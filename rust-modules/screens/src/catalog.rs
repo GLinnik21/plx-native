@@ -45,12 +45,14 @@ use plx_machine::machine::{
 use plx_machine::present::Provenance;
 use plx_plex::plex::ServerId;
 use plx_ui::hero_logo::{HeroLogo, LogoRung};
+use plx_ui::hstack::{Align, HStack, Item};
 use plx_ui::icons::Icon;
 use plx_ui::label::{HAlign, Label, VAlign};
 use plx_ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, FocusSource, Focusable, GroupKind, GroupSpec, HitSource,
     Hover, Placed, RenderStrategy, Screen, ScreenEvent, Seat, Step, Stop,
 };
+use plx_ui::vstack::VFlow;
 use plx_ui::widgets::{Button, ControlGround, CtlPop, StatusKind, StatusOverlay};
 use plx_ui::{detail_layout, theme, Env, Painter, Rect, View};
 
@@ -267,22 +269,23 @@ pub struct Stack {
 }
 
 pub fn stack(has_coming: bool, has_status: bool, summary: &str, measure: &dyn Measure) -> Stack {
-    let mut bottom = detail_layout::TITLE_BOTTOM;
-    let mut row = |h: f32, gap: f32| {
-        let y = bottom + gap;
-        bottom = y + h;
-        y
-    };
-    let coming = has_coming.then(|| row(measure.cap_h(theme::size::HEADLINE), theme::space::SM));
-    let meta = row(measure.cap_h(theme::size::BODY), theme::space::SM);
-    let status = has_status.then(|| row(STATUS_ICON_D, theme::space::SM));
+    // The title's bottom edge is a zero-height first item, so the first row's SM is an ordinary gap.
+    let mut flow = VFlow::new(detail_layout::TITLE_BOTTOM, theme::space::SM);
+    flow.push(Item::new(0.0));
+    let mut row = |present: bool, h: f32| flow.push(if present { Item::new(h) } else { Item::absent() });
+    let coming = row(has_coming, measure.cap_h(theme::size::HEADLINE)).map(|s| s.y);
+    let meta = row(true, measure.cap_h(theme::size::BODY)).map_or(0.0, |s| s.y);
+    let status = row(has_status, STATUS_ICON_D).map(|s| s.y);
     let summary_h = if summary.is_empty() {
         0.0
     } else {
         plx_ui::hero_synopsis(summary, "").with_measure(measure).measure_h(detail_layout::HERO_TEXT_W)
     };
-    let summary_y = row(summary_h, if summary.is_empty() { 0.0 } else { theme::space::MD });
-    let pill = row(hero_layout::CD, theme::space::LG);
+    // An empty summary is a present, zero-high row with no gap of its own (`before(0)`): it stands
+    // where the last row ends and the action pill still sits one LG under that.
+    let summary_item = if summary.is_empty() { Item::new(0.0).before(0.0) } else { Item::new(summary_h).before(theme::space::MD) };
+    let summary_y = flow.push(summary_item).map_or(0.0, |s| s.y);
+    let pill = flow.push(Item::new(hero_layout::CD).before(theme::space::LG)).map_or(0.0, |s| s.y);
     Stack { coming, meta, status, summary: summary_y, summary_h, pill }
 }
 
@@ -353,7 +356,7 @@ impl CatalogScreen {
     /// The pill's frame: the hero row's first (and only) control.
     fn pill_rect(&self, measure: &dyn Measure) -> Option<Rect> {
         let stack = self.stack(measure)?;
-        let w = hero_layout::pill_w(measure, pill_label(self.vm.membership), theme::size::BODY, true, false)
+        let w = hero_layout::pill_w(measure, pill_label(self.vm.membership), theme::size::BODY, true, None)
             .max(hero_layout::PW);
         Some(hero_layout::row_rect(&[w], 0, stack.pill))
     }
@@ -428,17 +431,15 @@ impl CatalogScreen {
         if let (Some(y), Some(icon), Some(text)) =
             (stack.status, status_icon(*status, release), status_text(*status, release))
         {
-            plx_ui::icons::draw(p, icon, Rect::new(x, y, STATUS_ICON_D, STATUS_ICON_D), theme::TEXT_SECONDARY);
+            // The status row: the icon box, one SM, the label in the rest of the hero column.
+            let row = [Item::new(STATUS_ICON_D), Item::new(detail_layout::HERO_TEXT_W - STATUS_ICON_D - theme::space::SM)];
+            let row = HStack::new(&row, theme::space::SM, Align::Leading(x));
+            let (Some((icon_x, icon_w)), Some((text_x, text_w))) = (row.span(0), row.span(1)) else { return };
+            plx_ui::icons::draw(p, icon, Rect::new(icon_x, y, icon_w, STATUS_ICON_D), theme::TEXT_SECONDARY);
             if let Ok(text) = CString::new(text) {
-                Label::new(text.as_ptr(), theme::size::LABEL, theme::TEXT_SECONDARY).v(VAlign::Middle).draw(
-                    p,
-                    Rect::new(
-                        x + STATUS_ICON_D + theme::space::SM,
-                        y,
-                        detail_layout::HERO_TEXT_W - STATUS_ICON_D - theme::space::SM,
-                        STATUS_ICON_D,
-                    ),
-                );
+                Label::new(text.as_ptr(), theme::size::LABEL, theme::TEXT_SECONDARY)
+                    .v(VAlign::Middle)
+                    .draw(p, Rect::new(text_x, y, text_w, STATUS_ICON_D));
             }
         }
 

@@ -71,8 +71,8 @@ pub(super) fn tick(i: u32) -> Tick {
 /// does (after the dispatcher's frame).
 ///
 /// Returns one label per request it PERFORMED (`"library:BackToHome { kind: Movie }"`,
-/// `"content:Back"`, `"watchlist:Back"`, `"home:Detail"`), so a table can assert which request a key produced. A
-/// request that is not a navigation (a menu, a play) is labelled
+/// `"content:Back"`, `"watchlist:Back"`, `"home:FoldToHero"`, `"home:Detail"`), so a table can assert which request a key
+/// produced. A request that is not a navigation (a menu, a play) is labelled
 /// `"unperformed ..."` and left undone: this pump does not stand in for the rest of the loop, and
 /// a test that needs one of those should say so rather than have it dropped (a shelf publication is the
 /// store's business and is not listed). [`Pump`] is the one
@@ -89,7 +89,8 @@ pub(super) fn pump_navigation(d: &mut Dispatcher<AppHost>, rig: &mut Bridge) -> 
 /// It also drains the item menu's committed rows (`content::drain_item_menu_requests`, the Watchlist
 /// disc's Add/Remove among them), performs the Watchlist page's own requests
 /// (`content::watchlist_request`: the Sort & Filter menu and the value it chooses) and a Home shelf
-/// card's Detail (`perform_home_detail`; Home's other requests are drained and left undone).
+/// card's Detail (`perform_home_detail`). The BACK fold (`content::fold_to_hero`) needs none of this
+/// state, so [`pump_navigation`] performs it too; Home's other requests are drained and left undone.
 pub(super) struct Pump {
     ps: plx_media::route::PlaybackSession,
     pa: plx_media::player::adapter::PlayerAdapter,
@@ -164,13 +165,24 @@ fn pump_requests(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, mut item: Option
         }
     }
     // Home's requests (`content::home_requests`), under the loop's guards: the asking page holds input and Home is the
-    // route. Only a card's Detail is performed (`perform_home_detail`); the rest are drained and left undone, as they were
-    // before this arm (nothing read them), so a test that presses OK on the hero or a pill sees what it always saw.
+    // route. Two are performed: the BACK fold, the one request of Home's that moves focus rather than navigating (the loop
+    // runs `content::fold_to_hero`, so the world does, or a BACK on a shelf would fold the picture and leave the engine's
+    // focus where it was), which needs none of the Pump's resources and so is performed for `pump_navigation` as well, and a
+    // card's Detail (`perform_home_detail`, the Pump only). The rest are drained and left undone, as they were before this
+    // arm (nothing read them), so a test that presses OK on the hero or a pill sees what it always saw.
     for (source, request, ret) in rig.take_home_reqs() {
-        if asker(d, source).is_none() || d.top_arg() != Some(&AppArg::Home) { continue; }
-        if let (plx_screens::registry::HomeReq::Detail { sid, rk }, Some((pump, now))) = (request, item.as_mut()) {
-            perform_home_detail(pump, *now, d, rig, sid, &rk, ret);
-            seen.push("home:Detail".into());
+        let Some(entry) = asker(d, source) else { continue };
+        if d.top_arg() != Some(&AppArg::Home) { continue; }
+        match (request, item.as_mut()) {
+            (plx_screens::registry::HomeReq::FoldToHero, _) => {
+                crate::app::content::fold_to_hero(d, source, entry);
+                seen.push("home:FoldToHero".into());
+            }
+            (plx_screens::registry::HomeReq::Detail { sid, rk }, Some((pump, now))) => {
+                perform_home_detail(pump, *now, d, rig, sid, &rk, ret);
+                seen.push("home:Detail".into());
+            }
+            _ => {}
         }
     }
     for (source, request, ret) in rig.take_watchlist_reqs() {
@@ -256,7 +268,26 @@ pub(super) struct World {
 }
 
 impl Drop for World {
-    fn drop(&mut self) { plx_plex::plex::reset_servers_for_test(); }
+    fn drop(&mut self) {
+        plx_plex::plex::reset_servers_for_test();
+        crate::app::collections_probe::clear_seeds_for_test();
+    }
+}
+
+/// How many collections the rig's probe stands in for on every section it seeds (a server the rig
+/// has no network to ask): enough that the Library header's Collections control is on the row.
+pub(crate) const RIG_COLLECTIONS: u32 = 4;
+
+impl Bridge {
+    /// Seed the Collections probe's `answer` for every section of the directory captured now (the
+    /// probe never reaches a server under test, `collections_probe::seed_for_test`), replacing the
+    /// rig's earlier seeds: `Count(n)` puts the control on the Library header, `Count(0)` or
+    /// `Forbidden` takes it off, `Unknown` is a probe that has not answered.
+    pub(crate) fn seed_collections_for_test(&self, answer: plx_plex::plex::collections::CollectionsCount) {
+        for section in self.directory.view().sections() {
+            if let Some(sid) = section.sid { crate::app::collections_probe::seed_for_test(sid, section.key, answer); }
+        }
+    }
 }
 
 impl World {
@@ -285,6 +316,7 @@ impl World {
     fn build_shelves(name: &str, two_libraries: bool, answered: bool, shelved: bool) -> World {
         let (serial, session) = Self::lock(name);
         plx_plex::plex::reset_servers_for_test();
+        crate::app::collections_probe::clear_seeds_for_test();
         let own = plx_plex::plex::register_for_test("route-own", "127.0.0.1", 9, "synthetic", "fixture");
         let shared = plx_plex::plex::register_for_test("route-shared", "127.0.0.1", 10, "synthetic", "fixture");
         plx_plex::plex::set_current(own);
@@ -297,6 +329,7 @@ impl World {
             bridge.browse_run(plx_data::stores::browse::BrowseCmd::ApplyPins(vec![(FILM_CLUB, true)]));
         }
         bridge.refresh_browse_directory();
+        bridge.seed_collections_for_test(plx_plex::plex::collections::CollectionsCount::Count(RIG_COLLECTIONS));
         bridge.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(0));
         {
             let mut browse = bridge.stores.browse.borrow_mut();
@@ -318,6 +351,24 @@ impl World {
         w
     }
 
+    /// The Movies library whose sections' Collections probe answered `answer` (a refusal, none, or a
+    /// count other than the rig's), settled: the header the rig's server would give a library with
+    /// that answer.
+    pub(super) fn movies_library_answering(name: &str, answer: plx_plex::plex::collections::CollectionsCount) -> World {
+        let mut w = Self::build(name, false);
+        w.bridge.seed_collections_for_test(answer);
+        w.open_library();
+        w
+    }
+
+    /// The Movies library showing its section's EPISODES listing (the landscape stills), settled.
+    pub(super) fn episodes_library(name: &str) -> World {
+        let mut w = Self::movies_library(name, false);
+        w.bridge.stores.browse.borrow_mut().seed_episodes_for_test(60);
+        w.frames(60);
+        w
+    }
+
     /// The Movies library whose section has published no shelves yet (its listing answered): the
     /// Recommended page opened from it has a first publication still to come.
     pub(super) fn movies_library_unshelved(name: &str) -> World {
@@ -335,7 +386,7 @@ impl World {
     }
 
     /// The Collections page, opened with OK on the Library header's Collections control, its own
-    /// listing held LOADING (the Library under it is answered, so the control is there to press).
+    /// listing held LOADING (the Library under it is answered, and the rig's probe is seeded with a count, so the control is there to press).
     pub(super) fn collections_loading(name: &str) -> World {
         let mut w = Self::movies_library(name, false);
         w.bridge.stores.browse.borrow_mut().hold_listing_for_test();
@@ -442,20 +493,51 @@ impl World {
     /// A movie's Detail page (record `rk` carrying the guid of the catalog id `hex`) pushed over Home,
     /// over the same scripted plex.tv, settled.
     pub(super) fn detail_with_disc(name: &str, hex: [u8; 12]) -> World {
-        let mut w = Self::scripted(name);
-        super::show_page(&mut w.d, AppArg::Home);
-        w.frames(20);
-        // Installed BEFORE the mount: the page keys its element identities from the item it finds current.
-        plx_data::metadata::set_current_for_test(w.bridge.stores.metadata.state_mut(), Some(plx_data::metadata::Detail {
+        Self::detail_page(name, plx_data::metadata::Detail {
             sid: plx_plex::plex::ServerId::UNSET,
             rk: "movie".into(),
             kind: "movie".into(),
             guid: format!("plex://movie/{}", plx_data::watchlist::encode_hex(&hex)),
             ..Default::default()
-        }));
+        })
+    }
+
+    /// The Detail page of record `movie` holding `detail` (its `related` shelf, its collection), pushed
+    /// over Home over the same scripted plex.tv, settled.
+    pub(super) fn detail_page(name: &str, detail: plx_data::metadata::Detail) -> World {
+        let mut w = Self::scripted(name);
+        super::show_page(&mut w.d, AppArg::Home);
+        w.frames(20);
+        // Installed BEFORE the mount: the page keys its element identities from the item it finds current.
+        plx_data::metadata::set_current_for_test(w.bridge.stores.metadata.state_mut(), Some(detail));
         super::nav_push_with_return(&mut w.d, detail_arg("movie"), Default::default());
         w.frames(60);
         assert!(w.on(&detail_arg("movie")), "premise: the Detail page is on top");
+        w
+    }
+
+    /// The Search page with `shelves` (of the world's own server) published as its results, settled.
+    /// The query is set the way a typed one is, so the page shows results rather than recents.
+    pub(super) fn search_results(name: &str, shelves: impl FnOnce(plx_plex::plex::ServerId) -> Vec<plx_data::search::Shelf>) -> World {
+        let mut w = Self::new(name);
+        super::show_page(&mut w.d, AppArg::Search);
+        w.bridge.search_run(plx_data::stores::search::SearchCmd::SetQuery("synthetic".into()));
+        let shelves = shelves(w.own);
+        w.bridge.stores.search.publish_shelves_over_directory_for_test(shelves, w.bridge.directory.view());
+        w.frames(60);
+        assert!(w.on(&AppArg::Search), "premise: Search is on top");
+        w
+    }
+
+    /// The person page of `actor-a` whose filmography is `movies` and `shows`, `movie_roles` being the
+    /// characters the roles batch named the movie tiles' credits as, settled.
+    pub(super) fn person_page(name: &str, movies: Vec<plx_data::pms::PmsMovie>, shows: Vec<plx_data::pms::PmsMovie>, movie_roles: &[&str]) -> World {
+        let mut w = Self::new(name);
+        super::show_page(&mut w.d, person_arg("actor-a"));
+        w.frames(30);
+        w.bridge.stores.person.install_for_test(movies, shows);
+        w.bridge.stores.person.install_roles_for_test(0, movie_roles.iter().map(|r| (*r).to_owned()).collect());
+        w.frames(60);
         w
     }
 
@@ -526,15 +608,19 @@ impl World {
         let mut glass = plx_ui::frame::glass::GlassPlan::new();
         let sources = glass.sources.clone();
         sources.borrow_mut().begin(self.d.backdrop_layers(1.0));
-        let words = {
-            let _declarations = backdrop::discover(sources.clone());
-            plx_ui::draw_census::capture_text(|| {
-                self.d.draw_with_glass_below(&mut self.bridge, &mut glass, true, backdrop::Z::ALL);
-            })
-        };
+        let mut words = Vec::new();
+        let mut runs = Vec::new();
+        let marks = plx_ui::draw_census::capture_play_marks(|| {
+            runs = plx_ui::draw_census::capture_runs(|| {
+                let _declarations = backdrop::discover(sources.clone());
+                words = plx_ui::draw_census::capture_text(|| {
+                    self.d.draw_with_glass_below(&mut self.bridge, &mut glass, true, backdrop::Z::ALL);
+                });
+            });
+        });
         sources.borrow_mut().resolve();
         backdrop::commit(&sources);
-        Drawn { words }
+        Drawn { words, runs, marks }
     }
 
     /// Present the hit map the bar registers for this frame (`Dispatcher::present_bar_stops`): what a pointer
@@ -587,11 +673,21 @@ impl World {
             .expect("a Library page (the grid or the Collections page) is on top")
     }
 
+    /// Poster `i`'s settled cell on the grid page on top (the Library grid or the Collections page, the
+    /// Watchlist, the Collection screen's members), the caption band folded in.
+    pub(super) fn poster_cell(&self, i: usize) -> plx_ui::Rect {
+        let any = self.d.top_screen().and_then(|screen| screen.as_any()).expect("a page is on top");
+        if let Some(page) = any.downcast_ref::<plx_screens::library::LibraryScreen>() { return page.probe_cell(i).0; }
+        if let Some(page) = any.downcast_ref::<plx_screens::watchlist::page::WatchlistScreen>() { return page.probe_cell(i).expect("the Watchlist holds a grid"); }
+        if let Some(page) = any.downcast_ref::<plx_screens::collection::CollectionScreen>() { return page.probe_cell(i).expect("the Collection screen holds a grid"); }
+        panic!("the top page holds no poster grid");
+    }
+
     /// **Every card's pop as the top page's draw paints it**, shelf by shelf (Home or the Recommended
     /// page): `1.0` is a card at EXACT rest, which `ui::widgets::pop_factor` turns into `0.0` and the card
     /// compositor into the plain program and the resting split. Anything above `1.0` on a card the
     /// focus is not on is a card that never came to rest (`Spring::land`).
-    fn card_pops(&self) -> Vec<Vec<f32>> {
+    pub(super) fn card_pops(&self) -> Vec<Vec<f32>> {
         let any = self.d.top_screen().and_then(|screen| screen.as_any()).expect("a page is on top");
         if let Some(page) = any.downcast_ref::<plx_screens::home::HomeScreen>() { return page.probe_card_pops(self.d.focus()); }
         if let Some(page) = any.downcast_ref::<plx_screens::library::RecommendedScreen>() { return page.probe_card_pops(self.d.focus()); }
@@ -693,11 +789,21 @@ impl World {
 /// One frame's draw, as [`World::drawn`] reads it: the text, since a host paints no pixels.
 pub(super) struct Drawn {
     pub(super) words: Vec<(String, plx_ui::Rect)>,
+    /// The same runs with their style: `ink[3]` is the alpha the page drew each at (the cascade folded in).
+    pub(super) runs: Vec<plx_ui::draw_census::Run>,
+    /// Every amber play mark the frame drew (a host paints no icon: the census notes each one), as
+    /// the rect it stands in.
+    pub(super) marks: Vec<plx_ui::Rect>,
 }
 
 impl Drawn {
-    /// Was `text` drawn, exactly as one run?
-    pub(super) fn says(&self, text: &str) -> bool { self.words.iter().any(|(words, _)| words == text) }
+    /// **The lines of the focused tile's label block this frame drew**, top to bottom, with no list of
+    /// words to look for: every run `card_row::draw_label_block` drew, whatever its ink
+    /// (`plx_ui::draw_census::label_lines`), so a line the setting turned off, or one nothing asked
+    /// for, is not there, and one that should not be (a stray UNSHADOWED legacy block under Nothing
+    /// included) fails the test that compares this list. A line's shadow and a gliding line's
+    /// follower are the same line; two lines that read alike stay two.
+    pub(super) fn caption_lines(&self) -> Vec<String> { plx_ui::draw_census::label_lines(&self.runs) }
 }
 
 pub(super) use super::super::words::every_route;
@@ -749,4 +855,52 @@ impl Drop for DirectoryPolicyCleanup {
 fn presented<R>(frame: R) -> R {
     plx_ui::panel_motion::PanelMotion::drain_queued_text_for_test();
     frame
+}
+
+/// A one-thread loopback PMS for route tests: `respond` maps each request's path to a status line
+/// and a JSON body. Dropping it stops and joins the thread, so a test that never dials still ends.
+pub(crate) struct Pms {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+    pub(crate) port: i32,
+}
+
+impl Pms {
+    pub(crate) fn serve(respond: fn(&str) -> (&'static str, String)) -> Pms {
+        use std::io::{Read, Write};
+        use std::sync::atomic::Ordering;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port() as i32;
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = std::sync::Arc::clone(&stop);
+        let thread = std::thread::spawn(move || {
+            while !flag.load(Ordering::SeqCst) {
+                let Ok((mut conn, _)) = plx_base::testnet::accept(&listener) else {
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                    continue;
+                };
+                let mut buf = [0u8; 4096];
+                let n = conn.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]);
+                let path = head.split_whitespace().nth(1).unwrap_or("");
+                let (status, body) = respond(path.split('?').next().unwrap_or(""));
+                let _ = write!(
+                    conn,
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len(),
+                );
+            }
+        });
+        Pms { stop, thread: Some(thread), port }
+    }
+}
+
+impl Drop for Pms {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
 }

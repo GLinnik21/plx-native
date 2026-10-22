@@ -247,7 +247,7 @@ impl plx_screens::registry::LibraryLike for AppHost {
     fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> { cx.views.listing }
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> { cx.views.directory }
     fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a> { cx.views.section_hubs }
-    fn collections_count(cx: &Cx<'_, Self>, section: u32) -> Option<Result<u32, plx_screens::registry::Forbidden>> {
+    fn collections_count(cx: &Cx<'_, Self>, section: usize) -> Option<Result<u32, plx_screens::registry::Forbidden>> {
         super::collections_probe::count(cx.views.directory, section, cx.tick.ms)
     }
 }
@@ -2249,6 +2249,12 @@ fn frame_ingest(
     // page is told of it in the frame that first draws it (`MetadataStore::pump_related`).
     rig.stores.metadata.pump_related();
     let (browse_changed, hubs_changed, search_changed) = rig.capture_views(d);
+    // A directory that just landed (or a server re-pointed at a new client) has every section's
+    // Collections count asked for now, so a library switch finds its answer already there
+    // (`collections_probe::warm`, one request at a time on one worker).
+    if super::collections_probe::warm_due(browse_changed) {
+        super::collections_probe::warm(rig.directory.view(), tick.ms);
+    }
     rig.capture_chrome(d);
     rig.deliver_home_commands(d);
     rig.deliver_library_commands(d);
@@ -2855,10 +2861,10 @@ fn strip_menu_arg(
 /// **It does not touch the press.** A hold the screen answered was already abandoned onto its
 /// release spring by the dispatcher (`InputMachine::cancel_press`), so the card springs from its dip
 /// up to its pop as the menu opens, and the press is the ONE owner of that motion: the opener
-/// lift ([`Dispatcher::opener_press`]) draws it live above the frozen page (and, for an opener no card section
-/// draws, the page draws it too). The page pass leaves
+/// lift ([`Dispatcher::opener_press`]) draws it live above the frozen page (and, for an opener no page
+/// leaves out (`DrawFrame::leaves_out`), the page draws it too). The page pass leaves
 /// the lifted card out (`DrawFrame::lifted`), so the snapshot holds no copy of it to go stale and
-/// the spring is not page damage (`Press::tick`); only an opener no card section draws keeps the
+/// the spring is not page damage (`Press::tick`); only an opener no page leaves out keeps the
 /// per-frame re-take. Ending the press at rest here instead (`Press::settle`, rc.3) made the
 /// card jump to its pop in one frame, the lost animation the owner reported.
 ///
@@ -3844,7 +3850,11 @@ mod restore_characterisation_tests;
 
 #[cfg(test)]
 #[path = "bridge_test_support.rs"]
-mod test_support;
+pub(crate) mod test_support;
+
+#[cfg(test)]
+#[path = "deeplink_route_tests.rs"]
+mod deeplink_route_tests;
 
 #[cfg(test)]
 #[path = "session_plaintext_repair_tests.rs"]
@@ -3869,6 +3879,10 @@ mod library_bookmark_tests;
 #[cfg(test)]
 #[path = "library_push_capture_tests.rs"]
 mod library_push_capture_tests;
+
+#[cfg(test)]
+#[path = "recommended_enter_tests.rs"]
+mod recommended_enter_tests;
 
 #[cfg(test)]
 #[path = "library_diagnostic_tests.rs"]
@@ -4000,6 +4014,21 @@ mod library_memory_route_tests;
 #[cfg(test)]
 #[path = "under_posters_route_tests.rs"]
 mod under_posters_route_tests;
+#[cfg(test)]
+#[path = "under_posters_shelf_route_tests.rs"]
+mod under_posters_shelf_route_tests;
+#[cfg(test)]
+#[path = "under_posters_pages_route_tests.rs"]
+mod under_posters_pages_route_tests;
+#[cfg(test)]
+#[path = "under_posters_band_route_tests.rs"]
+mod under_posters_band_route_tests;
+#[cfg(test)]
+#[path = "home_chrome_route_tests.rs"]
+mod home_chrome_route_tests;
+#[cfg(test)]
+#[path = "home_hero_route_tests.rs"]
+mod home_hero_route_tests;
 #[cfg(test)]
 #[path = "watchlist_disc_route_tests.rs"]
 mod watchlist_disc_route_tests;

@@ -70,9 +70,11 @@ pub const UNDER_LABEL_AIR: f32 = 22.0;
 /// of it on all of them spent most of a 1080 panel on emptiness; a shelf column is now a running
 /// sum of `card_row::ROW_PITCH_FIXED + card_row::under_band(e)`, which is exactly this at `e == 1`.
 /// Every screen that stacks shelves — Home, the Library, Search and the person page — accumulates
-/// it that way, and `card_row::settled_top` is the closed form a scroll target must use. What is
+/// it that way, and `card_row::settled_top` (`settled_top_for` with a policy's band) is the closed form a scroll target must use. What is
 /// unchanged is that this constant remains the ONE authority on a poster shelf's rhythm: the four
-/// screens differ in their fixed part (a landscape row, a typed search block), never in the band.
+/// screens differ in their fixed part (a landscape row, a typed search block), and in the band only by the
+/// Under posters policy a screen hands its poster shelves (`caption_policy::band_h`; the legacy band for a shelf of
+/// landscape stills or headshots, which take none).
 pub const ROW_PITCH: f32 =
     TITLE_DY + CARD_DY + CARD_H + crate::card_row::UNDER_LABEL_H + UNDER_LABEL_AIR;
 pub const CONTENT_Y: f32 = 200.0;
@@ -117,8 +119,9 @@ pub fn inside_safe(r: crate::Rect) -> bool {
 /// the whole shelf by that much, so the peek is 17px shallower here to keep the composition the
 /// hero view was tuned to (828 → 811; card top = `PEEK_Y + CARD_DY` = 837, as the popped one was).
 pub const PEEK_Y: f32 = 811.0;
-// shelf top in grid view — leaves the first hub title (row_y − TITLE_DY, lifted up to ~10 more when its
-// leftmost card magnifies) a clear space::MD under the profile chip (bottom edge 126).
+// shelf top in grid view, and the rest of the FOCUSED shelf on every scroll (`ui_cards::grid_rest_scroll`
+// pins it here whatever the Under posters band): leaves the hub title (row_y − TITLE_DY, lifted up to
+// ~17 more when its leftmost card magnifies) a clear space::MD under the profile chip (bottom edge 126).
 // 176 until 2026-08-23: it moved with the top bar, which dropped 18px so its track clears MARGIN_Y
 // (`widgets::TOP_BAR_Y`). The clearance under the chip is what this number IS, so it follows the bar
 // rather than staying put and letting the heading crowd it.

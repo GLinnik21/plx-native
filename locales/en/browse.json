@@ -47,6 +47,14 @@
     "value": "Movie",
     "description": "browse kind movie"
   },
+  "browse.kind.episode": {
+    "value": "Episode",
+    "description": "The kind word an episode tile's caption falls back to when the server sent it no number, year or show."
+  },
+  "browse.detail.specials": {
+    "value": "Specials",
+    "description": "A season numbered 0 that the server gave no title: the identity line of its caption (caption_policy)."
+  },
   "browse.kind.show": {
     "value": "Show",
     "description": "browse kind show"

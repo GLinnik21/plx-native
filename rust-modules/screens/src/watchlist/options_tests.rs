@@ -3,6 +3,7 @@ use super::super::header::{self, Count};
 use super::super::readout::{self, Readout};
 use super::*;
 use plx_base::fontcov::advances::ShippedMeasure;
+use plx_machine::machine::Measure as _;
 use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference, SHIPPED};
 use plx_ui::fit::HEADROOM;
 use plx_ui::fixture::FixtureMeasure;
@@ -250,7 +251,7 @@ fn the_title_is_plain_text_with_no_plate_under_it() {
 }
 
 /// **A count is a filter read-out and nothing else** (the Library's rule): "6 of 14" while a filter
-/// narrows the list, ahead of the control by the read-out gap, and no "14 titles" at rest.
+/// narrows the list, one row gap ahead of the control, and no "14 titles" at rest.
 #[test]
 fn the_row_carries_a_readout_only_while_a_filter_narrows_the_list() {
     let plain = header::Row::new(&FixtureMeasure, "Default", Some(Count::All(14)));
@@ -259,7 +260,7 @@ fn the_row_carries_a_readout_only_while_a_filter_narrows_the_list() {
     assert_eq!(narrowed.items().len(), 3);
     let readout = narrowed.items()[1];
     let control = narrowed.items()[2];
-    assert_eq!(control.text.x - (readout.text.x + readout.text.w), plx_ui::page_header::READOUT_GAP);
+    assert_eq!(control.text.x - (readout.text.x + readout.text.w), plx_ui::page_header::GAP);
     assert!(!readout.focusable && control.focusable);
     assert_eq!(narrowed.plate(), plain.plate(), "the control does not move for the read-out");
     let log = plx_ui::draw_census::capture(|| narrowed.draw(plx_ui::Painter::recording(), 0.0, &plx_ui::widgets::TabStrip::new(), 1.0, false));
@@ -304,6 +305,44 @@ fn the_readout_hangs_its_verdict_from_540_with_the_reason_under_it() {
     assert_eq!(reason.y, cap.y + cap.h + theme::space::SM);
     assert!(reason.w <= StatusOverlay::REASON_W);
     assert!((reason.cx() - frame.cx()).abs() < 0.01, "centred on the page");
+}
+
+/// Q2: the read-out's verdict and reason sit exactly where `StatusOverlay` puts a page-placed
+/// `Failed` read-out's, for a one-line AND a two-line reason: the painted runs' positions do not
+/// depend on the reason box's height (it is top-anchored), and the read-out's bands ARE the overlay's.
+#[test]
+fn the_readout_paints_the_same_runs_for_a_one_line_and_a_two_line_reason() {
+    let _g = language_on_this_thread_for_test(Preference::En);
+    let measure = FixtureMeasure;
+    let (cap, reason) = readout::bands(Rect::FULL, &measure);
+    let (verdict_sz, ..) = StatusOverlay::verdict_face(StatusKind::Failed);
+    assert_eq!(cap.y, 540.0);
+    assert_eq!(cap.h, measure.line_h(verdict_sz));
+    assert_eq!(reason.y, 540.0 + cap.h + theme::space::SM, "the reason hangs SM under the verdict's box");
+    // The reserved slot: one line pitch plus the last line's box, whatever the reason says.
+    let (reason_sz, _) = StatusOverlay::reason_face(StatusKind::Failed);
+    let pitch = plx_ui::text_view::TextView::new("", reason_sz, theme::TEXT_SECONDARY).line_h();
+    assert_eq!(reason.h, pitch + measure.line_h(reason_sz));
+    // Painted (the read-out draws with the device's `LegacyMeasure`): the reason's first run starts
+    // at the reason band's top, one-line body or two.
+    let (_, painted) = readout::bands(Rect::FULL, &plx_ui::widgets::LegacyMeasure);
+    let runs = |r: Readout| {
+        plx_ui::draw_census::capture_runs(|| readout::draw_readout(r, plx_ui::Painter::recording(), Rect::FULL))
+    };
+    for r in [Readout::Empty, Readout::Filtered] {
+        let runs = runs(r);
+        assert!(runs.len() >= 2, "{r:?}: a verdict and at least one reason line");
+        let body = CString::new(r.body().unwrap()).unwrap();
+        let (reason_sz, ink) = StatusOverlay::reason_face(StatusKind::Failed);
+        let want = plx_ui::draw_census::capture_runs(|| {
+            plx_ui::text_view::TextView::new(body.to_str().unwrap(), reason_sz, ink)
+                .h(plx_ui::label::HAlign::Center)
+                .max_lines(2)
+                .with_measure(&plx_ui::widgets::LegacyMeasure)
+                .draw(plx_ui::Painter::recording(), Rect::new(painted.x, painted.y, painted.w, 0.0));
+        });
+        assert!((runs[1].at.y - want[0].at.y).abs() < 0.5, "{r:?}: the reason starts at {}, want {}", runs[1].at.y, want[0].at.y);
+    }
 }
 
 #[test]

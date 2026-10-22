@@ -58,7 +58,7 @@
 #![allow(dead_code)] // the accessors are Landing 3's; see the Dormant note above
 
 use plx_plex::plex::ServerId;
-use crate::pms::{clamp_hold, listable, parse_item, PmsMovie, HOLD_ROWS, MAX_SHELF_ITEMS};
+use crate::pms::{clamp_hold, PmsMovie, HOLD_ROWS, MAX_SHELF_ITEMS};
 use crate::stores::paging::{self, Ask, PageInfo, Row, RowMode, RowState};
 use std::panic::catch_unwind;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1044,6 +1044,18 @@ pub fn seed_named_shelves_for_owner_test(
     st.hubs.commit_staged(true);
 }
 
+/// Edit every card of every published shelf of section `sec` (a seeded card carries only a key and
+/// a title): the facts a caption is worded from, or a resume point. The cards are told apart by
+/// their `rk`, which [`seed_named_shelves_for_owner_test`] makes `{hubIdentifier}-{index}`.
+#[cfg(any(test, feature = "test-support"))]
+pub fn edit_shelf_items_for_owner_test(state: &mut super::BrowseState, sec: usize, edit: &dyn Fn(&mut PmsMovie)) {
+    let Some(st) = state.state_mut(sec) else { return };
+    for shelf in Arc::make_mut(&mut st.hubs.committed).iter_mut() {
+        shelf.items.iter_mut().for_each(edit);
+    }
+    st.hubs.revised();
+}
+
 /// The reads a moved hold is owed, landed: every row in the held range that is a descriptor gets
 /// back the cards it showed, keyed as [`seed_named_shelves_for_owner_test`] keys them, and the
 /// result is published (the revision moves). What the worker does for a ring that moved onto rows
@@ -1303,9 +1315,7 @@ fn parse_window(out: &mut Vec<Shelf>, hubs: &[plx_plex::plex::Hub], sid: ServerI
             .metadata
             .iter()
             .enumerate()
-            .filter(|(_, m)| listable(&m.kind))
-            .map(|(i, m)| (i, parse_item(m, sid)))
-            .filter(|(_, m)| !m.title.is_empty() && !m.thumb.is_empty())
+            .filter_map(|(i, m)| crate::pms::shelf_card(m, sid).map(|card| (i, card)))
             .take(MAX_SHELF_ITEMS)
             .unzip();
         if items.is_empty() {
@@ -1711,17 +1721,28 @@ mod tests {
     }
 
     /// An item with no thumb is not drawable in a shelf and is dropped, and a hub left with nothing
-    /// goes with it — the same filter `pms::project` applies to Home's rows, so one library's shelf
-    /// cannot follow a different rule from the same server's Home shelf.
+    /// goes with it — the same filter `pms::project` applies to Home's rows (`pms::shelf_card`), so one
+    /// library's shelf cannot follow a different rule from the same server's Home shelf. A missing
+    /// TITLE is not a reason to drop: an item the server left unnamed is still a poster.
     #[test]
     fn an_item_with_no_artwork_is_dropped_and_can_empty_its_hub() {
         let json = r#"{"MediaContainer":{"Hub":[
           {"hubIdentifier":"movie.recentlyadded.1","title":"Recently Added","size":2,"Metadata":[
              {"ratingKey":"1","type":"movie","title":"No Art"},
-             {"ratingKey":"2","type":"movie","title":"","thumb":"/t/2"}]}]}}"#;
+             {"ratingKey":"2","type":"movie","title":"No Art Either","thumb":""}]}]}}"#;
         assert!(
             parse_hubs(&container(json), ServerId::from_raw(0), 1).shelves.is_empty(),
-            "one row has no art and the other no title: the hub has nothing to draw"
+            "neither row has art: the hub has nothing to draw"
+        );
+        let json = r#"{"MediaContainer":{"Hub":[
+          {"hubIdentifier":"movie.recentlyadded.1","title":"Recently Added","size":2,"Metadata":[
+             {"ratingKey":"1","type":"movie","title":"No Art"},
+             {"ratingKey":"2","type":"movie","title":"","thumb":"/t/2"}]}]}}"#;
+        let shelves = parse_hubs(&container(json), ServerId::from_raw(0), 1).shelves;
+        assert_eq!(
+            shelves.iter().map(|s| s.items.iter().map(|m| m.rk.as_str()).collect::<Vec<_>>()).collect::<Vec<_>>(),
+            [vec!["2"]],
+            "the artless row is dropped; the untitled one with art is still a card"
         );
     }
 

@@ -281,6 +281,13 @@ impl BrowseStore {
         crate::browse::seed_collections_for_owner_test(&mut self.state, count);
     }
 
+    /// [`seed_items_for_test`](Self::seed_items_for_test) with `count` numbered episodes: the
+    /// listing a show section answers on `type=4`, the library type already `Episodes`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn seed_episodes_for_test(&mut self, count: usize) {
+        crate::browse::seed_episodes_for_owner_test(&mut self.state, count);
+    }
+
     /// **Hold the listing's fetch**: the single-flight flag stays taken, so the page the section is
     /// waiting for is never asked for and nothing lands. A host test's server is a closed port, whose
     /// fetch fails at once; a page that wants to be read while its listing is LOADING needs the
@@ -372,6 +379,14 @@ impl BrowseStore {
     #[cfg(any(test, feature = "test-support"))]
     pub fn stage_shelves_for_test(&mut self, section: usize) {
         crate::browse::section_hubs::stage_shelves_for_owner_test(&mut self.state, section);
+    }
+
+    /// Edit every card of section `section`'s published shelves
+    /// ([`seed_named_shelves_for_test`](Self::seed_named_shelves_for_test)'s cards carry only a key
+    /// and a title).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn edit_shelf_items_for_test(&mut self, section: usize, edit: &dyn Fn(&mut crate::pms::PmsMovie)) {
+        crate::browse::section_hubs::edit_shelf_items_for_owner_test(&mut self.state, section, edit);
     }
 
     #[cfg(any(test, feature = "test-support"))]

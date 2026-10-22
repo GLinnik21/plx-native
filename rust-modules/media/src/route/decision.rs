@@ -5202,11 +5202,12 @@ pub fn play_resolution_failed(ps: &PlaybackSession) -> bool {
 /// The refusal's own sentence for the read-out to quote — `None` when the server did not refuse,
 /// `Some("")` when it refused without saying why. MAIN THREAD (see [`PlaybackSession::play_verdict`]).
 ///
-/// Borrowed, not cloned: the read-out asks for this 2–3× on every frame of a failure (the HUD
+/// Borrowed, not cloned, for every sentence but the two Force Direct Play audio ones that name a
+/// codec (formatted on read): the read-out asks for this 2–3× on every frame of a failure (the HUD
 /// caption, the read-out itself, and the diagnostics panel when it is open), and every one of them
 /// only reads it. The borrow lives until the next main-thread write, which is `apply_plan` or
 /// `request_play` — neither of which can run inside a frame's draw.
-pub fn play_verdict(ps: &PlaybackSession) -> Option<&str> {
+pub fn play_verdict(ps: &PlaybackSession) -> Option<std::borrow::Cow<'_, str>> {
     ps.play_verdict.as_ref().map(PlayVerdict::text)
 }
 /// The verdict NUMBERS of a refusal the SERVER made at `/decision` — `None` when nothing was
@@ -5280,6 +5281,11 @@ pub fn refuse_by_server_for_test(
 pub fn resolve_as_preview_for_test(ps: &mut PlaybackSession) {
     ps.preview = false;
     ps.resolved_as_preview = true;
+}
+/// Test-only: mark `ps` as the hero preview's session, as `preview::start` does for a trailer.
+#[cfg(any(test, feature = "test-support"))]
+pub fn mark_preview_for_test(ps: &mut PlaybackSession) {
+    ps.preview = true;
 }
 /// Test-only: install a live transcode route (`encoder` session, optional remux, optional
 /// fixed-HLS delivery) the way a successful [`apply_plan`] leaves it.
@@ -10378,7 +10384,13 @@ pub fn commit_audio_selection(ps: &mut PlaybackSession, audio: CarriedAudio) -> 
 /// The route half of [`commit_audio_selection`]: which way the pick reloads, and what it displaces.
 fn commit_audio_route(ps: &mut PlaybackSession, audio: CarriedAudio) -> bool {
     if forced_direct_play(ps) && !audio_track_direct_plays(ps, &audio.codec, audio.channels) {
-        ps.play_verdict = Some(PlayVerdict::Forced(ForcedFailure::AudioNeedsConversion));
+        let friendly = plx_data::metadata::friendly_codec(&audio.codec);
+        crate::player::log(&format!(
+            "playback_policy: Force Direct Play refused audio codec {} ({friendly})", audio.codec
+        ));
+        ps.play_verdict = Some(PlayVerdict::Forced(ForcedFailure::AudioNeedsConversion {
+            codec: friendly,
+        }));
         return false;
     }
     if original_recovery_pending() {

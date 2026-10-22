@@ -114,7 +114,9 @@ A muted device run proves pipeline behavior, not audible output.
 Auto keeps the measured DTS channel ceiling: DTS-HD sources reporting more channels than that
 ceiling (including 7.1 on the six-channel dev set), or no usable channel count, still convert on
 the server. Stripping an HD extension alone does not prove the remaining core fits the decoder;
-this change does not advertise all DTS-HD streams as directly playable.
+this change does not advertise all DTS-HD streams as directly playable. PMS reports DTS as
+`dca`; Auto and Force treat it as `dts`, and the profile sends `dca`. Force skips the channel
+ceiling for DTS but still requires the device table to list a DTS decoder with channels.
 
 ### Implementation verification — 2026-09-27
 

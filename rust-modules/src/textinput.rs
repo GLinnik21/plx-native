@@ -142,15 +142,29 @@ const TEXT_OFF: usize = if cfg!(feature = "hostsim") { 12 } else { 16 };
 /// Not a queue-depth tuning knob — a leak bound. Text events are delivered to the whole app, not
 /// to a screen, and on a desktop SDL they are enabled from `SDL_VideoInit` onward (see [`start`]),
 /// so every keystroke anywhere in the simulator lands here whether or not anything intends to
-/// read it. The screen that cares drains every frame, so a buffer this deep means nobody is
-/// draining at all, and the only thing left to protect is memory.
+/// read it. Nothing drains the queue in production (a focused search field takes its text through
+/// `ingest_text` instead, see [`PENDING`]), so this bound is the whole of the queue's memory
+/// discipline.
 const MAX_PENDING: usize = 256;
 
-/// Committed text, oldest first, waiting for [`drain`].
-///
-/// Main-thread-only by construction: written from the SDL event loop in `app.rs`, read by the
-/// screen's `update` in the same loop. Same `static mut` + `addr_of` idiom as `search.rs`.
-static mut PENDING: Vec<String> = Vec::new();
+thread_local! {
+    /// Committed text, oldest first, waiting for [`drain`].
+    ///
+    /// Nothing drains it in production: while a search field owns input, typed text (the
+    /// television's keyboard and the `txt:` remote token alike) goes through `app/run.rs`'s
+    /// `ingest_text` into the app's input queue (`app.inputs`) and never reaches this one.
+    /// [`on_event`] fills it only on every other route, where it is a bounded buffer
+    /// ([`MAX_PENDING`]) that [`start`] clears, and [`drain`] is read by the tests and nothing else.
+    ///
+    /// Main-thread-only by construction: [`on_event`] is called from the SDL event loop in
+    /// `app/run.rs` and from the `txt:` remote token in `app/events.rs`, both on the frame thread. A
+    /// `thread_local!` for that reason and not a `static mut`:
+    /// the queue owns `String`s that `on_event` trims and `start`/`drain` clear, so one process-wide
+    /// queue lets two threads free each other's commits, which is how `cargo test`'s parallel threads
+    /// aborted `plx_ui` in libmalloc (2026-10-20). `STARTED` and `WIN` below are plain `Copy` data
+    /// that free nothing, so they stay statics.
+    static PENDING: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
 
 /// Whether WE have asked for the panel. Our own edge, deliberately not `SDL_IsTextInputActive`:
 /// SDL's flag starts TRUE on a desktop and FALSE on the television (again, see [`start`]), so
@@ -236,7 +250,7 @@ pub(crate) fn start() {
         // first search field to open would come up pre-filled with the user's navigation. On the
         // television the same line means text events are OFF until this call, which is why
         // `SDL_IsTextInputActive` cannot stand in for `STARTED` above.
-        (*addr_of_mut!(PENDING)).clear();
+        PENDING.with(|pending| pending.borrow_mut().clear());
         // Trap 2, at the moment it matters. `support=0` means this firmware has no panel at all;
         // `focus=0` means SDL will enable text events and then silently skip the panel.
         log(&format!(
@@ -325,14 +339,14 @@ pub(crate) fn adopt() {
 /// began. Returning owned data (rather than lending a static) keeps the caller free to hold it
 /// across a frame.
 pub(crate) fn drain() -> Vec<String> {
-    unsafe { std::mem::take(&mut *addr_of_mut!(PENDING)) }
+    PENDING.take()
 }
 
-/// How many commits are waiting for [`drain`]. Diagnostic only — the screen drains rather than
-/// counts — but it is what makes the `txt:` remote token observable in the event log while
-/// nothing is draining yet.
+/// How many commits are waiting for [`drain`]. Diagnostic only — nothing in production drains or
+/// counts for a decision — but it is what makes the `txt:` remote token observable in the event log
+/// on a route whose text goes nowhere.
 pub(crate) fn pending() -> usize {
-    unsafe { (*addr_of!(PENDING)).len() }
+    PENDING.with(|pending| pending.borrow().len())
 }
 
 /// What [`on_event`] would read out of these bytes, at THIS platform's offset. Exposed so a
@@ -351,13 +365,13 @@ pub(crate) fn on_event(ev: &[u8]) {
     if s.is_empty() {
         return;
     }
-    unsafe {
-        let pend = &mut *addr_of_mut!(PENDING);
+    PENDING.with(|pending| {
+        let mut pend = pending.borrow_mut();
         if pend.len() >= MAX_PENDING {
             pend.remove(0); // see MAX_PENDING: bound the leak, keep the RECENT keystrokes
         }
         pend.push(s);
-    }
+    });
 }
 
 /// The bytes an `SDL_TEXTINPUT` event carries for `text`, in whichever layout [`decode_text_at`]
@@ -484,7 +498,8 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    /// `PENDING`/`STARTED` are module singletons, so the tests that drive them must not overlap.
+    /// `STARTED` is a module singleton (and `PENDING` is per thread, but these tests drive both
+    /// together), so the tests that drive them must not overlap.
     /// Module-local rather than `plx_base::testlock`: nothing outside this file touches either, and
     /// `testlock` is for globals that move under ANOTHER module's code (see `lib.rs`).
     static BUF: Mutex<()> = Mutex::new(());
@@ -754,7 +769,7 @@ mod tests {
     #[test]
     fn commits_queue_in_order_and_drain_takes_them_once() {
         let _g = BUF.lock().unwrap_or_else(|e| e.into_inner());
-        unsafe { (*addr_of_mut!(PENDING)).clear() };
+        PENDING.with(|pending| pending.borrow_mut().clear());
         on_event(&ev_with(TEXT_OFF, b"wal"));
         on_event(&ev_with(TEXT_OFF, b"l"));
         assert_eq!(drain(), ["wal", "l"]);
@@ -768,10 +783,35 @@ mod tests {
     #[test]
     fn an_empty_commit_is_not_queued() {
         let _g = BUF.lock().unwrap_or_else(|e| e.into_inner());
-        unsafe { (*addr_of_mut!(PENDING)).clear() };
+        PENDING.with(|pending| pending.borrow_mut().clear());
         on_event(&ev_with(TEXT_OFF, b"\0"));
         on_event(&[0u8; 128]);
         assert!(drain().is_empty());
+    }
+
+    /// **The queue is the frame thread's own.** `PENDING` holds heap (a `Vec<String>`) that `on_event`
+    /// pushes and trims and `start`/`drain` clear, so one process-wide queue lets two threads free
+    /// each other's `String`s: the shape that aborted `plx_ui`'s tests in libmalloc (2026-10-20).
+    /// `cargo test` runs tests on parallel threads, so each thread must see only the commits it
+    /// queued itself. Every thread overflows the bound, which trims (frees) the oldest commit on
+    /// every push.
+    #[test]
+    fn every_thread_drains_only_the_commits_it_queued() {
+        plx_base::testrace::race(4, |t| {
+            for round in 0..40 {
+                for i in 0..MAX_PENDING + 20 {
+                    on_event(&ev_with(TEXT_OFF, format!("t{t}r{round}i{i}").as_bytes()));
+                }
+                let got = drain();
+                assert_eq!(got.len(), MAX_PENDING, "round {round}");
+                let own = format!("t{t}r{round}i");
+                assert!(
+                    got.iter().all(|s| s.starts_with(&own)),
+                    "round {round}: drained a commit another thread queued"
+                );
+                assert!(drain().is_empty());
+            }
+        });
     }
 
     /// The leak bound holds, and holds the RECENT end. Nothing drains on Home, and on a desktop
@@ -779,7 +819,7 @@ mod tests {
     #[test]
     fn the_pending_buffer_is_bounded() {
         let _g = BUF.lock().unwrap_or_else(|e| e.into_inner());
-        unsafe { (*addr_of_mut!(PENDING)).clear() };
+        PENDING.with(|pending| pending.borrow_mut().clear());
         for i in 0..MAX_PENDING + 10 {
             on_event(&ev_with(TEXT_OFF, format!("{i}").as_bytes()));
         }

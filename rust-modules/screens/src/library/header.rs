@@ -6,11 +6,23 @@
 //! The row is built here, once per sync, as a ui [`HeaderRow`]; its layout, paint, motion and focus
 //! group are the ui's (`plx_ui::page_header`), the same ones the Collections, Recommended and
 //! Watchlist pages wear. The names are packed against the room the right cluster leaves
-//! (`PageHeader::layout`'s `left_budget`), so the cluster never moves when a name or a value
-//! changes. The row's MOTION (`header_capsules`, `header_pop`) lives on the screen, not in the
+//! (`PageHeader::layout`'s `left_budget`, sized from the cluster's widest case), so the names never
+//! shift when a value changes, the Collections answer (unknown, none, a count of up to three digits)
+//! included; a library whose count needs a fourth digit widens its own budget once; the
+//! controls inside the cluster stand by what they draw, one gap apart. The row's MOTION (`header_capsules`, `header_pop`) lives on the screen, not in the
 //! row: a library switch replaces the whole row, and the pill must travel across it.
 use super::*;
+use plx_ui::hstack::{self, Align, HStack};
 use plx_ui::page_header::{self, HeaderFocus, HeaderItem, HeaderRow, PageHeader, PageHeaderSpec, Slot};
+
+/// The width the names `picks` (then, with `more_w`, the "+N" after them) stand in, one
+/// [`page_header::GAP`] apart: the ui's own [`HStack::width`]. `PageHeader::layout` places the names
+/// with the same stack and the same gap, so what is packed here and where the names stand share the
+/// gap rule (not one construction: this takes measured widths, the layout takes spec items).
+fn names_w(widths: &[f32], picks: &[usize], more_w: Option<f32>) -> f32 {
+    let names: Vec<hstack::Item> = picks.iter().map(|&i| widths[i]).chain(more_w).map(hstack::Item::new).collect();
+    HStack::new(&names, page_header::GAP, Align::Leading(0.0)).width()
+}
 
 /// Which of `n` names show when the row cannot hold them all (`budget` is text edge to text edge
 /// for names plus "+N"). The picked library takes the LAST visible slot: names keep their order
@@ -20,13 +32,10 @@ pub(super) fn pack_names(widths: &[f32], selected: usize, budget: f32, more_w: f
     let n = widths.len();
     if n == 0 || cap == 0 { return Vec::new(); }
     let selected = selected.min(n - 1);
-    let span = |picks: &[usize]| picks.iter().map(|&i| widths[i]).sum::<f32>()
-        + page_header::GAP * picks.len().saturating_sub(1) as f32;
     let all: Vec<usize> = (0..n).collect();
-    if n <= cap && span(&all) <= budget { return all; }
+    if n <= cap && names_w(widths, &all, None) <= budget { return all; }
     // "+N" takes the end of the row, one gap after the last name.
-    let with_more = |picks: &[usize]| span(picks) + picks.last()
-        .map_or(0.0, |_| page_header::GAP) + more_w;
+    let with_more = |picks: &[usize]| names_w(widths, picks, Some(more_w));
     for k in (1..n.min(cap)).rev() {
         let mut picks: Vec<usize> = (0..k).collect();
         if selected >= k { picks[k - 1] = selected; }
@@ -106,7 +115,8 @@ impl LibraryScreen {
     }
 
     /// The right cluster as it is now, and in its widest case (every value at its longest), which
-    /// fixes the cluster's width so nothing on the row moves when a value changes.
+    /// fixes the cluster's BUDGET so the room the library names may use does not change when a
+    /// value does.
     pub(super) fn header_right<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> (Vec<HeaderItem>, Vec<HeaderItem>) {
         use plx_platform::i18n::msg;
         let locale = plx_platform::i18n::current();
@@ -117,17 +127,28 @@ impl LibraryScreen {
             widest.push(item.clone());
             right.push(item);
         }
-        if self.collections != CollectionsControl::Hidden {
-            let count = match self.collections { CollectionsControl::Count(n) => Some(n), _ => None };
-            let value = count.map(|n| locale.number(i64::from(n)));
-            // The slot reserves THREE digits (a fourth left 108-125 px of air before "Recommended"
-            // against the row's 62 px rhythm); a library whose count needs more widens only its own
-            // slot, here and in the widest case, so the row is measured once per switch and the label
-            // stands at the slot's leading edge whatever the count is, or whether it is known yet.
-            let slot = Some(locale.number(i64::from(count.unwrap_or(0).max(999))));
-            right.push(HeaderItem { value, selected_plate: self.listing == Listing::Collections, value_slot: slot.clone(),
-                ..item(msg::library_header_collections()) });
-            widest.push(HeaderItem { value: slot.clone(), value_slot: slot, ..item(msg::library_header_collections()) });
+        // The control is on the row only with its count: an unknown answer lays out as none (see
+        // [`CollectionsControl`]), so "Collections" is never drawn bare. The slot is the widest
+        // count the cluster's BUDGET allows for (THREE digits; a library whose count needs more
+        // widens only its own slot, here and in the widest case). It is no air inside the row: the
+        // control is placed by the text it draws, so the gap to "Recommended" is the row's one gap
+        // whatever the count is. The budget reserves it for EVERY answer, a library with none
+        // included: a cold cache reads Unknown for a round trip and then Hidden, and the names
+        // must not repack between the two (the room they pack into is measured once and never
+        // moves).
+        let slot_of = |count: u32| Some(locale.number(i64::from(count.max(999))));
+        let control = |value, slot| HeaderItem { value, value_slot: slot, ..item(msg::library_header_collections()) };
+        match self.collections {
+            CollectionsControl::Count(count) => {
+                let slot = slot_of(count);
+                right.push(HeaderItem { selected_plate: self.listing == Listing::Collections,
+                    ..control(Some(locale.number(i64::from(count))), slot.clone()) });
+                widest.push(control(slot.clone(), slot));
+            }
+            CollectionsControl::Unknown | CollectionsControl::Hidden => {
+                let slot = slot_of(0);
+                widest.push(control(slot.clone(), slot));
+            }
         }
         right.push(HeaderItem { selected_plate: self.listing == Listing::Recommended,
             ..item(msg::library_header_recommended()) });
@@ -175,27 +196,39 @@ impl LibraryScreen {
     /// Rebuild everything the header row is made of: the Collections control's state, the names
     /// that fit (`self.libraries`), and the cached geometry.
     ///
-    /// **A switch in flight keeps the control as it was.** Choosing a library moves the row to it
-    /// at once, but the probe answers only for the directory's CURRENT library, so for a few frames
-    /// the new one has no answer, and an unknown answer would read as "Collections" with no number:
-    /// the label would jump by the number's width and jump back when it landed. While the grid is
-    /// still dissolving to the new library ([`Xfade::is_swapping`]) an unknown answer therefore
-    /// changes nothing, and the row's [`HeaderSwap`] cross-fades the count when the real one lands.
-    /// A probe slower than the grid's arrival ends the hold: the control then reads as it does
-    /// before its first answer (a refused or failed probe must not pin the library left behind).
+    /// **The control is the answer for THIS library, and nothing else.** [`Self::view_section`] is
+    /// the library the row names (a switch's target from the moment it is chosen), so the answer
+    /// read is that library's and a switch never carries the one it left: while the new library's
+    /// count is not known the control is not on the row, and a count that lands later fades in
+    /// through the row's [`HeaderSwap`] (the probe is warmed for every library when the directory
+    /// lands, so it is usually known before the switch is drawn, and the control is then in the
+    /// new row's first frame). The control the library left is not drawn on the new one at all,
+    /// not even fading out ([`HeaderSwap::begin_switch`]). The one thing carried is this SAME
+    /// library's own last count across a read of nothing (see below), never another's.
     pub(super) fn refresh_header<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
-        let answer = self.view_section(cx)
-            .and_then(|index| H::directory(cx).sections().get(index).map(|section| section.key))
-            .and_then(|key| u32::try_from(key).ok())
-            .map_or(CollectionsControl::Unknown, |key| CollectionsControl::of(H::collections_count(cx, key)));
-        if answer != CollectionsControl::Unknown || !self.grid_fade.is_swapping() { self.collections = answer; }
+        let view = self.view_section(cx);
+        let of = view.and_then(|index| H::directory(cx).sections().get(index)).map(|section| (section.sid, section.key));
+        let read = view.map_or(CollectionsControl::Unknown, |index| CollectionsControl::of(H::collections_count(cx, index)));
+        // The probe reading nothing AGAIN for the library the row already names (its server was
+        // re-pointed at a new client, so the cache missed for a round trip) is not news: the count
+        // the row has stays, with its focus stop, until an answer replaces it. Across a switch it
+        // never does (`of` is another library's), so a count is only ever one this library gave.
+        self.collections = match (read, self.collections) {
+            (CollectionsControl::Unknown, held @ CollectionsControl::Count(_)) if of == self.header_of => held,
+            (read, _) => read,
+        };
         self.note_unfiltered(cx);
         // `sync` runs every frame; the row (text measurement, packing) is rebuilt only when one
         // of the things it is made of changed.
         let key = self.header_key(cx);
         if self.header.is_current(key) { return; }
         let row = if self.listing == Listing::Collections { self.collections_header(cx) } else { self.names_header(cx) };
-        if let Some(old) = self.header.row() { self.header_swap.begin(old, &row); }
+        if let Some(old) = self.header.row() {
+            // The same library's row changing fades what comes and goes; a row for ANOTHER library
+            // is the new page's own, and shows nothing of the one left (see `HeaderSwap::begin_switch`).
+            if of == self.header_of { self.header_swap.begin(old, &row); } else { self.header_swap.begin_switch(old, &row); }
+        }
+        self.header_of = of;
         self.header.install(key, row);
     }
 

@@ -1,6 +1,7 @@
 //! The television, as everything outside the port sees it (step L15, docs/module-layers.md).
 pub mod device;
 pub mod home;
+pub mod launch;
 pub mod sandbox;
 pub mod secure;
 pub mod sink;

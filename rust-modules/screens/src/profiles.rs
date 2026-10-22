@@ -95,7 +95,9 @@ use plx_session::auth::{self, Phase};
 use plx_ui::cards::AvatarRow;
 use plx_ui::frame::Budget;
 use plx_ui::geom;
+use plx_ui::hstack::{Align, HStack, Item};
 use plx_ui::icons;
+use plx_ui::vstack::{Anchor, VStack};
 use plx_machine::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, Fx, GroupId, Handled, InputEvent, InputKind, Key,
     LogicalState, Machine, Measure, Tick,
@@ -146,6 +148,11 @@ const PAD_GRID_H: f32 = PAD_ROWS as f32 * PAD_KEY + (PAD_ROWS - 1) as f32 * PAD_
 const PAD_GRID_W: f32 = PAD_COLS as f32 * PAD_KEY + (PAD_COLS - 1) as f32 * PAD_KGAP;
 const PAD_TITLE_GRID: f32 = 152.0; // title draw-y → keypad top (the unit's overall pacing)
 const PAD_DOT: f32 = 18.0; // entry-dot diameter
+/// The gap above and below the entry-dot row: the air between the title and the keypad less the
+/// dots' own diameter, split evenly, so the dots stand centred in it (67: an off-ladder value, kept).
+const PAD_DOT_GAP: f32 = (PAD_TITLE_GRID - PAD_DOT) * 0.5;
+/// The air between neighbouring PIN entry dots.
+const PIN_DOT_GAP: f32 = 34.0;
 const PIN_ERR_S: f32 = 1.4; // wrong-PIN red-flash duration (s)
 const PIN_ERR_HALF_S: f32 = 0.175; // …and one half-cycle of it, so the window is four full blinks
 
@@ -350,13 +357,18 @@ fn footer_rect(measure: &dyn Measure) -> Rect {
 /// centring — nothing downstream depends on the pixel being exact, only on `draw` and every
 /// `Focusable` query reading the SAME number, which this function is the one place either computes.
 fn pad_geom(measure: &dyn Measure) -> (f32, f32, f32) {
+    // One run, centred on the screen: the title, the dot row centred in the air above the keypad,
+    // and the keypad. The stack's gap is the air's half, so the title-to-keypad pitch stays
+    // PAD_TITLE_GRID.
     let title_h = measure.line_h(theme::size::TITLE);
-    let unit_h = title_h + PAD_TITLE_GRID + PAD_GRID_H;
-    let unit_top = (SCR_H as f32 - unit_h) * 0.5;
-    let grid_y = unit_top + title_h + PAD_TITLE_GRID;
-    // the dot row centred in the air between the title's own bottom and the keypad's top
-    let dots_y = (unit_top + title_h + grid_y) * 0.5 - PAD_DOT * 0.5;
-    (unit_top, dots_y, grid_y)
+    let items = [Item::new(title_h), Item::new(PAD_DOT), Item::new(PAD_GRID_H)];
+    let unit = VStack::new(
+        &items,
+        PAD_DOT_GAP,
+        Anchor::Centre(SCR_H as f32 * 0.5),
+    );
+    let at = |i| unit.span(i).map_or(0.0, |(y, _)| y);
+    (at(0), at(1), at(2))
 }
 
 /// Keypad cell geometry — shared by `draw` and every `Focusable` query on the pad group.
@@ -1251,23 +1263,22 @@ impl ProfilesScreen {
                 .draw(&Env::inert(), p);
         } else {
             let flash = pin_flash(self.pad.error_s);
-            let dgap = 34.0f32;
-            let dw = PIN_LEN as f32 * PAD_DOT + (PIN_LEN as f32 - 1.0) * dgap;
-            let mut dx = SCR_W as f32 * 0.5 - dw * 0.5;
-            for i in 0..PIN_LEN {
+            let dot_widths = [PAD_DOT; PIN_LEN];
+            let dots = HStack::widths(&dot_widths, PIN_DOT_GAP, Align::Centre(SCR_W as f32 * 0.5));
+            for span in dots.placed() {
+                let i = span.i;
                 let filled = i < self.pad.entry.len();
                 let col = match flash {
                     Some(lit) => theme::with_a(theme::DANGER, if lit { 1.0 } else { 0.16 }),
                     None => theme::with_a(theme::TEXT_PRIMARY, if filled { 1.0 } else { 0.28 }),
                 };
                 p.rect(
-                    Rect::new(dx, dots_y, PAD_DOT, PAD_DOT),
+                    Rect::new(span.x, dots_y, PAD_DOT, PAD_DOT),
                     PAD_DOT * 0.5,
                     col,
                     col,
                     0.0,
                 );
-                dx += PAD_DOT + dgap;
             }
         }
         for (r, row) in KEYS.iter().enumerate() {

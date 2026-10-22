@@ -80,6 +80,15 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
      `SelMark` (`widgets.rs`), the nav bar's own motion.
    - **Menus**: `Popover` (`popover.rs`) around a `TableView` (`table.rs`). **Strips and grids of
      tiles**: `cards::Shelf` / `cards::Grid` (`cards/`, next section).
+   - **A row of items an equal gap apart** (a header row, a crumb, a name packer): `hstack::HStack`
+     (`hstack.rs`), UIStackView's spacing for widths the caller already measured. It places, sums
+     (`width`) and budgets (`budget_w`); it never measures, so a replay gains no `Width` key, and a
+     slot sizes the budget, never the air. A run whose items are not in a slice (their count is the
+     data's, or each is measured as it is painted, or it stops lazily at the first item that will not
+     fit) uses `hstack::Flow`: the same gap rule, placing while measuring/painting
+     (`push`/`place`), `next_x` for the lazy break. Never write `x += w + GAP` for a new row.
+     The same stack top to bottom is `vstack::VStack`/`VFlow` (`Anchor::{Top,Bottom,Centre}`, `Item::before` for a
+     gap that belongs to the item below it, `AlertHead` for the alert family's eyebrow/title/path ladder); never `y += h + GAP`.
    - **Springs**: `Spring` (`lib.rs`) stepped at the shared stiffness (`consts::K_SCALE`,
      `K_SCROLL`, `K_SNAP`; `popover::K_APPEAR`), not a new constant or a hand-made easing.
 
@@ -150,7 +159,9 @@ default a spec is built with and no screen runs it, so a scroll fault on a stack
 snapping grid (`GridSpec::new`; a grid built with `GridSpec::resting` is read through
 `rest_target(end)` instead, because `reveal_target()` has no document end in it and `Stack::wanted`
 passes its own; the Library applies the same rule through `Layout::row_reveal` ->
-`poster_grid::rest_scroll`) and applies the document
+`poster_grid::rest_scroll`, and Home's shelf grid through `home::rest_scroll` -> `cards::grid_rest_scroll`,
+so the focused shelf rests with its heading at `GRID_TOP_Y - TITLE_DY` whatever the Under posters band
+and whichever way focus arrived) and applies the document
 shift a content landing needs, `landed_shift()`, to its scroll and scroll target; the grid does
 not home when focus is elsewhere. An owner whose columns, style or document top change at run time
 (the Library's episode listing, its shelf run) hands them over with `set_columns` / `set_page`;
@@ -560,7 +571,9 @@ tried first. None of it is reconstructable from the code without repeating the m
   it. The Library's chrome band and its scroll capsule are the case: the page owns one
   `scroll_chrome::Handoff`, decided on the key frame from the scroll target and run on the `xfade`
   clock, in sequence in both directions (the departing glass fades to exactly 0 and only then does
-  the arriving one start), so no frame has both. The chip and the
+  the arriving one start), so no frame has both. Home keeps its nav and chip shown and owns no
+  `Handoff`; a heading that rides under them fades by where it stands through the same spatial rule
+  (`scroll_chrome::clearance_under_shown_chrome`). The chip and the
   tab track (`GLASS_TRACK_MAX`, `BAND_AIR`) and the hold hint and the band (`hold_hint.rs`) keep
   apart the same way. Any new live glass that can stand within a band's blur reach of another
   (68 px past the visible members) must be sequenced with it, or it prices ~1.4M a frame.
@@ -681,11 +694,20 @@ tried first. None of it is reconstructable from the code without repeating the m
 
 ## Card marks — three marks, three meanings, and no card may blur them
 
-Library All uses the shared caption-band policy for movies, shows, seasons and episodes:
+Library All uses the shared caption-band policy for movies, shows, seasons and collections (so does every other POSTER tile: Home's shelves,
+Recommended's poster shelves, Search's poster rows, the person page's filmography, Detail's Related and collection shelves and the Collection
+screen's members; `Shelf::set_caption_policy(Some(policy))` sizes the band a shelf reserves and the caption block it reveals by
+`caption_policy::band_h`, and a `Stack` page hands it to a shelf or grid section through `StackPage::caption_policy`; a shelf or grid with
+no policy (`None`: a landscape still row or a headshot row, and the Library's Episodes listing, a grid of stills) keeps the legacy 114 px
+band and its two-line block, under every setting; the band must follow the label, never the setting):
 only the focused row opens its caption; a bounded set of springs closes rows left behind, and
-each row's caption is drawn at its band's own expansion (`card_row::band_fade`), so a move is one
-hand-over (`out = 1 - in`) that starts on the key frame; `GridBands::closing` names the card a
-closing band's caption belongs to.
+each LINE of a row's caption is drawn only once the room under its card holds the line's box, and
+never beyond its band's own expansion (`card_row::line_reveal_for`, one rule for a shelf and a grid), so
+a move hands the title over from the departing row to the arriving one with no line over what is under
+it AS DRAWN: a grid measures to the drawn top of the tile below (its live pop and press), and the owner
+of stacked shelves hands each one the lift of the next shelf's heading (`SectionFrame::below_rise`;
+`Stack`, Home, Recommended and Detail do; a `Stack` page keeps its shelves adjacent, the air under one its
+`StackPage::shelf_foot`, never a `Custom` gap section between two); `GridBands::closing` names the card a closing band's caption belongs to.
 Live and target geometry include these bands, so painting, paging, scrolling and restored
 viewports agree. Episode rows use landscape stills. `Art::Still` supplies the label ground;
 `widgets::still_overlay` draws its labels and resume bar afterward. Both the artwork and
@@ -694,7 +716,14 @@ its ground participate in backdrop discovery, including texture changes and UV c
 - An **amber ▶** means **this press starts the video**. It is drawn where that is true and nowhere
   else: the detail page's episode filmstrip always, and a Continue Watching deck only while
   Settings > Playback > Continue Watching is "Play" (`DeckPress::Play`; the default opens the page
-  and draws none). Watch state does not
+  and draws none). On a poster deck (Home's, Recommended's) the mark leads the FIRST line the Under
+  posters setting draws (`registry::captions::label`): the title when Title is On, else the details
+  line ("8m left"), hanging to the left of a line that is centred as if it were not there; with the
+  title and the details both off (Nothing) no line is drawn and so no mark, EXCEPT on the deck: its
+  progress line ("S3 · E4 · 18m left") is the tile's state and is always shown, Nothing included (the
+  owner's 2026-10-22 call; `captions::deck_policy`), so the deck's band keeps one line (two with the
+  Title On) and the mark leads that line. The band is per shelf, so it never changes as focus walks
+  the row. Watch state does not
   withdraw it — `widgets::still_glyph` is the whole rule, graded by an exhaustive table, because
   the clause that failed first was the absent one: the glyph used to be decided by `PosterMark`
   FIRST, so an in-progress tile drew nothing and a Continue Watching deck — almost entirely
@@ -705,7 +734,8 @@ its ground participate in backdrop discovery, including texture changes and UV c
   always the mark that read as "this will play".
 - A **`✓`** means **finished** — likewise a state, not a promise.
 
-**A card with no play indicator NAVIGATES**, and an episode navigates to its own detail page —
+**A card with no play indicator NAVIGATES** (a poster deck set to Play with the title and details both Off draws no
+line to carry the mark, the one exception), and an episode navigates to its own detail page —
 except on Continue Watching, where it opens the SHOW on the card's season
 (`app::input::activate_deck_card`; the card menu's Go to Episode is the way to the episode).
 Until 2026-09-05 `want_play` was `from_deck || kind == 3` on both Home and the Library, so an

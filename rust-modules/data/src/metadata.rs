@@ -3798,6 +3798,19 @@ pub fn begin_detail_for_test(adapter: &MetadataAdapter, sid: plx_plex::plex::Ser
     gen
 }
 
+/// Put the season fetch in flight (`season_loading()` true) with no worker behind it, or settle it
+/// again: the state a tab press leaves between `LoadSeason` and the landing, for a test that needs
+/// the loading half of a screen's behaviour without a network fetch.
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_season_loading_for_test(adapter: &MetadataAdapter, loading: bool) {
+    use std::sync::atomic::Ordering;
+    if loading {
+        adapter.season_gen.fetch_add(1, Ordering::SeqCst);
+    } else {
+        supersede_season(adapter);
+    }
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub fn detail_generation_for_test(adapter: &MetadataAdapter) -> u32 {
     adapter.detail_gen.load(std::sync::atomic::Ordering::SeqCst)
@@ -4213,8 +4226,10 @@ pub struct AltCopy {
     /// That server's ratingKey for the item — per-server, and the whole reason the identity above
     /// it is a guid. Where OK navigates.
     pub rk: String,
-    /// Runtime in ms, for the row's sub-line. 0 = unknown, and then the sub-line is the owner
-    /// alone rather than "0 min".
+    /// Runtime in ms, for the row's read-out. 0 = none, and then the slot is left empty rather
+    /// than "0 min". Only a leaf copy has one ([`has_runtime`]): a show or season copy is 0
+    /// whatever its container's `duration` says, because that is the agent's nominal per-episode
+    /// figure and no episode's.
     pub dur_ms: i64,
     /// `Media.videoResolution` ("4k" / "1080" / "sd"), plus the stored frame size as its fallback —
     /// exactly the trio `ui::fmt::resolution` takes, so the badge in the panel and the hero's media
@@ -4483,25 +4498,47 @@ fn resolve_alt_sources(
         let handle = plx_plex::plex::server_facts(id)
             .map(|f| f.handle.clone())
             .unwrap_or_default();
-        for m in mc.metadata.iter() {
+        out.extend(alt_copies_from(id, &handle, &mc));
+    }
+    out
+}
+
+/// Does an item of this PMS `type` have a runtime of its own? A leaf does (movie, episode, clip,
+/// and any other playable file); a container (show, season, and the music/collection kinds) does
+/// not, because its `Metadata.duration` is the metadata agent's nominal per-episode figure, which
+/// matches no episode and differs per server (#814). The one predicate behind both the
+/// *Also available* rows and the About footer's Runtime.
+pub fn has_runtime(kind: &str) -> bool {
+    !matches!(kind, "show" | "season" | "artist" | "album" | "collection" | "playlist")
+}
+
+/// PURE. One source's `find_by_guid` answer projected into *Also available* rows: `handle` is the
+/// source's credit (empty = nobody to credit, so the row reads "This account").
+fn alt_copies_from(
+    id: plx_plex::plex::ServerId,
+    handle: &str,
+    mc: &plx_plex::plex::MediaContainer,
+) -> Vec<AltCopy> {
+    mc.metadata
+        .iter()
+        .map(|m| {
             let media0 = m.media.first();
-            out.push(AltCopy {
+            AltCopy {
                 sid: id,
                 library: m.library_section_title.clone(),
                 // `None` is the ABSENCE of an owner, which is what the row spells "This account";
                 // an empty handle must not become `Some("")`.
-                owner: (!handle.is_empty()).then(|| handle.clone()),
+                owner: (!handle.is_empty()).then(|| handle.to_string()),
                 rk: m.rating_key.clone(),
-                dur_ms: m.duration,
+                dur_ms: if has_runtime(&m.kind) { m.duration } else { 0 },
                 res: media0
                     .map(|x| x.video_resolution.clone())
                     .unwrap_or_default(),
                 width: media0.map(|x| x.width).unwrap_or_default(),
                 height: media0.map(|x| x.height).unwrap_or_default(),
-            });
-        }
-    }
-    out
+            }
+        })
+        .collect()
 }
 
 /// MAIN THREAD, once a frame. Runs the store's whole per-frame half — the two registry epochs, the
@@ -6058,3 +6095,45 @@ mod related_tail_tests;
 #[cfg(test)]
 #[path = "metadata_initial_season_tests.rs"]
 mod initial_season_tests;
+
+/// #814: the runtime an *Also available* row carries is a fact about one FILE, so only a leaf has
+/// one. A show container's `duration` is the metadata agent's nominal per-episode figure.
+#[cfg(test)]
+mod alt_runtime_tests {
+    use super::*;
+
+    fn copies(kind: &str) -> Vec<AltCopy> {
+        let body = format!(
+            r#"{{"MediaContainer":{{"size":1,"Metadata":[{{"ratingKey":"100","type":"{kind}",
+                "librarySectionTitle":"Library","duration":6000000}}]}}}}"#
+        );
+        let mc = serde_json::from_str::<plx_plex::plex::Envelope>(&body).unwrap().media_container;
+        alt_copies_from(plx_plex::plex::ServerId::UNSET, "", &mc)
+    }
+
+    #[test]
+    fn a_show_or_season_copy_carries_no_runtime() {
+        for kind in ["show", "season"] {
+            let c = copies(kind);
+            assert_eq!(c.len(), 1);
+            assert_eq!(c[0].dur_ms, 0, "{kind}: the container's duration is no file's runtime");
+        }
+    }
+
+    #[test]
+    fn a_leaf_copy_keeps_its_runtime() {
+        for kind in ["movie", "episode", "clip"] {
+            assert_eq!(copies(kind)[0].dur_ms, 6_000_000, "{kind}");
+        }
+    }
+
+    #[test]
+    fn only_a_playable_leaf_kind_has_a_runtime() {
+        for k in ["movie", "episode", "clip"] {
+            assert!(has_runtime(k), "{k}");
+        }
+        for k in ["show", "season", "artist", "album", "collection"] {
+            assert!(!has_runtime(k), "{k}");
+        }
+    }
+}

@@ -8,6 +8,8 @@
 //! same widget serves the in-player track menu and the Settings, Privacy and Legal surfaces.
 #![allow(dead_code)]
 use crate::fit;
+use crate::hstack::{Align, Flow, HStack, Item, Span};
+use crate::vstack::{Anchor, VStack};
 use crate::label::{HAlign, Label, VAlign};
 use crate::theme;
 use crate::{Painter, Rect, Spring};
@@ -398,6 +400,8 @@ pub const MENU_MIN_W: f32 = 300.0;
 pub const MENU_MAX_W: f32 = 650.0;
 const CHECK_W: f32 = 32.0; // leading check column
 const GAP: f32 = 16.0; // check→label gap
+/// The leading column every row's label stands past: the check column and its gap to the label.
+const LABEL_INSET: f32 = CHECK_W + GAP;
 /// Focused-row pill corner radius. `pub` for the [`ROW_H`] caller shape.
 pub const PILL_RAD: f32 = 18.0;
 /// Pill inset from the row's top/bottom. `pub` for the [`ROW_H`] caller shape.
@@ -481,17 +485,65 @@ pub fn assert_no_fit_failures(out: &[String]) {
 }
 const ACCESSORY_ICON_W: f32 = 26.0;
 
-/// The horizontal space a row's trailing icon takes from the content edge: its INK width (per
-/// [`crate::icons::ink_x`]) plus [`ACCESSORY_GAP`]. The icon is drawn so its ink, not its
-/// 26px box, ends on the content edge — the same edge a flush read-out ends on — so the eye sees
-/// one right edge whatever the glyph's own side bearing.
+/// The horizontal space a lone trailing icon takes from the content edge: its INK width (per
+/// [`crate::icons::ink_x`]) plus [`ACCESSORY_GAP`]. The tests' yardstick for what [`trailing_items`]
+/// stands, written out independently of the stack.
+#[cfg(test)]
 fn ticon_slot_w(icon: crate::icons::Icon) -> f32 {
     let (l, r) = crate::icons::ink_x(icon);
     (r - l) * ACCESSORY_ICON_W + ACCESSORY_GAP
 }
 
+/// **A row's trailing run, as ONE stack**: the read-out, then the badge run, then the trailing icon,
+/// [`ACCESSORY_GAP`] apart and anchored by the icon's INK at the content edge ([`Item::glyph`]: the
+/// icon is drawn so its ink, not its 26px box, ends on the edge a flush read-out ends on, whatever
+/// the glyph's own side bearing). `value_w` is the read-out's natural width, `None` for a row
+/// without one. The width the label may not use ([`trailing_reserved`]), where each run stands
+/// ([`trailing_stack`] at `text_right`) and the tests' read-out edge all read these items, so
+/// they cannot disagree.
+fn trailing_items(row: &Row, value_w: Option<f32>, measure: &dyn plx_machine::machine::Measure) -> [Item; 3] {
+    [
+        value_w.map_or(Item::absent(), Item::new),
+        if row.badges.is_empty() { Item::absent() } else { Item::new(badge_run_w(&row.badges, measure)) },
+        row.ticon.map_or(Item::absent(), |icon| Item::glyph(icon, ACCESSORY_ICON_W)),
+    ]
+}
+
+/// [`trailing_items`] anchored with its trailing edge at `right` (the content edge).
+fn trailing_stack(items: &[Item; 3], right: f32) -> HStack<'_> {
+    HStack::new(items, ACCESSORY_GAP, Align::Trailing(right))
+}
+
+/// What a row reserves for its trailing run: the stack's width plus the [`ACCESSORY_GAP`] between
+/// the run and the label before it (0 for a row with no trailing run at all).
+fn trailing_reserved(items: &[Item; 3]) -> f32 {
+    let width = trailing_stack(items, 0.0).width();
+    if items.iter().any(|item| *item != Item::absent()) { width + ACCESSORY_GAP } else { 0.0 }
+}
+
+/// The badges of a row's trailing run, [`BADGE_GAP`] apart from `x` on: each with the span it
+/// draws. The ONE place the run is laid out — its width ([`badge_run_w`]) and where each chip is
+/// painted are both read off it, so they cannot disagree.
+fn badge_spans<'a>(
+    badges: &'a [Badge],
+    x: f32,
+    measure: &'a dyn plx_machine::machine::Measure,
+) -> impl Iterator<Item = (&'a Badge, Span)> + 'a {
+    let mut flow = Flow::new(x, BADGE_GAP);
+    badges.iter().filter_map(move |b| {
+        flow.push(Item::new(crate::widgets::badge_w(b.text(), None, measure))).map(|span| (b, span))
+    })
+}
+
+/// The badge run's width: the last chip's trailing edge when it starts at 0 (0 for no badges).
+fn badge_run_w(badges: &[Badge], measure: &dyn plx_machine::machine::Measure) -> f32 {
+    badge_spans(badges, 0.0, measure).last().map_or(0.0, |(_, s)| s.x + s.w)
+}
+
 /// Where the trailing icon's box starts, as an offset from the content edge (<= 0): the box is
-/// placed so the glyph's ink right edge lands ON the content edge.
+/// placed so the glyph's ink right edge lands ON the content edge. A test's yardstick for the
+/// box [`trailing_stack`] stands.
+#[cfg(test)]
 fn ticon_box_dx(icon: crate::icons::Icon) -> f32 {
     -crate::icons::ink_x(icon).1 * ACCESSORY_ICON_W
 }
@@ -504,9 +556,9 @@ fn ticon_box_dx(icon: crate::icons::Icon) -> f32 {
 /// it. The step back is the INK's alone.
 ///
 /// ONE constant, because the three calls at the draw site have to agree: the cap band the run is
-/// centred on, the advance width it adds to `trailing`, and the paint. Bold glyphs are WIDER than
-/// their regular twins, so measuring on one flag and painting on the other under-counts `trailing`
-/// — and `trailing` is the LABEL's elision budget (`text_w` below), so the label would be elided
+/// centred on, the advance width it adds to the trailing stack ([`trailing_items`]), and the paint.
+/// Bold glyphs are WIDER than their regular twins, so measuring on one flag and painting on the
+/// other under-counts [`trailing_reserved`] — and that is the LABEL's elision budget (`text_w` below), so the label would be elided
 /// as though the read-out were narrower than it is and run right into it. The BADGE run is not at
 /// risk: it is placed outside the read-out, while the complete trailing-width calculation
 /// reserves both runs before measuring the label.
@@ -868,7 +920,7 @@ impl TableView {
     /// Intrinsic panel width: the width at which EVERY header, label, sub-line and trailing value
     /// resolves to its full natural width under [`Self::row_columns_under`] /
     /// [`Self::header_columns`] with the device's [`fit::HEADROOM`] to spare. It is the INVERSE of
-    /// those two layouts and is built from the same pieces (`row_runs`, [`Self::trailing_width`],
+    /// those two layouts and is built from the same pieces (`row_runs`, [`trailing_reserved`],
     /// [`ROW_VALUE_GAP`], [`ACCESSORY_GAP`], the hug margin), so a panel of exactly this width can
     /// never elide a run the layout would have kept. Action menus size their panel with it.
     pub fn measured_width(&self, measure: &dyn plx_machine::machine::Measure) -> f32 {
@@ -899,8 +951,8 @@ impl TableView {
                     Some(value) => primary + ROW_VALUE_GAP + value / h,
                     None => primary,
                 };
-                let fixed = self.trailing_width(row, measure) - Self::value_slot(row, measure);
-                width = width.max(2.0 * CONTENT_X + CHECK_W + GAP + fixed + text);
+                let fixed = trailing_reserved(&trailing_items(row, None, measure));
+                width = width.max(2.0 * CONTENT_X + LABEL_INSET + fixed + text);
             }
         }
         width.ceil()
@@ -1048,21 +1100,17 @@ impl TableView {
     }
 
     /// Where a row's read-out ends (its right edge) in a `frame_w`-wide table — the x offset from
-    /// the panel's left, the same `text_right - trailing` the draw uses.
+    /// the panel's left, the same [`trailing_stack`] edge the draw uses.
     #[cfg(any(test, feature = "test-support"))]
     fn value_right_edge(&self, row: &Row, frame_w: f32) -> f32 {
-        let mut trailing = row.ticon.map_or(0.0, ticon_slot_w);
-        if !row.badges.is_empty() {
-            trailing += row.badges.iter().map(|b| crate::widgets::badge_w(b.text(), None, &plx_base::fontcov::advances::ShippedMeasure)).sum::<f32>()
-                + BADGE_GAP * (row.badges.len() - 1) as f32 + ACCESSORY_GAP;
-        }
-        frame_w - SIDE - CONTENT_PAD - trailing
+        let items = trailing_items(row, None, &plx_base::fontcov::advances::ShippedMeasure);
+        frame_w - SIDE - CONTENT_PAD - trailing_reserved(&items)
     }
 
     /// The text column a [`Row::note`] wraps in: the ROW-LABEL column (past the check column), so
     /// the note reads as attached to the rows above it rather than as a second header.
     fn note_column_w(frame_w: f32) -> f32 {
-        (frame_w - 2.0 * CONTENT_X - CHECK_W - GAP).max(0.0)
+        (frame_w - 2.0 * CONTENT_X - LABEL_INSET).max(0.0)
     }
 
     /// **Measure every [`Row::note`] against a `frame_w`-wide table**, storing the wrapped line
@@ -1081,18 +1129,6 @@ impl TableView {
 
     fn label_style(&self) -> (std::os::raw::c_int, bool) {
         if self.compact { (theme::size::BODY, false) } else { (theme::size::HEADLINE, true) }
-    }
-
-    fn trailing_width(&self, row: &Row, measure: &dyn plx_machine::machine::Measure) -> f32 {
-        let mut width = row.ticon.map_or(0.0, ticon_slot_w);
-        if !row.badges.is_empty() {
-            width += row.badges.iter().map(|badge| crate::widgets::badge_w(badge.text(), None, measure)).sum::<f32>()
-                + BADGE_GAP * (row.badges.len() - 1) as f32 + ACCESSORY_GAP;
-        }
-        if let Some(value) = row.readout() {
-            width += measure.width_str(value, theme::size::LABEL, VALUE_BOLD != 0) + ACCESSORY_GAP;
-        }
-        width
     }
 
     /// The same label budget used by rendering and intrinsic-width checks.
@@ -1115,8 +1151,8 @@ impl TableView {
     /// [`Self::fit_report`] passes the device's headroom to model glyphs wider than the measure.
     /// The label is hugged with [`fit::HUG_MARGIN`] before dividing.
     fn row_columns_under(&self, row: &Row, frame_w: f32, measure: &dyn plx_machine::machine::Measure, headroom: f32) -> RowColumns {
-        let fixed = self.trailing_width(row, measure) - Self::value_slot(row, measure);
-        let span = (frame_w - 2.0 * CONTENT_X - CHECK_W - GAP - fixed).max(0.0);
+        let fixed = trailing_reserved(&trailing_items(row, None, measure));
+        let span = (frame_w - 2.0 * CONTENT_X - LABEL_INSET - fixed).max(0.0);
         let (label, value) = self.row_runs(row, measure);
         let Some(value) = value else {
             return RowColumns { label_w: span, value_w: 0.0 };
@@ -1138,11 +1174,6 @@ impl TableView {
             (measure.width_str(&row.label, size, bold) * fit::HUG_MARGIN).ceil(),
             row.readout().map(|v| measure.width_str(v, theme::size::LABEL, VALUE_BOLD != 0)),
         )
-    }
-
-    /// The trailing value's natural slot (run + its gap), `0` for a row without one.
-    fn value_slot(row: &Row, measure: &dyn plx_machine::machine::Measure) -> f32 {
-        row.readout().map_or(0.0, |v| measure.width_str(v, theme::size::LABEL, VALUE_BOLD != 0) + ACCESSORY_GAP)
     }
 
     /// The width a server-header section guarantees its app-owned accessory text (hugged like a
@@ -1611,7 +1642,7 @@ impl TableView {
                 // a pill — it cannot be focused (skipped by every `sep` check above), so it never
                 // draws over the sliding highlight either. Its height is `Row::height_in`'s.
                 let nsz = theme::size::CAPTION;
-                let x = content_x + CHECK_W + GAP;
+                let x = content_x + LABEL_INSET;
                 let view = crate::text_view::TextView::new(&row.label, nsz, dimc)
                     .with_measure(measure)
                     .leading(NOTE_LEADING);
@@ -1645,7 +1676,7 @@ impl TableView {
             // Leading column (SVG): the PICKER's tick, or an ACTION's glyph — one or the other, and
             // never a switch. A mark here says WHERE YOU ARE; what a row is SET to is a word at the
             // trailing edge (below), and no row is allowed to say both.
-            let label_x = content_x + CHECK_W + GAP;
+            let label_x = content_x + LABEL_INSET;
             let lead = if row.checked {
                 Some(crate::icons::Icon::Check)
             } else {
@@ -1656,13 +1687,16 @@ impl TableView {
                 let cr = Rect::new(content_x + (CHECK_W - cs) * 0.5, cyc - cs * 0.5, cs, cs);
                 crate::icons::draw(p, li, cr, base);
             }
-            // trailing accessory (SVG)
-            let mut trailing = 0.0f32;
-            if let Some(ti) = row.ticon {
+            // The trailing run — read-out, badge run, trailing icon — is ONE stack ([`trailing_items`]),
+            // anchored by the icon's ink at `text_right`; each part below is drawn where it stands.
+            // The read-out is flush right at its item's trailing edge (below), so its width moves
+            // nothing the draw reads: a zero-wide item places the same edge, and costs no measure.
+            let trailing_run = trailing_items(row, row.readout().map(|_| 0.0), measure);
+            let trailing_at = |i: usize| trailing_stack(&trailing_run, text_right).placed().find(|s| s.i == i);
+            // trailing accessory (SVG), its BOX at the stack's `box_x` so its ink ends on the edge
+            if let (Some(ti), Some(at)) = (row.ticon, trailing_at(2)) {
                 let cs = ACCESSORY_ICON_W;
-                let cr = Rect::new(text_right + ticon_box_dx(ti), cyc - cs * 0.5, cs, cs);
-                crate::icons::draw(p, ti, cr, base);
-                trailing = ticon_slot_w(ti);
+                crate::icons::draw(p, ti, Rect::new(at.box_x, cyc - cs * 0.5, cs, cs), base);
             }
             // PLACE 4 — the badge run, RIGHT-ALIGNED at the trailing edge and the outermost of the
             // three trailing runs (the design system's cell is a flex row whose label block takes
@@ -1676,14 +1710,11 @@ impl TableView {
             // the whole label block, so on a two-line row it sits level with the pair rather than
             // ~16px high, level with the first line.
             if !row.badges.is_empty() {
-                let run: f32 = row
-                    .badges
-                    .iter()
-                    .map(|b| crate::widgets::badge_w(b.text(), None, measure))
-                    .sum::<f32>()
-                    + BADGE_GAP * (row.badges.len() - 1) as f32;
-                let mut bx = text_right - trailing - run;
-                for b in row.badges.iter() {
+                // one measuring pass: laid out from 0, the last chip's trailing edge IS the run's
+                // width, and each chip is then drawn at `start + its offset`
+                let laid: Vec<(&Badge, Span)> = badge_spans(&row.badges, 0.0, measure).collect();
+                let start = trailing_at(1).map_or(text_right, |s| s.x);
+                for (b, span) in laid {
                     // the shared chip leaf in this row's contextual colours: the row's own ink for
                     // the label, the design's keyline for the ring (the pill's near-black ink over
                     // a focused row, where a 55%-white stroke would vanish), the row's ground
@@ -1693,9 +1724,8 @@ impl TableView {
                         border: on_pill(theme::OVERLAY_BORDER, ink),
                         bg: row_bg,
                     };
-                    bx += crate::widgets::badge(p, bx, cyc, b.text(), None, sty, measure) + BADGE_GAP;
+                    crate::widgets::badge(p, start + span.x, cyc, b.text(), None, sty, measure);
                 }
-                trailing += run + ACCESSORY_GAP;
             }
             // Trailing VALUE — the read-out that says what this row is set to ("On"/"Off" for a
             // switch, or any word). One step behind the label in ink, so the label is what you read
@@ -1715,7 +1745,7 @@ impl TableView {
                     let vy = plx_gfx::text::text_vcenter_y(vsz, VALUE_BOLD, cyc);
                     p.text(
                         vc.as_ptr(),
-                        text_right - trailing,
+                        trailing_at(0).map_or(text_right, |s| s.x + s.w),
                         vy,
                         vsz,
                         ink,
@@ -1738,10 +1768,14 @@ impl TableView {
             let (title_y, detail_y) = if two_line {
                 let (t_top, t_base) = plx_gfx::text::text_cap_band(tsz, tbold);
                 let (d_top, d_base) = plx_gfx::text::text_cap_band(theme::size::CAPTION, 0);
-                let (t_cap, d_cap) = (t_base - t_top, d_base - d_top); // cap heights
-                let pair_gap = ROW_SUB_GAP; // title baseline → detail cap-top
-                let pair_top = sy + (h - (t_cap + pair_gap + d_cap)) * 0.5; // title cap-top
-                (pair_top - t_top, pair_top + t_cap + pair_gap - d_top)
+                // The pair's cap bands, one stack: title cap-top, then the detail cap-top one
+                // ROW_SUB_GAP below the title's baseline, the pair centred in the row.
+                let items = [Item::new(t_base - t_top), Item::new(d_base - d_top)];
+                let pair = VStack::new(&items, ROW_SUB_GAP, Anchor::Centre(sy + h * 0.5));
+                let (Some((title_cap, _)), Some((detail_cap, _))) = (pair.span(0), pair.span(1)) else {
+                    unreachable!("the title and the detail line are always present")
+                };
+                (title_cap - t_top, detail_cap - d_top)
             } else {
                 (0.0, 0.0) // unused single-line; Label centres the label
             };
@@ -2628,5 +2662,83 @@ mod tests {
         assert_eq!(TableView::top_edge_alpha(40.0, 100.0), 0.0, "and so is ink above it");
         assert!(FIRST_HEADER_CAP_OFFSET >= TOP_FADE_H);
         assert!(TOP_PAD + ROW_INK_PAD >= TOP_FADE_H);
+    }
+
+    /// A row's badges stand `BADGE_GAP` apart edge to edge, and the run's width is the last chip's
+    /// trailing edge: the one layout the width, the elision budget and the paint all read.
+    #[test]
+    fn a_rows_badge_run_stands_one_gap_apart() {
+        let badges = [Badge::Forced, Badge::Sdh, Badge::Ad];
+        let m = &plx_base::fontcov::advances::ShippedMeasure;
+        let spans: Vec<Span> = badge_spans(&badges, 40.0, m).map(|(_, s)| s).collect();
+        assert_eq!(spans.len(), 3);
+        for pair in spans.windows(2) {
+            assert!((pair[1].x - (pair[0].x + pair[0].w) - BADGE_GAP).abs() < 0.01);
+        }
+        assert_eq!(spans[0].x, 40.0);
+        let last = spans[2];
+        assert!((badge_run_w(&badges, m) - (last.x + last.w - 40.0)).abs() < 0.01);
+        assert_eq!(badge_run_w(&[], m), 0.0);
+    }
+
+    /// **The badge run is PAINTED flush right, `BADGE_GAP` apart.** Reads the drawn chip labels
+    /// (not `badge_spans` against itself): each chip's left edge is its label's drawn x less the
+    /// chip's side padding, and the last chip's right edge lands on `text_right - trailing`.
+    #[test]
+    fn a_rows_painted_badges_stand_a_gap_apart_and_end_at_the_trailing_edge() {
+        let _serial = plx_base::testlock::serial();
+        use plx_machine::machine::Measure;
+        let m = &plx_base::fontcov::advances::ShippedMeasure;
+        let frame = Rect::new(0.0, 0.0, 900.0, 300.0);
+        let badges = [Badge::Forced, Badge::Sdh, Badge::Ad];
+        let mut t = TableView::new();
+        let row = Row::new("a").badge(Badge::Forced).badge(Badge::Sdh).badge(Badge::Ad);
+        t.set_sections(vec![Section::new("S").row(row)], 0, false);
+        let runs = crate::draw_census::capture_runs(|| t.draw(crate::Painter::recording(), frame, m));
+        let text_right = frame.x + frame.w - SIDE - CONTENT_PAD;
+        let mut chips: Vec<(f32, f32)> = Vec::new(); // (left, right) of each painted chip, in draw order
+        for b in &badges {
+            let r = runs
+                .iter()
+                .find(|r| r.text == b.text() && r.size == theme::size::CAPTION && r.bold)
+                .unwrap_or_else(|| panic!("chip {:?} not painted: {runs:?}", b.text()));
+            let w = crate::widgets::badge_w(b.text(), None, m);
+            let tw = m.width_str(b.text(), theme::size::CAPTION, true);
+            let left = r.at.x - (w - tw) * 0.5;
+            chips.push((left, left + w));
+        }
+        for pair in chips.windows(2) {
+            assert!((pair[1].0 - pair[0].1 - BADGE_GAP).abs() < 0.5, "chips a gap apart: {chips:?}");
+        }
+        assert!((chips[2].1 - text_right).abs() < 0.5, "last chip ends at the trailing edge {text_right}: {chips:?}");
+    }
+
+    /// **The whole trailing run is PAINTED as one stack**: read-out, badge run, then the chevron's
+    /// INK, each `ACCESSORY_GAP` from the next and the ink on the content edge. Reads the painted
+    /// runs against the closed form (the chevron's ink width from `ink_x`), not against the stack.
+    #[test]
+    fn a_rows_painted_trailing_run_is_readout_then_badges_then_icon_ink_a_gap_apart() {
+        let _serial = plx_base::testlock::serial();
+        use plx_machine::machine::Measure;
+        let m = &plx_base::fontcov::advances::ShippedMeasure;
+        let frame = Rect::new(0.0, 0.0, 900.0, 300.0);
+        let mut t = TableView::new();
+        let row = Row::new("a").value("All").badge(Badge::Forced).badge(Badge::Sdh).chevron(true);
+        t.set_sections(vec![Section::new("S").row(row)], 0, false);
+        let runs = crate::draw_census::capture_runs(|| t.draw(crate::Painter::recording(), frame, m));
+        let text_right = frame.x + frame.w - SIDE - CONTENT_PAD;
+        let (l, r) = crate::icons::ink_x(crate::icons::Icon::Chevron);
+        let ink_left = text_right - (r - l) * ACCESSORY_ICON_W;
+        let chip = |b: Badge| {
+            let run = runs.iter().find(|r| r.text == b.text() && r.size == theme::size::CAPTION && r.bold).expect("chip painted");
+            let w = crate::widgets::badge_w(b.text(), None, m);
+            let left = run.at.x - (w - m.width_str(b.text(), theme::size::CAPTION, true)) * 0.5;
+            (left, left + w)
+        };
+        let (first, last) = (chip(Badge::Forced), chip(Badge::Sdh));
+        assert!((last.1 + ACCESSORY_GAP - ink_left).abs() < 0.5, "last chip {last:?} a gap before the chevron ink at {ink_left}");
+        let value = runs.iter().find(|r| r.text == "All" && r.bold).expect("read-out painted");
+        assert_eq!(value.align, 2, "the read-out is right-aligned at its anchor");
+        assert!((value.at.x + ACCESSORY_GAP - first.0).abs() < 0.5, "read-out ends a gap before the first chip {first:?}: {value:?}");
     }
 }

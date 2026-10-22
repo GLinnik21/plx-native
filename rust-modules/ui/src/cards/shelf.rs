@@ -12,7 +12,7 @@ use plx_machine::present::Provenance;
 use super::landing::{Landing, Scene};
 use super::pool::{self, Drawn, RowPool};
 use super::{CardEvent, CardSource, Landed, Retry, SectionFrame, Seen, Tile};
-use crate::card_row::{self, CardRow, RowStyle};
+use crate::card_row::{self, CardRow, RowStyle, TileLabel};
 use crate::consts::SCR_W;
 use crate::screen::{
     Activate, At, AxisMask, DrawFrame, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Placed, Seat, Step,
@@ -185,10 +185,20 @@ impl Shelf {
     }
 
     /// Hold every card at rest while the owner's page is still dissolving in: a lifted tile under
-    /// a fade plays its selection where nobody can see it. The shelf keeps no pop meanwhile (the
-    /// springs ease to rest like an unfocused shelf's); the first awake tick starts the focused
-    /// card's pop from rest, as a deliberate move does (a restore or reconcile announced since the last
-    /// dormant tick is still adopted whole). Set it before each [`on`](Self::on).
+    /// a fade plays its selection where nobody can see it. The shelf keeps no pop meanwhile; the
+    /// first awake tick starts the focused card's pop from rest, as a deliberate move does (a restore
+    /// or reconcile announced since the last dormant tick is still adopted whole). Set it before each
+    /// [`on`](Self::on).
+    ///
+    /// What was lifted lets go in one of two ways, by whether the page can be seen. On a page in
+    /// view (Home's shelves while its dive has not reached them, the Recommended page's while its
+    /// shelves dissolve in) the springs EASE to rest like an unfocused shelf's and park once they
+    /// settle. While the page is a held transition image
+    /// ([`page_image_held`](crate::containers::transition::page_image_held): a dip's Out and In
+    /// halves and the hold after it) nothing on screen can show the ease, and stepping it would hold
+    /// the image past its dissolve (a page that is covered freezes its shelves mid-ease and resumes
+    /// them under the BACK dip's image), so the springs and the caption band jump to rest on the
+    /// first tick, as [`Grid::dormant`](super::Grid::dormant) does. The scroll is kept either way.
     pub fn dormant(&mut self, held: bool) {
         self.dormant = held;
     }
@@ -278,8 +288,14 @@ impl Shelf {
             self.anchor = None;
             self.landing.snap(src);
             if !self.row.at_exact_rest() {
-                self.row.update(src.len(), None, self.style, dt);
-                self.row.park();
+                if crate::containers::transition::page_image_held() {
+                    // an image hides the page: nothing may step under it (it would hold the image
+                    // past its dissolve), so what was lifted is at rest now
+                    self.row.snap_to_rest();
+                } else {
+                    self.row.update(src.len(), None, self.style, dt);
+                    self.row.park();
+                }
             }
             return;
         }
@@ -490,7 +506,7 @@ impl Shelf {
     /// the fold asks too (one page, on the page's open). A row whose cards reach past the screen
     /// has no such cell and still asks only as focus nears its end.
     fn pending_in_view<H: Host, S: CardSource<H>>(&self, src: &S) -> bool {
-        let x = self.style.margin_x + src.len() as f32 * self.pitch() - self.drawn_scroll(src);
+        let x = self.style.margin_x + src.len() as f32 * self.pitch() - self.row.scroll_x();
         src.more_after() && crate::on_axis(x, self.style.w, SCR_W, self.margin)
     }
 
@@ -559,7 +575,7 @@ impl Shelf {
         let n = src.len();
         let forward = self.warm.forward;
         let pitch = self.pitch();
-        let sx = self.drawn_scroll(src);
+        let sx = self.row.scroll_x();
         // the first card past the painted run on each side (a card is painted while any of it shows)
         let first_shown = ((sx - self.style.margin_x + self.style.gap) / pitch).floor().max(0.0) as usize;
         let past_shown = ((sx + SCR_W - self.style.margin_x) / pitch).ceil().max(0.0) as usize;
@@ -659,11 +675,6 @@ impl Shelf {
         Rect::new(r.x + self.landing.offset(n, i), r.y, r.w, r.h)
     }
 
-    /// The scroll the row is drawn at: the spring's, scaled by [`CardSource::sweep`].
-    fn drawn_scroll<H: Host, S: CardSource<H>>(&self, src: &S) -> f32 {
-        self.row.scroll_x() * src.sweep()
-    }
-
     /// The settled, unpopped rect of the shelf's first card in SCREEN space: where the strip
     /// starts, for a screen that registers the shelf's group extent there.
     pub fn head(&self, at: SectionFrame) -> Rect {
@@ -683,7 +694,7 @@ impl Shelf {
         let i = src.index_of(elem)?;
         let focus = super::focused_index(&cx.focus, self.entry, src);
         let pressed = super::pressed_index(cx, self.entry, src);
-        let slot = self.slot(i, src.len(), at, self.drawn_scroll(src));
+        let slot = self.slot(i, src.len(), at, self.row.scroll_x());
         let s = match how {
             At::Drawn => super::press_scale(self.pop(src, i, focus), i, pressed, cx),
             At::SpringTarget => if focus == Some(i) { self.style.focus_scale } else { 1.0 },
@@ -719,7 +730,7 @@ impl Shelf {
         let n = src.len();
         let focus = super::focused_index(&f.focus, self.entry, src);
         let pressed = super::pressed_index(f.cx, self.entry, src);
-        let sx = self.drawn_scroll(src);
+        let sx = self.row.scroll_x();
         let pr = p.translate(-sx, 0.0);
         let visible = |i: usize| crate::on_axis(self.slot(i, n, at, sx).x, self.style.w, SCR_W, self.margin);
         for i in (0..n).filter(|&i| focus != Some(i) && visible(i)) {
@@ -763,20 +774,18 @@ impl Shelf {
     /// them. `ghosts` holds the removed cards in [`ghost_keys`](Self::ghost_keys) order (only `art`,
     /// `progress`, `loaded` and `overlay` are read; a ghost is never captioned or registered as a
     /// stop; one that was the focused card eases from its lifted scale to rest while it fades).
-    /// `src` is the section's current source, for the dive's sweep, which a ghost follows like
-    /// every other card. Nothing is drawn when no landing is playing, and only what is on-axis.
-    pub fn paint_ghosts<H: Host, S: CardSource<H>, G: CardSource<H> + ?Sized>(
-        &self, f: &DrawFrame<'_, '_, H>, p: Painter, src: &S, ghosts: &G, at: SectionFrame,
+    /// Nothing is drawn when no landing is playing, and only what is on-axis.
+    pub fn paint_ghosts<H: Host, G: CardSource<H> + ?Sized>(
+        &self, f: &DrawFrame<'_, '_, H>, p: Painter, ghosts: &G, at: SectionFrame,
     ) {
         if self.dormant {
             return;
         }
-        let sweep = src.sweep();
-        let sx = self.drawn_scroll(src);
+        let sx = self.row.scroll_x();
         let pr = p.translate(-sx, 0.0);
         for (j, g) in self.landing.ghosts().iter().enumerate().filter(|(j, _)| *j < ghosts.len() && ghosts.loaded(*j)) {
             let a = g.alpha.pos.clamp(0.0, 1.0);
-            let x = self.style.margin_x + g.was as f32 * self.pitch() + g.shift.0 * sweep;
+            let x = self.style.margin_x + g.was as f32 * self.pitch() + g.shift.0;
             if a <= 0.0 || !crate::on_axis(x - sx, self.style.w, SCR_W, self.margin) {
                 continue;
             }
@@ -793,7 +802,7 @@ impl Shelf {
     pub fn paint_focused<H: Host, S: CardSource<H>>(&self, f: &DrawFrame<'_, '_, H>, p: Painter, src: &S, at: SectionFrame) {
         let focus = super::focused_index(&f.focus, self.entry, src);
         let pressed = super::pressed_index(f.cx, self.entry, src);
-        let pr = p.translate(-self.drawn_scroll(src), 0.0);
+        let pr = p.translate(-self.row.scroll_x(), 0.0);
         if let Some(i) = focus.filter(|&i| i < src.len()) {
             let s = super::press_scale(self.pop(src, i, focus), i, pressed, f.cx);
             self.draw_card(f, pr, src, i, at, s, true);
@@ -809,7 +818,7 @@ impl Shelf {
         }
         let focus = super::focused_index(&f.focus, self.entry, src);
         let pressed = super::pressed_index(f.cx, self.entry, src);
-        let sx = self.drawn_scroll(src);
+        let sx = self.row.scroll_x();
         let n = src.len();
         for i in (0..n).filter(|&i| crate::on_axis(self.slot(i, n, at, sx).x, self.style.w, SCR_W, self.margin)) {
             let s = super::press_scale(self.pop(src, i, focus), i, pressed, f.cx);
@@ -838,7 +847,7 @@ impl Shelf {
         let Some(i) = focus.filter(|k| k.entry == self.entry).and_then(|k| src.index_of(&k.elem)) else { return };
         let pressed = super::pressed_index(f.cx, self.entry, src);
         let s = super::press_scale(self.pop(src, i, Some(i)), i, pressed, f.cx);
-        self.draw_card(f, p.translate(-self.drawn_scroll(src), 0.0), src, i, at, s, true);
+        self.draw_card(f, p.translate(-self.row.scroll_x(), 0.0), src, i, at, s, true);
     }
 
     /// One card at scale `s` in the scrolled painter `pr`. The rect and the treatment derive from
@@ -868,8 +877,7 @@ impl Shelf {
             _ => pr,
         };
         if focused {
-            let label = src.label(i).revealed(self.row.band_reveal())
-                .settling(self.row.settle_lag(src.len(), i, self.style) * src.sweep());
+            let label = self.focused_label(src, i, at);
             #[cfg(feature = "devtriggers")]
             crate::card_probe::begin_card();
             card_row::draw_focused(pr, src.art(i), rect, s, self.style, src.progress(i), &label, f.measure);
@@ -882,6 +890,33 @@ impl Shelf {
         }
         let tile = Tile { rect, scale: s, radius: self.style.tile_radius(rect, s), focused };
         src.overlay(pr, i, &tile, f.measure);
+    }
+
+    /// The label block the focused card `i` is drawn with: its source's label, revealed as far as
+    /// the band has opened and the room under it holds each line ([`card_row::line_reveal_for`],
+    /// the heading below it as `at.below_rise` says it is drawn), placed for where the tile settles.
+    /// What [`draw_card`](Self::draw_card) paints and [`caption_lines_probe`](Self::caption_lines_probe)
+    /// reads, so a test sees the ink the frame carries.
+    fn focused_label<H: Host, S: CardSource<H>>(&self, src: &S, i: usize, at: SectionFrame) -> TileLabel {
+        self.row.reveal(src.label(i), at.below_rise)
+            .settling(self.row.settle_lag(src.len(), i, self.style))
+    }
+
+    /// Test support: every caption LINE [`draw`](Self::draw) puts on screen now for the focused card,
+    /// `(card index, top y, bottom y, alpha)` in screen space for a painter with no translate and
+    /// no scroll (the tests'), from the same label and boxes the draw paints
+    /// ([`TileLabel::lines`](card_row::TileLabel::lines)): a line that is not drawn (alpha 0) is
+    /// not listed.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn caption_lines_probe<H: Host, S: CardSource<H>>(&self, f: &DrawFrame<'_, '_, H>, src: &S, at: SectionFrame) -> Vec<(usize, f32, f32, f32)> {
+        let Some(i) = super::focused_index(&f.focus, self.entry, src).filter(|&i| i < src.len() && src.loaded(i)) else {
+            return Vec::new();
+        };
+        let pressed = super::pressed_index(f.cx, self.entry, src);
+        let s = super::press_scale(self.pop(src, i, Some(i)), i, pressed, f.cx);
+        let bottom = card_row::unscaled_bottom(self.slot(i, src.len(), at, 0.0).scaled(s), s);
+        self.focused_label(src, i, at).lines().into_iter().flatten().filter(|l| l.alpha > 0.0)
+            .map(|l| (i, bottom + l.top, bottom + l.bottom, l.alpha)).collect()
     }
 
     /// The `Focusable` neighbour of `key` inside the shelf: left and right by index, the edge
@@ -959,8 +994,22 @@ impl Shelf {
         self.row.under_band()
     }
 
+    /// Follow the Under posters policy (`Some`) or the legacy two-line band (`None`, the default):
+    /// the band this shelf reserves, and how much of the caption block shows, follow its height
+    /// ([`crate::caption_policy::band_h`]). Only the focused shelf opens it.
+    pub fn set_caption_policy(&mut self, policy: Option<crate::caption_policy::CaptionPolicy>) {
+        if self.row.caption_policy() != policy {
+            self.row.set_caption_policy(policy);
+        }
+    }
+
+    /// The focused band's whole height under this shelf's policy ([`CardRow::band_h`]).
+    pub fn band_h(&self) -> f32 {
+        self.row.band_h()
+    }
+
     /// The live label-band expansion, 0 collapsed to 1 focused: what a screen that lays its column
-    /// out from the band's TRAVEL (`card_row::BAND_OPEN` times this) reads.
+    /// out from the band's TRAVEL (`card_row::BAND_OPEN`, or `band_open_for(band_h)` under a policy, times this) reads.
     pub fn band_expand(&self) -> f32 {
         self.row.band_expand()
     }

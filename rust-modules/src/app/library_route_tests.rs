@@ -459,6 +459,30 @@ fn the_sort_filter_pill_is_painted_after_the_panel_in_the_dispatchers_own_draw()
         "the pill's run ({}) comes after the panel's rows ({panel_first}..={panel_last}): {words:?}", pills[0]);
 }
 
+/// **A library the server says has no collections has no Collections stop** (the rig's probe is
+/// seeded per section, `collections_probe::seed_for_test`, so the app tier models what the live
+/// probe reports): none, or a refusal (HTTP 403), puts nothing on the header, and the arrows walk
+/// Recommended then Sort & Filter. With the rig's count the control is the first stop.
+#[test]
+fn a_library_without_collections_has_no_collections_stop() {
+    use plx_plex::plex::collections::CollectionsCount;
+    for (name, answer, collections) in [
+        ("route-no-collections-none", CollectionsCount::Count(0), false),
+        ("route-no-collections-403", CollectionsCount::Forbidden, false),
+        ("route-no-collections-unknown", CollectionsCount::Unknown, false),
+        ("route-collections-some", CollectionsCount::Count(7), true),
+    ] {
+        let mut w = World::movies_library_answering(name, answer);
+        let stops: Vec<&str> = w.library().probe_header_stops().into_iter().map(|(stop, _)| stop).collect();
+        assert_eq!(stops.contains(&"collections"), collections, "{name}: the header's stops are {stops:?}");
+        w.climb_into_header();
+        assert_eq!(here(&w), if collections { "header:collections" } else { "header:recommended" }, "{name}");
+        w.press(Key::Right);
+        w.frames(10);
+        assert_eq!(here(&w), if collections { "header:recommended" } else { "header:sort" }, "{name}");
+    }
+}
+
 // ---- R6: Sort & Filter and the "N of M" read-out ---------------------------------------------------
 
 /// The Sort & Filter control, from the Library's arrival on the Collections control.

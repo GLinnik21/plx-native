@@ -242,10 +242,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install SDL
-        # Same step-level bound and package set as the `macos` job: the host test binary links SDL
-        # (build.rs links it for every host test binary) and libass's dependencies need cmake.
+        # Same step-level bound as the `macos` job, and its package set plus `ffmpeg`: the host test binary links SDL
+        # (build.rs links it for every host test binary) and libass's dependencies need cmake. The
+        # `ffmpeg` formula supplies the `ffmpeg`/`ffprobe` command line tools that
+        # `ff::late_audio_tests` writes and measures its fixtures with (not the library it demuxes
+        # with: that is the pinned host build below). Without them those tests fail under CI.
         timeout-minutes: 15
-        run: brew install sdl2_ttf cmake pkg-config
+        run: brew install sdl2_ttf cmake pkg-config ffmpeg
       - id: toolchain
         name: Identify the host toolchain
         run: echo "id=$(./ci/host-toolchain-id.sh)" >> "$GITHUB_OUTPUT"

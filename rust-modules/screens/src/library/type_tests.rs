@@ -199,7 +199,7 @@ fn the_hold_hint_does_not_stand_on_a_collection_card() {
             &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
     }
     assert!(!page.hold_hint.visible(), "a hold on a collection opens no menu, so no hint");
-    assert!(!plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Library), "and nothing is spent");
+    assert!(!plx_ui::hold_hint::shown_this_run(), "and nothing is spent");
 }
 
 /// The dev/scenario path to a listing type: `SetType` is the menu row's own edit, addressed to the

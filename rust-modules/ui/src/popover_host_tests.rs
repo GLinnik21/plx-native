@@ -12,10 +12,8 @@ impl Reset {
     fn new(cache_off: bool) -> Self {
         let users = HOST_USERS.swap(1, Relaxed);
         let frozen = plx_gfx::gfx::set_page_frozen(false);
-        unsafe {
-            CACHE = FrameCache { snapshot: None, off: cache_off, prev: None };
-            HELD = Held::Nothing;
-        }
+        cache(|c| *c = FrameCache { snapshot: None, off: cache_off, prev: None });
+        HELD.set(Held::Nothing);
         CAPTURE_OWED.store(false, Relaxed);
         CAPTURE_POINTLESS.store(false, Relaxed);
         GROUND_DRAWN.store(false, Relaxed);
@@ -593,7 +591,7 @@ fn a_reflowing_page_is_live_under_the_glass_and_the_host_is_retaken_once() {
     assert_eq!(drawn[0], 1.0);
     let (e, c, copies, released, _) = counts();
     assert_eq!((e, c, copies, released), (epoch + 1, caps + 2, 1, 1), "still one retake in all; the old texture is released at b = 1");
-    assert!(!unsafe { (*std::ptr::addr_of!(CACHE)).has_prev() }, "and the cache keeps no second slot");
+    assert!(!cache(|c| c.has_prev()), "and the cache keeps no second slot");
     let after = counts().4;
     set_reflow(false, dt);
     reflow_frame("r-final", false);

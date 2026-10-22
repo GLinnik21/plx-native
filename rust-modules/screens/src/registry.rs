@@ -41,6 +41,9 @@ use plx_ui::screen::{Mounter, ReturnState, Screen};
 /// because a screen may name `registry` but never a sibling screen, and `ui` cannot name the row.
 pub mod tile_facts;
 
+/// The Under posters setting read once, and the one builder of a focused poster's caption.
+pub mod captions;
+
 /// The application's effects (spec §3.1). `Store` since phase 4; `Consent` and `Loop` since 5b.
 pub enum AppFx {
     Session(plx_session::auth::SessionCmd),
@@ -1271,19 +1274,24 @@ pub trait LibraryLike: AppLike<Memory = PageMemory> + Sized {
     fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a>;
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a>;
     fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a>;
-    /// How many collections `section` holds, from the `type=18` `Size:0` probe of
-    /// `/library/sections/{id}/all` (`totalSize`). `None` = not known yet; `Some(Err(Forbidden))` =
-    /// the server answered HTTP 403 (the Collections control is then hidden); `Some(Ok(0))` = none.
+    /// How many collections the directory's section `section` (an index into
+    /// `directory(cx).sections()`, which names the server as well as the section key) holds, from
+    /// the `type=18` `Size:0` probe of `/library/sections/{id}/all` (`totalSize`). `None` = not
+    /// known yet (the Collections control is then not on the row); `Some(Err(Forbidden))` = the
+    /// server answered HTTP 403 (hidden); `Some(Ok(0))` = none (hidden). Any section of the
+    /// directory may be asked about, not only the current one: the app warms them all when the
+    /// directory lands, so a switch finds its answer already there.
     ///
-    /// CONTRACT FREEZE: a provided method so every existing host compiles; P2 implements it on
-    /// `AppHost` (`src/app/bridge.rs`) over the probe, and P4 reads it.
-    fn collections_count(_cx: &Cx<'_, Self>, _section: u32) -> Option<Result<u32, Forbidden>> {
+    /// CONTRACT FREEZE: a provided method so every existing host compiles; `AppHost`
+    /// (`src/app/bridge.rs`) implements it over the probe.
+    fn collections_count(_cx: &Cx<'_, Self>, _section: usize) -> Option<Result<u32, Forbidden>> {
         None
     }
 }
 
-/// The server refused the collections listing (HTTP 403): the answer is final for this session, so
-/// it is kept distinct from "none yet" and from a count of zero.
+/// The server refused the collections listing (HTTP 401/403): the answer is final for the identity
+/// (credential) it was asked under, so it is kept distinct from "none yet" and from a count of
+/// zero.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Forbidden;
 
@@ -2532,7 +2540,19 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // the shape string of `LibraryScreen` and of the Watchlist page (which drops its private head ramp
 // for it). One bump; the three replay fixtures were re-recorded against it; the previous pin was
 // 0xbd4f_cd3e_ff97_a15f.
-const SCREEN_SHAPES_PIN: u64 = 0xcbaf_3fdb_0c28_ad38;
+// Grid let-go canon: `plx_ui::poster_grid::GridPop::write` writes the pop, then the let-gos in
+// flight as a counted sequence (`c.seq`, a `(cell, spring)` each), where it wrote one slot per
+// let-go with no count -- a stream that did not match the one `shrink` slot `LibraryGrid` declared
+// and was not self-delimiting. `LibraryGrid`'s `shrink:(index:Option<u32>,sp:..)` becomes
+// `let_gos:[(index:u32,sp:..)]`. One bump; the three replay fixtures were re-recorded against it;
+// the previous pin was 0xcbaf_3fdb_0c28_ad38.
+// Grid bands slot card: `plx_ui::poster_grid::GridBands::write` has written each open band's card
+// (`c.option(s.card, ..)`, the one whose caption it carries) after the row and the spring since the
+// Library redesign (#843), and `LibraryGrid` declared the slot without it. The slot is now
+// `(row:u32,sp:..,card:Option<u32>)`, in write order; the Collection and Watchlist grids name
+// `bands` symbolically, so their shape strings did not change. One bump; the three replay fixtures
+// were re-recorded against it; the previous pin was 0x0803_2f8d_c828_6d70.
+const SCREEN_SHAPES_PIN: u64 = 0x6b71_df9e_04db_2b76;
 
 #[cfg(test)]
 mod arg_tests {

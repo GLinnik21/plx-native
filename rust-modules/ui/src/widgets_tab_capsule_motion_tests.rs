@@ -964,3 +964,126 @@ fn the_top_bar_draws_every_label_at_full_ink_in_one_weight_per_frame() {
     assert!(mid_weight_frames > 20, "the hops cross labels mid-weight ({mid_weight_frames} frames)");
     assert!(stepped > 4, "the weight steps as a capsule crosses a label ({stepped} steps)");
 }
+
+/// **The painted gaps (lane hs-ui2).** Reads the label runs a recording painter was handed and
+/// checks the AIR between neighbouring pill frames as drawn: [`TAB_GAP`] in the top bar, the row's
+/// `gap` in a strip, a skipped label leaving no double gap. A label is centred in its frame, so a
+/// frame is its run's measured width plus the pad each side.
+#[test]
+fn painted_pill_frames_stand_one_gap_apart_in_the_top_bar_and_in_a_strip() {
+    let _g = serial_for_motion();
+    struct Frozen(bool);
+    impl Drop for Frozen {
+        fn drop(&mut self) {
+            plx_gfx::gfx::set_page_frozen(self.0);
+        }
+    }
+    let _frozen = Frozen(plx_gfx::gfx::set_page_frozen(true));
+    // a label's frame (x, w) from the first run that says it
+    fn frame(runs: &[crate::draw_census::Run], word: &str, pad: f32) -> (f32, f32) {
+        let run = runs.iter().find(|r| r.text == word).unwrap_or_else(|| panic!("\"{word}\" is not drawn"));
+        assert_eq!(run.align, 1, "\"{word}\" is centred in its frame");
+        let w = run.at.w + 2.0 * pad;
+        (run.at.x - w * 0.5, w)
+    }
+    // ---- the top bar ----
+    let faces = [
+        TabFace::Label("Home".into()),
+        TabFace::Label("Movies".into()),
+        TabFace::Label("TV Shows".into()),
+        TabFace::Icon(crate::icons::Icon::Search),
+    ];
+    let labels = TabLabels { generation: 1, faces: &faces };
+    let mut strip = StripRender::new();
+    let mut band = TabBand::new();
+    for _ in 0..90 {
+        strip.update(labels, 0, TopFocus::Pill(0), DT);
+    }
+    let runs = crate::draw_census::capture_runs(|| strip.draw(labels, Painter::recording(), &mut band));
+    let bar: Vec<(f32, f32)> = ["Home", "Movies", "TV Shows"].iter().map(|w| frame(&runs, w, TAB_PILL_PAD)).collect();
+    for pair in bar.windows(2) {
+        let air = pair[1].0 - (pair[0].0 + pair[0].1);
+        assert!((air - TAB_GAP).abs() <= 0.5, "top-bar pill frames stand {air} apart, not {TAB_GAP}");
+    }
+    // the Search icon pill's frame is the geometry's (an icon has no run to read): TAB_ICON_PILL_W
+    // wide, and one TAB_GAP after the last label's painted frame
+    let search = with_tab_metrics_for(labels, |_, _, widths| tab_geometry(widths, 0.0).pill(3));
+    assert_eq!(search.w, TAB_ICON_PILL_W, "the Search pill is the icon pill's width");
+    let air = search.x - (bar[2].0 + bar[2].1);
+    assert!((air - TAB_GAP).abs() <= 0.5, "the Search pill's frame stands {air} after TV Shows, not {TAB_GAP}");
+    // ---- a strip, with a label that cannot be drawn between two that can ----
+    let measure = crate::fixture::FixtureMeasure;
+    let gap = 37.0;
+    let lays = strip_layout_measured(
+        ["Alpha".into(), "bad\0label".into(), "Beta".into(), "Gamma".into()].into_iter(),
+        96.0, theme::size::BODY, gap, &measure,
+    );
+    assert_eq!(lays.len(), 3, "the unusable label is skipped");
+    assert_eq!(lays.iter().map(|l| l.i).collect::<Vec<_>>(), [0, 2, 3], "indices survive the skip");
+    let tabs = TabStrip::new();
+    let runs = crate::draw_census::capture_runs(|| draw_strip(Painter::recording(), &tabs, &lays, 10.0, 60.0, 0.0, TabGround::Plated { pop: 0.0 }));
+    let frames: Vec<(f32, f32)> = ["Alpha", "Beta", "Gamma"].iter().map(|w| frame(&runs, w, STRIP_PAD)).collect();
+    assert!((frames[0].0 - (96.0 - STRIP_PAD)).abs() <= 0.5, "the first frame starts one pad before x0");
+    for pair in frames.windows(2) {
+        let air = pair[1].0 - (pair[0].0 + pair[0].1);
+        assert!((air - gap).abs() <= 0.5, "strip pill frames stand {air} apart, not {gap}");
+    }
+}
+
+/// The focus cast rides the capsule's own fade (`control_cast_at`'s doc): on a plated strip the
+/// shadow used to be drawn at full strength while the fill faded out and then vanish in the one
+/// frame the fill dropped under the draw cutoff — and appear whole on the way back.
+#[test]
+fn a_plated_focus_capsules_cast_fades_with_it_both_ways() {
+    let _g = serial_for_motion();
+    let measure = crate::fixture::FixtureMeasure;
+    let lays = strip_layout_measured(
+        ["Alpha".into(), "Beta".into(), "Gamma".into()].into_iter(),
+        96.0, theme::size::BODY, 37.0, &measure,
+    );
+    let (top, h) = (10.0, 60.0);
+    let span = |i: usize| lays.iter().find(|l| l.i == i).map(|l| {
+        let r = strip_pill_rect(l, top, h);
+        (r.x, r.w)
+    });
+    let full: f32 = theme::CONTROL_CAST_FOCUS.iter().map(|(_, _, a)| a).sum();
+    let mut strip = TabStrip::new();
+    // (cast strength as a share of the full lift, the focus fill's effective alpha, plates drawn)
+    let frame = |strip: &mut TabStrip, focused: c_int| {
+        strip.update(0, focused, span, SelMark::Lands, DT);
+        let inks = crate::draw_census::capture_inks(|| {
+            draw_strip(Painter::recording(), strip, &lays, top, h, 0.0, TabGround::Plated { pop: 1.0 });
+        });
+        // The cast must be the OUTSIDE-only shadow (tag 5): the interior-painting one (tag 4) shows
+        // through a translucent capsule as it fades.
+        assert!(inks.iter().all(|(t, _, _)| *t != 4), "a capsule's cast is drawn outside its outline only");
+        let sum = |tag: u64| inks.iter().filter(|(t, _, _)| *t == tag).map(|(_, _, a)| *a).sum::<f32>();
+        let fill = inks.iter().filter(|(t, _, _)| *t == 8).map(|(_, _, a)| *a).fold(0.0, f32::max);
+        (sum(5) / full, fill, inks.iter().any(|(t, _, _)| *t == 2))
+    };
+    let mut trace = Vec::new();
+    for _ in 0..60 { trace.push(frame(&mut strip, 0)); }
+    let held = *trace.last().unwrap();
+    assert!((held.0 - 1.0).abs() < 1e-3, "a focused plated pill wears the full cast ({})", held.0);
+    for _ in 0..60 { trace.push(frame(&mut strip, -1)); }
+    let out = *trace.last().unwrap();
+    for _ in 0..60 { trace.push(frame(&mut strip, 0)); }
+    let back = *trace.last().unwrap();
+
+    assert_eq!(out.0, 0.0, "after focus leaves the strip there is no cast");
+    assert_eq!(out.1, 0.0, "…and no focus capsule");
+    assert!(out.2, "…only the selection plate remains");
+    assert!((back.0 - 1.0).abs() < 1e-3, "after focus returns the cast is whole again ({})", back.0);
+    assert!(back.1 > 0.99, "…and so is the fill ({})", back.1);
+    // the cast leads the fill out: <=10% of full once the capsule is at half alpha, whole at rest
+    for (n, t) in trace.iter().enumerate() {
+        if t.1 <= 0.5 { assert!(t.0 <= 0.1, "frame {n}: the cast ({}) outlives the fill ({})", t.0, t.1); }
+        if t.1 > 0.999 { assert!((t.0 - 1.0).abs() < 1e-3, "frame {n}: a settled capsule wears the whole cast ({})", t.0); }
+    }
+    // the cast is a smoothstep of the fill (slope up to 3x over [0.5, 1]): it may move 3x as fast per frame, never a step
+    for (n, pair) in trace.windows(2).enumerate() {
+        let (dc, df) = ((pair[1].0 - pair[0].0).abs(), (pair[1].1 - pair[0].1).abs());
+        assert!(dc <= 0.35, "frame {}: the cast jumped {dc} in one frame ({} -> {})", n + 1, pair[0].0, pair[1].0);
+        assert!(df <= 0.12, "frame {}: the fill jumped {df} in one frame ({} -> {})", n + 1, pair[0].1, pair[1].1);
+    }
+}

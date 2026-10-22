@@ -22,6 +22,7 @@ use std::ffi::CString;
 
 use plx_machine::machine::Measure;
 
+use super::hstack::{Align, HStack, Item};
 use super::page_header::{HEIGHT, OVERHANG, TEXT_X0, TOP};
 use super::widgets::focus_pill;
 use super::{theme, Rect};
@@ -76,20 +77,25 @@ impl Crumb {
         Self { root: root.into(), page: page.into() }
     }
 
-    /// Place the three parts on the header row (y 148, 56 tall), the root's text at x 96.
+    /// Place the three parts on the header row (y 148, 56 tall), the root's text at x 96. The parts
+    /// are one [`HStack`] [`AIR`] apart: the root's FOCUSED pill (its plate and the focus outset,
+    /// which is the edge the eye reads against the chevron), the chevron's box, and the page name's
+    /// plate.
     pub fn layout(&self, measure: &dyn Measure) -> CrumbLayout {
         let root_w = text_w(&self.root, false, measure);
         let page_w = text_w(&self.page, false, measure);
         let root_text = Rect::new(TEXT_X0, TOP, root_w, HEIGHT);
         let root_plate = Rect::new(TEXT_X0 - OVERHANG, TOP, root_w + 2.0 * OVERHANG, HEIGHT);
-        // The glyph's box stands `AIR` clear of the root's FOCUSED pill, and the page plate `AIR`
-        // clear of the box.
+        let page_plate_w = page_w + 2.0 * OVERHANG;
         let pill = focus_pill(root_plate);
-        let gx = pill.x + pill.w + AIR;
-        let glyph = Rect::new(gx, TOP + (HEIGHT - GLYPH_SIZE) * 0.5, GLYPH_SIZE, GLYPH_SIZE);
-        let px = gx + GLYPH_SIZE + AIR;
-        let page_plate = Rect::new(px, TOP, page_w + 2.0 * OVERHANG, HEIGHT);
-        let page_text = Rect::new(px + OVERHANG, TOP, page_w, HEIGHT);
+        let parts = [Item::new(pill.w), Item::new(GLYPH_SIZE), Item::new(page_plate_w)];
+        let mut at = [pill.x; 3];
+        for span in HStack::new(&parts, AIR, Align::Leading(pill.x)).placed() {
+            at[span.i] = span.x;
+        }
+        let glyph = Rect::new(at[1], TOP + (HEIGHT - GLYPH_SIZE) * 0.5, GLYPH_SIZE, GLYPH_SIZE);
+        let page_plate = Rect::new(at[2], TOP, page_plate_w, HEIGHT);
+        let page_text = Rect::new(page_plate.x + OVERHANG, TOP, page_w, HEIGHT);
         CrumbLayout { root_text, root_plate, glyph, page_text, page_plate }
     }
 }

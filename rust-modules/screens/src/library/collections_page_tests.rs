@@ -1,6 +1,7 @@
 //! T1: the Collections page's own rules: Sort visibility, the section-sync guard, the crumb's
 //! geometry and focus order, the tile caption (Belarusian plurals 1/2/5/21).
 use super::*;
+use plx_ui::caption_policy::{CaptionFacts, CaptionPolicy, DetailsKind};
 use plx_base::fontcov::advances::ShippedMeasure;
 use plx_platform::i18n::{self, language_on_this_thread_for_test, Language, Preference};
 use plx_ui::page_header::{self, HeaderLayout, ItemRect, PageHeader, Slot};
@@ -17,13 +18,14 @@ fn part(layout: &HeaderLayout, slot: Slot) -> Option<ItemRect> {
     layout.items.iter().copied().find(|item| item.slot == slot)
 }
 
-fn films(n: i64) -> TileFacts<'static> {
-    TileFacts { title: "Starfall Saga", subtype: Some("movie"), child_count: n, name_cut: false }
+/// A movie collection's facts as the one builder reads them (`registry::tile_facts::caption_facts`).
+fn films(n: u32) -> CaptionFacts {
+    CaptionFacts { title: Some("Starfall Saga".into()), subtype: Some("movie".into()), child_count: Some(n).filter(|n| *n > 0), ..Default::default() }
 }
 
-fn lines(tag: &str, stored: CaptionPolicy, f: &TileFacts<'_>) -> [Option<String>; 2] {
+fn lines(tag: &str, stored: CaptionPolicy, f: &CaptionFacts) -> [Option<String>; 2] {
     let _g = language_on_this_thread_for_test(Preference::from_tag(tag));
-    caption(stored, f, i18n::current())
+    plx_ui::caption_policy::caption_lines(&stored, f, i18n::current())
 }
 
 #[test]
@@ -92,9 +94,9 @@ fn the_default_caption_is_the_count_alone_and_title_on_puts_the_name_above() {
     assert_eq!(lines(en, CaptionPolicy::DEFAULT, &films(1)), [None, Some("1 film".into())]);
     let titled = CaptionPolicy { title: true, details: DetailsKind::YearLength };
     assert_eq!(lines(en, titled, &films(24)), [Some("Starfall Saga".into()), Some("24 films".into())]);
-    let shows = TileFacts { subtype: Some("show"), ..films(3) };
+    let shows = CaptionFacts { subtype: Some("show".into()), ..films(3) };
     assert_eq!(lines(en, CaptionPolicy::DEFAULT, &shows)[1].as_deref(), Some("3 shows"));
-    let other = TileFacts { subtype: None, ..films(3) };
+    let other = CaptionFacts { subtype: Some(String::new()), ..films(3) };
     assert!(lines(en, CaptionPolicy::DEFAULT, &other)[1].is_some(), "an unknown subtype still counts");
 }
 
@@ -107,29 +109,27 @@ fn a_film_describing_details_choice_falls_back_to_the_count_and_none_stays_none(
     }
     let none = CaptionPolicy { title: true, details: DetailsKind::None };
     assert_eq!(lines(en, none, &films(4)), [Some("Starfall Saga".into()), None]);
-    assert_eq!(policy(CaptionPolicy { title: false, details: DetailsKind::None }, false).max_lines(), 0);
 }
 
-/// **S23.** A name the tile's face cuts rides the focused caption whatever the Under posters
-/// setting; a name the face sets whole stays the reader's to show or hide. The band is reserved for
-/// the title line either way (one height for every tile, whichever is focused).
+/// **S23, under the one rule.** A name the tile's face cuts rides the details line when the Title
+/// switch is off (the policy's own band, one line), is said once when it is on, and Nothing opens
+/// nothing; a name the face sets whole follows the switch.
 #[test]
-fn a_name_the_face_cuts_is_in_the_caption_whatever_the_setting() {
+fn a_name_the_face_cuts_rides_the_details_line_inside_the_policys_band() {
     let en = "en";
-    let cut = TileFacts { name_cut: true, ..films(4) };
+    let cut = CaptionFacts { name_cut: true, ..films(4) };
     let silent = CaptionPolicy { title: false, details: DetailsKind::None };
-    assert_eq!(lines(en, silent, &cut), [Some("Starfall Saga".into()), None], "title off, details off");
-    assert_eq!(lines(en, CaptionPolicy::DEFAULT, &cut), [Some("Starfall Saga".into()), Some("4 films".into())]);
+    assert_eq!(lines(en, silent, &cut), [None, None], "Nothing opens nothing");
+    assert_eq!(lines(en, CaptionPolicy::DEFAULT, &cut), [None, Some("Starfall Saga \u{b7} 4 films".into())]);
+    assert_eq!(lines(en, CaptionPolicy { title: true, ..CaptionPolicy::DEFAULT }, &cut), [Some("Starfall Saga".into()), Some("4 films".into())]);
     assert_eq!(lines(en, silent, &films(4)), [None, None], "a name set whole follows the switch");
     assert_eq!(lines(en, CaptionPolicy::DEFAULT, &films(4)), [None, Some("4 films".into())]);
-    assert_eq!(band_policy(CaptionPolicy::DEFAULT).max_lines(), 2, "the band always reserves the title line");
-    assert_eq!(band_policy(silent).max_lines(), 1, "and with nothing else, only that line");
 }
 
 #[test]
-fn an_unknown_count_leaves_no_count_line() {
+fn an_unknown_count_invents_no_count_and_says_what_the_tile_is() {
     let en = "en";
-    assert_eq!(lines(en, CaptionPolicy::DEFAULT, &films(0)), [None, None]);
+    assert_eq!(lines(en, CaptionPolicy::DEFAULT, &films(0)), [None, Some("Collection".into())]);
 }
 
 #[test]
@@ -142,7 +142,7 @@ fn belarusian_counts_take_the_right_plural_for_1_2_5_21() {
     assert_ne!(few, many, "few ({few}) is not many ({many})");
     assert_ne!(few, one);
     assert_eq!(twenty_one.split_once(' ').unwrap().1, one.split_once(' ').unwrap().1, "21 takes the 'one' form");
-    let shows = TileFacts { subtype: Some("show"), ..films(2) };
+    let shows = CaptionFacts { subtype: Some("show".into()), ..films(2) };
     assert!(lines(be, CaptionPolicy::DEFAULT, &shows)[1].as_deref().is_some_and(|s| s.starts_with("2 ")));
 }
 

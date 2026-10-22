@@ -25,11 +25,12 @@ fn grid_labels_identify_episodes_and_seasons() {
     assert_eq!(super::parts::grid_label(&episode, &POLICY).title.unwrap().to_str().unwrap(), "S3 · E4",
         "an episode without its own title must identify the episode, not repeat the show");
     let season = PmsMovie { kind: 2, title: "Season 3".into(), show_title: "The Bear".into(),
-        season_index: 3, year: 2024, ..Default::default() };
+        season_index: 3, ..Default::default() };
     let label = super::parts::grid_label(&season, &POLICY);
-    assert_eq!(label.title.unwrap().to_str().unwrap(), "Season 3");
-    assert_eq!(label.caption.unwrap().to_str().unwrap(), "The Bear",
+    assert_eq!(label.title.unwrap().to_str().unwrap(), "The Bear",
         "a mixed library of seasons must name the show each season belongs to");
+    assert_eq!(label.caption.unwrap().to_str().unwrap(), "Season 3",
+        "the season is the details line when the setting's facts have nothing to say about it");
 }
 
 #[test]
@@ -44,7 +45,8 @@ fn focused_grid_labels_keep_the_shared_trailing_fact_including_under_a_menu() {
             "grid cards word the policy's year line, not remaining playback time (year {year})");
     }
     let item = PmsMovie { title: "Undated".into(), ..Default::default() };
-    assert!(super::parts::grid_label(&item, &POLICY).caption.is_none());
+    assert_eq!(super::parts::grid_label(&item, &POLICY).caption.unwrap().to_str().unwrap(), "Movie",
+        "a film the server told us nothing about says what it is: the band the setting opens is never over nothing");
     let episode = PmsMovie { kind: 3, year: 2020, season_index: 2, ep_index: 7,
         ..Default::default() };
     assert_eq!(super::parts::grid_label(&episode, &POLICY).caption.unwrap().to_str().unwrap(), "2020",
@@ -160,6 +162,9 @@ fn owned_library_overscan_probe_covers_every_legacy_edge() {
 fn the_deck_title_carries_the_play_glyph_only_while_the_press_plays() {
     let _guard = plx_base::testlock::serial();
     let prior = plx_media::route::deck_press();
+    // The play mark leads the title line, so the Title switch is on for this test's thread.
+    crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(Some(
+        plx_plex::plex::session::UnderPosters { title: true, details: plx_plex::plex::session::UnderPostersDetails::YearLength })));
     let glyph = |mode, is_continue| {
         plx_media::route::restore_deck_press(mode);
         let shelf = plx_data::browse::section_hubs::Shelf {
@@ -174,6 +179,7 @@ fn the_deck_title_carries_the_play_glyph_only_while_the_press_plays() {
         glyph(DeckPress::Play, false), glyph(DeckPress::Details, false),
     );
     plx_media::route::restore_deck_press(prior);
+    crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(None));
     assert_eq!(seen, (true, false, false, false));
 }
 
@@ -196,7 +202,7 @@ fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
         dur_ns: 60 * 60 * 1_000_000_000, resume_ms: 35 * 60 * 1000,
         ..Default::default() }, true), "25m left", "a Continue Watching tile reports time left");
     assert_eq!(caption(PmsMovie { kind: 1, title: "Untitled".into(),
-        ..Default::default() }, false), "", "missing source data does not invent a caption");
+        ..Default::default() }, false), "Show", "missing source data invents no fact: the line says what the tile is");
 }
 
     #[test]
@@ -300,10 +306,16 @@ fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
         let sh = shelf(vec![dated(ep(2, 1, "X", "X"))]);
         assert_eq!(title(&shelf_label(&sh, 0)), "S2 \u{b7} E1");
 
-        // …and a POSTER shelf is untouched: its tiles still name the item on focus
+        // …and a POSTER shelf follows the Under posters setting: its tiles name the item on focus
+        // when the Title switch is on, and the episode's address is its default details line
         let mut poster = shelf(vec![dated(ep(3, 4, "Violet", "The Bear"))]);
         poster.landscape = false;
-        assert_eq!(title(&shelf_label(&poster, 0)), "Violet");
+        assert_eq!(title(&shelf_label(&poster, 0)), "", "the default setting wears no title");
+        crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(Some(
+            plx_plex::plex::session::UnderPosters { title: true, details: plx_plex::plex::session::UnderPostersDetails::YearLength })));
+        let l = shelf_label(&poster, 0);
+        crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(None));
+        assert_eq!((title(&l).as_str(), caption(&l).as_str()), ("Violet", "S3 \u{b7} E4"));
     }
 
 /// The artwork FALLBACK CHAIN: the episode's own still, then the show's POSTER, and its

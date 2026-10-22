@@ -216,7 +216,7 @@ fn every_line_fits_in_every_shipped_language() {
         }
         for m in [Membership::On, Membership::Off] {
             let label = pill_label(m);
-            let w = hero_layout::pill_w(&ShippedMeasure, label, theme::size::BODY, true, false);
+            let w = hero_layout::pill_w(&ShippedMeasure, label, theme::size::BODY, true, None);
             let room = (plx_ui::consts::SCR_W - 2.0 * plx_ui::consts::MARGIN_X) * HEADROOM;
             if w > room {
                 over.push(format!("{} pill {m:?}: {w}px of {room}px: {label:?}", language.tag()));
@@ -376,4 +376,26 @@ fn a_page_with_no_record_draws_its_verdict_string() {
     assert_eq!(verdict_text(&Load::Unreachable), Some(msg::watchlist_empty_unreachable()));
     assert_eq!(verdict_text(&Load::Loading), None);
     assert_eq!(verdict_text(&loaded(Status::None, None)), None);
+}
+
+/// The hero's rows stand the named rungs apart whichever of the Coming line and the status line is
+/// absent, and an empty summary leaves the pill one LG under the last row.
+#[test]
+fn the_hero_stack_keeps_its_rungs_when_rows_are_absent() {
+    let m = FixtureMeasure;
+    let (sm, md, lg) = (theme::space::SM, theme::space::MD, theme::space::LG);
+    let meta_h = m.cap_h(theme::size::BODY);
+    let full = stack(true, true, "A summary.", &m);
+    let coming = full.coming.unwrap();
+    assert!((coming - (detail_layout::TITLE_BOTTOM + sm)).abs() < 0.01);
+    assert!((full.meta - (coming + m.cap_h(theme::size::HEADLINE) + sm)).abs() < 0.01);
+    let status = full.status.unwrap();
+    assert!((status - (full.meta + meta_h + sm)).abs() < 0.01);
+    assert!((full.summary - (status + STATUS_ICON_D + md)).abs() < 0.01);
+    assert!((full.pill - (full.summary + full.summary_h + lg)).abs() < 0.01);
+    let bare = stack(false, false, "", &m);
+    assert_eq!((bare.coming, bare.status, bare.summary_h), (None, None, 0.0));
+    assert!((bare.meta - (detail_layout::TITLE_BOTTOM + sm)).abs() < 0.01);
+    assert!((bare.summary - (bare.meta + meta_h)).abs() < 0.01, "an empty summary takes no gap");
+    assert!((bare.pill - (bare.summary + lg)).abs() < 0.01);
 }

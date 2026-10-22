@@ -2178,6 +2178,21 @@ pub fn install_for_test(&mut self, movies: Vec<PmsMovie>, shows: Vec<PmsMovie>) 
     self.revision += 1;
 }
 
+/// TEST ONLY: the roles batch of the first source's shelf `kind` has landed (`roles[i]` is the
+/// character tile `i` credits this person as, `""` for a crew credit), through the same merge
+/// projection a real roles landing ends in, so [`Person::role`] answers as the product's does.
+pub fn install_roles_for_test(&mut self, kind: usize, roles: Vec<String>) {
+    let Some(p) = self.current.as_mut() else {
+        return;
+    };
+    if let Some(source) = p.srcs.first_mut() {
+        source.shelves[kind].roles = roles;
+        source.roled = true;
+    }
+    resettle(p);
+    self.revision += 1;
+}
+
 /// TEST ONLY: land one named source's shelves through the same per-source ownership and merge
 /// projection as [`apply_landing`]'s successful media arm. Unlike [`PersonState::install_for_test`], this does not
 /// settle unrelated credits state and therefore supports multi-source pending-return tests.

@@ -4,16 +4,14 @@ use crate::registry::tile_facts;
 use plx_data::search::scope::{ScopeSource, SourceScopeSnapshot};
 use plx_ui::consts::{MARGIN_X, SCR_H};
 use plx_ui::label::{HAlign, Label, VAlign};
+use plx_ui::vstack::{Anchor, VStack};
 use plx_ui::widgets::{Art, Button, StatusKind, StatusOverlay};
 use plx_ui::{theme, Env, Painter, View};
 use std::ffi::{CStr, CString};
-use std::os::raw::c_int;
 
 const CARET_W: f32 = 5.0;
 const CARET_GAP: f32 = 8.0;
 const GHOST_GAP: f32 = theme::size::BODY as f32;
-const COUNT_GAP: f32 = theme::space::SM;
-const SOURCE_PAD: f32 = theme::space::XS;
 
 #[derive(Default)]
 pub(super) struct Resources {
@@ -157,31 +155,20 @@ pub(super) fn draw<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '
         }
         let slot = layout::ordinal(row.kind) as usize;
         let title = &screen.render.titles[slot];
-        let cap = f.cx.measure.cap_h(theme::size::HEADLINE);
         let source = if screen.owner_row == Some(i) && screen.owner_alpha.pos > OWNER_FLOOR {
             screen.render.owner.as_c_str()
         } else {
             c""
         };
-        heading_flow(
+        plx_ui::cards::draw_heading_c(
+            p,
             title,
             &screen.render.counts[slot],
             source,
-            |run, dx, size, bold, ink, faded| {
-                let mut label = Label::new(run.as_ptr(), size, ink).v(VAlign::Baseline);
-                if bold != 0 {
-                    label = label.bold();
-                }
-                label.draw(
-                    if faded {
-                        p.alpha(screen.owner_alpha.pos.clamp(0.0, 1.0))
-                    } else {
-                        p
-                    },
-                    Rect::new(MARGIN_X + dx, top - shelf.heading_lift(), 0.0, cap),
-                );
-                f.cx.measure.width(run, size, bold != 0)
-            },
+            MARGIN_X,
+            top - shelf.heading_lift(),
+            screen.owner_alpha.pos,
+            f.cx.measure,
         );
         if let Some(src) = screen.row_cards(H::search(f.cx), i) {
             shelf.draw(f, p, &src, frame);
@@ -366,19 +353,29 @@ fn empty<H: SearchLike>(screen: &SearchScreen, f: &DrawFrame<'_, '_, H>, p: Pain
     let statement = cstring(&statement);
     let hh = f.cx.measure.cap_h(theme::size::CAPTION);
     let sh = f.cx.measure.cap_h(theme::size::TITLE);
-    let top = rect.y + (rect.h - hh - sh - theme::space::MD) * 0.5;
+    let (header_y, statement_y) = empty_pair(rect, hh, sh);
     Label::new(header.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
         .h(HAlign::Center)
         .v(VAlign::CapTop)
-        .draw(p, Rect::new(rect.x, top, rect.w, 0.0));
+        .draw(p, Rect::new(rect.x, header_y, rect.w, 0.0));
     Label::new(statement.as_ptr(), theme::size::TITLE, theme::TEXT_HEADING)
         .bold()
         .h(HAlign::Center)
         .v(VAlign::CapTop)
-        .draw(
-            p,
-            Rect::new(rect.x, top + hh + theme::space::MD, rect.w, 0.0),
-        );
+        .draw(p, Rect::new(rect.x, statement_y, rect.w, 0.0));
+}
+
+/// The empty state's two cap tops: the header's band over the statement's, one MD apart, the pair
+/// centred in `area`. `Item` is the search's own row type here, so the stack's is named by its path.
+pub(super) fn empty_pair(area: Rect, header_h: f32, statement_h: f32) -> (f32, f32) {
+    let items = [plx_ui::hstack::Item::new(header_h), plx_ui::hstack::Item::new(statement_h)];
+    let pair = VStack::new(
+        &items,
+        theme::space::MD,
+        Anchor::Centre(area.y + area.h * 0.5),
+    );
+    let at = |i| pair.span(i).map_or(area.y, |(y, _)| y);
+    (at(0), at(1))
 }
 
 /// What a result tile draws. A collection always draws through `Art::Poster` with its row, so the
@@ -525,54 +522,6 @@ fn no_results_line(q: &str) -> String {
     plx_platform::i18n::msg::browse_search_no_results(q)
 }
 
-fn heading_flow(
-    title: &CStr,
-    count: &CStr,
-    source: &CStr,
-    mut run: impl FnMut(&CStr, f32, c_int, c_int, [f32; 4], bool) -> f32,
-) -> f32 {
-    let mut dx = run(
-        title,
-        0.0,
-        theme::size::HEADLINE,
-        1,
-        theme::TEXT_HEADING,
-        false,
-    );
-    if !count.is_empty() {
-        dx += COUNT_GAP;
-        dx += run(count, dx, theme::size::BODY, 0, theme::TEXT_TERTIARY, false);
-    }
-    if source.is_empty() {
-        return dx;
-    }
-    dx += SOURCE_PAD;
-    dx += run(c"·", dx, theme::size::BODY, 0, theme::TEXT_SEPARATOR, true);
-    dx += SOURCE_PAD;
-    dx += run(source, dx, theme::size::BODY, 0, theme::TEXT_TERTIARY, true);
-    dx
-}
-
-pub(super) fn subtitle(kind: Kind, item: &Item, handle: &str) -> String {
-    let mut parts = Vec::new();
-    match item {
-        Item::Media(media) if kind == Kind::Episode => {
-            let date = plx_ui::fmt::pretty_date(&media.aired, media.year as i64);
-            if !date.is_empty() {
-                parts.push(date);
-            }
-        }
-        Item::Media(media) if media.year > 0 => parts.push(media.year.to_string()),
-        // a collection is its size, in the one formatter every collection surface shares
-        Item::Collection(hit) => parts.push(plx_ui::fmt::collection_count(hit.item.subtype.as_deref(), hit.item.child_count)),
-        _ => {}
-    }
-    if !handle.is_empty() {
-        parts.push(handle.into());
-    }
-    parts.join(" · ")
-}
-
 fn source_label(source: &ScopeSource) -> String {
     if source.household {
         return if source.name.is_empty() {
@@ -688,7 +637,7 @@ mod tests {
         assert_eq!(msg::browse_search_placeholder_c_in(&be).to_str().unwrap(), "Пошук у вашай бібліятэцы");
     }
 
-    use plx_data::search::{Item, Kind, State, TagHit};
+    use plx_data::search::{Item, Kind, State};
 
     fn own(name: &str) -> ScopeSource {
         ScopeSource {
@@ -1147,52 +1096,62 @@ mod tests {
 
     #[test]
     fn the_heading_states_its_count_and_annotates_only_a_borrowed_source() {
-        let w = |s: &str, sz: c_int| s.chars().count() as f32 * sz as f32 * 0.5;
-        type Run = (String, f32, c_int, c_int, [f32; 4], bool);
-        let runs = |title: &str, count: &str, source: &str| {
+        use plx_ui::cards::HEADING_SOURCE_PAD;
+        let _g = plx_base::testlock::serial();
+        // PAINTED through the call Search's result rows make, read back run by run, left to right
+        let runs = |title: &str, count: &str, source: &str, alpha: f32| {
             let (t, c, s) = (cs(title), cs(count), cs(source));
-            let mut out: Vec<Run> = Vec::new();
-            heading_flow(&t, &c, &s, |run, dx, size, bold, ink, faded| {
-                let text = run.to_str().unwrap_or_default().to_string();
-                out.push((text.clone(), dx, size, bold, ink, faded));
-                w(&text, size)
+            let mut out = plx_ui::draw_census::capture_runs(|| {
+                plx_ui::cards::draw_heading_c(
+                    plx_ui::Painter::recording(),
+                    &t,
+                    &c,
+                    &s,
+                    MARGIN_X,
+                    100.0,
+                    alpha,
+                    &plx_ui::widgets::LegacyMeasure,
+                );
             });
+            out.sort_by(|a, b| a.at.x.total_cmp(&b.at.x));
             out
         };
-        let bare = runs("Movies", "12 results", "");
-        assert_eq!(bare.len(), 2);
-        assert_eq!((bare[0].2, bare[0].3), (theme::size::HEADLINE, 1));
-        assert_eq!(bare[0].4, theme::TEXT_HEADING);
-        assert_eq!((bare[1].2, bare[1].3), (theme::size::BODY, 0));
-        assert_eq!(bare[1].4, theme::TEXT_TERTIARY);
-        assert_eq!(bare[1].1, w("Movies", theme::size::HEADLINE) + COUNT_GAP);
-        let shared = runs("Movies", "12 results", "friend");
-        assert_eq!(shared.len(), 4);
-        assert_eq!(shared[..2], bare[..2]);
-        assert_eq!(shared[2].0, "·");
-        assert_eq!(shared[2].4, theme::TEXT_SEPARATOR);
-        assert_eq!(
-            shared[2].1,
-            bare[1].1 + w("12 results", theme::size::BODY) + SOURCE_PAD
-        );
-        assert_eq!(shared[3].0, "friend");
-        assert_eq!(shared[3].4, theme::TEXT_TERTIARY);
-        assert_eq!((shared[3].2, shared[3].3), (theme::size::BODY, 0));
-        assert!(shared[2].5 && shared[3].5);
-        assert!(!shared[0].5 && !shared[1].5);
-        assert_eq!(runs("Collections", "", "").len(), 1);
+        let gaps_are_the_pad = |runs: &[plx_ui::draw_census::Run]| {
+            for pair in runs.windows(2) {
+                let gap = pair[1].at.x - (pair[0].at.x + pair[0].at.w);
+                assert!((gap - HEADING_SOURCE_PAD).abs() < 0.5, "{} -> {}: {gap}", pair[0].text, pair[1].text);
+            }
+        };
+        // the count is a quiet note behind a dot, at the gap every heading's note keeps
+        let bare = runs("Movies", "12 results", "", 1.0);
+        assert_eq!(bare.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(), ["Movies", "\u{b7}", "12 results"]);
+        assert_eq!(bare[0].at.x, MARGIN_X);
+        assert_eq!((bare[0].size, bare[0].bold, bare[0].ink), (theme::size::HEADLINE, true, theme::TEXT_HEADING));
+        assert_eq!(bare[1].ink, theme::TEXT_SEPARATOR);
+        assert_eq!((bare[2].size, bare[2].bold, bare[2].ink), (theme::size::BODY, false, theme::TEXT_TERTIARY));
+        gaps_are_the_pad(&bare);
+        // a borrowed source is a second note on the same pad, and only it fades with the owner
+        let shared = runs("Movies", "12 results", "friend", 0.5);
+        assert_eq!(shared.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(), ["Movies", "\u{b7}", "12 results", "\u{b7}", "friend"]);
+        gaps_are_the_pad(&shared);
+        assert_eq!(shared[2].ink, theme::TEXT_TERTIARY, "the count does not fade");
+        assert!((shared[4].ink[3] - theme::TEXT_TERTIARY[3] * 0.5).abs() < 1e-4, "the source rides the owner's alpha: {:?}", shared[4].ink);
+        // a hidden count is ABSENT: the title alone, no dot
+        assert_eq!(runs("Collections", "", "", 1.0).len(), 1);
     }
 
+    /// A tile that is not a poster keeps this block: an episode still is worded by the one landscape
+    /// builder (`registry::captions::still_label`: its title over its air date, its address when it
+    /// has no title), a headshot has its name alone, each with the server it came from named last.
+    /// (A poster's caption is the Under posters setting's: `a_poster_result_is_worded_by_the_under_posters_builder`.)
     #[test]
-    fn a_caption_identifies_the_result_and_names_a_borrowed_source_last() {
-        let film = Item::Media(plx_data::pms::PmsMovie {
-            title: "Wallace & Gromit".into(),
-            year: 2005,
-            ..Default::default()
-        });
-        assert_eq!(subtitle(Kind::Movie, &film, ""), "2005");
-        assert_eq!(subtitle(Kind::Movie, &film, "friend"), "2005 · friend");
-        let ep = Item::Media(plx_data::pms::PmsMovie {
+    fn a_still_or_headshot_caption_names_a_borrowed_source_last() {
+        use crate::registry::captions::still_label;
+        let lines = |l: &plx_ui::cards::TileLabel| {
+            let text = |c: &Option<std::ffi::CString>| c.as_ref().map(|c| c.to_string_lossy().into_owned());
+            [text(&l.title), text(&l.caption)]
+        };
+        let ep = plx_data::pms::PmsMovie {
             kind: 3,
             title: "A Grand Day Out".into(),
             show_title: "Wallace & Gromit".into(),
@@ -1200,49 +1159,22 @@ mod tests {
             ep_index: 3,
             aired: "1989-11-04".into(),
             ..Default::default()
-        });
-        assert_eq!(subtitle(Kind::Episode, &ep, ""), "11/4/1989");
+        };
+        assert_eq!(lines(&still_label(&ep, false, "")), [Some("A Grand Day Out".into()), Some("11/4/1989".into())]);
         assert_eq!(
-            subtitle(Kind::Episode, &ep, "friend"),
-            "11/4/1989 · friend"
+            lines(&still_label(&ep, false, "friend")),
+            [Some("A Grand Day Out".into()), Some("11/4/1989 \u{b7} friend".into())]
         );
-        let undated = Item::Media(plx_data::pms::PmsMovie {
+        let undated = plx_data::pms::PmsMovie {
             kind: 3,
-            title: "A Grand Day Out".into(),
             season_index: 1,
             ep_index: 3,
             ..Default::default()
-        });
-        assert_eq!(subtitle(Kind::Episode, &undated, ""), "");
-        assert_eq!(subtitle(Kind::Episode, &undated, "friend"), "friend");
-        let bare = Item::Media(plx_data::pms::PmsMovie {
-            title: "Untitled".into(),
-            ..Default::default()
-        });
-        assert_eq!(subtitle(Kind::Movie, &bare, ""), "");
-        assert_eq!(subtitle(Kind::Movie, &bare, "friend"), "friend");
-        let person = Item::Tag(TagHit {
-            name: "Peter Sallis".into(),
-            count: 9,
-            ..Default::default()
-        });
-        assert_eq!(subtitle(Kind::Person, &person, ""), "");
-        // a tag-shaped collection lands as a collection hit carrying the tag's count
-        let tagged = |count| Item::Collection(plx_data::search::CollectionHit::from_tag(&TagHit {
-            count,
-            ..Default::default()
-        }));
-        assert_eq!(subtitle(Kind::Collection, &tagged(4), ""), "4 items");
-        assert_eq!(subtitle(Kind::Collection, &tagged(1), ""), "1 item");
-        // a collection that arrived as a full row reads its childCount through the shared
-        // formatter — an empty collection is "0 items", as on its own page
-        let full = |child_count| Item::Collection(plx_data::search::CollectionHit {
-            item: plx_data::pms::PmsMovie { child_count, kind: plx_data::pms::KIND_COLLECTION, ..Default::default() },
-            ..Default::default()
-        });
-        assert_eq!(subtitle(Kind::Collection, &full(12), ""), "12 items");
-        assert_eq!(subtitle(Kind::Collection, &full(1), "friend"), "1 item · friend");
-        assert_eq!(subtitle(Kind::Collection, &full(0), ""), "0 items");
+        };
+        assert_eq!(lines(&still_label(&undated, false, "")), [Some("S1 \u{b7} E3".into()), None],
+            "an untitled, undated episode says its address alone");
+        assert_eq!(lines(&still_label(&undated, false, "friend")), [Some("S1 \u{b7} E3".into()), Some("friend".into())]);
+        assert!(still_label(&ep, false, "").shadowed, "a still is shadowed like every other landscape block");
     }
 
     /// Every collection result reaches the shared card as `Art::Poster` with a kind-4 row, which

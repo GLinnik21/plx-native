@@ -58,14 +58,14 @@ use crate::{theme, Painter, Rect, Spring};
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 
 thread_local! {
-    /// Does the opener lift own the card the press is moving? Set by a card section that left the
-    /// lifted element out of the page pass, cleared when the dispatcher sees the lifted element
+    /// Does the opener lift own the card the press is moving? Set by a page that left the
+    /// lifted element out of its pass (`DrawFrame::leaves_out`), cleared when the dispatcher sees the lifted element
     /// change. Per thread: the loop draws and ticks on one thread, and a test must not see another
     /// test's lift.
     static LIFT_OWNS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// A card section left the lifted element out of the page pass (`true`), or the dispatcher saw the
+/// A page left the lifted element out of its pass (`DrawFrame::leaves_out`; `true`), or the dispatcher saw the
 /// lifted element change or go away (`false`). While it is set, `Press::tick` reports no page
 /// damage, because the snapshot does not hold the card the press is moving.
 pub fn set_lift_owns(owns: bool) {
@@ -859,25 +859,25 @@ pub mod host {
     impl crate::containers::transition::PageSnapshot for TransitionSnapshot {
         fn available(&self) -> bool {
             users() == 0 && held() == Held::Nothing
-                && unsafe { (*std::ptr::addr_of!(CACHE)).render_available() }
+                && cache(|c| c.render_available())
         }
         fn valid(&self) -> bool {
-            TRANSITION_OWNS.load(Relaxed) && unsafe { (*std::ptr::addr_of!(CACHE)).tex().is_some() }
+            TRANSITION_OWNS.load(Relaxed) && cache(|c| c.tex().is_some())
         }
         fn revision(&self) -> u64 { page_epoch() as u64 }
         fn resident_bytes(&self) -> usize {
-            unsafe { (*std::ptr::addr_of!(CACHE)).resident_bytes() }
+            cache(|c| c.resident_bytes())
         }
         fn begin(&mut self) -> bool {
             if !self.available() || crate::frame::backdrop::source_walk() { return false; }
             // FBO refusal falls back to a live draw, not a synchronous framebuffer copy.
-            self.target = unsafe { (*std::ptr::addr_of_mut!(CACHE)).render_into() };
+            self.target = cache(|c| c.render_into());
             TRANSITION_OWNS.store(self.target.is_some(), Relaxed);
             self.target.is_some()
         }
         fn finish(&mut self) {
             if let Some(target) = self.target.take() {
-                unsafe { (*std::ptr::addr_of_mut!(CACHE)).finish_render(target); }
+                cache(|c| c.finish_render(target));
                 PAGE_EPOCH.fetch_add(1, Relaxed);
             }
         }
@@ -887,7 +887,7 @@ pub mod host {
                 let c = crate::theme::CLEAR_RGB;
                 plx_gfx::gfx::frame_clear(c.0, c.1, c.2);
             }
-            unsafe { (*std::ptr::addr_of!(CACHE)).draw_alpha(alpha); }
+            cache(|c| c.draw_alpha(alpha));
         }
         fn release(&mut self) {
             self.target = None;
@@ -914,24 +914,38 @@ pub mod host {
         Ground(crate::frame::backdrop::Z),
     }
 
-    /// The one snapshot. Main-render-thread only, like the `gfx` resource it holds.
-    ///
-    /// **One, shared, rather than one per popover**, and the memory is the smaller half of the
-    /// argument: a full-screen RGBA texture is 8.3 MB on this panel and six of them would be a
-    /// meaningful bite out of the app's `requiredMemory` budget. The larger half is that only one
-    /// modal is ever up over one page, so a second cache could only ever hold a stale copy of a
-    /// page some OTHER popover had already frozen — a second answer to a question with one answer.
-    /// The snapshot represents one explicit prefix of the layer stack; nested live surfaces sit
-    /// above that prefix rather than each owning a competing frozen picture of the page.
-    static mut CACHE: FrameCache = FrameCache::new();
+    thread_local! {
+        /// The one snapshot. Render-thread only, like the `gfx` resource it holds.
+        ///
+        /// **One, shared, rather than one per popover**, and the memory is the smaller half of the
+        /// argument: a full-screen RGBA texture is 8.3 MB on this panel and six of them would be a
+        /// meaningful bite out of the app's `requiredMemory` budget. The larger half is that only one
+        /// modal is ever up over one page, so a second cache could only ever hold a stale copy of a
+        /// page some OTHER popover had already frozen — a second answer to a question with one answer.
+        /// The snapshot represents one explicit prefix of the layer stack; nested live surfaces sit
+        /// above that prefix rather than each owning a competing frozen picture of the page.
+        ///
+        /// All three cells are `thread_local!`: the texture names belong to the render thread's GL
+        /// context. `FrameCache` has no destructor; [`TARGET`]'s `PageTarget` does (it rebinds the
+        /// frame's framebuffer) but is `None` at every frame boundary, so it only drops mid-frame, on
+        /// the GL thread.
+        static CACHE: std::cell::RefCell<FrameCache> = const { std::cell::RefCell::new(FrameCache::new()) };
 
-    /// Which stage [`CACHE`] holds.
-    static mut HELD: Held = Held::Nothing;
+        /// Which stage [`CACHE`] holds.
+        static HELD: std::cell::Cell<Held> = const { std::cell::Cell::new(Held::Nothing) };
 
-    /// The page being drawn straight INTO [`CACHE`] this frame (`gfx::FrameCache::render_into`),
-    /// opened by [`page_pass`] when it owes a capture and closed by [`capture_now`] at the instant
-    /// the capture would otherwise have been copied. `None` on every other frame.
-    static mut TARGET: Option<plx_base::surface::PageTarget> = None;
+        /// The page being drawn straight INTO [`CACHE`] this frame (`gfx::FrameCache::render_into`),
+        /// opened by [`page_pass`] when it owes a capture and closed by [`capture_now`] at the
+        /// instant the capture would otherwise have been copied. `None` on every other frame.
+        static TARGET: std::cell::RefCell<Option<plx_base::surface::PageTarget>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    /// Run `f` on the one snapshot. The borrow lasts exactly the call, and `FrameCache`'s methods
+    /// (GL calls, or the host stand-in's thread-local counters) never come back into this module.
+    fn cache<R>(f: impl FnOnce(&mut FrameCache) -> R) -> R {
+        CACHE.with_borrow_mut(f)
+    }
 
     /// Is the ground already on this frame's framebuffer, either drawn live and captured or
     /// served from the cache? A popover reaches [`live`] twice (its scrim and its panel), and a
@@ -960,17 +974,17 @@ pub mod host {
         // The page went straight into the snapshot (`page_pass` redirected it): close that pass and
         // put the page on the frame from the texture. No copy, and no pointless-capture question —
         // the redirect is only ever opened when the capture is wanted.
-        if let Some(target) = unsafe { (*std::ptr::addr_of_mut!(TARGET)).take() } {
-            unsafe { (*std::ptr::addr_of_mut!(CACHE)).rendered(target) };
-            unsafe { HELD = Held::Page };
+        if let Some(target) = TARGET.take() {
+            cache(|c| c.rendered(target));
+            HELD.set(Held::Page);
             PAGE_EPOCH.fetch_add(1, Relaxed);
             return true;
         }
         if CAPTURE_POINTLESS.load(Relaxed) {
             return false;
         }
-        if unsafe { (*std::ptr::addr_of_mut!(CACHE)).capture() } {
-            unsafe { HELD = Held::Page };
+        if cache(|c| c.capture()) {
+            HELD.set(Held::Page);
             PAGE_EPOCH.fetch_add(1, Relaxed);
             true
         } else {
@@ -1004,7 +1018,7 @@ pub mod host {
         if held() != Held::Page {
             return None;
         }
-        unsafe { (*std::ptr::addr_of!(CACHE)).tex() }
+        cache(|c| c.tex())
     }
 
     /// Hold off the GROUND stage for this frame. Set by `containers::modal::ModalUnderlay` while its
@@ -1095,7 +1109,7 @@ pub mod host {
     fn end_fade() {
         FADE_ON.store(false, Relaxed);
         FADE_B.store(0, Relaxed);
-        unsafe { (*std::ptr::addr_of_mut!(CACHE)).release_prev() };
+        cache(|c| c.release_prev());
     }
 
     /// Draw the old look over what is on the frame, at `1 - b`: the crossfade's one extra quad.
@@ -1108,7 +1122,7 @@ pub mod host {
             return;
         }
         let b = f32::from_bits(FADE_B.load(Relaxed));
-        if unsafe { (*std::ptr::addr_of!(CACHE)).draw_prev(1.0 - b) } {
+        if cache(|c| c.draw_prev(1.0 - b)) {
             let _own = plx_machine::idle::OwnScope::open();
             plx_machine::idle::invalidate();
         }
@@ -1143,10 +1157,8 @@ pub mod host {
 
     /// Throw the snapshot away; the next page pass will draw the real page and take a new one.
     pub fn invalidate() {
-        unsafe {
-            (*std::ptr::addr_of_mut!(CACHE)).invalidate();
-            HELD = Held::Nothing;
-        }
+        cache(|c| c.invalidate());
+        HELD.set(Held::Nothing);
     }
 
     /// Drop only the GROUND stage, keeping a page snapshot if there is one.
@@ -1157,11 +1169,9 @@ pub mod host {
     /// would keep showing the frost the panel had when it settled, which is invisible on a still
     /// page and wrong the moment anything re-blurs.
     pub fn ground_invalidate() {
-        unsafe {
-            if matches!(HELD, Held::Ground(_)) {
-                (*std::ptr::addr_of_mut!(CACHE)).invalidate();
-                HELD = Held::Nothing;
-            }
+        if matches!(HELD.get(), Held::Ground(_)) {
+            cache(|c| c.invalidate());
+            HELD.set(Held::Nothing);
         }
     }
 
@@ -1180,7 +1190,7 @@ pub mod host {
     }
 
     fn held() -> Held {
-        unsafe { HELD }
+        HELD.get()
     }
 
     /// Z of the last layer included in the held full-canvas image. A source below this
@@ -1197,7 +1207,7 @@ pub mod host {
     fn draw_held() -> bool {
         // The cached quad is a layer too. It cannot bypass the source walk's explicit ceiling.
         let _layer=held_ceiling().map(|z|crate::frame::backdrop::layer(z,false));
-        unsafe { (*std::ptr::addr_of!(CACHE)).draw() }
+        cache(|c| c.draw())
     }
 
     fn freezes_current_layer() -> bool {
@@ -1208,7 +1218,7 @@ pub mod host {
     fn hold_ground() {
         let ceiling=crate::frame::backdrop::current_layer()
             .unwrap_or(crate::frame::backdrop::Z::surface(0));
-        unsafe { HELD=Held::Ground(ceiling); }
+        HELD.set(Held::Ground(ceiling));
         // The copy did not remove the ground from the visible framebuffer. Repainting it at
         // the next surface would erase foreground that has since been drawn above it.
         GROUND_DRAWN.store(true,Relaxed);
@@ -1235,6 +1245,12 @@ pub mod host {
     /// darkening, but the scrim is drawn live above this snapshot rather than into it. The page
     /// itself is not moving.
     pub fn begin_frame(page_moving: bool) {
+        // The page redirect ([`TARGET`]) is opened and closed inside one frame (`page_pass` opens
+        // it, `PagePass::drop` closes it through `capture_now`), so none can be open as a frame
+        // opens. The destructor of a `PageTarget` rebinds the framebuffer, which is only safe on
+        // the frame's own GL thread in mid-frame; a leaked one would drop wherever the thread-local
+        // is torn down.
+        debug_assert!(TARGET.with_borrow(Option::is_none), "a page redirect survived the frame boundary");
         // A new frame has drawn no modal dim yet (`popover_glass` applies the frame's dims to its
         // frozen pictures). `app/run.rs` already cleared it at the head of the iteration through
         // [`clear_dims`], which the player and preview routes need because they never get here;
@@ -1272,7 +1288,7 @@ pub mod host {
                 // the exit frame is drawn: take the page and the ground again, ONCE, and fade the
                 // old look (copied on the exit frame) into them
                 REFLOW_EXIT.store(0, Relaxed);
-                if unsafe { (*std::ptr::addr_of!(CACHE)).has_prev() } {
+                if cache(|c| c.has_prev()) {
                     FADE_B.store(0, Relaxed);
                     FADE_ON.store(true, Relaxed);
                 }
@@ -1337,10 +1353,8 @@ pub mod host {
             // see `FrameCache::render_into` for what the copy cost. Not in a blur source pass (the
             // capture is refused there anyway) and not when the capture would be thrown away.
             if !plx_gfx::gfx::blur_source_pass() && !CAPTURE_POINTLESS.load(Relaxed) {
-                unsafe {
-                    if (*std::ptr::addr_of!(TARGET)).is_none() {
-                        TARGET = (*std::ptr::addr_of_mut!(CACHE)).render_into();
-                    }
+                if TARGET.with_borrow(Option::is_none) {
+                    TARGET.set(cache(|c| c.render_into()));
                 }
             }
         }
@@ -1361,7 +1375,7 @@ pub mod host {
             // Nobody lifted: this page's popovers draw AFTER the closure (the two menus,
             // `account_menu`). The framebuffer holds the completed undimmed page, which is exactly
             // what the snapshot is.
-            let redirected = unsafe { (*std::ptr::addr_of!(TARGET)).is_some() };
+            let redirected = TARGET.with_borrow(Option::is_some);
             if CAPTURE_OWED.swap(false, Relaxed) || redirected {
                 capture_now();
             }
@@ -1468,7 +1482,7 @@ pub mod host {
             // The exit frame: the page has stopped, the glass still wears the look it had while
             // it moved. Keep this frame as the look the new ground fades in from.
             if REFLOW_EXIT.load(Relaxed) == 2 && !plx_gfx::gfx::blur_source_pass() {
-                unsafe { (*std::ptr::addr_of_mut!(CACHE)).capture_prev() };
+                cache(|c| c.capture_prev());
             }
             return;
         }
@@ -1477,7 +1491,7 @@ pub mod host {
             && !plx_gfx::gfx::blur_source_pass()
             && !GROUND_DEFERRED.load(Relaxed)
         {
-            if unsafe { (*std::ptr::addr_of_mut!(CACHE)).capture() } {
+            if cache(|c| c.capture()) {
                 hold_ground();
             }
         }
@@ -1508,7 +1522,7 @@ pub mod host {
         fn layers_above_a_frozen_prefix_remain_live_in_both_draw_walks() {
             let _guard=plx_base::testlock::serial();
             let old=held(); let drawn=GROUND_DRAWN.swap(true,Relaxed);
-            unsafe {HELD=Held::Ground(crate::frame::backdrop::Z::surface(0));}
+            HELD.set(Held::Ground(crate::frame::backdrop::Z::surface(0)));
             let mut frozen=Vec::new();
             for ceiling in [crate::frame::backdrop::Z::ALL,crate::frame::backdrop::Z::OPENER] {
                 let sources=std::rc::Rc::new(std::cell::RefCell::new(crate::frame::backdrop::Sources::default()));
@@ -1516,7 +1530,7 @@ pub mod host {
                 let _layer=crate::frame::backdrop::layer(crate::frame::backdrop::Z::surface(1),false);
                 let _live=live(); frozen.push(plx_gfx::gfx::page_frozen());
             }
-            unsafe {HELD=old;} GROUND_DRAWN.store(drawn,Relaxed);
+            HELD.set(old); GROUND_DRAWN.store(drawn,Relaxed);
             assert_eq!(frozen,vec![false,false]);
         }
         #[test]
@@ -1525,7 +1539,7 @@ pub mod host {
             let old=held(); let drawn=GROUND_DRAWN.swap(false,Relaxed);
             hold_ground();
             let already_present=GROUND_DRAWN.load(Relaxed);
-            unsafe {HELD=old;} GROUND_DRAWN.store(drawn,Relaxed);
+            HELD.set(old); GROUND_DRAWN.store(drawn,Relaxed);
             assert!(already_present,"the captured ground is already on this visible frame");
         }
 
@@ -1545,7 +1559,7 @@ pub mod host {
             let _new_layout=crate::frame::backdrop::layer(crate::frame::backdrop::Z::surface(0),false);
             crate::frame::backdrop::surface(crate::Rect::new(0.0,0.0,10.0,10.0));
             let added=crate::frame::backdrop::surface(crate::Rect::new(0.0,0.0,10.0,10.0)).unwrap();
-            unsafe { HELD=old; }
+            HELD.set(old);
             GROUND_DRAWN.store(drawn,Relaxed);
             assert!(ceiling>glass.z,"the held image contains this glass, so it replaces a higher layer");
             assert!(foreground.z>ceiling,"new foreground glass belongs above the held prefix");
@@ -1557,14 +1571,14 @@ pub mod host {
             let _guard=plx_base::testlock::serial();
             let old=held();
             let drawn=GROUND_DRAWN.swap(false,Relaxed);
-            unsafe { HELD=Held::Ground(crate::frame::backdrop::Z::surface(0)); }
+            HELD.set(Held::Ground(crate::frame::backdrop::Z::surface(0)));
             {
                 let sources=std::rc::Rc::new(std::cell::RefCell::new(crate::frame::backdrop::Sources::default()));
                 let _walk=crate::frame::backdrop::enter(sources,crate::frame::backdrop::Z::OPENER);
                 let _live=live();
             }
             let unchanged=matches!(held(), Held::Ground(_)) && !GROUND_DRAWN.load(Relaxed);
-            unsafe { HELD=old; }
+            HELD.set(old);
             GROUND_DRAWN.store(drawn,Relaxed);
             assert!(unchanged,"a source is not the visible ground draw and cannot discard it");
         }

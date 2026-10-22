@@ -107,6 +107,8 @@ fn preview_frame(layout: RouteLayout, title: &str, copy: &str, measure: &dyn Mea
         .leading(theme::size::LABEL as f32 + theme::space::XS)
         .max_lines(12)
         .measure_h(text.w);
+    // The preview hangs one LG under the copy's block (never above its own slot): a single
+    // `bottom + gap`, not a stack.
     let top = PV.y.max(text.y + copy_h + theme::space::LG);
     let height = PV.h.min((layout.narrative.y + layout.narrative.h - top).max(0.0));
     Rect::new(layout.narrative.x, top, PV.w * height / PV.h, height)
@@ -1807,5 +1809,40 @@ mod tests {
             out.extend(table.app_fit_failures(w, language.tag()));
         }
         plx_ui::table::assert_no_fit_failures(&out);
+    }
+}
+
+#[cfg(test)]
+mod preview_gap_tests {
+    use super::*;
+    use plx_ui::fixture::FixtureMeasure;
+
+    /// The preview hangs one LG under the copy's block and never rises above its own slot: a copy
+    /// tall enough to reach past the slot pushes the preview to its bottom plus LG, and an empty
+    /// copy leaves it at the slot.
+    #[test]
+    fn the_preview_sits_one_lg_under_the_copy_and_never_above_its_slot() {
+        let layout = RouteLayout::screen();
+        let measure = FixtureMeasure;
+        let title = "A Title";
+        let text = layout.narrative_copy_frame(true, title, layout.action.y, &measure);
+        let long = "word ".repeat(400);
+        let long_h = plx_ui::text_view::TextView::new(&long, theme::size::LABEL, theme::TEXT_READING)
+            .with_measure(&measure)
+            .leading(theme::size::LABEL as f32 + theme::space::XS)
+            .max_lines(12)
+            .measure_h(text.w);
+        let long_top = preview_frame(layout, title, &long, &measure).y;
+        assert!(long_top > PV.y, "a tall copy pushes the preview below its slot");
+        assert!((long_top - (text.y + long_h + theme::space::LG)).abs() < 1e-3);
+        // A short copy hangs the same LG under its own (shorter) block, and never above the slot.
+        let short_h = plx_ui::text_view::TextView::new("x", theme::size::LABEL, theme::TEXT_READING)
+            .with_measure(&measure)
+            .leading(theme::size::LABEL as f32 + theme::space::XS)
+            .max_lines(12)
+            .measure_h(text.w);
+        let short_top = preview_frame(layout, title, "x", &measure).y;
+        assert!(short_top >= PV.y && short_top < long_top);
+        assert_eq!(short_top, PV.y.max(text.y + short_h + theme::space::LG));
     }
 }

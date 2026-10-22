@@ -14,7 +14,7 @@ use plx_data::watchlist::ledger::Intent;
 use plx_data::watchlist::model::{Kind, Reach, ServerMatch, TileState};
 use plx_data::watchlist::{decode_hex, encode_hex, WatchlistAuth, WatchlistIo};
 use plx_plex::plex::watchlist::{CatalogItem, WatchItem, WatchKind, WatchPage, WatchlistError};
-use plx_plex::plex::{GuidKind, GuidLookupError, GuidMatch, ServerId};
+use plx_plex::plex::{GuidKind, GuidLookupError, GuidMatch, ListingFacts, ServerId};
 use plx_screens::catalog::CatalogScreen;
 use plx_screens::registry::ContentArg;
 use std::collections::HashMap;
@@ -37,6 +37,8 @@ pub(super) struct Script {
     up: AtomicBool,
     /// Does every roster server hold every title?
     holds: AtomicBool,
+    /// What the lookup row of a held title says of it for a caption (genre, video, ratings, length).
+    copy_facts: Mutex<ListingFacts>,
     facts: AtomicU32,
     /// Each server record's own `guid`, by `(server, ratingKey)`: what `client.metadata` would say.
     records: Mutex<HashMap<(ServerId, String), String>>,
@@ -74,6 +76,7 @@ impl Script {
             roster: Mutex::new(Vec::new()),
             up: AtomicBool::new(false),
             holds: AtomicBool::new(false),
+            copy_facts: Mutex::new(ListingFacts::default()),
             facts: AtomicU32::new(1),
             records: Mutex::new(HashMap::new()),
             record_reads: AtomicU32::new(0),
@@ -123,7 +126,7 @@ impl WatchlistIo for Script {
         }
         Ok(guids
             .iter()
-            .map(|g| GuidMatch { guid: g.clone(), rating_key: "42".into(), library_section_id: None, blur: None })
+            .map(|g| GuidMatch { guid: g.clone(), rating_key: "42".into(), library_section_id: None, blur: None, facts: self.copy_facts.lock().unwrap().clone() })
             .collect())
     }
     fn roster_gen(&self) -> u32 {
@@ -600,4 +603,49 @@ fn the_item_menu_watchlist_arms_queue_the_write_pulse_and_route() {
         super::frame(&mut d, &mut rig, tick(200 + i), vec![]);
     }
     assert!(d.top_arg() == Some(&AppArg::Content(ContentArg::Catalog { hex: [3; 12] })), "Go to opens the catalog page");
+}
+
+/// **The lookup row's facts reach the focused caption** (audit N5): a title a reachable server holds
+/// is worded by its COPY under the Under posters setting, as every poster is, through the whole
+/// chain on a real `Dispatcher<AppHost>`: the guid lookup's row, the store's match table, the feed,
+/// the page's cell, read off the frame the page DRAWS. The scripted plex.tv sends no year, so the
+/// default reads the length alone.
+#[test]
+fn a_matched_titles_caption_reads_its_copys_facts_under_every_details_pick() {
+    use super::test_support::World;
+    use super::under_posters_shelf_route_tests::{set, Cell};
+    use plx_plex::plex::session::UnderPostersDetails as Details;
+    let script = Script::new(&[1]);
+    *script.roster.lock().unwrap() = vec![ServerId::from_raw(1)];
+    script.up.store(true, Ordering::SeqCst);
+    script.holds.store(true, Ordering::SeqCst);
+    *script.copy_facts.lock().unwrap() = ListingFacts {
+        genre: Some("Drama".into()),
+        video_resolution: Some("1080".into()),
+        hdr: true,
+        content_rating: Some("PG-13".into()),
+        audience_rating: Some(7.8),
+        duration_ms: Some(100 * 60_000),
+        ..Default::default()
+    };
+    let mut w = World::watchlist_over("watchlist-matched-facts", script);
+    let _cell = Cell::default(); // after the world, which holds the process-global lock the setting needs
+    assert_eq!(w.bridge.watchlist_for_test().view().tile_state_of(&[1; 12]), Some(TileState::Available),
+        "premise: a reachable server holds the title");
+    // the focused poster's block as the frame DREW it (not the production label): Down brings focus onto
+    // the one title, then each pick words its details line alone (the Title switch is off)
+    set(&mut w, false, Details::YearLength);
+    for _ in 0..4 {
+        if !w.drawn().caption_lines().is_empty() { break; }
+        w.press(Key::Down);
+    }
+    for (details, want) in [
+        (Details::YearLength, "1h 40m"),
+        (Details::Genre, "Drama"),
+        (Details::Video, "1080p \u{b7} HDR"),
+        (Details::AgeRatingScore, "PG-13 \u{b7} 7.8"),
+    ] {
+        set(&mut w, false, details);
+        assert_eq!(w.drawn().caption_lines(), [want.to_string()], "{details:?}");
+    }
 }

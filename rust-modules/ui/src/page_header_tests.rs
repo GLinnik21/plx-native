@@ -150,15 +150,14 @@ fn values_are_regular_weight_white_and_labels_are_65_percent() {
 }
 
 #[test]
-fn the_filtered_readout_is_half_white_and_64_left_of_collections() {
+fn the_filtered_readout_is_half_white_and_one_gap_left_of_collections() {
     let _g = plx_base::testlock::serial();
     let mut spec = header("Title").spec().clone();
     spec.right.insert(0, HeaderItem { readout: true, ..item("24 of 27", None) });
     let h = PageHeader::new(spec, &[], &Fixed);
     let l = h.layout(1920.0, &Fixed);
     let (readout, collections) = (l.items[3].text, l.items[4].text);
-    assert_eq!(collections.x - (readout.x + readout.w), READOUT_GAP);
-    assert_eq!(READOUT_GAP, 64.0);
+    assert_eq!(collections.x - (readout.x + readout.w), GAP, "a read-out stands the row's one gap before the control after it");
     let runs = crate::draw_census::capture_runs(|| h.draw(Painter::recording(), &l, &TabStrip::new(), 1.0, None));
     let run = runs.iter().find(|r| r.text == "24 of 27").unwrap();
     assert_eq!(run.ink, theme::COUNT_FILTERED_INK);
@@ -523,38 +522,62 @@ fn row_with(value: Option<&str>) -> HeaderRow {
     row_of(page, layout, &[(1, 0), (2, 1)])
 }
 
-/// **A slotted control never moves its label** (a count that is unknown, one digit, two, or the
-/// widest the slot holds): the label stands at the slot's leading edge, the plate hugs what is
-/// drawn, and nothing after the control moves either.
+/// **A slotted control is placed by what it DRAWS, so the row has one gap** (the owner's photo: a
+/// wide gap before "Recommended" and a narrow one after it). The slot is the widest the count ever
+/// is and sizes the cluster's BUDGET (`cluster_w`, `left_budget`: the room the names may use never
+/// changes with the count); it is no air inside the row. Whatever the control holds, the next item
+/// stands exactly one [`GAP`] from the ink, the cluster ends at [`TEXT_X1`], the items after the
+/// control do not move (the cluster is anchored at its right edge), and the plate hugs the text.
+/// The accepted cost: a count of another digit count moves the control's own label by that digit.
+/// (This replaces `a_slotted_control_keeps_its_label_still_whatever_it_holds`, the old rule: the
+/// label stood at the slot's leading edge and the slot's unused air sat before the next item.)
 #[test]
-fn a_slotted_control_keeps_its_label_still_whatever_it_holds() {
-    let rows: Vec<HeaderRow> = [None, Some("4"), Some("12"), Some("9,999")].into_iter().map(row_with).collect();
-    let first = rows[0].layout.items[0];
+fn a_slotted_control_is_placed_by_what_it_draws_so_the_row_has_one_gap() {
+    let rows: Vec<HeaderRow> = [Some("4"), Some("12"), Some("9,999")].into_iter().map(row_with).collect();
     for row in &rows {
         let (collections, recommended) = (row.layout.items[0], row.layout.items[1]);
-        assert_eq!(collections.text.x, first.text.x, "the label is where it was");
-        assert_eq!(recommended.text, rows[0].layout.items[1].text, "and so is everything after it");
+        assert_eq!(recommended.text.x - (collections.text.x + collections.text.w), GAP, "one gap after the ink, not after the slot");
+        assert_eq!(recommended.text, rows[0].layout.items[1].text, "everything after the control stands where it stood");
         assert_eq!(collections.plate.w, collections.text.w + 2.0 * OVERHANG, "the plate hugs the text drawn");
+        assert!((recommended.text.x + recommended.text.w - TEXT_X1).abs() < 0.01, "and the cluster still ends at the right text edge");
+        assert_eq!((row.layout.cluster_w, row.layout.left_budget), (rows[0].layout.cluster_w, rows[0].layout.left_budget),
+            "the budget the names pack into is the widest case's, whatever the count is");
     }
-    assert!(rows[1].layout.items[0].text.w < rows[3].layout.items[0].text.w, "a short count draws a short run");
-    assert!(rows[0].layout.items[0].text.w < rows[1].layout.items[0].text.w, "and none draws the bare label");
+    let x = |at: usize| rows[at].layout.items[0].text.x;
+    assert_eq!(x(0) - x(1), 8.0, "one more digit moves the label one digit's width left (Fixed: 8 px a glyph)");
+    assert!(x(1) > x(2), "and so on up to the widest the slot holds");
 }
 
-/// **The read-out stands at the cluster's measured left edge**, not wherever the control after it
-/// puts it: it does not move when the Collections control comes, goes or is unknown.
+/// **A read-out and a slotted control after it both keep the row's one gap**: the read-out stands
+/// one [`GAP`] before the control, and the control's ink one [`GAP`] from the item after it, count
+/// or no count.
 #[test]
-fn the_readout_stands_at_the_clusters_measured_left_edge() {
+fn a_slotted_control_after_a_readout_still_stands_one_gap_before_the_next_item() {
+    for value in ["4", "12", "9,999"] {
+        let (spec, widest) = slotted(Some(value), true);
+        let l = PageHeader::new(spec, &widest, &Fixed).layout(1920.0, &Fixed);
+        let (readout, collections, recommended) = (l.items[0].text, l.items[1].text, l.items[2].text);
+        assert_eq!(recommended.x - (collections.x + collections.w), GAP, "count {value}: one gap after the ink");
+        assert_eq!(collections.x - (readout.x + readout.w), GAP, "count {value}: the read-out is one gap clear");
+    }
+}
+
+/// **The read-out is unpinned**: it stands one [`GAP`] before the control after it, so it moves with
+/// the live cluster's width (the cluster is right-anchored, the read-out is its leading item) and
+/// the control after it keeps its place when the read-out's own text changes.
+#[test]
+fn the_readout_stands_one_gap_before_the_live_cluster_and_moves_with_it() {
     let (with, widest) = slotted(Some("4"), true);
     let held = PageHeader::new(with, &widest, &Fixed).layout(1920.0, &Fixed);
-    let edge = TEXT_X1 - held.cluster_w;
-    assert_eq!(held.items[0].text.x, edge, "the read-out leads the cluster at its left edge");
+    let gap_of = |l: &HeaderLayout| l.items[1].text.x - (l.items[0].text.x + l.items[0].text.w);
+    assert_eq!(gap_of(&held), GAP);
+    assert!(held.items[0].text.x > TEXT_X1 - held.cluster_w, "narrower than the budget: the read-out is NOT at the budget's edge");
     let (mut without, _) = slotted(None, true);
     without.right.remove(1);
     let gone = PageHeader::new(without, &widest, &Fixed).layout(1920.0, &Fixed);
-    assert_eq!(gone.items[0].text.x, edge, "and stays there when the control is gone");
-    let (unknown, _) = slotted(None, true);
-    let bare = PageHeader::new(unknown, &widest, &Fixed).layout(1920.0, &Fixed);
-    assert_eq!(bare.items[0].text.x, edge, "or its count is not known yet");
+    assert_eq!(gone.items[1].text.x - (gone.items[0].text.x + gone.items[0].text.w), GAP, "still one gap when the control is gone");
+    assert!(gone.items[0].text.x > held.items[0].text.x, "the shorter cluster leaves the read-out further right");
+    assert_eq!(gone.cluster_w, held.cluster_w, "the budget is unchanged");
 }
 
 /// Every text run of `row` drawn at swap `swap`, as `(text, x, alpha)`.
@@ -563,13 +586,15 @@ fn swap_runs(row: &HeaderRow, swap: &HeaderSwap) -> Vec<(String, f32, f32)> {
         .into_iter().map(|run| (run.text, run.at.x, run.ink[3])).collect()
 }
 
-/// **A changed count cross-fades in place**: the old number leaves and the new one arrives at the
-/// same x, their opacities sum to one on every frame, the label is drawn once at one x, and the
-/// swap ends by itself on the new row alone.
+/// **A changed count of the same width cross-fades in place**: the old number leaves and the new
+/// one arrives at the same x (the label does not move, the control's width is the same), their
+/// opacities sum to one on every frame, the label is drawn once at one x, and the swap ends by
+/// itself on the new row alone. A count of another digit count moves the label, which is the next
+/// test's dissolve.
 #[test]
 fn a_changed_count_cross_fades_in_place_on_the_content_swap_clock() {
     let _g = plx_base::testlock::serial();
-    let (old, new) = (row_with(Some("4")), row_with(Some("12")));
+    let (old, new) = (row_with(Some("4")), row_with(Some("7")));
     let mut swap = HeaderSwap::new();
     swap.begin(&old, &new);
     assert!(swap.is_active());
@@ -581,7 +606,7 @@ fn a_changed_count_cross_fades_in_place_on_the_content_swap_clock() {
         let labels: Vec<_> = runs.iter().filter(|(text, ..)| text == "Collections").collect();
         assert_eq!(labels.len(), 1, "one label, never two: {runs:?}");
         assert_eq!(labels[0].1, label_x, "and it does not move");
-        if let (Some(from), Some(to)) = (at("4"), at("12")) {
+        if let (Some(from), Some(to)) = (at("4"), at("7")) {
             assert_eq!(from.0, to.0, "the numbers share an x");
             assert!((from.1 + to.1 - 1.0).abs() < 1e-4, "and their opacities sum to one: {from:?} {to:?}");
             crossed = true;
@@ -591,7 +616,146 @@ fn a_changed_count_cross_fades_in_place_on_the_content_swap_clock() {
     assert!(crossed, "the two numbers shared frames");
     assert!(!swap.is_active(), "the clock ran out");
     let runs = swap_runs(&new, &swap);
-    assert!(runs.iter().all(|(text, ..)| text != "4") && runs.iter().any(|(text, _, alpha)| text == "12" && *alpha == 1.0));
+    assert!(runs.iter().all(|(text, ..)| text != "4") && runs.iter().any(|(text, _, alpha)| text == "7" && *alpha == 1.0));
+}
+
+/// **A count of another width dissolves the control at each x**: the width is the control's own, so
+/// its label stands at another x on the new row (a digit's width on the Fixed measure). The swap
+/// carries that as the dissolve it already plays for a control that comes or goes: the old face
+/// (label and old number) fades out where it stood while the new face fades in where it now stands,
+/// their opacities summing to one on every frame; nothing glides and the label is never drawn
+/// twice at the same x.
+#[test]
+fn a_count_of_another_width_leaves_and_arrives_at_each_x() {
+    let _g = plx_base::testlock::serial();
+    let (old, new) = (row_with(Some("4")), row_with(Some("12")));
+    let (old_x, new_x) = (old.layout.items[0].text.x, new.layout.items[0].text.x);
+    assert_eq!(old_x - new_x, 8.0, "premise: the wider count moves the label one digit left");
+    let mut swap = HeaderSwap::new();
+    swap.begin(&old, &new);
+    assert!(swap.is_active());
+    let mut crossed = 0;
+    for _ in 0..30 {
+        let runs = swap_runs(&new, &swap);
+        let label = |x: f32| runs.iter().find(|(text, rx, _)| text == "Collections" && *rx == x).map(|(_, _, alpha)| *alpha);
+        let number = |text: &str| runs.iter().find(|(t, ..)| t == text).map(|(_, x, alpha)| (*x, *alpha));
+        if let (Some(out), Some(arriving)) = (label(old_x), label(new_x)) {
+            assert!((out + arriving - theme::CONTROL_TEXT_REST[3]).abs() < 1e-4, "the labels' opacities sum to the resting one: {out} {arriving}");
+            let (from, to) = (number("4").expect("the old number leaves with its label"), number("12").expect("the new one arrives with its"));
+            assert_eq!(from.0 - old_x, to.0 - new_x, "each number stands at its own label's offset");
+            assert!((from.1 + to.1 - 1.0).abs() < 1e-4, "and the numbers' opacities sum to one: {from:?} {to:?}");
+            crossed += 1;
+        }
+        assert!(runs.iter().filter(|(text, ..)| text == "Collections").count() <= 2, "two faces at most: {runs:?}");
+        swap.step(1.0 / 60.0);
+    }
+    assert!(crossed >= 6, "several frames of dissolve, not a cut: {crossed}");
+    assert!(!swap.is_active(), "the clock ran out");
+    let runs = swap_runs(&new, &swap);
+    assert!(runs.iter().all(|(text, ..)| text != "4") && runs.iter().filter(|(text, ..)| text == "Collections").count() == 1,
+        "and the new face stands alone: {runs:?}");
+}
+
+/// A row with the Recommended control alone: the library whose probe found no collections.
+fn row_without_the_slotted_control() -> HeaderRow {
+    let (spec, widest) = slotted(None, false);
+    let page = PageHeader::new(PageHeaderSpec { right: spec.right[1..].to_vec(), ..spec }, &widest, &Fixed);
+    let layout = page.layout(1920.0, &Fixed);
+    row_of(page, layout, &[(2, 0)])
+}
+
+/// **A control the row before did not have fades in where it stands** (a count that lands after the
+/// row was built, or a library with collections after one without): the swap is on from the first
+/// frame, the face rises from nothing on the swap clock and never pops. This is the way a count the
+/// header did not know yet reaches the row, now that an unknown count is not drawn.
+#[test]
+fn a_control_the_row_before_lacked_fades_in_where_it_stands() {
+    let _g = plx_base::testlock::serial();
+    let (old, new) = (row_without_the_slotted_control(), row_with(Some("4")));
+    let mut swap = HeaderSwap::new();
+    swap.begin(&old, &new);
+    assert!(swap.is_active(), "the swap runs although the row before carried no slotted control");
+    let label_x = new.layout.items[0].text.x;
+    let mut alphas = Vec::new();
+    for _ in 0..30 {
+        let runs = swap_runs(&new, &swap);
+        if let Some((_, x, alpha)) = runs.iter().find(|(text, ..)| text == "Collections") {
+            assert_eq!(*x, label_x, "it fades in where it stands");
+            alphas.push(*alpha);
+        }
+        swap.step(1.0 / 60.0);
+    }
+    assert!(alphas.len() >= 6, "several frames of fade, not a pop: {alphas:?}");
+    assert!(alphas[0] < theme::CONTROL_TEXT_REST[3] - 0.05, "the first frame is not fully there: {alphas:?}");
+    assert!(alphas.windows(2).all(|pair| pair[1] >= pair[0]), "rising: {alphas:?}");
+    assert!((alphas.last().unwrap() - theme::CONTROL_TEXT_REST[3]).abs() < 1e-4, "to fully there: {alphas:?}");
+    assert!(!swap.is_active(), "and the swap ends on the new row alone");
+}
+
+/// A row whose read-out says `text`, with the Collections control holding `collections` (none:
+/// the control is not on the row).
+fn row_with_readout(text: &str, collections: Option<&str>) -> HeaderRow {
+    let (mut spec, widest) = slotted(collections, true);
+    spec.right[0].label = text.into();
+    if collections.is_none() { spec.right.remove(1); }
+    let page = PageHeader::new(spec, &widest, &Fixed);
+    let layout = page.layout(1920.0, &Fixed);
+    row_of(page, layout, &[])
+}
+
+/// **The read-out rides the content swap** (the owner dislikes an un-animated jump): the unpinned
+/// filter read-out stands one gap before the cluster's next item, so it moves when Collections
+/// arrives or leaves, when its count changes digit count, and when its own text changes. Each is a
+/// leave-and-arrive at the two xs on the swap clock (the same dissolve a slotted control that moves
+/// plays), never a cut: opacities sum to the read-out's resting one on every frame.
+#[test]
+fn a_readout_that_moves_or_changes_dissolves_at_each_x() {
+    let _g = plx_base::testlock::serial();
+    let rest = theme::COUNT_FILTERED_INK[3];
+    // Collections arrives (the read-out moves left), then leaves, then the text changes in place.
+    for (old, new) in [
+        (row_with_readout("24 of 27", None), row_with_readout("24 of 27", Some("4"))),
+        (row_with_readout("24 of 27", Some("4")), row_with_readout("24 of 27", None)),
+        (row_with_readout("24 of 27", Some("4")), row_with_readout("8 of 27", Some("4"))),
+    ] {
+        let (old_text, new_text) = (old.page.spec().right[0].label.clone(), new.page.spec().right[0].label.clone());
+        let (old_x, new_x) = (old.layout.items[0].text.x, new.layout.items[0].text.x);
+        let mut swap = HeaderSwap::new();
+        swap.begin(&old, &new);
+        assert!(swap.is_active(), "{old_text} to {new_text}: the swap runs although no slotted value changed");
+        let mut dissolving = 0;
+        for _ in 0..30 {
+            let runs = swap_runs(&new, &swap);
+            let at = |text: &str, x: f32| runs.iter().find(|(t, rx, _)| t == text && *rx == x).map(|(_, _, alpha)| *alpha);
+            if let (Some(out), Some(arriving)) = (at(&old_text, old_x), at(&new_text, new_x)) {
+                assert!((out + arriving - rest).abs() < 1e-4, "the two faces' opacities sum to the resting one: {out} {arriving}");
+                if out > 0.01 && arriving > 0.01 { dissolving += 1; }
+            }
+            swap.step(1.0 / 60.0);
+        }
+        assert!(dissolving >= 6, "{old_text} to {new_text}: several frames of dissolve, not a cut: {dissolving}");
+        assert!(!swap.is_active());
+        let runs = swap_runs(&new, &swap);
+        assert_eq!(runs.iter().filter(|(t, ..)| *t == new_text).count(), 1, "the new face stands alone: {runs:?}");
+        assert!(runs.iter().find(|(t, ..)| *t == new_text).is_some_and(|r| r.1 == new_x && (r.2 - rest).abs() < 1e-4));
+        assert!(old_text == new_text || runs.iter().all(|(t, ..)| *t != old_text));
+    }
+}
+
+/// A read-out both libraries have dissolves on a switch like a control both rows have; one only the
+/// new library has is simply there, and one only the old library had is not drawn (`Edge::Cut`).
+#[test]
+fn a_switch_cuts_a_readout_only_one_row_has() {
+    let _g = plx_base::testlock::serial();
+    let with = row_with_readout("24 of 27", Some("4"));
+    let without = row_with(Some("4"));
+    let mut swap = HeaderSwap::new();
+    swap.begin_switch(&with, &without);
+    assert!(swap_runs(&without, &swap).iter().all(|(t, ..)| t != "24 of 27"), "the library left's read-out is not drawn");
+    swap.begin_switch(&without, &with);
+    let runs = swap_runs(&with, &swap);
+    let readout = runs.iter().find(|(t, ..)| t == "24 of 27").expect("the read-out is on the row");
+    assert!((readout.2 - theme::COUNT_FILTERED_INK[3]).abs() < 1e-4, "and not fading in: {readout:?}");
 }
 
 /// **A control the next row does not have fades out where it stood** (a library with no
@@ -621,6 +785,69 @@ fn a_control_the_next_row_lacks_fades_out_in_place() {
     assert!(alphas.windows(2).all(|pair| pair[1] <= pair[0]), "falling: {alphas:?}");
     assert!((alphas[0] - theme::CONTROL_TEXT_REST[3]).abs() < 1e-4, "from fully there: {alphas:?}");
     assert!(swap_runs(&new, &swap).iter().all(|(text, ..)| text != "Collections"), "and gone once the clock ran out");
+}
+
+/// **A switch to another library's row cuts a control only one of the rows has** (`begin_switch`):
+/// the old library's control is not drawn on the new one (not even fading out, which for a library
+/// with no collections shows its label for several frames), and a control the old row lacked is
+/// simply there at its resting opacity. A control both rows have still dissolves, number to number.
+#[test]
+fn a_switch_cuts_the_control_only_one_row_has_and_dissolves_the_one_both_have() {
+    let _g = plx_base::testlock::serial();
+    let with = |value: &str| row_with(Some(value));
+    // The library without: the control is gone from the first frame, and no swap is left running.
+    let mut swap = HeaderSwap::new();
+    swap.begin_switch(&with("4"), &row_without_the_slotted_control());
+    let runs = swap_runs(&row_without_the_slotted_control(), &swap);
+    assert!(runs.iter().all(|(text, ..)| text != "Collections" && text != "4"), "the left library's control is drawn: {runs:?}");
+    // The library with, from one without: there from the first frame, at its resting opacity.
+    let new = with("4");
+    swap.begin_switch(&row_without_the_slotted_control(), &new);
+    let runs = swap_runs(&new, &swap);
+    let label = runs.iter().find(|(text, ..)| text == "Collections").expect("the control is on the row");
+    assert!((label.2 - theme::CONTROL_TEXT_REST[3]).abs() < 1e-4, "and not fading in: {label:?}");
+    // Both have it: the number cross-fades in place, as it does for one row changing.
+    swap.end();
+    let new = with("7");
+    swap.begin_switch(&with("4"), &new);
+    assert!(swap.is_active(), "a count that differs between the two libraries dissolves");
+    for _ in 0..8 { swap.step(1.0 / 60.0); }
+    let runs = swap_runs(&new, &swap);
+    assert!(runs.iter().any(|(text, ..)| text == "4") && runs.iter().any(|(text, ..)| text == "7"), "number to number: {runs:?}");
+    // Whereas the same page's own row losing the control (begin) fades it out where it stood.
+    swap.end();
+    swap.begin(&with("4"), &row_without_the_slotted_control());
+    assert!(swap_runs(&row_without_the_slotted_control(), &swap).iter().any(|(text, ..)| text == "Collections"));
+}
+
+/// **A switch ends a fade of the row it leaves, whatever the switch itself carries** (`begin_switch`
+/// while a `begin` is still running): the same library's count changed (4 to 7, fading), and the
+/// press on another library arrives before the clock ran out. The new library's row has no slotted
+/// control, so the switch changes nothing a swap would carry and used to return early with the
+/// running fade still holding the OLD library's face: `leaving()` then drew it, fading out, on the
+/// page of a library that has none. The fade is the left library's and ends with the switch.
+#[test]
+fn a_switch_arriving_during_a_fade_ends_it_and_draws_nothing_of_the_library_left() {
+    let _g = plx_base::testlock::serial();
+    let (before, after) = (row_with(Some("4")), row_with(Some("7")));
+    let other = row_without_the_slotted_control();
+    let mut swap = HeaderSwap::new();
+    swap.begin(&before, &after);
+    for _ in 0..3 { swap.step(1.0 / 60.0); }
+    assert!(swap.is_active(), "premise: the count's fade is running");
+    swap.begin_switch(&after, &other);
+    assert!(!swap.is_active(), "the switch ends the left library's fade");
+    let runs = swap_runs(&other, &swap);
+    assert!(runs.iter().all(|(text, ..)| text != "Collections" && text != "4" && text != "7"),
+        "no frame of the new page draws the control of the library left: {runs:?}");
+    // And the same when the new library has the control with the same count: the fade between two
+    // numbers of the library left is not the new page's to show.
+    let mut swap = HeaderSwap::new();
+    swap.begin(&before, &after);
+    for _ in 0..3 { swap.step(1.0 / 60.0); }
+    swap.begin_switch(&after, &row_with(Some("7")));
+    let runs = swap_runs(&row_with(Some("7")), &swap);
+    assert!(!swap.is_active() && runs.iter().all(|(text, ..)| text != "4"), "the old number is not drawn: {runs:?}");
 }
 
 /// **A label a capsule's shape crosses is painted once per ink region, each in its own ink**: the
@@ -653,4 +880,83 @@ fn a_label_the_focus_capsule_is_half_across_is_two_inks() {
     }
     assert!(runs.iter().any(|run| same(run.ink, crate::ACCENT_INK)) && runs.iter().any(|run| same(run.ink, theme::CONTROL_TEXT_REST)),
         "both inks are on the label: the capsule is half across it");
+}
+
+/// **The gaps the eye reads are the gaps the stack says.** A Library header row is laid out on
+/// `LegacyMeasure`, the measure the recording painter draws with, and DRAWN through a recording
+/// painter; each item's drawn extent is read back off the runs it painted (its label's x to the end
+/// of its last run, a fold glyph's box included), and the air between neighbours is [`GAP`] within
+/// half a pixel: in the left names, between the last name and the "+N", and across the right
+/// cluster. Collections wears "4" in a "9,999" slot (and `widest` holds "9,999"), so the live
+/// cluster is narrower than its budget: the slot is not air (the air after the drawn "4" is [`GAP`],
+/// whatever the slot holds, #875), and the read-out stands one [`GAP`] before Collections like the
+/// rest.
+#[test]
+fn the_drawn_runs_of_a_library_header_stand_one_gap_apart() {
+    let _g = plx_base::testlock::serial();
+    let m = crate::widgets::LegacyMeasure;
+    let collections = |value: &str| HeaderItem { value_slot: Some("9,999".into()), ..item("Collections", Some(value)) };
+    let right = vec![
+        HeaderItem { readout: true, focusable: false, ..item("24 of 27 films", None) },
+        collections("4"),
+        item("Recommended", None),
+        HeaderItem { fold_glyph: true, ..item("Sort & Filter", Some("Title")) },
+    ];
+    let mut widest = right.clone();
+    widest[1] = collections("9,999");
+    let spec = PageHeaderSpec {
+        left: vec![real("Movies", true), real("Documentaries", false)],
+        overflow: 2,
+        right: right.clone(),
+        ..Default::default()
+    };
+    let page = PageHeader::new(spec, &widest, &m);
+    let layout = page.layout(1920.0, &m);
+    let runs = crate::draw_census::capture_runs(|| page.draw(Painter::recording(), &layout, &TabStrip::new(), 1.0, None));
+    // One item's drawn extent: its label's x to the end of the last thing it paints.
+    let extent = |label: &str, value: Option<&str>, fold: bool| -> (f32, f32) {
+        let drawn = |text: &str| runs.iter().find(|run| run.text == text).unwrap_or_else(|| panic!("{text:?} was not drawn: {runs:?}"));
+        let first = drawn(label).at;
+        let last = value.map_or(first, |value| drawn(value).at);
+        (first.x, last.x + last.w + if fold { FOLD_GAP + FOLD_SIZE } else { 0.0 })
+    };
+    let left = [extent("Movies", None, false), extent("Documentaries", None, false), extent("+2", None, false)];
+    let cluster = [
+        extent("24 of 27 films", None, false),
+        extent("Collections", Some("4"), false),
+        extent("Recommended", None, false),
+        extent("Sort & Filter", Some("Title"), true),
+    ];
+    let live_w = cluster[3].1 - cluster[0].0;
+    let slack = layout.cluster_w - live_w;
+    let air = |row: &[(f32, f32)]| row.windows(2).map(|pair| pair[1].0 - pair[0].1).collect::<Vec<f32>>();
+    for (gap, want, who) in air(&left).into_iter().zip([GAP; 2]).map(|(gap, want)| (gap, want, "names"))
+        .chain(air(&cluster).into_iter().zip([GAP; 3]).map(|(gap, want)| (gap, want, "cluster")))
+    {
+        assert!((gap - want).abs() <= 0.5, "{who}: {gap} px drawn between neighbours, the layout says {want}");
+    }
+    assert!(slack > 20.0, "the fixture leaves the budget well clear of the live cluster, or the slot is not seen: {slack} px");
+    assert!((cluster[3].1 - TEXT_X1).abs() <= 0.5, "the cluster ends at the right text edge, drawn: {}", cluster[3].1);
+    assert!((left[0].0 - TEXT_X0).abs() <= 0.5, "the names start at the left text edge");
+}
+
+/// The fold glyph stands `FOLD_GAP` past the end of the value the face wears, and the item's run
+/// (`run_w`) ends `FOLD_SIZE` after that: the draw and the width read one fold item.
+#[test]
+fn the_fold_glyph_stands_fold_gap_past_the_value() {
+    let _g = plx_base::testlock::serial();
+    // The census paints with `LegacyMeasure`, so the row is laid out with it too: draw advances
+    // and layout widths are then the same numbers, as on the device.
+    let m = crate::widgets::LegacyMeasure;
+    let sort_item = HeaderItem { fold_glyph: true, ..item("Sort", Some("Date added")) };
+    let page = PageHeader::new(
+        PageHeaderSpec { right: vec![sort_item.clone()], ..Default::default() }, &[sort_item], &m);
+    let layout = page.layout(1920.0, &m);
+    let sort = layout.items.last().unwrap();
+    let runs = crate::draw_census::capture_runs(|| page.draw(Painter::recording(), &layout, &TabStrip::new(), 1.0, None));
+    let value = runs.iter().filter(|r| r.at.x >= sort.text.x).max_by(|a, b| a.at.x.total_cmp(&b.at.x)).expect("Sort's value is drawn");
+    assert_eq!(value.text, "Date added");
+    // The glyph (not in the census) stands FOLD_GAP past the value and the item's width ends
+    // FOLD_SIZE on, so the painted value's end plus the fold item is the item's text edge.
+    assert_eq!(value.at.x + value.at.w + FOLD_GAP + FOLD_SIZE, sort.text.x + sort.text.w);
 }

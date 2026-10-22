@@ -51,6 +51,7 @@ use plx_plex::plex::ServerId;
 use plx_machine::machine::PosterKey;
 use plx_ui::tex::{self, Decoded, PosterError, PosterReady, Tex, Uploader, Warm};
 use std::os::raw::{c_int, c_uchar, c_uint};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
@@ -507,7 +508,10 @@ fn set_key(s: &mut Pslot, key: &str) {
 // (server, path, w, h, png) → built transcode path, memoised. resolve_tex_wh_on re-derives the key for
 // every visible art tile every frame (~25-40 tiles × 60fps); the QueryBuilder + token clone behind
 // image_transcode_path was ~15k heap allocs/sec of steady-state waste for keys that never change.
-// MAIN-thread only (all poster_key callers are draw paths).
+// A `thread_local!`, not a `static mut`: only the thread that paints reads it (every `built_key`
+// caller is a draw or prefetch path), and a memo that owns `HashMap`s and `String`s must not be
+// one process-wide value that two threads replace and free under each other. `cargo test` runs
+// tests on parallel threads, which is how `plx_ui`'s tab labels crashed the same way (2026-10-20).
 //
 // The SERVER is part of the key and the token generation is part of the VALUE. Both matter, and
 // neither is bookkeeping: the built path carries a token, so keying without the server would let
@@ -525,8 +529,9 @@ fn set_key(s: &mut Pslot, key: &str) {
 /// already built the same string. Nesting keeps the hit path allocation-free (`get` borrows a
 /// `&str`) and pays for the owned key only on a real miss.
 type MemoDims = (u16, c_int, c_int, bool);
+#[derive(Default)]
 struct KeyMemo {
-    map: std::collections::HashMap<MemoDims, std::collections::HashMap<String, (u32, String)>>,
+    map: std::collections::HashMap<MemoDims, std::collections::HashMap<String, (u32, Rc<str>)>>,
 }
 /// Entries kept before the memo is emptied wholesale. A ceiling, not a working set: a screen's
 /// live keys are dozens, and this only bounds a session that browses thousands of tiles.
@@ -536,7 +541,9 @@ impl KeyMemo {
     /// The memo's whole rule, as a pure function of what it holds — so the two ways it can serve
     /// the wrong path are host-testable without a registry, a socket or a GL context: an entry
     /// belongs to ONE server, and it survives only as long as the token generation it was built
-    /// at. `build` is called exactly when neither holds.
+    /// at. `build` is called exactly when neither holds. The value is an `Rc<str>` so a hit hands
+    /// out a reference count rather than a borrow (which could not leave the thread-local) or a
+    /// fresh `String` (which is the allocation the nesting above exists to avoid).
     fn get_or_build(
         &mut self,
         srv: u16,
@@ -546,32 +553,36 @@ impl KeyMemo {
         png: bool,
         gen: u32,
         build: impl FnOnce() -> String,
-    ) -> &str {
+    ) -> Rc<str> {
         let by_path = self.map.entry((srv, w, h, png)).or_default();
         // Bound the working set the same way the flat map did, one dimension bucket at a time.
         if by_path.len() > MEMO_CAP {
             by_path.clear();
         }
         // HIT: borrow the path, allocate nothing. This is the frame-rate path.
-        if by_path.get(path).is_some_and(|e| e.0 == gen) {
-            return &by_path[path].1;
+        if let Some(e) = by_path.get(path).filter(|e| e.0 == gen) {
+            return Rc::clone(&e.1);
         }
         // MISS (or a moved token): now the owned key is worth paying for.
-        by_path.insert(path.to_owned(), (gen, build()));
-        &by_path[path].1
+        let built: Rc<str> = build().into();
+        by_path.insert(path.to_owned(), (gen, Rc::clone(&built)));
+        built
     }
 }
-static mut KEY_MEMO: Option<KeyMemo> = None;
+thread_local! {
+    static KEY_MEMO: std::cell::RefCell<KeyMemo> = std::cell::RefCell::default();
+}
 
-/// The memo is a SECOND crate global, and it outlives `plex::reset_servers_for_test`. Entries are
-/// keyed `(slot, w, h, png)` and every test re-registers at slot 0, so without this a test is
+/// The memo is a SECOND piece of state beside the registry (one per thread, and a thread that runs
+/// several tests, as `--test-threads=1` does, keeps it), and it outlives `plex::reset_servers_for_test`.
+/// Entries are keyed `(slot, w, h, png)` and every test re-registers at slot 0, so without this a test is
 /// served the previous test's path for the same request box. That the key tests pass at all rests
 /// on `Client::new` drawing a process-unique `token_gen` from a monotone sequence — true today,
 /// incidental, and exactly the kind of thing a later simplification (per-server counters from 0)
 /// would break in a way nothing in this module would explain. Reset it explicitly instead.
 #[cfg(test)]
 fn reset_key_memo() {
-    unsafe { *std::ptr::addr_of_mut!(KEY_MEMO) = None };
+    KEY_MEMO.set(KeyMemo::default());
 }
 
 /// Does a poster that is RESIDENT for `sid` before `change` still answer a draw after it? Seeds
@@ -582,7 +593,7 @@ fn reset_key_memo() {
 pub(crate) fn resident_art_survives_for_test(sid: ServerId, change: impl FnOnce()) -> bool {
     const SRC: &str = "/library/metadata/42/thumb";
     reset_key_memo();
-    let before = built_key(sid, SRC, 2, 2, false).expect("a registered server builds a key").to_owned();
+    let before = built_key(sid, SRC, 2, 2, false).expect("a registered server builds a key").to_string();
     {
         let c = plx_plex::plex::client_for(sid).expect("a registered server");
         let mut g = store();
@@ -597,7 +608,6 @@ pub(crate) fn resident_art_survives_for_test(sid: ServerId, change: impl FnOnce(
     }
     change();
     let hit = built_key(sid, SRC, 2, 2, false)
-        .map(|k| k.to_owned())
         .is_some_and(|k| lookup(sid, &k, Touch::Draw).0 == Some(PosterKey(0)));
     store().slots = [Pslot::ZERO; PT_CAP];
     reset_key_memo();
@@ -608,30 +618,33 @@ pub(crate) fn resident_art_survives_for_test(sid: ServerId, change: impl FnOnce(
 /// unknown server, an empty path, or a path the slot array cannot hold ([`KEY_MAX`]: a path that
 /// cannot survive the round trip is worse than no path, since the stored key would never equal
 /// the probe that built it and every frame would claim a fresh slot and evict a real poster).
-/// MAIN thread; borrows the memo, so the key is consumed before the next call.
+/// The calling thread's own memo ([`KEY_MEMO`]); the key comes back as a reference count, so the
+/// memo is not borrowed once this returns.
 ///
 /// Headroom today, worth stating so a future shape can be judged against it: a headshot key
 /// measures ~177 bytes of the 255 (54 fixed + 89 encoded URL + 34 of token), an ordinary relative
 /// thumb ~140.
-fn built_key(srv: ServerId, path: &str, w: c_int, h: c_int, png: bool) -> Option<&'static str> {
+fn built_key(srv: ServerId, path: &str, w: c_int, h: c_int, png: bool) -> Option<Rc<str>> {
     if path.is_empty() {
         return None;
     }
     let c = plx_plex::plex::client_for(srv)?;
-    // SAFETY: main-thread only (every caller is a draw path), and the borrow is consumed by the
-    // caller before the memo can be touched again; the `'static` is that discipline, not a fact.
-    let memo = unsafe {
-        (*std::ptr::addr_of_mut!(KEY_MEMO)).get_or_insert_with(|| KeyMemo {
-            map: std::collections::HashMap::new(),
+    // The memo's `RefCell` is borrowed only for the lookup. `build` runs under that borrow, and
+    // what it calls (`fan::fan_key`, `transcode_request`) is string building on the client: neither
+    // reaches `built_key`, so there is no second borrow to panic on. What they call into is the Plex
+    // client (`composite_parts`, `image_transcode_path`), in `plx_plex`, a layer below this adapter
+    // that cannot name it: `ci/check-module-layers.py` refuses that reference, so a later edit to
+    // the client cannot start calling back into `built_key`. The two poster-local callees are
+    // one-line wrappers over it, which only a reader keeps from growing a call back.
+    let s = KEY_MEMO.with(|memo| {
+        memo.borrow_mut().get_or_build(srv.raw(), path, w, h, png, c.token_gen(), || {
+            // A server-generated collection composite is replaced by the app's baked fan: one
+            // synthetic key per collection and stamp, whatever box the consumer draws it in.
+            if let Some(fan) = fan::fan_key(path) {
+                return fan;
+            }
+            transcode_request(c, path, w, h, png)
         })
-    };
-    let s = memo.get_or_build(srv.raw(), path, w, h, png, c.token_gen(), || {
-        // A server-generated collection composite is replaced by the app's baked fan: one
-        // synthetic key per collection and stamp, whatever box the consumer draws it in.
-        if let Some(fan) = fan::fan_key(path) {
-            return fan;
-        }
-        transcode_request(c, path, w, h, png)
     });
     if s.len() > KEY_MAX {
         warn_key_refused(s.len());
@@ -829,7 +842,7 @@ const LOGO_REQ_H: c_int = 240;
 /// the PREFETCH must warm the exact key the draw will later resolve — `(server, path, w, h, png)`
 /// IS the store key, so a warm at a different size (or against a different server) is a different
 /// slot and buys nothing. `None` for an item with no ratingKey.
-fn logo_key(srv: ServerId, rk: &str) -> Option<&'static str> {
+fn logo_key(srv: ServerId, rk: &str) -> Option<Rc<str>> {
     if rk.is_empty() {
         return None;
     }
@@ -841,7 +854,7 @@ fn logo_key(srv: ServerId, rk: &str) -> Option<&'static str> {
 /// logotype the moment it lands; warming kills that pop the same way it kills the backdrop's.
 fn logo_warm(srv: ServerId, rk: &str) -> Warm {
     logo_key(srv, rk)
-        .map(|k| lookup(srv, k, Touch::Warm).1)
+        .map(|k| lookup(srv, &k, Touch::Warm).1)
         .unwrap_or(Warm::Known)
 }
 
@@ -858,7 +871,7 @@ fn logo_warm(srv: ServerId, rk: &str) -> Warm {
 /// NB it claims a slot even for an item that HAS no logo — the 404 lands as `P_FAILED` and holds it
 /// — so every hero page costs two of the store's [`PT_CAP`] slots, backdrop plus logo.
 fn logo_probe(srv: ServerId, rk: &str) -> Option<PosterKey> {
-    lookup(srv, logo_key(srv, rk)?, Touch::Draw).0
+    lookup(srv, &logo_key(srv, rk)?, Touch::Draw).0
 }
 
 /// Has this item's clearLogo SETTLED as a miss — the server answered with a non-transient
@@ -867,13 +880,13 @@ fn logo_probe(srv: ServerId, rk: &str) -> Option<PosterKey> {
 /// unsent, in flight, parked for a retry, or the pixels are in; the demo-video accounting
 /// (`plx_ui::placeholder`) reads it to tell "will never arrive" from "has not arrived".
 fn logo_failed(srv: ServerId, rk: &str) -> bool {
-    logo_key(srv, rk).is_some_and(|key_s| settled_failed(srv, key_s))
+    logo_key(srv, rk).is_some_and(|key_s| settled_failed(srv, &key_s))
 }
 
 /// [`logo_failed`] for any built key: the slot holding `(srv, path, w, h, png)` is `P_FAILED`.
 /// The same pure peek — a key never built, or never requested, has not failed.
 fn art_failed(srv: ServerId, path: &str, w: c_int, h: c_int, png: bool) -> bool {
-    built_key(srv, path, w, h, png).is_some_and(|key_s| settled_failed(srv, key_s))
+    built_key(srv, path, w, h, png).is_some_and(|key_s| settled_failed(srv, &key_s))
 }
 
 /// The scan behind [`logo_failed`] and [`art_failed`]: a `P_FAILED` slot for this exact art,
@@ -1350,12 +1363,12 @@ impl tex::Source for PosterSource {
         let sid = ServerId::from_raw(srv);
         let key = built_key(sid, path, w, h, png)?;
         if !trace::armed() {
-            return lookup(sid, key, Touch::Draw).0;
+            return lookup(sid, &key, Touch::Draw).0;
         }
         let id = trace::draw_id(srv, path, w, h, png);
         let kid = trace::key_id(srv, key.as_bytes());
         trace::set_current(id);
-        let hit = lookup(sid, key, Touch::Draw).0;
+        let hit = lookup(sid, &key, Touch::Draw).0;
         let gate = match plx_ui::card_motion::verdict() {
             Some(plx_ui::card_motion::Verdict::Unknown) => trace::Gate::Unknown,
             Some(plx_ui::card_motion::Verdict::Moving) => trace::Gate::Moving,
@@ -1376,7 +1389,7 @@ impl tex::Source for PosterSource {
         match built_key(srv, path, w, h, png) {
             Some(k) => {
                 if trace::armed() { trace::set_current(trace::draw_id(srv.raw(), path, w, h, png)); }
-                let r = lookup(srv, k, Touch::Warm).1;
+                let r = lookup(srv, &k, Touch::Warm).1;
                 if trace::armed() { trace::set_current(0); }
                 r
             }
@@ -1388,7 +1401,7 @@ impl tex::Source for PosterSource {
     /// ([`ahead_victim`]), which is what keeps a screenful of lookahead from evicting itself.
     fn warm_ahead(&self, srv: u16, path: &str, w: i32, h: i32, png: bool) -> Warm {
         let srv = ServerId::from_raw(srv);
-        built_key(srv, path, w, h, png).map_or(Warm::Known, |k| lookup(srv, k, Touch::Ahead).1)
+        built_key(srv, path, w, h, png).map_or(Warm::Known, |k| lookup(srv, &k, Touch::Ahead).1)
     }
     fn logo(&self, srv: u16, rk: &str) -> Option<PosterKey> {
         logo_probe(ServerId::from_raw(srv), rk)
@@ -2146,10 +2159,31 @@ mod tests {
         (Fresh(g), sid, tok)
     }
 
+    /// **The key memo is the calling thread's own.** It owns `HashMap`s and `String`s, and a full
+    /// bucket is cleared (freed) on the next insert, so one process-wide memo lets two threads free
+    /// each other's keys: the class that aborted `plx_ui`'s tests in libmalloc (2026-10-20). Six
+    /// threads build keys for disjoint paths in ONE request box, far past `MEMO_CAP`, so every
+    /// thread clears its bucket again and again; each key must come back carrying its own path.
+    #[test]
+    fn every_thread_builds_its_keys_through_its_own_memo() {
+        const ROUNDS: usize = 3 * MEMO_CAP;
+        let (_fresh, sid, _tok) = one_server();
+        plx_base::testrace::race(6, move |t| {
+            for i in 0..ROUNDS {
+                let path = format!("/library/metadata/{t}{i}/thumb/1");
+                let want = path.replace('/', "%2F");
+                let first = built_key(sid, &path, 250, 375, false).expect("a registered server builds a key");
+                assert!(first.contains(&want), "round {i}: {first}");
+                let again = built_key(sid, &path, 250, 375, false).expect("a registered server builds a key");
+                assert_eq!(first, again, "round {i}: a hit differs");
+            }
+        });
+    }
+
     /// Build a key through the real [`built_key`] — the same call `lookup` makes for a draw —
     /// so these grade the string a draw actually receives, not a reimplementation of it.
     fn key_for(srv: ServerId, src: &str, w: c_int, h: c_int, png: c_int) -> String {
-        built_key(srv, src, w, h, png != 0).unwrap_or("").to_owned()
+        built_key(srv, src, w, h, png != 0).map(|k| k.to_string()).unwrap_or_default()
     }
 
     /// **Search's `Directory[]` half, and the reason this file needed no second image route.** An
@@ -3915,16 +3949,14 @@ mod tests {
     #[test]
     fn a_memo_entry_belongs_to_one_server_and_one_token_generation() {
         const PATH: &str = "/library/metadata/42/thumb/1755000000";
-        let mut m = KeyMemo {
-            map: std::collections::HashMap::new(),
-        };
+        let mut m = KeyMemo::default();
         let builds = std::cell::Cell::new(0u32);
         let key = |m: &mut KeyMemo, srv: u16, w: c_int, gen: u32, built: &str| -> String {
             m.get_or_build(srv, PATH, w, 375, false, gen, || {
                 builds.set(builds.get() + 1);
                 built.to_owned()
             })
-            .to_owned()
+            .to_string()
         };
 
         assert_eq!(key(&mut m, 0, 250, 7, "A?token=a"), "A?token=a");

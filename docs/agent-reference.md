@@ -630,12 +630,10 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   popover or modal, any title flagged `not_in_video` opened (`gates` checks the mock's request log,
   and that no stream, transcode, timeline, scrobble or play-queue request was made), and the
   hold-hint capsule: the film is shot with the hint taught. The capsule is a one-time teaching
-  overlay (it stands after 1.5 s of rest on a card, once per resting place on Home and once per run
-  on the other card screens, and for the length of an `ok` held on a card), and a film has no
+  overlay (it stands after 1.5 s of rest on a card, once per install across every card screen, Home included, and once more on the Detail season pill after a shorter rest, and for the length of an `ok` held on a card), and a film has no
   viewer to teach, so `render --storyboard` writes the `plxnative-hintoff` trigger
   (`HINT_OFF` in `site_video.py`; the app reads it once at boot, in `devtriggers` builds only, and
-  calls `hold_hint::teach_all_for_dev`, which marks the hint learned and shown on every screen
-  kind) and `render.json` records `hold_hint: suppressed`. The hint's own timing is unchanged,
+  calls `hold_hint::teach_all_for_dev`, which marks the hint learned and both of its showings spent for the run) and `render.json` records `hold_hint: suppressed`. The hint's own timing is unchanged,
   and no card rest in the film is capped by it. `up` from the hero lands on the Home pill, one `left` short of the profile chip, so the film as walked
   no longer passes the chip; the launcher still runs, before the film boots, a prep boot of the simulator
   with the `plxnative-login` trigger: the app's own QR sign-in completes against the mock (served
@@ -1996,7 +1994,11 @@ sharing — so it is the only tier a stranger can run, and it is what separates 
 broken" from "the library layer is broken" when a server case fails. **What it covers, precisely:**
 the player feeds `{h264,hevc}` (plus `av1` / `vp9` on a set whose codec table lists that decoder's row) × `{aac,ac3,eac3,dts}` in mkv/mp4/m4v. Auto intersects this
 software set with the device table and per-codec channel ceilings; DTS requires a measured
-DTS row and feeds only the DTS core when an HD extension is present. The implemented Load
+DTS row and feeds only the DTS core when an HD extension is present. PMS names DTS `dca`:
+`devcaps::audio_codec_id` folds it (and `ec-3`) onto the pipeline's `dts` at membership and at
+the Load payload, and the profile sends `dca` (`transcoder.rs::profile_codec_name`). Force
+Direct Play admits DTS only when the table has a DTS row with channels (`Caps::forced_admits_dts`)
+but skips the channel ceiling. The implemented Load
 strings are `H264`/`H265`/`AV1`/`VP9` (AV1 and VP9 only on a set whose table lists that decoder; elsewhere the Load is refused) and `AC3`/`AC3 PLUS`/`AAC`/`DTS`; these are not the firmware's whole
 vocabulary. The six AC3/EAC3/AAC combinations and H264/DTS are covered
 here, plus DV 8.1, both containers, in-place seek in each, and the FRAME-RATE axis added the same

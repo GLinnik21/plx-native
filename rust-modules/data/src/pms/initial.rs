@@ -125,7 +125,7 @@ impl Initial {
     #[cfg(any(test, feature = "test-support"))]
     pub fn capture(state: &PmsState, adapter: &PmsAdapter) -> Self {
         let sources = state.srcs.iter().map(|s| {
-            let Src { sid, client, token_gen, handle, state, fetching, seq, retry_s, retry_n, last, page, deferred: _, abandoned: _, adoptable: _, stalled: _, ledger: _, stamp: _, staged: _, quiet: _, quiet_owed: _, quiet_after: _, quiet_fails: _ } = s;
+            let Src { sid, client, token_gen, handle, state, fetching, seq, retry_s, retry_n, last, page, deferred: _, abandoned: _, adoptable: _, stalled: _, ledger: _, stamp: _, staged: _, quiet: _, quiet_owed: _, quiet_after: _, quiet_fails: _, copies: _, deck_read: _ } = s;
             Source { sid: *sid, client: client.map(|c| c.instance_gen()), token_gen: *token_gen,
                 handle: handle.clone(), state: match state { HubState::Loading => 0, HubState::Ready => 1, HubState::Failed => 2 },
                 fetching: *fetching, seq: *seq, retry_bits: retry_s.to_bits(), retry_n: *retry_n, last: last.clone(), page: page.clone() }

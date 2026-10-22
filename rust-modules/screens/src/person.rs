@@ -37,7 +37,9 @@ use plx_ui::screen::{
 #[cfg(test)]
 use plx_ui::screen::Enter;
 use plx_ui::text_view::TextView;
+use plx_ui::hstack::Item;
 use plx_ui::theme;
+use plx_ui::vstack::{Anchor, VStack};
 use plx_ui::widgets::{Art, PageGround, StatusKind, StatusOverlay};
 use plx_ui::{Env, Painter, Rect, View};
 
@@ -68,8 +70,9 @@ enum Sec {
     Entry,
     /// The skeleton / empty read-out in the shelves' place, while no shelf has content.
     State,
-    /// The air above the shelf of this kind.
-    Gap(usize),
+    /// The air between the header band and the first shelf. The air under a shelf is its own foot
+    /// ([`StackPage::shelf_foot`]), so two shelves are adjacent sections.
+    Gap,
     /// The shelf of this kind (0 = Movies, 1 = Shows).
     Shelf(usize),
 }
@@ -80,7 +83,7 @@ const ENTRY_GROUP: GroupId = GroupId(0);
 const SHELF_GROUP: [GroupId; NSHELF] = [GroupId(2), GroupId(3)];
 /// Sections with no focus element still carry a distinct id ([`SectionSpec::group`]); none is listed.
 const STATE_GROUP: GroupId = GroupId(8);
-const GAP_GROUP: [GroupId; NSHELF] = [GroupId(9), GroupId(10)];
+const GAP_GROUP: GroupId = GroupId(9);
 
 #[cfg(test)]
 pub(crate) mod cards_harness; // Tier 2 card conformance (cards_conformance_tests.rs)
@@ -118,7 +121,6 @@ const LIFE_GAP: f32 = theme::space::MD;
 // the bio highlight sits `--space-md` below the dates line) — and the box itself pads the prose by
 // `HL_PAD_Y` on every side, so the cap-to-prose gap this measures to has to carry both.
 const BIO_GAP: f32 = theme::space::MD + HL_PAD_Y;
-const SHELF_COUNT_GAP: f32 = theme::space::SM;
 const fn text_w_const(d: f32) -> f32 {
     SCR_W - MARGIN_X - (MARGIN_X + d + BAND_GAP)
 }
@@ -132,6 +134,8 @@ const BIO_MORE_GAP: f32 = theme::space::LG;
 // heading below it, not the full `XL` region gap the band and its first shelf shipped with — the
 // pill is part of the header's own block, not a separate section.
 const BAND_GAP_TO_SHELF: f32 = theme::space::MD;
+/// The air under a shelf that has another under it ([`StackPage::shelf_foot`]): the label band's air,
+/// which keeps the pitch Home's shelves have.
 const SHELF_GAP: f32 = UNDER_LABEL_AIR;
 const SHELF_LABEL_H: f32 = TITLE_DY + CARD_DY;
 const SHELF_STYLE: RowStyle = RowStyle::HOME;
@@ -227,40 +231,41 @@ fn header_flow(
     measure: &dyn Measure,
 ) -> HeaderFlow {
     let mut f = HeaderFlow::default();
-    let mut y = measure.cap_h(theme::size::DISPLAY);
-    if pending || has_roles {
-        y += META_GAP;
-        f.meta_y = Some(y);
-        y += measure.cap_h(theme::size::LABEL);
-    }
-    if pending || has_life {
-        y += if f.meta_y.is_some() {
-            LIFE_GAP
-        } else {
-            META_GAP
-        };
-        f.life_y = Some(y);
-        // The life line draws at `CAPTION` (see `draw_header`'s loop), not `LABEL` — advancing by
-        // the wrong rung's cap height left a few px of drift between the pending skeleton's
-        // reserved band and the loaded line's actual one.
-        y += measure.cap_h(theme::size::CAPTION);
-    }
-    if pending || !bio.is_empty() {
-        y += BIO_GAP;
-        f.bio_y = Some(y);
-        y += if pending && bio.is_empty() {
-            BIO_LEAD * BIO_LINES as f32
-        } else {
-            let view = bio_view(bio, 1.0, measure);
-            f.bio_truncated = view.truncates(BIO_W);
-            view.measure_h(BIO_W)
-        };
-    }
-    if has_entry {
-        y += ENTRY_GAP;
-        f.entry_y = Some(y);
-        y += LinkedHeading::HEIGHT;
-    }
+    let has_meta = pending || has_roles;
+    let has_life = pending || has_life;
+    let has_bio = pending || !bio.is_empty();
+    let bio_h = if !has_bio {
+        0.0
+    } else if pending && bio.is_empty() {
+        BIO_LEAD * BIO_LINES as f32
+    } else {
+        let view = bio_view(bio, 1.0, measure);
+        f.bio_truncated = view.truncates(BIO_W);
+        view.measure_h(BIO_W)
+    };
+    // One stack, so a missing line takes its gap with it. The name and meta lines own the gap BELOW
+    // them (`after`): the name leaves META_GAP to whatever follows it (the meta line, or the life
+    // line when there is no meta) and the meta line leaves LIFE_GAP to the life line; the
+    // biography keeps BIO_GAP, and the entry ENTRY_GAP, whichever lines above them are absent. The
+    // life line draws at `CAPTION` (see `draw_header`'s loop), not `LABEL` — advancing by the wrong
+    // rung's cap height left a few px of drift between the pending skeleton's reserved band and the
+    // loaded line's actual one.
+    let items = [
+        Item::new(measure.cap_h(theme::size::DISPLAY)).after(META_GAP),
+        presence(has_meta, measure.cap_h(theme::size::LABEL)).after(LIFE_GAP),
+        presence(has_life, measure.cap_h(theme::size::CAPTION)),
+        presence(has_bio, bio_h).before(BIO_GAP),
+        presence(has_entry, LinkedHeading::HEIGHT).before(ENTRY_GAP),
+    ];
+    let stack = VStack::new(&items, 0.0, Anchor::Top(0.0));
+    // The bottom of the last line as the spans stand (`y + h`), not `stack.height()`: the sum the
+    // callers compare `exp_h` against, with no ulp between them.
+    let y = stack.placed().last().map_or(0.0, |s| s.y + s.h);
+    f.name_y = 0.0;
+    f.meta_y = stack.span(1).map(|(y, _)| y);
+    f.life_y = stack.span(2).map(|(y, _)| y);
+    f.bio_y = stack.span(3).map(|(y, _)| y);
+    f.entry_y = stack.span(4).map(|(y, _)| y);
     let bare = !pending && f.meta_y.is_none() && f.life_y.is_none() && f.bio_y.is_none();
     f.exp_d = if bare { PORTRAIT_BARE } else { PORTRAIT_EXP };
     f.exp_h = y.max(f.exp_d);
@@ -276,6 +281,11 @@ fn header_flow(
         }
     }
     f
+}
+
+/// An item `h` tall when `present`, else one that takes no room and no gap.
+fn presence(present: bool, h: f32) -> Item {
+    if present { Item::new(h) } else { Item::absent() }
 }
 
 fn bio_view<'a>(bio: &'a str, a: f32, measure: &'a dyn Measure) -> TextView<'a> {
@@ -341,9 +351,17 @@ impl<H: ContentLike> CardSource<H> for ShelfCards<'_> {
     fn art(&self, i: usize) -> Art<'_> {
         Art::Poster(self.person.shelf(self.kind).get(i).map(tile_facts::of))
     }
+    /// A filmography poster follows the Under posters setting through the one builder. The character
+    /// the credit plays is the PAGE's own state for the tile (the way a Continue Watching tile's time
+    /// left is), so it is the details line under every setting but Nothing; a credit with no
+    /// character (every crew credit, and every credit before the roles batch lands) reads the picked
+    /// fact like any other poster.
     fn label(&self, i: usize) -> TileLabel {
         match self.person.shelf(self.kind).get(i) {
-            Some(m) => TileLabel::titled(&m.title, self.person.role(self.kind, i)),
+            Some(m) => {
+                let role = Some(self.person.role(self.kind, i)).filter(|role| !role.is_empty()).map(str::to_owned);
+                crate::registry::captions::label(&crate::registry::captions::policy(), &tile_facts::caption_facts(m), role, false)
+            }
             None => TileLabel::default(),
         }
     }
@@ -493,7 +511,7 @@ impl PersonScreen {
         Self {
             page: Page::new(entry, sid, key, guid, name, thumb),
             // A page that leaves focus (a menu over it, a pointer gone) rests at the top.
-            stack: Stack::new(entry).hold_hint(plx_ui::hold_hint::Kind::Person).home_when_unfocused(true),
+            stack: Stack::new(entry).hold_hint().home_when_unfocused(true),
             teardown_closed: false,
         }
     }
@@ -996,33 +1014,16 @@ impl Page {
     /// Shelf `kind`'s heading and count, drawn in the shelf block's own space (`lift` is how far
     /// the focused tile makes it rise); the tiles are the stack's.
     fn draw_shelf_heading(&self, p: Painter, kind: usize, lift: f32, measure: &dyn plx_machine::machine::Measure) {
-        let hy = -lift;
-        Label::new(
-            shelf_title()[kind].as_ptr(),
-            theme::size::HEADLINE,
-            theme::TEXT_HEADING,
-        )
-        .bold()
-        .v(VAlign::CapTop)
-        .draw(p, Rect::new(MARGIN_X, hy, SCR_W, 0.0));
-        if !self.shelf_count_c[kind].as_bytes().is_empty() {
-            let tw = measure.width(shelf_title()[kind], theme::size::HEADLINE, true);
-            Label::new(
-                self.shelf_count_c[kind].as_ptr(),
-                theme::size::CAPTION,
-                theme::TEXT_TERTIARY,
-            )
-            .v(VAlign::Baseline)
-            .draw(
-                p,
-                Rect::new(
-                    MARGIN_X + tw + SHELF_COUNT_GAP,
-                    hy,
-                    0.0,
-                    measure.cap_h(theme::size::HEADLINE),
-                ),
-            );
-        }
+        plx_ui::cards::draw_heading_c(
+            p,
+            shelf_title()[kind],
+            &self.shelf_count_c[kind],
+            c"",
+            MARGIN_X,
+            -lift,
+            1.0,
+            measure,
+        );
     }
 
     /// The skeleton / empty read-out where the first shelf would be, `y` being that shelf's top.
@@ -1099,10 +1100,22 @@ impl<H: ContentLike + PersonLike> StackPage<H> for Page {
         out.push(SectionSpec::new(Sec::Head, Kind::Custom { height: HEADER_TOP + self.header.exp_h, focusable: person.is_some() }, HEADER_GROUP));
         out.push(SectionSpec::new(Sec::Entry, Kind::Custom { height: 0.0, focusable: person.is_some_and(entry_reachable) }, ENTRY_GROUP));
         out.push(SectionSpec::new(Sec::State, Kind::Custom { height: 0.0, focusable: false }, STATE_GROUP));
-        for (pos, &kind) in kinds[..n].iter().enumerate() {
-            let gap = if pos == 0 { BAND_GAP_TO_SHELF } else { SHELF_GAP };
-            out.push(SectionSpec::new(Sec::Gap(kind), Kind::Custom { height: gap, focusable: false }, GAP_GROUP[kind]));
+        if n > 0 {
+            out.push(SectionSpec::new(Sec::Gap, Kind::Custom { height: BAND_GAP_TO_SHELF, focusable: false }, GAP_GROUP));
+        }
+        for &kind in &kinds[..n] {
             out.push(SectionSpec::new(Sec::Shelf(kind), Kind::Shelf { style: &SHELF_STYLE, heading: SHELF_LABEL_H }, SHELF_GROUP[kind]));
+        }
+    }
+
+    /// Every shelf but the last keeps the label band's air under it, so the next shelf stands at
+    /// Home's pitch; the last ends where its block does (the page rests it one margin above the
+    /// bottom edge). The shelves present are read the way `sections` reads them.
+    fn shelf_foot(&self, cx: &Cx<'_, H>, k: Sec) -> f32 {
+        let (kinds, n) = self.person(cx).map_or(([0; NSHELF], 0), present);
+        match k {
+            Sec::Shelf(kind) if kinds[..n].last() != Some(&kind) => SHELF_GAP,
+            _ => 0.0,
         }
     }
 
@@ -1110,6 +1123,11 @@ impl<H: ContentLike + PersonLike> StackPage<H> for Page {
     fn fallback(&self, _cx: &Cx<'_, H>, out: &mut Vec<Sec>) {
         out.extend((0..NSHELF).map(Sec::Shelf));
         out.push(Sec::Head);
+    }
+
+    /// Every filmography shelf is a row of posters: they follow the Under posters setting.
+    fn caption_policy(&self, k: Sec) -> Option<plx_ui::caption_policy::CaptionPolicy> {
+        matches!(k, Sec::Shelf(_)).then(crate::registry::captions::policy)
     }
 
     fn cards<'a>(&'a self, cx: &'a Cx<'_, H>, k: Sec) -> Option<ShelfCards<'a>> {
@@ -1179,7 +1197,7 @@ impl<H: ContentLike + PersonLike> StackPage<H> for Page {
                 }
             }
             Sec::State => self.draw_shelf_state(p, &Env::inert(), person, r.y + BAND_GAP_TO_SHELF),
-            Sec::Entry | Sec::Gap(_) | Sec::Shelf(_) => {}
+            Sec::Entry | Sec::Gap | Sec::Shelf(_) => {}
         }
     }
 }
@@ -1560,9 +1578,9 @@ mod tests {
 
     /// The hold hint (`ui::hold_hint`) on a Person shelf card: it stands after the dwell on a
     /// settled card, not on the Filmography pill (not a card), not while a menu owns focus, and
-    /// not a second time on a Person page this run.
+    /// not a second time this run.
     #[test]
-    fn the_hold_hint_stands_on_a_resting_shelf_card_once_per_run() {
+    fn the_hold_hint_stands_on_a_resting_shelf_card_once_per_install() {
         let _g = plx_base::testlock::serial();
         plx_ui::hold_hint::reset_learned_for_test();
         plx_ui::hold_hint::reset_shown_for_test();
@@ -1577,11 +1595,11 @@ mod tests {
         };
         rest(&mut s, card, 1.2);
         assert!(!s.stack.hint_visible(), "not before the dwell");
-        // negatives first: a stand spends the kind's latch and would make them vacuous
+        // negatives first: a stand spends the run's latch and would make them vacuous
         rest(&mut s, plx_machine::machine::FocusKey { entry: EntryId(900), elem: 0 }, 4.0);
-        assert!(!s.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Person), "never while a menu owns focus");
+        assert!(!s.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(), "never while a menu owns focus");
         rest(&mut s, plx_machine::machine::FocusKey { entry: EntryId(0), elem: ENTRY_ELEM }, 4.0);
-        assert!(!s.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Person), "never on the Filmography pill");
+        assert!(!s.stack.hint_visible() && !plx_ui::hold_hint::shown_this_run(), "never on the Filmography pill");
         rest(&mut s, card, 3.6);
         assert!(s.stack.hint_visible(), "after the dwell, on a settled card");
         rest(&mut s, plx_machine::machine::FocusKey { entry: EntryId(900), elem: 0 }, 1.0);
@@ -3115,7 +3133,7 @@ mod tests {
             .unwrap();
         let tile_top = placed.rest_rect.cy() - CARD_H / 2.0;
         let block_top = tile_top - SHELF_LABEL_H;
-        let block_bottom = tile_top + CARD_H + ui_cards::under_band(1.0);
+        let block_bottom = tile_top + CARD_H + ui_cards::under_band_for(plx_ui::caption_policy::band_h(&crate::registry::captions::policy()), 1.0);
         assert!(block_bottom <= SCR_H, "the block's bottom edge is on screen: {block_bottom}");
         assert!(block_top >= HEADER_TOP - 0.5, "and its top keeps the page margin: {block_top}");
         // and no further: the last shelf rests exactly one page margin above the bottom edge
@@ -3125,11 +3143,89 @@ mod tests {
 
     #[test]
     fn a_shelf_here_pitches_like_a_shelf_on_home() {
-        assert_eq!(
-            SHELF_GAP + SHELF_LABEL_H + CARD_H + ui_cards::under_band(1.0),
-            plx_ui::consts::ROW_PITCH
-        );
+        // the fixed part of the pitch; the band under it is the Under posters setting's, as Home's
+        assert_eq!(SHELF_GAP + SHELF_LABEL_H + CARD_H, ui_cards::ROW_PITCH_FIXED);
         assert_eq!(SHELF_LABEL_H, TITLE_DY + CARD_DY);
     }
 
+    /// **The first filmography shelf's caption stops short of the heading of the shelf under it.**
+    /// A Down from the Movies shelf onto the Shows shelf lifts the Shows heading while the Movies
+    /// caption is still leaving, and an Up back does the reverse; at the 112 px band no caption line
+    /// of the Movies shelf ends below the Shows heading's drawn top (`SectionFrame::below_rise`).
+    #[test]
+    fn a_shelfs_caption_keeps_clear_of_the_next_shelfs_lifted_heading() {
+        use crate::registry::captions::TEST_UNDER_POSTERS;
+        use plx_plex::plex::session::{UnderPosters, UnderPostersDetails as Details};
+        let _serial = plx_base::testlock::serial();
+        TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title: true, details: Details::YearLength })));
+        let (mut store, mut s) = shelved_page(PORTRAIT_EXP);
+        let (movies, shows) = (focus_of(&s, &store, 0, 0), focus_of(&s, &store, 1, 0));
+        settle_shelves(&mut s, &store, movies, 120);
+        let (mut worst, mut lines, mut from) = (f32::MIN, 0, movies);
+        for frame in 0..130 {
+            let to = match frame { 0 => shows, 60 => movies, _ => from };
+            if to != from {
+                feed(&mut s, &store, &FixtureMeasure, Some(to), ScreenEvent::FocusMoved { from: Some(from), to, by: By::Dir });
+                from = to;
+            }
+            settle_shelves(&mut s, &store, from, 1);
+            let cxv = cx_at(&FixtureMeasure, store.view(), from);
+            let f = DrawFrame::new(&cxv, Painter::root());
+            let (first, second) = (Sec::Shelf(0), Sec::Shelf(1));
+            let above = s.stack.shelf_frame(&s.page, &cxv, first).expect("the Movies shelf");
+            let heading = s.stack.shelf_frame(&s.page, &cxv, second).expect("the Shows shelf").y - SHELF_LABEL_H
+                - s.stack.shelf(second).expect("the Shows shelf").heading_lift();
+            let src = StackPage::<PersonHost>::cards(&s.page, &cxv, first).expect("the Movies cards");
+            let drawn = s.stack.shelf(first).expect("the Movies shelf").caption_lines_probe(&f, &src, above);
+            lines += drawn.len();
+            worst = drawn.iter().fold(worst, |worst, &(_, _, bottom, _)| worst.max(bottom - heading));
+        }
+        TEST_UNDER_POSTERS.with(|cell| cell.set(None));
+        store.run(PersonCmd::Close);
+        assert!(lines > 0, "the walk saw no caption line");
+        assert!(worst <= 0.0, "a caption line of the Movies shelf ends {worst:.1} px below the drawn top of the Shows heading");
+    }
+
+
+    /// Q4, painted: a shelf's heading is the one heading + count idiom. The title, the dot and the
+    /// count are PAINTED through a recording painter and read back run by run: each stands
+    /// `HEADING_SOURCE_PAD` after the one before it; a shelf with no count draws its title alone.
+    #[test]
+    fn a_painted_shelf_heading_keeps_the_pad_between_title_dot_and_count() {
+        let _g = plx_base::testlock::serial();
+        let (_store, mut s) = seed(2, 2);
+        s.page.shelf_count_c = [std::ffi::CString::new("22").unwrap(), std::ffi::CString::default()];
+        let paint = |kind: usize| {
+            let mut runs = plx_ui::draw_census::capture_runs(|| {
+                s.page.draw_shelf_heading(Painter::recording(), kind, 0.0, &plx_ui::widgets::LegacyMeasure);
+            });
+            runs.sort_by(|a, b| a.at.x.total_cmp(&b.at.x));
+            runs
+        };
+        let counted = paint(0);
+        assert_eq!(counted.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(), [shelf_title()[0].to_str().unwrap(), "\u{b7}", "22"]);
+        assert_eq!(counted[0].at.x, MARGIN_X);
+        for pair in counted.windows(2) {
+            let gap = pair[1].at.x - (pair[0].at.x + pair[0].at.w);
+            assert!((gap - plx_ui::cards::HEADING_SOURCE_PAD).abs() < 0.5, "{} -> {}: {gap}", pair[0].text, pair[1].text);
+        }
+        assert_eq!(counted[2].size, theme::size::BODY, "the count is a BODY note, not a caption");
+        assert_eq!(paint(1).len(), 1, "a shelf with no count draws its title alone");
+    }
+
+    /// The header's gaps ride the item, not its neighbour: with no life line the biography keeps
+    /// BIO_GAP under the meta line, and with no biography the entry keeps ENTRY_GAP under the life line.
+    #[test]
+    fn header_gaps_survive_an_absent_neighbour() {
+        let m = FixtureMeasure;
+        let label = m.cap_h(theme::size::LABEL);
+        let no_life = header_flow(false, "A biography.", true, false, false, &m);
+        assert_eq!(no_life.life_y, None);
+        let (meta, bio) = (no_life.meta_y.unwrap(), no_life.bio_y.unwrap());
+        assert!((bio - meta - label - BIO_GAP).abs() < 0.01);
+        let no_bio = header_flow(false, "", true, true, true, &m);
+        assert_eq!(no_bio.bio_y, None);
+        let (life, entry) = (no_bio.life_y.unwrap(), no_bio.entry_y.unwrap());
+        assert!((entry - life - m.cap_h(theme::size::CAPTION) - ENTRY_GAP).abs() < 0.01);
+    }
 }

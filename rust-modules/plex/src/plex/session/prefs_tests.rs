@@ -12,11 +12,11 @@ use super::prefs::{Descriptor, Fallback, ListRow, Parse, ProfileMemory, Row, Sco
 use super::prefs::{AudioEnhancementsPref, AutoSignInPref, DeckPressPref, UnderPostersPref, DirectPlayModePref, LastHeroBlurPref,
     LastLibraryRow, LibraryViewsRow, NextEpisodeModePref, PlaintextConsentRow, QualityPref, ServerKeyPinsRow,
     HdrOverlayBrightnessPref, SkipIntervalPref, SubtitleOffsetsPref, SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref,
-    TrailerAutoplayPref, UiResolutionPref};
+    HoldHintTaughtPref, TrailerAutoplayPref, UiResolutionPref};
 use super::{
     CanonicalSessionPreferences, DeckPress, UnderPosters, UnderPostersDetails, DirectPlayMode, LastLibrary, LibraryViews, NextEpisodeMode,
     PlaintextChoice, PlaintextConsent, PlaybackQuality, Preferences, ServerKeyPin, Session, SkipInterval,
-    HdrOverlayBrightness, SubtitleOffsetEntry, SubtitlePosition, SubtitleSize, SubtitleTone, UiResolution,
+    HdrOverlayBrightness, HoldHintTaught, SubtitleOffsetEntry, SubtitlePosition, SubtitleSize, SubtitleTone, UiResolution,
 };
 use serde::de::{self, Deserializer, Visitor};
 use serde_json::{json, Value};
@@ -118,13 +118,14 @@ fn every_marker_names_its_own_field() {
     check_row::<TrailerAutoplayPref>(true);
     check_row::<LastHeroBlurPref>(Some([[0.5, 0.25, 0.125]; 4]));
     check_row::<UiResolutionPref>(UiResolution::Hd720);
-    // The table lists exactly these fifteen `Setting` rows, the four list rows below, the two
+    check_row::<HoldHintTaughtPref>(HoldHintTaught { card: true, pill: false });
+    // The table lists exactly these sixteen `Setting` rows, the four list rows below, the two
     // memory-door rows (`TrackMemoryPref`, whose field check is
     // `track_memory_tests::the_list_row_names_its_own_field`, and `SubtitleOffsetsPref`, checked by
     // `the_subtitle_offsets_row_names_its_own_field`) and the per-profile record list
     // (`ProfilePrefsPref`, `profile_prefs_tests::nothing_picked_serializes_to_no_key`): a row needs
     // its line in one of the four places.
-    assert_eq!(DESCRIPTORS.len(), 15 + 4 + 2 + 1);
+    assert_eq!(DESCRIPTORS.len(), 16 + 4 + 2 + 1);
 }
 
 /// The list rows do what `check_row` proves for the `Copy` ones: the marker names its own field
@@ -244,6 +245,7 @@ fn the_a5_rows_declare_the_scope_and_binding_main_has() {
         ("auto_sign_in", Scope::Install, false, Parse::BoolOff),
         ("last_hero_blur", Scope::Install, false, Parse::OptionalSoft),
         ("ui_resolution", Scope::Install, false, Parse::Soft),
+        ("hold_hint_taught", Scope::Install, false, Parse::Soft),
         ("plaintext_consent", Scope::Account, true, Parse::SoftVec),
         ("server_key_pins", Scope::Account, true, Parse::SoftVec),
         ("last_library", Scope::Profile, true, Parse::SoftVec),
@@ -253,6 +255,41 @@ fn the_a5_rows_declare_the_scope_and_binding_main_has() {
         assert_eq!((d.scope, d.account_bound, d.parse), (scope, bound, parse), "{key}");
         assert!(!d.live && d.settings.is_none(), "{key}");
     }
+}
+
+/// **The taught hold hints** (`plx_ui::hold_hint`): an absent key is "not taught" and writes no
+/// key, each flag round-trips through both on-disk hosts, a damaged flag costs only itself, and the
+/// row is the television's (Install, never account-bound, so sign-out keeps it:
+/// `platform::storage::state::clear_tenure_keeps_the_taught_hold_hints`).
+#[test]
+fn the_taught_hold_hints_default_absent_round_trip_and_are_install_wide() {
+    let default_json = serde_json::to_value(Preferences::default()).unwrap();
+    assert!(default_json.get("hold_hint_taught").is_none(), "nothing taught writes no key: {default_json}");
+    assert!(!serde_json::to_string(&Session::default()).unwrap().contains("hold_hint_taught"));
+    let absent: Preferences = serde_json::from_value(json!({})).unwrap();
+    assert_eq!(absent.hold_hint_taught, HoldHintTaught::NONE);
+
+    for taught in [
+        HoldHintTaught { card: true, pill: false },
+        HoldHintTaught { card: false, pill: true },
+        HoldHintTaught { card: true, pill: true },
+    ] {
+        let session = Session::default().with_pref::<HoldHintTaughtPref>(taught);
+        let legacy: Session = serde_json::from_slice(&serde_json::to_vec(&session).unwrap()).unwrap();
+        assert_eq!(legacy.hold_hint_taught(), taught);
+        let (public, protected) = super::split_canonical(&session).unwrap();
+        assert_eq!(super::join_canonical(&public, &protected).unwrap().hold_hint_taught(), taught);
+        assert_eq!(super::public_session(&public).hold_hint_taught(), taught);
+    }
+    let one = serde_json::to_value(Session::default().with_pref::<HoldHintTaughtPref>(HoldHintTaught { card: true, pill: false })).unwrap();
+    assert_eq!(one["hold_hint_taught"], json!({"card": true}), "only the flag that is set is written");
+
+    let damaged: Preferences = serde_json::from_value(json!({"hold_hint_taught": {"card": "yes", "pill": true}})).unwrap();
+    assert_eq!(damaged.hold_hint_taught, HoldHintTaught { card: false, pill: true }, "a damaged flag costs only itself");
+
+    let row = DESCRIPTORS.iter().find(|d| d.key == "hold_hint_taught").expect("the row is in the table");
+    assert_eq!((row.scope, row.account_bound, row.live, row.settings), (Scope::Install, false, false, None));
+    assert!(!plx_platform::storage::state::ACCOUNT_BOUND_PREFERENCES.contains(&"hold_hint_taught"));
 }
 
 /// The `subtitle_offsets` row is a `Preferences` field under its own key, written only while
@@ -299,6 +336,7 @@ fn garbage_fixtures() -> Vec<(&'static str, Vec<Value>)> {
         // A5. A switch's garbage excludes the booleans, which are VALID values for it.
         ("auto_sign_in", not_a_bool()),
         ("ui_resolution", generic()),
+        ("hold_hint_taught", generic()),
         ("trailer_autoplay", not_a_bool()),
         ("last_hero_blur", vec![Value::Null, json!("zzz"), json!(17), json!([1, "x"]), json!([[1, 2, 3]]), json!({"unexpected": 1})]),
         // A list's garbage is anything that is not an array; a mixed array is driven separately.

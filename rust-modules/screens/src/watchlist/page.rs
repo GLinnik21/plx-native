@@ -35,7 +35,7 @@ use plx_ui::page_regions::{Arrival, BackStep, PageRegions};
 use plx_ui::theme;
 use plx_ui::tile::{Resume, TileFacts, TileKind};
 use plx_ui::widgets::{AmbientWash, Art, PageGround};
-use plx_plex::plex::ServerId;
+use plx_plex::plex::{ListingFacts, ServerId};
 use plx_ui::{Painter, Rect};
 
 use super::caption;
@@ -69,6 +69,10 @@ pub struct MatchedFacts {
     pub resume: Option<f32>,
     /// The matched item's `UltraBlurColors` corners: the ground the focused title keys.
     pub blur: Option<[[f32; 3]; 4]>,
+    /// What the matched item's listing row says of the title (genre, video, ratings, length, counts):
+    /// the facts the focused caption words under the Under posters setting
+    /// ([`caption::label`](super::caption::label)), as every poster's caption does.
+    pub listing: ListingFacts,
 }
 
 /// Where the list stands, which decides the read-out (plan §1.2).
@@ -200,6 +204,8 @@ struct Cell {
     watched: bool,
     resume: Option<f32>,
     blur: Option<[[f32; 3]; 4]>,
+    /// The matched copy's caption facts (default: none known).
+    listing: ListingFacts,
 }
 
 /// Guid to element: a title keeps its key while it stays on the list, and a key is never reused.
@@ -292,6 +298,15 @@ impl Page {
         self.rev += 1;
     }
 
+    /// The caption of the tile at `i` under the Under posters setting: its row and state, and the
+    /// facts of its matched copy.
+    fn label(&self, i: usize) -> TileLabel {
+        match self.tiles.get(i).zip(self.cells.get(i)) {
+            Some((t, c)) => caption::label(&t.row, t.state, &caption::policy(), &c.listing),
+            None => TileLabel::default(),
+        }
+    }
+
     /// Re-derive the cells after the snapshot or the facts moved.
     fn rebuild(&mut self) {
         let elems = self.keys.assign(&self.tiles);
@@ -320,6 +335,7 @@ impl Page {
                 watched,
                 resume: facts.and_then(|f| f.resume),
                 blur: facts.and_then(|f| f.blur).or_else(|| t.copy.and_then(|c| c.blur).map(unquantize)),
+                listing: facts.map(|f| f.listing.clone()).unwrap_or_default(),
             });
             self.index.insert(elem, i);
         }
@@ -502,10 +518,7 @@ impl<H: ContentLike> CardSource<H> for Titles<'_> {
         }
     }
     fn label(&self, i: usize) -> TileLabel {
-        match self.page.tiles.get(i) {
-            Some(t) => caption::label(&t.row, t.state, &caption::policy()),
-            None => TileLabel::default(),
-        }
+        self.page.label(i)
     }
     fn progress(&self, i: usize) -> Option<f32> {
         self.page.cells.get(i)?.resume
@@ -577,7 +590,7 @@ impl<H: ContentLike> CardSource<H> for GhostTitles<'_> {
     /// Read only for the focused card's ghost, which keeps its caption until the landing steps.
     fn label(&self, i: usize) -> TileLabel {
         match self.tiles.get(i).copied().flatten() {
-            Some((t, _)) => caption::label(&t.row, t.state, &caption::policy()),
+            Some((t, c)) => caption::label(&t.row, t.state, &caption::policy(), &c.listing),
             None => TileLabel::default(),
         }
     }
@@ -837,7 +850,7 @@ impl WatchlistScreen {
         Self {
             page,
             // A page that leaves focus (a menu over it, a pointer gone) rests at the top.
-            stack: Stack::new(entry).hold_hint(plx_ui::hold_hint::Kind::Collection).home_when_unfocused(true),
+            stack: Stack::new(entry).hold_hint().home_when_unfocused(true),
             ground: PageGround::new(),
             ground_seeded: false,
             ground_applied: [theme::SURFACE_APP; 4],
@@ -863,7 +876,7 @@ impl WatchlistScreen {
     /// The same page mounted as `entry`.
     pub fn at_entry(mut self, entry: EntryId) -> Self {
         self.page.entry = entry;
-        self.stack = Stack::new(entry).hold_hint(plx_ui::hold_hint::Kind::Collection).home_when_unfocused(true);
+        self.stack = Stack::new(entry).hold_hint().home_when_unfocused(true);
         self
     }
 
@@ -1271,6 +1284,13 @@ impl WatchlistScreen {
     #[cfg(test)]
     pub(crate) fn scale_of<H: ContentLike>(&self, cx: &Cx<'_, H>, elem: &u32) -> Option<f32> {
         self.stack.view(&self.page).scale_of(cx, elem)
+    }
+
+    /// Poster `i`'s settled cell as the grid stands now, the caption band folded in: where an app-tier
+    /// test reads how much room the focused row opened under its posters.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_cell(&self, i: usize) -> Option<plx_ui::Rect> {
+        self.stack.grid(Sec::Items).map(|grid| grid.cell_probe(i))
     }
 
     /// Test support: the focused caption band's height the grid opens (0 / 80 / 112 by the policy).

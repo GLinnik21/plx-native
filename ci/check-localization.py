@@ -30,7 +30,7 @@ ROOT = Path(__file__).resolve().parent.parent
 CONSTRUCTORS = {
     'Label': (0,), 'Button': (0,), 'TextView': (0,), 'Row': (0,), 'Section': (0,),
     'Header': (0,), 'StatusOverlay': (1,), 'DocumentScreen': (1,), 'KeyHint': (0, 2),
-    'Field': (0, 1), 'ValueChip': (0, 1),
+    'Field': (0, 1),
 }
 # Associated functions and enum variants that carry display text: `Owner::name(...)`.
 PATHS = {('Kicker', 'Context'): (0,), ('Busy', 'Readout'): (1,), ('TileLabel', 'titled'): (0, 1),

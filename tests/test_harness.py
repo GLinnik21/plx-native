@@ -6132,11 +6132,240 @@ impl PersonOwnerGateFixture {
         self.assertIn("_check_deps_selftest_dt_fn.rs", out)
 
     def test_check_statics_is_green(self):
-        """Spec §0 done-criterion 1: `ci/check-statics.sh` — every `static mut` under ui/ and screens/
-        is a named render cache (ci/allow/statics.txt) or sits in a legacy module still awaiting its
-        phase (ci/allow/statics-migration.txt), and no allowlist entry is stale."""
+        """Spec §0 done-criterion 1: `ci/check-statics.sh` — every `static mut` in the gated
+        directories is named in ci/allow/statics.txt or sits in a legacy module still awaiting its
+        phase (ci/allow/statics-migration.txt), every heap-owning `static mut` anywhere under
+        rust-modules is named in ci/allow/statics.txt, and no allowlist entry is stale."""
         r = subprocess.run([os.path.join(self.ROOT, "ci", "check-statics.sh")], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def _heap_statics(self, files, lines=False):
+        """`{(path, NAME)}` that `ci/check-statics-heap.py` reports over a scratch checkout holding
+        `files` ({path under rust-modules/: Rust source}), plus a `target-fast` build tree full of
+        heap statics that must never be read. `lines=True` returns the whole report lines instead."""
+        with tempfile.TemporaryDirectory() as root:
+            files = dict(files)
+            files["target-fast/debug/build/dep/out.rs"] = "static mut BUILD_TREE: Vec<u8> = Vec::new();\n"
+            for rel, source in files.items():
+                path = os.path.join(root, "rust-modules", rel)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(source)
+            r = subprocess.run([sys.executable, "-I", os.path.join(self.ROOT, "ci", "check-statics-heap.py"), root],
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            if lines:
+                return [line for line in r.stdout.splitlines() if line]
+            return {tuple(line.split("\t")[:2]) for line in r.stdout.splitlines() if line}
+
+    def test_heap_static_gate_refuses_a_static_mut_that_owns_heap_in_any_crate(self):
+        """The class behind `TAB_CACHE` (`plx_ui`'s test abort, 2026-10-20): a `static mut` that owns
+        heap and is replaced frees memory another thread is using. The gate reads the TYPE, so it
+        sees the heap through a struct the declaration only names (`KeyMemo`, `GroundProbe`), a
+        type alias, a multi-line declaration and a qualified path, in any crate, tests included."""
+        found = self._heap_statics({
+            "gfx/src/a.rs": (
+                "static mut CACHE: Option<HashMap<u64, String>> = None;\n"
+                "pub(crate) static mut QUEUE: Vec<String> = Vec::new();\n"
+                "static mut MEMO: Option<Memo> = None;\n"
+                "static mut PROBE: Probe<4> = Probe::new();\n"
+                "static mut ALIASED: Names = Names::new();\n"
+                "static mut SPLIT: Option<\n    plx_base::Holder,\n> = None;\n"
+                "static mut ARRAY: [Option<Memo>; 4] = [None, None, None, None];\n"
+                "struct Memo { map: HashMap<u32, Vec<u8>> }\n"
+                "struct Probe<const N: usize> { ready: Option<Vec<u8>> }\n"
+                "type Names = Vec<String>;\n"),
+            "src/b.rs": (
+                "mod tests {\n    static mut SCRATCH: Box<u32> = Box::new(0);\n}\n"
+                "pub struct Holder(Vec<u8>);\n"),
+            "src/c.rs": "static mut UNKNOWN: Option<Nowhere> = None;\n",
+        })
+        self.assertEqual(found, {
+            ("rust-modules/gfx/src/a.rs", n)
+            for n in ("CACHE", "QUEUE", "MEMO", "PROBE", "ALIASED", "SPLIT", "ARRAY")
+        } | {("rust-modules/src/b.rs", "SCRATCH"), ("rust-modules/src/c.rs", "UNKNOWN")})
+
+    def test_heap_static_gate_finds_the_other_spellings_of_the_same_static(self):
+        """Each of these slipped past a first version of the gate: a tree type that reuses a std name
+        (`screens` has its own `struct Cell` holding a `String`), an acronym alias, a declaration
+        that shares its line with an attribute or a fn body, one whose name is on the next line, and
+        one a `macro_rules!` writes."""
+        found = self._heap_statics({
+            "screens/src/a.rs": (
+                "struct Cell { thumb: String }\n"
+                "static mut SHADOW: Option<Cell> = None;\n"
+                "type LRU = Vec<u8>;\n"
+                "static mut ACRONYM: LRU = Vec::new();\n"
+                "#[allow(static_mut_refs)] static mut ATTR: Vec<u8> = Vec::new();\n"
+                "fn f() { static mut LOCAL: Vec<u8> = Vec::new(); }\n"
+                "pub static mut\n    NEXT: Vec<u8> = Vec::new();\n"
+                "macro_rules! cache { ($n:ident) => { static mut $n: u32 = 0; } }\n"),
+        })
+        self.assertEqual(found, {
+            ("rust-modules/screens/src/a.rs", n)
+            for n in ("SHADOW", "ACRONYM", "ATTR", "LOCAL", "NEXT", "cache!")
+        })
+
+    def test_heap_static_gate_leaves_plain_data_statics_alone(self):
+        """GL object names, uniform locations, function pointers, raw FFI handles, flags and
+        counters free nothing when written, so they are not the bug class and are not listed."""
+        found = self._heap_statics({
+            "gfx/src/a.rs": (
+                "static mut PROG: c_uint = 0;\n"
+                "static mut LOC: [c_int; 4] = [0; 4];\n"
+                "static mut FONTS: [*mut TtfFont; FONT_SLOTS] = [std::ptr::null_mut(); FONT_SLOTS];\n"
+                "static mut HOOK: Option<FnQuery> = None;\n"
+                "static mut IMAGE: Option<(c_uint, Uniforms, c_int)> = None;\n"
+                "static mut FENCE: Option<crate::egl::fence::Fence> = None;\n"
+                "static mut FLAG: bool = false;\n"
+                "static mut STAMP: Option<std::time::Instant> = None;\n"
+                "type FnQuery = unsafe extern \"C\" fn(*mut c_void) -> Vec2;\n"
+                "static mut CALLBACK: Option<fn(&str) -> String> = None;\n"
+                "static mut NAMER: Option<Namer> = None;\n"
+                "type Namer = fn(Vec<u8>, usize) -> String;\n"
+                "fn take(v: &'static mut Vec<u8>) -> &'static mut Vec<u8> { v }\n"
+                "struct Uniforms { rect: c_int, tint: c_int }\n"
+                "pub struct Fence { sync: usize }\n"
+                "// static mut NOTE: Vec<u8> = Vec::new();\n"
+                "const DOC: &str = \"static mut TEXT: Vec<u8> = Vec::new();\";\n"
+                "thread_local! { static CACHE: RefCell<HashMap<u64, String>> = Default::default(); }\n"
+                "static LOCKED: Mutex<Vec<String>> = Mutex::new(Vec::new());\n"
+                "struct Vec2(f32, f32);\n"
+                "pub enum TtfFont {}\n"),
+        })
+        self.assertEqual(found, set())
+
+    def test_heap_static_gate_does_not_resolve_a_name_to_an_associated_type(self):
+        """`type Item = String;` inside an `impl`/`trait` block is an ASSOCIATED type, reachable only
+        as `Self::Item`/`<T as Trait>::Item`; it is not what a bare `Item` names at module level. A
+        first version unioned it with `enum Item`, so a plain `Option<Item>` static read as owning a
+        `String`. Only module-level (and fn-local) definitions count; a `type` alias in a nested fn
+        body of an impl still does."""
+        found = self._heap_statics({
+            "ui/src/a.rs": (
+                "impl Iterator for Foo { type Item = String; fn next(&mut self) -> Option<String> { None } }\n"
+                "trait Source { type Output: Clone; type Error = Vec<u8>; }\n"
+                "unsafe impl<T: Copy> Marker for [T; 4] { type Target = Vec<u8>; }\n"
+                "enum Item { A }\n"
+                "enum Output { Left }\n"
+                "enum Error { Bad }\n"
+                "enum Target { Here }\n"
+                "static mut X: Option<Item> = None;\n"
+                "static mut Y: Option<Output> = None;\n"
+                "static mut Z: [Option<Error>; 2] = [None, None];\n"
+                "static mut W: Option<Target> = None;\n"
+                "impl Foo { fn local() { type Local = Vec<u8>; } }\n"
+                "static mut V: Option<Local> = None;\n"),
+        })
+        self.assertEqual(found, {("rust-modules/ui/src/a.rs", "V")})
+
+    def test_heap_static_gate_treats_std_plain_data_wrappers_as_plain(self):
+        """`Option<SystemTime>`, `Option<NonZeroU32>`, `RefCell<u32>` and `ManuallyDrop<u32>` own no
+        heap, and the failure message tells people to fix the detector rather than allowlist plain
+        data; a wrapper is plain only while its PARAMETER is, so `RefCell<Vec<u8>>` stays reported."""
+        found = self._heap_statics({
+            "gfx/src/a.rs": (
+                "static mut WHEN: Option<SystemTime> = None;\n"
+                "static mut WHEN2: Option<std::time::SystemTime> = None;\n"
+                "static mut SINCE: Option<Instant> = None;\n"
+                "static mut GAP: Duration = Duration::ZERO;\n"
+                "static mut NZ: Option<NonZeroU32> = None;\n"
+                "static mut NZ2: Option<std::num::NonZeroUsize> = None;\n"
+                "static mut NZ3: Option<NonZero<u16>> = None;\n"
+                "static mut WRAP: Wrapping<u32> = Wrapping(0);\n"
+                "static mut SAT: Saturating<u8> = Saturating(0);\n"
+                "static mut REF: RefCell<u32> = RefCell::new(0);\n"
+                "static mut CELL: Cell<u32> = Cell::new(0);\n"
+                "static mut UC: UnsafeCell<u32> = UnsafeCell::new(0);\n"
+                "static mut DROP: ManuallyDrop<u32> = ManuallyDrop::new(0);\n"
+                "static mut SLOT: MaybeUninit<[u8; 4]> = MaybeUninit::uninit();\n"
+                "static mut PH: PhantomData<u8> = PhantomData;\n"
+                "static mut HITS: AtomicUsize = AtomicUsize::new(0);\n"
+                "static mut HEAPY: RefCell<Vec<u8>> = RefCell::new(Vec::new());\n"
+                "static mut HEAPY2: ManuallyDrop<Option<String>> = ManuallyDrop::new(None);\n"
+                "static mut HEAPY3: Option<Cell<Box<u8>>> = None;\n"
+                "static mut HEAPY4: UnsafeCell<Holder> = UnsafeCell::new(Holder::new());\n"
+                "struct Holder { names: Vec<String> }\n"),
+        })
+        self.assertEqual(found, {("rust-modules/gfx/src/a.rs", n) for n in ("HEAPY", "HEAPY2", "HEAPY3", "HEAPY4")})
+
+    def test_heap_static_gate_does_not_read_enum_variant_names_as_types(self):
+        """A variant name (`Idle`, `Running`) is CamelCase but names no type, so it must not read as
+        "defined nowhere in the tree"; the payload of a variant is still a type (`Loaded(Vec<u8>)`)."""
+        found = self._heap_statics({
+            "appkit/src/a.rs": (
+                "#[derive(Clone, Copy)]\n"
+                "enum Phase { Idle, #[default] Running = 2, Done(u8), Moving { dx: i32, dy: i32 } }\n"
+                "enum Slot { Empty, Loaded(Vec<u8>) }\n"
+                "static mut PHASE: Phase = Phase::Idle;\n"
+                "static mut SLOT: Slot = Slot::Empty;\n"),
+        })
+        self.assertEqual(found, {("rust-modules/appkit/src/a.rs", "SLOT")})
+
+    def test_heap_static_gate_names_a_macro_static_by_its_macro_and_line(self):
+        """A `static mut $n` a `macro_rules!` declares has no name yet, and `$n` could never be
+        allowlisted (`$` anchors in `grep -E`). It is reported as `<macro>!`, with the line, so a
+        named entry in ci/allow/statics.txt can match it."""
+        report = self._heap_statics({
+            "screens/src/a.rs": (
+                "fn before() {}\n"
+                "macro_rules! cache {\n"
+                "    ($n:ident) => { static mut $n: u32 = 0; };\n"
+                "}\n"
+                "macro_rules! other { ($a:ident, $b:ident) => {\n"
+                "    static mut $a: u32 = 0;\n"
+                "    static mut $b: u32 = 0;\n"
+                "} }\n"),
+        }, lines=True)
+        fields = sorted(line.split("\t") for line in report)
+        self.assertEqual([(f[0], f[1]) for f in fields],
+                         [("rust-modules/screens/src/a.rs", "cache!"), ("rust-modules/screens/src/a.rs", "other!")])
+        self.assertIn("line 3", fields[0][2])
+        self.assertIn("line 6", fields[1][2])
+        for f in fields:
+            self.assertNotIn("$", f[1])
+
+    def test_check_statics_lets_a_named_entry_allow_a_macro_declared_static(self):
+        """End to end through `ci/check-statics.sh` on a scratch checkout: a heap static a
+        `macro_rules!` declares is refused until `ci/allow/statics.txt` names it `cache!`, then
+        passes, and the entry goes stale (fails) once the macro is gone."""
+        ci = os.path.join(self.ROOT, "ci")
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, "ci", "allow"))
+            for fn in ("check-statics.sh", "check-statics-heap.py", "module_graph.py", "rust_test_modules.py"):
+                shutil.copy(os.path.join(ci, fn), os.path.join(root, "ci", fn))
+            mod = os.path.join(root, "rust-modules")
+            for d in ("ui/src", "appkit/src", "screens/src", "data/src/metadata", "data/src/stores",
+                      "data/src/search", "media/src/route", "media/src/player"):
+                os.makedirs(os.path.join(mod, d))
+            for f in ("data/src/person.rs", "data/src/metadata.rs", "data/src/pms.rs",
+                      "media/src/route/decision.rs", "media/src/player/engine.rs", "ui/src/press.rs"):
+                open(os.path.join(mod, f), "w").close()
+            source = os.path.join(mod, "gfx", "src", "a.rs")
+            os.makedirs(os.path.dirname(source))
+            allow = os.path.join(root, "ci", "allow")
+            with open(os.path.join(allow, "statics-migration.txt"), "w") as f:
+                f.write("# count: 0\n")
+
+            def run(macro, entry):
+                with open(source, "w") as f:
+                    f.write(macro)
+                with open(os.path.join(allow, "statics.txt"), "w") as f:
+                    f.write(f"# count: {len(entry)}\n" + "".join(entry))
+                r = subprocess.run([os.path.join(root, "ci", "check-statics.sh")], capture_output=True, text=True)
+                return r.returncode, r.stdout + r.stderr
+
+            macro = "macro_rules! cache { ($n:ident) => { static mut $n: Vec<u8> = Vec::new(); } }\n"
+            code, out = run(macro, [])
+            self.assertNotEqual(code, 0, out)
+            self.assertIn("static mut cache! — Vec<u8> — is declared through macro `cache!` (line 1)", out)
+            self.assertIn("do not allowlist it", out)
+            entry = "rust-modules/gfx/src/a.rs\tcache!: boot-time table, owned by the main thread\n"
+            code, out = run(macro, [entry])
+            self.assertEqual(code, 0, out)
+            code, out = run("fn nothing() {}\n", [entry])
+            self.assertNotEqual(code, 0, out)
+            self.assertIn("stale: rust-modules/gfx/src/a.rs cache!", out)
 
     def test_every_allowlist_declares_its_own_count(self):
         allow = os.path.join(self.ROOT, "ci", "allow")
@@ -6201,7 +6430,7 @@ impl PersonOwnerGateFixture {
         "nav.txt": 0,
         "sibling-migration.txt": 0,
         "statics-migration.txt": 0,
-        "statics.txt": 17,
+        "statics.txt": 5,  # the two data/search/recents.rs persistence-seam statics + the three gfx.rs GL-context heap statics (ci/check-statics-heap.py); every ui/ render cache, the elide memo, the key memo and the text-input queue are thread_local!
         "store-seams.txt": 0,
         "threads.txt": 0,
         "ticks.txt": 2,

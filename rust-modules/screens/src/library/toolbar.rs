@@ -11,13 +11,23 @@ pub(super) const SORTFILTER: u32 = 10;
 pub(super) const CRUMB_ROOT: u32 = 11;
 
 /// What the Collections control knows about its count (`LibraryLike::collections_count`).
+///
+/// **"Collections" is on the row only with its count** (the #843 spec: it always shows its count),
+/// so only [`Self::Count`] puts it there. A bare "Collections" would be drawn for a library that has
+/// none, for the frames until its probe answers, and then withdrawn: the flash this enum's two
+/// other states prevent. The count the row holds is kept while the SAME library's probe reads
+/// nothing again (`LibraryScreen::refresh_header`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub(super) enum CollectionsControl {
-    /// Not probed yet: the control shows "Collections" with no number.
+    /// Not probed yet (or the probe learned nothing): the control is NOT on the row, though its
+    /// room in the cluster's budget is kept so the names do not repack when the count lands. A
+    /// count that lands later fades in through the row's `HeaderSwap`.
     #[default]
     Unknown,
     Count(u32),
-    /// The probe found none, or the server refused it (HTTP 403): the control is not on the row.
+    /// The probe found none, or the server refused it (HTTP 403): the control is not on the row,
+    /// though its room in the cluster's budget is kept, as for [`Self::Unknown`], so the names do
+    /// not repack when one of the two turns into the other.
     Hidden,
 }
 
@@ -32,13 +42,14 @@ impl CollectionsControl {
 }
 
 impl LibraryScreen {
-    /// The controls on the row, left to right. A hidden Collections control is not on it.
+    /// The controls on the row, left to right. The Collections control is on it only with a known
+    /// count: an unknown or hidden one is not.
     pub(super) fn toolbar_elems(&self) -> &'static [u32] {
         // The Collections page's row: the crumb (its own element, `CRUMB_ROOT`) and, only when the
         // server declares two sorts, the one Sort control. No Collections, Recommended or menu.
         if self.listing == Listing::Collections { return if self.collections_sort { &[SORTFILTER] } else { &[] }; }
-        if self.collections == CollectionsControl::Hidden { &[RECOMMENDED, SORTFILTER] }
-        else { &[COLLECTIONS, RECOMMENDED, SORTFILTER] }
+        if matches!(self.collections, CollectionsControl::Count(_)) { &[COLLECTIONS, RECOMMENDED, SORTFILTER] }
+        else { &[RECOMMENDED, SORTFILTER] }
     }
 
 

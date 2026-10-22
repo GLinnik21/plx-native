@@ -394,9 +394,9 @@ pub fn note_jump(changed: bool) {
 /// - a `Spring::jump` that actually teleported something (via [`note_jump`])
 /// - `Press::tick` (`plx_ui::press`), on each frame the release spring of a press that latched
 ///   long (a hold) visibly moves its card, by [`settled`], and on its phase changes: a card the
-///   item menu's lift owns (a card section left it out of the page pass) springs without any
-///   report, but an opener no card section draws (the Detail episode strip, season tabs, hero
-///   buttons, the Home hero) springs under the frozen host snapshot, which must be re-taken until
+///   item menu's lift owns (a page left it out through `DrawFrame::leaves_out`: a card section's
+///   tile, a Detail episode cell) springs without any report, but an opener no page leaves out
+///   (season tabs, hero buttons, the Home hero) springs under the frozen host snapshot, which must be re-taken until
 ///   it rests. A tap's press never reports
 /// - an `Xfade` ramp mid-flight, and a `Spinner` being drawn — the two time-driven animators
 ///   `note_spring` cannot see

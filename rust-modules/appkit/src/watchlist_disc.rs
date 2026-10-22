@@ -24,26 +24,6 @@ pub fn face(m: Membership) -> Face {
     if m == Membership::On { Face::Filled } else { Face::Outline }
 }
 
-/// The name a face wears while the disc holds focus: the action the outline offers, the state the
-/// filled face reports (the menu's own words, `watchlist.action.*`; the filled one is the detail
-/// page's "On Watchlist"). A press on the filled face removes, but the name says what the disc IS.
-pub fn face_name(f: Face) -> &'static str {
-    match f {
-        Face::Outline => plx_platform::i18n::msg::watchlist_action_add(),
-        Face::Filled => plx_platform::i18n::msg::watchlist_action_on_list(),
-    }
-}
-
-/// **Both of the disc's names with how much each is wanted along the flip** (`pos`: 0 the outline at
-/// rest, 1 the filled face; [`Disc::pos`]): the glyph's own clock, so the words change with the
-/// glyph and not a frame before it. `hero_layout::name_reveal` turns these into the slot's swap, the
-/// old name out over the first half of the flip and the new one in over the second, in either
-/// direction.
-pub fn names(pos: f32) -> [(&'static str, f32); 2] {
-    let p = pos.clamp(0.0, 1.0);
-    [(face_name(Face::Outline), 1.0 - p), (face_name(Face::Filled), p)]
-}
-
 /// The glyph a face draws. The pair share one silhouette (`icons.rs`), so a flip never moves an edge.
 pub fn face_icon(f: Face) -> plx_ui::icons::Icon {
     match f {
@@ -202,19 +182,6 @@ mod tests {
         assert_eq!(face_icon(Face::Outline), plx_ui::icons::Icon::Bookmark);
         assert_eq!(face_icon(Face::Filled), plx_ui::icons::Icon::BookmarkFill);
         assert_eq!((target(Membership::On), target(Membership::Off), target(Membership::Unknown)), (1.0, 0.0, 0.0));
-    }
-
-    /// The names ride the flip: along it the outline's is wanted `1 - pos` and the filled face's `pos`
-    /// (the mirror images `hero_layout::name_reveal` trades the slot with), and a progress outside the
-    /// flip is clamped.
-    #[test]
-    fn the_names_are_wanted_along_the_flip() {
-        let (add, on) = (face_name(Face::Outline), face_name(Face::Filled));
-        assert_ne!(add, on);
-        assert_eq!(names(0.0), [(add, 1.0), (on, 0.0)]);
-        assert_eq!(names(1.0), [(add, 0.0), (on, 1.0)]);
-        assert_eq!(names(0.25), [(add, 0.75), (on, 0.25)]);
-        assert_eq!((names(-3.0), names(9.0)), (names(0.0), names(1.0)));
     }
 
     /// The flip fills from the bottom, drops the ribbon 3 px at most, and rests exactly at both ends.

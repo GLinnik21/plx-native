@@ -78,6 +78,8 @@ likely will. I develop and test on a 2019 set, and opt-in usage reports show
 video playing on sets from 2018 through the newest, on webOS 11 — both direct play and server
 transcodes, Developer Mode installs included.
 
+Owners' reports, set by set, are in the [compatibility list](docs/compatibility.md).
+
 ### Known issues
 
 | Where | What happens |
@@ -96,7 +98,8 @@ A rooted TV with Homebrew Channel has no expiry.
 
 If something goes wrong, check [Troubleshooting](docs/troubleshooting.md) first, then
 [tell me what happened](https://github.com/GLinnik21/plx-native/issues/new/choose) — and if you own one of the
-sets above, it working is as useful a report as it failing.
+sets above, it working is as useful a report as it failing: post it under
+[Discussions > Compatibility](https://github.com/GLinnik21/plx-native/discussions/categories/compatibility).
 
 ## Installing
 

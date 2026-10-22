@@ -153,8 +153,8 @@ mod loopback {
         assert_eq!(seen.len(), 1);
         assert!(seen[0].starts_with("GET /library/all?type=1&guid="), "{}", seen[0]);
         assert_eq!(got, vec![
-            GuidMatch { guid: g[0].clone(), rating_key: "101".into(), library_section_id: Some(4), blur: None },
-            GuidMatch { guid: g[2].clone(), rating_key: "103".into(), library_section_id: None, blur: None },
+            GuidMatch { guid: g[0].clone(), rating_key: "101".into(), library_section_id: Some(4), blur: None, facts: Default::default() },
+            GuidMatch { guid: g[2].clone(), rating_key: "103".into(), library_section_id: None, blur: None, facts: Default::default() },
         ]);
     }
 

@@ -165,12 +165,20 @@ pub struct LibraryScreen {
     header_capsules: plx_ui::widgets::TabStrip,
     header_pop: plx_ui::widgets::CtlPop<1>,
     /// The row's content swap: the Collections count cross-fading in place when a rebuilt row
-    /// changes it, the control fading out when the new library has none. Held beside the capsules
+    /// changes it, the control fading out when the same library's row loses it and in when its
+    /// count lands (or dissolving between two x when the count's digits move it). A library
+    /// SWITCH cuts instead: the control the old library had is not drawn on the new page. Held beside the capsules
     /// for the same reason (a library switch replaces the row), but unlike them it is NOT hashed
     /// into the canon: the capsules' position steers the next frame, while `collections` is no part
     /// of the screen's shape (a recording never probes), so the swap has nothing to be a function of.
     header_swap: plx_ui::page_header::HeaderSwap,
-    /// What the Collections control knows (`LibraryLike::collections_count`), refreshed by `sync`.
+    /// The library (server, section key) the row in `header` was built for: a rebuild for another
+    /// library is a switch (`HeaderSwap::begin_switch`), for the same one the page's own row
+    /// changing (`HeaderSwap::begin`). A projection, not canon.
+    header_of: Option<(Option<plx_plex::plex::ServerId>, i64)>,
+    /// What the Collections control knows (`LibraryScreen::refresh_header` reads
+    /// `LibraryLike::collections_count` for the library on view each `sync`): the same library's
+    /// last count is held across a read of nothing, another library's never is.
     collections: CollectionsControl,
     /// The Collections page's header carries the Sort control (the server declared two or more
     /// sorts for the collections listing). A projection of `header`, read by `toolbar_elems`.
@@ -242,8 +250,8 @@ pub struct LibraryScreen {
     clock: super::clock_readout::ClockWatch,
     /// The question, asked from the failed read-out's *Connect*.
     plaintext_alert: super::plaintext_question::PlaintextAlert,
-    /// The standing "Hold OK for options" hint over a card (`plx_ui::hold_hint`, the rarer
-    /// cadence of a non-Home card screen). Paint-only: not hashed, not in the shape.
+    /// The standing "Hold OK for options" hint over a card (`plx_ui::hold_hint`, once per
+    /// install). Paint-only: not hashed, not in the shape.
     hold_hint: plx_ui::hold_hint::HoldHint,
 }
 
@@ -269,7 +277,7 @@ impl LibraryScreen {
                 MasterDetailGroups { master: RAIL_GROUP, detail: GRID_GROUP },
                 MasterDetailPolicy::new(MasterSide::Right, Follow::Live), Regions,
             ),
-            libraries: Vec::new(), folded: Vec::new(), header: plx_ui::page_header::RowCache::new(), header_capsules: plx_ui::widgets::TabStrip::new(), header_pop: plx_ui::widgets::CtlPop::new(), header_swap: plx_ui::page_header::HeaderSwap::new(), collections: CollectionsControl::Unknown, collections_sort: false, collections_asked: None,
+            libraries: Vec::new(), folded: Vec::new(), header: plx_ui::page_header::RowCache::new(), header_capsules: plx_ui::widgets::TabStrip::new(), header_pop: plx_ui::widgets::CtlPop::new(), header_swap: plx_ui::page_header::HeaderSwap::new(), header_of: None, collections: CollectionsControl::Unknown, collections_sort: false, collections_asked: None,
             type_before_collections: None, unfiltered: None,
             switched: false, enter_remembered: false, section: None, epoch: None, query: None, grid_reset_pending: false,
             layout, target_layout: layout,
@@ -281,7 +289,7 @@ impl LibraryScreen {
             plaintext: Default::default(),
             clock: Default::default(),
             plaintext_alert: super::plaintext_question::PlaintextAlert::new(PLAINTEXT_GROUP, PLAINTEXT_CANCEL, PLAINTEXT_CONNECT),
-            hold_hint: plx_ui::hold_hint::HoldHint::once_per_run(plx_ui::hold_hint::Kind::Library),
+            hold_hint: plx_ui::hold_hint::HoldHint::new(),
         }
     }
 
@@ -354,11 +362,10 @@ impl LibraryScreen {
     #[cfg(any(test, feature = "test-support"))]
     pub fn probe_scroll_target(&self) -> f32 { self.scroll_target }
 
-    /// The two caption lines (title, details) the grid draws under tile `i` of `view`.
+    /// Card `i`'s settled cell with the focused caption band folded in, and the grid's column count:
+    /// what a test reads the room the band opened under a row of cards from.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn probe_caption(&self, view: plx_data::stores::browse::ListingView<'_>, i: usize) -> [Option<String>; 2] {
-        self.pair.detail.probe_caption(view, i)
-    }
+    pub fn probe_cell(&self, i: usize) -> (plx_ui::Rect, usize) { (self.pair.detail.probe_cell(i), self.layout.cols()) }
 
     /// How many header rows this page has built: the build counter of its `RowCache`/`SharedRow`.
     #[cfg(any(test, feature = "test-support"))]
@@ -441,11 +448,13 @@ impl LibraryScreen {
         self.store(target, LibraryWork::Requery, fx);
     }
 
-    /// The caption policy the grid reserves its band for: the Under posters setting, except on the
-    /// Collections page, whose band always holds the title line (`collections_page::band_policy`).
-    fn grid_policy(&self) -> plx_ui::caption_policy::CaptionPolicy {
-        let stored = parts::caption_policy();
-        if self.listed == plx_data::browse::LibraryType::Collections { collections_page::band_policy(stored) } else { stored }
+    /// The caption policy the grid reserves its band for: the Under posters setting for every
+    /// listing of POSTERS (the Collections page included), and `None`, the legacy band, for the
+    /// Episodes listing, whose landscape stills are not on the policy like every other landscape
+    /// surface (`registry::captions::still_label` words their 92 px block in the 114 px legacy band,
+    /// which the policy's 80 / 40 px gap would run under the next row).
+    fn grid_policy(&self) -> Option<plx_ui::caption_policy::CaptionPolicy> {
+        (self.listed != plx_data::browse::LibraryType::Episodes).then(parts::caption_policy)
     }
 
     fn sync<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
@@ -604,7 +613,7 @@ impl LibraryScreen {
             self.layout.rows
         } else { rows };
         let episodes = self.layout.is_episodes();
-        let band_h = plx_ui::caption_policy::band_h(&self.grid_policy());
+        let band_h = self.grid_policy().as_ref().map_or(plx_ui::cards::LEGACY_BAND_H, plx_ui::caption_policy::band_h);
         self.layout = if self.readout == Readout::Failed {
             Layout::failed(true)
         } else { Layout::new(true, rows) }.with_episodes(episodes).with_band_h(band_h)
@@ -1248,9 +1257,10 @@ impl LibraryScreen {
             }
             ScreenEvent::FocusMoved { from, to, by } => {
                 // The grid opens the row's caption band and, for a deliberate move only, grows the
-                // tile from rest over the frames after this. A restore or a
-                // reconcile is adopted whole by its next tick so a page returning from a Detail
-                // push lands as it was left.
+                // tile from rest over the frames after this. A restore or a reconcile announced
+                // here is adopted whole by its next tick, unless a dormant tick ran since (a page
+                // returning from a Detail push under the held image, `Tick` below), in which case
+                // the first awake tick regrows the tile from rest (`ui::cards`, the pop rule).
                 self.pair.detail.on(ev, cx, fx, self.scroll.pos);
                 // The engine seats a page it has just mounted in the first group it can (the bar), before a
                 // page whose listing is still loading has anything to seat. Such a page holds no seat

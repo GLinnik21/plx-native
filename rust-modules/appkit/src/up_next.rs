@@ -34,6 +34,8 @@
 //! never hands us a different show. Sourcing it from Continue Watching is the owner's call.)*
 #![allow(dead_code)]
 use plx_media::route::UpNext;
+use plx_ui::hstack::{Align, HStack, Item};
+use plx_ui::vstack::{Anchor, VStack};
 use plx_ui::label::{HAlign, Label};
 use plx_ui::theme;
 use plx_ui::widgets::{draw_card, Button, ControlGround};
@@ -220,21 +222,27 @@ pub struct Layout {
 /// in [`layout`]: `text_width` is `TTF_SizeUTF8`, which the host suite cannot even link against.
 pub fn layout_of(next_w: f32, credits_w: f32) -> Layout {
     use crate::player_hud::{CTRL_H, CTRL_RIGHT, CTRL_Y};
-    let next = Rect::new(CTRL_RIGHT - next_w, CTRL_Y, next_w, CTRL_H);
-    let credits = Rect::new(next.x - PILL_GAP - credits_w, next.y, credits_w, next.h);
-    let caption = Rect::new(
-        CTRL_RIGHT - CAPTION_W,
-        CTRL_Y - BTN_GAP - CAPTION_H,
-        CAPTION_W,
-        CAPTION_H,
-    );
+    // The two pills are one run, right-anchored at the control row's edge, `PILL_GAP` apart.
+    let pills = [Item::new(credits_w), Item::new(next_w)];
+    let row = HStack::new(&pills, PILL_GAP, Align::Trailing(CTRL_RIGHT));
+    let (credits_x, _) = row.span(0).unwrap_or_default();
+    let (next_x, _) = row.span(1).unwrap_or_default();
+    let next = Rect::new(next_x, CTRL_Y, next_w, CTRL_H);
+    let credits = Rect::new(credits_x, next.y, credits_w, next.h);
+    // The column, bottom-up from the control row: still, caption, row. The unequal gaps are what
+    // group them (the caption hugs the still; the buttons get more air), carried as the caption's
+    // own `after`. The still's height is its 16:9 frame at the primary's width.
     let still_h = (next_w * 9.0 / 16.0).round();
-    let still = Rect::new(
-        CTRL_RIGHT - next_w,
-        caption.y - CAP_GAP - still_h,
-        next_w,
-        still_h,
-    );
+    let column = [
+        Item::new(still_h),
+        Item::new(CAPTION_H).after(BTN_GAP),
+        Item::new(CTRL_H),
+    ];
+    let col = VStack::new(&column, CAP_GAP, Anchor::Bottom(CTRL_Y + CTRL_H));
+    let (still_y, _) = col.span(0).unwrap_or_default();
+    let (caption_y, _) = col.span(1).unwrap_or_default();
+    let caption = Rect::new(CTRL_RIGHT - CAPTION_W, caption_y, CAPTION_W, CAPTION_H);
+    let still = Rect::new(CTRL_RIGHT - next_w, still_y, next_w, still_h);
     Layout {
         still,
         caption,
@@ -252,7 +260,7 @@ pub fn layout_of(next_w: f32, credits_w: f32) -> Layout {
 pub fn layout(row: &mut crate::player_hud::TransportRow, measure: &dyn plx_machine::machine::Measure) -> Layout {
     layout_of(
         crate::player_hud::ctrl_slot(row, plx_platform::i18n::msg::widgets_next_episode(), measure).w,
-        plx_ui::widgets::Button::pill_w_measured(plx_platform::i18n::msg::widgets_next_credits_c(), theme::size::BODY, false, false, measure),
+        plx_ui::widgets::Button::pill_w_measured(plx_platform::i18n::msg::widgets_next_credits_c(), theme::size::BODY, false, None, measure),
     )
 }
 
@@ -263,7 +271,7 @@ pub fn layout(row: &mut crate::player_hud::TransportRow, measure: &dyn plx_machi
 pub fn layout_peek(row: &crate::player_hud::TransportRow, measure: &dyn plx_machine::machine::Measure) -> Layout {
     layout_of(
         crate::player_hud::ctrl_slot_w(row, plx_platform::i18n::msg::widgets_next_episode(), measure),
-        plx_ui::widgets::Button::pill_w_measured(plx_platform::i18n::msg::widgets_next_credits_c(), theme::size::BODY, false, false, measure),
+        plx_ui::widgets::Button::pill_w_measured(plx_platform::i18n::msg::widgets_next_credits_c(), theme::size::BODY, false, None, measure),
     )
 }
 
@@ -416,7 +424,7 @@ mod tests {
     /// the host suite cannot link SDL2_ttf at all.
     #[test]
     fn the_column_is_right_anchored_on_one_edge() {
-        // the real orders of magnitude: `ctrl_slot`'s floor is 236, and "Watch Credits" measures a
+        // the real orders of magnitude: `ctrl_slot`'s floor is 232, and "Watch Credits" measures a
         // little under it — which is the asymmetry the design is making a point of
         let l = layout_of(243.0, 226.0);
         let (n, c, t, cap) = (l.next, l.credits, l.still, l.caption);

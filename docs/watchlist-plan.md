@@ -506,7 +506,7 @@ Corner veil darkened to rgba(0,0,0,.55) DS-wide (watched tick too). Ruled out: d
 duotone, frosted tiles.
 
 **Detail.** With Play/Resume: icon-only bookmark disc SECOND after Play/Resume; outline when
-not on list, filled when on. No labels under hero discs at rest (superseded by design-review S25: the focused disc wears a caption, "Add to Watchlist" / "On Watchlist"). Without Play (coming soon / on no
+not on list, filled when on. No label under a hero disc, at rest or focused (design-review S25's focused caption, "Add to Watchlist" / "On Watchlist", was removed by the owner on 2026-10-20). Without Play (coming soon / on no
 server / server offline): labelled pill in primary slot "Add to Watchlist" (outline) / "On
 Watchlist" (filled) + status line with icon; coming-soon also has a 36 px "Coming 12 March"
 line and a Trailer button. NO toast anywhere (not `platform/src/tv/toast.rs`); button state is

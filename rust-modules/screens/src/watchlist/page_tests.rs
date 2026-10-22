@@ -28,7 +28,7 @@ const UNPLAYABLE: [TileState; 5] = [
 
 /// The details line the default Under posters policy words for `row` (empty: no line).
 fn default_caption(row: &plx_data::watchlist::model::WatchRow, state: TileState) -> String {
-    caption::label(row, state, &plx_ui::caption_policy::CaptionPolicy::DEFAULT)
+    caption::label(row, state, &plx_ui::caption_policy::CaptionPolicy::DEFAULT, &Default::default())
         .caption.map(|c| c.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
@@ -86,7 +86,7 @@ fn the_verdicts_title_and_pill_fit_in_every_language() {
     assert!(over.is_empty(), "lines wider than the safe area:\n  {}", over.join("\n  "));
 }
 
-/// **A caption is the state's sentence, else the year, else nothing.**
+/// **A caption is the state's sentence, else the year, else what the title is.**
 #[test]
 fn captions_carry_the_state_sentence_with_the_month_date() {
     let _guard = language_on_this_thread_for_test(Preference::En);
@@ -104,7 +104,7 @@ fn captions_carry_the_state_sentence_with_the_month_date() {
     row.release = Some("soon".into());
     assert_eq!(default_caption(&row, TileState::ComingSoon), "Coming soon");
     row.year = None;
-    assert_eq!(default_caption(&row, TileState::Available), "");
+    assert_eq!(default_caption(&row, TileState::Available), "Movie", "no year: the kind, never an empty line under an open band");
 }
 
 /// **One mark per tile, and the no-server wash is quieter under focus** (TileStates board).

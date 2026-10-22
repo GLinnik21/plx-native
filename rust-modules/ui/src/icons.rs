@@ -26,8 +26,8 @@
 //! resolves to a clean gap at 4×), and no ink on the border.
 #![allow(dead_code)]
 use crate::{Painter, Rect};
+use std::cell::RefCell;
 use std::os::raw::c_uint;
-use std::ptr::addr_of_mut;
 
 // `Debug` so a host test can name the glyph it expected: `widgets`' play-indicator table grades
 // an Option<Icon> per cell and an assertion that cannot print the two sides is one nobody reads.
@@ -263,6 +263,9 @@ pub const fn ink_x(id: Icon) -> (f32, f32) {
         Icon::Rewind | Icon::FastForward => (2.6 / 24.0, 21.4 / 24.0),
         // One entry for the mirrored pair: the reflected path has the same ink bounds.
         Icon::Chevron | Icon::ChevronLeft => (7.5 / 24.0, 16.5 / 24.0),
+        // The fold pair: path x 6..18 plus the 3-unit stroke's 1.5 each side. One entry, the pair
+        // reflected about y=12 (`the_fold_chevrons_ink_matches_their_assets`).
+        Icon::ChevronDown | Icon::ChevronUp => (4.5 / 24.0, 19.5 / 24.0),
         // The bookmark pair share one silhouette, so one entry (the fill is the outline's own shape).
         Icon::Bookmark | Icon::BookmarkFill => (4.4 / 24.0, 19.6 / 24.0),
         Icon::Clock | Icon::ServerSlash | Icon::CircleSlash => (1.9 / 24.0, 22.1 / 24.0),
@@ -344,12 +347,18 @@ fn src(id: Icon) -> &'static str {
 
 // (icon, px) → GL texture. The UI is fixed 1080p so only a handful of (icon,size) pairs ever
 // appear; a flat Vec is plenty. Rasterize+upload once, then reuse.
+//
+// A `thread_local!`, because the texture names it holds belong to the GL context of the thread that
+// uploaded them: the render thread, the only one that draws. (The entries have no destructor, so
+// nothing runs GL at thread exit; the textures live for the process, as `CACHE` never evicts.)
 struct Entry {
     id: Icon,
     px: i32,
     tex: c_uint,
 }
-static mut CACHE: Vec<Entry> = Vec::new();
+thread_local! {
+    static CACHE: RefCell<Vec<Entry>> = const { RefCell::new(Vec::new()) };
+}
 
 // Antialias the way text does — rasterise the vector at the *exact* draw size and keep nanosvg's own
 // coverage-AA edge (SS = 1: no supersample). The old path rasterised SS× larger and let GL minify it
@@ -381,32 +390,33 @@ pub fn icon_raster_px(px: i32) -> i32 {
 }
 
 fn tex_for(id: Icon, px: i32) -> c_uint {
-    unsafe {
-        let cache = &mut *addr_of_mut!(CACHE);
-        // Keyed on the CLAMPED size, not the caller's raw `px` — two different `px` values that
-        // land on the same `icon_raster_px` result rasterize identically, so they share one
-        // texture instead of minting a duplicate. This is also what makes `MAX_ICON_PX`'s own
-        // doc claim ("a runaway caller cannot blow the cache open-ended") actually true: keyed on
-        // the raw `px`, a caller sweeping through distinct oversized values still minted one
-        // entry per value, unbounded, the clamp having capped only the RASTER, not the cache.
-        let raster_px = icon_raster_px(px);
-        if let Some(e) = cache.iter().find(|e| e.id == id && e.px == raster_px) {
-            return e.tex;
-        }
-        // `render_scale` is the simulator's supersampling (1 on a television): the mask is
-        // rasterised at physical size and still drawn into the same logical rect.
-        let target = raster_px * plx_base::surface::render_scale();
-        let hi = target * SS;
-        let tex = match plx_gfx::svg::rasterize(src(id), hi, hi) {
-            Some(rgba) => {
-                let small = downsample_alpha(&rgba, hi, SS);
-                upload(target, &small)
-            }
-            None => 0,
-        };
-        cache.push(Entry { id, px: raster_px, tex });
-        tex
+    // Keyed on the CLAMPED size, not the caller's raw `px` — two different `px` values that
+    // land on the same `icon_raster_px` result rasterize identically, so they share one
+    // texture instead of minting a duplicate. This is also what makes `MAX_ICON_PX`'s own
+    // doc claim ("a runaway caller cannot blow the cache open-ended") actually true: keyed on
+    // the raw `px`, a caller sweeping through distinct oversized values still minted one
+    // entry per value, unbounded, the clamp having capped only the RASTER, not the cache.
+    let raster_px = icon_raster_px(px);
+    // The cell is borrowed only for the lookup and, below, for the push: the rasteriser and the
+    // upload run with no borrow held, so nothing they call can meet one.
+    if let Some(tex) = CACHE.with(|cache| {
+        cache.borrow().iter().find(|e| e.id == id && e.px == raster_px).map(|e| e.tex)
+    }) {
+        return tex;
     }
+    // `render_scale` is the simulator's supersampling (1 on a television): the mask is
+    // rasterised at physical size and still drawn into the same logical rect.
+    let target = raster_px * plx_base::surface::render_scale();
+    let hi = target * SS;
+    let tex = match plx_gfx::svg::rasterize(src(id), hi, hi) {
+        Some(rgba) => {
+            let small = downsample_alpha(&rgba, hi, SS);
+            upload(target, &small)
+        }
+        None => 0,
+    };
+    CACHE.with(|cache| cache.borrow_mut().push(Entry { id, px: raster_px, tex }));
+    tex
 }
 
 /// Upload a rasterized mask, or — in a HOST TEST — do not.
@@ -474,6 +484,10 @@ pub fn draw_raster(p: Painter, id: Icon, r: Rect, raster_px: i32, tint: [f32; 4]
     // A text-recording painter submits no primitive; rasterising the mask for it would only
     // spend the transition's prewarm budget on something it then does not draw.
     if px <= 0 || p.is_recording() {
+        #[cfg(any(test, feature = "test-support"))]
+        if p.is_recording() {
+            crate::draw_census::note_icon(id, p.place(r));
+        }
         return;
     }
     let tex = tex_for(id, px);
@@ -522,6 +536,8 @@ mod ink_tests {
             Icon::FastForward,
             Icon::Chevron,
             Icon::ChevronLeft,
+            Icon::ChevronDown,
+            Icon::ChevronUp,
             Icon::Check,
         ] {
             let (l, r) = ink_x(id);
@@ -541,6 +557,17 @@ mod ink_tests {
         assert_eq!(ink_x(Icon::ChevronLeft), ink_x(Icon::Chevron));
         assert!(src(Icon::Chevron).contains(r#"d="M9 6l6 6-6 6""#));
         assert!(src(Icon::ChevronLeft).contains(r#"d="M15 6l-6 6 6 6""#));
+    }
+
+    /// The fold chevrons' `ink_x` is their asset's own bounds (path x 6..18, stroke 3), and the up
+    /// mark is the down mark reflected about y=12, so one entry serves the pair.
+    #[test]
+    fn the_fold_chevrons_ink_matches_their_assets() {
+        assert_eq!(ink_x(Icon::ChevronDown), ink_x(Icon::ChevronUp));
+        assert!(src(Icon::ChevronDown).contains(r#"d="M6 9l6 6 6-6""#));
+        assert!(src(Icon::ChevronUp).contains(r#"d="M6 15l6-6 6 6""#));
+        let (l, r) = ink_x(Icon::ChevronDown);
+        assert!((l - (6.0 - 1.5) / 24.0).abs() < 1e-6 && (r - (18.0 + 1.5) / 24.0).abs() < 1e-6);
     }
 
     #[test]

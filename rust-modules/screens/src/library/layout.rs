@@ -52,7 +52,7 @@ pub(super) struct Layout {
     episodes: bool,
     grid_bands: [GridBand; MAX_GRID_BANDS],
     /// The focused grid row's band height under the Under posters setting (0 / 80 / 112; the
-    /// legacy 92 until [`with_band_h`](Self::with_band_h)). A pref input, not motion: not in the canon.
+    /// legacy 114 until [`with_band_h`](Self::with_band_h)). A pref input, not motion: not in the canon.
     band_h: f32,
 }
 

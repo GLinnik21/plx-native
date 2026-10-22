@@ -569,8 +569,9 @@ window must request and upload missing art and then draw every artwork-bearing c
 A high FPS with no poster work cannot pass. The reversal also requires real texture losses,
 refusals of evicted slots during reversal, and rearming afterward. The dive records
 actual snap plus shelf offset/velocity throughout Hero, dive and settle, requiring
-its horizontal spring to stay stationary while the retained offset is transformed.
-The dive hands over at snap 0.9, while that horizontal product is still moving fast;
+its horizontal spring to stay stationary (a Home shelf draws at the offset it holds and the
+dive does not scale it), so the motion it grades is the page's vertical travel (snap 0 to 1 is
+617 px for every shelf). The dive hands over at snap 0.9, while the dive is still moving;
 the settle phase captures its natural deceleration and resulting art arrivals.
 
 These scenes send focus commands only, and size their targets to the catalog they boot into

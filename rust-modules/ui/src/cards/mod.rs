@@ -1,7 +1,7 @@
 //! `plx_ui::cards` — the shared card sections (layer L1: the sections built on the L0 row and grid primitives).
 //!
 //! [`Shelf`] (one horizontal strip) and [`Grid`] (the six-column poster grid) own everything a card
-//! section does that is not the screen's content: the focus pop, the let-go of the tile that lost
+//! section does that is not the screen's content: the focus pop, the let-go of every tile that lost
 //! focus, scrolling to keep focus visible, the caption band, drawing the focused tile last, culling,
 //! hit-map stops, `Focusable` placement, paging requests and idle. A screen supplies its content
 //! through [`CardSource`] and reacts to the one [`CardEvent`] [`Shelf::on`] / [`Grid::on`] returns;
@@ -41,25 +41,37 @@
 //!   ghosts fade on K_SCALE, survivors spring home on K_SCROLL.
 //! - **The pop rule.** A tile the engine reports focused that no deliberate move (`By::Dir` /
 //!   `By::Pointer`) announced draws at FULL focus scale at once — a restore or reconcile is adopted
-//!   whole, a page returns exactly as it was left. An unfocused tile draws at rest (or the live
-//!   let-go of the one that just lost focus). A deliberate move grows from rest.
-//!   A shelf or grid whose page is still dissolving in is [`dormant`](Shelf::dormant) /
-//!   [`Grid::dormant`]: nothing is lifted under the fade, and the first awake tick grows the focused
-//!   card from rest (a focus the engine restored meanwhile is adopted whole, as above). A grid keeps
+//!   whole, a page returns as it was left (a page that returns dormant, below, regrows its focused
+//!   card from rest instead). An unfocused tile draws at rest (or the live
+//!   let-go of one that lost focus and has not landed). A deliberate move grows from rest (or from
+//!   where its own let-go is, when focus comes back to a tile still letting go).
+//!   A shelf or grid whose page is still dissolving in, or is shown as a held transition image, is
+//!   [`dormant`](Shelf::dormant) / [`Grid::dormant`]: nothing is lifted under the fade or the image
+//!   (a shelf on a page in view eases what was lifted to rest; under a held image it, like a grid,
+//!   is at rest on its first tick), and the first awake tick grows the focused card from rest. A
+//!   focus the engine restored while the owner slept regrows from rest too, once a dormant tick has
+//!   run since (the Recommended page returning from a Detail under the BACK dip's image); only a
+//!   restore announced after the last dormant tick, on the tick the page wakes, is adopted whole,
+//!   as above. A grid keeps
 //!   its caption bands shut meanwhile and the waking tick opens the focused row's on the lift's own
-//!   frames: a caption is its band's content (alpha = the band's expansion), so it never stands at
-//!   full strength under a tile that has not lifted. An owner seating its page's ARRIVAL later (a
+//!   frames: a caption is its band's content (a line is drawn only as the band opens and the room
+//!   holds it, `card_row::line_reveal_for`), so it never stands at full strength under a tile that
+//!   has not lifted. An owner seating its page's ARRIVAL later (a
 //!   listing that answered after the dissolve lands its first poster) says so with
 //!   [`Grid::arrive`], and that one `FocusMoved` grows from rest like a deliberate move, band and all.
 //! - **One frame convention.** A [`SectionFrame`]'s `y` is screen space; the painter handed to
-//!   `draw` may carry any translate (see [`SectionFrame`]).
+//!   `draw` may carry any translate (see [`SectionFrame`]). It also says how far the heading under
+//!   the shelf is drawn above its place (`below_rise`), which a caption line stops short of.
 //! - **Press comes from the frame**, `cx.press` / `f.press` through `PressRead::dip_of()`, never the
 //!   thread-local. The dip lands on the card the press OWNS (`PressRead::owner`), focused or not:
 //!   an abandoned press springs back on the card that was pressed while its neighbour takes the
 //!   ordinary focus pop. [`Shelf::place`] / [`Grid::place`] answer the live drawn rect and the stop the
 //!   draw registers is the same value; `rest_rect` is the settled focus-scaled rect.
 //! - **Idle.** Springs report their own motion; a settled section reports none and parks at exact
-//!   rest. No call allocates except the focused tile's label.
+//!   rest. What allocates: the focused tile's label, a landing's diff, a [`Grid`]'s draw plan (built
+//!   each frame) and its let-go list, which grows to the most cards a held key has had letting go at
+//!   once and is kept across a dormant wake and [`Grid::forget_pop`], so a press or a tick allocates
+//!   only when a key first puts more in flight than the grid has seen.
 //!
 //! The L0 primitives (`card_row`, `poster_grid`) are `pub(crate)`: a screen cannot hand-assemble a
 //! shelf or a grid. What a screen legitimately reads from them (the tile style and label types, the
@@ -88,9 +100,9 @@ pub use avatars::AvatarRow;
 // Geometry and painters a screen's own layout reads (L0 `card_row` / `poster_grid`, re-exported so
 // those modules can stay `pub(crate)`).
 pub use crate::card_row::{
-    column_near_x, draw_credit_label, draw_heading, draw_label, focused_caption, heading_flow, heading_lift_max, label_band, paint_visible,
-    poster_label, resume_bar, reveal, scroll_into_view, settled_top, tile_rect, under_band, RowStyle, TileLabel,
-    BAND_OPEN, CREDIT_ROLE_LEADING, LABEL_BAND_COLLAPSED, LABEL_EDGE_FADE, LEGACY_BAND_H, MAX_ROW_ITEMS, ROW_PITCH_FIXED, UNDER_LABEL_H,
+    column_near_x, credit_role_dy, draw_credit_label, draw_heading, draw_heading_c, draw_label, cw_caption, heading_flow, heading_parts, HeadingPart, HEADING_SOURCE_PAD, heading_lift_max, label_band, paint_visible,
+    resume_bar, reveal, scroll_into_view, settled_top, settled_top_for, tile_rect, under_band, under_band_for, RowStyle, TileLabel,
+    band_open_for, BAND_OPEN, CREDIT_ROLE_LEADING, LABEL_BAND_COLLAPSED, LABEL_EDGE_FADE, LEGACY_BAND_H, MAX_ROW_ITEMS, ROW_PITCH_FIXED, UNDER_LABEL_H,
 };
 pub use crate::poster_grid::{
     growth_before as grid_growth_before, growth_before_for as grid_growth_before_for, rest_scroll as grid_rest_scroll, settled as grid_settled, GridBand, COLS as GRID_COLS, MAX_GRID_BANDS,
@@ -251,12 +263,6 @@ pub trait CardSource<H: Host> {
     fn hover(&self, _i: usize) -> crate::screen::Hover {
         crate::screen::Hover::Focus
     }
-    /// How much of the shelf's scroll the screen shows, 0 to 1 (default 1, all of it): the offset
-    /// the cards are drawn, placed and registered at, and the caption's settle lag, are scaled by
-    /// it. Home's row sweeps in with its hero dive, so a row with a retained offset does not jump.
-    fn sweep(&self) -> f32 {
-        1.0
-    }
     /// Whether cards the source does not hold lie between card `i - 1` and card `i`: a row that
     /// is a fixed head and a sliding window of what follows draws the two side by side while the
     /// window is away from the head. A press does not step across (it would pass every card
@@ -341,6 +347,21 @@ pub enum CardEvent<E> {
 pub struct SectionFrame {
     pub y: f32,
     pub clip: Rect,
+    /// How far what the layout owner puts directly below this shelf's caption band (the next
+    /// shelf's heading) is DRAWN above where the layout rests it, in px: the next shelf's
+    /// `heading_lift()`. A caption line is drawn only where that thing is not
+    /// (`card_row::line_reveal_for`). 0 for a shelf with nothing under it, or one whose neighbour
+    /// does not lift. A [`Stack`] reads it off the next section that takes room, so stacked shelves
+    /// are adjacent sections with the air under each as its [`StackPage::shelf_foot`], not a `Custom`
+    /// gap between two.
+    pub below_rise: f32,
+}
+
+impl SectionFrame {
+    /// A frame whose neighbour below does not lift (nothing under the shelf, or a resting block).
+    pub const fn new(y: f32, clip: Rect) -> Self {
+        Self { y, clip, below_rise: 0.0 }
+    }
 }
 
 /// What the `FocusMoved` events since a section's last tick told it about the card focus went to.
@@ -399,11 +420,7 @@ pub(crate) fn lifted_out<H: Host, S: CardSource<H>>(
     src: &S,
     i: usize,
 ) -> bool {
-    let out = f.lifted.is_some_and(|k| k.entry == entry && k.elem == src.elem(i));
-    if out {
-        crate::popover::set_lift_owns(true);
-    }
-    out
+    f.leaves_out(entry, src.elem(i))
 }
 
 /// The paging rule shared by both sections: ask for cards up to `end` once per `(len, end)`, and

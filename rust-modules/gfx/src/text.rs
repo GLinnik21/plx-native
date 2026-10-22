@@ -1,7 +1,10 @@
 //! SDL2_ttf text rendering (was src/text.c): font cache + glyph-texture LRU +
-//! draw_text. Main-thread only (all GL), so the caches are plain statics (no
-//! locking). Uses gfx's link_program/use_prog (crate path). Mostly GL/TTF FFI —
-//! the retui text backend.
+//! draw_text. Main-thread only (all GL), so the font and glyph caches (GL names, `TTF_Font`
+//! pointers, fixed arrays) are plain statics (no locking). The caches that OWN HEAP are not:
+//! the elide and measured-bounds memos are `thread_local!`, and each fallback face's cmap loads
+//! once into a `OnceLock`, because a heap-owning `static mut` that one thread replaces frees what
+//! another is using (`ci/check-statics-heap.py`). Uses gfx's link_program/use_prog (crate path).
+//! Mostly GL/TTF FFI — the retui text backend.
 //!
 //! The glyph cache is an LRU **with a hot window** since phase 11 (spec §8.1): an entry drawn
 //! within the last eight frames is not evicted while any colder slot exists, and the case where
@@ -72,7 +75,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::ffi::{CStr, CString};
 use std::hash::{Hash, Hasher};
 use std::os::raw::{c_char, c_int, c_uint, c_void};
@@ -316,8 +319,10 @@ pub fn draw_mask_inked(tex: c_uint, x: f32, y: f32, w: f32, h: f32, tint: *const
 /// One opened face per pixel size, per array. 80 covers the whole `theme::size` ladder; the
 /// simulator's supersampled rendering (`surface::render_scale`, up to 4x) rasterises at up to 4x it.
 const FONT_SLOTS: usize = if cfg!(feature = "hostsim") { 320 } else { 80 };
-static mut FONTS: [*mut TtfFont; FONT_SLOTS] = [std::ptr::null_mut(); FONT_SLOTS];
-static mut FONTS_B: [*mut TtfFont; FONT_SLOTS] = [std::ptr::null_mut(); FONT_SLOTS];
+static FONTS: [AtomicPtr<TtfFont>; FONT_SLOTS] =
+    [const { AtomicPtr::new(std::ptr::null_mut()) }; FONT_SLOTS];
+static FONTS_B: [AtomicPtr<TtfFont>; FONT_SLOTS] =
+    [const { AtomicPtr::new(std::ptr::null_mut()) }; FONT_SLOTS];
 static mut TEXT_OK: c_int = 0;
 
 #[derive(Clone, Copy)]
@@ -835,16 +840,15 @@ fn log_font_fallback_once() {
 
 unsafe fn font_at(sz: c_int, bold: c_int) -> *mut TtfFont {
     let sz = sz.clamp(8, FONT_SLOTS as c_int - 1) as usize;
-    let arr = if bold != 0 {
-        &mut *addr_of_mut!(FONTS_B)
-    } else {
-        &mut *addr_of_mut!(FONTS)
-    };
-    if arr[sz].is_null() {
-        arr[sz] = TTF_OpenFont(app_font(bold != 0).as_ptr(), sz as c_int);
-        if arr[sz].is_null() {
-            arr[sz] = TTF_OpenFont(app_font(false).as_ptr(), sz as c_int);
-            if arr[sz].is_null() {
+    // Rendering is main-thread-only, so `Relaxed` is all the slot needs; it is an `AtomicPtr` so
+    // the table is not a `static mut` that every access reborrows through a raw pointer.
+    let slot = if bold != 0 { &FONTS_B[sz] } else { &FONTS[sz] };
+    let mut f = slot.load(Ordering::Relaxed);
+    if f.is_null() {
+        f = TTF_OpenFont(app_font(bold != 0).as_ptr(), sz as c_int);
+        if f.is_null() {
+            f = TTF_OpenFont(app_font(false).as_ptr(), sz as c_int);
+            if f.is_null() {
                 // DroidSans is NOT an acceptable outcome, and it used to be an invisible one: the
                 // app booted looking plausible while every rung of the theme::size ladder rendered
                 // in a face the light-hinting/pixel-snapping contract was never tuned for — and
@@ -854,21 +858,23 @@ unsafe fn font_at(sz: c_int, bold: c_int) -> *mut TtfFont {
                 // tools/font-hint-audit.py reads HOST files, so it structurally cannot catch this.
                 // Say so once, loudly, so it is a reportable bug rather than a mystery.
                 log_font_fallback_once();
-                arr[sz] = TTF_OpenFont(DROIDSANS.as_ptr(), sz as c_int);
+                f = TTF_OpenFont(DROIDSANS.as_ptr(), sz as c_int);
             }
-            if !arr[sz].is_null() && bold != 0 {
-                TTF_SetFontStyle(arr[sz], TTF_STYLE_BOLD);
+            if !f.is_null() && bold != 0 {
+                TTF_SetFontStyle(f, TTF_STYLE_BOLD);
             }
         }
-        if !arr[sz].is_null() {
+        if !f.is_null() {
             // Light hinting y-snaps strokes to the NEAREST pixel. Arial's own bytecode (default
             // NORMAL hinting) rounds horizontal bars UP — at bold 26 that draws 4px bars over
             // 3px stems, inverting the design's stem>bar weight — so every size token had to
             // dodge "unlucky" px values. Light keeps the whole theme::size scale design-true.
-            TTF_SetFontHinting(arr[sz], TTF_HINTING_LIGHT);
+            TTF_SetFontHinting(f, TTF_HINTING_LIGHT);
         }
+        // A failed open stores null, so the next call retries.
+        slot.store(f, Ordering::Relaxed);
     }
-    arr[sz]
+    f
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -911,13 +917,21 @@ const EMOJI_FONT: &str = "appfont-emoji.ttf";
 /// defect path: reaching this one is normal and expected on a Korean library.
 const DROIDSANS_FALLBACK: &str = "/usr/share/fonts/DroidSansFallback.ttf";
 
-static mut FONTS_CJK: [*mut TtfFont; FONT_SLOTS] = [std::ptr::null_mut(); FONT_SLOTS];
-static mut FONTS_SYS: [*mut TtfFont; FONT_SLOTS] = [std::ptr::null_mut(); FONT_SLOTS];
-static mut FONTS_EMOJI: [*mut TtfFont; FONT_SLOTS] = [std::ptr::null_mut(); FONT_SLOTS];
-/// Per-link coverage, read from the file's cmap on FIRST NEED and never again. `None` after
-/// `COV_TRIED` means the file is absent or unreadable, i.e. the link is empty.
-static mut COV: [Option<plx_base::fontcov::Coverage>; 4] = [None, None, None, None];
-static mut COV_TRIED: [bool; 4] = [false; 4];
+static FONTS_CJK: [AtomicPtr<TtfFont>; FONT_SLOTS] =
+    [const { AtomicPtr::new(std::ptr::null_mut()) }; FONT_SLOTS];
+static FONTS_SYS: [AtomicPtr<TtfFont>; FONT_SLOTS] =
+    [const { AtomicPtr::new(std::ptr::null_mut()) }; FONT_SLOTS];
+static FONTS_EMOJI: [AtomicPtr<TtfFont>; FONT_SLOTS] =
+    [const { AtomicPtr::new(std::ptr::null_mut()) }; FONT_SLOTS];
+/// Per-link coverage, read from the file's cmap on FIRST NEED and never again. A slot holding
+/// `None` means the file is absent or unreadable, i.e. the link is empty.
+///
+/// A `OnceLock` per link and not a `thread_local!`: the cmap is a pure function of a file, so one
+/// load serves every thread (a per-thread table would read the 44k-codepoint cmap once per thread
+/// for nothing), and `get_or_init` runs the load exactly once even when two threads ask for the
+/// same link first.
+static COV: [std::sync::OnceLock<Option<plx_base::fontcov::Coverage>>; 4] =
+    [const { std::sync::OnceLock::new() }; 4];
 
 /// The ONE place a link's file is named — both the coverage read and the `TTF_OpenFont` go
 /// through it, so the two can never disagree about which file a link is.
@@ -940,13 +954,9 @@ fn link_file(link: Link) -> std::path::PathBuf {
 /// `font_at`'s DroidSans branch and logged loudly, and in that state the useful behaviour is the
 /// pre-chain one — render the whole string in one call with whatever face opened — not to split
 /// every string into runs against a coverage set of nothing.
-unsafe fn link_covers(link: Link, cp: u32) -> bool {
-    let i = link as usize;
-    let tried = &mut *addr_of_mut!(COV_TRIED);
-    if !tried[i] {
-        tried[i] = true;
+fn link_covers(link: Link, cp: u32) -> bool {
+    let loaded = COV[link as usize].get_or_init(|| {
         let path = link_file(link);
-        let cov = &mut *addr_of_mut!(COV);
         match plx_base::fontcov::of_file(&path) {
             Ok(c) => {
                 log(&format!(
@@ -954,19 +964,22 @@ unsafe fn link_covers(link: Link, cp: u32) -> bool {
                     path.display(),
                     c.len()
                 ));
-                cov[i] = Some(c);
+                Some(c)
             }
             // Not a failure for Cjk/Sys — a television without DroidSansFallback, or a host
             // simulator with no bundled face, simply has a shorter chain. Logged once either way,
             // WITH the path, because "why is this still tofu" is otherwise unanswerable from a log
             // and the answer is usually that the file is not where the install put it.
-            Err(e) => log(&format!(
-                "font chain: {link:?} unavailable — {}: {e}",
-                path.display()
-            )),
+            Err(e) => {
+                log(&format!(
+                    "font chain: {link:?} unavailable — {}: {e}",
+                    path.display()
+                ));
+                None
+            }
         }
-    }
-    match &(*addr_of!(COV))[i] {
+    });
+    match loaded {
         Some(c) => c.contains(cp),
         None => link == Link::Base,
     }
@@ -988,23 +1001,25 @@ unsafe fn link_font(link: Link, sz: c_int, bold: c_int) -> *mut TtfFont {
         return font_at(sz, bold);
     }
     let sz = sz.clamp(8, FONT_SLOTS as c_int - 1) as usize;
-    let arr = match link {
-        Link::Cjk => &mut *addr_of_mut!(FONTS_CJK),
-        Link::Emoji => &mut *addr_of_mut!(FONTS_EMOJI),
-        _ => &mut *addr_of_mut!(FONTS_SYS),
+    let slot = match link {
+        Link::Cjk => &FONTS_CJK[sz],
+        Link::Emoji => &FONTS_EMOJI[sz],
+        _ => &FONTS_SYS[sz],
     };
-    if arr[sz].is_null() {
+    let mut f = slot.load(Ordering::Relaxed);
+    if f.is_null() {
         let file = link_file(link);
         let Ok(c) = CString::new(file.into_os_string().into_encoded_bytes()) else {
             return std::ptr::null_mut();
         };
-        arr[sz] = TTF_OpenFont(c.as_ptr(), sz as c_int);
-        if !arr[sz].is_null() {
+        f = TTF_OpenFont(c.as_ptr(), sz as c_int);
+        if !f.is_null() {
             // The same light-hinting contract the base face is opened under (see `font_at`).
-            TTF_SetFontHinting(arr[sz], TTF_HINTING_LIGHT);
+            TTF_SetFontHinting(f, TTF_HINTING_LIGHT);
         }
+        slot.store(f, Ordering::Relaxed);
     }
-    arr[sz]
+    f
 }
 
 /// A string's split into single-face runs. Fixed capacity so the common path allocates nothing;
@@ -1022,13 +1037,13 @@ struct Runs {
 ///
 /// The ASCII shortcut is the reason an English library pays nothing at all for this feature: it
 /// returns before any coverage is loaded, so `appfont-cjk.ttf`'s cmap is never even opened.
-unsafe fn split_runs(s: &str) -> Option<Runs> {
-    split_runs_with(s, |link, cp| link_covers(link, cp))
+fn split_runs(s: &str) -> Option<Runs> {
+    split_runs_with(s, link_covers)
 }
 
 /// [`split_runs`] with the coverage oracle passed in — the pure half, so the host suite can drive
 /// it against the REAL shipped cmaps without a `TTF_Font`, a GL context or an install directory.
-/// The `unsafe` half is only the lazy file load behind `link_covers`.
+/// The lazy file load is behind `link_covers`.
 fn split_runs_with(s: &str, covers: impl Fn(Link, u32) -> bool) -> Option<Runs> {
     if s.is_ascii() {
         return None;
@@ -1105,10 +1120,14 @@ fn is_emoji_joiner(cp: u32) -> bool {
 }
 
 /// [`run_text`] against the emoji face's own cmap.
-unsafe fn run_text_live(link: Link, s: &str) -> std::borrow::Cow<'_, str> {
-    run_text(link, s, |cp| match &(*addr_of!(COV))[Link::Emoji as usize] {
-        Some(c) => c.astral_rank(cp),
-        None => None,
+fn run_text_live(link: Link, s: &str) -> std::borrow::Cow<'_, str> {
+    // Reads the table only if `split_runs` already loaded it: an emoji run exists only because
+    // `link_covers` asked the emoji face about a codepoint.
+    run_text(link, s, |cp| {
+        COV[Link::Emoji as usize]
+            .get()
+            .and_then(|c| c.as_ref())
+            .and_then(|c| c.astral_rank(cp))
     })
 }
 
@@ -1712,7 +1731,11 @@ impl plx_machine::machine::Measure for TtfMeasure {
     }
 }
 
-static mut ELIDE_CACHE: Option<HashMap<u64, String>> = None;
+thread_local! {
+    /// [`elide`]'s memo: (text, budget, size, weight, continuation) hashed to the elided string.
+    /// Per thread because it owns `String`s that a full memo frees wholesale; see [`elide`].
+    static ELIDE_MEMO: RefCell<HashMap<u64, String>> = RefCell::default();
+}
 
 #[derive(Default)]
 pub struct MeasuredBounds {
@@ -1968,8 +1991,9 @@ mod fitted_line_tests {
 /// cont) makes every later frame a hash lookup, thrash-proof no matter how long the input. `cont=false`
 /// returns `s` unchanged when it already fits (a plain elide — track menu / chapters / info card);
 /// `cont=true` always marks the result with `…` (a continued line whose caller already knows more text
-/// follows — `TextView`). The single truncation impl for the whole UI. Main-thread only, like the
-/// glyph cache.
+/// follows — `TextView`). The single truncation impl for the whole UI. The memo is the calling
+/// thread's own ([`ELIDE_MEMO`]): the frame loop is the one caller that matters, and a memo shared
+/// by every test thread is one that a clearing thread frees under a reading one (2026-10-20).
 pub fn elide(s: &str, budget: f32, sz: c_int, bold: c_int, cont: bool) -> String {
     let mut hh = DefaultHasher::new();
     s.hash(&mut hh);
@@ -1978,15 +2002,19 @@ pub fn elide(s: &str, budget: f32, sz: c_int, bold: c_int, cont: bool) -> String
     bold.hash(&mut hh);
     cont.hash(&mut hh);
     let key = hh.finish();
-    let cache = unsafe { (*addr_of_mut!(ELIDE_CACHE)).get_or_insert_with(HashMap::new) };
-    if let Some(v) = cache.get(&key) {
-        return v.clone();
+    // The cell is borrowed twice, never across `elide_compute` (which measures through
+    // `text_width` and its own memo and never calls back into `elide`).
+    if let Some(hit) = ELIDE_MEMO.with(|memo| memo.borrow().get(&key).cloned()) {
+        return hit;
     }
     let out = elide_compute(s, budget, sz, bold, cont);
-    if cache.len() > 512 {
-        cache.clear(); // crude cap — plenty for every label/line across a few screens
-    }
-    cache.insert(key, out.clone());
+    ELIDE_MEMO.with(|memo| {
+        let mut memo = memo.borrow_mut();
+        if memo.len() > 512 {
+            memo.clear(); // crude cap — plenty for every label/line across a few screens
+        }
+        memo.insert(key, out.clone());
+    });
     out
 }
 
@@ -2026,6 +2054,34 @@ pub fn elide_middle_by(s: &str, budget: f32, measure: impl Fn(&str) -> f32) -> S
         }
     }
     cut(lo)
+}
+
+/// `elide`'s memo is read and replaced by the thread that paints, and `cargo test` paints from many
+/// threads at once. A shared memo that one thread clears while another reads is the crash `plx_ui`'s
+/// tab labels had (2026-10-20), so every thread must see only its own memo.
+#[cfg(test)]
+mod elide_memo_tests {
+    use super::*;
+
+    /// Eight threads elide disjoint strings, far past the memo's 512-entry cap so every thread
+    /// clears it again and again while the others insert. With one process-wide memo that is a
+    /// data race on a `HashMap` that frees `String`s the other threads are cloning: an abort in
+    /// libmalloc, a wrong string, or a corrupted table that spins forever (the unfixed code did
+    /// exactly that, at 320% CPU for 13 minutes, which is why `race` waits with a deadline).
+    #[test]
+    fn every_thread_elides_through_its_own_memo() {
+        const ROUNDS: usize = 4000;
+        plx_base::testrace::race(8, |t| {
+            let size = 20 + (t % 3) as c_int;
+            for i in 0..ROUNDS {
+                let text = format!("thread {t} row {i} a title long enough to be cut short");
+                let budget = 40.0 + (i % 7) as f32 * 8.0;
+                let got = elide(&text, budget, size, 0, i % 2 == 0);
+                let want = elide_compute(&text, budget, size, 0, i % 2 == 0);
+                assert_eq!(got, want, "round {i}: another thread's elided string");
+            }
+        });
+    }
 }
 
 #[cfg(test)]

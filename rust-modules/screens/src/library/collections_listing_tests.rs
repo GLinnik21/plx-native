@@ -164,13 +164,14 @@ fn a_tile_is_captioned_with_its_member_count_and_a_smart_one_is_marked() {
     let fixture = as_collections(2);
     let view = fixture.listing.view();
     let item = view.item(0).expect("the first collection");
-    let label = parts::collection_label(item);
+    let label = parts::grid_label(item, &parts::caption_policy());
     assert_eq!(label.caption.as_ref().map(|c| c.to_str().unwrap()), Some("24 films"));
     assert!(item.smart && !view.item(1).unwrap().smart);
 }
 
 /// **S23, the focused caption of a long collection name stays inside its tile.** The name the face
-/// cuts is carried by the caption under the lifted tile; it used to glide inside a window two tiles
+/// cuts is carried by the caption under the lifted tile (with the Title switch off, the one rule
+/// puts it on the details line, in front of the member count); it used to glide inside a window two tiles
 /// and two gaps wide, so it ran under the next column and was cut hard mid-letter ("...Open Movi")
 /// at the window's edge. Now the window is the lifted tile, the run dissolves over the last
 /// [`plx_ui::cards::LABEL_EDGE_FADE`] px before the edge, and the shared marquee glides it (a run and its follower).
@@ -187,8 +188,10 @@ fn a_long_collection_name_is_held_to_its_lifted_tile_with_a_fade_and_marquees() 
         subtype: Some("movie".into()), kind: plx_data::pms::KIND_COLLECTION, child_count: 2,
         thumb: "/library/collections/50001/composite/1700000000?width=400".into(), ..Default::default()
     };
-    let label = parts::collection_label(&item);
-    assert_eq!(label.title.as_ref().map(|t| t.to_str().unwrap()), Some(name), "the cut name is carried by the caption");
+    let label = parts::grid_label(&item, &plx_ui::caption_policy::CaptionPolicy::DEFAULT);
+    let line = format!("{name} \u{b7} 2 films");
+    assert!(label.title.is_none(), "the Title switch is off: the name rides the details line");
+    assert_eq!(label.caption.as_ref().map(|c| c.to_str().unwrap()), Some(line.as_str()), "the cut name is carried by the caption");
     let sty = layout::Layout::new(false, 10_000).style();
     let s = sty.focus_scale;
     let lifted = Rect::new(plx_ui::consts::MARGIN_X, 300.0, sty.w, sty.h).scaled(s);
@@ -196,9 +199,9 @@ fn a_long_collection_name_is_held_to_its_lifted_tile_with_a_fade_and_marquees() 
         plx_ui::cards::draw_label(plx_ui::Painter::recording(), lifted, s, &sty, &label, &plx_ui::fixture::FixtureMeasure);
     });
     let run_w = plx_ui::fixture::FixtureMeasure
-        .width(label.title.as_ref().unwrap(), plx_ui::theme::size::LABEL, true);
+        .width(label.caption.as_ref().unwrap(), plx_ui::theme::size::CAPTION, false);
     assert!(run_w > lifted.w, "the name is wider than the tile it names ({run_w} vs {})", lifted.w);
-    let title: Vec<_> = runs.iter().filter(|r| r.text == name && r.ink[3] > 0.5).collect();
+    let title: Vec<_> = runs.iter().filter(|r| r.text == line && r.ink[3] > 0.5).collect();
     assert_eq!(title.len(), 2, "a run and its follower: the shared marquee glides it ({runs:?})");
     for run in &title {
         let window = run.clip.expect("the glide is clipped to a window");
@@ -211,8 +214,6 @@ fn a_long_collection_name_is_held_to_its_lifted_tile_with_a_fade_and_marquees() 
     let (from, to) = title[0].fade.expect("the run dissolves into the clip edge instead of being cut hard");
     assert!((to - edge).abs() < 0.5 && (to - from - plx_ui::cards::LABEL_EDGE_FADE).abs() < 0.5,
         "a {} px dissolve ending on the window's right edge {edge}: {from}..{to}", plx_ui::cards::LABEL_EDGE_FADE);
-    let count = runs.iter().find(|r| r.text == "2 films" && r.ink[3] > 0.5).expect("the member count");
-    assert!(count.clip.is_none() && count.fade.is_none(), "a caption that fits is drawn plain: {count:?}");
 }
 
 #[test]

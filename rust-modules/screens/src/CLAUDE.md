@@ -170,12 +170,14 @@ smallest worked example.
   and `cards` (a section's `CardSource`, `None` while it has no content). Optional hooks: `pending`,
   `recover`, `card_has_menu`, `elem_of`, `plain_len`, `plain_elem`, `plain_step`, `focus_rect`,
   `element_rect`, `seat_override`, `reveal_margin`, `shelf_foot`, `wide_extent`, `plain_group`,
-  `reveal_with`, `draw_heading`, `custom_draw`.
+  `reveal_with`, `draw_heading`, `custom_draw`. Stacked shelves are adjacent sections and the air
+  under one is its `shelf_foot` (Search, Person), never a `Custom` gap section between two: a shelf's
+  caption stops short of the next shelf's lifted heading, which `Stack` reads off the section that follows.
 - Hold the `Stack` in the screen, feed it every event with `stack.on(&page, ev, cx, fx)` and draw
   through `stack.view(&page)`. Get `Focusable` from `plx_ui::focusable_via_view!`
   (`focusable_via_view!(Screen, H: [Bounds], view)` for a screen generic over its host).
-- Opt into the hold hint with `Stack::hold_hint(Kind)`; `card_has_menu` says which cards a hold
-  actually opens a menu on.
+- Opt into the hold hint with `Stack::hold_hint()`; `card_has_menu` says which cards a hold
+  actually opens a menu on. The hint is once per INSTALL per surface (`plx_ui::hold_hint::Surface`: a card, and Detail's season pill, which takes a shorter dwell); the screen only names the surface and focus in `HintInput`, and the application persists what was taught (`app/hint_taught.rs`, the `hold_hint_taught` Install preference).
 - Register a conformance mount: a `cards_harness.rs` child module of the screen exposing
   `mount` (see `collection/cards_harness.rs`), and a row for it in `table()` of
   `cards_conformance_tests.rs`; the shared drivers live in `ui/src/cards/conformance.rs`.
@@ -199,5 +201,27 @@ Captures are the check — see the `ui-sim` and `which-tier` skills, and `../../
 
 `SettingsPage::UnderPosters` (ScreenId 113, `settings_under_posters.rs`) is pushed from Settings >
 Libraries, which now has two rows (Favorite libraries, Under posters). The page has three rows (Title switch, Details › with the current line on the right, Reset to default) and a framed preview (a still row of three posters from the library the Library last showed, `cards::SampleRow`, the middle one lifted and captioned, a blank face carrying no word); Details pushes `SettingsPage::UnderPostersDetails` (ScreenId 114, `DetailsPage` in the same file), the picker of the one details line (Nothing first, a sample on each row), which pops on a durable write. `settings::caption_policy_of`
-maps the stored `UnderPosters` to the ui `CaptionPolicy`. The Library page is the full grid under one
+maps the stored `UnderPosters` to the ui `CaptionPolicy`. **EVERY poster tile reads that one policy through
+`registry::captions`** (`policy()` with the one `TEST_UNDER_POSTERS` test override, `label()` the one builder of a focused
+poster's `[title, details]`, `shelf_label()` for Home's and Recommended's shelves): the Library grid, the Collections page, the Watchlist,
+Home's shelves, Recommended's poster shelves, **Search's poster rows** (Movies, Shows, Collections; a result from a server that is not the
+household's own is credited after its details line, `CaptionFacts::source`), **the person page's filmography**, **Detail's Related and
+collection shelves** and **the Collection screen's members** (an episode member's poster already prints its "S3 · E4" mark, so its caption names the show instead: `CaptionFacts::address_on_art`). A grid page hands its grid the policy through `StackPage::caption_policy`
+(Stack hands it to a `Body::Shelf` as well as a `Body::Grid`); Detail owns its shelves and sets the policy on Related and the
+collection each step. **Landscape tiles and headshots are not posters and do not read it**: the Library's Episodes listing, Search's Episode stills and Person
+headshots, Detail's Extras and Cast, and Recommended's landscape rows keep the legacy block under every setting (the Episodes listing's grid is handed
+`None` for its policy, so its band is the legacy 114 px one the two-line label needs; every landscape block is made by `captions::still_block`: `still_label` words an episode's, Extras hand theirs in). A shelf is
+handed the policy (`Shelf::set_caption_policy`) and reserves,
+opens and reveals its band from `caption_policy::band_h`; a tile that carries a state keeps it (the Continue Watching deck's
+time left is its details line, a filmography poster's character is its details line, the amber play mark leads the first line drawn while OK plays, a Watchlist title's release date or
+"Server offline"), and with Title Off and Details set to Nothing no band opens (a state line is dropped with the details line), **except the Continue Watching deck** (the owner's 2026-10-22 call): its progress line is the tile's state and is always shown, Nothing included, so the deck shelf is handed `captions::deck_policy(policy)` (Home's and Recommended's alike; `shelf_label` words its tiles by the same value) and keeps a one-line band (two with the Title On), per shelf so it never changes as focus walks the row.
+**One rule for every kind of tile: a line the setting turns on is never drawn empty** (`caption_policy::caption_lines`): the title line is the name a reader
+knows the tile by (`tile_facts::caption_facts`: a season by its SHOW, an episode by its own title, a show or movie by its title), and a
+details kind the tile has no facts for (a season has no length, often no genre or rating) says the tile's identity instead: a season "Season 6" (its own title,
+else "Season N", else "Specials" for the season numbered 0), an episode "S1 · E8" (the app's ONE address spelling, `fmt::episode_address`), a show or movie its year, a collection its size, and for an episode, movie, show or collection
+with not even that the KIND word ("Episode", "Movie", "Show", "Collection") as the last fallback, so no band opens over nothing and no per-tile band is needed (a per-tile band
+would move the rows below it as focus walks a row). Home's season tiles ("Recently Added TV") and the Library grid's seasons read it the same way; the
+Library grid's episodes keep their own wording (title and release date). **A collection follows one rule on every surface**: its details line is its
+size under every details kind but Nothing, the Title switch governs its title line, and a name its face cuts (`registry::tile_facts::face_cuts_name`) rides the details line
+("Name · 7 films") when the title line is off; the Collections page has no caption transform of its own. The Library page is the full grid under one
 header row (`library/header.rs`); the hub shelves live on the Recommended page (`library/recommended.rs`), which the header's Recommended control pushes.

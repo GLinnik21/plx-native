@@ -33,7 +33,7 @@
   },
   "watchlist.action.add": {
     "value": "Add to Watchlist",
-    "description": "Button and menu row that adds a movie or a catalogue title to the Watchlist. Also the outline face of the detail-page button."
+    "description": "Button and menu row that adds a movie or a catalogue title to the Watchlist. Also the outline face of the catalogue page's Watchlist pill."
   },
   "watchlist.action.add_show": {
     "value": "Add Show to Watchlist",
@@ -41,7 +41,7 @@
   },
   "watchlist.action.on_list": {
     "value": "On Watchlist",
-    "description": "Filled face of the detail-page button when the title is already on the Watchlist. Shows state, not an action."
+    "description": "Filled face of the catalogue page's Watchlist pill when the title is already on the Watchlist. Shows state, not an action."
   },
   "watchlist.action.remove": {
     "value": "Remove from Watchlist",

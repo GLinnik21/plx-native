@@ -53,6 +53,8 @@
 use std::borrow::Cow;
 
 use crate::consts::{K_SCROLL, SAFE};
+use crate::hstack::{Align as StackAlign, HStack, Item as HItem};
+use crate::vstack::{Anchor, VFlow, VStack};
 use plx_machine::machine::Measure;
 use crate::popover::Popover;
 use crate::text_view::TextView;
@@ -118,6 +120,23 @@ pub struct Layout {
     pub scroll_max: f32,
 }
 
+/// Where the button row stands in [`panel_items`].
+const PANEL_BUTTONS: usize = 3;
+
+/// **The panel's one vertical run**, read both for its fixed height (`layout_with`'s `fixed_h`, with
+/// a viewport of 0) and for where the answer row stands: the top pad, the text viewport,
+/// [`QUESTION_GAP`], the button row, the bottom pad. The pads and the gap are items of height, so
+/// the stack's own gap is 0.
+fn panel_items(viewport_h: f32) -> [HItem; 5] {
+    [
+        HItem::new(PAD_TOP),
+        HItem::new(viewport_h),
+        HItem::new(QUESTION_GAP),
+        HItem::new(StatusOverlay::CTRL_H),
+        HItem::new(PAD_BOTTOM),
+    ]
+}
+
 /// The panel, **pure**, from the two measured text heights. `body_h` is 0.0 for an alert that asks
 /// its question and nothing more, and the arithmetic is written so that case stays byte-identical
 /// to the layout that existed before a body was possible when the question fits the safe frame.
@@ -129,27 +148,33 @@ pub fn layout(question_h: f32, body_h: f32) -> Layout {
 /// panel and the destructive rect is the zero-width point at the row's centre — nothing draws
 /// there and nothing registers it.
 pub fn layout_with(question_h: f32, body_h: f32, answers: Answers) -> Layout {
-    let body_block = if body_h > 0.0 { BODY_GAP + body_h } else { 0.0 };
-    let text_h = question_h + body_block;
-    let fixed_h = PAD_TOP + QUESTION_GAP + StatusOverlay::CTRL_H + PAD_BOTTOM;
+    // The text block is ONE stack: the question, then the body BODY_GAP under it. The body item is
+    // always there so its rect stands where a present body would (and a zero-height body keeps
+    // today's rect); the BLOCK's height only counts it, and its gap, when the body has any height,
+    // so an alert that asks its question alone is exactly the question.
+    let text = [HItem::new(question_h), HItem::new(body_h)];
+    let stack = VStack::new(&text, BODY_GAP, Anchor::Top(0.0));
+    let body_off = stack.span(1).map_or(0.0, |(y, _)| y);
+    let text_h = if body_h > 0.0 { stack.height() } else { question_h };
+    let fixed_h = VStack::new(&panel_items(0.0), 0.0, Anchor::Top(0.0)).height();
     let overflow = text_h + fixed_h > SAFE.h;
     let viewport_h = text_h.min(SAFE.h - fixed_h);
     let h = fixed_h + viewport_h;
     let panel = Rect::new((Rect::FULL.w - PANEL_W) * 0.5, (Rect::FULL.h - h) * 0.5, PANEL_W, h);
-    let row_w = BUTTON_W * 2.0 + BUTTON_GAP;
-    let x = panel.cx() - row_w * 0.5;
-    let by = panel.y + PAD_TOP + viewport_h + QUESTION_GAP;
+    let by = VStack::new(&panel_items(viewport_h), 0.0, Anchor::Top(panel.y)).span(PANEL_BUTTONS).expect("present").0;
     let (cancel, destructive) = if answers == Answers::One {
-        (Rect::new(panel.cx() - BUTTON_W * 0.5, by, BUTTON_W, StatusOverlay::CTRL_H),
-         Rect::new(panel.cx(), by, 0.0, StatusOverlay::CTRL_H))
+        let lone = [HItem::new(BUTTON_W)];
+        let at = HStack::new(&lone, BUTTON_GAP, StackAlign::Centre(panel.cx())).span(0).expect("present").0;
+        (Rect::new(at, by, BUTTON_W, StatusOverlay::CTRL_H), Rect::new(panel.cx(), by, 0.0, StatusOverlay::CTRL_H))
     } else {
-        (Rect::new(x, by, BUTTON_W, StatusOverlay::CTRL_H),
-         Rect::new(x + BUTTON_W + BUTTON_GAP, by, BUTTON_W, StatusOverlay::CTRL_H))
+        let pair = [HItem::new(BUTTON_W), HItem::new(BUTTON_W)];
+        let at = |i| HStack::new(&pair, BUTTON_GAP, StackAlign::Centre(panel.cx())).span(i).expect("present").0;
+        (Rect::new(at(0), by, BUTTON_W, StatusOverlay::CTRL_H), Rect::new(at(1), by, BUTTON_W, StatusOverlay::CTRL_H))
     };
     Layout {
         panel,
         question: Rect::new(panel.x + PAD_X, panel.y + PAD_TOP, BODY_W, question_h),
-        body: Rect::new(panel.x + PAD_X, panel.y + PAD_TOP + question_h + BODY_GAP, BODY_W, body_h),
+        body: Rect::new(panel.x + PAD_X, panel.y + PAD_TOP + body_off, BODY_W, body_h),
         cancel,
         destructive,
         text_viewport: Rect::new(panel.x + PAD_X, panel.y + PAD_TOP, BODY_W, viewport_h),
@@ -417,12 +442,13 @@ impl DecisionAlert {
             if l.scroll_max > 0.0 { p.clip(l.text_viewport); }
             let text_painter = p.translate(0.0, -scroll);
             Self::question_view(self.question).with_measure(measure).draw(text_painter, l.question);
-            let mut y = l.body.y;
+            let mut paras = VFlow::new(l.body.y, PARA_GAP);
             for para in &self.body {
                 let view = Self::body_view(para).with_measure(measure);
                 let h = view.measure_h(BODY_W);
-                view.draw(text_painter, Rect::new(l.body.x, y, l.body.w, h));
-                y += h + PARA_GAP;
+                if let Some(at) = paras.push(HItem::new(h)) {
+                    view.draw(text_painter, Rect::new(l.body.x, at.y, l.body.w, at.h));
+                }
             }
             if l.scroll_max > 0.0 {
                 p.clip_clear();
@@ -457,10 +483,7 @@ impl DecisionAlert {
 /// The body block's height from each paragraph's measured height: stacked [`PARA_GAP`] apart, and
 /// 0.0 — the no-body geometry — when there are none.
 fn body_h(heights: &[f32]) -> f32 {
-    if heights.is_empty() {
-        return 0.0;
-    }
-    heights.iter().sum::<f32>() + PARA_GAP * (heights.len() - 1) as f32
+    VStack::heights(heights, PARA_GAP, Anchor::Top(0.0)).height()
 }
 
 #[cfg(test)]
@@ -674,6 +697,15 @@ mod tests {
         alert.close();
     }
 
+    /// The pair is one centred [`HStack`] run: [`BUTTON_GAP`] between the answers, the run centred on
+    /// the panel (the answers' geometry has not moved since the stack took the spacing).
+    #[test]
+    fn the_two_answers_stand_one_button_gap_apart_centred_on_the_panel() {
+        let l = layout(40.0, 90.0);
+        assert_eq!(l.destructive.x - (l.cancel.x + l.cancel.w), BUTTON_GAP);
+        assert_eq!((l.cancel.x + l.destructive.x + l.destructive.w) * 0.5, l.panel.cx());
+    }
+
     /// **A one-answer card centres its one answer** in the cancel slot, keeps the two-answer
     /// panel's height, and a re-open as a question gets both answers back.
     #[test]
@@ -700,5 +732,16 @@ mod tests {
         assert_eq!(body_h(&[]), 0.0);
         assert_eq!(body_h(&[30.0]), 30.0);
         assert_eq!(body_h(&[30.0, 60.0]), 90.0 + PARA_GAP);
+    }
+
+    /// The body rect stands BODY_GAP under the question, and an alert with no body keeps the rect
+    /// where a body would start while taking no room.
+    #[test]
+    fn the_body_stands_one_gap_under_the_question_and_an_absent_body_takes_no_room() {
+        let with = layout(40.0, 90.0);
+        assert!((with.body.y - (with.question.y + 40.0 + BODY_GAP)).abs() < 0.01);
+        let plain = layout(40.0, 0.0);
+        assert!((plain.body.y - (plain.question.y + 40.0 + BODY_GAP)).abs() < 0.01);
+        assert!((with.panel.h - plain.panel.h - (BODY_GAP + 90.0)).abs() < 0.01);
     }
 }

@@ -2,6 +2,8 @@
 //! Button, CircleButton, TabPill, TransportButton, PageDots, Badge, plus the shared art-card
 //! core (`card`/`draw_card`) and the poster-resolve helper. (Multi-line text wrapping
 //! now lives in the `TextView` primitive in `text_view.rs`.)
+use crate::hstack::{Align as StackAlign, HStack, Item as HItem};
+use crate::vstack::{Anchor as VAnchor, VStack};
 use crate::label::{HAlign, Label, VAlign};
 use crate::text_view::TextView;
 use crate::theme;
@@ -514,45 +516,52 @@ pub fn still_line(
     has_bar: bool,
     measure: &dyn plx_machine::machine::Measure,
 ) {
-    // The pair is authored from the BOTTOM up, because that is what the two insets are about: the
-    // sub line's baseline sits at the tile's own bottom inset and the label stacks above it.
+    // The pair is one bottom-anchored VStack of cap bands, because that is what the two insets are
+    // about: the sub line's baseline sits at the tile's own bottom inset and the label stacks above
+    // it. The band heights come from the cap bands (a font swap cannot silently close the pair up); a
+    // label-less tile leaves the sub exactly where it was. The label's baseline stands
+    // `STILL_PAIR_GAP` above the sub's TEXT ORIGIN less its cap top (the design's "line-height 1.15,
+    // then 2px" measured from the sub's box), which is `2 * sct` further up than the gap between the
+    // bands, so that distance is the sub item's `before`.
     let (lsz, ssz) = (theme::size::LABEL, theme::size::CAPTION);
     let (sct, scb) = plx_gfx::text::text_cap_band(ssz, 0);
-    let (_, lcb) = plx_gfx::text::text_cap_band(lsz, 1);
+    let (lct, lcb) = plx_gfx::text::text_cap_band(lsz, 1);
     let bot = if has_bar {
         STILL_LINE_BOT_BAR
     } else {
         STILL_LINE_BOT
     };
-    let sy = card.y + card.h - bot - scb;
+    let pair = [
+        if label.is_empty() { HItem::absent() } else { HItem::new(lcb - lct) },
+        HItem::new(scb - sct).before(STILL_PAIR_GAP + 2.0 * sct),
+    ];
+    let pair = VStack::new(&pair, STILL_PAIR_GAP, VAnchor::Bottom(card.y + card.h - bot));
+    let sy = pair.span(1).map_or(0.0, |(y, _)| y) - sct;
     let x0 = card.x + STILL_LINE_INSET;
     let right = card.x + card.w - STILL_LINE_INSET;
 
     // The SHOW, above: LABEL bold in primary ink, elided to the tile's own right inset.
-    if !label.is_empty() {
-        // `line-height: 1.15` on the sub, then the design's 2px gap, then this run's own descent —
-        // measured through the cap bands rather than a literal, so a font swap cannot silently
-        // close the pair up.
-        let ly = sy - sct - STILL_PAIR_GAP - lcb;
+    if let Some((y, _)) = pair.span(0) {
+        let ly = y - lct;
         let run = measure.fit_line(label, right - x0, lsz, true);
         p.text(run.as_ptr(), x0, ly, lsz, theme::TEXT_PRIMARY, 0, 1);
     }
 
-    // …and the IDENTIFIER under it, with the action glyph at its head.
-    let mut lx = x0;
-    if let Some((icon, tint)) = still_glyph(mark, press_plays) {
+    // …and the IDENTIFIER under it, with the action glyph at its head. One flow: the glyph stands
+    // by its INK (so STILL_LINE_GAP is the gap the eye reads, not the gap to the asset's empty
+    // margin), and the sub line one gap after it. The sub's own width is not needed to place it.
+    let mut flow = crate::hstack::Flow::new(x0, STILL_LINE_GAP);
+    let glyph = still_glyph(mark, press_plays);
+    let glyph_span =
+        flow.push(glyph.map_or(crate::hstack::Item::absent(), |(icon, _)| crate::hstack::Item::glyph(icon, STILL_GLYPH_D)));
+    if let (Some((icon, tint)), Some(span)) = (glyph, glyph_span) {
         let cy = sy + (sct + scb) * 0.5;
-        crate::icons::draw(
-            p,
-            icon,
-            Rect::new(lx, cy - STILL_GLYPH_D * 0.5, STILL_GLYPH_D, STILL_GLYPH_D),
-            tint,
-        );
-        lx += STILL_GLYPH_D + STILL_LINE_GAP;
+        crate::icons::draw(p, icon, Rect::new(span.box_x, cy - STILL_GLYPH_D * 0.5, STILL_GLYPH_D, STILL_GLYPH_D), tint);
     }
     if sub.is_empty() {
         return;
     }
+    let lx = flow.push(crate::hstack::Item::new(0.0)).map_or(x0, |s| s.x);
     let run = measure.fit_line(sub, right - lx, ssz, false);
     p.text(run.as_ptr(), lx, sy, ssz, theme::TEXT_SECONDARY, 0, 0);
 }
@@ -1237,6 +1246,11 @@ fn pop_outset(pop: f32) -> f32 {
 /// happen to share a row. The decision alert's `Cancel`/`Delete` pair has always used this
 /// distance (`decision_alert::BUTTON_GAP`, the design's `--alert-btn-gap`); the two are separate
 /// tokens in the design system that happen to have landed on one number, so either may move alone.
+///
+/// It is also the air between one control of an ACTION ROW and the next, edge to edge, the sibling
+/// of [`StatusOverlay::CTRL_H`] on the other axis: the home hero's row and the detail hero's row
+/// are one object rather than two that agree by inspection (`CTRL_GAP`, a second constant holding
+/// the same 20, was folded into this one when the stack took over the spacing).
 pub const CONTROL_GAP: f32 = 20.0;
 
 /// One control ROW's focus pop — a spring per control, so the arriving face grows while the one
@@ -1378,18 +1392,6 @@ impl<const N: usize> Default for CtlPop<N> {
 /// Icon box as a fraction of a round control's diameter — the ONE ratio every disc glyph uses
 /// (transport CC/Audio buttons, CircleButton vector icons, the Continue-Watching play badge).
 pub const DISC_ICON_RATIO: f32 = 0.54;
-
-/// The air between one control of an ACTION ROW and the next, edge to edge — the sibling of
-/// [`StatusOverlay::CTRL_H`] on the other axis, and the second half of what makes the home hero's
-/// row and the detail hero's row one object rather than two that agree by inspection. Both wrote
-/// out a private `20.0` (Home's `HERO_CTRL_GAP`, `detail::CGAP`), so the rhythm those rows are meant
-/// to share was a number two files happened to hold the same copy of.
-///
-/// Deliberately NOT a [`theme::space`] rung: that ladder is the gap between stacked BLOCKS in a
-/// page's vertical flow, and this is the air inside one horizontal control row, measured against
-/// the 60px control it separates. Adding a 20 to the ladder to launder it would put a rung on the
-/// scale that no block spacing may use, which is worse than an honest constant with a home.
-pub const CTRL_GAP: f32 = 20.0;
 
 /// A media card shared by the episode picker and the chapters strip so they resolve + animate
 /// identically: the thumbnail (at `res`, or a dark placeholder), a focus scale-pop about the centre +
@@ -1878,19 +1880,6 @@ pub fn key_hint_parts(message: &str) -> (std::ffi::CString, std::ffi::CString) {
 
 // ---- Dotted run: fine-print facts separated by `·` ----------------------------------------------
 
-/// Draw `parts` left to right from `x` on the cap-band y `y`, joined by a **`·` in
-/// [`theme::TEXT_SEPARATOR`]** with `pad` either side of it. Returns the total drawn width.
-///
-/// **Empty parts are ABSENT, not blank**: a run with no content contributes neither a draw nor a
-/// separator, so a person with no birthplace gets "Actor · 1987" and never "Actor · 1987 · ". That
-/// is the whole reason this is a component and not a `join(" · ")` — the dot is a *different ink*
-/// from the runs it divides ([`theme::TEXT_SEPARATOR`], .45 of the words' own, which is what every
-/// mock in the design project sets a separator to). A dot sharing the ink of the words either side
-/// JOINS them instead of punctuating them, and one `p.text` call cannot express the difference.
-///
-/// Promoted out of `detail.rs`, where it was `dotted_run` and private; the detail facts row and the
-/// bio panel's identity line are the same idiom one screen apart, and the second copy is where the
-/// separator ink would have drifted.
 /// The hairline divider's height. Published because a panel's flow has to MEASURE the rule as
 /// well as draw it, and the two files that made it a private constant each called it something
 /// else (`RULE_H`, `HAIRLINE_H`) while holding the same 1.0.
@@ -1913,6 +1902,125 @@ pub fn hairline(p: Painter, x: f32, y: f32, w: f32) {
     );
 }
 
+/// One dotted run: fine-print parts left to right, joined by a **`·` in
+/// [`theme::TEXT_SEPARATOR`]** with `pad` either side of it. The ONE implementation of the idiom:
+/// [`dotted_run`] is its plain call, and a caller that must know the width before it draws (a row
+/// that fits chips into a room) or that bolds the parts, or continues another run, sets those here.
+///
+/// **Empty parts are ABSENT, not blank**: a run with no content contributes neither a draw nor a
+/// separator, so a person with no birthplace gets "Actor · 1987" and never "Actor · 1987 · ". That
+/// is the whole reason this is a component and not a `join(" · ")` — the dot is a *different ink*
+/// from the runs it divides ([`theme::TEXT_SEPARATOR`], .45 of the words' own, which is what every
+/// mock in the design project sets a separator to). A dot sharing the ink of the words either side
+/// JOINS them instead of punctuating them, and one `p.text` call cannot express the difference.
+///
+/// The cells (parts and dots) stand where the shared [`crate::hstack::HStack`] puts them, `pad`
+/// apart. Their widths are the [`Self::measured`] capability's when it is set, else what each
+/// `p.text` call answers as it draws (so a plain run asks for no new measurement). The dot is
+/// always regular weight; `bold` is the parts'. Promoted out of `detail.rs`, where it was
+/// `dotted_run` and private; the detail facts row, the bio panel's identity line and the player
+/// info card's meta line are the same idiom, and a second copy is where the separator ink would
+/// have drifted.
+#[derive(Clone, Copy)]
+pub struct DottedRun<'a> {
+    sz: c_int,
+    col: [f32; 4],
+    pad: f32,
+    bold: c_int,
+    lead_dot: bool,
+    measure: Option<&'a dyn plx_machine::machine::Measure>,
+}
+
+impl<'a> DottedRun<'a> {
+    /// Regular-weight parts of size `sz` in `col`, `pad` either side of every dot.
+    pub fn new(sz: c_int, col: [f32; 4], pad: f32) -> Self {
+        Self { sz, col, pad, bold: 0, lead_dot: false, measure: None }
+    }
+
+    /// Draw the parts at this weight (the dot stays regular).
+    #[must_use]
+    pub fn bold(mut self, bold: c_int) -> Self {
+        self.bold = bold;
+        self
+    }
+
+    /// Put a dot before the first part: this run continues the one before it.
+    #[must_use]
+    pub fn lead_dot(mut self) -> Self {
+        self.lead_dot = true;
+        self
+    }
+
+    /// Take the cells' widths from `measure` instead of from the draw, so [`Self::width`] can say
+    /// how wide the run will be before anything is drawn.
+    #[must_use]
+    pub fn measured(mut self, measure: &'a dyn plx_machine::machine::Measure) -> Self {
+        self.measure = Some(measure);
+        self
+    }
+
+    /// Draw `parts` from `x` on the cap-band y `y`; returns the total drawn width.
+    pub fn draw<S: AsRef<str>>(&self, p: Painter, parts: &[S], x: f32, y: f32) -> f32 {
+        self.lay(Some((p, y)), self.measure, parts, x)
+    }
+
+    /// The width [`Self::draw`] will give, without drawing: needs [`Self::measured`] (`measure`
+    /// here stands in for it when the run was built without).
+    pub fn width<S: AsRef<str>>(&self, measure: &dyn plx_machine::machine::Measure, parts: &[S]) -> f32 {
+        self.lay(None, Some(measure), parts, 0.0)
+    }
+
+    /// The single placement. Each cell is placed by an `HStack` of the cells so far (a leading run's
+    /// cell stands where the cells before it put it, whatever its own width), then drawn, which
+    /// is when a plain run learns its width.
+    fn lay<S: AsRef<str>>(
+        &self,
+        paint: Option<(Painter, f32)>,
+        measure: Option<&dyn plx_machine::machine::Measure>,
+        parts: &[S],
+        x: f32,
+    ) -> f32 {
+        debug_assert!(paint.is_some() || measure.is_some(), "a run with neither a painter nor a measure has no widths");
+        // `Some(i)` is part i, `None` a dot; the text a cell shows is built only for the cells drawn.
+        let live: Vec<(usize, CString)> = parts
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| CString::new(s.as_ref()).ok().filter(|c| !c.as_bytes().is_empty()).map(|c| (i, c)))
+            .collect();
+        let mut cells: Vec<Option<&CString>> = Vec::with_capacity(live.len() * 2);
+        for (n, (_, c)) in live.iter().enumerate() {
+            if n > 0 || self.lead_dot {
+                cells.push(None);
+            }
+            cells.push(Some(c));
+        }
+        let dot = c"\u{b7}";
+        // The dot is measured once, and only when one will be drawn.
+        let dot_w = measure.filter(|_| cells.contains(&None)).map(|m| m.width(dot, self.sz, false));
+        let mut items = vec![HItem::new(0.0); cells.len()];
+        for (k, cell) in cells.iter().enumerate() {
+            let at = HStack::new(&items[..=k], self.pad, StackAlign::Leading(x))
+                .placed()
+                .last()
+                .map_or(x, |s| s.x);
+            let (text, col, bold) = match cell {
+                Some(c) => (c.as_c_str(), self.col, self.bold),
+                None => (dot, theme::TEXT_SEPARATOR, 0),
+            };
+            let drawn = paint.map(|(p, y)| p.text(text.as_ptr(), at, y, self.sz, col, 0, bold));
+            let w = match (cell, dot_w, measure) {
+                (None, Some(w), _) => w,
+                (Some(_), _, Some(m)) => m.width(text, self.sz, bold != 0),
+                _ => drawn.unwrap_or(0.0),
+            };
+            items[k] = HItem::new(w);
+        }
+        HStack::new(&items, self.pad, StackAlign::Leading(x)).width()
+    }
+}
+
+/// Draw `parts` left to right from `x` on the cap-band y `y` as a plain [`DottedRun`] (regular
+/// weight, widths learned as it draws); returns the total drawn width.
 pub fn dotted_run(
     p: Painter,
     parts: &[&str],
@@ -1922,20 +2030,7 @@ pub fn dotted_run(
     col: [f32; 4],
     pad: f32,
 ) -> f32 {
-    let mut bx = x;
-    for part in parts.iter().filter(|s| !s.is_empty()) {
-        if bx > x {
-            bx += pad;
-            // `c"·"`, not `CString::new` — the separator is a compile-time constant, and this runs
-            // once per gap per frame on the detail facts row and the bio identity line.
-            bx += p.text(c"\u{b7}".as_ptr(), bx, y, sz, theme::TEXT_SEPARATOR, 0, 0);
-            bx += pad;
-        }
-        if let Ok(pc) = CString::new(*part) {
-            bx += p.text(pc.as_ptr(), bx, y, sz, col, 0, 0);
-        }
-    }
-    bx - x
+    DottedRun::new(sz, col, pad).draw(p, parts, x, y)
 }
 
 // ---- Scroll rail: how far through a paged viewport you are --------------------------------------
@@ -3307,37 +3402,49 @@ impl PageDots {
         let w = self.width();
         self.at(cx - w * 0.5, y)
     }
-    /// The row's drawn width — the SAME advance `draw` walks (each element's own width plus one
-    /// gap between neighbours), so a centred row can't drift from the pixels.
+    /// The row as three stack items, no allocation: the dots before the lit one (one block, a
+    /// dot and a gap each), the lit pill, the dots after it. A block is absent when it has no
+    /// dot, so it takes no gap either; the gap between two dots of a block is the stack's own.
+    fn items(&self) -> [HItem; 3] {
+        let block = |n: usize| if n == 0 { HItem::absent() } else { HItem::new(n as f32 * Self::DOT + (n - 1) as f32 * Self::GAP) };
+        if self.count == 0 { return [HItem::absent(); 3]; }
+        [block(self.active), HItem::new(Self::PILL), block(self.count - 1 - self.active)]
+    }
+    /// The row's drawn width — the SAME [`HStack`] `draw` places (each element's own width plus
+    /// one gap between neighbours), so a centred row can't drift from the pixels.
     pub fn width(&self) -> f32 {
-        if self.count == 0 {
-            return 0.0;
-        }
-        (self.count - 1) as f32 * (Self::DOT + Self::GAP) + Self::PILL
+        HStack::new(&self.items(), Self::GAP, StackAlign::Leading(self.x)).width()
     }
 }
 impl View for PageDots {
     fn draw(&self, _e: &Env, p: Painter) {
-        // Advance by each element's own width + a fixed gap, so the gaps are equal even around the
-        // wider active pill (equal centre-pitch would squeeze the pill's neighbours). The pill just
-        // takes more width and nudges the trailing dots along.
-        let mut x = self.x;
-        for d in 0..self.count {
-            let active = d == self.active;
-            let w = if active { Self::PILL } else { Self::DOT };
-            // tokens, not a raw literal: full-strength white for the current page, dimmed for the rest
-            let col = crate::theme::with_a(
-                crate::theme::TEXT_PRIMARY,
-                if active { 1.0 } else { 0.35 },
-            );
-            p.rect(
-                Rect::new(x, self.y, w, Self::DOT),
-                Self::DOT * 0.5,
-                col,
-                col,
-                0.0,
-            );
-            x += w + Self::GAP;
+        // One equal gap between neighbours, so the gaps are equal even around the wider active pill
+        // (equal centre-pitch would squeeze the pill's neighbours). The pill just takes more width
+        // and nudges the trailing dots along.
+        let items = self.items();
+        for span in HStack::new(&items, Self::GAP, StackAlign::Leading(self.x)).placed() {
+            // The pill is the lit page; a block steps its dots at one dot and one gap.
+            let (first, n) = match span.i {
+                0 => (0, self.active),
+                1 => (self.active, 1),
+                _ => (self.active + 1, self.count - 1 - self.active),
+            };
+            for k in 0..n {
+                let d = first + k;
+                // tokens, not a raw literal: full-strength white for the current page, dimmed for the rest
+                let col = crate::theme::with_a(
+                    crate::theme::TEXT_PRIMARY,
+                    if d == self.active { 1.0 } else { 0.35 },
+                );
+                let w = if span.i == 1 { span.w } else { Self::DOT };
+                p.rect(
+                    Rect::new(span.x + k as f32 * (Self::DOT + Self::GAP), self.y, w, Self::DOT),
+                    Self::DOT * 0.5,
+                    col,
+                    col,
+                    0.0,
+                );
+            }
         }
     }
 }
@@ -3378,7 +3485,24 @@ impl Spinner {
     /// over by this and nothing else. Read by [`StatusOverlay`]'s busy note and by any column of
     /// fine print that marks a line the same way.
     pub fn inline_gutter() -> f32 {
-        2.0 * (Self::R_INLINE + Self::dot_r(Self::R_INLINE)) + theme::space::XS
+        Self::inline_extent() + theme::space::XS
+    }
+    /// The inline ring's full extent, dots included: the width its [`Self::pair_items`] item takes.
+    pub fn inline_extent() -> f32 {
+        2.0 * (Self::R_INLINE + Self::dot_r(Self::R_INLINE))
+    }
+    /// **A spinner then the line it marks, as stack items**: the ring `ring_extent` wide (its full
+    /// extent, dots included), then `text_w` of text. Stand them in an `HStack` whose gap is the
+    /// air between ring and text (`space::XS` for the inline ring, [`Self::inline_gutter`] being that
+    /// gap plus [`Self::inline_extent`]), anchored `Align::Centre(x)` for a pair centred on a band or
+    /// `Align::Leading(x)` for a line that starts on one. `Span::x` of item 0 is the ring's left
+    /// edge ([`Self::leading`]'s `x`); item 1's is the text's.
+    pub fn pair_items(ring_extent: f32, text_w: f32) -> [crate::hstack::Item; 2] {
+        [crate::hstack::Item::new(ring_extent), crate::hstack::Item::new(text_w)]
+    }
+    /// [`Self::pair_items`] for the inline ring: gap [`theme::space::XS`].
+    pub fn inline_pair_items(text_w: f32) -> [crate::hstack::Item; 2] {
+        Self::pair_items(Self::inline_extent(), text_w)
     }
     /// An inline spinner in the leading gutter that starts at `x`, centred on `cy` — the middle
     /// of the cap band of the line it marks.
@@ -4418,6 +4542,18 @@ impl<'a> StatusOverlay<'a> {
         self.bands_measured(&LegacyMeasure)
     }
 
+    /// The verdict's and the reason's bands of a page-placed `Failed` read-out that HAS a reason, for
+    /// a caller that draws its own text into the same slots (the Watchlist's full-screen read-outs):
+    /// the overlay's own placement, the reason's reserved two-line slot included, not a copy of it.
+    pub fn failed_page_text_bands(frame: Rect, measure: &dyn plx_machine::machine::Measure) -> (Rect, Rect) {
+        let bands = Self::new(frame, c"", StatusKind::Failed)
+            .page(crate::icons::Icon::ServerBadgeMinus)
+            .reason(c"-")
+            .bands_measured(measure);
+        let cap = bands.cap;
+        (cap, bands.reason.unwrap_or(Rect::new(frame.x, cap.y + cap.h, frame.w, 0.0)))
+    }
+
     fn bands_measured(&self, measure: &dyn plx_machine::machine::Measure) -> StatusBands {
         let (cap_sz, _, _) = Self::verdict_face(self.kind);
         let (reason_sz, _) = Self::reason_face(self.kind);
@@ -4450,14 +4586,18 @@ impl<'a> StatusOverlay<'a> {
             cy - cap_h * 0.5
         };
         let cap = Rect::new(self.frame.x, cap_y, self.frame.w, cap_h);
-        let mut below = cap_y + cap_h;
-        let reason = self.reason.map(|_| {
-            let h = reason_h;
-            let r = Rect::new(self.frame.x, below + theme::space::SM, self.frame.w, h);
-            below = r.y + h;
-            r
-        });
-        let action_y = below + theme::space::LG + self.row_drop();
+        // One top-anchored run from the caption: verdict, the reason `SM` under it (absent without
+        // one), then the action row's slot. The row's slot is placed whether or not there is a row,
+        // because the note takes the row's place without one (Q1, kept neutral: the note stands
+        // `LG` + the slot's drop under the reason, which is the row's own `before`).
+        let items = [
+            HItem::new(cap_h),
+            self.reason.map_or(HItem::absent(), |_| HItem::new(reason_h)),
+            HItem::new(Self::CTRL_H).before(theme::space::LG + self.row_drop()),
+        ];
+        let stack = VStack::new(&items, theme::space::SM, VAnchor::Top(cap_y));
+        let reason = stack.span(1).map(|(y, h)| Rect::new(self.frame.x, y, self.frame.w, h));
+        let action_y = stack.span(2).map_or(cap_y + cap_h, |(y, _)| y);
         StatusBands { cap, reason, action_y }
     }
 
@@ -4472,20 +4612,14 @@ impl<'a> StatusOverlay<'a> {
         self.action.into_iter().map(|l| (0, l)).chain(rest)
     }
 
-    /// Lay the row out from its pill widths: one centred run, `CONTROL_GAP` apart — the
+    /// Lay the row out from its pill widths: one centred [`HStack`], `CONTROL_GAP` apart — the
     /// control-group distance a pair of answers uses everywhere else. A lone primary is exactly
     /// the centred pill it always was.
     fn row_rects(&self, widths: [Option<f32>; STATUS_ROW_MAX], bands: &StatusBands) -> [Option<Rect>; STATUS_ROW_MAX] {
-        let present = widths.iter().flatten().count();
-        let total = widths.iter().flatten().sum::<f32>()
-            + CONTROL_GAP * present.saturating_sub(1) as f32;
-        let mut x = self.frame.cx() - total * 0.5;
+        let items = widths.map(|w| w.map_or(HItem::absent(), HItem::new));
         let mut out = [None; STATUS_ROW_MAX];
-        for (i, w) in widths.iter().enumerate() {
-            if let Some(w) = w {
-                out[i] = Some(Rect::new(x, bands.action_y, *w, Self::CTRL_H));
-                x += w + CONTROL_GAP;
-            }
+        for span in HStack::new(&items, CONTROL_GAP, StackAlign::Centre(self.frame.cx())).placed() {
+            out[span.i] = Some(Rect::new(span.x, bands.action_y, span.w, Self::CTRL_H));
         }
         out
     }
@@ -4495,16 +4629,19 @@ impl<'a> StatusOverlay<'a> {
     /// height inside [`Self::REASON_W`].
     fn note_band(&self, bands: &StatusBands, measure: &dyn plx_machine::machine::Measure) -> Option<Rect> {
         let line = self.note?;
-        let top = if self.action.is_some() {
-            bands.action_y + Self::CTRL_H + theme::space::MD
-        } else {
-            bands.action_y
-        };
         let h = if self.note_busy {
             self.note_view(c"").line_h()
         } else {
             self.note_view(line).with_measure(measure).measure_h(Self::REASON_W.min(self.frame.w))
         };
+        // The row's slot (absent without an action) then the note `MD` under it; with no row the
+        // note is the run's first item and stands at `action_y` itself (Q1: the `LG` + drop already
+        // in `action_y`, kept rather than the `MD` a row would give).
+        let items = [
+            if self.action.is_some() { HItem::new(Self::CTRL_H) } else { HItem::absent() },
+            HItem::new(h),
+        ];
+        let top = VStack::new(&items, theme::space::MD, VAnchor::Top(bands.action_y)).span(1).map_or(bands.action_y, |(y, _)| y);
         Some(Rect::new(self.frame.x, top, self.frame.w, h))
     }
 
@@ -4542,7 +4679,7 @@ impl<'a> StatusOverlay<'a> {
         }
         let mut widths = [None; STATUS_ROW_MAX];
         for (i, l) in self.row_labels() {
-            widths[i] = Some(Button::pill_w_measured(l, STATUS_CAP_SZ, false, false, measure));
+            widths[i] = Some(Button::pill_w_measured(l, STATUS_CAP_SZ, false, None, measure));
         }
         self.row_rects(widths, &self.bands_measured(measure))
     }
@@ -4571,9 +4708,10 @@ impl<'a> StatusOverlay<'a> {
     /// `text_w` of text — centred on `band` as one group, so the line reads as centred as a
     /// settled one. Returns the gutter's left edge and the text's rect.
     fn busy_note_split(band: Rect, text_w: f32) -> (f32, Rect) {
-        let gutter = Spinner::inline_gutter();
-        let left = band.cx() - (gutter + text_w) / 2.0;
-        (left, Rect::new(left + gutter, band.y, text_w, band.h))
+        let pair = Spinner::inline_pair_items(text_w);
+        let stack = crate::hstack::HStack::new(&pair, theme::space::XS, crate::hstack::Align::Centre(band.cx()));
+        let (ring, text) = (stack.span(0).expect("present").0, stack.span(1).expect("present").0);
+        (ring, Rect::new(text, band.y, text_w, band.h))
     }
 
     fn draw_geometry(
@@ -5692,13 +5830,19 @@ fn strip_layout_by(
     gap: f32,
     mut width: impl FnMut(&CStr) -> f32,
 ) -> Vec<StripLay> {
-    let mut x = x0;
     let mut out = Vec::new();
+    let mut widths = Vec::new();
     for (i, label) in labels.enumerate() {
         let Ok(lc) = CString::new(label) else { continue };
         let w = width(&lc);
-        out.push(StripLay { i, x, w, label: lc });
-        x += w + 2.0 * STRIP_PAD + gap;
+        widths.push(w);
+        out.push(StripLay { i, x: 0.0, w, label: lc });
+    }
+    // The labels stand on ONE HStack: each is `STRIP_PAD` inside a padded frame, so two labels are
+    // a frame's two pads plus the row's `gap` apart, and the first stands at `x0`.
+    let stack = HStack::widths(&widths, gap + 2.0 * STRIP_PAD, StackAlign::Leading(x0));
+    for span in stack.placed() {
+        out[span.i].x = span.x;
     }
     out
 }
@@ -5795,6 +5939,11 @@ impl TabStrip {
             foc: Capsule::new(),
         }
     }
+    /// Whether either capsule is still travelling, resizing or fading: the strip's own statement of
+    /// motion, for an owner that waits for the strip to arrive (the Detail season pill's hold hint).
+    pub fn moving(&self) -> bool {
+        [&self.sel, &self.foc].iter().any(|c| [&c.x, &c.w, &c.a].iter().any(|s| s.vel.abs() > 0.01))
+    }
     /// Step both capsules. `span(i)` resolves pill `i`'s content-space `(x, w)` and MUST be the same
     /// function the caller lays its pills out with — that is what keeps a capsule from ever landing
     /// off a pill. A negative or out-of-range index resolves to `None` (nothing to mark).
@@ -5846,7 +5995,7 @@ impl TabStrip {
                 // for a TRACKED pill or the selection plate — see the call sites' own comments for
                 // why each of those stays flat.
                 if cast {
-                    control_cast(p, r, h * 0.5);
+                    control_cast_at(p, r, h * 0.5, a);
                 }
                 match rim {
                     // On a GLASS track the selection plate is a piece of the same material, not a
@@ -7020,8 +7169,8 @@ const BAND_AIR: f32 = theme::space::SM;
 ///
 /// Two of those clearances are HORIZONTAL and live here ([`CHIP_CAP_MAX_R`], and through it
 /// [`GLASS_TRACK_TOUCH_MAX`]). The third is VERTICAL and belongs to another screen: Home's shelf
-/// headings begin at the very margin this capsule sits on, so the grid's vertical reveal is bounded
-/// by this rect's bottom edge (the home grid's `row_reveal_band`). Exported whole rather than as a
+/// headings begin at the very margin this capsule sits on, so the grid's resting top (`GRID_TOP_Y`)
+/// is graded against this rect's bottom edge (the home grid's tests). Exported whole rather than as a
 /// second edge constant, for the same reason the `_R` form exists at all — one expression, drawn
 /// and graded from the same place.
 pub const CHIP_CAP_MAX: Rect = chip_cap(1.0, CHIP_NAME_MAX);
@@ -7150,13 +7299,15 @@ latched_flag!(
 /// Width/material policy only. Source eligibility belongs to the layer walk.
 
 // Pure glyph-metric memo keyed by the full captured vocabulary: generation, label count and every
-// label byte. A PERMANENT entry in `ci/allow/statics.txt`, not an ownership path: every caller
-// supplies Bridge-owned `TabLabels`, and a key mismatch deterministically replaces the memo. Like
-// `text_view.rs`'s `WRAP_CACHE`, it is never read as logical state.
+// label byte. Every caller supplies Bridge-owned `TabLabels`, and a key mismatch deterministically
+// replaces the memo, so it is never read as logical state. A `thread_local!` render cache (the
+// form `ci/check-statics.sh` names, `nav.rs`'s precedent): only the render thread paints.
 /// The memo's key is the generation AND the captured faces; `CString`s are kept beside them because
 /// paint hands `TabPill` a raw pointer into them.
 type TabMetrics = (u32, Vec<TabFace>, Vec<std::ffi::CString>, Vec<f32>);
-static mut TAB_CACHE: Option<TabMetrics> = None;
+thread_local! {
+    static TAB_CACHE: std::cell::RefCell<Option<TabMetrics>> = const { std::cell::RefCell::new(None) };
+}
 
 /// What one pill of the shared strip shows: a captured word, or a mark. The strip never reads the
 /// application's vocabulary to decide which pill is the mark — the application says so per pill.
@@ -7234,35 +7385,42 @@ fn tab_cache_matches(cache: &TabMetrics, data: TabLabels<'_>) -> bool {
 /// differently.
 ///
 /// Deliberately a closure and not a `&'static` getter: the borrow points into `TAB_CACHE`, and a
-/// nested rebuild would free the `CString`s a caller is still handing to `TabPill` as a raw
-/// `*const c_char`. Scoping it here makes that impossible to write by accident — so do NOT call
-/// this again from inside `f`.
+/// rebuild would free the `CString`s a caller is still handing to `TabPill` as a raw
+/// `*const c_char`. Scoping it here makes that impossible to write by accident, and the `RefCell`
+/// enforces it: do NOT call this again from inside `f` (a nested call with another key panics
+/// rather than freeing what the caller points into).
 fn with_tab_metrics_for<R>(data: TabLabels<'_>, f: impl FnOnce(&[TabFace], &[CString], &[f32]) -> R) -> R {
-    use std::ptr::addr_of_mut;
-    let cache = unsafe { &mut *addr_of_mut!(TAB_CACHE) };
-    if cache.as_ref().is_none_or(|c| !tab_cache_matches(c, data)) {
-        // measure bold (the widest state) so pill widths don't change with focus; pill =
-        // label + the season tabs' ±18 padding
-        //
-        // The `Measure`-threaded twin is `tab_widths`, used while `ChromeSnapshot` publishes input
-        // geometry. Paint receives the same captured labels but no `Measure` capability, so these
-        // renderer entry points use `LegacyMeasure`; it wraps the same `text_width`, preserving
-        // identical glyph widths on both paths.
-        use plx_machine::machine::Measure as _;
-        let measure = LegacyMeasure;
-        // An icon face has no word to measure: it gets the fixed square width, so `faces.len()`
-        // stays the pill count, which is what the draw and the hit test both walk.
-        let (words, widths) = tab_metrics_from(data.faces,
-            |l| measure.width(l, theme::size::BODY, true));
-        *cache = Some((data.generation, data.faces.to_vec(), words, widths));
-    }
-    let (_, faces, words, widths) = cache.as_ref().unwrap();
-    f(faces, words, widths)
+    TAB_CACHE.with(|cell| {
+        if cell.borrow().as_ref().is_none_or(|c| !tab_cache_matches(c, data)) {
+            // measure bold (the widest state) so pill widths don't change with focus; pill =
+            // label + the season tabs' ±18 padding
+            //
+            // The `Measure`-threaded twin is `tab_widths`, used while `ChromeSnapshot` publishes input
+            // geometry. Paint receives the same captured labels but no `Measure` capability, so these
+            // renderer entry points use `LegacyMeasure`; it wraps the same `text_width`, preserving
+            // identical glyph widths on both paths.
+            use plx_machine::machine::Measure as _;
+            let measure = LegacyMeasure;
+            // An icon face has no word to measure: it gets the fixed square width, so `faces.len()`
+            // stays the pill count, which is what the draw and the hit test both walk.
+            let (words, widths) = tab_metrics_from(data.faces,
+                |l| measure.width(l, theme::size::BODY, true));
+            *cell.borrow_mut() = Some((data.generation, data.faces.to_vec(), words, widths));
+        }
+        let cache = cell.borrow();
+        let (_, faces, words, widths) = cache.as_ref().unwrap();
+        f(faces, words, widths)
+    })
 }
 
 /// Content width of the whole pill strip: the pills plus the air between them.
 fn tab_content_w(widths: &[f32]) -> f32 {
-    widths.iter().sum::<f32>() + TAB_GAP * (widths.len() as f32 - 1.0).max(0.0)
+    tab_stack(widths).width()
+}
+/// The pill row as ONE [`HStack`] of the measured pill widths, [`TAB_GAP`] apart, from content x 0:
+/// the paint, the hit test and the capsules' span all read their x from it.
+fn tab_stack(widths: &[f32]) -> HStack<'_> {
+    HStack::widths(widths, TAB_GAP, StackAlign::Leading(0.0))
 }
 /// The VISIBLE pill area: the strip's own width until it outgrows [`TAB_VIEW_MAX`], then that.
 fn tab_view_w(widths: &[f32]) -> f32 {
@@ -7284,8 +7442,14 @@ struct TabGeometry<'a> {
 
 impl TabGeometry<'_> {
     fn pill(&self, i: usize) -> Rect {
+        self.pill_at(tab_pill_x(self.widths, i), i)
+    }
+
+    /// Pill `i` given its content-space x, for a caller that walks the stack once ([`Self::pill`]
+    /// finds the x itself, which is a walk per call).
+    fn pill_at(&self, x: f32, i: usize) -> Rect {
         Rect::new(
-            self.clip.x + tab_pill_x(self.widths, i) - self.scroll,
+            self.clip.x + x - self.scroll,
             TOP_BAR_Y,
             self.widths.get(i).copied().unwrap_or(0.0),
             TAB_PILL_H,
@@ -7312,8 +7476,13 @@ fn tab_geometry(widths: &[f32], scroll: f32) -> TabGeometry<'_> {
 }
 /// Content-space x of pill `i`'s left edge (0 = the strip's start).
 fn tab_pill_x(widths: &[f32], i: usize) -> f32 {
-    let i = i.min(widths.len());
-    widths[..i].iter().sum::<f32>() + TAB_GAP * i as f32
+    // Past the end reads as the strip's end plus one gap (where the next pill would stand).
+    let stack = tab_stack(widths);
+    match stack.span(i) {
+        Some((x, _)) => x,
+        None if widths.is_empty() => 0.0,
+        None => stack.width() + TAB_GAP,
+    }
 }
 /// Scroll offset that brings pill `idx` into the strip's viewport: the minimal scroll-into-view
 /// rule the season tabs and every shelf share ([`card_row::reveal`]) — move only when the pill
@@ -7622,12 +7791,13 @@ impl StripRender {
             TAB_PILL_H,
             TabGround::Tracked { glass: glass_on },
         );
+        // ONE walk of the stack per frame (`tab_pill_x` is O(i), so a call per pill is O(n²)): the
+        // pills are all present, so the i-th span is pill i, and the rect and the capsule coverage
+        // both read its x. The hit test builds the SAME stack from the same widths.
+        let mut stand = tab_stack(widths).placed();
         for i in 0..n {
-            // ONE prefix sum per pill: `tab_pill_x` is O(i), and it was walked twice here — once for
-            // the rect and again for the capsule coverage — so the row re-summed its own width every
-            // frame for nothing.
-            let px = tab_pill_x(widths, i);
-            let r = geometry.pill(i);
+            let px = stand.next().map_or(0.0, |span| span.x);
+            let r = geometry.pill_at(px, i);
             // ONE rule for "is this pill on screen": its rect clipped to the viewport. The clipped
             // rect is what gets recorded for the hit test AND what decides whether to draw at all
             // (a 12-library server would otherwise lay out three rows' worth of text the scissor
@@ -8016,17 +8186,27 @@ fn face_box(r: Rect) -> Rect {
 /// "the remote is here" over a ground nobody chose — the measured case is an `ACCENT` capsule over
 /// a white frame at ~1.2:1 — and the design's answer is [`theme::CONTROL_CAST_FOCUS`], two stops of
 /// black under the focused face only. Drawn to the stadium radius rather than to the solved
-/// capsule: at a 32px blur the half pixel between the two outlines is far below anything the
-/// penumbra resolves.
+/// capsule: the half pixel between the two outlines falls inside the shadow's cut, whose edge is a
+/// coverage ramp about a pixel wide (`fs_shadow.frag`'s `CUT_AA`), so the face's blended outline
+/// meets a partial shadow there and no hard, aliased strip.
 fn control_cast(p: Painter, r: Rect, rad: f32) {
     control_cast_at(p, r, rad, 1.0);
 }
 
-/// [`control_cast`] at focus progress `t` (see [`ControlStyle::face_at`]): the lift's shadow rides
-/// the same spring as the fill it lifts, so it is not a step either.
+/// [`control_cast`] at focus progress `t` (see [`ControlStyle::face_at`]). Two rules, so the cast
+/// never outstays or shows through the face it lifts:
+///
+/// * it is drawn OUTSIDE the face's outline only ([`Painter::shadow_outside`]), because a fading
+///   face is translucent and an interior-painting shadow would show through it as a dark pill;
+/// * its strength is a smoothstep of `t` over `[0.5, 1]`, so it is whole at rest, gone by the time
+///   the face is half faded, and still continuous (a face that reads as gone must not keep a halo).
 fn control_cast_at(p: Painter, r: Rect, rad: f32, t: f32) {
+    let k = crate::xfade::smooth((t - 0.5) * 2.0);
+    if k <= 0.0 {
+        return;
+    }
     for (dy, blur, a) in theme::CONTROL_CAST_FOCUS {
-        p.shadow(r, rad, blur, dy, theme::with_a(theme::CARD_SHADOW, a * t));
+        p.shadow_outside(r, rad, blur, dy, theme::with_a(theme::CARD_SHADOW, a * k));
     }
 }
 
@@ -8282,15 +8462,15 @@ impl Button {
     /// icon-only version had to send such callers off to `text::text_width` on their own. A second
     /// sizing path is exactly the drift this file exists to prevent.
     pub fn pill_w(label: *const c_char, sz: c_int, icon: bool) -> f32 {
-        Self::pill_w_full(label, sz, icon, false)
+        Self::pill_w_full(label, sz, icon, None)
     }
 
     /// [`Button::pill_w`] with the TRAILING accessory counted too — the same one formula, taking
     /// both of the button's optional slots rather than growing a second sizing path beside it (the
     /// drift this file exists to prevent, and the exact reason `pill_w` gained its `icon` flag).
-    /// An accessory occupies one more icon box and one more gap, which is what [`Button::draw`]
-    /// lays out below.
-    pub fn pill_w_full(label: *const c_char, sz: c_int, icon: bool, trailing: bool) -> f32 {
+    /// An accessory occupies one more gap and its INK width (`icons::ink_x`): the pill's right pad
+    /// is measured to the accessory's ink, which is what [`Button::draw`] lays out below.
+    pub fn pill_w_full(label: *const c_char, sz: c_int, icon: bool, trailing: Option<crate::icons::Icon>) -> f32 {
         // The `Measure`-threaded twin is `pill_w_measured`, just below. This raw form has to stay
         // measure-less: its own caller `StatusOverlay::action_frame` is reached from
         // `impl View for StatusOverlay` (`View::draw` takes no `Measure`, and reshaping that shared
@@ -8306,23 +8486,26 @@ impl Button {
         Self::pill_w_from_advance(advance, sz, icon, trailing)
     }
 
-    pub fn pill_w_measured(label: &core::ffi::CStr, sz: c_int, icon: bool, trailing: bool,
+    pub fn pill_w_measured(label: &core::ffi::CStr, sz: c_int, icon: bool, trailing: Option<crate::icons::Icon>,
         measure: &dyn plx_machine::machine::Measure) -> f32 {
         Self::pill_w_from_advance(measure.width(label, sz, true), sz, icon, trailing)
     }
 
-    fn pill_w_from_advance(advance: f32, sz: c_int, icon: bool, trailing: bool) -> f32 {
-        let (isz, gap) = if icon {
-            (sz as f32 * BTN_ICON_RATIO, BTN_ICON_GAP)
-        } else {
-            (0.0, 0.0)
-        };
-        let (tsz, tgap) = if trailing {
-            (sz as f32 * BTN_ICON_RATIO, BTN_ICON_GAP)
-        } else {
-            (0.0, 0.0)
-        };
-        isz + gap + advance + tgap + tsz + BTN_PILL_AIR
+    fn pill_w_from_advance(advance: f32, sz: c_int, icon: bool, trailing: Option<crate::icons::Icon>) -> f32 {
+        HStack::new(&Self::run_items(advance, sz, icon, trailing), BTN_ICON_GAP, StackAlign::Leading(0.0)).width()
+            + BTN_PILL_AIR
+    }
+
+    /// The pill's one run, which `draw` places and `pill_w_*` sizes: the leading icon's box, the
+    /// label, and the trailing accessory standing by its INK. An accessory the pill does not carry
+    /// is ABSENT, so it leaves neither its width nor its gap.
+    fn run_items(advance: f32, sz: c_int, icon: bool, trailing: Option<crate::icons::Icon>) -> [HItem; 3] {
+        let box_w = sz as f32 * BTN_ICON_RATIO;
+        [
+            if icon { HItem::new(box_w) } else { HItem::absent() },
+            HItem::new(advance),
+            trailing.map_or_else(HItem::absent, |acc| HItem::glyph(acc, box_w)),
+        ]
     }
 
     /// Turn the pill into its own countdown: `frac` of its width is filled with
@@ -8364,8 +8547,9 @@ impl Button {
                 face.top,
             );
         } else {
-            // FOCUS is an elevation as well as a fill — see `control_cast`. Under the face, so the
-            // near-opaque focused plate covers everything the shadow's own interior cut leaves.
+            // FOCUS is an elevation as well as a fill — see `control_cast`. Drawn before the face
+            // for draw order only: `control_cast_at` is outside-only, so nothing of it lies under
+            // the plate, even while the plate fades.
             if self.focused {
                 control_cast_at(p, b, rad, self.focus.unwrap_or(1.0));
             }
@@ -8453,36 +8637,27 @@ impl View for Button {
                 true,
             )
         };
-        let (isz, gap) = if self.icon.is_some() {
-            (self.sz as f32 * BTN_ICON_RATIO, BTN_ICON_GAP)
-        } else {
-            (0.0, 0.0)
-        };
-        let (asz, agap) = if self.trailing.is_some() {
-            (self.sz as f32 * BTN_ICON_RATIO, BTN_ICON_GAP)
-        } else {
-            (0.0, 0.0)
-        };
         // the WHOLE run is centred — accessory included — which is why `pill_w_full` measures it:
-        // sizing the pill without the chevron and then drawing one would push the label off-centre
-        let gl = r.cx() - (isz + gap + tw + agap + asz) * 0.5;
-        if let Some(icon) = self.icon {
-            crate::icons::draw(
-                p,
-                icon,
-                Rect::new(gl, r.y + (r.h - isz) * 0.5, isz, isz),
-                ink,
-            );
-        }
-        p.text(self.label, gl + isz + gap, ty, self.sz, ink, 0, 1); // left-aligned after the icon
-        if let Some(acc) = self.trailing {
-            let ax = gl + isz + gap + tw + agap;
-            crate::icons::draw(
-                p,
-                acc,
-                Rect::new(ax, r.y + (r.h - asz) * 0.5, asz, asz),
-                ink,
-            );
+        // sizing the pill without the chevron and then drawing one would push the label off-centre.
+        // The accessory stands by its INK, so the pill's right pad is measured to the mark itself.
+        let isz = self.sz as f32 * BTN_ICON_RATIO;
+        let items = Self::run_items(tw, self.sz, self.icon.is_some(), self.trailing);
+        for span in HStack::new(&items, BTN_ICON_GAP, StackAlign::Centre(r.cx())).placed() {
+            match span.i {
+                0 => {
+                    if let Some(icon) = self.icon {
+                        crate::icons::draw(p, icon, Rect::new(span.x, r.y + (r.h - isz) * 0.5, isz, isz), ink);
+                    }
+                }
+                1 => {
+                    p.text(self.label, span.x, ty, self.sz, ink, 0, 1); // left-aligned after the icon
+                }
+                _ => {
+                    if let Some(acc) = self.trailing {
+                        crate::icons::draw(p, acc, Rect::new(span.box_x, r.y + (r.h - isz) * 0.5, isz, isz), ink);
+                    }
+                }
+            }
         }
     }
 }
@@ -8759,6 +8934,8 @@ const RATING_CAPTION_GAP: f32 = 12.0;
 /// Score → the next glyph in the SAME group (Rotten Tomatoes' critic → audience). Wider than
 /// [`RATING_GAP`] so the two pairs read as two readings rather than one run of four things.
 const RATING_PAIR_GAP: f32 = 14.0;
+/// One provider's group → the next provider's, on a row of groups (the Detail hero's ratings line).
+pub const RATING_GROUP_GAP: f32 = 32.0;
 
 /// One colour layer of a rating mark — a mask and the tint it is painted in. Marks are two-tone
 /// (body + calyx), and the rasterizer renders a MASK, so a mark is a slice rather than one icon.
@@ -8775,6 +8952,50 @@ pub struct RatingCell<'a> {
     pub suffix: &'a str,
 }
 
+/// One run of a rating group, as [`rating_walk`] hands it to whoever paints or sums it.
+enum RatingPart<'a> {
+    Caption,
+    Mark(&'a [MarkLayer]),
+    Value(&'a str),
+    Suffix(&'a str),
+}
+
+/// **The one layout of a provider group**, from `x`: the caption, then per cell its mark, score and
+/// suffix, as a [`Flow`](crate::hstack::Flow) whose gaps are the tokens above — caption to first
+/// score [`RATING_CAPTION_GAP`], mark to score [`RATING_GAP`], score to suffix none, a cell to the
+/// next [`RATING_PAIR_GAP`]. `each` sees every run with the span it draws; the return is the group's
+/// width. Each run is measured once here, and [`rating_group_w`] and [`rating_group`] both read this,
+/// so the width a row stops at is the width the group paints.
+fn rating_walk<'a>(
+    x: f32,
+    caption: &str,
+    cells: &'a [RatingCell<'a>],
+    measure: &dyn plx_machine::machine::Measure,
+    mut each: impl FnMut(RatingPart<'a>, crate::hstack::Span),
+) -> f32 {
+    use crate::hstack::{Flow, Item};
+    let mut flow = Flow::new(x, 0.0);
+    let item = |w: f32, after: f32| Item::new(w).after(after);
+    if let Some(span) = flow.push(item(measure.width_str(caption, theme::size::MICRO, true), RATING_CAPTION_GAP)) {
+        each(RatingPart::Caption, span);
+    }
+    for (i, cell) in cells.iter().enumerate() {
+        let next = if i + 1 < cells.len() { RATING_PAIR_GAP } else { 0.0 };
+        if !cell.mark.is_empty() {
+            if let Some(span) = flow.push(item(RATING_MARK_D, RATING_GAP)) {
+                each(RatingPart::Mark(cell.mark), span);
+            }
+        }
+        if let Some(span) = flow.push(item(measure.width_str(cell.value, theme::size::LABEL, true), 0.0)) {
+            each(RatingPart::Value(cell.value), span);
+        }
+        if let Some(span) = flow.push(item(measure.width_str(cell.suffix, theme::size::MICRO, true), next)) {
+            each(RatingPart::Suffix(cell.suffix), span);
+        }
+    }
+    flow.end() - x
+}
+
 /// Width [`rating_group`] will occupy. Measure before drawing so a row can stop at a margin
 /// instead of running a group off the panel (same contract as `badge`/`badge_w`).
 pub fn rating_group_w(
@@ -8785,22 +9006,7 @@ pub fn rating_group_w(
     if caption.contains('\0') {
         return 0.0;
     }
-    let mut w = measure.width_str(caption, theme::size::MICRO, true) + RATING_CAPTION_GAP;
-    for (i, cell) in cells.iter().enumerate() {
-        if i > 0 {
-            w += RATING_PAIR_GAP;
-        }
-        if !cell.mark.is_empty() {
-            w += RATING_MARK_D + RATING_GAP;
-        }
-        if !cell.value.contains('\0') {
-            w += measure.width_str(cell.value, theme::size::LABEL, true);
-        }
-        if !cell.suffix.contains('\0') {
-            w += measure.width_str(cell.suffix, theme::size::MICRO, true);
-        }
-    }
-    w
+    rating_walk(0.0, caption, cells, measure, |_, _| {})
 }
 
 /// Draw one provider's group with its LEFT edge at `x`, centred on `cy`; returns its width.
@@ -8812,10 +9018,9 @@ pub fn rating_group(
     cells: &[RatingCell],
     measure: &dyn plx_machine::machine::Measure,
 ) -> f32 {
-    let Ok(cap) = std::ffi::CString::new(caption) else {
+    if caption.contains('\0') {
         return 0.0;
-    };
-    let mut bx = x;
+    }
     // The caption sits on the SCORE's baseline, not on its own centre: the design aligns the row
     // by baseline (`align-items:baseline`), so a MICRO caption beside a LABEL number must share
     // the number's baseline or it floats. `text::baseline_y` is that rule, shared.
@@ -8826,59 +9031,30 @@ pub fn rating_group(
         1,
         plx_gfx::text::text_vcenter_y(theme::size::LABEL, 1, cy),
     );
-    p.text(
-        cap.as_ptr(),
-        bx,
-        base,
-        theme::size::MICRO,
-        theme::TEXT_TERTIARY,
-        0,
-        1,
-    );
-    bx += measure.width(&cap, theme::size::MICRO, true) + RATING_CAPTION_GAP;
-
-    for (i, cell) in cells.iter().enumerate() {
-        if i > 0 {
-            bx += RATING_PAIR_GAP;
+    let text = |s: &str, x: f32, y: f32, sz, ink, bold| {
+        if let Ok(c) = std::ffi::CString::new(s) {
+            p.text(c.as_ptr(), x, y, sz, ink, 0, bold);
         }
-        if !cell.mark.is_empty() {
+    };
+    // Every advance comes from the walk, which used the supplied metric source: the extent it
+    // returns is the drawn width, not a second measurement (the host test compares it with
+    // rating_group_w).
+    rating_walk(x, caption, cells, measure, |part, span| match part {
+        RatingPart::Caption => text(caption, span.x, base, theme::size::MICRO, theme::TEXT_TERTIARY, 1),
+        RatingPart::Mark(layers) => {
             // every layer rides the SAME rect, so all of them rasterize at one size from one
             // viewBox and register exactly — see `ui/icons.rs`'s note on the layered marks
-            let r = Rect::new(bx, cy - RATING_MARK_D * 0.5, RATING_MARK_D, RATING_MARK_D);
-            for (mask, tint) in cell.mark.iter() {
+            let r = Rect::new(span.x, cy - RATING_MARK_D * 0.5, RATING_MARK_D, RATING_MARK_D);
+            for (mask, tint) in layers.iter() {
                 crate::icons::draw(p, *mask, r, *tint);
             }
-            bx += RATING_MARK_D + RATING_GAP;
         }
-        if let Ok(v) = std::ffi::CString::new(cell.value) {
+        RatingPart::Value(v) => {
             let ty = plx_gfx::text::text_vcenter_y(theme::size::LABEL, 1, cy);
-            p.text(
-                v.as_ptr(),
-                bx,
-                ty,
-                theme::size::LABEL,
-                theme::TEXT_PRIMARY,
-                0,
-                1,
-            );
-            bx += measure.width(&v, theme::size::LABEL, true);
+            text(v, span.x, ty, theme::size::LABEL, theme::TEXT_PRIMARY, 1);
         }
-        if let Ok(s) = std::ffi::CString::new(cell.suffix) {
-            p.text(
-                s.as_ptr(),
-                bx,
-                base,
-                theme::size::MICRO,
-                theme::TEXT_TERTIARY,
-                0,
-                1,
-            );
-            bx += measure.width(&s, theme::size::MICRO, true);
-        }
-    }
-    // Every advance above already used the supplied metric source. Return that extent rather
-    // than measuring every run a second time; the host test compares it with rating_group_w.
-    bx - x
+        RatingPart::Suffix(s) => text(s, span.x, base, theme::size::MICRO, theme::TEXT_TERTIARY, 1),
+    })
 }
 
 #[cfg(test)]
@@ -8960,3 +9136,56 @@ mod hero_scrim_tests;
 #[cfg(test)]
 #[path = "widgets_art_crop_tests.rs"]
 mod art_crop_tests;
+
+#[cfg(test)]
+#[test]
+fn a_painted_rating_group_keeps_each_token_gap_between_its_runs() {
+    let _serial = plx_base::testlock::serial();
+    let m = LegacyMeasure;
+    let mark: &[MarkLayer] = &[(crate::icons::Icon::Check, theme::TEXT_PRIMARY)];
+    let cells = [
+        RatingCell { mark, value: "88%", suffix: "" },
+        RatingCell { mark: &[], value: "8.1", suffix: "/10" },
+    ];
+    let mut icons = Vec::new();
+    let mut runs = crate::draw_census::capture_runs(|| {
+        icons = crate::draw_census::capture_icons(|| {
+            rating_group(Painter::recording(), 64.0, 100.0, "Provider", &cells, &m);
+        });
+    });
+    runs.retain(|r| !r.text.is_empty());
+    runs.sort_by(|a, b| a.at.x.total_cmp(&b.at.x));
+    let texts: Vec<&str> = runs.iter().map(|r| r.text.as_str()).collect();
+    assert_eq!(texts, ["Provider", "88%", "8.1", "/10"]);
+    let gap = |a: &crate::draw_census::Run, b: &crate::draw_census::Run| b.at.x - (a.at.x + a.at.w);
+    assert!((icons[0].1.x - (runs[0].at.x + runs[0].at.w) - RATING_CAPTION_GAP).abs() < 0.5, "caption -> mark");
+    assert!((runs[1].at.x - (icons[0].1.x + icons[0].1.w) - RATING_GAP).abs() < 0.5, "mark -> score");
+    assert!((gap(&runs[1], &runs[2]) - RATING_PAIR_GAP).abs() < 0.5, "score -> next pair");
+    assert!(gap(&runs[2], &runs[3]).abs() < 0.5, "score -> its suffix is one run");
+    let w = rating_group_w("Provider", &cells, &m);
+    assert!((runs[3].at.x + runs[3].at.w - 64.0 - w).abs() < 0.5, "the extent is the last run's trailing edge");
+}
+
+#[cfg(test)]
+#[test]
+fn a_painted_still_line_stands_its_sub_line_one_gap_from_the_glyphs_ink() {
+    let _serial = plx_base::testlock::serial();
+    let m = LegacyMeasure;
+    let card = Rect::new(100.0, 100.0, 300.0, 170.0);
+    let mut icons = Vec::new();
+    let runs = crate::draw_census::capture_runs(|| {
+        icons = crate::draw_census::capture_icons(|| {
+            still_line(Painter::recording(), card, PosterMark::None, "Show", "S1 E2", true, false, &m);
+        });
+    });
+    let sub = runs.iter().find(|r| r.text == "S1 E2").expect("the sub line");
+    let (icon, boxr) = icons[0];
+    let (l, r) = crate::icons::ink_x(icon);
+    assert!(((boxr.x + l * boxr.w) - (card.x + STILL_LINE_INSET)).abs() < 0.01, "the ink, not the box, stands at the inset");
+    assert!((sub.at.x - (boxr.x + r * boxr.w) - STILL_LINE_GAP).abs() < 0.5, "ink -> sub line is the token");
+    // no glyph, no gap: the sub line stands at the inset
+    let bare = crate::draw_census::capture_runs(|| {
+        still_line(Painter::recording(), card, PosterMark::None, "Show", "S1 E2", false, false, &m);
+    });
+    assert_eq!(bare.iter().find(|r| r.text == "S1 E2").unwrap().at.x, card.x + STILL_LINE_INSET);
+}

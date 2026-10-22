@@ -27,7 +27,9 @@
 //! It measures through the live-font `widgets::LegacyMeasure` (`card` is drawn by callers that hold
 //! no `Measure`, and the card composite skips recording passes, so no recorded layout depends on
 //! this text); tests hand it the shipped faces' real advances.
+use crate::hstack::Item;
 use crate::icons::{self, Icon};
+use crate::vstack::{Anchor, VStack};
 use crate::label::{HAlign, Label, VAlign};
 use plx_machine::machine::Measure;
 use std::cell::RefCell;
@@ -413,10 +415,13 @@ pub fn glyph_px(w: f32) -> f32 {
 /// the mark above, sized from the tile's width.
 pub fn layout(r: Rect, name_w: f32, name_h: f32) -> (Rect, Rect) {
     let d = glyph_px(r.w);
-    let gap = r.w * GAP_RATIO;
-    let top = r.y + (r.h - (d + gap + name_h)) * 0.5;
+    let items = [Item::new(d), Item::new(name_h)];
+    let stack = VStack::new(&items, r.w * GAP_RATIO, Anchor::Centre(r.cy()));
+    let (Some((top, _)), Some((name_top, _))) = (stack.span(0), stack.span(1)) else {
+        unreachable!("the mark and the name are always present")
+    };
     let glyph = Rect::new(r.cx() - d * 0.5, top, d, d);
-    let name = Rect::new(r.cx() - name_w * 0.5, top + d + gap, name_w, name_h);
+    let name = Rect::new(r.cx() - name_w * 0.5, name_top, name_w, name_h);
     (glyph, name)
 }
 
@@ -589,6 +594,15 @@ mod tests {
         let bottom_air = r.y + r.h - (name.y + name.h);
         assert!((top_air - bottom_air).abs() < 0.01, "the block is centred: {top_air} vs {bottom_air}");
         assert!(name.y > glyph.y + glyph.h, "the name sits under the mark");
+    }
+
+    /// The mark and the name are one centred stack: the air between them is the tile-width gap.
+    #[test]
+    fn the_mark_and_name_stand_one_gap_apart() {
+        let r = Rect::new(100.0, 200.0, 250.0, 375.0);
+        let (glyph, name) = layout(r, 200.0, 64.0);
+        assert!((name.y - (glyph.y + glyph.h) - r.w * GAP_RATIO).abs() < 1e-4);
+        assert_eq!(name.h, 64.0);
     }
 
     /// Resting widths within 8% of a 250 tile (the grids differ by that much) share at most two
