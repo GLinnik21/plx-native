@@ -109,8 +109,7 @@ pub(crate) unsafe fn run(app: &mut App) {
     let mut hint_taught = super::hint_taught::HintTaught::new();
     while app.running {
         watchdog.advance();
-        // Release health's once-per-frame beat: expires an idle session, and counts a film
-        // playing with no remote input as activity (`telemetry::session`).
+        // Release health's beat: expires an idle session; a film playing counts as activity.
         plx_telemetry::telemetry::session::tick(matches!(app.route(), AppArg::Player));
         let _frame_scope = plx_base::task::FrameScope::enter();
         #[cfg(all(feature = "hostsim", target_os = "linux"))]

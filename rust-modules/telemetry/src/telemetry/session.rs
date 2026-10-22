@@ -200,7 +200,7 @@ pub enum Event {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Effect {
+pub enum SessionFx {
     /// Write the open session's state.
     Persist(Stored),
     /// Delete the persisted state.
@@ -240,7 +240,7 @@ impl Machine {
 
     /// Advance on `event`. `ctx` is asked for only when a session is about to start, so a frame
     /// that starts nothing reads no consent and mints no id.
-    pub fn step(&mut self, event: Event, clk: Clock, ctx: &mut dyn FnMut() -> Option<Ctx>) -> Vec<Effect> {
+    pub fn step(&mut self, event: Event, clk: Clock, ctx: &mut dyn FnMut() -> Option<Ctx>) -> Vec<SessionFx> {
         let mut fx = Vec::new();
         match event {
             Event::Start => {
@@ -250,7 +250,7 @@ impl Machine {
             }
             Event::Stop => {
                 if self.live.take().is_some() {
-                    fx.push(Effect::Clear);
+                    fx.push(SessionFx::Clear);
                 }
             }
             Event::Foreground => {
@@ -272,7 +272,7 @@ impl Machine {
         fx
     }
 
-    fn begin(&mut self, clk: Clock, ctx: &mut dyn FnMut() -> Option<Ctx>, fx: &mut Vec<Effect>) {
+    fn begin(&mut self, clk: Clock, ctx: &mut dyn FnMut() -> Option<Ctx>, fx: &mut Vec<SessionFx>) {
         let Some(c) = ctx() else { return };
         let stored = Stored {
             sid: c.sid,
@@ -282,7 +282,7 @@ impl Machine {
             started: clk.unix,
             last_active: clk.unix,
         };
-        fx.push(Effect::Persist(stored.clone()));
+        fx.push(SessionFx::Persist(stored.clone()));
         self.live = Some(Live {
             stored,
             started_mono: clk.mono,
@@ -291,14 +291,14 @@ impl Machine {
         });
     }
 
-    fn finish(&mut self, status: Status, duration_s: u64, fx: &mut Vec<Effect>) {
+    fn finish(&mut self, status: Status, duration_s: u64, fx: &mut Vec<SessionFx>) {
         if let Some(live) = self.live.take() {
-            fx.push(Effect::Finish(Finished { stored: live.stored, status, duration_s, errors: 0 }));
-            fx.push(Effect::Clear);
+            fx.push(SessionFx::Finish(Finished { stored: live.stored, status, duration_s, errors: 0 }));
+            fx.push(SessionFx::Clear);
         }
     }
 
-    fn end_exited(&mut self, now_mono: u64, fx: &mut Vec<Effect>) {
+    fn end_exited(&mut self, now_mono: u64, fx: &mut Vec<SessionFx>) {
         if let Some(live) = &self.live {
             let duration = now_mono.saturating_sub(live.started_mono);
             self.finish(Status::Exited, duration, fx);
@@ -307,7 +307,7 @@ impl Machine {
 
     /// End the session when it has been idle for [`IDLE_SECS`] (its duration stops at the last
     /// activity) or has run [`MAX_SESSION_SECS`]. Returns whether it ended.
-    fn expire(&mut self, clk: Clock, fx: &mut Vec<Effect>) -> bool {
+    fn expire(&mut self, clk: Clock, fx: &mut Vec<SessionFx>) -> bool {
         let Some(live) = &self.live else { return false };
         let idle = clk.mono.saturating_sub(live.last_active_mono);
         let age = clk.mono.saturating_sub(live.started_mono);
@@ -325,7 +325,7 @@ impl Machine {
 
     /// Activity: split what has expired, start a session when none is open, and refresh the
     /// persisted state at most every [`CHECKPOINT_SECS`].
-    fn activity(&mut self, clk: Clock, ctx: &mut dyn FnMut() -> Option<Ctx>, fx: &mut Vec<Effect>) {
+    fn activity(&mut self, clk: Clock, ctx: &mut dyn FnMut() -> Option<Ctx>, fx: &mut Vec<SessionFx>) {
         self.expire(clk, fx);
         if self.live.is_none() {
             if self.foreground {
@@ -338,7 +338,7 @@ impl Machine {
             live.stored.last_active = clk.unix;
             if clk.mono.saturating_sub(live.checkpoint_mono) >= CHECKPOINT_SECS {
                 live.checkpoint_mono = clk.mono;
-                fx.push(Effect::Persist(live.stored.clone()));
+                fx.push(SessionFx::Persist(live.stored.clone()));
             }
         }
     }
@@ -404,12 +404,12 @@ fn drive(event: Event) {
         let mut m = MACHINE.lock().unwrap_or_else(|e| e.into_inner());
         m.step(event, clk, &mut make_ctx)
     };
-    let finished = fx.iter().any(|e| matches!(e, Effect::Finish(_)));
+    let finished = fx.iter().any(|e| matches!(e, SessionFx::Finish(_)));
     for effect in fx {
         match effect {
-            Effect::Persist(stored) => persist_off_thread(stored),
-            Effect::Clear => clear_state(),
-            Effect::Finish(f) => spool(&f),
+            SessionFx::Persist(stored) => persist_off_thread(stored),
+            SessionFx::Clear => clear_state(),
+            SessionFx::Finish(f) => spool(&f),
         }
     }
     if finished && event != Event::Shutdown {
@@ -567,15 +567,15 @@ mod tests {
         }
     }
 
-    fn finished(fx: &[Effect]) -> Vec<&Finished> {
-        fx.iter().filter_map(|e| if let Effect::Finish(f) = e { Some(f) } else { None }).collect()
+    fn finished(fx: &[SessionFx]) -> Vec<&Finished> {
+        fx.iter().filter_map(|e| if let SessionFx::Finish(f) = e { Some(f) } else { None }).collect()
     }
 
     #[test]
     fn a_session_starts_on_start_and_persists_its_identity() {
         let mut m = Machine::new();
         let fx = m.step(Event::Start, at(0), &mut ctx_n(0));
-        assert!(matches!(&fx[..], [Effect::Persist(s)] if s.did == "crash-id" && s.started == 1_800_000_000));
+        assert!(matches!(&fx[..], [SessionFx::Persist(s)] if s.did == "crash-id" && s.started == 1_800_000_000));
         assert!(m.is_open());
         // A second Start while open changes nothing and asks for no new identity.
         assert!(m.step(Event::Start, at(1), &mut || panic!("no id needed")).is_empty());
@@ -590,7 +590,7 @@ mod tests {
             let f = finished(&fx);
             assert_eq!(f.len(), 1);
             assert_eq!((f[0].status, f[0].duration_s, f[0].errors), (Status::Exited, 90, 0));
-            assert_eq!(fx.last(), Some(&Effect::Clear));
+            assert_eq!(fx.last(), Some(&SessionFx::Clear));
             assert!(!m.is_open());
         }
     }
@@ -603,7 +603,7 @@ mod tests {
         // While backgrounded, input (a late event) does not start one.
         assert!(m.step(Event::Input, at(11), &mut ctx_n(5)).is_empty());
         let fx = m.step(Event::Foreground, at(500), &mut ctx_n(9));
-        assert!(matches!(&fx[..], [Effect::Persist(s)] if s.sid.ends_with("000000000010")));
+        assert!(matches!(&fx[..], [SessionFx::Persist(s)] if s.sid.ends_with("000000000010")));
     }
 
     #[test]
@@ -619,7 +619,7 @@ mod tests {
         assert!(!m.is_open());
         // The next input after a long gap starts the following session.
         let fx = m.step(Event::Input, at(5_000), &mut ctx_n(7));
-        assert!(matches!(&fx[..], [Effect::Persist(s)] if s.started == 1_800_005_000));
+        assert!(matches!(&fx[..], [SessionFx::Persist(s)] if s.started == 1_800_005_000));
     }
 
     #[test]
@@ -628,7 +628,7 @@ mod tests {
         m.step(Event::Start, at(0), &mut ctx_n(0));
         let fx = m.step(Event::Input, at(IDLE_SECS + 30), &mut ctx_n(3));
         assert_eq!(finished(&fx)[0].duration_s, 0);
-        assert!(matches!(fx.last(), Some(Effect::Persist(_))), "{fx:?}");
+        assert!(matches!(fx.last(), Some(SessionFx::Persist(_))), "{fx:?}");
         assert!(m.is_open());
     }
 
@@ -668,7 +668,7 @@ mod tests {
         let mut writes = 0;
         for t in 1..=900 {
             let fx = m.step(Event::Input, at(t), &mut ctx_n(0));
-            writes += fx.iter().filter(|e| matches!(e, Effect::Persist(_))).count();
+            writes += fx.iter().filter(|e| matches!(e, SessionFx::Persist(_))).count();
         }
         assert_eq!(writes, 3, "900 s of constant input checkpoints once per 300 s");
     }
@@ -678,7 +678,7 @@ mod tests {
         let mut m = Machine::new();
         m.step(Event::Start, at(0), &mut ctx_n(0));
         let fx = m.step(Event::Stop, at(5), &mut ctx_n(0));
-        assert_eq!(fx, vec![Effect::Clear]);
+        assert_eq!(fx, vec![SessionFx::Clear]);
         assert!(finished(&fx).is_empty());
         assert!(m.step(Event::Stop, at(6), &mut ctx_n(0)).is_empty());
         // No consent means no ctx: nothing starts.
