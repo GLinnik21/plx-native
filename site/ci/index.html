@@ -183,6 +183,7 @@ code { font-family: var(--font-mono); font-size: 0.92em; background: var(--chip)
     <section class="panel" id="regress"></section>
     <section class="panel" id="now"></section>
     <section class="panel" id="slow"></section>
+    <section class="panel" id="flaky"></section>
 
     <div class="bar">
       <div class="seg" role="group" aria-label="Time range">
@@ -951,6 +952,31 @@ function renderSummary() {
   slow.innerHTML = ci.length || local.length ? `<h2>Slowest right now</h2><div class="slowgrid">` +
     slowList("CI jobs", "the longest jobs of CI, Simulator CI and the nightly", ci) +
     slowList("Local steps", `measured on the ${esc(runnerWords())}`, local) + `</div>` : "";
+  renderFlaky();
+}
+
+// ---- flaky tests (ci-summary.json `flaky`, derived by tools/ci-summary.py from the per-test results of the unit-test jobs) ----
+// A test is flaky when one job of one run gave it both a pass and a fail (a re-run attempt); Active, Quarantined (ci/flaky.txt)
+// or Fixed (no flake for 30 days). Test names and job names come from artifacts a workflow wrote: only ever esc()'d here.
+function flakyRow(f) {
+  const tag = f.new ? `<span class="chg bad">new</span>` : `<span class="chg${f.status === "Fixed" ? " good" : ""}">${esc(String(f.status).toLowerCase())}</span>`;
+  const last = f.last || {};
+  const where = last.pr ? ` in <a href="https://github.com/${REPO}/pull/${esc(last.pr)}">#${esc(last.pr)}</a>` : (last.sha ? ` at <code>${esc(last.sha)}</code>` : "");
+  return `<li class="nrow${f.status === "Active" ? " worse" : ""}"><span class="nl"><code>${esc(f.test)}</code><small>${esc(f.job)}</small></span>` +
+    `<span class="nv mono">${esc(f.count)}x</span>` +
+    `<span class="nc">${tag}<span class="chg">first ${esc(fmtDate(new Date(f.first_seen)))}</span><span class="chg">last ${esc(fmtDate(new Date(f.last_seen)))}${where}</span></span></li>`;
+}
+
+function renderFlaky() {
+  const el = document.getElementById("flaky");
+  const all = SUMMARY && Array.isArray(SUMMARY.flaky) ? SUMMARY.flaky.filter((f) => f && typeof f.test === "string" && f.first_seen && f.last_seen) : null;
+  if (!all) { el.innerHTML = ""; return; }      // a summary written before the flaky list existed shows nothing
+  const live = all.filter((f) => f.status !== "Fixed"), fixed = all.filter((f) => f.status === "Fixed");
+  const fresh = live.filter((f) => f.new);
+  el.innerHTML = `<h2>Flaky tests</h2><p class="hint">A test is flaky when one job of one run gave it both a pass and a fail, as a re-run does for the same commit. Active until it has not flaked for 30 days, then fixed; quarantined ones are listed in <code>ci/flaky.txt</code>. Only the Rust unit-test jobs of CI, on pushes to <code>main</code> and on pull requests from this repository, are tracked.</p>` +
+    (fresh.length ? `<p class="hint"><b>${fresh.length} new flaky test${fresh.length > 1 ? "s" : ""} in the last day.</b></p>` : "") +
+    (live.length ? `<ul class="now">${live.map(flakyRow).join("")}</ul>` : `<p class="empty">No test has flaked in the last 30 days.</p>`) +
+    (fixed.length ? `<details class="more"><summary>Show the ${fixed.length} fixed (no flake for 30 days)</summary><ul class="now">${fixed.map(flakyRow).join("")}</ul></details>` : "");
 }
 
 function renderBenchShell() {
