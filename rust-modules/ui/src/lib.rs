@@ -76,6 +76,7 @@ pub mod panel_motion; // the resize/page-slide spring of the in-player table pop
 pub mod nav; // the page transition's PRESENTATION, published once a frame from the container
 pub mod breadcrumb; // 'Films > Collections' crumb (PR5)
 pub mod hstack; // one gap between a run of measured items (UIStackView spacing)
+pub mod vstack; // the same stack top to bottom (VStack/VFlow over hstack's engine) + the alert head ladder
 pub mod page_header; // the page header row: one layout, paint, focus group and motion for the Library, Collections, Recommended and Watchlist pages
 pub mod page_regions; // the column NAV/HEADER/CONTENT/RAIL: one table for the pages' links, BACK and first seat
 pub mod caption_policy; // "Under posters": what a focused poster's caption band shows and how tall it is (CONTRACT FREEZE: P3 fills)
@@ -326,6 +327,27 @@ pub mod draw_census {
         LOG.with(|l| *l.borrow_mut() = Some(Vec::new()));
         f();
         LOG.with(|l| l.borrow_mut().take()).unwrap_or_default()
+    }
+
+    thread_local! {
+        static INKS: RefCell<Option<Vec<(u64, Rect, f32)>>> = const { RefCell::new(None) };
+    }
+    /// A recording painter was handed a fill or shadow of command `tag` in `r` whose EFFECTIVE alpha
+    /// (the colour's own alpha times the painter's cascaded alpha) is `a`: [`note`] carries no
+    /// colour, and a test that asks whether a fade reaches every primitive of a control needs it.
+    pub fn note_ink(tag: u64, r: Rect, a: f32) {
+        INKS.with(|l| {
+            if let Some(v) = l.borrow_mut().as_mut() {
+                v.push((tag, r, a));
+            }
+        });
+    }
+    /// Every rounded-rect fill (tag 2), shadow (4), outside-only shadow (5) and rimmed fill (8) a recording painter is handed
+    /// while `f` runs, as `(tag, screen rect, effective alpha)`, in draw order.
+    pub fn capture_inks(f: impl FnOnce()) -> Vec<(u64, Rect, f32)> {
+        INKS.with(|l| *l.borrow_mut() = Some(Vec::new()));
+        f();
+        INKS.with(|l| l.borrow_mut().take()).unwrap_or_default()
     }
 
     thread_local! {
@@ -875,6 +897,8 @@ impl Painter {
         );
     }
     pub fn rrect(self, r: Rect, rl: f32, rr: f32, col: [f32; 4]) {
+        #[cfg(any(test, feature = "test-support"))]
+        if self.records() { draw_census::note_ink(2, self.place(r), self.c(col)[3]); }
         if self.declare(r, 2, |data| {
             use frame::backdrop::Value;
             rl.record(data);
@@ -951,6 +975,8 @@ impl Painter {
     /// occluder's own rim, ending in a hard step. A tile hides that; anything you can see through
     /// wears it as a drawn frame — use [`shadow_outside`](Self::shadow_outside) there.
     pub fn shadow(self, r: Rect, radius: f32, blur: f32, off_y: f32, col: [f32; 4]) {
+        #[cfg(any(test, feature = "test-support"))]
+        if self.records() { draw_census::note_ink(4, self.place(r), self.c(col)[3]); }
         if self.declare(Rect::new(r.x-blur,r.y+off_y-blur,r.w+2.0*blur,r.h+2.0*blur), 4, |data| {
             use frame::backdrop::Value;
             radius.record(data);
@@ -981,6 +1007,8 @@ impl Painter {
     /// `shadow`'s under-the-rim band would show as a frame; a separate entry point rather than a flag
     /// on the tile path, because a tile pays a rounded-rect SDF for a region it covers anyway.
     pub fn shadow_outside(self, r: Rect, radius: f32, blur: f32, off_y: f32, col: [f32; 4]) {
+        #[cfg(any(test, feature = "test-support"))]
+        if self.records() { draw_census::note_ink(5, self.place(r), self.c(col)[3]); }
         if self.declare(Rect::new(r.x-blur,r.y+off_y-blur,r.w+2.0*blur,r.h+2.0*blur), 5, |data| {
             use frame::backdrop::Value;
             radius.record(data);
@@ -1067,6 +1095,8 @@ impl Painter {
         rim: [f32; 4],
         rim_top: f32,
     ) {
+        #[cfg(any(test, feature = "test-support"))]
+        if self.records() { draw_census::note_ink(8, self.place(r), self.c(top)[3]); }
         if self.declare(r, 8, |data| {
             use frame::backdrop::Value;
             rad.record(data);

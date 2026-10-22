@@ -89,9 +89,10 @@ fn a_continue_watching_tile_on_home_keeps_its_time_left_line() {
     let _cell = Cell::default();
     for (title, details, _) in TABLE {
         set(&mut w, title, details);
-        // The deck's details line is the time left, not the picked fact, unless the setting shows none.
+        // The deck's details line is the time left, not the picked fact, and is always shown: Details
+        // Nothing included (the owner's 2026-10-22 call).
         let left = left();
-        let want: Vec<&str> = title.then_some("Heat").into_iter().chain((details != Details::None).then_some(left.as_str())).collect();
+        let want: Vec<&str> = title.then_some("Heat").into_iter().chain([left.as_str()]).collect();
         assert_eq!(w.drawn().caption_lines(), want, "title {title}, details {details:?}");
     }
 }
@@ -190,7 +191,7 @@ fn a_continue_watching_tile_on_recommended_keeps_its_time_left_line() {
     for (title, details, _) in TABLE {
         set(&mut w, title, details);
         let left = left();
-        let want: Vec<&str> = title.then_some("Continue Watching 0").into_iter().chain((details != Details::None).then_some(left.as_str())).collect();
+        let want: Vec<&str> = title.then_some("Continue Watching 0").into_iter().chain([left.as_str()]).collect();
         assert_eq!(w.drawn().caption_lines(), want, "title {title}, details {details:?}");
     }
 }

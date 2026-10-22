@@ -555,3 +555,13 @@ committed recording's. The anchor was recorded afresh on the unchanged shape (`t
 the recorder's header, `anchor: true` kept). The re-record also gained 4 non-tick `eff` records (an extra Home
 hubs/discovery work+delivery pair): timing of the recording, not Q4. `make check-replay` replays all three with
 `verdict=SAME` in Targets and Resolve and every difference counter at zero (three consecutive runs).
+
+The Continue Watching caption (an episode reads "S3 · E4 · 18m left" where it read "Show · 18m left";
+Under posters = Nothing keeps that line and the deck shelf keeps a one-line band) moved what Home draws
+without moving the shape. `1-boot-home-chip-grid` was refused (`replay: REFUSED — replay measurement
+table miss`, both modes) on the one new measured run, "S2 · E2 · 32m left", while `6-settings-family` and
+`12-filmography-detail-return` stayed SAME. The closed alphabet's deck pattern became
+`S[0-9]+ · E[0-9]+ · [0-9]+m left`. The anchor was recorded afresh (`tests/focusfp.sh --rec --only 1`),
+passed `plxnative-rec check`, and only `1-boot-home-chip-grid/rec-0000.jsonl` was replaced: the manifest
+(anchor flag included) stands. `tests/replay_fixtures.py` replays all three with `verdict=SAME` in Targets
+and Resolve and every difference counter at zero.

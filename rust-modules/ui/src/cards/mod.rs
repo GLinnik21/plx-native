@@ -100,7 +100,7 @@ pub use avatars::AvatarRow;
 // Geometry and painters a screen's own layout reads (L0 `card_row` / `poster_grid`, re-exported so
 // those modules can stay `pub(crate)`).
 pub use crate::card_row::{
-    column_near_x, draw_credit_label, draw_heading, draw_heading_c, draw_label, cw_caption, heading_flow, heading_parts, HeadingPart, HEADING_SOURCE_PAD, heading_lift_max, label_band, paint_visible,
+    column_near_x, credit_role_dy, draw_credit_label, draw_heading, draw_heading_c, draw_label, cw_caption, heading_flow, heading_parts, HeadingPart, HEADING_SOURCE_PAD, heading_lift_max, label_band, paint_visible,
     resume_bar, reveal, scroll_into_view, settled_top, settled_top_for, tile_rect, under_band, under_band_for, RowStyle, TileLabel,
     band_open_for, BAND_OPEN, CREDIT_ROLE_LEADING, LABEL_BAND_COLLAPSED, LABEL_EDGE_FADE, LEGACY_BAND_H, MAX_ROW_ITEMS, ROW_PITCH_FIXED, UNDER_LABEL_H,
 };
@@ -420,11 +420,7 @@ pub(crate) fn lifted_out<H: Host, S: CardSource<H>>(
     src: &S,
     i: usize,
 ) -> bool {
-    let out = f.lifted.is_some_and(|k| k.entry == entry && k.elem == src.elem(i));
-    if out {
-        crate::popover::set_lift_owns(true);
-    }
-    out
+    f.leaves_out(entry, src.elem(i))
 }
 
 /// The paging rule shared by both sections: ask for cards up to `end` once per `(len, end)`, and

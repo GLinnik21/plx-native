@@ -37,7 +37,9 @@ use plx_ui::screen::{
 #[cfg(test)]
 use plx_ui::screen::Enter;
 use plx_ui::text_view::TextView;
+use plx_ui::hstack::Item;
 use plx_ui::theme;
+use plx_ui::vstack::{Anchor, VStack};
 use plx_ui::widgets::{Art, PageGround, StatusKind, StatusOverlay};
 use plx_ui::{Env, Painter, Rect, View};
 
@@ -229,40 +231,41 @@ fn header_flow(
     measure: &dyn Measure,
 ) -> HeaderFlow {
     let mut f = HeaderFlow::default();
-    let mut y = measure.cap_h(theme::size::DISPLAY);
-    if pending || has_roles {
-        y += META_GAP;
-        f.meta_y = Some(y);
-        y += measure.cap_h(theme::size::LABEL);
-    }
-    if pending || has_life {
-        y += if f.meta_y.is_some() {
-            LIFE_GAP
-        } else {
-            META_GAP
-        };
-        f.life_y = Some(y);
-        // The life line draws at `CAPTION` (see `draw_header`'s loop), not `LABEL` — advancing by
-        // the wrong rung's cap height left a few px of drift between the pending skeleton's
-        // reserved band and the loaded line's actual one.
-        y += measure.cap_h(theme::size::CAPTION);
-    }
-    if pending || !bio.is_empty() {
-        y += BIO_GAP;
-        f.bio_y = Some(y);
-        y += if pending && bio.is_empty() {
-            BIO_LEAD * BIO_LINES as f32
-        } else {
-            let view = bio_view(bio, 1.0, measure);
-            f.bio_truncated = view.truncates(BIO_W);
-            view.measure_h(BIO_W)
-        };
-    }
-    if has_entry {
-        y += ENTRY_GAP;
-        f.entry_y = Some(y);
-        y += LinkedHeading::HEIGHT;
-    }
+    let has_meta = pending || has_roles;
+    let has_life = pending || has_life;
+    let has_bio = pending || !bio.is_empty();
+    let bio_h = if !has_bio {
+        0.0
+    } else if pending && bio.is_empty() {
+        BIO_LEAD * BIO_LINES as f32
+    } else {
+        let view = bio_view(bio, 1.0, measure);
+        f.bio_truncated = view.truncates(BIO_W);
+        view.measure_h(BIO_W)
+    };
+    // One stack, so a missing line takes its gap with it. The name and meta lines own the gap BELOW
+    // them (`after`): the name leaves META_GAP to whatever follows it (the meta line, or the life
+    // line when there is no meta) and the meta line leaves LIFE_GAP to the life line; the
+    // biography keeps BIO_GAP, and the entry ENTRY_GAP, whichever lines above them are absent. The
+    // life line draws at `CAPTION` (see `draw_header`'s loop), not `LABEL` — advancing by the wrong
+    // rung's cap height left a few px of drift between the pending skeleton's reserved band and the
+    // loaded line's actual one.
+    let items = [
+        Item::new(measure.cap_h(theme::size::DISPLAY)).after(META_GAP),
+        presence(has_meta, measure.cap_h(theme::size::LABEL)).after(LIFE_GAP),
+        presence(has_life, measure.cap_h(theme::size::CAPTION)),
+        presence(has_bio, bio_h).before(BIO_GAP),
+        presence(has_entry, LinkedHeading::HEIGHT).before(ENTRY_GAP),
+    ];
+    let stack = VStack::new(&items, 0.0, Anchor::Top(0.0));
+    // The bottom of the last line as the spans stand (`y + h`), not `stack.height()`: the sum the
+    // callers compare `exp_h` against, with no ulp between them.
+    let y = stack.placed().last().map_or(0.0, |s| s.y + s.h);
+    f.name_y = 0.0;
+    f.meta_y = stack.span(1).map(|(y, _)| y);
+    f.life_y = stack.span(2).map(|(y, _)| y);
+    f.bio_y = stack.span(3).map(|(y, _)| y);
+    f.entry_y = stack.span(4).map(|(y, _)| y);
     let bare = !pending && f.meta_y.is_none() && f.life_y.is_none() && f.bio_y.is_none();
     f.exp_d = if bare { PORTRAIT_BARE } else { PORTRAIT_EXP };
     f.exp_h = y.max(f.exp_d);
@@ -278,6 +281,11 @@ fn header_flow(
         }
     }
     f
+}
+
+/// An item `h` tall when `present`, else one that takes no room and no gap.
+fn presence(present: bool, h: f32) -> Item {
+    if present { Item::new(h) } else { Item::absent() }
 }
 
 fn bio_view<'a>(bio: &'a str, a: f32, measure: &'a dyn Measure) -> TextView<'a> {
@@ -3203,5 +3211,21 @@ mod tests {
         }
         assert_eq!(counted[2].size, theme::size::BODY, "the count is a BODY note, not a caption");
         assert_eq!(paint(1).len(), 1, "a shelf with no count draws its title alone");
+    }
+
+    /// The header's gaps ride the item, not its neighbour: with no life line the biography keeps
+    /// BIO_GAP under the meta line, and with no biography the entry keeps ENTRY_GAP under the life line.
+    #[test]
+    fn header_gaps_survive_an_absent_neighbour() {
+        let m = FixtureMeasure;
+        let label = m.cap_h(theme::size::LABEL);
+        let no_life = header_flow(false, "A biography.", true, false, false, &m);
+        assert_eq!(no_life.life_y, None);
+        let (meta, bio) = (no_life.meta_y.unwrap(), no_life.bio_y.unwrap());
+        assert!((bio - meta - label - BIO_GAP).abs() < 0.01);
+        let no_bio = header_flow(false, "", true, true, true, &m);
+        assert_eq!(no_bio.bio_y, None);
+        let (life, entry) = (no_bio.life_y.unwrap(), no_bio.entry_y.unwrap());
+        assert!((entry - life - m.cap_h(theme::size::CAPTION) - ENTRY_GAP).abs() < 0.01);
     }
 }

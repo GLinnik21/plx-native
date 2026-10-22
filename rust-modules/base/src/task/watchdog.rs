@@ -167,10 +167,12 @@ pub(super) fn enter_label(label: &'static BlockingLabel) -> LabelScope {
     LabelScope { previous, _thread: PhantomData }
 }
 
-// Dedicated label-only entry points: neither asserts nor grants permission to block. The texts
-// are also how the fatal policy recognises a GPU phase (`runtime_check::Issue::Hang`): every
-// stretch of the frame whose cost is the GL implementation's — drawing, a framebuffer
-// readback, the swap — carries one of them, or a CPU rasterizer's time lands as `unlabeled`.
+// Dedicated label-only entry points: neither asserts nor grants permission to block. The GPU
+// texts are also how the fatal policy recognises a GPU phase (`runtime_check::Issue::Hang`):
+// every stretch of the frame whose cost is the GL implementation's — drawing, a framebuffer
+// readback, the swap — carries one of them, or a CPU rasterizer's time lands as a CPU label. The
+// main loop's other phases (`LoopPhase`) name where a CPU hang landed and are NOT in
+// `GPU_LABELS`, so the policy treats each exactly as it treats `unlabeled`.
 #[cfg(feature = "threadcheck")]
 const DRAW_LABEL: &str = "frame draw";
 #[cfg(feature = "threadcheck")]
@@ -191,6 +193,93 @@ pub fn readback_scope() -> LabelScope {
 #[cfg(feature = "threadcheck")]
 pub fn present_scope() -> LabelScope {
     enter_label(const { &BlockingLabel::new(PRESENT_LABEL) })
+}
+
+/// The CPU phases of one main-loop iteration, so a hang line names where it landed
+/// (`main-thread hang: 303ms in land results`) instead of reading `unlabeled`. They are not a
+/// third naming of the loop: each text is published by a mark or span the loop already has —
+/// a heartbeat leg (`heartbeat::Instruments::mark` opens the leg that follows its `Phase`) or a
+/// named FRAMEDROP span (`diag::spans::span`, via [`span_scope`]). Label-only, like `draw_scope`:
+/// no assertion, no permission to block, and none is a GPU phase, so the fatal policy sees each
+/// exactly as it sees `unlabeled`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoopPhase {
+    EventIngest,
+    Results,
+    DevScenarios,
+    PlaybackPump,
+    LandResults,
+    Navcommit,
+    DispatcherFrame,
+    Update,
+    PrepareWindow,
+    PresentAndSwap,
+    FrameReport,
+}
+
+impl LoopPhase {
+    pub const ALL: [LoopPhase; 11] = [
+        Self::EventIngest, Self::Results, Self::DevScenarios, Self::PlaybackPump, Self::LandResults,
+        Self::Navcommit, Self::DispatcherFrame, Self::Update, Self::PrepareWindow,
+        Self::PresentAndSwap, Self::FrameReport,
+    ];
+
+    #[cfg(feature = "threadcheck")]
+    const fn descriptor(self) -> &'static BlockingLabel {
+        match self {
+            Self::EventIngest => const { &BlockingLabel::new("event ingest") },
+            Self::Results => const { &BlockingLabel::new("results") },
+            Self::DevScenarios => const { &BlockingLabel::new("dev scenarios") },
+            Self::PlaybackPump => const { &BlockingLabel::new("playback pump") },
+            Self::LandResults => const { &BlockingLabel::new("land results") },
+            Self::Navcommit => const { &BlockingLabel::new("navcommit") },
+            Self::DispatcherFrame => const { &BlockingLabel::new("dispatcher frame") },
+            Self::Update => const { &BlockingLabel::new("update") },
+            Self::PrepareWindow => const { &BlockingLabel::new("prepare window") },
+            Self::PresentAndSwap => const { &BlockingLabel::new("present and swap") },
+            Self::FrameReport => const { &BlockingLabel::new("frame report") },
+        }
+    }
+
+    /// The phase a FRAMEDROP span of this name stands for, if the loop labels it.
+    #[cfg(feature = "threadcheck")]
+    fn of_span(name: &str) -> Option<Self> {
+        Some(match name {
+            "scen" => Self::DevScenarios,
+            "pump" => Self::PlaybackPump,
+            "land" => Self::LandResults,
+            "dframe" => Self::DispatcherFrame,
+            _ => return None,
+        })
+    }
+}
+
+/// `diag::spans::span`'s label: for the named spans the loop labels, the phase's text for the
+/// duration of the guard; any other span name publishes nothing.
+#[cfg(feature = "threadcheck")]
+pub fn span_scope(name: &str) -> Option<LabelScope> {
+    LoopPhase::of_span(name).map(|phase| enter_label(phase.descriptor()))
+}
+
+/// The heartbeat leg currently open. `enter` closes the previous leg and opens the next; the last
+/// stays open until the next `enter`. Owned by `heartbeat::Instruments`, whose `mark` is the only
+/// caller. Without `threadcheck` this is a zero-sized no-op.
+#[derive(Default)]
+pub struct LoopPhases {
+    #[cfg(feature = "threadcheck")]
+    open: Option<LabelScope>,
+}
+
+impl LoopPhases {
+    #[inline]
+    #[cfg_attr(not(feature = "threadcheck"), allow(unused_variables))]
+    pub fn enter(&mut self, phase: LoopPhase) {
+        #[cfg(feature = "threadcheck")]
+        {
+            self.open = None; // restores the label that was current before the first leg
+            self.open = Some(enter_label(phase.descriptor()));
+        }
+    }
 }
 
 impl Drop for LabelScope {
@@ -633,6 +722,111 @@ mod tests {
         let mut hardware = DevObserver::default();
         for now in (0..=1900).step_by(100) { assert!(!hardware.poll(now, Some(1), "frame draw", HW).kill); }
         assert!(hardware.poll(2000, Some(1), "unlabeled", HW).kill);
+    }
+
+    #[cfg(feature = "threadcheck")]
+    #[test]
+    fn a_hang_in_each_loop_phase_reports_that_phase() {
+        for phase in LoopPhase::ALL {
+            let signals = signals();
+            let watch = LoopWatch::attach(signals);
+            watch.presented();
+            let mut phases = LoopPhases::default();
+            phases.enter(phase);
+            let label = signals.label();
+            assert_eq!(label, phase.descriptor().text);
+            let mut detector = Detector::default();
+            detector.observe(0, signals.progress(), signals.label());
+            let began = detector.observe(300, signals.progress(), signals.label());
+            assert_eq!(began, Some(Event::Began { ms: 300, label }));
+            assert_eq!(began.unwrap().line(), format!("main-thread hang: 300ms in {label}"));
+            drop(phases);
+            assert_eq!(signals.label(), "unlabeled", "{label}");
+        }
+        let labels: Vec<&str> = LoopPhase::ALL.iter().map(|p| p.descriptor().text).collect();
+        for (i, a) in labels.iter().enumerate() { assert!(!labels[i + 1..].contains(a), "duplicate {a}"); }
+        assert!(labels.contains(&"land results"));
+    }
+
+    #[cfg(feature = "threadcheck")]
+    #[test]
+    fn the_named_loop_spans_publish_their_label_and_restore_it() {
+        let signals = signals();
+        let _watch = LoopWatch::attach(signals);
+        let mut phases = LoopPhases::default();
+        phases.enter(LoopPhase::Results);
+        for (name, label) in [("scen", "dev scenarios"), ("pump", "playback pump"), ("land", "land results"), ("dframe", "dispatcher frame")] {
+            let scope = span_scope(name);
+            assert_eq!(signals.label(), label);
+            drop(scope);
+            assert_eq!(signals.label(), "results");
+        }
+        assert!(span_scope("text").is_none());
+        assert_eq!(signals.label(), "results");
+    }
+
+    #[cfg(feature = "threadcheck")]
+    #[test]
+    fn each_heartbeat_mark_opens_the_next_legs_label() {
+        use crate::diag::heartbeat::{Instruments, Phase};
+        let signals = signals();
+        let watch = LoopWatch::attach(signals);
+        let mut instr = Instruments::new(false, 22.0);
+        for (mark, label) in [
+            (Phase::Top, "event ingest"), (Phase::Ingest, "results"), (Phase::Results, "navcommit"),
+            (Phase::NavCommit, "update"), (Phase::TickDrain, "prepare window"),
+            (Phase::Prepare, "present and swap"), (Phase::Draw, "present and swap"),
+            (Phase::Capture, "present and swap"), (Phase::Swap, "frame report"),
+        ] {
+            instr.mark(mark);
+            assert_eq!(signals.label(), label, "after {mark:?}");
+        }
+        drop(instr);
+        assert_eq!(signals.label(), "unlabeled");
+        drop(watch);
+    }
+
+    #[cfg(feature = "threadcheck")]
+    #[test]
+    fn loop_phases_replace_each_other_nest_with_gpu_scopes_and_do_not_allow_blocking() {
+        let signals = signals();
+        let _watch = LoopWatch::attach(signals);
+        let _frame = super::super::FrameScope::enter();
+        let mut phases = LoopPhases::default();
+        phases.enter(LoopPhase::Update);
+        phases.enter(LoopPhase::PresentAndSwap);
+        assert_eq!(signals.label(), "present and swap");
+        {
+            let _draw = draw_scope();
+            assert_eq!(signals.label(), "frame draw");
+        }
+        assert_eq!(signals.label(), "present and swap");
+        assert!(std::panic::catch_unwind(|| {
+            super::super::assert_may_block(const { &BlockingLabel::new("still forbidden") })
+        }).is_err(), "a phase label must not grant allow_blocking");
+        drop(phases);
+        assert_eq!(signals.label(), "unlabeled");
+    }
+
+    /// The fatal policy recognises a GPU phase only by `GPU_LABELS`; a loop phase is a CPU label
+    /// and must be killed on the same schedule as `unlabeled`, on hardware and software GL alike.
+    #[cfg(feature = "threadcheck")]
+    #[test]
+    fn a_loop_phase_is_treated_by_the_fatal_policy_exactly_as_unlabeled() {
+        for phase in LoopPhase::ALL {
+            let label = phase.descriptor().text;
+            assert!(!GPU_LABELS.contains(&label), "{label} must not be a GPU label");
+            for policy in [HW, Policy { log_only: false, software_gl: true }, Policy { log_only: true, software_gl: false }] {
+                let mut phased = DevObserver::default();
+                let mut plain = DevObserver::default();
+                for now in (0..=5000).step_by(100) {
+                    let a = phased.poll(now, Some(1), label, policy);
+                    let b = plain.poll(now, Some(1), "unlabeled", policy);
+                    assert_eq!((a.kill, a.reset_warning, a.elapsed), (b.kill, b.reset_warning, b.elapsed), "{label} at {now}ms");
+                    assert_eq!(a.event.is_some(), b.event.is_some(), "{label} at {now}ms");
+                }
+            }
+        }
     }
 
 }

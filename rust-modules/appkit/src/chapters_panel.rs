@@ -18,6 +18,8 @@ use plx_ui::screen::{
     Hover, Part, Placed, Seat, Step, Stop,
 };
 use plx_ui::theme;
+use plx_ui::hstack::Item;
+use plx_ui::vstack::{Anchor, VStack};
 use plx_ui::{Painter, Rect, Spring};
 use std::ffi::CString;
 use std::os::raw::c_int;
@@ -27,6 +29,9 @@ const CH_H: f32 = 162.0; // 16:9 still
 const CH_GAP: f32 = 24.0;
 const CH_TOP: f32 = 684.0; // thumbnail top — name/time fit above the tabs (SCR_H-128)
 const CH_RAD: f32 = 10.0;
+/// Card bottom → chapter name, and name → timestamp: off-ladder, kept at their painted values.
+const CH_NAME_DROP: f32 = 26.0;
+const CH_TIME_DROP: f32 = 34.0;
 /// Focus rim on the selected chapter. The card family's resting sheen ([`theme::CARD_SHEEN`] .22 /
 /// 1px) washes out over the hardware video plane the same way an unkeyed control's edge did — pure
 /// white and a thicker stroke are what keep "which chapter" readable from the couch while scrolling.
@@ -132,6 +137,7 @@ impl ChaptersState {
         // dim grey washed out even up close. SECONDARY matches the (readable) chapter-name grey; the
         // name still leads by size (LABEL vs CAPTION) + bold.
         let dimc = theme::TEXT_SECONDARY;
+        let label_ys = label_ys();
         for (i, ch) in chs.iter().enumerate() {
             let x = MARGIN_X + i as f32 * (CH_W + CH_GAP);
             if !plx_ui::on_axis(x - scroll, CH_W, SCR_W, 0.0) {
@@ -161,7 +167,7 @@ impl ChaptersState {
                 );
             }
             // name + timestamp beneath the card
-            let ty = CH_TOP + CH_H + 26.0;
+            let (name_y, time_y) = (label_ys.0, label_ys.1);
             let titc = if focused {
                 theme::TEXT_PRIMARY
             } else {
@@ -175,13 +181,29 @@ impl ChaptersState {
             if let Ok(tc) = CString::new(plx_gfx::text::elide_by(&name, CH_W, false, |t| {
                 measure.width_str(t, theme::size::LABEL, true)
             })) {
-                p.text(tc.as_ptr(), x, ty, theme::size::LABEL, titc, 0, 1);
+                p.text(tc.as_ptr(), x, name_y, theme::size::LABEL, titc, 0, 1);
             }
             if let Ok(sc) = CString::new(plx_ui::fmt::clock(ch.start_ms)) {
-                p.text(sc.as_ptr(), x, ty + 34.0, theme::size::CAPTION, dimc, 0, 0);
+                p.text(sc.as_ptr(), x, time_y, theme::size::CAPTION, dimc, 0, 0);
             }
         }
     }
+}
+
+/// Card, name, timestamp: one column every card shares; returns the name's and the timestamp's y.
+/// The name and the stamp are origins, not boxes: each is a zero-height item standing its drop
+/// (`CH_NAME_DROP`, `CH_TIME_DROP`) under the one before it.
+fn label_ys() -> (f32, f32) {
+    let column = [
+        Item::new(CH_H),
+        Item::new(0.0).before(CH_NAME_DROP),
+        Item::new(0.0).before(CH_TIME_DROP),
+    ];
+    let col = VStack::new(&column, 0.0, Anchor::Top(CH_TOP));
+    let (Some((name_y, _)), Some((time_y, _))) = (col.span(1), col.span(2)) else {
+        unreachable!("the name and the stamp are always present")
+    };
+    (name_y, time_y)
 }
 
 /// the playing leaf's chapters — the ONE read, so within a frame the count, the open, the seek and
@@ -450,5 +472,18 @@ mod focus_tests {
                 (n(test_store().view()) > 0).then_some(GroupId(0))
             );
         });
+    }
+}
+
+#[cfg(test)]
+mod vstack_tests {
+    use super::*;
+
+    /// The name and timestamp stand where the hand-added offsets put them: 26 under the card, 34 apart.
+    #[test]
+    fn the_labels_stand_26_and_34_under_the_card() {
+        let (name, time) = label_ys();
+        assert_eq!(name, CH_TOP + CH_H + 26.0);
+        assert_eq!(time - name, 34.0);
     }
 }

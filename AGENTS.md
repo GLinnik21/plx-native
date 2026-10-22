@@ -77,6 +77,9 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   the broken behavior. Observe the failure, implement the fix, then observe it pass.
 - Do not use `make -p` or `make -pn`; recursive variables such as `TV` are misleading there. Use
   the `make -s print-*` query targets documented in `docs/agent-reference.md`.
+- Edition 2021 keeps a `while let`/`match` scrutinee's temporaries alive for the whole body:
+  `while let Some(x) = m.lock().next() { io(x) }` holds the lock across `io`. Bind first
+  (`let next = m.lock().next();`) whenever the body blocks (#908).
 
 ## Build and verification
 
@@ -192,6 +195,10 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   is named. A count of late frames, an A/B between two builds, or a reading of the heartbeat line
   is not a diagnosis, and "probably the upload" is not a finding. State a cause only with the
   counter or trace evidence behind it; what was not measured is reported as not determined.
+- A main-thread stall (one long `navcommit=`/`results=` leg on a `FRAMEDROP` line, `--arm
+  framedrop=N`) is attributed by wrapping that leg's calls in temporary
+  `plx_base::diag::spans::span("label", || …)` on a scratch branch: the labels print in that
+  frame's `spans=` field, so one deploy names the call.
 - FFI, linkage, `dynlib!`, Starfish, ACB, curl, or bundled-FFmpeg changes require the
   `fw-compat-reviewer` custom agent (`fw_compat_reviewer` in Codex), or the equivalent manual
   review, before push.

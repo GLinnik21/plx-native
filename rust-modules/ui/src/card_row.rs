@@ -12,6 +12,7 @@
 //! supplies.
 use crate::consts::*;
 use crate::hstack::{Flow, Item};
+use crate::vstack::{Anchor, VStack};
 use crate::theme;
 use crate::tile::{TileFacts, TileKind};
 use crate::widgets::{card, pop_factor, Art};
@@ -1000,14 +1001,19 @@ impl TileLabel {
     /// not have is `None`. The one place the block's vertical metrics are read as boxes, so what is
     /// drawn, what a test reads and what the reveal rule is solved against cannot disagree.
     pub fn lines(&self) -> [Option<LineBox>; 2] {
-        let mut y = UNDER_DROP;
-        let title = self.title.is_some().then(|| {
-            let line = self.line(y, y + UNDER_LINE_H);
-            y += UNDER_LINE_H + UNDER_LINE_GAP;
-            line
-        });
-        let details = self.caption.is_some().then(|| self.line(y, y + UNDER_CAPTION_H));
-        [title, details]
+        let items = Self::items(self.title.is_some(), self.caption.is_some());
+        let stack = VStack::new(&items, UNDER_LINE_GAP, Anchor::Top(UNDER_DROP));
+        let line = |i: usize| stack.span(i).map(|(y, h)| self.line(y, y + h));
+        [line(0), line(1)]
+    }
+    /// The block's two lines as one stack: the title line (index 0) and the details line (index 1),
+    /// each present or absent. Both [`TileLabel::lines`] and [`TileLabel::height`] read this, so the
+    /// drawn lines and the reserved height are the same stack.
+    const fn items(title: bool, caption: bool) -> [Item; 2] {
+        [
+            if title { Item::new(UNDER_LINE_H) } else { Item::absent() },
+            if caption { Item::new(UNDER_CAPTION_H) } else { Item::absent() },
+        ]
     }
     /// The line whose box is `top..bottom` under the card, at the alpha this block's band gives it.
     fn line(&self, top: f32, bottom: f32) -> LineBox {
@@ -1020,13 +1026,14 @@ impl TileLabel {
     /// budget marquees in place rather than growing the block, so this no longer varies with the
     /// row style at all.
     pub fn height(caption: bool) -> f32 {
-        UNDER_DROP
-            + UNDER_LINE_H
-            + if caption {
-                UNDER_LINE_GAP + UNDER_CAPTION_H
-            } else {
-                0.0
-            }
+        Self::block_h(caption)
+    }
+    /// [`Self::height`] as a `const fn`, so [`UNDER_LABEL_H`] IS this stack's full case rather than
+    /// a hand-summed copy of it. The title is always a line, so the block's height is the stack's
+    /// height from its top.
+    const fn block_h(caption: bool) -> f32 {
+        let items = Self::items(true, caption);
+        UNDER_DROP + VStack::new(&items, UNDER_LINE_GAP, Anchor::Top(0.0)).height()
     }
     /// [`TileLabel::height`] for a block that has whatever THIS one has.
     #[cfg(test)]
@@ -1146,11 +1153,15 @@ pub fn draw_label(
     draw_label_block(p, rect, sty, label, lines, bottom, measure);
 }
 /// **The state line under a focused Continue Watching tile** (`registry::captions::shelf_label`: the
-/// caption rung of the deck's state, replacing the details line whenever the setting shows one; a
-/// plain poster's details line is worded by `caption_policy::caption_lines`, the one rule). The
-/// focused Continue-Watching card's secondary line (Home Screen.dc): an in-progress item reads
-/// "<show> · 8m left" (episodes) or just the time-remaining (a resumed movie); a next-up episode
-/// (no resume point yet) reads "<show> · New episode". `title` above it carries the episode name.
+/// caption rung of the deck's state, replacing the details line, and always shown on the deck (the
+/// owner's 2026-10-22 call), Details Nothing included (`captions::deck_policy`); a
+/// plain poster's details line is worded by `caption_policy::caption_lines`, the one rule). An
+/// in-progress episode reads "S3 · E4 · 8m left" and a next-up episode (no resume point yet)
+/// "S2 · E1 · New episode"; a resumed movie reads just the time remaining. The episode's ADDRESS
+/// leads because the deck's poster is the show's own art and already names the show (the owner's
+/// call, 2026-10-22, replacing the Home Screen.dc "<show> · 8m left" wording); `title` above it
+/// carries the episode's own name, so the address never repeats it. An unnumbered episode (the
+/// server sent no index) still names its show: "Show · 8m left", "Show · New episode".
 ///
 /// "In progress" is `PmsMovie::resume_frac` — THE resume rule, which the caller applies when it
 /// fills [`TileFacts::resume`], and the same call `Grid::draw` makes for the BAR in the pass that
@@ -1162,25 +1173,30 @@ pub fn draw_label(
 /// separate question with a separate answer: `widgets::poster_mark` reads `PmsMovie::watched`, so
 /// a stale past-end `viewOffset` on an item the server has not marked watched drew no mark at all.
 pub fn cw_caption(m: &TileFacts<'_>) -> Option<std::ffi::CString> {
+    use crate::caption_policy::join;
+    use plx_platform::i18n::msg;
     let show = m.show_title;
+    let is_episode = m.kind == TileKind::Episode;
+    let address = (is_episode && m.ep_index > 0)
+        .then(|| crate::fmt::episode_address(i64::from(m.season_index), i64::from(m.ep_index)));
     let s = if let Some(resume) = m.resume {
         let left = crate::fmt::time_left(resume.left_ms);
-        if m.kind == TileKind::Episode && !show.is_empty() {
-            format!("{show} \u{00b7} {left}")
-        } else {
-            left // a resumed movie: time-remaining alone
+        match address {
+            Some(a) => join(vec![a, left]),
+            None if is_episode && !show.is_empty() => join(vec![show.to_string(), left]),
+            None => Some(left), // a resumed movie: time-remaining alone
         }
-    } else if m.kind == TileKind::Episode {
+    } else if is_episode {
         // next-up episode: no resume point, so no bar and no time — just the "New episode" cue
-        if show.is_empty() {
-            plx_platform::i18n::msg::widgets_card_new_episode().to_string()
-        } else {
-            plx_platform::i18n::msg::widgets_card_show_new_episode(show)
+        match address {
+            Some(a) => join(vec![a, msg::widgets_card_new_episode().to_string()]),
+            None if show.is_empty() => Some(msg::widgets_card_new_episode().to_string()),
+            None => Some(msg::widgets_card_show_new_episode(show)),
         }
     } else {
         return None;
     };
-    std::ffi::CString::new(s).ok()
+    std::ffi::CString::new(s?).ok()
 }
 
 // The under-tile metadata block's four metrics — the ONLY authority on its geometry, which
@@ -1200,7 +1216,7 @@ const UNDER_CAPTION_H: f32 = 28.0;
 /// also drives [`TileLabel::height`], instead of a screen re-deriving or (worse) hand-copying it.
 /// `consts::UNDER_LABEL_AIR` is this constant's other half: the two together are what unifies
 /// Home's and Library's row spacing.
-pub const UNDER_LABEL_H: f32 = UNDER_DROP + UNDER_LINE_H + UNDER_LINE_GAP + UNDER_CAPTION_H;
+pub const UNDER_LABEL_H: f32 = TileLabel::block_h(true);
 
 /// **What an UNFOCUSED shelf reserves where the focused one reserves [`UNDER_LABEL_H`]** — the
 /// collapsed half of the band, and the reason it is a subtraction rather than a taste number.
@@ -1824,7 +1840,7 @@ pub const CREDIT_ROLE_LEADING: f32 = theme::size::CAPTION as f32 + theme::space:
 
 /// Where a credit label's role line starts below its name line's cap top — the name's cap height
 /// and a gap. One number for the label in every state, so the two baselines never move.
-fn credit_role_dy(measure: &dyn plx_machine::machine::Measure) -> f32 {
+pub fn credit_role_dy(measure: &dyn plx_machine::machine::Measure) -> f32 {
     measure.cap_h(theme::size::LABEL) + theme::space::XS
 }
 
@@ -2755,7 +2771,27 @@ mod tests {
     #[test]
     fn the_label_height_is_fixed_regardless_of_row_style() {
         assert_eq!(TileLabel::height(true), UNDER_LABEL_H);
+        // derived from the stack, and still the 92 px band detail.rs and every row pitch were built on
+        assert_eq!(UNDER_LABEL_H, 92.0);
         assert!(TileLabel::height(false) < TileLabel::height(true));
+    }
+
+    /// The two lines are one stack: the details line stands [`UNDER_LINE_GAP`] under the title line,
+    /// an absent caption draws no line, and the block's height is the stack's.
+    #[test]
+    fn the_label_lines_are_one_stack_with_the_reserved_height() {
+        let both = TileLabel::titled("Title", "Caption");
+        let [title, details] = both.lines();
+        let (title, details) = (title.unwrap(), details.unwrap());
+        assert_eq!(title.top, UNDER_DROP);
+        assert_eq!(title.bottom, UNDER_DROP + UNDER_LINE_H);
+        assert_eq!(details.top - title.bottom, UNDER_LINE_GAP);
+        assert_eq!(details.bottom - details.top, UNDER_CAPTION_H);
+        assert_eq!(details.bottom, TileLabel::height(true));
+        let bare = TileLabel::title("Title");
+        let [title, details] = bare.lines();
+        assert!(details.is_none());
+        assert_eq!(title.unwrap().bottom, TileLabel::height(false));
     }
 
     /// [`TileLabel::own_height`] agrees with the free function for a label that carries whatever
@@ -2996,7 +3032,7 @@ mod tests {
     }
 
     /// With no title the mark leads the details line, centred the same way; with no line at all
-    /// (Nothing) there is nothing to lead and no mark.
+    /// (a label with no lines) there is nothing to lead and no mark.
     #[test]
     fn the_play_mark_leads_the_details_line_when_there_is_no_title() {
         let _serial = plx_base::testlock::serial();

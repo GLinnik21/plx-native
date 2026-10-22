@@ -316,7 +316,12 @@ fn walk<F>(
     let lock = move || queue.lock().unwrap_or_else(|e| e.into_inner());
     if !lock().push(targets, now) { return; }
     let started = spawn(Box::new(move || {
-        while let Some((target, now)) = lock().next() {
+        // The next section is taken in its own statement: a `while let ... = lock().next()` keeps
+        // the guard to the end of the body, and `each` is a blocking GET the frame thread's `warm`
+        // would then wait out on this same lock.
+        loop {
+            let next = lock().next();
+            let Some((target, now)) = next else { break };
             // A section that panics is a section not asked, not a walk that stops.
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| each(target, now)));
         }
@@ -454,6 +459,29 @@ mod tests {
         assert_eq!(started.lock().unwrap().len(), 1, "a dry queue lets the next landing start a worker");
         started.lock().unwrap().pop().unwrap()();
         assert_eq!(asked.lock().unwrap().last(), Some(&(1, 5, 300)));
+    }
+
+    /// **The worker never holds the queue's lock while it asks a section**: `each` is a blocking GET,
+    /// and the frame thread's `warm` -> `walk` locks the same queue to push, so a guard that lived
+    /// across `each` (a `while let ... = lock().next()` keeps its temporary to the loop's end) made
+    /// the frame wait out a whole network round-trip (225 ms at boot on the TV).
+    #[test]
+    fn the_warm_worker_does_not_hold_the_queue_while_it_asks_a_section() {
+        use std::sync::{mpsc, Arc};
+        static QUEUE: Mutex<Walk> = Mutex::new(Walk::new());
+        let (entered_tx, entered) = mpsc::channel::<()>();
+        let (release, released) = mpsc::channel::<()>();
+        let released = Arc::new(Mutex::new(released));
+        let spawn = |job: Box<dyn FnOnce() + Send>| { std::thread::spawn(job); true };
+        let each = { let released = Arc::clone(&released); move |_: Target, _| {
+            entered_tx.send(()).unwrap();
+            let _ = released.lock().unwrap().recv();
+        } };
+        walk(&QUEUE, vec![(ServerId::from_raw(1), 5)], 1, spawn, each);
+        entered.recv_timeout(std::time::Duration::from_secs(10)).expect("the worker reached its section");
+        let free = !matches!(QUEUE.try_lock(), Err(std::sync::TryLockError::WouldBlock));
+        release.send(()).unwrap();
+        assert!(free, "the queue is locked while a section is being asked, so the frame thread would wait on the GET");
     }
 
     /// A worker the OS refuses leaves no queue behind it, so the next landing starts one; and a

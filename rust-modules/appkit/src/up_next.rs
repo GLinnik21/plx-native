@@ -35,6 +35,7 @@
 #![allow(dead_code)]
 use plx_media::route::UpNext;
 use plx_ui::hstack::{Align, HStack, Item};
+use plx_ui::vstack::{Anchor, VStack};
 use plx_ui::label::{HAlign, Label};
 use plx_ui::theme;
 use plx_ui::widgets::{draw_card, Button, ControlGround};
@@ -228,19 +229,20 @@ pub fn layout_of(next_w: f32, credits_w: f32) -> Layout {
     let (next_x, _) = row.span(1).unwrap_or_default();
     let next = Rect::new(next_x, CTRL_Y, next_w, CTRL_H);
     let credits = Rect::new(credits_x, next.y, credits_w, next.h);
-    let caption = Rect::new(
-        CTRL_RIGHT - CAPTION_W,
-        CTRL_Y - BTN_GAP - CAPTION_H,
-        CAPTION_W,
-        CAPTION_H,
-    );
+    // The column, bottom-up from the control row: still, caption, row. The unequal gaps are what
+    // group them (the caption hugs the still; the buttons get more air), carried as the caption's
+    // own `after`. The still's height is its 16:9 frame at the primary's width.
     let still_h = (next_w * 9.0 / 16.0).round();
-    let still = Rect::new(
-        CTRL_RIGHT - next_w,
-        caption.y - CAP_GAP - still_h,
-        next_w,
-        still_h,
-    );
+    let column = [
+        Item::new(still_h),
+        Item::new(CAPTION_H).after(BTN_GAP),
+        Item::new(CTRL_H),
+    ];
+    let col = VStack::new(&column, CAP_GAP, Anchor::Bottom(CTRL_Y + CTRL_H));
+    let (still_y, _) = col.span(0).unwrap_or_default();
+    let (caption_y, _) = col.span(1).unwrap_or_default();
+    let caption = Rect::new(CTRL_RIGHT - CAPTION_W, caption_y, CAPTION_W, CAPTION_H);
+    let still = Rect::new(CTRL_RIGHT - next_w, still_y, next_w, still_h);
     Layout {
         still,
         caption,

@@ -216,6 +216,8 @@ pub struct Instruments {
     thresh_ms: f64,
     perf_freq: f64,
     stamps: [u64; 9],
+    /// The watchdog label of the leg `mark` last opened (label-only; a no-op without `threadcheck`).
+    leg: crate::task::watchdog::LoopPhases,
     /// Worst frame total this second (presented frames only), for the heartbeat peak.
     worst: f64,
     /// Worst prepare phase this second, timed on EVERY iteration (ungated by present).
@@ -287,6 +289,7 @@ impl Instruments {
             // loop that owns this value exists.
             perf_freq: unsafe { SDL_GetPerformanceFrequency() } as f64,
             stamps: [0; 9],
+            leg: Default::default(),
             worst: 0.0,
             worst_prep: 0.0,
             counters: FrameCounters::default(),
@@ -317,6 +320,19 @@ impl Instruments {
 
     /// Stamp the end of a phase. Unarmed, a phase inherits the origin so every span reads 0.
     pub fn mark(&mut self, phase: Phase) {
+        use crate::task::watchdog::LoopPhase as Leg;
+        // A mark ends the leg it names and opens the next one: the watchdog names the leg a hang
+        // lands in. Draw and Capture open nothing new (`draw_scope` / `present_scope` label them).
+        match phase {
+            Phase::Top => self.leg.enter(Leg::EventIngest),
+            Phase::Ingest => self.leg.enter(Leg::Results),
+            Phase::Results => self.leg.enter(Leg::Navcommit),
+            Phase::NavCommit => self.leg.enter(Leg::Update),
+            Phase::TickDrain => self.leg.enter(Leg::PrepareWindow),
+            Phase::Prepare => self.leg.enter(Leg::PresentAndSwap),
+            Phase::Swap => self.leg.enter(Leg::FrameReport),
+            Phase::Draw | Phase::Capture => {}
+        }
         let i = phase as usize;
         self.stamps[i] = if self.armed {
             // SAFETY: as `new`.

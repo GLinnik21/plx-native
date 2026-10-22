@@ -20,6 +20,8 @@
 //! it is the token, and [`Span::box_x`] is where the caller draws its box.
 //!
 //! The gap is a token the caller passes (`theme::space::*`, `page_header::GAP`), never a literal here.
+//! The gap between two present neighbours `a` then `b` is `b`'s [`Item::before`] if it has one, else
+//! `a`'s [`Item::after`], else the stack's own; an absent item gives and takes neither.
 //!
 //! **A slot sizes a budget, never air inside the row** (the Library header, #875). A control whose
 //! count comes and goes ("Collections · 12") is placed by the text it DRAWS, one gap from its
@@ -60,6 +62,9 @@ pub struct Item {
     budget: Option<f32>,
     /// The gap after this item instead of the stack's own (`setCustomSpacing`).
     after: Option<f32>,
+    /// The gap before this item, which wins over the neighbour's `after` and the stack's own: see
+    /// [`Item::before`].
+    before: Option<f32>,
     /// Drop order for [`HStack::fit`]; `None` is never dropped. See the fit section.
     priority: Option<u8>,
     /// A glyph's empty margin left of its ink inside its box (0 for anything else): see
@@ -70,13 +75,13 @@ pub struct Item {
 impl Item {
     /// A present item `w` wide. A `w` of 0 is still present, and keeps its gap.
     pub const fn new(w: f32) -> Self {
-        Self { w: w, present: true, budget: None, after: None, priority: None, lead: 0.0 }
+        Self { w: w, present: true, budget: None, after: None, before: None, priority: None, lead: 0.0 }
     }
 
     /// An item that is not on the row: no width, no gap. Give it [`Self::slot`] and it still
     /// reserves its room in [`HStack::budget_w`].
     pub const fn absent() -> Self {
-        Self { w: 0.0, present: false, budget: None, after: None, priority: None, lead: 0.0 }
+        Self { w: 0.0, present: false, budget: None, after: None, before: None, priority: None, lead: 0.0 }
     }
 
     /// The widest case this item will ever draw, which [`HStack::budget_w`] reserves (the larger of
@@ -156,14 +161,14 @@ enum Items<'a> {
 }
 
 impl Items<'_> {
-    fn len(&self) -> usize {
+    const fn len(&self) -> usize {
         match self {
             Items::Slice(s) => s.len(),
             Items::Widths(w) => w.len(),
         }
     }
 
-    fn get(&self, i: usize) -> Item {
+    const fn get(&self, i: usize) -> Item {
         match self {
             Items::Slice(s) => s[i],
             Items::Widths(w) => Item::new(w[i]),
@@ -178,28 +183,45 @@ impl<'a> HStack<'a> {
         Self { items: Items::Slice(items), gap, align, kept: Kept::ALL }
     }
 
-    /// The gap after `item`.
-    fn gap_after(&self, item: &Item) -> f32 {
-        item.after.unwrap_or(self.gap)
+    /// The gap between neighbours `a` then `b`: `b`'s [`Item::before`], else `a`'s [`Item::after`],
+    /// else the stack's own.
+    const fn gap_between(&self, a: &Item, b: &Item) -> f32 {
+        gap_between(self.gap, a, b)
     }
 
     /// Item `i` as this run sees it: itself, or [`Item::absent`] once [`Self::fit`] dropped it.
-    fn live(&self, i: usize) -> Item {
+    const fn live(&self, i: usize) -> Item {
         if self.kept.has(i) { self.items.get(i) } else { Item::absent() }
     }
 
     /// The sum of `size` over the items that count (`Some`), plus one gap between each neighbouring
     /// pair of them. The widths are added first and the gaps second, so a caller that summed a row
     /// as "runs, then gaps" gets the same float back.
-    fn sum(&self, size: impl Fn(&Item) -> Option<f32>) -> f32 {
+    ///
+    /// `budget` picks what counts: `false` the drawn run ([`Self::width`]), `true` the reserved one
+    /// ([`Self::budget_w`]). A flag, not a closure, so [`Self::width`] can be a `const fn`.
+    const fn sum(&self, budget: bool) -> f32 {
         let (mut runs, mut gaps) = (0.0, 0.0);
         let mut before: Option<Item> = None;
-        for i in 0..self.items.len() {
+        let mut i = 0;
+        while i < self.items.len() {
             let item = self.live(i);
-            let Some(w) = size(&item) else { continue };
+            i += 1;
+            let size = if budget {
+                match (item.present, item.budget) {
+                    (true, Some(b)) => Some(if item.w > b { item.w } else { b }),
+                    (true, None) => Some(item.w),
+                    (false, b) => b,
+                }
+            } else if item.present {
+                Some(item.w)
+            } else {
+                None
+            };
+            let Some(w) = size else { continue };
             runs += w;
             if let Some(prev) = before {
-                gaps += self.gap_after(&prev);
+                gaps += self.gap_between(&prev, &item);
             }
             before = Some(item);
         }
@@ -208,18 +230,15 @@ impl<'a> HStack<'a> {
 
     /// The run's width as DRAWN: every present item's width and one gap between present
     /// neighbours. An absent item adds neither; a present item of width 0 adds its gaps.
-    pub fn width(&self) -> f32 {
-        self.sum(|item| item.present.then_some(item.w))
+    pub const fn width(&self) -> f32 {
+        self.sum(false)
     }
 
     /// What the run RESERVES: [`Self::width`] with every item at the larger of what it draws and
     /// its [`Item::slot`], and an absent item that has a slot counted at its slot, gap included.
     /// This sizes the room a neighbour may use; it is never where anything stands.
     pub fn budget_w(&self) -> f32 {
-        self.sum(|item| match (item.present, item.budget) {
-            (true, budget) => Some(budget.map_or(item.w, |b| item.w.max(b))),
-            (false, budget) => budget,
-        })
+        self.sum(true)
     }
 
     /// Where the first present item's leading edge stands.
@@ -336,8 +355,9 @@ impl<'a> HStack<'a> {
 pub struct Flow {
     x: f32,
     gap: f32,
-    /// What the pen moves by before the next present item: the last item's width and its gap.
-    advance: Option<f32>,
+    /// The last present item: its width and its own `after`. The pen moves by the width and the gap
+    /// to the next item, which only that item's `before` can settle.
+    last: Option<(f32, Option<f32>)>,
     /// The trailing edge of the last present item.
     edge: f32,
     /// Counts the items pushed, present or not: the next [`Span::i`].
@@ -347,40 +367,88 @@ pub struct Flow {
 impl Flow {
     /// A flow whose first item's leading edge stands at `x`, `gap` between neighbours.
     pub const fn new(x: f32, gap: f32) -> Self {
-        Self { x, gap, advance: None, edge: x, next: 0 }
+        Self { x, gap, last: None, edge: x, next: 0 }
     }
 
     /// Place the next item: the span it draws, `None` (and no room taken) when it is absent.
     pub fn push(&mut self, item: Item) -> Option<Span> {
-        self.place(|_| item)
+        let x = self.x_for(&item);
+        self.place_item(item, x)
+    }
+
+    /// Where `item`'s leading edge stands: the pen moved by the last item's width and the gap
+    /// between it and `item`.
+    fn x_for(&self, item: &Item) -> f32 {
+        match self.last {
+            None => self.x,
+            Some((w, after)) => {
+                let prev = Item { w, after, ..Item::new(0.0) };
+                self.x + (w + gap_between(self.gap, &prev, item))
+            }
+        }
     }
 
     /// Place the next item, handing `make` the x its leading edge will stand at (the pen after the
     /// gap) BEFORE the item exists, for a caller that paints the run to learn its width. `make`
     /// runs for an absent item too, at the pen's current x; its item then takes no room.
+    ///
+    /// **An item placed this way has no [`Item::before`]** (debug-asserted): the pen is fixed before
+    /// the item exists, so a gap that depends on it cannot be honoured. Use [`Self::push`].
     pub fn place(&mut self, make: impl FnOnce(f32) -> Item) -> Option<Span> {
+        let x = self.next_x();
+        let item = make(x);
+        debug_assert!(item.before.is_none(), "Flow::place cannot honour Item::before; use push");
+        self.place_item(item, x)
+    }
+
+    /// Place `item` with the gap it asks for: [`Item::before`], else the last item's `after`, else
+    /// the flow's gap.
+    fn place_item(&mut self, item: Item, x: f32) -> Option<Span> {
         let i = self.next;
         self.next += 1;
-        let x = self.x + self.advance.unwrap_or(0.0);
-        let item = make(x);
         if !item.present {
             return None;
         }
         self.x = x;
-        self.advance = Some(item.w + item.after.unwrap_or(self.gap));
+        self.last = Some((item.w, item.after));
         self.edge = x + item.w;
         Some(Span { i, x, w: item.w, box_x: x - item.lead })
     }
 
     /// Where the next present item will stand: the pen after the gap (the leading `x` while none is
     /// placed). A caller that places items only while they fit its room asks it before it commits.
+    /// It assumes the next item has no [`Item::before`].
     pub fn next_x(&self) -> f32 {
-        self.x + self.advance.unwrap_or(0.0)
+        self.x_for(&Item::new(0.0))
     }
 
     /// The trailing edge of the last present item (the leading `x` while none is): where the run ends.
     pub const fn end(&self) -> f32 {
         self.edge
+    }
+}
+
+// ---- before: the gap ahead of an item (lane vs-p0) ----
+
+impl Item {
+    /// The gap BEFORE this item, in place of the previous item's [`Item::after`] and the stack's own
+    /// (CSS `margin-top`; the vertical precedent is `Column::gap_before`). The gap between present
+    /// neighbours `a` then `b` is `b.before`, else `a.after`, else the stack's gap. It is the gap to
+    /// the previous item that is on the row, so it means nothing for the first, and an absent item
+    /// neither gives nor takes one: a stack whose optional middle item is absent keeps the `before`
+    /// of the item after it, measured from the item before that.
+    #[must_use]
+    pub const fn before(mut self, gap: f32) -> Self {
+        self.before = Some(gap);
+        self
+    }
+}
+
+/// The gap between present neighbours `a` then `b` in a run whose own gap is `gap`.
+const fn gap_between(gap: f32, a: &Item, b: &Item) -> f32 {
+    match (b.before, a.after) {
+        (Some(g), _) | (None, Some(g)) => g,
+        (None, None) => gap,
     }
 }
 

@@ -145,7 +145,11 @@ fn member(sid: plx_plex::plex::ServerId, rk: &str) -> plx_data::pms::PmsMovie {
 /// ([`band_open_for`]: 72 px for a two-line band, 40 for a one-line one, 0 for none): the Library
 /// grid's grade, on a shelf. The runs strictly between the two headings are the caption block (a
 /// poster draws no text of its own), and none may end under the next heading.
-fn grade_shelf_bands(w: &mut World, surface: &str, focused: &str, next: &str) {
+///
+/// `deck`: the focused shelf is the Continue Watching deck, whose policy is the setting's
+/// `captions::deck_policy` (its progress line is always shown, so Nothing keeps one line): the same
+/// grade, with each band and the closed baseline read through that policy.
+fn grade_shelf_bands(w: &mut World, surface: &str, focused: &str, next: &str, deck: bool) {
     use plx_screens::registry::caption_policy_of;
     use plx_ui::caption_policy::{band_h, CaptionPolicy};
     use plx_ui::cards::band_open_for;
@@ -163,11 +167,14 @@ fn grade_shelf_bands(w: &mut World, surface: &str, focused: &str, next: &str) {
         to - from
     };
     let closed = pitch(w, false, Details::None);
+    let effective = |policy: CaptionPolicy| if deck { plx_screens::registry::captions::deck_policy(&policy) } else { policy };
+    let baseline = band_open_for(band_h(&effective(caption_policy_of(plx_plex::plex::session::UnderPosters { title: false, details: Details::None }))));
     for (title, details, band, grows) in [(true, Details::YearLength, 112.0, 72.0), (false, Details::YearLength, 80.0, 40.0),
         (true, Details::None, 80.0, 40.0), (false, Details::None, 0.0, 0.0), (true, Details::Genre, 112.0, 72.0)] {
         let policy: CaptionPolicy = caption_policy_of(plx_plex::plex::session::UnderPosters { title, details });
         assert_eq!(band_h(&policy), band, "{surface}: premise: the policy's band for title {title}, {details:?}");
         assert!((band_open_for(band) - grows).abs() < 0.5, "{surface}: premise: the layout's growth for a {band} band");
+        let (band, grows) = (band_h(&effective(policy)), band_open_for(band_h(&effective(policy))) - baseline);
         let opened = pitch(w, title, details) - closed;
         assert!((opened - grows).abs() < 0.5,
             "{surface}: the page opens {opened} px for title {title}, {details:?}; the {band} px band asks {grows}");
@@ -182,7 +189,7 @@ fn home_opens_the_band_its_setting_asks_for() {
     w.frames(30);
     w.press(super::Key::Down);
     w.frames(60);
-    grade_shelf_bands(&mut w, "Home", "Continue Watching", "Recently Added");
+    grade_shelf_bands(&mut w, "Home", "Continue Watching", "Recently Added", true);
 }
 
 /// Recommended: its first poster shelf is focused on arrival, a second one sits below it.
@@ -192,7 +199,7 @@ fn recommended_opens_the_band_its_setting_asks_for() {
     w.bridge.stores.browse.borrow_mut().seed_named_shelves_for_test(
         0, &[("hub.movie.recent", "", "Recently Added"), ("hub.movie.top", "", "Top Rated")], 3);
     w.frames(60);
-    grade_shelf_bands(&mut w, "Recommended", "Recently Added", "Top Rated");
+    grade_shelf_bands(&mut w, "Recommended", "Recently Added", "Top Rated", false);
 }
 
 /// Detail: Related is the focused shelf (three Downs from the top), About the section below it.
@@ -214,7 +221,7 @@ fn detail_related_opens_the_band_its_setting_asks_for() {
         w.press(super::Key::Down);
         w.frames(30);
     }
-    grade_shelf_bands(&mut w, "Detail", "Related", "About");
+    grade_shelf_bands(&mut w, "Detail", "Related", "About", false);
 }
 
 /// Detail: the collection shelf is the first poster shelf, Related the one below it.
@@ -231,7 +238,7 @@ fn detail_collection_shelf_opens_the_band_its_setting_asks_for() {
     let mut w = World::detail_page("band-detail-collection", detail);
     let _cell = Cell::default();
     focus_first_poster(&mut w, "Detail collection");
-    grade_shelf_bands(&mut w, "Detail collection", "Trilogy", "Related");
+    grade_shelf_bands(&mut w, "Detail collection", "Trilogy", "Related", false);
 }
 
 /// Search: its Movies row is the focused shelf, the Shows row the one below it (the Stack hands each
@@ -249,7 +256,7 @@ fn search_opens_the_band_its_setting_asks_for() {
     });
     let _cell = Cell::default();
     focus_first_poster(&mut w, "Search");
-    grade_shelf_bands(&mut w, "Search", Kind::Movie.title(), Kind::Show.title());
+    grade_shelf_bands(&mut w, "Search", Kind::Movie.title(), Kind::Show.title(), false);
 }
 
 /// The person page's filmography: the Movies shelf is the focused one, the Shows shelf below it.
@@ -261,7 +268,7 @@ fn the_filmography_opens_the_band_its_setting_asks_for() {
     let mut w = World::person_page("band-person", vec![member(sid, "m1"), member(sid, "m2")], vec![show], &["", ""]);
     let _cell = Cell::default();
     focus_first_poster(&mut w, "Filmography");
-    grade_shelf_bands(&mut w, "Filmography", msg::browse_kind_movies(), msg::browse_kind_shows());
+    grade_shelf_bands(&mut w, "Filmography", msg::browse_kind_movies(), msg::browse_kind_shows(), false);
 }
 
 // ── Detail names what the server did not: a season 0 and an episode with no number ───────────────

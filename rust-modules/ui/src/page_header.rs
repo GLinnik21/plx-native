@@ -38,7 +38,7 @@ use std::ffi::CString;
 use plx_machine::machine::{EntryId, FocusKey, GroupId, Measure};
 
 use super::breadcrumb::{self, Crumb};
-use super::hstack::{Align, HStack, Item};
+use super::hstack::{Align, Flow, HStack, Item};
 use super::page_regions::row_neighbour;
 use super::screen::{At, AxisMask, Dir, EdgeRule, ElemKind, GroupKind, GroupSpec, Placed, Seat, Step};
 use super::widgets::{focus_pill_popped, paint_inked, CtlPop, PillInk, SelMark, TabGround, TabStrip, PILL_FOCUS_OUTSET};
@@ -185,12 +185,19 @@ fn text_w(s: &str, measure: &dyn Measure) -> f32 {
 /// digits). It sizes `cluster_w` and `left_budget`; the items are placed by [`ink_w`].
 fn run_w(item: &HeaderItem, measure: &dyn Measure) -> f32 {
     let w = |s: &str| text_w(s, measure);
-    let value = match (&item.value_slot, &item.value) {
-        (Some(slot), value) => w(" \u{b7} ") + w(slot).max(value.as_deref().map_or(0.0, w)),
-        (None, Some(value)) => w(" \u{b7} ") + w(value),
-        (None, None) => 0.0,
+    let (sep, value) = match (&item.value_slot, &item.value) {
+        (Some(slot), value) => (Item::new(w(" \u{b7} ")), Item::new(w(slot).max(value.as_deref().map_or(0.0, w)))),
+        (None, Some(value)) => (Item::new(w(" \u{b7} ")), Item::new(w(value))),
+        (None, None) => (Item::absent(), Item::absent()),
     };
-    w(&item.label) + value + if item.fold_glyph { FOLD_GAP + FOLD_SIZE } else { 0.0 }
+    let fold = if item.fold_glyph { fold_item() } else { Item::absent() };
+    HStack::new(&[Item::new(w(&item.label)), sep, value, fold], 0.0, Align::Leading(0.0)).width()
+}
+
+/// The fold glyph as a run item: [`FOLD_SIZE`] wide, [`FOLD_GAP`] after whatever precedes it. `run_w`
+/// sizes the item with it and `draw_face_at` places the glyph from it, so the two cannot disagree.
+fn fold_item() -> Item {
+    Item::new(FOLD_SIZE).before(FOLD_GAP)
 }
 
 /// The width of what an item DRAWS: [`run_w`], less the unused part of a slot. The item's text box
@@ -458,8 +465,13 @@ impl PageHeader {
         }
         x = value_end;
         if face.fold {
+            // The run ends at `x` (a zero-width stand-in for the text before it): the glyph stands
+            // where `run_w` put it, `FOLD_GAP` on.
+            let mut run = Flow::new(x, 0.0);
+            run.push(Item::new(0.0));
+            let fold = run.push(fold_item()).expect("present");
             icons::draw(p, Icon::ChevronDown,
-                Rect::new(x + FOLD_GAP, text.y + dy + (text.h - FOLD_SIZE) * 0.5, FOLD_SIZE, FOLD_SIZE), to_accent(strong));
+                Rect::new(fold.box_x, text.y + dy + (text.h - FOLD_SIZE) * 0.5, FOLD_SIZE, FOLD_SIZE), to_accent(strong));
         }
     }
 }

@@ -957,7 +957,7 @@ fn the_home_hero_logo_never_reaches_the_top_bar() {
     const META_H: f32 = 28.0 * 1.32;
     let synopsis = plx_ui::hero_syn_h(plx_ui::HERO_SYN_MAXLINES);
     let band = hero_logo::band_h(LogoRung::Hero);
-    let top = hero_stack_top(band, META_H, theme::space::SM + synopsis);
+    let top = plx_ui::landing_hero::hero_stack(band, META_H, Some(synopsis)).title.y;
     assert!(top - (theme::logo::HERO_H_MAX - band) > plx_ui::widgets::TOP_BAR_BOTTOM);
 }
 
@@ -1031,6 +1031,29 @@ fn the_continue_watching_caption_promises_time_left_only_when_the_bar_is_drawn()
     );
 }
 
+#[test]
+fn a_continue_watching_episode_is_captioned_by_its_address_not_its_show() {
+    let m = |kind: i32, ep_index: i32, resume_ms: i64| PmsMovie {
+        kind,
+        show_title: "Laura".into(),
+        season_index: 2,
+        ep_index,
+        dur_ns: 45 * 60 * 1_000_000_000,
+        resume_ms,
+        ..Default::default()
+    };
+    let cap = |m: &PmsMovie| {
+        ui_cards::cw_caption(&tile_facts::of(m)).unwrap().to_str().unwrap().to_owned()
+    };
+    // the poster is the show's own art, so the show's name adds nothing: the address leads
+    assert_eq!(cap(&m(3, 5, 20 * 60_000)), "S2 \u{00b7} E5 \u{00b7} 25m left");
+    assert_eq!(cap(&m(3, 5, 0)), "S2 \u{00b7} E5 \u{00b7} New episode");
+    // an unnumbered episode still names its show
+    assert_eq!(cap(&m(3, 0, 20 * 60_000)), "Laura \u{00b7} 25m left");
+    // a movie: the time left alone
+    assert_eq!(cap(&m(1, 0, 20 * 60_000)), "25m left");
+}
+
 fn top_band_bottom() -> f32 {
     let chip = plx_ui::widgets::CHIP_CAP_MAX;
     assert_eq!(chip.y + chip.h, plx_ui::widgets::TOP_BAR_BOTTOM,
@@ -1044,19 +1067,19 @@ fn heading_top(row: usize, focus_row: usize, scroll: f32) -> f32 {
         0.0
     };
     heading_y(
-        GRID_TOP_Y + shelf_top_settled(row, focus_row) - scroll,
+        GRID_TOP_Y + shelf_top_settled(row, focus_row, band_open_of(false)) - scroll,
         lift,
     )
 }
 /// The heading's place on the page without the focus pop's lift: what the chrome's clearance rule
 /// judges it at (`draw_grid`).
 fn heading_place(row: usize, focus_row: usize, scroll: f32) -> f32 {
-    heading_y(GRID_TOP_Y + shelf_top_settled(row, focus_row) - scroll, 0.0)
+    heading_y(GRID_TOP_Y + shelf_top_settled(row, focus_row, band_open_of(false)) - scroll, 0.0)
 }
 
 #[test]
 fn the_first_shelfs_raised_heading_settles_clear_of_the_profile_chip() {
-    assert!(heading_top(0, 0, rest_scroll(0, 5)) >= top_band_bottom());
+    assert!(heading_top(0, 0, rest_scroll(0, 5, band_open_of(false))) >= top_band_bottom());
 }
 
 /// **At rest a heading is whole or it is gone, never half under the chrome**, for every focused
@@ -1068,7 +1091,7 @@ fn the_first_shelfs_raised_heading_settles_clear_of_the_profile_chip() {
 fn no_shelf_heading_settles_inside_the_shared_top_band() {
     for rows in 1..=SWEEP_ROWS {
         for focus_row in 0..rows {
-            let scroll = rest_scroll(focus_row, rows);
+            let scroll = rest_scroll(focus_row, rows, band_open_of(false));
             for row in 0..rows {
                 let place = heading_place(row, focus_row, scroll);
                 let clear = plx_ui::scroll_chrome::clearance_under_shown_chrome(place);
@@ -1087,10 +1110,10 @@ fn no_shelf_heading_settles_inside_the_shared_top_band() {
 #[test]
 fn the_focused_shelfs_heading_rests_at_one_y_whatever_the_band() {
     let rows = SWEEP_ROWS;
-    let at_top = heading_place(0, 0, rest_scroll(0, rows));
+    let at_top = heading_place(0, 0, rest_scroll(0, rows, band_open_of(false)));
     for focus_row in 0..rows {
-        let scroll = rest_scroll(focus_row, rows);
-        if scroll < grid_max_scroll(rows) {
+        let scroll = rest_scroll(focus_row, rows, band_open_of(false));
+        if scroll < grid_max_scroll(rows, band_open_of(false)) {
             assert_eq!(heading_place(focus_row, focus_row, scroll), at_top, "focus {focus_row}");
         } else {
             assert!(heading_place(focus_row, focus_row, scroll) >= at_top, "focus {focus_row}: the end holds it lower, never higher");
@@ -1109,7 +1132,7 @@ fn every_settled_row_keeps_its_focused_label_block_above_the_overscan_bottom() {
         let block = if lines == 0 { 0.0 } else { ui_cards::TileLabel::height(lines == 2) };
         for rows in 1..=SWEEP_ROWS {
             for focus_row in 0..rows {
-                let row_y = GRID_TOP_Y + shelf_top_settled(focus_row, focus_row) - rest_scroll(focus_row, rows);
+                let row_y = GRID_TOP_Y + shelf_top_settled(focus_row, focus_row, band_open_of(false)) - rest_scroll(focus_row, rows, band_open_of(false));
                 assert!(row_y + CARD_DY + CARD_H + block <= SCR_H - MARGIN_Y,
                     "title {title}, {details:?}: row {focus_row} of {rows} ends its {lines}-line block at {}", row_y + CARD_DY + CARD_H + block);
             }
@@ -1119,8 +1142,8 @@ fn every_settled_row_keeps_its_focused_label_block_above_the_overscan_bottom() {
 
 #[test]
 fn the_grids_resting_top_is_the_highest_a_shelf_may_settle() {
-    assert_eq!(rest_scroll(0, 8), 0.0);
-    assert_eq!(rest_scroll(3, 8), shelf_top_settled(3, 3));
+    assert_eq!(rest_scroll(0, 8, band_open_of(false)), 0.0);
+    assert_eq!(rest_scroll(3, 8, band_open_of(false)), shelf_top_settled(3, 3, band_open_of(false)));
     assert!(heading_top(0, 0, 0.0) - top_band_bottom() >= theme::space::XS);
 }
 
@@ -1143,7 +1166,7 @@ fn the_page_rests_by_the_engines_focus_while_the_picture_still_shows_the_deep_sh
     let rows = s.rows.len();
     assert!(rows >= 3, "premise: the catalog has shelves below the first two ({rows})");
     let deep = rows - 1;
-    assert!(rest_scroll(deep, rows) > 0.0, "premise: the last shelf rests the page below the first");
+    assert!(rest_scroll(deep, rows, band_open_of(false)) > 0.0, "premise: the last shelf rests the page below the first");
     let card = FocusKey { entry: s.entry, elem: s.rows[deep].elems[0] };
     let hero = FocusKey { entry: s.entry, elem: HERO_PLAY_ELEM };
     // the dive has reached the last shelf and the page rests there
@@ -1151,20 +1174,20 @@ fn the_page_rests_by_the_engines_focus_while_the_picture_still_shows_the_deep_sh
     s.snap_target = 1.0;
     step(&mut s, view, Some(card), &ScreenEvent::FocusMoved { from: Some(hero), to: card, by: By::Dir });
     tick(&mut s, card);
-    assert_eq!(s.grid.scroll_target, rest_scroll(deep, rows), "a card's focus rests its own row");
+    assert_eq!(s.grid.scroll_target, rest_scroll(deep, rows, band_open_of(false)), "a card's focus rests its own row");
 
     // the fold: the engine is on the billboard, and the picture is still on the shelves
     step(&mut s, view, Some(hero), &ScreenEvent::FocusMoved { from: Some(card), to: hero, by: By::Dir });
     tick(&mut s, hero);
     assert!(s.snap.pos > 0.5, "premise: the picture still shows the shelves ({})", s.snap.pos);
-    assert_eq!(s.grid.scroll_target, rest_scroll(0, rows), "a billboard focus rests the first shelf at once");
+    assert_eq!(s.grid.scroll_target, rest_scroll(0, rows, band_open_of(false)), "a billboard focus rests the first shelf at once");
 
     // a linked heading rests its row by the engine's focus as well
     let row = (1..rows).find(|row| s.rows[*row].link.is_some()).expect("premise: a collection shelf has a linked heading");
     let heading = heading_key(&s, row);
     step(&mut s, view, Some(heading), &ScreenEvent::FocusMoved { from: Some(hero), to: heading, by: By::Dir });
     tick(&mut s, heading);
-    assert_eq!(s.grid.scroll_target, rest_scroll(row, rows), "a heading's focus rests its row");
+    assert_eq!(s.grid.scroll_target, rest_scroll(row, rows, band_open_of(false)), "a heading's focus rests its row");
 }
 
 struct Run {
@@ -5658,6 +5681,31 @@ fn an_unchanged_refetch_leaves_the_billboard_exactly_as_it_was() {
     assert_eq!(s.backdrop.tex.0, shown);
 }
 
+/// **Home hands the Continue Watching shelf the deck policy** (the owner's 2026-10-22 call: its
+/// progress line is always shown), so under Details Nothing its band keeps one line while an
+/// ordinary shelf's is none, and the band the focused deck opens carries the rows below it down.
+#[test]
+fn home_hands_the_continue_watching_shelf_the_deck_policy_under_nothing() {
+    use plx_plex::plex::session::{UnderPosters, UnderPostersDetails};
+    use crate::registry::captions::TEST_UNDER_POSTERS;
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_continue_window_for_test(&mut state, &adapter, 12, true);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    for (title, tall) in [(false, plx_ui::caption_policy::BAND_ONE_LINE), (true, plx_ui::caption_policy::BAND_TWO_LINES)] {
+        TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title, details: UnderPostersDetails::None })));
+        let s = screen(snapshot.view());
+        assert_eq!(s.rows[0].identity, HomeHubIdentity::ContinueWatching);
+        assert_eq!(s.grid.shelves[0].band_h(), tall, "title {title}: the deck keeps its progress line's band");
+        assert_eq!(band_open_of(true), ui_cards::band_open_for(tall), "title {title}");
+        s.grid.shelves.iter().zip(&s.rows).filter(|(_, row)| row.identity != HomeHubIdentity::ContinueWatching)
+            .for_each(|(shelf, _)| assert_eq!(shelf.band_h(), if title { plx_ui::caption_policy::BAND_ONE_LINE } else { 0.0 },
+                "title {title}: an ordinary shelf follows the setting"));
+        TEST_UNDER_POSTERS.with(|cell| cell.set(None));
+    }
+}
+
 /// **Home reserves the focused shelf's band from the Under posters setting, the same band_h the
 /// Library grid reads.** The settled layout (`shelf_top_settled`: the row below the focused one is
 /// carried down by what the band opens) and the end of the document both follow it, for a band of
@@ -5669,7 +5717,7 @@ fn home_opens_its_focused_shelf_band_by_the_policys_band_h() {
     for (title, details, tall) in [(false, UnderPostersDetails::None, 0.0), (false, UnderPostersDetails::Genre, 80.0),
         (true, UnderPostersDetails::YearLength, 112.0)] {
         TEST_UNDER_POSTERS.with(|cell| cell.set(Some(UnderPosters { title, details })));
-        let opened = shelf_top_settled(1, 0) - shelf_top_settled(1, 1);
+        let opened = shelf_top_settled(1, 0, band_open_of(false)) - shelf_top_settled(1, 1, band_open_of(false));
         let policy = crate::registry::captions::policy();
         TEST_UNDER_POSTERS.with(|cell| cell.set(None));
         assert_eq!(plx_ui::caption_policy::band_h(&policy), tall, "premise: title {title}, details {details:?}");
@@ -5708,8 +5756,8 @@ fn a_caption_input_that_changes_under_a_kept_row_reaches_the_drawn_block() {
     let mut s = screen(first.view());
     drop(first);
     let (row, col) = (1usize, 2usize);
-    assert_eq!(band_h(), 112.0, "premise: Title on over a details line is the tall band");
-    assert!(s.grid.shelves.iter().all(|shelf| shelf.band_h() == band_h()));
+    assert_eq!(band_h_of(false), 112.0, "premise: Title on over a details line is the tall band");
+    assert!(s.grid.shelves.iter().all(|shelf| shelf.band_h() == band_h_of(false)));
     let untouched = [(0, 0), (2, 3), (3, 4)].map(|(r, c)| (r, c, block(&s, &state, r, c)));
     let before = block(&s, &state, row, col);
 
@@ -5742,8 +5790,8 @@ fn a_caption_input_that_changes_under_a_kept_row_reaches_the_drawn_block() {
     let video = block(&s, &state, row, col);
     assert_eq!(video[0], None, "Title off draws no title line");
     assert_eq!(video[1].as_deref(), Some("4K"), "the Video details line reads the card's own resolution");
-    assert_eq!(band_h(), 80.0, "premise: one line is an 80 px band, the two lines it was were 112");
-    assert!(s.grid.shelves.iter().all(|shelf| shelf.band_h() == band_h()), "every shelf reserves the new setting's band");
+    assert_eq!(band_h_of(false), 80.0, "premise: one line is an 80 px band, the two lines it was were 112");
+    assert!(s.grid.shelves.iter().all(|shelf| shelf.band_h() == band_h_of(false)), "every shelf reserves the new setting's band");
 
     // Nothing in it is a stale projection: a page remounted on the very same catalog words the same block.
     let remounted = {

@@ -221,6 +221,27 @@ pub(crate) fn install_plex_seams() {
 }
 
 #[cfg(test)]
+mod relaunch_tap_tests {
+    use super::slot_holds;
+
+    #[test]
+    fn relaunch_slot_must_hold_libhelpers() {
+        assert!(slot_holds(0x1000, Some(0x1000)), "the slot holds libhelpers' function");
+        assert!(!slot_holds(0x1000, Some(0x1001)), "a different value, even by the Thumb bit");
+        assert!(!slot_holds(0x1000, None), "libhelpers is not mapped or lacks the symbol");
+        assert!(!slot_holds(0, None));
+    }
+
+    #[test]
+    fn the_slot_must_be_word_aligned() {
+        use super::slot_aligned;
+        let word = core::mem::align_of::<usize>();
+        assert!(slot_aligned(0x1000) && slot_aligned(word));
+        assert!(!slot_aligned(0x1000 + 1) && !slot_aligned(word + word / 2));
+    }
+}
+
+#[cfg(test)]
 mod seam_order_tests {
     /// `plx_plex` reports the version it is handed (`plex::identity::set_version`) and, in a
     /// shipping build, panics when asked for it earlier, so the hand-in has to be the first thing
@@ -632,6 +653,102 @@ fn cursor_sleep_hint(has_lg_extension: bool) -> Option<&'static std::ffi::CStr> 
 #[cfg(not(feature = "hostsim"))]
 fn self_sym(name: &str) -> Option<*mut std::ffi::c_void> {
     plx_base::dynlib::Handle::self_handle().sym(name).filter(|p| !p.is_null())
+}
+
+/// **A warm launch's parameters, read where LG's SDL reads its `registerApp` replies.** SAM sends a
+/// relaunch's parameters only to the `registerApp` subscriber, which is LG's SDL; its handler
+/// (`callback_RegistNativeApp`) raises the window and never reads `parameters`. It fetches every
+/// reply's payload through `HELPER_HLunaServiceMessage`, an exported pointer slot that
+/// `LoadWEBOSBASELibrary` fills from `libhelpers.so.2` inside `SDL_Init` and that the handler
+/// reloads on every call. Wrapping that slot hands a relaunch payload to `tv::launch` and returns
+/// it unchanged, so SDL still raises the window. No new Luna registration: SAM refuses the app's
+/// own (`tv::launch`). The firmware inventories have the slot from webOS 7.4 on; where it is missing
+/// or empty (webOS 4.x to 6.x), nothing changes and callers keep closing the app first.
+/// The tap installs only when the slot holds the address `libhelpers.so.2` (already mapped,
+/// `RTLD_NOLOAD`) exports as `HLunaServiceMessage` ([`slot_holds`]); any other value is left alone.
+#[cfg(not(feature = "hostsim"))]
+unsafe fn tap_relaunch_payloads() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let Some(slot) = self_sym("HELPER_HLunaServiceMessage") else {
+        log("relaunch tap: no HELPER_HLunaServiceMessage in this SDL");
+        return;
+    };
+    // An atomic reference to a misaligned address is undefined behaviour: refuse a symbol that is
+    // not a word-aligned slot before forming it.
+    if !slot_aligned(slot as usize) {
+        log("relaunch tap: slot misaligned \u{2014} not installed");
+        return;
+    }
+    // SDL's Luna thread may read the slot while it is replaced: store it atomically, after the
+    // function it forwards to is published.
+    let slot = &*(slot as *const AtomicUsize);
+    let wrapped = wrapped_message as *const () as usize;
+    let current = slot.load(Ordering::Acquire);
+    if current == 0 || current == wrapped {
+        log(if current == 0 { "relaunch tap: HELPER_HLunaServiceMessage is empty" }
+            else { "relaunch tap: already installed" });
+        return;
+    }
+    // The slot is only ours to wrap while it holds libhelpers' own `HLunaServiceMessage`: another
+    // value (a different SDL build, a slot of some other type) would be called as a function
+    // pointer it is not.
+    let expected = plx_base::dynlib::Handle::open_loaded(&["libhelpers.so.2"])
+        .and_then(|(h, _)| h.sym("HLunaServiceMessage"))
+        .filter(|p| !p.is_null())
+        .map(|p| p as usize);
+    if !slot_holds(current, expected) {
+        log("relaunch tap: slot does not hold libhelpers' HLunaServiceMessage \u{2014} not installed");
+        return;
+    }
+    REAL_MESSAGE.store(current, Ordering::Release);
+    MAIN_THREAD.store(libc::pthread_self() as usize, Ordering::Relaxed);
+    slot.store(wrapped, Ordering::Release);
+    log("relaunch tap: installed");
+}
+#[cfg(feature = "hostsim")]
+unsafe fn tap_relaunch_payloads() {}
+
+/// Does the SDL slot hold exactly the function `libhelpers.so.2` exports as `HLunaServiceMessage`?
+/// The Thumb bit is compared as `dlsym` and the slot both carry it. `expected` is `None` when
+/// libhelpers is not mapped or lacks the symbol, and then nothing holds.
+#[cfg(any(test, not(feature = "hostsim")))]
+fn slot_holds(current: usize, expected: Option<usize>) -> bool {
+    expected == Some(current)
+}
+
+/// Is `addr` aligned for the `AtomicUsize` the slot is read and written as?
+#[cfg(any(test, not(feature = "hostsim")))]
+fn slot_aligned(addr: usize) -> bool {
+    addr % core::mem::align_of::<usize>() == 0
+}
+
+#[cfg(not(feature = "hostsim"))]
+type LunaMessageFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> *const std::ffi::c_char;
+#[cfg(not(feature = "hostsim"))]
+static REAL_MESSAGE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(not(feature = "hostsim"))]
+static MAIN_THREAD: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// SDL's payload read, passed through. Every Luna reply SDL subscribed to comes through here, so
+/// anything that is not a relaunch costs one substring scan and nothing else.
+#[cfg(not(feature = "hostsim"))]
+unsafe extern "C" fn wrapped_message(msg: *mut std::ffi::c_void) -> *const std::ffi::c_char {
+    let real = REAL_MESSAGE.load(std::sync::atomic::Ordering::Acquire);
+    if real == 0 {
+        return std::ptr::null();
+    }
+    let real: LunaMessageFn = std::mem::transmute(real);
+    let p = real(msg);
+    if !p.is_null() {
+        let payload = std::ffi::CStr::from_ptr(p).to_string_lossy();
+        if payload.contains("\"relaunch\"") {
+            let main = libc::pthread_self() as usize == MAIN_THREAD.load(std::sync::atomic::Ordering::Relaxed);
+            log(&format!("relaunch tap: {} bytes on the {} thread, parameters={}",
+                payload.len(), if main { "main" } else { "other" }, payload.contains("\"parameters\"")));
+            plx_platform::tv::launch::offer(&payload);
+        }
+    }
+    p
 }
 
 /// The cursor [`hide_cursor`] replaced with the transparent one, for the motion that restores it.
@@ -1130,6 +1247,7 @@ pub(crate) unsafe fn construct(
         log("SDL_Init failed");
         return Err(1);
     }
+    tap_relaunch_payloads();
     {
         let d = SDL_GetCurrentVideoDriver();
         if !d.is_null() {
@@ -2053,6 +2171,7 @@ pub(crate) unsafe fn construct(
         last_route_reported,
         ptr,
         menu_play_await: None,
+        deeplink: Default::default(),
         prev,
         refresh_hubs,
         return_hold: Default::default(),

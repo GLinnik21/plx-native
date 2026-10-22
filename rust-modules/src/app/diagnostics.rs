@@ -106,8 +106,10 @@
 //! id is reduced to `window ready`/`NO WINDOW`; the only server-derived text is the PMS release and
 //! Pass state, never its name or address. There is no generic "push a string to diagnostics" path,
 //! so adding a field is a deliberate edit to the file that carries these rules.
+use plx_ui::hstack::Item;
 use plx_ui::label::Label;
 use plx_machine::machine::Measure;
+use plx_ui::vstack::VFlow;
 use plx_ui::widgets::{Field, FieldList, FIELD_COL_W};
 use plx_ui::{theme, Env, Painter, Rect, View};
 use std::cell::Cell;
@@ -1573,10 +1575,16 @@ fn mb(b: i64) -> String {
 const MARGIN: f32 = 60.0;
 const PAD: f32 = 24.0;
 const COL_GAP: f32 = 32.0;
-/// Minimum header height: title, single-line identity/verdict, and column headings.
+/// Minimum header height: title, single-line identity/verdict, and column headings. The ladder in
+/// [`HeaderLayout::new`] yields exactly this for one-line blocks; only the tests quote it.
+#[cfg(test)]
 const HEAD_H: f32 = 118.0;
 const HEAD_LINE_H: f32 = 24.0;
 const HEAD_IDENTITY_Y: f32 = 38.0;
+/// The air between the verdict's last line and the column headings (off the spacing ladder, kept).
+const SECTIONS_GAP: f32 = 4.0;
+/// The column headings' line to the field lists under them.
+const FIELDS_GAP: f32 = 4.0;
 const PANEL_W: f32 = 2.0 * FIELD_COL_W + COL_GAP + 2.0 * PAD;
 
 /// Identity and verdict remain complete; even opaque build identifiers wrap at a character
@@ -1599,9 +1607,18 @@ impl HeaderLayout {
     fn new(lines: &[Vec<String>; 2]) -> Self {
         let identity_h = lines[0].len().max(1) as f32 * HEAD_LINE_H;
         let verdict_h = lines[1].len().max(1) as f32 * HEAD_LINE_H;
-        let verdict_y = HEAD_IDENTITY_Y + identity_h;
-        let sections_y = verdict_y + verdict_h + 4.0;
-        let fields_y = HEAD_H + identity_h + verdict_h - 2.0 * HEAD_LINE_H;
+        // The identity block, the verdict under it with no gap, the column headings SECTIONS_GAP
+        // below the verdict, and the field lists FIELDS_GAP under the headings: one run.
+        let mut head = VFlow::new(HEAD_IDENTITY_Y, 0.0);
+        head.push(Item::new(identity_h));
+        let verdict_y = head.next_y();
+        head.push(Item::new(verdict_h).after(SECTIONS_GAP));
+        let (Some(sections), Some(fields)) =
+            (head.push(Item::new(HEAD_LINE_H).after(FIELDS_GAP)), head.push(Item::new(0.0)))
+        else {
+            unreachable!("the headings line and the field lists' top are always present")
+        };
+        let (sections_y, fields_y) = (sections.y, fields.y);
         Self { verdict_y, sections_y, fields_y }
     }
 }
@@ -3374,5 +3391,20 @@ mod tests {
             head[1]
         );
         assert_eq!(head[1], "Idle", "a default Diag with no session is Idle");
+    }
+}
+
+#[cfg(test)]
+mod header_layout_tests {
+    use super::*;
+
+    /// The verdict stands straight under the identity block, and the column headings stand
+    /// SECTIONS_GAP under the verdict's last line.
+    #[test]
+    fn the_verdict_follows_the_identity_and_the_sections_sit_a_gap_under_it() {
+        let lines = [vec!["identity".to_string()], vec!["verdict".to_string(), "more".to_string()]];
+        let h = HeaderLayout::new(&lines);
+        assert_eq!(h.verdict_y, HEAD_IDENTITY_Y + HEAD_LINE_H);
+        assert_eq!(h.sections_y, h.verdict_y + 2.0 * HEAD_LINE_H + SECTIONS_GAP);
     }
 }

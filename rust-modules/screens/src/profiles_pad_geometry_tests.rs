@@ -550,3 +550,16 @@ fn reconcile_reseats_a_foreign_key_on_the_first_avatar_and_a_stale_index_on_the_
     assert_eq!(at(2), 2);
     assert_eq!(at(FOOTER), FOOTER, "the footer is its own control and stays");
 }
+
+/// The PIN unit's three pieces: the dot row sits one PAD_DOT_GAP under the title and one above the
+/// keypad (the air split evenly), and the keypad stands PAD_TITLE_GRID under the title's bottom.
+#[test]
+fn pin_unit_centres_the_dot_row_in_the_air_above_the_keypad() {
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let (title_y, dots_y, grid_y) = pad_geom(&measure);
+    let title_h = measure.line_h(theme::size::TITLE);
+    assert!((dots_y - (title_y + title_h) - PAD_DOT_GAP).abs() < 0.01);
+    assert!((grid_y - (dots_y + PAD_DOT) - PAD_DOT_GAP).abs() < 0.01);
+    assert!((grid_y - (title_y + title_h) - PAD_TITLE_GRID).abs() < 0.01, "the keypad is PAD_TITLE_GRID under the title");
+    assert!(((title_y + grid_y + PAD_GRID_H) * 0.5 - SCR_H as f32 * 0.5).abs() < 0.01, "the unit is centred");
+}

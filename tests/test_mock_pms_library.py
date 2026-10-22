@@ -1336,5 +1336,20 @@ class BifStills(unittest.TestCase):
         self.assertIsNone(lib.image("/library/parts/7459/indexes/sd/0", "320", "180"))
 
 
+class PmsAudioVocabulary(unittest.TestCase):
+    """The mock speaks PMS's codec names, not FFmpeg's: DTS is `dca` on the wire."""
+
+    def test_dts_is_dca_on_the_wire_and_other_codecs_pass_through(self):
+        from mock_pms import pms_audio_codec
+        self.assertEqual(pms_audio_codec("dts"), "dca")
+        self.assertEqual([pms_audio_codec(c) for c in ("ac3", "eac3", "aac", "truehd")],
+                         ["ac3", "eac3", "aac", "truehd"])
+        stream = Library(movies=1)._stream_wire({"codec_type": "audio", "codec_name": "dts", "index": 1}, 11)
+        self.assertEqual(stream["codec"], "dca")
+        media = Library(movies=1)._media(__import__("random").Random(1), 5, 50, 1000, acodec="dts")[0]
+        self.assertEqual(media["audioCodec"], "dca")
+        self.assertEqual(media["Part"][0]["Stream"][1]["codec"], "dca")
+
+
 if __name__ == "__main__":
     unittest.main()
