@@ -1816,6 +1816,12 @@ pub fn http_read_until(
     unsafe {
         let hs = &mut *hs;
         let n = n as usize;
+        // A finished body is the clean end, answered before any framing is parsed. The drain may
+        // have consumed the last chunk already, and a keep-alive connection stays open after it:
+        // reading chunk framing off it would wait for bytes that never come.
+        if hs.body_done != 0 {
+            return 0;
+        }
         if hs.chunked != 0 {
             if hs.chunk_left < 0 {
                 match hs_skip_chunked_trailers(hs, deadline, pacer) {
