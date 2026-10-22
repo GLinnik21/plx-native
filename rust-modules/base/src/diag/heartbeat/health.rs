@@ -114,7 +114,7 @@ impl FrameHealth {
     /// to measure across, and nothing counts in between.
     pub fn suspend(&mut self, suspended: bool) {
         self.suspended = suspended;
-        self.prev_present = None;
+        self.idle();
         self.prev_iteration = None;
     }
 
