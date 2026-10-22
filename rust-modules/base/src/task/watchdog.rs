@@ -518,7 +518,27 @@ fn probe_main_thread(main_thread: usize) -> bool {
         if old.sa_sigaction == libc::SIG_DFL || old.sa_sigaction == libc::SIG_IGN {
             return false;
         }
+        if !handler_is_ours(old.sa_sigaction) {
+            return false;
+        }
         libc::pthread_kill(main_thread as libc::pthread_t, libc::SIGUSR2) == 0
+    }
+}
+
+/// Whether `handler` lives in the same loaded object as this code, i.e. is the crash tracer's own
+/// `freeze_handler` and not a library's that took `SIGUSR2` after the tracer was installed
+/// (ACB is `dlopen`ed at playback). A stranger's handler fired at a random moment is not a probe.
+/// An unanswerable `dladdr` reads as "not ours": no probe is better than a wrong one.
+fn handler_is_ours(handler: libc::sighandler_t) -> bool {
+    // SAFETY: `dladdr` writes into zeroed plain-data `Dl_info` structs and only reads the
+    // addresses it is given; neither is dereferenced.
+    unsafe {
+        let mut theirs: libc::Dl_info = std::mem::zeroed();
+        let mut mine: libc::Dl_info = std::mem::zeroed();
+        let here = handler_is_ours as usize as *const libc::c_void;
+        libc::dladdr(handler as *const libc::c_void, &mut theirs) != 0
+            && libc::dladdr(here, &mut mine) != 0
+            && theirs.dli_fbase == mine.dli_fbase
     }
 }
 

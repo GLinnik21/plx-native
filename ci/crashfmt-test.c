@@ -300,6 +300,9 @@ int main(void) {
         eq_int("fp whose frame record straddles hi", (long)plx_fp_walk(lo, W(N - 1), hi, code, 1, out, 8), 0);
         eq_int("an unaligned fp", (long)plx_fp_walk(lo, W(10) + 1, hi, code, 1, out, 8), 0);
         eq_int("fp zero", (long)plx_fp_walk(lo, 0, hi, code, 1, out, 8), 0);
+        /* A frame pointer near the top of the address space must not wrap the bound check. */
+        eq_int("fp -w wraps", (long)plx_fp_walk(lo, (unsigned long)0 - sizeof(unsigned long), hi, code, 1, out, 8), 0);
+        eq_int("fp -2w wraps", (long)plx_fp_walk(lo, (unsigned long)0 - 2 * sizeof(unsigned long), hi, code, 1, out, 8), 0);
 
         /* A return address that is not in executable memory is not a frame. */
         memset(stack, 0, sizeof stack);

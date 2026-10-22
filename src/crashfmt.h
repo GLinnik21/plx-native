@@ -284,7 +284,9 @@ static inline size_t plx_fp_walk(unsigned long sp, unsigned long fp, unsigned lo
     size_t n = 0;
     unsigned long cur = fp;
     while (n < max) {
-        if (cur % w || cur < sp + w || cur + 2 * w > hi) break;
+        /* Written without `cur + 2 * w`: an r11 of 0xFFFFFFF8 (an ordinary value in code with no frame
+         * pointer) would wrap that sum to 0 and pass the bound. */
+        if (cur % w || cur < sp || cur - sp < w || cur >= hi || hi - cur < 2 * w) break;
         const unsigned long *f = (const unsigned long *)cur;
         unsigned long prev, ret;
         /* A caller's fp is 0 (the chain's end, which a thread's first frame leaves) or strictly

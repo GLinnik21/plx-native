@@ -405,6 +405,16 @@ static void freeze_handler(int sig, siginfo_t *si, void *uc) {
 #else
     (void)si;
 #endif
+    /* A probe that lands while a fatal-signal handler is running (Sentry's native backend waits up
+     * to 10 s for its daemon, in the crashing thread) would write a FREEZE record into the middle
+     * of a crash. Neither that handler nor ours uses SA_NODEFER, so the fatal signal stays in the
+     * blocked set for as long as one runs; `uc_sigmask` is the mask the probe interrupted. */
+    {
+        static const int fatal[] = {SIGSEGV, SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGSYS, SIGTRAP};
+        const sigset_t *interrupted = &((const ucontext_t *)uc)->uc_sigmask;
+        for (size_t i = 0; i < sizeof fatal / sizeof fatal[0]; i++)
+            if (sigismember(interrupted, fatal[i]) == 1) return;
+    }
     if (__sync_lock_test_and_set(&freeze_busy, 1)) return;
     int saved_errno = errno;
     int seq = ++freeze_count;
@@ -473,6 +483,7 @@ void plx_crash_install(int ev_fd, int cr_fd) {
      * libc entry it uses is called once here, and the stack bound is read while this is still the
      * main thread's own frame (`&sa` is on its stack). */
     (void)getpid();
+    (void)sigismember(&(sigset_t){0}, SIGSEGV);
     if (write(-1, "", 0) < 0) { /* EBADF is the point: the symbol is bound, nothing was written */ }
     {
         unsigned long here = (unsigned long)&sa;
@@ -481,7 +492,13 @@ void plx_crash_install(int ev_fd, int cr_fd) {
     memset(&sa, 0, sizeof sa);
     sa.sa_sigaction = freeze_handler;
     sa.sa_flags = SA_SIGINFO | SA_RESTART;
-    sigaction(SIGUSR2, &sa, NULL);
+    {
+        /* A library constructor that already took SIGUSR2 owns it: decline rather than replace it
+         * (the watchdog also refuses to probe a handler that is not this binary's own). */
+        struct sigaction prior;
+        if (sigaction(SIGUSR2, NULL, &prior) == 0 && prior.sa_handler == SIG_DFL)
+            sigaction(SIGUSR2, &sa, NULL);
+    }
     memset(&sa, 0, sizeof sa);
     sa.sa_sigaction = crash_handler;
     sa.sa_flags = SA_SIGINFO;
