@@ -122,9 +122,14 @@ pub fn resume_if_paused(pa: &mut crate::player::adapter::PlayerAdapter) {
 /// key, or a toggle press (PLAYPAUSE, a click on no control) that wakes a decoder-release park
 /// saved Paused. `Superseded` is the opposite edge: something else took the session over, and
 /// whatever the machine parked is retired (the table is on [`ForegroundLifecycle::claim`]).
+/// `DidForegroundSuperseded` is the DID foreground that arrives together with something that is
+/// about to end the session (a launch link leaving playback): it follows `DidForeground`'s table
+/// except that it claims nothing, so a parked session stays parked, to be retired by the
+/// `Superseded(Exit)` the ending sends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ForegroundInput {
     DidForeground,
+    DidForegroundSuperseded,
     PlayKey,
     Superseded(Successor),
 }
@@ -327,6 +332,11 @@ impl<Attempt: Copy + PartialEq> ForegroundLifecycle<Attempt> {
     /// | `Claimed{PlayClock}`, `ClockPending` | unchanged, `Suppressed` | Idle, `Suppressed` |
     /// | `LoadPending{clock}` | unchanged, `Suppressed` (its settlement owns it) | Idle, `Effect(Retire{clock})` |
     ///
+    /// `DidForegroundSuperseded` claims nothing: `Suspended` and `Prepared` stay and answer
+    /// `Suppressed`, `Idle` answers `Ordinary`, and every other state answers as it does for
+    /// `DidForeground` (already `Suppressed`). The session stays awaiting its load, so playback
+    /// stays off until the superseding `Exit` retires it.
+    ///
     /// `Prepared` is retired under both: its failed Load already released what `before_load` armed,
     /// and a Retry starts a fresh play, which supersedes it anyway.
     pub fn claim(&mut self, input: ForegroundInput) -> ForegroundClaimResult {
@@ -336,6 +346,13 @@ impl<Attempt: Copy + PartialEq> ForegroundLifecycle<Attempt> {
         let state = self.state;
         match state {
             ForegroundState::Idle => ForegroundClaimResult::Ordinary,
+            // Nothing is claimed: the parked states stay as they are, exactly as the pending ones
+            // do for every input.
+            ForegroundState::Suspended { .. } | ForegroundState::Prepared { .. }
+                if matches!(input, ForegroundInput::DidForegroundSuperseded) =>
+            {
+                ForegroundClaimResult::Suppressed
+            }
             ForegroundState::Suspended {
                 id,
                 saved_ns,

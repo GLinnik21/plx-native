@@ -956,15 +956,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             plx_machine::idle::invalidate();
             // A decoder-release park is claimed by this edge like any other park.
             app.decoder_parked = false;
-            let activation = drive_foreground(
-                &mut app.player.lifecycle,
-                &mut app.player.session,
-                ForegroundInput::DidForeground,
-                &mut PlayerForegroundActuator {
-                    pa: &mut app.adapters.player,
-                    repause_at: &mut app.repause_at,
-                },
-            );
+            let activation = did_foreground_with_link(app);
             if matches!(activation, ForegroundActivation::Launched) {
                 finish_foreground_launch(app);
             }
@@ -1663,6 +1655,35 @@ fn claim_press_after_decoder_release(app: &mut App, press: WakePress) -> bool {
     }
     plx_machine::idle::invalidate();
     true
+}
+
+/// The warm-launch DID composes its two children in order: the launch link sees the arrival
+/// first, and its output picks the lifecycle's input. The parent reads no child's state: a link
+/// that ends playback (`leaves_playback`, true only when its step emitted `PlayerReq::Exit`)
+/// makes the DID claim nothing, so the parked film is not restored just to be stopped; the Exit,
+/// drained at the next frame, retires it (`Superseded(Exit)`).
+fn did_foreground_with_link(app: &mut App) -> ForegroundActivation {
+    let now = clock::now();
+    let stands = link_session_stands(app);
+    let (event, env) = super::deeplink::link_inputs(
+        &app.pages, app.window_activity.allow_present(true), stands, now);
+    let out = app.deeplink.step(event, &env);
+    let input = if out.leaves_playback {
+        ForegroundInput::DidForegroundSuperseded
+    } else {
+        ForegroundInput::DidForeground
+    };
+    let activation = drive_foreground(
+        &mut app.player.lifecycle,
+        &mut app.player.session,
+        input,
+        &mut PlayerForegroundActuator {
+            pa: &mut app.adapters.player,
+            repause_at: &mut app.repause_at,
+        },
+    );
+    super::deeplink::perform(out, &mut app.pages, &mut app.menu_play_await, now);
+    activation
 }
 
 /// The facts of whether a playback session stands, for the launch link's step
