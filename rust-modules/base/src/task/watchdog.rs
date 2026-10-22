@@ -16,7 +16,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-const HANG_THRESHOLD_MS: u64 = 250;
+/// A loop iteration over this long is a main-thread hang (also `heartbeat::health`'s stall edge).
+pub const HANG_THRESHOLD_MS: u64 = 250;
 const POLL_MS: u64 = 100;
 #[cfg(feature = "threadcheck")]
 const MAX_POLL_GAP_MS: u64 = 4 * POLL_MS;

@@ -18,7 +18,12 @@
 //! `heartbeat_tail`'s doc for why a counting allocator was not invented to fill it.
 //!
 //! Armed by `plxnative-framedrop[=<ms>]`; unarmed, every stamp is the frame's origin and every
-//! phase reads 0.0 — the counter is never read, so an unarmed frame pays nothing.
+//! phase reads 0.0 — the counter is never read, so an unarmed frame pays nothing for the phases.
+//! The one clock read an unarmed frame does pay is [`health`]'s, two per iteration (the loop top
+//! and the swap), which is what lets the usage event `route.left` report smoothness in a release
+//! build; it feeds no heartbeat field.
+
+pub mod health;
 
 #[cfg(not(any(test, feature = "test-support")))]
 extern "C" {
@@ -229,6 +234,9 @@ pub struct Instruments {
     pacing: FramePacing,
     /// `plxnative-framering`: write slow frames with their context instead of every frame.
     ring: Option<FrameRing>,
+    /// The per-visit frame health the usage event `route.left` reports. UNARMED: it keeps its own
+    /// clock reads (`health` says why), so it is live in every build.
+    health: health::FrameHealth,
 }
 
 /// **The frame-drop detector's context ring** (`/tmp/plxnative-framering[=<ms>]`).
@@ -296,7 +304,29 @@ impl Instruments {
             previous_present: None,
             pacing: FramePacing::default(),
             ring: None,
+            health: health::FrameHealth::default(),
         }
+    }
+
+    /// The top of a loop iteration, for the visit's hang rate. Every build, armed or not.
+    pub fn begin_iteration(&mut self) {
+        self.health.iteration(now_us());
+    }
+
+    /// A frame was presented: the swap has returned. Every build, armed or not.
+    pub fn frame_presented(&mut self) {
+        self.health.presented(now_us());
+    }
+
+    /// The app left (`true`) or re-entered (`false`) the foreground; nothing is measured across it.
+    pub fn set_suspended(&mut self, suspended: bool) {
+        self.health.suspend(suspended);
+    }
+
+    /// End the screen visit being measured: its classes, or `None` for a visit too short to mean
+    /// anything. `dead_bursts` is the dispatcher's repeated-key count over the same visit.
+    pub fn finish_visit(&mut self, dead_bursts: u32) -> Option<health::HealthClasses> {
+        self.health.finish(dead_bursts)
     }
 
     /// Arm the context ring ([`FrameRing`]): every presented frame formats its line, so the
@@ -358,6 +388,7 @@ impl Instruments {
     pub fn skip_present_phases(&mut self) {
         self.seed_present_phases();
         self.previous_present = None;
+        self.health.idle();
     }
 
     /// An iteration whose present the capture fence deferred. Same stamps as a skip, but the

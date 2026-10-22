@@ -397,6 +397,35 @@ mod tests {
         });
     }
 
+    /// `route.left` is a usage event: dropped, and never held for a later answer, unless usage
+    /// reporting is on. Error-only consent, an answered "no" and an unanswered question all fail
+    /// closed before anything (a session stamp, an identifier, a queue record) is resolved.
+    #[test]
+    fn route_left_needs_usage_consent_and_is_never_deferred() {
+        let left = schema::DiagEvent::RouteLeft {
+            screen: "detail",
+            slow_frames: "5-20%",
+            frozen_frames: "1",
+            hang: "1-10",
+            dead_presses: "2+",
+        };
+        with_consent_snapshot(|| {
+            let answered_no = Consent { asked_version: consent::POLICY_VERSION, ..Default::default() };
+            let errors_only = Consent { usage: false, install_id: None, ..answered_yes() };
+            for refused in [Consent::default(), answered_no, errors_only] {
+                consent::install(refused);
+                take_last_stamp_used();
+                event(left);
+                assert!(take_last_stamp_used().is_none(), "nothing may be resolved for it");
+                assert_eq!(deferred_len(), 0, "and it is not held for a later yes");
+            }
+            consent::install(answered_yes());
+            take_last_stamp_used();
+            event(left);
+            assert!(take_last_stamp_used().is_some(), "usage consent lets it reach the queue path");
+        });
+    }
+
     /// An answered "no" is a real decision: it stays dropped, never held.
     #[test]
     fn nothing_is_held_once_consent_is_answered_no() {
