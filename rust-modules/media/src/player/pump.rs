@@ -681,6 +681,17 @@ fn land_recovery_flight(
     }
 }
 
+/// How close to the container's duration the playhead must be, after the EOS, to count as the end.
+const EOS_TAIL_NS: i64 = 1_000_000_000;
+
+/// Whether a stream whose EOS has been pushed has ended: the pipeline said so
+/// (`Shared::pipeline_eos`), or the playhead is within [`EOS_TAIL_NS`] of the duration. The
+/// duration is the longest track's, so a film whose audio outlasts its video by more than the
+/// tail never gets there on the arithmetic alone.
+fn stream_ended(pos_ns: i64, duration_ns: i64, pipeline_eos: bool) -> bool {
+    pipeline_eos || (duration_ns > 0 && pos_ns >= duration_ns - EOS_TAIL_NS)
+}
+
 /// Settle a synchronous native reload effect.  A failed `start_bufferfeed` used to be only a log:
 /// callers had already advanced the route reducer and then returned, leaving no Engine to publish
 /// the failure and (for Original) an `OriginalTrial` which could never receive its first frame.
@@ -2065,11 +2076,10 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         PlaybackState::Playing
     });
 
-    const EOS_TAIL_NS: i64 = 1_000_000_000;
     if eng.eos_pushed && !SHARED.ended.load(Relaxed) {
         let dur = SHARED.duration_ns.load(Relaxed);
         let pos = SHARED.playpos_ns.load(Relaxed);
-        if dur > 0 && pos >= dur - EOS_TAIL_NS {
+        if stream_ended(pos, dur, SHARED.pipeline_eos.load(Relaxed)) {
             SHARED.ended.store(true, Relaxed);
             super::log(&format!(
                 "EOS reached: playpos={}s/{}s → ended",
@@ -2087,7 +2097,21 @@ mod tests {
         hls_buffered_ms, native_clock_silence_ms, native_clock_stopped, open_failure_action,
         prime_before_play, rebuffer_request_is_current, should_begin_hls_rebuffer,
         OpenFailureAction, CLOCK_WATCH_SINCE_MS, NATIVE_CLOCK_STOPPED_MS, SHARED,
+        stream_ended,
     };
+
+    /// **The pipeline's own end-of-stream ends the film even short of the duration.** C1,
+    /// 2026-10-20: audio ran 3 s past the last video frame, the clock stopped at 5894 s of
+    /// 5897 s after the EOS, and the player sat on the last frame for good because the playhead
+    /// never came within a second of the duration.
+    #[test]
+    fn the_pipelines_end_of_stream_ends_a_film_whose_audio_outlasts_its_video() {
+        const S: i64 = 1_000_000_000;
+        assert!(!stream_ended(5894 * S, 5897 * S, false), "short of the duration, nothing said");
+        assert!(stream_ended(5894 * S, 5897 * S, true), "the pipeline said it reached the end");
+        assert!(stream_ended(5896_500_000_000, 5897 * S, false), "within the tail, as before");
+        assert!(!stream_ended(5894 * S, 0, false), "no duration, no arithmetic");
+    }
     use std::sync::atomic::Ordering::{Relaxed, Release};
 
     /// The device's measured position-callback period, so the replay below advances in the same
