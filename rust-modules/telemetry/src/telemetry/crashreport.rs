@@ -1635,7 +1635,7 @@ fn execute(plan: &Plan, fresh: bool, fx: &mut impl Recovery) {
 /// with no build id: [`module_images`] lists it by name with a nil `debug_id` and no `code_id`,
 /// because attributing a crash to a library is worth more than the silent `missing_symbol`.
 ///
-/// **Returns how many crash records this pass FOUND** (local log reports plus native envelopes, a
+/// **Returns how many crash records this pass FOUND** (local log reports, freezes excluded, plus native envelopes, a
 /// crash that left both counts twice): `telemetry::session` reads "more than none" as "the previous
 /// process died of a crash", which is what separates a `crashed` release-health session from an
 /// `abnormal` one. `0` also when nothing may be read (no consent, no destination).
@@ -1783,7 +1783,14 @@ fn recover_pending_at(path: &std::path::Path) -> usize {
             }) { "yes" } else { "partial/no" }
         ));
     }
-    reports.len() + natives.len()
+    crashes_found(&reports, natives.len())
+}
+
+/// What `recover_pending` returns and `session::classify_unfinished` reads: how many crash records
+/// this pass found. A freeze is a report but not a crash (the process lived on, or was killed by
+/// something else), so it does not count.
+fn crashes_found(reports: &[Report], natives: usize) -> usize {
+    reports.iter().filter(|r| !matches!(r, Report::Freeze(_))).count() + natives
 }
 
 /// Make crash consent prospective. When error reporting is switched on, faults already present in
@@ -3316,4 +3323,32 @@ mod tests {
         assert_eq!(id, event_id_for(BUILD, 7, &unrecovered));
     }
 
+
+    /// A freeze is recovered (or reported unrecovered) after the fact, never a crash: it must not
+    /// make the previous release-health session `crashed`.
+    #[test]
+    fn a_freeze_only_log_finds_no_crash_so_its_session_is_abnormal() {
+        use super::super::session::{classify_unfinished, Status, Stored};
+        let unrecovered = FRZ.replace("freeze-end: seq=1 bucket=10-30s\n", "");
+        for log in [FRZ.to_string(), unrecovered] {
+            let reports = parse(&log);
+            assert!(matches!(reports.as_slice(), [Report::Freeze(_)]), "{reports:?}");
+            let found = crashes_found(&reports, 0);
+            assert_eq!(found, 0, "a freeze is not a crash");
+            let stored = Stored {
+                sid: "11111111-1111-4111-8111-111111111111".into(),
+                did: "d".into(),
+                release: "plxnative@1.2.3".into(),
+                environment: "production".into(),
+                started: 1_800_000_000,
+                last_active: 1_800_000_100,
+            };
+            let f = classify_unfinished(stored, found, 1_800_100_000, "d").expect("reported");
+            assert_eq!(f.status, Status::Abnormal);
+        }
+        let crash = parse("\n*** SIGNAL 11 (SIGSEGV) addr=0x0 pc=0x88ef8 lr=0x4bccd0\n");
+        assert_eq!(crashes_found(&crash, 0), 1);
+        assert_eq!(crashes_found(&[], 1), 1, "a native envelope alone is a crash");
+        assert_eq!(crashes_found(&parse(FRZ), 1), 1);
+    }
 }
