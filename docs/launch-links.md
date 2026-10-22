@@ -21,8 +21,24 @@ luna://com.webos.applicationManager/launch
 - The page opens with Home alone underneath it, so BACK returns to Home.
 - A key the server does not know, a server that never appears, or a malformed `plex` object
   leaves Home as it is and writes a `deeplink:` line to the event log; nothing is shown on screen.
-- Sign-in, the profile picker and onboarding are never interrupted: the link waits behind the
-  picker and onboarding, and is dropped when no account is signed in.
+- Sign-in, the profile picker and onboarding are never interrupted. A TV that is signed out keeps
+  the link through sign-in and acts on it once Home is the root. A link that names a server
+  resolves against the account that signed in (it waits up to 15 s for that server to appear in
+  the roster, then writes `deeplink: not opened (server not available)`). A link that names no
+  server cannot know which account it was meant for after a sign-in, so it is dropped, with a
+  `deeplink: dropped` line.
+- The link also waits under any surface that is up (the first-run consent question, a menu) and
+  while the app is in the background; it acts after the surface is dismissed and the window is
+  foregrounded again.
+- A link over playback ends it the way the STOP key does (the player's exit ritual: the engine is
+  released, the server is told, a parked restore is retired) and then lands. It does this as soon
+  as the link is due, even while the app is in the background, so a film that was parked is not
+  brought back first. If the engine does not end within 5 s the link is dropped with
+  `deeplink: not opened (playback did not end)`. A link whose server never resolves never stops
+  the film.
+- `action: play` starts through the same door as a Play from a page. While a trailer preview is
+  still letting go of the engine the play waits; if the engine is still busy when the wait's 12 s
+  ceiling passes, the link is dropped with `deeplink: not opened, rk=… (engine busy)`.
 - The debug flavour's id is `com.beb.plxnative.debug`; the contract is the same.
 
 ## A launch while the app runs
@@ -37,7 +53,9 @@ Instead, `app::boot::tap_relaunch_payloads` wraps the pointer slot LG's SDL read
 payload through (`HELPER_HLunaServiceMessage`, exported by its `libSDL2` and filled in `SDL_Init`).
 A relaunch payload is passed to the link code and returned unchanged, so SDL still raises the
 window. The link then replaces wherever the app was, with Home underneath. A relaunch without a
-`plex` object leaves the app where it is. Measured on webOS 9.2.2 (LG C2): links opened from Home
+`plex` object leaves the app where it is. The tap is installed only where the slot holds the
+address of libhelpers' `HLunaServiceMessage`; anywhere else it is not installed and the event log
+says so, so a warm link works only where the guarded tap installs. Measured on webOS 9.2.2 (LG C2): links opened from Home
 and from another detail page, on the same process.
 
 ## Where the slot is missing

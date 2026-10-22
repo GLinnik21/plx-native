@@ -33,6 +33,23 @@
 //! that signed in (the wait for the server starts the first frame Home is the root, and ends
 //! after `SERVER_WAIT_MS`); a link that names none means "the signed-in server" and, having waited
 //! across a sign-in, cannot know which account it was meant for: it is dropped.
+//!
+//! **Leaving playback.** Once the link resolves (so a link that can never open never stops the
+//! viewer's film), a standing session (`LinkEnv::session_stands`: a player page, a parked restore,
+//! or a live engine that is not a preview) moves it to `Leaving`: the step emits one
+//! `Fx::App(AppFx::Player(PlayerReq::Exit))` and sets `LinkOut::leaves_playback`. The Exit goes
+//! through the dispatcher to the player's exit ritual (`Superseded(Exit)` and all), never a nav pop
+//! and never a direct call. This is allowed while backgrounded (leaving early is good) and over
+//! the player's own overlays. `Leaving` emits nothing more; it returns to `Waiting` once the
+//! session is gone and the stack has settled, and gives up after `LEAVE_WAIT_MS` (the engine that
+//! never dies). A newer link replaces the one on its way out without a second Exit.
+//!
+//! **How the DID composes it.** The warm launch's DID foreground (`run.rs`,
+//! `did_foreground_with_link`) steps the link first with the same inputs and lets its output pick
+//! the lifecycle's input: `leaves_playback` makes it `DidForegroundSuperseded` (claims nothing,
+//! so the parked film is not restored just to be stopped), otherwise `DidForeground`. The parent
+//! reads no child's state. The landing itself plays through the shared play door
+//! (`content::clear_engine_for_play`) in `input::menu_play_tick`, bounded by the wait's deadline.
 use plx_machine::machine::{Fx, LogLine, MachineId, NavOp};
 use plx_plex::plex::ServerId;
 use plx_screens::registry::{AppArg, AppFx, PlayerReq};
