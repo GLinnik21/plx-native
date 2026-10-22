@@ -8200,8 +8200,7 @@ fn control_cast(p: Painter, r: Rect, rad: f32) {
 /// * its strength is a smoothstep of `t` over `[0.5, 1]`, so it is whole at rest, gone by the time
 ///   the face is half faded, and still continuous (a face that reads as gone must not keep a halo).
 fn control_cast_at(p: Painter, r: Rect, rad: f32, t: f32) {
-    let u = ((t - 0.5) * 2.0).clamp(0.0, 1.0);
-    let k = u * u * (3.0 - 2.0 * u);
+    let k = crate::xfade::smooth((t - 0.5) * 2.0);
     if k <= 0.0 {
         return;
     }
