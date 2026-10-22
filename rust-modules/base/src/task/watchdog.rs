@@ -535,7 +535,7 @@ fn handler_is_ours(handler: libc::sighandler_t) -> bool {
     unsafe {
         let mut theirs: libc::Dl_info = std::mem::zeroed();
         let mut mine: libc::Dl_info = std::mem::zeroed();
-        let here = handler_is_ours as usize as *const libc::c_void;
+        let here = handler_is_ours as *const () as *const libc::c_void;
         libc::dladdr(handler as *const libc::c_void, &mut theirs) != 0
             && libc::dladdr(here, &mut mine) != 0
             && theirs.dli_fbase == mine.dli_fbase

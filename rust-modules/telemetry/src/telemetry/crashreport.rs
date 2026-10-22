@@ -613,15 +613,11 @@ fn parse_seeded(log: &str, mut image: Option<ImageIdentity>) -> Vec<Report> {
             }
         } else if l.starts_with("reg: ") {
             match out.last_mut() {
-                Some(Report::Fault(f)) => {
-                    f.registers = parse_registers(l);
-                    f.registers.lr.get_or_insert(f.lr);
-                    f.registers.pc.get_or_insert(f.pc);
-                }
-                Some(Report::Freeze(f)) => {
-                    f.registers = parse_registers(l);
-                    f.registers.lr.get_or_insert(f.lr);
-                    f.registers.pc.get_or_insert(f.pc);
+                Some(Report::Fault(Fault { registers, pc, lr, .. }))
+                | Some(Report::Freeze(Freeze { registers, pc, lr, .. })) => {
+                    *registers = parse_registers(l);
+                    registers.lr.get_or_insert(*lr);
+                    registers.pc.get_or_insert(*pc);
                 }
                 _ => {}
             }
