@@ -302,8 +302,6 @@ pub(crate) unsafe fn run(app: &mut App) {
         report(app, fr);
         heartbeat(app, fr);
     }
-    // Quit: the last screen's visit has not been reported, and no route change will.
-    end_route_visit(app, false);
 }
 
 /// **The frame's clock and the click's spring** (spec §3.3 step 3's head).
@@ -2912,7 +2910,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
 /// opening a screen is never split across two. A visit that ends for the background or quit has
 /// no new screen: `transition` is false. The dispatcher's repeated-key run is dropped with the
 /// visit either way.
-fn end_route_visit(app: &mut App, transition: bool) {
+pub(crate) fn end_route_visit(app: &mut App, transition: bool) {
     let dead = app.pages.end_visit_dead_presses();
     let health = if transition { app.instr.finish_visit_at_transition(dead) } else { app.instr.finish_visit(dead) };
     let Some(health) = health else { return };
