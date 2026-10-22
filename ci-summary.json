@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-22T01:15:48Z",
+ "generated": "2026-10-22T01:20:18Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -86,19 +86,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -33.2,
-   "change7_pct": 4.8,
+   "change30_pct": -33.3,
+   "change7_pct": 4.6,
    "d30": 684,
-   "delta30": -227,
-   "delta7": 21,
+   "delta30": -228.0,
+   "delta7": 20.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 243,
-   "n_prev": 205,
-   "now": 457,
-   "prev7": 436,
+   "n_now": 242,
+   "n_prev": 206,
+   "now": 456.0,
+   "prev7": 436.0,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -609,11 +609,6 @@
    "change_pct": 118.6,
    "commits": [
     {
-     "pr": 894,
-     "sha": "6a3ef8b55",
-     "title": "Continue Watching: one tile per show across servers, as the official client (#892)"
-    },
-    {
      "pr": 895,
      "sha": "7f5e27a7d",
      "title": "route: the account subtitle rule reads forced/SDH the way the track menu does (#828)"
@@ -657,6 +652,11 @@
      "pr": 899,
      "sha": "d156a8585",
      "title": "DTS: PMS's dca spelling direct-plays; Force Direct Play offers DTS only with a DTS table row"
+    },
+    {
+     "pr": 912,
+     "sha": "0dd6797c1",
+     "title": "Continue Watching: the caption names the episode (S3 \u00b7 E4 \u00b7 18m left) and is always shown"
     }
    ],
    "from": 58.2,
@@ -670,11 +670,6 @@
    "change_pct": 36.9,
    "commits": [
     {
-     "pr": 894,
-     "sha": "6a3ef8b55",
-     "title": "Continue Watching: one tile per show across servers, as the official client (#892)"
-    },
-    {
      "pr": 895,
      "sha": "7f5e27a7d",
      "title": "route: the account subtitle rule reads forced/SDH the way the track menu does (#828)"
@@ -718,6 +713,11 @@
      "pr": 899,
      "sha": "d156a8585",
      "title": "DTS: PMS's dca spelling direct-plays; Force Direct Play offers DTS only with a DTS table row"
+    },
+    {
+     "pr": 912,
+     "sha": "0dd6797c1",
+     "title": "Continue Watching: the caption names the episode (S3 \u00b7 E4 \u00b7 18m left) and is always shown"
     }
    ],
    "from": 134,
@@ -731,11 +731,6 @@
    "change_pct": 36.6,
    "commits": [
     {
-     "pr": 894,
-     "sha": "6a3ef8b55",
-     "title": "Continue Watching: one tile per show across servers, as the official client (#892)"
-    },
-    {
      "pr": 895,
      "sha": "7f5e27a7d",
      "title": "route: the account subtitle rule reads forced/SDH the way the track menu does (#828)"
@@ -779,6 +774,11 @@
      "pr": 899,
      "sha": "d156a8585",
      "title": "DTS: PMS's dca spelling direct-plays; Force Direct Play offers DTS only with a DTS table row"
+    },
+    {
+     "pr": 912,
+     "sha": "0dd6797c1",
+     "title": "Continue Watching: the caption names the episode (S3 \u00b7 E4 \u00b7 18m left) and is always shown"
     }
    ],
    "from": 103.0,
@@ -792,11 +792,6 @@
    "change_pct": 30.8,
    "commits": [
     {
-     "pr": 894,
-     "sha": "6a3ef8b55",
-     "title": "Continue Watching: one tile per show across servers, as the official client (#892)"
-    },
-    {
      "pr": 895,
      "sha": "7f5e27a7d",
      "title": "route: the account subtitle rule reads forced/SDH the way the track menu does (#828)"
@@ -840,6 +835,11 @@
      "pr": 899,
      "sha": "d156a8585",
      "title": "DTS: PMS's dca spelling direct-plays; Force Direct Play offers DTS only with a DTS table row"
+    },
+    {
+     "pr": 912,
+     "sha": "0dd6797c1",
+     "title": "Continue Watching: the caption names the episode (S3 \u00b7 E4 \u00b7 18m left) and is always shown"
     }
    ],
    "from": 46.0,
