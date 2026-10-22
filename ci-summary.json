@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-22T12:37:15Z",
+ "generated": "2026-10-22T12:39:52Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -65,18 +65,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -44.4,
-   "change7_pct": -17.4,
+   "change30_pct": -45.2,
+   "change7_pct": -18.6,
    "d30": 686,
-   "delta30": -304.5,
-   "delta7": -80.5,
+   "delta30": -310,
+   "delta7": -86,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 170,
+   "n_now": 171,
    "n_prev": 253,
-   "now": 381.5,
+   "now": 376,
    "prev7": 462,
    "shown": true,
    "state": "flat",
@@ -86,18 +86,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -51.5,
-   "change7_pct": -16.4,
+   "change30_pct": -51.6,
+   "change7_pct": -16.5,
    "d30": 682.5,
-   "delta30": -351.5,
-   "delta7": -65.0,
+   "delta30": -352.0,
+   "delta7": -65.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 85,
+   "n_now": 86,
    "n_prev": 116,
-   "now": 331,
+   "now": 330.5,
    "prev7": 396.0,
    "shown": true,
    "state": "better",
@@ -308,18 +308,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 99.6,
-   "change7_pct": 15.6,
+   "change30_pct": 99.2,
+   "change7_pct": 15.4,
    "d30": 128.0,
-   "delta30": 127.5,
-   "delta7": 34.5,
+   "delta30": 127.0,
+   "delta7": 34.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 80,
+   "n_now": 81,
    "n_prev": 106,
-   "now": 255.5,
+   "now": 255,
    "prev7": 221.0,
    "shown": true,
    "state": "flat",
@@ -329,18 +329,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 191.5,
-   "change7_pct": 11.4,
+   "change30_pct": 189.4,
+   "change7_pct": 10.6,
    "d30": 70.5,
-   "delta30": 135.0,
-   "delta7": 21.0,
+   "delta30": 133.5,
+   "delta7": 19.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 80,
+   "n_now": 81,
    "n_prev": 106,
-   "now": 205.5,
+   "now": 204,
    "prev7": 184.5,
    "shown": true,
    "state": "flat",
@@ -393,17 +393,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 8.9,
+   "change7_pct": 9.3,
    "d30": null,
    "delta30": null,
-   "delta7": 12.5,
+   "delta7": 13.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 80,
+   "n_now": 81,
    "n_prev": 106,
-   "now": 152.5,
+   "now": 153,
    "prev7": 140.0,
    "shown": true,
    "state": "flat",
@@ -487,9 +487,9 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 80,
+   "n_now": 81,
    "n_prev": 106,
-   "now": 18.0,
+   "now": 18,
    "prev7": 17.0,
    "shown": false,
    "state": "flat",
@@ -609,11 +609,6 @@
    "change_pct": 37.5,
    "commits": [
     {
-     "pr": 895,
-     "sha": "7f5e27a7d",
-     "title": "route: the account subtitle rule reads forced/SDH the way the track menu does (#828)"
-    },
-    {
      "pr": 896,
      "sha": "dbe7b014b",
      "title": "ui: text runs and the remaining screen rows on HStack/Flow; still_line glyph by ink (Q6)"
@@ -657,6 +652,11 @@
      "pr": 912,
      "sha": "0dd6797c1",
      "title": "Continue Watching: the caption names the episode (S3 \u00b7 E4 \u00b7 18m left) and is always shown"
+    },
+    {
+     "pr": 913,
+     "sha": "cb5c2a140",
+     "title": "replay: re-record 1-boot-home-chip-grid for the Continue Watching caption change"
     }
    ],
    "from": 140,
@@ -670,11 +670,6 @@
    "change_pct": 36.6,
    "commits": [
     {
-     "pr": 895,
-     "sha": "7f5e27a7d",
-     "title": "route: the account subtitle rule reads forced/SDH the way the track menu does (#828)"
-    },
-    {
      "pr": 896,
      "sha": "dbe7b014b",
      "title": "ui: text runs and the remaining screen rows on HStack/Flow; still_line glyph by ink (Q6)"
@@ -718,6 +713,11 @@
      "pr": 912,
      "sha": "0dd6797c1",
      "title": "Continue Watching: the caption names the episode (S3 \u00b7 E4 \u00b7 18m left) and is always shown"
+    },
+    {
+     "pr": 913,
+     "sha": "cb5c2a140",
+     "title": "replay: re-record 1-boot-home-chip-grid for the Continue Watching caption change"
     }
    ],
    "from": 103.0,
@@ -731,11 +731,6 @@
    "change_pct": 30.8,
    "commits": [
     {
-     "pr": 895,
-     "sha": "7f5e27a7d",
-     "title": "route: the account subtitle rule reads forced/SDH the way the track menu does (#828)"
-    },
-    {
      "pr": 896,
      "sha": "dbe7b014b",
      "title": "ui: text runs and the remaining screen rows on HStack/Flow; still_line glyph by ink (Q6)"
@@ -779,6 +774,11 @@
      "pr": 912,
      "sha": "0dd6797c1",
      "title": "Continue Watching: the caption names the episode (S3 \u00b7 E4 \u00b7 18m left) and is always shown"
+    },
+    {
+     "pr": 913,
+     "sha": "cb5c2a140",
+     "title": "replay: re-record 1-boot-home-chip-grid for the Continue Watching caption change"
     }
    ],
    "from": 46.0,
@@ -819,7 +819,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 255.5
+   "now": 255
   }
  ],
  "slowest_local": [
