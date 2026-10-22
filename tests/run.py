@@ -3731,7 +3731,7 @@ def op_audio_transcode(lines):
 
 # LG's buffer-feed audio vocabulary (`player::engine::audio_payload_codec`) back to the PMS codec
 # names a `decision output:` line uses, so the two can be compared.
-LOAD_AUDIO_TO_PMS = {"ac3": "ac3", "ac3 plus": "eac3", "aac": "aac", "dts": "dts"}
+LOAD_AUDIO_TO_PMS = {"ac3": "ac3", "ac3 plus": "eac3", "aac": "aac", "dts": "dca"}
 # The Load vocabulary's video names back to the demuxer's (`ff: v=#0 codec=..`).
 LOAD_VIDEO_TO_FF = {"h264": "h264", "h265": "hevc", "hevc": "hevc"}
 

@@ -93,6 +93,13 @@ impl Marquee {
         t >= self.hold_ms && (t - self.hold_ms) / 1000.0 * SPEED < text_w + GAP
     }
 
+    /// Move an overflowing line just far enough to reveal its end, then stop. Used by the
+    /// paused player title; unlike a focused tile's marquee, this never loops or wraps.
+    pub fn reveal_once(&self, t_ms: f32, text_w: f32, budget: f32) -> f32 {
+        ((t_ms - self.hold_ms).max(0.0) / 1000.0 * SPEED)
+            .min((text_w - budget).max(0.0))
+    }
+
     /// One full cycle in ms — the rest beat plus the glide that carries the run and its [`GAP`]
     /// fully past. The ONE place the period is spelled.
     pub fn period(&self, text_w: f32) -> f32 {
@@ -276,6 +283,16 @@ mod tests {
         );
         assert!(!ROW.moving(ROW.hold_ms - 1.0, w, budget) && ROW.moving(ROW.hold_ms + 1.0, w, budget));
         assert_eq!(ROW.x(ROW.period(w) + 10.0, w, budget), ROW.x(10.0, w, budget), "loops");
+    }
+
+    #[test]
+    fn paused_title_reveal_stops_at_the_last_word_without_looping() {
+        let m = TITLE;
+        assert_eq!(m.reveal_once(m.hold_ms - 1.0, 500.0, 200.0), 0.0);
+        assert_eq!(m.reveal_once(m.hold_ms + 2000.0, 500.0, 200.0), 80.0);
+        assert_eq!(m.reveal_once(m.hold_ms + 20_000.0, 500.0, 200.0), 300.0);
+        assert_eq!(m.reveal_once(1_000_000.0, 500.0, 200.0), 300.0);
+        assert_eq!(m.reveal_once(1_000_000.0, 100.0, 200.0), 0.0);
     }
 
     /// A fitting run never moves and never reports.

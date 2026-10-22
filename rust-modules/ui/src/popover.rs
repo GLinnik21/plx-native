@@ -58,14 +58,14 @@ use crate::{theme, Painter, Rect, Spring};
 use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 
 thread_local! {
-    /// Does the opener lift own the card the press is moving? Set by a card section that left the
-    /// lifted element out of the page pass, cleared when the dispatcher sees the lifted element
+    /// Does the opener lift own the card the press is moving? Set by a page that left the
+    /// lifted element out of its pass (`DrawFrame::leaves_out`), cleared when the dispatcher sees the lifted element
     /// change. Per thread: the loop draws and ticks on one thread, and a test must not see another
     /// test's lift.
     static LIFT_OWNS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// A card section left the lifted element out of the page pass (`true`), or the dispatcher saw the
+/// A page left the lifted element out of its pass (`DrawFrame::leaves_out`; `true`), or the dispatcher saw the
 /// lifted element change or go away (`false`). While it is set, `Press::tick` reports no page
 /// damage, because the snapshot does not hold the card the press is moving.
 pub fn set_lift_owns(owns: bool) {

@@ -31,7 +31,7 @@
     "s[0-9a-f]{8}( s[0-9a-f]{8}){23}",
     "s[0-9a-f]{8}( s[0-9a-f]{8}){1,23}(…)?",
     "s[0-9a-f]{8}, s[0-9a-f]{8}(, s[0-9a-f]{8})*,?",
-    "s[0-9a-f]{8} · [0-9]+m left",
+    "S[0-9]+ · E[0-9]+ · [0-9]+m left",
     "[0-9]{4} · ([0-9]+h )?[0-9]+m",
     "Character [0-9]+ · s[0-9a-f]{8}",
     "(Actor|Appeared|Director|Producer|Composer|Cinematographer|Writer|Other) · [0-9]+",

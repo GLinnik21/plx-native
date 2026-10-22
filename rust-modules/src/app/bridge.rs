@@ -2861,10 +2861,10 @@ fn strip_menu_arg(
 /// **It does not touch the press.** A hold the screen answered was already abandoned onto its
 /// release spring by the dispatcher (`InputMachine::cancel_press`), so the card springs from its dip
 /// up to its pop as the menu opens, and the press is the ONE owner of that motion: the opener
-/// lift ([`Dispatcher::opener_press`]) draws it live above the frozen page (and, for an opener no card section
-/// draws, the page draws it too). The page pass leaves
+/// lift ([`Dispatcher::opener_press`]) draws it live above the frozen page (and, for an opener no page
+/// leaves out (`DrawFrame::leaves_out`), the page draws it too). The page pass leaves
 /// the lifted card out (`DrawFrame::lifted`), so the snapshot holds no copy of it to go stale and
-/// the spring is not page damage (`Press::tick`); only an opener no card section draws keeps the
+/// the spring is not page damage (`Press::tick`); only an opener no page leaves out keeps the
 /// per-frame re-take. Ending the press at rest here instead (`Press::settle`, rc.3) made the
 /// card jump to its pop in one frame, the lost animation the owner reported.
 ///
@@ -3850,7 +3850,11 @@ mod restore_characterisation_tests;
 
 #[cfg(test)]
 #[path = "bridge_test_support.rs"]
-mod test_support;
+pub(crate) mod test_support;
+
+#[cfg(test)]
+#[path = "deeplink_route_tests.rs"]
+mod deeplink_route_tests;
 
 #[cfg(test)]
 #[path = "session_plaintext_repair_tests.rs"]

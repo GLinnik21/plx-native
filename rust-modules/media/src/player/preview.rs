@@ -613,6 +613,23 @@ pub fn set_phase_for_test(phase: Phase) {
     with_mut(|m| m.phase = phase);
 }
 
+/// Test-only: while set, [`retire`] finds the preview's Load not yet returned, as it does for a
+/// real trailer abandoned mid-Load, so a halt leaves the machine `Abandoning` (`occupies()` true)
+/// without an installed engine. Cleared by [`reset_for_test`].
+#[cfg(any(test, feature = "test-support"))]
+pub fn hold_load_for_test(on: bool) {
+    LOAD_STILL_OUT.store(on, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(any(test, feature = "test-support"))]
+static LOAD_STILL_OUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(any(test, feature = "test-support"))]
+fn load_still_out() -> bool { LOAD_STILL_OUT.load(std::sync::atomic::Ordering::SeqCst) }
+
+#[cfg(not(any(test, feature = "test-support")))]
+fn load_still_out() -> bool { false }
+
 /// Test-only: [`set_phase_for_test`] plus the `picture_ms` half `view()` also checks, skipping
 /// `enabled()`/session plumbing and a real Starfish Load so a screen-level test can exercise
 /// `DetailScreen::full_trailer()`-gated behavior.
@@ -626,6 +643,7 @@ pub fn force_playing_for_test() {
 /// `Machine`.
 #[cfg(any(test, feature = "test-support"))]
 pub fn reset_for_test() {
+    hold_load_for_test(false);
     with_mut(|m| *m = Machine::default());
 }
 
@@ -898,7 +916,7 @@ pub fn retire(
     if pa.is_live() {
         super::engine::stop_bufferfeed(ps, pa);
     }
-    let still_live = pa.is_live();
+    let still_live = pa.is_live() || load_still_out();
     transition(why, |m| m.halted(still_live));
     if !still_live {
         crate::route::clear_preview(ps);
