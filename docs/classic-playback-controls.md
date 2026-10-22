@@ -6,6 +6,11 @@ modern controls. The earlier `"legacy"` saved value remains readable; new saves 
 
 - With the HUD hidden, Left/Right immediately seeks by the existing Skip interval without
   opening the controls. Each fresh press is one jump; holding the key does not start a scrub.
+  Fresh presses no more than 1.5 seconds apart accumulate from the last requested target,
+  including when reversing direction. This prevents an earlier keyframe landing from making
+  the next tap request the same position. After a longer gap, the next tap starts from the
+  current intended playhead again. Visible controls, another key, pointer interaction or a new
+  item end the burst; a seek reload preserves it.
 - With the HUD visible, the existing preview/OK-to-confirm gesture is unchanged.
 - Previous restarts the current item at five seconds or later. Before five seconds it plays
   the previous queue item. It is unavailable when there is no previous item and playback is
@@ -61,3 +66,23 @@ python3 tests/classic_controls_sim.py --sim rust-modules/target-sim/debug/plxnat
 
 Use a new output directory for each run. Hidden seeking keeps the controls dismissed through
 the first new picture; later rebuffering still shows the normal status read-out.
+
+For a repeated-keyframe regression, make a copy of the mock media with 12-second keyframes
+(the generated clip is 24 fps), keeping the original fixtures unchanged. The bitrate keeps the demuxer from reaching EOF
+before the tap sequence finishes:
+
+```sh
+mkdir -p /tmp/classic-long-gop
+ffmpeg -y -i /tmp/classic-media/mockverify-v1.mkv -t 60 -map 0 \
+  -c:v libx264 -preset ultrafast -b:v 8M -minrate 8M -maxrate 8M -bufsize 16M \
+  -x264-params nal-hrd=cbr -g 288 -keyint_min 288 -sc_threshold 0 \
+  -c:a copy -c:s copy /tmp/classic-long-gop/mockverify-v1.mkv
+cp /tmp/classic-media/mockverify-v2.mkv /tmp/classic-media/mockverify-v2.eng.srt /tmp/classic-long-gop/
+python3 tests/classic_controls_sim.py --sim rust-modules/target-sim/debug/plxnative-sim \
+  --media /tmp/classic-long-gop --out /tmp/classic-burst-evidence --rapid-seeks
+```
+
+This checks three fresh Right presses in one burst, with playback reporting its landed
+position between presses: the first two land on the same keyframe, but requested targets
+advance by ten seconds each and the third crosses into the next keyframe. Unit tests also
+cover reversing direction, configured intervals, bounds, clock wrap, expiry and reset.

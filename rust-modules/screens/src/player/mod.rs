@@ -63,7 +63,7 @@ pub const WORD: &str = "player";
 pub const SHAPE: &str =
     "PlayerScreen{hud:{focus:i32,btn:i32,tab:i32,until:u32,dismissed:bool,visible_at_press:bool,\
      offer:Option<(u32,i64)>,was_standin:bool},scrub:{dir:i32,hold:bool,reveal:bool,drag:bool,\
-     ns:i64},origin:Option<u32>,repair_alert:{open:bool,confirm:bool,scroll:u32}}";
+     ns:i64},classic_seek:Option<(i64,u32)>,origin:Option<u32>,repair_alert:{open:bool,confirm:bool,scroll:u32}}";
 
 /// **The page this playback was launched from**, as the container's own identity.
 ///
@@ -113,6 +113,8 @@ pub struct PlayerScreen {
     pub hud: HudState,
     /// The scrub-seek gesture, including its preview position.
     pub scrub: Scrub,
+    /// Requested relative position across a short burst of immediate tap-seeks.
+    classic_seek: player_hud::classic_controls::SeekBurst,
     // (`held: HeldKey` stood here — "the client-side hold-repeat for the bare transport's
     // directions". Nothing armed it after phase 9 put the panels' input on the dispatcher, so it
     // wrote two constant zeros into this screen's canonical state; the type is deleted with the
@@ -163,6 +165,7 @@ impl PlayerScreen {
             entry,
             hud: HudState::IDLE,
             scrub: Scrub::IDLE,
+            classic_seek: player_hud::classic_controls::SeekBurst::IDLE,
             row: TransportRow::new(),
             up_next: Countdown::default(),
             slot: ControlSlot::Discs,
@@ -219,6 +222,7 @@ impl PlayerScreen {
         self.scrub.cancel();
         self.row.reset_title();
         if !for_reload {
+            self.classic_seek.reset();
             self.hud.until = 0;
             self.hud.dismissed = false;
             self.hud.last_offer = None;
@@ -621,17 +625,22 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                         self.handle_key(ps, consts::classify_input(*key, *sym, *wcode), *edge, input.at.ms, fx, H::metadata(cx))
                     }
                     InputKind::Click { hit, x, .. } => {
+                        self.classic_seek.reset();
                         self.handle_click(ps, *hit, *x, input.at.ms, fx)
                     }
                     // §7.5: a drag drives its CONTROL. Only the scrubber has one here, and only
                     // once a click has seated the gesture on it — a drag that began anywhere else
                     // must not capture the bar the moment it passes over it.
-                    InputKind::Drag { x, .. } => self.handle_drag(*x, input.at.ms),
+                    InputKind::Drag { x, .. } => {
+                        self.classic_seek.reset();
+                        self.handle_drag(*x, input.at.ms)
+                    },
                     // Pointer MOTION over the bare transport raises it and clears a hand
                     // dismissal, which is how a Magic Remote user finds the HUD over full-screen
                     // video. `app/run.rs`'s own motion arm did this and then RETURNED, so the page
                     // never saw a pointer event at all.
                     InputKind::Pointer { .. } => {
+                        self.classic_seek.reset();
                         self.hud.dismissed = false;
                         self.hud.extend(input.at.ms, input::HUD_LINGER_MS);
                         self.publish();
@@ -835,6 +844,9 @@ impl PlayerScreen {
         meta: plx_data::metadata::MetadataView<'_>,
     ) -> Handled {
         use consts::Key;
+        if edge == Edge::Down && !matches!(key, Key::Left { .. } | Key::Right { .. }) {
+            self.classic_seek.reset();
+        }
         // **A terminal failure owns the whole frame, so almost nothing may be driven on it.**
         // `draw_hud` returns before painting anything under a `Failed` read-out, and a control
         // that is not drawn must not be activatable — two blind presses (DOWN, OK) once opened the
@@ -869,7 +881,7 @@ impl PlayerScreen {
             // Swallowed either way: that is what "the read-out owns the frame" means.
             return Handled::Yes;
         }
-        if self.classic_hidden_seek(ps, key, edge, fx) {
+        if self.classic_hidden_seek(ps, key, edge, now, fx) {
             return Handled::Yes;
         }
         match key {
@@ -1406,6 +1418,9 @@ impl LogicalState for PlayerScreen {
             .bool(self.scrub.reveal)
             .bool(self.scrub.drag)
             .u64(self.scrub.ns as u64);
+        c.option(self.classic_seek.snapshot().as_ref(), |c, (target, at)| {
+            c.u64(*target as u64).u32(*at);
+        });
         c.option(self.origin.as_ref(), |c, o| {
             c.u32(o.entry.0);
         });

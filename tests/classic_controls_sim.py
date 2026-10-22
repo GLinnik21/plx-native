@@ -107,18 +107,72 @@ def verify(binary, media, output):
         server.server_close()
 
 
+
+def verify_rapid(binary, media, output):
+    """Use a clip with keyframes more than one skip interval apart (e.g. 12s vs 10s)."""
+    output.mkdir(parents=True, exist_ok=False)
+    (output / "auth.json").write_text(json.dumps({"playback_controls": "classic", "trailer_autoplay": False}))
+    server, pms = mock_pms.serve(0, media=media, media_next_episode=True)
+    port = server.server_address[1]
+    url = f"http://127.0.0.1:{port}"
+    sim = SimRun(binary.resolve(), port, {
+        "plxnative-plextv": url, "plxnative-discover": url, "plxnative-clocksink": "",
+        "plxnative-noidle": "", "plxnative-focus": "", "plxnative-play": str(mock_pms.V1_RATING_KEY),
+    }, output)
+
+    def wait(pattern, after=0):
+        stamp = sim.wait_for(pattern, 20, after=after)
+        assert stamp is not None, f"no {pattern!r}; evidence: {output}"
+        return stamp
+
+    try:
+        wait("boot: dev token")
+        wait(r"loop=.*route=player .*pos=[23]s")
+        stamp = sim.key("up")
+        wait(r"^focus route=player .*hud=1 f=1", stamp)
+        stamp = sim.key("up")
+        wait(r"^focus route=player .*hud=0 ", stamp)
+        targets = []
+        landings = []
+        presses = []
+        for _ in range(3):
+            stamp = sim.key("right")
+            presses.append(stamp)
+            if len(presses) > 1:
+                assert presses[-1] - presses[-2] < 1.5, "host too slow to exercise one tap burst"
+            wait(r"seek\(in-place\): av_seek t=", stamp)
+            line = sim.latest(lambda at, line: at >= stamp and "seek(in-place): av_seek t=" in line)[1]
+            targets.append(int(re.search(r"av_seek t=(\d+)", line)[1]))
+            wait(r"in-place seek\(native\): Seek\(", stamp)
+            line = sim.latest(lambda at, line: at >= stamp and "in-place seek(native): Seek(" in line)[1]
+            landings.append(int(re.search(r"Seek\((\d+)\)", line)[1]))
+            # A heartbeat with pos= is published only once playback is Playing again, so the
+            # next tap exercises an actual earlier landing, not merely an in-flight target.
+            wait(r"loop=.*route=player .*pos=\d+s", stamp)
+        assert [b - a for a, b in zip(targets, targets[1:])] == [10_000_000_000] * 2, targets
+        assert landings[0] == landings[1], f"fixture did not produce a repeated keyframe: {landings}"
+        assert landings[2] > landings[1], landings
+        print(f"PASS rapid taps accumulate across repeated keyframes: targets={targets}, landings_ms={landings}", flush=True)
+    finally:
+        sim.close()
+        server.shutdown()
+        server.server_close()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sim", type=Path, required=True)
     parser.add_argument("--media", type=Path, required=True)
     parser.add_argument("--out", type=Path, help="new directory for runtime, screenshots and logs")
+    parser.add_argument("--rapid-seeks", action="store_true", help="verify tap accumulation with a long-GOP fixture")
     args = parser.parse_args()
+    run = verify_rapid if args.rapid_seeks else verify
     if args.out:
-        verify(args.sim, args.media, args.out)
+        run(args.sim, args.media, args.out)
         print(f"Evidence: {args.out}")
     else:
         with tempfile.TemporaryDirectory(prefix="plx-classic-controls-") as root:
-            verify(args.sim, args.media, Path(root) / "runtime")
+            run(args.sim, args.media, Path(root) / "runtime")
 
 
 if __name__ == "__main__":

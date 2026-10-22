@@ -24,11 +24,13 @@ impl PlayerScreen {
         ps: &plx_media::route::PlaybackSession,
         key: consts::Key,
         edge: Edge,
+        now: u32,
         fx: &mut Effects<'_, H>,
     ) -> bool {
         if plx_media::route::playback_controls() != PlaybackControls::Classic
             || self.hud.visible_at_press
         {
+            self.classic_seek.reset();
             return false;
         }
         let forward = match key {
@@ -40,8 +42,10 @@ impl PlayerScreen {
             let duration = plx_media::player::duration_ns();
             if duration > 0 {
                 let step = input::scrub_step_ns() * if forward { 1 } else { -1 };
-                let target = Scrub::clamp_target(
-                    plx_media::player::intended_pos_ns(ps).saturating_add(step),
+                let target = self.classic_seek.jump(
+                    now,
+                    plx_media::player::intended_pos_ns(ps),
+                    step,
                     duration,
                 );
                 self.scrub.cancel();
@@ -147,6 +151,94 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn classic_controls_rapid_taps_accumulate_past_an_earlier_keyframe_landing() {
+        let _g = plx_base::testlock::serial();
+        let _playback = PlaybackFixture::new();
+        let _interval =
+            player_hud::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
+        let mut page = PlayerScreen::new(EntryId(9));
+        page.hud.dismissed = true;
+        // A +10s request lands on the preceding keyframe at 40s again. A second tap must
+        // advance the REQUESTED position, even after the player reports Playing at that frame.
+        for (sym, at, target) in [
+            (consts::SDLK_RIGHT, 1_000, 50_000_000_000),
+            (consts::SDLK_RIGHT, 1_300, 60_000_000_000),
+            (consts::SDLK_LEFT, 1_600, 50_000_000_000),
+        ] {
+            assert_eq!(
+                key(&mut page, sym, Edge::Down, at),
+                vec![PlayerReq::CommitSeek(target)]
+            );
+            assert!(key(&mut page, sym, Edge::Up, at + 20).is_empty());
+            plx_media::player::SHARED
+                .seek_display_ns
+                .store(target, Relaxed);
+            plx_media::player::SHARED
+                .playpos_ns
+                .store(40_000_000_000, Relaxed);
+        }
+    }
+
+    #[test]
+    fn classic_controls_burst_expires_and_other_controls_clear_it() {
+        let _g = plx_base::testlock::serial();
+        let _playback = PlaybackFixture::new();
+        let _interval =
+            player_hud::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
+        let mut page = PlayerScreen::new(EntryId(9));
+        let right = consts::SDLK_RIGHT;
+        assert_eq!(
+            key(&mut page, right, Edge::Down, 1_000),
+            vec![PlayerReq::CommitSeek(50_000_000_000)]
+        );
+        plx_media::player::SHARED
+            .playpos_ns
+            .store(43_000_000_000, Relaxed);
+        assert_eq!(
+            key(&mut page, right, Edge::Down, 2_501),
+            vec![PlayerReq::CommitSeek(53_000_000_000)]
+        );
+        key(&mut page, consts::SDLK_UP, Edge::Down, 2_550);
+        // UP raises or moves the HUD; simulate dismissing it again without moving the playhead.
+        page.hud.visible_at_press = false;
+        assert_eq!(
+            key(&mut page, right, Edge::Down, 2_600),
+            vec![PlayerReq::CommitSeek(53_000_000_000)]
+        );
+        page.hud.visible_at_press = true;
+        key(&mut page, right, Edge::Down, 2_650);
+        page.scrub.cancel();
+        page.hud.visible_at_press = false;
+        assert_eq!(
+            key(&mut page, right, Edge::Down, 2_700),
+            vec![PlayerReq::CommitSeek(53_000_000_000)]
+        );
+    }
+
+    #[test]
+    fn classic_controls_burst_survives_a_seek_reload_but_not_an_item_change() {
+        let _g = plx_base::testlock::serial();
+        let _playback = PlaybackFixture::new();
+        let _interval =
+            player_hud::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
+        let mut page = PlayerScreen::new(EntryId(9));
+        assert_eq!(
+            key(&mut page, consts::SDLK_RIGHT, Edge::Down, 1_000),
+            vec![PlayerReq::CommitSeek(50_000_000_000)]
+        );
+        page.transport_reset(true);
+        assert_eq!(
+            key(&mut page, consts::SDLK_RIGHT, Edge::Down, 1_100),
+            vec![PlayerReq::CommitSeek(60_000_000_000)]
+        );
+        page.transport_reset(false);
+        assert_eq!(
+            key(&mut page, consts::SDLK_RIGHT, Edge::Down, 1_200),
+            vec![PlayerReq::CommitSeek(50_000_000_000)]
+        );
     }
 
     #[test]
