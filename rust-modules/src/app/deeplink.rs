@@ -26,9 +26,10 @@
 //!
 //! **When it acts.** The link is a pure step ([`DeepLink::step`]): one event and the read-only
 //! facts of the frame in ([`link_inputs`] is the only reader of the outside world), effect values
-//! out ([`LinkOut`], performed by [`perform`], which decides nothing). It waits, and never
+//! out ([`LinkOut`], performed by [`perform`], which decides nothing). Its landing waits, and never
 //! interrupts, behind sign-in, the profile picker and onboarding (the root is not Home), behind any
-//! surface that is up (the first-run consent question), and while the window is backgrounded.
+//! surface that is up (the first-run consent question), and while the window is backgrounded;
+//! ending playback does not wait for any of those (see "Leaving playback" below).
 //! A link that names a server survives a sign-in and resolves against the roster of the account
 //! that signed in (the wait for the server starts the first frame Home is the root, and ends
 //! after `SERVER_WAIT_MS`); a link that names none means "the signed-in server" and, having waited

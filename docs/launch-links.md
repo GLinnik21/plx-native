@@ -27,9 +27,9 @@ luna://com.webos.applicationManager/launch
   the roster, then writes `deeplink: not opened (server not available)`). A link that names no
   server cannot know which account it was meant for after a sign-in, so it is dropped, with a
   `deeplink: dropped` line.
-- The link also waits under any surface that is up (the first-run consent question, a menu) and
-  while the app is in the background; it acts after the surface is dismissed and the window is
-  foregrounded again.
+- The link also lands only when no surface is up (the first-run consent question, a menu) and the
+  app is in the foreground; it waits for the surface to be dismissed and the window to be
+  foregrounded again. Ending playback (next bullet) does not wait for either.
 - A link over playback ends it the way the STOP key does (the player's exit ritual: the engine is
   released, the server is told, a parked restore is retired) and then lands. It does this as soon
   as the link is due, even while the app is in the background, so a film that was parked is not
