@@ -115,15 +115,28 @@ pub fn resume_if_paused(pa: &mut crate::player::adapter::PlayerAdapter) {
     }
 }
 
-/// The only two inputs which may claim a parked playback session — one an OS suspend parked, or
-/// one the pipeline's decoder release did (`app::run::park_on_decoder_release`). `DidForeground`
-/// restores the saved clock; `PlayKey` is a press that asks to play, which restores it Playing at
-/// the exact saved offset: the remote's PLAY key, or a toggle press (PLAYPAUSE, a click on no
-/// control) that wakes a decoder-release park saved Paused.
+/// The inputs which move the foreground machine. `DidForeground` and `PlayKey` may claim a parked
+/// playback session — one an OS suspend parked, or one the pipeline's decoder release did
+/// (`app::run::park_on_decoder_release`). `DidForeground` restores the saved clock; `PlayKey` is a
+/// press that asks to play, which restores it Playing at the exact saved offset: the remote's PLAY
+/// key, or a toggle press (PLAYPAUSE, a click on no control) that wakes a decoder-release park
+/// saved Paused. `Superseded` is the opposite edge: something else took the session over, and
+/// whatever the machine parked is retired (the table is on [`ForegroundLifecycle::claim`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ForegroundInput {
     DidForeground,
     PlayKey,
+    Superseded(Successor),
+}
+
+/// Who took the session over. They differ in ONE state, `LoadPending`: a new playback leaves the
+/// foreground Load to its own settlement (`settle_load`'s Stale arm), because the replacement's
+/// resolve can still be refused after `PLAY_BUSY` is set; an exit ends the session now, so the
+/// Load's armed paused-seek state is released with [`ForegroundEffect::Retire`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Successor {
+    Playback,
+    Exit,
 }
 
 /// Viewer clock intent carried independently of the native Engine's current clock state.
@@ -298,17 +311,6 @@ impl<Attempt: Copy + PartialEq> ForegroundLifecycle<Attempt> {
         }
     }
 
-    /// Retire a parked foreground owner when a distinct playback request has already been
-    /// accepted. `Prepared` remains untouched for the same session's Play-key retry; that path
-    /// claims the lifecycle directly and never owns a fresh route resolve.
-    pub fn replace_with_new_playback(&mut self) -> bool {
-        if !self.awaiting_load() {
-            return false;
-        }
-        self.state = ForegroundState::Idle;
-        true
-    }
-
     /// Read-only view of the machine for tests in other crates; every write goes through
     /// [`claim`](Self::claim) and the `finish_*` settlements.
     #[cfg(any(test, feature = "test-support"))]
@@ -316,7 +318,21 @@ impl<Attempt: Copy + PartialEq> ForegroundLifecycle<Attempt> {
         self.state
     }
 
+    /// Apply one input. `Superseded(successor)` retires the parked owner, per this table:
+    ///
+    /// | State | `Playback` | `Exit` |
+    /// |---|---|---|
+    /// | `Idle` | Idle, `Ordinary` | Idle, `Ordinary` |
+    /// | `Suspended`, `Prepared`, `PreparePending`, `RecoveryPending`, `Claimed{Prepare\|Load}` | Idle, `Suppressed` | Idle, `Suppressed` |
+    /// | `Claimed{PlayClock}`, `ClockPending` | unchanged, `Suppressed` | Idle, `Suppressed` |
+    /// | `LoadPending{clock}` | unchanged, `Suppressed` (its settlement owns it) | Idle, `Effect(Retire{clock})` |
+    ///
+    /// `Prepared` is retired under both: its failed Load already released what `before_load` armed,
+    /// and a Retry starts a fresh play, which supersedes it anyway.
     pub fn claim(&mut self, input: ForegroundInput) -> ForegroundClaimResult {
+        if let ForegroundInput::Superseded(successor) = input {
+            return self.supersede(successor);
+        }
         let state = self.state;
         match state {
             ForegroundState::Idle => ForegroundClaimResult::Ordinary,
@@ -381,6 +397,36 @@ impl<Attempt: Copy + PartialEq> ForegroundLifecycle<Attempt> {
             ForegroundState::LoadPending { .. }
             | ForegroundState::PreparePending { .. }
             | ForegroundState::RecoveryPending { .. } => ForegroundClaimResult::Suppressed,
+        }
+    }
+
+    fn supersede(&mut self, successor: Successor) -> ForegroundClaimResult {
+        let exit = matches!(successor, Successor::Exit);
+        match self.state {
+            ForegroundState::Idle => ForegroundClaimResult::Ordinary,
+            ForegroundState::LoadPending { clock, id, .. } if exit => {
+                self.state = ForegroundState::Idle;
+                ForegroundClaimResult::Effect(ForegroundEffect::Retire { id, clock })
+            }
+            ForegroundState::LoadPending { .. } => ForegroundClaimResult::Suppressed,
+            ForegroundState::Claimed {
+                claim: ForegroundClaim::PlayClock,
+                ..
+            }
+            | ForegroundState::ClockPending { .. } => {
+                if exit {
+                    self.state = ForegroundState::Idle;
+                }
+                ForegroundClaimResult::Suppressed
+            }
+            ForegroundState::Suspended { .. }
+            | ForegroundState::Claimed { .. }
+            | ForegroundState::Prepared { .. }
+            | ForegroundState::PreparePending { .. }
+            | ForegroundState::RecoveryPending { .. } => {
+                self.state = ForegroundState::Idle;
+                ForegroundClaimResult::Suppressed
+            }
         }
     }
 
@@ -685,6 +731,12 @@ pub enum ForegroundEffect {
     PlayClock {
         id: u64,
     },
+    /// Release foreground ownership with `clock` unapplied: the Stale settlement's
+    /// `after_load(ps, None, clock, false)`, performed by the actuator. No engine stop.
+    Retire {
+        id: u64,
+        clock: ForegroundClock,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -829,6 +881,10 @@ fn run_foreground_effects<A: ForegroundActuator>(
             }
             ForegroundEffect::PlayClock { id } => {
                 lifecycle.finish_clock(id, actuator.play_clock());
+                None
+            }
+            ForegroundEffect::Retire { clock, .. } => {
+                actuator.after_load(ps, None, clock, false);
                 None
             }
         };
