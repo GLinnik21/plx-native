@@ -991,7 +991,10 @@ fn drive_consumer(run: &mut DemuxRun, read_to_ns: i64, speed: i64, stall: Durati
     };
     let pop = |q: *mut AuQueue| -> Option<(*mut AuNode, i64)> {
         let node = crate::aq::aq_pop(q, std::ptr::null_mut());
-        (!node.is_null()).then(|| (node, unsafe { crate::aq::au_fields(node) }.2))
+        if node.is_null() {
+            return None;
+        }
+        Some((node, unsafe { crate::aq::au_fields(node) }.2))
     };
     let free = |n: *mut AuNode| unsafe { libc::free(n as *mut c_void) };
 
