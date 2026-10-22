@@ -1,20 +1,20 @@
 {
  "flaky": [],
- "generated": "2026-10-22T15:33:07Z",
+ "generated": "2026-10-22T15:38:39Z",
  "metrics": [
   {
    "change30_pct": null,
    "change7_pct": 38.0,
    "d30": null,
    "delta30": null,
-   "delta7": 54.0,
+   "delta7": 54,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 80,
+   "n_now": 81,
    "n_prev": 101,
-   "now": 196.0,
+   "now": 196,
    "prev7": 142,
    "shown": true,
    "state": "worse",
@@ -67,18 +67,18 @@
   },
   {
    "change30_pct": -48.1,
-   "change7_pct": -23.4,
+   "change7_pct": -23.3,
    "d30": 686,
    "delta30": -330,
-   "delta7": -109.0,
+   "delta7": -108,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 175,
-   "n_prev": 252,
+   "n_prev": 251,
    "now": 356,
-   "prev7": 465.0,
+   "prev7": 464,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -87,18 +87,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -51.3,
-   "change7_pct": -17.6,
+   "change30_pct": -51.5,
+   "change7_pct": -17.8,
    "d30": 684,
-   "delta30": -351,
-   "delta7": -71,
+   "delta30": -352.0,
+   "delta7": -72.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 87,
+   "n_now": 88,
    "n_prev": 117,
-   "now": 333,
+   "now": 332.0,
    "prev7": 404,
    "shown": true,
    "state": "better",
@@ -250,14 +250,14 @@
    "change7_pct": -12.1,
    "d30": null,
    "delta30": null,
-   "delta7": -45.0,
+   "delta7": -45,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 80,
+   "n_now": 81,
    "n_prev": 101,
-   "now": 327.0,
+   "now": 327,
    "prev7": 372,
    "shown": true,
    "state": "flat",
@@ -276,9 +276,9 @@
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 70,
+   "n_now": 71,
    "n_prev": 0,
-   "now": 314.5,
+   "now": 315,
    "prev7": null,
    "shown": true,
    "state": "new",
@@ -289,17 +289,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -23.9,
+   "change7_pct": -23.6,
    "d30": null,
    "delta30": null,
-   "delta7": -85,
+   "delta7": -84.0,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 79,
+   "n_now": 80,
    "n_prev": 101,
-   "now": 271,
+   "now": 272.0,
    "prev7": 356,
    "shown": true,
    "state": "better",
@@ -352,17 +352,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 15.7,
+   "change7_pct": 16.0,
    "d30": null,
    "delta30": null,
-   "delta7": 23.5,
+   "delta7": 24,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 80,
+   "n_now": 81,
    "n_prev": 101,
-   "now": 173.5,
+   "now": 174,
    "prev7": 150,
    "shown": true,
    "state": "flat",
@@ -376,14 +376,14 @@
    "change7_pct": -12.0,
    "d30": null,
    "delta30": null,
-   "delta7": -22.0,
+   "delta7": -22,
    "group": "ci",
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 80,
+   "n_now": 81,
    "n_prev": 101,
-   "now": 162.0,
+   "now": 162,
    "prev7": 184,
    "shown": true,
    "state": "flat",
@@ -530,9 +530,9 @@
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 70,
+   "n_now": 71,
    "n_prev": 0,
-   "now": 5.0,
+   "now": 5,
    "prev7": null,
    "shown": false,
    "state": "new",
@@ -545,15 +545,15 @@
    "change30_pct": -98.7,
    "change7_pct": -99.1,
    "d30": 234,
-   "delta30": -231,
-   "delta7": -315,
+   "delta30": -231.0,
+   "delta7": -315.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 79,
+   "n_now": 80,
    "n_prev": 101,
-   "now": 3,
+   "now": 3.0,
    "prev7": 318,
    "shown": false,
    "state": "better",
@@ -566,15 +566,15 @@
    "change30_pct": -99.6,
    "change7_pct": 0.0,
    "d30": 686,
-   "delta30": -683,
-   "delta7": 0,
+   "delta30": -683.0,
+   "delta7": 0.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 79,
+   "n_now": 80,
    "n_prev": 101,
-   "now": 3,
+   "now": 3.0,
    "prev7": 3,
    "shown": false,
    "state": "flat",
@@ -610,11 +610,6 @@
    "change_pct": 38.0,
    "commits": [
     {
-     "pr": 898,
-     "sha": "4ed33e537",
-     "title": "Force Direct Play: the audio refusal names the codec"
-    },
-    {
      "pr": 899,
      "sha": "d156a8585",
      "title": "DTS: PMS's dca spelling direct-plays; Force Direct Play offers DTS only with a DTS table row"
@@ -658,6 +653,11 @@
      "pr": 925,
      "sha": "8be69a89c",
      "title": "sim: the host sink reports the pipeline's end-of-stream"
+    },
+    {
+     "pr": 926,
+     "sha": "24587134e",
+     "title": "CI: track flaky tests per commit on plxnative.com/ci"
     }
    ],
    "from": 142,
@@ -665,16 +665,11 @@
    "label": "CI: host python/shell/C gates",
    "since": "2026-10-20",
    "threshold_pct": 20.0,
-   "to": 196.0
+   "to": 196
   },
   {
    "change_pct": 36.6,
    "commits": [
-    {
-     "pr": 898,
-     "sha": "4ed33e537",
-     "title": "Force Direct Play: the audio refusal names the codec"
-    },
     {
      "pr": 899,
      "sha": "d156a8585",
@@ -719,6 +714,11 @@
      "pr": 925,
      "sha": "8be69a89c",
      "title": "sim: the host sink reports the pipeline's end-of-stream"
+    },
+    {
+     "pr": 926,
+     "sha": "24587134e",
+     "title": "CI: track flaky tests per commit on plxnative.com/ci"
     }
    ],
    "from": 103.0,
@@ -732,11 +732,6 @@
    "change_pct": 30.8,
    "commits": [
     {
-     "pr": 898,
-     "sha": "4ed33e537",
-     "title": "Force Direct Play: the audio refusal names the codec"
-    },
-    {
      "pr": 899,
      "sha": "d156a8585",
      "title": "DTS: PMS's dca spelling direct-plays; Force Direct Play offers DTS only with a DTS table row"
@@ -780,6 +775,11 @@
      "pr": 925,
      "sha": "8be69a89c",
      "title": "sim: the host sink reports the pipeline's end-of-stream"
+    },
+    {
+     "pr": 926,
+     "sha": "24587134e",
+     "title": "CI: track flaky tests per commit on plxnative.com/ci"
     }
    ],
    "from": 46.0,
@@ -802,19 +802,19 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 327.0
+   "now": 327
   },
   {
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 314.5
+   "now": 315
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 271
+   "now": 272.0
   },
   {
    "group": "ci",
