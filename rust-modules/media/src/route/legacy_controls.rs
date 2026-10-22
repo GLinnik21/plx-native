@@ -37,6 +37,18 @@ impl QueueContinuation {
         self.rows[self.selected].sid == sid && self.rows[self.selected].rk == rk
     }
 
+    fn with_window(&self, rows: &[QueueRow]) -> Self {
+        Self::from_queue(self.id.clone(), rows, &self.rows[self.selected])
+            .unwrap_or_else(|| self.clone())
+    }
+
+    pub(super) fn refreshed(&self, client: &plx_plex::plex::Client) -> Self {
+        client
+            .play_queue_window(&self.id, self.rows[self.selected].item_id)
+            .map(|rows| self.with_window(&rows))
+            .unwrap_or_else(|| self.clone())
+    }
+
     pub(super) fn resolve(&self) -> super::decision::QueueInfo {
         super::decision::QueueInfo {
             id: self.id.clone(),
@@ -152,6 +164,30 @@ mod tests {
             .resolve();
         assert_eq!(back.item_id, "11");
         assert_eq!(back.up_next.unwrap().rk, "12");
+    }
+
+    #[test]
+    fn legacy_controls_queue_window_moves_forward_without_losing_the_selected_item() {
+        let sid = ServerId::from_raw(1);
+        let rows: Vec<_> = [11, 12, 13]
+            .into_iter()
+            .map(|item_id| QueueRow {
+                item_id,
+                sid,
+                rk: item_id.to_string(),
+                kind: "episode".into(),
+                ..Default::default()
+            })
+            .collect();
+        let handoff =
+            QueueContinuation::from_queue("queue-7".into(), &rows[..2], &rows[1]).unwrap();
+        let landed = handoff.with_window(&rows).resolve();
+        assert_eq!(landed.rows.len(), 3);
+        assert_eq!(landed.item_id, "12");
+        assert_eq!(landed.up_next.unwrap().rk, "13");
+        // Empty/expired/wrong-item windows cannot discard the known predecessor or selection.
+        assert_eq!(handoff.with_window(&[]).resolve().rows.len(), 2);
+        assert_eq!(handoff.with_window(&rows[2..]).resolve().item_id, "12");
     }
 
     #[test]

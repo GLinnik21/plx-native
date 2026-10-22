@@ -59,6 +59,8 @@ def verify(binary, media, output):
         wait(rf"playing item: rk={mock_pms.V3_RATING_KEY} ", stamp)
         queue_posts = [path for path, _ in pms.requests if path.split("?")[0] == "/playQueues"]
         assert len(queue_posts) == 1, f"Next replaced the queue and lost its preceding rows: {queue_posts}"
+        windows = [path for path, _ in pms.requests if path.startswith("/playQueues/1?")]
+        assert any("center=2" in path and "own=0" in path for path in windows), windows
         control_row()
         stamp = sim.key("ok")
         wait(rf"queue transport: Previous rk={mock_pms.V1_RATING_KEY}", stamp)

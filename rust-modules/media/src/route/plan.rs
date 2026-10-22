@@ -1573,7 +1573,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     plan.sess = session.clone();
     if !rk.is_empty() && !env.preview {
         let q = env.queue_continuation.as_ref().filter(|queue| queue.matches(env.sid, rk))
-            .map(|queue| queue.resolve()).unwrap_or_else(|| resolve_playqueue(
+            .map(|queue| queue.refreshed(client).resolve()).unwrap_or_else(|| resolve_playqueue(
                 client, rk, &session, &env.machine_id, !env.omit_queue_continuous,
             ));
         plan.machine_id = q.machine_id;
