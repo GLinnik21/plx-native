@@ -2261,6 +2261,24 @@ mod step_ladder_tests {
         assert_eq!(one, vec![], "one BACK over the rebuffer does not leave");
     }
 
+    /// …and an UP-hide done WHILE the pipeline is busy arms nothing either: only a BACK-hide is the
+    /// viewer asking to leave. The test above hides in `Playing`, so it could not tell `key_updown`
+    /// passing `false` to `HudState::hide` from passing the live `loading()`; this one can.
+    #[test]
+    fn an_up_hide_while_busy_does_not_arm_the_exit() {
+        use plx_media::player::PlaybackState::Buffering;
+        let _g = plx_base::testlock::serial();
+        let was = plx_media::player::swap_state_for_test(Buffering);
+        let mut page = PlayerScreen::new(ENTRY);
+        page.hud.nav.focus = 1; // on the control row, where UP hides
+        bound_press(&mut page, SDLK_UP, 0);
+        let hidden = (page.hud.dismissed, page.hud.exit_armed);
+        let (_, one) = bound_press(&mut page, 0, WCODE_BACK);
+        plx_media::player::restore_state_for_test(was);
+        assert_eq!(hidden, (true, false), "the fixture: UP hid the transport over a Buffering load and armed nothing");
+        assert_eq!(one, vec![], "one BACK after an UP-hide over a busy load does not leave");
+    }
+
     /// Any other bound press between the two BACKs spends the arming: BACK, DOWN, BACK is a hide, a
     /// move and another hide — not a request to leave.
     #[test]

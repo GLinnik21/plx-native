@@ -228,7 +228,7 @@ pub struct HudState {
     /// un-dismisses, for the same reason [`visible_at_press`](Self::visible_at_press) is: by the
     /// time an arm runs the press has already cleared what it would have read. Requiring
     /// `dismissed` is what makes anything that un-dismisses the transport in between (a segment
-    /// offer, a new episode, a pointer touch) disarm it too.
+    /// offer, a new episode, pointer motion) disarm it too.
     pub back_leaves_at_press: bool,
     /// The last SEGMENT the control row offered. Sticky: it is never cleared back to None,
     /// so each segment raises the HUD exactly once per playback however often the row
