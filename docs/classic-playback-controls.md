@@ -83,6 +83,6 @@ python3 tests/classic_controls_sim.py --sim rust-modules/target-sim/debug/plxnat
 ```
 
 This checks three fresh Right presses in one burst, with playback reporting its landed
-position between presses: the first two land on the same keyframe, but requested targets
-advance by ten seconds each and the third crosses into the next keyframe. Unit tests also
+position between presses: two adjacent taps land on the same keyframe, but requested targets
+advance by ten seconds each and the sequence reaches a later keyframe. Unit tests also
 cover reversing direction, configured intervals, bounds, clock wrap, expiry and reset.
