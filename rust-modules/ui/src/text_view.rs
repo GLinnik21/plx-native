@@ -19,6 +19,11 @@ use std::hash::{Hash, Hasher};
 use std::os::raw::c_int;
 use std::rc::Rc;
 
+/// The air between a truncated last line and its trailing run ("MORE"): the spacing scale's hairline
+/// rung. The run's reserved width is this on each side of it, so the clipped line and the run stand
+/// one gap apart with one gap of slack after.
+const TRAILING_GAP: f32 = crate::theme::space::XS;
+
 // Wrapping is pixel-measured (text_width per word), which is far too slow to redo every frame for
 // every block — the text is stable, so memoize the wrapped lines by (text, sz, bold, width, lines).
 // The lines are shared via Rc, so a cache hit is a refcount bump. Main-thread only (immediate-mode
@@ -573,7 +578,7 @@ impl<'a> TextView<'a> {
         // reserve the run's (bold) width so the last line clips short and "… MORE" never spills the column
         let reserve = run
             .and_then(|(r, _)| CString::new(r).ok())
-            .map(|c| self.width(&c, true) + 16.0)
+            .map(|c| self.width(&c, true) + 2.0 * TRAILING_GAP)
             .unwrap_or(0.0);
         // fade_last: the last line dissolves to nothing across this band ending at the wrap width
         // minus the reserved affordance gap. Loop-invariant, so hoisted out.
@@ -675,7 +680,7 @@ impl<'a> TextView<'a> {
             if is_last {
                 if let Some((r, rc)) = run {
                     if let Ok(cs) = CString::new(r) {
-                        let rx = frame.x + text_w + 8.0;
+                        let rx = frame.x + text_w + TRAILING_GAP;
                         Label::new(cs.as_ptr(), self.sz, rc)
                             .bold()
                             .h(HAlign::Left)
@@ -813,6 +818,38 @@ mod tests {
         assert_eq!(font.0.get(), after_first, "the next frame's fresh view re-measured the paragraph");
         assert_eq!(first.lines, second.lines);
         plx_gfx::text::take_measure_fault();
+    }
+
+    /// **The trailing run stands one `TRAILING_GAP` after the clipped last line**, and the width it
+    /// reserved is that gap on each side of it: read off the PAINTED runs, not the constant.
+    #[test]
+    fn a_trailing_run_stands_one_gap_after_the_clipped_last_line() {
+        struct Tens;
+        impl plx_machine::machine::Measure for Tens {
+            fn width(&self, s: &std::ffi::CStr, _: i32, _: bool) -> f32 {
+                s.to_string_lossy().chars().count() as f32 * 10.0
+            }
+            fn cap_h(&self, _: i32) -> f32 { 20.0 }
+            fn line_h(&self, _: i32) -> f32 { 28.0 }
+        }
+        let _serial = plx_base::testlock::serial();
+        let frame = Rect::new(30.0, 10.0, 200.0, 0.0);
+        let view = TextView::new("alpha beta gamma delta epsilon zeta eta theta", theme::size::BODY, theme::TEXT_PRIMARY)
+            .max_lines(1)
+            .trailing("MORE", theme::TEXT_PRIMARY)
+            .with_measure(&Tens);
+        let runs = crate::draw_census::capture_runs(|| {
+            view.draw(Painter::recording(), frame);
+        });
+        let more = runs.iter().find(|r| r.text == "MORE").expect("MORE painted");
+        let line = runs.iter().find(|r| r.text != "MORE").expect("the clipped line painted");
+        // (the recording painter's own run widths are the real font's; the view measured with `Tens`)
+        let line_w = line.text.chars().count() as f32 * 10.0;
+        assert_eq!(more.at.x, line.at.x + line_w + theme::space::XS, "{runs:?}");
+        assert!(
+            line_w + 2.0 * theme::space::XS + 40.0 <= frame.w,
+            "the line was clipped to leave the run's width and a gap each side: {runs:?}"
+        );
     }
 
     #[test]

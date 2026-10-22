@@ -5,12 +5,13 @@
 //! `reason_face` (bold `TITLE` in `TEXT_PRIMARY`, then `BODY` in `TEXT_SECONDARY`), so a change to
 //! the design system's read-out moves these with it. The boards draw the same two lines at the same
 //! y (540 and 622); this module places them by the shipped bands (the reason `space::SM` under the
-//! verdict's line box), which is the position `StatusOverlay` gives a page-placed read-out.
+//! verdict's line box, in `StatusOverlay`'s reserved two-line slot), which is the position and the
+//! box `StatusOverlay` gives a page-placed read-out.
 use plx_machine::machine::Measure;
 use plx_ui::label::{HAlign, Label};
 use plx_ui::text_view::TextView;
 use plx_ui::widgets::{LegacyMeasure, StatusKind, StatusOverlay};
-use plx_ui::{theme, Painter, Rect};
+use plx_ui::{Painter, Rect};
 use std::ffi::CString;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,11 +65,12 @@ pub fn unreachable_overlay<'a>() -> StatusOverlay<'a> {
 /// verdict's line box starts at [`StatusOverlay::FULL_ANCHOR_TOP`] in screen space whatever the
 /// frame says; the reason hangs `space::SM` below it and is [`StatusOverlay::REASON_W`] wide.
 pub fn bands(frame: Rect, measure: &dyn Measure) -> (Rect, Rect) {
-    let (cap_sz, _, _) = StatusOverlay::verdict_face(StatusKind::Failed);
-    let (reason_sz, _) = StatusOverlay::reason_face(StatusKind::Failed);
-    let cap = Rect::new(frame.x, StatusOverlay::FULL_ANCHOR_TOP, frame.w, measure.line_h(cap_sz));
+    // `StatusOverlay`'s own bands (the verdict's line box, `SM`, the reserved two-line reason slot).
+    let (cap_band, reason_band) = StatusOverlay::failed_page_text_bands(Rect::FULL, measure);
+    let (cap_y, cap_h, reason_y, reason_h) = (cap_band.y, cap_band.h, reason_band.y, reason_band.h);
+    let cap = Rect::new(frame.x, cap_y, frame.w, cap_h);
     let w = StatusOverlay::REASON_W.min(frame.w);
-    let reason = Rect::new(frame.cx() - w * 0.5, cap.y + cap.h + theme::space::SM, w, 2.0 * measure.line_h(reason_sz));
+    let reason = Rect::new(frame.cx() - w * 0.5, reason_y, w, reason_h);
     (cap, reason)
 }
 

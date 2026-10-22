@@ -28,7 +28,7 @@ use plx_ui::icons::Icon;
 use plx_ui::label::{Label, VAlign};
 use plx_ui::linked_heading::{self, LinkedHeading};
 use plx_ui::landing_hero::{
-    base_scrim_ramp, stack_top as hero_stack_top, COL_W as HERO_COL_W,
+    base_scrim_ramp, hero_stack, COL_W as HERO_COL_W,
     TEXT_BOTTOM as HERO_TEXT_BOTTOM,
 };
 use plx_machine::machine::{
@@ -139,11 +139,6 @@ const HERO_PAGER_PAD: f32 = HERO_CTRL_GAP - HERO_PAGER_BEARING;
 const HERO_META_R: f32 = 0.60 * SCR_W;
 const META_FLOW_W: f32 = HERO_META_R - MARGIN_X;
 const SOURCE_PAD: f32 = theme::space::XS;
-// The same screen-side measurement seam as `screens/detail/hero.rs`. The frame produced here is
-// handed to `Button::draw`, so focus geometry and paint share one capability-derived width. The
-// widget should eventually expose these two private terms through `Button::pill_w_with`.
-const HERO_ICON_RATIO: f32 = 1.15;
-const HERO_ICON_GAP: f32 = 12.0;
 
 /// Each row's `motion` bytes are its `Shelf`'s (`Shelf::write`), the L0 row's motion write unchanged
 /// (`base_y` included), so the text, `SCREEN_SHAPES_PIN` and the replay anchors stay what they were;
@@ -3479,7 +3474,7 @@ fn hero_rects(measure: &dyn Measure, item: &PmsMovie, label: &std::ffi::CStr) ->
     // One row: Play, the watchlist disc when the title has one (absent: no room, no gap), Info.
     let has_disc = disc_hex(item).is_some();
     let items = [
-        Item::new(hero_pill_w(measure, label)),
+        Item::new(plx_appkit::hero_layout::pill_w(measure, label, theme::size::BODY, true, None)),
         if has_disc { Item::new(HERO_CTRL_D) } else { Item::absent() },
         Item::new(HERO_CTRL_D),
     ];
@@ -3490,13 +3485,6 @@ fn hero_rects(measure: &dyn Measure, item: &PmsMovie, label: &std::ffi::CStr) ->
         disc: at(1),
         info: at(2).unwrap_or_default(),
     }
-}
-
-fn hero_pill_w(measure: &dyn Measure, label: &std::ffi::CStr) -> f32 {
-    theme::size::BODY as f32 * HERO_ICON_RATIO
-        + HERO_ICON_GAP
-        + measure.width(label, theme::size::BODY, true)
-        + plx_ui::widgets::BTN_PILL_AIR
 }
 
 fn card_x(col: usize, scroll: f32) -> f32 {
@@ -3741,14 +3729,10 @@ fn hero_content(hero: &PmsMovie, source: &str, p: Painter, dx: f32, measure: &dy
     let meta_view = TextView::new(&meta, theme::size::BODY, theme::TEXT_SECONDARY).max_lines(1);
     let meta_h = meta_view.measure_h(HERO_COL_W);
     let synopsis = (!hero.summary.is_empty()).then(|| plx_ui::hero_synopsis(&hero.summary, ""));
-    let synopsis_h = synopsis
-        .as_ref()
-        .map(|v| theme::space::SM + v.measure_h(HERO_COL_W))
-        .unwrap_or(0.0);
-    let mut y = hero_stack_top(title_h, meta_h, synopsis_h);
+    let stack = hero_stack(title_h, meta_h, synopsis.as_ref().map(|v| v.measure_h(HERO_COL_W)));
     HeroLogo::new(hero.sid.raw(), hero_logo_rk(hero), title, LogoRung::Hero)
-        .draw(p, Rect::new(MARGIN_X, y, HERO_COL_W, title_h), measure);
-    y += title_h + theme::space::MD;
+        .draw(p, Rect::new(MARGIN_X, stack.title.y, HERO_COL_W, title_h), measure);
+    let y = stack.meta.y;
     meta_view.draw(p, Rect::new(MARGIN_X, y, HERO_COL_W, 0.0));
     if !source.is_empty() {
         draw_meta_source(
@@ -3760,12 +3744,8 @@ fn hero_content(hero: &PmsMovie, source: &str, p: Painter, dx: f32, measure: &dy
             measure,
         );
     }
-    y += meta_h;
-    if let Some(view) = synopsis {
-        view.draw(
-            p,
-            Rect::new(MARGIN_X, y + theme::space::SM, HERO_COL_W, 0.0),
-        );
+    if let (Some(view), Some(span)) = (synopsis, stack.synopsis) {
+        view.draw(p, Rect::new(MARGIN_X, span.y, HERO_COL_W, 0.0));
     }
 }
 

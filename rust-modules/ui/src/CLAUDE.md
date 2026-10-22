@@ -87,6 +87,8 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
      data's, or each is measured as it is painted, or it stops lazily at the first item that will not
      fit) uses `hstack::Flow`: the same gap rule, placing while measuring/painting
      (`push`/`place`), `next_x` for the lazy break. Never write `x += w + GAP` for a new row.
+     The same stack top to bottom is `vstack::VStack`/`VFlow` (`Anchor::{Top,Bottom,Centre}`, `Item::before` for a
+     gap that belongs to the item below it, `AlertHead` for the alert family's eyebrow/title/path ladder); never `y += h + GAP`.
    - **Springs**: `Spring` (`lib.rs`) stepped at the shared stiffness (`consts::K_SCALE`,
      `K_SCROLL`, `K_SNAP`; `popover::K_APPEAR`), not a new constant or a hand-made easing.
 

@@ -1638,3 +1638,17 @@ fn a_poster_result_is_worded_by_the_under_posters_builder() {
     TEST_UNDER_POSTERS.with(|cell| cell.set(None));
     assert_eq!(episode, [Some("A Grand Day Out".into()), Some("11/4/1989 \u{b7} @alex".into())], "a still keeps its own block");
 }
+
+/// The empty state's header and statement stand one MD apart, and the pair is centred in its area
+/// (the stack's Centre anchor, not a hand-written `(rect.h - a - b - MD) * 0.5`).
+#[test]
+fn empty_state_pair_is_one_md_apart_and_centred_in_its_area() {
+    use plx_ui::theme;
+    let area = Rect::new(10.0, 100.0, 800.0, 400.0);
+    let (hh, sh) = (12.0, 30.0);
+    let (header_y, statement_y) = super::render::empty_pair(area, hh, sh);
+    assert_eq!(statement_y - (header_y + hh), theme::space::MD);
+    let top = header_y;
+    let bottom = statement_y + sh;
+    assert!(((top + bottom) * 0.5 - (area.y + area.h * 0.5)).abs() < 0.01, "the pair is centred");
+}

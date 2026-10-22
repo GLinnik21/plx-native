@@ -3,6 +3,7 @@
 //! core (`card`/`draw_card`) and the poster-resolve helper. (Multi-line text wrapping
 //! now lives in the `TextView` primitive in `text_view.rs`.)
 use crate::hstack::{Align as StackAlign, HStack, Item as HItem};
+use crate::vstack::{Anchor as VAnchor, VStack};
 use crate::label::{HAlign, Label, VAlign};
 use crate::text_view::TextView;
 use crate::theme;
@@ -515,26 +516,33 @@ pub fn still_line(
     has_bar: bool,
     measure: &dyn plx_machine::machine::Measure,
 ) {
-    // The pair is authored from the BOTTOM up, because that is what the two insets are about: the
-    // sub line's baseline sits at the tile's own bottom inset and the label stacks above it.
+    // The pair is one bottom-anchored VStack of cap bands, because that is what the two insets are
+    // about: the sub line's baseline sits at the tile's own bottom inset and the label stacks above
+    // it. The band heights come from the cap bands (a font swap cannot silently close the pair up); a
+    // label-less tile leaves the sub exactly where it was. The label's baseline stands
+    // `STILL_PAIR_GAP` above the sub's TEXT ORIGIN less its cap top (the design's "line-height 1.15,
+    // then 2px" measured from the sub's box), which is `2 * sct` further up than the gap between the
+    // bands, so that distance is the sub item's `before`.
     let (lsz, ssz) = (theme::size::LABEL, theme::size::CAPTION);
     let (sct, scb) = plx_gfx::text::text_cap_band(ssz, 0);
-    let (_, lcb) = plx_gfx::text::text_cap_band(lsz, 1);
+    let (lct, lcb) = plx_gfx::text::text_cap_band(lsz, 1);
     let bot = if has_bar {
         STILL_LINE_BOT_BAR
     } else {
         STILL_LINE_BOT
     };
-    let sy = card.y + card.h - bot - scb;
+    let pair = [
+        if label.is_empty() { HItem::absent() } else { HItem::new(lcb - lct) },
+        HItem::new(scb - sct).before(STILL_PAIR_GAP + 2.0 * sct),
+    ];
+    let pair = VStack::new(&pair, STILL_PAIR_GAP, VAnchor::Bottom(card.y + card.h - bot));
+    let sy = pair.span(1).map_or(0.0, |(y, _)| y) - sct;
     let x0 = card.x + STILL_LINE_INSET;
     let right = card.x + card.w - STILL_LINE_INSET;
 
     // The SHOW, above: LABEL bold in primary ink, elided to the tile's own right inset.
-    if !label.is_empty() {
-        // `line-height: 1.15` on the sub, then the design's 2px gap, then this run's own descent —
-        // measured through the cap bands rather than a literal, so a font swap cannot silently
-        // close the pair up.
-        let ly = sy - sct - STILL_PAIR_GAP - lcb;
+    if let Some((y, _)) = pair.span(0) {
+        let ly = y - lct;
         let run = measure.fit_line(label, right - x0, lsz, true);
         p.text(run.as_ptr(), x0, ly, lsz, theme::TEXT_PRIMARY, 0, 1);
     }
@@ -3477,7 +3485,24 @@ impl Spinner {
     /// over by this and nothing else. Read by [`StatusOverlay`]'s busy note and by any column of
     /// fine print that marks a line the same way.
     pub fn inline_gutter() -> f32 {
-        2.0 * (Self::R_INLINE + Self::dot_r(Self::R_INLINE)) + theme::space::XS
+        Self::inline_extent() + theme::space::XS
+    }
+    /// The inline ring's full extent, dots included: the width its [`Self::pair_items`] item takes.
+    pub fn inline_extent() -> f32 {
+        2.0 * (Self::R_INLINE + Self::dot_r(Self::R_INLINE))
+    }
+    /// **A spinner then the line it marks, as stack items**: the ring `ring_extent` wide (its full
+    /// extent, dots included), then `text_w` of text. Stand them in an `HStack` whose gap is the
+    /// air between ring and text (`space::XS` for the inline ring, [`Self::inline_gutter`] being that
+    /// gap plus [`Self::inline_extent`]), anchored `Align::Centre(x)` for a pair centred on a band or
+    /// `Align::Leading(x)` for a line that starts on one. `Span::x` of item 0 is the ring's left
+    /// edge ([`Self::leading`]'s `x`); item 1's is the text's.
+    pub fn pair_items(ring_extent: f32, text_w: f32) -> [crate::hstack::Item; 2] {
+        [crate::hstack::Item::new(ring_extent), crate::hstack::Item::new(text_w)]
+    }
+    /// [`Self::pair_items`] for the inline ring: gap [`theme::space::XS`].
+    pub fn inline_pair_items(text_w: f32) -> [crate::hstack::Item; 2] {
+        Self::pair_items(Self::inline_extent(), text_w)
     }
     /// An inline spinner in the leading gutter that starts at `x`, centred on `cy` — the middle
     /// of the cap band of the line it marks.
@@ -4517,6 +4542,18 @@ impl<'a> StatusOverlay<'a> {
         self.bands_measured(&LegacyMeasure)
     }
 
+    /// The verdict's and the reason's bands of a page-placed `Failed` read-out that HAS a reason, for
+    /// a caller that draws its own text into the same slots (the Watchlist's full-screen read-outs):
+    /// the overlay's own placement, the reason's reserved two-line slot included, not a copy of it.
+    pub fn failed_page_text_bands(frame: Rect, measure: &dyn plx_machine::machine::Measure) -> (Rect, Rect) {
+        let bands = Self::new(frame, c"", StatusKind::Failed)
+            .page(crate::icons::Icon::ServerBadgeMinus)
+            .reason(c"-")
+            .bands_measured(measure);
+        let cap = bands.cap;
+        (cap, bands.reason.unwrap_or(Rect::new(frame.x, cap.y + cap.h, frame.w, 0.0)))
+    }
+
     fn bands_measured(&self, measure: &dyn plx_machine::machine::Measure) -> StatusBands {
         let (cap_sz, _, _) = Self::verdict_face(self.kind);
         let (reason_sz, _) = Self::reason_face(self.kind);
@@ -4549,14 +4586,18 @@ impl<'a> StatusOverlay<'a> {
             cy - cap_h * 0.5
         };
         let cap = Rect::new(self.frame.x, cap_y, self.frame.w, cap_h);
-        let mut below = cap_y + cap_h;
-        let reason = self.reason.map(|_| {
-            let h = reason_h;
-            let r = Rect::new(self.frame.x, below + theme::space::SM, self.frame.w, h);
-            below = r.y + h;
-            r
-        });
-        let action_y = below + theme::space::LG + self.row_drop();
+        // One top-anchored run from the caption: verdict, the reason `SM` under it (absent without
+        // one), then the action row's slot. The row's slot is placed whether or not there is a row,
+        // because the note takes the row's place without one (Q1, kept neutral: the note stands
+        // `LG` + the slot's drop under the reason, which is the row's own `before`).
+        let items = [
+            HItem::new(cap_h),
+            self.reason.map_or(HItem::absent(), |_| HItem::new(reason_h)),
+            HItem::new(Self::CTRL_H).before(theme::space::LG + self.row_drop()),
+        ];
+        let stack = VStack::new(&items, theme::space::SM, VAnchor::Top(cap_y));
+        let reason = stack.span(1).map(|(y, h)| Rect::new(self.frame.x, y, self.frame.w, h));
+        let action_y = stack.span(2).map_or(cap_y + cap_h, |(y, _)| y);
         StatusBands { cap, reason, action_y }
     }
 
@@ -4588,16 +4629,19 @@ impl<'a> StatusOverlay<'a> {
     /// height inside [`Self::REASON_W`].
     fn note_band(&self, bands: &StatusBands, measure: &dyn plx_machine::machine::Measure) -> Option<Rect> {
         let line = self.note?;
-        let top = if self.action.is_some() {
-            bands.action_y + Self::CTRL_H + theme::space::MD
-        } else {
-            bands.action_y
-        };
         let h = if self.note_busy {
             self.note_view(c"").line_h()
         } else {
             self.note_view(line).with_measure(measure).measure_h(Self::REASON_W.min(self.frame.w))
         };
+        // The row's slot (absent without an action) then the note `MD` under it; with no row the
+        // note is the run's first item and stands at `action_y` itself (Q1: the `LG` + drop already
+        // in `action_y`, kept rather than the `MD` a row would give).
+        let items = [
+            if self.action.is_some() { HItem::new(Self::CTRL_H) } else { HItem::absent() },
+            HItem::new(h),
+        ];
+        let top = VStack::new(&items, theme::space::MD, VAnchor::Top(bands.action_y)).span(1).map_or(bands.action_y, |(y, _)| y);
         Some(Rect::new(self.frame.x, top, self.frame.w, h))
     }
 
@@ -4664,9 +4708,10 @@ impl<'a> StatusOverlay<'a> {
     /// `text_w` of text — centred on `band` as one group, so the line reads as centred as a
     /// settled one. Returns the gutter's left edge and the text's rect.
     fn busy_note_split(band: Rect, text_w: f32) -> (f32, Rect) {
-        let gutter = Spinner::inline_gutter();
-        let left = band.cx() - (gutter + text_w) / 2.0;
-        (left, Rect::new(left + gutter, band.y, text_w, band.h))
+        let pair = Spinner::inline_pair_items(text_w);
+        let stack = crate::hstack::HStack::new(&pair, theme::space::XS, crate::hstack::Align::Centre(band.cx()));
+        let (ring, text) = (stack.span(0).expect("present").0, stack.span(1).expect("present").0);
+        (ring, Rect::new(text, band.y, text_w, band.h))
     }
 
     fn draw_geometry(

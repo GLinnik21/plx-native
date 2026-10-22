@@ -2,8 +2,10 @@
 //! Encode on mount, upload once in `prepare`, then paint one texture per frame.
 use super::{theme, Painter, Rect};
 use plx_machine::machine::Measure;
+use super::hstack::Item;
 use super::label::HAlign;
 use super::text_view::TextView;
+use super::vstack::VFlow;
 
 /// Caption-sized link text with a 32 px cap-top pitch. At the shared 24 px face this leaves
 /// roughly 10–14 px of visible air between address lines, without a paragraph-sized gap.
@@ -42,17 +44,26 @@ impl QrLinkLayout {
     pub fn new(frame: Rect, caption: &str, address: &str, measure: &dyn Measure) -> Self {
         let side = frame.w.min(frame.h * 0.60).max(0.0);
         let code = Rect::new(frame.cx() - side / 2.0, frame.y, side, side);
-        let caption_h = text_block_height(caption, code.w, measure);
-        let caption = Rect::new(code.x, code.y + code.h + theme::space::MD, code.w, caption_h);
-        let gap = if caption_h > 0.0 { theme::space::MD } else { 0.0 };
-        let address = Rect::new(
-            code.x, caption.y + caption.h + gap, code.w,
-            text_block_height(address, code.w, measure),
-        );
-        let bottom = if address.h > 0.0 { address.y + address.h }
-            else if caption.h > 0.0 { caption.y + caption.h }
-            else { code.y + code.h };
-        Self { code, caption, address, height: bottom - frame.y }
+        // The code, then the caption and the address, each an absent item when it measures nothing
+        // (absence is read off the height, as it always was; the text is measured either way): an
+        // absent block takes no room and no gap. One flow, one gap ([`theme::space::MD`]) between
+        // the blocks that are there.
+        let mut flow = VFlow::new(code.y, theme::space::MD);
+        flow.push(Item::new(code.h));
+        let block = |flow: &mut VFlow, text: &str| {
+            let h = text_block_height(text, code.w, measure);
+            let span = flow.push(if h > 0.0 { Item::new(h) } else { Item::absent() });
+            (span.map_or_else(|| flow.next_y(), |s| s.y), h)
+        };
+        let (caption_y, caption_h) = block(&mut flow, caption);
+        let (address_y, address_h) = block(&mut flow, address);
+        Self {
+            code,
+            caption: Rect::new(code.x, caption_y, code.w, caption_h),
+            address: Rect::new(code.x, address_y, code.w, address_h),
+            // The bottom of the last block that is there, or of the code when neither is.
+            height: flow.end() - frame.y,
+        }
     }
 }
 
@@ -203,5 +214,25 @@ mod tests {
         assert_eq!(long.address.h, 50.0);
         assert_eq!(long.code.y, short.code.y);
         assert_eq!(long.code.w, short.code.w);
+    }
+
+    /// The blocks stand one MD apart, and an empty block is absent: no room, no gap, and the block
+    /// below it stands under the code (or the caption) with the one gap.
+    #[test]
+    fn an_empty_block_is_absent_and_the_one_gap_stands_between_the_rest() {
+        let frame = Rect::new(960.0, 180.0, 864.0, 720.0);
+        let code_bottom = |l: &QrLinkLayout| l.code.y + l.code.h;
+        let full = QrLinkLayout::new(frame, "Scan", ADDRESS, &CaptionMetrics);
+        assert_eq!(full.caption.y - code_bottom(&full), theme::space::MD);
+        assert_eq!(full.address.y - (full.caption.y + full.caption.h), theme::space::MD);
+        let no_caption = QrLinkLayout::new(frame, "", ADDRESS, &CaptionMetrics);
+        assert_eq!(no_caption.caption.h, 0.0);
+        assert_eq!(no_caption.address.y - code_bottom(&no_caption), theme::space::MD, "one gap, not two");
+        assert_eq!(no_caption.height, no_caption.address.y + no_caption.address.h - frame.y);
+        let no_address = QrLinkLayout::new(frame, "Scan", "", &CaptionMetrics);
+        assert_eq!(no_address.address.h, 0.0);
+        assert_eq!(no_address.height, no_address.caption.y + no_address.caption.h - frame.y);
+        let code_only = QrLinkLayout::new(frame, "", "", &CaptionMetrics);
+        assert_eq!(code_only.height, code_bottom(&code_only) - frame.y);
     }
 }

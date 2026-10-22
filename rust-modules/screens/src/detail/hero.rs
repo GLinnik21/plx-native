@@ -29,6 +29,7 @@ use plx_ui::hstack::{Flow, Item, Span};
 use plx_ui::label::HAlign;
 use plx_machine::machine::{GroupId, Measure};
 use plx_ui::text_view::TextView;
+use plx_ui::vstack::{Anchor, VStack};
 use plx_ui::widgets::PosterMark;
 use plx_ui::{theme, Painter, Rect};
 
@@ -478,36 +479,50 @@ pub fn has_people(d: &Detail) -> bool {
 pub fn draw_people(p: Painter, d: &Detail, button_y: f32, measure: &dyn Measure) {
     use plx_ui::detail_layout::PEOPLE_W;
     let x = plx_ui::consts::SCR_W - plx_ui::consts::MARGIN_X - PEOPLE_W;
-    let mut bottom = button_y + CD;
-    if !d.cast.is_empty() {
-        let names: Vec<&str> = d
-            .cast
-            .iter()
-            .take(PEOPLE_SUMMARY)
-            .map(|credit| credit.tag.as_str())
-            .collect();
-        bottom -= people_line(p, plx_platform::i18n::msg::browse_detail_starring(), &names, x, bottom, measure);
-    }
-    if let Some((label, names)) = hero_credit(d) {
-        people_line(p, label, &names, x, bottom, measure);
+    let cast_names: Vec<&str> = d
+        .cast
+        .iter()
+        .take(PEOPLE_SUMMARY)
+        .map(|credit| credit.tag.as_str())
+        .collect();
+    let credit = hero_credit(d);
+    // The credit line stands above the cast line, flush against it, the pair's bottom on the button
+    // row's: one bottom-anchored stack, an absent line taking no room.
+    let cast_text = people_text(&cast_names);
+    let credit_text = credit.as_ref().map(|(_, names)| people_text(names));
+    let cast = (!cast_names.is_empty()).then(|| {
+        people_view(&cast_text, plx_platform::i18n::msg::browse_detail_starring(), measure)
+    });
+    let credit_view = credit.as_ref().zip(credit_text.as_deref()).map(|((label, _), text)| people_view(text, label, measure));
+    let heights = [
+        credit_view.as_ref().map(|v| v.measure_h(PEOPLE_W)),
+        cast.as_ref().map(|v| v.measure_h(PEOPLE_W)),
+    ];
+    let items = heights.map(|h| h.map_or(Item::absent(), Item::new));
+    let stack = VStack::new(&items, 0.0, Anchor::Bottom(button_y + CD));
+    for span in stack.placed() {
+        let view = if span.i == 0 { credit_view.as_ref() } else { cast.as_ref() };
+        if let Some(view) = view {
+            view.draw(p, Rect::new(x, span.y, PEOPLE_W, 0.0));
+        }
     }
 }
 
-fn people_line(p: Painter, label: &str, names: &[&str], x: f32, bottom: f32, measure: &dyn Measure) -> f32 {
-    use plx_ui::detail_layout::{PEOPLE_INK, PEOPLE_LEAD, PEOPLE_W};
-    let names = names
+fn people_text(names: &[&str]) -> String {
+    names
         .iter()
         .map(|name| name.replace(' ', "\u{a0}"))
         .collect::<Vec<_>>()
-        .join(", ");
-    let view = TextView::new(&names, theme::size::CAPTION, PEOPLE_INK).with_measure(measure)
+        .join(", ")
+}
+
+fn people_view<'a>(names: &'a str, label: &'a str, measure: &'a dyn Measure) -> TextView<'a> {
+    use plx_ui::detail_layout::{PEOPLE_INK, PEOPLE_LEAD};
+    TextView::new(names, theme::size::CAPTION, PEOPLE_INK).with_measure(measure)
         .leading(PEOPLE_LEAD)
         .max_lines(PEOPLE_MAX_LINES)
         .h(HAlign::Right)
-        .lead_quiet(label, PEOPLE_LABEL_INK);
-    let h = view.measure_h(PEOPLE_W);
-    view.draw(p, Rect::new(x, bottom - h, PEOPLE_W, 0.0));
-    h
+        .lead_quiet(label, PEOPLE_LABEL_INK)
 }
 
 fn hero_facts(d: &Detail) -> (String, Option<String>) {
@@ -1888,5 +1903,26 @@ mod tests {
             !plx_machine::idle::should_present(20_016),
             "the third unfurl spring is quiet at rest"
         );
+    }
+
+    /// The people lines are one bottom-anchored stack: the cast line stays pinned to the button row's
+    /// bottom whether or not a credit line exists above it, and the credit stands wholly above it.
+    #[test]
+    fn the_people_lines_stack_up_from_the_button_row() {
+        let _g = plx_base::testlock::serial();
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let credit = |tag: &str| plx_data::metadata::Cast { tag: tag.into(), role: String::new(), thumb: String::new(), id: 0, tag_key: String::new() };
+        let cast_only = Detail { cast: vec![credit("An Actor")], ..Default::default() };
+        let both = Detail { directors: vec!["A Director".into()], ..cast_only.clone() };
+        let ys = |d: &Detail| {
+            let runs = plx_ui::draw_census::capture_runs(|| draw_people(Painter::recording(), d, 100.0, &measure));
+            runs.iter().map(|r| r.at.y).collect::<Vec<_>>()
+        };
+        let alone = ys(&cast_only);
+        let pair = ys(&both);
+        let cast_y = alone.iter().cloned().fold(f32::MIN, f32::max);
+        assert!(pair.len() > alone.len());
+        assert!((pair.iter().cloned().fold(f32::MIN, f32::max) - cast_y).abs() < 0.01);
+        assert!(pair.iter().cloned().fold(f32::MAX, f32::min) < alone.iter().cloned().fold(f32::MAX, f32::min));
     }
 }

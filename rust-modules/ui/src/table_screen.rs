@@ -46,7 +46,9 @@ use super::screen::{
     Step, Stop,
 };
 use super::widgets::{ControlPalette, KeyHint};
+use super::hstack::Item;
 use super::table::TableView;
+use super::vstack::{Anchor, VStack};
 use super::{theme, Painter, Rect};
 
 /// The narrative column: crumb (where BACK goes, `None` = nowhere inside the app), title, copy.
@@ -89,7 +91,11 @@ impl<'a> Header<'a> {
     pub fn paint(&self, p: Painter, measure: &dyn Measure) {
         let copy_end = self.layout.draw_narrative(p, self.crumb, self.title, self.copy, self.copy_size, measure);
         if let Some(hint) = &self.hint {
-            let top = copy_end + theme::space::MD;
+            // The copy's end, then the hint one MD under it: a two-item run from `copy_end`.
+            let run = [Item::new(0.0), Item::new(KeyHint::height())];
+            let Some((top, _)) = VStack::new(&run, theme::space::MD, Anchor::Top(copy_end)).span(1) else {
+                unreachable!("the hint is always present")
+            };
             // The copy already stops short of the action band; the hint keeps the same margin.
             if top + KeyHint::height() <= self.layout.action.y - theme::space::XL {
                 hint.draw(p, self.layout.narrative.x, top + KeyHint::height() * 0.5, measure);
