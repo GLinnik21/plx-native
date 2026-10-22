@@ -122,7 +122,7 @@ pub struct Preferences {
     /// field — committed replay fixtures included — serializes exactly as it did before.
     #[serde(default, deserialize_with = "de_soft_skip_interval", skip_serializing_if = "is_default_skip_interval")]
     pub skip_interval: SkipInterval,
-    /// Opt-in legacy transport; absent and unrecognized values keep the modern controls.
+    /// Opt-in classic transport; absent and unrecognized values keep the modern controls.
     #[serde(default, deserialize_with = "super::playback_controls::deserialize", skip_serializing_if = "PlaybackControls::is_modern")]
     pub playback_controls: PlaybackControls,
     /// **What OK does on a Continue Watching card** — see [`DeckPress`]. A frozen fallback like

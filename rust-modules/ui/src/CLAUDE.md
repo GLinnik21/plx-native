@@ -448,8 +448,8 @@ presentation in a design pass.
    Transport is driven by REMOTE KEYS, which must genuinely work. Any `<<` / `>>` added must be a
    small glyph in that same indicator slot at the clock's cap height — never a control, and never a
    fourth entry in the default HUD control row (`appkit/player_hud.rs`'s `BTN_N`, currently 3).
-   The opt-in **Legacy Playback Controls** preference adds Previous/Next in its separate
-   `appkit/player_hud/legacy_controls.rs` composition and immediate hidden-HUD Left/Right seeks.
+   The opt-in **Classic Playback Controls** preference adds Previous/Next in its separate
+   `appkit/player_hud/classic_controls.rs` composition and immediate hidden-HUD Left/Right seeks.
 
 4. **Failure read-outs are never red — the app does not scold.** A read-out's verdict (DS3) is inked `theme::TEXT_PRIMARY`: bright, because it is the line the eye lands on — a `Failed` read-out's verdict, and an `Empty` read-out's caption, which is not bold. Its body, the reason under it, is `theme::TEXT_SECONDARY`. Emphasis is ink only: never a warning colour, a rule, a capsule or a tint. A `Failed` verdict is bold `size::TITLE` (per the design system's `StatusOverlay` contract). Home, Library, sign-in and the player's failure read-outs share ONE placement: the verdict hangs
    from `FULL_ANCHOR_TOP` with the reason and action row stacked directly under it, and a 112 px

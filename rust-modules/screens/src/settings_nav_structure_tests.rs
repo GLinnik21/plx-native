@@ -312,7 +312,7 @@ fn every_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row() {
     r::restore_next_episode_mode(*ses::NextEpisodeMode::LADDER.last().unwrap());
     r::restore_deck_press(*ses::DeckPress::LADDER.last().unwrap());
     r::restore_skip_interval(*ses::SkipInterval::LADDER.last().unwrap());
-    r::restore_playback_controls(ses::PlaybackControls::Legacy);
+    r::restore_playback_controls(ses::PlaybackControls::Classic);
     let lines = |kind: PickerKind| match kind {
         PickerKind::Quality => ladder_last(r::available_quality_ladder().len()),
         PickerKind::DirectPlay => 2,

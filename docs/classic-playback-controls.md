@@ -1,8 +1,8 @@
-# Legacy Playback Controls
+# Classic Playback Controls
 
-Enable **Settings → Playback → Legacy Playback Controls → On**. The preference is saved for
+Enable **Settings → Playback → Classic Playback Controls → On**. The preference is saved for
 the current profile and defaults to Off. Missing or unrecognized stored values retain the
-modern controls.
+modern controls. The earlier `"legacy"` saved value remains readable; new saves use `"classic"`.
 
 - With the HUD hidden, Left/Right immediately seeks by the existing Skip interval without
   opening the controls. Each fresh press is one jump; holding the key does not start a scrub.
@@ -25,15 +25,15 @@ The feature's main files are:
 
 | File under `rust-modules/` | Responsibility |
 | --- | --- |
-| `screens/src/player/legacy_controls.rs` | Hidden-HUD key policy and regression tests |
-| `appkit/src/player_hud/legacy_controls.rs` | Previous/Next row, actions and geometry |
-| `media/src/route/legacy_controls.rs` | Queue neighbor selection and five-second rule |
+| `screens/src/player/classic_controls.rs` | Hidden-HUD key policy and regression tests |
+| `appkit/src/player_hud/classic_controls.rs` | Previous/Next row, actions and geometry |
+| `media/src/route/classic_controls.rs` | Queue neighbor selection and five-second rule |
 | `plex/src/plex/session/playback_controls.rs` | Persisted preference type and default |
-| `plex/src/plex/legacy_controls.rs` | Read the current PlayQueue window around a target item |
+| `plex/src/plex/classic_controls.rs` | Read the current PlayQueue window around a target item |
 | `src/app/playback/queue_transport.rs` | Shared queue playback handoff, also used by Up Next |
 
 Small integration hooks remain in the HUD slot, player key dispatcher, preference schema/live
-setting registrations and Settings picker. Translations live in separate `legacy_controls.json`
+setting registrations and Settings picker. Translations live in separate `classic_controls.json`
 catalog shards, and Previous/Next use separate SVG assets. Those hooks must be retained when
 merging upstream updates; separate files reduce conflicts but cannot eliminate them.
 
@@ -54,9 +54,9 @@ restart rule, an immediate hidden-HUD seek and visible-HUD confirmation without 
 
 ```sh
 make sim-macos
-python3 tests/fixtures/make_fixtures.py --only mockverify --out /tmp/legacy-media
-python3 tests/legacy_controls_sim.py --sim rust-modules/target-sim/debug/plxnative-sim \
-  --media /tmp/legacy-media --out /tmp/legacy-controls-evidence
+python3 tests/fixtures/make_fixtures.py --only mockverify --out /tmp/classic-media
+python3 tests/classic_controls_sim.py --sim rust-modules/target-sim/debug/plxnative-sim \
+  --media /tmp/classic-media --out /tmp/classic-controls-evidence
 ```
 
 Use a new output directory for each run. Hidden seeking keeps the controls dismissed through

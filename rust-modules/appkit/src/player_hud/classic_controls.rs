@@ -1,4 +1,4 @@
-//! Opt-in legacy row. The modern HUD delegates only this composition; geometry, focus pops,
+//! Opt-in classic row. The modern HUD delegates only this composition; geometry, focus pops,
 //! controls and playback requests continue to use the shared systems.
 use super::*;
 use plx_ui::icons::Icon;
@@ -83,7 +83,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_controls_keep_all_three_modern_actions_and_share_draw_and_hit_geometry() {
+    fn classic_controls_keep_all_three_modern_actions_and_share_draw_and_hit_geometry() {
         let controls = Controls {
             previous: true,
             next: true,
@@ -100,7 +100,7 @@ mod tests {
                     (rect.x - previous.x - previous.w - plx_ui::widgets::CONTROL_GAP).abs() < 0.01
                 );
             }
-            let slot = ControlSlot::Legacy(controls);
+            let slot = ControlSlot::Classic(controls);
             assert_eq!(icon_hit(slot, rect.cx(), rect.cy()), Some(index));
         }
         assert!(controls.action(ITEMS as i32).is_none());

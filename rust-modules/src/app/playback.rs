@@ -939,7 +939,7 @@ pub(crate) fn activate_ctrl_row(
                 }
             }
         }
-        ControlSlot::Discs | ControlSlot::Legacy(_) => false,
+        ControlSlot::Discs | ControlSlot::Classic(_) => false,
     }
 }
 
@@ -1147,8 +1147,8 @@ pub(crate) unsafe fn activate_player_row(
     // The cursor is the instance's; read the one field this dispatch turns on, so the container
     // is borrowed once and the arms below are free to present a panel on it.
     let btn = super::bridge::player(pages).map_or(0, |player| player.hud.nav.btn);
-    let btn = if let plx_appkit::player_hud::ControlSlot::Legacy(controls) = ctrl {
-        use plx_appkit::player_hud::legacy_controls::Action;
+    let btn = if let plx_appkit::player_hud::ControlSlot::Classic(controls) = ctrl {
+        use plx_appkit::player_hud::classic_controls::Action;
         use plx_media::route::QueueStep;
         match controls.action(btn) {
             Some(Action::Previous) => { queue_transport::step(&mut player.session, pa, QueueStep::Previous, pages, bridge); return; }

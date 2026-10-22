@@ -73,7 +73,7 @@ pub enum PickerKind {
     ForcedSubtitles,
     /// Settings > System > Interface resolution (install-wide; pushed from the Settings root).
     UiResolution,
-    /// Opt-in legacy transport, appended to preserve recorded picker identities.
+    /// Opt-in classic transport, appended to preserve recorded picker identities.
     PlaybackControls,
 }
 

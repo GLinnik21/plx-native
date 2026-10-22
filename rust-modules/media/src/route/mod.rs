@@ -10,8 +10,8 @@
 //! network/adapter effect is allowed to read wall time) but as of this split carries none either.
 
 mod decision;
-mod legacy_controls;
-pub use legacy_controls::{QueueContinuation, QueueStep, previous_restarts, queue_neighbor, queue_neighbors};
+mod classic_controls;
+pub use classic_controls::{QueueContinuation, QueueStep, previous_restarts, queue_neighbor, queue_neighbors};
 mod flight;
 mod plan;
 mod prefs;

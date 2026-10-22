@@ -49,7 +49,7 @@ impl PickerKind {
         Self::NextEpisode => plx_platform::i18n::msg::settings_playback_next_episode(),
         Self::DeckPress => plx_platform::i18n::msg::settings_playback_deck_press(),
         Self::SkipInterval => plx_platform::i18n::msg::settings_playback_skip_interval(),
-        Self::PlaybackControls => plx_platform::i18n::msg::settings_playback_legacy_controls(),
+        Self::PlaybackControls => plx_platform::i18n::msg::settings_playback_classic_controls(),
         Self::UiResolution => plx_platform::i18n::msg::settings_resolution_title(),
         Self::AudioLanguage => plx_platform::i18n::msg::settings_audio_language(), Self::SubtitleMode => plx_platform::i18n::msg::settings_audio_subtitles(),
         Self::SubtitleLanguage => plx_platform::i18n::msg::settings_audio_subtitle_language(), Self::ForcedSubtitles => plx_platform::i18n::msg::settings_audio_forced_subtitles(),
@@ -65,7 +65,7 @@ impl PickerKind {
         Self::NextEpisode => plx_platform::i18n::msg::settings_playback_next_episode_copy(),
         Self::DeckPress => plx_platform::i18n::msg::settings_playback_deck_press_copy(),
         Self::SkipInterval => plx_platform::i18n::msg::settings_playback_skip_interval_copy(),
-        Self::PlaybackControls => plx_platform::i18n::msg::settings_playback_legacy_controls_copy(),
+        Self::PlaybackControls => plx_platform::i18n::msg::settings_playback_classic_controls_copy(),
         Self::UiResolution => plx_platform::i18n::msg::settings_resolution_detail(),
         Self::AudioLanguage | Self::SubtitleMode | Self::SubtitleLanguage | Self::ForcedSubtitles => plx_platform::i18n::msg::settings_audio_account_note(),
     }}
@@ -498,8 +498,8 @@ fn field_options(field: PickerKind, quality: Quality, direct_play: DirectPlayMod
         PickerKind::DeckPress => DeckPress::LADDER.into_iter()
             .map(|m| (deck_press_label(m).into(), Value::DeckPress(m))).collect(),
         PickerKind::PlaybackControls => [
-            (plx_platform::i18n::msg::settings_playback_legacy_controls_off(), PlaybackControls::Modern),
-            (plx_platform::i18n::msg::settings_playback_legacy_controls_on(), PlaybackControls::Legacy),
+            (plx_platform::i18n::msg::settings_playback_classic_controls_off(), PlaybackControls::Modern),
+            (plx_platform::i18n::msg::settings_playback_classic_controls_on(), PlaybackControls::Classic),
         ].into_iter().map(|(label, value)| (label.into(), Value::PlaybackControls(value))).collect(),
         PickerKind::SkipInterval => SkipInterval::LADDER.into_iter()
             .map(|i| (skip_interval_label(i), Value::SkipInterval(i))).collect(),

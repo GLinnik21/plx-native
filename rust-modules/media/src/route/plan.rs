@@ -1244,7 +1244,7 @@ pub struct ResolveEnv {
     /// Trailer sessions omit `continuous=1` so EOS cannot Up-Next into a sibling extra.
     pub omit_queue_continuous: bool,
     /// An explicit queue-item handoff reuses the existing queue instead of POSTing a new tail.
-    pub queue_continuation: Option<super::legacy_controls::QueueContinuation>,
+    pub queue_continuation: Option<super::classic_controls::QueueContinuation>,
     /// Hero preview. Skip the PlayQueue entirely, and refuse anything that is not a direct play.
     pub preview: bool,
     /// The viewer's Plex Pass audio-DSP preference (`player::audio_enhancements`), captured at the

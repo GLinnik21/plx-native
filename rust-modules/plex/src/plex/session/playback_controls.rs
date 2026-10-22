@@ -1,4 +1,4 @@
-//! Opt-in transport policy. Kept separate so a fork can carry legacy controls across updates.
+//! Opt-in transport policy. Kept separate so a fork can carry classic controls across updates.
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -6,16 +6,17 @@ use serde::{Deserialize, Serialize};
 pub enum PlaybackControls {
     #[default]
     Modern,
-    Legacy,
+    #[serde(alias = "legacy")]
+    Classic,
 }
 
 impl PlaybackControls {
     pub fn index(self) -> u8 {
-        u8::from(self == Self::Legacy)
+        u8::from(self == Self::Classic)
     }
     pub fn from_index(index: u8) -> Self {
         if index == 1 {
-            Self::Legacy
+            Self::Classic
         } else {
             Self::Modern
         }
@@ -40,7 +41,15 @@ mod tests {
     };
 
     #[test]
-    fn legacy_controls_default_off_and_round_trip_per_profile() {
+    fn classic_controls_default_off_and_round_trip_per_profile() {
+        for saved in ["classic", "legacy"] {
+            let json = format!(r#"{{"playback_controls":"{saved}"}}"#);
+            let prefs: Preferences = serde_json::from_str(&json).unwrap();
+            assert_eq!(prefs.playback_controls, PlaybackControls::Classic);
+            let profile: ProfilePrefs = serde_json::from_str(&json).unwrap();
+            assert_eq!(profile.playback_controls, Some(PlaybackControls::Classic));
+            assert_eq!(serde_json::to_value(&profile).unwrap()["playback_controls"], "classic");
+        }
         let prefs: Preferences =
             serde_json::from_str(r#"{"playback_controls":"unknown"}"#).unwrap();
         assert_eq!(prefs.playback_controls, PlaybackControls::Modern);
@@ -54,11 +63,11 @@ mod tests {
             &mut records,
             "alice",
             "account",
-            PlaybackControls::Legacy
+            PlaybackControls::Classic
         ));
         assert_eq!(
             effective::<PlaybackControlsPref>(&prefs, own_prefs(&records, "alice", "account")),
-            PlaybackControls::Legacy
+            PlaybackControls::Classic
         );
         assert_eq!(
             effective::<PlaybackControlsPref>(&prefs, own_prefs(&records, "bob", "account")),

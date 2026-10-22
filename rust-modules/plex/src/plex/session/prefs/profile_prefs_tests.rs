@@ -56,7 +56,7 @@ fn the_record_has_one_field_for_each_setting_with_a_legacy_fallback() {
         hdr_overlay_brightness: Some(HdrOverlayBrightness::Half),
         next_episode_mode: Some(NextEpisodeMode::AfterCredits),
         skip_interval: Some(SkipInterval::Seconds30),
-        playback_controls: Some(PlaybackControls::Legacy),
+        playback_controls: Some(PlaybackControls::Classic),
         deck_press: Some(DeckPress::Play),
         under_posters: Some(UnderPosters { title: true, details: UnderPostersDetails::Video }),
         audio_enhancements: Some(AudioEnhancements { boost_dialog: true, normalize_loudness: true }),

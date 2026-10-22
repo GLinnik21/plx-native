@@ -1,9 +1,9 @@
-//! The legacy remote policy lives beside, rather than inside, the modern scrub gesture.
+//! The classic remote policy lives beside, rather than inside, the modern scrub gesture.
 
 use super::*;
 use plx_plex::plex::session::PlaybackControls;
 
-/// A seek requested over a dismissed legacy HUD stays invisible through the first new picture.
+/// A seek requested over a dismissed classic HUD stays invisible through the first new picture.
 /// Ordinary rebuffering and failures retain the shared read-out policy.
 pub(super) fn seek_stays_hidden(ps: &plx_media::route::PlaybackSession, dismissed: bool) -> bool {
     use plx_media::player::{self, PlaybackState};
@@ -15,18 +15,18 @@ pub(super) fn seek_stays_hidden(ps: &plx_media::route::PlaybackSession, dismisse
         || (state == PlaybackState::Buffering
             && !player::rebuffering()
             && player::seek_display_ns() >= 0);
-    dismissed && plx_media::route::playback_controls() == PlaybackControls::Legacy && seeking
+    dismissed && plx_media::route::playback_controls() == PlaybackControls::Classic && seeking
 }
 
 impl PlayerScreen {
-    pub(super) fn legacy_hidden_seek<H: AppLike>(
+    pub(super) fn classic_hidden_seek<H: AppLike>(
         &mut self,
         ps: &plx_media::route::PlaybackSession,
         key: consts::Key,
         edge: Edge,
         fx: &mut Effects<'_, H>,
     ) -> bool {
-        if plx_media::route::playback_controls() != PlaybackControls::Legacy
+        if plx_media::route::playback_controls() != PlaybackControls::Classic
             || self.hud.visible_at_press
         {
             return false;
@@ -92,7 +92,7 @@ mod tests {
                     .swap(false, Relaxed),
                 seek_display: plx_media::player::SHARED.seek_display_ns.swap(-1, Relaxed),
             };
-            plx_media::route::restore_playback_controls(PlaybackControls::Legacy);
+            plx_media::route::restore_playback_controls(PlaybackControls::Classic);
             saved
         }
     }
@@ -150,7 +150,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_controls_hidden_press_seeks_immediately_without_raising_the_hud() {
+    fn classic_controls_hidden_press_seeks_immediately_without_raising_the_hud() {
         let _g = plx_base::testlock::serial();
         let _playback = PlaybackFixture::new();
         let _interval =
@@ -176,7 +176,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_controls_visible_seek_still_waits_for_confirmation() {
+    fn classic_controls_visible_seek_still_waits_for_confirmation() {
         let _g = plx_base::testlock::serial();
         let _playback = PlaybackFixture::new();
         let _interval =
@@ -193,7 +193,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_controls_do_not_raise_the_hud_during_seeking_but_buffering_still_does() {
+    fn classic_controls_do_not_raise_the_hud_during_seeking_but_buffering_still_does() {
         let _g = plx_base::testlock::serial();
         let _playback = PlaybackFixture::new();
         let ps = plx_media::route::PlaybackSession::IDLE;
@@ -218,7 +218,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_controls_off_keeps_the_modern_reveal_first_behavior() {
+    fn classic_controls_off_keeps_the_modern_reveal_first_behavior() {
         let _g = plx_base::testlock::serial();
         let _playback = PlaybackFixture::new();
         plx_media::route::restore_playback_controls(PlaybackControls::Modern);
@@ -229,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_controls_hidden_jumps_clamp_and_repeats_do_not_create_a_scrub() {
+    fn classic_controls_hidden_jumps_clamp_and_repeats_do_not_create_a_scrub() {
         let _g = plx_base::testlock::serial();
         let _playback = PlaybackFixture::new();
         let _interval =

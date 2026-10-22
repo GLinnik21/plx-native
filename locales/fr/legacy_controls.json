@@ -1,6 +1,0 @@
-{
-  "settings.playback.legacy_controls": "Commandes de lecture classiques",
-  "settings.playback.legacy_controls.copy": "Avancez ou reculez avec Gauche ou Droite lorsque les commandes sont masquées. Lorsqu’elles sont visibles, confirmez avec OK. Précédent redémarre après cinq secondes ; avant, lance l’élément précédent.",
-  "settings.playback.legacy_controls.off": "Désactivées",
-  "settings.playback.legacy_controls.on": "Activées"
-}

@@ -1,6 +1,0 @@
-{
-  "settings.playback.legacy_controls": "Controles clásicos",
-  "settings.playback.legacy_controls.copy": "Avanza o retrocede con Izquierda o Derecha cuando los controles están ocultos. Con los controles visibles, confirma con OK. Anterior reinicia tras cinco segundos; antes, reproduce el elemento anterior.",
-  "settings.playback.legacy_controls.off": "Desactivados",
-  "settings.playback.legacy_controls.on": "Activados"
-}

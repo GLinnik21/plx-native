@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise legacy transport against synthetic Plex media, using the shared simulator driver.
+"""Exercise classic transport against synthetic Plex media, using the shared simulator driver.
 
 Generate media with tests/fixtures/make_fixtures.py --only mockverify --out <directory>, then
 run this with --sim rust-modules/target-sim/debug/plxnative-sim --media <directory>.
@@ -18,7 +18,7 @@ from paging_link import SimRun
 
 def verify(binary, media, output):
     output.mkdir(parents=True, exist_ok=False)
-    (output / "auth.json").write_text(json.dumps({"playback_controls": "legacy", "trailer_autoplay": False}))
+    (output / "auth.json").write_text(json.dumps({"playback_controls": "classic", "trailer_autoplay": False}))
     server, pms = mock_pms.serve(0, media=media, media_next_episode=True)
     port = server.server_address[1]
     stand_in = f"http://127.0.0.1:{port}"
@@ -41,7 +41,7 @@ def verify(binary, media, output):
         for _ in range(3):
             stamp = sim.key("up")
             wait(r"key type=0x301", stamp)
-            if sim.wait_for(r"^focus route=player .*hud=1 f=1 .*slot=legacy items=5", 1, after=stamp):
+            if sim.wait_for(r"^focus route=player .*hud=1 f=1 .*slot=classic items=5", 1, after=stamp):
                 return
         latest = sim.latest(lambda _, line: line.startswith("focus "))[1]
         raise AssertionError(f"control row not reached: {latest}")
@@ -49,7 +49,7 @@ def verify(binary, media, output):
     try:
         wait(r"boot: dev token")
         wait(rf"playing item: rk={mock_pms.V1_RATING_KEY} ")
-        wait(r"^focus route=player .*slot=legacy items=5")
+        wait(r"^focus route=player .*slot=classic items=5")
         control_row()
         stamp = sim.key("right")
         wait(r"^focus route=player .*f=1 btn=1", stamp)
@@ -117,7 +117,7 @@ def main():
         verify(args.sim, args.media, args.out)
         print(f"Evidence: {args.out}")
     else:
-        with tempfile.TemporaryDirectory(prefix="plx-legacy-controls-") as root:
+        with tempfile.TemporaryDirectory(prefix="plx-classic-controls-") as root:
             verify(args.sim, args.media, Path(root) / "runtime")
 
 

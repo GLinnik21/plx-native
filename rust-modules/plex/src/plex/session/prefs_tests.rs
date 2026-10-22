@@ -110,7 +110,7 @@ fn every_marker_names_its_own_field() {
     check_row::<HdrOverlayBrightnessPref>(HdrOverlayBrightness::Half);
     check_row::<NextEpisodeModePref>(NextEpisodeMode::Off);
     check_row::<SkipIntervalPref>(SkipInterval::Seconds30);
-    check_row::<PlaybackControlsPref>(PlaybackControls::Legacy);
+    check_row::<PlaybackControlsPref>(PlaybackControls::Classic);
     check_row::<DeckPressPref>(DeckPress::Play);
     check_row::<UnderPostersPref>(UnderPosters { title: true, details: UnderPostersDetails::Genre });
     check_row::<AudioEnhancementsPref>(crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false });

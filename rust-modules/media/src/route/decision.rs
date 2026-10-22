@@ -7756,7 +7756,7 @@ pub fn request_play_queue_item(
     title: &str,
     ctx: &str,
 ) -> bool {
-    let queue = super::legacy_controls::QueueContinuation::capture(ps, row);
+    let queue = super::classic_controls::QueueContinuation::capture(ps, row);
     request_play_with_queue(ps, meta, PlaybackRequest {
         sid: row.sid, rk: row.rk.clone(), part: row.part.clone(), vcodec: row.vcodec.clone(),
         acodec: row.acodec.clone(), title: title.into(), ctx: ctx.into(), preview: false,
@@ -7843,7 +7843,7 @@ fn request_play_with_queue(
     trace_generation: Option<u32>,
     drain_previous: bool,
     origin: crate::player::report::AttemptOrigin,
-    queue: Option<super::legacy_controls::QueueContinuation>,
+    queue: Option<super::classic_controls::QueueContinuation>,
 ) -> bool {
     let sid = request.sid;
     let rk = &request.rk;
