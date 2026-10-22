@@ -308,8 +308,9 @@ impl Instruments {
         }
     }
 
-    /// The top of a loop iteration, for the visit's hang rate. Every build, armed or not.
-    pub fn begin_iteration(&mut self) {
+    /// The top of a loop iteration, for the visit's hang rate. Every build, armed or not; called
+    /// by [`Self::mark`] on `Phase::Top`, so the loop needs no second call.
+    fn begin_iteration(&mut self) {
         self.health.iteration(now_us());
     }
 
@@ -360,7 +361,10 @@ impl Instruments {
         // A mark ends the leg it names and opens the next one: the watchdog names the leg a hang
         // lands in. Draw and Capture open nothing new (`draw_scope` / `present_scope` label them).
         match phase {
-            Phase::Top => self.leg.enter(Leg::EventIngest),
+            Phase::Top => {
+                self.leg.enter(Leg::EventIngest);
+                self.begin_iteration();
+            }
             Phase::Ingest => self.leg.enter(Leg::Results),
             Phase::Results => self.leg.enter(Leg::Navcommit),
             Phase::NavCommit => self.leg.enter(Leg::Update),
