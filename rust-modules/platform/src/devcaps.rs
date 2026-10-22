@@ -57,6 +57,19 @@ pub mod dv;
 /// (`plex::DP_AUDIO_CODECS`) for the profile string and route's plan.
 pub const DP_AUDIO_CODECS: &str = "aac,ac3,eac3,dts";
 
+/// Audio the app DECODES ITSELF and feeds as PCM, so no row of the device table is needed: the
+/// pipeline's PCM input (`libpf`'s `audio/x-raw` caps and the `contents.pcmInfo` node) is what
+/// carries it, and that is the same on every set with the buffer-feed path. FLAC is the case —
+/// libpf has no FLAC input of its own (its Load vocabulary is AAC/AC3/AC3 PLUS/DTS/MP3/MPEG/OPUS/
+/// VORBIS/WMA/PCM, read from libpf-1.0 on a webOS 4.4.3 OLED55B8), but PCM decoded from it is
+/// bit-exact. Joins [`Caps::audio`] only on a table that was READ: the assumed fallback stays
+/// byte-for-byte what it was.
+pub const PCM_AUDIO_CODECS: &str = "flac";
+
+/// The channel ceiling of the PCM path: `pcmInfo.channelMode` has `mono` and `stereo` (and
+/// `dual`), nothing wider, so a multichannel FLAC stays a server conversion.
+pub const PCM_MAX_CHANNELS: u32 = 2;
+
 const CAPS_TABLE: &str = "/etc/umediaserver/device_codec_capability_config.json";
 
 /// The decode-capability snapshot the playback stack derives from. `OnceLock` for the same
@@ -151,9 +164,11 @@ impl Caps {
         if !self.audio_has(&id) {
             return false;
         }
+        // DTS and the PCM path both need a stated channel count: an unknown one is not admitted.
+        let needs_count = id == "dts" || PCM_AUDIO_CODECS.split(',').any(|c| c == id);
         match self.audio_channels.get(id.as_ref()) {
-            Some(&limit) => (channels > 0 || id != "dts") && channels <= i64::from(limit),
-            None => id != "dts",
+            Some(&limit) => (channels > 0 || !needs_count) && channels <= i64::from(limit),
+            None => !needs_count,
         }
     }
 
@@ -164,6 +179,10 @@ impl Caps {
         let id = audio_codec_id(codec);
         if id == "dts" {
             return self.forced_admits_dts();
+        }
+        if PCM_AUDIO_CODECS.split(',').any(|c| c == id) {
+            // Decoded in the app, so only "is the PCM path on" — i.e. was the table read.
+            return self.audio_has(&id);
         }
         DP_AUDIO_CODECS.split(',').any(|c| c == id)
     }
@@ -398,7 +417,12 @@ fn parse(s: &str) -> Option<Caps> {
         // reading of it, not about the television. Same reasoning as the empty-video guard.
         Caps::assumed().audio
     } else {
-        audio.join(",")
+        // The app-decoded PCM formats follow the hardware ones, with the PCM path's own ceiling
+        // replacing whatever the table says about a decoder we never feed.
+        for c in PCM_AUDIO_CODECS.split(',') {
+            audio_channels.insert(c.to_string(), PCM_MAX_CHANNELS);
+        }
+        audio.into_iter().chain(PCM_AUDIO_CODECS.split(',')).collect::<Vec<_>>().join(",")
     };
     Some(Caps {
         hevc,
@@ -603,9 +627,9 @@ mod tests {
         // a fractional cap is a CEILING the stream must fit under: 59.94 reads as 60, never 59
         let frac = parse(r#"{"videoCodecs":[{"name":"H.264","maxWidth":1920,"maxHeight":1088,"maxFrameRate":59.94}]}"#).unwrap();
         assert_eq!(frac.h264_row, (1920, 1088, 60));
-        // FLAC/MPEG are in the table but not in the pipeline's decode set; the subset keeps
-        // DP_AUDIO_CODECS's own order, not the table's.
-        assert_eq!(c.audio, "aac,ac3,eac3,dts");
+        // MPEG is in the table but not in the pipeline's decode set; the subset keeps
+        // DP_AUDIO_CODECS's own order, not the table's, and the app-decoded PCM formats follow.
+        assert_eq!(c.audio, "aac,ac3,eac3,dts,flac");
     }
 
     /// PMS names DTS `dca` (every DTS entry in the profiles shipped with PMS spells it so); the
@@ -639,6 +663,27 @@ mod tests {
             assert!(Caps::assumed().forced_feeds_audio(c), "{c}");
         }
         assert!(!Caps::assumed().forced_feeds_audio("truehd"));
+    }
+
+    /// FLAC is decoded in the app and fed as PCM: it needs no table row, but it does need a
+    /// table that was READ (the assumed fallback must stay exactly what shipped), a stated channel
+    /// count, and at most the PCM path's two channels — a 5.1 FLAC stays a server conversion. The
+    /// table's own FLAC row (6 channels on the dev set) says nothing about our decoder.
+    #[test]
+    fn flac_is_pcm_decoded_stereo_only_and_only_on_a_read_table() {
+        let caps = parse(REAL).unwrap();
+        assert!(caps.audio_has("flac") && caps.audio_has("FLAC"));
+        assert!(caps.audio_supports("flac", 1));
+        assert!(caps.audio_supports("flac", 2));
+        assert!(!caps.audio_supports("flac", 6));
+        assert!(!caps.audio_supports("flac", 0), "an unknown channel count is not admitted");
+        assert_eq!(caps.audio_channels.get("flac"), Some(&PCM_MAX_CHANNELS));
+        let no_row = parse(&REAL.replace("\"name\" : \"FLAC\"", "\"name\" : \"WMA\"")).unwrap();
+        assert!(no_row.audio_supports("flac", 2), "the PCM path does not need a FLAC decoder row");
+        assert!(!Caps::assumed().audio_has("flac"));
+        assert_eq!(Caps::assumed().audio, "aac,ac3,eac3");
+        assert!(caps.forced_feeds_audio("flac"));
+        assert!(!Caps::assumed().forced_feeds_audio("flac"));
     }
 
     #[test]
@@ -725,7 +770,7 @@ mod tests {
         .unwrap();
         assert!(!c.hevc);
         assert_eq!(c.hevc_max, (1920, 1088));
-        assert_eq!(c.audio, "aac");
+        assert_eq!(c.audio, "aac,flac");
     }
 
     /// Codec-name matching survives the spelling variants firmwares use: case, dots, dashes
@@ -739,7 +784,7 @@ mod tests {
         )
         .unwrap();
         assert!(c.hevc);
-        assert_eq!(c.audio, "aac,ac3,eac3");
+        assert_eq!(c.audio, "aac,ac3,eac3,flac");
     }
 
     /// Garbage in must not panic AND must not half-parse: every unusable input lands on None so

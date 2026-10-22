@@ -163,6 +163,10 @@ pub struct CarriedAudio {
     pub can_normalize_loudness: bool,
     /// Dolby Atmos (`metadata::Stream::has_atmos`) — the Load payload's `contents.immersive`.
     pub immersive: bool,
+    /// PMS `samplingRate` (Hz) and `bitDepth` — what a PCM Load declares for a track the app
+    /// decodes itself (FLAC, `devcaps::PCM_AUDIO_CODECS`). 0 = not said, and the Load refuses.
+    pub sample_rate: i64,
+    pub bit_depth: i64,
 }
 
 impl CarriedAudio {
@@ -180,6 +184,8 @@ impl CarriedAudio {
             channels: s.channels,
             can_normalize_loudness: s.can_normalize_loudness,
             immersive: s.has_atmos(),
+            sample_rate: s.sampling_rate,
+            bit_depth: s.bit_depth,
         }
     }
 
@@ -196,6 +202,8 @@ impl CarriedAudio {
             channels: 0,
             can_normalize_loudness: false,
             immersive: false,
+            sample_rate: 0,
+            bit_depth: 0,
         }
     }
 }

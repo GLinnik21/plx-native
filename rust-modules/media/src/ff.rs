@@ -42,6 +42,23 @@ pub fn set_feed_audio(on: bool) {
     FEED_AUDIO.store(on, Ordering::Relaxed);
 }
 
+/// The PCM the current Load declared for app-decoded audio (`route::stream_pcm`), packed
+/// `rate << 16 | bits << 8 | channels`; 0 = this Load declares no PCM.
+static PCM_OUT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Set by `start_bufferfeed` beside the Load, before the demuxer is spawned.
+pub fn set_pcm_out(f: Option<(u32, u32, u32)>) {
+    let v = f.map_or(0, |(rate, bits, ch)| u64::from(rate) << 16 | u64::from(bits) << 8 | u64::from(ch));
+    PCM_OUT.store(v, Ordering::Relaxed);
+}
+fn pcm_out() -> Option<crate::ff_pcm::PcmOut> {
+    let v = PCM_OUT.load(Ordering::Relaxed);
+    (v != 0).then(|| crate::ff_pcm::PcmOut {
+        rate: (v >> 16) as u32,
+        bits: ((v >> 8) & 0xff) as u32,
+        channels: (v & 0xff) as u32,
+    })
+}
+
 // ---- opaque handles (pointer-only, never dereferenced) ----
 pub enum AVClass {}
 pub enum AVInputFormat {}
@@ -422,6 +439,9 @@ plx_base::dynlib! {
     ) -> c_int;
     fn avsubtitle_free(sub: *mut AVSubtitle);
     fn avcodec_free_context(ctx: *mut *mut AVCodecContext);
+    // the FLAC → PCM decoder (`ff_pcm`)
+    fn avcodec_send_packet(ctx: *mut AVCodecContext, pkt: *const AVPacket) -> c_int;
+    fn avcodec_receive_frame(ctx: *mut AVCodecContext, frame: *mut c_void) -> c_int;
     // Scratch AVCodecParameters for `sub_canvas` — library-allocated so its true size (136 on
     // this build) is never our problem, and `from_context` starts by av_freep-ing par->extradata.
     // Both PRESENT on the device's own libavcodec.so.57.89.100 (`tools/abi-probe.sh has
@@ -9003,6 +9023,33 @@ pub fn demux(
                 if dts_audio {
                     crate::player::log("ff: DTS core extraction on (DTS-HD extensions discarded)");
                 }
+                // App-decoded audio (FLAC): decode to the PCM the Load declared, or refuse the
+                // stream — the Load and the file must agree, or the panel plays the wrong pitch.
+                let flac_audio = ai >= 0 && std::ffi::CStr::from_ptr(avcodec_get_name(
+                    (*stream_codecpar(*streams.add(ai as usize))).codec_id
+                )).to_bytes() == b"flac";
+                let mut pcm_dec: Option<crate::ff_pcm::PcmDecoder> = None;
+                if flac_audio && FEED_AUDIO.load(Ordering::Relaxed) {
+                    let opened = match pcm_out() {
+                        Some(out) => crate::ff_pcm::PcmDecoder::open(
+                            stream_codecpar(*streams.add(ai as usize)), out,
+                        ),
+                        None => Err("the Load declared no PCM for a FLAC track".to_string()),
+                    };
+                    match opened {
+                        Ok(d) => {
+                            crate::player::log("ff: FLAC -> PCM decoding on");
+                            pcm_dec = Some(d);
+                        }
+                        Err(why) => {
+                            crate::player::log(&format!("ff: FLAC refused — {why}"));
+                            SHARED.demux_failed.store(true, Ordering::Release);
+                            avformat_close_input(&mut fmt);
+                            free_avio(avio);
+                            break;
+                        }
+                    }
+                }
                 if let Some((fi, ch)) = aac_adts {
                     crate::player::log(&format!(
                         "ff: AAC → ADTS reframing on (freq_idx={fi} ch={ch})"
@@ -9392,6 +9439,25 @@ pub fn demux(
                                 gate,
                                 || state.drain_wire(),
                             )
+                        } else if let Some(dec) = pcm_dec.as_mut() {
+                            let pcm = match dec.decode(pkt) {
+                                Ok(pcm) => pcm,
+                                Err(why) => {
+                                    crate::player::log(&format!("ff: FLAC decode failed — {why}; refusing audio feed"));
+                                    SHARED.demux_failed.store(true, Ordering::Release);
+                                    SHARED.demux_io_failed.store(true, Ordering::Release);
+                                    av_packet_unref(pkt);
+                                    break;
+                                }
+                            };
+                            if pcm.is_empty() {
+                                0
+                            } else {
+                                crate::aq::aq_push_gated(
+                                    aqa_p, pcm.as_ptr(), pcm.len() as c_int, pts, 1, 2, gate,
+                                    || state.drain_wire(),
+                                )
+                            }
                         } else if dts_audio {
                             let raw = std::slice::from_raw_parts((*pkt).data, (*pkt).size.max(0) as usize);
                             let Some(core) = dts_core_packet(raw) else {

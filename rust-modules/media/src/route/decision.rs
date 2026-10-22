@@ -5434,6 +5434,82 @@ pub fn stream_immersive(ps: &PlaybackSession) -> bool {
     // source flag exists, so neither diagnostics nor Load may repeat that source-only claim.
     s.stream_acodec.eq_ignore_ascii_case("eac3") && s.stream_immersive
 }
+
+/// The PCM a Load must declare for audio the app decodes itself
+/// (`devcaps::PCM_AUDIO_CODECS` — FLAC).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PcmFormat {
+    pub sample_rate: u32,
+    /// 16 or 32: a source of up to 16 bits is fed as S16LE, anything deeper (or unstated) as
+    /// S32LE — both bit-exact, since the decoder left-justifies 24-bit samples in 32.
+    pub bits: u32,
+    pub channels: u32,
+}
+
+/// [`PcmFormat`] for the stream now being fed, `None` when it is not app-decoded audio.
+/// `Some(Err(why))` when it IS, but the facts the Load needs are missing or outside the PCM path:
+/// the caller refuses the Load rather than declare a rate the decoder would contradict.
+pub fn stream_pcm(ps: &PlaybackSession) -> Option<Result<PcmFormat, String>> {
+    let id = plx_platform::devcaps::audio_codec_id(&ps.stream_acodec);
+    if !plx_platform::devcaps::PCM_AUDIO_CODECS.split(',').any(|c| c == id) {
+        return None;
+    }
+    Some(pcm_format_of(ps.cur_audio.as_ref(), &id))
+}
+
+/// PURE half of [`stream_pcm`]: the carried track must be the same codec, with a stated rate and
+/// one or two channels.
+pub(crate) fn pcm_format_of(audio: Option<&CarriedAudio>, codec: &str) -> Result<PcmFormat, String> {
+    let Some(a) = audio else {
+        return Err(format!("{codec}: the playing track's facts are unknown"));
+    };
+    if plx_platform::devcaps::audio_codec_id(&a.codec) != codec {
+        return Err(format!("{codec}: the carried track is {:?}", a.codec));
+    }
+    let max = i64::from(plx_platform::devcaps::PCM_MAX_CHANNELS);
+    if !(1..=max).contains(&a.channels) {
+        return Err(format!("{codec}: {} channels (the PCM path carries 1..={max})", a.channels));
+    }
+    let sample_rate = u32::try_from(a.sample_rate).ok().filter(|r| (8_000..=192_000).contains(r));
+    let Some(sample_rate) = sample_rate else {
+        return Err(format!("{codec}: sampling rate {} not stated or out of range", a.sample_rate));
+    };
+    let bits = if (1..=16).contains(&a.bit_depth) { 16 } else { 32 };
+    Ok(PcmFormat { sample_rate, bits, channels: a.channels as u32 })
+}
+
+#[cfg(test)]
+mod pcm_format_tests {
+    use super::*;
+
+    fn flac(channels: i64, rate: i64, bits: i64) -> CarriedAudio {
+        CarriedAudio {
+            sid: 7, ordinal: 4, codec: "flac".into(), channels,
+            can_normalize_loudness: false, immersive: false, sample_rate: rate, bit_depth: bits,
+        }
+    }
+
+    #[test]
+    fn a_stereo_flac_declares_its_own_rate_and_a_bit_exact_width() {
+        assert_eq!(pcm_format_of(Some(&flac(2, 48_000, 16)), "flac"),
+            Ok(PcmFormat { sample_rate: 48_000, bits: 16, channels: 2 }));
+        assert_eq!(pcm_format_of(Some(&flac(1, 44_100, 24)), "flac"),
+            Ok(PcmFormat { sample_rate: 44_100, bits: 32, channels: 1 }));
+        // an unstated depth is fed wide: never truncate a sample nobody measured
+        assert_eq!(pcm_format_of(Some(&flac(2, 96_000, 0)), "flac").unwrap().bits, 32);
+    }
+
+    #[test]
+    fn missing_or_out_of_path_facts_refuse_the_load() {
+        assert!(pcm_format_of(None, "flac").is_err());
+        assert!(pcm_format_of(Some(&flac(6, 48_000, 16)), "flac").is_err());
+        assert!(pcm_format_of(Some(&flac(0, 48_000, 16)), "flac").is_err());
+        assert!(pcm_format_of(Some(&flac(2, 0, 16)), "flac").is_err());
+        let mut other = flac(2, 48_000, 16);
+        other.codec = "ac3".into();
+        assert!(pcm_format_of(Some(&other), "flac").is_err());
+    }
+}
 /// Override the audio codec used to build the Load payload — set by a native audio-track
 /// switch to the chosen track's codec before the direct-play reload.
 pub fn set_stream_acodec(ps: &mut PlaybackSession, codec: &str) {
@@ -10260,6 +10336,8 @@ fn test_original_candidate(subtitle_ordinal: Option<i32>) -> AutoOriginalCandida
             channels: 6,
             can_normalize_loudness: false,
             immersive: true,
+            sample_rate: 0,
+            bit_depth: 0,
         }),
         audio_converted: false,
         subtitle_ordinal,
@@ -10303,6 +10381,8 @@ pub fn enhancement_test_session(route: EnhTestFixture) -> (PlaybackSession, Serv
         channels: 2,
         can_normalize_loudness: capable,
         immersive: false,
+        sample_rate: 0,
+        bit_depth: 0,
     });
     ps.auto_original = route.base_present.then(|| AutoOriginalCandidate {
         direct: route.remux.is_none(),

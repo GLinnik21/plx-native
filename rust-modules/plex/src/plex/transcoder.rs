@@ -339,6 +339,7 @@ fn forced_direct_profile_for(caps: &plx_platform::devcaps::Caps) -> String {
     // pipeline cannot decode.
     let audio = DP_AUDIO_CODECS
         .split(',')
+        .chain(plx_platform::devcaps::PCM_AUDIO_CODECS.split(','))
         .filter(|c| caps.forced_feeds_audio(c))
         .map(profile_codec_name)
         .collect::<Vec<_>>()
@@ -1299,6 +1300,25 @@ mod tests {
         assert!(profile.contains("scope=videoAudioCodec&scopeName=dca&type=upperBound&name=audio.channels&value=6&replace=true"));
         assert!(!profile.contains("dts"), "{profile}");
         assert!(!profile.contains("truehd"));
+    }
+
+    /// FLAC is decoded in the app and fed as PCM: offered for direct play (and Force) on a set
+    /// whose table was read, capped at the PCM path's two channels so PMS still converts a 5.1
+    /// FLAC — and never named as a transcode TARGET, which is the server's encoder, not ours.
+    #[test]
+    fn flac_is_offered_for_direct_play_up_to_stereo_and_never_as_a_target() {
+        // what `devcaps` makes of a READ table (its own tests pin that half)
+        let mut caps = plx_platform::devcaps::Caps::assumed();
+        caps.audio.push_str(",flac");
+        caps.audio_channels.insert("flac".into(), plx_platform::devcaps::PCM_MAX_CHANNELS);
+        let profile = super::profile_for(&caps);
+        assert!(list_of(&profile, "audioCodec=").contains(&"flac".into()), "{profile}");
+        assert!(profile.contains("scope=videoAudioCodec&scopeName=flac&type=upperBound&name=audio.channels&value=2&replace=true"), "{profile}");
+        assert!(!list_of(target_of(&profile), "audioCodec=").contains(&"flac".into()));
+        assert!(list_of(&super::forced_direct_profile_for(&caps), "audioCodec=").contains(&"flac".into()));
+        let assumed = plx_platform::devcaps::Caps::assumed();
+        assert!(!super::profile_for(&assumed).contains("flac"));
+        assert!(!super::forced_direct_profile_for(&assumed).contains("flac"));
     }
 
     /// Force Direct Play offers DTS only on the same table evidence the planner asks for
