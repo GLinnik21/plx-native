@@ -786,15 +786,18 @@ unsafe fn nth_audio_stream(fmt: *mut AVFormatContext, n: i32) -> Option<c_int> {
 // asserts them per major, so if anyone ever needs to poke them again the proven numbers are there.
 // AVFrame (avutil 55, 32-bit ARM). pts sits at +104: a 4-byte pad at +100
 // 8-aligns the int64 on ARM EABI (the classic AVFrame-on-ARM quirk).
-const OFF_FRAME_DATA: usize = 0; // u8*[8] — the only one that does not move
+pub(crate) const OFF_FRAME_DATA: usize = 0; // u8*[8] — the only one that does not move
 #[cfg(target_pointer_width = "32")]
 const OFF_FRAME_LINESIZE: usize = 32; // c_int[8]
 #[cfg(target_pointer_width = "32")]
 const OFF_FRAME_WIDTH: usize = 68;
 #[cfg(target_pointer_width = "32")]
 const OFF_FRAME_HEIGHT: usize = 72;
+// `nb_samples` (the FLAC → PCM decoder, `ff_pcm`) sits right after `height`.
 #[cfg(target_pointer_width = "32")]
-const OFF_FRAME_FORMAT: usize = 80;
+pub(crate) const OFF_FRAME_NB_SAMPLES: usize = 76;
+#[cfg(target_pointer_width = "32")]
+pub(crate) const OFF_FRAME_FORMAT: usize = 80;
 #[cfg(target_pointer_width = "32")]
 const OFF_FRAME_PTS: usize = 96;
 // 64-bit: `data` is eight POINTERS rather than eight 32-bit ones, so `linesize` doubles and
@@ -807,7 +810,9 @@ const OFF_FRAME_WIDTH: usize = 104;
 #[cfg(target_pointer_width = "64")]
 const OFF_FRAME_HEIGHT: usize = 108;
 #[cfg(target_pointer_width = "64")]
-const OFF_FRAME_FORMAT: usize = 116;
+pub(crate) const OFF_FRAME_NB_SAMPLES: usize = 112;
+#[cfg(target_pointer_width = "64")]
+pub(crate) const OFF_FRAME_FORMAT: usize = 116;
 #[cfg(target_pointer_width = "64")]
 const OFF_FRAME_PTS: usize = 136;
 const SWS_BILINEAR: c_int = 2;

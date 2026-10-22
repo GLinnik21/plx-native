@@ -59,11 +59,11 @@ pub const DP_AUDIO_CODECS: &str = "aac,ac3,eac3,dts";
 
 /// Audio the app DECODES ITSELF and feeds as PCM, so no row of the device table is needed: the
 /// pipeline's PCM input (`libpf`'s `audio/x-raw` caps and the `contents.pcmInfo` node) is what
-/// carries it, and that is the same on every set with the buffer-feed path. FLAC is the case —
-/// libpf has no FLAC input of its own (its Load vocabulary is AAC/AC3/AC3 PLUS/DTS/MP3/MPEG/OPUS/
-/// VORBIS/WMA/PCM, read from libpf-1.0 on a webOS 4.4.3 OLED55B8), but PCM decoded from it is
-/// bit-exact. Joins [`Caps::audio`] only on a table that was READ: the assumed fallback stays
-/// byte-for-byte what it was.
+/// carries it. FLAC is the case — libpf has no FLAC input of its own (its Load vocabulary is
+/// AAC/AC3/AC3 PLUS/DTS/MP3/MPEG/OPUS/VORBIS/WMA/PCM), but PCM decoded from it is bit-exact. Both
+/// the vocabulary and the PCM input were verified on webOS 4.4.3 (libpf-1.0 on an OLED55B8); other
+/// webOS versions are unconfirmed. Joins [`Caps::audio`] only on a table that was READ: the assumed
+/// fallback stays byte-for-byte what it was.
 pub const PCM_AUDIO_CODECS: &str = "flac";
 
 /// The channel ceiling of the PCM path: `pcmInfo.channelMode` has `mono` and `stereo` (and

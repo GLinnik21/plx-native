@@ -94,7 +94,7 @@ SAME64(offsetof(AVFormatContext, streams), 48, "AVFormatContext.streams moved [h
 SAME32(offsetof(AVFormatContext, duration), 64, "OFF_FMT_DURATION != 64");
 SAME64(offsetof(AVFormatContext, duration), 104, "OFF_FMT_DURATION != 64 [host]");
 
-/* --- AVFrame: poked directly by the encode path. --- */
+/* --- AVFrame: poked directly by the encode path, and read by the FLAC → PCM decoder. --- */
 SAME(offsetof(AVFrame, data), 0, "OFF_FRAME_DATA != 0");
 SAME32(offsetof(AVFrame, linesize), 32, "OFF_FRAME_LINESIZE != 32");
 SAME64(offsetof(AVFrame, linesize), 64, "OFF_FRAME_LINESIZE != 32 [host]");
@@ -102,6 +102,8 @@ SAME32(offsetof(AVFrame, width), 68, "OFF_FRAME_WIDTH != 68");
 SAME64(offsetof(AVFrame, width), 104, "OFF_FRAME_WIDTH != 68 [host]");
 SAME32(offsetof(AVFrame, height), 72, "OFF_FRAME_HEIGHT != 72");
 SAME64(offsetof(AVFrame, height), 108, "OFF_FRAME_HEIGHT != 72 [host]");
+SAME32(offsetof(AVFrame, nb_samples), 76, "OFF_FRAME_NB_SAMPLES != 76");
+SAME64(offsetof(AVFrame, nb_samples), 112, "OFF_FRAME_NB_SAMPLES != 76 [host]");
 SAME32(offsetof(AVFrame, format), 80, "OFF_FRAME_FORMAT != 80");
 SAME64(offsetof(AVFrame, format), 116, "OFF_FRAME_FORMAT != 80 [host]");
 /* +96 on FFmpeg 9, +104 on 6 and on the n3.3 the TVs ship — AVFrame lost fields ahead of it.

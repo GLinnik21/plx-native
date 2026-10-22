@@ -2,10 +2,9 @@
 //!
 //! libpf has no FLAC input — its Load vocabulary is AAC / AC3 / AC3 PLUS / DTS / MP3 / MPEG / OPUS
 //! / VORBIS / WMA / PCM (read from `libpf-1.0` on a webOS 4.4.3 OLED55B8) — but it does take raw
-//! PCM through `contents.pcmInfo` (`player::engine::with_pcm_info`). FLAC is lossless, so the PCM
-//! decoded from it is the same signal the official client hands the panel's own player: bit-exact
-//! at 16 bits, and at 24 bits too, carried left-justified in S32 exactly as FFmpeg's decoder
-//! produces it.
+//! PCM through `contents.pcmInfo` (`player::engine::with_pcm_info`). The PCM decoded from FLAC is
+//! bit-exact: at 16 bits as S16, and at 24 bits too, carried left-justified in S32 exactly as
+//! FFmpeg's decoder produces it.
 //!
 //! The Load is built before the demuxer opens the file, so it declares the shape from the PMS
 //! track facts (`route::stream_pcm`), and [`PcmDecoder::open`] refuses a stream whose own rate or
@@ -14,7 +13,9 @@
 
 use std::os::raw::c_int;
 
-use crate::ff::{AVCodecContext, AVCodecParameters, AVPacket};
+use crate::ff::{
+    AVCodecContext, AVCodecParameters, AVPacket, OFF_FRAME_DATA, OFF_FRAME_FORMAT, OFF_FRAME_NB_SAMPLES,
+};
 
 /// FFmpeg `AVSampleFormat` values the FLAC decoder can produce. The enum has been stable since
 /// FFmpeg 1.x (`S16 = 1`, `S32 = 2`, `S16P = 6`, `S32P = 7`).
@@ -22,19 +23,6 @@ const AV_SAMPLE_FMT_S16: c_int = 1;
 const AV_SAMPLE_FMT_S32: c_int = 2;
 const AV_SAMPLE_FMT_S16P: c_int = 6;
 const AV_SAMPLE_FMT_S32P: c_int = 7;
-
-/// AVFrame offsets of the fields read here. `data`/`linesize` are shared with `ff`'s video
-/// encoder; `nb_samples` sits right after `height`, and `format` after it (same on every FFmpeg
-/// major this app ships against — `ci/ffabi-assert.c` pins the neighbours).
-const OFF_FRAME_DATA: usize = 0;
-#[cfg(target_pointer_width = "32")]
-const OFF_FRAME_NB_SAMPLES: usize = 76;
-#[cfg(target_pointer_width = "32")]
-const OFF_FRAME_FORMAT: usize = 80;
-#[cfg(target_pointer_width = "64")]
-const OFF_FRAME_NB_SAMPLES: usize = 112;
-#[cfg(target_pointer_width = "64")]
-const OFF_FRAME_FORMAT: usize = 116;
 
 /// The PCM the Load declared: rate, sample width (16 or 32) and channels.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

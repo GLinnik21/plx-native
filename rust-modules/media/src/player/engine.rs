@@ -6251,18 +6251,6 @@ mod load_in_flight_tests {
     }
 }
 
-/// **The webOS 10.3.1 refusal, replayed.** `docs/webos10-lab-report.md` §3.2 records the exact
-/// callback order the pipeline produced when it refused the 4K60 H.264 envelope: `13/1`, `14/0`,
-/// the `type=5` sink echo, `15/0`, `8/0`, then `18/601 Resource Allocation Error` — with `Load()`
-/// itself having returned `ok=1`. §3.5 records what the app did about it: nothing. `load_failed`
-/// stayed false, the state machine sat in Connecting, and no failure read-out was ever reached.
-///
-/// This test is that artifact, host-side, watched RED before the fix (2026-09-03): the red is the
-/// lab set's measured sequence, NOT a reproduction of issue #63, whose set nobody here has seen a
-/// log from. Under `hostsim` only because it borrows `prime_livelock_tests`' engine constructor.
-/// The envelope rule, cell by cell. Every value here is either a measured declaration
-/// (`ENVELOPE_UHD60`, `ENVELOPE_FHD60`) or today's behaviour; the test exists so the narrow rule
-/// stays narrow — a "smarter" envelope that changes HEVC or the unknown-raster case fails here.
 #[cfg(test)]
 mod pcm_info_tests {
     use super::*;
@@ -6289,6 +6277,18 @@ mod pcm_info_tests {
     }
 }
 
+/// **The webOS 10.3.1 refusal, replayed.** `docs/webos10-lab-report.md` §3.2 records the exact
+/// callback order the pipeline produced when it refused the 4K60 H.264 envelope: `13/1`, `14/0`,
+/// the `type=5` sink echo, `15/0`, `8/0`, then `18/601 Resource Allocation Error` — with `Load()`
+/// itself having returned `ok=1`. §3.5 records what the app did about it: nothing. `load_failed`
+/// stayed false, the state machine sat in Connecting, and no failure read-out was ever reached.
+///
+/// This test is that artifact, host-side, watched RED before the fix (2026-09-03): the red is the
+/// lab set's measured sequence, NOT a reproduction of issue #63, whose set nobody here has seen a
+/// log from. Under `hostsim` only because it borrows `prime_livelock_tests`' engine constructor.
+/// The envelope rule, cell by cell. Every value here is either a measured declaration
+/// (`ENVELOPE_UHD60`, `ENVELOPE_FHD60`) or today's behaviour; the test exists so the narrow rule
+/// stays narrow — a "smarter" envelope that changes HEVC or the unknown-raster case fails here.
 #[cfg(test)]
 mod sink_envelope_tests {
     use super::*;
