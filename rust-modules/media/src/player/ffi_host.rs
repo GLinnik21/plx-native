@@ -49,6 +49,11 @@
 //! newly answer are about Apple's decoder, and the ones that break this app are about LG's. The
 //! pixels are not the uncertainty. This is ~1% of the work for the part that is.
 //!
+//! **It also ends a film the way the pipeline does.** After `PushEOS`, once the clock has played
+//! out to the last video frame it was fed, the sink sends `type=28 num=1 str=true` through the real
+//! callback ([`Clock::tick`]), so a film whose audio outlasts its video ends here as on the
+//! television instead of hanging at the video tail. Cleared wherever the fed timeline restarts.
+//!
 //! It reports [`VP_EXPORTED`](super::VP_EXPORTED), the webOS 5+ path, because that one binds video
 //! through an exported window id and never touches ACB — so the whole ACB stage sequence stays
 //! skipped rather than faked.
@@ -409,12 +414,30 @@ pub fn stop_clock_at(media_ns: Option<i64>) -> bool {
     true
 }
 
-fn report_position(pts_ns: i64) {
+/// Deliver one pipeline event through the real callback, as LG's library thread would: into the
+/// current `Load`'s epoch, and only while that `Load`'s callback gate is open.
+fn report_event(ty: c_int, num: i64, text: *const c_char) {
     let epoch = ACTIVE_EPOCH.load(Relaxed);
     if epoch != 0 && !CALLBACK_GATE_RETIRED.load(Relaxed) {
         CALLBACK_INTERCEPTS.fetch_add(1, Relaxed);
-        super::sf_on_event(epoch, 0, pts_ns, std::ptr::null());
+        super::sf_on_event(epoch, ty, num, text);
     }
+}
+
+fn report_position(pts_ns: i64) {
+    report_event(0, pts_ns, std::ptr::null());
+}
+
+/// How many times the sink decided to report the pipeline's end-of-stream. Test-only: it counts
+/// the decision, so a unit test can grade it without an open callback gate.
+#[cfg(test)]
+static EOS_REPORTS: AtomicU64 = AtomicU64::new(0);
+
+/// The pipeline's end-of-stream: `type=28 num=1 str=true` (`PIPELINE_END_OF_STREAM`).
+fn report_end_of_stream() {
+    #[cfg(test)]
+    EOS_REPORTS.fetch_add(1, Relaxed);
+    report_event(28, 1, c"true".as_ptr());
 }
 
 /// Everything the sink remembers. One session's worth; `sf_unload` clears it.
@@ -441,6 +464,12 @@ static RESUMED_AT_MS: AtomicI64 = AtomicI64::new(0);
 static FED_MAX_NS: AtomicI64 = AtomicI64::new(i64::MIN);
 /// A MOVIE position the clock may not run past either (`i64::MAX` = none): [`stop_clock_at`].
 static STOP_AT_MEDIA_NS: AtomicI64 = AtomicI64::new(i64::MAX);
+/// **`PushEOS` has been called and the clock has not yet played out to the end of what was fed.**
+/// The pipeline reports its end-of-stream only after it has presented everything it holds, so the
+/// sink latches the push and [`Clock::tick`] sends `type=28` once the position reaches
+/// [`FED_MAX_NS`]. One per pushed EOS; cleared wherever the fed timeline restarts
+/// ([`Clock::rewind`], [`sf_seek_ms`]).
+static EOS_PENDING: AtomicBool = AtomicBool::new(false);
 
 #[cfg(test)]
 pub(super) fn force_callback_intercepts_for_test(value: u32) {
@@ -507,6 +536,20 @@ pub(super) fn clock_run_for_test(base_ns: i64) {
 pub(super) fn clock_state_for_test() -> (i64, bool) {
     (Clock::position_ns(), PLAYING.load(Relaxed))
 }
+/// Take one sink tick (what the `clocksink` thread does every [`TICK_MS`]) on the calling thread.
+/// Test-only.
+#[cfg(test)]
+pub(super) fn tick_for_test() {
+    Clock::tick();
+}
+/// Run the clock `ms` of wall time forward while it is playing, for EVERY thread that reads it:
+/// the `clocksink` thread is not the test's, so a per-thread pin ([`pinned_clock`]) would leave it
+/// reporting the real time. Backdates the resume stamp, which is all `position_ns` adds elapsed
+/// time to. Test-only.
+#[cfg(test)]
+pub(super) fn advance_clock_for_test(ms: i64) {
+    RESUMED_AT_MS.fetch_sub(ms, Relaxed);
+}
 
 impl Clock {
     /// Where the sink claims to be presenting, in the fed-PTS timeline `sf_on_event` expects.
@@ -563,6 +606,41 @@ impl Clock {
         PLAYING.store(false, Relaxed);
         BASE_NS.store(0, Relaxed);
         FED_MAX_NS.store(i64::MIN, Relaxed);
+        EOS_PENDING.store(false, Relaxed);
+    }
+
+    /// What the sink reports every [`TICK_MS`] while a loaded session is running: the position,
+    /// and, once an end-of-stream has been pushed and the clock has played out to the last video
+    /// frame it was fed, the pipeline's end-of-stream.
+    ///
+    /// **Why the clock reaching [`FED_MAX_NS`] is the pipeline's end.** The clock is clamped to the
+    /// highest VIDEO pts fed, which is where a real pipeline's presentation stops once its last
+    /// frame is out. A film whose audio outlasts its video leaves the position there for good, and
+    /// the arithmetic the pump falls back on (position within `EOS_TAIL_NS` of the container's
+    /// duration, the longest track's) never holds. What ends such a film is the pipeline saying so:
+    /// `smp_cb type=28 num=1 str=true`, sent after the last video frame was presented and with the
+    /// clock still at that frame. Measured twice, with the same order both times: a contributor's
+    /// LG C1 on webOS 6.5.3 (the clock stopped at 5894 s of 5897 s, #865) and the dev TV on webOS
+    /// 4.10.2 (ACB route; an H.264 + AC3 clip whose video ends at 20 s and audio at 23 s: `EOS
+    /// pushed at true EOF`, the clock stuck at `pos=19s`, then `type=28`). Until this existed the
+    /// simulator reproduced the stall at the video tail but never the `type=28` that ends the
+    /// film, so #865's `pipeline_eos` arm could not fire here.
+    ///
+    /// A paused clock reports nothing, as a paused pipeline does not finish. It is sent through
+    /// [`super::sf_on_event`], like the position, and sets nothing in `SHARED` itself.
+    ///
+    /// A function of its own so a test can take a tick on its own thread ([`tick_for_test`])
+    /// instead of waiting for the ticker's wall-clock sleep.
+    fn tick() {
+        if !LOADED.load(Relaxed) || !PLAYING.load(Relaxed) {
+            return;
+        }
+        let at = Clock::position_ns();
+        report_position(at);
+        let fed = FED_MAX_NS.load(Relaxed);
+        if fed != i64::MIN && at >= fed && EOS_PENDING.swap(false, Relaxed) {
+            report_end_of_stream();
+        }
     }
 
     /// One thread for the process, reporting position at the device's own cadence.
@@ -580,12 +658,7 @@ impl Clock {
             .name("clocksink".into())
             .spawn(|| loop {
                 std::thread::sleep(std::time::Duration::from_millis(TICK_MS));
-                if !LOADED.load(Relaxed) {
-                    continue;
-                }
-                if PLAYING.load(Relaxed) {
-                    report_position(Clock::position_ns());
-                }
+                Clock::tick();
             });
         if spawned.is_err() {
             TICKING.store(false, Relaxed);
@@ -778,13 +851,20 @@ unsafe fn sf_seek_ms(ms: i64) -> c_int {
     PLAYING.store(false, Relaxed);
     BASE_NS.store(ms.saturating_mul(1_000_000), Relaxed);
     FED_MAX_NS.store(i64::MIN, Relaxed);
+    EOS_PENDING.store(false, Relaxed);
     crate::player::sim_video::flush();
     1
 }
+/// `PushEOS`: the engine has fed the last access unit. The pipeline answers with its own
+/// end-of-stream once it has presented them all, which [`Clock::tick`] reproduces.
 unsafe fn sf_push_eos() -> c_int {
     #[cfg(any(test, feature = "test-support"))]
     note_dispatch("sf_push_eos");
-    c_int::from(enabled())
+    if !enabled() {
+        return 0;
+    }
+    EOS_PENDING.store(true, Relaxed);
+    1
 }
 unsafe fn sf_set_time_to_decode(_position_ns: i64) -> c_int {
     #[cfg(any(test, feature = "test-support"))]
@@ -1242,6 +1322,95 @@ mod tests {
             i64::MIN,
             "audio must not move the ceiling"
         );
+    }
+
+    /// A loaded, running clock that has played out everything it was fed (20 s of video).
+    fn at_the_tail() {
+        fresh();
+        force_clocksink_for_test(true);
+        run_to_the_tail();
+    }
+
+    /// The clock state `at_the_tail` ends in, WITHOUT clearing a latch a test is grading.
+    fn run_to_the_tail() {
+        LOADED.store(true, Relaxed);
+        FED_MAX_NS.store(20_000_000_000, Relaxed);
+        BASE_NS.store(0, Relaxed);
+        RESUMED_AT_MS.store(now_ms() - 60_000, Relaxed);
+        PLAYING.store(true, Relaxed);
+        EOS_REPORTS.store(0, Relaxed);
+    }
+
+    fn reports_after(ticks: u32) -> u64 {
+        for _ in 0..ticks {
+            Clock::tick();
+        }
+        EOS_REPORTS.load(Relaxed)
+    }
+
+    fn disarm() {
+        reset_native_lifecycle_for_test();
+        force_clocksink_for_test(false);
+    }
+
+    #[test]
+    fn the_sink_reports_the_end_of_stream_only_after_one_is_pushed_and_once_per_push() {
+        let _g = lock();
+        at_the_tail();
+        assert_eq!(reports_after(3), 0, "nothing is sent before an EOS is pushed, tail or not");
+        assert_eq!(unsafe { sf_push_eos() }, 1);
+        assert_eq!(reports_after(1), 1, "the clock is at the last fed frame: the pipeline is done");
+        assert_eq!(reports_after(5), 1, "once per pushed EOS");
+        assert_eq!(unsafe { sf_push_eos() }, 1);
+        assert_eq!(reports_after(1), 2, "a second push is a second end");
+        disarm();
+    }
+
+    #[test]
+    fn a_pushed_end_of_stream_waits_for_the_clock_to_play_out() {
+        let _g = lock();
+        at_the_tail();
+        RESUMED_AT_MS.store(now_ms() - 5_000, Relaxed); // 5 s in, 15 s of fed video still to play
+        unsafe { sf_push_eos() };
+        assert_eq!(reports_after(2), 0, "the pipeline has not presented what it holds");
+        RESUMED_AT_MS.fetch_sub(20_000, Relaxed);
+        assert_eq!(reports_after(1), 1);
+        disarm();
+    }
+
+    #[test]
+    fn a_paused_clock_does_not_finish() {
+        let _g = lock();
+        at_the_tail();
+        unsafe { sf_push_eos() };
+        Clock::hold();
+        assert_eq!(reports_after(3), 0, "a paused pipeline does not reach its end");
+        Clock::resume();
+        assert_eq!(reports_after(1), 1, "it finishes when it is resumed");
+        disarm();
+    }
+
+    #[test]
+    fn a_pushed_end_of_stream_does_not_survive_the_fed_timeline_restarting() {
+        let _g = lock();
+        let restarts: [(&str, fn()); 4] = [
+            ("rewind", Clock::rewind),
+            ("flush", || {
+                unsafe { sf_flush() };
+            }),
+            ("seek", || {
+                unsafe { sf_seek_ms(0) };
+            }),
+            ("unload", || unsafe { sf_unload() }),
+        ];
+        for (what, restart) in restarts {
+            at_the_tail();
+            unsafe { sf_push_eos() };
+            restart();
+            run_to_the_tail(); // the same clock a new timeline would reach, with the latch as it was left
+            assert_eq!(reports_after(2), 0, "a pushed EOS survived a {what}");
+        }
+        disarm();
     }
 
     /// `sf_unload` is one of the nine verbs the real seam routes through `sf_ready_object()`

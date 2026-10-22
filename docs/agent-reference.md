@@ -392,7 +392,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
     `.github/workflows/ci-metrics.yml` runs `tools/ci-history.py` and `tools/ci-summary.py` after
     every finished CI / Simulator CI / Nightly run that is a push to `main` or a pull request (one
     short ubuntu job, `concurrency`-collapsed, `actions: read` + `contents: write`; it checks out
-    only three tool files (the collector, the summary and the reader it imports) and never runs pull-request code, so a fork's pull request is recorded too,
+    only three tool files (the collector, the summary and the reader it imports) plus `ci/flaky.txt`, and never runs pull-request code, so a fork's pull request is recorded too,
     with `pr: null`). Rows carry `event` (absent = a push to main), the PR number, `conclusion`,
     `attempt`, `wall` (created to last update, for a re-run: what the developer waited) and the green
     jobs (`failed` names the others); the nightly is recorded for pull requests only; cancelled runs
@@ -406,6 +406,21 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
     nothing. `tools/test_ci_history.py` and `tools/test_ci_summary.py`, in `check-python`, use a fake
     `gh` and synthetic series. To look at local data files, serve `site/` with the files beside the
     page and open `/ci/?data=ci-history.json` (a same-origin relative path only).
+  - **Flaky tests.** The page's "Flaky tests" section lists tests that gave one job of one run both a
+    pass and a fail (the same commit and build, in practice a re-run attempt). Both host unit jobs of `ci.yml`
+    run `tools/ci-test-results.py` over the log of their `make check-cargo-unit-*` (stable libtest has no JSON
+    output, so it reads the `test <name> ... ok|FAILED` lines under each `Running unittests` header) and upload
+    `test-results-<job slug>-<run_attempt>` (14 days). For every new or re-run `ci` run that failed or has
+    attempt > 1, and whose head repository is this one (a fork's workflow file is its own, so its artifacts are
+    never read), `tools/ci-history.py` downloads those artifacts in memory and stores one event per flaky
+    (job, test) under `flaky` in `ci-history.json` (never the thousands of passes; 90-day retention, at most
+    100 events per run). Jobs are never compared with each other: the default-feature and `hostsim` jobs are
+    different builds. `tools/ci-summary.py` derives `flaky` in `ci-summary.json`: per (job, test) first and
+    last seen, number of runs, status Active, Quarantined (listed in `ci/flaky.txt`) or Fixed (no flake for
+    30 days), and `new` for a first flake within 24 hours. `ci/flaky.txt` is the quarantine list
+    (`test<TAB>reason`, a `# count:` header, it only shrinks like `ci/allow/layers.txt`); it is read from
+    `main` by both writers of the summary and today only changes a test's status on the page: nothing skips a
+    quarantined test and nothing blocks on a new flake. Not covered: the Python gates and the simulator jobs.
 - `make build-bench [ARGS='--runs 5 --json out.json']` / `make build-bench-quick` — the repeatable
   local **build benchmark** (`tools/build-bench.py`), so a build-affecting change pastes a
   before/after table instead of an ad-hoc scratch-script number. It prints a Markdown table (median /
@@ -2020,12 +2035,14 @@ raster alone, each grading `expect.video_size` EXACTLY out of the `ff:` line rat
 floor — which is what stopped the item being answerable only as "pieces are covered", and which
 closed the `4k-h264` library gap on this tier (`8-bit-hevc` was already closed by
 `pipe_hevc_aac_mp4` and the gap list had not caught up; a generated clip closes neither gap's real
-half, which is a PMS DECISION on such an item). The same day added the one clip in
+half, which is a PMS DECISION on such an item). The same day added the first clip in
 either pack that is MEANT to run out (`pipe_finish_eos` and `pipe_replay_after_eos`, 20 s), which
 is #46 END TO END — the second of those restarts the finished stream through
 `/tmp/plxnative-replay[=N]`, a bounded counter re-arming `app.rs`'s one-shot autoplay latch, and
 grades the re-entry COUNT, a second `load:` line, a second fetch off the fixture server and a
-media position that falls and then climbs. Still
+media position that falls and then climbs. A second such clip followed for #865,
+`pipe_h264_ac3_audio_tail` (a film whose audio outlasts its picture, ended by the pipeline's own
+end-of-stream; `pipe_finish_audio_tail`). Still
 uncovered: HLG, HDR10+, DV P5/P7, Atmos, the
 4096-wide edge and any refusal above it, a USER-driven replay (a Play control on a detail page is
 server-tier by construction), and the transcode INPUT space

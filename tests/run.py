@@ -3300,10 +3300,14 @@ def a_finished(lines):
     completion. Two links, in order, because either alone is satisfiable by something that is not
     a finish:
 
-      * `EOS reached: playpos=Ns/Ms → ended` (pump.rs) — the producer hit file EOF AND the pipeline
-        played out to within a second of the duration. Not merely "the socket closed": the pump
-        gates the flag on `eos_pushed && pos >= dur - 1s`, so a truncated transfer does not reach
-        it.
+      * `EOS reached: playpos=Ns/Ms → ended` (pump.rs) — the producer hit file EOF (the EOS was
+        pushed) AND the pipeline played out: either it reported its own end-of-stream after a
+        picture (`smp: the pipeline reached end-of-stream`, `type=28`; #865) or the playhead came
+        within a second of the duration (`stream_ended`). Not merely "the socket closed". The
+        pipeline's word is the only way out for a film whose audio outlasts its picture, whose
+        playhead stops at the last frame and never gets near the container's duration
+        (`pipe_finish_audio_tail`, `playpos=19s/23s`) — so the two numbers in the line are NOT
+        compared here, and the line alone no longer proves a transfer was read to its end.
       * `stop_bufferfeed: torn down` (engine.rs::teardown) AFTER that line — `app.rs` calls
         `finish_playback` on `player::ended()`, which with nothing queued is `exit_player`. The
         ORDER is the assertion: this app tears the engine down on every stop, including the
@@ -4931,11 +4935,11 @@ def _resolve_fixtures(cases, root):
     Same contract as `_resolve_items`: a case that cannot run gets `skip` and NO `path`, so a
     partition that is ever wrong raises KeyError naming the case rather than driving the TV at
     some default. Three ways to be unrunnable, and they are different answers: the pack was never
-    built, it was built SHORTER than this case seeks, or — for the one case that wants the stream
-    to run OUT — it was built LONGER than the case can play through. The last two are the quiet
-    ones: a pack regenerated at `--secs 30` while the manifest still seeks to 40 s makes the seek
-    assertion fail as though the player had regressed, and the same regeneration at `--secs 300`
-    would do it to `a_finished`.
+    built, it was built SHORTER than this case seeks, or — for a case that wants the stream to run
+    OUT (`reaches_eos`) — it was built LONGER than the case can play through. The last two are the
+    quiet ones: a pack regenerated at `--secs 30` while the manifest still seeks to 40 s makes the
+    seek assertion fail as though the player had regressed, and the same regeneration at
+    `--secs 300` would do it to `a_finished`.
     """
     for c in cases:
         name = c.get("fixture")

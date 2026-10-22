@@ -1346,7 +1346,8 @@ pub(crate) fn delete_all_local_data(meta: &mut plx_data::stores::metadata::Metad
             .into_iter()
             .chain(plx_base::paths::telemetry_candidates())
             .chain(plx_base::paths::telemetry_spool_candidates())
-            .chain(plx_base::paths::telemetry_crashmark_candidates()),
+            .chain(plx_base::paths::telemetry_crashmark_candidates())
+            .chain(plx_base::paths::telemetry_session_candidates()),
         plx_base::paths::runtime_dir(),
     ));
     meta.run(plx_data::stores::metadata::MetadataCmd::Clear);
@@ -1382,7 +1383,7 @@ mod delete_all_tests {
             Self(root)
         }
         fn persistent(&self) -> Vec<std::path::PathBuf> {
-            ["lastplace.json", "telemetry.json", "telemetry-spool.bin", "telemetry-crashmark.json"]
+            ["lastplace.json", "telemetry.json", "telemetry-spool.bin", "telemetry-crashmark.json", "telemetry-session.json"]
                 .iter()
                 .map(|name| self.0.join("persistent").join(format!(".com.beb.plxnative.debug-{name}")))
                 .collect()

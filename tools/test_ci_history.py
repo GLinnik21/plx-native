@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
+import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -34,7 +35,7 @@ def run(rid, hours=0, conclusion="success", event="push", title="Build: a thing 
             "run_started_at": stamp(T0 + timedelta(hours=hours, minutes=1)),
             "updated_at": stamp(T0 + timedelta(hours=hours, seconds=took if took is not None else 600)),
             "pull_requests": [{"number": pr}] if pr else [], "head_branch": branch,
-            "head_repository": {"owner": {"login": owner}}}
+            "head_repository": {"owner": {"login": owner}, "full_name": f"{owner}/plx-native"}}
 
 
 def job(name, secs, conclusion="success"):
@@ -47,8 +48,9 @@ class Fake:
     (`branch=main`), {"pr:" + workflow file: ...} the pull-request listing (`event=pull_request`); a listing
     that is not given is empty. jobs: {run id: [job]}."""
 
-    def __init__(self, pages, jobs=None):
+    def __init__(self, pages, jobs=None, artifacts=None):
         self.pages, self.jobs, self.calls, self.pulls = pages, jobs or {}, [], {}
+        self.artifacts = artifacts or {}       # {run id: [(artifact id, name, zip bytes or an exception to raise)]}
         self.lock = threading.Lock()
 
     def __call__(self, path):
@@ -66,6 +68,22 @@ class Fake:
         if "/jobs" in path:
             rid = int(path.split("/runs/")[1].split("/")[0])
             return {"jobs": self.jobs.get(rid, [job("only job", 10)])}
+        if path.endswith("/artifacts?per_page=100"):
+            rid = int(path.split("/runs/")[1].split("/")[0])
+            return {"artifacts": [{"id": aid, "name": name, "expired": False, "size_in_bytes": 10} for aid, name, _ in self.artifacts.get(rid, [])]}
+        raise AssertionError(path)
+
+    def blob(self, path):
+        """The artifact download double: the zip bytes of the artifact id in `.../artifacts/<id>/zip`."""
+        with self.lock:
+            self.calls.append(path)
+        aid = int(path.split("/artifacts/")[1].split("/")[0])
+        for items in self.artifacts.values():
+            for a, _, data in items:
+                if a == aid:
+                    if isinstance(data, Exception):
+                        raise data
+                    return data
         raise AssertionError(path)
 
     def job_calls(self):
@@ -84,7 +102,7 @@ def go(fake, src_doc=None, extra=()):
         if src_doc is not None:
             src.write_text(src_doc if isinstance(src_doc, str) else json.dumps(src_doc))
         with contextlib.redirect_stdout(io.StringIO()):
-            code = h.main(["--in", str(src), "--out", str(out), *extra], api=fake, now=NOW)
+            code = h.main(["--in", str(src), "--out", str(out), *extra], api=fake, now=NOW, blob=fake.blob)
         return code, (json.loads(out.read_text()) if out.exists() else None), (out.read_text() if out.exists() else "")
 
 
@@ -427,6 +445,115 @@ class HistoryTest(unittest.TestCase):
         self.assertEqual(len(fake.list_calls("ci.yml")), 2)
 
 
+def results_zip(job_name, failed=(), passed=(), member="test-results.json", payload=None):
+    """The zip tools/ci-test-results.py's artifact holds."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr(member, payload if payload is not None else json.dumps({"v": 1, "job": job_name, "failed": list(failed), "passed": list(passed)}))
+    return buf.getvalue()
+
+
+JOB = "host unit tests (default features)"
+OTHER_JOB = "host unit tests (hostsim)"
+
+
+class FlakyTest(unittest.TestCase):
+    """Per-test results: a test is flaky when one job of one run gave it a pass AND a fail."""
+
+    def flaky_doc(self, runs, artifacts, extra=(), src_doc=None):
+        pushes, pulls = [r for r in runs if r["event"] == "push"], [r for r in runs if r["event"] == "pull_request"]
+        fake = Fake({"ci.yml": [pushes], "pr:ci.yml": [pulls], "simulators.yml": [[]]}, artifacts=artifacts)
+        code, doc, text = go(fake, src_doc, extra)
+        self.assertEqual(code, 0)
+        return fake, doc, text
+
+    def test_a_test_that_failed_in_attempt_one_and_passed_in_attempt_two_is_recorded(self):
+        fake, doc, _ = self.flaky_doc([run(1, conclusion="success", attempt=2, pr=7, event="pull_request")], {1: [
+            (10, "test-results-host-unit-default-1", results_zip(JOB, failed=["plx_ui::a"], passed=["plx_ui::b", "plx_base::c"])),
+            (11, "test-results-host-unit-default-2", results_zip(JOB, passed=["plx_ui::a", "plx_ui::b", "plx_base::c"])),
+            (12, "cargo-timings-host-unit-default", b"not ours")]})
+        self.assertEqual(doc["flaky"], [{"run": 1, "at": doc["ci"][0]["at"], "sha": f"{1:040x}"[:9], "pr": 7, "job": JOB,
+                                         "test": "plx_ui::a", "fail": [1], "pass": [2]}])
+        self.assertFalse([c for c in fake.calls if "/artifacts/12/" in c], "only test-results-* artifacts are downloaded")
+
+    def test_a_green_first_attempt_is_not_fetched_and_a_plain_failure_is_not_a_flake(self):
+        fake, doc, _ = self.flaky_doc([run(1), run(2, 2, conclusion="failure")], {
+            2: [(20, "test-results-host-unit-default-1", results_zip(JOB, failed=["plx_ui::a"], passed=["plx_ui::b"]))]})
+        self.assertEqual(doc["flaky"], [])
+        self.assertEqual([c for c in fake.calls if "/artifacts" in c], ["repos/GLinnik21/plx-native/actions/runs/2/artifacts?per_page=100",
+                                                                          "repos/GLinnik21/plx-native/actions/artifacts/20/zip"])
+
+    def test_a_test_missing_from_the_second_attempt_did_not_pass_there_and_jobs_are_never_merged(self):
+        _, doc, _ = self.flaky_doc([run(1, attempt=2, conclusion="success")], {1: [
+            (10, "test-results-host-unit-default-1", results_zip(JOB, failed=["a", "b"], passed=["c"])),
+            (11, "test-results-host-unit-default-2", results_zip(JOB, passed=["a", "c"])),
+            (12, "test-results-host-unit-hostsim-1", results_zip(OTHER_JOB, failed=["c"]))]})
+        self.assertEqual([(e["job"], e["test"], e["fail"], e["pass"]) for e in doc["flaky"]], [(JOB, "a", [1], [2])])
+
+    def test_a_fork_runs_artifacts_are_never_read(self):
+        fake, doc, _ = self.flaky_doc([run(1, attempt=2, event="pull_request", owner="stranger")], {1: [
+            (10, "test-results-host-unit-default-1", results_zip(JOB, failed=["a"])), (11, "test-results-host-unit-default-2", results_zip(JOB, passed=["a"]))]})
+        self.assertEqual(doc["flaky"], [])
+        self.assertEqual([c for c in fake.calls if "/artifacts" in c], [])
+
+    def test_a_rerun_replaces_the_runs_events_and_an_unchanged_second_pass_rewrites_the_same_bytes(self):
+        arts = {1: [(10, "test-results-host-unit-default-1", results_zip(JOB, failed=["a"], passed=["b"])),
+                    (11, "test-results-host-unit-default-2", results_zip(JOB, passed=["a", "b"]))]}
+        _, first, text1 = self.flaky_doc([run(1, attempt=2)], arts)
+        self.assertEqual(len(first["flaky"]), 1)
+        _, again, text2 = self.flaky_doc([run(1, attempt=2)], arts, src_doc=text1)
+        self.assertEqual(text1, text2)
+        # attempt 3 is a different signature: the run is recorded again and its events are recomputed from scratch
+        arts[1].append((12, "test-results-host-unit-default-3", results_zip(JOB, failed=["b"], passed=["a"])))
+        _, third, _ = self.flaky_doc([run(1, attempt=3)], arts, src_doc=text1)
+        self.assertEqual([(e["test"], e["fail"], e["pass"]) for e in third["flaky"]], [("a", [1], [2, 3]), ("b", [3], [1, 2])])
+
+    def test_events_past_retention_are_dropped(self):
+        old = {"run": 5, "at": "2026-06-01T00:00:00Z", "sha": "s", "pr": None, "job": JOB, "test": "t", "fail": [1], "pass": [2]}
+        recent = {**old, "run": 6, "at": "2026-09-30T00:00:00Z"}
+        _, doc, _ = self.flaky_doc([], {}, src_doc={"updated": "u", "ci": [], "sim": [], "nightly": [], "flaky": [old, recent]})
+        self.assertEqual([e["run"] for e in doc["flaky"]], [6])
+
+    def test_a_run_with_more_flakes_than_the_limit_is_an_outage_and_records_none(self):
+        names = [f"t{i:03d}" for i in range(h.RUN_EVENT_LIMIT + 20)]
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            _, doc, _ = self.flaky_doc([run(1, attempt=2)], {1: [
+                (10, "test-results-host-unit-default-1", results_zip(JOB, failed=names)), (11, "test-results-host-unit-default-2", results_zip(JOB, passed=names))]})
+        self.assertEqual(doc["flaky"], [])
+        self.assertIn("::warning::", err.getvalue())
+        self.assertIn(f"run 1 has {len(names)} flaky tests", err.getvalue())
+
+    def test_a_late_rerun_whose_artifacts_expired_keeps_the_recorded_events(self):
+        stored = {"run": 1, "at": stamp(T0 + timedelta(minutes=1)), "sha": "s", "pr": None, "job": JOB, "test": "kept", "fail": [1], "pass": [2]}
+        arts = {1: [(12, "test-results-host-unit-default-3", results_zip(JOB, passed=["kept"]))]}
+        _, doc, _ = self.flaky_doc([run(1, attempt=3)], arts, src_doc={"updated": "u", "ci": [], "sim": [], "nightly": [], "flaky": [stored]})
+        self.assertEqual(doc["flaky"], [stored])
+
+    def test_a_download_that_fails_is_a_warning_and_the_runs_stored_events_stay(self):
+        stored = {"run": 1, "at": stamp(T0 + timedelta(minutes=1)), "sha": "s", "pr": None, "job": JOB, "test": "kept", "fail": [1], "pass": [2]}
+        arts = {1: [(10, "test-results-host-unit-default-1", h.ApiError("boom"))]}
+        fake = Fake({"ci.yml": [[run(1, attempt=2)]], "simulators.yml": [[]]}, artifacts=arts)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code, doc, _ = go(fake, {"updated": "u", "ci": [{"id": 1, "at": "x", "sha": "s", "title": "t", "conclusion": "success", "attempt": 1, "jobs": {}}],
+                                     "sim": [], "nightly": [], "flaky": [stored]})
+        self.assertEqual(code, 0)
+        self.assertEqual(doc["flaky"], [stored])
+        self.assertIn("no per-test results for run 1", err.getvalue())
+
+    def test_a_hostile_artifact_is_ignored_not_trusted(self):
+        big = json.dumps({"v": 1, "job": JOB, "failed": [], "passed": ["x" * 100] * (h.RESULTS_BYTES // 100 + 10)})
+        for bad in (b"not a zip", results_zip(JOB, member="other.json"), results_zip(JOB, payload="{"), results_zip(JOB, payload="[]"),
+                    results_zip(JOB, payload=json.dumps({"job": JOB, "failed": "a", "passed": []})),
+                    results_zip(JOB, payload=json.dumps({"job": JOB, "failed": [1], "passed": []})),
+                    results_zip(JOB, failed=["x" * (h.RESULTS_NAME_LEN + 1)]),
+                    results_zip(JOB, failed=["a\x1b[31m"]), results_zip("j" * 101, failed=["a"]),
+                    results_zip(JOB, payload=big)):
+            self.assertIsNone(h.parse_results(bad), bad[:40])
+        self.assertEqual(h.parse_results(results_zip(JOB, failed=["a"], passed=["a", "b"])), (JOB, {"a"}, {"b"}))
+
+
 SITE_CI = Path(__file__).resolve().parents[1] / "site" / "ci"
 
 
@@ -456,6 +583,19 @@ class PageTest(unittest.TestCase):
         script = (SITE_CI / "index.html").read_text(encoding="ascii")
         for needle in ("r.conclusion", "attempt", "pull_request", "r.wall", "ci-history.json", "ci-summary.json", "build-history.json"):
             self.assertIn(needle, script)
+
+    def test_the_flaky_section_draws_the_summarys_list_and_escapes_every_name_from_an_artifact(self):
+        page = (SITE_CI / "index.html").read_text(encoding="ascii")
+        self.assertIn('id="flaky"', page)
+        script = page[page.index("<script>"):]
+        row, section = script[script.index("function flakyRow"):script.index("function renderFlaky")], script[script.index("function renderFlaky"):script.index("function renderBenchShell")]
+        for needle in ("SUMMARY.flaky", "f.status", "f.new", "f.first_seen", "f.last_seen", "f.count"):
+            self.assertIn(needle, row + section)
+        # a test, job, sha or pull request number is text somebody's workflow wrote: nothing reaches innerHTML raw
+        for raw in ("${f.test}", "${f.job}", "${f.status}", "${f.count}", "${last.sha}", "${last.pr}"):
+            self.assertNotIn(raw, row + section)
+        for escaped in ("esc(f.test)", "esc(f.job)", "esc(last.sha)", "esc(last.pr)"):
+            self.assertIn(escaped, row)
 
     def test_the_local_build_charts_judge_noise_per_row_and_show_failures_and_the_runner(self):
         page = (SITE_CI / "index.html").read_text(encoding="ascii")

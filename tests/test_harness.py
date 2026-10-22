@@ -2184,20 +2184,59 @@ class CompletionCase(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("froze", why)
 
-    def test_only_a_case_that_asks_to_reach_the_end_may_name_the_short_clip(self):
-        """The rule is not "exactly one case", which is what it said while there was one — it is
-        that a case graded through a TEARDOWN has to have asked for one. The short clip ends inside
-        every window, so any case naming it without `reaches_eos` would have its assertions cut off
-        by a finish it never declared."""
+    def test_a_finish_with_the_playhead_short_of_the_duration_is_still_a_finish(self):
+        """Since #865 the pump ends the film on the pipeline's own end-of-stream as well as on
+        `pos >= dur - 1s`, and the clip whose audio outlasts its picture (`pipe_finish_audio_tail`)
+        reads `playpos=19s/23s`: four seconds short, by construction. The assertion is the line and
+        the teardown behind it; a check of the playhead against the duration added here would fail
+        the one clip built to end the other way."""
+        eos = "EOS reached: playpos=19s/23s -> ended\n"
+        ok, why = run.a_finished([self.POS, eos, self.TORN])
+        self.assertTrue(ok, why)
+
+    def test_only_a_case_that_asks_to_reach_the_end_may_name_a_clip_that_runs_out(self):
+        """The rule is not "exactly one case", which is what it said while there was one, and not
+        "exactly one clip" either, which it said until a clip whose audio outlasts its picture
+        joined (#865) — it is that a case graded through a TEARDOWN has to have asked for one.
+        Every clip a `reaches_eos` case names ENDS inside its window, so any case naming it
+        without `reaches_eos` would have its assertions cut off by a finish it never declared."""
         cases = _manifest()["pipeline_cases"]
         eos = [c for c in cases if c["expect"].get("reaches_eos")]
         self.assertTrue(eos, "no case reaches EOS — LG #46 has nothing behind it")
-        short = {c["fixture"] for c in eos}
-        self.assertEqual(len(short), 1, f"the completion cases disagree on which clip ends: {short}")
+        runs_out = {c["fixture"] for c in eos}
         strays = [c["name"] for c in cases
-                  if c["fixture"] in short and not c["expect"].get("reaches_eos")]
-        self.assertFalse(strays, f"the short clip ENDS mid-window; {strays} would be graded "
+                  if c["fixture"] in runs_out and not c["expect"].get("reaches_eos")]
+        self.assertFalse(strays, f"{sorted(runs_out)} END mid-window; {strays} would be graded "
                                  f"through a teardown they never asked for")
+
+    def test_every_clip_a_finish_case_names_ends_inside_the_cap_it_is_given(self):
+        """The bound `_resolve_fixtures` skips on, pinned statically against the generator's own
+        table: a clip that must be played out `1 + replays` times inside 0.6 of the case's cap. The
+        runtime check only fires on a pack someone regenerated; this one fires on the edit that
+        made the manifest and the generator disagree, before any pack exists."""
+        shapes = fixturegen.PIPE_SHAPES
+        for c in _manifest()["pipeline_cases"]:
+            exp = c["expect"]
+            if not exp.get("reaches_eos"):
+                continue
+            key, _, ext = c["fixture"].rpartition(".")
+            self.assertIn(key, shapes, f"{c['name']} names a clip the generator does not build")
+            self.assertEqual(ext, shapes[key]["ext"], c["name"])
+            views = 1 + exp.get("replays", 0)
+            self.assertLessEqual(
+                shapes[key]["duration"] * views, 0.6 * c["run_secs"],
+                f"{c['name']}: {shapes[key]['duration']}s x {views} viewing(s) does not fit "
+                f"0.6 x {c['run_secs']}s, so `_resolve_fixtures` would skip it on a pack built "
+                f"at the declared length")
+
+    def test_a_clip_whose_audio_outlasts_its_picture_is_named_by_a_finish_case(self):
+        """`audio_tail_s` exists to make a clip that only the pipeline's own end-of-stream can end,
+        so a shape carrying it that no `reaches_eos` case names is media nothing grades."""
+        named = {c["fixture"] for c in _manifest()["pipeline_cases"]
+                 if c["expect"].get("reaches_eos")}
+        for key, spec in fixturegen.PIPE_SHAPES.items():
+            if spec.get("audio_tail_s"):
+                self.assertIn(f"{key}.{spec['ext']}", named, key)
 
     def test_the_replay_case_grades_both_halves_of_46(self):
         """#46 is "replay AFTER completion", so the case that grades the replay must also be the
@@ -4531,6 +4570,131 @@ class LateAudioFixture(unittest.TestCase):
         climbing = [f"loop=100 fps=60 pos={t}s stage=Playing" for t in range(0, 20)]
         self.assertTrue(run.a_timeline_climb(climbing, 15, dense_only=True)[0])
         self.assertFalse(run.a_audio_feed_ready(["feed v#1 sz=9 fed=0 reply=O qbytes=1"])[0])
+
+
+class AudioTailFixture(unittest.TestCase):
+    """The clip whose audio outlasts its picture and its case (#865): 20 s of video, 23 s of audio.
+
+    Static only. The clip is only worth anything if its audio really runs past the pump's
+    one-second tolerance, and the case is only worth anything if it names that clip and ends it.
+    """
+
+    KEY = "pipe_h264_ac3_audio_tail"
+
+    def _packets(self, video_end=20.0, audio_end=23.0):
+        v = [{"stream_index": 0, "pts_time": f"{i / 24.0:.3f}", "duration_time": "0.041667"}
+             for i in range(int(video_end * 24))]
+        a = [{"stream_index": 1, "pts_time": f"{i * 0.032:.3f}", "duration_time": "0.032000"}
+             for i in range(int(audio_end / 0.032))]
+        return v + a
+
+    def _argv(self, spec, dur):
+        captured = []
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(fixturegen, "run",
+                                  side_effect=lambda argv, quiet=True: captured.append(list(argv)) or ""):
+            work = fixturegen.Path(d)
+            fixturegen.build_generic(mock.Mock(markers=False), self.KEY, spec, dur, None,
+                                     work / "out.mkv", work)
+        return captured[0]
+
+    def test_the_streams_ends_are_the_last_packet_plus_its_duration(self):
+        video_end, audio_end = fixturegen.stream_ends(self._packets(), 0, 1)
+        self.assertAlmostEqual(video_end, 20.0, delta=0.05)
+        self.assertAlmostEqual(audio_end, 23.0, delta=0.05)
+
+    def test_a_missing_stream_or_timestamp_is_refused_not_zeroed(self):
+        with self.assertRaises(ValueError):
+            fixturegen.stream_ends([p for p in self._packets() if p["stream_index"] == 0], 0, 1)
+        broken = self._packets()
+        broken[-1] = {"stream_index": 1, "duration_time": "0.032"}
+        with self.assertRaises(ValueError):
+            fixturegen.stream_ends(broken, 0, 1)
+
+    def _verify(self, packets, spec=None):
+        spec = spec or fixturegen.PIPE_SHAPES[self.KEY]
+        streams = [{"codec_type": "video", "index": 0}, {"codec_type": "audio", "index": 1}]
+        rec, problems = {}, []
+        with mock.patch.object(fixturegen, "run",
+                               return_value=json.dumps({"packets": packets})):
+            fixturegen.verify_audio_tail("x.mkv", spec, streams, rec, problems)
+        return rec, problems
+
+    def test_a_clip_with_its_tail_verifies_and_records_both_ends(self):
+        rec, problems = self._verify(self._packets())
+        self.assertEqual(problems, [])
+        self.assertAlmostEqual(rec["audio_tail"]["tail_s"], 3.0, delta=0.1)
+
+    def test_a_clip_that_lost_its_tail_fails_the_build(self):
+        """The audio cut at the picture's end verifies clean on every other axis, and a player
+        without the #865 fix then ends it on the old arithmetic, so the case grades nothing."""
+        _, problems = self._verify(self._packets(audio_end=20.0))
+        self.assertTrue(any("wanted at least 2.0s" in p for p in problems), problems)
+
+    def test_a_tail_inside_the_pumps_tolerance_fails_even_if_declared(self):
+        """1.5 s past the picture is under the 2 s floor, whatever the shape asked for."""
+        spec = dict(fixturegen.PIPE_SHAPES[self.KEY], audio_tail_s=1.5)
+        _, problems = self._verify(self._packets(audio_end=21.5), spec)
+        self.assertTrue(any("wanted at least 2.0s" in p for p in problems), problems)
+
+    def test_a_tail_other_than_the_declared_one_fails_the_build(self):
+        _, problems = self._verify(self._packets(audio_end=25.0))
+        self.assertTrue(any("declares 3s" in p for p in problems), problems)
+
+    def test_the_picture_is_the_file_less_the_tail_and_no_other_shape_has_one(self):
+        spec = fixturegen.PIPE_SHAPES[self.KEY]
+        self.assertEqual((spec["duration"], spec["audio_tail_s"]), (23, 3))
+        self.assertEqual(fixturegen.picture_secs(spec, spec["duration"]), 20)
+        others = [k for k, s in fixturegen.PIPE_SHAPES.items()
+                  if s.get("audio_tail_s") and k != self.KEY]
+        self.assertEqual(others, [], "a second audio-tail shape wants its own case")
+        short = fixturegen.PIPE_SHAPES["pipe_h264_ac3_short"]
+        self.assertEqual(fixturegen.picture_secs(short, short["duration"]), short["duration"])
+
+    def test_the_picture_input_ends_at_the_picture_and_everything_else_at_the_file(self):
+        """Video `-t` 20, audio `-t` 23 and the audio graph's own duration, output `-t` 23: the mux
+        has to run on to the audio's end, and the picture must not be padded to meet it."""
+        argv = self._argv(fixturegen.PIPE_SHAPES[self.KEY], 23)
+        v = next(i for i, a in enumerate(argv) if a.startswith("testsrc2="))
+        self.assertEqual(argv[v - 5:v - 1], ["-t", "20", "-f", "lavfi"])
+        a = next(i for i, a in enumerate(argv) if a.startswith("sine="))
+        self.assertEqual(argv[a - 5:a - 1], ["-t", "23", "-f", "lavfi"])
+        self.assertIn("duration=23", argv[a])
+        self.assertEqual(argv[-3:-1], ["-t", "23"], "the output cap must not cut the tail")
+
+    def test_a_shape_without_a_tail_builds_exactly_as_before(self):
+        short = fixturegen.PIPE_SHAPES["pipe_h264_ac3_short"]
+        argv = self._argv(short, short["duration"])
+        v = next(i for i, a in enumerate(argv) if a.startswith("testsrc2="))
+        self.assertEqual(argv[v - 5:v - 1], ["-t", "20", "-f", "lavfi"])
+        self.assertEqual(argv[-3:-1], ["-t", "20"])
+
+    def test_a_build_shorter_than_its_tail_has_no_picture_and_is_refused(self):
+        with self.assertRaises(fixturegen.Fail):
+            self._argv(fixturegen.PIPE_SHAPES[self.KEY], 3)
+
+    def test_the_burned_in_layout_states_the_pictures_length(self):
+        """verify() rebuilds this from the MEASURED file length, so the V0 line must come out the
+        same from the build's 23 and from the measured 23.005 rounded."""
+        spec = fixturegen.PIPE_SHAPES[self.KEY]
+        line = fixturegen.layout_lines(self.KEY, spec, 23)[1]
+        self.assertTrue(line.endswith(" 20s"), line)
+        self.assertEqual(fixturegen.layout_lines(self.KEY, spec, round(23.005)),
+                         fixturegen.layout_lines(self.KEY, spec, 23))
+
+    def test_the_case_names_the_clip_and_declares_what_it_carries(self):
+        case = next(c for c in _manifest()["pipeline_cases"] if c["name"] == "pipe_finish_audio_tail")
+        spec = fixturegen.PIPE_SHAPES[self.KEY]
+        self.assertEqual(case["fixture"], self.KEY + ".mkv")
+        for k in ("vcodec", "acodec", "fps"):
+            self.assertEqual(case["declare"][k], spec["declare"][k], f"declare.{k} drifted from the shape")
+        self.assertTrue(case["expect"]["reaches_eos"])
+        self.assertEqual(case["expect"]["video_size"], spec["video"]["size"])
+        finish = next(c for c in _manifest()["pipeline_cases"] if c["name"] == "pipe_finish_eos")
+        self.assertEqual(case["expect"], finish["expect"],
+                         "same grading as pipe_finish_eos: the clip is the only thing that differs")
+        self.assertEqual(case["run_secs"], finish["run_secs"])
+        self.assertEqual(case["operations"], finish["operations"])
 
 
 class AbrResponseProfile(unittest.TestCase):

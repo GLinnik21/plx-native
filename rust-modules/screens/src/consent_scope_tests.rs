@@ -213,6 +213,19 @@ fn first_run_separates_crash_and_product_consent() {
         plx_platform::i18n::msg::settings_consent_crash_body().contains("crash report identifier"),
         "the crash question must disclose the identifier it now carries"
     );
+    // The release-health session record is inside the crash-report consent (owner decision
+    // 2026-10-22: the text names it, nobody is re-asked). The first-run question has room for
+    // one short clause; the Privacy page's crash paragraph carries the full description.
+    assert!(
+        plx_platform::i18n::msg::settings_consent_crash_body().contains("hether each app session ended normally"),
+        "the crash question must say session endings are sent"
+    );
+    let crashes = plx_platform::i18n::msg::settings_legal_privacy_crashes_body();
+    assert!(
+        crashes.contains("record of each app session") && crashes.contains("ended normally or in a crash"),
+        "the Privacy page must describe the session record: {crashes}"
+    );
+    assert!(plx_platform::i18n::msg::settings_legal_privacy_local_body().contains("app session in progress"));
     assert!(plx_platform::i18n::msg::settings_consent_product_body().contains("random Analytics ID"));
     for body in [plx_platform::i18n::msg::settings_consent_crash_body(), plx_platform::i18n::msg::settings_consent_product_body()] {
         assert!(
