@@ -3203,6 +3203,8 @@ mod tests {
                         channels: 8,
                         can_normalize_loudness: true,
                         immersive: true,
+                        sample_rate: 0,
+                        bit_depth: 0,
                     },
                     memo: Some(plx_plex::plex::session::prefs::AudioMemo {
                         codec: "eac3".into(),
