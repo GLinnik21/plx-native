@@ -61,7 +61,7 @@ pub const WORD: &str = "player";
 /// The fields [`PlayerScreen::write`] canonicalises, for the recorder's shape pin (§5.4).
 pub const SHAPE: &str =
     "PlayerScreen{hud:{focus:i32,btn:i32,tab:i32,until:u32,dismissed:bool,visible_at_press:bool,\
-     offer:Option<(u32,i64)>,was_standin:bool},scrub:{dir:i32,hold:bool,reveal:bool,drag:bool,\
+     exit_armed:bool,back_leaves_at_press:bool,offer:Option<(u32,i64)>,was_standin:bool},scrub:{dir:i32,hold:bool,reveal:bool,drag:bool,\
      ns:i64},origin:Option<u32>,repair_alert:{open:bool,confirm:bool,scroll:u32}}";
 
 /// **The page this playback was launched from**, as the container's own identity.
@@ -442,7 +442,7 @@ impl PlayerScreen {
     /// nothing to confirm. The target is CANCELLED there, never committed.
     pub fn set_hud_policy(&mut self, policy: HudPolicy) {
         if self.hud_policy == HudPolicy::Hidden && policy != HudPolicy::Hidden {
-            self.hud.dismissed = true;
+            self.hud.hide(false);
         }
         if self.hud_policy == HudPolicy::Normal && policy != HudPolicy::Normal {
             self.scrub.cancel();
@@ -890,18 +890,31 @@ impl PlayerScreen {
             // …except a BACK that finds the transport ON SCREEN: that one hides it, the way an
             // UP-hide does, and the film keeps playing. A second BACK, now over a bare picture,
             // leaves. `visible_at_press` and not `hud_up`, for the reason its own doc gives.
+            //
+            // The two presses apply whether or not the hide can take effect. While the pipeline is
+            // busy (`loading`) the transport is ALWAYS on screen — `hud_visible` ORs it in, so the
+            // hide is latched but invisible, and every later BACK would find the transport up and
+            // hide it again: a first load that stalls with no picture and no error could never be
+            // left. So a BACK that hid the transport while busy ARMS the exit
+            // (`HudState::exit_armed`), and the NEXT BACK leaves even though the transport stayed
+            // up. Leaving on the FIRST busy BACK instead would end the film on one press to clear
+            // the transport after a seek, an audio retranscode hold or an HLS rebuffer. Only a hide
+            // done WHILE busy arms it, and any other bound press spends it
+            // (`HudState::note_fresh_press`), so a rebuffer that pops the transport up after the
+            // viewer hid it in normal play still takes two presses.
             Key::Back if edge == Edge::Down && self.scrub.is_live() => {
                 self.key_back_scrub(now);
                 Handled::Yes
             }
-            // A BACK that finds the transport on screen hides it instead of leaving. While the
-            // pipeline is busy the transport is always on screen and cannot be hidden, so BACK
-            // must leave. Otherwise a load that never shows a picture traps the user.
-            Key::Back if edge == Edge::Down && self.hud.visible_at_press && !plx_media::player::loading(ps) => {
+            Key::Back if edge == Edge::Down && self.hud.back_leaves_at_press => {
+                Self::ask(fx, PlayerReq::Exit);
+                Handled::Yes
+            }
+            Key::Back if edge == Edge::Down && self.hud.visible_at_press => {
                 self.hud.nav.focus = 0;
                 self.scrub.ns = -1;
                 self.scrub.disengage();
-                self.hud.dismissed = true;
+                self.hud.hide(plx_media::player::loading(ps));
                 self.publish();
                 Handled::Yes
             }
@@ -1009,7 +1022,7 @@ impl PlayerScreen {
             self.scrub.disengage();
         }
         if hide {
-            self.hud.dismissed = true;
+            self.hud.hide(false);
         } else {
             self.hud.extend(now, input::HUD_LINGER_MS);
         }
@@ -1395,6 +1408,8 @@ impl LogicalState for PlayerScreen {
             .u32(self.hud.until)
             .bool(self.hud.dismissed)
             .bool(self.hud.visible_at_press)
+            .bool(self.hud.exit_armed)
+            .bool(self.hud.back_leaves_at_press)
             .bool(self.hud.was_standin);
         c.option(self.hud.last_offer.as_ref(), |c, (kind, at)| {
             c.u32(*kind as u32).u64(*at as u64);
@@ -1810,6 +1825,15 @@ mod step_ladder_tests {
         page.hud.visible_at_press = true;
     }
 
+    /// One BOUND key press as the app delivers it: `note_global_press` samples the fresh-press
+    /// state (`HudState::note_fresh_press`) and only then does the page's `key` arm run. [`fresh`]
+    /// skips that sample, which is right for a test of one arm's body and wrong for anything about
+    /// what the PREVIOUS press left behind — the two-press BACK reads exactly that.
+    fn bound_press(page: &mut PlayerScreen, sym: u32, wcode: u32) -> (Handled, Vec<PlayerReq>) {
+        page.hud.note_fresh_press(TestHost::session(&cx()), 1_000, false);
+        press(page, sym, wcode, Edge::Down)
+    }
+
     /// The census's other half: a control the frame does NOT draw registers no stop, so a click
     /// there reaches the picture (play/pause) rather than a blind action. A hidden HUD registers
     /// nothing; with an Info card or Chapters strip over the middle (`transport == false`) only
@@ -2104,20 +2128,131 @@ mod step_ladder_tests {
         assert_eq!(reqs, vec![PlayerReq::Exit], "the second BACK leaves");
     }
 
-    /// **BACK leaves a stalled load.** While the pipeline is busy the transport cannot be hidden
-    /// (`hud_visible` keeps it up), so BACK must exit on every press instead of trying to hide it.
+    /// **BACK leaves a stalled load, on the second press.** While the pipeline is busy the transport
+    /// cannot be hidden (`hud_visible` keeps it up), so a first load that stalls with no picture and
+    /// no error would be a trap if BACK could only ever hide: every press would find the transport
+    /// up. The first BACK hides it (latched, and it ARMS the exit); the second leaves.
     #[test]
-    fn back_leaves_a_stalled_load_every_time() {
+    fn back_leaves_a_stalled_load_on_the_second_press() {
+        use plx_media::player::PlaybackState::{Buffering, Resolving};
+        let _g = plx_base::testlock::serial();
+        for busy in [Resolving, Buffering] {
+            let was = plx_media::player::swap_state_for_test(busy);
+            let mut page = PlayerScreen::new(ENTRY);
+            let (handled, first) = bound_press(&mut page, 0, WCODE_BACK);
+            let latched = (page.hud.dismissed, page.hud.exit_armed);
+            let (_, second) = bound_press(&mut page, 0, WCODE_BACK);
+            plx_media::player::restore_state_for_test(was);
+            assert_eq!(handled, Handled::Yes);
+            assert_eq!(first, vec![], "the first BACK over a {busy:?} load only hides the transport");
+            assert_eq!(latched, (true, true), "{busy:?}: the hide is latched and arms the exit");
+            assert_eq!(second, vec![PlayerReq::Exit], "the second BACK over a {busy:?} load leaves");
+        }
+    }
+
+    /// A BACK during a mid-film seek (the scrub was committed, so no scrub is live) hides the
+    /// transport on the first press; it must not end the film.
+    #[test]
+    fn back_during_a_seek_hides_rather_than_leaves() {
+        let _g = plx_base::testlock::serial();
+        let was = plx_media::player::swap_state_for_test(plx_media::player::PlaybackState::Seeking);
+        let mut page = PlayerScreen::new(ENTRY);
+        assert!(!page.scrub.is_live(), "the fixture: a committed seek leaves no live scrub");
+        let (handled, reqs) = bound_press(&mut page, 0, WCODE_BACK);
+        plx_media::player::restore_state_for_test(was);
+        assert_eq!(handled, Handled::Yes);
+        assert_eq!(reqs, vec![], "BACK during a seek must not leave the film");
+        assert!(page.hud.dismissed, "BACK during a seek latches the hide");
+    }
+
+    /// …and the second BACK, with the seek still in flight and the transport still up, leaves: the
+    /// viewer who asked twice meant it.
+    #[test]
+    fn a_second_back_during_a_seek_leaves() {
+        let _g = plx_base::testlock::serial();
+        let was = plx_media::player::swap_state_for_test(plx_media::player::PlaybackState::Seeking);
+        let mut page = PlayerScreen::new(ENTRY);
+        let (_, first) = bound_press(&mut page, 0, WCODE_BACK);
+        let (_, second) = bound_press(&mut page, 0, WCODE_BACK);
+        plx_media::player::restore_state_for_test(was);
+        assert_eq!(first, vec![], "the first BACK only hides");
+        assert_eq!(second, vec![PlayerReq::Exit], "the second BACK leaves");
+    }
+
+    /// A BACK-hide in normal play does NOT arm the exit: a rebuffer that pops the transport back up
+    /// afterwards still costs two presses, because that viewer has not asked to leave.
+    #[test]
+    fn a_back_hide_in_play_does_not_arm_the_exit_for_a_later_rebuffer() {
+        use plx_media::player::PlaybackState::{Buffering, Playing};
+        let _g = plx_base::testlock::serial();
+        let was = plx_media::player::swap_state_for_test(Playing);
+        let mut page = PlayerScreen::new(ENTRY);
+        page.hud.until = 5_000; // the transport is up and lingering
+        let (_, hide) = bound_press(&mut page, 0, WCODE_BACK);
+        let hidden = (page.hud.dismissed, page.hud.exit_armed);
+        plx_media::player::swap_state_for_test(Buffering);
+        let (_, one) = bound_press(&mut page, 0, WCODE_BACK);
+        let (_, two) = bound_press(&mut page, 0, WCODE_BACK);
+        plx_media::player::restore_state_for_test(was);
+        assert_eq!(hide, vec![], "the first BACK hides the transport");
+        assert_eq!(hidden, (true, false), "…and, with nothing busy, arms nothing");
+        assert_eq!(one, vec![], "one BACK over the rebuffer hides again");
+        assert_eq!(two, vec![PlayerReq::Exit], "the next one leaves");
+    }
+
+    /// An UP-hide is a hide that arms nothing either: UP from the control row, then a rebuffer, and
+    /// one BACK still only hides.
+    #[test]
+    fn an_up_hide_does_not_arm_the_exit_for_a_later_rebuffer() {
+        use plx_media::player::PlaybackState::{Buffering, Playing};
+        let _g = plx_base::testlock::serial();
+        let was = plx_media::player::swap_state_for_test(Playing);
+        let mut page = PlayerScreen::new(ENTRY);
+        page.hud.until = 5_000;
+        page.hud.nav.focus = 1; // on the control row, where UP hides
+        bound_press(&mut page, SDLK_UP, 0);
+        let hidden = (page.hud.dismissed, page.hud.exit_armed);
+        plx_media::player::swap_state_for_test(Buffering);
+        let (_, one) = bound_press(&mut page, 0, WCODE_BACK);
+        plx_media::player::restore_state_for_test(was);
+        assert_eq!(hidden, (true, false), "the fixture: UP hid the transport and armed nothing");
+        assert_eq!(one, vec![], "one BACK over the rebuffer does not leave");
+    }
+
+    /// Any other bound press between the two BACKs spends the arming: BACK, DOWN, BACK is a hide, a
+    /// move and another hide — not a request to leave.
+    #[test]
+    fn another_bound_press_between_the_backs_disarms_the_exit() {
         let _g = plx_base::testlock::serial();
         let was = plx_media::player::swap_state_for_test(plx_media::player::PlaybackState::Buffering);
         let mut page = PlayerScreen::new(ENTRY);
-        for press_no in 1..=3 {
-            fresh(&mut page);
-            let (handled, reqs) = press(&mut page, 0, WCODE_BACK, Edge::Down);
-            assert_eq!(handled, Handled::Yes);
-            assert_eq!(reqs, vec![PlayerReq::Exit], "BACK press {press_no} while loading");
-        }
+        let (_, first) = bound_press(&mut page, 0, WCODE_BACK);
+        bound_press(&mut page, SDLK_DOWN, 0);
+        // DOWN walks the ring; it must not have started a scrub, whose own BACK arm would then
+        // swallow the next press and make this test pass without the disarm.
+        let scrubbing = page.scrub.is_live();
+        let (_, third) = bound_press(&mut page, 0, WCODE_BACK);
+        let (_, fourth) = bound_press(&mut page, 0, WCODE_BACK);
         plx_media::player::restore_state_for_test(was);
+        assert_eq!(first, vec![]);
+        assert!(!scrubbing, "the fixture: DOWN started no scrub");
+        assert_eq!(third, vec![], "a BACK after another key is a fresh first BACK");
+        assert_eq!(fourth, vec![PlayerReq::Exit], "…and it re-arms the exit for the next one");
+    }
+
+    /// Anything that un-dismisses the transport between the two BACKs disarms the exit too: a
+    /// segment offer raising it (`raise_for_offer`) leaves the next BACK a first BACK again.
+    #[test]
+    fn a_segment_offer_between_the_backs_disarms_the_exit() {
+        let _g = plx_base::testlock::serial();
+        let was = plx_media::player::swap_state_for_test(plx_media::player::PlaybackState::Buffering);
+        let mut page = PlayerScreen::new(ENTRY);
+        let (_, first) = bound_press(&mut page, 0, WCODE_BACK);
+        page.hud.raise_for_offer(1_000, 1);
+        let (_, second) = bound_press(&mut page, 0, WCODE_BACK);
+        plx_media::player::restore_state_for_test(was);
+        assert_eq!(first, vec![]);
+        assert_eq!(second, vec![], "an offer put the transport back: this BACK is a first one");
     }
 
     /// STOP leaves even with the transport up, and BACK's key-up edge does nothing either way.
