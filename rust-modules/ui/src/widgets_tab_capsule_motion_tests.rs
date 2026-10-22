@@ -1054,9 +1054,12 @@ fn a_plated_focus_capsules_cast_fades_with_it_both_ways() {
         let inks = crate::draw_census::capture_inks(|| {
             draw_strip(Painter::recording(), strip, &lays, top, h, 0.0, TabGround::Plated { pop: 1.0 });
         });
+        // The cast must be the OUTSIDE-only shadow (tag 5): the interior-painting one (tag 4) shows
+        // through a translucent capsule as it fades.
+        assert!(inks.iter().all(|(t, _, _)| *t != 4), "a capsule's cast is drawn outside its outline only");
         let sum = |tag: u64| inks.iter().filter(|(t, _, _)| *t == tag).map(|(_, _, a)| *a).sum::<f32>();
         let fill = inks.iter().filter(|(t, _, _)| *t == 8).map(|(_, _, a)| *a).fold(0.0, f32::max);
-        (sum(4) / full, fill, inks.iter().any(|(t, _, _)| *t == 2))
+        (sum(5) / full, fill, inks.iter().any(|(t, _, _)| *t == 2))
     };
     let mut trace = Vec::new();
     for _ in 0..60 { trace.push(frame(&mut strip, 0)); }
@@ -1072,13 +1075,15 @@ fn a_plated_focus_capsules_cast_fades_with_it_both_ways() {
     assert!(out.2, "…only the selection plate remains");
     assert!((back.0 - 1.0).abs() < 1e-3, "after focus returns the cast is whole again ({})", back.0);
     assert!(back.1 > 0.99, "…and so is the fill ({})", back.1);
-    // the cast rides the fill's own spring, so each frame it IS the fill's alpha (as a share of full)
+    // the cast leads the fill out: <=10% of full once the capsule is at half alpha, whole at rest
     for (n, t) in trace.iter().enumerate() {
-        assert!((t.0 - t.1).abs() < 1e-3, "frame {n}: the cast ({}) is not the fill's alpha ({})", t.0, t.1);
+        if t.1 <= 0.5 { assert!(t.0 <= 0.1, "frame {n}: the cast ({}) outlives the fill ({})", t.0, t.1); }
+        if t.1 > 0.999 { assert!((t.0 - 1.0).abs() < 1e-3, "frame {n}: a settled capsule wears the whole cast ({})", t.0); }
     }
+    // the cast is a smoothstep of the fill (slope up to 3x over [0.5, 1]): it may move 3x as fast per frame, never a step
     for (n, pair) in trace.windows(2).enumerate() {
         let (dc, df) = ((pair[1].0 - pair[0].0).abs(), (pair[1].1 - pair[0].1).abs());
-        assert!(dc <= 0.12, "frame {}: the cast jumped {dc} in one frame ({} -> {})", n + 1, pair[0].0, pair[1].0);
+        assert!(dc <= 0.35, "frame {}: the cast jumped {dc} in one frame ({} -> {})", n + 1, pair[0].0, pair[1].0);
         assert!(df <= 0.12, "frame {}: the fill jumped {df} in one frame ({} -> {})", n + 1, pair[0].1, pair[1].1);
     }
 }

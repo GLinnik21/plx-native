@@ -342,7 +342,7 @@ pub mod draw_census {
             }
         });
     }
-    /// Every rounded-rect fill (tag 2), shadow (4) and rimmed fill (8) a recording painter is handed
+    /// Every rounded-rect fill (tag 2), shadow (4), outside-only shadow (5) and rimmed fill (8) a recording painter is handed
     /// while `f` runs, as `(tag, screen rect, effective alpha)`, in draw order.
     pub fn capture_inks(f: impl FnOnce()) -> Vec<(u64, Rect, f32)> {
         INKS.with(|l| *l.borrow_mut() = Some(Vec::new()));
@@ -1007,6 +1007,8 @@ impl Painter {
     /// `shadow`'s under-the-rim band would show as a frame; a separate entry point rather than a flag
     /// on the tile path, because a tile pays a rounded-rect SDF for a region it covers anyway.
     pub fn shadow_outside(self, r: Rect, radius: f32, blur: f32, off_y: f32, col: [f32; 4]) {
+        #[cfg(any(test, feature = "test-support"))]
+        if self.records() { draw_census::note_ink(5, self.place(r), self.c(col)[3]); }
         if self.declare(Rect::new(r.x-blur,r.y+off_y-blur,r.w+2.0*blur,r.h+2.0*blur), 5, |data| {
             use frame::backdrop::Value;
             radius.record(data);
