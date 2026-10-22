@@ -719,7 +719,11 @@ its ground participate in backdrop discovery, including texture changes and UV c
   and draws none). On a poster deck (Home's, Recommended's) the mark leads the FIRST line the Under
   posters setting draws (`registry::captions::label`): the title when Title is On, else the details
   line ("8m left"), hanging to the left of a line that is centred as if it were not there; with the
-  title and the details both off (Nothing) no line is drawn and so no mark. Watch state does not
+  title and the details both off (Nothing) no line is drawn and so no mark, EXCEPT on the deck: its
+  progress line ("S3 · E4 · 18m left") is the tile's state and is always shown, Nothing included (the
+  owner's 2026-10-22 call; `captions::deck_policy`), so the deck's band keeps one line (two with the
+  Title On) and the mark leads that line. The band is per shelf, so it never changes as focus walks
+  the row. Watch state does not
   withdraw it — `widgets::still_glyph` is the whole rule, graded by an exhaustive table, because
   the clause that failed first was the absent one: the glyph used to be decided by `PosterMark`
   FIRST, so an in-progress tile drew nothing and a Continue Watching deck — almost entirely

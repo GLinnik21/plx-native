@@ -23,8 +23,12 @@
 //!   details line: a deck that plays on OK announces it under every setting that draws a line). With
 //!   Title Off and Details set to Nothing no band is opened ([`plx_ui::caption_policy::band_h`]) and
 //!   no line carries a mark; with Details Nothing the state line is dropped with the details line, so
-//!   only the title (if on) shows.
-//! - The band's height is [`plx_ui::caption_policy::band_h`] of the same policy, everywhere: a
+//!   only the title (if on) shows, **except on the Continue Watching deck** (the owner's 2026-10-22
+//!   call): there the progress line is the tile's state and is ALWAYS shown, Nothing included
+//!   ([`deck_policy`]), and the mark leads it when the deck plays. The deck's band is per SHELF, so
+//!   it never changes as focus walks the row.
+//! - The band's height is [`plx_ui::caption_policy::band_h`] of the same policy, everywhere (the deck
+//!   shelf's policy being [`deck_policy`] of the setting): a
 //!   shelf is handed the policy ([`plx_ui::cards::Shelf::set_caption_policy`]) and reserves, opens
 //!   and reveals its band from it, so the label and the room for it cannot disagree.
 use plx_ui::caption_policy::{caption_lines, CaptionFacts, CaptionPolicy, DetailsKind};
@@ -47,6 +51,17 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
+/// **The policy the Continue Watching deck follows** (the owner's 2026-10-22 call): the progress
+/// line is the tile's state and is always shown, so Details Nothing is read as a details line being
+/// present (it is the state line); every other kind, and the Title switch, stand. The deck shelf is
+/// handed this policy (so its band, [`plx_ui::caption_policy::band_h`], opens one line under
+/// Nothing, two with Title On, per shelf and never per tile) and [`shelf_label`] words its tiles by
+/// it, so the band and the label cannot disagree.
+pub fn deck_policy(policy: &CaptionPolicy) -> CaptionPolicy {
+    let details = if policy.details == DetailsKind::None { DetailsKind::YearLength } else { policy.details };
+    CaptionPolicy { details, ..*policy }
+}
+
 /// The focused block of one poster under `policy`: `[title, details]` as the setting words them
 /// from `facts`, the details line being `state` when the tile has one, and the first line drawn led by
 /// the play mark when `plays` (a press on this tile starts playback).
@@ -64,16 +79,21 @@ pub fn label(policy: &CaptionPolicy, facts: &CaptionFacts, state: Option<String>
 
 /// A poster shelf tile's label under `policy`: Home's shelves and the Library's Recommended
 /// shelves. The tile keeps what its caption carries as a STATE: on the Continue Watching deck
-/// (`is_continue`) its time left ("8m left", "Show · 8m left", or "Show · New episode" for a
-/// next-up episode) is the details line whatever kind the setting asks for (but Nothing), and the
-/// amber play mark leads the first line drawn while OK on the deck plays (`DeckPress::Play`). An
-/// episode's default details line is its address ("S1 · E8"), as it was on a shelf.
+/// (`is_continue`) its time left ("8m left", "S3 · E4 · 8m left", or "S2 · E1 · New episode" for a
+/// next-up episode; an unnumbered episode leads with its show's name instead of the address) is the details line
+/// whatever kind the setting asks for, and the amber play mark leads the first line drawn while OK on the deck plays (`DeckPress::Play`). An
+/// episode's default details line is its address ("S1 · E8"), as it was on a shelf. On the deck that
+/// line is shown under Nothing too ([`deck_policy`]); a deck tile with no state to show draws no
+/// fallback line under Nothing (the shelf's band stays open, per shelf).
 pub fn shelf_label(policy: &CaptionPolicy, item: &plx_data::pms::PmsMovie, is_continue: bool) -> TileLabel {
     let facts = crate::registry::tile_facts::caption_facts(item);
     let state = is_continue
         .then(|| plx_ui::cards::cw_caption(&crate::registry::tile_facts::of(item)))
         .flatten()
         .map(|c| c.to_string_lossy().into_owned());
+    // A deck tile with a state is worded by the deck's policy (its progress line shows under
+    // Nothing); one with no state to show has nothing to say under Nothing, only the shelf's band.
+    let policy = &if state.is_some() { deck_policy(policy) } else { *policy };
     label(policy, &facts, state, is_continue && plx_media::route::deck_press().press_plays())
 }
 
@@ -158,6 +178,46 @@ mod tests {
         let episode = CaptionFacts { title: Some("Pilot".into()), episode: Some((1, 8)), ..Default::default() };
         let p = CaptionPolicy { title: false, details: DetailsKind::YearLength };
         assert_eq!(lines(&label(&p, &episode, None, false)), [None, Some("S1 \u{b7} E8".into())]);
+    }
+
+    fn deck_episode() -> plx_data::pms::PmsMovie {
+        plx_data::pms::PmsMovie { kind: 3, title: "Pilot".into(), show_title: "Laura".into(), season_index: 2, ep_index: 5,
+            dur_ns: 45 * 60 * 1_000_000_000, resume_ms: 20 * 60 * 1000, ..Default::default() }
+    }
+
+    /// **The owner's 2026-10-22 call: on the Continue Watching deck the progress line is the tile's
+    /// state and is always shown**, Details Nothing included; the Title switch still governs the
+    /// title line. Off the deck, Nothing with Title Off still draws no line.
+    #[test]
+    fn the_deck_progress_line_is_shown_under_nothing() {
+        let ep = deck_episode();
+        let movie = plx_data::pms::PmsMovie { kind: 1, title: "Heat".into(), dur_ns: 45 * 60 * 1_000_000_000, resume_ms: 20 * 60 * 1000, ..Default::default() };
+        let at = |title, item: &plx_data::pms::PmsMovie, deck| lines(&shelf_label(&CaptionPolicy { title, details: DetailsKind::None }, item, deck));
+        assert_eq!(at(false, &ep, true), [None, Some("S2 \u{b7} E5 \u{b7} 25m left".into())]);
+        assert_eq!(at(false, &movie, true), [None, Some("25m left".into())]);
+        assert_eq!(at(true, &ep, true), [Some("Pilot".into()), Some("S2 \u{b7} E5 \u{b7} 25m left".into())]);
+        assert_eq!(at(false, &ep, false), [None, None], "off the deck Nothing with Title Off draws no line");
+    }
+
+    /// The deck shelf's band keeps one line under Nothing (two with the Title On), per SHELF; a plain
+    /// shelf's follows the setting, and every other kind and the Title switch stand.
+    #[test]
+    fn the_deck_policy_keeps_a_band_line_under_nothing() {
+        use plx_ui::caption_policy::{band_h, BAND_NONE, BAND_ONE_LINE, BAND_TWO_LINES};
+        let (off, on) = (CaptionPolicy { title: false, details: DetailsKind::None }, CaptionPolicy { title: true, details: DetailsKind::None });
+        assert_eq!([band_h(&off), band_h(&deck_policy(&off))], [BAND_NONE, BAND_ONE_LINE]);
+        assert_eq!([band_h(&on), band_h(&deck_policy(&on))], [BAND_ONE_LINE, BAND_TWO_LINES]);
+        let genre = CaptionPolicy { title: true, details: DetailsKind::Genre };
+        assert_eq!(deck_policy(&genre), genre, "a policy that shows a details line is the deck's own");
+    }
+
+    /// Any other tile's state (a Watchlist title's release date, a filmography character) still
+    /// goes with the details line under Nothing.
+    #[test]
+    fn a_non_deck_state_line_still_drops_under_nothing() {
+        let facts = CaptionFacts { title: Some("Heat".into()), ..Default::default() };
+        let p = CaptionPolicy { title: false, details: DetailsKind::None };
+        assert_eq!(lines(&label(&p, &facts, Some("Server offline".into()), true)), [None, None]);
     }
 
     /// A SEASON on a shelf (Recently Added TV) is named by its show and, with no fact the picked

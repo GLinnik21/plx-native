@@ -77,7 +77,7 @@ fn forced_refusal_then_switch_to_auto_keeps_the_subtitle() {
         &mut ps,
         Plan {
             direct_play_mode: DirectPlayMode::Forced,
-            verdict: Some(PlayVerdict::Forced(ForcedFailure::AudioNeedsConversion)),
+            verdict: Some(PlayVerdict::Forced(ForcedFailure::AudioNeedsConversion { codec: String::new() })),
             ..Default::default()
         },
         "rk-forced",
@@ -188,7 +188,7 @@ fn a_refused_retry_keeps_the_selection_it_carried() {
         &mut ps,
         Plan {
             direct_play_mode: DirectPlayMode::Forced,
-            verdict: Some(PlayVerdict::Forced(ForcedFailure::AudioNeedsConversion)),
+            verdict: Some(PlayVerdict::Forced(ForcedFailure::AudioNeedsConversion { codec: String::new() })),
             ..Default::default()
         },
         "rk-refused-retry",

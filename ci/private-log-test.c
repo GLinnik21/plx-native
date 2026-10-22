@@ -11,6 +11,7 @@
 int plex_run(const char *host, int port) { (void)host; (void)port; return 0; }
 int plx_sentry_spool_external(const char *path) { (void)path; return 0; }
 void plx_crash_write_image_marker(int fd) { (void)fd; }
+void plx_launch_args(const char *json) { (void)json; }
 void plx_crash_install(int event_fd, int crash_fd) { (void)event_fd; (void)crash_fd; }
 
 /* The runtime root `main()` resolves its sinks under. The shipped resolver is Rust; here it is a

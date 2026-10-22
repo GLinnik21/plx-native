@@ -269,17 +269,19 @@ fn profile_for_delivery(caps: &plx_platform::devcaps::Caps, delivery: TranscodeD
             caps.vp9_bit_depth
         ));
     }
-    let dp_audio = &caps.audio;
+    let dp_audio = caps.audio.split(',').map(profile_codec_name).collect::<Vec<_>>().join(",");
     // ac3 first — the preferred ENCODE target — then the rest of the caps subset as copy lanes.
     let target_audio = ["ac3", "eac3", "aac", "dts"]
         .into_iter()
         .filter(|c| caps.audio_has(c))
+        .map(profile_codec_name)
         .collect::<Vec<_>>()
         .join(",");
     // PMS scopes audio carried by a video profile as videoAudioCodec (Plex-for-Kodi's
     // plexplayer.py uses this scope for audio.channels too); audioCodec is not a valid scope.
     let audio_limits = caps.audio_channels.iter()
         .filter(|(codec, _)| caps.audio_has(codec))
+        .map(|(codec, channels)| (profile_codec_name(codec), channels))
         .map(|(codec, channels)| format!(
             "+add-limitation(scope=videoAudioCodec&scopeName={codec}&type=upperBound&name=audio.channels&value={channels}&replace=true)"
         ))
@@ -332,7 +334,27 @@ fn forced_direct_profile_for(caps: &plx_platform::devcaps::Caps) -> String {
     if caps.av1 {
         video.push_str(",av1");
     }
-    format!("add-direct-play-profile(type=videoProfile&container=mkv,mp4&videoCodec={video}&audioCodec={DP_AUDIO_CODECS}&subtitleCodec={DP_SUBTITLE_CODECS})")
+    // The pipeline's feed formats, DTS only under the Forced rule (`Caps::forced_admits_dts`):
+    // a profile that offered DTS to a set with no DTS row would have PMS direct-play a Load the
+    // pipeline cannot decode.
+    let audio = DP_AUDIO_CODECS
+        .split(',')
+        .filter(|c| caps.forced_feeds_audio(c))
+        .map(profile_codec_name)
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("add-direct-play-profile(type=videoProfile&container=mkv,mp4&videoCodec={video}&audioCodec={audio}&subtitleCodec={DP_SUBTITLE_CODECS})")
+}
+
+/// The spelling PMS reads for an audio codec in a profile: the direct-play list, the transcode
+/// target and the `add-limitation(scopeName=…)` all name DTS `dca` (every DTS entry in the
+/// profiles shipped with PMS does), where the pipeline and the device table say `dts`. The one
+/// place profile text leaves our own vocabulary.
+fn profile_codec_name(codec: &str) -> &str {
+    match plx_platform::devcaps::audio_codec_id(codec).as_ref() {
+        "dts" => "dca",
+        _ => codec,
+    }
 }
 
 fn forced_direct_profile() -> String {
@@ -1270,10 +1292,29 @@ mod tests {
         caps.audio.push_str(",dts");
         caps.audio_channels.insert("dts".into(), 6);
         let profile = super::profile_for(&caps);
-        assert!(list_of(&profile, "audioCodec=").contains(&"dts".into()));
-        assert!(list_of(target_of(&profile), "audioCodec=").contains(&"dts".into()));
-        assert!(profile.contains("scope=videoAudioCodec&scopeName=dts&type=upperBound&name=audio.channels&value=6&replace=true"));
+        // PMS's own spelling in every place it reads a codec name: the direct-play list, the
+        // transcode target and the channel limitation's scopeName. `dts` appears nowhere.
+        assert!(list_of(&profile, "audioCodec=").contains(&"dca".into()));
+        assert!(list_of(target_of(&profile), "audioCodec=").contains(&"dca".into()));
+        assert!(profile.contains("scope=videoAudioCodec&scopeName=dca&type=upperBound&name=audio.channels&value=6&replace=true"));
+        assert!(!profile.contains("dts"), "{profile}");
         assert!(!profile.contains("truehd"));
+    }
+
+    /// Force Direct Play offers DTS only on the same table evidence the planner asks for
+    /// (`Caps::forced_admits_dts`); without the row the profile cannot invite a Load the
+    /// pipeline cannot decode.
+    #[test]
+    fn forced_profile_offers_dca_only_with_a_dts_row() {
+        let without = super::forced_direct_profile_for(&Caps::assumed());
+        assert_eq!(list_of(&without, "audioCodec="), ["aac", "ac3", "eac3"]);
+        assert!(!without.contains("dts") && !without.contains("dca"), "{without}");
+        let mut caps = Caps::assumed();
+        caps.audio.push_str(",dts");
+        caps.audio_channels.insert("dts".into(), 6);
+        let with = super::forced_direct_profile_for(&caps);
+        assert_eq!(list_of(&with, "audioCodec="), ["aac", "ac3", "eac3", "dca"]);
+        assert!(!with.contains("dts"), "{with}");
     }
 
     /// Forced mode advertises the engine's formats with no device limits and no transcode target.
@@ -1283,7 +1324,7 @@ mod tests {
     #[test]
     fn force_profile_advertises_engine_formats_without_device_limits_or_transcode() {
         let p = super::forced_direct_profile();
-        assert_eq!(list_of(&p, "audioCodec="), ["aac", "ac3", "eac3", "dts"]);
+        assert_eq!(list_of(&p, "audioCodec="), ["aac", "ac3", "eac3"], "no DTS row on the assumed caps");
         assert_eq!(list_of(&p, "videoCodec="), ["h264", "hevc"]);
         assert!(!p.contains("add-limitation"));
         assert!(!p.contains("transcode-target"));
@@ -1491,14 +1532,14 @@ mod tests {
     }
 
     /// The forced profile is the engine's own formats with no device limits: its literal is
-    /// unchanged on the assumed caps, and av1 joins its codec list only when the table lists it.
+    /// the assumed-caps literal (no DTS row, so no DTS), and av1 joins its codec list only when the table lists it.
     #[test]
     fn forced_profile_names_av1_only_with_the_row() {
         assert_eq!(
             super::forced_direct_profile_for(&Caps::assumed()),
             format!(
                 "add-direct-play-profile(type=videoProfile&container=mkv,mp4&videoCodec=h264,hevc&audioCodec={}&subtitleCodec={})",
-                super::DP_AUDIO_CODECS,
+                "aac,ac3,eac3",
                 super::DP_SUBTITLE_CODECS,
             )
         );

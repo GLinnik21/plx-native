@@ -86,6 +86,10 @@ pub(super) struct Row {
     pub(super) heading: Option<(GroupId, u32)>,
     pub(super) elems: Vec<u32>,
     pub(super) landscape: bool,
+    /// The Continue Watching deck of poster cards: its band follows
+    /// `registry::captions::deck_policy` (its progress line is always shown). Derived from the
+    /// publication; not canon.
+    deck: bool,
     pub(super) cards: ui_cards::Shelf,
     /// What the row's keys were registered from, to tell a publication that changed the row from
     /// one that did not ([`Basis`]). Derived; not canon.
@@ -515,7 +519,7 @@ impl RecommendedScreen {
             cards
         });
         let heading = self.seat_heading(section, shelf, index);
-        Row { id: shelf.id.clone(), group, heading, elems, landscape: shelf.landscape, cards, basis: Basis::of(shelf, query) }
+        Row { id: shelf.id.clone(), group, heading, elems, landscape: shelf.landscape, deck: shelf.is_continue && !shelf.landscape, cards, basis: Basis::of(shelf, query) }
     }
 
     /// A kept row that stands at another index now: its group and heading keys remember the index
@@ -544,9 +548,10 @@ impl RecommendedScreen {
     fn relayout(&mut self, focus: Option<FocusKey<u32>>) {
         // The poster rows follow the Under posters setting; a landscape row (an episode still) is
         // not a poster and keeps its own two-line block and band.
-        let policy = Some(crate::registry::captions::policy());
+        let policy = crate::registry::captions::policy();
         for row in &mut self.shelves {
-            row.cards.set_caption_policy(policy.filter(|_| !row.landscape));
+            let policy = if row.deck { crate::registry::captions::deck_policy(&policy) } else { policy };
+            row.cards.set_caption_policy(Some(policy).filter(|_| !row.landscape));
         }
         self.run.set(self.shelves.iter().map(|row| shelf_pitch(row.landscape, row.cards.band_h(), row.cards.band_expand())));
         self.target_run.set(self.shelves.iter().map(|row| shelf_pitch(row.landscape, row.cards.band_h(),
@@ -1327,7 +1332,7 @@ impl LogicalState for RecommendedScreen {
         c.seq(self.shelves.len());
         for row in &self.shelves {
             // `basis` is what the keys were registered from: derived from the publication, not canon.
-            let Row { id, group, heading, elems, landscape, cards, basis: _ } = row;
+            let Row { id, group, heading, elems, landscape, deck: _, cards, basis: _ } = row;
             c.str(id).u32(group.0);
             c.option(*heading, |c, (group, elem)| { c.u32(group.0).u32(elem); });
             c.bool(*landscape).seq(elems.len());
