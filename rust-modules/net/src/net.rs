@@ -25,7 +25,7 @@
 //! key mode also follows a roots attempt that failed on the date). **Key mode** (issue #378): a date verify result (a
 //! television with no battery clock) is repeated once, recognising the server by the public key
 //! remembered for that exact host and port, with the name check still on. **Roots mode**: a
-//! missing-issuer verify result (a 2020 firmware's store lacks Let's Encrypt's 2025 roots) on a
+//! missing-issuer verify result (or the generic result 1 older LG firmware reports for it) on a
 //! `*.plex.direct` host is repeated once against the bundled public roots (`pkg/le-roots.pem`),
 //! with chain, dates and name all still checked.
 //! `NOSIGNAL` is set because we call from threads. Response bodies never carry into a log here.
@@ -961,6 +961,12 @@ pub fn request_result_evidence(
             learn_pin,
         );
     }
+    let bundle = account_ca_bundle(url, plx_base::paths::app_dir());
+    if bundle.is_some() {
+        static SAID: std::sync::Once = std::sync::Once::new();
+        SAID.call_once(|| plx_base::eventlog::log("net: Plex account TLS uses shipped public CA roots"));
+    }
+    let tls = bundle.as_deref().map_or(Tls::Ca, Tls::CaBundle);
     request_tls_evidence(
         url,
         headers,
@@ -969,7 +975,7 @@ pub fn request_result_evidence(
         t,
         follow_redirects,
         max_body,
-        Tls::Ca,
+        tls,
         resolve,
         learn_pin,
     )
@@ -1649,7 +1655,8 @@ pub use loopback_pms::{curl_ready, expired_leaf, identity_request, key_of_port, 
 /// Making them variants means the compiler enforces what a comment used to ask for.
 pub enum Tls<'a> {
     /// CA-verified against **the television's own trust store**. The default, and what every
-    /// plex.tv and PMS call has always used — `request` is exactly this. A `*.plex.direct` request
+    /// PMS call uses when no explicit bundle is selected. Plex account calls use the shipped
+    /// public bundle when available. A `*.plex.direct` request
     /// that this store fails for a missing issuer is repeated once against the shipped public
     /// roots ([`keypin::Mode::Roots`]); the first attempt is this one, unless the host is latched
     /// in roots mode (a recent success through the bundle), which starts there instead.
@@ -2026,7 +2033,7 @@ pub fn request_evidence(
     url: &str, headers: &[String], verb: &str, body: Option<&[u8]>, t: Timeouts,
     follow_redirects: bool, max_body: Option<usize>, resolve: Option<&str>,
 ) -> Result<Resp, RequestFailure> {
-    request_tls_evidence(url, headers, verb, body, t, follow_redirects, max_body, Tls::Ca, resolve, false)
+    request_result_evidence(url, headers, verb, body, t, follow_redirects, max_body, resolve, false)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2827,6 +2834,16 @@ fn shipped_ca_bundle(dir: &std::path::Path) -> Option<String> {
     p.is_file().then(|| p.to_str().map(str::to_owned)).flatten()
 }
 
+/// Select shipped public roots only for the Plex account origin. Other servers keep their
+/// existing trust-store and retry policy; peer and hostname checks remain enabled.
+fn account_ca_bundle(url: &str, dir: &std::path::Path) -> Option<String> {
+    let origin = origin::Origin::parse(url)?;
+    if !origin.is_tls() || !origin.host().eq_ignore_ascii_case("plex.tv") {
+        return None;
+    }
+    shipped_ca_bundle(dir)
+}
+
 /// How much of a telemetry endpoint's reply is worth keeping. Both vendors answer a small JSON
 /// object and the only field either sender acts on is the status code; the body is kept at all so a
 /// rejection can be logged with the server's own explanation, which is the difference between
@@ -3089,6 +3106,13 @@ pub mod keypin {
     fn is_untrusted_issuer(rc: c_int, verify: Option<c_long>) -> bool {
         rc == TLS_VERIFY_FAILED
             && matches!(verify, Some(X509_NO_ISSUER | X509_NO_LOCAL_ISSUER | X509_NO_LEAF_SIGNATURE_KEY))
+    }
+
+    /// Older LG libcurl/OpenSSL reports result 1 even when its CLI names a missing issuer.
+    /// This is NOT evidence that the issuer is missing. It only permits one fully verified
+    /// attempt against public roots; an invalid chain, date or hostname must still fail.
+    fn should_retry_public_roots(rc: c_int, verify: Option<c_long>) -> bool {
+        is_untrusted_issuer(rc, verify) || (rc == TLS_VERIFY_FAILED && verify == Some(1))
     }
 
     /// OpenSSL `X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT` (18) and `…_SELF_SIGNED_CERT_IN_CHAIN` (19):
@@ -3543,7 +3567,7 @@ pub mod keypin {
             };
         }
         match ran {
-            Mode::Strict if !roots_tried && is_untrusted_issuer(rc, verify) && is_plex_direct(host_of_key(key)) => {
+            Mode::Strict if !roots_tried && should_retry_public_roots(rc, verify) && is_plex_direct(host_of_key(key)) => {
                 let path = roots_bundle()?;
                 plx_base::eventlog::log(&format!(
                     "net: a plex.direct certificate failed the device trust store (X509 verify result {}) — retrying against the bundled public roots",
@@ -4862,6 +4886,53 @@ mod legacy_tests {
 #[cfg(test)]
 mod tls_mode_tests {
     use super::*;
+
+    #[test]
+    fn plex_account_evidence_entry_uses_the_shared_certificate_policy() {
+        let _serial = plx_base::testlock::serial();
+        assert!(curl_ready());
+        let cert = std::sync::Arc::new(mint_ca_issued_cert(&["plex.tv"], ymd_from_now(-1), ymd_from_now(30)));
+        let _roots = TestCaGuard::install(&cert.pem, "account-entry");
+        let server = spawn_observed(cert, b"{}".to_vec());
+        let url = format!("https://plex.tv:{}/api/v2/pins", server.port);
+        let resolve = format!("plex.tv:{}:127.0.0.1", server.port);
+        let response = request_evidence(&url, &[], "POST", Some(b""), API, false, Some(4096), Some(&resolve));
+        assert!(response.is_ok(), "the account entry must use the shared verified trust-store policy");
+    }
+
+    #[test]
+    fn plex_account_selects_shipped_roots_only_for_its_https_origin() {
+        let dir = std::env::temp_dir().join(format!("plx-account-roots-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("roots.pem"), b"test public roots").unwrap();
+        assert!(account_ca_bundle("https://plex.tv/api/v2/pins", &dir).is_some());
+        for url in ["http://plex.tv/api/v2/pins", "https://plex.tv.evil.invalid/", "https://other.invalid/", "https://plex.tv@evil.invalid/"] {
+            assert!(account_ca_bundle(url, &dir).is_none(), "{url}");
+        }
+        std::fs::remove_file(dir.join("roots.pem")).unwrap();
+        assert!(account_ca_bundle("https://plex.tv/api/v2/pins", &dir).is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn plex_account_bundle_verifies_chain_and_hostname() {
+        let _serial = plx_base::testlock::serial();
+        assert!(curl_ready(), "real libcurl required for this regression");
+        let dir = std::env::temp_dir().join(format!("plx-account-tls-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, trusted, expected) in [("plex.tv", true, true), ("wrong.invalid", true, false), ("plex.tv", false, false)] {
+            let cert = std::sync::Arc::new(mint_ca_issued_cert(&[name], ymd_from_now(-1), ymd_from_now(30)));
+            let pem = if trusted { cert.pem.clone() } else { mint_cert(&["unrelated.invalid"]).pem };
+            std::fs::write(dir.join("roots.pem"), pem).unwrap();
+            let server = spawn_observed(cert, b"{}".to_vec());
+            let url = format!("https://plex.tv:{}/api/v2/pins", server.port);
+            let bundle = account_ca_bundle(&url, &dir).expect("account bundle selected");
+            let resolve = format!("plex.tv:{}:127.0.0.1", server.port);
+            let result = request_tls_evidence(&url, &[], "GET", None, API, false, Some(4096), Tls::CaBundle(&bundle), Some(&resolve), false);
+            assert_eq!(result.is_ok(), expected, "name={name}, trusted={trusted}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     /// **The fallback is the interesting half, and it is silent.** With no `roots.pem` beside the
     /// binary a telemetry POST verifies against the television's own 2019 trust store — which works
