@@ -1,4 +1,4 @@
-{"updated":"2026-10-22T14:50:49Z",
+{"updated":"2026-10-22T14:53:41Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -1867,7 +1867,8 @@
 {"id":39791302369,"at":"2026-10-22T13:56:05Z","sha":"df17b03f5","title":"Merge branch 'main' into end-of-film-eos","pr":865,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"which gates apply":6,"host harness tests":193,"armv7 cross-build and artifact assertions":319,"host unit tests (default features)":268,"host python/shell/C gates":216,"host unit tests (hostsim)":190,"host lint + type-checks":170,"host checks (NOT a device gate)":4,"cross-build (armv7) + artifact assertions":3}},
 {"id":39792371066,"at":"2026-10-22T14:03:12Z","sha":"60538b681","title":"player: a film ends on the pipeline's end-of-stream","pr":865,"conclusion":"success","attempt":1,"jobs":{"which gates apply":5,"armv7 cross-build and artifact assertions":350,"host python/shell/C gates":265,"host unit tests (default features)":215,"host harness tests":135,"host lint + type-checks":137}},
 {"id":39795819418,"at":"2026-10-22T14:27:26Z","sha":"512748553","title":"Merge remote-tracking branch 'origin/main' into release/v0.9.0-docs","pr":922,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"which gates apply":4,"cross-build (armv7) + artifact assertions":3,"host checks (NOT a device gate)":3}},
-{"id":39798249322,"at":"2026-10-22T14:43:57Z","sha":"27b769b29","title":"tests: a clip whose audio outlasts its video plays to the end","pr":924,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"host python/shell/C gates":248,"cross-build (armv7) + artifact assertions":3}}
+{"id":39798249322,"at":"2026-10-22T14:43:57Z","sha":"27b769b29","title":"tests: a clip whose audio outlasts its video plays to the end","pr":924,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"host python/shell/C gates":248,"cross-build (armv7) + artifact assertions":3}},
+{"id":39798387885,"at":"2026-10-22T14:44:53Z","sha":"0e6a73504","title":"sim: the host sink reports the pipeline's end-of-stream","pr":925,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"which gates apply":5,"host python/shell/C gates":255,"host lint + type-checks":169,"host harness tests":147,"host unit tests (hostsim)":306,"host checks (NOT a device gate)":3}}
 ],
 "sim":[
 {"id":34792902936,"at":"2026-09-14T00:30:21Z","sha":"4c8a02f7e","title":"Add cross-platform simulator CI","pr":94,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":113,"macOS simulator build + launch":178,"Windows launcher syntax":28}},
