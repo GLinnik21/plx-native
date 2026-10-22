@@ -116,7 +116,9 @@ The focus pop values differ on purpose and each carries the reasoning at its def
 of widely spaced circles needs a bigger pop than a tight poster shelf to read as selected at all.
 
 Tile text is `TileLabel::title(t)` or `TileLabel::titled(t, caption)`, with the focused-label band
-driven by `band_reveal` and `under_band`. Row headings are `theme::size::HEADLINE` at the SHARED
+driven by `line_reveal_for` and `under_band` (a line shows once the room under its card holds its
+box, for a shelf and a grid alike, so no caption line is drawn over the tile or heading under it as it is
+drawn, pop and heading lift included). Row headings are `theme::size::HEADLINE` at the SHARED
 shelf pitch, `consts::TITLE_DY + CARD_DY` (see `related.rs`, `cast.rs`, `extras.rs`) — the same
 heading-to-card distance Home and the Library use, quoted as the sum rather than as a number this
 file would then have to keep in step.
@@ -124,8 +126,11 @@ file would then have to keep in step.
 Menus over a page are glass on frozen ground (DS6: `popover_glass`, gradient face, 1 px rim, soft shadow, 30% scrim; the body shows the dim's latched field and the rim refracts the once-captured host snapshot, so nothing is re-blurred while a menu is up). Every other surface stands on the page's own latched light: `widgets::panel_ground` draws the
 underlay field the modal dim latched, windowed to the panel's rect and graded toward the panel
 material under its frost. Backdrop-blur glass (`Glass::DYNAMIC_BACKDROP`) is chrome-only — the top
-bar's track and the profile chip — plus the one non-interactive standing note, the "Hold OK for options"
-capsule (`ui::hold_hint`: standing on Home, and once per screen kind per run on the other card screens). See `docs/liquid-glass.md`.
+bar's track and the profile chip — plus two non-interactive standing notes in the page layer: the "Hold OK for options"
+capsule (`ui::hold_hint`: standing once per install on the card screens, and once on the Detail season pill) and the Library's
+scroll capsule (`ui::scroll_capsule`: the library's name and size once the chrome has tucked away on a page whose header names two
+or more libraries; the nav pill's own glass, asked for by the owner in place of its frozen-ground form). The guard is the file
+list in `widgets_glass_budget_tests`, not this paragraph. See `docs/liquid-glass.md`.
 
 ## Navigation says where BACK goes, once
 

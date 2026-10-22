@@ -10,13 +10,23 @@
 //! after its element to wherever the source now shows it. A walk with no reorder is bit-for-bit
 //! the walk by position.
 //!
-//! Bounded and allocation-free: [`CAP`] entries in fixed arrays, only cards whose spring is off
-//! rest are held (an entry settles out), a lookup hashes at most [`MAX_ROW_ITEMS`] elements (the
-//! grid's [`SEARCH`]), and only when a held element is no longer where it was.
+//! A Shelf's pool ([`RowPool`]) is bounded and allocation-free: [`CAP`] entries in fixed arrays, only
+//! cards whose spring is off rest are held (an entry settles out), and a lookup hashes at most
+//! [`MAX_ROW_ITEMS`] elements, only when a held element is no longer where it was.
 //!
-//! The DRAW path is element-keyed too ([`RowPool::drawn`], [`ShrinkKey::drawn`]): a frame drawn
-//! after the source changed and before the next tick already shows each element at its own
-//! spring's scale, one hash per card, so no frame reverses what the tick then corrects.
+//! A Grid's is the let-gos of its [`GridPop`](crate::poster_grid::GridPop): one per card still
+//! letting go, each born with the element it was released from, sparse and uncapped (see there). What
+//! the thousands of cards of a Library still cannot cost is a scan: a tick hashes ONE element per
+//! let-go in flight, and only a let-go whose element is no longer in its cell searches, nearest
+//! cell first and no further than [`SEARCH`] from where it was ([`follow_let_gos`]).
+//!
+//! The DRAW path is element-aware too ([`RowPool::drawn`], [`let_go_cards`]): a frame drawn after
+//! the source changed and before the next tick already shows each element at its own spring's
+//! scale, so no frame reverses what the tick then corrects. A Shelf's pool hashes the card it
+//! draws, at most [`MAX_ROW_ITEMS`] of them. A Grid's frame draws ~40 cards, so it does not: it
+//! verifies each let-go's own card once ([`let_go_cards`], one hash per let-go in flight and none
+//! when the grid is settled), and only a frame that finds one of them moved resolves every card by
+//! its element ([`let_go_drawn`]); every other card is read by its cell.
 
 use std::hash::{Hash, Hasher};
 
@@ -34,8 +44,8 @@ pub(crate) enum Drawn {
     Rest,
 }
 
-/// Moving springs held at once: the focused card, the one shrinking, and a few let-gos of a
-/// fast key repeat still on their way to rest.
+/// Moving springs a Shelf's [`RowPool`] holds at once: the focused card, the one shrinking, and a
+/// few let-gos of a fast key repeat still on their way to rest.
 pub(crate) const CAP: usize = 8;
 
 /// How far from a grid let-go's previous cell its element is looked for: the source of a
@@ -52,6 +62,11 @@ pub(crate) fn key<E: Hash>(e: &E) -> u64 {
     h.finish()
 }
 
+/// Whether the element whose [`key`] is `k` stands in `cell` of `src`.
+fn stands_at<H: Host, S: CardSource<H>>(src: &S, cell: usize, k: u64) -> bool {
+    cell < src.len() && key(&src.elem(cell)) == k
+}
+
 /// The first of the cells that have their own spring (`0..MAX_ROW_ITEMS`, within the source)
 /// showing the element whose [`key`] is `k`.
 fn find<H: Host, S: CardSource<H>>(src: &S, k: u64) -> Option<usize> {
@@ -63,9 +78,18 @@ fn find<H: Host, S: CardSource<H>>(src: &S, k: u64) -> Option<usize> {
 /// source (one hash per card, nearest first) and is spent only on a tick whose focused element
 /// is no longer in its cell, which [`anchor_of`] re-arms at the end of, so a landing pays it once.
 pub(crate) fn find_nearest<H: Host, S: CardSource<H>>(src: &S, k: u64, at: usize) -> Option<usize> {
-    let n = src.len();
-    let is = |j: usize| j < n && key(&src.elem(j)) == k;
-    (0..n.max(at.saturating_add(1))).find_map(|d| [at.checked_sub(d), at.checked_add(d)].into_iter().flatten().find(|&j| is(j)))
+    find_nearest_within::<H, S>(src, k, at, usize::MAX)
+}
+
+/// [`find_nearest`] no further than `reach` cells from `at` (`at` itself first): work grows with
+/// how far the element went, never with the size of the source, so a Library of thousands pays for
+/// the shift of a landing and no more.
+pub(crate) fn find_nearest_within<H: Host, S: CardSource<H>>(src: &S, k: u64, at: usize, reach: usize) -> Option<usize> {
+    (0..src.len().max(at.saturating_add(1)))
+        .take(reach.saturating_add(1))
+        .find_map(|d| {
+            [at.checked_sub(d), at.checked_add(d).filter(|_| d > 0)].into_iter().flatten().find(|&j| stands_at::<H, S>(src, j, k))
+        })
 }
 
 /// The element a section had focused at the end of its tick and the cell it stood in: what
@@ -80,7 +104,7 @@ pub(crate) fn anchor_of<H: Host, S: CardSource<H>>(src: &S, focus: Option<usize>
 /// that changes in the same tick as the cards move.
 pub(crate) fn slid<H: Host, S: CardSource<H>>(src: &S, anchor: Option<(usize, u64)>) -> Option<(usize, usize)> {
     let (p, k) = anchor?;
-    if p < src.len() && key(&src.elem(p)) == k {
+    if stands_at::<H, S>(src, p, k) {
         return None;
     }
     find_nearest::<H, S>(src, k, p).map(|q| (p, q))
@@ -124,14 +148,14 @@ impl RowPool {
         let mut m = 0;
         for e in 0..self.n {
             let at = self.at[e];
-            if at < src.len() && key(&src.elem(at)) == self.key[e] {
+            if stands_at::<H, S>(src, at, self.key[e]) {
                 continue;
             }
             let sp = row.cell_spring(at).unwrap_or(crate::Spring::at(1.0));
             moved[m] = (e, find::<H, S>(src, self.key[e]), sp);
             m += 1;
         }
-        let beyond = |k: u64| focus.is_some_and(|f| f < src.len() && key(&src.elem(f)) == k);
+        let beyond = |k: u64| focus.is_some_and(|f| stands_at::<H, S>(src, f, k));
         let mut carried = false;
         for &(e, to, _) in &moved[..m] {
             if to.is_none() && beyond(self.key[e]) {
@@ -215,56 +239,77 @@ impl RowPool {
         if self.n == 0 || i >= src.len() {
             return None;
         }
-        let k = key(&src.elem(i));
-        if let Some(e) = (0..self.n).find(|&e| self.key[e] == k) {
-            return (self.at[e] != i).then_some(Drawn::Cell(self.at[e]));
-        }
-        (!focused && self.at[..self.n].contains(&i)).then_some(Drawn::Rest)
+        drawn_among((0..self.n).map(|e| (self.at[e], self.key[e])), i, key(&src.elem(i)), focused)
     }
 }
 
-/// The shrinking tile of a [`GridPop`](crate::poster_grid::GridPop): the grid's whole pool (it
-/// keeps one let-go; the pop itself already follows its element through the landing rule).
-#[derive(Clone, Copy)]
-pub(crate) struct ShrinkKey(Option<(usize, u64)>);
-
-impl ShrinkKey {
-    pub(crate) const fn new() -> Self {
-        Self(None)
-    }
-
-    /// Before the tick: the let-go follows its element to the cell the source shows it in
-    /// (within [`SEARCH`] of where it was), or is dropped when the element left.
-    pub(crate) fn follow<H: Host, S: CardSource<H>>(&mut self, pop: &mut crate::poster_grid::GridPop, src: &S) {
-        // a let-go armed since the last tick has no key yet: it is still where it started
-        let (Some((at, k)), Some(c)) = (self.0, pop.shrinking()) else { return };
-        if c != at {
-            return;
+/// The one rule a draw between a source change and the next tick follows, for a pool that holds
+/// `(cell, key)` pairs: card `i`, whose element's key is `k`, is drawn with the spring of the cell
+/// its element was held in, at rest when it stands where a held element no longer is, `None` when
+/// nothing moved (the rule by position applies).
+fn drawn_among(held: impl Iterator<Item = (usize, u64)>, i: usize, k: u64, focused: bool) -> Option<Drawn> {
+    let mut held_here = false;
+    for (at, held_key) in held {
+        if held_key == k {
+            return (at != i).then_some(Drawn::Cell(at));
         }
-        if c < src.len() && key(&src.elem(c)) == k {
-            return;
-        }
-        let from = c.saturating_sub(SEARCH);
-        let to = (from..src.len().min(c.saturating_add(SEARCH))).find(|&j| key(&src.elem(j)) == k);
-        pop.move_shrink(to);
+        held_here |= at == i;
     }
+    (held_here && !focused).then_some(Drawn::Rest)
+}
 
-    /// After the tick: remember which element the running let-go belongs to.
-    pub(crate) fn note<H: Host, S: CardSource<H>>(&mut self, pop: &crate::poster_grid::GridPop, src: &S) {
-        self.0 = pop.shrinking().filter(|&c| c < src.len()).map(|c| (c, key(&src.elem(c))));
-    }
+/// Before the tick: every let-go follows its element to the cell the source shows it in (nearest
+/// the cell it was in, within [`SEARCH`] of it), or is dropped when the element left.
+///
+/// `carried` is the move the landing rule already found for the card the last tick had focused,
+/// `(was, now)` (see [`slid`], which looks for it at any distance): the let-go that card was born
+/// with when a key took focus off it between the ticks stands in `was`, since the cell a let-go
+/// carries is where the last tick saw its element, and goes to `now` however far that is. (A cell
+/// holds one card, and the one the pop stood in is that card.)
+///
+/// Cost: one element hashed per let-go in flight on an ordinary tick, and for a let-go whose
+/// element is no longer in its cell about two more per cell it moved (nearest first), so a landing
+/// under a held key pays for the shift of the cards and the let-gos in flight, never for the
+/// Library's thousands.
+pub(crate) fn follow_let_gos<H: Host, S: CardSource<H>>(
+    pop: &mut crate::poster_grid::GridPop,
+    src: &S,
+    carried: Option<(usize, usize)>,
+) {
+    pop.follow_let_gos(|c, k| match carried {
+        Some((was, now)) if c == was => Some(now),
+        _ => find_nearest_within::<H, S>(src, k, c, SEARCH),
+    });
+}
 
-    /// What card `i` is drawn with when the source changed since the last tick, as
-    /// [`RowPool::drawn`]. The focused card's pop follows its element by the landing rule.
-    pub(crate) fn drawn<H: Host, S: CardSource<H>>(&self, pop: &crate::poster_grid::GridPop, src: &S, i: usize, focused: bool) -> Option<Drawn> {
-        let (Some((at, k)), Some(c)) = (self.0, pop.shrinking()) else { return None };
-        if c != at || focused || i >= src.len() {
-            return None;
-        }
-        if key(&src.elem(i)) == k {
-            (i != at).then_some(Drawn::Cell(at))
-        } else {
-            (i == at).then_some(Drawn::Rest)
-        }
+/// How a frame finds the card each of a [`GridPop`](crate::poster_grid::GridPop)'s let-gos belongs to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LetGoCards {
+    /// Every let-go's element stands in the cell the last tick left its let-go in, so a card is the
+    /// let-go of its cell, if it has one: no card is hashed.
+    ByCell,
+    /// The source changed since the last tick (a landing, an insert, a removal) or a press armed
+    /// a let-go over cards that had: each card is looked up by its element, as [`RowPool::drawn`] does.
+    ByElement,
+}
+
+/// Which of the two ways a frame resolves a grid's let-gos ([`LetGoCards`]). Asked once per pass
+/// over the cards (the draw, the stops), not once per card: it hashes one element per let-go in
+/// flight, and none for a grid with none.
+pub(crate) fn let_go_cards<H: Host, S: CardSource<H>>(pop: &crate::poster_grid::GridPop, src: &S) -> LetGoCards {
+    if pop.let_gos().all(|c| stands_at::<H, S>(src, c.cell, c.key)) {
+        LetGoCards::ByCell
+    } else {
+        LetGoCards::ByElement
     }
+}
+
+/// What card `i` is drawn with when [`let_go_cards`] says the source changed since the last tick, as
+/// [`RowPool::drawn`] but for every let-go of a [`GridPop`](crate::poster_grid::GridPop). The focused
+/// card's pop follows its element by the landing rule.
+pub(crate) fn let_go_drawn<H: Host, S: CardSource<H>>(pop: &crate::poster_grid::GridPop, src: &S, i: usize, focused: bool) -> Option<Drawn> {
+    if focused || i >= src.len() {
+        return None;
+    }
+    drawn_among(pop.let_gos().map(|c| (c.cell, c.key)), i, key(&src.elem(i)), false)
 }

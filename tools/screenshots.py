@@ -211,6 +211,10 @@ def capture(binary, scene, defaults, hero, keep):
         for line in scene.get("expect", []):
             if line not in log:
                 problems.append(f"expected log line missing: {line!r}")
+        # The boot line proves the person-page and Watchlist reads reach the mock, not the real provider.
+        stand_in = mock_pms.discover_stand_in_problem(log)
+        if stand_in:
+            problems.append(stand_in)
         for bad in REFUSALS:
             hits = [l for l in log.splitlines() if bad in l]
             if hits:

@@ -521,17 +521,10 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
                 app.pages.nav.next_style = plx_ui::containers::modal::Style::Opaque { snapshot: true };
                 app.pages.request_with_return(source, NavOp::Present(AppArg::Content(arg)), ret);
             }
-            ContentReq::Back if {
+            ContentReq::Back => {
                 halt_preview(app);
-                bridge::nav_cancel(&mut app.pages)
-            } => {}
-            ContentReq::Back if app.pages.nav.is_surface(entry) =>
-                app.pages.request_with_return(source, NavOp::Dismiss(entry), ret),
-            ContentReq::Back if app.pages.nav.pending_surface().is_some() =>
-                app.pages.request_with_return(source, NavOp::Dismiss(app.pages.nav.pending_surface().unwrap()), ret),
-            // The chrome question (`Nav::Back { bar }`) is not asked here any more: the container
-            // answers it itself, over the entry a `Pop` would reveal (`NavStack::continuous_for`).
-            ContentReq::Back => bridge::nav_pop_with_return(&mut app.pages, ret),
+                content_back(&mut app.pages, source, entry, ret);
+            }
             ContentReq::Play { play, resume_ns } => {
                 let mounted = bridge::player(&app.pages).is_some();
                 if !clear_engine_for_play(&mut app.player.session, &mut app.adapters.player, mounted) {
@@ -630,6 +623,20 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
     }
 }
 
+/// **Home's BACK fold, performed**: the screen owns the fold (its dive), the input engine owns the
+/// hero group's last control. Restore that cursor without introducing a Home-local focus copy. The
+/// loop runs this from [`home_requests`] and the route-test world's pump from its own, so a BACK on a
+/// shelf lands focus on the billboard in both.
+pub(crate) fn fold_to_hero(pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>, source: MachineId, entry: EntryId) {
+    let remembered = pages.input.engine.remembered_for(entry).into_iter()
+        .find(|(group, _)| *group == plx_machine::machine::GroupId(0)).map(|(_, elem)| elem);
+    let focus = remembered.map(|elem| plx_ui::screen::FocusTarget::Elem(
+        plx_machine::machine::FocusKey { entry, elem }))
+        .unwrap_or(plx_ui::screen::FocusTarget::ContainerGroup(plx_machine::machine::GroupId(0)));
+    pages.emit(MachineId::Nav, Fx::Deliver(source,
+        Delivery::Screen(ScreenEvent::Enter(plx_ui::screen::Enter::Fresh { focus }))));
+}
+
 /// Home chooses an action and a stable item; only the application performs navigation,
 /// playback or legacy-modal work. Recheck the emitting entry before every queued action.
 fn home_requests(app: &mut App, now: u32) {
@@ -639,17 +646,7 @@ fn home_requests(app: &mut App, now: u32) {
         if app.pages.nav.input_owner() != Some(InputOwner::Entry(entry))
             || !matches!(app.route(), AppArg::Home) { continue; }
         match request {
-            HomeReq::FoldToHero => {
-                // The screen owns the fold; the input engine owns the hero group's last
-                // control. Restore that cursor without introducing a Home-local focus copy.
-                let remembered = app.pages.input.engine.remembered_for(entry).into_iter()
-                    .find(|(group, _)| *group == plx_machine::machine::GroupId(0)).map(|(_, elem)| elem);
-                let focus = remembered.map(|elem| plx_ui::screen::FocusTarget::Elem(
-                    plx_machine::machine::FocusKey { entry, elem }))
-                    .unwrap_or(plx_ui::screen::FocusTarget::ContainerGroup(plx_machine::machine::GroupId(0)));
-                app.pages.emit(MachineId::Nav, Fx::Deliver(source,
-                    Delivery::Screen(ScreenEvent::Enter(plx_ui::screen::Enter::Fresh { focus }))));
-            }
+            HomeReq::FoldToHero => fold_to_hero(&mut app.pages, source, entry),
             HomeReq::Account => chip_activate(&mut app.pages),
             HomeReq::Tab(tab) => {
                 // A pointer may name the last presented map after favourites changed. The
@@ -762,46 +759,54 @@ fn watchlist_requests(app: &mut App) {
     for (source, request, ret) in app.bridge.take_watchlist_reqs() {
         let MachineId::Instance(instance) = source else { continue };
         let Some(entry) = app.pages.nav.entry_of_instance(instance) else { continue };
-        // The Sort & Filter value comes from the surface over the page, not from the page.
-        if let WatchlistOut::SetOptions(options) = &request {
-            if app.pages.nav.tabs.stack.entries.iter().any(|e| e.arg == AppArg::Watchlist) {
-                app.bridge.watchlist_set_options(options);
-            }
+        // The Sort & Filter value comes from the surface over the page, not from the page, so it
+        // is not gated on the asking page holding input.
+        if !matches!(request, WatchlistOut::SetOptions(_))
+            && (app.route() != AppArg::Watchlist || app.pages.nav.input_owner() != Some(InputOwner::Entry(entry)))
+        {
             continue;
         }
-        if app.route() != AppArg::Watchlist || app.pages.nav.input_owner() != Some(InputOwner::Entry(entry)) { continue; }
-        match request {
-            WatchlistOut::Back => bridge::nav_tab(&mut app.pages, &mut app.bridge, HomeTab::Home, None, Some(ret)),
-            WatchlistOut::Tab(tab) => {
-                if !app.bridge.search_tab_available(tab) || matches!(tab, HomeTab::Watchlist) { continue; }
-                match tab {
-                    HomeTab::Home => bridge::nav_home_pill(&mut app.pages, &mut app.bridge, Some(ret)),
-                    other => bridge::nav_tab(&mut app.pages, &mut app.bridge, other, None, Some(ret)),
-                }
+        watchlist_request(&mut app.pages, &mut app.bridge, entry, request, ret, &mut app.ok_armed);
+    }
+}
+
+/// **One request the Watchlist page or its Sort & Filter surface made, performed**, after the loop's
+/// gates (the asking page still holds input on the Watchlist route; a `SetOptions` is gated on
+/// nothing but a Watchlist page being on the stack). Shared with the tests' pump for the reason
+/// [`library_navigation`] is: a test that presses OK on the pill sees the menu the TV opens.
+pub(crate) fn watchlist_request(
+    pages: &mut plx_ui::dispatch::Dispatcher<bridge::AppHost>, rig: &mut bridge::Bridge, entry: EntryId,
+    request: plx_screens::watchlist::page::WatchlistOut, ret: ReturnState<u32, PageMemory>, ok_armed: &mut bool,
+) {
+    use plx_screens::watchlist::page::WatchlistOut;
+    match request {
+        WatchlistOut::SetOptions(options) => {
+            if pages.nav.tabs.stack.entries.iter().any(|e| e.arg == AppArg::Watchlist) {
+                rig.watchlist_set_options(&options);
             }
-            WatchlistOut::Account => chip_activate(&mut app.pages),
-            WatchlistOut::Retry => app.bridge.watchlist_retry(),
-            WatchlistOut::OpenOptions => {
-                let Some(arg) = app.bridge.watchlist_menu_arg(&mut app.pages, entry) else { continue };
-                bridge::open_watchlist_menu(&mut app.pages, arg);
-            }
-            WatchlistOut::Hold { guid, state, copy, .. } => {
-                let Some(arg) = app.bridge.watchlist_hold_arg(&mut app.pages, entry, ret.focus, &guid, state, copy)
-                    else { continue };
-                bridge::open_item_menu(&mut app.pages, arg);
-                app.ok_armed = false;
-            }
-            // The catalog page of a title no server holds, by the tile's guid (a guid the service
-            // does not form as `plex://movie|show/<hex>` has no page to open).
-            WatchlistOut::OpenCatalog(guid) => {
-                if let Some(hex) = bridge::hex_of_guid(&guid) {
-                    bridge::open_catalog(&mut app.pages, hex, Some(ret));
-                }
-            }
-            // The page pushes a matched copy's Detail itself (`ContentReq::Push`), and the surface
-            // is the only sender of the options value (handled above).
-            WatchlistOut::OpenDetail(_) | WatchlistOut::SetOptions(_) => {}
         }
+        WatchlistOut::Back | WatchlistOut::Tab(_) | WatchlistOut::Account => {
+            watchlist_navigation(pages, rig, &request, ret);
+        }
+        WatchlistOut::Retry => rig.watchlist_retry(),
+        WatchlistOut::OpenOptions => {
+            let Some(arg) = rig.watchlist_menu_arg(pages, entry) else { return };
+            bridge::open_watchlist_menu(pages, arg);
+        }
+        WatchlistOut::Hold { guid, state, copy, .. } => {
+            let Some(arg) = rig.watchlist_hold_arg(pages, entry, ret.focus, &guid, state, copy) else { return };
+            bridge::open_item_menu(pages, arg);
+            *ok_armed = false;
+        }
+        // The catalog page of a title no server holds, by the tile's guid (a guid the service
+        // does not form as `plex://movie|show/<hex>` has no page to open).
+        WatchlistOut::OpenCatalog(guid) => {
+            if let Some(hex) = bridge::hex_of_guid(&guid) {
+                bridge::open_catalog(pages, hex, Some(ret));
+            }
+        }
+        // The page pushes a matched copy's Detail itself (`ContentReq::Push`).
+        WatchlistOut::OpenDetail(_) => {}
     }
 }
 
@@ -871,53 +876,170 @@ mod search_action_tests {
 }
 
 fn library_requests(app: &mut App, now: u32) {
-    use plx_screens::registry::{LibraryReq, LibraryMenuArg};
+    use plx_screens::registry::LibraryReq;
     for (source, request, ret) in app.bridge.take_library_reqs() {
         let MachineId::Instance(instance) = source else { continue };
         let Some(entry) = app.pages.nav.entry_of_instance(instance) else { continue };
         if let LibraryReq::PublishShelves { target, hidden_page, at_head } = request {
-            if app.pages.nav.top_page().is_some_and(|page| page.id == entry) && app.route() == AppArg::Library {
-                // Apply through the store vocabulary at this boundary. The press check and commit
-                // are adjacent; no queued boolean can outlive an input arm created later.
-                app.bridge.browse_run(library_publication_command(
-                    &app.pages, target, hidden_page, at_head));
-            }
+            library_publish_shelves(&app.pages, &mut app.bridge, entry, target, hidden_page, at_head);
             continue;
         }
-        if app.pages.nav.input_owner() != Some(InputOwner::Entry(entry)) || app.route() != AppArg::Library { continue; }
-        match request {
-            LibraryReq::PublishShelves { .. } => unreachable!(),
-            LibraryReq::Menu { kind, anchor, target } => {
-                app.pages.nav.next_style = plx_ui::containers::modal::Style::Compact;
-                app.pages.request(source, NavOp::Present(AppArg::LibraryMenu(LibraryMenuArg { host: instance, target, kind, anchor })));
-            }
-            LibraryReq::Account => chip_activate(&mut app.pages),
-            LibraryReq::BackToHome { kind } => {
-                bridge::nav_tab(&mut app.pages, &mut app.bridge, HomeTab::Home,
-                    Some(crate::app::chrome::Pill::Section(kind)), Some(ret));
-            }
-            LibraryReq::Tab(HomeTab::Home) => bridge::nav_home_pill(&mut app.pages, &mut app.bridge, Some(ret)),
-            LibraryReq::Tab(tab) => bridge::nav_tab(&mut app.pages, &mut app.bridge, tab, None, Some(ret)),
-            LibraryReq::ItemMenu { sid, rk, from_deck } => {
-                let Some((item, opener)) = app.bridge.library_selection(&app.pages, entry, ret.focus) else { continue };
-                if item.sid != sid || item.rk != rk || !plx_screens::item_menu::has_actions(&item) { continue; }
-                let mut arg = bridge::card_menu_arg(&item, from_deck, false, entry, ret.focus, opener.rect);
-                app.bridge.watchlist_open_if_idle();
-                arg.watchlist = app.bridge.watchlist_card_face(&item);
-                bridge::open_item_menu(&mut app.pages, arg);
-                app.ok_armed = false;
-            }
-            LibraryReq::Detail { sid, ref rk, .. } | LibraryReq::Play { sid, ref rk, .. } => {
-                let Some((mut item, _)) = app.bridge.library_selection(&app.pages, entry, ret.focus) else { continue };
-                if item.sid != sid || &item.rk != rk { continue; }
-                let play = matches!(request, LibraryReq::Play { .. });
-                let from_deck = matches!(request, LibraryReq::Detail { from_deck: true, .. });
-                if let LibraryReq::Play { resume_ns, .. } = request { item.resume_ms = resume_ns / 1_000_000; }
-                unsafe { activate_deck_card(&mut app.player.session, &mut app.adapters.player, &item, from_deck, play,
-                    HUD_LINGER_MS, Some(ret), &mut app.pages, &mut app.bridge, &mut app.menu_play_await, now); }
-            }
+        // The full grid and the two pages its header pushes (Collections, Recommended) are all the
+        // library screen, so they answer the same requests.
+        let library_page = app.route().is_library_family();
+        if app.pages.nav.input_owner() != Some(InputOwner::Entry(entry)) || !library_page { continue; }
+        let Some(ret) = library_navigation(&mut app.pages, &mut app.bridge, &request, ret) else { continue };
+        unsafe {
+            library_page_request(&mut app.player.session, &mut app.adapters.player, &mut app.menu_play_await,
+                &mut app.ok_armed, now, &mut app.pages, &mut app.bridge, instance, entry, request, ret);
         }
     }
+}
+
+/// **A Library page's shelf publication, performed**: the store may land the hubs it staged quietly
+/// when the asking page is the one on top. The grid and the Recommended page both publish: the hubs
+/// are the Recommended page's whole content, so its route must be let through too. The loop
+/// (`library_requests`) and the app-tier tests' pump both call this.
+pub(crate) fn library_publish_shelves(
+    pages: &plx_ui::dispatch::Dispatcher<bridge::AppHost>,
+    bridge: &mut bridge::Bridge,
+    entry: EntryId,
+    target: plx_data::stores::browse::SectionAddress,
+    hidden_page: bool,
+    at_head: bool,
+) {
+    if pages.nav.top_page().is_some_and(|page| page.id == entry)
+        && matches!(pages.top_arg(), Some(AppArg::Library | AppArg::LibraryRecommended { .. })) {
+        // Apply through the store vocabulary at this boundary. The press check and commit
+        // are adjacent; no queued boolean can outlive an input arm created later.
+        let committed = bridge.hubs_committed(target);
+        bridge.browse_run(library_publication_command(pages, target, hidden_page, at_head, committed));
+    }
+}
+
+/// **The rest of a Library-family page's requests, performed** — the ones [`library_navigation`] left
+/// undone: the "+N" and Sort & Filter menus (`Menu`), a held poster's card menu (`ItemMenu`) and a
+/// poster press (`Detail`, `Play`), the last two through `Bridge::library_selection`, which reads the
+/// card from whichever Library-family page asked. The loop (`library_requests`) and the app-tier
+/// tests' pump (`test_support::Pump`) both call this, so a test that presses OK on a poster drives
+/// the routing the TV runs, not a copy of it.
+#[allow(clippy::too_many_arguments)]
+pub(crate) unsafe fn library_page_request(
+    ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
+    menu_play_await: &mut Option<super::input::MenuPlayAwait>,
+    ok_armed: &mut bool,
+    now: u32,
+    pages: &mut plx_ui::dispatch::Dispatcher<bridge::AppHost>,
+    bridge: &mut bridge::Bridge,
+    instance: plx_machine::machine::InstanceId,
+    entry: EntryId,
+    request: plx_screens::registry::LibraryReq,
+    ret: ReturnState<u32, PageMemory>,
+) {
+    use plx_screens::registry::{LibraryReq, LibraryMenuArg};
+    let source = MachineId::Instance(instance);
+    match request {
+        LibraryReq::PublishShelves { .. } => unreachable!("`library_requests` publishes them"),
+        LibraryReq::OpenListing { .. } | LibraryReq::BackToHome { .. } | LibraryReq::Tab(_) | LibraryReq::Account =>
+            unreachable!("`library_navigation` performed it"),
+        LibraryReq::Menu { kind, anchor, target, folded, control } => {
+            pages.nav.next_style = plx_ui::containers::modal::Style::Compact;
+            pages.request(source, NavOp::Present(AppArg::LibraryMenu(LibraryMenuArg {
+                host: instance, target, kind, anchor, folded,
+                opener: Some((entry, control)),
+            })));
+        }
+        LibraryReq::ItemMenu { sid, rk, from_deck } => {
+            let Some((item, opener)) = bridge.library_selection(pages, entry, ret.focus) else { return };
+            if item.sid != sid || item.rk != rk || !plx_screens::item_menu::has_actions(&item) { return; }
+            let mut arg = bridge::card_menu_arg(&item, from_deck, false, entry, ret.focus, opener.rect);
+            bridge.watchlist_open_if_idle();
+            arg.watchlist = bridge.watchlist_card_face(&item);
+            bridge::open_item_menu(pages, arg);
+            *ok_armed = false;
+        }
+        LibraryReq::Detail { sid, ref rk, .. } | LibraryReq::Play { sid, ref rk, .. } => {
+            let Some((mut item, _)) = bridge.library_selection(pages, entry, ret.focus) else { return };
+            if item.sid != sid || &item.rk != rk { return; }
+            let play = matches!(request, LibraryReq::Play { .. });
+            let from_deck = matches!(request, LibraryReq::Detail { from_deck: true, .. });
+            if let LibraryReq::Play { resume_ns, .. } = request { item.resume_ms = resume_ns / 1_000_000; }
+            activate_deck_card(ps, pa, &item, from_deck, play, HUD_LINGER_MS, Some(ret), pages, bridge, menu_play_await, now);
+        }
+    }
+}
+
+/// **The page moves a Library-family page asks for** — its header's Collections / Recommended links
+/// pushing a page over it, BACK off the grid to Home, a strip pill, the account chip. The loop
+/// (`library_requests`) and the app-tier tests' pump (`test_support::pump_navigation`) both call
+/// this, so a test drives the routing the TV runs rather than a copy of it. A request that is not
+/// one of these comes back with its `ret` for the caller to act on.
+pub(crate) fn library_navigation(
+    pages: &mut plx_ui::dispatch::Dispatcher<bridge::AppHost>, rig: &mut bridge::Bridge, request: &plx_screens::registry::LibraryReq,
+    ret: ReturnState<u32, PageMemory>,
+) -> Option<ReturnState<u32, PageMemory>> {
+    use plx_screens::registry::LibraryReq;
+    match request {
+        LibraryReq::OpenListing { listing, section } => {
+            use plx_screens::library::Listing;
+            let arg = match listing {
+                Listing::Collections => AppArg::LibraryCollections { section: *section },
+                Listing::Recommended => AppArg::LibraryRecommended { section: *section },
+                // The full grid is the page underneath: nothing pushes it.
+                Listing::All => return None,
+            };
+            bridge::nav_push_with_return(pages, arg, ret);
+        }
+        LibraryReq::Account => chip_activate(pages),
+        LibraryReq::BackToHome { kind } => {
+            bridge::nav_tab(pages, rig, HomeTab::Home, Some(crate::app::chrome::Pill::Section(*kind)), Some(ret));
+        }
+        LibraryReq::Tab(HomeTab::Home) => bridge::nav_home_pill(pages, rig, Some(ret)),
+        LibraryReq::Tab(tab) => bridge::nav_tab(pages, rig, *tab, None, Some(ret)),
+        _ => return Some(ret),
+    }
+    None
+}
+
+/// **BACK off a content page**, in the order the loop has always tried: withdraw a transition that
+/// has not committed, else dismiss the surface this page is (or the one on its way), else pop.
+/// Shared with the tests' pump for the reason [`library_navigation`] is.
+pub(crate) fn content_back(
+    pages: &mut plx_ui::dispatch::Dispatcher<bridge::AppHost>, source: MachineId, entry: EntryId, ret: ReturnState<u32, PageMemory>,
+) {
+    if bridge::nav_cancel(pages) { return; }
+    if pages.nav.is_surface(entry) {
+        pages.request_with_return(source, NavOp::Dismiss(entry), ret);
+    } else if let Some(surface) = pages.nav.pending_surface() {
+        pages.request_with_return(source, NavOp::Dismiss(surface), ret);
+    } else {
+        // The chrome question (`Nav::Back { bar }`) is not asked here: the container answers it
+        // itself, over the entry a `Pop` would reveal (`NavStack::continuous_for`).
+        bridge::nav_pop_with_return(pages, ret);
+    }
+}
+
+/// **The page moves the Watchlist asks for** — BACK to Home and the strip's pills — shared with the
+/// tests' pump for the reason [`library_navigation`] is.
+pub(crate) fn watchlist_navigation(
+    pages: &mut plx_ui::dispatch::Dispatcher<bridge::AppHost>, rig: &mut bridge::Bridge,
+    request: &plx_screens::watchlist::page::WatchlistOut, ret: ReturnState<u32, PageMemory>,
+) -> Option<ReturnState<u32, PageMemory>> {
+    use plx_screens::watchlist::page::WatchlistOut;
+    match request {
+        WatchlistOut::Back => bridge::nav_tab(pages, rig, HomeTab::Home, None, Some(ret)),
+        WatchlistOut::Tab(tab) => {
+            if !rig.search_tab_available(*tab) || matches!(tab, HomeTab::Watchlist) { return None; }
+            match tab {
+                HomeTab::Home => bridge::nav_home_pill(pages, rig, Some(ret)),
+                other => bridge::nav_tab(pages, rig, *other, None, Some(ret)),
+            }
+        }
+        WatchlistOut::Account => chip_activate(pages),
+        _ => return Some(ret),
+    }
+    None
 }
 
 fn home_tab_available(
@@ -932,15 +1054,24 @@ fn home_tab_available(
     kind.is_none_or(|kind| directory.tab_of_kind(kind).is_some())
 }
 
+/// **The Library pages' publication gate**: may the store land the hubs it staged, this frame?
+/// Always on a hidden page; on a visible one only at the page's head and, over `committed` shelves,
+/// only once no press is live. A live press protects the shelf under the finger, so what it
+/// protects is COMMITTED ground: a page's FIRST publication (`committed` false: nothing drawn yet)
+/// is never held by one. OK on the Recommended capsule pushes the page while its press still
+/// springs back (`Phase::Up` counts as live), and holding that first landing would keep the page on
+/// its spinner for as long as the spring takes to rest, forever on a frozen clock.
 fn library_publication_command(
     dispatcher: &plx_ui::dispatch::Dispatcher<bridge::AppHost>,
     target: plx_data::stores::browse::SectionAddress,
     hidden_page: bool,
     at_head: bool,
+    committed: bool,
 ) -> plx_data::stores::browse::BrowseCmd {
+    let press_holds = committed && dispatcher.input.press.is_live();
     plx_data::stores::browse::BrowseCmd::Addressed { target,
         work: plx_data::stores::browse::LibraryWork::Hubs {
-            may_publish: hidden_page || (at_head && !dispatcher.input.press.is_live()),
+            may_publish: hidden_page || (at_head && !press_holds),
         },
     }
 }
@@ -1182,7 +1313,7 @@ mod library_publication_tests {
         let mut dispatcher = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
         let target = plx_data::stores::browse::SectionAddress { epoch: 1, sid: plx_plex::plex::ServerId::from_raw(0), section: 1 };
         let allowed = |d: &plx_ui::dispatch::Dispatcher<bridge::AppHost>, hidden, head| {
-            matches!(library_publication_command(d, target, hidden, head),
+            matches!(library_publication_command(d, target, hidden, head, true),
                 plx_data::stores::browse::BrowseCmd::Addressed { work: plx_data::stores::browse::LibraryWork::Hubs { may_publish: true }, .. })
         };
         assert!(allowed(&dispatcher, false, true));
@@ -1193,6 +1324,42 @@ mod library_publication_tests {
         assert!(allowed(&dispatcher, true, false));
         dispatcher.input.press.cancel();
         assert!(allowed(&dispatcher, false, true));
+    }
+
+    /// **A press gate protects COMMITTED ground, and a page's first publication has none.** OK on the
+    /// grid's Recommended capsule pushes the page from `take_commit`, while the press is still
+    /// springing back (`Phase::Up`, not cancelled, so `is_live`). The page's hubs are its whole
+    /// content and nothing is committed under that press yet, so holding their FIRST landing `Staged`
+    /// protects no shelf and only keeps `settled()` false: the page shows its spinner, and on a
+    /// frozen clock (the frame dump's held repeat: same `T(v)`, `dt` 0) the spring never rests and the
+    /// spinner never clears (crx-f3's dump of the Recommended page stalled 120 s at virtual frame 479
+    /// on `library-spinner` with no open claim). A RE-publication over committed shelves still waits
+    /// for the press: the shelf under the finger must not move.
+    #[test]
+    fn a_first_publication_is_never_held_by_a_press_a_republication_is() {
+        let mut dispatcher = plx_ui::dispatch::Dispatcher::<bridge::AppHost>::new();
+        let target = plx_data::stores::browse::SectionAddress { epoch: 1, sid: plx_plex::plex::ServerId::from_raw(0), section: 1 };
+        let press = &mut dispatcher.input.press;
+        press.begin(0);
+        press.release(100);
+        let mut now = 0;
+        while !press.take_commit(now) {
+            now += 16;
+            press.tick(now, 0.016);
+            assert!(now < 5_000, "the press never committed");
+        }
+        // The frame dump's held repeat: the same instant, again and again.
+        for _ in 0..600 { press.tick(now, 0.0); }
+        assert!(press.is_active(), "premise: the activated press is still springing back");
+        let allowed = |d: &plx_ui::dispatch::Dispatcher<bridge::AppHost>, head, committed| {
+            matches!(library_publication_command(d, target, false, head, committed),
+                plx_data::stores::browse::BrowseCmd::Addressed { work: plx_data::stores::browse::LibraryWork::Hubs { may_publish: true }, .. })
+        };
+        assert!(allowed(&dispatcher, true, false),
+            "the page an activated press opened may publish its FIRST hubs at its head");
+        assert!(!allowed(&dispatcher, true, true),
+            "a re-publication over committed shelves still waits for the press to rest");
+        assert!(!allowed(&dispatcher, false, false), "and a first publication still lands only at the head");
     }
 
     /// A landing names rows, and only the Detail pages showing one of them are owed a re-read: the

@@ -25,6 +25,10 @@
 //! on the dispatcher yet. The bridge drains them after every dispatcher frame.
 
 pub use crate::family::SettingsPage;
+/// The stored Under posters setting as the ui caption policy: the shared door a screen outside
+/// Settings (the Library's Collections page) reads it through, so none names `crate::settings`.
+pub use crate::settings::caption_policy_of;
+use std::collections::HashMap;
 use std::sync::Arc;
 use crate::settings::{Family, RouteSurface};
 use plx_data::stores::{StoreCmd, StoreId, StoreWork};
@@ -36,6 +40,9 @@ use plx_ui::screen::{Mounter, ReturnState, Screen};
 /// The one conversion from a catalog row to the plain facts `ui` draws a tile from. It lives here
 /// because a screen may name `registry` but never a sibling screen, and `ui` cannot name the row.
 pub mod tile_facts;
+
+/// The Under posters setting read once, and the one builder of a focused poster's caption.
+pub mod captions;
 
 /// The application's effects (spec §3.1). `Store` since phase 4; `Consent` and `Loop` since 5b.
 pub enum AppFx {
@@ -281,7 +288,13 @@ pub enum HomeCmd {
 pub enum LibraryReq {
     /// Evaluated after dispatch by the application, where the input owner can report a live arm.
     PublishShelves { target: plx_data::stores::browse::SectionAddress, hidden_page: bool, at_head: bool },
-    Menu { kind: LibraryMenuKind, anchor: [u32; 4], target: plx_data::stores::browse::SectionAddress },
+    Menu { kind: LibraryMenuKind, anchor: [u32; 4], target: plx_data::stores::browse::SectionAddress,
+        /// The `Sources` menu's contents: the directory sections the header's fold hid (empty for
+        /// every other menu).
+        folded: Vec<u32>,
+        /// The header control the menu hangs from: the page lifts it out of its own pass while
+        /// the menu is up (`Screen::opener`).
+        control: u32 },
     Play { sid: plx_plex::plex::ServerId, rk: String, resume_ns: i64 },
     /// Open the item's page. `from_deck` is the SHELF's answer (this library's own Continue
     /// Watching shelf): a deck episode opens its show, any other card its own page.
@@ -290,10 +303,19 @@ pub enum LibraryReq {
     Account,
     Tab(HomeTab),
     BackToHome { kind: plx_data::stores::browse::SecKind },
+    /// Push the library's Collections or Recommended page over this one (OK on the header's
+    /// control): `AppArg::LibraryCollections` / `LibraryRecommended` for `section`, the section's
+    /// key on its server. Never `Listing::All`, which is this page.
+    OpenListing { listing: crate::library::Listing, section: u32 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LibraryMenuKind { Sort, Filter, Genre, Sources, Type }
+pub enum LibraryMenuKind {
+    Sort, Filter, Genre, Sources, Type,
+    /// The header's one Sort & Filter popover: Show / Sort / Filter sections. `Sort`, `Filter` and
+    /// `Type` remain as the single-purpose menus the scripted pipeline names.
+    SortFilter,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LibraryMenuArg {
@@ -302,6 +324,13 @@ pub struct LibraryMenuArg {
     pub kind: LibraryMenuKind,
     /// Bit-preserving rest rectangle; valid in canonical arguments without float equality.
     pub anchor: [u32; 4],
+    /// The `Sources` menu lists exactly these directory sections, the libraries the header's fold
+    /// hid behind "+N". Empty for every other menu.
+    pub folded: Vec<u32>,
+    /// The page's entry and the control the menu grew out of. Every header menu names it, "+N"
+    /// included: the page leaves the control out of its pass and the opener lift draws it lit
+    /// above the panel's scrim (design review S12).
+    pub opener: Option<(plx_machine::machine::EntryId, u32)>,
 }
 
 impl plx_machine::machine::LogicalState for LibraryMenuArg {
@@ -310,8 +339,12 @@ impl plx_machine::machine::LogicalState for LibraryMenuArg {
             .u64(self.target.section as u64).u32(match self.kind {
                 LibraryMenuKind::Sort => 0, LibraryMenuKind::Filter => 1,
                 LibraryMenuKind::Genre => 2, LibraryMenuKind::Sources => 3, LibraryMenuKind::Type => 4,
+                LibraryMenuKind::SortFilter => 5,
             });
         for value in self.anchor { c.u32(value); }
+        c.seq(self.folded.len());
+        for value in &self.folded { c.u32(*value); }
+        match self.opener { Some((entry, control)) => { c.bool(true).u32(entry.0).u32(control); } None => { c.bool(false); } }
     }
     fn probe(&self, out: &mut String) { out.push_str("library_menu_arg"); }
 }
@@ -356,7 +389,7 @@ pub struct ItemMenuArg {
     pub rk: String,
     pub kind: ItemMenuKind,
     /// The PAGE entry the menu hangs off: its focused element is the anchor the panel sits beside
-    /// and the tile lifted back out of the modal dim (`app::bridge::redraw_opener`).
+    /// and the tile lifted back out of the modal dim (the dispatcher's lift pass).
     pub host: plx_machine::machine::EntryId,
     /// …and which element that is, as the host page's own focus at the press frame. The surface
     /// takes input the moment it is presented, so the host's live cursor is not the answer.
@@ -473,8 +506,8 @@ pub enum LibraryCmd {
     Enter(plx_data::stores::browse::SecKind),
     /// Seat focus on one grid card (tests, and the screenshot pipeline's `plxnative-libgrid`).
     FocusGrid { row: usize, col: usize },
-    /// Seat focus on one card of a hub shelf above the grid, `shelf` counted from the top (the
-    /// screenshot pipeline's `plxnative-libshelf`).
+    /// Seat focus on one card of a hub shelf of the Recommended page, `shelf` counted from the top
+    /// (the screenshot pipeline's `plxnative-libshelf`).
     FocusShelf { shelf: usize, col: usize },
     /// Open the Sort or Filter menu exactly as OK on its toolbar chip does (the screenshot
     /// pipeline's `plxnative-libmenu`).
@@ -482,6 +515,10 @@ pub enum LibraryCmd {
     /// Choose a TYPE menu value exactly as its row does (the screenshot pipeline's and the fps
     /// suite's `plxnative-libtype`).
     SetType(plx_data::browse::LibraryType),
+    /// Open the Collections or Recommended page exactly as OK on its header control does (the
+    /// screenshot pipeline's `plxnative-libtype=collections|recommended`, i.e. the
+    /// `library-collections` and `library-recommended` scenarios).
+    OpenListing(crate::library::Listing),
     Page(i32),
     Sweep,
     SwitchStep(u32),
@@ -660,7 +697,7 @@ impl CardKeys {
     /// rather than a scan of every key per card.
     pub fn intern_all<'a>(&mut self,
         cards: impl Iterator<Item = (plx_plex::plex::ServerId, &'a str)>, page: &str) -> Vec<u32> {
-        let mut known: std::collections::HashMap<(plx_plex::plex::ServerId, String), u32> =
+        let mut known: HashMap<(plx_plex::plex::ServerId, String), u32> =
             self.keys.iter().map(|k| ((k.sid, k.rk.clone()), k.elem)).collect();
         cards.map(|(sid, rk)| {
             if let Some(&elem) = known.get(&(sid, rk.to_string())) { return elem; }
@@ -725,6 +762,19 @@ const KEY_SLACK: usize = 256;
 /// The size a key table may reach before the oldest unlive keys go: twice `live` plus [`KEY_SLACK`].
 pub(crate) fn key_cap(live: usize) -> usize { 2 * live + KEY_SLACK }
 
+/// How many keys may leave the page before a table that drops its keys sweeps them: Home's
+/// placeholder slots, and the Recommended page's item and slot keys (`RecommendedScreen::rebuild`,
+/// off `KeyRegistry::count`). Closing the gap a key at a time moves every key behind it in the
+/// table and in the indexes that name positions, so a page that changes a few keys per publication
+/// paid for the whole table on each one; the sweep is batched instead. What waits on Home is a key
+/// no card can name again (a slot's identity carries its publication); on the Recommended page it
+/// can be a card key that a later publication names again (a hub that returns), which is minted
+/// afresh if the sweep took it first, so the sweep is a bound on the table, not on what can be
+/// reached. The sweep runs in the sync that finds the batch full, and keeps what that very sync took
+/// off the page (a focus on a card that rotated out recovers to its row), so what waits is the batch
+/// plus the departures of one or two syncs.
+pub(crate) const KEY_PRUNE_BATCH: usize = 256;
+
 /// Which keys of a table go first when it stands over its bound.
 #[derive(Clone, Copy)]
 pub(crate) enum EvictOrder {
@@ -754,10 +804,12 @@ pub(crate) fn unlive_excess(
 pub struct CardPageMemory {
     pub cards: CardKeys,
     pub header_marked: bool,
-    /// A listing page's directory (Collection): its total, one kept-row count per page read, the
-    /// focused member's index and element. Empty for a page that has none.
+    /// A listing page's directory (Collection): its total, one kept-row count per page of the
+    /// listing, the store's generation of the listing they were saved from, the focused member's
+    /// index and element. Empty for a page that has none.
     pub total: usize,
     pub counts: Vec<u8>,
+    pub generation: u32,
     pub focus_index: Option<usize>,
     pub focus_elem: Option<u32>,
 }
@@ -770,6 +822,7 @@ impl CardPageMemory {
         if tag == 7 {
             c.u64(self.total as u64).seq(self.counts.len());
             for &kept in &self.counts { c.u32(u32::from(kept)); }
+            c.u32(self.generation);
             c.bool(self.focus_index.is_some()).u64(self.focus_index.unwrap_or(0) as u64)
                 .bool(self.focus_elem.is_some()).u32(self.focus_elem.unwrap_or(0));
         }
@@ -798,12 +851,30 @@ pub struct FilmographyMemory {
 ///
 /// A provider which publishes no identity receives an explicitly ephemeral identity scoped to
 /// that publication generation. Neither its title nor its position is claimed as stable.
+///
+/// The strings are `Arc<str>`: every card of a row carries its row's identity, and a key table
+/// that clones two strings per card it registers (or per entry it re-indexes) costs the catalog's
+/// size on every landing.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum HomeHubIdentity {
     ContinueWatching,
-    Identifier { sid: plx_plex::plex::ServerId, id: String, key: String },
-    Key { sid: plx_plex::plex::ServerId, key: String },
+    Identifier { sid: plx_plex::plex::ServerId, id: Arc<str>, key: Arc<str> },
+    Key { sid: plx_plex::plex::ServerId, key: Arc<str> },
     Ephemeral { generation: u32, ordinal: u32 },
+}
+
+impl HomeHubIdentity {
+    /// The identity as the store publishes it, borrowed, to look a published row up by; `None` for an
+    /// ephemeral row, which the store gave no identity.
+    pub fn borrowed(&self) -> Option<plx_data::pms::HubIdentity<'_>> {
+        use plx_data::pms::HubIdentity;
+        match self {
+            Self::ContinueWatching => Some(HubIdentity::ContinueWatching),
+            Self::Identifier { sid, id, key } => Some(HubIdentity::Identifier { sid: *sid, id, key }),
+            Self::Key { sid, key } => Some(HubIdentity::Key { sid: *sid, key }),
+            Self::Ephemeral { .. } => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -814,7 +885,7 @@ pub struct HomeGroupKey {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HomeItemIdentity {
-    Item { hub: HomeHubIdentity, sid: plx_plex::plex::ServerId, rk: String },
+    Item { hub: HomeHubIdentity, sid: plx_plex::plex::ServerId, rk: Arc<str> },
     Slot { hub: HomeHubIdentity, generation: u32, ordinal: u32 },
 }
 
@@ -1157,6 +1228,14 @@ pub trait PersonLike: AppLike + Sized {
 
 pub trait CollectionLike: AppLike + Sized {
     fn collection<'a>(cx: &Cx<'a, Self>) -> plx_data::collection::CollectionView<'a>;
+
+    /// **The title of the page BACK returns to**, as the user sees it on that page: the entry
+    /// beneath this one on the navigation stack, read from the container ([`Host::views_over`]),
+    /// never named by the Collection screen or threaded by whoever opened it (Home, a library
+    /// page, Search, an item's Detail). `None`: BACK leaves the page stack, or the page beneath has
+    /// no name to give, and the screen draws no caption. The default is `None`, so a host that
+    /// cannot say draws none rather than a wrong one.
+    fn back_to<'a>(_cx: &Cx<'a, Self>) -> Option<std::borrow::Cow<'a, str>> { None }
 }
 
 /// A host publishing the Metadata layer's read surface borrowed from its concrete store owner
@@ -1195,7 +1274,26 @@ pub trait LibraryLike: AppLike<Memory = PageMemory> + Sized {
     fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a>;
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a>;
     fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a>;
+    /// How many collections the directory's section `section` (an index into
+    /// `directory(cx).sections()`, which names the server as well as the section key) holds, from
+    /// the `type=18` `Size:0` probe of `/library/sections/{id}/all` (`totalSize`). `None` = not
+    /// known yet (the Collections control is then not on the row); `Some(Err(Forbidden))` = the
+    /// server answered HTTP 403 (hidden); `Some(Ok(0))` = none (hidden). Any section of the
+    /// directory may be asked about, not only the current one: the app warms them all when the
+    /// directory lands, so a switch finds its answer already there.
+    ///
+    /// CONTRACT FREEZE: a provided method so every existing host compiles; `AppHost`
+    /// (`src/app/bridge.rs`) implements it over the probe.
+    fn collections_count(_cx: &Cx<'_, Self>, _section: usize) -> Option<Result<u32, Forbidden>> {
+        None
+    }
 }
+
+/// The server refused the collections listing (HTTP 401/403): the answer is final for the identity
+/// (credential) it was asked under, so it is kept distinct from "none yet" and from a count of
+/// zero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Forbidden;
 
 /// A host carrying the retained Browse directory needed by Chrome and the Settings family.
 /// Full Library hosts implement this automatically; the nested Settings host carries only this
@@ -1618,6 +1716,23 @@ mod tests {
 // beside `Screen::name`; and `AppArg::route()`, the "which of the two spellings is this page"
 // resolution that every reader in `app/` had to perform first.)
 
+/// **The screen ids of the pages BACK can return to and that have a title to give**, named once so
+/// the one match that names a page ([`AppArg::id`], below) and the one that reads the kind of page
+/// beneath another ([`Host::views_over`]) cannot drift: an id is a screen's identity in a recorded
+/// state, so these numbers are the ones `id` has always answered.
+pub mod page_id {
+    use plx_machine::machine::ScreenId;
+    pub const HOME: ScreenId = ScreenId(4);
+    pub const LIBRARY: ScreenId = ScreenId(7);
+    pub const DETAIL: ScreenId = ScreenId(8);
+    pub const PERSON: ScreenId = ScreenId(9);
+    pub const SEARCH: ScreenId = ScreenId(10);
+    pub const COLLECTION: ScreenId = ScreenId(23);
+    pub const WATCHLIST: ScreenId = ScreenId(25);
+    pub const LIBRARY_COLLECTIONS: ScreenId = ScreenId(28);
+    pub const LIBRARY_RECOMMENDED: ScreenId = ScreenId(29);
+}
+
 /// **A screen argument: everything the container needs to mount one screen, and nothing else.**
 ///
 /// Three families in one enum, distinguished by nothing but which variant it is: the seven flat
@@ -1696,6 +1811,15 @@ pub enum AppArg {
     /// WHICH library is the `browse` store's business, not this argument's, which is why it
     /// carries nothing (the grid is re-ENTERED, never re-queried).
     Library,
+    /// The library's COLLECTIONS page ("Films > Collections"), pushed over [`Self::Library`] by the
+    /// header's Collections control: the same `LibraryScreen` in `Listing::Collections` mode (type
+    /// 18). CONTRACT FREEZE: P4 declares and routes it; P5 builds the page. Dev boot target
+    /// `library-collections`.
+    LibraryCollections { section: u32 },
+    /// The library's RECOMMENDED page: its server hubs in admin order, pushed over
+    /// [`Self::Library`] by the header's Recommended control (`Listing::Recommended`). P6 builds it.
+    /// Dev boot target `library-recommended`.
+    LibraryRecommended { section: u32 },
     /// The Search screen. A PEER of Home and the Library, not a stacking page: it is reached from
     /// the strip's last pill and BACK from it returns to Home. What it OPENS stacks; it does not.
     Search,
@@ -1717,7 +1841,16 @@ pub enum AppArg {
     FirstRunConsent(u8),
 }
 
-pub const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,Search,Watchlist,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str},Collection{sid:u32,rk:str,sec:i64,tag:i64,name:str},Catalog{hex:str}},Settings:SettingsPage{Root,Playback,AudioSubtitles,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8),Language,Contribute},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
+impl AppArg {
+    /// Is this one of the library screen's three routes: the full grid and the two pages its header
+    /// pushes over it (Collections, Recommended)? They are all the one `LibraryScreen` family, so a
+    /// request or a command addressed to "the library" is answered on any of them.
+    pub fn is_library_family(&self) -> bool {
+        matches!(self, AppArg::Library | AppArg::LibraryCollections { .. } | AppArg::LibraryRecommended { .. })
+    }
+}
+
+pub const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,LibraryCollections{section:u32},LibraryRecommended{section:u32},Search,Watchlist,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str},Collection{sid:u32,rk:str,sec:i64,tag:i64,name:str},Catalog{hex:str}},Settings:SettingsPage{Root,Playback,AudioSubtitles,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8),Language,Contribute},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
      PlayerOverlay{Tracks(tab:i32),Info,Chapters,More(quality:bool)},\
      AltSources{host:u32,sid:u32,rk:str,anchor:[u32;4]},\
      TracksPanel{page:i32},AboutPanel,PersonBio,CollectionAbout,AccountMenu,\
@@ -1759,6 +1892,9 @@ impl LogicalState for AppArg {
             // 11, after Player's 10: a page tag is a screen's identity in a recording, allocated forward.
             Self::Watchlist => { c.u32(0).u32(11); }
             Self::Player => { c.u32(0).u32(10); }
+            // 12 and 13, forward of Watchlist's 11 (both are in `ARG_SHAPE`).
+            Self::LibraryCollections { section } => { c.u32(0).u32(12).u32(*section); }
+            Self::LibraryRecommended { section } => { c.u32(0).u32(13).u32(*section); }
             Self::Content(arg) => { c.u32(1); arg.write(c); }
             Self::Settings(page) => { c.u32(2); page.write(c); }
             Self::FirstRunConsent(stage) => { c.u32(3).u8(*stage); }
@@ -1776,6 +1912,8 @@ impl plx_ui::screen::ScreenArg for AppArg {
     fn chrome(&self) -> Chrome {
         match self {
             AppArg::Home | AppArg::Library | AppArg::Search | AppArg::Watchlist => Chrome::TabBar,
+            // The two sub-pages of a library keep the bar, as the Library they are pushed over.
+            AppArg::LibraryCollections { .. } | AppArg::LibraryRecommended { .. } => Chrome::TabBar,
             AppArg::Login
             | AppArg::Profiles
             | AppArg::Onboard
@@ -1819,7 +1957,7 @@ impl plx_ui::screen::ScreenArg for AppArg {
             // it is holding two of them.
             AppArg::ItemMenu(_) => 20,
             // 25 and 26, forward of Collection's 24: the Watchlist page and its Sort & Filter menu.
-            AppArg::Watchlist => 25,
+            AppArg::Watchlist => page_id::WATCHLIST.0,
             AppArg::WatchlistMenu(_) => 26,
             // The seven page ids are the ones `Legacy(Route)` computed, unchanged: an id is a
             // screen's identity in a recorded state and in `same_instance`, so they are allocated
@@ -1828,18 +1966,21 @@ impl plx_ui::screen::ScreenArg for AppArg {
             AppArg::Login => 1,
             AppArg::Profiles => 2,
             AppArg::Onboard => 3,
-            AppArg::Home => 4,
-            AppArg::Library => 7,
-            AppArg::Search => 10,
+            AppArg::Home => page_id::HOME.0,
+            AppArg::Library => page_id::LIBRARY.0,
+            // 28 and 29, forward of the catalog page's 27.
+            AppArg::LibraryCollections { .. } => page_id::LIBRARY_COLLECTIONS.0,
+            AppArg::LibraryRecommended { .. } => page_id::LIBRARY_RECOMMENDED.0,
+            AppArg::Search => page_id::SEARCH.0,
             AppArg::Player => 11,
             // The ROOT payload is a boot address, not an identity: one Settings surface and one
             // consent question, whichever page each happens to have been rooted at.
             AppArg::Settings(_) => 12,
             AppArg::FirstRunConsent(_) => 13,
-            AppArg::Content(ContentArg::Detail { .. }) => 8,
-            AppArg::Content(ContentArg::Person { .. }) => 9,
+            AppArg::Content(ContentArg::Detail { .. }) => page_id::DETAIL.0,
+            AppArg::Content(ContentArg::Person { .. }) => page_id::PERSON.0,
             AppArg::Content(ContentArg::Filmography { .. }) => 14,
-            AppArg::Content(ContentArg::Collection(_)) => 23,
+            AppArg::Content(ContentArg::Collection(_)) => page_id::COLLECTION.0,
             // 27, forward of the Watchlist menu's 26: the catalog page (plan W6).
             AppArg::Content(ContentArg::Catalog { .. }) => 27,
         })
@@ -2024,6 +2165,21 @@ where
                 if let PageMemory::Library(memory) = &ret.memory { page.restore(memory); }
                 Box::new(page)
             }
+            // The server's hubs for the library, on their own screen.
+            AppArg::LibraryRecommended { .. } => {
+                let kind = self.library_kind.or_else(|| H::directory(cx).current().map(|i| H::directory(cx).sections()[i].kind))
+                    .unwrap_or(plx_data::stores::browse::SecKind::Movie);
+                let mut page = crate::library::RecommendedScreen::new(entry, id, kind);
+                if let PageMemory::Library(memory) = &ret.memory { page.restore(memory); }
+                Box::new(page)
+            }
+            // The library's grid in `Listing::Collections`: it asks the store for the section's collections (type=18)
+            // when it mounts, wears the "Films > Collections" crumb for a header, and hands the section back when left.
+            AppArg::LibraryCollections { .. } => {
+                let kind = self.library_kind.or_else(|| H::directory(cx).current().map(|i| H::directory(cx).sections()[i].kind))
+                    .unwrap_or(plx_data::stores::browse::SecKind::Movie);
+                Box::new(crate::library::LibraryScreen::new(entry, id, kind).with_listing(crate::library::Listing::Collections))
+            }
             AppArg::Search => {
                 let mut page = crate::search::SearchScreen::new(entry, id);
                 if let PageMemory::Search(memory) = &ret.memory { page.restore(memory); }
@@ -2092,6 +2248,8 @@ pub fn every_surface_arg() -> Vec<AppArg> {
             },
             kind: LibraryMenuKind::Sort,
             anchor: [0; 4],
+            folded: Vec::new(),
+            opener: None,
         }),
         AppArg::AccountMenu,
         AppArg::ItemMenu(ItemMenuArg {
@@ -2152,6 +2310,8 @@ pub fn every_surface_arg() -> Vec<AppArg> {
             | AppArg::Onboard
             | AppArg::Home
             | AppArg::Library
+            | AppArg::LibraryCollections { .. }
+            | AppArg::LibraryRecommended { .. }
             | AppArg::Search
             | AppArg::Watchlist
             | AppArg::Player
@@ -2193,6 +2353,8 @@ pub const SCREEN_SHAPES: &[&str] = &[
     crate::library::SHAPE[5],
     crate::library::SHAPE[6],
     crate::library::SHAPE[7],
+    crate::library::SHAPE[8],
+    crate::library::SHAPE[9],
     crate::library::menu::SHAPE[0],
     crate::library::menu::SHAPE[1],
     crate::account_menu::SHAPE,
@@ -2358,7 +2520,39 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // Merged tree (origin/main's scrub click-to-confirm and Home-hero successor into the Watchlist
 // branch): both sides' shape changes stand; the pin below is the value the pin test reported for
 // the merged tree, and the three replay fixtures were re-recorded on it.
-const SCREEN_SHAPES_PIN: u64 = 0x07c8_d161_c006_f959;
+// Library/Collections redesign PR4: `LibraryScreen` drops the TYPE/SORT/FILTER chip row and its
+// capsule/pop motion for one `LibraryHeader` row (`switched` joins the first shape string),
+// `AppArg` gains `LibraryCollections{section}` / `LibraryRecommended{section}` (inserted after
+// `Library`, so `ARG_SHAPE`, the first entry, moves) and `LibraryMenuKind` gains `SortFilter`. One
+// bump; the replay fixtures that open the Library were re-recorded against it; the previous pin
+// was 0x07c8_d161_c006_f959.
+// Library shelf removal: `LibraryScreen` and its `Layout` drop the hub-shelf fields (the shelves are
+// `RecommendedScreen`'s alone), so both shape strings move. The replay fixtures that open the
+// Library need re-recording against it; the previous pin was 0xff36_edc2_57ab_505a.
+// Header-row motion (F2): the page header is one component with the top bar's motion. Each page
+// that wears it (`LibraryScreen` -- the Library and Collections page, `RecommendedScreen`,
+// `WatchlistScreen`) holds the row's `TabStrip` (the focus capsule and the selection plate) and a
+// one-spring `CtlPop`, in its canon (`write_motion`) and its shape string; `LibraryScreen::SHAPE`
+// gains two entries, appended (`SCREEN_SHAPES` lists both). One bump; the three replay fixtures were
+// re-recorded against it; the previous pin was 0x2560_8275_1136_934c.
+// Chrome handoff (FIX-A): the top chrome / capsule handoff is one state type the page owns
+// (`plx_ui::scroll_chrome::Handoff`: the decided state and the two drawn alphas), in the canon and
+// the shape string of `LibraryScreen` and of the Watchlist page (which drops its private head ramp
+// for it). One bump; the three replay fixtures were re-recorded against it; the previous pin was
+// 0xbd4f_cd3e_ff97_a15f.
+// Grid let-go canon: `plx_ui::poster_grid::GridPop::write` writes the pop, then the let-gos in
+// flight as a counted sequence (`c.seq`, a `(cell, spring)` each), where it wrote one slot per
+// let-go with no count -- a stream that did not match the one `shrink` slot `LibraryGrid` declared
+// and was not self-delimiting. `LibraryGrid`'s `shrink:(index:Option<u32>,sp:..)` becomes
+// `let_gos:[(index:u32,sp:..)]`. One bump; the three replay fixtures were re-recorded against it;
+// the previous pin was 0xcbaf_3fdb_0c28_ad38.
+// Grid bands slot card: `plx_ui::poster_grid::GridBands::write` has written each open band's card
+// (`c.option(s.card, ..)`, the one whose caption it carries) after the row and the spring since the
+// Library redesign (#843), and `LibraryGrid` declared the slot without it. The slot is now
+// `(row:u32,sp:..,card:Option<u32>)`, in write order; the Collection and Watchlist grids name
+// `bands` symbolically, so their shape strings did not change. One bump; the three replay fixtures
+// were re-recorded against it; the previous pin was 0x0803_2f8d_c828_6d70.
+const SCREEN_SHAPES_PIN: u64 = 0x6b71_df9e_04db_2b76;
 
 #[cfg(test)]
 mod arg_tests {
@@ -2418,14 +2612,21 @@ mod arg_tests {
     /// grades the other half, on a real tree.
     ///
     /// It is asked of `ScreenArg::chrome` DIRECTLY, here, rather than of its one-line consumer
-    /// (`app::input::wears_the_chip`, which is `chrome() == Chrome::TabBar` and nothing else):
+    /// (`app::bridge::wears_tab_bar`, which is `chrome() == Chrome::TabBar` and nothing else):
     /// this file is where a page argument joins the alphabet, so the bar-wearing set and the
     /// screen that joins it land in the same commit. A `screens/` module may not name
     /// `crate::app::` at all (`ci/check-deps.sh`'s `layer` gate), which is the same boundary
     /// stated as a rule.
     #[test]
     fn the_profile_chip_is_offered_on_exactly_the_bar_wearing_pages() {
-        for r in [AppArg::Home, AppArg::Library, AppArg::Search, AppArg::Watchlist] {
+        for r in [
+            AppArg::Home,
+            AppArg::Library,
+            AppArg::LibraryCollections { section: 0 },
+            AppArg::LibraryRecommended { section: 0 },
+            AppArg::Search,
+            AppArg::Watchlist,
+        ] {
             assert!((r.chrome() == Chrome::TabBar), "a bar-wearing page carries the chip");
         }
         for r in [
@@ -2502,5 +2703,154 @@ mod arg_tests {
         assert!(!a.same_instance(&AppArg::Content(ContentArg::Detail {
             sid: plx_plex::plex::ServerId::UNSET, rk: "50001".into(),
         })));
+    }
+}
+
+/// What removing entries from a table did to the positions that index it, so an index of
+/// `identity -> position` follows the table in place instead of being rebuilt from it (a rebuild
+/// clones and hashes every identity in the table for the sake of the few that went). The table
+/// keeps its order: `HomeMemory` and `LibraryMemory` are canon in table order.
+pub(crate) struct Compaction {
+    /// The positions removed, ascending.
+    removed: Vec<usize>,
+}
+
+impl Compaction {
+    /// Remove the entries at `positions` (any order, repeats allowed) from `table`; `None` when
+    /// there was nothing to remove.
+    pub(crate) fn remove<T>(table: &mut Vec<T>, mut positions: Vec<usize>) -> Option<Self> {
+        positions.sort_unstable();
+        positions.dedup();
+        if positions.is_empty() { return None; }
+        let mut next = 0;
+        let mut at = 0;
+        table.retain(|_| {
+            let drop = positions.get(next) == Some(&at);
+            next += usize::from(drop);
+            at += 1;
+            !drop
+        });
+        Some(Self { removed: positions })
+    }
+
+    /// Where the entry that stood at `at` stands now; `None` if it was removed.
+    pub(crate) fn follow(&self, at: usize) -> Option<usize> {
+        match self.removed.binary_search(&at) {
+            Ok(_) => None,
+            Err(before) => Some(at - before),
+        }
+    }
+
+    /// [`follow`](Self::follow) in place, for `HashMap::retain` and `Vec::retain_mut`: false when
+    /// the entry is gone.
+    pub(crate) fn follow_in_place(&self, at: &mut usize) -> bool {
+        self.follow(*at).map(|now| *at = now).is_some()
+    }
+}
+
+/// The rows a page was built from, claimed one at a time by the rows of the next publication: the
+/// matching half of a catalog sync, which Home and the Library's Recommended page share, so the
+/// cost of a sync follows what CHANGED and not what the catalog holds (a landing on one of 170 rows
+/// builds that row and keeps the other 169).
+///
+/// A row is looked for at the position it stood at first (a ring move or a landing changes a row's
+/// cards, not its place), and by a map of the old rows, built the first time that misses. A row
+/// KEPT whole is taken out of its slot (`Vec<Option<R>>::take`, never `Vec::remove`: closing the
+/// gap moves every row behind it, ~13 MB for 170 rows of a 920-byte `Row`); a row built again
+/// leaves the old one standing for the caller to read from (or [`take`](Self::take) from) and for
+/// [`RowDiff::unclaimed`].
+pub(crate) struct RowSeats<R, K> {
+    old: Vec<Option<R>>,
+    by_identity: Option<HashMap<K, usize>>,
+    /// Per new row: the old position it came from (kept whole or built again).
+    matched: Vec<Option<usize>>,
+    /// The new rows built anew.
+    rebuilt: Vec<usize>,
+}
+
+/// What [`RowSeats::finish`] leaves of a sync's matching.
+pub(crate) struct RowDiff<R> {
+    /// Every new row is the old row at its own position: nothing moved.
+    pub(crate) same_rows: bool,
+    /// Per new row, the old position it came from (kept or built again).
+    pub(crate) matched: Vec<Option<usize>>,
+    /// The new rows built anew, ascending.
+    pub(crate) rebuilt: Vec<usize>,
+    /// The old rows that were neither kept whole nor taken, by their old position, ascending.
+    pub(crate) unclaimed: Vec<(usize, R)>,
+}
+
+impl<R, K: std::hash::Hash + Eq> RowSeats<R, K> {
+    pub(crate) fn new(old: Vec<R>, rows: usize) -> Self {
+        Self { old: old.into_iter().map(Some).collect(), by_identity: None,
+            matched: Vec::with_capacity(rows), rebuilt: Vec::new() }
+    }
+
+    /// The old row at `position`, if it was not kept by an earlier new row.
+    pub(crate) fn at(&self, position: usize) -> Option<&R> { self.old.get(position)?.as_ref() }
+
+    /// The next new row IS the old row at `position`, kept whole.
+    pub(crate) fn keep(&mut self, position: usize) -> R {
+        self.matched.push(Some(position));
+        self.old[position].take().expect("a kept row was standing")
+    }
+
+    /// Where the old row for the new row at `position` stands: there, when it is the same row
+    /// (`same_place`), else the old row `key` names that was not kept (`None` for a row with no
+    /// identity, which is matched by position alone). `key_of` names an old row, for the map.
+    pub(crate) fn locate(&mut self, position: usize, same_place: bool, key: Option<&K>, key_of: impl Fn(&R) -> K) -> Option<usize> {
+        if same_place { return Some(position); }
+        let key = key?;
+        let old = &self.old;
+        self.by_identity
+            .get_or_insert_with(|| old.iter().enumerate().filter_map(|(at, row)| Some((key_of(row.as_ref()?), at))).collect())
+            .get(key).copied().filter(|&at| old[at].is_some())
+    }
+
+    /// Take the old row at `at` out of its slot, for a new row that moves what it owns out of it
+    /// (the Recommended page's card section). A row taken is no longer [`RowDiff::unclaimed`].
+    pub(crate) fn take(&mut self, at: usize) -> Option<R> { self.old.get_mut(at)?.take() }
+
+    /// The next new row is built anew, from the old row at `from` when it has one.
+    pub(crate) fn rebuilt(&mut self, from: Option<usize>) {
+        self.rebuilt.push(self.matched.len());
+        self.matched.push(from);
+    }
+
+    /// The sync is over: every new row was matched, kept or built again.
+    pub(crate) fn finish(self) -> RowDiff<R> {
+        let same_rows = self.old.len() == self.matched.len() && self.matched.iter().enumerate().all(|(row, from)| *from == Some(row));
+        let unclaimed = self.old.into_iter().enumerate().filter_map(|(at, old)| Some((at, old?))).collect();
+        RowDiff { same_rows, matched: self.matched, rebuilt: self.rebuilt, unclaimed }
+    }
+}
+
+#[cfg(test)]
+mod compaction_tests {
+    use super::Compaction;
+
+    #[test]
+    fn a_compaction_keeps_the_order_and_every_survivor_finds_its_new_position() {
+        let mut table: Vec<char> = "abcdefgh".chars().collect();
+        // unsorted, with a repeat: the drop list is a set of positions
+        let moved = Compaction::remove(&mut table, vec![5, 1, 5, 6]).expect("something went");
+        assert_eq!(table, vec!['a', 'c', 'd', 'e', 'h']);
+        assert_eq!(moved.follow(0), Some(0));
+        assert_eq!(moved.follow(1), None, "b went");
+        assert_eq!((2..5).map(|at| moved.follow(at)).collect::<Vec<_>>(), [Some(1), Some(2), Some(3)]);
+        assert_eq!(moved.follow(5), None);
+        assert_eq!(moved.follow(6), None);
+        assert_eq!(moved.follow(7), Some(4));
+        let mut at = 7;
+        assert!(moved.follow_in_place(&mut at) && at == 4);
+        let mut gone = 1;
+        assert!(!moved.follow_in_place(&mut gone));
+    }
+
+    #[test]
+    fn removing_nothing_leaves_the_table_alone() {
+        let mut table = vec![1, 2, 3];
+        assert!(Compaction::remove(&mut table, Vec::new()).is_none());
+        assert_eq!(table, vec![1, 2, 3]);
     }
 }

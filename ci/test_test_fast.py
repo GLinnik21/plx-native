@@ -63,6 +63,9 @@ def make(*args, env=None, home=None):
     full = dict(os.environ)
     full.pop("MAKEFLAGS", None)
     full.pop("MFLAGS", None)
+    # The recipes are under test here; the disk preflight has its own test (ci/test_disk_preflight.py), and a real
+    # `make` would otherwise run it against this machine's disk and, below the comfort line, evict its trees.
+    full["PLX_DISK_BUDGET_DONE"] = "1"
     full.update(env or {})
     if home is not None:
         full["HOME"] = home

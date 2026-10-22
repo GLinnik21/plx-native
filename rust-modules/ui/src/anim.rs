@@ -4,7 +4,7 @@
 //! calling `anim::probe(name, pos, vel, target, dt)` right after `Spring::step`. Zero cost when off.
 #![allow(dead_code)]
 use crate::{Painter, Rect};
-use std::ptr::{addr_of, addr_of_mut};
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
@@ -39,7 +39,11 @@ struct Entry {
     peak_over: f32, // furthest past the target (in the travel direction)
     last: Option<(u32, f32, f32)>, // last settled episode: (frames, ms, overshoot %)
 }
-static mut ENTRIES: Vec<Entry> = Vec::new();
+// A `thread_local!`: the diagnostic is armed and drawn on the render thread, and its heap-backed
+// history must not be shared with whichever other thread (a host test's) happens to probe.
+thread_local! {
+    static ENTRIES: RefCell<Vec<Entry>> = const { RefCell::new(Vec::new()) };
+}
 
 #[inline]
 fn eps(target: f32) -> f32 {
@@ -52,7 +56,11 @@ pub fn probe(name: &'static str, pos: f32, vel: f32, target: f32, dt: f32) {
     if !enabled() {
         return;
     }
-    let es = unsafe { &mut *addr_of_mut!(ENTRIES) };
+    ENTRIES.with(|es| record(&mut es.borrow_mut(), name, pos, vel, target, dt));
+}
+
+/// [`probe`]'s body over the thread's entries.
+fn record(es: &mut Vec<Entry>, name: &'static str, pos: f32, vel: f32, target: f32, dt: f32) {
     let i = match es.iter().position(|e| e.name == name) {
         Some(i) => i,
         None => {
@@ -162,7 +170,11 @@ pub fn draw_overlay() {
     if !enabled() {
         return;
     }
-    let es = unsafe { &*addr_of!(ENTRIES) };
+    ENTRIES.with(|es| paint_overlay(&es.borrow()));
+}
+
+/// [`draw_overlay`]'s body over the thread's entries.
+fn paint_overlay(es: &[Entry]) {
     if es.is_empty() {
         return;
     }

@@ -1,0 +1,19 @@
+{
+  "under_posters.title": "Sotto le locandine",
+  "under_posters.detail": "Cosa appare sotto la locandina scelta.",
+  "under_posters.copy": "La maggior parte delle locandine mostra già il titolo. Scegli cosa appare sotto la locandina su cui ti trovi.",
+  "under_posters.title_row": "Titolo",
+  "under_posters.title_detail": "Il nome, in grassetto.",
+  "under_posters.details_row": "Dettagli",
+  "under_posters.details_detail": "Una riga di informazioni.",
+  "under_posters.details_copy": "I titoli iniziati, in arrivo o le raccolte mostrano invece questo: tempo rimanente, data di uscita, numero di film.",
+  "under_posters.year_length": "Anno · Durata",
+  "under_posters.genre": "Genere",
+  "under_posters.video": "Video",
+  "under_posters.age_rating_score": "Classificazione · Voto",
+  "under_posters.none": "Niente",
+  "under_posters.reset": "Ripristina predefinito",
+  "under_posters.reset_detail": "Anno e durata, senza titolo.",
+  "under_posters.sample_title": "Film",
+  "under_posters.sample_genre": "Drammatico"
+}

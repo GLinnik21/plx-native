@@ -51,6 +51,13 @@ fn opening_row(options: &WatchlistOptionsState) -> usize {
 }
 
 impl WatchlistMenuScreen {
+
+    /// The panel as it reads: each section's heading and its rows' `(label, value)`, for a route
+    /// test that compares the Watchlist's words with the Library's.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_panel(&self) -> Vec<(String, Vec<(String, Option<String>)>)> {
+        self.menu.probe_panel()
+    }
     pub fn new(entry: EntryId, arg: WatchlistMenuArg) -> Self {
         Self {
             entry,
@@ -175,16 +182,15 @@ impl<H: ContentLike> Focusable<H> for WatchlistMenuScreen {
 }
 
 impl<H: ContentLike> Screen<H> for WatchlistMenuScreen {
-    /// The pill the panel grew out of is THIS surface's while it is up (DS7: the pill's glass
-    /// becomes the panel), so the page leaves it out of its pass (`DrawFrame::lifted`) and
-    /// [`draw_pill`](Self::draw_pill) is its only copy. Left on the page, the pill sat under the
-    /// scrim for the whole menu, and the settled panel — slid up over it, being taller than the
-    /// room below — refracted its label into the glass rim.
     /// Sort & Filter shows the effect of each click: the page reflows under the open menu, and
     /// the glass stands on a host that follows it (`popover::host::set_reflow`).
     fn lets_host_reflow(&self) -> bool {
         true
     }
+    /// The pill the panel grew out of: the page leaves it out of its pass (`DrawFrame::lifted`) and
+    /// the host's opener lift (`WatchlistScreen::redraw_focused`) is its only copy, lit above the
+    /// scrim and the panel for as long as the menu is up (design review S12). Left on the page it
+    /// sat dimmed under the scrim; drawn by this surface it vanished once the panel settled.
     fn opener(&self) -> Option<(EntryId, Option<FocusKey<u32>>)> {
         Some((self.arg.host, Some(FocusKey { entry: self.arg.host, elem: super::page::PILL_ELEM })))
     }
@@ -205,14 +211,12 @@ impl<H: ContentLike> Screen<H> for WatchlistMenuScreen {
         Scrim::dim(plx_ui::theme::underlay::DIM_COMPACT)
     }
     fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, H>) {}
-    /// The menu and the pill it grows out of, as one surface (`OptionsMenu::draw`). It is drawn
-    /// on the frame painter, NOT faded by the container's appear (`f.page_alpha`, which still
-    /// gates the hit stops): the surface begins and ends as the pill, so it has nothing to fade in
-    /// or out. Faded by it, the landed pill dimmed away under the closing scrim and the page's own
-    /// pill popped in at full strength when the surface left (frame dump at 572f46d07, n325–352).
+    /// The panel, growing out of the pill's rect (`OptionsMenu::draw`). Drawn on the frame painter,
+    /// NOT faded by the container's appear (`f.page_alpha`, which still gates the hit stops): the
+    /// morph is its own entrance, and the pill above it is the opener lift's.
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha);
-        self.menu.draw(f.painter, f.underlay, f.measure, &self.options);
+        self.menu.draw(f.painter, f.underlay, f.measure);
         for row in 0..OptionsRow::ALL.len() {
             let Some(rect) = self.menu.row_frame(row, f.measure) else { continue };
             f.stop(
@@ -230,11 +234,6 @@ impl<H: ContentLike> Screen<H> for WatchlistMenuScreen {
     }
     fn render(&self) -> RenderStrategy {
         RenderStrategy::Page
-    }
-    /// Held (its capture frame, its text warming), the surface is still the pill the page has left
-    /// out: drawn here, it does not vanish on OK.
-    fn draw_held(&mut self, f: &mut DrawFrame<'_, '_, H>) {
-        self.menu.draw_face(f.painter, f.measure, &self.options);
     }
 }
 

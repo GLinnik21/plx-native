@@ -3,7 +3,10 @@
 //! The types and signatures below are what `data::watchlist` compiles against; a change to a
 //! name or a signature here is a change to every dependent, so make it deliberately and say so.
 //!
-//! Written as an `impl AccountClient` block like `discover.rs`. Every call is blocking; run it on
+//! Written as an `impl AccountClient` block like `discover.rs`, and on the SAME base: both read
+//! [`discover`] (`account.rs`), so a stand-in armed for the person page serves the Watchlist and the
+//! other way round, and the dev-build failsafes here (a refused write, a refused read on a dev-token
+//! boot) are decided against the one answer to "is a stand-in armed". Every call is blocking; run it on
 //! a worker thread. The account token rides in the request the transport builds, never in the
 //! [`WatchRequest`] a closure sees, so a test closure cannot leak it and a log line cannot carry
 //! it. Logs name the status and the endpoint SHAPE only.
@@ -14,7 +17,9 @@
 //! on metadata.provider; add/remove are `PUT /actions/addToWatchlist?ratingKey=<hex>` /
 //! `removeFromWatchlist`. Discover ratingKeys are 24-char hex, NOT PMS ratingKeys.
 use super::paging::{paged_path, PageReq};
-use super::account::{endpoint_shape, loopback_http, note_response_contact, AccountClient};
+use super::account::{
+    discover, discover_read_allowed, endpoint_shape, note_response_contact, stand_in_armed, AccountClient,
+};
 use serde_json::Value;
 
 /// Largest page the service accepts (101 answers 400).
@@ -94,7 +99,8 @@ pub enum WatchlistError {
     NotFound,
     /// No answer: offline, TLS, timeout.
     Transport,
-    /// A `devtriggers` build refused a WRITE because the discover stand-in is not armed.
+    /// A `devtriggers` build refused the request: a WRITE while neither the discover stand-in nor
+    /// the owner's live switch is armed, or a READ on a dev-token boot with no stand-in armed.
     Refused,
     /// A 2xx whose body this module could not read.
     Unreadable,
@@ -126,34 +132,6 @@ pub struct WatchResponse {
 /// The injectable request closure every call takes (tests pass a canned one; production passes
 /// [`AccountClient::watchlist_transport`]).
 pub type WatchTransport<'a> = &'a mut dyn FnMut(&WatchRequest) -> Result<WatchResponse, WatchlistError>;
-
-const DISCOVER: &str = "https://discover.provider.plex.tv";
-
-/// The discover provider's base URL: `https://discover.provider.plex.tv`, or, in a dev build
-/// only, the loopback stand-in named by `/tmp/plxnative-discover` (guarded exactly like
-/// `account::plex_tv()`: plain `http://` to `127.0.0.1`/`localhost` or it is refused and logged,
-/// so the trigger can never point the account token at another host). Read once.
-pub fn discover() -> &'static str {
-    static BASE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    BASE.get_or_init(|| match plx_base::devtrig::read("discover") {
-        Some(v) if loopback_http(&v) => {
-            #[cfg(feature = "devtriggers")]
-            plx_base::eventlog::log("watchlist: discover replaced by a loopback stand-in (/tmp/plxnative-discover)");
-            v.trim_end_matches('/').to_string()
-        }
-        Some(_) => {
-            #[cfg(feature = "devtriggers")]
-            plx_base::eventlog::log("BADTRIGGER discover: only http://127.0.0.1:<port> or http://localhost:<port> is accepted");
-            DISCOVER.to_string()
-        }
-        None => DISCOVER.to_string(),
-    })
-}
-
-/// Is the discover stand-in armed (the base is not the real service)?
-fn stand_in_armed() -> bool {
-    discover() != DISCOVER
-}
 
 #[cfg(feature = "devtriggers")]
 plx_base::devtrig::latched_flag!(
@@ -356,6 +334,11 @@ impl AccountClient {
     /// out logs its status ([`write_line`]).
     pub fn watchlist_transport(&self) -> impl FnMut(&WatchRequest) -> Result<WatchResponse, WatchlistError> + '_ {
         move |req: &WatchRequest| -> Result<WatchResponse, WatchlistError> {
+            // A READ is gated the way a person-page read is (`account::permit_read`): a dev-token
+            // boot with no stand-in armed never dials the real provider.
+            if req.method == "GET" && !discover_read_allowed(&req.url) {
+                return Err(WatchlistError::Refused);
+            }
             let dev = cfg!(feature = "devtriggers");
             let (armed, live) = (stand_in_armed(), live_armed());
             if let Err(e) = permit_write(req.method, dev, armed, live) {
@@ -486,6 +469,7 @@ impl AccountClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::account::REAL_DISCOVER as DISCOVER;
 
     const HEX: &str = "5d776824999c4a001f9a1b2c";
     const HEX2: &str = "5d776824999c4a001f9a1b2d";
@@ -781,7 +765,7 @@ mod tests {
         assert_eq!(permit_write("PUT", true, false, true), Ok(()), "the owner's live switch lets it out");
         assert_eq!(permit_write("PUT", true, true, true), Ok(()), "both armed: allowed, and the stand-in is the base");
         assert_eq!(permit_write("PUT", false, false, false), Ok(()), "release builds write");
-        assert_eq!(permit_write("GET", true, false, false), Ok(()), "reads are never refused");
+        assert_eq!(permit_write("GET", true, false, false), Ok(()), "the WRITE gate never refuses a read (reads have their own, account::permit_read)");
         // The refusal travels up as the write's own error.
         let (out, _) = run(vec![Err(WatchlistError::Refused)], |c, t| c.watchlist_add(HEX, t));
         assert_eq!(out, Err(WatchlistError::Refused));
@@ -793,6 +777,58 @@ mod tests {
         assert_eq!(discover(), DISCOVER);
         assert!(!stand_in_armed());
         assert!(!live_armed(), "the live switch is off unless its file exists");
+    }
+
+    /// The Watchlist and the person routes share ONE base: arming the stand-in for either moves
+    /// both, and the Watchlist's write failsafe sees it.
+    #[test]
+    fn the_watchlist_reads_the_shared_base() {
+        if !plx_base::devtrig::ENABLED {
+            return;
+        }
+        plx_base::devtrig::with_private_triggers(|| {
+            std::fs::write(plx_base::devtrig::path("discover"), "http://127.0.0.1:41999/").unwrap();
+            assert_eq!(discover(), "http://127.0.0.1:41999");
+            assert!(stand_in_armed());
+            let (_, seen) = run(vec![ok(&list_body(&[], 0))], |c, t| c.watchlist_page(0, 100, None, t));
+            assert!(seen[0].url.starts_with("http://127.0.0.1:41999/library/sections/watchlist/all?"), "{}", seen[0].url);
+        });
+        // A redirected plex.tv carries its Discover along (the mock serves both on one listener).
+        plx_base::devtrig::with_private_triggers(|| {
+            std::fs::write(plx_base::devtrig::path("plextv"), "http://127.0.0.1:41998").unwrap();
+            assert_eq!(discover(), "http://127.0.0.1:41998");
+            assert!(stand_in_armed());
+        });
+    }
+
+    /// **Every request site** of the Watchlist builds its URL on the shared base: with the stand-in
+    /// armed, the request each public method hands the transport sits on it. Spelling the real host
+    /// (or any other base) in one of them turns this red; the tests above compare against
+    /// `discover()` itself, which cannot see that.
+    #[test]
+    fn every_watchlist_request_site_is_built_on_the_armed_stand_in() {
+        if !plx_base::devtrig::ENABLED {
+            return;
+        }
+        const BASE: &str = "http://127.0.0.1:41999";
+        let page = || ok(&list_body(&[], 0));
+        plx_base::devtrig::with_private_triggers(|| {
+            std::fs::write(plx_base::devtrig::path("discover"), BASE).unwrap();
+            let sites: Vec<(&str, Vec<WatchRequest>)> = vec![
+                ("watchlist_page", run(vec![page()], |c, t| { let _ = c.watchlist_page(0, 100, None, t); }).1),
+                ("watchlist_released", run(vec![page(), page(), page()], |c, t| { let _ = c.watchlist_released(t); }).1),
+                ("user_state", run(vec![status(200)], |c, t| { let _ = c.user_state(HEX, t); }).1),
+                ("catalog_item", run(vec![status(200)], |c, t| { let _ = c.catalog_item(HEX, t); }).1),
+                ("watchlist_add", run(vec![status(200)], |c, t| { let _ = c.watchlist_add(HEX, t); }).1),
+                ("watchlist_remove", run(vec![status(200)], |c, t| { let _ = c.watchlist_remove(HEX, t); }).1),
+            ];
+            for (site, seen) in sites {
+                assert!(!seen.is_empty(), "{site} made no request");
+                for r in &seen {
+                    assert!(r.url.starts_with(&format!("{BASE}/")), "{site}: {}", r.url);
+                }
+            }
+        });
     }
 
     #[test]

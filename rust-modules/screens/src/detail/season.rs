@@ -112,13 +112,7 @@ impl Metrics {
         }
         self.fingerprint = fp;
         self.lays = widgets::strip_layout_measured(
-            d.seasons.iter().map(|season| {
-                if season.title.is_empty() {
-                    plx_platform::i18n::msg::browse_detail_season_number(season.index as i64)
-                } else {
-                    season.title.clone()
-                }
-            }),
+            d.seasons.iter().map(|season| plx_ui::fmt::season_identity(season.index, &season.title)),
             // The LABEL origin: the first pill's FRAME then starts on the page's content edge
             // (`MARGIN_X`), the same leading edge as the hero buttons above it and the season
             // group's own focus extent — the Library's strip lays out from the same origin.
@@ -314,6 +308,22 @@ mod tests {
             watch_state(&season),
             plx_ui::widgets::PosterMark::Watched
         );
+    }
+
+    /// **A season tab is named by the ONE identity rule the captions use** (`fmt::season_identity`):
+    /// its own title, else "Season N", else "Specials" for the season numbered 0. A server that gave
+    /// season 0 no title used to put "Season 0" on its tab while the same season's caption said
+    /// "Specials".
+    #[test]
+    fn an_untitled_season_zero_tab_reads_specials_not_season_zero() {
+        let mut d = detail();
+        d.seasons[0].index = 0;
+        d.seasons[0].title = String::new();
+        d.seasons[1].title = String::new();
+        let mut metrics = Metrics::new();
+        metrics.update(&d, &plx_ui::fixture::FixtureMeasure);
+        let labels: Vec<_> = metrics.lays().iter().map(|lay| lay.label.to_str().unwrap().to_string()).collect();
+        assert_eq!(labels, ["Specials", "Season 3"]);
     }
 
     #[test]

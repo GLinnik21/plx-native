@@ -171,7 +171,8 @@ fn foreign_table_replacement_during_grid_query_mounts_incoming_engine_focus_and_
         let mut engine = FocusEngine::new();
         let mut page = LibraryScreen::new(ENTRY, INSTANCE, SecKind::Movie);
         outgoing.deliver(&mut page, &mut engine, ScreenEvent::Mount);
-        let first_group = page.first_group();
+        // The listing is still loading, so the page has no arrival seat of its own: the test seats the header.
+        let first_group = page.first_group().unwrap_or(super::LIBRARY_GROUP);
         outgoing.deliver(
             &mut page,
             &mut engine,
@@ -263,16 +264,12 @@ fn foreign_table_replacement_during_grid_query_mounts_incoming_engine_focus_and_
             )
         )));
         let first = engine.current(OWNER).unwrap();
-        let selected = page
-            .libraries
-            .iter()
-            .find(|(_, index)| *index == incoming_index)
-            .unwrap()
-            .0;
+        // The page arrives in its first poster: the incoming listing's, never the outgoing deep card.
+        let head = page.pair.detail.elem_for(&incoming.cx(&engine), &mut page.keys, 0, COLS).expect("the incoming first poster");
         assert_eq!(
             first,
-            page.key(selected),
-            "first incoming focus is its selected library, not the outgoing deep card"
+            page.key(head),
+            "first incoming focus is its first poster, not the outgoing deep card"
         );
         assert_eq!(page.scroll.pos, 0.0);
         assert_eq!(
@@ -280,7 +277,7 @@ fn foreign_table_replacement_during_grid_query_mounts_incoming_engine_focus_and_
             Some(deep.elem),
             "old history remains engine-owned, but cannot seat the incoming epoch"
         );
-        assert_eq!(engine.read(OWNER).remembered(new_grid), None);
+        assert_eq!(engine.read(OWNER).remembered(new_grid), Some(head), "the new epoch remembers only its own first poster");
 
         // Mount's first ready tick changes Hold to In; the following tick advances alpha.
         incoming.frame(&mut page, &mut engine, 161);
@@ -304,9 +301,7 @@ fn foreign_table_replacement_during_grid_query_mounts_incoming_engine_focus_and_
         for n in 163..240 {
             incoming.frame(&mut page, &mut engine, n);
         }
-        incoming.down(&mut page, &mut engine); // selected library -> toolbar
-        assert_eq!(engine.current_group(OWNER), Some(page.toolbar_group()));
-        incoming.down(&mut page, &mut engine); // toolbar -> the incoming grid's first row, under the chip
+        assert_eq!(engine.current_group(OWNER), Some(new_grid), "the first poster holds the arrival seat");
         let (row, col) = page.grid_position(engine.current(OWNER)).expect("DOWN lands in the grid");
         assert_eq!(row, 0);
         let key = engine.current(OWNER).unwrap();

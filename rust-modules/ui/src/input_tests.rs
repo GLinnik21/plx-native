@@ -255,7 +255,7 @@ fn a_card_held_with_repeat_beats_still_delivers_one_hold_and_no_tap() {
 /// app may open it or decline. Either way the card goes from its dip (~0.92, the unpopped size)
 /// back to its pop on the underdamped release spring the OK press gets: a decline leaves no menu
 /// over the card, and a menu that opens is what the card springs UNDER (the press is the one owner
-/// of that motion and the opener lift reads it, `bridge::opener_press`). A one-frame snap from the
+/// of that motion and the opener lift reads it, `Dispatcher::opener_press`). A one-frame snap from the
 /// dip to 1.0 is a card jumping under the user's thumb, and for a taken hold it is the pop
 /// animation the owner reported lost (0.8.0-rc.3). A hold that is NOT answered (page 700) keeps
 /// the dip until the release, by design.
@@ -343,8 +343,8 @@ fn a_control_that_handles_a_direction_keeps_it_from_the_engine() {
 }
 
 /// §6.2: the strip is the CONTAINER's group, contributed above the page's — UP from the row
-/// lands on the nearest pill — and the page gates it: a page snapped to its grid has no strip
-/// to reach.
+/// lands on the page's own pill (this fixture publishes none, so the nearest) — and the page gates
+/// it: a page snapped to its grid has no strip to reach.
 #[test]
 fn the_strip_is_the_containers_group_and_the_page_gates_it() {
     let (mut d, mut rig, _) = booted();
@@ -448,6 +448,127 @@ fn strip_pointer_stops_use_drawn_geometry_and_stable_keys() {
     assert_eq!(bounds(stop.rect), bounds(drawn));
     assert_eq!(bounds(stop.rest_rect), bounds(target));
     assert_eq!(bounds(stop.clip), bounds(clip));
+}
+
+/// **The shared bar's pointer stops follow what is drawn** (the tuck, the nav's own chrome alpha).
+///
+/// The bar the application publishes (`ChromeSnapshot::members`): the profile chip at its frame, then
+/// three pills at the strip's own geometry. They are published at their RESTING rects every frame; the
+/// dispatcher is what puts them where the bar is drawn, and withdraws them when it is not drawn.
+fn publish_bar(d: &mut Dispatcher<FixtureHost>) -> Vec<StripMember<u32>> {
+    use super::widgets::{tab_members, TopFocus, CHIP_FRAME, TAB_KEY_CHIP};
+    let mut members = vec![StripMember::new(TAB_KEY_CHIP, CHIP_FRAME)];
+    tab_members(&[140.0; 3], &[STRIP_BASE, STRIP_BASE + 1, STRIP_BASE + 2], 0, TopFocus::Away, 0.0, &mut members);
+    d.nav.tabs.strip = members.clone();
+    members
+}
+
+/// Tuck the page on top by `tuck` (0 shown .. 1 gone) and draw one frame, publishing its hit map.
+fn draw_tucked(d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, tuck: f32) {
+    let page = d.nav.tabs.stack.top_mut().and_then(|entry| entry.inst.as_mut()).expect("the booted page");
+    page.screen.as_any_mut().and_then(|any| any.downcast_mut::<super::fixture::FixtureScreen>())
+        .expect("fixture screen").tuck = tuck;
+    d.draw(rig, true);
+}
+
+/// The bar's stops on the presented hit map: every strip key (the chip's and the pills').
+fn bar_stops(d: &Dispatcher<FixtureHost>) -> Vec<u32> {
+    d.input.hit.front().iter().map(|s| s.key.elem).filter(|&elem| elem >= STRIP_BASE).collect()
+}
+
+fn bar_stop(d: &Dispatcher<FixtureHost>, elem: u32) -> Option<&super::screen::Stop<u32>> {
+    d.input.hit.front().iter().find(|s| s.key.elem == elem)
+}
+
+fn bounds(r: Rect) -> (f32, f32, f32, f32) { (r.x, r.y, r.w, r.h) }
+
+fn lifted(r: Rect, by: f32) -> (f32, f32, f32, f32) { (r.x, r.y - by, r.w, r.h) }
+
+/// A bar tucked half way is drawn `chrome_lift(0.5)` higher, and its stops are there with it: the rect,
+/// the rest rect an opener anchors to and the clip (the painter's translate moves the strip's scissor).
+#[test]
+fn a_half_tucked_bar_registers_its_stops_where_it_is_drawn() {
+    let (mut d, mut rig) = boot(FixtureArg::Home);
+    let members = publish_bar(&mut d);
+    draw_tucked(&mut d, &mut rig, 0.0);
+    for member in &members {
+        let stop = bar_stop(&d, member.elem).expect("an untucked bar is clickable");
+        assert_eq!((bounds(stop.rect), bounds(stop.rest_rect), bounds(stop.clip)),
+            (bounds(member.drawn), bounds(member.target), bounds(member.clip)), "tuck 0 leaves the stops where the bar rests");
+    }
+    draw_tucked(&mut d, &mut rig, 0.5);
+    let lift = super::screen::chrome_lift(0.5);
+    assert!(lift > 0.0, "premise: a half tuck lifts the bar");
+    for member in &members {
+        let stop = bar_stop(&d, member.elem).expect("a half-tucked bar is still on screen");
+        assert_eq!(bounds(stop.rect), lifted(member.drawn, lift), "elem {:#x}: the stop is where the bar is drawn", member.elem);
+        assert_eq!(bounds(stop.rest_rect), lifted(member.target, lift), "elem {:#x}: its rest rect rides with it", member.elem);
+        assert_eq!(bounds(stop.clip), lifted(member.clip, lift), "elem {:#x}: and so does its scissor", member.elem);
+    }
+}
+
+/// A click at the place the bar RESTS misses once the bar has risen off it; a click where it is drawn
+/// lands (and activates the pill). At tuck 0 the two places are one and the click lands there.
+#[test]
+fn a_click_lands_where_the_half_tucked_bar_is_drawn_not_where_it_rests() {
+    let (mut d, mut rig) = boot(FixtureArg::Home);
+    let members = publish_bar(&mut d);
+    let pill = members.iter().find(|m| m.elem == STRIP_BASE + 1).copied().expect("the second pill");
+    let lift = super::screen::chrome_lift(0.5);
+    // inside the resting rect and below the drawn one / inside the drawn rect and above the resting one
+    let (rest_x, rest_y) = (pill.drawn.cx(), pill.drawn.y + pill.drawn.h - 1.0);
+    let (drawn_x, drawn_y) = (pill.drawn.cx(), pill.drawn.y - lift + 10.0);
+    assert!(rest_y > pill.drawn.y - lift + pill.drawn.h, "premise: the resting point is below the lifted pill");
+    assert!(drawn_y > 0.0 && drawn_y < pill.drawn.y, "premise: the drawn point is on canvas and above the resting pill");
+
+    draw_tucked(&mut d, &mut rig, 0.0);
+    assert_eq!(d.input.hit.top_at(rest_x, rest_y).map(|s| s.key.elem), Some(pill.elem), "untucked: the pill is where it rests");
+    assert!(d.input.hit.top_at(drawn_x, drawn_y).is_none(), "untucked: nothing is drawn above the bar");
+
+    draw_tucked(&mut d, &mut rig, 0.5);
+    assert!(d.input.hit.top_at(rest_x, rest_y).is_none(), "half tucked: the bar is not drawn at the place it rests");
+    assert_eq!(d.input.hit.top_at(drawn_x, drawn_y).map(|s| s.key.elem), Some(pill.elem), "…it is drawn where the lift put it");
+    d.frame(&mut rig, tick(16), vec![click(rest_x, rest_y, tick(16))], vec![], &mut NoTap);
+    assert!(!events_of(&d, 0).contains("\"activate\""), "a click at the resting place activates nothing");
+    d.frame(&mut rig, tick(32), vec![click(drawn_x, drawn_y, tick(32))], vec![], &mut NoTap);
+    assert!(events_of(&d, 0).contains("\"activate\""), "a click on the drawn pill activates it");
+}
+
+/// A fully tucked bar is not drawn (the chrome pass skips it), so it is not clickable and not hoverable:
+/// the dispatcher publishes no stop for any of its members. Asserted on the map itself, not on a click
+/// at the resting rect, because the lift alone takes a fully tucked bar off canvas and a click there
+/// would miss either way; the withdrawal is the rule, the geometry only agrees with it.
+#[test]
+fn a_fully_tucked_bar_registers_no_pointer_stops_and_returns_with_the_scroll() {
+    let (mut d, mut rig) = boot(FixtureArg::Home);
+    let members = publish_bar(&mut d);
+    let chip = members[0];
+    draw_tucked(&mut d, &mut rig, 0.0);
+    assert_eq!(bar_stops(&d).len(), members.len(), "premise: an untucked bar registers the chip and every pill");
+
+    draw_tucked(&mut d, &mut rig, 1.0);
+    assert!(bar_stops(&d).is_empty(), "a fully tucked bar registers no stop: {:?}", bar_stops(&d));
+    assert!(d.input.hit.top_at(chip.drawn.cx(), chip.drawn.cy()).is_none());
+    d.frame(&mut rig, tick(16), vec![click(chip.drawn.cx(), chip.drawn.cy(), tick(16))], vec![], &mut NoTap);
+    assert!(!events_of(&d, 0).contains("\"activate\""), "a click at the chip's resting place activates nothing");
+
+    draw_tucked(&mut d, &mut rig, 0.0);
+    assert_eq!(bar_stops(&d).len(), members.len(), "the stops return as the page returns to its top");
+}
+
+/// **The rule is "drawn", not "lifted".** The nav's own chrome alpha (a page transition that fades the
+/// bar) takes the bar off the screen with no lift at all, and the chrome pass skips it at alpha 0, so
+/// its stops go with it. This is the case the geometry cannot decide: at tuck 0 the lift is 0.
+#[test]
+fn a_bar_the_nav_has_faded_out_registers_no_pointer_stops() {
+    let (mut d, mut rig) = boot(FixtureArg::Home);
+    let members = publish_bar(&mut d);
+    rig.chrome_alpha = 0.5;
+    draw_tucked(&mut d, &mut rig, 0.0);
+    assert_eq!(bar_stops(&d).len(), members.len(), "a half-faded bar is on screen and clickable");
+    rig.chrome_alpha = 0.0;
+    draw_tucked(&mut d, &mut rig, 0.0);
+    assert!(bar_stops(&d).is_empty(), "a bar faded to nothing is not drawn, so it is not clickable");
 }
 
 #[test]

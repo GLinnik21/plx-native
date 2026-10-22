@@ -1,5 +1,5 @@
-//! **The eleven per-profile settings, live: one cell each, one restore, one write door.** (The ten
-//! player settings and hero trailer autoplay.)
+//! **The twelve per-profile settings, live: one cell each, one restore, one write door.** (The ten
+//! player settings, hero trailer autoplay and Under posters.)
 //!
 //! The persisted half of each setting is a [`Setting`] row in `plex::session::prefs`; this is the
 //! other half, the in-memory copy the player reads every frame (a process-global [`LiveCell`], an
@@ -39,7 +39,8 @@ use plx_plex::plex::session::{
     effective, own_prefs, persist_profile_pref, AudioEnhancementsPref, DeckPress, DeckPressPref, DirectPlayMode,
     DirectPlayModePref, HdrOverlayBrightness, HdrOverlayBrightnessPref, NextEpisodeMode, NextEpisodeModePref, Preferences, ProfilePrefs, ProfilePrefsRecord,
     ProfileSetting, ProfileWrite, QualityPref, Row, Setting, SkipInterval, SkipIntervalPref, SubtitlePosition,
-    SubtitlePositionPref, SubtitleSize, SubtitleSizePref, SubtitleTone, SubtitleTonePref, TrailerAutoplayPref,
+    SubtitlePositionPref, SubtitleSize, SubtitleSizePref, SubtitleTone, SubtitleTonePref, TrailerAutoplayPref, UnderPosters,
+    UnderPostersPref,
 };
 use plx_plex::plex::session::prefs::{
     MemoryEntry, ProfileKeyed, ProfileList, ProfileMemory, ProfileRecords, SettingsWrite, TrackMemoryEntry,
@@ -161,6 +162,19 @@ impl Packed for DirectPlayMode {
     }
 }
 
+/// Under posters is one byte: the title switch in bit 0, the details' ladder index in bits 1-3
+/// ([`UnderPosters::pack`]). The seed, 0, is the default (no title, year and length), so a read
+/// before any restore is what the install did before the setting existed.
+impl Packed for UnderPosters {
+    const SEED: u8 = 0;
+    fn to_u8(self) -> u8 {
+        self.pack()
+    }
+    fn from_u8(b: u8) -> Self {
+        UnderPosters::unpack(b)
+    }
+}
+
 /// The hero trailer switch is one byte, 0 or 1. The seed is ON, the product default, so a read before
 /// any restore is what the install did before the setting existed.
 impl Packed for bool {
@@ -239,6 +253,11 @@ live_cell!(
     pub(super) DECK_PRESS: DeckPress, "deck press preference"
 );
 live_cell!(
+    /// What sits under the focused poster (Settings > Libraries > Under posters). Read by every
+    /// poster grid and row each frame, through `route::under_posters`.
+    pub(super) UNDER_POSTERS: UnderPosters, "under posters preference"
+);
+live_cell!(
     /// The client-rendered subtitle caption's text size.
     pub(super) SUBTITLE_SIZE: SubtitleSize, "subtitle size preference"
 );
@@ -303,6 +322,7 @@ macro_rules! live_setting {
 
 live_setting!(DirectPlayModePref, DIRECT_PLAY_MODE, "direct play mode");
 live_setting!(DeckPressPref, DECK_PRESS, "deck press");
+live_setting!(UnderPostersPref, UNDER_POSTERS, "under posters");
 live_setting!(SubtitleSizePref, SUBTITLE_SIZE, "subtitle size");
 live_setting!(SubtitlePositionPref, SUBTITLE_POSITION, "subtitle position");
 live_setting!(HdrOverlayBrightnessPref, HDR_OVERLAY_BRIGHTNESS, "HDR overlay brightness");
@@ -361,6 +381,7 @@ pub const LIVE_ROWS: &[LiveRow] = &[
     LiveRow::of::<NextEpisodeModePref>(),
     LiveRow::of::<SkipIntervalPref>(),
     LiveRow::of::<DeckPressPref>(),
+    LiveRow::of::<UnderPostersPref>(),
     LiveRow::of::<AudioEnhancementsPref>(),
     LiveRow::of::<TrailerAutoplayPref>(),
 ];
@@ -743,6 +764,7 @@ choices! {
     NextEpisode => NextEpisodeModePref,
     SkipInterval => SkipIntervalPref,
     DeckPress => DeckPressPref,
+    UnderPosters => UnderPostersPref,
     TrailerAutoplay => TrailerAutoplayPref,
     SubtitleSize => SubtitleSizePref,
     SubtitlePosition => SubtitlePositionPref,
@@ -869,6 +891,13 @@ pub fn deck_press() -> DeckPress { DeckPressPref::live() }
 pub fn restore_deck_press(mode: DeckPress) { restore_live::<DeckPressPref>(mode) }
 /// Blocking persistence seam, as [`set_next_episode_mode`].
 pub fn set_deck_press(mode: DeckPress) -> bool { confirm::<DeckPressPref>(mode) }
+
+/// What sits under the focused poster, for the seated profile. Safe from any thread; a reader takes
+/// no lock.
+pub fn under_posters() -> UnderPosters { UnderPostersPref::live() }
+pub fn restore_under_posters(v: UnderPosters) { restore_live::<UnderPostersPref>(v) }
+/// Blocking persistence seam, as [`set_next_episode_mode`].
+pub fn set_under_posters(v: UnderPosters) -> bool { confirm::<UnderPostersPref>(v) }
 
 pub fn subtitle_size() -> SubtitleSize { SubtitleSizePref::live() }
 pub fn restore_subtitle_size(size: SubtitleSize) { restore_live::<SubtitleSizePref>(size) }

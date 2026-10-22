@@ -1,0 +1,19 @@
+{
+  "under_posters.title": "Пад постэрамі",
+  "under_posters.detail": "Што паказана пад постэрам.",
+  "under_posters.copy": "Большасць постэраў ужо паказваюць назву. Выберыце, што з’яўляецца пад постэрам, на якім вы знаходзіцеся.",
+  "under_posters.title_row": "Назва",
+  "under_posters.title_detail": "Назва тоўстым шрыфтам.",
+  "under_posters.details_row": "Звесткі",
+  "under_posters.details_detail": "Адзін радок звестак.",
+  "under_posters.details_copy": "Пачатыя, будучыя назвы і калекцыі паказваюць замест гэтага: час, які застаўся, дату выхаду, колькасць фільмаў.",
+  "under_posters.year_length": "Год · Працягласць",
+  "under_posters.genre": "Жанр",
+  "under_posters.video": "Відэа",
+  "under_posters.age_rating_score": "Узроставы рэйтынг · Ацэнка",
+  "under_posters.none": "Нічога",
+  "under_posters.reset": "Скінуць па змаўчанні",
+  "under_posters.reset_detail": "Год і працягласць, без назвы.",
+  "under_posters.sample_title": "Фільм",
+  "under_posters.sample_genre": "Драма"
+}

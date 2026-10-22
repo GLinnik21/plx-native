@@ -43,6 +43,7 @@ use plx_ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec,
     Hover, Placed, RenderStrategy, Screen, ScreenEvent, Scrim, Seat, Step, Stop,
 };
+use plx_ui::popover::Popover;
 use plx_ui::table::{Row, Section, TableView};
 use plx_ui::Rect;
 
@@ -147,8 +148,14 @@ impl AccountInputs {
 /// signed-in owner and the chip offered them "Sign in" — which is the first thing a reviewer on a
 /// fresh test account sees, and the last thing they should.
 pub fn chip_label(acc: &Account) -> String {
-    match (&acc.name, acc.signed_in) {
-        (Some(n), _) => n.clone(),
+    chip_text(acc.name.as_deref(), acc.signed_in)
+}
+
+/// [`chip_label`] from the two facts it is decided by, so the menu's own builder
+/// ([`account_form`], which holds [`AccountInputs`] and no `Account`) asks the SAME rule.
+fn chip_text(name: Option<&str>, signed_in: bool) -> String {
+    match (name, signed_in) {
+        (Some(n), _) => n.to_string(),
         (None, true) => plx_platform::i18n::msg::settings_account_title().to_string(),
         (None, false) => label(Action::SignIn).to_string(),
     }
@@ -167,27 +174,36 @@ fn label(a: Action) -> &'static str {
 /// The menu's header text and its one-section [`Form`], from [`AccountInputs`] — pure, so the
 /// text-fit suite drives the real builder. A named account's own name is user text (the managed
 /// profile or the roster owner), so it is a `server_header`; the fallback "Account" label is this
-/// app's own word for a nameless signed-in account. **Reordering the menu is moving a line.**
+/// app's own word for a nameless signed-in account. A head that only repeats the chip's own label
+/// ([`chip_label`]) is not drawn. **Reordering the menu is moving a line.**
 fn account_form(inputs: &AccountInputs) -> (String, Form<Action, Action, Infallible>) {
     let header = inputs
         .name
         .clone()
         .unwrap_or_else(|| plx_platform::i18n::msg::settings_account_title().to_string());
-    let mut head = Section::new(header.clone());
-    if inputs.name.is_some() {
+    // The chip this menu hangs from already says who the account is (N-c): a head that only repeats
+    // it is dropped (an empty header draws no header row), so the panel opens on its first action.
+    // Signed out, the chip reads "Sign in" and the head "Account": different words, so it stays.
+    let repeats_chip = header == chip_text(inputs.name.as_deref(), inputs.signed_in);
+    let mut head = Section::new(if repeats_chip { String::new() } else { header.clone() });
+    if inputs.name.is_some() && !repeats_chip {
         head = head.server_header();
     }
     let mut sec = FormSection::from_head(head);
     let signed_in = inputs.signed_in;
+    // Where the user goes, then the one way out: Sign out is LAST, behind a rule, so it is never
+    // one Down from where the menu opens and never beside the row a stray press would mean.
     let rows = [
         (Action::ChangeProfile, signed_in && inputs.can_switch),
         (Action::SignIn, !signed_in),
-        (Action::SignOut, signed_in),
         (Action::Settings, true),
         (Action::SendDiagnostics, inputs.lab),
     ];
     for (action, offered) in rows {
         sec = sec.item_if(offered, action, RowKind::Button, action, action_row(action));
+    }
+    if signed_in {
+        sec = sec.separator().item(Action::SignOut, RowKind::Button, Action::SignOut, action_row(Action::SignOut));
     }
     (header, Form::new().section(sec))
 }
@@ -239,6 +255,11 @@ pub struct AccountMenuScreen {
     /// ([`plx_session::auth::owner::SessionSnapshot::switch_refused`]) — a change rebuilds them.
     switch_refused: bool,
     built: bool,
+    /// The open/close motion: the panel MORPHS out of the profile chip and back into it
+    /// (`Popover::morphing` + `open_from`, the path every header menu takes: one opener rule,
+    /// design review S11). It owns the glass's arrival; the chip itself is the host's opener lift
+    /// ([`Screen::scrim`]'s `lifting`), so this draws no chip of its own.
+    popover: Popover,
 }
 
 impl AccountMenuScreen {
@@ -250,6 +271,7 @@ impl AccountMenuScreen {
             built: false,
             session_watch: Default::default(),
             switch_refused: false,
+            popover: Popover::new().morphing(),
         }
     }
 
@@ -306,6 +328,11 @@ impl AccountMenuScreen {
         fx.push(Fx::Nav(NavOp::Dismiss(self.entry)));
     }
 
+    /// The menu's popover: its morph, read by the tests that hold it to the scrim's clock.
+    pub fn popover(&self) -> &Popover {
+        &self.popover
+    }
+
     /// The highlighted row, for the focus probe — a READ of the cursor the engine moves.
     pub fn sel(&self) -> i32 {
         self.form.table.sel
@@ -317,8 +344,16 @@ impl<H: AuthLike> Machine<H> for AccountMenuScreen {
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         let switch_refused = H::auth(cx).0.switch_refused;
         match ev {
-            ScreenEvent::Mount => self.build(switch_refused),
+            ScreenEvent::Mount => {
+                // the origin is the chip's LIVE drawn rect, handed in before every draw (`opener_rect`)
+                self.popover.open_from(None);
+                self.build(switch_refused)
+            }
+            // However the surface was dismissed (BACK, a pick, the host's own press), the panel
+            // runs the morph back into the chip.
+            ScreenEvent::Closing => self.popover.dismiss(),
             ScreenEvent::Tick(tick) => {
+                self.popover.update(tick.dt());
                 if self.session_watch.changed() || switch_refused != self.switch_refused {
                     self.built = false;
                 }
@@ -428,24 +463,35 @@ impl<H: AuthLike> Screen<H> for AccountMenuScreen {
     fn crumb(&self, _: &Cx<'_, H>) -> Option<Cow<'_, str>> {
         None
     }
-    /// The modal dim, and the CHIP lifted back out of it. The chip is what the panel unfurls from
-    /// and the only thing on screen the panel is about, so dimming it under its own menu is the
-    /// same bug the focused card had. Only the DRAW half of the legacy `Opener` is used: this
-    /// panel's placement is its own (it hangs under the top bar), not a function of the chip's
-    /// rect.
+    /// The CHIP is this menu's opener, like a header pill is the Library menu's: the dispatcher's one
+    /// lift pass (`Z::OPENER`, `Dispatcher::lifted_opener`) draws it lit above the dim and the panel,
+    /// so the glass grows out from under it. The chip is chrome the bar draws, so it is named as a
+    /// bar member rather than a page element.
+    fn bar_opener(&self) -> Option<u32> {
+        Some(plx_ui::widgets::TAB_KEY_CHIP)
+    }
+    /// The chip's LIVE drawn rect (the bar's tuck and its unfurl included): the rect the morph starts
+    /// and ends on, re-read every frame, so a chip that moves while the menu opens or closes is
+    /// followed (the Watchlist tucks the bar). The panel's settled placement is its own.
+    fn opener_rect(&mut self, drawn: plx_ui::Rect) {
+        self.popover.track_opener(drawn);
+    }
+    /// The modal dim: the COMPACT role, as every menu hung off a chip: how dark the page goes behind
+    /// this menu, the peak the container ramps with the appear spring (`ModalStack::draw_scrims`).
     fn scrim(&self) -> Scrim {
-        // The SHEET role: how dark the page goes behind this menu, the peak the container ramps
-        // with the appear spring (`ModalStack::draw_scrims`).
-        Scrim::lifting(plx_ui::theme::underlay::DIM_SHEET, plx_ui::widgets::redraw_profile_chip)
+        Scrim::dim(plx_ui::theme::underlay::DIM_COMPACT)
     }
     fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha);
         let measure = f.measure;
         let r = self.frame(measure);
-        plx_ui::widgets::panel_ground(p, r, PANEL_RAD, f.underlay, plx_ui::widgets::Ground::Menu);
+        // The glass and the rows ride the MORPH (`Popover::panel` / `morph_rows`), not the
+        // container's appear: the panel begins and ends as the chip it grows from.
+        let m = self.popover.content_painter_on(f.painter, 0.0);
+        self.popover.panel(m, r, PANEL_RAD, f.underlay, plx_ui::widgets::Ground::Menu);
         plx_ui::profile::phase("glass.foreground", || {
-            self.form.table.draw(p, r, measure);
+            self.popover.morph_rows(m, r, PANEL_RAD, |m| self.form.table.draw(m, r, measure));
         });
         for elem in (0..self.form.table.n_rows() as usize).filter_map(|i| self.form.key_at(i).map(|k| k.0)) {
             if let Some(placed) = <Self as Focusable<H>>::place(self, &elem, f.cx, At::Drawn) {
@@ -512,6 +558,17 @@ mod tests {
         (0..menu.form.table.n_rows() as usize).filter_map(|i| menu.form.id_at(i).copied()).collect()
     }
 
+    /// N4: the account menu is a compact menu hanging off a chip, the same object as the card menu
+    /// and the Library / Watchlist Sort & Filter menus, so it darkens the page by their ONE weight
+    /// (it read 28% beside their 20% under the SHEET role, which is for a surface that takes a
+    /// side of the screen).
+    #[test]
+    fn the_account_menu_dims_the_page_by_the_compact_menus_one_weight() {
+        let menu = AccountMenuScreen::new(EntryId(1));
+        let scrim = <AccountMenuScreen as Screen<MenuHost>>::scrim(&menu);
+        assert_eq!(scrim.alpha, plx_ui::theme::underlay::DIM_COMPACT);
+    }
+
     /// A host whose only view is the Session publication — the one fact the menu reads off it.
     struct MenuHost;
     impl plx_machine::machine::Host for MenuHost {
@@ -543,17 +600,94 @@ mod tests {
     }
 
     fn tick(menu: &mut AccountMenuScreen, read: &plx_session::auth::owner::SessionSnapshot) {
-        use plx_machine::machine::{InputOwner, MachineId, Tick};
-        let cx = Cx::<MenuHost> {
+        step(menu, read, ScreenEvent::Tick(plx_machine::machine::Tick::default()));
+    }
+
+    fn cx_of(read: &plx_session::auth::owner::SessionSnapshot) -> Cx<'_, MenuHost> {
+        use plx_machine::machine::{InputOwner, Tick};
+        Cx::<MenuHost> {
             views: read.read(),
             tick: Tick::default(), measure: &plx_ui::fixture::FixtureMeasure,
             press: Default::default(), focus: Default::default(),
             owner: InputOwner::Entry(EntryId(0)),
-        };
+        }
+    }
+
+    fn step(menu: &mut AccountMenuScreen, read: &plx_session::auth::owner::SessionSnapshot, ev: ScreenEvent<MenuHost>) {
+        use plx_machine::machine::MachineId;
+        let cx = cx_of(read);
         let mut out = Vec::new();
         let mut present = plx_machine::present::Present::new();
         let mut fx = Effects::new(&mut out, MachineId::Session, &mut present);
-        menu.step(&ScreenEvent::Tick(Tick::default()), &cx, &mut fx);
+        menu.step(&ev, &cx, &mut fx);
+    }
+
+    /// The glass this frame: the panel ground (a `rect_rimmed`, tag 8, on a host with no frozen
+    /// field) the surface drew, `Rect::default()` when it drew none.
+    fn glass(menu: &mut AccountMenuScreen, read: &plx_session::auth::owner::SessionSnapshot) -> Rect {
+        let cx = cx_of(read);
+        plx_ui::draw_census::capture(|| {
+            let mut f = DrawFrame::new(&cx, plx_ui::Painter::recording());
+            Screen::<MenuHost>::draw(menu, &mut f);
+        })
+        .into_iter()
+        .find_map(|(tag, r)| (tag == 8).then_some(r))
+        .unwrap_or_default()
+    }
+
+    /// **The profile menu GROWS out of the chip it opened from** (design review S11), as every other
+    /// header menu does (`Popover::morphing` + `open_from`, the Library's and the Watchlist's one
+    /// morph path): the chip is what the host lifts above the dim, and the glass begins as its
+    /// surround and ends as the panel. Red while the panel was laid at its final rect on its first
+    /// frame and only faded in: three frames in, the glass is still the chip's size or a little
+    /// over, and the settled panel is exactly `frame()`. A BACK runs the same morph in reverse and
+    /// lands on the chip.
+    #[test]
+    fn the_panel_grows_out_of_the_chip_and_settles_on_its_frame() {
+        use plx_machine::machine::Tick;
+        let _serial = plx_base::testlock::serial();
+        let _session = plx_plex::plex::session::TempSession::new("account-menu-grows");
+        plx_plex::plex::session::save(&local(Session { client_id: "synthetic-client".into(),
+            account_token: "synthetic-token".into(), ..Default::default() }));
+        let read = published(false);
+        let mut menu = AccountMenuScreen::new(EntryId(0));
+        step(&mut menu, &read, ScreenEvent::Mount);
+        // the dispatcher hands the surface the chip's live drawn rect before every draw
+        // (`Screen::opener_rect`); this rig has no dispatcher, so it plays that part
+        <AccountMenuScreen as Screen<MenuHost>>::opener_rect(&mut menu, plx_ui::widgets::chip_cap(0.0, 0.0));
+        let settled = menu.frame(&plx_ui::fixture::FixtureMeasure);
+        assert!(settled.w > 120.0 && settled.h > 120.0, "rig: the menu built its rows ({settled:?})");
+        let mut ms = 0;
+        for _ in 0..3 {
+            ms += 16;
+            step(&mut menu, &read, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
+        }
+        let early = glass(&mut menu, &read);
+        assert!(
+            early.w < settled.w - 20.0 && early.h < settled.h - 20.0,
+            "three frames into the open the panel is still growing out of the chip ({early:?}), \
+             not laid at its final {settled:?}"
+        );
+        for _ in 0..90 {
+            ms += 16;
+            step(&mut menu, &read, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
+        }
+        let end = glass(&mut menu, &read);
+        assert!(
+            (end.x - settled.x).abs() < 0.5 && (end.y - settled.y).abs() < 0.5
+                && (end.w - settled.w).abs() < 0.5 && (end.h - settled.h).abs() < 0.5,
+            "the settled panel is the frame {settled:?}, drew {end:?}"
+        );
+        // BACK (or any dismissal) runs the morph home: a few frames into the close the glass is
+        // already most of the way back to the chip.
+        step(&mut menu, &read, ScreenEvent::Closing);
+        for _ in 0..3 {
+            ms += 16;
+            step(&mut menu, &read, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }));
+        }
+        let closing = glass(&mut menu, &read);
+        assert!(closing.w < settled.w - 20.0 && closing.h < settled.h - 20.0,
+            "three frames into the close the panel is shrinking into the chip ({closing:?})");
     }
 
     /// #132's dead end, not led into: once the Session KNOWS switching is unavailable for the
@@ -566,7 +700,7 @@ mod tests {
         let s = local(Session { account_token: "acct".into(), ..Default::default() });
         let acc = s.account(None);
         assert_eq!(rows_of(&acc, true).iter().map(|a| label(*a)).collect::<Vec<_>>(),
-            vec!["Sign out", "Settings"]);
+            vec!["Settings", "Sign out"]);
         assert_eq!(rows_of(&acc, false)[0], Action::ChangeProfile);
 
         let _serial = plx_base::testlock::serial();
@@ -596,7 +730,7 @@ mod tests {
         let mut menu = AccountMenuScreen::new(EntryId(0));
         tick(&mut menu, &published(true));
         assert!(!menu_rows(&menu).contains(&Action::ChangeProfile), "rig: the roster was refused");
-        assert_eq!(menu_rows(&menu)[0], Action::SignOut, "rig: Sign out is the first row");
+        assert_eq!(menu_rows(&menu), [Action::Settings, Action::SignOut], "rig: Sign out is behind Settings");
         assert_ne!(menu.form.selected_id(), Some(&Action::SignOut),
             "the menu opened focused on Sign out");
         assert_eq!(menu.form.selected_id(), Some(&Action::Settings));
@@ -656,7 +790,9 @@ mod tests {
             account_token: "synthetic-token".into(), ..Default::default() }));
         menu.built = false;
         menu.build(false);
-        assert_eq!(menu.form.index_of_key(RowKey(settings_key)), Some(2));
+        // Sign out arrives LAST behind a rule, so Settings holds its seat — and still its key
+        assert_eq!(menu.form.index_of_key(RowKey(settings_key)), Some(1));
+        assert!(menu.form.index_of_key(RowKey(Action::SignOut.focus_key())) > Some(1));
         assert_eq!(menu.form.index_of_key(RowKey(Action::SignIn.focus_key())), None,
             "an old Sign in key cannot become the new Sign out action");
     }
@@ -701,7 +837,7 @@ mod tests {
         });
         let (name, rows) = menu(&s, Some(&UserRef::default()));
         assert_eq!(name, "Gleb");
-        assert_eq!(rows, vec!["Change profile", "Sign out", "Settings"]);
+        assert_eq!(rows, vec!["Change profile", "Settings", "Sign out"]);
     }
 
     /// A picked managed profile names the header even though the roster also could.
@@ -718,7 +854,7 @@ mod tests {
         };
         let (name, rows) = menu(&s, Some(&active));
         assert_eq!(name, "Kid");
-        assert_eq!(rows, vec!["Change profile", "Sign out", "Settings"]);
+        assert_eq!(rows, vec!["Change profile", "Settings", "Sign out"]);
     }
 
     /// The roster hop looks for a NAMED entry, admin first: an admin tile that happens to carry an
@@ -744,7 +880,7 @@ mod tests {
         });
         let (name, rows) = menu(&s, Some(&UserRef::default()));
         assert_eq!(name, "Account");
-        assert_eq!(rows, vec!["Change profile", "Sign out", "Settings"]);
+        assert_eq!(rows, vec!["Change profile", "Settings", "Sign out"]);
     }
 
     /// A server-only session (no plex.tv token) is still signed IN — it is streaming — but cannot
@@ -762,7 +898,7 @@ mod tests {
         });
         let (name, rows) = menu(&s, None);
         assert_eq!(name, "Gleb");
-        assert_eq!(rows, vec!["Sign out", "Settings"]);
+        assert_eq!(rows, vec!["Settings", "Sign out"]);
     }
 
     /// The seam the mount actually uses: the crate-global active profile really does reach the
@@ -880,9 +1016,56 @@ mod tests {
             [Action::SignIn, Action::Settings]);
         let s = local(Session { account_token: "acct".into(), ..Default::default() });
         assert_eq!(rows_of(&s.account(None), false),
-            [Action::ChangeProfile, Action::SignOut, Action::Settings]);
+            [Action::ChangeProfile, Action::Settings, Action::SignOut]);
         assert_eq!(rows_of(&local(Session::default()).account(None), false),
-            [Action::SignOut, Action::Settings]);
+            [Action::Settings, Action::SignOut]);
+    }
+
+    /// **The menu does not head itself with what the chip above it already says** (N-c: "DEMO" over the
+    /// panel the chip "DEMO" opened). The head is dropped exactly when it would read as the chip's own
+    /// label (`chip_label`); a header the chip does not say stays, and the rows are the same either way.
+    #[test]
+    fn the_head_is_dropped_only_when_it_repeats_the_chip() {
+        let heads = |inputs: &AccountInputs| {
+            let (_, form) = account_form(inputs);
+            let mut t = FormTable::<Action, Action, Infallible>::new(crate::registry::BAND);
+            t.set(form, None);
+            t.table.sections.iter().map(|section| section.header.clone()).collect::<Vec<_>>()
+        };
+        // a named account: the chip says the name, so the menu does not say it again
+        let named = local(Session { account_token: "acct".into(), home_users: vec![owner("Gleb")], ..Default::default() });
+        let named = named.account(Some(&UserRef::default()));
+        assert_eq!(chip_label(&named), "Gleb", "premise: the chip says the name");
+        let named_inputs = AccountInputs::of(&named, false);
+        assert!(heads(&named_inputs).iter().all(String::is_empty), "named: no head repeats the chip: {:?}", heads(&named_inputs));
+        // signed out the chip says "Sign in" and the menu "Account": different words, so the head stays
+        let out = Session::default().account(None);
+        assert_ne!(chip_label(&out), plx_platform::i18n::msg::settings_account_title(), "premise: the chip says another word");
+        assert_eq!(heads(&AccountInputs::of(&out, false)), [plx_platform::i18n::msg::settings_account_title()],
+            "signed out: the \"Account\" head stays");
+        // the rows are the same with the head or without
+        assert_eq!(ids(account_form(&named_inputs).1), rows_of(&named, false));
+    }
+
+    /// **Sign out is the last row, behind a separator.** The account menu used to put it one Down
+    /// from the landing row; now the rows go to places, a rule closes them, and the one destructive
+    /// row ends the menu in EVERY signed-in state (lab diagnostics included).
+    #[test]
+    fn sign_out_is_last_behind_a_separator() {
+        let s = local(Session { account_token: "acct".into(), ..Default::default() });
+        for (inputs, why) in [
+            (AccountInputs::of(&s.account(None), false), "signed in"),
+            (AccountInputs::of(&s.account(None), true), "roster refused"),
+            (AccountInputs { lab: true, ..AccountInputs::of(&s.account(None), false) }, "lab build"),
+        ] {
+            let mut t = FormTable::<Action, Action, Infallible>::new(crate::registry::BAND);
+            t.set(account_form(&inputs).1, None);
+            let n = t.table.n_rows() as usize;
+            assert_eq!(t.id_at(n - 1).copied(), Some(Action::SignOut), "{why}: Sign out is the last row");
+            assert!(t.id_at(n - 2).is_none(), "{why}: a separator, not a row, sits above Sign out");
+            assert!(t.id_at(n - 3).is_some(), "{why}: and the rows it closes sit above that");
+        }
+        assert!(!rows_of(&Session::default().account(None), false).contains(&Action::SignOut));
     }
 
     /// Reordering the form moves no focus key and no behaviour: two forms that differ only in the

@@ -8,8 +8,10 @@ use std::ffi::CString;
 
 use plx_data::metadata::{Detail, Episode};
 use plx_machine::machine::GroupId;
+use plx_ui::hstack::{Align, HStack, Item};
 use plx_ui::text_lift::{TextLift, TOP_CENTRE};
 use plx_ui::text_view::TextView;
+use plx_ui::vstack::{Anchor, VStack};
 use plx_ui::widgets::{self, PosterMark};
 use plx_ui::{on_axis, theme, Painter, Rect};
 
@@ -106,6 +108,19 @@ pub fn still_rect(i: usize, top: f32, scroll: f32) -> Rect {
     Rect::new(strip_x(i) - scroll, top, W, H)
 }
 
+/// **The label block's one stack**, title / summary / date row: an empty summary, or neither air
+/// date nor rating chip (one row paints both), is ABSENT, not a zero-high row, so there is one `MD`
+/// between the blocks that are there and none after the last (the date sits one gap under the
+/// title when there is no summary, and a title-only platter ends at the title). `meta_layout` reads
+/// it at the heights the episode measured, [`reserved_text_h`] at the tallest it can have.
+fn meta_items(title_h: f32, summary_h: Option<f32>, has_row: bool) -> [Item; 3] {
+    [
+        Item::new(title_h),
+        summary_h.map_or(Item::absent(), Item::new),
+        if has_row { Item::new(theme::size::MICRO as f32) } else { Item::absent() },
+    ]
+}
+
 pub fn meta_layout(ep: &Episode, measure: &dyn plx_machine::machine::Measure) -> (f32, f32, f32) {
     let title_h = TextView::new(&ep.title, theme::size::BODY, theme::TEXT_PRIMARY)
         .bold()
@@ -114,7 +129,6 @@ pub fn meta_layout(ep: &Episode, measure: &dyn plx_machine::machine::Measure) ->
         .max_lines(2)
         .measure_h(TEXT_W)
         .max(TITLE_LEAD);
-    let summary_y = TITLE_DY + title_h + theme::space::MD;
     let summary_h = if ep.summary.is_empty() {
         0.0
     } else {
@@ -124,18 +138,14 @@ pub fn meta_layout(ep: &Episode, measure: &dyn plx_machine::machine::Measure) ->
             .max_lines(SUMMARY_MAX_LINES)
             .measure_h(TEXT_W)
     };
-    let date_y = summary_y
-        + summary_h
-        + if ep.aired.is_empty() {
-            0.0
-        } else {
-            theme::space::MD
-        };
-    let bottom = if ep.aired.is_empty() {
-        summary_y + summary_h
-    } else {
-        date_y + theme::size::MICRO as f32
-    };
+    let items = meta_items(title_h, (!ep.summary.is_empty()).then_some(summary_h), !(ep.aired.is_empty() && ep.rating.is_empty()));
+    let stack = VStack::new(&items, theme::space::MD, Anchor::Top(TITLE_DY));
+    // Where a summary WOULD stand (unread when there is none: the draw skips an empty one): the
+    // same stack with a zero-high summary present.
+    let probe = meta_items(title_h, Some(0.0), false);
+    let (summary_y, _) = stack.span(1).or_else(|| VStack::new(&probe, theme::space::MD, Anchor::Top(TITLE_DY)).span(1)).unwrap_or((TITLE_DY, 0.0));
+    let bottom = TITLE_DY + stack.height();
+    let date_y = stack.span(2).map_or(summary_y + summary_h, |(y, _)| y);
     (date_y, summary_y, bottom + META_BOTTOM_PAD)
 }
 
@@ -153,8 +163,8 @@ pub fn meta_rect(ep: &Episode, i: usize, top: f32, scroll: f32, measure: &dyn pl
 /// date row. A season longer than a page reserves this for its whole life, so a page landing never
 /// changes the strip's height under the viewer.
 fn reserved_text_h() -> f32 {
-    TITLE_DY + 2.0 * TITLE_LEAD + theme::space::MD + SUMMARY_MAX_LINES as f32 * SUMMARY_LEAD
-        + theme::space::MD + theme::size::MICRO as f32 + META_BOTTOM_PAD
+    let items = meta_items(2.0 * TITLE_LEAD, Some(SUMMARY_MAX_LINES as f32 * SUMMARY_LEAD), true);
+    TITLE_DY + VStack::new(&items, theme::space::MD, Anchor::Top(TITLE_DY)).height() + META_BOTTOM_PAD
 }
 
 pub fn block_h(d: &Detail, measure: &dyn plx_machine::machine::Measure) -> f32 {
@@ -222,8 +232,14 @@ impl Cells {
             if i == NONE {
                 continue;
             }
-            let target = if still == Some(i) { theme::EP_CARD_FOCUS_SCALE } else { 1.0 };
-            self.scale[s].step(target, 300.0, dt);
+            let held = still == Some(i);
+            self.scale[s].step(if held { theme::EP_CARD_FOCUS_SCALE } else { 1.0 }, 300.0, dt);
+            // A released cell comes to EXACT rest by the shared landing rule, as a shelf's released tile
+            // does (`CardRow::update`): `step` alone parks it one ulp above 1.0 for good, so it would never
+            // read as at rest ([`widgets::pop_factor`] must be exactly 0.0 there).
+            if !held {
+                self.scale[s].land(1.0, dt);
+            }
             self.lift[s].step(text == Some(i), dt);
         }
     }
@@ -264,7 +280,7 @@ fn state(ep: &Episode) -> State {
             Glyph::Play
         },
         label: if ep.dur_ms > 0 {
-            plx_ui::fmt::dur_long(ep.dur_ms)
+            plx_ui::fmt::duration(ep.dur_ms)
         } else {
             String::new()
         },
@@ -393,8 +409,10 @@ fn draw_cell(
 ) {
     let x = strip_x(i);
     let still_focused = focused == Some((i, Row::Still));
-    let focused_here = still_focused || scale > 1.001;
     let pop = widgets::pop_factor(scale, theme::EP_CARD_FOCUS_SCALE);
+    // A cell is drawn at its spring's scale for as long as the spring is off rest: the pop factor is
+    // exactly 0.0 only at rest (a released cell lands there, `Cells::step`), so no threshold of its own.
+    let focused_here = still_focused || pop > 0.0;
     let card = Rect::new(x, -theme::EP_CARD_FOCUS_LIFT * pop, W, H);
     #[cfg(feature = "devtriggers")]
     plx_ui::card_probe::begin_card();
@@ -449,7 +467,7 @@ fn draw_cell(
     let (date_y, summary_y, content_h_with_pad) = meta_layout(ep, measure);
     let text_x = x + PLATTER_PAD;
     let labels = |p: Painter| {
-        if let Ok(kicker) = CString::new(plx_platform::i18n::msg::browse_detail_episode_number(ep.index as i64)) {
+        if let Ok(kicker) = CString::new(plx_ui::fmt::episode_card_kicker(ep.index)) {
             p.text(
                 kicker.as_ptr(),
                 text_x,
@@ -486,9 +504,12 @@ fn draw_cell(
             );
             if !ep.rating.is_empty() {
                 let (top, baseline) = plx_gfx::text::text_cap_band(theme::size::MICRO, 0);
+                // The date run, one SM, then the chip: the chip's left edge is the marker's x.
+                let run = [Item::new(width), Item::new(0.0)];
+                let chip_x = HStack::new(&run, theme::space::SM, Align::Leading(text_x)).span(1).map_or(text_x, |(x, _)| x);
                 plx_ui::widgets::keyline_chip(
                     p,
-                    text_x + width + theme::space::SM,
+                    chip_x,
                     text_top + date_y + (top + baseline) * 0.5,
                     &ep.rating,
                     theme::EP_META_INK,
@@ -632,6 +653,36 @@ mod tests {
         })
     }
 
+    /// **The words one episode's card drew** (the kicker over its title, its title, its date).
+    fn card_words(ep: &Episode) -> Vec<String> {
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let d = Detail::default();
+        plx_ui::draw_census::capture_text(|| {
+            draw_cell(Painter::recording(), &d, 0, ep, None, 1.0, &TextLift::new(), kicker_cap_top(), &measure)
+        })
+        .into_iter()
+        .map(|(text, _)| text)
+        .collect()
+    }
+
+    /// **A card for an episode the server did not number never reads "EPISODE 0"**: its kicker is the
+    /// kind word instead (its date, when it has one, is already the card's own bottom row, so the
+    /// kicker does not say it twice), and a numbered episode keeps "EPISODE N".
+    #[test]
+    fn a_numberless_episode_card_never_reads_episode_zero() {
+        let _g = plx_base::testlock::serial();
+        let kind = plx_platform::i18n::msg::browse_kind_episode().to_uppercase();
+        let dated = Episode { title: "Pilot".into(), aired: "2016-04-21".into(), ..Default::default() };
+        let words = card_words(&dated);
+        assert!(!words.iter().any(|w| w.contains("EPISODE 0") || w.contains('0') && w.to_uppercase().contains("EPISODE")), "{words:?}");
+        assert!(words.contains(&kind), "the kicker says {kind:?}: {words:?}");
+        assert!(words.contains(&plx_ui::fmt::pretty_date("2016-04-21", 0)), "the date row is still there: {words:?}");
+        let undated = Episode { title: "Pilot".into(), ..Default::default() };
+        assert!(card_words(&undated).contains(&kind), "an episode with no number and no date says what it is");
+        let numbered = Episode { index: 3, title: "Pilot".into(), ..Default::default() };
+        assert!(card_words(&numbered).contains(&plx_platform::i18n::msg::browse_detail_episode_number(3)), "a numbered one keeps EPISODE N");
+    }
+
     fn settled_lift(focused: bool) -> TextLift {
         let mut lift = TextLift::new();
         for _ in 0..240 {
@@ -662,6 +713,72 @@ mod tests {
         assert_eq!(cell_census(1.0, &lift), rest);
     }
 
+    /// **A released strip cell lands exactly at rest by the shared rule** (`Spring::land`, the one
+    /// `CardRow::update` uses for a shelf's released tile). `Spring::step` alone parks a released
+    /// spring one ulp off its target forever, so without the landing the cell never reads as at rest
+    /// (a pop factor of 1e-6 instead of exactly 0.0, the focus program instead of the resting split).
+    /// The reference is the same spring stepped alone: until the landing the cell is bit-for-bit that
+    /// spring (same constants, same targets), and the landing moves it by no more than the epsilon.
+    #[test]
+    fn a_released_strip_cell_lands_exactly_at_rest_by_the_shared_rule() {
+        let dt = 1.0 / 60.0;
+        let mut cells = Cells::new();
+        let mut reference = plx_ui::Spring::at(1.0);
+        let step = |cells: &mut Cells, reference: &mut plx_ui::Spring, focused: Option<usize>| {
+            cells.step(focused, None, dt);
+            reference.step(if focused == Some(2) { theme::EP_CARD_FOCUS_SCALE } else { 1.0 }, 300.0, dt);
+        };
+        for _ in 0..90 {
+            step(&mut cells, &mut reference, Some(2));
+        }
+        assert_eq!(cells.scale(2), reference.pos, "the focused cell is the plain spring");
+        let mut landed = false;
+        for frame in 1..=600 {
+            step(&mut cells, &mut reference, None);
+            let shown = cells.scale(2);
+            if shown == reference.pos {
+                continue;
+            }
+            let epsilon = plx_ui::LAND_REL * (1.0 + reference.pos.max(1.0));
+            assert!(
+                (shown - reference.pos).abs() <= epsilon,
+                "frame {frame}: the cell moved {} in its landing, against the epsilon {epsilon}",
+                (shown - reference.pos).abs()
+            );
+            assert_eq!(shown, 1.0, "it lands exactly at rest");
+            landed = true;
+            break;
+        }
+        assert!(landed, "the released cell never landed: it is parked at {} (target 1.0)", cells.scale(2));
+        assert_eq!(widgets::pop_factor(cells.scale(2), theme::EP_CARD_FOCUS_SCALE), 0.0);
+    }
+
+    /// The width of the still's card as `draw_cell` placed it at spring position `scale`: the widest
+    /// rect within a pop of the cell's width (the art scrim, drawn over the card's own rect).
+    fn drawn_card_width(scale: f32) -> f32 {
+        cell_census(scale, &TextLift::new())
+            .iter()
+            .map(|(_, r)| r.w)
+            .filter(|w| *w >= W * 0.99 && *w <= W * 1.2)
+            .fold(0.0, f32::max)
+    }
+
+    /// **The still is drawn at the scale its spring says, at every scale**: a released cell's card
+    /// shrinks continuously into its resting rect. The pop factor is exactly 0.0 at rest
+    /// ([`widgets::pop_factor`]), so no threshold is needed to tell a resting cell from a popped one.
+    #[test]
+    fn a_released_still_is_drawn_at_its_spring_scale_all_the_way_to_rest() {
+        let _g = plx_base::testlock::serial();
+        for scale in [1.0, 1.0004, 1.0009, 1.0011, 1.003, 1.02, theme::EP_CARD_FOCUS_SCALE] {
+            let w = drawn_card_width(scale);
+            assert!(
+                (w - W * scale).abs() < 0.001,
+                "scale {scale}: the card is drawn {w} wide, its spring says {}",
+                W * scale
+            );
+        }
+    }
+
     #[test]
     fn strip_x_matches_the_shared_shelf_formula() {
         for i in 0..20 {
@@ -678,5 +795,76 @@ mod tests {
                 .x
             );
         }
+    }
+
+    /// Q6: an empty summary is ABSENT from the meta stack, so there is one gap wherever two blocks
+    /// meet: the date stands one MD under the title (not two), and a title-only platter ends at the
+    /// title with no trailing MD. A summary, when there is one, keeps its MD on both sides.
+    #[test]
+    fn the_meta_block_has_one_gap_between_blocks_and_none_trailing() {
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let md = theme::space::MD;
+        let full = Episode { title: "Pilot".into(), summary: "word ".repeat(30), aired: "2020-01-01".into(), ..Default::default() };
+        let (date_y, summary_y, bottom) = meta_layout(&full, &measure);
+        let title_h = summary_y - TITLE_DY - md;
+        assert!(title_h >= TITLE_LEAD);
+        assert!(date_y > summary_y + md, "a summary keeps its MD before the date");
+        assert!((bottom - (date_y + theme::size::MICRO as f32 + META_BOTTOM_PAD)).abs() < 0.01);
+        // (a) no summary, a date: one MD under the title.
+        let dated = Episode { summary: String::new(), ..full.clone() };
+        let (date_y, _, bottom) = meta_layout(&dated, &measure);
+        assert!((date_y - (TITLE_DY + title_h + md)).abs() < 0.01, "the date stands one MD under the title: {date_y}");
+        assert!((bottom - (date_y + theme::size::MICRO as f32 + META_BOTTOM_PAD)).abs() < 0.01);
+    }
+
+    /// Q6 (b): a title-only platter (no summary, no date, no rating) ends at the title with no trailing MD.
+    #[test]
+    fn a_title_only_platter_has_no_trailing_md() {
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let full = Episode { title: "Pilot".into(), summary: "word ".repeat(30), ..Default::default() };
+        let title_h = meta_layout(&full, &measure).1 - TITLE_DY - theme::space::MD;
+        let title = Episode { title: "Pilot".into(), ..Default::default() };
+        let (_, _, bottom) = meta_layout(&title, &measure);
+        assert!((bottom - (TITLE_DY + title_h + META_BOTTOM_PAD)).abs() < 0.01, "no trailing MD: {bottom}");
+    }
+
+    /// A rating chip with no air date, no summary: the date row is present for the chip, so the
+    /// platter (which ends [`PLATTER_PAD`] under the last row `meta_layout` measured) reaches it.
+    #[test]
+    fn a_rating_chip_without_a_date_stays_inside_the_platter() {
+        let _g = plx_base::testlock::serial();
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let ep = Episode { title: "Pilot".into(), rating: "TV-14".into(), ..Default::default() };
+        let (_, _, bottom) = meta_layout(&ep, &measure);
+        let text_top = H + META_TOP;
+        let platter_bottom = text_top + (bottom - META_BOTTOM_PAD) + PLATTER_PAD;
+        let d = Detail::default();
+        let runs = plx_ui::draw_census::capture_runs(|| {
+            draw_cell(Painter::recording(), &d, 0, &ep, None, 1.0, &TextLift::new(), kicker_cap_top(), &measure)
+        });
+        let chip = runs.iter().find(|r| r.text == "TV-14").expect("the rating chip is drawn");
+        assert!(chip.at.y + theme::size::MICRO as f32 <= platter_bottom + 0.5, "chip run at {} + MICRO past platter bottom {platter_bottom}", chip.at.y);
+    }
+}
+
+#[cfg(test)]
+mod stack_tests {
+    use super::*;
+
+    /// The reserved label block is the meta stack at its tallest, to the bit.
+    #[test]
+    fn the_reserved_block_is_the_meta_stack_at_its_tallest() {
+        let md = theme::space::MD;
+        let old = TITLE_DY + 2.0 * TITLE_LEAD + md + SUMMARY_MAX_LINES as f32 * SUMMARY_LEAD + md + theme::size::MICRO as f32 + META_BOTTOM_PAD;
+        assert_eq!(reserved_text_h(), old);
+    }
+
+    /// With an empty summary the fallback `summary_y` is where a summary would stand: one MD under the title.
+    #[test]
+    fn a_missing_summary_would_stand_one_md_under_the_title() {
+        let measure = plx_ui::fixture::FixtureMeasure;
+        let full = Episode { title: "Pilot".into(), summary: "word ".repeat(30), aired: "2020-01-01".into(), ..Default::default() };
+        let none = Episode { summary: String::new(), ..full.clone() };
+        assert_eq!(meta_layout(&none, &measure).1, TITLE_DY + (meta_layout(&full, &measure).1 - TITLE_DY - theme::space::MD) + theme::space::MD);
     }
 }

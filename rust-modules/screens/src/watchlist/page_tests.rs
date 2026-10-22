@@ -26,6 +26,12 @@ const UNPLAYABLE: [TileState; 5] = [
     TileState::Unknown,
 ];
 
+/// The details line the default Under posters policy words for `row` (empty: no line).
+fn default_caption(row: &plx_data::watchlist::model::WatchRow, state: TileState) -> String {
+    caption::label(row, state, &plx_ui::caption_policy::CaptionPolicy::DEFAULT, &Default::default())
+        .caption.map(|c| c.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
 fn screen(n: usize) -> WatchlistScreen {
     WatchlistScreen::new(tiles(n), WatchlistOptionsState::default())
 }
@@ -65,8 +71,7 @@ fn the_verdicts_title_and_pill_fit_in_every_language() {
         // TITLE), not in a stand-in.
         let (verdict_sz, verdict_bold, _) = plx_ui::widgets::StatusOverlay::verdict_face(plx_ui::widgets::StatusKind::Failed);
         let mut lines: Vec<(&str, String, i32, bool)> = vec![
-            ("title", msg::watchlist_page_title().into(), theme::size::DISPLAY, false),
-            ("pill", msg::watchlist_page_sort_filter_summary("Movies & Shows, Release Date"), theme::size::LABEL, false),
+            ("title", msg::watchlist_page_title().into(), theme::size::BODY, false),
         ];
         for r in [Readout::Empty, Readout::Filtered, Readout::NoToken, Readout::Unreachable] {
             lines.push(("verdict", r.verdict().into(), verdict_sz, verdict_bold));
@@ -81,25 +86,25 @@ fn the_verdicts_title_and_pill_fit_in_every_language() {
     assert!(over.is_empty(), "lines wider than the safe area:\n  {}", over.join("\n  "));
 }
 
-/// **A caption is the state's sentence, else the year, else nothing.**
+/// **A caption is the state's sentence, else the year, else what the title is.**
 #[test]
 fn captions_carry_the_state_sentence_with_the_month_date() {
     let _guard = language_on_this_thread_for_test(Preference::En);
     let mut row = super::cards_harness::row(1);
     row.release = Some("2027-03-12".into());
-    assert_eq!(caption::caption(&row, TileState::ComingSoon), "Releasing 12 Mar");
+    assert_eq!(default_caption(&row, TileState::ComingSoon), "Coming 12 Mar");
     // Q6: coming soon AND matched keeps the clock, so it keeps the date.
-    assert_eq!(caption::caption(&row, TileState::ComingSoonMatched), "Releasing 12 Mar");
-    assert_eq!(caption::caption(&row, TileState::NotOnAnyServer), "Not on your servers");
-    assert_eq!(caption::caption(&row, TileState::ServerOffline), "Server offline");
-    assert_eq!(caption::caption(&row, TileState::Available), "2001");
-    assert_eq!(caption::caption(&row, TileState::Unknown), "2001");
+    assert_eq!(default_caption(&row, TileState::ComingSoonMatched), "Coming 12 Mar");
+    assert_eq!(default_caption(&row, TileState::NotOnAnyServer), "Not on your servers");
+    assert_eq!(default_caption(&row, TileState::ServerOffline), "Server offline");
+    assert_eq!(default_caption(&row, TileState::Available), "2001");
+    assert_eq!(default_caption(&row, TileState::Unknown), "2001");
     row.release = None;
-    assert_eq!(caption::caption(&row, TileState::ComingSoon), "Coming soon");
+    assert_eq!(default_caption(&row, TileState::ComingSoon), "Coming soon");
     row.release = Some("soon".into());
-    assert_eq!(caption::caption(&row, TileState::ComingSoon), "Coming soon");
+    assert_eq!(default_caption(&row, TileState::ComingSoon), "Coming soon");
     row.year = None;
-    assert_eq!(caption::caption(&row, TileState::Available), "");
+    assert_eq!(default_caption(&row, TileState::Available), "Movie", "no year: the kind, never an empty line under an open band");
 }
 
 /// **One mark per tile, and the no-server wash is quieter under focus** (TileStates board).
@@ -292,40 +297,38 @@ fn removing_the_focused_title_leaves_focus_on_a_neighbour() {
     assert!(h.screen.index_of(now).is_some());
 }
 
-/// **The pill's focus ring, hit target and menu anchor are the pill the header draws, and it ends
-/// on the grid's right edge** (not on the screen edge, not 150 px left of it).
+/// **The control's focus ring and hit target are the plate the header draws, and the menu's anchor is
+/// the focused pill over it**; the text ends on the Library's right text edge (x 1771).
 #[test]
-fn the_pill_is_one_rect_for_paint_focus_and_anchor() {
+fn the_control_is_one_rect_for_paint_focus_and_anchor() {
     use super::header;
     use plx_ui::screen::{At, Focusable};
     let h = Harness::new(tiles(3));
     let cx = h.cx();
     let focus = Focusable::<super::cards_harness::WatchHost>::place(&h.screen, &PILL_ELEM, &cx, At::Drawn)
-        .expect("the pill is a focus stop")
+        .expect("the control is a focus stop")
         .rect;
-    let style = plx_ui::cards::GRID_STYLE;
-    let grid_right = plx_ui::consts::MARGIN_X + 6.0 * style.w + 5.0 * style.gap;
-    let drawn = header::pill_rect(header::header_frame(grid_right), &plx_ui::fixture::FixtureMeasure, &h.screen.options().summary());
-    assert_eq!(focus, drawn, "the focus rect is the drawn pill");
-    assert_eq!(h.screen.pill_rect(&plx_ui::fixture::FixtureMeasure), drawn, "so is the menu's anchor");
-    assert_eq!(focus.x + focus.w, grid_right, "right-aligned to the grid, not the screen");
-    assert!(focus.x + focus.w < plx_ui::consts::SCR_W);
+    let row = header::Row::new(&plx_ui::fixture::FixtureMeasure, &h.screen.options().summary(), None);
+    assert_eq!(focus, row.plate(), "the focus rect is the drawn plate");
+    assert_eq!(h.screen.pill_rect(&plx_ui::fixture::FixtureMeasure), row.pill(), "the menu grows out of the focused pill");
+    assert_eq!(focus.x + focus.w, 1771.0 + plx_ui::page_header::OVERHANG, "text on the right text edge, the plate overhangs");
+    assert_eq!((focus.y, focus.h), (148.0, 56.0));
 }
 
-/// **While Sort & Filter is up the pill is the menu's, not the page's** (DS7: "the pill's glass
-/// becomes the panel"). The menu names the pill as its opener, so the dispatcher lifts it out of
-/// the page pass and the menu's own copy (`OptionsMenu::draw_face`, the morph's opener face) is the
-/// only pill drawn. Red when the page kept drawing its pill under the scrim: the
-/// settled menu, slid up over the pill because it is taller than the room below it, refracted
-/// that pill's label into its glass rim (`GlassRim::Menu`'s sharp band) — a ghost "Sort & Filter
-/// · Default" along the panel's top edge.
+/// **While Sort & Filter is up the pill is the opener lift's, lit** (S12: one rule for every header
+/// opener). The menu names the pill as its opener, so the dispatcher leaves it out of the page pass
+/// (no dimmed copy under the scrim) and the lift (`Screen::redraw_focused`) paints the only copy,
+/// as the focused control: the accent pill at the focused extent and the whole face in the focused
+/// ink. Red while the menu's own morph face drew the pill: it was gone once the panel settled.
 #[test]
-fn the_open_menu_lifts_the_pill_out_of_the_page() {
+fn the_open_menus_pill_is_lit_by_the_lift_and_left_out_of_the_page() {
     use super::cards_harness::{WatchHost, ENTRY};
     use super::menu::WatchlistMenuScreen;
     use plx_machine::machine::{EntryId, FocusKey};
-    use plx_ui::screen::Screen;
+    use plx_ui::screen::{By, Screen};
     let mut h = Harness::new(tiles(3));
+    h.focus_elem(PILL_ELEM, By::Dir);
+    h.run(60); // the row's motion brings the focused pill up
     let pill = h.screen.pill_rect(&plx_ui::fixture::FixtureMeasure);
     let arg = crate::registry::WatchlistMenuArg {
         host: ENTRY,
@@ -335,48 +338,44 @@ fn the_open_menu_lifts_the_pill_out_of_the_page() {
     let menu = WatchlistMenuScreen::new(EntryId(ENTRY.0 + 1), arg);
     let key = FocusKey { entry: ENTRY, elem: PILL_ELEM };
     assert_eq!(Screen::<WatchHost>::opener(&menu), Some((ENTRY, Some(key))), "the menu's opener is the page's pill");
-    let label_in_pill = |log: &[(u64, plx_ui::Rect)]| {
-        log.iter().filter(|(tag, r)| *tag == 100 && r.cx() > pill.x && r.cx() < pill.x + pill.w && r.cy() > pill.y && r.cy() < pill.y + pill.h).count()
-    };
+    let inside = |r: &plx_ui::Rect| r.cx() > pill.x && r.cx() < pill.x + pill.w && r.cy() > pill.y && r.cy() < pill.y + pill.h;
+    let label_in_pill = |log: &[(u64, plx_ui::Rect)]| log.iter().filter(|(tag, r)| *tag == 100 && inside(r)).count();
     assert!(label_in_pill(&h.draw_census(None)) > 0, "premise: the page draws the pill's label");
     let lifted = h.draw_census(Some(key));
     assert_eq!(label_in_pill(&lifted), 0, "a lifted pill is not drawn by the page");
     assert!(lifted.iter().any(|(tag, r)| *tag == 100 && r.x < pill.x), "the title still is");
+
+    let (prims, runs) = h.lift_census(Some(key));
+    let plates: Vec<_> = prims.iter().filter(|(tag, _)| *tag == 2).map(|(_, r)| *r).collect();
+    assert!(plates.len() == 1 && (plates[0].x - pill.x).abs() < 0.5 && (plates[0].w - pill.w).abs() < 0.5 && (plates[0].h - pill.h).abs() < 0.5,
+        "the lift paints one accent pill at the focused extent {pill:?}: {plates:?}");
+    assert!(runs.iter().any(|run| run.text.contains("Sort") && inside(&run.at)), "and its label: {runs:?}");
+    assert!(runs.iter().all(|run| run.ink.iter().zip(plx_ui::ACCENT_INK).all(|(a, b)| (a - b).abs() < 0.01)),
+        "every run of the face in the focused ink: {runs:?}");
+    // a card is not the pill: the lift for a tile paints no accent pill
+    h.focus_index(0);
+    let tile = h.focus.expect("a tile is focused");
+    let (prims, _) = h.lift_census(Some(tile));
+    assert!(!prims.iter().any(|(tag, r)| *tag == 2 && (r.w - pill.w).abs() < 0.5 && (r.h - pill.h).abs() < 0.5), "a tile's lift is no pill");
 }
 
-/// **The Sort & Filter surface begins and ends as the page's own pill, and is never nothing** (spec
-/// (a), (b), (d); frame dump at 572f46d07). Driven through the surface itself, as the dispatcher
-/// drives it: Mount, the held face (`Screen::draw_held`), the open's frames, BACK, and the close
-/// run out and past. Graded on the paints each frame DECLARES (a discovery walk):
-///
-/// - the held face and the last close frame are the page's focused pill, primitive for primitive
-///   (red when the face was the pill drawn on the container's appear: on the held frames nothing,
-///   at the end of the close a pill faded to nothing, then the page's popping in);
-/// - every frame between has the opener's plate or the glass (red on the n334–351 empty frames).
+/// **The menu's surface draws no pill of its own** (S12): its glass begins at the pill's rect and is
+/// never nothing once the morph is under way, and the pill above it is the lift's. Driven through
+/// the surface itself, as the dispatcher drives it: Mount, the open's frames, BACK, and the close
+/// run out and past. Red while the surface painted the pill's plate and label (the morph face), which
+/// is also what put a second copy of the label under the lift's on the first frames.
 #[test]
-fn the_menu_surface_begins_and_ends_as_the_pages_pill_and_is_never_nothing() {
+fn the_menu_surface_is_glass_and_rows_and_draws_no_pill_of_its_own() {
     use super::cards_harness::{WatchHost, ENTRY};
     use super::menu::WatchlistMenuScreen;
     use plx_machine::machine::{
         Cx, Edge, Effects, EntryId, FocusKey, FocusRead, InputEvent, InputKind, InputOwner, Key, Machine, PressRead, Tick,
     };
-    use plx_ui::screen::{By, DrawFrame, Screen, ScreenEvent};
+    use plx_ui::screen::{DrawFrame, Screen, ScreenEvent};
     use std::{cell::RefCell, rc::Rc};
     let _g = plx_base::testlock::serial();
-    let mut h = Harness::new(tiles(3));
-    h.focus_elem(PILL_ELEM, By::Dir);
+    let h = Harness::new(tiles(3));
     let pill = h.screen.pill_rect(&plx_ui::fixture::FixtureMeasure);
-    let inside = |r: plx_ui::Rect| {
-        let (cx, cy) = (r.cx(), r.cy());
-        cx > pill.x && cx < pill.x + pill.w && cy > pill.y && cy < pill.y + pill.h
-    };
-    type Census = Vec<(u64, plx_ui::Rect)>;
-    let shape = |log: &Census| -> Vec<(u64, [i32; 4])> {
-        log.iter().filter(|(_, r)| inside(*r)).map(|(t, r)| (*t, [r.x, r.y, r.w, r.h].map(|v| v.round() as i32))).collect()
-    };
-    let page_pill = shape(&h.draw_census(None));
-    assert!(page_pill.iter().any(|(t, r)| *t != 100 && r[2] == pill.w.round() as i32), "premise: the page draws its focused pill's plate: {page_pill:?}");
-
     let arg = crate::registry::WatchlistMenuArg {
         host: ENTRY,
         options: WatchlistOptionsState::default(),
@@ -399,7 +398,7 @@ fn the_menu_surface_begins_and_ends_as_the_pages_pill_and_is_never_nothing() {
         let mut fx = Effects::new(&mut out, plx_machine::machine::MachineId::Instance(plx_machine::machine::InstanceId(10)), &mut present);
         Machine::<WatchHost>::step(menu, &ev, &cx, &mut fx);
     };
-    let draw = |menu: &mut WatchlistMenuScreen, held: bool| -> Census {
+    let draw = |menu: &mut WatchlistMenuScreen| -> Vec<(String, plx_ui::Rect)> {
         let sources = Rc::new(RefCell::new(plx_gfx::gfx::backdrop::Sources::default()));
         let cx = Cx {
             views: (),
@@ -409,44 +408,26 @@ fn the_menu_surface_begins_and_ends_as_the_pages_pill_and_is_never_nothing() {
             focus: FocusRead { current: Some(FocusKey { entry, elem: 0 }), ..Default::default() },
             owner: InputOwner::Entry(entry),
         };
-        plx_ui::draw_census::capture(|| {
+        plx_ui::draw_census::capture_text(|| {
             let _discovery = plx_ui::frame::backdrop::discover(sources.clone());
             let mut f = DrawFrame::new(&cx, plx_ui::Painter::recording());
-            if held {
-                Screen::<WatchHost>::draw_held(menu, &mut f);
-            } else {
-                Screen::<WatchHost>::draw(menu, &mut f);
-            }
+            Screen::<WatchHost>::draw(menu, &mut f);
         })
     };
-    // The plate or the glass: a primitive at least the pill's height and twice as wide (the
-    // surface narrows toward the panel's width, which may be less than the pill's; text runs are
-    // the label's and the rows').
-    let something = |log: &Census| log.iter().any(|(t, r)| *t != 100 && r.h >= pill.h - 1.0 && r.w >= 2.0 * pill.h);
-
+    let pill_label = plx_platform::i18n::msg::watchlist_page_sort_filter();
     step(&mut menu, ScreenEvent::Mount, ms);
-    assert_eq!(shape(&draw(&mut menu, true)), page_pill, "held: the surface is the page's pill");
-    assert_eq!(shape(&draw(&mut menu, false)), page_pill, "frame 0: still the page's pill");
-    for _ in 0..40 {
-        ms += 16;
-        step(&mut menu, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }), ms);
-        let log = draw(&mut menu, false);
-        assert!(something(&log), "an open frame with neither plate nor glass: {log:?}");
-    }
     let back = InputEvent {
         kind: InputKind::Key { key: Key::Back, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false },
         at: Tick::default(),
         source: plx_machine::machine::Source::Sdl,
     };
-    step(&mut menu, ScreenEvent::Input(back), ms);
-    let mut last = Vec::new();
-    for _ in 0..60 {
+    for frame in 0..100 {
+        if frame == 40 { step(&mut menu, ScreenEvent::Input(back.clone()), ms); }
         ms += 16;
         step(&mut menu, ScreenEvent::Tick(Tick { ms, dt_us: 16_667 }), ms);
-        last = draw(&mut menu, false);
-        assert!(something(&last), "a close frame with neither plate nor glass");
+        let words = draw(&mut menu);
+        assert!(!words.iter().any(|(text, _)| text == pill_label), "frame {frame}: the surface drew the pill's label: {words:?}");
     }
-    assert_eq!(shape(&last), page_pill, "the close lands on the page's own pill: nothing to pop in");
 }
 
 /// **A removed tile is kept as a ghost for the landing to fade (DS4)**: the grid names it and the
@@ -987,4 +968,204 @@ fn a_filter_never_passes_the_wash_through_neutral_or_another_title() {
         assert_eq!(h.screen.ground_goal(), before, "frame {frame}: it stays on the focused title's key");
         assert_eq!(h.screen.ground_codes(), resting, "frame {frame}: the drawn wash does not move");
     }
+}
+
+// ---- the Library's grid and scroll chrome ----
+
+/// One row down: the first scrolled rest of the grid (a whole pitch, since a focused row rests at the
+/// first row's y), where the header has scrolled off.
+fn row_pitch() -> f32 {
+    plx_ui::consts::CARD_H + plx_ui::cards::LABEL_BAND_COLLAPSED + plx_ui::consts::UNDER_LABEL_AIR
+}
+
+/// **The grid is the Library's**: six 250 x 375 posters from x 96, 285 apart (the last column ends on
+/// the header row's right text edge, x 1771), the first row at y 244 (the header row's foot), and
+/// the next row a poster and the collapsed caption band (40 px of air) lower.
+#[test]
+fn the_grid_is_the_librarys_six_columns_at_pitch_285_from_y_244() {
+    use plx_ui::cards::conformance::CardHarness;
+    let h = Harness::new(tiles(8));
+    let cards = h.cards();
+    let rect = |i: usize| h.drawn_rect(cards[i], 1.0).expect("a drawn stop");
+    for c in 0..6 {
+        let r = rect(c);
+        assert_eq!((r.w, r.h), (250.0, 375.0), "column {c}");
+        assert!((r.x - (96.0 + 285.0 * c as f32)).abs() < 0.01, "column {c} at {}", r.x);
+        assert_eq!(r.y, 244.0, "the first row stands at the header row's foot");
+    }
+    assert!((rect(5).x + rect(5).w - 1771.0).abs() < 0.01, "the last column ends on the row's right text edge");
+    let second = rect(6);
+    assert_eq!((second.x, second.y), (96.0, 244.0 + 375.0 + plx_ui::cards::LABEL_BAND_COLLAPSED + plx_ui::consts::UNDER_LABEL_AIR));
+}
+
+/// **A scrolled page tucks the top chrome**, as the Library does: untucked at rest, fully tucked
+/// once the header has scrolled off. (It leaves no capsule behind: the next test.)
+#[test]
+fn the_top_chrome_tucks_once_the_header_has_scrolled_off() {
+    use plx_ui::screen::Screen;
+    let mut h = Harness::new(tiles(24));
+    assert_eq!(Screen::<super::cards_harness::WatchHost>::chrome_tuck(&h.screen), 0.0, "at rest nothing is tucked");
+    h.screen.jump_scroll(row_pitch());
+    assert_eq!(Screen::<super::cards_harness::WatchHost>::chrome_tuck(&h.screen), 1.0, "tucked once the first row has gone");
+}
+
+/// **A focused row below the first rests where the first row does** (owner finding 13): its
+/// posters' top at the first row's resting y (244), the row above still drawn over the top edge
+/// under the fade, as on the Library. The document's end clamps it: the last row of a long list
+/// cannot rest above the line, but it sits lower rather than scrolling past the end. Measured on an
+/// UNFOCUSED poster of the row, whose cell carries no focus pop.
+#[test]
+fn a_focused_row_below_the_first_rests_with_its_posters_at_244() {
+    use plx_ui::cards::conformance::CardHarness;
+    let mut h = Harness::new(tiles(40));
+    let cards = h.cards();
+    let at = |h: &Harness, i: usize| h.drawn_rect(cards[i], 1.0).expect("a drawn stop");
+    let first_row_y = at(&h, 0).y;
+    assert_eq!(first_row_y, 244.0, "premise: the first row stands at the header row's foot");
+    for row in [1, 2, 5] {
+        h.focus_index(row * 6 + 1);
+        h.run(300);
+        let y = at(&h, row * 6).y;
+        assert!((y - first_row_y).abs() < 0.5, "row {row} rests with its posters at {first_row_y}, not {y} (scroll {})", h.screen.scroll());
+    }
+    h.focus_index(5 * 6 + 1);
+    h.run(300);
+    let above = at(&h, 4 * 6);
+    assert!(above.y < 0.0 && above.y + above.h > 0.0, "the row above is still drawn over the top edge: {above:?}");
+
+    let last = 6;
+    h.focus_index(last * 6 + 1);
+    h.run(300);
+    let y = at(&h, last * 6).y;
+    assert!(y > first_row_y + 0.5, "the last row of the list sits lower than the line, the end clamps: {y}");
+    assert!(y + plx_ui::consts::CARD_H <= plx_ui::consts::SCR_H - plx_ui::consts::MARGIN_Y + 0.5, "and it is whole above the foot margin: {y}");
+    assert!(h.screen.scroll() < last as f32 * row_pitch(), "the end holds the scroll below the unclamped rest: {}", h.screen.scroll());
+}
+
+/// **The Watchlist has no capsule.** Its header names no library, so a scrolled page has nothing to
+/// restate: the chrome tucks and the 72 px fade of the ground takes the top edge, but no capsule
+/// (live glass at the board's x 96, y 54, 64 tall) and no "Watchlist 24" text stand over the rows.
+/// The Library draws the capsule only where its header names 2+ libraries; this page names none, so
+/// the one predicate (`plx_ui::scroll_chrome::capsule_shown`) says no here too.
+#[test]
+fn a_scrolled_watchlist_draws_the_top_fade_and_no_capsule() {
+    use plx_ui::scroll_capsule;
+    let _g = plx_base::testlock::serial();
+    let mut h = Harness::new(tiles(24));
+    h.screen.jump_scroll(row_pitch());
+    let paints = h.draw_paints();
+    let fade = |p: &std::rc::Rc<plx_gfx::gfx::backdrop::Paint>| {
+        let r = p.placed();
+        p.kind() == "rect" && r[0] == 0.0 && r[2] == plx_ui::consts::SCR_W && r[3] == scroll_capsule::FADE_STEP && r[1] < scroll_capsule::FADE_H
+    };
+    assert_eq!(paints.iter().filter(|p| fade(p)).count(), (scroll_capsule::FADE_H / scroll_capsule::FADE_STEP) as usize,
+        "the tucked page's top fade stays (its strips down to FADE_H, no deeper: no capsule): {} paints", paints.len());
+    let capsule = paints.iter().filter(|p| p.kind() == "glass" && p.placed()[0] == scroll_capsule::X && p.placed()[1] == scroll_capsule::Y).count();
+    assert_eq!(capsule, 0, "no capsule glass at the board's x 96, y 54");
+    let in_capsule_band = |r: &plx_ui::Rect| r.y >= scroll_capsule::Y - 1.0 && r.y + r.h <= scroll_capsule::Y + scroll_capsule::H + 1.0;
+    let texts = h.draw_texts();
+    assert!(!texts.iter().any(|(t, r)| in_capsule_band(r) && (t == msg::watchlist_page_title() || t == "24")),
+        "and no name or count in the capsule's band: {texts:?}");
+}
+
+/// **No scrolled rest shows the header under the chrome.** Walking down to the second row rests the
+/// page a whole row down (the row at the first row's y, 244): the header row leaves with the top
+/// chrome on the handoff's clock (`plx_ui::scroll_chrome`), so by that first rest it has gone and the
+/// strip has tucked. Frame by frame it only ever fades out on the way down (monotone, in several
+/// frames, not cut), and it is the chrome's own alpha: the two are one value.
+#[test]
+fn a_scrolled_rest_leaves_no_header_under_the_chrome() {
+    use plx_ui::screen::Screen;
+    let mut h = Harness::new(tiles(24));
+    assert_eq!(h.screen.head_alpha(), 1.0);
+    h.focus_index(6);
+    let mut seen = vec![h.screen.head_alpha()];
+    for _ in 0..240 {
+        h.run(1);
+        seen.push(h.screen.head_alpha());
+        assert_eq!(h.screen.head_alpha(), 1.0 - Screen::<super::cards_harness::WatchHost>::chrome_tuck(&h.screen), "the header row is the chrome's own alpha");
+    }
+    let rest = h.screen.scroll();
+    assert!((rest - row_pitch()).abs() < 0.5, "premise: the second row rests a whole row down, at {rest}");
+    assert!(Screen::<super::cards_harness::WatchHost>::chrome_tuck(&h.screen) > 0.99, "the strip is tucked at the first rest");
+    assert_eq!(h.screen.head_alpha(), 0.0, "and the header is gone");
+    let leaving: Vec<f32> = seen.iter().copied().filter(|a| *a > 0.0 && *a < 1.0).collect();
+    assert!(leaving.len() >= 4 && leaving.windows(2).all(|w| w[1] < w[0]), "it fades out over several frames, never cut: {leaving:?}");
+}
+
+/// **The chrome comes back over a header that is still on its way down, never onto it.** From the
+/// second row's rest (chrome tucked, the header row far above the top) an Up to the first row sends
+/// the page home on its scroll spring while the chrome returns on the handoff's clock, decided on the
+/// key frame and not waiting for the scroll. So for a dozen frames the chrome is whole and the header
+/// row, riding the page, is still passing through the band the chip and the strip stand in: the
+/// profile chip painted over the page title ("D ist"; design review F3, the Watchlist's up-move).
+/// On every frame the title is drawn at all (`head_alpha`, the alpha the row's draw wears, above 2%)
+/// its text box must not meet the profile chip as the chrome pass draws it that frame (the resting
+/// [`plx_ui::widgets::CHIP_FRAME`] lifted by the tuck, as `NavPresentation::chrome_rect` does) while
+/// the chip is drawn; and the title arrives over more than a pop and is whole once the page is home.
+/// (The text census gives the title's place; the alpha is read from the page because the host
+/// harness's recording painter keeps no alpha: `draw_runs` without a discovery pass segfaults.)
+#[test]
+fn the_returning_chrome_never_draws_over_the_header_row_still_arriving() {
+    use plx_ui::screen::{chrome_lift, Screen};
+    let _g = plx_base::testlock::serial();
+    let mut h = Harness::new(tiles(24));
+    h.focus_index(6);
+    h.run(240);
+    let tuck = |h: &Harness| Screen::<super::cards_harness::WatchHost>::chrome_tuck(&h.screen);
+    assert!(tuck(&h) > 0.99, "premise: tucked at the second row's rest");
+    h.focus_index(0);
+    let title = msg::watchlist_page_title();
+    let (mut collided, mut arriving, mut chip_drawn) = (Vec::new(), 0, 0);
+    for n in 0..120 {
+        h.run(1);
+        let tuck = tuck(&h);
+        let chip = plx_ui::widgets::CHIP_FRAME;
+        let chip = plx_ui::Rect { y: chip.y - chrome_lift(tuck), ..chip };
+        if tuck < 0.98 { chip_drawn += 1; }
+        let alpha = h.screen.head_alpha();
+        if alpha > 0.02 && alpha < 0.98 { arriving += 1; }
+        let Some((_, glyphs)) = h.draw_texts().into_iter().find(|(t, _)| t == title) else { continue };
+        let meets = glyphs.x < chip.x + chip.w && glyphs.x + glyphs.w > chip.x && glyphs.y < chip.y + chip.h && glyphs.y + glyphs.h > chip.y;
+        if tuck < 0.98 && alpha > 0.02 && meets {
+            collided.push(format!("frame {n}: tuck {tuck:.2}, chip y {:.0}..{:.0}, title alpha {alpha:.2} at y {:.0}..{:.0}", chip.y, chip.y + chip.h, glyphs.y, glyphs.y + glyphs.h));
+        }
+    }
+    assert!(chip_drawn >= 8, "premise: the chip returned, over several frames ({chip_drawn})");
+    assert!(collided.is_empty(), "the chip is painted over the title: {collided:#?}");
+    assert!(arriving >= 3, "and the title arrives over more than a pop ({arriving} partial frames)");
+    assert!(h.screen.scroll().abs() < 0.5, "premise: the page is home");
+    assert_eq!(h.screen.head_alpha(), 1.0, "and the header row is whole once it is there");
+}
+
+/// **The header row is built once per key, not once per question.** The page asks for the row in its
+/// focus questions, its placement, its motion and its paint, many times a frame; it is built when
+/// the options, the narrowed count or the locale change and held otherwise, by the one rule the
+/// Library's and the Recommended page's rows are held by (`plx_ui::page_header::SharedRow`). A list
+/// that grows or shrinks unfiltered changes nothing the row draws, so it builds nothing.
+#[test]
+fn the_header_row_is_built_once_per_key_not_once_per_question() {
+    let mut h = Harness::new(tiles(3));
+    h.screen.input(WatchlistIn::List(ListState::Ready { total: 3 }));
+    h.run(10);
+    h.draw();
+    let built = h.screen.probe_header_builds();
+    assert!(built >= 1, "premise: the row is built");
+    for _ in 0..20 {
+        h.run(3);
+        h.draw();
+        h.reconcile();
+    }
+    assert_eq!(h.screen.probe_header_builds(), built, "sixty frames of motion, questions and paint build no row");
+    h.screen.input(WatchlistIn::List(ListState::Ready { total: 4 }));
+    h.run(5);
+    h.draw();
+    assert_eq!(h.screen.probe_header_builds(), built, "an unfiltered count is never drawn, so a new one builds nothing");
+    h.screen.input(WatchlistIn::Options(WatchlistOptionsState { sort: super::options::SortKey::Title, ..Default::default() }));
+    h.run(5);
+    h.draw();
+    assert_eq!(h.screen.probe_header_builds(), built + 1, "a new sort rewords the pill: one build");
+    h.run(30);
+    h.draw();
+    assert_eq!(h.screen.probe_header_builds(), built + 1, "and the frames after it build none");
 }

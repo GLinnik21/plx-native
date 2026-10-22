@@ -46,16 +46,24 @@ fn row_rect_of_an_empty_row_is_a_zero_width_control_at_the_margin() {
     assert_eq!((r.x, r.y, r.w, r.h), (plx_ui::consts::MARGIN_X, 3.0, 0.0, CD));
 }
 
+const CHEV: Option<plx_ui::icons::Icon> = Some(plx_ui::icons::Icon::ChevronDown);
+
+/// The trailing chevron counts as its INK (`icons::ink_x`), not its box, at a 20 px type size.
+fn chevron_ink() -> f32 {
+    let (l, r) = plx_ui::icons::ink_x(plx_ui::icons::Icon::ChevronDown);
+    (r - l) * 20.0 * HERO_ICON_RATIO
+}
+
 #[test]
 fn pill_w_adds_icon_boxes_only_when_asked() {
     let label = CString::new("Play").unwrap();
     let text = 4.0 * GLYPH;
-    let plain = pill_w(&Mono, &label, 20, false, false);
+    let plain = pill_w(&Mono, &label, 20, false, None);
     assert_eq!(plain, text + plx_ui::widgets::BTN_PILL_AIR);
-    let lead = pill_w(&Mono, &label, 20, true, false);
+    let lead = pill_w(&Mono, &label, 20, true, None);
     assert_eq!(lead, plain + 20.0 * 1.15 + 12.0);
-    let both = pill_w(&Mono, &label, 20, true, true);
-    assert_eq!(both, plain + 2.0 * (20.0 * 1.15 + 12.0));
+    let both = pill_w(&Mono, &label, 20, true, CHEV);
+    assert_eq!(both, plain + (20.0 * 1.15 + 12.0) + chevron_ink() + 12.0);
 }
 
 #[test]
@@ -75,4 +83,32 @@ fn disc_caps_open_when_room_and_close_when_the_trial_row_overruns() {
     // A closed fraction keeps a circle.
     let shut = disc_caps_with([0.0; 3], [60.0; 3], |_| 100.0);
     assert_eq!(shut, [CD; 3]);
+}
+
+/// **The drawn gap between neighbouring controls is `CGAP`, for any widths** (the stack's one gap),
+/// and a control that is `0` wide is still on the row: it keeps a gap on each side. A disc springs
+/// between `CD` and its open width, never through 0, so this is the rule's edge, not a live case.
+#[test]
+fn every_control_stands_one_cgap_from_the_next_even_at_zero_width() {
+    for widths in [[200.0, CD, 90.5], [200.0, 0.0, 90.5]] {
+        let rects: Vec<Rect> = (0..3).map(|i| row_rect(&widths, i, 0.0)).collect();
+        for pair in rects.windows(2) {
+            assert_eq!(pair[1].x - (pair[0].x + pair[0].w), CGAP, "{widths:?}");
+        }
+        assert_eq!(rects.iter().map(|r| r.w).collect::<Vec<_>>(), widths);
+    }
+}
+
+/// A pill's icon boxes and label are one run `HERO_ICON_GAP` apart; an icon the pill does not carry
+/// leaves neither its box nor its gap (so no double gap beside the label).
+#[test]
+fn pill_w_gaps_only_the_icons_it_carries() {
+    let label = CString::new("Play").unwrap();
+    let text = 4.0 * GLYPH;
+    let box_w = 20.0 * HERO_ICON_RATIO;
+    let air = plx_ui::widgets::BTN_PILL_AIR;
+    assert_eq!(pill_w(&Mono, &label, 20, false, None), text + air);
+    assert_eq!(pill_w(&Mono, &label, 20, true, None), box_w + text + HERO_ICON_GAP + air);
+    assert_eq!(pill_w(&Mono, &label, 20, false, CHEV), text + chevron_ink() + HERO_ICON_GAP + air);
+    assert_eq!(pill_w(&Mono, &label, 20, true, CHEV), box_w + text + chevron_ink() + 2.0 * HERO_ICON_GAP + air);
 }

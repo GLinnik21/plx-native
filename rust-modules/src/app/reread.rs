@@ -12,8 +12,8 @@
 //!   and the VISIBLE page is read back in place: a list page the keys it holds (patches only), a
 //!   Detail page its own item, which owes it the obligation-only re-read.
 //!
-//! "Re-read" is per page kind ([`action`]): Library, Search, Person, Filmography and Collection
-//! owe the read-back of the keys they hold (`Stores::owe_read_back`, the layer-1 reconcile worker,
+//! "Re-read" is per page kind ([`action`]): the Library family (the grid and its Collections and
+//! Recommended pages), Search, Person, Filmography and Collection owe the read-back of the keys they hold (`Stores::owe_read_back`, the layer-1 reconcile worker,
 //! never a stop and never an end-of-stream candidate); Home owes one quiet refetch per source
 //! (`HubsCmd::RefetchSourceQuiet`); the Watchlist owes its read-back AND the plex.tv list read
 //! again, which re-matches it (`Action::WatchlistRead`); a Detail page under the top is told `Deferred`, which the page
@@ -133,7 +133,11 @@ pub(crate) fn action(arg: &AppArg, covered: bool) -> Action {
         // list read again (a title newly on a server, or added elsewhere, re-derives its status
         // line and bookmark face), and the record itself when the first read did not land.
         AppArg::Content(ContentArg::Catalog { .. }) => Action::CatalogRead,
-        AppArg::Library | AppArg::Search => Action::ReadBack,
+        AppArg::Search => Action::ReadBack,
+        // The grid and the two pages its header pushes over it (Collections, Recommended) are one
+        // screen family over one store listing: the same read-back is owed on each
+        // (`Bridge::held_keys`). Naming `AppArg::Library` alone left the other two owed nothing.
+        arg if arg.is_library_family() => Action::ReadBack,
         AppArg::Content(ContentArg::Person { .. } | ContentArg::Filmography { .. } | ContentArg::Collection(_)) =>
             Action::ReadBack,
         AppArg::Content(ContentArg::Detail { .. }) if covered => Action::DetailDeferred,

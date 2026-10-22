@@ -49,7 +49,9 @@ def recipe_body(target):
     test_test_fast.recipe_text it stops at the recipe's own end, so the comment block that introduces
     the NEXT target is not read as this one's."""
     lines = (ROOT / "Makefile").read_text().splitlines()
-    start = next(i for i, line in enumerate(lines) if line.startswith(target + ":"))
+    # The rule itself (`target:` alone), not a target-specific assignment such as `target: DISK_TREE = ...`.
+    assign = re.compile(re.escape(target) + r":\s*[A-Za-z_]+\s*[:+?]?=")
+    start = next(i for i, line in enumerate(lines) if line.startswith(target + ":") and not assign.match(line))
     body = []
     for line in lines[start + 1:]:
         if line.startswith("\t"):
@@ -131,7 +133,7 @@ class TestHostsim(unittest.TestCase):
 
     def test_c_is_one_recipe_not_a_second_one(self):
         text = (ROOT / "Makefile").read_text()
-        self.assertEqual(len(re.findall(r"^test-hostsim:", text, re.M)), 1)
+        self.assertEqual(len(re.findall(r"^test-hostsim:[ \t]*$", text, re.M)), 1)
         self.assertEqual(len(re.findall(r"--features hostsim", recipe_body("test-hostsim"))), 1)
 
     def test_the_throwaway_runtime_dir_is_removed_afterwards(self):

@@ -293,3 +293,116 @@ fn a_released_row_keeps_a_ledger_only_when_its_window_cannot_be_read_without_it(
     assert_eq!(kept, (0..ROWS).filter(|row| row % 5 == 0 && build.shelves[*row].released()).count());
     plx_plex::plex::reset_servers_for_test();
 }
+
+/// A Hold moves the band and the rows that left it give their cards up. The catalog is PATCHED for
+/// them (their slices become placeholders, the shape is the same), not built a second time; the
+/// result must be the catalog a second merge of the settled ring produces, hero pool included - a
+/// hero in a row that left the band is kept as a card the catalog still holds.
+#[test]
+fn merge_held_equals_a_merge_of_the_settled_ring() {
+    let _guard = plx_base::testlock::serial();
+    plx_plex::plex::reset_servers_for_test();
+    let id = plx_plex::plex::register_for_test("ring", "127.0.0.1", 9, "synthetic", "cid");
+    let hero_rows = [2, 60, 61, 300];
+    let shelves = (0..ROWS).map(|row| {
+        let mut sh = pageable_shelf(id.raw(), row);
+        if hero_rows.contains(&row) {
+            sh.hub_id = format!("x.recent.{row}");
+            for item in &mut sh.items { Arc::make_mut(item).art = format!("/art/{row}"); }
+        }
+        sh
+    }).collect();
+    let mut srcs = vec![src(id.raw(), "", HubState::Ready, Some(built(id.raw(), &[], shelves)))];
+    let scope = BrowseScope::standalone();
+    let full = merge_with_scope(&srcs, &scope);
+    assert!(full.2.len() >= 3, "the fixture pools heroes from several rows");
+    let (patched, changed) = merge_held(&mut srcs, &scope, (0, 15));
+    assert!(changed, "most rows are outside the band");
+    // the old way: the same sources, merged again once the ring has settled
+    let mut rebuilt = merge_with_scope(&srcs, &scope);
+    keep_heroes(&full.0, &full.2, &mut rebuilt);
+    let keys = |build: &HubBuild| build.0.iter().map(|m| (m.sid, m.rk.clone(), m.art.clone())).collect::<Vec<_>>();
+    assert_eq!(keys(&patched), keys(&rebuilt), "the patched catalog holds the cards a second merge holds");
+    let rows = |build: &HubBuild| build.1.iter().map(|h| (h.title.clone(), h.hub_id.clone(), h.key.clone(),
+        h.source.clone(), h.total, h.start, h.len, h.offset, h.more, h.epoch)).collect::<Vec<_>>();
+    assert_eq!(rows(&patched), rows(&rebuilt));
+    let pool = |build: &HubBuild| build.2.iter().map(|h| (build.0[h.idx].rk.clone(), h.source.clone())).collect::<Vec<_>>();
+    assert_eq!(pool(&patched), pool(&rebuilt));
+    assert!(patched.2.iter().all(|h| !patched.0[h.idx].rk.is_empty()), "no hero is a placeholder");
+    assert!(patched.1.iter().skip(16).all(|h| patched.0[h.start..h.start + h.len].iter().all(|m| m.rk.is_empty())),
+        "the rows outside the band are placeholders");
+    plx_plex::plex::reset_servers_for_test();
+}
+
+/// The same equivalence over what the one-source fixture above leaves out: two sources (the pool
+/// spans them and the placeholder slot is per source), the placed Continue Watching deck (it leads
+/// the catalog, so the held band counts it), a pin filter that withholds a row, and rows that
+/// cannot give their cards up (a card with no rating key has no way back) and so stay whole outside
+/// the band. For several bands, the later ones over rows that earlier ones released.
+#[test]
+fn merge_held_equals_a_merge_of_the_settled_ring_across_sources_the_deck_pins_and_rows_that_keep_their_cards() {
+    let _guard = plx_base::testlock::serial();
+    plx_plex::plex::reset_servers_for_test();
+    let a = plx_plex::plex::register_for_test("ring-a", "127.0.0.1", 9, "synthetic", "cid-a");
+    let b = plx_plex::plex::register_for_test("ring-b", "127.0.0.2", 9, "synthetic", "cid-b");
+    let (withheld_row, whole_row, hero_rows) = (7, 30, [2, 45, 50]);
+    let shelves = |id: ServerId| -> Vec<Shelf> {
+        (0..90).map(|row| {
+            let mut sh = pageable_shelf(id.raw(), row);
+            if hero_rows.contains(&row) {
+                sh.hub_id = format!("x.recent.{row}");
+                for item in &mut sh.items { Arc::make_mut(item).art = format!("/art/{}/{row}", id.raw()); }
+            }
+            if row == withheld_row {
+                // every card of the row belongs to a library the pins turn off
+                for item in &mut sh.items { Arc::make_mut(item).sec = 5; }
+            }
+            if row == whole_row {
+                // a row that cannot be read again: its key is no pager's and one card has no rating key
+                sh = opaque_shelf(id.raw(), row);
+                Arc::make_mut(&mut sh.items[3]).rk.clear();
+            }
+            sh
+        }).collect()
+    };
+    let deck: Vec<(i64, String)> = (0..8).map(|i| (1000 - i, format!("cw{i}"))).collect();
+    let deck: Vec<(i64, &str)> = deck.iter().map(|(at, rk)| (*at, rk.as_str())).collect();
+    let mut srcs = vec![
+        src(a.raw(), "", HubState::Ready, Some(built(a.raw(), &deck, shelves(a)))),
+        src(b.raw(), "", HubState::Ready, Some(built(b.raw(), &deck[..3], shelves(b)))),
+    ];
+    settle_deck(&mut srcs, true);
+    let scope = BrowseScope { sections_gen: 1, pins: vec![(a, 5, false)] };
+    let keys = |build: &HubBuild| build.0.iter().map(|m| (m.sid, m.rk.clone(), m.art.clone())).collect::<Vec<_>>();
+    let rows = |build: &HubBuild| build.1.iter().map(|h| (h.title.clone(), h.hub_id.clone(), h.key.clone(),
+        h.source.clone(), h.total, h.start, h.len, h.offset, h.more, h.epoch)).collect::<Vec<_>>();
+    let pool = |build: &HubBuild| build.2.iter().map(|h| (build.0[h.idx].sid, build.0[h.idx].rk.clone(), h.source.clone())).collect::<Vec<_>>();
+    let full = merge_with_scope(&srcs, &scope);
+    assert!(full.2.len() >= 3, "the fixture pools heroes from several rows");
+    assert!(full.1.iter().any(|h| h.hub_id == "home.continue"), "premise: the deck leads the catalog");
+    let rows_of = |hub_key: String| full.1.iter().filter(|h| h.key == hub_key).count();
+    assert_eq!(rows_of(format!("/hubs/sections/1/{withheld_row}")), 1, "premise: the pins withhold the row of source a only");
+    // the first band, then bands that move on, and back over rows released before
+    let mut patches = Vec::new();
+    for band in [(0, 15), (20, 35), (60, 75), (0, 15), (40, 55)] {
+        let (patched, changed) = merge_held(&mut srcs, &scope, band);
+        patches.push(changed);
+        let mut rebuilt = merge_with_scope(&srcs, &scope);
+        keep_heroes(&full.0, &full.2, &mut rebuilt);
+        assert_eq!(keys(&patched), keys(&rebuilt), "band {band:?}: the patched catalog holds the cards a second merge holds");
+        assert_eq!(rows(&patched), rows(&rebuilt), "band {band:?}");
+        assert_eq!(pool(&patched), pool(&rebuilt), "band {band:?}");
+        assert!(patched.2.iter().all(|h| !patched.0[h.idx].rk.is_empty()), "band {band:?}: no hero is a placeholder");
+        // the row that cannot release keeps its cards wherever the band is, for both sources
+        let whole: Vec<_> = patched.1.iter().filter(|h| h.key == format!("/playlists/{whole_row}/items")).collect();
+        assert_eq!(whole.len(), 2, "band {band:?}: the row of each source is there");
+        for h in whole {
+            let cards = &patched.0[h.start..h.start + h.len];
+            assert_eq!(cards.iter().filter(|m| m.rk.is_empty()).count(), 1, "band {band:?}: its cards are the row's own");
+        }
+    }
+    // (no reads land here, so a row released by one band stays released: only the first two bands
+    // hold cards to give up, and the later ones check that a patch with nothing to do is the merge too)
+    assert_eq!(&patches[..2], &[true; 2], "the first bands release rows, so each is a patch and not a no-op: {patches:?}");
+    plx_plex::plex::reset_servers_for_test();
+}

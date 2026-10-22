@@ -77,6 +77,9 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   the broken behavior. Observe the failure, implement the fix, then observe it pass.
 - Do not use `make -p` or `make -pn`; recursive variables such as `TV` are misleading there. Use
   the `make -s print-*` query targets documented in `docs/agent-reference.md`.
+- Edition 2021 keeps a `while let`/`match` scrutinee's temporaries alive for the whole body:
+  `while let Some(x) = m.lock().next() { io(x) }` holds the lock across `io`. Bind first
+  (`let next = m.lock().next();`) whenever the body blocks (#908).
 
 ## Build and verification
 
@@ -170,8 +173,19 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   refused). It never evicts the cargo seed, and unlike the other modes it does not stop for a
   held FFmpeg cache lock. Preview a plan with `python3 tools/disk-budget.py reclaim --to GIB
   --emit > plan; tools/build-gc.sh --evict plan -n`; never run `--evict` for real from a test
-  or an experiment outside a fixture. `make disk` stays the report to read before intervening
-  yourself, or when the volume needs relief faster than the automatic trigger provides it.
+  or an experiment outside a fixture. The budget is also checked at every build entry: each
+  cargo-running `make` target (`make -s print-disk-entries` lists them) takes `disk-preflight` as an
+  order-only prerequisite, which is `python3 tools/disk-budget.py preflight`. At or above the
+  comfort line (`PLX_GC_MIN_FREE_GIB`, 20) it is one `statvfs` and a Python start (tens of
+  milliseconds); below it, it evicts through the planner and `--evict`, which spare the tree being
+  built and every live tree (the current checkout's incremental dirs in its other trees go only when
+  nothing cheaper covers the build), and it refuses only when the whole ladder cannot cover the build
+  plus the `PLX_MIN_FREE_MB` reserve. That eviction is real deletion time before cargo starts, so a
+  `make` below the comfort line that sits in the preflight is working, not hung. A new
+  cargo-running target joins `DISK_ENTRIES` in the Makefile (`ci/test_disk_preflight.py` fails
+  until it does), and a `$(MAKE)` line inside an entry passes `PLX_DISK_BUDGET_DONE=1`. `make disk`
+  stays the report to read before intervening yourself, or when the volume needs relief faster than
+  the automatic trigger provides it.
 - Use the `which-tier` skill to choose between host checks, `ui-sim`, and real-device verification.
   Pixel output, LG text rasterization, video-plane composition, performance, and native playback
   generally need the TV before being called verified.
@@ -181,6 +195,10 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   is named. A count of late frames, an A/B between two builds, or a reading of the heartbeat line
   is not a diagnosis, and "probably the upload" is not a finding. State a cause only with the
   counter or trace evidence behind it; what was not measured is reported as not determined.
+- A main-thread stall (one long `navcommit=`/`results=` leg on a `FRAMEDROP` line, `--arm
+  framedrop=N`) is attributed by wrapping that leg's calls in temporary
+  `plx_base::diag::spans::span("label", || …)` on a scratch branch: the labels print in that
+  frame's `spans=` field, so one deploy names the call.
 - FFI, linkage, `dynlib!`, Starfish, ACB, curl, or bundled-FFmpeg changes require the
   `fw-compat-reviewer` custom agent (`fw_compat_reviewer` in Codex), or the equivalent manual
   review, before push.
@@ -200,7 +218,7 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   is "Play" (the default, "Open details", opens the page) — and the setting is saved on the set
   PER PROFILE (a profile that never chose reads the install's older value), so never assume which
   one a given install, or a given profile on it, has. In the default the card's hold menu opens ON a
-  Play/Continue row, so hold-then-OK plays too. That press is how two separate sessions started
+  Play/Resume row, so hold-then-OK plays too. That press is how two separate sessions started
   real playback on the owner's account. Seeding, scrobbling, unscrobbling, marking watched and
   "Remove from Deck" are all writes to a household's actual viewing record — the managed and Guest profiles
   are real users too. When screenshot or demo work needs particular content, mock the server.

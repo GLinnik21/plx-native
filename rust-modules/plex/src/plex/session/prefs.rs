@@ -4,7 +4,7 @@
 //! since the seat work: each is read from the seated profile's own record in `profile_prefs`,
 //! falling back to the frozen install-wide key beside it, see [`profile_prefs`]), and since A5
 //! every other preference key of the
-//! session (`auto_sign_in`, `last_hero_blur`, the two Account-scope lists, the
+//! session (`auto_sign_in`, `last_hero_blur`, `ui_resolution`, `hold_hint_taught`, the two Account-scope lists, the
 //! two per-profile library lists and the two memory-door lists, `track_memory` and
 //! `subtitle_offsets`), that used to be spelled, field for field, in
 //! [`Session`] AND in the canonical (DB8) preference record: the struct field, the manual
@@ -37,8 +37,8 @@
 //! ([`SubtitleOffsetsPref`]).
 use super::{
     DeckPress, DirectPlayMode, HdrOverlayBrightness, LastLibrary, LibraryViews, NextEpisodeMode, OpaqueExtensions, PlaintextConsent,
-    PlaybackQuality, ServerKeyPin, Session, SkipInterval, SubtitleOffsetEntry, SubtitleOffsets, SubtitlePosition,
-    SubtitleSize, SubtitleTone, UiResolution,
+    HoldHintTaught, PlaybackQuality, ServerKeyPin, Session, SkipInterval, SubtitleOffsetEntry, SubtitleOffsets, SubtitlePosition,
+    SubtitleSize, SubtitleTone, UiResolution, UnderPosters,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -129,6 +129,12 @@ pub struct Preferences {
     /// committed replay fixtures included — serializes exactly as it did before.
     #[serde(default, deserialize_with = "de_soft_deck_press", skip_serializing_if = "is_default_deck_press")]
     pub deck_press: DeckPress,
+    /// **What sits under the focused poster** — see [`UnderPosters`]. A frozen fallback like
+    /// [`Preferences::deck_press`]: each profile keeps its own pick in `profile_prefs`. Absence is no
+    /// title and the year and length. Skipped at the default so a session predating this field —
+    /// committed replay fixtures included — serializes exactly as it did before.
+    #[serde(default, deserialize_with = "de_soft_under_posters", skip_serializing_if = "is_default_under_posters")]
+    pub under_posters: UnderPosters,
     /// Plex Pass per-track transcoder DSP preference (issue #266): dialog boost / loudness
     /// normalization. `NONE` by default and skipped on write while `NONE`, so every session
     /// persisted before the field existed — and every viewer who never opted in — round-trips
@@ -166,6 +172,16 @@ pub struct Preferences {
     /// unchanged. Soft-parsed: a spelling this build does not know costs the preference only.
     #[serde(default, deserialize_with = "de_soft_ui_resolution", skip_serializing_if = "is_default_ui_resolution")]
     pub ui_resolution: UiResolution,
+    /// **Which "Hold [OK] for options" hints this install has been taught** ([`HoldHintTaught`],
+    /// `plx_ui::hold_hint`): the self-appearing hint stands once per install per surface, so the
+    /// flags survive relaunches. Install-wide, kept across sign-out, shared by every profile (it is
+    /// about the viewer's thumb, not an account). No Settings row: the application seeds the hint's
+    /// latches from it at boot and writes it on the first read showing. Absence is "not taught";
+    /// skipped at the default so a session predating this field — committed replay fixtures
+    /// included — serializes exactly as it did before. Soft-parsed: garbage costs the lesson,
+    /// never the credentials.
+    #[serde(default, deserialize_with = "de_soft_hold_hint_taught", skip_serializing_if = "is_default_hold_hint_taught")]
+    pub hold_hint_taught: HoldHintTaught,
     /// **Hero trailer autoplay** — the install-wide FALLBACK every profile reads until it picks its
     /// own (per profile in `profile_prefs`; this top-level key is frozen, which a build with
     /// per-profile settings never writes, except that session creation sets it on, as it always
@@ -329,8 +345,8 @@ pub struct Preferences {
     pub profile_prefs: Vec<ProfilePrefsRecord>,
 }
 
-/// How long a setting's value lives, and who owns the write. `auto_sign_in` and
-/// `last_hero_blur` are `Install`; the two lists sign-out clears are `Account`; the ten player
+/// How long a setting's value lives, and who owns the write. `auto_sign_in`, `ui_resolution`,
+/// `hold_hint_taught` and `last_hero_blur` are `Install`; the two lists sign-out clears are `Account`; the ten player
 /// scalars, the hero trailer autoplay switch (each with its install-wide key as the [`Fallback`]) and
 /// the library lists are `Profile`;
 /// `track_memory` is `PerShow` and `subtitle_offsets` is `PerItem`. Sign-out clears every row that
@@ -480,6 +496,8 @@ setting!(SkipIntervalPref: SkipInterval = skip_interval, "skip_interval", Profil
     account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
 setting!(DeckPressPref: DeckPress = deck_press, "deck_press", Profile fallback LegacyInstallKey,
     account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
+setting!(UnderPostersPref: UnderPosters = under_posters, "under_posters", Profile fallback LegacyInstallKey,
+    account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
 setting!(SubtitleSizePref: SubtitleSize = subtitle_size, "subtitle_size", Profile fallback LegacyInstallKey,
     account false, live true, settings Some(SettingsWrite::Optimistic), parse Soft);
 setting!(SubtitlePositionPref: SubtitlePosition = subtitle_position, "subtitle_position", Profile fallback LegacyInstallKey,
@@ -500,12 +518,15 @@ setting!(TrailerAutoplayPref: bool = trailer_autoplay, "trailer_autoplay", Profi
 // ---- A5: the remaining preference keys (a separate block, below the ten) -----------------------
 //
 // None of these has a `choose` door: the Settings screen writes `auto_sign_in` through its own
-// ticketed `queue_update_ticket` (pending UI), `last_hero_blur` and the lists through their own
+// ticketed `queue_update_ticket` (pending UI), `hold_hint_taught` through `session::learn_hold_hint_taught`
+// (the application's frame tick), `last_hero_blur` and the lists through their own
 // writers, and no media cell applies any of them live.
 
 setting!(AutoSignInPref: bool = auto_sign_in, "auto_sign_in", Install,
     account false, live false, settings None, parse BoolOff);
 setting!(UiResolutionPref: UiResolution = ui_resolution, "ui_resolution", Install,
+    account false, live false, settings None, parse Soft);
+setting!(HoldHintTaughtPref: HoldHintTaught = hold_hint_taught, "hold_hint_taught", Install,
     account false, live false, settings None, parse Soft);
 setting!(LastHeroBlurPref: Option<[[f32; 3]; 4]> = last_hero_blur, "last_hero_blur", Install,
     account false, live false, settings None, parse OptionalSoft);
@@ -585,12 +606,14 @@ pub const DESCRIPTORS: &[Descriptor] = &[
     Descriptor::of::<NextEpisodeModePref>(),
     Descriptor::of::<SkipIntervalPref>(),
     Descriptor::of::<DeckPressPref>(),
+    Descriptor::of::<UnderPostersPref>(),
     Descriptor::of::<AudioEnhancementsPref>(),
     // A5: the remaining keys.
     Descriptor::of::<AutoSignInPref>(),
     Descriptor::of::<TrailerAutoplayPref>(),
     Descriptor::of::<LastHeroBlurPref>(),
     Descriptor::of::<UiResolutionPref>(),
+    Descriptor::of::<HoldHintTaughtPref>(),
     Descriptor::of::<PlaintextConsentRow>(),
     Descriptor::of::<ServerKeyPinsRow>(),
     Descriptor::of::<LastLibraryRow>(),
@@ -1301,6 +1324,23 @@ fn is_default_deck_press(mode: &DeckPress) -> bool {
     *mode == DeckPress::default()
 }
 
+/// The under-posters record is a preference too: a value that is not a record is the default, and
+/// each field inside softens on its own (`UnderPosters`' own deserializer).
+fn de_soft_under_posters<'de, D>(d: D) -> Result<UnderPosters, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Ok(v) = serde_json::Value::deserialize(d) else {
+        return Ok(UnderPosters::default());
+    };
+    Ok(serde_json::from_value::<UnderPosters>(v).unwrap_or_default())
+}
+
+/// `skip_serializing_if` needs a function, not just `PartialEq` with `Default::default()`.
+fn is_default_under_posters(v: &UnderPosters) -> bool {
+    *v == UnderPosters::default()
+}
+
 /// The interface resolution is a preference too: a spelling this build does not know is Automatic.
 pub(super) fn de_soft_ui_resolution<'de, D>(d: D) -> Result<UiResolution, D::Error>
 where
@@ -1310,6 +1350,21 @@ where
         return Ok(UiResolution::default());
     };
     Ok(serde_json::from_value::<UiResolution>(v).unwrap_or_default())
+}
+
+/// The taught flags are a preference too: an unreadable shape is "not taught".
+pub(super) fn de_soft_hold_hint_taught<'de, D>(d: D) -> Result<HoldHintTaught, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Ok(v) = serde_json::Value::deserialize(d) else {
+        return Ok(HoldHintTaught::NONE);
+    };
+    Ok(serde_json::from_value::<HoldHintTaught>(v).unwrap_or(HoldHintTaught::NONE))
+}
+
+pub(super) fn is_default_hold_hint_taught(taught: &HoldHintTaught) -> bool {
+    *taught == HoldHintTaught::NONE
 }
 
 /// `skip_serializing_if` needs a function, not just `PartialEq` with `Default::default()`.

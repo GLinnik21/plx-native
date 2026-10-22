@@ -25,7 +25,7 @@ impl LibraryScreen {
                     query: id.query,
                     cursor: plx_data::browse::Cursor {
                         at: plx_data::browse::CursorAt::SlotIndex(0),
-                        scroll: self.target_layout.grid_block_top(),
+                        scroll: self.target_layout.grid_top(),
                     },
                 },
                 fx,
@@ -111,14 +111,18 @@ impl LibraryScreen {
             // The remembered row owns its full caption before clamping the saved viewport.
             // Clamping against an all-collapsed document loses the last row's 74px on return.
             self.relayout(Some(self.key(elem)));
-            let scroll = if index == slot {
-                cursor.scroll
-            } else {
-                self.target_layout.row_reveal(index / self.layout.cols())
-            };
-            self.scroll_target = scroll.clamp(0.0, self.target_layout.max_scroll());
-            self.scroll.jump(self.scroll_target);
-            self.restore_scroll = Some(self.scroll_target);
+            // A library chosen with OK keeps the header on screen: the grid cursor is remembered
+            // (DOWN from the header lands on it) but the page does not scroll to it.
+            if !self.switched {
+                let scroll = if index == slot {
+                    cursor.scroll
+                } else {
+                    self.target_layout.row_reveal(index / self.layout.cols())
+                };
+                self.scroll_target = scroll.clamp(0.0, self.target_layout.max_scroll());
+                self.scroll.jump(self.scroll_target);
+                self.restore_scroll = Some(self.scroll_target);
+            }
             self.relayout(Some(self.key(elem)));
         }
         true

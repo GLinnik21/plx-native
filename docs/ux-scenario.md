@@ -164,9 +164,10 @@ promoted items; the dots under the action row show the position.
 | control | what OK does |
 |---|---|
 | **Play** / **Continue** | starts playback — *Continue* when the item has a resume point, *Play* when it does not |
+| **🔖** (bookmark) | adds the title to the Watchlist (an episode's or season's show), or removes it when it is already on it; outline off the list, filled on it. Present only when the hero row names a title with a known catalog id |
 | **ⓘ** (info) | opens that item's detail page |
 
-Those are the only two. **The `›` beside them is an indicator, not a third button** — it is drawn,
+Those are the only three, in that order (the bookmark disc is absent for a row with no catalog id), and none of the circles carries a name, focused or not. **The `›` beside them is an indicator, not a third button** — it is drawn,
 it never takes focus and it has no hit rect. The hero is paged by **RIGHT past the info disc** or
 **LEFT off the Play pill**, and it also advances itself every **8 s** while the row sits idle. The
 dots under the row show the position.
@@ -176,23 +177,26 @@ dots under the row show the position.
 The strip is uncapped and scrolls once it outgrows the bar, so every discovered section is
 focusable. At the left margin, outside the group, sits the **profile chip** (§5.7).
 
-**UP from the hero reaches the bar**, landing on the profile chip; LEFT and RIGHT then walk the
-whole band — **chip → Home → Movies → TV Shows → … → Search**. DOWN leaves the bar: back to the
-hero action row from the chip, or into the shelves from a pill. The bar is worn by Home, the Library
-and Search and by nothing else — the detail, person, player and onboarding screens have none, which
-is why moving to or from them fades the whole screen rather than just the page.
+**UP from the hero reaches the bar**, landing on the Home pill (UP from any page that wears the bar
+lands on that page's own pill); LEFT and RIGHT then walk the whole band — **chip → Home → Movies →
+TV Shows → … → Search**. DOWN leaves the bar: back to the hero action row from the chip, or into the
+shelves from a pill. The bar is worn by Home, the Library family (the grid, its Collections page and
+its Recommended page), the Watchlist and Search, and by nothing else — the detail, person, player and
+onboarding screens have none, which is why moving to or from them fades the whole screen rather than
+just the page.
 
 **Below the hero**, the shelves.
 
 ![Home, shelves](screenshots/ux-home-shelves.jpg)
 
 DOWN from the hero enters the shelves; DOWN again steps between them; LEFT/RIGHT walks the cards.
-The focused card grows, and its title and a status line appear beneath it — here *"8 min
+The focused card grows, and what Settings → Libraries → Under posters asks for appears
+beneath it (a title line when its Title switch is On; a line the setting turns on is never left empty, so a season, which has no length, says *"Season 6"* under its show's name, and a film the server told us nothing about says *"Movie"*; the setting is the same under every poster in the app: Search results, a person's filmography, a title's Related and collection shelves and a collection's members, though not under a landscape still or a cast headshot) — a Continue Watching card keeps its status line, here *"8 min
 left"*, which is the resume state. A watched item carries a check mark in its corner.
 
 **OK on a card in *Continue Watching* opens its page by default** (Settings → Playback →
-Continue Watching: *Open details*); set to *Play*, OK plays it directly and the amber ▶ on the card is
-what announces that — the ▶ is drawn only in that mode, and in the default the card's menu leads
+Continue Watching: *Open details*); set to *Play*, OK plays it directly and the amber ▶ before the card's title is
+what announces that (it needs the title line, so Under posters → Title On) — the ▶ is drawn only in that mode, and in the default the card's menu leads
 with Play instead; an *episode* card there opens its **show** on that episode's season (the card's menu
 offers *Go to Episode*). **Every other card opens a page, an episode included**: an episode tile on a
 discovery shelf ("Recently Released Episodes", "Recently Added…") opens that EPISODE's own page and
@@ -284,19 +288,21 @@ Reached from any library pill in the top strip. A poster grid, four-way navigabl
 
 **CH ▲ / CH ▼ page the grid**, which is the fast way through a large library.
 
-**BACK here is ONE step to the head of the library, and a second leaves for Home.** From a shelf, a
-grid row, the Sort/Filter row or the A–Z rail, BACK returns to the top of the page — a deep shelf is
-as far from the head as a deep grid row is — and only from the head does it hand the screen back.
-(This said "two steps: to the tab row, then Home" until 2026-09-05. The Library is one continuous
-scroll now, with no fixed toolbar to walk up from and a tab track that never hides, so UP is the
-one-press route to the strip and BACK is about the DOCUMENT.)
+**BACK here climbs one region a press, and from the bar it leaves for Home.** From the A–Z rail BACK
+returns to the grid; from deep in the grid it returns to the top of the page — a deep shelf is as far
+from the head as a deep grid row is; from the top it steps to the Sort/Filter header, from the header
+to the tab bar, and from the bar it hands the screen back. UP is still the one-press route to the
+strip; the header and bar steps exist so that BACK can never loop between them. The Collections and
+Recommended pages pop to the page that opened them from the top of their content, from their header or
+from the bar. (This said "two steps: to the tab row, then Home" until 2026-09-05, and "ONE step to the
+head of the library, and a second leaves for Home" after it.)
 
 Sort and Filter open as **popovers over the live grid**, never as full-screen sheets:
 
 ![Library sort menu](screenshots/ux-library-sort.jpg)
 
 The options are the ones the **server** reports for that section, not a hardcoded list; the current
-choice carries a check and a direction chevron, and OK on the current choice reverses the direction.
+choice carries a check and its direction as a word ("A–Z", "Newest first"), and OK on the current choice reverses the direction.
 BACK closes the popover and returns focus to the pill.
 
 ### 5.5 Search

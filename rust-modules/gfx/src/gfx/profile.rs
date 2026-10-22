@@ -86,13 +86,15 @@ mod imp {
         "profile.empty",
         "frame.ui",
         "main.ui",
-        // `backdrop::draw_span`'s five layers of the frame, each also a phase: the page (live or
-        // its cached image), the chrome, the modal dims and the surfaces above them.
+        // `backdrop::draw_span`'s six layers of the frame, each also a phase: the page (live or
+        // its cached image), the chrome, the modal dims, the surfaces above them and the lifted
+        // openers above those.
         "page",
         "page.image",
         "chrome",
         "scrims",
         "surf",
+        "lifts",
         "blur.copy",
         // The direct path's own source pass — the one phase the capture path does not have.
         "blur.scene",
@@ -126,8 +128,10 @@ mod imp {
         "lb.grid",
         "lb.document",
         "lb.rail",
-        "lb.shelves",
         "lb.menu",
+        "rc.clear",
+        "rc.ground",
+        "rc.rows",
         "st.ground",
     ];
 

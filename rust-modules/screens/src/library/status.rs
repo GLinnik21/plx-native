@@ -103,7 +103,8 @@ impl LibraryScreen {
                     else if directory.sections().is_empty() { plx_platform::i18n::msg::browse_library_empty().into() }
                     else if listing.unwatched() || listing.genre().is_some() { plx_platform::i18n::msg::browse_library_no_matches().into() }
                     else if let Some(section) = directory.current().and_then(|i| directory.sections().get(i)) {
-                        listing.library_type().empty_readout(section.kind, &section.row.title)
+                        if self.listing == Listing::Collections { super::collections_page::empty_text(&section.row.title) }
+                        else { listing.library_type().empty_readout(section.kind, &section.row.title) }
                     } else { plx_platform::i18n::msg::browse_library_no_matches().into() };
                 (caption, None)
             }
@@ -115,12 +116,7 @@ impl LibraryScreen {
     }
 
     pub(super) fn status_frame(&self) -> Rect {
-        // Under shelves, an empty answer stands in its own document band below the heading row
-        // (`Layout::empty_band`) and scrolls with it; the fixed region would put it on a shelf.
-        if let Some((top, h)) = self.layout.empty_band().filter(|_| self.layout.shelves > 0) {
-            return Rect::new(MARGIN_X, CONTENT_TOP + top - self.scroll.pos, SCR_W - 2.0 * MARGIN_X, h);
-        }
-        // The legacy readout occupies the fixed content region, inside the overscan frame.
+        // The readout occupies the fixed content region, inside the overscan frame.
         const STATUS_TOP: f32 = 232.0;
         Rect::new(MARGIN_X, STATUS_TOP, SCR_W - 2.0 * MARGIN_X,
             SCR_H - STATUS_TOP - plx_ui::consts::MARGIN_Y)

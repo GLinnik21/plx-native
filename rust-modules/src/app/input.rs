@@ -1470,35 +1470,13 @@ pub(crate) fn chip_activate(
     // function with the television's own keyboard up — a pointer click on the chip from inside
     // the field.
     // That path is retired (phase 7 Search cutover): `owns_input()` in `app/run.rs` now takes
-    // every Search click before it ever reaches `chip_clicked`/`chip_activate`, and the owned
+    // every Search click before it ever reaches `chip_activate`, and the owned
     // path that replaces it (`content.rs`'s `SearchReq::Account`) does not call this function at
     // all — the owned screen releases its own keyboard before emitting the request, and calling
     // `end_editing` here a second time on an instance that already dismissed it would be the
     // stale-request problem `an_old_search_keyboard_request_cannot_close_the_new_instances_keyboard`
     // guards against.
     super::bridge::open_account_menu(pages);
-}
-
-/// The bar-wearing pages, i.e. the ones with a profile chip on them at all — `BarHost::of`'s
-/// successor, and the whole of what that type was still doing once the menu became a surface.
-/// DERIVED from [`plx_ui::screen::ScreenArg::chrome`] rather than listing Home/Library/Search a second time: the
-/// chip is a control ON the shared bar, so "is there a chip to press" is "does this page wear the
-/// bar", and the two cannot drift.
-pub(crate) fn wears_the_chip(route: &AppArg) -> bool {
-    use plx_ui::screen::ScreenArg;
-    route.chrome() == plx_machine::machine::Chrome::TabBar
-}
-
-/// Did this click land on the profile chip of a screen that is WEARING the shared bar? The pointer
-/// twin of [`chip_activate`]'s key path, and the route test is the whole of what makes it safe:
-/// `widgets::CHIP_FRAME` is a constant (the chip never moves), so nothing else bounds it to the
-/// screens that actually draw one.
-pub(crate) fn chip_clicked(route: &AppArg, ev: &[u8]) -> bool {
-    if !wears_the_chip(route) {
-        return false;
-    }
-    let (mx, my) = ptr_xy(ev);
-    plx_ui::widgets::profile_chip_at(mx, my)
 }
 
 #[allow(clippy::too_many_arguments)]

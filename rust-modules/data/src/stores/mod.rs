@@ -71,6 +71,7 @@ pub mod notify_map;
 pub mod person;
 pub mod collection;
 pub(crate) mod deck;
+pub(crate) mod deck_group;
 pub mod page_cache;
 pub mod paging;
 pub mod search;
@@ -161,6 +162,11 @@ impl Stores {
     /// Explicit synchronous Browse command path. The answer is available before this call returns.
     pub fn browse_run(&self, cmd: browse::BrowseCmd) -> bool {
         self.browse.borrow_mut().run(cmd)
+    }
+
+    /// Is any shelf of the addressed section committed? (The Library pages' publication gate asks.)
+    pub fn browse_hubs_committed(&self, target: browse::SectionAddress) -> bool {
+        self.browse.borrow().hubs_committed(target)
     }
 
     pub fn browse_discover_pump(&self) -> StoreOutcome {
@@ -635,9 +641,13 @@ pub fn take_landing<T>(gate: &plx_machine::landgate::Gate, id: StoreId,
 }
 
 /// [`take_landing`] for a site whose request is tracked by `owed` (a [`Fetch::busy`], or the site's own in-flight flag): in the
-/// landing gate's DUMP MODE the take waits, bounded and fail-closed, until the mail the claim owes
-/// has been taken, so a request that has not been superseded lands on the site's next execution
-/// whatever the worker's timing. Everywhere else it is exactly [`take_landing`]. `owed` must be
+/// landing gate's DUMP MODE the take delivers the mail the claim owes, so a request that has not
+/// been superseded lands on the site's next execution whatever the worker's timing. The blocking
+/// dump ([`Gate::arm_dump`](plx_machine::landgate::Gate::arm_dump), for a caller that is not on the
+/// frame thread) waits for it, bounded and fail-closed; the PACED dump the frame dump arms
+/// ([`Gate::arm_dump_paced`](plx_machine::landgate::Gate::arm_dump_paced)) never waits: a take whose
+/// answer is out returns `None` and names the store in `Gate::take_starved`, and the driver holds
+/// the frame until it is in. Everywhere else it is exactly [`take_landing`]. `owed` must be
 /// the claim of the ONE mailbox `f` takes from, never a store-wide one: a store with several
 /// mailboxes would wait on the wrong one.
 ///
@@ -645,13 +655,15 @@ pub fn take_landing<T>(gate: &plx_machine::landgate::Gate, id: StoreId,
 /// ends on the first mail `f` RETURNS, and `take_current` returns only the answer to the claimed
 /// generation, so a superseded request's stale answer neither ends the wait nor releases the new
 /// request's claim.
+#[track_caller]
 pub fn take_landing_owed<T>(gate: &plx_machine::landgate::Gate, id: StoreId,
     owed: impl Fn() -> bool, f: impl FnMut() -> Option<T>) -> Option<T> {
     gate.take_owed(id.ord(), id.name(), owed, f)
 }
 
 /// [`take_landings`] for a queue site; see [`take_landing_owed`].
-pub fn take_landings_owed<T>(gate: &plx_machine::landgate::Gate, id: StoreId,
+#[track_caller]
+pub fn take_landings_owed<T: Send + 'static>(gate: &plx_machine::landgate::Gate, id: StoreId,
     owed: impl Fn(&[T]) -> bool, f: impl FnMut() -> Vec<T>) -> Vec<T> {
     gate.take_all_owed(id.ord(), id.name(), owed, f)
 }

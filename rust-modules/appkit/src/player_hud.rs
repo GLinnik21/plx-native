@@ -15,6 +15,7 @@ use plx_media::player::text_style::{
 };
 use crate::knob_spring::KnobSpring;
 use plx_ui::consts::{SCR_H, SCR_W};
+use plx_ui::hstack::{Align, HStack, Item};
 use plx_ui::theme;
 use plx_ui::widgets::{
     ControlGround, Spinner, StatusKind, StatusOverlay, TabPill, TransportButton,
@@ -472,7 +473,6 @@ pub const fn sb_w() -> f32 {
 const SB_Y: f32 = SCR_H - 198.0;
 const SB_H: f32 = 8.0;
 const BTN_S: f32 = 64.0; // right-side control button size (mockup ≈ 68)
-const BTN_GAP: f32 = 22.0;
 const BTN_Y: f32 = HUD_CONTROLS_TOP_Y;
 
 // The control row, exported for `skip_pill` — while a marker is under the playhead the Skip button
@@ -653,7 +653,17 @@ impl TransportRow {
 /// was introduced to stop.
 pub const BTN_MORE: i32 = BTN_N - 1;
 /// width the disc row occupies, the floor for anything replacing it
-pub const CTRL_ROW_W: f32 = 3.0 * BTN_S + 2.0 * BTN_GAP;
+pub fn ctrl_row_w() -> f32 {
+    disc_row().width()
+}
+
+/// **The control row's discs as ONE run**: [`BTN_N`] discs of [`BTN_S`], `CONTROL_GAP` apart (the
+/// shared control-family gap), anchored on [`CTRL_RIGHT`]. [`btn_x`], the row's width
+/// ([`ctrl_row_w`]) and the hit rects all read this one stack.
+fn disc_row() -> HStack<'static> {
+    const DISCS: [Item; BTN_N as usize] = [Item::new(BTN_S); BTN_N as usize];
+    HStack::new(&DISCS, plx_ui::widgets::CONTROL_GAP, Align::Trailing(CTRL_RIGHT))
+}
 
 /// The shared control-row slot for anything that STANDS IN for the disc pair: right-aligned to the
 /// discs' own edge, and never narrower than the pair it replaces so the row does not visibly shrink
@@ -668,7 +678,7 @@ pub fn ctrl_slot(row: &mut TransportRow, label: &str, measure: &dyn plx_machine:
         None => {
             let measured = ctrl_slot_measure(label, measure);
             // `text_width` reads 0 until `init_text` has run — don't cache a pre-init measurement
-            if measured > CTRL_ROW_W {
+            if measured > ctrl_row_w() {
                 memo.push((label.to_string(), measured));
             }
             measured
@@ -685,7 +695,7 @@ pub fn ctrl_slot_w(row: &TransportRow, label: &str, measure: &dyn plx_machine::m
 
 fn ctrl_slot_measure(label: &str, measure: &dyn plx_machine::machine::Measure) -> f32 {
     const PAD_X: f32 = 34.0;
-    (measure.width_str(label, theme::size::BODY, true) + 2.0 * PAD_X).max(CTRL_ROW_W)
+    (measure.width_str(label, theme::size::BODY, true) + 2.0 * PAD_X).max(ctrl_row_w())
 }
 
 /// What currently occupies the transport's right-hand control row.
@@ -1309,7 +1319,7 @@ pub fn disc_hit_rect(idx: i32) -> Rect {
     Rect::new(btn_x(idx), BTN_Y, BTN_S, BTN_S)
 }
 
-/// **The control row's band at its floor width** ([`CTRL_ROW_W`]) — the row GROUP's extent only.
+/// **The control row's band at its floor width** ([`ctrl_row_w`]) — the row GROUP's extent only.
 ///
 /// It is not any item's hit region: every item of whatever occupies the row — a disc, the Skip
 /// pill, either Up Next button — is placed and registered at its own drawn rect by
@@ -1317,25 +1327,48 @@ pub fn disc_hit_rect(idx: i32) -> Rect {
 /// left *Watch Credits* (drawn left of it) unclickable and made a click on *Next Episode* land on
 /// item 0, *Watch Credits* (issue #162's audit).
 pub fn ctrl_row_hit_rect() -> Rect {
-    Rect::new(CTRL_RIGHT - CTRL_ROW_W, CTRL_Y, CTRL_ROW_W, CTRL_H)
+    let w = ctrl_row_w();
+    Rect::new(CTRL_RIGHT - w, CTRL_Y, w, CTRL_H)
 }
 
 /// One bottom tab's rect, matching the left-to-right layout [`draw_hud`] lays the pills out with.
 pub fn tab_hit_rect(idx: i32, has_chapters: bool, measure: &dyn plx_machine::machine::Measure) -> Option<Rect> {
-    let tabs: &[&str] = if has_chapters { &[plx_platform::i18n::msg::widgets_player_info(), plx_platform::i18n::msg::widgets_player_chapters()] } else { &[plx_platform::i18n::msg::widgets_player_info()] };
-    let label = *tabs.get(idx as usize)?;
-    let ph = BTN_S;
-    let py = (SB_Y + SCR_H) * 0.5 - ph * 0.5;
-    let mut px = SB_X;
-    for (i, l) in tabs.iter().enumerate() {
-        let pw = TabPill::width_measured(l, theme::size::BODY, measure);
-        if i as i32 == idx {
-            return Some(Rect::new(px, py, pw, ph));
-        }
-        px += pw + 16.0;
-    }
-    let _ = label;
-    None
+    let tabs = tab_labels(has_chapters);
+    let items = tab_items(tabs, measure);
+    let (px, pw) = tab_row(&items).span(usize::try_from(idx).ok()?)?;
+    Some(Rect::new(px, tab_y(), pw, BTN_S))
+}
+
+/// The bottom tab pills' labels: Info always, Chapters only when the item has any; `None` is a
+/// tab the row does not carry.
+fn tab_labels(has_chapters: bool) -> [Option<&'static str>; HUD_TABS] {
+    [
+        Some(plx_platform::i18n::msg::widgets_player_info()),
+        has_chapters.then(plx_platform::i18n::msg::widgets_player_chapters),
+    ]
+}
+
+/// The tabs' top: BTN_S tall, centred between the play bar (scrubber, at `SB_Y`) and the bottom edge.
+fn tab_y() -> f32 {
+    (SB_Y + SCR_H) * 0.5 - BTN_S * 0.5
+}
+
+/// One item per label, as wide as its pill ([`TabPill::width_measured`]); a tab the row does not
+/// carry is ABSENT. Both the draw and [`tab_hit_rect`] build the row from these, so a pill is drawn
+/// where it is hit.
+fn tab_items(tabs: [Option<&str>; HUD_TABS], measure: &dyn plx_machine::machine::Measure) -> [Item; HUD_TABS] {
+    tabs.map(|l| match l {
+        Some(l) => Item::new(TabPill::width_measured(l, theme::size::BODY, measure)),
+        None => Item::absent(),
+    })
+}
+
+/// How many tabs the bottom row can hold: Info, then Chapters.
+const HUD_TABS: usize = 2;
+
+/// The tab pills as ONE run from the scrubber's left edge, `space::SM` apart.
+fn tab_row(items: &[Item; HUD_TABS]) -> HStack<'_> {
+    HStack::new(items, theme::space::SM, Align::Leading(SB_X))
 }
 
 /// Is the failure read-out's row ON SCREEN — a failure owns the frame. The row always holds at
@@ -1380,7 +1413,7 @@ fn draw_failed_readout(
 /// the existing ones left instead of moving the row's right margin, which is what keeps the discs
 /// and every stand-in (`ctrl_slot`) sharing one edge.
 fn btn_x(idx: i32) -> f32 {
-    CTRL_RIGHT - BTN_S - (BTN_N - 1 - idx) as f32 * (BTN_S + BTN_GAP)
+    disc_row().span(idx as usize).map_or(CTRL_RIGHT, |(x, _)| x)
 }
 
 /// which control button a pointer at (cx,cy) is over: 0 = Subtitles, 1 = Audio, 2 = More, or None.
@@ -1972,29 +2005,38 @@ pub fn draw_hud(
     } // end `if transport`
 
     // bottom tabs as pills — Chapters only appears when the item actually has chapters
-    let tabs: &[&str] = if crate::chapters_panel::has_chapters(meta) {
-        &[plx_platform::i18n::msg::widgets_player_info(), plx_platform::i18n::msg::widgets_player_chapters()]
-    } else {
-        &[plx_platform::i18n::msg::widgets_player_info()]
-    };
+    draw_tabs(&e, pc, crate::chapters_panel::has_chapters(meta), chrome, |i| hud_tab_state(transport, focus, tab, i), measure);
+}
+
+/// The bottom tab pills: ONE run from the scrubber's left edge ([`tab_row`]), the same one
+/// [`tab_hit_rect`] answers from. `state(i)` is tab `i`'s `(focused, selected)`; `chrome` false
+/// draws none (and measures none: a replay answers only the keys it recorded).
+fn draw_tabs(
+    e: &Env,
+    pc: Painter,
+    has_chapters: bool,
+    chrome: bool,
+    state: impl Fn(i32) -> (bool, bool),
+    measure: &dyn plx_machine::machine::Measure,
+) {
+    let tabs = tab_labels(has_chapters);
     // tabs match the transport control buttons' height (BTN_S), centred vertically between the
     // play bar (scrubber, at SB_Y) and the bottom edge of the screen
     let ph = BTN_S; // = 64, same as the Subtitles/Audio buttons
-    let py = (SB_Y + SCR_H) * 0.5 - ph * 0.5;
-    let mut px = SB_X;
-    for (i, label) in tabs.iter().enumerate().filter(|_| chrome) {
-        let (focused, selected) = hud_tab_state(transport, focus, tab, i as i32);
-        let pw = TabPill::width_measured(label, theme::size::BODY, measure);
-        if let Ok(cs) = CString::new(*label) {
+    let py = tab_y();
+    let items = if chrome { tab_items(tabs, measure) } else { [Item::absent(); HUD_TABS] };
+    for placed in tab_row(&items).placed() {
+        let (px, pw, i) = (placed.x, placed.w, placed.i);
+        let (focused, selected) = state(i as i32);
+        if let Some(Ok(cs)) = tabs[i].map(CString::new) {
             TabPill::new(cs.as_ptr(), theme::size::BODY, Rect::new(px, py, pw, ph))
                 .focused(focused)
                 .selected(selected)
                 // Same row band, same ramp, same ground as the transport discs — everything the
                 // HUD draws stands on the video plane (`ControlGround`).
                 .ground(ControlGround::Unkeyed)
-                .draw(&e, pc);
+                .draw(e, pc);
         }
-        px += pw + 16.0;
     }
 }
 
@@ -2062,7 +2104,7 @@ pub fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
     out.push(("player scrubber", Rect::new(SB_X, SB_Y, sb_w(), SB_H)));
     out.push((
         "player control row",
-        Rect::new(CTRL_RIGHT - CTRL_ROW_W, CTRL_Y, CTRL_ROW_W, CTRL_H),
+        ctrl_row_hit_rect(),
     ));
     let py = (SB_Y + SCR_H) * 0.5 - BTN_S * 0.5;
     out.push(("player bottom tab row", Rect::new(SB_X, py, 0.0, BTN_S)));
@@ -2236,9 +2278,62 @@ mod tests {
         }
     }
 
+    /// **Q5: the discs stand `CONTROL_GAP` (20) apart, not the old 22**, and the row's width — the
+    /// floor a stand-in (Skip pill, Up Next) may not shrink below — is the three discs and two of
+    /// those gaps.
+    #[test]
+    fn the_control_row_gap_is_the_shared_control_gap() {
+        assert_eq!(plx_ui::widgets::CONTROL_GAP, 20.0);
+        assert_eq!(btn_x(1) - (btn_x(0) + BTN_S), 20.0);
+        assert_eq!(ctrl_row_w(), 3.0 * BTN_S + 2.0 * 20.0);
+        assert_eq!(ctrl_slot_floor_for_test(), ctrl_row_w());
+    }
+
+    /// The failure-free floor `ctrl_slot` gives a stand-in whose label measures nothing.
+    fn ctrl_slot_floor_for_test() -> f32 {
+        ctrl_slot_measure("", &plx_ui::fixture::FixtureMeasure)
+    }
+
+    /// **The bottom tabs are one run `space::SM` apart**, and the hit rects and the painted pills
+    /// agree. Read off the PAINTED labels (each pill's label is centred on its plate, so the label
+    /// runs' centres stand `half + SM + half` apart), against `tab_hit_rect`.
+    #[test]
+    fn the_bottom_tabs_stand_one_sm_apart_and_are_drawn_where_they_are_hit() {
+        use plx_machine::machine::Measure as _;
+        let m = plx_ui::fixture::FixtureMeasure;
+        let hit: Vec<Rect> = (0..2).map(|i| tab_hit_rect(i, true, &m).unwrap()).collect();
+        assert_eq!(hit[0].x, SB_X);
+        assert_eq!(hit[1].x - (hit[0].x + hit[0].w), theme::space::SM);
+        // the same pills, painted
+        let runs = plx_ui::draw_census::capture_runs(|| {
+            draw_tabs(&hud_env(), Painter::recording(), true, true, |_| (false, false), &m);
+        });
+        let labels: Vec<_> = runs.iter().filter(|r| [plx_platform::i18n::msg::widgets_player_info(), plx_platform::i18n::msg::widgets_player_chapters()].contains(&r.text.as_str())).collect();
+        assert_eq!(labels.len(), 2, "{runs:?}");
+        for (run, rect) in labels.iter().zip(&hit) {
+            let centre = match run.align { 1 => run.at.x, _ => run.at.x + m.width_str(&run.text, run.size, run.bold) * 0.5 };
+            assert!((centre - rect.cx()).abs() < 0.5, "{} is drawn on its hit rect: {run:?} vs {rect:?}", run.text);
+        }
+        assert!(((labels[1].at.x - labels[0].at.x) - (hit[1].cx() - hit[0].cx())).abs() < 0.5);
+        // Hidden case: with no chapters there is one pill, at the same place, and no second hit rect
+        // (no double gap and no stray trailing one).
+        assert_eq!(tab_hit_rect(0, false, &m), Some(hit[0]));
+        assert_eq!(tab_hit_rect(1, false, &m), None);
+        assert_eq!(tab_hit_rect(-1, true, &m), None);
+        let one = plx_ui::draw_census::capture_runs(|| {
+            draw_tabs(&hud_env(), Painter::recording(), false, true, |_| (false, false), &m);
+        });
+        assert_eq!(one.iter().filter(|r| r.text == plx_platform::i18n::msg::widgets_player_chapters()).count(), 0);
+        // chrome off draws (and measures) nothing
+        let none = plx_ui::draw_census::capture_runs(|| {
+            draw_tabs(&hud_env(), Painter::recording(), true, false, |_| (false, false), &m);
+        });
+        assert!(none.is_empty());
+    }
+
     /// The row is right-anchored and does not overlap itself: the LAST disc ends exactly at
-    /// `CTRL_RIGHT`, each disc sits a full `BTN_GAP` clear of its neighbour, and the whole span is
-    /// `CTRL_ROW_W` — which is the floor `ctrl_slot` gives a stand-in, so a drifting span would
+    /// `CTRL_RIGHT`, each disc sits a full `CONTROL_GAP` clear of its neighbour, and the whole span is
+    /// `ctrl_row_w` — which is the floor `ctrl_slot` gives a stand-in, so a drifting span would
     /// silently let the Skip pill shrink the row.
     #[test]
     fn the_disc_row_is_right_anchored_and_spans_ctrl_row_w() {
@@ -2250,13 +2345,13 @@ mod tests {
         for i in 1..BTN_N {
             assert_eq!(
                 btn_x(i) - (btn_x(i - 1) + BTN_S),
-                BTN_GAP,
+                plx_ui::widgets::CONTROL_GAP,
                 "gap before disc {i}"
             );
         }
         assert_eq!(
             CTRL_RIGHT - btn_x(0),
-            CTRL_ROW_W,
+            ctrl_row_w(),
             "drawn span vs the stand-in floor"
         );
     }
@@ -2278,7 +2373,7 @@ mod tests {
             "right of the row"
         );
         for i in 1..BTN_N {
-            let mid = btn_x(i) - BTN_GAP * 0.5;
+            let mid = btn_x(i) - plx_ui::widgets::CONTROL_GAP * 0.5;
             assert_eq!(
                 icon_hit(ControlSlot::Discs, mid, cy),
                 None,

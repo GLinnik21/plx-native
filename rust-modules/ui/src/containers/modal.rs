@@ -12,6 +12,9 @@
 //!   Every dim is painted through the stack's ONE inherited field ([`ModalUnderlay`]), latched
 //!   from the undimmed host page (over the video plane: unlatched, the flat neutral ink) at the head
 //!   of that call, re-latched when the host snapshot is re-taken, reset with the last surface.
+//!   A surface's LIFT (the element it was opened from) is drawn by the dispatcher's one lift pass
+//!   (`Z::OPENER`), after every surface, so a panel never covers the element it grows out of. The
+//!   host page's own opener (`Screen::opener`) is drawn in that same pass, by the dispatcher.
 //! - `prune()` is the ONLY place Closing clears, so Closing surfaces step unconditionally (the
 //!   fade must finish whatever the host is doing) — `the_closing_phase_is_stepped_even_when_the_host_is_frozen`.
 //! - `on_miss(style)` is consulted only while the surface is `Open`: a click beside a Compact,
@@ -797,12 +800,9 @@ impl<H: Host> ModalStack<H> {
     /// The caller owns the freeze: this paints, so it must run inside a
     /// `popover::host::live()` scope or a frozen page will refuse every fill.
     ///
-    /// `chip_read` is the shared top bar's render values this frame
-    /// (`crate::dispatch::Rig::scrim_chip_read`) — every lift called here receives the SAME
-    /// pair, since there is one bar and at most one lift reads it (spec phase 12, PX-WIDGETS): a
-    /// bare `Scrim::lift` fn cannot borrow the rig that owns those values, so they cross as this
-    /// call's own argument instead of through a static.
-    pub fn draw_scrims(&mut self, nav_page_alpha: f32, read: crate::screen::ScrimLiftRead<'_>) {
+    /// The dims only: a surface's LIFT (the element it was opened from) is drawn after every
+    /// surface, by the dispatcher's lift pass, so the panel's glass grows out from under it.
+    pub fn draw_scrims(&mut self, nav_page_alpha: f32) {
         // Nothing is up: no dim to paint, and the field is not this frame's to touch.
         if self.surfaces.is_empty() {
             return;
@@ -810,23 +810,27 @@ impl<H: Host> ModalStack<H> {
         if plx_gfx::gfx::blur_source_pass() {
             // Declaration/source traversals consume the published field. Only the visible
             // traversal may advance its capture/readback lifecycle or the held-ground ledger.
-            for (_, alpha, lift) in self.scrims(nav_page_alpha) {
-                GlDims.dim(self.underlay.field(), alpha);
-                (lift)(crate::screen::ScrimLiftRead { field: Some(self.underlay.field()), ..read });
+            let dims = self.scrims(nav_page_alpha);
+            for (_, alpha) in &dims {
+                GlDims.dim(self.underlay.field(), *alpha);
             }
             return;
         }
-        self.draw_scrims_on(nav_page_alpha, read, &mut GlDims);
+        self.draw_scrims_on(nav_page_alpha, &mut GlDims);
+    }
+
+    /// **The stack's latched underlay field**: the frozen ground a lifted opener's glass stands on
+    /// instead of the live page (the dispatcher's lift pass hands it to `Rig::lift_bar_member`).
+    pub fn lift_field(&self) -> &crate::underlay::UnderlayField {
+        self.underlay.field()
     }
 
     /// [`draw_scrims`](Self::draw_scrims) against any [`DimSink`] — the order is the contract:
     /// the field is brought up to date FIRST, from a framebuffer no dim of this frame has touched,
-    /// and only then is each surface's dim painted through it, bottom to top, each followed by its
-    /// lift.
+    /// and only then is each surface's dim painted through it, bottom to top.
     pub fn draw_scrims_on(
         &mut self,
         nav_page_alpha: f32,
-        read: crate::screen::ScrimLiftRead<'_>,
         sink: &mut dyn DimSink,
     ) {
         if self.surfaces.is_empty() {
@@ -844,12 +848,11 @@ impl<H: Host> ModalStack<H> {
         if !dims.is_empty() || source != Some(UnderlaySource::Page) || sink.captured() {
             plx_base::diag::spans::span("ulatch", || self.underlay.sync(source, sink));
         }
-        for (id, a, lift) in dims {
+        for (id, a) in dims {
             let index = self.surfaces.iter().position(|s| s.entry.id == id).unwrap_or(0);
             plx_base::diag::spans::span("udim", || {
                 crate::popover_glass::dim_owner(index, || sink.dim(self.underlay.field(), a));
             });
-            (lift)(crate::screen::ScrimLiftRead { field: Some(self.underlay.field()), ..read });
         }
     }
 
@@ -868,14 +871,14 @@ impl<H: Host> ModalStack<H> {
     }
 
     /// [`draw_scrims`](Self::draw_scrims)'s decision, without the paint: which surfaces owe their
-    /// host a dim this frame, at what alpha, lifting what. Bottom to top.
+    /// host a dim this frame, at what alpha. Bottom to top.
     ///
     /// Split out so the rule is host-testable. A `cargo test --lib` run has no GL context — the
     /// fixture screens register stops and paint nothing — so the two halves have to be separable
     /// or neither the alpha ladder nor the draw ORDER could be graded at all. Every eligible
     /// surface is ASKED (`Screen::scrim`) whatever its answer, which is what makes "the container
     /// asked me, in the page pass" observable from a fixture that wants no dim.
-    pub fn scrims(&self, nav_page_alpha: f32) -> Vec<(EntryId, f32, crate::screen::ScrimLift)> {
+    pub fn scrims(&self, nav_page_alpha: f32) -> Vec<(EntryId, f32)> {
         let mut out = Vec::new();
         for s in &self.surfaces {
             if s.phase == Phase::Hidden || s.faded() || matches!(s.style, Style::Opaque { .. }) {
@@ -885,7 +888,7 @@ impl<H: Host> ModalStack<H> {
             let scrim = inst.screen.scrim();
             let a = scrim.alpha * s.motion.appear * nav_page_alpha;
             if a > 0.0 {
-                out.push((s.entry.id, a, scrim.lift));
+                out.push((s.entry.id, a));
             }
         }
         out

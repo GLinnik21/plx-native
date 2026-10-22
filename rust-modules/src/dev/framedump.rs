@@ -13,6 +13,7 @@
 //! | `PLXNATIVE_DUMP_PREROLL=<n>` | virtual frames run and NOT written first (default [`DEFAULT_PREROLL`], 60), so the boot settles and a hero's reveal can finish |
 //! | `PLXNATIVE_DUMP_OUT=<path>` | where the RGB24 frames go: a file or a FIFO (unset: hash only, nothing is written) |
 //! | `PLXNATIVE_DUMP_MAX_HOLD_MS=<ms>` | the fail-closed wall-clock bound on a stretch without progress (default 60000) |
+//! | `PLXNATIVE_DUMP_LAND_LAG_MS=<ms>` | how long, in VIRTUAL time, a request is out before its answer lands (default 0: the next execution of its site). A page whose read takes a second to answer is filmed with its loading frames by setting this to about that second; see "Landings" below |
 //! | `PLXNATIVE_DUMP_NO_HOLD=1` | write every frame whatever the debt (a negative-test switch, never a render) |
 //! | `PLXNATIVE_DUMP_ALLOW_ABSENT=1` | do not fail on a settled-absent hero logo, a never-resolving card or a failed art request (a proof switch) |
 //! | `PLXNATIVE_DUMP_KEYS=<v>:<key>,...` | press `up`/`down`/`left`/`right`/`ok`/`back`: the down edge at the first iteration of virtual frame `<v>`, the up edge [`KEY_UP_AFTER`] frames later (the storyboard's compiled key schedule, `tests/video/feel.json`, arrives through this variable). `hold` is OK held for [`HOLD_UP_AFTER`] frames (the long press that opens an item's context menu) |
@@ -25,12 +26,13 @@
 //! `app.t0` and `app.prev` are set to it, so the first iteration's `dt` is 0 like every held one.
 //!
 //! **One iteration**, in the order `landgate` and `plx_gfx::dump` require: the landing takes (the
-//! loop's own, which wait in dump mode), then [`pre_draw`] (the FULL text prewarm drain, then the
-//! debt sample), then the draw, then [`after_draw`], which decides.
+//! loop's own, which never sleep in dump mode: see "Landings"), then [`pre_draw`] (the FULL text
+//! prewarm drain, then the debt sample), then the draw, then [`after_draw`], which decides.
 //!
 //! **The hold rule.** A frame is written only when nothing says the picture is still in flux: no
-//! placeholder was drawn (`placeholder::take`), no upload is queued (`tex::has_pending`), the poster
-//! source is idle (`tex::source_idle`), no landing claim is open (`Bridge::open_claims`) and the
+//! placeholder was drawn (`placeholder::take`; bar a store's loading state while the landing lag holds its answer out, see "Landings"), no upload is queued (`tex::has_pending`), the poster
+//! source is idle (`tex::source_idle`), no landing claim is open (`Bridge::open_claims`), no landing
+//! take is waiting on an answer that is still out (`owed:<store>`, see "Landings") and the
 //! dispatcher carries no work into its next iteration (`Dispatcher::work_carried`: a pressed key's
 //! effect, such as a nav commit, lands one iteration after the press, so without this the frame an
 //! effect shows on depends on how many iterations the frames before it took). Otherwise the
@@ -86,13 +88,50 @@
 //! llvmpipe render (`.github/workflows/site-video.yml`: run twice and hold-gated per dispatch) is the canonical one; a
 //! render from a Mac is a non-canonical preview.
 //!
-//! **Claims.** The `Fetch` stores wait inline (`take_owed`), so the frame they land on is a function
-//! of the frame that requested them and they need no hold. Session-adapter drains and stores outside
-//! `open_claims` cannot change what is drawn without a placeholder or a claim: every request-driven
-//! landing either paints a placeholder until it lands (card art, spinners, logos, the Detail
-//! spinner), or is a `Fetch` store taken inline. Anything that does not is a gap no predicate covers:
-//! the storyboard fixes its rests in frames, and `site_video.py gates` measures whether each beat had
-//! come to rest by the next key (`storyboard/rest`).
+//! **Landings.** The loop's landing takes (`landgate::Gate::take_owed` and `take_all_owed`) never
+//! sleep in a dump: a sleep on the frame thread is what `plx_base::task::assert_may_block` refuses,
+//! and a page whose read took longer than a frame held the loop on one sleeping take, so the
+//! 2 s hang watchdog aborted the dump and the page's loading frames were never drawn. The driver arms
+//! the PACED form (`Gate::arm_dump_paced`) instead. A take whose answer is still out returns nothing
+//! and names its store (`Gate::take_starved`); the iteration then HOLDS on `owed:<store>` like on any
+//! other debt (it repeats at the same `T(v)`, sleeping [`PACE_SLEEP_US`] between repeats so a worker
+//! can run) and the next repeat takes again. The landing frame is therefore still a function of the
+//! request and not of the worker, because the picture is never written while a take is starved.
+//! `Fetch` stores need no `open_claims` entry for this, and Home's hubs and the Browse discovery
+//! (which have one) are held by the claim as before.
+//!
+//! **The landing lag** (`PLXNATIVE_DUMP_LAND_LAG_MS`, off by default) is how a slow page is filmed
+//! with the frames its user would see. Waiting for an answer, however it is done, writes no frame
+//! while it is out, so a page whose read takes a second would show the loading state for one frame
+//! and then the loaded page. With a lag of `L` virtual frames the gate holds an answer back until
+//! `L` frames after the frame its request was first seen open (`Gate::dump_frame` is the driver's
+//! clock for it), whatever the worker did meanwhile, and the stores it is holding back are not debt
+//! (`Gate::take_lagged`), so those `L` frames are drawn, held only by what else they owe, and written:
+//! the loading state, for the time the dump chose and not the network. The landing frame is the
+//! request's frame plus `L`: deterministic, and equal for a fast worker and a slow one (a worker
+//! slower than `L` frames holds the picture on `owed:<store>` at that frame). With no lag a take lands
+//! on the next execution of its site, which is what every storyboard's rests were tuned on.
+//!
+//! **A lagged page's loading placeholders are not debt either** ([`owed_placeholders`]). The page of a
+//! lagged store draws its loading state (the Working read-out, a spinner, the Detail's "Loading"
+//! title: `Reason::is_loading_state`), and virtual time advances only when a frame is written, so
+//! holding on that placeholder would never reach the frame the lag waits for and the run would end
+//! on `PLXNATIVE_DUMP_MAX_HOLD_MS` naming `placeholder`. While a store is lagged this iteration
+//! those placeholders, and only those, are excused (`Entry::is_loading_state`: the loading reasons, and a
+//! card tile whose key is EMPTY, the Collection header's thumb before the collection lands, which no
+//! poster fetch can answer); a card's art with a key, a logo or a backdrop still hold, and so does any
+//! draw past the entry cap. They are still COUNTED where it matters: the written
+//! frame's `debt` column and `frames_with_debt` record the loading frames the film holds, so
+//! `site_video.py gates` rejects a lagged render as a deliverable, which is right: it is a capture
+//! of a loading state, never the demo. With no lag armed nothing is excused and the "no placeholders
+//! in a demo video" rule holds as written.
+//!
+//! **Claims.** Session-adapter drains and stores outside `open_claims` cannot change what is drawn
+//! without a placeholder or a claim: every request-driven landing either paints a placeholder until
+//! it lands (card art, spinners, logos, the Detail spinner), or is a landing take that holds the
+//! picture itself (above). Anything that does not is a gap no predicate covers: the storyboard fixes
+//! its rests in frames, and `site_video.py gates` measures whether each beat had come to rest by the
+//! next key (`storyboard/rest`).
 //!
 //! **Fail closed, never fail soft.** A stretch of `PLXNATIVE_DUMP_MAX_HOLD_MS` without a virtual
 //! frame completing ends the process (exit 3, after writing `dump.json`) naming the debt reasons,
@@ -102,8 +141,8 @@
 //! the card would hold on its placeholder to the timeout; the run ends at once naming the key),
 //! unless `ALLOW_ABSENT` says the proof accepts them. So does a modal or popover opening, unless `ALLOW_OVERLAY` (`site_video.py render --allow-overlay`)
 //! marks a motion review, which is never a deliverable; so does any
-//! PANIC on the loop's thread (a landgate take that never got its answer names the owed mailbox):
-//! a panic hook writes `dump.json` with the message and exits 3, so a failed run always leaves a
+//! PANIC on the loop's thread (a stretch that never gets its answer is the `max_hold` exit above,
+//! and its message names `owed:<store>`): a panic hook writes `dump.json` with the message and exits 3, so a failed run always leaves a
 //! valid summary. The launcher renames a failed run's master to `master.partial.mkv`. At the end the driver
 //! asserts `Gate::unconverted_takes()` is empty. The exit is `_exit`, not `exit`: libc's `atexit`
 //! handlers race the sign-in worker (`shot::maybe_capture`'s account of the same crash).
@@ -119,7 +158,7 @@
 //! slot 0` line plus one `home: hero page slot N rk=R` per page turn, checked by `gates` against the
 //! `demo_library.py hero-report` pass set and `not_in_video`) and `opened_rating_keys` (every title page opened, read from the mock's request log), which `gates`
 //! checks against the catalog's `not_in_video` flag. A storyboard render also writes the
-//! `plxnative-hintoff` trigger (`app::boot` teaches the hold hint on every screen kind, a one-time
+//! `plxnative-hintoff` trigger (`app::boot` teaches the hold hint on every screen, a one-time
 //! teaching overlay a film has no viewer for) and records `hold_hint: suppressed`. Nothing here assumes
 //! the script is "hold".
 //!
@@ -134,7 +173,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use plx_machine::machine::{Key, Tick};
-use plx_ui::placeholder::{self, Entry, Reason};
+use plx_ui::placeholder::{self, Entry, Frame, Reason};
 
 use crate::app::App;
 
@@ -154,6 +193,9 @@ const HOLD_UP_AFTER: u64 = 45;
 pub(crate) const DEFAULT_PREROLL: u32 = 60;
 /// The frame rate every written frame is spaced at.
 pub(crate) const FPS: u32 = 60;
+/// How long a held iteration sleeps when a landing take is still waiting on its worker: long enough
+/// that the wait does not burn a core, far under a frame, and nowhere near the hang watchdog's 2 s.
+const PACE_SLEEP_US: u64 = 500;
 /// The virtual clock's origin. See the module doc.
 pub(crate) const ORIGIN_MS: u32 = 1_000_000;
 /// The frame size `tools/site_video.py` requires.
@@ -166,10 +208,16 @@ pub(crate) fn virtual_ms(v: u64) -> u32 {
     ((v * 1000 + (FPS as u64) / 2) / FPS as u64) as u32
 }
 
+/// `PLXNATIVE_DUMP_LAND_LAG_MS` as virtual frames, rounded UP so a lag never lands before it was asked.
+pub(crate) fn land_lag_frames(ms: u32) -> u64 {
+    (ms as u64 * FPS as u64).div_ceil(1000)
+}
+
 /// What one iteration observed about whether the picture is still in flux.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Sample {
-    /// `placeholder::take().count`: placeholders the draw showed.
+    /// Placeholders the draw showed that are DEBT ([`owed_placeholders`]: `placeholder::take().count`,
+    /// less a loading state the landing lag is deliberately holding out).
     pub placeholders: u32,
     /// `tex::has_pending()`: an upload or an eviction notice is queued.
     pub tex_pending: bool,
@@ -182,6 +230,54 @@ pub(crate) struct Sample {
     pub claims: Vec<&'static str>,
     /// The dispatcher still carries work into its next iteration (`Dispatcher::work_carried`).
     pub carried: bool,
+    /// Landing takes whose answer is still out (`Gate::take_starved`), by store name.
+    pub starved: Vec<String>,
+}
+
+impl Sample {
+    /// The whole iteration's sample: `self` is the pre-draw half (the takes and the text drain have
+    /// run), `after` what was observed once the draw was done (its `placeholders` field is ignored:
+    /// the draw's [`Frame`] is the count, read through [`owed_placeholders`]), and `lagged` the stores
+    /// the landing lag held back this iteration. The one place the driver combines them, so a test
+    /// of the hold rule runs the code the driver runs.
+    pub(crate) fn with_draw(&self, after: Sample, frame: &Frame, lagged: &[String]) -> Sample {
+        let mut claims = self.claims.clone();
+        for c in after.claims {
+            if !claims.contains(&c) {
+                claims.push(c);
+            }
+        }
+        let mut starved = self.starved.clone();
+        for n in after.starved {
+            if !starved.contains(&n) {
+                starved.push(n);
+            }
+        }
+        Sample {
+            placeholders: owed_placeholders(frame, lagged),
+            tex_pending: self.tex_pending || after.tex_pending,
+            source_busy: self.source_busy || after.source_busy,
+            page_image: after.page_image,
+            claims,
+            carried: after.carried,
+            starved,
+        }
+    }
+}
+
+/// The placeholders a draw shows that are DEBT. All of them, unless the landing lag is holding a
+/// store's answer back this iteration (`lagged` non-empty): the page is then deliberately showing
+/// its loading state, so the placeholders that ARE a loading state ([`Frame::loading_state`]) are the
+/// picture the dump was asked to film and not something to wait out. Every other placeholder
+/// (a card's art, a logo, a backdrop) stays debt, and so does a draw past the entry cap, whose
+/// reason is unknown. With no lag armed `lagged` is always empty, so no placeholder is ever excused
+/// and the "no placeholders in a demo video" rule holds as written.
+pub(crate) fn owed_placeholders(frame: &Frame, lagged: &[String]) -> u32 {
+    if lagged.is_empty() {
+        frame.count
+    } else {
+        frame.count - frame.loading_state()
+    }
 }
 
 /// Why this frame must be held, in a fixed order; empty means the frame may be written.
@@ -201,6 +297,9 @@ pub(crate) fn hold_reasons(s: &Sample) -> Vec<String> {
     }
     if s.carried {
         why.push("carried-work".to_string());
+    }
+    for n in &s.starved {
+        why.push(format!("owed:{n}"));
     }
     why
 }
@@ -390,6 +489,8 @@ struct Cfg {
     preroll: u32,
     out: Option<std::path::PathBuf>,
     max_hold: Duration,
+    /// Virtual frames a landing is held back after its request ([`land_lag_frames`]).
+    land_lag: u64,
     no_hold: bool,
     allow_absent: bool,
     keys: Vec<(u64, Key, u64)>,
@@ -410,6 +511,7 @@ impl Cfg {
             preroll: env_u32("PLXNATIVE_DUMP_PREROLL", DEFAULT_PREROLL),
             out: std::env::var_os("PLXNATIVE_DUMP_OUT").map(Into::into),
             max_hold: Duration::from_millis(env_u32("PLXNATIVE_DUMP_MAX_HOLD_MS", 60_000) as u64),
+            land_lag: land_lag_frames(env_u32("PLXNATIVE_DUMP_LAND_LAG_MS", 0)),
             no_hold: std::env::var_os("PLXNATIVE_DUMP_NO_HOLD").is_some(),
             allow_absent: std::env::var_os("PLXNATIVE_DUMP_ALLOW_ABSENT").is_some(),
             allow_overlay: std::env::var_os("PLXNATIVE_DUMP_ALLOW_OVERLAY").is_some(),
@@ -475,6 +577,9 @@ struct Dump {
     tsv: BufWriter<std::fs::File>,
     sum: Summary,
     pre: Sample,
+    /// The stores whose answer this iteration's takes held back for the lag: their claims are not
+    /// debt ([`Gate::take_lagged`](plx_machine::landgate::Gate::take_lagged)).
+    lagged: Vec<String>,
     done: bool,
     /// Index into `cfg.keys` of the next key to press.
     keys_next: usize,
@@ -507,14 +612,15 @@ impl Dump {
         plx_gfx::dump::arm();
         install_panic_hook();
         placeholder::arm();
-        // The takes wait for their answers up to this long; the hold timeout is the real bound.
-        app.bridge.landgate().arm_dump_strict(cfg.max_hold);
+        // The takes never sleep: a take whose answer is out holds the iteration, and the hold
+        // timeout is the bound on how long (the module doc's "Landings").
+        app.bridge.landgate().arm_dump_paced(cfg.land_lag);
         app.t0 = ORIGIN_MS;
         app.prev = ORIGIN_MS;
         ACTIVE.store(true, Ordering::Relaxed);
         plx_base::eventlog::log(&format!(
-            "framedump: armed, {} frames after {} preroll, out={:?}, no_hold={}, allow_absent={}",
-            cfg.frames, cfg.preroll, cfg.out, cfg.no_hold, cfg.allow_absent
+            "framedump: armed, {} frames after {} preroll, out={:?}, no_hold={}, allow_absent={}, land_lag={} frames",
+            cfg.frames, cfg.preroll, cfg.out, cfg.no_hold, cfg.allow_absent, cfg.land_lag
         ));
         let now = Instant::now();
         Dump {
@@ -528,6 +634,7 @@ impl Dump {
             tsv,
             sum: Summary { frames: cfg.frames, preroll: cfg.preroll, width: WIDTH, height: HEIGHT, ..Summary::default() },
             pre: Sample::default(),
+            lagged: Vec::new(),
             done: false,
             keys_next: 0,
             ups: Vec::new(),
@@ -577,6 +684,15 @@ fn install_panic_hook() {
     }));
 }
 
+/// `Bridge::open_claims` without the stores the landing lag is deliberately holding back this
+/// iteration: their request is out on purpose, and holding the picture for it would stop the
+/// virtual frames the lag counts.
+fn open_claims_but(app: &App, lagged: &[String]) -> Vec<&'static str> {
+    let mut claims = app.bridge.open_claims();
+    claims.retain(|c| !lagged.iter().any(|l| l == c));
+    claims
+}
+
 /// Top of every loop iteration, before anything reads the clock. The first call arms the dump.
 pub(crate) fn iteration_begin(app: &mut App) {
     DUMP.with(|cell| {
@@ -597,6 +713,8 @@ pub(crate) fn iteration_begin(app: &mut App) {
         // A repeat of the same virtual frame: the per-iteration steppers stand still (`held_repeat`).
         plx_gfx::dump::set_held_repeat(d.holds_run > 0);
         crate::app::clock::set_replay(ORIGIN_MS + virtual_ms(d.v));
+        // The landing clock: a landing is due on a virtual frame, never on a count of iterations.
+        app.bridge.landgate().dump_frame(d.v);
         // The storyboard's compiled key schedule (`site_video.py compile_storyboard`): a key goes down at the FIRST iteration of its virtual frame, so a
         // repeat never presses it twice, and comes up [`KEY_UP_AFTER`] virtual frames later, as a
         // finger leaves a remote. Both edges at one instant would make the press machine's commit
@@ -635,13 +753,17 @@ pub(crate) fn pre_draw(app: &App) {
         plx_gfx::text::drain_prewarm(u64::MAX, || 0);
         plx_gfx::text::drain_background_prewarm(u64::MAX, || 0);
         plx_ui::panel_motion::PanelMotion::drain_queued_text(|| 0);
+        // The takes ran before this: which of them held an answer back for the lag, and which are
+        // still waiting on a worker.
+        d.lagged = app.bridge.landgate().take_lagged();
         d.pre = Sample {
             placeholders: 0,
             tex_pending: plx_ui::tex::has_pending(),
             source_busy: !plx_ui::tex::source_idle(),
             page_image: false,
-            claims: app.bridge.open_claims(),
+            claims: open_claims_but(app, &d.lagged),
             carried: false,
+            starved: app.bridge.landgate().take_starved(),
         };
     });
 }
@@ -657,22 +779,16 @@ pub(crate) fn after_draw(app: &App, vx: c_int, vy: c_int, vw: c_int, vh: c_int) 
             return true;
         }
         let frame = placeholder::take();
-        let post = Sample {
-            placeholders: frame.count,
-            tex_pending: d.pre.tex_pending || plx_ui::tex::has_pending(),
-            source_busy: d.pre.source_busy || !plx_ui::tex::source_idle(),
+        let after = Sample {
+            placeholders: 0,
+            tex_pending: plx_ui::tex::has_pending(),
+            source_busy: !plx_ui::tex::source_idle(),
             page_image: app.pages.held_page_image().is_some(),
-            claims: {
-                let mut c = d.pre.claims.clone();
-                for n in app.bridge.open_claims() {
-                    if !c.contains(&n) {
-                        c.push(n);
-                    }
-                }
-                c
-            },
+            claims: open_claims_but(app, &d.lagged),
             carried: app.pages.work_carried(),
+            starved: app.bridge.landgate().take_starved(),
         };
+        let post = d.pre.with_draw(after, &frame, &d.lagged);
         if !d.cfg.allow_absent && !frame.absent.is_empty() {
             let why = format!("a settled-absent placeholder is on screen (no clearLogo will arrive): {}", describe(&frame.absent));
             d.fail(why);
@@ -719,6 +835,10 @@ pub(crate) fn after_draw(app: &App, vx: c_int, vy: c_int, vw: c_int, vh: c_int) 
                 *d.sum.hold_reasons.entry(r.clone()).or_default() += 1;
             }
             d.last_why = format!("{}; entries [{}]", why.join(","), describe(&frame.entries));
+            if !post.starved.is_empty() {
+                // A landing take is waiting on a worker: let it run before the next repeat polls.
+                std::thread::sleep(Duration::from_micros(PACE_SLEEP_US));
+            }
             let stuck_on_nothing = !post.tex_pending && !post.source_busy
                 && post.claims.is_empty() && !frame.entries.is_empty() && frame.entries.iter().all(never_resolves);
             if stuck_on_nothing && !d.cfg.allow_absent {
@@ -825,13 +945,15 @@ mod tests {
         assert_eq!(one(Sample { source_busy: true, ..Default::default() }), ["source-busy"]);
         assert_eq!(one(Sample { claims: vec!["hubs"], ..Default::default() }), ["claim:hubs"]);
         assert_eq!(one(Sample { carried: true, ..Default::default() }), ["carried-work"]);
+        assert_eq!(one(Sample { starved: vec!["collection".to_string()], ..Default::default() }), ["owed:collection"]);
     }
 
     #[test]
     fn reasons_come_in_a_fixed_order_and_accumulate() {
         let s = Sample { placeholders: 1, tex_pending: true, source_busy: true, page_image: true,
-            claims: vec!["hubs", "browse"], carried: true };
-        assert_eq!(hold_reasons(&s), ["placeholder", "tex-pending", "source-busy", "claim:hubs", "claim:browse", "carried-work"]);
+            claims: vec!["hubs", "browse"], carried: true, starved: vec!["collection".to_string(), "person".to_string()] };
+        assert_eq!(hold_reasons(&s), ["placeholder", "tex-pending", "source-busy", "claim:hubs", "claim:browse", "carried-work",
+            "owed:collection", "owed:person"]);
     }
 
     #[test]
@@ -843,6 +965,7 @@ mod tests {
             Sample { source_busy: true, ..Default::default() },
             Sample { claims: vec!["hubs"], ..Default::default() },
             Sample { carried: true, ..Default::default() },
+            Sample { starved: vec!["collection".to_string()], ..Default::default() },
         ] {
             assert_eq!(decide(&s), Action::Hold, "{s:?}");
         }
@@ -858,6 +981,18 @@ mod tests {
         assert_eq!(decide(&Sample { tex_pending: true, ..image.clone() }), Action::Hold);
         assert_eq!(decide(&Sample { source_busy: true, ..image.clone() }), Action::Hold);
         assert_eq!(decide(&Sample { claims: vec!["browse"], ..image }), Action::Hold);
+    }
+
+    /// The lag is asked for in milliseconds and runs in virtual frames, rounded up.
+    #[test]
+    fn the_landing_lag_is_whole_virtual_frames_rounded_up() {
+        assert_eq!(land_lag_frames(0), 0, "no lag: the next execution of the site");
+        assert_eq!(land_lag_frames(1), 1);
+        assert_eq!(land_lag_frames(16), 1);
+        assert_eq!(land_lag_frames(17), 2);
+        assert_eq!(land_lag_frames(1000), 60);
+        assert_eq!(land_lag_frames(1555), 94, "a 1.5 s listing is filmed for at least its 1.5 s");
+        assert!(land_lag_frames(1555) as u32 * 1000 >= 1555 * FPS);
     }
 
     #[test]
@@ -949,3 +1084,7 @@ mod tests {
         assert!(ok.contains("\"failed\":null"));
     }
 }
+
+#[cfg(test)]
+#[path = "framedump_lag_tests.rs"]
+mod lag_tests;

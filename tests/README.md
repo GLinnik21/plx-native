@@ -456,6 +456,14 @@ or any other server version, fails the scene before it is graded. Debug flavor o
 `--owner`, `--shared-server`, `--suite` and `--graphics-profile` are refused with it. The panel is
 turned off (`tv-session.sh screen off`, before every scene) and the sound muted (`sound off`) —
 the run stops if either cannot be done — and neither is ever turned back on.
+**A person page on a `--mock` or `--guest` boot has no biography and no filmography credits.** Both
+write `plxnative-token`, and a dev-token boot with no Discover stand-in armed has the app refuse the
+page's two provider reads itself (`discover: GET … refused` in the log, `discover: base=real
+reads=refused` at boot). That is a standing decision (fail closed), and it settles the page as for a
+person the provider has never heard of, once, with nothing retried; `person-page`, `person-bio`,
+`filmography-idle`, `push-100` and `deep-100` are the scenes that open one. Arming the
+stand-in (`plxnative-discover`, or a loopback `plxnative-plextv`) brings the mock's synthetic reads
+back; `plxnative-personbio` and `plxnative-personcredits` seed the content instead.
 
 A scene is runnable under `--mock` only if it carries a `"mock"` block (`{}` for the default
 library); everything else needs real library content and is skipped with that reason. `"only":
@@ -491,22 +499,28 @@ wait included (a harness test holds every `walk` scene to that).
 (`mock.section.<key>.shelf.<i>`, each listing the recent items of its kind; the default 48-movie
 library is unchanged), 40 of them promoted collections (`custom.collection.<section>.<rk>.<n>`
 keyed `/library/collections/<rk>/children`, which the mock resolves) whose headings the app links.
-Without the flags `/hubs/sections/<id>` is byte-for-byte what it was. The scene arms
-`plxnative-library` (the preferred Movies library), `plxnative-framedrop` and `plxnative-focus`,
-and the walk (`"landed": "library"`) is sized from the **seated section's**
+Without the flags `/hubs/sections/<id>` is byte-for-byte what it was. The shelves live on the
+Library's **Recommended page** (the Library page itself mounts none), so the scene arms
+`plxnative-library` (the preferred Movies library), `plxnative-libtype` = `recommended` (presses
+the header's Recommended control), `plxnative-framedrop` and `plxnative-focus`, and the walk
+(`"landed": "library"`) is sized from the **seated section's**
 `libhubs: section N landed S shelves` line (index 0 for Movies; `plxnative-library` content `1`
 seats Shows, index 1 — the last landing of that section, not the last such line in the log):
 **Down once per shelf, a second time for each linked shelf** (its heading is a stop of its own,
-then its row), and `extra_rows` more (6) to cross the toolbar into the grid, then **Up** back. It
-grades keys sent against that count, a `focus route=library … region=grid` fingerprint inside the
-walk window (the turn-around), `loop_floor` 50 and `fps_floor` 30; frame drops are reported, not
-graded. This is the instrument for #412: the section has no shelf cap, so all 170 land, and
-`walk.min_landed` (150) fails the scene when fewer do (a build that bounds each section at twelve
-shelves would land 12 and the walk, which follows what landed, would otherwise pass on those 12).
+then its row), and `extra_rows` more (0: the Recommended page seats its first shelf on arrival and
+has no toolbar to cross), then **Up** back. It
+grades keys sent against that count, a `focus route=library … region=shelf` fingerprint inside the
+walk window (`fingerprint_region` `shelf`; the Recommended page prints the Library's fingerprint
+grammar, `region=shelf row=R col=C` on a card and `heading`/`crumb`/`strip` elsewhere, and a harness
+test holds every scene's `fingerprint_region` / `reach.region` to a word its page prints),
+`loop_floor` 50 and `fps_floor` 30; frame drops are
+reported, not graded. This is the instrument for #412: the section has no shelf cap, so all 170
+land, and `walk.min_landed` (150) fails the scene when fewer do (a build that bounds each section at
+twelve shelves would land 12 and the walk, which follows what landed, would otherwise pass on those 12).
 The landed count is the data layer's, so a library walk with `min_landed` also requires a
 `focus route=library … region=shelf row=R` fingerprint in the walk window with `R >= min_landed - 1`
 (row 169 on a passing run): the screen must show the deep shelves the store published, or a screen
-that capped its rows again (store 170, page 12) would still walk into the grid and pass.
+that capped its rows again (store 170, page 12) would still pass.
 The linked-shelf count is derived from the mock's own arguments, not read from the app.
 
 `library-burst` is an **instrument, not a gate**: how many loading (placeholder) poster tiles a
@@ -555,8 +569,9 @@ window must request and upload missing art and then draw every artwork-bearing c
 A high FPS with no poster work cannot pass. The reversal also requires real texture losses,
 refusals of evicted slots during reversal, and rearming afterward. The dive records
 actual snap plus shelf offset/velocity throughout Hero, dive and settle, requiring
-its horizontal spring to stay stationary while the retained offset is transformed.
-The dive hands over at snap 0.9, while that horizontal product is still moving fast;
+its horizontal spring to stay stationary (a Home shelf draws at the offset it holds and the
+dive does not scale it), so the motion it grades is the page's vertical travel (snap 0 to 1 is
+617 px for every shelf). The dive hands over at snap 0.9, while the dive is still moving;
 the settle phase captures its natural deceleration and resulting art arrivals.
 
 These scenes send focus commands only, and size their targets to the catalog they boot into
@@ -605,6 +620,16 @@ marks pacing invalid if a render-profiler trigger is armed.
     scene that bounces rather than animates continuously, a 1 s window can land wholly inside the
     settled gap and read 0 with a perfectly healthy animation (measured: `home-detail-nav` min=0,
     median=15). A frozen animator reads ~1/s — the keepalive alone — so the two are far apart.
+    A scene whose graded windows are a live stretch plus a long idle tail (`library-switch`: the
+    back of a 14-step cycle with idle steps, then the spent-cycle keepalive `0 1 0 1 0 1`, so the
+    median flips with the boot's timing, 7-11 for one animation) opts into a **count of live
+    windows** with `"fps_floor_stat": "live"` and `"fps_floor_windows": N`: at least N of the graded
+    windows must each draw at least `fps_floor` frames. A frozen animator has none, a freeze after
+    two graded seconds has two, a frozen run with one burst has one, and the healthy runs have 8 or
+    9, against N = 6. The mean was tried and rejected (a freeze after two seconds still averages
+    3.8-4.7, above any floor the healthy runs also clear). A freeze after the first N live seconds
+    reads as a cycle that ended early and is not caught. `fps_floor_verdict` in `run.py` is the
+    grader; the scene's `_fps_floor_note` carries the measurements.
   - `fps_ceiling` grades `fps=` on the **2nd-highest** — "does this screen actually STOP".
     This is the only guard on over-reporting, which silently gives back the whole ~38-points-of-a-
     core saving while every floor in the suite still passes.

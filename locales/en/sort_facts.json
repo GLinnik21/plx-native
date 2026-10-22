@@ -1,0 +1,54 @@
+{
+  "sort_facts.title": {
+    "value": "Title",
+    "description": "Sort fact: alphabetical order of the title, ignoring accents and case. One name on the Library and the Watchlist Sort & Filter panels."
+  },
+  "sort_facts.date_added": {
+    "value": "Date added",
+    "description": "Sort fact: the date the title was added (to the library, or to the Watchlist on the account)."
+  },
+  "sort_facts.release_date": {
+    "value": "Release date",
+    "description": "Sort fact: the title's release date. Titles without one sort last in either direction."
+  },
+  "sort_facts.rating": {
+    "value": "Score",
+    "description": "Sort fact: the title's score (the critics' number). The one word for it on every page, the same as the Under posters picker's Score."
+  },
+  "sort_facts.audience_rating": {
+    "value": "Audience score",
+    "description": "Sort fact: the audience's score for the title, as the Library offers it beside the critics' score."
+  },
+  "sort_facts.last_viewed": {
+    "value": "Date viewed",
+    "description": "Sort fact: the date the viewer last played the title (the server's lastViewedAt). One name on every Sort & Filter panel; sentence case."
+  },
+  "sort_facts.random": {
+    "value": "Random",
+    "description": "Sort fact: a shuffled order with no ends (the server's random key). One short word; sentence case."
+  },
+  "sort_facts.a_to_z": {
+    "value": "A–Z",
+    "description": "Direction word on the checked sort row when the order is alphabetical, first letter first. Shown in place of a chevron."
+  },
+  "sort_facts.z_to_a": {
+    "value": "Z–A",
+    "description": "Direction word on the checked sort row when the order is alphabetical, last letter first."
+  },
+  "sort_facts.oldest_first": {
+    "value": "Oldest first",
+    "description": "Direction word on the checked sort row when a date order runs from the oldest date."
+  },
+  "sort_facts.newest_first": {
+    "value": "Newest first",
+    "description": "Direction word on the checked sort row when a date order runs from the newest date."
+  },
+  "sort_facts.lowest_first": {
+    "value": "Lowest first",
+    "description": "Direction word on the checked sort row when a rating or count order runs from the lowest."
+  },
+  "sort_facts.highest_first": {
+    "value": "Highest first",
+    "description": "Direction word on the checked sort row when a rating or count order runs from the highest."
+  }
+}

@@ -55,6 +55,18 @@ pub trait Host: 'static {
     /// focused identity, `focus` being the entry's saved focus key. The default keeps everything,
     /// which is right for a host whose memory is already small.
     fn shed_memory(_memory: &mut Self::Memory, _focus: Option<Self::Elem>) {}
+
+    /// **The views a page reads once the container has told them which page sits beneath it.**
+    /// The dispatcher owns the page stack and no screen may see it, yet a page that BACK returns
+    /// to a different place depending on its opener (the Collection screen, pushed from Home, a
+    /// library page, Search or an item's Detail) must name where BACK goes. It is the container's
+    /// one answer: for the page it is building a context for, the dispatcher passes the
+    /// [`ScreenId`] of the entry beneath it (`None` when it is the root, i.e. BACK leaves the
+    /// app's page stack) and the host folds that into its `Views`, which every screen already
+    /// reads. A `Copy` id rather than a reference, because the entry beneath lives in the same
+    /// `Vec` as the one being stepped. The default drops it: a host with no page that names its
+    /// parent pays nothing.
+    fn views_over<'a>(views: Self::Views<'a>, _beneath: Option<ScreenId>) -> Self::Views<'a> { views }
 }
 
 macro_rules! newtype {
@@ -591,7 +603,11 @@ pub enum FocusTarget<K> {
     /// fresh Home/Search → TV Shows mint SNAPPED to the first tile while a Movies → TV Shows
     /// peer switch (which never leaves the strip's already-focused pill, and never re-enters
     /// through here at all) animated normally. `stack.rs`'s `SelectTab` "cover-and-mint" arm is
-    /// the one constructor; nothing else may produce this variant.
+    /// the one constructor of a MINT. The second sanctioned producer is a page seating its OWN
+    /// arrival through a self-delivered `Enter::Fresh`: the Watchlist's `follow_seat` moves its
+    /// first seat from the Sort & Filter pill to the first tile as the grid lands, and that seat
+    /// must read as a deliberate move for the opening animation to play
+    /// (`watchlist/opening_tests.rs`). Nothing else may produce this variant.
     FirstInGroupAnimated(GroupId),
 }
 

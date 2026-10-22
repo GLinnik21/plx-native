@@ -1514,12 +1514,23 @@ pub(crate) unsafe fn construct(
     // television. Armed after the projection above, whose sign-out arm only clears bound hosts.
     #[cfg(feature = "devtriggers")]
     crate::dev::scenarios::clock_fact::arm_at_boot();
-    // dev: /tmp/plxnative-hintoff — the hold hint taught for this run, on every screen kind, read
+    // dev: /tmp/plxnative-hintoff — the hold hint taught for this run, on every screen, read
     // once here on the frame thread (the hint's latches are thread-local). The site demo film is
     // shot with it: the capsule is a one-time teaching overlay, and a film has no viewer to teach.
     #[cfg(feature = "devtriggers")]
     if plx_base::devtrig::flag("hintoff") {
         plx_ui::hold_hint::teach_all_for_dev();
+    }
+    // dev: /tmp/plxnative-hintfresh — this run starts with the hold hint untaught, though the install
+    // was taught: the seed below is skipped, so the hint can be looked at again. Nothing on disk is
+    // un-written; a read showing then writes taught again (an idempotent write).
+    // The hold hint offers itself once per INSTALL: seed what an earlier run taught, before frame one.
+    #[cfg(feature = "devtriggers")]
+    let hint_fresh = plx_base::devtrig::flag("hintfresh");
+    #[cfg(not(feature = "devtriggers"))]
+    let hint_fresh = false;
+    if !hint_fresh {
+        super::hint_taught::seed(session.hold_hint_taught());
     }
     #[cfg(not(test))]
     plx_platform::i18n::initialize(session.language, controlled);
@@ -1701,6 +1712,7 @@ pub(crate) unsafe fn construct(
     if !controlled {
         crate::dev::scenarios::arm_overdraw();
         crate::dev::scenarios::arm_drawmask();
+        crate::dev::scenarios::arm_cardsplit();
     }
     // dev: /tmp/plxnative-heroground — draw the hero's photograph and BOTH of its scrim fields
     // in one pass instead of the art plus four blended gradient quads over it. Absent, the
@@ -2234,6 +2246,10 @@ pub(crate) unsafe fn construct(
     // dev: /tmp/plxnative-watchlist-live — the owner's switch that lets a debug build write to the
     // real plex.tv Watchlist; latched here, and logged once when it is on.
     plx_plex::plex::watchlist::announce_live_writes();
+    // dev: /tmp/plxnative-discover (or the plextv redirect) — resolve where Discover lives NOW, so
+    // the event log says whether this boot's person and Watchlist reads reach a stand-in, the real
+    // provider, or nothing, before any request is made.
+    plx_plex::plex::account::announce_discover();
     if controlled {
         let initial = app.snapshot_init().expect("controlled constructor retains initial inputs");
         initial.validate().map_err(|reason| { log(&format!("rec: REFUSED — {reason}")); 1 })?;

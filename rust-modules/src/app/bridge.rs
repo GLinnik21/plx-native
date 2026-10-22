@@ -56,7 +56,7 @@ use plx_machine::machine::{
 };
 use plx_machine::present::Present;
 use plx_ui::screen::{
-    At, DrawFrame, FocusSource, ReturnState, Screen, ScreenEvent,
+    At, FocusSource, ReturnState, Screen, ScreenEvent,
 };
 
 
@@ -117,6 +117,11 @@ pub(crate) struct AppViews<'a> {
     /// a screen reads them here. A screen that wants to CHANGE the playback emits an effect
     /// (`AppFx::Player`, `ContentReq::Play`) — there is no `&mut` on this path by construction.
     pub(crate) session: &'a plx_media::route::PlaybackSession,
+    /// **The kind of page beneath the page these views are read for** on the navigation stack,
+    /// folded in by the dispatcher per page ([`Host::views_over`]); `None` for a root, and for
+    /// every context that is not a page's own. What a page that names where BACK goes reads
+    /// ([`super::page_title`]).
+    pub(crate) beneath: Option<plx_machine::machine::ScreenId>,
 }
 
 impl Bridge {
@@ -132,7 +137,7 @@ impl Bridge {
         AppViews { auth: self.session.read(), hubs: self.hubs.view(), listing: self.listing.view(),
             directory: self.directory.view(), section_hubs: self.section_hubs.view(),
             search: self.search.view(), metadata: self.stores.metadata_view(),
-            person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session }
+            person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session, beneath: None }
     }
 }
 
@@ -175,6 +180,10 @@ impl Host for AppHost {
         !matches!(fx, AppFx::Store(..) | AppFx::StoreWork(_)
             | AppFx::Library(LibraryReq::PublishShelves { .. }))
     }
+
+    fn views_over<'a>(views: Self::Views<'a>, beneath: Option<plx_machine::machine::ScreenId>) -> Self::Views<'a> {
+        AppViews { beneath, ..views }
+    }
 }
 
 impl HomeLike for AppHost {
@@ -184,6 +193,10 @@ impl HomeLike for AppHost {
 impl plx_screens::registry::CollectionLike for AppHost {
     fn collection<'a>(cx: &Cx<'a, Self>) -> plx_data::collection::CollectionView<'a> {
         cx.views.collection
+    }
+
+    fn back_to<'a>(cx: &Cx<'a, Self>) -> Option<std::borrow::Cow<'a, str>> {
+        super::page_title::of(cx.views.beneath?, &cx.views)
     }
 }
 
@@ -234,6 +247,9 @@ impl plx_screens::registry::LibraryLike for AppHost {
     fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> { cx.views.listing }
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> { cx.views.directory }
     fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a> { cx.views.section_hubs }
+    fn collections_count(cx: &Cx<'_, Self>, section: usize) -> Option<Result<u32, plx_screens::registry::Forbidden>> {
+        super::collections_probe::count(cx.views.directory, section, cx.tick.ms)
+    }
 }
 
 impl plx_screens::registry::PersonLike for AppHost {
@@ -720,7 +736,9 @@ impl Bridge {
 
     pub(crate) fn library_selection(&self, d: &Dispatcher<AppHost>, entry: EntryId, focus: Option<FocusKey<u32>>)
         -> Option<(plx_data::pms::PmsMovie, plx_ui::popover::Opener)> {
-        let e = d.nav.entry(entry).filter(|e| e.arg == AppArg::Library)?;
+        // The grid and the two pages its header pushes (Collections, Recommended) are all the
+        // library screen: a card pressed on any of them is read from the same place.
+        let e = d.nav.entry(entry).filter(|e| e.arg.is_library_family())?;
         let screen = &e.inst.as_ref()?.screen;
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: plx_machine::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(entry) };
@@ -743,7 +761,7 @@ impl Bridge {
             }
         }
         let Some(entry) = d.nav.top_page() else { return };
-        if entry.arg != AppArg::Library { return; }
+        if !entry.arg.is_library_family() { return; }
         let Some(instance) = entry.inst.as_ref().map(|instance| instance.id) else { return };
         d.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
             Delivery::Screen(ScreenEvent::App(AppMsg::Library(command)))));
@@ -774,11 +792,11 @@ impl Bridge {
         Some(page.listed())
     }
 
-    /// The Library page's focused hub-shelf card, `(shelf, col)`, if focus is on a shelf.
+    /// The Recommended page's focused hub-shelf card, `(shelf, col)`, if focus is on a shelf.
     pub(crate) fn library_shelf_position(d: &Dispatcher<AppHost>) -> Option<(usize, usize)> {
         let entry = d.nav.top_page()?;
         let page = entry.inst.as_ref().and_then(|instance| instance.screen.as_any())
-            .and_then(|page| page.downcast_ref::<plx_screens::library::LibraryScreen>())?;
+            .and_then(|page| page.downcast_ref::<plx_screens::library::RecommendedScreen>())?;
         page.shelf_position(d.input.engine.current(InputOwner::Entry(entry.id)))
     }
 
@@ -921,28 +939,35 @@ impl Bridge {
         // the next frame's reconcile clamped that foreign key to the picker's LAST avatar.
         let route = d.top_or_mounting_arg().cloned().unwrap_or(AppArg::Home);
         let route = &route;
-        let search = *route == AppArg::Search;
-        let watchlist = *route == AppArg::Watchlist;
-        if matches!(route, AppArg::Home | AppArg::Library) || search || watchlist {
-            d.nav.tabs.strip_fallback = Some(if search { plx_ui::widgets::TAB_KEY_SEARCH }
-                else if watchlist { plx_ui::widgets::TAB_KEY_WATCHLIST } else { plx_screens::home::STRIP_HOME_ELEM });
+        if wears_tab_bar(route) {
+            d.nav.tabs.strip_fallback = Some(match route {
+                AppArg::Search => plx_ui::widgets::TAB_KEY_SEARCH,
+                AppArg::Watchlist => plx_ui::widgets::TAB_KEY_WATCHLIST,
+                _ => plx_screens::home::STRIP_HOME_ELEM,
+            });
             if let Some(io) = &self.home_io {
                 refresh_chrome(&mut self.chrome, &self.measure, self.directory.view(),
                     Some((&io.profile, &io.preferences)));
             } else {
                 refresh_chrome(&mut self.chrome, &self.measure, self.directory.view(), None);
             }
-            self.chrome_selection = if *route == AppArg::Library {
-                self.directory.view().current().map(|i| self.chrome.library_selection(self.directory.view().sections()[i].kind)).unwrap_or(0)
-            } else if search { self.chrome.search_selection()
-            } else if watchlist { self.chrome.watchlist_selection() } else { 0 };
+            // The page's own pill: Home's is the first, and a library page's is its library's type.
+            self.chrome_selection = pill_of_arg(route, self.directory.view()).unwrap_or(0) as u32;
             let selected = self.navigation_presentation().view_tab.unwrap_or(self.chrome_selection) as i32;
-            self.chrome.members(selected, Self::home_focus(d), self.strip.scroll_pos(), &mut d.nav.tabs.strip);
+            self.publish_strip(d, selected);
         } else {
             d.nav.tabs.strip.clear();
             d.nav.tabs.strip_fallback = None;
+            d.nav.tabs.strip_selected = None;
             self.chrome.drop_pulse();
         }
+    }
+
+    /// **Publish the strip's members and the pill that is the page's own** — one write, so the
+    /// landing rule (`TabContainer::strip_selected`) cannot name a pill the members do not hold.
+    fn publish_strip(&mut self, d: &mut Dispatcher<AppHost>, selected: i32) {
+        self.chrome.members(selected, Self::home_focus(d), self.strip.scroll_pos(), &mut d.nav.tabs.strip);
+        d.nav.tabs.strip_selected = self.chrome.key_at(selected);
     }
 
     /// Return publication changes so the frame can coalesce them with store notices.
@@ -984,7 +1009,7 @@ impl Bridge {
         let chrome_focus = self.chrome.focus(focus);
         self.strip.update(labels, selected, chrome_focus, dt);
         glass.step_tab_band(dt);
-        self.chrome.members(selected, focus, self.strip.scroll_pos(), &mut d.nav.tabs.strip);
+        self.publish_strip(d, selected);
     }
 
     #[cfg(test)]
@@ -1078,31 +1103,6 @@ impl Bridge {
         Some(arg)
     }
 
-    /// **The opener LIFT: the focused tile repainted above the modal dim.** Render-only, and the
-    /// pair it works from is the SURFACE's own argument (`ItemMenuScreen::opener`) — it was
-    /// `Bridge::menu_opener`, a second copy of the same `(entry, focus)` kept on the side and
-    /// written by four separate arms.
-    ///
-    /// It runs immediately after the container's page pass, which is where `ModalStack::draw_scrims`
-    /// laid the dim down: the tile is the panel's whole subject, and the design's stated point is
-    /// that the card stays visible behind it. The dim is the CONTAINER's now (`Screen::scrim`), so
-    /// what is left here is the half only the page that drew the element can answer — a `fn()` lift
-    /// has nothing to borrow a `&Dispatcher` through.
-    ///
-    /// Whether it runs at all is [`opener_lift`]'s answer, made once for every page: it stands down
-    /// once the menu is dismissed and focus has moved off the opener element.
-    pub(crate) fn redraw_opener(&self, d: &Dispatcher<AppHost>) {
-        let Some((entry, focus)) = opener_lift(d) else { return };
-        let Some(screen) = d.nav.entry(entry).and_then(|e| e.inst.as_ref()).map(|i| &i.screen) else { return };
-        // The page pass may be submitting a cached host quad. Opener lifts are live paint
-        // above that quad, like Popover::scrim_lifting's legacy callback scope.
-        let _live = plx_ui::popover::host::live();
-        let parts = opener_parts(d, entry, focus);
-        let cx = parts.cx::<AppHost>(self.views(), &self.measure);
-        let mut frame = DrawFrame::with_navigation(&cx, plx_ui::Painter::root(), self.navigation_presentation());
-        screen.redraw_focused(&mut frame, focus);
-    }
-
     /// Drive `popover`'s host-user counters from the surface phases (module doc).
     fn sync_host(&mut self, d: &Dispatcher<AppHost>, dt: f32) {
         plx_ui::popover::host::set_reflow(d.host_reflow(), dt);
@@ -1181,6 +1181,12 @@ impl Bridge {
     /// This borrows the one store owned by this Bridge.
     pub(crate) fn browse_run(&mut self, cmd: plx_data::stores::browse::BrowseCmd) -> bool {
         self.stores.browse_run(cmd)
+    }
+
+    /// Is any shelf of the addressed section committed? The Library pages' publication gate reads it
+    /// (`content::library_publication_command`).
+    pub(crate) fn hubs_committed(&self, target: plx_data::stores::browse::SectionAddress) -> bool {
+        self.stores.browse_hubs_committed(target)
     }
 
     pub(crate) fn browse_discover_pump(&mut self) -> plx_data::stores::StoreOutcome {
@@ -1338,12 +1344,14 @@ impl Bridge {
         self.stores.owe_page_read(keys);
     }
 
-    /// The items the page for `arg` holds cards for, from the store that feeds it: Library's
-    /// current section, Search's results, and the Person / Filmography / Collection store when it
-    /// is showing that very page. Nothing for any other page.
+    /// The items the page for `arg` holds cards for, from the store that feeds it: the current
+    /// section of the Library family (the grid, its Collections page, which borrows the section's
+    /// listing, and its Recommended page, which shows the section's shelves), Search's results, and
+    /// the Person / Filmography / Collection store when it is showing that very page. Nothing for
+    /// any other page.
     pub(crate) fn held_keys(&self, arg: &AppArg) -> plx_data::stores::HeldKeys {
         match arg {
-            AppArg::Library => self.stores.library_held_keys(),
+            arg if arg.is_library_family() => self.stores.library_held_keys(),
             AppArg::Search => self.stores.search.held_keys(),
             AppArg::Watchlist => self.stores.watchlist.held_keys(),
             AppArg::Content(content @ (ContentArg::Person { .. } | ContentArg::Filmography { .. })) =>
@@ -1417,7 +1425,8 @@ impl Bridge {
     /// (`HubsStore::owed`) and the controlled-Home Browse discovery. The `Fetch`-based stores
     /// (metadata, person, collection, search, view state) keep their claim inside the store and
     /// answer through `take_owed` alone, so a request spawned this iteration is seen by NEXT
-    /// iteration's take, which waits for it (`plx_machine::landgate`'s module doc).
+    /// iteration's take, which holds the picture until the answer is in (`Gate::take_starved`,
+    /// `plx_machine::landgate`'s module doc).
     #[cfg(all(feature = "hostsim", feature = "devtriggers"))]
     pub(crate) fn open_claims(&self) -> Vec<&'static str> {
         let mut open = Vec::new();
@@ -1586,8 +1595,7 @@ impl Bridge {
     /// itself. `route_wears_tab_bar`'s old `page_of` resolution — "which page is this popover
     /// route over" — has nothing left to resolve and went with the routes in D1.
     fn draws_chrome_for(arg: &AppArg) -> bool {
-        use plx_ui::screen::ScreenArg;
-        arg.chrome() == plx_machine::machine::Chrome::TabBar
+        wears_tab_bar(arg)
     }
 }
 
@@ -1652,7 +1660,7 @@ impl Bridge {
             let publication = self.session.publication();
             let cx = parts.cx::<AppHost>(AppViews { auth: publication.read(),
                 hubs: self.hubs.view(), listing: self.listing.view(), directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback,
+                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback, beneath: None,
             }, &self.measure);
             let handled = self.session.step(event, &cx, fx);
             // #132: the owner logs nothing, and the Profiles screen cannot see a read-out that
@@ -1786,7 +1794,7 @@ impl Rig<AppHost> for Bridge {
         glass: Option<&mut plx_ui::frame::glass::GlassPlan>) {
         if !Self::draws_chrome_for(arg) { return; }
         let Some(glass) = glass else { return };
-        let p = plx_ui::Painter::root().alpha(nav.chrome_alpha);
+        let p = plx_ui::Painter::root().alpha(nav.chrome_alpha).translate(0.0, -nav.chrome_lift);
         let chrome = self.chrome.read(self.strip.chip_expand_pos());
         self.strip.draw(chrome.labels, p, glass.tab_band_mut());
         plx_ui::widgets::profile_chip_with(
@@ -1796,11 +1804,23 @@ impl Rig<AppHost> for Bridge {
             glass.tab_face(),
         );
     }
-    /// See [`plx_ui::dispatch::Rig::scrim_chrome_read`] — the account menu's chip lift borrows
-    /// the SAME captured profile, labels and unfurl [`Bridge::draw_chrome`] used. The dispatcher
-    /// adds this frame's material from `GlassPlan`; neither value crosses through a static.
-    fn scrim_chrome_read(&self) -> Option<plx_ui::widgets::ChromeRead<'_>> {
-        Some(self.chrome.read(self.strip.chip_expand_pos()))
+    /// The chip's DRAWN rect: `chip_cap` at the strip's live unfurl and the captured name's width,
+    /// through the host page's tuck (`presented`), exactly what [`Bridge::draw_chrome`] draws.
+    fn bar_member_rect(&self, elem: u32, presented: plx_ui::screen::NavPresentation) -> Option<plx_ui::Rect> {
+        (elem == plx_ui::widgets::TAB_KEY_CHIP).then(|| {
+            let chrome = self.chrome.read(self.strip.chip_expand_pos());
+            presented.chrome_rect(plx_ui::widgets::chip_cap(chrome.chip_expand.clamp(0.0, 1.0), chrome.profile.name_w))
+        })
+    }
+    /// The account menu's chip lift (the dispatcher's `Z::OPENER` pass): the SAME captured profile and
+    /// unfurl [`Bridge::draw_chrome`] used, on the same painter (the host page's tuck, alpha and
+    /// lift), over the stack's frozen ground. The material is this frame's tab face from `GlassPlan`.
+    fn lift_bar_member(&mut self, elem: u32, presented: plx_ui::screen::NavPresentation,
+        material: Option<plx_gfx::gfx::GlassFace>, ground: &plx_ui::underlay::UnderlayField) {
+        if elem != plx_ui::widgets::TAB_KEY_CHIP { return; }
+        let chrome = self.chrome.read(self.strip.chip_expand_pos());
+        let p = plx_ui::Painter::root().alpha(presented.chrome_alpha).translate(0.0, -presented.chrome_lift);
+        plx_ui::widgets::lift_profile_chip(p, chrome.profile, chrome.chip_expand, material, ground);
     }
     fn page_alpha(&self) -> f32 { plx_ui::nav::page_alpha() }
     fn navigation_presentation(&self) -> plx_ui::screen::NavPresentation {
@@ -1809,6 +1829,7 @@ impl Rig<AppHost> for Bridge {
             chrome_alpha: plx_ui::nav::chrome_alpha(),
             view_tab: u32::try_from(plx_ui::nav::view_tab(-1)).ok(),
             blur_amount: plx_ui::nav::blur_amount(),
+            chrome_lift: 0.0,
         }
     }
     fn surface_scope(&mut self) -> Option<plx_ui::popover::host::Live> {
@@ -1821,7 +1842,7 @@ impl Rig<AppHost> for Bridge {
                 hubs: self.hubs.view(),
                 listing: self.listing.view(),
                 directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback,
+                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), subtitle_search: self.stores.subtitle_search_view(), session: &self.playback, beneath: None,
             },
             measure: &self.measure,
         }
@@ -2094,9 +2115,10 @@ impl Bridge {
     /// arrival waits for the frame the recording delivered it on (§3.3 step 3). Off a replay, one
     /// relaxed atomic load and the same call.
     fn take_hubs_results(&self) -> AppResults {
-        // Dump mode waits here for every hub request the previous execution of this site (or the
+        // Dump mode gives this site every hub request the previous execution of this site (or the
         // frame's own work) spawned, so a request issued in iteration k lands in k+1 whatever the
-        // worker's timing. The claim is the adapter's own count (`HubsStore::owed`).
+        // worker's timing: the blocking dump waits for them, the frame dump's paced one holds the
+        // frame until they are in. The claim is the adapter's own count (`HubsStore::owed`).
         let mut results = self.stores.landgate.take_all_owed(StoreId::Hubs.ord(), StoreId::Hubs.name(),
             |_| self.stores.hubs.owed(), || self.stores.hubs.take_results());
         results.sort_by_key(|result| result.request_id());
@@ -2227,6 +2249,12 @@ fn frame_ingest(
     // page is told of it in the frame that first draws it (`MetadataStore::pump_related`).
     rig.stores.metadata.pump_related();
     let (browse_changed, hubs_changed, search_changed) = rig.capture_views(d);
+    // A directory that just landed (or a server re-pointed at a new client) has every section's
+    // Collections count asked for now, so a library switch finds its answer already there
+    // (`collections_probe::warm`, one request at a time on one worker).
+    if super::collections_probe::warm_due(browse_changed) {
+        super::collections_probe::warm(rig.directory.view(), tick.ms);
+    }
     rig.capture_chrome(d);
     rig.deliver_home_commands(d);
     rig.deliver_library_commands(d);
@@ -2450,9 +2478,14 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         }
         return out;
     }
-    if matches!(page.arg, AppArg::Library) {
-        let Some(library) = page.inst.as_ref().and_then(|i| i.screen.as_any())
-            .and_then(|s| s.downcast_ref::<plx_screens::library::LibraryScreen>()) else { return String::new() };
+    if page.arg.is_library_family() {
+        // The Library page and the Collections page are `LibraryScreen`s and the Recommended page a
+        // `RecommendedScreen`; they answer ONE grammar (`region= row= col=` ...), so a scene that
+        // walks any of them reads the same fingerprint. Only an instance that holds neither (the
+        // page is not mounted yet) answers the empty line.
+        let screen = page.inst.as_ref().and_then(|i| i.screen.as_any());
+        let library = screen.and_then(|s| s.downcast_ref::<plx_screens::library::LibraryScreen>());
+        let recommended = screen.and_then(|s| s.downcast_ref::<plx_screens::library::RecommendedScreen>());
         let focus = d.input.engine.current(InputOwner::Entry(page.id));
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: plx_machine::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(page.id) };
@@ -2461,13 +2494,25 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         let pill = if menu { -1 } else { match rig.chrome.focus(focus) {
             plx_ui::widgets::TopFocus::Pill(index) => index as i32, _ => -1,
         }};
-        let item = library.focused_item(focus, &cx);
-        let (region, row, col, x, y) = library.probe_viewport(focus);
+        let (item, (region, row, col, x, y)) = match (library, recommended) {
+            (Some(library), _) => (library.focused_item(focus, &cx), library.probe_viewport(focus)),
+            (None, Some(recommended)) => (recommended.focused_item(focus, &cx), recommended.probe_viewport(focus)),
+            (None, None) => return String::new(),
+        };
         let mut out = format!(" pill={pill} card={} menu={} region={region} row={row} col={col} viewport_x={x:.3} viewport_y={y:.3} sid=", u8::from(item.is_some() && !menu), u8::from(menu));
         if let Some(item) = item {
             let _ = write!(out, "{} rk=", item.sid.raw());
             crate::focusprobe::push_rk(&mut out, &item.rk);
         } else { out.push_str("- rk=-"); }
+        // `plxnative-focusx`: the handoff's two drawn alphas (chrome, capsule) -- off by default, so
+        // the fingerprint grammar the replay recordings pin does not change.
+        #[cfg(feature = "devtriggers")]
+        if plx_base::devtrig::flag("focusx") {
+            if let Some(library) = library {
+                let (chrome, capsule) = library.probe_handoff();
+                let _ = write!(out, " hand={chrome:.3},{capsule:.3}");
+            }
+        }
         return out;
     }
     if matches!(page.arg, AppArg::Search) {
@@ -2810,62 +2855,13 @@ fn strip_menu_arg(
     }
 }
 
-/// **What the opener lift reads of the press: the dispatcher's own, live.** The lift is the page's
-/// focused card drawn a second time above the dim. A card a card section left out of the page pass
-/// (`DrawFrame::lifted`) is drawn by the lift ALONE, at this scale. An opener no card section draws
-/// (the Detail episode strip, season tabs, hero buttons, the Home hero) is still drawn by the page
-/// at the press scale (`DrawFrame.press`, from `Dispatcher::parts`), so there the lift must be
-/// handed the SAME number or the two disagree on every frame the press is moving. They did, while
-/// this was a constant `1.0`: a taken hold's card was drawn at its pop by the lift and at its dip
-/// by the page and the host snapshot, and the owner saw a poster that popped in one frame with its
-/// title doubled.
-///
-/// Only the scale is the lift's business; a hold in flight or the hint's elapsed time is not (the
-/// lift draws one card, not the page's hold hint).
-pub(crate) fn opener_press(d: &Dispatcher<AppHost>) -> plx_machine::machine::PressRead<u32> {
-    plx_machine::machine::PressRead { scale: d.input.press.scale(), is_long: false, held_ms: None, owner: d.input.dip_owner }
-}
-
-/// **Which element, if any, the opener lift repaints this frame** — the ONE decision every page
-/// inherits, so no screen's `redraw_focused` has to defend against a stale key.
-///
-/// The lift is the opener tile drawn again above the dim, *because it is the focused one*. That
-/// stops being true the moment the menu is dismissed: `ModalStack::dismiss` hands input back to the
-/// page on the same frame, but the surface stays in the stack until its fade settles, so a D-pad
-/// press during the fade moves the page's focus to a neighbour while this lift would still paint
-/// the OLD tile fully popped and captioned (two tiles look focused at once; the new one's pop
-/// reads late). So while the surface is `Closing`, the lift is painted only if the engine's focus
-/// on the host page is still the opener element (or there is none to compare); once focus has
-/// moved, the page draws the tiles itself and the lift stands down. While the menu is open the
-/// engine's focus is on the menu's own rows, so the lift always paints then.
-pub(crate) fn opener_lift(d: &Dispatcher<AppHost>) -> Option<(EntryId, Option<FocusKey<u32>>)> {
-    d.lifted_opener()
-}
-
-/// **The context the opener lift draws with**: the page's own pieces for `entry`'s focused element,
-/// with the press taken from [`opener_press`] and nothing else standing in for it. `redraw_opener`
-/// builds its whole `Cx` from this, so the scale the lift draws at is observable
-/// (`parts.press.scale`) without a renderer.
-pub(crate) fn opener_parts(
-    d: &Dispatcher<AppHost>,
-    entry: EntryId,
-    focus: Option<plx_machine::machine::FocusKey<u32>>,
-) -> CxParts<u32> {
-    CxParts {
-        tick: Tick { ms: 0, dt_us: 0 },
-        press: opener_press(d),
-        focus: plx_machine::machine::FocusRead { current: focus, ..Default::default() },
-        owner: plx_machine::machine::InputOwner::Entry(entry),
-    }
-}
-
 /// **Present the item context menu** over the page the hold happened on (idempotent while one is
 /// up, for `open_settings`'s reason: a second hold must not stack a second panel).
 ///
 /// **It does not touch the press.** A hold the screen answered was already abandoned onto its
 /// release spring by the dispatcher (`InputMachine::cancel_press`), so the card springs from its dip
 /// up to its pop as the menu opens, and the press is the ONE owner of that motion: the opener
-/// lift ([`opener_press`]) draws it live above the frozen page (and, for an opener no card section
+/// lift ([`Dispatcher::opener_press`]) draws it live above the frozen page (and, for an opener no card section
 /// draws, the page draws it too). The page pass leaves
 /// the lifted card out (`DrawFrame::lifted`), so the snapshot holds no copy of it to go stale and
 /// the spring is not page damage (`Press::tick`); only an opener no card section draws keeps the
@@ -3154,6 +3150,19 @@ pub(crate) fn nav_push_with_return(
     d.request_with_return(MachineId::Nav, NavOp::Push(arg), ret);
 }
 
+/// **Does this route wear the shared tab bar?** The ONE answer: `ScreenArg::chrome()`, which the
+/// registry writes exhaustively, so a new page cannot be added without deciding it. Everything that
+/// depends on the bar asks this and nothing else — drawing it (`draws_chrome_for`), publishing the
+/// strip's members and the pill that is the page's own (`Bridge::capture_chrome`), and stepping the
+/// strip's springs (`run::update`) — because hand-written lists of route names once drifted
+/// from it: the Collections and Recommended pages drew the bar, but their strip was never published
+/// or stepped, so Up from the page found no pills to land on. (A click on the bar is not asked of the
+/// route at all: the chip and pills are stops of the hit map, registered where the bar is drawn.)
+pub(crate) fn wears_tab_bar(arg: &AppArg) -> bool {
+    use plx_ui::screen::ScreenArg;
+    arg.chrome() == plx_machine::machine::Chrome::TabBar
+}
+
 /// **Which PILL of the shared strip a page argument is**, for the pending selection the capsule
 /// travels to. `None` for everything that is not a strip destination, which is most of the
 /// alphabet — the row shows no pending selection while a detail page is coming up.
@@ -3167,7 +3176,9 @@ fn pill_of_arg(arg: &AppArg, directory: plx_data::stores::browse::DirectoryView<
         AppArg::Home => pill_of(directory, Pill::Home),
         AppArg::Search => pill_of(directory, Pill::Search),
         AppArg::Watchlist => pill_of(directory, Pill::Watchlist),
-        AppArg::Library => {
+        // The grid and the two pages its header pushes (Collections, Recommended) are all the
+        // library's: they select its type's pill, the pill they were opened from.
+        arg if arg.is_library_family() => {
             let kind = directory.current().map(|i| directory.sections()[i].kind)?;
             pill_of(directory, Pill::Section(kind))
         }
@@ -3177,7 +3188,7 @@ fn pill_of_arg(arg: &AppArg, directory: plx_data::stores::browse::DirectoryView<
 
 /// **A press on the shared top strip** — the door for the Search / Movies / Shows destinations and
 /// for BACK-to-Home (`focus_pill`), so the seed or command each one carries cannot be forgotten at
-/// one of the three screens that wear the bar. A press on the HOME pill goes through
+/// one of the pages that wear the bar. A press on the HOME pill goes through
 /// [`nav_home_pill`] instead, which seats the hero rather than a strip pill.
 ///
 /// It is `app::nav`'s four `Nav` variants, minus the enum: what each arm did BESIDE the flip is a
@@ -3870,6 +3881,10 @@ mod library_bookmark_tests;
 mod library_push_capture_tests;
 
 #[cfg(test)]
+#[path = "recommended_enter_tests.rs"]
+mod recommended_enter_tests;
+
+#[cfg(test)]
 #[path = "library_diagnostic_tests.rs"]
 mod library_diagnostic_tests;
 
@@ -3902,6 +3917,10 @@ mod opener_route_tests;
 mod library_tab_arrival_tests;
 
 #[cfg(test)]
+#[path = "library_collections_arrival_tests.rs"]
+mod library_collections_arrival_tests;
+
+#[cfg(test)]
 #[path = "strip_home_pill_tests.rs"]
 mod strip_home_pill_tests;
 
@@ -3912,6 +3931,22 @@ pub(crate) use watchlist::{hex_of_guid, open_catalog, open_watchlist_menu};
 #[cfg(test)]
 #[path = "watchlist_press_tests.rs"]
 mod watchlist_press_tests;
+
+#[cfg(test)]
+#[path = "page_regions_tests.rs"]
+mod page_regions_tests;
+
+#[cfg(test)]
+#[path = "arrival_seat_tests.rs"]
+mod arrival_seat_tests;
+
+#[cfg(test)]
+#[path = "collection_crumb_route_tests.rs"]
+mod collection_crumb_route_tests;
+
+#[cfg(test)]
+#[path = "library_route_tests.rs"]
+mod library_route_tests;
 
 #[cfg(test)]
 #[path = "watchlist_wiring_tests.rs"]
@@ -3958,6 +3993,57 @@ mod person_lifecycle_tests;
 #[cfg(test)]
 #[path = "collection_lifecycle_tests.rs"]
 mod collection_lifecycle_tests;
+
+// The route-test lanes: key-driven tests of the Library / Collections redesign's routes, over one
+// shared driver (`test_support::World`).
+#[cfg(test)]
+#[path = "library_switch_route_tests.rs"]
+mod library_switch_route_tests;
+#[cfg(test)]
+#[path = "library_scroll_route_tests.rs"]
+mod library_scroll_route_tests;
+#[cfg(test)]
+#[path = "header_cache_route_tests.rs"]
+mod header_cache_route_tests;
+#[cfg(test)]
+#[path = "library_reread_route_tests.rs"]
+mod library_reread_route_tests;
+#[cfg(test)]
+#[path = "library_memory_route_tests.rs"]
+mod library_memory_route_tests;
+#[cfg(test)]
+#[path = "under_posters_route_tests.rs"]
+mod under_posters_route_tests;
+#[cfg(test)]
+#[path = "under_posters_shelf_route_tests.rs"]
+mod under_posters_shelf_route_tests;
+#[cfg(test)]
+#[path = "under_posters_pages_route_tests.rs"]
+mod under_posters_pages_route_tests;
+#[cfg(test)]
+#[path = "under_posters_band_route_tests.rs"]
+mod under_posters_band_route_tests;
+#[cfg(test)]
+#[path = "home_chrome_route_tests.rs"]
+mod home_chrome_route_tests;
+#[cfg(test)]
+#[path = "home_hero_route_tests.rs"]
+mod home_hero_route_tests;
+#[cfg(test)]
+#[path = "watchlist_disc_route_tests.rs"]
+mod watchlist_disc_route_tests;
+#[cfg(test)]
+#[path = "sort_filter_vocabulary_route_tests.rs"]
+mod sort_filter_vocabulary_route_tests;
+#[cfg(test)]
+#[path = "account_menu_route_tests.rs"]
+mod account_menu_route_tests;
+#[cfg(test)]
+#[path = "card_rest_route_tests.rs"]
+mod card_rest_route_tests;
+#[cfg(test)]
+#[path = "deep_shelves_route_tests.rs"]
+mod deep_shelves_route_tests;
 
 #[cfg(test)]
 mod preference_effect_tests {

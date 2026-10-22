@@ -121,7 +121,10 @@ fn an_at_rest_grid_warms_a_bounded_set_nearest_row_first_then_goes_quiet() {
         let cols = layout.cols();
         let scroll = layout.row_reveal(20);
         page.pair.detail.set_geometry(layout, scroll, layout, scroll);
-        let (first, last) = visible_rows(&layout, scroll);
+        // The rows the grid DRAWS: a row wholly over the content edge is under the top fade and
+        // is not drawn, though the primitive's own cull (`visible_rows`) still counts it.
+        let drawn = page.pair.detail.painted();
+        let (first, last) = (drawn.start / cols, (drawn.end - 1) / cols);
         let prefix = if episodes { "/still/" } else { "/poster/" };
 
         frames(&mut page, &fixture, 2, 2);

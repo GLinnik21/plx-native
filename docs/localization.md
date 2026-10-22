@@ -65,7 +65,7 @@ Some slots have a fixed width and line count, and a translation that overflows o
 Host tests measure each shipped language with the TV's own glyph widths and fail when such a line
 would not fit. The covered slots are Settings row titles and subtitles, the sign-in failure
 read-out, alert answer buttons, the player's More menu, Subtitles panel and subtitle-timing control,
-the Library's TYPE menu, and the
+the Library's Sort & Filter menu, and the
 collection page's meta line and season marks. When one of these tests fails, shorten
 the wording; do not abbreviate it past readability.
 

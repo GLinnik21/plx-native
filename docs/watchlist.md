@@ -81,11 +81,21 @@ rotates the epoch and resets the store (the catalog store re-opens under the new
 the status and the endpoint SHAPE only: no token, and no id beyond what is scrubbed.
 
 **A debug build does not write unless someone switched it on.** In a `devtriggers` build a `PUT` is
-refused and logged (`WatchlistError::Refused`) unless the loopback stand-in named by
-`/tmp/plxnative-discover` is armed (the stand-in then takes the write) or the owner's live switch is on;
-the UI flips and then reverts, and the page header says `Debug: watchlist write blocked` until a write
+refused and logged (`WatchlistError::Refused`) unless the loopback stand-in is armed (the stand-in then
+takes the write) or the owner's live switch is on. "Armed" is `account::discover()`, the ONE Discover base
+the person page shares: `/tmp/plxnative-discover`, else the loopback `/tmp/plxnative-plextv` already
+redirects plex.tv to (the mock answers both on one listener). The UI flips and then reverts, and the page header says `Debug: watchlist write blocked` until a write
 goes out (`header::dev_blocked_text`, compiled only into a `devtriggers` build, so nightly and stable keep Q8's
 silence). Release builds write. Host tests never reach curl: they drive the request closure.
+
+**Reads are refused on a dev-token boot too.** A dev-token boot (`plxnative-token`) with neither
+stand-in armed has its READS of the provider refused and logged once per endpoint, the person page's profile
+and credits included, rather than reaching the real host with a server token. That is a fixed decision
+(fail closed), and the cost is accepted: such a boot shows no person biography and no filmography
+credits; arm the stand-in to see them. A refused person read settles its page at once (no retry). A
+refused Watchlist or catalog read (reachable only after an in-process sign-in: a dev-token boot with no
+account seated makes no request at all) lands once as the unavailable read-out, never as an empty list,
+and is not re-asked on a timer.
 
 **The live switch** is `plxnative-watchlist-live` in the install's runtime root (on the television
 `/tmp/com.beb.plxnative.debug/plxnative-watchlist-live`). It is read once at boot, which logs
@@ -155,17 +165,17 @@ this id lives on another service with another token). `IntentLedger`:
   is a member (intents in flight included), **Off** when the list is `Ready` and it is absent,
   otherwise **Unknown**, which every surface draws as the Add face.
 
-**Surfaces.** The Detail hero's bookmark disc is second after Play/Resume (`ELEM_WATCHLIST`, unlabeled,
+**Surfaces.** The Detail hero's bookmark disc is second after Play/Resume (`ELEM_WATCHLIST`, a circle that never unfurls and carries no name, focused or not — owner, 2026-10-20: an icon-only control is its glyph and its focus fill —
 outline when off the list, filled when on; the fill rises from the bottom with a 3 px ribbon drop on a
 flip, not on the first answer). It exists only for an item whose guid is `plex://movie|show/<hex>`
 (`HeroSet::watchlist`).
-The **Home hero** carries the same disc, second after Play/Continue and before Info (Play, disc, Info, with
-`HERO_CTRL_GAP` = `CTRL_GAP`, 20 px, between controls; the 12 px `HERO_ICON_GAP` is inside the Play pill). It is present when the hero row stands for a title
+The **Home hero** carries the same disc, second after Play/Resume and before Info (Play, disc, Info, with
+`HERO_CTRL_GAP` = `CONTROL_GAP`, 20 px, between controls; the 12 px `HERO_ICON_GAP` is inside the Play pill). It is present when the hero row stands for a title
 (`PmsMovie::watchlist_subject`: a movie or show itself, a season or episode its SHOW, "Add Show"
 semantics) with a known id. The application feeds it the membership of the title the hero shows
 (`HomeScreen::watchlist_hex` / `set_watchlist`, `app::watchlist::catalog_feed`); it flips only on a real
 membership change of that title, never on open or when the hero rotates to another title. A press is the
-same `AppFx::ItemMenu` write as Detail's. Face, glyphs and flip are `plx_appkit::watchlist_disc`, shared.
+same `AppFx::ItemMenu` write as Detail's. Face, glyphs, flip and the `Disc` state that decides when the flip plays are `plx_appkit::watchlist_disc`, shared.
 The item menu offers `Add to Watchlist` / `Remove from Watchlist` for a movie and `Add Show to
 Watchlist` / `Remove Show...` for an episode or season, with the identity captured when the menu
 opened. A catalog page's primary pill reads `Add to Watchlist` / `On Watchlist`. An add from a menu
@@ -184,16 +194,46 @@ blanked). Detail, Home hero and catalog controls draw the outline face when memb
 row is omitted when there is no face to offer, and a press flips then reverts. Reproduce with
 `/tmp/plxnative-nowan` or the failing-closure tests.
 
-**The count (Q7, decided: option D).** The Watchlist header carries the list's count as plain text
-just left of the Sort & Filter pill: LABEL 26 regular in `TEXT_SECONDARY`, centred on the pill's line,
-right-aligned `space::MD` (24 px) clear of it, so the pill does not move and nothing sits beside the
-title. It reads "{n} titles" (plural forms in every shipped language) while no Type or Show filter
-narrows the list (Sort alone does not), and "{shown} of {total}" when one does, including "0 of N"
-beside the filtered-empty read-out. It is derived from the list state (no `SCREEN_SHAPES` change),
-absent until the list has landed and on the empty-list and unavailable read-outs, and follows the cards
-when the grid's landing STARTS MOVING: a Remove's on the first feed after the hold menu's veil drops
-below `CLOSING_GONE`, a Sort & Filter change's on the frame after the click (the click's own frame
-draws the frame before it), never at the commit, so the number and the tiles move on one frame. It stays under the Sort & Filter menu's scrim; only the pill is lifted.
+**The count (Q7, decided: option D; reshaped onto the Library's header row).** The page header is the
+Library's one row (`plx_ui::page_header::PageHeader`; `watchlist/header.rs`): the title "Watchlist" on
+the selected plate at the left, and at the right the control "Sort & Filter · <value> ▾". The list's
+count is a filter read-out and nothing else: "{shown} of {total}" (the Library's sentence,
+`library.header.filtered_of`, numbers grouped as it groups them) stands ahead of the control while a
+Type or Show filter narrows the list (Sort alone does not), including "0 of N" beside the
+filtered-empty read-out, and there is no "{n} titles" at rest. It is derived from the list state (it
+holds no state of its own), absent until the list has landed and on the empty-list and unavailable
+read-outs, and follows the cards when the grid's landing STARTS MOVING: a Remove's on the first feed
+after the hold menu's veil drops below `CLOSING_GONE`, a Sort & Filter change's on the frame after the
+click (the click's own frame draws the frame before it), never at the commit, so the number and the
+tiles move on one frame. It stays under the Sort & Filter menu's scrim; only the control is lifted.
+The row's pills are the Library's, one component. With one focus stop the focus pill has nowhere to
+travel from: it lands on the control and fades in on the top bar's alpha spring, then pops on the
+page's `CtlPop`; the title is plain text, no plate (`HeaderItem::title`, design review S10; `plx_ui::page_header`; the page holds
+the row's `TabStrip` and `CtlPop`, which `WatchlistScreen::SHAPE` carries and its tick steps), and the Sort & Filter
+panel is as wide as its longest label or as the control's focused pill, whichever is wider
+(`TableView::menu_panel_width_from`, the rule the Library's Sort & Filter hangs by too).
+
+**The grid and its captions follow the Library.** Six columns of 250 x 375 posters from x 96, 285
+apart (the last column ends on the row's right text edge, x 1771), the first row at y 244, a focused
+row below the first resting at y 244 too. The caption under a poster is the global Under posters setting (Settings >
+Libraries; `plx_ui::caption_policy`): the Title switch (default off) and the Details picker, and only
+the focused row opens its band (0 / 80 / 112 px). A Watchlist row itself carries a title, a year and a
+kind; the rest of what a caption words is the matched copy's, as the guid lookup's row said it
+(`ListingFacts`, `app/watchlist.rs`), so a playable title reads like any poster ("2001 · 1h 40m",
+"Drama", "4K · HDR", "PG-13 · 7.8", "2019 · 3 seasons") and a title with no copy falls to its year (or,
+under a picker the row has nothing for, to its kind). An unplayable title's state sentence ("Coming soon", "Not on your servers", "Server
+offline") takes the details line whatever the picker shows, except Nothing, which shows no line at all.
+A focused row below the first rests with its posters at the first row's y, 244 (`GridSpec::resting`,
+`poster_grid::rest_scroll`: the Library's rule, one function for both pages), and the last rows of a
+long list rest lower because the document's end holds them. So the first scrolled rest is a whole row
+down. The page owns one `plx_ui::scroll_chrome::Handoff` (the Library's, one rule for both pages): it is
+decided on the key frame from the scroll TARGET (tucked once the target is within 60 px of one row
+pitch down or past it, untucked once it is 120 px short of a pitch or less) and the top chrome leaves on the `xfade` clock, not on the scroll
+spring's. The header row is the chrome's own alpha (`Handoff::chrome`), so it leaves and returns with
+the bar and has no ramp of its own, and the eased 72 px fade of the page's ground takes the top
+edge, as on the Library. There is NO capsule: the header names no
+library, and the capsule restates the library the header names (`scroll_chrome::capsule_shown` is
+true only for 2+ names).
 
 **The Remove landing (DS4).** Remove from the hold menu commits at once but the grid waits for the
 menu: between the commit and the landing's first step nothing on the grid changes (tile slots and

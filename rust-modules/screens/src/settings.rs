@@ -376,6 +376,28 @@ impl RouteSurface {
         }
         let popping = matches!(op, NavOp::Pop);
         self.inner.request(op, ReturnState::default());
+        // **Every page in this family shares the surface's OUTER `EntryId`, and every page's
+        // table shares `GroupId(0)`** (module doc, and `FocusTarget`'s own doc on `machine.rs`).
+        // That makes `(EntryId, GroupId(0))` the same `Seat::Remembered` key for Root, Legal,
+        // Privacy and every other page here — harmless on a POP, where the key IS meant to name
+        // whichever page is being returned to and the `remembered` list above already looked up
+        // its saved row, but wrong on a PUSH: the destination has never been entered, so
+        // `ContainerGroup` would hand `seat_in` the OUTGOING page's remembered row instead of the
+        // new page's first row (the reported bug: OK on row 2 opened Legal already seated on
+        // Legal's row 2). `FirstInGroup` is the same group with the remembered cursor ignored, and
+        // a push uses it.
+        //
+        // **…AND IT QUEUES IT BEFORE THE DESTINATION'S MOUNT RUNS.** The engine takes the Enters in
+        // the order they are queued and the last one wins, and a page that wants another seat (the
+        // Details picker on its checked line, the Language page on the chosen language) asks for it
+        // from its `Mount`, which `run_inner` below delivers. Queued after that, this default put
+        // every such page back on its first row.
+        if !popping {
+            fx.push(Fx::Deliver(
+                MachineId::Instance(self.id),
+                Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::FirstInGroup(GroupId(0)) })),
+            ));
+        }
         self.run_inner(cx, fx);
         // An entry the container no longer knows about (a completed Pop's own page, retired and
         // pruned inside `run_inner` above) can never be revisited under this `EntryId` — a fresh
@@ -397,34 +419,27 @@ impl RouteSurface {
             self.push.route.jump(false);
             self.push.open = true;
         }
-        // **Every page in this family shares the surface's OUTER `EntryId`, and every page's
-        // table shares `GroupId(0)`** (module doc, and `FocusTarget`'s own doc on `machine.rs`).
-        // That makes `(EntryId, GroupId(0))` the same `Seat::Remembered` key for Root, Legal,
-        // Privacy and every other page here — harmless on a POP, where the key IS meant to name
-        // whichever page is being returned to and the `remembered` list above already looked up
-        // its saved row, but wrong on a PUSH: the destination has never been entered, so
-        // `ContainerGroup` would hand `seat_in` the OUTGOING page's remembered row instead of the
-        // new page's first row (the reported bug: OK on row 2 opened Legal already seated on
-        // Legal's row 2). `FirstInGroup` is the same group with the remembered cursor ignored, and
-        // it is used on every arm below EXCEPT the one that found a saved elem to restore.
-        let focus = match (popping, self.inner.top().map(|e| e.id)) {
-            (true, Some(eid)) => self
-                .remembered
-                .iter()
-                .find(|(e, _)| *e == eid)
-                .map(|(_, elem)| {
-                    FocusTarget::Elem(FocusKey {
-                        entry: self.entry,
-                        elem: *elem,
+        // A pop returns to a page that has been entered: the row it left from, else its first.
+        if popping {
+            let focus = match self.inner.top().map(|e| e.id) {
+                Some(eid) => self
+                    .remembered
+                    .iter()
+                    .find(|(e, _)| *e == eid)
+                    .map(|(_, elem)| {
+                        FocusTarget::Elem(FocusKey {
+                            entry: self.entry,
+                            elem: *elem,
+                        })
                     })
-                })
-                .unwrap_or(FocusTarget::FirstInGroup(GroupId(0))),
-            _ => FocusTarget::FirstInGroup(GroupId(0)),
-        };
-        fx.push(Fx::Deliver(
-            MachineId::Instance(self.id),
-            Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus })),
-        ));
+                    .unwrap_or(FocusTarget::FirstInGroup(GroupId(0))),
+                None => FocusTarget::FirstInGroup(GroupId(0)),
+            };
+            fx.push(Fx::Deliver(
+                MachineId::Instance(self.id),
+                Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus })),
+            ));
+        }
         fx.invalidate(Provenance::Nav);
     }
 
@@ -444,6 +459,8 @@ fn mount_page(
     match arg {
         SettingsPage::Root => Box::new(RootPage::new(entry, cx.views)),
         SettingsPage::Language => Box::new(LanguagePage::new(entry)),
+        SettingsPage::UnderPosters => Box::new(under_posters::UnderPostersPage::new(entry)),
+        SettingsPage::UnderPostersDetails => Box::new(under_posters::DetailsPage::new(entry)),
         SettingsPage::Contribute => Box::new(super::legal::DocumentPage::contribute(entry)),
         SettingsPage::Playback => Box::new(super::preferences::PreferencesPage::new(entry, super::preferences::Kind::Playback)),
         SettingsPage::AudioSubtitles => Box::new(super::preferences::PreferencesPage::new(entry, super::preferences::Kind::AudioSubtitles)),
@@ -946,6 +963,7 @@ struct ServerMachineId(String);
 #[derive(Clone, PartialEq, Eq, Debug)]
 enum RootId {
     Favourites,
+    UnderPosters,
     Playback,
     AudioSubtitles,
     Language,
@@ -976,6 +994,7 @@ impl FormId for RootId {
             RootId::Legal => 8,
             RootId::About => 9,
             RootId::Resolution => 10,
+            RootId::UnderPosters => 11,
             // the base; `root_form` adds the position (`item_keyed`)
             RootId::Plaintext(_) => PLAINTEXT_KEY_BASE,
         })
@@ -1025,6 +1044,9 @@ struct RootState {
     auto_sign_in: bool,
     trailer_autoplay: bool,
     language: plx_platform::i18n::Preference,
+    /// What shows under a poster, as the Under posters row summarises it. Written to the canon only
+    /// when it is not the default, so every default root's digest is unchanged.
+    under_posters: plx_plex::plex::session::UnderPosters,
     /// Each unencrypted-connection switch, in row order. Written to the canon only when there is
     /// one, so every other root's digest is unchanged.
     plaintext: Vec<bool>,
@@ -1033,6 +1055,9 @@ struct RootState {
 impl LogicalState for RootState {
     fn write(&self, w: &mut Canon) {
         w.u32(self.sel.0).bool(self.auto_sign_in).bool(self.trailer_autoplay).str(self.language.tag());
+        if self.under_posters != plx_plex::plex::session::UnderPosters::DEFAULT {
+            w.u8(self.under_posters.pack());
+        }
         if !self.plaintext.is_empty() {
             w.u32(self.plaintext.len() as u32);
             for &on in &self.plaintext {
@@ -1083,6 +1108,9 @@ struct RootInputs {
     /// builder stays pure and a test can state either answer.
     resolution_offered: bool,
     language: plx_platform::i18n::Preference,
+    /// What shows under a poster (the stored setting, read at the build), which the Under posters
+    /// row summarises the way Language shows its name.
+    under_posters: plx_plex::plex::session::UnderPosters,
     /// Unencrypted-connection switches, in row order — empty when signed out or when nobody has
     /// an answered/offered plaintext question.
     plaintext: Vec<PlaintextRowInput>,
@@ -1108,6 +1136,15 @@ fn root_form(inputs: &RootInputs) -> Form<RootId, Action, SettingsPage> {
             Row::new(plx_platform::i18n::msg::settings_libraries_title())
                 .detail(plx_platform::i18n::msg::settings_libraries_detail())
                 .value(plx_platform::i18n::msg::settings_libraries_count(inputs.library_count))
+                .chevron(true),
+        )
+        .item(
+            RootId::UnderPosters,
+            RowKind::Nav(SettingsPage::UnderPosters),
+            Action::Door,
+            Row::new(plx_platform::i18n::msg::under_posters_title())
+                .detail(plx_platform::i18n::msg::under_posters_detail())
+                .value(under_posters::summary(inputs.under_posters))
                 .chevron(true),
         );
     let playback = FormSection::new(plx_platform::i18n::msg::settings_playback_section())
@@ -1239,6 +1276,7 @@ impl RootPage {
                 auto_sign_in: false,
                 trailer_autoplay: true,
                 language: plx_platform::i18n::Preference::System,
+                under_posters: plx_plex::plex::session::UnderPosters::DEFAULT,
                 plaintext: Vec::new(),
             },
         };
@@ -1266,10 +1304,12 @@ impl RootPage {
         self.state.auto_sign_in = auto_sign_in;
         self.state.trailer_autoplay = trailer_autoplay;
         self.state.language = plx_platform::i18n::saved_preference();
+        self.state.under_posters = plx_media::route::under_posters();
         let plaintext = if signed_in { self.plaintext_inputs() } else { Vec::new() };
         let form = root_form(&RootInputs {
             signed_in, multi_user, library_count: directory.pinned_count() as i64,
-            auto_sign_in, trailer_autoplay, resolution, resolution_offered, language: self.state.language, plaintext,
+            auto_sign_in, trailer_autoplay, resolution, resolution_offered, language: self.state.language,
+            under_posters: self.state.under_posters, plaintext,
         });
         let keep = self.form.selected_id().cloned();
         self.form.table.compact = false;
@@ -1584,6 +1624,10 @@ impl Screen<InnerHost> for RootPage {
         HitSource::Engine
     }
 }
+
+#[path = "settings_under_posters.rs"]
+mod under_posters;
+pub use under_posters::caption_policy_of;
 
 #[cfg(test)]
 #[path = "settings_test_support.rs"]

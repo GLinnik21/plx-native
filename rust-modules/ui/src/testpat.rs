@@ -36,10 +36,13 @@
 //! it is exactly what `gfx::sample_ground` reads and exactly what the backdrop blur sources. It
 //! rides the page's own transition alpha, so a route change still dips it like anything else.
 use crate::{Painter, Rect};
-use std::ptr::{addr_of, addr_of_mut};
+use std::cell::Cell;
 
-/// The armed pattern, or `None` for the ordinary page.
-static mut CURRENT: Option<Pattern> = None;
+thread_local! {
+    /// The armed pattern, or `None` for the ordinary page. Armed and drawn on the one thread that
+    /// runs the frame loop (`boot`, the `pat:` remote token and `draw` are all called from it).
+    static CURRENT: Cell<Option<Pattern>> = const { Cell::new(None) };
+}
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Pattern {
@@ -167,7 +170,7 @@ pub fn set(spec: &str) -> bool {
     let spec = spec.trim();
     let p = match spec {
         "off" | "" => {
-            unsafe { *addr_of_mut!(CURRENT) = None };
+            CURRENT.set(None);
             plx_machine::idle::invalidate();
             return true;
         }
@@ -205,7 +208,7 @@ pub fn set(spec: &str) -> bool {
             }
         }
     };
-    unsafe { *addr_of_mut!(CURRENT) = Some(p) };
+    CURRENT.set(Some(p));
     // A pattern change is discrete damage: nothing is moving, so without this the present gate
     // would hold the old ground on screen until something else asked for a frame.
     plx_machine::idle::invalidate();
@@ -220,7 +223,7 @@ pub fn boot() {
             plx_base::eventlog::log(&format!("testpat: unrecognised spec {v:?} — ignored"));
         }
     }
-    if let Some(p) = unsafe { *addr_of!(CURRENT) } {
+    if let Some(p) = CURRENT.get() {
         plx_base::eventlog::log(&format!("testpat: armed — {}", describe(p)));
     }
 }
@@ -246,7 +249,7 @@ fn describe(p: Pattern) -> String {
 /// Draw the armed pattern over the whole canvas. A no-op when nothing is armed, so the call site
 /// needs no test of its own.
 pub fn draw(p: Painter) {
-    let Some(pat) = (unsafe { *addr_of!(CURRENT) }) else {
+    let Some(pat) = CURRENT.get() else {
         return;
     };
     let (w, h) = (crate::consts::SCR_W, crate::consts::SCR_H);
@@ -351,7 +354,7 @@ pub fn draw(p: Painter) {
 
 /// The dark ground a checker/lines pattern is drawn over — one quad, laid first.
 pub fn underlay(p: Painter) {
-    match unsafe { *addr_of!(CURRENT) } {
+    match CURRENT.get() {
         Some(Pattern::Checker(_)) | Some(Pattern::Lines(_)) | Some(Pattern::HBars(_)) => {
             p.rrect(
                 Rect::new(0.0, 0.0, crate::consts::SCR_W, crate::consts::SCR_H),
@@ -416,22 +419,22 @@ mod tests {
     /// FIFO, one token at a time, with no way to see what was rejected.
     #[test]
     fn an_unrecognised_spec_changes_nothing() {
-        let restore = unsafe { *addr_of!(CURRENT) };
+        let restore = CURRENT.get();
         assert!(set("flat:40"));
         assert!(!set("flat:banana"), "a bad argument is refused");
         assert!(!set("nonsense"), "…and so is a bad name");
         // `hbars` is one letter away from `lines` and means the perpendicular thing; a parse that
         // quietly fell through to the default would give a ground that answers the wrong edge.
         assert!(set("hbars:12"));
-        assert_eq!(unsafe { *addr_of!(CURRENT) }, Some(Pattern::HBars(12.0)));
+        assert_eq!(CURRENT.get(), Some(Pattern::HBars(12.0)));
         assert!(set("flat:40"));
         assert_eq!(
-            unsafe { *addr_of!(CURRENT) },
+            CURRENT.get(),
             Some(Pattern::Flat(40.0)),
             "the armed one survives"
         );
         assert!(set("off"));
-        assert_eq!(unsafe { *addr_of!(CURRENT) }, None);
-        unsafe { *addr_of_mut!(CURRENT) = restore };
+        assert_eq!(CURRENT.get(), None);
+        CURRENT.set(restore);
     }
 }

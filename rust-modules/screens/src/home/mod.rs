@@ -20,6 +20,7 @@ use plx_data::stores::{StoreCmd, StoreId, StoreWork};
 use plx_ui::cards::{self as ui_cards, RowStyle};
 use plx_ui::cards::{CardSource, SectionFrame, Shelf};
 use plx_ui::consts::*;
+use plx_ui::hstack::{Align, HStack, Item};
 use plx_ui::frame::Budget;
 use plx_ui::hero_logo::{self, HeroLogo, LogoRung};
 use plx_ui::hold_hint::{HintInput, HoldHint};
@@ -27,7 +28,7 @@ use plx_ui::icons::Icon;
 use plx_ui::label::{Label, VAlign};
 use plx_ui::linked_heading::{self, LinkedHeading};
 use plx_ui::landing_hero::{
-    base_scrim_ramp, stack_top as hero_stack_top, COL_W as HERO_COL_W,
+    base_scrim_ramp, hero_stack, COL_W as HERO_COL_W,
     TEXT_BOTTOM as HERO_TEXT_BOTTOM,
 };
 use plx_machine::machine::{
@@ -64,8 +65,8 @@ fn hub_page_cmd(hub: &HubRef<'_>,
 }
 use super::plaintext_question::{self, AlertStep, Near, OfferWatch, PlaintextAlert};
 use super::registry::{
-    key_cap, tile_facts, unlive_excess, EvictOrder, AppFx, AppMsg, ContentArg, ContentReq, HomeCmd, HomeGroupKey, HomeHubIdentity, HomeItemIdentity, HomeItemKey, HomeLike,
-    HomeMemory, HomeReq, HomeTab, LoopReq, PageMemory,
+    key_cap, tile_facts, unlive_excess, Compaction, EvictOrder, KEY_PRUNE_BATCH, AppFx, AppMsg, ContentArg, ContentReq, HomeCmd, HomeGroupKey, HomeHubIdentity, HomeItemIdentity, HomeItemKey, HomeLike,
+    HomeMemory, HomeReq, HomeTab, LoopReq, PageMemory, RowDiff, RowSeats,
 };
 
 const HERO_GROUP: GroupId = GroupId(0);
@@ -99,6 +100,15 @@ pub const STRIP_ACCOUNT_ELEM: u32 = plx_ui::dispatch::STRIP_BASE + 4;
 pub const STRIP_WATCHLIST_ELEM: u32 = plx_ui::dispatch::STRIP_BASE + 5;
 
 const MAX_ITEMS: usize = plx_data::pms::MAX_SHELF_ITEMS;
+/// **How much of a resting shelf's posters must stand above the bottom margin for the pointer to take
+/// focus onto them**, from the poster's top (0..1). The page rests the focused shelf at one fixed
+/// line (`rest_scroll`), so the shelf below it stands cut by the bottom margin by a few tens of px
+/// and the shelf above it is off the top: a rule that wanted a shelf WHOLE on screen
+/// left the pointer nothing it could take focus onto (a shelf cut by the TOP still never takes it,
+/// so one passing under the pointer on its way off does not steal focus). The wheel moves the
+/// focus shelf by shelf either way (`bridge::wheel_input`, an Up or Down key).
+const POINTER_REACH: f32 = 0.5;
+
 const HERO_FLIP_CD: f32 = 0.35;
 const HERO_AUTO_S: f32 = 8.0;
 /// How near its target (px) a shelf's horizontal glide and the page's vertical reveal have to be
@@ -120,7 +130,7 @@ const HERO_WASH_W: [f32; 4] = [0.55, 0.55, 0.40, 0.40];
 
 const HERO_ROW_Y: f32 = HERO_TEXT_BOTTOM + theme::space::MD;
 const HERO_CTRL_D: f32 = StatusOverlay::CTRL_H;
-const HERO_CTRL_GAP: f32 = plx_ui::widgets::CTRL_GAP;
+const HERO_CTRL_GAP: f32 = plx_ui::widgets::CONTROL_GAP;
 const HERO_PAGER_D: f32 = HERO_CTRL_D * plx_ui::widgets::DISC_ICON_RATIO;
 const HERO_PAGER_BEARING: f32 =
     HERO_PAGER_D * plx_ui::icons::ink_x(plx_ui::icons::Icon::Chevron).0;
@@ -129,16 +139,22 @@ const HERO_PAGER_PAD: f32 = HERO_CTRL_GAP - HERO_PAGER_BEARING;
 const HERO_META_R: f32 = 0.60 * SCR_W;
 const META_FLOW_W: f32 = HERO_META_R - MARGIN_X;
 const SOURCE_PAD: f32 = theme::space::XS;
-// The same screen-side measurement seam as `screens/detail/hero.rs`. The frame produced here is
-// handed to `Button::draw`, so focus geometry and paint share one capability-derived width. The
-// widget should eventually expose these two private terms through `Button::pill_w_with`.
-const HERO_ICON_RATIO: f32 = 1.15;
-const HERO_ICON_GAP: f32 = 12.0;
 
 /// Each row's `motion` bytes are its `Shelf`'s (`Shelf::write`), the L0 row's motion write unchanged
 /// (`base_y` included), so the text, `SCREEN_SHAPES_PIN` and the replay anchors stay what they were;
 /// the primitive's name is split only so the `cards` gate does not read a shape string as a use of it.
 pub const SHAPE: &str = concat!("HomeScreen{snap_target:f32,snap:{pos:f32,vel:f32},hero_flip_cd:f32,hero_auto:f32,covered:bool,visible_activation:Option<u32>,cta_available:bool,strip_chosen:bool,next_group:u32,next_elem:u32,groups:[HomeGroupKey{identity:HomeHubIdentity,group:u32}],items:[HomeItemKey{identity:HomeItemIdentity,elem:u32,last_row:u32,last_col:u32}],carousel:Option<(sid:u32,rk:str)>,outgoing:Option<(sid:u32,rk:str)>,hero_slide:{pos:f32,vel:f32},hero_dir:f32,hero_pop:{sp:[Spring{pos:f32,vel:f32};3],focused:Option<u32>},projected_generation:Option<u32>,grid:{scroll_y:{pos:f32,vel:f32},scroll_target:f32,rows:[{identity:HomeHubIdentity,group:u32,elems:[u32],motion:Card", "Row{scale:[Spring;24],overflow:Spring,scroll_x:Spring,lift:Spring,band:Spring,focus:i32,base_y:f32}}]},restored_scroll:[(group:u32,scroll:f32)],restore_reveal:bool}");
+
+/// Work a sync did, by kind: index entries inserted, whole-index rebuilds, `elem_at` writes, and
+/// sweeps of the item key table.
+#[cfg(test)]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+struct SyncCost {
+    index_inserts: usize,
+    index_rebuilds: usize,
+    elem_at_writes: usize,
+    sweeps: usize,
+}
 
 #[derive(Clone)]
 struct HubProjection {
@@ -151,6 +167,18 @@ struct HubProjection {
     /// lists, classified once per publication. Every other row is unlinked and keeps its plain
     /// heading.
     link: Option<plx_plex::plex::collections::CollectionRef>,
+    /// The row's title, which the link above was classified from.
+    title: String,
+    /// The cards the projection was made from (an `Arc` clone each, none for a descriptor): the row
+    /// is the same row, and needs no projecting again, while the next publication holds the very
+    /// same cards (`Arc::ptr_eq`) in the same order. A pointer, not a rating key: a card the
+    /// server answered again is a new card even when it reads alike.
+    cards: Vec<Arc<PmsMovie>>,
+    /// The key table was edited from outside a projection (a restore, an adopted show) since this
+    /// row was projected, so its `elems` and the places its keys remember may no longer be the
+    /// table's: the row is projected again, whatever the next publication holds. Only
+    /// [`HomeScreen::invalidate_projection`] sets it, and a projection is always built unset.
+    stale: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -208,10 +236,6 @@ impl Grid {
 
     fn scroll_x(&self, row: usize) -> f32 {
         self.shelves.get(row).map_or(0.0, Shelf::scroll)
-    }
-
-    fn eff_scroll(&self, row: usize, snap: f32) -> f32 {
-        self.scroll_x(row) * snap
     }
 }
 
@@ -280,8 +304,11 @@ impl Backdrop {
 
     /// Is a direction key being held right now? The chrome glass blurs the page under it and
     /// reuses that blur only while the draw arguments beneath it are unchanged; a wash re-keyed
-    /// to every card of a held run changes them every frame (about 6 ms of GPU a late frame on
-    /// the TV). So the wash holds its target for the run and re-keys once the key rests.
+    /// to every card of a held run changes them every frame wherever the wash is not the plain
+    /// ground under the band (hero art or a ramp knee under it: about 6 ms of GPU a late frame on
+    /// the TV; over a plain wash the glass takes the ease at composite instead,
+    /// `backdrop::Ground`). So the wash holds its target for the run and re-keys once the key
+    /// rests.
     fn held(&self, ms: u32) -> bool {
         self.repeat_ms.is_some_and(|r| ms.wrapping_sub(r) <= WASH_REPEAT_GRACE_MS)
     }
@@ -492,11 +519,15 @@ enum ItemRef<'a> {
 /// One hub's entries in the key table: positions in `HomeScreen::items`.
 #[derive(Default)]
 struct HubKeys {
-    by_rk: HashMap<String, Vec<(plx_plex::plex::ServerId, usize)>>,
+    by_rk: HashMap<Arc<str>, Vec<(plx_plex::plex::ServerId, usize)>>,
     slots: HashMap<(u32, u32), usize>,
 }
 
 impl HubKeys {
+    fn is_empty(&self) -> bool {
+        self.by_rk.is_empty() && self.slots.is_empty()
+    }
+
     #[cfg(test)]
     fn len(&self) -> usize {
         self.by_rk.values().map(Vec::len).sum::<usize>() + self.slots.len()
@@ -519,8 +550,10 @@ pub struct HomeScreen {
     elem_at: HashMap<u32, (u32, u32)>,
     /// `items` / `groups` looked up by identity, so keying a card is a hash probe rather than a
     /// scan of the whole table. Positions into the two `Vec`s; kept in step by `push_item` /
-    /// `push_group`, the only places either grows, and rebuilt whole by `rebuild_indexes` after a
-    /// prune compacts them. Derived, not canon.
+    /// `push_group`, the only places either grows, and followed IN PLACE when a prune compacts the
+    /// tables (`registry::Compaction`: no key is cloned or re-hashed for the entries that stay).
+    /// `rebuild_indexes` rebuilds both whole, for the rare edit that rewrites identities in place.
+    /// Derived, not canon.
     item_index: HashMap<HomeHubIdentity, HubKeys>,
     group_index: HashMap<HomeHubIdentity, usize>,
     projected_generation: Option<u32>,
@@ -545,9 +578,17 @@ pub struct HomeScreen {
     ghost_cards: HashMap<u64, (u32, Arc<PmsMovie>)>,
     restored_scroll: Vec<(u32, f32)>,
     restore_reveal: bool,
-    /// The rows last sent to the store as held (`HubsCmd::Hold`), so the command goes out only when
-    /// the range changes. Derived from what is on screen; not canon.
-    hold_sent: Option<(usize, usize)>,
+    /// The rows held in the store (`HubsCmd::Hold`): the command goes out only when the rows in
+    /// view outgrow the band last sent (`ui_cards::HoldBand`). Derived from what is on screen; not
+    /// canon.
+    hold: ui_cards::HoldBand,
+    /// Keys that have left the page since the key table was last swept (`prune_keys`). Derived; not
+    /// canon.
+    since_prune: usize,
+    /// What the syncs have cost, counted so the tests can pin the cost to the CHANGE and not to the
+    /// catalog. Not canon.
+    #[cfg(test)]
+    cost: SyncCost,
 
     /// Selected hero ITEM identity. It is data, not focus.
     carousel: Option<(plx_plex::plex::ServerId, String)>,
@@ -617,7 +658,10 @@ impl HomeScreen {
             ghost_cards: HashMap::new(),
             restored_scroll: Vec::new(),
             restore_reveal: false,
-            hold_sent: None,
+            hold: ui_cards::HoldBand::default(),
+            since_prune: 0,
+            #[cfg(test)]
+            cost: SyncCost::default(),
             carousel: None,
             carousel_anchor: None,
             outgoing: None,
@@ -683,7 +727,21 @@ impl HomeScreen {
         self.grid.scroll_target = memory.scroll_y;
         self.restored_scroll = memory.row_scroll.clone();
         self.restore_reveal = true;
+        // The saved places overwrote the ones the fresh page's keys remember, and `adopt_shows`
+        // may have handed elements on: every row is projected again from the table as it stands.
+        self.invalidate_projection();
+    }
+
+    /// Make the next [`sync_catalog`](Self::sync_catalog) project EVERY row again, whatever the
+    /// publication holds. A row whose identity and cards are unchanged is otherwise kept whole,
+    /// and a key table edited from outside a projection (a restore, an adopted show) would then
+    /// disagree with the rows kept over it: a tile listing an element that now names another
+    /// card, a key remembering the place of the instance it came from.
+    fn invalidate_projection(&mut self) {
         self.projected_generation = None;
+        for row in &mut self.rows {
+            row.stale = true;
+        }
     }
 
     fn hub_identity(view: HubsView<'_>, row: usize, hub: HubRef<'_>) -> HomeHubIdentity {
@@ -691,12 +749,12 @@ impl HomeScreen {
             Some(HubIdentity::ContinueWatching) => HomeHubIdentity::ContinueWatching,
             Some(HubIdentity::Identifier { sid, id, key }) => HomeHubIdentity::Identifier {
                 sid,
-                id: id.to_owned(),
-                key: key.to_owned(),
+                id: id.into(),
+                key: key.into(),
             },
             Some(HubIdentity::Key { sid, key }) => HomeHubIdentity::Key {
                 sid,
-                key: key.to_owned(),
+                key: key.into(),
             },
             None => HomeHubIdentity::Ephemeral {
                 generation: view.generation,
@@ -710,6 +768,8 @@ impl HomeScreen {
     }
 
     fn push_group(&mut self, key: HomeGroupKey) {
+        #[cfg(test)]
+        { self.cost.index_inserts += 1; }
         Self::index_group(&mut self.group_index, &key, self.groups.len());
         self.groups.push(key);
     }
@@ -754,6 +814,8 @@ impl HomeScreen {
     }
 
     fn push_item(&mut self, key: HomeItemKey) {
+        #[cfg(test)]
+        { self.cost.index_inserts += 1; }
         Self::index_item(&mut self.item_index, &key, self.items.len());
         Arc::make_mut(&mut self.items).push(key);
     }
@@ -773,8 +835,11 @@ impl HomeScreen {
         }
     }
 
-    /// Both indexes from the tables, after a prune compacted them.
+    /// Both indexes from the tables, after an edit that rewrote identities in place (a rebind of a
+    /// finished episode's key). A prune does not come here: it follows the positions it moved.
     fn rebuild_indexes(&mut self) {
+        #[cfg(test)]
+        { self.cost.index_rebuilds += 1; self.cost.index_inserts += self.items.len() + self.groups.len(); }
         self.item_index.clear();
         self.group_index.clear();
         for (at, key) in self.items.iter().enumerate() {
@@ -796,7 +861,7 @@ impl HomeScreen {
             .expect("Home element-key space exhausted");
         assert!(elem < HEADING_BASE, "Home elements overlap the linked headings");
         let identity = match item {
-            ItemRef::Item { sid, rk } => HomeItemIdentity::Item { hub: hub.clone(), sid, rk: rk.to_owned() },
+            ItemRef::Item { sid, rk } => HomeItemIdentity::Item { hub: hub.clone(), sid, rk: rk.into() },
             ItemRef::Slot { generation, ordinal } => HomeItemIdentity::Slot { hub: hub.clone(), generation, ordinal },
         };
         self.push_item(HomeItemKey { identity, elem, last_row: 0, last_col: 0 });
@@ -827,30 +892,56 @@ impl HomeScreen {
         self.items[index].elem
     }
 
+    /// Project the published catalog onto the page's rows, keys and shelves. **The cost follows the
+    /// change, not the catalog**: the ring moves a row on or off its cards on every press of a long
+    /// page, and a row whose identity, title and cards (or descriptor size) are the ones it was
+    /// projected from keeps its projection, its shelf and its entries in `elem_at` untouched, so a
+    /// landing that changes two of 170 rows registers and maps two rows. A row inserted or removed
+    /// above the rest moves them, and then every row from there on is projected again (`last_row`
+    /// is where a card's key remembers it sat).
     fn sync_catalog<H: HomeLike>(&mut self, cx: &Cx<'_, H>) {
         let view = H::hubs(cx);
         if self.projected_generation == Some(view.generation) {
             return;
         }
         let mut rows = Vec::with_capacity(view.hub_count());
-        let old_rows = std::mem::take(&mut self.rows);
-        let old_at: HashMap<&HomeHubIdentity, usize> = old_rows.iter().enumerate().map(|(at, row)| (&row.identity, at)).collect();
+        // Where a row was, by identity: at the same position first (the ring changes a row's
+        // cards, not its place), then by the map of the old rows. The matching is the registry's,
+        // shared with the Library's Recommended page.
+        let mut seats: RowSeats<HubProjection, HomeHubIdentity> =
+            RowSeats::new(std::mem::take(&mut self.rows), view.hub_count());
         for row in 0..view.hub_count() {
             let Some(hub) = view.hub(row) else { continue };
-            let identity = Self::hub_identity(view, row, hub);
-            let group = self.group_for(&identity);
+            let placeholders = !hub.items.is_empty() && hub.items.len() <= MAX_ITEMS && hub.items.iter().all(|item| item.rk.is_empty());
+            let same_place = hub.identity.is_some()
+                && seats.at(row).is_some_and(|old| old.identity.borrowed() == hub.identity);
             // A descriptor that is still a descriptor of the same size keeps the slots it has: its
             // cards are nowhere on screen or near it, so a ring move costs nothing per such row.
-            let placeholders = !hub.items.is_empty() && hub.items.len() <= MAX_ITEMS && hub.items.iter().all(|item| item.rk.is_empty());
-            let reused = placeholders.then(|| old_at.get(&identity).map(|&at| &old_rows[at]))
-                .flatten().filter(|old| old.placeholders && old.elems.len() == hub.items.len()).map(|old| old.elems.clone());
+            // A row of cards keeps them while they are the same cards.
+            if same_place && seats.at(row).is_some_and(|old|
+                !old.stale && old.placeholders == placeholders && old.title == hub.title
+                    && if placeholders {
+                        old.elems.len() == hub.items.len()
+                    } else {
+                        old.cards.len() == hub.items.len().min(MAX_ITEMS)
+                            && old.cards.iter().zip(hub.items).all(|(a, b)| Arc::ptr_eq(a, b))
+                    }) {
+                rows.push(seats.keep(row));
+                continue;
+            }
+            let identity = Self::hub_identity(view, row, hub);
+            let old_index = seats.locate(row, same_place, hub.identity.is_some().then_some(&identity),
+                |old| old.identity.clone());
+            let group = self.group_for(&identity);
+            if identity == HomeHubIdentity::ContinueWatching && !placeholders {
+                let old = old_index.and_then(|at| seats.at(at));
+                self.rebind_shows(&identity, hub.items, hub.offset, old);
+            }
+            let reused = placeholders.then(|| old_index.and_then(|at| seats.at(at)))
+                .flatten().filter(|old| !old.stale && old.placeholders && old.elems.len() == hub.items.len()).map(|old| old.elems.clone());
             let elems = match reused {
                 Some(elems) => elems,
                 None => {
-                    if identity == HomeHubIdentity::ContinueWatching && !placeholders {
-                        let old = old_at.get(&identity).map(|&at| &old_rows[at]);
-                        self.rebind_shows(&identity, hub.items, hub.offset, old);
-                    }
                     let mut elems = Vec::with_capacity(hub.items.len().min(MAX_ITEMS));
                     for (col, item) in hub.items.iter().take(MAX_ITEMS).enumerate() {
                         let item_ref = if item.rk.is_empty() {
@@ -872,36 +963,83 @@ impl HomeScreen {
                         sid, id, key, hub.title, hub.items.first().map_or(0, |item| item.sec)),
                 _ => None,
             };
+            seats.rebuilt(old_index);
             rows.push(HubProjection {
                 identity,
                 group,
                 elems,
                 placeholders,
                 link,
+                title: hub.title.to_owned(),
+                cards: if placeholders { Vec::new() } else { hub.items.iter().take(MAX_ITEMS).cloned().collect() },
+                stale: false,
             });
         }
-        let mut old_shelves: Vec<Option<Shelf>> = std::mem::take(&mut self.grid.shelves).into_iter().map(Some).collect();
-        self.grid.shelves = Vec::with_capacity(rows.len());
-        for row in &rows {
-            let kept = old_at.get(&row.identity).and_then(|&old| old_shelves.get_mut(old)?.take());
-            let mut shelf = kept.unwrap_or_else(|| Shelf::new(self.entry, &RowStyle::HOME).cull_margin(GLOW_PAD)
-                .animate_landings(row.identity == HomeHubIdentity::ContinueWatching));
-            if let Some(&(_, scroll)) = self.restored_scroll.iter().find(|(group, _)| *group == row.group.0) {
-                shelf.restore_scroll(scroll, row.elems.len());
+        // `unclaimed` is the old rows that were not kept whole, by position, for the element map.
+        // `same_rows`: every row is the old row at its own position, so nothing moved, the shelves
+        // stand and the element map is patched for the rows projected again.
+        let RowDiff { same_rows, matched, rebuilt: reprojected, unclaimed: left } = seats.finish();
+        if !same_rows {
+            let mut old_shelves: Vec<Option<Shelf>> = std::mem::take(&mut self.grid.shelves).into_iter().map(Some).collect();
+            self.grid.shelves = Vec::with_capacity(rows.len());
+            for (row, projection) in rows.iter().enumerate() {
+                // a shelf stays with its identity, wherever the row went
+                let kept = matched[row].and_then(|old| old_shelves.get_mut(old)?.take());
+                let shelf = kept.unwrap_or_else(|| Shelf::new(self.entry, &RowStyle::HOME).cull_margin(GLOW_PAD)
+                    .animate_landings(projection.identity == HomeHubIdentity::ContinueWatching));
+                self.grid.shelves.push(shelf);
             }
-            self.grid.shelves.push(shelf);
+        }
+        if !self.restored_scroll.is_empty() {
+            for (row, projection) in rows.iter().enumerate() {
+                if let Some(&(_, scroll)) = self.restored_scroll.iter().find(|(group, _)| *group == projection.group.0) {
+                    self.grid.shelves[row].restore_scroll(scroll, projection.elems.len());
+                }
+            }
         }
         debug_assert_eq!(self.grid.shelves.len(), rows.len());
         // A fresh shelf rests at `base_y = 0`, and this runs on events (`Mount`, `StoreChanged`,
         // `Uncover`) as well as on the `Tick` whose `update_grid` lays the grid out. A frame drawn
         // between the two showed the new rows at the top of the screen, over the billboard.
         self.layout_grid();
-        let was = std::mem::take(&mut self.elem_at);
-        for (row, hub) in rows.iter().enumerate() {
-            for (col, &elem) in hub.elems.iter().enumerate() {
-                // First row wins, as the scan this replaces did.
-                self.elem_at.entry(elem).or_insert((row as u32, col as u32));
+        let mut removed: HashSet<u32> = HashSet::new();
+        // The patch is exact while every row is its own hub. A publication can carry one hub twice
+        // (the store does not dedupe `(hubIdentifier, key)`): the two rows share their keys, the map
+        // keeps the first row's place for a shared element, and a first row that changed while the
+        // second was kept would take the element away from the second. Two rows of one group are
+        // that case, and it maps the page again (a pass over the groups, no hashing of identities).
+        if same_rows && (reprojected.is_empty() || Self::groups_are_distinct(&rows)) {
+            // the changed rows only: forget what each held, map what it holds now
+            for &row in &reprojected {
+                if let Ok(found) = left.binary_search_by_key(&row, |(at, _)| *at) {
+                    let old = &left[found].1;
+                    for &elem in &old.elems {
+                        if self.elem_at.get(&elem).is_some_and(|&(r, _)| r as usize == row) {
+                            self.elem_at.remove(&elem);
+                            removed.insert(elem);
+                        }
+                    }
+                }
             }
+            for &row in &reprojected {
+                for (col, &elem) in rows[row].elems.iter().enumerate() {
+                    // First row wins, as the scan this replaces did.
+                    #[cfg(test)]
+                    { self.cost.elem_at_writes += 1; }
+                    self.elem_at.entry(elem).or_insert((row as u32, col as u32));
+                }
+            }
+            removed.retain(|elem| !self.elem_at.contains_key(elem));
+        } else {
+            let was = std::mem::take(&mut self.elem_at);
+            for (row, hub) in rows.iter().enumerate() {
+                for (col, &elem) in hub.elems.iter().enumerate() {
+                    #[cfg(test)]
+                    { self.cost.elem_at_writes += 1; }
+                    self.elem_at.entry(elem).or_insert((row as u32, col as u32));
+                }
+            }
+            removed.extend(was.keys().filter(|elem| !self.elem_at.contains_key(elem)));
         }
         self.rows = rows;
         self.restored_scroll.retain(|(group, _)| {
@@ -910,8 +1048,14 @@ impl HomeScreen {
         });
         self.projected_generation = Some(view.generation);
         self.stash_removed_continue_watching(view);
-        self.prune_keys(&was, view.generation, cx.focus.current.map(|key| key.elem), &cx.focus.remembered);
+        self.prune_keys(&removed, view.generation, cx.focus.current.map(|key| key.elem), &cx.focus.remembered);
         self.reconcile_carousel(view);
+    }
+
+    /// Whether every row has a group of its own, which is to say every row is its own hub.
+    fn groups_are_distinct(rows: &[HubProjection]) -> bool {
+        let mut seen: HashSet<u32> = HashSet::with_capacity(rows.len());
+        rows.iter().all(|row| seen.insert(row.group.0))
     }
 
     /// **Focus follows the show** (layer-1 view state, 3g). A show's Continue Watching tile is its
@@ -964,7 +1108,7 @@ impl HomeScreen {
         let keys = Arc::make_mut(&mut self.items);
         for (elem, sid, rk) in inherited {
             if let Some(key) = keys.iter_mut().find(|key| key.elem == elem) {
-                key.identity = HomeItemIdentity::Item { hub: hub.clone(), sid, rk };
+                key.identity = HomeItemIdentity::Item { hub: hub.clone(), sid, rk: rk.into() };
                 self.rebound.insert(elem);
             }
         }
@@ -989,8 +1133,9 @@ impl HomeScreen {
     /// one it remembers (the hold on the return from the player lets that land first) holds a
     /// fresh element for the new card while the memory names the old. Hand the remembered element
     /// to the new card, so the tile, and the focus on it, are the same; a fresh key that held that
-    /// element takes the displaced one's number (both are fresh, and the next projection rebuilds
-    /// the rows from the keys). Same rules as `rebind_shows`: the same server and show, a card the
+    /// element takes the displaced one's number (both are fresh). The rows were projected from the
+    /// numbers before the swap, so a swap invalidates the projection
+    /// ([`Self::invalidate_projection`]) and the next sync projects every row again from the keys. Same rules as `rebind_shows`: the same server and show, a card the
     /// row no longer holds, and not a window that slid.
     fn adopt_shows(&mut self, memory: &HomeMemory, view: HubsView<'_>) {
         if memory.cw_shows.is_empty() { return }
@@ -1008,7 +1153,7 @@ impl HomeScreen {
             let Some(show) = show_of(item) else { continue };
             if item.rk.is_empty() { continue }
             let named = |key: &HomeItemKey| matches!(&key.identity,
-                HomeItemIdentity::Item { hub, sid, rk } if *hub == HomeHubIdentity::ContinueWatching && *sid == item.sid && *rk == item.rk);
+                HomeItemIdentity::Item { hub, sid, rk } if *hub == HomeHubIdentity::ContinueWatching && *sid == item.sid && **rk == *item.rk);
             if memory.items.iter().any(named) { continue }
             let Some(at) = gone.iter().position(|(_, sid, _, s)| *sid == item.sid && s == show) else { continue };
             let (elem, ..) = *gone.remove(at);
@@ -1019,7 +1164,9 @@ impl HomeScreen {
             self.rebound.insert(elem);
             changed = true;
         }
-        if changed { self.rebuild_indexes(); }
+        // The elements were swapped between keys, not their identities or places: the indexes
+        // stand, and the rows, which list the elements the keys held a moment ago, do not.
+        if changed { self.invalidate_projection(); }
     }
 
     /// Keep the Continue Watching cards the projection just removed (by element, so a later
@@ -1042,8 +1189,11 @@ impl HomeScreen {
     /// Bound the key tables. A key is only needed while its card is shown, was just shown (so a
     /// focus on a card that rotated out can recover to its row), or is the focus. Volatile keys
     /// (a `Slot` item, an item of an `Ephemeral` hub) carry their generation and can never match
-    /// again once their publication is gone, so those go at once; stable keys stay until the table
-    /// outgrows twice the shown cards plus 256, then the oldest go (elems are minted in order).
+    /// again once their publication is gone, so those go in the next sweep, which runs once
+    /// [`KEY_PRUNE_BATCH`] keys have left the page (closing the gaps moves every key behind them,
+    /// so a sync that changed a row or two does not pay for it) or the table is over its bound;
+    /// stable keys stay until the table outgrows twice the shown cards plus 256, then the oldest
+    /// go (elems are minted in order).
     /// An `Ephemeral` group of an older generation is never projected again. A remembered cursor
     /// older than what is retained recovers to the first row (`reconcile`). A Home whose hubs are
     /// stable and whose cards carry rating keys, under the cap, drops nothing.
@@ -1051,43 +1201,68 @@ impl HomeScreen {
     /// Each row's remembered card (`remembered`, the engine's cursor per group) is kept whether or
     /// not the row holds cards now: a row the ring released is a row of placeholders, and the card
     /// the user left in it must still be the card they return to. One key per row.
-    fn prune_keys(&mut self, was: &HashMap<u32, (u32, u32)>, generation: u32, focus: Option<u32>,
+    fn prune_keys(&mut self, removed: &HashSet<u32>, generation: u32, focus: Option<u32>,
         remembered: &[(GroupId, u32)]) {
         let now = &self.elem_at;
-        let pinned: HashSet<u32> = remembered.iter().map(|&(_, elem)| elem).collect();
-        let shown = |elem: u32| now.contains_key(&elem) || was.contains_key(&elem) || Some(elem) == focus;
-        let live = |elem: u32| shown(elem) || pinned.contains(&elem);
-        let mut drop: HashSet<u32> = self.items.iter()
-            .filter(|key| {
-                let volatile = match &key.identity {
-                    HomeItemIdentity::Slot { .. } => true,
-                    HomeItemIdentity::Item { hub, .. } => matches!(hub, HomeHubIdentity::Ephemeral { .. }),
-                };
-                // a placeholder's key is a pure function of its publication: never worth keeping
-                volatile && !shown(key.elem)
-            })
-            .map(|key| key.elem)
-            .collect();
-        let cap = key_cap(now.len());
-        let kept = self.items.len() - drop.len();
-        if kept > cap {
-            let held = unlive_excess(
-                self.items.iter().map(|key| key.elem),
-                |elem| live(elem) || drop.contains(&elem),
-                kept - cap,
-                EvictOrder::Elem,
-            );
-            drop.extend(held);
+        self.since_prune += removed.len();
+        let stale: Vec<usize> = self.groups.iter().enumerate()
+            .filter(|(_, key)| matches!(key.identity, HomeHubIdentity::Ephemeral { generation: g, .. } if g != generation))
+            .map(|(at, _)| at).collect();
+        // The sweep of the item keys is batched (`KEY_PRUNE_BATCH`): a sync that changed a row or
+        // two only leaves a handful of keys behind, and closing their gaps moves every key after
+        // them, in the table and in the position indexes. It runs when enough have left the page,
+        // or at once when the table stands over its bound.
+        let swept = self.since_prune >= KEY_PRUNE_BATCH || self.items.len() > key_cap(now.len());
+        let mut drop: Vec<usize> = Vec::new();
+        if swept {
+            #[cfg(test)]
+            { self.cost.sweeps += 1; }
+            self.since_prune = 0;
+            let pinned: HashSet<u32> = remembered.iter().map(|&(_, elem)| elem).collect();
+            // shown now, or a sync ago (`removed` is what left the page this sync), or the focus
+            let shown = |elem: u32| now.contains_key(&elem) || removed.contains(&elem) || Some(elem) == focus;
+            let live = |elem: u32| shown(elem) || pinned.contains(&elem);
+            drop = self.items.iter().enumerate()
+                .filter(|(_, key)| {
+                    let volatile = match &key.identity {
+                        HomeItemIdentity::Slot { .. } => true,
+                        HomeItemIdentity::Item { hub, .. } => matches!(hub, HomeHubIdentity::Ephemeral { .. }),
+                    };
+                    // a placeholder's key is a pure function of its publication: never worth keeping
+                    volatile && !shown(key.elem)
+                })
+                .map(|(at, _)| at)
+                .collect();
+            let cap = key_cap(now.len());
+            let kept = self.items.len() - drop.len();
+            if kept > cap {
+                let dropped: HashSet<u32> = drop.iter().map(|&at| self.items[at].elem).collect();
+                let held = unlive_excess(
+                    self.items.iter().map(|key| key.elem),
+                    |elem| live(elem) || dropped.contains(&elem),
+                    kept - cap,
+                    EvictOrder::Elem,
+                );
+                drop.extend(self.items.iter().enumerate().filter(|(_, key)| held.contains(&key.elem)).map(|(at, _)| at));
+            }
         }
-        let groups_before = self.groups.len();
-        self.groups.retain(|key| !matches!(key.identity, HomeHubIdentity::Ephemeral { generation: g, .. } if g != generation));
-        if drop.is_empty() && self.groups.len() == groups_before {
-            return;
+        // The tables compact in place and the indexes follow the positions they moved: no identity
+        // is cloned or hashed again for the entries that stay.
+        // (a table shared with the memory is detached only when something goes)
+        let moved = if drop.is_empty() { None } else { Compaction::remove(Arc::make_mut(&mut self.items), drop) };
+        if let Some(moved) = moved {
+            self.item_index.retain(|_, keys| {
+                keys.by_rk.retain(|_, held| {
+                    held.retain_mut(|(_, at)| moved.follow_in_place(at));
+                    !held.is_empty()
+                });
+                keys.slots.retain(|_, at| moved.follow_in_place(at));
+                !keys.is_empty()
+            });
         }
-        if !drop.is_empty() {
-            Arc::make_mut(&mut self.items).retain(|key| !drop.contains(&key.elem));
+        if let Some(moved) = Compaction::remove(&mut self.groups, stale) {
+            self.group_index.retain(|_, at| moved.follow_in_place(at));
         }
-        self.rebuild_indexes();
     }
 
     fn identity_of(item: &PmsMovie) -> Option<(plx_plex::plex::ServerId, String)> {
@@ -1264,6 +1439,22 @@ impl HomeScreen {
         }
     }
 
+    /// **The shelf the page rests on for the ENGINE's `focus`**: the focused card's or linked
+    /// heading's, and the first for the billboard (`ui_cards::grid_rest_scroll` rests row 0 at the
+    /// head), so a fold to the billboard brings the page back to the first shelf instead of leaving
+    /// the deep rest it had under the hidden shelves. `None` (the top bar, nothing focused) leaves
+    /// the rest where it was.
+    ///
+    /// The picture's focus is not this: the billboard stays "focused" in the picture until the dive
+    /// is half way (`activation_elem`), so resting by it kept the page's last deep target through
+    /// the fold and the first Down drew the deep shelves on its way back up.
+    fn rest_row(&self, focus: Option<FocusKey<u32>>) -> Option<usize> {
+        match self.focused_loc(focus)? {
+            Located::Item(row, _) | Located::Heading(row) => Some(row),
+            Located::Hero(_) => Some(0),
+        }
+    }
+
     /// The row whose label band is open (or opening) for `focus` — the focused card's row, `None`
     /// on a linked heading, and `fallback` (the row a hero→grid door would open) otherwise.
     fn band_row(&self, focus: Option<FocusKey<u32>>, fallback: usize) -> Option<usize> {
@@ -1325,6 +1516,10 @@ impl HomeScreen {
     }
 
     fn layout_grid(&mut self) {
+        let policy = Some(crate::registry::captions::policy());
+        for shelf in &mut self.grid.shelves {
+            shelf.set_caption_policy(policy);
+        }
         let top = PEEK_Y + (GRID_TOP_Y - PEEK_Y) * self.snap.pos;
         let mut flow = 0.0;
         for shelf in &mut self.grid.shelves {
@@ -1333,7 +1528,10 @@ impl HomeScreen {
         }
     }
 
-    fn update_grid<H: HomeLike>(&mut self, view: HubsView<'_>, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>, t: Tick) {
+    /// `cx` is the PICTURE's view of focus (the shelves read it, and read none until the dive has
+    /// reached them); `engine` is the engine's own focus, which the page rests by ([`Self::rest_row`]).
+    fn update_grid<H: HomeLike>(&mut self, view: HubsView<'_>, cx: &Cx<'_, H>, engine: Option<FocusKey<u32>>,
+        fx: &mut Effects<'_, H>, t: Tick) {
         let dt = t.dt();
         let focused = self.focused_grid(cx.focus.current);
         // Until the dive has reached the shelves the engine's card is not the picture's focus: the
@@ -1376,25 +1574,17 @@ impl HomeScreen {
         if !self.ghost_cards.is_empty() && !self.grid.shelves.iter().any(Shelf::landing_pending) {
             self.ghost_cards.clear();
         }
-        // The store holds cards for the rows in view and two either side; the rest keep a descriptor.
+        // The store holds cards for the rows in view and `HOLD_MARGIN` either side (`HoldBand` asks
+        // for `HOLD_SLACK` more, once, so a scroll does not re-send the band on every row); the rest
+        // keep a descriptor.
         if !self.rows.is_empty() {
             let (lo, hi) = on_screen.unwrap_or((0, 0));
-            let hold = ui_cards::hold_band((lo, hi), self.rows.len());
-            if self.hold_sent != Some(hold) {
-                self.hold_sent = Some(hold);
+            if let Some(hold) = self.hold.next((lo, hi), self.rows.len()) {
                 fx.push(Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Hold { lo: hold.0, hi: hold.1 }))));
             }
         }
-        let revealed = focused.map(|(row, _)| (row, Some(row)))
-            .or_else(|| self.focused_heading(cx.focus.current).map(|row| (row, None)));
-        if let Some((row, band_row)) = revealed.filter(|(r, _)| *r < self.rows.len()) {
-            let (lo, hi) = row_reveal_band(shelf_top_banded(row, band_row));
-            self.grid.scroll_target = ui_cards::reveal(
-                self.grid.scroll_y.pos,
-                lo,
-                hi,
-                grid_max_scroll(self.rows.len()),
-            );
+        if let Some(row) = self.rest_row(engine).filter(|row| *row < self.rows.len()) {
+            self.grid.scroll_target = rest_scroll(row, self.rows.len());
         }
         self.grid
             .scroll_y
@@ -1553,7 +1743,7 @@ impl HomeScreen {
             ..Default::default() },
             owner: cx.owner,
         };
-        self.update_grid(view, &visible_cx, fx, t);
+        self.update_grid(view, &visible_cx, cx.focus.current, fx, t);
 
         let grid_item = self
             .focused_grid(visible_focus)
@@ -1954,7 +2144,7 @@ impl HomeScreen {
         press_scale: f32,
     ) {
         let resumes = plx_data::metadata::resume_ns(hero.resume_ms, hero.dur_ns / 1_000_000) > 0;
-        let label = if resumes { plx_platform::i18n::msg::browse_home_continue_c() } else { plx_platform::i18n::msg::browse_detail_play_c() };
+        let label = plx_appkit::hero_layout::play_label(resumes);
         let HeroRects { play: pill, disc, info } = hero_rects(measure, hero, label);
         let mark_d = HERO_PAGER_D.round();
         let mark = Rect::new(
@@ -1979,9 +2169,12 @@ impl HomeScreen {
         .map(ControlPalette::ambient)
         .unwrap_or_default();
         let pop = |i| if live { self.hero_pop.scale_with(i, press_scale) } else { 1.0 };
+        // The fill rides the lift spring (`CtlPop::focus`) so the plate cross-fades (and the ink flips) with the pop;
+        // a frame drawn off the live row (a transition's snapshot) has no spring and reads the focus.
+        let fill = |i| if live { self.hero_pop.focus(i) } else { f32::from(focus == Some(Located::Hero(i))) };
         Button::new(label.as_ptr(), theme::size::BODY, pill)
             .icon(Icon::Play)
-            .focused(focus == Some(Located::Hero(0)))
+            .focus_mix(fill(0))
             .palette(palette)
             .scale(pop(0))
             .draw(env, p);
@@ -1991,7 +2184,7 @@ impl HomeScreen {
             let mut button = CircleButton::new(c"".as_ptr())
                 .icon(icon)
                 .at(rect.x, rect.y)
-                .focused(focus == Some(Located::Hero(2)))
+                .focus_mix(fill(2))
                 .palette(palette)
                 .scale(pop(2));
             if let Some(frame) = mid {
@@ -2002,7 +2195,7 @@ impl HomeScreen {
         CircleButton::new(c"".as_ptr())
             .icon(Icon::Info)
             .at(info.x, info.y)
-            .focused(focus == Some(Located::Hero(1)))
+            .focus_mix(fill(1))
             .palette(palette)
             .scale(pop(1))
             .draw(env, p);
@@ -2036,11 +2229,16 @@ impl HomeScreen {
                 continue;
             }
             let row_y = self.grid.base_y(row);
+            // The heading rides the page under the chrome, which stays: it fades by where it is
+            // DRAWN (`scroll_chrome`'s clearance, at the place the lift leaves it) and is gone
+            // before it reaches the chip, so no ink of it ever stands over the chip's rows. The
+            // focused row's heading rests whole: its drawn place is clear of the ramp.
+            let alpha = env.sp * plx_ui::scroll_chrome::clearance_under_shown_chrome(heading_y(row_y, self.grid.lift(row)));
             if let Some(linked) = self.heading_widget(view, row).filter(|_| env.sp > 0.02) {
                 let m = linked.measure(f.measure);
                 let focus_t = f32::from(heading == Some(row) && env.sp > 0.5);
                 linked.draw(
-                    p.alpha(env.sp),
+                    p.alpha(alpha),
                     MARGIN_X,
                     heading_y(row_y, self.grid.lift(row)),
                     focus_t,
@@ -2049,7 +2247,7 @@ impl HomeScreen {
                 );
             } else if env.sp > 0.02 {
                 ui_cards::draw_heading(
-                    p.alpha(env.sp),
+                    p.alpha(alpha),
                     hub.title,
                     hub.source,
                     MARGIN_X,
@@ -2060,7 +2258,7 @@ impl HomeScreen {
             }
             if let Some(shelf) = self.grid.shelves.get(row) {
                 if shelf.has_ghosts() {
-                    shelf.paint_ghosts(f, p, &self.cards(view, row), &self.ghost_source(shelf), self.section(row));
+                    shelf.paint_ghosts(f, p, &self.ghost_source(shelf), self.section(row));
                 }
                 shelf.paint_resting(f, p, &self.cards(view, row), self.section(row));
             }
@@ -2078,6 +2276,8 @@ impl HomeScreen {
         SectionFrame {
             y: self.grid.base_y(row) + CARD_DY,
             clip: Rect::new(0.0, plx_ui::widgets::TOP_BAR_BOTTOM, SCR_W, SCR_H - plx_ui::widgets::TOP_BAR_BOTTOM),
+            // what stands under this row's caption is the next shelf's heading, as it is drawn
+            below_rise: self.grid.lift(row + 1),
         }
     }
 
@@ -2138,12 +2338,14 @@ impl HomeScreen {
                     continue;
                 }
                 // Every tile of the row shares one y, so one answer says whether a pointer passing
-                // over the row may take its focus.
+                // over the row may take its focus: its posters stand clear of the top margin and
+                // their upper part clears the bottom one ([`POINTER_REACH`]), which is what the shelf
+                // below the focused one is at rest.
                 let rest = Rect::new(0.0, self.grid.base_y(row_index) + CARD_DY, CARD_W, CARD_H)
                     .scaled(RowStyle::HOME.focus_scale);
-                let fully_visible = rest.y >= 40.0 && rest.y + rest.h <= SCR_H - 20.0;
+                let pointable = rest.y >= 40.0 && rest.y + rest.h * POINTER_REACH <= SCR_H - 20.0;
                 let src = HomeCards {
-                    hover: if fully_visible || row_focused { Hover::Focus } else { Hover::OnlyIfFocused },
+                    hover: if pointable || row_focused { Hover::Focus } else { Hover::OnlyIfFocused },
                     ..self.cards(view, row_index)
                 };
                 if let Some(shelf) = self.grid.shelves.get(row_index) {
@@ -2193,6 +2395,18 @@ impl HomeScreen {
     #[cfg(feature = "devtriggers")]
     pub fn shelf_len(&self, row: usize) -> Option<usize> {
         self.rows.get(row).map(|projection| projection.elems.len())
+    }
+
+    /// Every card's pop as the draw paints it, shelf by shelf (`focus` the engine's focus): what a route test
+    /// reads to say a card the focus has left is at EXACT rest (see `World::card_pops`).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_card_pops(&self, focus: Option<FocusKey<u32>>) -> Vec<Vec<f32>> {
+        let at = self.focused_grid(focus);
+        self.rows.iter().enumerate().map(|(row, projection)| {
+            let col = at.filter(|&(r, _)| r == row).map(|(_, c)| c);
+            let Some(shelf) = self.grid.shelves.get(row) else { return Vec::new() };
+            (0..projection.elems.len()).map(|i| shelf.drawn_pop(i, col)).collect()
+        }).collect()
     }
 
     /// Diagnostic view of the actual animated state: snap, retained shelf offset,
@@ -2269,7 +2483,7 @@ impl LogicalState for HomeScreen {
         let Self { entry: _, instance: _, groups: _, items: _, next_group: _, next_elem: _,
             // `elem_at` is derived from `rows`, which the census already covers via its elems.
             // `item_index` / `group_index` are caches of `items` / `groups`, which are covered.
-            rows: _, elem_at: _, item_index: _, group_index: _, projected_generation: _, cw_cards: _, cw_offset: _, carousel_anchor: _, rebound: _, ghost_cards: _, restored_scroll: _, restore_reveal: _, hold_sent: _, carousel: _,
+            rows: _, elem_at: _, item_index: _, group_index: _, projected_generation: _, cw_cards: _, cw_offset: _, carousel_anchor: _, rebound: _, ghost_cards: _, restored_scroll: _, restore_reveal: _, hold: _, since_prune: _, #[cfg(test)] cost: _, carousel: _,
             outgoing: _, hero_flip_cd: _, hero_slide: _, hero_dir: _, hero_auto: _, hero_pinned: _, covered: _,
             snap_target: _,
             visible_activation: _, cta_available: _, strip_chosen: _, snap: _, status_ms: _,
@@ -2407,7 +2621,7 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
                     MARGIN_X,
                     top + CARD_DY,
                     SCR_W - 2.0 * MARGIN_X,
-                    CARD_H + ui_cards::UNDER_LABEL_H,
+                    CARD_H + band_h(),
                 ),
                 len: projection.elems.len(),
                 elem: ElemKind::Card,
@@ -2526,7 +2740,7 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
                     .unwrap_or(row);
                 let y = GRID_TOP_Y + shelf_top_settled(row, focus_row) - self.grid.scroll_target;
                 let base = Rect::new(
-                    card_x(col, self.grid.eff_scroll(row, self.snap_target)),
+                    card_x(col, self.grid.scroll_x(row)),
                     y + CARD_DY,
                     CARD_W,
                     CARD_H,
@@ -2641,6 +2855,9 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
 pub struct HomeProbe {
     pub cw_elems: Vec<u32>,
     pub animating: bool,
+    /// The hero's bookmark disc: the title it was last fed a membership for, and the membership it
+    /// wears (`Unknown` and `Off` draw the outline, `On` the filled face).
+    pub disc: Option<([u8; 12], plx_data::catalog::Membership)>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -2650,6 +2867,7 @@ impl HomeScreen {
         HomeProbe {
             cw_elems: row.map(|row| self.rows[row].elems.clone()).unwrap_or_default(),
             animating: row.is_some_and(|row| self.grid.shelves[row].landing_pending() || self.grid.shelves[row].has_ghosts()),
+            disc: self.disc.of.map(|hex| (hex, self.disc.flip.membership())),
         }
     }
 }
@@ -2724,7 +2942,7 @@ impl HomeScreen {
     }
 
     /// The application's answer: `hex`'s membership on the Watchlist (`Unknown` while the list is
-    /// unread, which wears the Add face). See [`HeroDisc::set`] for when this flips and when it snaps.
+    /// unread, which wears the Add face). See [`plx_appkit::watchlist_disc::Disc::set`] for when this flips and when it snaps.
     pub fn set_watchlist(&mut self, hex: [u8; 12], membership: plx_data::catalog::Membership) {
         self.disc.set(hex, membership);
     }
@@ -2743,7 +2961,7 @@ impl HomeScreen {
         }
         let hero = self.selected_hero(view)?.item;
         let resumes = plx_data::metadata::resume_ns(hero.resume_ms, hero.dur_ns / 1_000_000) > 0;
-        let label = if resumes { plx_platform::i18n::msg::browse_home_continue_c() } else { plx_platform::i18n::msg::browse_detail_play_c() };
+        let label = plx_appkit::hero_layout::play_label(resumes);
         let rects = hero_rects(measure, hero, label);
         match index {
             0 => Some(rects.play),
@@ -2846,7 +3064,7 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                     self.visible_activation = None;
                     if let Some(Located::Item(row, col)) = to_loc {
                         // The saved viewport is a preference, not an assertion about today's
-                        // catalog order. Minimally reveal the reconciled item before first draw.
+                        // catalog order. Rest the reconciled item's shelf before first draw.
                         if let (Some(shelf), Some(hub)) =
                             (self.grid.shelves.get_mut(row), self.rows.get(row))
                         {
@@ -2855,9 +3073,7 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                                 CARD_W, GAP, SCR_W - 2.0 * MARGIN_X);
                             shelf.restore_scroll(scroll, count);
                         }
-                        let (lo, hi) = row_reveal_band(shelf_top_settled(row, row));
-                        self.grid.scroll_target = ui_cards::reveal(self.grid.scroll_y.pos,
-                            lo, hi, grid_max_scroll(self.rows.len()));
+                        self.grid.scroll_target = rest_scroll(row, self.rows.len());
                         self.grid.scroll_y.jump(self.grid.scroll_target);
                     }
                     self.layout_grid();
@@ -3184,14 +3400,16 @@ fn disc_hex(item: &PmsMovie) -> Option<[u8; 12]> {
     item.watchlist_subject().and_then(|(_, hex, _)| hex)
 }
 
-/// The bookmark disc's state: which title the membership belongs to, the flip toward it, and the
-/// title that was shown before it (the page sliding out keeps its face). Fed by the application.
+/// The bookmark disc's Home half: which title the shared [`plx_appkit::watchlist_disc::Disc`] is
+/// for, and the title that was shown before it (the page sliding out keeps its face). The hero
+/// rotates through many titles on the one disc; everything about the flip itself is the `Disc`'s.
+/// Fed by the application.
 #[derive(Default)]
 struct HeroDisc {
     /// The title the application last fed a membership for.
-    of: Option<([u8; 12], plx_data::catalog::Membership)>,
-    /// 0 = the outline at rest, 1 = filled; stepped toward `of`'s face.
-    flip: Spring,
+    of: Option<[u8; 12]>,
+    /// That title's membership and flip, stepped toward its face.
+    flip: plx_appkit::watchlist_disc::Disc,
     /// The previous title and whether it wore the filled face, for the page sliding out.
     prev: Option<([u8; 12], bool)>,
     /// The title the hero shows now, cached each tick for the application's feed.
@@ -3200,11 +3418,12 @@ struct HeroDisc {
 
 impl HeroDisc {
     /// What a press on the disc of `item` asks for, `None` when it names no title.
-    fn press(&self, item: &PmsMovie) -> Option<crate::registry::ItemMenuAction> {
+    fn press(&mut self, item: &PmsMovie) -> Option<crate::registry::ItemMenuAction> {
         use crate::registry::ItemMenuAction as Action;
         let (kind, hex, _) = item.watchlist_subject()?;
         let hex = hex?;
-        let on = matches!(self.of, Some((h, plx_data::catalog::Membership::On)) if h == hex);
+        let on = self.of == Some(hex) && self.flip.membership() == plx_data::catalog::Membership::On;
+        self.flip.press();
         Some(if on {
             Action::WatchlistRemove(plx_data::watchlist::guid_of(kind, &hex))
         } else {
@@ -3212,32 +3431,24 @@ impl HeroDisc {
         })
     }
 
-    /// The membership of `hex`. A change on the title already shown flips the disc; a different
-    /// title (the hero rotated) or the first answer for this one (`Unknown` before) snaps the face,
-    /// so the flip plays only on a real membership change of the shown title.
+    /// The membership of `hex`. A different title (the hero rotated) rests the disc on its face and
+    /// keeps the title that left as `prev`; the same title is the `Disc`'s own rule
+    /// ([`plx_appkit::watchlist_disc::Disc::set`]), so the flip plays only on a real membership
+    /// change of the shown title.
     fn set(&mut self, hex: [u8; 12], m: plx_data::catalog::Membership) {
-        use plx_data::catalog::Membership;
-        match self.of {
-            Some((h, now)) if h == hex => {
-                if now != m {
-                    if now == Membership::Unknown {
-                        self.flip = Spring::at(plx_appkit::watchlist_disc::target(m));
-                    }
-                    self.of = Some((hex, m));
-                }
-            }
-            _ => {
-                self.prev = self.of.map(|(h, m)| (h, plx_appkit::watchlist_disc::target(m) >= 1.0));
-                self.flip = Spring::at(plx_appkit::watchlist_disc::target(m));
-                self.of = Some((hex, m));
-            }
+        if self.of == Some(hex) {
+            self.flip.set(m);
+        } else {
+            self.prev = self.of.map(|h| (h, plx_appkit::watchlist_disc::target(self.flip.membership()) >= 1.0));
+            self.flip.reset(m);
+            self.of = Some(hex);
         }
     }
 
     /// The flip progress the page of the title `hex` draws its disc at.
     fn progress(&self, hex: [u8; 12]) -> f32 {
         match (self.of, self.prev) {
-            (Some((h, _)), _) if h == hex => self.flip.pos,
+            (Some(h), _) if h == hex => self.flip.pos(),
             (_, Some((h, filled))) if h == hex => f32::from(filled),
             _ => 0.0,
         }
@@ -3245,13 +3456,8 @@ impl HeroDisc {
 
     /// Step the flip toward the face of the title it belongs to.
     fn step(&mut self, dt: f32) {
-        let Some((_, m)) = self.of else { return };
-        let target = plx_appkit::watchlist_disc::target(m);
-        plx_machine::idle::decorative(|| self.flip.step(target, plx_ui::widgets::K_DISC_UNFURL, dt));
-        // A spring idle has stopped asking frames for can rest a hair short of its target; land it
-        // exactly so a settled disc draws the plain face, never a 99.9 % fill clip.
-        if plx_machine::idle::settled(self.flip.pos, target, self.flip.vel) {
-            self.flip.jump(target);
+        if self.of.is_some() {
+            self.flip.step(dt);
         }
     }
 }
@@ -3265,21 +3471,20 @@ struct HeroRects {
 }
 
 fn hero_rects(measure: &dyn Measure, item: &PmsMovie, label: &std::ffi::CStr) -> HeroRects {
-    let play = Rect::new(MARGIN_X, HERO_ROW_Y, hero_pill_w(measure, label), HERO_CTRL_D);
-    let mut x = play.x + play.w + HERO_CTRL_GAP;
-    let disc = disc_hex(item).map(|_| {
-        let r = Rect::new(x, HERO_ROW_Y, HERO_CTRL_D, HERO_CTRL_D);
-        x += HERO_CTRL_D + HERO_CTRL_GAP;
-        r
-    });
-    HeroRects { play, disc, info: Rect::new(x, HERO_ROW_Y, HERO_CTRL_D, HERO_CTRL_D) }
-}
-
-fn hero_pill_w(measure: &dyn Measure, label: &std::ffi::CStr) -> f32 {
-    theme::size::BODY as f32 * HERO_ICON_RATIO
-        + HERO_ICON_GAP
-        + measure.width(label, theme::size::BODY, true)
-        + plx_ui::widgets::BTN_PILL_AIR
+    // One row: Play, the watchlist disc when the title has one (absent: no room, no gap), Info.
+    let has_disc = disc_hex(item).is_some();
+    let items = [
+        Item::new(plx_appkit::hero_layout::pill_w(measure, label, theme::size::BODY, true, None)),
+        if has_disc { Item::new(HERO_CTRL_D) } else { Item::absent() },
+        Item::new(HERO_CTRL_D),
+    ];
+    let row = HStack::new(&items, HERO_CTRL_GAP, Align::Leading(MARGIN_X));
+    let at = |i: usize| row.span(i).map(|(x, w)| Rect::new(x, HERO_ROW_Y, w, HERO_CTRL_D));
+    HeroRects {
+        play: at(0).unwrap_or_default(),
+        disc: at(1),
+        info: at(2).unwrap_or_default(),
+    }
 }
 
 fn card_x(col: usize, scroll: f32) -> f32 {
@@ -3295,13 +3500,33 @@ fn col_at(x: f32, scroll: f32, count: usize) -> Option<usize> {
 fn heading_y(row_y: f32, lift: f32) -> f32 {
     row_y - TITLE_DY - lift
 }
-fn row_reveal_band(top: f32) -> (f32, f32) {
-    let lo = top + GRID_TOP_Y + CARD_DY + CARD_H + 96.0 - (SCR_H - MARGIN_Y);
-    (lo, top)
+/// The focused shelf's caption band under the stored Under posters setting (0 / 80 / 112 px): the
+/// height every shelf here reserves, opens and reveals by (`Shelf::set_caption_policy`).
+fn band_h() -> f32 {
+    plx_ui::caption_policy::band_h(&crate::registry::captions::policy())
+}
+/// How far the focused band carries the rows below it down.
+fn band_open() -> f32 {
+    ui_cards::band_open_for(band_h())
+}
+/// **The scroll a focused shelf RESTS at: the Library's rest rule** (`poster_grid::rest_scroll`,
+/// `ui_cards::grid_rest_scroll`): the shelf's top comes to `GRID_TOP_Y`, the first shelf's own
+/// resting line, and the document's end holds the last shelves lower. Every shelf above it has
+/// scrolled off, so no heading but the focused one stands in the top band.
+///
+/// It was the NEAREST scroll that showed the focused shelf with its caption band open
+/// (`ui_cards::reveal` between a `lo` and the shelf's top): Down came to rest at `lo`, which is
+/// the caption's reach short of the bottom margin, so the focused shelf's y followed the Under
+/// posters band (531 / 563 / 603 for 112 / 80 / 0) and the heading of the shelf above rested at
+/// 22 / 54 / 94 with it, under the account chip at the two smaller bands, while Up came to rest at
+/// the shelf's top. A rest that depends on the band and on the direction of the last move is not a
+/// rest a heading can be kept out of the chrome by.
+fn rest_scroll(row: usize, rows: usize) -> f32 {
+    ui_cards::grid_rest_scroll(row, ui_cards::ROW_PITCH_FIXED + ui_cards::LABEL_BAND_COLLAPSED, 0.0, grid_max_scroll(rows))
 }
 fn grid_max_scroll(rows: usize) -> f32 {
     let n = rows.max(1);
-    let h = ui_cards::settled_top(n, Some(n - 1), ui_cards::ROW_PITCH_FIXED);
+    let h = ui_cards::settled_top_for(n, Some(n - 1), ui_cards::ROW_PITCH_FIXED, band_open());
     (h - (SCR_H - CONTENT_Y) + 60.0).max(0.0)
 }
 fn shelf_top_settled(row: usize, focus_row: usize) -> f32 {
@@ -3310,7 +3535,7 @@ fn shelf_top_settled(row: usize, focus_row: usize) -> f32 {
 /// [`shelf_top_settled`] with the open label band named explicitly: `None` while a linked heading
 /// holds focus, which opens no row's band.
 fn shelf_top_banded(row: usize, band_row: Option<usize>) -> f32 {
-    ui_cards::settled_top(row, band_row, ui_cards::ROW_PITCH_FIXED)
+    ui_cards::settled_top_for(row, band_row, ui_cards::ROW_PITCH_FIXED, band_open())
 }
 
 fn wash_corners(hero: Option<&PmsMovie>, grid: [[f32; 4]; 4], snap: f32) -> [[f32; 4]; 4] {
@@ -3504,14 +3729,10 @@ fn hero_content(hero: &PmsMovie, source: &str, p: Painter, dx: f32, measure: &dy
     let meta_view = TextView::new(&meta, theme::size::BODY, theme::TEXT_SECONDARY).max_lines(1);
     let meta_h = meta_view.measure_h(HERO_COL_W);
     let synopsis = (!hero.summary.is_empty()).then(|| plx_ui::hero_synopsis(&hero.summary, ""));
-    let synopsis_h = synopsis
-        .as_ref()
-        .map(|v| theme::space::SM + v.measure_h(HERO_COL_W))
-        .unwrap_or(0.0);
-    let mut y = hero_stack_top(title_h, meta_h, synopsis_h);
+    let stack = hero_stack(title_h, meta_h, synopsis.as_ref().map(|v| v.measure_h(HERO_COL_W)));
     HeroLogo::new(hero.sid.raw(), hero_logo_rk(hero), title, LogoRung::Hero)
-        .draw(p, Rect::new(MARGIN_X, y, HERO_COL_W, title_h), measure);
-    y += title_h + theme::space::MD;
+        .draw(p, Rect::new(MARGIN_X, stack.title.y, HERO_COL_W, title_h), measure);
+    let y = stack.meta.y;
     meta_view.draw(p, Rect::new(MARGIN_X, y, HERO_COL_W, 0.0));
     if !source.is_empty() {
         draw_meta_source(
@@ -3523,12 +3744,8 @@ fn hero_content(hero: &PmsMovie, source: &str, p: Painter, dx: f32, measure: &dy
             measure,
         );
     }
-    y += meta_h;
-    if let Some(view) = synopsis {
-        view.draw(
-            p,
-            Rect::new(MARGIN_X, y + theme::space::SM, HERO_COL_W, 0.0),
-        );
+    if let (Some(view), Some(span)) = (synopsis, stack.synopsis) {
+        view.draw(p, Rect::new(MARGIN_X, span.y, HERO_COL_W, 0.0));
     }
 }
 
@@ -3538,17 +3755,6 @@ mod tests;
 mod placeholder_tests;
 #[cfg(test)]
 pub(crate) mod cards_harness; // Tier 2 card conformance (cards_conformance_tests.rs)
-
-/// A focused tile's title line. The deck's carries the amber ▶ only while OK on a Continue
-/// Watching card plays (`DeckPress::Play`): the triangle promises the press, so when OK opens the
-/// page there is none (`widgets::still_line`'s rule).
-fn deck_label(is_deck: bool, title: &str) -> ui_cards::TileLabel {
-    if is_deck && plx_media::route::deck_press().press_plays() {
-        ui_cards::TileLabel::played(title)
-    } else {
-        ui_cards::TileLabel::title(title)
-    }
-}
 
 /// The cards a landing removed, each under the element it had, in the order the shelf names them
 /// (`Shelf::ghost_keys`); a card the screen did not keep is `None` and is not drawn.
@@ -3656,10 +3862,8 @@ impl<H: HomeLike> CardSource<H> for HomeCards<'_> {
 
     fn label(&self, i: usize) -> ui_cards::TileLabel {
         let Some(item) = self.item(i) else { return ui_cards::TileLabel::default() };
-        let continue_watching = self.home.rows[self.row].identity == HomeHubIdentity::ContinueWatching;
-        let mut label = deck_label(continue_watching, &item.title);
-        label.caption = ui_cards::focused_caption(&tile_facts::of(item), continue_watching);
-        label
+        let deck = self.home.rows[self.row].identity == HomeHubIdentity::ContinueWatching;
+        crate::registry::captions::shelf_label(&crate::registry::captions::policy(), item, deck)
     }
 
     fn progress(&self, i: usize) -> Option<f32> {
@@ -3673,10 +3877,5 @@ impl<H: HomeLike> CardSource<H> for HomeCards<'_> {
 
     fn hover(&self, _i: usize) -> Hover {
         self.hover
-    }
-
-    /// The row sweeps in with the dive: its offset and its caption's lag are the spring's times `snap`.
-    fn sweep(&self) -> f32 {
-        self.home.snap.pos
     }
 }

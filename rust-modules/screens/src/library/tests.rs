@@ -36,6 +36,9 @@ impl LibraryLike for HostFixture {
     fn listing<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::ListingView<'a> { cx.views.listing }
     fn directory<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::DirectoryView<'a> { cx.views.directory }
     fn section_hubs<'a>(cx: &Cx<'a, Self>) -> plx_data::stores::browse::HubsView<'a> { cx.views.hubs }
+    /// The fixture's libraries all hold collections, and their probe has said so: the Collections
+    /// control is on the row only with a known count, and these tests are about a row that has it.
+    fn collections_count(_cx: &Cx<'_, Self>, _section: usize) -> Option<Result<u32, crate::registry::Forbidden>> { Some(Ok(4)) }
 }
 const ENTRY: EntryId = EntryId(81);
 const OWNER: InputOwner = InputOwner::Entry(ENTRY);
@@ -238,8 +241,8 @@ fn duplicate_across_pages_keeps_full_projection_recovery_metadata() {
         partial.sync(&fixture.cx(None));
         full.pair.detail.clear_projection();
         full.sync(&fixture.cx(None));
-        // The pass visits the wanted window (six rows of four), exactly, not the 60-slot listing.
-        assert_eq!(partial.pair.detail.publication_ops().0, 24);
+        // The pass visits the wanted window (five rows of six), exactly, not the 60-slot listing.
+        assert_eq!(partial.pair.detail.publication_ops().0, 30);
         assert!(partial.pair.detail.publication_ops().1 <= 120);
         canonical.push((grid_hash(&partial), grid_hash(&full)));
         observations.push((partial.keys.last_place(duplicate), full.keys.last_place(duplicate)));
@@ -363,49 +366,9 @@ fn down_from_a_missing_final_row_column_clamps_to_the_last_item() {
 }
 
 #[test]
-fn rail_eligibility_and_last_producer_hold_over_a_long_shelf() {
+fn owned_rail_keeps_the_fixed_grid_top_origin_and_short_window() {
     let _guard = plx_base::testlock::serial();
-    let session = plx_plex::plex::session::TempSession::new("library-rail-layer");
-    session.watching("u-library-rail-layer");
-    let mut fixture = Fixture::shelves(&["movie.inprogress.1", "movie.recentlyadded.1"], 12);
-    let view = fixture.listing.view();
-    let id = view.id().unwrap();
-    let items = (0..view.total() as usize).map(|i| view.item(i).cloned()).collect();
-    fixture.listing = plx_data::browse::view::ListingSnapshot::fixture(id.sid, items,
-        (0..9).map(|i| (format!("{i}"), 14)).collect()).with_section(id.epoch, id.section);
-    let mut page = fixture.screen();
-    assert!(page.layout.row_y(0, page.scroll.pos) > SCR_H, "the fixture grid starts below the viewport");
-    let shelf = page.key(*page.shelves[0].elems.last().unwrap());
-    let mut engine = FocusEngine::new();
-    engine.set(OWNER, shelf, Some(page.shelves[0].group), By::Restore);
-    let mut groups = Vec::new();
-    page.groups(&fixture.cx(Some(shelf)), &mut groups);
-    assert!(!groups.iter().any(|group| group.id == page.pair.groups_config().master));
-    direction(&mut page, &mut engine, &fixture, Dir::Right);
-    assert_eq!(engine.current(OWNER), Some(shelf), "the shelf edge cannot enter an ineligible rail");
-
-    let grid = page.key(page.pair.detail.elem_at(0).unwrap());
-    engine.set(OWNER, grid, Some(page.pair.groups_config().detail), By::Restore);
-    let cx = fixture.cx(Some(grid));
-    page.pair.master.advance(&cx, Some(0), true, 0.05);
-    let rail = page.key(page.pair.master.elems[0]);
-    let placed = page.place(&rail.elem, &cx, At::Drawn).unwrap();
-    assert!(placed.clip.h > 0.0);
-    let mut draw = DrawFrame::new(&cx, plx_ui::Painter::root());
-    page.record_stops(&mut draw);
-    let stops = draw.into_stops();
-    assert!(stops.iter().any(|stop| region_of_elem(stop.key.elem) == Some(KeyRegion::Shelf)
-        && stop.rect.intersect(stop.clip).contains(placed.rect.cx(), placed.rect.cy())), "the producer-order assertion needs actual overlap");
-    let mut hit = plx_ui::hit::HitMap::new();
-    hit.fill(stops); hit.swap();
-    assert_eq!(hit.top_at(placed.rect.cx(), placed.rect.cy()).map(|stop| stop.key), Some(rail),
-        "the eligible rail must paint and register after the document's wide shelf");
-}
-
-#[test]
-fn owned_rail_keeps_the_fixed_legacy_origin_and_short_window() {
-    let _guard = plx_base::testlock::serial();
-    for n in [9, 30] {
+    for n in [9, 40] {
         let mut fixture = Fixture::new();
         let sid = plx_plex::plex::ServerId::from_raw(0);
         fixture.listing = plx_data::browse::view::ListingSnapshot::fixture(sid,
@@ -415,10 +378,37 @@ fn owned_rail_keeps_the_fixed_legacy_origin_and_short_window() {
         let mut groups = Vec::new();
         page.pair.master.groups(&fixture.cx(Some(page.key(page.pair.detail.elem_at(0).unwrap()))), &mut groups);
         let rail = groups.first().expect("the fixture has a real rail").extent;
-        assert_eq!(rail.y, 240.0, "the rail is not attached to the scrolling first grid row");
+        // a short alphabet starts at the grid's top; a long one climbs to the board's 152 first
+        assert_eq!(rail.y, if n == 9 { 244.0 } else { 152.0 }, "the rail is not attached to the scrolling first grid row");
         if n == 9 { assert_eq!(rail.h, 9.0 * layout::RAIL_PITCH); }
-        else { assert!(rail.h < n as f32 * layout::RAIL_PITCH, "long alphabets scroll at the same pitch"); }
+        else { assert!(rail.h < n as f32 * layout::rail_pitch(n), "an alphabet too long even squeezed scrolls"); }
     }
+}
+
+#[test]
+fn the_rail_lists_the_whole_alphabet_and_letters_the_server_omitted_are_empty() {
+    let _guard = plx_base::testlock::serial();
+    let mut fixture = Fixture::new();
+    let sid = plx_plex::plex::ServerId::from_raw(0);
+    // PMS answers only the letters something starts with.
+    fixture.listing = plx_data::browse::view::ListingSnapshot::fixture(sid,
+        (0..6).map(|i| Some(plx_data::pms::PmsMovie { sid, rk: format!("{i}"), ..Default::default() })).collect(),
+        vec![("B".into(), 2), ("C".into(), 1), ("E".into(), 3)]);
+    let page = fixture.screen();
+    let rail = &page.pair.master;
+    assert_eq!(rail.elems.len(), 26, "A to Z, not the three the server listed");
+    let empty: Vec<usize> = (0..26).filter(|i| rail.letter_empty(*i)).collect();
+    assert_eq!(empty.len(), 23, "every letter but B, C and E is dimmed and skipped by focus");
+    assert!(!empty.contains(&1) && !empty.contains(&2) && !empty.contains(&4));
+    assert_eq!(rail.letter_for_item(0), 1);
+    assert_eq!(rail.letter_for_item(2), 2);
+    assert_eq!(rail.letter_for_item(3), 4, "the jump offsets are the prefix sums: E starts at item 3");
+    let (_, _, h, max) = layout::rail_geom(26);
+    assert_eq!(max, 0.0);
+    let mut groups = Vec::new();
+    page.pair.master.groups(&fixture.cx(Some(page.key(page.pair.detail.elem_at(0).unwrap()))), &mut groups);
+    let extent = groups.first().expect("the rail is a group").extent;
+    assert!((extent.h - h).abs() < 0.01 && extent.y + extent.h < 1080.0, "the whole alphabet stands on screen");
 }
 
 #[test]
@@ -635,7 +625,7 @@ fn a_fully_discovered_missing_kind_finishes_its_fade_and_has_no_foreign_grid() {
         "waiting for Shows cannot page through the retained Movies listing");
     let mut groups = Vec::new();
     page.groups(&fixture.cx(None), &mut groups);
-    assert!(!groups.iter().any(|g| g.id == page.pair.groups_config().detail || g.id == page.toolbar_group()));
+    assert!(!groups.iter().any(|g| g.id == page.pair.groups_config().detail));
     assert!(page.focused_item(Some(page.key(page.keys.keys().first().map_or(0, |k| k.elem))), &fixture.cx(None)).is_none());
 }
 
@@ -694,7 +684,7 @@ fn actual_sort_menu_traps_engine_navigation_in_its_own_entry() {
     let owner = InputOwner::Entry(entry);
     let arg = crate::registry::LibraryMenuArg { host: InstanceId(19),
         target: page.address(&fixture.cx(None)).unwrap(), kind: crate::registry::LibraryMenuKind::Sort,
-        anchor: [0; 4] };
+        anchor: [0; 4], folded: Vec::new(), opener: None };
     let mut menu = menu::LibraryMenu::new(entry, arg);
     let mut out = Vec::new();
     let mut present = plx_machine::present::Present::new();
@@ -813,7 +803,7 @@ fn published_library_projection_and_layout_enter_canonical_state() {
 }
 
 #[test]
-fn library_capsule_and_control_motion_enter_canonical_state() {
+fn a_pending_library_switch_enters_canonical_state() {
     let hash = |page: &LibraryScreen| {
         let mut c = Canon::new();
         page.write(&mut c);
@@ -821,12 +811,8 @@ fn library_capsule_and_control_motion_enter_canonical_state() {
     };
     let mut page = LibraryScreen::new(ENTRY, InstanceId(19), SecKind::Movie);
     let initial = hash(&page);
-    page.library_capsules.update(0, 0, |_| Some((120.0, 180.0)),
-        plx_ui::widgets::SelMark::Travels, 0.016);
-    let capsule = hash(&page);
-    assert_ne!(initial, capsule, "held capsule geometry affects subsequent frames");
-    page.library_pop.step(Some(0), 0.016);
-    assert_ne!(capsule, hash(&page), "control focus and spring velocity affect subsequent frames");
+    page.switched = true;
+    assert_ne!(initial, hash(&page), "the header-focus-keeping switch changes subsequent frames");
 }
 
 #[test]
@@ -972,9 +958,12 @@ fn failed_and_empty_readouts_offer_only_their_real_owned_controls() {
         assert_eq!(page.readout, expected);
         let mut groups = Vec::new();
         page.groups(&cx, &mut groups);
-        assert_eq!(groups.iter().any(|g| g.id == page.pair.groups_config().detail), grid);
-        for control in [TYPE, SORT, FILTER] {
-            assert_eq!(page.place(&control, &cx, At::SpringTarget).is_some(), head);
+        // (A loading listing declares its grid group EMPTY, `PageRegions::declare_pending`: no control.)
+        assert_eq!(groups.iter().any(|g| g.id == page.pair.groups_config().detail && g.len > 0), grid);
+        // The header row is the way out of every state, so its controls are always placed.
+        let _ = head;
+        for control in [SORTFILTER] {
+            assert!(page.place(&control, &cx, At::SpringTarget).is_some());
         }
         assert_eq!(page.place(&RETRY, &cx, At::SpringTarget).is_some(), retry);
         if !grid {
@@ -1006,16 +995,19 @@ fn foreign_section_replacement_upgrades_a_grid_fade_once() {
 }
 
 #[test]
-fn toolbar_stops_use_the_shared_value_chip_measurement() {
+fn header_controls_sit_in_the_header_row_left_to_right() {
     let _guard = plx_base::testlock::serial();
     let fixture = Fixture::new();
     let page = fixture.screen();
     let cx = fixture.cx(None);
-    let sort = page.place(&SORT, &cx, At::Drawn).unwrap().rect;
-    let filter = page.place(&FILTER, &cx, At::Drawn).unwrap().rect;
-    assert_eq!(sort.w, plx_ui::value_chip::ValueChip::width(cx.measure, c"Sort", c" · Title", None));
-    assert_eq!(filter.w, plx_ui::value_chip::ValueChip::width(cx.measure, c"Filter", c" · All", None));
-    assert_eq!(filter.x, sort.x + sort.w + 16.0);
+    let mut last = f32::MIN;
+    for elem in page.toolbar_elems() {
+        let rect = page.place(elem, &cx, At::Drawn).unwrap().rect;
+        assert!(rect.x >= last, "{elem}: controls read left to right without overlap");
+        let lowered = if page.libraries.is_empty() { layout::SINGLE_LIBRARY_DY } else { 0.0 };
+        assert_eq!(rect.y + rect.h * 0.5, layout::HEADER_Y + lowered + plx_ui::page_header::HEIGHT * 0.5 - page.scroll.pos);
+        last = rect.x + rect.w;
+    }
 }
 
 #[test]
@@ -1041,10 +1033,6 @@ fn section_grid_memories_do_not_overwrite_one_another() {
     assert!(engine.remembered_for(ENTRY).contains(&(group_b, card_b.elem)));
     engine.enter(OWNER, &page, FocusTarget::ContainerGroup(group_a), None, &fixture.cx(engine.current(OWNER)));
     assert_eq!(engine.current(OWNER), Some(card_a), "Remembered seating restores the exact section card");
-    // Enter the rail through a toolbar: projection must consult only this section's grid memory.
-    engine.set(OWNER, page.key(FILTER), Some(page.toolbar_group()), By::Dir);
-    direction(&mut page, &mut engine, &fixture, Dir::Right);
-    assert_eq!(page.pair.master.start_for_elem(engine.current(OWNER).unwrap().elem), Some(0));
 }
 
 #[test]
@@ -1179,99 +1167,6 @@ fn direction(page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, fixture: &
 }
 
 #[test]
-fn shelf_horizontal_viewport_and_engine_item_survive_body_eviction() {
-    let _guard = plx_base::testlock::serial();
-    let session = plx_plex::plex::session::TempSession::new("library-shelf-return");
-    session.watching("u-library-shelf-return");
-    let fixture = Fixture::shelves(&["movie.inprogress.1"], 12);
-    let mut page = fixture.screen();
-    page.shelves[0].cards.restore_scroll(700.0, 12);
-    let key = page.key(page.shelves[0].elems[3]);
-    let before = page.place(&key.elem, &fixture.cx(Some(key)), At::Drawn).unwrap().rest_rect;
-    let mut engine = FocusEngine::new();
-    engine.set(OWNER, key, Some(page.shelves[0].group), By::Restore);
-    let memory = page.page_memory();
-    let mut restored = LibraryScreen::new(ENTRY, InstanceId(20), SecKind::Movie);
-    restored.restore(&memory);
-    restored.sync(&fixture.cx(Some(key)));
-    engine.enter(OWNER, &restored, FocusTarget::ContainerGroup(restored.shelves[0].group), Some(key), &fixture.cx(Some(key)));
-    assert_eq!(engine.current(OWNER), Some(key));
-    assert_eq!(restored.shelves[0].cards.scroll(), 700.0);
-    let after = restored.place(&key.elem, &fixture.cx(Some(key)), At::Drawn).unwrap().rest_rect;
-    assert_eq!([before.x, before.y, before.w, before.h], [after.x, after.y, after.w, after.h]);
-    assert_eq!(restored.focused_item(engine.current(OWNER), &fixture.cx(Some(key))).unwrap().rk, "movie.inprogress.1-3");
-}
-
-/// A page that turns opaque while a compact menu covers it must not stay dormant until Uncover: the
-/// focused tile and the opener lift the menu's redraw reads would draw unpopped under the menu.
-#[test]
-fn a_page_that_turns_opaque_while_covered_draws_its_focused_tile_popped() {
-    let _guard = plx_base::testlock::serial();
-    let session = plx_plex::plex::session::TempSession::new("library-covered-fade");
-    session.watching("u-library-covered-fade");
-    let fixture = Fixture::shelves(&["movie.inprogress.1"], 12);
-    let mut page = fixture.screen();
-    page.live = true;
-    page.page_fade.mount();
-    let key = page.key(page.shelves[0].elems[2]);
-    let mut engine = FocusEngine::new();
-    engine.set(OWNER, key, Some(page.shelves[0].group), By::Restore);
-    let tick = |page: &mut LibraryScreen, engine: &FocusEngine<u32>, ms: u32| {
-        let mut out = Vec::new();
-        let mut present = plx_machine::present::Present::new();
-        let mut cx = fixture.cx(engine.current(OWNER));
-        cx.tick = Tick { ms, dt_us: 16_667 };
-        page.step(&ScreenEvent::Tick(cx.tick), &cx,
-            &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
-    };
-    for ms in 0..3 { tick(&mut page, &engine, ms * 16); }
-    assert!(page.page_fade.is_arriving(), "the page is still dissolving in");
-    deliver(&mut page, &mut engine, &fixture, ScreenEvent::Cover);
-    for ms in 3..200 { tick(&mut page, &engine, ms * 16); }
-    assert!(page.page_fade.alpha() >= 1.0, "the page turned opaque under the menu");
-    let cx = fixture.cx(engine.current(OWNER));
-    let pop = page.shelves[0].cards.scale_of(&cx, &page.hub_src(0, &cx), &key.elem).unwrap();
-    assert!((pop - RowStyle::HOME.focus_scale).abs() < 0.002,
-        "the focused tile draws at {pop}, not popped, though the page is opaque");
-}
-
-#[test]
-fn shelf_return_follows_the_film_then_its_last_published_slot() {
-    let _guard = plx_base::testlock::serial();
-    let session = plx_plex::plex::session::TempSession::new("library-shelf-removal");
-    session.watching("u-library-shelf-removal");
-    for evict in [false, true] {
-        for remove_focused in [false, true] {
-            let mut fixture = Fixture::shelves(&["movie.inprogress.1"], 6);
-            let mut page = fixture.screen();
-            let key = page.key(page.shelves[0].elems[3]);
-            let memory = page.page_memory();
-            let item = fixture.hubs.view().shelves()[0].items[if remove_focused { 3 } else { 0 }].clone();
-            let stores = fixture.stores.as_ref().unwrap();
-            assert!(stores.browse_run(BrowseCmd::ApplyView {
-                at: plx_data::viewstate::ViewAt::leaf(item.sid, &item.rk),
-                edit: plx_data::viewstate::ViewEdit::LeftDeck,
-            }));
-            let publication = stores.capture_browse(&mut fixture.directory);
-            fixture.hubs = publication.section_hubs;
-            if evict {
-                page = LibraryScreen::new(ENTRY, InstanceId(20), SecKind::Movie);
-                page.restore(&memory);
-            }
-            page.sync(&fixture.cx(Some(key)));
-            let mut engine = FocusEngine::new();
-            engine.set(OWNER, key, Some(page.shelves[0].group), By::Restore);
-            engine.enter(OWNER, &page, FocusTarget::ContainerGroup(page.shelves[0].group), Some(key), &fixture.cx(Some(key)));
-            let focus = engine.current(OWNER).unwrap();
-            let item = page.focused_item(Some(focus), &fixture.cx(Some(focus))).unwrap();
-            assert_eq!(item.rk, if remove_focused { "movie.inprogress.1-4" } else { "movie.inprogress.1-3" });
-            assert_eq!(page.shelves[0].elems.iter().position(|elem| *elem == focus.elem), Some(if remove_focused { 3 } else { 2 }));
-            if !remove_focused { assert_eq!(focus, key); }
-        }
-    }
-}
-
-#[test]
 fn projected_entry_preserves_the_last_item_within_a_letter_then_live_move_jumps() {
     let _guard = plx_base::testlock::serial();
     let fixture = Fixture::new();
@@ -1289,22 +1184,6 @@ fn projected_entry_preserves_the_last_item_within_a_letter_then_live_move_jumps(
     assert_eq!(direction(&mut page, &mut engine, &fixture, Dir::Down), 1);
     direction(&mut page, &mut engine, &fixture, Dir::Left);
     assert_eq!(page.grid_position(engine.current(OWNER)), Some((3, 0)));
-}
-
-#[test]
-fn toolbar_rail_entry_uses_engine_grid_memory_and_returns_to_toolbar() {
-    let _guard = plx_base::testlock::serial();
-    let fixture = Fixture::new();
-    let mut page = fixture.screen();
-    let mut engine = FocusEngine::new();
-    let exact = page.key(page.pair.detail.elem_at(23).unwrap());
-    engine.set(OWNER, exact, Some(page.pair.groups_config().detail), By::Restore);
-    engine.set(OWNER, page.key(FILTER), Some(page.toolbar_group()), By::Dir);
-    assert_eq!(direction(&mut page, &mut engine, &fixture, Dir::Right), 0);
-    assert_eq!(page.pair.master.start_for_elem(engine.current(OWNER).unwrap().elem), Some(18));
-    direction(&mut page, &mut engine, &fixture, Dir::Left);
-    assert_eq!(engine.current(OWNER), Some(page.key(FILTER)));
-    assert_eq!(engine.remembered_for(ENTRY).iter().find(|(g, _)| *g == page.pair.groups_config().detail).unwrap().1, exact.elem);
 }
 
 #[test]
@@ -1351,7 +1230,7 @@ fn sort_chosen_during_section_fade_commits_to_the_incoming_library() {
     let mut present = plx_machine::present::Present::new();
     let mut fx = Effects::new(&mut output, MachineId::Instance(InstanceId(19)), &mut present);
     page.activate(page.libraries[1].0, false, &fixture.cx(None), &mut fx);
-    page.activate(SORT, false, &fixture.cx(None), &mut fx);
+    page.activate(SORTFILTER, false, &fixture.cx(None), &mut fx);
     drop(fx);
     let incoming = SectionAddress { epoch: 1, sid, section: 2 };
     let target = output.iter().find_map(|effect| match &effect.fx {
@@ -1395,12 +1274,11 @@ fn a_single_favourite_library_draws_no_selector() {
                 pinned: true, current: true, ..Default::default() } }]);
     let page = fixture.screen();
     assert!(page.libraries.is_empty(), "a lone favourite must clear the selector");
-    assert!(!page.layout.libraries, "no row height is reserved for it");
+    assert!(page.layout.libraries, "the header row is always reserved, names or not");
     let cx = fixture.cx(None);
     let mut groups = Vec::new();
     page.groups(&cx, &mut groups);
-    assert!(!groups.iter().any(|group| group.id == LIBRARY_GROUP),
-        "no selector focus group is offered");
+    assert_eq!(page.header_elems(), page.toolbar_elems(), "the header row holds only the controls");
     let mut draw = DrawFrame::new(&cx, plx_ui::Painter::root());
     page.record_stops(&mut draw);
     let stops = draw.into_stops();
@@ -1420,78 +1298,15 @@ fn favorite_library_row_uses_shared_strip_geometry_and_incoming_type() {
                 current: i == 0, ..Default::default() } }).collect());
     let mut page = fixture.screen();
     let cx = fixture.cx(None);
-    let lays = plx_ui::widgets::strip_layout_measured(["Library 0".into(), "Library 1".into()].into_iter(),
-        MARGIN_X + plx_ui::widgets::STRIP_PAD, plx_ui::theme::size::BODY,
-        plx_ui::widgets::STRIP_GAP_WIDE, cx.measure);
-    for (i, lay) in lays.iter().enumerate() {
-        let expected = plx_ui::widgets::strip_pill_rect(lay, CONTENT_TOP, plx_ui::widgets::StatusOverlay::CTRL_H);
-        let actual = page.library_rect(i, &cx);
-        assert_eq!([actual.x, actual.y, actual.w, actual.h], [expected.x, expected.y, expected.w, expected.h]);
+    for (elem, _) in page.libraries.clone() {
+        let rect = page.place(&elem, &cx, At::Drawn).unwrap().rect;
+        assert_eq!(rect.y + rect.h * 0.5, layout::HEADER_Y + plx_ui::page_header::HEIGHT * 0.5, "names sit in the header row");
     }
     page.pending.request_section(SectionTarget { epoch: 1, index: 3,
         identity: LibrarySectionIdentity { sid, key: 4 }, kind: SecKind::Show });
     page.sync(&cx);
     assert_eq!(page.libraries.iter().map(|(_, section)| *section).collect::<Vec<_>>(), vec![2, 3],
         "the favorite row must not keep movie libraries beneath the incoming Shows type");
-}
-
-#[test]
-fn rapid_shelf_moves_use_settled_geometry_and_walk_each_document_row() {
-    let _guard = plx_base::testlock::serial();
-    let session = plx_plex::plex::session::TempSession::new("library-shelf-geometry");
-    session.watching("u-library-shelf-geometry");
-    let fixture = Fixture::shelves(&["s0", "s1", "s2"], 12);
-    let listing_id = fixture.listing.view().id().unwrap();
-    let hubs_id = fixture.hubs.view().id().unwrap();
-    assert_eq!((listing_id.epoch, listing_id.sid, listing_id.section), (hubs_id.epoch, hubs_id.sid, hubs_id.section));
-    assert_eq!(fixture.hubs.view().shelves().len(), 3);
-    let mut page = fixture.screen();
-    let mut engine = FocusEngine::new();
-    let first = page.key(page.shelves[0].elems[3]);
-    engine.set(OWNER, first, Some(page.shelves[0].group), By::Restore);
-    let resting = page.place(&first.elem, &fixture.cx(Some(first)), At::Drawn).unwrap();
-    let mut pressed_cx = fixture.cx(Some(first));
-    pressed_cx.press = PressRead { scale: 0.85, is_long: true, held_ms: None, owner: Some(first) };
-    let pressed = page.place(&first.elem, &pressed_cx, At::Drawn).unwrap();
-    assert!(pressed.rect.w < resting.rect.w);
-    let rect = |r: Rect| [r.x, r.y, r.w, r.h];
-    assert_eq!(rect(pressed.rest_rect), rect(resting.rest_rect), "hold/menu opener stays on the unpressed card rectangle");
-    direction(&mut page, &mut engine, &fixture, Dir::Down);
-    assert_eq!(engine.current_group(OWNER), Some(page.shelves[1].group), "the grid cannot stand geometrically above the shelves that precede it");
-    let key = engine.current(OWNER).unwrap();
-    let drawn = page.place(&key.elem, &fixture.cx(Some(key)), At::Drawn).unwrap();
-    let settled = page.place(&key.elem, &fixture.cx(Some(key)), At::SpringTarget).unwrap();
-    assert_ne!(drawn.rect.y, settled.rect.y, "the second key must resolve against the destination document and scroll");
-    direction(&mut page, &mut engine, &fixture, Dir::Down);
-    assert_eq!(engine.current_group(OWNER), Some(page.shelves[2].group));
-    assert_eq!(page.shelves[2].elems.iter().position(|elem| *elem == engine.current(OWNER).unwrap().elem), Some(3));
-}
-
-#[test]
-fn shelf_publication_request_distinguishes_page_fade_from_grid_fade_and_head_focus() {
-    let _guard = plx_base::testlock::serial();
-    let fixture = Fixture::new();
-    let mut page = fixture.screen();
-    page.initial = false;
-    let grid = page.key(page.pair.detail.elem_at(0).unwrap());
-    let request = |page: &mut LibraryScreen| {
-        let mut out = Vec::new();
-        let mut present = plx_machine::present::Present::new();
-        page.step(&ScreenEvent::Tick(Tick::default()), &fixture.cx(Some(grid)),
-            &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
-        out.into_iter().find_map(|effect| match effect.fx {
-            Fx::App(AppFx::Library(LibraryReq::PublishShelves { hidden_page, at_head, .. })) => Some((hidden_page, at_head)), _ => None,
-        }).unwrap()
-    };
-    assert_eq!(request(&mut page), (false, true), "grid focus at a settled document head does not starve the first shelf publication");
-    page.scroll.jump(700.0);
-    page.scroll_target = 700.0;
-    page.grid_fade.reload();
-    assert_eq!(request(&mut page), (false, false), "a fading grid leaves the shelves visible");
-    page.page_fade.reload();
-    assert_eq!(request(&mut page), (false, false), "the outgoing page remains visible until the fade floor");
-    page.page_fade.mount();
-    assert_eq!(request(&mut page), (true, false), "only the full-page fade permits publication away from the head");
 }
 
 /// **The page glyph and the Library's own live tab strip never overlap.** They used to (measured
@@ -1509,7 +1324,7 @@ fn the_page_glyph_and_the_librarys_live_tab_strip_never_overlap() {
     use plx_ui::widgets::StatusOverlay;
     let _guard = plx_base::testlock::serial();
     let tab_strip_bottom = CONTENT_TOP + StatusOverlay::CTRL_H;
-    assert_eq!(tab_strip_bottom, 254.0, "the tab strip band moved — re-measure the fix against it");
+    assert_eq!(tab_strip_bottom, 208.0, "the tab strip band moved — re-measure the fix against it");
 
     // A live strip: two pinned sections of the current kind. `favorite_sections_for` only
     // populates `self.libraries` for 2+ candidates (see
@@ -1554,140 +1369,13 @@ fn the_page_glyph_and_the_librarys_live_tab_strip_never_overlap() {
 
 mod type_tests { include!("type_tests.rs"); }
 
+mod collections_listing_tests { include!("collections_listing_tests.rs"); }
+
 mod art_admission_tests { include!("art_admission_tests.rs"); }
 mod lookahead_tests { include!("lookahead_tests.rs"); }
 
 mod grid_motion_tests { include!("grid_motion_tests.rs"); }
 mod keys_window_tests { include!("keys_window_tests.rs"); }
-mod shelf_paging_tests { include!("shelf_paging_tests.rs"); }
-
-#[test]
-fn every_published_shelf_is_on_the_page_and_reachable() {
-    let _guard = plx_base::testlock::serial();
-    let session = plx_plex::plex::session::TempSession::new("library-fifteen-shelves");
-    session.watching("u-library-fifteen-shelves");
-    let titles: Vec<String> = (0..15).map(|i| format!("shelf-{i:02}")).collect();
-    let titles: Vec<&str> = titles.iter().map(String::as_str).collect();
-    let fixture = Fixture::shelves(&titles, 6);
-    let mut page = fixture.screen();
-    assert_eq!(page.shelves.len(), 15, "the page keeps every shelf the server published");
-    assert_eq!(page.layout.shelves, 15);
-    let mut engine = FocusEngine::new();
-    let first = page.key(page.shelves[0].elems[0]);
-    engine.set(OWNER, first, Some(page.shelves[0].group), By::Restore);
-    for _ in 0..14 { direction(&mut page, &mut engine, &fixture, Dir::Down); }
-    assert_eq!(engine.current(OWNER).map(|key| key.elem), Some(page.shelves[14].elems[0]),
-        "fourteen DOWN presses walk from the first shelf to the fifteenth");
-}
-
-/// Of 170 shelves only the handful whose band crosses the panel are drawn and recorded.
-#[test]
-fn draw_visits_only_shelves_in_the_window() {
-    let _guard = plx_base::testlock::serial();
-    let session = plx_plex::plex::session::TempSession::new("library-shelf-window");
-    session.watching("u-library-shelf-window");
-    let titles: Vec<String> = (0..170).map(|i| format!("shelf-{i:03}")).collect();
-    let titles: Vec<&str> = titles.iter().map(String::as_str).collect();
-    let fixture = Fixture::shelves(&titles, 6);
-    let mut page = fixture.screen();
-    assert_eq!(page.shelves.len(), 170);
-    let key = page.key(page.shelves[100].elems[0]);
-    let cx = fixture.cx(Some(key));
-    page.reveal(key, By::Pointer, &cx);
-    page.scroll.jump(page.scroll_target);
-    page.relayout(Some(key));
-    // `draw_page` rasterizes, which a host test cannot do; it loops over the same `shelf_window`
-    // the stop recorder does, so the recorder's visits and the window's width cover both.
-    let window = page.shelf_window();
-    assert!(window.contains(&100), "the focused shelf is in the window: {window:?}");
-    assert!(window.len() <= 8, "{window:?} of 170 shelves; the window holds a screenful");
-    page.shelf_visits.set(0);
-    let mut draw = DrawFrame::new(&cx, plx_ui::Painter::root());
-    page.record_stops(&mut draw);
-    let visited = page.shelf_visits.get();
-    assert!(visited >= 1, "the focused shelf at least is visited");
-    assert!(visited <= 8, "{visited} of 170 shelves visited; the window holds a screenful");
-}
-
-#[test]
-fn a_released_shelf_row_reaches_exact_rest() {
-    let _guard = plx_base::testlock::serial();
-    let session = plx_plex::plex::session::TempSession::new("library-shelf-rest");
-    session.watching("u-library-shelf-rest");
-    let fixture = Fixture::shelves(&["s0", "s1"], 12);
-    let mut page = fixture.screen();
-    let on = page.key(page.shelves[0].elems[3]);
-    let tick = |page: &mut LibraryScreen, focus| {
-        let mut out = Vec::new();
-        let mut present = plx_machine::present::Present::new();
-        page.step(&ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 }), &fixture.cx(focus),
-            &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
-    };
-    for _ in 0..30 { tick(&mut page, Some(on)); }
-    assert!(!page.shelves[0].cards.at_rest(), "a focused row is mid-spring");
-    let off = page.key(page.shelves[1].elems[0]);
-    for _ in 0..600 { tick(&mut page, Some(off)); }
-    assert!(page.shelves[0].cards.at_rest(), "a released row parks instead of being stepped forever");
-}
-
-/// `run` and `target_run` are derived, with no dirty flag: every relayout refills both, so after
-/// any event that can move a pitch they equal a run built fresh from the shelves.
-#[test]
-fn the_runs_equal_a_fresh_recompute_after_every_kind_of_change() {
-    let _guard = plx_base::testlock::serial();
-    let session = plx_plex::plex::session::TempSession::new("library-run-fresh");
-    session.watching("u-library-run-fresh");
-    let fresh = |page: &LibraryScreen, focus: Option<FocusKey<u32>>| {
-        let live = layout::ShelfRun::of(&page.shelves.iter()
-            .map(|row| layout::shelf_pitch(row.landscape, row.cards.band_expand())).collect::<Vec<_>>());
-        let target = layout::ShelfRun::of(&page.shelves.iter()
-            .map(|row| layout::shelf_pitch(row.landscape, f32::from(focus.is_some_and(|key| row.elems.contains(&key.elem)))))
-            .collect::<Vec<_>>());
-        assert_eq!(page.run, live, "live run");
-        assert_eq!(page.target_run, target, "target run");
-        assert_eq!(page.layout.grid_block_top().to_bits(), (page.layout.library_h() + live.height()).to_bits());
-        assert_eq!(page.target_layout.grid_block_top().to_bits(), (page.target_layout.library_h() + target.height()).to_bits());
-    };
-    let tick = |page: &mut LibraryScreen, fixture: &Fixture, focus| {
-        let mut out = Vec::new();
-        let mut present = plx_machine::present::Present::new();
-        page.step(&ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 }), &fixture.cx(focus),
-            &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
-    };
-    let fixture = Fixture::shelves(&["a", "b", "c"], 6);
-    let mut page = fixture.screen();
-    fresh(&page, None);
-    let on = page.key(page.shelves[1].elems[2]);
-    for _ in 0..12 { tick(&mut page, &fixture, Some(on)); fresh(&page, Some(on)); }
-    let other = page.key(page.shelves[2].elems[0]);
-    page.reveal(other, By::Pointer, &fixture.cx(Some(other)));
-    fresh(&page, Some(other));
-    for _ in 0..12 { tick(&mut page, &fixture, Some(other)); fresh(&page, Some(other)); }
-
-    let memory = page.page_memory();
-    let mut restored = LibraryScreen::new(ENTRY, InstanceId(20), SecKind::Movie);
-    restored.restore(&memory);
-    restored.sync(&fixture.cx(None));
-    fresh(&restored, None);
-
-    let mut fixture = fixture;
-    {
-        let stores = fixture.stores.as_ref().unwrap();
-        stores.browse.borrow_mut().seed_shelves_for_test(0, &["a", "b", "c", "d", "e"], 6);
-        let publication = stores.capture_browse(&mut fixture.directory);
-        fixture.listing = publication.listing;
-        fixture.hubs = publication.section_hubs;
-    }
-    page.sync(&fixture.cx(Some(other)));
-    assert_eq!(page.shelves.len(), 5);
-    fresh(&page, Some(other));
-
-    page.wanted_kind = Some(SecKind::Show);
-    page.sync(&fixture.cx(None));
-    assert!(page.shelves.is_empty());
-    fresh(&page, None);
-    assert_eq!(page.run.len(), 0);
-}
 
 /// BACK from deep in the document returns to the top on the scroll SPRING, the way Home's BACK
 /// glides its page back to the hero — it must not snap. The reseat BACK raises arrives as
@@ -1753,90 +1441,4 @@ fn assert_back_glides(fixture: &Fixture, deep_index: usize) {
     }
     assert!(frames > 4, "reaching the top takes frames (took {frames}), it is not a cut");
     assert!(page.scroll.pos <= 0.5, "and it arrives");
-}
-
-/// **The page's focus groups are the base's, adopted shelves or not.** Their ids come from the key
-/// registry (sequential per kind, never from a position), their order is the document's
-/// (shelves in publication order, then the heading row, then the grid), the page's first seat is
-/// the first shelf and a shelf's elements keep their published order. A shelf drawn by
-/// `cards::Shelf` must not renumber, reorder or reseat any of it.
-#[test]
-fn the_pages_focus_groups_keep_their_ids_order_and_first_seat() {
-    let _guard = plx_base::testlock::serial();
-    let session = plx_plex::plex::session::TempSession::new("library-group-order");
-    session.watching("u-library-group-order");
-    let fixture = Fixture::shelves(&["movie.inprogress.1", "movie.recentlyadded.1"], 5);
-    let page = fixture.screen();
-    let mut groups = Vec::new();
-    page.groups(&fixture.cx(None), &mut groups);
-    let ids: Vec<u32> = groups.iter().map(|group| group.id.0).collect();
-    assert_eq!(ids, [0x2500_0003, 0x2500_0004, 0x2500_0002, 0x2500_0001],
-        "shelf 0, shelf 1, the heading row, the grid");
-    assert_eq!(groups.iter().map(|group| group.len).collect::<Vec<_>>(), [5, 5, 3, 120]);
-    assert_eq!(page.shelves.iter().map(|row| row.group.0).collect::<Vec<_>>(), [0x2500_0003, 0x2500_0004]);
-    assert_eq!(page.shelves[0].elems, [0x2200_0000, 0x2200_0001, 0x2200_0002, 0x2200_0003, 0x2200_0004]);
-    assert_eq!(page.shelves[1].elems, [0x2200_0005, 0x2200_0006, 0x2200_0007, 0x2200_0008, 0x2200_0009]);
-    assert_eq!(page.first_group(), page.shelves[0].group, "the page seats on its first shelf");
-    for (row, group) in page.shelves.iter().zip(&groups) {
-        assert!(matches!(group.kind, GroupKind::Row { wrap: false }) && group.seat == Seat::Remembered);
-        assert_eq!(page.row_elems(Some(row.group)), row.elems);
-        for elem in &row.elems {
-            assert_eq!(Focusable::<HostFixture>::group_of(&page, elem, &fixture.cx(None)), Some(row.group));
-        }
-    }
-    let mut links = Vec::new();
-    Screen::<HostFixture>::links(&page, &mut links);
-    assert!(links.iter().any(|link| link.from == page.shelves[0].group && link.dir == Dir::Down
-        && link.to == page.shelves[1].group), "the document is walked shelf by shelf");
-}
-
-/// The hold hint (`ui::hold_hint`) on a Library shelf card: it stands after the dwell once the
-/// page is opaque and the card at rest, not on a non-card focus, not while a menu owns focus, and
-/// not a second time on a Library page this run.
-#[test]
-fn the_hold_hint_stands_on_a_resting_library_card_once_per_run() {
-    let _guard = plx_base::testlock::serial();
-    plx_ui::hold_hint::reset_learned_for_test();
-    plx_ui::hold_hint::reset_shown_for_test();
-    let session = plx_plex::plex::session::TempSession::new("library-hold-hint");
-    session.watching("u-library-hold-hint");
-    let fixture = Fixture::shelves(&["movie.inprogress.1"], 12);
-    let mut page = fixture.screen();
-    page.live = true;
-    page.page_fade.mount();
-    let key = page.key(page.shelves[0].elems[2]);
-    let mut engine = FocusEngine::new();
-    engine.set(OWNER, key, Some(page.shelves[0].group), By::Restore);
-    let mut ms = 0;
-    let mut rest = |page: &mut LibraryScreen, focus: Option<FocusKey<u32>>, secs: f32| {
-        for _ in 0..(secs * 60.0) as u32 {
-            ms += 17;
-            let mut out = Vec::new();
-            let mut present = plx_machine::present::Present::new();
-            let mut cx = fixture.cx(focus);
-            cx.tick = Tick { ms, dt_us: 16_667 };
-            page.step(&ScreenEvent::Tick(cx.tick), &cx,
-                &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
-        }
-    };
-    rest(&mut page, Some(key), 1.0); // the page dissolves in; the dwell only starts once it is at rest
-    assert!(!page.hold_hint.visible(), "not before the dwell");
-    // The negatives come BEFORE the first stand: once it has stood the kind's latch is spent and
-    // nothing could stand whatever the wiring.
-    let plain = Some(page.key(TYPE));
-    rest(&mut page, plain, 4.0);
-    assert!(!page.hold_hint.visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Library),
-        "never on a chip of the same entry");
-    rest(&mut page, Some(FocusKey { entry: EntryId(900), elem: 0 }), 4.0);
-    assert!(!page.hold_hint.visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Library),
-        "never while a menu owns focus");
-    rest(&mut page, None, 4.0);
-    assert!(!page.hold_hint.visible() && !plx_ui::hold_hint::shown_this_run(plx_ui::hold_hint::Kind::Library),
-        "never without a focused card");
-    rest(&mut page, Some(key), 3.0);
-    assert!(page.hold_hint.visible(), "after the dwell, on a settled card of an opaque page");
-    rest(&mut page, Some(FocusKey { entry: EntryId(900), elem: 0 }), 1.0);
-    assert!(!page.hold_hint.visible(), "a menu taking focus hides it");
-    rest(&mut page, Some(key), 4.0);
-    assert!(!page.hold_hint.visible(), "and not a second time on a Library page this run");
 }

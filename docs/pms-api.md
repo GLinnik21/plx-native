@@ -137,6 +137,14 @@ spec's "Media Queries" section documents the full query language.
   tag id, while its `guid` is shared with search hits and member `Collection[]` tags. Adding
   `includeCollections=1` to `/hubs/search` yields full collection `Metadata[]` rows rather than
   tag-shaped `Directory[]` hits.
+- **Collections count (the Library header's "Collections · N"):** `GET
+  /library/sections/{key}/all?type=18` with `X-Plex-Container-Start=0` and `X-Plex-Container-Size=0`
+  returns no rows and the section's collection count as `totalSize` (the same count the
+  `/collections` listing and `firstCharacter?type=18` total to). The client reads three answers apart:
+  a number (a real `0` included), a refusal (401/403 — an unshared section, as the listing above),
+  and unknown (404, transport failure, malformed body). Collection rows also carry `subtype` (`movie`, `show`, …), `smart`
+  (`"1"` for a smart collection — a saved filter whose `childCount` is its current match count, not a
+  hand-picked set), `childCount` and `addedAt`; a show row's `childCount` is its season count.
 - **Collection routes and hubs:** `/library/collections/{rk}/children` and `/items` return the same
   paged members. A promoted `custom.collection.*` hub embeds the members and carries the collection
   ratingKey in its identifier; a member's `collection.related.*` hub lists the whole collection.
@@ -216,7 +224,14 @@ the spec but **this server does not emit it on `Role[]`** — treat 0 as unknown
   `/tmp/plxnative-personbio` exists for one step further along — the biography degrades to a blank
   line, the filmography to nothing at all — and it is why `/tmp/plxnative-personcredits` had to be
   written. Reaching either with real data needs a signed-in account (`make sim` with a real
-  session, or the debug install with `--no-token`).
+  session, or the debug install with `--no-token`). A `devtriggers` build does not even ask on such
+  a boot, by decision (fail closed; the cost is accepted): with no Discover stand-in armed
+  (`plxnative-discover`, or a `plxnative-plextv` redirect that Discover follows) the person store
+  settles both reads as an empty answer without spawning a worker, `AccountClient::person_profile` /
+  `person_credits` refuse the same read if anything else calls them, and `discover: GET … refused` is
+  logged once. Such a boot shows no biography and no filmography credits; with a stand-in armed,
+  `tests/mock_pms.py` answers both routes with synthetic data (the credits 401 without a token there
+  too).
 - **The person's titles:** `GET /library/people/{personId}/media` → `Metadata[]`, everything the
   person appears in **across EVERY library section in one request** (person 161 → 3 items;
   person 6059 → 6). This is the right call for a person page; `?actor=<id>` below is the right
@@ -248,6 +263,14 @@ Discover guid to a server's own ratingKey; `docs/watchlist.md`.)
 - **Only the primary `plex://` guid matches.** `plex://movie/<24 hex>` and `plex://show/<24 hex>`.
   `imdb://`, `tmdb://` and `tvdb://` (which the items carry in `Guid[]` with `includeGuids=1`) answer
   size 0, so a title with no `plex://` guid cannot be looked up this way.
+- **An episode's `grandparentGuid` is the show's catalog id.** Measured 2026-10-21 on the local PMS: it
+  is `plex://show/<24 hex>` even for an episode whose own `guid` is `local://N`, and it is the global
+  agent id, the same on every server using the Plex agent. Continue Watching groups on it
+  (`docs/shared-servers.md`, "One tile per show in Continue Watching").
+- **A scrobble restamps `lastViewedAt` and moves the deck.** `/:/scrobble` on a never-watched episode
+  set `viewCount=1` and `lastViewedAt` to now, and `/hubs/continueWatching/items` then listed the show's
+  next episode first with that same `lastViewedAt`; `/:/unscrobble` restored both. Every row of that
+  hub carried `Media[0].Part[0]` (the hub parse fills `PmsMovie::part` from it).
 - **`type` narrows and must be right.** `type=1` movies, `type=2` shows. A wrong `type` answers
   size 0, which is indistinguishable from "not held", so the call is made once per kind and the kind
   comes from the guid's own prefix. Rows carry `librarySectionID` and, when the server has them,

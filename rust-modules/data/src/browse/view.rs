@@ -363,6 +363,9 @@ pub struct DirectorySnapshot {
     kind_fetch: [SecFetch; 2],
     stamp: Option<(u32, u32, usize, usize)>,
     data: Arc<DirectoryData>,
+    /// The current library's listing as it stands (an O(1) handle on its immutable pages), for a
+    /// page that illustrates the library without being on it ([`DirectoryView::sample`]).
+    items: super::SecItems,
     source: Option<usize>,
     source_fetch: SecFetch,
     discovery: SecFetch,
@@ -377,6 +380,7 @@ impl Default for DirectorySnapshot {
             kind_fetch: [SecFetch::Loading; 2],
             stamp: None,
             data: Arc::default(),
+            items: super::SecItems::default(),
             source: None,
             source_fetch: SecFetch::Loading,
             discovery: SecFetch::Loading,
@@ -407,6 +411,7 @@ impl DirectorySnapshot {
             });
             self.stamp = Some(stamp);
         }
+        self.items = state.states().get(state.cur()).map(|section| section.items.clone()).unwrap_or_default();
         self.source = state.cur_source_idx();
         self.source_fetch = state.cur_source_state();
         self.discovery = state.discovery_state();
@@ -434,12 +439,20 @@ impl DirectorySnapshot {
                 sections: Vec::new(),
                 favorites: Vec::new(),
             }),
+            items: super::SecItems::default(),
             source: Some(0),
             source_fetch: fetch,
             discovery: fetch,
             sections_gen: 0,
             tabs_gen: 0,
         }
+    }
+
+    /// This directory with `items` as the current library's listing (what [`DirectoryView::sample`] reads).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_sample(mut self, items: Vec<crate::pms::PmsMovie>) -> Self {
+        self.items = super::SecItems::from_vec(items.into_iter().map(Some).collect());
+        self
     }
 
     pub fn same_publication(&self, other: &Self) -> bool {
@@ -480,6 +493,7 @@ impl DirectorySnapshot {
                 sections,
                 favorites,
             }),
+            items: super::SecItems::default(),
             source: None,
             source_fetch: SecFetch::Ready,
             discovery: SecFetch::Ready,
@@ -510,6 +524,13 @@ impl<'a> DirectoryView<'a> {
 
     #[allow(dead_code)] // Wave 0 publication contract; consumer lanes take these accessors.
     pub fn section_count(self) -> usize { self.sections().len() }
+    /// The first `n` rows of the current library's listing that are loaded: the cached items a page
+    /// outside the Library shows as that library's posters (Settings > Under posters). Fewer than
+    /// `n` while the listing is short or its first page has not landed; none before a library is
+    /// chosen. Reads what the Library already holds and starts no fetch.
+    pub fn sample(self, n: usize) -> impl Iterator<Item = &'a crate::pms::PmsMovie> {
+        (0..n).filter_map(move |i| self.0.items.get(i))
+    }
     #[allow(dead_code)]
     pub fn source_list_gen(self) -> u32 { self.0.stamp.map_or(0, |stamp| stamp.1) }
     #[allow(dead_code)]

@@ -27,6 +27,10 @@
     "value": "Home",
     "description": "browse chrome home"
   },
+  "browse.chrome.search": {
+    "value": "Search",
+    "description": "browse chrome search"
+  },
   "browse.kind.movies": {
     "value": "Movies",
     "description": "browse kind movies"
@@ -42,6 +46,14 @@
   "browse.kind.movie": {
     "value": "Movie",
     "description": "browse kind movie"
+  },
+  "browse.kind.episode": {
+    "value": "Episode",
+    "description": "The kind word an episode tile's caption falls back to when the server sent it no number, year or show."
+  },
+  "browse.detail.specials": {
+    "value": "Specials",
+    "description": "A season numbered 0 that the server gave no title: the identity line of its caption (caption_policy)."
   },
   "browse.kind.show": {
     "value": "Show",
@@ -202,10 +214,6 @@
   "browse.detail.tonemap_needs": {
     "value": "tone-mapping needs",
     "description": "browse detail tonemap_needs"
-  },
-  "browse.home.continue": {
-    "value": "Continue",
-    "description": "browse home continue"
   },
   "browse.home.failed": {
     "value": "Can’t reach your Plex server",
@@ -2202,7 +2210,15 @@
   },
   "browse.collection.items": {
     "value": "Items",
-    "description": "Heading over the collection page's member grid"
+    "description": "Heading over the collection page's member grid when its members are neither films nor shows: the noun its count uses (browse.search.items)."
+  },
+  "browse.collection.films": {
+    "value": "Films",
+    "description": "Heading over the collection page's member grid when the collection holds films: the noun its count uses (browse.person.films), so '6 films' sits under 'Films'."
+  },
+  "browse.collection.shows": {
+    "value": "Shows",
+    "description": "Heading over the collection page's member grid when the collection holds shows: the noun its count uses (browse.person.shows)."
   },
   "browse.collection.order.release": {
     "value": "Release order",

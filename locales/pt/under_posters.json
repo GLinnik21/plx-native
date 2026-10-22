@@ -1,0 +1,19 @@
+{
+  "under_posters.title": "Sob os cartazes",
+  "under_posters.detail": "O que aparece sob o cartaz em que está.",
+  "under_posters.copy": "A maioria dos cartazes já mostra o título. Escolha o que aparece sob o cartaz em que está.",
+  "under_posters.title_row": "Título",
+  "under_posters.title_detail": "O nome, a negrito.",
+  "under_posters.details_row": "Detalhes",
+  "under_posters.details_detail": "Uma linha de informação.",
+  "under_posters.details_copy": "Os títulos iniciados, em breve ou as coleções mostram isso em vez disso: tempo restante, data de estreia, número de filmes.",
+  "under_posters.year_length": "Ano · Duração",
+  "under_posters.genre": "Género",
+  "under_posters.video": "Vídeo",
+  "under_posters.age_rating_score": "Classificação · Nota",
+  "under_posters.none": "Nada",
+  "under_posters.reset": "Repor predefinição",
+  "under_posters.reset_detail": "Ano e duração, sem título.",
+  "under_posters.sample_title": "Filme",
+  "under_posters.sample_genre": "Drama"
+}

@@ -127,6 +127,28 @@ impl Harness {
         sources
     }
 
+    /// The paints one descriptive draw declares (`frame::backdrop::discover`: primitives are
+    /// recorded, GL is never reached), glass and rects included, as the Library's tests read a page.
+    pub(crate) fn draw_paints(&mut self) -> Vec<std::rc::Rc<plx_gfx::gfx::backdrop::Paint>> {
+        let sources = std::rc::Rc::new(std::cell::RefCell::new(plx_gfx::gfx::backdrop::Sources::default()));
+        sources.borrow_mut().begin(vec![]);
+        let cx = Cx {
+            views: (),
+            tick: Tick { ms: self.ms, dt_us: 16_667 },
+            measure: &FixtureMeasure,
+            press: PressRead { scale: self.press, owner: self.focus, ..Default::default() },
+            focus: FocusRead { current: self.focus, ..Default::default() },
+            owner: InputOwner::Entry(ENTRY),
+        };
+        {
+            let _discovery = plx_ui::frame::backdrop::discover(sources.clone());
+            let mut f = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::root());
+            Screen::<WatchHost>::draw(&mut self.screen, &mut f);
+        }
+        let paints = sources.borrow().paints.clone();
+        paints
+    }
+
     /// Every text run the page's draw declares, as `(string, screen rect)` (`plx_ui::draw_census::capture_text`).
     pub(crate) fn draw_texts(&mut self) -> Vec<(String, Rect)> {
         let sources = std::rc::Rc::new(std::cell::RefCell::new(plx_gfx::gfx::backdrop::Sources::default()));
@@ -177,6 +199,20 @@ impl Harness {
         let _discovery = plx_ui::frame::backdrop::discover(sources);
         let mut f = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::recording());
         Screen::<WatchHost>::redraw_focused(&self.screen, &mut f, focus);
+    }
+
+    /// The opener lift's frame for `focus`, with what it declared: its primitives as `(tag, screen
+    /// rect)` and its text runs with their ink. A recording painter OUTSIDE a discovery walk, which
+    /// is the only place a run's ink is noted.
+    pub(crate) fn lift_census(&mut self, focus: Option<FocusKey<u32>>) -> (Vec<(u64, Rect)>, Vec<plx_ui::draw_census::Run>) {
+        use plx_ui::screen::Screen;
+        let cx = self.cx();
+        let mut f = plx_ui::screen::DrawFrame::new(&cx, plx_ui::Painter::recording());
+        let mut prims = Vec::new();
+        let runs = plx_ui::draw_census::capture_runs(|| {
+            prims = plx_ui::draw_census::capture(|| Screen::<WatchHost>::redraw_focused(&self.screen, &mut f, focus));
+        });
+        (prims, runs)
     }
 
     /// Step one event; returns the effects it queued and whether the step reported page motion.

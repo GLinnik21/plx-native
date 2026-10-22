@@ -417,3 +417,141 @@ four failures. The two anchors were recorded afresh on the unchanged shape (`tes
 --only 6,12`, old fixtures removed, `tools/plxnative-rec import`, manifests restored byte for byte,
 `anchor: true` kept) and replayed SAME in Targets and Resolve (`tests/replay_fixtures.py`, three
 consecutive runs) with every difference counter zero.
+
+The page header row's motion (the focus capsule that travels and the selection plate that lands,
+held by the Library, the Watchlist and the Recommended page; `LibraryScreen::SHAPE` gains two
+entries and `WatchlistScreen::SHAPE` two fields, pin `0xbd4f_cd3e_ff97_a15f`) moved the state shape
+from 15465575800102215655 to 16328958095966704900, read from the old and the new recorder
+headers by `tools/plxnative-rec rerecord`. All three anchors were refused on load
+(`StateShape` in the fixture preflight), then freshly recorded against the synthetic server with
+`tests/focusfp.sh --rec --only 1,6,12`, installed with `tools/plxnative-rec rerecord`, anchors
+retained, and replayed in both modes by `tests/replay_fixtures.py` with `verdict=SAME` and every
+difference counter at zero.
+
+The chrome handoff (`plx_ui::scroll_chrome::Handoff`, the decided tucked state and the two drawn
+alphas the Library and the Watchlist page now own; the screen pin moves to `0xcbaf_3fdb_0c28_ad38`)
+moved the state shape from 16328958095966704900 to 4058586095815036115, read from the old and the new
+recorder headers by `tools/plxnative-rec rerecord`. Two changes after it moved what the pages draw
+without moving the shape: one duration and one release phrase (`plx_ui::fmt::duration`,
+`fmt::coming_on`), so Detail's Run Time and hero facts read "2h 24m" where they read "2 hr 24 min"
+(`12-filmography-detail-return`); and one label for the Play control
+(`plx_appkit::hero_layout::play_label`, shared by Home, Detail and the card menu), so Home's hero
+measures "Resume" where it measured "Continue" (all three). The committed recordings of all three anchors are one re-record of
+the merged tree: the closed alphabet's `Continue` literal became `Resume` and its runtime literal
+`2h 24m` (`plxnative-rec check` refused the committed `12-filmography-detail-return` for the old
+duration, and refused each fresh recording for `Resume` until the alphabet followed), each anchor
+was recorded afresh against the synthetic server with `tests/focusfp.sh --rec --only 1,6,12`, and
+only its `rec-0000.jsonl` was replaced: `rerecord` refuses a shape that did not move, and the
+manifests (anchor flag included) already equal the new recorder's header, so they stand byte for
+byte. `tests/replay_fixtures.py` replays all three with `verdict=SAME` in Targets and Resolve and
+every difference counter at zero.
+
+The Collections redesign's third batch changed what the pages draw without moving the shape: the
+time-left form ("12m left" where it read "12 min left"; the closed alphabet's
+pattern is now `s[0-9a-f]{8} · [0-9]+m left`), ink weight, hero names, the art dissolve, header
+clearance and the menus' morphs. `plxnative-rec check` refused the committed
+`1-boot-home-chip-grid` for the old time-left phrase (`a string of 23 chars outside the
+alphabet`). The shape stayed `4058586095815036115`, so `rerecord` refuses; each anchor was
+recorded afresh on the merged, committed tree (`tests/focusfp.sh --rec --only 1,6,12`), passed
+`plxnative-rec check` against the alphabet unchanged by this step, and only its `rec-0000.jsonl`
+was replaced: the manifests (anchor flag included) already equal the new recorder's header.
+`make check-replay` replays all three with `verdict=SAME` in Targets and Resolve and every
+difference counter at zero.
+
+The Under posters captions moved what Home draws without moving the shape: Home's poster shelves word
+their focused caption through the one caption policy, so under the default setting (Title Off,
+Year · Length) the focused poster's caption measures "1992 · 1h 40m" where Home's old caption
+measured the year alone ("1992") and two synthetic title names. Only `1-boot-home-chip-grid`
+moved (`plxnative-rec check` refused the fresh recording for one 13-character string; the replay of
+the committed one refused a measurement table miss from frame 304); `6-settings-family` and
+`12-filmography-detail-return` replayed `verdict=SAME` on the new tree. The owner decided the
+alphabet's answer (2026-10-20): ONE general pattern, `[0-9]{4} · ([0-9]+h )?[0-9]+m`, not the one
+literal (sourced in `_sources.year_length_caption`: `year_length`, `fmt::duration_minutes_in`,
+`core.duration_hours` / `core.duration_minutes`, and `tests/mock_pms.py` `_base` / `_movie`, which draw
+the year and the length). The fresh recording (`tests/focusfp.sh --rec --only 1`) passed
+`plxnative-rec check` with that pattern and nothing else added, and only
+`1-boot-home-chip-grid/rec-0000.jsonl` was replaced: the manifest (anchor flag included) already
+equals the new recorder's header, so it stands byte for byte. `make check-replay` replays all three
+with `verdict=SAME` in Targets and Resolve and every difference counter at zero.
+
+A card the focus has left now lands exactly on rest (`plx_ui::Spring::land`, called by
+`CardRow::update` for every cell that does not hold focus): the spring used to park one ulp above
+1.0 with a velocity of ~1e-6, which the canon hashes bit for bit (`CardRow::write_motion`). The
+shape did not move. `1-boot-home-chip-grid` diverged on exactly 13 frames (381-393, the tail of the
+Home card spring that releases focus, until the row parks and both builds hold the same exact rest)
+with every other counter zero, in Targets and Resolve, while `6-settings-family` and
+`12-filmography-detail-return` stayed SAME. The divergence was attributed by replaying the committed
+anchors against a build with only `Spring::land` made a no-op (all three SAME, every counter zero).
+The anchor was recorded afresh (`tests/focusfp.sh --rec --only 1`) and only its `rec-0000.jsonl`
+replaced; `make check-replay` replays all three with `verdict=SAME` in Targets and Resolve and
+every difference counter at zero.
+
+The two changes above both move `1-boot-home-chip-grid`'s canon (the Under posters caption band,
+and the card landing at rest), and they landed apart: neither recording alone matched the merged
+code. The anchor was therefore re-recorded once on the merged tree (`tests/focusfp.sh --rec
+--only 1`), only `1-boot-home-chip-grid/rec-0000.jsonl` was replaced, and `make check-replay`
+replays all three with `verdict=SAME` in Targets and Resolve and every difference counter at zero.
+
+The grid let-go canon (`plx_ui::poster_grid::GridPop::write` writes the pop, then the let-gos in
+flight as a counted sequence, where it wrote one slot per let-go with no count; `LibraryGrid`'s
+declared `shrink` slot became `let_gos:[(index:u32,sp:..)]`, pin `0x0803_2f8d_c828_6d70`) moved the
+state shape from 4058586095815036115 to 15892566164571969361, read from the old and the new recorder
+headers by `tools/plxnative-rec rerecord`. All three anchors were observed being refused on load
+(`replay: REFUSED — invalid or incompatible recording`, six replays), so nothing could be compared.
+The bytes were checked another way: a throwaway build with the new `GridPop::write` and the OLD
+`LibraryGrid` shape text (so the old fixtures load) replayed all three SAME in Targets and Resolve,
+every difference counter zero and `diverged=0` — none of the three flows mounts a grid, so no
+recorded frame hashes a let-go, and the bump moves the fingerprint alone. The anchors were then
+recorded afresh on the committed tree (`tests/focusfp.sh --rec --only 1,6,12`), passed
+`plxnative-rec check`, and were installed with `tools/plxnative-rec rerecord`, anchors retained.
+
+The grid bands slot (`plx_ui::poster_grid::GridBands::write` has written each open band's card after
+its row and spring since #843; `LibraryGrid`'s declared `slots:[(row:u32,sp:..)]` became
+`slots:[(row:u32,sp:..,card:Option<u32>)]`, pin `0x6b71_df9e_04db_2b76`) moved the state shape from
+15892566164571969361 to 2896094977091175041, read from the old and the new recorder headers by
+`tools/plxnative-rec rerecord`. All three anchors were observed being refused on load (`replay:
+REFUSED — invalid or incompatible recording`, six replays). The bytes were checked another way: a
+throwaway build of the same tree with only the OLD `LibraryGrid` shape text restored (so the old
+fixtures load) replayed all three SAME in Targets and Resolve, every difference counter zero and
+`diverged=0` — none of the three flows mounts a grid, so no recorded frame hashes a band, and the
+bump moves the fingerprint alone. The anchors were then recorded afresh on the committed tree
+(`tests/focusfp.sh --rec --only 1,6,12`), passed `plxnative-rec check`, and were installed with
+`tools/plxnative-rec rerecord`, anchors retained; the manifest diff is the `state_fp` line only.
+
+The per-line caption reveal and the Person page on `StackPage::shelf_foot` (`crx-grid-reveal`, merged
+with #863, #864 and #866) moved what two anchors hash and draw without moving the shape (`state_fp`
+stayed 2896094977091175041, so `rerecord` refuses). `6-settings-family` stayed SAME.
+`12-filmography-detail-return` replayed `DIVERGED` in both modes on the merged tree: `diverged=884` of
+923 frames, every visible counter at zero (`present_diffs`, `input_diffs`, `result_diffs`,
+`land_diffs`, `effect_diffs`, `focus_diffs`, `hit_diffs`), a pure state-hash divergence. It was
+attributed by replaying the committed anchor against a build of the merged tree with only
+`person.rs` put back to `origin/main`'s (the filmography labels through the one caption policy, the
+air under a shelf as `shelf_foot` where `Sec::Gap(kind)` stood before each shelf): SAME, `diverged=0`,
+every counter zero, in Targets and Resolve. The text measurements agree too: the fresh recording and
+the old one hold the same 136 `metrics` queries. `1-boot-home-chip-grid` diverged from frame 296 and
+was then refused (`replay: REFUSED — replay measurement table miss`, both modes), because main's
+recording predates the Under posters captions this branch carries (the paragraph above): attributed
+from the measurements themselves, by comparing the `metrics` records of a fresh recording against
+the committed one, which differ by exactly one gained Width query, Home's focused poster caption
+"1992 · 1h 40m" (24 px), and three lost, the year alone "1992" (24 px) and the two synthetic title
+names (26 px bold) the old caption measured. The owner approved re-anchoring for intended UI
+changes (the 2026-09-29/30 entries above, and the standing instruction not to stall on it). Both
+anchors were recorded afresh on the merged tree (`tests/focusfp.sh --rec --only 1,12`), passed
+`plxnative-rec check` against the alphabet unchanged by this step, and only their `rec-0000.jsonl`
+was replaced (`git rm -r`, `tools/plxnative-rec import`, the committed manifests restored byte for
+byte, `anchor: true` kept: they already equal the new recorder's header). `make check-replay`
+replays all three with `verdict=SAME` in Targets and Resolve and every difference counter at zero
+(three consecutive runs).
+
+One heading + count idiom (`card_row::heading_parts`, Q4: a Person's shelf count is now a quiet note behind a
+dot, in the `BODY` rung where it was `CAPTION` bare) changed recorded behaviour without moving the shape:
+`12-filmography-detail-return` mounts Person, so it was observed being refused (`replay: REFUSED — replay
+measurement table miss`, both modes), while `1-boot-home-chip-grid` and `6-settings-family` stayed SAME.
+Attributed from the measurements themselves: the fresh recording holds the committed one's 136 `metrics`
+queries plus exactly three gained Width queries, all at 28 px regular: the separator dot (`·`) and the two
+shelf counts ("22", "4"); none lost. The route and focus-fingerprint sequences are identical to the
+committed recording's. The anchor was recorded afresh on the unchanged shape (`tests/focusfp.sh --rec --only
+12`), passed `plxnative-rec check`, and only its `rec-0000.jsonl` was replaced (the manifest already equals
+the recorder's header, `anchor: true` kept). The re-record also gained 4 non-tick `eff` records (an extra Home
+hubs/discovery work+delivery pair): timing of the recording, not Q4. `make check-replay` replays all three with
+`verdict=SAME` in Targets and Resolve and every difference counter at zero (three consecutive runs).

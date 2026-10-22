@@ -26,7 +26,7 @@ use crate::watchlist::{
     run_delta, run_list, run_rematch, run_write, Failure, Landed, LiveIo, Tag, What, WatchlistAuth, WatchlistIo,
 };
 use plx_machine::machine::{Cx, Effects, Handled, Host, Machine};
-use plx_plex::plex::ServerId;
+use plx_plex::plex::{ListingFacts, ServerId};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -290,6 +290,12 @@ impl WatchlistStore {
     /// The copy a matched tile reads and opens (plan §1.5): a held copy on a Reachable server,
     /// the current server first, then an owned one, then a share; ties keep roster order.
     fn copy_of(&self, ri: usize) -> Option<ServerMatch> {
+        self.held_copy(ri).map(|(m, _)| *m)
+    }
+
+    /// [`Self::copy_of`] with what its lookup row said of the title ([`ListingFacts`]): one choice
+    /// of copy for the press that opens it and the caption that words it.
+    fn held_copy(&self, ri: usize) -> Option<(&ServerMatch, &ListingFacts)> {
         let row = self.state.rows.get(ri)?;
         self.state
             .table
@@ -297,11 +303,11 @@ impl WatchlistStore {
             .get(&row.guid)?
             .iter()
             .filter_map(|(sid, asked)| match asked {
-                Asked::Held(m) if self.io.reachable(*sid) => Some((self.io.copy_rank(*sid), *m)),
+                Asked::Held(m, facts) if self.io.reachable(*sid) => Some((self.io.copy_rank(*sid), (m, facts))),
                 _ => None,
             })
             .min_by_key(|(rank, _)| *rank)
-            .map(|(_, m)| m)
+            .map(|(_, held)| held)
     }
 
     /// The ViewChange patch: a watched/unwatched, `Facts` or `Offset` fact about a matched
@@ -321,7 +327,7 @@ impl WatchlistStore {
     pub fn apply_edit(&mut self, sid: ServerId, rk: &str, edit: ViewEdit, dur_ms: Option<i64>) -> bool {
         let Ok(rk) = rk.parse::<i64>() else { return false };
         let matched = self.state.table.by_guid.values().flatten().any(|(s, a)| {
-            matches!(a, Asked::Held(m) if *s == sid && m.rating_key == rk)
+            matches!(a, Asked::Held(m, _) if *s == sid && m.rating_key == rk)
         });
         if !matched {
             return false;
@@ -784,7 +790,7 @@ impl WatchlistStore {
         for r in &self.state.rows {
             let Some(answers) = self.state.table.by_guid.get(&r.guid) else { continue };
             for (s, asked) in answers {
-                if let (true, Asked::Held(m)) = (*s == sid, asked) {
+                if let (true, Asked::Held(m, _)) = (*s == sid, asked) {
                     out.insert(m.rating_key, (r.guid.clone(), r.kind));
                 }
             }
@@ -797,7 +803,7 @@ impl WatchlistStore {
     pub fn unmatched_on(&self, sid: ServerId, kind: Kind) -> Vec<(String, Kind)> {
         let held = |guid: &str| {
             self.state.table.by_guid.get(guid).is_some_and(|answers| {
-                answers.iter().any(|(s, asked)| *s == sid && matches!(asked, Asked::Held(_)))
+                answers.iter().any(|(s, asked)| *s == sid && matches!(asked, Asked::Held(..)))
             })
         };
         self.state.rows.iter().filter(|r| r.kind == kind && !held(&r.guid)).map(|r| (r.guid.clone(), r.kind)).collect()
@@ -968,6 +974,12 @@ impl WatchlistView<'_> {
         self.store.copy_of(*self.store.state.index.get(i)?)
     }
 
+    /// What the matched copy's lookup row says of the title (genre, video, ratings, length, counts):
+    /// the facts the focused caption words, with the copy [`Self::copy`] opens.
+    pub fn listing(&self, i: usize) -> Option<&ListingFacts> {
+        self.store.held_copy(*self.store.state.index.get(i)?).map(|(_, facts)| facts)
+    }
+
     /// The committed tile state of the title with catalog id `hex`, over EVERY row (the options
     /// narrowing the page do not hide it from the catalog page). `None` when the title is not a
     /// row of the list read.
@@ -1099,8 +1111,13 @@ pub(super) mod tests {
         pages: AtomicUsize,
         /// Pages starting at or after this offset fail.
         fail_pages_from: AtomicU32,
+        /// ...and fail as a READ the dev-token gate refused (`WatchlistError::Refused`) rather than
+        /// as a transport error.
+        fail_refused: AtomicBool,
         /// Copy preference per server (0 current, 1 owned, 2 share); absent = 2.
         ranks: Mutex<HashMap<ServerId, u8>>,
+        /// What each server's lookup row says of a held title for a caption; absent = nothing.
+        listings: Mutex<HashMap<ServerId, ListingFacts>>,
         /// Page starts requested, in order.
         starts: Mutex<Vec<u32>>,
         /// Entries per page the decoder "dropped": counted in `raw`, absent from `items`; also
@@ -1142,7 +1159,9 @@ pub(super) mod tests {
                 found: Mutex::new(Vec::new()),
                 pages: AtomicUsize::new(0),
                 fail_pages_from: AtomicU32::new(u32::MAX),
+                fail_refused: AtomicBool::new(false),
                 ranks: Mutex::new(HashMap::new()),
+                listings: Mutex::new(HashMap::new()),
                 starts: Mutex::new(Vec::new()),
                 dropped: AtomicU32::new(0),
                 guid_answers: Mutex::new(Vec::new()),
@@ -1186,7 +1205,11 @@ pub(super) mod tests {
                 return Err(WatchlistError::NotModified);
             }
             if start >= self.fail_pages_from.load(Ordering::SeqCst) {
-                return Err(WatchlistError::Transport);
+                return Err(if self.fail_refused.load(Ordering::SeqCst) {
+                    WatchlistError::Refused
+                } else {
+                    WatchlistError::Transport
+                });
             }
             let all = self.items.lock().unwrap();
             self.starts.lock().unwrap().push(start);
@@ -1212,7 +1235,8 @@ pub(super) mod tests {
                 .iter()
                 .filter_map(|g| {
                     held.get(&(server, g.clone()))
-                        .map(|rk| GuidMatch { guid: g.clone(), rating_key: rk.clone(), library_section_id: None, blur: None })
+                        .map(|rk| GuidMatch { guid: g.clone(), rating_key: rk.clone(), library_section_id: None, blur: None,
+                            facts: self.listings.lock().unwrap().get(&server).cloned().unwrap_or_default() })
                 })
                 .collect())
         }
@@ -1516,6 +1540,26 @@ pub(super) mod tests {
             s.pump();
         }
         assert_eq!(s.view().status(), Status::Ready, "then it goes");
+    }
+
+    /// A READ the dev-token gate refused (`WatchlistError::Refused`, `plex::account::permit_read`) cannot
+    /// succeed later in this process, and nothing re-asks it: `list_wanted` is cleared when the worker
+    /// spawns and only a mount or a reread sets it again. It lands once as the unavailable read-out,
+    /// never as an empty list, and ten simulated seconds of frames make no second request.
+    #[test]
+    fn a_refused_list_read_is_asked_once_and_is_not_retried_on_a_timer() {
+        let mock = three();
+        mock.fail_pages_from.store(0, Ordering::SeqCst);
+        mock.fail_refused.store(true, Ordering::SeqCst);
+        let mut s = store(&mock);
+        load(&mut s);
+        assert_eq!(s.view().status(), Status::Failed(Failure::Other), "unavailable, not an empty list");
+        assert_eq!(s.view().len(), 0);
+        for _ in 0..(10 * 60) {
+            s.pump();
+        }
+        assert_eq!(mock.pages.load(Ordering::SeqCst), 1, "a refused read is not asked again");
+        assert_eq!(s.view().status(), Status::Failed(Failure::Other));
     }
 
     #[test]
@@ -1838,6 +1882,29 @@ pub(super) mod tests {
         // An unreachable preferred copy is never chosen.
         mock.up.lock().unwrap().retain(|x| *x != c);
         assert_eq!(s.view().copy(1).map(|m| m.rating_key), Some(20));
+    }
+
+    /// **The caption's facts are the OPENED copy's**: the listing row of the server whose copy a
+    /// press opens, never another server's, and none for a copy that is not reachable.
+    #[test]
+    fn the_listing_facts_are_those_of_the_copy_a_tile_opens() {
+        let (a, b) = (ServerId::from_raw(0), ServerId::from_raw(1));
+        let mock = three();
+        *mock.roster.lock().unwrap() = vec![a, b];
+        *mock.up.lock().unwrap() = vec![a, b];
+        for (sid, rk, genre) in [(a, "10", "Drama"), (b, "20", "Comedy")] {
+            mock.held.lock().unwrap().insert((sid, guid(2)), rk.into());
+            mock.listings.lock().unwrap().insert(sid, ListingFacts { genre: Some(genre.into()), ..Default::default() });
+        }
+        let mut s = store(&mock);
+        load(&mut s);
+        let genre = |s: &WatchlistStore| s.view().listing(1).and_then(|l| l.genre.clone());
+        assert_eq!((s.view().copy(1).map(|m| m.rating_key), genre(&s)), (Some(10), Some("Drama".into())));
+        mock.ranks.lock().unwrap().insert(b, 1);
+        assert_eq!((s.view().copy(1).map(|m| m.rating_key), genre(&s)), (Some(20), Some("Comedy".into())), "the owned copy's facts");
+        mock.up.lock().unwrap().clear();
+        assert_eq!((s.view().copy(1), genre(&s)), (None, None), "no reachable copy, no facts");
+        assert_eq!(s.view().listing(0), None, "a title no server holds has none");
     }
 
     #[test]

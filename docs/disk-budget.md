@@ -8,6 +8,8 @@ page is the design record of that tooling and the reference for the pieces that 
   decision as a file) and the probes the executor asks.
 - `tools/build-gc.sh --evict PLAN`: the one narrow mode that deletes what a plan names, after asking
   the live machine about every path again. `build-gc.sh --auto` is the planner followed by it.
+- `tools/disk-budget.py preflight`: what `make disk-preflight` runs at every build entry. With room
+  it is one `statvfs`; without, it is the planner followed by `--evict`, then a re-measure.
 
 The planner never deletes and the executor never decides: a plan is a proposal, and the executor
 treats every line of it as untrusted.
@@ -16,9 +18,9 @@ Paths below use `~` for the home directory and `<repo>` for a checkout.
 
 ## Why
 
-A build never checks for room and never makes any. The only build-time check, `make disk-preflight`
-(`PLX_MIN_FREE_MB`, default 3072), refuses; it frees nothing, and only `check` and `check-replay`
-depend on it. The cleanup that exists, `tools/build-gc.sh --auto`, runs on a clock (hourly from the
+A build used to check for room at two targets and make none. That check, `make disk-preflight`
+(`PLX_MIN_FREE_MB`, default 3072), only refused: it freed nothing, and only `check` and `check-replay`
+depended on it. The cleanup that exists, `tools/build-gc.sh --auto`, runs on a clock (hourly from the
 launchd agent, and at the end of a session), so between two ticks a fleet of lanes writes 3-8 GB
 each. And the cargo target directories agents leave outside any checkout (the hostsim recipe in
 `AGENTS.md` points `CARGO_TARGET_DIR` at `/tmp`) were visible to no tool: `build-gc.sh` deleted only
@@ -68,7 +70,7 @@ freed-bytes estimate that said it did would stop the ladder early.
 |---|---|---|
 | Comfort line | 20 GiB free (`PLX_GC_MIN_FREE_GIB`) | The line `build-gc.sh --auto` already uses: about an hour of fleet growth |
 | Hysteresis | +4 GiB | A reclaim runs up to comfort + 4, about one cold host `target`, so the next build does not reclaim again |
-| Reserve | 3 GiB (`PLX_MIN_FREE_MB`) | The existing preflight's ENOSPC floor |
+| Reserve | 3 GiB (`PLX_MIN_FREE_MB`) | The margin kept on top of the build's estimate: the preflight refuses when free space cannot cover estimate + reserve. The bare reserve is the floor only when the preflight itself fails (it then fails open unless free space is below the reserve); it is also the figure the `df`-only check it replaced used |
 | Idle | 15 min | A tree written in the last 15 minutes is somebody's current work; a lane is idle only when all of its trees are |
 | `/tmp` garbage | 24 h | A PlxNative `/tmp` tree untouched for a day is nobody's current work |
 | Seed | never planned | Lanes cloned from it share its blocks, so deleting it frees almost nothing (12 KiB private against 478 MB by `du`, measured) and makes every new lane's first build cold. `build-gc.sh --seed` (7 days, `PLX_SEED_MAX_DAYS`) stays as a manual prune |
@@ -273,10 +275,77 @@ when `PLX_GC_TMP_ROOTS` is set) let a test pretend the disk is full or that time
 real trees is how a test would delete them. `ci/test_build_gc.py` and `ci/test_disk_budget.py` point
 all three at temp directories and never run `--evict` anywhere else.
 
+## The preflight
+
+`make disk-preflight` is `python3 tools/disk-budget.py preflight --tree <the dir the target builds
+into>` and an ORDER-ONLY prerequisite (`$(DISK_ENTRIES): | disk-preflight`) of every Makefile target
+that starts cargo. `make -s print-disk-entries` lists them. It is order-only because a phony normal
+prerequisite would make every file target in the list out of date on every run; it still runs on a
+`make` that has nothing to do, which is why the fast path matters. The decision, in order:
+
+1. `PLX_DISK_BUDGET_DONE` set (and not `0`): exit 0. A recipe that re-enters make for a hooked target
+   (`check` into `check-unlocked`, `install` into `deploy`, `build-bench`'s children) sets it on that
+   line, so the child does not measure again. `PLX_MIN_FREE_MB=0` is exit 0 too.
+2. **Fast path: one `statvfs`, exit 0** when free space is at least the comfort line and at least the
+   target's UPPER estimate plus the reserve. This block sits before the module's heavy imports and
+   needs only `os` and `sys`; a test pins that no subprocess, `tempfile`, `ctypes`, `argparse` or
+   `dataclasses` is loaded on it. Measured 2026-10-19 over 20 runs of `python3 tools/disk-budget.py
+   preflight`: median 21.3 ms against 14.2 ms for an empty interpreter (the earlier version, with
+   every import first, took about 45 ms).
+3. Below that, the full command. A tree on another volume than the checkout is judged on free space
+   alone (nothing in the inventory is on its disk). Otherwise it takes `build-gc.sh`'s auto lock,
+   plans `reclaim --to <comfort>` for the tree being built, sparing the CURRENT checkout (bar rung 6), runs
+   `build-gc.sh --evict` on the plan, drops the inventory cache, re-reads free space and applies
+   `settle`: exit 0 if the build plus the reserve now fits, exit 1 with the reason if not.
+4. A plan that is a `refuse` and not `uncertain` evicts nothing (an eviction that cannot save the build
+   is lost build time for nothing). One that is `uncertain` (the `--stale` sweep is in it) runs, because
+   `settle` judges what it actually freed.
+
+**What it will not do.**
+
+- *Delete the tree being built, or anything of the checkout it runs from*, other than rung 6's
+  incremental dirs in trees other than the one being built, and only when the build would otherwise
+  be refused. `--evict` spares its own checkout by construction; the test runs it against a fixture
+  fleet and asserts that the lane's tree, its incremental dirs and `target-sim` are all still there.
+- *Wait on a lock for long.* If build-gc's auto lock (`${TMPDIR:-/tmp}/plx-build-gc-auto.lock`) is
+  held it polls up to `--wait-secs` (default 60) and returns 0 the moment free space shows the build
+  fits (it makes no plan while another reclaim runs, which is the one making the room). Each poll
+  tries the lock again: a holder that has finished, or a dead holder's lock older than
+  `PLX_GC_LOCK_STALE_MIN` (120), as `--auto` reclaims it, is taken over and the plan runs. At the
+  deadline it judges on free space alone.
+- *Fail a build for its own faults.* An exception in the preflight falls back to the bare floor: the
+  build goes on unless free space is already below the reserve. A `build-gc.sh` that is missing,
+  cannot be run or exceeds its 900 s timeout is judged like one that ran: `settle` on the free space
+  re-read, so a build that fits still goes on.
+- *Plan on a stale picture.* The inventory (the slow part, a walk of every tree) is cached under
+  `$PLX_BUILD_CACHE/disk-budget/inventory-<hash of the roots>.json` for 10 minutes by file mtime,
+  and dropped after any eviction. A cache that cannot be read, or that has another schema, is a miss.
+  The executor re-probes every path whatever the cache says.
+- *Run a pretend emergency over real trees.* With `PLX_GC_TEST_FREE_KIB` set it refuses (exit 2)
+  while the roots are defaults, and, new with the preflight, when the current checkout is not
+  under the named roots: a fixture's preflight cannot reach the owner's real fleet.
+
+**Estimates.** The table value for the tree's directory name (`NEED_GIB` in `tools/disk-budget.py`)
+unless the entry states its own: the ARM library is 0.6 GiB (`tvdev`) or 0.45 (`release`) though it
+lives in a `target*` dir that a host build fills with 3.4 or more, the storage helper 0.15, and
+`build-bench` 6.1 (the worst case: the host `target` plus a `test-fast` tree built from nothing, which only `ARGS=--cold` produces; a plain run reuses an existing `test-fast` tree or skips the `-inc` rows). `--need-gib N` and
+`PLX_DISK_NEED_GIB` override it. The fast path compares against the UPPER estimate and the full path
+subtracts what the tree already holds, so the fast path never says "go" where the planner would
+say "reclaim".
+
+**The managed `/tmp` replacements are entries too.** `make test-hostsim` builds into
+`rust-modules/target-hostsim` (the table's 3.5 GiB, so `DISK_TREE` names that dir, not the lane's
+`CARGO_TARGET_DIR`), and `make check-nodef` into the checkout's own `target` (or the
+`CARGO_TARGET_DIR` a lane exports), where the table's 3.4 GiB is an upper bound: it adds only `check`
+metadata beside `make lint`'s, so the planner subtracts what the tree already holds and a warm tree
+needs the 0.5 GiB minimum. Both came from PR #845, which landed after this branch was cut; the static
+test that finds every target whose recipe runs cargo is generic, and it failed on both until they
+were added to `DISK_ENTRIES`.
+
 ## Not done, and not determined
 
-- Build-entry preflights, the hook that catches a direct `cargo`, `make test-hostsim` and dedup are
-  the PRs below.
+- The hook that catches a direct `cargo`, and dedup, are the PRs below. A direct `cargo` in a lane
+  reaches no preflight today.
 - The `--stale` sweep's yield is not estimated. Sizing it (superseded `deps/` hashes) is open; until
   then it counts as zero in the verdict and `settle` judges the measured result.
 - `--evict` asks `lsof` once per path (each probe takes its own snapshot, so a tree that turned live
@@ -295,8 +364,8 @@ all three at temp directories and never run `--evict` anywhere else.
 | PR | Content |
 |---|---|
 | 1 (#846) | `tools/disk-budget.py` inventory, planner and `report`; `make disk` shows it; `ci/test_disk_budget.py`. No deletions |
-| 2 (this) | `build-gc.sh --evict`, `/tmp` discovery shared with the planner, `worktree_reason` against `origin/main` (and, because that makes `--auto` reach squash-merged lanes, `--worktrees` keeps a lane holding a non-build ignored file when unattended), `--auto` takes its order from the planner |
-| 3 | `disk-preflight` becomes the planner's preflight, an order-only prerequisite of every cargo-invoking target |
+| 2 (#848) | `build-gc.sh --evict`, `/tmp` discovery shared with the planner, `worktree_reason` against `origin/main` (and, because that makes `--auto` reach squash-merged lanes, `--worktrees` keeps a lane holding a non-build ignored file when unattended), `--auto` takes its order from the planner |
+| 3 (this) | `disk-preflight` becomes the planner's preflight (`disk-budget.py preflight`), an order-only prerequisite of every cargo-invoking target on this branch; `print-disk-entries`; `ci/test_disk_preflight.py` |
 | 4 | A `PreToolUse` hook that catches direct `cargo` in a Claude session |
-| 5 | `make test-hostsim` and `make check-nodef`, which replace the `/tmp` recipe |
+| 5 (#845, landed) | `make test-hostsim` and `make check-nodef`, which replace the `/tmp` recipe; hooked into `DISK_ENTRIES` by PR 3 |
 | 6 (optional) | `build-gc.sh --dedup` as rung 1 |

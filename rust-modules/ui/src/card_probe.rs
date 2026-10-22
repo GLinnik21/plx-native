@@ -146,6 +146,13 @@ pub fn begin_card() {
     STATE.with(|s| { let mut s = s.borrow_mut(); s.art = None; s.caption = None; });
 }
 
+/// The focused card's tile is about to draw after its caption did ([`begin_card`] came first):
+/// forget the art a neighbour's tile noted in between, keep the caption.
+pub fn begin_art() {
+    if !armed() { return; }
+    STATE.with(|s| s.borrow_mut().art = None);
+}
+
 /// `resolve_card_art` answered for `path` at `w`x`h` (`ready`: a texture came back).
 pub fn art(srv: u16, path: &str, w: i32, h: i32, ready: bool) {
     if !armed() { return; }

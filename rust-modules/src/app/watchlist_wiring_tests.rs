@@ -187,14 +187,13 @@ fn the_tab_arrival_seats_in_the_page_not_on_the_strip() {
 }
 
 /// **The arrival seat follows the tiles in, while it is still the page's.** Before the rows land the
-/// header's pill holds it; the first landing moves it to the first tile, as the tab mint asked.
+/// page seats nothing (`PageRegions::unseat`); the first landing seats the first tile, as the tab mint asked.
 #[test]
 fn the_arrival_seat_moves_to_the_first_tile_when_the_rows_land() {
-    use plx_screens::watchlist::page::PILL_ELEM;
     let _serial = plx_base::testlock::serial();
     let script = Script::new(&THREE, true);
     let (mut d, mut rig) = mounted(&script);
-    assert_eq!(d.focus().map(|k| k.elem), Some(PILL_ELEM), "nothing landed yet: the pill holds the seat");
+    assert_eq!(d.focus(), None, "nothing landed yet: the page seats nothing");
     settle(&mut d, &mut rig, 2);
     assert_eq!(d.focus().map(|k| k.elem), page(&d).elem_at(0), "the rows landed: the first tile holds it");
 }
@@ -210,7 +209,7 @@ fn a_key_before_the_rows_land_keeps_the_readers_choice() {
     super::frame(&mut d, &mut rig, tick(2), super::script_key(Key::Up, tick(2)));
     super::frame(&mut d, &mut rig, tick(3), vec![]);
     let chosen = d.focus();
-    assert!(chosen.is_some_and(|k| k.elem >= plx_ui::dispatch::STRIP_BASE), "UP from the pill reaches the strip: {chosen:?}");
+    assert!(chosen.is_some_and(|k| k.elem >= plx_ui::dispatch::STRIP_BASE), "UP with nothing seated reaches the strip: {chosen:?}");
     settle(&mut d, &mut rig, 4);
     assert!(!guids(&d).is_empty(), "the rows landed");
     assert_eq!(d.focus(), chosen, "the landing left the reader's choice alone");
@@ -230,8 +229,7 @@ fn a_key_ahead_of_the_pages_deferred_seat_enter_keeps_the_readers_move() {
     let _serial = plx_base::testlock::serial();
     let script = Script::new(&THREE, true);
     let (mut d, mut rig) = mounted(&script);
-    assert_eq!(d.focus().map(|k| k.elem), Some(plx_screens::watchlist::page::PILL_ELEM),
-        "control: nothing landed yet, the pill holds the page's seat");
+    assert_eq!(d.focus(), None, "control: nothing landed yet, the page seats nothing");
     let inst = d.nav.top_page().and_then(|e| e.inst.as_ref()).map(|i| i.id).expect("the page is mounted");
     // Land the rows (the page's cells are fed), then spend both budgets of the next frame on
     // no-op deliveries queued AHEAD of its Tick, so that Tick is carried to the frame after.
@@ -255,7 +253,7 @@ fn a_key_ahead_of_the_pages_deferred_seat_enter_keeps_the_readers_move() {
     assert!(!guids(&d).is_empty(), "the rows landed");
     let held = d.focus();
     assert!(held.is_some_and(|k| k.elem >= plx_ui::dispatch::STRIP_BASE),
-        "UP from the pill reached the strip and the page's late seat Enter left it there: {held:?}");
+        "UP with nothing seated reached the strip and the page's late seat Enter left it there: {held:?}");
 }
 
 #[test]

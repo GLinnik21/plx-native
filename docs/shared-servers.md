@@ -645,6 +645,44 @@ per source, off the SDL thread).
 that the pressed copy is not written twice, that a deck removal does not propagate) and the landing's
 local edit; the two-server round trip itself needs a television and both servers awake.
 
+### One tile per show in Continue Watching (#892, discussion #884)
+
+A show both your own server and a friend's hold used to be two tiles ("Social Studies" and
+"Estudios sociales"). Continue Watching now copies the official client: Plex Web 4.163.0 merges the
+row in the browser from each source's `continuewatching` hub, and so does `stores::deck_group`, run
+after `deck::merge_deck` and the pin filter.
+
+- **Episodes group by the show's catalog id** (`grandparentGuid`, decoded to `PmsMovie::show_guid`).
+  A movie, a season, and an episode whose server sent no decodable show guid never group. Legacy
+  agent guids decode to nothing, so two legacy libraries do not group (Plex Web compares the raw
+  strings and may).
+- **The first copy in roster order wins**, and a copy without Media yields to one that has it.
+  Roster order is Home's source order: the household's servers first, then each shared one
+  (`roster_with_scope`). That is not always the Library's Sources panel order, which is the
+  registry's. `lastViewedAt` only SORTS: the tile sits where its winning copy sorts.
+- **Only a copy that would be shown, from a server that answered its deck in this process and whose
+  latest deck read did not fail, can win**: a copy in a library unpinned from Home, a source that only
+  holds what was restored from earlier, or one whose deck read failed never hides another server's
+  copy. A refresh in flight does not count against a server (its tile does not flip while the
+  refresh lands), and another shelf's failing page is not a failing deck.
+- **Remove acts on the pressed copy only** (§11 is unchanged), so the other server's copy is the tile
+  afterwards, if that server's deck still lists the show. app.plex.tv does the same.
+- **Hidden only when the winner is known.** Each server's source remembers the copy of each show it
+  has listed, past the lane's trim (`deck_group::Held`, dropped by `deck::order` span, not by
+  position, because a ledger lane's positions are an order). A non-winner is hidden whenever a
+  winner is known, wherever it sorts. The residual: a winner beyond what the lane has read (past the
+  lookahead) is unknown, so two tiles of one show can appear until it is read. The published window
+  can be short when copies are hidden (about half in a household that mirrors every show); a move
+  that lands on a window of nothing but hidden copies asks on, a page further each time and
+  publishing nothing in between, until a window has a card; if the listing ends first the deck stays
+  where it was. A copy removed with Remove leaves the facts at once; one a server stops listing
+  deeper than its lane has read is dropped only when the lane next covers its place.
+- **Mark watched** flags the pressed copy and, a round trip later, the other copy in place (§11);
+  neither leaves the deck until the refetch, so the tile does not flip to the other server's copy
+  at the press. There is no separate retirement. One transient remains: if the winner's server
+  drops a finished show first, the other server's copy shows until its own refetch lands, as in
+  Plex Web.
+
 ## 12. The Home selection, per PROFILE — deliverable F (2026-08-21)
 
 The canvas's first-run route was built in `ui/onboard.rs` (phase 5b, 2026-09-07, moved it to

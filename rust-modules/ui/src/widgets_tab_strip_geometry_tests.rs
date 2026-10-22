@@ -131,27 +131,15 @@ fn continuous_document_rail_tracks_both_ends_and_disappears_when_content_fits() 
     assert_eq!(continuous_rail_geom(0.0, 300.0, 300.0), None);
 }
 
-/// **The chip's frame and its hit test are one rect, and it really does sit LEFT of the pills.**
+/// **The chip really does sit LEFT of the pills, on their line.**
 ///
-/// Both halves matter and neither is visible in a diff. The hit test is what makes the chip
-/// clickable on all three screens that draw it (it was Home's alone, recorded at Home's draw),
-/// so it must address exactly the rect the draw uses. And the D-pad rule every one of those
-/// screens now adopts — ◀ off the FIRST pill reaches the chip, ▶ walks back — is only sane
-/// while the chip is genuinely the bar's leftmost thing: [`TAB_SIDE_CLEAR`] is the margin that
-/// keeps the CENTRED strip off it, and a strip that grew far enough left to overlap would make
-/// the walk cross two controls occupying one place.
+/// The D-pad rule every screen that wears the bar adopts — ◀ off the FIRST pill reaches the chip, ▶ walks
+/// back — is only sane while the chip is genuinely the bar's leftmost thing: [`TAB_SIDE_CLEAR`] is the
+/// margin that keeps the CENTRED strip off it, and a strip that grew far enough left to overlap would
+/// make the walk cross two controls occupying one place.
 #[test]
-fn the_profile_chip_is_hit_where_it_is_drawn_and_sits_left_of_the_pills() {
+fn the_profile_chip_sits_left_of_the_pills() {
     let r = CHIP_FRAME;
-    assert!(
-        profile_chip_at(r.cx(), r.cy()),
-        "the middle of the avatar is the chip"
-    );
-    assert!(
-        !profile_chip_at(r.x - 1.0, r.cy()),
-        "…and a pixel outside it is not"
-    );
-    assert!(!profile_chip_at(r.cx(), r.y + r.h + 1.0), "…on either axis");
     // it shares the bar's line with the pills: one control height, one top edge
     assert_eq!(r.y, TOP_BAR_Y);
     // one control height with the pills, which is also what makes the focused chip's capsule
@@ -294,6 +282,44 @@ fn a_stale_pill_index_clamps_instead_of_panicking() {
     assert_eq!(tab_scroll_target(&[], 0, 12.0), 0.0);
 }
 
+/// **The tab row's label memo belongs to the thread that draws, not to the process.** libtest runs
+/// every test on its own thread, and two of them reach `with_tab_metrics_for` with different
+/// vocabularies, so each call replaces (and frees) the entry the other is still reading. Behind a
+/// `static mut` that was a double free / use-after-free under `make test-crate C="plx_ui
+/// plx_screens"` (five test threads), a SIGABRT "pointer being freed was not allocated" in
+/// `with_tab_metrics_for`'s `*cache = Some(..)`. Each thread here alternates between two vocabularies
+/// of its own (a key mismatch on EVERY call, which is what forces the rebuild) and must read back its
+/// own faces, words and widths every time.
+#[test]
+fn every_thread_reads_its_own_tab_labels_back_from_the_memo() {
+    use plx_machine::machine::Measure as _;
+    const ROUNDS: usize = 3000;
+    plx_base::testrace::race(4, |t| {
+        // Two vocabularies per thread, different from every other thread's in length,
+        // wording and generation, so no two threads ever agree on the memo's key.
+        let vocab = |k: usize| -> Vec<TabFace> {
+            let mut faces: Vec<TabFace> = (0..2 + t + k)
+                .map(|i| TabFace::Label(format!("thread {t} vocab {k} word {i}")))
+                .collect();
+            faces.push(TabFace::Icon(crate::icons::Icon::Search));
+            faces
+        };
+        let vocabs = [vocab(0), vocab(1)];
+        let expect: Vec<(Vec<std::ffi::CString>, Vec<f32>)> = vocabs.iter()
+            .map(|faces| tab_metrics_from(faces, |l| LegacyMeasure.width(l, theme::size::BODY, true)))
+            .collect();
+        for round in 0..ROUNDS {
+            let k = round % 2;
+            let labels = TabLabels { generation: (t * 2 + k) as u32 + 1, faces: &vocabs[k] };
+            with_tab_metrics_for(labels, |faces, words, widths| {
+                assert_eq!(faces, vocabs[k].as_slice(), "round {round}: another thread's faces");
+                assert_eq!(words, expect[k].0.as_slice(), "round {round}: another thread's words");
+                assert_eq!(widths, expect[k].1.as_slice(), "round {round}: another thread's widths");
+            });
+        }
+    });
+}
+
 /// The tab pulse rises from rest to its peak and comes back to exactly rest; it ends on its own.
 #[test]
 fn the_tab_pulse_envelope_is_zero_at_both_ends_and_one_at_the_peak() {
@@ -309,6 +335,7 @@ fn the_tab_pulse_envelope_is_zero_at_both_ends_and_one_at_the_peak() {
 /// it: it is decorative, so it adds no layout motion.
 #[test]
 fn a_tab_pulse_runs_its_beat_then_is_gone_without_holding_the_page() {
+    let _g = serial_for_motion(); // asserts `plx_machine::idle`'s process-global flags
     let faces = [TabFace::Label("Home".into()), TabFace::Icon(crate::icons::Icon::Bookmark)];
     let labels = TabLabels { generation: 1, faces: &faces };
     let mut strip = StripRender::new();
@@ -339,6 +366,7 @@ fn a_tab_pulse_runs_its_beat_then_is_gone_without_holding_the_page() {
 /// against 9.2M the frame it ended.
 #[test]
 fn a_running_tab_pulse_reports_motion_not_page_damage() {
+    let _g = serial_for_motion(); // resets and asserts `plx_machine::idle`'s process-global flags
     let faces = [TabFace::Label("Home".into()), TabFace::Icon(crate::icons::Icon::Bookmark)];
     let labels = TabLabels { generation: 1, faces: &faces };
     let mut strip = StripRender::new();

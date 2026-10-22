@@ -11,7 +11,7 @@ use plx_ui::widgets::Ground;
 use plx_ui::{theme, Painter, Rect};
 
 /// The Type section: `Movies & Shows` / `Movies` / `TV Shows`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum TypeFilter {
     #[default]
     All,
@@ -20,7 +20,7 @@ pub enum TypeFilter {
 }
 
 /// The Show section: `All` / `Released` / `On your servers`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum ShowFilter {
     #[default]
     All,
@@ -36,6 +36,16 @@ pub struct WatchlistOptionsState {
     pub sort: SortKey,
     pub descending: bool,
     pub show: ShowFilter,
+}
+
+/// A fingerprint of the value, for what is built from it (the header row's key).
+impl std::hash::Hash for WatchlistOptionsState {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.type_.hash(state);
+        std::mem::discriminant(&self.sort).hash(state);
+        self.descending.hash(state);
+        self.show.hash(state);
+    }
 }
 
 impl Default for WatchlistOptionsState {
@@ -99,27 +109,13 @@ impl WatchlistOptionsState {
         }
     }
 
-    /// The pill's `<summary>` half: "Default" when nothing is changed, else the changed choices in
-    /// section order (Type, Sort, Show) joined by a comma, each by its menu label ("Movies, Title").
-    /// The direction is not spelled: the open menu shows it as the active key's chevron, and the
-    /// pill has to share the header line with the title and the count in the longest language.
+    /// The pill's `<summary>` half: the current SORT, by its menu label ("Date added", "Title"),
+    /// the same fact the Library's pill names. A filter (Type, Show) never shows here; it shows
+    /// as the header's "N of M" read-out. The direction is not spelled: the open menu shows it as
+    /// the checked sort row's value word, and the pill has to share the header line with the
+    /// title and the count in the longest language.
     pub fn summary(&self) -> String {
-        let mut parts: Vec<&'static str> = Vec::new();
-        if self.type_ != TypeFilter::All {
-            parts.push(OptionsRow::Type(self.type_).label());
-        }
-        let default = Self::default();
-        if (self.sort, self.descending) != (default.sort, default.descending) {
-            parts.push(OptionsRow::Sort(self.sort).label());
-        }
-        if self.show != ShowFilter::All {
-            parts.push(OptionsRow::Show(self.show).label());
-        }
-        if parts.is_empty() {
-            msg::watchlist_filter_sort_default().to_string()
-        } else {
-            parts.join(", ")
-        }
+        OptionsRow::Sort(self.sort).label().to_string()
     }
 
     /// `rows` filtered and ordered by this value, exactly as the data layer does it
@@ -133,7 +129,7 @@ impl WatchlistOptionsState {
 }
 
 /// A sort key's own first direction, the one choosing it from another key lands on: Title reads
-/// A to Z, the others newest, highest and most recent first. Date Added descending is the
+/// A to Z, the others newest, highest and most recent first. Date added descending is the
 /// service's own order and the page's default.
 pub fn natural_desc(key: SortKey) -> bool {
     !matches!(key, SortKey::Title)
@@ -148,7 +144,7 @@ pub enum OptionsRow {
 }
 
 impl OptionsRow {
-    /// Every row in draw order: Type, Sort by, Show (boards WatchlistOptions: 3 + 4 + 3 rows).
+    /// Every row in draw order: Show, Sort, Filter (boards WatchlistOptions: 3 + 4 + 3 rows).
     pub const ALL: [OptionsRow; 10] = [
         OptionsRow::Type(TypeFilter::All),
         OptionsRow::Type(TypeFilter::Movies),
@@ -167,10 +163,8 @@ impl OptionsRow {
             OptionsRow::Type(TypeFilter::All) => msg::watchlist_filter_type_all(),
             OptionsRow::Type(TypeFilter::Movies) => msg::watchlist_filter_type_movies(),
             OptionsRow::Type(TypeFilter::Shows) => msg::watchlist_filter_type_shows(),
-            OptionsRow::Sort(SortKey::DateAdded) => msg::watchlist_filter_sort_date_added(),
-            OptionsRow::Sort(SortKey::Title) => msg::watchlist_filter_sort_title(),
-            OptionsRow::Sort(SortKey::Release) => msg::watchlist_filter_sort_release(),
-            OptionsRow::Sort(SortKey::Rating) => msg::watchlist_filter_sort_rating(),
+            // The shared table's name for the fact, the one the Library's Sort section wears.
+            OptionsRow::Sort(key) => key.fact().label(),
             OptionsRow::Show(ShowFilter::All) => msg::watchlist_filter_show_all(),
             OptionsRow::Show(ShowFilter::Released) => msg::watchlist_filter_show_released(),
             OptionsRow::Show(ShowFilter::OnYourServers) => msg::watchlist_filter_show_on_servers(),
@@ -187,8 +181,8 @@ impl OptionsRow {
     }
 
     /// Press this row. A different sort key lands on its [`natural_desc`]; pressing the key that is
-    /// already chosen flips the direction, the Library sort menu's idiom (chevron on the active
-    /// row). Returns whether `state` changed (a Type or Show press on the chosen row does not).
+    /// already chosen flips the direction, the Library sort menu's idiom (the direction word on the
+    /// active row). Returns whether `state` changed (a Type or Show press on the chosen row does not).
     pub fn apply(self, state: &mut WatchlistOptionsState) -> bool {
         let before = *state;
         match self {
@@ -204,17 +198,18 @@ impl OptionsRow {
     }
 }
 
-/// The menu's three sections for `state`: Type, Sort by (the active key carries the direction
-/// chevron), Show. Pure, so the text-fit suite drives the real builder.
+/// The menu's three sections for `state`, named as the Library's Sort & Filter panel names its own:
+/// Show (the kind of title), Sort (the checked key carries the direction as a value word, "Newest
+/// first", from the same table), Filter (availability). Pure, so the text-fit suite drives the
+/// real builder.
 pub fn sections(state: &WatchlistOptionsState) -> Vec<Section> {
-    use plx_ui::icons::Icon;
-    let mut type_ = Section::new(msg::watchlist_filter_type_heading());
-    let mut sort = Section::new(msg::watchlist_filter_sort_heading());
-    let mut show = Section::new(msg::watchlist_filter_show_heading());
+    let mut type_ = Section::new(msg::library_header_show());
+    let mut sort = Section::new(msg::browse_library_sort());
+    let mut show = Section::new(msg::browse_library_filter());
     for id in OptionsRow::ALL {
         let mut row = Row::new(id.label()).checked(id.is_chosen(state));
-        if matches!(id, OptionsRow::Sort(_)) && id.is_chosen(state) {
-            row = row.ticon(if state.descending { Icon::ChevronDown } else { Icon::ChevronUp });
+        if let OptionsRow::Sort(key) = id {
+            if let Some(axis) = key.fact().axis().filter(|_| id.is_chosen(state)) { row = row.value(axis.direction_word(state.descending)); }
         }
         match id {
             OptionsRow::Type(_) => type_ = type_.row(row),
@@ -233,21 +228,16 @@ pub const PANEL_RAD: f32 = 24.0;
 /// DS7), its rows a [`TableView`]. A component the mounting surface owns, like the profile menu's
 /// table: it holds the open/morph state, the row cursor and the geometry, and answers `draw`.
 ///
-/// The pill and the panel are ONE surface (`popover_morph`): [`draw`](Self::draw) lays the glass,
-/// then the pill's own focused fill and label as the morph's opener face (`Popover::morph_face`),
-/// then the rows. The surface begins and ends as the pill, at its rect and radius and in its
-/// colours, so the face is the only pill while the menu is up: the host surface names the pill as
-/// its `opener`, and the page leaves it out of its own pass.
+/// The panel grows out of the pill (`popover_morph`): [`draw`](Self::draw) lays the glass at the
+/// morphing rect, then the rows. It draws NO pill: the pill is the control's own, kept lit above the
+/// panel by the host's opener lift (the host surface names it as its `opener`, the page leaves it
+/// out of its pass, `WatchlistScreen::redraw_focused` paints it) like every header opener, so the
+/// panel opens under the control it is about (design review S12).
 pub struct OptionsMenu {
     popover: Popover,
     table: TableView,
     /// The pill the panel grows from and hangs under.
     pill: Rect,
-    /// Whether the pill will REST focused once the menu is gone: the face's plate and label end on
-    /// the pill as it will be (focus back on it: the accent plate; focus gone elsewhere: the idle
-    /// fill), never on a colour it will not have. True while open, since the menu is opened from
-    /// the focused pill.
-    rest_focused: bool,
 }
 
 impl Default for OptionsMenu {
@@ -261,34 +251,27 @@ impl OptionsMenu {
         let mut table = TableView::new();
         // A menu of one-word choices: BODY regular labels (the Library's sort menu does the same).
         table.compact = true;
-        Self { popover: Popover::new().morphing(), table, pill: Rect::default(), rest_focused: true }
+        Self { popover: Popover::new().morphing(), table, pill: Rect::default() }
+    }
+
+    /// The open table as it reads: each section's heading and its rows' `(label, value)`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn probe_panel(&self) -> Vec<(String, Vec<(String, Option<String>)>)> {
+        self.table.sections.iter()
+            .map(|section| (section.header.clone(), section.rows.iter().map(|row| (row.label.clone(), row.value.clone())).collect()))
+            .collect()
     }
 
     /// Open on `state`, growing out of `pill` (the header pill's rect).
     pub fn open(&mut self, pill: Rect, state: &WatchlistOptionsState) {
         self.pill = pill;
-        self.rest_focused = true;
         self.table.open_sections(sections(state));
         self.popover.open_from(Some(pill));
     }
 
     /// BACK / OK: run the morph in reverse; input returns to the page now, focus on the pill.
     pub fn dismiss(&mut self) {
-        self.dismiss_resting(true);
-    }
-
-    /// Run the morph in reverse so that it lands on the pill as it will REST: `pill_focused` is
-    /// whether focus returns to the pill (the accent plate) or goes elsewhere (the idle fill, so
-    /// the glass never passes through the accent).
-    pub fn dismiss_resting(&mut self, pill_focused: bool) {
-        self.rest_focused = pill_focused;
         self.popover.dismiss();
-    }
-
-    /// The plate the face draws under the label: the pill's fill as it will rest
-    /// ([`header::pill_fill`](super::header::pill_fill)).
-    pub fn plate_fill(&self) -> [f32; 4] {
-        super::header::pill_fill(self.rest_focused)
     }
 
     pub fn is_open(&self) -> bool {
@@ -325,18 +308,18 @@ impl OptionsMenu {
         changed
     }
 
-    /// The settled panel: hung under the pill, right edges aligned, as wide as its longest label
-    /// ([`TableView::menu_panel_width`]) and as tall as its rows, held inside the safe frame.
+    /// The settled panel: hung under the pill, right edges aligned, as wide as its longest label and
+    /// never narrower than the pill ([`TableView::menu_panel_width_from`], the Library's rule too)
+    /// and as tall as its rows, held inside the safe frame.
     pub fn panel_rect(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
         let safe = plx_ui::consts::SAFE;
-        let w = self.table.menu_panel_width(measure);
-        let x = (self.pill.x + self.pill.w - w).max(safe.x);
+        let w = self.table.menu_panel_width_from(measure, self.pill);
+        let x = plx_ui::popover::hang_x(self.pill, w, safe);
         let h = self.table.measured_height().min(safe.h);
-        // Hung under the pill; when the whole menu (ten rows, three headings) is taller than the
-        // room below it, it slides up over the pill rather than cutting its last rows off, the
-        // pill having dissolved into the panel by then (DS7). The page draws no pill under it
-        // while the menu is up (`WatchlistMenuScreen::opener`): left there, the glass rim's lens
-        // pulled its label into the panel's top edge.
+        // Hung under the pill; a menu taller than the room below it slides up rather than cutting
+        // its last rows off (the ten-row menu fits under the header on a 1080 frame in every
+        // shipped language, so it does not today). The pill is drawn above the panel by the opener
+        // lift, never under its glass.
         let y = (self.pill.y + self.pill.h + theme::space::SM).min(safe.y + safe.h - h);
         Rect::new(x, y, w, h)
     }
@@ -364,34 +347,18 @@ impl OptionsMenu {
     }
 
     /// Draw the menu on `base` (the surface's frame painter): the glass panel (`Ground::Menu`) at
-    /// the morphing rect, the pill's face over it ([`draw_face`](Self::draw_face)), and the rows
-    /// through `Popover::morph_rows` (clipped to the surface, scaled about the panel anchor, not
-    /// before the glass has replaced the pill's fill).
+    /// the morphing rect and the rows through `Popover::morph_rows` (clipped to the surface, scaled
+    /// about the panel anchor, not before the glass has taken over).
     pub fn draw(
         &self,
         base: Painter,
         field: Option<&plx_ui::underlay::UnderlayField>,
         measure: &dyn plx_machine::machine::Measure,
-        state: &WatchlistOptionsState,
     ) {
         let panel = self.panel_rect(measure);
         let p = self.popover.content_painter_on(base, 0.0);
         self.popover.panel(p, panel, PANEL_RAD, field, Ground::Menu);
-        self.draw_face(base, measure, state);
         self.popover.morph_rows(p, panel, PANEL_RAD, |p| self.table.draw(p, panel, measure));
-    }
-
-    /// The pill as the morph's opener face: its focused fill as the plate, its label clipped to
-    /// the surface. All a HELD surface shows (`Screen::draw_held`): at the start of the morph it is
-    /// the page's own focused pill.
-    pub fn draw_face(&self, base: Painter, measure: &dyn plx_machine::machine::Measure, state: &WatchlistOptionsState) {
-        let p = self.popover.content_painter_on(base, 0.0);
-        let summary = state.summary();
-        let face = super::header::HeaderFace { title: "", count: None, summary: &summary, pill_focused: self.rest_focused };
-        let pill = self.pill;
-        self.popover.morph_face(p, self.panel_rect(measure), PANEL_RAD, self.plate_fill(), |p| {
-            super::header::draw_pill_label(p, pill, &face)
-        });
     }
 }
 

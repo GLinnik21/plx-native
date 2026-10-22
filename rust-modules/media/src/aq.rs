@@ -138,7 +138,7 @@ pub fn aq_push(
     key: c_int,
     es: c_int,
 ) -> c_int {
-    aq_push_park(q, data, len, pts, key, es, None)
+    aq_push_park(q, data, len, pts, key, es, None, None)
 }
 
 /// [`aq_push`] that runs `drain` whenever the queue is full.
@@ -158,8 +158,61 @@ pub fn aq_push_with_drain(
     es: c_int,
     mut drain: impl FnMut() -> bool,
 ) -> c_int {
-    aq_push_park(q, data, len, pts, key, es, Some(&mut drain))
+    aq_push_park(q, data, len, pts, key, es, Some(&mut drain), None)
 }
+
+/// **The cross-lane admission rule for a push that is over its lane's soft cap** (issue #600).
+///
+/// The demuxer fills both lanes from ONE sequential read, so a lane that parks its producer also
+/// stops the other lane being read. A lane's byte cap is a soft one for exactly that reason: it
+/// may be exceeded, up to a hard ceiling, **while the other lane is starved** (holds less than
+/// `starved_below_ns` of media, [`aq_span_ns`]), because the consumer cannot make progress without
+/// that other lane's next packets and parking here would withhold them. A container that stores
+/// its audio ahead of its video does this for its whole length, not only at the start.
+///
+/// * Over the soft cap and the other lane NOT starved: park, as a full lane always has. The wait is
+///   timed (10 ms), because the signal that ends it is the OTHER lane being popped, which this
+///   lane's condvar never hears; an untimed wait there would be a hang.
+/// * Over the soft cap and the other lane starved: admit, while the lane holds no more than
+///   `base cap + headroom` (the hard ceiling). The soft cap is back the moment the other lane is
+///   stocked again or the lane drains: nothing about it is granted or latched.
+/// * At the ceiling with the other lane starved: with `fail_at_ceiling` the push returns
+///   [`PUSH_CEILING`] and the caller fails the stream (the consumer provably cannot have started, so
+///   parking is a spinner nobody can leave); without it the push parks like any full lane.
+///
+/// The starvation test reads the other lane with this lane's mutex RELEASED (no two lane locks
+/// are ever held together), so it can be a moment stale. That errs harmlessly: an extra AU admitted
+/// to a lane under its ceiling, or one more 10 ms poll.
+#[derive(Clone, Copy)]
+pub struct PushGate {
+    /// The lane whose starvation lets this one run past its soft cap.
+    pub other: *mut AuQueue,
+    /// The other lane is starved while it holds less than this much media (pts span of its queue).
+    pub starved_below_ns: i64,
+    /// Bytes past the soft cap this lane may hold while the other is starved: the hard ceiling is
+    /// the lane's base cap plus this.
+    pub headroom: c_long,
+    /// Whether reaching the ceiling with the other lane still starved is a failure (`true`) or an
+    /// ordinary full-lane park (`false`).
+    pub fail_at_ceiling: bool,
+}
+
+/// [`aq_push_with_drain`] under a [`PushGate`]. Returns 0, -1 (abort / OOM), or [`PUSH_CEILING`].
+pub fn aq_push_gated(
+    q: *mut AuQueue,
+    data: *const c_uchar,
+    len: c_int,
+    pts: i64,
+    key: c_int,
+    es: c_int,
+    gate: PushGate,
+    mut drain: impl FnMut() -> bool,
+) -> c_int {
+    aq_push_park(q, data, len, pts, key, es, Some(&mut drain), Some(gate))
+}
+
+/// [`aq_push_gated`]: the lane is at its hard ceiling and the other lane is still starved.
+pub const PUSH_CEILING: c_int = -2;
 
 /// A `not_full` timed-wait deadline 10 ms out, on the SAME clock `init_not_full_cond` bound the
 /// condvar to — Linux gets `CLOCK_MONOTONIC` (immune to the wall-clock step this device is
@@ -214,6 +267,7 @@ fn aq_push_park(
     key: c_int,
     es: c_int,
     mut drain: Option<&mut dyn FnMut() -> bool>,
+    gate: Option<PushGate>,
 ) -> c_int {
     if q.is_null() || len < 0 {
         return -1;
@@ -232,7 +286,37 @@ fn aq_push_park(
             ptr::copy_nonoverlapping(data, node_data(n), len as usize);
         }
         libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
-        while (*q).queued_bytes > (*q).max_bytes && (*q).abort == 0 {
+        let mut admitted = false;
+        while !admitted && (*q).queued_bytes > (*q).max_bytes && (*q).abort == 0 {
+            if let Some(g) = gate {
+                libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
+                if let Some(drain) = drain.as_mut() {
+                    drain();
+                }
+                let starved = aq_span_ns(g.other) < g.starved_below_ns;
+                libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
+                if (*q).queued_bytes <= (*q).max_bytes || (*q).abort != 0 {
+                    continue;
+                }
+                if starved {
+                    if (*q).queued_bytes <= (*q).base_bytes + g.headroom.max(0) {
+                        admitted = true;
+                        continue;
+                    }
+                    if g.fail_at_ceiling {
+                        libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
+                        libc::free(n as *mut c_void);
+                        return PUSH_CEILING;
+                    }
+                }
+                let ts = aq_park_deadline();
+                libc::pthread_cond_timedwait(
+                    ptr::addr_of_mut!((*q).not_full),
+                    ptr::addr_of_mut!((*q).m),
+                    &ts,
+                );
+                continue;
+            }
             if let Some(drain) = drain.as_mut() {
                 libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
                 let keep_polling = drain();
@@ -456,6 +540,25 @@ pub fn aq_would_park(q: *mut AuQueue) -> bool {
         let parks = (*q).queued_bytes > (*q).max_bytes && (*q).abort == 0;
         libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
         parks
+    }
+}
+
+/// How much media the queue holds, as the pts span from its head AU to its tail AU (0 when it
+/// holds fewer than two). A producer's measure of whether the consumer is starved of this lane:
+/// producers append in order, so the span is what is queued, not what has ever passed through.
+pub fn aq_span_ns(q: *mut AuQueue) -> i64 {
+    if q.is_null() {
+        return 0;
+    }
+    unsafe {
+        libc::pthread_mutex_lock(ptr::addr_of_mut!((*q).m));
+        let span = if (*q).head.is_null() || (*q).tail.is_null() {
+            0
+        } else {
+            ((*(*q).tail).pts - (*(*q).head).pts).max(0)
+        };
+        libc::pthread_mutex_unlock(ptr::addr_of_mut!((*q).m));
+        span
     }
 }
 
@@ -856,5 +959,94 @@ mod tests {
         unsafe { libc::free(n as *mut c_void) };
         assert_eq!(worker.join().unwrap(), 0);
         aq_destroy(&mut *q);
+    }
+
+    /// The cross-lane admission rule ([`PushGate`]): an audio-like lane over its soft cap is let
+    /// through, up to the ceiling, while the video-like lane is starved; parked while it is stocked;
+    /// failed at the ceiling when asked to; and its soft cap is simply back once the other lane is
+    /// stocked again (nothing latched).
+    #[test]
+    fn a_gated_push_runs_past_the_soft_cap_only_while_the_other_lane_is_starved() {
+        let ms = 1_000_000i64;
+        let mut audio = aq_new(100);
+        let mut video = aq_new(1_000_000);
+        let (ap, vp) = (&mut *audio as *mut AuQueue, &mut *video as *mut AuQueue);
+        let gate = |fail| PushGate { other: vp, starved_below_ns: 1_600 * ms, headroom: 900, fail_at_ceiling: fail };
+        let au = [0u8; 50];
+        let push = |gate: PushGate, pts: i64| {
+            aq_push_gated(ap, au.as_ptr(), au.len() as c_int, pts, 1, 2, gate, || false)
+        };
+        // Under the soft cap: nothing to decide. Video lane empty = starved: admitted past it.
+        for i in 0..10 {
+            assert_eq!(push(gate(true), i), 0, "starved video lane: audio runs past its 100 byte soft cap");
+        }
+        assert_eq!(aq_bytes(ap), 500);
+        assert_eq!(aq_cap(ap), 100, "no cap was raised: the rule is not a grant");
+
+        // Stock the video lane (3 s of media): audio past the soft cap now parks, TIMED, and goes
+        // through as soon as the video lane is popped back under the target - no audio pop at all.
+        for (i, pts) in [0, 3_000 * ms].into_iter().enumerate() {
+            assert_eq!(aq_push(vp, au.as_ptr(), au.len() as c_int, pts, 1, 1), 0, "video {i}");
+        }
+        assert_eq!(aq_span_ns(vp), 3_000 * ms);
+        let (addr, vaddr) = (ap as usize, vp as usize);
+        let waiting = std::thread::spawn(move || {
+            let au = [0u8; 50];
+            let g = PushGate { other: vaddr as *mut AuQueue, starved_below_ns: 1_600 * ms, headroom: 900, fail_at_ceiling: true };
+            aq_push_gated(addr as *mut AuQueue, au.as_ptr(), 50, 99, 1, 2, g, || false)
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!waiting.is_finished(), "a stocked video lane parks the audio push");
+        let n = aq_pop(vp, ptr::null_mut());
+        unsafe { libc::free(n as *mut c_void) };
+        assert_eq!(aq_span_ns(vp), 0);
+        assert_eq!(waiting.join().unwrap(), 0, "the video lane starved again: admitted without any audio pop");
+
+        // At the ceiling (100 + 900 = 1000 bytes) with the video lane starved.
+        while aq_bytes(ap) <= 1_000 {
+            assert_eq!(push(gate(true), 0), 0);
+        }
+        assert_eq!(push(gate(true), 0), PUSH_CEILING, "ceiling + starved + fail_at_ceiling: the push reports it");
+        assert_eq!(aq_bytes(ap), 1_050, "and queued nothing");
+        // Without fail_at_ceiling it parks like any full lane, and a pop frees it.
+        let waiting = std::thread::spawn(move || {
+            let au = [0u8; 50];
+            let g = PushGate { other: vaddr as *mut AuQueue, starved_below_ns: 1_600 * ms, headroom: 900, fail_at_ceiling: false };
+            aq_push_gated(addr as *mut AuQueue, au.as_ptr(), 50, 99, 1, 2, g, || false)
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!waiting.is_finished(), "at the ceiling the push parks");
+        let n = aq_pop(ap, ptr::null_mut());
+        unsafe { libc::free(n as *mut c_void) };
+        assert_eq!(waiting.join().unwrap(), 0, "one pop takes the lane back under its ceiling");
+        assert_eq!(aq_bytes(ap), 1_050, "1050 - 50 popped + 50 pushed");
+        aq_abort(ap);
+        aq_abort(vp);
+        aq_destroy(ap);
+        aq_destroy(vp);
+    }
+
+    /// A gated push parked on a stocked other lane still ends at an abort.
+    #[test]
+    fn a_gated_push_parked_on_a_stocked_lane_ends_at_abort() {
+        let mut audio = aq_new(10);
+        let mut video = aq_new(1_000_000);
+        let (ap, vp) = (&mut *audio as *mut AuQueue, &mut *video as *mut AuQueue);
+        let au = [0u8; 50];
+        assert_eq!(aq_push(vp, au.as_ptr(), 50, 0, 1, 1), 0);
+        assert_eq!(aq_push(vp, au.as_ptr(), 50, 5_000_000_000, 1, 1), 0);
+        assert_eq!(aq_push(ap, au.as_ptr(), 50, 0, 1, 2), 0);
+        let (addr, vaddr) = (ap as usize, vp as usize);
+        let waiting = std::thread::spawn(move || {
+            let au = [0u8; 50];
+            let gate = PushGate { other: vaddr as *mut AuQueue, starved_below_ns: 1_600_000_000, headroom: 1_000, fail_at_ceiling: true };
+            aq_push_gated(addr as *mut AuQueue, au.as_ptr(), 50, 1, 1, 2, gate, || false)
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!waiting.is_finished());
+        aq_abort(ap);
+        assert_eq!(waiting.join().unwrap(), -1);
+        aq_destroy(ap);
+        aq_destroy(vp);
     }
 }

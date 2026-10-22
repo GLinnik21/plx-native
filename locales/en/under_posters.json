@@ -1,0 +1,70 @@
+{
+  "under_posters.title": {
+    "value": "Under posters",
+    "description": "Settings > Libraries row and page title: the setting for what shows under the focused poster. Row label, short."
+  },
+  "under_posters.detail": {
+    "value": "What shows under the poster you are on.",
+    "description": "Detail line under the Under posters row on the Settings root. One short sentence."
+  },
+  "under_posters.copy": {
+    "value": "Most posters already show their title. Choose what appears under the poster you are on.",
+    "description": "Narrative copy beside the Under posters page: what the setting does. Two short sentences."
+  },
+  "under_posters.title_row": {
+    "value": "Title",
+    "description": "Switch row label on the Under posters page: show the item title under the focused poster."
+  },
+  "under_posters.title_detail": {
+    "value": "The name, in bold.",
+    "description": "Detail line under the Title switch on the Under posters page: what the Title switch shows."
+  },
+  "under_posters.details_row": {
+    "value": "Details",
+    "description": "Row label on the Under posters page that opens the details picker, and that picker's page title. Its right side reads the chosen line, e.g. Year · Length. One short word."
+  },
+  "under_posters.details_detail": {
+    "value": "One line of information.",
+    "description": "Detail line under the Details row on the Under posters page."
+  },
+  "under_posters.details_copy": {
+    "value": "Titles that are started, coming soon or a collection show that instead: time left, the release date, the number of films.",
+    "description": "Narrative copy beside the Details picker page: the facts that replace the details line on started, upcoming and collection titles. One sentence."
+  },
+  "under_posters.year_length": {
+    "value": "Year · Length",
+    "description": "Under posters details choice: the release year and the running time, e.g. 2019 · 2h 14m. Keep the middle dot."
+  },
+  "under_posters.genre": {
+    "value": "Genre",
+    "description": "Under posters details choice: the genre."
+  },
+  "under_posters.video": {
+    "value": "Video",
+    "description": "Under posters details choice: video quality marks such as 4K · HDR."
+  },
+  "under_posters.age_rating_score": {
+    "value": "Age rating · Score",
+    "description": "Under posters details choice: age rating and audience score, e.g. PG-13 · 7.8. Keep the middle dot."
+  },
+  "under_posters.none": {
+    "value": "Nothing",
+    "description": "Under posters details choice (first in the list): show no details line. A single word that reads as 'show nothing'."
+  },
+  "under_posters.reset": {
+    "value": "Reset to default",
+    "description": "Button on the Under posters page that restores the default (no title, year and length)."
+  },
+  "under_posters.reset_detail": {
+    "value": "Year and length, no title.",
+    "description": "Detail line under Reset to default on the Under posters page: what the default shows."
+  },
+  "under_posters.sample_title": {
+    "value": "Movie",
+    "description": "Placeholder title of the sample poster in the Under posters preview. One short word that fits inside a small poster tile, e.g. Movie."
+  },
+  "under_posters.sample_genre": {
+    "value": "Drama",
+    "description": "Sample genre shown in the Under posters preview, one word."
+  }
+}

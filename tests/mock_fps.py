@@ -46,11 +46,16 @@ Scene fields (tests/manifest.json, `fps_scenes`):
   "walk": {"key_gap_s": 0.33, "max_rows": 170, ...}
                                 after the Home shelves land, press Down once per landed row at
                                 that pace and then Up back, and grade the heartbeats of THAT window
-  "walk": {"landed": "library", "extra_rows": 6, "fingerprint_region": "grid", ...}
-                                the same walk over the Library: sized from the seated section's
+  "walk": {"landed": "library", "extra_rows": 0, "fingerprint_region": "shelf", ...}
+                                the same walk over the Library's Recommended page (the Library page
+                                mounts no shelves): sized from the seated section's
                                 `libhubs: section N landed M shelves` line, a second Down per
-                                linked shelf, `extra_rows` more to reach the grid, and a
-                                `focus route=... region=grid` fingerprint required in the window
+                                linked shelf, `extra_rows` more (0: the page seats its first shelf on
+                                arrival and has no toolbar to cross; the burst walks over the Library's
+                                grid use 2, to cross its header), and a
+                                `focus route=... region=<fingerprint_region>` fingerprint required in
+                                the window (a region the scene's page prints: tests/test_harness.py
+                                reads the words from the page's `probe_viewport`)
   "walk": {"row_down": 1, "cards": 96, "key_gap_s": 0.33, ...}
                                 a ROW walk (#567, `home-recent-paging`): after Home lands, press Down
                                 `row_down` times to reach a named row (the `plxnative-grid` trigger
@@ -466,8 +471,13 @@ def walk_downs(scene, shelves):
     """The Down presses a walk of `scene` makes for `shelves` landed shelves (before the
     `max_rows` cap `walk_plan` applies). Home: one per row. Library (`walk.landed: "library"`):
     one per shelf, a SECOND for each linked shelf (its heading is a stop of its own, then its
-    row), and `extra_rows` more to cross the toolbar into the grid."""
+    row), and `extra_rows` more (the Library page's toolbar, to reach its grid; the Recommended
+    page seats its first shelf on arrival and needs none). A `walk.reach` surface (the
+    Library page, which mounts no shelves and logs no landing) has a fixed plan: its one "row"
+    plus `extra_rows` Downs from the page header into the grid."""
     w = scene["walk"]
+    if w.get("reach"):
+        return int(shelves) + int(w.get("extra_rows", 0))
     if w.get("landed") != "library":
         return int(shelves)
     return int(shelves) + linked_landed(scene, shelves) + int(w.get("extra_rows", 0))

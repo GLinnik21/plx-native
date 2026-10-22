@@ -1,0 +1,9 @@
+{
+  "collections_page.empty": {
+    "value": "No collections in {library}",
+    "args": {
+      "library": "str"
+    },
+    "description": "Collections page, when the library has no collections: one sentence naming the library (No collections in Films). Shown in the middle of the page, so keep it short."
+  }
+}

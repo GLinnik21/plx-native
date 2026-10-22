@@ -182,7 +182,11 @@ fn matches_landed(reply: &Reply, landed: &plx_machine::landing::Landed<DetailKey
 
 pub fn validate(value: &serde_json::Value) -> Result<(), &'static str> {
     let replies: Vec<Reply> = serde_json::from_value(value.clone()).map_err(|_| "invalid detail replies")?;
-    if replies.is_empty() || replies.len() > 4 || serde_json::to_value(&replies).ok().as_ref() != Some(value) {
+    // The round trip is compared as the segment reader parses it: without `float_roundtrip` an
+    // f32 widened to f64 (9.600000381469727) reads back one ulp off, so a literal `to_value`
+    // comparison would refuse a recording of perfectly ordinary mock ratings.
+    let reread = serde_json::to_value(&replies).ok().map(|v| v.to_string()).and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
+    if replies.is_empty() || replies.len() > 4 || (serde_json::to_value(&replies).ok().as_ref() != Some(value) && reread.as_ref() != Some(value)) {
         return Err("noncanonical detail replies");
     }
     let mut seen = BTreeSet::new();

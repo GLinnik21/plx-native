@@ -1,5 +1,8 @@
 blank_issues_enabled: true
 contact_links:
+  - name: My TV works, or partly works
+    url: https://github.com/GLinnik21/plx-native/discussions/new?category=compatibility
+    about: Tell me which TV, webOS version and build you run, and what you tried. Reports that it works feed the compatibility list; use a bug report only when something is broken.
   - name: Feature request or idea
     url: https://github.com/GLinnik21/plx-native/discussions/categories/ideas
     about: Suggest a new feature or an improvement. Ideas live in Discussions so people can vote and discuss before anything becomes an issue.

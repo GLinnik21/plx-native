@@ -1020,15 +1020,13 @@ live_checkouts() {
   # one tree never collected. That `make` is not compiling anything; it is blocked waiting on this
   # script. Walk the parent chain and exclude it. A sibling `cargo` in the same checkout is still
   # found by its own cwd, so nothing real stops being protected.
-  _anc=" "
-  _p=$$
-  _hops=0
-  while [ "$_p" -gt 1 ] && [ "$_hops" -lt 32 ]; do
-    _anc="$_anc$_p "
-    _p=$(ps -o ppid= -p "$_p" 2>/dev/null | tr -d ' ') || _p=0
-    case "$_p" in ''|*[!0-9]*) _p=0 ;; esac
-    _hops=$((_hops + 1))
-  done
+  # ONE read of the process table and one awk, however deep the chain: a `ps -p` per hop was ten-odd
+  # process spawns per stage, in every stage of an `--auto`, and a spawn is the expensive thing on a
+  # loaded machine. A `ps` that fails leaves just this process, the same answer the per-hop form gave.
+  _anc=" $(ps -axo pid=,ppid= 2>/dev/null | awk -v me="$$" '
+    { parent[$1] = $2 }
+    END { p = me; for (h = 0; p > 1 && h < 32; h++) { printf "%s ", p; p = parent[p] + 0 } }') "
+  case "$_anc" in *" $$ "*) ;; *) _anc=" $$ " ;; esac
   _pids=""
   for n in cargo rustc make cc1 arm-webos-linux-gnueabi-gcc; do
     _found=$(pgrep -x "$n" 2>/dev/null) || true

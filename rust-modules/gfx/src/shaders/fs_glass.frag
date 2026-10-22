@@ -156,6 +156,25 @@ uniform sampler2D u_dim_tex;
 // reads the frozen host snapshot there (`gfx::draw_glass_frozen`), which holds no scrim. 0 for a
 // live glass, whose sharp grab is off the finished framebuffer and carries the dim already.
 uniform float u_dim_sharp;
+// THE PAGE WASH, as a DELTA applied here rather than filtered into the snapshot
+// (`backdrop::Ground`): the wash is the page's opaque ground, the first draw under the glass that can
+// SHOW (the frame clear recorded before it is overwritten), and it eases for ~0.5 s on a library
+// switch, so a source that held it re-sourced the whole glass on every frame of the ease.
+// The snapshot keeps the wash it was drawn under and this adds `wash now - wash then`, evaluated
+// where the fragment SAMPLES (the refracted uv, not the fragment): the wash is a bilinear field,
+// so the difference of two washes is one — `u_wash_*` are the four corners of that difference
+// (tl, tr, br, bl), `u_wash_uv` maps snapshot UV to the wash's own 0..1 frame (`uv * xy + zw`), and
+// `u_wash_w` is how much of the wash an ink ramp over it lets through at its top and bottom edge.
+// `u_wash_on = 0` is the glass without it, bit for bit. Added where the wash shows and, as if it
+// showed everywhere, over content too: bounded by the ease's own amplitude and gone when the
+// source is re-taken at the wash's own rest (`backdrop::GroundDelta`, `AmbientWash::at_rest`).
+uniform float u_wash_on;
+uniform highp vec4 u_wash_uv;
+uniform vec3 u_wash_tl;
+uniform vec3 u_wash_tr;
+uniform vec3 u_wash_br;
+uniform vec3 u_wash_bl;
+uniform vec2 u_wash_w;
 uniform vec4 u_rimcol;       // the container's perimeter line, over the scrim
 // THE LIT EDGE IS ITS OWN COLOUR, and that is not a refinement — it is the difference between the
 // two polarities being one material and being two. The lamp is above; the grain facing it catches
@@ -197,6 +216,11 @@ vec3 srcRGB(highp vec2 uv, out vec4 g){
     c += texture2D(u_tex, uv + vec2( d.x, -d.y)).rgb;
     c += texture2D(u_tex, uv + vec2(-d.x, -d.y)).rgb;
     c *= 0.2;
+  }
+  if (u_wash_on > 0.0) {
+    highp vec2 w = clamp(uv * u_wash_uv.xy + u_wash_uv.zw, 0.0, 1.0);
+    c += mix(mix(u_wash_tl, u_wash_tr, w.x), mix(u_wash_bl, u_wash_br, w.x), w.y)
+       * mix(u_wash_w.x, u_wash_w.y, w.y);
   }
   c = mix(u_source_ground, c, u_source_alpha);
   return dimRGB(c, uv, g);

@@ -28,7 +28,7 @@ pub(crate) fn route_word(route: &AppArg) -> &'static str {
         AppArg::Login => "login",
         AppArg::Profiles => "profiles",
         AppArg::Onboard => "onboard",
-        AppArg::Library => "library",
+        AppArg::Library | AppArg::LibraryCollections { .. } | AppArg::LibraryRecommended { .. } => "library",
         AppArg::Content(ContentArg::Detail { .. }) => "detail",
         // The filmography sheet answers `word::PERSON` too (`FilmographyScreen::name`): the test
         // manifest intentionally records that opaque modal as `route=person`.
@@ -57,7 +57,7 @@ pub(crate) fn route_word(route: &AppArg) -> &'static str {
         | AppArg::CollectionAbout => "",
     }
 }
-/// **Every PAGE argument, one per heartbeat word** — the domain [`route_word`] is applied over to DERIVE the
+/// **Every PAGE argument** (a word may repeat: the library's three pages are all `library`) — the domain [`route_word`] is applied over to DERIVE the
 /// heartbeat's `route=` alphabet, and the list `app::bridge`'s own argument tests walk.
 ///
 /// The compiler is what keeps it complete: the array's length is written out, so an added variant
@@ -70,7 +70,7 @@ pub(crate) fn route_word(route: &AppArg) -> &'static str {
 /// holds one and asks about it. Its two readers are this module's word derivation and
 /// `app::bridge`'s argument tests, which used to keep a second copy of the same list.
 #[cfg(test)]
-pub(crate) fn every_route() -> [AppArg; 12] {
+pub(crate) fn every_route() -> [AppArg; 14] {
     use plx_screens::registry::ContentArg;
     let sid = plx_plex::plex::ServerId::UNSET;
     [
@@ -79,6 +79,10 @@ pub(crate) fn every_route() -> [AppArg; 12] {
         AppArg::Onboard,
         AppArg::Home,
         AppArg::Library,
+        // The two pages the library's header pushes. They answer the library's word and the
+        // tab bar's chrome, and a list without them is how the strip they wear went unpublished.
+        AppArg::LibraryCollections { section: 0 },
+        AppArg::LibraryRecommended { section: 0 },
         AppArg::Content(ContentArg::Detail { sid, rk: String::new() }),
         AppArg::Content(ContentArg::Person {
             sid, key: String::new(), guid: String::new(), name: String::new(), thumb: String::new(),

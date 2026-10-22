@@ -349,6 +349,9 @@ fn live_glass_carries_no_private_source_policy() {
 /// band — all in `widgets.rs` — the standing hold hint's capsule (`hold_hint.rs`: a non-interactive
 /// standing note, the track's own material, budgeted by
 /// `hold_hint::tests::the_capsules_own_blur_region_fits_the_budget_and_never_meets_the_top_band`),
+/// the library's scroll capsule (`scroll_capsule.rs`: the same standing container over the page
+/// the chrome tucked away from, budgeted by
+/// `scroll_capsule::tests::a_long_names_capsule_stays_inside_the_glass_region_budget`),
 /// plus the frame mechanism and the dev load dial.
 ///
 /// A source grep, because the failure it guards is a call that COMPILES: `Glass` and
@@ -364,6 +367,9 @@ fn no_popover_panel_uses_the_blur_path_and_every_one_stands_on_the_field() {
         "ui/src/widgets.rs",
         // the standing hold hint: one `Glass::DYNAMIC_BACKDROP.backdrop` call, region-budgeted
         "ui/src/hold_hint.rs",
+        // the library's scroll capsule: the nav pill's live glass over the page it tucked away
+        // from, one `Glass::DYNAMIC_BACKDROP.backdrop` call, region-budgeted
+        "ui/src/scroll_capsule.rs",
         "ui/src/frame/glass.rs",
         "ui/src/frame/backdrop_tests.rs",
         "ui/src/glassload.rs",
@@ -418,7 +424,7 @@ fn no_popover_panel_uses_the_blur_path_and_every_one_stands_on_the_field() {
     let ground_of = |rel: &str| {
         let src = std::fs::read_to_string(root.join(rel)).expect("read panel source");
         assert!(
-            src.contains("panel_ground(") || src.contains("pop.panel("),
+            src.contains("panel_ground(") || src.contains("pop.panel(") || src.contains("popover.panel("),
             "{rel} must draw its ground through `panel_ground` (or `Popover::panel`)"
         );
         let code: String = src.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");

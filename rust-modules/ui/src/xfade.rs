@@ -30,10 +30,25 @@
 /// Outgoing ramp (ms). Short on purpose: the data swap is deferred by exactly this long, and a
 /// control that acknowledges a press later than ~100 ms reads as dropped input. ≈4–5 frames at
 /// 60 Hz; bounded at 2 frames by `app.rs`'s 0.05 s `dt` clamp.
-const OUT_MS: f32 = 70.0;
+pub(crate) const OUT_MS: f32 = 70.0;
 /// Incoming ramp (ms) — deliberately longer than [`OUT_MS`]: leave fast, arrive gently, the
 /// standard dissolve asymmetry. ≈9 frames at 60 Hz.
-const IN_MS: f32 = 140.0;
+pub(crate) const IN_MS: f32 = 140.0;
+
+/// The dissolve's easing: a smoothstep of the linear ramp `t` (clamped to 0..1). The one curve
+/// every fade-in on this page's dissolve shares — [`Xfade::alpha`] and [`arrived`].
+pub(crate) fn smooth(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// **How far a thing that began arriving `age_ms` ago has come, 0..1**, on the page fade's own
+/// duration ([`IN_MS`]) and curve ([`smooth`]): art that lands after its card was already on
+/// screen (`card_motion::Scope::arrival`) dissolves in over the skeleton on the clock the page's
+/// dissolve-in runs on, so a poster that is late looks like a poster that was on time, only later.
+pub(crate) fn arrived(age_ms: f32) -> f32 {
+    smooth(age_ms / IN_MS)
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Phase {
@@ -203,8 +218,7 @@ impl Xfade {
     /// ([`Painter::alpha`](crate::Painter::alpha)). Smoothstepped so the dissolve eases at both
     /// ends while the commit deadline stays exact.
     pub fn alpha(&self) -> f32 {
-        let t = self.t.clamp(0.0, 1.0);
-        t * t * (3.0 - 2.0 * t)
+        smooth(self.t)
     }
 
     /// A swap is in flight — for a screen that must not treat a FOREIGN store change as a new

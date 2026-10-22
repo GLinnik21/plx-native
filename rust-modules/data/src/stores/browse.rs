@@ -195,6 +195,11 @@ impl BrowseStore {
         self.state.held_keys(target)
     }
 
+    /// Is any shelf of the addressed section committed (see [`BrowseState::hubs_committed`])?
+    pub fn hubs_committed(&self, target: SectionAddress) -> bool {
+        self.state.hubs_committed(target)
+    }
+
     /// Is a membership re-query's first page still out with no Library page on top to pump it? The
     /// application pumps this store itself while it holds (`Bridge::reconcile_pump`).
     pub fn requery_owed(&self) -> bool {
@@ -269,6 +274,37 @@ impl BrowseStore {
         crate::browse::seed_items_for_owner_test(&mut self.state, count);
     }
 
+    /// [`seed_items_for_test`](Self::seed_items_for_test) with `count` collections: the listing a
+    /// section answers on `type=18`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn seed_collections_for_test(&mut self, count: usize) {
+        crate::browse::seed_collections_for_owner_test(&mut self.state, count);
+    }
+
+    /// [`seed_items_for_test`](Self::seed_items_for_test) with `count` numbered episodes: the
+    /// listing a show section answers on `type=4`, the library type already `Episodes`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn seed_episodes_for_test(&mut self, count: usize) {
+        crate::browse::seed_episodes_for_owner_test(&mut self.state, count);
+    }
+
+    /// **Hold the listing's fetch**: the single-flight flag stays taken, so the page the section is
+    /// waiting for is never asked for and nothing lands. A host test's server is a closed port, whose
+    /// fetch fails at once; a page that wants to be read while its listing is LOADING needs the
+    /// listing to stay so. A seeded listing ([`seed_items_for_test`](Self::seed_items_for_test)) still
+    /// lands over the hold.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn hold_listing_for_test(&mut self) {
+        crate::browse::hold_listing_for_owner_test(&self.adapter);
+    }
+
+    /// [`seed_collections_for_test`](Self::seed_collections_for_test) with each collection's
+    /// `(title, thumb)` stated.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn seed_named_collections_for_test(&mut self, rows: &[(&str, &str)]) {
+        crate::browse::seed_named_collections_for_owner_test(&mut self.state, rows);
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn seed_sources_for_test(&mut self, count: usize, reachable: bool) {
         crate::browse::seed_sources_for_owner_test(&mut self.state, count, reachable);
@@ -339,6 +375,20 @@ impl BrowseStore {
         );
     }
 
+    /// A landing held behind the publication gate, as the worker leaves one: staged, not drawn.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn stage_shelves_for_test(&mut self, section: usize) {
+        crate::browse::section_hubs::stage_shelves_for_owner_test(&mut self.state, section);
+    }
+
+    /// Edit every card of section `section`'s published shelves
+    /// ([`seed_named_shelves_for_test`](Self::seed_named_shelves_for_test)'s cards carry only a key
+    /// and a title).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn edit_shelf_items_for_test(&mut self, section: usize, edit: &dyn Fn(&mut crate::pms::PmsMovie)) {
+        crate::browse::section_hubs::edit_shelf_items_for_owner_test(&mut self.state, section, edit);
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn seed_named_shelves_for_test(
         &mut self,
@@ -357,6 +407,19 @@ impl BrowseStore {
     #[cfg(any(test, feature = "test-support"))]
     pub fn land_held_rows_for_test(&mut self, section: usize) {
         crate::browse::section_hubs::land_held_rows_for_owner_test(&mut self.state, section);
+    }
+
+    /// The rows of `section` the ring gave up (placeholders) and the band the store holds.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn released_rows_for_test(&self, section: usize) -> (Vec<usize>, (usize, usize)) {
+        crate::browse::section_hubs::released_rows_for_owner_test(&self.state, section)
+    }
+
+    /// One row of `section` takes a fresh window of `count` cards through the store's own landing
+    /// (`section_hubs::land_row`).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn land_row_for_test(&mut self, section: usize, row: usize, count: usize) -> bool {
+        crate::browse::section_hubs::land_row_for_owner_test(&mut self.state, section, row, count)
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -499,8 +562,8 @@ pub enum LibraryWork {
     /// its hub identifier and key. `seen` is the revision of the hub view the ask was computed
     /// from (`HubsView::revision`): a frame captures its views before its landings are delivered,
     /// so the ask can come from a window the store has since replaced, and such an ask is refused
-    /// (the publication it missed rebuilds the shelves and re-arms the row, which asks again from
-    /// the window that stands if the ask is still due).
+    /// (the publication it missed re-arms every row of the page, changed or not, and the row asks
+    /// again on its next tick from the window that stands if the ask is still due).
     HubPage {
         id: String,
         key: String,
@@ -656,6 +719,24 @@ mod contract_tests {
         assert_eq!(held.len(), shelf_only.len() + 3, "the shelves plus the three grid items: {:?}", rks(&held));
         assert!(!rks(&held).contains(&"7".to_string()), "past the window");
         assert!(browse.held_keys(SectionAddress { epoch: target.epoch + 1, ..target }).is_empty(), "a stale address holds nothing");
+    }
+
+    /// `hubs_committed` is the drawn set: nothing before the first publication, and still nothing
+    /// while a landing is only staged behind the gate; a stale address has none.
+    #[test]
+    fn hubs_committed_reads_the_drawn_set_not_the_staged_one() {
+        let _guard = plx_base::testlock::serial();
+        plx_plex::plex::reset_servers_for_test();
+        let mut browse = BrowseStore::default();
+        browse.seed_two_source_table_for_test();
+        let id = browse.hubs_snapshot().view().id().unwrap();
+        let target = SectionAddress { epoch: id.epoch, sid: id.sid, section: id.section };
+        assert!(!browse.hubs_committed(target), "nothing has been published");
+        crate::browse::section_hubs::stage_shelves_for_owner_test(&mut browse.state, 0);
+        assert!(!browse.hubs_committed(target), "a staged set is not drawn");
+        assert!(browse.run(BrowseCmd::Addressed { target, work: LibraryWork::Hubs { may_publish: true } }));
+        assert!(browse.hubs_committed(target), "the committed set is drawn");
+        assert!(!browse.hubs_committed(SectionAddress { epoch: target.epoch + 1, ..target }), "a stale address names no section");
     }
 
     #[test]

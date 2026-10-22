@@ -109,3 +109,63 @@ four widget entries were updated in this follow-up. Related forms include
 **пры яго выключэнні**. Skarnik also records [даслаць](https://www.skarnik.by/belrus/26517)
 and [дасланы](https://www.skarnik.by/belrus/26516). These confirm word forms,
 while the supplied review determines the interface wording. **Справаздачы** is retained.
+
+## Pending native review: Library/Collections redesign (2026-10-18)
+
+These strings were written without a dictionary lookup (skarnik.by / verbum.by) and need
+native review. Only `under_posters.genre` (from `browse.library.genre`) and the "па
+змаўчанні" part of `under_posters.reset` (from `watchlist.filter.sort_default`) reuse
+existing catalog wording.
+
+Dictionary correction (2026-10-19): the first draft wrote the word for "poster" as "пастар", which
+is "pastor" (skarnik.by: "пастор — церк. пастар"). The correct word is **постэр** (verbum.by,
+Булыка, "Слоўнік іншамоўных слоў": по́стэр, англ. poster); every form below uses it.
+
+`locales/be/under_posters.json`:
+
+| Key suffix | String |
+| --- | --- |
+| `title` | Пад постэрамі |
+| `detail` | Што паказана пад постэрам. |
+| `copy` | Большасць постэраў ужо паказваюць назву. Выберыце, што з’яўляецца пад постэрам, на якім вы знаходзіцеся. |
+| `title_row` | Назва |
+| `title_detail` | Назва тоўстым шрыфтам. |
+| `details_row` | Звесткі |
+| `details_detail` | Адзін радок звестак. |
+| `details_copy` | Пачатыя, будучыя назвы і калекцыі паказваюць замест гэтага: час, які застаўся, дату выхаду, колькасць фільмаў. |
+| `year_length` | Год · Працягласць |
+| `genre` | Жанр |
+| `video` | Відэа |
+| `age_rating_score` | Узроставы рэйтынг · Ацэнка |
+| `none` | Нічога |
+| `reset` | Скінуць па змаўчанні |
+| `reset_detail` | Год і працягласць, без назвы. |
+| `sample_title` | Фільм |
+| `sample_genre` | Драма |
+
+`locales/be/library_header.json`:
+
+| Key suffix | String |
+| --- | --- |
+| `collections` | Калекцыі |
+| `recommended` | Рэкамендацыі |
+| `sort_filter` | Сартаванне і фільтр |
+| `filtered_of` | {shown} з {total} |
+| `show` | Паказваць |
+
+`locales/be/collections_page.json` and `locales/be/recommended_page.json` (unchecked in skarnik.by / verbum.by):
+
+| Key | String |
+| --- | --- |
+| `collections_page.empty` | У бібліятэцы {library} няма калекцый |
+| `collections_page.smart` | Разумная калекцыя |
+| `recommended_page.empty` | Для гэтай бібліятэкі пакуль няма рэкамендацый |
+
+`locales/be/captions.json`:
+
+| Key | Form | String |
+| --- | --- | --- |
+| `captions.new_episodes` | one | {count} новая серыя |
+| `captions.new_episodes` | few | {count} новыя серыі |
+| `captions.new_episodes` | many | {count} новых серый |
+| `captions.new_episodes` | other | {count} новай серыі |

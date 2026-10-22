@@ -608,12 +608,13 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `tools/demo_library.py`, "People"), four more `down`s through the rest of the page (the title's
   collection, its linked heading a stop of its own, then More Like This) to the About section at its
   foot, with no `ok` anywhere on the page (each one there opens another page or a reader), `back`
-  (the shelf, that card focused; Detail's `back` leaves the page from wherever it is scrolled), `up` `up` to the profile chip and
-  on to the Movies tab, `ok` for the Movies library, six quick `down`s through its four shelves (the
-  two collection shelves' linked headings are stops of their own) to the All heading's Type chip,
-  `right` `right` to Filter, `down` into the poster grid and three more moves inside its columns 2 to
-  4, eight `up`s back to the first shelf (as many as there were `down`s: the page is left from its
-  top), `back` (Home), then `down` onto Continue, about 30 s. A `back` pressed lower on the Movies
+  (the shelf, that card focused; Detail's `back` leaves the page from wherever it is scrolled), `up` `up` to the Home pill (Up lands on the page's own pill; the
+  profile chip is one `left` away, off this route) and `right` on to the Movies tab, `ok` for the Movies library. The film's Movies leg predates the Library redesign: the page is now one
+  header row over the full poster grid, with no shelves and no All heading, so the recorded presses
+  through shelves to Type and Filter chips no longer match it and `feel.json` needs a re-walk (header
+  row, then `down` into the grid and a few moves inside its columns, then back to the top) before the
+  film is re-rendered (the Library's `back` takes one region a press, grid top, header, tab bar, then
+  Home, so the leg's single `back` returns Home only from the bar); the page is left that way, then `down` onto Continue, about 30 s. A `back` pressed lower on the Movies
   page jumps it to its top first; that jump is NOT filmed, because its first Linux render wrote
   different frames under the hold-injection gate (104 of 1734, from the press to the end of the
   return Home), so it is a motion the dump cannot yet vouch for. Keys of one
@@ -629,17 +630,15 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   popover or modal, any title flagged `not_in_video` opened (`gates` checks the mock's request log,
   and that no stream, transcode, timeline, scrobble or play-queue request was made), and the
   hold-hint capsule: the film is shot with the hint taught. The capsule is a one-time teaching
-  overlay (it stands after 1.5 s of rest on a card, once per resting place on Home and once per run
-  on the other card screens, and for the length of an `ok` held on a card), and a film has no
+  overlay (it stands after 1.5 s of rest on a card, once per install across every card screen, Home included, and once more on the Detail season pill after a shorter rest, and for the length of an `ok` held on a card), and a film has no
   viewer to teach, so `render --storyboard` writes the `plxnative-hintoff` trigger
   (`HINT_OFF` in `site_video.py`; the app reads it once at boot, in `devtriggers` builds only, and
-  calls `hold_hint::teach_all_for_dev`, which marks the hint learned and shown on every screen
-  kind) and `render.json` records `hold_hint: suppressed`. The hint's own timing is unchanged,
-  and no card rest in the film is capped by it. `up` from the hero always
-  lands on the profile chip, so before the film boots the launcher runs a prep boot of the simulator
+  calls `hold_hint::teach_all_for_dev`, which marks the hint learned and both of its showings spent for the run) and `render.json` records `hold_hint: suppressed`. The hint's own timing is unchanged,
+  and no card rest in the film is capped by it. `up` from the hero lands on the Home pill, one `left` short of the profile chip, so the film as walked
+  no longer passes the chip; the launcher still runs, before the film boots, a prep boot of the simulator
   with the `plxnative-login` trigger: the app's own QR sign-in completes against the mock (served
   with `authorize_after=2`) and stores a "Demo" account, which is what the chip reads when focus
-  passes it (never "Sign in"). Gates specific to the film: `storyboard/rest` (every beat's last 12
+  passes it (never "Sign in"), should a beat press `left` there. Gates specific to the film: `storyboard/rest` (every beat's last 12
   frames differ from the first of them by at most 3/255 in every channel, or by more in at most
   0.01 % of the pixels; the spring tails), `storyboard/opened`, `storyboard/no-playback`,
   `storyboard/loop` (read from `end.match_first_frame` in `feel.json`: the last frame differs from
@@ -719,7 +718,21 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   kind of tree) and re-probed for liveness (builder in the checkout, cargo or `make check` lock,
   open files, the idle window, a `/tmp` tree's ctime) immediately before it is renamed away. It
   does not stop for a held FFmpeg cache lock the way the other modes do, it never evicts the cargo
-  seed, and `-n` previews it. Tests may run it only against fixtures.)
+  seed, and `-n` previews it. Tests may run it only against fixtures. **Every build entry runs the
+  same planner first**: `make disk-preflight` (`python3 tools/disk-budget.py preflight --tree
+  <the tree this target builds into>`) is an order-only prerequisite of each cargo-running target
+  in the Makefile's `DISK_ENTRIES` (`make -s print-disk-entries`). At or above `PLX_GC_MIN_FREE_GIB`
+  (20) it is one `statvfs` (a median 21 ms with the interpreter start, measured 2026-10-19); below it, it
+  plans a reclaim to that line, sparing the tree it is building and every live tree (the current
+  checkout's incremental dirs in its other trees are rung 6, taken only when rungs 0-5 cannot cover
+  the build), hands the plan to `--evict`, and re-measures; it refuses (exit 1, naming what it kept and why) only when rungs 0-6
+  cannot cover the target's estimated need plus the `PLX_MIN_FREE_MB` reserve (3072; `0` turns the
+  preflight off). Its wait on a lock is bounded: a held `build-gc` auto lock is waited on for up to
+  `--wait-secs` (60) and the wait ends the moment the build fits; the eviction itself is not short
+  (a few multi-GiB deletions, `build-gc.sh --evict` capped at 900 s), so a target below the comfort
+  line can spend real time in the preflight before cargo starts. A recursive `$(MAKE)` inside an
+  entry passes `PLX_DISK_BUDGET_DONE=1`, which every nested preflight honours. The inventory is cached
+  for 10 minutes under `$PLX_BUILD_CACHE/disk-budget/` and dropped after an eviction.)
   `SYMBOLS` is in the `RUST_CFG` stamp beside `RELEASE`, and it has to be: a debuginfo build and a
   plain one produce **different build ids from identical sources**, so without the stamp
   `make RELEASE=1 ipk` followed by `make RELEASE=1 SYMBOLS=1 symbols` would hand you a `.debug`

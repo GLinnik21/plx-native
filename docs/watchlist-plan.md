@@ -107,7 +107,7 @@ Every file:line is on origin/main adf73d81a.
 ### 1.1 Modules and layers
 | module | crate/layer | role |
 |---|---|---|
-| `plex::watchlist` (plex/src/plex/watchlist.rs) | plex | `impl AccountClient`: paged list, released list, `user_state(hex)`, `catalog_item(hex)`, add/remove PUT. Drift-tolerant DTOs; injectable `request` closure. Base URL `discover()`: DISCOVER, or `/tmp/plxnative-discover` behind the `loopback_http` guard as `plex_tv()` (account.rs:43-68). Logs status + endpoint shape only. |
+| `plex::watchlist` (plex/src/plex/watchlist.rs) | plex | `impl AccountClient`: paged list, released list, `user_state(hex)`, `catalog_item(hex)`, add/remove PUT. Drift-tolerant DTOs; injectable `request` closure. Base URL `account::discover()` (moved from this file; `discover.rs`'s person routes share it): DISCOVER, or `/tmp/plxnative-discover` (else the `plxnative-plextv` loopback) behind the `loopback_http` guard as `plex_tv()`. Logs status + endpoint shape only. |
 | `Client::find_by_guids` (plex/library.rs) | plex | One `/library/all?type=T&guid=a,b,c` per server per kind (1 movie, 2 show), ≤40 guids/request; other guid kinds not matched. |
 | `watchlist` (data/src/watchlist.rs) | data — ADD to `[data] members` + docs/module-layers.md line. Names `plx_plex` (incl. `plex::servers` facts_gen/roster_gen/probe_result, `plex::session`), base, machine, platform. NOT net, NOT media. | Rows, released set, match table, `TileState`, intent ledger, client-side sort/filter, comparator. |
 | `stores::watchlist` | data | `WatchlistStore`: main-thread state + `Arc<Adapter>` mailbox (viewstate ownership pattern). `StoreId::Watchlist` APPENDED. |
@@ -219,7 +219,7 @@ if present — probe P3 — else lazily from that item's metadata, focused tile 
 | state | mark / caption | OK | hold |
 |---|---|---|---|
 | playable | PMS tick/progress | Detail{sid,rk} of chosen copy | Card kind (sid,rk) + Remove |
-| coming soon, unmatched | clock, "Releasing 12 Mar" | Catalog{hex} | Catalog: Go to … — Remove |
+| coming soon, unmatched | clock, "Coming 12 Mar" | Catalog{hex} | Catalog: Go to … — Remove |
 | coming soon, matched Reachable (Q6) | clock kept (proposal) | Detail{sid,rk} | Card kind + Remove |
 | on no server | circle-slash; 55% wash rest / 25% focus | Catalog{hex} | Catalog |
 | server offline | server-slash, cached progress | Catalog{hex} (server-slash status + progress caption) | Catalog (no Play/Mark-watched) |
@@ -358,8 +358,8 @@ Discover trailer playable?
   measure icu_datetime name-data size (UNVERIFIED). Host.
 - **W45 strip destination + page (Bump A)** (boards: Main, Watchlist, WatchlistOptions, WatchlistFiltered, WatchlistEmpty, WatchlistRemoved; NOT WatchlistHeaderB): `HomeTab::Watchlist`, `STRIP_BASE+5`,
   `TabFace::Icon(Bookmark)` before Search, route word `"watchlist"`; 6-col 250×375 grid; header
-  (DISPLAY 48 bold; tracking after DS8) + "Sort & Filter · <summary>" pill → popover (morph if
-  DS7 landed): Type / Sort+direction / Show; empty + filtered read-outs at 540; marks/states;
+  (DISPLAY 48 bold; tracking after DS8) + "Sort & Filter · <current sort>" pill → popover (morph if
+  DS7 landed): Show / Sort+direction word / Filter; empty + filtered read-outs at 540; marks/states;
   PageGround wash; focus caption; hold menu with Remove + DS4 landing. Text-fit test for SHIPPED;
   cards_harness + conformance, scenario, manifest. tests/mock_pms.py gains discover paths (list,
   released, userState, metadata, in-memory add/remove); `tools/tv-session.sh up
@@ -480,12 +480,12 @@ New DS icons: bookmark, plain clock, server-with-slash.
 
 **Watchlist page.** One grid (Library-style, 6 columns, 250×375 tiles), not sections/rows.
 Default order = server's `watchlistedAt` order (list items carry no `watchlistedAt`).
-Header: title "Watchlist" (48 px bold, −0.5 px tracking) + ONE pill "Sort & Filter · <summary>"
-(default "Default") opening a glass popover with three sections:
-- Type: Movies & Shows / Movies / TV Shows (type=1/2)
-- Sort by: Date Added / Title / Release Date / Rating (watchlistedAt / titleSort /
-  originallyAvailableAt / rating), with direction
-- Show: All / Released / On your servers ("Released" = API `released` list; "On your servers"
+Header: title "Watchlist" (48 px bold, −0.5 px tracking) + ONE pill "Sort & Filter · <current sort>"
+(default "Date added"; a filter shows only as the header's "N of M") opening a glass popover with three sections:
+- Show: Movies & Shows / Movies / TV Shows (type=1/2)
+- Sort: Date added / Title / Release date / Rating (watchlistedAt / titleSort /
+  originallyAvailableAt / rating); the checked row's value is its direction word ("Newest first")
+- Filter: All / Released / On your servers ("Released" = API `released` list; "On your servers"
   computed client-side from server matching)
 Page ground: AmbientWash keyed to focused title's UltraBlur colours, as Home and Library
 (`screens/src/home/mod.rs:347`; `TileFacts::blur` `ui/src/tile.rs:84`; Library `mod.rs:202`,
@@ -494,7 +494,7 @@ Page ground: AmbientWash keyed to focused title's UltraBlur colours, as Home and
 Empty states: full-screen read-out (verdict y=372, no glyph, sentence case): empty list, and
 "filter left nothing". DS rule change: verdict in PRIMARY text colour, body secondary,
 everywhere. App text never elides (ui/src/CLAUDE.md).
-Focus caption: TileLabel title + secondary line; unplayable → state sentence ("Releasing 12
+Focus caption: TileLabel title + secondary line; unplayable → state sentence ("Coming 12
 Mar"). ICU4X dates numeric only today (`platform/src/i18n/mod.rs:151-163`); need month-name
 format for En/Es/Be (`SHIPPED`, `mod.rs:22`).
 
@@ -506,7 +506,7 @@ Corner veil darkened to rgba(0,0,0,.55) DS-wide (watched tick too). Ruled out: d
 duotone, frosted tiles.
 
 **Detail.** With Play/Resume: icon-only bookmark disc SECOND after Play/Resume; outline when
-not on list, filled when on. No labels under hero discs. Without Play (coming soon / on no
+not on list, filled when on. No label under a hero disc, at rest or focused (design-review S25's focused caption, "Add to Watchlist" / "On Watchlist", was removed by the owner on 2026-10-20). Without Play (coming soon / on no
 server / server offline): labelled pill in primary slot "Add to Watchlist" (outline) / "On
 Watchlist" (filled) + status line with icon; coming-soon also has a 36 px "Coming 12 March"
 line and a Trailer button. NO toast anywhere (not `platform/src/tv/toast.rs`); button state is

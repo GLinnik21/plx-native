@@ -119,7 +119,9 @@ fn shelf_offset(col: usize, n: usize) -> f32 {
     scroll_into_view(0.0, col, n, s.w, s.gap, plx_ui::consts::SCR_W - 2.0 * s.margin_x)
 }
 
-/// Warm Home shelf 0 at its deepest card (at most column 11), go up to the hero, and dive back.
+/// Warm Home shelf 0 at its deepest card (at most column 11), go up to the hero, and dive back. The
+/// shelf holds that offset through all of it and the dive does not scale it, so the cards move by the
+/// page's vertical travel alone; the offset is there for the grader to hold the shelf spring still.
 fn dive_plan(cards: usize) -> Result<Vec<Stage>, Unfit> {
     let col = DIVE_COL.min(cards.saturating_sub(1));
     if cards == 0 || shelf_offset(col, cards) < DIVE_MIN_OFFSET_PX {
@@ -129,8 +131,8 @@ fn dive_plan(cards: usize) -> Result<Vec<Stage>, Unfit> {
     Ok(vec![
         hold("warm", Target::GridSeed(col), true),
         Stage { name: "hero", target: Target::Hero, seed: false, handoff_snap: None, sweep: None, min_ms: 1600, max_ms: 6000, needs_art: false },
-        // Hand off while the retained horizontal product is still moving fast, so
-        // the natural deceleration and resulting requests/uploads belong to settle.
+        // Hand off while the dive is still moving, so the natural deceleration and
+        // resulting requests/uploads belong to settle.
         Stage { name: "dive", target: Target::Grid, seed: false, handoff_snap: Some(0.9), sweep: None, min_ms: 0, max_ms: 4000, needs_art: false },
         hold("settle", Target::Grid, false),
     ])

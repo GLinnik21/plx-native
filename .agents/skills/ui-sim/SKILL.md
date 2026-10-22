@@ -163,6 +163,34 @@ make sim-macos-shot SIM_DIR=$SIM_DIR
 Stale triggers change which screen you boot to, silently — same trap as on the device. `make
 sim-clean SIM_DIR=…` resets a root.
 
+### A simulator run against `tests/mock_pms.py` must arm the Discover stand-in
+
+A person page reads its biography and filmography from the plex.tv metadata provider, not from the
+PMS. The mock serves those two reads (`GET /library/people/{tagKey}` and `.../credits`) on the same
+listener as everything else, but the app only asks it when told where Discover lives:
+
+```sh
+echo "http://127.0.0.1:$MOCK_PORT" > $SIM_DIR/plxnative-discover     # the mock's own port
+```
+
+(`plxnative-plextv=http://127.0.0.1:$MOCK_PORT`, which the QR sign-in flow needs anyway, is followed by
+Discover too.) A `plxnative-token` boot has no account token, so with the stand-in armed the biography
+arrives (synthetic prose, or just the name for a demo-library actor) while the credits answer `401`
+exactly as the real provider does, and the Filmography stays empty unless `plxnative-personcredits`
+seeds it.
+
+**Decision: a `plxnative-token` boot with neither stand-in armed does NOT fall through to
+`discover.provider.plex.tv`; the app refuses both person reads locally and does not ask again.** The
+cost is accepted: such a boot (`--guest`, `--guest --mock`, `tests/run.py --mock`, a real-PMS
+`--guest` scene) shows no biography and no filmography credits, and the page settles as it does for a
+person the provider has never heard of. To see them, arm the stand-in. The event log says so once
+(`discover: GET discover.provider.plex.tv/library/people/{id} refused`, and `discover: base=real
+reads=refused` at boot). **Before opening a person page, read the boot line**: `discover:
+base=stand-in reads=open` (or `base=real reads=refused`) means nothing reaches the real provider;
+`base=real reads=open` means a stored or interactive session that WILL, so do not open the page.
+`tools/screenshots.py`, `tools/site_video.py` and `tools/watchlist_captures.py` arm both triggers and
+fail the run unless the boot logged `discover: base=stand-in` (`mock_pms.discover_stand_in_problem`).
+
 ## Drive it, then screenshot
 
 Run it in the background, write tokens to the FIFO, ask for a shot:
@@ -253,9 +281,11 @@ make screenshots SHOT_HERO_VARIANTS=1 # also home-hero-<film>.jpg for each hero 
   `python3 tools/render-site-variants.py` (the WebP of every close-up and the phone copies of
   tiles and player) and then `python3 tools/render-site-glows.py`; both read the rendered JPEGs.
 - **Screenshot triggers worth knowing.** `grid=<row>,<col>` (Home), `libgrid=<row>,<col>` (the
-  library's All grid), `libshelf=<shelf>,<col>` (a library shelf; the view scrolls to it),
-  `libtype=<movies|shows|seasons|episodes|collections>` (the All grid's TYPE menu value, applied
-  before `libgrid`/`libshelf`/`libmenu` act), `libmenu=<sort|filter|type>,<ms>`, and under `hostsim` `clockstop=<ms>`: the clock sink's clock stops at that
+  library's poster grid), `libshelf=<shelf>,<col>` (a shelf on the Recommended page only, so arm
+  `libtype=recommended` first; the view scrolls to it),
+  `libtype=<movies|shows|seasons|episodes|collections|recommended>` (the first four set the Show-menu
+  type of the page's grid; `collections` and `recommended` press the header control that opens that
+  page; applied before `libgrid`/`libshelf`/`libmenu` act), `libmenu=<sortfilter|sort|filter|type>,<ms>`, and under `hostsim` `clockstop=<ms>`: the clock sink's clock stops at that
   position while the player stays PLAYING (Up Next only shows while playing; `autopause` would
   take it down). The settled capture waits for every armed seat, menu and clock stop to land, so
   a scene that seeks does not rest before it. `stillclock` also holds the Up Next countdown.
@@ -385,7 +415,7 @@ device-verified" is a useful, honest status. "Verified" without a TV is not.
 
 `make site-video-sim` builds the simulator for the demo-video pipeline (`--no-default-features
 --features hostsim,devtriggers,placeholder-sentinel`, release, its own target dir, libass only), and
-`python3 tools/site_video.py render --out DIR --storyboard` plays `tests/video/feel.json` (positions and durations, compiled to the driver's key schedule: Home hero, hero paged to the second page and back, down to the Continue Watching shelf, the third card's Detail opened with OK and scrolled with five downs past its Cast & Crew row to the About section, back, the Movies library walked down with arrows only to its All poster grid and across it, walked back up and left with one back, about 30 s; nothing opened from Detail, no modal; shot with the hold hint taught, so card rests and the card OK are not capped: `render --storyboard` sets the `plxnative-hintoff` trigger (`devtriggers` builds only; it calls `hold_hint::teach_all_for_dev`, once, at boot) because the capsule is a one-time teaching overlay and a film has no viewer to teach) and records its sha256, `--extra-holds`, `--trigger`, how far each beat still moved at its end (`storyboard.rest`) and which titles it opened and `hold_hint: suppressed` in `render.json`. Before the film boots the launcher signs the simulator in to the mock's Demo account through the app's own QR sign-in (a prep boot with the `plxnative-login` trigger), because `up` from the hero always lands on the profile chip and an account-less session would read "Sign in" there. A pushed page is filmed LIVE under the dip, never as a held image (`plx_gfx::dump`'s one page rule: every dip frame re-captures the page, `PageImage::step_filmed`), so a page that mounts hidden and fades in (an `Xfade` mount, the Library's) fades in as it does in the product, with its entrance springs playing, and nothing cuts when the dip ends. Either way `render` runs the simulator headless against the mock catalog (without `--storyboard` it holds Home for `--frames`, 180 by default) and leaves
+`python3 tools/site_video.py render --out DIR --storyboard` plays `tests/video/feel.json` (positions and durations, compiled to the driver's key schedule: Home hero, hero paged to the second page and back, down to the Continue Watching shelf, the third card's Detail opened with OK and scrolled with five downs past its Cast & Crew row to the About section, back, the Movies library walked down with arrows only to its All poster grid and across it, walked back up and left with one back, about 30 s; nothing opened from Detail, no modal; shot with the hold hint taught, so card rests and the card OK are not capped: `render --storyboard` sets the `plxnative-hintoff` trigger (`devtriggers` builds only; it calls `hold_hint::teach_all_for_dev`, once, at boot) because the capsule is a one-time teaching overlay and a film has no viewer to teach) and records its sha256, `--extra-holds`, `--trigger`, how far each beat still moved at its end (`storyboard.rest`) and which titles it opened and `hold_hint: suppressed` in `render.json`. Before the film boots the launcher signs the simulator in to the mock's Demo account through the app's own QR sign-in (a prep boot with the `plxnative-login` trigger), so the profile chip, one `left` from the Home pill that `up` from the hero lands on, reads "Demo" and never "Sign in" should a beat press `left` there. A pushed page is filmed LIVE under the dip, never as a held image (`plx_gfx::dump`'s one page rule: every dip frame re-captures the page, `PageImage::step_filmed`), so a page that mounts hidden and fades in (an `Xfade` mount, the Library's) fades in as it does in the product, with its entrance springs playing, and nothing cuts when the dip ends. Either way `render` runs the simulator headless against the mock catalog (without `--storyboard` it holds Home for `--frames`, 180 by default) and leaves
 `master.mkv`, `frames.tsv`, `dump.json` and `render.json`. The simulator side is
 `rust-modules/src/dev/framedump.rs`, armed by `PLXNATIVE_DUMP=<dir>` (its module doc lists the
 variables). It drives the app from VIRTUAL time (`clock::set_replay`, 60 fps), forces a present every

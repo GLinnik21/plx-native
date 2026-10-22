@@ -1,116 +1,165 @@
-//! The page header: the title (DISPLAY 48 bold, DS8 tracking), the count just left of the pill (Q7,
-//! option D) and the one `Sort & Filter · <summary>` pill (plan §1.2; boards Watchlist, WatchlistOptions).
+//! The page header: the Library's one row (`plx_ui::page_header::PageHeader`, container left 76 /
+//! right 129, top 148, 56 tall, text edges x 96 and x 1771). The title "Watchlist" stands on the
+//! left as plain text (`HeaderItem::title`: no plate, which means "current among siblings", and no
+//! pill, which means "focusable"; design review S10); on the right a filter
+//! read-out ("12 of 40", only while a Type or Show filter narrows the list, at the read-out ink and
+//! one [`GAP`](plx_ui::page_header::GAP) before the control) and the one control, "Sort & Filter · <value> ▾".
 //!
-//! Board values and where they land: the title's box top 172 and the pill's centre (172 + 24 = 196)
-//! are [`HEADER_TOP`] / [`HEADER_CY`]; the pill's right edge is the grid's right edge, which the
-//! caller passes in [`header_frame`]. The pill is the shared [`ValueChip`] (regular label, bold
-//! summary, chevron, the Library toolbar's capsule), so its height is that chip's 52 (the board
-//! draws 54: shipped wins) and its ink and fill are the idle control tokens.
+//! This file DECLARES the row ([`Row::new`]); its layout, paint, motion (the focus capsule that
+//! travels, the pop) and focus group are the ui's, the same ones the Library, Collections and
+//! Recommended pages wear. The control a Sort & Filter menu has lifted is drawn by the host's opener
+//! lift, focused, above the menu's scrim ([`Row::draw_opener`], which is [`PageHeader::draw_opener`]:
+//! the one paint every header opener has), so the page's pass leaves it out ([`Row::draw`] with
+//! `lifted`) and the pill stays lit for as long as its panel is up (design review S12).
+//!
+//! The row is built here as a value ([`Row`]) from the measure, the summary and the read-out, and
+//! every consumer (paint, the focus rect, the menu's anchor) reads that one value.
 use plx_machine::machine::Measure;
-use plx_ui::consts::MARGIN_X;
-use plx_ui::icons::Icon;
+use plx_ui::page_header::{self, HeaderFocus, HeaderItem, HeaderRow, ItemRect, PageHeader, PageHeaderSpec, Slot};
+#[cfg(feature = "devtriggers")]
 use plx_ui::theme;
-use plx_ui::value_chip::ValueChip;
-use plx_ui::{Env, Painter, Rect, View};
-use std::ffi::CString;
+use plx_ui::widgets::{focus_pill, CtlPop, TabStrip};
+use plx_ui::{Painter, Rect};
 
-/// What the header shows.
-pub struct HeaderFace<'a> {
-    pub title: &'a str,
-    /// Q7: the count just left of the pill; `None` while the list has not landed.
-    pub count: Option<Count>,
-    /// `WatchlistOptionsState::summary`.
-    pub summary: &'a str,
-    pub pill_focused: bool,
-}
-
-/// The count the header shows: the whole list, or what a Type / Show filter leaves of it.
+/// The count the page holds: the whole list, or what a Type / Show filter leaves of it. Only the
+/// narrowed form is ever drawn (the Library's rule: "312 of 1,284" while filtered, nothing else).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Count {
-    /// No filter narrows the list: "{n} titles".
+    /// No filter narrows the list.
     All(usize),
     /// A filter narrows it: "{shown} of {total}".
     Of { shown: usize, total: usize },
 }
 
 impl Count {
-    /// The catalog's sentence for it, plural by the language's own rules.
-    pub fn text(&self) -> String {
-        use plx_platform::i18n::msg;
-        match *self {
-            Count::All(n) => msg::watchlist_page_count_all(n as i64).to_string(),
-            Count::Of { shown, total } => msg::watchlist_page_count_of(shown as i64, total as i64).to_string(),
+    /// What the row reads of the count: the narrowed form's two numbers, nothing for the whole list
+    /// (it is never drawn, so a list that grows or shrinks unfiltered changes nothing on the row).
+    pub fn narrowed(count: Option<Count>) -> Option<(usize, usize)> {
+        match count {
+            Some(Count::Of { shown, total }) => Some((shown, total)),
+            _ => None,
         }
     }
-}
 
-/// The type rung the count wears: LABEL, regular, [`theme::TEXT_SECONDARY`].
-const COUNT_SIZE: std::os::raw::c_int = theme::size::LABEL;
-
-/// The title's box top on the 1080 frame (boards: `top: 172px`).
-pub const HEADER_TOP: f32 = 172.0;
-/// The title and the pill share this centre line: the title box is `DISPLAY` tall at line-height 1.
-pub const HEADER_CY: f32 = HEADER_TOP + theme::size::DISPLAY as f32 * 0.5;
-/// The pill's height: the shared value chip's, as the Library toolbar draws it.
-pub const PILL_H: f32 = 52.0;
-
-/// The header band for a grid whose right edge is `grid_right`: from the title's left (`MARGIN_X`)
-/// to the pill's right, `DISPLAY` tall from [`HEADER_TOP`].
-pub fn header_frame(grid_right: f32) -> Rect {
-    Rect::new(MARGIN_X, HEADER_TOP, grid_right - MARGIN_X, theme::size::DISPLAY as f32)
-}
-
-/// The pill's text halves: the label, and the value with its own separator (" · Default"), cut from
-/// the catalog's one composed sentence so the separator is the translators'.
-fn pill_text(summary: &str) -> (&'static std::ffi::CStr, CString) {
-    let name = plx_platform::i18n::msg::watchlist_page_sort_filter_c();
-    let full = plx_platform::i18n::msg::watchlist_page_sort_filter_summary(summary);
-    let value = full.strip_prefix(name.to_str().unwrap_or("")).unwrap_or(&full);
-    (name, CString::new(value).unwrap_or_default())
-}
-
-/// The pill's rect inside `frame` (the [`header_frame`]): right-aligned, centred on [`HEADER_CY`].
-pub fn pill_rect(frame: Rect, measure: &dyn Measure, summary: &str) -> Rect {
-    let (name, value) = pill_text(summary);
-    let w = ValueChip::width(measure, name, &value, None);
-    Rect::new(frame.x + frame.w - w, frame_cy(frame) - PILL_H * 0.5, w, PILL_H)
-}
-
-/// The title's and the pill's shared centre line in `frame`: [`HEADER_CY`] when the frame is the
-/// document-space [`header_frame`], and the same line carried down or up by a scrolled page.
-fn frame_cy(frame: Rect) -> f32 {
-    frame.y + frame.h * 0.5
-}
-
-/// Where the count `text` sits in `frame`: right-aligned [`theme::space::MD`] clear of the pill,
-/// centred on the pill's line. The pill's rect does not depend on it, so the pill never moves.
-pub fn count_rect(frame: Rect, measure: &dyn Measure, summary: &str, text: &str) -> Rect {
-    let pill = pill_rect(frame, measure, summary);
-    let c = CString::new(text).unwrap_or_default();
-    let w = measure.width(&c, COUNT_SIZE, false);
-    Rect::new(pill.x - theme::space::MD - w, pill.cy() - COUNT_SIZE as f32 * 0.5, w, COUNT_SIZE as f32)
-}
-
-/// The title run and the count: returns the title's painted width. The count rides with the title
-/// (not the pill) so it stays under the menu's scrim while the pill alone is lifted.
-pub fn draw_title(p: Painter, frame: Rect, measure: &dyn Measure, face: &HeaderFace<'_>) -> f32 {
-    let cy = frame_cy(frame);
-    let sz = theme::size::DISPLAY;
-    let y = plx_gfx::text::text_vcenter_y(sz, 1, cy);
-    let title = CString::new(face.title).unwrap_or_default();
-    let w = p.text_tracked(title.as_ptr(), MARGIN_X, y, sz, theme::TEXT_PRIMARY, 0, 1, theme::TRACKING_TITLE_TIGHT);
-    if let Some(count) = face.count {
-        let text = count.text();
-        let r = count_rect(frame, measure, face.summary, &text);
-        let y = plx_gfx::text::text_vcenter_y(COUNT_SIZE, 0, r.cy());
-        let text = CString::new(text).unwrap_or_default();
-        p.text(text.as_ptr(), r.x, y, COUNT_SIZE, theme::TEXT_SECONDARY, 0, 0);
+    /// The read-out sentence, `None` when nothing narrows the list. Numbers group as the Library's
+    /// do (`LocaleContext::number`).
+    pub fn readout(&self) -> Option<String> {
+        let Count::Of { shown, total } = *self else { return None };
+        let locale = plx_platform::i18n::current();
+        Some(plx_platform::i18n::msg::library_header_filtered_of(
+            &locale.number(shown as i64),
+            &locale.number(total as i64),
+        ))
     }
-    w
+}
+
+/// The type rung of the debug cue under the row: LABEL, regular, [`theme::TEXT_SECONDARY`].
+#[cfg(feature = "devtriggers")]
+const CUE_SIZE: std::os::raw::c_int = theme::size::LABEL;
+
+/// The row's top on the 1080 frame and the band the grid's first row sits [`page_header::HEIGHT`]
+/// plus this air below.
+pub const HEADER_TOP: f32 = page_header::TOP;
+/// The header block: the row and the air under it, so the grid's first poster top is 96 under the
+/// row's top (244), as the Library's.
+pub const BLOCK_H: f32 = page_header::BLOCK_H;
+/// The grid's right edge: the row's right text edge.
+pub const GRID_RIGHT: f32 = page_header::TEXT_X1;
+
+/// The row laid out: the ui's [`HeaderRow`] (its one stop is the Sort & Filter control) and which
+/// laid-out item that is.
+pub struct Row {
+    row: HeaderRow,
+    sort: usize,
+}
+
+impl Row {
+    /// Build the row for `summary` and the read-out `count`.
+    pub fn new(measure: &dyn Measure, summary: &str, count: Option<Count>) -> Self {
+        use plx_platform::i18n::msg;
+        let left = vec![HeaderItem {
+            label: msg::watchlist_page_title().to_owned(),
+            title: true,
+            ..Default::default()
+        }];
+        let mut right = Vec::new();
+        if let Some(readout) = count.and_then(|c| c.readout()) {
+            right.push(HeaderItem { label: readout, readout: true, ..Default::default() });
+        }
+        right.push(HeaderItem {
+            label: msg::watchlist_page_sort_filter().to_owned(),
+            value: Some(summary.to_owned()),
+            fold_glyph: true,
+            focusable: true,
+            ..Default::default()
+        });
+        let page = PageHeader::new(PageHeaderSpec { left, right, ..Default::default() }, &[], measure);
+        let layout = page.layout(plx_ui::consts::SCR_W, measure);
+        let sort = layout.items.iter().position(|it| matches!(it.slot, Slot::Right(_)) && it.focusable)
+            .unwrap_or(layout.items.len().saturating_sub(1));
+        Self { row: HeaderRow::new(page, layout, vec![(super::page::PILL_ELEM, sort)]), sort }
+    }
+
+    /// The control's item, in document space.
+    fn control(&self) -> ItemRect {
+        self.row.layout.items[self.sort]
+    }
+
+    /// The control's plate (its focus rect and hit target), in document space.
+    pub fn plate(&self) -> Rect {
+        self.control().plate
+    }
+
+    /// The control as the focused pill draws it, [`PILL_FOCUS_OUTSET`] past the plate: where the menu's
+    /// morph starts and ends when focus is on the control.
+    pub fn pill(&self) -> Rect {
+        focus_pill(self.plate())
+    }
+
+    /// The row as one focus group (`id`), for the page's declaration of its header section.
+    pub fn focus(&self, entry: plx_machine::machine::EntryId, id: plx_machine::machine::GroupId) -> HeaderFocus<'_> {
+        self.row.focus(entry, id, (0.0, 0.0), Rect::FULL)
+    }
+
+    /// The title's box (its text and the room a plate would take), in document space.
+    #[cfg(test)]
+    pub fn title_box(&self) -> Rect {
+        self.row.layout.items[0].plate
+    }
+
+    /// The text left edge of the right cluster (the read-out, else the control).
+    #[cfg(test)]
+    pub fn cluster_left(&self) -> f32 {
+        self.row.layout.items.iter().filter(|it| matches!(it.slot, Slot::Right(_))).map(|it| it.text.x).fold(f32::MAX, f32::min)
+    }
+
+    /// The laid-out items' text and plate rects, for geometry tests.
+    #[cfg(test)]
+    pub fn items(&self) -> &[ItemRect] {
+        &self.row.layout.items
+    }
+
+    /// One frame of the row's motion on the page's `capsules` and `pop`, from the engine's
+    /// `current` focus and the page's `entry` ([`HeaderRow::step`]).
+    pub fn step(&self, entry: plx_machine::machine::EntryId, current: Option<plx_machine::machine::FocusKey<u32>>, capsules: &mut TabStrip, pop: &mut CtlPop<1>, dt: f32) {
+        self.row.step(entry, current, capsules, pop, dt);
+    }
+
+    /// Paint the row `dy` px from the document origin (a scrolled page: minus the scroll): the title, the read-out and the control, which the Sort & Filter menu has
+    /// `lifted` out of the page when it is up (the opener lift draws the only copy).
+    pub fn draw(&self, p: Painter, dy: f32, capsules: &TabStrip, pop: f32, lifted: bool) {
+        self.row.draw(p, -dy, capsules, pop, lifted.then_some(super::page::PILL_ELEM));
+    }
+
+    /// The control as the focused opener of its menu, `dy` px from the document origin
+    /// ([`HeaderRow::draw_opener`]): what the opener lift paints above the scrim.
+    pub fn draw_opener(&self, p: Painter, dy: f32, pop: f32) {
+        self.row.draw_opener(p, -dy, pop, super::page::PILL_ELEM);
+    }
 }
 
 /// **The debug build's "write blocked" cue** (Q11): one LABEL line in [`theme::TEXT_SECONDARY`] under
-/// the title, in the gap above the grid, while the last Watchlist write was refused by the dev-build
+/// the row, in the air above the grid, while the last Watchlist write was refused by the dev-build
 /// failsafe (catalog key `watchlist.page.debug_write_blocked`). Compiled only into a `devtriggers`
 /// build, so nightly and stable cannot draw it (Q8: no toast, no notice for users).
 #[cfg(feature = "devtriggers")]
@@ -118,39 +167,12 @@ pub fn dev_blocked_text() -> &'static std::ffi::CStr {
     plx_platform::i18n::msg::watchlist_page_debug_write_blocked_c()
 }
 
-/// Draw [`dev_blocked_text`] for the header `frame`: left on the title's edge, centred in the band
-/// between the title's foot and the grid's first row.
+/// Draw [`dev_blocked_text`] `dy` from the document origin: left on the title's text edge, centred
+/// in the air between the row's foot and the grid's first row.
 #[cfg(feature = "devtriggers")]
-pub fn draw_dev_blocked(p: Painter, frame: Rect) {
-    let band = super::page::GRID_TOP - HEADER_TOP - frame.h;
-    let cy = frame.y + frame.h + band * 0.5;
-    let y = plx_gfx::text::text_vcenter_y(COUNT_SIZE, 0, cy);
-    p.text(dev_blocked_text().as_ptr(), MARGIN_X, y, COUNT_SIZE, theme::TEXT_SECONDARY, 0, 0);
-}
-
-/// The pill alone, at `rect` (from [`pill_rect`]).
-pub fn draw_pill(p: Painter, rect: Rect, face: &HeaderFace<'_>) {
-    pill_chip(rect, face, &pill_text(face.summary)).draw(&Env::inert(), p);
-}
-
-/// The pill's label and chevron with no fill of its own: while the Sort & Filter menu is up the
-/// page leaves its pill out and the menu surface draws it as its morph's opener face
-/// (`OptionsMenu::draw`), the fill ([`pill_fill`]) as the morph's plate and this over it.
-pub fn draw_pill_label(p: Painter, rect: Rect, face: &HeaderFace<'_>) {
-    pill_chip(rect, face, &pill_text(face.summary)).bare().draw(&Env::inert(), p);
-}
-
-/// The pill's fill, focused or not ([`ValueChip::fill`]).
-pub fn pill_fill(focused: bool) -> [f32; 4] {
-    ValueChip::fill(focused)
-}
-
-fn pill_chip<'a>(rect: Rect, face: &HeaderFace<'_>, text: &'a (&'a std::ffi::CStr, CString)) -> ValueChip<'a> {
-    ValueChip::new(text.0, &text.1, None, rect).focused(face.pill_focused).icon(Icon::ChevronDown)
-}
-
-/// Draw the header into `frame` (the [`header_frame`]): the title and count, then the pill.
-pub fn draw_header(p: Painter, frame: Rect, measure: &dyn Measure, face: &HeaderFace<'_>) {
-    draw_title(p, frame, measure, face);
-    draw_pill(p, pill_rect(frame, measure, face.summary), face);
+pub fn draw_dev_blocked(p: Painter, dy: f32) {
+    let band = BLOCK_H - page_header::HEIGHT;
+    let cy = HEADER_TOP + page_header::HEIGHT + band * 0.5 + dy;
+    let y = plx_gfx::text::text_vcenter_y(CUE_SIZE, 0, cy);
+    p.text(dev_blocked_text().as_ptr(), page_header::TEXT_X0, y, CUE_SIZE, theme::TEXT_SECONDARY, 0, 0);
 }

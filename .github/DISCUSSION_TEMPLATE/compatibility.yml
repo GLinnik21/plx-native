@@ -1,0 +1,78 @@
+title: "Works on "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for telling me how PlxNative runs on your television. A report that it works is as useful as one that fails: the [compatibility list](https://github.com/GLinnik21/plx-native/blob/main/docs/compatibility.md) is built from these.
+
+        If something is **broken** (video never starts, the app closes, sign-in fails), please use the [bug report form](https://github.com/GLinnik21/plx-native/issues/new?template=bug_report.yml) instead, so it gets tracked and fixed.
+  - type: input
+    id: tv-model
+    attributes:
+      label: TV model
+      description: From the sticker on the back, or Settings > About This TV. For example `OLED55C8PLA`.
+    validations:
+      required: true
+  - type: input
+    id: webos-version
+    attributes:
+      label: webOS version and platform release
+      description: Settings > About This TV shows both. For example `webOS 4.4.3`, platform release `4.4.3-22`. The platform release matters on 2016 to 2018 sets.
+    validations:
+      required: true
+  - type: input
+    id: plxnative-version
+    attributes:
+      label: PlxNative version
+      description: For example `0.8.0`, or the nightly's version.
+    validations:
+      required: true
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: How you installed PlxNative
+      options:
+        - Dev Manager (Developer Mode)
+        - Homebrew Channel
+        - Nightly build
+        - Built from source
+        - Other or not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: Overall result
+      options:
+        - Works
+        - Works, with problems
+        - Starts, but video does not play
+        - Does not start
+    validations:
+      required: true
+  - type: checkboxes
+    id: tested
+    attributes:
+      label: What you tried that worked
+      description: Tick only what you actually tried and saw working. Anything left unticked is recorded as not tested.
+      options:
+        - label: Sign-in and browsing
+        - label: Direct play
+        - label: Resume and seeking
+        - label: A transcoded stream
+        - label: HEVC or 4K
+        - label: HDR or Dolby Vision
+        - label: Subtitles
+        - label: Switching audio tracks
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: Problems you hit, what you could not try, the file types you played. For a problem with video, the bottom line of the failure screen (it starts with `PlxNative`) is the most useful thing to paste.
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Before you submit
+      options:
+        - label: I have not pasted a Plex token or a passphrase into this discussion.
+          required: true

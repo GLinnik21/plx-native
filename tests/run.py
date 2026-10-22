@@ -5058,10 +5058,27 @@ def evaluate_pipeline(case, lines, srv_delta, gst_lines=None):
     return all(ok for _, ok, _ in results), results
 
 
+def pull_runtime_file(tv, name):
+    """One file out of this install's runtime root, as text; empty when the app never wrote it."""
+    return ssh(tv, f"cat {RUNDIR}/{name} 2>/dev/null", timeout=30).stdout
+
+
 def pull_runtime_log(tv, name):
     """Read a case-owned diagnostic after playback; an absent/unreadable trace grades empty."""
-    proc = ssh(tv, f"cat {RUNDIR}/{name}", timeout=30)
-    return proc.stdout.splitlines() if proc.returncode == 0 else []
+    return pull_runtime_file(tv, name).splitlines()
+
+
+def save_logs_file(cfg, filename, text):
+    """Write `text` to `filename` in the --save-logs directory (made if need be); its path, or None
+    when --save-logs was not asked for."""
+    outdir = cfg.get("save_logs")
+    if not outdir:
+        return None
+    os.makedirs(outdir, exist_ok=True)
+    path = os.path.join(outdir, filename)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+    return path
 
 
 def save_case_log(cfg, name, lines):
@@ -5072,14 +5089,41 @@ def save_case_log(cfg, name, lines):
     (transaction records, per-segment acquisition) and re-running a device case to recover a log
     costs a television lease.
     """
-    outdir = cfg.get("save_logs")
-    if not outdir:
-        return None
-    os.makedirs(outdir, exist_ok=True)
-    path = os.path.join(outdir, f"{name}.log")
-    with open(path, "w") as f:
-        f.write("\n".join(lines) + "\n")
-    return path
+    return save_logs_file(cfg, f"{name}.log", "\n".join(lines) + "\n")
+
+
+# The counter file each profiler trigger leaves in the runtime root (`paths::profile`). One mode is
+# armed per run (`gfx/profile.rs`): `plxnative-hwcnt` writes the first file and the GL timer behind
+# `plxnative-profile` the second, so the file of a leg is the one its own trigger names.
+HWCNT_FILE = "plxnative-hwcnt.jsonl"
+GPU_TIME_FILE = "plxnative-gputime.jsonl"
+PROFILER_FILES = {"plxnative-hwcnt": HWCNT_FILE, "plxnative-profile": GPU_TIME_FILE}
+
+
+def pull_profiler_files(cfg, armed):
+    """The counter file of each profiler trigger in `armed` (a scene's trigger list), off the set:
+    `{trigger: text}`, `''` for an armed trigger that left nothing.
+
+    The files are gone by the next scene's trigger wipe (`apply_triggers`) and by the harness's
+    teardown, so this must run after the scene's app run and before either.
+    """
+    triggers = dict.fromkeys(name for name, _ in armed if name in PROFILER_FILES)
+    return {name: pull_runtime_file(cfg["tv"], PROFILER_FILES[name]) for name in triggers}
+
+
+def save_profiler_files(cfg, stem, pulled):
+    """Keep the files `pull_profiler_files` brought off the set beside the event log, if --save-logs
+    asked for them. An armed leg that left no counters is said so on the spot: it is not a leg."""
+    if not cfg.get("save_logs"):
+        return
+    for name, text in pulled.items():
+        fname = f"{stem}.{PROFILER_FILES[name]}"
+        if text:
+            save_logs_file(cfg, fname, text)
+            print(f"    profiler: kept {fname}")
+        else:
+            print(f"    profiler: {name} was armed but the set holds no {PROFILER_FILES[name]} "
+                  "(phase unknown, trigger unread, or the counters refused): this leg has no counters")
 
 
 def run_pipeline_case(case, cfg, srv, url_base, verbose):
@@ -5983,6 +6027,52 @@ def fps_trigger_files(scene):
     return files
 
 
+# The statistics a scene may grade `fps_floor` on (`fps_floor_stat`); the first is the default.
+FPS_FLOOR_STATS = ("median", "live")
+
+
+def fps_floor_verdict(samples, floor, stat="median", windows=None):
+    """Grade a scene's post-warmup `fps=` windows against its `fps_floor`.
+
+    Returns `(passed, detail_suffix)`. The question is "is this screen still animating, at rate";
+    a FROZEN animator reads ~0.5/s, the keepalive alone, which no floor in this range can confuse
+    with a healthy one. What statistic answers it depends on the scene's duty cycle:
+
+    * `median` (the default) — the median window must read at least `floor`. Deliberately NOT the
+      2nd-lowest the way `loop_floor` and `fps_ceiling` are. Under the present gate a frame rate is
+      intermittent BY DESIGN, so on a scene that bounces rather than animates continuously (the
+      `*-nav` pair reverse every 1400 ms, of which only ~210 ms is fading) a 1-second window can
+      land entirely inside the settled gap and legitimately read 0. Measured: home-detail-nav ran
+      min=0, median=15 with a healthy fade.
+    * `live` — at least `windows` of the graded windows must each read at least `floor` (a window
+      that did is LIVE). For a scene whose graded windows are a live stretch followed by a long
+      idle tail, so that the median and the mean both read the tail's share and not the animation:
+      `library-switch` grades the back half of a 14-step switch cycle (about eight live seconds, the
+      idle steps among them reading 5-12 on the television) plus the spent-cycle tail (`0 1 0 1 0 1`,
+      the keepalive), and the tail is the same whether the cycle ended or the animator froze. The
+      median of those windows read 7-11 for one animation; the mean (8.8-13.3) passes an animator
+      that froze after two graded seconds (H3 4.07, H7 4.43, H9 4.21) and a frozen run plus one
+      50 fps window (3.8-4.7) at any floor that also passes the healthy runs. A count of live windows
+      is what a freeze takes away: healthy runs hold 8 or 9 of them, a freeze after N live seconds
+      holds N, a frozen run 0, a frozen run with a burst 1. What it does not see is a freeze AFTER the
+      first `windows` live seconds: that reads as a cycle that ended early, and only a scene-specific
+      count of the cycle's steps could tell them apart.
+    """
+    if stat not in FPS_FLOOR_STATS:
+        raise ValueError(f"fps_floor_stat {stat!r}: want one of {', '.join(FPS_FLOOR_STATS)}")
+    sf = sorted(samples)
+    med = sf[len(sf) // 2]
+    if stat == "live":
+        if not isinstance(windows, int) or windows < 1:
+            raise ValueError("fps_floor_stat 'live' needs fps_floor_windows, a count of at least 1")
+        live = sum(1 for n in sf if n >= floor)
+        shown = (f"live={live} of n={len(sf)} windows at >= {floor} fps (need {windows}; total={sum(sf)}, "
+                 f"median={med}, min={sf[0]}, max={sf[-1]}) vs fps_floor {floor} (live windows)")
+        return live >= windows, " | " + shown
+    shown = f"median={med} fps (min={sf[0]}, max={sf[-1]}, n={len(sf)}) vs fps_floor {floor}"
+    return med >= floor, " | " + shown
+
+
 def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
                   instrumented=False, log_suffix="", before_run=None):
     name = scene["name"]
@@ -6051,10 +6141,15 @@ def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
     # FPS scenes are the runs most likely to carry profiler summaries.  Preserve them just like
     # playback cases when --save-logs is requested; otherwise teardown closes the app and the
     # only copy of the HWCNT/phase evidence is lost before it can be compared with the A/B leg.
-    save_case_log(cfg, f"fps-{name}{log_suffix}", lines)
+    stem = f"fps-{name}{log_suffix}"
+    save_case_log(cfg, stem, lines)
+    # The counter files come off the set here, once, for --save-logs and for the graphics profile
+    # (which reads its HWCNT file out of `capture`) alike: the next trigger wipe deletes them.
+    profiler = pull_profiler_files(cfg, files) if cfg.get("save_logs") or capture is not None else {}
+    save_profiler_files(cfg, stem, profiler)
     if capture is not None:
         capture.update({"lines": lines, "warmup": warmup, "run_secs": run_secs,
-                        "route": route, "overlay": overlay})
+                        "route": route, "overlay": overlay, "profiler": profiler})
     # Same refusal as the playback cases, and it matters at least as much here: a scene graded
     # against the wrong install's log, or against a release build that never read its triggers,
     # fails on the <5-samples guard and reads as "the app never reached this screen".
@@ -6124,18 +6219,8 @@ def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
 
     # `fps_floor`: for a scene whose whole point is that an ANIMATION keeps running. Graded on
     # `fps=` because `loop=` counts loop iterations and cannot see a frozen animator — the trap that
-    # let a frozen route dip and a stopped spinner both ship.
-    #
-    # Graded on the MEDIAN, deliberately NOT on the 2nd-lowest the way `loop_floor` and
-    # `fps_ceiling` are. Under the present gate a frame rate is intermittent BY DESIGN — that is the
-    # whole feature — so on a scene that bounces rather than animates continuously (the `*-nav` pair
-    # reverse every 1400ms, of which only ~210ms is fading) a 1-second heartbeat window can land
-    # entirely inside the settled gap and legitimately read 0. Measured: home-detail-nav ran min=0,
-    # median=15 with a perfectly healthy fade, and even the oscillator scenes are bursty now that
-    # the settle predicate lets them idle between steps (home-grid min=11, median=41).
-    # The median answers the question actually being asked — "is this screen animating at all, at
-    # rate" — while a FROZEN animator reads ~0.5/s, the keepalive alone, which no threshold in this
-    # range can confuse with a healthy one. Fill-rate regressions are `loop_floor`'s job, not this.
+    # let a frozen route dip and a stopped spinner both ship. The statistic is `fps_floor_stat`
+    # (the MEDIAN unless the scene opts into a count of LIVE windows); see `fps_floor_verdict`.
     f_floor = scene.get("fps_floor")
     if f_floor is not None:
         presf = parse_fps(lines, route, overlay)[warmup:]
@@ -6144,11 +6229,10 @@ def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
                    f"build without the fps= field, or the scene never reached this screen")
             print(f"    [FAIL] {msg}")
             return False, msg
-        sf = sorted(presf)
-        med = sf[len(sf) // 2]
-        ok = ok and med >= f_floor
-        detail += (f" | median={med} fps (min={sf[0]}, max={sf[-1]}, n={len(presf)}) "
-                   f"vs fps_floor {f_floor}")
+        ok_fl, detail_fl = fps_floor_verdict(presf, f_floor, scene.get("fps_floor_stat", "median"),
+                                             scene.get("fps_floor_windows"))
+        ok = ok and ok_fl
+        detail += detail_fl
 
     # `fps_ceiling`: the INVERSE assertion — this scene wants the app to stop presenting.
     # `loop_floor` still guards loop liveness so a wedged loop cannot pass by presenting nothing;
@@ -6417,8 +6501,8 @@ def run_graphics_profile(scene, cfg, token, phase, output=None):
             before_run=lambda: sampler.start(run_secs + 4.0),
         )
         hw_irq_raw = sampler.finish()
-        hwcnt_result = ssh(cfg["tv"], f"cat {RUNDIR}/plxnative-hwcnt.jsonl 2>/dev/null", timeout=30)
-        if not hwcnt_result.stdout:
+        hwcnt_jsonl = instrumented.get("profiler", {}).get("plxnative-hwcnt", "")
+        if not hwcnt_jsonl:
             raise RuntimeError(
                 "HWCNT produced no JSONL — phase unknown, trigger unread, or /dev/mali0 refused"
             )
@@ -6436,9 +6520,9 @@ def run_graphics_profile(scene, cfg, token, phase, output=None):
         out.write("\n".join(production["lines"]) + "\n")
     with open(os.path.join(bundle, "events-hwcnt.log"), "w", encoding="utf-8") as out:
         out.write("\n".join(instrumented["lines"]) + "\n")
-    hwcnt_path = os.path.join(bundle, "plxnative-hwcnt.jsonl")
+    hwcnt_path = os.path.join(bundle, HWCNT_FILE)
     with open(hwcnt_path, "w", encoding="utf-8") as out:
-        out.write(hwcnt_result.stdout)
+        out.write(hwcnt_jsonl)
 
     # The sampler starts immediately before make run. Drop launch plus the scene's declared
     # heartbeat warmup from active summaries; raw JSONL remains complete for a different cut.
@@ -6582,7 +6666,10 @@ def main():
     ap.add_argument("--save-logs", metavar="DIR", default=None,
                     help="write each case's full event log to DIR/<case>.log. The app truncates "
                          "its log every launch and each case overwrites the previous one, so a "
-                         "trace not captured here is gone when the run ends.")
+                         "trace not captured here is gone when the run ends. An FPS scene that "
+                         "arms a profiler (--extra-trigger plxnative-hwcnt=PHASE or "
+                         "plxnative-profile=PHASE) also keeps its counter file as "
+                         "DIR/fps-<scene>.<plxnative-hwcnt|plxnative-gputime>.jsonl.")
     ap.add_argument("--tv", default=None, help="override TV IP (default from manifest.local.json)")
     # Deliberately NOT `choices=`: the Makefile's FLAVORS list is the one whitelist, and a second
     # copy here would be the copy that goes stale. A bad value fails on the first `make -s print-*`
@@ -6804,7 +6891,7 @@ def main():
             else:
                 gates = "gate=?"
             if s.get("fps_floor") is not None:
-                gates += f" fps_floor={s['fps_floor']}"
+                gates += f" fps_floor={s['fps_floor']}" + (f"({s['fps_floor_stat']}>={s['fps_floor_windows']})" if s.get("fps_floor_stat") == "live" else "")
             if s.get("fps_ceiling") is not None:
                 gates += f" fps_ceiling={s['fps_ceiling']}"
             if s.get("worst_ceiling_ms") is not None:

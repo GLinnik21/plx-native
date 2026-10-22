@@ -433,7 +433,128 @@ in authored coordinates.
 **`/tmp/plxnative-drawmask=<classes>`** — refuse every draw of the named classes, so a whole-frame
 `frame.ui` HWCNT A/B against the unmasked control prices that class **as the frame sees it**,
 un-serialised. `all` draws nothing, and is therefore the **compositor floor**. Every leg it
-produces except the control is a broken picture by construction; it is a measurement knob.
+produces except the control is a broken picture by construction; it is a measurement knob. The
+`card` class also answers to three PARTS (`card.interior`, `card.ring`, `card.focus`), below.
+
+**The card-path counter, and `/tmp/plxnative-nocardsplit`.** The `card` class above counts LOGICAL
+composites, so it cannot say how a card was drawn: a resting card is cut into its plain-texture
+interior and a ring (`gfx::draw_tex_core_in`, five scissored draws of one quad), a focused or risen
+one runs the focus program, and both are one `card` composite. With `/tmp/plxnative-overdraw` armed
+the window line therefore ends in one more section, per frame, as `<px visible>/<card draws>`:
+
+```
+OVERDRAW frames=60 panel=... | card=... image=... | cardpath split=P/D focus=P/D clip=P/D nointerior=P/D plain=P/D off=P/D
+```
+
+`split` is a resting card cut into pieces; `focus` a card with `f > 0` or `dy > 0` (the focus
+program, whole); `clip` a resting, rounded card on a reduced-resolution blur source pass with the
+split on (whole); `nointerior` a card with no certainly-plain interior (a circle, a sliver);
+`plain` a corner radius under half a pixel (the shader's own whole-quad plain branch); `off` a card
+that would have been split with the split switched off. A card is sorted focus, then plain, then
+off, and only a card that is still to be split has its target checked, so a popped, square-cornered
+or split-off card on a source pass is booked under `focus`, `plain` or `off` like any other. The
+six add up to the `card` entry plus every card draw on a source pass, which the class ledger leaves
+out (a source pass is not the panel). So on a `nocardsplit` leg with glass up `card + clip` will not
+reconcile, because those source-pass cards are in `off`, and that is not a bug. Draws are logical (a
+split card is one) and printed to one decimal, so a path that fires on one frame in ten still shows.
+A resting shelf should be all `split`; a card sitting in `focus` that no key put there is a
+spring that did not land (`CardRow::update`, `Spring::land`).
+
+`/tmp/plxnative-nocardsplit` (present = off, unarmed = the split is on) draws every resting card
+whole again, as `off`, so ONE binary measures the split on and off, interleaved, like `drawmask`'s
+control leg. It is in `dev::DIAG` for the same reason the other three are: the legs must boot to
+the same screen. Unlike a masked leg it draws the same picture as the control, bit for bit.
+
+**The card's parts: `card.interior`, `card.ring`, `card.focus`.** The `card` class is one number,
+and what to do about it depends on which kind of draw holds it, so `drawmask` also takes three PART
+names. Each refuses only that part of the card compositor's work (`gfx::draw_tex_core_in`) and draws
+everything else, the rest of the card class included:
+
+| name | refuses | card-path bucket |
+|---|---|---|
+| `card.interior` | the interior piece (the one scissored draw through the plain-texture exit) of every split card | `split` |
+| `card.ring` | the four ring pieces (rim, anti-aliased edge, shadow pad: the full card math) of every split card | `split` |
+| `card.focus` | every card drawn whole through the focus program: the focused card and every card whose spring has not landed exactly | `focus` |
+
+A name with a dot is ONE word: `card.ring` is not `card` followed by an unknown `ring`, which would
+have refused the whole class. Words are still separated by anything else, so
+`plxnative-drawmask=card.ring,card.focus` refuses both parts. A misspelt name masks nothing and the
+boot log says so (`OVERDRAW drawmask: unknown class [...]; valid names: ...`); the line after it,
+`OVERDRAW drawmask=0x... skipping: card.ring`, names what is actually armed, and is the line to read
+before trusting a leg. `card` refuses the whole class, so it takes every part with it and the parts
+are not asked; `all` is every class.
+
+A part leg changes the card's draw calls and next to nothing else. Both ledgers (the class ledger
+and the card-path ledger above) book a card BEFORE its part is refused, and the program, the texture
+and the card's uniforms are set either way, so a part leg's `OVERDRAW` window line reads like its
+control's (the same `card=P/D`, the same `split` and `focus` rows) and the CPU does the same
+bookkeeping in every leg; a leg that books fewer draws than its control would price its own
+bookkeeping along with the draw. The GL calls that differ are the ones only a refused draw needs:
+`card.interior` skips the interior's own `u_card` upload, and `card.interior,card.ring` together,
+with no piece left to draw, skip the scissor enable and the restore of the clip the caller held.
+A card that is whole for another reason (`clip`, `nointerior`, `plain`, `off`) belongs to no part:
+only `card` removes it.
+
+*The TV recipe.* Scene `home-recent-paging-held` (held Right, mock PMS, `--mock`), on one binary
+deployed with `make ARM_PROFILE=release deploy` (the harness refuses a `tvdev` binary: a timing run
+must be the shipped build), one harness run per leg, each run under its own TV lease (`tv-lock`
+skill), the legs interleaved `none card.interior card.ring card.focus card` and repeated at least
+three times so a slow drift lands on every leg:
+
+```sh
+tools/tv-lock.sh with --why "card attribution" -- ./tests/run.py --fps --mock \
+    --only home-recent-paging-held --save-logs DIR/<leg> \
+    --extra-trigger plxnative-hwcnt=frame.ui --extra-trigger plxnative-overdraw \
+    --extra-trigger plxnative-framedrop=0.01 --extra-trigger plxnative-drawmask=<leg>
+```
+
+`<leg>` is `card`, `card.interior`, `card.ring` or `card.focus`; the control leg leaves the
+`plxnative-drawmask` argument out. `plxnative-drawmask` is in `dev::DIAG`, so every leg boots to the
+same screen. The panel and the sound are the harness's, not this recipe's: `--fps --mock` blanks the
+panel and mutes the sound through `tools/tv-session.sh` before the run and the panel again before
+every scene, and stops if it cannot, so every leg is a panel-off, muted run and the legs differ in
+nothing else. The harness's `fps=` is not a pacing number in these runs (a profiler is armed).
+
+`--save-logs` keeps the two files a leg is read from, in `DIR/<leg>/`: the event log
+`fps-home-recent-paging-held.log` (the `OVERDRAW` lines) and the GPU counters
+`fps-home-recent-paging-held.plxnative-hwcnt.jsonl` (the `frame.ui` samples), copied off the set
+after the scene's app run, before the next scene's trigger wipe and the harness's teardown delete
+them (`tests/run.py`, `save_profiler_files`). It does so for any FPS scene that arms a profiler, by
+`--extra-trigger` or otherwise, and keeps the file of the trigger it armed: `plxnative-hwcnt` leaves
+`plxnative-hwcnt.jsonl`, `plxnative-profile` (the GL timer) `plxnative-gputime.jsonl`. Read each leg's `OVERDRAW drawmask=0x... skipping:` line first. A leg
+whose run prints `profiler: plxnative-hwcnt was armed but the set holds no ...` has no counters and
+is not a leg: run it again.
+
+*Reading the deltas.* `tools/analyze-hwcnt.py <leg>.jsonl --phase frame.ui --discard 60` prints each
+leg's mean, p50, p95 and max per frame for `GPU_ACTIVE`, `ARITH_WORDS`, `TEX_WORDS` and the L2
+counters (`L2_EXT_READ_BEATS`, `L2_READ_LOOKUP`, ...). Each part's cost is `control - leg`, in the
+same units as the `card` delta (`control - card`). Grade a delta against the spread of that
+counter's per-leg means over the interleaved repeats (and against the spread of the `none` legs
+themselves), not against a fixed figure: this note has no noise floor for this scene, and a delta
+inside the repeats' spread is not a finding.
+
+- `card.interior` is the interior's own cost: its texture fetch, tint, blend and the uniform branch.
+  `card.ring` is the ring's: the SDF, the rim, the anti-aliased edge and the shadow. If `card.ring`
+  is most of `card`, the ring's math is what is left and baking the resting ring as a shared 9-slice
+  texture is the lever; if `card.interior` is, the ring's math is not, and the cost to attack is the
+  fetch and the blend (read the `TEX_WORDS` and L2 deltas, not `ARITH_WORDS`).
+- `card.focus` is the cards on the focus program. A `focus` row in the window line larger than the
+  one or two cards a key put there is springs that have not landed, and this delta prices them.
+- The three need not add up to `card`: `card - interior - ring - focus` is the cards drawn whole for
+  another reason (the other `cardpath` rows, with their pixels) plus whatever the parts do not
+  share. They can also add up to MORE than `card` on a scene with episode stills: under `card` a
+  still falls back to a separate scrim pass, while under the part legs it stays fused with its
+  card (last bullet), so interior + ring can exceed `card`. `GPU_ACTIVE` is an OR across
+  concurrently busy units, so overlapping work is not additive;
+  trust `ARITH_WORDS`, `TEX_WORDS` and L2 reads for what a part removed, and `GPU_ACTIVE` for what
+  the frame got back.
+- A refused part leaves the destination as it was, so a delta is the most a rewrite of that part
+  could save, not a promise of it: a baked ring or a plainer interior still pays for the pixels it
+  writes.
+- A still-fusion card (`draw_tex_carded_still`: an episode still with its bottom scrim folded into
+  the card's program) is split like any other resting card, and the scrim is composited in that
+  program, so on a scene with stills `card.interior` and `card.ring` also price the scrim over
+  their pieces.
 
 ### The frame, decomposed
 
@@ -1678,3 +1799,19 @@ drops into a baseline.
 - New FRAMEDROP spans: `text` (a glyph-cache miss), `host`, `src`, `warm` and `warmdrain`. They
   are there so the television can attribute what is left. The GPU-side `clear` waits and the 1080p
   backdrop upload are not addressed here.
+
+### 2026-10-19: a direct job plus an inline capture on one frame is a tile class the bins never named
+
+The 4096 / ~6050 / ~4912 bins (above) assume ONE refresh per frame. A frame with two glasses whose
+blur footprints meet has two: the lower glass runs its direct job (about +825 tiles for the Library's
+scroll capsule) and the upper one is a composite band that captures INLINE in the visible pass
+(about +1800 to +2100 tiles), so the frame lands at 6300 to 7000 tiles, above every bin. The
+Library's tuck ramp with the capsule up was exactly that on every ramp frame (mean 12.91M GPU
+cycles against 10.73M for the same page with one library and no capsule; 25.6% of the ramp's frames
+late against 2.4%): the inline capture costs about 1.4M more than the band's direct job. The page
+now sequences the two (`scroll_chrome::Handoff`: the chrome leaves, then the capsule arrives), so a
+ramp frame carries one direct job. With `plxnative-framedrop` armed the new `inl` span times each inline capture, so a frame
+whose FRAMEDROP line carries `inl` in its `spans=` took the inline path (it counts them on the frames
+that line is logged for, not on every frame). Two caveats: the
+per-pass split of the inline increment (copy, render-pass split, chain) is not measured, and the
+~6050 class is not unique to inline captures (frames with no glass job at all land there too).

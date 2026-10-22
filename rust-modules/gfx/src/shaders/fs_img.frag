@@ -13,6 +13,12 @@
 // straight-alpha blend - accepted). Full-screen art (radius 0) takes the flat fast-path.
 // v_cuv/v_p and the SDF chain are highp - see the PRECISION note in fs_src.frag.
 //
+// RESTING CARDS ARE DRAWN IN PIECES (gfx.rs's `draw_tex_core_in`): the whole quad is drawn five times
+// under scissor boxes, the card's interior with `u_card.z = 0` (the `u_card.z < 0.5` exit below) and the
+// ring with the real card geometry. The three exits that write `vec4(tex, ta)` must stay one
+// expression (`the_plain_exits_of_the_card_shader_are_one_expression` pins it). A focused or risen
+// card (PLX_FOCUS) is not split.
+//
 // PLX_FOCUS (linked as its own program, gfx.rs's FOCUS_IMAGE/VS_FOCUS/FS_FOCUS): the lit-glass
 // edge and risen shadow for a FOCUSED ArtTile used to be inline here unconditionally, behind
 // `u_focus.x > 0.0` uniform branches. A TV A/B measured real backpressure from that: EVERY IPROG

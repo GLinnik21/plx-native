@@ -49,7 +49,8 @@
 //! ## Who drives it
 //!
 //! [`kick`] is the only thing that issues a request. The owned Library emits `PublishShelves`;
-//! the application combines its visibility flags with live press state and delivers addressed
+//! the application combines its visibility flags with live press state (a press holds only
+//! committed shelves; a page's first publication is never held by one) and delivers addressed
 //! `LibraryWork::Hubs` to `stores::browse`, which calls `kick` and gates staged publication.
 //! It was dormant for one landing — deliberately, since a fetch is
 //! production network, task and retry behaviour and "fetched but not drawn" would not have been
@@ -57,7 +58,7 @@
 #![allow(dead_code)] // the accessors are Landing 3's; see the Dormant note above
 
 use plx_plex::plex::ServerId;
-use crate::pms::{clamp_hold, listable, parse_item, PmsMovie, HOLD_ROWS, MAX_SHELF_ITEMS};
+use crate::pms::{clamp_hold, PmsMovie, HOLD_ROWS, MAX_SHELF_ITEMS};
 use crate::stores::paging::{self, Ask, PageInfo, Row, RowMode, RowState};
 use std::panic::catch_unwind;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -341,8 +342,9 @@ impl SecHubs {
     /// The page asks to move row `id`'s window; refused when the row cannot move that way.
     fn want_page(&mut self, seen: u64, id: &str, key: &str, before: bool) -> bool {
         // The asker read a window that a landing has since replaced: where its focus stood in the
-        // old one says nothing about the new one. The landing's publication rebuilds the shelves,
-        // which re-arms the row to ask again from the window that stands.
+        // old one says nothing about the new one. The landing's publication reaches the page, which
+        // re-arms every row it holds (the rows the publication changed and the ones it left as they
+        // stood), so a row whose edge is still wanted asks again from the window that stands.
         if seen != self.revision { return false; }
         let Some(shelf) = self.committed.iter().find(|shelf| shelf.is(id, key)) else { return false };
         if !plx_plex::plex::is_pageable_hub_key(key) || shelf.released()
@@ -1042,6 +1044,18 @@ pub fn seed_named_shelves_for_owner_test(
     st.hubs.commit_staged(true);
 }
 
+/// Edit every card of every published shelf of section `sec` (a seeded card carries only a key and
+/// a title): the facts a caption is worded from, or a resume point. The cards are told apart by
+/// their `rk`, which [`seed_named_shelves_for_owner_test`] makes `{hubIdentifier}-{index}`.
+#[cfg(any(test, feature = "test-support"))]
+pub fn edit_shelf_items_for_owner_test(state: &mut super::BrowseState, sec: usize, edit: &dyn Fn(&mut PmsMovie)) {
+    let Some(st) = state.state_mut(sec) else { return };
+    for shelf in Arc::make_mut(&mut st.hubs.committed).iter_mut() {
+        shelf.items.iter_mut().for_each(edit);
+    }
+    st.hubs.revised();
+}
+
 /// The reads a moved hold is owed, landed: every row in the held range that is a descriptor gets
 /// back the cards it showed, keyed as [`seed_named_shelves_for_owner_test`] keys them, and the
 /// result is published (the revision moves). What the worker does for a ring that moved onto rows
@@ -1058,6 +1072,34 @@ pub fn land_held_rows_for_owner_test(state: &mut super::BrowseState, sec: usize)
         shelf.shown = 0;
     }
     st.hubs.revised();
+}
+
+/// The rows of section `sec` that gave their cards up to the ring (descriptors, drawn as placeholders)
+/// and the band the store holds (`lo, hi`): what a route test reads to say the rows in view are published.
+#[cfg(any(test, feature = "test-support"))]
+pub fn released_rows_for_owner_test(state: &super::BrowseState, sec: usize) -> (Vec<usize>, (usize, usize)) {
+    let Some(st) = state.states().get(sec) else { return (Vec::new(), (0, 0)) };
+    let released = st.hubs.committed.iter().enumerate().filter(|(_, shelf)| shelf.released()).map(|(row, _)| row).collect();
+    (released, st.hubs.held())
+}
+
+/// A read of row `row` of section `sec` lands through [`SecHubs::land_row`], the real landing: the
+/// row's window becomes `count` cards with ratingKeys no earlier window had (`{id}-e{epoch}-{i}`),
+/// its epoch moves, and the revision with it. What a page the reader walked to, or a held row read
+/// again, does to ONE row of a long page. False when the row cannot take it.
+#[cfg(any(test, feature = "test-support"))]
+pub fn land_row_for_owner_test(state: &mut super::BrowseState, sec: usize, row: usize, count: usize) -> bool {
+    let Some(st) = state.state_mut(sec) else { return false };
+    let Some(current) = st.hubs.committed.get(row) else { return false };
+    let ask = RowAsk { id: current.id.clone(), key: current.key.clone(), before: false, reload: current.released() };
+    let epoch = current.epoch;
+    let next = Shelf {
+        id: current.id.clone(), key: current.key.clone(), title: current.title.clone(), landscape: current.landscape,
+        items: (0..count).map(|index| PmsMovie { rk: format!("{}-e{epoch}-{index}", current.id), ..Default::default() }).collect(),
+        positions: (0..count).collect(), end: count, total: count,
+        ..Default::default()
+    };
+    st.hubs.land_row(&ask, Some(next))
 }
 
 /// Make a seeded section's pageable rows the first window of a listing of `total` cards, as a hub
@@ -1273,9 +1315,7 @@ fn parse_window(out: &mut Vec<Shelf>, hubs: &[plx_plex::plex::Hub], sid: ServerI
             .metadata
             .iter()
             .enumerate()
-            .filter(|(_, m)| listable(&m.kind))
-            .map(|(i, m)| (i, parse_item(m, sid)))
-            .filter(|(_, m)| !m.title.is_empty() && !m.thumb.is_empty())
+            .filter_map(|(i, m)| crate::pms::shelf_card(m, sid).map(|card| (i, card)))
             .take(MAX_SHELF_ITEMS)
             .unzip();
         if items.is_empty() {
@@ -1681,17 +1721,28 @@ mod tests {
     }
 
     /// An item with no thumb is not drawable in a shelf and is dropped, and a hub left with nothing
-    /// goes with it — the same filter `pms::project` applies to Home's rows, so one library's shelf
-    /// cannot follow a different rule from the same server's Home shelf.
+    /// goes with it — the same filter `pms::project` applies to Home's rows (`pms::shelf_card`), so one
+    /// library's shelf cannot follow a different rule from the same server's Home shelf. A missing
+    /// TITLE is not a reason to drop: an item the server left unnamed is still a poster.
     #[test]
     fn an_item_with_no_artwork_is_dropped_and_can_empty_its_hub() {
         let json = r#"{"MediaContainer":{"Hub":[
           {"hubIdentifier":"movie.recentlyadded.1","title":"Recently Added","size":2,"Metadata":[
              {"ratingKey":"1","type":"movie","title":"No Art"},
-             {"ratingKey":"2","type":"movie","title":"","thumb":"/t/2"}]}]}}"#;
+             {"ratingKey":"2","type":"movie","title":"No Art Either","thumb":""}]}]}}"#;
         assert!(
             parse_hubs(&container(json), ServerId::from_raw(0), 1).shelves.is_empty(),
-            "one row has no art and the other no title: the hub has nothing to draw"
+            "neither row has art: the hub has nothing to draw"
+        );
+        let json = r#"{"MediaContainer":{"Hub":[
+          {"hubIdentifier":"movie.recentlyadded.1","title":"Recently Added","size":2,"Metadata":[
+             {"ratingKey":"1","type":"movie","title":"No Art"},
+             {"ratingKey":"2","type":"movie","title":"","thumb":"/t/2"}]}]}}"#;
+        let shelves = parse_hubs(&container(json), ServerId::from_raw(0), 1).shelves;
+        assert_eq!(
+            shelves.iter().map(|s| s.items.iter().map(|m| m.rk.as_str()).collect::<Vec<_>>()).collect::<Vec<_>>(),
+            [vec!["2"]],
+            "the artless row is dropped; the untitled one with art is still a card"
         );
     }
 

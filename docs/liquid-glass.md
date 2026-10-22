@@ -14,9 +14,20 @@ menu opened (`gfx::draw_glass_frozen`), and the frame's dim is applied to both a
 live version it replaced measured about 2 to 2.6M Mali GPU cycles a frame over the field ground;
 read the 2026-09-19 text below as the pre-DS6 history it is.
 
+**The live glass takes the page's wash at composite (2026-10-19).** The tab bar's band and the hold
+hint stand on a full-screen wash that eases on springs through a library switch, which moved the
+exact corner codes by 2-6 every frame and re-sourced both glasses on each (measured on the TV before
+the fix: 77-83% of a switch's refreshing frames, about 0.8M Mali cycles and 2.7-7.1 ms of render
+thread apiece). The wash is now a delta in `fs_glass.frag` (`u_wash_*`, `backdrop::Ground`): the
+source keeps the wash it was drawn under, the composite adds `wash now - wash captured` at the
+refracted uv, and the source is re-taken once when the wash's own springs have landed on their
+target (`AmbientWash::at_rest`; a held 8-bit code in the tail is not rest). Bounded, not exact, over card
+content: the error is the ease's amplitude times the content's coverage under the filter, gone at
+rest. Art grounds, a ramp knee under the region and a moving card keep the wash in the source.
+
 **Glass was CHROME-ONLY from 2026-09-19 until DS6.** Its users are the top bar's standing track, the profile
 chip's capsule, the dev tile band and the one non-interactive standing note, the "Hold OK for
-options" capsule (`ui::hold_hint`: Home's, and on the other card screens once per screen kind per run). Popover panels — the menus, the alert panels, the person bio,
+options" capsule (`ui::hold_hint`: on the card screens and the Detail season pill, once each per install). Popover panels — the menus, the alert panels, the person bio,
 the decision alert — no longer frost a backdrop blur: they stand on `widgets::panel_ground`, the
 15×8 underlay field the modal dim already latches (`ui::underlay`), windowed to the panel's own
 screen rect, graded by `theme::underlay::PANEL_TINT` under a `PANEL_LUMA_MAX` ceiling, with the
@@ -324,9 +335,12 @@ popup menu is too pixelated" was, 2026-08-20 to 2026-08-21.
 
 ## 7. Where it can go today
 
-**Glass: the chrome and one standing note.** The top bar's standing track and the profile chip's capsule, and the
-"Hold OK for options" capsule (`ui::hold_hint`, on Home and, once per screen kind per run, on Collection, Person, Search, Library and Detail — the track's material at a fixed weight, its own
-source in the page layer rather than a member of the shared top band, flat fallback when glass is refused), on
+**Glass: the chrome and the standing notes.** The top bar's standing track and the profile chip's capsule, the
+"Hold OK for options" capsule (`ui::hold_hint`, once per install on the card screens and once on the Detail season pill — the track's material at a fixed weight, its own
+source in the page layer rather than a member of the shared top band, flat fallback when glass is refused), and the
+Library's scroll capsule (`ui::scroll_capsule`: the same standing container, `GlassRim::Standing` and `Material::UltraThin`, wearing the
+hold hint's fixed face; flat track fallback; drawn only while the chrome is tucked on a page whose header names two or more libraries;
+region-budgeted by `scroll_capsule::tests::a_long_names_capsule_stays_inside_the_glass_region_budget`), on
 `Glass::DYNAMIC_BACKDROP` (the one preset left). **Popovers and sheets over a UI page were not glass, until DS6 (menus are again, on frozen ground with no blur chain; the field below is every sheet's ground and a menu's fallback)**:
 Sort, Filter, Sources, the item menu, *Also available*, *Track information*, *About*, Account, the
 person biography and the decision alert all draw their ground through `widgets::panel_ground` over

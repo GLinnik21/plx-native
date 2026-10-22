@@ -125,8 +125,8 @@ pub fn draw(p: Painter, r: Rect, radius: f32, field: Option<&crate::underlay::Un
     draw_shadowed(p, r, radius, field, 1.0)
 }
 
-/// [`draw`] with the drop shadow at `shadow` of the painter's opacity: a morph lays its glass at
-/// full strength under the opener's fading plate, and its shadow arrives with the fill.
+/// [`draw`] with the drop shadow at `shadow` of the painter's opacity: a morph hands the glass and
+/// its shadow the same fill ramp (`Popover::ground`), a fallback open keeps its shadow whole.
 #[must_use]
 pub fn draw_shadowed(
     p: Painter,
@@ -382,10 +382,10 @@ pub(crate) mod tests {
     }
 
     /// **The profile chip's opener lift stands on frozen ground too.** The account menu lifts the
-    /// chip back out of its dim (`Scrim::lifting`, drawn in `Z::DIM`); that capsule was a live
+    /// chip back out of its dim (`widgets::lift_profile_chip`, the lift pass's); that capsule was a live
     /// `Glass::DYNAMIC_BACKDROP` whose source was the re-rendered page (the `src` job, three
     /// frames per open and per close). With the stack's latched field handed through
-    /// `ScrimLiftRead::field` it requests no backdrop entry and no job, on every frame of an open,
+    /// `Rig::lift_bar_member`'s ground it requests no backdrop entry and no job, on every frame of an open,
     /// a stay and a close, and declares one `glass_frozen` for the capsule. Red on the live lift.
     #[test]
     fn the_chip_lift_stands_on_frozen_ground_and_asks_for_nothing() {
@@ -396,16 +396,9 @@ pub(crate) mod tests {
         let sources = std::rc::Rc::new(std::cell::RefCell::new(Sources::default()));
         let profile = crate::widgets::ProfileChipRead { src: 0, thumb: "", initial: c"G", name: c"Guest", name_w: 60.0 };
         let face = crate::widgets::chip_face(FACE, 1.0);
-        let read = crate::screen::ScrimLiftRead {
-            chrome: Some(crate::widgets::ChromeRead {
-                profile,
-                labels: crate::widgets::TabLabels { generation: 0, faces: &[] },
-                chip_expand: 0.0,
-            }),
-            bar_material: Some(face),
-            field: Some(&field),
-        };
-        let lift = |read| layer_dim(|| crate::widgets::redraw_profile_chip(read));
+        let lift = |ground: &crate::underlay::UnderlayField| layer_dim(|| {
+            crate::widgets::lift_profile_chip(Painter::root(), profile, 0.0, Some(face), ground)
+        });
         fn layer_dim(f: impl FnOnce()) {
             let _dim = layer(Z::DIM, false);
             f();
@@ -421,7 +414,7 @@ pub(crate) mod tests {
                     let _dim = layer(Z::DIM, false);
                     field.draw(p, Rect::FULL, crate::underlay::Role::Dim { weight: theme::underlay::TINT }, alpha);
                 }
-                lift(read);
+                lift(&field);
             }
             let live = {
                 let mut s = sources.borrow_mut();
@@ -430,15 +423,29 @@ pub(crate) mod tests {
             };
             commit(&sources);
             assert!(!live, "frame {i}: the chip lift asks for no backdrop entry and no job");
-            let glass = declared_glass(|| lift(read));
+            let glass = declared_glass(|| lift(&field));
             assert_eq!(glass.len(), 1, "frame {i}: the capsule is one frozen glass");
         }
-        // The field not latched yet: the flat capsule, still no live glass.
-        let unlatched = crate::underlay::UnderlayField::new();
-        let none = crate::screen::ScrimLiftRead { field: Some(&unlatched), ..read };
-        let all = declared_all(|| lift(none));
-        assert!(all.iter().all(|p| p.kind() != "glass_frozen" && p.kind() != "backdrop"), "flat fallback");
         unlatch(tex);
+    }
+
+    /// **A lift whose ground has not latched draws NOTHING** (CONFIRM2 CB1). The field latches a frame
+    /// after the OK that opens the menu (`gfx::FIELD_READ_LAG_SWAPS`), and on that frame the lift used
+    /// to fall back to the flat `scrim_black(TAB_TRACK_A)` capsule over the capsule the bar had already
+    /// drawn UNDER it: the chip blinked near-black for one frame on every open (F3 `c/chip-open.png`
+    /// n=194), because the dim is 0 on that frame and nothing darkens the bar's own chip but the second
+    /// capsule. The bar's chip is on screen already; the lift owes the frame nothing until it has a ground.
+    #[test]
+    fn a_chip_lift_with_no_latched_ground_draws_nothing() {
+        let _g = plx_base::testlock::serial();
+        let profile = crate::widgets::ProfileChipRead { src: 0, thumb: "", initial: c"G", name: c"Guest", name_w: 60.0 };
+        let face = crate::widgets::chip_face(FACE, 1.0);
+        let unlatched = crate::underlay::UnderlayField::new();
+        for expand in [0.0, 1.0] {
+            let all = declared_all(|| crate::widgets::lift_profile_chip(Painter::root(), profile, expand, Some(face), &unlatched));
+            assert!(all.is_empty(), "unlatched ground, expand {expand}: no capsule, no avatar, no name; drew {:?}",
+                all.iter().map(|p| p.kind()).collect::<Vec<_>>());
+        }
     }
 
     /// **The rim's sharp source is the host snapshot**: `draw` hands the glass whatever

@@ -287,10 +287,21 @@ pub(crate) fn arm_overdraw() {
     }
 }
 
-/// `/tmp/plxnative-drawmask=<classes>` — refuse every draw of the named classes.
+/// `/tmp/plxnative-drawmask=<classes>` — refuse every draw of the named classes, or, for the card
+/// class, one PART of its work (`card.interior`, `card.ring`, `card.focus`: `plx_gfx::overdraw`).
 pub(crate) fn arm_drawmask() {
     if let Some(spec) = plx_base::devtrig::read("drawmask") {
         plx_gfx::overdraw::set_mask(&spec);
+    }
+}
+
+/// `/tmp/plxnative-nocardsplit` — draw every resting card WHOLE again, as before the split of a
+/// resting card into its interior and ring (`gfx::draw_tex_core_in`). Unarmed the split is on,
+/// which is the shipped behaviour; present, the very same binary is the control leg of a split
+/// on/off A/B, with the card-path ledger (`plxnative-overdraw`) booking the whole draws as `off`.
+pub(crate) fn arm_cardsplit() {
+    if plx_base::devtrig::flag("nocardsplit") {
+        plx_gfx::overdraw::set_card_split(false);
     }
 }
 
@@ -745,8 +756,9 @@ pub(crate) fn advance_content_boot(app: &mut App, fr: &Frame) {
                 // needs `credited`/`landed` because it is a list of them; the biography needs the
                 // person's own facts, which the header already has. Requiring the credits here
                 // would be requiring something a headless boot cannot have: they come from
-                // plex.tv, which answers an injected server token 401 (`account: … HTTP 401` in
-                // the event log), so the wait would never end and the trigger would present
+                // the Discover provider: a dev-token boot with no Discover stand-in armed has the
+                // read REFUSED locally (`discover: GET … refused` in the event log), and one with
+                // the mock's stand-in armed gets the credits' 401 (no account token), so the wait would never end and the trigger would present
                 // nothing at all — measured on the simulator, 2026-09-10.
                 && (boot.bio || (p.credited && p.landed)))
         })
@@ -767,7 +779,8 @@ pub(crate) fn advance_content_boot(app: &mut App, fr: &Frame) {
         // door OK on the header uses (`ContentPanel::Bio`) and gated on the same predicate, so the
         // trigger cannot open a sheet an interactive press would have refused. It exists because
         // this sheet has no other headless route: OK on the header only opens it when the prose is
-        // TRUNCATED, and the bio comes from plex.tv, which answers an injected server token 401 —
+        // TRUNCATED, and the bio comes from the Discover provider, which a dev-token boot either
+        // refuses locally (no stand-in armed) or gets only the mock's synthetic prose from —
         // so pair it with `/tmp/plxnative-personbio=<text>` for a boot that has any prose at all.
         let available = app
             .pages
@@ -1183,8 +1196,10 @@ fn grid_library_search_heroidx_arm(app: &mut App, _fr: &mut Frame) {
             apply_search_boot_trigger(&q, &mut app.pages, &mut app.bridge);
         }
         // `/tmp/plxnative-watchlist` — boot straight onto the Watchlist page (`SelectTab`, as the
-        // Library and Search triggers above). Pair it with `plxnative-discover=<mock url>`, or the
-        // page reads the real discover host; `tools/tv-session.sh --mock-plextv` arms both.
+        // Library and Search triggers above). Pair it with `plxnative-discover=<mock url>` (or a
+        // `plxnative-plextv` redirect, which Discover follows); a dev-token boot with neither armed
+        // has its Discover reads refused, logged at boot as `discover: base=real reads=refused`.
+        // `tools/tv-session.sh --mock-plextv` arms both.
         if plx_base::devtrig::flag("watchlist") {
             crate::app::bridge::nav_select_tab(&mut app.pages, AppArg::Watchlist);
         }
@@ -2303,15 +2318,20 @@ pub(crate) fn home_osc_tick(app: &mut App, now: u32) {
     }
 }
 
-/// `/tmp/plxnative-libosc` — the Library twin of `homeosc`.
+/// `/tmp/plxnative-libosc` — the Library twin of `homeosc`. Sweeps whichever page of the library
+/// family is up (the grid, its Collections page, its Recommended shelves): all three answer
+/// `LibraryCmd::Sweep`, and `fps:library-collections` is this sweep on the Collections page.
 pub(crate) fn lib_osc_tick(app: &mut App, now: u32) {
-    if app.scenarios.dev.lib_osc && matches!(app.route(), AppArg::Library) && now.wrapping_sub(app.scenarios.lib_osc_last) > 350 {
+    if app.scenarios.dev.lib_osc && app.route().is_library_family() && now.wrapping_sub(app.scenarios.lib_osc_last) > 350 {
         app.scenarios.lib_osc_last = now;
         crate::app::bridge::Bridge::library_command(&mut app.pages, plx_screens::registry::LibraryCmd::Sweep);
     }
 }
 
-/// `/tmp/plxnative-libswitch` — cycle EVERY Library switch on a timer.
+/// `/tmp/plxnative-libswitch` — cycle EVERY Library switch on a timer. The full grid's alone, on
+/// purpose and unlike the sweep above: the switches it cycles (type, sort and filter, the library
+/// plate, Unwatched, the A-Z rail) are the grid header's controls, which the Collections page does
+/// not wear (its header is a crumb) and the Recommended page answers `Handled::No`.
 pub(crate) fn lib_switch_tick(app: &mut App, now: u32) {
     if app.scenarios.dev.lib_switch && matches!(app.route(), AppArg::Library) && now.wrapping_sub(app.scenarios.lib_switch_last) > 1400 {
         app.scenarios.lib_switch_last = now;

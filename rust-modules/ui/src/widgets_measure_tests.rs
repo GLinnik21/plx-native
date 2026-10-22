@@ -59,7 +59,7 @@ fn measured_status_action_uses_shared_button_width_height_and_reason_spacing() {
     assert!((shifted.y - action.y - (theme::space::SM + slot + explained.row_drop())).abs() < 1e-3);
     let bands = explained.bands_measured(&StatusMetrics);
     let drawn = explained.action_rect(
-        Button::pill_w_measured(c"Try again", STATUS_CAP_SZ, false, false, &StatusMetrics), &bands);
+        Button::pill_w_measured(c"Try again", STATUS_CAP_SZ, false, None, &StatusMetrics), &bands);
     assert_eq!((drawn.x, drawn.y, drawn.w, drawn.h), (shifted.x, shifted.y, shifted.w, shifted.h));
     // A Working read-out keeps its one-line CAPTION reason under a BODY verdict.
     let working = StatusOverlay::new(frame, c"Loading", StatusKind::Working).action(c"Try again");
@@ -312,11 +312,16 @@ fn measured_status_without_action_does_not_consult_metrics() {
 
 #[test]
 fn measured_button_preserves_both_accessory_slots() {
-    let plain = Button::pill_w_measured(c"Try again", STATUS_CAP_SZ, false, false, &StatusMetrics);
-    let slot = STATUS_CAP_SZ as f32 * BTN_ICON_RATIO + BTN_ICON_GAP;
-    for (leading, trailing) in [(true, false), (false, true), (true, true)] {
+    let plain = Button::pill_w_measured(c"Try again", STATUS_CAP_SZ, false, None, &StatusMetrics);
+    let box_w = STATUS_CAP_SZ as f32 * BTN_ICON_RATIO;
+    let chevron = crate::icons::Icon::ChevronDown;
+    let (l, r) = crate::icons::ink_x(chevron);
+    let leading_slot = box_w + BTN_ICON_GAP;
+    let trailing_slot = (r - l) * box_w + BTN_ICON_GAP; // the trailing mark counts as its INK
+    for (leading, trailing) in [(true, None), (false, Some(chevron)), (true, Some(chevron))] {
         let width = Button::pill_w_measured(c"Try again", STATUS_CAP_SZ, leading, trailing, &StatusMetrics);
-        assert!((width - plain - slot * (u8::from(leading) + u8::from(trailing)) as f32).abs() < 0.001);
+        let want = plain + if leading { leading_slot } else { 0.0 } + if trailing.is_some() { trailing_slot } else { 0.0 };
+        assert!((width - want).abs() < 0.001, "{leading} {trailing:?}: {width} vs {want}");
     }
 }
 
@@ -453,4 +458,156 @@ fn the_hint_cap_is_the_alert_cap_with_more_room_and_nothing_else() {
         2.0 * (CapMetrics::HINT.pad_x - CapMetrics::ALERT.pad_x),
         "past the floor only the padding differs ({inner}px of legend)"
     );
+}
+
+/// **The drawn gaps of the read-out's action row are the stack's** ([`crate::hstack`]): three
+/// controls (primary, secondary, one extra) painted through a recording painter, the pills read
+/// back off the painted rects, are [`CONTROL_GAP`] apart edge to edge, and a hidden SECONDARY (slot
+/// 1) leaves one gap, not two. The row stays centred on the frame whatever it holds.
+#[test]
+fn the_drawn_pills_of_a_status_row_stand_one_control_gap_apart() {
+    let _g = plx_base::testlock::serial();
+    let frame = Rect::new(100.0, 200.0, 1200.0, 500.0);
+    let pills = |overlay: StatusOverlay| -> Vec<Rect> {
+        let mut rects: Vec<Rect> = crate::draw_census::capture(|| {
+            overlay.draw_measured(&Env::inert(), Painter::recording(), &StatusMetrics);
+        })
+        .into_iter()
+        .map(|(_, r)| r)
+        .filter(|r| r.h > StatusOverlay::CTRL_H * 0.9 && r.w > r.h)
+        .collect();
+        rects.sort_by(|a, b| a.x.total_cmp(&b.x));
+        rects.dedup_by(|a, b| a.x == b.x && a.w == b.w);
+        rects
+    };
+    let base = || StatusOverlay::new(frame, c"Couldn't load", StatusKind::Failed);
+    let three = pills(base().row(&[c"Try again", c"Settings", c"Sign out"]));
+    assert_eq!(three.len(), 3, "{three:?}");
+    for pair in three.windows(2) {
+        assert!((pair[1].x - (pair[0].x + pair[0].w) - CONTROL_GAP).abs() <= 0.5, "{three:?}");
+    }
+    let (left, right) = (three[0].x, three[2].x + three[2].w);
+    assert!(((left + right) * 0.5 - frame.cx()).abs() <= 0.5, "the row is centred on the frame");
+    // Slot 1 hidden: primary and the extra (slot 2) are neighbours with ONE gap between them.
+    let mut gapped = base().action(c"Try again");
+    gapped.extra[0] = Some(c"Sign out");
+    let two = pills(gapped);
+    assert_eq!(two.len(), 2, "{two:?}");
+    assert!((two[1].x - (two[0].x + two[0].w) - CONTROL_GAP).abs() <= 0.5, "no double gap where the secondary stood: {two:?}");
+}
+
+/// **A dot pager's gaps are equal around the wider active pill**, read off the painted rects, and
+/// `width` is the extent it paints (a centred row cannot drift from its pixels).
+#[test]
+fn the_drawn_dots_of_a_pager_stand_one_gap_apart() {
+    let _g = plx_base::testlock::serial();
+    for active in [0usize, 2, 4] {
+        let dots = PageDots::new(5).active(active).centered_at(960.0, 900.0);
+        let mut rects: Vec<Rect> = crate::draw_census::capture(|| dots.draw(&Env::inert(), Painter::recording()))
+            .into_iter().map(|(_, r)| r).filter(|r| r.h == PageDots::DOT).collect();
+        rects.sort_by(|a, b| a.x.total_cmp(&b.x));
+        assert_eq!(rects.len(), 5, "active {active}: {rects:?}");
+        for pair in rects.windows(2) {
+            assert!((pair[1].x - (pair[0].x + pair[0].w) - PageDots::GAP).abs() <= 0.5, "active {active}: {rects:?}");
+        }
+        let extent = rects[4].x + rects[4].w - rects[0].x;
+        assert!((extent - dots.width()).abs() <= 0.5, "width() is the painted extent");
+        assert!((rects[0].x + extent * 0.5 - 960.0).abs() <= 0.5, "centred on cx");
+    }
+    assert_eq!(PageDots::new(0).width(), 0.0);
+}
+
+/// **One dotted-run mechanism, no part limit.** A measured run's width is its parts plus a dot and
+/// two pads between each pair (and one more dot cell before the first for `lead_dot`), empty parts
+/// leave no dot, and more parts than the old fixed-size stack held still lay out.
+#[test]
+fn a_dotted_run_measures_parts_dots_and_pads_for_any_number_of_parts() {
+    let m = crate::fixture::FixtureMeasure;
+    let pad = theme::space::SM;
+    let sz = theme::size::CAPTION;
+    let dot = m.width(c"\u{b7}", sz, false);
+    let w = |s: &str| m.width(&CString::new(s).unwrap(), sz, false);
+    let run = DottedRun::new(sz, theme::TEXT_SECONDARY, pad);
+    assert_eq!(run.width(&m, &["ab", "", "cde"]), w("ab") + w("cde") + dot + 2.0 * pad);
+    assert_eq!(run.lead_dot().width(&m, &["ab"]), dot + w("ab") + pad);
+    assert_eq!(run.width(&m, &["", ""]), 0.0);
+    let many = ["a"; 9];
+    assert_eq!(run.width(&m, &many), 9.0 * w("a") + 8.0 * (dot + 2.0 * pad));
+}
+
+/// Q6: a pill's trailing accessory is placed by INK. The pill is PAINTED through a recording painter,
+/// and the gap the eye reads from the label's end to the glyph's first ink (`icons::ink_x`) is
+/// `BTN_ICON_GAP`, for every accessory the bearing table knows; the label keeps its place.
+#[test]
+fn a_painted_trailing_accessory_stands_one_icon_gap_from_the_label_by_ink() {
+    let _g = plx_base::testlock::serial();
+    for icon in [crate::icons::Icon::ChevronDown, crate::icons::Icon::ChevronUp, crate::icons::Icon::Chevron] {
+        let pill_w = Button::pill_w_full(c"Alt".as_ptr(), theme::size::BODY, false, Some(icon));
+        let button = Button::new(c"Alt".as_ptr(), theme::size::BODY, Rect::new(100.0, 200.0, pill_w, 60.0)).trailing_icon(icon);
+        let mut runs = Vec::new();
+        let icons = crate::draw_census::capture_icons(|| {
+            runs = crate::draw_census::capture_runs(|| button.draw(&Env::inert(), Painter::recording()));
+        });
+        let label = runs.iter().find(|r| r.text == "Alt").expect("the label is painted");
+        let (bx, _) = icons.iter().find(|(i, _)| *i == icon).map(|(_, r)| (r.x, r.w)).expect("the accessory is painted");
+        let box_w = theme::size::BODY as f32 * BTN_ICON_RATIO;
+        let (l, _) = crate::icons::ink_x(icon);
+        let gap = (bx + l * box_w) - (label.at.x + label.at.w);
+        assert!((gap - BTN_ICON_GAP).abs() < 0.5, "{icon:?}: the painted label-to-ink gap is {gap}");
+        // ... and the pill's right pad is measured to that INK: half the air stands between the ink
+        // and the pill's edge, as it does between the pill's left edge and its first content
+        let (_, r) = crate::icons::ink_x(icon);
+        let right_pad = (100.0 + pill_w) - (bx + r * box_w);
+        assert!((right_pad - BTN_PILL_AIR * 0.5).abs() < 0.5, "{icon:?}: the ink-to-edge pad is {right_pad}");
+    }
+}
+
+/// The read-out's verdict, reason and action slot are one top-anchored VStack: the reason `SM` under
+/// the verdict, the slot `LG` + drop under the reason, and an absent reason takes no gap.
+#[test]
+fn status_bands_are_one_vstack_with_an_absent_reason_taking_no_gap() {
+    let frame = Rect::new(100.0, 200.0, 600.0, 500.0);
+    let bare = StatusOverlay::new(frame, c"Unavailable", StatusKind::Failed).bands_measured(&StatusMetrics);
+    assert!(bare.reason.is_none());
+    assert_eq!(bare.action_y, bare.cap.y + bare.cap.h + theme::space::LG);
+    let with = StatusOverlay::new(frame, c"Unavailable", StatusKind::Failed).reason(c"Shared source");
+    let b = with.bands_measured(&StatusMetrics);
+    let reason = b.reason.expect("a reason band");
+    assert_eq!(reason.y - (b.cap.y + b.cap.h), theme::space::SM);
+    assert_eq!(b.action_y - (reason.y + reason.h), theme::space::LG + with.row_drop());
+}
+
+/// A note with no action row keeps standing `LG` (+ drop) under the reason (Q1, neutral); under a
+/// row it stands `MD` below the row.
+#[test]
+fn the_note_stands_in_the_rows_place_without_one_and_md_under_it_with_one() {
+    let frame = Rect::new(100.0, 200.0, 600.0, 500.0);
+    let m = &StatusMetrics;
+    let lone = StatusOverlay::new(frame, c"Unavailable", StatusKind::Failed).reason(c"why").note(Some(c"hint"));
+    let b = lone.bands_measured(m);
+    assert_eq!(lone.note_band(&b, m).unwrap().y, b.action_y);
+    let row = StatusOverlay::new(frame, c"Unavailable", StatusKind::Failed).action(c"Try again").note(Some(c"hint"));
+    let b = row.bands_measured(m);
+    assert_eq!(row.note_band(&b, m).unwrap().y, b.action_y + StatusOverlay::CTRL_H + theme::space::MD);
+}
+
+/// `still_line`'s label baseline stands where it always stood, `sy - sct - STILL_PAIR_GAP` with
+/// `sy` the sub line's text origin (measured on what was painted); without a label the sub line
+/// stays where it was.
+#[test]
+fn still_line_label_baseline_is_where_it_always_stood() {
+    let card = Rect::new(0.0, 0.0, 400.0, 225.0);
+    let draw = |label: &str| {
+        crate::draw_census::capture_runs(|| {
+            still_line(Painter::recording(), card, PosterMark::None, label, "S1 · E2", false, false, &LegacyMeasure)
+        })
+    };
+    let (_, lcb) = plx_gfx::text::text_cap_band(theme::size::LABEL, 1);
+    let (sct, _) = plx_gfx::text::text_cap_band(theme::size::CAPTION, 0);
+    let both = draw("Show");
+    let (label, sub) = (&both[0], &both[1]);
+    assert!(((label.at.y + lcb) - (sub.at.y - sct - STILL_PAIR_GAP)).abs() < 0.01);
+    let alone = draw("");
+    assert_eq!(alone.len(), 1);
+    assert_eq!(alone[0].at.y, sub.at.y);
 }

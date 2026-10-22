@@ -35,7 +35,7 @@ use plx_machine::present::PresentEvent;
 
 use super::{CardEvent, CardSource, Grid, GridSpec, SectionFrame, Shelf};
 use crate::card_row::{self, RowStyle};
-use crate::consts::{K_SCROLL, MARGIN_Y, SCR_H, SCR_W};
+use crate::consts::{K_SCROLL, MARGIN_Y, SCR_H, SCR_W, UNDER_LABEL_AIR};
 use crate::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, ElemKind, Focusable, GroupKind, GroupSpec, Hover, Part,
     Placed, Seat, Step, Stop,
@@ -209,7 +209,13 @@ pub trait StackPage<H: Host> {
     }
     /// Air the page keeps under a shelf's block, counted in the block's height (the scroll reveals
     /// it with the block): a page whose shelves are stacked with the label band's air under each.
-    fn shelf_foot(&self, _k: Self::Key) -> f32 {
+    /// Shelves are adjacent sections, never a `Custom` gap between two of them: the shelf above
+    /// reads the heading of the one below as the thing under its caption
+    /// ([`SectionFrame::below_rise`]), and a gap section hides it. A page that keeps the last
+    /// shelf bare says so from `cx`, the content its sections read: the default, 0, is for that
+    /// last shelf, because the caption rule counts [`UNDER_LABEL_AIR`] under every shelf that has another
+    /// below it (`card_row::room_for`), and a `Stack` refuses a page that keeps less there.
+    fn shelf_foot(&self, _cx: &Cx<'_, H>, _k: Self::Key) -> f32 {
         0.0
     }
     /// Whether a shelf's group extent spans the page's width (the default) or is the shelf's own
@@ -217,6 +223,9 @@ pub trait StackPage<H: Host> {
     fn wide_extent(&self, _k: Self::Key) -> bool {
         true
     }
+    /// Groups the page declares beyond its sections' own, appended after them (the group of a
+    /// listing still on its way: `PageRegions::declare_pending`).
+    fn extra_groups(&self, _cx: &Cx<'_, H>, _out: &mut Vec<GroupSpec>) {}
     /// The focus group of a focusable `Custom` / `Overlay` section.
     fn plain_group(&self, _cx: &Cx<'_, H>, _k: Self::Key, id: GroupId, extent: Rect) -> GroupSpec {
         GroupSpec {
@@ -240,6 +249,13 @@ pub trait StackPage<H: Host> {
     fn draw_heading(&self, _k: Self::Key, _f: &mut DrawFrame<'_, '_, H>, _r: Rect, _lift: f32) {}
     /// A `Custom` / `Overlay` section drawn in `r` (screen space); `scroll` is the page's.
     fn custom_draw(&self, _k: Self::Key, _f: &mut DrawFrame<'_, '_, H>, _r: Rect, _scroll: f32) {}
+    /// The Under posters policy shelf or grid section `k` opens its focused caption band by (0 / 80 /
+    /// 112 px, `caption_policy::band_h`). `None` keeps the legacy band (title and caption, 114 px): a
+    /// section whose tiles are not posters (a landscape still row, a headshot row) keeps it. The
+    /// stack hands it to the section every frame, so a setting changed elsewhere reaches a standing page.
+    fn caption_policy(&self, _k: Self::Key) -> Option<crate::caption_policy::CaptionPolicy> {
+        None
+    }
     /// The cards grid section `k`'s landing is fading out, painted BEFORE the grid's own cards so
     /// the ones that slid over their cells cover them. A page that keeps the cards it removed
     /// paints them with [`Grid::paint_ghosts`] (named by [`Grid::ghost_keys`]); the default keeps none.
@@ -341,11 +357,11 @@ impl<K: Copy + Eq> Stack<K> {
     }
 
     /// Teach the hold on this page: a standing "Hold OK for options" hint over the cards, on the
-    /// rarer cadence of a non-Home screen of `kind` (`HoldHint::once_per_run`). The stack steps it
+    /// run-wide cadence every card screen shares (`HoldHint::new`). The stack steps it
     /// on its `Tick`, answers its two screen-specific questions itself ([`hint_input`](Self::hint_input))
     /// and draws it last in [`StackView::paint`]. For a page whose card holds open the item menu.
-    pub fn hold_hint(mut self, kind: crate::hold_hint::Kind) -> Self {
-        self.hint = Some(crate::hold_hint::HoldHint::once_per_run(kind));
+    pub fn hold_hint(mut self) -> Self {
+        self.hint = Some(crate::hold_hint::HoldHint::new());
         self
     }
 
@@ -558,7 +574,7 @@ impl<K: Copy + Eq> Stack<K> {
     fn height<H: Host, P: StackPage<H, Key = K>>(&self, p: &P, cx: &Cx<'_, H>, i: usize) -> f32 {
         match (&self.specs[i].kind, &self.bodies[i]) {
             (Kind::Shelf { style, heading }, Body::Shelf(s)) => {
-                if self.len_of(p, cx, i) == 0 { 0.0 } else { heading + style.h + s.under_band() + p.shelf_foot(self.specs[i].key) }
+                if self.len_of(p, cx, i) == 0 { 0.0 } else { heading + style.h + s.under_band() + p.shelf_foot(cx, self.specs[i].key) }
             }
             (Kind::Grid { .. }, Body::Grid(g)) => g.height(self.len_of(p, cx, i)),
             (Kind::Custom { height, .. }, _) => *height,
@@ -588,6 +604,18 @@ impl<K: Copy + Eq> Stack<K> {
 
     /// Hand every grid the page: its top in document space and the scroll.
     fn sync_pages<H: Host, P: StackPage<H, Key = K>>(&mut self, p: &P, cx: &Cx<'_, H>) {
+        for i in 0..self.bodies.len() {
+            match &mut self.bodies[i] {
+                Body::Grid(g) => {
+                    let policy = p.caption_policy(self.specs[i].key);
+                    if g.caption_policy() != policy {
+                        g.set_caption_policy(policy);
+                    }
+                }
+                Body::Shelf(s) => s.set_caption_policy(p.caption_policy(self.specs[i].key)),
+                Body::Plain => {}
+            }
+        }
         self.retop(p, cx);
         for i in 0..self.bodies.len() {
             if let Body::Grid(g) = &mut self.bodies[i] {
@@ -636,7 +664,22 @@ impl<K: Copy + Eq> Stack<K> {
 
     fn frame<H: Host, P: StackPage<H, Key = K>>(&self, p: &P, cx: &Cx<'_, H>, i: usize) -> SectionFrame {
         let heading = if let Kind::Shelf { heading, .. } = self.specs[i].kind { heading } else { 0.0 };
-        SectionFrame { y: self.top(p, cx, i) - self.scroll.pos + heading, clip: self.clip }
+        // what stands under a shelf's caption is the heading of the next section that takes room
+        // (an empty shelf takes none) when that is a shelf, drawn lifted by that shelf's own lift
+        // (`draw_heading`'s `lift`)
+        let below_rise = match (i + 1..self.specs.len()).find(|&j| self.height(p, cx, j) > 0.0).map(|j| &self.bodies[j]) {
+            Some(Body::Shelf(next)) => {
+                // `card_row::room_for` counts `UNDER_LABEL_AIR` under a shelf's band: a page that keeps less
+                // with a shelf below would have a caption line drawn over that heading
+                debug_assert!(
+                    p.shelf_foot(cx, self.specs[i].key) >= UNDER_LABEL_AIR,
+                    "a shelf with another shelf below it keeps at least UNDER_LABEL_AIR under it (`StackPage::shelf_foot`)"
+                );
+                next.heading_lift()
+            }
+            _ => 0.0,
+        };
+        SectionFrame { below_rise, ..SectionFrame::new(self.top(p, cx, i) - self.scroll.pos + heading, self.clip) }
     }
 
     // ---- events ----------------------------------------------------------------------------
@@ -756,13 +799,19 @@ impl<K: Copy + Eq> Stack<K> {
     /// target computed against the live bands chases a moving goal for as long as they animate.
     fn settled_height<H: Host, P: StackPage<H, Key = K>>(&self, p: &P, cx: &Cx<'_, H>, n: usize, focus: usize) -> f32 {
         match &self.specs[n].kind {
-            Kind::Shelf { style, heading } => {
-                if self.len_of(p, cx, n) == 0 {
-                    0.0
-                } else {
-                    heading + style.h + card_row::under_band((n == focus) as i32 as f32) + p.shelf_foot(self.specs[n].key)
+            Kind::Shelf { style, heading } => match &self.bodies[n] {
+                _ if self.len_of(p, cx, n) == 0 => 0.0,
+                // the band the shelf's OWN policy opens to, so a Nothing / one-line / two-line setting
+                // is the destination the scroll target is computed against
+                Body::Shelf(s) => {
+                    heading + style.h + card_row::under_band_for(s.band_h(), (n == focus) as i32 as f32) + p.shelf_foot(cx, self.specs[n].key)
                 }
-            }
+                _ => self.height(p, cx, n),
+            },
+            Kind::Grid { .. } => match &self.bodies[n] {
+                Body::Grid(g) => g.settled_height(self.len_of(p, cx, n), n == focus),
+                _ => self.height(p, cx, n),
+            },
             _ => self.height(p, cx, n),
         }
     }
@@ -772,7 +821,9 @@ impl<K: Copy + Eq> Stack<K> {
     /// names, [`StackPage::reveal_with`]) otherwise.
     fn wanted<H: Host, P: StackPage<H, Key = K>>(&self, p: &P, cx: &Cx<'_, H>, i: usize) -> f32 {
         if let Body::Grid(g) = &self.bodies[i] {
-            return g.reveal_target().unwrap_or(self.target);
+            // a resting grid's row rests where the first row does, held by the document's end
+            let want = if g.rests() { g.rest_target(self.max_with_focus(p, cx, i)) } else { g.reveal_target() };
+            return want.unwrap_or(self.target);
         }
         if matches!(self.specs[i].kind, Kind::Overlay { .. }) {
             return self.target;
@@ -1060,6 +1111,7 @@ impl<K: Copy + Eq, H: Host<Elem = u32>, P: StackPage<H, Key = K>> Focusable<H> f
                 _ => {}
             }
         }
+        p.extra_groups(cx, out);
     }
 
     fn group_of(&self, key: &H::Elem, cx: &Cx<'_, H>) -> Option<GroupId> {

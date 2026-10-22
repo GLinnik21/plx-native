@@ -50,6 +50,13 @@ pub(super) fn style(kind: Kind) -> &'static RowStyle {
         _ => &POSTER,
     }
 }
+/// Whether `kind`'s tiles are POSTERS, and so follow the Under posters setting (their caption
+/// built by `registry::captions`, their band sized by `caption_policy::band_h`). The Episode row is a
+/// landscape still and the Person row a headshot: neither is a poster, and both keep the legacy
+/// block under every setting.
+pub(super) fn is_poster(kind: Kind) -> bool {
+    matches!(kind, Kind::Movie | Kind::Show | Kind::Collection)
+}
 /// A shelf block's height under a caption band of `band` px (a shelf's live
 /// [`Shelf::under_band`](plx_ui::cards::Shelf::under_band), or [`card_row::under_band`] of a
 /// settled 0 / 1).
@@ -76,7 +83,7 @@ pub(super) fn clear_below(list_end: f32, measure: &dyn plx_machine::machine::Mea
         plx_platform::i18n::msg::browse_search_clear_c(),
         plx_ui::theme::size::BODY,
         false,
-        false,
+        None,
         measure,
     );
     Rect::new(

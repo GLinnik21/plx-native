@@ -36,9 +36,13 @@ pub fn armed() -> bool {
     ON.load(Relaxed)
 }
 
-/// Run `f`, and when armed add its wall time to this frame's `name`.
+/// Run `f`, and when armed add its wall time to this frame's `name`. Under `threadcheck` the
+/// loop's own spans (`scen`, `pump`, `land`, `dframe`) also label the watchdog for the call.
 #[inline]
 pub fn span<R>(name: &'static str, f: impl FnOnce() -> R) -> R {
+    // The main-loop spans also name the phase for the hang watchdog (label-only).
+    #[cfg(feature = "threadcheck")]
+    let _label = crate::task::watchdog::span_scope(name);
     if !armed() {
         return f();
     }

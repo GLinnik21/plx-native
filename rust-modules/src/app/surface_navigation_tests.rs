@@ -27,7 +27,7 @@ fn content_instances_compare_item_identity_and_keep_distinct_entries() {
 #[test]
 fn a_page_arg_wears_the_chrome_its_own_table_says() {
     for r in every_route() {
-        let want = if matches!(r, AppArg::Home | AppArg::Library | AppArg::Search | AppArg::Watchlist) {
+        let want = if matches!(r, AppArg::Home | AppArg::Search | AppArg::Watchlist) || r.is_library_family() {
             Chrome::TabBar
         } else {
             Chrome::None
@@ -50,7 +50,7 @@ fn a_page_arg_wears_the_chrome_its_own_table_says() {
 /// route. It is graded against `route_word(r)` and not against `route_word(page_of(r))`
 /// because `page_of` is gone with the two routes that made it more than the identity: since
 /// phase 10 the profile and card menus are SURFACES, their words are the overlay alphabet's
-/// (`overlay_word`), and `every_route()` is nine pages with nothing to fold.
+/// (`overlay_word`), and `every_route()` is every page argument with nothing to fold.
 #[test]
 fn every_route_mounts_a_screen_that_names_the_heartbeat_word() {
     let _g = plx_base::testlock::serial();
@@ -640,7 +640,7 @@ fn opening_the_item_menu_leaves_the_press_springing_and_the_opener_lift_follows_
     d.input.cancel_press(); // what the dispatcher does when it hears the hold answered
     assert!(d.input.press.is_active() && !d.input.press.is_live(), "abandoned and springing back");
     let dipped = d.input.press.scale();
-    assert_eq!(opener_press(&d).scale, dipped, "the lift draws the card at the press's own scale");
+    assert_eq!(d.opener_press().scale, dipped, "the lift draws the card at the press's own scale");
 
     open_item_menu(&mut d, card_menu_arg(&row, false, true, host, None, None));
     assert!(d.input.press.is_active(), "the menu opening does not end the spring-back");
@@ -653,11 +653,11 @@ fn opening_the_item_menu_leaves_the_press_springing_and_the_opener_lift_follows_
     for _ in 0..80 {
         ms += 16;
         d.input.press.tick(ms, 0.016);
-        assert_eq!(opener_press(&d).scale, d.input.press.scale(), "lift and page agree at {ms} ms");
-        // …and the context `redraw_opener` really draws with is built from that press: the scale
+        assert_eq!(d.opener_press().scale, d.input.press.scale(), "lift and page agree at {ms} ms");
+        // …and the context the dispatcher's lift pass really draws with is built from that press: the scale
         // the lift paints at is the press's own, and (while it moves) not the resting 1.0 a lift
         // that stopped reading the press would draw.
-        let lift = opener_parts(&d, host, None).press.scale;
+        let lift = d.opener_parts(host, None).press.scale;
         assert_eq!(lift, d.input.press.scale(), "the drawn lift scale is the press's at {ms} ms");
         if (d.input.press.scale() - 1.0).abs() > 0.01 { moving_frames += 1; assert_ne!(lift, 1.0, "…not the pop at {ms} ms"); }
         rose |= d.input.press.scale() > dipped + 0.05;
@@ -665,7 +665,7 @@ fn opening_the_item_menu_leaves_the_press_springing_and_the_opener_lift_follows_
     assert!(rose, "the spring really moved the card");
     assert!(moving_frames > 5, "the lift was checked mid-spring, not only at rest");
     assert!(!d.input.press.is_active());
-    assert_eq!(opener_press(&d).scale, 1.0, "at rest the lift is the resting pop");
+    assert_eq!(d.opener_press().scale, 1.0, "at rest the lift is the resting pop");
 }
 
 /// **A card hold the app takes: the release spring under the open item menu is the LIFT's, not
@@ -724,7 +724,7 @@ fn page_damage_frames_across_a_taken_holds_spring(lift_owns_the_card: bool) -> (
     // left the card out), then the spring.
     run(&mut d, &mut rig, &mut t);
     assert!(item_menu_up(&d), "the menu mounted");
-    assert_eq!(opener_lift(&d), Some((host, Some(key))));
+    assert_eq!(d.lifted_opener(), Some((host, Some(key))));
     plx_ui::popover::set_lift_owns(lift_owns_the_card);
     let (mut moving, mut damaged) = (0, 0);
     for _ in 0..40 {
@@ -1332,7 +1332,7 @@ fn a_second_open_of_the_pending_detail_page_leaves_no_seed_behind() {
 /// its fade; a D-pad press in that window moves the page's focus to the neighbour, and a lift that
 /// kept repainting the menu's ORIGINAL key drew the old tile fully popped and captioned above the
 /// page — two tiles focused at once (Collection, owner's recording). The decision is
-/// [`opener_lift`], shared by every page.
+/// [`Dispatcher::lifted_opener`], shared by every page.
 #[test]
 fn a_closing_item_menus_opener_lift_stands_down_when_focus_moves_off_the_opener() {
     let _g = plx_base::testlock::serial();
@@ -1346,15 +1346,15 @@ fn a_closing_item_menus_opener_lift_stands_down_when_focus_moves_off_the_opener(
     let key = |elem| plx_machine::machine::FocusKey { entry: host, elem };
     open_item_menu(&mut d, card_menu_arg(&row, false, true, host, Some(key(7)), None));
     frame(&mut d, &mut rig, AppArg::Home, tick(1), vec![]);
-    assert_eq!(opener_lift(&d), Some((host, Some(key(7)))), "open: the lift paints the opener");
+    assert_eq!(d.lifted_opener(), Some((host, Some(key(7)))), "open: the lift paints the opener");
 
     let ev = script_key(Key::Back, tick(2));
     frame(&mut d, &mut rig, AppArg::Home, tick(2), ev);
     assert_eq!(d.nav.modals.top().map(|s| s.phase), Some(Phase::Closing));
     d.set_focus(Some(key(7)));
-    assert_eq!(opener_lift(&d), Some((host, Some(key(7)))), "closing, focus still on the opener: it stays lifted");
+    assert_eq!(d.lifted_opener(), Some((host, Some(key(7)))), "closing, focus still on the opener: it stays lifted");
     d.set_focus(Some(key(8)));
-    assert_eq!(opener_lift(&d), None, "closing, focus moved to the neighbour: the old tile is NOT repainted as focused");
+    assert_eq!(d.lifted_opener(), None, "closing, focus moved to the neighbour: the old tile is NOT repainted as focused");
 }
 
 /// **OK on a Continue Watching EPISODE opens the SHOW on the card's season** (Settings > Playback >

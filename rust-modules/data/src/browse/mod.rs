@@ -349,6 +349,21 @@ impl LibraryType {
         self.title_in(kind, plx_platform::i18n::current())
     }
 
+    /// `n` of what this listing holds, in the same words every other count of it wears: "185
+    /// films", "40 shows", "6 seasons", "12 episodes", "9 items" (a collection listing). The ONE
+    /// source of the noun beside a number, shared by the Sources list's "185 films" line and the
+    /// Library header's "37 of 120 films" read-out, so a count never changes its noun by screen.
+    pub fn count_label(self, kind: SecKind, n: i64) -> String {
+        use plx_platform::i18n::msg;
+        match (self, kind) {
+            (Self::Primary, SecKind::Movie) => msg::browse_person_films(n),
+            (Self::Primary, SecKind::Show) => msg::browse_person_shows(n),
+            (Self::Seasons, _) => msg::browse_detail_seasons(n),
+            (Self::Episodes, _) => msg::browse_detail_episodes(n),
+            (Self::Collections, _) => msg::browse_search_items(n),
+        }
+    }
+
     fn title_in(self, kind: SecKind, locale: &plx_platform::i18n::LocaleContext) -> &'static str {
         match (self, kind) {
             (Self::Primary, SecKind::Movie) => plx_platform::i18n::msg::browse_kind_movies_in(locale),
@@ -437,6 +452,27 @@ pub struct SortEntry {
 }
 
 impl SortEntry {
+    /// The name every panel and pill shows for this sort: the shared table's word for a fact it
+    /// knows ([`crate::sortfacts`]), else the server's title.
+    pub fn label(&self) -> &str {
+        match crate::sortfacts::SortFact::of_pms_key(&self.key) {
+            Some(fact) => fact.label(),
+            None => &self.title,
+        }
+    }
+
+    /// Whether [`label`](Self::label) is the app's own text (the table's word, which includes the
+    /// client-side Plays entry) rather than something the server wrote.
+    pub fn label_is_ours(&self) -> bool {
+        crate::sortfacts::SortFact::of_pms_key(&self.key).is_some()
+    }
+
+    /// The word for the order this entry is in when `desc`: "A–Z", "Newest first". `None` for a
+    /// key whose axis is unknown (a random order has no ends).
+    pub fn direction_word(&self, desc: bool) -> Option<&'static str> {
+        crate::sortfacts::Axis::of_pms_key(&self.key).map(|axis| axis.direction_word(desc))
+    }
+
     fn query(&self, desc: bool) -> String {
         if !desc {
             if self.key.contains(',') { self.key.clone() } else { format!("{}:asc", self.key) }
@@ -552,6 +588,9 @@ struct SecState {
     /// Counts describe the UNFILTERED title listing, so the rail only shows in that state.
     letters: Arc<Vec<(String, i64)>>,
     letters_done: bool,
+    /// The grid's own view (sort, genre, menus, letters), set aside while the section is on the
+    /// Collections listing and put back when it returns to the type it was on ([`LoanedView`]).
+    loaned: Option<LoanedView>,
     /// **The library's OWN shelves** — `Library Recommended`, as its server's owner arranged it.
     /// A field here rather than a store of its own because this struct is already the per-section
     /// aggregate; `section_hubs`' module doc argues it, and `reset()` clearing it on a profile
@@ -566,6 +605,25 @@ struct SecState {
     /// [`BrowseState::apply_view_local`]): what it lists is out of date though every row on screen
     /// is right. Cleared by any re-query.
     membership_stale: bool,
+}
+
+/// What the Collections page borrows the section's single query from: the grid's sort, genre and
+/// the menus and letter counts that describe them. `set_library_type` resets all of it for the
+/// new type, so the page that listed Films, sorted by Date Added and filtered to Drama, would
+/// come back title-sorted and unfiltered; the loan hands it back whole instead.
+#[derive(Clone)]
+struct LoanedView {
+    library_type: LibraryType,
+    sort_idx: usize,
+    sort_desc: bool,
+    genre: Option<Arc<GenreEntry>>,
+    sorts: Arc<Vec<SortEntry>>,
+    genres: Arc<Vec<GenreEntry>>,
+    genres_done: bool,
+    sort_resolved: bool,
+    genre_resolved: bool,
+    letters: Arc<Vec<(String, i64)>>,
+    letters_done: bool,
 }
 
 /// A section's items, CHUNKED BY PAGE (restructure phase 4, the O(result) rule of spec §5.2 —
@@ -740,6 +798,7 @@ impl Default for SecState {
             genre_resolved: true,
             letters: Arc::default(),
             letters_done: false,
+            loaned: None,
             hubs: Default::default(),
             fetch: SecFetch::Loading,
             total: -1,
@@ -1140,6 +1199,13 @@ impl BrowseState {
         }
         keys
     }
+    /// Is any shelf of the section addressed by `target` committed (drawn)? A section whose first
+    /// publication has not happened, or whose address no longer names a section, has none.
+    pub fn hubs_committed(&self, target: crate::stores::browse::SectionAddress) -> bool {
+        self.resolve_section(target.epoch, target.sid, target.section)
+            .and_then(|index| self.states.get(index))
+            .is_some_and(|st| !st.hubs.committed.is_empty())
+    }
     pub fn resolve_section(&self, epoch: u32, sid: ServerId, key: i64) -> Option<usize> {
         if epoch != self.table_epoch() {
             return None;
@@ -1216,7 +1282,34 @@ impl BrowseState {
         if state.library_type == library_type {
             return true;
         }
+        let from = state.library_type;
         state.library_type = library_type;
+        // The Collections page borrows the listing: the view it borrowed it from comes back as it
+        // was, on the way out, and is set aside on the way in.
+        if library_type == LibraryType::Collections {
+            state.loaned = Some(LoanedView {
+                library_type: from, sort_idx: state.sort_idx, sort_desc: state.sort_desc,
+                genre: state.genre.clone(), sorts: state.sorts.clone(), genres: state.genres.clone(),
+                genres_done: state.genres_done, sort_resolved: state.sort_resolved,
+                genre_resolved: state.genre_resolved, letters: state.letters.clone(),
+                letters_done: state.letters_done,
+            });
+        } else if from == LibraryType::Collections {
+            if let Some(view) = state.loaned.take().filter(|view| view.library_type == library_type) {
+                state.sort_idx = view.sort_idx;
+                state.sort_desc = view.sort_desc;
+                state.genre = view.genre;
+                state.sorts = view.sorts;
+                state.genres = view.genres;
+                state.genres_done = view.genres_done;
+                state.sort_resolved = view.sort_resolved;
+                state.genre_resolved = view.genre_resolved;
+                state.letters = view.letters;
+                state.letters_done = view.letters_done;
+                self.requery();
+                return true;
+            }
+        }
         // Menus and letter counts describe a metadata type. Never reuse the show's menus
         // or offsets for episodes, and never send a sort key the new type hasn't advertised.
         state.sorts = Arc::default();
@@ -2526,6 +2619,10 @@ impl BrowseState {
         let Some((epoch, source, landing)) = taken else { return Default::default() };
         self.apply_discovery(epoch, source, landing, None, adapter)
     }
+    /// `#[track_caller]`: the paced dump keys a landing's claim by CALL SITE, and the genre and
+    /// letters mailboxes both come through here, so the wrapper must hand its caller's site on
+    /// (`plx_machine::landgate::Gate::take_owed`).
+    #[track_caller]
     fn land_directory_owned_with_gate<T>(
         &mut self,
         gate: &plx_machine::landgate::Gate,
@@ -2565,6 +2662,7 @@ impl BrowseState {
         self.land_discovery_owned_with_gate(adapter, plx_machine::landgate::fixture_gate())
     }
     #[cfg(test)]
+    #[track_caller]
     fn land_directory_owned<T>(&mut self, flag: &AtomicBool,
         mail: &Mutex<Option<DirectoryResult<T>>>, apply: impl FnOnce(&mut SecState, Vec<T>)) -> bool {
         self.land_directory_owned_with_gate(plx_machine::landgate::fixture_gate(), flag, mail, apply)
@@ -3355,10 +3453,7 @@ pub struct SrcRow {
 
 fn count_line(count: i64, kind: SecKind) -> String {
     if count >= 0 {
-        match kind {
-            SecKind::Movie => plx_platform::i18n::msg::browse_person_films(count),
-            SecKind::Show => plx_platform::i18n::msg::browse_person_shows(count),
-        }
+        LibraryType::Primary.count_label(kind, count)
     } else {
         kind.plural().to_string()
     }
@@ -3532,26 +3627,93 @@ pub fn queue_discovery_for_owner_test(
     ));
 }
 
+/// Take the single-flight flag the listing's page fetch waits on, and never give it back: no page is
+/// asked for, so the listing stays `Loading` (`BrowseStore::hold_listing_for_test`).
+#[cfg(any(test, feature = "test-support"))]
+pub fn hold_listing_for_owner_test(adapter: &BrowseAdapter) {
+    adapter.fetching.store(true, Ordering::SeqCst);
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub fn seed_items_for_owner_test(state: &mut BrowseState, n: usize) {
     plx_base::testlock::assert_held("browse's section table (seed_items_for_test)");
+    seed_listing_for_owner_test(state, n, |sid, i| crate::pms::PmsMovie {
+        sid,
+        rk: format!("{}", i + 1),
+        title: format!("Item {i}"),
+        thumb: format!("/t/{i}"),
+        ..Default::default()
+    });
+}
+
+/// [`seed_items_for_owner_test`]'s listing as the section lists on `type=18`: `n` collections,
+/// each with a ratingKey of its own (`5000<i>`, none of the films'), a title and a child count.
+#[cfg(any(test, feature = "test-support"))]
+pub fn seed_collections_for_owner_test(state: &mut BrowseState, n: usize) {
+    plx_base::testlock::assert_held("browse's section table (seed_collections_for_test)");
+    seed_listing_for_owner_test(state, n, |sid, i| crate::pms::PmsMovie {
+        sid,
+        rk: format!("5000{i}"),
+        title: format!("Collection {i}"),
+        thumb: format!("/t/c{i}"),
+        kind: crate::pms::KIND_COLLECTION,
+        child_count: i as i64 + 2,
+        ..Default::default()
+    });
+}
+
+/// [`seed_items_for_owner_test`]'s listing as a show section lists its EPISODES (`type=4`): `n`
+/// numbered episodes of one show, each with a title, an air date and a still, the section's library
+/// type set to [`LibraryType::Episodes`] so the Library page lays the landscape grid out.
+#[cfg(any(test, feature = "test-support"))]
+pub fn seed_episodes_for_owner_test(state: &mut BrowseState, n: usize) {
+    plx_base::testlock::assert_held("browse's section table (seed_episodes_for_test)");
+    seed_listing_for_owner_test(state, n, |sid, i| crate::pms::PmsMovie {
+        sid,
+        rk: format!("{}", i + 1),
+        title: format!("Episode title {i}"),
+        show_title: "Synthetic show".to_owned(),
+        still: format!("/s/{i}"),
+        kind: 3,
+        season_index: 1,
+        ep_index: i as i32 + 1,
+        aired: "2019-01-03".to_owned(),
+        year: 2019,
+        ..Default::default()
+    });
+    let c = state.cur();
+    if let Some(st) = state.state_mut(c) { st.library_type = LibraryType::Episodes; }
+}
+
+/// [`seed_collections_for_owner_test`] with each collection's `(title, thumb)` stated, for a test
+/// that needs a name a tile's face cuts (a long title over a server composite).
+#[cfg(any(test, feature = "test-support"))]
+pub fn seed_named_collections_for_owner_test(state: &mut BrowseState, rows: &[(&str, &str)]) {
+    plx_base::testlock::assert_held("browse's section table (seed_named_collections_for_test)");
+    seed_listing_for_owner_test(state, rows.len(), |sid, i| crate::pms::PmsMovie {
+        sid,
+        rk: format!("5000{i}"),
+        title: rows[i].0.to_owned(),
+        thumb: rows[i].1.to_owned(),
+        kind: crate::pms::KIND_COLLECTION,
+        subtype: Some("movie".to_owned()),
+        child_count: i as i64 + 2,
+        ..Default::default()
+    });
+}
+
+/// A seeded listing is "the server answered this query", so a page still out for it is superseded
+/// the way a query edit supersedes it ([`BrowseState::refetch_gen`]): the store retries a failed
+/// first page on a frame-counted cooldown, and a worker released a frame before the seed lands its
+/// failure AFTER it, at the current generation, flipping the seeded listing to `Failed`.
+#[cfg(any(test, feature = "test-support"))]
+fn seed_listing_for_owner_test(state: &mut BrowseState, n: usize, make: impl Fn(ServerId, usize) -> crate::pms::PmsMovie) {
+    state.refetch_gen();
     let c = state.cur();
     let sid = state.section_sid(c).unwrap_or_default();
     if let Some(st) = state.state_mut(c) {
         st.total = n as i64;
-        st.items = SecItems::from_vec(
-            (0..n)
-                .map(|i| {
-                    Some(crate::pms::PmsMovie {
-                        sid,
-                        rk: format!("{}", i + 1),
-                        title: format!("Item {i}"),
-                        thumb: format!("/t/{i}"),
-                        ..Default::default()
-                    })
-                })
-                .collect(),
-        );
+        st.items = SecItems::from_vec((0..n).map(|i| Some(make(sid, i))).collect());
         st.fetch = SecFetch::Ready;
     }
 }

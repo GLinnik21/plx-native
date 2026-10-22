@@ -123,6 +123,15 @@ pub const TEXT_SECONDARY: [f32; 4] = COOL_300;
 pub const TEXT_READING: [f32; 4] = COOL_200;
 /// Tertiary text: runtime, kickers, inactive tabs, About labels, dim/empty states.
 pub const TEXT_TERTIARY: [f32; 4] = COOL_400;
+/// A page-header control's label at rest (`PageHeader`): white at 65%. A value segment beside it
+/// stays full white, so "Sort & Filter · Title" reads as a label and a value.
+pub const CONTROL_TEXT_REST: [f32; 4] = with_a(WHITE, 0.65);
+/// The "312 of 1,284" read-out beside the header controls while a filter is on: white at 50%,
+/// quieter than [`CONTROL_TEXT_REST`] because it is not a control and takes no focus.
+pub const COUNT_FILTERED_INK: [f32; 4] = with_a(WHITE, 0.50);
+/// The details line under a focused poster (Under posters: "2019 · 2h 6m"): white at 82%, a step
+/// below the title above it and neutral where [`TEXT_SECONDARY`] read bluish over the ground.
+pub const CAPTION_DETAIL_INK: [f32; 4] = with_a(WHITE, 0.82);
 /// The `·` between fine-print facts, and **only** that — a step below the words it separates.
 /// Both mocks set every separator dot `opacity:.45` against the run around it, and the reason is
 /// worth keeping: a dot at the full ink of its neighbours joins the list instead of punctuating
@@ -709,14 +718,14 @@ pub const fn scrim_black(a: f32) -> [f32; 4] {
 /// [`TINT`] `= 0`.
 pub mod underlay {
     /// A compact menu beside the thing it is about (the card menu, the Library's Sort/Filter
-    /// menu): most of the page stays readable, so the dim only separates the panel from it. 0.30 is
+    /// and "+N" menus, the Watchlist's options, the profile menu): most of the page stays readable, so the dim only separates the panel from it. 0.30 is
     /// the glass menus' 30% scrim (boards `WatchlistOptions` / `HoldMenu`), down from 0.34.
     pub const DIM_COMPACT: f32 = 0.30;
     /// A read-only or picker panel in the middle of the frame (*Also available*, *About*,
     /// *Track information*, Settings' own ground dim). Was `alert::SCRIM_A` — the design's
     /// `scrimStill`.
     pub const DIM_PANEL: f32 = 0.46;
-    /// A sheet that takes over a side of the screen (the profile menu, the player's `…` menu).
+    /// A sheet that takes over a side of the screen (the player's `…` menu).
     pub const DIM_SHEET: f32 = 0.50;
     /// A decision alert: the page is not what is being asked about, so it recedes further than
     /// behind a read-only panel.
@@ -877,7 +886,8 @@ pub const TILE_MARK_INK: [f32; 4] = COOL_0;
 /// ONE veil role: every tile corner mark — the watched tick, and any unplayable mark added later —
 /// reads it, never a literal alpha.
 pub const TILE_MARK_VEIL: [f32; 4] = with_a(BLACK, 0.55);
-/// Letter-spacing of the Watchlist header title (DS8): aliases the gfx text const, no literal.
+/// Letter-spacing of the Watchlist board's title (DS8; no page draws it since the Watchlist took the
+/// Library's header row): aliases the gfx text const, no literal.
 pub const TRACKING_TITLE_TIGHT: f32 = plx_gfx::text::TRACKING_TITLE_TIGHT;
 /// The tick's own soft drop shadow, INSIDE the veil — belt and braces on a bright frame, and what
 /// keeps the mark from dissolving into a busy one (the design's `drop-shadow(0 2px 7px …)`).

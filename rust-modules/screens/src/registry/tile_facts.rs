@@ -22,7 +22,57 @@
 use std::os::raw::c_int;
 
 use plx_data::pms::{PmsMovie, KIND_COLLECTION};
+use plx_ui::caption_policy::CaptionFacts;
 use plx_ui::tile::{Resume, TileFacts, TileKind};
+
+/// The facts of a catalog row a caption policy words its lines from: every poster shelf's captions
+/// (Home, Recommended, the Library grid, the Watchlist) and the Under posters preview's tiles read
+/// one conversion, so a row is worded the same everywhere.
+///
+/// `title` is the name a reader knows the tile by, which is not always the row's own: a SEASON is
+/// known by its SHOW (Plex's own clients caption a season tile with the show's name), and the
+/// season's own title ("Season 6") becomes `season`, the line the details fall back to. A season
+/// the server sent no show for keeps its own title.
+pub fn caption_facts(item: &PmsMovie) -> CaptionFacts {
+    let season = item.kind == 2;
+    CaptionFacts {
+        title: Some(if season && !item.show_title.is_empty() { item.show_title.clone() } else { item.title.clone() }),
+        season: season.then(|| (u32::try_from(item.season_index).unwrap_or(0), item.title.clone())),
+        year: Some(item.year),
+        duration_min: u32::try_from(item.dur_ns / 60_000_000_000).ok(),
+        genre: item.genre.clone(),
+        video_resolution: item.video_resolution.clone(),
+        hdr: item.hdr,
+        content_rating: Some(item.rating.clone()),
+        audience_rating: item.audience_rating,
+        leaf_count: item.leaf_count,
+        viewed_leaf_count: item.viewed_leaf_count,
+        child_count: u32::try_from(item.child_count).ok().filter(|n| *n > 0),
+        subtype: (item.kind == KIND_COLLECTION).then(|| item.subtype.clone().unwrap_or_default()),
+        is_show: item.kind == 1,
+        is_movie: item.kind == 0,
+        episode: (item.kind == 3).then(|| (
+            u32::try_from(item.season_index).unwrap_or(0),
+            u32::try_from(item.ep_index).unwrap_or(0),
+        )),
+        show: (item.kind == 3 || season).then(|| item.show_title.clone()).filter(|show| !show.is_empty()),
+        name_cut: item.kind == KIND_COLLECTION && face_cuts_name(item),
+        ..Default::default()
+    }
+}
+
+/// **Does this collection's face cut its name?** The face is the grid's resting card, drawn by the
+/// ONE card art every poster surface shares (`widgets::card_named_led`: a baked fan names itself
+/// live, a collection with no artwork wears the neutral tile's name, a custom poster is artwork with
+/// no name on it to cut), so the answer is the row's, the same on the Collections page, Search, Home,
+/// Recommended, Detail and the Collection screen. A name the face cuts is carried whole by the
+/// caption ([`CaptionFacts::name_cut`]).
+pub fn face_cuts_name(item: &PmsMovie) -> bool {
+    use plx_ui::collection_tile::{name_is_cut, Face};
+    let facts = of(item);
+    let face = if facts.thumb.is_empty() { Face::Neutral } else if facts.composite_thumb { Face::Fan } else { return false };
+    name_is_cut(face, &item.title, plx_ui::Rect::new(0.0, 0.0, plx_ui::consts::CARD_W, plx_ui::consts::CARD_H))
+}
 
 /// What `ui` reads of `m`. The result borrows from the row for `'a`, and carries the row's address
 /// as [`TileFacts::owner`], which is how a card's placement history stays keyed to the ROW and not
@@ -51,6 +101,15 @@ pub fn of(m: &PmsMovie) -> TileFacts<'_> {
         // flag, so the path is parsed for those alone rather than for every tile every frame.
         composite_thumb: m.kind == KIND_COLLECTION && is_composite_thumb(&m.thumb),
         blur: m.has_blur.then_some(m.blur),
+        subtype: m.subtype.as_deref(),
+        smart: m.smart,
+        genre: m.genre.as_deref(),
+        video_resolution: m.video_resolution.as_deref(),
+        hdr: m.hdr,
+        audience_rating: m.audience_rating,
+        leaf_count: m.leaf_count,
+        viewed_leaf_count: m.viewed_leaf_count,
+        added_at: m.added_at,
     }
 }
 
@@ -100,6 +159,21 @@ mod tests {
         assert_eq!(kind(3), TileKind::Episode);
         assert_eq!(kind(KIND_COLLECTION), TileKind::Collection);
         assert_eq!(kind(9), TileKind::Other);
+    }
+
+    /// A season is known by its SHOW, and its own title is the identity the details fall back to;
+    /// every other kind is known by its own title.
+    #[test]
+    fn a_season_is_captioned_by_its_show_and_keeps_its_own_title_as_its_identity() {
+        let season = PmsMovie { kind: 2, title: "Season 6".into(), show_title: "The Office".into(), season_index: 6, ..Default::default() };
+        let f = caption_facts(&season);
+        assert_eq!(f.title.as_deref(), Some("The Office"));
+        assert_eq!(f.season, Some((6, "Season 6".to_owned())));
+        let orphan = PmsMovie { show_title: String::new(), ..season.clone() };
+        assert_eq!(caption_facts(&orphan).title.as_deref(), Some("Season 6"), "no show to name: its own title");
+        let episode = PmsMovie { kind: 3, title: "Pilot".into(), show_title: "Severance".into(), ..Default::default() };
+        let f = caption_facts(&episode);
+        assert_eq!((f.title.as_deref(), f.season), (Some("Pilot"), None), "an episode is known by its own title");
     }
 
     #[test]

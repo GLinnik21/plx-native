@@ -159,3 +159,52 @@ fn dump_mode_a_stale_epoch_answer_is_awaited_and_consumed_by_the_pump_that_was_o
     assert!(!browse.state.states[0].genres_done);
     join.join().unwrap();
 }
+
+/// The paced dump keeps one claim per CALL SITE (`Gate::take_owed` is `#[track_caller]`), so a
+/// wrapper between a take and its callers must be `#[track_caller]` too, or every mailbox behind it
+/// shares one key. `land_directory_owned_with_gate` serves two mailboxes, genre and letters: with a
+/// lag, each must be held until `lag` frames after ITS OWN claim was first seen open. Genre is seen
+/// at frame 0 and letters at frame 2 (lag 3), so genre lands on frame 3 and letters on frame 5; under
+/// a shared key letters inherits genre's sighting and lands on a frame that depends on which of the
+/// two took first and whether the other had landed.
+#[test]
+fn a_paced_lag_counts_the_genre_and_letters_mailboxes_from_their_own_first_sighting() {
+    let _serial = plx_base::testlock::serial();
+    let (_cleanup, mut browse, _sid, client) = registered_directory_source();
+    let (epoch, token_gen) = (browse.state.table_epoch(), client.token_gen());
+    let library_type = browse.state.states[0].library_type;
+    let adapter = Arc::clone(&browse.adapter);
+    let gate = plx_machine::landgate::Gate::default();
+    gate.arm_dump_paced(3);
+    *adapter.genre_result.lock().unwrap() = Some(DirectoryResult {
+        library_type, epoch, sec: 0, client, token_gen,
+        list: vec![GenreEntry { id: "g".into(), title: "G".into() }],
+    });
+    adapter.genre_fetching.store(true, Ordering::SeqCst);
+    let (mut genre_at, mut letters_at) = (None, None);
+    for v in 0..9u64 {
+        gate.dump_frame(v);
+        if v == 2 {
+            *adapter.letter_result.lock().unwrap() = Some(DirectoryResult {
+                library_type, epoch, sec: 0, client, token_gen, list: vec![("S".into(), 9)],
+            });
+            adapter.letters_fetching.store(true, Ordering::SeqCst);
+        }
+        if genre_at.is_none() && browse.state.land_directory_owned_with_gate(
+            &gate, &adapter.genre_fetching, &adapter.genre_result, |st, list| {
+            st.genres_done = true;
+            st.genres = Arc::new(list);
+        }) {
+            genre_at = Some(v);
+        }
+        if letters_at.is_none() && browse.state.land_directory_owned_with_gate(
+            &gate, &adapter.letters_fetching, &adapter.letter_result, |st, list| {
+            st.letters_done = true;
+            st.letters = Arc::new(list);
+        }) {
+            letters_at = Some(v);
+        }
+    }
+    assert_eq!((genre_at, letters_at), (Some(3), Some(5)),
+        "each mailbox lands a lag after its own first sighting (genre, letters)");
+}

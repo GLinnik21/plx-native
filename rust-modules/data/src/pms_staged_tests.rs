@@ -578,7 +578,7 @@ fn a_deck_advance_owes_the_quiet_read_for_what_it_dropped() {
     let _g = plx_base::testlock::serial();
     let mut r = rig(1);
     r.stage(0, cw_moved(r.slots[0]));
-    advance_deck(&mut r.o.state.srcs, false);
+    advance_deck(&mut r.o.state.srcs, false, 1);
     assert!(r.o.state.srcs[0].staged.is_none(), "the lane moved under the staged copy");
     let (_, asked) = r.run(None, 120.0);
     assert_eq!(asked.len(), 1, "and its update is asked for again");
@@ -626,4 +626,41 @@ fn nothing_staged_is_known_without_a_scope() {
     assert!(!has_staged(&r.o.state));
     r.stage(0, cw_moved(r.slots[0]));
     assert!(has_staged(&r.o.state));
+}
+
+
+/// A source whose deck is one episode of show 4 (`e`) after a movie that moves (`lead`).
+fn show_build(slot: u16, lead: Option<&str>, episode: Option<&str>) -> SourceBuild {
+    let mut cw: Vec<(i64, &str)> = Vec::new();
+    if let Some(lead) = lead { cw.push((40, lead)); }
+    if let Some(episode) = episode { cw.push((30, episode)); }
+    let mut build = built(slot, &cw, Vec::new());
+    for item in &mut build.cw {
+        if Some(item.m.rk.as_str()) == episode {
+            let m = Arc::make_mut(&mut item.m);
+            (m.kind, m.show_guid, m.part) = (3, Some([4; 12]), "/library/parts/1/file.mkv".into());
+        }
+    }
+    build
+}
+
+/// The publish gate's trial merge settles the lanes and feeds the copies; when the commit waits, the
+/// facts it fed must go back with the lanes.
+#[test]
+fn a_trial_merge_that_waits_leaves_nothing_behind() {
+    let _g = plx_base::testlock::serial();
+    let mut r = rig_of(vec![
+        Box::new(|slot| show_build(slot, None, Some("a-e"))),
+        Box::new(|slot| show_build(slot, None, Some("b-e"))),
+    ]);
+    let held = |r: &Rig| r.o.state.srcs.iter().map(|s| s.copies.rks()).collect::<Vec<_>>();
+    assert_eq!(held(&r), [vec!["a-e".to_string()], vec!["b-e".to_string()]], "premise: both copies are held");
+    let (gen, published) = (r.o.state.catalog_gen, r.rows());
+    // source 0's next answer lists a new first card and no longer lists its copy
+    r.stage(0, show_build(r.slots[0], Some("lead"), None));
+    let outcome = r.publish(true, Some(0), false);
+    assert!(!outcome.changed && r.o.state.catalog_gen == gen, "premise: the focused deck row holds the change");
+    assert!(r.o.state.srcs[0].staged.is_some(), "premise: it waits");
+    assert_eq!(r.rows(), published);
+    assert_eq!(held(&r), [vec!["a-e".to_string()], vec!["b-e".to_string()]], "the trial left no feed behind");
 }

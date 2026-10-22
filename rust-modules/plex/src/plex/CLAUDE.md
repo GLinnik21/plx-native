@@ -489,7 +489,7 @@ a dead source is **absent** from Home and states itself in its own library secti
   reader may now call `session::peek()`, because `peek()` is backed by a live in-memory read
   cache, not a per-call file transaction.
 - **Every preference key but `language` lives in ONE struct, `session/prefs.rs`'s `Preferences`**
-  (the ten player settings' and `trailer_autoplay`'s FROZEN top-level keys, `profile_prefs` (their per-profile home, below), `auto_sign_in`, `last_hero_blur`, the account-bound
+  (the ten player settings' and `trailer_autoplay`'s FROZEN top-level keys, `profile_prefs` (their per-profile home, below), `auto_sign_in`, `last_hero_blur`, `hold_hint_taught`, the account-bound
   `plaintext_consent` and `server_key_pins`, the per-profile `last_library` and `library_sorts` (cleared
   at sign-out like every `ACCOUNT_BOUND = true` row in `prefs::DESCRIPTORS`, but their records carry no
   account stamp, so the one login that is not a sign-out, a stored session that could not be activated
@@ -513,6 +513,9 @@ a dead source is **absent** from Home and states itself in its own library secti
   records of other accounts). `profile_prefs` is account-bound (`ACCOUNT_BOUND_PREFERENCES`, so
   sign-out drops it and the legacy keys stay). Who is seated is `session::Seat`
   (`Seat::of(profile, stamp)`, `current_seat()`); the live cells follow it in `plx_media::route`.
+  `hold_hint_taught` is Install and never account-bound, so sign-out keeps it: which hold hints
+  (`card`, `pill`) this television has been taught; the application seeds `plx_ui::hold_hint` from
+  it at boot and writes it on the frame tick (`app/hint_taught.rs`, `session::learn_hold_hint_taught`).
   `auto_sign_in` is Install and never
   account-bound: `boot_shows_picker` reads it before any profile is seated. `trailer_autoplay` is
   NOT Install any more (P1c): the DETAIL page's hero reads the seated profile's value, the top-level key

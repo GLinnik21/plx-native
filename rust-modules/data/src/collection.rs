@@ -61,6 +61,8 @@ pub struct Collection {
     pub summary: String,
     pub thumb: String,
     pub child_count: usize,
+    /// The PMS `subtype` the header stated (`movie`, `show`, …), which names what the members are.
+    pub subtype: Option<String>,
     /// The member order the header stated, if it stated one.
     pub order: Option<CollectionOrder>,
     /// The rows by absolute index. A hole (a page not read, or evicted) reads as `None`.
@@ -81,16 +83,18 @@ pub struct Collection {
     budget: u8,
     header_ready: bool,
     client_key: Option<(u32, u32)>,
+    /// The store's request epoch this listing was opened under (see [`Collection::generation`]).
+    generation: u32,
 }
 
 impl Collection {
-    /// A collection opened (or reopened) with nothing landed yet: its title is the link's name
-    /// until the header replaces it.
-    fn loading(id: CollectionRef, want: usize, client_key: Option<(u32, u32)>) -> Self {
+    /// A collection opened (or reopened) with nothing landed yet, under the store's request epoch
+    /// `generation`: its title is the link's name until the header replaces it.
+    fn loading(id: CollectionRef, want: usize, client_key: Option<(u32, u32)>, generation: u32) -> Self {
         Self { title: id.name.clone(), id, summary: String::new(), thumb: String::new(),
-            child_count: 0, order: None, pages: PageCache::default(), read: 0, total: 0,
+            child_count: 0, subtype: None, order: None, pages: PageCache::default(), read: 0, total: 0,
             status: CollectionStatus::Loading, more: true, wanted: 0..want, focus: None, restore: None,
-            budget: FRONTIER_ASK, header_ready: false, client_key }
+            budget: FRONTIER_ASK, header_ready: false, client_key, generation }
     }
 
     /// Whether the header (title, art, summary) has landed — before it, an empty `thumb` is not
@@ -120,9 +124,17 @@ impl Collection {
     /// Every row held, with its absolute index.
     pub fn loaded_rows(&self) -> impl Iterator<Item = (usize, &PmsMovie)> + '_ { self.pages.loaded_rows() }
 
-    /// One kept-row count per page read, for a screen to save with its position and send back as
+    /// One kept-row count per page of the listing, for a screen to save with its position and its
+    /// [`generation`](Self::generation) and send back as
     /// [`CollectionCmd::Restore`](crate::stores::collection::CollectionCmd::Restore).
     pub fn kept_counts(&self) -> Vec<u8> { self.pages.kept_counts() }
+
+    /// Which listing this is, for a page to save with its [`kept_counts`](Self::kept_counts): the
+    /// store's request epoch when the listing was opened. Only a store superseding its listing moves
+    /// it (another collection opened, a close or reset, a rebuild for a changed client), never
+    /// paging, so a page handing it back in [`CollectionCmd::Restore`](crate::stores::collection::CollectionCmd::Restore)
+    /// says whether the store still holds the listing the page was saved from.
+    pub fn generation(&self) -> u32 { self.generation }
 
     /// Pages the screen shows or is restoring to whose rows are not held, below the frontier.
     fn wanted_pages(&self) -> Vec<usize> {
@@ -250,7 +262,7 @@ impl CollectionState {
                 }
                 self.supersede(adapter);
                 let client_key = plx_plex::plex::client_for(target.id.sid).map(|c| (c.instance_gen(), c.token_gen()));
-                self.current = Some(Collection::loading(target.id, target.want.max(PAGE_SIZE), client_key));
+                self.current = Some(Collection::loading(target.id, target.want.max(PAGE_SIZE), client_key, self.generation));
                 true
             }
             CollectionCmd::Window { wanted, focus, restore } => {
@@ -260,11 +272,19 @@ impl CollectionState {
                 c.budget = FRONTIER_ASK;
                 changed
             }
-            CollectionCmd::Restore { total, counts } => {
+            CollectionCmd::Restore { total, counts, generation } => {
                 // The counts describe a listing of `total` items, one entry per page; any other
                 // shape is not this listing's directory and is not guessed at.
                 let Some(c) = self.current.as_mut() else { return false };
                 if counts.len() != total.div_ceil(PAGE_SIZE) { return false; }
+                // A page whose surface was closed over it (a menu, a sheet, Back from Detail) is
+                // handed the directory it saved while this store still holds the listing it was
+                // saved from: the same generation, however much has been read since (a page landed
+                // while covered, a moved total). Nothing is to be restored: the rows are held, and
+                // the store's own counts, read position and paging stand. Equal counts would not
+                // prove it, for a store rebuilt since (a retoken, a server re-point) reads the same
+                // numbers off the same server; a different generation takes the saved directory.
+                if c.generation == generation { return false; }
                 c.total = total;
                 c.pages.set_total(total);
                 c.pages.restore_kept_counts(&counts);
@@ -306,7 +326,7 @@ impl CollectionState {
         let (id, want) = (c.id.clone(), c.wanted.end);
         let (window, focus, restore) = (c.wanted.clone(), c.focus, c.restore);
         self.supersede(adapter);
-        let mut fresh = Collection::loading(id, want, now);
+        let mut fresh = Collection::loading(id, want, now, self.generation);
         (fresh.wanted, fresh.focus, fresh.restore) = (window, focus, restore);
         self.current = Some(fresh);
         self.revision += 1;
@@ -391,6 +411,7 @@ impl CollectionState {
                 c.thumb = head.thumb;
                 c.summary = head.summary;
                 c.child_count = head.child_count;
+                c.subtype = head.subtype;
                 c.order = head.order;
                 c.header_ready = true;
                 c.status = CollectionStatus::Loading;
@@ -488,13 +509,16 @@ struct Header {
     summary: String,
     child_count: usize,
     #[serde(default)]
+    subtype: Option<String>,
+    #[serde(default)]
     order: Option<CollectionOrder>,
 }
 
 impl Header {
     fn of(row: &plx_plex::plex::Metadata) -> Self {
         Self { title: row.title.clone(), thumb: row.thumb.clone(), summary: row.summary.clone(),
-            child_count: row.child_count.max(0) as usize, order: CollectionOrder::of(row.collection_sort) }
+            child_count: row.child_count.max(0) as usize, subtype: Some(row.subtype.clone()).filter(|s| !s.is_empty()),
+            order: CollectionOrder::of(row.collection_sort) }
     }
 }
 
@@ -569,7 +593,7 @@ fn run_job(client: &'static plx_plex::plex::Client, sid: ServerId, job: Job) -> 
 
 #[cfg(any(test, feature = "test-support"))]
 fn header(title: &str, child_count: usize) -> Header {
-    Header { title: title.into(), thumb: String::new(), summary: String::new(), child_count, order: None }
+    Header { title: title.into(), thumb: String::new(), summary: String::new(), child_count, subtype: None, order: None }
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -579,7 +603,7 @@ pub fn validate_record(slot: u32, value: &serde_json::Value) -> Result<(), &'sta
     if slot != 0 { return Err("invalid collection slot"); }
     let mail: Mail = serde_json::from_value(value.clone()).map_err(|_| "invalid collection reply")?;
     if mail.gen == 0 { return Err("invalid collection reply generation"); }
-    if serde_json::to_value(&mail).ok().as_ref() != Some(value) { return Err("noncanonical collection reply"); }
+    if serde_json::to_value(&mail).ok().as_ref() != Some(value) && reread(&mail).as_ref() != Some(value) { return Err("noncanonical collection reply"); }
     Ok(())
 }
 
@@ -903,6 +927,31 @@ mod tests {
         (state, adapter)
     }
 
+    /// The collection closed and opened again, as a page entered anew does it: the store supersedes
+    /// the listing it held and holds nothing of the new one yet but its header.
+    fn reopen(state: &mut CollectionState, adapter: &Arc<CollectionAdapter>, total: usize) {
+        state.run(adapter, CollectionCmd::Close);
+        state.run(adapter, CollectionCmd::Open { target: set_target("50001", 7, "Set") });
+        adapter.land(state.generation(), Landing::Header { rk: None, head: header("Set", total) });
+        assert!(state.take_landing_for_test(adapter));
+    }
+
+    /// A retoken or a server re-point while a surface covers the page: the pump rebuilds the listing
+    /// from its first page (`refresh_if_client_changed`), keeping the window the page asked for.
+    fn rebuild(state: &mut CollectionState, adapter: &Arc<CollectionAdapter>, total: usize) {
+        state.current.as_mut().unwrap().client_key = Some((1, 1)); // the client the listing was read from
+        assert!(state.refresh_if_client_changed(adapter));
+        adapter.land(state.generation(), Landing::Header { rk: None, head: header("Set", total) });
+        assert!(state.take_landing_for_test(adapter));
+    }
+
+    /// What a page saves of the listing it reads (`kept_counts` and `generation`) and hands back in a
+    /// [`CollectionCmd::Restore`].
+    fn directory(state: &CollectionState) -> (usize, Vec<u8>, u32) {
+        let c = state.view().current().unwrap();
+        (c.total, c.kept_counts(), c.generation())
+    }
+
     fn movie(rk: usize) -> PmsMovie {
         PmsMovie { rk: rk.to_string(), ..Default::default() }
     }
@@ -1000,7 +1049,7 @@ mod tests {
         let keep = |s: usize| s % 7 != 3;
         let (mut state, adapter) = opened(total);
         walk_down(&mut state, &adapter, total, &keep);
-        let counts = state.view().current().unwrap().pages.kept_counts();
+        let (_, counts, generation) = directory(&state);
         assert!(counts.iter().any(|&k| k < 60), "a filtered listing has short pages");
 
         // Kept rows per page are short, so index 3000 sits on a later server page than 3000 / 60.
@@ -1012,12 +1061,136 @@ mod tests {
         let pages: Vec<usize> = (page_of(3000)..=page_of(3119)).map(|p| p * PAGE_SIZE).collect();
         assert!(pages[0] > 3000, "the window is not where an unfiltered listing would put it");
 
-        let (mut back, adapter) = opened(total);
-        assert!(back.run(&adapter, CollectionCmd::Restore { total, counts }));
-        let requests = show(&mut back, &adapter, total, 3000..3120, Some(3000), Some(3000), &keep);
+        reopen(&mut state, &adapter, total);
+        assert!(state.run(&adapter, CollectionCmd::Restore { total, counts, generation }));
+        let requests = show(&mut state, &adapter, total, 3000..3120, Some(3000), Some(3000), &keep);
         assert_eq!(requests, pages, "only the pages the window covers");
         let kept: Vec<usize> = (0..total).filter(|&s| keep(s)).collect();
-        assert!((3000..3120).all(|i| rk_at(&back, i) == Some(kept[i].to_string())));
+        assert!((3000..3120).all(|i| rk_at(&state, i) == Some(kept[i].to_string())));
+    }
+
+    /// Where a store's reading stands: the pages read, whether the frontier goes on, the indices
+    /// counted, the pages whose rows are held and the content revision.
+    fn standing(state: &CollectionState) -> (usize, bool, usize, usize, u64) {
+        let view = state.view();
+        let c = view.current().unwrap();
+        (c.read, c.more, c.shown(), c.pages.loaded_pages(), view.revision())
+    }
+
+    /// A surface closed over a live page (a card's hold menu, a sheet) or a Back from Detail hands
+    /// the page its own saved directory while the store still holds the listing it was saved from.
+    /// That restores nothing: the rows stay held (no member turns into a not-yet-loaded card), and in
+    /// a long, partly read list the read position stays where the reading left it and paging stays
+    /// on, instead of "read" to the last page with the frontier switched off.
+    #[test]
+    fn a_restore_of_the_listing_the_store_holds_changes_nothing_in_a_long_partly_read_list() {
+        let total = 5_000;
+        let keep = |s: usize| s % 7 != 3;
+        let (mut state, adapter) = opened(total);
+        show(&mut state, &adapter, total, 0..120, Some(0), None, &keep);
+        let (_, counts, generation) = directory(&state);
+        assert_eq!(counts.len(), total.div_ceil(PAGE_SIZE));
+        let before = standing(&state);
+        let (read, more, shown, loaded_pages, _) = before;
+        assert!(read >= 2 && read < counts.len() && more, "a long list read only part of the way: {before:?}");
+        assert!(counts[..read].iter().all(|&k| k < 60) && loaded_pages == read, "short pages, every one held: {before:?}");
+
+        assert!(!state.run(&adapter, CollectionCmd::Restore { total, counts: counts.clone(), generation }),
+            "the store holds this listing: nothing changed");
+        assert_eq!(standing(&state), before, "no row dropped, the read position and paging untouched");
+        assert!((0..shown).all(|i| rk_at(&state, i).is_some()), "every member the store counted is still held");
+
+        let requests = show(&mut state, &adapter, total, 0..shown + PAGE_SIZE, Some(0), None, &keep);
+        assert!(!requests.is_empty(), "paging is still on");
+        assert_eq!(requests, (read..read + requests.len()).map(|p| p * PAGE_SIZE).collect::<Vec<_>>(),
+            "the frontier goes on in order from the page it had reached");
+
+        // A store opened again since is another listing, so it takes the saved directory whole.
+        reopen(&mut state, &adapter, total);
+        assert!(state.run(&adapter, CollectionCmd::Restore { total, counts: counts.clone(), generation }));
+        let (read, more, _, loaded_pages, _) = standing(&state);
+        assert_eq!((read, more, loaded_pages), (counts.len(), false, 0), "the directory, no rows");
+        assert_eq!(state.view().current().unwrap().kept_counts(), counts);
+    }
+
+    /// A directory saved from another listing is a restore: a page whose kept count differs becomes
+    /// a hole (its rows no longer match its count), and the pages that agree keep their rows.
+    #[test]
+    fn a_restore_of_another_listings_directory_drops_only_the_pages_whose_counts_changed() {
+        let total = 300;
+        let (mut state, adapter) = opened(total);
+        show(&mut state, &adapter, total, 0..300, Some(0), None, &|_| true);
+        let (_, mut counts, generation) = directory(&state);
+        counts[1] = 57;
+        rebuild(&mut state, &adapter, total);
+        show(&mut state, &adapter, total, 0..300, Some(0), None, &|_| true);
+        assert_eq!(loaded(&state), 5);
+        assert!(state.run(&adapter, CollectionCmd::Restore { total, counts: counts.clone(), generation }));
+        assert_eq!(loaded(&state), 4, "the page whose count changed is a hole");
+        assert_eq!(state.view().current().unwrap().kept_counts(), counts);
+        assert_eq!(rk_at(&state, 0).as_deref(), Some("0"), "a page that agrees keeps its rows");
+        assert_eq!(rk_at(&state, 60), None);
+        assert_eq!(rk_at(&state, 117).as_deref(), Some("120"), "the pages after the changed one keep their rows, read from their new first index");
+    }
+
+    /// A retoken or a server re-point while a surface covers the page rebuilds the store from its
+    /// first page (`refresh_if_client_changed`); the covered page's own per-frame pump then reads the
+    /// header and a stretch of the frontier, so the NEW store can hold the very counts the page saved
+    /// (an unfiltered list: every page 60, the total the same) without being the listing they were
+    /// saved from. The Back is a full restore of the target page, as #605 designed, not a no-op that
+    /// leaves the store reading forward from page 8 to page 50 with focus held on skeletons.
+    #[test]
+    fn a_restore_after_the_store_was_rebuilt_while_covered_takes_the_saved_directory() {
+        let total = 5_000;
+        let (mut state, adapter) = opened(total);
+        for start in (0..=3000).step_by(45) {
+            show(&mut state, &adapter, total, start..start + PAGE_SIZE, Some(start), None, &|_| true);
+        }
+        let (saved_total, counts, generation) = directory(&state);
+        let (read, more, ..) = standing(&state);
+        assert!(more && read < counts.len() && counts.iter().all(|&k| k == 60), "deep in an unfiltered list: read {read}");
+
+        rebuild(&mut state, &adapter, total);
+        let mut frontier = Vec::new();
+        serve(&mut state, &adapter, total, &|_| true, &mut frontier);
+        assert_eq!(frontier.len(), usize::from(FRONTIER_ASK), "the covered page's pump read a stretch of the frontier");
+        let (now_total, now_counts, now_generation) = directory(&state);
+        assert_eq!((now_total, &now_counts), (saved_total, &counts), "the new store holds the saved counts");
+        assert_ne!(now_generation, generation, "…as another listing");
+
+        assert!(state.run(&adapter, CollectionCmd::Restore { total, counts: counts.clone(), generation }),
+            "a store rebuilt since the page was saved is not the listing the directory came from");
+        let c = state.view().current().unwrap();
+        assert_eq!((c.read, c.more), (counts.len(), false), "the directory is whole again");
+        let requests = show(&mut state, &adapter, total, 3000..3120, Some(3000), Some(3000), &|_| true);
+        assert_eq!(requests, vec![3000, 3060], "only the target's pages, not a read forward from the frontier");
+        assert_eq!(rk_at(&state, 3000).as_deref(), Some("3000"));
+    }
+
+    /// The listing keeps being read while a surface covers the page (`/children` reads continue under
+    /// a menu or Detail): a short page lands, so the store's counts are newer than the page's. The
+    /// Back is not a restore of the older counts over them (the landed page's count back to 60, its
+    /// rows dropped and read again, the read position jumped to the end, paging off).
+    #[test]
+    fn a_short_page_landing_while_covered_survives_the_restore() {
+        let total = 300;
+        let keep = |s: usize| !(120..123).contains(&s);
+        let (mut state, adapter) = opened(total);
+        show(&mut state, &adapter, total, 0..120, Some(0), None, &keep);
+        let (_, counts, generation) = directory(&state);
+        assert_eq!(standing(&state).0, 2, "two pages read, the third is the frontier");
+
+        // Covered: the frontier goes on and page 2 lands with three rows filtered out.
+        show(&mut state, &adapter, total, 0..150, Some(0), None, &keep);
+        let before = standing(&state);
+        assert_eq!(state.view().current().unwrap().kept_counts()[2], 57, "the landed page counts its kept rows");
+        assert_eq!((before.0, before.1), (3, true), "three pages read, paging on");
+
+        assert!(!state.run(&adapter, CollectionCmd::Restore { total, counts, generation }),
+            "the store is still the listing the page was saved from: its newer counts stand");
+        assert_eq!(standing(&state), before, "the landed page keeps its count and rows; read and paging stay");
+        assert_eq!(rk_at(&state, 119).as_deref(), Some("119"));
+        assert_eq!(rk_at(&state, 120).as_deref(), Some("123"), "page 2's rows are held at the indices they landed at");
     }
 
     /// The focused card's page and a pending restore's target page survive the eviction a far-away
@@ -1137,4 +1310,12 @@ mod tests {
         assert!(!ask(&mut state), "the same window changes nothing in the view");
         assert!(state.job().is_some(), "but is an ask: the budget is back");
     }
+}
+
+/// `mail` re-serialized and read back the way the recording's segment reader parses numbers.
+/// Without `float_roundtrip` an f32 widened to f64 (9.600000381469727) reads back one ulp off, so
+/// comparing `to_value` against the parsed file would refuse a recording of ordinary mock ratings.
+fn reread(mail: &impl serde::Serialize) -> Option<serde_json::Value> {
+    let text = serde_json::to_value(mail).ok()?.to_string();
+    serde_json::from_str(&text).ok()
 }

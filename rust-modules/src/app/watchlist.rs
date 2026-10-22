@@ -71,7 +71,7 @@ pub(crate) struct Feed {
 
 /// The membership of `hex` in `view`: member (intents in flight counted), absent from a read list,
 /// or not known yet.
-fn membership_in(view: &plx_data::stores::watchlist::WatchlistView<'_>, hex: &[u8; 12]) -> plx_data::catalog::Membership {
+pub(super) fn membership_in(view: &plx_data::stores::watchlist::WatchlistView<'_>, hex: &[u8; 12]) -> plx_data::catalog::Membership {
     use plx_data::catalog::Membership;
     if view.is_member(hex) {
         Membership::On
@@ -117,13 +117,14 @@ fn list_state(view: &plx_data::stores::watchlist::WatchlistView<'_>) -> ListStat
     }
 }
 
-fn matched_facts(facts: plx_data::stores::watchlist::TileFacts) -> MatchedFacts {
+fn matched_facts(facts: plx_data::stores::watchlist::TileFacts, listing: plx_plex::plex::ListingFacts) -> MatchedFacts {
     MatchedFacts {
         thumb: String::new(),
         watched: facts.watched,
         resume: (facts.resume_ms > 0 && facts.dur_ms > 0)
             .then(|| (facts.resume_ms as f32 / facts.dur_ms as f32).clamp(0.0, 1.0)),
         blur: None,
+        listing,
     }
 }
 
@@ -206,8 +207,11 @@ impl Bridge {
                 .collect();
             let mut now_facts = HashMap::new();
             for (i, tile) in tiles.iter().enumerate() {
-                if let Some(facts) = view.facts(i) {
-                    now_facts.insert(tile.row.guid.clone(), matched_facts(facts));
+                // A matched copy lends its watch state once the store has learnt it, and its
+                // listing row's caption facts as soon as the lookup answered.
+                let (watch, listing) = (view.facts(i), view.listing(i));
+                if watch.is_some() || listing.is_some() {
+                    now_facts.insert(tile.row.guid.clone(), matched_facts(watch.unwrap_or_default(), listing.cloned().unwrap_or_default()));
                 }
             }
             screen.input(WatchlistIn::Rows(tiles));

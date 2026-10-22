@@ -1,0 +1,15 @@
+{
+  "sort_facts.title": "Назва",
+  "sort_facts.date_added": "Дата дадання",
+  "sort_facts.release_date": "Дата выхаду",
+  "sort_facts.rating": "Ацэнка",
+  "sort_facts.audience_rating": "Ацэнка гледачоў",
+  "sort_facts.last_viewed": "Дата прагляду",
+  "sort_facts.random": "Выпадкова",
+  "sort_facts.a_to_z": "А–Я",
+  "sort_facts.z_to_a": "Я–А",
+  "sort_facts.oldest_first": "Спачатку старыя",
+  "sort_facts.newest_first": "Спачатку новыя",
+  "sort_facts.lowest_first": "Спачатку ніжэйшыя",
+  "sort_facts.highest_first": "Спачатку вышэйшыя"
+}

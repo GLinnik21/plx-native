@@ -333,11 +333,7 @@ fn build_card(
         ItemRow::Play,
         RowKind::Button,
         Action::Play(m.rk.clone()),
-        Row::new(if resumes {
-            plx_platform::i18n::msg::browse_home_continue()
-        } else {
-            plx_platform::i18n::msg::browse_detail_play()
-        })
+        Row::new(plx_appkit::hero_layout::play_text(resumes))
         .licon(Icon::Play),
     );
 
@@ -907,11 +903,11 @@ impl<H: AppLike + crate::registry::MetadataLike> Screen<H> for ItemMenuScreen {
         None
     }
     /// The modal dim. **The TILE is lifted back out of it, and the lift is the HOST PAGE's to
-    /// draw** — only the screen that drew an element knows where it landed, and a `Scrim::lift` is
+    /// draw** — only the screen that drew an element knows where it landed, and the dispatcher's lift pass is
     /// a bare `fn()` with nothing to borrow a page through. So this asks for the dim alone, and
-    /// `app/bridge.rs`'s `redraw_opener` — the ONE owner, reading this surface's own
-    /// [`ItemMenuScreen::opener`] rather than a copy kept on the side — repaints the focused
-    /// element immediately after the container's page pass, above the dim it just laid down.
+    /// the dispatcher's lift pass (`Dispatcher::draw_with`, after the last surface) — the ONE
+    /// owner, reading this surface's own [`ItemMenuScreen::opener`] rather than a copy kept on the
+    /// side — repaints the focused element above the dim and the panel.
     ///
     /// That tile is the panel's whole subject: the design's stated point is that "the card and the
     /// rest of the shelf stay where they are, visible behind it", which a scrim over the card
@@ -1122,7 +1118,8 @@ mod tests {
 
         // an item with a resume point says so, in the hero pill's word
         let resuming = build_deck(&item(0, PosterMark::InProgress), true, DeckPress::Details);
-        assert_eq!(labels(&resuming)[0], "Continue");
+        assert_eq!(labels(&resuming)[0], plx_appkit::hero_layout::play_label(true).to_str().unwrap());
+        assert_eq!(labels(&resuming)[0], "Resume");
     }
 
     /// A show or season card on the deck (the Library's `*.inprogress.*` shelf can hold one) in
@@ -1146,7 +1143,7 @@ mod tests {
             let play = labels(&build_deck(&m, true, DeckPress::Play));
             assert_eq!(play[0], nav, "{kind}: {play:?}");
             assert_eq!(l[1..], play[2..], "{kind}: {l:?} vs {play:?}");
-            assert!(!play.iter().any(|x| x == "Play" || x == "Continue"), "{play:?}");
+            assert!(!play.iter().any(|x| x == "Play" || x == "Resume"), "{play:?}");
             // off the deck the setting is not consulted
             assert_eq!(
                 labels(&build_deck(&m, false, DeckPress::Details)),
@@ -1197,7 +1194,7 @@ mod tests {
     fn the_play_mode_and_off_deck_menus_are_unchanged() {
         for kind in [0, 3] {
             let today = labels(&build(&item(kind, PosterMark::None), true));
-            assert!(!today.iter().any(|l| l == "Play" || l == "Continue"), "{today:?}");
+            assert!(!today.iter().any(|l| l == "Play" || l == "Resume"), "{today:?}");
             assert_eq!(labels(&build_deck(&item(kind, PosterMark::None), true, DeckPress::Play)), today);
             // off the deck the setting is not consulted at all
             for mode in DeckPress::LADDER {

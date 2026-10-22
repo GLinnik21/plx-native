@@ -4,10 +4,11 @@
 //! `acct`, `detail`, `search`, `library`, `play`…), never through a key walk.
 //!
 //! Each arm here drives the SAME command path a user's key does (`LibraryCmd::FocusGrid` reseats
-//! focus the way the grid's own navigation does; `LibraryCmd::OpenMenu` is OK on the toolbar
-//! chip), and each logs one line when its state is REACHED rather than when it was asked for, so
+//! focus the way the grid's own navigation does; `LibraryCmd::OpenMenu` is OK on the header's
+//! Sort & Filter control), and each logs one line when its state is REACHED rather than when it was asked for, so
 //! the driver can verify from the event log that the picture it captured is the one the manifest
-//! named. `libtype` chooses the listing (the TYPE menu's value) the others then act on. Every arm
+//! named. `libtype` chooses the listing the others then act on (the Show-menu type, or the
+//! Collections / Recommended page the header pushes). Every arm
 //! gives up after [`CEILING_MS`] with a log line of its own, so a scene whose data never arrives
 //! fails loudly instead of capturing the wrong screen.
 //!
@@ -17,6 +18,7 @@
 use crate::app::run::Frame;
 use crate::app::App;
 use plx_data::browse::LibraryType;
+use plx_screens::library::Listing;
 use plx_screens::registry::{AppArg, LibraryCmd, LibraryMenuKind};
 
 /// How long an arm keeps retrying for its data before it gives up and says so.
@@ -111,21 +113,37 @@ fn due(sent: Option<u32>, now: u32) -> bool {
     sent.is_none_or(|at| now.wrapping_sub(at) >= RESEND_MS)
 }
 
-/// `"<name>"` → the TYPE menu value it names.
-fn parse_type(v: &str) -> Option<LibraryType> {
+/// What `plxnative-libtype` asks for: a Show-menu type of the page's own grid, or one of the two
+/// pages the header's controls push over it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LibTypeArm {
+    Type(LibraryType),
+    Page(Listing),
+}
+
+/// `"<name>"` → what it names.
+fn parse_type(v: &str) -> Option<LibTypeArm> {
     Some(match v.trim() {
-        "primary" | "movies" | "shows" => LibraryType::Primary,
-        "seasons" => LibraryType::Seasons,
-        "episodes" => LibraryType::Episodes,
-        "collections" => LibraryType::Collections,
+        "primary" | "movies" | "shows" => LibTypeArm::Type(LibraryType::Primary),
+        "seasons" => LibTypeArm::Type(LibraryType::Seasons),
+        "episodes" => LibTypeArm::Type(LibraryType::Episodes),
+        "collections" => LibTypeArm::Page(Listing::Collections),
+        "recommended" => LibTypeArm::Page(Listing::Recommended),
         _ => return None,
     })
 }
 
-/// `/tmp/plxnative-libtype=<movies|shows|seasons|episodes|collections>` — on the Library page,
-/// choose that TYPE menu value the way its row does, once the section's listing is there. Done
-/// when the page's committed listing REPORTS that type; `libgrid` and `libmenu` wait for it, so a
-/// seat or a menu lands on the listing this trigger asked for.
+/// The Library family of routes: the full grid and the two pages its header pushes over it.
+fn on_library_page(app: &App) -> bool {
+    app.route().is_library_family()
+}
+
+/// `/tmp/plxnative-libtype=<movies|shows|seasons|episodes|collections|recommended>` — on the
+/// Library page, choose that Show-menu type the way its row does, or (collections, recommended)
+/// press the header control that opens that page (the `library-collections` and
+/// `library-recommended` scenarios), once the section's listing is there. Done when the page's
+/// committed listing REPORTS that type, or the route is that page; `libgrid` and `libmenu` wait for
+/// it, so a seat or a menu lands on the listing this trigger asked for.
 pub(crate) fn libtype_arm(app: &mut App, fr: &Frame) {
     if app.scenarios.shots.libtype_done {
         return;
@@ -136,11 +154,16 @@ pub(crate) fn libtype_arm(app: &mut App, fr: &Frame) {
     };
     let Some(kind) = parse_type(&v) else {
         #[cfg(feature = "devtriggers")]
-        plx_base::eventlog::log(&format!("BADTRIGGER libtype {v:?}: expected movies, shows, seasons, episodes or collections"));
+        plx_base::eventlog::log(&format!("BADTRIGGER libtype {v:?}: expected movies, shows, seasons, episodes, collections or recommended"));
         app.scenarios.shots.libtype_done = true;
         return;
     };
-    if crate::app::bridge::Bridge::library_listed(&app.pages) == Some(kind) {
+    let reached = match kind {
+        LibTypeArm::Type(kind) => crate::app::bridge::Bridge::library_listed(&app.pages) == Some(kind),
+        LibTypeArm::Page(Listing::Collections) => matches!(app.route(), AppArg::LibraryCollections { .. }),
+        LibTypeArm::Page(_) => matches!(app.route(), AppArg::LibraryRecommended { .. }),
+    };
+    if reached {
         plx_base::eventlog::log(&format!("libtype: listing {}", v.trim()));
         app.scenarios.shots.libtype_done = true;
         return;
@@ -152,7 +175,11 @@ pub(crate) fn libtype_arm(app: &mut App, fr: &Frame) {
     }
     if matches!(app.route(), AppArg::Library) && due(app.scenarios.shots.libtype_sent, fr.now) {
         app.scenarios.shots.libtype_sent = Some(fr.now);
-        crate::app::bridge::Bridge::library_command(&mut app.pages, LibraryCmd::SetType(kind));
+        let command = match kind {
+            LibTypeArm::Type(kind) => LibraryCmd::SetType(kind),
+            LibTypeArm::Page(listing) => LibraryCmd::OpenListing(listing),
+        };
+        crate::app::bridge::Bridge::library_command(&mut app.pages, command);
     }
 }
 
@@ -162,7 +189,7 @@ pub(crate) fn libgrid_arm(app: &mut App, fr: &Frame) {
     if !app.scenarios.shots.libtype_done {
         return;
     }
-    let on_library = matches!(app.route(), AppArg::Library);
+    let on_library = on_library_page(app);
     let arm = &mut app.scenarios.shots.libgrid;
     let Some((row, col)) = arm.pending("libgrid", || plx_base::devtrig::read("libgrid"), "focus seated at row {0} col {1}",
         fr, app.t0, || crate::app::bridge::Bridge::library_grid_position(&app.pages)) else { return };
@@ -179,7 +206,7 @@ pub(crate) fn libshelf_arm(app: &mut App, fr: &Frame) {
     if !app.scenarios.shots.libtype_done {
         return;
     }
-    let on_library = matches!(app.route(), AppArg::Library);
+    let on_library = on_library_page(app);
     let arm = &mut app.scenarios.shots.libshelf;
     let Some((shelf, col)) = arm.pending("libshelf", || plx_base::devtrig::read("libshelf"), "focus seated on shelf {0} col {1}",
         fr, app.t0, || crate::app::bridge::Bridge::library_shelf_position(&app.pages)) else { return };
@@ -240,7 +267,7 @@ impl SeatArm {
     }
 }
 
-/// `/tmp/plxnative-libmenu=<sort|filter|type>[,<rest ms>]` — on the Library page, open that toolbar
+/// `/tmp/plxnative-libmenu=<sortfilter|sort|filter|type>[,<rest ms>]` — on the Library page, open that toolbar
 /// menu, after `libgrid` (if armed) has seated its focus and, with a rest period, once the page has
 /// stopped moving ([`at_rest`]). Done when the menu SURFACE is up.
 pub(crate) fn libmenu_arm(app: &mut App, fr: &Frame) {
@@ -256,9 +283,10 @@ pub(crate) fn libmenu_arm(app: &mut App, fr: &Frame) {
         "sort" => LibraryMenuKind::Sort,
         "filter" => LibraryMenuKind::Filter,
         "type" => LibraryMenuKind::Type,
+        "sortfilter" | "sort-filter" => LibraryMenuKind::SortFilter,
         _other => {
             #[cfg(feature = "devtriggers")]
-            plx_base::eventlog::log(&format!("BADTRIGGER libmenu {_other:?}: expected sort, filter or type"));
+            plx_base::eventlog::log(&format!("BADTRIGGER libmenu {_other:?}: expected sort, filter, type or sortfilter"));
             app.scenarios.shots.libmenu_done = true;
             return;
         }
@@ -273,7 +301,7 @@ pub(crate) fn libmenu_arm(app: &mut App, fr: &Frame) {
         app.scenarios.shots.libmenu_done = true;
         return;
     }
-    if matches!(app.route(), AppArg::Library)
+    if on_library_page(app)
         && at_rest(fr.now, rest)
         && due(app.scenarios.shots.libmenu_sent, fr.now)
     {

@@ -181,6 +181,8 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
                 host: d.nav.top_page().unwrap().inst.as_ref().unwrap().id,
                 kind: plx_screens::registry::LibraryMenuKind::Filter,
                 anchor: [0; 4],
+                folded: Vec::new(),
+                opener: None,
                 target: plx_data::stores::browse::SectionAddress {
                     epoch: listing_id.epoch,
                     sid: listing_id.sid,
@@ -268,13 +270,16 @@ fn retired_library_entry_seeds_its_previous_section_card_and_viewport() {
         frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
     }
     assert_eq!(rig.directory.view().current(), Some(0));
-    let (returned, opener) = rig
+    // A switch leaves focus on the library name and the page at the top (the header stays on
+    // screen); the Down that enters the grid lands on the tile this library was left at.
+    frame(&mut d, &mut rig, AppArg::Library, tick(370), script_key(Key::Down, tick(370)));
+    for i in 371..400 {
+        frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
+    }
+    let (returned, _) = rig
         .library_selection(&d, entry, d.focus())
-        .expect("new entry restores the saved card");
-    assert_eq!(
-        (returned.sid, returned.rk.as_str()),
-        (item.sid, item.rk.as_str())
-    );
-    let after = opener.rect.unwrap();
-    assert!((before.y - after.y).abs() < 0.01, "{before:?} -> {after:?}");
+        .expect("the switched-to grid takes focus on Down");
+    assert_eq!(returned.sid, item.sid, "the grid is the library that was switched to");
+    assert_eq!(returned.rk, item.rk, "Down lands on the tile the library was left at (slot 52, not the first row)");
+    let _ = before;
 }

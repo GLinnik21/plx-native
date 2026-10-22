@@ -1,0 +1,19 @@
+{
+  "under_posters.title": "Plakátok alatt",
+  "under_posters.detail": "Mi látszik a kijelölt plakát alatt.",
+  "under_posters.copy": "A legtöbb plakát már mutatja a címét. Válaszd ki, mi jelenjen meg annak a plakátnak az alatt, amelyiken állsz.",
+  "under_posters.title_row": "Cím",
+  "under_posters.title_detail": "A név, félkövéren.",
+  "under_posters.details_row": "Részletek",
+  "under_posters.details_detail": "Egy sor információ.",
+  "under_posters.details_copy": "A megkezdett, hamarosan érkező címek és a gyűjtemények ezt mutatják helyette: hátralévő idő, megjelenési dátum, filmek száma.",
+  "under_posters.year_length": "Év · Hossz",
+  "under_posters.genre": "Műfaj",
+  "under_posters.video": "Videó",
+  "under_posters.age_rating_score": "Korhatár · Értékelés",
+  "under_posters.none": "Semmi",
+  "under_posters.reset": "Alapértelmezés",
+  "under_posters.reset_detail": "Év és hossz, cím nélkül.",
+  "under_posters.sample_title": "Film",
+  "under_posters.sample_genre": "Dráma"
+}

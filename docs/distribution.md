@@ -22,7 +22,7 @@ answers what a QA pass would find.
 | Question | Answer |
 | --- | --- |
 | Ship via **webOS Homebrew Channel**? | **Yes** — it is a real, current, native-app-friendly path. ~1 day of packaging work plus the licence fixes below. |
-| Ship via **LG Content Store**? | **Submittable — this was a "no" here until 2026-08-23 and the "no" was wrong.** Seller Lounge parses this project's ipk as **File Type: Native** and asks for the native SDK version, chipset and resolution. The old verdict rested on a `develop/*` **web-runtime** page (*"Only `web` is allowed currently"*), which is not authority over a native app. What remains is a QA problem, not a permission problem — §2, and `docs/lg-self-checklist.md` for the four items that genuinely fail. |
+| Ship via **LG Content Store**? | **No — not through Seller Lounge.** LG Seller Lounge answered in writing on 2026-10-20 that its registration and Functional QA support **Web Type applications only**, that Native Type applications are "not eligible for submission or review", and that it gives no information on any native program, NDK access or partnership. The 2026-08-23 "submittable" verdict (the portal parsing our ipk as `File Type: Native`) is superseded — §2. Distribution is Developer Mode or Homebrew Channel. |
 | Runs on **newer webOS**? | 32-bit armv7 is *not* the problem — it stays the native userland through webOS 26. **ACB is the problem**: `libAcbAPI` exists on webOS 4.x only. Today's binary does not reach `main()` on 5.0+. |
 | Is **private data** in the repo? | Git history is clean of credentials. Release CI has no `config.local.h`, remaps host paths, compiles out the trigger/FIFO/capture surfaces, and verifies the shipped bytes. The event log scrubs tokens, server addresses, household names and media text before writing, and the three runtime logs (events, crash, stderr) are mode 0640 — group read for a Dev Mode user's file tool, never world-readable; §4 records the remaining diagnostic surface and the residual risk. |
 | Needs a **rooted** TV? | **No** — the unprivileged Dev Mode jail is device-proven in §3.5. Homebrew and retail layouts now use probed writable paths; Key Manager permission is capability-tested and denial keeps the mode-0600 fallback. A real LG Content Store entitlement/install is still an acceptance test, not something the rooted development set can prove. |
@@ -190,7 +190,23 @@ factory webOS 10.0 is vulnerable) — but **webOS 4.5, our own target, is unpatc
 
 ---
 
-## 2. LG Content Store — a native ipk IS submittable
+## 2. LG Content Store — native apps are not accepted through Seller Lounge
+
+**[corrected 2026-10-20 — supersedes the 2026-08-23 verdict below]** LG Seller Lounge support
+answered a direct written question on 2026-10-20 (after a first reply on 2026-10-19 saying the same):
+*"According to the current LG webOS TV App Service policy, the standard Seller Lounge registration
+and Functional QA process support Web Type applications only. Therefore, Native Type applications
+are not eligible for submission or review through Seller Lounge."* It also declined to say whether
+third-party developers can publish native apps at all, whether any separate native program exists,
+or what its qualifications would be. The portal classifying our ipk as `File Type: Native` showed
+that LG's tooling recognises native packages; it did not show that LG will review one from us, and
+the 2026-08-23 reading drew that second conclusion from the first. **Treat Store distribution as
+unavailable**: the shipping routes are LG Developer Mode (each user signs in with their own LG
+account, and the session needs renewal) and Homebrew Channel (§1, §1.7). Everything below this
+paragraph is the superseded 2026-08-23 analysis, kept as dated history; its QA findings
+(`docs/lg-self-checklist.md`) remain true statements about the app, not a submission plan.
+
+### Superseded 2026-08-23 analysis
 
 **[corrected 2026-08-23]** This section used to be headed *"LG Content Store — no"* and to argue
 that native eligibility was **unsettled**, on the strength of one sentence in LG's `appinfo.json`

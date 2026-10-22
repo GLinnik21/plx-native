@@ -35,9 +35,10 @@ simulator, browsing a demo library of openly licensed films
 
 ![Library](docs/screenshots/library.jpg)
 
-**Library** — a library opens on its own shelves: what you're partway through, with the time
-left under the focused card, and what just landed. Further down is the full grid, with sort,
-filter (including unwatched-only) and an A–Z rail down the side
+**Library** — a library opens on its full poster grid, with an A–Z rail down the side and one
+header row for sort & filter (including unwatched-only), a Collections page and a Recommended
+page. The shelves live on Recommended: what you're partway through, with the time left under
+the focused card, and what just landed
 ([pictured here](docs/screenshots/ux-library-grid.jpg)).
 
 ![Search](docs/screenshots/search.jpg)
@@ -77,6 +78,8 @@ likely will. I develop and test on a 2019 set, and opt-in usage reports show
 video playing on sets from 2018 through the newest, on webOS 11 — both direct play and server
 transcodes, Developer Mode installs included.
 
+Owners' reports, set by set, are in the [compatibility list](docs/compatibility.md).
+
 ### Known issues
 
 | Where | What happens |
@@ -95,7 +98,8 @@ A rooted TV with Homebrew Channel has no expiry.
 
 If something goes wrong, check [Troubleshooting](docs/troubleshooting.md) first, then
 [tell me what happened](https://github.com/GLinnik21/plx-native/issues/new/choose) — and if you own one of the
-sets above, it working is as useful a report as it failing.
+sets above, it working is as useful a report as it failing: post it under
+[Discussions > Compatibility](https://github.com/GLinnik21/plx-native/discussions/categories/compatibility).
 
 ## Installing
 

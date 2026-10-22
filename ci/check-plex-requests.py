@@ -30,6 +30,10 @@ key saying what the request is (`docs/pms-api.md`, "Paging, observed"):
 bound or a whole list, and the registry says which. A new request site fails the gate until a
 section names it; a section for a site that no longer exists fails the gate as stale.
 
+The same gate also keeps the Discover host (`discover.provider.plex.tv`) at its one definition,
+`account.rs`'s private constant: every request site builds on `account::discover()`, the base a
+harness's stand-in replaces (`discover_host_problems`).
+
 Lexical, like the other structure gates (rust_test_modules.py's lexer, ~0.4 s). Test code is out
 of the enumeration: whole test files (rust_test_modules.wholly_test_files) and every
 `#[cfg(test)]` item of the rest.
@@ -57,6 +61,8 @@ CLASSES = ('single', 'paged', 'bounded', 'whole')
 PAGING_NAMES = frozenset({'paged_path', 'PageReq'})
 EVIDENCE_LINE = re.compile(r'(?P<path>[A-Za-z0-9_./-]+\.rs):(?P<line>[0-9]+)\Z')
 WORD = re.compile(r'[A-Za-z_][A-Za-z_0-9]*\Z')
+DISCOVER_HOST = 'discover.provider.plex.tv'
+DISCOVER_HOME = 'rust-modules/plex/src/plex/account.rs'
 
 # The server client's request methods, which the rest of the plex layer calls from any receiver.
 CLIENT_DOORS = frozenset({
@@ -334,11 +340,40 @@ def section_problems(name, section, site, file, fn_name, functions, repo, paging
     return problems
 
 
+def discover_host_problems(repo=REPO):
+    """Every spelling of the Discover host in non-test Rust other than its one definition.
+
+    `account::discover()` is the ONE answer to "where does Discover live": the real provider, or in
+    a dev build the loopback stand-in a harness armed. A request built on the host literal instead
+    skips the stand-in, so a mock-armed simulator run would reach the real provider again while
+    every other gate stayed green (the leak this gate exists for). Comments and `#[cfg(test)]` items
+    are out of the scan, like the request sites; the definition is the single string in account.rs.
+    """
+    problems = []
+    root = repo / 'rust-modules'
+    for src in [root / 'src', *sorted(root.glob('*/src'))]:
+        if not src.is_dir(): continue
+        test_files = rust_test_modules.wholly_test_files(src)
+        for path in sorted(src.rglob('*.rs')):
+            if path.resolve() in test_files: continue
+            rel = path.relative_to(repo).as_posix()
+            tokens = without_test_items(rust_test_modules.lex(path.read_text()))
+            spelled = sum(1 for kind, text in tokens if kind == 'string' and DISCOVER_HOST in text)
+            allowed = 1 if rel == DISCOVER_HOME else 0
+            if spelled > allowed:
+                problems.append(
+                    f'{rel} spells the Discover host ({DISCOVER_HOST}) {spelled} time(s) in non-test code, '
+                    f'{allowed} allowed: build the URL on account::discover() (the base the stand-in '
+                    f'replaces), and let {DISCOVER_HOME} keep the only definition')
+    return problems
+
+
 def check(repo=REPO, ini=INI):
     """(sites, [problem]): the request sites found, and every way the registry disagrees with them."""
     plex_src = repo / 'rust-modules' / 'plex' / 'src'
     sites, functions = read_sites(repo, plex_dir=plex_src / 'plex', plex_src=plex_src)
     registry, problems = read_registry(ini)
+    problems += discover_host_problems(repo)
     paging_lines = pms_paging_lines(repo / 'docs' / 'pms-api.md')
     wanted = {section_name(file, name): (file, name) for file, name in sites}
     for key in sorted(wanted):

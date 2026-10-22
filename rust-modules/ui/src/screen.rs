@@ -31,29 +31,9 @@ pub enum RenderStrategy {
     VideoPlane,
 }
 
-/// Borrowed frame data passed to a [`Scrim::lift`]. Shared chrome comes from its application's
-/// captured owner, while the material is the face the application-owned `GlassPlan` resolved and
-/// the normal chrome draw published for this frame. Fixtures without either capability use
-/// `None`; drawing never recovers either value from globals.
-#[derive(Clone, Copy, Default)]
-pub struct ScrimLiftRead<'a> {
-    pub chrome: Option<crate::widgets::ChromeRead<'a>>,
-    pub bar_material: Option<plx_gfx::gfx::GlassFace>,
-    /// The stack's latched underlay field, set by `ModalStack::draw_scrims*` (the dispatcher cannot
-    /// know it): the frozen ground a lifted element's glass stands on instead of the live page.
-    /// `None` outside a stack, and before the field has latched.
-    pub field: Option<&'a crate::underlay::UnderlayField>,
-}
-
-pub type ScrimLift = for<'a> fn(ScrimLiftRead<'a>);
-
-/// The [`Scrim::lift`] of a surface with nothing to lift — a named `fn` rather than a closure, so
-/// [`Scrim::NONE`] can be a `const`. (`popover::Opener::NONE` carries its own twin of this for the
-/// legacy popovers; the two disappear together when the last of those becomes a surface.)
-fn no_lift(_: ScrimLiftRead<'_>) {}
-
-/// **The modal dim a surface asks its HOST PAGE for** (spec §6.2, §8.3), and the one element it
-/// lifts back out of that dim.
+/// **The modal dim a surface asks its HOST PAGE for** (spec §6.2, §8.3). The element a surface was
+/// opened from is lifted back out of that dim by the dispatcher's one lift pass, not here
+/// ([`Screen::opener`], [`Screen::bar_opener`]).
 ///
 /// It is a REQUEST rather than a drawing, and that is the whole of why this type exists. The dim
 /// sits between the page and the surface's own glass, so it is part of what that glass looks
@@ -77,21 +57,6 @@ pub struct Scrim {
     /// spring and by `nav::page_alpha`, so the dim ramps with the panel and dips with a route
     /// change exactly as `Popover::scrim` did.
     pub alpha: f32,
-    /// Re-draw the element this surface was opened FROM, ABOVE the dim — the profile chip, a
-    /// focused card. A SECOND draw rather than a cut-out (`popover::Popover::scrim_lifting` has
-    /// the visual argument), and a bare `fn` — rather than a closure — because only the element's
-    /// own screen knows where it landed and how to paint it, and this is minted as a `const` on
-    /// that screen's own `Screen::scrim`.
-    ///
-    /// Its [`ScrimLiftRead`] argument carries the shared top bar's borrowed render values for this
-    /// frame: captured profile/labels and focus unfurl from the rig's chrome owner, plus the face
-    /// published by the application-owned `GlassPlan`. [`ModalStack::draw_scrims`] passes that one
-    /// typed context to every lift it calls (spec phase 12, PX-WIDGETS). Thus a bare `fn` needs no
-    /// `Bridge` borrow and performs no global/session read while drawing; a surface with nothing to
-    /// lift ([`Scrim::NONE`], [`Scrim::dim`]) simply ignores it (`no_lift`).
-    ///
-    /// [`ModalStack::draw_scrims`]: crate::containers::modal::ModalStack::draw_scrims
-    pub lift: ScrimLift,
     /// Where the dim's inherited light comes from — see [`UnderlaySource`]. Every constructor
     /// but [`Scrim::over_video`] answers [`UnderlaySource::Page`].
     pub source: UnderlaySource,
@@ -112,29 +77,18 @@ pub enum UnderlaySource {
 }
 
 impl Scrim {
-    /// No dim and nothing to lift — every page, and every surface that draws its own ground.
+    /// No dim — every page, and every surface that draws its own ground.
     pub const NONE: Scrim = Scrim {
         alpha: 0.0,
-        lift: no_lift,
         source: UnderlaySource::Page,
     };
 
-    /// A dim of `alpha` with nothing lifted out of it. `alpha` is a `theme::underlay::DIM_*`
+    /// A dim of `alpha`. `alpha` is a `theme::underlay::DIM_*`
     /// role, never a literal (`containers::tests::no_surface_states_its_own_dim_weight`).
     pub const fn dim(alpha: f32) -> Scrim {
         Scrim {
             alpha,
-            lift: no_lift,
-            source: UnderlaySource::Page,
-        }
-    }
-
-    /// A dim of `alpha` with `lift` re-drawn above it.
-    pub const fn lifting(alpha: f32, lift: ScrimLift) -> Scrim {
-        Scrim {
-            alpha,
-            lift,
-            source: UnderlaySource::Page,
+                source: UnderlaySource::Page,
         }
     }
 
@@ -144,8 +98,7 @@ impl Scrim {
     pub const fn over_video(alpha: f32) -> Scrim {
         Scrim {
             alpha,
-            lift: no_lift,
-            source: UnderlaySource::Flat,
+                source: UnderlaySource::Flat,
         }
     }
 }
@@ -154,6 +107,24 @@ impl Scrim {
 pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     /// The heartbeat word — byte-identical to today's route word (§15.3).
     fn name(&self) -> &'static str;
+    /// **How far the page has tucked the app's top chrome away** (the nav tab bar and the profile
+    /// chip), 0 (fully shown, the default) to 1 (gone). The dispatcher hands the chrome pass
+    /// [`NavPresentation::tucked`]: the nav's chrome alpha multiplied by `1 - tuck`, and the band
+    /// lifted by [`chrome_lift`] (up to its own height, [`widgets::TOP_BAR_BOTTOM`]), so it fades
+    /// WHILE it travels up off the top edge; the application's `draw_chrome` applies both. At tuck 1
+    /// the band is gone and the dispatcher does not draw it at all (a band at `chrome_alpha` 0
+    /// declares no glass and samples no ground, whatever the lift), and the bar's pointer stops are
+    /// withdrawn with it; part way up they sit where the bar is DRAWN ([`NavPresentation::chrome_drawn`],
+    /// [`NavPresentation::chrome_rect`]). A page
+    /// answers from a `scroll_chrome::Handoff` it owns (the Library, Collections and the Watchlist:
+    /// decided from the scroll target, run on the `xfade` clock); the handoff reports its own motion
+    /// to the idle gate, so a running one asks for frames and a resting page keeps the frame loop
+    /// asleep. A page that keeps its chrome shown (Home, the landing page's navigation) answers 0
+    /// and keeps what it rides under the chrome clear of it with
+    /// `scroll_chrome::clearance_under_shown_chrome` instead.
+    fn chrome_tuck(&self) -> f32 {
+        0.0
+    }
     fn state(&self) -> &dyn LogicalState;
     fn crumb(&self, cx: &Cx<'_, H>) -> Option<Cow<'_, str>>;
     /// RENDER resources only.
@@ -169,6 +140,15 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     }
     /// The page's declared `Link`s (§7.3 step 3) — the strip→hero door among them.
     fn links(&self, _out: &mut Vec<Link>) {}
+    /// **Does the page hold this arrow key instead of letting it move focus?** Asked only while
+    /// nothing of the page holds focus: a page whose first seat is still on its way
+    /// ([`PageRegions::holds`](crate::page_regions::PageRegions::holds)) answers `true` for Down,
+    /// Left and Right, and the dispatcher then consumes the key BEFORE the page or the engine see
+    /// it, so it seats nothing and the arrival is still the page's to make when its cells land.
+    /// Defaults to `false`: the engine's no-focus fallback seats the first group it can.
+    fn holds_arrival(&self, _dir: Dir) -> bool {
+        false
+    }
     fn focus_source(&self) -> FocusSource {
         FocusSource::Engine
     }
@@ -230,13 +210,14 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     /// **Repaint the focused element above a modal dim** — the item-menu opener lift, asked of
     /// whichever page hosts the menu. `focus` is the engine key the surface was opened from, passed
     /// explicitly so the page never keeps a cursor of its own. A page with no card to lift draws
-    /// nothing, which is the default. The host calls it only while `focus` is still what the page
-    /// has focused (`app::bridge::opener_lift`), so an implementer may draw `focus` as focused
+    /// nothing, which is the default. The dispatcher's lift pass calls it only while `focus` is still
+    /// what the page has focused (`Dispatcher::lifted_opener`), so an implementer may draw `focus` as focused
     /// without checking that the page has not moved on.
     fn redraw_focused(&self, _f: &mut DrawFrame<'_, '_, H>, _focus: Option<FocusKey<H::Elem>>) {}
     /// **The page element this surface lifts back out of the dim** (`(host page, element)`), for a
-    /// surface that has one: the item menu's captured opener, and the Watchlist Sort & Filter
-    /// menu's pill (which the surface itself redraws, dissolving into its morphing panel). The
+    /// surface that has one: the item menu's captured opener and every header menu's control (Library
+    /// and Watchlist Sort & Filter, the Library's `+N`), which the host's `redraw_focused` paints lit
+    /// above the scrim and the panel while the menu is up (design review S12). The
     /// dispatcher folds it with the surface's phase and the engine's focus into
     /// [`Dispatcher::lifted_opener`] and keeps that element OUT of the frozen page pass
     /// (`DrawFrame::lifted`), so the lift is its only copy. `None` (the default) for every other
@@ -244,6 +225,20 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     fn opener(&self) -> Option<(EntryId, Option<FocusKey<H::Elem>>)> {
         None
     }
+    /// **The member of the shared top bar this surface hangs from** (the profile chip), for a surface
+    /// whose opener is CHROME rather than a page element. It is the same opener rule as
+    /// [`opener`](Self::opener) with the host resolved by the dispatcher (the page on top, whose bar
+    /// it is), so `Dispatcher::lifted_opener` answers for it too and the lift pass
+    /// (`Z::OPENER`) asks the rig to redraw the member lit above the dim and the panel
+    /// (`Rig::lift_bar_member`). `None` (the default) for every other screen.
+    fn bar_opener(&self) -> Option<H::Elem> {
+        None
+    }
+    /// **Where the bar member this surface hangs from is DRAWN this frame** (its rest rect through
+    /// the host page's tuck, the same rect the lift draws at), handed to the surface before every
+    /// draw so its morph starts and ends on the live opener, not on a rect measured once at mount.
+    /// Called only for a surface that answers [`bar_opener`](Self::bar_opener).
+    fn opener_rect(&mut self, _drawn: crate::Rect) {}
     /// **The opener element LEFT this page and is still drawn as it goes** (a removed card's
     /// landing ghost). While a menu fades, the opener lift stands down once focus moves off the
     /// opener; a page answering `true` here keeps it up instead, because focus moved only because
@@ -365,6 +360,20 @@ pub enum Dir {
     Right,
 }
 
+impl Dir {
+    /// The direction an arrow key names; `None` for every other key.
+    pub fn of_key(key: plx_machine::machine::Key) -> Option<Dir> {
+        use plx_machine::machine::Key;
+        match key {
+            Key::Up => Some(Dir::Up),
+            Key::Down => Some(Dir::Down),
+            Key::Left => Some(Dir::Left),
+            Key::Right => Some(Dir::Right),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum GroupKind {
     Row { wrap: bool },
@@ -387,6 +396,9 @@ pub enum Seat {
     /// its first element. Linked shelf headings use this for their one DOWN transition; ordinary
     /// row-to-row movement keeps [`Seat::Remembered`]'s square-closing projection.
     RememberedFirst,
+    /// The group's remembered element when it is within `rows` element-sizes of the key the move
+    /// leaves, else the one projected under that key; `u8::MAX` is "remembered, else projected"
+    /// ([`crate::page_regions::CONTENT_HEAD_SEAT`]).
     RememberedNear { rows: u8 },
     First,
     Projected,
@@ -773,14 +785,51 @@ pub enum Activate {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NavPresentation {
     pub page_alpha: f32,
+    /// The top chrome's opacity. At 0 the chrome is not drawn ([`Self::chrome_drawn`]) and has no
+    /// pointer stops.
     pub chrome_alpha: f32,
     pub view_tab: Option<u32>,
     pub blur_amount: f32,
+    /// How far the top chrome sits above its rest position, in px (0 at rest; a tucked page lifts
+    /// it by up to [`widgets::TOP_BAR_BOTTOM`] while it fades). The chrome pass translates by it.
+    pub chrome_lift: f32,
 }
 
 impl Default for NavPresentation {
     fn default() -> Self {
-        Self { page_alpha: 1.0, chrome_alpha: 1.0, view_tab: None, blur_amount: 0.0 }
+        Self { page_alpha: 1.0, chrome_alpha: 1.0, view_tab: None, blur_amount: 0.0, chrome_lift: 0.0 }
+    }
+}
+
+/// The distance the top chrome rises at `tuck` (0 shown .. 1 gone): none at rest, the whole chrome
+/// band ([`widgets::TOP_BAR_BOTTOM`]) once fully tucked.
+pub fn chrome_lift(tuck: f32) -> f32 {
+    crate::widgets::TOP_BAR_BOTTOM * tuck.clamp(0.0, 1.0)
+}
+
+impl NavPresentation {
+    /// This presentation with the top chrome tucked away by `tuck` ([`Screen::chrome_tuck`]):
+    /// the chrome's alpha falls to 0 and it lifts by [`chrome_lift`] as the tuck reaches 1. The dispatcher hands the chrome pass
+    /// this value for the page that answers a tuck; every other page answers 0 and is unchanged.
+    pub fn tucked(self, tuck: f32) -> Self {
+        Self { chrome_alpha: self.chrome_alpha * (1.0 - tuck.clamp(0.0, 1.0)), chrome_lift: self.chrome_lift + chrome_lift(tuck), ..self }
+    }
+
+    /// **Is the shared top bar drawn under this presentation?** The ONE answer, asked of a presentation
+    /// that already carries the page's tuck ([`Self::tucked`]): the chrome pass is skipped when it is
+    /// `false` (a band at alpha 0 declares no glass and samples no ground, whatever the lift) AND the
+    /// bar's pointer stops are withdrawn when it is `false`, because a control that is not on screen
+    /// must not be pressable or hoverable. Both ask this and nothing else; the dispatcher's
+    /// `chrome_presented` is the pairing of the two.
+    pub fn chrome_drawn(&self) -> bool {
+        self.chrome_alpha > 0.0
+    }
+
+    /// Where the bar draws `rest`, a rect of its RESTING geometry: lifted by [`Self::chrome_lift`], as the
+    /// application's `draw_chrome` translates its painter. The bar's pointer stops go through this, so a
+    /// click lands where the bar is drawn and not where it would rest.
+    pub fn chrome_rect(&self, rest: Rect) -> Rect {
+        Rect { y: rest.y - self.chrome_lift, ..rest }
     }
 }
 
@@ -893,6 +942,7 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
             page_alpha: self.page_alpha,
             chrome_alpha: self.chrome_alpha,
             view_tab: self.view_tab,
+            chrome_lift: 0.0,
             blur_amount: self.blur_amount,
         }
     }
@@ -1196,6 +1246,7 @@ mod draw_frame_tests {
             chrome_alpha: 1.0,
             view_tab: None,
             blur_amount: 0.0,
+            chrome_lift: 0.0,
         };
         let mut f = DrawFrame::with_navigation(&cx, Painter::root(), navigation);
         assert_eq!(f.nav_page_alpha, 0.42);

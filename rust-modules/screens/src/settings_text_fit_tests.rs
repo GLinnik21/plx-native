@@ -27,7 +27,8 @@ fn base_root_inputs() -> RootInputs {
     RootInputs {
         signed_in: true, multi_user: false, library_count: 0,
         auto_sign_in: false, trailer_autoplay: true, resolution: UiResolution::Auto, resolution_offered: true,
-        language: plx_platform::i18n::Preference::System, plaintext: Vec::new(),
+        language: plx_platform::i18n::Preference::System,
+        under_posters: plx_plex::plex::session::UnderPosters::DEFAULT, plaintext: Vec::new(),
     }
 }
 

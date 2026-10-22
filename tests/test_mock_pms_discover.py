@@ -11,7 +11,7 @@ import urllib.parse
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
-from mock_pms import DiscoverFixture, Library, MockPms  # noqa: E402
+from mock_pms import DiscoverFixture, Library, MockPms, discover_stand_in_problem  # noqa: E402
 
 LIST = "/library/sections/watchlist/all?includeCollections=1&includeExternalMedia=1&sort=watchlistedAt:desc"
 
@@ -213,6 +213,76 @@ class DiscoverMock(unittest.TestCase):
                                / "watchlist_captures.json").read_text())
         modes = {c["mock"] for c in scenario["captures"]}
         self.assertLessEqual(modes, set(DiscoverFixture.LIST_MODES))
+
+    def _credited(self, pms):
+        """A person the synthetic library credits as an actor, with the titles that credit names."""
+        who = next(t for t in pms.lib.people.values() if pms.lib.person_media(t["id"]))
+        return who, pms.lib.person_media(who["id"])
+
+    def test_the_stand_in_answers_the_person_profile_without_a_token(self):
+        # The person page's biography read (`discover.rs::person_profile`): the tagKey addresses the
+        # person, the record needs no token, an unknown person is a 200 with nothing in it.
+        pms = make()
+        who, _ = self._credited(pms)
+        c = jcall(pms, "GET", f"/library/people/{who['tagKey']}")
+        record = c["Metadata"][0]
+        self.assertEqual(record["title"], who["tag"])
+        self.assertTrue(record["summary"] and record["bornAt"] and record["birthPlace"])
+        self.assertRegex(record["bornAt"], r"^\d{4}-\d{2}-\d{2}$")
+        self.assertIn("actor", {t["type"] for t in record["CreditType"]})
+        self.assertEqual(record, jcall(pms, "GET", f"/library/people/{who['tagKey']}")["Metadata"][0],
+                         "a pure function of the tagKey")
+        self.assertNotIn("Metadata", jcall(pms, "GET", "/library/people/not-a-person"))
+
+    def test_the_stand_in_answers_the_person_credits_only_with_a_token(self):
+        pms = make()
+        who, held = self._credited(pms)
+        path = f"/library/people/{who['tagKey']}/credits"
+        self.assertEqual(call(pms, "GET", path)[0], 401, "the real provider answers 401 without a token")
+        status, ctype, data = pms.handle("GET", path, b"", {"X-Plex-Token": "t"})
+        self.assertEqual((status, ctype), (200, "application/json"))
+        groups = json.loads(data)["MediaContainer"]["CreditGroup"]
+        self.assertTrue(groups and all(g["type"] and g["title"] and g["Credit"] for g in groups), groups)
+        rows = [c["Metadata"] for g in groups for c in g["Credit"]]
+        for item in rows:
+            self.assertNotIn("guid", item, "the credits wire carries no guid on the item")
+            self.assertRegex(item["ratingKey"], r"^[0-9a-f]{24}$")
+        # The availability join: a held title's ratingKey is the TAIL of its library guid.
+        tails = {it["guid"].rsplit("/", 1)[-1] for it in held}
+        self.assertTrue(tails & {i["ratingKey"] for i in rows}, "the filmography has a row a server holds")
+        self.assertTrue({i["ratingKey"] for i in rows} - tails, "and rows no server holds")
+        self.assertEqual(jcall(pms, "GET", f"/library/people/{who['tagKey']}/credits?X-Plex-Token=t"),
+                         json.loads(data)["MediaContainer"], "a token in the query is a token")
+        self.assertEqual(pms.handle("GET", "/library/people/not-a-person/credits", b"", {"X-Plex-Token": "t"})[0], 200)
+
+    def test_a_real_actors_record_invents_no_fact_about_them(self):
+        # The demo library's actors carry real names (`demo-person-N`): their record is the name and
+        # the synthetic departments, with no birth date, place or biography made up for them.
+        pms = make()
+        pms.lib.people[9999] = {"id": 9999, "tag": "Some Real Actor", "tagKey": "demo-person-9"}
+        record = jcall(pms, "GET", "/library/people/demo-person-9")["Metadata"][0]
+        self.assertEqual(record["title"], "Some Real Actor")
+        for invented in ("summary", "bornAt", "birthPlace", "knownFor"):
+            self.assertNotIn(invented, record)
+        # A synthetic person (`s%08x`) still gets the plainly-labelled synthetic record.
+        who, _ = self._credited(pms)
+        synthetic = jcall(pms, "GET", f"/library/people/{who['tagKey']}")["Metadata"][0]
+        self.assertIn("synthetic person", synthetic["summary"])
+
+    def test_a_harness_requires_the_stand_in_boot_line(self):
+        # The line `account::announce_discover` writes; a harness that boots against this mock fails
+        # the run unless it reads `base=stand-in`, and fails closed on a log with no line at all.
+        self.assertIsNone(discover_stand_in_problem("[0.1] boot\n[0.2] discover: base=stand-in\n"))
+        self.assertIn("base=real", discover_stand_in_problem("[0.2] discover: base=real\n"))
+        self.assertIn("no `discover: base=` line", discover_stand_in_problem("[0.1] boot\n"))
+        self.assertIn("base=real", discover_stand_in_problem(
+            "discover: base=stand-in\ndiscover: base=real\n"), "any real line fails the run")
+
+    def test_the_pms_people_media_route_is_not_the_stand_ins(self):
+        pms = make()
+        who, held = self._credited(pms)
+        self.assertEqual(len(jcall(pms, "GET", f"/library/people/{who['id']}/media")["Metadata"]), len(held))
+        self.assertEqual(call(pms, "PUT", f"/library/people/{who['tagKey']}")[0], 405)
 
     def test_ordinary_pms_paths_are_untouched(self):
         pms = make()

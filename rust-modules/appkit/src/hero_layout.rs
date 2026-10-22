@@ -9,22 +9,27 @@
 //! given page shows (`HeroCtl`, `HeroSet`) stays with that page and feeds these functions its
 //! widths.
 //!
-//! **Behaviour-neutral.** These bodies moved out of `screens::detail::hero` unchanged; the
-//! Detail page calls them back, so its pixels and its tests are the contract
+//! **Behaviour-neutral.** These began as the bodies of `screens::detail::hero` and were
+//! re-based on the shared `HStack` without moving a pixel; the Detail page calls them back, so its pixels and its tests are the contract
 //! (`hero_layout_tests.rs` pins the arithmetic on its own).
 use std::ffi::CStr;
 
 use plx_data::metadata::{Detail, Episode};
 use plx_machine::machine::Measure;
+use plx_ui::hstack::{Align, HStack, Item};
 use plx_ui::widgets::CircleButton;
 use plx_ui::{theme, Rect};
+
+/// How many controls the hero row can hold at most: Play + bookmark + Restart + Trailer + Alt + one
+/// watch face. [`row_rect`] sizes its stack storage by it.
+pub const MAX_CTLS: usize = 6;
 
 /// The Play/Resume pill's minimum width: a pathologically short label still gets a pill.
 pub const PW: f32 = 168.0;
 
 /// The row's inter-control air and its disc diameter: the SHARED control-family numbers
-/// (`ui::widgets::CTRL_GAP` / `StatusOverlay::CTRL_H`), not a second copy of them.
-pub const CGAP: f32 = plx_ui::widgets::CTRL_GAP;
+/// (`ui::widgets::CONTROL_GAP` / `StatusOverlay::CTRL_H`), not a second copy of them.
+pub const CGAP: f32 = plx_ui::widgets::CONTROL_GAP;
 pub const CD: f32 = plx_ui::widgets::StatusOverlay::CTRL_H;
 
 /// The right edge the hero's controls and facts line may reach: the People column's left edge less
@@ -46,18 +51,37 @@ const HERO_ICON_GAP: f32 = 12.0;
 
 /// `widgets::Button::pill_w_full`, reproduced over [`Measure`] rather than `plx_gfx::text`
 /// directly (host-test-safe geometry shared by `place` and `draw`).
-pub fn pill_w(measure: &dyn Measure, label: &CStr, sz: i32, icon: bool, trailing: bool) -> f32 {
-    let (isz, gap) = if icon {
-        (sz as f32 * HERO_ICON_RATIO, HERO_ICON_GAP)
+pub fn pill_w(measure: &dyn Measure, label: &CStr, sz: i32, icon: bool, trailing: Option<plx_ui::icons::Icon>) -> f32 {
+    // One run: the leading icon box, the label, the trailing icon's INK (its bearing is not air), `HERO_ICON_GAP` apart. An
+    // icon the pill does not carry is ABSENT, so it leaves neither its width nor its gap.
+    let box_w = sz as f32 * HERO_ICON_RATIO;
+    let run = [
+        if icon { Item::new(box_w) } else { Item::absent() },
+        Item::new(measure.width(label, sz, true)),
+        trailing.map_or_else(Item::absent, |acc| Item::glyph(acc, box_w)),
+    ];
+    HStack::new(&run, HERO_ICON_GAP, Align::Leading(0.0)).width() + plx_ui::widgets::BTN_PILL_AIR
+}
+
+/// **The one verb for the Play control: "Resume" when the title has a resume point, else "Play".**
+/// The Home hero's pill, the Detail hero's pill and the card menu's first row all say it through
+/// this function (and [`play_text`]), so one resume point can never be called "Continue" on one
+/// page and "Resume" on the next.
+pub fn play_label(resumes: bool) -> &'static CStr {
+    if resumes {
+        plx_platform::i18n::msg::browse_detail_resume_c()
     } else {
-        (0.0, 0.0)
-    };
-    let (tsz, tgap) = if trailing {
-        (sz as f32 * HERO_ICON_RATIO, HERO_ICON_GAP)
+        plx_platform::i18n::msg::browse_detail_play_c()
+    }
+}
+
+/// [`play_label`] as text, for the rows that take a `&str`.
+pub fn play_text(resumes: bool) -> &'static str {
+    if resumes {
+        plx_platform::i18n::msg::browse_detail_resume()
     } else {
-        (0.0, 0.0)
-    };
-    isz + gap + measure.width(label, sz, true) + tgap + tsz + plx_ui::widgets::BTN_PILL_AIR
+        plx_platform::i18n::msg::browse_detail_play()
+    }
 }
 
 /// Every measured width the Detail row's accumulation needs, as one value.
@@ -70,22 +94,29 @@ pub struct HeroWidths {
 }
 
 /// The accumulation itself, PURE: the drawn frame of control `i` in a row whose controls, in drawn
-/// order, are `widths` wide (`CGAP` apart, from the page margin). An index past the end lands one
+/// order, are `widths` wide (`CGAP` apart, from the page margin), placed by the shared
+/// [`HStack`]. Every control is PRESENT whatever its width: a disc springing between `CD` and its
+/// open width never passes through 0 and so never pops its gap. An index past the end lands one
 /// gap after the last control, as the Detail row always has.
 ///
 /// `widths` is never empty from the Detail row (`hero_ctls` always yields Play and a watch face).
 /// The Detail-only fallback the old inline loop had for an empty row (`cw.pill`) is therefore
 /// unreachable and was not carried over: an empty slice yields a zero-width control at the margin.
 pub fn row_rect(widths: &[f32], i: usize, y: f32) -> Rect {
-    let mut x = plx_ui::consts::MARGIN_X;
-    let mut w = widths.first().copied().unwrap_or(0.0);
-    for (k, &cw) in widths.iter().enumerate() {
-        w = cw;
-        if k >= i {
-            break;
-        }
-        x += w + CGAP;
+    debug_assert!(widths.len() <= MAX_CTLS);
+    let n = widths.len().min(MAX_CTLS);
+    // Fixed storage: this runs ~10-16 times a frame on Detail, so it allocates nothing. One extra,
+    // zero-wide item (the sentinel) stands in for "past the end": the stack puts it one gap after
+    // the last control, exactly where the old accumulation left `x`.
+    let mut items = [Item::absent(); MAX_CTLS + 1];
+    for (slot, w) in items.iter_mut().zip(&widths[..n]) {
+        *slot = Item::new(*w);
     }
+    items[n] = Item::new(0.0);
+    let stack = HStack::new(&items[..=n], CGAP, Align::Leading(plx_ui::consts::MARGIN_X));
+    let at = i.min(n);
+    let (x, _) = stack.span(at).unwrap_or((plx_ui::consts::MARGIN_X, 0.0));
+    let w = widths.get(i).or(widths.last()).copied().unwrap_or(0.0);
     Rect::new(x, y, w, CD)
 }
 
@@ -122,7 +153,7 @@ pub fn disc_caps_with(
 /// own date, and a show's seasons/episodes extent or a title's runtime.
 pub fn meta_facts(d: &Detail, episode: Option<&Episode>) -> (String, Option<String>) {
     if let Some(ep) = episode {
-        let runtime = (ep.dur_ms >= 60_000).then(|| plx_ui::fmt::dur_long(ep.dur_ms));
+        let runtime = (ep.dur_ms >= 60_000).then(|| plx_ui::fmt::duration(ep.dur_ms));
         return (plx_ui::fmt::pretty_date(&ep.aired, 0), runtime);
     }
     let date = plx_ui::fmt::pretty_date(&d.aired, d.year);
@@ -145,7 +176,7 @@ pub fn meta_facts(d: &Detail, episode: Option<&Episode>) -> (String, Option<Stri
     }
     (
         date,
-        (d.dur_ms >= 60_000).then(|| plx_ui::fmt::dur_long(d.dur_ms)),
+        (d.dur_ms >= 60_000).then(|| plx_ui::fmt::duration(d.dur_ms)),
     )
 }
 
