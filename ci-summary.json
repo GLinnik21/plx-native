@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-22T01:00:59Z",
+ "generated": "2026-10-22T01:02:56Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -20,6 +20,27 @@
    "state30": "new",
    "threshold_abs": 5.0,
    "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": 36.9,
+   "d30": null,
+   "delta30": null,
+   "delta7": 49.5,
+   "group": "ci",
+   "id": "ci|host python/shell/C gates",
+   "kind": "job",
+   "label": "CI: host python/shell/C gates",
+   "n_now": 98,
+   "n_prev": 94,
+   "now": 183.5,
+   "prev7": 134.0,
+   "shown": true,
+   "state": "worse",
+   "state30": "new",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
    "unit": "s"
   },
   {
@@ -45,27 +66,6 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 35.8,
-   "d30": null,
-   "delta30": null,
-   "delta7": 48.0,
-   "group": "ci",
-   "id": "ci|host python/shell/C gates",
-   "kind": "job",
-   "label": "CI: host python/shell/C gates",
-   "n_now": 97,
-   "n_prev": 94,
-   "now": 182,
-   "prev7": 134.0,
-   "shown": true,
-   "state": "worse",
-   "state30": "new",
-   "threshold_abs": 20.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
    "change7_pct": 30.8,
    "d30": null,
    "delta30": null,
@@ -87,18 +87,18 @@
   },
   {
    "change30_pct": -32.9,
-   "change7_pct": 5.5,
+   "change7_pct": 5.4,
    "d30": 684,
-   "delta30": -225.0,
-   "delta7": 24.0,
+   "delta30": -225,
+   "delta7": 23.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 246,
-   "n_prev": 203,
-   "now": 459.0,
-   "prev7": 435,
+   "n_now": 245,
+   "n_prev": 204,
+   "now": 459,
+   "prev7": 435.5,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -107,18 +107,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -50.3,
-   "change7_pct": -3.6,
+   "change30_pct": -50.2,
+   "change7_pct": -3.4,
    "d30": 682.5,
-   "delta30": -343.0,
-   "delta7": -12.5,
+   "delta30": -342.5,
+   "delta7": -12.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
    "n_now": 110,
    "n_prev": 106,
-   "now": 339.5,
+   "now": 340.0,
    "prev7": 352.0,
    "shown": true,
    "state": "flat",
@@ -203,18 +203,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 85.8,
-   "change7_pct": 5.7,
+   "change30_pct": 85.4,
+   "change7_pct": 5.4,
    "d30": 1137.5,
-   "delta30": 975.5,
-   "delta7": 113,
+   "delta30": 971.0,
+   "delta7": 108.5,
    "group": "ci",
    "id": "minutes",
    "kind": "cost",
    "label": "Runner time per push",
-   "n_now": 87,
+   "n_now": 88,
    "n_prev": 73,
-   "now": 2113,
+   "now": 2108.5,
    "prev7": 2000,
    "shown": true,
    "state": "flat",
@@ -246,17 +246,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 16.3,
+   "change7_pct": 16.0,
    "d30": null,
    "delta30": null,
-   "delta7": 47.0,
+   "delta7": 46.0,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 97,
+   "n_now": 98,
    "n_prev": 94,
-   "now": 335,
+   "now": 334.0,
    "prev7": 288.0,
    "shown": true,
    "state": "flat",
@@ -275,9 +275,9 @@
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 62,
+   "n_now": 63,
    "n_prev": 0,
-   "now": 314.0,
+   "now": 314,
    "prev7": null,
    "shown": true,
    "state": "new",
@@ -288,17 +288,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 14.0,
+   "change7_pct": 13.8,
    "d30": null,
    "delta30": null,
-   "delta7": 34.5,
+   "delta7": 34.0,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 97,
+   "n_now": 98,
    "n_prev": 94,
-   "now": 281,
+   "now": 280.5,
    "prev7": 246.5,
    "shown": true,
    "state": "flat",
@@ -359,9 +359,9 @@
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 97,
+   "n_now": 98,
    "n_prev": 94,
-   "now": 167,
+   "now": 167.0,
    "prev7": 148.0,
    "shown": true,
    "state": "flat",
@@ -372,17 +372,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -7.0,
+   "change7_pct": -6.8,
    "d30": null,
    "delta30": null,
-   "delta7": -12.5,
+   "delta7": -12.0,
    "group": "ci",
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 97,
+   "n_now": 98,
    "n_prev": 94,
-   "now": 165,
+   "now": 165.5,
    "prev7": 177.5,
    "shown": true,
    "state": "flat",
@@ -529,9 +529,9 @@
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 62,
+   "n_now": 63,
    "n_prev": 0,
-   "now": 5.0,
+   "now": 5,
    "prev7": null,
    "shown": false,
    "state": "new",
@@ -550,9 +550,9 @@
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 97,
+   "n_now": 98,
    "n_prev": 94,
-   "now": 4,
+   "now": 4.0,
    "prev7": 313.0,
    "shown": false,
    "state": "better",
@@ -571,9 +571,9 @@
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 97,
+   "n_now": 98,
    "n_prev": 94,
-   "now": 3,
+   "now": 3.0,
    "prev7": 3.0,
    "shown": false,
    "state": "flat",
@@ -667,6 +667,67 @@
    "to": 127.3
   },
   {
+   "change_pct": 36.9,
+   "commits": [
+    {
+     "pr": 894,
+     "sha": "6a3ef8b55",
+     "title": "Continue Watching: one tile per show across servers, as the official client (#892)"
+    },
+    {
+     "pr": 895,
+     "sha": "7f5e27a7d",
+     "title": "route: the account subtitle rule reads forced/SDH the way the track menu does (#828)"
+    },
+    {
+     "pr": 896,
+     "sha": "dbe7b014b",
+     "title": "ui: text runs and the remaining screen rows on HStack/Flow; still_line glyph by ink (Q6)"
+    },
+    {
+     "pr": 901,
+     "sha": "59466656b",
+     "title": "ui: one vertical stack \u2014 vstack facade, Item::before, AlertHead; y ladders moved, no pixel moves"
+    },
+    {
+     "pr": 903,
+     "sha": "acf1d2a36",
+     "title": "Detail: Accessibility rows and episode meta keep one gap; Watchlist read-out uses the overlay's bands"
+    },
+    {
+     "pr": 904,
+     "sha": "9141edd1c",
+     "title": "watchdog: a main-thread hang names its loop phase (labels from the heartbeat marks and loop spans)"
+    },
+    {
+     "pr": 907,
+     "sha": "b12c5cd99",
+     "title": "ui: the last hand-summed spacing sites stand on hstack/vstack"
+    },
+    {
+     "pr": 908,
+     "sha": "30b5183be",
+     "title": "collections probe: the warm walk no longer holds its queue lock across the GET"
+    },
+    {
+     "pr": 898,
+     "sha": "4ed33e537",
+     "title": "Force Direct Play: the audio refusal names the codec"
+    },
+    {
+     "pr": 899,
+     "sha": "d156a8585",
+     "title": "DTS: PMS's dca spelling direct-plays; Force Direct Play offers DTS only with a DTS table row"
+    }
+   ],
+   "from": 134.0,
+   "id": "ci|host python/shell/C gates",
+   "label": "CI: host python/shell/C gates",
+   "since": "2026-10-19",
+   "threshold_pct": 20.0,
+   "to": 183.5
+  },
+  {
    "change_pct": 36.6,
    "commits": [
     {
@@ -726,67 +787,6 @@
    "since": "2026-10-19",
    "threshold_pct": 25.0,
    "to": 140.7
-  },
-  {
-   "change_pct": 35.8,
-   "commits": [
-    {
-     "pr": 894,
-     "sha": "6a3ef8b55",
-     "title": "Continue Watching: one tile per show across servers, as the official client (#892)"
-    },
-    {
-     "pr": 895,
-     "sha": "7f5e27a7d",
-     "title": "route: the account subtitle rule reads forced/SDH the way the track menu does (#828)"
-    },
-    {
-     "pr": 896,
-     "sha": "dbe7b014b",
-     "title": "ui: text runs and the remaining screen rows on HStack/Flow; still_line glyph by ink (Q6)"
-    },
-    {
-     "pr": 901,
-     "sha": "59466656b",
-     "title": "ui: one vertical stack \u2014 vstack facade, Item::before, AlertHead; y ladders moved, no pixel moves"
-    },
-    {
-     "pr": 903,
-     "sha": "acf1d2a36",
-     "title": "Detail: Accessibility rows and episode meta keep one gap; Watchlist read-out uses the overlay's bands"
-    },
-    {
-     "pr": 904,
-     "sha": "9141edd1c",
-     "title": "watchdog: a main-thread hang names its loop phase (labels from the heartbeat marks and loop spans)"
-    },
-    {
-     "pr": 907,
-     "sha": "b12c5cd99",
-     "title": "ui: the last hand-summed spacing sites stand on hstack/vstack"
-    },
-    {
-     "pr": 908,
-     "sha": "30b5183be",
-     "title": "collections probe: the warm walk no longer holds its queue lock across the GET"
-    },
-    {
-     "pr": 898,
-     "sha": "4ed33e537",
-     "title": "Force Direct Play: the audio refusal names the codec"
-    },
-    {
-     "pr": 899,
-     "sha": "d156a8585",
-     "title": "DTS: PMS's dca spelling direct-plays; Force Direct Play offers DTS only with a DTS table row"
-    }
-   ],
-   "from": 134.0,
-   "id": "ci|host python/shell/C gates",
-   "label": "CI: host python/shell/C gates",
-   "since": "2026-10-19",
-   "threshold_pct": 20.0,
-   "to": 182
   },
   {
    "change_pct": 30.8,
@@ -862,19 +862,19 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 335
+   "now": 334.0
   },
   {
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 314.0
+   "now": 314
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 281
+   "now": 280.5
   },
   {
    "group": "ci",
