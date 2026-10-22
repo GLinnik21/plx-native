@@ -33,7 +33,12 @@
 //! ready and no read is out is dropped, since the read that follows asks after it; one that arrives
 //! while the first read is out is kept, since that read's matching may already have asked) and is made through the store's own
 //! worker; the tile flips when the answer lands, through the same §1.5 derivation as any
-//! re-match. Home, Library and Search are not touched.
+//! re-match.
+//!
+//! **Library changes also move the server's lists.** The same entries owe that server one quiet
+//! Home refetch and one section-shelf invalidate (coalesced and spaced like a `stopped`'s), and its
+//! library grids one re-list (`BrowseCmd::ListingsChanged`): the open grid is listed again where
+//! the reader stands, the server's other sections fetch afresh on their next visit.
 //!
 //! **Owed work is spent only when [`Stores::reread_allowed`]** (not under the player, not while a
 //! recording or replay is armed). Until then it is queued, not dropped, and coalesced.
@@ -99,6 +104,8 @@ pub struct Spent {
     pub refetched: Vec<ServerId>,
     /// Servers whose section shelves were invalidated (`BrowseCmd::HubsInvalidateServer`).
     pub invalidated: Vec<ServerId>,
+    /// Servers whose library grids were re-listed (`BrowseCmd::ListingsChanged`).
+    pub relisted: Vec<ServerId>,
 }
 
 /// Read-backs and refetches a notification owes, not yet spent.
@@ -108,6 +115,8 @@ struct Owed {
     reads: Vec<(Key, bool)>,
     refetch: Vec<ServerId>,
     invalidate: Vec<ServerId>,
+    /// Servers whose library grids are out of date (`BrowseCmd::ListingsChanged`).
+    listings: Vec<ServerId>,
 }
 
 fn push_unique(servers: &mut Vec<ServerId>, sid: ServerId) {
@@ -118,7 +127,7 @@ fn push_unique(servers: &mut Vec<ServerId>, sid: ServerId) {
 
 impl Owed {
     fn is_empty(&self) -> bool {
-        self.reads.is_empty() && self.refetch.is_empty() && self.invalidate.is_empty()
+        self.reads.is_empty() && self.refetch.is_empty() && self.invalidate.is_empty() && self.listings.is_empty()
     }
     fn read(&mut self, key: Key, owing: bool) {
         match self.reads.iter_mut().find(|(k, _)| plx_plex::plex::same_item((k.0, &k.1), (key.0, &key.1))) {
@@ -334,6 +343,11 @@ impl Stores {
         }
         for library in &out.library {
             self.owe_library(library);
+            // The server's lists moved: its Home source, its section shelves and its grids.
+            let owed = &mut self.notify_map.owed;
+            owed.refetch(library.sid);
+            owed.invalidate(library.sid);
+            push_unique(&mut owed.listings, library.sid);
         }
         if !out.plays.is_empty() {
             let mut changed = Transitions::default();
@@ -457,11 +471,12 @@ impl Stores {
         }
         let owed = std::mem::take(&mut self.notify_map.owed);
         plx_base::eventlog::log(&format!(
-            "notify: owes reads={} (detail={}) refetch={} invalidate={}",
+            "notify: owes reads={} (detail={}) refetch={} invalidate={} listings={}",
             owed.reads.len(),
             owed.reads.iter().filter(|(_, d)| *d).count(),
             owed.refetch.len(),
-            owed.invalidate.len()
+            owed.invalidate.len(),
+            owed.listings.len()
         ));
         for (key, owing) in owed.reads {
             if owing {
@@ -473,6 +488,10 @@ impl Stores {
         for sid in owed.refetch {
             let _ = self.hubs.run_with_directory(super::hubs::HubsCmd::RefetchSourceQuiet { sid }, directory);
             spent.refetched.push(sid);
+        }
+        for sid in owed.listings {
+            let _ = self.browse.borrow_mut().run(browse::BrowseCmd::ListingsChanged { sid });
+            spent.relisted.push(sid);
         }
         for sid in owed.invalidate {
             let _ = self.browse.borrow_mut().run(browse::BrowseCmd::HubsInvalidateServer { sid });
@@ -487,6 +506,7 @@ impl Stores {
         let mut all: Vec<_> = owed.reads.iter().map(|(k, _)| k.clone()).collect();
         all.extend(owed.refetch.iter().map(|s| (*s, String::new())));
         all.extend(owed.invalidate.iter().map(|s| (*s, "invalidate".into())));
+        all.extend(owed.listings.iter().map(|s| (*s, "listings".into())));
         all.extend(self.notify_map.library.iter().map(|((s, _), _)| (*s, "library".into())));
         all
     }

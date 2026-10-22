@@ -146,3 +146,43 @@ fn an_agreeing_read_back_resets_a_stale_section_that_is_not_showing() {
     let first = &browse.state.states()[0];
     assert_eq!((first.fetch, first.total), (SecFetch::Loading, -1), "its next visit fetches afresh");
 }
+
+#[test]
+fn created_or_removed_items_re_list_the_open_section_without_emptying_it() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, _) = registered_page_source();
+    resident(sid, &mut browse);
+    let gen = browse.state.query_gen();
+    let shown = browse.state.listing_snapshot().view().id().unwrap().query;
+
+    assert!(browse.state.run_owned(&browse.adapter, crate::stores::browse::BrowseCmd::ListingsChanged { sid }));
+    assert_eq!(browse.state.query_gen(), gen.wrapping_add(1), "a page still out for the old listing is dropped");
+    assert_eq!(browse.state.listing_snapshot().view().id().unwrap().query, shown, "not a query edit");
+    let state = &browse.state.states()[0];
+    assert_eq!((state.fetch, state.total), (SecFetch::Ready, 1), "the rows on screen stay until the re-list lands");
+    assert!(state.items.get(0).is_some());
+    assert!(state.relist && state.cursor.is_some());
+    assert!(browse.state.requery_owed(), "the re-list is owed with no Library page ticking the store");
+}
+
+#[test]
+fn created_or_removed_items_make_the_servers_other_sections_forget_their_pages() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, _) = registered_page_source();
+    browse.append_sections(0, vec![(2, "Other".into(), SecKind::Movie)]);
+    resident(sid, &mut browse);
+    browse.state.set_cur(1);
+    assert!(browse.state.run_owned(&browse.adapter, crate::stores::browse::BrowseCmd::ListingsChanged { sid }));
+    let first = &browse.state.states()[0];
+    assert_eq!((first.fetch, first.total), (SecFetch::Loading, -1), "its next visit fetches afresh");
+}
+
+#[test]
+fn another_servers_listings_are_left_alone() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, _) = registered_page_source();
+    resident(sid, &mut browse);
+    let other = ServerId::from_raw(sid.raw().wrapping_add(7));
+    assert!(!browse.state.run_owned(&browse.adapter, crate::stores::browse::BrowseCmd::ListingsChanged { sid: other }));
+    assert_eq!(browse.state.states()[0].fetch, SecFetch::Ready);
+}

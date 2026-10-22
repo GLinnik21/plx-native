@@ -133,6 +133,27 @@ fn stopped_unheld_coalesced_source_refetch_and_invalidate() {
 }
 
 #[test]
+fn created_or_removed_items_owe_the_servers_grids_one_re_list() {
+    let _g = plx_base::testlock::serial();
+    let mut stores = holding(&[]);
+    use crate::stores::notify::NotifyLibrary;
+    use plx_plex::plex::notify::{LibraryEntry, LibraryKind, LibraryState};
+    let entry = |id: &str, state| LibraryEntry { item_id: id.into(), kind: LibraryKind::Movie, state, section: None };
+    let out = NotifyOut {
+        library: vec![
+            NotifyLibrary { sid: SID, entries: vec![entry("a", LibraryState::Created)] },
+            NotifyLibrary { sid: SID, entries: vec![entry("b", LibraryState::Deleted)] },
+        ],
+        ..Default::default()
+    };
+    let spent = map(&mut stores, &out, &[]);
+    assert_eq!(spent.relisted, [SID], "two reports in one pump are one re-list");
+    assert_eq!(spent.refetched, [SID], "and one quiet Home refetch");
+    assert_eq!(spent.invalidated, [SID], "and one section-shelf invalidate");
+    assert!(map(&mut stores, &NotifyOut::default(), &[]).relisted.is_empty(), "spent once");
+}
+
+#[test]
 fn owed_work_waits_for_network_release() {
     let _g = plx_base::testlock::serial();
     let mut stores = holding(&["s1"]);
@@ -687,10 +708,12 @@ fn a_feed_that_came_back_after_a_gap_sweeps_the_titles_of_that_server() {
 }
 
 #[test]
-fn a_library_change_leaves_home_and_the_reads_alone() {
+fn a_library_change_moves_the_servers_lists_and_reads_no_item() {
     let _g = plx_base::testlock::serial();
     let (mut stores, _script, sid) = watchlist_of_three();
     let spent = map(&mut stores, &library(sid, vec![created("20"), deleted("11")]), &[]);
-    assert_eq!(spent, Default::default(), "no Home refetch, no shelf invalidation");
-    assert!(pending(&stores).is_empty());
+    assert_eq!(spent.refetched, [sid], "one quiet Home refetch");
+    assert_eq!(spent.invalidated, [sid], "one section-shelf invalidate");
+    assert_eq!(spent.relisted, [sid], "one re-list of its grids");
+    assert!(pending(&stores).is_empty(), "no per-item read-back");
 }

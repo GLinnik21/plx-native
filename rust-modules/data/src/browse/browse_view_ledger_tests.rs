@@ -134,3 +134,84 @@ fn a_hub_row_page_in_flight_across_a_watched_edit_lands_watched() {
     let marks: Vec<_> = landed.items.iter().map(|m| (m.rk.as_str(), m.watched)).collect();
     assert_eq!(marks, [("20", false), ("21", true)]);
 }
+
+/// A server's created or removed items re-list the open grid: its rows stay on screen while the
+/// re-list is out, and its first page then replaces them whole, at the new total, in place.
+#[test]
+fn a_re_list_keeps_the_rows_until_its_first_page_replaces_them() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, client) = loopback_page_source();
+    {
+        let state = browse.state.state_mut(0).unwrap();
+        state.fetch = SecFetch::Ready;
+        state.total = 3;
+        state.items = SecItems::from_vec(vec![Some(row(sid, "6")), Some(row(sid, "7")), Some(row(sid, "8"))]);
+    }
+    browse.state.want(0, PAGE, None);
+    assert!(browse.state.run_owned(&browse.adapter, crate::stores::browse::BrowseCmd::ListingsChanged { sid }));
+    browse.state.maybe_spawn_owned(&browse.adapter);
+    assert!(browse.adapter.fetching.load(Ordering::SeqCst), "the re-list asks though no page is missing");
+    assert_eq!(browse.state.states()[0].items.get(1).map(|m| m.rk.as_str()), Some("7"), "the old rows stay meanwhile");
+    plx_base::task::drain_workers_for_test();
+    let r = PageResult {
+        client,
+        token_gen: client.token_gen(),
+        gen: browse.state.query_gen(),
+        sec: 0,
+        start: 0,
+        items: vec![row(sid, "6"), row(sid, "8")],
+        total: 2,
+        sorts: None, restored: None, genres: None, genre: None,
+        resolved: Default::default(),
+    };
+    *browse.adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+    let _ = browse.state.pump_owned(&browse.adapter);
+    plx_base::task::drain_workers_for_test();
+    let state = &browse.state.states()[0];
+    let rks: Vec<_> = (0..3).map(|i| state.items.get(i).map(|m| m.rk.clone())).collect();
+    assert_eq!(rks, [Some("6".into()), Some("8".into()), None], "the removed row is gone and nothing is left past the end");
+    assert_eq!(state.total, 2);
+    assert!(!state.relist && !browse.state.requery_owed(), "spent");
+}
+
+/// A long scan reports change after change: a re-list already out is kept (never dropped for the
+/// next ask, which could starve the grid), and exactly one more follows it.
+#[test]
+fn a_change_while_a_re_list_is_out_keeps_it_and_owes_one_more() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, client) = loopback_page_source();
+    {
+        let state = browse.state.state_mut(0).unwrap();
+        state.fetch = SecFetch::Ready;
+        state.total = 3;
+        state.items = SecItems::from_vec(vec![Some(row(sid, "6")), Some(row(sid, "7")), Some(row(sid, "8"))]);
+    }
+    browse.state.want(0, PAGE, None);
+    let relist = |browse: &mut TestBrowse| browse.state.run_owned(&browse.adapter, crate::stores::browse::BrowseCmd::ListingsChanged { sid });
+    relist(&mut browse);
+    browse.state.maybe_spawn_owned(&browse.adapter);
+    let gen = browse.state.query_gen();
+    relist(&mut browse);
+    relist(&mut browse);
+    assert_eq!(browse.state.query_gen(), gen, "the re-list out is not dropped");
+    plx_base::task::drain_workers_for_test();
+    let land = |browse: &mut TestBrowse, rks: &[&str]| {
+        let r = PageResult {
+            client, token_gen: client.token_gen(), gen: browse.state.query_gen(), sec: 0, start: 0,
+            items: rks.iter().map(|rk| row(sid, rk)).collect(), total: rks.len() as i64,
+            sorts: None, restored: None, genres: None, genre: None, resolved: Default::default(),
+        };
+        *browse.adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+        let _ = browse.state.pump_owned(&browse.adapter);
+        plx_base::task::drain_workers_for_test();
+    };
+    land(&mut browse, &["6", "8"]);
+    assert_eq!(browse.state.states()[0].total, 2, "its answer lands");
+    assert!(browse.state.states()[0].relist && browse.state.requery_owed(), "one more re-list is owed");
+    browse.adapter.fetching.store(false, Ordering::SeqCst);
+    browse.state.maybe_spawn_owned(&browse.adapter);
+    plx_base::task::drain_workers_for_test();
+    land(&mut browse, &["8"]);
+    assert_eq!(browse.state.states()[0].total, 1);
+    assert!(!browse.state.states()[0].relist, "and no more after it");
+}
