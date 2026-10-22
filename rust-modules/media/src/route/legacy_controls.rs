@@ -1,4 +1,4 @@
-//! Queue transport policy for the optional legacy HUD. No I/O and no new playback path.
+//! Queue transport policy and existing-queue window refresh for the optional legacy HUD.
 use super::{cur_rk, cur_sid, pq_id, pq_item_id, with_queue, PlaybackSession};
 use plx_plex::plex::{queue_index_of, QueueRow, ServerId};
 use std::sync::Arc;
