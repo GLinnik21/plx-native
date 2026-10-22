@@ -515,6 +515,8 @@ pub type RowPop = plx_ui::widgets::CtlPop<{ BTN_N as usize }>;
 /// exactly where [`step`](Self::step)'s doc says they must be.
 pub struct TransportRow {
     pop: RowPop,
+    /// The paused title's one-shot reveal clock; no motion remains after it reaches the end.
+    title_clock: plx_ui::marquee::Clock,
     /// **The measured width of every control-row stand-in label seen so far** — a RENDER memo, the
     /// one half of this struct that is not logical state.
     ///
@@ -549,6 +551,7 @@ impl TransportRow {
     pub fn new() -> Self {
         Self {
             pop: RowPop::new(),
+            title_clock: plx_ui::marquee::Clock::new(),
             widths: Vec::new(),
             play_at: None,
             pause_seen: None,
@@ -615,13 +618,21 @@ impl TransportRow {
         self.play_at = Some(at);
     }
 
+    pub fn reset_title(&self) {
+        self.title_clock.release();
+    }
+
     pub fn note_transport(&mut self, now: u32) {
         if !plx_media::player::is_started() {
+            self.reset_title();
             self.play_at = None;
             self.pause_seen = None;
             return;
         }
         let paused = plx_media::player::TX.paused.load(Relaxed);
+        if !paused {
+            self.reset_title();
+        }
         if self.pause_seen == Some(true) && !paused {
             self.play_at = Some(now);
         }
@@ -1610,31 +1621,85 @@ pub enum Kicker {
     Context(*const std::os::raw::c_char),
 }
 
-/// The title block above the playbar: the [`Kicker`] line over the [`HUD_TITLE_SZ`] display
-/// title. (Apple-TV layout.)
+/// The trailer's unbounded title block (it has no player control row).
 pub fn draw_title(p: Painter, kicker: Kicker, title: *const std::os::raw::c_char) {
     let (text, ink, bold) = match kicker {
         Kicker::Episode(text) => (text, theme::TEXT_PRIMARY, 1),
         Kicker::Context(text) => (text, theme::TEXT_SECONDARY, 0),
     };
-    p.text(
-        text,
-        SB_X,
-        SCR_H - 312.0,
-        theme::size::CAPTION,
-        ink,
-        0,
-        bold,
-    );
-    p.text(
-        title,
-        SB_X,
-        SCR_H - 278.0,
-        HUD_TITLE_SZ,
-        theme::TEXT_PRIMARY,
-        0,
-        1,
-    );
+    p.text(text, SB_X, SCR_H - 312.0, theme::size::CAPTION, ink, 0, bold);
+    p.text(title, SB_X, SCR_H - 278.0, HUD_TITLE_SZ, theme::TEXT_PRIMARY, 0, 1);
+}
+
+/// The player's title is always contained before the control row. While playing it is
+/// ellipsised; while paused the full line glides once to reveal its end, then rests.
+fn draw_player_title(
+    p: Painter,
+    kicker: Kicker,
+    title: *const std::os::raw::c_char,
+    right: f32,
+    measure: &dyn Measure,
+    paused: bool,
+    clock: &plx_ui::marquee::Clock,
+) {
+    let width = (right - SB_X).max(0.0);
+    let _clip = plx_ui::screen::ClipScope::open_in(p, Rect::new(SB_X, 0.0, width, SCR_H));
+    let (text, ink, bold) = match kicker {
+        Kicker::Episode(text) => (text, theme::TEXT_PRIMARY, true),
+        Kicker::Context(text) => (text, theme::TEXT_SECONDARY, false),
+    };
+    if !text.is_null() {
+        let label = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy();
+        let fitted = measure.fit_line(&label, width, theme::size::CAPTION, bold);
+        p.text(fitted.as_ptr(), SB_X, SCR_H - 312.0, theme::size::CAPTION, ink, 0, i32::from(bold));
+    }
+    if title.is_null() {
+        clock.release();
+        return;
+    }
+    let full = unsafe { std::ffi::CStr::from_ptr(title) };
+    let label = full.to_string_lossy();
+    let full_width = measure.width(full, HUD_TITLE_SZ, true);
+    if paused && full_width > width {
+        // A show's display title can stay the same across episodes; the kicker is
+        // part of the visible identity and must restart the reveal when it changes.
+        let kicker = if text.is_null() { "" } else { unsafe { std::ffi::CStr::from_ptr(text) }.to_str().unwrap_or("") };
+        let key = format!("{kicker}\u{1}{label}");
+        let elapsed = clock.read(&key) as f32;
+        let offset = plx_ui::marquee::TITLE.reveal_once(elapsed, full_width, width);
+        if offset < full_width - width {
+            if elapsed < plx_ui::marquee::TITLE.hold_ms {
+                plx_machine::idle::wake();
+            } else {
+                plx_machine::idle::invalidate();
+            }
+        }
+        if offset > 0.0 {
+            p.text(title, SB_X - offset, SCR_H - 278.0, HUD_TITLE_SZ, theme::TEXT_PRIMARY, 0, 1);
+            return;
+        }
+    } else {
+        clock.release();
+    }
+    let fitted = measure.fit_line(&label, width, HUD_TITLE_SZ, true);
+    p.text(fitted.as_ptr(), SB_X, SCR_H - 278.0, HUD_TITLE_SZ, theme::TEXT_PRIMARY, 0, 1);
+}
+
+/// Reserve the same geometry used by focus placement, plus focus pop and a reading gap.
+/// Use at least the settled focus scale so moving focus does not make the title breathe; a
+/// spring overshoot still reserves its actual drawn extent. Stand-ins are measured, not guessed.
+fn title_right(slot: ControlSlot, row: &TransportRow, measure: &dyn Measure) -> f32 {
+    let mut left = CTRL_RIGHT;
+    for i in 0..slot.items() {
+        if let Some(rect) = slot.item_rect(row, i, measure) {
+            left = left.min(rect.scaled(row.scale(i).max(plx_ui::widgets::CTRL_FOCUS_SCALE)).x);
+        }
+    }
+    if matches!(slot, ControlSlot::UpNext(_)) {
+        let layout = crate::up_next::layout_peek(row, measure);
+        left = left.min(layout.still.x).min(layout.caption.x);
+    }
+    (left - theme::space::MD).max(SB_X)
 }
 
 /// How the playhead is drawn — see [`draw_playbar`].
@@ -1922,6 +1987,7 @@ pub fn draw_hud(
     // doc exists to forbid. Deliberately NOT gated on `transport` — the Info card / Chapters strip
     // pass false and would otherwise put the bottom scrim + tabs back under a failure.
     if readout_owns_frame(busy) {
+        row.reset_title();
         return;
     }
     let p = Painter::root();
@@ -1935,6 +2001,9 @@ pub fn draw_hud(
     let chrome_a = row.preview.motion.chrome_alpha(now);
     let chrome = chrome_a > 0.004;
     let pc = p.alpha(chrome_a);
+    if !transport || !chrome {
+        row.reset_title();
+    }
 
     if transport {
         // title block under the playbar: for an episode, "S1, E1 · Episode Name" (white) sits above the
@@ -1944,6 +2013,8 @@ pub fn draw_hud(
         // so it takes this same "Trailer" ctxline + title treatment a movie trailer already gets,
         // instead of a fabricated `S0 · E0` kicker.
         if chrome {
+            let right = title_right(slot, row, measure);
+            let paused = plx_media::player::TX.paused.load(Relaxed);
             if let Some(n) = meta.now_playing().filter(|n| n.is_real_episode) {
                 // `fmt::episode_kicker` outright — this line was a byte-identical hand-spelling of it, which
                 // is the drift that formatter exists to prevent (the pre-roll ctx line and the Up Next
@@ -1959,13 +2030,15 @@ pub fn draw_hud(
                 // refactor was supposed to be visual-no-op, and an `unwrap_or_default()` here draws an
                 // EMPTY title line instead of skipping it, which is a real (if rare) behavior change.
                 if let Ok(title) = CString::new(n.title.clone()) {
-                    draw_title(pc, Kicker::Episode(kicker.as_ptr()), title.as_ptr());
+                    draw_player_title(pc, Kicker::Episode(kicker.as_ptr()), title.as_ptr(),
+                        right, measure, paused, &row.title_clock);
                 }
             } else {
-                draw_title(
+                draw_player_title(
                     pc,
                     Kicker::Context(plx_media::route::ctxline_cptr(ps)),
                     plx_media::route::title_cptr(ps),
+                    right, measure, paused, &row.title_clock,
                 );
             }
 
@@ -2157,6 +2230,87 @@ mod tests {
     }
 
     use super::*;
+    #[test]
+    fn long_hud_titles_fit_before_every_control_slot() {
+        use plx_base::fontcov::advances::ShippedMeasure;
+        let measure = &ShippedMeasure;
+        let long = CString::new("An extraordinarily long episode — Über den Wolken — ".repeat(20)).unwrap();
+        let clock = plx_ui::marquee::Clock::new();
+        for language in plx_platform::i18n::SHIPPED {
+            let _language = plx_platform::i18n::language_on_this_thread_for_test(language);
+            let slots = [
+                ControlSlot::Discs,
+                slot_for(Some(marker(MarkerKind::Intro, false)), false, NextEpisodeMode::Countdown),
+                slot_for(Some(marker(MarkerKind::Credits, true)), true, NextEpisodeMode::Countdown),
+            ];
+            for slot in slots {
+                let mut row = TransportRow::new();
+                for focused in 0..slot.items() {
+                    for _ in 0..30 {
+                        row.pop.step(Some(focused as usize), 1.0 / 60.0);
+                        let right = title_right(slot, &row, measure);
+                        for i in 0..slot.items() {
+                            let rect = slot.item_rect(&row, i, measure).unwrap();
+                            assert!(right + theme::space::MD <= rect.scaled(row.scale(i)).x + 0.001);
+                        }
+                        for kicker in [Kicker::Episode(long.as_ptr()), Kicker::Context(long.as_ptr())] {
+                            let runs = plx_ui::draw_census::capture_runs(|| {
+                                draw_player_title(Painter::recording(), kicker, long.as_ptr(),
+                                    right, measure, false, &clock);
+                            });
+                            assert_eq!(runs.len(), 2);
+                            for run in runs {
+                                assert!(run.text.ends_with('…'), "{}: expected ellipsis: {run:?}", language.tag());
+                                assert_eq!(run.at.x, SB_X);
+                                assert!(measure.width_str(&run.text, run.size, run.bold) <= right - SB_X + 1.0,
+                                    "{}: fitted title exceeds the control boundary: {run:?}", language.tag());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn short_hud_titles_keep_the_original_position_typography_and_ink() {
+        let clock = plx_ui::marquee::Clock::new();
+        for kicker in [Kicker::Episode(c"S1 · E1 · Pilot".as_ptr()), Kicker::Context(c"Trailer".as_ptr())] {
+            let original = plx_ui::draw_census::capture_runs(|| {
+                draw_title(Painter::recording(), kicker, c"Short title".as_ptr());
+            });
+            for paused in [false, true] {
+                let bounded = plx_ui::draw_census::capture_runs(|| {
+                    draw_player_title(Painter::recording(), kicker, c"Short title".as_ptr(),
+                        title_right(ControlSlot::Discs, &TransportRow::new(), &FM), &FM, paused, &clock);
+                });
+                assert_eq!(original, bounded);
+            }
+        }
+    }
+
+    #[test]
+    fn paused_title_reveals_once_and_resume_restores_ellipsis() {
+        let clock = plx_ui::marquee::Clock::new();
+        let long = c"A very long movie title that should slowly reveal its final words after pausing";
+        let right = title_right(ControlSlot::Discs, &TransportRow::new(), &FM);
+        let paint = |paused| plx_ui::draw_census::capture_runs(|| {
+            draw_player_title(Painter::recording(), Kicker::Context(c"Movie".as_ptr()),
+                long.as_ptr(), right, &FM, paused, &clock);
+        });
+        let start = paint(true);
+        assert!(start[1].text.ends_with('…'));
+        plx_machine::idle::frame_begin(2.0);
+        let moving = paint(true);
+        assert!(moving[1].at.x < SB_X);
+        plx_machine::idle::frame_begin(30.0);
+        let ended = paint(true);
+        assert_eq!(ended[1].at.x, SB_X - (FM.width(long, HUD_TITLE_SZ, true) - (right - SB_X)));
+        assert_eq!(paint(true)[1].at.x, ended[1].at.x, "the title must stay at the end");
+        assert!(paint(false)[1].text.ends_with('…'), "resume restores a static ellipsis");
+        assert!(paint(true)[1].text.ends_with('…'), "a later pause starts from the beginning");
+    }
+
     /// The host tests' text capability (half an em per byte).
     const FM: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
 

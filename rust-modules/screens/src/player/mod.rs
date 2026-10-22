@@ -216,6 +216,7 @@ impl PlayerScreen {
     /// countdown go with it.
     pub fn transport_reset(&mut self, for_reload: bool) {
         self.scrub.cancel();
+        self.row.reset_title();
         if !for_reload {
             self.hud.until = 0;
             self.hud.dismissed = false;
@@ -1468,6 +1469,8 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Screen<H> for PlayerScreen {
         let hud_drawn = self.hud_drawn(ps, now);
         if hud_drawn {
             self.draw_hud(ps, now, f.measure, H::metadata(f.cx));
+        } else {
+            self.row.reset_title();
         }
         // The read-out is NOT transport chrome — it is drawn whether or not the HUD is up, so a
         // terminal `Error` (which is not `is_busy()`, so it does not pin the HUD) keeps its message
