@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-22T00:52:51Z",
+ "generated": "2026-10-22T01:00:59Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -87,18 +87,18 @@
   },
   {
    "change30_pct": -32.9,
-   "change7_pct": 6.1,
+   "change7_pct": 5.5,
    "d30": 684,
    "delta30": -225.0,
-   "delta7": 26.5,
+   "delta7": 24.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 248,
-   "n_prev": 202,
+   "n_now": 246,
+   "n_prev": 203,
    "now": 459.0,
-   "prev7": 432.5,
+   "prev7": 435,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -107,18 +107,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -50.2,
-   "change7_pct": -3.4,
+   "change30_pct": -50.3,
+   "change7_pct": -3.6,
    "d30": 682.5,
-   "delta30": -342.5,
-   "delta7": -12.0,
+   "delta30": -343.0,
+   "delta7": -12.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 109,
+   "n_now": 110,
    "n_prev": 106,
-   "now": 340,
+   "now": 339.5,
    "prev7": 352.0,
    "shown": true,
    "state": "flat",
@@ -308,18 +308,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 96.9,
-   "change7_pct": 16.7,
+   "change30_pct": 96.5,
+   "change7_pct": 16.4,
    "d30": 128.0,
-   "delta30": 124.0,
-   "delta7": 36,
+   "delta30": 123.5,
+   "delta7": 35.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 105,
+   "n_now": 106,
    "n_prev": 91,
-   "now": 252,
+   "now": 251.5,
    "prev7": 216,
    "shown": true,
    "state": "flat",
@@ -329,18 +329,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 182.3,
-   "change7_pct": 4.7,
+   "change30_pct": 180.9,
+   "change7_pct": 4.2,
    "d30": 70.5,
-   "delta30": 128.5,
-   "delta7": 9,
+   "delta30": 127.5,
+   "delta7": 8.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 105,
+   "n_now": 106,
    "n_prev": 91,
-   "now": 199,
+   "now": 198.0,
    "prev7": 190,
    "shown": true,
    "state": "flat",
@@ -396,14 +396,14 @@
    "change7_pct": 7.9,
    "d30": null,
    "delta30": null,
-   "delta7": 11,
+   "delta7": 11.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 105,
+   "n_now": 106,
    "n_prev": 91,
-   "now": 150,
+   "now": 150.0,
    "prev7": 139,
    "shown": true,
    "state": "flat",
@@ -482,14 +482,14 @@
    "change7_pct": 5.9,
    "d30": 16.0,
    "delta30": 2.0,
-   "delta7": 1,
+   "delta7": 1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 105,
+   "n_now": 106,
    "n_prev": 91,
-   "now": 18,
+   "now": 18.0,
    "prev7": 17,
    "shown": false,
    "state": "flat",
@@ -609,11 +609,6 @@
    "change_pct": 118.6,
    "commits": [
     {
-     "pr": 874,
-     "sha": "5648058a3",
-     "title": "Playback: a file whose audio is stored far ahead of its video starts and keeps playing"
-    },
-    {
      "pr": 894,
      "sha": "6a3ef8b55",
      "title": "Continue Watching: one tile per show across servers, as the official client (#892)"
@@ -657,6 +652,11 @@
      "pr": 898,
      "sha": "4ed33e537",
      "title": "Force Direct Play: the audio refusal names the codec"
+    },
+    {
+     "pr": 899,
+     "sha": "d156a8585",
+     "title": "DTS: PMS's dca spelling direct-plays; Force Direct Play offers DTS only with a DTS table row"
     }
    ],
    "from": 58.2,
@@ -670,11 +670,6 @@
    "change_pct": 36.6,
    "commits": [
     {
-     "pr": 874,
-     "sha": "5648058a3",
-     "title": "Playback: a file whose audio is stored far ahead of its video starts and keeps playing"
-    },
-    {
      "pr": 894,
      "sha": "6a3ef8b55",
      "title": "Continue Watching: one tile per show across servers, as the official client (#892)"
@@ -718,6 +713,11 @@
      "pr": 898,
      "sha": "4ed33e537",
      "title": "Force Direct Play: the audio refusal names the codec"
+    },
+    {
+     "pr": 899,
+     "sha": "d156a8585",
+     "title": "DTS: PMS's dca spelling direct-plays; Force Direct Play offers DTS only with a DTS table row"
     }
    ],
    "from": 103.0,
@@ -731,11 +731,6 @@
    "change_pct": 35.8,
    "commits": [
     {
-     "pr": 874,
-     "sha": "5648058a3",
-     "title": "Playback: a file whose audio is stored far ahead of its video starts and keeps playing"
-    },
-    {
      "pr": 894,
      "sha": "6a3ef8b55",
      "title": "Continue Watching: one tile per show across servers, as the official client (#892)"
@@ -779,6 +774,11 @@
      "pr": 898,
      "sha": "4ed33e537",
      "title": "Force Direct Play: the audio refusal names the codec"
+    },
+    {
+     "pr": 899,
+     "sha": "d156a8585",
+     "title": "DTS: PMS's dca spelling direct-plays; Force Direct Play offers DTS only with a DTS table row"
     }
    ],
    "from": 134.0,
@@ -792,11 +792,6 @@
    "change_pct": 30.8,
    "commits": [
     {
-     "pr": 874,
-     "sha": "5648058a3",
-     "title": "Playback: a file whose audio is stored far ahead of its video starts and keeps playing"
-    },
-    {
      "pr": 894,
      "sha": "6a3ef8b55",
      "title": "Continue Watching: one tile per show across servers, as the official client (#892)"
@@ -840,6 +835,11 @@
      "pr": 898,
      "sha": "4ed33e537",
      "title": "Force Direct Play: the audio refusal names the codec"
+    },
+    {
+     "pr": 899,
+     "sha": "d156a8585",
+     "title": "DTS: PMS's dca spelling direct-plays; Force Direct Play offers DTS only with a DTS table row"
     }
    ],
    "from": 46.0,
@@ -880,7 +880,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 252
+   "now": 251.5
   }
  ],
  "slowest_local": [

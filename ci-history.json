@@ -1,4 +1,4 @@
-{"updated":"2026-10-22T00:52:31Z",
+{"updated":"2026-10-22T01:00:39Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -3270,7 +3270,8 @@
 {"id":39684435188,"at":"2026-10-21T22:09:45Z","sha":"30b5183be","title":"collections probe: the warm walk no longer holds its queue lock across the GET","pr":908,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":209,"Linux simulator build + launch":241,"macOS tests against bundled FFmpeg and ASS":165,"Windows launcher syntax":32}},
 {"id":39687826058,"at":"2026-10-21T22:37:28Z","sha":"711bea9a2","title":"Player: BACK leaves a load that has not produced a picture","pr":909,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":153,"Windows launcher syntax":21,"Linux simulator build + launch":283,"macOS simulator build + launch":129}},
 {"id":39701508666,"at":"2026-10-22T00:44:34Z","sha":"4ed33e537","title":"Force Direct Play: the audio refusal names the codec","pr":898,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":196,"Linux simulator build + launch":275,"macOS tests against bundled FFmpeg and ASS":167,"Windows launcher syntax":15}},
-{"id":39701585489,"at":"2026-10-22T00:45:18Z","sha":"128537f2f","title":"Merge remote-tracking branch 'origin/main' into lane/dts-dca-spelling","pr":899,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":16,"Linux simulator build + launch":274,"macOS simulator build + launch":206,"macOS tests against bundled FFmpeg and ASS":168}}
+{"id":39701585489,"at":"2026-10-22T00:45:18Z","sha":"128537f2f","title":"Merge remote-tracking branch 'origin/main' into lane/dts-dca-spelling","pr":899,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":16,"Linux simulator build + launch":274,"macOS simulator build + launch":206,"macOS tests against bundled FFmpeg and ASS":168}},
+{"id":39702715911,"at":"2026-10-22T00:56:28Z","sha":"d156a8585","title":"DTS: PMS's dca spelling direct-plays; Force Direct Play offers DTS only with a DTS table row","pr":899,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":21,"macOS tests against bundled FFmpeg and ASS":163,"macOS simulator build + launch":193,"Linux simulator build + launch":241}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
