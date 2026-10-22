@@ -3198,6 +3198,52 @@ fn an_automatic_direct_original_recovery_is_a_flight_that_holds_nothing() {
     cleanup(&mut ps);
 }
 
+/// **The no-Plex pipeline tier's recovery is the same flight, and it has no server to ask.** The
+/// `pipe_auto_original_slow_recover` TV case (`arm_auto_fixture`: a fixture Original, fixture HLS
+/// rungs, no Plex client) used to reach Original through the synchronous recovery; once the
+/// handoff became a claim flight (#457) its plan step also snapshotted the PMS retranscode inputs,
+/// which need a client, so the automatic direct Original — whose PMS half never touches the
+/// server — was refused as `AUTO_ORIGINAL_REJECTED` before it flew. The pump then reopened the retained HLS and the Auto
+/// worker probed, recovered and was refused again every ~10 s (13 Loads instead of 3).
+#[test]
+fn an_automatic_direct_original_recovery_needs_no_server_on_the_no_plex_fixture() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    restore_quality(Quality::Auto);
+    reset_player_control_for_test(&ps);
+    assert_eq!(
+        arm_auto_fixture(&mut ps, "http://host/clip.mp4", 8_000, "http://host/__abr", false, (1_920, 1_080)),
+        None,
+        "the fixture starts on its Original",
+    );
+    let hls = fallback_auto_to_hls_for(&mut ps, &worker_ticket(), 4_000, 11)
+        .expect("the watched fixture Original falls back to fixture HLS");
+    assert!(hls.contains("/__abr/"), "{hls}");
+    assert!(cur_client(&ps).is_none(), "the fixture has no Plex client behind it");
+    assert_eq!(
+        publish_automatic_route_intent(AutomaticRouteIntent::HlsToOriginal {
+            ticket: worker_ticket(),
+            evidence_kbps: 34_000,
+            position_ns: 24_000_000_000,
+        }),
+        AutomaticIntentResult::Accepted,
+    );
+    let action = claim_route_action().expect("the Auto worker's handoff");
+    let _frame = plx_base::task::FrameScope::enter();
+    let dispatch =
+        execute_recover_original_claim(&mut ps, &action, 24, RecoveryCause::Automatic, -1, 24_000_000_000);
+    drop(_frame);
+    assert!(
+        matches!(dispatch, RetranscodeClaimDispatch::PendingNoHold),
+        "a direct fixture Original is a flight that reaches no server, not a refusal: {dispatch:?}",
+    );
+    let (_, tail, ..) = await_landing(&mut ps, "automatic fixture Original worker never landed");
+    assert_eq!(tail, ClaimTail::Original(AutoOriginalReload::Direct));
+    assert!(original_recovery_pending());
+    assert_eq!(ps.url, "http://host/clip.mp4", "the trial opens the fixture's own Original");
+    cleanup(&mut ps);
+}
+
 // ---- the automatic Original-to-HLS flight: the Auto watchdog's fallback ----------------------
 //
 // `execute_auto_hls_claim` plans on the frame, the claim worker runs `run_auto_hls`, and the drain

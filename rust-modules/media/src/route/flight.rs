@@ -283,7 +283,7 @@ fn run_retranscode_claim_worker(
     fallback: RetranscodeFallback,
 ) -> RetranscodeClaimResult {
     // A rebuild carries everything it needs in its plan; the other kinds are built only by
-    // `execute_retranscode_claim`, which always captured inputs for them.
+    // `plan_claim_flight`, which captures the retranscode inputs whenever an encode may run.
     if let ClaimWork::Rebase(plan) = work {
         let outcome = run_rebase(off, &plan);
         return match (outcome, fallback) {
@@ -298,10 +298,15 @@ fn run_retranscode_claim_worker(
             outcome => RetranscodeClaimResult::AutoHls(Box::new(AutoHlsLanding { plan: *plan, outcome })),
         };
     }
-    let inputs = inputs.expect("an encode or recovery flight is dispatched with its claim inputs");
+    // An Original recovery's plan carries its own PMS inputs too ([`OriginalRecoveryPlan`]); the
+    // claim's retranscode inputs are captured only when an encode is the primary or the owed
+    // fallback ([`plan_claim_flight`]), so a recovery with neither (the no-Plex fixture has no
+    // client to capture them from) flies without them.
+    let claim_inputs = || inputs.expect("an encode, or a recovery owing a rebuild, is dispatched with its claim inputs");
     match work {
         ClaimWork::Rebase(_) | ClaimWork::AutoHls(_) => unreachable!("handled above"),
         ClaimWork::Encode(primary_contract) => {
+            let inputs = claim_inputs();
             select_streams_for_encode(off, inputs);
             if let RetranscodeWorkerOutcome::Applied(applied) = try_retranscode(off, inputs, primary_contract) {
                 return RetranscodeClaimResult::Retranscode(applied);
@@ -314,7 +319,7 @@ fn run_retranscode_claim_worker(
             // The recovery's own selection PUT named the candidate's track; a rebuild owed to a
             // displaced pick names the session's, so it sends its own, once, like any other claim.
             if matches!(fallback, RetranscodeFallback::Retranscode(_)) {
-                select_streams_for_encode(off, inputs);
+                select_streams_for_encode(off, claim_inputs());
             }
         }
     }
@@ -323,7 +328,7 @@ fn run_retranscode_claim_worker(
         RetranscodeFallback::Native { ordinal, codec } => {
             RetranscodeClaimResult::NativeAudio { ordinal, codec }
         }
-        RetranscodeFallback::Retranscode(contract) => match try_retranscode(off, inputs, contract) {
+        RetranscodeFallback::Retranscode(contract) => match try_retranscode(off, claim_inputs(), contract) {
             RetranscodeWorkerOutcome::Applied(applied) => RetranscodeClaimResult::Retranscode(applied),
             RetranscodeWorkerOutcome::Refused => RetranscodeClaimResult::Rejected(LEGACY_REJECTED),
         },

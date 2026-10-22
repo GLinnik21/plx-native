@@ -9950,11 +9950,19 @@ fn plan_claim_flight(
             },
         },
     };
-    let Some(inputs) = prepare_retranscode_inputs(ps, &expected, offset_secs) else {
+    // The retranscode inputs serve an encode: the primary's, or the rebuild a refused recovery
+    // owes. An Original recovery's plan already holds what its own PMS half reads, and a direct
+    // automatic one reads nothing at all, so a recovery owing no rebuild does not need them —
+    // requiring them refused every automatic recovery on the no-Plex fixture, which has no client
+    // (`pipe_auto_original_slow_recover` reloaded the retained HLS every ~10 s instead).
+    let needs_inputs = !matches!(work, ClaimWork::RecoverOriginal(_))
+        || matches!(fallback, RetranscodeFallback::Retranscode(_));
+    let inputs = prepare_retranscode_inputs(ps, &expected, offset_secs);
+    if needs_inputs && inputs.is_none() {
         return RetranscodeClaimDispatch::Sync(claim_fallback(ps, dispatch.on_failure, primary_reject));
-    };
+    }
     let owner = begin_claim_flight(ps, action);
-    if spawn_flight(owner, pending_seek, user_target, Some(inputs), work, fallback) {
+    if spawn_flight(owner, pending_seek, user_target, inputs, work, fallback) {
         if holds_presentation {
             RetranscodeClaimDispatch::Pending
         } else {
