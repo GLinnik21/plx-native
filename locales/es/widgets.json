@@ -178,6 +178,8 @@
   "widgets.verdict.forced_unauthorized": "Forzar reproducción directa está activado y el servidor no permitió reproducir el archivo original.",
   "widgets.verdict.forced_open": "Forzar reproducción directa está activado y no se pudo abrir el archivo original.",
   "widgets.verdict.forced_audio_conversion": "Forzar reproducción directa está activado y esta pista de audio necesita conversión.",
+  "widgets.verdict.forced_audio_codec": "Forzar reproducción directa está activado y el audio {codec} no se reproduce sin conversión.",
+  "widgets.verdict.forced_audio_conversion_codec": "Forzar reproducción directa está activado y esta pista de audio {codec} necesita conversión.",
   "widgets.quality.original": "Original",
   "widgets.ass.start_failed": "No se pudieron iniciar los subtítulos con estilo",
   "widgets.ass.invalid_file": "Este archivo de subtítulos con estilo no es válido o es demasiado grande",

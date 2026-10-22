@@ -178,6 +178,8 @@
   "widgets.verdict.forced_unauthorized": "Direct Play forzato è attivo, ma il server non ha consentito la riproduzione del file originale.",
   "widgets.verdict.forced_open": "Direct Play forzato è attivo, ma non è stato possibile aprire il file originale.",
   "widgets.verdict.forced_audio_conversion": "Direct Play forzato è attivo, ma questa traccia audio richiede una conversione.",
+  "widgets.verdict.forced_audio_codec": "Direct Play forzato è attivo, ma l’audio {codec} richiede una conversione.",
+  "widgets.verdict.forced_audio_conversion_codec": "Direct Play forzato è attivo, ma questa traccia audio {codec} richiede una conversione.",
   "widgets.quality.original": "Originale",
   "widgets.ass.start_failed": "Impossibile avviare i sottotitoli stilizzati",
   "widgets.ass.invalid_file": "File dei sottotitoli stilizzati non valido o troppo grande",

@@ -1043,34 +1043,47 @@ pub enum PlayVerdict {
 }
 
 /// The limitation a Force Direct Play verdict names. Each one carries the same recovery step.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ForcedFailure {
     NoOriginal,
     Container,
     Video,
-    Audio,
+    /// No audio track the TV can play without conversion. `codec` is the refused track's display
+    /// name ([`plx_data::metadata::friendly_codec`], the codec only, no profile); empty when the
+    /// codec is unknown, which keeps the generic sentence.
+    Audio { codec: String },
     Unauthorized,
     /// The resolve reached the transcode path, which Force never takes.
     OpenFailed,
-    /// A later audio-track pick needs conversion.
-    AudioNeedsConversion,
+    /// A later audio-track pick needs conversion; `codec` as in [`ForcedFailure::Audio`].
+    AudioNeedsConversion { codec: String },
 }
 
 impl PlayVerdict {
     /// The read-out's sentence: the server's verbatim, or the app's own from the catalog.
-    pub fn text(&self) -> &str {
+    ///
+    /// Borrowed for every sentence but the two that name a codec, which are formatted (an
+    /// allocation on the failure path only).
+    pub fn text(&self) -> std::borrow::Cow<'_, str> {
         use plx_platform::i18n::msg;
+        use std::borrow::Cow::{Borrowed, Owned};
         match self {
-            Self::Server(sentence, _) => sentence,
-            Self::DirectPlayDisabled => msg::widgets_verdict_direct_play_disabled(),
+            Self::Server(sentence, _) => Borrowed(sentence),
+            Self::DirectPlayDisabled => Borrowed(msg::widgets_verdict_direct_play_disabled()),
             Self::Forced(why) => match why {
-                ForcedFailure::NoOriginal => msg::widgets_verdict_forced_no_original(),
-                ForcedFailure::Container => msg::widgets_verdict_forced_container(),
-                ForcedFailure::Video => msg::widgets_verdict_forced_video(),
-                ForcedFailure::Audio => msg::widgets_verdict_forced_audio(),
-                ForcedFailure::Unauthorized => msg::widgets_verdict_forced_unauthorized(),
-                ForcedFailure::OpenFailed => msg::widgets_verdict_forced_open(),
-                ForcedFailure::AudioNeedsConversion => msg::widgets_verdict_forced_audio_conversion(),
+                ForcedFailure::NoOriginal => Borrowed(msg::widgets_verdict_forced_no_original()),
+                ForcedFailure::Container => Borrowed(msg::widgets_verdict_forced_container()),
+                ForcedFailure::Video => Borrowed(msg::widgets_verdict_forced_video()),
+                ForcedFailure::Audio { codec } if codec.is_empty() => Borrowed(msg::widgets_verdict_forced_audio()),
+                ForcedFailure::Audio { codec } => Owned(msg::widgets_verdict_forced_audio_codec(codec)),
+                ForcedFailure::Unauthorized => Borrowed(msg::widgets_verdict_forced_unauthorized()),
+                ForcedFailure::OpenFailed => Borrowed(msg::widgets_verdict_forced_open()),
+                ForcedFailure::AudioNeedsConversion { codec } if codec.is_empty() => {
+                    Borrowed(msg::widgets_verdict_forced_audio_conversion())
+                }
+                ForcedFailure::AudioNeedsConversion { codec } => {
+                    Owned(msg::widgets_verdict_forced_audio_conversion_codec(codec))
+                }
             },
         }
     }
@@ -1999,14 +2012,23 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         || (tracks.is_empty() && (acodec.is_empty() || audio_direct_plays(env.direct_play_mode, acodec, 0))))
         && mde.as_ref().is_some_and(|v| v.original && (!forced || !v.video_forbids_copy));
     if forced {
+        let mut refused_raw = String::new();
         let failure = if part.is_empty() { Some(ForcedFailure::NoOriginal) }
             else if !streamable { Some(ForcedFailure::Container) }
             else if !video_dp { Some(ForcedFailure::Video) }
             else if audio_sel.is_none() && (!tracks.is_empty() || !audio_direct_plays(env.direct_play_mode, acodec, 0)) {
-                Some(ForcedFailure::Audio)
+                refused_raw = refused_audio_codec(tracks, acodec, audio_prefs, env.audio_sid);
+                Some(ForcedFailure::Audio { codec: plx_data::metadata::friendly_codec(&refused_raw) })
             } else if !rk.is_empty() && !directplay { Some(ForcedFailure::Unauthorized) }
             else { None };
         if let Some(failure) = failure {
+            // The field-report line: the raw PMS spelling and the name the read-out shows, so a
+            // report can tell `dca` from `dts` and still names the codec.
+            if let ForcedFailure::Audio { codec } = &failure {
+                crate::player::log(&format!(
+                    "playback_policy: Force Direct Play refused audio codec {refused_raw} ({codec})"
+                ));
+            }
             plan.verdict = Some(PlayVerdict::Forced(failure));
             log_memory(false);
             return plan;
@@ -2942,10 +2964,18 @@ pub(super) fn pick_dp_audio_pref(
 }
 
 pub(super) fn audio_direct_plays(mode: DirectPlayMode, codec: &str, channels: i64) -> bool {
+    audio_direct_plays_with(plx_platform::devcaps::caps(), mode, codec, channels)
+}
+
+/// [`audio_direct_plays`] over an explicit capability snapshot. Auto and Forced both go through
+/// `devcaps`' canonicaliser (PMS's `dca` is the pipeline's `dts`), so they cannot drift apart.
+pub(super) fn audio_direct_plays_with(
+    caps: &plx_platform::devcaps::Caps, mode: DirectPlayMode, codec: &str, channels: i64,
+) -> bool {
     if mode == DirectPlayMode::Forced {
-        plx_plex::plex::DP_AUDIO_CODECS.split(',').any(|c| c.eq_ignore_ascii_case(codec))
+        caps.forced_feeds_audio(codec)
     } else {
-        plx_plex::plex::is_dp_audio_track(codec, channels)
+        caps.audio_supports(codec, channels)
     }
 }
 
@@ -2956,6 +2986,23 @@ fn pick_dp_audio_mode(
 ) -> Option<(i32, String, i64)> {
     pick_dp_audio_eligible(tracks, default_acodec, prefs, 0, StandIn::Any,
         |codec, channels| audio_direct_plays(mode, codec, channels))
+}
+
+/// The codec of the audio track a refused Force Direct Play was going to play: the first intent
+/// ([`audio_intents`]) that names a track, else the file's default, else the first track; with no
+/// track list, the Media-level `acodec` (possibly empty). Raw PMS spelling.
+fn refused_audio_codec(
+    tracks: &[plx_data::metadata::Stream], acodec: &str, prefs: AudioLangPrefs<'_>, session_pick: i64,
+) -> String {
+    let index = audio_intents(tracks, prefs, session_pick).into_iter().find_map(|intent| match intent {
+        AudioIntent::Selection(i) => Some(i),
+        AudioIntent::Language(l) => tracks.iter().position(|s| lang_matches(l, &s.lang_code)),
+        AudioIntent::FileDefault => tracks.iter().position(|s| s.default),
+    });
+    match index.or((!tracks.is_empty()).then_some(0)) {
+        Some(i) => tracks[i].codec.clone(),
+        None => acodec.to_owned(),
+    }
 }
 
 fn pick_dp_audio_eligible(

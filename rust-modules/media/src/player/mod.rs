@@ -1261,7 +1261,7 @@ pub fn error_now(ps: &crate::route::PlaybackSession) -> ErrorShape {
         SHARED.demux_no_video.load(Relaxed),
         crate::route::is_transcoding(ps),
         playing_subscription(&ps),
-        crate::route::play_verdict(ps),
+        crate::route::play_verdict(ps).as_deref(),
         runtime_failure(
             demux_failed,
             demux_io_failed,
@@ -1317,7 +1317,7 @@ fn failtest_arm(ps: &crate::route::PlaybackSession) -> Option<ErrorShape> {
         // verdict sentence for a video format the engine cannot take, through the real resolver.
         "policy" => with_forced_playback_context(
             error_shape(false, false, sub,
-                Some(crate::route::PlayVerdict::Forced(crate::route::ForcedFailure::Video).text()),
+                Some(&crate::route::PlayVerdict::Forced(crate::route::ForcedFailure::Video).text()),
                 RuntimeFailure::Unknown),
             true,
         ),

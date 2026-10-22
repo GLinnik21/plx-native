@@ -941,3 +941,45 @@ fn the_account_rule_treats_a_track_titled_sdh_as_sdh() {
     assert!(plx_data::metadata::sub_layout::sub_traits(&subs[0]).sdh, "the menu calls track 1 SDH");
     assert_eq!(account_pick(&subs, 0), Some(2), "pref non-SDH skips the track named SDH");
 }
+
+// ---- PMS spells DTS `dca`: the table-backed caps must admit it -----------------------------
+
+/// The dev set's table shape for DTS: the decoder is listed with a 6-channel ceiling.
+fn dts_row_caps() -> plx_platform::devcaps::Caps {
+    plx_platform::devcaps::Caps {
+        audio: "aac,ac3,eac3,dts".into(),
+        audio_channels: [("dts".into(), 6)].into(),
+        ..plx_platform::devcaps::Caps::assumed()
+    }
+}
+
+/// The PMS spelling of DTS direct-plays on a set whose table has a DTS row: the selected `dca`
+/// 5.1 track is picked, not the AC3 sibling (the spelling gap made every DTS file convert).
+#[test]
+fn a_selected_dca_track_is_picked_when_the_table_has_a_dts_row() {
+    let caps = dts_row_caps();
+    let mut dca = server_selected(trk(2669, "dca", "eng", false));
+    dca.channels = 6;
+    let tracks = [trk(2663, "ac3", "rus", true), dca, trk(2673, "ac3", "eng", false)];
+    let pick = pick_dp_audio_eligible(&tracks, "dca", AudioLangPrefs::default(), 0, StandIn::Any,
+        |c, n| caps.audio_supports(c, n));
+    assert_eq!(pick.map(|(_, _, id)| id), Some(2669));
+}
+
+/// Auto and Forced decide through the same canonicaliser, and Forced's DTS needs the table row
+/// but not the ceiling (7.1 DTS-HD MA: Auto converts, Forced feeds the core).
+#[test]
+fn auto_and_forced_agree_on_the_dca_spelling() {
+    let caps = dts_row_caps();
+    assert!(audio_direct_plays_with(&caps, DirectPlayMode::Auto, "dca", 6));
+    assert!(!audio_direct_plays_with(&caps, DirectPlayMode::Auto, "dca", 8));
+    assert!(audio_direct_plays_with(&caps, DirectPlayMode::Forced, "dca", 6));
+    assert!(audio_direct_plays_with(&caps, DirectPlayMode::Forced, "dca", 8));
+    assert!(audio_direct_plays_with(&caps, DirectPlayMode::Forced, "DTS", 8));
+    let assumed = plx_platform::devcaps::Caps::assumed();
+    for mode in [DirectPlayMode::Auto, DirectPlayMode::Forced] {
+        assert!(!audio_direct_plays_with(&assumed, mode, "dca", 6), "{mode:?}: no DTS row, no DTS");
+    }
+    assert!(audio_direct_plays_with(&assumed, DirectPlayMode::Forced, "ac3", 8));
+    assert!(!audio_direct_plays_with(&assumed, DirectPlayMode::Forced, "truehd", 8));
+}
