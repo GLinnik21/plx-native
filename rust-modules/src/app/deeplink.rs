@@ -7,7 +7,9 @@
 //! {"id":"com.beb.plxnative","params":{"plex":{"server":"<machineIdentifier>","ratingKey":"12345","action":"open"}}}
 //! ```
 //!
-//! - `ratingKey` (required): the item to open, exactly as given. A string or a number, digits only.
+//! - `ratingKey` (required): the item to open, exactly as given. A string or a number: ASCII letters,
+//!   digits and dashes, at most 64 (a Plex key is digits; a server behind an alternative backend may
+//!   key its items by GUID).
 //! - `server` (optional): the server's `machineIdentifier`. Without it, the signed-in current server.
 //! - `action` (optional): `open` (the default) lands on the item's detail page; `play` starts it
 //!   where Resume would. Anything else is `open`.
@@ -91,7 +93,9 @@ pub(crate) fn parse(raw: &str) -> Parsed {
         Some(serde_json::Value::Number(n)) if n.is_u64() => n.to_string(),
         _ => return Parsed::Bad,
     };
-    if rk.is_empty() || rk.len() > 20 || !rk.bytes().all(|b| b.is_ascii_digit()) {
+    // Letters, digits and dashes: whatever a server keys its items by, and nothing that could
+    // change the request path the key is spliced into (`/`, `?`, `&`, `%`, `..`).
+    if rk.is_empty() || rk.len() > 64 || !rk.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
         return Parsed::Bad;
     }
     let server = plex.get("server").and_then(|s| s.as_str()).map(str::trim)
@@ -464,13 +468,27 @@ mod tests {
             r#"{}"#,
             r#""12345""#,
             r#"{"ratingKey":""}"#,
-            r#"{"ratingKey":"12a"}"#,
             r#"{"ratingKey":"../library"}"#,
+            r#"{"ratingKey":"1?X-Plex-Token=a"}"#,
+            r#"{"ratingKey":"1/children"}"#,
+            r#"{"ratingKey":"1%2F2"}"#,
+            r#"{"ratingKey":"1 2"}"#,
             r#"{"ratingKey":-3}"#,
             r#"{"ratingKey":1.5}"#,
         ] {
             assert_eq!(parse(&format!(r#"{{"parameters":{{"plex":{bad}}}}}"#)), Parsed::Bad, "{bad}");
         }
+    }
+
+    #[test]
+    fn a_guid_shaped_key_is_read_as_given_and_the_length_is_bounded() {
+        let p = |rk: &str| parse(&format!(r#"{{"parameters":{{"plex":{{"ratingKey":"{rk}"}}}}}}"#));
+        assert_eq!(p("f137a2dd21bbc1b99aa5c0f6bf02a805"),
+            link(None, "f137a2dd21bbc1b99aa5c0f6bf02a805", Action::Open));
+        assert_eq!(p("F137A2DD-21BB-C1B9-9AA5-C0F6BF02A805"),
+            link(None, "F137A2DD-21BB-C1B9-9AA5-C0F6BF02A805", Action::Open));
+        assert_eq!(p(&"7".repeat(64)), link(None, &"7".repeat(64), Action::Open));
+        assert_eq!(p(&"7".repeat(65)), Parsed::Bad);
     }
 
     /// A Sentry crash envelope path (`main.c` hands that to the spooler first) is not a launch.

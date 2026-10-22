@@ -13,7 +13,7 @@ luna://com.webos.applicationManager/launch
 
 | Key | | Meaning |
 | --- | --- | --- |
-| `ratingKey` | required | The item, as a string or a number; digits only. |
+| `ratingKey` | required | The item, as a string or a number: ASCII letters, digits and dashes, at most 64 characters. A Plex key is digits. |
 | `server` | optional | The server's `machineIdentifier`. Without it, the signed-in current server. |
 | `action` | optional | `open` (the default) lands on the item's detail page; `play` starts it where Resume would. Anything else is `open`. |
 
