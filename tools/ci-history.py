@@ -58,11 +58,11 @@ default-feature and hostsim jobs, which are different builds, are never compared
 of ci.yml upload `test-results-<job slug>-<run_attempt>` (tools/ci-test-results.py) and for every NEW or RE-RUN run
 that failed or has attempt > 1, and whose head repository is this one (a fork's workflow file is its own, so its
 artifacts are not read), this tool downloads them and stores one event per flaky (job, test) in `flaky`:
-`{"run", "at", "sha", "pr", "job", "test", "fail": [attempts], "pass": [attempts]}`, sorted by `at`, replaced
-wholesale when the run is recorded again (a later attempt can add flakes) and dropped after the 90-day
+`{"run", "at", "sha", "pr", "job", "test", "fail": [attempts], "pass": [attempts]}`, sorted by `at`, merged
+by (job, test) when the run is recorded again (a later attempt can add flakes; an expired artifact never erases one) and dropped after the 90-day
 retention. Only the tests seen both ways are stored, never every pass (~6000 names a run): the pass lists live
-in the 14-day artifacts and are read once. At most RUN_EVENT_LIMIT events per run (more than that is an outage,
-not a hundred flaky tests). tools/ci-summary.py turns the events into the page's flaky list.
+in the 14-day artifacts and are read once. At most RUN_EVENT_LIMIT events per run (more than that is an outage:
+none are recorded and a ::warning:: names the run). tools/ci-summary.py turns the events into the page's flaky list.
 
 Filtering happens here, not in the query: the `status=success` query parameter of the runs listing
 was verified stale on 2026-10-02 (it dropped every run after 2026-10-01). Needs `gh` and a token
