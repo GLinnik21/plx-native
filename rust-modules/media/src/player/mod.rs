@@ -750,6 +750,7 @@ pub fn state(ps: &crate::route::PlaybackSession) -> shared::PlaybackState {
         || ps.native_start_refused
         || crate::route::play_refused(ps)
         || crate::route::play_resolution_failed(ps)
+        || crate::route::engine_failure(ps).is_some()
     {
         return shared::PlaybackState::Error;
     }
@@ -1037,7 +1038,7 @@ pub struct ErrorShape {
 /// variant is backed by a distinct signal the worker already publishes, so the HUD never parses
 /// log strings or guesses from elapsed time.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum RuntimeFailure {
+pub(crate) enum RuntimeFailure {
     /// No worker supplied a cause. Say that honestly rather than leaving the reason slot blank.
     Unknown,
     /// The producer never opened a usable media stream or produced a video access unit.
@@ -1267,13 +1268,14 @@ pub fn error_now(ps: &crate::route::PlaybackSession) -> ErrorShape {
         crate::route::is_transcoding(ps),
         playing_subscription(&ps),
         crate::route::play_verdict(ps).as_deref(),
-        runtime_failure(
+        // The cause a released Engine left behind, else the live worker signals.
+        crate::route::engine_failure(ps).unwrap_or_else(|| runtime_failure(
             demux_failed,
             demux_io_failed,
             SHARED.load_failed.load(Relaxed),
             // The refused start's cause: an abandoned Load exists only after the budget fired.
             SHARED.load_timed_out.load(Relaxed) || ps.native_start_refused,
-        ),
+        )),
     ), crate::route::forced_direct_play(ps))
 }
 
