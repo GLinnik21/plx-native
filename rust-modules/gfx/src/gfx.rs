@@ -1797,7 +1797,9 @@ fn shadow_skip_rect(quad: [f32; 4], blur: f32, radius: f32, off: f32, cut: f32) 
     let (ox, oy) = (quad[0] + blur, quad[1] + blur - off);
     let k = if cut >= 0.0 {
         // Rounded occluder, corner radius rc: the axis-aligned rect inset by rc(1 - 1/sqrt 2) has
-        // its corners on the arcs' 45-degree points, so it lies inside the shape; +1 px is margin.
+        // its corners on the arcs' 45-degree points, so it lies inside the shape; +1 px is margin,
+        // which also covers the cut's coverage ramp (fs_shadow's `CUT_AA`, 0.75 px: the rect lies
+        // where the coverage is exactly 0, not only where the sd is negative).
         let rc = cut.min(bw * 0.5).min(bh * 0.5);
         rc * (1.0 - std::f32::consts::FRAC_1_SQRT_2) + 1.0
     } else {
@@ -8849,13 +8851,21 @@ mod shadow_band_tests {
         len + q[0].max(q[1]).min(0.0) - r
     }
 
-    /// `fs_shadow.frag`'s discard test for a fragment at `pos` (authored px) of `quad`.
+    /// `fs_shadow.frag`'s `CUT_AA`, parsed from the shader itself.
+    fn cut_aa() -> f32 {
+        let src = super::FS_SHADOW.to_str().unwrap();
+        let at = src.find("#define CUT_AA").expect("the cut's ramp half-width");
+        src[at..].lines().next().unwrap().split_whitespace().nth(2).unwrap().parse().unwrap()
+    }
+
+    /// `fs_shadow.frag`'s discard test (the cut's coverage is exactly 0) for a fragment at `pos`
+    /// (authored px) of `quad`.
     fn discards(quad: [f32; 4], blur: f32, radius: f32, off: f32, cut: f32, pos: [f32; 2]) -> bool {
         let p = [pos[0] - (quad[0] + quad[2] * 0.5), pos[1] - (quad[1] + quad[3] * 0.5)];
         let hsz = [(quad[2] * 0.5 - blur).max(0.0), (quad[3] * 0.5 - blur).max(0.0)];
         let pq = [p[0], p[1] + off];
         if cut >= 0.0 {
-            sd_box(pq, hsz, cut.min(hsz[0].min(hsz[1]))) < 0.0
+            sd_box(pq, hsz, cut.min(hsz[0].min(hsz[1]))) <= -cut_aa()
         } else {
             pq[0].abs() < hsz[0] - (radius + 1.0) && pq[1].abs() < hsz[1] - (radius + 1.0)
         }
@@ -8933,7 +8943,8 @@ mod shadow_band_tests {
         assert_eq!((n, b[0]), (1, quad));
     }
 
-    /// Everything inside the skip rect (corners included) is a fragment the shader discards.
+    /// Everything inside the skip rect (corners included) is a fragment the shader discards: its cut
+    /// coverage is exactly 0, so skipping it changes no pixel.
     #[test]
     fn shadow_skip_rect_is_certainly_discarded() {
         for (w, h, r, blur, off, cut) in cases() {
@@ -8977,8 +8988,9 @@ mod shadow_band_tests {
     /// Blur larger than the box, tiny boxes, and an occluder pushed off the quad all fall back to
     /// the whole quad or to well-formed bands.
     /// **The cut's box pre-test only skips work, never a decision.** `fs_shadow.frag` evaluates the
-    /// occluder's rounded `sdBox` only for a fragment inside the occluder's bounding box: outside it,
-    /// a component of `q` is >= the corner radius, so `sdBox >= 0` and the fragment is kept anyway.
+    /// occluder's rounded `sdBox` only for a fragment inside the occluder's bounding box grown by
+    /// `CUT_AA`: outside it, a component of `q` is >= the corner radius + `CUT_AA`, so
+    /// `sdBox >= CUT_AA`, the coverage ramp is full and the fragment is kept at full strength.
     /// Graded on the replica over every case and a dense grid, and the shader must run the box test
     /// BEFORE the SDF it skips. Red on the build whose cut ran `sdBox` on every band fragment (most
     /// of them far outside the panel).
@@ -8994,7 +9006,7 @@ mod shadow_band_tests {
         let cut = code.find("if (u_cut >= 0.0)").expect("the cut branch");
         let tail = &code[cut..];
         let sdf = tail.find("sdBox(pq").expect("the cut's SDF");
-        let boxed = tail.find("all(lessThan(abs(pq), hsz))");
+        let boxed = tail.find("all(lessThan(abs(pq), hsz + vec2(CUT_AA)))");
         assert!(boxed.is_some_and(|b| b < sdf), "the bounding-box test must guard the cut's sdBox");
         for (w, h, r, blur, off, cut) in cases().into_iter().filter(|c| c.5 >= 0.0) {
             let quad = quad_of(w, h, blur);
@@ -9004,8 +9016,9 @@ mod shadow_band_tests {
                 for j in 0..=96 {
                     let pos = [quad[0] + quad[2] * i as f32 / 96.0, quad[1] + quad[3] * j as f32 / 96.0];
                     let pq = [pos[0] - cx, pos[1] - cy + off];
-                    if !(pq[0].abs() < hsz[0] && pq[1].abs() < hsz[1]) {
-                        assert!(!discards(quad, blur, r, off, cut, pos), "{w}x{h} r{r} cut{cut}: {pos:?} outside the box is discarded");
+                    if !(pq[0].abs() < hsz[0] + cut_aa() && pq[1].abs() < hsz[1] + cut_aa()) {
+                        let sd = sd_box(pq, hsz, cut.min(hsz[0].min(hsz[1])));
+                        assert!(sd >= cut_aa() - 1e-3, "{w}x{h} r{r} cut{cut}: {pos:?} outside the grown box has coverage < 1 (sd {sd})");
                     }
                 }
             }
