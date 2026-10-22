@@ -843,6 +843,9 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             "LIFECYCLE: background (playing={})",
             matches!(app.route(), AppArg::Player) as i32
         ));
+        // A freeze is only reported in the foreground (`watchdog::FREEZE_THRESHOLD_MS`): a parked
+        // app may idle or wait on the system for as long as the system keeps it there.
+        plx_base::task::watchdog::set_foreground(false);
         // **The TELEVISION'S KEYBOARD goes with the panel, and it is not ours to keep.**
         // The compositor tears its own IME down when it takes the screen away, and it
         // tells the app nothing — so a field left `editing` comes back to the
@@ -933,6 +936,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             "LIFECYCLE: foreground (wasPlaying={})",
             app.player.lifecycle.awaiting_load() as i32
         ));
+        plx_base::task::watchdog::set_foreground(true);
         // The other half of the park (§12.1): `ScreenEvent::Resume` down the tree and
         // `Navigation.suspended` cleared. On BOTH edges, matching the suspend above — webOS sends
         // `will` and `did` and the app is told nothing about which of the two it will get first;
