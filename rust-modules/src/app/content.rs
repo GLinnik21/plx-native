@@ -485,8 +485,9 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
         app.rec.refuse("replay cannot authorize sandbox repair");
     }
     if !player_reqs.is_empty() {
-        super::playback::player_requests(&mut app.player.repair, &mut app.player.session,
+        super::playback::player_requests(&mut app.player,
             &mut app.adapters.player,
+            &mut app.repause_at,
             player_reqs,
             fr.now,
             &mut app.refresh_hubs,

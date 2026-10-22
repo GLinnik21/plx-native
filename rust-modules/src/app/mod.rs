@@ -128,6 +128,7 @@ pub(crate) mod bridge;
 pub(crate) mod chrome;
 mod collections_probe;
 pub(crate) mod content;
+pub(crate) mod deeplink;
 pub(crate) mod reread;
 pub(crate) mod run;
 use self::boot::*;
@@ -293,6 +294,9 @@ pub(crate) struct App {
     /// already finished by then). See `input::menu_play_tick`, driven every frame beside
     /// `pump_detail()` (`app/run.rs`).
     pub(crate) menu_play_await: Option<MenuPlayAwait>,
+    /// A title another app asked to open (`deeplink`), until Home is up to hand it to
+    /// `menu_play_await`.
+    pub(crate) deeplink: deeplink::DeepLink,
     pub(crate) prev: u32,
     /// A playback exit is owed a re-read of Home's hubs and every library's shelves. Armed by
     /// `exit_player`; spent by `playback_tick` once the stop's `stopped` POST has landed

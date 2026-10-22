@@ -29,12 +29,6 @@ pub struct Controls {
 }
 
 impl Controls {
-    pub fn title_frame() -> Rect {
-        let right =
-            Self::rect(0).expect("the row has a first control").x - plx_ui::widgets::CONTROL_GAP;
-        Rect::new(SB_X, 0.0, right - SB_X, SCR_H)
-    }
-
     pub fn now(ps: &plx_media::route::PlaybackSession) -> Self {
         use plx_media::route::{previous_restarts, queue_neighbors};
         let (previous, next) = queue_neighbors(ps);
