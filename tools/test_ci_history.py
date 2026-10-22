@@ -514,11 +514,21 @@ class FlakyTest(unittest.TestCase):
         _, doc, _ = self.flaky_doc([], {}, src_doc={"updated": "u", "ci": [], "sim": [], "nightly": [], "flaky": [old, recent]})
         self.assertEqual([e["run"] for e in doc["flaky"]], [6])
 
-    def test_a_run_with_more_flakes_than_the_limit_keeps_the_limit_in_a_stable_order(self):
+    def test_a_run_with_more_flakes_than_the_limit_is_an_outage_and_records_none(self):
         names = [f"t{i:03d}" for i in range(h.RUN_EVENT_LIMIT + 20)]
-        _, doc, _ = self.flaky_doc([run(1, attempt=2)], {1: [
-            (10, "test-results-host-unit-default-1", results_zip(JOB, failed=names)), (11, "test-results-host-unit-default-2", results_zip(JOB, passed=names))]})
-        self.assertEqual([e["test"] for e in doc["flaky"]], names[:h.RUN_EVENT_LIMIT])
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            _, doc, _ = self.flaky_doc([run(1, attempt=2)], {1: [
+                (10, "test-results-host-unit-default-1", results_zip(JOB, failed=names)), (11, "test-results-host-unit-default-2", results_zip(JOB, passed=names))]})
+        self.assertEqual(doc["flaky"], [])
+        self.assertIn("::warning::", err.getvalue())
+        self.assertIn(f"run 1 has {len(names)} flaky tests", err.getvalue())
+
+    def test_a_late_rerun_whose_artifacts_expired_keeps_the_recorded_events(self):
+        stored = {"run": 1, "at": stamp(T0 + timedelta(minutes=1)), "sha": "s", "pr": None, "job": JOB, "test": "kept", "fail": [1], "pass": [2]}
+        arts = {1: [(12, "test-results-host-unit-default-3", results_zip(JOB, passed=["kept"]))]}
+        _, doc, _ = self.flaky_doc([run(1, attempt=3)], arts, src_doc={"updated": "u", "ci": [], "sim": [], "nightly": [], "flaky": [stored]})
+        self.assertEqual(doc["flaky"], [stored])
 
     def test_a_download_that_fails_is_a_warning_and_the_runs_stored_events_stay(self):
         stored = {"run": 1, "at": stamp(T0 + timedelta(minutes=1)), "sha": "s", "pr": None, "job": JOB, "test": "kept", "fail": [1], "pass": [2]}

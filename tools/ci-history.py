@@ -389,7 +389,11 @@ def run_flaky(api, blob, repo: str, run: dict, row: dict) -> list[dict] | None:
         return None
     events = [{"run": run["id"], "at": row["at"], "sha": row["sha"], "pr": row["pr"], "job": job, "test": test, "fail": fail, "pass": ok}
               for (job, test), (fail, ok) in sorted(flaky_tests(results).items())]
-    return events[:RUN_EVENT_LIMIT]
+    if len(events) > RUN_EVENT_LIMIT:       # an outage, not flakes: record none of it
+        print(f"::warning::ci-history: run {run['id']} has {len(events)} flaky tests (more than {RUN_EVENT_LIMIT}); "
+              "treated as an outage and none recorded", file=sys.stderr)
+        return []
+    return events
 
 
 def row_event(row: dict) -> str:
@@ -490,7 +494,11 @@ def update(doc: dict, api, repo: str, max_pages: int, workers: int, now: str, fu
             for run, row in zip(fresh, rows):
                 events = run_flaky(api, blob, repo, run, row) if wants_results(run, repo) else None
                 if events is not None:
-                    doc["flaky"] = [e for e in doc["flaky"] if e["run"] != run["id"]] + events
+                    # union, never replace: the artifacts are kept 14 days, so a late re-run rebuilds from the newest
+                    # attempt alone and must not erase what an earlier pass recorded. A (job, test) seen again takes the new event.
+                    seen = {(e["job"], e["test"]) for e in events}
+                    doc["flaky"] = ([e for e in doc["flaky"] if e["run"] != run["id"] or (e["job"], e["test"]) not in seen]
+                                    + events)
         unique = {r["id"]: r for r in doc[key] + rows}      # also heals duplicates an older file may hold
         doc[key] = sorted(unique.values(), key=lambda r: (r["at"], r["id"]))
         added += [r for r in rows if r["id"] not in known]
