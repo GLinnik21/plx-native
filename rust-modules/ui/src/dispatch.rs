@@ -2183,6 +2183,7 @@ where
                 let watched = match &ev {
                     ScreenEvent::Input(InputEvent { at, kind: InputKind::Key { key, edge: Edge::Down, .. }, .. })
                         if (Dir::of_key(*key).is_some() || *key == Key::Ok)
+                            && self.owner_entry().is_some()
                             && self.owner_entry() == self.nav.entry_of_instance(id)
                             && self.engine_page()
                             && !self.input.keyboard => Some((*key, at.ms)),
@@ -2422,7 +2423,19 @@ where
                                 fx: Fx::Nav(NavOp::Dismiss(entry)),
                             });
                         }
-                        Outcome::Edge(_) | Outcome::Nothing => fate = KeyFate::Dead,
+                        // **A press into the END of a list is an overshoot, not frustration.**
+                        // `move_dir` answers a `Stop` edge (and a geometric search with nothing
+                        // beyond) with `Nothing`, the same word it uses for "no focus / no
+                        // groups". Told apart by the engine's state: with a seated focus the
+                        // direction reached a boundary and acted as the focus model says (stay
+                        // put), which tapping Down past a short list's last row does at
+                        // once; only a press with nothing seated to take it is dead.
+                        Outcome::Edge(_) => {}
+                        Outcome::Nothing => {
+                            if self.input.engine.current(owner).is_none() {
+                                fate = KeyFate::Dead;
+                            }
+                        }
                     }
                 } else if *key == Key::Ok && *edge == Edge::Down {
                     let kind = {
@@ -2780,6 +2793,14 @@ where
     /// `dead_presses`, read when a screen visit ends).
     pub fn take_dead_presses(&mut self) -> u32 {
         self.dead_presses.take()
+    }
+
+    /// The visit ended (a route change, the background, quit): its bursts, and the run in
+    /// progress is dropped with it, so presses of the old screen never complete a burst on the next.
+    pub fn end_visit_dead_presses(&mut self) -> u32 {
+        let bursts = self.dead_presses.take();
+        self.dead_presses.acted();
+        bursts
     }
 
     /// The `coldopen` lines this frame closed (§8.4), for the loop's report block to log.
@@ -3454,55 +3475,75 @@ mod edge_back_tests {
         assert_eq!(d.queued(), 0, "nothing was left circulating");
     }
 
-    /// **The repeated-key signal at its one door.** The fixture screen has a single element, so a
-    /// RIGHT runs off its group and nothing takes it: three of those inside a second are not a
-    /// burst, the fourth is, and the burst is read (and cleared) once.
+    /// One OK with nothing seated: the key no element took, which is what a dead press is.
+    fn dead_ok(d: &mut Dispatcher<FixtureHost>, rig: &mut EdgeBackRig, ms: u32) {
+        d.set_focus(None);
+        d.frame(rig, tick(ms), vec![key(Key::Ok, tick(ms))], vec![], &mut NoTap);
+    }
+
+    /// **The repeated-key signal at its one door.** An OK that nothing took: three inside a second
+    /// are not a burst, the fourth is, and the burst is read (and cleared) once.
     #[test]
     fn four_dead_presses_of_one_key_inside_a_second_are_one_burst() {
         let (mut d, mut rig) = booted();
-        let id = open(&mut d, &mut rig, 3, 16);
-        seat(&mut d, id);
+        let _id = open(&mut d, &mut rig, 3, 16);
         for (i, ms) in [32, 232, 432].into_iter().enumerate() {
-            d.frame(&mut rig, tick(ms), vec![key(Key::Right, tick(ms))], vec![], &mut NoTap);
+            dead_ok(&mut d, &mut rig, ms);
             assert_eq!(d.take_dead_presses(), 0, "press {} of 4", i + 1);
         }
-        d.frame(&mut rig, tick(632), vec![key(Key::Right, tick(632))], vec![], &mut NoTap);
+        dead_ok(&mut d, &mut rig, 632);
         assert_eq!(d.take_dead_presses(), 1);
         assert_eq!(d.take_dead_presses(), 0, "a read clears it");
+    }
+
+    /// **Tapping a direction past the END of a list is an overshoot, not frustration.** The fixture
+    /// screen has one element, so RIGHT and DOWN run off its group at once and the focus stays;
+    /// however many of them land inside a second, none is dead.
+    #[test]
+    fn presses_into_the_end_of_a_list_are_not_dead() {
+        let (mut d, mut rig) = booted();
+        let id = open(&mut d, &mut rig, 3, 16);
+        seat(&mut d, id);
+        for (i, k) in [Key::Down, Key::Right, Key::Down, Key::Down, Key::Down, Key::Down, Key::Down, Key::Down]
+            .into_iter().enumerate()
+        {
+            let ms = 32 + 40 * i as u32;
+            d.frame(&mut rig, tick(ms), vec![key(k, tick(ms))], vec![], &mut NoTap);
+        }
+        assert_eq!(d.take_dead_presses(), 0);
     }
 
     /// The same four spread over more than a second are not.
     #[test]
     fn four_dead_presses_slower_than_a_second_are_not_a_burst() {
         let (mut d, mut rig) = booted();
-        let id = open(&mut d, &mut rig, 3, 16);
-        seat(&mut d, id);
+        let _id = open(&mut d, &mut rig, 3, 16);
         for ms in [32, 432, 832, 1_233] {
-            d.frame(&mut rig, tick(ms), vec![key(Key::Right, tick(ms))], vec![], &mut NoTap);
+            dead_ok(&mut d, &mut rig, ms);
         }
         assert_eq!(d.take_dead_presses(), 0);
     }
 
-    /// A press something took (here LEFT, which the screen walks its own stack on) ends the run, and
-    /// so does a different dead key; the four have to be consecutive and of one key.
+    /// A press something took (here LEFT, which the screen walks its own stack on) ends the run;
+    /// so does the end of the visit (`end_visit_dead_presses`): presses of the old screen never
+    /// complete a burst on the next.
     #[test]
-    fn a_press_that_did_something_or_a_different_key_resets_the_run() {
+    fn a_press_that_did_something_or_the_end_of_the_visit_resets_the_run() {
         let (mut d, mut rig) = booted();
         let id = open(&mut d, &mut rig, 3, 16);
+        for ms in [32, 82, 132] {
+            dead_ok(&mut d, &mut rig, ms);
+        }
         seat(&mut d, id);
-        let mut ms = 32;
-        let mut press = |d: &mut Dispatcher<FixtureHost>, k: Key| {
-            ms += 50;
-            d.frame(&mut rig, tick(ms), vec![key(k, tick(ms))], vec![], &mut NoTap);
-        };
-        for k in [Key::Right, Key::Right, Key::Right, Key::Left, Key::Right] {
-            press(&mut d, k);
+        d.frame(&mut rig, tick(182), vec![key(Key::Left, tick(182))], vec![], &mut NoTap);
+        dead_ok(&mut d, &mut rig, 232);
+        assert_eq!(d.take_dead_presses(), 0, "LEFT was taken: the fourth OK is the first of a new run");
+        for ms in [282, 332] {
+            dead_ok(&mut d, &mut rig, ms);
         }
-        assert_eq!(d.take_dead_presses(), 0, "LEFT was taken (the stack walked): the fourth RIGHT is the first of a new run");
-        for k in [Key::Right, Key::Right, Key::Down, Key::Right] {
-            press(&mut d, k);
-        }
-        assert_eq!(d.take_dead_presses(), 0, "a different dead key in between ends the run too");
+        assert_eq!(d.end_visit_dead_presses(), 0);
+        dead_ok(&mut d, &mut rig, 382);
+        assert_eq!(d.take_dead_presses(), 0, "the run died with the visit: this is the first press of a new one");
     }
 
     /// Every OTHER owner is unchanged. A page-stack owner that declines the synthetic BACK pops

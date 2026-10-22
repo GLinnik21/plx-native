@@ -18,6 +18,15 @@
 //! * a **hang** is a main-loop iteration that took over [`STALL_US`] (250 ms, the watchdog's own
 //!   threshold), and the rate is the seconds of such stalls per hour of the visit.
 //!
+//! **The player route is measured like any other.** Its graphics plane is NOT paced at the video's
+//! 24/30/50 Hz: while the video plane is bound the idle gate presents every iteration
+//! (`plx_machine::idle::should_present`), the swap interval is 1 (`SDL_GL_SetSwapInterval`), and
+//! the heartbeat's `fps=` reads 60 through playback (the decoded picture is composited by the
+//! television on a surface this process never touches, `vtick=` is its own ~5 Hz liveness). So a
+//! player frame over the slow edge is as late as any other and no route is exempt. If a device
+//! trace ever shows the plane paced at the video rate, exclude `player` from the slow count
+//! here (keeping frozen and hang), not at the call site.
+//!
 //! It runs in EVERY build, unarmed, because it needs one clock read per presented frame and one
 //! per loop iteration ([`super::now_us`], the performance counter: `clock::now()` is whole
 //! milliseconds, and a perfect 16.67 ms interval reads as 17 about two thirds of the time).
@@ -71,6 +80,8 @@ pub struct FrameHealth {
     visit: Visit,
     prev_present: Option<u64>,
     prev_iteration: Option<u64>,
+    /// The frame `presented` counted in THIS iteration (slow, frozen), for [`Self::finish_at_transition`].
+    this_iteration_frame: Option<(bool, bool)>,
     warm: bool,
     suspended: bool,
 }
@@ -81,6 +92,7 @@ impl FrameHealth {
         if self.suspended {
             return;
         }
+        self.this_iteration_frame = None;
         let Some(prev) = self.prev_iteration.replace(now_us) else { return };
         let gap = now_us.saturating_sub(prev);
         if gap >= ASLEEP_US || !self.warm {
@@ -97,12 +109,25 @@ impl FrameHealth {
         if self.suspended {
             return;
         }
-        self.warm = true;
-        let Some(prev) = self.prev_present.replace(now_us) else { return };
+        let was_warm = std::mem::replace(&mut self.warm, true);
+        // After an idle gap the chain has no previous present, and the first frame is the one
+        // that ANSWERS the key press (a focus move, a nav commit, a cold open): the frame whose
+        // lateness the viewer feels. It is measured from the top of this iteration, so the idle
+        // gap before it is not in it. Not before the first present ever (warm-up).
+        let prev = match self.prev_present.replace(now_us) {
+            Some(prev) => prev,
+            None if was_warm => match self.prev_iteration {
+                Some(top) => top,
+                None => return,
+            },
+            None => return,
+        };
         let interval = now_us.saturating_sub(prev);
+        let (slow, frozen) = (interval > SLOW_FRAME_US, interval > FROZEN_FRAME_US);
         self.visit.frames += 1;
-        self.visit.slow += u32::from(interval > SLOW_FRAME_US);
-        self.visit.frozen += u32::from(interval > FROZEN_FRAME_US);
+        self.visit.slow += u32::from(slow);
+        self.visit.frozen += u32::from(frozen);
+        self.this_iteration_frame = Some((slow, frozen));
     }
 
     /// An iteration that skipped presenting: the gap until the next present is idle, not a frame.
@@ -110,10 +135,32 @@ impl FrameHealth {
         self.prev_present = None;
     }
 
+    /// End the visit at a ROUTE CHANGE seen after this iteration's present. That frame is the
+    /// first of the NEW screen (the route was committed before it was drawn: the cost of opening
+    /// it), and this iteration's stall is added at the next [`Self::iteration`], after the reset,
+    /// to the new visit; so the frame moves with it and one stall is never split across two
+    /// screens. Otherwise as [`Self::finish`].
+    pub fn finish_at_transition(&mut self, dead_bursts: u32) -> Option<HealthClasses> {
+        let moved = self.this_iteration_frame.take();
+        if let Some((slow, frozen)) = moved {
+            self.visit.frames -= 1;
+            self.visit.slow -= u32::from(slow);
+            self.visit.frozen -= u32::from(frozen);
+        }
+        let classes = self.finish(dead_bursts);
+        if let Some((slow, frozen)) = moved {
+            self.visit.frames = 1;
+            self.visit.slow = u32::from(slow);
+            self.visit.frozen = u32::from(frozen);
+        }
+        classes
+    }
+
     /// The app left (`true`) or re-entered (`false`) the foreground. Neither edge leaves a chain
     /// to measure across, and nothing counts in between.
     pub fn suspend(&mut self, suspended: bool) {
         self.suspended = suspended;
+        self.this_iteration_frame = None;
         self.idle();
         self.prev_iteration = None;
     }
@@ -270,7 +317,7 @@ mod tests {
     fn the_slow_edge_is_the_late_frame_not_the_vsync_budget() {
         for (interval, slow) in [(16_670, 0), (21_999, 0), (22_000, 0), (22_001, 1), (33_333, 1)] {
             let mut h = warm();
-            h.presented(1_000_000);
+            h.prev_present = Some(1_000_000);
             h.presented(1_000_000 + interval);
             assert_eq!((h.visit.frames, h.visit.slow), (1, slow), "{interval} us");
         }
@@ -280,7 +327,7 @@ mod tests {
     fn the_frozen_edge_is_700_ms_and_a_frozen_frame_is_also_slow() {
         for (interval, frozen) in [(699_999, 0), (700_000, 0), (700_001, 1)] {
             let mut h = warm();
-            h.presented(1_000_000);
+            h.prev_present = Some(1_000_000);
             h.presented(1_000_000 + interval);
             assert_eq!(h.visit.frozen, frozen, "{interval} us");
             assert_eq!(h.visit.slow, 1, "{interval} us is slow either way");
@@ -300,15 +347,51 @@ mod tests {
     #[test]
     fn an_idle_gap_is_not_a_frame_and_a_deferral_is() {
         let mut h = warm();
-        h.presented(1_000_000);
         h.idle();
+        h.iteration(9_000_000 - 16_000);
         h.presented(9_000_000);
-        assert_eq!(h.visit.frames, 0, "the first present after idle starts a new chain");
+        assert_eq!((h.visit.frames, h.visit.slow), (1, 0), "the answering frame is counted from its iteration's top, not from the idle gap");
         h.presented(9_000_000 + 40_000);
-        assert_eq!((h.visit.frames, h.visit.slow), (1, 1));
+        assert_eq!((h.visit.frames, h.visit.slow), (2, 1));
         // A deferred present never calls `idle`: the chain spans it.
         h.presented(9_000_000 + 40_000 + 100_000);
-        assert_eq!((h.visit.frames, h.visit.slow), (2, 2));
+        assert_eq!((h.visit.frames, h.visit.slow), (3, 2));
+    }
+
+    #[test]
+    fn the_frame_that_answers_a_key_after_idle_is_counted() {
+        let mut h = warm();
+        h.idle();
+        // A settled screen, then a key: the iteration starts, and its commit frame takes 900 ms.
+        h.iteration(20_000_000);
+        h.presented(20_900_000);
+        assert_eq!((h.visit.frames, h.visit.slow, h.visit.frozen), (1, 1, 1));
+    }
+
+    #[test]
+    fn nothing_is_counted_for_the_very_first_present() {
+        let mut h = FrameHealth::default();
+        h.iteration(0);
+        h.presented(900_000);
+        assert_eq!(h.visit.frames, 0, "warm-up is never a frame");
+    }
+
+    #[test]
+    fn a_transition_frame_and_its_stall_land_on_the_new_visit() {
+        let mut h = warm();
+        h.iteration(6_000_000);
+        h.presented(6_016_000);
+        // The next iteration's top: the committing iteration took 800 ms (frame and stall).
+        h.iteration(6_800_000);
+        h.presented(6_800_000 + 800_000); // the frame that opened the new screen: 800 ms late
+        let _ = h.finish_at_transition(0); // route change seen in this iteration's report
+        assert_eq!(
+            (h.visit.frames, h.visit.slow, h.visit.frozen),
+            (1, 1, 1),
+            "the transition frame starts the new visit"
+        );
+        h.iteration(7_700_000);
+        assert_eq!(h.visit.stall_us, 900_000, "and so does its stall");
     }
 
     #[test]

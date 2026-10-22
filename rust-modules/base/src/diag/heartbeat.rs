@@ -329,6 +329,12 @@ impl Instruments {
         self.health.finish(dead_bursts)
     }
 
+    /// [`Self::finish_visit`] for a route change seen after this iteration's present: the frame
+    /// just presented belongs to the screen being opened, and moves to its visit.
+    pub fn finish_visit_at_transition(&mut self, dead_bursts: u32) -> Option<health::HealthClasses> {
+        self.health.finish_at_transition(dead_bursts)
+    }
+
     /// Arm the context ring ([`FrameRing`]): every presented frame formats its line, so the
     /// threshold drops to zero, and `slow_ms` decides which of them reach the log.
     pub fn arm_ring(&mut self, slow_ms: f64) {
