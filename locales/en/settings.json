@@ -235,7 +235,7 @@
     "description": "Settings, account, onboarding or privacy UI: settings.consent.crash.body"
   },
   "settings.consent.product.body": {
-    "value": "PlxNative can share which screens and features are used and broad sign-in and playback outcomes. Reports carry a random Analytics ID, created when you turn this on and deleted when you turn it off or sign out, and can include the app version, webOS version, television model and SoC, and whether a selected server is local, remote or relayed. They never include titles, Plex accounts, searches, server names or addresses, tokens, subtitle text, or exact viewing history.",
+    "value": "PlxNative can share which screens and features are used, how smoothly they respond, and broad sign-in and playback outcomes. Reports carry a random Analytics ID, created when you turn this on and deleted when you turn it off or sign out, and can include the app version, webOS version, television model and SoC, and whether a selected server is local, remote or relayed. They never include titles, Plex accounts, searches, server names or addresses, tokens, subtitle text, or exact viewing history.",
     "description": "Settings, account, onboarding or privacy UI: settings.consent.product.body"
   },
   "settings.consent.crash.row": {
@@ -479,7 +479,7 @@
     "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.analytics"
   },
   "settings.legal.privacy.analytics_body": {
-    "value": "If enabled, screen and feature events and broad sign-in and playback outcomes are sent to PostHog in Germany with a random Analytics ID created when you turned product analytics on. Settings shows that identifier as your Analytics ID while product analytics is on. Sign-in events from before you answered are held in memory and sent only if you choose to share.",
+    "value": "If enabled, screen and feature events, how smoothly each screen responds, and broad sign-in and playback outcomes are sent to PostHog in Germany with a random Analytics ID created when you turned product analytics on. Settings shows that identifier as your Analytics ID while product analytics is on. Sign-in events from before you answered are held in memory and sent only if you choose to share.",
     "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.analytics_body"
   },
   "settings.legal.privacy.excluded": {
