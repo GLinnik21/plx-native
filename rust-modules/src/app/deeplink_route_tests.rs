@@ -216,3 +216,67 @@ fn a_serverless_link_that_waited_across_sign_in_is_dropped() {
         plx_plex::plex::reset_servers_for_test();
     });
 }
+
+fn play_payload(rk: &str) -> String {
+    format!(r#"{{"event":"launch","parameters":{{"plex":{{"ratingKey":"{rk}","action":"play"}}}}}}"#)
+}
+
+/// Puts a preview back to Idle when the test ends, however it ends (the machine is process-wide).
+struct PreviewReset;
+impl Drop for PreviewReset {
+    fn drop(&mut self) { plx_media::player::preview::reset_for_test(); }
+}
+
+impl Rig {
+    /// Frames until the link's item is the loaded detail, then a few more for the wait to act.
+    fn until_loaded(&mut self) {
+        for _ in 0..2500 {
+            self.once();
+            let landed = self.bridge.metadata_view().current()
+                .is_some_and(|d| plx_plex::plex::same_item((d.sid, &d.rk), (self.sid, KNOWN)));
+            if landed { break; }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        self.frames(10);
+    }
+}
+
+/// A Play link whose item lands while a preview is still letting go of the engine does not play
+/// through it: the wait stays armed, and the Play starts once, when the preview is gone.
+#[test]
+fn a_play_landing_waits_for_an_abandoning_preview() {
+    use plx_media::player::preview::{self, Phase};
+    let mut rig = Rig::new(AppArg::Home);
+    let _reset = PreviewReset;
+    preview::set_phase_for_test(Phase::Abandoning);
+    assert!(preview::occupies(), "premise: the preview holds the engine");
+    plx_platform::tv::launch::offer(&play_payload(KNOWN));
+    rig.until_loaded();
+    assert!(!plx_media::route::play_pending(), "the Play went through an engine a preview still holds");
+    assert!(rig.wait.is_some(), "the wait gave up instead of holding");
+    preview::reset_for_test();
+    rig.frames(10);
+    assert!(plx_media::route::play_pending(), "the Play never started once the engine was free");
+    assert!(rig.wait.is_none());
+    plx_media::route::cancel_play(&mut rig.ps);
+    assert!(plx_media::route::wait_resolve_workers_for_test(std::time::Duration::from_secs(5)));
+    plx_plex::plex::reset_servers_for_test();
+}
+
+/// …and a preview that never lets go does not hold the link forever: the wait's own deadline ends
+/// it, with a line saying why, and nothing plays.
+#[test]
+fn a_play_landing_behind_a_preview_that_never_returns_gives_up() {
+    use plx_media::player::preview::{self, Phase};
+    plx_base::eventlog::with_private_log(|| {
+        let mut rig = Rig::new(AppArg::Home);
+        let _reset = PreviewReset;
+        preview::set_phase_for_test(Phase::Abandoning);
+        plx_platform::tv::launch::offer(&play_payload(KNOWN));
+        rig.run();
+        assert!(!plx_media::route::play_pending(), "the Play went through an engine a preview still holds");
+        let log = std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default();
+        assert!(log.contains(&format!("deeplink: not opened, rk={KNOWN} (engine busy)")), "log was: {log}");
+        plx_plex::plex::reset_servers_for_test();
+    });
+}
