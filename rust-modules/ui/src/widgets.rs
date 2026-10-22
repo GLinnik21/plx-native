@@ -5995,7 +5995,7 @@ impl TabStrip {
                 // for a TRACKED pill or the selection plate — see the call sites' own comments for
                 // why each of those stays flat.
                 if cast {
-                    control_cast(p, r, h * 0.5);
+                    control_cast_at(p, r, h * 0.5, a);
                 }
                 match rim {
                     // On a GLASS track the selection plate is a piece of the same material, not a
