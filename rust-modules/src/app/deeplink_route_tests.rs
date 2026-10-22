@@ -241,20 +241,29 @@ impl Rig {
     }
 }
 
+/// A preview whose Load has not returned when it is halted (the trailer on the page the link
+/// unwinds): the session is a preview and the machine stays `Abandoning` across every halt, as a
+/// real one does until the Load returns.
+fn hold_a_preview(rig: &mut Rig) {
+    plx_media::route::mark_preview_for_test(&mut rig.ps);
+    plx_media::player::preview::hold_load_for_test(true);
+    assert!(plx_media::route::is_preview(&rig.ps));
+}
+
 /// A Play link whose item lands while a preview is still letting go of the engine does not play
 /// through it: the wait stays armed, and the Play starts once, when the preview is gone.
 #[test]
 fn a_play_landing_waits_for_an_abandoning_preview() {
-    use plx_media::player::preview::{self, Phase};
+    use plx_media::player::preview;
     let mut rig = Rig::new(AppArg::Home);
     let _reset = PreviewReset;
-    preview::set_phase_for_test(Phase::Abandoning);
-    assert!(preview::occupies(), "premise: the preview holds the engine");
+    hold_a_preview(&mut rig);
     plx_platform::tv::launch::offer(&play_payload(KNOWN));
     rig.until_loaded();
+    assert!(preview::abandoning(), "premise: the halt left the preview abandoning");
     assert!(!plx_media::route::play_pending(), "the Play went through an engine a preview still holds");
     assert!(rig.wait.is_some(), "the wait gave up instead of holding");
-    preview::reset_for_test();
+    preview::hold_load_for_test(false);
     rig.frames(10);
     assert!(plx_media::route::play_pending(), "the Play never started once the engine was free");
     assert!(rig.wait.is_none());
@@ -267,11 +276,10 @@ fn a_play_landing_waits_for_an_abandoning_preview() {
 /// it, with a line saying why, and nothing plays.
 #[test]
 fn a_play_landing_behind_a_preview_that_never_returns_gives_up() {
-    use plx_media::player::preview::{self, Phase};
     plx_base::eventlog::with_private_log(|| {
         let mut rig = Rig::new(AppArg::Home);
         let _reset = PreviewReset;
-        preview::set_phase_for_test(Phase::Abandoning);
+        hold_a_preview(&mut rig);
         plx_platform::tv::launch::offer(&play_payload(KNOWN));
         rig.run();
         assert!(!plx_media::route::play_pending(), "the Play went through an engine a preview still holds");

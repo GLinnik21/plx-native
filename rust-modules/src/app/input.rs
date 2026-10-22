@@ -335,13 +335,17 @@ pub(crate) unsafe fn menu_play_tick(
         if loading && !expired {
             return; // still waiting — try again next frame
         }
-        *menu_play_await = None;
         if loading || !landed {
+            *menu_play_await = None;
             // ceiling, or the fetch settled as a failure — land on the page, as the detail phase does
             super::bridge::open_detail(pages, bridge, sid, expect, None, None);
-        } else {
-            play_loaded_hero(ps, pa, pages, bridge, sid, expect, hud_ms);
+            return;
         }
+        if !play_door_open(ps, pa, pages, bridge, menu_play_await, (sid, expect, stay_on_miss), expired) {
+            return;
+        }
+        *menu_play_await = None;
+        play_loaded_hero(ps, pa, pages, bridge, sid, expect, hud_ms);
         return;
     }
     let landed = bridge.metadata_view().current()
@@ -394,8 +398,40 @@ pub(crate) unsafe fn menu_play_tick(
             }
         }
     }
+    if !play_door_open(ps, pa, pages, bridge, menu_play_await, (sid, expect, stay_on_miss), expired) {
+        return;
+    }
     *menu_play_await = None;
     play_loaded_hero(ps, pa, pages, bridge, sid, expect, hud_ms);
+}
+
+/// **The play door of a [`MenuPlayAwait`]:** the landing may play only through the one door every
+/// Play from a page goes through ([`super::content::clear_engine_for_play`]), because a preview
+/// can still be letting go of the engine when the item lands. `true` means the engine is free and
+/// the caller plays. `false` means the wait goes on, still armed, and is asked again next frame;
+/// at the wait's own `deadline` (`expired`) it ends instead, as the wait's other expiries do: a
+/// link logs why and leaves the stack alone, a card press lands on the item's page.
+unsafe fn play_door_open(
+    ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    bridge: &mut super::bridge::Bridge,
+    menu_play_await: &mut Option<MenuPlayAwait>,
+    (sid, expect, stay_on_miss): (plx_plex::plex::ServerId, &str, bool),
+    expired: bool,
+) -> bool {
+    if super::content::clear_engine_for_play(ps, pa, super::bridge::player(pages).is_some()) {
+        return true;
+    }
+    if expired {
+        *menu_play_await = None;
+        if stay_on_miss {
+            plx_base::eventlog::log(&format!("deeplink: not opened, rk={expect} (engine busy)"));
+        } else {
+            super::bridge::open_detail(pages, bridge, sid, expect, None, None);
+        }
+    }
+    false
 }
 
 /// The end of a settled [`MenuPlayAwait`]: play the loaded item's hero (a show's next episode, or
