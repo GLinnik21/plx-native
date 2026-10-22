@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-22T13:45:28Z",
+ "generated": "2026-10-22T13:50:58Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -69,15 +69,15 @@
    "change7_pct": -19.2,
    "d30": 685.0,
    "delta30": -311.0,
-   "delta7": -89,
+   "delta7": -89.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 171,
-   "n_prev": 253,
+   "n_prev": 252,
    "now": 374,
-   "prev7": 463,
+   "prev7": 463.0,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -86,18 +86,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -51.2,
-   "change7_pct": -17.2,
+   "change30_pct": -51.4,
+   "change7_pct": -17.4,
    "d30": 682.5,
-   "delta30": -349.5,
-   "delta7": -69.0,
+   "delta30": -350.5,
+   "delta7": -70.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 87,
+   "n_now": 88,
    "n_prev": 116,
-   "now": 333,
+   "now": 332.0,
    "prev7": 402.0,
    "shown": true,
    "state": "better",
@@ -308,18 +308,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 100.4,
-   "change7_pct": 16.1,
+   "change30_pct": 100.8,
+   "change7_pct": 16.3,
    "d30": 128.0,
-   "delta30": 128.5,
-   "delta7": 35.5,
+   "delta30": 129.0,
+   "delta7": 36,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 82,
+   "n_now": 83,
    "n_prev": 107,
-   "now": 256.5,
+   "now": 257,
    "prev7": 221,
    "shown": true,
    "state": "flat",
@@ -329,18 +329,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 185.8,
-   "change7_pct": 8.9,
+   "change30_pct": 186.5,
+   "change7_pct": 9.2,
    "d30": 70.5,
-   "delta30": 131.0,
-   "delta7": 16.5,
+   "delta30": 131.5,
+   "delta7": 17,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 82,
+   "n_now": 83,
    "n_prev": 107,
-   "now": 201.5,
+   "now": 202,
    "prev7": 185,
    "shown": true,
    "state": "flat",
@@ -393,17 +393,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 8.9,
+   "change7_pct": 9.3,
    "d30": null,
    "delta30": null,
-   "delta7": 12.5,
+   "delta7": 13,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 82,
+   "n_now": 83,
    "n_prev": 107,
-   "now": 152.5,
+   "now": 153,
    "prev7": 140,
    "shown": true,
    "state": "flat",
@@ -482,14 +482,14 @@
    "change7_pct": 5.9,
    "d30": 16.0,
    "delta30": 2.0,
-   "delta7": 1.0,
+   "delta7": 1,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 82,
+   "n_now": 83,
    "n_prev": 107,
-   "now": 18.0,
+   "now": 18,
    "prev7": 17,
    "shown": false,
    "state": "flat",
@@ -609,11 +609,6 @@
    "change_pct": 39.5,
    "commits": [
     {
-     "pr": 904,
-     "sha": "9141edd1c",
-     "title": "watchdog: a main-thread hang names its loop phase (labels from the heartbeat marks and loop spans)"
-    },
-    {
      "pr": 907,
      "sha": "b12c5cd99",
      "title": "ui: the last hand-summed spacing sites stand on hstack/vstack"
@@ -657,6 +652,11 @@
      "pr": 920,
      "sha": "ffc9c44dd",
      "title": "Detail: a held episode still is drawn once at the press dip; focus casts fade outside the face"
+    },
+    {
+     "pr": 897,
+     "sha": "2302e3e5e",
+     "title": "Also available: a show or season copy shows no runtime; the show's nominal duration is no episode's (#814)"
     }
    ],
    "from": 140.5,
@@ -670,11 +670,6 @@
    "change_pct": 36.6,
    "commits": [
     {
-     "pr": 904,
-     "sha": "9141edd1c",
-     "title": "watchdog: a main-thread hang names its loop phase (labels from the heartbeat marks and loop spans)"
-    },
-    {
      "pr": 907,
      "sha": "b12c5cd99",
      "title": "ui: the last hand-summed spacing sites stand on hstack/vstack"
@@ -718,6 +713,11 @@
      "pr": 920,
      "sha": "ffc9c44dd",
      "title": "Detail: a held episode still is drawn once at the press dip; focus casts fade outside the face"
+    },
+    {
+     "pr": 897,
+     "sha": "2302e3e5e",
+     "title": "Also available: a show or season copy shows no runtime; the show's nominal duration is no episode's (#814)"
     }
    ],
    "from": 103.0,
@@ -731,11 +731,6 @@
    "change_pct": 30.8,
    "commits": [
     {
-     "pr": 904,
-     "sha": "9141edd1c",
-     "title": "watchdog: a main-thread hang names its loop phase (labels from the heartbeat marks and loop spans)"
-    },
-    {
      "pr": 907,
      "sha": "b12c5cd99",
      "title": "ui: the last hand-summed spacing sites stand on hstack/vstack"
@@ -779,6 +774,11 @@
      "pr": 920,
      "sha": "ffc9c44dd",
      "title": "Detail: a held episode still is drawn once at the press dip; focus casts fade outside the face"
+    },
+    {
+     "pr": 897,
+     "sha": "2302e3e5e",
+     "title": "Also available: a show or season copy shows no runtime; the show's nominal duration is no episode's (#814)"
     }
    ],
    "from": 46.0,
@@ -819,7 +819,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 256.5
+   "now": 257
   }
  ],
  "slowest_local": [
