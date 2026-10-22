@@ -1,5 +1,5 @@
 {
- "generated": "2026-10-22T00:15:16Z",
+ "generated": "2026-10-22T00:49:42Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -53,10 +53,10 @@
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 97,
-   "n_prev": 96,
-   "now": 182,
-   "prev7": 134.0,
+   "n_now": 96,
+   "n_prev": 95,
+   "now": 182.0,
+   "prev7": 134,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -86,40 +86,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": null,
-   "change7_pct": 22.4,
-   "d30": null,
-   "delta30": null,
-   "delta7": 51.5,
-   "group": "ci",
-   "id": "ci|host unit tests (hostsim)",
-   "kind": "job",
-   "label": "CI: host unit tests (hostsim)",
-   "n_now": 97,
-   "n_prev": 96,
-   "now": 281,
-   "prev7": 229.5,
-   "shown": true,
-   "state": "worse",
-   "state30": "new",
-   "threshold_abs": 20.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": -33.1,
-   "change7_pct": 8.5,
-   "d30": 686,
-   "delta30": -227.0,
-   "delta7": 36.0,
+   "change30_pct": -32.9,
+   "change7_pct": 6.1,
+   "d30": 684,
+   "delta30": -225,
+   "delta7": 26.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 250,
-   "n_prev": 205,
-   "now": 459.0,
-   "prev7": 423,
+   "n_now": 247,
+   "n_prev": 202,
+   "now": 459,
+   "prev7": 432.5,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -128,19 +107,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -50.1,
-   "change7_pct": -2.3,
-   "d30": 681,
-   "delta30": -341,
-   "delta7": -8.0,
+   "change30_pct": -50.2,
+   "change7_pct": -3.1,
+   "d30": 682.5,
+   "delta30": -342.5,
+   "delta7": -11,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 111,
-   "n_prev": 106,
+   "n_now": 109,
+   "n_prev": 107,
    "now": 340,
-   "prev7": 348.0,
+   "prev7": 351,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -224,19 +203,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 85.2,
-   "change7_pct": 5.3,
-   "d30": 1136,
-   "delta30": 968,
-   "delta7": 105.0,
+   "change30_pct": 85.4,
+   "change7_pct": 5.4,
+   "d30": 1137.5,
+   "delta30": 971.0,
+   "delta7": 108.5,
    "group": "ci",
    "id": "minutes",
    "kind": "cost",
    "label": "Runner time per push",
-   "n_now": 87,
-   "n_prev": 74,
-   "now": 2104,
-   "prev7": 1999.0,
+   "n_now": 86,
+   "n_prev": 73,
+   "now": 2108.5,
+   "prev7": 2000,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -245,19 +224,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 56.0,
-   "change7_pct": 1.0,
+   "change30_pct": 55.7,
+   "change7_pct": -2.7,
    "d30": 612,
-   "delta30": 343,
-   "delta7": 9.0,
+   "delta30": 341,
+   "delta7": -26,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "kind": "job",
    "label": "Nightly: ARM build + gates / build + verify",
-   "n_now": 31,
-   "n_prev": 10,
-   "now": 955,
-   "prev7": 946.0,
+   "n_now": 29,
+   "n_prev": 11,
+   "now": 953,
+   "prev7": 979,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -267,18 +246,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 16.4,
+   "change7_pct": 16.0,
    "d30": null,
    "delta30": null,
-   "delta7": 47.0,
+   "delta7": 46.0,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 97,
-   "n_prev": 96,
-   "now": 333,
-   "prev7": 286.0,
+   "n_now": 96,
+   "n_prev": 95,
+   "now": 334.0,
+   "prev7": 288,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -308,19 +287,40 @@
    "unit": "s"
   },
   {
-   "change30_pct": 95.3,
-   "change7_pct": 16.6,
-   "d30": 128,
-   "delta30": 122,
-   "delta7": 35.5,
+   "change30_pct": null,
+   "change7_pct": 14.0,
+   "d30": null,
+   "delta30": null,
+   "delta7": 34.5,
+   "group": "ci",
+   "id": "ci|host unit tests (hostsim)",
+   "kind": "job",
+   "label": "CI: host unit tests (hostsim)",
+   "n_now": 96,
+   "n_prev": 95,
+   "now": 280.5,
+   "prev7": 246,
+   "shown": true,
+   "state": "flat",
+   "state30": "new",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": 96.9,
+   "change7_pct": 16.7,
+   "d30": 128.0,
+   "delta30": 124.0,
+   "delta7": 36,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 107,
-   "n_prev": 90,
-   "now": 250,
-   "prev7": 214.5,
+   "n_now": 105,
+   "n_prev": 91,
+   "now": 252,
+   "prev7": 216,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -329,19 +329,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 177.5,
-   "change7_pct": 2.9,
-   "d30": 71,
-   "delta30": 126,
-   "delta7": 5.5,
+   "change30_pct": 182.3,
+   "change7_pct": 4.7,
+   "d30": 70.5,
+   "delta30": 128.5,
+   "delta7": 9,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 107,
-   "n_prev": 90,
-   "now": 197,
-   "prev7": 191.5,
+   "n_now": 105,
+   "n_prev": 91,
+   "now": 199,
+   "prev7": 190,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -359,10 +359,10 @@
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 97,
-   "n_prev": 96,
-   "now": 167,
-   "prev7": 148.0,
+   "n_now": 96,
+   "n_prev": 95,
+   "now": 167.0,
+   "prev7": 148,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -372,18 +372,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -7.0,
+   "change7_pct": -7.3,
    "d30": null,
    "delta30": null,
-   "delta7": -12.5,
+   "delta7": -13.0,
    "group": "ci",
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 97,
-   "n_prev": 96,
-   "now": 165,
-   "prev7": 177.5,
+   "n_now": 96,
+   "n_prev": 95,
+   "now": 165.0,
+   "prev7": 178,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -393,18 +393,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 8.0,
+   "change7_pct": 7.9,
    "d30": null,
    "delta30": null,
-   "delta7": 11.0,
+   "delta7": 11,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 107,
-   "n_prev": 90,
-   "now": 149,
-   "prev7": 138.0,
+   "n_now": 105,
+   "n_prev": 91,
+   "now": 150,
+   "prev7": 139,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -458,18 +458,18 @@
   },
   {
    "change30_pct": 31.0,
-   "change7_pct": 2.7,
+   "change7_pct": 0.0,
    "d30": 14.5,
    "delta30": 4.5,
-   "delta7": 0.5,
+   "delta7": 0,
    "group": "ci",
    "id": "nightly|publish nightly prerelease",
    "kind": "job",
    "label": "Nightly: publish nightly prerelease",
-   "n_now": 31,
-   "n_prev": 10,
+   "n_now": 29,
+   "n_prev": 11,
    "now": 19,
-   "prev7": 18.5,
+   "prev7": 19,
    "shown": false,
    "state": "flat",
    "state30": "flat",
@@ -480,17 +480,17 @@
   {
    "change30_pct": 12.5,
    "change7_pct": 5.9,
-   "d30": 16,
-   "delta30": 2,
-   "delta7": 1.0,
+   "d30": 16.0,
+   "delta30": 2.0,
+   "delta7": 1,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 107,
-   "n_prev": 90,
+   "n_now": 105,
+   "n_prev": 91,
    "now": 18,
-   "prev7": 17.0,
+   "prev7": 17,
    "shown": false,
    "state": "flat",
    "state30": "flat",
@@ -500,18 +500,18 @@
   },
   {
    "change30_pct": 33.3,
-   "change7_pct": 3.2,
+   "change7_pct": 0.0,
    "d30": 12,
    "delta30": 4,
-   "delta7": 0.5,
+   "delta7": 0,
    "group": "ci",
    "id": "nightly|plan today's nightly",
    "kind": "job",
    "label": "Nightly: plan today's nightly",
-   "n_now": 31,
-   "n_prev": 10,
+   "n_now": 29,
+   "n_prev": 11,
    "now": 16,
-   "prev7": 15.5,
+   "prev7": 16,
    "shown": false,
    "state": "flat",
    "state30": "flat",
@@ -543,17 +543,17 @@
   {
    "change30_pct": -98.3,
    "change7_pct": -98.7,
-   "d30": 234,
-   "delta30": -230,
-   "delta7": -308.0,
+   "d30": 234.0,
+   "delta30": -230.0,
+   "delta7": -309.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 97,
-   "n_prev": 96,
-   "now": 4,
-   "prev7": 312.0,
+   "n_now": 96,
+   "n_prev": 95,
+   "now": 4.0,
+   "prev7": 313,
    "shown": false,
    "state": "better",
    "state30": "better",
@@ -564,17 +564,17 @@
   {
    "change30_pct": -99.6,
    "change7_pct": 0.0,
-   "d30": 684,
-   "delta30": -681,
+   "d30": 685.0,
+   "delta30": -682.0,
    "delta7": 0.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 97,
-   "n_prev": 96,
-   "now": 3,
-   "prev7": 3.0,
+   "n_now": 96,
+   "n_prev": 95,
+   "now": 3.0,
+   "prev7": 3,
    "shown": false,
    "state": "flat",
    "state30": "better",
@@ -609,11 +609,6 @@
    "change_pct": 118.6,
    "commits": [
     {
-     "pr": 891,
-     "sha": "01de26af3",
-     "title": "screens: one heading+count idiom (Q4), facts dot pad (Q2), glyphs by ink in the tracks footer and Button (Q6)"
-    },
-    {
      "pr": 874,
      "sha": "5648058a3",
      "title": "Playback: a file whose audio is stored far ahead of its video starts and keeps playing"
@@ -657,6 +652,11 @@
      "pr": 908,
      "sha": "30b5183be",
      "title": "collections probe: the warm walk no longer holds its queue lock across the GET"
+    },
+    {
+     "pr": 898,
+     "sha": "4ed33e537",
+     "title": "Force Direct Play: the audio refusal names the codec"
     }
    ],
    "from": 58.2,
@@ -670,11 +670,6 @@
    "change_pct": 36.6,
    "commits": [
     {
-     "pr": 891,
-     "sha": "01de26af3",
-     "title": "screens: one heading+count idiom (Q4), facts dot pad (Q2), glyphs by ink in the tracks footer and Button (Q6)"
-    },
-    {
      "pr": 874,
      "sha": "5648058a3",
      "title": "Playback: a file whose audio is stored far ahead of its video starts and keeps playing"
@@ -718,6 +713,11 @@
      "pr": 908,
      "sha": "30b5183be",
      "title": "collections probe: the warm walk no longer holds its queue lock across the GET"
+    },
+    {
+     "pr": 898,
+     "sha": "4ed33e537",
+     "title": "Force Direct Play: the audio refusal names the codec"
     }
    ],
    "from": 103.0,
@@ -731,11 +731,6 @@
    "change_pct": 35.8,
    "commits": [
     {
-     "pr": 891,
-     "sha": "01de26af3",
-     "title": "screens: one heading+count idiom (Q4), facts dot pad (Q2), glyphs by ink in the tracks footer and Button (Q6)"
-    },
-    {
      "pr": 874,
      "sha": "5648058a3",
      "title": "Playback: a file whose audio is stored far ahead of its video starts and keeps playing"
@@ -779,24 +774,24 @@
      "pr": 908,
      "sha": "30b5183be",
      "title": "collections probe: the warm walk no longer holds its queue lock across the GET"
+    },
+    {
+     "pr": 898,
+     "sha": "4ed33e537",
+     "title": "Force Direct Play: the audio refusal names the codec"
     }
    ],
-   "from": 134.0,
+   "from": 134,
    "id": "ci|host python/shell/C gates",
    "label": "CI: host python/shell/C gates",
    "since": "2026-10-19",
    "threshold_pct": 20.0,
-   "to": 182
+   "to": 182.0
   },
   {
    "change_pct": 30.8,
    "commits": [
     {
-     "pr": 891,
-     "sha": "01de26af3",
-     "title": "screens: one heading+count idiom (Q4), facts dot pad (Q2), glyphs by ink in the tracks footer and Button (Q6)"
-    },
-    {
      "pr": 874,
      "sha": "5648058a3",
      "title": "Playback: a file whose audio is stored far ahead of its video starts and keeps playing"
@@ -840,6 +835,11 @@
      "pr": 908,
      "sha": "30b5183be",
      "title": "collections probe: the warm walk no longer holds its queue lock across the GET"
+    },
+    {
+     "pr": 898,
+     "sha": "4ed33e537",
+     "title": "Force Direct Play: the audio refusal names the codec"
     }
    ],
    "from": 46.0,
@@ -848,67 +848,6 @@
    "since": "2026-10-19",
    "threshold_pct": 25.0,
    "to": 60.2
-  },
-  {
-   "change_pct": 22.4,
-   "commits": [
-    {
-     "pr": 891,
-     "sha": "01de26af3",
-     "title": "screens: one heading+count idiom (Q4), facts dot pad (Q2), glyphs by ink in the tracks footer and Button (Q6)"
-    },
-    {
-     "pr": 874,
-     "sha": "5648058a3",
-     "title": "Playback: a file whose audio is stored far ahead of its video starts and keeps playing"
-    },
-    {
-     "pr": 894,
-     "sha": "6a3ef8b55",
-     "title": "Continue Watching: one tile per show across servers, as the official client (#892)"
-    },
-    {
-     "pr": 895,
-     "sha": "7f5e27a7d",
-     "title": "route: the account subtitle rule reads forced/SDH the way the track menu does (#828)"
-    },
-    {
-     "pr": 896,
-     "sha": "dbe7b014b",
-     "title": "ui: text runs and the remaining screen rows on HStack/Flow; still_line glyph by ink (Q6)"
-    },
-    {
-     "pr": 901,
-     "sha": "59466656b",
-     "title": "ui: one vertical stack \u2014 vstack facade, Item::before, AlertHead; y ladders moved, no pixel moves"
-    },
-    {
-     "pr": 903,
-     "sha": "acf1d2a36",
-     "title": "Detail: Accessibility rows and episode meta keep one gap; Watchlist read-out uses the overlay's bands"
-    },
-    {
-     "pr": 904,
-     "sha": "9141edd1c",
-     "title": "watchdog: a main-thread hang names its loop phase (labels from the heartbeat marks and loop spans)"
-    },
-    {
-     "pr": 907,
-     "sha": "b12c5cd99",
-     "title": "ui: the last hand-summed spacing sites stand on hstack/vstack"
-    },
-    {
-     "pr": 908,
-     "sha": "30b5183be",
-     "title": "collections probe: the warm walk no longer holds its queue lock across the GET"
-    }
-   ],
-   "from": 229.5,
-   "id": "ci|host unit tests (hostsim)",
-   "label": "CI: host unit tests (hostsim)",
-   "since": "2026-10-21",
-   "threshold_pct": 20.0,
-   "to": 281
   }
  ],
  "schema": 2,
@@ -917,13 +856,13 @@
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "label": "Nightly: ARM build + gates / build + verify",
-   "now": 955
+   "now": 953
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 333
+   "now": 334.0
   },
   {
    "group": "ci",
@@ -935,13 +874,13 @@
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 281
+   "now": 280.5
   },
   {
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 250
+   "now": 252
   }
  ],
  "slowest_local": [
