@@ -1,7 +1,8 @@
 //! **The crash channel, and the guarantee that it carries no text.**
 //!
 //! Reads the append-only crash log the C tracer writes (`src/crashtrace.c`), turns each fault
-//! record into a Sentry event, and reports it on the next launch — because the process that wrote
+//! record, and each `*** FREEZE` record (a main-thread stall the process survived: addresses and a
+//! fixed duration bucket, never raw milliseconds), into a Sentry event, and reports it on the next launch — because the process that wrote
 //! it no longer exists, which is the whole reason the log is on disk and not in memory.
 //!
 //! # NOTHING FROM THE LOG'S TEXT REACHES THE WIRE
