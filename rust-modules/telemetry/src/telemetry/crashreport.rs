@@ -189,7 +189,7 @@ const MAX_CRASH_AGE_SECS: u64 = 25 * 86_400;
 const FUTURE_SLACK_SECS: u64 = 60;
 /// A clock earlier than this has not been set (a television that has not synced yet reads 1970),
 /// so it is no reference to bound a crash time against: nothing is sent.
-const FIRST_PLAUSIBLE_NOW: u64 = 1_704_067_200; // 2024-01-01T00:00:00Z
+pub(super) const FIRST_PLAUSIBLE_NOW: u64 = 1_704_067_200; // 2024-01-01T00:00:00Z
 
 /// The crash time to send, or `None` to send no `timestamp` at all (Sentry then stamps the event
 /// with its receipt time, which is what happened before the record carried one).

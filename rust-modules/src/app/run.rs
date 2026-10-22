@@ -773,10 +773,10 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
     app.window_activity.event(et);
     let playing = matches!(app.route(), AppArg::Player);
     plx_telemetry::telemetry::window::lifecycle(et, playing);
-    // Release health: the foreground/background edge ends or begins a session, and a key or
-    // pointer event is the activity that keeps one open (`telemetry::session`; consent-gated
-    // inside, a no-op while crash reports are off).
-    plx_telemetry::telemetry::session::lifecycle(et);
+    // Release health: the foreground edge begins a session (the background edge ends it further
+    // down, after the player's park), and a key or pointer event is the activity that keeps one
+    // open (`telemetry::session`; consent-gated inside, a no-op while crash reports are off).
+    if et == 0x106 { plx_telemetry::telemetry::session::lifecycle(et); }
     if is_input_event(et) { plx_telemetry::telemetry::session::input(); }
     if controlled_replay(app) {
         // The tape owns logical ingress; real SDL startup notifications must not be
@@ -928,6 +928,9 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             // now, so destroying entries destroys the way back. See
             // `an_app_switch_parks_the_page_stack_and_gives_the_same_entries_back`.
         }
+        // The session ends only after the park above: a crash inside the buffer-feed suspend
+        // leaves it open, to be reported crashed or abnormal on the next boot.
+        plx_telemetry::telemetry::session::lifecycle(et);
         // The DID edge finished its work (the WILL edge is only the notice): a crash after this
         // crumb is not inside the background arm.
         if et == 0x104 {
@@ -3248,9 +3251,6 @@ pub(crate) unsafe fn shutdown(
     ps: &mut plx_media::route::PlaybackSession,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
 ) {
-    // A clean exit ends the release-health session as `exited`; a death leaves its state for
-    // the next boot to classify.
-    plx_telemetry::telemetry::session::shutdown();
     plx_media::player::report::abandon_pending(ps);
     if is_started() {
         plx_media::player::stop_bufferfeed(ps, pa);
@@ -3265,6 +3265,9 @@ pub(crate) unsafe fn shutdown(
     plx_media::route::drain_scrobble();
     crate::capture::shutdown();
     crate::app::adapters::poster::shutdown();
+    // A clean exit ends the release-health session as `exited`, after the native teardown: a death
+    // anywhere above leaves its state for the next boot to classify as crashed or abnormal.
+    plx_telemetry::telemetry::session::shutdown();
     SDL_Quit();
 }
 

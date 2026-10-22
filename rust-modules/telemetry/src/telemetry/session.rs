@@ -125,6 +125,13 @@ impl Finished {
         })
     }
 
+    /// Is the start time worth sending against `now_unix`: the plausibility window the crash
+    /// reports use, so a session begun and ended on a television whose clock was never set is
+    /// dropped rather than filed under a made-up date.
+    pub fn reportable(&self, now_unix: u64) -> bool {
+        super::crashreport::crash_timestamp(Some(self.stored.started), now_unix).is_some()
+    }
+
     /// The spool's `event_id`: the sid without dashes, 32 lowercase hex like every other id there.
     pub fn event_id(&self) -> String {
         self.stored.sid.replace('-', "")
@@ -132,22 +139,22 @@ impl Finished {
 }
 
 /// UTC `YYYY-MM-DDTHH:MM:SSZ`, the form the documentation's examples use.
-fn iso(unix: u64) -> String {
+pub(super) fn iso(unix: u64) -> String {
     let (y, m, d) = plx_net::net::civil_date(unix as i64);
     let s = unix % 86_400;
     format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", s / 3_600, s % 3_600 / 60, s % 60)
 }
 
-/// Is this spooled Sentry body a session item rather than an event? Decided on shape, in this one
-/// place: it has `sid`, `started` and `attrs` and an event never has `event_id` missing.
+/// How every spooled session body begins. A body is `serde_json::to_vec` of a `Value` whose map
+/// keeps its keys sorted, so `attrs` leads; a Sentry event has no top-level `attrs`.
+pub const SESSION_BODY_PREFIX: &[u8] = br#"{"attrs":"#;
+
+/// Is this spooled Sentry body a session item rather than an event? A prefix test, because the
+/// spool trim, the pending-session count at every session end (on the frame thread) and the send
+/// order all ask it of every record, and a full parse of each would cost far more than the answer.
+/// A test pins that [`Finished::payload`] serialises with this prefix, so a change fails loudly.
 pub fn is_session_body(body: &[u8]) -> bool {
-    let Ok(serde_json::Value::Object(o)) = serde_json::from_slice::<serde_json::Value>(body) else {
-        return false;
-    };
-    o.get("sid").is_some_and(|v| v.is_string())
-        && o.contains_key("started")
-        && o.contains_key("attrs")
-        && !o.contains_key("event_id")
+    body.starts_with(SESSION_BODY_PREFIX)
 }
 
 /// A random version-4 UUID, from the same source the analytics session id uses.
@@ -217,6 +224,13 @@ struct Live {
     checkpoint_mono: u64,
 }
 
+impl Live {
+    /// Unix seconds of the start by the clock of `clk`: its length is measured monotonically.
+    fn corrected_start(&self, clk: Clock) -> u64 {
+        clk.unix.saturating_sub(clk.mono.saturating_sub(self.started_mono))
+    }
+}
+
 #[derive(Debug)]
 pub struct Machine {
     live: Option<Live>,
@@ -261,9 +275,9 @@ impl Machine {
             }
             Event::Background => {
                 self.foreground = false;
-                self.end_exited(clk.mono, &mut fx);
+                self.end_exited(clk, &mut fx);
             }
-            Event::Shutdown => self.end_exited(clk.mono, &mut fx),
+            Event::Shutdown => self.end_exited(clk, &mut fx),
             Event::Input | Event::Tick { playing: true } => self.activity(clk, ctx, &mut fx),
             Event::Tick { playing: false } => {
                 self.expire(clk, &mut fx);
@@ -291,17 +305,20 @@ impl Machine {
         });
     }
 
-    fn finish(&mut self, status: Status, duration_s: u64, fx: &mut Vec<SessionFx>) {
-        if let Some(live) = self.live.take() {
+    fn finish(&mut self, status: Status, duration_s: u64, clk: Clock, fx: &mut Vec<SessionFx>) {
+        if let Some(mut live) = self.live.take() {
+            // The wall clock may have been unset (or stepped by NTP) when the session began: the
+            // start is the end minus the monotonic length, from the clock as it is now.
+            live.stored.started = live.corrected_start(clk);
             fx.push(SessionFx::Finish(Finished { stored: live.stored, status, duration_s, errors: 0 }));
             fx.push(SessionFx::Clear);
         }
     }
 
-    fn end_exited(&mut self, now_mono: u64, fx: &mut Vec<SessionFx>) {
+    fn end_exited(&mut self, clk: Clock, fx: &mut Vec<SessionFx>) {
         if let Some(live) = &self.live {
-            let duration = now_mono.saturating_sub(live.started_mono);
-            self.finish(Status::Exited, duration, fx);
+            let duration = clk.mono.saturating_sub(live.started_mono);
+            self.finish(Status::Exited, duration, clk, fx);
         }
     }
 
@@ -313,10 +330,10 @@ impl Machine {
         let age = clk.mono.saturating_sub(live.started_mono);
         if idle >= IDLE_SECS {
             let duration = live.last_active_mono.saturating_sub(live.started_mono);
-            self.finish(Status::Exited, duration, fx);
+            self.finish(Status::Exited, duration, clk, fx);
             true
         } else if age >= MAX_SESSION_SECS {
-            self.finish(Status::Exited, age, fx);
+            self.finish(Status::Exited, age, clk, fx);
             true
         } else {
             false
@@ -338,6 +355,7 @@ impl Machine {
             live.stored.last_active = clk.unix;
             if clk.mono.saturating_sub(live.checkpoint_mono) >= CHECKPOINT_SECS {
                 live.checkpoint_mono = clk.mono;
+                live.stored.started = live.corrected_start(clk);
                 fx.push(SessionFx::Persist(live.stored.clone()));
             }
         }
@@ -404,17 +422,38 @@ fn drive(event: Event) {
         let mut m = MACHINE.lock().unwrap_or_else(|e| e.into_inner());
         m.step(event, clk, &mut make_ctx)
     };
-    let finished = fx.iter().any(|e| matches!(e, SessionFx::Finish(_)));
     for effect in fx {
         match effect {
             SessionFx::Persist(stored) => persist_off_thread(stored),
             SessionFx::Clear => clear_state(),
-            SessionFx::Finish(f) => spool(&f),
+            SessionFx::Finish(f) if !f.reportable(clk.unix) => {
+                plx_base::eventlog::log("telemetry: a session ended on a clock that was never set; dropped");
+            }
+            // The process is ending: nothing runs after this, so it is written here.
+            SessionFx::Finish(f) if event == Event::Shutdown => {
+                spool(&f);
+            }
+            SessionFx::Finish(f) => spool_off_thread(f),
         }
     }
-    if finished && event != Event::Shutdown {
-        super::flush_soon();
+}
+
+/// Spool a finished session on the storage worker and then flush: the spool is read in full to
+/// count the pending sessions and written synced, neither of which belongs on the frame thread.
+fn spool_off_thread(f: Finished) {
+    let job = f.clone();
+    let queued = plx_base::storage_worker::submit(move || {
+        if spool(&job) {
+            super::flush_soon();
+        }
+    });
+    if queued.is_err() {
+        if spool(&f) {
+            super::flush_soon();
+        }
     }
+    #[cfg(any(test, feature = "test-support"))]
+    plx_base::storage_worker::drain_for_test();
 }
 
 /// The app is in use: boot, or crash reports were just switched on.
@@ -459,13 +498,32 @@ pub fn shutdown() {
 /// At boot, after crash recovery: report the previous process's unfinished session, then begin
 /// this one. `crashes_found` is `crashreport::recover_pending`'s count.
 pub fn recover_and_start(crashes_found: usize) {
-    let stored = read_state();
-    clear_state();
-    if let (Some(stored), true, Some(did)) = (stored, gate(), super::consent::errors_id()) {
-        match classify_unfinished(stored, crashes_found, super::crashreport::now_secs(), &did) {
-            Some(f) => spool(&f),
-            None => plx_base::eventlog::log("telemetry: an unfinished session could not be reported truthfully; dropped"),
+    recover_and_start_at(crashes_found, super::crashreport::now_secs());
+}
+
+/// [`recover_and_start`] against an injected clock.
+///
+/// The state file is deleted only once its session is spooled or definitively dropped (a
+/// different Crash report ID, consent off, a start outside the plausible window). On a clock that
+/// is not yet set it can be neither classified nor dated, so it is KEPT for a later boot, and no
+/// session begins now: the new one's state would overwrite it.
+fn recover_and_start_at(crashes_found: usize, now_unix: u64) {
+    if let Some(stored) = read_state() {
+        if now_unix < super::crashreport::FIRST_PLAUSIBLE_NOW {
+            plx_base::eventlog::log("telemetry: clock not set; an unfinished session is kept for a later boot");
+            return;
         }
+        if let (true, Some(did)) = (gate(), super::consent::errors_id()) {
+            match classify_unfinished(stored, crashes_found, now_unix, &did) {
+                Some(f) => {
+                    if !spool(&f) {
+                        return; // keep it: the next boot tries again
+                    }
+                }
+                None => plx_base::eventlog::log("telemetry: an unfinished session could not be reported truthfully; dropped"),
+            }
+        }
+        clear_state();
     }
     start();
 }
@@ -528,9 +586,9 @@ fn clear_state() {
 
 /// Queue a finished session: Errors category (withdrawal purges it with the crash reports it
 /// travels with), after making room under [`MAX_PENDING_SESSIONS`].
-fn spool(f: &Finished) {
+fn spool(f: &Finished) -> bool {
     use super::queue::{Category, Dest, Record};
-    let Ok(body) = serde_json::to_vec(&f.payload()) else { return };
+    let Ok(body) = serde_json::to_vec(&f.payload()) else { return true };
     let record = Record { category: Category::Errors, dest: Dest::Sentry, event_id: f.event_id(), body };
     let pending: Vec<String> = super::spool::read()
         .into_iter()
@@ -541,9 +599,11 @@ fn spool(f: &Finished) {
         let excess = pending.len() + 1 - MAX_PENDING_SESSIONS;
         super::spool::commit_retiring(&pending[..excess]);
     }
-    if super::spool::append_if(&record, super::consent::allows_errors) == Some(false) {
+    let appended = super::spool::append_if(&record, super::consent::allows_errors);
+    if appended == Some(false) {
         plx_base::eventlog::log("telemetry: a session report could not be spooled");
     }
+    appended != Some(false)
 }
 
 #[cfg(test)]
@@ -684,6 +744,46 @@ mod tests {
         // No consent means no ctx: nothing starts.
         assert!(m.step(Event::Input, at(7), &mut || None).is_empty());
         assert!(!m.is_open());
+    }
+
+    /// A television whose clock was never set when the session began reports the session from the
+    /// clock it has when the session ENDS: `started` is `unix_now - (mono_now - started_mono)`, and a
+    /// result outside the plausible window is not reported at all.
+    #[test]
+    fn a_session_started_on_an_unset_clock_is_reported_from_the_clock_at_its_end() {
+        let mut m = Machine::new();
+        m.step(Event::Start, Clock { mono: 0, unix: 12 }, &mut ctx_n(0));
+        let end = Clock { mono: 90, unix: 1_800_000_090 };
+        let fx = m.step(Event::Shutdown, end, &mut ctx_n(0));
+        let f = &finished(&fx)[0];
+        assert_eq!(f.stored.started, 1_800_000_000, "the start is the end minus the monotonic length");
+        assert!(f.reportable(end.unix));
+
+        let mut m = Machine::new();
+        m.step(Event::Start, Clock { mono: 0, unix: 12 }, &mut ctx_n(0));
+        let still_unset = Clock { mono: 90, unix: 102 };
+        let fx = m.step(Event::Shutdown, still_unset, &mut ctx_n(0));
+        assert!(!finished(&fx)[0].reportable(still_unset.unix), "an unset clock at the end is no start time");
+    }
+
+    #[test]
+    fn a_checkpoint_carries_a_start_time_corrected_by_the_clock_it_now_has() {
+        let mut m = Machine::new();
+        m.step(Event::Start, Clock { mono: 0, unix: 12 }, &mut ctx_n(0));
+        let fx = m.step(Event::Input, Clock { mono: CHECKPOINT_SECS, unix: 1_800_000_300 }, &mut ctx_n(0));
+        assert!(matches!(&fx[..], [SessionFx::Persist(s)] if s.started == 1_800_000_000 && s.last_active == 1_800_000_300), "{fx:?}");
+    }
+
+    /// Session bodies are serialised with sorted keys, so `attrs` leads. The recogniser reads that
+    /// prefix instead of parsing the body: if a serialisation change moves it, THIS fails loudly.
+    #[test]
+    fn a_serialised_session_begins_with_the_prefix_the_recogniser_reads() {
+        let f = classify_unfinished(stored("d"), 0, 1_800_100_000, "d").unwrap();
+        let body = serde_json::to_vec(&f.payload()).unwrap();
+        assert!(body.starts_with(SESSION_BODY_PREFIX), "{}", String::from_utf8_lossy(&body));
+        assert!(is_session_body(&body));
+        assert!(!is_session_body(br#"{"sid":"x","started":1,"attrs":{}}"#), "not the serialised shape");
+        assert!(!is_session_body(br#"{"contexts":{},"event_id":"a"}"#));
     }
 
     fn stored(did: &str) -> Stored {
@@ -848,6 +948,25 @@ mod tests {
             let now = rig.state().expect("the new boot began its own session");
             assert_ne!(now.sid, live.sid);
         }
+    }
+
+    /// A boot on a clock that is not set yet can neither date nor classify the old session, so its
+    /// state file stays for a later boot (and no new session overwrites it); once the clock is set
+    /// the same file is reported and removed.
+    #[test]
+    fn an_unfinished_session_survives_a_boot_on_an_unset_clock_and_is_reported_on_a_later_one() {
+        let rig = Rig::new("unsetclock", Some("crash-id"));
+        start();
+        let live = rig.state().expect("persisted");
+        *MACHINE.lock().unwrap() = Machine::new();
+        recover_and_start_at(1, 12);
+        assert_eq!(rig.state(), Some(live.clone()), "kept, and not replaced by a new session");
+        assert!(rig.spooled().is_empty());
+        recover_and_start_at(1, super::super::crashreport::now_secs());
+        let spooled = rig.spooled();
+        assert_eq!(spooled.len(), 1);
+        assert_eq!(body_of(&spooled[0])["sid"], live.sid.as_str());
+        assert_ne!(rig.state().expect("this boot's own").sid, live.sid);
     }
 
     #[test]
