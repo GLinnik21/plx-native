@@ -230,7 +230,7 @@ fn the_declared_live_and_settings_facts_are_the_ones_main_has() {
     ] {
         let d = row(key);
         assert_eq!(d.settings, settings, "{key}");
-        assert!(d.live, "{key}: every one of the twelve has a live cell in media");
+        assert!(d.live, "{key}: every declared live setting has a cell in media");
         assert_eq!(d.scope, Scope::Profile, "{key}: DECLARED FLIP (P1a, and P1c for trailer_autoplay, where live and settings flipped too): it was Install on main");
         assert_eq!(d.fallback, Fallback::LegacyInstallKey, "{key}: a profile with no value of its own reads the TV's");
         assert!(!d.account_bound, "{key}: the top-level key is the TV's, the profile's own value is `profile_prefs`");

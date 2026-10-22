@@ -36,6 +36,23 @@ setting registrations and Settings picker. Translations live in separate `legacy
 catalog shards, and Previous/Next use separate SVG assets. Those hooks must be retained when
 merging upstream updates; separate files reduce conflicts but cannot eliminate them.
 
+Queue handoffs carry the existing PlayQueue ID, selected item ID and rows through the shared
+resolve environment. Creating a fresh queue on Next can return only the remaining tail and lose
+the preceding item; preserving the queue keeps Previous working after manual or automatic advance.
+
 No native decoder, Starfish/ACB, demuxer, build configuration or Plex endpoint changes are needed.
 Host tests and simulator checks do not establish LG decoder or video-plane behavior; finish
 device verification through the repository's `tv-session` workflow before shipping.
+
+The synthetic simulator regression exercises Next/Previous queue continuity, the five-second
+restart rule, an immediate hidden-HUD seek and visible-HUD confirmation without household data:
+
+```sh
+make sim-macos
+python3 tests/fixtures/make_fixtures.py --only mockverify --out /tmp/legacy-media
+python3 tests/legacy_controls_sim.py --sim rust-modules/target-sim/debug/plxnative-sim \
+  --media /tmp/legacy-media --out /tmp/legacy-controls-evidence
+```
+
+Use a new output directory for each run. A normal buffering read-out can briefly appear while
+the simulator primes its clock sink after seeking; the HUD remains dismissed when playback resumes.

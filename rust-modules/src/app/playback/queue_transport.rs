@@ -46,17 +46,8 @@ pub(super) fn play(
     };
     close_player_overlays(pages);
     plx_media::player::stop_bufferfeed(ps, pa);
-    if !plx_media::route::request_play(
-        ps,
-        bridge.metadata_mut(),
-        row.sid,
-        &row.rk,
-        &row.part,
-        &row.vcodec,
-        &row.acodec,
-        title,
-        &context,
-    ) {
+    if !plx_media::route::request_play_queue_item(ps, bridge.metadata_mut(), &row, title, &context)
+    {
         return false;
     }
     bridge

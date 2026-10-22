@@ -11,7 +11,7 @@
 
 mod decision;
 mod legacy_controls;
-pub use legacy_controls::{QueueStep, previous_restarts, queue_neighbor, queue_neighbors};
+pub use legacy_controls::{QueueContinuation, QueueStep, previous_restarts, queue_neighbor, queue_neighbors};
 mod flight;
 mod plan;
 mod prefs;

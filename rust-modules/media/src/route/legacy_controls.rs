@@ -1,6 +1,55 @@
 //! Queue transport policy for the optional legacy HUD. No I/O and no new playback path.
-use super::{cur_rk, cur_sid, pq_item_id, with_queue, PlaybackSession};
+use super::{cur_rk, cur_sid, pq_id, pq_item_id, with_queue, PlaybackSession};
 use plx_plex::plex::{queue_index_of, QueueRow, ServerId};
+use std::sync::Arc;
+
+/// An owned continuation of the server's existing queue, captured before request_play retires
+/// the outgoing state. Shared across resolve snapshots without copying a show's rows per frame.
+#[derive(Clone)]
+pub struct QueueContinuation {
+    id: String,
+    rows: Arc<Vec<QueueRow>>,
+    selected: usize,
+}
+
+impl QueueContinuation {
+    fn from_queue(id: String, rows: &[QueueRow], target: &QueueRow) -> Option<Self> {
+        if id.is_empty() || target.item_id == 0 {
+            return None;
+        }
+        let selected = queue_index_of(rows, target.item_id, target.sid, &target.rk)?;
+        let row = &rows[selected];
+        if row.item_id != target.item_id || row.sid != target.sid || row.rk != target.rk {
+            return None;
+        }
+        Some(Self {
+            id,
+            rows: Arc::new(rows.to_vec()),
+            selected,
+        })
+    }
+
+    pub(super) fn capture(ps: &PlaybackSession, target: &QueueRow) -> Option<Self> {
+        with_queue(ps, |rows| Self::from_queue(pq_id(ps), rows, target))
+    }
+
+    pub(super) fn matches(&self, sid: ServerId, rk: &str) -> bool {
+        self.rows[self.selected].sid == sid && self.rows[self.selected].rk == rk
+    }
+
+    pub(super) fn resolve(&self) -> super::decision::QueueInfo {
+        super::decision::QueueInfo {
+            id: self.id.clone(),
+            item_id: self.rows[self.selected].item_id.to_string(),
+            up_next: self
+                .rows
+                .get(self.selected + 1)
+                .and_then(super::plan::up_next_of),
+            rows: self.rows.as_ref().clone(),
+            machine_id: String::new(),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QueueStep {
@@ -67,6 +116,42 @@ mod tests {
         assert!(!previous_restarts(4_999_999_999));
         assert!(previous_restarts(5_000_000_000));
         assert!(previous_restarts(90_000_000_000));
+    }
+
+    #[test]
+    fn legacy_controls_queue_handoff_retains_the_predecessor_and_original_queue_ids() {
+        let sid = ServerId::from_raw(1);
+        let rows: Vec<_> = [11, 12]
+            .into_iter()
+            .map(|item_id| QueueRow {
+                item_id,
+                sid,
+                rk: item_id.to_string(),
+                kind: "episode".into(),
+                ..Default::default()
+            })
+            .collect();
+        // A fresh PlayQueue POST for item 12 can return only [12]. The continuation must carry
+        // [11, 12] instead, or Previous on the newly started item has nowhere to go.
+        let handoff = QueueContinuation::from_queue("queue-7".into(), &rows, &rows[1]).unwrap();
+        let landed = handoff.resolve();
+        assert_eq!(landed.id, "queue-7");
+        assert_eq!(landed.item_id, "12");
+        assert_eq!(landed.rows.len(), 2);
+        assert_eq!(
+            neighbor(&landed.rows, 12, sid, "12", QueueStep::Previous)
+                .unwrap()
+                .rk,
+            "11"
+        );
+        assert!(handoff.matches(sid, "12"));
+        assert!(!handoff.matches(ServerId::from_raw(2), "12"));
+        assert!(!handoff.matches(sid, "11"));
+        let back = QueueContinuation::from_queue(landed.id, &landed.rows, &landed.rows[0])
+            .unwrap()
+            .resolve();
+        assert_eq!(back.item_id, "11");
+        assert_eq!(back.up_next.unwrap().rk, "12");
     }
 
     #[test]

@@ -1,4 +1,4 @@
-//! The ten player settings and hero trailer autoplay per profile: the record and its soft parse, the fallback read, the
+//! Per-profile playback and display settings: the record and its soft parse, the fallback read, the
 //! write that always records an own value and prunes foreign stamps, and the seat a publication
 //! seats. The live half (cells, the door, the restore) is `media::route::prefs_tests`; the seat
 //! trigger is the app's `restore_characterisation_tests`.
@@ -43,8 +43,8 @@ fn the_row_declares_a_profile_scoped_account_bound_soft_list() {
 }
 
 /// **T-fields.** `ProfilePrefs` has a field for exactly the settings whose `FALLBACK` is the legacy
-/// install key, under the same name: the ten player settings and `trailer_autoplay` (P1c), and no
-/// more. A twelfth Profile row without a field (or a field without its row) fails here.
+/// install key, under the same name. A Profile row without a field (or a field without its row)
+/// fails here.
 #[test]
 fn the_record_has_one_field_for_each_setting_with_a_legacy_fallback() {
     let full = ProfilePrefs {

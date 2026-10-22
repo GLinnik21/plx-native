@@ -7457,6 +7457,7 @@ impl ResolveEnv {
             direct_play_mode: direct_play_mode(),
             src_kbps: resolve_src_kbps(meta.current(), sid, rk),
             omit_queue_continuous: false,
+            queue_continuation: None,
             preview: false,
             audio_enhancements: crate::player::audio_enhancements(),
             pass: plx_plex::plex::serverinfo::subscription_of(sid),
@@ -7741,6 +7742,22 @@ pub fn request_play(
     )
 }
 
+/// Start an existing queue item without replacing the queue and losing its preceding rows.
+/// The continuation is captured before the common request transaction retires the outgoing queue.
+pub fn request_play_queue_item(
+    ps: &mut PlaybackSession,
+    meta: &mut plx_data::stores::metadata::MetadataStore,
+    row: &plx_plex::plex::QueueRow,
+    title: &str,
+    ctx: &str,
+) -> bool {
+    let queue = super::legacy_controls::QueueContinuation::capture(ps, row);
+    request_play_with_queue(ps, meta, PlaybackRequest {
+        sid: row.sid, rk: row.rk.clone(), part: row.part.clone(), vcodec: row.vcodec.clone(),
+        acodec: row.acodec.clone(), title: title.into(), ctx: ctx.into(), preview: false,
+    }, None, None, false, crate::player::report::AttemptOrigin::Fresh, queue)
+}
+
 /// Same resolve door as [`request_play`], flagged as a preview. Does not push a route. Resume is
 /// zero. The caller keeps the detail page mounted.
 pub fn request_preview(
@@ -7808,6 +7825,20 @@ fn request_play_inner(
     trace_generation: Option<u32>,
     drain_previous: bool,
     origin: crate::player::report::AttemptOrigin,
+) -> bool {
+    request_play_with_queue(ps, meta, request, retry, trace_generation, drain_previous, origin, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn request_play_with_queue(
+    ps: &mut PlaybackSession,
+    meta: &mut plx_data::stores::metadata::MetadataStore,
+    request: PlaybackRequest,
+    retry: Option<RetryContext>,
+    trace_generation: Option<u32>,
+    drain_previous: bool,
+    origin: crate::player::report::AttemptOrigin,
+    queue: Option<super::legacy_controls::QueueContinuation>,
 ) -> bool {
     let sid = request.sid;
     let rk = &request.rk;
@@ -7893,7 +7924,8 @@ fn request_play_inner(
     // and makes the landing stale instead of installing an old plan beneath a new checkmark.
     let contract_revision = desired_contract_revision();
     // captured HERE, on the main thread, and moved into the worker — see ResolveEnv
-    let env = request_env(ps, meta.view(), &request, retry);
+    let mut env = request_env(ps, meta.view(), &request, retry);
+    env.queue_continuation = queue;
     let gen = PLAY_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     if let Some(resume_ns) = retry.map(|r| r.resume_ns).filter(|ns| *ns > 0) {
         *PLAY_RESUME.lock().unwrap_or_else(|e| e.into_inner()) = Some((gen, resume_ns));

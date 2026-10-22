@@ -520,7 +520,7 @@ impl<E: MemoryEntry> MemoryMirror<E> {
     }
 }
 
-/// The profiles' own values of the eleven settings, as of the last pick (not the last write that
+/// The profiles' own setting values, as of the last pick (not the last write that
 /// landed): what [`restore_profile_rows`] reads, because `session::peek()` is write-after and a
 /// switch back to a profile must not show a pre-pick value.
 static PROFILE_PREFS: KeyedMirror<ProfilePrefsRecord> = KeyedMirror::new();

@@ -951,6 +951,10 @@ pub(crate) fn play_up_next(
     // category this app's Data Safety declaration answers "Not collected" to. `eventlog::scrub` is a
     // backstop for shapes like this; not writing it is the mechanism.
     log(&format!("up next: S{}E{} rk={}", u.season, u.index, u.rk));
+    if let Some(row) = plx_media::route::queue_neighbor(ps, plx_media::route::QueueStep::Next)
+        .filter(|row| row.rk == u.rk) {
+        return queue_transport::play(ps, pa, row, hud_ms, pages, bridge);
+    }
     let sid = plx_media::route::item_sid(plx_media::route::cur_sid(ps));
     queue_transport::play(ps, pa, plx_plex::plex::QueueRow {
         sid, rk: u.rk, kind: "episode".into(), title: u.ep_title, show_title: u.show_title,
