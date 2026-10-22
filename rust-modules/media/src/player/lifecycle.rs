@@ -1910,6 +1910,128 @@ mod foreground_resume_tests {
         assert_eq!(actuator.clock_calls, 2);
         assert_eq!(lifecycle.state, ForegroundState::Idle);
     }
+
+    /// §3.2's table, every state under both successors: the exact state, the exact claim result,
+    /// and the actuator calls (`after_load(None, clock, false)` once, for `LoadPending` x `Exit`).
+    #[test]
+    fn superseded_moves_every_state_as_the_table_says() {
+        use ForegroundClaimResult::{Effect, Ordinary, Suppressed};
+        let paused = ForegroundClock::Paused;
+        let playing = ForegroundClock::Playing;
+        let prepare = ForegroundClaim::Prepare {
+            saved_ns: 5,
+            saved_clock: paused,
+            resume_ns: 5,
+            clock: paused,
+        };
+        let load = ForegroundClaim::Load {
+            resume_ns: 5,
+            clock: paused,
+        };
+        let idle = ForegroundState::Idle;
+        // (state, Playback: (after, result), Exit: (after, result), retired clock for Exit)
+        let cases: Vec<(
+            &str,
+            ForegroundState<u64>,
+            (ForegroundState<u64>, ForegroundClaimResult),
+            (ForegroundState<u64>, ForegroundClaimResult),
+        )> = vec![
+            ("Idle", idle, (idle, Ordinary), (idle, Ordinary)),
+            (
+                "Suspended",
+                ForegroundState::Suspended { id: 1, saved_ns: 5, clock: paused },
+                (idle, Suppressed),
+                (idle, Suppressed),
+            ),
+            (
+                "Claimed Prepare",
+                ForegroundState::Claimed { id: 1, claim: prepare },
+                (idle, Suppressed),
+                (idle, Suppressed),
+            ),
+            (
+                "Claimed Load",
+                ForegroundState::Claimed { id: 1, claim: load },
+                (idle, Suppressed),
+                (idle, Suppressed),
+            ),
+            (
+                "Claimed PlayClock",
+                ForegroundState::Claimed { id: 1, claim: ForegroundClaim::PlayClock },
+                (ForegroundState::Claimed { id: 1, claim: ForegroundClaim::PlayClock }, Suppressed),
+                (idle, Suppressed),
+            ),
+            (
+                "Prepared",
+                ForegroundState::Prepared { id: 1, resume_ns: 5, clock: paused },
+                (idle, Suppressed),
+                (idle, Suppressed),
+            ),
+            (
+                "LoadPending",
+                ForegroundState::LoadPending { id: 1, attempt: 7, resume_ns: 5, clock: playing },
+                (
+                    ForegroundState::LoadPending { id: 1, attempt: 7, resume_ns: 5, clock: playing },
+                    Suppressed,
+                ),
+                (idle, Effect(ForegroundEffect::Retire { id: 1, clock: playing })),
+            ),
+            (
+                "PreparePending",
+                ForegroundState::PreparePending {
+                    id: 1,
+                    saved_ns: 5,
+                    saved_clock: paused,
+                    resume_ns: 5,
+                    clock: paused,
+                },
+                (idle, Suppressed),
+                (idle, Suppressed),
+            ),
+            (
+                "RecoveryPending",
+                ForegroundState::RecoveryPending { id: 1, resume_ns: 5, clock: paused },
+                (idle, Suppressed),
+                (idle, Suppressed),
+            ),
+            (
+                "ClockPending",
+                ForegroundState::ClockPending { id: 1 },
+                (ForegroundState::ClockPending { id: 1 }, Suppressed),
+                (idle, Suppressed),
+            ),
+        ];
+        for (name, start, playback, exit) in cases {
+            for (successor, (after, result)) in [(Successor::Playback, playback), (Successor::Exit, exit)] {
+                let input = ForegroundInput::Superseded(successor);
+                let mut lifecycle = ForegroundLifecycle::<u64> { state: start, next_id: 1 };
+                assert_eq!(lifecycle.claim(input), result, "{name} x {successor:?}: result");
+                assert_eq!(lifecycle.state, after, "{name} x {successor:?}: state");
+
+                let mut ps = crate::route::PlaybackSession::IDLE;
+                let mut lifecycle = ForegroundLifecycle::<u64> { state: start, next_id: 1 };
+                let mut actuator = FakeActuator::default();
+                let activation = drive_foreground(&mut lifecycle, &mut ps, input, &mut actuator);
+                assert_eq!(lifecycle.state, after, "{name} x {successor:?}: driven state");
+                let expected_activation = if result == Ordinary {
+                    ForegroundActivation::Ordinary
+                } else {
+                    ForegroundActivation::Handled
+                };
+                assert_eq!(activation, expected_activation, "{name} x {successor:?}: activation");
+                let retired = match result {
+                    Effect(ForegroundEffect::Retire { clock, .. }) => vec![(None, clock, false)],
+                    _ => Vec::new(),
+                };
+                assert_eq!(actuator.after_loads, retired, "{name} x {successor:?}: after_load");
+                assert_eq!(
+                    (actuator.load_calls, actuator.clock_calls, actuator.prepare_calls.len()),
+                    (0, 0, 0),
+                    "{name} x {successor:?}: nothing else runs"
+                );
+            }
+        }
+    }
 }
 
 #[cfg(all(test, feature = "hostsim"))]

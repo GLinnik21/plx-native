@@ -5245,18 +5245,10 @@ mod lifecycle_regression_tests {
         assert!(plx_media::route::up_next(&rig.app.player.session).is_none());
     }
 
-    /// An exit over a parked restore whose Load was refused (`Prepared`) must retire it; main left
-    /// it standing, so `playback_may_run` stayed false until the next play released it.
-        #[test]
-    fn exit_over_a_refused_restore_retires_it() {
-        let _serial = plx_base::testlock::serial();
-        let Some(mut rig) = Rig::new() else {
-            eprintln!(
-                "SKIPPED exit_over_a_refused_restore_retires_it: \
-                 lifecycle fixture worker thread could not be spawned"
-            );
-            return;
-        };
+    /// The first half of a foreground restore the engine refuses: playback, an OS background, DID
+    /// foreground, and a Load the route answers with `StartFailed`, leaving the machine `Prepared`
+    /// with no live engine. Returns the frame the rest of the test keeps driving.
+    fn refuse_restore(rig: &mut Rig) -> Frame {
         rig.request();
         rig.resolve();
         rig.accept_start();
@@ -5300,6 +5292,22 @@ mod lifecycle_regression_tests {
             ForegroundState::Prepared { .. }
         ));
         assert!(!rig.app.adapters.player.is_live());
+        fr
+    }
+
+    /// An exit over a parked restore whose Load was refused (`Prepared`) must retire it; main left
+    /// it standing, so `playback_may_run` stayed false until the next play released it.
+    #[test]
+    fn exit_over_a_refused_restore_retires_it() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::new() else {
+            eprintln!(
+                "SKIPPED exit_over_a_refused_restore_retires_it: \
+                 lifecycle fixture worker thread could not be spawned"
+            );
+            return;
+        };
+        let fr = refuse_restore(&mut rig);
 
         player_requests(
             &mut rig.app.player,
@@ -5315,6 +5323,47 @@ mod lifecycle_regression_tests {
         );
         frame(&mut rig.app, 48);
         assert!(super::super::bridge::player(&rig.app.pages).is_none());
+        assert_eq!(rig.app.player.lifecycle.state(), ForegroundState::Idle);
+        assert!(playback_may_run(&rig.app));
+    }
+
+    /// The failure screen's Retry over a refused restore: its fresh resolve supersedes the parked
+    /// `Prepared` at the `play_pending` boundary and the retry runs. Pins what replacing
+    /// `replace_with_new_playback` by `Superseded(Playback)` must keep.
+    #[test]
+    fn a_retry_from_a_refused_restore_still_runs() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::new() else {
+            eprintln!(
+                "SKIPPED a_retry_from_a_refused_restore_still_runs: \
+                 lifecycle fixture worker thread could not be spawned"
+            );
+            return;
+        };
+        let mut fr = refuse_restore(&mut rig);
+
+        player_requests(
+            &mut rig.app.player,
+            &mut rig.app.adapters.player,
+            &mut rig.app.repause_at,
+            vec![plx_screens::registry::PlayerReq::RetryPlayback],
+            fr.now,
+            &mut rig.app.refresh_hubs,
+            &mut rig.app.pages,
+            &mut rig.app.bridge,
+            &mut rig.app.ok_armed,
+            &mut rig.app.input.press,
+        );
+        assert!(plx_media::route::play_pending());
+        rig.accept_start();
+        poll_until("the retry did not land past the refused restore", || {
+            unsafe {
+                playback_tick(&mut rig.app, &mut fr);
+                update(&mut rig.app, &mut fr);
+            }
+            rig.app.adapters.player.is_live()
+        });
+        assert!(!plx_media::route::play_pending());
         assert_eq!(rig.app.player.lifecycle.state(), ForegroundState::Idle);
         assert!(playback_may_run(&rig.app));
     }
