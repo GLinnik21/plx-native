@@ -1,4 +1,4 @@
-{"updated":"2026-10-22T14:50:07Z",
+{"updated":"2026-10-22T14:50:49Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -3309,7 +3309,8 @@
 {"id":39788749355,"at":"2026-10-22T13:39:18Z","sha":"20e1574ae","title":"Merge remote-tracking branch 'origin/main' into fix/814-alt-runtime","pr":897,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":172,"macOS simulator build + launch":208,"Linux simulator build + launch":249,"Windows launcher syntax":21}},
 {"id":39789741224,"at":"2026-10-22T13:45:51Z","sha":"2302e3e5e","title":"Also available: a show or season copy shows no runtime; the show's nominal duration is no episode's (#814)","pr":897,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":217,"Linux simulator build + launch":271,"macOS tests against bundled FFmpeg and ASS":207,"Windows launcher syntax":15}},
 {"id":39791302111,"at":"2026-10-22T13:56:05Z","sha":"df17b03f5","title":"Merge branch 'main' into end-of-film-eos","pr":865,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":300,"macOS simulator build + launch":248,"Windows launcher syntax":26,"macOS tests against bundled FFmpeg and ASS":203}},
-{"id":39792371122,"at":"2026-10-22T14:03:12Z","sha":"60538b681","title":"player: a film ends on the pipeline's end-of-stream","pr":865,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":146,"Windows launcher syntax":20,"macOS simulator build + launch":159,"Linux simulator build + launch":276}}
+{"id":39792371122,"at":"2026-10-22T14:03:12Z","sha":"60538b681","title":"player: a film ends on the pipeline's end-of-stream","pr":865,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":146,"Windows launcher syntax":20,"macOS simulator build + launch":159,"Linux simulator build + launch":276}},
+{"id":39798514166,"at":"2026-10-22T14:45:41Z","sha":"d57f0ec77","title":"Player: document the busy BACK rule, fix an overclaiming field doc, test the busy UP-hide","pr":909,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":19}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
