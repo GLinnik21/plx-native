@@ -2,7 +2,9 @@
 //!
 //! One global setting (Settings > Libraries > Under posters): a Title switch (default Off) and a
 //! Details picker. Only the FOCUSED row opens its band: 80 px for one line, 112 px for two,
-//! nothing when the policy shows nothing; non-focused rows keep their 40 px spacing.
+//! nothing when the policy shows nothing; non-focused rows keep their 40 px spacing. (The Continue Watching
+//! deck is the one shelf handed a different policy: its progress line is always shown, so under Nothing
+//! it is handed `registry::captions::deck_policy` and keeps its one line.)
 //!
 //! **A line the setting turns on is never drawn empty**, whatever the tile is. The title line is the
 //! name a reader knows the tile by (a season by its SHOW, an episode by its own title). The details
@@ -10,7 +12,7 @@
 //! often no genre or rating) says its identity line instead (a season "Season 6" or "Specials", an
 //! episode its "S1 · E8" address, a show or movie its year, a collection its size), and a tile with
 //! not even that says what KIND it is ("Episode", "Movie", "Show", "Collection"), so a band the
-//! policy opens is never open over nothing. Under Nothing with Title Off no band opens at all.
+//! policy opens is never open over nothing. Under Nothing with Title Off no band opens at all (but for the deck).
 //!
 //! **One collection rule, on every surface.** A collection's details line is its size ("7 films")
 //! under every details kind but Nothing; the Title switch governs its title line like any poster's;

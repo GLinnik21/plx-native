@@ -1153,7 +1153,8 @@ pub fn draw_label(
     draw_label_block(p, rect, sty, label, lines, bottom, measure);
 }
 /// **The state line under a focused Continue Watching tile** (`registry::captions::shelf_label`: the
-/// caption rung of the deck's state, replacing the details line whenever the setting shows one; a
+/// caption rung of the deck's state, replacing the details line, and always shown on the deck (the
+/// owner's 2026-10-22 call), Details Nothing included (`captions::deck_policy`); a
 /// plain poster's details line is worded by `caption_policy::caption_lines`, the one rule). An
 /// in-progress episode reads "S3 · E4 · 8m left" and a next-up episode (no resume point yet)
 /// "S2 · E1 · New episode"; a resumed movie reads just the time remaining. The episode's ADDRESS
@@ -3031,7 +3032,7 @@ mod tests {
     }
 
     /// With no title the mark leads the details line, centred the same way; with no line at all
-    /// (Nothing) there is nothing to lead and no mark.
+    /// (a label with no lines) there is nothing to lead and no mark.
     #[test]
     fn the_play_mark_leads_the_details_line_when_there_is_no_title() {
         let _serial = plx_base::testlock::serial();
