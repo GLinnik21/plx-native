@@ -1960,14 +1960,14 @@ gone. The remote FIFO's key and `ck:` tokens are safe because every field they s
 to Starfish/ACB, so playback correctness — and every pixel-level and perf question — is only
 observable as behavior on the TV. **Wake the TV first** (`wake-tv` skill) — asleep, every assertion
 fails as "no line found", which reads exactly like a total regression. **The panel rule (the
-owner's standing directive, restated 2026-09-07):** the television's PANEL is **OFF and the sound
-is OFF for EVERY device run** — the playback tiers, the fps scenes, `shot` and capture alike; the
-set is in a living room. The owner's statement is that rendering continues with the LCD off, so an
-fps scene graded under `screen off` is a real measurement; the 2026-09-06 form of this rule (panel
-ON for fps, on the reasoning that `plx_machine::idle` gates presents on what the panel shows) is SUPERSEDED,
-and the one number still owed is a same-session `fps=` comparison of one scene screen-on vs
-screen-off, to be taken at the next device session and written here. `tests/run.py --fps` says so
-in its banner; the command is `tools/tv-session.sh screen off` (a PANEL state, not an app state —
+owner's standing directive, amended 2026-10):** the sound is **OFF (muted) for EVERY device run**.
+The panel is OFF for the playback and log-read tiers (the set is in a living room), but
+**ON for every smoothness / fps run** (`--fps*`, `profile-tv`): a dark panel lets `plx_machine::idle`
+hold presents back, so frame times are meaningless or silently wrong, and the owner watches those
+runs. `tests/run.py --fps --mock` therefore asserts `screen on` before every scene (`--panel off`
+is the opt-in for an unattended soak). This reverses the 2026-09-07 form ("panel OFF for fps too,
+rendering continues with the LCD off"), which was never backed by the same-session screen-on vs
+screen-off `fps=` comparison it said was owed. The command is `tools/tv-session.sh screen off|on` (a PANEL state, not an app state —
 the app keeps running and playback keeps decoding). The sound half is now the same shape of
 command: `tools/tv-session.sh sound off|on|status` calls `com.webos.service.audio/setMuted` and
 reads `getVolume` back to confirm — this is the sanctioned path, so no lane needs

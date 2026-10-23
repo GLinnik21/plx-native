@@ -229,7 +229,11 @@ something.
     dispatches `Pending` for a replacement remux (PUT + `/decision`, landing at the offset the Auto
     worker published) and `PendingNoHold` for a direct Original the worker already sampled, which
     needs no round trip and keeps playing. A refused one reopens the retained HLS
-    (`pump::land_automatic_original`) because the Auto worker exited to hand the action over. The
+    (`pump::land_automatic_original`) because the Auto worker exited to hand the action over; the
+    reducer remembers the refusal against that HLS encoder (`PlayerControl::original_refused_on`;
+    an admitted trial whose Load fails is recorded the same way, on the encoder its rollback's
+    rebase installs), so the reopened worker's source gate starts held (`ProbeBlock::RouteRefused`) until an HLS
+    commit, a seek's rebuild or a new playback changes the route — no timer, no re-ask loop. The
     Original-to-HLS fallback (`route::execute_auto_hls_claim`) never holds, though its worker reaches
     PMS: the Original plays until the landing replaces it, and a refusal (`pump::land_automatic_hls`)
     raises `demux_io_failed`. A user pick made during an automatic flight WAITS in `pending_user` and

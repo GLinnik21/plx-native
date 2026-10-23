@@ -98,9 +98,10 @@ set — no lane needs the raw luna-send/`PLX_TV_LOCK_BYPASS` route for it. Neith
 `sound` is restored automatically by `down`; a lane that muted or blanked the panel for its own
 reasons is the one that knows when to undo it.
 
-**The panel rule (the owner's standing directive, restated 2026-09-07):** run every device tier —
-playback, fps scenes, `shot`, capture — with the panel OFF and the sound OFF; the set is in a
-living room, and rendering continues with the LCD off. `tools/tv-session.sh screen off` and
+**The panel rule (the owner's standing directive, amended 2026-10):** the sound is OFF for every
+device run. The panel is OFF for playback and log-read tiers (the set is in a living room) but ON for
+fps / smoothness runs, where a dark panel makes the frame times meaningless (`tests/run.py --fps
+--mock` keeps it on; `--panel off` opts out). `tools/tv-session.sh screen on|off` and
 `tools/tv-session.sh sound off` are both it. See `docs/agent-reference.md` (Tier 2) for the full
 history of this rule.
 

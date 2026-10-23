@@ -6660,7 +6660,22 @@ fn hls_demux(
                     control.catalog,
                 )
             })
-            .flatten();
+            .flatten()
+            // An automatic Original recovery was already refused on this HLS encoder (or admitted
+            // and rolled back onto it after its Load failed): this worker is the pump's reopen of
+            // the retained route, and a fresh gate would probe, ask and be refused again, a
+            // visible reload each round. Held until an HLS commit changes the
+            // route (`OriginalRecovery::on_hls_commit`).
+            .map(|gate| {
+                if control.original_refused_on_this_route() {
+                    crate::player::log(
+                        "abr: Original was refused on this HLS route; not asked again until the route changes",
+                    );
+                    gate.after_route_refusal()
+                } else {
+                    gate
+                }
+            });
         // **Observation only (plan I0-G).** A seek builds a FRESH controller here, so the live
         // link estimate does not survive it — the only thing that does is `prior`, whose writer on
         // the fallback path is the rate measured at the moment Original failed. One line, printed
