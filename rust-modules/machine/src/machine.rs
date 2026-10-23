@@ -682,6 +682,7 @@ impl<K> InputEvent<K> {
             }
             InputKind::PointerHidden => { c.u32(6); }
             InputKind::SystemKeyboard(up) => { c.u32(7).bool(*up); }
+            InputKind::Pan { dx, x, y } => { c.u32(8).f32(*dx).f32(*x).f32(*y); }
         }
     }
 }
@@ -744,6 +745,14 @@ pub enum InputKind<K> {
     },
     Wheel {
         dy: f32,
+    },
+    /// **A sideways glide of the row under the pointer** (the application's pointer edge glide):
+    /// `dx` px (+ shows more on the right), for whatever scrolls sideways at screen `(x, y)`. A
+    /// page with nothing there ignores it.
+    Pan {
+        dx: f32,
+        x: f32,
+        y: f32,
     },
     Text(TextEdit),
     PointerHidden,

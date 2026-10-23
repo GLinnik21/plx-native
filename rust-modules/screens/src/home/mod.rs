@@ -3033,10 +3033,30 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                     .map(|_| *elem);
                 self.free = false;
                 self.snap_target = if loc.on_grid() { 1.0 } else { 0.0 };
+                if let Located::Item(row, _) = loc {
+                    if let Some(shelf) = self.grid.shelves.get_mut(row) { shelf.unfree(); }
+                }
                 fx.invalidate(Provenance::Input);
             }
         }
         match ev {
+            // The pointer's sideways glide moves the shelf under it, which stays where it put it
+            // until a key moves along it or a click lands on one of its cards (`Shelf::glide`).
+            ScreenEvent::Input(InputEvent { kind: InputKind::Pan { dx, y, .. }, .. }) => {
+                if dx.is_finite() {
+                    let under = (0..self.grid.shelves.len()).find(|&row| {
+                        let top = self.grid.base_y(row);
+                        self.shelf_on_screen(row) && *y >= top && *y < top + CARD_DY + CARD_H + self.grid.under_band(row)
+                    });
+                    if let (Some(row), Some(n)) = (under, under.and_then(|row| self.rows.get(row)).map(|hub| hub.elems.len())) {
+                        if let Some(shelf) = self.grid.shelves.get_mut(row) {
+                            shelf.glide(*dx, n);
+                            fx.invalidate(Provenance::Input);
+                        }
+                    }
+                }
+                Handled::Yes
+            }
             // A wheel (the pointer's edge glide, a fractional one every frame) moves the page
             // itself, focus staying where it is: down from the hero into the shelves, then through
             // them by `ROW_PITCH` a row; up through the shelves, then back to the hero.

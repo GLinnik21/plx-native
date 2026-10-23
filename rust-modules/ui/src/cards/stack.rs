@@ -748,6 +748,24 @@ impl<K: Copy + Eq> Stack<K> {
             ScreenEvent::FocusMoved { by: plx_machine::machine::By::Pointer, .. } => self.wheeled = true,
             ScreenEvent::FocusMoved { to, .. } if self.on_move => self.reveal_on(p, cx, *to),
             ScreenEvent::FocusMoved { .. } => self.wheeled = false,
+            // The pointer's sideways glide moves the shelf under it (`Shelf::glide`).
+            ScreenEvent::Input(input) if matches!(input.kind, plx_machine::machine::InputKind::Pan { .. }) => {
+                if let plx_machine::machine::InputKind::Pan { dx, y, .. } = input.kind {
+                    let under = (0..self.bodies.len()).find(|&i| {
+                        matches!(self.bodies[i], Body::Shelf(_)) && {
+                            let r = self.rect(p, cx, i);
+                            y >= r.y && y < r.y + r.h
+                        }
+                    });
+                    if let Some(i) = under {
+                        let n = self.len_of(p, cx, i);
+                        if let Body::Shelf(shelf) = &mut self.bodies[i] {
+                            shelf.glide(dx, n);
+                            fx.invalidate(plx_machine::present::Provenance::Input);
+                        }
+                    }
+                }
+            }
             ScreenEvent::Input(input) if matches!(input.kind, plx_machine::machine::InputKind::Click { hit: Some(_), .. }) => {
                 if let plx_machine::machine::InputKind::Click { hit: Some(elem), .. } = input.kind {
                     self.wheeled = false;

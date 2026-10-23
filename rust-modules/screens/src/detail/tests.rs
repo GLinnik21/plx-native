@@ -139,6 +139,7 @@ pub(super) fn bare_held(sid: ServerId, rk: &str) -> DetailScreen {
         scroll: Spring::at(0.0),
         scroll_target: 0.0,
         free: false,
+        episode_free: false,
         episode_scroll: Spring::at(0.0),
         tab_scroll: Spring::at(0.0),
         episode_cells: episodes::Cells::new(),
@@ -5397,5 +5398,42 @@ fn a_landing_does_not_pull_a_glided_detail_page_back() {
     screen.scroll_target = seated + 50.0;
     step(&mut screen, &landing, Some(related));
     assert_eq!(screen.scroll_target, seated, "with no glide, a landing keeps the focused section in reading position");
+    clear();
+}
+
+/// **The pointer's sideways glide moves the row under it on a detail page**: the Related shelf, and
+/// the episode strip, which then stays where the glide put it although an episode holds focus,
+/// until a key moves focus.
+#[test]
+fn the_sideways_glide_moves_the_related_shelf_and_the_episode_strip() {
+    let sid = ServerId::UNSET;
+    let mut page = detail(sid, "show");
+    page.episodes = (1..=12).map(|i| episode(&format!("e{i}"), i)).collect();
+    page.related = (1..=12).map(|i| collection_member(sid, &format!("r{i}"))).collect();
+    let _guard = install(page);
+    let mut screen = bare(&_guard, sid, "show");
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let row_y = |screen: &DetailScreen, sec: section::SectionId| {
+        let d = screen.detail(test_store().view()).unwrap();
+        screen.section_top(sec.raw(), d, &measure) - screen.scroll.pos + screen.block_h(sec.raw(), d, &measure) / 2.0
+    };
+    let pan = |y: f32| ScreenEvent::Input(InputEvent { at: Default::default(),
+        source: plx_machine::machine::Source::Script, kind: InputKind::Pan { dx: 20.0, x: 1900.0, y } });
+    let y = row_y(&screen, section::SectionId::Related);
+    for _ in 0..10 { step(&mut screen, &pan(y), None); }
+    assert_eq!(screen.related.scroll(), 200.0, "the Related shelf glides");
+    assert_eq!(screen.episode_scroll.pos, 0.0, "the episode strip stays");
+    let y = row_y(&screen, section::SectionId::Episode);
+    let ep = screen.engine_key(episodes::elem(0, episodes::Row::Still).unwrap()).unwrap();
+    for _ in 0..10 { step(&mut screen, &pan(y), Some(ep)); }
+    assert_eq!(screen.episode_scroll.pos, 200.0, "the episode strip glides");
+    for i in 1..=60 { step(&mut screen, &ScreenEvent::Tick(Tick { ms: i * 16, dt_us: 16_667 }), Some(ep)); }
+    assert_eq!(screen.episode_scroll.pos, 200.0, "its focused episode does not pull it back");
+    let entry = screen.entry;
+    // a key's move to the first episode (off screen to the left now) brings the strip back to it
+    step(&mut screen, &ScreenEvent::FocusMoved { from: Some(FocusKey { entry, elem: ep }),
+        to: FocusKey { entry, elem: ep }, by: By::Dir }, Some(ep));
+    for i in 61..=200 { step(&mut screen, &ScreenEvent::Tick(Tick { ms: i * 16, dt_us: 16_667 }), Some(ep)); }
+    assert!(screen.episode_scroll.pos < 1.0, "a key's move brings the strip back to its focus: {}", screen.episode_scroll.pos);
     clear();
 }

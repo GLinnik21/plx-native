@@ -2045,6 +2045,14 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
                     kind: plx_machine::machine::InputKind::Wheel { dy },
                 });
             }
+            // and at a side edge, the row under the pointer glides sideways
+            if let (Some(dx), Some((x, y))) = (app.ptr.edge.pan(on_bar, fr.now), app.ptr.edge.at()) {
+                app.inputs.push(plx_machine::machine::InputEvent {
+                    at: plx_machine::machine::Tick { ms: fr.now, dt_us: 0 },
+                    source: plx_machine::machine::Source::Sdl,
+                    kind: plx_machine::machine::InputKind::Pan { dx, x, y },
+                });
+            }
         } else {
             app.ptr.edge.stop();
         }
@@ -4146,6 +4154,36 @@ mod lifecycle_regression_tests {
         }
         assert!(wheels.len() > 40 && wheels.iter().all(|&dy| dy > 0.0),
             "the resting pointer glides the page up on every frame after the dwell: {wheels:?}");
+    }
+
+    /// **The pointer resting at a side edge sends the row under it a sideways glide, through the
+    /// real loop**, frame after frame (`InputKind::Pan`, + at the right edge), at the pointer's place.
+    #[test]
+    fn a_pointer_resting_at_the_right_edge_sends_a_sideways_glide_through_the_real_loop() {
+        let _serial=plx_base::testlock::serial();
+        let mut app=app();
+        super::super::bridge::nav_root(&mut app.pages, AppArg::Home);
+        frame(&mut app,0);
+        let mut fr=Frame::begin(&app.player.session, app.bridge.metadata_view());
+        app.ev=[0;128];
+        app.ev[20..24].copy_from_slice(&1910i32.to_ne_bytes());
+        app.ev[24..28].copy_from_slice(&600i32.to_ne_bytes());
+        event(&mut app,&mut fr,SDL_MOUSEMOTION);
+        assert!(app.inputs.iter().any(|e| matches!(e.kind, plx_machine::machine::InputKind::Pointer { .. })),
+            "a sideways glide does not hold the pointer's hover");
+        app.inputs.clear();
+        let mut pans=Vec::new();
+        for i in 1..=60u32 {
+            let mut fr=Frame::begin(&app.player.session, app.bridge.metadata_view());
+            fr.now=1_000+i*16;
+            unsafe { playback_tick(&mut app,&mut fr); }
+            for e in app.inputs.drain(..) {
+                if let plx_machine::machine::InputKind::Pan { dx, x, y } = e.kind { pans.push((dx, x, y)); }
+                assert!(!matches!(e.kind, plx_machine::machine::InputKind::Wheel { .. }), "no vertical glide mid-height");
+            }
+        }
+        assert!(pans.len() > 40 && pans.iter().all(|&(dx, x, y)| dx > 0.0 && x == 1910.0 && y == 600.0),
+            "the row under the pointer glides to show more on the right: {pans:?}");
     }
 
     /// **The glide stops on the top bar's buttons and goes on off them, through the real loop**

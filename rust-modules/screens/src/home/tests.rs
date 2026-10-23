@@ -5891,3 +5891,43 @@ fn a_card_peeking_under_the_hero_is_clickable_and_its_click_brings_it_into_view(
     assert!(s.snap.pos > 0.99, "the page has come down to the shelf: {}", s.snap.pos);
     assert!(has_home(&commit(&mut s, 2), |r| matches!(r, HomeReq::Detail { .. })), "a click once it is in view opens it");
 }
+
+/// **The pointer's sideways glide moves the shelf under it, and the shelf stays there.** A shelf
+/// wider than the screen glides by the `Pan` the application sends while the pointer rests at a
+/// side edge; neither its focus nor a hover pulls it back, and a click on one of its cards brings
+/// it to that card again.
+#[test]
+fn the_sideways_glide_moves_the_shelf_under_the_pointer_and_a_click_brings_it_back() {
+    let _guard = plx_base::testlock::serial();
+    let mut state = plx_data::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(plx_data::pms::PmsAdapter::default());
+    plx_data::pms::seed_grid_for_test(&mut state, &adapter, 3, 20);
+    let snapshot = plx_data::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    let mut s = screen(view);
+    s.snap.jump(1.0);
+    s.snap_target = 1.0;
+    s.layout_grid();
+    let card = |s: &HomeScreen, row: usize, col: usize| FocusKey { entry: s.entry, elem: s.rows[row].elems[col] };
+    let first = card(&s, 0, 0);
+    let tick = |s: &mut HomeScreen, focus| for i in 1..=60 { step(s, view, Some(focus), &ScreenEvent::Tick(Tick { ms: i * 16, dt_us: 16_667 })); };
+    tick(&mut s, first);
+    let y = s.grid.base_y(0) + CARD_DY + CARD_H / 2.0;
+    let pan = ScreenEvent::Input(InputEvent { at: Tick::default(), source: plx_machine::machine::Source::Script,
+        kind: InputKind::Pan { dx: 25.0, x: SCR_W - 10.0, y } });
+    for _ in 0..20 { step(&mut s, view, Some(first), &pan); }
+    assert_eq!(s.grid.shelves[0].scroll(), 500.0, "the shelf under the pointer glides");
+    assert_eq!(s.grid.shelves[1].scroll(), 0.0, "the shelf below stays");
+    tick(&mut s, first);
+    assert_eq!(s.grid.shelves[0].scroll(), 500.0, "its focus does not pull it back");
+    let hovered = card(&s, 0, 4);
+    step(&mut s, view, Some(hovered), &ScreenEvent::FocusMoved { from: Some(first), to: hovered, by: By::Pointer });
+    tick(&mut s, hovered);
+    assert_eq!(s.grid.shelves[0].scroll(), 500.0, "nor does a hover");
+    step(&mut s, view, Some(first), &ScreenEvent::FocusMoved { from: Some(hovered), to: first, by: By::Pointer });
+    step(&mut s, view, Some(first), &ScreenEvent::Input(InputEvent { at: Tick::default(),
+        source: plx_machine::machine::Source::Script, kind: InputKind::Click { x: 0.0, y, hit: Some(first.elem) } }));
+    tick(&mut s, first);
+    tick(&mut s, first);
+    assert!(s.grid.shelves[0].scroll() < 1.0, "a click on its first card brings the shelf back to it: {}", s.grid.shelves[0].scroll());
+}

@@ -77,6 +77,9 @@ pub(crate) const EDGE_RAMP_MS: u32 = 350;
 /// The glide's speed with the pointer at the very edge, in the page's own rows a second (the unit
 /// of `InputKind::Wheel`'s `dy`: the Library scales it by its grid pitch).
 pub(crate) const EDGE_ROWS_PER_S: f32 = 2.6;
+/// The sideways glide's speed with the pointer at the very left or right edge, px a second (about
+/// three and a half posters).
+pub(crate) const EDGE_PAN_PX_PER_S: f32 = 1000.0;
 /// The share of that speed at the band's inner border: deeper into the band is faster.
 const EDGE_MIN_SHARE: f32 = 0.35;
 
@@ -107,10 +110,15 @@ pub(crate) struct EdgeScroll {
     /// glide that took the frame's dt would move the page by nothing on every frame (the host rigs
     /// set `dt` by hand, which hid exactly that during development).
     last: Option<u32>,
+    /// The sideways glide under way ([`pan`](Self::pan)): its direction (+1 right, -1 left) and
+    /// when the pointer came to the side band.
+    pan: Option<(i32, u32)>,
+    /// The last frame [`pan`](Self::pan) ran on (it times its own frames, as `step` does).
+    pan_last: Option<u32>,
 }
 
 impl EdgeScroll {
-    pub(crate) const IDLE: EdgeScroll = EdgeScroll { at: None, glide: None, last: None };
+    pub(crate) const IDLE: EdgeScroll = EdgeScroll { at: None, glide: None, last: None, pan: None, pan_last: None };
 
     fn band(y: f32) -> Option<i32> {
         if y < EDGE_BAND {
@@ -180,6 +188,51 @@ impl EdgeScroll {
         let share = EDGE_MIN_SHARE + (1.0 - EDGE_MIN_SHARE) * depth;
         let dy = dir as f32 * EDGE_ROWS_PER_S * share * ramp * dt;
         (dy != 0.0).then_some(dy)
+    }
+
+    /// **The sideways glide**, one frame at `now` (ms): the `InputKind::Pan` `dx` (px, + shows more
+    /// on the right) to hand the page for the row under the pointer, if any. A pointer resting in
+    /// the left or right [`EDGE_BAND`] (and in neither vertical band, which take the corners)
+    /// glides the row it is over after the same dwell, on the same ease-in, faster nearer the edge,
+    /// up to [`EDGE_PAN_PX_PER_S`]. Unlike the vertical glide it does not hold the pointer's hover:
+    /// the side bands hold controls of their own (the Library's alphabet rail, Detail's Play), and
+    /// a row the glide moved no longer follows its focus, so a card the pointer comes to rest on
+    /// cannot pull it back. A page with nothing sideways at the pointer ignores it.
+    pub(crate) fn pan(&mut self, on_bar: bool, now: u32) -> Option<f32> {
+        let dt = self.pan_last.map_or(0.0, |last| now.wrapping_sub(last).min(100) as f32 / 1000.0);
+        self.pan_last = Some(now);
+        let side = self.at.filter(|_| !on_bar).and_then(|(x, y)| {
+            if Self::band(y).is_some() {
+                None
+            } else if x < EDGE_BAND {
+                Some((-1, x))
+            } else if x >= plx_ui::consts::SCR_W - EDGE_BAND {
+                Some((1, plx_ui::consts::SCR_W - x))
+            } else {
+                None
+            }
+        });
+        let Some((dir, from_edge)) = side else {
+            self.pan = None;
+            return None;
+        };
+        let since = match self.pan {
+            Some((d, since)) if d == dir => since,
+            _ => {
+                self.pan = Some((dir, now));
+                now
+            }
+        };
+        let t = now.wrapping_sub(since);
+        if t < EDGE_DWELL_MS {
+            return None;
+        }
+        let ramp = ((t - EDGE_DWELL_MS) as f32 / EDGE_RAMP_MS as f32).min(1.0);
+        let ramp = ramp * ramp * (3.0 - 2.0 * ramp);
+        let depth = (1.0 - from_edge / EDGE_BAND).clamp(0.0, 1.0);
+        let share = EDGE_MIN_SHARE + (1.0 - EDGE_MIN_SHARE) * depth;
+        let dx = dir as f32 * EDGE_PAN_PX_PER_S * share * ramp * dt;
+        (dx != 0.0).then_some(dx)
     }
 }
 
@@ -1927,5 +1980,29 @@ mod edge_scroll_tests {
         assert!(e.step(false, 632).is_none());
         e.moved(900.0, 60.0, false);
         assert!(run(&mut e, false, 648, EDGE_DWELL_MS - 20).is_empty(), "coming back starts the dwell again");
+    }
+
+    /// Resting at the right edge glides the row under the pointer to show more on the right, at
+    /// the left edge back; the corners belong to the vertical glide, the middle to nothing.
+    #[test]
+    fn the_pointer_resting_at_a_side_edge_pans_the_row_under_it() {
+        use plx_ui::consts::SCR_W;
+        let pan = |x: f32, y: f32| {
+            let mut e = EdgeScroll::IDLE;
+            e.moved(x, y, false);
+            (0..=1500 / 16).filter_map(|i| e.pan(false, i * 16)).collect::<Vec<_>>()
+        };
+        let right = pan(SCR_W - 10.0, 540.0);
+        assert!(right.len() > 60 && right.iter().all(|&dx| dx > 0.0), "right edge shows more on the right: {right:?}");
+        let last = *right.last().unwrap();
+        let share = super::EDGE_MIN_SHARE + (1.0 - super::EDGE_MIN_SHARE) * (1.0 - 10.0 / EDGE_BAND);
+        assert!((last - super::EDGE_PAN_PX_PER_S * share * 0.016).abs() < 1e-3, "a 16 ms frame's pan: {last}");
+        assert!(pan(10.0, 540.0).iter().all(|&dx| dx < 0.0) && !pan(10.0, 540.0).is_empty(), "left edge goes back");
+        assert!(pan(10.0, 40.0).is_empty() && pan(SCR_W - 10.0, 1070.0).is_empty(), "the corners are the vertical glide's");
+        assert!(pan(960.0, 540.0).is_empty(), "the middle pans nothing");
+        let mut e = EdgeScroll::IDLE;
+        e.moved(SCR_W - 10.0, 540.0, false);
+        assert!(!e.moved(SCR_W - 12.0, 540.0, false), "a sideways glide never holds the pointer's hover");
+        assert!((0..100).filter_map(|i| e.pan(true, i * 16)).next().is_none(), "nor runs over a bar button");
     }
 }

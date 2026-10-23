@@ -286,6 +286,10 @@ pub struct DetailScreen {
     /// Not in the canon: what it decides is `scroll_target`, which is.
     free: bool,
     episode_scroll: Spring,
+    /// The episode strip is where the pointer's sideways glide put it (`InputKind::Pan`): the tick
+    /// stops steering it to the focused episode until a key's move or a click. Like `free`, not in
+    /// the canon (what it decides, `episode_scroll`, is).
+    episode_free: bool,
     /// What the episode strip last asked the store to have loaded, and when.
     ep_want: EpWant,
     /// Where the page itself last seated the two strips, and whether the viewer has taken them
@@ -572,6 +576,7 @@ impl DetailScreen {
             scroll_target: 0.0,
             free: false,
             episode_scroll: Spring::at(0.0),
+            episode_free: false,
             tab_scroll: Spring::at(0.0),
             episode_cells: episodes::Cells::new(),
             ep_want: EpWant::default(),
@@ -2127,6 +2132,7 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
                     self.free = true;
                 } else {
                     self.free = false;
+                    self.episode_free = false;
                     self.reveal_focus(Some(*to), cx.measure, meta);
                 }
                 if let Some(located) = self.locate(to.elem, meta) {
@@ -2205,9 +2211,19 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
                 if let InputKind::Click { hit: Some(hit), .. } = input.kind {
                     if !self.full_trailer() {
                         self.free = false;
+                        self.episode_free = false;
                         self.reveal_focus(Some(FocusKey { entry: self.entry, elem: hit }), cx.measure, meta);
                         fx.invalidate(Provenance::Input);
                     }
+                }
+                // The pointer's sideways glide moves the row under it: one of the four shelves, or
+                // the episode strip, each left where it put it until a key's move or a click.
+                if let InputKind::Pan { dx, y, .. } = input.kind {
+                    if dx.is_finite() && !self.full_trailer() {
+                        self.pan_row(dx, y, meta, cx.measure);
+                        fx.invalidate(Provenance::Input);
+                    }
+                    return Handled::Yes;
                 }
                 // A wheel (and the pointer's edge glide, a fractional one) moves the page itself,
                 // focus staying where it is, as the Library's does: `dy` rows of `ROW_PITCH`, up
@@ -3518,6 +3534,40 @@ impl DetailScreen {
         self.scroll_target = self.reveal_target(located.section(), detail, measure);
     }
 
+    /// **The pointer's sideways glide over the page** (`InputKind::Pan`): the section drawn at
+    /// screen `y` moves by `dx` px if it is a row (Related, a collection, Extras, Cast or the
+    /// episode strip).
+    fn pan_row(&mut self, dx: f32, y: f32, meta: plx_data::metadata::MetadataView<'_>, measure: &dyn plx_machine::machine::Measure) {
+        use section::SectionId;
+        let Some(d) = self.detail(meta) else { return };
+        let (sections, n) = self.sections(Some(d));
+        let Some(sec) = sections[..n].iter().copied().find(|&sec| {
+            let top = self.section_top(sec, d, measure) - self.scroll.pos;
+            y >= top && y < top + self.block_h(sec, d, measure)
+        }) else { return };
+        let which = if sec == SectionId::Related.raw() { Some(cards::Which::Related) }
+            else if sec == SectionId::Collections.raw() { Some(cards::Which::Collection) }
+            else if sec == SectionId::Extras.raw() { Some(cards::Which::Extras) }
+            else if sec == SectionId::Cast.raw() { Some(cards::Which::Cast) }
+            else { None };
+        if let Some(which) = which {
+            let len = Self::cards_of(&self.key_by_local, &self.local_by_key, which, d).count();
+            let shelf = match which {
+                cards::Which::Related => &mut self.related,
+                cards::Which::Collection => &mut self.collection,
+                cards::Which::Extras => &mut self.extras,
+                cards::Which::Cast => &mut self.cast,
+            };
+            shelf.glide(dx, len);
+        } else if sec == SectionId::Episode.raw() {
+            let len = d.episodes.len();
+            let viewport = plx_ui::consts::SCR_W - 2.0 * plx_ui::consts::MARGIN_X;
+            let max = (len as f32 * (episodes::W + episodes::GAP) - episodes::GAP - viewport).max(0.0);
+            self.episode_scroll.jump((self.episode_scroll.pos + dx).clamp(0.0, max));
+            self.episode_free = true;
+        }
+    }
+
     /// The furthest the page scrolls: the scroll the last section's reveal takes (what a key can
     /// reach, and the end of a wheel's travel).
     fn max_scroll(&self, meta: plx_data::metadata::MetadataView<'_>, measure: &dyn plx_machine::machine::Measure) -> f32 {
@@ -3797,7 +3847,7 @@ impl DetailScreen {
             if let Some(i) = match focused {
                 Some(Located::Episode(i, _)) => Some(i),
                 _ => None,
-            } {
+            }.filter(|_| !self.episode_free) {
                 let target = ui_cards::scroll_into_view(
                     self.episode_scroll.pos,
                     i,

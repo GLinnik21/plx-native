@@ -991,6 +991,21 @@ impl RecommendedScreen {
                     | InputKind::Pointer { .. } | InputKind::Click { .. } | InputKind::Drag { .. }) {
                     self.initial = false;
                 }
+                // The pointer's sideways glide moves the shelf under it (`Shelf::glide`).
+                if let InputKind::Pan { dx, y, .. } = input.kind {
+                    if dx.is_finite() {
+                        let under = self.shelf_window().find(|&index| {
+                            let origin = shelf_y(&self.run, index, self.scroll.pos);
+                            y >= origin - TITLE_DY && y < origin + self.run.pitch(index)
+                        });
+                        if let Some(row) = under.and_then(|index| self.shelves.get_mut(index)) {
+                            let n = row.elems.len();
+                            row.cards.glide(dx, n);
+                            fx.invalidate(Provenance::Input);
+                        }
+                    }
+                    return Handled::Yes;
+                }
                 if let InputKind::Wheel { dy } = input.kind {
                     self.scroll_target = (self.scroll_target - dy * shelf_pitch(false, ui_cards::LEGACY_BAND_H, 0.0))
                         .clamp(0.0, max_scroll(&self.target_run));

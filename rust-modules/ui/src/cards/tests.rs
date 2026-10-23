@@ -2439,6 +2439,28 @@ mod stack {
         assert!(r.stack.scroll().abs() < 0.5, "focus on the header brings the page home: {}", r.stack.scroll());
     }
 
+    /// The pointer's sideways glide (`InputKind::Pan`) moves the stack's shelf under the pointer,
+    /// and only that shelf; a `Pan` over the grid below moves nothing.
+    #[test]
+    fn a_sideways_glide_moves_the_shelf_under_the_pointer() {
+        let pan = |y: f32| ScreenEvent::Input(plx_machine::machine::InputEvent {
+            at: Default::default(),
+            source: plx_machine::machine::Source::Script,
+            kind: plx_machine::machine::InputKind::Pan { dx: 30.0, x: 1900.0, y },
+        });
+        let mut r = rig(24, 60);
+        r.go(100, By::Restore);
+        r.run(2);
+        let before = r.place(100).unwrap().rect;
+        let grid_card = r.place(1000).unwrap().rect;
+        for _ in 0..10 { r.feed(pan(before.cy())); }
+        r.run(60);
+        let after = r.place(100).unwrap().rect;
+        assert!((before.x - after.x - 300.0).abs() < 0.5, "the shelf under the pointer glides 300 px: {before:?} -> {after:?}");
+        r.feed(pan(grid_card.cy()));
+        assert_eq!(r.place(1000).unwrap().rect.x, grid_card.x, "the grid does not move sideways");
+    }
+
     /// The pointer's edge glide (a fractional wheel every frame) moves a stack page itself: the
     /// page follows the wheel and stays where it put it instead of the tick pulling it back to the
     /// focused row; a hover moves focus and not the page, and a key's move brings it back.
