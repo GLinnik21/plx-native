@@ -207,12 +207,16 @@ mod through_build_stream {
     }
 
     /// The request lines with their per-run noise (session ids, tokens, query values) taken off.
+    /// The requests a resolve made, method and path, in order — except the play queue, which is
+    /// asked for on a thread of its own beside the rest and so leads here wherever it landed.
     pub(super) fn shape(requests: &[String]) -> Vec<String> {
-        requests
+        let (mut queue, rest): (Vec<String>, Vec<String>) = requests
             .iter()
             .map(|r| r.split_whitespace().take(2).collect::<Vec<_>>().join(" "))
             .map(|r| r.split('?').next().unwrap_or("").to_string())
-            .collect()
+            .partition(|r| r == "POST /playQueues");
+        queue.extend(rest);
+        queue
     }
 
     pub(super) fn decision(requests: &[String]) -> &String {

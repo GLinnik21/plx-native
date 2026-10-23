@@ -3637,7 +3637,9 @@ fn selected_season_number(state: &MetadataState, sid: plx_plex::plex::ServerId, 
 /// The full detail fetch for `rk` (movie or show): item metadata + cast + streams, plus — for
 /// shows — seasons, the opening season's episodes ([`initial_season`]) and a stream backfill, plus
 /// the related hub.
-/// 2 PMS round-trips for a movie, 5 for a show.
+/// Round trips one after another: 2 for a movie (the item beside Related, then extras); for a
+/// show the item, then its seasons, then the opening season's episodes, with the on-deck episode
+/// and extras beside them (a show nobody has started reads its first episode after those).
 ///
 /// PURE NETWORK + PARSING — it touches no `static mut`, which is what let it run either on the
 /// main thread or on a worker ([`request_detail`]) while a synchronous caller still existed
@@ -3662,51 +3664,83 @@ fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) -> O
     // `client_for(sid)?.metadata(rk)?`, so this arm is also taken when the server id resolves to no
     // client at all and no request was ever issued. One line for both is right — the page is equally
     // empty either way — but it must not assert a round trip that may not have happened.
-    let Some((mut d, primary_extra_key)) = fetch_detail(sid, rk) else {
+    // Related needs only the key, so it is asked for beside the item: the page waits for the slower
+    // of the two, not for both one after the other. A refused spawn asks for it after the item.
+    let (detail, related) = std::thread::scope(|s| {
+        let related = std::thread::Builder::new()
+            .name("detail-related".into())
+            .spawn_scoped(s, || fetch_related(sid, rk));
+        let detail = fetch_detail(sid, rk);
+        (detail, related.ok().map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p))))
+    });
+    let Some((mut d, primary_extra_key)) = detail else {
         plx_base::eventlog::log(&format!(
             "detail: rk={rk} sid={sid:?} — no metadata (server unresolved, or it refused)"
         ));
         return None;
     };
-    if d.is_show {
-        load_show_seasons(sid, rk, &mut d, prefer);
-        // A show carries no streams itself — backfill from ONE episode: the one the hero is
-        // about, which is the one Play starts (`on_deck` when the show has been started, else
-        // its first). Everything downstream reads this as "the show's" media, so borrowing from
-        // a different episode than the button plays would have the chips, the About footer and
-        // "how this plays" describing a file the user is not about to watch.
-        let hero_ep = d.on_deck.as_ref().map(|e| e.rk.clone());
-        let ep = hero_ep.or_else(|| d.episodes.first().map(|e| e.rk.clone()));
-        if let Some(ep_rk) = ep {
-            fetch_item_streams(sid, &ep_rk, &mut d);
-            // NB `part`/`vcodec`/`acodec` are deliberately NOT backfilled. They are the item's OWN
-            // playable file, and "a show has an empty part" is load-bearing elsewhere — `app.rs`'s
-            // play trigger reads it as "this is a show, take the episode's resume point instead",
-            // so filling it here would silently hand a show's duration to an episode's playback.
-            // A consumer that wants to know how the HERO's episode will play asks the episode
-            // (`ui::detail::draw_play_mode`), which is also the only place that knows which
-            // episode the button would start.
-        }
-    }
-    // Movie/show: extras GET overlaps `/related` on a sibling thread so serial depth stays 2 / 5.
-    // Episode/season pages never show the Trailer control, so they must not pay extras I/O.
-    // Spawn failure omits the trailer rather than adding a serial extras hop behind related.
-    let extras_src: &'static str;
-    if extras_wanted(&d.kind) {
-        let (related, extras) = std::thread::scope(|s| {
-            let extras_h = std::thread::Builder::new()
+    let related = related.unwrap_or_else(|| fetch_related(sid, rk));
+    // Movie/show: the extras GET. Episode/season pages never show the Trailer control, so they must
+    // not pay extras I/O. Spawn failure omits the trailer rather than adding a serial extras hop.
+    let wants_extras = extras_wanted(&d.kind);
+    // A show carries no streams itself — backfill from ONE episode: the one the hero is about,
+    // which is the one Play starts (`on_deck` when the show has been started, else its first).
+    // Everything downstream reads this as "the show's" media, so borrowing from a different
+    // episode than the button plays would have the chips, the About footer and "how this plays"
+    // describing a file the user is not about to watch. The on-deck episode is known from the
+    // item, so it is read beside the seasons; the first episode is known only once they land.
+    let on_deck_rk = d.is_show.then(|| d.on_deck.as_ref().map(|e| e.rk.clone())).flatten();
+    // After the item, the rest at once: a show's seasons and the episodes of the season it opens
+    // on, its on-deck episode, and the extras.
+    let (extras, on_deck_item) = std::thread::scope(|s| {
+        let extras = wants_extras.then(|| {
+            std::thread::Builder::new()
                 .name("detail-extras".into())
-                .spawn_scoped(s, || fetch_extras_rows(sid, rk));
-            let related = fetch_related(sid, rk);
-            let extras = match extras_h {
-                Ok(h) => h.join().ok().flatten(),
-                Err(_) => None,
-            };
-            (related, extras)
+                .spawn_scoped(s, || fetch_extras_rows(sid, rk))
         });
-        d.related = related.related;
-        d.related_tail = related.tail;
-        d.collection = related.collection;
+        let on_deck = on_deck_rk.as_deref().map(|ep| {
+            std::thread::Builder::new()
+                .name("detail-hero".into())
+                .spawn_scoped(s, move || plx_plex::plex::client_for(sid).and_then(|c| c.metadata(ep)))
+        });
+        if d.is_show {
+            load_show_seasons(sid, rk, &mut d, prefer);
+        }
+        let extras = match extras {
+            Some(Ok(h)) => h.join().ok().flatten(),
+            _ => None,
+        };
+        // `None`: not asked (no on-deck episode, or a refused spawn), so asked below.
+        let on_deck = match on_deck {
+            Some(Ok(h)) => Some(h.join().ok().flatten()),
+            _ => None,
+        };
+        (extras, on_deck)
+    });
+    if d.is_show {
+        match on_deck_item {
+            Some(Some(it)) => parse_streams(&it, &mut d),
+            Some(None) => {}
+            None => {
+                let ep = on_deck_rk.or_else(|| d.episodes.first().map(|e| e.rk.clone()));
+                if let Some(ep_rk) = ep {
+                    fetch_item_streams(sid, &ep_rk, &mut d);
+                }
+            }
+        }
+        // NB `part`/`vcodec`/`acodec` are deliberately NOT backfilled. They are the item's OWN
+        // playable file, and "a show has an empty part" is load-bearing elsewhere — `app.rs`'s
+        // play trigger reads it as "this is a show, take the episode's resume point instead",
+        // so filling it here would silently hand a show's duration to an episode's playback.
+        // A consumer that wants to know how the HERO's episode will play asks the episode
+        // (`ui::detail::draw_play_mode`), which is also the only place that knows which
+        // episode the button would start.
+    }
+    d.related = related.related;
+    d.related_tail = related.tail;
+    d.collection = related.collection;
+    let extras_src: &'static str;
+    if wants_extras {
         match extras {
             Some(rows) => {
                 extras_src = "extras";
@@ -3728,10 +3762,6 @@ fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) -> O
         }
     } else {
         extras_src = "skip";
-        let related = fetch_related(sid, rk);
-        d.related = related.related;
-        d.related_tail = related.tail;
-        d.collection = related.collection;
     }
     // The item's IDENTITY and the SHAPE of what came back — never its title. `scrub_local` runs
     // on every line in every build, but nothing in a line distinguishes a programme title from
