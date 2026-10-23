@@ -35,7 +35,10 @@ class FileSet(unittest.TestCase):
         self.assertFalse(auto & manual)
         committed = tracked("docs/screenshots") | tracked("site/media")
         film = {p for p in committed if p.startswith("site/media/feel")}
-        # what is committed and in neither set is the film and the photograph taken on the television, nothing else
+        # the stills' manifest is written by `adopt` beside the stills, not rendered as one
+        film.add("site/media/stills.manifest.json")
+        # what is committed and in neither set is the film, the stills' manifest and the photograph taken on the
+        # television, nothing else
         self.assertEqual(committed - auto - manual - film, {"docs/screenshots/navblur-transition.jpg"})
         self.assertLessEqual(auto | manual, committed)
 
