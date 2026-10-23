@@ -1755,6 +1755,10 @@ pub struct Detail {
     /// Rating key of the picker winner inside [`Self::extras`]. Empty when there is none.
     #[serde(default)]
     pub trailer_rk: String,
+    /// Every version of a movie or episode that has more than one (`pms::versions_of`), for the
+    /// hero's Play Version disc; empty for a single-version item and for a show or season.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub versions: Vec<crate::pms::MediaVersion>,
 }
 
 impl Detail {
@@ -2363,6 +2367,7 @@ fn fetch_detail(sid: plx_plex::plex::ServerId, rk: &str) -> Option<(Detail, Stri
         ratings: convert_ratings(&it),
         extras: Vec::new(),
         trailer_rk: String::new(),
+        versions: if it.kind == "movie" || it.kind == "episode" { crate::pms::versions_of(&it) } else { Vec::new() },
     };
     // audio/subtitle streams (movies carry Media/Part/Stream; a show does not — its
     // episodes do, so load_detail backfills a show's streams from its first episode).

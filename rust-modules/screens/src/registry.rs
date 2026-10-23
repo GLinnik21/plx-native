@@ -1131,6 +1131,9 @@ pub enum ContentPanel {
     /// *Also available* (`screens::alt_sources`), anchored to the drawn rect of the pill that
     /// opened it — bit-preserving, so a canonical argument holds it without float equality.
     AltSources { anchor: [u32; 4] },
+    /// *Play Version* (`screens::versions_panel`), anchored to the drawn rect of the disc that
+    /// opened it, as [`Self::AltSources`] is to its pill.
+    Versions { anchor: [u32; 4] },
     /// *Track information* (`screens::tracks_panel`), opened at 1-based `page`. Every interactive
     /// opening passes 1; `/tmp/plxnative-tracks=<n>` is the only caller that does not, and it is
     /// what makes a headless capture of page 2 possible at all.
@@ -1182,6 +1185,18 @@ impl ContentPanel {
                     }),
                 )
             }
+            Self::Versions { anchor } => {
+                let (sid, rk) = subject?;
+                (
+                    Style::Compact,
+                    AppArg::VersionsPanel(crate::versions_panel::VersionsArg {
+                        host,
+                        sid,
+                        rk: rk.to_string(),
+                        anchor,
+                    }),
+                )
+            }
             Self::Tracks { page } => (
                 Style::Alert,
                 AppArg::TracksPanel(crate::tracks_panel::TracksPanelArg { page }),
@@ -1211,12 +1226,18 @@ pub enum PlayIntent {
         acodec: String,
         title: String,
         context: String,
+        /// The version picked on the Play Version panel, `None` for the default (`Media[0]`).
+        version: Option<plx_plex::plex::MediaId>,
     },
     /// The alternative source the page had selected (`route::request_play_movie`). Owned rather
     /// than a `&'static` catalog borrow: it is held inside `PageAction`/`AppFx` across a frame
     /// boundary, and once Detail's `selected` becomes an owned per-page snapshot (rather than a
     /// process-wide catalog read) there is no `'static` row left to borrow.
-    Movie(plx_data::pms::PmsMovie),
+    Movie {
+        item: plx_data::pms::PmsMovie,
+        /// As [`PlayIntent::Item`]'s.
+        version: Option<plx_plex::plex::MediaId>,
+    },
 }
 
 pub trait ContentLike: AppLike<Memory = PageMemory> {}
@@ -1352,6 +1373,9 @@ pub enum AppMsg {
     /// the destination and the PAGE navigates, which is `LibraryMenu`'s shape (`LibrarySelect`) and
     /// what keeps "what a press means on the Detail page" in one place instead of two.
     AltSourceOpen(ContentArg),
+    /// The *Play Version* surface committed a row: play that version of the page's item, as its
+    /// Play pill would (resuming). The surface names the version and the page plays it.
+    PlayVersion(plx_plex::plex::MediaId),
 }
 
 /// What the consent machine is told (§2.3): a person's answer to both questions at once.
@@ -1778,6 +1802,9 @@ pub enum AppArg {
     /// rect of the pill it hangs off — is on the argument, `LibraryMenuArg`'s shape and for the
     /// same reason: the entry outlives any one frame's idea of where that pill was.
     AltSources(crate::alt_sources::AltSourcesArg),
+    /// The Detail page's *Play Version* list (§6.2's page-owned panels), anchored to the hero disc
+    /// that opened it, [`Self::AltSources`]'s shape.
+    VersionsPanel(crate::versions_panel::VersionsArg),
     /// The Detail page's *Track information* sheet (§6.2's page-owned panels). It carries only the
     /// 1-based PAGE the sheet opens at — a boot address like `Settings`'s root, not an identity —
     /// because the sheet describes `metadata::current()` and the host it is presented over is the
@@ -1854,6 +1881,7 @@ impl AppArg {
 pub const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,LibraryCollections{section:u32},LibraryRecommended{section:u32},Search,Watchlist,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str},Collection{sid:u32,rk:str,sec:i64,tag:i64,name:str},Catalog{hex:str}},Settings:SettingsPage{Root,Playback,AudioSubtitles,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8),Language,Contribute},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
      PlayerOverlay{Tracks(tab:i32),Info,Chapters,More(quality:bool)},\
      AltSources{host:u32,sid:u32,rk:str,anchor:[u32;4]},\
+     VersionsPanel{host:u32,sid:u32,rk:str,anchor:[u32;4]},\
      TracksPanel{page:i32},AboutPanel,PersonBio,CollectionAbout,AccountMenu,\
      ItemMenu{sid:u32,rk:str,kind:{Card{from_deck:bool,type:u32},Episode{mark:u32},Season{mark:u32},Catalog{state:u32}},\
      host:u32,focus:Option<{entry:u32,elem:u32}>,anchor:[u32;4],loaded_episode:bool,from_home:bool,catalog:Option<{guid:str}>},\
@@ -1880,6 +1908,8 @@ impl LogicalState for AppArg {
             Self::ItemMenu(arg) => { c.u32(9); arg.write(c); }
             // 13, after the About/Bio/Collection sheets' 10-12: allocated forward.
             Self::WatchlistMenu(arg) => { c.u32(13); arg.write(c); }
+            // 14, forward of the Watchlist menu's 13.
+            Self::VersionsPanel(arg) => { c.u32(14); arg.write(c); }
             // The seven PAGE variants keep the canon bytes `Legacy(Route)` wrote — a `0` tag and
             // then the route's own — so a recording taken before the fold and one taken after are
             // byte-comparable at every page frame. Only the SHAPE STRING moved, which is what the
@@ -1928,6 +1958,7 @@ impl plx_ui::screen::ScreenArg for AppArg {
             | AppArg::WatchlistMenu(_)
             | AppArg::PlayerOverlay(_)
             | AppArg::AltSources(_)
+            | AppArg::VersionsPanel(_)
             | AppArg::TracksPanel(_)
             | AppArg::AboutPanel
             | AppArg::PersonBio
@@ -1984,6 +2015,8 @@ impl plx_ui::screen::ScreenArg for AppArg {
             AppArg::Content(ContentArg::Collection(_)) => page_id::COLLECTION.0,
             // 27, forward of the Watchlist menu's 26: the catalog page (plan W6).
             AppArg::Content(ContentArg::Catalog { .. }) => 27,
+            // 30, forward of the Recommended page's 29.
+            AppArg::VersionsPanel(_) => 30,
         })
     }
     fn title(&self) -> Option<&str> {
@@ -2089,6 +2122,13 @@ where
             AppArg::AltSources(arg) => Box::new(
                 crate::alt_sources::AltSourcesScreen::new(entry, arg.clone(), H::metadata(cx)),
             ),
+            AppArg::VersionsPanel(arg) => {
+                let versions = H::metadata(cx)
+                    .current()
+                    .filter(|d| plx_plex::plex::same_item((d.sid, d.rk.as_str()), (arg.sid, arg.rk.as_str())))
+                    .map_or(&[][..], |d| d.versions.as_slice());
+                Box::new(crate::versions_panel::VersionsPanelScreen::new(entry, arg.clone(), versions))
+            }
             AppArg::TracksPanel(arg) => Box::new(
                 crate::tracks_panel::TracksPanelScreen::new(entry, *arg),
             ),
@@ -2281,6 +2321,12 @@ pub fn every_surface_arg() -> Vec<AppArg> {
             rk: "1".into(),
             anchor: [0; 4],
         }),
+        AppArg::VersionsPanel(crate::versions_panel::VersionsArg {
+            host: plx_machine::machine::InstanceId(1),
+            sid: plx_plex::plex::ServerId::UNSET,
+            rk: "1".into(),
+            anchor: [0; 4],
+        }),
         AppArg::TracksPanel(crate::tracks_panel::TracksPanelArg { page: 1 }),
         AppArg::AboutPanel,
         AppArg::PersonBio,
@@ -2297,6 +2343,7 @@ pub fn every_surface_arg() -> Vec<AppArg> {
             | AppArg::ItemMenu(_)
             | AppArg::WatchlistMenu(_)
             | AppArg::AltSources(_)
+            | AppArg::VersionsPanel(_)
             | AppArg::TracksPanel(_)
             | AppArg::AboutPanel
             | AppArg::PersonBio
@@ -2380,6 +2427,7 @@ pub const SCREEN_SHAPES: &[&str] = &[
     crate::watchlist::page::WatchlistScreen::SHAPE,
     crate::watchlist::menu::SHAPE,
     crate::catalog::CatalogScreen::SHAPE,
+    crate::versions_panel::SHAPE,
 ];
 
 /// The pin over [`SCREEN_SHAPES`] — bump it in the same edit that adds an entry, and say why.
@@ -2556,7 +2604,10 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // Play Version: `item_menu::SHAPE`'s `Action` gains `ChooseVersion` (tag 12) and `PlayVersion`
 // (tag 13, with its `media:u64` id). One bump; the three replay fixtures were re-recorded against
 // it; the previous pin was 0x6b71_df9e_04db_2b76.
-const SCREEN_SHAPES_PIN: u64 = 0x2085_d42d_b9be_8eae;
+// Play Version disc: `ARG_SHAPE` gains `VersionsPanel{host,sid,rk,anchor}` and
+// `screens::versions_panel::SHAPE` is appended. One bump; the three replay fixtures were
+// re-recorded against it; the previous pin was 0x2085_d42d_b9be_8eae.
+const SCREEN_SHAPES_PIN: u64 = 0x2628_df23_3445_5f80;
 
 #[cfg(test)]
 mod arg_tests {

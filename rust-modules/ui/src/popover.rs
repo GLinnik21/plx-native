@@ -272,6 +272,33 @@ pub enum OpenStyle {
     Morph,
 }
 
+/// Air between a control and the anchored panel it opens: one `space` rung.
+pub const PANEL_GAP: f32 = crate::theme::space::MD;
+/// An anchored panel's keep-out from the screen edges, so one opened low on the page is still
+/// whole. Per AXIS: `space::XL` 64 clears `MARGIN_Y` vertically and misses `MARGIN_X`
+/// horizontally by 32px.
+pub const PANEL_EDGE: f32 = crate::theme::space::XL;
+pub const PANEL_EDGE_X: f32 = crate::consts::MARGIN_X;
+
+/// **A menu panel anchored to the control that opened it** (the Detail hero's *Also available*
+/// pill and Play Version disc): under the control when there is room, above it when there is not,
+/// never over it, so the control stays readable beside its own list. Horizontally it hangs off the
+/// control's left edge (the list and the label it came from share a margin), pulled inside the
+/// screen's keep-out. Pure (anchor + measured size in, rect out).
+pub fn under_or_above(a: Rect, content_w: f32, content_h: f32) -> Rect {
+    use crate::consts::{SCR_H, SCR_W};
+    let width = content_w.clamp(crate::table::MENU_MIN_W, crate::table::MENU_MAX_W);
+    let h = content_h.clamp(120.0, SCR_H - 2.0 * PANEL_EDGE);
+    let below = a.y + a.h + PANEL_GAP;
+    let y = if below + h <= SCR_H - PANEL_EDGE {
+        below
+    } else {
+        (a.y - PANEL_GAP - h).max(PANEL_EDGE)
+    };
+    let x = a.x.clamp(PANEL_EDGE_X, (SCR_W - PANEL_EDGE_X - width).max(PANEL_EDGE_X));
+    Rect::new(x, y, width, h)
+}
+
 /// **Where a header menu's panel of width `w` starts across, hung under its opener `pill`** (the
 /// focused pill, outset included): the panel's NEAR edge is the opener's OUTER edge, the edge it
 /// morphs from, so the lit opener and the panel read as one object. The near edge is the one on

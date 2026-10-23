@@ -16,6 +16,7 @@ pub mod about_panel;
 pub mod account_menu;
 pub mod alt_sources;
 pub mod tracks_panel;
+pub mod versions_panel; // the Detail hero's Play Version list
 pub mod consent;
 pub mod catalog; // the catalog page's view-model (plan W6)
 pub mod collection;

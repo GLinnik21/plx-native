@@ -604,71 +604,13 @@ fn build_season(rk: &str, mark: PosterMark, face: Option<&watchlist::Face>) -> I
     Form::new().section(watchlist::push_face(sec, face))
 }
 
-/// **The Play Version page**: one row per version, in the order the server lists them, each a
-/// [`version_rows`] label over the facts that tell it from the others. Every row plays.
+/// **The Play Version page**: the shared version list (`plx_appkit::version_list`), every row a
+/// play of that version of the captured item.
 fn build_versions(rk: &str, versions: &[MediaVersion]) -> ItemForm {
-    let mut sec = FormSection::new(plx_platform::i18n::msg::browse_menu_play_version_title());
-    for (n, (v, (label, detail))) in versions.iter().zip(version_rows(versions)).enumerate() {
-        let mut row = Row::new(label);
-        if !detail.is_empty() {
-            row = row.detail(detail);
-        }
-        sec = sec.item(
-            ItemRow::Version(n as u16),
-            RowKind::Button,
-            Action::PlayVersion { rk: rk.to_string(), media: v.id },
-            row,
-        );
-    }
-    Form::new().section(sec)
-}
-
-/// What each version's row says: `"25.2 Mbps · 4K"`, over the facts that DIFFER between the
-/// versions (video codec and HDR, audio, container, size), so two rows never read alike for a
-/// reason the list does not show and a fact every version shares is not repeated. Pure.
-pub fn version_rows(versions: &[MediaVersion]) -> Vec<(String, String)> {
-    let video = |v: &MediaVersion| {
-        let codec = plx_appkit::info_panel::video_codec_name(&v.vcodec);
-        if v.hdr { format!("{codec} HDR") } else { codec }
-    };
-    let audio = |v: &MediaVersion| {
-        let codec = plx_data::metadata::friendly_codec(&v.acodec);
-        let channels = match v.channels {
-            1 => plx_platform::i18n::msg::widgets_tracks_mono().to_string(),
-            2 => plx_platform::i18n::msg::widgets_tracks_stereo().to_string(),
-            6 => "5.1".to_string(),
-            8 => "7.1".to_string(),
-            _ => String::new(),
-        };
-        join_present(&[&codec, &channels], " ")
-    };
-    let container = |v: &MediaVersion| v.container.to_ascii_uppercase();
-    let size = |v: &MediaVersion| if v.size > 0 { plx_ui::fmt::bytes(v.size, (1, 0, 0)) } else { String::new() };
-    let facts: [&dyn Fn(&MediaVersion) -> String; 4] = [&video, &audio, &container, &size];
-    let differs: Vec<bool> = facts
-        .iter()
-        .map(|f| versions.iter().map(|v| f(v)).collect::<std::collections::HashSet<_>>().len() > 1)
-        .collect();
-    versions
-        .iter()
-        .map(|v| {
-            let rate = if v.kbps > 0 { plx_ui::fmt::bitrate(v.kbps) } else { String::new() };
-            let res = plx_ui::fmt::resolution(&v.resolution, v.width, v.height).unwrap_or_default();
-            let label = join_present(&[&rate, &res], " \u{b7} ");
-            let shown: Vec<String> = facts
-                .iter()
-                .zip(&differs)
-                .filter(|(_, d)| **d)
-                .map(|(f, _)| f(v))
-                .collect();
-            let shown: Vec<&str> = shown.iter().map(String::as_str).collect();
-            (label, join_present(&shown, " \u{b7} "))
-        })
-        .collect()
-}
-
-fn join_present(parts: &[&str], sep: &str) -> String {
-    parts.iter().filter(|p| !p.is_empty()).copied().collect::<Vec<_>>().join(sep)
+    Form::new().section(plx_appkit::version_list::section(versions, ItemRow::Version, |v| Action::PlayVersion {
+        rk: rk.to_string(),
+        media: v.id,
+    }))
 }
 
 /// Beside the card, never over it: to its RIGHT by default, flipped to its LEFT when that would run
@@ -2344,17 +2286,7 @@ mod tests {
     }
 
     fn sample_versions() -> Vec<MediaVersion> {
-        let common = MediaVersion { acodec: "eac3".into(), channels: 6, container: "mkv".into(), ..Default::default() };
-        vec![
-            MediaVersion {
-                id: plx_plex::plex::MediaId(3082), kbps: 25_200, resolution: "4k".into(), vcodec: "hevc".into(),
-                size: 30 << 30, hdr: true, ..common.clone()
-            },
-            MediaVersion {
-                id: plx_plex::plex::MediaId(3086), kbps: 10_900, resolution: "1080".into(), vcodec: "h264".into(),
-                size: 8 << 30, ..common
-            },
-        ]
+        plx_appkit::version_list::sample()
     }
 
     fn versioned(kind: c_int) -> PmsMovie {
@@ -2414,20 +2346,6 @@ mod tests {
         let req = commit(&mut s, second);
         assert_eq!(req.act, Action::PlayVersion { rk: "42".into(), media: plx_plex::plex::MediaId(3086) });
         assert_eq!(req.item.map(|r| r.rk), Some("42".into()), "the captured row rides with it");
-    }
-
-    /// The label is rate and resolution; the sub-line names only what tells the versions apart
-    /// (here the video codec and HDR, and the size), never a fact they share (audio, container).
-    #[test]
-    fn a_version_row_says_what_differs() {
-        let _g = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
-        let rows = version_rows(&sample_versions());
-        assert_eq!(rows[0].0, "25.2 Mbps \u{b7} 4K");
-        assert_eq!(rows[1].0, "10.9 Mbps \u{b7} 1080p");
-        assert_eq!(rows[0].1, format!("HEVC HDR \u{b7} {}", plx_ui::fmt::bytes(30 << 30, (1, 0, 0))));
-        assert_eq!(rows[1].1, format!("H.264 \u{b7} {}", plx_ui::fmt::bytes(8 << 30, (1, 0, 0))));
-        let same = vec![sample_versions()[0].clone(), sample_versions()[0].clone()];
-        assert!(version_rows(&same).iter().all(|(_, detail)| detail.is_empty()), "nothing differs, nothing to say");
     }
 
     /// The Play Version page fits the menu panel in every shipped language.

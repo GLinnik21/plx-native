@@ -171,6 +171,10 @@
     "value": "Trailer",
     "description": "browse detail trailer"
   },
+  "browse.detail.play_version": {
+    "value": "Play Version",
+    "description": "The detail page's Play Version button, shown on a movie or episode that has more than one file (version). It is a round icon button whose name slides out beside it when focused, so keep it short. Pressing it opens the list of versions to choose which one plays."
+  },
   "browse.detail.resume": {
     "value": "Resume",
     "description": "browse detail resume"
