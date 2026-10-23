@@ -3169,6 +3169,53 @@ fn a_user_claim_queued_mid_automatic_flight_waits_for_the_landing_and_runs_after
     cleanup(&mut ps);
 }
 
+/// **A refused automatic Original is the reducer's fact about the HLS encoder it was asked from,
+/// and only about that encoder.** The pump reopens the retained HLS for the refusal, and the worker
+/// it spawns on the same encoder is handed the refusal, so its source gate does not probe and ask
+/// again (`player::pump::flight_tests`' reopen twin). A new encoder — an HLS rung commit, a
+/// transcode seek's rebuild, a user change — is a new admission question: its worker's gate
+/// starts fresh, so the refusal is never a give-up for the playback.
+#[test]
+fn a_refused_automatic_original_holds_the_source_gate_on_its_own_encoder_only() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = always_refusing_live();
+    restore_quality(Quality::Auto);
+    reset_player_control_for_test(&ps);
+    install(&mut ps, &live, Delivery::Hls, a1(), Some(candidate(false, a1(), None)), 0);
+    let (fresh, asked_on) = hls_abr_control(&ps).expect("the Auto HLS worker's capture");
+    assert!(!fresh.original_refused_on_this_route(), "sanity: nothing has been refused yet");
+
+    assert_eq!(
+        publish_automatic_route_intent(AutomaticRouteIntent::HlsToOriginal {
+            ticket: worker_ticket(),
+            evidence_kbps: 80_000,
+            position_ns: 60_000_000_000,
+        }),
+        AutomaticIntentResult::Accepted,
+    );
+    let action = claim_route_action().expect("the Auto worker's handoff");
+    let _frame = plx_base::task::FrameScope::enter();
+    let dispatch =
+        execute_recover_original_claim(&mut ps, &action, 60, RecoveryCause::Automatic, -1, 60_000_000_000);
+    drop(_frame);
+    assert!(matches!(dispatch, RetranscodeClaimDispatch::Pending), "a remux reaches PMS: {dispatch:?}");
+    let (_, tail, ..) = await_landing(&mut ps, "automatic Original worker never landed");
+    assert_eq!(tail, ClaimTail::Rejected(AUTO_ORIGINAL_REJECTED));
+    assert!(settle(&mut ps, &action, tail));
+
+    let (reopened, same) = hls_abr_control(&ps).expect("the retained HLS worker's capture");
+    assert_eq!(same.encoder(), asked_on.encoder(), "the refusal retained the HLS encoder");
+    assert!(reopened.original_refused_on_this_route(), "the encoder that refused Original is not asked again");
+
+    install_active_hls("next-encoder", "http://host/next.m3u8", crate::abr::Rung::P720);
+    let (moved, next) = hls_abr_control(&ps).expect("the next HLS worker's capture");
+    assert_eq!(next.encoder(), "next-encoder");
+    assert!(!moved.original_refused_on_this_route(), "a new encoder is a new admission question");
+    live.finish();
+    cleanup(&mut ps);
+}
+
 /// A direct Original needs no server round trip for an automatic recovery: the plan says so, and
 /// the pump leaves the stream playing instead of holding it for a flight that is over in a frame.
 #[test]

@@ -1672,6 +1672,7 @@ fn source_probe_reuses_live_hls_resource_instead_of_entering_adhoc_mde() {
         prior: None,
         history: crate::abr::TransitionHistory::default(),
         original_features: crate::abr::SourceFeatures::default(),
+        original_refused: false,
     };
     let result = control.probe_original_while_hls(&active_route, source_plan);
     assert!(
@@ -1773,6 +1774,7 @@ fn a_rejected_original_probe_keeps_hls_and_produces_no_capacity_observation() {
         prior: None,
         history: crate::abr::TransitionHistory::default(),
         original_features: crate::abr::SourceFeatures::default(),
+        original_refused: false,
     };
     let plan = crate::abr::source_probe_plan(320, crate::abr::PROBE_BUDGET_MS).unwrap();
     let result = control.probe_original_while_hls(&active_route, plan);
@@ -1864,6 +1866,7 @@ fn a_source_sample_from_a_superseded_hls_resource_is_discarded() {
         prior: None,
         history: crate::abr::TransitionHistory::default(),
         original_features: crate::abr::SourceFeatures::default(),
+        original_refused: false,
     };
 
     assert_eq!(

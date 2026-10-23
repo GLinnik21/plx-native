@@ -997,7 +997,9 @@ fn original_tail(
 /// one is not an ordinary rejection: the Auto worker exited to hand the action over, so the stream
 /// has no producer, and a refused/lost Original decision leaves the HLS route fully intact —
 /// rebuild that exact HLS Engine at the action's position rather than turning a recoverable probe
-/// failure into the terminal playback screen. Returns whether the Engine was replaced.
+/// failure into the terminal playback screen. Settling the action `Rejected` is also what tells the
+/// reopened worker not to ask again on this encoder (`route::finish_route_action`). Returns whether
+/// the Engine was replaced.
 fn land_automatic_original(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
@@ -2787,6 +2789,36 @@ mod flight_tests {
         assert_ne!(engine_epoch(&mut rig), epoch, "the producer had stopped, so the HLS Engine was reopened");
         assert!(!super::super::claim_hold::active() && !TX.paused.load(Acquire));
         assert!(!rig.flight.stopped().iter().any(|s| s == "rig-1"));
+    }
+
+    /// **A refused automatic recovery is not asked again on the route that refused it.** The
+    /// reopen above spawns a fresh HLS worker on the SAME encoder, and its capture
+    /// (`route::hls_abr_control`) used to hand it a fresh source gate: on a server that refuses
+    /// the Part and the remux every time, the worker probed, asked and was refused again ~10 s
+    /// later, a visible reload each round, for the rest of the film. The reopened worker's capture
+    /// now carries the refusal, which holds its source gate until the route changes
+    /// (`route::decision_audio_enhancement_tests`' encoder-scoped twin grades the release). The
+    /// ~10 s cadence itself is the pipeline tier's (the real worker's probe funding); this grades
+    /// its only input.
+    #[test]
+    fn a_refused_automatic_original_recovery_is_not_asked_again_on_the_reopened_hls() {
+        let mut rig = hls_rig(40);
+        FlightRig::offer_original(&mut rig.ps, false);
+        rig.flight.refuse_decisions(1);
+        rig.frame();
+        let (fresh, _) = crate::route::hls_abr_control(&rig.ps).expect("the live HLS worker's capture");
+        assert!(!fresh.original_refused_on_this_route(), "sanity: nothing has been refused yet");
+
+        FlightRig::publish_hls_to_original(60_000_000_000);
+        rig.frame();
+        rig.frames_until("the refusal's landing", |_| !crate::route::flight_outstanding());
+        assert_eq!(crate::route::transcode_session(&rig.ps), "rig-1", "the retained HLS is the route");
+        let (reopened, ticket) = crate::route::hls_abr_control(&rig.ps).expect("the reopened HLS worker's capture");
+        assert_eq!(ticket.encoder(), "rig-1");
+        assert!(
+            reopened.original_refused_on_this_route(),
+            "the worker reopened on the encoder that refused Original must not ask for it again",
+        );
     }
 
     /// A rig whose route is an Original the Auto watchdog watches (a progressive remux `rig-1`
