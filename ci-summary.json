@@ -1,28 +1,7 @@
 {
  "flaky": [],
- "generated": "2026-10-23T00:58:03Z",
+ "generated": "2026-10-23T01:03:45Z",
  "metrics": [
-  {
-   "change30_pct": null,
-   "change7_pct": 36.8,
-   "d30": null,
-   "delta30": null,
-   "delta7": 53.5,
-   "group": "ci",
-   "id": "ci|host python/shell/C gates",
-   "kind": "job",
-   "label": "CI: host python/shell/C gates",
-   "n_now": 75,
-   "n_prev": 102,
-   "now": 199,
-   "prev7": 145.5,
-   "shown": true,
-   "state": "worse",
-   "state30": "new",
-   "threshold_abs": 20.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
   {
    "change30_pct": null,
    "change7_pct": 36.6,
@@ -42,6 +21,27 @@
    "state30": "new",
    "threshold_abs": 5.0,
    "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": 36.3,
+   "d30": null,
+   "delta30": null,
+   "delta7": 53.0,
+   "group": "ci",
+   "id": "ci|host python/shell/C gates",
+   "kind": "job",
+   "label": "CI: host python/shell/C gates",
+   "n_now": 76,
+   "n_prev": 101,
+   "now": 199.0,
+   "prev7": 146,
+   "shown": true,
+   "state": "worse",
+   "state30": "new",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
    "unit": "s"
   },
   {
@@ -76,7 +76,7 @@
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 145,
-   "n_prev": 275,
+   "n_prev": 273,
    "now": 333,
    "prev7": 475,
    "shown": true,
@@ -88,18 +88,18 @@
   },
   {
    "change30_pct": -51.8,
-   "change7_pct": -20.3,
+   "change7_pct": -20.5,
    "d30": 685.0,
    "delta30": -355.0,
-   "delta7": -84.0,
+   "delta7": -85.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 74,
-   "n_prev": 125,
-   "now": 330.0,
-   "prev7": 414,
+   "n_now": 75,
+   "n_prev": 124,
+   "now": 330,
+   "prev7": 415.0,
    "shown": true,
    "state": "better",
    "state30": "better",
@@ -255,10 +255,10 @@
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 75,
-   "n_prev": 102,
-   "now": 321,
-   "prev7": 399.0,
+   "n_now": 76,
+   "n_prev": 101,
+   "now": 321.0,
+   "prev7": 399,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -276,9 +276,9 @@
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 75,
+   "n_now": 76,
    "n_prev": 0,
-   "now": 315,
+   "now": 315.0,
    "prev7": null,
    "shown": true,
    "state": "new",
@@ -289,18 +289,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -33.5,
+   "change7_pct": -33.7,
    "d30": null,
    "delta30": null,
-   "delta7": -130.0,
+   "delta7": -131,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 74,
-   "n_prev": 102,
-   "now": 257.5,
-   "prev7": 387.5,
+   "n_now": 75,
+   "n_prev": 101,
+   "now": 258,
+   "prev7": 389,
    "shown": true,
    "state": "better",
    "state30": "new",
@@ -360,10 +360,10 @@
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 75,
-   "n_prev": 102,
-   "now": 177,
-   "prev7": 151.5,
+   "n_now": 76,
+   "n_prev": 101,
+   "now": 177.5,
+   "prev7": 152,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -381,10 +381,10 @@
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 75,
-   "n_prev": 102,
-   "now": 160,
-   "prev7": 186.5,
+   "n_now": 76,
+   "n_prev": 101,
+   "now": 160.5,
+   "prev7": 187,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -530,9 +530,9 @@
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 75,
+   "n_now": 76,
    "n_prev": 0,
-   "now": 5,
+   "now": 5.0,
    "prev7": null,
    "shown": false,
    "state": "new",
@@ -546,15 +546,15 @@
    "change7_pct": -99.1,
    "d30": 234.5,
    "delta30": -231.5,
-   "delta7": -319.5,
+   "delta7": -320,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 74,
-   "n_prev": 102,
-   "now": 3.0,
-   "prev7": 322.5,
+   "n_now": 75,
+   "n_prev": 101,
+   "now": 3,
+   "prev7": 323,
    "shown": false,
    "state": "better",
    "state30": "better",
@@ -567,15 +567,15 @@
    "change7_pct": 0.0,
    "d30": 686.5,
    "delta30": -683.5,
-   "delta7": 0.0,
+   "delta7": 0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 74,
-   "n_prev": 102,
-   "now": 3.0,
-   "prev7": 3.0,
+   "n_now": 75,
+   "n_prev": 101,
+   "now": 3,
+   "prev7": 3,
    "shown": false,
    "state": "flat",
    "state30": "better",
@@ -607,75 +607,9 @@
  ],
  "regressions": [
   {
-   "change_pct": 36.8,
-   "commits": [
-    {
-     "pr": 919,
-     "sha": "5b9979d61",
-     "title": "CodeQL: font slots are AtomicPtr tables; late-audio pop guards with if"
-    },
-    {
-     "pr": 920,
-     "sha": "ffc9c44dd",
-     "title": "Detail: a held episode still is drawn once at the press dip; focus casts fade outside the face"
-    },
-    {
-     "pr": 897,
-     "sha": "2302e3e5e",
-     "title": "Also available: a show or season copy shows no runtime; the show's nominal duration is no episode's (#814)"
-    },
-    {
-     "pr": 865,
-     "sha": "60538b681",
-     "title": "player: a film ends on the pipeline's end-of-stream"
-    },
-    {
-     "pr": 925,
-     "sha": "8be69a89c",
-     "title": "sim: the host sink reports the pipeline's end-of-stream"
-    },
-    {
-     "pr": 926,
-     "sha": "24587134e",
-     "title": "CI: track flaky tests per commit on plxnative.com/ci"
-    },
-    {
-     "pr": 930,
-     "sha": "33f29b775",
-     "title": "Crash reports: Sentry release-health sessions (crash-free sessions per release)"
-    },
-    {
-     "pr": 932,
-     "sha": "8f3d3a0f2",
-     "title": "Crash reports: detect and report main-thread freezes"
-    },
-    {
-     "pr": 928,
-     "sha": "575d9d842",
-     "title": "Telemetry: per-screen frame health and repeated-key signal (route.left)"
-    },
-    {
-     "pr": 942,
-     "sha": "10ad33361",
-     "title": "Auto: an automatic Original recovery no longer needs a Plex client to fly"
-    }
-   ],
-   "from": 145.5,
-   "id": "ci|host python/shell/C gates",
-   "label": "CI: host python/shell/C gates",
-   "since": "2026-10-20",
-   "threshold_pct": 20.0,
-   "to": 199
-  },
-  {
    "change_pct": 36.6,
    "commits": [
     {
-     "pr": 919,
-     "sha": "5b9979d61",
-     "title": "CodeQL: font slots are AtomicPtr tables; late-audio pop guards with if"
-    },
-    {
      "pr": 920,
      "sha": "ffc9c44dd",
      "title": "Detail: a held episode still is drawn once at the press dip; focus casts fade outside the face"
@@ -719,6 +653,11 @@
      "pr": 942,
      "sha": "10ad33361",
      "title": "Auto: an automatic Original recovery no longer needs a Plex client to fly"
+    },
+    {
+     "pr": 943,
+     "sha": "05e04a003",
+     "title": "Test tooling: ABR plant probe ignores --quick stubs; fps --mock keeps the panel on (--panel)"
     }
    ],
    "from": 103.0,
@@ -729,13 +668,8 @@
    "to": 140.7
   },
   {
-   "change_pct": 30.8,
+   "change_pct": 36.3,
    "commits": [
-    {
-     "pr": 919,
-     "sha": "5b9979d61",
-     "title": "CodeQL: font slots are AtomicPtr tables; late-audio pop guards with if"
-    },
     {
      "pr": 920,
      "sha": "ffc9c44dd",
@@ -780,6 +714,72 @@
      "pr": 942,
      "sha": "10ad33361",
      "title": "Auto: an automatic Original recovery no longer needs a Plex client to fly"
+    },
+    {
+     "pr": 943,
+     "sha": "05e04a003",
+     "title": "Test tooling: ABR plant probe ignores --quick stubs; fps --mock keeps the panel on (--panel)"
+    }
+   ],
+   "from": 146,
+   "id": "ci|host python/shell/C gates",
+   "label": "CI: host python/shell/C gates",
+   "since": "2026-10-20",
+   "threshold_pct": 20.0,
+   "to": 199.0
+  },
+  {
+   "change_pct": 30.8,
+   "commits": [
+    {
+     "pr": 920,
+     "sha": "ffc9c44dd",
+     "title": "Detail: a held episode still is drawn once at the press dip; focus casts fade outside the face"
+    },
+    {
+     "pr": 897,
+     "sha": "2302e3e5e",
+     "title": "Also available: a show or season copy shows no runtime; the show's nominal duration is no episode's (#814)"
+    },
+    {
+     "pr": 865,
+     "sha": "60538b681",
+     "title": "player: a film ends on the pipeline's end-of-stream"
+    },
+    {
+     "pr": 925,
+     "sha": "8be69a89c",
+     "title": "sim: the host sink reports the pipeline's end-of-stream"
+    },
+    {
+     "pr": 926,
+     "sha": "24587134e",
+     "title": "CI: track flaky tests per commit on plxnative.com/ci"
+    },
+    {
+     "pr": 930,
+     "sha": "33f29b775",
+     "title": "Crash reports: Sentry release-health sessions (crash-free sessions per release)"
+    },
+    {
+     "pr": 932,
+     "sha": "8f3d3a0f2",
+     "title": "Crash reports: detect and report main-thread freezes"
+    },
+    {
+     "pr": 928,
+     "sha": "575d9d842",
+     "title": "Telemetry: per-screen frame health and repeated-key signal (route.left)"
+    },
+    {
+     "pr": 942,
+     "sha": "10ad33361",
+     "title": "Auto: an automatic Original recovery no longer needs a Plex client to fly"
+    },
+    {
+     "pr": 943,
+     "sha": "05e04a003",
+     "title": "Test tooling: ABR plant probe ignores --quick stubs; fps --mock keeps the panel on (--panel)"
     }
    ],
    "from": 46.0,
@@ -802,19 +802,19 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 321
+   "now": 321.0
   },
   {
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 315
+   "now": 315.0
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 257.5
+   "now": 258
   },
   {
    "group": "ci",
