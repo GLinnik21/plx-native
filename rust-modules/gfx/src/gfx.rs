@@ -206,7 +206,6 @@ const GL_TEXTURE3: c_uint = 0x84C3;
 
 extern "C" {
     fn glGetString(name: c_uint) -> *const c_char;
-    fn glGetIntegerv(name: c_uint, value: *mut c_int);
     fn glCreateShader(ty: c_uint) -> c_uint;
     fn glShaderSource(
         shader: c_uint,
@@ -503,19 +502,13 @@ fn frame_clear_alpha(r: f32, g: f32, b: f32, a: f32) {
     });
 }
 
-/// `GL_FRAMEBUFFER_BINDING`: the framebuffer the next clear writes.
-const GL_FRAMEBUFFER_BINDING: c_uint = 0x8CA6;
-
-/// Is the framebuffer bound right now the one the frame is PRESENTED from
-/// ([`plx_base::surface::frame_fb`])? Only a clear of that one can be the back-buffer wait; a page
-/// replayed into a blur source (`blur_snapshot_direct`) or drawn into a host snapshot
-/// ([`plx_base::surface::PageTarget`]) clears an FBO first. One client-state query, asked only
-/// while the probe is armed.
+/// Does a clear issued now write the framebuffer the frame is PRESENTED from? Only that one can be
+/// the back-buffer wait. A page replayed into a blur source ([`blur_source_pass`], the tap target
+/// bound by `blur_snapshot_direct`) or drawn into a host snapshot ([`plx_base::surface::PageTarget`],
+/// which redirects [`plx_base::surface::default_fb`]) clears an FBO instead. Two flag reads, no GL
+/// query: the hooks are installed in every build, so this runs on the first clear of every frame.
 fn clears_presented_fb() -> bool {
-    let mut bound: c_int = 0;
-    // SAFETY: a plain state query into a local.
-    unsafe { glGetIntegerv(GL_FRAMEBUFFER_BINDING, &mut bound) };
-    bound as u32 == plx_base::surface::frame_fb()
+    !blur_source_pass() && plx_base::surface::default_fb() == plx_base::surface::frame_fb()
 }
 
 /// Run `clear`, bracketed by the installed probe when [`arm_clear_probe`] offered it this frame
@@ -523,7 +516,7 @@ fn clears_presented_fb() -> bool {
 /// leaves the probe armed for the frame's real first framebuffer command: on a frame that rebuilds
 /// a glass source, the page's own clear runs first INSIDE the source replay, into the tap target,
 /// and bracketing that one priced a 0.04 ms wait while the real one (the visible page's clear,
-/// 8-18 ms on the television's pong scenes) went unpriced. `presented` is asked only when armed.
+/// 8-18 ms on the television's pong scenes) went unpriced. `presented` is asked only when offered.
 fn probed_clear(presented: impl FnOnce() -> bool, clear: impl FnOnce()) {
     let probe = CLEAR_PROBE
         .with(|p| (p.armed.get() && presented()).then(|| {
@@ -8858,6 +8851,7 @@ mod clear_probe_tests {
             "the source pass's clear is bare; the presented clear after it takes the pair"
         );
     }
+
 }
 
 #[cfg(test)]
