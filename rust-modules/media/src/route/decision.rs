@@ -1287,7 +1287,8 @@ pub(super) struct PlayerControl {
     timeline: Option<TimelineProjection>,
     /// **The HLS encoder an automatic Original recovery was refused on** — the reducer's own
     /// record of a [`RouteApplyResult::Rejected`] settlement of an automatic `HlsToOriginal`
-    /// action ([`finish_route_action`]). The Auto worker exits to hand that action over, so the
+    /// action ([`finish_route_action`]), or of an Original trial PMS admitted whose Load then
+    /// failed, on the encoder its rollback's rebase installed ([`note_original_rolled_back_onto`]). The Auto worker exits to hand that action over, so the
     /// pump reopens the retained HLS for a refusal, and the reopened route's worker used to start
     /// with a fresh source gate: on a server that kept refusing it probed, asked and was refused
     /// again every ~10 s, a visible reload each time. [`hls_abr_control`] hands a worker on THIS
@@ -1832,7 +1833,7 @@ pub fn finish_route_action(ps: &mut PlaybackSession, action: &ClaimedRouteAction
     // refused nothing.
     if let RouteIntent::Automatic(AutomaticRouteIntent::HlsToOriginal { ticket, .. }) = &action.intent {
         if result == RouteApplyResult::Rejected {
-            control.original_refused_on = Some(ticket.encoder().to_owned());
+            note_original_refused_on(&mut control, ticket.encoder());
         }
     }
     let restore = control.applied_projection.clone();
@@ -3029,6 +3030,26 @@ fn sync_active_hls_to_session(ps: &mut PlaybackSession) -> Option<(WorkerTicket,
     // The applied clone retained above intentionally excludes Session's staged user fields:
     // rejection combines the newest physical HLS route with the last accepted track contract.
     Some(active)
+}
+
+/// The one writer of [`PlayerControl::original_refused_on`]: Original was refused, or admitted and
+/// then failed to load, from the HLS route served by `encoder`.
+fn note_original_refused_on(control: &mut PlayerControl, encoder: &str) {
+    control.original_refused_on = Some(encoder.to_owned());
+}
+
+/// **An Original trial that failed to load was rolled back onto `installed`.** The rollback rebases
+/// the retained HLS at the recovery position, which mints a NEW encoder ([`plan_rebase`]), so the
+/// record goes on the encoder the rebase installed — the one the reloaded worker captures. PMS
+/// admitted the Original and the set still could not play it: the same answer the route would get
+/// by asking again, so it is held the way a refusal is. A rebase that landed INSIDE a trial
+/// rebuilt the candidate rather than restoring the route ([`carry_rebase_into_trial`]), and
+/// records nothing.
+pub(super) fn note_original_rolled_back_onto(installed: &RebaseInstalled) {
+    let mut control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
+    if !matches!(control.phase, ControlPhase::OriginalTrial(_)) {
+        note_original_refused_on(&mut control, &installed.replacement);
+    }
 }
 
 /// Whether the reducer recorded an automatic Original recovery refused on `encoder`.

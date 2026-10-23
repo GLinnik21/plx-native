@@ -173,7 +173,8 @@ pub enum ProbeBlock {
     /// not yet been released by a confidence-separated stronger HLS regime, or retained completed
     /// source evidence is awaiting/already exhausted its comparison at this HLS operating point.
     NoNewLinkEvidence,
-    /// The server already refused an automatic Original recovery asked from this HLS route
+    /// The server already refused an automatic Original recovery asked from this HLS route, or
+    /// admitted one whose Load then failed and was rolled back onto it
     /// ([`OriginalRecovery::after_route_refusal`]). Asking again from the same route would put the
     /// same admission question and buy the viewer another reload for the same answer.
     RouteRefused,
@@ -217,7 +218,8 @@ enum SourceProbeState {
     /// to `Fresh`.
     ReconsiderAfterHlsCommit,
     /// An automatic Original recovery asked from this HLS route was refused (PMS admitted neither
-    /// the Part nor a remux, or the plan could not fly). The refusal arrives in a NEW worker — the
+    /// the Part nor a remux, or the plan could not fly), or was admitted and failed to load, its
+    /// rollback rebasing this route. The refusal arrives in a NEW worker — the
     /// old one exited to hand the action over and the pump reopened the retained HLS — so the
     /// gate starts here instead of `Fresh`. Like `RejectCause::Structural` for an HLS ceiling PMS
     /// refused, no reserve and no elapsed time changes the answer for this route; a committed HLS

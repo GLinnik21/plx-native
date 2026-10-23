@@ -6661,9 +6661,10 @@ fn hls_demux(
                 )
             })
             .flatten()
-            // An automatic Original recovery was already refused on this HLS encoder: this worker
-            // is the pump's reopen of the retained route, and a fresh gate would probe, ask and be
-            // refused again, a visible reload each round. Held until an HLS commit changes the
+            // An automatic Original recovery was already refused on this HLS encoder (or admitted
+            // and rolled back onto it after its Load failed): this worker is the pump's reopen of
+            // the retained route, and a fresh gate would probe, ask and be refused again, a
+            // visible reload each round. Held until an HLS commit changes the
             // route (`OriginalRecovery::on_hls_commit`).
             .map(|gate| {
                 if control.original_refused_on_this_route() {
