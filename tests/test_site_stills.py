@@ -296,6 +296,24 @@ class Stability(unittest.TestCase):
         self.assertIn("60", over[0])
 
 
+class CaptureSize(unittest.TestCase):
+    """The simulator writes its drawable, which a HiDPI window makes 2x the canvas; the crops assume the canvas."""
+
+    def test_a_retina_capture_is_brought_back_to_the_canvas_not_cropped_to_its_quadrant(self):
+        if not shutil.which("ffmpeg"):
+            self.skipTest("no ffmpeg")
+        got = shots.fit_capture(png(3840, 2160, lambda x, y: (10, 20, 30)), 1920, 1080)
+        self.assertEqual(shots.png_size(got), (1920, 1080))
+
+    def test_an_exact_capture_passes_through_untouched(self):
+        data = png(1920, 1080, lambda x, y: (1, 2, 3))
+        self.assertIs(shots.fit_capture(data, 1920, 1080), data)
+
+    def test_a_capture_that_is_no_whole_multiple_is_refused(self):
+        with self.assertRaises(RuntimeError):
+            shots.fit_capture(png(2000, 1080, lambda x, y: (1, 2, 3)), 1920, 1080)
+
+
 class NeedsRender(unittest.TestCase):
     """An app whose inputs did not change commits no stills, whatever the renderer's noise: the decision is the
     inputs' tree hash against the committed manifest, taken in a throwaway repository laid out like this one."""

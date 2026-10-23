@@ -175,6 +175,28 @@ def clean_env(rt, shot, scene, defaults):
     return env
 
 
+def png_size(png):
+    """(width, height) from a PNG's IHDR chunk."""
+    if png[:8] != b"\x89PNG\r\n\x1a\n" or png[12:16] != b"IHDR":
+        raise RuntimeError("the capture is not a PNG")
+    return int.from_bytes(png[16:20], "big"), int.from_bytes(png[20:24], "big")
+
+
+def fit_capture(png, w, h):
+    """The capture at exactly `w`x`h` (the canvas times the scene's render scale), which `output_spec`'s crops
+    assume. The simulator writes its DRAWABLE, and a window on a HiDPI display (a Retina Mac) has one 2x the
+    window: 3840x2160 for the 1920x1080 canvas, whose top-left quadrant a canvas-sized crop then cut, a
+    Library that looked zoomed 2x. A whole multiple is downscaled (Lanczos, bit-exact); anything else is refused."""
+    have = png_size(png)
+    if have == (w, h):
+        return png
+    if have[0] % w or have[1] % h or have[0] // w != have[1] // h:
+        raise RuntimeError(f"the capture is {have[0]}x{have[1]}, not a whole multiple of the {w}x{h} canvas")
+    return subprocess.run(["ffmpeg", "-v", "error", "-threads", "1", "-i", "pipe:0", "-vf", f"scale={w}:{h}:flags=lanczos",
+                           "-frames:v", "1", "-bitexact", "-f", "image2pipe", "-c:v", "png", "pipe:1"],
+                          input=png, capture_output=True, check=True).stdout
+
+
 def capture(binary, scene, defaults, hero, keep):
     """Boot one scene and return (png bytes, log text). Raises RuntimeError on any failure."""
     srv, pms = mock_pms.serve(0, catalog=CATALOG, hero=hero)
@@ -224,7 +246,9 @@ def capture(binary, scene, defaults, hero, keep):
         if problems:
             tail = "\n    ".join(log.splitlines()[-15:])
             raise RuntimeError("; ".join(problems) + f"\n  instance root: {rt}\n  log tail:\n    {tail}")
-        png = shot.read_bytes()
+        k = render_scale(scene)
+        cw, ch = size_of(defaults["canvas"])
+        png = fit_capture(shot.read_bytes(), cw * k, ch * k)
         print(f"  {scene['name']}: settled in {secs:.1f}s")
         return png, log
     finally:
