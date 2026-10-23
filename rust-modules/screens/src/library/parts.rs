@@ -124,8 +124,9 @@ pub(super) struct GridPart {
     /// (`Grid::set_page`) before every call. A pop starts from REST when a deliberate move arms it
     /// and when the first awake tick finds a focus no event announced since the last dormant tick;
     /// a restore or reconcile announced after that is adopted at full scale (`ui::cards`, the pop
-    /// rule). A page returning from a Detail push is dormant under the BACK dip's held image, so
-    /// its focused poster regrows from rest when the image is let go.
+    /// rule). A page ENTERED under a route dip's held image is dormant, so its focused poster grows
+    /// from rest when the image is let go; a page rebuilt from its memory on BACK is not
+    /// (`LibraryScreen::restored`), so its poster comes back lifted, as it was left.
     grid: Grid,
     snapshot: Option<plx_data::stores::browse::ListingSnapshot>,
     indexes: GridIndexes,
