@@ -106,9 +106,27 @@ def fixture_map() -> dict[str, str]:
     return dict(re.findall(r'"(\d+)":\s*"([^"]+)"', m.group(1)))
 
 
+def is_quick_clip(path: pathlib.Path) -> bool:
+    """True when the pack's `fixtures.json` says this clip is a `--quick`/`--secs` stub.
+
+    A quick clip is ~2 s long, and ffprobe's `bit_rate` for a TS audio stream is an ESTIMATE
+    (bytes over the probed duration) that includes the AAC priming and PES framing, so on a stub it
+    reads 160.26 kbps where the full-length clip of the same 160k encode reads 159. Probing it
+    would make `sim.rs` look stale against a pack that is, by its own `quick` flag, "NOT
+    suite-valid" (tests/fixtures/make_fixtures.py). Unknown (no manifest, no record) is not quick.
+    """
+    try:
+        shapes = json.loads((path.parent / "fixtures.json").read_text()).get("shapes", {})
+        return bool((shapes.get(path.stem) or {}).get("quick"))
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
 def audio_es_kbps(path: pathlib.Path) -> int | None:
-    """The audio elementary rate, which no log line carries."""
-    if not path.exists():
+    """The audio elementary rate, which no log line carries.
+
+    None when the clip is absent, ffprobe is unavailable, or the clip is a `--quick` stub."""
+    if not path.exists() or is_quick_clip(path):
         return None
     try:
         out = subprocess.run(

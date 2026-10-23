@@ -454,8 +454,10 @@ that address. It boots the synthetic guest `tools/tv-session.sh up --guest --moc
 is then checked against the app's own log: no `pms: server N version=1.41.0.0000-synthetic` line,
 or any other server version, fails the scene before it is graded. Debug flavor only; `tests/run.py` does not deploy the binary, so deploy the build you mean to measure first (`make deploy` under the TV lock, or `tools/tv-session.sh up`, which deploys when stale; for FPS or frame pacing build with `ARM_PROFILE=release`, e.g. `make ARM_PROFILE=release deploy`, because a bare `make deploy` ships the no-LTO `tvdev` build, which `--fps*` and `tools/profile-graphics` refuse to grade; see `docs/agent-reference.md` "ARM_PROFILE") — a stress run once measured an older binary this way. `--server`,
 `--owner`, `--shared-server`, `--suite` and `--graphics-profile` are refused with it. The panel is
-turned off (`tv-session.sh screen off`, before every scene) and the sound muted (`sound off`) —
-the run stops if either cannot be done — and neither is ever turned back on.
+kept ON (`tv-session.sh screen on`, asserted before every scene: a dark panel lets the app's idle
+gate hold presents back, which makes frame times meaningless) and the sound muted (`sound off`, once
+per run); the run stops if either cannot be done, and the sound is never un-muted. `--panel off`
+blanks the panel instead (`screen off` before every scene), for an unattended soak where only the log matters.
 **A person page on a `--mock` or `--guest` boot has no biography and no filmography credits.** Both
 write `plxnative-token`, and a dev-token boot with no Discover stand-in armed has the app refuse the
 page's two provider reads itself (`discover: GET … refused` in the log, `discover: base=real

@@ -6376,12 +6376,20 @@ def fps_for_tiers(scenes, include_player, name_filter=None):
     return [s for s in in_tier if not name_filter or name_filter in s["name"]]
 
 
-def quiet_tv(tv, sound=False):
-    """Panel OFF (and, once per run, sound OFF) through `tools/tv-session.sh` — the owner's standing
-    rule for every device run. Fails closed: a run that cannot blank the panel stops instead of
-    lighting a household's television for a stress walk. Never turns either on."""
+def quiet_tv(tv, sound=False, panel="on"):
+    """Set the panel (`panel` = "on"|"off") and, once per run (`sound=True`), MUTE the sound,
+    through `tools/tv-session.sh`. Fails closed: a run that cannot meet the requested panel/sound
+    state stops instead of measuring a different one. Never un-mutes.
+
+    The panel defaults to ON because this is only reached from the `--fps*` scenes, and a dark
+    panel makes those either meaningless or silently wrong (`plx_machine::idle` gates presents on
+    it; `tools/tv-session.sh`, "SCREEN OFF"). It is asserted (`screen on`, idempotent) rather than
+    assumed, since an earlier run or a person may have left the set dark. `--panel off` is the
+    opt-in for a long unattended soak, and keeps the old blanked behaviour."""
+    if panel not in ("on", "off"):
+        raise ValueError(f"panel must be 'on' or 'off', not {panel!r}")
     session = os.path.join(REPO_ROOT, "tools", "tv-session.sh")
-    steps = [["screen", "off"]] + ([["sound", "off"]] if sound else [])
+    steps = [["screen", panel]] + ([["sound", "off"]] if sound else [])
     for step in steps:
         r = subprocess.run([session, *step], env=dict(os.environ, TV=tv),
                            capture_output=True, text=True, timeout=120)
@@ -6395,9 +6403,9 @@ def run_mock_fps_scene(scene, cfg):
 
     The mock lives exactly as long as the scene (each scene may ask for a different library), the
     guest token is resolved only after the mock answers, from `tools/mock-guest.py`, which refuses
-    any server that is not the synthetic one, and the panel is re-blanked before every launch.
+    any server that is not the synthetic one, and the panel state (`--panel`, default on) is re-asserted before every launch.
     """
-    quiet_tv(cfg["tv"])
+    quiet_tv(cfg["tv"], panel=cfg.get("panel", "on"))
     log = os.path.join(tempfile.gettempdir(), f"plx-mock-pms-{os.getpid()}-{scene['name']}.log")
     args = mock_fps.mock_server_args(scene)
     print(f"    mock: tests/mock_pms.py {' '.join(args) or '(default library)'}")
@@ -6414,15 +6422,16 @@ def run_fps_suite(scenes, cfg, token, include_player, skipped=()):
     tiers = {"ui"} | ({"player"} if include_player else set())
     print(f"=== FPS regression suite: {len(scenes)} scene(s), tiers={sorted(tiers)}, "
           f"binary profile={cfg.get('arm_profile', 'unknown')} ===")
-    # The panel rule (docs/agent-reference.md, Tier 2), restated by the owner 2026-09-07: the panel
-    # is OFF and the sound is OFF for EVERY device run, fps scenes included — rendering continues
-    # with the LCD off. The 2026-09-06 "panel ON for fps" form is superseded.
-    print("    panel rule: run this suite with the television's panel OFF and the sound OFF "
-          "(tools/tv-session.sh screen off; tools/tv-session.sh sound off) — the owner's "
-          "standing directive")
+    # The panel rule for SMOOTHNESS runs (owner, 2026-10): the panel stays ON and the sound is MUTED.
+    # A dark panel lets `plx_machine::idle` hold presents back, so frame times are meaningless or
+    # silently wrong, and the owner watches these runs. (The 2026-09-07 "panel OFF for every device
+    # run" form is superseded for fps; `--panel off` still blanks it for an unattended soak.)
+    panel = cfg.get("panel", "on")
+    print(f"    panel rule: panel {panel.upper()} and sound OFF (muted) for this suite "
+          "(tools/tv-session.sh screen on|off; tools/tv-session.sh sound off)")
     results = []
     if cfg.get("mock"):
-        quiet_tv(cfg["tv"], sound=True)
+        quiet_tv(cfg["tv"], sound=True, panel=panel)
     for s in scenes:
         try:
             if cfg.get("mock"):
@@ -6716,8 +6725,14 @@ def main():
                          "each scene's own arguments. Needs NO PMS_TOKEN, NO manifest.local.json "
                          "and makes NO plex.tv call; boots the same synthetic guest as "
                          "`tools/tv-session.sh up --guest --mock`, refuses a log whose server is "
-                         "not the synthetic one, and keeps the panel OFF and the sound OFF. "
+                         "not the synthetic one, and keeps the panel ON (see --panel) and the sound muted. "
                          "Debug flavor only. Scenes with no `mock` block are skipped with a reason")
+    ap.add_argument("--panel", choices=("on", "off"), default="on",
+                    help="with --mock: the TV panel state for the run (default: on). FPS/smoothness "
+                         "runs need it ON, because a dark panel lets the app's idle gate hold "
+                         "presents back and the frame times are then meaningless; `off` is for "
+                         "an unattended soak where only the log matters. The sound is muted "
+                         "either way")
     ap.add_argument("--graphics-profile", action="store_true",
                     help="for exactly one selected FPS scene, run production pacing + passive "
                          "Mali IRQ + a separate HWCNT leg and save one diagnostic bundle")
@@ -6829,6 +6844,7 @@ def main():
     if args.mock and not args.list:
         mock_host, mock_port = mock_fps.configured_endpoint(CONFIG_LOCAL_H)
         cfg["mock"] = {"host": mock_host, "port": mock_port}
+        cfg["panel"] = args.panel
         cfg["inject_token"] = True  # the synthetic guest token rides plxnative-token, as for tv-session
     cases = manifest["cases"]
     if args.suite:
