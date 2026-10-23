@@ -220,6 +220,10 @@ account stays clean. It works without storing any new secret:
   access token** from `GET https://plex.tv/api/servers/<machineId>/shared_servers` (keyed by
   `userID` — which is what `test_user.id` is). The managed user must already have the libraries
   shared with it.
+- An installation without an owner token in `config.local.h` can instead set
+  `test_user.token_file`: the path of a private file, outside the tree, holding that managed
+  user's per-server token on one line (`~` is expanded). `run.py` reads it at run time, skips the
+  plex.tv lookup, and never prints it; `--print-test-token` honours the same key.
 - That token is used for the `/:/progress` resume seed **and** written to `plxnative-token` in the
   TV's runtime root. The binary carries **no** token, so this file is the only way an automated run
   gets PMS access at all (see `plex_run`); the **app itself** then plays and scrobbles as the
