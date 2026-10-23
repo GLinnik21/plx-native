@@ -73,8 +73,8 @@ typedef struct PlxText PlxText;
 
 typedef struct {
     int width;            /* box width in px: the advance, grown by any ink overhanging either end */
-    int ascent;           /* rows from the box's top to the baseline */
-    int height;           /* rows in the box; the face's own ascent and descent, grown by ink */
+    int ascent;           /* rows from the box's top to the baseline: the ink's height above it */
+    int height;           /* rows in the box: exactly the ink's, so 0 for a run of spaces */
     const uint8_t *alpha; /* width*height coverage, row-major, tightly packed. NULL from
                            * plx_ass_text_measure; from plx_ass_text_render, valid until the next
                            * call on the same handle or its close */

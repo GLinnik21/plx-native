@@ -192,6 +192,21 @@ impl Face {
         self.call(s, rtl, true)
     }
 
+    /// Hand the handle to a process-lifetime cache slot (`text.rs` keeps one per face and size,
+    /// as it does every SDL2_ttf face).
+    pub(crate) fn into_raw(self) -> *mut c_void {
+        let p = self.0;
+        std::mem::forget(self);
+        p
+    }
+
+    /// Use a cached handle without taking it back.
+    ///
+    /// # Safety
+    /// `p` must come from [`Face::into_raw`]; cached handles are never closed.
+    pub(crate) unsafe fn borrow_raw(p: *mut c_void) -> std::mem::ManuallyDrop<Face> {
+        std::mem::ManuallyDrop::new(Face(p))
+    }
 }
 
 impl Drop for Face {
@@ -381,6 +396,25 @@ mod native_tests {
                 assert_eq!(r.alpha.len(), (r.w * r.h) as usize);
             }
         }
+    }
+
+    #[test]
+    #[ignore = "needs pkg/libass-plx-host.so.0 (make libass-host)"]
+    fn the_box_is_the_ink_not_the_faces_line_box() {
+        let px = 40;
+        let f = face("appfont-arabic.ttf", px);
+        let alef = f.render("ا", true).unwrap();
+        // alef is 0.760 em tall and sits on the baseline: its box is its stroke, give or take a
+        // row of anti-aliasing, nowhere near Noto Kufi's 1.282 em ascender or 0.615 em descender
+        assert!((alef.ascent - (0.760 * px as f32) as i32).abs() <= 1, "alef ascent {}", alef.ascent);
+        assert!(alef.h - alef.ascent <= 1, "alef reaches {} rows below", alef.h - alef.ascent);
+        // a final yeh descends about 0.45 em, deeper than Inter's 0.241 em descender
+        let yeh = f.render("في", true).unwrap();
+        assert!(yeh.h - yeh.ascent >= (0.40 * px as f32) as i32, "yeh below {}", yeh.h - yeh.ascent);
+        let spaces = f.render("   ", true).unwrap();
+        assert!(spaces.w > 0, "spaces advance");
+        assert_eq!(spaces.h, 0, "and draw nothing");
+        assert!(spaces.alpha.is_empty());
     }
 
     #[test]

@@ -47,8 +47,6 @@
 struct PlxText {
     FT_Face ft;
     hb_font_t *hb;
-    long ascent;   /* the face's rows above the baseline: SDL2_ttf 2.0.x's FT_CEIL of the ascender */
-    long below;    /* its rows from the baseline down, SDL2_ttf's `height - ascent` */
     uint8_t *pixels;
     size_t capacity;
 };
@@ -133,9 +131,6 @@ PlxText *plx_ass_text_open(const char *path, int px)
     }
     text->hb = hb_font_create(face);
     hb_font_set_scale(text->hb, px * 64, px * 64); /* positions in 26.6 pixels */
-    FT_Fixed scale = text->ft->size->metrics.y_scale;
-    text->ascent = ceil64(FT_MulFix(text->ft->ascender, scale));
-    text->below = 1 - ceil64(FT_MulFix(text->ft->descender, scale)); /* SDL2_ttf's + 1 baseline row */
     return text;
 }
 
@@ -171,8 +166,13 @@ static int layout(PlxText *text, const char *utf8, size_t len, int rtl, PlxTextR
     }
 
     /* Glyphs arrive in VISUAL order (HarfBuzz reverses a right-to-left run itself), each advance
-     * positive, so the pen walks left to right from the run's origin in both directions. */
-    long min_x = 0, max_x = 0, ascent = text->ascent, below = text->below;
+     * positive, so the pen walks left to right from the run's origin in both directions.
+     *
+     * The box is the INK, not the face's line box: Noto Kufi's descender is 0.615 em against
+     * Inter's 0.241, so a face box would make every Arabic label measure taller than its Latin
+     * neighbours whether or not a letter descends. The caller keeps its own line box and grows it
+     * only by what is actually drawn. */
+    long min_x = 0, max_x = 0, ascent = 0, below = 0;
     FT_Pos pen_x = 0, pen_y = 0;
     for (unsigned i = 0; i < count; i++) {
         FT_Pos gx = pen_x + pos[i].x_offset, gy = pen_y + pos[i].y_offset;
@@ -212,7 +212,7 @@ static int layout(PlxText *text, const char *utf8, size_t len, int rtl, PlxTextR
     if (ceil64(pen_x) > max_x)
         max_x = ceil64(pen_x);
     long width = max_x - min_x, height = ascent + below;
-    if (width < 0 || height <= 0 || width > INT_MAX || height > INT_MAX ||
+    if (width < 0 || height < 0 || width > INT_MAX || height > INT_MAX ||
         (unsigned long)width * (unsigned long)height > TEXT_MAX_PIXELS) {
         release(glyphs, count);
         return -1;
