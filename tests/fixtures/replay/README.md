@@ -565,3 +565,11 @@ table miss`, both modes) on the one new measured run, "S2 · E2 · 32m left", wh
 passed `plxnative-rec check`, and only `1-boot-home-chip-grid/rec-0000.jsonl` was replaced: the manifest
 (anchor flag included) stands. `tests/replay_fixtures.py` replays all three with `verdict=SAME` in Targets
 and Resolve and every difference counter at zero.
+
+Play Version (the item menu's version page) added two `Action` variants to `item_menu::SHAPE`,
+which moved the state shape from 2896094977091175041 to 2556366498870773725 (`SCREEN_SHAPES_PIN`
+`0x2085_d42d_b9be_8eae`). All three anchors were refused on load, then recorded again against the
+synthetic server with `tests/focusfp.sh --rec --only 1,6,12` on the 120 Hz display (the 350 ms
+key interval and halved idle sleeps above; the default cadence overran the replay budget) and
+installed with `tools/plxnative-rec rerecord`, anchors retained. `tests/replay_fixtures.py`
+replays all three with `verdict=SAME` in Targets and Resolve and every difference counter at zero.
