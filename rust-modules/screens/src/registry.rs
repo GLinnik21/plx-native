@@ -2126,7 +2126,7 @@ where
                 let versions = H::metadata(cx)
                     .current()
                     .filter(|d| plx_plex::plex::same_item((d.sid, d.rk.as_str()), (arg.sid, arg.rk.as_str())))
-                    .map_or(&[][..], |d| d.versions.as_slice());
+                    .map_or(&[][..], crate::detail::hero_versions);
                 Box::new(crate::versions_panel::VersionsPanelScreen::new(entry, arg.clone(), versions))
             }
             AppArg::TracksPanel(arg) => Box::new(

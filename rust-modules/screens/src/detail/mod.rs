@@ -4218,7 +4218,7 @@ impl DetailScreen {
         // `!hero_set().trailer` and then drive `ELEM_TRAILER` directly to prove `activate_hero`'s
         // handling stays correct even though the disc itself is never shown.)
         hero::HeroSet {
-            version: self.detail(meta).is_some_and(|d| d.versions.len() >= 2),
+            version: self.detail(meta).is_some_and(|d| hero_versions(d).len() >= 2),
             restart,
             trailer: false,
             alt: self.alt_available(meta),
@@ -4281,7 +4281,7 @@ impl DetailScreen {
                     .unwrap_or(episodes::Action::None);
                 match action {
                     episodes::Action::Play(i) => {
-                        self.play_episode_at(i, false, fx, meta);
+                        self.play_episode_at(i, false, None, fx, meta);
                     }
                     episodes::Action::OpenDetail(sid, rk) => {
                         self.content(fx, ContentReq::Push(ContentArg::Detail { sid, rk }))
@@ -4445,8 +4445,8 @@ impl DetailScreen {
         }
     }
 
-    /// Play what the hero is about. `version` is a pick off the Play Version panel, which only a
-    /// movie or episode page offers; a show's hero plays its episode's default version.
+    /// Play what the hero is about. `version` is a pick off the Play Version panel
+    /// ([`hero_versions`]): on a show page it is a version of the episode the hero plays.
     fn play_hero<H: ContentLike>(
         &mut self,
         from_start: bool,
@@ -4458,11 +4458,12 @@ impl DetailScreen {
         if d.is_show {
             let i = hero::hero_episode(d).and_then(|ep| d.episodes.position(&ep.rk));
             match i {
-                Some(i) => self.play_episode_at(i, from_start, fx, meta),
+                Some(i) => self.play_episode_at(i, from_start, version, fx, meta),
                 None => self.play_episode_value(
-                    hero::hero_episode(d).or_else(|| d.episodes.first()),
+                    hero_episode_played(d),
                     d,
                     from_start,
+                    version,
                     fx,
                 ),
             }
@@ -4490,6 +4491,7 @@ impl DetailScreen {
         &mut self,
         index: usize,
         from_start: bool,
+        version: Option<plx_plex::plex::MediaId>,
         fx: &mut Effects<'_, H>,
         meta: plx_data::metadata::MetadataView<'_>,
     ) -> bool {
@@ -4497,7 +4499,7 @@ impl DetailScreen {
             return false;
         }
         let Some(d) = self.detail(meta) else { return false };
-        self.play_episode_value(d.episodes.get(index), d, from_start, fx)
+        self.play_episode_value(d.episodes.get(index), d, from_start, version, fx)
     }
 
     fn play_episode_value<H: ContentLike>(
@@ -4505,6 +4507,7 @@ impl DetailScreen {
         episode: Option<&plx_data::metadata::Episode>,
         d: &Detail,
         from_start: bool,
+        version: Option<plx_plex::plex::MediaId>,
         fx: &mut Effects<'_, H>,
     ) -> bool {
         let Some(ep) = episode else { return false };
@@ -4553,7 +4556,7 @@ impl DetailScreen {
             acodec,
             title,
             context,
-            version: None,
+            version,
         };
         self.content(fx, ContentReq::Play { play, resume_ns });
         true
@@ -4563,6 +4566,21 @@ impl DetailScreen {
         fx.push(Fx::App(AppFx::Content(req)));
     }
 
+}
+
+/// The episode a show page's hero Play plays: the one it is resuming, else the season's first.
+fn hero_episode_played(d: &Detail) -> Option<&plx_data::metadata::Episode> {
+    hero::hero_episode(d).or_else(|| d.episodes.first())
+}
+
+/// The versions the hero's Play chooses among, for its Play Version disc and panel: the page's
+/// own movie or episode, or on a show page the episode its Play plays.
+pub(crate) fn hero_versions(d: &Detail) -> &[plx_data::pms::MediaVersion] {
+    if d.is_show {
+        hero_episode_played(d).map_or(&[], |ep| ep.versions.as_slice())
+    } else {
+        &d.versions
+    }
 }
 
 /// A presented preview must leave the framebuffer transparent. The player route punches this

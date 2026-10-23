@@ -33,11 +33,11 @@ fn the_disc_is_second_after_play_in_every_row() {
         assert_eq!(v[..n].iter().filter(|c| **c == HeroCtl::Watchlist).count(), 1, "{s:?}");
         let rest: Vec<_> = v[2..n].to_vec();
         let mut want = Vec::new();
-        if s.version { want.push(HeroCtl::Version); }
         if s.restart { want.push(HeroCtl::Restart); }
         if s.trailer { want.push(HeroCtl::Trailer); }
         if s.alt { want.push(HeroCtl::Alt); }
         want.push(if s.mark == PosterMark::Watched { HeroCtl::MarkUnwatched } else { HeroCtl::MarkWatched });
+        if s.version { want.push(HeroCtl::Version); }
         assert_eq!(rest, want, "{s:?}");
         assert!(n <= MAX_CTLS);
     }

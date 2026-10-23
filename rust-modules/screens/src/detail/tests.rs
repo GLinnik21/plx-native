@@ -5368,3 +5368,34 @@ fn a_picked_version_plays_it_resuming_like_play() {
         clear();
     }
 }
+
+/// On a show page the disc offers the versions of the episode the hero's Play plays (the on-deck
+/// one once the show is started), and a pick plays THAT episode in that version.
+#[test]
+fn a_show_page_offers_and_plays_its_hero_episodes_versions() {
+    let two = || plx_appkit::version_list::sample().into_iter().take(2).collect::<Vec<_>>();
+    let on_deck = plx_data::metadata::Episode { resume_ms: 30_000, versions: two(), ..episode("e2", 2) };
+    let mut d = detail(ServerId::UNSET, "show");
+    d.episodes = vec![episode("e1", 1), on_deck.clone()].into();
+    d.on_deck = Some(on_deck);
+    let _guard = install(d);
+    let mut screen = bare(&_guard, ServerId::UNSET, "show");
+    assert!(screen.hero_set(test_store().view()).version, "the on-deck episode has two versions");
+    let pick = plx_appkit::version_list::sample()[1].id;
+    let (_, effects) = step(&mut screen, &ScreenEvent::App(AppMsg::PlayVersion(pick)), None);
+    match play_item(&effects).map(|(play, _)| play) {
+        Some(PlayIntent::Item { rk, version, .. }) => {
+            assert_eq!(rk, "e2", "the hero's episode");
+            assert_eq!(*version, Some(pick));
+        }
+        _ => panic!("a pick plays the hero's episode"),
+    }
+    clear();
+    drop(_guard);
+
+    // The first episode has one version and no episode is on deck: nothing to choose.
+    let _guard = install(detail(ServerId::UNSET, "show"));
+    let screen = bare(&_guard, ServerId::UNSET, "show");
+    assert!(!screen.hero_set(test_store().view()).version);
+    clear();
+}

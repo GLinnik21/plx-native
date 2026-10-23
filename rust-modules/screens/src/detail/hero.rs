@@ -167,16 +167,12 @@ pub struct HeroSet {
 /// The row's controls, in drawn order, for a given set. A fixed [`MAX_CTLS`]-slot array plus a
 /// live count, so no per-frame allocation. The bookmark disc (only when `set.watchlist`) is SECOND, after Play/Resume;
 /// whether it wears the outline or the filled face is membership ([`face`]), not presence. The Play
-/// Version disc follows it, before Restart: it is another way to Play, so it stands with Play.
+/// Version disc is LAST, after the watched toggle.
 pub fn hero_ctls(set: HeroSet) -> ([HeroCtl; MAX_CTLS], usize) {
     let mut v = [HeroCtl::Play; MAX_CTLS];
     let mut n = 1;
     if set.watchlist {
         v[n] = HeroCtl::Watchlist;
-        n += 1;
-    }
-    if set.version {
-        v[n] = HeroCtl::Version;
         n += 1;
     }
     if set.restart {
@@ -197,6 +193,10 @@ pub fn hero_ctls(set: HeroSet) -> ([HeroCtl; MAX_CTLS], usize) {
         HeroCtl::MarkWatched
     };
     n += 1;
+    if set.version {
+        v[n] = HeroCtl::Version;
+        n += 1;
+    }
     (v, n)
 }
 
@@ -1679,16 +1679,16 @@ mod tests {
         }
     }
 
-    /// The Play Version disc stands after Play and the bookmark, before Restart, and unfurls to
-    /// "Play Version" in its own (fourth) slot.
+    /// The Play Version disc is last in the row, and unfurls to "Play Version" in its own (fourth)
+    /// slot.
     #[test]
-    fn the_version_disc_follows_the_bookmark_and_names_itself() {
+    fn the_version_disc_is_last_and_names_itself() {
         let _g = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
         let with = HeroSet { version: true, ..set(true, true, PosterMark::None) };
         let (controls, n) = hero_ctls(with);
         assert_eq!(
             &controls[..n],
-            &[HeroCtl::Play, HeroCtl::Watchlist, HeroCtl::Version, HeroCtl::Restart, HeroCtl::Alt, HeroCtl::MarkWatched]
+            &[HeroCtl::Play, HeroCtl::Watchlist, HeroCtl::Restart, HeroCtl::Alt, HeroCtl::MarkWatched, HeroCtl::Version]
         );
         assert_eq!(disc_verb(HeroCtl::Version, false).map(|(slot, l)| (slot, l.to_str().unwrap())), Some((3, "Play Version")));
         assert_eq!(HeroCtl::of_elem(ELEM_VERSION), Some(HeroCtl::Version));
