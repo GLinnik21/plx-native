@@ -602,15 +602,10 @@ struct SecState {
     items: SecItems,
     cursor: Option<Arc<Cursor>>,
     /// A read-back changed a row this section's QUERY depends on (see
-    /// [`BrowseState::apply_view_local`]): what it lists is out of date though every row on screen
-    /// is right. Cleared by any re-query.
+    /// [`BrowseState::apply_view_local`]), or the server created or removed items
+    /// ([`BrowseState::listings_changed`]): what it lists is out of date though every row on
+    /// screen is right. Cleared by any re-query.
     membership_stale: bool,
-    /// Items were created or removed on the server ([`BrowseState::listings_changed`]): the rows
-    /// on screen stay until the re-list's first page lands, which then replaces them in place.
-    relist: bool,
-    /// More was created or removed while the re-list was out: its answer may predate that, so
-    /// one more re-list follows it rather than dropping it (a long scan never starves the grid).
-    relist_again: bool,
 }
 
 /// What the Collections page borrows the section's single query from: the grid's sort, genre and
@@ -811,8 +806,6 @@ impl Default for SecState {
             items: SecItems::default(),
             cursor: None,
             membership_stale: false,
-            relist: false,
-            relist_again: false,
         }
     }
 }
@@ -832,8 +825,6 @@ impl SecState {
         self.items.clear();
         self.cursor = None;
         self.membership_stale = false;
-        self.relist = false;
-        self.relist_again = false;
     }
     fn query_filters(&self, section_kind: SecKind) -> Vec<(String, String)> {
         let mut filters = Vec::new();
@@ -1074,9 +1065,6 @@ impl BrowseState {
         if state.total < 0 {
             return true;
         }
-        if state.relist {
-            return true;
-        }
         let (lo, hi) = self.want;
         let first = lo / PAGE;
         let last = hi.saturating_sub(1) / PAGE;
@@ -1174,10 +1162,16 @@ impl BrowseState {
         activate_source_of(i);
     }
     /// The grid's memory of the sections it is not showing: the recent few keep their last
-    /// window, the rest keep no pages. Runs on a switch, never per frame.
+    /// window, the rest keep no pages, and a section left while stale
+    /// ([`SecState::membership_stale`]) keeps none either, so that coming back fetches it afresh
+    /// rather than showing the list it had before the change. Runs on a switch, never per frame.
     fn apply_section_rule(&mut self) {
         for (section, state) in self.states.iter_mut().enumerate() {
             if section == self.cur {
+                continue;
+            }
+            if state.membership_stale {
+                state.reset_listing();
                 continue;
             }
             match self.left.iter().find(|&&(left, _)| left == section) {
@@ -1417,13 +1411,20 @@ impl BrowseState {
         self.requery_gen = Some(self.gen);
         true
     }
-    /// Items were created or removed on `sid`: re-list the current section without emptying it
-    /// (its rows stay on screen until the new first page replaces them, so the grid absorbs the
-    /// change in place) and make every other section of the server forget its pages.
-    fn listings_changed(&mut self, sid: ServerId) -> bool {
+    /// Items were created or removed on `sid` (a notification, never a press).
+    ///
+    /// Every other section of the server forgets its pages AND its cursor (`reset_listing`): its
+    /// next visit fetches afresh. The current section, when it is one of the server's and lists
+    /// something, is only marked stale, as a read-back that moved a row's membership marks it: the
+    /// grid on screen is never listed again under the reader, and the Library page re-queries it
+    /// (keeping the reader's place, [`Self::requery_stale`]) when a page is pushed over it. With no
+    /// Library page on the stack nobody is looking (`library_on_stack` is false), so the re-query
+    /// starts at once and `requery_owed` has the store pumped to land its first page.
+    /// True when a section was marked or reset, or a re-query was started.
+    fn listings_changed(&mut self, sid: ServerId, library_on_stack: bool) -> bool {
         let current = self.cur();
-        let mut relist = false;
         let mut hit = false;
+        let mut marked = false;
         for i in 0..self.states.len() {
             if self.section_sid(i) != Some(sid) {
                 continue;
@@ -1432,25 +1433,21 @@ impl BrowseState {
             if i != current {
                 state.reset_listing();
                 hit = true;
-            } else if state.relist {
-                // One is owed already: the one out is kept, and one more follows it.
-                state.relist_again = true;
-            } else if state.fetch == SecFetch::Ready && state.total >= 0 {
-                state.relist = true;
-                relist = true;
+            } else if state.total >= 0 || state.fetch == SecFetch::Loading {
+                hit |= !state.membership_stale;
+                state.membership_stale = true;
+                marked = true;
             }
         }
-        if relist {
-            // A page still out for the old listing is dropped when it lands.
-            self.refetch_gen();
+        if marked && !library_on_stack {
+            hit |= self.requery_stale();
         }
-        relist || hit
+        hit
     }
     /// Is a membership re-query's first page still owed, so that the store must be pumped even
     /// though no Library page is on top to do it?
     pub fn requery_owed(&self) -> bool {
         self.requery_gen == Some(self.gen) && self.cur_state().is_some_and(|s| s.fetch == SecFetch::Loading)
-            || self.cur_state().is_some_and(|s| s.relist)
     }
     fn note_library_choice(&mut self, i: usize) {
         let (Some(kind), Some(section)) = (self.section_kind(i), self.sections.get(i)) else {
@@ -2584,7 +2581,7 @@ impl BrowseState {
                 self.hubs_invalidate_server(sid, adapter);
                 true
             }
-            BrowseCmd::ListingsChanged { sid } => self.listings_changed(sid),
+            BrowseCmd::ListingsChanged { sid, library_on_stack } => self.listings_changed(sid, library_on_stack),
             BrowseCmd::ApplyView { at, edit } => match edit {
                 crate::viewstate::ViewEdit::Watched(on) => {
                     let listing = self.apply_view_local(&at, edit);
@@ -2720,9 +2717,6 @@ impl BrowseState {
         let Some(section) = self.sections.get(current) else { return };
         let start = if state.total < 0 {
             0
-        } else if state.relist {
-            // The re-list's first page is the one the reader is looking at.
-            (self.want.0 / PAGE) * PAGE
         } else {
             let (lo, hi) = self.want;
             let hi = hi.min(state.total as usize);
@@ -2895,14 +2889,7 @@ impl BrowseState {
                                         state.genre_resolved = result.resolved.genre;
                                     }
                                 }
-                                if std::mem::take(&mut state.relist) {
-                                    // The rows it replaces described the old listing; every other
-                                    // page is fetched again as the grid wants it.
-                                    state.items.clear();
-                                    state.total = result.total;
-                                    state.items.resize(state.total as usize);
-                                    state.relist = std::mem::take(&mut state.relist_again);
-                                } else if state.total != result.total {
+                                if state.total != result.total {
                                     state.total = result.total;
                                     state.items.resize(state.total as usize);
                                 }

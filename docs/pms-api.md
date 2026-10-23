@@ -1425,9 +1425,13 @@ request), deduplicated per pump, at most once per quiet-refetch spacing (5 s) pe
 the Watchlist has loaded and only when `reread_allowed`; it stays queued otherwise. A feed that came back
 after a gap re-asks the server's titles whole. The tile flips when the answer lands (`docs/watchlist.md`,
 *Live-update gaps*). The same create or delete also moves that server's lists: one quiet Home refetch
-and one section-shelf invalidate (spaced like a `stopped`'s), and one re-list of its library grids
-(`BrowseCmd::ListingsChanged`: the open grid is listed again where the reader stands, its rows kept
-until the new first page replaces them; the server's other sections fetch afresh on their next visit). A watched toggle on another client emits
+and one section-shelf invalidate (spaced like a `stopped`'s), and one `BrowseCmd::ListingsChanged` for its
+library listings, at most once per quiet-refetch spacing per server (a change inside it stays owed and is
+spent when due). PMS sends the same `finished` frame for a refreshed item as for a new one, so the open grid
+is never listed again while it is visible: it is marked stale, as a read-back that moves a row's membership
+marks it, and re-queried keeping the reader's place when a page covers it (at once when no Library page is
+on the navigation stack). The server's other sections forget their pages and fetch afresh on their next
+visit, and so does a section left while stale. A watched toggle on another client emits
 nothing, and the plex.tv membership itself has no PMS signal at all.
 
 Connection policy: idle 25 s ends a stream as `Silent`; `Silent`, `Closed`, a transport failure and a
