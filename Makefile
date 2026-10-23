@@ -2280,6 +2280,9 @@ libass-host: $(LIBASS_HOST_STAGED)
 check-ass: $(LIBASS_HOST_STAGED)
 	cd rust-modules && CARGO_INCREMENTAL=0 PLXNATIVE_APP_DIR="$(CURDIR)/pkg" PATH="$$HOME/.cargo/bin:$$PATH" \
 	  cargo +$(RUST_TOOLCHAIN) test --lib -p plx_media player::ass::tests -- --include-ignored
+	# The same library's UI text surface (ABI 4): Arabic and Hebrew runs, gfx/src/rtl.rs.
+	cd rust-modules && CARGO_INCREMENTAL=0 PLXNATIVE_APP_DIR="$(CURDIR)/pkg" PATH="$$HOME/.cargo/bin:$$PATH" \
+	  cargo +$(RUST_TOOLCHAIN) test --lib -p plx_gfx rtl:: -- --include-ignored
 
 $(FFMPEG_HOST_INC)/libavformat/avformat.h: ci/build-ffmpeg.sh ci/deps.py ci/dependencies.json
 	HOST=1 ./ci/build-ffmpeg.sh

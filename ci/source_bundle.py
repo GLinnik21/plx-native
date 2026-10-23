@@ -309,6 +309,10 @@ def validate(path, expected_snapshot=None, private_values=()):
             for required in ['src/ass_internal.h', 'src/ass_fonts.c']:
                 if required not in contents:
                     fail('missing ASS renderer source: ' + required)
+        # From ABI 4 the recipe also compiles the UI text surface into the same library.
+        if b'src/ass_text.c' in contents.get('ci/build-libass.py', b''):
+            if 'src/ass_text.c' not in contents:
+                fail('missing ASS renderer source: src/ass_text.c')
     if 'ci/dependencies.json' in contents:
         # Every dependency the manifest bundles (FFmpeg, Sentry Native, the libass stack, nanosvg)
         # is a required source of this tree.
