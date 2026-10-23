@@ -1292,6 +1292,7 @@ impl<H: LibraryLike> Screen<H> for RecommendedScreen {
     }
     // The heartbeat's `route=` word and the focus probe's screen both read this: it is the
     // library family's word, so a scene that greps `route=library` keeps matching.
+    fn glides(&self) -> bool { true }
     fn name(&self) -> &'static str { "library" }
     fn state(&self) -> &dyn LogicalState { self }
     fn crumb(&self, _: &Cx<'_, H>) -> Option<Cow<'_, str>> { None }

@@ -776,6 +776,7 @@ impl<H: SearchLike> Screen<H> for SearchScreen {
     fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<plx_machine::machine::FocusKey<u32>>) {
         SearchScreen::redraw_focused::<H>(self, f, focus)
     }
+    fn glides(&self) -> bool { true }
     fn name(&self) -> &'static str { "search" }
     fn state(&self) -> &dyn LogicalState { self }
     fn crumb(&self, _: &Cx<'_, H>) -> Option<Cow<'_, str>> { None }

@@ -286,6 +286,9 @@ pub struct Stack<K> {
     home: bool,
     /// The reveal target moves only on `FocusMoved`, not every tick ([`Stack::reveal_on_move`]).
     on_move: bool,
+    /// A wheel (or the pointer's edge glide) moved the page: it stays where the wheel put it until
+    /// focus moves, instead of the tick pulling it back to the focused section.
+    wheeled: bool,
     /// The clip every section's placement carries ([`Stack::clipped`]).
     clip: Rect,
     /// The section and position focus was last on, for the reconcile rule.
@@ -319,6 +322,7 @@ impl<K: Copy + Eq> Stack<K> {
             target: 0.0,
             home: false,
             on_move: false,
+            wheeled: false,
             clip: Rect::FULL,
             last: None,
             queue: Vec::new(),
@@ -739,7 +743,32 @@ impl<K: Copy + Eq> Stack<K> {
                     reported = Some(StackEvent::Card(k, CardEvent::Want(r)));
                 }
             }
+            // A hover moves focus, never the page: the pointer scrolls by the screen's edges (and
+            // a click by what it clicked, below). Every other move brings the page to the focus.
+            ScreenEvent::FocusMoved { by: plx_machine::machine::By::Pointer, .. } => self.wheeled = true,
             ScreenEvent::FocusMoved { to, .. } if self.on_move => self.reveal_on(p, cx, *to),
+            ScreenEvent::FocusMoved { .. } => self.wheeled = false,
+            ScreenEvent::Input(input) if matches!(input.kind, plx_machine::machine::InputKind::Click { hit: Some(_), .. }) => {
+                if let plx_machine::machine::InputKind::Click { hit: Some(elem), .. } = input.kind {
+                    self.wheeled = false;
+                    if self.on_move {
+                        self.reveal_on(p, cx, FocusKey { entry: self.entry, elem });
+                    }
+                }
+            }
+            // A wheel moves the page itself, focus staying where it is: `dy` rows of `ROW_PITCH`
+            // (fractional for the pointer's edge glide). A `reveal_on_move` page answers its own
+            // wheel (Search scrolls by its table rows), so it is left alone here.
+            ScreenEvent::Input(input) if !self.on_move => {
+                if let plx_machine::machine::InputKind::Wheel { dy } = input.kind {
+                    if dy.is_finite() {
+                        let max = self.max_scroll(p, cx).max(self.target);
+                        self.target = (self.target - dy * crate::consts::ROW_PITCH).clamp(0.0, max);
+                        self.wheeled = true;
+                        fx.invalidate(plx_machine::present::Provenance::Input);
+                    }
+                }
+            }
             ScreenEvent::Activate(e) => {
                 reported = reported.or_else(|| {
                     let i = self.owner(p, cx, e)?;
@@ -782,7 +811,7 @@ impl<K: Copy + Eq> Stack<K> {
             self.target += shift;
         }
         match focus {
-            _ if self.on_move => {}
+            _ if self.on_move || self.wheeled => {}
             Some((i, _)) if !matches!(self.specs[i].kind, Kind::Overlay { .. }) => self.target = self.wanted(p, cx, i),
             _ if self.home => self.target = 0.0,
             _ => {}
