@@ -1,6 +1,6 @@
 {
  "flaky": [],
- "generated": "2026-10-23T20:26:08Z",
+ "generated": "2026-10-23T20:35:03Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -69,16 +69,16 @@
    "change30_pct": -51.6,
    "change7_pct": -30.3,
    "d30": 688,
-   "delta30": -355.0,
-   "delta7": -145.0,
+   "delta30": -355,
+   "delta7": -145,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 148,
-   "n_prev": 272,
-   "now": 333.0,
-   "prev7": 478.0,
+   "n_now": 147,
+   "n_prev": 273,
+   "now": 333,
+   "prev7": 478,
    "shown": true,
    "state": "better",
    "state30": "better",
@@ -610,11 +610,6 @@
    "change_pct": 35.8,
    "commits": [
     {
-     "pr": 943,
-     "sha": "05e04a003",
-     "title": "Test tooling: ABR plant probe ignores --quick stubs; fps --mock keeps the panel on (--panel)"
-    },
-    {
      "pr": 944,
      "sha": "6ca6fbfd6",
      "title": "Auto: a refused Original recovery is not asked again on the HLS route that refused it"
@@ -658,6 +653,11 @@
      "pr": 963,
      "sha": "d550676d1",
      "title": "Site: stamp the hero's \"Version X.Y.Z\" from pkg/appinfo.json at deploy"
+    },
+    {
+     "pr": 962,
+     "sha": "5959398b2",
+     "title": "CI: push to main with a ruleset-bypass deploy key (release bump, audit, site film)"
     }
    ],
    "from": 46.0,
@@ -671,11 +671,6 @@
    "change_pct": 34.2,
    "commits": [
     {
-     "pr": 943,
-     "sha": "05e04a003",
-     "title": "Test tooling: ABR plant probe ignores --quick stubs; fps --mock keeps the panel on (--panel)"
-    },
-    {
      "pr": 944,
      "sha": "6ca6fbfd6",
      "title": "Auto: a refused Original recovery is not asked again on the HLS route that refused it"
@@ -719,6 +714,11 @@
      "pr": 963,
      "sha": "d550676d1",
      "title": "Site: stamp the hero's \"Version X.Y.Z\" from pkg/appinfo.json at deploy"
+    },
+    {
+     "pr": 962,
+     "sha": "5959398b2",
+     "title": "CI: push to main with a ruleset-bypass deploy key (release bump, audit, site film)"
     }
    ],
    "from": 152,
@@ -732,11 +732,6 @@
    "change_pct": 27.1,
    "commits": [
     {
-     "pr": 943,
-     "sha": "05e04a003",
-     "title": "Test tooling: ABR plant probe ignores --quick stubs; fps --mock keeps the panel on (--panel)"
-    },
-    {
      "pr": 944,
      "sha": "6ca6fbfd6",
      "title": "Auto: a refused Original recovery is not asked again on the HLS route that refused it"
@@ -780,6 +775,11 @@
      "pr": 963,
      "sha": "d550676d1",
      "title": "Site: stamp the hero's \"Version X.Y.Z\" from pkg/appinfo.json at deploy"
+    },
+    {
+     "pr": 962,
+     "sha": "5959398b2",
+     "title": "CI: push to main with a ruleset-bypass deploy key (release bump, audit, site film)"
     }
    ],
    "from": 114.7,
