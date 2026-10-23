@@ -878,6 +878,41 @@ class TeardownProcessTable(unittest.TestCase):
         fake.assert_called_once_with(["ps", "-Ao", "pid,command"], capture_output=True)
 
 
+class QuietTv(unittest.TestCase):
+    """`quiet_tv` is what `--fps --mock` uses to set the panel and sound. The panel stays ON for
+    smoothness runs (a dark one makes the frame times meaningless); only `--panel off` blanks it."""
+
+    def _steps(self, **kw):
+        calls = []
+
+        def fake(cmd, **_):
+            calls.append(tuple(cmd[1:]))
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        with mock.patch.object(run.subprocess, "run", fake):
+            run.quiet_tv("tv.invalid", **kw)
+        return calls
+
+    def test_default_keeps_the_panel_on_and_mutes_once(self):
+        self.assertEqual(self._steps(), [("screen", "on")])
+        self.assertEqual(self._steps(sound=True), [("screen", "on"), ("sound", "off")])
+
+    def test_panel_off_is_the_opt_in(self):
+        self.assertEqual(self._steps(sound=True, panel="off"),
+                         [("screen", "off"), ("sound", "off")])
+
+    def test_a_bad_panel_value_is_refused_and_a_failed_step_stops_the_run(self):
+        with self.assertRaises(ValueError):
+            run.quiet_tv("tv.invalid", panel="dim")
+        fail = lambda cmd, **_: subprocess.CompletedProcess(cmd, 1, "", "no")
+        with mock.patch.object(run.subprocess, "run", fail), self.assertRaises(SystemExit):
+            run.quiet_tv("tv.invalid")
+
+    def test_the_cli_exposes_panel_with_on_as_default(self):
+        src = inspect.getsource(run.main)
+        self.assertIn('"--panel", choices=("on", "off"), default="on"', src)
+        self.assertIn('cfg["panel"] = args.panel', src)
+
+
 class StoredSessionGate(unittest.TestCase):
     """A `session: stored` case with no stored sign-in on the install used to call
     `require_stored_session()` -> `sys.exit()` from inside `run_case`, and `SystemExit` is not an
