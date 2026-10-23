@@ -1,21 +1,21 @@
 {
  "flaky": [],
- "generated": "2026-10-23T03:14:37Z",
+ "generated": "2026-10-23T09:46:48Z",
  "metrics": [
   {
    "change30_pct": null,
-   "change7_pct": 36.6,
+   "change7_pct": 34.4,
    "d30": null,
    "delta30": null,
-   "delta7": 37.7,
+   "delta7": 16.0,
    "group": "local",
-   "id": "bench.leaf",
+   "id": "bench.ui",
    "kind": "local",
-   "label": "Rebuild after editing plx_base",
+   "label": "Rebuild after editing plx_ui",
    "n_now": 7,
-   "n_prev": 7,
-   "now": 140.7,
-   "prev7": 103.0,
+   "n_prev": 8,
+   "now": 62.5,
+   "prev7": 46.5,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -25,18 +25,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 34.5,
+   "change7_pct": 34.0,
    "d30": null,
    "delta30": null,
-   "delta7": 51,
+   "delta7": 50.5,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 79,
-   "n_prev": 97,
-   "now": 199,
-   "prev7": 148,
+   "n_now": 78,
+   "n_prev": 98,
+   "now": 199.0,
+   "prev7": 148.5,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -46,18 +46,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 30.8,
+   "change7_pct": 33.9,
    "d30": null,
    "delta30": null,
-   "delta7": 14.2,
+   "delta7": 36.9,
    "group": "local",
-   "id": "bench.ui",
+   "id": "bench.leaf",
    "kind": "local",
-   "label": "Rebuild after editing plx_ui",
+   "label": "Rebuild after editing plx_base",
    "n_now": 7,
-   "n_prev": 7,
-   "now": 60.2,
-   "prev7": 46.0,
+   "n_prev": 8,
+   "now": 145.8,
+   "prev7": 108.8,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -69,16 +69,16 @@
    "change30_pct": -51.5,
    "change7_pct": -30.2,
    "d30": 686,
-   "delta30": -353.0,
+   "delta30": -353,
    "delta7": -144.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 152,
-   "n_prev": 267,
-   "now": 333.0,
-   "prev7": 477,
+   "n_now": 151,
+   "n_prev": 268,
+   "now": 333,
+   "prev7": 477.0,
    "shown": true,
    "state": "better",
    "state30": "better",
@@ -88,18 +88,18 @@
   },
   {
    "change30_pct": -51.8,
-   "change7_pct": -21.1,
+   "change7_pct": -21.6,
    "d30": 685.0,
    "delta30": -355.0,
-   "delta7": -88.5,
+   "delta7": -91,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 78,
-   "n_prev": 120,
-   "now": 330.0,
-   "prev7": 418.5,
+   "n_now": 77,
+   "n_prev": 121,
+   "now": 330,
+   "prev7": 421,
    "shown": true,
    "state": "better",
    "state30": "better",
@@ -109,18 +109,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 9.5,
+   "change7_pct": 12.6,
    "d30": null,
    "delta30": null,
-   "delta7": 2.2,
+   "delta7": 2.8,
    "group": "local",
    "id": "bench.app",
    "kind": "local",
    "label": "Rebuild after editing the app crate",
    "n_now": 7,
-   "n_prev": 7,
+   "n_prev": 8,
    "now": 25.1,
-   "prev7": 22.9,
+   "prev7": 22.3,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -130,18 +130,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 9.3,
+   "change7_pct": 9.7,
    "d30": null,
    "delta30": null,
-   "delta7": 3.9,
+   "delta7": 4.1,
    "group": "local",
    "id": "bench.screens",
    "kind": "local",
    "label": "Rebuild after editing plx_screens",
    "n_now": 7,
-   "n_prev": 7,
-   "now": 45.6,
-   "prev7": 41.7,
+   "n_prev": 8,
+   "now": 47.0,
+   "prev7": 42.9,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -151,20 +151,20 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 7.5,
+   "change7_pct": -27.4,
    "d30": null,
    "delta30": null,
-   "delta7": 8.3,
+   "delta7": -45.4,
    "group": "local",
    "id": "bench.tests",
    "kind": "local",
    "label": "Unit suite",
    "n_now": 6,
-   "n_prev": 6,
+   "n_prev": 7,
    "now": 120.3,
-   "prev7": 112.0,
+   "prev7": 165.7,
    "shown": true,
-   "state": "flat",
+   "state": "better",
    "state30": "new",
    "threshold_abs": 5.0,
    "threshold_pct": 25.0,
@@ -172,16 +172,16 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -12.0,
+   "change7_pct": -16.9,
    "d30": null,
    "delta30": null,
-   "delta7": -151.9,
+   "delta7": -227.0,
    "group": "local",
    "id": "bench.check",
    "kind": "local",
    "label": "make check, the whole gate",
    "n_now": 5,
-   "n_prev": 5,
+   "n_prev": 6,
    "now": 1116.6,
    "parts": [
     {
@@ -195,7 +195,7 @@
      "now": 973.0
     }
    ],
-   "prev7": 1268.5,
+   "prev7": 1343.6,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -247,20 +247,20 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -19.8,
+   "change7_pct": -20.3,
    "d30": null,
    "delta30": null,
-   "delta7": -79,
+   "delta7": -81.5,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 79,
-   "n_prev": 97,
-   "now": 321,
-   "prev7": 400,
+   "n_now": 78,
+   "n_prev": 98,
+   "now": 320.5,
+   "prev7": 402.0,
    "shown": true,
-   "state": "flat",
+   "state": "better",
    "state30": "new",
    "threshold_abs": 20.0,
    "threshold_pct": 20.0,
@@ -276,9 +276,9 @@
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 79,
-   "n_prev": 0,
-   "now": 314,
+   "n_now": 78,
+   "n_prev": 1,
+   "now": 314.0,
    "prev7": null,
    "shown": true,
    "state": "new",
@@ -289,18 +289,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -33.9,
+   "change7_pct": -34.7,
    "d30": null,
    "delta30": null,
-   "delta7": -137.0,
+   "delta7": -140.5,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 78,
-   "n_prev": 97,
-   "now": 267.0,
-   "prev7": 404,
+   "n_now": 77,
+   "n_prev": 98,
+   "now": 264,
+   "prev7": 404.5,
    "shown": true,
    "state": "better",
    "state30": "new",
@@ -352,18 +352,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 13.4,
+   "change7_pct": 15.5,
    "d30": null,
    "delta30": null,
-   "delta7": 21,
+   "delta7": 24.0,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 79,
-   "n_prev": 97,
-   "now": 178,
-   "prev7": 157,
+   "n_now": 78,
+   "n_prev": 98,
+   "now": 178.5,
+   "prev7": 154.5,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -373,18 +373,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -14.4,
+   "change7_pct": -14.1,
    "d30": null,
    "delta30": null,
-   "delta7": -27,
+   "delta7": -26.5,
    "group": "ci",
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 79,
-   "n_prev": 97,
-   "now": 161,
-   "prev7": 188,
+   "n_now": 78,
+   "n_prev": 98,
+   "now": 161.0,
+   "prev7": 187.5,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -415,19 +415,19 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -11.9,
+   "change7_pct": -16.8,
    "d30": null,
    "delta30": null,
-   "delta7": -151.0,
+   "delta7": -226.0,
    "group": "local",
    "id": "bench.check.cargo",
    "kind": "local",
    "label": "make check: cargo branch",
    "n_now": 5,
-   "n_prev": 5,
+   "n_prev": 6,
    "now": 1116.0,
    "parent": "bench.check",
-   "prev7": 1267.0,
+   "prev7": 1342.0,
    "shown": false,
    "state": "flat",
    "state30": "new",
@@ -437,19 +437,19 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 7.8,
+   "change7_pct": 2.2,
    "d30": null,
    "delta30": null,
-   "delta7": 70.0,
+   "delta7": 21.0,
    "group": "local",
    "id": "bench.check.python",
    "kind": "local",
    "label": "make check: python branch",
    "n_now": 5,
-   "n_prev": 5,
+   "n_prev": 6,
    "now": 973.0,
    "parent": "bench.check",
-   "prev7": 903.0,
+   "prev7": 952.0,
    "shown": false,
    "state": "flat",
    "state30": "new",
@@ -530,9 +530,9 @@
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 79,
-   "n_prev": 0,
-   "now": 5,
+   "n_now": 78,
+   "n_prev": 1,
+   "now": 5.0,
    "prev7": null,
    "shown": false,
    "state": "new",
@@ -551,10 +551,10 @@
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 78,
-   "n_prev": 97,
-   "now": 3.0,
-   "prev7": 323,
+   "n_now": 77,
+   "n_prev": 98,
+   "now": 3,
+   "prev7": 323.0,
    "shown": false,
    "state": "better",
    "state30": "better",
@@ -572,10 +572,10 @@
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 78,
-   "n_prev": 97,
-   "now": 3.0,
-   "prev7": 3,
+   "n_now": 77,
+   "n_prev": 98,
+   "now": 3,
+   "prev7": 3.0,
    "shown": false,
    "state": "flat",
    "state30": "better",
@@ -585,7 +585,7 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -9.3,
+   "change7_pct": -16.6,
    "d30": null,
    "delta30": null,
    "delta7": -0.1,
@@ -594,8 +594,8 @@
    "kind": "local",
    "label": "No-op build",
    "n_now": 7,
-   "n_prev": 7,
-   "now": 0.7,
+   "n_prev": 8,
+   "now": 0.6,
    "prev7": 0.8,
    "shown": false,
    "state": "flat",
@@ -607,7 +607,7 @@
  ],
  "regressions": [
   {
-   "change_pct": 36.6,
+   "change_pct": 34.4,
    "commits": [
     {
      "pr": 925,
@@ -660,134 +660,134 @@
      "title": "Test harness: keep plxnative-stderr.log of a case whose app died, and fail that case (crash_gate)"
     }
    ],
-   "from": 103.0,
-   "id": "bench.leaf",
-   "label": "Rebuild after editing plx_base",
-   "since": "2026-10-19",
-   "threshold_pct": 25.0,
-   "to": 140.7
-  },
-  {
-   "change_pct": 34.5,
-   "commits": [
-    {
-     "pr": 925,
-     "sha": "8be69a89c",
-     "title": "sim: the host sink reports the pipeline's end-of-stream"
-    },
-    {
-     "pr": 926,
-     "sha": "24587134e",
-     "title": "CI: track flaky tests per commit on plxnative.com/ci"
-    },
-    {
-     "pr": 930,
-     "sha": "33f29b775",
-     "title": "Crash reports: Sentry release-health sessions (crash-free sessions per release)"
-    },
-    {
-     "pr": 932,
-     "sha": "8f3d3a0f2",
-     "title": "Crash reports: detect and report main-thread freezes"
-    },
-    {
-     "pr": 928,
-     "sha": "575d9d842",
-     "title": "Telemetry: per-screen frame health and repeated-key signal (route.left)"
-    },
-    {
-     "pr": 942,
-     "sha": "10ad33361",
-     "title": "Auto: an automatic Original recovery no longer needs a Plex client to fly"
-    },
-    {
-     "pr": 943,
-     "sha": "05e04a003",
-     "title": "Test tooling: ABR plant probe ignores --quick stubs; fps --mock keeps the panel on (--panel)"
-    },
-    {
-     "pr": 944,
-     "sha": "6ca6fbfd6",
-     "title": "Auto: a refused Original recovery is not asked again on the HLS route that refused it"
-    },
-    {
-     "pr": 946,
-     "sha": "01e77d550",
-     "title": "tests: test_user.token_file supplies a managed-user token without an owner token"
-    },
-    {
-     "pr": 948,
-     "sha": "b8e82a1ce",
-     "title": "Test harness: keep plxnative-stderr.log of a case whose app died, and fail that case (crash_gate)"
-    }
-   ],
-   "from": 148,
-   "id": "ci|host python/shell/C gates",
-   "label": "CI: host python/shell/C gates",
-   "since": "2026-10-23",
-   "threshold_pct": 20.0,
-   "to": 199
-  },
-  {
-   "change_pct": 30.8,
-   "commits": [
-    {
-     "pr": 925,
-     "sha": "8be69a89c",
-     "title": "sim: the host sink reports the pipeline's end-of-stream"
-    },
-    {
-     "pr": 926,
-     "sha": "24587134e",
-     "title": "CI: track flaky tests per commit on plxnative.com/ci"
-    },
-    {
-     "pr": 930,
-     "sha": "33f29b775",
-     "title": "Crash reports: Sentry release-health sessions (crash-free sessions per release)"
-    },
-    {
-     "pr": 932,
-     "sha": "8f3d3a0f2",
-     "title": "Crash reports: detect and report main-thread freezes"
-    },
-    {
-     "pr": 928,
-     "sha": "575d9d842",
-     "title": "Telemetry: per-screen frame health and repeated-key signal (route.left)"
-    },
-    {
-     "pr": 942,
-     "sha": "10ad33361",
-     "title": "Auto: an automatic Original recovery no longer needs a Plex client to fly"
-    },
-    {
-     "pr": 943,
-     "sha": "05e04a003",
-     "title": "Test tooling: ABR plant probe ignores --quick stubs; fps --mock keeps the panel on (--panel)"
-    },
-    {
-     "pr": 944,
-     "sha": "6ca6fbfd6",
-     "title": "Auto: a refused Original recovery is not asked again on the HLS route that refused it"
-    },
-    {
-     "pr": 946,
-     "sha": "01e77d550",
-     "title": "tests: test_user.token_file supplies a managed-user token without an owner token"
-    },
-    {
-     "pr": 948,
-     "sha": "b8e82a1ce",
-     "title": "Test harness: keep plxnative-stderr.log of a case whose app died, and fail that case (crash_gate)"
-    }
-   ],
-   "from": 46.0,
+   "from": 46.5,
    "id": "bench.ui",
    "label": "Rebuild after editing plx_ui",
    "since": "2026-10-19",
    "threshold_pct": 25.0,
-   "to": 60.2
+   "to": 62.5
+  },
+  {
+   "change_pct": 34.0,
+   "commits": [
+    {
+     "pr": 925,
+     "sha": "8be69a89c",
+     "title": "sim: the host sink reports the pipeline's end-of-stream"
+    },
+    {
+     "pr": 926,
+     "sha": "24587134e",
+     "title": "CI: track flaky tests per commit on plxnative.com/ci"
+    },
+    {
+     "pr": 930,
+     "sha": "33f29b775",
+     "title": "Crash reports: Sentry release-health sessions (crash-free sessions per release)"
+    },
+    {
+     "pr": 932,
+     "sha": "8f3d3a0f2",
+     "title": "Crash reports: detect and report main-thread freezes"
+    },
+    {
+     "pr": 928,
+     "sha": "575d9d842",
+     "title": "Telemetry: per-screen frame health and repeated-key signal (route.left)"
+    },
+    {
+     "pr": 942,
+     "sha": "10ad33361",
+     "title": "Auto: an automatic Original recovery no longer needs a Plex client to fly"
+    },
+    {
+     "pr": 943,
+     "sha": "05e04a003",
+     "title": "Test tooling: ABR plant probe ignores --quick stubs; fps --mock keeps the panel on (--panel)"
+    },
+    {
+     "pr": 944,
+     "sha": "6ca6fbfd6",
+     "title": "Auto: a refused Original recovery is not asked again on the HLS route that refused it"
+    },
+    {
+     "pr": 946,
+     "sha": "01e77d550",
+     "title": "tests: test_user.token_file supplies a managed-user token without an owner token"
+    },
+    {
+     "pr": 948,
+     "sha": "b8e82a1ce",
+     "title": "Test harness: keep plxnative-stderr.log of a case whose app died, and fail that case (crash_gate)"
+    }
+   ],
+   "from": 148.5,
+   "id": "ci|host python/shell/C gates",
+   "label": "CI: host python/shell/C gates",
+   "since": "2026-10-23",
+   "threshold_pct": 20.0,
+   "to": 199.0
+  },
+  {
+   "change_pct": 33.9,
+   "commits": [
+    {
+     "pr": 925,
+     "sha": "8be69a89c",
+     "title": "sim: the host sink reports the pipeline's end-of-stream"
+    },
+    {
+     "pr": 926,
+     "sha": "24587134e",
+     "title": "CI: track flaky tests per commit on plxnative.com/ci"
+    },
+    {
+     "pr": 930,
+     "sha": "33f29b775",
+     "title": "Crash reports: Sentry release-health sessions (crash-free sessions per release)"
+    },
+    {
+     "pr": 932,
+     "sha": "8f3d3a0f2",
+     "title": "Crash reports: detect and report main-thread freezes"
+    },
+    {
+     "pr": 928,
+     "sha": "575d9d842",
+     "title": "Telemetry: per-screen frame health and repeated-key signal (route.left)"
+    },
+    {
+     "pr": 942,
+     "sha": "10ad33361",
+     "title": "Auto: an automatic Original recovery no longer needs a Plex client to fly"
+    },
+    {
+     "pr": 943,
+     "sha": "05e04a003",
+     "title": "Test tooling: ABR plant probe ignores --quick stubs; fps --mock keeps the panel on (--panel)"
+    },
+    {
+     "pr": 944,
+     "sha": "6ca6fbfd6",
+     "title": "Auto: a refused Original recovery is not asked again on the HLS route that refused it"
+    },
+    {
+     "pr": 946,
+     "sha": "01e77d550",
+     "title": "tests: test_user.token_file supplies a managed-user token without an owner token"
+    },
+    {
+     "pr": 948,
+     "sha": "b8e82a1ce",
+     "title": "Test harness: keep plxnative-stderr.log of a case whose app died, and fail that case (crash_gate)"
+    }
+   ],
+   "from": 108.8,
+   "id": "bench.leaf",
+   "label": "Rebuild after editing plx_base",
+   "since": "2026-10-19",
+   "threshold_pct": 25.0,
+   "to": 145.8
   }
  ],
  "schema": 2,
@@ -802,19 +802,19 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 321
+   "now": 320.5
   },
   {
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 314
+   "now": 314.0
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 267.0
+   "now": 264
   },
   {
    "group": "ci",
@@ -834,7 +834,7 @@
    "group": "local",
    "id": "bench.leaf",
    "label": "Rebuild after editing plx_base",
-   "now": 140.7
+   "now": 145.8
   },
   {
    "group": "local",
@@ -846,13 +846,13 @@
    "group": "local",
    "id": "bench.ui",
    "label": "Rebuild after editing plx_ui",
-   "now": 60.2
+   "now": 62.5
   },
   {
    "group": "local",
    "id": "bench.screens",
    "label": "Rebuild after editing plx_screens",
-   "now": 45.6
+   "now": 47.0
   }
  ],
  "thresholds": {
