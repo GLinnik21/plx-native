@@ -1,6 +1,6 @@
 {
  "flaky": [],
- "generated": "2026-10-23T22:01:10Z",
+ "generated": "2026-10-23T22:09:58Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -75,9 +75,9 @@
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 148,
+   "n_now": 149,
    "n_prev": 272,
-   "now": 333.0,
+   "now": 333,
    "prev7": 478.5,
    "shown": true,
    "state": "better",
