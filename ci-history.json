@@ -1,4 +1,4 @@
-{"updated":"2026-10-23T01:06:52Z",
+{"updated":"2026-10-23T01:20:36Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -3539,6 +3539,6 @@
 {"id":39467407073,"at":"2026-10-20T17:35:25Z","sha":"3061a6d89","title":"Merge remote-tracking branch 'origin/main' into fix/600-early-audio","pr":874,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"plan today's nightly":18,"ARM build + gates / build + verify":977,"publish nightly prerelease":26}},
 {"id":39572844513,"at":"2026-10-21T08:54:36Z","sha":"c3cf2273b","title":"tests: the constant-skew fixture keeps each track's decode order","pr":874,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"plan today's nightly":19,"ARM build + gates / build + verify":933,"publish nightly prerelease":18}}
 ],
-"cancelled":{"2026-10-19":{"push":0,"pull_request":1},"2026-10-20":{"push":0,"pull_request":2},"2026-10-22":{"push":4,"pull_request":1}},
+"cancelled":{"2026-10-19":{"push":0,"pull_request":1},"2026-10-20":{"push":0,"pull_request":2},"2026-10-22":{"push":4,"pull_request":1},"2026-10-23":{"push":0,"pull_request":2}},
 "daily":[],
 "flaky":[]}
