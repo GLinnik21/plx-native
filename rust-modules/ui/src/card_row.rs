@@ -1669,6 +1669,8 @@ fn title_marquee(
         draw_play_mark(p, at.x, y, sz, bold);
     }
     let text_x0 = at.x + lead;
+    // an Arabic or Hebrew title glides mirrored, from its first words at the window's right edge
+    let rtl = !text.is_null() && plx_gfx::text::is_rtl_paragraph(&unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy());
     TITLE_CLOCK.with(|clock| {
         MARQUEE.glide_in(
             clock,
@@ -1677,6 +1679,7 @@ fn title_marquee(
             w,
             block.cycle_w,
             Rect::new(text_x0, y - MARQUEE_AIR, budget, UNDER_LINE_H + 2.0 * MARQUEE_AIR),
+            rtl,
             |dx| {
                 let window = fade.then_some((text_x0, text_x0 + budget));
                 if shadowed {
@@ -1811,6 +1814,7 @@ fn draw_label_block(
                     caption_w,
                     block.cycle_w,
                     Rect::new(x0, y - MARQUEE_AIR, (at.w - caption_lead).max(0.0), UNDER_CAPTION_H + 2.0 * MARQUEE_AIR),
+                    plx_gfx::text::is_rtl_paragraph(s),
                     |dx| {
                         let window = label.within_tile.then_some((x0, at.x + at.w));
                         if label.shadowed {
@@ -1909,6 +1913,7 @@ pub fn draw_credit_label(
                 run_w,
                 block.cycle_w,
                 Rect::new(frame.x, frame.y - MARQUEE_AIR, frame.w, frame.h + 2.0 * MARQUEE_AIR),
+                plx_gfx::text::is_rtl_paragraph(text),
                 |dx| {
                     label.draw(p, Rect::new(frame.x + dx, frame.y, frame.w, frame.h));
                 },
@@ -3359,5 +3364,75 @@ mod tests {
         let _ = plx_machine::idle::take_local_damage();
         assert_eq!(credit_runs("Ana", "Director", true).len(), 2);
         assert_eq!(plx_machine::idle::take_local_damage(), 0, "a fitting label never reports");
+    }
+
+    // ---- right-to-left lines glide mirrored ---------------------------------------------------
+
+    const LONG_ARABIC_TITLE: &str = "المغامرات الطويلة جدا لألكسندرا وولكوفيتش هارينغتون سميث وأطبائها الكثيرين في البيت الملكي";
+    const LONG_ARABIC_CAPTION: &str = "الدكتورة ألكسندرا وولكوفيتش هارينغتون سميث، كبيرة الأطباء في البيت الملكي";
+
+    /// `text`'s run and its follower in `runs`, as (follower, run), and the clip they glide in.
+    fn glide_pair(runs: &[crate::draw_census::Run], text: &str) -> (f32, f32, Rect) {
+        let mut xs: Vec<&crate::draw_census::Run> = runs.iter().filter(|r| r.text == text).collect();
+        assert_eq!(xs.len(), 2, "{text:?} glides as a run and its follower: {runs:?}");
+        xs.sort_by(|a, b| a.at.x.total_cmp(&b.at.x));
+        (xs[0].at.x, xs[1].at.x, xs[1].clip.expect("a gliding run is clipped to its window"))
+    }
+
+    /// The mirror image, checked line by line: at rest the run's RIGHT edge is on its window's (the
+    /// first words show), its follower waits one gap to its LEFT; 500 ms into the glide it has
+    /// moved 20 px RIGHT (40 px/s).
+    fn assert_glides_mirrored(rest: &[crate::draw_census::Run], moved: &[crate::draw_census::Run], text: &str, sz: i32) {
+        let w = measure_w(text, sz);
+        let (follower, run, clip) = glide_pair(rest, text);
+        assert!((run + w - (clip.x + clip.w)).abs() < 0.01, "{text:?} rests flush right: {run} + {w} vs {clip:?}");
+        assert!((follower + w + marquee::GAP - run).abs() < 0.01, "the follower one gap to the left");
+        let (_, later, _) = glide_pair(moved, text);
+        assert!((later - run - 20.0).abs() < 0.01, "{text:?} glides right: {run} -> {later}");
+    }
+
+    /// **An Arabic title reads from its right edge**, so a focused one that overflows glides as the
+    /// mirror image of a Latin one, and its caption with it.
+    #[test]
+    fn a_right_to_left_title_and_caption_rest_on_their_first_words_and_glide_right() {
+        let _serial = plx_base::testlock::serial();
+        let sty = RowStyle::HOME;
+        let rect = Rect::new(700.0, 300.0, sty.w, sty.h);
+        let label = TileLabel::titled(LONG_ARABIC_TITLE, LONG_ARABIC_CAPTION);
+        let draw = || crate::draw_census::capture_runs(|| {
+            draw_focused(Painter::recording(), Art::Poster(None), rect, 1.0, &sty, None, &label,
+                &crate::fixture::FixtureMeasure);
+        });
+        TITLE_CLOCK.with(|c| c.release());
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        let rest = draw();
+        plx_machine::idle::frame_begin(MARQUEE.hold_ms / 1000.0);
+        let _ = draw();
+        plx_machine::idle::frame_begin(0.5);
+        let moved = draw();
+        assert_glides_mirrored(&rest, &moved, LONG_ARABIC_TITLE, theme::size::LABEL);
+        assert_glides_mirrored(&rest, &moved, LONG_ARABIC_CAPTION, theme::size::CAPTION);
+        TITLE_CLOCK.with(|c| c.release());
+    }
+
+    /// And a headshot's Arabic name and role.
+    #[test]
+    fn a_right_to_left_credit_label_glides_mirrored() {
+        let _serial = plx_base::testlock::serial();
+        let at = Rect::new(500.0, 100.0, 222.0, 60.0);
+        let draw = || crate::draw_census::capture_runs(|| {
+            CREDIT_CLOCK.with(|c| draw_credit_label(Painter::recording(), c, at, LONG_ARABIC_TITLE,
+                LONG_ARABIC_CAPTION, true, &crate::fixture::FixtureMeasure));
+        });
+        CREDIT_CLOCK.with(|c| c.release());
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        let rest = draw();
+        plx_machine::idle::frame_begin(MARQUEE.hold_ms / 1000.0);
+        let _ = draw();
+        plx_machine::idle::frame_begin(0.5);
+        let moved = draw();
+        assert_glides_mirrored(&rest, &moved, LONG_ARABIC_TITLE, theme::size::LABEL);
+        assert_glides_mirrored(&rest, &moved, LONG_ARABIC_CAPTION, theme::size::CAPTION);
+        CREDIT_CLOCK.with(|c| c.release());
     }
 }

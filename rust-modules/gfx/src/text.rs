@@ -1379,6 +1379,28 @@ fn effective_tracking(s: &str, letter_spacing: f32) -> f32 {
     }
 }
 
+/// **Does the paragraph `s` read right to left?** Its first strong character decides (UAX #9
+/// rules P2 and P3): an Arabic or Hebrew letter, or a right-to-left mark, makes it right to left;
+/// any other letter, or no letter at all, left to right. Pure and cheap (it stops at the first
+/// letter), so a layout can ask it per draw. `ui::text_view` aligns and mirrors a block by it.
+pub fn is_rtl_paragraph(s: &str) -> bool {
+    for c in s.chars() {
+        match c as u32 {
+            0x200F | 0x061C => return true, // RLM, ALM
+            0x200E => return false,         // LRM
+            cp if c.is_alphabetic() && !is_combining_mark(cp) => return crate::rtl::may_be_rtl(cp),
+            _ => {}
+        }
+    }
+    false
+}
+
+/// The Arabic and Hebrew points are Alphabetic in Unicode but non-spacing marks in UAX #9 (class
+/// NSM, never strong): they cannot decide a paragraph's direction.
+fn is_combining_mark(cp: u32) -> bool {
+    matches!(cp, 0x0591..=0x05C7 | 0x0610..=0x061A | 0x064B..=0x065F | 0x0670 | 0x06D6..=0x06ED)
+}
+
 /// vertical ink bounds of a packed RGBA buffer — the same scan [`surface_ink_v`] does, over a
 /// buffer we own rather than an SDL surface.
 fn buf_ink_v(px: &[u8], w: c_int, h: c_int) -> (c_int, c_int) {
@@ -3350,6 +3372,27 @@ mod rtl_layout_tests {
         assert_eq!(effective_tracking("Кино", TRACKING_TITLE_TIGHT), TRACKING_TITLE_TIGHT);
         assert_eq!(effective_tracking("قائمة المشاهدة", TRACKING_TITLE_TIGHT), 0.0);
         assert_eq!(effective_tracking("רשימה", TRACKING_TITLE_TIGHT), 0.0);
+    }
+
+    /// Rules P2/P3: the first strong character decides; numbers, punctuation and marks do not.
+    #[test]
+    fn a_paragraph_reads_in_the_direction_of_its_first_letter() {
+        for (s, rtl) in [
+            ("مسلسلات عربية", true),
+            ("שלום", true),
+            ("2024 · الموسم الأول", true),
+            ("«فيلم» Inception", true),
+            ("Inception فيلم", false),
+            ("\u{200F}Netflix عرض", true),
+            ("\u{200E}عرض", false),
+            ("2024 — 47 min", false),
+            ("", false),
+            ("\u{064E}abc", false), // a stray fatha is a mark, not a letter
+            ("Ирония судьбы", false),
+            ("오징어 게임", false),
+        ] {
+            assert_eq!(is_rtl_paragraph(s), rtl, "{s:?}");
+        }
     }
 }
 
