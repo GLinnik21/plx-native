@@ -3617,8 +3617,9 @@ pub fn hls_abr_control(ps: &PlaybackSession) -> Option<(HlsAbrControl, WorkerTic
     }
     // A manual Original open that failed is restored onto HLS while the picker still reflects the
     // user's attempted choice.  That route still needs rung control, but it must not immediately
-    // auto-retry the same failed source. Selecting Auto later adopts this worker in place; a
-    // subsequent seek/reload constructs a fresh controller with Original recovery enabled again.
+    // auto-retry the same failed source. Selecting Auto later adopts this worker in place. The
+    // rollback records its rebased encoder (`note_original_rolled_back_onto`), so a reload on that
+    // encoder starts held; a seek mints a new encoder, whose controller probes Original again.
     let original = (applied_quality() == Quality::Auto)
         .then(|| ps.auto_original.as_ref())
         .flatten();
