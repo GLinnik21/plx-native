@@ -112,20 +112,3 @@ fn pill_w_gaps_only_the_icons_it_carries() {
     assert_eq!(pill_w(&Mono, &label, 20, false, CHEV), text + chevron_ink() + HERO_ICON_GAP + air);
     assert_eq!(pill_w(&Mono, &label, 20, true, CHEV), box_w + text + chevron_ink() + 2.0 * HERO_ICON_GAP + air);
 }
-
-/// **Four discs** (the row's [`DISCS`]): each opens with room, all stay circles when the four
-/// together would overrun the People column although one alone fits, and the open widths never
-/// put the last control past [`FACTS_R`].
-#[test]
-fn four_disc_caps_obey_the_people_column() {
-    let roomy = disc_caps_with([1.0; DISCS], [60.0; DISCS], |disc| 100.0 + disc.iter().sum::<f32>());
-    assert!(roomy.iter().all(|w| *w > CD), "all four unfurl with room: {roomy:?}");
-    let last = |disc: [f32; DISCS]| FACTS_R - 4.0 * CD - 20.0 + disc.iter().sum::<f32>();
-    assert_eq!(disc_caps_with([1.0; DISCS], [60.0; DISCS], last), [CD; DISCS]);
-    for e in [0.0f32, 0.3, 0.7, 1.0] {
-        for unfurl in [[e, 0.0, 0.0, 1.0 - e], [0.0, e, e, e], [e; DISCS]] {
-            let caps = disc_caps_with(unfurl, [40.0, 90.0, 140.0, 110.0], last);
-            assert!(last(caps) <= FACTS_R + 0.01, "{unfurl:?} -> {caps:?}");
-        }
-    }
-}

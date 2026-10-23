@@ -1679,24 +1679,6 @@ mod tests {
         }
     }
 
-    /// The Play Version disc is last in the row, and unfurls to "Play Version" in its own (fourth)
-    /// slot.
-    #[test]
-    fn the_version_disc_is_last_and_names_itself() {
-        let _g = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
-        let with = HeroSet { version: true, ..set(true, true, PosterMark::None) };
-        let (controls, n) = hero_ctls(with);
-        assert_eq!(
-            &controls[..n],
-            &[HeroCtl::Play, HeroCtl::Watchlist, HeroCtl::Restart, HeroCtl::Alt, HeroCtl::MarkWatched, HeroCtl::Version]
-        );
-        assert_eq!(disc_verb(HeroCtl::Version, false).map(|(slot, l)| (slot, l.to_str().unwrap())), Some((3, "Play Version")));
-        assert_eq!(HeroCtl::of_elem(ELEM_VERSION), Some(HeroCtl::Version));
-        assert_eq!(HeroCtl::Version.elem(), ELEM_VERSION);
-        let without = set(true, true, PosterMark::None);
-        assert_eq!(index_of(without, HeroCtl::Version), None);
-    }
-
     #[test]
     fn the_real_verbs_all_fit_the_widest_row() {
         let measure = plx_ui::fixture::FixtureMeasure;

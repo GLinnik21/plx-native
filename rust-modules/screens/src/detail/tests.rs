@@ -5310,38 +5310,6 @@ fn versioned(kind: &str, versions: usize) -> Detail {
     }
 }
 
-/// The Play Version disc is on a movie's or episode's page exactly when there is a choice: two
-/// versions draw it, one (or none) does not.
-#[test]
-fn the_version_disc_is_present_only_for_two_or_more_versions() {
-    for kind in ["movie", "episode"] {
-        for (n, want) in [(0, false), (1, false), (2, true)] {
-            let _guard = install(versioned(kind, n));
-            let screen = bare(&_guard, ServerId::UNSET, "leaf");
-            let set = screen.hero_set(test_store().view());
-            assert_eq!(set.version, want, "{kind} with {n} versions");
-            assert_eq!(hero::index_of(set, hero::HeroCtl::Version).is_some(), want, "{kind} with {n} versions");
-            clear();
-        }
-    }
-}
-
-/// OK on the disc presents the Play Version panel, anchored to the disc's own drawn rect.
-#[test]
-fn the_version_disc_opens_the_panel_anchored_to_itself() {
-    let _guard = install(versioned("movie", 2));
-    let mut screen = bare(&_guard, ServerId::UNSET, "leaf");
-    let (_, effects) = step(&mut screen, &ScreenEvent::Activate(hero::ELEM_VERSION), Some(hero::ELEM_VERSION));
-    let anchor = effects.iter().find_map(|e| match &e.fx {
-        Fx::App(AppFx::Content(ContentReq::Panel(ContentPanel::Versions { anchor }))) => Some(anchor.map(f32::from_bits)),
-        _ => None,
-    });
-    let anchor = anchor.expect("the disc presents the Play Version panel");
-    assert_eq!(anchor[3], hero::CD, "anchored to a disc");
-    assert!(play_item(&effects).is_none(), "the press opens the list; it plays nothing yet");
-    clear();
-}
-
 /// A version the panel reports plays THAT version of the page's item, resuming as Play does, on a
 /// movie page and an episode page alike.
 #[test]

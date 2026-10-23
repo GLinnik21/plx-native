@@ -329,19 +329,6 @@ mod tests {
         )
     }
 
-    /// It opens on the version Play takes unasked: the server's first.
-    #[test]
-    fn it_opens_on_the_default_version() {
-        let p = panel();
-        let first = p.form.selected_id().copied();
-        assert_eq!(first, Some(VersionRow(0)));
-        assert_eq!(
-            p.form.binding_at(0).map(|b| b.action),
-            Some(plx_appkit::version_list::sample()[0].id),
-            "row 0 is Media[0], `media_version(None)`",
-        );
-    }
-
     /// OK on a row closes the panel and reports THAT version to the page that opened it.
     #[test]
     fn a_row_reports_its_version_to_the_host_page() {

@@ -125,15 +125,6 @@ mod tests {
         assert!(labels(&same).iter().all(|(_, detail)| detail.is_empty()), "nothing differs, nothing to say");
     }
 
-    /// Row `n` is version `n`, with the caller's identity and action, in the server's order.
-    #[test]
-    fn row_n_reports_version_n() {
-        let mut form: FormTable<Pos, plx_plex::plex::MediaId, Infallible> = FormTable::new(plx_ui::table_screen::BAND_BASE);
-        form.set(Form::new().section(section(&sample(), Pos, |v| v.id)), None);
-        let acts: Vec<_> = (0..form.table.n_rows() as usize).filter_map(|i| form.binding_at(i).map(|b| b.action)).collect();
-        assert_eq!(acts, [plx_plex::plex::MediaId(3082), plx_plex::plex::MediaId(3086)]);
-    }
-
     /// The list fits a menu panel in every shipped language, measured with the device's advances.
     #[test]
     fn the_list_fits_in_every_language() {

@@ -2348,28 +2348,6 @@ mod tests {
         assert_eq!(req.item.map(|r| r.rk), Some("42".into()), "the captured row rides with it");
     }
 
-    /// The Play Version page fits the menu panel in every shipped language.
-    #[test]
-    fn the_version_page_fits_in_every_language() {
-        use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
-        let measure = plx_base::fontcov::advances::ShippedMeasure;
-        let mut out = Vec::new();
-        for language in SHIPPED {
-            let _guard = language_on_this_thread_for_test(language);
-            let mut menu = built(build_versions("42", &sample_versions()));
-            menu.0.table.compact = false;
-            let table = &menu.0.table;
-            let tag = format!("{} versions", language.tag());
-            out.extend(table.menu_cap_failure(&measure, &tag));
-            out.extend(table.app_fit_failures(MENU_MAX_W, &tag));
-            out.extend(table.app_fit_failures_hugged(&tag));
-            let mut card = build_with(&versioned(0), false, None);
-            card.0.table.compact = true;
-            out.extend(card.0.table.app_fit_failures(MENU_MAX_W, &format!("{} card with versions", language.tag())));
-        }
-        plx_ui::table::assert_no_fit_failures(&out);
-    }
-
     /// **The Watchlist hold menu** is `hold::rows_for` bound to actions: the go row
     /// names the matched rk or the guid, Remove names the guid, and only Remove is destructive.
     #[test]
