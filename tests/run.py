@@ -1212,11 +1212,11 @@ def triggers_for_case(case, url_base=None):
                 "plxnative-autopause",
                 f'delay={int(op.get("delay_ms", 0))},hold={int(op["hold_ms"])}',
             ))
-        # "play", startup "resume" and "audio_enhancement_burn" (when it names no "row" — a
-        # cold-start proof against an item whose subtitle is already server-selected) need no extra
-        # trigger: the last of those grades the boot-forced preference the `plxnative-audioenh`
-        # trigger above already wrote, and there is no menu row to pick — the candidate becomes an
-        # enhanced Burn before the first frame (resume rides the seeded viewOffset).
+        # "play", startup "resume" and "audio_enhancement_subtitle" (a cold-start proof against an
+        # item whose subtitle is already server-selected) need no extra trigger: the last of those
+        # grades the boot-forced preference the `plxnative-audioenh` trigger above already wrote,
+        # and there is no menu row to pick — the route is decided before the first frame (resume
+        # rides the seeded viewOffset).
     return files
 
 
@@ -2181,8 +2181,10 @@ def early_exit_allowed(case, cfg):
     satisfied by evidence something else produced. Measured on `auto_pin_then_original_and_seek`,
     whose seek is scheduled at 95 s: the case exited early at 71 s reporting `[PASS] seek_transcode`,
     because `op_seek_transcode` matches `reload_transcode: fresh Load at offset` and a QUALITY
-    SWITCH emits that same line -- so the switch's reload graded as a seek that had not fired. Run
-    to its full window the seek fires and the case passes on the right evidence. Note this is NOT a
+    SWITCH emits that same line -- so the switch's reload graded as a seek that had not fired. (The
+    seek arms now read only lines after their own `autoseek: step`, which closes that look-alike;
+    the rule stays, because any assertion about an operation that has not happened yet can only
+    be graded once it has.) Note this is NOT a
     monotonicity failure: the assertion is monotone, it is merely satisfiable by a look-alike. That
     is why the rule keys on the SCHEDULE rather than on the operation kind -- an undelayed seek
     fires promptly and stays eligible.
@@ -3355,7 +3357,30 @@ def _reached_target(lines, target_s):
     return reached, None
 
 
-def op_seek_inplace(lines, target_s):
+def _seek_window(lines):
+    """The lines a seek operation's own evidence can be in: from its `autoseek: step` (the
+    scenario logs one per scheduled seek, `dev/scenarios.rs`) onward. `None` when no seek was ever
+    requested. Everything before it belongs to some other transition -- a quality switch rebuilds
+    with the very `reload_transcode: fresh Load at offset` line a transcode seek emits, and
+    `auto_pin_then_original_and_seek` (v0.9.0 TV run) graded the pin's reload as its seek."""
+    step = next((i for i, ln in enumerate(lines) if "autoseek: step" in ln), None)
+    return None if step is None else lines[step:]
+
+
+def _post_seek_survival(after_signal, target_s, min_climb_after_s):
+    """`None`, or why the playback did not survive the seek: the media series from the target
+    onward must climb `min_climb_after_s`. See `op_seek_transcode` for why reaching the target is
+    not enough."""
+    after = [t for t, _ in progress_secs(after_signal) if t >= target_s - 5]
+    span = (max(after) - min(after)) if len(after) >= 2 else 0
+    if span < min_climb_after_s:
+        return span, len(after), (f"the seek landed but the playback did not survive it: only "
+                                  f"{span}s of progress after the target ({len(after)} sample(s) "
+                                  f"from {min(after) if after else '-'}s), need >={min_climb_after_s}s")
+    return span, len(after), None
+
+
+def op_seek_inplace(lines, target_s, min_climb_after_s=0):
     started = find(lines, "seek(in-place)")
     if started is None:
         return False, "no `seek(in-place)` line (in-place seek did not fire)"
@@ -3374,6 +3399,12 @@ def op_seek_inplace(lines, target_s):
     reached, err = _reached_target(lines, target_s)
     if err:
         return False, err
+    if min_climb_after_s:
+        span, n, err = _post_seek_survival(after_seek, target_s, min_climb_after_s)
+        if err:
+            return False, err
+        return True, (f"in-place seek OK; reached {reached}s, then {span}s of progress over {n} "
+                      f"sample(s) :: {started.strip()}")
     return True, f"in-place seek OK; reached {reached}s :: {started.strip()}"
 
 
@@ -3609,15 +3640,19 @@ def op_seek_rapid(lines, final_s):
 def op_seek_transcode(lines, target_s, min_climb_after_s=0):
     # transcode seeks now RELOAD the pipeline (reload_transcode: fresh Load = correct GStreamer
     # segment, no stale-segment artifacts). Older builds flushed+refed (`seek(transcode)`) or fell
-    # back to reload_at.
-    hit = find(lines, "reload_transcode: fresh Load at offset") or find(lines, "seek(transcode)") \
-        or find(lines, "reload_at: fresh Load at %ds" % target_s)
+    # back to reload_at. Only lines after the seek was requested are its evidence (`_seek_window`).
+    window = _seek_window(lines)
+    if window is None:
+        return False, "the seek was never requested (`autoseek: step` absent)"
+    hit = find(window, "reload_transcode: fresh Load at offset") or find(window, "seek(transcode)") \
+        or find(window, "reload_at: fresh Load at %ds" % target_s)
     if hit is None:
-        return False, "no transcode-seek signal (reload_transcode / seek(transcode) / reload_at) present"
-    hit_i = lines.index(hit)
+        return False, ("no transcode-seek signal (reload_transcode / seek(transcode) / reload_at) "
+                       "after the seek was requested")
+    hit_i = window.index(hit)
     if "reload_transcode: fresh Load at offset" in hit:
         retired = next(
-            (line for line in lines[hit_i:]
+            (line for line in window[hit_i:]
              if "seek:" in line and "retired previous encoder ok=" in line),
             None,
         )
@@ -3639,14 +3674,11 @@ def op_seek_transcode(lines, target_s, min_climb_after_s=0):
     # `timeline_climb`. `min_climb_after_s` grades the series from the target ONWARD, which is
     # the only window a post-seek death is visible in.
     if min_climb_after_s:
-        after = [t for t, _ in progress_secs(lines[hit_i + 1:]) if t >= target_s - 5]
-        span = (max(after) - min(after)) if len(after) >= 2 else 0
-        if span < min_climb_after_s:
-            return False, (f"the seek landed but the playback did not survive it: only {span}s of "
-                           f"progress after the target ({len(after)} sample(s) from "
-                           f"{min(after) if after else '-'}s), need >={min_climb_after_s}s")
+        span, n, err = _post_seek_survival(window[hit_i + 1:], target_s, min_climb_after_s)
+        if err:
+            return False, err
         return True, (f"transcode/reload seek OK; reached {reached}s, then {span}s of progress "
-                      f"over {len(after)} sample(s) :: {hit.strip()}")
+                      f"over {n} sample(s) :: {hit.strip()}")
     return True, f"transcode/reload seek OK; reached {reached}s :: {hit.strip()}"
 
 
@@ -3903,15 +3935,18 @@ def op_audio_enhancement_burn(lines):
     `subtitles=embedded`/`=sidecar`/`=auto` shapes M4 measured. Two manifest shapes reach this
     grader:
 
-    * A COLD START (`{"op": "audio_enhancement_burn"}`, no live pick): the item already carries a
-      server-selected embedded subtitle, so `route/plan.rs`'s cold-start branch computes
-      `Offered(Burn)` before the first frame and logs exactly ONE `enhancement: applied` line
-      (`route::decision::log_enhancement_outcome`, the same helper the live reconcile's
-      `install_retranscode_outcome` calls).
-    * A LIVE RECONCILE (`{"op": "subtitle", "burn": true}`): the boot-time preference decorates an
-      otherwise-bare candidate as an ordinary enhanced remux first (one `enhancement: applied` line
-      with no subtitle in the picture), then the pick reroutes it to a burn
-      (`route::decision::reconcile_enhancement`), producing a SECOND `enhancement: applied` line.
+    * A COLD START (`{"op": "audio_enhancement_subtitle", "presenter": "burn"}`, no live pick):
+      the item already carries a server-selected embedded subtitle, so `route/plan.rs`'s cold-start
+      branch computes `Offered(Burn)` before the first frame and logs exactly ONE
+      `enhancement: applied` line (`route::decision::log_enhancement_outcome`, the same helper the
+      live reconcile's `install_retranscode_outcome` calls).
+    * A LIVE RECONCILE (`{"op": "subtitle", "enhanced": "burn"}`): the boot-time preference
+      decorates an otherwise-bare candidate as an ordinary enhanced remux first (one
+      `enhancement: applied` line with no subtitle in the picture), then the pick reroutes it to a
+      burn (`route::decision::reconcile_enhancement`), producing a SECOND `enhancement: applied`
+      line.
+
+    Only an item the app's side reader cannot read takes either (`op_audio_enhancement_subtitle`).
 
     Both are graded the same way, off the LAST `enhancement: applied boost=.. loudness=..` line and
     the stream state after it:
@@ -3973,6 +4008,90 @@ def op_audio_enhancement_burn(lines):
                        f"subtitles) :: {late_cue.strip()}")
     return True, (f"enhancement re-applied as an explicit burn, DSP preserved :: "
                   f"{hit.strip()} / {redact(stream.strip())}")
+
+
+RE_SUBSIDE_OPEN = re.compile(r"subside: open tracks=\d+ ordinal=(-?\d+)")
+RE_SERVER_SELECTED_SUB = re.compile(r"server-selected subtitle: sid=\d+ render_idx=(-?\d+)")
+RE_SELECT_STREAMS_SUB = re.compile(r"select streams: part=\S+ audio=\S+ sub=([1-9]\d*) ")
+
+
+def op_audio_enhancement_subtitle(lines, presenter, live):
+    """An embedded subtitle under the Plex Pass audio enhancement (issue #266) stays on screen,
+    drawn by the presenter the case STATES -- the same habit as a seek's `mode`, because which one
+    a given item gets is a fact about the item and the link, not about the build:
+
+    * `"burn"`: the server re-encodes with `subtitleStreamID=..&subtitles=burn` (M7). The route
+      takes it only where the app cannot read the track itself -- a relay or remote link, a Part
+      over `SIDE_MAX_PART_KBPS` (30000 kbps) or of unknown bitrate (`side_reader_inputs_admit`,
+      `route/decision.rs`). Graded by `op_audio_enhancement_burn`.
+    * `"client"`: since #474 the app reads an embedded track beside the remux on a local link with
+      a moderate Part (`player::subside`) and draws it itself, so Style and Timing reach it: the
+      stream stays the ordinary enhanced remux and nothing is burned. Host-pinned by
+      `cold_start_keeps_intended_audio_and_draws_the_subtitle` (plan) and
+      `embedded_pick_on_a_live_remux_queues_no_retranscode` (decision). The v0.9.0 TV run failed
+      both burn cases on exactly this, correct, shape.
+
+    `live` is a pick made mid-play (`{"op": "subtitle", "enhanced": ..}`) rather than a
+    server-selected track at cold start (`{"op": "audio_enhancement_subtitle"}`)."""
+    if presenter == "burn":
+        return op_audio_enhancement_burn(lines)
+    if presenter != "client":
+        return False, f"unknown subtitle presenter {presenter!r} (want \"client\" or \"burn\")"
+    hits = [i for i, ln in enumerate(lines) if RE_ENHANCEMENT_APPLIED.search(ln)]
+    if not hits:
+        return _enhancement_miss(
+            lines, "enhancement: applied",
+            "no `enhancement: applied boost=.. loudness=..` line at all (boot-forced preference "
+            "never took effect)",
+            refused_marker="enhancement: refused/ignored by server",
+            refused_label="the server refused/ignored the enhancement")
+    applied_i = hits[-1]
+    if RE_ENHANCEMENT_APPLIED.search(lines[applied_i]).group(2) != "1":
+        return False, f"applied line does not show loudness=1 :: {lines[applied_i].strip()}"
+    after = lines[applied_i + 1:]
+    stream = next((ln for ln in after if RE_STREAM_PATH.search(ln)), None)
+    if stream is None:
+        return False, f"no `stream: .. path=` line after the enhancement :: {lines[applied_i].strip()}"
+    path = RE_STREAM_PATH.search(stream).group(1)
+    if "subtitles=burn" in path or "directStreamAudio=1" not in path:
+        return False, (f"the stream is not the enhanced remux an app-drawn subtitle rides "
+                       f"(want directStreamAudio=1 and no subtitles=burn) :: {redact(stream.strip())}")
+    if live:
+        pick = next((i for i, ln in enumerate(after) if RE_SELECT_STREAMS_SUB.search(ln)), None)
+        if pick is None:
+            return _enhancement_miss(
+                lines, "select streams: .. sub=<id>",
+                "the subtitle pick never committed (no `select streams: .. sub=<id>` after the "
+                "enhancement)")
+        rebuilt = next((ln for ln in after[pick:]
+                        if RE_ENHANCEMENT_APPLIED.search(ln) or RE_STREAM_PATH.search(ln)), None)
+        if rebuilt is not None:
+            return False, (f"the pick rebuilt the stream although the app draws the track "
+                           f"itself :: {redact(rebuilt.strip())}")
+        tail, want_ordinal = after[pick + 1:], None
+    else:
+        sel = next((i for i, ln in enumerate(lines) if RE_SERVER_SELECTED_SUB.search(ln)), None)
+        if sel is None:
+            return False, "no `server-selected subtitle: .. render_idx=` line (nothing to draw)"
+        want_ordinal = int(RE_SERVER_SELECTED_SUB.search(lines[sel]).group(1))
+        tail = lines[sel + 1:]
+    opened = next((i for i, ln in enumerate(tail) if RE_SUBSIDE_OPEN.search(ln)), None)
+    if opened is None:
+        return False, "the app's side reader never opened the track (`subside: open` absent)"
+    ordinal = int(RE_SUBSIDE_OPEN.search(tail[opened]).group(1))
+    if want_ordinal is not None and ordinal != want_ordinal:
+        return False, (f"the side reader opened ordinal {ordinal}, not the server-selected "
+                       f"render_idx {want_ordinal} :: {tail[opened].strip()}")
+    broken = next((ln for ln in tail[opened:]
+                   if "subside: failed" in ln or "subside: could not start" in ln), None)
+    if broken is not None:
+        return False, f"the side reader failed :: {broken.strip()}"
+    cue = next((ln for ln in tail[opened:]
+                if RE_SUBCUE.search(ln) and int(RE_SUBCUE.search(ln).group(1)) > 0), None)
+    if cue is None:
+        return False, f"the side reader opened but drew no cue :: {tail[opened].strip()}"
+    return True, (f"enhanced remux kept, subtitle drawn by the app :: {lines[applied_i].strip()} / "
+                  f"{tail[opened].strip()} / {cue.strip()}")
 
 
 def subtitle_menupick_target(op):
@@ -4583,7 +4702,8 @@ def evaluate(case, lines):
         elif k == "seek" and op.get("mode") == "refused":
             results.append(("seek_refused", *op_seek_refused(lines, op.get("target_s", 140))))
         elif k == "seek" and op.get("mode") == "inplace":
-            results.append(("seek_inplace", *op_seek_inplace(lines, op.get("target_s", 140))))
+            results.append(("seek_inplace", *op_seek_inplace(
+                lines, op.get("target_s", 140), op.get("min_climb_after_s", 0))))
         elif k == "seek":
             results.append(("seek_transcode", *op_seek_transcode(
                 lines, op.get("target_s", 140), op.get("min_climb_after_s", 0))))
@@ -4610,10 +4730,12 @@ def evaluate(case, lines):
             results.append(("audio_enhancement_release", *op_audio_enhancement_release(lines)))
         elif k == "audio_enhancement":
             results.append(("audio_enhancement", *op_audio_enhancement(lines)))
-        elif k == "audio_enhancement_burn":
-            results.append(("audio_enhancement_burn", *op_audio_enhancement_burn(lines)))
-        elif k == "subtitle" and op.get("burn"):
-            results.append(("audio_enhancement_burn", *op_audio_enhancement_burn(lines)))
+        elif k == "audio_enhancement_subtitle":
+            results.append(("audio_enhancement_subtitle", *op_audio_enhancement_subtitle(
+                lines, op["presenter"], live=False)))
+        elif k == "subtitle" and op.get("enhanced"):
+            results.append(("audio_enhancement_subtitle", *op_audio_enhancement_subtitle(
+                lines, op["enhanced"], live=True)))
         elif k == "subtitle" and op.get("image"):
             results.append(("image_subtitle", *op_image_subtitle(lines)))
         elif k == "subtitle":
@@ -4739,7 +4861,7 @@ def run_case(case, cfg, token, verbose, cond=None):
     # shape. Reset it to the item's default -- subtitles off, audio on its server-selected/first
     # track -- for the TEST identity, unless the case's own precondition is what PMS currently has
     # selected (`"stream_reset": false`), and then a case that NEEDS a selection establishes it
-    # itself (`setup.seed_subtitle`; see audio_enhancement_burns_server_selected_subtitle).
+    # itself (`setup.seed_subtitle`; see audio_enhancement_draws_server_selected_subtitle).
     apply_stream_setup(cfg["pms"]["host"], cfg["pms"]["port"], case, token)
 
     # 3. clear + set triggers, and inject the effective PMS token in the SAME round-trip.
@@ -5050,7 +5172,8 @@ def evaluate_pipeline(case, lines, srv_delta, gst_lines=None):
         elif op["op"] == "seek" and op.get("mode") == "refused":
             results.append(("seek_refused", *op_seek_refused(lines, op.get("target_s", 140))))
         elif op["op"] == "seek":
-            results.append(("seek_inplace", *op_seek_inplace(lines, op.get("target_s", 140))))
+            results.append(("seek_inplace", *op_seek_inplace(
+                lines, op.get("target_s", 140), op.get("min_climb_after_s", 0))))
         elif op["op"] == "pause_resume":
             results.append(("pause_resume", *op_pause_resume(
                 lines, op.get("min_climb_after_s", 8))))

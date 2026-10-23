@@ -3629,6 +3629,91 @@ class AbrTraceMetrics(unittest.TestCase):
         ok, why = run.op_audio_enhancement_burn(lines)
         self.assertTrue(ok, why)
 
+    # The side-reader shape (#474): on a local link with a moderate Part bitrate the app reads an
+    # embedded subtitle beside the enhanced remux and draws it itself, so nothing is burned. Lines
+    # are the v0.9.0 TV run's, reduced; ids and the host are placeholders.
+    _CLIENT_REMUX = ("stream: <addr> path=/video/:/transcode/universal/start.mkv?directPlay=0&"
+                     "directStream=1&directStreamAudio=1&audioStreamID=11&normalizeLoudness=1&"
+                     "subtitleStreamID=0&subtitles=none")
+
+    def _cold_client(self):
+        return ["enhancement: boost_dialog=false normalize_loudness=true — direct play becomes "
+                "an enhanced remux", "decision output: v=h264 a=aac",
+                "enhancement: applied boost=0 loudness=1",
+                "server-selected subtitle: sid=21 render_idx=0", self._CLIENT_REMUX,
+                "subside: open tracks=4 ordinal=0 kbps=10000",
+                "subside: anchor match=exact part_kf_ms=0 remux_kf_ms=44",
+                "sub cue [4296..7049ms] len=50"]
+
+    def _live_client(self):
+        remux = self._CLIENT_REMUX.replace("&subtitleStreamID=0&subtitles=none", "")
+        return ["enhancement: applied boost=0 loudness=1", remux,
+                "loop=60 route=player overlay=menu pos=5s play=1000pm",
+                "select streams: part=31 audio=11 sub=24 -> HTTP 200",
+                "subside: open tracks=6 ordinal=3 kbps=26000",
+                "sub cue [4296..7049ms] len=50"]
+
+    def test_enhancement_subtitle_client_presenter_passes_the_v090_shapes(self):
+        """The two v0.9.0 TV failures were this product behaviour graded as a missing burn."""
+        ok, why = run.op_audio_enhancement_subtitle(self._cold_client(), "client", live=False)
+        self.assertTrue(ok, why)
+        ok, why = run.op_audio_enhancement_subtitle(self._live_client(), "client", live=True)
+        self.assertTrue(ok, why)
+
+    def test_enhancement_subtitle_client_presenter_rejects_a_burn_or_a_lost_subtitle(self):
+        burned = [ln.replace("directStreamAudio=1&", "").replace("subtitles=none", "subtitles=burn")
+                  for ln in self._cold_client()]
+        ok, why = run.op_audio_enhancement_subtitle(burned, "client", live=False)
+        self.assertFalse(ok, why)
+        no_reader = [ln for ln in self._cold_client() if not ln.startswith("subside:")]
+        ok, why = run.op_audio_enhancement_subtitle(no_reader, "client", live=False)
+        self.assertFalse(ok, why)
+        self.assertIn("subside: open", why)
+        other_track = [ln.replace("ordinal=0", "ordinal=2") for ln in self._cold_client()]
+        ok, why = run.op_audio_enhancement_subtitle(other_track, "client", live=False)
+        self.assertFalse(ok, why)
+        no_cue = [ln for ln in self._cold_client() if not ln.startswith("sub cue")]
+        ok, why = run.op_audio_enhancement_subtitle(no_cue, "client", live=False)
+        self.assertFalse(ok, why)
+        failed = self._cold_client() + ["subside: failed"]
+        ok, why = run.op_audio_enhancement_subtitle(failed, "client", live=False)
+        self.assertFalse(ok, why)
+
+    def test_enhancement_subtitle_live_pick_must_not_rebuild_the_stream(self):
+        """`embedded_pick_on_a_live_remux_queues_no_retranscode`'s device half: the pick starts
+        the reader and leaves the enhanced remux alone."""
+        lines = self._live_client()
+        rebuilt = lines[:4] + ["enhancement: applied boost=0 loudness=1", lines[1]] + lines[4:]
+        ok, why = run.op_audio_enhancement_subtitle(rebuilt, "client", live=True)
+        self.assertFalse(ok, why)
+        no_pick = [ln for ln in lines if not ln.startswith("select streams:")]
+        ok, why = run.op_audio_enhancement_subtitle(no_pick, "client", live=True)
+        self.assertFalse(ok, why)
+
+    def test_enhancement_subtitle_burn_presenter_is_the_burn_grader(self):
+        applied = "enhancement: applied boost=0 loudness=1"
+        burn = ("stream: 1.2.3.4 path=/video/:/transcode/universal/start.mkv?directStream=1&"
+                "videoResolution=3840x2160&maxVideoBitrate=60000&normalizeLoudness=1&"
+                "subtitleStreamID=24&subtitles=burn")
+        self.assertTrue(run.op_audio_enhancement_subtitle([applied, burn], "burn", live=False)[0])
+        self.assertFalse(run.op_audio_enhancement_subtitle(self._cold_client(), "burn", live=False)[0])
+
+    def test_enhancement_subtitle_cases_name_their_presenter(self):
+        """Each case STATES which presenter its item gets (`side_reader_inputs_admit`: a local link
+        and a Part of at most 30000 kbps admit the app's reader), and evaluate() grades it."""
+        cases = {c["name"]: c for c in _manifest()["cases"]}
+        cold = cases["audio_enhancement_draws_server_selected_subtitle"]
+        live = cases["audio_enhancement_draws_embedded_subtitle"]
+        self.assertIn({"op": "audio_enhancement_subtitle", "presenter": "client"}, cold["operations"])
+        self.assertTrue(any(o.get("op") == "subtitle" and o.get("enhanced") == "client"
+                            for o in live["operations"]))
+        _, results = run.evaluate({"rk": "1", **cold}, self._cold_client())
+        self.assertIn(("audio_enhancement_subtitle", True),
+                      [(label, ok) for label, ok, _ in results])
+        _, results = run.evaluate({"rk": "1", **live}, self._live_client())
+        self.assertIn(("audio_enhancement_subtitle", True),
+                      [(label, ok) for label, ok, _ in results])
+
     def test_audio_enhancement_dispatch_picks_release_by_settle(self):
         """`evaluate()`'s per-operation dispatch: `settle: "released"` grades the cleanup leg, and
         its absence grades the ordinary apply leg."""
@@ -5347,7 +5432,7 @@ class PostSeekSurvival(unittest.TestCase):
     """
 
     def _log(self, positions, tail=(), retired=True):
-        out = ["reload_transcode: fresh Load at offset 300s"]
+        out = ["autoseek: step → 300s (0 left)", "reload_transcode: fresh Load at offset 300s"]
         if retired:
             out.append("seek: retired previous encoder ok=1")
         out += [f"loop=60 fps=60 pos={t}s play=1000pm" for t in positions]
@@ -5364,7 +5449,7 @@ class PostSeekSurvival(unittest.TestCase):
 
     def test_a_stop_that_the_server_rejected_is_not_a_successful_retirement(self):
         lines = self._log(range(300, 480), retired=False)
-        lines.insert(1, "seek: retired previous encoder ok=0")
+        lines.insert(2, "seek: retired previous encoder ok=0")
         ok, why = run.op_seek_transcode(lines, 300, min_climb_after_s=45)
         self.assertFalse(ok, why)
         self.assertIn("ok=0", why)
@@ -5390,6 +5475,68 @@ class PostSeekSurvival(unittest.TestCase):
         """A short seek case may omit post-climb, never physical-session retirement."""
         ok, _ = run.op_seek_transcode(self._log(range(300, 315)), 300)
         self.assertTrue(ok)
+
+    def _pin_then_original_then_inplace_seek(self):
+        """`auto_pin_then_original_and_seek` on the v0.9.0 TV run, reduced: the 720p PIN rebuilt
+        the stream (`reload_transcode: fresh Load at offset 12s`), Original then restored direct
+        play and retired the pin's encoder, and the scheduled seek ~45 s later was an in-place
+        `av_seek` on the source file."""
+        pos = lambda t: f"loop=60 route=player overlay=none pos={t}s play=1000pm fps=60"
+        return ([pos(t) for t in range(0, 12)]
+                + ["quality: switch → 720p_4_mbps (1 left)",
+                   "route transition: user retranscode at 12s",
+                   "reload_transcode: fresh Load at offset 12s"]
+                + [pos(t) for t in range(12, 50)]
+                + ["quality: switch → original (0 left)", "reload_at: fresh Load at 50s",
+                   "abr: retired superseded encoder after Original handoff ok=1"]
+                + [pos(t) for t in range(50, 95)]
+                + ["autoseek: step → 300s (0 left)",
+                   "seek(in-place): av_seek t=300000000000 coalesced=0",
+                   "in-place seek: setTimeToDecode(296917000000) rv=0 setContentInfo=1 sendSegment=1"]
+                + [pos(t) for t in range(300, 339)])
+
+    def test_a_quality_switch_reload_before_the_seek_is_not_the_seeks_signal(self):
+        """The v0.9.0 failure: the grader grepped the WHOLE log, took the pin's own reload for the
+        seek's, and then failed it for not retiring an encoder the pin never replaced. Only the
+        lines after the seek was requested (`autoseek: step`) can be the seek's evidence."""
+        ok, why = run.op_seek_transcode(self._pin_then_original_then_inplace_seek(), 300,
+                                        min_climb_after_s=25)
+        self.assertFalse(ok, why)
+        self.assertIn("no transcode-seek signal", why)
+
+    def test_a_look_alike_before_the_seek_cannot_pass_it(self):
+        """The same trap in the passing direction: a switch's rebuild that DID retire its
+        predecessor must not grade a seek that never rebuilt anything."""
+        lines = self._pin_then_original_then_inplace_seek()
+        lines.insert(lines.index("reload_transcode: fresh Load at offset 12s") + 1,
+                     "seek: retired previous encoder ok=1")
+        ok, why = run.op_seek_transcode(lines, 300, min_climb_after_s=25)
+        self.assertFalse(ok, why)
+
+    def test_a_seek_that_was_never_requested_is_not_graded_from_other_reloads(self):
+        lines = [ln for ln in self._log(range(300, 480)) if not ln.startswith("autoseek:")]
+        ok, why = run.op_seek_transcode(lines, 300, min_climb_after_s=45)
+        self.assertFalse(ok, why)
+        self.assertIn("never requested", why)
+
+    def test_the_inplace_arm_grades_the_restored_source_and_its_survival(self):
+        lines = self._pin_then_original_then_inplace_seek()
+        ok, why = run.op_seek_inplace(lines, 300, min_climb_after_s=25)
+        self.assertTrue(ok, why)
+        ok, why = run.op_seek_inplace(lines[:-30], 300, min_climb_after_s=25)
+        self.assertFalse(ok, why)
+        self.assertIn("did not survive", why)
+
+    def test_the_case_states_its_inplace_assumption(self):
+        """After Original restores direct play the seek is an `av_seek`; the case says so (as its
+        sibling `original_then_auto_and_seek` does) instead of leaving the transcode arm to find a
+        reload that a direct play cannot emit."""
+        with open(run.MANIFEST) as f:
+            cases = json.load(f)["cases"]
+        case = next(c for c in cases if c["name"] == "auto_pin_then_original_and_seek")
+        seek = next(o for o in case["operations"] if o["op"] == "seek")
+        self.assertEqual(seek.get("mode"), "inplace")
+        self.assertTrue(seek.get("min_climb_after_s"))
 
 
 class DemuxFailureAssertion(unittest.TestCase):
@@ -6815,13 +6962,13 @@ class StreamSelectionReset(unittest.TestCase):
         self.assertFalse(ok)
 
     def test_server_selected_subtitle_case_seeds_its_own_subtitle_after_the_reset(self):
-        """audio_enhancement_burns_server_selected_subtitle reads a SERVER-selected subtitle, and
+        """audio_enhancement_draws_server_selected_subtitle reads a SERVER-selected subtitle, and
         `subtitle_text_srt` plays the same part -- its reset/pick leaves an explicit selection,
         so relying on stream_reset: false made the case order-dependent. The case now declares
         `setup.seed_subtitle`; `apply_stream_setup` must reset, THEN PUT a non-zero
         subtitleStreamID resolved from live metadata (no id in the manifest)."""
         case = {c["name"]: c for c in _manifest()["cases"]}[
-            "audio_enhancement_burns_server_selected_subtitle"]
+            "audio_enhancement_draws_server_selected_subtitle"]
         case = {"rk": "72", **case}
         self.assertTrue(case.get("stream_reset", True))
         self.assertNotIn("stream_reset", case)
