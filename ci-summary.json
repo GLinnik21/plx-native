@@ -1,6 +1,6 @@
 {
  "flaky": [],
- "generated": "2026-10-23T20:04:56Z",
+ "generated": "2026-10-23T20:20:59Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -25,17 +25,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 34.5,
+   "change7_pct": 34.2,
    "d30": null,
    "delta30": null,
-   "delta7": 52.5,
+   "delta7": 52,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 74,
+   "n_now": 75,
    "n_prev": 101,
-   "now": 204.5,
+   "now": 204,
    "prev7": 152,
    "shown": true,
    "state": "worse",
@@ -90,15 +90,15 @@
    "change30_pct": -52.0,
    "change7_pct": -23.3,
    "d30": 687,
-   "delta30": -357,
+   "delta30": -357.0,
    "delta7": -100.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 73,
+   "n_now": 74,
    "n_prev": 124,
-   "now": 330,
+   "now": 330.0,
    "prev7": 430.0,
    "shown": true,
    "state": "better",
@@ -250,14 +250,14 @@
    "change7_pct": -24.5,
    "d30": null,
    "delta30": null,
-   "delta7": -104.0,
+   "delta7": -104,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 74,
+   "n_now": 75,
    "n_prev": 101,
-   "now": 321.0,
+   "now": 321,
    "prev7": 425,
    "shown": true,
    "state": "better",
@@ -271,14 +271,14 @@
    "change7_pct": -5.4,
    "d30": null,
    "delta30": null,
-   "delta7": -18.0,
+   "delta7": -18,
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 74,
+   "n_now": 75,
    "n_prev": 9,
-   "now": 314.0,
+   "now": 314,
    "prev7": 332,
    "shown": true,
    "state": "flat",
@@ -289,17 +289,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -35.8,
+   "change7_pct": -35.0,
    "d30": null,
    "delta30": null,
-   "delta7": -147,
+   "delta7": -144.0,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 73,
+   "n_now": 74,
    "n_prev": 101,
-   "now": 264,
+   "now": 267.0,
    "prev7": 411,
    "shown": true,
    "state": "better",
@@ -352,17 +352,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 15.6,
+   "change7_pct": 15.9,
    "d30": null,
    "delta30": null,
-   "delta7": 24.5,
+   "delta7": 25,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 74,
+   "n_now": 75,
    "n_prev": 101,
-   "now": 181.5,
+   "now": 182,
    "prev7": 157,
    "shown": true,
    "state": "flat",
@@ -376,14 +376,14 @@
    "change7_pct": -14.4,
    "d30": null,
    "delta30": null,
-   "delta7": -27.0,
+   "delta7": -27,
    "group": "ci",
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 74,
+   "n_now": 75,
    "n_prev": 101,
-   "now": 161.0,
+   "now": 161,
    "prev7": 188,
    "shown": true,
    "state": "flat",
@@ -525,14 +525,14 @@
    "change7_pct": 0.0,
    "d30": null,
    "delta30": null,
-   "delta7": 0.0,
+   "delta7": 0,
    "group": "ci",
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 74,
+   "n_now": 75,
    "n_prev": 9,
-   "now": 5.0,
+   "now": 5,
    "prev7": 5,
    "shown": false,
    "state": "flat",
@@ -545,15 +545,15 @@
    "change30_pct": -98.7,
    "change7_pct": -99.1,
    "d30": 236,
-   "delta30": -233,
-   "delta7": -320,
+   "delta30": -233.0,
+   "delta7": -320.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 73,
+   "n_now": 74,
    "n_prev": 101,
-   "now": 3,
+   "now": 3.0,
    "prev7": 323,
    "shown": false,
    "state": "better",
@@ -566,15 +566,15 @@
    "change30_pct": -99.6,
    "change7_pct": 0.0,
    "d30": 696,
-   "delta30": -693,
-   "delta7": 0,
+   "delta30": -693.0,
+   "delta7": 0.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 73,
+   "n_now": 74,
    "n_prev": 101,
-   "now": 3,
+   "now": 3.0,
    "prev7": 3,
    "shown": false,
    "state": "flat",
@@ -610,11 +610,6 @@
    "change_pct": 35.8,
    "commits": [
     {
-     "pr": 942,
-     "sha": "10ad33361",
-     "title": "Auto: an automatic Original recovery no longer needs a Plex client to fly"
-    },
-    {
      "pr": 943,
      "sha": "05e04a003",
      "title": "Test tooling: ABR plant probe ignores --quick stubs; fps --mock keeps the panel on (--panel)"
@@ -658,6 +653,11 @@
      "pr": 960,
      "sha": "8354a31e6",
      "title": "Site: refresh the demo film and stills for v0.9.0 (and fix what broke their render)"
+    },
+    {
+     "pr": 963,
+     "sha": "d550676d1",
+     "title": "Site: stamp the hero's \"Version X.Y.Z\" from pkg/appinfo.json at deploy"
     }
    ],
    "from": 46.0,
@@ -668,13 +668,8 @@
    "to": 62.5
   },
   {
-   "change_pct": 34.5,
+   "change_pct": 34.2,
    "commits": [
-    {
-     "pr": 942,
-     "sha": "10ad33361",
-     "title": "Auto: an automatic Original recovery no longer needs a Plex client to fly"
-    },
     {
      "pr": 943,
      "sha": "05e04a003",
@@ -719,6 +714,11 @@
      "pr": 960,
      "sha": "8354a31e6",
      "title": "Site: refresh the demo film and stills for v0.9.0 (and fix what broke their render)"
+    },
+    {
+     "pr": 963,
+     "sha": "d550676d1",
+     "title": "Site: stamp the hero's \"Version X.Y.Z\" from pkg/appinfo.json at deploy"
     }
    ],
    "from": 152,
@@ -726,16 +726,11 @@
    "label": "CI: host python/shell/C gates",
    "since": "2026-10-23",
    "threshold_pct": 20.0,
-   "to": 204.5
+   "to": 204
   },
   {
    "change_pct": 27.1,
    "commits": [
-    {
-     "pr": 942,
-     "sha": "10ad33361",
-     "title": "Auto: an automatic Original recovery no longer needs a Plex client to fly"
-    },
     {
      "pr": 943,
      "sha": "05e04a003",
@@ -780,6 +775,11 @@
      "pr": 960,
      "sha": "8354a31e6",
      "title": "Site: refresh the demo film and stills for v0.9.0 (and fix what broke their render)"
+    },
+    {
+     "pr": 963,
+     "sha": "d550676d1",
+     "title": "Site: stamp the hero's \"Version X.Y.Z\" from pkg/appinfo.json at deploy"
     }
    ],
    "from": 114.7,
@@ -802,19 +802,19 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 321.0
+   "now": 321
   },
   {
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 314.0
+   "now": 314
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 264
+   "now": 267.0
   },
   {
    "group": "ci",
