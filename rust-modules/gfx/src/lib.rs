@@ -31,3 +31,5 @@ pub mod img;
 pub mod overdraw; // dev-only DRAW-CLASS ledger + mask — the attribution instrument (docs/backdrop-blur-profiling.md Part 5)
 pub mod svg; // runtime SVG rasterizer FFI (src/svg.c / nanosvg) — vector icon assets
 pub mod text;
+// Arabic and Hebrew: FriBidi + HarfBuzz runs through the bundled libass-plx's UI text facade
+mod rtl;

@@ -887,7 +887,7 @@ LIBASS_STAGED = pkg/libass-plx.so.0
 LIBASS_INPUTS = ci/build-libass.sh ci/build-libass.py ci/deps.py ci/dependencies.json \
                 ci/arm-cc.py ci/check-link-evidence.py ci/stage-link-evidence.py \
                 ci/patches/libass-0001-grow-font-faces.patch \
-                src/ass.c src/ass_fonts.c src/ass_internal.h src/ass_composite.h include/ass.h
+                src/ass.c src/ass_fonts.c src/ass_text.c src/ass_internal.h src/ass_composite.h include/ass.h
 $(LIBASS_STAGED): $(LIBASS_INPUTS)
 	WEBOS_SDK=$(WEBOS_SDK) ./ci/build-libass.sh
 
