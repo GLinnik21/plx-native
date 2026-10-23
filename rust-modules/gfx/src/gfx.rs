@@ -206,6 +206,7 @@ const GL_TEXTURE3: c_uint = 0x84C3;
 
 extern "C" {
     fn glGetString(name: c_uint) -> *const c_char;
+    fn glGetIntegerv(name: c_uint, value: *mut c_int);
     fn glCreateShader(ty: c_uint) -> c_uint;
     fn glShaderSource(
         shader: c_uint,
@@ -494,7 +495,7 @@ fn frame_clear_alpha(r: f32, g: f32, b: f32, a: f32) {
     if !frame_clear_allowed() {
         return;
     }
-    probed_clear(|| {
+    probed_clear(clears_presented_fb, || {
         plx_base::diag::spans::span("clear", || unsafe {
             glClearColor(r, g, b, a);
             glClear(GL_COLOR_BUFFER_BIT);
@@ -502,9 +503,34 @@ fn frame_clear_alpha(r: f32, g: f32, b: f32, a: f32) {
     });
 }
 
-/// Run `clear`, bracketed by the installed probe when [`arm_clear_probe`] offered it this frame.
-fn probed_clear(clear: impl FnOnce()) {
-    let probe = CLEAR_PROBE.with(|p| p.armed.replace(false).then(|| p.hooks.get())).flatten();
+/// `GL_FRAMEBUFFER_BINDING`: the framebuffer the next clear writes.
+const GL_FRAMEBUFFER_BINDING: c_uint = 0x8CA6;
+
+/// Is the framebuffer bound right now the one the frame is PRESENTED from
+/// ([`plx_base::surface::frame_fb`])? Only a clear of that one can be the back-buffer wait; a page
+/// replayed into a blur source (`blur_snapshot_direct`) or drawn into a host snapshot
+/// ([`plx_base::surface::PageTarget`]) clears an FBO first. One client-state query, asked only
+/// while the probe is armed.
+fn clears_presented_fb() -> bool {
+    let mut bound: c_int = 0;
+    // SAFETY: a plain state query into a local.
+    unsafe { glGetIntegerv(GL_FRAMEBUFFER_BINDING, &mut bound) };
+    bound as u32 == plx_base::surface::frame_fb()
+}
+
+/// Run `clear`, bracketed by the installed probe when [`arm_clear_probe`] offered it this frame
+/// and `presented` says this clear writes the presented framebuffer. A clear of any other target
+/// leaves the probe armed for the frame's real first framebuffer command: on a frame that rebuilds
+/// a glass source, the page's own clear runs first INSIDE the source replay, into the tap target,
+/// and bracketing that one priced a 0.04 ms wait while the real one (the visible page's clear,
+/// 8-18 ms on the television's pong scenes) went unpriced. `presented` is asked only when armed.
+fn probed_clear(presented: impl FnOnce() -> bool, clear: impl FnOnce()) {
+    let probe = CLEAR_PROBE
+        .with(|p| (p.armed.get() && presented()).then(|| {
+            p.armed.set(false);
+            p.hooks.get()
+        }))
+        .flatten();
     if let Some((waiting, _)) = probe {
         waiting();
     }
@@ -524,8 +550,9 @@ pub fn install_clear_probe(waiting: fn(), acquired: fn()) {
 }
 
 /// Offer the installed probe the next clear, and only the next one: the first clear that actually
-/// reaches the framebuffer after this call brackets the wait, later clears of the same frame (a
-/// popover's, a second pass) do not, so one frame yields one waiting/acquired pair. The loop calls
+/// reaches the PRESENTED framebuffer after this call brackets the wait (a clear into a blur source
+/// or a host snapshot does not take it), later clears of the same frame (a popover's, a second
+/// pass) do not, so one frame yields one waiting/acquired pair. The loop calls
 /// this once per non-player frame; the player clears from the loop and brackets that itself.
 pub fn arm_clear_probe() {
     CLEAR_PROBE.with(|p| p.armed.set(p.hooks.get().is_some()));
@@ -8795,17 +8822,40 @@ mod clear_probe_tests {
             || LOG.with(|l| l.borrow_mut().push("acquired")),
         );
         let clear = || LOG.with(|l| l.borrow_mut().push("clear"));
-        super::probed_clear(clear);
+        let panel = || true;
+        super::probed_clear(panel, clear);
         super::arm_clear_probe();
-        super::probed_clear(clear);
-        super::probed_clear(clear);
+        super::probed_clear(panel, clear);
+        super::probed_clear(panel, clear);
         super::arm_clear_probe();
-        super::probed_clear(clear);
+        super::probed_clear(panel, clear);
         let log = LOG.with(|l| std::mem::take(&mut *l.borrow_mut()));
         assert_eq!(
             log,
             ["clear", "waiting", "clear", "acquired", "clear", "waiting", "clear", "acquired"],
             "an unarmed clear is bare; an armed frame gets one pair, and its second clear none"
+        );
+    }
+
+    /// A frame that rebuilds a glass source clears the tap target first (the page's own clear,
+    /// replayed into the source) and the presented framebuffer second. The probe prices the back
+    /// buffer wait, which only the second can be, so the first must leave it armed.
+    #[test]
+    fn an_fbo_clear_leaves_the_probe_for_the_presented_one() {
+        super::install_clear_probe(
+            || LOG.with(|l| l.borrow_mut().push("waiting")),
+            || LOG.with(|l| l.borrow_mut().push("acquired")),
+        );
+        let clear = || LOG.with(|l| l.borrow_mut().push("clear"));
+        super::arm_clear_probe();
+        super::probed_clear(|| false, clear);
+        super::probed_clear(|| true, clear);
+        super::probed_clear(|| true, clear);
+        let log = LOG.with(|l| std::mem::take(&mut *l.borrow_mut()));
+        assert_eq!(
+            log,
+            ["clear", "waiting", "clear", "acquired", "clear"],
+            "the source pass's clear is bare; the presented clear after it takes the pair"
         );
     }
 }
