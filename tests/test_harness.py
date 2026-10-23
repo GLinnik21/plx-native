@@ -878,6 +878,37 @@ class TeardownProcessTable(unittest.TestCase):
         fake.assert_called_once_with(["ps", "-Ao", "pid,command"], capture_output=True)
 
 
+class TestUserTokenFile(unittest.TestCase):
+    """`test_user.token_file` supplies an already-resolved managed-user token: no plex.tv call."""
+
+    def _file(self, text):
+        fd, path = tempfile.mkstemp()
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        self.addCleanup(os.unlink, path)
+        return path
+
+    def test_token_file_is_read_and_skips_the_owner_lookup(self):
+        path = self._file("synthetic-token-value\n")
+        with mock.patch.object(run, "fetch_managed_user_token") as fetch, \
+                mock.patch.object(run, "read_token") as owner:
+            tok = run.resolve_test_user_token({"id": "1", "token_file": path}, "h", 32400)
+        self.assertEqual(tok, "synthetic-token-value")
+        fetch.assert_not_called()
+        owner.assert_not_called()
+
+    def test_without_token_file_the_shared_servers_lookup_is_unchanged(self):
+        with mock.patch.object(run, "fetch_managed_user_token", return_value="t") as fetch, \
+                mock.patch.object(run, "read_token", return_value="owner"):
+            self.assertEqual(run.resolve_test_user_token({"id": "7"}, "h", 1), "t")
+        fetch.assert_called_once_with("owner", "h", 1, "7")
+
+    def test_empty_multiline_or_missing_file_is_refused(self):
+        for path in (self._file(""), self._file("a\nb\n"), "/nonexistent/plx-token"):
+            with self.assertRaises(SystemExit):
+                run.resolve_test_user_token({"id": "1", "token_file": path}, "h", 1)
+
+
 class StoredSessionGate(unittest.TestCase):
     """A `session: stored` case with no stored sign-in on the install used to call
     `require_stored_session()` -> `sys.exit()` from inside `run_case`, and `SystemExit` is not an

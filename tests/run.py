@@ -406,6 +406,29 @@ def fetch_managed_user_token(admin_token, host, port, user_id):
              f"(share the libraries with it first, or run with --owner)")
 
 
+def resolve_test_user_token(test_user, host, port):
+    """The managed test user's per-server token, from wherever the overlay says it lives.
+
+    `test_user.token_file` names a file outside the tree (`~` expanded) that already holds that
+    user's per-server accessToken: for an installation whose config.local.h carries no usable
+    OWNER token, which `fetch_managed_user_token` needs in order to ask plex.tv. The file is read
+    at runtime and its value is never printed. Without the key, the token is resolved through the
+    owner's shared_servers list exactly as before.
+    """
+    path = test_user.get("token_file")
+    if not path:
+        return fetch_managed_user_token(read_token(), host, port, test_user["id"])
+    path = os.path.expanduser(str(path))
+    try:
+        with open(path, encoding="utf-8") as fh:
+            tok = fh.read().strip()
+    except OSError as e:
+        sys.exit(f"test_user.token_file: cannot read {path}: {e.strerror}")
+    if not tok or any(c.isspace() for c in tok):
+        sys.exit(f"test_user.token_file: {path} must hold exactly one token on one line")
+    return tok
+
+
 # ---------------------------------------------------------------------------
 # The SECOND server (a friend's shared server) — resolved, never stored
 # ---------------------------------------------------------------------------
@@ -6762,7 +6785,7 @@ def main():
                      "identity (add a test_user block, see manifest.local.json.example; or boot "
                      "as the owner explicitly instead of asking for a guest)")
         pms = manifest["pms"]
-        token = fetch_managed_user_token(read_token(), pms["host"], pms["port"], test_user["id"])
+        token = resolve_test_user_token(test_user, pms["host"], pms["port"])
         print(token)
         return 0
     if args.graphics_profile and not (args.fps or args.fps_player):
@@ -7010,13 +7033,12 @@ def main():
         # the app boots to QR sign-in and the scene grades a screen it never reached.
         # `--mock` resolves its own synthetic token per scene, after that scene's mock is up.
         if not args.mock and fps_run_needs_token(scenes, bool(cfg.get("shared_server"))):
-            admin_token = read_token()
             test_user = manifest.get("test_user")
             if args.owner or not test_user:
-                token, cfg["inject_token"] = admin_token, True  # no baked token in the binary
+                token, cfg["inject_token"] = read_token(), True  # no baked token in the binary
             else:
-                token = fetch_managed_user_token(admin_token, cfg["pms"]["host"],
-                                                 cfg["pms"]["port"], test_user["id"])
+                token = resolve_test_user_token(test_user, cfg["pms"]["host"],
+                                                cfg["pms"]["port"])
                 cfg["inject_token"] = True
         print(f"install: {APPID} [{FLAVOUR}] — triggers and log under {RUNDIR}")
         acquire_tv_lock(cfg["tv"], f"tests/run.py --fps ({len(scenes)} scenes) [{FLAVOUR}]")
@@ -7040,22 +7062,19 @@ def main():
                      + "\n  ".join(f"{n}  <- {r}" for n, r in item_skipped))
         sys.exit(f"no cases match --filter {args.filter!r} / --suite {args.suite!r}")
 
-    admin_token = read_token()  # owner token from config.local.h; never printed
-
     # Resolve the identity every case plays as. Default = the overlay's test_user, so
     # playback + timeline scrobbles land on that user's history and the owner's real account
     # stays clean. --owner opts back into the owner token. Neither token is ever printed.
     test_user = manifest.get("test_user")
     if args.owner or not test_user:
-        token = admin_token
+        token = read_token()  # owner token from config.local.h; never printed
         cfg["user_label"] = "owner (config.local.h)"
         cfg["inject_token"] = True  # the binary has NO baked token; every identity is injected
         if not args.owner:
             print("NOTE: no test_user in manifest.local.json -> running as OWNER "
                   "(history WILL be affected)")
     else:
-        token = fetch_managed_user_token(admin_token, cfg["pms"]["host"], cfg["pms"]["port"],
-                                         test_user["id"])
+        token = resolve_test_user_token(test_user, cfg["pms"]["host"], cfg["pms"]["port"])
         cfg["user_label"] = f'{test_user.get("title", "managed")} (id={test_user["id"]})'
         cfg["inject_token"] = True
     print(f"install: {APPID} [{FLAVOUR}] — triggers and log under {RUNDIR}")
