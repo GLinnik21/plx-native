@@ -821,8 +821,8 @@ impl ItemMenuScreen {
                 Activation::Action(act) => act,
                 Activation::Push(never) => match never {},
             });
-        if let Some(Action::ChooseVersion(rk)) = act.as_ref() {
-            self.show_versions(&rk.clone());
+        if let Some(Action::ChooseVersion(rk)) = &act {
+            self.show_versions(rk);
             return;
         }
         // Every arm of the dispatch turns an rk into a blocking fetch, a scrobble or a play; an
