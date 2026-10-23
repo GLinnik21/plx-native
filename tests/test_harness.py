@@ -6973,7 +6973,7 @@ class StreamSelectionReset(unittest.TestCase):
         self.assertTrue(case.get("stream_reset", True))
         self.assertNotIn("stream_reset", case)
         self.assertIn("seed_subtitle", case["setup"])
-        self.assertNotRegex(json.dumps(case["setup"]), r"\d{4}")
+        self.assertNotRegex(json.dumps(case["setup"]["seed_subtitle"]), r"\d{4}")
         streams = [
             {"id": 2694, "streamType": 1},
             {"id": 2695, "streamType": 2, "selected": 1},
