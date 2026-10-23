@@ -1,6 +1,6 @@
 {
  "flaky": [],
- "generated": "2026-10-23T02:58:15Z",
+ "generated": "2026-10-23T03:03:54Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -25,18 +25,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 34.9,
+   "change7_pct": 34.5,
    "d30": null,
    "delta30": null,
-   "delta7": 51.5,
+   "delta7": 51.0,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 77,
-   "n_prev": 98,
-   "now": 199,
-   "prev7": 147.5,
+   "n_now": 78,
+   "n_prev": 97,
+   "now": 199.0,
+   "prev7": 148,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -88,18 +88,18 @@
   },
   {
    "change30_pct": -51.8,
-   "change7_pct": -21.6,
+   "change7_pct": -21.1,
    "d30": 685.0,
    "delta30": -355.0,
-   "delta7": -91.0,
+   "delta7": -88.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 76,
-   "n_prev": 121,
-   "now": 330.0,
-   "prev7": 421,
+   "n_now": 77,
+   "n_prev": 120,
+   "now": 330,
+   "prev7": 418.5,
    "shown": true,
    "state": "better",
    "state30": "better",
@@ -247,20 +247,20 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -20.1,
+   "change7_pct": -19.9,
    "d30": null,
    "delta30": null,
-   "delta7": -81.0,
+   "delta7": -79.5,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 77,
-   "n_prev": 98,
-   "now": 321,
-   "prev7": 402.0,
+   "n_now": 78,
+   "n_prev": 97,
+   "now": 320.5,
+   "prev7": 400,
    "shown": true,
-   "state": "better",
+   "state": "flat",
    "state30": "new",
    "threshold_abs": 20.0,
    "threshold_pct": 20.0,
@@ -276,9 +276,9 @@
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 77,
+   "n_now": 78,
    "n_prev": 0,
-   "now": 315,
+   "now": 314.5,
    "prev7": null,
    "shown": true,
    "state": "new",
@@ -289,18 +289,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -34.4,
+   "change7_pct": -34.7,
    "d30": null,
    "delta30": null,
-   "delta7": -137.0,
+   "delta7": -140,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 76,
-   "n_prev": 98,
-   "now": 261.0,
-   "prev7": 398.0,
+   "n_now": 77,
+   "n_prev": 97,
+   "now": 264,
+   "prev7": 404,
    "shown": true,
    "state": "better",
    "state30": "new",
@@ -352,18 +352,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 15.2,
+   "change7_pct": 13.7,
    "d30": null,
    "delta30": null,
-   "delta7": 23.5,
+   "delta7": 21.5,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 77,
-   "n_prev": 98,
-   "now": 178,
-   "prev7": 154.5,
+   "n_now": 78,
+   "n_prev": 97,
+   "now": 178.5,
+   "prev7": 157,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -373,7 +373,7 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -14.7,
+   "change7_pct": -14.6,
    "d30": null,
    "delta30": null,
    "delta7": -27.5,
@@ -381,10 +381,10 @@
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 77,
-   "n_prev": 98,
-   "now": 160,
-   "prev7": 187.5,
+   "n_now": 78,
+   "n_prev": 97,
+   "now": 160.5,
+   "prev7": 188,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -530,9 +530,9 @@
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 77,
+   "n_now": 78,
    "n_prev": 0,
-   "now": 5,
+   "now": 5.0,
    "prev7": null,
    "shown": false,
    "state": "new",
@@ -546,15 +546,15 @@
    "change7_pct": -99.1,
    "d30": 234.5,
    "delta30": -231.5,
-   "delta7": -320.0,
+   "delta7": -320,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 76,
-   "n_prev": 98,
-   "now": 3.0,
-   "prev7": 323.0,
+   "n_now": 77,
+   "n_prev": 97,
+   "now": 3,
+   "prev7": 323,
    "shown": false,
    "state": "better",
    "state30": "better",
@@ -567,15 +567,15 @@
    "change7_pct": 0.0,
    "d30": 686.5,
    "delta30": -683.5,
-   "delta7": 0.0,
+   "delta7": 0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 76,
-   "n_prev": 98,
-   "now": 3.0,
-   "prev7": 3.0,
+   "n_now": 77,
+   "n_prev": 97,
+   "now": 3,
+   "prev7": 3,
    "shown": false,
    "state": "flat",
    "state30": "better",
@@ -610,11 +610,6 @@
    "change_pct": 36.6,
    "commits": [
     {
-     "pr": 897,
-     "sha": "2302e3e5e",
-     "title": "Also available: a show or season copy shows no runtime; the show's nominal duration is no episode's (#814)"
-    },
-    {
      "pr": 865,
      "sha": "60538b681",
      "title": "player: a film ends on the pipeline's end-of-stream"
@@ -658,6 +653,11 @@
      "pr": 944,
      "sha": "6ca6fbfd6",
      "title": "Auto: a refused Original recovery is not asked again on the HLS route that refused it"
+    },
+    {
+     "pr": 946,
+     "sha": "01e77d550",
+     "title": "tests: test_user.token_file supplies a managed-user token without an owner token"
     }
    ],
    "from": 103.0,
@@ -668,13 +668,8 @@
    "to": 140.7
   },
   {
-   "change_pct": 34.9,
+   "change_pct": 34.5,
    "commits": [
-    {
-     "pr": 897,
-     "sha": "2302e3e5e",
-     "title": "Also available: a show or season copy shows no runtime; the show's nominal duration is no episode's (#814)"
-    },
     {
      "pr": 865,
      "sha": "60538b681",
@@ -719,24 +714,24 @@
      "pr": 944,
      "sha": "6ca6fbfd6",
      "title": "Auto: a refused Original recovery is not asked again on the HLS route that refused it"
+    },
+    {
+     "pr": 946,
+     "sha": "01e77d550",
+     "title": "tests: test_user.token_file supplies a managed-user token without an owner token"
     }
    ],
-   "from": 147.5,
+   "from": 148,
    "id": "ci|host python/shell/C gates",
    "label": "CI: host python/shell/C gates",
    "since": "2026-10-23",
    "threshold_pct": 20.0,
-   "to": 199
+   "to": 199.0
   },
   {
    "change_pct": 30.8,
    "commits": [
     {
-     "pr": 897,
-     "sha": "2302e3e5e",
-     "title": "Also available: a show or season copy shows no runtime; the show's nominal duration is no episode's (#814)"
-    },
-    {
      "pr": 865,
      "sha": "60538b681",
      "title": "player: a film ends on the pipeline's end-of-stream"
@@ -780,6 +775,11 @@
      "pr": 944,
      "sha": "6ca6fbfd6",
      "title": "Auto: a refused Original recovery is not asked again on the HLS route that refused it"
+    },
+    {
+     "pr": 946,
+     "sha": "01e77d550",
+     "title": "tests: test_user.token_file supplies a managed-user token without an owner token"
     }
    ],
    "from": 46.0,
@@ -802,19 +802,19 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 321
+   "now": 320.5
   },
   {
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 315
+   "now": 314.5
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 261.0
+   "now": 264
   },
   {
    "group": "ci",
