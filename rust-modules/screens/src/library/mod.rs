@@ -229,6 +229,14 @@ pub struct LibraryScreen {
     /// ground under the reader. A modal (a compact menu) covers the page without setting it.
     /// Transient like `seat_wanted`: it is not part of the canon, a pop clears it.
     buried: bool,
+    /// The page was rebuilt from its memory (`ScreenEvent::RestoreMemory`: BACK onto a page the stack
+    /// let go of while a Detail was over it): a return, not an entry. Until the dip's image is let
+    /// go the grid is not held at rest, so its focused card comes back lifted with its caption open,
+    /// as it was left, and the row below does not move (since #843 it dropped to rest and grew again
+    /// under the image, which read as a bounce). Transient like `buried`: not part of the canon.
+    restored: bool,
+    /// `restored`, and the dip's image has been held since: the next tick that finds it let go ends the return.
+    restored_held: bool,
     initial: bool,
     /// The head group the page seated its own focus in, while that seat is still the page's own
     /// choice: nobody has moved since. Such a seat follows the head when a landing changes what the
@@ -284,7 +292,7 @@ impl LibraryScreen {
             scroll: Spring::at(0.0), scroll_target: 0.0, handoff: plx_ui::scroll_chrome::Handoff::new(), restore_scroll: None,
             viewports: Vec::new(), seat_wanted: None,
             pending: PendingTransactions::default(), page_fade: Xfade::new(), grid_fade: Xfade::new(),
-            readout: Readout::Loading, live: true, buried: false, initial: true, provisional: None, placed: Vec::new(), sweep_down: true,
+            readout: Readout::Loading, live: true, buried: false, restored: false, restored_held: false, initial: true, provisional: None, placed: Vec::new(), sweep_down: true,
             ground: plx_ui::widgets::PageGround::new(), ground_seeded: false,
             plaintext: Default::default(),
             clock: Default::default(),
@@ -1198,7 +1206,12 @@ impl LibraryScreen {
                 // A read-back that lands while a page is pushed over this one is acted on at once.
                 if self.buried { self.requery_stale(cx, fx); }
             }
-            ScreenEvent::RestoreMemory(PageMemory::Library(memory)) => { self.restore(memory); self.sync(cx); }
+            ScreenEvent::RestoreMemory(PageMemory::Library(memory)) => { self.restore(memory); self.restored = true; self.restored_held = false;
+                // The grid still sleeps from the dip that held the image over the Detail: wake it now,
+                // or the page's first drawn frame (the dip's captured image) shows the card at rest.
+                self.pair.detail.dormant(false);
+                self.sync(cx);
+            }
             ScreenEvent::Enter(enter) => {
                 self.live = true;
                 self.buried = false;
@@ -1259,8 +1272,9 @@ impl LibraryScreen {
                 // The grid opens the row's caption band and, for a deliberate move only, grows the
                 // tile from rest over the frames after this. A restore or a reconcile announced
                 // here is adopted whole by its next tick, unless a dormant tick ran since (a page
-                // returning from a Detail push under the held image, `Tick` below), in which case
-                // the first awake tick regrows the tile from rest (`ui::cards`, the pop rule).
+                // ENTERED under the held image, `Tick` below), in which case the first awake tick
+                // grows the tile from rest (`ui::cards`, the pop rule); a page restored on BACK
+                // runs none (`restored`).
                 self.pair.detail.on(ev, cx, fx, self.scroll.pos);
                 // The engine seats a page it has just mounted in the first group it can (the bar), before a
                 // page whose listing is still loading has anything to seat. Such a page holds no seat
@@ -1347,7 +1361,17 @@ impl LibraryScreen {
                     // A page still dissolving in shows its seat unpopped: the lift starts on the
                     // dissolve's last frame, where it can be seen, instead of playing out under the
                     // fade or the held image of a route dip (the page arrives in its first poster).
-                    self.pair.detail.dormant(self.page_fade.is_arriving() || plx_ui::containers::transition::page_image_held());
+                    // A page restored on BACK is a return: its card stays as it was left.
+                    let image_held = plx_ui::containers::transition::page_image_held();
+                    // It stays a return until the dip's image has been held and let go (the capture may
+                    // come a frame after this tick, so the image not yet being held says nothing),
+                    // and the card is lifted throughout: never put to rest and grown again.
+                    let arriving = self.page_fade.is_arriving();
+                    if self.restored {
+                        if image_held { self.restored_held = true; }
+                        else if self.restored_held { self.restored = false; self.restored_held = false; }
+                    }
+                    self.pair.detail.dormant(!self.restored && (arriving || image_held));
                     self.handoff.step(dt, self.scroll.pos, self.scroll_target, self.layout.grid_pitch(), self.capsule_wanted());
                     // The grid steps its pop and bands. A content landing that moved the focused
                     // element's row (`Landed`) comes back as the document shift that keeps the
