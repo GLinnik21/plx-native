@@ -4533,6 +4533,10 @@ mod prime_livelock_tests {
         let lead0 = 100_000_000;
         eng.max_fed_video_pts = PRES + lead0;
         eng.max_fed_audio_pts = PRES + lead0;
+        // This fixture holds the presented position fixed. Keep FeedPace's existing anchor
+        // ahead of the real clock so host preemption cannot extrapolate that position while
+        // the simulated feed clock is testing the slice. FeedPace's run-on has its own tests.
+        eng.feed_pace.last = Some((PRES, u32::MAX));
         push_segment_at(&mut eng, PRES + lead0 + 1);
 
         tick(&mt, &mut eng);

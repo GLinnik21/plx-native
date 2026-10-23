@@ -49,7 +49,10 @@
 //!   cache rather than keep a second copy of the session live.
 use super::origin::Origin;
 use super::probe::Location;
-pub use prefs::{HoldHintTaughtPref, effective, own_prefs, persist_profile_pref, put_own, stored_effective, tenure, AudioEnhancementsPref,
+mod playback_controls;
+pub use playback_controls::PlaybackControls;
+
+pub use prefs::{PlaybackControlsPref, HoldHintTaughtPref, effective, own_prefs, persist_profile_pref, put_own, stored_effective, tenure, AudioEnhancementsPref,
     DeckPressPref, DirectPlayModePref, HdrOverlayBrightnessPref, NextEpisodeModePref, Preferences, ProfilePrefs, ProfilePrefsPref,
     ProfilePrefsRecord, ProfileSetting, ProfileWrite, QualityPref, Row, Setting, SkipIntervalPref,
     SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref, UiResolutionPref, UnderPostersPref};
@@ -611,8 +614,8 @@ pub struct Session {
     /// Soft-parsed like every list in this struct: an entry costs itself, never the credentials.
     #[serde(default, deserialize_with = "de_profile_cache")]
     pub profiles: Vec<ProfileCreds>,
-    /// Every preference key but `language` (`ui_resolution`, `hold_hint_taught`, `profile_prefs`, the per-profile home of the ten player
-    /// settings and of hero trailer autoplay, and those settings' frozen top-level keys every profile
+    /// Every preference key but `language` (`ui_resolution`, `hold_hint_taught`, `profile_prefs`, the per-profile home of playback
+    /// and display settings, and those settings' frozen top-level keys every profile
     /// falls back to (`trailer_autoplay` among them), `auto_sign_in`,
     /// `last_hero_blur`, `plaintext_consent`, `server_key_pins`, `last_library`,
     /// `library_sorts`, `track_memory`, `subtitle_offsets`), flattened so the keys sit at the top level of the file under
@@ -646,7 +649,7 @@ struct CanonicalSessionAuth {
 struct CanonicalSessionPreferences {
     #[serde(default)]
     language: plx_platform::i18n::Preference,
-    /// Every flattened preference key (the ten player settings, hero trailer autoplay, the A5 rows and the two memory-door
+    /// Every flattened preference key (playback and display settings, the A5 rows and the two memory-door
     /// lists), flattened ahead of `extensions` so a flattened struct takes its keys first and
     /// `extensions` still sees only unknown ones.
     #[serde(flatten)]

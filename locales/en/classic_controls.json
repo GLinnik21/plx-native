@@ -1,0 +1,18 @@
+{
+  "settings.playback.classic_controls": {
+    "value": "Classic Playback Controls",
+    "description": "Playback setting title. Optional classic remote behavior and previous/next controls."
+  },
+  "settings.playback.classic_controls.copy": {
+    "value": "Seek immediately with Left or Right while the controls are hidden. With controls visible, confirm seeking with OK. Previous restarts after five seconds; otherwise it plays the previous item.",
+    "description": "Explanation of the opt-in classic controls setting."
+  },
+  "settings.playback.classic_controls.off": {
+    "value": "Off",
+    "description": "Use the modern playback controls (default)."
+  },
+  "settings.playback.classic_controls.on": {
+    "value": "On",
+    "description": "Use classic playback controls."
+  }
+}

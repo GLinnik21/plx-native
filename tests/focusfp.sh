@@ -28,6 +28,8 @@
 #   tests/focusfp.sh --pms 10.0.0.5:32400   # against a real server (fingerprints then carry
 #                                            #   real ratingKeys: NOT committable)
 #
+# FOCUS_STEP / FOCUS_SETTLE / FOCUS_BOOT_SETTLE override the default timing when recording on
+# high-refresh hosts; the route/focus assertions still have to pass before importing a fixture.
 # Needs `make sim` (the binary) and nothing else. Every flow gets a fresh instance root.
 set -euo pipefail
 
@@ -43,8 +45,9 @@ REPLAY=""
 MODE=""
 MIN_LINES=2
 BOOT_WAIT=25     # seconds to wait for the boot marker before giving up on a flow
-STEP=0.9         # seconds between tokens — a human D-pad cadence, and past every settle spring
-SETTLE=3         # seconds after the last token before the run is read
+STEP="${FOCUS_STEP:-0.9}" # seconds between tokens; shorter recordings on high-refresh hosts
+SETTLE="${FOCUS_SETTLE:-3}" # seconds after the last token before the run is read
+BOOT_SETTLE="${FOCUS_BOOT_SETTLE:-2}" # posters and asynchronous initial landings
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -181,7 +184,7 @@ PY
       echo "  [FAIL] $n $name: $verdict"; return 1
     fi
   fi
-  sleep 2   # posters and the async landings the first keys must not race
+  sleep "$BOOT_SETTLE"
   if [ -n "$tokens" ]; then
     # `<>`: a FIFO opened write-only blocks in open(2) with no reader (ui-sim skill, trap 1).
     exec 3<> "$d/plxnative-remote"

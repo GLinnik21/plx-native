@@ -290,6 +290,7 @@ fn push_player(ps: &plx_media::route::PlaybackSession, s: &mut String, overlay: 
     // the panels' fields rather than being read off a module global here.
     let slot = match ctrl {
         ControlSlot::Discs => "discs",
+        ControlSlot::Classic(_) => "classic",
         ControlSlot::Skip(_) => "skip",
         ControlSlot::UpNext(_) => "upnext",
     };

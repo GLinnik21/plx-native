@@ -182,6 +182,7 @@ pub enum PlayerReq {
     /// Seek to this position in ns and resume if paused — the Chapters strip's OK, and OK or PLAY
     /// taking the scrub's pending key target (a playing film simply seeks and plays on).
     SeekTo(i64),
+    /// Commit a pointer scrub or an immediate legacy-key seek, and leave a paused film paused.
     /// **Commit a SCRUB to this position, and leave a paused film paused** (restructure phase 12,
     /// PX-PLAYER) — `app::playback::commit_seek`, the other half of the pair above.
     ///
@@ -2552,7 +2553,10 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // `(row:u32,sp:..,card:Option<u32>)`, in write order; the Collection and Watchlist grids name
 // `bands` symbolically, so their shape strings did not change. One bump; the three replay fixtures
 // were re-recorded against it; the previous pin was 0x0803_2f8d_c828_6d70.
-const SCREEN_SHAPES_PIN: u64 = 0x6b71_df9e_04db_2b76;
+// Classic immediate-seek bursts add their requested target and last-press clock to PlayerScreen's
+// canonical state. The previous pin was 0x6b71_df9e_04db_2b76; the three supported replay anchors
+// are re-recorded for the new shape rather than editing their manifest fingerprints.
+const SCREEN_SHAPES_PIN: u64 = 0x0979_46ef_0d6c_f075;
 
 #[cfg(test)]
 mod arg_tests {

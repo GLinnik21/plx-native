@@ -4,6 +4,7 @@
 //! route::title_cptr/ctxline_cptr. The video-overlay subtitle draws below stay on the raw text/tex
 //! primitives (they composite directly over the video plane, outside the transport HUD).
 #![allow(dead_code)]
+pub mod classic_controls;
 use plx_gfx::gfx::{delete_tex, upload_rgba};
 use plx_machine::machine::Measure;
 // The caption's look (face, pitch, wrap, lift, anchors) is one definition, media's `text_style`,
@@ -497,14 +498,14 @@ const BTN_N: i32 = 3;
 /// **One array for all three slot occupants**, not one per module. The transport discs, the Skip
 /// pill and the Up Next pair are the same row at the same right edge, only ever one at a time, and
 /// the cursor walking them is `hud_nav.btn` for all three ([`ControlSlot::items`]) — so the pop is a
-/// property of that row and not of whichever module happens to draw it this frame. `BTN_N` 3 is the
-/// widest occupant. `up_next` and `skip_pill` read theirs through [`row_pop`].
+/// property of that row and not of whichever module happens to draw it this frame. The classic row has the widest occupant,
+/// with room for its Previous/Next pair plus the three existing discs. `up_next` and `skip_pill` read theirs through [`row_pop`].
 ///
 /// A field of [`TransportRow`], which the player's instance owns: the HUD keeps no view struct
 /// — it is drawn entirely from the caller's arguments — so this and the resume clock beside it are
 /// the whole of the route's retained motion state, and phase 9 gave them the one owner the rest of
 /// the route already has.
-pub type RowPop = plx_ui::widgets::CtlPop<{ BTN_N as usize }>;
+pub type RowPop = plx_ui::widgets::CtlPop<{ classic_controls::ITEMS }>;
 
 /// **Everything the transport row remembers between frames**: the control row's per-item focus pop
 /// and the paused→playing edge the state read-out's `Play` mark is timed from.
@@ -717,8 +718,10 @@ fn ctrl_slot_measure(label: &str, measure: &dyn plx_machine::machine::Measure) -
 /// separate if-chains, with nothing to keep them agreeing and nothing to test.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ControlSlot {
-    /// the ordinary Subtitles + Audio pair
+    /// the ordinary Subtitles, Audio and More discs
     Discs,
+    /// The opt-in queue transport row; availability is sampled with the rest of the slot.
+    Classic(classic_controls::Controls),
     /// a marker segment is under the playhead
     Skip(crate::skip_pill::Prompt),
     /// …and the show has another episode queued, which outranks skipping the credits. Carries the
@@ -732,6 +735,7 @@ impl ControlSlot {
     pub fn items(self) -> c_int {
         match self {
             ControlSlot::Discs => BTN_N,
+            ControlSlot::Classic(_) => classic_controls::ITEMS as c_int,
             // Watch Credits + Next Episode — the one stand-in with a pair
             ControlSlot::UpNext(_) => 2,
             ControlSlot::Skip(_) => 1,
@@ -749,7 +753,7 @@ impl ControlSlot {
     }
     /// whether the Subtitles/Audio discs are the current occupant
     pub fn is_discs(self) -> bool {
-        matches!(self, ControlSlot::Discs)
+        matches!(self, ControlSlot::Discs | ControlSlot::Classic(_))
     }
     /// Which SEGMENT this row is offering, if any — the row's identity for "have I already offered
     /// this?". Deliberately not the `ControlSlot` itself: `active_marker` is gated on `is_playing`,
@@ -758,7 +762,7 @@ impl ControlSlot {
     /// slot, it was — and every flicker re-raised the HUD over an intro the user was just watching.
     pub fn offer(self) -> Option<(plx_data::metadata::MarkerKind, i64)> {
         match self {
-            ControlSlot::Discs => None,
+            ControlSlot::Discs | ControlSlot::Classic(_) => None,
             ControlSlot::Skip(pr) => Some((pr.marker.kind, pr.marker.start_ms)),
             ControlSlot::UpNext(m) => Some((m.kind, m.start_ms)),
         }
@@ -776,6 +780,7 @@ impl ControlSlot {
         }
         Some(match self {
             ControlSlot::Discs => disc_hit_rect(idx),
+            ControlSlot::Classic(_) => classic_controls::Controls::rect(idx)?,
             ControlSlot::Skip(pr) => {
                 let w = ctrl_slot_w(row, pr.label(), measure);
                 Rect::new(CTRL_RIGHT - w, CTRL_Y, w, CTRL_H)
@@ -837,7 +842,10 @@ pub fn slot(ps: &plx_media::route::PlaybackSession, meta: plx_data::metadata::Me
             .then(|| meta.synthesized_tail_marker(head, has_next))
             .flatten()
     });
-    slot_for(m, has_next, mode)
+    let slot = slot_for(m, has_next, mode);
+    if slot.is_discs() && plx_media::route::playback_controls() == plx_plex::plex::session::PlaybackControls::Classic {
+        ControlSlot::Classic(classic_controls::Controls::now(ps))
+    } else { slot }
 }
 
 /// PURE edge: has a stand-in just vanished OUT FROM UNDER the focus ring, so the ring has to go
@@ -1436,9 +1444,12 @@ pub fn icon_hit(slot: ControlSlot, cx: f32, cy: f32) -> Option<i32> {
     if !slot.is_discs() || cy < BTN_Y || cy > BTN_Y + BTN_S {
         return None;
     }
-    (0..BTN_N).find(|&idx| {
-        let x = btn_x(idx);
-        cx >= x && cx <= x + BTN_S
+    (0..slot.items()).find(|&idx| {
+        let rect = match slot {
+            ControlSlot::Classic(_) => classic_controls::Controls::rect(idx),
+            _ => Some(disc_hit_rect(idx)),
+        };
+        rect.is_some_and(|r| cx >= r.x && cx <= r.x + r.w)
     })
 }
 
@@ -1553,8 +1564,9 @@ pub fn scrub_speed(held_ms: u32) -> f32 {
     (SCRUB_BASE * (1u32 << doublings) as f32).min(SCRUB_MAX)
 }
 // tap released → commit after this (further taps accumulate into one Load/reload). The TRAILER
-// transport's debounce (`screens::detail::trailer`); the player has none — its keys only move a
-// target that OK confirms (`screens::player`'s `step` doc).
+// transport's debounce (`screens::detail::trailer`); the modern player has none — its keys only
+// move a target that OK confirms. Classic hidden-HUD taps commit immediately; their SeekBurst
+// retains requested travel without delaying the commit.
 pub const TAP_COMMIT_MS: u32 = 450;
 pub const SCRUB_LOST_MS: u32 = 400; // holding but no repeat this long → lost keyup (the trailer commits, the player lets go)
 /// How long a key-up of a HELD scrub waits before it counts as the release. The remote's key
@@ -2051,6 +2063,7 @@ pub fn draw_hud(
                 ControlSlot::Skip(pr) => {
                     crate::skip_pill::draw(row, pc, pr, focus == 1, measure);
                 }
+                ControlSlot::Classic(controls) => controls.draw(row, pc, focus == 1, btn),
                 ControlSlot::Discs => {
                     for i in 0..BTN_N {
                         let pop = row.scale(i);
@@ -2240,6 +2253,7 @@ mod tests {
             let _language = plx_platform::i18n::language_on_this_thread_for_test(language);
             let slots = [
                 ControlSlot::Discs,
+                ControlSlot::Classic(classic_controls::Controls { previous: true, next: true }),
                 slot_for(Some(marker(MarkerKind::Intro, false)), false, NextEpisodeMode::Countdown),
                 slot_for(Some(marker(MarkerKind::Credits, true)), true, NextEpisodeMode::Countdown),
             ];
