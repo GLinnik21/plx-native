@@ -878,6 +878,76 @@ class TeardownProcessTable(unittest.TestCase):
         fake.assert_called_once_with(["ps", "-Ao", "pid,command"], capture_output=True)
 
 
+class CrashGate(unittest.TestCase):
+    """`crash_gate`: a case whose app died keeps `plxnative-stderr.log` (the next launch truncates
+    it) and FAILS, unless the case declares `expect_crash`."""
+
+    SIGLINE = "*** SIGNAL 6 (SIGABRT) addr=0x0 pc=0x76a1b2c4 lr=0x76a1b2c8"
+
+    def _gate(self, case, lines, crash_log, baseline, save=None):
+        files = {run.CRASH_LOG: crash_log, run.STDERR_LOG: "abort: assertion failed\n"}
+        out = tempfile.mkdtemp()
+        cfg = {"tv": "192.0.2.20", "save_logs": save or None}
+        with mock.patch.object(run, "pull_runtime_file", side_effect=lambda tv, n: files[n]), \
+             mock.patch.object(run.tempfile, "gettempdir", return_value=out), \
+             mock.patch.object(run, "_CRASH_BASELINE", baseline), \
+             mock.patch("builtins.print") as shown:
+            res = run.crash_gate(cfg, case, "case_a", lines, True, [("x", True, "ok")])
+        return res, out, shown
+
+    def test_new_crash_record_fails_the_case_and_keeps_stderr(self):
+        (passed, results), out, shown = self._gate({}, ["loop=60"], f"old\n{self.SIGLINE}\n", 0)
+        self.assertFalse(passed)
+        self.assertEqual(results[-1][0], "app_alive")
+        kept = os.path.join(out, "plxnative-crash-evidence", "case_a.stderr.log")
+        with open(kept) as f:
+            self.assertEqual(f.read(), "abort: assertion failed\n")
+        self.assertIn(kept, " ".join(str(c) for c in shown.call_args_list))
+
+    def test_signal_line_in_the_case_log_alone_fails_it(self):
+        (passed, results), _out, _shown = self._gate({}, ["loop=60", self.SIGLINE], "", None)
+        self.assertFalse(passed)
+        self.assertFalse(results[-1][1])
+
+    def test_a_crash_before_the_case_is_not_this_cases(self):
+        (passed, results), out, _shown = self._gate({}, ["loop=60"], f"{self.SIGLINE}\n", 1)
+        self.assertTrue(passed)
+        self.assertEqual(len(results), 1)
+        self.assertFalse(os.path.exists(os.path.join(out, "plxnative-crash-evidence")))
+
+    def test_expect_crash_keeps_evidence_without_failing(self):
+        (passed, results), out, _shown = self._gate(
+            {"expect_crash": True}, ["loop=60"], f"{self.SIGLINE}\n", 0)
+        self.assertTrue(passed)
+        self.assertEqual(len(results), 1)
+        self.assertTrue(os.path.exists(
+            os.path.join(out, "plxnative-crash-evidence", "case_a.crash.log")))
+
+    def test_save_logs_keeps_stderr_even_for_a_clean_case(self):
+        save = tempfile.mkdtemp()
+        (passed, _results), _out, _shown = self._gate({}, ["loop=60"], "", 0, save=save)
+        self.assertTrue(passed)
+        self.assertTrue(os.path.exists(os.path.join(save, "case_a.stderr.log")))
+
+    def test_apply_triggers_records_the_crash_baseline(self):
+        saved = run.RUNDIR
+        run.RUNDIR = "/tmp/com.beb.plxnative.debug"
+        try:
+            done = subprocess.CompletedProcess([], 0, stdout="3\n", stderr="")
+            with mock.patch.object(run, "ssh", return_value=done) as ssh:
+                run.apply_triggers("192.0.2.20", [])
+            self.assertIn("plxnative-crash.log", ssh.call_args.args[1])
+            self.assertEqual(run._CRASH_BASELINE, 3)
+        finally:
+            run.RUNDIR = saved
+            run._CRASH_BASELINE = None
+
+    def test_parse_crash_count(self):
+        self.assertEqual(run.parse_crash_count("0\n"), 0)
+        self.assertEqual(run.parse_crash_count(""), None)
+        self.assertEqual(run.parse_crash_count("noise\n4\n"), 4)
+
+
 class TestUserTokenFile(unittest.TestCase):
     """`test_user.token_file` supplies an already-resolved managed-user token: no plex.tv call."""
 

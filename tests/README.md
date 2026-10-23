@@ -773,6 +773,12 @@ pieces make that reproducible:
 4. `make run TV=<tv> RUN_SECS=<n> FLAVOR=<f>` — relaunch, wait, and cat that install's
    `plxnative-events.log` back.
 5. Filter the `smp_cb type=43 num=0 str=` flood and evaluate the assertions.
+6. `crash_gate` (`run.py`): if the case's log holds a `*** SIGNAL` line, or `plxnative-crash.log`
+   gained a record since step 3 counted it, the case FAILS (`app_alive`) unless it sets
+   `expect_crash: true`, and the set's `plxnative-stderr.log` (the abort message; the next launch
+   truncates it) is copied to `<name>.stderr.log` / `<name>.crash.log` in the `--save-logs`
+   directory, else `$TMPDIR/plxnative-crash-evidence/`, with the path printed. `--save-logs`
+   keeps `<name>.stderr.log` for every case. The FPS tier does not run this gate.
 
 ## The `plxnative-play=<rk>` trigger (added for this harness)
 

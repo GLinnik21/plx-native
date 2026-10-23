@@ -18,6 +18,8 @@ on:
       - "tools/requirements-docs.txt"
       - "pkg/appfont.ttf"
       - "pkg/appfont-bold.ttf"
+      # the hero's "Version X.Y.Z" is stamped from it below, so a release's bump redeploys the site
+      - "pkg/appinfo.json"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
   # nightly.yml calls this after every published nightly, so the site's "latest nightly" pointer
@@ -63,6 +65,19 @@ jobs:
           mkdir -p _site/troubleshooting
 
           cp site/index.html _site/index.html
+          # The hero's version is main's own: pkg/appinfo.json moves only when a stable release's
+          # bump lands, so it is the latest release. Typed by hand, it read 0.8.0 after 0.9.0 shipped.
+          version=$(python3 -c 'import json; print(json.load(open("pkg/appinfo.json"))["version"])')
+          python3 - "$version" <<'PY'
+          import re, sys
+          path = "_site/index.html"
+          html = open(path, encoding="utf-8").read()
+          html, n = re.subn(r"Version \d+\.\d+\.\d+(?=<span)", "Version " + sys.argv[1], html)
+          if n != 1:
+              sys.exit(f"{path}: expected one hero 'Version X.Y.Z', found {n}")
+          open(path, "w", encoding="utf-8").write(html)
+          PY
+          grep -o "Version $version<span" _site/index.html
           cp site/credits.html _site/credits.html
           cp site/styles.css _site/styles.css
           cp site/site.js _site/site.js

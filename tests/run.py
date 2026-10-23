@@ -1284,6 +1284,9 @@ def apply_triggers(tv, files, extra=None):
     parts = [f"mkdir -p {RUNDIR} && chmod 1777 {RUNDIR}"]
     # wipe every trigger, keeping only the append-only logs (events/stderr/crash)
     parts.append(f'for f in {RUNDIR}/plxnative-*; do case "$f" in *.log) ;; *) rm -f "$f";; esac; done')
+    # the crash log is append-only across launches, so "did THIS case crash" is a count of its
+    # records now against the count taken here, before the launch (see crash_gate)
+    parts.append(crash_count_cmd())
     # GST_DEBUG_FILE_OVERWRITE is honoured only once libpf installs its logger. Remove the old
     # trace here as well, before launch, so an app that fails before that point cannot be graded
     # against the previous case's perfectly plausible per-frame log.
@@ -1297,7 +1300,9 @@ def apply_triggers(tv, files, extra=None):
     for cmd in ([extra] if isinstance(extra, str) else (extra or [])):
         if cmd:
             parts.append(cmd)
-    ssh(tv, "; ".join(parts))
+    global _CRASH_BASELINE
+    out = getattr(ssh(tv, "; ".join(parts)), "stdout", None)
+    _CRASH_BASELINE = parse_crash_count(out) if isinstance(out, str) else None
 
 
 # ---------------------------------------------------------------------------
@@ -4968,6 +4973,7 @@ def run_case(case, cfg, token, verbose, cond=None):
 
     # 5. evaluate
     passed, results = evaluate(case, lines)
+    passed, results = crash_gate(cfg, case, name, lines, passed, results)
     report_and_record(cfg, name, passed, results, lines, elapsed, run_secs, stopped_early,
                       settled, verbose)
     return passed, results, lines
@@ -5231,6 +5237,76 @@ def save_logs_file(cfg, filename, text):
     return path
 
 
+# The crash tracer appends a `*** SIGNAL <n> (<name>) ...` record to `plxnative-crash.log` (kept
+# across relaunches; src/main.c, ci/crashtrace-test.c). The abort MESSAGE of a C thread goes to
+# `plxnative-stderr.log` instead, which main.c opens O_TRUNC at EVERY launch: the next case's launch
+# destroys it, and nothing else here saves stderr. `crash_gate` keeps it before that can happen.
+CRASH_MARK = "*** SIGNAL"
+CRASH_LOG = "plxnative-crash.log"
+STDERR_LOG = "plxnative-stderr.log"
+_CRASH_BASELINE = None   # SIGNAL records in the crash log when the case's triggers were armed
+
+
+def crash_count_cmd():
+    """Remote command that prints how many SIGNAL records the crash log holds (nothing if absent)."""
+    return f"grep -c -F '{CRASH_MARK}' {RUNDIR}/{CRASH_LOG} 2>/dev/null || true"
+
+
+def parse_crash_count(out):
+    """The count `crash_count_cmd` printed (last integer line), or None when it printed none."""
+    nums = [ln.strip() for ln in (out or "").splitlines() if ln.strip().isdigit()]
+    return int(nums[-1]) if nums else None
+
+
+def crash_records(text):
+    """The `*** SIGNAL` lines of a crash log or event log."""
+    return [ln for ln in (text or "").splitlines() if CRASH_MARK in ln]
+
+
+def keep_crash_evidence(cfg, name, files):
+    """Write `{suffix: text}` as `<name>.<suffix>` into the --save-logs directory, or (without
+    --save-logs) into a temp directory; returns the paths written."""
+    outdir = cfg.get("save_logs") or os.path.join(tempfile.gettempdir(), "plxnative-crash-evidence")
+    os.makedirs(outdir, exist_ok=True)
+    paths = []
+    for suffix, text in files.items():
+        path = os.path.join(outdir, f"{name}.{suffix}")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        paths.append(path)
+    return paths
+
+
+def crash_gate(cfg, case, name, lines, passed, results):
+    """After a case, before the next launch: did the app die mid-case? Returns (passed, results).
+
+    A death shows as a `*** SIGNAL` line in the case's log or as new SIGNAL records in the crash
+    log since `apply_triggers` counted them. When it died, `plxnative-stderr.log` (the abort message
+    the next launch truncates) and the new crash records are copied off the set and the path is
+    printed; the case FAILS unless it declares `expect_crash`. With --save-logs the stderr log is
+    kept for every case.
+    """
+    tv = cfg["tv"]
+    crash_text = pull_runtime_file(tv, CRASH_LOG)
+    records = crash_records(crash_text)
+    new = 0 if _CRASH_BASELINE is None else max(0, len(records) - _CRASH_BASELINE)
+    in_log = crash_records("\n".join(lines))
+    died = bool(in_log) or new > 0
+    if not died and not cfg.get("save_logs"):
+        return passed, results
+    files = {"stderr.log": pull_runtime_file(tv, STDERR_LOG)}
+    if died:
+        files["crash.log"] = "\n".join(records[-new:] if new else in_log) + "\n"
+    paths = keep_crash_evidence(cfg, name, files)
+    print(f"    {'app died mid-case; ' if died else ''}stderr/crash evidence kept: "
+          + ", ".join(paths))
+    if died and not case.get("expect_crash"):
+        what = (in_log or records[-1:] or ["?"])[0].strip()
+        results = list(results) + [("app_alive", False, f"the app died mid-case: {redact(what)}")]
+        passed = False
+    return passed, results
+
+
 def save_case_log(cfg, name, lines):
     """Persist one case's event log, if --save-logs asked for it.
 
@@ -5343,6 +5419,7 @@ def run_pipeline_case(case, cfg, srv, url_base, verbose):
     # the poll path see the same windows whichever way the case ended.
     case["_dip_windows"] = srv.dip_windows()
     passed, results = evaluate_pipeline(case, lines, delta, gst_lines=gst_lines)
+    passed, results = crash_gate(cfg, case, name, lines, passed, results)
     report_and_record(cfg, name, passed, results, lines, elapsed, run_secs, stopped_early,
                       settled, verbose)
     if delta[0] == 0:

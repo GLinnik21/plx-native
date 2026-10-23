@@ -218,6 +218,17 @@ class NightlyHomebrewRepository(unittest.TestCase):
         self.assertLess(pages.index("docs/nightly-builds.md > _site/nightly/index.html"),
                         pages.index("ci/nightly.py repo-json"))
 
+    def test_the_site_stamps_the_hero_version_from_the_package(self):
+        pages = code("pages.yml")
+        self.assertIn('"pkg/appinfo.json"', pages)
+        self.assertIn('json.load(open("pkg/appinfo.json"))["version"]', pages)
+        # the stamp edits the staged copy, after it is copied, and fails unless it hit exactly one line
+        self.assertLess(pages.index("cp site/index.html _site/index.html"), pages.index('path = "_site/index.html"'))
+        self.assertIn("if n != 1:", pages)
+        # the pattern it rewrites is still the source's hero line
+        hero = re.findall(r"Version \d+\.\d+\.\d+(?=<span)", (ROOT / "site/index.html").read_text())
+        self.assertEqual(len(hero), 1, hero)
+
 
 class HostToolTests(unittest.TestCase):
     def test_ffmpeg_and_ass_tests_run_in_their_own_job_not_behind_the_replay(self):

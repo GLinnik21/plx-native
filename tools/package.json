@@ -3,7 +3,7 @@
   "private": true,
   "description": "Node command-line tools that the Makefile and the workflows run, pinned here so Dependabot can bump them and the lockfile records what ran. Install: npm ci --prefix tools",
   "devDependencies": {
-    "@github/copilot": "1.0.96",
+    "@github/copilot": "1.0.100",
     "@sentry/cli": "3.8.0"
   }
 }
