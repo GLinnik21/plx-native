@@ -44,9 +44,9 @@
     },
     {
       "name": "library",
-      "state": "The Movies library at the top of its page, as it opens: the Continue Watching shelf with focus on its first card (the catalog's hero, captioned with its time left), Recently Added Movies below.",
+      "state": "The Movies library as it opens: the header row over the full poster grid (the Library redesign dropped the shelves from this page; they live on the Recommended page).",
       "triggers": {"library": "0"},
-      "expect": ["coldopen screen=library", "libhubs: section 0 landed 4 shelves"],
+      "expect": ["coldopen screen=library"],
       "outputs": [{"file": "library.jpg", "size": "1600x900"}]
     },
     {
@@ -114,16 +114,16 @@
     },
     {
       "name": "site-glass",
-      "state": "The website's glass close-up, supersampled 3x. The Movies library lists its collections after Recently Added, as a real server does; focus is seated on the third card of the last one (Silent Classics), so the Blender Open Movies shelf above it has scrolled up under the tab bar and fills it edge to edge in the collection's pinned custom order (catalog.json `collection_order`): Wing It! behind Home and Movies, Spring behind TV Shows, Sprite Fright past the search button. Measured as the area under the bar, mean HSV saturation 0.49 and mean chroma 0.16, against 0.16 and 0.04 for Continue Watching under it. Crop in canvas pixels: centred on the bar, which the app centres on the canvas (canvas x 688 to 1233, centre 960): 880 wide, so 168 px of shelf shows either side, at the page's 5.5:1 desktop shape. The phone crop (site-glass-narrow) stays cut from the bar's left end.",
-      "triggers": {"library": "0", "libshelf": "3,2"},
+      "state": "The website's glass close-up, supersampled 3x. The Movies library's Recommended page (libtype=recommended: shelves live there since the Library redesign); focus is seated on the third card of its last shelf (shelf 3), so the shelves above scroll up under the tab bar, which sits over poster art. Crop in canvas pixels: centred on the bar, which the app centres on the canvas (canvas x 688 to 1233, centre 960): 880 wide, so 168 px of shelf shows either side, at the page's 5.5:1 desktop shape. The phone crop (site-glass-narrow) stays cut from the bar's left end.",
+      "triggers": {"library": "0", "libtype": "recommended", "libshelf": "3,2"},
       "render_scale": 3,
       "expect": ["libshelf: focus seated on shelf 3 col 2", "libhubs: section 0 landed 4 shelves"],
       "outputs": [{"file": "closeup-glass.jpg", "dest": "site", "crop": [520, 0, 880, 160]}]
     },
     {
       "name": "site-tiles",
-      "state": "The website's tiles close-up, supersampled 3x. The Movies library with focus on the third card of Recently Added Movies (Sprite Fright, captioned with its year, between Big Buck Bunny and Coffee Run). Crop in canvas pixels: the three shelf cards with the caption under the focused one (matched on the hand cut's card edges to 0-1 px). Resampled to 0.75x: the page shows it at most 698 CSS px wide through the phone crop, which needs 1866 px at DPR 2, not 2540.",
-      "triggers": {"library": "0", "libshelf": "1,2"},
+      "state": "The website's tiles close-up, supersampled 3x. The Movies library's Recommended page with focus on the third card of its second shelf, Recently Added Movies (Sprite Fright, captioned with its year, between Big Buck Bunny and Coffee Run). Crop in canvas pixels: the three shelf cards with the caption under the focused one (matched on the hand cut's card edges to 0-1 px). Resampled to 0.75x: the page shows it at most 698 CSS px wide through the phone crop, which needs 1866 px at DPR 2, not 2540.",
+      "triggers": {"library": "0", "libtype": "recommended", "libshelf": "1,2"},
       "render_scale": 3,
       "expect": ["libshelf: focus seated on shelf 1 col 2", "libhubs: section 0 landed 4 shelves"],
       "outputs": [{"file": "closeup-tiles.jpg", "dest": "site", "crop": [353.333, 220, 846.667, 513.333], "size": "1905x1155"}]
@@ -131,7 +131,7 @@
     {
       "name": "site-glass-narrow",
       "state": "The website's phone crop of the glass close-up: the same state as site-glass, supersampled 4x, cut from 13 canvas px left of the bar's left end (where the hand cut began). 4x because the phone layout shows it up to 698 CSS px wide, 1396 px at DPR 2, which the 3x cut (1120 px) could not fill.",
-      "triggers": {"library": "0", "libshelf": "3,2"},
+      "triggers": {"library": "0", "libtype": "recommended", "libshelf": "3,2"},
       "render_scale": 4,
       "expect": ["libshelf: focus seated on shelf 3 col 2", "libhubs: section 0 landed 4 shelves"],
       "outputs": [{"file": "closeup-glass-narrow.jpg", "dest": "site", "crop": [675, 0, 373.333, 176.667]}]
