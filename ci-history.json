@@ -1,4 +1,4 @@
-{"updated":"2026-10-23T16:56:47Z",
+{"updated":"2026-10-23T17:24:33Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -3380,7 +3380,8 @@
 {"id":39953930119,"at":"2026-10-23T12:31:14Z","sha":"02f59f3e5","title":"release: 0.9.0","pr":952,"conclusion":"failure","attempt":1,"jobs":{"Windows launcher syntax":19,"macOS simulator build + launch":200,"Linux simulator build + launch":224},"failed":["macOS tests against bundled FFmpeg and ASS"]},
 {"id":39979005728,"at":"2026-10-23T15:31:30Z","sha":"caafc598d","title":"Frame probe: price the back-buffer wait at the presented framebuffer's clear","pr":945,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":236,"Linux simulator build + launch":271,"macOS tests against bundled FFmpeg and ASS":187,"Windows launcher syntax":20}},
 {"id":39859872389,"at":"2026-10-23T16:43:35Z","sha":"8ae82baca","title":"Notices: regenerate section 2.4 for the dependency bump","pr":940,"event":"pull_request","conclusion":"success","attempt":2,"jobs":{"Windows launcher syntax":19,"macOS tests against bundled FFmpeg and ASS":186,"macOS simulator build + launch":166,"Linux simulator build + launch":204},"wall":68463},
-{"id":39990030969,"at":"2026-10-23T16:49:57Z","sha":"30233742f","title":"Deps: Bump the rust-minor-patch group in /rust-modules with 2 updates","pr":940,"conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":276,"macOS tests against bundled FFmpeg and ASS":172,"macOS simulator build + launch":234,"Windows launcher syntax":17}}
+{"id":39990030969,"at":"2026-10-23T16:49:57Z","sha":"30233742f","title":"Deps: Bump the rust-minor-patch group in /rust-modules with 2 updates","pr":940,"conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":276,"macOS tests against bundled FFmpeg and ASS":172,"macOS simulator build + launch":234,"Windows launcher syntax":17}},
+{"id":39994153370,"at":"2026-10-23T17:19:46Z","sha":"6288ca364","title":"Home reads Continue Watching beside the hub list, not after it","pr":956,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":21,"Linux simulator build + launch":274,"macOS simulator build + launch":162,"macOS tests against bundled FFmpeg and ASS":98}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
