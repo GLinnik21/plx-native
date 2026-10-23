@@ -1762,18 +1762,39 @@ fn place_heroes(pool: Vec<(Arc<PmsMovie>, String, usize)>, build: &mut HubBuild)
 /// The hub list is read in windows of hubs ([`paging::read_hub_list`]) and each window is projected
 /// as it arrives; `held` names the rows whose cards the source holds now, and the rest are
 /// descriptors from the moment they are parsed (see [`Projection`]).
+///
+/// The Continue Watching deck needs nothing from the hub list, so it is read beside it rather than
+/// after it, on a thread of its own (inline if the system refuses one).
 fn fetch_source(c: &plx_plex::plex::Client, sid: ServerId, held: &[(String, String)]) -> Option<SourceBuild> {
-    let mut build = project_hubs(sid, held, |req| match req {
-        Some(req) => c.home_hubs_page(HUB_FETCH_COUNT, req),
-        None => c.home_hubs(HUB_FETCH_COUNT),
-    })?;
+    let (build, deck) = std::thread::scope(|s| {
+        let deck = std::thread::Builder::new().name("hubs-deck".into()).spawn_scoped(s, || fetch_deck(c, sid));
+        let build = project_hubs(sid, held, |req| match req {
+            Some(req) => c.home_hubs_page(HUB_FETCH_COUNT, req),
+            None => c.home_hubs(HUB_FETCH_COUNT),
+        });
+        let deck = match deck {
+            Ok(h) => h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)),
+            Err(_) => fetch_deck(c, sid),
+        };
+        (build, deck)
+    });
     // The Continue Watching shelf comes from the DEDICATED hub (see `project`). Its failure fails
     // THIS SOURCE (`?`) — nothing of it commits and it retries on its own backoff. Losing the most
     // important shelf to a transient error would be worse than briefly showing the previous one.
-    let cw = c.continue_watching(HUB_FETCH_COUNT)?;
-    project_deck(&mut build, &cw, sid);
-    with_lookahead(&mut build, sid, |start, size| c.continue_watching_page(start as i64, size as i64));
+    let (mut build, deck) = (build?, deck?);
+    build.cw = deck.cw;
+    build.lane = deck.lane;
     Some(build)
+}
+
+/// One source's Continue Watching deck: the dedicated hub and the read-ahead behind its preview,
+/// as a build that holds only the deck. `None` when the hub did not answer.
+fn fetch_deck(c: &plx_plex::plex::Client, sid: ServerId) -> Option<SourceBuild> {
+    let cw = c.continue_watching(HUB_FETCH_COUNT)?;
+    let mut deck = SourceBuild::default();
+    project_deck(&mut deck, &cw, sid);
+    with_lookahead(&mut deck, sid, |start, size| c.continue_watching_page(start as i64, size as i64));
+    Some(deck)
 }
 
 /// The first window is the merge of the servers' previews, which is the deck's order only if no
