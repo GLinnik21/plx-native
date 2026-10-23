@@ -1,6 +1,6 @@
 {
  "flaky": [],
- "generated": "2026-10-23T15:36:36Z",
+ "generated": "2026-10-23T15:40:06Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -25,17 +25,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 34.7,
+   "change7_pct": 33.3,
    "d30": null,
    "delta30": null,
-   "delta7": 52.0,
+   "delta7": 50,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 72,
+   "n_now": 73,
    "n_prev": 105,
-   "now": 202.0,
+   "now": 200,
    "prev7": 150,
    "shown": true,
    "state": "worse",
@@ -87,18 +87,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -52.4,
-   "change7_pct": -23.1,
+   "change30_pct": -52.2,
+   "change7_pct": -22.7,
    "d30": 687,
-   "delta30": -360,
-   "delta7": -98.0,
+   "delta30": -358.5,
+   "delta7": -96.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 71,
+   "n_now": 72,
    "n_prev": 128,
-   "now": 327,
+   "now": 328.5,
    "prev7": 425.0,
    "shown": true,
    "state": "better",
@@ -247,17 +247,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -21.0,
+   "change7_pct": -20.8,
    "d30": null,
    "delta30": null,
-   "delta7": -85.0,
+   "delta7": -84,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 72,
+   "n_now": 73,
    "n_prev": 105,
-   "now": 319.0,
+   "now": 320,
    "prev7": 404,
    "shown": true,
    "state": "better",
@@ -276,9 +276,9 @@
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 72,
+   "n_now": 73,
    "n_prev": 8,
-   "now": 314.0,
+   "now": 314,
    "prev7": 335.5,
    "shown": true,
    "state": "flat",
@@ -310,17 +310,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -36.3,
+   "change7_pct": -36.4,
    "d30": null,
    "delta30": null,
-   "delta7": -147,
+   "delta7": -147.5,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 71,
+   "n_now": 72,
    "n_prev": 105,
-   "now": 258,
+   "now": 257.5,
    "prev7": 405,
    "shown": true,
    "state": "better",
@@ -355,14 +355,14 @@
    "change7_pct": 19.9,
    "d30": null,
    "delta30": null,
-   "delta7": 30.0,
+   "delta7": 30,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 72,
+   "n_now": 73,
    "n_prev": 105,
-   "now": 181.0,
+   "now": 181,
    "prev7": 151,
    "shown": true,
    "state": "flat",
@@ -373,17 +373,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -14.2,
+   "change7_pct": -13.9,
    "d30": null,
    "delta30": null,
-   "delta7": -26.5,
+   "delta7": -26,
    "group": "ci",
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 72,
+   "n_now": 73,
    "n_prev": 105,
-   "now": 160.5,
+   "now": 161,
    "prev7": 187,
    "shown": true,
    "state": "flat",
@@ -530,9 +530,9 @@
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 72,
+   "n_now": 73,
    "n_prev": 8,
-   "now": 5.0,
+   "now": 5,
    "prev7": 5.0,
    "shown": false,
    "state": "flat",
@@ -545,15 +545,15 @@
    "change30_pct": -98.7,
    "change7_pct": -99.1,
    "d30": 236,
-   "delta30": -233,
-   "delta7": -318,
+   "delta30": -233.0,
+   "delta7": -318.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 71,
+   "n_now": 72,
    "n_prev": 105,
-   "now": 3,
+   "now": 3.0,
    "prev7": 321,
    "shown": false,
    "state": "better",
@@ -566,15 +566,15 @@
    "change30_pct": -99.6,
    "change7_pct": 0.0,
    "d30": 693,
-   "delta30": -690,
-   "delta7": 0,
+   "delta30": -690.0,
+   "delta7": 0.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 71,
+   "n_now": 72,
    "n_prev": 105,
-   "now": 3,
+   "now": 3.0,
    "prev7": 3,
    "shown": false,
    "state": "flat",
@@ -610,11 +610,6 @@
    "change_pct": 35.8,
    "commits": [
     {
-     "pr": 930,
-     "sha": "33f29b775",
-     "title": "Crash reports: Sentry release-health sessions (crash-free sessions per release)"
-    },
-    {
      "pr": 932,
      "sha": "8f3d3a0f2",
      "title": "Crash reports: detect and report main-thread freezes"
@@ -658,6 +653,11 @@
      "pr": 945,
      "sha": "caafc598d",
      "title": "Frame probe: price the back-buffer wait at the presented framebuffer's clear"
+    },
+    {
+     "pr": 939,
+     "sha": "be1659788",
+     "title": "Tools: Bump @github/copilot in /tools in the node-tools group"
     }
    ],
    "from": 46.0,
@@ -668,13 +668,8 @@
    "to": 62.5
   },
   {
-   "change_pct": 34.7,
+   "change_pct": 33.3,
    "commits": [
-    {
-     "pr": 930,
-     "sha": "33f29b775",
-     "title": "Crash reports: Sentry release-health sessions (crash-free sessions per release)"
-    },
     {
      "pr": 932,
      "sha": "8f3d3a0f2",
@@ -719,6 +714,11 @@
      "pr": 945,
      "sha": "caafc598d",
      "title": "Frame probe: price the back-buffer wait at the presented framebuffer's clear"
+    },
+    {
+     "pr": 939,
+     "sha": "be1659788",
+     "title": "Tools: Bump @github/copilot in /tools in the node-tools group"
     }
    ],
    "from": 150,
@@ -726,16 +726,11 @@
    "label": "CI: host python/shell/C gates",
    "since": "2026-10-23",
    "threshold_pct": 20.0,
-   "to": 202.0
+   "to": 200
   },
   {
    "change_pct": 27.1,
    "commits": [
-    {
-     "pr": 930,
-     "sha": "33f29b775",
-     "title": "Crash reports: Sentry release-health sessions (crash-free sessions per release)"
-    },
     {
      "pr": 932,
      "sha": "8f3d3a0f2",
@@ -780,6 +775,11 @@
      "pr": 945,
      "sha": "caafc598d",
      "title": "Frame probe: price the back-buffer wait at the presented framebuffer's clear"
+    },
+    {
+     "pr": 939,
+     "sha": "be1659788",
+     "title": "Tools: Bump @github/copilot in /tools in the node-tools group"
     }
    ],
    "from": 114.7,
@@ -802,13 +802,13 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 319.0
+   "now": 320
   },
   {
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 314.0
+   "now": 314
   },
   {
    "group": "ci",
@@ -820,7 +820,7 @@
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 258
+   "now": 257.5
   }
  ],
  "slowest_local": [
