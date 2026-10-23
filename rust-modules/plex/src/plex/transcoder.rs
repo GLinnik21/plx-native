@@ -29,10 +29,12 @@ pub fn is_dp_audio(codec: &str) -> bool {
     plx_platform::devcaps::caps().audio_has(codec)
 }
 
-/// Codec and channel check for an actual selected track. Codec-only membership is insufficient
-/// on devices whose DTS decoder stops at 5.1 or whose AAC decoder stops at stereo.
-pub fn is_dp_audio_track(codec: &str, channels: i64) -> bool {
+/// Codec, channel and (for app-decoded PCM) rate check for an actual selected track. Codec-only
+/// membership is insufficient on devices whose DTS decoder stops at 5.1 or whose AAC decoder
+/// stops at stereo, and on the PCM path, which plays only some rates at their own speed.
+pub fn is_dp_audio_track(codec: &str, channels: i64, sample_rate: i64) -> bool {
     plx_platform::devcaps::caps().audio_supports(codec, channels)
+        && plx_platform::devcaps::pcm_track_fits(codec, channels, sample_rate)
 }
 
 /// Subtitle codecs Original client-renders (`ff.rs` / the track menu). This is the
@@ -286,6 +288,18 @@ fn profile_for_delivery(caps: &plx_platform::devcaps::Caps, delivery: TranscodeD
             "+add-limitation(scope=videoAudioCodec&scopeName={codec}&type=upperBound&name=audio.channels&value={channels}&replace=true)"
         ))
         .collect::<String>();
+    // The PCM path plays only some rates at their own speed (`devcaps::PCM_SAMPLE_RATES`, 48 kHz
+    // at most): above that PMS converts, as it does for a FLAC wider than stereo. A rate under
+    // 48 kHz that is not in the table is refused by the planner instead.
+    let pcm_ceiling = plx_platform::devcaps::PCM_SAMPLE_RATES.iter().max().copied().unwrap_or(0);
+    let audio_limits = audio_limits
+        + &plx_platform::devcaps::PCM_AUDIO_CODECS
+            .split(',')
+            .filter(|c| caps.audio_has(c))
+            .map(|codec| format!(
+                "+add-limitation(scope=videoAudioCodec&scopeName={codec}&type=upperBound&name=audio.samplingRate&value={pcm_ceiling}&replace=true)"
+            ))
+            .collect::<String>();
     let target = match delivery {
         TranscodeDelivery::ProgressiveMkv => format!(
             "add-transcode-target(type=videoProfile&context=streaming&protocol=http\
@@ -1314,6 +1328,8 @@ mod tests {
         let profile = super::profile_for(&caps);
         assert!(list_of(&profile, "audioCodec=").contains(&"flac".into()), "{profile}");
         assert!(profile.contains("scope=videoAudioCodec&scopeName=flac&type=upperBound&name=audio.channels&value=2&replace=true"), "{profile}");
+        // and at the PCM input's highest rate: a 96 kHz FLAC is converted, not played slow
+        assert!(profile.contains("scope=videoAudioCodec&scopeName=flac&type=upperBound&name=audio.samplingRate&value=48000&replace=true"), "{profile}");
         assert!(!list_of(target_of(&profile), "audioCodec=").contains(&"flac".into()));
         assert!(list_of(&super::forced_direct_profile_for(&caps), "audioCodec=").contains(&"flac".into()));
         let assumed = plx_platform::devcaps::Caps::assumed();

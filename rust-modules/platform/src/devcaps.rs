@@ -70,6 +70,29 @@ pub const PCM_AUDIO_CODECS: &str = "flac";
 /// `dual`), nothing wider, so a multichannel FLAC stays a server conversion.
 pub const PCM_MAX_CHANNELS: u32 = 2;
 
+/// The rates the PCM path plays at their own speed: libpf's `LUT_SampleRateType` (8, 12, 16,
+/// 22.05, 24, 32 and 48 kHz) plus 44.1 kHz, which the table does not list but plays correctly.
+/// Any other `pcmInfo.sampleRate` plays slow and without an error: a 96 kHz FLAC audibly slow, a
+/// 192 kHz one slower still (measured on webOS 4.4.3, an OLED55B8, where 44.1 and 48 kHz played
+/// right). The table was read from libpf-1.0 on that set.
+pub const PCM_SAMPLE_RATES: [u32; 8] = [8_000, 12_000, 16_000, 22_050, 24_000, 32_000, 44_100, 48_000];
+
+/// Whether `codec` is one the app decodes itself and feeds as PCM ([`PCM_AUDIO_CODECS`]).
+pub fn is_pcm_codec(codec: &str) -> bool {
+    let id = audio_codec_id(codec);
+    PCM_AUDIO_CODECS.split(',').any(|c| c == id)
+}
+
+/// The PCM path's own limits for one track: one or two channels, at a rate the pipeline plays at
+/// its own speed. A codec that is not app-decoded passes; an unstated count or rate does not.
+/// These are limits of the PCM input, not of a hardware decoder, so Force Direct Play applies
+/// them as well.
+pub fn pcm_track_fits(codec: &str, channels: i64, sample_rate: i64) -> bool {
+    !is_pcm_codec(codec)
+        || ((1..=i64::from(PCM_MAX_CHANNELS)).contains(&channels)
+            && PCM_SAMPLE_RATES.iter().any(|&r| i64::from(r) == sample_rate))
+}
+
 const CAPS_TABLE: &str = "/etc/umediaserver/device_codec_capability_config.json";
 
 /// The decode-capability snapshot the playback stack derives from. `OnceLock` for the same
@@ -165,7 +188,7 @@ impl Caps {
             return false;
         }
         // DTS and the PCM path both need a stated channel count: an unknown one is not admitted.
-        let needs_count = id == "dts" || PCM_AUDIO_CODECS.split(',').any(|c| c == id);
+        let needs_count = id == "dts" || is_pcm_codec(&id);
         match self.audio_channels.get(id.as_ref()) {
             Some(&limit) => (channels > 0 || !needs_count) && channels <= i64::from(limit),
             None => !needs_count,
@@ -180,8 +203,9 @@ impl Caps {
         if id == "dts" {
             return self.forced_admits_dts();
         }
-        if PCM_AUDIO_CODECS.split(',').any(|c| c == id) {
-            // Decoded in the app, so only "is the PCM path on" — i.e. was the table read.
+        if is_pcm_codec(&id) {
+            // Decoded in the app, so only "is the PCM path on" — i.e. was the table read. The
+            // track's own limits are [`pcm_track_fits`], which the planner applies in both modes.
             return self.audio_has(&id);
         }
         DP_AUDIO_CODECS.split(',').any(|c| c == id)
@@ -663,6 +687,25 @@ mod tests {
             assert!(Caps::assumed().forced_feeds_audio(c), "{c}");
         }
         assert!(!Caps::assumed().forced_feeds_audio("truehd"));
+    }
+
+    /// The PCM input plays only the rates in libpf's table (plus 44.1 kHz) at their own speed: a
+    /// 96 kHz or 192 kHz FLAC played audibly slow on the B8, with no error anywhere. The
+    /// track gate refuses those, and an unstated rate or channel count, for app-decoded codecs
+    /// only.
+    #[test]
+    fn the_pcm_path_admits_only_the_rates_and_channels_it_plays_correctly() {
+        for rate in [8_000, 22_050, 44_100, 48_000] {
+            assert!(pcm_track_fits("flac", 2, rate), "{rate}");
+        }
+        assert!(pcm_track_fits("FLAC", 1, 48_000));
+        for rate in [0, 11_025, 88_200, 96_000, 176_400, 192_000] {
+            assert!(!pcm_track_fits("flac", 2, rate), "{rate} plays at the wrong speed or is unknown");
+        }
+        assert!(!pcm_track_fits("flac", 6, 48_000));
+        assert!(!pcm_track_fits("flac", 0, 48_000));
+        // not app-decoded: the hardware decoder's own rules apply, not these
+        assert!(pcm_track_fits("ac3", 6, 0) && pcm_track_fits("dca", 8, 96_000));
     }
 
     /// FLAC is decoded in the app and fed as PCM: it needs no table row, but it does need a

@@ -5475,9 +5475,13 @@ pub(crate) fn pcm_format_of(audio: Option<&CarriedAudio>, codec: &str) -> Result
     if !(1..=max).contains(&a.channels) {
         return Err(format!("{codec}: {} channels (the PCM path carries 1..={max})", a.channels));
     }
-    let sample_rate = u32::try_from(a.sample_rate).ok().filter(|r| (8_000..=192_000).contains(r));
+    let rates = &plx_platform::devcaps::PCM_SAMPLE_RATES;
+    let sample_rate = u32::try_from(a.sample_rate).ok().filter(|r| rates.contains(r));
     let Some(sample_rate) = sample_rate else {
-        return Err(format!("{codec}: sampling rate {} not stated or out of range", a.sample_rate));
+        return Err(format!(
+            "{codec}: sampling rate {} is not one the PCM input plays at its own speed",
+            a.sample_rate
+        ));
     };
     let bits = if (1..=16).contains(&a.bit_depth) { 16 } else { 32 };
     Ok(PcmFormat { sample_rate, bits, channels: a.channels as u32 })
@@ -5501,7 +5505,7 @@ mod pcm_format_tests {
         assert_eq!(pcm_format_of(Some(&flac(1, 44_100, 24)), "flac"),
             Ok(PcmFormat { sample_rate: 44_100, bits: 32, channels: 1 }));
         // an unstated depth is fed wide: never truncate a sample nobody measured
-        assert_eq!(pcm_format_of(Some(&flac(2, 96_000, 0)), "flac").unwrap().bits, 32);
+        assert_eq!(pcm_format_of(Some(&flac(2, 48_000, 0)), "flac").unwrap().bits, 32);
     }
 
     #[test]
@@ -5510,6 +5514,9 @@ mod pcm_format_tests {
         assert!(pcm_format_of(Some(&flac(6, 48_000, 16)), "flac").is_err());
         assert!(pcm_format_of(Some(&flac(0, 48_000, 16)), "flac").is_err());
         assert!(pcm_format_of(Some(&flac(2, 0, 16)), "flac").is_err());
+        // libpf plays these slow, with no error: refused, never declared
+        assert!(pcm_format_of(Some(&flac(2, 96_000, 24)), "flac").is_err());
+        assert!(pcm_format_of(Some(&flac(2, 192_000, 24)), "flac").is_err());
         let mut other = flac(2, 48_000, 16);
         other.codec = "ac3".into();
         assert!(pcm_format_of(Some(&other), "flac").is_err());
@@ -6745,8 +6752,8 @@ pub fn forced_direct_play(ps: &PlaybackSession) -> bool {
     ps.direct_play_mode == DirectPlayMode::Forced
 }
 
-pub fn audio_track_direct_plays(ps: &PlaybackSession, codec: &str, channels: i64) -> bool {
-    audio_direct_plays(ps.direct_play_mode, codec, channels)
+pub fn audio_track_direct_plays(ps: &PlaybackSession, codec: &str, channels: i64, sample_rate: i64) -> bool {
+    audio_direct_plays(ps.direct_play_mode, codec, channels, sample_rate)
 }
 
 /// **Would the server convert this track's audio if it played?** The track menu's "converted by
@@ -6757,9 +6764,9 @@ pub fn audio_track_direct_plays(ps: &PlaybackSession, codec: &str, channels: i64
 /// [`playback_preview`]: the menu's track form is built from the metadata view alone (it keeps no
 /// session), so it cannot read the `direct_play_mode` the session captured and
 /// `commit_audio_selection` uses; the two agree unless the setting changes mid-playback.
-pub fn audio_converted_by_server(codec: &str, channels: i64) -> bool {
+pub fn audio_converted_by_server(codec: &str, channels: i64, sample_rate: i64) -> bool {
     let mode = direct_play_mode();
-    mode != DirectPlayMode::Forced && !audio_direct_plays(mode, codec, channels)
+    mode != DirectPlayMode::Forced && !audio_direct_plays(mode, codec, channels, sample_rate)
 }
 
 /// Select a rung. MAIN THREAD (it writes the session).
@@ -7580,7 +7587,7 @@ fn playback_preview_with_capability(
     if mode == DirectPlayMode::Forced {
         return (!part.is_empty() && part_is_streamable(part)
             && video_feed_supported(vcodec, presentation, plx_platform::devcaps::caps())
-            && d.audio.iter().any(|a| audio_direct_plays(mode, &a.codec, a.channels)))
+            && d.audio.iter().any(|a| audio_direct_plays(mode, &a.codec, a.channels, a.sampling_rate)))
             .then_some(Preview::DirectPlay);
     }
     let p = playback_preview_with_audio(
@@ -9026,7 +9033,7 @@ fn remux_output_acodec(
     enhanced: bool, carried: Option<&CarriedAudio>, src_acodec: &str,
 ) -> String {
     let carried = carried.filter(|a| !a.codec.is_empty());
-    if enhanced || carried.is_some_and(|a| !plx_plex::plex::is_dp_audio_track(&a.codec, a.channels)) {
+    if enhanced || carried.is_some_and(|a| !plx_plex::plex::is_dp_audio_track(&a.codec, a.channels, a.sample_rate)) {
         "ac3".to_owned()
     } else {
         carried.map_or_else(|| src_acodec.to_owned(), |a| a.codec.clone())
@@ -9749,7 +9756,7 @@ pub enum LegacyAction {
 
 pub fn legacy_action(ps: &PlaybackSession) -> LegacyAction {
     match (live_family(ps), ps.cur_audio.as_ref()) {
-        (RouteFamily::Direct, Some(a)) if audio_track_direct_plays(ps, &a.codec, a.channels) => {
+        (RouteFamily::Direct, Some(a)) if audio_track_direct_plays(ps, &a.codec, a.channels, a.sample_rate) => {
             LegacyAction::Native {
                 ordinal: a.ordinal,
                 codec: a.codec.clone(),
@@ -10463,7 +10470,7 @@ pub fn commit_audio_selection(ps: &mut PlaybackSession, audio: CarriedAudio) -> 
 
 /// The route half of [`commit_audio_selection`]: which way the pick reloads, and what it displaces.
 fn commit_audio_route(ps: &mut PlaybackSession, audio: CarriedAudio) -> bool {
-    if forced_direct_play(ps) && !audio_track_direct_plays(ps, &audio.codec, audio.channels) {
+    if forced_direct_play(ps) && !audio_track_direct_plays(ps, &audio.codec, audio.channels, audio.sample_rate) {
         let friendly = plx_data::metadata::friendly_codec(&audio.codec);
         crate::player::log(&format!(
             "playback_policy: Force Direct Play refused audio codec {} ({friendly})", audio.codec
@@ -10492,7 +10499,7 @@ fn commit_audio_route(ps: &mut PlaybackSession, audio: CarriedAudio) -> bool {
     // A standing Burn is wire-shaped `Other`, but it is an Original-family route: the pick must
     // retarget the candidate the release returns to, exactly as on a remux.
     let family = enhancement_family(ps);
-    let direct_plays = audio_track_direct_plays(ps, &audio.codec, audio.channels);
+    let direct_plays = audio_track_direct_plays(ps, &audio.codec, audio.channels, audio.sample_rate);
     match family {
         // The recovery declaration captures one exact source/audio pairing. Once the user changes
         // that pairing while HLS is live, do not later resurrect the old track behind their back.

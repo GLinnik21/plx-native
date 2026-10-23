@@ -104,10 +104,10 @@ fn force_retains_feed_limits_and_session_snapshot_across_retry_and_track_edits()
     assert!(forced_direct_play(&ps));
     assert_eq!(current_retry_context(&ps, 123).direct_play_mode, DirectPlayMode::Forced);
     assert!(forced_direct_play(&ps.publication()));
-    assert!(audio_track_direct_plays(&ps, "eac3", 8), "Force bypasses device channels");
-    assert!(!audio_track_direct_plays(&ps, "dca", 6), "Force admits DTS only with a table DTS row (assumed caps have none)");
-    assert!(!audio_track_direct_plays(&ps, "truehd", 8));
-    assert!(!audio_track_direct_plays(&ps, "", 0));
+    assert!(audio_track_direct_plays(&ps, "eac3", 8, 0), "Force bypasses device channels");
+    assert!(!audio_track_direct_plays(&ps, "dca", 6, 0), "Force admits DTS only with a table DTS row (assumed caps have none)");
+    assert!(!audio_track_direct_plays(&ps, "truehd", 8, 0));
+    assert!(!audio_track_direct_plays(&ps, "", 0, 0));
     assert!(!video_feed_supported("vp9", plx_data::metadata::DvPresentation::NotDv, &plx_platform::devcaps::Caps::assumed()));
     let blocked_dv = plx_data::metadata::Dovi { present: true, profile: 5, bl_compat: 0, ..plx_data::metadata::Dovi::NONE }
         .presentation(false, plx_platform::devcaps::dv::DvCapability::Unsupported, true);
