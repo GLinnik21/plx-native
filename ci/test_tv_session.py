@@ -700,6 +700,104 @@ class SoundSubcommand(unittest.TestCase):
             self.assertIn("usage: tv-session.sh sound off|on|status", result.stdout)
 
 
+class ScreenSubcommand(unittest.TestCase):
+    """Host regression for `tv-session.sh screen off|on`.
+
+    `tv()` is stubbed to print a canned `power/turnOnScreen` / `turnOffScreen` reply EXACTLY as
+    `script -qc luna-send` prints it on the set: pretty-printed over several lines with CRLF line
+    ends, which cmd_screen collapses before matching. The -102 reply below is the verbatim reply
+    the television gave to `screen on` on an already-lit panel (2026-10-24), reflowed to the
+    multi-line shape; the -101 and success replies are the same shape with their own fields.
+    """
+
+    ON_WHILE_LIT = (
+        '{\n'
+        '    "state": "Active",\n'
+        '    "errorCode": "-102",\n'
+        '    "returnValue": false,\n'
+        '    "errorText": "The current state must be \'Screen Off\'"\n'
+        '}'
+    )
+    ON_WHILE_STANDBY = ON_WHILE_LIT.replace('"Active"', '"Active Standby"')
+    OFF_WHILE_DARK = (
+        '{\n'
+        '    "state": "Screen Off",\n'
+        '    "errorCode": "-101",\n'
+        '    "returnValue": false,\n'
+        '    "errorText": "The current state must be \'Active\'"\n'
+        '}'
+    )
+    OFF_WHILE_LIT_REFUSED = ON_WHILE_LIT  # -102 asked of `off`: the mirror reading must not apply
+    ACCEPTED = '{\n    "state": "%s",\n    "returnValue": true\n}'
+
+    def _run(self, want, reply):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "tools").mkdir()
+            script_link = root / "tools" / "tv-session.sh"
+            script_link.symlink_to(SCRIPT)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            SoundSubcommand._fake_make(bin_dir)
+            canned = root / "reply"
+            canned.write_bytes(reply.replace("\n", "\r\n").encode("utf-8") + b"\r\n")
+
+            harness = textwrap.dedent(
+                f"""\
+                source "$1" selftest
+                require_lock() {{ return 0; }}
+                ensure_awake() {{ return 0; }}
+                tv() {{ cat "{canned}"; }}
+                cmd_screen {want}
+                echo "RC:$?"
+                """
+            )
+            environment = os.environ.copy()
+            environment["PATH"] = f"{bin_dir}:{environment['PATH']}"
+            result = subprocess.run(
+                ["bash", "-c", harness, "screen-subcommand", str(script_link)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=environment,
+                check=False,
+                timeout=10,
+            )
+            return result.stdout
+
+    def test_on_accepted_reports_the_new_state(self):
+        out = self._run("on", self.ACCEPTED % "Active")
+        self.assertIn("RC:0", out)
+        self.assertIn("panel on (Active)", out)
+
+    def test_on_while_the_panel_is_already_lit_is_a_no_op_success(self):
+        # `tests/run.py --fps --mock` asks for `screen on` by default and refused to run at all
+        # when the panel was lit, because -102 was read as a refusal.
+        out = self._run("on", self.ON_WHILE_LIT)
+        self.assertIn("RC:0", out)
+        self.assertIn("panel already on", out)
+        self.assertNotIn("refused", out)
+
+    def test_on_while_the_set_is_not_lit_is_still_a_refusal(self):
+        # -102 alone is not "already lit": with any state but Active the panel did not come on.
+        out = self._run("on", self.ON_WHILE_STANDBY)
+        self.assertIn("RC:1", out)
+        self.assertIn("screen on refused", out)
+        self.assertNotIn("panel already", out)
+
+    def test_off_while_the_panel_is_already_dark_is_a_no_op_success(self):
+        out = self._run("off", self.OFF_WHILE_DARK)
+        self.assertIn("RC:0", out)
+        self.assertIn("panel already off", out)
+
+    def test_off_refused_with_102_is_still_a_refusal(self):
+        # -102 means "already lit" only for `on`; asked of `off` it is a refusal to report.
+        out = self._run("off", self.OFF_WHILE_LIT_REFUSED)
+        self.assertIn("RC:1", out)
+        self.assertIn("screen off refused", out)
+        self.assertNotIn("panel already", out)
+
+
 class LifecycleSubcommand(unittest.TestCase):
     """`background` / `foreground`: launch a full-screen app, then ours, and ASSERT each took.
 

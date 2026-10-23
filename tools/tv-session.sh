@@ -1231,6 +1231,12 @@ cmd_screen() {
     # the set is already in is a no-op, not a failure -- and reporting it as one makes every script
     # that re-asserts screen-off after a relaunch look broken.
     ok "panel already $want"
+  elif [ "$want" = on ] && printf '%s' "$flat" | grep -q '"errorCode": *"-102"' \
+    && printf '%s' "$flat" | grep -q '"state": *"Active"'; then
+    # The mirror: -102 "The current state must be 'Screen Off'" with state Active means the panel is
+    # ALREADY lit (`tests/run.py --fps` asks for `screen on` by default and would refuse to run on a
+    # lit set). Any other state -- "Active Standby" -- is a set that is NOT lit, so it stays a refusal.
+    ok "panel already on"
   else
     bad "screen $want refused: $flat"; return 1
   fi
