@@ -76,6 +76,8 @@
   "browse.menu.go_season": "Перайсці да сезона",
   "browse.menu.go_movie": "Перайсці да фільма",
   "browse.menu.remove_deck": "Прыбраць з працягу прагляду",
+  "browse.menu.play_version": "Прайграць версію…",
+  "browse.menu.play_version_title": "Прайграць версію",
   "browse.login.deleted": "Лакальныя даныя выдалены",
   "browse.login.deleted_detail": "Даныя ўваходу, налады, тэлеметрыя і лакальная дыягностыка выдалены.",
   "browse.login.partial": "Вы выйшлі з уліковага запісу, большасць лакальных даных выдалена",

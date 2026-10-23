@@ -624,11 +624,19 @@ impl<R: super::playback::PlaybackResources> LiveItemPlayback<'_, R> {
         ps: &mut plx_media::route::PlaybackSession,
         pa: &mut plx_media::player::adapter::PlayerAdapter,
         rk: &str,
+        version: Option<plx_plex::plex::MediaId>,
         pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
         bridge: &mut super::bridge::Bridge,
     ) {
-        if self.0.request_episode(ps, bridge.metadata_mut(), rk) {
-            super::playback::start_playback_with(ps, pa, 0, Origin::Here, HUD_LINGER_MS,
+        // Play from Start restarts; a picked version resumes, as Play does.
+        let resume_ns = match version {
+            None => 0,
+            Some(_) => bridge.metadata_view().current()
+                .and_then(|d| d.episodes.position(rk).and_then(|i| d.episodes.get(i)))
+                .map_or(0, |ep| plx_data::metadata::resume_ns(ep.resume_ms, ep.dur_ms)),
+        };
+        if self.0.request_episode(ps, bridge.metadata_mut(), rk, version) {
+            super::playback::start_playback_with(ps, pa, resume_ns, Origin::Here, HUD_LINGER_MS,
                 None, pages, bridge, self.0);
         }
     }
@@ -639,10 +647,11 @@ impl<R: super::playback::PlaybackResources> LiveItemPlayback<'_, R> {
         pa: &mut plx_media::player::adapter::PlayerAdapter,
         item: &plx_data::pms::PmsMovie,
         from_start: bool,
+        version: Option<plx_plex::plex::MediaId>,
         pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
         bridge: &mut super::bridge::Bridge,
     ) {
-        super::playback::play_item_now_with(ps, pa, item, from_start, Origin::Here, HUD_LINGER_MS,
+        super::playback::play_item_now_with(ps, pa, item, from_start, version, Origin::Here, HUD_LINGER_MS,
             None, pages, bridge, self.0);
     }
 }
@@ -801,7 +810,7 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
         Action::Play(rk) => {
             if let Some(mm) = item.as_ref().filter(|m| m.rk == rk) {
                 if matches!(mm.kind, 0 | 3) {
-                    playback.captured_card(ps, pa, mm, false, pages, bridge);
+                    playback.captured_card(ps, pa, mm, false, None, pages, bridge);
                 } else {
                     activate_card(ps, pa, mm, true, HUD_LINGER_MS, None, pages, bridge,
                         menu_play_await, now);
@@ -817,7 +826,7 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             // lookup would miss and the press would do nothing — it takes the card-row arm below,
             // which plays the row the menu captured.
             if loaded_episode {
-                playback.loaded_episode(ps, pa, &rk, pages, bridge);
+                playback.loaded_episode(ps, pa, &rk, None, pages, bridge);
                 return;
             }
             // **The row the menu was opened ON, not a re-resolve by key.** This used to walk the
@@ -833,7 +842,18 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             // own key, so playing a row that does not carry it would be this dispatch disagreeing
             // with itself.
             if let Some(mm) = item.as_ref().filter(|m| m.rk == rk) {
-                playback.captured_card(ps, pa, mm, true, pages, bridge);
+                playback.captured_card(ps, pa, mm, true, None, pages, bridge);
+            }
+        }
+        // The menu turns itself into the version list; this never arrives (`ItemMenuScreen::activate`).
+        Action::ChooseVersion(_) => {}
+        // A picked version plays like Play: the filmstrip's leaf through the loaded season, a card
+        // through the row the menu captured, resuming where it left off.
+        Action::PlayVersion { rk, media } => {
+            if loaded_episode {
+                playback.loaded_episode(ps, pa, &rk, Some(media), pages, bridge);
+            } else if let Some(mm) = item.as_ref().filter(|m| m.rk == rk) {
+                playback.captured_card(ps, pa, mm, false, Some(media), pages, bridge);
             }
         }
         Action::PlayTrailer {

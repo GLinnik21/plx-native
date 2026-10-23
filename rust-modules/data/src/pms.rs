@@ -168,9 +168,63 @@ pub struct PmsMovie {
     /// `addedAt`, seconds since the epoch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub added_at: Option<i64>,
+    /// Every version of a leaf that has more than one (`Media[]`, in the server's order), for the
+    /// item menu's Play Version row; empty for a single-version item.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub versions: Vec<MediaVersion>,
 }
 
 fn is_false(b: &bool) -> bool { !*b }
+
+/// **One version of an item, as the version picker describes it**: the facts a listing carries
+/// for each `Media[]` entry, keyed by the identity a play is asked for by
+/// ([`plx_plex::plex::MediaId`], never a position).
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MediaVersion {
+    pub id: plx_plex::plex::MediaId,
+    /// Whole-file bitrate, kbps.
+    pub kbps: i64,
+    /// PMS's resolution class (`4k`, `1080`), with the frame size as its fallback.
+    pub resolution: String,
+    pub width: i64,
+    pub height: i64,
+    pub vcodec: String,
+    pub acodec: String,
+    pub channels: i64,
+    pub container: String,
+    /// The first part's size in bytes, 0 when unsent.
+    pub size: i64,
+    /// A video stream is HDR or Dolby Vision. Only a response that carries streams can say so (a
+    /// listing usually does not), so `false` is "not known to be".
+    pub hdr: bool,
+}
+
+/// The versions worth a picker: every `Media[]` entry with an id when there are at least two,
+/// else none.
+pub fn versions_of(it: &plx_plex::plex::Metadata) -> Vec<MediaVersion> {
+    if it.media.len() < 2 || it.media.iter().any(|m| m.id.0 == 0) {
+        return Vec::new();
+    }
+    it.media
+        .iter()
+        .map(|m| {
+            let part = m.part.first();
+            MediaVersion {
+                id: m.id,
+                kbps: m.bitrate,
+                resolution: clean(&m.video_resolution),
+                width: m.width,
+                height: m.height,
+                vcodec: clean(&m.video_codec),
+                acodec: clean(&m.audio_codec),
+                channels: m.audio_channels,
+                container: clean(part.map_or(&m.container, |p| if p.container.is_empty() { &m.container } else { &p.container })),
+                size: part.map_or(0, |p| p.size),
+                hdr: part.is_some_and(|p| p.stream.iter().any(|s| s.stream_type == 1 && s.is_hdr())),
+            }
+        })
+        .collect()
+}
 
 impl PmsMovie {
     /// **The Watchlist title this row stands for**, as `(kind, catalog id, from_episode)`: a movie or
@@ -525,13 +579,16 @@ pub fn parse_item(it: &plx_plex::plex::Metadata, sid: ServerId) -> PmsMovie {
     m.art = clean(&it.art);
     m.summary = clean(&it.summary);
     m.rk = clean(&it.rating_key);
-    // Media[0]: codecs + Part[0].key (movies/episodes; a show container has none)
-    if let Some(md) = it.media.first() {
+    // the default version: codecs + Part[0].key (movies/episodes; a show container has none)
+    if let Some((_, md)) = it.media_version(None) {
         m.vcodec = clean(&md.video_codec);
         m.acodec = clean(&md.audio_codec);
         if let Some(p0) = md.part.first() {
             m.part = clean(&p0.key);
         }
+    }
+    if m.kind == 0 || m.kind == 3 {
+        m.versions = versions_of(it);
     }
     // UltraBlurColors -> the ambient gradient. `UltraBlurColors::corners` owns the corner ORDER and
     // the all-black-envelope guard (shared with the detail store, which keys the same wash off the

@@ -307,6 +307,14 @@
     "value": "Remove from Deck",
     "description": "browse menu remove_deck"
   },
+  "browse.menu.play_version": {
+    "value": "Play Version…",
+    "description": "Item context menu row on a movie or episode that has more than one file (version). Opens the list of versions to choose which one plays. The ellipsis says that a choice follows."
+  },
+  "browse.menu.play_version_title": {
+    "value": "Play Version",
+    "description": "Heading of the list of a movie's or episode's versions (files), opened from the Play Version… row. Each row below it is one version, e.g. \"25.2 Mbps · 4K\"; choosing one plays it."
+  },
   "browse.login.deleted": {
     "value": "Local data deleted",
     "description": "browse login deleted"

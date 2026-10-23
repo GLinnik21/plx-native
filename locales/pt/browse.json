@@ -76,6 +76,8 @@
   "browse.menu.go_season": "Ir para a temporada",
   "browse.menu.go_movie": "Ir para o filme",
   "browse.menu.remove_deck": "Remover de Continuar a ver",
+  "browse.menu.play_version": "Reproduzir versão…",
+  "browse.menu.play_version_title": "Reproduzir versão",
   "browse.login.deleted": "Dados locais eliminados",
   "browse.login.deleted_detail": "As credenciais, preferências, telemetria e diagnósticos locais foram removidos.",
   "browse.login.partial": "Sessão terminada e a maioria dos dados locais eliminada",

@@ -1458,6 +1458,7 @@ fn a_refused_retry_keeps_its_position_and_full_request_for_the_next_quality() {
         title: "Episode".into(),
         ctx: "S01 E02".into(),
         preview: false,
+        version: None,
     };
     { let s = &mut ps; {
         s.request = Some(request.clone());
@@ -1659,6 +1660,7 @@ fn source_probe_reuses_live_hls_resource_instead_of_entering_adhoc_mde() {
         trace_generation: 0,
         sid,
         rating_key: "1".into(),
+        media_index: 0,
         logical_session: "probe-logical".into(),
         audio_stream_id: 0,
         subtitle_stream_id: 0,
@@ -1761,6 +1763,7 @@ fn a_rejected_original_probe_keeps_hls_and_produces_no_capacity_observation() {
         trace_generation: 0,
         sid,
         rating_key: "1".into(),
+        media_index: 0,
         logical_session: "probe-bodyless-logical".into(),
         audio_stream_id: 0,
         subtitle_stream_id: 0,
@@ -1853,6 +1856,7 @@ fn a_source_sample_from_a_superseded_hls_resource_is_discarded() {
         trace_generation: 0,
         sid,
         rating_key: "1".into(),
+        media_index: 0,
         logical_session: "probe-logical".into(),
         audio_stream_id: 0,
         subtitle_stream_id: 0,

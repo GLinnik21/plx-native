@@ -198,7 +198,9 @@ fn movie(m: &PmsMovie, w: &mut impl Sink) {
         // CONTRACT FREEZE: the caption facts are not in the canonical encoding yet, so every
         // recorded hash stays what it was. P2 decides whether to hash them (which re-records).
         subtype: _, smart: _, genre: _, video_resolution: _, hdr: _, audience_rating: _,
-        leaf_count: _, viewed_leaf_count: _, added_at: _ } = m;
+        leaf_count: _, viewed_leaf_count: _, added_at: _,
+        // a listing's versions only feed the item menu's row, which the menu captures at open
+        versions: _ } = m;
     w.u32(sid.raw().into()); w.u64(*sec as u64); w.text(title); w.u32(*year as u32);
     w.text(rating); w.u64(*dur_ns as u64);
     for text in [part, thumb, still, art, summary, rk, vcodec, acodec] { w.text(text); }

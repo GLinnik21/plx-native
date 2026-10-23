@@ -39,7 +39,7 @@
 //!   pure formatting/policy, no state at all; free functions.
 //!
 //! **Two names that LOOK like reads and are not, on purpose — read the exclusion, not just the
-//! list.** `fetch_playing_item(sid, rk) -> Option<PlayingItem>` performs a BLOCKING `plex::client`
+//! list.** `fetch_playing_item(sid, rk, version) -> Option<(PlayingItem, Option<PlayedVersion>)>` performs a BLOCKING `plex::client`
 //! network call (`route.rs`'s one caller runs it on the resolve WORKER, never the main thread); a
 //! screen must route it through a request/pump, never call it from `step`/`draw`. `sync_now_playing()`
 //! mutates `NOW` and its one remaining caller is already inside the WRITE surface below
