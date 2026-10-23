@@ -573,3 +573,14 @@ synthetic server with `tests/focusfp.sh --rec --only 1,6,12` on the 120 Hz displ
 key interval and halved idle sleeps above; the default cadence overran the replay budget) and
 installed with `tools/plxnative-rec rerecord`, anchors retained. `tests/replay_fixtures.py`
 replays all three with `verdict=SAME` in Targets and Resolve and every difference counter at zero.
+
+The Play Version hero disc added `AppArg::VersionsPanel` to `ARG_SHAPE` and appended
+`versions_panel::SHAPE` to the screen census, which moved the state shape from
+2556366498870773725 to 8665027655285794431 (`SCREEN_SHAPES_PIN` `0x2628_df23_3445_5f80`). All three
+anchors were refused on load, then recorded again against the synthetic server with
+`tests/focusfp.sh --rec --only 1,6,12` at the 350 ms key interval and halved idle sleeps, and
+installed with `tools/plxnative-rec rerecord`, anchors retained. The first `6-settings-family`
+recording ran past the reader's record budget (`Malformed { what: "record JSON/budget" }`), so it
+was recorded once more with the final settle halved as well and only its `rec-0000.jsonl` was
+replaced. `make check-replay` replays all three with `verdict=SAME` in Targets and Resolve and
+every difference counter at zero.
