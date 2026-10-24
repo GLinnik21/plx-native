@@ -1253,7 +1253,7 @@ impl Bridge {
     pub(crate) fn person_pump(&mut self) -> bool {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
         let changed = self.stores.person_pump(&self.client_keys);
-        self.start_store_jobs_of(plx_data::stores::StoreId::Person);
+        self.start_store_jobs_of(StoreId::Person);
         changed
     }
 

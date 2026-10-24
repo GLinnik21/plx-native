@@ -34,8 +34,8 @@
 //! no filmography credits). Both routes are built by [`person_profile_url`] / [`person_credits_url`]
 //! and the gate sits in front of each request; `tests/mock_pms.py`'s Discover stand-in answers them
 //! with synthetic data. The refusal is fixed for the life of the process, so the person store asks
-//! [`person_profile_refused`] / [`person_credits_refused`] BEFORE it emits a job for the read (so no
-//! worker starts) and settles its page on a refusal rather than retrying it as a failure.
+//! [`person_profile_refused`] / [`person_credits_refused`] BEFORE it launches the read and settles its
+//! page on a refusal rather than retrying it as a failure.
 //!
 //! The token is optional here (the endpoint answered 200 unauthenticated in the same probe), but we
 //! send whatever the session holds anyway — an unauthenticated read is not a promise plex.tv has

@@ -418,7 +418,8 @@ pub fn facts_pending(p: &Person) -> bool {
 /// discarded by [`PersonState::pump`], so a slow fetch for the actor you just left can never repopulate the
 /// one you are looking at now.
 /// The three requests this page makes OF ONE SERVER. Adding one is a constant, one arm in
-/// [`address`] and one in [`maybe_spawn`]; [`supersede`] picks it up with no edit at all.
+/// [`address`], a variant of [`LocalKind`] and one arm in [`local_landing`]; [`supersede`] picks it
+/// up with no edit at all.
 const K_RESOLVE: usize = 0;
 const K_MEDIA: usize = 1;
 const K_ROLES: usize = 2;
@@ -1183,10 +1184,9 @@ impl PersonState {
     /// registry's answer as of this call: which client each server holds. The pump starts no
     /// worker. Every request it emits is a [`StoreJob`](crate::stores::StoreJob) on [`PersonState::jobs`],
     /// pushed in ascending slot order, which its owner takes and owes to a runner in the same turn;
-    /// the tape's admission record is written there, after the visit loop. That moves a person
-    /// admission later within the pump and changes no recorded byte: admissions and results are
-    /// separate tape streams, a take for one slot needs the admission evidence of an earlier pump
-    /// (`tape::person_completion` is keyed by slot and generation), and the admissions stay in
+    /// the tape's admission record is written there, after the visit loop. Admissions and results
+    /// are separate tape streams, a take for one slot needs the admission evidence of an earlier
+    /// pump (`tape::person_completion` is keyed by slot and generation), and the admissions stay in
     /// emission order.
     pub fn pump_with_gate(&mut self, adapter: &Arc<PersonAdapter>, gate: &plx_machine::landgate::Gate,
         keys: &ClientKeys) -> bool {
@@ -1762,7 +1762,7 @@ impl PersonState {
     fn emit(&mut self, adapter: &Arc<PersonAdapter>, req: PersonReq) {
         let addr = person_addr(self.next_job);
         self.next_job = self.next_job.wrapping_add(1);
-        let port = PersonPort::of(adapter, &req);
+        let port = PersonPort::to(adapter, req.slot, req.generation);
         self.jobs.push(crate::stores::StoreJob::Person(Job { addr, req }, port));
     }
 }
@@ -1786,7 +1786,7 @@ impl LocalKind {
 /// Whose plex.tv account a global read is made as, captured by the step.
 ///
 /// `Controlled` is a controlled run (the tape is armed): the read is not made and the answer is the
-/// failure value, exactly as the worker did before. `Settled` is the account the session held when
+/// failure value. `Settled` is the account the session held when
 /// the step decided, so a sign-in that lands while the request is out cannot redirect it.
 #[derive(Clone)]
 enum Identity {
@@ -1885,14 +1885,8 @@ pub struct PersonPort {
 }
 
 impl PersonPort {
-    fn of(adapter: &Arc<PersonAdapter>, req: &PersonReq) -> Self {
-        Self { adapter: Arc::clone(adapter), slot: req.slot, generation: req.generation }
-    }
-}
-
-#[cfg(test)]
-impl PersonPort {
-    pub(crate) fn at_for_test(adapter: &Arc<PersonAdapter>, slot: usize, generation: u32) -> Self {
+    /// The port to slot `slot` of `adapter`, under listing generation `generation`.
+    fn to(adapter: &Arc<PersonAdapter>, slot: usize, generation: u32) -> Self {
         Self { adapter: Arc::clone(adapter), slot, generation }
     }
 }
@@ -1951,14 +1945,14 @@ pub fn finish_person_job(port: &PersonPort, addr: Addr, client: Option<&'static 
         PersonWork::Local { sid, kind, local, .. } => {
             // A local job runs through a client; one handed none was never startable.
             let Some(c) = client else { return port.refused(addr) };
-            local_landing(c, sid, kind, &arg, &guid, &local)
+            local_landing(c, sid, kind, arg, &guid, &local)
         }
     };
     port.done(addr, PersonAnswer(what));
 }
 
 /// One per-server read, as its landing.
-fn local_landing(c: &plx_plex::plex::Client, sid: ServerId, kind: LocalKind, arg: &[String], guid: &str,
+fn local_landing(c: &plx_plex::plex::Client, sid: ServerId, kind: LocalKind, arg: Vec<String>, guid: &str,
                  local: &str) -> Landing {
     match kind {
         LocalKind::Resolve => Landing::Resolve(
@@ -1982,7 +1976,7 @@ fn local_landing(c: &plx_plex::plex::Client, sid: ServerId, kind: LocalKind, arg
             .unwrap_or(None),
         ),
         LocalKind::Roles => Landing::Roles(
-            catch_unwind(|| {
+            catch_unwind(move || {
                 // One request per chunk, in shelf order, on this one worker. A chunk that gets
                 // no answer is skipped rather than ending the batch: the others still caption
                 // their credits, and `incomplete` tells the store to re-ask the whole list.
@@ -1996,7 +1990,7 @@ fn local_landing(c: &plx_plex::plex::Client, sid: ServerId, kind: LocalKind, arg
                     }
                 }
                 Some(RolesLanding {
-                    keys: arg.to_vec(),
+                    keys: arg,
                     pairs,
                     incomplete,
                 })
@@ -2506,13 +2500,11 @@ mod tests {
     struct Owner {
         state: PersonState,
         adapter: Arc<PersonAdapter>,
-        /// What the host would have filled in before the last [`Owner::step`].
-        keys: ClientKeys,
     }
 
     impl Default for Owner {
         fn default() -> Self {
-            Self { state: Default::default(), adapter: Arc::new(Default::default()), keys: Default::default() }
+            Self { state: Default::default(), adapter: Arc::new(Default::default()) }
         }
     }
 
@@ -2574,24 +2566,18 @@ mod tests {
         }
         /// One pump over the registry's current answer. The requests it emits stay on the outbox,
         /// for [`Owner::jobs`] / [`Owner::run_jobs`]: the step starts nothing.
-        fn step(&mut self) -> bool {
-            self.keys = registry_keys();
-            self.state.pump(&self.adapter, &self.keys)
-        }
+        fn step(&mut self) -> bool { self.step_with(&registry_keys()) }
         /// One pump over `keys` instead of the registry's answer.
-        fn step_with(&mut self, keys: &ClientKeys) -> bool {
-            self.keys = keys.clone();
-            self.state.pump(&self.adapter, &self.keys)
-        }
+        fn step_with(&mut self, keys: &ClientKeys) -> bool { self.state.pump(&self.adapter, keys) }
         /// The requests on the outbox, taken, in the order they were emitted.
         fn jobs(&mut self) -> Vec<crate::stores::StoreJob> { std::mem::take(&mut self.state.jobs) }
-        /// Run `jobs` on THIS thread through the production completion path
-        /// ([`finish_person_job`]), each with the client the registry holds for the key it names;
-        /// their answers wait in the mailboxes for the next pump. Returns how many ran.
-        fn run(&mut self, jobs: Vec<crate::stores::StoreJob>) -> usize {
+        /// Run the whole outbox on THIS thread through the production completion path
+        /// ([`finish_person_job`]), each job with the client the registry holds for the key it
+        /// names; their answers wait in the mailboxes for the next pump. Returns how many ran.
+        fn run_jobs(&mut self) -> usize {
+            let jobs = person_jobs(self.jobs());
             let n = jobs.len();
-            for job in jobs {
-                let crate::stores::StoreJob::Person(job, port) = job else { panic!("not a person job") };
+            for (job, port) in jobs {
                 let client = job.req.server().map(|(sid, key)| {
                     plx_plex::plex::client_for(sid).filter(|c| ClientKey::of(c) == key)
                         .expect("the registry still holds the client the job names")
@@ -2600,13 +2586,7 @@ mod tests {
             }
             n
         }
-        /// [`Owner::run`] over the whole outbox.
-        fn run_jobs(&mut self) -> usize {
-            let jobs = self.jobs();
-            self.run(jobs)
-        }
-        /// A pump, then every request it emitted run to its answer. The old `pump` started real
-        /// workers on threads; this is the same pair without the wait.
+        /// A pump, then every request it emitted run to its answer on this thread.
         fn pump(&mut self) -> bool {
             let changed = self.step();
             self.run_jobs();
@@ -3494,7 +3474,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(25));
             worker.land(at(S0, K_MEDIA), gen, media(vec![PmsMovie::default()], Vec::new()));
         });
-        assert!(owner.state.pump_with_gate(&owner.adapter, &gate, &owner.keys),
+        assert!(owner.state.pump_with_gate(&owner.adapter, &gate, &ClientKeys::default()),
             "the answer the pump owed must be taken by the pump that asked");
         assert_eq!(owner.current().unwrap().shelf(0).len(), 1);
         assert!(!owner.adapter.mailbox(at(S0, K_MEDIA)).busy(), "the TAKE released the claim");
@@ -3525,7 +3505,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(25));
             worker.land(at(S0, K_MEDIA), current, media(vec![PmsMovie::default()], Vec::new()));
         });
-        assert!(owner.state.pump_with_gate(&owner.adapter, &gate, &owner.keys),
+        assert!(owner.state.pump_with_gate(&owner.adapter, &gate, &ClientKeys::default()),
             "B was out when the pump ran, so B's answer must land on this pump");
         assert_eq!(owner.current().unwrap().shelf(0).len(), 1);
         assert!(!owner.adapter.mailbox(at(S0, K_MEDIA)).busy(), "B's own answer released B's claim");
@@ -4514,6 +4494,17 @@ mod tests {
         }).collect()
     }
 
+    /// The registry's answer when server 0 holds the client [`KEY`].
+    fn holding() -> ClientKeys { ClientKeys::from_keys([(S0, KEY)]) }
+
+    /// Open a person on [`S0`], pump once over [`holding`], and take the Media read's job and port.
+    fn media_job(owner: &mut Owner) -> (Job<PersonReq>, PersonPort) {
+        owner.open(S0, "7", "plex://person/7", "Actor", "");
+        owner.step_with(&holding());
+        let media = at(S0, K_MEDIA);
+        person_jobs(owner.jobs()).into_iter().find(|(job, _)| job.req.slot == media).expect("the media read")
+    }
+
     /// A pump over an opened page emits each request the page wants, one job per slot, in
     /// ascending slot order, and every job says which client it decided on; opening emits nothing;
     /// and a slot with a request out is not asked again.
@@ -4527,9 +4518,9 @@ mod tests {
         owner.open(S0, "7", "plex://person/7", "Actor", "");
         plx_machine::assert_fx!(owner.jobs(), []);
 
-        owner.step_with(&ClientKeys::from_keys([(S0, KEY)]));
+        owner.step_with(&holding());
         let (g, adapter) = (owner.gen(), Arc::clone(&owner.adapter));
-        let port = |slot| PersonPort::at_for_test(&adapter, slot, g);
+        let port = |slot| PersonPort::to(&adapter, slot, g);
         let media = at(S0, K_MEDIA);
         plx_machine::assert_fx!(owner.jobs(), [
             job(0, port(media), req(media, g, &["7"], "plex://person/7", local(S0, LocalKind::Media, "7"))),
@@ -4542,7 +4533,7 @@ mod tests {
             assert!(owner.adapter.mailbox(slot).busy(), "slot {slot} holds its claim while its request is out");
         }
 
-        owner.step_with(&ClientKeys::from_keys([(S0, KEY)]));
+        owner.step_with(&holding());
         plx_machine::assert_fx!(owner.jobs(), []);
     }
 
@@ -4564,7 +4555,7 @@ mod tests {
         let slots: Vec<usize> = locals.iter().map(|(job, _)| job.req.slot).collect();
         assert!(slots.windows(2).all(|w| w[0] < w[1]), "ascending slots, got {slots:?}");
         for (job, port) in &locals {
-            assert_eq!(*port, PersonPort::at_for_test(&owner.adapter, job.req.slot, job.req.generation));
+            assert_eq!(*port, PersonPort::to(&owner.adapter, job.req.slot, job.req.generation));
             let (sid, key) = job.req.server().unwrap();
             assert_eq!(Some(key), registry_keys().key(sid), "the key is the registry's answer for that server");
         }
@@ -4573,7 +4564,7 @@ mod tests {
     }
 
     /// A source whose server holds no client has nothing to ask: no job, no claim, and the slot
-    /// backs off in the same pump, as it did when the step read the registry itself.
+    /// backs off in the same pump.
     #[test]
     fn a_source_whose_server_holds_no_client_emits_no_job_and_backs_off() {
         let _g = plx_base::testlock::serial();
@@ -4589,7 +4580,7 @@ mod tests {
 
         // The backoff holds the slot off for its length; then a client appearing is asked at once.
         for _ in 0..RETRY_FRAMES {
-            owner.step_with(&ClientKeys::from_keys([(S0, KEY)]));
+            owner.step_with(&holding());
         }
         assert!(person_jobs(owner.jobs()).iter().any(|(job, _)| job.req.slot == media));
         owner.close();
@@ -4632,7 +4623,7 @@ mod tests {
         let mut seen = Vec::new();
         for _ in 0..2 {
             owner.open(S0, "7", "plex://person/7", "Actor", "");
-            owner.step_with(&ClientKeys::from_keys([(S0, KEY)]));
+            owner.step_with(&holding());
             seen.extend(person_jobs(owner.jobs()).into_iter().map(|(job, _)| job.addr));
             owner.reset();
         }
@@ -4647,13 +4638,11 @@ mod tests {
         let _g = plx_base::testlock::serial();
         plx_plex::plex::reset_servers_for_test();
         let mut owner = Owner::default();
-        owner.open(S0, "7", "plex://person/7", "Actor", "");
-        owner.step_with(&ClientKeys::from_keys([(S0, KEY)]));
         let media = at(S0, K_MEDIA);
-        let (job, port) = person_jobs(owner.jobs()).into_iter().find(|(job, _)| job.req.slot == media).expect("the media read");
+        let (job, port) = media_job(&mut owner);
         let old = Arc::clone(&owner.adapter);
         owner.reset();
-        assert_ne!(port, PersonPort::at_for_test(&owner.adapter, media, job.req.generation));
+        assert_ne!(port, PersonPort::to(&owner.adapter, media, job.req.generation));
 
         port.done(job.addr, PersonAnswer(Landing::Media(None)));
         assert!(old.mailbox(media).has_mail(), "the answer reached the adapter the request came from");
@@ -4667,15 +4656,13 @@ mod tests {
         let _g = plx_base::testlock::serial();
         plx_plex::plex::reset_servers_for_test();
         let mut owner = Owner::default();
-        owner.open(S0, "7", "plex://person/7", "Actor", "");
-        owner.step_with(&ClientKeys::from_keys([(S0, KEY)]));
         let media = at(S0, K_MEDIA);
-        let (job, port) = person_jobs(owner.jobs()).into_iter().find(|(job, _)| job.req.slot == media).expect("the media read");
+        let (job, port) = media_job(&mut owner);
         assert!(owner.adapter.mailbox(media).busy());
 
         port.refused(job.addr);
         assert!(!owner.adapter.mailbox(media).busy(), "the refusal released its own claim");
-        owner.step_with(&ClientKeys::from_keys([(S0, KEY)]));
+        owner.step_with(&holding());
         assert!(person_jobs(owner.jobs()).iter().any(|(job, _)| job.req.slot == media), "and the next pump asks again");
 
         // a NEWER request now holds the slot; the older job's late refusal leaves it alone
@@ -4689,7 +4676,7 @@ mod tests {
     }
 
     /// A job's admission record is the bytes a recording holds and a replay compares: value-equal
-    /// to what the step wrote itself before the request became a job (fixture 12, frames 38, 39).
+    /// to the recorded shape (fixture 12, frames 38, 39).
     #[test]
     fn the_admission_record_names_the_request_in_the_recorded_shape() {
         use serde_json::json;
@@ -4709,8 +4696,8 @@ mod tests {
             json!({"arg":["Actor"],"client":7,"gen":3,"guid":sf,"local":"","sid":1,"slot":0,"store":"person"}));
     }
 
-    /// A controlled run's plex.tv reads are not made: the worker answers the failure value, as it
-    /// did before the request became a job, and the page treats it as any failed read.
+    /// A controlled run's plex.tv reads are not made: the worker answers the failure value, and
+    /// the page treats it as any failed read.
     #[test]
     fn a_controlled_plex_tv_job_answers_the_failure_value_without_a_read() {
         let _g = plx_base::testlock::serial();
@@ -4739,10 +4726,8 @@ mod tests {
         let _g = plx_base::testlock::serial();
         plx_plex::plex::reset_servers_for_test();
         let mut owner = Owner::default();
-        owner.open(S0, "7", "plex://person/7", "Actor", "");
-        owner.step_with(&ClientKeys::from_keys([(S0, KEY)]));
         let media = at(S0, K_MEDIA);
-        let (job, port) = person_jobs(owner.jobs()).into_iter().find(|(job, _)| job.req.slot == media).expect("the media read");
+        let (job, port) = media_job(&mut owner);
         finish_person_job(&port, job.addr, None, job.req);
         assert!(!owner.adapter.mailbox(media).has_mail(), "a refusal answers nothing");
         assert!(!owner.adapter.mailbox(media).busy(), "and gives the claim back");
