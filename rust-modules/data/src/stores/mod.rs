@@ -537,6 +537,22 @@ impl StoreWork {
     }
 }
 
+/// IO a store's step asked the application to start, as a value: the store emits it
+/// (`MetadataStore::take_jobs`), the application's runner (`app::adapters::stores`) starts it, and
+/// its [`Port`](plx_machine::job::Port) takes the one answer. Unlike [`StoreWork`], which is a timing
+/// lane a store is pumped on, a job carries the request itself and the port its answer goes to.
+#[derive(Debug, PartialEq)]
+pub enum StoreJob {
+    /// One detail fetch (`MetadataCmd::RequestDetail`), addressed by its request generation.
+    Detail(plx_machine::job::Job<crate::metadata::DetailReq>, crate::metadata::DetailPort),
+}
+
+impl StoreJob {
+    pub fn store(&self) -> StoreId {
+        match self { Self::Detail(..) => StoreId::Metadata }
+    }
+}
+
 impl StoreId {
     pub const ALL: [StoreId; 12] = [
         StoreId::Browse,

@@ -309,6 +309,26 @@ impl MetadataStore {
 
     pub fn adapter_ref(&self) -> &crate::metadata::MetadataAdapter { &self.adapter }
 
+    /// Take the jobs this owner's commands have emitted since the last take, in order. The caller
+    /// OWES each one to a runner: a job dropped here is a request whose reservation is never
+    /// handed back and whose spinner never settles, so the application drains them in the same
+    /// call that ran the command (`Bridge::metadata_run`).
+    #[must_use]
+    pub fn take_jobs(&mut self) -> Vec<super::StoreJob> {
+        std::mem::take(&mut self.state.jobs)
+    }
+
+    /// Does the outbox hold a job nobody has taken yet?
+    pub fn has_jobs(&self) -> bool {
+        !self.state.jobs.is_empty()
+    }
+
+    /// The port that lands a detail answer into THIS owner's current adapter: what a job emitted
+    /// now carries (`assert_fx!` compares it by adapter identity).
+    pub fn detail_port(&self) -> crate::metadata::DetailPort {
+        crate::metadata::DetailPort::of(&self.adapter)
+    }
+
     /// Arms this owner's replay-tracking `Tracker` for controlled-content recording/replay. Call
     /// exactly once, right after construction (`crate::metadata::record::arm`'s own doc has the
     /// full rationale and history) — the one caller is `Bridge::controlled_home`.
