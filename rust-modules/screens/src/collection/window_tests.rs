@@ -36,7 +36,7 @@ impl Sim {
     fn new(total: usize) -> Self {
         let all: Vec<PmsMovie> = (0..total).map(|i| item(&format!("m{i}"))).collect();
         let mut store = CollectionStore::default();
-        store.run(CollectionCmd::Open { target: CollectionTarget { id: set(), want: PAGE_SIZE } });
+        store.run(CollectionCmd::Open { target: CollectionTarget { id: set(), want: PAGE_SIZE } }, &plx_plex::plex::ClientKeys::default());
         store.install_for_test(all.clone(), CollectionStatus::Ready);
         store.edit_for_test(|c| c.evict_for_test(0..3 * PAGE_SIZE, None, None));
         let mut sim = Self { store, screen: CollectionScreen::new(EntryId(9), set()), all, focus: None, ms: 0, sent: Vec::new(), reads: true };
