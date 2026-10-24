@@ -1,7 +1,7 @@
 //! The detail chain runs through the client it was handed (`finish_detail_fetch`), never through the
-//! registry: every GET of `fetch_full` but the opening season's episodes (`fetch_episodes`, which
-//! still resolves its own client), and the one `fetch_playing_item` makes, goes to the server the
-//! runner resolved for the job, whatever the registry says by the time each GET is made.
+//! registry: every GET of `fetch_full`, the opening season's episodes included, and the one
+//! `fetch_playing_item` makes, goes to the server the runner resolved for the job, whatever the
+//! registry says by the time each GET is made.
 //!
 //! The rig is two loopback PMSes. The slot is registered against `A` and its client taken, as the
 //! runner does at the admission; then the registry moves on (the slot re-pointed at `B`, or emptied
@@ -212,7 +212,7 @@ fn a_chain_whose_extras_were_refused_asks_the_primary_trailer_through_the_same_c
 }
 
 #[test]
-fn a_show_chain_keeps_the_client_it_was_handed_except_for_its_opening_season() {
+fn a_show_chain_keeps_the_client_it_was_handed_including_its_opening_season() {
     let _serial = plx_base::testlock::serial();
     let rig = Rig::new();
     rig.repoint();
@@ -226,13 +226,11 @@ fn a_show_chain_keeps_the_client_it_was_handed_except_for_its_opening_season() {
             "/library/metadata/show-1/children",
             "/library/metadata/show-1/extras",
             "/library/metadata/show-1/related",
+            "/library/metadata/sk1/children",
         ]),
-        "the item, its seasons, the stream backfill's episode, its extras and its related",
+        "the item, its seasons, the stream backfill's episode, its extras, its related and the opening season's episodes",
     );
-    // The opening season's episodes are the one read the chain still resolves for itself:
-    // `fetch_episodes` is shared with the season worker, which has not moved to a job yet. When it
-    // does, this list is empty, as the movie's is.
-    assert_eq!(rig.b.paths(), paths(&["/library/metadata/sk1/children"]));
+    assert_eq!(rig.b.paths(), Vec::<String>::new(), "and none reached the server the registry holds now");
 }
 
 #[test]
