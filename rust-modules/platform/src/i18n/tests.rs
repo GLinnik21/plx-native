@@ -195,6 +195,20 @@ fn russian_catalog_counts_follow_russian_plurals_even_with_english_formatting() 
 }
 
 #[test]
+fn russian_episode_labels_keep_the_reviewed_latin_markers() {
+    let ru = LocaleContext::resolve(Preference::Ru, None, None, None, None);
+    assert_eq!(msg::core_season_in(&ru, 2), "S2");
+    assert_eq!(msg::core_episode_in(&ru, 4), "E4");
+    assert_eq!(msg::core_episode_ordinal_in(&ru, 4, 2), "S2, E4");
+}
+
+#[test]
+fn russian_stats_menu_uses_the_native_reviewers_wording() {
+    let ru = LocaleContext::resolve(Preference::Ru, None, None, None, None);
+    assert_eq!(msg::widgets_menu_stats_in(&ru), "Статистика для гиков");
+}
+
+#[test]
 fn russian_month_day_captions_use_format_months_at_both_widths() {
     let cx = LocaleContext::resolve(Preference::Ru, None, Some("en-US"), None, None);
     let medium = [
