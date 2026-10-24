@@ -19,6 +19,8 @@ struct Truth {
     release: AtomicBool,
     reads: AtomicUsize,
     scrobbles: AtomicUsize,
+    /// Every request that reached the server, whatever it asked.
+    requests: AtomicUsize,
     /// The `viewOffset` a read answers with (0: none), whatever the watched state.
     view_offset: AtomicI64,
 }
@@ -39,6 +41,7 @@ fn serve_connection(mut conn: std::net::TcpStream, truth: Arc<Truth>) {
     let n = conn.read(&mut buf).unwrap_or(0);
     let request = String::from_utf8_lossy(&buf[..n]).into_owned();
     let path = request.split_whitespace().nth(1).unwrap_or("/").to_string();
+    truth.requests.fetch_add(1, Ordering::SeqCst);
     if path.starts_with("/:/scrobble") || path.starts_with("/:/unscrobble") {
         truth.scrobbles.fetch_add(1, Ordering::SeqCst);
         if path.starts_with("/:/scrobble") && truth.refuse_scrobble.load(Ordering::SeqCst) {
@@ -129,6 +132,7 @@ fn press_as(stores: &mut Stores, sid: ServerId, write: Write, profile: u32) {
     assert!(stores.viewstate_run(ViewStateCmd::Request {
         sid, rk: "1".into(), write, scope: Scope::Leaf, guid: String::new(),
     }, directory.view(), &crate::pms::registry_keys_for_test(), profile).changed);
+    super::rig::start_jobs(stores); // the Bridge's drain, in the same call as the step
 }
 
 /// Pump both owners as the frame loop does until `done`, failing after ~5 s.
@@ -527,6 +531,34 @@ fn a_write_pressed_under_another_profile_is_dropped_and_retired_not_sent_as_the_
     assert!(settled(&stores), "the queue emptied");
     assert_eq!(pms.truth.scrobbles.load(Ordering::SeqCst), 0, "nothing was sent under the new profile's token");
     assert!(stores.view_ledger.since(0).is_empty(), "the dropped press was retired");
+    drop(stores);
+}
+
+/// **The worker reaches the other servers only through the snapshot the step decided under.** A
+/// profile switch re-tokens the registry's clients in place; a fan-out that read the registry
+/// again would look the title up on, and scrobble it to, the other server under the NEXT profile's
+/// credential. The origin's client still carries the key the step named, so the write itself goes
+/// out; the other server's no longer does, so it hears nothing at all: no lookup, no scrobble.
+#[test]
+fn a_fanout_target_whose_key_moved_after_the_step_gets_no_request() {
+    let _g = plx_base::testlock::serial();
+    let (a, b) = (serve(), serve());
+    let (mut stores, sid_a, sid_b) = two_servers(&a, &b);
+    let directory = DirectorySnapshot::default();
+    assert!(stores.viewstate_run(ViewStateCmd::Request {
+        sid: sid_a, rk: "1".into(), write: Write::Watched, scope: Scope::Leaf, guid: String::new(),
+    }, directory.view(), &crate::pms::registry_keys_for_test(), 0).changed);
+    // the switch lands between the step and the worker
+    plx_plex::plex::client_for(sid_b).unwrap().set_token("the-next-profiles-token");
+    super::rig::start_jobs(&mut stores);
+
+    drive(&mut stores, |s| {
+        settled(s) && a.truth.scrobbles.load(Ordering::SeqCst) == 1 && a.truth.reads.load(Ordering::SeqCst) >= 1
+    });
+    assert_eq!(a.truth.scrobbles.load(Ordering::SeqCst), 1, "the origin's own write went out");
+    assert_eq!(b.truth.requests.load(Ordering::SeqCst), 0,
+        "the other server heard nothing: no guid lookup, no scrobble, no read");
+    assert_eq!(b.truth.scrobbles.load(Ordering::SeqCst), 0);
     drop(stores);
 }
 

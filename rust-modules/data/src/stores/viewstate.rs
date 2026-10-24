@@ -139,6 +139,19 @@ impl ViewStateStore {
         self.state.take_reread()
     }
 
+    /// Take the writes the step has sent since the last take, in order. The caller OWES each one to
+    /// a runner (`Bridge::viewstate_run` / `viewstate_pump` / `reconcile_pump` hand them over in the
+    /// same call): a write dropped here is never answered, and the queue behind it never starts.
+    #[must_use]
+    pub fn take_jobs(&mut self) -> Vec<super::StoreJob> {
+        self.state.take_jobs()
+    }
+
+    /// Does the outbox hold a write nobody has taken yet?
+    pub fn has_jobs(&self) -> bool {
+        self.state.has_jobs()
+    }
+
     /// Is a write queued or in flight?
     pub fn is_busy(&self) -> bool {
         self.state.is_busy()

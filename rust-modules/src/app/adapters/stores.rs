@@ -9,7 +9,7 @@
 //! tape's admission record, the worker thread and the process-global client the request reads. A
 //! kind that is not on the tape (the catalog read, a plex.tv call that names no client; subtitle
 //! search; the Search screen's fetches and its recents writes; view reconcile; the Library's
-//! section-hubs read) is started with no admission record, as its inline spawn was. The detail pump
+//! section-hubs read; the view-state writes) is started with no admission record, as its inline spawn was. The detail pump
 //! keeps a counted backstop for a sender that did neither (`Bridge::start_late_store_jobs`).
 //!
 //! **Three admission families** (`plx_data::stores::Admission`, stated by the job kind and matched
@@ -50,6 +50,7 @@ use plx_data::stores::{Admission, StoreJob};
 use plx_data::search::recents::{finish_save_recents_job, SaveRecentsPort, SaveRecentsReq};
 use plx_data::search::{finish_search_job, SearchPort, SearchReq};
 use plx_data::subsearch::{finish_subsearch_job, SubSearchPort, SubSearchReq};
+use plx_data::viewstate::{finish_view_write_job, ViewWritePort, ViewWriteReq};
 use plx_machine::job::{Job, Port};
 use plx_plex::plex::{Client, ClientKey, ClientKeys};
 
@@ -189,6 +190,7 @@ impl StoreRunner {
             StoreJob::BrowseHubs(job, port) => self.start_browse_hubs(job, port),
             StoreJob::Search(job, port) => self.start_search(job, port),
             StoreJob::SaveRecents(job, port) => self.start_save_recents(job, port),
+            StoreJob::ViewWrite(job, port) => self.start_view_write(job, port),
         }
     }
 
@@ -226,7 +228,8 @@ impl StoreRunner {
                 | StoreJob::ViewReconcile(..)
                 | StoreJob::BrowseHubs(..)
                 | StoreJob::Search(..)
-                | StoreJob::SaveRecents(..)) => self.start(other),
+                | StoreJob::SaveRecents(..)
+                | StoreJob::ViewWrite(..)) => self.start(other),
         }
     }
 
@@ -313,6 +316,7 @@ impl StoreRunner {
                     | StoreJob::BrowseHubs(..)
                     | StoreJob::Search(..)
                     | StoreJob::SaveRecents(..)
+                    | StoreJob::ViewWrite(..)
                 ) => held.push(kept),
             }
         }
@@ -555,6 +559,42 @@ impl StoreRunner {
         }
     }
 
+    /// A view-state write is not on the tape either: the launch is the whole decision (a controlled
+    /// run refuses every write before it reaches the store, `viewstate_controlled_tests`). A launch
+    /// that did not happen is refused, and the refusal is the write's answer: nothing left the
+    /// device, so the pump that takes it judges the write again from its own inputs (a moved profile
+    /// drops it, a re-tokened client re-keys it) and puts it back at the head of the queue.
+    fn start_view_write(&mut self, job: Job<ViewWriteReq>, port: ViewWritePort) {
+        let addr = job.addr;
+        let refusal = port.clone();
+        if !self.launch_view_write(job, port) {
+            refusal.refused(addr);
+        }
+    }
+
+    /// Start the write on a worker, if the registry still holds the client the step decided on for
+    /// the origin. The origin is resolved ONCE, here, and the worker is handed that `&'static
+    /// Client`; the other copies of the title are reached only through the job's own snapshot, and
+    /// only while each client still carries the key in it (`finish_view_write_job`). The registry
+    /// read the worker needs for that is passed in here, so no data-layer step names it.
+    fn launch_view_write(&mut self, job: Job<ViewWriteReq>, port: ViewWritePort) -> bool {
+        let (sid, key) = job.req.server();
+        let Some(origin) = resolve(sid, key) else { return false };
+        match self {
+            Self::Live => {
+                let Job { addr, req } = job;
+                plx_base::task::spawn_small("viewstate", move || {
+                    finish_view_write_job(&port, addr, origin, plx_plex::plex::client_for, req);
+                })
+            }
+            #[cfg(test)]
+            Self::Held { parked: held, .. } => {
+                held.push(StoreJob::ViewWrite(job, port));
+                true
+            }
+        }
+    }
+
     /// A section-hubs read is not on the tape either (and a controlled run never emits it, so the
     /// Home ledger holds no record of it): the launch is the whole decision. A launch that did not
     /// happen (the registry no longer holds the client the step decided on, or the thread ceiling) is
@@ -597,7 +637,8 @@ impl StoreRunner {
     /// TEST ONLY: run every parked job on THIS thread through the production completion path
     /// (`finish_detail_fetch` over `fetch_full`, `finish_collection_job`, `finish_person_job`,
     /// `finish_hubs_job`, `finish_catalog_job`, `finish_subsearch_job`, `finish_search_job`,
-    /// `finish_save_recents_job`, `finish_reconcile_job`, `finish_browse_hubs_job`) and return how many ran.
+    /// `finish_save_recents_job`, `finish_reconcile_job`, `finish_browse_hubs_job`, `finish_view_write_job`) and
+    /// return how many ran.
     /// Their landings are queued for the next pump. Under `Live` there is nothing parked.
     #[cfg(test)]
     pub(crate) fn run_held(&mut self) -> usize {
@@ -705,6 +746,17 @@ impl StoreRunner {
                     }
                 }
                 StoreJob::SaveRecents(job, port) => finish_save_recents_job(&port, job.addr, job.req),
+                StoreJob::ViewWrite(job, port) => {
+                    // The registry may have moved on since the job was parked: a write whose
+                    // origin client is gone, or carries a moved credential, is refused, as the
+                    // launch would have refused it. Nothing was sent.
+                    let (sid, key) = job.req.server();
+                    match resolve(sid, key) {
+                        Some(origin) => finish_view_write_job(
+                            &port, job.addr, origin, plx_plex::plex::client_for, job.req),
+                        None => port.refused(job.addr),
+                    }
+                }
             }
         }
         n
@@ -1709,6 +1761,211 @@ mod tests {
         let _ = bridge.reconcile_pump();
         bridge.assert_no_store_jobs_left_for_test();
         assert!(bridge.read_back_pending_for_test().is_empty(), "the answer settled the flight; nothing is owed");
+    }
+
+    // ---- the view-write lane: a household write starts only through the client the step chose ----
+
+    /// A loopback listener that counts the connections made to it and answers none: a write sent
+    /// here fails at once, so what the count shows is whether the write was sent at all.
+    struct Sink {
+        port: i32,
+        hits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Sink {
+        fn new() -> Self {
+            use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+            use std::sync::Arc;
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+            listener.set_nonblocking(true).expect("nonblocking");
+            let port = listener.local_addr().expect("bound").port() as i32;
+            let (hits, stop) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicBool::new(false)));
+            let (count, halt) = (Arc::clone(&hits), Arc::clone(&stop));
+            let thread = std::thread::spawn(move || {
+                while !halt.load(Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok(_) => { count.fetch_add(1, Ordering::SeqCst); }
+                        Err(_) => std::thread::sleep(std::time::Duration::from_millis(1)),
+                    }
+                }
+            });
+            Self { port, hits, stop, thread: Some(thread) }
+        }
+
+        /// The connections made, after giving the listener time to accept what was sent.
+        fn settled_hits(&self) -> usize {
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            self.hits.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        /// Wait (bounded) for the first connection.
+        fn wait_for_a_hit(&self) -> usize {
+            for _ in 0..400 {
+                if self.hits.load(std::sync::atomic::Ordering::SeqCst) > 0 { break; }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            self.settled_hits()
+        }
+    }
+
+    impl Drop for Sink {
+        fn drop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(thread) = self.thread.take() { let _ = thread.join(); }
+        }
+    }
+
+    /// The profile identity the presses of this lane are made under.
+    const VIEW_PROFILE: u32 = 7;
+
+    /// A server registered at `sink` and a ViewState owner whose first write, `Watched` on item
+    /// `1`, is out: the job its step sent, keyed to the client the registry held when it did.
+    fn view_write_request(sink: &Sink) -> (ServerId, plx_data::stores::Stores, StoreJob) {
+        use plx_data::stores::viewstate::ViewStateCmd;
+        use plx_data::viewstate::{Scope, Write};
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test("runner", "127.0.0.1", sink.port, "t", "cid");
+        plx_plex::plex::client_for(sid).expect("registered").set_link(plx_plex::plex::probe::Location::Local);
+        let mut stores = plx_data::stores::Stores::default();
+        let directory = DirectorySnapshot::default();
+        assert!(stores.viewstate_run(
+            ViewStateCmd::Request { sid, rk: "1".into(), write: Write::Watched, scope: Scope::Leaf, guid: String::new() },
+            directory.view(), &registry_keys(), VIEW_PROFILE).changed);
+        let mut jobs = stores.take_jobs_of(plx_data::stores::StoreId::ViewState);
+        assert_eq!(jobs.len(), 1, "one press, one write");
+        (sid, stores, jobs.remove(0))
+    }
+
+    /// One pump of the ViewState owner with the registry's answer as of now.
+    fn view_pump(stores: &mut plx_data::stores::Stores, profile: u32) {
+        let directory = DirectorySnapshot::default();
+        let _ = stores.viewstate_pump(directory.view(), &registry_keys(), profile);
+    }
+
+    /// The write is not out any more and nothing is queued behind it.
+    fn view_idle(stores: &plx_data::stores::Stores) -> bool {
+        !stores.viewstate.borrow().is_busy_for_test()
+    }
+
+    /// The write the step sent again after a refusal: one job, naming `sid`'s client as the registry
+    /// holds it now.
+    fn assert_sent_again_under_the_current_key(stores: &mut plx_data::stores::Stores, sid: ServerId) {
+        let mut again = stores.take_jobs_of(plx_data::stores::StoreId::ViewState);
+        assert_eq!(again.len(), 1, "the same profile's write is still the user's, so it goes out again");
+        let StoreJob::ViewWrite(job, _) = again.remove(0) else { panic!("a write goes out as a ViewWrite") };
+        let now = ClientKey::of(plx_plex::plex::client_for(sid).expect("registered"));
+        assert_eq!(job.req.server(), (sid, now), "re-keyed to the credential the registry holds now");
+    }
+
+    /// Recording, the registry still holding the client the step chose: the worker starts, sends
+    /// the write, and posts its ONE answer; taking it settles the write. The kind is not on the
+    /// tape: nothing is recorded.
+    #[test]
+    fn a_view_write_whose_client_is_still_held_is_started_answered_once_and_not_taped() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let sink = Sink::new();
+        let (_, mut stores, job) = view_write_request(&sink);
+        tape::init(None, false);
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert_eq!(tape::finish(), (vec![], None), "the kind is untaped: the runner records no admission");
+        tape::reset_for_test();
+        assert_eq!(sink.wait_for_a_hit(), 1, "the write left the device once");
+        assert!(!view_idle(&stores), "the answer is the next pump's to take");
+        view_pump(&mut stores, VIEW_PROFILE);
+        assert!(view_idle(&stores), "the one answer settled the write");
+        assert!(stores.view_ledger.since(0).is_empty(), "the sink took none, so the press is retired");
+        assert!(stores.take_jobs_of(plx_data::stores::StoreId::ViewState).is_empty(), "and no write is sent again");
+    }
+
+    /// The registry moved on between the step and the launch (a retoken here): the runner does not
+    /// start a write through a credential the step never decided on, and nothing leaves the device.
+    /// The refusal is the write's answer, so the next pump puts the SAME profile's write back out
+    /// under the credential the registry holds now.
+    #[test]
+    fn a_view_write_whose_origin_key_moved_is_not_started() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let sink = Sink::new();
+        let (sid, mut stores, job) = view_write_request(&sink);
+        plx_plex::plex::client_for(sid).expect("registered").set_token("rotated");
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert_eq!(sink.settled_hits(), 0, "nothing was sent through the credential the step never asked with");
+        assert!(!view_idle(&stores), "the refusal is the next pump's to take");
+        view_pump(&mut stores, VIEW_PROFILE);
+        assert_sent_again_under_the_current_key(&mut stores, sid);
+        assert_eq!(stores.view_ledger.since(0).len(), 1, "a write not yet sent keeps its press on screen");
+    }
+
+    /// `Held` parks the write without running it, and a newer DETAIL request retires only the
+    /// detail fetches parked before it: a household write is not a request it supersedes, and the
+    /// write that was parked still runs and answers.
+    #[test]
+    fn a_parked_view_write_is_kept_by_retire_parked_details() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let sink = Sink::new();
+        let (_, mut stores, job) = view_write_request(&sink);
+        let mut runner = StoreRunner::held();
+        let mut metadata = MetadataStore::default();
+
+        runner.start(job);
+        runner.start(request(&mut metadata, ServerId::UNSET, "d1"));
+        assert_eq!(runner.run_held(), 2, "the write was kept, and the detail job parked after it");
+
+        assert_eq!(sink.wait_for_a_hit(), 1, "the kept write ran");
+        view_pump(&mut stores, VIEW_PROFILE);
+        assert!(view_idle(&stores));
+    }
+
+    /// A parked write runs later and answers through the production completion path, once.
+    #[test]
+    fn a_held_view_write_runs_and_answers_once() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let sink = Sink::new();
+        let (_, mut stores, job) = view_write_request(&sink);
+        let mut runner = StoreRunner::held();
+
+        runner.start(job);
+        assert!(!view_idle(&stores), "parked, still out");
+        assert_eq!(sink.settled_hits(), 0, "and not sent");
+        assert_eq!(runner.run_held(), 1);
+        assert_eq!(runner.run_held(), 0, "the job ran, so nothing is left to run");
+
+        assert_eq!(sink.wait_for_a_hit(), 1, "the write left the device once");
+        view_pump(&mut stores, VIEW_PROFILE);
+        assert!(view_idle(&stores), "the one answer settled the write");
+        view_pump(&mut stores, VIEW_PROFILE);
+        assert!(view_idle(&stores), "a second pump finds nothing more");
+        assert!(stores.take_jobs_of(plx_data::stores::StoreId::ViewState).is_empty(), "and sends no write again");
+    }
+
+    /// A parked write runs later, and the registry may have moved on by then: the held runner
+    /// refuses it as the launch would have, so nothing is sent and the write is owed again.
+    #[test]
+    fn a_parked_view_write_whose_origin_key_moved_before_it_runs_is_refused() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let sink = Sink::new();
+        let (sid, mut stores, job) = view_write_request(&sink);
+        let mut runner = StoreRunner::held();
+
+        runner.start(job);
+        plx_plex::plex::client_for(sid).expect("registered").set_token("rotated");
+        assert_eq!(runner.run_held(), 1);
+
+        assert_eq!(sink.settled_hits(), 0, "the parked write was not sent through the moved credential");
+        view_pump(&mut stores, VIEW_PROFILE);
+        assert_sent_again_under_the_current_key(&mut stores, sid);
     }
 
     // ---- the Bridge's drain, which feeds the runner ----

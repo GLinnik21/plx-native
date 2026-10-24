@@ -105,8 +105,11 @@
 //! worker, and its notice. Reset rotates the adapter, and request IDs fence malformed or stale
 //! completions even within one adapter. There is no process-global ViewState transport or state.
 
-use plx_plex::plex::{ClientKey, ClientKeys, ServerId};
-use std::panic::catch_unwind;
+use crate::stores::{StoreId, StoreJob};
+use plx_machine::job::{Job, Port};
+use plx_machine::machine::{Addr, MachineId, RequestId};
+use plx_plex::plex::{Client, ClientKey, ClientKeys, KeyedClients, ServerId};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 
 /// How much of the library one view-state change reaches, read off the row the user acted on.
@@ -346,7 +349,7 @@ impl Write {
         matches!(self, Write::Watched | Write::Unwatched)
     }
 
-    /// Perform it. WORKER THREAD — `c` was resolved on the main thread at the spawn site.
+    /// Perform it. WORKER THREAD — `c` was resolved by the runner, through the key the step named.
     fn perform(self, c: &plx_plex::plex::Client, rk: &str) -> bool {
         match self {
             Write::Watched => c.scrobble(rk),
@@ -364,17 +367,17 @@ impl Write {
     }
 }
 
-/// One queued write. Identity only — the `&'static Client` is resolved in [`kick`], on the main
-/// thread, at the moment the worker is spawned. `pms::kick_with`'s rule ("capture at the step":
-/// decide on the main thread) says the worker must never ask which server is current; resolving a
-/// SLOT there is that rule, and it also means a share whose registration went away while this sat
-/// in the queue is turned away with a log line instead of being sent to whatever now occupies the
-/// slot.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-struct RequestId(u64);
-
+/// One queued write. Identity only — no client is held: [`ViewStateState::kick`] decides from the
+/// step's inputs (the borrowed [`ClientKeys`] and the profile) and sends the runner a job that
+/// names the client by key, and the runner starts it only through that very client.
+/// `pms::kick_with`'s rule ("capture at the step": decide on the main thread) says the worker must
+/// never ask which server is current; naming a SLOT's key there is that rule, and it also means a
+/// share whose registration went away while this sat in the queue is turned away with a log line
+/// instead of being sent to whatever now occupies the slot.
 struct Req {
-    id: RequestId,
+    /// Unique among this owner's writes and monotone; also the job's request id. A `u32` so it
+    /// fits there: four billion writes is not a lifetime.
+    id: u32,
     /// Where [`crate::viewledger::ViewLedger::record`] numbered this press. The landing renumbers
     /// (`landed`) or retires that exact entry; a newer press that replaced it is left alone.
     seq: crate::viewledger::Stamp,
@@ -412,14 +415,124 @@ struct Req {
 /// only the ones that were TAKEN, since by the time this is filled the answer is known and there is
 /// no reason to flip a copy the server refused. Empty for a write that does not propagate.
 #[derive(Default)]
-struct Done {
+pub struct Done {
     ok: bool,
     also: Vec<(ServerId, String)>,
 }
 
+/// How a write came back to the mailbox.
+enum Outcome {
+    /// The worker ran: the origin write, if it took one, and the fan-out. A failed write is
+    /// `ok: false` here, and so is a worker that panicked (the origin write may already be on the
+    /// server, and a second scrobble would add a second viewCount).
+    Written(Done),
+    /// The write was never started: the runner refused the job. Nothing left the device, so it is
+    /// not a failure — it changes no ledger entry, owes no read-back or hub refresh, and goes back
+    /// to be judged again ([`ViewStateState::restart_refused`]).
+    NotStarted,
+}
+
 struct Completion {
-    id: RequestId,
-    done: Done,
+    id: u32,
+    outcome: Outcome,
+}
+
+/// The one write a [`StoreJob::ViewWrite`] carries: everything the worker needs, captured by the
+/// step. `key` is the origin's client as the step decided it; the runner starts the write only if
+/// the registry still holds that client at the launch. `keys` is the WHOLE snapshot the step decided
+/// under: the fan-out reaches the other copies only through [`KeyedClients`] built from it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ViewWriteReq {
+    sid: ServerId,
+    key: ClientKey,
+    rk: String,
+    w: Write,
+    guid: String,
+    origin_done: bool,
+    keys: ClientKeys,
+}
+
+impl ViewWriteReq {
+    /// The server to write to and the client the step decided to write it through.
+    pub fn server(&self) -> (ServerId, ClientKey) { (self.sid, self.key) }
+}
+
+/// Where a write's ONE answer goes: the owner's mailbox, captured with the job when it was emitted.
+/// A store that has since been reset holds a new adapter, and this port still reaches the one the
+/// write was made from, the retired one nobody pumps. Two ports are equal when they reach the same
+/// adapter.
+#[derive(Clone)]
+pub struct ViewWritePort(Arc<ViewStateAdapter>);
+
+impl ViewWritePort {
+    fn of(adapter: &Arc<ViewStateAdapter>) -> Self { Self(Arc::clone(adapter)) }
+
+    fn post(&self, id: u32, outcome: Outcome) {
+        *self.0.mail.lock().unwrap_or_else(|e| e.into_inner()) = Some(Completion { id, outcome });
+    }
+}
+
+impl PartialEq for ViewWritePort {
+    fn eq(&self, other: &Self) -> bool { Arc::ptr_eq(&self.0, &other.0) }
+}
+
+impl std::fmt::Debug for ViewWritePort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ViewWritePort({:p})", Arc::as_ptr(&self.0))
+    }
+}
+
+impl Port<Done> for ViewWritePort {
+    /// The write's result, under its id.
+    fn done(&self, addr: Addr, out: Done) {
+        self.post(addr.req.0, Outcome::Written(out));
+    }
+
+    /// The write was never started, so nothing will land: say so under its id, which is what puts
+    /// it back in the queue (or drops it, if the profile or the client moved).
+    fn refused(&self, addr: Addr) {
+        self.post(addr.req.0, Outcome::NotStarted);
+    }
+}
+
+/// A write's address: this store and its id. Ids are unique, so no two writes share an address.
+fn view_write_addr(id: u32) -> Addr {
+    Addr { to: MachineId::Store(StoreId::ViewState.ord()), req: RequestId(id) }
+}
+
+/// The write's IO body and its completion: write to `origin` (unless it already holds the write),
+/// fan the write out to the title's other copies through the key-checked `clients`, and post the
+/// result to `port`. `lookup` is the registry read the host passes in; a copy whose client no
+/// longer carries the key the step decided under is not written to. The answer is posted OUTSIDE
+/// the guard, so a write that panics lands as a failure and never as a missing answer — and never
+/// as "not started", because the origin write may already be on the server.
+pub fn finish_view_write_job(
+    port: &ViewWritePort,
+    addr: Addr,
+    origin: &'static Client,
+    lookup: fn(ServerId) -> Option<&'static Client>,
+    req: ViewWriteReq,
+) {
+    let done = catch_unwind(AssertUnwindSafe(|| {
+        let clients = KeyedClients::new(&req.keys, lookup);
+        let ok = req.origin_done || req.w.perform(origin, &req.rk);
+        // The fan-out runs INSIDE this worker rather than beside it. The queue is drained one
+        // worker at a time precisely so two writes for one item cannot land out of order, and a
+        // second thread doing the other sources would put those copies outside that ordering — a
+        // watched/unwatched pair could then settle differently per server, which is the one thing
+        // this whole feature exists to stop.
+        let also = if req.w.propagates() {
+            fan_out(origin, clients, req.sid, &req.rk, &req.guid, req.w)
+        } else {
+            Vec::new()
+        };
+        Done { ok, also }
+    }))
+    .unwrap_or_else(|_| {
+        plx_base::eventlog::log("viewstate: write worker panicked");
+        Done::default()
+    });
+    port.done(addr, done);
 }
 
 /// Cross-thread transport for one physical owner. Every worker captures the exact adapter that
@@ -441,7 +554,11 @@ pub struct ViewStateState {
     /// Items whose write landed (taken or refused) and whose truth the read-back worker is owed,
     /// handed over by [`ViewStateState::take_reread`] once the burst is idle.
     want_reread: Vec<(ServerId, String)>,
-    next_request_id: u64,
+    next_request_id: u32,
+    /// The writes the step has sent and nobody has taken to a runner yet ([`Self::take_jobs`]).
+    /// Not cleared by a reset: the job answers into the adapter it was emitted under, which the
+    /// owning store rotated out, so the new state never sees its answer.
+    jobs: Vec<StoreJob>,
     /// The player is on top: the terminal hub refetch stays owed (`want_hubs`) instead of running
     /// under the video. Writes and landings are untouched.
     pub(crate) hold_refresh: bool,
@@ -457,6 +574,7 @@ impl Default for ViewStateState {
             want_hubs: false,
             want_reread: Vec::new(),
             next_request_id: 1,
+            jobs: Vec::new(),
             hold_refresh: false,
         }
     }
@@ -467,8 +585,8 @@ impl Default for ViewStateState {
 const RETRY_FRAMES: u32 = 120;
 
 impl ViewStateState {
-    fn mint_request_id(&mut self) -> RequestId {
-        let id = RequestId(self.next_request_id);
+    fn mint_request_id(&mut self) -> u32 {
+        let id = self.next_request_id;
         self.next_request_id = self.next_request_id.checked_add(1)
             .expect("viewstate request identity exhausted");
         id
@@ -644,29 +762,65 @@ impl ViewStateState {
 /// Start the next queued write if nothing is out. MAIN THREAD.
     ///
     /// The decision is made from the step's inputs: `keys` is the registry's answer as of this
-    /// call and `profile` the profile the Session owner has seated now. A write goes out only
-    /// under the profile it was pressed under.
+    /// call and `profile` the profile the Session owner has seated now ([`Self::admit`]). A write
+    /// goes out as a [`StoreJob::ViewWrite`] the Bridge hands to the runner in the same call; the
+    /// runner starts it only through the client its key names. This reads no registry and starts
+    /// no thread.
     fn kick(&mut self, adapter: &Arc<ViewStateAdapter>, keys: &ClientKeys, profile: u32) {
         if self.sent.is_some() || self.retry_cd > 0 {
             return;
         }
-    while !self.queue.is_empty() {
-        let mut req = self.queue.remove(0);
-        // A profile switch re-tokens the registry's clients in place: the slot still answers, under
-        // the NEW profile's credential. A write pressed under another profile is a statement about
-        // that household's viewing record and must not be sent as this one's.
+        while !self.queue.is_empty() {
+            let req = self.queue.remove(0);
+            let Some(req) = self.admit(req, keys, profile) else { continue };
+            // An end-of-stream request writes nothing on its origin: say what it does.
+            let what = if req.origin_done { "fanout-only" } else { req.w.name() };
+            plx_base::eventlog::log(&format!(
+                "viewstate: rk={} {} → server {} (sent to the runner)",
+                req.rk,
+                what,
+                req.sid.raw()
+            ));
+            self.jobs.push(StoreJob::ViewWrite(
+                Job {
+                    addr: view_write_addr(req.id),
+                    req: ViewWriteReq {
+                        sid: req.sid,
+                        key: req.key,
+                        rk: req.rk.clone(),
+                        w: req.w,
+                        guid: req.guid.clone(),
+                        origin_done: req.origin_done,
+                        keys: keys.clone(),
+                    },
+                },
+                ViewWritePort::of(adapter),
+            ));
+            self.sent = Some(req);
+            return;
+        }
+    }
+
+    /// May `req` still go out, judged from the step's inputs? `None`: it was dropped, its ledger
+    /// entry retired (it never left, so nothing will ever confirm it), and the log says why.
+    ///
+    /// - A profile other than the one it was pressed under: DROPPED. A profile switch re-tokens the
+    ///   registry's clients in place, so the slot still answers, under the NEW profile's credential;
+    ///   a write is a statement about one household member's viewing record and is never sent as
+    ///   another's.
+    /// - A server that holds no client now: DROPPED, with a line, so no PMS write goes unrecorded.
+    /// - The same profile with a client re-tokened since the press (a refresh): the write is still
+    ///   the user's, so it is re-keyed to the credential the registry holds now and goes on.
+    fn admit(&mut self, mut req: Req, keys: &ClientKeys, profile: u32) -> Option<Req> {
         if req.profile != profile {
             plx_base::eventlog::log(&format!(
                 "viewstate: rk={} {} DROPPED — the profile changed while it was queued",
                 req.rk,
                 req.w.name()
             ));
-            self.ledger.retire(req.seq); // it never left, so nothing will ever confirm it
-            continue;
+            self.ledger.retire(req.seq);
+            return None;
         }
-        // A slot that has since stopped holding a client is a write with nowhere to go: dropping it
-        // silently would be the one PMS write with no line at all, which is what the request-time
-        // check above exists to prevent, so it says so here too.
         let Some(key) = keys.key(req.sid) else {
             plx_base::eventlog::log(&format!(
                 "viewstate: rk={} {} DROPPED — server {} left the registry while queued",
@@ -675,10 +829,8 @@ impl ViewStateState {
                 req.sid.raw()
             ));
             self.ledger.retire(req.seq);
-            continue;
+            return None;
         };
-        // The same profile with a re-tokened client (a refresh): the write is still the user's, so it
-        // is re-keyed to the credential the registry holds now and proceeds.
         if key != req.key {
             plx_base::eventlog::log(&format!(
                 "viewstate: rk={} {} re-keyed — server {} was re-tokened while it was queued",
@@ -688,61 +840,40 @@ impl ViewStateState {
             ));
             req.key = key;
         }
-        // Resolved HERE, at the spawn site, and never inside the worker. (The next commit moves this
-        // read to the runner, which starts the job only through the client `req.key` names.)
-        let Some(c) = plx_plex::plex::client_for(req.sid) else {
-            plx_base::eventlog::log(&format!(
-                "viewstate: rk={} {} DROPPED — server {} left the registry while queued",
-                req.rk,
-                req.w.name(),
-                req.sid.raw()
-            ));
-            self.ledger.retire(req.seq);
-            continue;
-        };
-        let (id, sid, rk, w, guid) = (req.id, req.sid, req.rk.clone(), req.w, req.guid.clone());
-        let origin_done = req.origin_done;
-        let worker_adapter = Arc::clone(adapter);
-        let spawned = plx_base::task::spawn_small("viewstate", move || {
-            // Filled OUTSIDE the guard, so a panicking write still lands (as a failure) rather than
-            // latching the queue behind a worker that will never report.
-            let done = catch_unwind(move || {
-                let ok = origin_done || w.perform(c, &rk);
-                // The fan-out runs INSIDE this worker rather than beside it. The queue is drained
-                // one worker at a time precisely so two writes for one item cannot land out of
-                // order, and a second thread doing the other sources would put those copies outside
-                // that ordering — a watched/unwatched pair could then settle differently per server,
-                // which is the one thing this whole feature exists to stop.
-                let also = if w.propagates() {
-                    fan_out(c, sid, &rk, &guid, w)
-                } else {
-                    Vec::new()
-                };
-                Done { ok, also }
-            })
-            .unwrap_or_default();
-            *worker_adapter.mail.lock().unwrap_or_else(|e| e.into_inner()) =
-                Some(Completion { id, done });
-        });
-        if !spawned {
-            // Nothing will ever fill the mailbox. Put the write back at the HEAD — dropping it would
-            // silently lose a press the user has already seen take effect on screen — and wait out
-            // the ladder before trying again, exactly as `search.rs`/`browse.rs` do.
-            self.queue.insert(0, req);
-            self.retry_cd = RETRY_FRAMES;
-            return;
-        }
-        // An end-of-stream request writes nothing on its origin: say what it does.
-        let what = if origin_done { "fanout-only" } else { w.name() };
-        plx_base::eventlog::log(&format!(
-            "viewstate: rk={} {} → server {} (off-thread)",
-            req.rk,
-            what,
-            req.sid.raw()
-        ));
-        self.sent = Some(req);
-        return;
+        Some(req)
     }
+
+    /// A write the runner never started ([`Outcome::NotStarted`]): nothing left the device. It goes
+    /// back to the HEAD of the queue — dropping it would silently lose a press the user has already
+    /// seen take effect on screen — after the same judgment [`Self::admit`] makes of any queued
+    /// write: a moved profile drops it, a re-tokened client re-keys it. A client that did not move
+    /// means the refusal was the system's (the thread ceiling), so the retry waits out the ladder,
+    /// exactly as `search.rs`/`browse.rs` do.
+    fn restart_refused(&mut self, req: Req, keys: &ClientKeys, profile: u32) {
+        plx_base::eventlog::log(&format!(
+            "viewstate: rk={} {} not started by the runner",
+            req.rk,
+            req.w.name()
+        ));
+        let client_unmoved = req.profile == profile && keys.key(req.sid) == Some(req.key);
+        let Some(req) = self.admit(req, keys, profile) else { return };
+        self.queue.insert(0, req);
+        if client_unmoved {
+            self.retry_cd = RETRY_FRAMES;
+        }
+    }
+
+    /// Take the writes the step has sent since the last take, in order. The caller OWES each one to
+    /// a runner: a job dropped here is a write that is never answered, and the queue behind it
+    /// never starts.
+    #[must_use]
+    pub fn take_jobs(&mut self) -> Vec<StoreJob> {
+        std::mem::take(&mut self.jobs)
+    }
+
+    /// Does the outbox hold a job nobody has taken yet?
+    pub fn has_jobs(&self) -> bool {
+        !self.jobs.is_empty()
     }
 
 /// MAIN THREAD, once a frame, ROUTE-UNCONDITIONAL — a landing must never depend on which screen is
@@ -776,15 +907,23 @@ pub fn pump_with_gate(
         }
         plx_base::eventlog::log(&format!(
             "viewstate: completion {} ignored — in-flight identity is {}",
-            completion.id.0,
-            self.sent.as_ref().map(|request| request.id.0.to_string())
+            completion.id,
+            self.sent.as_ref().map(|request| request.id.to_string())
                 .unwrap_or_else(|| "none".into()),
         ));
         None
     });
-    if let Some(completion) = landed {
+    let landed = match landed {
+        Some(Completion { outcome: Outcome::Written(done), .. }) => Some(done),
+        Some(Completion { outcome: Outcome::NotStarted, .. }) => {
+            let r = self.sent.take().expect("the exact in-flight request remains present");
+            self.restart_refused(r, keys, profile);
+            None
+        }
+        None => None,
+    };
+    if let Some(done) = landed {
         let r = self.sent.take().expect("the exact in-flight request remains present");
-        let done = completion.done;
         plx_base::eventlog::log(&format!(
             "viewstate: rk={} {} ok={} others={}",
             r.rk,
@@ -940,7 +1079,7 @@ impl ViewStateState {
         self.retry_cd = 9;
         self.want_hubs = true;
         *adapter.mail.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some(Completion { id, done: Done::default() });
+            Some(Completion { id, outcome: Outcome::Written(Done::default()) });
     }
 
     pub fn ownership_fixture(&self, adapter: &Arc<ViewStateAdapter>) -> OwnershipFixture {
@@ -961,7 +1100,7 @@ impl ViewStateState {
         let adapter = Arc::clone(adapter);
         Box::new(move || {
             *adapter.mail.lock().unwrap_or_else(|e| e.into_inner()) =
-                Some(Completion { id, done: Done::default() });
+                Some(Completion { id, outcome: Outcome::Written(Done::default()) });
         })
     }
 
@@ -985,13 +1124,21 @@ type Answer = (ServerId, Option<Vec<String>>);
 /// main thread can flip them locally. **Best-effort throughout**: nothing here can fail, delay or
 /// retry the write that has already gone out, and a source that never answers costs one log line.
 ///
-/// `c` is the item's OWN client — the one [`kick`] captured on the main thread and the write itself
-/// went out on, handed down rather than re-resolved from `sid` here. That is `pms::kick_with`'s
-/// capture-at-the-step rule (decide on the main thread; a worker never asks the registry about the
-/// server it was given), and it also keeps [`resolved_guid`]'s failure honest: a slot re-pointed or
-/// revoked mid-write cannot turn into a log line claiming the item has no portable id.
+/// `c` is the item's OWN client — the one the runner resolved through the key the step named and the
+/// write itself went out on, handed down rather than re-resolved from `sid` here. That is
+/// `pms::kick_with`'s capture-at-the-step rule (decide on the main thread; a worker never asks the
+/// registry about the server it was given), and it also keeps [`resolved_guid`]'s failure honest: a
+/// slot re-pointed or revoked mid-write cannot turn into a log line claiming the item has no
+/// portable id.
+///
+/// `clients` reaches every OTHER source, and only while that source's client still carries the key
+/// the step's snapshot holds. A profile switch re-tokens the registry's clients in place, so a
+/// fan-out begun under one profile would otherwise send its lookups and its writes to the other
+/// servers under the next profile's credential, into another person's viewing record. A source the
+/// snapshot never held, or whose credential moved, is answered "no answer" and gets no request.
 fn fan_out(
     c: &plx_plex::plex::Client,
+    clients: KeyedClients<'_>,
     sid: ServerId,
     rk: &str,
     guid: &str,
@@ -1013,13 +1160,13 @@ fn fan_out(
         ));
         return Vec::new();
     };
-    let answers = ask_sources(&sources, &guid);
+    let answers = ask_sources(&sources, clients, &guid);
     let mut done = Vec::new();
     for (id, key) in fanout_targets((sid, rk), &answers) {
         // `dst`, not a second `c`: shadowing the item's own client inside the one loop that writes
         // to OTHER machines is how a key ends up posted to the wrong server, which is the exact
         // failure this whole function is arranged around.
-        let Some(dst) = plx_plex::plex::client_for(id) else {
+        let Some(dst) = clients.client(id) else {
             continue;
         };
         let ok = w.perform(dst, &key);
@@ -1058,11 +1205,11 @@ fn resolved_guid(c: &plx_plex::plex::Client, rk: &str, given: &str) -> Option<St
 /// A guid is a public metadata id and is safe to log; **a machine name, an address or a token is
 /// not**, and none appears here — a source is named by its registry slot number, which means
 /// nothing off this device. (This repo is public, and a friend's server details are theirs.)
-fn ask_sources(sources: &[ServerId], guid: &str) -> Vec<Answer> {
+fn ask_sources(sources: &[ServerId], clients: KeyedClients<'_>, guid: &str) -> Vec<Answer> {
     sources
         .iter()
         .map(|&id| {
-            let keys = plx_plex::plex::client_for(id)
+            let keys = clients.client(id)
                 .and_then(|c| c.find_by_guid(guid))
                 .map(|mc| {
                     mc.metadata
@@ -1393,7 +1540,7 @@ mod tests {
             scope: Scope::Leaf, guid: "plex://movie/7".into(), origin_done: false });
         *adapter.mail.lock().unwrap_or_else(|e| e.into_inner()) = Some(Completion {
             id,
-            done: Done { ok: true, also: vec![(other, "70".into())] },
+            outcome: Outcome::Written(Done { ok: true, also: vec![(other, "70".into())] }),
         });
         let mut browse = Vec::new();
         let mut hubs = Vec::new();
@@ -1602,41 +1749,251 @@ mod tests {
         assert!(std::mem::take(&mut state.want_hubs), "exactly one hub refetch is owed for the burst");
     }
 
-    /// A refused spawn must neither panic nor block nor silently lose the press: the write goes back
-    /// to the HEAD of the queue and the ladder holds the next attempt off. The real refusal needs
-    /// the OS out of threads, which no host test can arrange, so what is graded is the recovery.
+    // ---- the job lane ----------------------------------------------------------------------
+    //
+    // A write leaves the step as a `StoreJob::ViewWrite` and comes back through its port. These
+    // grade that edge with no registry, socket or thread: the step is driven with a hand-built
+    // `ClientKeys` and a profile, and the answer is posted through the job's own port, as the
+    // runner would.
+
+    const PROFILE: u32 = 4;
+
+    fn key(instance: u32, token: u32) -> ClientKey { ClientKey { instance, token } }
+
+    fn keys_of(entries: &[(ServerId, ClientKey)]) -> ClientKeys {
+        ClientKeys::from_keys(entries.iter().copied())
+    }
+
+    /// Queue a write on `sid` as `request` would have: the key and the profile the press saw, and a
+    /// live ledger entry (`seq`) to retire or renumber.
+    fn press(state: &mut ViewStateState, sid: ServerId, k: ClientKey, rk: &str, w: Write) {
+        state.coalesce(sid, rk, w);
+        let mut r = req(state, rk, w);
+        let change = ViewChange { sid, rk: rk.into(), scope: Scope::Leaf, fact: w.fact() };
+        r.seq = state.ledger.record(&change.at(), change.edit());
+        r.sid = sid;
+        r.key = k;
+        r.profile = PROFILE;
+        state.queue.push(r);
+    }
+
+    /// The jobs the step has sent, unwrapped.
+    fn sent_jobs(state: &mut ViewStateState) -> Vec<(Addr, ViewWriteReq, ViewWritePort)> {
+        state.take_jobs().into_iter().map(|job| match job {
+            StoreJob::ViewWrite(job, port) => (job.addr, job.req, port),
+            other => panic!("viewstate emitted {other:?}"),
+        }).collect()
+    }
+
+    /// One frame of the pump on the fixture gate, with the inputs a Bridge call would hand it.
+    /// Returns the hub commands the frame ran.
+    fn frame(state: &mut ViewStateState, adapter: &Arc<ViewStateAdapter>, keys: &ClientKeys, profile: u32)
+        -> Vec<crate::stores::hubs::HubsCmd> {
+        let mut hubs = Vec::new();
+        let _ = state.pump_with_gate(adapter, plx_machine::landgate::fixture_gate(), keys, profile,
+            &mut |_| false,
+            &mut |cmd| { hubs.push(cmd); crate::stores::StoreOutcome::default() },
+            &mut |_| false, &mut |_| false, &mut |_| false, &mut |_| false);
+        hubs
+    }
+
+    /// The step decides a write from its inputs and emits it: one job, the key it decided, the
+    /// snapshot it decided under and the id the in-flight request carries. Only one write is out at
+    /// a time, so the next one waits for the answer.
     #[test]
-    fn a_refused_spawn_keeps_the_write_at_the_head_of_the_queue_and_waits_out_the_ladder() {
+    fn a_kicked_write_leaves_as_one_job_naming_the_key_it_decided_and_the_next_waits() {
         let mut state = ViewStateState::default();
+        let adapter = Arc::new(ViewStateAdapter::default());
+        let keys = keys_of(&[(SRV_A, key(1, 1)), (SRV_B, key(2, 1))]);
+        press(&mut state, SRV_A, key(1, 1), "5", Write::Watched);
+        press(&mut state, SRV_B, key(2, 1), "9", Write::Unwatched);
 
-        // exactly what `kick`'s refusal branch does
-        enqueue(&mut state, "5", Write::Watched);
-        let head = state.queue.remove(0);
-        state.queue.insert(0, head);
-        state.retry_cd = RETRY_FRAMES;
+        state.kick(&adapter, &keys, PROFILE);
 
-        assert_eq!(
-            queued(&state),
-            vec![("5".into(), Write::Watched)],
-            "the press survives the refusal"
-        );
-        assert!(
-            state.sent.is_none(),
-            "and nothing is recorded as in flight"
-        );
+        let jobs = sent_jobs(&mut state);
+        assert_eq!(jobs.len(), 1, "one write is out at a time");
+        let (addr, job, port) = &jobs[0];
+        assert_eq!(job.server(), (SRV_A, key(1, 1)));
+        assert_eq!((job.rk.as_str(), job.w, job.origin_done), ("5", Write::Watched, false));
+        assert_eq!(job.keys, keys, "the worker reaches the other copies under the snapshot the step used");
+        assert_eq!(addr.to, MachineId::Store(StoreId::ViewState.ord()));
+        assert_eq!(Some(addr.req.0), state.sent.as_ref().map(|r| r.id), "the job's id is the in-flight request's");
+        assert_eq!(queued(&state), vec![("9".into(), Write::Unwatched)], "the next write waits behind it");
+        assert!(!state.has_jobs(), "taking the jobs empties the outbox");
+
+        // its answer starts the next one
+        port.done(*addr, Done { ok: true, also: Vec::new() });
+        let _ = frame(&mut state, &adapter, &keys, PROFILE);
+        let next = sent_jobs(&mut state);
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].1.server(), (SRV_B, key(2, 1)));
+        assert_eq!(next[0].1.rk, "9");
+    }
+
+    /// A job the runner refused changed nothing on any server: the write goes back to the HEAD of
+    /// the queue and the ladder holds the next attempt off. It is not a failure, so it does not
+    /// retire its ledger entry, owe a read-back or owe a hub refresh. The real refusal needs the OS
+    /// out of threads, which no host test can arrange, so the refusal is posted through the port.
+    #[test]
+    fn a_refused_job_keeps_the_write_at_the_head_of_the_queue_and_waits_out_the_ladder() {
+        let mut state = ViewStateState::default();
+        let adapter = Arc::new(ViewStateAdapter::default());
+        let keys = keys_of(&[(SRV_A, key(1, 1))]);
+        press(&mut state, SRV_A, key(1, 1), "5", Write::Watched);
+        state.kick(&adapter, &keys, PROFILE);
+        let (addr, _, port) = sent_jobs(&mut state).remove(0);
+        let first_id = addr.req.0;
+        let entries = state.ledger.since(0);
+        assert_eq!(entries.len(), 1, "the press is recorded");
+
+        port.refused(addr);
+        let hubs = frame(&mut state, &adapter, &keys, PROFILE);
+
+        assert_eq!(queued(&state), vec![("5".into(), Write::Watched)], "the press survives the refusal");
+        assert!(state.sent.is_none(), "and nothing is recorded as in flight");
+        assert!(!state.has_jobs(), "the ladder holds the retry off");
+        assert_eq!(state.retry_cd, RETRY_FRAMES);
+        assert_eq!(state.ledger.since(0), entries, "nothing left the device, so the press stands");
+        assert!(state.take_reread().is_empty(), "and no read-back is owed");
+        assert!(hubs.is_empty() && !state.want_hubs, "and no hub refresh");
 
         for i in 1..RETRY_FRAMES {
-            assert!(!state.retry_tick(), "frame {i} of the wait is not the due one");
+            let _ = frame(&mut state, &adapter, &keys, PROFILE);
+            assert!(!state.has_jobs(), "frame {i} of the wait is not the due one");
         }
-        assert!(
-            state.retry_tick(),
-            "the ladder is spent after RETRY_FRAMES frames"
-        );
+        let _ = frame(&mut state, &adapter, &keys, PROFILE);
+        let again = sent_jobs(&mut state);
+        assert_eq!(again.len(), 1, "the ladder is spent after RETRY_FRAMES frames");
+        assert_eq!(again[0].0.req.0, first_id, "the same write goes out again");
+        assert_eq!(again[0].1.rk, "5");
+    }
+
+    /// A refusal is judged again like any queued write. The same profile whose client was re-tokened
+    /// meanwhile (a refresh) re-keys, and as the client moved the refusal was not the system's, so
+    /// there is no ladder: it goes out in that very frame.
+    #[test]
+    fn a_refused_job_whose_client_was_retokened_under_the_same_profile_is_rekeyed_and_sent_at_once() {
+        let mut state = ViewStateState::default();
+        let adapter = Arc::new(ViewStateAdapter::default());
+        press(&mut state, SRV_A, key(1, 1), "5", Write::Watched);
+        state.kick(&adapter, &keys_of(&[(SRV_A, key(1, 1))]), PROFILE);
+        let (addr, _, port) = sent_jobs(&mut state).remove(0);
+
+        port.refused(addr);
+        let moved = keys_of(&[(SRV_A, key(1, 2))]);
+        let _ = frame(&mut state, &adapter, &moved, PROFILE);
+
+        let again = sent_jobs(&mut state);
+        assert_eq!(again.len(), 1, "the write is still the user's, so it goes out");
+        assert_eq!(again[0].1.server(), (SRV_A, key(1, 2)), "under the credential the registry holds now");
+        assert_eq!(again[0].1.keys, moved);
         assert_eq!(state.retry_cd, 0);
-        assert!(
-            state.retry_tick(),
-            "…and stays due until a fresh refusal re-arms it"
-        );
+    }
+
+    /// A write is one household member's statement. A profile switch re-tokens the registry's
+    /// clients in place, so the slot still answers, under the NEW profile's credential: the write
+    /// is dropped and its ledger entry retired instead (queued, refused and about to be sent alike).
+    #[test]
+    fn a_write_whose_profile_moved_is_dropped_and_retired_wherever_it_is_judged() {
+        let keys = keys_of(&[(SRV_A, key(1, 2))]); // re-tokened by the switch
+        let next = PROFILE + 1;
+
+        // queued, judged at the kick
+        let mut state = ViewStateState::default();
+        let adapter = Arc::new(ViewStateAdapter::default());
+        press(&mut state, SRV_A, key(1, 1), "5", Write::Watched);
+        state.kick(&adapter, &keys, next);
+        assert!(!state.has_jobs() && state.sent.is_none() && !state.is_busy(), "nothing is sent");
+        assert!(state.ledger.since(0).is_empty(), "and the optimistic edit is taken back");
+
+        // refused, judged at the landing of the refusal
+        let mut state = ViewStateState::default();
+        press(&mut state, SRV_A, key(1, 1), "5", Write::Watched);
+        state.kick(&adapter, &keys_of(&[(SRV_A, key(1, 1))]), PROFILE);
+        let (addr, _, port) = sent_jobs(&mut state).remove(0);
+        port.refused(addr);
+        let _ = frame(&mut state, &adapter, &keys, next);
+        assert!(!state.has_jobs() && !state.is_busy(), "the refused write is not queued again");
+        assert_eq!(state.retry_cd, 0, "and no ladder is armed for it");
+        assert!(state.ledger.since(0).is_empty());
+    }
+
+    /// A server that left the registry while the write waited has no client to send it through: it
+    /// is dropped with a line, never sent to whatever now occupies the slot.
+    #[test]
+    fn a_write_whose_server_left_the_registry_is_dropped_and_retired() {
+        let mut state = ViewStateState::default();
+        let adapter = Arc::new(ViewStateAdapter::default());
+        press(&mut state, SRV_A, key(1, 1), "5", Write::Watched);
+        state.kick(&adapter, &keys_of(&[(SRV_B, key(2, 1))]), PROFILE);
+        assert!(!state.has_jobs() && !state.is_busy());
+        assert!(state.ledger.since(0).is_empty());
+    }
+
+    /// The same profile with a client re-tokened while the write waited: re-keyed, and sent.
+    #[test]
+    fn a_queued_write_whose_client_was_retokened_under_the_same_profile_is_rekeyed_and_sent() {
+        let mut state = ViewStateState::default();
+        let adapter = Arc::new(ViewStateAdapter::default());
+        press(&mut state, SRV_A, key(1, 1), "5", Write::Watched);
+        state.kick(&adapter, &keys_of(&[(SRV_A, key(1, 2))]), PROFILE);
+        let jobs = sent_jobs(&mut state);
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].1.server(), (SRV_A, key(1, 2)));
+        assert_eq!(state.sent.as_ref().map(|r| r.key), Some(key(1, 2)), "the request carries the new key too");
+    }
+
+    /// A reset drops the queue and what is in flight, not the outbox: a job already sent answers
+    /// into the adapter it was emitted under, which the owning store has retired, and the new
+    /// owner never sees that answer.
+    #[test]
+    fn a_job_sent_before_a_reset_answers_into_the_retired_adapter_only() {
+        let mut state = ViewStateState::default();
+        let old = Arc::new(ViewStateAdapter::default());
+        let keys = keys_of(&[(SRV_A, key(1, 1))]);
+        press(&mut state, SRV_A, key(1, 1), "5", Write::Watched);
+        state.kick(&old, &keys, PROFILE);
+        assert!(state.has_jobs());
+
+        state.reset();
+        let new = Arc::new(ViewStateAdapter::default());
+        assert!(state.has_jobs(), "the outbox is not the reset's to empty");
+        let (addr, _, port) = sent_jobs(&mut state).remove(0);
+        port.done(addr, Done { ok: true, also: Vec::new() });
+
+        let hubs = frame(&mut state, &new, &keys, PROFILE);
+        assert!(hubs.is_empty() && !state.want_hubs && state.take_reread().is_empty(),
+            "the new owner learns nothing of it");
+        assert!(new.mail.lock().unwrap_or_else(|e| e.into_inner()).is_none());
+        assert!(old.mail.lock().unwrap_or_else(|e| e.into_inner()).is_some(), "it went to the adapter it was made under");
+    }
+
+    /// A worker that panics answers with a failed write, NEVER with "not started": the origin
+    /// write may already be on the server, and a second scrobble adds a second viewCount. The
+    /// registry read is the panic here (the host passes it in), reached by the fan-out.
+    #[test]
+    fn a_worker_that_panics_answers_a_failed_write_and_never_not_started() {
+        fn panicking_lookup(_: ServerId) -> Option<&'static Client> { panic!("registry read panicked") }
+        let _g = plx_base::testlock::serial();
+        plx_plex::plex::reset_servers_for_test();
+        let a = plx_plex::plex::register_for_test("viewstate-panic-a", "127.0.0.1", 9, "token", "panic-a");
+        let b = plx_plex::plex::register_for_test("viewstate-panic-b", "127.0.0.1", 9, "token", "panic-b");
+        let keys = crate::pms::registry_keys_for_test();
+        let origin = plx_plex::plex::client_for(a).expect("registered");
+        let adapter = Arc::new(ViewStateAdapter::default());
+        let job = ViewWriteReq {
+            sid: a, key: keys.key(a).expect("keyed"), rk: "1".into(), w: Write::Watched,
+            guid: "plex://movie/6856893830a4aaafd5c4291d".into(), origin_done: true, keys: keys.clone(),
+        };
+        assert!(keys.key(b).is_some());
+
+        finish_view_write_job(&ViewWritePort::of(&adapter), view_write_addr(77), origin, panicking_lookup, job);
+
+        let answer = adapter.mail.lock().unwrap_or_else(|e| e.into_inner()).take().expect("the job is answered");
+        assert_eq!(answer.id, 77);
+        assert!(matches!(&answer.outcome, Outcome::Written(done) if !done.ok && done.also.is_empty()),
+            "a failed write with nothing fanned out, not a refusal");
+        plx_plex::plex::reset_servers_for_test();
     }
 
     /// DUMP MODE at the ViewState site, through the real pump: a write on the wire when the pump
@@ -1657,7 +2014,7 @@ mod tests {
         let join = std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(25));
             *worker.mail.lock().unwrap_or_else(|e| e.into_inner()) =
-                Some(Completion { id, done: Done { ok: true, also: Vec::new() } });
+                Some(Completion { id, outcome: Outcome::Written(Done { ok: true, also: Vec::new() }) });
         });
         let mut hubs = Vec::new();
         let _ = state.pump_with_gate(&adapter, &gate, &ClientKeys::default(), 0, &mut |_| false,
@@ -1687,10 +2044,10 @@ mod tests {
         let join = std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(5));
             *worker.mail.lock().unwrap_or_else(|e| e.into_inner()) =
-                Some(Completion { id: stale, done: Done::default() });
+                Some(Completion { id: stale, outcome: Outcome::Written(Done::default()) });
             std::thread::sleep(std::time::Duration::from_millis(25));
             *worker.mail.lock().unwrap_or_else(|e| e.into_inner()) =
-                Some(Completion { id, done: Done { ok: true, also: Vec::new() } });
+                Some(Completion { id, outcome: Outcome::Written(Done { ok: true, also: Vec::new() }) });
         });
         let _ = state.pump_with_gate(&adapter, &gate, &ClientKeys::default(), 0, &mut |_| false,
             &mut |_| crate::stores::StoreOutcome::default(),
@@ -1709,7 +2066,7 @@ mod tests {
         state.sent = Some(Req { id, seq: 0, sid: ServerId::from_raw(0), key: UNKEYED, profile: 0, rk: "7".into(), w: Write::Watched,
             scope: Scope::Leaf, guid: String::new(), origin_done: true });
         *adapter.mail.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some(Completion { id, done: Done { ok: true, also } });
+            Some(Completion { id, outcome: Outcome::Written(Done { ok: true, also }) });
         let mut hubs = Vec::new();
         let _ = state.pump(&adapter, &mut |_| true,
             &mut |cmd| { hubs.push(cmd); crate::stores::StoreOutcome::default() },
@@ -1771,7 +2128,7 @@ mod tests {
         state.want_hubs = true;
         state.retry_cd = 9;
         *adapter.mail.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some(Completion { id: sent_id, done: Done::default() });
+            Some(Completion { id: sent_id, outcome: Outcome::Written(Done::default()) });
 
         state.reset();
 
@@ -1972,7 +2329,7 @@ mod tests {
         });
         *adapter.mail.lock().unwrap_or_else(|e| e.into_inner()) = Some(Completion {
             id,
-            done: Done { ok: true, also: vec![(SRV_B, "4".into())] },
+            outcome: Outcome::Written(Done { ok: true, also: vec![(SRV_B, "4".into())] }),
         });
 
         let _outcome = state.pump(&adapter, &mut |_| false,
@@ -2011,7 +2368,7 @@ mod tests {
             origin_done: false,
         });
         *adapter.mail.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some(Completion { id, done: Done { ok, also: Vec::new() } });
+            Some(Completion { id, outcome: Outcome::Written(Done { ok, also: Vec::new() }) });
         let _ = state.pump(&adapter, &mut |_| false, &mut |_cmd| crate::stores::StoreOutcome::default(),
             &mut |_| false, &mut |_| false, &mut |_| false, &mut |_| false);
         (state.ledger.clone(), read_stamp)
@@ -2067,7 +2424,7 @@ mod tests {
             origin_done: false,
         });
         *adapter.mail.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some(Completion { id, done: Done { ok: true, also: Vec::new() } });
+            Some(Completion { id, outcome: Outcome::Written(Done { ok: true, also: Vec::new() }) });
         let _ = state.pump(&adapter, &mut |_| false, &mut |_cmd| crate::stores::StoreOutcome::default(),
             &mut |_| false, &mut |_| false, &mut |_| false, &mut |_| false);
         assert!(state.ledger.since(stamp).is_empty());
@@ -2095,11 +2452,11 @@ mod tests {
         state.reset();
         let second = req(&mut state, "after-reset", Write::Unwatched);
         let second_id = second.id;
-        assert!(second_id.0 > first_id.0, "request identity stays monotone across reset");
+        assert!(second_id > first_id, "request identity stays monotone across reset");
         state.sent = Some(second);
         *adapter.mail.lock().unwrap_or_else(|e| e.into_inner()) = Some(Completion {
             id: first_id,
-            done: Done::default(),
+            outcome: Outcome::Written(Done::default()),
         });
 
         let _ = state.pump(&adapter, &mut |_| false,

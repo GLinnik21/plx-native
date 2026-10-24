@@ -1514,13 +1514,14 @@ impl Bridge {
 
     /// The read-back worker's pass (`stores::viewreconcile`), and the Browse pump a membership
     /// re-query needs while a page is pushed over the Library page and so it is not ticked to pump its own store.
-    /// The keys are refilled first and the reads the step sent are started before this goes on, in
-    /// the same call; only the reconcile outbox is drained here, the shared `Stores` call's other
-    /// fan-outs emit no jobs of their own.
+    /// The keys are refilled first and the writes and reads the step sent are started before this
+    /// goes on, in the same call: an end-of-stream fan-out it queues starts ViewState's next write,
+    /// so both outboxes are drained here (`Stores::RECONCILE_FILLS`); the shared `Stores` call's
+    /// other fan-outs emit no jobs of their own.
     pub(crate) fn reconcile_pump(&mut self) -> plx_data::stores::EndpointRefreshSet {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
         let mut outcome = self.stores.reconcile_pump(self.directory.view(), &self.client_keys, Self::profile_scope());
-        self.start_store_jobs_of(StoreId::ViewReconcile);
+        self.start_store_jobs_in(plx_data::stores::Stores::RECONCILE_FILLS);
         if outcome.changed {
             plx_machine::idle::invalidate();
         }

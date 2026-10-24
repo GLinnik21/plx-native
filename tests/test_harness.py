@@ -7389,14 +7389,16 @@ impl PersonOwnerGateFixture {
     PINNED_LEDGER_TOTALS = {
         # Browse B-A (the section hubs' list and row reads leave as `StoreJob::BrowseHubs`): -2 here (`hubs_spawn`,
         # `hubs_spawn_row` `spawn_small`), -3 on globals (their `client_for` reads and `hubs_land`'s).
-        "workers": 14,  # production worker starts inside machines (`ci/allow/workers/`)
+        # ViewState C3 (the household writes leave as `StoreJob::ViewWrite`): -1 here (`kick`'s `spawn_small`).
+        "workers": 13,  # production worker starts inside machines (`ci/allow/workers/`)
         # Sans-IO lifecycle PR B moved the pin by nothing: -3 (the three `lifecycle.rs` `player::TX` lines left with the
         # transport contract, `player/transport.rs`, the IO layer) and +3 (a relocation lowers no pin by itself, so the same
         # diff widened the spellings to the transport readers `transport::paused`, `transport::viewer_paused` and
         # `preview::paused`, and seeded the 3 `preview::paused` reads in screens/detail it found).
         # ViewState C2 (the step decides from the borrowed `ClientKeys`): -2 on globals (`request` and
-        # `fan_out_origin_watched` no longer read the registry). `kick`'s read leaves with the job lane (C3).
-        "globals": 73,  # production process-global reads inside machines (`ci/allow/globals/`)
+        # `fan_out_origin_watched` no longer read the registry). C3 (the job lane) took the other 3: `kick`, and the
+        # fan-out's `fan_out` and `ask_sources`, which now reach the other servers through the key-checked `KeyedClients`.
+        "globals": 70,  # production process-global reads inside machines (`ci/allow/globals/`)
         "forks": 58,  # production test/production forks in data/, plex/, media/, session/ (`ci/allow/forks/`)
         "fxlanes": 11,  # Bridge::app_effect arms that do not push Fx::Deliver (`ci/allow/fxlanes/`)
     }
