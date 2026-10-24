@@ -1366,6 +1366,13 @@ impl Bridge {
         self.start_jobs(jobs)
     }
 
+    /// [`Bridge::start_store_jobs_of`] for each store a fanning `Stores` call can fill, in the order
+    /// its `*_FILLS` list names them (`Stores::VIEWSTATE_FILLS`, `Stores::NOTIFY_FILLS`): the
+    /// calls that step more than one store drain every outbox they can fill and nothing else.
+    pub(crate) fn start_store_jobs_in(&mut self, ids: &[StoreId]) -> usize {
+        ids.iter().map(|&id| self.start_store_jobs_of(id)).sum()
+    }
+
     fn start_jobs(&mut self, jobs: Vec<plx_data::stores::StoreJob>) -> usize {
         let started = jobs.len();
         for job in jobs {
@@ -1385,7 +1392,7 @@ impl Bridge {
         }
         self.late_store_jobs += late;
         plx_base::eventlog::log(&format!(
-            "stores: WARN {late} store job(s) reached a pump unstarted ({} so far): a sender bypassed its Bridge drain (metadata_run / person_pump / collection_pump / catalog_open / catalog_pump / subsearch_pump / reconcile_pump / start_store_jobs_of / start_store_jobs)",
+            "stores: WARN {late} store job(s) reached a pump unstarted ({} so far): a sender bypassed its Bridge drain (metadata_run / person_pump / collection_pump / catalog_open / catalog_pump / subsearch_pump / reconcile_pump / hubs_run / viewstate_run / viewstate_pump / notify_pump / start_store_jobs_in / start_store_jobs_of / start_store_jobs)",
             self.late_store_jobs
         ));
     }
@@ -1415,7 +1422,7 @@ impl Bridge {
 
     /// TEST ONLY: no sender bypassed the drain. A frame's end is the moment to ask, and both halves
     /// matter: a job still on an outbox is a sender that neither went through its store's Bridge
-    /// method ([`Bridge::metadata_run`], [`Bridge::person_pump`], [`Bridge::collection_pump`], [`Bridge::catalog_open`], [`Bridge::catalog_pump`], [`Bridge::subsearch_pump`], [`Bridge::reconcile_pump`]) nor drained with
+    /// method ([`Bridge::metadata_run`], [`Bridge::person_pump`], [`Bridge::collection_pump`], [`Bridge::catalog_open`], [`Bridge::catalog_pump`], [`Bridge::subsearch_pump`], [`Bridge::reconcile_pump`], [`Bridge::hubs_run`], [`Bridge::viewstate_run`], [`Bridge::viewstate_pump`], [`Bridge::notify_pump`]) nor drained with
     /// [`Bridge::start_store_jobs`] (the detail pump's
     /// backstop would start it a frame late), and a nonzero `late_store_jobs` is a sender the
     /// backstop has ALREADY rescued, which the job check alone cannot see once `update()` has run
@@ -1423,9 +1430,9 @@ impl Bridge {
     #[cfg(test)]
     pub(crate) fn assert_no_store_jobs_left_for_test(&self) {
         assert!(!self.stores.has_jobs(),
-            "a store job sits on an outbox: its sender neither ran through its store's Bridge drain (metadata_run / person_pump / collection_pump / catalog_open / catalog_pump / subsearch_pump / reconcile_pump / start_store_jobs_of) nor drained with Bridge::start_store_jobs");
+            "a store job sits on an outbox: its sender neither ran through its store's Bridge drain (metadata_run / person_pump / collection_pump / catalog_open / catalog_pump / subsearch_pump / reconcile_pump / hubs_run / viewstate_run / viewstate_pump / notify_pump / start_store_jobs_in / start_store_jobs_of) nor drained with Bridge::start_store_jobs");
         assert_eq!(self.late_store_jobs, 0,
-            "a pump's backstop had to start store jobs their sender left unstarted: that sender bypassed its Bridge drain (metadata_run / person_pump / collection_pump / catalog_open / catalog_pump / subsearch_pump / reconcile_pump / start_store_jobs_of / start_store_jobs)");
+            "a pump's backstop had to start store jobs their sender left unstarted: that sender bypassed its Bridge drain (metadata_run / person_pump / collection_pump / catalog_open / catalog_pump / subsearch_pump / reconcile_pump / hubs_run / viewstate_run / viewstate_pump / notify_pump / start_store_jobs_in / start_store_jobs_of / start_store_jobs)");
     }
 
     pub(crate) fn metadata_view(&self) -> plx_data::metadata::MetadataView<'_> {
@@ -1442,7 +1449,9 @@ impl Bridge {
 
     pub(crate) fn viewstate_run(&mut self, cmd: plx_data::stores::viewstate::ViewStateCmd) -> bool {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
-        self.stores.viewstate_run(cmd, self.directory.view(), &self.client_keys)
+        let changed = self.stores.viewstate_run(cmd, self.directory.view(), &self.client_keys);
+        self.start_store_jobs_in(plx_data::stores::Stores::VIEWSTATE_FILLS);
+        changed
     }
 
     /// Keep the view-state reconcile network work owed while the player is on top
@@ -1453,7 +1462,8 @@ impl Bridge {
 
     /// Take the stops whose `stopped` POST was attempted or abandoned, patch each item's resume
     /// point at once, and owe it a read-back (`Stores::stops_landed`). Route-unconditional: an Up
-    /// Next chain stops one episode after another without ever leaving the player.
+    /// Next chain stops one episode after another without ever leaving the player. The patches
+    /// reach Hubs as `ApplyView` only, which launches nothing, so this drains no outbox.
     pub(crate) fn stops_pump(&mut self) {
         let stops = plx_data::stores::take_landings_owed(
             &self.stores.landgate,
@@ -1478,7 +1488,9 @@ impl Bridge {
 
     pub(crate) fn viewstate_pump(&mut self) -> plx_data::stores::EndpointRefreshSet {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
-        self.stores.viewstate_pump(self.directory.view(), &self.client_keys)
+        let endpoints = self.stores.viewstate_pump(self.directory.view(), &self.client_keys);
+        self.start_store_jobs_in(plx_data::stores::Stores::VIEWSTATE_FILLS);
+        endpoints
     }
 
     /// The read-back worker's pass (`stores::viewreconcile`), and the Browse pump a membership
@@ -1515,6 +1527,7 @@ impl Bridge {
         let out = self.stores.notify_pump();
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
         let spent = self.stores.notify_map(&out, pages, shown, self.directory.view(), &self.client_keys);
+        self.start_store_jobs_in(plx_data::stores::Stores::NOTIFY_FILLS);
         if !spent.refetched.is_empty() || !spent.invalidated.is_empty() {
             plx_base::eventlog::log(&format!(
                 "notify: refetched {} source(s) invalidated {} server(s)", spent.refetched.len(), spent.invalidated.len()));
@@ -1624,7 +1637,9 @@ impl Bridge {
     pub(crate) fn hubs_run(&mut self, cmd: plx_data::stores::hubs::HubsCmd) -> plx_data::stores::StoreOutcome {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
         let directory = self.directory.view();
-        self.stores.hubs.run_with_directory(cmd, directory, &self.client_keys)
+        let out = self.stores.hubs.run_with_directory(cmd, directory, &self.client_keys);
+        self.start_store_jobs_of(StoreId::Hubs);
+        out
     }
 
     /// One store's generation, for the recorder's per-frame landing scan
@@ -1978,6 +1993,7 @@ impl Bridge {
                 super::adapters::stores::refill_client_keys(&mut self.client_keys);
                 let directory = self.directory.view();
                 let due = self.stores.hubs.run_with_directory(c.clone(), directory, &self.client_keys).endpoints;
+                self.start_store_jobs_of(StoreId::Hubs);
                 Self::carry(&mut self.endpoint_carry, due)
             }
             AppMsg::Store(cmd) => step_store(cmd, &cx, fx),
@@ -1985,12 +2001,14 @@ impl Bridge {
                 super::adapters::stores::refill_client_keys(&mut self.client_keys);
                 let directory = self.directory.view();
                 let due = self.stores.hubs.land_with_directory(result, directory, &self.client_keys).endpoints;
+                self.start_store_jobs_of(StoreId::Hubs);
                 Self::carry(&mut self.endpoint_carry, due)
             }
             AppMsg::StoreWork(plx_data::stores::StoreWork::Hubs) => {
                 super::adapters::stores::refill_client_keys(&mut self.client_keys);
                 let directory = self.directory.view();
                 let due = self.stores.hubs.tick_with_directory(parts.tick.dt(), directory, &self.client_keys).endpoints;
+                self.start_store_jobs_of(StoreId::Hubs);
                 Self::carry(&mut self.endpoint_carry, due)
             }
             AppMsg::StoreWork(plx_data::stores::StoreWork::BrowseDiscovery) => {

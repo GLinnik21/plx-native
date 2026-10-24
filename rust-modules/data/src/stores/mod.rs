@@ -310,6 +310,12 @@ impl Stores {
         self.browse.borrow_mut().controlled_discover(launch);
     }
 
+    /// The outboxes [`Stores::viewstate_run`] and [`Stores::viewstate_pump`] can fill, in drain
+    /// order: ViewState's `RefetchHubs` and `Reset` reach the Hubs step. Their Browse, Person,
+    /// Collection, Search and Metadata edits emit no jobs from this call. The Bridge drains
+    /// exactly these after either call (`Bridge::start_store_jobs_in`).
+    pub const VIEWSTATE_FILLS: &'static [StoreId] = &[StoreId::Hubs];
+
     /// ViewState's synchronous command path, with every Browse side effect addressed back to this
     /// aggregate. The callback is invoked inline, preserving the press-frame optimistic edit.
     pub fn viewstate_run(
@@ -365,6 +371,11 @@ impl Stores {
             &mut |cmd| metadata.run(cmd),
         )
     }
+
+    /// The outboxes the notification map ([`Stores::notify_map`]) can fill, in drain order: a
+    /// server-side change reads the affected source back with `RefetchSourceQuiet`. The Bridge
+    /// drains exactly these after the map (`Bridge::start_store_jobs_in`).
+    pub const NOTIFY_FILLS: &'static [StoreId] = &[StoreId::Hubs];
 
     /// The notification feed's per-frame pass. It stands down while the landing gate is armed (a
     /// recording, a replay or a dump owns the run), and never reads the registry's tokens.
@@ -1186,6 +1197,22 @@ mod tests {
             assert_eq!(StoreId::from_ord(id.ord()), Some(id));
         }
         assert_eq!(StoreId::from_ord(StoreOrd(12)), None);
+    }
+
+    /// A fan-out call that can fill an outbox names it in a `*_FILLS` list the Bridge drains. A
+    /// new emitter joins the list of every call that reaches it (Browse appends itself where its
+    /// calls do), so the content is pinned: an emitter left off a list strands its jobs until the
+    /// backstop, which the test rigs count as a bypass.
+    #[test]
+    fn the_fan_out_fill_lists_name_the_stores_the_calls_can_fill() {
+        assert_eq!(Stores::VIEWSTATE_FILLS, [StoreId::Hubs]);
+        assert_eq!(Stores::NOTIFY_FILLS, [StoreId::Hubs]);
+        for list in [Stores::VIEWSTATE_FILLS, Stores::NOTIFY_FILLS] {
+            for (i, id) in list.iter().enumerate() {
+                assert!(StoreId::ALL.contains(id), "{id:?} is a store");
+                assert!(!list[..i].contains(id), "{id:?} is listed once");
+            }
+        }
     }
 }
 
