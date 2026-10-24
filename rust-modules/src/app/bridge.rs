@@ -4246,6 +4246,10 @@ mod search_publication_tests;
 mod search_owned_tests;
 
 #[cfg(test)]
+#[path = "search_fetch_pin_tests.rs"]
+mod search_fetch_pin_tests;
+
+#[cfg(test)]
 #[path = "detail_panel_tests.rs"]
 mod detail_panel_tests;
 
