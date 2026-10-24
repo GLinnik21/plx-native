@@ -82,10 +82,10 @@ was the last to complete its port): each `Bridge` owns one of each store. `Brows
 state/adapter/notice, `HubsStore`'s `PmsState`/`Arc<PmsAdapter>`/notice, `SearchStore`'s
 state/adapter/notice, `MetadataStore`'s state/`Arc<MetadataAdapter>`/notice and `ViewStateStore`'s
 queue, flight, retry and refresh state, worker adapter and notice are per-instance. The Browse
-adapter holds Browse's page, genre, letter and source-discovery mailboxes and single-flight flags,
-and the section hubs' one `Fetch` (claim, mailbox and refusal list for both the list and the row
-reads); the section hubs' reads are started by the app's runner (`StoreJob::BrowseHubs`), not by
-the store. Person's adapter keeps the recorded fetch numbering (`slot * 3 + kind` for
+adapter holds Browse's source-discovery mailbox and single-flight flag, and a `Fetch` (claim,
+mailbox and refusal list) for each of the page, the genre list, the letter list and the section
+hubs (one for both the list and the row reads); those four reads are started by the app's runner
+(`StoreJob::{BrowsePage,BrowseDirectory,BrowseHubs}`), not by the store. Person's adapter keeps the recorded fetch numbering (`slot * 3 + kind` for
 servers 0..15, the two global fetches at 48 and 49, then `50 + (slot - 16) * 3 + kind`; see
 `person::fx`) and the controlled-record schema; Person, Search, Metadata and ViewState all rotate adapters on reset
 (D3: Metadata's `Clear` is the one exception — see `stores/metadata.rs`'s struct doc). `metadata`'s
@@ -104,6 +104,7 @@ exactly these (file: callers):
 | store | mutator | callers outside the store |
 |---|---|---|
 | browse | `BrowseCmd` (including `Reset`) | owned screens emit `AppFx::Store`; `app/bridge.rs` delivers the command to that Bridge's `BrowseStore`; synchronous app boundaries call `Stores::browse_run` on an explicit aggregate |
+| browse::listing_jobs | `kick_directory` (reached through `BrowseCmd::Addressed` with `Genres` or `Letters`) and `maybe_spawn_owned` (the `StoreWork::Browse` pump) | The step takes the section's `ClientKey` from the `ClientKeys` the Bridge filled, raises the read's claim and leaves a `StoreJob::BrowseDirectory` / `StoreJob::BrowsePage` on the outbox, drained by the same entries as the section hubs. The landings are unchanged; a refused read is settled by the store's next step. A controlled Home run never emits either |
 | browse | `StoreWork::{BrowseDiscovery,Browse}` | Onboard schedules the roster-only owned pass; Library schedules the full owned landing pass; `app/bridge.rs` delivers both to the addressed Bridge's `BrowseStore` |
 | browse::section_hubs | `kick`, `commit_staged`, `invalidate_all`, `set_watched_local`, `left_the_deck` (reached through `BrowseCmd::ApplyView`) | Library mutations are carried by `StoreCmd::Browse`; the BrowseStore owns the section-hub adapter and its per-section state. A step that needs a read decides it from the `ClientKeys` the Bridge filled and leaves it as a `StoreJob::BrowseHubs` on the store's outbox; every Bridge entry that can run such a step starts it in the same call (`Bridge::browse_run`, the `StoreWork::Browse` arm, `Bridge::reconcile_pump`, and `viewstate_pump` / `notify_pump` through their `*_FILLS` lists) |
 | viewstate | `ViewStateCmd::{Request,Reset}` | owned Detail emits `AppFx::Store`; `app/bridge.rs` delivers to its `ViewStateStore`; synchronous item-menu/boot boundaries call that Bridge; run pumps and drains addressed Detail refreshes through the same owner |

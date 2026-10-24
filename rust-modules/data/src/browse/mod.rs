@@ -8,10 +8,12 @@
 //! `pms`'s worker-driven hub catalog); this store pages arbitrarily large sections without blocking the
 //! main loop. Data model: one [`SecItems`] per section — a PAGE-CHUNKED table sized to the
 //! listing's `totalSize`, a page (`PAGE` items) allocated only when it lands (restructure phase
-//! 4's O(result) rule) — filled page-by-page by ONE background fetch at a
-//! time using the season-switch idiom from `metadata.rs` — [`plx_base::task::spawn_small`] + a
-//! `Mutex` mailbox + generation atomics (a re-query supersedes in-flight landings), applied
-//! on the main thread by [`pump`] once a frame while the Library screen is up.
+//! 4's O(result) rule) — filled page-by-page by ONE read at a time: the pump emits it as a
+//! `StoreJob::BrowsePage` ([`listing_jobs`]) that the app's runner starts on a worker, and its
+//! answer waits in a claim-guarded mailbox (`Fetch`) stamped with the request's generation (a
+//! re-query supersedes in-flight landings), applied on the main thread by [`pump`] once a frame
+//! while the Library screen is up. The filter menus' value lists (genres, first letters) leave the
+//! same way, as `StoreJob::BrowseDirectory`.
 //!
 //! The sort/filter MENUS are server-driven: the first page of a section is requested with
 //! `includeMeta=1` and the response's `Meta.Type[]` supplies the Sort entries; the genre
@@ -47,8 +49,11 @@
 //! own server's section `1` and the friend's section `1` are different libraries, and each server
 //! answers 401 to the other's token. So the table is a flat `Vec<BrowseSection>` whose every entry
 //! names its [`BrowseSource`], and every fetch is issued through `client_for(source.sid)` captured
-//! AT THE SPAWN SITE — never `client()` read inside a worker, which would dial whichever server
-//! happened to be current when the thread got scheduled.
+//! BEFORE the worker starts — never `client()` read inside a worker, which would dial whichever
+//! server happened to be current when the thread got scheduled. Source discovery and the pins
+//! capture it at their spawn site; the page and directory reads capture the section's `ClientKey`
+//! at the step (from the `ClientKeys` the caller filled) and the runner resolves it to the client
+//! at the launch, refusing a job whose client has moved on.
 //!
 //! **It grows by APPEND and never by rebuild**, which is what keeps the page mailbox sound. A page
 //! landing is blamed on a section INDEX (`PageResult.sec`), so an index that moved under an
@@ -574,7 +579,7 @@ struct SecState {
     // menus (kept across re-queries)
     sorts: Arc<Vec<SortEntry>>,
     genres: Arc<Vec<GenreEntry>>,
-    genres_done: bool, // a genre fetch LANDED (even empty) — kick_genres won't re-spawn
+    genres_done: bool, // a genre fetch LANDED (even empty) — kick_genres won't ask again
     /// Is the live sort the viewer's CHOICE rather than merely what a failed restore left? False
     /// only after a first page that was asked to restore the saved sort and could not tell
     /// whether it had (the re-ask failed, or no menu came back): the library then shows the
@@ -930,8 +935,8 @@ impl PinWrite {
     }
 }
 
-/// Worker-facing half of one Browse store. Every spawned job captures this adapter, so a result
-/// can only land in the store that admitted the job even when another Bridge is alive.
+/// Worker-facing half of one Browse store. Every read's port holds this adapter, so a result
+/// can only land in the store that emitted the job even when another Bridge is alive.
 pub struct BrowseAdapter {
     /// The listing page read: its claim and mailbox, and the refusal of a read that never started
     /// ([`listing_jobs`]). The claim is raised by the step that emits the read.
@@ -3127,8 +3132,8 @@ fn fetch_listing_page(
 /// Landings blamed on a section INDEX gate on this rather than on the section-shape generation: an APPEND from
 /// one source must not discard a landing in flight for another, and it cannot invalidate one
 /// either, because appending never moves an existing index.
-/// Frames left before another page fetch may spawn after a FAILED one (main-thread; pump
-/// decrements). Stops a fast-failing network from spawning a worker per frame.
+/// Frames left before another page fetch may be asked for after a FAILED one (main-thread; pump
+/// decrements). Stops a fast-failing network from starting a worker per frame.
 
 struct PageResult {
     /// Exact registry lifecycle the worker dialled. Section/query generations do not move when a

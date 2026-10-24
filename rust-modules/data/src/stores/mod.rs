@@ -743,18 +743,24 @@ impl StoreJob {
         match self {
             Self::Detail(..) | Self::Collection(..) | Self::Person(..) => Admission::Tape,
             Self::Hubs(..) => Admission::Home,
-            // A controlled run never emits the section hubs' work, a listing page or a directory:
-            // `bootstrap/effects.rs` `store()` accepts only `Browse(Reset)` and `Browse(Discovery(..))`
-            // and `work_value()` refuses every `StoreWork` but `Hubs` and `BrowseDiscovery`, so no
-            // record exists to place them in and the launch is the whole decision (as for the kinds
-            // beside it). `app/store_admission_tests.rs` pins that a controlled Home run's Browse
-            // commands emit none of them.
+            // A controlled run never emits the section hubs' work: `bootstrap/effects.rs` `store()`
+            // accepts only `Browse(Reset)` and `Browse(Discovery(..))` and `work_value()` refuses
+            // every `StoreWork` but `Hubs` and `BrowseDiscovery`, so no record exists to place it in
+            // and the launch is the whole decision (as for the kinds beside it).
+            Self::BrowseHubs(..) => Admission::Direct,
+            // A Library directory read (genres, first letters) is asked for by `BrowseCmd::Addressed`
+            // with `Genres` or `Letters`, which the controlled-run encoder refuses, so no controlled run or
+            // replay emits one and the launch is the whole decision. A controlled run's own Browse
+            // commands (Reset, a Discovery landing) emit none: `app/browse_listing_admission_tests.rs`
+            // pins it in record and in replay mode.
+            Self::BrowseDirectory(..) => Admission::Direct,
+            // A listing page is asked for by the Browse pump (`StoreWork::Browse`), which
+            // `work_value()` refuses, so no controlled run or replay emits one and the launch is
+            // the whole decision. Pinned beside the directory read, in the same file.
+            Self::BrowsePage(..) => Admission::Direct,
             Self::Catalog(..)
             | Self::SubtitleSearch(..)
             | Self::ViewReconcile(..)
-            | Self::BrowseHubs(..)
-            | Self::BrowseDirectory(..)
-            | Self::BrowsePage(..)
             | Self::Search(..)
             | Self::SaveRecents(..) => Admission::Direct,
         }
