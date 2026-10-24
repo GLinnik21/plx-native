@@ -15,7 +15,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-24T12:49:03Z",
+ "generated": "2026-10-24T12:52:18Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -240,18 +240,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 53.0,
-   "change7_pct": -5.4,
+   "change30_pct": 53.4,
+   "change7_pct": -5.2,
    "d30": 617.5,
-   "delta30": 327.5,
-   "delta7": -53.5,
+   "delta30": 329.5,
+   "delta7": -51.5,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "kind": "job",
    "label": "Nightly: ARM build + gates / build + verify",
-   "n_now": 15,
+   "n_now": 16,
    "n_prev": 20,
-   "now": 945,
+   "now": 947.0,
    "prev7": 998.5,
    "shown": true,
    "state": "flat",
@@ -476,15 +476,15 @@
    "change30_pct": 26.7,
    "change7_pct": 2.7,
    "d30": 15,
-   "delta30": 4,
+   "delta30": 4.0,
    "delta7": 0.5,
    "group": "ci",
    "id": "nightly|publish nightly prerelease",
    "kind": "job",
    "label": "Nightly: publish nightly prerelease",
-   "n_now": 15,
+   "n_now": 16,
    "n_prev": 20,
-   "now": 19,
+   "now": 19.0,
    "prev7": 18.5,
    "shown": false,
    "state": "flat",
@@ -524,9 +524,9 @@
    "id": "nightly|plan today's nightly",
    "kind": "job",
    "label": "Nightly: plan today's nightly",
-   "n_now": 15,
+   "n_now": 16,
    "n_prev": 20,
-   "now": 17,
+   "now": 17.0,
    "prev7": 15.0,
    "shown": false,
    "state": "flat",
@@ -811,7 +811,7 @@
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "label": "Nightly: ARM build + gates / build + verify",
-   "now": 945
+   "now": 947.0
   },
   {
    "group": "ci",
