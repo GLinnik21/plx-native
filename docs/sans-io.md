@@ -176,7 +176,7 @@ and row reads, are the ninth (the bullet headed "The section hubs lane"): their 
 and three registry reads are gone from `data/src/browse/section_hubs.rs`; the rest of `browse/` (the
 directory, page and source reads, discovery, the pins) is still on its ledger. The household's
 watch-state writes are the tenth (the bullet headed "The view-state write lane"): the worker start
-and the three `client_for` reads are gone from `data/src/viewstate.rs`, and its two `data-viewstate`
+and all five `client_for` reads are gone from `data/src/viewstate.rs`, and its two `data-viewstate`
 ledger files are deleted.
 
 - **The shape.** `plx_machine::job` holds `Job<R>` (an `Addr` and a request that carries everything
@@ -221,9 +221,9 @@ ledger files are deleted.
   `Stores::take_jobs_of(StoreId)` takes ONE store's outbox and `Stores::take_jobs` aggregates every
   store's, and each Bridge entry point drains the outboxes its step can fill, in the same call as
   the step. A step that touches only its own store drains it with `start_store_jobs_of`; a `Stores`
-  call that fans out to other stores (`viewstate_run`, `viewstate_pump`, `notify_pump`) drains every
-  outbox named in its `*_FILLS` list (`Stores::VIEWSTATE_FILLS`, `Stores::NOTIFY_FILLS`) with
-  `Bridge::start_store_jobs_in`. `Bridge::metadata_run` steps then drains Metadata; `Bridge::person_pump` and
+  call that fans out to other stores (`viewstate_run`, `viewstate_pump`, `reconcile_pump`,
+  `notify_pump`) drains every outbox named in its `*_FILLS` list (`Stores::VIEWSTATE_FILLS`,
+  `Stores::RECONCILE_FILLS`, `Stores::NOTIFY_FILLS`) with `Bridge::start_store_jobs_in`. `Bridge::metadata_run` steps then drains Metadata; `Bridge::person_pump` and
   `Bridge::collection_pump` refill the keys, step, then run
   `Bridge::start_store_jobs_of(StoreId::Person)` and `(StoreId::Collection)`;
   `Bridge::catalog_open` and `Bridge::catalog_pump` step the Catalog store and run
@@ -330,7 +330,8 @@ ledger files are deleted.
   `take_refused` to answer once, and a refusal for a superseded generation (one whose claim a newer
   request or a supersede has replaced) frees nothing and records nothing. A store whose claim is a mailbox of landings
   (the view-state read-back and the view-state write) has its port post a store-local `NotStarted`
-  landing, and the next pump puts the flight's items (the write) back and waits. A refusal never goes into a recorded mailbox (a recorded
+  landing, and the next pump puts the flight's items back and waits (a write is judged again first,
+  and dropped when its profile, its server or its client's key moved). A refusal never goes into a recorded mailbox (a recorded
   take would write it as an async result and change the bytes). It reaches the step one pump after
   the launch; no fixture holds a refused start, so no recorded byte moves.
 - **Subtitle search and the view-state read-back** are the fifth and sixth stores on the lane. The
@@ -339,9 +340,10 @@ ledger files are deleted.
   `plx_plex::plex::ClientKeys` as an argument and emits a `StoreJob`
   (`plx_data::subsearch::{SubSearchReq, SubSearchPort}` and
   `plx_data::stores::viewreconcile::{ReconcileReq, ReconcilePort}`); the runner starts the job
-  only if `client_for` still answers the key the step decided on. `Bridge::subsearch_pump` and
-  `Bridge::reconcile_pump` refill the keys, step, then run `Bridge::start_store_jobs_of` for their
-  own store in the same call; `Bridge::subsearch_run` only drains, because the command step takes no
+  only if `client_for` still answers the key the step decided on. `Bridge::subsearch_pump` refills
+  the keys, steps, then runs `Bridge::start_store_jobs_of` for its own store in the same call;
+  `Bridge::reconcile_pump` drains `Stores::RECONCILE_FILLS` with `Bridge::start_store_jobs_in`,
+  because an end-of-stream fan-out it queues sends a ViewState write; `Bridge::subsearch_run` only drains, because the command step takes no
   keys and emits nothing. Neither kind is on the tape, so the runner makes no admission record for
   them and a replay launches them live.
 - **The Hubs lane.** Home's source reads (`data/src/pms.rs`) are the seventh store on the lane. The
@@ -354,7 +356,7 @@ ledger files are deleted.
   for. The Hubs read differs from the six before it in four ways.
   - **A third admission family.** `StoreJob::admission()` names `Tape` (Detail, Collection, Person),
     `Direct` (Catalog, subtitle search, view reconcile, Search's fetches and recents writes, the section
-    hubs' read) or `Home`,
+    hubs' read, the view-state writes) or `Home`,
     as one exhaustive match. A `Home`
     job is recorded in a controlled Home run's own ordered ledger (`HomeIo::admit`), not on the tape,
     with the bytes `HubRequest::admission` returns (the bytes `hubs_descriptor` returned before it,

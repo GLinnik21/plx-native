@@ -40,13 +40,17 @@
 //! * **One refresh per burst.** The hub refetch is deferred until the queue
 //!   empties, so ticking four episodes watched in a row costs four writes and one refresh.
 //! * **A refused launch is a retry, never a panic and never a fallback to blocking.** The runner
-//!   declines a write when the OS is out of threads (or the registry moved on, below); that is the
-//!   job's `refused` answer, the queue keeps its head and [`pump`] tries again after
+//!   declines a write when the OS is out of threads or the origin's client no longer carries the
+//!   job's key; that is the job's `refused` answer, and the pump judges it again
+//!   ([`ViewStateState::restart_refused`]): a moved profile, a vanished server or a re-tokened client
+//!   drops it, and a write that survives that keeps its head and [`pump`] tries again after
 //!   [`RETRY_FRAMES`], the same degradation `search.rs` and `browse.rs` apply to a refused fetch.
 //!
 //! ## The job lane
 //!
-//! The step starts no worker and reads no registry. [`ViewStateState::kick`] decides from its
+//! The step starts no worker and reads no `client_for`; the one registry read left in it is
+//! `fan_out_origin_watched`'s `server_ids()` (the one-server short-circuit), as the Person and
+//! Search steps still read theirs. [`ViewStateState::kick`] decides from its
 //! inputs, the borrowed [`ClientKeys`] and the `profile` the Bridge read from the session, and
 //! emits one [`StoreJob::ViewWrite`] on the owner's outbox ([`ViewStateState::take_jobs`]); the
 //! app's `StoreRunner` starts it, through the origin's client only if the registry still holds the
