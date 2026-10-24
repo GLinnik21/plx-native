@@ -870,8 +870,8 @@ fn decoder_row(video: LoadVideo, caps: &plx_platform::devcaps::Caps) -> (u32, u3
 /// **The frame rate a playback speed may feed this stream at**: [`super::SPEED_MAX_FPS`], or the
 /// measured decoder row's rate when that is lower. A speed feeds every frame `rate` times closer
 /// together and the Load declares that fed rate, which [`sink_envelope`] then clamps to the row; a
-/// speed past the row would play at the row's rate and the sound would run away from the picture,
-/// so the menu must not offer it. Only a table that was actually READ bounds anything (`measured`,
+/// speed whose fed rate passes the row is one the Load cannot declare, so the menu does not offer
+/// it. Only a table that was actually READ bounds anything (`measured`,
 /// the same condition [`sink_envelope_now`] clamps under), a stream whose codec the Load cannot
 /// declare has no row, and a row with no rate (0) is no bound. The `+ 0.5` is the 60.5 ceiling's own
 /// tolerance, so a 29.97 stream is not turned away from a 30 row. Pure; the wrapper feeds it the

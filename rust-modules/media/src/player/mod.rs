@@ -1786,11 +1786,11 @@ pub fn speed_offer(ps: &crate::route::PlaybackSession) -> Vec<i32> {
     speeds_within(crate::route::stream_fps(ps), engine::speed_fps_ceiling_now(ps))
 }
 
-/// The most frames per second a speed may ask the decoder to show, at most: at speed `r` a `fps`
-/// source is fed at `fps * r` (every frame, closer together), and 60 is what every Load envelope
-/// this app declares can carry. It is the ceiling when the device's own table says nothing
-/// tighter; a measured decoder row below it lowers it ([`engine::speed_fps_ceiling`]). 24p
-/// reaches 2x there; 50p and 60p offer nothing above 1x.
+/// The most frames per second a speed may ask the decoder to show: at speed `r` a `fps` source is
+/// fed at `fps * r` (every frame, closer together), and 60 is what every Load envelope this app
+/// declares can carry. It is the ceiling when the device's own table says nothing tighter; a
+/// measured decoder row below it lowers it ([`engine::speed_fps_ceiling`]). 24p reaches 2x there;
+/// 50p and 60p offer nothing above 1x.
 pub const SPEED_MAX_FPS: f64 = 60.5;
 
 /// [`PLAY_RATES`] a `fps` source can play without being fed faster than `max_fps`: the ceiling for
