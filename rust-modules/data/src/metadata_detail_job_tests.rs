@@ -144,7 +144,7 @@ fn a_job_emitted_before_a_reset_answers_into_the_retired_adapter() {
     store.run(MetadataCmd::Reset);
     let mut jobs = store.take_jobs();
     assert_eq!(jobs.len(), 1, "a reset does not drop an emitted job");
-    let StoreJob::Detail(job, port) = jobs.remove(0);
+    let StoreJob::Detail(job, port) = jobs.remove(0) else { panic!("a detail request emits a detail job") };
     assert_ne!(port, store.detail_port(), "the job holds the retired adapter's port");
 
     port.done(job.addr, ((sid, "42".into()), Some(Detail::default())));

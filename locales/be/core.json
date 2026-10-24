@@ -33,6 +33,7 @@
   "core.preview_domain_buffer": "буфер",
   "core.preview_domain_transport": "збой перадачы",
   "core.preview_domain_transfer_age": "час перадачы да збою",
+  "core.preview_domain_demux_exit": "этап збою медыяпатоку",
   "core.preview_domain_elapsed": "прайшло часу",
   "core.preview_domain_hls_direction": "кірунак HLS",
   "core.preview_domain_delivery_reason": "прычына спосабу дастаўкі",

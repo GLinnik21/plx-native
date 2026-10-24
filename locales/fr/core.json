@@ -33,6 +33,7 @@
   "core.preview_domain_buffer": "tampon",
   "core.preview_domain_transport": "échec de transport",
   "core.preview_domain_transfer_age": "durée du transfert avant l’échec",
+  "core.preview_domain_demux_exit": "étape où le flux multimédia a échoué",
   "core.preview_domain_elapsed": "temps écoulé",
   "core.preview_domain_hls_direction": "sens HLS",
   "core.preview_domain_delivery_reason": "raison de la diffusion",

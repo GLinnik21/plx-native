@@ -98,12 +98,18 @@ set — no lane needs the raw luna-send/`PLX_TV_LOCK_BYPASS` route for it. Neith
 `sound` is restored automatically by `down`; a lane that muted or blanked the panel for its own
 reasons is the one that knows when to undo it.
 
-**The panel rule (the owner's standing directive, amended 2026-10):** the sound is OFF for every
-device run. The panel is OFF for playback and log-read tiers (the set is in a living room) but ON for
-fps / smoothness runs, where a dark panel makes the frame times meaningless (`tests/run.py --fps
---mock` keeps it on; `--panel off` opts out). `tools/tv-session.sh screen on|off` and
-`tools/tv-session.sh sound off` are both it. See `docs/agent-reference.md` (Tier 2) for the full
-history of this rule.
+**The panel rule (the owner's standing directive, amended 2026-10-24):** the sound is OFF for every
+device run, and so is the panel (the set is in a living room), fps / smoothness runs included: the
+panel is only the backlight, and the app keeps presenting at full rate with it dark (Home `grid-pong`,
+release build: 73 frames/cycle at 59.9 fps panel off, 59.6-59.9 on; the panel state changed neither
+pacing nor misses). `tests/run.py --fps --mock` blanks it by default; `--panel on` lights it for a run
+someone wants to watch. `tools/tv-session.sh screen on|off` and `tools/tv-session.sh sound off` are
+both it. `shot` (the DISPLAY compositor read) works with the panel off:
+`docs/measurements/tv-session-7-2026-09-10.md` ran `screen off` first and got a 1920x1080 capture
+with real pixel values, and `docs/measurements/library-all-types-and-fps-2026-09-26.md` checked
+native captures with the panel off. The live capture stream (the app's own GLES frames) with the
+panel off is not on record: check its first frame instead of assuming either way. See
+`docs/agent-reference.md` (Tier 2) for the full history of this rule.
 
 `wan off` is the offline-mode test condition: a netfilter chain on the television rejects every
 v4 packet leaving the LAN and every DNS query, an `unreachable 2000::/3` route cuts public v6

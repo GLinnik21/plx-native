@@ -15,6 +15,7 @@ use crate::aq::AuQueue;
 use crate::player::threads::SendPtr;
 use crate::player::SHARED;
 use plx_net::stream::HttpStream;
+use plx_telemetry::telemetry::classes::DemuxExitClass;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_long, c_uchar, c_uint, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -8689,7 +8690,7 @@ pub fn demux(
                 if PUSHED_ANY.load(Ordering::Relaxed) {
                     SHARED.demux_io_failed.store(true, Ordering::Release);
                 } else {
-                    SHARED.demux_failed.store(true, Ordering::Release);
+                    SHARED.fail_demux(DemuxExitClass::HlsFailed);
                 }
             }
             Ok(Err(HlsExit::NotReady)) => {
@@ -8697,7 +8698,7 @@ pub fn demux(
                 if PUSHED_ANY.load(Ordering::Relaxed) {
                     SHARED.demux_io_failed.store(true, Ordering::Release);
                 } else {
-                    SHARED.demux_failed.store(true, Ordering::Release);
+                    SHARED.fail_demux(DemuxExitClass::HlsNotReady);
                 }
             }
             Ok(Err(HlsExit::PrimeExpired)) => {
@@ -8712,13 +8713,13 @@ pub fn demux(
             }
             Err(_) => {
                 crate::player::log("hls: demux panicked");
-                SHARED.demux_failed.store(true, Ordering::Release);
+                SHARED.fail_demux(DemuxExitClass::DemuxPanicked);
             }
         }
         if unproductive_exit_failed(PUSHED_ANY.load(Ordering::Relaxed), unsafe {
             crate::aq::aq_is_aborted(aq_p)
         }) {
-            SHARED.demux_failed.store(true, Ordering::Release);
+            SHARED.fail_demux(DemuxExitClass::NoAccessUnits);
         }
         crate::aq::aq_set_eof(aq_p);
         crate::aq::aq_set_eof(aqa_p);
@@ -8808,7 +8809,7 @@ pub fn demux(
                         Ok(r) => Some(r),
                         Err(e) => {
                             crate::player::log(&format!("ff: https reservation FAILED: {e:?}"));
-                            SHARED.demux_failed.store(true, Ordering::Release);
+                            SHARED.fail_demux(DemuxExitClass::HttpsReserveFailed);
                             break;
                         }
                     }
@@ -8846,7 +8847,7 @@ pub fn demux(
                                 SHARED.dg_http_status.store(st, Ordering::Relaxed);
                             }
                             crate::player::log(&format!("ff: https open FAILED: {e:?}"));
-                            SHARED.demux_failed.store(true, Ordering::Release);
+                            SHARED.fail_demux(DemuxExitClass::HttpsOpenFailed);
                             break;
                         }
                     }
@@ -8859,7 +8860,7 @@ pub fn demux(
                             break;
                         }
                         Err(MediaOpenFail::Failed) => {
-                            SHARED.demux_failed.store(true, Ordering::Release);
+                            SHARED.fail_demux(DemuxExitClass::HttpOpenFailed);
                             break;
                         }
                     }
@@ -8889,6 +8890,7 @@ pub fn demux(
                 let buf = av_malloc(65536) as *mut u8;
                 if buf.is_null() {
                     crate::player::log("ff: av_malloc failed");
+                    SHARED.note_demux_exit(DemuxExitClass::Other);
                     break;
                 }
                 let avio = avio_alloc_context(
@@ -8902,12 +8904,14 @@ pub fn demux(
                 );
                 if avio.is_null() {
                     crate::player::log("ff: avio_alloc_context failed");
+                    SHARED.note_demux_exit(DemuxExitClass::Other);
                     free_ptr(buf as *mut c_void);
                     break;
                 }
                 let mut fmt = avformat_alloc_context();
                 if fmt.is_null() {
                     crate::player::log("ff: avformat_alloc_context failed");
+                    SHARED.note_demux_exit(DemuxExitClass::Other);
                     free_avio(avio);
                     break;
                 }
@@ -8919,12 +8923,20 @@ pub fn demux(
                     std::ptr::null_mut(),
                 );
                 if r < 0 || fmt.is_null() {
-                    crate::player::log(&open_input_failure_note(r, crate::aq::aq_is_aborted(aq_p)));
+                    let lane_aborted = crate::aq::aq_is_aborted(aq_p);
+                    crate::player::log(&open_input_failure_note(r, lane_aborted));
+                    // A stop teardown asked for is not the source failing to open.
+                    if !lane_aborted {
+                        SHARED.note_demux_exit(DemuxExitClass::OpenInputFailed);
+                    }
                     free_avio(avio);
                     break;
                 }
                 if avformat_find_stream_info(fmt, std::ptr::null_mut()) < 0 {
                     crate::player::log("ff: find_stream_info failed");
+                    if !crate::aq::aq_is_aborted(aq_p) {
+                        SHARED.note_demux_exit(DemuxExitClass::FindStreamInfoFailed);
+                    }
                     avformat_close_input(&mut fmt);
                     free_avio(avio);
                     break;
@@ -8992,6 +9004,7 @@ pub fn demux(
                     } else {
                         crate::player::log("ff: no video stream");
                     }
+                    SHARED.note_demux_exit(DemuxExitClass::NoVideoStream);
                     avformat_close_input(&mut fmt);
                     free_avio(avio);
                     break;
@@ -9049,7 +9062,7 @@ pub fn demux(
                         "ff: no framing for video codec {cname} (codec_id={}); refusing the stream",
                         (*vcp).codec_id
                     ));
-                    SHARED.demux_failed.store(true, Ordering::Release);
+                    SHARED.fail_demux(DemuxExitClass::NoFraming);
                     avformat_close_input(&mut fmt);
                     free_avio(avio);
                     break;
@@ -9063,7 +9076,7 @@ pub fn demux(
                         "ff: the Load declared {} but the file is {cname}; refusing the stream",
                         crate::player::load_v_name(declared)
                     ));
-                    SHARED.demux_failed.store(true, Ordering::Release);
+                    SHARED.fail_demux(DemuxExitClass::LoadMismatch);
                     avformat_close_input(&mut fmt);
                     free_avio(avio);
                     break;
@@ -9358,7 +9371,7 @@ pub fn demux(
                                     crate::aq::aq_cap(aq_p),
                                     PRE_AUDIO_VIDEO_HEADROOM
                                 ));
-                                SHARED.demux_failed.store(true, Ordering::Release);
+                                SHARED.fail_demux(DemuxExitClass::NoAudioAu);
                                 SHARED.demux_io_failed.store(true, Ordering::Release);
                                 av_packet_unref(pkt);
                                 break;
@@ -9411,7 +9424,7 @@ pub fn demux(
                             let raw = std::slice::from_raw_parts((*pkt).data, (*pkt).size.max(0) as usize);
                             let Some(core) = dts_core_packet(raw) else {
                                 crate::player::log("ff: DTS packet has no complete supported core; refusing audio feed");
-                                SHARED.demux_failed.store(true, Ordering::Release);
+                                SHARED.fail_demux(DemuxExitClass::DtsCoreMissing);
                                 SHARED.demux_io_failed.store(true, Ordering::Release);
                                 av_packet_unref(pkt);
                                 break;
@@ -9446,7 +9459,7 @@ pub fn demux(
                                 AUDIO_AHEAD_HEADROOM,
                                 headroom.video_reach_ns() / 1_000_000
                             ));
-                            SHARED.demux_failed.store(true, Ordering::Release);
+                            SHARED.fail_demux(DemuxExitClass::NoUsableVideo);
                             SHARED.demux_io_failed.store(true, Ordering::Release);
                             break;
                         }
@@ -9634,7 +9647,7 @@ pub fn demux(
         // the pump waiting on a stage it can never reach. This is the same flag the `http_open`
         // failure above raises, and `pump` turns it into `PlaybackState::Error` (gated on
         // `frames == 0`, so a panic MID-playback is left to the EOF/EOS path below instead).
-        SHARED.demux_failed.store(true, Ordering::Release);
+        SHARED.fail_demux(DemuxExitClass::DemuxPanicked);
     }
     // A demux that ends having produced NOTHING is a failure, whatever route it took out.
     // Only two exits used to say so — the http_open failure and the panic handler — while every
@@ -9650,7 +9663,7 @@ pub fn demux(
         crate::aq::aq_is_aborted(aq_p)
     }) {
         crate::player::log("ff: demux produced no access units — treating as a failure");
-        SHARED.demux_failed.store(true, Ordering::Release);
+        SHARED.fail_demux(DemuxExitClass::NoAccessUnits);
     }
     crate::aq::aq_set_eof(aq_p);
     crate::aq::aq_set_eof(aqa_p); // EOF on the audio lane too
