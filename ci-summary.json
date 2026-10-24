@@ -15,7 +15,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-24T12:28:33Z",
+ "generated": "2026-10-24T12:36:05Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -81,18 +81,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -51.2,
-   "change7_pct": -30.2,
-   "d30": 686,
-   "delta30": -351,
-   "delta7": -145.0,
+   "change30_pct": -51.3,
+   "change7_pct": -30.3,
+   "d30": 687.0,
+   "delta30": -352.5,
+   "delta7": -145.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 175,
+   "n_now": 176,
    "n_prev": 268,
-   "now": 335,
+   "now": 334.5,
    "prev7": 480.0,
    "shown": true,
    "state": "better",
@@ -103,17 +103,17 @@
   },
   {
    "change30_pct": -51.9,
-   "change7_pct": -23.7,
+   "change7_pct": -23.8,
    "d30": 686.5,
-   "delta30": -356.0,
-   "delta7": -102.5,
+   "delta30": -356.5,
+   "delta7": -103,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 86,
+   "n_now": 87,
    "n_prev": 119,
-   "now": 330.5,
+   "now": 330,
    "prev7": 433,
    "shown": true,
    "state": "better",
@@ -240,10 +240,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 53.4,
+   "change30_pct": 53.0,
    "change7_pct": -5.4,
-   "d30": 616,
-   "delta30": 329,
+   "d30": 617.5,
+   "delta30": 327.5,
    "delta7": -53.5,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
@@ -327,15 +327,15 @@
    "change30_pct": 102.3,
    "change7_pct": 14.3,
    "d30": 130,
-   "delta30": 133,
-   "delta7": 33,
+   "delta30": 133.0,
+   "delta7": 33.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 73,
+   "n_now": 74,
    "n_prev": 115,
-   "now": 263,
+   "now": 263.0,
    "prev7": 230,
    "shown": true,
    "state": "flat",
@@ -345,18 +345,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 179.6,
-   "change7_pct": 6.7,
+   "change30_pct": 181.7,
+   "change7_pct": 7.5,
    "d30": 71,
-   "delta30": 127.5,
-   "delta7": 12.5,
+   "delta30": 129,
+   "delta7": 14,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 72,
+   "n_now": 73,
    "n_prev": 115,
-   "now": 198.5,
+   "now": 200,
    "prev7": 186,
    "shown": true,
    "state": "flat",
@@ -409,17 +409,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -7.2,
+   "change7_pct": -6.9,
    "d30": null,
    "delta30": null,
-   "delta7": -11,
+   "delta7": -10.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 73,
+   "n_now": 74,
    "n_prev": 115,
-   "now": 141,
+   "now": 141.5,
    "prev7": 152,
    "shown": true,
    "state": "flat",
@@ -473,10 +473,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 22.6,
+   "change30_pct": 26.7,
    "change7_pct": 2.7,
-   "d30": 15.5,
-   "delta30": 3.5,
+   "d30": 15,
+   "delta30": 4,
    "delta7": 0.5,
    "group": "ci",
    "id": "nightly|publish nightly prerelease",
@@ -497,15 +497,15 @@
    "change30_pct": 18.8,
    "change7_pct": 11.8,
    "d30": 16,
-   "delta30": 3,
-   "delta7": 2,
+   "delta30": 3.0,
+   "delta7": 2.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 73,
+   "n_now": 74,
    "n_prev": 115,
-   "now": 19,
+   "now": 19.0,
    "prev7": 17,
    "shown": false,
    "state": "flat",
@@ -517,8 +517,8 @@
   {
    "change30_pct": 30.8,
    "change7_pct": 13.3,
-   "d30": 13,
-   "delta30": 4,
+   "d30": 13.0,
+   "delta30": 4.0,
    "delta7": 2.0,
    "group": "ci",
    "id": "nightly|plan today's nightly",
@@ -625,11 +625,6 @@
    "change_pct": 35.8,
    "commits": [
     {
-     "pr": 971,
-     "sha": "ae611ee4f",
-     "title": "Sans-IO baseline: make check ledgers that freeze IO in logic"
-    },
-    {
      "pr": 973,
      "sha": "088f6f764",
      "title": "Session cache: peek is a pure read; the session owner refills it"
@@ -673,6 +668,11 @@
      "pr": 990,
      "sha": "10e9287ff",
      "title": "Person store: emit store jobs and read the server registry as an input"
+    },
+    {
+     "pr": 994,
+     "sha": "9bc127faf",
+     "title": "gfx: no dev-trigger name in an embedded shader source"
     }
    ],
    "from": 46.0,
@@ -686,11 +686,6 @@
    "change_pct": 34.5,
    "commits": [
     {
-     "pr": 971,
-     "sha": "ae611ee4f",
-     "title": "Sans-IO baseline: make check ledgers that freeze IO in logic"
-    },
-    {
      "pr": 973,
      "sha": "088f6f764",
      "title": "Session cache: peek is a pure read; the session owner refills it"
@@ -734,6 +729,11 @@
      "pr": 990,
      "sha": "10e9287ff",
      "title": "Person store: emit store jobs and read the server registry as an input"
+    },
+    {
+     "pr": 994,
+     "sha": "9bc127faf",
+     "title": "gfx: no dev-trigger name in an embedded shader source"
     }
    ],
    "from": 152,
@@ -747,11 +747,6 @@
    "change_pct": 27.1,
    "commits": [
     {
-     "pr": 971,
-     "sha": "ae611ee4f",
-     "title": "Sans-IO baseline: make check ledgers that freeze IO in logic"
-    },
-    {
      "pr": 973,
      "sha": "088f6f764",
      "title": "Session cache: peek is a pure read; the session owner refills it"
@@ -795,6 +790,11 @@
      "pr": 990,
      "sha": "10e9287ff",
      "title": "Person store: emit store jobs and read the server registry as an input"
+    },
+    {
+     "pr": 994,
+     "sha": "9bc127faf",
+     "title": "gfx: no dev-trigger name in an embedded shader source"
     }
    ],
    "from": 114.7,
@@ -835,7 +835,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 263
+   "now": 263.0
   }
  ],
  "slowest_local": [
