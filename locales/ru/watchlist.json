@@ -1,6 +1,6 @@
 {
   "watchlist.page.title": "Список просмотра",
-  "watchlist.page.sort_filter": "Сортировка и фильтры",
+  "watchlist.page.sort_filter": "Порядок и фильтры",
   "watchlist.filter.type_all": "Фильмы и сериалы",
   "watchlist.filter.type_movies": "Фильмы",
   "watchlist.filter.type_shows": "Сериалы",
@@ -20,7 +20,7 @@
   "watchlist.empty.filtered": "Ничего не найдено по этим фильтрам",
   "watchlist.empty.no_token": "Список просмотра недоступен для этого профиля",
   "watchlist.empty.list_body": "Здесь появятся фильмы и сериалы, добавленные в список просмотра на любом устройстве.",
-  "watchlist.empty.filtered_body": "Измените сортировку и фильтры, чтобы увидеть остальные записи списка просмотра.",
+  "watchlist.empty.filtered_body": "Измените порядок и фильтры, чтобы увидеть остальные записи списка просмотра.",
   "watchlist.empty.unreachable": "Не удалось загрузить список просмотра",
   "watchlist.detail.trailer": "Трейлер",
   "watchlist.page.debug_write_blocked": "Отладка: запись в список просмотра заблокирована"
