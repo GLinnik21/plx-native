@@ -238,6 +238,7 @@ impl Stores {
         match id {
             StoreId::Metadata => self.metadata.take_jobs(),
             StoreId::SubtitleSearch => self.subtitle_search.take_jobs(),
+            StoreId::ViewReconcile => self.reconcile.take_jobs(),
             // The other stores emit no jobs yet.
             _ => Vec::new(),
         }
@@ -253,6 +254,7 @@ impl Stores {
         match id {
             StoreId::Metadata => self.metadata.has_jobs(),
             StoreId::SubtitleSearch => self.subtitle_search.has_jobs(),
+            StoreId::ViewReconcile => self.reconcile.has_jobs(),
             // The other stores emit no jobs yet.
             _ => false,
         }
@@ -433,8 +435,11 @@ impl Stores {
     }
 
     /// The read-back worker's route-unconditional pass: hand it what landed writes owe, send its
-    /// reads, and publish the facts it brought back to the stores that hold the rows.
-    pub fn reconcile_pump(&mut self, directory: browse::DirectoryView<'_>) -> bool {
+    /// reads, and publish the facts it brought back to the stores that hold the rows. `clients` is
+    /// the registry's answer as of this call. It does NOT start the reads it sent: a caller that
+    /// returns without taking them ([`Stores::take_jobs_of`]) and handing them to a runner has
+    /// stranded the flights. The one production caller is `Bridge::reconcile_pump`.
+    pub fn reconcile_pump(&mut self, directory: browse::DirectoryView<'_>, clients: &plx_plex::plex::ClientKeys) -> bool {
         let owed = self.viewstate.borrow_mut().take_reread();
         self.reconcile.enqueue(owed);
         let idle = !self.viewstate.borrow().is_busy() && !self.network_held;
@@ -445,7 +450,7 @@ impl Stores {
         let search = &mut self.search;
         let metadata = &mut self.metadata;
         let watchlist = &mut self.watchlist;
-        let changed = self.reconcile.pump_with_gate(&self.landgate, idle, &mut |change| crate::viewstate::publish_view(
+        let changed = self.reconcile.pump_with_gate(&self.landgate, idle, clients, &mut |change| crate::viewstate::publish_view(
             { watchlist.apply_view(&change); change },
             &mut |cmd| browse.borrow_mut().run(cmd),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory),
@@ -598,11 +603,18 @@ pub enum StoreJob {
     /// One subtitle search, download or install poll, emitted by the subtitle-search pump and
     /// addressed by the search generation. One is out at a time. Not on the tape.
     SubtitleSearch(plx_machine::job::Job<crate::subsearch::SubSearchReq>, crate::subsearch::SubSearchPort),
+    /// One read-back batch (`/library/metadata/{k1,k2,…}` of one server), emitted by the reconcile
+    /// pump and addressed by its flight id. One is out per server. Not on the tape.
+    ViewReconcile(plx_machine::job::Job<viewreconcile::ReconcileReq>, viewreconcile::ReconcilePort),
 }
 
 impl StoreJob {
     pub fn store(&self) -> StoreId {
-        match self { Self::Detail(..) => StoreId::Metadata, Self::SubtitleSearch(..) => StoreId::SubtitleSearch }
+        match self {
+            Self::Detail(..) => StoreId::Metadata,
+            Self::SubtitleSearch(..) => StoreId::SubtitleSearch,
+            Self::ViewReconcile(..) => StoreId::ViewReconcile,
+        }
     }
 }
 

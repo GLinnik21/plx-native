@@ -1347,7 +1347,7 @@ impl Bridge {
         }
         self.late_store_jobs += late;
         plx_base::eventlog::log(&format!(
-            "stores: WARN {late} store job(s) reached a pump unstarted ({} so far): a sender bypassed its Bridge drain (metadata_run / collection_pump / subsearch_pump / start_store_jobs_of / start_store_jobs)",
+            "stores: WARN {late} store job(s) reached a pump unstarted ({} so far): a sender bypassed its Bridge drain (metadata_run / collection_pump / subsearch_pump / reconcile_pump / start_store_jobs_of / start_store_jobs)",
             self.late_store_jobs
         ));
     }
@@ -1361,7 +1361,7 @@ impl Bridge {
 
     /// TEST ONLY: no sender bypassed the drain. A frame's end is the moment to ask, and both halves
     /// matter: a job still on an outbox is a sender that neither went through its store's Bridge
-    /// method ([`Bridge::metadata_run`], [`Bridge::collection_pump`], [`Bridge::subsearch_pump`]) nor drained with
+    /// method ([`Bridge::metadata_run`], [`Bridge::collection_pump`], [`Bridge::subsearch_pump`], [`Bridge::reconcile_pump`]) nor drained with
     /// [`Bridge::start_store_jobs`] (the detail pump's
     /// backstop would start it a frame late), and a nonzero `late_store_jobs` is a sender the
     /// backstop has ALREADY rescued, which the job check alone cannot see once `update()` has run
@@ -1369,9 +1369,9 @@ impl Bridge {
     #[cfg(test)]
     pub(crate) fn assert_no_store_jobs_left_for_test(&self) {
         assert!(!self.stores.has_jobs(),
-            "a store job sits on an outbox: its sender neither ran through its store's Bridge drain (metadata_run / collection_pump / subsearch_pump / start_store_jobs_of) nor drained with Bridge::start_store_jobs");
+            "a store job sits on an outbox: its sender neither ran through its store's Bridge drain (metadata_run / collection_pump / subsearch_pump / reconcile_pump / start_store_jobs_of) nor drained with Bridge::start_store_jobs");
         assert_eq!(self.late_store_jobs, 0,
-            "a pump's backstop had to start store jobs their sender left unstarted: that sender bypassed its Bridge drain (metadata_run / collection_pump / subsearch_pump / start_store_jobs_of / start_store_jobs)");
+            "a pump's backstop had to start store jobs their sender left unstarted: that sender bypassed its Bridge drain (metadata_run / collection_pump / subsearch_pump / reconcile_pump / start_store_jobs_of / start_store_jobs)");
     }
 
     pub(crate) fn metadata_view(&self) -> plx_data::metadata::MetadataView<'_> {
@@ -1426,8 +1426,14 @@ impl Bridge {
 
     /// The read-back worker's pass (`stores::viewreconcile`), and the Browse pump a membership
     /// re-query needs while a page is pushed over the Library page and so it is not ticked to pump its own store.
+    /// The keys are refilled first and the reads the step sent are started before this goes on, in
+    /// the same call; only the reconcile outbox is drained here, the shared `Stores` call's other
+    /// fan-outs emit no jobs of their own.
     pub(crate) fn reconcile_pump(&mut self) -> plx_data::stores::EndpointRefreshSet {
-        if self.stores.reconcile_pump(self.directory.view()) {
+        super::adapters::stores::refill_client_keys(&mut self.client_keys);
+        let changed = self.stores.reconcile_pump(self.directory.view(), &self.client_keys);
+        self.start_store_jobs_of(plx_data::stores::StoreId::ViewReconcile);
+        if changed {
             plx_machine::idle::invalidate();
         }
         if self.stores.network_held() {

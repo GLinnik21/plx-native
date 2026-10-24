@@ -131,7 +131,7 @@ fn drive(stores: &mut Stores, done: impl Fn(&Stores) -> bool) {
     let directory = DirectorySnapshot::default();
     for _ in 0..1000 {
         let _ = stores.viewstate_pump(directory.view());
-        stores.reconcile_pump(directory.view());
+        super::rig::frame(stores, &directory);
         if done(stores) { return; }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
@@ -190,7 +190,7 @@ fn a_read_back_overtaken_by_a_press_is_dropped_and_the_item_asked_again() {
     pms.truth.release.store(true, Ordering::SeqCst); // the held read answers: WATCHED, the old truth
     let directory = DirectorySnapshot::default();
     for _ in 0..1000 {
-        stores.reconcile_pump(directory.view()); // the reconcile owner alone: the second write has not landed
+        super::rig::frame(&mut stores, &directory); // the reconcile owner alone: the second write has not landed
         if stores.reconcile.flights_for_test() == 0 { break; }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
@@ -240,7 +240,7 @@ fn a_read_is_not_spawned_while_a_write_is_queued_so_the_press_survives_it() {
     stores.reconcile.enqueue([(sid, "1".to_string())]); // an earlier burst's read-back, still waiting
     let directory = DirectorySnapshot::default();
     for _ in 0..200 { // the reconcile owner alone, as when a press lands between two frames
-        stores.reconcile_pump(directory.view());
+        super::rig::frame(&mut stores, &directory);
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
     assert_eq!(pms.truth.reads.load(Ordering::SeqCst), 0, "no read goes out over a queued write");
@@ -365,7 +365,7 @@ fn the_read_back_of_a_stop_waits_while_the_network_is_held() {
     stores.stops_landed(vec![stop(sid, 30_000, true, true)], directory.view());
     for _ in 0..40 {
         let _ = stores.viewstate_pump(directory.view());
-        stores.reconcile_pump(directory.view());
+        super::rig::frame(&mut stores, &directory);
         std::thread::sleep(std::time::Duration::from_millis(3));
     }
     assert_eq!(pms.truth.reads.load(Ordering::SeqCst), 0, "no read under the player");
@@ -483,7 +483,7 @@ fn a_flight_spawned_before_the_candidate_does_not_settle_it() {
     stores.hold_network(true); // landings are taken, the re-read waits: the stale landing is observed alone
     a.truth.release.store(true, Ordering::SeqCst); // the early read answers with its OLD body
     for _ in 0..1000 {
-        stores.reconcile_pump(directory.view());
+        super::rig::frame(&mut stores, &directory);
         if stores.reconcile.flights_for_test() == 0 { break; }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
