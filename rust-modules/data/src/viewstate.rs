@@ -849,35 +849,25 @@ impl ViewStateState {
     ///   on a genuine refresh; the read-back restores what the server holds.
     fn admit(&mut self, req: Req, keys: &ClientKeys, profile: u32) -> Option<Req> {
         if req.profile != profile {
-            plx_base::eventlog::log(&format!(
-                "viewstate: rk={} {} DROPPED — the profile changed while it was queued",
-                req.rk,
-                req.w.name()
-            ));
-            self.ledger.retire(req.seq);
+            self.drop_queued(&req, "the profile changed while it was queued");
             return None;
         }
         let Some(key) = keys.key(req.sid) else {
-            plx_base::eventlog::log(&format!(
-                "viewstate: rk={} {} DROPPED — server {} left the registry while queued",
-                req.rk,
-                req.w.name(),
-                req.sid.raw()
-            ));
-            self.ledger.retire(req.seq);
+            self.drop_queued(&req, &format!("server {} left the registry while queued", req.sid.raw()));
             return None;
         };
         if key != req.key {
-            plx_base::eventlog::log(&format!(
-                "viewstate: rk={} {} DROPPED — server {} was re-tokened while it was queued",
-                req.rk,
-                req.w.name(),
-                req.sid.raw()
-            ));
-            self.ledger.retire(req.seq);
+            self.drop_queued(&req, &format!("server {} was re-tokened while it was queued", req.sid.raw()));
             return None;
         }
         Some(req)
+    }
+
+    /// Drop a write that will not go out: the log says why and its ledger entry is retired (it never
+    /// left, so nothing will ever confirm it).
+    fn drop_queued(&mut self, req: &Req, why: &str) {
+        plx_base::eventlog::log(&format!("viewstate: rk={} {} DROPPED — {why}", req.rk, req.w.name()));
+        self.ledger.retire(req.seq);
     }
 
     /// A write the runner never started ([`Outcome::NotStarted`]): nothing left the device. It goes
