@@ -22,7 +22,7 @@ fn search_publication_is_frozen_for_the_frame_then_notified_once_at_the_next_spl
     d.emit(MachineId::Nav, Fx::App(AppFx::Store(StoreId::Search,
         StoreCmd::Search(SearchCmd::SetQuery("after".into())))));
     frame(&mut d, &mut rig, AppArg::Search, tick(1), vec![]);
-    assert_eq!(rig.stores.search_snapshot(rig.directory.view()).view().query(), "after",
+    assert_eq!(rig.stores.search_snapshot(rig.directory.view(), &Bridge::household_ids()).view().query(), "after",
         "real store delivery ran");
     assert_eq!(rig.search.view().query(), "before", "the frame split precedes the store drain");
     assert!(rig.search.same_publication(&retained));

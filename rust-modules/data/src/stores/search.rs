@@ -79,11 +79,14 @@ impl SearchStore {
         self.state.snapshot()
     }
 
+    /// `household`: the signed-in profile's household member ids, read by the application's
+    /// `Bridge` and handed in (`SearchState::snapshot_with_directory`).
     pub fn snapshot_with_directory(
         &self,
         directory: crate::stores::browse::DirectoryView<'_>,
+        household: &[i64],
     ) -> SearchSnapshot {
-        self.state.snapshot_with_directory(directory)
+        self.state.snapshot_with_directory(directory, household)
     }
 
     /// The ITEMS the result shelves hold, in shelf order. A tag or collection hit has no rating

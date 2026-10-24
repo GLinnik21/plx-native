@@ -570,7 +570,7 @@ impl Bridge {
         let stores = plx_data::stores::Stores::default();
         let mut directory = plx_data::stores::browse::DirectorySnapshot::default();
         let browse = stores.capture_browse(&mut directory);
-        let search = stores.search_snapshot(browse.directory.view());
+        let search = stores.search_snapshot(browse.directory.view(), &Self::household_ids());
         Self::with_publications_and_stores(measure, now_us, init, session_adapter, consent,
             consent_adapter, store_runner,
             StorePublications {
@@ -1035,7 +1035,7 @@ impl Bridge {
         let browse_changed = listing_changed || !self.directory.same_publication(&directory_before)
             || hubs_before != (self.section_hubs.view().id(), self.section_hubs.view().revision());
         let search = if self.home_io.is_some() { self.search.clone() } else {
-            self.stores.search_snapshot(self.directory.view())
+            self.stores.search_snapshot(self.directory.view(), &Self::household_ids())
         };
         let search_changed = !self.search.same_publication(&search);
         if search_changed {
@@ -1609,6 +1609,13 @@ impl Bridge {
     /// The rows the read-back has landed since the last call (`Stores::take_landed_views`).
     pub(crate) fn take_landed_views(&mut self) -> Vec<(plx_plex::plex::ServerId, String)> {
         self.stores.take_landed_views()
+    }
+
+    /// The signed-in profile's household member ids, which Search's source scope grades each
+    /// server's household mark against. The Bridge reads the session here and hands the answer to
+    /// the store; the data layer reads no session global for it.
+    fn household_ids() -> Vec<i64> {
+        plx_plex::plex::session::peek().household_ids()
     }
 
     /// Search commands snapshot their initial favourite-library ranking from the same retained

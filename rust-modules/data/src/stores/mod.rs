@@ -301,8 +301,12 @@ impl Stores {
         self.search.pump_with_directory_and_gate(dt, directory, &self.landgate)
     }
 
-    pub fn search_snapshot(&self, directory: browse::DirectoryView<'_>) -> search::SearchSnapshot {
-        self.search.snapshot_with_directory(directory)
+    pub fn search_snapshot(
+        &self,
+        directory: browse::DirectoryView<'_>,
+        household: &[i64],
+    ) -> search::SearchSnapshot {
+        self.search.snapshot_with_directory(directory, household)
     }
 
     /// Controlled discovery against this aggregate's Browse owner.

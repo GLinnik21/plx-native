@@ -751,15 +751,23 @@ impl SearchState {
         self.gen
     }
 
+    /// Standalone fixture snapshot: no retained directory and, by construction, no household
+    /// (production reaches the scope through [`SearchState::snapshot_with_directory`], which is
+    /// handed the household).
+    #[cfg(any(test, feature = "test-support"))]
     pub fn snapshot(&self) -> view::SearchSnapshot {
-        self.snapshot_with_scope(self.scope_cache.snapshot())
+        self.snapshot_with_scope(self.scope_cache.snapshot(&[]))
     }
 
+    /// `household`: the signed-in profile's household member ids, read by the application's
+    /// `Bridge` (`Session::household_ids`) and handed in, so the source scope this publishes
+    /// reads no session global.
     pub fn snapshot_with_directory(
         &self,
         directory: crate::stores::browse::DirectoryView<'_>,
+        household: &[i64],
     ) -> view::SearchSnapshot {
-        self.snapshot_with_scope(self.scope_cache.snapshot_with_directory(directory))
+        self.snapshot_with_scope(self.scope_cache.snapshot_with_directory(directory, household))
     }
 
     fn snapshot_with_scope(&self, scope: scope::SourceScopeSnapshot) -> view::SearchSnapshot {
@@ -789,7 +797,6 @@ impl SearchState {
         cmd: crate::stores::search::SearchCmd,
         directory: crate::stores::browse::DirectoryView<'_>,
     ) -> bool {
-        self.scope_cache.snapshot_with_directory(directory);
         run_with_optional_directory(self, adapter, cmd, Some(directory))
     }
 
