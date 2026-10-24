@@ -202,6 +202,19 @@ fn a_panicking_fetch_lands_as_a_failure_and_releases_its_claim() {
     assert_eq!(source(&owner.state, 0).retry_cd, RETRY_FRAMES);
 }
 
+/// ViewState's `ApplyView` fan-out steps Search, and ViewState drains only the stores its fill list
+/// names (`VIEWSTATE_FILLS`), Search not among them because a view edit emits no job. This pins the
+/// premise, so an `ApplyView` that one day emits fails here and not on the late backstop.
+#[test]
+fn a_view_edit_stepped_through_the_fan_out_emits_no_job() {
+    use crate::viewstate::{ViewAt, ViewEdit};
+    let (_fresh, mut owner) = settled(1);
+    owner.state.run(&owner.adapter, SearchCmd::ApplyView {
+        at: ViewAt::leaf(ServerId::from_raw(0), "synthetic-rk"), edit: ViewEdit::Watched(true),
+    });
+    assert!(owner.state.jobs.is_empty(), "a view edit starts nothing");
+}
+
 /// A lane read rides the same lane: an answered source owed a window asks for it as a `Tail` job
 /// carrying a COPY of its lane, and the read that panics lands as a failed read, which leaves the
 /// slide owed and the claim released.
@@ -228,4 +241,5 @@ fn a_lane_read_is_a_job_and_a_panicking_one_lands_as_a_failed_read() {
     owner.pump(0.3);
     assert!(owner.state.wins[k].pending.is_some(), "the slide stays owed");
     assert_eq!(source(&owner.state, 0).status, Status::Answered, "a failed read is not a failed source");
+    assert!(!claim_held(&owner, 0), "the failed read's take released the claim");
 }

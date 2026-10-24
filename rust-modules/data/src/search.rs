@@ -1334,7 +1334,10 @@ fn pump_with_optional_directory(
         // A launch the runner refused freed its claim in the call that refused it, and said so:
         // back off here, or the free claim would have the next request go out at once, every pump.
         // Read after the take (a refusal and an answer cannot both belong to one request) and
-        // before the request, so the source is judged as backed off in the very pump that sees it.
+        // before the request, so the REQUEST is judged as backed off in the very pump that sees
+        // it. The fan-out turn above was planned before the sweep and does not know: a refused
+        // slot still counted `Wanting` there, so another wanting source can wait one extra pump
+        // (never more than `WIDTH` requests are out either way).
         if adapter.mailbox(i).take_refused(state.gen) {
             source_mut(state, i).retry_cd = RETRY_FRAMES;
         }
@@ -1714,12 +1717,11 @@ pub fn finish_search_job(port: &SearchPort, addr: Addr, client: &'static Client,
 /// with, in place of a client.
 #[cfg(test)]
 fn finish_with_io(port: &SearchPort, addr: Addr, io: &mut dyn tail::Io, req: SearchReq) {
+    io.serving(req.sid);
     finish_work(port, addr, io, req.sid, req.work);
 }
 
 fn finish_work(port: &SearchPort, addr: Addr, io: &mut dyn tail::Io, sid: ServerId, work: SearchWork) {
-    #[cfg(test)]
-    io.serving(sid);
     let out = match work {
         SearchWork::First => {
             // sectionId 0 = every section, which `opt_int` sends by omitting it. The Search screen

@@ -82,14 +82,16 @@ struct Key {
     source_list_gen: u32,
     profile_gen: u32,
     session_gen: u64,
-    /// The signed-in profile's household member ids the caller passed in: an INPUT of the build
-    /// (`ScopeSource::household` is graded against it), so the memo keys on it as it keys on every
-    /// other input and a changed household rebuilds the scope whatever the generations did.
-    household: Vec<i64>,
 }
 
 struct Cache {
     key: Key,
+    /// The signed-in profile's household member ids the caller passed in: an INPUT of the build
+    /// (`ScopeSource::household` is graded against it), so the memo keys on it as it keys on every
+    /// other input and a changed household rebuilds the scope whatever the generations did. Kept
+    /// beside the key rather than in it so the per-frame read compares the caller's slice in place
+    /// and copies it only when it rebuilds.
+    household: Vec<i64>,
     directory: Option<DirectoryInput>,
     publication: SourceScopeSnapshot,
 }
@@ -145,18 +147,18 @@ pub struct ScopeCache {
 
 /// Read every registry input used by a standalone Search fixture. Production adds the retained
 /// Browse directory generations through [`read_key_with_directory`].
-fn read_key(household: &[i64]) -> Key {
-    read_registry_key(household)
+fn read_key() -> Key {
+    read_registry_key()
 }
 
-fn read_key_with_directory(directory: crate::stores::browse::DirectoryView<'_>, household: &[i64]) -> Key {
-    let mut key = read_registry_key(household);
+fn read_key_with_directory(directory: crate::stores::browse::DirectoryView<'_>) -> Key {
+    let mut key = read_registry_key();
     key.sections_gen = directory.sections_gen();
     key.source_list_gen = directory.source_list_gen();
     key
 }
 
-fn read_registry_key(household: &[i64]) -> Key {
+fn read_registry_key() -> Key {
     // Every live server, however many: the fingerprint must move when ANY of them changes, so it
     // cannot be a fixed-size prefix of the roster.
     let roster: Vec<ServerId> = plx_plex::plex::server_ids().collect();
@@ -173,7 +175,6 @@ fn read_registry_key(household: &[i64]) -> Key {
         source_list_gen: 0,
         profile_gen: plx_plex::plex::session::current_gen(),
         session_gen: plx_plex::plex::session::visible_generation(),
-        household: household.to_vec(),
     }
 }
 
@@ -185,14 +186,15 @@ impl ScopeCache {
     /// ViewState steps are handed their registry keys: this module reads the server registry
     /// itself but never the session cache.
     pub fn snapshot(&self, household: &[i64]) -> SourceScopeSnapshot {
-        let key = read_key(household);
+        let key = read_key();
         let mut cache = self.cache.borrow_mut();
         let matches = cache.as_ref().is_some_and(|cached| {
-            cached.key == key && cached.directory.is_none()
+            cached.key == key && cached.household == household && cached.directory.is_none()
         });
         if !matches {
             *cache = Some(Cache {
                 key,
+                household: household.to_vec(),
                 directory: None,
                 publication: build(household),
             });
@@ -209,15 +211,17 @@ impl ScopeCache {
         directory: crate::stores::browse::DirectoryView<'_>,
         household: &[i64],
     ) -> SourceScopeSnapshot {
-        let key = read_key_with_directory(directory, household);
+        let key = read_key_with_directory(directory);
         let mut cache = self.cache.borrow_mut();
         let matches = cache.as_ref().is_some_and(|cached| {
             cached.key == key
+                && cached.household == household
                 && cached.directory.as_ref().is_some_and(|input| input.matches(directory))
         });
         if !matches {
             *cache = Some(Cache {
                 key,
+                household: household.to_vec(),
                 directory: Some(DirectoryInput::capture(directory)),
                 publication: build_with_directory(directory, household),
             });
@@ -464,7 +468,7 @@ mod tests {
         );
         let alpha = directory("Alpha");
         let beta = directory("Beta");
-        assert!(read_key_with_directory(alpha.view(), &household()) == read_key_with_directory(beta.view(), &household()),
+        assert!(read_key_with_directory(alpha.view()) == read_key_with_directory(beta.view()),
             "the regression requires equal owner-local generations");
 
         let cache = ScopeCache::default();
@@ -510,7 +514,7 @@ mod tests {
         ]);
         let dir_a = directory("Owner A's Library");
         let dir_b = directory("Owner B's Library");
-        assert!(read_key_with_directory(dir_a.view(), &household()) == read_key_with_directory(dir_b.view(), &household()),
+        assert!(read_key_with_directory(dir_a.view()) == read_key_with_directory(dir_b.view()),
             "the regression requires equal owner-local generations");
 
         let owner_a = ScopeCache::default();
@@ -644,12 +648,12 @@ mod tests {
         stores.capture_browse(&mut directory);
         let cache = ScopeCache::default();
         let old = cache.snapshot_with_directory(directory.view(), &household());
-        let before = read_key_with_directory(directory.view(), &household());
+        let before = read_key_with_directory(directory.view());
         assert!(old.sources().iter().all(|source| source.live));
 
         plx_plex::plex::describe_server(share, "renamed-share", "new-friend", plx_plex::plex::GrantEvidence::outside());
         let described = cache.snapshot_with_directory(directory.view(), &household());
-        let after = read_key_with_directory(directory.view(), &household());
+        let after = read_key_with_directory(directory.view());
         assert!(!old.same_publication(&described), "a described source is a new sentence");
         assert_eq!(described.sources()[1].handle, "new-friend");
         assert_eq!(
@@ -666,7 +670,7 @@ mod tests {
         assert!(quiet.sources().iter().all(|source| !source.live));
         assert!(described.sources().iter().all(|source| source.live),
             "…and the retained publication keeps saying what it said");
-        assert_ne!(read_key_with_directory(directory.view(), &household()).source_list_gen, after.source_list_gen);
+        assert_ne!(read_key_with_directory(directory.view()).source_list_gen, after.source_list_gen);
     }
 
     #[test]

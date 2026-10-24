@@ -244,7 +244,9 @@ pub struct SaveRecentsReq;
 /// Where a recents write's answer goes: the adapter it was made from. The write answers with
 /// nothing (the history it writes was published when the edit was made); a REFUSED write is
 /// remembered on the adapter, so the next edit asks for a drain again instead of leaving the queue
-/// to wait for a change that may never come ([`SearchAdapter::take_recents_refused`]).
+/// to wait for a change that may never come ([`SearchAdapter::take_recents_refused`]). An adapter a
+/// `SearchCmd::Reset` replaced forgets it; the queue is a process static, so the next edit that
+/// changes the history still drains it.
 #[derive(Clone)]
 pub struct SaveRecentsPort {
     adapter: Arc<crate::search::SearchAdapter>,
