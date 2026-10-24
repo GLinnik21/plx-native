@@ -771,7 +771,7 @@ class ScreenSubcommand(unittest.TestCase):
         self.assertIn("panel on (Active)", out)
 
     def test_on_while_the_panel_is_already_lit_is_a_no_op_success(self):
-        # `tests/run.py --fps --mock` asks for `screen on` by default and refused to run at all
+        # `tests/run.py --fps --mock --panel on` asks for `screen on` and refused to run at all
         # when the panel was lit, because -102 was read as a refusal.
         out = self._run("on", self.ON_WHILE_LIT)
         self.assertIn("RC:0", out)
