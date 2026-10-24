@@ -29,7 +29,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-24T19:34:08Z",
+ "generated": "2026-10-24T19:35:33Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -119,15 +119,15 @@
    "change30_pct": -51.8,
    "change7_pct": -23.7,
    "d30": 687,
-   "delta30": -356.0,
+   "delta30": -356,
    "delta7": -103.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 94,
+   "n_now": 95,
    "n_prev": 118,
-   "now": 331.0,
+   "now": 331,
    "prev7": 434.0,
    "shown": true,
    "state": "better",
@@ -341,15 +341,15 @@
    "change30_pct": 100.8,
    "change7_pct": 14.1,
    "d30": 131,
-   "delta30": 132.0,
+   "delta30": 132,
    "delta7": 32.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 80,
+   "n_now": 81,
    "n_prev": 114,
-   "now": 263.0,
+   "now": 263,
    "prev7": 230.5,
    "shown": true,
    "state": "flat",
@@ -359,18 +359,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 185.7,
-   "change7_pct": 7.5,
+   "change30_pct": 186.4,
+   "change7_pct": 7.8,
    "d30": 70,
-   "delta30": 130,
-   "delta7": 14.0,
+   "delta30": 130.5,
+   "delta7": 14.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 79,
+   "n_now": 80,
    "n_prev": 114,
-   "now": 200,
+   "now": 200.5,
    "prev7": 186.0,
    "shown": true,
    "state": "flat",
@@ -423,17 +423,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -4.9,
+   "change7_pct": -5.6,
    "d30": null,
    "delta30": null,
-   "delta7": -7.5,
+   "delta7": -8.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 80,
+   "n_now": 81,
    "n_prev": 114,
-   "now": 145.0,
+   "now": 144,
    "prev7": 152.5,
    "shown": true,
    "state": "flat",
@@ -511,15 +511,15 @@
    "change30_pct": 18.8,
    "change7_pct": 11.8,
    "d30": 16,
-   "delta30": 3.0,
+   "delta30": 3,
    "delta7": 2.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 80,
+   "n_now": 81,
    "n_prev": 114,
-   "now": 19.0,
+   "now": 19,
    "prev7": 17.0,
    "shown": false,
    "state": "flat",
@@ -639,11 +639,6 @@
    "change_pct": 35.8,
    "commits": [
     {
-     "pr": 990,
-     "sha": "10e9287ff",
-     "title": "Person store: emit store jobs and read the server registry as an input"
-    },
-    {
      "pr": 994,
      "sha": "9bc127faf",
      "title": "gfx: no dev-trigger name in an embedded shader source"
@@ -687,6 +682,11 @@
      "pr": 805,
      "sha": "4a551d0b0",
      "title": "player: playback speed (0.5x-2x), done in the app"
+    },
+    {
+     "pr": 1013,
+     "sha": "ef3e55a4c",
+     "title": "Metadata detail chain runs its GETs through the client the runner resolved"
     }
    ],
    "from": 46.0,
@@ -700,11 +700,6 @@
    "change_pct": 34.0,
    "commits": [
     {
-     "pr": 990,
-     "sha": "10e9287ff",
-     "title": "Person store: emit store jobs and read the server registry as an input"
-    },
-    {
      "pr": 994,
      "sha": "9bc127faf",
      "title": "gfx: no dev-trigger name in an embedded shader source"
@@ -748,6 +743,11 @@
      "pr": 805,
      "sha": "4a551d0b0",
      "title": "player: playback speed (0.5x-2x), done in the app"
+    },
+    {
+     "pr": 1013,
+     "sha": "ef3e55a4c",
+     "title": "Metadata detail chain runs its GETs through the client the runner resolved"
     }
    ],
    "from": 153.0,
@@ -761,11 +761,6 @@
    "change_pct": 27.1,
    "commits": [
     {
-     "pr": 990,
-     "sha": "10e9287ff",
-     "title": "Person store: emit store jobs and read the server registry as an input"
-    },
-    {
      "pr": 994,
      "sha": "9bc127faf",
      "title": "gfx: no dev-trigger name in an embedded shader source"
@@ -809,6 +804,11 @@
      "pr": 805,
      "sha": "4a551d0b0",
      "title": "player: playback speed (0.5x-2x), done in the app"
+    },
+    {
+     "pr": 1013,
+     "sha": "ef3e55a4c",
+     "title": "Metadata detail chain runs its GETs through the client the runner resolved"
     }
    ],
    "from": 114.7,
@@ -849,7 +849,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 263.0
+   "now": 263
   }
  ],
  "slowest_local": [
