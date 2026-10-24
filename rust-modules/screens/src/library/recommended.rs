@@ -880,6 +880,7 @@ impl RecommendedScreen {
             TAB_KEY_SHOWS => Some(LibraryReq::Tab(HomeTab::Shows)),
             TAB_KEY_SEARCH => Some(LibraryReq::Tab(HomeTab::Search)),
             TAB_KEY_WATCHLIST => Some(LibraryReq::Tab(HomeTab::Watchlist)),
+            plx_ui::widgets::TAB_KEY_LIVETV => Some(LibraryReq::Tab(HomeTab::LiveTv)),
             TAB_KEY_CHIP => Some(LibraryReq::Account),
             _ => None,
         };

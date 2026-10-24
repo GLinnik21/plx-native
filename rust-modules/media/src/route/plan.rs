@@ -1192,6 +1192,14 @@ pub(super) fn up_next_of(r: &plx_plex::plex::QueueRow) -> Option<UpNext> {
 /// a *function call* — `plex::client_opt()` — which is worse, because `Send` cannot see a function
 /// call and a worker that resolves its own server therefore compiles clean and passes every test.
 /// It is captured here, at the request, and every PMS call the worker makes is `client_for(sid)`.
+/// A Live TV channel to tune instead of a library item to resolve: the `{dvr}` and `{channel}` of
+/// `plx_plex::plex::livetv::tune_path`. A request that carries one has no `rk` and no `part`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LiveTune {
+    pub dvr: String,
+    pub channel: String,
+}
+
 #[derive(Clone, Default)]
 pub struct ResolveEnv {
     /// WHICH SERVER this playback's item lives on — the scope for every server-local key the
@@ -1264,6 +1272,8 @@ pub struct ResolveEnv {
     /// `false` and is set in exactly one place, `request_env` (which `request_play_inner` builds
     /// every environment through), so nothing can default it on.
     pub fresh_play: bool,
+    /// A Live TV channel to tune ([`build_live_stream`]); `None` for every library item.
+    pub live: Option<LiveTune>,
     /// Test-only account subtitle preferences `(language, mode, forced)`, standing in for the
     /// plex.tv call a unit test cannot make.
     #[cfg(any(test, feature = "test-support"))]
@@ -1468,6 +1478,10 @@ pub struct Plan {
     /// rides along so the read-out can quote the server instead of guessing. `None` on every other
     /// plan, including one that simply failed to reach the server.
     pub verdict: Option<PlayVerdict>,
+    /// The Live TV session a tune opened on the server, set as soon as the tune answered — before
+    /// the plan has a URL — so a plan that is abandoned, refused or installed always names the
+    /// recording its stop must end (`livetv::Client::live_timeline`).
+    pub live: Option<plx_plex::plex::livetv::LiveSession>,
     /// the episode queued after this one, straight off the `continuous=1` PlayQueue
     pub up_next: Option<UpNext>,
     /// that same PlayQueue's whole returned window, projected on the worker (see `queue`)
@@ -1555,13 +1569,22 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         source_decodable: true,
         ..Default::default()
     };
+    // The server's client is read once, ahead of the Live TV branch: both resolves make their PMS
+    // calls through it, and a server that is gone ends either one the same way.
+    let client = plx_plex::plex::client_for(env.sid);
+    if let Some(tune) = &env.live {
+        if let Some(client) = client {
+            build_live_stream(off, tune, client, &mut plan);
+        }
+        return plan;
+    }
     if env.direct_play_mode == DirectPlayMode::Disabled && rk.is_empty() {
         plan.verdict = Some(PlayVerdict::DirectPlayDisabled);
         return plan;
     }
     let forced = env.direct_play_mode == DirectPlayMode::Forced;
     let playback_quality = if forced { Quality::Original } else { env.quality };
-    let client = match plx_plex::plex::client_for(env.sid) {
+    let client = match client {
         Some(c) => c,
         None => return plan,
     };
@@ -2640,6 +2663,32 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
 /// the retranscode landing all ask it.
 pub(super) fn video_copy_fps(contract: &plx_plex::plex::EncodeContract, src_fps: f64) -> f64 {
     if contract.remux && !contract.no_video_copy { src_fps } else { 0.0 }
+}
+
+/// The Live TV resolve: tune, ask the decision for the playlist, and direct-play it. Nothing of the
+/// library path applies — no PlayQueue, no metadata, no track memory, no quality ladder, no
+/// direct-play mode: the server already records the channel as H.264/AAC in MPEG-TS, and the
+/// official client plays it the same way (`docs/pms-api.md` §10).
+fn build_live_stream(
+    off: &plx_base::task::OffFrame, tune: &LiveTune, client: &plx_plex::plex::Client, plan: &mut Plan,
+) {
+    let session = new_sess("");
+    plan.sess = session.clone();
+    let Some(live) = client.tune(off, &tune.dvr, &tune.channel, &session) else {
+        crate::player::log(&format!("livetv: tune of {} on dvr {} failed", tune.channel, tune.dvr));
+        return;
+    };
+    crate::player::log(&format!("livetv: tuned {} -> {}", tune.channel, live.key));
+    plan.live = Some(live.clone());
+    let Some(play) = client.live_part(off, &live, &session) else {
+        crate::player::log("livetv: the decision named no playlist");
+        return;
+    };
+    plan.vcodec = play.vcodec;
+    plan.acodec = play.acodec;
+    plan.src_vcodec = plan.vcodec.clone();
+    plan.src_acodec = plan.acodec.clone();
+    plan.url = client.direct_play_url(&play.part, &session).to_url();
 }
 
 /// The direct-play plan: the pipeline decodes the SOURCE codecs natively, so the Load payload uses
@@ -3763,6 +3812,9 @@ pub(super) fn part_id_of(part_key: &str) -> i64 {
 pub(super) struct AbandonedPlanResources {
     pub(super) sid: ServerId,
     pub(super) identities: Vec<String>,
+    /// A tuned Live TV session (and the playback session it was decided under) whose recording
+    /// must be stopped before anything else: it holds one of the server's tuners.
+    pub(super) live: Option<(plx_plex::plex::livetv::LiveSession, String)>,
 }
 
 pub(super) fn abandoned_plan_resources(plan: &Plan) -> Option<AbandonedPlanResources> {
@@ -3773,12 +3825,14 @@ pub(super) fn abandoned_plan_resources(plan: &Plan) -> Option<AbandonedPlanResou
     if !plan.sess.is_empty() && !identities.iter().any(|id| id == &plan.sess) {
         identities.push(plan.sess.clone());
     }
-    if identities.is_empty() {
+    let live = plan.live.clone().map(|live| (live, plan.sess.clone()));
+    if identities.is_empty() && live.is_none() {
         None
     } else {
         Some(AbandonedPlanResources {
             sid: plan.sid,
             identities,
+            live,
         })
     }
 }

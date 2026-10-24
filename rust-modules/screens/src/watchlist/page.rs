@@ -1246,6 +1246,7 @@ impl WatchlistScreen {
             TAB_KEY_SEARCH => Some(Some(WatchlistOut::Tab(HomeTab::Search))),
             TAB_KEY_CHIP => Some(Some(WatchlistOut::Account)),
             TAB_KEY_WATCHLIST => Some(None),
+            plx_ui::widgets::TAB_KEY_LIVETV => Some(Some(WatchlistOut::Tab(HomeTab::LiveTv))),
             _ => None,
         }
     }

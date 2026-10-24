@@ -37,6 +37,7 @@ pub(crate) fn route_word(route: &AppArg) -> &'static str {
         AppArg::Content(ContentArg::Catalog { .. }) => "catalog",
         AppArg::Search => "search",
         AppArg::Watchlist => "watchlist",
+        AppArg::LiveTv => "livetv",
         AppArg::Player => "player",
         AppArg::Home => "home",
         // Not pages: a surface's word is ` overlay=`, and none of these reaches the page stack's
@@ -70,7 +71,7 @@ pub(crate) fn route_word(route: &AppArg) -> &'static str {
 /// holds one and asks about it. Its two readers are this module's word derivation and
 /// `app::bridge`'s argument tests, which used to keep a second copy of the same list.
 #[cfg(test)]
-pub(crate) fn every_route() -> [AppArg; 14] {
+pub(crate) fn every_route() -> [AppArg; 15] {
     use plx_screens::registry::ContentArg;
     let sid = plx_plex::plex::ServerId::UNSET;
     [
@@ -91,6 +92,7 @@ pub(crate) fn every_route() -> [AppArg; 14] {
         AppArg::Content(ContentArg::Catalog { hex: [0; 12] }),
         AppArg::Search,
         AppArg::Watchlist,
+        AppArg::LiveTv,
         AppArg::Player,
     ]
 }

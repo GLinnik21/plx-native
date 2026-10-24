@@ -4595,7 +4595,9 @@ class LogLineContract(unittest.TestCase):
                               "abr: window", source=source)
 
     def test_hls_segment_regex_matches_the_rust_format_string(self):
-        self._assert_contract('"hls: segment={}', run.RE_HLS_SEGMENT, run.SEGMENT_FIELDS,
+        # Anchored on `bytes=`: `"hls: segment={} carries no SPS; ..."` (a second line with the
+        # same prefix, ff.rs) comes first in the file and is not the sample line the regex reads.
+        self._assert_contract('"hls: segment={} bytes=', run.RE_HLS_SEGMENT, run.SEGMENT_FIELDS,
                               "hls: segment")
 
     def test_abr_tx_parses_a_committed_upshift(self):

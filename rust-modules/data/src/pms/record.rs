@@ -118,7 +118,7 @@ mod tests {
             leaf_count: Some(10), viewed_leaf_count: Some(4), added_at: Some(i64::MAX),
         };
         Landing { gen: 7, seq: 19, sid: m.sid, client: None, token_gen: 5,
-            build: Some(SourceBuild {
+            build: Some(SourceBuild { live: Vec::new(),
                 lane: Default::default(),
                 cw: vec![CwItem { last_viewed_at: i64::MAX, m: Arc::new(m.clone()), position: 0 }],
                 shelves: vec![Shelf { epoch: 0, positions: Vec::new(), title: "Shelf".into(), hub_id: "provider.hub".into(),

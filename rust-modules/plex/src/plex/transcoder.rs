@@ -271,7 +271,8 @@ fn profile_for_delivery(caps: &plx_platform::devcaps::Caps, delivery: TranscodeD
     }
     let dp_audio = caps.audio.split(',').map(profile_codec_name).collect::<Vec<_>>().join(",");
     // ac3 first — the preferred ENCODE target — then the rest of the caps subset as copy lanes.
-    let target_audio = ["ac3", "eac3", "aac", "dts"]
+    // opus is only ever a copy lane: last, so it can never be the encode head.
+    let target_audio = ["ac3", "eac3", "aac", "dts", "opus"]
         .into_iter()
         .filter(|c| caps.audio_has(c))
         .map(profile_codec_name)

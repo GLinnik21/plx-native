@@ -41,3 +41,5 @@ pub mod registry;
 pub mod settings;
 pub mod preferences;
 pub mod watchlist;
+/// The Live TV page (the strip's "TV en directo"): the server's channels as a poster grid.
+pub mod livetv;

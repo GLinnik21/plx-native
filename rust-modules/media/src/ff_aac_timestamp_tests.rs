@@ -104,6 +104,44 @@ fn a_later_ts_idr_recovers_cached_parameter_sets() {
     assert!(out.ends_with(&later));
 }
 
+/// A Live TV recording's later segment carries no SPS/PPS (2026-10-21): the sets the previous
+/// segment of the SAME playlist left are carried over, and another playlist never inherits them.
+#[test]
+fn a_live_segment_without_parameter_sets_inherits_them_from_its_own_playlist_only() {
+    let at = |path: &str| crate::hls::Segment {
+        sequence: 1,
+        duration: std::time::Duration::from_secs(1),
+        resource: crate::hls::Resource::new(plx_plex::plex::Origin::http("192.0.2.10", 32400), path).unwrap(),
+    };
+    let session = "/livetv/sessions/9b9fe727/d459eaef";
+    assert_eq!(carry_scope(&at(&format!("{session}/00000.ts"))), session);
+    assert_eq!(carry_scope(&at(&format!("{session}/00001.ts?X-Plex-Token=t"))), session);
+    assert_ne!(carry_scope(&at("/video/:/transcode/universal/session/other/base/00001.ts")), session);
+
+    // the previous segment's sets, cloned into the next one, go in front of its bare IDR
+    let mut previous = H264ParamSets::default();
+    let mut out = Vec::new();
+    ts_h264_access_unit(&[0, 0, 1, 0x67, 1, 0, 0, 1, 0x68, 2, 0, 0, 1, 0x65, 3], &mut previous, &mut out).unwrap();
+    let mut next = previous.clone();
+    assert_eq!(ts_h264_access_unit(&[0, 0, 1, 0x65, 4], &mut next, &mut out), Ok(true));
+    assert!(out.starts_with(&[0, 0, 0, 1, 0x67, 1, 0, 0, 0, 1, 0x68, 2]));
+}
+
+/// A live recording starts three seconds behind its edge and is polled twice a second (measured
+/// on the TV 2026-10-21: started on its first segment it stalled at every late one); a PMS
+/// transcode's playlist keeps the VOD cadence and starts at once.
+#[test]
+fn a_live_playlist_starts_behind_its_edge_and_is_polled_faster() {
+    assert!(!live_start_ready(true, false, 760_000_000), "one segment is no cushion");
+    assert!(!live_start_ready(true, false, 2_760_000_000));
+    assert!(live_start_ready(true, false, 3_760_000_000));
+    assert!(live_start_ready(true, true, 0), "once started, every segment goes as it lands");
+    assert!(live_start_ready(false, false, 0), "a PMS transcode is never held");
+    assert_eq!(playlist_poll(true, 3), std::time::Duration::from_millis(500));
+    assert_eq!(playlist_poll(false, 3), std::time::Duration::from_millis(1_000));
+    assert_eq!(playlist_poll(false, 0), std::time::Duration::from_millis(250));
+}
+
 #[test]
 fn a_ts_idr_without_any_parameter_sets_is_rejected() {
     let mut sets = H264ParamSets::default();

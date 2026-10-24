@@ -11,12 +11,15 @@ use plx_data::stores::browse::{DirectoryView, SecKind};
 pub(crate) enum Pill {
     Home,
     Section(SecKind),
+    LiveTv,
     Watchlist,
     Search,
 }
 
-/// The strip's destination keys in strip order: Home, one key per type pill, the Watchlist
-/// bookmark, Search. The one
+/// The strip's destination keys in strip order: Home, one key per type pill, Live TV, the
+/// Watchlist bookmark, Search. Live TV is always offered: a server without a DVR shows an empty
+/// page. shortcut: the pill does not follow the hubs (the strip rebuilds on the directory's
+/// generation only); hide it once a hubs-driven rebuild exists. The one
 /// place that order is written; `refresh` publishes it and the pill maps below read it, so no
 /// map assumes which index Search holds.
 fn strip_keys(directory: DirectoryView<'_>) -> Vec<u32> {
@@ -25,6 +28,7 @@ fn strip_keys(directory: DirectoryView<'_>) -> Vec<u32> {
         SecKind::Movie => widgets::TAB_KEY_MOVIES,
         SecKind::Show => widgets::TAB_KEY_SHOWS,
     }));
+    keys.push(widgets::TAB_KEY_LIVETV);
     keys.push(widgets::TAB_KEY_WATCHLIST);
     keys.push(widgets::TAB_KEY_SEARCH);
     keys
@@ -39,6 +43,7 @@ fn pill_in(i: usize, keys: &[u32]) -> Pill {
     match keys.get(i).copied() {
         Some(widgets::TAB_KEY_MOVIES) => Pill::Section(SecKind::Movie),
         Some(widgets::TAB_KEY_SHOWS) => Pill::Section(SecKind::Show),
+        Some(widgets::TAB_KEY_LIVETV) => Pill::LiveTv,
         Some(widgets::TAB_KEY_WATCHLIST) => Pill::Watchlist,
         Some(widgets::TAB_KEY_SEARCH) => Pill::Search,
         _ => Pill::Home,
@@ -54,6 +59,7 @@ fn pill_index(pill: Pill, keys: &[u32]) -> Option<usize> {
         Pill::Home => widgets::TAB_KEY_HOME,
         Pill::Section(SecKind::Movie) => widgets::TAB_KEY_MOVIES,
         Pill::Section(SecKind::Show) => widgets::TAB_KEY_SHOWS,
+        Pill::LiveTv => widgets::TAB_KEY_LIVETV,
         Pill::Watchlist => widgets::TAB_KEY_WATCHLIST,
         Pill::Search => widgets::TAB_KEY_SEARCH,
     };
@@ -111,6 +117,9 @@ impl ChromeSnapshot {
                 widgets::TAB_KEY_HOME => TabFace::Label(plx_platform::i18n::msg::browse_chrome_home().into()),
                 widgets::TAB_KEY_MOVIES => TabFace::Label(plx_platform::i18n::msg::browse_kind_movies().into()),
                 widgets::TAB_KEY_SHOWS => TabFace::Label(plx_platform::i18n::msg::browse_kind_tv_shows().into()),
+                // "TV", not the page's "TV en directo": the strip keeps its glass only up to
+                // `GLASS_TRACK_MAX`, and the longer word put the product's bar past it.
+                widgets::TAB_KEY_LIVETV => TabFace::Label(plx_platform::i18n::msg::browse_chrome_live_tv().into()),
                 widgets::TAB_KEY_WATCHLIST => TabFace::Icon(Icon::Bookmark),
                 _ => TabFace::Icon(Icon::Search),
             }).collect();
@@ -245,12 +254,12 @@ mod tests {
         };
         snapshot.refresh(&plx_ui::fixture::FixtureMeasure, directory.view());
         assert_eq!(snapshot.keys, vec![widgets::TAB_KEY_HOME, widgets::TAB_KEY_MOVIES,
-            widgets::TAB_KEY_SHOWS, widgets::TAB_KEY_WATCHLIST, widgets::TAB_KEY_SEARCH]);
+            widgets::TAB_KEY_SHOWS, widgets::TAB_KEY_LIVETV, widgets::TAB_KEY_WATCHLIST, widgets::TAB_KEY_SEARCH]);
         let words: Vec<&str> = snapshot.faces.iter().filter_map(|face| match face {
             TabFace::Label(word) => Some(word.as_str()),
             TabFace::Icon(_) => None,
         }).collect();
-        assert_eq!(&words[..3], &["Home", "Movies", "TV Shows"]);
+        assert_eq!(&words[..4], &["Home", "Movies", "TV Shows", "TV"]);
         assert_eq!(snapshot.faces.last(), Some(&TabFace::Icon(Icon::Search)));
         assert_eq!(snapshot.faces[snapshot.faces.len() - 2], TabFace::Icon(Icon::Bookmark),
             "the Watchlist bookmark sits just before Search");
@@ -258,20 +267,21 @@ mod tests {
         snapshot.members(0, None, 0.0, &mut members);
         assert_eq!(members.iter().map(|member| member.elem).collect::<Vec<_>>(),
             vec![widgets::TAB_KEY_CHIP, widgets::TAB_KEY_HOME, widgets::TAB_KEY_MOVIES,
-                widgets::TAB_KEY_SHOWS, widgets::TAB_KEY_WATCHLIST, widgets::TAB_KEY_SEARCH]);
+                widgets::TAB_KEY_SHOWS, widgets::TAB_KEY_LIVETV, widgets::TAB_KEY_WATCHLIST, widgets::TAB_KEY_SEARCH]);
     }
 
     #[test]
     fn every_projected_pill_round_trips_by_stable_section_identity() {
         use plx_data::stores::browse::SecKind::{Movie, Show};
         let keys = [widgets::TAB_KEY_HOME, widgets::TAB_KEY_MOVIES, widgets::TAB_KEY_SHOWS,
-            widgets::TAB_KEY_WATCHLIST, widgets::TAB_KEY_SEARCH];
+            widgets::TAB_KEY_LIVETV, widgets::TAB_KEY_WATCHLIST, widgets::TAB_KEY_SEARCH];
         assert_eq!(pill_in(0, &keys), Pill::Home);
         assert_eq!(pill_in(1, &keys), Pill::Section(Movie));
         assert_eq!(pill_in(2, &keys), Pill::Section(Show));
-        assert_eq!(pill_in(3, &keys), Pill::Watchlist);
-        assert_eq!(pill_in(4, &keys), Pill::Search);
-        assert_eq!(pill_in(5, &keys), Pill::Home);
+        assert_eq!(pill_in(3, &keys), Pill::LiveTv);
+        assert_eq!(pill_in(4, &keys), Pill::Watchlist);
+        assert_eq!(pill_in(5, &keys), Pill::Search);
+        assert_eq!(pill_in(6, &keys), Pill::Home);
         for i in 0..keys.len() {
             assert_eq!(pill_index(pill_in(i, &keys), &keys), Some(i));
         }
@@ -298,11 +308,13 @@ mod tests {
         let directory = directory(&[SecKind::Movie, SecKind::Show]);
         let view = directory.view();
         assert_eq!(strip_keys(view), vec![widgets::TAB_KEY_HOME, widgets::TAB_KEY_MOVIES,
-            widgets::TAB_KEY_SHOWS, widgets::TAB_KEY_WATCHLIST, widgets::TAB_KEY_SEARCH]);
-        assert_eq!(pill_of(view, Pill::Watchlist), Some(3));
-        assert_eq!(pill_of(view, Pill::Search), Some(4));
-        assert_eq!(pill_at(view, 3), Pill::Watchlist);
-        assert_eq!(pill_at(view, 4), Pill::Search);
+            widgets::TAB_KEY_SHOWS, widgets::TAB_KEY_LIVETV, widgets::TAB_KEY_WATCHLIST, widgets::TAB_KEY_SEARCH]);
+        assert_eq!(pill_of(view, Pill::LiveTv), Some(3));
+        assert_eq!(pill_of(view, Pill::Watchlist), Some(4));
+        assert_eq!(pill_of(view, Pill::Search), Some(5));
+        assert_eq!(pill_at(view, 3), Pill::LiveTv);
+        assert_eq!(pill_at(view, 4), Pill::Watchlist);
+        assert_eq!(pill_at(view, 5), Pill::Search);
     }
 
     #[test]

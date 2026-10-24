@@ -455,6 +455,7 @@ fn a_session_resolved_for_a_preview_never_reports_a_timeline() {
         title: "Trailer".into(),
         ctx: plx_data::metadata::TRAILER_CONTEXT.into(),
         preview: true,
+        live: None,
     });
     apply_plan(
         &mut ps,
@@ -564,4 +565,142 @@ fn a_stop_posted_after_the_identity_changed_is_dropped() {
     fresh.post(true);
     assert_eq!(take_landed_stops().len(), 1, "a stop made after the switch lands as ever");
     reset_player_control_for_test(&ps);
+}
+
+// The official client's Live TV sequence (`docs/pms-api.md` §10), as a loopback server answers it.
+// The tune's body nests the session the way the server log names its levels; it was not captured.
+const LIVE_TUNED: &[u8] = br#"{"MediaContainer":{"size":1,"MediaSubscription":[{"id":112,
+    "MediaGrabOperation":[{"Metadata":{"key":"/livetv/sessions/9b9fe727-0000-46db-b94c-ef512e3e61d2",
+    "ratingKey":"355108","type":"episode"}}]}]}}"#;
+const LIVE_DECIDED: &[u8] = br#"{"MediaContainer":{"Metadata":[{"Media":[{"videoCodec":"h264","audioCodec":"aac",
+    "Part":[{"key":"/livetv/sessions/9b9fe727-0000-46db-b94c-ef512e3e61d2/cid-live/index.m3u8?offset=-1.000000",
+    "decision":"directplay"}]}]}]}}"#;
+
+/// A loopback PMS for the live sequence: answers the tune and the decision with their shapes and
+/// everything else with an empty container, handing each request line down the channel.
+fn live_pms(decision_refused: bool) -> (i32, std::sync::mpsc::Receiver<String>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port() as i32;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while std::time::Instant::now() < deadline {
+            match plx_base::testnet::accept(&listener) {
+                Ok((mut socket, _)) => {
+                    let first = drain_http(&mut socket);
+                    let decision = first.starts_with("GET /video/:/transcode/universal/decision?");
+                    if decision && decision_refused {
+                        // PMS 1.43.3 on the TV, 2026-10-21: "unable to find a matching profile".
+                        write_status(&mut socket, 400);
+                    } else {
+                        let body = if first.starts_with("POST /livetv/dvrs/7/channels/C101.242.ersatztv.org/tune") {
+                            LIVE_TUNED
+                        } else if decision {
+                            LIVE_DECIDED
+                        } else {
+                            EMPTY_MC
+                        };
+                        write_json(&mut socket, body);
+                    }
+                    if tx.send(first).is_err() {
+                        return;
+                    }
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(4)),
+            }
+        }
+    });
+    (port, rx)
+}
+
+#[test]
+fn a_live_channel_tunes_then_reports_under_its_session_and_its_stop_frees_the_tuner() {
+    use std::time::Duration;
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let (port, rx) = live_pms(false);
+    let sid = plx_plex::plex::register_for_test("route-live", "127.0.0.1", port, "tok-live", "cid-live");
+    let env = ResolveEnv {
+        sid,
+        live: Some(LiveTune { dvr: "7".into(), channel: "C101.242.ersatztv.org".into() }),
+        ..Default::default()
+    };
+    let plan = build_stream(&plx_base::task::OffFrame::for_test(), "", "", "", "", &env);
+    let next = || rx.recv_timeout(Duration::from_secs(5)).expect("a request");
+
+    let tune = next();
+    assert!(tune.starts_with("POST /livetv/dvrs/7/channels/C101.242.ersatztv.org/tune?"), "{tune}");
+    assert_eq!(
+        query_param(&tune, "X-Plex-Session-Identifier"),
+        Some(plan.sess.as_str()),
+        "PMS refuses a tune without a session id (400), and it is the one the playback reports under"
+    );
+    assert_eq!(query_param(&tune, "X-Plex-Client-Identifier"), Some("cid-live"));
+    let decision = next();
+    assert_eq!(query_param(&decision, "path"), Some("%2Flivetv%2Fsessions%2F9b9fe727-0000-46db-b94c-ef512e3e61d2"));
+    assert_eq!(query_param(&decision, "directPlay"), Some("1"));
+    assert_eq!(query_param(&decision, "hasMDE"), Some("1"), "the client's own decision is what PMS calls a direct play");
+    assert_eq!(query_param(&decision, "subtitles"), Some("none"));
+    assert_eq!(query_param(&decision, "X-Plex-Client-Profile-Name"), Some("Generic"), "PMS 400s a profile-less decision");
+    let profile = query_param(&decision, "X-Plex-Client-Profile-Extra").expect("a profile augmentation");
+    assert!(profile.contains("mpegts") && !profile.contains("direct-play"),
+        "an HLS target and no direct-play profile, or PMS decides a conversion: {profile}");
+    assert_eq!(query_param(&decision, "session"), Some(plan.sess.as_str()), "the decision and the URL share one session");
+
+    let live = plan.live.clone().expect("the plan names the recording");
+    assert_eq!((live.key.as_str(), live.rating_key.as_str()), ("/livetv/sessions/9b9fe727-0000-46db-b94c-ef512e3e61d2", "355108"));
+    assert!(plan.url.contains("/livetv/sessions/9b9fe727-0000-46db-b94c-ef512e3e61d2/cid-live/index.m3u8?offset=-1.000000&"), "{}", plan.url);
+    assert!(plan.url.contains("X-Plex-Token=tok-live") && plan.url.contains(&format!("X-Plex-Session-Identifier={}", plan.sess)));
+    assert_eq!((plan.vcodec.as_str(), plan.acodec.as_str()), ("h264", "aac"));
+    assert!(plan.tsession.is_empty() && plan.pq_id.is_empty(), "a direct play with no PlayQueue");
+
+    apply_plan(&mut ps, plan, "");
+    assert!(is_live(&ps) && live_playback());
+    let lease = begin_timeline_reporting(&ps).expect("a live play reports without a ratingKey of its own");
+    assert!(report_timeline(&lease, plx_plex::plex::TimelineState::Playing, 12_000, 12_000));
+    let playing = next();
+    assert!(playing.starts_with("POST /:/timeline?key=%2Flivetv%2Fsessions%2F9b9fe727-0000-46db-b94c-ef512e3e61d2&ratingKey=355108&state=playing&time=0&duration=0&playbackTime=12000"), "{playing}");
+
+    scrobble_stop(&mut ps, None, None);
+    drain_scrobble();
+    let stopped = next();
+    assert!(stopped.starts_with("POST /:/timeline?key=%2Flivetv%2Fsessions%2F9b9fe727-0000-46db-b94c-ef512e3e61d2"), "{stopped}");
+    assert_eq!(query_param(&stopped, "state"), Some("stopped"));
+    assert_eq!(query_param(&stopped, "continuing"), Some("0"));
+    assert!(!is_live(&ps) && !live_playback(), "the stop retires the session");
+}
+
+#[test]
+fn a_refused_live_decision_still_plays_the_session_s_own_playlist() {
+    use std::time::Duration;
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let (port, rx) = live_pms(true);
+    let sid = plx_plex::plex::register_for_test("route-live-400", "127.0.0.1", port, "tok-live", "cid-live");
+    let env = ResolveEnv {
+        sid,
+        live: Some(LiveTune { dvr: "7".into(), channel: "C101.242.ersatztv.org".into() }),
+        ..Default::default()
+    };
+    let plan = build_stream(&plx_base::task::OffFrame::for_test(), "", "", "", "", &env);
+    for _ in 0..2 {
+        rx.recv_timeout(Duration::from_secs(5)).expect("the tune, then the refused decision");
+    }
+    assert!(plan.live.is_some(), "the recording is still the plan's to stop");
+    let own = format!("/livetv/sessions/9b9fe727-0000-46db-b94c-ef512e3e61d2/{}/index.m3u8?offset=-1.000000&", plan.sess);
+    assert!(plan.url.contains(&own), "the consumer is named after the tune's session id: {}", plan.url);
+    assert_eq!((plan.vcodec.as_str(), plan.acodec.as_str()), ("h264", "aac"));
+}
+
+#[test]
+fn a_live_plan_abandoned_after_its_tune_still_stops_the_recording() {
+    let live = plx_plex::plex::livetv::LiveSession { key: "/livetv/sessions/abcdef01".into(), rating_key: String::new() };
+    let tuned_only = Plan { sid: ServerId::from_raw(3), live: Some(live.clone()), ..Default::default() };
+    let resources = abandoned_plan_resources(&tuned_only).expect("a tuned session is a server object to retire");
+    assert_eq!(resources.live, Some((live.clone(), String::new())));
+    let decided = Plan { sess: "s1".into(), live: Some(live.clone()), ..Default::default() };
+    let resources = abandoned_plan_resources(&decided).unwrap();
+    assert_eq!((resources.identities, resources.live), (vec!["s1".to_string()], Some((live, "s1".to_string()))));
+    assert!(abandoned_plan_resources(&Plan::default()).is_none());
 }

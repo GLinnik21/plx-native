@@ -1491,6 +1491,69 @@ was captured).
 
 ---
 
+## 10. Live TV — DVRs, guide lineup, airings (measured live 2026-10-20, PMS 1.43.3, one ErsatzTV tuner)
+
+Read-only GETs against a server with one DVR backed by an HDHomeRun-protocol tuner (ErsatzTV) and an
+XMLTV guide. The app's reads live in `rust-modules/plex/src/plex/livetv.rs`.
+
+- **`GET /livetv/dvrs`** → `Dvr[]`: `key`, `uuid`, `language`, `country`, `lineup`
+  (`lineup://tv.plex.providers.epg.xmltv/<url-encoded XMLTV URL>#<title>`), **`epgIdentifier`**
+  (`tv.plex.providers.epg.xmltv:{key}`, the path prefix of every guide read below) and `Device[]`:
+  `key`, `uuid` (`device://tv.plex.grabbers.hdhomerun/<id>`), `uri` (the tuner's own host), `status`
+  (`alive` | `dead`), `state` (`enabled`), `lastSeenAt`, `tuners`, `ChannelMapping[]`
+  (`channelKey`, `deviceIdentifier`, `enabled` as the string `"1"`, `lineupIdentifier`).
+- **`status` is a discovery result, not a health check.** PMS sets it when it discovers devices,
+  which it does at start-up and on `POST /media/grabbers/devices/discover`; `lastSeenAt` is that
+  moment. A tuner that was not answering at start-up stays `dead` until a later discovery, however
+  healthy it is in between. `POST /media/grabbers/devices?uri=…` probes the tuner and updates its URI
+  but leaves `status` as it was. Both are admin writes; the app sends neither.
+- **`GET /{epgIdentifier}/lineups/dvr/channels`** → `Channel[]`, only the channels the DVR mapped:
+  `id` = `gridKey` (`C101.242.ersatztv.org`), `vcn` (`"101"`), `title` and `callSign` with the number
+  in front (`"101 Some Channel"`), `thumb` — a URL on the TUNER's host. Fetched through
+  `/photo/:/transcode?url=…` it comes back as an image, so a client that cannot reach the tuner still
+  gets the logo.
+- **`GET /{epgIdentifier}/grid?beginsAt%3C={now}&endsAt%3E={now}`** → `Metadata[]`, one per channel
+  airing at `now`: `type` (`episode` | `movie`), `title` (the XMLTV title; for an episode it is
+  `"Show - S03E23 - Name"`), `grandparentTitle` (the show), `ratingKey`/`key` under the provider
+  (`/tv.plex.providers.epg.xmltv:7/metadata/…`), `onAir`, `Media[]` with `channelVcn`,
+  `channelIdentifier`, `channelTitle`, `channelThumb`, `protocol` `livetv`, `beginsAt` and `endsAt`
+  (Unix seconds), and a `Channel[]` tag. The comparison operator is part of the KEY (`beginsAt%3C=`).
+  Adding `type=1,4` returned the same four rows.
+
+### Watching a channel (the official LG client's sequence, read from the server log 2026-10-21)
+
+Plex for LG 5.94.3 on webOS 10.3 tuned one channel, watched it for six minutes and backed out. The
+order below is that client's; nothing here was sent by hand (a hand-sent tune has been seen to leave
+a server looping on its grabber).
+
+1. **`POST /livetv/dvrs/{dvr}/channels/{gridKey}/tune`** — the channel is the guide's `gridKey`
+   (`C101.242.ersatztv.org`), not the `vcn`. The server reserves a tuner, starts a "rolling"
+   subscription (`Live TV - Session {client id}`) and a `copy` transcode of the tuner's stream, and
+   answers only once that streams: **200 after 4.8 s**, 2764 bytes. The body was not captured; what
+   it carries is the session `/livetv/sessions/{uuid}` (the client's next request names it) and the
+   airing's `ratingKey`, under a `MediaSubscription` → `MediaGrabOperation` → item nesting that the
+   app does not rely on (`livetv::session_of` takes the first object whose `key` is a session key).
+2. **`GET /video/:/transcode/universal/decision?path=%2Flivetv%2Fsessions%2F{uuid}`** with
+   `directPlay=1&directStream=1&directStreamAudio=1&protocol=hls&mediaIndex=0&partIndex=0&session=…`
+   → 200. The session is then **direct play**: `/status/sessions` shows `Part.decision=directplay`,
+   `Part.key` = **`/livetv/sessions/{uuid}/{X-Plex-Client-Identifier}/index.m3u8?offset=-1.000000`**,
+   H.264 High 1080p25 + AAC LC stereo 48 kHz in MPEG-TS, `TranscodeSession.videoDecision=copy`.
+3. **The playlist is a MEDIA playlist with no master in front of it**, re-read about once a second
+   (`Content-Type: application/vnd.apple.mpegurl`, `Cache-Control: no-cache`):
+   `#EXT-X-VERSION:4`, `#EXT-X-TARGETDURATION:3`, `#EXT-X-MEDIA-SEQUENCE:0`, one
+   `#EXT-X-PROGRAM-DATE-TIME`, then one-second `#EXTINF:1.000000, nodesc` segments named `00000.ts`,
+   `00001.ts`, … relative to the playlist. No `PLAYLIST-TYPE`, no `ENDLIST`, no discontinuity; the
+   list only grows (segment 0 was still listed after six minutes: `buildLiveM3U8: min 0 max 385`).
+   Segment requests carry no token in the URI.
+4. **`/:/timeline?key=%2Flivetv%2Fsessions%2F{uuid}&ratingKey={airing}&state=…&time=0&duration=0&playbackTime={ms}`**
+   — `buffering`, then `playing` about every 10 s. The server records it with `scrobble: 0`.
+5. **The stop is the timeline's `state=stopped&continuing=0`.** On it the server terminates the
+   streaming session ("Client stopped playback"), the recorder sees no consumer left, kills the
+   transcode, deletes its directory, **frees the tuner** and destroys the rolling subscription — all
+   inside the same 3 ms. The client's `DELETE /media/subscriptions/{id}` afterwards answered 404.
+
+---
+
 ## Paging, observed
 
 Observed on PMS 1.43.4 with a small library, by read-only GETs. Only the endpoints in the table were
@@ -1516,6 +1579,7 @@ only `size`.
 | Key of `movie.topunwatched` and `movie.by.actor.or.director` (random hubs) | yes | not recorded | The listing came back in the same order on two calls; the windows (0,6) and (6,50) together equal the whole listing; every preview card is in it. The library held only 13 items, so large lists are not covered. |
 | `/playlists/all` (the key of the playlists hub in the Home hub list, `/hubs` and `/hubs/promoted`) | yes | yes | Measured on PMS 1.43: `X-Plex-Container-Start=2&X-Plex-Container-Size=2` answered `size` 2, `totalSize` 5, `offset` 2, items of type `playlist`. The app does not page it and no row shows it: a hub of type `playlist` is not listed (`pms::listable`), so it never reaches a shelf, and `is_pageable_hub_key` does not admit the key. |
 
+| `/livetv/dvrs`, `/{epg}/lineups/dvr/channels`, `/{epg}/grid?beginsAt%3C=…&endsAt%3E=…` (Live TV, §10) | no | no | Measured on PMS 1.43.3 with one DVR: the DVR list and the lineup come whole (one DVR, four mapped channels); the grid bounded to one instant returns one airing per channel. |
 
 ## App data-layer summary
 
