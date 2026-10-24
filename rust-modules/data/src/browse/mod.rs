@@ -4060,6 +4060,14 @@ pub fn adapter_has_page_for_test(adapter: &BrowseAdapter) -> bool {
     adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()).is_some()
 }
 
+/// TEST ONLY: has a directory worker (genres or letters) answered on this adapter, the answer
+/// still waiting for the pump?
+#[cfg(any(test, feature = "test-support"))]
+pub fn directory_answered_for_test(adapter: &BrowseAdapter) -> bool {
+    adapter.genre_result.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+        || adapter.letter_result.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub fn adapter_fetching_for_test(adapter: &BrowseAdapter) -> bool {
     adapter.fetching.load(Ordering::SeqCst)
@@ -4182,6 +4190,9 @@ mod reachability_tests;
 
 #[cfg(test)]
 mod library_type_tests;
+
+#[cfg(test)]
+mod listing_job_tests;
 
 #[cfg(test)]
 #[path = "browse_view_memory_tests.rs"]
