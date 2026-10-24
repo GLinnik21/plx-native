@@ -90,7 +90,7 @@ GL-timer triggers invalidate production pacing even when their output looks plau
 
 ## Why a back buffer is late (kernel trace)
 
-A frame whose first framebuffer command waits a whole refresh longer than usual missed a
+A frame whose first framebuffer command waits a tick (8.33 ms) or more longer than usual missed a
 compositor pass; which side made it miss (the app's CPU, the app's GPU job, or the compositor) is
 answered by a kernel trace, not by a count of late frames. During an fps leg armed with
 `--extra-trigger plxnative-framecb` (every frame logged, `--save-logs DIR`), take 6 s windows with

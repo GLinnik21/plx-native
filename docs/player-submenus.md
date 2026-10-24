@@ -260,8 +260,9 @@ tools below are the how-to; the findings follow.
    --extra-trigger plxnative-framering=17 --save-logs DIR` (add `--extra-trigger
    plxnative-framedrop=0.01` when the scene's own threshold logs only the slow frames), and while
    the bench runs take one or more windows with `tools/tv-sched-trace.sh --app --secs 6 --out
-   w1.gz` (the read-back takes tens of seconds; run it from the leg's own lane and its lease
-   covers it, see the `tv-lock` skill). Then
+   w1.gz` (the read-back takes tens of seconds; run it from the leg's own checkout, whose lease
+   it inherits, with the `PLX_TV_LOCK_LANE=<worktree>` prefix when you are a subagent: `tv-lock`
+   skill, "A lane is a checkout"). Then
    `tools/analyze-sched-trace.py DIR/fps-<scene>.log w1.gz w2.gz --tid <app pid> --latch`. The
    compositor composes just after every other `osd_irq` and takes the app's newest buffer only if the
    app's GPU work on it is done; taking buffer k releases k-1 at once. Frame k's wait ended just
