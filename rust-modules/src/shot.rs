@@ -34,11 +34,17 @@
 //! agent session uses: drive the UI, then ask for the frame. Those are NUMBERED (`shot-1.png`,
 //! `shot-2.png`, …) so a sequence of them does not overwrite one file and race whoever is reading
 //! it, and they never exit the process — the caller is still driving.
+//!
+//! On the television (where the FIFO's `shot` token is not available) the command API (debug
+//! build, `GET|POST /shot`) is the on-demand door: it arms the same `ON_DEMAND` flag and waits
+//! in memory for this thread's read-back, answering the request with the encoded PNG. One
+//! capture serves both consumers — the numbered file still lands.
 
 use std::os::raw::{c_int, c_uint, c_void};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 extern "C" {
     fn glReadPixels(
@@ -62,9 +68,12 @@ struct Cfg {
     /// numbered ones an agent was told to read — which is exactly what a default of 150 did to the
     /// `ui-sim` skill's own interactive recipe.
     frame: Option<u32>,
-    /// `Some(quiet_ms)` arms the settled capture — see the module doc.
+    /// `Some(quiet_ms)` arms the settled capture — see the module doc. Read only by [`tick`]
+    /// (simulator); on the television the field is set but never read.
+    #[cfg_attr(not(feature = "hostsim"), allow(dead_code))]
     settle: Option<u32>,
-    /// Earliest settled capture, in ms after the first frame.
+    /// Earliest settled capture, in ms after the first frame. Simulator-only, like `settle`.
+    #[cfg_attr(not(feature = "hostsim"), allow(dead_code))]
     after: u32,
     exit: bool,
     alpha: bool,
@@ -101,14 +110,28 @@ static FRAMES: AtomicU32 = AtomicU32::new(0);
 static ON_DEMAND: AtomicBool = AtomicBool::new(false);
 
 /// Set by [`tick`] when the settled capture is due; taken by the next [`maybe_capture`].
+/// Simulator-only (the television never runs `tick`, which is what sets it).
+#[cfg(feature = "hostsim")]
 static SETTLED: AtomicBool = AtomicBool::new(false);
-/// The settled capture has been asked for once; it never repeats in one process.
+/// The settled capture has been asked for once; it never repeats in one process. Simulator-only.
+#[cfg(feature = "hostsim")]
 static SETTLE_FIRED: AtomicBool = AtomicBool::new(false);
-/// `now` of the first [`tick`], the origin of `PLXNATIVE_SHOT_AFTER`.
+/// `now` of the first [`tick`], the origin of `PLXNATIVE_SHOT_AFTER`. Simulator-only.
+#[cfg(feature = "hostsim")]
 static FIRST_TICK: OnceLock<u32> = OnceLock::new();
 
+/// The last on-demand capture published for the command API (`api_capture`): a monotonic
+/// sequence — what distinguishes "a capture fired since my request armed" from a stale
+/// one — and the encoded PNG bytes. The frame thread is the only writer and the API
+/// thread the only reader, and both touch this under the one lock.
+static API_RESULT: Mutex<Option<(u32, Vec<u8>)>> = Mutex::new(None);
+static API_SEQ: AtomicU32 = AtomicU32::new(0);
+/// Wakes an `api_capture` waiter when `API_RESULT` has been republished.
+static API_CV: Condvar = Condvar::new();
+
 /// Is the settled capture due? `quiet` is how long nothing has changed, `age` how long since the
-/// first frame, `busy` whether work is queued that will change the picture.
+/// first frame, `busy` whether work is queued that will change the picture. Simulator-only.
+#[cfg(feature = "hostsim")]
 fn settled_due(settle: u32, after: u32, age: u32, quiet: u32, busy: bool) -> bool {
     !busy && age >= after && quiet >= settle
 }
@@ -116,6 +139,10 @@ fn settled_due(settle: u32, after: u32, age: u32, quiet: u32, busy: bool) -> boo
 /// Once per loop iteration, BEFORE the present decision (`app::run`): arm the settled capture when
 /// the screen has been at rest long enough. A settled screen does not present, so this invalidates
 /// to make the next frame present — and that frame, drawn from unchanged state, is the capture.
+///
+/// Simulator-only: it reads `plx_machine::idle::last_change_ms()`, which is gated to hostsim
+/// (nothing on the television tracks the settled-capture clock).
+#[cfg(feature = "hostsim")]
 pub(crate) fn tick(now: u32, busy: bool) {
     let cfg = cfg();
     let Some(settle) = cfg.settle else { return };
@@ -135,7 +162,8 @@ pub(crate) fn tick(now: u32, busy: bool) {
     }
 }
 
-/// Ask for a capture of the next frame. The remote-FIFO entry point (`app.rs`'s token dispatch).
+/// Ask for a capture of the next frame. The remote-FIFO entry point (`app.rs`'s token
+/// dispatch, simulator) and the command API's (`/shot`, television).
 ///
 /// Deliberately one-shot and idempotent: two `shot` tokens in a row produce one file, because the
 /// second arrives before anything has repainted and would otherwise overwrite the first with the
@@ -148,6 +176,52 @@ pub(crate) fn request() {
     // agent wants one, after driving and waiting — would set this flag and then wait forever for a
     // frame that never comes. Observed as a token that logged nothing at all.
     plx_machine::idle::invalidate();
+}
+
+/// The command API's capture door (`GET|POST /shot`, debug build — the API is debug-gated
+/// itself): arm an on-demand capture, then wait for the frame thread to read back and
+/// encode one. Returns the PNG bytes, or `None` when no frame was presented within
+/// `timeout` (the frame loop wedged, or the screen never presented — the API answers that
+/// as a 504).
+///
+/// Works on the television as well as the simulator: the capture seam
+/// (`app::run`'s `maybe_capture`) is not hostsim-only any more, and `request()`'s
+/// invalidate forces the one present a settled screen would otherwise withhold.
+pub(crate) fn api_capture(timeout: Duration) -> Option<Vec<u8>> {
+    let before = API_SEQ.load(Ordering::Acquire);
+    request();
+    let deadline = Instant::now() + timeout;
+    let mut data = API_RESULT.lock().unwrap_or_else(|e| e.into_inner());
+    loop {
+        // The STORED sequence is the freshness test (not the global one): the writer stores
+        // (seq, png) under this very lock, so a tuple newer than `before` is a capture that
+        // fired after this request armed.
+        if let Some((stored_seq, png)) = data.as_ref() {
+            if *stored_seq > before {
+                return Some(png.clone());
+            }
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return None;
+        }
+        let (guard, status) = match API_CV.wait_timeout(data, deadline - now) {
+            Ok(pair) => pair,
+            Err(_) => return None, // a poisoned lock is not worth recovering from here
+        };
+        let _ = status;
+        data = guard;
+    }
+}
+
+/// Encode a read-back buffer as PNG in memory. `image::save_buffer` does the same work for a
+/// path; this keeps the bytes where the API can hand them out, and lets the on-demand file
+/// and the API answer share one encode.
+fn encode_png(rgb: &[u8], w: u32, h: u32, color: image::ColorType) -> Vec<u8> {
+    use image::ImageEncoder;
+    let mut out: Vec<u8> = Vec::new();
+    let _ = image::codecs::png::PngEncoder::new(&mut out).write_image(rgb, w, h, color.into());
+    out
 }
 
 /// `dir/stem-N.ext`, N counting up per on-demand shot within this process.
@@ -245,7 +319,12 @@ pub(crate) fn read_flipped(vx: c_int, vy: c_int, vw: c_int, vh: c_int, ch: usize
 pub(crate) fn maybe_capture(vx: c_int, vy: c_int, vw: c_int, vh: c_int) -> bool {
     let n = FRAMES.fetch_add(1, Ordering::Relaxed);
     let on_demand = ON_DEMAND.swap(false, Ordering::Relaxed);
+    // The settled flag is simulator-only: the television never runs `tick`, which is what sets it,
+    // so it is read only in hostsim builds (a `false` here is the television's constant).
+    #[cfg(feature = "hostsim")]
     let settled = SETTLED.swap(false, Ordering::Relaxed);
+    #[cfg(not(feature = "hostsim"))]
+    let settled = false;
     let cfg = cfg();
     if !on_demand && !settled && cfg.frame != Some(n) {
         return false;
@@ -270,9 +349,23 @@ pub(crate) fn maybe_capture(vx: c_int, vy: c_int, vw: c_int, vh: c_int) -> bool 
     } else {
         cfg.path.clone()
     };
-    match image::save_buffer(&out, &rgb, w as u32, h as u32, color) {
-        Ok(()) => plx_base::eventlog::log(&format!("shot: wrote {}x{} to {}", w, h, out.display())),
-        Err(e) => plx_base::eventlog::log(&format!("shot: could not write {}: {e}", out.display())),
+    if on_demand {
+        // One encode serves both consumers of an on-demand capture: the on-disk file and the
+        // command API's in-memory answer (`/shot`). Automatic captures (simulator) have no
+        // second consumer and keep `save_buffer`.
+        let png = encode_png(&rgb, w as u32, h as u32, color);
+        match std::fs::write(&out, &png) {
+            Ok(()) => plx_base::eventlog::log(&format!("shot: wrote {}x{} to {}", w, h, out.display())),
+            Err(e) => plx_base::eventlog::log(&format!("shot: could not write {}: {e}", out.display())),
+        }
+        let seq = API_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+        *API_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some((seq, png));
+        API_CV.notify_all();
+    } else {
+        match image::save_buffer(&out, &rgb, w as u32, h as u32, color) {
+            Ok(()) => plx_base::eventlog::log(&format!("shot: wrote {}x{} to {}", w, h, out.display())),
+            Err(e) => plx_base::eventlog::log(&format!("shot: could not write {}: {e}", out.display())),
+        }
     }
 
     ends_run
@@ -286,8 +379,12 @@ fn ends_run(exit: bool, on_demand: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{ends_run, settled_due};
+    use super::ends_run;
 
+    #[cfg(feature = "hostsim")]
+    use super::settled_due;
+
+    #[cfg(feature = "hostsim")]
     #[test]
     fn the_settled_capture_waits_for_quiet_age_and_idle_work() {
         assert!(settled_due(800, 3_000, 3_000, 800, false));
