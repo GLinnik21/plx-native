@@ -98,7 +98,8 @@
 //! handshake failed with a date verify result (a television with no battery clock, issue #378) is
 //! repeated once on a fresh easy handle, recognising the server by the key `net::keypin` remembers
 //! for that exact host and port, name check still on. One that failed with a missing-issuer verify
-//! result, for a `*.plex.direct` host, is repeated once against the bundled public roots
+//! result (or older LG firmware's generic verify result 1), for a `*.plex.direct` host,
+//! is repeated once against the bundled public roots
 //! (`net::keypin::Mode::Roots`), verification fully on; and a roots attempt that then fails on the
 //! DATE (an old trust store behind a wrong clock) goes on to the remembered key, while a latched
 //! roots start the bundle now refuses goes strict once. Same decision (`keypin::after_failure`) and
