@@ -645,6 +645,7 @@ fn fail_or_wait_for_recovery(ps: &mut crate::route::PlaybackSession, eng: &Engin
         SourceRecovery::Failed => {
             crate::route::fail_current_engine();
             set_state(super::shared::PlaybackState::Error);
+            super::engine::arm_failed_engine_release();
         }
     }
 }
@@ -677,6 +678,7 @@ fn land_recovery_flight(
         crate::route::RecoveryVerdict::Refused => {
             crate::route::fail_current_engine();
             set_state(super::shared::PlaybackState::Error);
+            super::engine::arm_failed_engine_release();
         }
     }
 }
@@ -1229,6 +1231,10 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         super::restore_preroll_volume(pa.mt());
     }
     settle_paused_seek(pa, now);
+    // An Engine that failed for good last frame: let go of its pipeline and the video plane.
+    if super::engine::release_failed_engine(ps, pa) {
+        return;
+    }
     // ONE `&mut PlayerAdapter`, split into the live session and the seam token. Everything below
     // that replaces the session (`reload_*`) takes `pa` back, which the borrow checker only allows
     // where neither half is read afterwards — the "`eng` dangles after it, return immediately"
@@ -1237,6 +1243,9 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     let mut eng = match eng {
         Some(e) => e,
         None => {
+            // A worker registered a replacement for a flight that has since ended: stop it now,
+            // not whenever the next playback's Engine drains it.
+            crate::route::discard_stale_flight_landing();
             set_state(PlaybackState::Idle);
             return;
         }
@@ -2900,6 +2909,49 @@ mod flight_tests {
         assert!(!rig.flight.stopped().iter().any(|s| s == "rig-1"), "{:?}", rig.flight.stopped());
     }
 
+    /// **A terminal playback error lets go of the pipeline.** The read-out stands, but the loaded
+    /// pipeline and the video plane behind it made the television treat the app as still playing
+    /// video: its screensaver timer was reset every 30 s for as long as the error was up. The Engine
+    /// is released the frame after it fails, and the read-out keeps its cause and the resume point.
+    #[test]
+    fn a_terminal_error_releases_the_pipeline_and_keeps_the_read_out() {
+        let mut rig = Rig::new(120);
+        SHARED.frames.store(10, Relaxed);
+        SHARED.demux_io_failed.store(true, Release);
+        let cause_before = crate::player::error_now(&rig.ps).kind;
+        rig.frame();
+        assert_eq!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
+        rig.frame();
+        assert!(!rig.pa.is_live(), "the failed Engine and its pipeline are released");
+        assert_eq!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error, "the read-out stands without an Engine");
+        assert_eq!(crate::player::error_now(&rig.ps).kind, cause_before, "and keeps its cause");
+        assert_eq!(
+            crate::route::unpresented_resume_ns(&rig.ps),
+            60_000_000_000,
+            "a retry resumes from where the playhead was"
+        );
+        rig.frame();
+        assert_eq!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error, "still, a frame later");
+    }
+
+    /// Back from the read-out after the release still ends the playback, once: the real stop runs
+    /// with no Engine and the standing error is cleared with the session.
+    #[test]
+    fn leaving_the_read_out_after_the_release_stops_the_playback_once() {
+        let mut rig = Rig::new(120);
+        SHARED.frames.store(10, Relaxed);
+        SHARED.demux_io_failed.store(true, Release);
+        rig.frame();
+        rig.frame();
+        assert!(!rig.pa.is_live());
+        crate::player::stop_bufferfeed(&mut rig.ps, &mut rig.pa);
+        assert!(!rig.pa.is_live());
+        crate::route::cancel_play(&mut rig.ps); // the exit ritual's other half
+        assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error, "leaving clears the standing error");
+        assert!(crate::route::url(&rig.ps).is_empty(), "and the playback");
+        crate::player::stop_bufferfeed(&mut rig.ps, &mut rig.pa);
+    }
+
     /// Taps that arrive during a seek's flight coalesce to the LAST one: the first landing is
     /// outdated and discarded (its replacement stopped), and exactly one more flight runs, at the
     /// newest target.
@@ -3180,7 +3232,10 @@ mod flight_tests {
         // The worker is still waiting on the server: its landing arrives after the teardown, and
         // the next frame's drain finds it stale.
         rig.frames_until("the discarded replacement's stop", |r| replacement_stops(&r.flight) > stops);
-        assert_eq!(engine_epoch(&mut rig), epoch, "a discarded landing reloads nothing");
+        // The torn-down route leaves the Engine failed under the read-out, which releases it: it is
+        // gone or it is the same one, never a reload onto the discarded replacement.
+        let now = engine_epoch(&mut rig);
+        assert!(now.is_none() || now == epoch, "a discarded landing reloads nothing");
         assert!(!rig.flight.stopped().iter().any(|s| s == "rig-1"), "{:?}", rig.flight.stopped());
     }
 

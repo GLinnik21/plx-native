@@ -121,6 +121,12 @@ pub struct PlaybackSession {
     /// derives `Error` (cause `load_timeout`) from it. Cleared by the next start attempt and,
     /// like [`jail_load_blocked`](Self::jail_load_blocked), with the playback verdict.
     pub native_start_refused: bool,
+    /// The cause an Engine ended with when it failed for good and was released while the
+    /// read-out stands (`player::release_failed_engine`). The Engine, its pipeline and the video
+    /// plane are gone, so the worker signals the read-out used to be derived from are gone with
+    /// them; this keeps the cause. `player::state` derives `Error` from it, like the refusals
+    /// above. Cleared with them, and by the next playback request.
+    engine_failure: Option<crate::player::RuntimeFailure>,
     /// Read-only publication of Player.repair for the HUD. Never authorizes a resource effect.
     pub repair_status: plx_platform::tv::sandbox::State,
     /// The request which produced this attempt, retained for terminal Retry / Choose quality.
@@ -495,6 +501,7 @@ impl PlaybackSession {
         direct_play_mode: DirectPlayMode::Auto,
         jail_load_blocked: false,
         native_start_refused: false,
+        engine_failure: None,
         repair_status: plx_platform::tv::sandbox::State::Idle,
         request: None,
         requested_resume_ns: 0,
@@ -580,6 +587,7 @@ impl PlaybackSession {
             direct_play_mode,
             jail_load_blocked,
             native_start_refused,
+            engine_failure,
             repair_status,
             request,
             requested_resume_ns,
@@ -647,6 +655,7 @@ impl PlaybackSession {
             direct_play_mode: *direct_play_mode,
             jail_load_blocked: *jail_load_blocked,
             native_start_refused: *native_start_refused,
+            engine_failure: *engine_failure,
             repair_status: *repair_status,
             request: request.clone(),
             requested_resume_ns: *requested_resume_ns,
@@ -5263,6 +5272,20 @@ pub fn play_refused(ps: &PlaybackSession) -> bool {
 pub fn play_resolution_failed(ps: &PlaybackSession) -> bool {
     ps.resolve_failed
 }
+/// The cause a failed Engine left behind when it was released under the standing read-out, if one
+/// was ([`PlaybackSession::engine_failure`]).
+pub(crate) fn engine_failure(ps: &PlaybackSession) -> Option<crate::player::RuntimeFailure> {
+    ps.engine_failure
+}
+/// Record that the Engine failed for good and is about to be released: its `cause`, and the
+/// position a retry resumes from (`resume_ns`, kept in the unpresented-resume slot a retry already
+/// reads, since the playhead goes with the Engine).
+pub(crate) fn note_engine_failure(ps: &mut PlaybackSession, cause: crate::player::RuntimeFailure, resume_ns: i64) {
+    { let s = &mut *ps; {
+        s.engine_failure = Some(cause);
+        s.requested_resume_ns = s.requested_resume_ns.max(resume_ns.max(0));
+    } }
+}
 /// The refusal's own sentence for the read-out to quote — `None` when the server did not refuse,
 /// `Some("")` when it refused without saying why. MAIN THREAD (see [`PlaybackSession::play_verdict`]).
 ///
@@ -5296,6 +5319,7 @@ fn clear_play_verdict(ps: &mut PlaybackSession) {
         s.play_verdict = None;
         s.jail_load_blocked = false;
         s.native_start_refused = false;
+        s.engine_failure = None;
         s.resolve_failed = false;
         s.requested_resume_ns = 0;
     } }
@@ -7941,6 +7965,7 @@ fn request_play_inner(
         s.play_verdict = None;
         s.jail_load_blocked = false;
         s.native_start_refused = false;
+        s.engine_failure = None;
         s.resolve_failed = false;
         // A film request retires the previous trailer's mark: `resolved_as_preview` is otherwise
         // replaced only by a LANDING, so a film whose resolve never lands (a refused worker spawn)
@@ -8464,6 +8489,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             direct_play_mode: plan.direct_play_mode,
             jail_load_blocked: false,
             native_start_refused: false,
+            engine_failure: None,
             repair_status: plx_platform::tv::sandbox::State::Idle,
             request,
             requested_resume_ns,
