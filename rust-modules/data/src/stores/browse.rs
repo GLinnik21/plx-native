@@ -269,6 +269,31 @@ impl BrowseStore {
         crate::browse::hubs_answer_waiting_for_test(&self.adapter)
     }
 
+    /// TEST ONLY: is the listing page's claim up: a page read is out (running, parked, or answered
+    /// and not yet taken by the pump)?
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn page_read_out_for_test(&self) -> bool {
+        crate::browse::adapter_fetching_for_test(&self.adapter)
+    }
+
+    /// TEST ONLY: has a page worker answered, the answer still waiting for the pump?
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn page_answer_waiting_for_test(&self) -> bool {
+        crate::browse::adapter_has_page_for_test(&self.adapter)
+    }
+
+    /// TEST ONLY: is a directory (genres or letters) claim up?
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn directory_read_out_for_test(&self) -> bool {
+        crate::browse::directory_claim_up_for_test(&self.adapter)
+    }
+
+    /// TEST ONLY: has a directory worker answered, the answer still waiting for the pump?
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn directory_answer_waiting_for_test(&self) -> bool {
+        crate::browse::directory_answered_for_test(&self.adapter)
+    }
+
     pub fn take_discovery(&mut self) -> Option<crate::browse::record::Result> {
         crate::browse::record::take_from(&self.adapter)
     }

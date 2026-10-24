@@ -4065,6 +4065,12 @@ pub fn directory_answered_for_test(adapter: &BrowseAdapter) -> bool {
     adapter.genres.has_mail() || adapter.letters.has_mail()
 }
 
+/// TEST ONLY: is a directory claim (genres or letters) up on this adapter?
+#[cfg(any(test, feature = "test-support"))]
+pub fn directory_claim_up_for_test(adapter: &BrowseAdapter) -> bool {
+    adapter.genres.busy() || adapter.letters.busy()
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub fn adapter_fetching_for_test(adapter: &BrowseAdapter) -> bool {
     adapter.page.busy()
