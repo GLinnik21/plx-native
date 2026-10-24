@@ -476,7 +476,7 @@ impl Bridge {
     /// bookmark disc of every Detail page on the stack.
     pub(crate) fn catalog_feed(&mut self, d: &mut Dispatcher<AppHost>) {
         use plx_screens::registry::ContentArg;
-        if self.stores.catalog.pump() {
+        if self.catalog_pump() {
             plx_machine::idle::invalidate();
         }
         let mut catalog: Option<(EntryId, [u8; 12])> = None;
@@ -511,7 +511,7 @@ impl Bridge {
         }
         let Some((id, hex)) = catalog else {
             if self.catalog_seat.take().is_some() {
-                self.stores.catalog.reset();
+                self.catalog_reset();
             }
             return;
         };
@@ -521,7 +521,7 @@ impl Bridge {
             else { return };
         if self.catalog_seat != Some(instance) {
             self.catalog_seat = Some(instance);
-            self.stores.catalog.open(hex);
+            self.catalog_open(hex);
             // The page's membership needs the list: read it again on every mount, like the tab does.
             self.stores.watchlist.run(WatchlistCmd::Open);
         }
@@ -547,7 +547,7 @@ impl Bridge {
         if self.stores.catalog.hex == Some(hex)
             && !matches!(self.stores.catalog.load, plx_data::catalog::Load::Loaded(_))
         {
-            self.stores.catalog.open(hex);
+            self.catalog_open(hex);
         }
     }
 
@@ -560,6 +560,11 @@ impl Bridge {
     #[cfg(test)]
     pub(crate) fn watchlist_for_test(&mut self) -> &mut plx_data::stores::watchlist::WatchlistStore {
         &mut self.stores.watchlist
+    }
+
+    #[cfg(test)]
+    pub(crate) fn catalog_for_test(&mut self) -> &mut plx_data::stores::catalog::CatalogStore {
+        &mut self.stores.catalog
     }
 
     /// The removal landing the Watchlist page is owed, by guid.
