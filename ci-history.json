@@ -1,4 +1,4 @@
-{"updated":"2026-10-24T11:46:18Z",
+{"updated":"2026-10-24T11:52:49Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -3468,7 +3468,8 @@
 {"id":40088055884,"at":"2026-10-24T10:59:09Z","sha":"1e6f59162","title":"Collection store: emit store jobs and read the server registry as an input","pr":987,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":110,"macOS tests against bundled FFmpeg and ASS":172,"Linux simulator build + launch":219,"Windows launcher syntax":36}},
 {"id":40088268808,"at":"2026-10-24T11:02:11Z","sha":"0a1bd84b2","title":"gfx: trim the plain-exit pad prose to what the shader proves","pr":983,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":175,"macOS simulator build + launch":192,"Windows launcher syntax":19,"Linux simulator build + launch":193}},
 {"id":40089253665,"at":"2026-10-24T11:16:41Z","sha":"3e4c2ad77","title":"gfx: pin the card pad exit's nesting and tail, and drop two unmeasured shader claims","pr":985,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":222,"Linux simulator build + launch":292,"macOS tests against bundled FFmpeg and ASS":255,"Windows launcher syntax":17}},
-{"id":40090797337,"at":"2026-10-24T11:39:47Z","sha":"c9b61f80b","title":"person: simplify the lane's tests and drop migration narration","pr":990,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":25,"macOS tests against bundled FFmpeg and ASS":158,"macOS simulator build + launch":182,"Linux simulator build + launch":286}}
+{"id":40090797337,"at":"2026-10-24T11:39:47Z","sha":"c9b61f80b","title":"person: simplify the lane's tests and drop migration narration","pr":990,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":25,"macOS tests against bundled FFmpeg and ASS":158,"macOS simulator build + launch":182,"Linux simulator build + launch":286}},
+{"id":40091355709,"at":"2026-10-24T11:48:15Z","sha":"10e9287ff","title":"Person store: emit store jobs and read the server registry as an input","pr":990,"conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":265,"Windows launcher syntax":17,"macOS simulator build + launch":225,"macOS tests against bundled FFmpeg and ASS":121}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
