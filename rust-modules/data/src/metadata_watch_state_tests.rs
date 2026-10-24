@@ -356,6 +356,50 @@ fn the_playing_item_carries_its_plex_type() {
     );
 }
 
+fn two_versions() -> plx_plex::plex::Metadata {
+    serde_json::from_value(serde_json::json!({ "type": "episode", "Media": [
+        { "id": 3086, "bitrate": 2372, "width": 1920, "height": 1080, "videoResolution": "1080",
+          "videoCodec": "h264", "audioCodec": "aac", "audioChannels": 2, "container": "mp4",
+          "Part": [{ "key": "/p/3134", "size": 1000, "Stream": [{ "id": 1, "streamType": 2, "codec": "aac" }] }] },
+        { "id": 3082, "bitrate": 14663, "width": 3840, "height": 2160, "videoResolution": "4k",
+          "videoCodec": "hevc", "audioCodec": "eac3", "audioChannels": 6,
+          "Part": [{ "key": "/p/3130", "container": "mkv", "size": 6000, "Stream": [
+            { "id": 2, "streamType": 1, "colorTrc": "smpte2084" },
+            { "id": 3, "streamType": 2, "codec": "eac3" }] }] }
+    ] })).unwrap()
+}
+
+/// A picked version's track store, frame size and part all come from THAT `Media[]` entry, so the
+/// route can never pair version 0's part with version 1's streams; a version the item lost falls
+/// back to the default and says so by naming no played version.
+#[test]
+fn a_picked_version_is_the_whole_playing_item() {
+    let it = two_versions();
+    let (item, played) = playing_version_from(SRV_A, "42", Some(&it), Some(plx_plex::plex::MediaId(3082)));
+    let played = played.expect("the version is listed");
+    assert_eq!((played.index, played.part.as_str(), played.vcodec.as_str()), (1, "/p/3130", "hevc"));
+    assert_eq!((item.width, item.audio[0].id, item.hdr), (3840, 3, true));
+    let (item, played) = playing_version_from(SRV_A, "42", Some(&it), Some(plx_plex::plex::MediaId(9)));
+    assert!(played.is_none());
+    assert_eq!((item.width, item.audio[0].id), (1920, 1));
+    let (item, played) = playing_version_from(SRV_A, "42", Some(&it), None);
+    assert!(played.is_none(), "the default needs no override");
+    assert_eq!(item.width, 1920);
+}
+
+/// The picker's facts come off the listing row, one per version in the server's order; a
+/// single-version item offers none.
+#[test]
+fn versions_are_listed_only_when_there_is_a_choice() {
+    let v = crate::pms::versions_of(&two_versions());
+    assert_eq!(v.iter().map(|v| v.id.0).collect::<Vec<_>>(), [3086, 3082]);
+    assert_eq!((v[1].kbps, v[1].resolution.as_str(), v[1].channels, v[1].size, v[1].hdr), (14663, "4k", 6, 6000, true));
+    assert_eq!((v[0].container.as_str(), v[1].container.as_str()), ("mp4", "mkv"), "the part's container wins");
+    let one: plx_plex::plex::Metadata =
+        serde_json::from_value(serde_json::json!({ "Media": [{ "id": 1, "Part": [{ "key": "/p/1" }] }] })).unwrap();
+    assert!(crate::pms::versions_of(&one).is_empty());
+}
+
 /// `PlayingItem.hdr` is the played leaf's video HDR flag (PQ or HLG transfer), the fact the
 /// player's HDR overlay dim reads; an SDR leaf and an absent item are not HDR.
 #[test]

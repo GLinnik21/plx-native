@@ -27,10 +27,16 @@
 //! arm keeps a failure distinguishable from an empty answer: "the agent found nothing" is
 //! [`SearchStatus::Ready`] with no hits, never [`SearchStatus::Failed`].
 //!
-//! `ServerId` and the rating key are captured at the spawn site and the `&'static Client` resolved
-//! there (`plex/CLAUDE.md`'s rule), so a worker cannot search a server the viewer has left.
+//! The store starts no worker and reads no registry. Its pump emits the next request as a
+//! [`StoreJob`](crate::stores::StoreJob) ([`SubSearchReq`]: the server, the rating key, the work and
+//! the [`ClientKey`] the step decided on), and the application's runner starts it, resolving the
+//! `&'static Client` itself and only if the registry still holds that client
+//! (`plex/CLAUDE.md`'s rule), so a worker cannot search a server the viewer has left. Which client
+//! a server holds arrives as [`ClientKeys`], filled by the host right before the pump.
+use plx_machine::job::{Job, Port};
+use plx_machine::machine::{Addr, MachineId, RequestId};
 use plx_plex::plex::subtitles::{SubtitleAddOutcome, SubtitleSearchOutcome};
-use plx_plex::plex::{Client, ServerId, SubtitleSearch};
+use plx_plex::plex::{Client, ClientKey, ClientKeys, ServerId, SubtitleSearch};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
@@ -41,7 +47,8 @@ pub const POLL_FRAMES: u32 = 90;
 /// (~15 s in all). A bound, not a measurement: the probe saw the install land within one
 /// human-paced retry, and an agent fetching from OpenSubtitles can be slower than that.
 pub const POLL_ATTEMPTS: u32 = 10;
-/// The spacing applied when a spawn cannot happen (no client registered for the server yet).
+/// The spacing applied when a request cannot go out: no client is registered for the server yet, or
+/// the runner refused the launch.
 const RETRY_FRAMES: u32 = 120;
 
 /// One candidate the agent offered, projected on the WORKER so no wire DTO crosses the mailbox.
@@ -261,6 +268,9 @@ pub struct SubSearchState {
     open: Option<Open>,
     generation: u32,
     retry_cd: u32,
+    /// The requests the pump has emitted and its owner has not taken yet
+    /// (`SubSearchStore::take_jobs`).
+    pub(crate) jobs: Vec<crate::stores::StoreJob>,
 }
 
 impl SubSearchState {
@@ -324,9 +334,11 @@ impl SubSearchState {
         }
     }
 
-    /// Once a frame: count the backoff down, land whatever arrived, spawn what is owed.
+    /// Once a frame: count the backoff down, land whatever arrived, and emit the request that is
+    /// owed. `keys` is the registry's answer as of this call. The request is NOT started here: the
+    /// owner takes it (`SubSearchStore::take_jobs`) and owes it to a runner in the same turn.
     pub fn pump_with_gate(&mut self, adapter: &Arc<SubSearchAdapter>,
-        gate: &plx_machine::landgate::Gate) -> bool {
+        gate: &plx_machine::landgate::Gate, keys: &ClientKeys) -> bool {
         if self.retry_cd > 0 { self.retry_cd -= 1; }
         let mut changed = false;
         let mail = crate::stores::take_landing_owed(gate, crate::stores::StoreId::SubtitleSearch,
@@ -337,49 +349,44 @@ impl SubSearchState {
             plx_machine::idle::invalidate();
             if mail.gen == self.generation { changed |= self.apply(mail.what); }
         }
-        self.maybe_spawn(adapter);
+        // A launch the runner refused freed its claim in the call that refused it, and said so:
+        // back off here, or the free claim would have the next request go out at once, every pump.
+        if adapter.fetch.take_refused(self.generation) { self.retry_cd = RETRY_FRAMES; }
+        self.maybe_spawn(adapter, keys);
         changed
     }
 
-    fn job(&self) -> Option<Job> {
+    fn work(&self) -> Option<Work> {
         let open = self.open.as_ref()?;
         if open.status == SearchStatus::Searching {
-            return Some(Job::Search { lang: open.lang.clone() });
+            return Some(Work::Search { lang: open.lang.clone() });
         }
         match &open.download {
-            DownloadPhase::Sending { hit } => Some(Job::Download { key: open.hits[*hit].key.clone() }),
-            DownloadPhase::Waiting { .. } => Some(Job::Refresh),
+            DownloadPhase::Sending { hit } => Some(Work::Download { key: open.hits[*hit].key.clone() }),
+            DownloadPhase::Waiting { .. } => Some(Work::Refresh),
             _ => None,
         }
     }
 
-    fn maybe_spawn(&mut self, adapter: &Arc<SubSearchAdapter>) {
+    /// The next request, if one is owed and nothing is out: claim the fetch and emit the request as
+    /// a job. A server that holds no client has nothing to ask, so the pump backs off and claims
+    /// nothing.
+    fn maybe_spawn(&mut self, adapter: &Arc<SubSearchAdapter>, keys: &ClientKeys) {
         if adapter.fetch.busy() || self.retry_cd > 0 { return; }
-        let Some(job) = self.job() else { return };
+        let Some(work) = self.work() else { return };
         let open = self.open.as_ref().expect("a job implies an open item");
         let (sid, rk) = (open.sid, open.rk.clone());
-        let Some(client) = plx_plex::plex::client_for(sid) else {
+        let Some(key) = keys.key(sid) else {
             // no client for this server (yet): back off rather than spin; nothing is claimed
             self.retry_cd = RETRY_FRAMES;
             return;
         };
         let generation = self.generation;
-        let fallback = job.failure();
         adapter.fetch.claim(generation);
-        let worker = Arc::clone(adapter);
-        let spawned = plx_base::task::spawn_small("subsearch", move || {
-            // the mailbox is filled OUTSIDE the guard, so a panicking job lands as a FAILURE and
-            // never as "the agent found nothing"
-            let what = catch_unwind(AssertUnwindSafe(|| run_job(client, &rk, job)))
-                .unwrap_or(fallback);
-            worker.land(generation, what);
-        });
-        if !spawned {
-            // nothing will ever land to release this claim; without the release the page would
-            // sit on a spinner forever. The pump retries after the backoff.
-            adapter.fetch.release();
-            self.retry_cd = RETRY_FRAMES;
-        }
+        self.jobs.push(crate::stores::StoreJob::SubtitleSearch(
+            Job { addr: subsearch_addr(generation), req: SubSearchReq { sid, key, rk, work } },
+            SubSearchPort::of(adapter),
+        ));
     }
 
     fn apply(&mut self, landing: Landing) -> bool {
@@ -440,7 +447,7 @@ impl SubSearchState {
     #[cfg(any(test, feature = "test-support"))]
     pub fn apply_for_test(&mut self, landing: Landing) -> bool { self.apply(landing) }
     #[cfg(any(test, feature = "test-support"))]
-    pub fn job_for_test(&self) -> Option<Job> { self.job() }
+    pub fn work_for_test(&self) -> Option<Work> { self.work() }
     #[cfg(any(test, feature = "test-support"))]
     pub fn retry_for_test(&self) -> u32 { self.retry_cd }
 }
@@ -472,22 +479,97 @@ pub fn identify(rows: &[StreamRow], before: &[i64], picked_title: &str) -> Optio
         language_code: row.language_code.clone() })
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum Job {
+/// What one request asks the server for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Work {
     Search { lang: String },
     Download { key: String },
     Refresh,
 }
 
-impl Job {
-    /// What this job lands as when its worker panics: always a failure of ITS kind.
+impl Work {
+    /// What this work lands as when its worker panics: always a failure of ITS kind.
     fn failure(&self) -> Landing {
         match self {
-            Job::Search { .. } => Landing::Search(Err(SearchFailure::Transport)),
-            Job::Download { .. } => Landing::Download(Err(false)),
-            Job::Refresh => Landing::Streams(None),
+            Work::Search { .. } => Landing::Search(Err(SearchFailure::Transport)),
+            Work::Download { .. } => Landing::Download(Err(false)),
+            Work::Refresh => Landing::Streams(None),
         }
     }
+}
+
+/// The one request a [`StoreJob::SubtitleSearch`](crate::stores::StoreJob::SubtitleSearch)
+/// carries: everything the worker needs, captured by the step. `key` is the client the step decided
+/// on; a runner starts the request only if the registry still holds that client at the launch.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SubSearchReq {
+    sid: ServerId,
+    key: ClientKey,
+    rk: String,
+    work: Work,
+}
+
+impl SubSearchReq {
+    /// The server to ask and the client the step decided to ask it through.
+    pub fn server(&self) -> (ServerId, ClientKey) { (self.sid, self.key) }
+}
+
+/// A request's answer, opaque to the runner: the landing the step applies. The runner never names
+/// [`Landing`].
+pub struct SubSearchAnswer(Landing);
+
+/// Where a request's ONE answer goes: the store's landing, captured with the job when it was
+/// emitted. A store that has since been `Reset` holds a new adapter, and this port still reaches
+/// the one the request was made from, the retired one nobody pumps. Two ports are equal when they
+/// reach the same adapter.
+#[derive(Clone)]
+pub struct SubSearchPort(Arc<SubSearchAdapter>);
+
+impl SubSearchPort {
+    pub(crate) fn of(adapter: &Arc<SubSearchAdapter>) -> Self { Self(Arc::clone(adapter)) }
+}
+
+impl PartialEq for SubSearchPort {
+    fn eq(&self, other: &Self) -> bool { Arc::ptr_eq(&self.0, &other.0) }
+}
+
+impl std::fmt::Debug for SubSearchPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SubSearchPort({:p})", Arc::as_ptr(&self.0))
+    }
+}
+
+impl Port<SubSearchAnswer> for SubSearchPort {
+    /// The request's answer (a panicked read answers a failure of its kind). Stamped with the
+    /// request's generation, so the pump discards an answer for a search it has since superseded.
+    fn done(&self, addr: Addr, out: SubSearchAnswer) {
+        self.0.land(addr.req.0, out.0);
+    }
+
+    /// The request was never started, so nothing will land and nothing will release its claim:
+    /// hand it back and let the pump see it ([`Fetch::refuse_for`](crate::stores::Fetch::refuse_for)),
+    /// which backs off before it asks again. A refusal that comes after a newer request has
+    /// claimed leaves that claim alone.
+    fn refused(&self, addr: Addr) {
+        self.0.fetch.refuse_for(addr.req.0);
+    }
+}
+
+/// A request's address: its store and the search generation it was made for. Search, download and
+/// the install poll are one request at a time (`maybe_spawn`'s claim), so no two are in flight at
+/// one address.
+fn subsearch_addr(generation: u32) -> Addr {
+    Addr { to: MachineId::Store(crate::stores::StoreId::SubtitleSearch.ord()), req: RequestId(generation) }
+}
+
+/// The request's IO body and its completion: read the server through `client` and post the answer
+/// to `port`. The answer is posted OUTSIDE the guard, so a request that panics lands as a FAILURE
+/// of its kind and never as "the agent found nothing".
+pub fn finish_subsearch_job(port: &SubSearchPort, addr: Addr, client: &'static Client, req: SubSearchReq) {
+    let SubSearchReq { rk, work, .. } = req;
+    let fallback = work.failure();
+    let what = catch_unwind(AssertUnwindSafe(|| run_job(client, &rk, work))).unwrap_or(fallback);
+    port.done(addr, SubSearchAnswer(what));
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -500,9 +582,9 @@ pub enum Landing {
 }
 
 /// WORKER THREAD.
-fn run_job(client: &'static Client, rk: &str, job: Job) -> Landing {
-    match job {
-        Job::Search { lang } => {
+fn run_job(client: &'static Client, rk: &str, work: Work) -> Landing {
+    match work {
+        Work::Search { lang } => {
             let query = SubtitleSearch { language: lang, hearing_impaired: false, forced: false };
             Landing::Search(match client.search_subtitles(rk, &query) {
                 SubtitleSearchOutcome::Ok(container) => Ok(hits_of(&container.stream)),
@@ -512,7 +594,7 @@ fn run_job(client: &'static Client, rk: &str, job: Job) -> Landing {
                 SubtitleSearchOutcome::Transport => Err(SearchFailure::Transport),
             })
         }
-        Job::Download { key } => {
+        Work::Download { key } => {
             // the BEFORE read: without it a new stream could never be told from an old one
             let Some(before) = subtitle_rows(client, rk) else { return Landing::Download(Err(false)) };
             let before = before.iter().map(|r| r.id).collect();
@@ -523,7 +605,7 @@ fn run_job(client: &'static Client, rk: &str, job: Job) -> Landing {
                 | SubtitleAddOutcome::Transport => Err(false),
             })
         }
-        Job::Refresh => Landing::Streams(subtitle_rows(client, rk)),
+        Work::Refresh => Landing::Streams(subtitle_rows(client, rk)),
     }
 }
 
@@ -574,6 +656,8 @@ impl SubSearchAdapter {
     pub fn land_for_test(&self, generation: u32, what: Landing) { self.land(generation, what); }
     #[cfg(any(test, feature = "test-support"))]
     pub fn busy_for_test(&self) -> bool { self.fetch.busy() }
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn has_mail_for_test(&self) -> bool { self.fetch.has_mail() }
 }
 
 #[cfg(test)]
@@ -640,14 +724,14 @@ mod tests {
         let (state, _) = opened("tlh");
         assert_eq!(state.view().status(), SearchStatus::Failed);
         assert_eq!(state.view().failure(), Some(SearchFailure::BadLanguage));
-        assert_eq!(state.job_for_test(), None, "a refused language must not reach the wire");
+        assert_eq!(state.work_for_test(), None, "a refused language must not reach the wire");
     }
 
     #[test]
     fn opening_owes_a_search_in_the_folded_language() {
         let (state, _) = opened("nld");
         assert_eq!(state.view().status(), SearchStatus::Searching);
-        assert_eq!(state.job_for_test(), Some(Job::Search { lang: "nl".into() }));
+        assert_eq!(state.work_for_test(), Some(Work::Search { lang: "nl".into() }));
     }
 
     /// The invariant `search.rs` exists for: no hits is an ANSWER, not a fault.
@@ -666,16 +750,16 @@ mod tests {
         state.apply_for_test(Landing::Search(Err(SearchFailure::Denied)));
         assert_eq!(state.view().failure(), Some(SearchFailure::Denied));
         assert!(!state.run(&adapter, SubSearchCmd::Retry), "retrying a 403 gets a 403");
-        assert_eq!(state.job_for_test(), None);
+        assert_eq!(state.work_for_test(), None);
     }
 
     #[test]
     fn a_transport_failure_retries_only_when_asked() {
         let (mut state, adapter) = opened("nl");
         state.apply_for_test(Landing::Search(Err(SearchFailure::Transport)));
-        assert_eq!(state.job_for_test(), None, "no automatic retry on a timer");
+        assert_eq!(state.work_for_test(), None, "no automatic retry on a timer");
         assert!(state.run(&adapter, SubSearchCmd::Retry));
-        assert_eq!(state.job_for_test(), Some(Job::Search { lang: "nl".into() }));
+        assert_eq!(state.work_for_test(), Some(Work::Search { lang: "nl".into() }));
     }
 
     /// Re-opening the menu on the same item and language keeps the answer already paid for.
@@ -689,20 +773,15 @@ mod tests {
         assert_eq!(state.view().hits().len(), 1);
     }
 
-    /// A slow answer for the old language must never repopulate the new one's results.
-    ///
-    /// Serial: the pump ends by spawning the search the NEW language owes whenever
-    /// `plex::client_for` answers for this server, and that registry is process-global — a
-    /// parallel test with a client installed for server 1 made the claim busy again here
-    /// (intermittent, 2026-10-04/05). Under the lock no other test's client is installed.
+    /// A slow answer for the old language must never repopulate the new one's results. The pump is
+    /// handed no client, so it emits nothing for the NEW language and the claim stays free.
     #[test]
     fn a_landing_from_a_superseded_generation_is_discarded() {
-        let _serial = plx_base::testlock::serial();
         let (mut state, adapter) = opened("nl");
         let old = state.generation();
         assert!(state.run(&adapter, SubSearchCmd::SetLanguage("en".into())));
         adapter.land_for_test(old, Landing::Search(Ok(vec![hit("/library/streams/9", "old", 1)])));
-        state.pump_with_gate(&adapter, &plx_machine::landgate::Gate::default());
+        state.pump_with_gate(&adapter, &plx_machine::landgate::Gate::default(), &ClientKeys::default());
         assert_eq!(state.view().status(), SearchStatus::Searching, "the stale answer is dropped");
         assert!(state.view().hits().is_empty());
         assert!(!adapter.busy_for_test(), "the take still released the claim");
@@ -711,10 +790,9 @@ mod tests {
     /// DUMP MODE at the SubtitleSearch site, through the real pump: a request that is out lands on
     /// the pump that runs, however late the worker posts (25 ms here). A plain take (the conversion
     /// reverted) returns empty and the first assertion fails. A superseded request is the next
-    /// test. Serial for the reason the test above gives.
+    /// test.
     #[test]
     fn dump_mode_a_request_out_lands_on_the_pump_that_runs_whatever_the_worker() {
-        let _serial = plx_base::testlock::serial();
         let (mut state, adapter) = opened("nl");
         let generation = state.generation();
         adapter.fetch.claim(generation);
@@ -725,7 +803,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(25));
             worker.land(generation, Landing::Search(Ok(vec![hit("/library/streams/1", "a", 5)])));
         });
-        assert!(state.pump_with_gate(&adapter, &gate),
+        assert!(state.pump_with_gate(&adapter, &gate, &ClientKeys::default()),
             "the answer the pump owed must be taken by the pump that asked");
         assert_eq!(state.view().status(), SearchStatus::Ready);
         assert_eq!(state.view().hits().len(), 1);
@@ -737,7 +815,6 @@ mod tests {
     /// release the NEW request's claim, so the new answer lands on the pump that was owed it.
     #[test]
     fn dump_mode_a_superseded_requests_stale_answer_does_not_release_the_new_claim() {
-        let _serial = plx_base::testlock::serial();
         let (mut state, adapter) = opened("nl");
         let stale = state.generation();
         adapter.fetch.claim(stale); // request A is out
@@ -754,7 +831,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(25));
             worker.land(current, Landing::Search(Ok(vec![hit("/library/streams/1", "a", 5)])));
         });
-        assert!(state.pump_with_gate(&adapter, &gate),
+        assert!(state.pump_with_gate(&adapter, &gate, &ClientKeys::default()),
             "B was out when the pump ran, so B's answer must land on this pump");
         assert_eq!(state.view().hits().len(), 1);
         assert!(!adapter.busy_for_test(), "B's own answer released B's claim");
@@ -770,7 +847,7 @@ mod tests {
         state.apply_for_test(Landing::Search(Ok(vec![hit("/library/streams/2", "b", 5)])));
         assert!(!state.run(&adapter, SubSearchCmd::Download { gen: stale, hit: 0 }));
         assert!(state.run(&adapter, SubSearchCmd::Download { gen: state.generation(), hit: 0 }));
-        assert_eq!(state.job_for_test(), Some(Job::Download { key: "/library/streams/2".into() }));
+        assert_eq!(state.work_for_test(), Some(Work::Download { key: "/library/streams/2".into() }));
     }
 
     /// One download at a time, and no language change while one installs.
@@ -792,7 +869,7 @@ mod tests {
         state.run(&adapter, SubSearchCmd::Download { gen: state.generation(), hit: 0 });
         state.apply_for_test(Landing::Download(Ok(vec![1884886, 1884899])));
         assert_eq!(state.retry_for_test(), POLL_FRAMES, "no read straight after the PUT");
-        assert_eq!(state.job_for_test(), Some(Job::Refresh));
+        assert_eq!(state.work_for_test(), Some(Work::Refresh));
 
         // first read: not there yet (what the probe actually saw)
         state.apply_for_test(Landing::Streams(Some(vec![row(1884886, ""), row(1884899, "")])));
@@ -815,7 +892,7 @@ mod tests {
             state.apply_for_test(Landing::Streams(Some(vec![row(10, "")])));
         }
         assert_eq!(state.view().download(), Some(&DownloadPhase::Unconfirmed { hit: 0 }));
-        assert_eq!(state.job_for_test(), None, "the poll stops");
+        assert_eq!(state.work_for_test(), None, "the poll stops");
     }
 
     /// A refused download marks only that download; the search results stay.
@@ -863,6 +940,10 @@ mod tests {
         assert!(state.run(&adapter, SubSearchCmd::Close));
         assert_eq!(state.view().status(), SearchStatus::Idle);
         adapter.land_for_test(gen, Landing::Search(Ok(vec![])));
-        assert!(!state.pump_with_gate(&adapter, &plx_machine::landgate::Gate::default()));
+        assert!(!state.pump_with_gate(&adapter, &plx_machine::landgate::Gate::default(), &ClientKeys::default()));
     }
 }
+
+#[cfg(test)]
+#[path = "subsearch_job_tests.rs"]
+mod job_tests;

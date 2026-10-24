@@ -213,6 +213,23 @@ pub struct HudState {
     /// click arm's `hud_vis`); this is the key path's version of that sample, taken once so the two
     /// arms that need it cannot answer the question differently.
     pub visible_at_press: bool,
+    /// The last BACK that hid the transport did so WHILE the pipeline was busy
+    /// (`plx_media::player::loading`), so the hide could not take effect: the transport stays up
+    /// until the pipeline settles ([`hud_visible`] ORs the busy state in). The next BACK should then
+    /// leave. SET only by [`hide`](Self::hide); [`note_fresh_press`](Self::note_fresh_press)
+    /// spends it on the very next bound press, whatever that press is, and
+    /// [`settle`](Self::settle) drops it when the pipeline settles with nothing pressed.
+    ///
+    /// A hide done in normal play never sets it: a rebuffer that pops the transport back up after
+    /// the viewer hid it must still cost two presses, because that viewer has not asked to leave.
+    pub exit_armed: bool,
+    /// Does the BACK being handled leave? Sampled by `note_fresh_press` from
+    /// [`exit_armed`](Self::exit_armed) AND [`dismissed`](Self::dismissed), BEFORE the press
+    /// un-dismisses, for the same reason [`visible_at_press`](Self::visible_at_press) is: by the
+    /// time an arm runs the press has already cleared what it would have read. Requiring
+    /// `dismissed` is what makes anything that un-dismisses the transport in between (a segment
+    /// offer, a new episode, pointer motion) disarm it too.
+    pub back_leaves_at_press: bool,
     /// The last SEGMENT the control row offered. Sticky: it is never cleared back to None,
     /// so each segment raises the HUD exactly once per playback however often the row
     /// flickers.
@@ -229,6 +246,8 @@ impl HudState {
         until: 0,
         dismissed: false,
         visible_at_press: false,
+        exit_armed: false,
+        back_leaves_at_press: false,
         last_offer: None,
         was_standin: false,
     };
@@ -265,12 +284,42 @@ impl HudState {
     ///
     /// That caller is `note_global_press`, NOT `begin_fresh_press` as it once was, and the
     /// difference is the point of the split: an unsupported key never gets here at all.
+    ///
+    /// **[`back_leaves_at_press`](Self::back_leaves_at_press) obeys the same order:** it reads
+    /// [`exit_armed`](Self::exit_armed) and `dismissed` BEFORE the clear below, and the press then
+    /// spends the arming, so only a BACK that follows the arming BACK with nothing bound in between
+    /// can leave.
     pub fn note_fresh_press(&mut self, ps: &plx_media::route::PlaybackSession, now: u32, is_paused: bool) {
         self.visible_at_press = self.visible(ps, now, is_paused);
+        self.back_leaves_at_press = self.exit_armed && self.dismissed;
+        self.exit_armed = false;
         // Any BOUND fresh key un-dismisses the HUD (UP-hide re-sets it). "Bound" and not "any" is
         // the whole of `note_global_press`, the ONLY caller: an unsupported press never reaches
         // here, so a colour button over a film no longer raises the transport.
         self.dismissed = false;
+    }
+
+    /// Dismiss the transport: it stays down until a bound key (or a segment offer) raises it.
+    ///
+    /// `while_busy` is whether the pipeline is busy right now (`plx_media::player::loading`), and
+    /// only a hide done in that state arms the next BACK to leave
+    /// (see [`exit_armed`](Self::exit_armed)). Every dismissal goes through here, so a hide that is
+    /// not an arming one also clears a stale arming instead of inheriting it.
+    pub fn hide(&mut self, while_busy: bool) {
+        self.dismissed = true;
+        self.exit_armed = while_busy;
+    }
+
+    /// Once per frame, with whether the pipeline is busy right now (`plx_media::player::loading`):
+    /// drops the arming when it is not. The arming belongs to the busy window the hide was done in,
+    /// where the transport could not come down and a second BACK is the only way out; if the
+    /// pipeline settles and nothing is pressed, that window is over, and a rebuffer much later is
+    /// a rebuffer after a hide, which still costs two presses. `dismissed` is not touched: the hide
+    /// itself stands.
+    pub fn settle(&mut self, busy: bool) {
+        if !busy {
+            self.exit_armed = false;
+        }
     }
 
     /// A FRESH segment offer takes the control row: put the HUD ON SCREEN and, from rest, park the
@@ -498,6 +547,37 @@ mod hud_visibility_tests {
             hud.note_fresh_press(&ps, 10_000, false);
             assert!(!hud.visible_at_press, "the press found a hand-hidden HUD");
             assert!(!hud.dismissed, "the same bound press wakes it for the next decision");
+        });
+    }
+
+    /// The exit arming is sampled BEFORE the press un-dismisses, and the press spends it: only the
+    /// press right after a busy hide sees `back_leaves_at_press`, and only while the hide still
+    /// stands. A hide done in normal play, or any other writer of `dismissed`, arms nothing.
+    #[test]
+    fn the_exit_arming_is_sampled_before_the_clear_and_spent_by_the_next_press() {
+        let ps = plx_media::route::PlaybackSession::IDLE;
+        with_state(PlaybackState::Buffering, || {
+            let mut hud = HudState::IDLE;
+            hud.hide(true);
+            hud.note_fresh_press(&ps, 10_000, false);
+            assert!(hud.back_leaves_at_press, "the press after a busy hide may leave");
+            assert!(!hud.dismissed && !hud.exit_armed, "…and the same press spends the arming");
+            hud.note_fresh_press(&ps, 10_000, false);
+            assert!(!hud.back_leaves_at_press, "the press after that is a first press again");
+
+            hud.hide(false);
+            hud.note_fresh_press(&ps, 10_000, false);
+            assert!(!hud.back_leaves_at_press, "a hide that was not done while busy arms nothing");
+
+            hud.hide(true);
+            hud.raise_for_offer(10_000, 1);
+            hud.note_fresh_press(&ps, 10_000, false);
+            assert!(!hud.back_leaves_at_press, "an un-dismiss between the presses disarms it");
+
+            hud.hide(true);
+            hud.hide(false);
+            hud.note_fresh_press(&ps, 10_000, false);
+            assert!(!hud.back_leaves_at_press, "a later hide that is not an arming one replaces it");
         });
     }
 

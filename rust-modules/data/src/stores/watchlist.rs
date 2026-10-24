@@ -1662,7 +1662,7 @@ pub(super) mod tests {
         let directory = crate::stores::browse::DirectorySnapshot::default();
         assert!(stores.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
             sid, rk: "42".into(), write: Write::Watched, scope: Scope::Leaf, guid: String::new(),
-        }, directory.view()));
+        }, directory.view(), &crate::pms::registry_keys_for_test()).changed);
         assert_eq!(stores.watchlist.view().facts(1).map(|f| f.watched), Some(true),
             "patched at the press, before any pump or reconcile");
         drop(stores);

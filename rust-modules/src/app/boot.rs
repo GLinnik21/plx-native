@@ -1106,9 +1106,9 @@ pub(super) fn activate_server_owned(
     bridge.collection_run(plx_data::stores::collection::CollectionCmd::Reset);
     // before the stores reset: a stop the previous identity left in flight must not land on this one
     plx_media::route::retire_pending_stops();
-    bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Reset);
+    let mut endpoints = bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Reset).endpoints;
     bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::Reset);
-    let mut endpoints = bridge.hubs_run(plx_data::stores::hubs::HubsCmd::RefetchHubs).endpoints;
+    endpoints.merge(bridge.hubs_run(plx_data::stores::hubs::HubsCmd::RefetchHubs).endpoints);
     endpoints.merge(bridge.browse_discover_pump().endpoints);
     log("pms: catalog activation queued");
     endpoints
@@ -1295,8 +1295,8 @@ pub(crate) unsafe fn construct(
     // **The stored session is read HERE, before the window.** The window size is a setting
     // (Settings > System > Interface resolution, install-wide: `Session::ui_resolution`), and
     // `SDL_CreateWindow` below is the only moment it can be applied, so the record has to be read
-    // first. `peek_settled` would not do: its first call only schedules a background read and
-    // answers "not yet". The seams `load` consults (`install_plex_seams`) are installed by
+    // first. `peek_settled` would not do: it only reads the cache, which the session owner fills
+    // after boot, so its first call answers "not yet". The seams `load` consults (`install_plex_seams`) are installed by
     // `enter_application`, before `boot`. A replay or captured boot brings its own session.
     let session = match &initial {
         Some(initial) => initial.session.persisted.clone(),

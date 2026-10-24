@@ -720,7 +720,21 @@ fn pipeline_rows(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::
     if applied.normalize_loudness {
         audio.push_str(" · loudness");
     }
-    v.push(Field::new(plx_platform::i18n::msg::browse_diagnostics_field_audio(), audio).fault(d.load_a == 0 && d.load_v != 0));
+    // Playback speed: the sound is decoded and time-stretched in the app and reaches the pipeline as
+    // PCM, whatever the chain above says the file carries; and the pipeline's own report of what it
+    // set up is the safety net's evidence (`player::note_speed_audio_report`), so it is shown.
+    let speed = speed_suffix(
+        plx_media::player::applied_rate_permille(),
+        plx_media::player::speed_audio_report(),
+        plx_media::player::speed_unsupported(),
+    );
+    audio.push_str(&speed);
+    let speed_bad = plx_media::player::applied_rate_permille() != plx_media::player::RATE_NORMAL
+        && plx_media::player::speed_audio_report() == Some(false);
+    v.push(
+        Field::new(plx_platform::i18n::msg::browse_diagnostics_field_audio(), audio)
+            .fault((d.load_a == 0 && d.load_v != 0) || speed_bad),
+    );
 
     // **The frame rate here is a CLAIM, and the row says whose.** `video_fps_milli` is what LG's
     // pipeline announced in its own `sourceInfo` callback, and on this set that is not a
@@ -959,6 +973,22 @@ const STALL_MS: u32 = 8_000;
 
 /// The frame count with its clock. `frames` is SEEK-scoped, so "0" has three meanings and the
 /// panel has to say which.
+/// The Audio row's playback-speed suffix: nothing at 1x on a set that takes speed; the speed, PCM
+/// and the pipeline's verdict on it during a speed session; and a note once the safety net has
+/// turned speed off on this television.
+fn speed_suffix(rate_permille: i32, report: Option<bool>, unsupported: bool) -> String {
+    if rate_permille == plx_media::player::RATE_NORMAL {
+        return if unsupported { " · speed off (PCM refused)".to_string() } else { String::new() };
+    }
+    let name = plx_media::player::rate_name(rate_permille);
+    let verdict = match report {
+        Some(true) => "PCM 48 kHz stereo ok",
+        Some(false) => "PCM NOT taken",
+        None => "PCM, waiting for the pipeline",
+    };
+    format!(" · speed {name} · {verdict}")
+}
+
 fn frames_str(d: &plx_media::player::Diag, now: u32) -> String {
     // Paused, the frame count SHOULD stop moving. Reporting that as "frozen" sends a reader after
     // a fault that is just the pause button — the verdict line already disarms its own stall clock
@@ -1920,6 +1950,17 @@ pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
 mod tests {
     use super::*;
     use plx_media::route::{reset_player_control_for_test, EnhTestFixture};
+
+    /// The Audio row's speed suffix says nothing at 1x, names the speed and the pipeline's verdict
+    /// on the PCM during a speed session, and says so once the safety net has turned speed off.
+    #[test]
+    fn the_audio_row_reports_a_speed_session() {
+        assert_eq!(speed_suffix(1000, None, false), "");
+        assert_eq!(speed_suffix(1500, Some(true), false), " · speed 1.5× · PCM 48 kHz stereo ok");
+        assert_eq!(speed_suffix(2000, Some(false), false), " · speed 2× · PCM NOT taken");
+        assert_eq!(speed_suffix(750, None, false), " · speed 0.75× · PCM, waiting for the pipeline");
+        assert_eq!(speed_suffix(1000, None, true), " · speed off (PCM refused)");
+    }
 
     /// `enhancement_test_session` registers a synthetic server AND a playback session; every
     /// caller must undo both in the same order, and the five call sites below once repeated that

@@ -26,6 +26,7 @@ pub mod ass_timing; // libass clock reading and the validity window of a rendere
 pub mod ass_script; // a sidecar script fed in windows around the playhead
 pub mod ass_source; // bounded embedded scripts and subtitle presentation clock
 pub mod engine;
+pub mod foreground;
 pub mod lifecycle;
 pub mod machine;
 pub mod playurl; // the `plxnative-playurl` dev trigger: a stream and its Load declaration, parsed beside the engine that acts on it
@@ -54,6 +55,7 @@ pub mod sim_video; // the simulator's decoded picture, for screenshots (see its 
 pub mod text_ass; // text subtitles to ASS: dialect converter, synthesized header, sidecar scripts (pure)
 pub mod text_style; // the viewer's size/position picks as the numbers that converter and the screen's lift use (pure)
 pub mod threads;
+pub mod transport;
 pub mod video_geometry;
 pub mod vp9_hdr; // HDR10 for a VP9 stream: the container's PQ tag, written into the sourceInfo envelope ACB is sent
 
@@ -1706,6 +1708,193 @@ pub fn stage_native_audio(ps: &mut crate::route::PlaybackSession, audio_idx: i32
 pub fn reset_audio_track() {
     SHARED.desired_audio_idx.store(-1, Relaxed);
 }
+
+/// Normal speed, in the thousandths every playback-rate value here is counted in.
+pub const RATE_NORMAL: i32 = 1000;
+/// The speeds the player offers, slowest first: the same seven as Plex Web's Playback Speed.
+pub const PLAY_RATES: [i32; 7] = [500, 750, RATE_NORMAL, 1250, 1500, 1750, 2000];
+
+/// A speed as a multiplier with no trailing zeros (`0.5×`, `1.25×`, `2×`, `1×`). The numerals are
+/// not localized — Plex Web's are not either.
+pub fn rate_name(permille: i32) -> String {
+    let whole = permille / 1000;
+    let frac = format!("{:03}", permille % 1000);
+    let frac = frac.trim_end_matches('0');
+    if frac.is_empty() { format!("{whole}×") } else { format!("{whole}.{frac}×") }
+}
+
+/// The viewer's playback speed, in thousandths (1500 = 1.5x).
+pub fn play_rate_permille() -> i32 {
+    SHARED.play_rate_permille.load(Relaxed)
+}
+/// The speed the pipeline on screen is actually running at: [`play_rate_permille`] once a Load
+/// has applied it, 1x before that, and 1x for good if LG refused it.
+pub fn applied_rate_permille() -> i32 {
+    SHARED.applied_rate_permille.load(Relaxed)
+}
+
+/// **Change the playback speed of the item on screen.**
+///
+/// The speed is done in the APP, not the pipeline (LG's own `SetPlayRate` cannot work on a
+/// buffer-feed pipeline; `crate::speed_audio`'s module doc). A Load fixes it for its whole
+/// session: the payload declares PCM audio, the demuxer decodes and time-stretches the sound
+/// (`ff::SpeedDecoder`), and every timestamp crossing to the pipeline is divided by the speed
+/// ([`to_sink_ns`]). A change is therefore a reload at the viewer's position — a seek to where they
+/// already are, which `SHARED.rate_reload` makes a full reload in every seek mode — the same shape
+/// as a native audio-track switch, and while the speed is not 1x every direct-play seek reloads
+/// too (`pump::seek_must_reload`), so each session starts on a fresh timeline.
+///
+/// Returns whether anything was requested: picking the speed already set does nothing.
+pub fn set_play_rate(ps: &crate::route::PlaybackSession, permille: i32) -> bool {
+    if !PLAY_RATES.contains(&permille) || permille == play_rate_permille() {
+        return false;
+    }
+    if permille != RATE_NORMAL && !speed_offer(ps).contains(&permille) {
+        log(&format!("rate: {permille} not offered for this playback"));
+        return false;
+    }
+    SHARED.play_rate_permille.store(permille, Relaxed);
+    log(&format!("rate: {permille} requested"));
+    if !is_started() {
+        return true; // nothing on screen: the next Load applies it
+    }
+    SHARED.rate_reload.store(true, Relaxed);
+    request_seek(intended_pos_ns(ps).max(0));
+    true
+}
+plx_base::devtrig::latched_flag!(
+    /// `/tmp/plxnative-noaudio` — a video-only Load (`needAudio:false`, no audio ES fed), the dev A/B
+    /// that isolates the audio path. Latched: [`speed_offer`] runs every frame while the More menu
+    /// is open and the pump's speed check every tick, and a `devtrig::flag` read is a `stat(2)`
+    /// syscall per call.
+    pub(crate) fn no_audio_armed = "noaudio";
+);
+
+/// **The speeds this playback can offer** (Normal included), or none when speed is unavailable:
+/// a trailer preview, segmented HLS (not wired), audio the bundled FFmpeg cannot decode
+/// (`ff::speed_decoder_available`), a television that has already failed a PCM session
+/// ([`speed_unsupported`]), or a stream whose fed rate would pass the frame rate the Load can
+/// declare ([`engine::speed_fps_ceiling_now`]). The menu offers exactly these, and a Load plays
+/// only one of them.
+pub fn speed_offer(ps: &crate::route::PlaybackSession) -> Vec<i32> {
+    if crate::route::is_preview(ps) || crate::route::is_segmented_hls(ps) || speed_unsupported() {
+        return Vec::new();
+    }
+    let codec = crate::route::stream_acodec(ps);
+    if !no_audio_armed() && !crate::ff::speed_decoder_available(&codec) {
+        return Vec::new();
+    }
+    speeds_within(crate::route::stream_fps(ps), engine::speed_fps_ceiling_now(ps))
+}
+
+/// The most frames per second a speed may ask the decoder to show: at speed `r` a `fps` source is
+/// fed at `fps * r` (every frame, closer together), and 60 is what every Load envelope this app
+/// declares can carry. It is the ceiling when the device's own table says nothing tighter; a
+/// measured decoder row below it lowers it ([`engine::speed_fps_ceiling`]). 24p reaches 2x there;
+/// 50p and 60p offer nothing above 1x.
+pub const SPEED_MAX_FPS: f64 = 60.5;
+
+/// [`PLAY_RATES`] a `fps` source can play without being fed faster than `max_fps`: the ceiling for
+/// this playback, [`SPEED_MAX_FPS`] or a measured decoder row's lower rate. An unknown rate (0) is
+/// treated as film, the common case for a file whose rate PMS did not report.
+pub fn speeds_within(fps: f64, max_fps: f64) -> Vec<i32> {
+    let fps = if fps > 0.0 { fps } else { 24.0 };
+    PLAY_RATES.iter().copied().filter(|r| fps * *r as f64 / 1000.0 <= max_fps).collect()
+}
+
+/// **The speed a Load is about to play at**: the viewer's, if this playback offers it, else 1x —
+/// and a refusal puts the viewer's speed back to Normal so the menu does not claim a speed the
+/// picture is not playing at.
+pub(crate) fn session_rate_for(ps: &crate::route::PlaybackSession) -> i32 {
+    let want = play_rate_permille();
+    if want == RATE_NORMAL || crate::route::is_preview(ps) {
+        return RATE_NORMAL;
+    }
+    let offer = speed_offer(ps);
+    let rate = session_rate(want, &offer);
+    if rate != want {
+        SHARED.play_rate_permille.store(RATE_NORMAL, Relaxed);
+        log(&format!("speed: {want} not offered here ({offer:?}) -> 1x"));
+    }
+    rate
+}
+
+/// [`session_rate_for`]'s rule, pure.
+pub fn session_rate(want: i32, offer: &[i32]) -> i32 {
+    if offer.contains(&want) { want } else { RATE_NORMAL }
+}
+
+/// **A television that did not take this session's PCM.** Latched for the life of the process:
+/// the same set will refuse the next one too.
+pub fn speed_unsupported() -> bool {
+    SHARED.speed_unsupported.load(Relaxed)
+}
+
+/// What the pipeline said it set up for a speed session's audio, from its audio-info callback
+/// (`audio/x-raw … <kHz> <channels> …`). 48 kHz stereo is what the payload declared; anything
+/// else means the declaration was not understood — measured: `"sampleRate":48000` came back as
+/// 44.099998 and the audio drifted and resynced every few seconds.
+pub(crate) fn note_speed_audio_report(b: &[u8]) {
+    if applied_rate_permille() == RATE_NORMAL || !b.starts_with(b"audio/") {
+        return;
+    }
+    let text = String::from_utf8_lossy(b);
+    let mut f = text.split_whitespace();
+    let kind = f.next().unwrap_or("");
+    let khz: f64 = f.nth(2).and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    let channels: i32 = f.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let ok = kind == "audio/x-raw" && (khz - 48.0).abs() < 0.01 && channels == 2;
+    SHARED.speed_audio_verdict.store(if ok { SPEED_AUDIO_OK } else { SPEED_AUDIO_BAD }, Relaxed);
+    log(&format!("speed: pipeline audio {kind} {khz} kHz x{channels} -> {}", if ok { "ok" } else { "NOT what was declared" }));
+}
+/// What the pipeline reported for this speed session's audio, for the Stats for nerds read-out:
+/// `None` before any report, `Some(true)` for the declared 48 kHz stereo, `Some(false)` otherwise.
+pub fn speed_audio_report() -> Option<bool> {
+    match SHARED.speed_audio_verdict.load(Relaxed) {
+        SPEED_AUDIO_OK => Some(true),
+        SPEED_AUDIO_BAD => Some(false),
+        _ => None,
+    }
+}
+pub(crate) const SPEED_AUDIO_UNKNOWN: u8 = 0;
+pub(crate) const SPEED_AUDIO_OK: u8 = 1;
+pub(crate) const SPEED_AUDIO_BAD: u8 = 2;
+
+/// **The safety net**: this television did not take a speed session's PCM (`why`). Latch speed off
+/// ([`speed_unsupported`]), put the viewer's speed back to Normal, and reload at their position —
+/// the same reload a speed change is, which now lands at 1x on the TV's own audio path.
+pub(crate) fn fall_back_from_speed(ps: &crate::route::PlaybackSession, why: &str) {
+    log(&format!("speed: FALLING BACK to 1x — {why}; speed is off until the app restarts"));
+    SHARED.speed_unsupported.store(true, Relaxed);
+    SHARED.play_rate_permille.store(RATE_NORMAL, Relaxed);
+    SHARED.rate_reload.store(true, Relaxed);
+    request_seek(intended_pos_ns(ps).max(0));
+}
+
+/// **Film time to the pipeline's timeline.** At speed `r` the pipeline still plays at its own 1x,
+/// so every timestamp the app hands it — a fed AU, a seek or decode position — is divided by `r`;
+/// the frames then arrive `r` times closer together and the picture runs `r` times faster.
+/// Identity at 1x, which is every playback that has not picked a speed.
+pub fn to_sink_ns(ns: i64) -> i64 {
+    scale_ns(ns, RATE_NORMAL, applied_rate_permille())
+}
+/// The inverse, for every timestamp the pipeline reports back (a presented frame).
+pub fn from_sink_ns(ns: i64) -> i64 {
+    scale_ns(ns, applied_rate_permille(), RATE_NORMAL)
+}
+fn scale_ns(ns: i64, num: i32, den: i32) -> i64 {
+    if num == den || den <= 0 {
+        return ns;
+    }
+    (ns as i128 * num as i128 / den as i128) as i64
+}
+
+/// Back to 1x — called on a new item, like [`reset_audio_track`]: a speed is a choice about what
+/// is playing, and Plex Web's resets the same way.
+pub fn reset_play_rate() {
+    SHARED.play_rate_permille.store(RATE_NORMAL, Relaxed);
+    SHARED.rate_reload.store(false, Relaxed);
+}
 /// reset the subtitle selection to Off — called on a NEW item. Like desired_audio_idx, the
 /// subtitle selection PERSISTS across seeks/reloads (it is no longer cleared in reset_session),
 /// so a reload-based seek (transcode, or the direct-play reload fallback) keeps the chosen sub
@@ -2363,6 +2552,8 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::Event
             Relaxed,
             Relaxed,
         );
+        // back from the pipeline's timeline to film time (`from_sink_ns`; identity at 1x)
+        let num = from_sink_ns(num);
         SHARED.pres_fed.store(num, Relaxed); // raw fed pts, for the feed-ahead throttle
         SHARED.playpos_ns.store(
             num - SHARED.pts_shift.load(Relaxed) + SHARED.disp_base.load(Relaxed),
@@ -2377,6 +2568,7 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::Event
     if let Some(fps_milli) = source_fps_milli(b) {
         SHARED.video_fps_milli.store(fps_milli, Relaxed);
     }
+    note_speed_audio_report(b);
     if find(b, b"\"video\"") {
         if let Some(aspect) = video_geometry::source_aspect(b) {
             SHARED.video_aspect.store(aspect.pack(), std::sync::atomic::Ordering::Release);
@@ -2468,6 +2660,133 @@ pub fn every_failure_row() -> Vec<(FailureKind, FailureContext, Vec<FailureActio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The speeds a source can be offered: everything up to 2x for film, nothing above 1x for 60p
+    /// (it would ask the decoder for more than 60 fps), and a Load plays only an offered speed.
+    #[test]
+    fn a_session_plays_only_an_offered_speed() {
+        assert_eq!(speeds_within(23.976, SPEED_MAX_FPS), PLAY_RATES.to_vec());
+        assert_eq!(speeds_within(0.0, SPEED_MAX_FPS), PLAY_RATES.to_vec(), "unknown is treated as film");
+        assert_eq!(speeds_within(30.0, SPEED_MAX_FPS), PLAY_RATES.to_vec());
+        assert_eq!(speeds_within(50.0, SPEED_MAX_FPS), vec![500, 750, 1000]);
+        assert_eq!(speeds_within(59.94, SPEED_MAX_FPS), vec![500, 750, 1000]);
+        assert_eq!(session_rate(1500, &PLAY_RATES), 1500);
+        assert_eq!(session_rate(1500, &[500, 750, 1000]), RATE_NORMAL, "not offered");
+        assert_eq!(session_rate(1500, &[]), RATE_NORMAL, "speed unavailable");
+    }
+
+    /// A speed reads as its multiplier with no trailing zeros, for every speed the player offers.
+    #[test]
+    fn a_rate_is_named_by_its_multiplier() {
+        let names: Vec<String> = PLAY_RATES.iter().map(|r| rate_name(*r)).collect();
+        assert_eq!(names, ["0.5×", "0.75×", "1×", "1.25×", "1.5×", "1.75×", "2×"]);
+    }
+
+    /// The safety net's evidence: the pipeline's audio-info report for a speed session. 48 kHz
+    /// stereo raw is what the payload declared; the 44.1 a mis-declared rate produced, or any
+    /// compressed type, is not. At 1x the report is not judged at all.
+    #[test]
+    fn the_pipeline_audio_report_judges_a_speed_session() {
+        let _serial = plx_base::testlock::serial();
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                SHARED.applied_rate_permille.store(RATE_NORMAL, Relaxed);
+                SHARED.speed_audio_verdict.store(SPEED_AUDIO_UNKNOWN, Relaxed);
+            }
+        }
+        let _restore = Restore;
+        let verdict = |rate: i32, report: &[u8]| {
+            SHARED.applied_rate_permille.store(rate, Relaxed);
+            SHARED.speed_audio_verdict.store(SPEED_AUDIO_UNKNOWN, Relaxed);
+            note_speed_audio_report(report);
+            SHARED.speed_audio_verdict.load(Relaxed)
+        };
+        // both are the 3.9.3 set's own strings, from its event log
+        let good = b"audio/x-raw (null) (null) 48.000000 2 (null) 0 0 0 0 (null) 0 (null) 0 ";
+        let drift = b"audio/x-raw (null) (null) 44.099998 2 (null) 0 0 0 0 (null) 0 (null) 0 ";
+        assert_eq!(verdict(1500, good), SPEED_AUDIO_OK);
+        assert_eq!(verdict(1500, drift), SPEED_AUDIO_BAD);
+        assert_eq!(verdict(1500, b"audio/mpeg (null) (null) 0.000000 0 (null)"), SPEED_AUDIO_BAD);
+        assert_eq!(verdict(RATE_NORMAL, drift), SPEED_AUDIO_UNKNOWN, "1x is never judged");
+        assert_eq!(verdict(1500, b"{\"video\":1}"), SPEED_AUDIO_UNKNOWN, "not an audio report");
+    }
+
+    /// The timeline conversion: at 1.5x a fed timestamp is two thirds of the film time it stands
+    /// for, the presented one comes back as film time, and at 1x nothing changes.
+    #[test]
+    fn the_pipeline_timeline_is_film_time_divided_by_the_speed() {
+        let _serial = plx_base::testlock::serial();
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                SHARED.applied_rate_permille.store(RATE_NORMAL, Relaxed);
+            }
+        }
+        let _restore = Restore;
+        SHARED.applied_rate_permille.store(RATE_NORMAL, Relaxed);
+        assert_eq!(to_sink_ns(7_000_000_000), 7_000_000_000);
+        SHARED.applied_rate_permille.store(1500, Relaxed);
+        assert_eq!(to_sink_ns(3_000_000_000), 2_000_000_000);
+        assert_eq!(from_sink_ns(2_000_000_000), 3_000_000_000);
+        SHARED.applied_rate_permille.store(500, Relaxed);
+        assert_eq!(to_sink_ns(3_000_000_000), 6_000_000_000, "half speed spreads frames out");
+        // a long film at a fractional speed survives the round trip within a nanosecond
+        SHARED.applied_rate_permille.store(1750, Relaxed);
+        let t = 9_876_543_210_123;
+        assert!((from_sink_ns(to_sink_ns(t)) - t).abs() <= 2);
+    }
+
+    /// **A speed change is a seek to where the viewer already is, marked to reload**, and only a
+    /// real change on the ladder is one: the speed already set, or a value Plex Web does not offer,
+    /// asks for nothing. With nothing on screen the speed is only remembered for the next Load.
+    #[test]
+    fn a_speed_change_requests_a_reload_at_the_viewers_position() {
+        let _serial = plx_base::testlock::serial();
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                reset_play_rate();
+                SHARED.reset_session();
+                TX.reset();
+                crate::ff::force_speed_decoder_for_test(false);
+                SHARED.speed_unsupported.store(false, Relaxed);
+            }
+        }
+        let _restore = Restore;
+        let ps = crate::route::PlaybackSession::IDLE;
+        SHARED.reset_session();
+        TX.reset();
+        crate::ff::force_speed_decoder_for_test(true);
+
+        assert!(set_play_rate(&ps, 1250), "not started: remembered for the next Load");
+        assert_eq!(play_rate_permille(), 1250);
+        assert_eq!(seek_pending(), -1, "with nothing on screen there is nothing to reload");
+        assert!(!SHARED.rate_reload.load(Relaxed));
+
+        TX.started.store(true, Relaxed);
+        SHARED.playpos_ns.store(42_000_000_000, Relaxed);
+        assert!(set_play_rate(&ps, 1500));
+        assert_eq!(play_rate_permille(), 1500);
+        assert_eq!(seek_pending(), 42_000_000_000, "a seek to the viewer's own position");
+        assert!(SHARED.rate_reload.load(Relaxed), "marked so an in-place seek mode reloads it");
+
+        TX.seek_to_ns.store(-1, Relaxed);
+        SHARED.rate_reload.store(false, Relaxed);
+        assert!(!set_play_rate(&ps, 1500), "the speed already set asks for nothing");
+        assert!(!set_play_rate(&ps, 1300), "off the ladder");
+        assert_eq!(seek_pending(), -1);
+        assert_eq!(play_rate_permille(), 1500);
+
+        reset_play_rate();
+        assert_eq!(play_rate_permille(), RATE_NORMAL, "a new item starts at 1x");
+
+        // a television that failed a PCM session offers no speed at all
+        SHARED.speed_unsupported.store(true, Relaxed);
+        assert!(speed_offer(&ps).is_empty());
+        assert!(!set_play_rate(&ps, 1500), "nothing is offered after the fallback");
+        assert_eq!(play_rate_permille(), RATE_NORMAL);
+    }
 
     // The jail/rtkmem refusal (no Engine ever built, `state()` deriving `Error`, and the
     // refusal retiring on route exit) is exercised by

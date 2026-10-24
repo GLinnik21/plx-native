@@ -1050,8 +1050,9 @@ pub fn register_origin(
 ///
 /// **Two reasons a host test must come through here, and the second one cost a red CI run.**
 ///
-/// 1. The public [`register`] resolves the device id through `session::peek`; a cache miss can
-///    queue a storage refresh. Pure registry tests supply the id instead.
+/// 1. The public [`register`] resolves the device id through `session::peek`, a pure read of the
+///    session cache: a miss answers the empty session until the session owner's refresh has filled
+///    it. Pure registry tests supply the id instead.
 /// 2. [`register`] also fires [`serverinfo::refresh`](super::serverinfo::refresh), which spawns a
 ///    worker that really opens a socket. Tests of the registry must not acquire that unrelated
 ///    network side effect or depend on worker scheduling. (`stream::http_stream_boxed` now zeros

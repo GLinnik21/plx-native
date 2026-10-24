@@ -120,8 +120,8 @@
 //! * ViewState (`sent.is_some()`; a completion that answers no write on the wire is dropped).
 //! * The two the Bridge takes for itself in `Bridge::take_hubs_results` /
 //!   `Bridge::take_live_results`. **Home's hubs:** the claim is `PmsAdapter::owed`, a count of
-//!   workers spawned through `pms::spawn_fetch` whose landing `pms::take_landings` has not yet
-//!   moved out; it cannot be `Src::fetching`, which clears when a landing is APPLIED, after the
+//!   workers the runner launched (`pms::launch_hubs_job`) whose landing `pms::take_landings` has
+//!   not yet moved out; it cannot be `Src::fetching`, which clears when a landing is APPLIED, after the
 //!   take that delivered it. The take is a queue take (`take_all_owed`), so every request spawned
 //!   in one iteration is collected by the next, and a profile reset rotates the adapter, so a
 //!   retired worker's count and mailbox go with it and nothing waits on it. **The controlled-Home

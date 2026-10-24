@@ -24,7 +24,9 @@ pub(crate) struct HomeIo {
 }
 
 impl HomeIo {
-    fn admit(&mut self, request: serde_json::Value, launch: impl FnOnce() -> bool) -> bool {
+    /// Record `request` and whether its `launch` started anything, or under replay answer it from
+    /// the recording and never launch. The one place a recorded `admitted` is written or compared.
+    pub(crate) fn admit(&mut self, request: serde_json::Value, launch: impl FnOnce() -> bool) -> bool {
         let admitted = if self.replay {
             let Some(mut recorded) = self.admissions.pop_front() else {
                 self.failure = Some("missing synchronous admission"); return false;
@@ -39,35 +41,6 @@ impl HomeIo {
         recorded["admitted"] = serde_json::json!(admitted);
         self.requests.push(recorded);
         admitted
-    }
-    #[cfg(test)]
-    pub fn hubs(&mut self, hubs: &mut plx_data::stores::hubs::HubsStore,
-        cmd: Option<plx_data::stores::hubs::HubsCmd>, dt: f32) -> plx_data::stores::StoreOutcome {
-        let adapter = hubs.adapter();
-        self.hubs_with(hubs, cmd, dt, &mut |request| plx_data::pms::spawn_fetch(&adapter, request))
-    }
-    #[cfg(test)]
-    fn hubs_with(&mut self, hubs: &mut plx_data::stores::hubs::HubsStore,
-        cmd: Option<plx_data::stores::hubs::HubsCmd>, dt: f32,
-        launch: &mut dyn FnMut(plx_data::pms::HubRequest) -> bool) -> plx_data::stores::StoreOutcome {
-        hubs.controlled(cmd, dt, &mut |request| {
-            self.admit(hubs_descriptor(&request), || launch(request))
-        })
-    }
-    pub(crate) fn hubs_with_directory(&mut self, hubs: &mut plx_data::stores::hubs::HubsStore,
-        cmd: Option<plx_data::stores::hubs::HubsCmd>, dt: f32,
-        directory: plx_data::stores::browse::DirectoryView<'_>) -> plx_data::stores::StoreOutcome {
-        let adapter = hubs.adapter();
-        self.hubs_with_directory_and_launch(hubs, cmd, dt, directory,
-            &mut |request| plx_data::pms::spawn_fetch(&adapter, request))
-    }
-    fn hubs_with_directory_and_launch(&mut self, hubs: &mut plx_data::stores::hubs::HubsStore,
-        cmd: Option<plx_data::stores::hubs::HubsCmd>, dt: f32,
-        directory: plx_data::stores::browse::DirectoryView<'_>,
-        launch: &mut dyn FnMut(plx_data::pms::HubRequest) -> bool) -> plx_data::stores::StoreOutcome {
-        hubs.controlled_with_directory(cmd, dt, directory, &mut |request| {
-            self.admit(hubs_descriptor(&request), || launch(request))
-        })
     }
     pub(crate) fn discovery_owned(&mut self, stores: &plx_data::stores::Stores) {
         self.discovery_owned_with(stores, &mut plx_data::browse::execute_discovery);
@@ -364,13 +337,4 @@ impl Preflight {
     }
     pub(crate) fn replay(&self) -> bool { matches!(self, Self::Replay { .. }) }
     pub(crate) fn controlled(&self) -> bool { !matches!(self, Self::Live) }
-}
-
-/// The admission descriptor of one Hubs request, with its page query when it carries one.
-fn hubs_descriptor(request: &plx_data::pms::HubRequest) -> serde_json::Value {
-    let (epoch, req, sid, client, token_gen) = request.descriptor();
-    let mut descriptor = serde_json::json!({"kind":"hubs", "epoch":epoch,
-        "req":req, "sid":sid, "client":client, "token_gen":token_gen});
-    if let Some(page) = request.page_descriptor() { descriptor["page"] = page; }
-    descriptor
 }

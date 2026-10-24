@@ -490,8 +490,8 @@ same resolver instead of open-coding it.
 The session file became a **probed search order**, because there is no single writable persistent
 directory common to both layouts: `/media/developer/<id>-auth.json` (Dev Mode, survives a
 reinstall) → `/media/internal/.<id>-auth.json` (the production jail's only rw persistent location)
-→ `<appdir>/auth.json` → the legacy path, read-only, for migration. `peek()` takes the first plain
-file that parses, so a half-written file at a preferred location cannot shadow a good one. A
+→ `<appdir>/auth.json` → the legacy path, read-only, for migration. The read behind `peek()` takes
+the first plain file that parses, so a half-written file at a preferred location cannot shadow a good one. A
 recognized encrypted envelope deliberately does shadow lower candidates when its device key is
 unavailable: skipping it could resurrect stale plaintext and a later save could destroy the only
 live credentials;
@@ -1192,7 +1192,11 @@ Two other ways in, both still supported:
 *No double build.* `prepare` pushes the tag with `GITHUB_TOKEN`, and GitHub deliberately refuses to
 start a workflow run from a `GITHUB_TOKEN` push. So the `push: tags: ['v*']` trigger stays for a
 hand-pushed tag without firing a second time on our own. If that push is ever moved to a PAT or a
-deploy key, this becomes an infinite loop — that is the thing to remember.
+deploy key, this becomes an infinite loop — that is the thing to remember. The BRANCH push is
+already on one: `main`'s required-checks ruleset rejects the workflow token (GH013), so `prepare`
+and `publish` check out with `ssh-key: ${{ secrets.MAIN_PUSH_KEY }}`, a write deploy key the
+ruleset names as a bypass actor, and `prepare` pushes the tag separately over the token URL.
+`site-video.yml`'s publish checkout uses the same key.
 
 *`needs` exposes only DIRECT dependencies.* `legal-gate`, `build` and `publish` cannot see
 `prepare`, so the resolved tag is computed once in `guard` and published as `needs.guard.outputs.tag`;

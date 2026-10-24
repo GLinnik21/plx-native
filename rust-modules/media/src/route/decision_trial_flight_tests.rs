@@ -194,6 +194,40 @@ fn a_recovery_flight_is_refused_while_the_trial_awaits_its_first_frame() {
     cleanup_trial(&mut ps, rig);
 }
 
+/// **An automatic Original that PMS admitted but whose Load failed is not asked again from the
+/// restored HLS.** The rollback rebases the retained route at the recovery position, which mints a
+/// NEW encoder (`plan_rebase`), so a record keyed on the encoder the trial left would never match
+/// the worker the reload spawns: its source gate started fresh, probed, was admitted, failed to
+/// load and rolled back again, a visible reload every round. The refusal follows the rollback onto
+/// the encoder its rebase installed.
+#[test]
+fn a_rolled_back_automatic_original_is_not_asked_again_on_the_rebased_hls() {
+    let mut ps = PlaybackSession::IDLE;
+    let rig = FlightRig::start_hls(&mut ps, Duration::from_millis(10));
+    FlightRig::offer_original(&mut ps, false);
+    let (fresh, retained) = hls_abr_control(&ps).expect("the Auto HLS worker's capture");
+    assert!(!fresh.original_refused_on_this_route(), "sanity: nothing has been refused yet");
+    let reload = recover_auto_to_original_for(&mut ps, &worker_ticket(), 90, RecoveryCause::Automatic);
+    assert_eq!(reload, Some(AutoOriginalReload::Remux), "the automatic trial must arm");
+    FlightRig::fail_original_trial_load(&mut ps);
+
+    let rollback = rollback_original_recovery(&mut ps).expect("the failed trial rolls back");
+    let dispatched = {
+        let _frame = plx_base::task::FrameScope::enter();
+        dispatch_engineless_rollback_rebase(&mut ps, rollback.offset_ns)
+    };
+    assert!(matches!(dispatched, RecoveryDispatch::Flying { .. }), "{dispatched:?}");
+    assert_eq!(await_landing(&mut ps).verdict, RecoveryVerdict::Install);
+
+    let (rebased, ticket) = hls_abr_control(&ps).expect("the restored HLS worker's capture");
+    assert_ne!(ticket.encoder(), retained.encoder(), "the rollback's rebase installed a new encoder");
+    assert!(
+        rebased.original_refused_on_this_route(),
+        "the HLS route an Original failed to load from must not ask for it again",
+    );
+    cleanup_trial(&mut ps, rig);
+}
+
 /// Tear the rig down, then reset the process-global reducer, all under the rig's lock: the reset
 /// advances the route generation, which a later test's flight must never see move under it.
 fn cleanup_trial(ps: &mut PlaybackSession, rig: FlightRig) {

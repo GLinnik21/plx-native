@@ -122,6 +122,11 @@ pub(crate) fn apply_more_action(ps: &mut plx_media::route::PlaybackSession, pa: 
                 plx_media::route::set_quality(ps, q);
             }
         }
+        // A playback speed: a reload at the viewer's position at the new speed
+        // (`player::set_play_rate`). Picking the current speed does nothing.
+        plx_appkit::more_menu::Action::SetSpeed(r) => {
+            plx_media::player::set_play_rate(ps, r);
+        }
         // Lab builds only. Nothing about playback changes: the snapshot is taken and the toast
         // reports, over whatever the player is doing.
         plx_appkit::more_menu::Action::SendDiagnostics => crate::lab::request_upload("menu", ps),
@@ -284,9 +289,11 @@ pub(crate) fn start_playback(
 /// return state: acceptance cannot invent where a session returns to.
 pub(super) trait PlaybackResources {
     fn request_movie(&mut self, ps: &mut plx_media::route::PlaybackSession,
-        meta: &mut plx_data::stores::metadata::MetadataStore, item: &plx_data::pms::PmsMovie) -> bool;
+        meta: &mut plx_data::stores::metadata::MetadataStore, item: &plx_data::pms::PmsMovie,
+        version: Option<plx_plex::plex::MediaId>) -> bool;
     fn request_episode(&mut self, ps: &mut plx_media::route::PlaybackSession,
-        meta: &mut plx_data::stores::metadata::MetadataStore, rk: &str) -> bool;
+        meta: &mut plx_data::stores::metadata::MetadataStore, rk: &str,
+        version: Option<plx_plex::plex::MediaId>) -> bool;
     fn describe_movie(&mut self, meta: &mut plx_data::stores::metadata::MetadataStore,
         sid: plx_plex::plex::ServerId, rk: &str);
     fn prepare_start(&mut self, ps: &mut plx_media::route::PlaybackSession,
@@ -320,12 +327,14 @@ pub(super) struct LivePlaybackResources;
 
 impl PlaybackResources for LivePlaybackResources {
     fn request_movie(&mut self, ps: &mut plx_media::route::PlaybackSession,
-        meta: &mut plx_data::stores::metadata::MetadataStore, item: &plx_data::pms::PmsMovie) -> bool {
-        plx_media::route::request_play_movie(ps, meta, item, &movie_ctx(item))
+        meta: &mut plx_data::stores::metadata::MetadataStore, item: &plx_data::pms::PmsMovie,
+        version: Option<plx_plex::plex::MediaId>) -> bool {
+        plx_media::route::request_play_movie(ps, meta, item, &movie_ctx(item), version)
     }
     fn request_episode(&mut self, ps: &mut plx_media::route::PlaybackSession,
-        meta: &mut plx_data::stores::metadata::MetadataStore, rk: &str) -> bool {
-        request_loaded_episode(ps, meta, rk)
+        meta: &mut plx_data::stores::metadata::MetadataStore, rk: &str,
+        version: Option<plx_plex::plex::MediaId>) -> bool {
+        request_loaded_episode(ps, meta, rk, version)
     }
     fn describe_movie(&mut self, meta: &mut plx_data::stores::metadata::MetadataStore,
         sid: plx_plex::plex::ServerId, rk: &str) {
@@ -434,21 +443,23 @@ pub(crate) fn request_loaded_hero(ps: &mut plx_media::route::PlaybackSession, me
         let ep = (if started { d.on_deck.as_ref() } else { None })
             .or_else(|| d.episodes.first())?
             .clone();
-        request_episode(ps, meta, &d, &ep).then(|| plx_data::metadata::resume_ns(ep.resume_ms, ep.dur_ms))
+        request_episode(ps, meta, &d, &ep, None).then(|| plx_data::metadata::resume_ns(ep.resume_ms, ep.dur_ms))
     } else {
         plx_media::route::request_play(ps, meta, plx_media::route::item_sid(d.sid), &d.rk, &d.part,
-            &d.vcodec, &d.acodec, &d.title, "")
+            &d.vcodec, &d.acodec, &d.title, "", None)
             .then(|| plx_data::metadata::resume_ns(d.resume_ms, d.dur_ms))
     }
 }
 
-pub(crate) fn request_loaded_episode(ps: &mut plx_media::route::PlaybackSession, meta: &mut plx_data::stores::metadata::MetadataStore, rk: &str) -> bool {
+pub(crate) fn request_loaded_episode(ps: &mut plx_media::route::PlaybackSession, meta: &mut plx_data::stores::metadata::MetadataStore, rk: &str,
+    version: Option<plx_plex::plex::MediaId>) -> bool {
     let Some(d) = meta.view().current().cloned() else { return false };
     let Some(ep) = d.episodes.position(rk).and_then(|i| d.episodes.get(i)).cloned() else { return false };
-    request_episode(ps, meta, &d, &ep)
+    request_episode(ps, meta, &d, &ep, version)
 }
 
-fn request_episode(ps: &mut plx_media::route::PlaybackSession, meta: &mut plx_data::stores::metadata::MetadataStore, d: &plx_data::metadata::Detail, ep: &plx_data::metadata::Episode) -> bool {
+fn request_episode(ps: &mut plx_media::route::PlaybackSession, meta: &mut plx_data::stores::metadata::MetadataStore, d: &plx_data::metadata::Detail, ep: &plx_data::metadata::Episode,
+    version: Option<plx_plex::plex::MediaId>) -> bool {
     meta.run(plx_data::stores::metadata::MetadataCmd::SetNowPlaying(Some(plx_data::metadata::NowPlaying {
         is_episode: true, is_real_episode: true, title: d.title.clone(), ep_title: ep.title.clone(),
         season: ep.season, index: ep.index, summary: ep.summary.clone(),
@@ -458,7 +469,7 @@ fn request_episode(ps: &mut plx_media::route::PlaybackSession, meta: &mut plx_da
     let title = if ep.title.is_empty() { &d.title } else { &ep.title };
     let context = plx_ui::fmt::episode_context(&d.title, ep.season, ep.index);
     plx_media::route::request_play(ps, meta, plx_media::route::item_sid(d.sid), &ep.rk, &ep.part,
-        &ep.vcodec, &ep.acodec, title, &context)
+        &ep.vcodec, &ep.acodec, title, &context, version)
 }
 
 /// Leaving playback (Stop / BACK / EOS / Info's jump-to-detail): retire every in-player panel.
@@ -690,7 +701,7 @@ pub(super) fn return_from_player(
 /// It tells the foreground machine first (`ForegroundInput::Superseded(Successor::Exit)`): a
 /// restore parked or refused behind the exit (`Prepared`, `Suspended`, ...) is retired there rather
 /// than left standing until the next play, and a foreground Load still pending releases what
-/// `before_load` armed. `discard_started_state` stays the off-player PLAY's own, narrower reset.
+/// `before_load` armed. `PlayKeyOffPlayer` stays the off-player PLAY's own, narrower reset.
 ///
 /// The return target is [`plx_screens::player::Origin`]'s `entry` — the container entry that was on top when Play was
 /// pressed, seeded at the player's own mount by [`enter_player`] and read back off the mounted
@@ -987,7 +998,7 @@ pub(crate) fn play_up_next(
         .map(|p| p.sid)
         .unwrap_or_else(plx_plex::plex::current_server);
     bridge.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::RetirePlaying);
-    bridge.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::RequestDetail { sid: sid, rk: rk.to_string() });
+    bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::RequestDetail { sid: sid, rk: rk.to_string() });
     start_playback(
         ps,
         pa,
@@ -1018,7 +1029,7 @@ pub(crate) unsafe fn play_item_now(
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
 ) {
-    play_item_now_with(ps, pa, mm, from_start, from, hud_ms, ret, pages, bridge, &mut LivePlaybackResources);
+    play_item_now_with(ps, pa, mm, from_start, None, from, hud_ms, ret, pages, bridge, &mut LivePlaybackResources);
 }
 
 /// Shared captured-row launch, including the empty/request guards, metadata scheduling,
@@ -1028,6 +1039,8 @@ pub(super) fn play_item_now_with<R: PlaybackResources>(
     pa: &mut plx_media::player::adapter::PlayerAdapter,
     mm: &plx_data::pms::PmsMovie,
     from_start: bool,
+    // the version the viewer picked (Play Version), `None` for the default
+    version: Option<plx_plex::plex::MediaId>,
     from: Origin,
     hud_ms: u32,
     ret: Option<plx_ui::screen::ReturnState<u32, plx_screens::registry::PageMemory>>,
@@ -1038,7 +1051,7 @@ pub(super) fn play_item_now_with<R: PlaybackResources>(
     if mm.rk.is_empty() {
         return;
     }
-    if !resources.request_movie(ps, bridge.metadata_mut(), mm) {
+    if !resources.request_movie(ps, bridge.metadata_mut(), mm, version) {
         return;
     }
     // resolve OFF the SDL loop — pump_play starts it
@@ -1053,6 +1066,11 @@ pub(super) fn play_item_now_with<R: PlaybackResources>(
     // route's own TITLE/CTXLINE, set synchronously by request_play_movie, still carry
     // this item), and the landing refills it via sync_now_playing.
     resources.describe_movie(bridge.metadata_mut(), mm.sid, &mm.rk);
+    // `describe_movie` holds only the store, so its request's job is still on the outbox: start it
+    // here, where the request was made, so the tape's admission record lands before the playback
+    // starts and not at some later pump (`Bridge::metadata_run` does the same for a command that
+    // goes through the Bridge).
+    bridge.start_store_jobs();
     start_playback_with(
         ps,
         pa,
@@ -1232,13 +1250,17 @@ pub(crate) unsafe fn key_play(
     bridge: &mut super::bridge::Bridge,
 ) {
     let was_off_player = super::bridge::player(pages).is_none();
-    if was_off_player {
-        foreground.discard_started_state();
-    }
+    // Off the player a started session's pending clock belongs to a player a real exit removed, so
+    // the press must not be intercepted by its retry: the machine drops it itself.
+    let input = if was_off_player {
+        ForegroundInput::PlayKeyOffPlayer
+    } else {
+        ForegroundInput::PlayKey
+    };
     let activation = drive_foreground(
         foreground,
         ps,
-        ForegroundInput::PlayKey,
+        input,
         &mut PlayerForegroundActuator { pa, repause_at },
     );
     if matches!(activation, ForegroundActivation::Launched) {

@@ -755,9 +755,18 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `make RELEASE=1 SYMBOLS=1 ipk symbols`. `make symbols` without the flag REFUSES rather than
   writing the empty shell `objcopy --only-keep-debug` produces from a binary with no DWARF.
   **`SYMBOLS=1` is sticky the way `RELEASE=1` is: pass it to EVERY invocation in the session.** It
-  is in the stamp, so a bare `make run` after `make SYMBOLS=1 deploy` deletes `pkg/plxnative` at
+  is in the stamp, so a bare `make deploy` after `make SYMBOLS=1 deploy` deletes `pkg/plxnative` at
   parse time and leaves you unable to symbolize the crash you just captured — the stamp working as
-  designed, but it costs a rebuild to notice. **Device-verified end to end 2026-08-29**: a
+  designed, but it costs a rebuild to notice. (Goals that build, read and ship none of the
+  stamp's artifacts are in `SIDE_EFFECT_FREE` and leave the stamp and the binary alone whatever the
+  last build was: the goals that only drive the TV — `kill`, `run`, `run-stream`, `verify-deploy`,
+  `uninstall`, `fetch-profile`, `softfloat-probe`, so `tv-session.sh` and `tests/run.py` can run
+  them — and the host-only ones — `test-fast`, `test-crate`, `test-hostsim`, `lint`, `check-nodef`,
+  the print queries and the set-up and fixture tooling, so a unit-test loop after a
+  `make ARM_PROFILE=release` build does not cost the binary. `make check` is NOT among them: its own
+  steps dry-run the ARM goals. The Makefile comment above `SIDE_EFFECT_FREE` has the rule and the
+  goals deliberately left out, and `ci/test_arm_profile.py` pins both.)
+  **Device-verified end to end 2026-08-29**: a
   deliberate SIGSEGV on the set resolved through `pkg/plxnative.debug` to
   `dev::crash_on_purpose at rust-modules/src/dev.rs:218` — file and line, from a binary the
   television runs, matched by build id alone.
@@ -1217,10 +1226,11 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   the tree — see `no_log_call_site_interpolates_viewing_content`. Adding a `log(&format!(…))` that
   interpolates an item title, a search query or subtitle text will fail `make check`.
   Identities come from `plex::session::publish_identities`, PUSHED on load/save; the scrubber must
-  never call `session::peek()` from the log path — it is now cache-served, with a refresh queued to
-  `storage_worker` and no direct file I/O, but worker startup holds `storage_worker::SHARED` across
-  `task::spawn`, whose refusal logs. A `peek()` that schedules a refresh from that log tries to take
-  `SHARED` again and deadlocks; `CACHE` and `REFRESH` are released before queue admission.
+  never call `session::peek()` from the log path. `peek()` is a pure read of the cache (it submits
+  nothing, so it can no longer reach `storage_worker` from a log line), and the refill that once hid
+  behind it is the session owner's `RefreshCache` effect; but worker startup holds
+  `storage_worker::SHARED` across `task::spawn`, whose refusal logs, so a log line must not grow
+  a path back into the queue, and the scrubber stays fed by the pushed identities.
 - `rust-modules/base/src/task/blocking.rs` / `watchdog.rs` — frame scopes reject synchronous work.
   Tests keep catchable panics. Release guards log elapsed time once per label; the watchdog logs
   once above 250 ms and once on recovery, polling every 100 ms after the first present.
@@ -1960,14 +1970,28 @@ gone. The remote FIFO's key and `ck:` tokens are safe because every field they s
 to Starfish/ACB, so playback correctness — and every pixel-level and perf question — is only
 observable as behavior on the TV. **Wake the TV first** (`wake-tv` skill) — asleep, every assertion
 fails as "no line found", which reads exactly like a total regression. **The panel rule (the
-owner's standing directive, restated 2026-09-07):** the television's PANEL is **OFF and the sound
-is OFF for EVERY device run** — the playback tiers, the fps scenes, `shot` and capture alike; the
-set is in a living room. The owner's statement is that rendering continues with the LCD off, so an
-fps scene graded under `screen off` is a real measurement; the 2026-09-06 form of this rule (panel
-ON for fps, on the reasoning that `plx_machine::idle` gates presents on what the panel shows) is SUPERSEDED,
-and the one number still owed is a same-session `fps=` comparison of one scene screen-on vs
-screen-off, to be taken at the next device session and written here. `tests/run.py --fps` says so
-in its banner; the command is `tools/tv-session.sh screen off` (a PANEL state, not an app state —
+owner's standing directive, amended 2026-10-24):** the sound is **OFF (muted) for EVERY device run**,
+and the panel is **OFF by default for every device run, `--fps*` and `profile-tv` included** (the set
+is in a living room). The panel is only the backlight: `turnOffScreen` darkens the picture and the
+app keeps presenting at full rate. Nothing in the app reads the panel state (a search of
+`rust-modules/` and `src/` for `tvpower`, `turnOffScreen`, `screenOn` and `getPowerState` finds no app
+code), and `plx_machine::idle` gates presents on the UI's own changes ("nothing on screen changed, so
+don't repaint it"), not on the physical panel. The owner on 2026-10-24: "This is just a backlight …
+keep the screen off". Measured that day on the dev TV (Home `grid-pong` fps scene, release build):
+panel OFF gave 73 presented frames per cycle at 59.9 fps and 9 missed refreshes in cycles 2-60;
+panel ON controls gave 73 frames per cycle at 59.6-59.9 fps and 8, 13 and 14 misses, so the panel
+state changes neither pacing nor misses. `tests/run.py --fps --mock` therefore asserts `screen off`
+before every scene (`--panel on` lights it for a run someone wants to watch). This replaces the
+2026-10 form ("ON for every smoothness / fps run, because a dark panel lets `plx_machine::idle` hold
+presents back"), which that measurement contradicts, and the 2026-09-07 form before it ("panel OFF for fps
+too, rendering continues with the LCD off"), which named the same-session screen-on vs screen-off
+`fps=` comparison as owed — the 2026-10-24 measurement is that comparison. **Capture with the panel
+off:** `shot` (the DISPLAY compositor read) is on record as working: `docs/measurements/
+tv-session-7-2026-09-10.md` ran `screen off` first and got a 1920x1080 DISPLAY capture with real
+pixel values (opener p95 246.9 against a row-mate's 167.0), and `docs/measurements/
+library-all-types-and-fps-2026-09-26.md` checked native captures with the panel off. **Not on
+record:** the live capture stream (`/tmp/plxnative-capture`, the app's own GLES frames) with the
+panel off; check its first frame instead of assuming either way. The command is `tools/tv-session.sh screen off|on` (a PANEL state, not an app state —
 the app keeps running and playback keeps decoding). The sound half is now the same shape of
 command: `tools/tv-session.sh sound off|on|status` calls `com.webos.service.audio/setMuted` and
 reads `getVolume` back to confirm — this is the sanctioned path, so no lane needs

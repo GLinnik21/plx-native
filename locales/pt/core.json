@@ -33,6 +33,7 @@
   "core.preview_domain_buffer": "buffer",
   "core.preview_domain_transport": "falha de transporte",
   "core.preview_domain_transfer_age": "duração da transferência antes da falha",
+  "core.preview_domain_demux_exit": "etapa em que o fluxo multimédia falhou",
   "core.preview_domain_elapsed": "tempo decorrido",
   "core.preview_domain_hls_direction": "sentido HLS",
   "core.preview_domain_delivery_reason": "motivo da entrega",

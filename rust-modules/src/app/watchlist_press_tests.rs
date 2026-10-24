@@ -2,8 +2,9 @@
 //! press table, a plex.tv that cannot be reached, and the tab pulse.
 //!
 //! Like the wiring tests, the store runs over a scripted [`WatchlistIo`] with an inline worker
-//! runner and the catalog store over a scripted [`CatalogIo`]: a landing is a pump away and nothing
-//! here reaches a network or a real account.
+//! runner and the catalog store over a scripted [`CatalogIo`] whose reads the rig runs in the frame
+//! they were emitted (`feed_catalog`): a landing is a pump away and nothing here reaches a network
+//! or a real account.
 
 use super::*;
 use super::test_support::tick;
@@ -208,10 +209,18 @@ pub(super) fn rig_over(script: &Arc<Script>) -> (Dispatcher<AppHost>, Bridge) {
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     *rig.watchlist_for_test() = WatchlistStore::with_io(script.clone()).with_spawn_for_test(inline);
-    rig.stores.catalog = CatalogStore::with_io(Arc::new(Discover)).with_spawn_for_test(inline);
+    rig.stores.catalog = CatalogStore::with_io(Arc::new(Discover));
     super::nav_root(&mut d, AppArg::Home);
     super::frame(&mut d, &mut rig, tick(0), vec![]);
     (d, rig)
+}
+
+/// The catalog page's feed, then its read (if the feed emitted one) run on this thread, so the
+/// answer is in the mailbox for the next frame's pass, as an inline worker's was. Only the catalog's
+/// jobs run: a Detail fetch another test is holding stays parked.
+pub(super) fn feed_catalog(rig: &mut Bridge, d: &mut Dispatcher<AppHost>) {
+    rig.catalog_feed(d);
+    rig.run_held_store_jobs_of_for_test(plx_data::stores::StoreId::Catalog);
 }
 
 /// Land what the workers brought and feed the pages, a few frames.
@@ -219,7 +228,7 @@ pub(super) fn settle(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, from: u32) {
     for i in 0..6 {
         rig.watchlist_for_test().pump();
         rig.watchlist_feed(d);
-        rig.catalog_feed(d);
+        feed_catalog(rig, d);
         super::frame(d, rig, tick(from + i), vec![]);
     }
 }

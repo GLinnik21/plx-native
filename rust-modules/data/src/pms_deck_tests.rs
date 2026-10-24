@@ -96,7 +96,7 @@ fn expected(listings: &[&Listing]) -> Vec<String> {
 fn move_deck(owner: &mut Owner, listings: &[&Listing], before: bool, fail: Option<usize>) {
     let mut held = Vec::new();
     let _ = request_deck_page(&mut owner.state, &owner.adapter, before, &BrowseScope::standalone(),
-        &mut |request| { held.push(request); true });
+        &mut |request| { held.push(request); });
     for request in held {
         let at = owner.state.srcs.iter().position(|s| s.sid == request.sid).unwrap();
         let listing = listings[at];
@@ -109,7 +109,7 @@ fn move_deck(owner: &mut Owner, listings: &[&Listing], before: bool, fail: Optio
             };
             read.ok().map(|()| SourceBuild { lane, ..SourceBuild::default() })
         };
-        let landing = request.complete(build);
+        let landing = request.complete_for_test(build);
         let landing = record::decode(record::encode(&landing), |_| plx_plex::plex::client_for(landing.sid)).unwrap();
         let _ = super::land(&mut owner.state, &owner.adapter, &landing);
     }
@@ -215,7 +215,7 @@ fn read_in_flight(owner: &mut Owner, listings: &[&Listing]) -> Vec<(HubRequest, 
     let mut held = Vec::new();
     for _ in 0..10 {
         let _ = request_deck_page(&mut owner.state, &owner.adapter, false, &BrowseScope::standalone(),
-            &mut |request| { held.push(request); true });
+            &mut |request| { held.push(request); });
         if !held.is_empty() { break; }
     }
     assert!(!held.is_empty(), "no move needed a read");
@@ -230,7 +230,7 @@ fn read_in_flight(owner: &mut Owner, listings: &[&Listing]) -> Vec<(HubRequest, 
 
 fn land_all(owner: &mut Owner, answers: Vec<(HubRequest, Option<SourceBuild>)>) {
     for (request, build) in answers {
-        let _ = super::land(&mut owner.state, &owner.adapter, &request.complete(build));
+        let _ = super::land(&mut owner.state, &owner.adapter, &request.complete_for_test(build));
     }
 }
 
@@ -339,12 +339,17 @@ impl Drop for Loopback {
     }
 }
 
-/// A move whose reads go out through the real worker path: a spawned fetch, the HTTP client, the
+/// A move whose reads go out through the real worker path: a launched job, the HTTP client, the
 /// landing the worker posts. Waits for every worker, then lands what they left.
 fn move_deck_over_the_wire(owner: &mut Owner, before: bool) {
     let adapter = Arc::clone(&owner.adapter);
     let _ = request_deck_page(&mut owner.state, &adapter, before, &BrowseScope::standalone(),
-        &mut |request| spawn_fetch(&adapter, request));
+        &mut |request| {
+            let client = request.client_for_test();
+            let job = Job { addr: hubs_addr(request.seq), req: request };
+            let started = launch_hubs_job(job, HubsPort::of(&adapter), client, |work| { std::thread::spawn(work); true });
+            assert!(started, "a worker for the read");
+        });
     let started = std::time::Instant::now();
     let mut landings = Vec::new();
     while owed_count_for_test(&adapter) > 0 {

@@ -156,7 +156,7 @@ fn apply(
                 Some(stores.browse_run(command))
             }
             Fx::App(AppFx::Store(_, StoreCmd::Hubs(command))) => {
-                Some(stores.hubs.run_with_directory(command, directory).changed)
+                Some(stores.hubs.run_with_directory(command, directory, &plx_data::pms::registry_keys_for_test()).changed)
             }
             Fx::App(AppFx::Store(_, StoreCmd::Metadata(command))) => {
                 Some(stores.metadata.run(command))
@@ -168,7 +168,7 @@ fn apply(
                 Some(stores.search_run(command, directory))
             }
             Fx::App(AppFx::Store(_, StoreCmd::ViewState(command))) => {
-                Some(stores.viewstate_run(command, directory))
+                Some(stores.viewstate_run(command, directory, &plx_data::pms::registry_keys_for_test()).changed)
             }
             _ => None,
         })

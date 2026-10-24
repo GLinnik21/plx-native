@@ -365,10 +365,11 @@ impl Write {
 }
 
 /// One queued write. Identity only — the `&'static Client` is resolved in [`kick`], on the main
-/// thread, at the moment the worker is spawned. `pms::kick`'s rule ("capture at the spawn site")
-/// says the worker must never ask which server is current; resolving a SLOT there is that rule, and
-/// it also means a share whose registration went away while this sat in the queue is turned away
-/// with a log line instead of being sent to whatever now occupies the slot.
+/// thread, at the moment the worker is spawned. `pms::kick_with`'s rule ("capture at the step":
+/// decide on the main thread) says the worker must never ask which server is current; resolving a
+/// SLOT there is that rule, and it also means a share whose registration went away while this sat
+/// in the queue is turned away with a log line instead of being sent to whatever now occupies the
+/// slot.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct RequestId(u64);
 
@@ -471,9 +472,10 @@ impl ViewStateState {
     }
 
 /// Ask the item's server to change `(sid, rk)`'s view state, and update every surface that describes
-/// it AT ONCE. **MAIN THREAD, NON-BLOCKING.** Returns false when the write never left — the one case
-/// being a server slot that holds no client, which is a dropped PMS write and says so in the log
-/// rather than being the one that goes unrecorded.
+/// it AT ONCE. **MAIN THREAD, NON-BLOCKING.** `changed` is false when the write never left — the one
+/// case being a server slot that holds no client, which is a dropped PMS write and says so in the log
+/// rather than being the one that goes unrecorded. The `endpoints` are the ones the optimistic edit's
+/// Hubs step settled (see [`publish_view`]); the caller carries them.
 ///
 /// A Detail page the write touched is not named here: the read-back of the item (and of its season
 /// and show) lands the server's word, and every Detail page on the stack that shows one of those
@@ -499,7 +501,7 @@ impl ViewStateState {
     collection: &mut dyn FnMut(crate::stores::collection::CollectionCmd) -> bool,
     search: &mut dyn FnMut(crate::stores::search::SearchCmd) -> bool,
     metadata: &mut dyn FnMut(crate::stores::metadata::MetadataCmd) -> bool,
-) -> bool {
+) -> crate::stores::StoreOutcome {
     // `client_for`, never `client()`: the item may live on a share, and a scrobble sent to the wrong
     // machine marks a DIFFERENT film watched there (both servers number their items from 1). None is
     // a slot that is not registered, where `client()` panics — a view-state write is exactly the
@@ -510,14 +512,14 @@ impl ViewStateState {
             w.name(),
             sid.raw()
         ));
-        return false;
+        return crate::stores::StoreOutcome::default();
     }
     // OPTIMISTIC, before the request: the press must land on the panel now, not one WAN round trip
     // from now. Only THIS copy — the other sources' keys are not known until the fan-out resolves
     // them, which is what [`pump`] finishes the job with.
     let change = ViewChange { sid, rk: rk.to_string(), scope: scope.clone(), fact: w.fact() };
     let seq = self.ledger.record(&change.at(), change.edit());
-    publish_view(change, browse, hubs, person, collection, search, metadata);
+    let endpoints = publish_view(change, browse, hubs, person, collection, search, metadata);
     self.coalesce(sid, rk, w);
     let id = self.mint_request_id();
     self.queue.push(Req {
@@ -531,7 +533,7 @@ impl ViewStateState {
         origin_done: false,
     });
     self.kick(adapter);
-    true
+    crate::stores::StoreOutcome { changed: true, endpoints }
     }
 }
 
@@ -562,9 +564,11 @@ pub fn publish_view(
     collection: &mut dyn FnMut(crate::stores::collection::CollectionCmd) -> bool,
     search: &mut dyn FnMut(crate::stores::search::SearchCmd) -> bool,
     metadata: &mut dyn FnMut(crate::stores::metadata::MetadataCmd) -> bool,
-) {
+) -> crate::stores::EndpointRefreshSet {
     let (at, edit) = (change.at(), change.edit());
-    let _ = hubs(crate::stores::hubs::HubsCmd::ApplyView { at: at.clone(), edit });
+    // A Hubs step settles the launches the runner refused since the last one, whichever command it
+    // runs, so this edit's step can owe endpoint refreshes: they leave with the caller.
+    let endpoints = hubs(crate::stores::hubs::HubsCmd::ApplyView { at: at.clone(), edit }).endpoints;
     browse(crate::stores::browse::BrowseCmd::ApplyView { at: at.clone(), edit });
     // The Library's own deck is a different shelf on a different screen, and the one place a
     // deck removal is reachable from besides Home; no other store has a deck. Watched, Facts and
@@ -578,6 +582,7 @@ pub fn publish_view(
         collection(crate::stores::collection::CollectionCmd::ApplyView { at, edit });
     }
     plx_machine::idle::invalidate(); // the tick/veil/bar just changed with no spring behind it
+    endpoints
 }
 
 /// Drop any QUEUED write for the same item and toggle — see [`Write::family`]. The write already in
@@ -754,7 +759,7 @@ pub fn pump_with_gate(
             let change = ViewChange { sid: *osid, rk: ork.clone(), scope, fact: r.w.fact() };
             // the server took this copy already, so its number is the landing's
             self.ledger.record(&change.at(), change.edit());
-            publish_view(change, browse, hubs, person, collection, search, metadata);
+            endpoints.merge(publish_view(change, browse, hubs, person, collection, search, metadata));
         }
         // The refresh is owed whether or not the server took it: on success it is the reconcile,
         // and on failure it is what puts the optimistic edit back to whatever the server really
@@ -921,10 +926,10 @@ type Answer = (ServerId, Option<Vec<String>>);
 /// retry the write that has already gone out, and a source that never answers costs one log line.
 ///
 /// `c` is the item's OWN client — the one [`kick`] captured on the main thread and the write itself
-/// went out on, handed down rather than re-resolved from `sid` here. That is `pms::kick`'s
-/// capture-at-the-spawn-site rule (a worker never asks the registry about the server it was given),
-/// and it also keeps [`resolved_guid`]'s failure honest: a slot re-pointed or revoked mid-write
-/// cannot turn into a log line claiming the item has no portable id.
+/// went out on, handed down rather than re-resolved from `sid` here. That is `pms::kick_with`'s
+/// capture-at-the-step rule (decide on the main thread; a worker never asks the registry about the
+/// server it was given), and it also keeps [`resolved_guid`]'s failure honest: a slot re-pointed or
+/// revoked mid-write cannot turn into a log line claiming the item has no portable id.
 fn fan_out(
     c: &plx_plex::plex::Client,
     sid: ServerId,
@@ -1069,7 +1074,7 @@ pub fn run(
     collection: &mut dyn FnMut(crate::stores::collection::CollectionCmd) -> bool,
     search: &mut dyn FnMut(crate::stores::search::SearchCmd) -> bool,
     metadata: &mut dyn FnMut(crate::stores::metadata::MetadataCmd) -> bool,
-) -> bool {
+) -> crate::stores::StoreOutcome {
     use crate::stores::viewstate::ViewStateCmd;
     match cmd {
         ViewStateCmd::Request { sid, rk, write, scope, guid } => {
@@ -1077,7 +1082,7 @@ pub fn run(
         }
         ViewStateCmd::Reset => {
             self.reset();
-            true
+            crate::stores::StoreOutcome::changed(true)
         }
     }
 }
@@ -1123,7 +1128,7 @@ mod tests {
             &mut |cmd| { collection.push(cmd); true },
             &mut |cmd| { search.push(cmd); true },
             &mut |cmd| metadata_store.run(cmd),
-        ));
+        ).changed);
 
         assert!(matches!(hubs.as_slice(), [crate::stores::hubs::HubsCmd::ApplyView {
             at, edit: ViewEdit::Watched(true)
@@ -1187,7 +1192,7 @@ mod tests {
         let directory = crate::stores::browse::DirectorySnapshot::default();
         assert!(stores.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
             sid, rk: "S".into(), write: Write::Watched, scope: Scope::Show, guid: String::new(),
-        }, directory.view()));
+        }, directory.view(), &crate::pms::registry_keys_for_test()).changed);
         let marks = search_marks(&stores);
         let mark = |rk: &str| marks.iter().find(|m| m.0 == rk).unwrap().clone();
         assert_eq!(mark("S"), ("S".into(), true, false, 0), "the show row itself");
@@ -1209,7 +1214,7 @@ mod tests {
         let before = stores.view_ledger.stamp();
         assert!(stores.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
             sid, rk: "S".into(), write: Write::Watched, scope: Scope::Show, guid: String::new(),
-        }, directory.view()));
+        }, directory.view(), &crate::pms::registry_keys_for_test()).changed);
         let seen = stores.view_ledger.since(before);
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].0, ViewAt { sid, rk: "S".into(), scope: Scope::Show });
@@ -1256,7 +1261,7 @@ mod tests {
         }
         assert!(stores.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
             sid, rk: "S".into(), write: Write::Unwatched, scope: Scope::Show, guid: String::new(),
-        }, directory.view()));
+        }, directory.view(), &crate::pms::registry_keys_for_test()).changed);
         for (rk, watched, unwatched, _) in search_marks(&stores).into_iter().filter(|m| m.0 != "other") {
             assert!(!watched && unwatched, "{rk} reads unwatched after its show was marked unwatched");
         }
@@ -1272,7 +1277,7 @@ mod tests {
         assert!(stores.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
             sid, rk: "S1".into(), write: Write::Watched,
             scope: Scope::Season { show_rk: "S".into(), index: 1 }, guid: String::new(),
-        }, directory.view()));
+        }, directory.view(), &crate::pms::registry_keys_for_test()).changed);
         let marks = search_marks(&stores);
         let watched = |rk: &str| marks.iter().find(|m| m.0 == rk).unwrap().1;
         assert!(watched("e11") && watched("e12"), "season 1's episodes");
@@ -1301,7 +1306,7 @@ mod tests {
             write: Write::Watched,
             scope: Scope::Leaf,
             guid: String::new(),
-        }, directory.view()));
+        }, directory.view(), &crate::pms::registry_keys_for_test()).changed);
 
         assert!(!selected.browse.borrow_mut().listing_snapshot().view().item(0).unwrap().unwatched,
             "the selected owner changes before the command returns");
@@ -1362,12 +1367,47 @@ mod tests {
         let mut stores = crate::stores::Stores::default();
         stores.viewstate.borrow_mut().owe_hubs_refresh_for_test();
         let directory = crate::stores::browse::DirectorySnapshot::default();
-        let endpoints = crate::pms::with_refused_fetches_for_test(||
-            stores.viewstate_pump(directory.view()));
-        assert_eq!(endpoints.iter().map(|r| r.sid).collect::<Vec<_>>(), [sid]);
-        assert_eq!(stores.viewstate_pump(directory.view()).iter().count(), 0,
+        let endpoints = stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test());
+        stores.hubs.refuse_jobs_for_test(); // the runner starts nothing
+        assert_eq!(endpoints.iter().count(), 0, "a refused refetch is settled by the next Hubs step");
+        let settled = stores.hubs.tick_with_directory(0.0, directory.view(), &crate::pms::registry_keys_for_test());
+        assert_eq!(settled.endpoints.iter().map(|r| r.sid).collect::<Vec<_>>(), [sid]);
+        assert_eq!(stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test()).iter().count(), 0,
             "refetch is consumed once");
                 plx_plex::plex::reset_servers_for_test();
+    }
+
+    /// A launch the runner refused is settled by the next Hubs step, and a view edit's `ApplyView` is
+    /// such a step: the refreshes it owes leave with the call that ran it, not into `let _`.
+    #[test]
+    fn a_refusal_settled_by_a_view_edit_step_is_carried_out_of_the_press_and_the_stop_patch() {
+        let _g = plx_base::testlock::serial();
+        let _session = plx_plex::plex::session::TempSession::new("endpoint-view-edit");
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test("endpoint-view-edit", "127.0.0.1", 9, "synthetic", "cid");
+        let keys = crate::pms::registry_keys_for_test();
+        let directory = crate::stores::browse::DirectorySnapshot::default();
+        let refused_refetch = |stores: &mut crate::stores::Stores| {
+            let out = stores.hubs.run_with_directory(crate::stores::hubs::HubsCmd::RefetchHubs, directory.view(), &keys);
+            assert!(out.endpoints.is_empty(), "the refusal is the runner's answer, not the kick's");
+            stores.hubs.refuse_jobs_for_test();
+        };
+        let sids = |endpoints: crate::stores::EndpointRefreshSet| endpoints.iter().map(|r| r.sid).collect::<Vec<_>>();
+
+        let mut stores = crate::stores::Stores::default();
+        refused_refetch(&mut stores);
+        let press = stores.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
+            sid, rk: "7".into(), write: Write::Watched, scope: Scope::Leaf, guid: String::new(),
+        }, directory.view(), &keys);
+        assert!(press.changed);
+        assert_eq!(sids(press.endpoints), [sid], "the press's ApplyView step settled the refusal");
+
+        let mut stores = crate::stores::Stores::default();
+        refused_refetch(&mut stores);
+        let stop = StopRecord { sid, rk: "7".into(), pos_ms: 30_000, dur_ms: 60_000, ok: false, was_watched: false };
+        assert_eq!(sids(stores.stops_landed(vec![stop], directory.view(), &keys)), [sid],
+            "the stop patch's ApplyView step settled the refusal");
+        plx_plex::plex::reset_servers_for_test();
     }
     use super::*;
 
@@ -1781,7 +1821,7 @@ mod tests {
             ..Default::default()
         }));
 
-        publish_view(ViewChange { sid: SRV_A, rk: "4".into(), scope: Scope::Leaf, fact: ViewFact::Watched(true) },
+        let _ = publish_view(ViewChange { sid: SRV_A, rk: "4".into(), scope: Scope::Leaf, fact: ViewFact::Watched(true) },
             &mut |_| false,
             &mut |_cmd| crate::stores::StoreOutcome::default(), &mut |_| false, &mut |_| false, &mut |_| false,
             &mut |cmd| metadata_store.run(cmd));
@@ -1790,7 +1830,7 @@ mod tests {
             "A's 4 is not B's 4"
         );
 
-        publish_view(ViewChange { sid: SRV_B, rk: "4".into(), scope: Scope::Leaf, fact: ViewFact::Watched(true) },
+        let _ = publish_view(ViewChange { sid: SRV_B, rk: "4".into(), scope: Scope::Leaf, fact: ViewFact::Watched(true) },
             &mut |_| false,
             &mut |_cmd| crate::stores::StoreOutcome::default(), &mut |_| false, &mut |_| false, &mut |_| false,
             &mut |cmd| metadata_store.run(cmd));
@@ -1813,7 +1853,7 @@ mod tests {
         use crate::stores::{collection::CollectionCmd, metadata::MetadataCmd, person::PersonCmd, search::SearchCmd};
         let reached = |fact| {
             let (mut p, mut c, mut s, mut m) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-            publish_view(ViewChange { sid: SRV_A, rk: "4".into(), scope: Scope::Leaf, fact },
+            let _ = publish_view(ViewChange { sid: SRV_A, rk: "4".into(), scope: Scope::Leaf, fact },
                 &mut |_| false,
                 &mut |_cmd| crate::stores::StoreOutcome::default(),
                 &mut |cmd| { if let PersonCmd::ApplyView { edit, .. } = cmd { p.push(edit) } false },

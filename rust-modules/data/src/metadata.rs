@@ -156,6 +156,12 @@ pub struct MetadataState {
     /// [`cached_playing`] refuses it for this item until a page read after the playback lands.
     played_since_load: Option<(plx_plex::plex::ServerId, String)>,
     alt: AltStore,
+    /// The IO this owner has asked the application to start and the application has not yet taken
+    /// (`MetadataStore::take_jobs`): one [`crate::stores::StoreJob::Detail`] per accepted detail
+    /// request. The owner never starts the work itself, so no thread, clock or network read happens
+    /// in the step that asks. A job taken is a job owed to its runner: the application's `Bridge`
+    /// starts each one in the same call that stepped the store (`app::adapters::stores`).
+    pub(crate) jobs: Vec<crate::stores::StoreJob>,
 }
 
 /// The `Arc`'d worker half of one Metadata owner: the detail/season/alt-sources landing mailboxes,
@@ -183,10 +189,6 @@ pub struct MetadataAdapter {
     /// The Related tail window read in flight and landed ([`want_related`]).
     rel_pages: std::sync::Mutex<RelPages>,
     tracker: std::sync::Mutex<record::Tracker>,
-    /// TEST ONLY: the detail fetches [`request_detail`] admitted, parked here instead of on a
-    /// worker thread — see [`MetadataAdapter::run_held_detail_fetches_for_test`].
-    #[cfg(any(test, feature = "test-support"))]
-    held_detail: std::sync::Mutex<Vec<(plx_plex::plex::ServerId, String, u32, Option<i64>)>>,
 }
 
 impl Default for MetadataAdapter {
@@ -207,52 +209,7 @@ impl Default for MetadataAdapter {
             ep_pages: std::sync::Mutex::new(EpPages::default()),
             rel_pages: std::sync::Mutex::new(RelPages::default()),
             tracker: std::sync::Mutex::new(record::Tracker::new(false)),
-            #[cfg(any(test, feature = "test-support"))]
-            held_detail: std::sync::Mutex::new(Vec::new()),
         }
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-impl MetadataAdapter {
-    /// Run every detail fetch [`request_detail`] admitted and has not yet run, on THIS thread,
-    /// through the production completion path (`finish_detail_fetch` over `fetch_full`); return
-    /// how many ran. Their landings are queued for the next `pump_detail`.
-    ///
-    /// Under `cfg(test)` a detail request never starts a worker thread. It did until 2026-09-19,
-    /// and every test that drove a request through a real `Bridge` raced that thread: a fetch
-    /// for an unknown server returns in microseconds, so a fast run settled the request before
-    /// an "in flight" assertion (`Some(false)` where `Some(true)` was pinned), while a loaded CI
-    /// runner had not settled it after the hundred `yield_now`s a drain helper spun
-    /// (`Some(true)` where `Some(false)` was pinned). Both halves failed intermittently in
-    /// `app::content::library_publication_tests`. Holding the CURRENT fetch until a test asks
-    /// makes "in flight" and "settled" states the test chooses rather than the scheduler.
-    pub fn run_held_detail_fetches_for_test(&self) -> usize {
-        self.run_held_detail_fetches(|_| true)
-    }
-
-    /// The superseded half only: fetches whose generation is no longer current, whose landings
-    /// `pump_detail` discards anyway. [`begin_detail_request`] runs these right after it
-    /// supersedes them, BEFORE admitting the new request, so a superseded fetch hands back its
-    /// admission reservation — as the thread it replaces did, well inside a test's next step —
-    /// instead of holding one of the landing's four in-flight slots until a test drains it.
-    fn run_superseded_detail_fetches(&self) -> usize {
-        let current = self.detail_gen.load(std::sync::atomic::Ordering::SeqCst);
-        self.run_held_detail_fetches(|gen| gen != current)
-    }
-
-    fn run_held_detail_fetches(&self, pick: impl Fn(u32) -> bool) -> usize {
-        let run: Vec<_> = {
-            let mut held = self.held_detail.lock().unwrap_or_else(|e| e.into_inner());
-            let (run, keep) = std::mem::take(&mut *held).into_iter().partition(|(_, _, gen, _)| pick(*gen));
-            *held = keep;
-            run
-        };
-        let n = run.len();
-        for (sid, rk, gen, prefer) in run {
-            finish_detail_fetch(self, sid, &rk, gen, || fetch_full(sid, &rk, prefer));
-        }
-        n
     }
 }
 
@@ -998,6 +955,9 @@ pub struct Episode {
     pub rating: String,
     pub vcodec: String, // Media[0].videoCodec (for the direct-play/transcode decision)
     pub acodec: String, // Media[0].audioCodec
+    /// Every version, when the episode has more than one (`pms::versions_of`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub versions: Vec<crate::pms::MediaVersion>,
 }
 
 /// One slot per [`Spot`] section id. Section 6 is extras, 7 the collection shelf. Do not shrink
@@ -1662,9 +1622,9 @@ pub struct Detail {
     pub acodec: String, // Media[0].audioCodec
     #[serde(with = "record::float_bits")]
     pub video_fps: f64, // video Stream frameRate (0 = unknown); feeds the Load esInfo
-    // ---- the PRIMARY version's technical fields (plex::Metadata::primary_media = Media[0], NOT a
-    // best-of pick — a multi-version item has more, and choosing among them needs a version picker
-    // that does not exist yet). For a SHOW these are borrowed from its first episode, like the
+    // ---- the PRIMARY version's technical fields (plex::Metadata::media_version(None) = Media[0], NOT a
+    // best-of pick — a multi-version item has more, and the user chooses among them in the Play Version
+    // picker, by `MediaId`). For a SHOW these are borrowed from its first episode, like the
     // About footer's audio/subtitle lists. `bitrate`/`width`/`height` are unused by the UI today
     // and carried for the video-quality ladder ("26.1 Mbps 4K (Original)").
     pub video_resolution: String, // "4k" | "1080" | "720" | "sd" — the hero's media badge
@@ -1761,6 +1721,10 @@ pub struct Detail {
     /// Rating key of the picker winner inside [`Self::extras`]. Empty when there is none.
     #[serde(default)]
     pub trailer_rk: String,
+    /// Every version of a movie or episode that has more than one (`pms::versions_of`), for the
+    /// hero's Play Version disc; empty for a single-version item and for a show or season.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub versions: Vec<crate::pms::MediaVersion>,
 }
 
 impl Detail {
@@ -2282,7 +2246,7 @@ fn dev_source() -> Option<&'static str> {
 
 fn fetch_detail(sid: plx_plex::plex::ServerId, rk: &str) -> Option<(Detail, String)> {
     let it = plx_plex::plex::client_for(sid)?.metadata(rk)?;
-    let media0 = it.primary_media();
+    let media0 = it.media_version(None).map(|(_, m)| m);
     // one read, both fields (see `Detail::blur`)
     let blur = it.ultra_blur_colors.and_then(|u| u.corners());
     let mut d = Detail {
@@ -2311,7 +2275,7 @@ fn fetch_detail(sid: plx_plex::plex::ServerId, rk: &str) -> Option<(Detail, Stri
             it.view_count > 0
         },
         // empty for a show (no Media on the show container)
-        part: it.first_part().map(|p| p.key.clone()).unwrap_or_default(),
+        part: it.default_part().map(|p| p.key.clone()).unwrap_or_default(),
         vcodec: media0.map(|m| m.video_codec.clone()).unwrap_or_default(),
         acodec: media0.map(|m| m.audio_codec.clone()).unwrap_or_default(),
         video_fps: 0.0, // set from the video Stream by parse_streams below
@@ -2369,6 +2333,7 @@ fn fetch_detail(sid: plx_plex::plex::ServerId, rk: &str) -> Option<(Detail, Stri
         ratings: convert_ratings(&it),
         extras: Vec::new(),
         trailer_rk: String::new(),
+        versions: if it.kind == "movie" || it.kind == "episode" { crate::pms::versions_of(&it) } else { Vec::new() },
     };
     // audio/subtitle streams (movies carry Media/Part/Stream; a show does not — its
     // episodes do, so load_detail backfills a show's streams from its first episode).
@@ -2577,10 +2542,10 @@ mod convert_streams_tests {
 
 /// parse an item's Media[0].Part[0].Stream[] into d.audio / d.subs (the About footer), plus that
 /// same version's technical fields (resolution/size/bitrate — the hero's media badge). Both ride
-/// the ONE version (see `plex::Metadata::primary_media`), and both are borrowed from a show's
+/// the ONE version (see `plex::Metadata::media_version`), and both are borrowed from a show's
 /// first episode by the same call in `fetch_item_streams`, so they can't describe different files.
 fn parse_streams(it: &plx_plex::plex::Metadata, d: &mut Detail) {
-    if let Some(m) = it.primary_media() {
+    if let Some(m) = it.media_version(None).map(|(_, m)| m) {
         d.video_resolution = m.video_resolution.clone();
         d.width = m.width;
         d.height = m.height;
@@ -2588,7 +2553,7 @@ fn parse_streams(it: &plx_plex::plex::Metadata, d: &mut Detail) {
         d.container = m.container.clone();
         d.aspect_ratio = m.aspect_ratio;
     }
-    if let Some(p) = it.first_part() {
+    if let Some(p) = it.default_part() {
         d.file = p.file.clone();
         d.size = p.size;
         // The PART's container wins where it has one — a version can hold parts in different
@@ -2737,17 +2702,69 @@ fn cached_playing(state: &MetadataState, sid: plx_plex::plex::ServerId, rk: &str
 /// `sid` names the server `rk` is a key on. It runs on the resolve worker, so the server must
 /// arrive by value: `client_opt()` here would fetch whichever server is CURRENT, and a ratingKey
 /// that also exists there would come back with a different film's stream list.
-pub fn fetch_playing_item(sid: plx_plex::plex::ServerId, rk: &str) -> Option<PlayingItem> {
+///
+/// `want` is the version the viewer picked (`None`: the default). The store is built from THAT
+/// version's part, and the [`PlayedVersion`] beside it names the part key, codecs and
+/// `mediaIndex` the route must use with it, so no reader mixes version 0's part with version N's
+/// streams. A picked version the answer no longer lists falls back to the default with no
+/// `PlayedVersion`, and the caller logs it.
+pub fn fetch_playing_item(
+    sid: plx_plex::plex::ServerId,
+    rk: &str,
+    want: Option<plx_plex::plex::MediaId>,
+) -> Option<(PlayingItem, Option<PlayedVersion>)> {
     if rk.is_empty() {
         return None;
     }
     let it = plx_plex::plex::client_for(sid).and_then(|c| c.metadata(rk));
-    Some(playing_item_from(sid, rk, it.as_ref()))
+    Some(playing_version_from(sid, rk, it.as_ref(), want))
 }
 
-/// The conversion half of [`fetch_playing_item`], pure so the parse is testable without a server:
-/// the played item's streams, markers, chapters, frame size and type, given the server's item.
+/// The version a play resolved to: its position in `Media[]` (the transcoder's `mediaIndex`), its
+/// identity and the part and codecs a play of it is built from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlayedVersion {
+    pub index: usize,
+    pub id: plx_plex::plex::MediaId,
+    pub part: String,
+    pub vcodec: String,
+    pub acodec: String,
+}
+
+/// [`fetch_playing_item`]'s pure half.
+pub fn playing_version_from(
+    sid: plx_plex::plex::ServerId,
+    rk: &str,
+    it: Option<&plx_plex::plex::Metadata>,
+    want: Option<plx_plex::plex::MediaId>,
+) -> (PlayingItem, Option<PlayedVersion>) {
+    let picked = want.and_then(|id| it.and_then(|it| it.media_version(Some(id))));
+    let media = picked.map(|(_, m)| m).or_else(|| it.and_then(|it| it.media_version(None)).map(|(_, m)| m));
+    let played = picked.map(|(index, m)| PlayedVersion {
+        index,
+        id: m.id,
+        part: m.part.first().map(|p| p.key.clone()).unwrap_or_default(),
+        vcodec: m.video_codec.clone(),
+        acodec: m.audio_codec.clone(),
+    });
+    (playing_item_of(sid, rk, it, media), played)
+}
+
+/// The conversion half of [`fetch_playing_item`] for the default version, pure so the parse is
+/// testable without a server.
+#[cfg(test)]
 fn playing_item_from(sid: plx_plex::plex::ServerId, rk: &str, it: Option<&plx_plex::plex::Metadata>) -> PlayingItem {
+    playing_version_from(sid, rk, it, None).0
+}
+
+/// The played item's streams, markers, chapters, frame size and type, given the server's item
+/// and the version being played.
+fn playing_item_of(
+    sid: plx_plex::plex::ServerId,
+    rk: &str,
+    it: Option<&plx_plex::plex::Metadata>,
+    media: Option<&plx_plex::plex::Media>,
+) -> PlayingItem {
     // Markers and chapters hang off the ITEM, streams off its first Part — so a part-less response
     // still yields both of those instead of discarding all three. `Client::metadata` already sends
     // `includeChapters=1` (plex/library.rs), so the Chapter[] is on the wire either way: taking it
@@ -2760,21 +2777,17 @@ fn playing_item_from(sid: plx_plex::plex::ServerId, rk: &str, it: Option<&plx_pl
         .as_ref()
         .map(|it| convert_chapters(&it.chapter))
         .unwrap_or_default();
-    let st = it
-        .as_ref()
-        .and_then(|it| it.first_part().map(|p| convert_streams(&p.stream)))
+    let st = media
+        .and_then(|m| m.part.first().map(|p| convert_streams(&p.stream)))
         .unwrap_or_default();
     let (audio, subs, video_fps, dovi, hdr) = (st.audio, st.subs, st.fps, st.dovi, st.hdr);
     let show_rk = it
         .as_ref()
         .map(|it| it.grandparent_rating_key.clone())
         .unwrap_or_default();
-    // the frame size rides the same PRIMARY version the streams come from (route.rs's
+    // the frame size rides the same version the streams come from (route.rs's
     // direct-play gate tests it against the device bound — see the field doc)
-    let (width, height, bitrate) = it
-        .as_ref()
-        .and_then(|it| it.primary_media().map(|m| (m.width, m.height, m.bitrate)))
-        .unwrap_or((0, 0, 0));
+    let (width, height, bitrate) = media.map_or((0, 0, 0), |m| (m.width, m.height, m.bitrate));
     let kind = it.map(|it| it.kind.clone()).unwrap_or_default();
     PlayingItem {
         sid,
@@ -3314,7 +3327,7 @@ fn episode_window(mc: &plx_plex::plex::MediaContainer, start: usize) -> Vec<Epis
 /// derivation nothing can exercise is how `viewCount` came to be parsed at
 /// `plex/models.rs` and then dropped on the floor here for the whole life of the episode row.
 fn convert_episode(x: &plx_plex::plex::Metadata) -> Episode {
-    let media0 = x.media.first();
+    let media0 = x.media_version(None).map(|(_, m)| m);
     Episode {
         rk: x.rating_key.clone(),
         index: x.index,
@@ -3329,10 +3342,11 @@ fn convert_episode(x: &plx_plex::plex::Metadata) -> Episode {
         // the same rule `fetch_detail` applies to a movie. (A show/season instead compares
         // `viewedLeafCount` to `leafCount`; an episode is a leaf and has neither.)
         watched: x.view_count > 0,
-        part: x.first_part().map(|p| p.key.clone()).unwrap_or_default(),
+        part: x.default_part().map(|p| p.key.clone()).unwrap_or_default(),
         rating: x.content_rating.clone(),
         vcodec: media0.map(|m| m.video_codec.clone()).unwrap_or_default(),
         acodec: media0.map(|m| m.audio_codec.clone()).unwrap_or_default(),
+        versions: crate::pms::versions_of(x),
     }
 }
 
@@ -3342,11 +3356,11 @@ fn convert_extra(x: &plx_plex::plex::Metadata) -> Extra {
         title: x.title.clone(),
         subtype: x.subtype.clone(),
         extra_type: x.extra_type,
-        part: x.first_part().map(|p| p.key.clone()).unwrap_or_default(),
-        vcodec: x.primary_media().map(|m| m.video_codec.clone()).unwrap_or_default(),
-        acodec: x.primary_media().map(|m| m.audio_codec.clone()).unwrap_or_default(),
+        part: x.default_part().map(|p| p.key.clone()).unwrap_or_default(),
+        vcodec: x.media_version(None).map(|(_, m)| m.video_codec.clone()).unwrap_or_default(),
+        acodec: x.media_version(None).map(|(_, m)| m.audio_codec.clone()).unwrap_or_default(),
         dur_ms: x.duration,
-        bitrate: x.primary_media().map(|m| m.bitrate).unwrap_or(0),
+        bitrate: x.media_version(None).map(|(_, m)| m.bitrate).unwrap_or(0),
         thumb: x.thumb.clone(),
     }
 }
@@ -3366,7 +3380,7 @@ fn is_trailer_meta(x: &plx_plex::plex::Metadata) -> bool {
 }
 
 fn playable_trailer_meta(x: &plx_plex::plex::Metadata) -> bool {
-    is_trailer_meta(x) && x.first_part().is_some_and(|p| !p.key.is_empty())
+    is_trailer_meta(x) && x.default_part().is_some_and(|p| !p.key.is_empty())
 }
 
 /// Picker winner: a playable trailer, preferring `primaryExtraKey`, else first in server order.
@@ -3650,11 +3664,12 @@ fn selected_season_number(state: &MetadataState, sid: plx_plex::plex::ServerId, 
 /// 2 PMS round-trips for a movie, 5 for a show.
 ///
 /// PURE NETWORK + PARSING — it touches no `static mut`, which is what let it run either on the
-/// main thread or on a worker ([`request_detail`]) while a synchronous caller still existed
-/// (phase 12/D7 deleted the last one, `load_detail_now`; see that deletion's note below). Keep it
+/// main thread or on a worker (the app's `StoreRunner`, from the job [`request_detail`] emits)
+/// while a synchronous caller still existed (phase 12/D7 deleted the last one, `load_detail_now`;
+/// see that deletion's note below). Keep it
 /// that way: installing the result is the caller's job, and on the async path that must happen on
 /// the main thread (see the `DETAIL_LANDING`/`land_detail` note).
-fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) -> Option<Detail> {
+pub fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) -> Option<Detail> {
     // `ms=` is the whole chain's wall clock. It is the exact cost `request_detail` moves off the
     // SDL loop, so it is the number to read when judging whether a call site can afford to block
     // — note the framedrop breakdown CANNOT show it (fd_pc0 starts after event handling).
@@ -3772,9 +3787,9 @@ fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) -> O
 
 // ---- async detail load ---------------------------------------------------------------------
 // Opening a detail page used to block the SDL loop on 2 (movie) to 5 (show) sequential PMS
-// round-trips, straight off the key handler. `request_detail` spawns the fetch and `pump_detail`
-// installs the result — the page mounts THIS frame on the catalog row's art/title/summary and
-// fills in a beat later. Same shape as the season mailbox below and route.rs's play resolve.
+// round-trips, straight off the key handler. `request_detail` emits the fetch as a job (the app's
+// `StoreRunner` starts it) and `pump_detail` installs the result — the page mounts THIS frame on
+// the catalog row's art/title/summary and fills in a beat later. Same shape as the season mailbox below and route.rs's play resolve.
 //
 // The worker MUST NOT write CURRENT. `current()` (via `MetadataView`) hands out a `&'a Detail`,
 // borrowed from the owner, that ~25 draw sites read within a frame, so a background store would
@@ -3826,6 +3841,14 @@ pub fn detail_generation_for_test(adapter: &MetadataAdapter) -> u32 {
     adapter.detail_gen.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+/// How many detail reservations the adapter's landing holds: every request admitted and not yet
+/// answered and taken, a superseded one included (it keeps its slot until its fetch returns). A
+/// test that drives a runner reads it to prove a request's one answer handed its slot back.
+#[cfg(any(test, feature = "test-support"))]
+pub fn detail_inflight_for_test(adapter: &MetadataAdapter) -> u32 {
+    adapter.detail_landing_ref().inflight(detail_addr(0).to)
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub fn land_detail_for_test(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>, sid: plx_plex::plex::ServerId, rk: &str, gen: u32, detail: Option<Detail>) -> bool {
     plx_base::testlock::assert_held("the detail store (land_detail_for_test)");
@@ -3864,7 +3887,8 @@ fn land_detail(adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId, rk: &st
 }
 
 /// Mint the request: supersede the season, bump the generation, record what the page awaits
-/// and admit the request. The spawn is the caller's; a refused one is `refused` back.
+/// and admit the request. Starting the fetch is not this function's: [`request_detail`] emits it
+/// as a job, and a launch that then starts nothing is `DetailPort::refused` back.
 fn begin_detail_request(adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId, rk: &str) -> (
     u32, plx_machine::machine::Addr, Result<(), plx_machine::landing::AdmissionError>,
 ) {
@@ -3875,8 +3899,6 @@ fn begin_detail_request(adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId
     // DETAIL_DONE must stay behind so `detail_loading()` reports this fetch as in flight
     let gen = adapter.detail_gen.fetch_add(1, Ordering::SeqCst) + 1;
     record::cancel_all(adapter);
-    #[cfg(any(test, feature = "test-support"))]
-    adapter.run_superseded_detail_fetches();
     *adapter.detail_want.lock().unwrap_or_else(|e| e.into_inner()) = Some((sid, rk.to_string()));
     let addr = detail_addr(gen);
     let admission = record::admit(adapter, addr);
@@ -3889,35 +3911,81 @@ fn begin_detail_request(adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId
     (gen, addr, admission)
 }
 
-/// MAIN THREAD, NON-BLOCKING. Supersedes any in-flight load and spawns the fetch; the result
-/// lands via [`pump_detail`]. The caller mounts the detail page this same frame.
-///
-/// `sid` names the server to ask and is captured by the CALLER, on the main thread — the worker
-/// must not read the current server (see the fetch block's note), and the page being opened may
-/// belong to a machine that is not the current one at all.
-fn request_detail(adapter: &std::sync::Arc<MetadataAdapter>, sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) {
-    request_detail_with_spawn(adapter, sid, rk, |gen| {
-        let rk = rk.to_string();
-        let adapter = std::sync::Arc::clone(adapter);
-        crate::stores::tape::admit(serde_json::json!({"store":"metadata",
-            "sid":sid.raw(),"rk":rk,"gen":gen,
-            "client":plx_plex::plex::client_for(sid).map(|c| c.instance_gen())}), || {
-            // See `MetadataAdapter::run_held_detail_fetches_for_test`: a test runs the fetch
-            // when it chooses, never on a thread racing its assertions.
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                adapter.held_detail.lock().unwrap_or_else(|e| e.into_inner()).push((sid, rk, gen, prefer));
-                true
-            }
-            #[cfg(not(any(test, feature = "test-support")))]
-            plx_base::task::spawn_small("detail", move || {
-                finish_detail_fetch(&adapter, sid, &rk, gen, || fetch_full(sid, &rk, prefer));
-            })
-        })
-    });
+/// The detail fetch one `RequestDetail` asks for: everything the worker needs, captured on the
+/// main thread. `sid` names the server to ask and `prefer` is the season the page opens on (read
+/// from the store at request time, [`selected_season_number`]); the worker must not read either
+/// from the current server or the store (see the fetch block's note), and the page being opened
+/// may belong to a machine that is not the current one at all.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DetailReq {
+    pub sid: plx_plex::plex::ServerId,
+    pub rk: String,
+    pub prefer: Option<i64>,
 }
 
-/// Shared admission/spawn path; tests inject a spawn outcome without starting network workers.
+/// Where a detail fetch's ONE answer goes: the owner's landing, captured with the job when it was
+/// emitted. An owner that has since been `Reset` holds a new adapter, and this port still lands
+/// into the one the request was made from, the retired one nobody pumps. Two ports are equal when
+/// they reach the same adapter.
+#[derive(Clone)]
+pub struct DetailPort(std::sync::Arc<MetadataAdapter>);
+
+impl DetailPort {
+    pub(crate) fn of(adapter: &std::sync::Arc<MetadataAdapter>) -> Self {
+        Self(std::sync::Arc::clone(adapter))
+    }
+}
+
+impl PartialEq for DetailPort {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl std::fmt::Debug for DetailPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "DetailPort({:p})", std::sync::Arc::as_ptr(&self.0))
+    }
+}
+
+impl plx_machine::job::Port<(DetailKey, Option<Detail>)> for DetailPort {
+    /// The fetch's answer (`None`: it failed). An answer for a superseded request only hands its
+    /// reservation back; [`pump_detail`]'s generation check discards it.
+    fn done(&self, addr: plx_machine::machine::Addr, (key, detail): (DetailKey, Option<Detail>)) {
+        land_detail(&self.0, key.0, &key.1, addr.req.0, detail);
+    }
+
+    /// The fetch was never started: the refusal record is what settles the spinner
+    /// ([`pump_detail`]), exactly one event for the request (§5.2).
+    fn refused(&self, addr: plx_machine::machine::Addr) {
+        record::refused(&self.0, addr);
+    }
+}
+
+/// MAIN THREAD, NON-BLOCKING. Supersedes any in-flight load and emits the fetch as a
+/// [`crate::stores::StoreJob::Detail`] on `state`'s outbox; the application starts it, and the
+/// result lands via [`pump_detail`]. The caller mounts the detail page this same frame.
+///
+/// `sid` names the server to ask and is captured by the CALLER, on the main thread: it travels in
+/// the job (see [`DetailReq`]).
+fn request_detail(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>, sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) {
+    let (_, addr, admission) = begin_detail_request(adapter, sid, rk);
+    // A request refused for capacity owns no worker and emits no job: `begin_detail_request` has
+    // already settled it synchronously, and nothing will ever answer it.
+    if admission.is_err() { return; }
+    state.jobs.push(crate::stores::StoreJob::Detail(
+        plx_machine::job::Job { addr, req: DetailReq { sid, rk: rk.to_string(), prefer } },
+        DetailPort::of(adapter),
+    ));
+}
+
+/// TEST ONLY: [`request_detail`] with the hand-off injected. `spawn` stands for the runner's
+/// launch of an admitted request and says whether anything was started; `false` takes the
+/// refusal path a runner takes when the tape does not admit a launch (`DetailPort::refused`).
+/// Production does not come through here: it emits the job and the app's runner owns the launch
+/// and the refusal, so this exists to let the data layer's mailbox tests inject either outcome
+/// without a thread.
+#[cfg(test)]
 fn request_detail_with_spawn(adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId, rk: &str, spawn: impl FnOnce(u32) -> bool) {
     let (gen, addr, admission) = begin_detail_request(adapter, sid, rk);
     if admission.is_err() { return; }
@@ -3928,13 +3996,16 @@ fn request_detail_with_spawn(adapter: &MetadataAdapter, sid: plx_plex::plex::Ser
     }
 }
 
-fn finish_detail_fetch(
-    adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId, rk: &str, gen: u32,
+/// The fetch's IO body's completion: run `fetch` and post its answer, or its failure, to `port`.
+/// A fetch that unwinds still answers (with `None`), so its reservation is always handed back.
+pub fn finish_detail_fetch(
+    port: &DetailPort, addr: plx_machine::machine::Addr, key: DetailKey,
     fetch: impl FnOnce() -> Option<Detail> + std::panic::UnwindSafe,
 ) {
+    use plx_machine::job::Port;
     // Publish outside the catch so fetch failure/unwind still acknowledges this reservation.
     let d = catch_unwind(fetch).unwrap_or(None);
-    land_detail(adapter, sid, rk, gen, d);
+    port.done(addr, (key, d));
 }
 
 /// `stores::metadata`'s one door onto every [`MetadataCmd`](crate::stores::metadata::MetadataCmd)
@@ -3949,7 +4020,7 @@ pub fn run(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>,
         MetadataCmd::RequestDetail { sid, rk } => {
             let prefer = selected_season_number(state, sid, &rk);
             state.detail_stamp = state.ledger.stamp();
-            request_detail(adapter, sid, &rk, prefer);
+            request_detail(state, adapter, sid, &rk, prefer);
             true
         }
         MetadataCmd::Clear => {
@@ -4532,7 +4603,7 @@ fn alt_copies_from(
     mc.metadata
         .iter()
         .map(|m| {
-            let media0 = m.media.first();
+            let media0 = m.media_version(None).map(|(_, m)| m);
             AltCopy {
                 sid: id,
                 library: m.library_section_title.clone(),
@@ -6105,6 +6176,10 @@ mod related_tail_tests;
 #[cfg(test)]
 #[path = "metadata_initial_season_tests.rs"]
 mod initial_season_tests;
+
+#[cfg(test)]
+#[path = "metadata_detail_job_tests.rs"]
+mod detail_job_tests;
 
 /// #814: the runtime an *Also available* row carries is a fact about one FILE, so only a leaf has
 /// one. A show container's `duration` is the metadata agent's nominal per-episode figure.

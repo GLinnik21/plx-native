@@ -146,7 +146,7 @@ impl QueueRow {
     /// Consume a queue `Metadata` row into its lean projection. BY VALUE: the strings are moved,
     /// not cloned, and the rest of the row's tree is dropped as this returns.
     fn of(m: super::models::Metadata, sid: super::ServerId) -> QueueRow {
-        // `Media[0]` / `Media[0].Part[0]`, the same pick `Metadata::first_part` makes — by value,
+        // `Media[0]` / `Media[0].Part[0]`, the default version, `Metadata::media_version(None)` — by value,
         // so the other versions and their Stream lists die here.
         let (vcodec, acodec, part) = match m.media.into_iter().next() {
             Some(md) => (

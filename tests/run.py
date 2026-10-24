@@ -406,6 +406,29 @@ def fetch_managed_user_token(admin_token, host, port, user_id):
              f"(share the libraries with it first, or run with --owner)")
 
 
+def resolve_test_user_token(test_user, host, port):
+    """The managed test user's per-server token, from wherever the overlay says it lives.
+
+    `test_user.token_file` names a file outside the tree (`~` expanded) that already holds that
+    user's per-server accessToken: for an installation whose config.local.h carries no usable
+    OWNER token, which `fetch_managed_user_token` needs in order to ask plex.tv. The file is read
+    at runtime and its value is never printed. Without the key, the token is resolved through the
+    owner's shared_servers list exactly as before.
+    """
+    path = test_user.get("token_file")
+    if not path:
+        return fetch_managed_user_token(read_token(), host, port, test_user["id"])
+    path = os.path.expanduser(str(path))
+    try:
+        with open(path, encoding="utf-8") as fh:
+            tok = fh.read().strip()
+    except OSError as e:
+        sys.exit(f"test_user.token_file: cannot read {path}: {e.strerror}")
+    if not tok or any(c.isspace() for c in tok):
+        sys.exit(f"test_user.token_file: {path} must hold exactly one token on one line")
+    return tok
+
+
 # ---------------------------------------------------------------------------
 # The SECOND server (a friend's shared server) — resolved, never stored
 # ---------------------------------------------------------------------------
@@ -1212,11 +1235,11 @@ def triggers_for_case(case, url_base=None):
                 "plxnative-autopause",
                 f'delay={int(op.get("delay_ms", 0))},hold={int(op["hold_ms"])}',
             ))
-        # "play", startup "resume" and "audio_enhancement_burn" (when it names no "row" — a
-        # cold-start proof against an item whose subtitle is already server-selected) need no extra
-        # trigger: the last of those grades the boot-forced preference the `plxnative-audioenh`
-        # trigger above already wrote, and there is no menu row to pick — the candidate becomes an
-        # enhanced Burn before the first frame (resume rides the seeded viewOffset).
+        # "play", startup "resume" and "audio_enhancement_subtitle" (a cold-start proof against an
+        # item whose subtitle is already server-selected) need no extra trigger: the last of those
+        # grades the boot-forced preference the `plxnative-audioenh` trigger above already wrote,
+        # and there is no menu row to pick — the route is decided before the first frame (resume
+        # rides the seeded viewOffset).
     return files
 
 
@@ -1261,6 +1284,9 @@ def apply_triggers(tv, files, extra=None):
     parts = [f"mkdir -p {RUNDIR} && chmod 1777 {RUNDIR}"]
     # wipe every trigger, keeping only the append-only logs (events/stderr/crash)
     parts.append(f'for f in {RUNDIR}/plxnative-*; do case "$f" in *.log) ;; *) rm -f "$f";; esac; done')
+    # the crash log is append-only across launches, so "did THIS case crash" is a count of its
+    # records now against the count taken here, before the launch (see crash_gate)
+    parts.append(crash_count_cmd())
     # GST_DEBUG_FILE_OVERWRITE is honoured only once libpf installs its logger. Remove the old
     # trace here as well, before launch, so an app that fails before that point cannot be graded
     # against the previous case's perfectly plausible per-frame log.
@@ -1274,7 +1300,9 @@ def apply_triggers(tv, files, extra=None):
     for cmd in ([extra] if isinstance(extra, str) else (extra or [])):
         if cmd:
             parts.append(cmd)
-    ssh(tv, "; ".join(parts))
+    global _CRASH_BASELINE
+    out = getattr(ssh(tv, "; ".join(parts)), "stdout", None)
+    _CRASH_BASELINE = parse_crash_count(out) if isinstance(out, str) else None
 
 
 # ---------------------------------------------------------------------------
@@ -2181,8 +2209,10 @@ def early_exit_allowed(case, cfg):
     satisfied by evidence something else produced. Measured on `auto_pin_then_original_and_seek`,
     whose seek is scheduled at 95 s: the case exited early at 71 s reporting `[PASS] seek_transcode`,
     because `op_seek_transcode` matches `reload_transcode: fresh Load at offset` and a QUALITY
-    SWITCH emits that same line -- so the switch's reload graded as a seek that had not fired. Run
-    to its full window the seek fires and the case passes on the right evidence. Note this is NOT a
+    SWITCH emits that same line -- so the switch's reload graded as a seek that had not fired. (The
+    seek arms now read only lines after their own `autoseek: step`, which closes that look-alike;
+    the rule stays, because any assertion about an operation that has not happened yet can only
+    be graded once it has.) Note this is NOT a
     monotonicity failure: the assertion is monotone, it is merely satisfiable by a look-alike. That
     is why the rule keys on the SCHEDULE rather than on the operation kind -- an undelayed seek
     fires promptly and stays eligible.
@@ -3355,7 +3385,30 @@ def _reached_target(lines, target_s):
     return reached, None
 
 
-def op_seek_inplace(lines, target_s):
+def _seek_window(lines):
+    """The lines a seek operation's own evidence can be in: from its `autoseek: step` (the
+    scenario logs one per scheduled seek, `dev/scenarios.rs`) onward. `None` when no seek was ever
+    requested. Everything before it belongs to some other transition -- a quality switch rebuilds
+    with the very `reload_transcode: fresh Load at offset` line a transcode seek emits, and
+    `auto_pin_then_original_and_seek` (v0.9.0 TV run) graded the pin's reload as its seek."""
+    step = next((i for i, ln in enumerate(lines) if "autoseek: step" in ln), None)
+    return None if step is None else lines[step:]
+
+
+def _post_seek_survival(after_signal, target_s, min_climb_after_s):
+    """`None`, or why the playback did not survive the seek: the media series from the target
+    onward must climb `min_climb_after_s`. See `op_seek_transcode` for why reaching the target is
+    not enough."""
+    after = [t for t, _ in progress_secs(after_signal) if t >= target_s - 5]
+    span = (max(after) - min(after)) if len(after) >= 2 else 0
+    if span < min_climb_after_s:
+        return span, len(after), (f"the seek landed but the playback did not survive it: only "
+                                  f"{span}s of progress after the target ({len(after)} sample(s) "
+                                  f"from {min(after) if after else '-'}s), need >={min_climb_after_s}s")
+    return span, len(after), None
+
+
+def op_seek_inplace(lines, target_s, min_climb_after_s=0):
     started = find(lines, "seek(in-place)")
     if started is None:
         return False, "no `seek(in-place)` line (in-place seek did not fire)"
@@ -3374,6 +3427,12 @@ def op_seek_inplace(lines, target_s):
     reached, err = _reached_target(lines, target_s)
     if err:
         return False, err
+    if min_climb_after_s:
+        span, n, err = _post_seek_survival(after_seek, target_s, min_climb_after_s)
+        if err:
+            return False, err
+        return True, (f"in-place seek OK; reached {reached}s, then {span}s of progress over {n} "
+                      f"sample(s) :: {started.strip()}")
     return True, f"in-place seek OK; reached {reached}s :: {started.strip()}"
 
 
@@ -3609,15 +3668,19 @@ def op_seek_rapid(lines, final_s):
 def op_seek_transcode(lines, target_s, min_climb_after_s=0):
     # transcode seeks now RELOAD the pipeline (reload_transcode: fresh Load = correct GStreamer
     # segment, no stale-segment artifacts). Older builds flushed+refed (`seek(transcode)`) or fell
-    # back to reload_at.
-    hit = find(lines, "reload_transcode: fresh Load at offset") or find(lines, "seek(transcode)") \
-        or find(lines, "reload_at: fresh Load at %ds" % target_s)
+    # back to reload_at. Only lines after the seek was requested are its evidence (`_seek_window`).
+    window = _seek_window(lines)
+    if window is None:
+        return False, "the seek was never requested (`autoseek: step` absent)"
+    hit = find(window, "reload_transcode: fresh Load at offset") or find(window, "seek(transcode)") \
+        or find(window, "reload_at: fresh Load at %ds" % target_s)
     if hit is None:
-        return False, "no transcode-seek signal (reload_transcode / seek(transcode) / reload_at) present"
-    hit_i = lines.index(hit)
+        return False, ("no transcode-seek signal (reload_transcode / seek(transcode) / reload_at) "
+                       "after the seek was requested")
+    hit_i = window.index(hit)
     if "reload_transcode: fresh Load at offset" in hit:
         retired = next(
-            (line for line in lines[hit_i:]
+            (line for line in window[hit_i:]
              if "seek:" in line and "retired previous encoder ok=" in line),
             None,
         )
@@ -3639,14 +3702,11 @@ def op_seek_transcode(lines, target_s, min_climb_after_s=0):
     # `timeline_climb`. `min_climb_after_s` grades the series from the target ONWARD, which is
     # the only window a post-seek death is visible in.
     if min_climb_after_s:
-        after = [t for t, _ in progress_secs(lines[hit_i + 1:]) if t >= target_s - 5]
-        span = (max(after) - min(after)) if len(after) >= 2 else 0
-        if span < min_climb_after_s:
-            return False, (f"the seek landed but the playback did not survive it: only {span}s of "
-                           f"progress after the target ({len(after)} sample(s) from "
-                           f"{min(after) if after else '-'}s), need >={min_climb_after_s}s")
+        span, n, err = _post_seek_survival(window[hit_i + 1:], target_s, min_climb_after_s)
+        if err:
+            return False, err
         return True, (f"transcode/reload seek OK; reached {reached}s, then {span}s of progress "
-                      f"over {len(after)} sample(s) :: {hit.strip()}")
+                      f"over {n} sample(s) :: {hit.strip()}")
     return True, f"transcode/reload seek OK; reached {reached}s :: {hit.strip()}"
 
 
@@ -3903,15 +3963,18 @@ def op_audio_enhancement_burn(lines):
     `subtitles=embedded`/`=sidecar`/`=auto` shapes M4 measured. Two manifest shapes reach this
     grader:
 
-    * A COLD START (`{"op": "audio_enhancement_burn"}`, no live pick): the item already carries a
-      server-selected embedded subtitle, so `route/plan.rs`'s cold-start branch computes
-      `Offered(Burn)` before the first frame and logs exactly ONE `enhancement: applied` line
-      (`route::decision::log_enhancement_outcome`, the same helper the live reconcile's
-      `install_retranscode_outcome` calls).
-    * A LIVE RECONCILE (`{"op": "subtitle", "burn": true}`): the boot-time preference decorates an
-      otherwise-bare candidate as an ordinary enhanced remux first (one `enhancement: applied` line
-      with no subtitle in the picture), then the pick reroutes it to a burn
-      (`route::decision::reconcile_enhancement`), producing a SECOND `enhancement: applied` line.
+    * A COLD START (`{"op": "audio_enhancement_subtitle", "presenter": "burn"}`, no live pick):
+      the item already carries a server-selected embedded subtitle, so `route/plan.rs`'s cold-start
+      branch computes `Offered(Burn)` before the first frame and logs exactly ONE
+      `enhancement: applied` line (`route::decision::log_enhancement_outcome`, the same helper the
+      live reconcile's `install_retranscode_outcome` calls).
+    * A LIVE RECONCILE (`{"op": "subtitle", "enhanced": "burn"}`): the boot-time preference
+      decorates an otherwise-bare candidate as an ordinary enhanced remux first (one
+      `enhancement: applied` line with no subtitle in the picture), then the pick reroutes it to a
+      burn (`route::decision::reconcile_enhancement`), producing a SECOND `enhancement: applied`
+      line.
+
+    Only an item the app's side reader cannot read takes either (`op_audio_enhancement_subtitle`).
 
     Both are graded the same way, off the LAST `enhancement: applied boost=.. loudness=..` line and
     the stream state after it:
@@ -3973,6 +4036,90 @@ def op_audio_enhancement_burn(lines):
                        f"subtitles) :: {late_cue.strip()}")
     return True, (f"enhancement re-applied as an explicit burn, DSP preserved :: "
                   f"{hit.strip()} / {redact(stream.strip())}")
+
+
+RE_SUBSIDE_OPEN = re.compile(r"subside: open tracks=\d+ ordinal=(-?\d+)")
+RE_SERVER_SELECTED_SUB = re.compile(r"server-selected subtitle: sid=\d+ render_idx=(-?\d+)")
+RE_SELECT_STREAMS_SUB = re.compile(r"select streams: part=\S+ audio=\S+ sub=([1-9]\d*) ")
+
+
+def op_audio_enhancement_subtitle(lines, presenter, live):
+    """An embedded subtitle under the Plex Pass audio enhancement (issue #266) stays on screen,
+    drawn by the presenter the case STATES -- the same habit as a seek's `mode`, because which one
+    a given item gets is a fact about the item and the link, not about the build:
+
+    * `"burn"`: the server re-encodes with `subtitleStreamID=..&subtitles=burn` (M7). The route
+      takes it only where the app cannot read the track itself -- a relay or remote link, a Part
+      over `SIDE_MAX_PART_KBPS` (30000 kbps) or of unknown bitrate (`side_reader_inputs_admit`,
+      `route/decision.rs`). Graded by `op_audio_enhancement_burn`.
+    * `"client"`: since #474 the app reads an embedded track beside the remux on a local link with
+      a moderate Part (`player::subside`) and draws it itself, so Style and Timing reach it: the
+      stream stays the ordinary enhanced remux and nothing is burned. Host-pinned by
+      `cold_start_keeps_intended_audio_and_draws_the_subtitle` (plan) and
+      `embedded_pick_on_a_live_remux_queues_no_retranscode` (decision). The v0.9.0 TV run failed
+      both burn cases on exactly this, correct, shape.
+
+    `live` is a pick made mid-play (`{"op": "subtitle", "enhanced": ..}`) rather than a
+    server-selected track at cold start (`{"op": "audio_enhancement_subtitle"}`)."""
+    if presenter == "burn":
+        return op_audio_enhancement_burn(lines)
+    if presenter != "client":
+        return False, f"unknown subtitle presenter {presenter!r} (want \"client\" or \"burn\")"
+    hits = [i for i, ln in enumerate(lines) if RE_ENHANCEMENT_APPLIED.search(ln)]
+    if not hits:
+        return _enhancement_miss(
+            lines, "enhancement: applied",
+            "no `enhancement: applied boost=.. loudness=..` line at all (boot-forced preference "
+            "never took effect)",
+            refused_marker="enhancement: refused/ignored by server",
+            refused_label="the server refused/ignored the enhancement")
+    applied_i = hits[-1]
+    if RE_ENHANCEMENT_APPLIED.search(lines[applied_i]).group(2) != "1":
+        return False, f"applied line does not show loudness=1 :: {lines[applied_i].strip()}"
+    after = lines[applied_i + 1:]
+    stream = next((ln for ln in after if RE_STREAM_PATH.search(ln)), None)
+    if stream is None:
+        return False, f"no `stream: .. path=` line after the enhancement :: {lines[applied_i].strip()}"
+    path = RE_STREAM_PATH.search(stream).group(1)
+    if "subtitles=burn" in path or "directStreamAudio=1" not in path:
+        return False, (f"the stream is not the enhanced remux an app-drawn subtitle rides "
+                       f"(want directStreamAudio=1 and no subtitles=burn) :: {redact(stream.strip())}")
+    if live:
+        pick = next((i for i, ln in enumerate(after) if RE_SELECT_STREAMS_SUB.search(ln)), None)
+        if pick is None:
+            return _enhancement_miss(
+                lines, "select streams: .. sub=<id>",
+                "the subtitle pick never committed (no `select streams: .. sub=<id>` after the "
+                "enhancement)")
+        rebuilt = next((ln for ln in after[pick:]
+                        if RE_ENHANCEMENT_APPLIED.search(ln) or RE_STREAM_PATH.search(ln)), None)
+        if rebuilt is not None:
+            return False, (f"the pick rebuilt the stream although the app draws the track "
+                           f"itself :: {redact(rebuilt.strip())}")
+        tail, want_ordinal = after[pick + 1:], None
+    else:
+        sel = next((i for i, ln in enumerate(lines) if RE_SERVER_SELECTED_SUB.search(ln)), None)
+        if sel is None:
+            return False, "no `server-selected subtitle: .. render_idx=` line (nothing to draw)"
+        want_ordinal = int(RE_SERVER_SELECTED_SUB.search(lines[sel]).group(1))
+        tail = lines[sel + 1:]
+    opened = next((i for i, ln in enumerate(tail) if RE_SUBSIDE_OPEN.search(ln)), None)
+    if opened is None:
+        return False, "the app's side reader never opened the track (`subside: open` absent)"
+    ordinal = int(RE_SUBSIDE_OPEN.search(tail[opened]).group(1))
+    if want_ordinal is not None and ordinal != want_ordinal:
+        return False, (f"the side reader opened ordinal {ordinal}, not the server-selected "
+                       f"render_idx {want_ordinal} :: {tail[opened].strip()}")
+    broken = next((ln for ln in tail[opened:]
+                   if "subside: failed" in ln or "subside: could not start" in ln), None)
+    if broken is not None:
+        return False, f"the side reader failed :: {broken.strip()}"
+    cue = next((ln for ln in tail[opened:]
+                if RE_SUBCUE.search(ln) and int(RE_SUBCUE.search(ln).group(1)) > 0), None)
+    if cue is None:
+        return False, f"the side reader opened but drew no cue :: {tail[opened].strip()}"
+    return True, (f"enhanced remux kept, subtitle drawn by the app :: {lines[applied_i].strip()} / "
+                  f"{tail[opened].strip()} / {cue.strip()}")
 
 
 def subtitle_menupick_target(op):
@@ -4583,7 +4730,8 @@ def evaluate(case, lines):
         elif k == "seek" and op.get("mode") == "refused":
             results.append(("seek_refused", *op_seek_refused(lines, op.get("target_s", 140))))
         elif k == "seek" and op.get("mode") == "inplace":
-            results.append(("seek_inplace", *op_seek_inplace(lines, op.get("target_s", 140))))
+            results.append(("seek_inplace", *op_seek_inplace(
+                lines, op.get("target_s", 140), op.get("min_climb_after_s", 0))))
         elif k == "seek":
             results.append(("seek_transcode", *op_seek_transcode(
                 lines, op.get("target_s", 140), op.get("min_climb_after_s", 0))))
@@ -4610,10 +4758,12 @@ def evaluate(case, lines):
             results.append(("audio_enhancement_release", *op_audio_enhancement_release(lines)))
         elif k == "audio_enhancement":
             results.append(("audio_enhancement", *op_audio_enhancement(lines)))
-        elif k == "audio_enhancement_burn":
-            results.append(("audio_enhancement_burn", *op_audio_enhancement_burn(lines)))
-        elif k == "subtitle" and op.get("burn"):
-            results.append(("audio_enhancement_burn", *op_audio_enhancement_burn(lines)))
+        elif k == "audio_enhancement_subtitle":
+            results.append(("audio_enhancement_subtitle", *op_audio_enhancement_subtitle(
+                lines, op["presenter"], live=False)))
+        elif k == "subtitle" and op.get("enhanced"):
+            results.append(("audio_enhancement_subtitle", *op_audio_enhancement_subtitle(
+                lines, op["enhanced"], live=True)))
         elif k == "subtitle" and op.get("image"):
             results.append(("image_subtitle", *op_image_subtitle(lines)))
         elif k == "subtitle":
@@ -4739,7 +4889,7 @@ def run_case(case, cfg, token, verbose, cond=None):
     # shape. Reset it to the item's default -- subtitles off, audio on its server-selected/first
     # track -- for the TEST identity, unless the case's own precondition is what PMS currently has
     # selected (`"stream_reset": false`), and then a case that NEEDS a selection establishes it
-    # itself (`setup.seed_subtitle`; see audio_enhancement_burns_server_selected_subtitle).
+    # itself (`setup.seed_subtitle`; see audio_enhancement_draws_server_selected_subtitle).
     apply_stream_setup(cfg["pms"]["host"], cfg["pms"]["port"], case, token)
 
     # 3. clear + set triggers, and inject the effective PMS token in the SAME round-trip.
@@ -4823,6 +4973,7 @@ def run_case(case, cfg, token, verbose, cond=None):
 
     # 5. evaluate
     passed, results = evaluate(case, lines)
+    passed, results = crash_gate(cfg, case, name, lines, passed, results)
     report_and_record(cfg, name, passed, results, lines, elapsed, run_secs, stopped_early,
                       settled, verbose)
     return passed, results, lines
@@ -5050,7 +5201,8 @@ def evaluate_pipeline(case, lines, srv_delta, gst_lines=None):
         elif op["op"] == "seek" and op.get("mode") == "refused":
             results.append(("seek_refused", *op_seek_refused(lines, op.get("target_s", 140))))
         elif op["op"] == "seek":
-            results.append(("seek_inplace", *op_seek_inplace(lines, op.get("target_s", 140))))
+            results.append(("seek_inplace", *op_seek_inplace(
+                lines, op.get("target_s", 140), op.get("min_climb_after_s", 0))))
         elif op["op"] == "pause_resume":
             results.append(("pause_resume", *op_pause_resume(
                 lines, op.get("min_climb_after_s", 8))))
@@ -5083,6 +5235,76 @@ def save_logs_file(cfg, filename, text):
     with open(path, "w", encoding="utf-8") as f:
         f.write(text)
     return path
+
+
+# The crash tracer appends a `*** SIGNAL <n> (<name>) ...` record to `plxnative-crash.log` (kept
+# across relaunches; src/main.c, ci/crashtrace-test.c). The abort MESSAGE of a C thread goes to
+# `plxnative-stderr.log` instead, which main.c opens O_TRUNC at EVERY launch: the next case's launch
+# destroys it, and nothing else here saves stderr. `crash_gate` keeps it before that can happen.
+CRASH_MARK = "*** SIGNAL"
+CRASH_LOG = "plxnative-crash.log"
+STDERR_LOG = "plxnative-stderr.log"
+_CRASH_BASELINE = None   # SIGNAL records in the crash log when the case's triggers were armed
+
+
+def crash_count_cmd():
+    """Remote command that prints how many SIGNAL records the crash log holds (nothing if absent)."""
+    return f"grep -c -F '{CRASH_MARK}' {RUNDIR}/{CRASH_LOG} 2>/dev/null || true"
+
+
+def parse_crash_count(out):
+    """The count `crash_count_cmd` printed (last integer line), or None when it printed none."""
+    nums = [ln.strip() for ln in (out or "").splitlines() if ln.strip().isdigit()]
+    return int(nums[-1]) if nums else None
+
+
+def crash_records(text):
+    """The `*** SIGNAL` lines of a crash log or event log."""
+    return [ln for ln in (text or "").splitlines() if CRASH_MARK in ln]
+
+
+def keep_crash_evidence(cfg, name, files):
+    """Write `{suffix: text}` as `<name>.<suffix>` into the --save-logs directory, or (without
+    --save-logs) into a temp directory; returns the paths written."""
+    outdir = cfg.get("save_logs") or os.path.join(tempfile.gettempdir(), "plxnative-crash-evidence")
+    os.makedirs(outdir, exist_ok=True)
+    paths = []
+    for suffix, text in files.items():
+        path = os.path.join(outdir, f"{name}.{suffix}")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        paths.append(path)
+    return paths
+
+
+def crash_gate(cfg, case, name, lines, passed, results):
+    """After a case, before the next launch: did the app die mid-case? Returns (passed, results).
+
+    A death shows as a `*** SIGNAL` line in the case's log or as new SIGNAL records in the crash
+    log since `apply_triggers` counted them. When it died, `plxnative-stderr.log` (the abort message
+    the next launch truncates) and the new crash records are copied off the set and the path is
+    printed; the case FAILS unless it declares `expect_crash`. With --save-logs the stderr log is
+    kept for every case.
+    """
+    tv = cfg["tv"]
+    crash_text = pull_runtime_file(tv, CRASH_LOG)
+    records = crash_records(crash_text)
+    new = 0 if _CRASH_BASELINE is None else max(0, len(records) - _CRASH_BASELINE)
+    in_log = crash_records("\n".join(lines))
+    died = bool(in_log) or new > 0
+    if not died and not cfg.get("save_logs"):
+        return passed, results
+    files = {"stderr.log": pull_runtime_file(tv, STDERR_LOG)}
+    if died:
+        files["crash.log"] = "\n".join(records[-new:] if new else in_log) + "\n"
+    paths = keep_crash_evidence(cfg, name, files)
+    print(f"    {'app died mid-case; ' if died else ''}stderr/crash evidence kept: "
+          + ", ".join(paths))
+    if died and not case.get("expect_crash"):
+        what = (in_log or records[-1:] or ["?"])[0].strip()
+        results = list(results) + [("app_alive", False, f"the app died mid-case: {redact(what)}")]
+        passed = False
+    return passed, results
 
 
 def save_case_log(cfg, name, lines):
@@ -5197,6 +5419,7 @@ def run_pipeline_case(case, cfg, srv, url_base, verbose):
     # the poll path see the same windows whichever way the case ended.
     case["_dip_windows"] = srv.dip_windows()
     passed, results = evaluate_pipeline(case, lines, delta, gst_lines=gst_lines)
+    passed, results = crash_gate(cfg, case, name, lines, passed, results)
     report_and_record(cfg, name, passed, results, lines, elapsed, run_secs, stopped_early,
                       settled, verbose)
     if delta[0] == 0:
@@ -6376,12 +6599,28 @@ def fps_for_tiers(scenes, include_player, name_filter=None):
     return [s for s in in_tier if not name_filter or name_filter in s["name"]]
 
 
-def quiet_tv(tv, sound=False):
-    """Panel OFF (and, once per run, sound OFF) through `tools/tv-session.sh` — the owner's standing
-    rule for every device run. Fails closed: a run that cannot blank the panel stops instead of
-    lighting a household's television for a stress walk. Never turns either on."""
+# The one panel default for every `--fps --mock` entry: the CLI flag (`--panel`), `quiet_tv`, and the
+# two `cfg.get("panel", ...)` fallbacks a cfg built without the CLI reaches. They share this one name
+# so they cannot drift apart; `QuietTv` in tests/test_harness.py pins each of them to it.
+PANEL_DEFAULT = "off"
+
+
+def quiet_tv(tv, sound=False, panel=PANEL_DEFAULT):
+    """Set the panel (`panel` = "on"|"off") and, once per run (`sound=True`), MUTE the sound,
+    through `tools/tv-session.sh`. Fails closed: a run that cannot meet the requested panel/sound
+    state stops instead of measuring a different one. Never un-mutes.
+
+    The panel defaults to OFF, fps runs included: `turnOffScreen` only darkens the backlight, and
+    the app keeps presenting at full rate (`plx_machine::idle` keys on the UI's own changes, and
+    nothing in the app reads the panel state). Measured 2026-10-24, Home `grid-pong`, release
+    build: panel off 73 frames/cycle at 59.9 fps, 9 misses; panel on 73 at 59.6-59.9 fps, 8/13/14.
+    The requested state is still asserted (`screen off|on`, idempotent) rather than assumed, since
+    an earlier run or a person may have left the set in the other one. `--panel on` is for a run
+    someone wants to watch."""
+    if panel not in ("on", "off"):
+        raise ValueError(f"panel must be 'on' or 'off', not {panel!r}")
     session = os.path.join(REPO_ROOT, "tools", "tv-session.sh")
-    steps = [["screen", "off"]] + ([["sound", "off"]] if sound else [])
+    steps = [["screen", panel]] + ([["sound", "off"]] if sound else [])
     for step in steps:
         r = subprocess.run([session, *step], env=dict(os.environ, TV=tv),
                            capture_output=True, text=True, timeout=120)
@@ -6395,9 +6634,10 @@ def run_mock_fps_scene(scene, cfg):
 
     The mock lives exactly as long as the scene (each scene may ask for a different library), the
     guest token is resolved only after the mock answers, from `tools/mock-guest.py`, which refuses
-    any server that is not the synthetic one, and the panel is re-blanked before every launch.
+    any server that is not the synthetic one, and the panel state (`--panel`, default off: it is only
+    the backlight, see `quiet_tv`) is re-asserted before every launch.
     """
-    quiet_tv(cfg["tv"])
+    quiet_tv(cfg["tv"], panel=cfg.get("panel", PANEL_DEFAULT))
     log = os.path.join(tempfile.gettempdir(), f"plx-mock-pms-{os.getpid()}-{scene['name']}.log")
     args = mock_fps.mock_server_args(scene)
     print(f"    mock: tests/mock_pms.py {' '.join(args) or '(default library)'}")
@@ -6414,15 +6654,18 @@ def run_fps_suite(scenes, cfg, token, include_player, skipped=()):
     tiers = {"ui"} | ({"player"} if include_player else set())
     print(f"=== FPS regression suite: {len(scenes)} scene(s), tiers={sorted(tiers)}, "
           f"binary profile={cfg.get('arm_profile', 'unknown')} ===")
-    # The panel rule (docs/agent-reference.md, Tier 2), restated by the owner 2026-09-07: the panel
-    # is OFF and the sound is OFF for EVERY device run, fps scenes included — rendering continues
-    # with the LCD off. The 2026-09-06 "panel ON for fps" form is superseded.
-    print("    panel rule: run this suite with the television's panel OFF and the sound OFF "
-          "(tools/tv-session.sh screen off; tools/tv-session.sh sound off) — the owner's "
-          "standing directive")
+    # The panel rule for SMOOTHNESS runs (owner, 2026-10-24: "This is just a backlight"): the panel
+    # is OFF and the sound is MUTED. `turnOffScreen` darkens only the backlight; the app keeps
+    # presenting at full rate, because `plx_machine::idle` keys on the UI's own changes and nothing
+    # in the app reads the panel state. Measured 2026-10-24 (Home `grid-pong`, release build): panel
+    # off 73 frames/cycle at 59.9 fps, 9 misses in cycles 2-60; on 73 at 59.6-59.9 fps, 8/13/14.
+    # `--panel on` lights it for a run someone wants to watch.
+    panel = cfg.get("panel", PANEL_DEFAULT)
+    print(f"    panel rule: panel {panel.upper()} and sound OFF (muted) for this suite "
+          "(tools/tv-session.sh screen on|off; tools/tv-session.sh sound off)")
     results = []
     if cfg.get("mock"):
-        quiet_tv(cfg["tv"], sound=True)
+        quiet_tv(cfg["tv"], sound=True, panel=panel)
     for s in scenes:
         try:
             if cfg.get("mock"):
@@ -6716,8 +6959,15 @@ def main():
                          "each scene's own arguments. Needs NO PMS_TOKEN, NO manifest.local.json "
                          "and makes NO plex.tv call; boots the same synthetic guest as "
                          "`tools/tv-session.sh up --guest --mock`, refuses a log whose server is "
-                         "not the synthetic one, and keeps the panel OFF and the sound OFF. "
+                         "not the synthetic one, and keeps the panel OFF (see --panel) and the sound muted. "
                          "Debug flavor only. Scenes with no `mock` block are skipped with a reason")
+    ap.add_argument("--panel", choices=("on", "off"), default=PANEL_DEFAULT,
+                    help="with --mock: the TV panel state for the run (default: off). A dark panel "
+                         "is only the backlight; the app keeps presenting at full rate, so fps and "
+                         "smoothness runs read the same either way (Home grid-pong, 2026-10-24: "
+                         "73 frames/cycle at 59.9 fps off, 59.6-59.9 on). `on` is for a run "
+                         "someone wants to watch. The requested state is asserted before every "
+                         "scene, and the sound is muted either way")
     ap.add_argument("--graphics-profile", action="store_true",
                     help="for exactly one selected FPS scene, run production pacing + passive "
                          "Mali IRQ + a separate HWCNT leg and save one diagnostic bundle")
@@ -6762,7 +7012,7 @@ def main():
                      "identity (add a test_user block, see manifest.local.json.example; or boot "
                      "as the owner explicitly instead of asking for a guest)")
         pms = manifest["pms"]
-        token = fetch_managed_user_token(read_token(), pms["host"], pms["port"], test_user["id"])
+        token = resolve_test_user_token(test_user, pms["host"], pms["port"])
         print(token)
         return 0
     if args.graphics_profile and not (args.fps or args.fps_player):
@@ -6829,6 +7079,7 @@ def main():
     if args.mock and not args.list:
         mock_host, mock_port = mock_fps.configured_endpoint(CONFIG_LOCAL_H)
         cfg["mock"] = {"host": mock_host, "port": mock_port}
+        cfg["panel"] = args.panel
         cfg["inject_token"] = True  # the synthetic guest token rides plxnative-token, as for tv-session
     cases = manifest["cases"]
     if args.suite:
@@ -7010,13 +7261,12 @@ def main():
         # the app boots to QR sign-in and the scene grades a screen it never reached.
         # `--mock` resolves its own synthetic token per scene, after that scene's mock is up.
         if not args.mock and fps_run_needs_token(scenes, bool(cfg.get("shared_server"))):
-            admin_token = read_token()
             test_user = manifest.get("test_user")
             if args.owner or not test_user:
-                token, cfg["inject_token"] = admin_token, True  # no baked token in the binary
+                token, cfg["inject_token"] = read_token(), True  # no baked token in the binary
             else:
-                token = fetch_managed_user_token(admin_token, cfg["pms"]["host"],
-                                                 cfg["pms"]["port"], test_user["id"])
+                token = resolve_test_user_token(test_user, cfg["pms"]["host"],
+                                                cfg["pms"]["port"])
                 cfg["inject_token"] = True
         print(f"install: {APPID} [{FLAVOUR}] — triggers and log under {RUNDIR}")
         acquire_tv_lock(cfg["tv"], f"tests/run.py --fps ({len(scenes)} scenes) [{FLAVOUR}]")
@@ -7040,22 +7290,19 @@ def main():
                      + "\n  ".join(f"{n}  <- {r}" for n, r in item_skipped))
         sys.exit(f"no cases match --filter {args.filter!r} / --suite {args.suite!r}")
 
-    admin_token = read_token()  # owner token from config.local.h; never printed
-
     # Resolve the identity every case plays as. Default = the overlay's test_user, so
     # playback + timeline scrobbles land on that user's history and the owner's real account
     # stays clean. --owner opts back into the owner token. Neither token is ever printed.
     test_user = manifest.get("test_user")
     if args.owner or not test_user:
-        token = admin_token
+        token = read_token()  # owner token from config.local.h; never printed
         cfg["user_label"] = "owner (config.local.h)"
         cfg["inject_token"] = True  # the binary has NO baked token; every identity is injected
         if not args.owner:
             print("NOTE: no test_user in manifest.local.json -> running as OWNER "
                   "(history WILL be affected)")
     else:
-        token = fetch_managed_user_token(admin_token, cfg["pms"]["host"], cfg["pms"]["port"],
-                                         test_user["id"])
+        token = resolve_test_user_token(test_user, cfg["pms"]["host"], cfg["pms"]["port"])
         cfg["user_label"] = f'{test_user.get("title", "managed")} (id={test_user["id"]})'
         cfg["inject_token"] = True
     print(f"install: {APPID} [{FLAVOUR}] — triggers and log under {RUNDIR}")

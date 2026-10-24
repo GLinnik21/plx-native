@@ -514,14 +514,19 @@ fn endpoint_outcomes_cross_central_dispatch_machine_bridge_and_boot() {
     let b = plx_plex::plex::register_for_test("endpoint-b", "127.0.0.1", 10, "synthetic", "cid");
     plx_plex::plex::describe_server(a, "Synthetic", "Synthetic share", plx_plex::plex::GrantEvidence::outside());
     let expected = [b, a]; // Home's own-first observation order, deliberately not slot order.
-    plx_data::pms::with_refused_fetches_for_test(|| {
+    crate::app::adapters::stores::with_refused_hubs_launches_for_test(|| {
         let mut rig = Bridge::for_test(|| 0);
-        for cmd in [plx_data::stores::hubs::HubsCmd::RefetchHubs, plx_data::stores::hubs::HubsCmd::Retry] {
+        // A refused launch is settled by the NEXT Hubs step: the refetch's refusals by the retry,
+        // the retry's by whatever steps Hubs after it.
+        for (cmd, settles) in [(plx_data::stores::hubs::HubsCmd::RefetchHubs, false),
+                               (plx_data::stores::hubs::HubsCmd::Retry, true)] {
             let _ = rig.stores.take_notices();
             let generation = rig.stores.gen(StoreId::Hubs);
             let outcome = rig.stores.hubs.run(cmd);
+            rig.stores.hubs.refuse_jobs_for_test(); // a bare store step: the refusal is the runner's answer
             assert!(outcome.changed);
-            assert_eq!(outcome.endpoints.iter().map(|r| r.sid).collect::<Vec<_>>(), expected);
+            assert_eq!(outcome.endpoints.iter().map(|r| r.sid).collect::<Vec<_>>(),
+                if settles { expected.to_vec() } else { Vec::new() });
             assert_eq!(rig.stores.take_notices(), [(StoreId::Hubs, generation + 1)]);
         }
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
@@ -563,12 +568,28 @@ fn endpoint_outcomes_cross_central_dispatch_machine_bridge_and_boot() {
             .then_some(()).expect("two servers fit one step");
         drop(fx);
         drop(cx);
-        assert_eq!(out.len(), 2);
-        let actual: Vec<_> = out.into_iter().map(|e| match e.fx {
-            Fx::App(AppFx::Session(plx_session::auth::SessionCmd::RequestEndpoint { sid })) => sid,
-            _ => panic!("ViewState pump discarded its recovery outcome"),
-        }).collect();
+        assert!(out.is_empty(), "the refetch's refusals are settled by the next Hubs step");
+        stores.hubs.refuse_jobs_for_test(); // the refetch's reads, which the runner refuses
+        let next = stores.hubs.tick_with_directory(0.0, plx_data::stores::browse::DirectorySnapshot::default().view(),
+            &plx_data::pms::registry_keys_for_test());
+        stores.hubs.refuse_jobs_for_test();
+        let mut actual = Vec::new();
+        execute_endpoint_outcomes_with(next.endpoints, |command| {
+            let plx_session::auth::SessionCmd::RequestEndpoint { sid } = command
+                else { panic!("ViewState pump discarded its recovery outcome") };
+            actual.push(sid);
+        });
         assert_eq!(actual, expected);
+        // the Retry delivered above left its own refusals: the next Hubs step settles them
+        let mut out = Vec::new();
+        let mut fx = Effects::new(&mut out, MachineId::Store(StoreId::Hubs.ord()), &mut present);
+        rig.deliver(MachineId::Store(StoreId::Hubs.ord()),
+            &AppMsg::StoreWork(plx_data::stores::StoreWork::Hubs), &parts, &mut fx);
+        drop(fx);
+        assert_eq!(out.iter().map(|e| match &e.fx {
+            Fx::App(AppFx::Session(plx_session::auth::SessionCmd::RequestEndpoint { sid })) => *sid,
+            _ => panic!("the settled refusals were not translated into Session commands"),
+        }).collect::<Vec<_>>(), expected);
         rig.stores.hubs.queue_test_landing(None);
         let result = rig.stores.hubs.take_results().pop().unwrap();
         let mut out = Vec::new();
@@ -597,7 +618,22 @@ fn endpoint_outcomes_cross_central_dispatch_machine_bridge_and_boot() {
                     else { panic!("boot emitted a non-endpoint command") };
                 boot_executed.push(sid);
             });
-            assert_eq!(boot_executed, expected);
+            // Boot yields nothing here, exactly: `Reset` rotates the Hubs and Browse owners' adapters
+            // (the discovery refusal queued above goes with the old one), the refetch boot sends is
+            // refused only after its step, and a refusal is settled by the NEXT Hubs step, which
+            // boot does not run. Its set is the empty one on purpose, not by omission; the step
+            // that follows boot settles the refetch's refusals (asserted below).
+            assert!(boot_executed.is_empty(),
+                "boot's own Hubs refetch is settled by the next Hubs step, not by boot: {boot_executed:?}");
+            let mut after = Vec::new();
+            let mut fx = Effects::new(&mut after, MachineId::Store(StoreId::Hubs.ord()), &mut present);
+            rig.deliver(MachineId::Store(StoreId::Hubs.ord()),
+                &AppMsg::StoreWork(plx_data::stores::StoreWork::Hubs), &parts, &mut fx);
+            drop(fx);
+            assert_eq!(after.iter().map(|e| match &e.fx {
+                Fx::App(AppFx::Session(plx_session::auth::SessionCmd::RequestEndpoint { sid })) => *sid,
+                _ => panic!("the settled refusals were not translated into Session commands"),
+            }).collect::<Vec<_>>(), expected);
         });
     });
     plx_plex::plex::reset_servers_for_test();

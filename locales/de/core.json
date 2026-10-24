@@ -33,6 +33,7 @@
   "core.preview_domain_buffer": "Puffer",
   "core.preview_domain_transport": "Übertragungsfehler",
   "core.preview_domain_transfer_age": "Übertragungsdauer vor dem Fehler",
+  "core.preview_domain_demux_exit": "Schritt, an dem der Medienstream scheiterte",
   "core.preview_domain_elapsed": "vergangene Zeit",
   "core.preview_domain_hls_direction": "HLS-Richtung",
   "core.preview_domain_delivery_reason": "Grund der Übertragungsart",

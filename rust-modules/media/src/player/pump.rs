@@ -103,6 +103,21 @@ pub(super) fn seek_reloads(mode: SeekMode) -> bool {
     mode == SeekMode::Reload
 }
 
+/// How long a speed session may wait after loadCompleted for the pipeline's audio report before the
+/// safety net assumes the PCM was not taken. On the 3.9.3 set the report arrives before
+/// loadCompleted itself.
+const SPEED_AUDIO_DEADLINE_MS: u32 = 8_000;
+
+/// Whether THIS direct-play seek must be a full fresh `Load`: always in a reload mode, and in an
+/// in-place mode whenever playback speed is involved. A speed change rides a seek to the current
+/// position (`player::set_play_rate`, the one-shot `rate_reload`), and while the speed is not 1x
+/// every seek reloads too: a speed is fixed per Load (its PCM declaration, its time-stretch and its
+/// timeline all start with the session), and an in-place seek re-anchors the segment at content
+/// time.
+pub(super) fn seek_must_reload(mode: SeekMode, rate_permille: i32, rate_reload: bool) -> bool {
+    seek_reloads(mode) || rate_reload || rate_permille != super::RATE_NORMAL
+}
+
 fn take_coalesced() -> u32 {
     TX.seek_reqs.swap(0, Relaxed).saturating_sub(1)
 }
@@ -997,7 +1012,9 @@ fn original_tail(
 /// one is not an ordinary rejection: the Auto worker exited to hand the action over, so the stream
 /// has no producer, and a refused/lost Original decision leaves the HLS route fully intact —
 /// rebuild that exact HLS Engine at the action's position rather than turning a recoverable probe
-/// failure into the terminal playback screen. Returns whether the Engine was replaced.
+/// failure into the terminal playback screen. Settling the action `Rejected` is also what tells the
+/// reopened worker not to ask again on this encoder (`route::finish_route_action`). Returns whether
+/// the Engine was replaced.
 fn land_automatic_original(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
@@ -1670,6 +1687,8 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     {
         TX.seek_to_ns.store(-1, Relaxed);
         let coalesced = take_coalesced(); // read here so BOTH branches consume this seek's requests
+        // Consumed by whichever branch lands this seek: a transcode seek is a fresh Load anyway.
+        let rate_reload = SHARED.rate_reload.swap(false, Relaxed);
         let t = t.max(0);
         // TRANSCODE seek: restart the encode at the new &offset and do a FULL RELOAD (fresh Load).
         // A flush()+refeed of the new start.mkv left a STALE GStreamer segment → visual artifacts on
@@ -1694,7 +1713,7 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         // libraries, or set by feed_stream when sendSegmentEvent can't find the pipeline or a
         // native Seek is refused — is reload-per-seek. reload_at REPLACES the ENGINE, so `eng`
         // dangles after it: return immediately.
-        if seek_reloads(seek_mode()) {
+        if seek_must_reload(seek_mode(), super::play_rate_permille(), rate_reload) {
             crate::route::commit_user_seek();
             own_seek_under_pause(t);
             settle_reload(super::engine::reload_at(ps, pa, t), "direct seek reload");
@@ -1939,6 +1958,30 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
                     super::report::LoadElapsedClass::Over20s,
                 );
             }
+        }
+    }
+
+    // ---------- playback speed: the safety net ----------
+    // A speed session's Load declared PCM. The pipeline reports what it set up (audio-info
+    // callback, `player::note_speed_audio_report`); a report that is not the declared 48 kHz
+    // stereo, or none within SPEED_AUDIO_DEADLINE_MS of loadCompleted, means this television
+    // does not take app-fed PCM the way the 3.9.3 set does — fall back to 1x rather than play
+    // silence or a drifting sound. Video-only Loads (the `noaudio` trigger) have no audio to judge.
+    if super::applied_rate_permille() != super::RATE_NORMAL
+        && eng.stage >= Stage::Playing
+        && !super::no_audio_armed()
+        && TX.seek_to_ns.load(Relaxed) < 0
+    {
+        match SHARED.speed_audio_verdict.load(Relaxed) {
+            super::SPEED_AUDIO_BAD => {
+                super::fall_back_from_speed(ps, "the pipeline set up different audio than the PCM declared");
+            }
+            super::SPEED_AUDIO_UNKNOWN
+                if now.wrapping_sub(SHARED.dg_load_at.load(Relaxed)) > SPEED_AUDIO_DEADLINE_MS =>
+            {
+                super::fall_back_from_speed(ps, "the pipeline never reported its audio");
+            }
+            _ => {}
         }
     }
 
@@ -2502,7 +2545,7 @@ mod flight_tests {
     }
 
     /// A Home press while a seek flight is out saves the SEEK TARGET (what `app::intended_pos`
-    /// snapshots for `lifecycle.suspend`), not the playhead the viewer just left: the published
+    /// snapshots for the lifecycle's `Park`), not the playhead the viewer just left: the published
     /// `playpos_ns` still reads the pre-seek 60 s for the whole flight.
     #[test]
     fn a_suspend_snapshot_during_a_seek_flight_is_the_seek_target() {
@@ -2594,7 +2637,7 @@ mod flight_tests {
         rig.frame();
         assert!(!TX.seek_preroll_active(), "a claim hold's pause opened a preroll");
         SHARED.frames.store(1, Relaxed);
-        assert!(crate::player::lifecycle::set_transport_paused(&mut rig.pa, true), "the viewer's Pause press");
+        assert!(crate::player::transport::set_transport_paused(&mut rig.pa, true), "the viewer's Pause press");
         assert!(!super::super::claim_hold::owns_pause(), "the viewer's press outranks the hold");
         rig.flight.release_answers();
         rig.frames_until("the adaptive reload to settle", |r| {
@@ -2787,6 +2830,36 @@ mod flight_tests {
         assert_ne!(engine_epoch(&mut rig), epoch, "the producer had stopped, so the HLS Engine was reopened");
         assert!(!super::super::claim_hold::active() && !TX.paused.load(Acquire));
         assert!(!rig.flight.stopped().iter().any(|s| s == "rig-1"));
+    }
+
+    /// **A refused automatic recovery is not asked again on the route that refused it.** The
+    /// reopen above spawns a fresh HLS worker on the SAME encoder, and its capture
+    /// (`route::hls_abr_control`) used to hand it a fresh source gate: on a server that refuses
+    /// the Part and the remux every time, the worker probed, asked and was refused again ~10 s
+    /// later, a visible reload each round, for the rest of the film. The reopened worker's capture
+    /// now carries the refusal, which holds its source gate until the route changes
+    /// (`route::decision_audio_enhancement_tests`' encoder-scoped twin grades the release). The
+    /// ~10 s cadence itself is the pipeline tier's (the real worker's probe funding); this grades
+    /// its only input.
+    #[test]
+    fn a_refused_automatic_original_recovery_is_not_asked_again_on_the_reopened_hls() {
+        let mut rig = hls_rig(40);
+        FlightRig::offer_original(&mut rig.ps, false);
+        rig.flight.refuse_decisions(1);
+        rig.frame();
+        let (fresh, _) = crate::route::hls_abr_control(&rig.ps).expect("the live HLS worker's capture");
+        assert!(!fresh.original_refused_on_this_route(), "sanity: nothing has been refused yet");
+
+        FlightRig::publish_hls_to_original(60_000_000_000);
+        rig.frame();
+        rig.frames_until("the refusal's landing", |_| !crate::route::flight_outstanding());
+        assert_eq!(crate::route::transcode_session(&rig.ps), "rig-1", "the retained HLS is the route");
+        let (reopened, ticket) = crate::route::hls_abr_control(&rig.ps).expect("the reopened HLS worker's capture");
+        assert_eq!(ticket.encoder(), "rig-1");
+        assert!(
+            reopened.original_refused_on_this_route(),
+            "the worker reopened on the encoder that refused Original must not ask for it again",
+        );
     }
 
     /// A rig whose route is an Original the Auto watchdog watches (a progressive remux `rig-1`

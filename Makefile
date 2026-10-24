@@ -184,7 +184,8 @@ APPPORT      = $(if $(filter stable,$(FLAVOR)),8910,$(if $(filter nightly,$(FLAV
 
 QUERY_GOALS = print-flavor print-appid print-appdir print-rundir print-eventlog print-appport print-tv \
               print-simbin print-app-files print-deploy-files print-sentry-handler print-ffmpeg-staged \
-              print-sentry-project print-bench-config print-disk-entries
+              print-sentry-project print-bench-config print-disk-entries \
+              print-subs-font-files print-rust-toolchain print-rust-codegen print-cargo-env
 print-flavor:   ; @echo '$(FLAVOR)'
 print-appid:    ; @echo '$(APPID)'
 print-appdir:   ; @echo '$(APPDIR)'
@@ -782,10 +783,41 @@ RUST_CFG       = features:$(RUST_FEATFLAGS)$(if $(filter-out release,$(ARM_PROFI
 # different configuration deleted `pkg/plxnative`, the FFmpeg header sentinel and the staged
 # libraries — measured, by a reviewer, mid-review.
 #
-# `test-hostsim` and `check-nodef` join `build-bench` for the same reason: each only runs host cargo
-# in a tree under `rust-modules/`, builds none of the TV artifacts, and must not delete a release
-# binary because its caller's configuration differs from the stamp.
-SIDE_EFFECT_FREE = $(QUERY_GOALS) release-guard lab-guard disk disk-preflight build-bench build-bench-quick test-hostsim check-nodef
+# THE RULE, for what joins the queries and the guards above: a goal is listed when it builds, reads and
+# ships NOTHING the stamp describes -- not `pkg/plxnative`, not the ARM library, not anything staged
+# under `pkg/` -- so a parse that finds the configuration changed has nothing to protect and must not
+# delete a release build because its caller left `ARM_PROFILE=release` off. The stamp exists so that a
+# stale ARM binary is never deployed; a goal that builds, reads or ships any of that stays OUT. Decide
+# it from the recipe AND its prerequisites, never the name (`check-ass` is a test goal and stages the
+# host libass into `pkg/`). Two kinds qualify:
+#
+#   * HOST-ONLY goals: the unit-test loops and the lint pass (`test-hostsim`, `check-nodef`,
+#     `test-fast`, `test-crate`, `lint`, `build-bench`), the pieces of `check` that are plain host work
+#     (`check-cargo-lint`, `check-cargo-unit-hostsim`, `check-localization`, `check-c-unit`,
+#     `check-python-harness`), the notices tables, and the set-up and local tooling that writes outside
+#     `pkg/` (a toolchain install, the disk-watch agent, the test media, the demo library, the
+#     simulator's instance root). `make test-crate C=plx_gfx` after a `make ARM_PROFILE=release` build
+#     deleted `pkg/plxnative` and rewrote the stamp to `+profile:tvdev` (2026-10-24): it had been missed
+#     when `test-hostsim` and `check-nodef` were listed. Each such goal builds a cargo tree under
+#     `rust-modules/` or runs a script, and none of them reads what the stamp guards.
+#   * TV-CONTROL goals: `kill`, `run`, `run-stream`, `verify-deploy`, `uninstall`, `fetch-profile` and
+#     `softfloat-probe` each have `tv-lock-require` as their one prerequisite and an ssh/scp recipe, and
+#     `tv-lock-require` itself is a shell call, so they build and ship nothing. `tools/tv-session.sh`
+#     runs `make kill` with no ARM_PROFILE, which is the tvdev configuration, so after a
+#     `make ARM_PROFILE=release` build its `make kill` deleted the release-built `pkg/plxnative` and
+#     rewrote the stamp, and the next `tv-session.sh up` died on "no pkg/plxnative".
+#
+# NOT here, deliberately: `deploy`, `install`, `ipk`, `symbols*`, `libass`, `sentry-native` and the
+# probes build or ship the binary (or write `pkg/`), the host simulators and `check-ass`/`check-ffmpeg`/
+# `macapp` stage host libraries into `pkg/`, `telemetry-local` writes an INPUT of the stamp
+# (`pkg/telemetry.local.json`), and `check` is a mix: its own steps run `make -n` of the ARM library and
+# `pkg/plxnative-storage` at the checkout's root (ci/test_disk_preflight.py), and `check-cargo-unit-default`
+# grades `pkg/plxnative-storage` when it exists, so listing `check` or the goals that re-enter it
+# would only move the reset into a nested make. `ci/test_arm_profile.py` pins both sides of this: every
+# goal in the two kinds above resets nothing under a dry run, and every goal named as NOT here stays out
+# of the list. The list is ONE line on purpose (`grep '^SIDE_EFFECT_FREE' Makefile` is the exact set,
+# and several tests read it that way).
+SIDE_EFFECT_FREE = $(QUERY_GOALS) release-guard lab-guard disk disk-preflight build-bench build-bench-quick test-hostsim check-nodef test-fast test-crate lint check-cargo-lint check-cargo-unit-hostsim check-localization check-c-unit check-python-harness notices notices-verify setup-rust setup-env disk-watch disk-watch-uninstall fixtures fixtures-quick fixtures-pipeline demo-library sim-token sim-macos-token sim-clean sim-macos-clean kill run run-stream verify-deploy uninstall fetch-profile softfloat-probe tv-lock-require
 PURE_QUERY := $(if $(MAKECMDGOALS),$(if $(filter-out $(SIDE_EFFECT_FREE),$(MAKECMDGOALS)),,yes),)
 ifneq ($(PURE_QUERY),yes)
 ifneq ($(RUST_CFG),$(shell cat $(RUST_STAMP) 2>/dev/null))

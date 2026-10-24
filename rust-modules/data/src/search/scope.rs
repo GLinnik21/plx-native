@@ -138,12 +138,10 @@ pub struct ScopeCache {
 /// Read every registry input used by a standalone Search fixture. Production adds the retained
 /// Browse directory generations through [`read_key_with_directory`].
 fn read_key() -> Key {
-    let _ = plx_plex::plex::session::peek();
     read_registry_key()
 }
 
 fn read_key_with_directory(directory: crate::stores::browse::DirectoryView<'_>) -> Key {
-    let _ = plx_plex::plex::session::peek();
     let mut key = read_registry_key();
     key.sections_gen = directory.sections_gen();
     key.source_list_gen = directory.source_list_gen();

@@ -1,0 +1,19 @@
+# count: 14
+# Test/production forks (docs/sans-io.md), area `media`: one line per production-visible `#[cfg(..)]` / `cfg!(..)` whose predicate reads `test` or `feature = "test-support"`
+# (`not(test)`, `not(any(test, feature = "test-support"))`, ...) in data/, plex/, media/ and session/, keyed `<path>::<item name>` (an attribute on an item) or `<path>::<enclosing fn>` (a statement or an inline `cfg!`).
+# Logic is one thing in production and tests deliver it events: there is no cfg(test) fork. Spec: ci/check-deps.sh `forks`.
+# The gate compares this list to the tree as an exact multiset: a new site fails it, and so does a line whose site is gone, so it only shrinks. A migration lands by deleting its lines; do not add one to make a new site pass.
+rust-modules/media/src/ff.rs::BODY_SILENCE
+rust-modules/media/src/player/ass.rs::asset_dir
+rust-modules/media/src/player/engine.rs::feed_clock_us
+rust-modules/media/src/player/engine.rs::release_off_frame
+rust-modules/media/src/player/ffi_host.rs::sf_destroy
+rust-modules/media/src/player/ffi_host.rs::sf_set_volume
+rust-modules/media/src/player/mod.rs::ffi
+rust-modules/media/src/player/mod.rs::sink
+rust-modules/media/src/player/playurl.rs::parse_playurl
+rust-modules/media/src/player/preview.rs::load_still_out
+rust-modules/media/src/player/subside.rs::sync
+rust-modules/media/src/route/decision.rs::pump_play
+rust-modules/media/src/route/decision.rs::settle_plan_start_in_unit_test
+rust-modules/media/src/route/plan.rs::build_stream

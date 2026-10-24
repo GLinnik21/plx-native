@@ -298,8 +298,8 @@ pub struct DetailScreen {
     cast: Shelf,
     tabs: TabStrip,
     season_pop: CtlPop<1>,
-    ctl_pop: CtlPop<5>,
-    disc_unfurl: [Spring; 3],
+    ctl_pop: CtlPop<{ hero::MAX_CTLS }>,
+    disc_unfurl: [Spring; hero::DISCS],
     /// The bookmark disc: what the app last said of the title's membership, the flip toward its
     /// face ([`plx_appkit::watchlist_disc::flip_frame`]) and a pending press, all the shared
     /// [`plx_appkit::watchlist_disc::Disc`]'s. Render and input state only (never hashed): the
@@ -577,7 +577,7 @@ impl DetailScreen {
             tabs: TabStrip::new(),
             season_pop: CtlPop::new(),
             ctl_pop: CtlPop::new(),
-            disc_unfurl: [Spring::at(0.0); 3],
+            disc_unfurl: [Spring::at(0.0); hero::DISCS],
             watchlist: plx_appkit::watchlist_disc::Disc::new(plx_data::catalog::Membership::Unknown),
             watchlist_hex: None,
             season_metrics: season::Metrics::new(),
@@ -2290,6 +2290,12 @@ impl<H: ContentLike + crate::registry::MetadataLike> Machine<H> for DetailScreen
                 self.content(fx, ContentReq::Present(arg.clone()));
                 Handled::Yes
             }
+            // The *Play Version* surface committed a row: this page plays that version as its
+            // Play pill would.
+            ScreenEvent::App(AppMsg::PlayVersion(media)) => {
+                self.play_hero(false, Some(*media), fx, H::metadata(cx));
+                Handled::Yes
+            }
             // Dismissed: the page under this surface has just been entered again, and it decided
             // what to ask for on the store as it stands. A request of this page's still in flight
             // would land on top of the item that page found loaded — and this page's teardown,
@@ -3028,6 +3034,7 @@ impl DetailScreen {
                         hero::HeroCtl::MarkUnwatched => plx_ui::icons::Icon::Minus,
                         // At either rest the plain face; only a flip in flight layers the fill.
                         hero::HeroCtl::Watchlist => plx_appkit::watchlist_disc::paint(self.watchlist.pos()).0,
+                        hero::HeroCtl::Version => hero::VERSION_ICON,
                         _ => unreachable!(),
                     };
                     let mut button = CircleButton::new(c"".as_ptr())
@@ -4211,6 +4218,7 @@ impl DetailScreen {
         // `!hero_set().trailer` and then drive `ELEM_TRAILER` directly to prove `activate_hero`'s
         // handling stays correct even though the disc itself is never shown.)
         hero::HeroSet {
+            version: self.detail(meta).is_some_and(|d| hero_versions(d).len() >= 2),
             restart,
             trailer: false,
             alt: self.alt_available(meta),
@@ -4273,7 +4281,7 @@ impl DetailScreen {
                     .unwrap_or(episodes::Action::None);
                 match action {
                     episodes::Action::Play(i) => {
-                        self.play_episode_at(i, false, fx, meta);
+                        self.play_episode_at(i, false, None, fx, meta);
                     }
                     episodes::Action::OpenDetail(sid, rk) => {
                         self.content(fx, ContentReq::Push(ContentArg::Detail { sid, rk }))
@@ -4353,10 +4361,10 @@ impl DetailScreen {
         let measure = cx.measure;
         match ctl {
             hero::HeroCtl::Play => {
-                self.play_hero(false, fx, meta);
+                self.play_hero(false, None, fx, meta);
             }
             hero::HeroCtl::Restart => {
-                self.play_hero(true, fx, meta);
+                self.play_hero(true, None, fx, meta);
             }
             hero::HeroCtl::Trailer => {
                 // Do not touch `NowPlaying` here. Extra/Detail live in `current()`, and a
@@ -4373,10 +4381,11 @@ impl DetailScreen {
                     acodec: extra.acodec.clone(),
                     title: title.to_string(),
                     context: plx_data::metadata::TRAILER_CONTEXT.into(),
+                    version: None,
                 };
                 self.content(fx, ContentReq::Play { play, resume_ns: 0 });
             }
-            hero::HeroCtl::Alt => {
+            hero::HeroCtl::Alt | hero::HeroCtl::Version => {
                 let set = self.hero_set(meta);
                 if let Some(i) = hero::index_of(set, ctl) {
                     let widths = hero::hero_widths(
@@ -4389,13 +4398,14 @@ impl DetailScreen {
                     let mut rect = hero::hero_btn_rect_at(set, i, self.hero_chain(measure, meta).btn_y, widths);
                     rect.y -= self.scroll.pos;
                     // The ANCHOR travels on the argument, bit for bit, so the surface places
-                    // itself off the pill without the page or a static holding a `Rect` for it.
-                    self.content(
-                        fx,
-                        ContentReq::Panel(ContentPanel::AltSources {
-                            anchor: [rect.x, rect.y, rect.w, rect.h].map(f32::to_bits),
-                        }),
-                    );
+                    // itself off the control without the page or a static holding a `Rect` for it.
+                    let anchor = [rect.x, rect.y, rect.w, rect.h].map(f32::to_bits);
+                    let panel = if ctl == hero::HeroCtl::Version {
+                        ContentPanel::Versions { anchor }
+                    } else {
+                        ContentPanel::AltSources { anchor }
+                    };
+                    self.content(fx, ContentReq::Panel(panel));
                 }
             }
             // The bookmark disc: the press is the item menu's own write (`Action::WatchlistAdd` /
@@ -4435,16 +4445,25 @@ impl DetailScreen {
         }
     }
 
-    fn play_hero<H: ContentLike>(&mut self, from_start: bool, fx: &mut Effects<'_, H>, meta: plx_data::metadata::MetadataView<'_>) -> bool {
+    /// Play what the hero is about. `version` is a pick off the Play Version panel
+    /// ([`hero_versions`]): on a show page it is a version of the episode the hero plays.
+    fn play_hero<H: ContentLike>(
+        &mut self,
+        from_start: bool,
+        version: Option<plx_plex::plex::MediaId>,
+        fx: &mut Effects<'_, H>,
+        meta: plx_data::metadata::MetadataView<'_>,
+    ) -> bool {
         let Some(d) = self.detail(meta) else { return false };
         if d.is_show {
             let i = hero::hero_episode(d).and_then(|ep| d.episodes.position(&ep.rk));
             match i {
-                Some(i) => self.play_episode_at(i, from_start, fx, meta),
+                Some(i) => self.play_episode_at(i, from_start, version, fx, meta),
                 None => self.play_episode_value(
-                    hero::hero_episode(d).or_else(|| d.episodes.first()),
+                    hero_episode_played(d),
                     d,
                     from_start,
+                    version,
                     fx,
                 ),
             }
@@ -4458,8 +4477,9 @@ impl DetailScreen {
                     acodec: d.acodec.clone(),
                     title: d.title.clone(),
                     context: String::new(),
+                    version,
                 },
-                |m| PlayIntent::Movie(m.clone()),
+                |m| PlayIntent::Movie { item: m.clone(), version },
             );
             let resume_ns = play_resume_ns(from_start, d.resume_ms, d.dur_ms);
             self.content(fx, ContentReq::Play { play, resume_ns });
@@ -4471,6 +4491,7 @@ impl DetailScreen {
         &mut self,
         index: usize,
         from_start: bool,
+        version: Option<plx_plex::plex::MediaId>,
         fx: &mut Effects<'_, H>,
         meta: plx_data::metadata::MetadataView<'_>,
     ) -> bool {
@@ -4478,7 +4499,7 @@ impl DetailScreen {
             return false;
         }
         let Some(d) = self.detail(meta) else { return false };
-        self.play_episode_value(d.episodes.get(index), d, from_start, fx)
+        self.play_episode_value(d.episodes.get(index), d, from_start, version, fx)
     }
 
     fn play_episode_value<H: ContentLike>(
@@ -4486,6 +4507,7 @@ impl DetailScreen {
         episode: Option<&plx_data::metadata::Episode>,
         d: &Detail,
         from_start: bool,
+        version: Option<plx_plex::plex::MediaId>,
         fx: &mut Effects<'_, H>,
     ) -> bool {
         let Some(ep) = episode else { return false };
@@ -4534,6 +4556,7 @@ impl DetailScreen {
             acodec,
             title,
             context,
+            version,
         };
         self.content(fx, ContentReq::Play { play, resume_ns });
         true
@@ -4543,6 +4566,21 @@ impl DetailScreen {
         fx.push(Fx::App(AppFx::Content(req)));
     }
 
+}
+
+/// The episode a show page's hero Play plays: the one it is resuming, else the season's first.
+fn hero_episode_played(d: &Detail) -> Option<&plx_data::metadata::Episode> {
+    hero::hero_episode(d).or_else(|| d.episodes.first())
+}
+
+/// The versions the hero's Play chooses among, for its Play Version disc and panel: the page's
+/// own movie or episode, or on a show page the episode its Play plays.
+pub(crate) fn hero_versions(d: &Detail) -> &[plx_data::pms::MediaVersion] {
+    if d.is_show {
+        hero_episode_played(d).map_or(&[], |ep| ep.versions.as_slice())
+    } else {
+        &d.versions
+    }
 }
 
 /// A presented preview must leave the framebuffer transparent. The player route punches this

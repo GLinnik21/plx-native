@@ -35,4 +35,5 @@ pub mod timing_capsule; // the on-video Subtitle Timing capsule (plan `subtitle-
 pub mod track_menu;
 pub mod watchlist_disc; // the Watchlist bookmark disc's faces, glyphs and flip (Detail's hero and Home's)
 pub mod up_next; // end-of-episode Up Next card + auto-advance countdown
+pub mod version_list; // the Play Version rows, shared by the item menu and the Detail hero's panel
 

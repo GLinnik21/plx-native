@@ -33,6 +33,7 @@
   "core.preview_domain_buffer": "búfer",
   "core.preview_domain_transport": "fallo de transporte",
   "core.preview_domain_transfer_age": "tiempo de transferencia hasta el fallo",
+  "core.preview_domain_demux_exit": "paso en que falló el flujo multimedia",
   "core.preview_domain_elapsed": "tiempo transcurrido",
   "core.preview_domain_hls_direction": "dirección de HLS",
   "core.preview_domain_delivery_reason": "motivo de la entrega",

@@ -3,6 +3,8 @@
   "widgets.menu.quality": "Minőség",
   "widgets.menu.quality_converted": "Konvertált",
   "widgets.menu.quality_converted_note": "A Plex-szerver konvertálja ezt a videót.",
+  "widgets.menu.speed": "Lejátszási sebesség",
+  "widgets.speed.normal": "Normál",
   "widgets.menu.stats": "Részletes statisztika",
   "widgets.menu.diagnostics": "Diagnosztika küldése",
   "widgets.badge.forced": "KÉNYSZERÍTETT",

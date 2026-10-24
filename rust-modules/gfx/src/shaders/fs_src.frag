@@ -1,6 +1,8 @@
 // The SDF rounded-rect FILL: vertical gradient fill + per-corner-side radius (u_radius left /
 // u_radR right) + the focus ring/glow, with a flat fast-path for radius-0 non-focus rects
-// (full-screen scrims/backdrops pay one mix, no SDF). Also carries the focus edge-sheen
+// (one mix, no SDF). `gfx::draw_rect` sends such a rect to `fs_flat.frag` (one colour) or
+// `fs_ramp.frag` (two) instead, so the fast path here is the fallback for a failed link of
+// either and the path a sheened/shaped draw with radius < 0.5 lands on. Also carries the focus edge-sheen
 // (u_rimw/u_rimcol, additive like the focus ring) so a rounded FILL can draw the 1px perimeter
 // stroke in its own pass - same fold as fs_img.frag, for the skeleton/chip tiles that have no
 // texture. Disabled by u_rimcol.a == 0 (the default from draw_rect/draw_rrect).
@@ -98,8 +100,12 @@ highp vec2 sdBoxNormal(highp vec2 p, highp vec2 b, highp float r){
 void main(){
   float vy = v_uv.y;
   if (u_radius < 0.5 && u_radR < 0.5 && u_focus < 0.001) {
-    // The flat fast path — full-screen scrims and backdrops. Undithered ON PURPOSE: this program
-    // runs on more fragments than any other (every rect, scrim, pill and row highlight), and the
+    // The flat fast path. `draw_rect` no longer sends scrims or backdrops here (`fs_flat.frag`,
+    // `fs_ramp.frag`; this `mix` is the ramp's expression, character for character), so it is the
+    // fallback for their programs failing to link (the ramp's also failing to compile) and the path
+    // of a sheened/shaped draw with radius < 0.5.
+    // Undithered ON PURPOSE: this program
+    // runs on a great many fragments (every rounded or focused rect, pill and row highlight), and the
     // shared dither's uniform branch alone was measured at +4M shader words a frame across the
     // hero paging scene (`docs/backdrop-blur-profiling.md`, 2026-09-04). The slow fields that band
     // — the ambient wash, the glass blur, the underlay field — carry `dither.glsl`; a rect does not.

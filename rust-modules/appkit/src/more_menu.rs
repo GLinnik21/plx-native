@@ -26,6 +26,14 @@
 //! the root: the diagnostics switch is an overflow affordance, something a viewer reaches for once,
 //! to photograph a bug, not a control anyone returns to.
 //!
+//! **Playback speed** follows Quality, in the same idiom: a drill-in row reading out the current
+//! speed, onto a page of Plex Web's speeds (0.5× to 2×) with the current one checked — those this
+//! playback can play ([`plx_media::player::speed_offer`]), and no row at all where that is only 1x.
+//! It is offered under Force Direct Play too, where it is the root's first row, because a speed changes
+//! how fast the picture plays and not what the server sends. A pick reloads the stream at the
+//! viewer's position, with the picture retimed and the sound time-stretched by the app
+//! ([`plx_media::player::set_play_rate`]).
+//!
 //! **Quality** (the page) is the [`plx_media::route::Quality`] ladder — Original, fixed rungs, and Auto once its
 //! playback readiness gate opens — and its rows carry
 //! [`Row::checked`]'s LEADING checkmark, which means "the active one of several". That is the same
@@ -85,6 +93,9 @@ pub enum Action {
     ToggleStats,
     /// select a rung of the playback-quality ladder ([`plx_media::route::set_quality`])
     SetQuality(plx_media::route::Quality),
+    /// select a playback speed, in thousandths (one of [`plx_media::player::PLAY_RATES`];
+    /// [`plx_media::player::set_play_rate`])
+    SetSpeed(i32),
     /// **Lab builds only** — snapshot and upload the diagnostic ring (`crate::lab`). Here as well
     /// as in `account_menu` because the account menu is unreachable during playback, and playback
     /// is what a Cloud Test Lab session is usually reproducing.
@@ -98,6 +109,9 @@ pub enum MorePage {
     /// The playback-quality ladder: one checked-rung row per rung ([`MoreRow::Act`] of a
     /// [`Action::SetQuality`]).
     Quality,
+    /// The playback speeds, slowest first, Normal checked by default ([`MoreRow::Act`] of a
+    /// [`Action::SetSpeed`]).
+    Speed,
 }
 
 impl MorePage {
@@ -105,6 +119,7 @@ impl MorePage {
     fn title(self) -> String {
         match self {
             Self::Quality => plx_platform::i18n::msg::widgets_menu_quality().to_string(),
+            Self::Speed => plx_platform::i18n::msg::widgets_menu_speed().to_string(),
         }
     }
 
@@ -112,6 +127,7 @@ impl MorePage {
     fn code(self) -> u32 {
         match self {
             Self::Quality => 1,
+            Self::Speed => 2,
         }
     }
 }
@@ -122,6 +138,8 @@ impl MorePage {
 pub enum MoreRow {
     /// The root's Quality row ([`MorePage::Quality`]): reads out the choice and what is playing.
     OpenQuality,
+    /// The root's Playback speed row ([`MorePage::Speed`]): reads out the current speed.
+    OpenSpeed,
     Act(Action),
 }
 
@@ -159,6 +177,11 @@ pub struct MoreMenuState {
     forced: bool,
     /// The rung the root's Quality row reads out and the Quality page checks, as of the last build.
     current: plx_media::route::Quality,
+    /// The speed the root's Playback speed row reads out and the Speed page checks, as of the last
+    /// build ([`plx_media::player::play_rate_permille`]).
+    speed: i32,
+    /// The speeds this playback offers ([`plx_media::player::speed_offer`]); empty hides the row.
+    speeds: Vec<i32>,
     /// The pages pushed above the root, outermost first (empty = the root): each remembers the row
     /// that opened it and the scroll it was left at ([`page_stack`]).
     pages: PageStack<MorePage, MoreRow>,
@@ -185,6 +208,10 @@ impl FormId for Action {
             Action::SetQuality(Quality::P720) => 14,
             Action::SetQuality(Quality::P720Low) => 15,
             Action::SetQuality(Quality::P480) => 16,
+            // 20..=26 by the speed's place in the ladder; a value off the ladder is never offered
+            Action::SetSpeed(r) => {
+                20 + plx_media::player::PLAY_RATES.iter().position(|x| *x == *r).map_or(9, |i| i as u32)
+            }
         })
     }
 }
@@ -192,8 +219,9 @@ impl FormId for Action {
 impl FormId for MoreRow {
     fn key(&self) -> RowKey {
         match self {
-            // free in `Action`'s key space (0..=2 and 10..=16)
+            // free in `Action`'s key space (0..=2, 10..=16 and 20..=29)
             MoreRow::OpenQuality => RowKey(3),
+            MoreRow::OpenSpeed => RowKey(4),
             MoreRow::Act(a) => a.key(),
         }
     }
@@ -206,13 +234,16 @@ fn quality_offered(rows: &[Action], forced: bool) -> bool {
     !forced && rows.iter().any(|a| matches!(a, Action::SetQuality(_)))
 }
 
-/// The ROOT as a pure form: the Quality drill-in (headerless, like the Subtitles root's Style —
-/// it reads out the choice and what is playing as its value), then Options.
+/// The ROOT as a pure form: the Quality and Playback speed drill-ins (headerless, like the
+/// Subtitles root's Style — each reads out its current choice as its value, Quality also what is
+/// playing), then Options.
 fn root_form(
     ps: &plx_media::route::PlaybackSession,
     rows: &[Action],
     forced: bool,
     current: plx_media::route::Quality,
+    speed: i32,
+    speeds: &[i32],
 ) -> MoreForm {
     let mut options = FormSection::new(plx_platform::i18n::msg::widgets_menu_options());
     for a in rows.iter().copied().filter(|a| !matches!(a, Action::SetQuality(_))) {
@@ -224,8 +255,36 @@ fn root_form(
         RowKind::Nav(MorePage::Quality),
         Action::None,
         Row::new(plx_platform::i18n::msg::widgets_menu_quality()).value(quality_readout(ps, current)),
+    )
+    // Offered under Force Direct Play too: a speed changes how fast the picture plays, not what
+    // the server sends. Not offered where this playback cannot play any speed but 1x
+    // (`player::speed_offer`): a row that cannot change the outcome is not shown.
+    .item_if(
+        speeds.len() > 1,
+        MoreRow::OpenSpeed,
+        RowKind::Nav(MorePage::Speed),
+        Action::None,
+        Row::new(plx_platform::i18n::msg::widgets_menu_speed()).value(speed_label(speed)),
     );
     Form::new().section(quality).section(options)
+}
+
+/// The Speed PAGE: one checked row per offered speed (Plex Web's seven, in its order, less any this
+/// source cannot play — `player::speed_offer`), the current one checked.
+fn speed_form(ps: &plx_media::route::PlaybackSession, speed: i32, speeds: &[i32]) -> MoreForm {
+    let sec = speeds.iter().map(|r| Action::SetSpeed(*r)).fold(
+        FormSection::new(""),
+        |sec, a| sec.choice(MoreRow::Act(a), a, row_for(ps, a), |id| *id == MoreRow::Act(Action::SetSpeed(speed))),
+    );
+    Form::new().section(sec)
+}
+
+/// A speed's name: `Normal` at 1x, else the multiplier (`plx_media::player::rate_name`).
+fn speed_label(permille: i32) -> String {
+    if permille == plx_media::player::RATE_NORMAL {
+        return plx_platform::i18n::msg::widgets_speed_normal().to_string();
+    }
+    plx_media::player::rate_name(permille)
 }
 
 /// **The Quality row's value: "{choice} · {playing}".** The first word is what was picked; the
@@ -283,11 +342,22 @@ impl MoreMenuState {
         let forced = plx_media::route::forced_direct_play(ps);
         let rows = rows_for(forced);
         let current = plx_media::route::quality();
+        let speed = plx_media::player::play_rate_permille();
+        let speeds = plx_media::player::speed_offer(ps);
         let mut form = FormTable::new(plx_ui::table_screen::BAND_BASE);
         form.table.compact = true; // a short action list — BODY labels, like the profile menu
         form.table.min_panel_w = theme::layout::PLAYER_MENU_MIN_W;
-        form.set_or_open(root_form(ps, &rows, forced, current), None);
-        let mut st = MoreMenuState { form, rows, forced, current, pages: PageStack::new(), motion: PanelMotion::new() };
+        form.set_or_open(root_form(ps, &rows, forced, current, speed, &speeds), None);
+        let mut st = MoreMenuState {
+            form,
+            rows,
+            forced,
+            current,
+            speed,
+            speeds,
+            pages: PageStack::new(),
+            motion: PanelMotion::new(),
+        };
         // A quality entry (the failure screen's OK) opens straight on the Quality page with the
         // active rung focused, no slide: the viewer is fixing a bad decision, not browsing. Under
         // Force Direct Play there is no ladder, so it is the ordinary root.
@@ -314,6 +384,7 @@ impl MoreMenuState {
     fn page_form(&self, ps: &plx_media::route::PlaybackSession, page: MorePage) -> MoreForm {
         match page {
             MorePage::Quality => quality_form(ps, &self.rows, self.current),
+            MorePage::Speed => speed_form(ps, self.speed, &self.speeds),
         }
     }
 
@@ -322,6 +393,7 @@ impl MoreMenuState {
     fn page_initial(&self, page: MorePage) -> Option<MoreRow> {
         match page {
             MorePage::Quality => Some(MoreRow::Act(Action::SetQuality(self.current))),
+            MorePage::Speed => Some(MoreRow::Act(Action::SetSpeed(self.speed))),
         }
     }
 
@@ -345,7 +417,7 @@ impl MoreMenuState {
         let Some(saved) = self.pages.pop() else { return false };
         let leaving = page_stack::leave_page(&mut self.form);
         self.motion.begin_slide(leaving, -1.0);
-        let form = root_form(ps, &self.rows, self.forced, self.current);
+        let form = root_form(ps, &self.rows, self.forced, self.current, self.speed, &self.speeds);
         self.form.restore(form, Some(&saved.return_id), saved.scroll);
         self.form.table.set_title(None);
         true
@@ -382,7 +454,14 @@ impl MoreMenuState {
     /// follows, and the card animates to it ([`Self::update`]). Returns whether it rebuilt.
     pub fn refresh(&mut self, ps: &plx_media::route::PlaybackSession) -> bool {
         let forced = plx_media::route::forced_direct_play(ps);
-        self.refresh_to(ps, forced, rows_for(forced), plx_media::route::quality())
+        self.refresh_to(
+            ps,
+            forced,
+            rows_for(forced),
+            plx_media::route::quality(),
+            plx_media::player::play_rate_permille(),
+            plx_media::player::speed_offer(ps),
+        )
     }
 
     /// [`Self::refresh`] against explicit answers (what a test or a probe supplies in place of the
@@ -393,16 +472,30 @@ impl MoreMenuState {
         forced: bool,
         rows: Vec<Action>,
         current: plx_media::route::Quality,
+        speed: i32,
+        speeds: Vec<i32>,
     ) -> bool {
-        if forced == self.forced && rows == self.rows && current == self.current {
+        if forced == self.forced
+            && rows == self.rows
+            && current == self.current
+            && speed == self.speed
+            && speeds == self.speeds
+        {
             return false;
         }
+        self.speeds = speeds;
         self.rows = rows;
         self.forced = forced;
         self.current = current;
+        self.speed = speed;
         if let Some(first) = self.pages.first().copied() {
-            if quality_offered(&self.rows, self.forced) {
-                let page = self.pages.top().unwrap_or(MorePage::Quality);
+            // either page can vanish under the viewer: Quality with its ladder, Speed with its offer
+            let still_offered = match first.page {
+                MorePage::Speed => self.speeds.len() > 1,
+                MorePage::Quality => quality_offered(&self.rows, self.forced),
+            };
+            if still_offered {
+                let page = self.pages.top().unwrap_or(first.page);
                 let fallback = self.page_initial(page);
                 let form = self.page_form(ps, page);
                 self.form.refresh_with(form, None, fallback.as_ref());
@@ -410,14 +503,14 @@ impl MoreMenuState {
                 // the ladder is gone under the viewer: back to the root, restoring the opener and
                 // scroll the stack saved at its first push
                 self.pages.clear();
-                let form = root_form(ps, &self.rows, self.forced, self.current);
+                let form = root_form(ps, &self.rows, self.forced, self.current, self.speed, &self.speeds);
                 self.form.restore(form, Some(&first.return_id), first.scroll);
                 self.form.table.set_title(None);
                 self.motion.cancel_slide();
             }
         } else {
             let keep = self.form.selected_id().copied();
-            self.form.set_or_open(root_form(ps, &self.rows, self.forced, self.current), keep.as_ref());
+            self.form.set_or_open(root_form(ps, &self.rows, self.forced, self.current, self.speed, &self.speeds), keep.as_ref());
         }
         true
     }
@@ -672,6 +765,7 @@ fn label(a: Action) -> std::borrow::Cow<'static, str> {
         // the rung names itself — rate and frame in one string, because the row already carries
         // the picker's leading mark (see this module's doc)
         Action::SetQuality(q) => q.label().into(),
+        Action::SetSpeed(r) => speed_label(r).into(),
         Action::SendDiagnostics => plx_platform::i18n::msg::widgets_menu_diagnostics().into(),
         Action::None => "".into(),
     }
@@ -704,7 +798,7 @@ fn is_on(a: Action) -> bool {
     match a {
         Action::ToggleStats => stats_on(),
         // a rung is not a switch — see `row_for`, which gives it the leading mark instead
-        Action::SetQuality(_) | Action::SendDiagnostics | Action::None => false,
+        Action::SetQuality(_) | Action::SetSpeed(_) | Action::SendDiagnostics | Action::None => false,
     }
 }
 
@@ -745,6 +839,8 @@ fn quality_detail(q: plx_media::route::Quality, source_decodable: bool) -> &'sta
 fn row_for(ps: &plx_media::route::PlaybackSession, a: Action) -> Row {
     match a {
         Action::SetQuality(q) => Row::new(label(a)).detail(quality_detail(q, plx_media::route::source_decodable(ps))),
+        // a picker row like a rung: the leading mark comes from the page's `choice`
+        Action::SetSpeed(_) => Row::new(label(a)),
         _ => Row::new(label(a)).toggle(is_on(a)),
     }
 }
@@ -784,6 +880,7 @@ mod tests {
     /// into four lines of noise.
     #[test]
     fn only_the_original_row_says_the_source_cannot_be_preserved() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         use plx_media::route::Quality;
         assert_eq!(
             quality_detail(Quality::Original, false),
@@ -810,6 +907,7 @@ mod tests {
     /// would read as a second fact, and the two surfaces answer from the same predicate.
     #[test]
     fn the_conversion_notice_is_the_words_the_detail_page_already_uses() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         assert_eq!(
             quality_detail(plx_media::route::Quality::Original, false),
             plx_ui::fmt::converts_on_server(),
@@ -818,6 +916,7 @@ mod tests {
 
     #[test]
     fn every_row_has_a_label() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         for a in rows_for(false) {
             assert!(!label(a).is_empty(), "{a:?} would draw a blank row");
         }
@@ -848,8 +947,8 @@ mod tests {
         let rows = rows_for(forced);
         let mut form = FormTable::new(plx_ui::table_screen::BAND_BASE);
         form.table.compact = true;
-        form.set_or_open(root_form(&ps, &rows, forced, current), None);
-        MoreMenuState { form, rows, forced, current, pages: PageStack::new(), motion: PanelMotion::new() }
+        form.set_or_open(root_form(&ps, &rows, forced, current, plx_media::player::RATE_NORMAL, &plx_media::player::PLAY_RATES), None);
+        MoreMenuState { form, rows, forced, current, speed: plx_media::player::RATE_NORMAL, speeds: plx_media::player::PLAY_RATES.to_vec(), pages: PageStack::new(), motion: PanelMotion::new() }
     }
 
     /// The same menu with the Quality page pushed (and its slide skipped).
@@ -880,6 +979,7 @@ mod tests {
     /// Options row on the root and a rung on the Quality page.
     #[test]
     fn a_focused_row_commits_its_own_action() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let ps = plx_media::route::PlaybackSession::default();
         let mut st = menu(false, Quality::P1080);
         for a in rows_for(false).into_iter().filter(|a| !matches!(a, Action::SetQuality(_))) {
@@ -899,6 +999,7 @@ mod tests {
     /// longer lists a rung, the page lists the ladder in order and nothing else.
     #[test]
     fn the_root_leads_with_the_quality_row_and_the_page_holds_the_ladder() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let st = menu(false, Quality::Original);
         let ids: Vec<Option<MoreRow>> =
             (0..st.form.table.n_rows() as usize).map(|i| st.form.id_at(i).copied()).collect();
@@ -918,6 +1019,7 @@ mod tests {
     /// as its value, and the page checks that rung and no other.
     #[test]
     fn the_quality_row_reads_the_current_rung_and_the_page_checks_it() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         for q in plx_media::route::QUALITY_LADDER {
             let mut st = menu(false, q);
             let want = if q == plx_media::route::Quality::Auto {
@@ -944,6 +1046,7 @@ mod tests {
     /// title band comes and goes with the page, and BACK at the root pops nothing.
     #[test]
     fn push_lands_on_the_checked_rung_and_pop_restores_the_quality_row() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let ps = plx_media::route::PlaybackSession::default();
         for q in plx_media::route::available_quality_ladder() {
             let mut st = menu(false, *q);
@@ -965,6 +1068,7 @@ mod tests {
     /// does nothing either (there is no deeper page and no tab to switch to).
     #[test]
     fn right_enters_the_quality_row_and_nothing_else() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let ps = plx_media::route::PlaybackSession::default();
         let mut st = menu(false, Quality::P720);
         st.focus_key(Action::ToggleStats.key().0);
@@ -981,6 +1085,7 @@ mod tests {
     /// ordinary entry, the Quality page for a quality entry.
     #[test]
     fn warm_open_queues_the_opening_page_once_without_an_update() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         use plx_ui::fixture::FixtureMeasure as M;
         let _serial = plx_base::testlock::serial();
         let ps = plx_media::route::PlaybackSession::default();
@@ -998,6 +1103,7 @@ mod tests {
     /// Force Direct Play entry (no ladder) and the ordinary entry open the root.
     #[test]
     fn the_quality_entry_opens_on_the_page_and_the_ordinary_entry_on_the_root() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let _serial = plx_base::testlock::serial();
         let ps = plx_media::route::PlaybackSession::default();
         let st = MoreMenuState::new(&ps);
@@ -1012,10 +1118,97 @@ mod tests {
         }
     }
 
+    /// **The Speed page is Plex Web's seven speeds, slowest first, with the current one marked.**
+    /// It is offered on the root under Force Direct Play too — a speed changes how fast the
+    /// picture plays, not what the server sends — and a row commits its own speed.
+    #[test]
+    fn the_speed_page_offers_the_seven_speeds_with_the_current_one_checked() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        let ps = plx_media::route::PlaybackSession::default();
+        for forced in [false, true] {
+            let mut root = MoreMenuState::new(&ps);
+            let form = root_form(&ps, &rows_for(forced), forced, plx_media::route::Quality::Auto, 1000, &plx_media::player::PLAY_RATES);
+            root.form.set(form, None);
+            assert!(
+                root.form.index_of(&MoreRow::OpenSpeed).is_some(),
+                "the root offers Playback speed (forced={forced})"
+            );
+        }
+        let mut st = MoreMenuState::new(&ps);
+        st.speed = 1500;
+        st.focus_key(MoreRow::OpenSpeed.key().0);
+        st.push(&ps, MorePage::Speed);
+        assert_eq!(st.page(), Some(MorePage::Speed));
+        assert_eq!(st.form.table.title(), Some("Playback speed"));
+        let ids: Vec<MoreRow> = (0..st.form.table.n_rows() as usize).filter_map(|i| st.form.id_at(i).copied()).collect();
+        let want: Vec<MoreRow> =
+            plx_media::player::PLAY_RATES.iter().map(|r| MoreRow::Act(Action::SetSpeed(*r))).collect();
+        assert_eq!(ids, want, "the seven speeds, slowest first");
+        assert_eq!(
+            st.form.selected_id(),
+            Some(&MoreRow::Act(Action::SetSpeed(1500))),
+            "the page opens on the current speed"
+        );
+        let i = st.form.index_of(&MoreRow::Act(Action::SetSpeed(750))).unwrap();
+        match st.form.activate(i) {
+            Some(Activation::Action(got)) => assert_eq!(got, Action::SetSpeed(750)),
+            _ => panic!("a speed row must commit its own speed"),
+        }
+        assert!(st.pop(&ps), "BACK returns to the root");
+        assert_eq!(st.form.selected_id(), Some(&MoreRow::OpenSpeed), "on the row that opened it");
+    }
+
+    /// **No offer, no row**: where a playback can play only 1x (segmented HLS, an undecodable audio
+    /// codec, a television that failed PCM — `player::speed_offer`), the root has no Playback speed
+    /// row, and an open Speed page goes back to the root when the offer goes away under it.
+    #[test]
+    fn the_speed_row_follows_the_offer() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        let ps = plx_media::route::PlaybackSession::default();
+        let rows = rows_for(false);
+        for offer in [vec![], vec![1000]] {
+            let mut root = MoreMenuState::new(&ps);
+            root.form.set(root_form(&ps, &rows, false, Quality::Auto, 1000, &offer), None);
+            assert!(root.form.index_of(&MoreRow::OpenSpeed).is_none(), "offer {offer:?}");
+        }
+        let mut st = MoreMenuState::new(&ps);
+        st.focus_key(MoreRow::OpenSpeed.key().0);
+        st.push(&ps, MorePage::Speed);
+        assert_eq!(st.page(), Some(MorePage::Speed));
+        let (forced, rows, q) = (st.forced, st.rows.clone(), st.current);
+        assert!(st.refresh_to(&ps, forced, rows, q, 1000, Vec::new()));
+        assert_eq!(st.page(), None, "the page went with its offer");
+        assert!(st.form.index_of(&MoreRow::OpenSpeed).is_none());
+    }
+
+    /// The names: Normal at 1x, the multiplier with no trailing zeros otherwise, the way Plex Web
+    /// spells them (it writes `.5x`; we keep the leading zero and the real multiplication sign).
+    #[test]
+    fn speeds_are_named_like_plex_webs() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        let names: Vec<String> = plx_media::player::PLAY_RATES.iter().map(|r| speed_label(*r)).collect();
+        assert_eq!(names, ["0.5×", "0.75×", "Normal", "1.25×", "1.5×", "1.75×", "2×"]);
+    }
+
+    /// Every speed row has its own focus key, clear of every other row's.
+    #[test]
+    fn every_speed_row_has_a_distinct_key() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
+        let mut keys: Vec<u32> = plx_media::player::PLAY_RATES.iter().map(|r| Action::SetSpeed(*r).key().0).collect();
+        keys.extend([MoreRow::OpenQuality.key().0, MoreRow::OpenSpeed.key().0]);
+        keys.extend([Action::None, Action::ToggleStats, Action::SendDiagnostics].iter().map(|a| a.key().0));
+        keys.extend(plx_media::route::QUALITY_LADDER.iter().map(|q| Action::SetQuality(*q).key().0));
+        let mut sorted = keys.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), keys.len(), "a key is shared: {keys:?}");
+    }
+
     /// Reordering the rows moves no key: every row keeps the key (and so the action) it had, and
     /// the press still commits the row's own action.
     #[test]
     fn a_reordered_menu_resolves_every_key_to_the_same_action() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let ps = plx_media::route::PlaybackSession::default();
         let mut rows = rows_for(false);
         rows.reverse();
@@ -1026,6 +1219,8 @@ mod tests {
             rows: rows.clone(),
             forced: false,
             current: Quality::Auto,
+            speed: plx_media::player::RATE_NORMAL,
+            speeds: plx_media::player::PLAY_RATES.to_vec(),
             pages: PageStack::new(),
             motion: PanelMotion::new(),
         };
@@ -1044,6 +1239,7 @@ mod tests {
     /// built from, so a rung added on the wrong side of the split would reach the Options section.
     #[test]
     fn every_quality_rung_sits_ahead_of_the_stats_toggle() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let rows = rows_for(false);
         let stats_i = rows
             .iter()
@@ -1060,9 +1256,10 @@ mod tests {
     }
 
     /// **Force Direct Play leaves no Quality row and no page**: no rung can change what plays under
-    /// it, so none is offered and a quality entry lands on the first Options row.
+    /// it, so none is offered and a quality entry lands on the root's first row, Playback speed.
     #[test]
     fn forced_direct_play_offers_no_quality_row_and_lands_on_the_first_option() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let ps = plx_media::route::PlaybackSession::default();
         let forced = rows_for(true);
         assert!(
@@ -1076,8 +1273,11 @@ mod tests {
         for q in plx_media::route::QUALITY_LADDER {
             let mut st = menu(true, q);
             assert!(st.form.index_of(&MoreRow::OpenQuality).is_none());
-            assert_eq!(st.on_ok(&ps), MoreOk::Action(Action::ToggleStats), "a vanished rung opens on the first option");
             assert_eq!(st.sel(), 0);
+            // the root's first row is Playback speed, which Force Direct Play still offers
+            assert_eq!(st.form.selected_id(), Some(&MoreRow::OpenSpeed), "a vanished rung opens on the root's first row");
+            assert_eq!(st.on_ok(&ps), MoreOk::Navigated);
+            assert_eq!(st.page(), Some(MorePage::Speed));
         }
         // not forced: the ladder is unchanged, in order, ahead of Options
         let open = rows_for(false);
@@ -1099,14 +1299,15 @@ mod tests {
     /// and the focused row by id (the checked rung when the focused one left).
     #[test]
     fn a_live_rung_change_refreshes_the_open_page_in_place() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let ps = plx_media::route::PlaybackSession::default();
         let mut st = quality_page(Quality::P1080);
         st.focus_key(Action::SetQuality(Quality::P720).key().0);
         let before = st.form.table.sel;
         // the current rung moves: the check follows, focus stays on the row the viewer was on
         let rows = st.rows.clone();
-        assert!(st.refresh_to(&ps, false, rows.clone(), Quality::P480));
-        assert!(!st.refresh_to(&ps, false, rows.clone(), Quality::P480), "and only once");
+        assert!(st.refresh_to(&ps, false, rows.clone(), Quality::P480, plx_media::player::RATE_NORMAL, plx_media::player::PLAY_RATES.to_vec()));
+        assert!(!st.refresh_to(&ps, false, rows.clone(), Quality::P480, plx_media::player::RATE_NORMAL, plx_media::player::PLAY_RATES.to_vec()), "and only once");
         assert_eq!(st.page(), Some(MorePage::Quality), "still on the page");
         assert_eq!(st.form.table.title(), Some("Quality"), "the title band stays");
         assert_eq!(st.form.selected_id(), Some(&MoreRow::Act(Action::SetQuality(Quality::P720))));
@@ -1115,7 +1316,7 @@ mod tests {
         assert!(!checked(&mut st, MoreRow::Act(Action::SetQuality(Quality::P1080))));
         // the focused rung leaves the ladder: focus falls back to the checked rung, page stays
         let without: Vec<Action> = rows.iter().copied().filter(|a| *a != Action::SetQuality(Quality::P720)).collect();
-        assert!(st.refresh_to(&ps, false, without, Quality::P480));
+        assert!(st.refresh_to(&ps, false, without, Quality::P480, plx_media::player::RATE_NORMAL, plx_media::player::PLAY_RATES.to_vec()));
         assert!(st.form.index_of(&MoreRow::Act(Action::SetQuality(Quality::P720))).is_none());
         assert_eq!(st.page(), Some(MorePage::Quality));
         assert_eq!(st.form.selected_id(), Some(&MoreRow::Act(Action::SetQuality(Quality::P480))));
@@ -1126,19 +1327,22 @@ mod tests {
     /// comes back without the Quality row.
     #[test]
     fn quality_becoming_unavailable_pops_the_page_to_the_root() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let ps = plx_media::route::PlaybackSession::default();
         let mut st = quality_page(Quality::P1080);
-        assert!(st.refresh_to(&ps, true, rows_for(true), Quality::P1080));
+        assert!(st.refresh_to(&ps, true, rows_for(true), Quality::P1080, plx_media::player::RATE_NORMAL, plx_media::player::PLAY_RATES.to_vec()));
         assert_eq!(st.page(), None);
         assert_eq!(st.form.table.title(), None);
         assert!(!st.transitioning(), "a page that vanished does not slide away");
         assert!(st.form.index_of(&MoreRow::OpenQuality).is_none());
-        assert_eq!(st.form.selected_id(), Some(&MoreRow::Act(Action::ToggleStats)));
+        // the root's first row, Playback speed (Force Direct Play keeps it)
+        assert_eq!(st.form.selected_id(), Some(&MoreRow::OpenSpeed));
     }
 
     /// A key that names no row commits nothing, never a neighbour's action.
     #[test]
     fn an_unknown_key_is_none_not_a_neighbour() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let mut st = menu(false, Quality::Auto);
         let before = st.sel();
         assert!(!st.focus_key(0xdead), "an unknown key reports it seated nothing");
@@ -1150,6 +1354,7 @@ mod tests {
     /// them.
     #[test]
     fn every_key_is_distinct_and_below_the_band() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let mut all: Vec<MoreRow> = plx_media::route::QUALITY_LADDER.iter().map(|q| MoreRow::Act(Action::SetQuality(*q))).collect();
         all.extend([MoreRow::OpenQuality, MoreRow::Act(Action::ToggleStats), MoreRow::Act(Action::SendDiagnostics)]);
         let mut keys: Vec<u32> = all.iter().map(|a| a.key().0).collect();
@@ -1165,6 +1370,7 @@ mod tests {
     /// another: the same index on the two pages must not hash alike.
     #[test]
     fn the_canon_tells_the_root_and_the_page_apart() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         use plx_machine::machine::Canon;
         let fp = |st: &MoreMenuState| {
             let mut c = Canon::new();
@@ -1184,6 +1390,7 @@ mod tests {
     /// frame it animates and asks for none once settled — the same bar as the track menu.
     #[test]
     fn a_push_and_a_pop_slide_and_then_rest() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let _serial = plx_base::testlock::serial();
         const DT: f32 = 1.0 / 60.0;
         let ps = plx_media::route::PlaybackSession::default();
@@ -1227,6 +1434,7 @@ mod tests {
     /// right stay anchored, then it asks for no more frames.
     #[test]
     fn a_changed_row_set_resizes_the_card_with_a_spring_and_then_rests() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let _serial = plx_base::testlock::serial();
         const DT: f32 = 1.0 / 60.0;
         let ps = plx_media::route::PlaybackSession::default();
@@ -1313,6 +1521,8 @@ mod focus_tests {
             rows: Vec::new(),
             forced: false,
             current: plx_media::route::Quality::Auto,
+            speed: plx_media::player::RATE_NORMAL,
+            speeds: plx_media::player::PLAY_RATES.to_vec(),
             pages: PageStack::new(),
             motion: PanelMotion::new(),
         }
@@ -1327,6 +1537,7 @@ mod focus_tests {
     /// exercised here through the real `Focusable` dispatch over `HostFixture`.
     #[test]
     fn up_down_step_by_one_and_clamp_at_both_ends() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let e = EntryId(4);
         let st = three_row_menu();
         let part = MoreMenuPart { state: &st, entry: e, group: GroupId(0) };
@@ -1358,6 +1569,7 @@ mod focus_tests {
     /// paint at.
     #[test]
     fn place_matches_the_tables_own_row_frame() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let e = EntryId(4);
         let st = three_row_menu();
         let r = st.panel_rect(&plx_ui::fixture::FixtureMeasure);
@@ -1373,6 +1585,7 @@ mod focus_tests {
     /// OPENING row — a key has no neighbour to slide to — reached through `Focusable::reconcile`.
     #[test]
     fn a_stale_cursor_settles_onto_the_opening_row() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         let e = EntryId(4);
         let st = three_row_menu();
         let part = MoreMenuPart { state: &st, entry: e, group: GroupId(0) };
@@ -1401,6 +1614,7 @@ mod focus_tests {
     /// Measured with the device's whole-pixel advances.
     #[test]
     fn every_row_fits_the_panel_in_every_language() {
+        plx_media::ff::force_speed_decoder_for_test(true); // a host test loads no FFmpeg
         use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
         let ps = plx_media::route::PlaybackSession::default();
         let mut out = Vec::new();
@@ -1414,7 +1628,7 @@ mod focus_tests {
             let _guard = language_on_this_thread_for_test(language);
             for q in plx_media::route::QUALITY_LADDER {
                 let mut root = MoreMenuState::new(&ps);
-                root.form.set(root_form(&ps, &rows, false, q), None);
+                root.form.set(root_form(&ps, &rows, false, q, plx_media::player::RATE_NORMAL, &plx_media::player::PLAY_RATES), None);
                 check(language.tag(), &root.form);
                 let mut page = MoreMenuState::new(&ps);
                 page.current = q;
@@ -1426,6 +1640,16 @@ mod focus_tests {
             // the forced root (Options only)
             let forced = MoreMenuState::new(&ps);
             check(language.tag(), &forced.form);
+            // the Speed page, and the root reading out the longest speed name
+            for r in plx_media::player::PLAY_RATES {
+                let mut root = MoreMenuState::new(&ps);
+                root.form.set(root_form(&ps, &rows, false, plx_media::route::Quality::Auto, r, &plx_media::player::PLAY_RATES), None);
+                check(language.tag(), &root.form);
+            }
+            let mut page = MoreMenuState::new(&ps);
+            page.focus_key(MoreRow::OpenSpeed.key().0);
+            page.push(&ps, MorePage::Speed);
+            check(language.tag(), &page.form);
         }
         plx_ui::table::assert_no_fit_failures(&out);
     }
