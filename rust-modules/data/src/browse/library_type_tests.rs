@@ -57,7 +57,7 @@ mod tests {
             &adapter, target, crate::stores::browse::LibraryWork::Commit {
                 select: false, choice: false,
                 query: Some(crate::stores::browse::QueryEdit::LibraryType(to)),
-            }));
+            }, &ClientKeys::default(), &mut Vec::new()));
         let current = &mut state.states[1];
         current.sorts = Arc::new(vec![
             SortEntry { desc_key: String::new(), key: "titleSort".into(), title: "Title".into(), default_desc: false },
@@ -113,7 +113,7 @@ mod tests {
         assert!(state.addressed_with_adapter(&adapter, target, crate::stores::browse::LibraryWork::Commit {
             select: false, choice: false,
             query: Some(crate::stores::browse::QueryEdit::LibraryType(LibraryType::Episodes)),
-        }));
+        }, &ClientKeys::default(), &mut Vec::new()));
         let listing = state.listing_snapshot();
         assert_eq!(listing.view().library_type(), LibraryType::Episodes);
         assert_eq!(old.view().library_type(), LibraryType::Primary, "retained publication stays immutable");

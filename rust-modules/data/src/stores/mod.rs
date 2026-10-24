@@ -160,8 +160,19 @@ impl Stores {
     }
 
     /// Explicit synchronous Browse command path. The answer is available before this call returns.
-    pub fn browse_run(&self, cmd: browse::BrowseCmd) -> bool {
-        self.browse.borrow_mut().run(cmd)
+    /// `keys` is the registry's answer as of this call. A command may leave a
+    /// [`StoreJob::BrowseHubs`] on Browse's outbox: the caller that returns without
+    /// [`Stores::take_jobs_of`] and handing it to a runner has stranded the section's read. The one
+    /// production caller is `Bridge::browse_run`, which drains in the same call.
+    pub fn browse_run(&self, cmd: browse::BrowseCmd, keys: &plx_plex::plex::ClientKeys) -> bool {
+        self.browse.borrow_mut().run(cmd, keys)
+    }
+
+    /// [`Stores::browse_run`] on a registry that holds no client (no section-hubs read leaves): the
+    /// command of a test about something else.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn browse_run_for_test(&self, cmd: browse::BrowseCmd) -> bool {
+        self.browse_run(cmd, &plx_plex::plex::ClientKeys::default())
     }
 
     /// Is any shelf of the addressed section committed? (The Library pages' publication gate asks.)
@@ -256,6 +267,7 @@ impl Stores {
             StoreId::SubtitleSearch => self.subtitle_search.take_jobs(),
             StoreId::ViewReconcile => self.reconcile.take_jobs(),
             StoreId::Hubs => self.hubs.take_jobs(),
+            StoreId::Browse => self.browse.borrow_mut().take_jobs(),
             // The other stores emit no jobs yet.
             _ => Vec::new(),
         }
@@ -276,6 +288,7 @@ impl Stores {
             StoreId::SubtitleSearch => self.subtitle_search.has_jobs(),
             StoreId::ViewReconcile => self.reconcile.has_jobs(),
             StoreId::Hubs => self.hubs.has_jobs(),
+            StoreId::Browse => self.browse.borrow().has_jobs(),
             // The other stores emit no jobs yet.
             _ => false,
         }
@@ -314,10 +327,11 @@ impl Stores {
     }
 
     /// The outboxes [`Stores::viewstate_run`] and [`Stores::viewstate_pump`] can fill, in drain
-    /// order: ViewState's `RefetchHubs` and `Reset` reach the Hubs step. Their Browse, Person,
-    /// Collection, Search and Metadata edits emit no jobs from this call. The Bridge drains
-    /// exactly these after either call (`Bridge::start_store_jobs_in`).
-    pub const VIEWSTATE_FILLS: &'static [StoreId] = &[StoreId::Hubs];
+    /// order: ViewState's `RefetchHubs` and `Reset` reach the Hubs step, and its terminal
+    /// `HubsInvalidateAll` reaches Browse's section-hubs step. Its Person, Collection, Search and
+    /// Metadata edits emit no jobs from this call. The Bridge drains exactly these after either call
+    /// (`Bridge::start_store_jobs_in`).
+    pub const VIEWSTATE_FILLS: &'static [StoreId] = &[StoreId::Hubs, StoreId::Browse];
 
     /// ViewState's synchronous command path, with every Browse side effect addressed back to this
     /// aggregate. The callback is invoked inline, preserving the press-frame optimistic edit. The
@@ -342,7 +356,7 @@ impl Stores {
         let watchlist = &mut self.watchlist;
         self.viewstate.borrow_mut().run(
             cmd,
-            &mut |cmd| watchlist_tee(watchlist, cmd, |cmd| browse.borrow_mut().run(cmd)),
+            &mut |cmd| watchlist_tee(watchlist, cmd, |cmd| browse.borrow_mut().run(cmd, clients)),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory, clients),
             &mut |cmd| person.run(cmd),
             &mut |cmd| view_edit_collection(collection, cmd),
@@ -367,7 +381,7 @@ impl Stores {
         let watchlist = &mut self.watchlist;
         self.viewstate.borrow_mut().pump_with_gate(
             &self.landgate,
-            &mut |cmd| watchlist_tee(watchlist, cmd, |cmd| browse.borrow_mut().run(cmd)),
+            &mut |cmd| watchlist_tee(watchlist, cmd, |cmd| browse.borrow_mut().run(cmd, clients)),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory, clients),
             &mut |cmd| person.run(cmd),
             &mut |cmd| view_edit_collection(collection, cmd),
@@ -377,9 +391,10 @@ impl Stores {
     }
 
     /// The outboxes the notification map ([`Stores::notify_map`]) can fill, in drain order: a
-    /// server-side change reads the affected source back with `RefetchSourceQuiet`. The Bridge
-    /// drains exactly these after the map (`Bridge::start_store_jobs_in`).
-    pub const NOTIFY_FILLS: &'static [StoreId] = &[StoreId::Hubs];
+    /// server-side change reads the affected source back with `RefetchSourceQuiet` and re-reads its
+    /// sections' shelves with `HubsInvalidateServer`. The Bridge drains exactly these after the map
+    /// (`Bridge::start_store_jobs_in`).
+    pub const NOTIFY_FILLS: &'static [StoreId] = &[StoreId::Hubs, StoreId::Browse];
 
     /// The notification feed's per-frame pass. It stands down while the landing gate is armed (a
     /// recording, a replay or a dump owns the run), and never reads the registry's tokens.
@@ -465,7 +480,7 @@ impl Stores {
         let metadata = &mut self.metadata;
         crate::viewstate::publish_view(
             change,
-            &mut |cmd| browse.borrow_mut().run(cmd),
+            &mut |cmd| browse.borrow_mut().run(cmd, clients),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory, clients),
             &mut |cmd| person.run(cmd),
             &mut |cmd| view_edit_collection(collection, cmd),
@@ -494,7 +509,7 @@ impl Stores {
         let mut endpoints = EndpointRefreshSet::default();
         let changed = self.reconcile.pump_with_gate(&self.landgate, idle, clients, &mut |change| endpoints.merge(crate::viewstate::publish_view(
             { watchlist.apply_view(&change); change },
-            &mut |cmd| browse.borrow_mut().run(cmd),
+            &mut |cmd| browse.borrow_mut().run(cmd, clients),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory, clients),
             &mut |cmd| person.run(cmd),
             &mut |cmd| view_edit_collection(collection, cmd),
@@ -665,6 +680,12 @@ pub enum StoreJob {
     /// minted. Several are out at once, one per source. On the tape only through a controlled run
     /// ([`Admission::Home`]).
     Hubs(plx_machine::job::Job<crate::pms::HubRequest>, crate::pms::HubsPort),
+    /// One Library section-hubs read: a section's whole hub list, or one row's window. Emitted by
+    /// any Browse step that kicks a section's shelves (a page's `Hubs`, `HubPage`, `HubHold`, an
+    /// invalidation, the landing pass) and addressed by the request id the step minted. One is out
+    /// across all sections (the store's one claim). Not on the tape.
+    BrowseHubs(plx_machine::job::Job<crate::browse::section_hubs::BrowseHubsReq>,
+        crate::browse::section_hubs::BrowseHubsPort),
 }
 
 /// How the runner admits a job before it starts it: the policy a job kind belongs to, stated on
@@ -686,7 +707,12 @@ impl StoreJob {
         match self {
             Self::Detail(..) | Self::Collection(..) | Self::Person(..) => Admission::Tape,
             Self::Hubs(..) => Admission::Home,
-            Self::Catalog(..) | Self::SubtitleSearch(..) | Self::ViewReconcile(..) => Admission::Direct,
+            // A controlled run never emits this work: `bootstrap/effects.rs` `work_value()` refuses
+            // every `StoreWork` but `Hubs` and `BrowseDiscovery`, so no record exists to place it
+            // in and the launch is the whole decision (as for the three kinds beside it).
+            Self::Catalog(..) | Self::SubtitleSearch(..) | Self::ViewReconcile(..) | Self::BrowseHubs(..) => {
+                Admission::Direct
+            }
         }
     }
 
@@ -699,6 +725,7 @@ impl StoreJob {
             Self::SubtitleSearch(..) => StoreId::SubtitleSearch,
             Self::ViewReconcile(..) => StoreId::ViewReconcile,
             Self::Hubs(..) => StoreId::Hubs,
+            Self::BrowseHubs(..) => StoreId::Browse,
         }
     }
 }
@@ -1005,8 +1032,8 @@ impl<M> Fetch<M> {
         }
     }
 
-    /// Is mail waiting? A test's view of the mailbox without taking it.
-    #[cfg(any(test, feature = "test-support"))]
+    /// Is mail waiting? A pump's question before it takes, and a test's view of the mailbox without
+    /// taking it.
     pub fn has_mail(&self) -> bool {
         self.lock().is_some()
     }
@@ -1242,8 +1269,8 @@ mod tests {
     /// backstop, which the test rigs count as a bypass.
     #[test]
     fn the_fan_out_fill_lists_name_the_stores_the_calls_can_fill() {
-        assert_eq!(Stores::VIEWSTATE_FILLS, [StoreId::Hubs]);
-        assert_eq!(Stores::NOTIFY_FILLS, [StoreId::Hubs]);
+        assert_eq!(Stores::VIEWSTATE_FILLS, [StoreId::Hubs, StoreId::Browse]);
+        assert_eq!(Stores::NOTIFY_FILLS, [StoreId::Hubs, StoreId::Browse]);
         for list in [Stores::VIEWSTATE_FILLS, Stores::NOTIFY_FILLS] {
             for (i, id) in list.iter().enumerate() {
                 assert!(StoreId::ALL.contains(id), "{id:?} is a store");

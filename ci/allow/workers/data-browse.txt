@@ -1,4 +1,4 @@
-# count: 5
+# count: 3
 # Worker starts inside machines (docs/sans-io.md), area `data-browse`: one line per production call that starts a worker in a machine —
 # `task::spawn`, `spawn_small*`, `spawn_off_frame*`, `storage_worker::submit`, `submit_retained`, a command worker's `.submit_ticket` — keyed `<path>::<enclosing fn>::<spelling>`.
 # A machine starts no worker: its work leaves as a typed effect the app's runners execute, and the result returns as one addressed event. Spec: ci/check-deps.sh `workers`.
@@ -6,5 +6,3 @@
 rust-modules/data/src/browse/mod.rs::kick_directory::spawn_small
 rust-modules/data/src/browse/mod.rs::maybe_spawn_owned::spawn_small
 rust-modules/data/src/browse/mod.rs::spawn_discovery::spawn_small
-rust-modules/data/src/browse/section_hubs.rs::hubs_spawn::spawn_small
-rust-modules/data/src/browse/section_hubs.rs::hubs_spawn_row::spawn_small

@@ -527,12 +527,12 @@ impl Stores {
         }
         for sid in owed.listings {
             let cmd = browse::BrowseCmd::ListingsChanged { sid, library_on_stack: shown.library };
-            let _ = self.browse.borrow_mut().run(cmd);
+            let _ = self.browse.borrow_mut().run(cmd, clients);
             self.notify_map.listings_spent(sid);
             spent.relisted.push(sid);
         }
         for sid in owed.invalidate {
-            let _ = self.browse.borrow_mut().run(browse::BrowseCmd::HubsInvalidateServer { sid });
+            let _ = self.browse.borrow_mut().run(browse::BrowseCmd::HubsInvalidateServer { sid }, clients);
             spent.invalidated.push(sid);
         }
         spent

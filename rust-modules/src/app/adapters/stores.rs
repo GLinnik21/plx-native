@@ -8,7 +8,8 @@
 //! and hands each to [`StoreRunner::start`], which owns everything the data layer must not: the
 //! tape's admission record, the worker thread and the process-global client the request reads. A
 //! kind that is not on the tape (the catalog read, a plex.tv call that names no client; subtitle
-//! search; view reconcile) is started with no admission record, as its inline spawn was. The
+//! search; view reconcile; the Library's section-hubs read) is started with no admission record, as
+//! its inline spawn was. The
 //! detail pump keeps a counted backstop for a sender that did neither
 //! (`Bridge::start_late_store_jobs`).
 //!
@@ -28,7 +29,7 @@
 //! made both depend on the scheduler: a fetch for an unknown server returns in microseconds, so a
 //! fast run settled a request before an "in flight" assertion while a loaded CI runner had not
 //! settled it after a hundred `yield_now`s. `Held` parks per kind: [`StoreRunner::held`] leaves the
-//! Hubs read live (the rigs that poll for a landing, the dump and return-hold tests, need a real
+//! Home Hubs read live (the rigs that poll for a landing, the dump and return-hold tests, need a real
 //! answer on a worker), and [`StoreRunner::held_all`] parks it as well.
 //!
 //! **The registry is read here, not in a step.** A step that decides from "which client does this
@@ -37,6 +38,7 @@
 //! carries the key its step decided on, and the runner starts it only if the registry still holds
 //! that client at the moment of the launch.
 
+use plx_data::browse::section_hubs::{finish_browse_hubs_job, BrowseHubsPort, BrowseHubsReq};
 use plx_data::collection::{finish_collection_job, CollectionPort, CollectionReq};
 use plx_data::metadata::{fetch_full, finish_detail_fetch, DetailPort, DetailReq};
 use plx_data::person::{finish_person_job, PersonPort, PersonReq};
@@ -180,6 +182,7 @@ impl StoreRunner {
             StoreJob::Catalog(job, port) => self.start_catalog(job, port),
             StoreJob::SubtitleSearch(job, port) => self.start_subsearch(job, port),
             StoreJob::ViewReconcile(job, port) => self.start_reconcile(job, port),
+            StoreJob::BrowseHubs(job, port) => self.start_browse_hubs(job, port),
         }
     }
 
@@ -214,7 +217,8 @@ impl StoreRunner {
                 | StoreJob::Person(..)
                 | StoreJob::Catalog(..)
                 | StoreJob::SubtitleSearch(..)
-                | StoreJob::ViewReconcile(..)) => self.start(other),
+                | StoreJob::ViewReconcile(..)
+                | StoreJob::BrowseHubs(..)) => self.start(other),
         }
     }
 
@@ -292,6 +296,7 @@ impl StoreRunner {
                     | StoreJob::Catalog(..)
                     | StoreJob::SubtitleSearch(..)
                     | StoreJob::ViewReconcile(..)
+                    | StoreJob::BrowseHubs(..)
                 ) => held.push(kept),
             }
         }
@@ -466,10 +471,45 @@ impl StoreRunner {
         }
     }
 
+    /// A section-hubs read is not on the tape either (and a controlled run never emits it, so the
+    /// Home ledger holds no record of it): the launch is the whole decision. A launch that did not
+    /// happen (the registry no longer holds the client the step decided on, or the thread ceiling) is
+    /// refused, which hands the store's one claim back; the store's next step settles the section to
+    /// the state a read that never started leaves, and the pump after asks again.
+    fn start_browse_hubs(&mut self, job: Job<BrowseHubsReq>, port: BrowseHubsPort) {
+        let addr = job.addr;
+        let refusal = port.clone();
+        if !self.launch_browse_hubs(job, port) {
+            refusal.refused(addr);
+        }
+    }
+
+    /// Start the read on a worker, if the registry still holds the client the step decided on. The
+    /// claim was raised by the step, so a parked job (`Held`) holds it from the park: it is dropped
+    /// back by the take of its landing, or by the refusal when the client is gone by the time the
+    /// job runs.
+    fn launch_browse_hubs(&mut self, job: Job<BrowseHubsReq>, port: BrowseHubsPort) -> bool {
+        let (sid, key) = job.req.server();
+        let Some(client) = resolve(sid, key) else { return false };
+        match self {
+            Self::Live => {
+                let Job { addr, req } = job;
+                plx_base::task::spawn_small("libhubs", move || {
+                    finish_browse_hubs_job(&port, addr, client, req);
+                })
+            }
+            #[cfg(test)]
+            Self::Held { parked: held, .. } => {
+                held.push(StoreJob::BrowseHubs(job, port));
+                true
+            }
+        }
+    }
+
     /// TEST ONLY: run every parked job on THIS thread through the production completion path
     /// (`finish_detail_fetch` over `fetch_full`, `finish_collection_job`, `finish_person_job`,
-    /// `finish_hubs_job`, `finish_catalog_job`, `finish_subsearch_job`, `finish_reconcile_job`) and
-    /// return how many ran.
+    /// `finish_hubs_job`, `finish_catalog_job`, `finish_subsearch_job`, `finish_reconcile_job`,
+    /// `finish_browse_hubs_job`) and return how many ran.
     /// Their landings are queued for the next pump. Under `Live` there is nothing parked.
     #[cfg(test)]
     pub(crate) fn run_held(&mut self) -> usize {
@@ -550,6 +590,16 @@ impl StoreRunner {
                     let (sid, key) = job.req.server();
                     match resolve(sid, key) {
                         Some(client) => finish_reconcile_job(&port, job.addr, client, job.req),
+                        None => port.refused(job.addr),
+                    }
+                }
+                StoreJob::BrowseHubs(job, port) => {
+                    // The claim was raised by the step. The registry may have moved on since the
+                    // job was parked: a request whose client is gone is refused, which gives the
+                    // claim back, as the launch would have refused it.
+                    let (sid, key) = job.req.server();
+                    match resolve(sid, key) {
+                        Some(client) => finish_browse_hubs_job(&port, job.addr, client, job.req),
                         None => port.refused(job.addr),
                     }
                 }
