@@ -124,7 +124,8 @@ fn with_hubs_launch_for_test<R>(mode: HubsLaunch, f: impl FnOnce() -> R) -> R {
 }
 
 /// TEST ONLY: every Hubs launch this test thread makes inside `f` is refused by the system (no
-/// worker starts), including a launch made from a nested call into the Bridge.
+/// worker starts), including a launch made from a nested call into the Bridge. The section hubs'
+/// reads (`StoreJob::BrowseHubs`) are Hubs launches too: the system refuses their thread alike.
 #[cfg(test)]
 pub(crate) fn with_refused_hubs_launches_for_test<R>(f: impl FnOnce() -> R) -> R {
     with_hubs_launch_for_test(HubsLaunch::Refused, f)
@@ -491,6 +492,10 @@ impl StoreRunner {
     fn launch_browse_hubs(&mut self, job: Job<BrowseHubsReq>, port: BrowseHubsPort) -> bool {
         let (sid, key) = job.req.server();
         let Some(client) = resolve(sid, key) else { return false };
+        #[cfg(test)]
+        if matches!(hubs_launch_for_test(), HubsLaunch::Refused) {
+            return false; // the OS refusing the thread
+        }
         match self {
             Self::Live => {
                 let Job { addr, req } = job;
@@ -1721,6 +1726,195 @@ mod tests {
 
         assert_eq!(hubs.take_results().len(), 1, "the worker answered");
         assert!(!hubs.owed());
+    }
+
+    // ---- the section hubs' lane: a read the Browse store's step claimed, started or refused here ----
+
+    use plx_data::stores::browse::{BrowseCmd, BrowseStore, LibraryWork, SectionAddress};
+    use plx_plex::plex::ClientKey;
+
+    /// The command that asks the current section for its hubs.
+    fn browse_hubs_cmd(browse: &mut BrowseStore) -> BrowseCmd {
+        let id = browse.hubs_snapshot().view().id().expect("a section is current");
+        let target = SectionAddress { epoch: id.epoch, sid: id.sid, section: id.section };
+        BrowseCmd::Addressed { target, work: LibraryWork::Hubs { may_publish: true } }
+    }
+
+    /// A server registered at a port nothing listens on and a Browse store whose current section's
+    /// hubs read is out: the job its step emitted, keyed to the client the registry held when it did,
+    /// with the store's one claim up from that step.
+    fn browse_hubs_request() -> (ServerId, BrowseStore, StoreJob) {
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test("runner", "127.0.0.1", 9, "t", "cid");
+        let other = plx_plex::plex::register_for_test("runner-shared", "127.0.0.1", 10, "t", "cid");
+        assert!(plx_plex::plex::set_current(sid));
+        let mut browse = BrowseStore::default();
+        browse.seed_registered_table_for_test([sid, other]);
+        browse.run(BrowseCmd::SetCur(0), &registry_keys());
+        let cmd = browse_hubs_cmd(&mut browse);
+        browse.run(cmd, &registry_keys());
+        let mut jobs = browse.take_jobs();
+        assert_eq!(jobs.len(), 1, "one section, one read");
+        let job = jobs.remove(0);
+        assert!(matches!(job, StoreJob::BrowseHubs(..)), "a section-hubs job");
+        assert!(browse.hubs_read_out_for_test(), "the step raised the one claim");
+        (sid, browse, job)
+    }
+
+    /// The request id the job's one answer is filed under.
+    fn browse_hubs_id(job: &StoreJob) -> u32 {
+        let StoreJob::BrowseHubs(job, _) = job else { panic!("not a section-hubs job") };
+        job.addr.req.0
+    }
+
+    /// The key the job's step decided on.
+    fn browse_hubs_key(job: &StoreJob) -> ClientKey {
+        let StoreJob::BrowseHubs(job, _) = job else { panic!("not a section-hubs job") };
+        job.req.server().1
+    }
+
+    /// After the runner refused the read, the store's next step settles the section to the state of
+    /// a read that never started and asks again with the registry's CURRENT key: the one new job,
+    /// returned.
+    fn the_next_step_asks_again(browse: &mut BrowseStore) -> StoreJob {
+        assert!(!browse.hubs_read_out_for_test(), "the refusal gave the claim back in the call that refused");
+        let cmd = browse_hubs_cmd(browse);
+        browse.run(cmd, &registry_keys());
+        let mut jobs = browse.take_jobs();
+        assert_eq!(jobs.len(), 1, "the settled section asked again");
+        jobs.remove(0)
+    }
+
+    /// The registry still holds the client the step decided on: the worker posts its ONE answer and
+    /// the store's pump takes it, which lowers the claim the step raised. The launch raises nothing.
+    #[test]
+    fn a_browse_hubs_job_whose_client_is_still_held_runs_on_a_worker_and_answers_once() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, mut browse, job) = browse_hubs_request();
+        assert!(!browse.hubs_answer_waiting_for_test(), "nothing has answered before the launch");
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert!(browse.hubs_answer_waiting_for_test(), "the worker answered");
+        assert!(browse.hubs_read_out_for_test(), "the claim holds until the pump takes the answer");
+        let _outcome = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &registry_keys());
+        assert!(!browse.hubs_answer_waiting_for_test(), "the pump took the one answer");
+        assert!(!browse.hubs_read_out_for_test(), "…which lowered the claim");
+        assert!(!browse.has_jobs(), "and a read that landed asks for nothing more");
+    }
+
+    /// The registry moved on between the step and the launch: nothing starts and the one answer is
+    /// the refusal, which lowers the claim. The next step asks again with the new key.
+    #[test]
+    fn a_browse_hubs_job_whose_client_is_gone_is_refused_once_and_the_next_step_asks_again() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, mut browse, job) = browse_hubs_request();
+        let first = browse_hubs_key(&job);
+        replace_the_client();
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert!(!browse.hubs_answer_waiting_for_test(), "no worker started, so no landing");
+        let again = the_next_step_asks_again(&mut browse);
+        assert_ne!(browse_hubs_key(&again), first, "the new read asks with the registry's current key");
+    }
+
+    /// The system refuses the thread: the same single refusal, the same settle.
+    #[test]
+    fn a_browse_hubs_job_the_system_refuses_to_start_is_refused_once_and_the_next_step_asks_again() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, mut browse, job) = browse_hubs_request();
+        let first = browse_hubs_key(&job);
+
+        with_refused_hubs_launches_for_test(|| StoreRunner::live().start(job));
+        plx_base::task::drain_workers_for_test();
+
+        assert!(!browse.hubs_answer_waiting_for_test());
+        let again = the_next_step_asks_again(&mut browse);
+        assert_eq!(browse_hubs_key(&again), first, "nothing moved: the same client is asked again");
+    }
+
+    /// `held_all` parks the job with the claim the step raised still up, and `run_held` runs it on
+    /// the test thread through the production completion: one answer, nothing left parked.
+    #[test]
+    fn a_held_browse_hubs_job_holds_its_claim_and_runs_once_when_the_test_runs_it() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, mut browse, job) = browse_hubs_request();
+        let mut runner = StoreRunner::held_all();
+
+        runner.start(job);
+        assert!(browse.hubs_read_out_for_test(), "a parked job is a read that has not answered");
+        assert!(!browse.hubs_answer_waiting_for_test());
+
+        assert_eq!(runner.run_held_of(plx_data::stores::StoreId::Browse), 1);
+        assert!(browse.hubs_answer_waiting_for_test());
+        let _outcome = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &registry_keys());
+        assert!(!browse.hubs_read_out_for_test());
+        assert_eq!(runner.run_held(), 0, "nothing left parked");
+    }
+
+    /// A parked job whose client is gone by the time the test runs it is refused, as the launch
+    /// would have refused it; the next step asks again.
+    #[test]
+    fn a_held_browse_hubs_job_whose_client_is_gone_by_then_is_refused_and_the_next_step_asks_again() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, mut browse, job) = browse_hubs_request();
+        let first = browse_hubs_key(&job);
+        let mut runner = StoreRunner::held_all();
+
+        runner.start(job);
+        assert!(browse.hubs_read_out_for_test());
+        replace_the_client();
+        assert_eq!(runner.run_held(), 1);
+
+        assert!(!browse.hubs_answer_waiting_for_test());
+        let again = the_next_step_asks_again(&mut browse);
+        assert_ne!(browse_hubs_key(&again), first);
+    }
+
+    /// `held` parks the section hubs' read, unlike Hubs' (which stays live): no rig of the suite
+    /// waits for a section-hubs landing from a real worker, and a parked read is one the test
+    /// settles when it chooses to. The id on the parked job is the one the store addressed.
+    #[test]
+    fn the_held_runner_parks_a_browse_hubs_job() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, browse, job) = browse_hubs_request();
+        let id = browse_hubs_id(&job);
+        let mut runner = StoreRunner::held();
+
+        runner.start(job);
+        plx_base::task::drain_workers_for_test();
+        assert!(!browse.hubs_answer_waiting_for_test(), "no worker answered: the job is parked");
+
+        assert_eq!(runner.run_held_of(plx_data::stores::StoreId::Browse), 1, "parked under {id}");
+        assert!(browse.hubs_answer_waiting_for_test());
+    }
+
+    /// A section-hubs read is `Admission::Direct`: handed a Home ledger it starts as `start` starts
+    /// it and records nothing, and a ledger that has no record of it is not a failed run.
+    #[test]
+    fn a_browse_hubs_job_is_started_directly_and_leaves_the_home_ledger_untouched() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, browse, job) = browse_hubs_request();
+        assert_eq!(job.admission(), Admission::Direct);
+        let mut runner = StoreRunner::held_all();
+        let mut io = home_io(true, Vec::new());
+
+        runner.start_admitted(job, Some(&mut io));
+
+        assert!(io.requests.is_empty() && io.admissions.is_empty() && io.failure.is_none(),
+            "the ledger records Home jobs only");
+        assert_eq!(runner.run_held(), 1, "the job was started as `start` starts it");
+        assert!(browse.hubs_answer_waiting_for_test());
     }
 
     /// A controlled run recording: the launch is the recorded boolean. The ledger holds the job's

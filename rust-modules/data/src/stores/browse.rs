@@ -254,6 +254,19 @@ impl BrowseStore {
         self.state.hubs_snapshot(self.state.cur())
     }
 
+    /// TEST ONLY: is the section hubs' one shared claim up: a read is out (running, parked, or
+    /// answered and not yet taken by the pump)?
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn hubs_read_out_for_test(&self) -> bool {
+        crate::browse::hubs_claim_up_for_test(&self.adapter)
+    }
+
+    /// TEST ONLY: has a section-hubs worker answered, with the answer still waiting for the pump?
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn hubs_answer_waiting_for_test(&self) -> bool {
+        crate::browse::hubs_answer_waiting_for_test(&self.adapter)
+    }
+
     pub fn take_discovery(&mut self) -> Option<crate::browse::record::Result> {
         crate::browse::record::take_from(&self.adapter)
     }

@@ -4299,6 +4299,9 @@ mod collection_lifecycle_tests;
 #[path = "store_admission_tests.rs"]
 mod store_admission_tests;
 #[cfg(test)]
+#[path = "browse_hubs_drain_tests.rs"]
+mod browse_hubs_drain_tests;
+#[cfg(test)]
 #[path = "home_admission_tests.rs"]
 mod home_admission_tests;
 #[cfg(test)]

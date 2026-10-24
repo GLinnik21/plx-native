@@ -4072,6 +4072,20 @@ pub fn discovery_owed(adapter: &BrowseAdapter) -> bool {
     adapter.src_fetching.load(Ordering::SeqCst)
 }
 
+/// TEST ONLY: is the section hubs' one shared claim up on this adapter (a read is out, parked, or
+/// answered and not yet taken by the pump)?
+#[cfg(any(test, feature = "test-support"))]
+pub fn hubs_claim_up_for_test(adapter: &BrowseAdapter) -> bool {
+    adapter.hubs.fetch.busy()
+}
+
+/// TEST ONLY: has a section-hubs worker answered on this adapter, the answer still waiting for the
+/// pump?
+#[cfg(any(test, feature = "test-support"))]
+pub fn hubs_answer_waiting_for_test(adapter: &BrowseAdapter) -> bool {
+    adapter.hubs.fetch.has_mail()
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub fn set_adapter_src_fetching_for_test(adapter: &BrowseAdapter, fetching: bool) {
     adapter.src_fetching.store(fetching, Ordering::SeqCst);
