@@ -88,6 +88,84 @@ If layer 1 says frames are slow, use `/tmp/plxnative-framedrop` and then
 `/tmp/plxnative-profile` for GPU phase time. Arm only one profiler mode per launch. The HWCNT and
 GL-timer triggers invalidate production pacing even when their output looks plausible.
 
+## Mali T820 facts for reading the counters
+
+Measured facts for reading HWCNT, `plxnative-drawmask` and bench output. For `plxnative-drawmask`
+itself (the draw classes, `all`, `glass`, the comma list) see `docs/backdrop-blur-profiling.md`.
+
+**The GPU clock is fixed at 672 MHz (dev set, measured 2026-10-24).** The TV's `mali_kbase.ko`
+(Midgard r12p0, `lg1314_platform_config`) sets `gpu_freq_khz_max = 672000` and
+`gpu_freq_khz_min = 300000` in `kbase_platform_device_probe`. It imports `clk_get`/`clk_get_rate`/
+enable/disable but no `clk_set_rate`, regulator, OPP or devfreq symbol. Its `dvfs_callback` ->
+`kbase_pm_get_dvfs_action` only computes utilisation. The kernel clock tree (`clk/clk_summary`)
+holds only `xtal`, `busclk`, `cpupll` and `cpuclk`, with no Mali clock. So there is no GPU DVFS to
+blame.
+
+- `GPU_ACTIVE` converts to time at 672 MHz: one 60 Hz refresh is about 11.2M GPU cycles.
+- That budget is shared with the system compositor, because `GPU_ACTIVE` is GPU-global.
+- The highest `GPU_ACTIVE`-per-elapsed-ns rate seen in HWCNT legs was 649 MHz, under that ceiling.
+
+**The driver reports GPU busy % without HWCNT's `glFinish` serialization.** Debugfs is built into
+the kernel but not mounted.
+
+```bash
+mount -t debugfs none /sys/kernel/debug
+cat /sys/kernel/debug/mali0/gpu_utilization      # mali0 utilization: N
+umount /sys/kernel/debug
+```
+
+- `N` is a percent over the last `dvfs_period` (100 ms), for the whole GPU, compositor included.
+- Sample it from a TV-side shell loop whose only fork is `usleep`, so the sampler stays out of the
+  measurement:
+
+  ```sh
+  while :; do
+    read up rest < /proc/uptime
+    read a b c < /sys/kernel/debug/mali0/gpu_utilization
+    echo "$up $c" >> log
+    usleep 100000
+  done
+  ```
+
+- A Home grid-pong control run read 86-90 %. That matches HWCNT's 9.95M cycles/frame x 60 / 672 MHz.
+- Mounting debugfs is a device-state change: take the TV lock and unmount before handing back.
+
+**CPU and thermal.** LG's power manager governs the CPU only.
+
+- Its files are `/proc/lg/pm/status`, `/proc/lg/pm/tune/` (min 600 MHz, max 1008 MHz) and
+  `/proc/lg/pm/temperature`. Its GPU thermal parameters `ts_gpu_aparam`/`ts_gpu_bparam` read 0.
+- There is no cpufreq, devfreq or thermal-zone sysfs.
+- The owner's Glasshouse dashboard on the TV's port 8080 serves `/api/stats` with SoC `temp`, CPU
+  `mhz` and the foreground `app_id`. Its `gpuMhz` field is null on this set.
+- A control run at a flat 39-42 °C with the CPU pinned at 1008 MHz showed the normal miss rate, so
+  neither thermal throttling nor CPU frequency drives the misses.
+
+**Reading `plxnative-herobench` misses.**
+
+- (a) Cycle 1 of every run has one 13-16 ms `swap` on the frame after the event-log line
+  `egl surface (after 120 presents)`. That is the one-shot `EGL_BUFFER_AGE` query in
+  `plx_gfx::egl::late_probe()` (`rust-modules/gfx/src/egl.rs`, called after every swap from
+  `rust-modules/src/app/run.rs`). Count cycle 1 separately from cycles 2-60.
+- (b) On Home `hero-pong` and `grid-pong`, misses in cycles 2-60 rose sharply above about 8M
+  `GPU_ACTIVE` p50 per frame (about 70 % busy at 672 MHz):
+  - 5-14 misses at 8.1M or more;
+  - 1-5 at 7.9M or less;
+  - 0-3 at the 3.1M floor (`plxnative-drawmask=all`).
+
+  These are single runs per mask; the control spread was 7-14. Late frames wait in `clear`
+  (back-buffer release) while the CPU is idle. That is the GPU queue, not the UI thread.
+- (c) `plxnative-drawmask=glass` also skips the glass source pass, an early post-swap FBO
+  submission. A `-glass` leg is therefore not a clean measurement of glass cost.
+- (d) The Home p95 is bimodal: the ground probe's 1-in-30 kick frame adds 1.7-1.9M cycles.
+
+**Home pong census** (release build, 2026-10-24; `GPU_ACTIVE` saved per frame by removing one draw
+class with `plxnative-drawmask`):
+
+- hero: ramp bands up to 2.4M (upper bound; it includes about 35 chrome rects), photos 2.1M, wedge
+  1.1M, glass + source + blur 1.05M, floor 3.1M.
+- grid: cards 3.6M (the focus program 1.8M of that), background wash 1.8M.
+- Normal frames run about 10.3M (hero) and 9.9M (grid).
+
 ## What counts as verification
 
 The simulator cannot verify frame rate, the Mali driver, compositor behavior or live Linux stacks.
