@@ -288,6 +288,12 @@ pub(crate) struct SessionAdapter {
     /// letting the owner infer durability from `accepted`.
     live_completion: Option<plx_plex::plex::session::async_persistence::PersistenceCompletion>,
     captures: std::collections::VecDeque<(u32, u64, plx_base::storage_worker::TypedTicket<String>)>,
+    /// The one cache refresh in flight, `(owner's request, ticket)`. Its own slot, not `captures`:
+    /// `cancel`/`cancel_all` clear captures by request id and the owner's refresh ids come from
+    /// its own counter, so a login `Cancel` must never reach it. Dropped with the adapter, which is
+    /// why the bridge reconciles an owner still waiting on a slot that holds nothing
+    /// ([`Self::cache_refresh_req`]).
+    cache_refresh: Option<(u32, plx_base::storage_worker::TypedTicket<plx_plex::plex::session::CacheRefreshOutcome>)>,
     erasures: std::collections::VecDeque<PendingErase>,
     commits: std::collections::VecDeque<PendingCommit>,
     /// The report the owner now shows as queued — `(offer id, receipt)`, from either lane — until
@@ -390,7 +396,7 @@ impl SessionAdapter {
         Self { landing: Arc::new(Landing::with_limits(SESSION_DATA_RECORDS,
                 SESSION_OWNER_RESERVATIONS, SESSION_TOTAL_RESERVATIONS)),
             launches: BTreeMap::new(), native: BTreeMap::new(), resources, controlled_home: false, replay_resources: false,
-            receipts: BTreeMap::new(), live_completion: None, captures: Default::default(), erasures: Default::default(), commits: Default::default(), incident_watch: None, spawn, main_thread: PhantomData, recording_leftovers: 0,
+            receipts: BTreeMap::new(), live_completion: None, captures: Default::default(), cache_refresh: None, erasures: Default::default(), commits: Default::default(), incident_watch: None, spawn, main_thread: PhantomData, recording_leftovers: 0,
             #[cfg(test)] fixture_work: BTreeMap::new(),
             #[cfg(test)] resource_test_io: None }
     }
@@ -417,6 +423,35 @@ impl SessionAdapter {
         Some(SessionReadReply { addr: Addr { to: MachineId::Session, req: RequestId(req) }, epoch,
             value: SessionReadValue::LoginClientId(client_id) })
     }
+
+    /// Run one `RefreshCache` on the storage worker. `Some(Refused)` when the queue refused it, so
+    /// the owner hears at once and backs off; otherwise the answer comes from
+    /// [`Self::take_cache_refresh`].
+    pub(crate) fn begin_cache_refresh(&mut self, req: u32, generation: u64)
+        -> Option<plx_plex::plex::session::CacheRefreshOutcome> {
+        match plx_base::storage_worker::submit(plx_plex::plex::session::refresh_cache_job(generation)) {
+            Ok(ticket) => { self.cache_refresh = Some((req, ticket)); None }
+            Err(_) => Some(plx_plex::plex::session::CacheRefreshOutcome::Refused),
+        }
+    }
+
+    /// A finished cache refresh: its request and how it ended. A job that panicked or was dropped
+    /// unrun disconnects its ticket and reads as `Refused`.
+    pub(crate) fn take_cache_refresh(&mut self)
+        -> Option<(u32, plx_plex::plex::session::CacheRefreshOutcome)> {
+        use plx_plex::plex::session::CacheRefreshOutcome;
+        let (_, ticket) = self.cache_refresh.as_ref()?;
+        let outcome = match ticket.try_recv() {
+            Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => CacheRefreshOutcome::Refused,
+            Ok(outcome) => outcome,
+        };
+        let (req, _) = self.cache_refresh.take()?;
+        Some((req, outcome))
+    }
+
+    /// The request of the refresh this adapter holds (running, or finished and not yet taken).
+    pub(crate) fn cache_refresh_req(&self) -> Option<u32> { self.cache_refresh.as_ref().map(|(req, _)| *req) }
 
     pub(crate) fn capture(&mut self, req: u32, epoch: u64, request: SessionReadRequest) -> SessionReadReply {
         #[cfg(test)]

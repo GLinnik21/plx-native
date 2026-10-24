@@ -657,13 +657,28 @@ impl Bridge {
         }
     }
 
-    /// Observe storage landings on the frame thread, alongside store/adapter publications.
-    pub(crate) fn land_session_cache(&mut self) {
+    /// Observe storage landings on the frame thread, alongside store/adapter publications, and
+    /// tell the session owner when the cache lacks a read: `peek` never reads, so the owner's
+    /// `RefreshCache` effect is the only thing that refills it. The owner decides (one in flight,
+    /// backoff on the frame tick); this only reports, on frames where a need exists.
+    pub(crate) fn land_session_cache(&mut self, d: &mut Dispatcher<AppHost>) {
         let generation = plx_plex::plex::session::visible_generation();
         if self.session_cache_generation != generation {
             self.session_cache_generation = generation;
             plx_machine::idle::invalidate();
         }
+        let event = if let Some(req) = self.session.cache_refresh_in_flight() {
+            // The owner is waiting on a refresh. If the adapter holds no job and no result for it
+            // (the adapter was replaced or dropped, which loses the job's ticket), nothing will
+            // ever answer: refuse it, so the in-flight marker cannot stick.
+            if self.session_adapter.cache_refresh_req() == Some(req) { return; }
+            plx_session::auth::owner::SessionEvent::CacheRefreshed { req,
+                outcome: plx_plex::plex::session::CacheRefreshOutcome::Refused }
+        } else {
+            let Some(need) = plx_plex::plex::session::refresh_need() else { return };
+            plx_session::auth::owner::SessionEvent::CacheObserved(need)
+        };
+        d.emit(MachineId::Nav, Fx::Deliver(MachineId::Session, Delivery::Machine(AppMsg::Session(event))));
     }
 
     pub(crate) fn take_reqs(&mut self) -> Vec<LoopReq> {
@@ -1956,7 +1971,8 @@ impl Bridge {
         use plx_machine::machine::{Addr, RequestId};
         if let Some(io) = &mut self.home_io {
             if matches!(effect, SessionFx::Capture { .. } | SessionFx::Work { .. }
-                | SessionFx::Coordinator(_) | SessionFx::Erase { .. } | SessionFx::Incident { .. }) {
+                | SessionFx::Coordinator(_) | SessionFx::Erase { .. } | SessionFx::Incident { .. }
+                | SessionFx::RefreshCache { .. }) {
                 io.failure = Some("unsupported controlled Home Session operation");
                 return;
             }
@@ -2027,6 +2043,14 @@ impl Bridge {
             SessionFx::Incident { id, lane, report } => {
                 let delivery = self.session_adapter.report_incident(id, lane, report);
                 deliver(SessionEvent::IncidentReported { id, delivery });
+            }
+            // Every refresh ends in exactly one `CacheRefreshed`: here when the queue refuses it,
+            // from `take_live_results` when the job finishes (or panics), and from
+            // `land_session_cache` when the adapter that held it is gone.
+            SessionFx::RefreshCache { req, generation } => {
+                if let Some(outcome) = self.session_adapter.begin_cache_refresh(req, generation) {
+                    deliver(SessionEvent::CacheRefreshed { req, outcome });
+                }
             }
             SessionFx::Coordinator(action) => {
                 if matches!(action, plx_session::auth::owner::CoordinatorAction::LocalDataErased) {
@@ -2172,6 +2196,10 @@ impl Bridge {
             results.push((plx_machine::machine::Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(0) },
                 AppMsg::Session(event)));
         }
+        if let Some((req, outcome)) = self.session_adapter.take_cache_refresh() {
+            results.push((plx_machine::machine::Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(0) },
+                AppMsg::Session(plx_session::auth::owner::SessionEvent::CacheRefreshed { req, outcome })));
+        }
         // What became of the report whose Report ID the sign-in screen shows: held, delivered or
         // dropped.
         if let Some((id, delivery)) = self.session_adapter.take_incident_delivery() {
@@ -2241,7 +2269,7 @@ fn frame_ingest(
     // execution instead recaptures at its addressed result delivery above, preserving recording.
     if rig.home_io.is_none() {
         plx_base::storage_worker::pump_retained();
-        rig.land_session_cache();
+        rig.land_session_cache(d);
         let outcome = rig.stores.browse_discover_pump();
         execute_endpoint_outcomes(d, outcome.endpoints);
     }

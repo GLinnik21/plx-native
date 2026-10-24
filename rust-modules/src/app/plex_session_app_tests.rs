@@ -32,17 +32,18 @@ fn a_visible_session_change_invalidates_the_frame_once_per_landing() {
     }
     let _idle = ResetIdle;
     let mut bridge = Bridge::for_test(|| 0);
+    let mut pages = plx_ui::dispatch::Dispatcher::new();
     session::save(&signed_in());
     plx_machine::idle::reset_for_test();
     let _frame = plx_base::task::FrameScope::enter();
-    bridge.land_session_cache();
+    bridge.land_session_cache(&mut pages);
     assert_eq!(plx_machine::idle::take_local_damage(), 1, "a changed session lands on the frame step");
-    bridge.land_session_cache();
+    bridge.land_session_cache(&mut pages);
     assert_eq!(plx_machine::idle::take_local_damage(), 0, "one invalidation per landing");
     drop(_frame);
     session::save(&signed_in());
     let _frame = plx_base::task::FrameScope::enter();
-    bridge.land_session_cache();
+    bridge.land_session_cache(&mut pages);
     assert_eq!(plx_machine::idle::take_local_damage(), 0, "a save that serves the same content lands nothing");
 }
 
@@ -56,7 +57,7 @@ fn login_frames_never_wait_for_the_session_io_lock() {
     let _serial = plx_base::testlock::serial();
     let _session = session::TempSession::new("login-frame-storage-blocked");
     // The scratch session's own save primed the cache; start from the unloaded one a first frame
-    // finds, so its `peek` has a refresh to schedule behind the held lock.
+    // finds, so the owner has a refresh to run behind the held lock.
     session::invalidate_for_test();
     session::reset_reads_for_test();
     session::with_io_for_test(|| {
@@ -71,7 +72,7 @@ fn login_frames_never_wait_for_the_session_io_lock() {
         assert!(matches!(pages.top_arg(), Some(plx_screens::registry::AppArg::Login)));
         assert_eq!(session::reads_for_test(), 0, "login's Browse/Search captures may only peek");
     });
-    session::drain_refresh_for_test();
+    plx_base::storage_worker::drain_for_test();
 }
 
 /// Issue #266: the audio-DSP preference round-trips through the player's one write door
