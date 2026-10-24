@@ -563,7 +563,7 @@ impl Default for SearchAdapter {
 
 impl SearchAdapter {
     /// The mailbox for registry slot `i`, created on first use. Handed out as an `Arc` so the lock
-    /// is not held across a claim, a take or a spawn.
+    /// is not held across a claim, a take or a request.
     fn mailbox(&self, i: usize) -> Arc<Fetch> {
         let mut table = self.fetch.lock().unwrap_or_else(|e| e.into_inner());
         if table.len() <= i {
@@ -1213,7 +1213,7 @@ fn snapshot_favs_from_directory(
     state.favs = directory.favorite_sections().to_vec();
 }
 
-/// The snapshot, for the merge and for a worker about to be spawned.
+/// The snapshot, for the merge and for a request about to be emitted.
 fn favs(state: &SearchState) -> Vec<(ServerId, i64, bool)> {
     state.favs.clone()
 }
@@ -1334,7 +1334,7 @@ fn pump_with_optional_directory(
         // A launch the runner refused freed its claim in the call that refused it, and said so:
         // back off here, or the free claim would have the next request go out at once, every pump.
         // Read after the take (a refusal and an answer cannot both belong to one request) and
-        // before the spawn, so the source is judged as backed off in the very pump that sees it.
+        // before the request, so the source is judged as backed off in the very pump that sees it.
         if adapter.mailbox(i).take_refused(state.gen) {
             source_mut(state, i).retry_cd = RETRY_FRAMES;
         }

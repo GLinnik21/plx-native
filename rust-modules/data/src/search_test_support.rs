@@ -126,9 +126,9 @@ pub(super) fn fresh() -> Fresh {
     Fresh(g)
 }
 
-/// Park every source's fetch, so no host test spawns a worker: one would dial a `Client` whose
-/// port belongs to nobody, and a stray background thread also perturbs the process-wide fd
-/// count `stream.rs`'s tests assert on. Call it before every `pump()`.
+/// Park every source's fetch, so the pump emits no request: the tests that call it grade landings
+/// they inject themselves, and a request on the outbox would be one more thing for them to account
+/// for. Call it before every `pump()`.
 pub(super) fn hold_off(owner: &mut Owner) {
     for i in slots() {
         source_mut(&mut owner.state, i).retry_cd = RETRY_FRAMES;
@@ -136,7 +136,7 @@ pub(super) fn hold_off(owner: &mut Owner) {
     owner.state.armed = false;
 }
 
-/// A registered loopback slot. The port is never dialled — `hold_off` parks every spawn — so
+/// A registered loopback slot. The port is never dialled — no request is run against it — so
 /// this exists only to give [`slots`] a roster to fan out over. `register_for_test`, not the
 /// public `register`: the latter mints and PERSISTS a device uuid.
 pub(super) fn register(owner: &mut Owner, n: usize) {

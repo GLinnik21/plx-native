@@ -1,5 +1,11 @@
 //! The physically owned Search model and fetch transport (`docs/stores-as-machines.md`). Each
 //! production `Bridge` owns one [`SearchStore`]; no free selector can connect two Bridges.
+//!
+//! The store starts no worker. Its pump emits each source's fetch as a
+//! [`StoreJob::Search`](super::StoreJob::Search) and a recents edit emits its write as a
+//! [`StoreJob::SaveRecents`](super::StoreJob::SaveRecents), both on [`SearchStore::take_jobs`]; the
+//! `Bridge` takes them in the same call and the application's runner starts them
+//! (`docs/sans-io.md`, "The Search lane").
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;

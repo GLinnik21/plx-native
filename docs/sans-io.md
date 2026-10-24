@@ -154,7 +154,10 @@ Catalog step is not pure either (the bullet headed "What the Catalog step still 
 still reads). Subtitle search and the view-state read-back are the fifth and sixth (the bullet
 headed "Subtitle search and the view-state read-back"). Home's Hubs read is the seventh (the bullet
 headed "The Hubs lane"): the worker start and the `client_for` read are gone from `data/src/pms.rs`
-and its three `data-pms` ledger files are deleted.
+and its three `data-pms` ledger files are deleted. The Search screen's per-source fetches and its
+recents writes are the eighth (the bullet headed "The Search lane"): both worker starts and both
+`client_for` reads are gone from `data/src/search.rs` and `data/src/search/recents.rs`, and its two
+`data-search` ledger files are deleted.
 
 - **The shape.** `plx_machine::job` holds `Job<R>` (an `Addr` and a request that carries everything
   the worker needs), `Port<T>` (where the one answer goes: exactly one `done` or `refused` per job)
@@ -163,8 +166,10 @@ and its three `data-pms` ledger files are deleted.
   `MetadataStore::take_jobs`, `plx_data::metadata::{DetailReq, DetailPort}`,
   `plx_data::collection::{CollectionReq, CollectionPort}`,
   `plx_data::person::{PersonReq, PersonPort}` and
-  `plx_data::stores::catalog::{CatalogReq, CatalogPort}` and
-  `plx_data::pms::{HubRequest, HubsPort}`. The app's `StoreRunner`
+  `plx_data::stores::catalog::{CatalogReq, CatalogPort}`,
+  `plx_data::pms::{HubRequest, HubsPort}`,
+  `plx_data::search::{SearchReq, SearchPort}` and
+  `plx_data::search::recents::{SaveRecentsReq, SaveRecentsPort}`. The app's `StoreRunner`
   (`app/adapters/stores.rs`) executes a job and owns what `data/` must not: the tape's admission
   record, the thread and the `client_for` read. It is `Live` or `Held` (a test parks the job and
   runs it on the test thread), chosen when the `Bridge` is constructed; a newer Detail request
@@ -192,7 +197,9 @@ and its three `data-pms` ledger files are deleted.
   `Bridge::start_store_jobs_of(StoreId::Person)` and `(StoreId::Collection)`;
   `Bridge::catalog_open` and `Bridge::catalog_pump` step the Catalog store and run
   `(StoreId::Catalog)` (no keys to refill; the pump drains because its retry and its profile-switch
-  re-open both emit). Draining inside each pump, not at the frame's end, keeps every store's
+  re-open both emit). `Bridge::search_run` drains `(StoreId::Search)` after every command (a recents
+  edit emits its write there) and `Bridge::search_pump` refills the keys, steps and drains it.
+  Draining inside each pump, not at the frame's end, keeps every store's
   admissions in the tape where they were: the frame pumps Person, then Collection, then reconciles
   the Detail page. A caller that holds only the store (`describe_movie` gets a `&mut MetadataStore`)
   drains with `Bridge::start_store_jobs` the moment its call returns. A new store joins by implementing its
@@ -210,9 +217,12 @@ and its three `data-pms` ledger files are deleted.
   `HubsStore::run_with_directory`, `land_with_directory` and `tick_with_directory`: the
   Bridge's `Store(Hubs(..))`, `HubsResult` and `StoreWork::Hubs` arms and `Bridge::hubs_run` drain
   with `start_store_jobs_of(StoreId::Hubs)` in the same call, and a controlled Home arm admits the
-  jobs (`Bridge::admit_hubs_jobs`, the bullet headed "The Hubs lane").
+  jobs (`Bridge::admit_hubs_jobs`, the bullet headed "The Hubs lane"). And for the public
+  `SearchStore::run_with_directory` and `pump_with_directory_and_gate`: the Bridge's
+  `Store(Search(..))` and `StoreWork::Search` arms, `boot.rs`'s reset and `dev/scenarios.rs`'s query
+  all reach them through `Bridge::search_run` and `Bridge::search_pump`, which drain in the same call.
 - **Results do not return as FIFO events.** A gated store's result (Detail, Collection, Person,
-  subtitle search, the view-state read-back) goes back through the landing and its gate
+  Search, subtitle search, the view-state read-back) goes back through the landing and its gate
   (`landgate`, the `adapter_rank` of the landing key), where the pump takes it by value. This is a
   deliberate exception to "every result returns as one addressed event in the same drain": it is
   kept so that the replay anchors hold, because the landing is where they already record a result.
@@ -229,7 +239,7 @@ and its three `data-pms` ledger files are deleted.
   `Bridge::assert_no_store_jobs_left_for_test` (`#[cfg(test)]`) fails a frame that ends with a job
   still on an outbox or with that count above zero, so a sender that bypassed its store's Bridge
   drain (`metadata_run`, `person_pump`, `collection_pump`, `catalog_open`, `catalog_pump`,
-  `subsearch_pump`, `reconcile_pump`, `hubs_run`, `viewstate_run`, `viewstate_pump`, `notify_pump`,
+  `subsearch_pump`, `search_run`, `search_pump`, `reconcile_pump`, `hubs_run`, `viewstate_run`, `viewstate_pump`, `notify_pump`,
   `start_store_jobs_of`, `start_store_jobs_in`, `start_store_jobs`)
   is red in every rig that makes the check, the one that runs `update()`'s pump included. The rigs
   make it at the frame's end.
@@ -303,7 +313,8 @@ and its three `data-pms` ledger files are deleted.
   holds the adapter `Arc`, so a job emitted before a `Reset` answers into the adapter it was made
   for. The Hubs read differs from the six before it in four ways.
   - **A third admission family.** `StoreJob::admission()` names `Tape` (Detail, Collection, Person),
-    `Direct` (Catalog, subtitle search, view reconcile) or `Home`, as one exhaustive match. A `Home`
+    `Direct` (Catalog, subtitle search, view reconcile, Search's fetches and recents writes) or `Home`,
+    as one exhaustive match. A `Home`
     job is recorded in a controlled Home run's own ordered ledger (`HomeIo::admit`), not on the tape,
     with the bytes `HubRequest::admission` returns (the bytes `hubs_descriptor` returned before it,
     unchanged). A controlled arm of the Bridge steps Hubs, then admits what it emitted inside the
@@ -331,3 +342,40 @@ and its three `data-pms` ledger files are deleted.
   runner's, `with_refused_hubs_launches_for_test` and `with_late_hubs_launches_for_test`, `#[cfg(test)]`
   in `app/adapters/stores.rs` beside the boundary they stand for. A step test reads the jobs
   (`HubsStore::take_jobs`) or answers them (`refuse_jobs_for_test`).
+- **The Search lane.** The Search screen's fetches (`data/src/search.rs`) are the eighth store on the
+  lane, and its recents writes (`data/src/search/recents.rs`) ride the same outbox. The pump claims
+  a due source's mailbox and emits `StoreJob::Search(Job<SearchReq>, SearchPort)` instead of
+  spawning: the server, the `ClientKey` the step decided on (from the `ClientKeys`
+  `Bridge::search_pump` refilled; a server that holds no key lands as a failed fetch in the step, as
+  the missing client always did), the query, the favourite snapshot and the work (the source's first
+  answer, or one window of a lane read on a copy of the source's lane), addressed by the query's
+  generation. `finish_search_job` is the runner's call. The body keeps the `catch_unwind` guard the
+  old worker had and posts its answer outside it, so a fetch that panics lands as a failed fetch
+  and the source backs off instead of staying out. It differs from the lanes before it in four ways.
+  - **Several jobs, one per source, and the slot is in the port.** `Addr.req` is the query's
+    generation, so `SearchPort` carries the slot it answers into and the adapter it was made from:
+    `done` stamps the landing with the generation, `refused` names the slot. A `Reset` rotates the
+    adapter, and a job emitted before it answers into the retired one.
+  - **A refusal backs the source off.** `SearchPort::refused` is `Fetch::refuse_for(generation)`: it
+    gives the claim back and remembers the refusal only while the claim is still that generation's.
+    The next pump reads it (`take_refused`) before it decides to ask, so a refused source waits
+    `RETRY_FRAMES` instead of being emitted again every frame, which is what the refused inline
+    spawn did. A refusal for a request a newer query has superseded leaves the newer claim alone.
+  - **The client is resolved once, by the runner.** `StoreRunner::launch_search` resolves the slot's
+    client against the step's key and hands the worker that `&'static Client`; the worker body reads
+    no registry, so both `client_for` reads are gone from the ledger. A slot a roster change
+    re-points while a fetch is out is caught by the roster-generation supersede, which drops its
+    answer at the next pump. The kind is `Direct` and never taped.
+  - **A second kind, with a unit answer.** A recents edit queues the new history in memory
+    (`PENDING`, as before) and the step that made it emits `StoreJob::SaveRecents(Job<SaveRecentsReq>,
+    SaveRecentsPort)`, addressed by a sequence of its own. The runner starts `finish_save_recents_job`,
+    which drains the queue into the session file, and the write answers with nothing. A refused
+    write is remembered on the store's adapter and the next recents edit, even one that changes
+    nothing, asks for a drain once more (as the queue-full retry that edit already had). The runner
+    cannot be made to refuse a launch on a host (`spawn_small` has no failure knob), so its refused
+    branch is pinned at the port (`a_refused_save_is_asked_again_at_the_next_edit_once`).
+  What the Search step still reads: `server_ids()` (the roster), `server_roster_gen()`,
+  `session::current_gen()` for a scoped query, and the recents cache's session reads, which stay in
+  `recents.rs` with the statics `STORE` and `PENDING`. A test drives it with `Owner::run_jobs`
+  (`search_test_support.rs`), a fixture that plays the runner against a served fake, in place of the
+  inline fake-IO fork the old spawn carried.
