@@ -618,8 +618,13 @@ fn endpoint_outcomes_cross_central_dispatch_machine_bridge_and_boot() {
                     else { panic!("boot emitted a non-endpoint command") };
                 boot_executed.push(sid);
             });
-            assert!(boot_executed.iter().all(|sid| *sid == a),
-                "boot's own Hubs refetch is settled by the next Hubs step, not by boot");
+            // Boot yields nothing here, exactly: `Reset` rotates the Hubs and Browse owners' adapters
+            // (the discovery refusal queued above goes with the old one), the refetch boot sends is
+            // refused only after its step, and a refusal is settled by the NEXT Hubs step, which
+            // boot does not run. Its set is the empty one on purpose, not by omission; the step
+            // that follows boot settles the refetch's refusals (asserted below).
+            assert!(boot_executed.is_empty(),
+                "boot's own Hubs refetch is settled by the next Hubs step, not by boot: {boot_executed:?}");
             let mut after = Vec::new();
             let mut fx = Effects::new(&mut after, MachineId::Store(StoreId::Hubs.ord()), &mut present);
             rig.deliver(MachineId::Store(StoreId::Hubs.ord()),
