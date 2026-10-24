@@ -1599,10 +1599,10 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         None => (
             env.cached_item
                 .clone()
-                .or_else(|| plx_data::metadata::fetch_playing_item(env.sid, rk, None).map(|(item, _)| item)),
+                .or_else(|| plx_data::metadata::fetch_playing_item(client, env.sid, rk, None).map(|(item, _)| item)),
             None,
         ),
-        Some(want) => match plx_data::metadata::fetch_playing_item(env.sid, rk, Some(want)) {
+        Some(want) => match plx_data::metadata::fetch_playing_item(client, env.sid, rk, Some(want)) {
             Some((item, played)) => (Some(item), played),
             None => (None, None),
         },

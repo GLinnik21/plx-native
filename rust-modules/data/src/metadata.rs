@@ -2235,8 +2235,8 @@ fn dev_source() -> Option<&'static str> {
     None
 }
 
-fn fetch_detail(sid: plx_plex::plex::ServerId, rk: &str) -> Option<(Detail, String)> {
-    let it = plx_plex::plex::client_for(sid)?.metadata(rk)?;
+fn fetch_detail(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::ServerId, rk: &str) -> Option<(Detail, String)> {
+    let it = client.metadata(rk)?;
     let media0 = it.media_version(None).map(|(_, m)| m);
     // one read, both fields (see `Detail::blur`)
     let blur = it.ultra_blur_colors.and_then(|u| u.corners());
@@ -2689,9 +2689,10 @@ fn cached_playing(state: &MetadataState, sid: plx_plex::plex::ServerId, rk: &str
         })
 }
 
-/// `sid` names the server `rk` is a key on. It runs on the resolve worker, so the server must
-/// arrive by value: `client_opt()` here would fetch whichever server is CURRENT, and a ratingKey
-/// that also exists there would come back with a different film's stream list.
+/// `client` is the caller's own client for `sid`, the server `rk` is a key on. It runs on the
+/// resolve worker, so the server must arrive by value: `client_opt()` here would fetch whichever
+/// server is CURRENT, and a ratingKey that also exists there would come back with a different
+/// film's stream list. `sid` rides along for the identity the parsed rows carry.
 ///
 /// `want` is the version the viewer picked (`None`: the default). The store is built from THAT
 /// version's part, and the [`PlayedVersion`] beside it names the part key, codecs and
@@ -2699,6 +2700,7 @@ fn cached_playing(state: &MetadataState, sid: plx_plex::plex::ServerId, rk: &str
 /// streams. A picked version the answer no longer lists falls back to the default with no
 /// `PlayedVersion`, and the caller logs it.
 pub fn fetch_playing_item(
+    client: &'static plx_plex::plex::Client,
     sid: plx_plex::plex::ServerId,
     rk: &str,
     want: Option<plx_plex::plex::MediaId>,
@@ -2706,7 +2708,7 @@ pub fn fetch_playing_item(
     if rk.is_empty() {
         return None;
     }
-    let it = plx_plex::plex::client_for(sid).and_then(|c| c.metadata(rk));
+    let it = client.metadata(rk);
     Some(playing_version_from(sid, rk, it.as_ref(), want))
 }
 
@@ -3242,21 +3244,21 @@ mod lang_matches_tests {
 
 /// fetch one item's full metadata and parse its streams into `d` — used to borrow a
 /// show's first-episode audio/subtitle tracks (the show container carries none).
-fn fetch_item_streams(sid: plx_plex::plex::ServerId, rk: &str, d: &mut Detail) {
-    if let Some(it) = plx_plex::plex::client_for(sid).and_then(|c| c.metadata(rk)) {
+fn fetch_item_streams(client: &'static plx_plex::plex::Client, rk: &str, d: &mut Detail) {
+    if let Some(it) = client.metadata(rk) {
         parse_streams(&it, d);
     }
 }
 
-fn fetch_seasons(sid: plx_plex::plex::ServerId, rk: &str) -> Vec<Season> {
-    let mc = match plx_plex::plex::client_for(sid).and_then(|c| c.children(rk)) {
+fn fetch_seasons(client: &'static plx_plex::plex::Client, rk: &str) -> Vec<Season> {
+    let mc = match client.children(rk) {
         Some(m) => m,
         None => {
             // The empty Vec is the deliberate degrade (see `fetch_episodes`'s note), but by the
             // time `fetch_full` prints `seasons=` the refusal and a show that genuinely has no
             // seasons are the same zero — so the refusal has to say so HERE, or the log records a
             // failed GET as a fact about the library.
-            plx_base::eventlog::log(&format!("detail: rk={rk} — no season list (server unresolved, or it refused); the seasons= below is that, not a count"));
+            plx_base::eventlog::log(&format!("detail: rk={rk} — no season list (the server refused or did not answer); the seasons= below is that, not a count"));
             return Vec::new();
         }
     };
@@ -3407,17 +3409,17 @@ fn trailer_from_item(it: &plx_plex::plex::Metadata) -> Option<Extra> {
     playable_trailer_meta(it).then(|| convert_extra(it))
 }
 
-fn fetch_primary_trailer(sid: plx_plex::plex::ServerId, primary: &str) -> Option<Extra> {
+fn fetch_primary_trailer(client: &'static plx_plex::plex::Client, primary: &str) -> Option<Extra> {
     let rk = extra_key_tail(primary);
     if rk.is_empty() {
         return None;
     }
-    let it = plx_plex::plex::client_for(sid).and_then(|c| c.metadata(rk))?;
+    let it = client.metadata(rk)?;
     trailer_from_item(&it)
 }
 
-fn fetch_extras_rows(sid: plx_plex::plex::ServerId, rk: &str) -> Option<Vec<plx_plex::plex::Metadata>> {
-    match plx_plex::plex::client_for(sid).and_then(|c| c.extras(rk)) {
+fn fetch_extras_rows(client: &'static plx_plex::plex::Client, rk: &str) -> Option<Vec<plx_plex::plex::Metadata>> {
+    match client.extras(rk) {
         Some(mc) => Some(mc.metadata),
         None => {
             plx_base::eventlog::log(&format!(
@@ -3431,7 +3433,7 @@ fn fetch_extras_rows(sid: plx_plex::plex::ServerId, rk: &str) -> Option<Vec<plx_
 /// Resolve the Trailer control's extra. At most one follow-up `metadata()` when every trailer
 /// row arrived without a Part; never N+1 over the rest of the list.
 fn resolve_trailer(
-    sid: plx_plex::plex::ServerId,
+    client: &'static plx_plex::plex::Client,
     rows: &[plx_plex::plex::Metadata],
     primary: &str,
 ) -> Option<Extra> {
@@ -3439,7 +3441,7 @@ fn resolve_trailer(
         return Some(e);
     }
     let candidate = trailer_fill_candidate(rows, primary)?;
-    let it = plx_plex::plex::client_for(sid).and_then(|c| c.metadata(&candidate.rating_key))?;
+    let it = client.metadata(&candidate.rating_key)?;
     let e = convert_extra(&it);
     e.playable().then_some(e)
 }
@@ -3457,12 +3459,12 @@ fn extras_from_rows(rows: &[plx_plex::plex::Metadata]) -> Vec<Extra> {
 /// fills a missing Part replaces that row so the shelf tile and the Trailer disc agree.
 fn project_extras(
     d: &mut Detail,
-    sid: plx_plex::plex::ServerId,
+    client: &'static plx_plex::plex::Client,
     rows: &[plx_plex::plex::Metadata],
     primary: &str,
 ) {
     d.extras = extras_from_rows(rows);
-    let Some(winner) = resolve_trailer(sid, rows, primary) else {
+    let Some(winner) = resolve_trailer(client, rows, primary) else {
         d.trailer_rk.clear();
         return;
     };
@@ -3479,8 +3481,8 @@ fn project_extras(
     d.trailer_rk = winner.rk;
 }
 
-fn fetch_related(sid: plx_plex::plex::ServerId, rk: &str) -> RelatedRows {
-    let mc = match plx_plex::plex::client_for(sid).and_then(|c| c.related(rk)) {
+fn fetch_related(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::ServerId, rk: &str) -> RelatedRows {
+    let mc = match client.related(rk) {
         Some(m) => m,
         None => {
             // Same shape as `fetch_seasons` above: the degrade is deliberate, the silence is not —
@@ -3604,8 +3606,8 @@ fn collection_shelf(
 /// The season is chosen HERE, in the fetch, and its episodes are loaded in the same pass: picking
 /// it later (a `LoadSeason` once the page landed) would flash season 1's row first and spend a
 /// round trip fetching episodes nobody looks at.
-fn load_show_seasons(sid: plx_plex::plex::ServerId, rk: &str, d: &mut Detail, prefer: Option<i64>) {
-    d.seasons = fetch_seasons(sid, rk);
+fn load_show_seasons(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::ServerId, rk: &str, d: &mut Detail, prefer: Option<i64>) {
+    d.seasons = fetch_seasons(client, rk);
     d.cur_season = initial_season(&d.seasons, d.on_deck.as_ref(), prefer);
     if let Some(season) = d.seasons.get(d.cur_season) {
         // a season failure is not worth failing the whole page over — the hero, cast
@@ -3653,13 +3655,16 @@ fn selected_season_number(state: &MetadataState, sid: plx_plex::plex::ServerId, 
 /// the related hub.
 /// 2 PMS round-trips for a movie, 5 for a show.
 ///
+/// Every GET but the opening season's episodes goes through `client`, the one the runner resolved
+/// for the job ([`finish_detail_fetch`]): the chain re-reads no registry between its GETs.
+///
 /// PURE NETWORK + PARSING — it touches no `static mut`, which is what let it run either on the
 /// main thread or on a worker (the app's `StoreRunner`, from the job [`request_detail`] emits)
 /// while a synchronous caller still existed (phase 12/D7 deleted the last one, `load_detail_now`;
 /// see that deletion's note below). Keep it
 /// that way: installing the result is the caller's job, and on the async path that must happen on
 /// the main thread (see the `DETAIL_LANDING`/`land_detail` note).
-pub fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) -> Option<Detail> {
+pub fn fetch_full(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) -> Option<Detail> {
     // `ms=` is the whole chain's wall clock. It is the exact cost `request_detail` moves off the
     // SDL loop, so it is the number to read when judging whether a call site can afford to block
     // — note the framedrop breakdown CANNOT show it (fd_pc0 starts after event handling).
@@ -3673,18 +3678,15 @@ pub fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) 
     // but all four are equally silent in the log without this, and byte-identical to the user
     // never having pressed OK.
     //
-    // Worded as "no metadata" rather than "the GET failed": `fetch_detail` is
-    // `client_for(sid)?.metadata(rk)?`, so this arm is also taken when the server id resolves to no
-    // client at all and no request was ever issued. One line for both is right — the page is equally
-    // empty either way — but it must not assert a round trip that may not have happened.
-    let Some((mut d, primary_extra_key)) = fetch_detail(sid, rk) else {
-        plx_base::eventlog::log(&format!(
-            "detail: rk={rk} sid={sid:?} — no metadata (server unresolved, or it refused)"
-        ));
+    // Worded as "no metadata" rather than "the GET failed": `fetch_detail` is `client.metadata(rk)?`,
+    // and `metadata` answers `None` for a transport failure, a non-2xx and an unparseable body alike.
+    // One line for all of them is right — the page is equally empty — but it must not assert which.
+    let Some((mut d, primary_extra_key)) = fetch_detail(client, sid, rk) else {
+        plx_base::eventlog::log(&format!("detail: rk={rk} sid={sid:?} — no metadata (the server refused or did not answer)"));
         return None;
     };
     if d.is_show {
-        load_show_seasons(sid, rk, &mut d, prefer);
+        load_show_seasons(client, sid, rk, &mut d, prefer);
         // A show carries no streams itself — backfill from ONE episode: the one the hero is
         // about, which is the one Play starts (`on_deck` when the show has been started, else
         // its first). Everything downstream reads this as "the show's" media, so borrowing from
@@ -3693,7 +3695,7 @@ pub fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) 
         let hero_ep = d.on_deck.as_ref().map(|e| e.rk.clone());
         let ep = hero_ep.or_else(|| d.episodes.first().map(|e| e.rk.clone()));
         if let Some(ep_rk) = ep {
-            fetch_item_streams(sid, &ep_rk, &mut d);
+            fetch_item_streams(client, &ep_rk, &mut d);
             // NB `part`/`vcodec`/`acodec` are deliberately NOT backfilled. They are the item's OWN
             // playable file, and "a show has an empty part" is load-bearing elsewhere — `app.rs`'s
             // play trigger reads it as "this is a show, take the episode's resume point instead",
@@ -3711,8 +3713,8 @@ pub fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) 
         let (related, extras) = std::thread::scope(|s| {
             let extras_h = std::thread::Builder::new()
                 .name("detail-extras".into())
-                .spawn_scoped(s, || fetch_extras_rows(sid, rk));
-            let related = fetch_related(sid, rk);
+                .spawn_scoped(s, || fetch_extras_rows(client, rk));
+            let related = fetch_related(client, sid, rk);
             let extras = match extras_h {
                 Ok(h) => h.join().ok().flatten(),
                 Err(_) => None,
@@ -3725,14 +3727,14 @@ pub fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) 
         match extras {
             Some(rows) => {
                 extras_src = "extras";
-                project_extras(&mut d, sid, &rows, &primary_extra_key);
+                project_extras(&mut d, client, &rows, &primary_extra_key);
             }
             None => {
                 // Refused extras GET: still try the parent's `primaryExtraKey` (one metadata GET)
                 // so a blip on `/extras` does not hide a trailer the parent already named.
                 // An empty extras *list* is a real answer and must not do this. The filled
                 // trailer is also the shelf's one tile.
-                if let Some(e) = fetch_primary_trailer(sid, &primary_extra_key) {
+                if let Some(e) = fetch_primary_trailer(client, &primary_extra_key) {
                     d.trailer_rk = e.rk.clone();
                     d.extras = vec![e];
                     extras_src = "primary";
@@ -3743,7 +3745,7 @@ pub fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) 
         }
     } else {
         extras_src = "skip";
-        let related = fetch_related(sid, rk);
+        let related = fetch_related(client, sid, rk);
         d.related = related.related;
         d.related_tail = related.tail;
         d.collection = related.collection;
@@ -3905,7 +3907,8 @@ fn begin_detail_request(adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId
 /// main thread. `sid` names the server to ask and `prefer` is the season the page opens on (read
 /// from the store at request time, [`selected_season_number`]); the worker must not read either
 /// from the current server or the store (see the fetch block's note), and the page being opened
-/// may belong to a machine that is not the current one at all.
+/// may belong to a machine that is not the current one at all. The runner resolves `sid` to its
+/// client once, at the admission, and the chain runs through that client ([`finish_detail_fetch`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct DetailReq {
     pub sid: plx_plex::plex::ServerId,
@@ -3986,15 +3989,43 @@ fn request_detail_with_spawn(adapter: &MetadataAdapter, sid: plx_plex::plex::Ser
     }
 }
 
-/// The fetch's IO body's completion: run `fetch` and post its answer, or its failure, to `port`.
-/// A fetch that unwinds still answers (with `None`), so its reservation is always handed back.
+/// The fetch's IO body's completion: run `fetch` through `client` and post its answer, or its
+/// failure, to `port`. A fetch that unwinds still answers (with `None`), so its reservation is
+/// always handed back.
+///
+/// `client` is the one the runner resolved for the job, once, when it admitted it
+/// (`StoreRunner::start_detail`), and `fetch` is handed it for the GETs of the chain
+/// ([`fetch_full`]): the chain asks no registry. The capture has a consequence the old chain hid.
+/// It re-resolved its client before each sub-fetch, so a sign-out (or a slot re-pointed) halfway
+/// through turned every later GET into `None`; this one keeps the client it was handed for the
+/// rest of its GETs, all against the server the page was opened on. That is `pms::kick_with`'s
+/// capture-at-the-step rule, and what `ask_related` already does. The registry leaks its clients,
+/// so the reference outlives a slot that is re-pointed under it. The one exception is the opening
+/// season's episodes (`fetch_episodes`), which still resolve their own client until the season and
+/// episode workers move.
+///
+/// `None` is a server the registry held no client for when the job was admitted: there is nothing
+/// to ask, so `fetch` is not called and the answer is the failure, as it was when the first
+/// sub-fetch found no client.
 pub fn finish_detail_fetch(
     port: &DetailPort, addr: plx_machine::machine::Addr, key: DetailKey,
-    fetch: impl FnOnce() -> Option<Detail> + std::panic::UnwindSafe,
+    client: Option<&'static plx_plex::plex::Client>,
+    fetch: impl FnOnce(&'static plx_plex::plex::Client) -> Option<Detail> + std::panic::UnwindSafe,
 ) {
     use plx_machine::job::Port;
-    // Publish outside the catch so fetch failure/unwind still acknowledges this reservation.
-    let d = catch_unwind(fetch).unwrap_or(None);
+    let d = match client {
+        // The ONE line that says a detail page was asked for and got nothing when no request was
+        // made (`fetch_full` speaks for the ones that were).
+        None => {
+            plx_base::eventlog::log(&format!(
+                "detail: rk={} sid={:?} — no metadata (the registry held no client for the server; nothing was asked)",
+                key.1, key.0
+            ));
+            None
+        }
+        // Publish outside the catch so fetch failure/unwind still acknowledges this reservation.
+        Some(client) => catch_unwind(move || fetch(client)).unwrap_or(None),
+    };
     port.done(addr, (key, d));
 }
 
@@ -5980,12 +6011,14 @@ mod trailer_tests {
         };
         assert!(d.trailer().is_none());
         assert_eq!(d.rk, "movie");
+        let _serial = plx_base::testlock::serial();
+        let client = super::test_support::offline_client();
         assert!(
-            resolve_trailer(plx_plex::plex::ServerId::UNSET, &[], "").is_none(),
+            resolve_trailer(client.0, &[], "").is_none(),
             "empty extras never fails the page"
         );
         assert!(
-            fetch_primary_trailer(plx_plex::plex::ServerId::UNSET, "").is_none(),
+            fetch_primary_trailer(client.0, "").is_none(),
             "no primaryExtraKey → no follow-up GET"
         );
     }
@@ -6007,8 +6040,10 @@ mod trailer_tests {
         assert_eq!(shelf[0].rk, "1");
         assert_eq!(shelf[0].thumb, "/t");
         assert_eq!(shelf[0].caption(), "Behind the Scenes");
+        let _serial = plx_base::testlock::serial();
+        let client = super::test_support::offline_client();
         let mut d = Detail::default();
-        project_extras(&mut d, plx_plex::plex::ServerId::UNSET, &rows, "");
+        project_extras(&mut d, client.0, &rows, "");
         assert_eq!(d.trailer().unwrap().rk, "9");
         assert_eq!(d.extras.len(), 2, "the shelf keeps the featurette");
         // every row reaches the shelf, however many there are, and the picker still names the
@@ -6016,7 +6051,7 @@ mod trailer_tests {
         let mut many: Vec<_> = (0..100).map(|i| bts(&format!("{}", 1000 + i))).collect();
         many.push(trailer("9000", "/library/parts/9000"));
         let mut d = Detail::default();
-        project_extras(&mut d, plx_plex::plex::ServerId::UNSET, &many, "");
+        project_extras(&mut d, client.0, &many, "");
         assert_eq!(d.extras.len(), 101, "every extras row is on the shelf");
         assert_eq!(d.trailer().expect("a trailer").rk, "9000");
         let bare = Extra {
