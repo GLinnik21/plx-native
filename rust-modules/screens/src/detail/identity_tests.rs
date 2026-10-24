@@ -74,7 +74,7 @@ fn body(entry: EntryId, rk: &str) -> DetailScreen {
         restore_intent: None, teardown_cleared: false, withdrawn: false, scroll: Spring::at(0.0),
         refresh: DetailRefreshPhase::None,
         refresh_gen: 0,
-        scroll_target: 0.0, episode_scroll: Spring::at(0.0), tab_scroll: Spring::at(0.0),
+        scroll_target: 0.0, free: false, episode_free: false, episode_scroll: Spring::at(0.0), tab_scroll: Spring::at(0.0),
         episode_cells: episodes::Cells::new(),
             ep_want: Default::default(),
             strip_seat: Default::default(),

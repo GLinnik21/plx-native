@@ -155,6 +155,7 @@
     "click",
     "drag",
     "wheel",
+    "pan",
     "text",
     "token",
     "lifecycle",

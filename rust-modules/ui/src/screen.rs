@@ -138,6 +138,14 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     fn strip_reachable(&self) -> bool {
         true
     }
+    /// **Does the page scroll itself by a wheel?** A page that answers `true` moves its own
+    /// scroll on `InputKind::Wheel` (fractional `dy` included, focus staying where it is), so the
+    /// application's pointer EDGE GLIDE (`app::input::EdgeScroll`) is offered to it. A page that
+    /// answers `false` (Home, whose scroll follows its focus) is never glided and keeps the
+    /// pointer's hover at its edges.
+    fn glides(&self) -> bool {
+        false
+    }
     /// The page's declared `Link`s (§7.3 step 3) — the strip→hero door among them.
     fn links(&self, _out: &mut Vec<Link>) {}
     /// **Does the page hold this arrow key instead of letting it move focus?** Asked only while
