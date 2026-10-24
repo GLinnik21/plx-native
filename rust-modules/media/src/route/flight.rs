@@ -26,9 +26,10 @@
 //!    the HUD reads `Resolving` through [`engineless_flight_outstanding`], and the same drain reaps a
 //!    landing a stale flight left ([`discard_stale_flight_landing`]) because no pump will. So is
 //!    the FOREGROUND restore's resume (the foreground machine, `player::lifecycle`, waits on it the
-//!    way it waits on a pending Load and drains it with the same `land_resume`) and the rollback of
-//!    an Original trial whose Load failed before an Engine existed
-//!    ([`dispatch_engineless_rollback_rebase`], drained by `player::land_engineless_rollback`).
+//!    way it waits on a pending Load, and its driver `player::foreground::poll_foreground_flight`
+//!    drains it with the same `land_resume`) and the rollback of an Original trial whose Load failed
+//!    before an Engine existed ([`dispatch_engineless_rollback_rebase`], drained by
+//!    `player::land_engineless_rollback`).
 //!    The foreground restore's resume may also find an Original TRIAL's transaction (the OS suspended
 //!    mid-trial); see the invariant below on what the flight leaves of the trial.
 //!
