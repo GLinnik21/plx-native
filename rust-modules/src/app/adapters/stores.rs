@@ -35,7 +35,9 @@
 //! server slot hold" is handed the answer as an input (`plx_plex::plex::ClientKeys`), which the
 //! Bridge fills with [`refill_client_keys`] immediately before the step, in the same call. A job
 //! carries the key its step decided on, and the runner starts it only if the registry still holds
-//! that client at the moment of the launch.
+//! that client at the moment of the launch. (The Detail job carries no key: `start_detail` resolves
+//! its server once, at the admission, and the chain runs through that client, bar the opening
+//! season's episodes; `docs/sans-io.md`, "The store job lane".)
 
 use plx_data::collection::{finish_collection_job, CollectionPort, CollectionReq};
 use plx_data::metadata::{fetch_full, finish_detail_fetch, DetailPort, DetailReq};
@@ -515,8 +517,8 @@ impl StoreRunner {
         for job in run {
             match job {
                 StoreJob::Detail(job, port) => {
-                    // The client is resolved when the job runs, as the launch resolves it for a
-                    // live one; a server with none answers the failure.
+                    // The client is resolved when the job runs (a live one is resolved by
+                    // `start_detail`, at the admission); a server with none answers the failure.
                     let DetailReq { sid, rk, prefer } = job.req;
                     finish_detail_fetch(&port, job.addr, (sid, rk.clone()), plx_plex::plex::client_for(sid), |client| {
                         fetch_full(client, sid, &rk, prefer)

@@ -230,7 +230,7 @@ fn a_show_chain_keeps_the_client_it_was_handed_except_for_its_opening_season() {
 }
 
 #[test]
-fn a_signed_out_registry_does_not_cut_a_movie_chain_short() {
+fn an_emptied_registry_neither_redirects_nor_skips_the_chain() {
     let _serial = plx_base::testlock::serial();
     let rig = Rig::new();
     plx_plex::plex::reset_servers_for_test();
