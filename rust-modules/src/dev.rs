@@ -133,9 +133,11 @@ const DIAG: [&str; 42] = [
     // `wl_surface.frame` request per present. An observer for the reason `framedrop` is.
     "plxnative-framecb",
     // The post-120-present `EGL_BUFFER_AGE` re-ask (`plx_gfx::egl::late_probe`, off unless armed).
-    // A pure observer — one query, one log line — and a measurement boot has to stay on the
-    // screen it measures, which a non-DIAG trigger would move off the who's-watching picker. The
-    // two EGL triggers that DO change something (`eglprobe`, `egldamage`) are deliberately not here.
+    // It changes nothing on screen, which is what DIAG membership means: a boot that arms it stays
+    // on the screen it was going to, where a non-DIAG trigger would move it off the who's-watching
+    // picker. It is NOT free: that one query blocks a swap 13-16 ms on the T820 at present 120, so
+    // never arm it for a smoothness run. The two EGL triggers that DO change something (`eglprobe`,
+    // `egldamage`) are deliberately not here.
     "plxnative-eglage",
     // The detector's context ring: which of the same lines are written, never which screen they
     // are written about.

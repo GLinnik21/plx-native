@@ -48,12 +48,14 @@
 //! - `GL_EXTENSIONS`, which nothing in the app logged either.
 //!
 //! The probe is diagnostic only: it runs exactly once at boot, and no other module reads it — it
-//! exists to put a fact in the event log. There are two exceptions to "boot only". [`late_probe`]
-//! is a second `EGL_BUFFER_AGE` reading after 120 presents, OFF unless `/tmp/plxnative-eglage` is
-//! armed (2026-10-24: it blocks a swap 13-16 ms on the T820). And [`fence`] is something the draw
-//! path DOES call — `gfx::field_kick` fences the underlay-field reduction so its read-back is
-//! taken only once the GPU has finished it — and it resolves its entry points the same way, for
-//! the same `DT_NEEDED` reason.
+//! exists to put a fact in the event log. There are three exceptions to "boot only". [`late_probe`]
+//! is a second `EGL_BUFFER_AGE` reading after 120 presents, OFF unless the `eglage` trigger is
+//! armed (2026-10-24: it blocks a swap 13-16 ms on the T820). [`frame_damage`] runs on every
+//! presented frame, but only while the `egldamage` experiment is armed: it queries the buffer age
+//! and declares that frame's damage region. And [`fence`] is something the draw path DOES call —
+//! `gfx::field_kick` fences the underlay-field reduction so its read-back is taken only once the
+//! GPU has finished it — and it resolves its entry points the same way, for the same `DT_NEEDED`
+//! reason.
 use plx_base::dynlib::Handle;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_uint, c_void};

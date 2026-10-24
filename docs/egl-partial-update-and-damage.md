@@ -92,11 +92,13 @@ egl damage: eglSwapBuffersWithDamageKHR(0,0,64,64)  ok=1 err=0x3000 EGL_SUCCESS
 egl surface (after 120 presents): buffer_age=2 ok=1 err=EGL_SUCCESS
 ```
 
-The last line is **opt-in** (2026-10-24): it appears only when `/tmp/plxnative-eglage` was present at
-boot. The re-ask is off by default because that one `eglQuerySurface(EGL_BUFFER_AGE)` blocks a swap
-13-16 ms on this Mali-T820, about 2 s after every launch: one dropped frame, and the cycle-1 miss in
-the `hero-pong` / `grid-pong` fps benches (15 of 15 baseline runs had it; 0 of 3 with the query
-compiled out). Everything above it is still logged at every boot.
+The last line is **opt-in** (2026-10-24): it appears only when the `eglage` trigger was present at
+boot (`$(make -s print-rundir)/plxnative-eglage`, section 7). The re-ask is off by default because
+that one `eglQuerySurface(EGL_BUFFER_AGE)` blocks a swap 13-16 ms on this Mali-T820, about 2 s after
+every launch: one dropped frame, and the cycle-1 miss in the `hero-pong` / `grid-pong` fps benches
+(15 of 15 baseline runs had it; 0 of 3 with the query compiled out). Everything above it is still
+logged at every boot except the `egl preserve:` and `egl damage:` lines, which need the `eglprobe`
+trigger.
 
 Line by line, because each one closes something:
 
@@ -115,7 +117,7 @@ Line by line, because each one closes something:
   the back buffer") is **confirmed on the device** for every route except partial update itself.
 - **`buffer_age` is 0 at boot and 2 after 120 presents.** The boot reading is 0 by construction —
   before the first swap the buffer has no history — which is why the probe asks again later (only
-  with `/tmp/plxnative-eglage` armed since 2026-10-24: the re-ask blocks a swap 13-16 ms on this
+  with the `eglage` trigger armed since 2026-10-24: the re-ask blocks a swap 13-16 ms on this
   set). The answer **2** is a real double-buffered age from an extension that is not advertised. A
   correct damage implementation must therefore union **two frames** of damage.
 - **`GL_EXTENSIONS`** (91 entries, logged in full) carries `GL_EXT_discard_framebuffer`,
@@ -425,7 +427,8 @@ make deploy && make run RUN_SECS=12 | grep -E '^(egl|gl extensions)'
 # the buffer-age re-ask after 120 presents (the `egl surface (after 120 presents)` line). OFF by
 # default since 2026-10-24: its query blocks that present's swap 13-16 ms on the T820, so arm it
 # only for the reading, never for a smoothness run. Read once at boot: arm it BEFORE launching.
-ssh root@TV 'touch /tmp/plxnative-eglage'
+# Spelled with the install's runtime root, so it arms the install `make deploy` put there.
+ssh root@TV "touch $(make -s print-rundir)/plxnative-eglage"
 
 # the mutating probe (config surface type, BUFFER_PRESERVED attempt, the two damage calls)
 ssh root@TV 'touch /tmp/plxnative-eglprobe'
