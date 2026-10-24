@@ -183,8 +183,11 @@ and its three `data-pms` ledger files are deleted.
 - **Two drains, one rule.** A stepped machine (the session owner) emits its work through `Effects`,
   and the owner's drain starts it. A store the Bridge runs emits through its own `take_jobs`.
   `Stores::take_jobs_of(StoreId)` takes ONE store's outbox and `Stores::take_jobs` aggregates every
-  store's, and each Bridge entry point drains only its own store, in the same call as the step:
-  `Bridge::metadata_run` steps then drains Metadata; `Bridge::person_pump` and
+  store's, and each Bridge entry point drains the outboxes its step can fill, in the same call as
+  the step. A step that touches only its own store drains it with `start_store_jobs_of`; a `Stores`
+  call that fans out to other stores (`viewstate_run`, `viewstate_pump`, `notify_pump`) drains every
+  outbox named in its `*_FILLS` list (`Stores::VIEWSTATE_FILLS`, `Stores::NOTIFY_FILLS`) with
+  `Bridge::start_store_jobs_in`. `Bridge::metadata_run` steps then drains Metadata; `Bridge::person_pump` and
   `Bridge::collection_pump` refill the keys, step, then run
   `Bridge::start_store_jobs_of(StoreId::Person)` and `(StoreId::Collection)`;
   `Bridge::catalog_open` and `Bridge::catalog_pump` step the Catalog store and run
@@ -193,7 +196,9 @@ and its three `data-pms` ledger files are deleted.
   admissions in the tape where they were: the frame pumps Person, then Collection, then reconciles
   the Detail page. A caller that holds only the store (`describe_movie` gets a `&mut MetadataStore`)
   drains with `Bridge::start_store_jobs` the moment its call returns. A new store joins by implementing its
-  own outbox and adding it to `Stores::take_jobs_of` and `Stores::has_jobs_of`, in that one place.
+  own outbox and adding it to `Stores::take_jobs_of` and `Stores::has_jobs_of` AND to the `*_FILLS`
+  list of every fanning call that reaches it. Joining only the first pair strands its jobs until the
+  backstop, which the rigs count as a bypass.
 - **Whoever steps a store drains it.** `MetadataStore`'s `Machine::step` runs the command and does
   not drain: a `RequestDetail` stepped through it leaves its job on the outbox and nothing starts
   it. The same holds for the `pub` `Stores::metadata_run`. The owner drains in the same call, as
@@ -224,7 +229,8 @@ and its three `data-pms` ledger files are deleted.
   `Bridge::assert_no_store_jobs_left_for_test` (`#[cfg(test)]`) fails a frame that ends with a job
   still on an outbox or with that count above zero, so a sender that bypassed its store's Bridge
   drain (`metadata_run`, `person_pump`, `collection_pump`, `catalog_open`, `catalog_pump`,
-  `subsearch_pump`, `reconcile_pump`, `start_store_jobs_of`, `start_store_jobs`)
+  `subsearch_pump`, `reconcile_pump`, `hubs_run`, `viewstate_run`, `viewstate_pump`, `notify_pump`,
+  `start_store_jobs_of`, `start_store_jobs_in`, `start_store_jobs`)
   is red in every rig that makes the check, the one that runs `update()`'s pump included. The rigs
   make it at the frame's end.
 - **The port holds the adapter `Arc`.** `Reset` replaces the adapter and the store keeps no handle to

@@ -1351,7 +1351,9 @@ impl Bridge {
     /// return how many there were. Called by a caller that ran a command on the bare store
     /// ([`Bridge::metadata_mut`]) right after that call, so the tape's admission record is written
     /// where the command was issued, and by the backstop ([`Bridge::start_late_store_jobs`]). A
-    /// step the Bridge runs itself drains only its own store, with [`Bridge::start_store_jobs_of`].
+    /// step the Bridge runs itself drains the outboxes it can fill: its own store's with
+    /// [`Bridge::start_store_jobs_of`], and for a `Stores` call that fans out to other stores each
+    /// one in its `*_FILLS` list, with [`Bridge::start_store_jobs_in`].
     pub(crate) fn start_store_jobs(&mut self) -> usize {
         let jobs = self.stores.take_jobs();
         self.start_jobs(jobs)

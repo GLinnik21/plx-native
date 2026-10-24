@@ -7,8 +7,8 @@
 //! each production `Bridge` owns a `stores::hubs::HubsStore`, whose `run`/`run_with_directory`
 //! forward each `HubsCmd` variant into `request_refetch_hubs`/`reset`/`edit_item`/`page`/
 //! `cancel_page` here against its own `PmsState`/`Arc<PmsAdapter>`, the same relationship the owned
-//! `BrowseStore::run` has to Browse commands against its explicit state. Controlled work captures
-//! each immutable request before the adapter launches it. **The cross-module entry points
+//! `BrowseStore::run` has to Browse commands against its explicit state. Every step captures
+//! its immutable request and emits it as a `StoreJob::Hubs` for the app's runner to launch or refuse. **The cross-module entry points
 //! (`run_with_directory`, `land_with_directory`, `tick*`) cannot be scoped narrower than `pub`, and
 //! that is a fact about Rust module topology, not an oversight**: `pms` and `stores` are both
 //! top-level children of the crate root, so neither is an ancestor of the other, and `pub(in path)`

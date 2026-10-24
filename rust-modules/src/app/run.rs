@@ -1903,7 +1903,7 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // The return hold ends when the refetch it waits for has SETTLED for the played item's
         // source: issued (the owed flag is spent) and that source's read taken, whether it brought
         // a catalog or failed (a failure keeps the content and moves no generation, so the
-        // generation is not the signal). A refused launch settles at once. Nothing here can extend
+        // generation is not the signal). A refused launch is settled by the next Hubs step, one frame later. Nothing here can extend
         // the hold: the bound is the dip's own, on the frame clock.
         super::playback::return_hold_settle(app, fr.now);
         // What quiet reads staged for Home lands here when the store says nothing in view moves

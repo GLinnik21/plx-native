@@ -234,8 +234,9 @@ impl Stores {
 
     /// Take every job any store has emitted since the last take, store by store in a fixed order.
     /// The caller OWES each one to a runner (see [`StoreJob`]). A store with an outbox joins in
-    /// [`Stores::take_jobs_of`] and `has_jobs_of` and nowhere else: the Bridge's backstop and its
-    /// leftover-job check both read this aggregate, which walks [`StoreId::ALL`].
+    /// [`Stores::take_jobs_of`] and `has_jobs_of`, and in the `*_FILLS` list of every fanning call
+    /// that reaches it ([`Stores::VIEWSTATE_FILLS`], [`Stores::NOTIFY_FILLS`]): the Bridge's backstop
+    /// and its leftover-job check both read this aggregate, which walks [`StoreId::ALL`].
     #[must_use]
     pub fn take_jobs(&mut self) -> Vec<StoreJob> {
         StoreId::ALL.into_iter().flat_map(|id| self.take_jobs_of(id)).collect()
