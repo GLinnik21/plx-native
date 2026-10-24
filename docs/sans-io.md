@@ -154,8 +154,8 @@ slot's new client. This chain keeps the client it was handed. The registry blank
 token on both events (`revoke_all`, and the re-point arm of `register_lazy`), so the rest of the
 chain asks tokenless and lands `None`: the same as before for a sign-out (the requests are now sent
 and refused where they used to be skipped), and a partial page where the old chain followed a
-re-point. Bar the opening season's episodes it never mixes clients within one page. The one read
-left in it is those episodes (`fetch_episodes`), shared with the season worker until that moves.
+re-point. It never mixes clients within one page: the opening season's episodes
+(`fetch_episodes`) are read through the same client (Metadata M2, below).
 The Collection page's request is the second: its worker start and its three `client_for` reads are
 gone from `data/src/collection.rs`. The Person page's requests are the third: its two worker starts
 and its one `client_for` read are gone from `data/src/person.rs`, but unlike the two before it the
@@ -171,7 +171,9 @@ headed "The Hubs lane"): the worker start and the `client_for` read are gone fro
 and its three `data-pms` ledger files are deleted. The Search screen's per-source fetches and its
 recents writes are the eighth (the bullet headed "The Search lane"): both worker starts and both
 `client_for` reads are gone from `data/src/search.rs` and `data/src/search/recents.rs`, and its two
-`data-search` ledger files are deleted.
+`data-search` ledger files are deleted. The Metadata store's season switch and episode-page window
+are the ninth (the bullet headed "The Metadata reads"): their two worker starts and the `client_for`
+reads of `fetch_episodes` and `fetch_episode_page` are gone from `data/src/metadata.rs`.
 
 - **The shape.** `plx_machine::job` holds `Job<R>` (an `Addr` and a request that carries everything
   the worker needs), `Port<T>` (where the one answer goes: exactly one `done` or `refused` per job)
@@ -183,14 +185,17 @@ recents writes are the eighth (the bullet headed "The Search lane"): both worker
   `plx_data::stores::catalog::{CatalogReq, CatalogPort}`,
   `plx_data::pms::{HubRequest, HubsPort}`,
   `plx_data::search::{SearchReq, SearchPort}` and
-  `plx_data::search::recents::{SaveRecentsReq, SaveRecentsPort}`. The app's `StoreRunner`
+  `plx_data::search::recents::{SaveRecentsReq, SaveRecentsPort}` and
+  `plx_data::metadata::{MetaSeasonReq, MetaSeasonPort, MetaEpisodesReq, MetaEpisodesPort}`. The app's `StoreRunner`
   (`app/adapters/stores.rs`) executes a job and owns what `data/` must not: the tape's admission
   record, the thread and the `client_for` read. It is `Live` or `Held` (a test parks the job and
   runs it on the test thread), chosen when the `Bridge` is constructed; a newer Detail request
-  retires only the parked Detail jobs, never another store's. `Held` parks per kind:
-  `StoreRunner::held()` leaves the Hubs read live, as production runs it (a rig that waits for a
-  Home landing needs a real one), and `StoreRunner::held_all()` parks it too, for a test that
-  chooses when the read settles (`Bridge::run_held_store_jobs_of_for_test`).
+  retires only the parked Detail jobs, never another store's. `Held` parks per kind (the test-only
+  `LiveKind`): `StoreRunner::held()` leaves the Hubs read and the Metadata season switch live, as
+  production runs them (a rig that waits for a Home or a season landing needs a real one;
+  `menu_play_season_tests` polls for the latter and never runs held jobs), and
+  `StoreRunner::held_all()` parks them too, for a test that chooses when the read settles
+  (`Bridge::run_held_store_jobs_of_for_test`). Episode-page jobs are parked by both.
 - **A registry read is an input.** A step that decides from "which client does this server slot
   hold" is handed `plx_plex::plex::ClientKeys` (one `ClientKey { instance, token }` per server) as
   an argument. The Bridge owns one buffer and refills it in place
@@ -201,8 +206,8 @@ recents writes are the eighth (the bullet headed "The Search lane"): both worker
   then agree on the one boolean they hold, and a refused job hands its claim back.
 - **The Detail job carries no key.** Its step reads no registry, so `DetailReq` names a server and
   no `ClientKey`: the runner reads `client_for(sid)` ONCE in `start_detail`, records that client's
-  instance in the admission and runs the chain through that same client (bar the opening season's
-  episodes). That is a presence check, not the key compare of the jobs above. A server the registry
+  instance in the admission and runs the whole chain through that same client, the opening
+  season's episodes included. That is a presence check, not the key compare of the jobs above. A server the registry
   holds no client for at the admission still launches, and its worker answers the failure without
   asking anything, as the first read of the old chain did.
 - **Two drains, one rule.** A stepped machine (the session owner) emits its work through `Effects`,
@@ -212,7 +217,8 @@ recents writes are the eighth (the bullet headed "The Search lane"): both worker
   the step. A step that touches only its own store drains it with `start_store_jobs_of`; a `Stores`
   call that fans out to other stores (`viewstate_run`, `viewstate_pump`, `notify_pump`) drains every
   outbox named in its `*_FILLS` list (`Stores::VIEWSTATE_FILLS`, `Stores::NOTIFY_FILLS`) with
-  `Bridge::start_store_jobs_in`. `Bridge::metadata_run` steps then drains Metadata; `Bridge::person_pump` and
+  `Bridge::start_store_jobs_in`. `Bridge::metadata_run` steps then drains Metadata, and so does `Bridge::metadata_pump_season`
+  (a guard: no landing pump emits a job today, so it finds nothing); `Bridge::person_pump` and
   `Bridge::collection_pump` refill the keys, step, then run
   `Bridge::start_store_jobs_of(StoreId::Person)` and `(StoreId::Collection)`;
   `Bridge::catalog_open` and `Bridge::catalog_pump` step the Catalog store and run
@@ -221,7 +227,8 @@ recents writes are the eighth (the bullet headed "The Search lane"): both worker
   edit emits its write there) and `Bridge::search_pump` refills the keys, steps and drains it.
   Draining inside each pump, not at the frame's end, keeps every store's
   admissions in the tape where they were: the frame pumps Person, then Collection, then reconciles
-  the Detail page. A caller that holds only the store (`describe_movie` gets a `&mut MetadataStore`)
+  the Detail page. A caller that holds only the store (`describe_movie` gets a `&mut MetadataStore`, and the
+  menu-play wait's season press in `input.rs` runs `LoadSeason` on the bare store)
   drains with `Bridge::start_store_jobs` the moment its call returns. A new store joins by implementing its
   own outbox and adding it to `Stores::take_jobs_of` and `Stores::has_jobs_of` AND to the `*_FILLS`
   list of every fanning call that reaches it. Joining only the first pair strands its jobs until the
@@ -402,3 +409,31 @@ recents writes are the eighth (the bullet headed "The Search lane"): both worker
   `recents.rs` with the statics `STORE` and `PENDING`. A test drives it with `Owner::run_jobs`
   (`search_test_support.rs`), a fixture that plays the runner against a served fake, in place of the
   inline fake-IO fork the old spawn carried.
+- **The Metadata reads.** The season tabs and the long-season page window (`data/src/metadata.rs`)
+  are the ninth store reads on the lane. `load_season` flips the tab and emits
+  `StoreJob::MetaSeason(Job<MetaSeasonReq>, MetaSeasonPort)`, addressed by the season generation it
+  minted; `want_episodes` emits `StoreJob::MetaEpisodes(Job<MetaEpisodesReq>, MetaEpisodesPort)` for
+  at most `EP_JOB_PAGES` pages, addressed by a sequence of its own (pages are keyed by
+  `(server, season, page)`, not by generation). Both are `Direct` and never taped. The runner
+  resolves `client_for(sid)` once, at the launch, and hands `finish_season_job` /
+  `finish_episodes_job` that `&'static Client` (a presence check: the requests carry no
+  `ClientKey`); `fetch_episodes` and `fetch_episode_page` take it, so the detail chain is one client
+  end to end. A server it holds none for still launches, and the body answers the failure without a
+  GET (a season lands `eps: None`, a page `rows: None` and gives its key back). Both bodies keep the
+  `catch_unwind` guard and post their answer outside it. Landings stay ungated.
+  - **A refusal leaves what the inline spawn's `!spawned` arm left.** `MetaSeasonPort::refused`
+    catches `season_done` up to the job's generation with `fetch_max`, in the call that refused it,
+    so `season_loading()` is false at once and a refusal that arrives after a newer request landed
+    cannot turn it back on; the tab stays on the flipped season and the old episodes stay listed.
+    `MetaEpisodesPort::refused` drops the inflight keys the job held (the port carries them,
+    because a refusal is told only the address), so the next `WantEpisodes` asks again.
+  - **A page job answers once, with all its pages.** The body reads its pages in order and the
+    port lands them together, where the inline worker landed each page as it arrived: an earlier
+    page of a multi-page job now lands with the last one.
+  - **Drains.** `load_season` and `want_episodes` are reached through `Bridge::metadata_run` (the
+    dispatcher) or on the bare store (`input.rs`, which drains with `start_store_jobs`). No fan-out
+    reaches either (the view-state closures send `ApplyView` only), so no `*_FILLS` list names
+    Metadata for them. The runner's branches are pinned in `adapters/stores.rs`'s tests; the OS
+    refusing the thread cannot be forced on a host, so the refused branches are pinned at the port
+    (`a_refused_season_job_ends_season_loading_and_leaves_the_tab_and_the_list`,
+    `a_refused_page_job_releases_its_inflight_keys_and_the_next_want_asks_again`).

@@ -2212,9 +2212,9 @@ pub fn trailer_now_playing(
 // None of them reaches for `plex::client()`: they run on the detail/season workers, and the house
 // rule is that a worker reads no statics (`pms::parse_item` carries the same note). The detail
 // chain's fetches are handed the `&'static Client` the runner resolved when it admitted the job,
-// plus the `ServerId` where they stamp the row (`fetch_detail`, `fetch_related`). The season
-// worker's (`fetch_episodes`, `fetch_episode_page`) still take a `ServerId` and resolve it
-// themselves, by slot. Either way the row is stamped with its slot — an item fetched from slot 1
+// plus the `ServerId` where they stamp the row (`fetch_detail`, `fetch_related`); the season
+// worker's (`fetch_episodes`, `fetch_episode_page`) are handed the one the runner resolved when it
+// started that job. Either way the row is stamped with its slot — an item fetched from slot 1
 // must be recorded as slot 1's whatever `client()` answers with by the time the fetch returns.
 /// The stand-in handle, read ONCE. The trigger surface is boot state, and [`Detail::source`] is
 /// reached from a draw — a `stat` per frame inside one is exactly what `crate::dev`'s doc forbids.
@@ -4922,9 +4922,10 @@ pub fn detail_loading(adapter: &MetadataAdapter) -> bool {
 
 // ---- season switching ----------------------------------------------------------------------
 // The tab UI's season switch is ASYNC: `load_season` flips `cur_season` optimistically (the tab
-// highlight moves at once), fetches the episodes on a worker thread, and `pump_season` (called by
-// the detail page once a frame) applies the landed list on the main thread. The blocking
-// `/children` GET used to run on the main loop, freezing the UI for every rapid season hop.
+// highlight moves at once), emits the episodes' fetch as a job the application starts on a worker
+// thread (`MetaSeasonReq`), and `pump_season` (called by the detail page once a frame) applies the
+// landed list on the main thread. The blocking `/children` GET used to run on the main loop,
+// freezing the UI for every rapid season hop.
 // Generations guard against out-of-order landings; results for a different item are discarded.
 struct SeasonResult {
     gen: u32,
@@ -5595,7 +5596,7 @@ pub fn pump_season_with_gate(state: &mut MetadataState, adapter: &MetadataAdapte
     // the landing GATE (§3.3 step 3): a replay takes this on its recorded frame
     // DUMP MODE: owed while `season_loading` (a request is out, and `season_done` has not caught
     // up). A superseded request's late answer is dropped INSIDE the take, so it neither ends the
-    // wait nor settles the new request (`supersede_season` and a refused spawn catch `season_done`
+    // wait nor settles the new request (`supersede_season` and a refused job catch `season_done`
     // up themselves, so an abandoned request is not owed).
     let res = crate::stores::take_landing_owed(gate, crate::stores::StoreId::Metadata,
         || season_loading(adapter), || {
