@@ -121,6 +121,11 @@ pub struct PlaybackSession {
     /// derives `Error` (cause `load_timeout`) from it. Cleared by the next start attempt and,
     /// like [`jail_load_blocked`](Self::jail_load_blocked), with the playback verdict.
     pub native_start_refused: bool,
+    /// The viewer left this item for the next one from its credits (Up Next, or Skip on a `final`
+    /// credits marker). The stop that follows marks it watched explicitly: a server only does that
+    /// itself when the stop lands past its own threshold (Jellyfin's `MaxResumePct`, 90 % by
+    /// default), and long credits start before that. Read and cleared by [`scrobble_stop`].
+    pub finished: bool,
     /// Read-only publication of Player.repair for the HUD. Never authorizes a resource effect.
     pub repair_status: plx_platform::tv::sandbox::State,
     /// The request which produced this attempt, retained for terminal Retry / Choose quality.
@@ -495,6 +500,7 @@ impl PlaybackSession {
         direct_play_mode: DirectPlayMode::Auto,
         jail_load_blocked: false,
         native_start_refused: false,
+        finished: false,
         repair_status: plx_platform::tv::sandbox::State::Idle,
         request: None,
         requested_resume_ns: 0,
@@ -580,6 +586,7 @@ impl PlaybackSession {
             direct_play_mode,
             jail_load_blocked,
             native_start_refused,
+            finished,
             repair_status,
             request,
             requested_resume_ns,
@@ -647,6 +654,7 @@ impl PlaybackSession {
             direct_play_mode: *direct_play_mode,
             jail_load_blocked: *jail_load_blocked,
             native_start_refused: *native_start_refused,
+            finished: *finished,
             repair_status: *repair_status,
             request: request.clone(),
             requested_resume_ns: *requested_resume_ns,
@@ -5759,6 +5767,8 @@ struct ScrobbleWork {
     subtitle_stream_id: i64,
     transcode_session: String,
     timeline_stop: Option<TimelineStopCompletion>,
+    /// Mark the item watched once the `stopped` report is in (`PlaybackSession::finished`).
+    mark_watched: bool,
     /// The record the app learns this stop from; posted just before `timeline_stop` completes.
     stop_mail: Option<PendingStop>,
 }
@@ -5876,6 +5886,15 @@ impl ScrobbleWork {
                 ok as i32,
             ));
             posted = ok;
+            if self.mark_watched {
+                let marked = self.client.is_some_and(|c| c.scrobble(&rk));
+                plx_base::eventlog::log(&format!("marked watched at the credits ok={}", marked as i32));
+                if marked {
+                    if let Some(rec) = self.stop_mail.as_mut().and_then(|m| m.rec.as_mut()) {
+                        rec.pos_ms = rec.dur_ms; // our word until the read-back says the server's
+                    }
+                }
+            }
         }
         // BEFORE the fence completes, so a completed fence implies the record is in the mailbox.
         if let Some(mut mail) = self.stop_mail.take() {
@@ -5918,6 +5937,7 @@ pub fn scrobble_stop(
         return;
     }
     let (logical_session, pq, pqi) = (sess(ps), pq_id(ps), pq_item_id(ps));
+    let mark_watched = std::mem::take(&mut ps.finished);
     let (aud, sub) = (cur_audio_sid(ps), cur_sub_sid(ps)); // the selection this playback reported under
     let tsession = take_active_encoder();
     let session = if tsession.is_empty() {
@@ -5973,6 +5993,7 @@ pub fn scrobble_stop(
         subtitle_stream_id: sub,
         transcode_session: tsession,
         timeline_stop,
+        mark_watched,
         stop_mail,
     })));
     let worker = work.clone();
@@ -7879,6 +7900,7 @@ fn request_play_inner(
     drain_previous: bool,
     origin: crate::player::report::AttemptOrigin,
 ) -> bool {
+    ps.finished = false; // a flag the previous stop never took must not mark THIS item
     let sid = request.sid;
     let rk = &request.rk;
     let part = &request.part;
@@ -8464,6 +8486,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             direct_play_mode: plan.direct_play_mode,
             jail_load_blocked: false,
             native_start_refused: false,
+            finished: false,
             repair_status: plx_platform::tv::sandbox::State::Idle,
             request,
             requested_resume_ns,

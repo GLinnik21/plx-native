@@ -933,6 +933,7 @@ pub(crate) fn activate_ctrl_row(
                 }
                 // a `final` credits segment: skipping it IS finishing the item
                 SkipAction::Finish => {
+                    player.session.finished = true;
                     let _ = finish_playback(player, pa, repause_at, refresh_hubs, pages, bridge);
                     true
                 }
@@ -973,6 +974,8 @@ pub(crate) fn play_up_next(
         plx_data::metadata::resume_ns(u.resume_ms, u.dur_ms),
     );
     close_player_overlays(pages);
+    // Leaving for the next episode is finishing this one, whatever the stop's position says.
+    ps.finished = true;
     plx_media::player::stop_bufferfeed(ps, pa);
     let ctx = plx_ui::fmt::episode_kicker(u.season, u.index, &u.ep_title);
     if !plx_media::route::request_play_up_next(ps, bridge.metadata_mut(), u, &ctx) {
