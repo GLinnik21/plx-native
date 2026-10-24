@@ -8,7 +8,7 @@
 //! and hands each to [`StoreRunner::start`], which owns everything the data layer must not: the
 //! tape's admission record, the worker thread and the process-global client the request reads. A
 //! kind that is not on the tape (the catalog read, a plex.tv call that names no client; subtitle
-//! search; the Search screen's fetches; view reconcile) is started with no admission record, as its inline spawn was. The
+//! search; the Search screen's fetches and its recents writes; view reconcile) is started with no admission record, as its inline spawn was. The
 //! detail pump keeps a counted backstop for a sender that did neither
 //! (`Bridge::start_late_store_jobs`).
 //!
@@ -44,6 +44,7 @@ use plx_data::stores::catalog::{finish_catalog_job, CatalogPort, CatalogReq};
 use plx_data::stores::viewreconcile::{finish_reconcile_job, ReconcilePort, ReconcileReq};
 use plx_data::pms::{launch_hubs_job, HubRequest, HubsPort};
 use plx_data::stores::{Admission, StoreJob};
+use plx_data::search::recents::{finish_save_recents_job, SaveRecentsPort, SaveRecentsReq};
 use plx_data::search::{finish_search_job, SearchPort, SearchReq};
 use plx_data::subsearch::{finish_subsearch_job, SubSearchPort, SubSearchReq};
 use plx_machine::job::{Job, Port};
@@ -182,6 +183,7 @@ impl StoreRunner {
             StoreJob::SubtitleSearch(job, port) => self.start_subsearch(job, port),
             StoreJob::ViewReconcile(job, port) => self.start_reconcile(job, port),
             StoreJob::Search(job, port) => self.start_search(job, port),
+            StoreJob::SaveRecents(job, port) => self.start_save_recents(job, port),
         }
     }
 
@@ -217,7 +219,8 @@ impl StoreRunner {
                 | StoreJob::Catalog(..)
                 | StoreJob::SubtitleSearch(..)
                 | StoreJob::ViewReconcile(..)
-                | StoreJob::Search(..)) => self.start(other),
+                | StoreJob::Search(..)
+                | StoreJob::SaveRecents(..)) => self.start(other),
         }
     }
 
@@ -296,6 +299,7 @@ impl StoreRunner {
                     | StoreJob::SubtitleSearch(..)
                     | StoreJob::ViewReconcile(..)
                     | StoreJob::Search(..)
+                    | StoreJob::SaveRecents(..)
                 ) => held.push(kept),
             }
         }
@@ -476,6 +480,33 @@ impl StoreRunner {
         }
     }
 
+    /// A recents write is not on the tape either, and names no client: it drains the in-memory
+    /// queue into the session file. A launch that did not happen (the thread ceiling) is refused,
+    /// which the store remembers, so the next recents edit asks for the drain again.
+    fn start_save_recents(&mut self, job: Job<SaveRecentsReq>, port: SaveRecentsPort) {
+        let addr = job.addr;
+        let refusal = port.clone();
+        if !self.launch_save_recents(job, port) {
+            refusal.refused(addr);
+        }
+    }
+
+    fn launch_save_recents(&mut self, job: Job<SaveRecentsReq>, port: SaveRecentsPort) -> bool {
+        match self {
+            Self::Live => {
+                let Job { addr, req } = job;
+                plx_base::task::spawn_small("recents-save", move || {
+                    finish_save_recents_job(&port, addr, req);
+                })
+            }
+            #[cfg(test)]
+            Self::Held { parked: held, .. } => {
+                held.push(StoreJob::SaveRecents(job, port));
+                true
+            }
+        }
+    }
+
     /// A read-back batch is not on the tape either: the launch is the whole decision. A launch that
     /// did not happen is refused, and the refusal is the flight's answer: the pump that takes it
     /// puts the batch back in the queue and waits before it asks again.
@@ -508,7 +539,7 @@ impl StoreRunner {
 
     /// TEST ONLY: run every parked job on THIS thread through the production completion path
     /// (`finish_detail_fetch` over `fetch_full`, `finish_collection_job`, `finish_person_job`,
-    /// `finish_hubs_job`, `finish_catalog_job`, `finish_subsearch_job`, `finish_search_job`,
+    /// `finish_hubs_job`, `finish_catalog_job`, `finish_subsearch_job`, `finish_search_job`, `finish_save_recents_job`,
     /// `finish_reconcile_job`) and
     /// return how many ran.
     /// Their landings are queued for the next pump. Under `Live` there is nothing parked.
@@ -603,6 +634,7 @@ impl StoreRunner {
                         None => port.refused(job.addr),
                     }
                 }
+                StoreJob::SaveRecents(job, port) => finish_save_recents_job(&port, job.addr, job.req),
             }
         }
         n
@@ -1389,6 +1421,81 @@ mod tests {
         let _frame = plx_base::task::FrameScope::enter();
         assert!(bridge.search_pump(0.016), "the answer is the next pump's to take");
         bridge.assert_no_store_jobs_left_for_test();
+    }
+
+    // ---- the recents lane: a save job reaches its port once ----
+
+    /// A recents store whose history has one edit queued for the profile the test is watching, and
+    /// the job that edit emitted.
+    fn save_request() -> (SearchStore, StoreJob) {
+        let mut store = SearchStore::default();
+        let generation = plx_data::search::recents::snapshot().generation();
+        assert!(store.run(SearchCmd::RememberRecent { profile_generation: generation, term: "alpha".into() }));
+        let mut jobs = store.take_jobs();
+        assert_eq!(jobs.len(), 1, "one edit, one write");
+        (store, jobs.remove(0))
+    }
+
+    fn saved(profile: &str) -> Vec<String> {
+        plx_plex::plex::session::peek().recents_for(profile).to_vec()
+    }
+
+    /// The worker starts, drains the queue into the session file and answers; the kind is not on the
+    /// tape, so nothing is recorded.
+    #[test]
+    fn a_save_job_is_started_writes_the_history_and_is_not_taped() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let session = plx_plex::plex::session::TempSession::new("runner-recents-live");
+        session.watching("runner-recents-live");
+        let (_store, job) = save_request();
+        assert!(saved("runner-recents-live").is_empty(), "nothing is written until the job runs");
+        tape::init(None, false);
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert_eq!(tape::finish(), (vec![], None), "the kind is untaped: the runner records no admission");
+        assert_eq!(saved("runner-recents-live"), ["alpha"], "the worker wrote the queued history");
+    }
+
+    /// `Held` parks the job without running it, and a newer DETAIL request retires only the detail
+    /// fetches parked before it: the parked write is not a request it supersedes, and runs once when
+    /// the test runs the held jobs.
+    #[test]
+    fn a_newer_detail_request_leaves_a_parked_save_job_to_run() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let session = plx_plex::plex::session::TempSession::new("runner-recents-held");
+        session.watching("runner-recents-held");
+        let (_store, job) = save_request();
+        let mut runner = StoreRunner::held();
+        let mut metadata = MetadataStore::default();
+
+        runner.start(job);
+        assert!(saved("runner-recents-held").is_empty(), "parked, still unwritten");
+        runner.start(request(&mut metadata, ServerId::UNSET, "d1"));
+        assert_eq!(runner.run_held(), 2, "the save job was kept, and the detail job parked after it");
+
+        assert_eq!(saved("runner-recents-held"), ["alpha"]);
+    }
+
+    /// The Bridge's recents edit: `search_run` takes the write its step emitted and hands it to the
+    /// runner in the one call, so the frame check is green and the held job writes when it is run.
+    #[test]
+    fn the_bridge_starts_the_recents_write_an_edit_emitted_in_the_same_call() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let session = plx_plex::plex::session::TempSession::new("runner-recents-bridge");
+        session.watching("runner-recents-bridge");
+        let mut bridge = Bridge::for_test(|| 0);
+        let generation = plx_data::search::recents::snapshot().generation();
+
+        assert!(bridge.search_run(SearchCmd::RememberRecent { profile_generation: generation, term: "alpha".into() }));
+        bridge.assert_no_store_jobs_left_for_test();
+        assert!(saved("runner-recents-bridge").is_empty(), "held, not yet written");
+        assert_eq!(bridge.run_held_store_jobs_for_test(), 1, "the held runner was handed the write");
+        assert_eq!(saved("runner-recents-bridge"), ["alpha"]);
     }
 
     // ---- the view-reconcile lane: each outcome of a read-back job reaches its port once ----

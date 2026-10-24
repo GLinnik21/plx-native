@@ -7387,7 +7387,7 @@ impl PersonOwnerGateFixture {
     # the move. A migration PR lowers the number with the lines it deletes. Seeded 2026-10-24 from
     # the tool's own output on the tree this table was written for.
     PINNED_LEDGER_TOTALS = {
-        "workers": 17,  # production worker starts inside machines (`ci/allow/workers/`)
+        "workers": 16,  # production worker starts inside machines (`ci/allow/workers/`)
         # Sans-IO lifecycle PR B moved the pin by nothing: -3 (the three `lifecycle.rs` `player::TX` lines left with the
         # transport contract, `player/transport.rs`, the IO layer) and +3 (a relocation lowers no pin by itself, so the same
         # diff widened the spellings to the transport readers `transport::paused`, `transport::viewer_paused` and

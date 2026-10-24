@@ -685,6 +685,11 @@ pub enum StoreJob {
     /// out at once, one per source, each answering into its own mailbox slot (the port names it).
     /// Not on the tape.
     Search(plx_machine::job::Job<crate::search::SearchReq>, crate::search::SearchPort),
+    /// One write of the recent Search terms, emitted by the Search step that edited them
+    /// (`SearchCmd::RememberRecent` / `ClearRecents`) and addressed by a sequence of its own. It
+    /// carries nothing and answers with nothing: a refusal is remembered, and the next edit asks
+    /// again. Not on the tape.
+    SaveRecents(plx_machine::job::Job<crate::search::recents::SaveRecentsReq>, crate::search::recents::SaveRecentsPort),
 }
 
 /// How the runner admits a job before it starts it: the policy a job kind belongs to, stated on
@@ -706,7 +711,7 @@ impl StoreJob {
         match self {
             Self::Detail(..) | Self::Collection(..) | Self::Person(..) => Admission::Tape,
             Self::Hubs(..) => Admission::Home,
-            Self::Catalog(..) | Self::SubtitleSearch(..) | Self::ViewReconcile(..) | Self::Search(..) => Admission::Direct,
+            Self::Catalog(..) | Self::SubtitleSearch(..) | Self::ViewReconcile(..) | Self::Search(..) | Self::SaveRecents(..) => Admission::Direct,
         }
     }
 
@@ -719,7 +724,7 @@ impl StoreJob {
             Self::SubtitleSearch(..) => StoreId::SubtitleSearch,
             Self::ViewReconcile(..) => StoreId::ViewReconcile,
             Self::Hubs(..) => StoreId::Hubs,
-            Self::Search(..) => StoreId::Search,
+            Self::Search(..) | Self::SaveRecents(..) => StoreId::Search,
         }
     }
 }

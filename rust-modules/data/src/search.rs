@@ -551,11 +551,13 @@ pub struct SearchAdapter {
     /// Grown on demand by [`SearchAdapter::mailbox`]. Behind a lock because the table is shared with
     /// the workers, and a slot's mailbox has to exist before its first landing can reach it.
     fetch: Mutex<Vec<Arc<Fetch>>>,
+    /// A recents write the runner refused ([`recents::SaveRecentsPort`]), not yet seen by an edit.
+    recents_refused: std::sync::atomic::AtomicBool,
 }
 
 impl Default for SearchAdapter {
     fn default() -> Self {
-        Self { fetch: Mutex::new(Vec::new()) }
+        Self { fetch: Mutex::new(Vec::new()), recents_refused: std::sync::atomic::AtomicBool::new(false) }
     }
 }
 
@@ -577,6 +579,12 @@ impl SearchAdapter {
     /// Is an answer waiting in slot `i`'s mailbox? A runner test's view of a request that ran.
     #[cfg(any(test, feature = "test-support"))]
     pub fn has_mail_for_test(&self, i: usize) -> bool { self.mailbox(i).has_mail() }
+
+    /// Was a recents write refused since the last call? Reads and clears the memory, so a refusal
+    /// asks for ONE more drain ([`owe_recents_save`]).
+    fn take_recents_refused(&self) -> bool {
+        self.recents_refused.swap(false, std::sync::atomic::Ordering::SeqCst)
+    }
 
     /// Drop every mailbox's contents and claim — [`supersede`]'s half of the reset.
     fn clear_all(&self) {
@@ -855,6 +863,8 @@ pub struct SearchState {
     /// the owner takes (`SearchStore::take_jobs`) and owes to a runner in the same turn. The step
     /// starts no worker.
     pub(crate) jobs: Vec<crate::stores::StoreJob>,
+    /// The address of the last recents write this step emitted ([`owe_recents_save`]).
+    recents_seq: u32,
 }
 
 impl Default for SearchState {
@@ -875,6 +885,7 @@ impl Default for SearchState {
             scope_cache: scope::ScopeCache::default(),
             fanout: Default::default(),
             jobs: Vec::new(),
+            recents_seq: 0,
         }
     }
 }
@@ -2038,6 +2049,22 @@ fn reset(state: &mut SearchState, adapter: &Arc<SearchAdapter>) {
     state.armed = false;
 }
 
+/// Emit the recents write an edit owes: a [`StoreJob::SaveRecents`](crate::stores::StoreJob::SaveRecents)
+/// on the outbox, which the owner takes and runs in the same turn. A write the runner REFUSED since
+/// the last edit is owed too, whatever this edit did: its queue is still waiting, and an edit is the
+/// only moment the store gets to ask again. Addressed by a sequence of its own, since a recents
+/// write belongs to no query.
+fn owe_recents_save(state: &mut SearchState, adapter: &Arc<SearchAdapter>, owed: bool) {
+    let retried = adapter.take_recents_refused();
+    if !(owed || retried) { return; }
+    state.recents_seq = state.recents_seq.wrapping_add(1);
+    state.jobs.push(crate::stores::StoreJob::SaveRecents(
+        Job { addr: Addr { to: MachineId::Store(crate::stores::StoreId::Search.ord()), req: RequestId(state.recents_seq) },
+              req: recents::SaveRecentsReq },
+        recents::SaveRecentsPort::to(adapter),
+    ));
+}
+
 fn run_with_optional_directory(
     state: &mut SearchState,
     adapter: &Arc<SearchAdapter>,
@@ -2062,10 +2089,14 @@ fn run_with_optional_directory(
             true
         }
         SearchCmd::RememberRecent { profile_generation, term } => {
-            crate::search::recents::remember(profile_generation, &term)
+            let edit = crate::search::recents::remember(profile_generation, &term);
+            owe_recents_save(state, adapter, edit.save);
+            edit.changed
         }
         SearchCmd::ClearRecents { profile_generation } => {
-            crate::search::recents::clear(profile_generation)
+            let edit = crate::search::recents::clear(profile_generation);
+            owe_recents_save(state, adapter, edit.save);
+            edit.changed
         }
         SearchCmd::Reset => {
             reset(state, adapter);
