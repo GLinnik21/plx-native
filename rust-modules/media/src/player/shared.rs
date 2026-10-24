@@ -3521,10 +3521,15 @@ mod tests {
             .iter()
             .map(|src| src.chars().filter(|c| !c.is_whitespace()).collect())
             .collect();
+        // A first-wins latch is written by a compare-exchange inside a `Shared` method (the
+        // demuxer calls the method), so that spelling counts, but only where it is declared: the
+        // reset's plain `.store(0)` in this file must not satisfy the plain-store rule.
+        let shared_src: String = SHARED_SRC.chars().filter(|c| !c.is_whitespace()).collect();
         for f in declared {
-            let written = writers.iter().any(|src| {
-                src.contains(&format!("dg_{f}.store(")) || src.contains(&format!("dg_{f}.fetch_"))
-            });
+            let written = shared_src.contains(&format!("dg_{f}.compare_exchange("))
+                || writers.iter().any(|src| {
+                    src.contains(&format!("dg_{f}.store(")) || src.contains(&format!("dg_{f}.fetch_"))
+                });
             assert!(written, "dg_{f} is declared and read but NOTHING writes it — the panel would print its sentinel as fact");
         }
     }
