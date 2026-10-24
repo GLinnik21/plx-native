@@ -15,7 +15,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-24T09:21:46Z",
+ "generated": "2026-10-24T09:28:47Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -81,18 +81,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -51.5,
-   "change7_pct": -30.5,
+   "change30_pct": -51.6,
+   "change7_pct": -30.6,
    "d30": 688,
-   "delta30": -354.5,
-   "delta7": -146.5,
+   "delta30": -355,
+   "delta7": -147.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 160,
+   "n_now": 161,
    "n_prev": 268,
-   "now": 333.5,
+   "now": 333,
    "prev7": 480.0,
    "shown": true,
    "state": "better",
@@ -105,15 +105,15 @@
    "change30_pct": -52.0,
    "change7_pct": -23.8,
    "d30": 687,
-   "delta30": -357,
-   "delta7": -103,
+   "delta30": -357.0,
+   "delta7": -103.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 79,
+   "n_now": 80,
    "n_prev": 119,
-   "now": 330,
+   "now": 330.0,
    "prev7": 433,
    "shown": true,
    "state": "better",
@@ -328,14 +328,14 @@
    "change7_pct": 14.3,
    "d30": 130.0,
    "delta30": 133.0,
-   "delta7": 33,
+   "delta7": 33.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 67,
+   "n_now": 68,
    "n_prev": 115,
-   "now": 263,
+   "now": 263.0,
    "prev7": 230,
    "shown": true,
    "state": "flat",
@@ -345,18 +345,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 180.4,
-   "change7_pct": 7.8,
+   "change30_pct": 181.1,
+   "change7_pct": 8.1,
    "d30": 71.5,
-   "delta30": 129.0,
-   "delta7": 14.5,
+   "delta30": 129.5,
+   "delta7": 15,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 66,
+   "n_now": 67,
    "n_prev": 115,
-   "now": 200.5,
+   "now": 201,
    "prev7": 186,
    "shown": true,
    "state": "flat",
@@ -409,17 +409,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -5.3,
+   "change7_pct": -5.9,
    "d30": null,
    "delta30": null,
-   "delta7": -8,
+   "delta7": -9.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 67,
+   "n_now": 68,
    "n_prev": 115,
-   "now": 144,
+   "now": 143.0,
    "prev7": 152,
    "shown": true,
    "state": "flat",
@@ -498,14 +498,14 @@
    "change7_pct": 11.8,
    "d30": 16.0,
    "delta30": 3.0,
-   "delta7": 2,
+   "delta7": 2.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 67,
+   "n_now": 68,
    "n_prev": 115,
-   "now": 19,
+   "now": 19.0,
    "prev7": 17,
    "shown": false,
    "state": "flat",
@@ -625,11 +625,6 @@
    "change_pct": 42.1,
    "commits": [
     {
-     "pr": 940,
-     "sha": "30233742f",
-     "title": "Deps: Bump the rust-minor-patch group in /rust-modules with 2 updates"
-    },
-    {
      "pr": 960,
      "sha": "8354a31e6",
      "title": "Site: refresh the demo film and stills for v0.9.0 (and fix what broke their render)"
@@ -673,6 +668,11 @@
      "pr": 975,
      "sha": "591362f7e",
      "title": "Detail store: request_detail emits a job; the app's StoreRunner starts it"
+    },
+    {
+     "pr": 979,
+     "sha": "774b611c3",
+     "title": "Fixture session adapter: park the cache refresh instead of starting a worker job"
     }
    ],
    "from": 44.0,
@@ -686,11 +686,6 @@
    "change_pct": 38.1,
    "commits": [
     {
-     "pr": 940,
-     "sha": "30233742f",
-     "title": "Deps: Bump the rust-minor-patch group in /rust-modules with 2 updates"
-    },
-    {
      "pr": 960,
      "sha": "8354a31e6",
      "title": "Site: refresh the demo film and stills for v0.9.0 (and fix what broke their render)"
@@ -734,6 +729,11 @@
      "pr": 975,
      "sha": "591362f7e",
      "title": "Detail store: request_detail emits a job; the app's StoreRunner starts it"
+    },
+    {
+     "pr": 979,
+     "sha": "774b611c3",
+     "title": "Fixture session adapter: park the cache refresh instead of starting a worker job"
     }
    ],
    "from": 105.5,
@@ -747,11 +747,6 @@
    "change_pct": 34.5,
    "commits": [
     {
-     "pr": 940,
-     "sha": "30233742f",
-     "title": "Deps: Bump the rust-minor-patch group in /rust-modules with 2 updates"
-    },
-    {
      "pr": 960,
      "sha": "8354a31e6",
      "title": "Site: refresh the demo film and stills for v0.9.0 (and fix what broke their render)"
@@ -795,6 +790,11 @@
      "pr": 975,
      "sha": "591362f7e",
      "title": "Detail store: request_detail emits a job; the app's StoreRunner starts it"
+    },
+    {
+     "pr": 979,
+     "sha": "774b611c3",
+     "title": "Fixture session adapter: park the cache refresh instead of starting a worker job"
     }
    ],
    "from": 152,
@@ -835,7 +835,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 263
+   "now": 263.0
   }
  ],
  "slowest_local": [
