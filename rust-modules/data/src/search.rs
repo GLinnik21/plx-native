@@ -110,6 +110,7 @@ use plx_machine::machine::{Addr, MachineId, RequestId};
 use plx_plex::plex::{Client, ClientKey, ClientKeys, ServerId};
 use crate::pms::{parse_item, PmsMovie};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub mod view;
@@ -547,18 +548,13 @@ type Fetch = crate::stores::Fetch<Mail>;
 /// [`SearchPort`] holds a clone of the owning store's `Arc<SearchAdapter>` from the moment the
 /// request is made; rotating the store's live `Arc` (on `SearchCmd::Reset`) orphans that clone
 /// harmlessly — the old worker can still land, but only into a mailbox nothing reads any more.
+#[derive(Default)]
 pub struct SearchAdapter {
     /// Grown on demand by [`SearchAdapter::mailbox`]. Behind a lock because the table is shared with
     /// the workers, and a slot's mailbox has to exist before its first landing can reach it.
     fetch: Mutex<Vec<Arc<Fetch>>>,
     /// A recents write the runner refused ([`recents::SaveRecentsPort`]), not yet seen by an edit.
-    recents_refused: std::sync::atomic::AtomicBool,
-}
-
-impl Default for SearchAdapter {
-    fn default() -> Self {
-        Self { fetch: Mutex::new(Vec::new()), recents_refused: std::sync::atomic::AtomicBool::new(false) }
-    }
+    recents_refused: AtomicBool,
 }
 
 impl SearchAdapter {
@@ -583,7 +579,7 @@ impl SearchAdapter {
     /// Was a recents write refused since the last call? Reads and clears the memory, so a refusal
     /// asks for ONE more drain ([`owe_recents_save`]).
     fn take_recents_refused(&self) -> bool {
-        self.recents_refused.swap(false, std::sync::atomic::Ordering::SeqCst)
+        self.recents_refused.swap(false, Ordering::SeqCst)
     }
 
     /// Drop every mailbox's contents and claim — [`supersede`]'s half of the reset.
@@ -710,9 +706,10 @@ impl Port<SearchAnswer> for SearchPort {
     }
 }
 
-/// A search request's address: this store and the generation of the query it was made for.
-fn search_addr(gen: u32) -> Addr {
-    Addr { to: MachineId::Store(crate::stores::StoreId::Search.ord()), req: RequestId(gen) }
+/// An address in this store: a search request's `req` is the generation of the query it was made
+/// for, a recents write's the sequence of its own.
+fn search_addr(req: u32) -> Addr {
+    Addr { to: MachineId::Store(crate::stores::StoreId::Search.ord()), req: RequestId(req) }
 }
 
 /// ~2 s at 60 fps — the same backoff `person.rs`/`browse.rs` use for a failed fetch. Counted down in
@@ -1314,8 +1311,9 @@ fn pump_with_optional_directory(
         // the take releases the single-flight claim with the mail that answers the CLAIMED
         // generation; a superseded query's late answer is dropped inside it and leaves the new
         // query's claim alone (`Fetch::take_current`)
+        let mailbox = adapter.mailbox(i);
         let taken = crate::stores::take_landing_owed(gate, crate::stores::StoreId::Search,
-            || adapter.mailbox(i).busy(), || adapter.mailbox(i).take_current(|m| m.gen));
+            || mailbox.busy(), || mailbox.take_current(|m| m.gen));
         if let Some(m) = taken {
             turn.finished();
             if m.gen == state.gen {
@@ -1338,7 +1336,7 @@ fn pump_with_optional_directory(
         // it. The fan-out turn above was planned before the sweep and does not know: a refused
         // slot still counted `Wanting` there, so another wanting source can wait one extra pump
         // (never more than `WIDTH` requests are out either way).
-        if adapter.mailbox(i).take_refused(state.gen) {
+        if mailbox.take_refused(state.gen) {
             source_mut(state, i).retry_cd = RETRY_FRAMES;
         }
         maybe_spawn(state, adapter, i, &mut turn, keys);
@@ -2061,8 +2059,7 @@ fn owe_recents_save(state: &mut SearchState, adapter: &Arc<SearchAdapter>, owed:
     if !(owed || retried) { return; }
     state.recents_seq = state.recents_seq.wrapping_add(1);
     state.jobs.push(crate::stores::StoreJob::SaveRecents(
-        Job { addr: Addr { to: MachineId::Store(crate::stores::StoreId::Search.ord()), req: RequestId(state.recents_seq) },
-              req: recents::SaveRecentsReq },
+        Job { addr: search_addr(state.recents_seq), req: recents::SaveRecentsReq },
         recents::SaveRecentsPort::to(adapter),
     ));
 }

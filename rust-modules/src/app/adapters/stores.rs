@@ -8,9 +8,9 @@
 //! and hands each to [`StoreRunner::start`], which owns everything the data layer must not: the
 //! tape's admission record, the worker thread and the process-global client the request reads. A
 //! kind that is not on the tape (the catalog read, a plex.tv call that names no client; subtitle
-//! search; the Search screen's fetches and its recents writes; view reconcile) is started with no admission record, as its inline spawn was. The
-//! detail pump keeps a counted backstop for a sender that did neither
-//! (`Bridge::start_late_store_jobs`).
+//! search; the Search screen's fetches and its recents writes; view reconcile) is started with no
+//! admission record, as its inline spawn was. The detail pump keeps a counted backstop for a
+//! sender that did neither (`Bridge::start_late_store_jobs`).
 //!
 //! **Three admission families** (`plx_data::stores::Admission`, stated by the job kind and matched
 //! exhaustively): `Tape` kinds record their launch on the tape; `Direct` kinds are started with no
@@ -539,9 +539,8 @@ impl StoreRunner {
 
     /// TEST ONLY: run every parked job on THIS thread through the production completion path
     /// (`finish_detail_fetch` over `fetch_full`, `finish_collection_job`, `finish_person_job`,
-    /// `finish_hubs_job`, `finish_catalog_job`, `finish_subsearch_job`, `finish_search_job`, `finish_save_recents_job`,
-    /// `finish_reconcile_job`) and
-    /// return how many ran.
+    /// `finish_hubs_job`, `finish_catalog_job`, `finish_subsearch_job`, `finish_search_job`,
+    /// `finish_save_recents_job`, `finish_reconcile_job`) and return how many ran.
     /// Their landings are queued for the next pump. Under `Live` there is nothing parked.
     #[cfg(test)]
     pub(crate) fn run_held(&mut self) -> usize {
