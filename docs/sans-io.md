@@ -166,7 +166,8 @@ worker. Its three ledger lines are gone and the shape is the one the other `data
   failed backed off, so the step has to see it. A store whose claim is a `Fetch` (subtitle search)
   reads `Fetch::take_refused(gen)` at the head of its next pump: the port's
   `Fetch::refuse_for(gen)` frees that generation's claim and remembers the refusal for
-  `take_refused` to answer once, and a refusal for a superseded generation does neither. A store whose claim is a mailbox of landings
+  `take_refused` to answer once, and a refusal for a superseded generation (one whose claim a newer
+  request or a supersede has replaced) frees nothing and records nothing. A store whose claim is a mailbox of landings
   (the view-state read-back) has its port post a store-local `NotStarted` landing, and the next pump
   puts the flight's items back and waits. A refusal never goes into a recorded mailbox (a recorded
   take would write it as an async result and change the bytes). It reaches the step one pump later

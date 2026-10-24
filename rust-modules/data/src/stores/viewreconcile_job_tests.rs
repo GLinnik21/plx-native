@@ -219,6 +219,24 @@ fn a_job_emitted_before_a_reset_answers_into_the_retired_adapter() {
     plx_machine::assert_fx!(store.take_jobs(), [job(&store, 2, 0, &["1"])]);
 }
 
+/// A job the step sent and nobody has taken yet survives the reset on the outbox, as the other
+/// stores' jobs do: the drain still sees it (a bypass is counted by the backstop, not erased), and
+/// it answers into the adapter it was made for.
+#[test]
+fn a_job_still_on_the_outbox_at_a_reset_is_kept_and_answers_into_the_retired_adapter() {
+    let mut store = ViewReconcileStore::default();
+    owe(&mut store, 0, &["1"]);
+    pump(&mut store, true, &holding(&[0]));
+    assert!(store.has_jobs(), "premise: the read is on the outbox");
+
+    store.reset();
+    assert!(store.has_jobs(), "the reset does not drop an unanswered job");
+    let (sent, port) = one(&mut store);
+    assert_ne!(port, ReconcilePort::of(&store.adapter), "it holds the retired adapter's port");
+    port.refused(sent.addr);
+    assert_eq!(landings(&store), 0, "the replacement's mailbox never sees the answer");
+}
+
 /// **The owed predicate never starves.** In the paced dump the landing is owed while a flight it has
 /// not received is out, and holds the picture back; a refused flight still answers, so the take is
 /// satisfied by the NotStarted landing and nothing is left starved.

@@ -827,9 +827,15 @@ impl<M> Fetch<M> {
     /// answered later (one a runner holds, or refuses after a newer step has claimed again) finds
     /// the claim is a newer request's and leaves it alone.
     pub fn release_for(&self, gen: u32) {
-        if self.claimed.load(std::sync::atomic::Ordering::SeqCst) == gen {
+        if self.holds(gen) {
             self.release();
         }
+    }
+
+    /// Is the claim held, and was it made for `gen`? What [`Fetch::release_for`] and
+    /// [`Fetch::refuse_for`] hand back, and what neither touches otherwise.
+    fn holds(&self, gen: u32) -> bool {
+        self.busy() && self.claimed.load(std::sync::atomic::Ordering::SeqCst) == gen
     }
 
     /// [`Fetch::release_for`] that the owner's step can SEE: the claim made for `gen` is handed
@@ -842,11 +848,17 @@ impl<M> Fetch<M> {
     /// always did. The claim is still freed in the same call as the refusal, so a take that is
     /// owed on `busy` (dump mode) is never left waiting on a request that will not answer.
     ///
-    /// Remembered whichever claim is held: a refusal of a request the owner has since superseded
-    /// names a generation the owner no longer asks about, and is never taken.
+    /// Remembered only when the claim handed back was this request's. A refusal of a request the
+    /// owner has since superseded (a parked job refused after a newer one claimed, or after a
+    /// [`Fetch::clear`]) names a generation the owner no longer asks about: it releases nothing
+    /// and records nothing, so it cannot overwrite the unread refusal of the request that is
+    /// current. The refusal is written before the claim is freed, so a reader that finds the claim
+    /// free also finds the refusal.
     pub fn refuse_for(&self, gen: u32) {
-        self.release_for(gen);
-        self.refused.store(u64::from(gen), std::sync::atomic::Ordering::SeqCst);
+        if self.holds(gen) {
+            self.refused.store(u64::from(gen), std::sync::atomic::Ordering::SeqCst);
+            self.release();
+        }
     }
 
     /// Has the request made for `gen` been refused since the last answer to this? True once: the
@@ -1061,6 +1073,30 @@ mod tests {
         fetch.refuse_for(1); // request 1's launch is refused after request 2 has claimed
         assert!(fetch.busy(), "request 2's claim is not request 1's to hand back");
         assert!(!fetch.take_refused(2));
+        assert!(!fetch.take_refused(1), "...and a superseded request's refusal is not remembered");
+    }
+
+    /// The order that overwrote: the CURRENT request's refusal is unread when a superseded
+    /// request's refusal arrives (a `Held` runner refuses a parked job after the newer one). The
+    /// late one must leave the unread one to be taken, or the owner finds no refusal and asks
+    /// again at once.
+    #[test]
+    fn a_superseded_refusal_does_not_overwrite_the_current_ones() {
+        let fetch = Fetch::<u32>::IDLE;
+        fetch.claim(1);
+        fetch.clear(); // request 1 is superseded while its job is parked
+        fetch.claim(2);
+        fetch.refuse_for(2); // request 2 is refused at its start
+        fetch.refuse_for(1); // then the parked request 1 is refused
+        assert!(!fetch.busy());
+        assert!(fetch.take_refused(2), "request 2's refusal is still there for its owner");
+        assert!(!fetch.take_refused(1), "request 1's was never recorded");
+
+        // after a clear, with nothing claimed, a stale refusal records nothing either
+        fetch.claim(3);
+        fetch.clear();
+        fetch.refuse_for(3);
+        assert!(!fetch.take_refused(3));
     }
 
     /// A supersede retires whatever the old request was going to say, a refusal included: it is not

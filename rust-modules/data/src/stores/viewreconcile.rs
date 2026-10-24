@@ -77,8 +77,9 @@
 //!
 //! Reset (sign-out, profile switch) drops the queue and rotates the adapter, so an old worker can
 //! only post into a mailbox nobody reads, and a job's port keeps reaching the adapter it was made
-//! with. The landing is taken through `landgate` like every other store's, and in dump mode it is
-//! owed exactly while a batch it has not yet received is out.
+//! with (a job still on the outbox is kept for the drain, not dropped). The landing is taken
+//! through `landgate` like every other store's, and in dump mode it is owed exactly while a batch
+//! it has not yet received is out.
 
 use super::StoreJob;
 use crate::viewledger::{Stamp, ViewLedger};
@@ -370,11 +371,11 @@ impl ViewReconcileStore {
     }
 
     /// Drop everything: the identity changed. The adapter is replaced first, so a worker still out
-    /// can only post to the retired one, and a read not yet taken to a runner is dropped with the
-    /// flight it belonged to.
+    /// can only post to the retired one. A read the step sent and nobody has taken to a runner yet
+    /// stays on the outbox, as a job does in the other stores: it answers into the adapter it was
+    /// made for, and a drain that missed it is still seen by the backstop.
     pub fn reset(&mut self) {
         self.adapter = Arc::new(Default::default());
-        self.jobs.clear();
         self.pending.clear();
         self.pending_parents.clear();
         self.flights.clear();
@@ -436,7 +437,7 @@ impl ViewReconcileStore {
             self.next_id += 1;
             let stamp = self.ledger.stamp();
             plx_base::eventlog::log(&format!(
-                "viewreconcile: {} item(s) → server {} (off-thread)", keys.len(), sid.raw()));
+                "viewreconcile: {} item(s) → server {} (sent to the runner)", keys.len(), sid.raw()));
             self.jobs.push(StoreJob::ViewReconcile(
                 Job { addr: reconcile_addr(id), req: ReconcileReq { sid, key, keys: keys.clone() } },
                 ReconcilePort::of(&self.adapter),
@@ -462,10 +463,13 @@ impl ViewReconcileStore {
     /// was asked of the server, so this publishes nothing and settles nothing: the stop candidates,
     /// the quiet marks and the pages owed are exactly as they were. An item asked for again while
     /// the flight was out is already coming back with it, so its dirty mark is dropped rather than
-    /// queueing it a second time.
+    /// queueing it a second time. A parent that was also asked for as an item goes back as the item
+    /// it was asked for (a leaf), as a landing's re-queue of its dirty marks does, so its own season
+    /// and show are read after it.
     fn requeue_unstarted(&mut self, flight: Flight) {
         let Flight { sid, keys, parents, .. } = flight;
         let covered = |k: &Key| k.0 == sid && keys.iter().any(|f| plx_plex::plex::same_item((sid, f), (k.0, &k.1)));
+        let asked_again: Vec<Key> = self.dirty.iter().filter(|k| covered(k)).cloned().collect();
         self.dirty.retain(|k| !covered(k));
         let queued = |list: &[Key], rk: &str| list.iter().any(|k| plx_plex::plex::same_item((k.0, &k.1), (sid, rk)));
         let leaves = keys.len() - parents.len();
@@ -476,7 +480,12 @@ impl ViewReconcileStore {
             }
         }
         for rk in keys {
-            if !queued(&self.pending, &rk) && !queued(&self.pending_parents, &rk) {
+            if queued(&self.pending, &rk) || queued(&self.pending_parents, &rk) {
+                continue;
+            }
+            if queued(&asked_again, &rk) {
+                self.pending.push((sid, rk));
+            } else {
                 self.pending_parents.push((sid, rk));
             }
         }

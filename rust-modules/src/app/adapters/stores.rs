@@ -52,7 +52,8 @@ fn resolve(sid: plx_plex::plex::ServerId, key: ClientKey) -> Option<&'static Cli
 pub(crate) enum StoreRunner {
     /// Start every job on a worker thread.
     Live,
-    /// TEST ONLY: park every job (after its tape admission) until [`StoreRunner::run_held`].
+    /// TEST ONLY: park every job that starts (after its tape admission, for a kind that is on the
+    /// tape; after the registry's key check, for one that is not) until [`StoreRunner::run_held`].
     #[cfg(test)]
     Held(Vec<StoreJob>),
 }
@@ -67,8 +68,8 @@ impl StoreRunner {
         Self::Held(Vec::new())
     }
 
-    /// Admit `job` through the tape and start it. Exactly one answer reaches its port: the fetch's
-    /// own, or a refusal when nothing was started.
+    /// Admit `job` (a taped kind only) and start it. Exactly one answer reaches its port: the
+    /// fetch's own, or a refusal when nothing was started.
     pub(crate) fn start(&mut self, job: StoreJob) {
         match job {
             StoreJob::Detail(job, port) => self.start_detail(job, port),

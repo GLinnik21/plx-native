@@ -265,6 +265,27 @@ fn an_unstarted_batch_splits_back_into_leaves_and_parents() {
     assert_eq!(store.retry_cd, RETRY_FRAMES);
 }
 
+/// A season that rode in a refused batch as a parent and was asked for as an item while the batch
+/// was out goes back as the item (a leaf): read as a leaf, its own show is read after it, where
+/// going back as a parent would stop the walk at the season. Its dirty mark is dropped, as the
+/// other covered items' are.
+#[test]
+fn an_unstarted_parent_that_was_asked_for_again_goes_back_as_an_item() {
+    let sid = ServerId::from_raw(0);
+    let mut store = ViewReconcileStore::default();
+    store.flights.push(Flight {
+        id: 1, sid, keys: vec!["3".into(), "2".into(), "1".into()],
+        parents: vec!["2".into(), "1".into()], stamp: 0,
+    });
+    store.enqueue([(sid, "2".to_string())]); // the season's own press, while the batch is out
+    assert_eq!(store.dirty_for_test(), [(sid, "2".to_string())], "premise: the ask went dirty, not pending");
+    let flight = store.flights.remove(0);
+    store.requeue_unstarted(flight);
+    assert_eq!(store.pending_for_test(), [(sid, "3".to_string()), (sid, "2".to_string())]);
+    assert_eq!(store.pending_parents, [(sid, "1".to_string())], "the show that was not asked for stays a parent");
+    assert!(store.dirty_for_test().is_empty(), "the covered mark is dropped, not queued twice");
+}
+
 /// Two episodes of one season pressed in a burst: one read of both, one of the season and show —
 /// not one pair per episode.
 #[test]
