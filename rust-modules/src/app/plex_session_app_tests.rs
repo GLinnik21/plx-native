@@ -109,3 +109,99 @@ fn audio_enhancements_persist_and_restore() {
     plx_media::player::restore_audio_enhancements(plx_plex::plex::AudioEnhancements::NONE);
     plx_media::route::unseed_profile_prefs_for_test();
 }
+
+/// Frames of 16 ms from `*ms`, letting the storage worker finish between them so a refresh's answer
+/// is collected by the very next frame. Every refresh the frames start is awaited before returning.
+fn frames(pages: &mut plx_ui::dispatch::Dispatcher<crate::app::bridge::AppHost>, bridge: &mut Bridge,
+    ms: &mut u32, count: u32) {
+    for _ in 0..count {
+        crate::app::bridge::frame(pages, bridge, plx_machine::machine::Tick { ms: *ms, dt_us: 16_000 }, Vec::new());
+        plx_base::storage_worker::drain_for_test();
+        *ms += 16;
+    }
+}
+
+/// `peek` never reads, so an `Unloaded` cache in a live frame is refilled by the session owner's
+/// `RefreshCache` effect: observed by the frame step, run on the storage worker, answered to the
+/// owner. Within a few frames the cache is settled (what Settings' pending preference edits and
+/// the account menu wait for), the visible generation moved ONCE, and nothing is left in flight.
+#[test]
+fn an_unloaded_cache_is_refilled_by_the_owner_within_a_few_frames() {
+    let _serial = plx_base::testlock::serial();
+    let _session = session::TempSession::new("bridge-cache-refill");
+    struct ResetIdle;
+    impl Drop for ResetIdle {
+        fn drop(&mut self) { plx_machine::idle::reset_for_test(); }
+    }
+    let _idle = ResetIdle;
+    session::save(&signed_in());
+    session::invalidate_for_test();
+    let mut bridge = Bridge::for_test(|| 0);
+    let mut pages = plx_ui::dispatch::Dispatcher::new();
+    crate::app::bridge::nav_root(&mut pages, plx_screens::registry::AppArg::Login);
+    assert!(session::peek_settled().is_none(), "the cache starts unloaded");
+    assert!(session::peek().client_id.is_empty(), "and peek alone fills nothing");
+    let generation = session::visible_generation();
+    let mut ms = 0;
+    frames(&mut pages, &mut bridge, &mut ms, 4);
+    assert!(session::peek_settled().is_some(), "the owner's refresh filled the cache");
+    assert_eq!(session::peek().client_id, "cid-1");
+    assert_eq!(session::visible_generation(), generation + 1, "one visible landing");
+    assert_eq!(bridge.session.cache_refresh_in_flight(), None, "the answer reached the owner");
+    assert_eq!(session::refresh_need(), None);
+    frames(&mut pages, &mut bridge, &mut ms, 4);
+    assert_eq!(session::visible_generation(), generation + 1, "a settled cache raises no more landings");
+}
+
+/// An adapter that is replaced (or dropped) loses its job's ticket, so nothing would ever answer
+/// the owner: the frame step reconciles it with `Refused`, the owner backs off about a second, and
+/// then asks again.
+#[test]
+fn a_replaced_adapter_cannot_strand_an_in_flight_refresh() {
+    let _serial = plx_base::testlock::serial();
+    let _session = session::TempSession::new("bridge-cache-adapter-replaced");
+    session::save(&signed_in());
+    session::invalidate_for_test();
+    let mut bridge = Bridge::for_test(|| 0);
+    let mut pages = plx_ui::dispatch::Dispatcher::new();
+    crate::app::bridge::nav_root(&mut pages, plx_screens::registry::AppArg::Login);
+    let mut ms = 0;
+    crate::app::bridge::frame(&mut pages, &mut bridge, plx_machine::machine::Tick { ms, dt_us: 16_000 }, Vec::new());
+    ms += 16;
+    assert!(bridge.session.cache_refresh_in_flight().is_some(), "the first frame asked for a refresh");
+    let mt = unsafe { plx_base::task::MainThread::assume() };
+    bridge.session_adapter = crate::app::adapters::session::SessionAdapter::live_resources_for_test(&mt, false);
+    plx_base::storage_worker::drain_for_test();
+    session::invalidate_for_test(); // the lost job's fill is gone again: a need exists
+    frames(&mut pages, &mut bridge, &mut ms, 1);
+    assert_eq!(bridge.session.cache_refresh_in_flight(), None, "the reconcile answered the lost job");
+    assert!(session::peek_settled().is_none(), "and the owner is now backing off");
+    ms += 500;
+    frames(&mut pages, &mut bridge, &mut ms, 2);
+    assert!(session::peek_settled().is_none(), "the refusal holds back every generation for a second");
+    ms += 600;
+    frames(&mut pages, &mut bridge, &mut ms, 3);
+    assert!(session::peek_settled().is_some(), "then the owner asks again and the cache fills");
+    assert_eq!(bridge.session.cache_refresh_in_flight(), None);
+}
+
+/// A controlled run records its resources: a cache refresh is real storage IO it never recorded, so
+/// the Bridge fails the run loudly instead of executing it (the same refusal as `Capture`/`Work`).
+#[test]
+fn a_controlled_run_refuses_a_cache_refresh_loudly() {
+    use plx_machine::machine::{Effects, MachineId};
+    let _serial = plx_base::testlock::serial();
+    let mut bridge = Bridge::for_test(|| 0);
+    let mt = unsafe { plx_base::task::MainThread::assume() };
+    let publisher = plx_plex::plex::session::ProfilePublisher::scoped(&mt);
+    bridge.home_io = Some(crate::app::bootstrap::HomeIo { replay: false, preferences: Default::default(),
+        requests: Vec::new(), admissions: Default::default(), failure: None, profile: publisher.snapshot() });
+    assert_eq!(bridge.controlled_failure(), None);
+    let mut present = plx_machine::present::Present::new();
+    let mut effects = Vec::new();
+    bridge.session_effect(plx_session::auth::owner::SessionFx::RefreshCache { req: 1, generation: 0 },
+        &mut Effects::new(&mut effects, MachineId::Session, &mut present));
+    assert_eq!(bridge.controlled_failure(), Some("unsupported controlled Home Session operation"));
+    assert!(effects.is_empty(), "nothing was started or answered");
+    assert_eq!(bridge.session_adapter.cache_refresh_req(), None);
+}

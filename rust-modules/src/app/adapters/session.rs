@@ -1206,6 +1206,32 @@ impl SessionAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A cache refresh whose job panics (or is dropped unrun) disconnects its ticket: the owner
+    /// still gets exactly one answer, `Refused`, so its in-flight marker cannot stick.
+    #[test]
+    fn a_cache_refresh_job_that_panics_is_answered_refused() {
+        use plx_plex::plex::session::CacheRefreshOutcome;
+        let _serial = plx_base::testlock::serial();
+        let mt = unsafe { plx_base::task::MainThread::assume() };
+        let mut adapter = SessionAdapter::live_resources_for_test(&mt, false);
+        assert_eq!(adapter.cache_refresh_req(), None);
+        assert_eq!(adapter.take_cache_refresh(), None);
+        let ticket = plx_base::storage_worker::submit(|| -> CacheRefreshOutcome {
+            panic!("injected cache refresh failure")
+        }).expect("the queue admits the job");
+        adapter.cache_refresh = Some((7, ticket));
+        assert_eq!(adapter.cache_refresh_req(), Some(7), "held until taken");
+        let mut taken = None;
+        for _ in 0..5_000 {
+            taken = adapter.take_cache_refresh();
+            if taken.is_some() { break; }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(taken, Some((7, CacheRefreshOutcome::Refused)));
+        assert_eq!(adapter.cache_refresh_req(), None, "answered once");
+        assert_eq!(adapter.take_cache_refresh(), None);
+    }
     use plx_session::auth::{LoginProgress, owner::SessionOp};
     use plx_session::auth::owner::ObservationSink;
 
