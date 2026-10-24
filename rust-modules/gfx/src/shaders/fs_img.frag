@@ -25,9 +25,10 @@
 // draw (every resting card, glyph, blur reduction, `field_kick`, `FrameCache` quad) paid for the
 // bigger program even with nothing focused - Midgard flattens the extra uniform branches into
 // selects, and the `v_gloss` varying load costs something on every fragment regardless of
-// `u_focus.x`. The plain (non-`PLX_FOCUS`) path below is therefore BYTE-FOR-BYTE the pre-focus
-// program (main's `fs_img.frag` at 78a823eea, comments aside): `IPROG`, `FS_STILL` and every
-// resting-card draw compile and run exactly that, unaffected by any of this file's FOCUS code.
+// `u_focus.x`. The plain (non-`PLX_FOCUS`) path below is therefore the pre-focus program (main's
+// `fs_img.frag` at 78a823eea, comments aside) plus ONE later addition, its pad exit (`d >= 1.0`, see
+// there): `IPROG`, `FS_STILL` and every resting-card draw compile and run exactly that, unaffected
+// by any of this file's FOCUS code.
 // `gfx::draw_tex_impl` only reaches for the `PLX_FOCUS` program when a draw is actually focused or
 // risen (`focus > 0.0 || dy > 0.0` - at most one card on screen), falling back to the plain
 // program if it fails to link.
@@ -204,15 +205,34 @@ void main(){
   // A box-only (no `length()`) lower bound on the true shadow distance - safe for a "definitely
   // past the falloff" test since the true rounded distance is never smaller than the box one.
   highp float dShadowBox = straightS - u_card.z;
-  // Past this point the card's own AA/rim is exactly zero once `d >= 1.0` (`m`'s own smoothstep
-  // ceiling - GLSL's `smoothstep` clamps to exactly 1.0 past its top edge, and `rim` is already 0
-  // once `d >= 0.0`). If the shadow's box proxy has ALSO already cleared its own falloff, the whole
-  // fragment is provably transparent without ever computing the shadow's `length()` - the bigger,
-  // further-falling risen shadow otherwise pays that across ~35% more padded fragments than the
-  // plain symmetric halo it replaced. `discard` is expensive on Mali, so this writes `vec4(0)`
-  // directly rather than discarding.
-  if (d >= 1.0 && (0.5 - dShadowBox * u_shinv) <= 0.0) {
-    gl_FragColor = vec4(0.0);
+  // THE PAD EXIT. Once `d >= 1.0` this fragment lies outside the card body and its output is the
+  // shadow alone. `smoothstep` clamps to exactly 1.0 past its top edge (GLSL ES 1.00 spec: `t =
+  // clamp((x - edge0)/(edge1 - edge0), 0, 1)`, then `t*t*(3 - 2t)`, which is exactly 1.0 at t = 1),
+  // so `m = 1.0 - smoothstep(-1.0, 1.0, d)` is exactly 0.0 there and `1.0 - m` is exactly 1.0. The
+  // final `vec4(tex*m, ta*m + sh)` is therefore `vec4(0, 0, 0, sh)` whatever the glow, glare, gloss
+  // and rim made of `tex`: they reach only `tex`, which `m` zeroes, and never the alpha. None of
+  // them is computed. The shadow below is the same text the body ends with (`dShadow`, `sh`;
+  // `the_card_shaders_pad_exit_is_the_shadow_alone` pins the two together). If the shadow's box proxy
+  // (a lower bound on its distance, no `length()`) has ALSO cleared its own falloff the fragment is
+  // fully transparent without ever computing the shadow's `length()` - the bigger, further-falling
+  // risen shadow otherwise pays that across ~35% more padded fragments than the plain symmetric halo
+  // it replaced. That was this exit's only case before; the rest of the pad, where the shadow still
+  // reaches and the lit-glass work ran for nothing, now leaves here too. Midgard branches per 2x2
+  // quad: a quad that straddles the card's edge takes the long side, and both sides write the same
+  // bits for the fragments that left early. `discard` is expensive on Mali, so this writes the
+  // colour and returns instead.
+  if (d >= 1.0) {
+    if ((0.5 - dShadowBox * u_shinv) <= 0.0) {
+      gl_FragColor = vec4(0.0);
+      return;
+    }
+    highp float dShadow = d;
+    if (u_focus.z > 0.0) {
+      dShadow = dShadowBox;
+      if (min(qs.x, qs.y) > 0.0) dShadow = length(qs) - u_card.z;
+    }
+    float sh = clamp(0.5 - dShadow*u_shinv, 0.0, 1.0);
+    gl_FragColor = vec4(0.0, 0.0, 0.0, sh*sh*(3.0 - 2.0*sh) * u_shcol.a);
     return;
   }
   float glareTop = 0.0;
@@ -237,6 +257,19 @@ void main(){
     // `v_gloss` interpolated from `vs_img.vert` rather than re-derived per fragment.
     highp float gloss = clamp(1.0 - v_gloss / 0.34, 0.0, 1.0) * 0.14 * u_focus.x;
     tex = mix(tex, vec3(1.0), clamp(glow * u_focus.x + gloss, 0.0, 1.0));
+  }
+#else
+  // THE PAD EXIT, as in the FOCUS program: `d >= 1.0` makes `m` below exactly 0.0 (`smoothstep`
+  // clamps to exactly 1.0 past its top edge) and `1.0 - m` exactly 1.0, so `vec4(tex*m, ta*m + sh)`
+  // - and `stillOver(tex*m, ta*m + sh, m, ramp)`, whose scrim is `ramp*m` = 0 and whose keep is then
+  // `sh*(1 - 0)` - is `vec4(0, 0, 0, sh)` whatever the rim and the texture are. The shadow is the
+  // same text the body ends with (`the_card_shaders_pad_exit_is_the_shadow_alone`). A resting card's
+  // ring pieces and a card drawn whole both reach this; the fast path above (`u_card.z < 0.5`:
+  // glyphs, blur reductions, plain pictures) never does, so those draws pay nothing for it.
+  if (d >= 1.0) {
+    float sh = clamp(0.5 - d*u_shinv, 0.0, 1.0);
+    gl_FragColor = vec4(0.0, 0.0, 0.0, sh*sh*(3.0 - 2.0*sh) * u_shcol.a);
+    return;
   }
 #endif
   float m = 1.0 - smoothstep(-1.0, 1.0, d);

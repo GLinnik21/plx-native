@@ -7966,8 +7966,10 @@ mod tests {
 
     /// The whole reason [`FOCUS_IMAGE`] exists: a resting card, a glyph, a blur reduction, a
     /// `field_kick`, a `FrameCache` quad — every draw through the PLAIN program — must compile and
-    /// run EXACTLY what main shipped before the lit-glass/risen-shadow feature, with no trace of
-    /// `u_focus`/`v_gloss` left in by a stray `#ifdef PLX_FOCUS` that didn't close where intended.
+    /// run what main shipped before the lit-glass/risen-shadow feature (plus its one later
+    /// addition, the card's pad exit, which `the_card_shaders_pad_exit_is_the_shadow_alone` pins),
+    /// with no trace of `u_focus`/`v_gloss` left in by a stray `#ifdef PLX_FOCUS` that didn't close
+    /// where intended.
     /// Preprocessing with `PLX_FOCUS` absent (mirroring what the GL driver does for `FS_IMG`/
     /// `VS_IMG`, `FS_STILL`/`VS_STILL`) and grepping the result is what actually answers that,
     /// unlike a raw-text search against `shader_code`.
@@ -8056,6 +8058,104 @@ mod tests {
                 "if (u_card.z < 0.5)",
             ] {
                 assert!(fs.contains(line), "{defined:?}: `{line}` is gone from the shader: plain_exit() no longer replays it");
+            }
+        }
+    }
+
+    /// **A card fragment outside the body leaves `fs_img.frag` as the shadow alone, before any of the
+    /// card's own work.** `m = 1.0 - smoothstep(-1.0, 1.0, d)` is exactly 0.0 from `d >= 1.0` (the
+    /// GLSL `smoothstep` clamps to exactly 1.0 at its top edge), so the closing `vec4(tex*m, ta*m +
+    /// sh)` - or `stillOver(...)`, whose scrim is `ramp*m` - is `vec4(0, 0, 0, sh)` whatever the glow,
+    /// glare, gloss, rim and texture made of `tex`, and the shader returns that without computing
+    /// them (the pad of a card is ~14% of its quad, all of it shaded by the full path before). Three
+    /// things have to stay true for that to be the same picture, and each is pinned here: the exit
+    /// threshold is `m`'s own top edge, the closing expression is still the one the identity was
+    /// worked out for, and the shadow the exit writes is the SAME text the body ends with (a copy
+    /// that drifts from it would show as a seam at `d = 1`). The model at the bottom replays the
+    /// identity in `f32`; the simulator ignores `mediump`, so the device is the other half of the proof.
+    #[test]
+    fn the_card_shaders_pad_exit_is_the_shadow_alone() {
+        // Everything a fragment of the card path computes for the lit glass, the rim and the picture:
+        // none of it may appear inside the exit, which writes the shadow and returns.
+        const CARD_WORK: [&str; 11] = [
+            "tex", "ta", "glow", "gloss", "glareTop", "rim", "smoothstep", "stillOver", "texture2D", "u_rimcol", "u_tint",
+        ];
+        let programs: [(&str, &[&str], &str); 3] = [
+            ("plain", &[], "gl_FragColor = vec4(tex*m, ta*m + sh);"),
+            ("still", &["PLX_STILL_GROUND"], "gl_FragColor = stillOver(tex*m, ta*m + sh, m, ramp);"),
+            ("focus", &["PLX_FOCUS"], "gl_FragColor = vec4(tex*m, ta*m + sh);"),
+        ];
+        for (name, defined, closing) in programs {
+            let fs = preprocess(FS_IMG.to_str().unwrap(), defined);
+            let at = |needle: &str| fs.find(needle).unwrap_or_else(|| panic!("{name}: `{needle}` is gone from the shader"));
+            let open = at("if (d >= 1.0) {");
+            assert_eq!(fs.matches("if (d >= 1.0) {").count(), 1, "{name}: exactly one pad exit");
+            let close = open + fs[open..].find("\n  }\n").expect("the pad exit closes at the indent of main's body");
+            let exit = &fs[open..close];
+            // 1. The threshold is the top edge of the coverage smoothstep, and the exit comes before it.
+            let m = at("float m = 1.0 - smoothstep(-1.0, 1.0, d);");
+            assert!(close < m, "{name}: the pad exit must precede the coverage `m`");
+            // 2. The identity was worked out for this closing expression and this coverage shape.
+            assert_eq!(fs.matches(closing).count(), 1, "{name}: the closing expression changed from `{closing}`");
+            assert!(
+                fs.contains("sh = sh*sh*(3.0 - 2.0*sh) * u_shcol.a * (1.0 - m);"),
+                "{name}: the body's shadow is no longer `shadow * (1.0 - m)`, which is exactly `shadow` at m == 0"
+            );
+            // 3. The exit writes the shadow (alpha) and nothing else, and none of the card's own work runs in it.
+            assert!(
+                exit.contains("gl_FragColor = vec4(0.0, 0.0, 0.0, sh*sh*(3.0 - 2.0*sh) * u_shcol.a);"),
+                "{name}: the pad exit is not the shadow alone:\n{exit}"
+            );
+            for work in CARD_WORK {
+                let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+                let hit = exit
+                    .match_indices(work)
+                    .any(|(i, w)| !exit[..i].ends_with(ident) && !exit[i + w.len()..].starts_with(ident));
+                assert!(!hit, "{name}: the pad exit computes `{work}`:\n{exit}");
+            }
+            // 4. The shadow's own distance and falloff are the body's text, verbatim: every line the
+            // exit uses to build `sh` appears once in the exit and once in the body.
+            let shadow: &[&str] = if defined.contains(&"PLX_FOCUS") {
+                &[
+                    "highp float dShadow = d;",
+                    "dShadow = dShadowBox;",
+                    "if (min(qs.x, qs.y) > 0.0) dShadow = length(qs) - u_card.z;",
+                    "float sh = clamp(0.5 - dShadow*u_shinv, 0.0, 1.0);",
+                ]
+            } else {
+                &["float sh = clamp(0.5 - d*u_shinv, 0.0, 1.0);"]
+            };
+            for line in shadow {
+                assert_eq!(fs.matches(line).count(), 2, "{name}: `{line}` must be the same text in the exit and in the body");
+                assert!(exit.contains(line), "{name}: the exit lost `{line}`");
+            }
+        }
+        // The focus program keeps its cheaper first case: a fragment whose shadow's box proxy has
+        // already cleared the falloff writes plain zero without the shadow's `length()`.
+        let focus = preprocess(FS_IMG.to_str().unwrap(), &["PLX_FOCUS"]);
+        let box_clear = focus.find("if ((0.5 - dShadowBox * u_shinv) <= 0.0) {").expect("the box-proxy exit");
+        assert!(focus[box_clear..].contains("gl_FragColor = vec4(0.0);"));
+        assert!(box_clear < focus.find("length(qs)").unwrap(), "the box-proxy exit must precede the shadow's `length()`");
+
+        // The identity itself, replayed in f32 over the exit's domain (`d >= 1.0`): coverage is exactly
+        // 0, so the full path's colour is the shadow alone, to the bit.
+        fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
+            let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        }
+        for blur in [1.0_f32, 4.0, 12.0, 24.0] {
+            let shinv = 0.5 / blur;
+            for step in 0..4000 {
+                let d = 1.0 + step as f32 * 0.0125;
+                for (tex, ta, a) in [(0.0_f32, 0.0_f32, 0.0_f32), (0.25, 1.0, 0.35), (1.0, 0.5, 1.0)] {
+                    let m = 1.0 - smoothstep(-1.0, 1.0, d);
+                    assert_eq!(m.to_bits(), 0.0_f32.to_bits(), "d = {d}: coverage is exactly zero");
+                    let sh0 = (0.5 - d * shinv).clamp(0.0, 1.0);
+                    let shadow = sh0 * sh0 * (3.0 - 2.0 * sh0) * a;
+                    let full = (tex * m, ta * m + shadow * (1.0 - m));
+                    assert_eq!(full.0.to_bits(), 0.0_f32.to_bits(), "d = {d}: no colour outside the body");
+                    assert_eq!(full.1.to_bits(), shadow.to_bits(), "d = {d}, blur {blur}: alpha is the shadow alone");
+                }
             }
         }
     }
