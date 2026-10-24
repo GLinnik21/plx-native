@@ -106,34 +106,49 @@ blame.
 - The highest `GPU_ACTIVE`-per-elapsed-ns rate seen in HWCNT legs was 649 MHz, under that ceiling.
 
 **The driver reports GPU busy % without HWCNT's `glFinish` serialization.** Debugfs is built into
-the kernel but not mounted.
+the kernel but not mounted. Mounting it is a device-state change, so do these steps in order under
+the TV lock, on the TV's busybox `sh` (POSIX sh only). The state they share lives in files, so they
+work as one script or as separate `tools/tv-ssh ssh tv '...'` calls; repeat the first line in each:
 
-```bash
-mount -t debugfs none /sys/kernel/debug
-cat /sys/kernel/debug/mali0/gpu_utilization      # mali0 utilization: N
-umount /sys/kernel/debug
+```sh
+D=/sys/kernel/debug; OUT=/tmp/gpu-util.log; PIDF=/tmp/gpu-util.pid; MNTF=/tmp/gpu-util.mounted
+
+# 1. Mount debugfs only if it is not already mounted, and remember whether THIS run did.
+if grep -q " $D debugfs " /proc/mounts; then echo 0 > $MNTF
+else mount -t debugfs none $D && echo 1 > $MNTF; fi
+
+# 2. One-shot read; prints "mali0 utilization: N".
+cat $D/mali0/gpu_utilization
+
+# 3. Sampled run only: start a 10 Hz loop in the background (its only fork is `usleep`), writing
+#    to the absolute $OUT, and record its pid. All three fds are redirected so an ssh call returns.
+: > $OUT
+while :; do
+  read up rest < /proc/uptime
+  read a b c < $D/mali0/gpu_utilization
+  echo "$up $c" >> $OUT
+  usleep 100000
+done > /dev/null 2>&1 < /dev/null &
+echo $! > $PIDF
+
+# 4. Run the scene, then stop the sampler by killing that pid. $OUT now holds the samples; read it
+#    back, then `rm -f $OUT`.
+kill $(cat $PIDF); rm -f $PIDF
+
+# 5. Unmount only if step 1 mounted it, before handing the set back.
+[ "$(cat $MNTF 2>/dev/null)" = 1 ] && umount $D; rm -f $MNTF
 ```
 
 - `N` is a percent over the last `dvfs_period` (100 ms), for the whole GPU, compositor included.
-- Sample it from a TV-side shell loop (10 Hz; its only fork is `usleep`):
-
-  ```sh
-  while :; do
-    read up rest < /proc/uptime
-    read a b c < /sys/kernel/debug/mali0/gpu_utilization
-    echo "$up $c" >> log
-    usleep 100000
-  done
-  ```
-
-- **The sampler is not out of the measurement for misses: it roughly doubles bench misses.** With it
-  running, a grid-pong control with the panel off missed 22 refreshes in cycles 2-60 and a
-  cards-off run missed 8. The same panel-off control without it missed 9 (panel-on controls that
-  day missed 8, 13 and 14, measured 2026-10-24). Its utilization figures are valid, but never grade
-  misses from a run that had the sampler running; take misses from a separate run without it.
+  Each line of `$OUT` is the uptime in seconds and `N`.
+- **The sampler is not out of the measurement for misses: in one run (22 vs 9) it roughly doubled
+  them.** With it running, a grid-pong control with the panel off missed 22 refreshes in cycles 2-60
+  and a cards-off run missed 8. The same panel-off control without it missed 9 (panel-on controls
+  that day missed 8, 13 and 14, measured 2026-10-24). That is one run each way, so the size of the
+  effect is not established. Its utilization figures are valid, but never grade misses from a run
+  that had the sampler running; take misses from a separate run without it.
 - A Home grid-pong control run read 86-90 % and a cards-off run 50-63 %. That matches HWCNT at
   672 MHz (the control: 9.95M cycles/frame x 60 / 672 MHz).
-- Mounting debugfs is a device-state change: take the TV lock and unmount before handing back.
 
 **CPU and thermal.** LG's power manager governs the CPU only.
 
@@ -149,18 +164,24 @@ umount /sys/kernel/debug
 
 **Reading `plxnative-herobench` misses.**
 
-- (a) Cycle 1 of every run has one 13-16 ms `swap` on the frame after the event-log line
-  `egl surface (after 120 presents)`. That is the one-shot `EGL_BUFFER_AGE` query in
-  `plx_gfx::egl::late_probe()` (`rust-modules/gfx/src/egl.rs`, called after every swap from
-  `rust-modules/src/app/run.rs`). Count cycle 1 separately from cycles 2-60.
+- (a) A cycle-1 `swap` of 13-16 ms on the frame after the event-log line
+  `egl surface (after 120 presents)` is the one-shot `EGL_BUFFER_AGE` query in
+  `plx_gfx::egl::late_probe()` (`rust-modules/gfx/src/egl.rs`). A build from before #980 ran it on
+  every launch, about 2 s in, so older logs show that block in cycle 1. On a current build it runs
+  only with the `eglage` dev trigger armed (`docs/egl-partial-update-and-damage.md`, section 7), so
+  an unarmed run has neither the stall nor the line, and a cycle-1 miss there is something else: a
+  first-time upload (`prepare=` with a large `px=`; #980's runs showed one, a 921,600-px upload with
+  `prepare=15.0`) or first-time text raster (`textx4`). Count cycle 1 separately from cycles 2-60.
 - (b) On Home `hero-pong` and `grid-pong`, misses in cycles 2-60 rose sharply above about 8M
   `GPU_ACTIVE` p50 per frame (about 70 % busy at 672 MHz):
   - 5-14 misses at 8.1M or more;
   - 1-5 at 7.9M or less;
   - 0-3 at the 3.1M floor (`plxnative-drawmask=all`).
 
-  These are single runs per mask; the control spread was 7-14. Late frames wait in `clear`
-  (back-buffer release) while the CPU is idle. That is the GPU queue, not the UI thread.
+  These are single runs per mask. The control spread in cycles 2-60 was 7-15: `hero-pong` 14, 7
+  and 9 and `grid-pong` 15, 11 and 9 in #980's device runs (2026-10-24), and `grid-pong` 8, 9, 13
+  and 14 in the controls above. Late frames wait in `clear` (back-buffer release) while the CPU is
+  idle. That is the GPU queue, not the UI thread.
 - (c) `plxnative-drawmask=glass` also skips the glass source pass, an early post-swap FBO
   submission. A `-glass` leg is therefore not a clean measurement of glass cost.
 - (d) The Home p95 is bimodal: the ground probe's 1-in-30 kick frame adds 1.7-1.9M cycles.
