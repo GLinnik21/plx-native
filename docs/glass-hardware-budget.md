@@ -482,6 +482,9 @@ sensor and no GPU clock at all** (there is no thermal zone and no frequency node
 `/sys`; this was checked, read-only, at the start and end of every batch). So I cannot say what a
 set that has been off overnight does. What I can say is that **a set this warm shows no decay and
 holds a clean 60**, which removes the reason to design against a 50 fps ceiling.
+(2026-10-24: the GPU does have a clock, fixed at 672 MHz; sysfs just does not show it. The TV's
+`mali_kbase.ko` declares it and has no clock-setting path, and debugfs `mali0/gpu_utilization`
+agrees; see `.agents/skills/profile-tv/SKILL.md`, "Mali T820 facts".)
 
 ---
 

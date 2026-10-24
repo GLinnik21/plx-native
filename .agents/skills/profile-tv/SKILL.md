@@ -115,8 +115,7 @@ umount /sys/kernel/debug
 ```
 
 - `N` is a percent over the last `dvfs_period` (100 ms), for the whole GPU, compositor included.
-- Sample it from a TV-side shell loop whose only fork is `usleep`, so the sampler stays out of the
-  measurement:
+- Sample it from a TV-side shell loop (10 Hz; its only fork is `usleep`):
 
   ```sh
   while :; do
@@ -127,7 +126,13 @@ umount /sys/kernel/debug
   done
   ```
 
-- A Home grid-pong control run read 86-90 %. That matches HWCNT's 9.95M cycles/frame x 60 / 672 MHz.
+- **The sampler is not out of the measurement for misses: it roughly doubles bench misses.** With it
+  running, a grid-pong control with the panel off missed 22 refreshes in cycles 2-60 and a
+  cards-off run missed 8. The same panel-off control without it missed 9 (panel-on controls that
+  day missed 8, 13 and 14, measured 2026-10-24). Its utilization figures are valid, but never grade
+  misses from a run that had the sampler running; take misses from a separate run without it.
+- A Home grid-pong control run read 86-90 % and a cards-off run 50-63 %. That matches HWCNT at
+  672 MHz (the control: 9.95M cycles/frame x 60 / 672 MHz).
 - Mounting debugfs is a device-state change: take the TV lock and unmount before handing back.
 
 **CPU and thermal.** LG's power manager governs the CPU only.
