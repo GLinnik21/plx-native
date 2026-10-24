@@ -2644,14 +2644,19 @@ mod tests {
             crate::stores::tape::init(None, replay);
             let _tape = ResetTape;
             let mut owner = Owner::default();
-            owner.open(S0, "1001", "", "Synthetic person", "");
+            // A guid, so the two plex.tv reads would be wanted if the flags below were not honoured.
+            owner.open(S0, "1001", "plex://person/1001", "Synthetic person", "");
             owner.state.current.as_mut().unwrap().profiled = true;
             owner.state.current.as_mut().unwrap().credited = true;
             let generation = owner.gen();
             // Minimized from ARM: the ambient cache recovered at frame 26 while
             // recording, but frame 20 on replay, retiring/reissuing Person work.
             plx_plex::plex::session::save(&saved);
-            let changed = owner.pump();
+            // The step alone, with the outbox pinned empty: `run_jobs` hands a job to
+            // `finish_person_job` and never to `tape::admit`, so the tape assertions below see
+            // nothing a controlled step emitted. The outbox is where "no request" is observed.
+            let changed = owner.step();
+            plx_machine::assert_fx!(owner.jobs(), []);
             assert_eq!(owner.gen(), generation,
                 "controlled Person must not retire recorded work on an ambient storage completion");
             assert!(!changed);
