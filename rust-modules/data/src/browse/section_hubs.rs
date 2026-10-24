@@ -529,9 +529,9 @@ impl SecHubs {
     /// It has to say so explicitly, because `hubs_spawn` clears `owed` when it emits the read. A
     /// refused read is put back by `hubs_settle`, but a read that lands for a server the slot no
     /// longer is has to say so itself. `kick` cannot recover it either: it re-arms neither a
-    /// published section nor an unpublished one with `fails == 0`. So without this an ordinary `sync_roster` re-point or
-    /// a token refresh left a library's shelves empty, or a refresh stale, for the rest of the
-    /// session, silently and with no failure anywhere to read.
+    /// published section nor an unpublished one with `fails == 0`. So without this an ordinary
+    /// `sync_roster` re-point or a token refresh left a library's shelves empty, or a refresh
+    /// stale, for the rest of the session, silently and with no failure anywhere to read.
     ///
     /// The ladder is deliberately NOT armed: it exists for a server that answered badly, and this
     /// one may never have answered at all.
@@ -2443,10 +2443,10 @@ mod tests {
     /// **A landing rejected on the client's LIFECYCLE leaves the section still owed a fetch.**
     /// `hubs_spawn` clears `owed` when it emits the read, and an answer that arrives is not the same
     /// as "the answer will be usable". `land` discards a response whose server slot was re-pointed
-    /// or retokened since the read was emitted, and `kick` re-arms
-    /// neither a published section nor an unpublished one with `fails == 0`. So an ordinary
-    /// `sync_roster` re-point or a token refresh could leave a library's shelves empty, or a
-    /// refresh stale, for the rest of the session — silently, with no failure anywhere to read.
+    /// or retokened since the read was emitted, and `kick` re-arms neither a published section nor
+    /// an unpublished one with `fails == 0`. So an ordinary `sync_roster` re-point or a token
+    /// refresh could leave a library's shelves empty, or a refresh stale, for the rest of the
+    /// session — silently, with no failure anywhere to read.
     ///
     /// **Graded here on `landing_was_not_ours` alone.** The end-to-end rejection, a landing whose
     /// `ClientKey` moved, is `section_hubs_job_tests.rs`'s
