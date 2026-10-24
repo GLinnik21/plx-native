@@ -1,4 +1,4 @@
-//! **Arabic and Hebrew for the UI's text renderer** — the half of it SDL2_ttf 2.0.x cannot do.
+//! **Arabic and Hebrew for the UI's text renderer**: the half of it SDL2_ttf 2.0.x cannot do.
 //!
 //! Every television draws the application's text with its own SDL2_ttf 2.0.10 or 2.0.14: one face
 //! per call, a left-to-right advance loop keyed on codepoints, and no shaper. That is enough for
@@ -7,16 +7,16 @@
 //! joining, the lam-alef ligature, marks placed by the font's anchors), and Arabic and Hebrew both
 //! run right to left inside lines that may also hold Latin words and numbers (the Unicode
 //! Bidirectional Algorithm, UAX #9). Drawing either through SDL2_ttf with a face that merely HAS
-//! the glyphs prints fluent-looking wrong text — letters unjoined, words backwards — which is
+//! the glyphs prints fluent-looking wrong text (letters unjoined, words backwards), which is
 //! worse than the boxes it replaces, and is why the chain carried no such face until this module.
 //!
 //! **The engine is the one the subtitles already use.** `libass-plx` (`ci/build-libass.py`) links a
 //! pinned FreeType, HarfBuzz and FriBidi statically and exports only its `plx_ass_*` facade; ABI 4
 //! adds `plx_ass_text_*` (`src/ass_text.c`). This module binds that surface:
 //!
-//! * [`bidi`] — FriBidi's resolved levels (after rule L1), the visual order (rule L2) and the
+//! * [`bidi`]: FriBidi's resolved levels (after rule L1), the visual order (rule L2) and the
 //!   mirrored brackets of one line. `text.rs` groups the line into runs from these.
-//! * [`Face`] — one bundled face at one pixel size. A run is shaped by HarfBuzz from its LOGICAL
+//! * [`Face`]: one bundled face at one pixel size. A run is shaped by HarfBuzz from its LOGICAL
 //!   text plus a direction, rasterized by FreeType, and returned as an 8-bit coverage box with its
 //!   own baseline; `text.rs` composites it beside the SDL2_ttf runs on the shared baseline.
 //!
@@ -262,7 +262,7 @@ mod native_tests {
 
     /// UAX #9 by hand: the paragraph is left to right (first strong is `B`). W2 turns the `2`
     /// after Arabic into an Arabic number, N1 puts the space before it at the Arabic level, I1
-    /// lifts the number to 2. So the line draws as `Breaking Bad: 2 ةقلحلا` — read right to left,
+    /// lifts the number to 2. So the line draws as `Breaking Bad: 2 ةقلحلا`. Read right to left,
     /// the Arabic says "الحلقة 2" with its number where an Arabic reader expects it.
     #[test]
     #[ignore = "needs pkg/libass-plx-host.so.0 (make libass-host)"]
@@ -287,8 +287,8 @@ mod native_tests {
         assert_eq!(*b.visual.last().unwrap(), 0);
     }
 
-    /// A right-to-left mark in front makes the line right to left even when a Latin word opens it
-    /// — how `TextView` keeps a wrapped line in its paragraph's direction.
+    /// A right-to-left mark in front makes the line right to left even when a Latin word opens it.
+    /// `TextView` keeps a wrapped line in its paragraph's direction this way.
     #[test]
     #[ignore = "needs pkg/libass-plx-host.so.0 (make libass-host)"]
     fn a_leading_rlm_makes_a_latin_led_line_right_to_left() {

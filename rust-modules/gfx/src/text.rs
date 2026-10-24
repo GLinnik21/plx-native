@@ -1438,8 +1438,8 @@ enum Part {
 /// Returns `(pixels, w, h, rise)`. Geometry: the composite keeps the BASE face's box — height
 /// `TTF_FontHeight`, baseline `TTF_FontAscent` rows down — and each run is placed so its own
 /// baseline lands there. The box grows DOWNWARD for a run that descends further than the base
-/// face. It grows UPWARD only for shaped (Arabic, Hebrew) ink that reaches above Inter's ascent —
-/// alef with hamza at 1.03 em, a vowel mark over a lam — and then by exactly those rows, returned
+/// face. It grows UPWARD only for shaped (Arabic, Hebrew) ink that reaches above Inter's ascent
+/// (alef with hamza at 1.03 em, a vowel mark over a lam), and then by exactly those rows, returned
 /// as `rise` so the caller draws the texture that much higher and the baseline stays where every
 /// pure-Latin neighbour has it. SDL2_ttf runs never raise the box: their rows above the base
 /// ascent are blank by measurement (see this module's header) and stay discarded, so every
@@ -3296,7 +3296,7 @@ mod rtl_layout_tests {
     }
 
     /// FriBidi's levels (see `rtl::native_tests`): Latin 0, the Arabic word and the space after it
-    /// 1, the number 2. Drawn left to right: the Latin, then the number, then the Arabic word —
+    /// 1, the number 2. Drawn left to right: the Latin, then the number, then the Arabic word,
     /// which an Arabic reader reads as "الحلقة 2".
     #[test]
     fn a_latin_title_with_an_arabic_episode_keeps_each_script_in_its_own_order() {

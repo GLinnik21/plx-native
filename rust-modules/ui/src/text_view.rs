@@ -314,7 +314,7 @@ impl<'a> TextView<'a> {
 
     /// **Does this block read right to left?** Its first strong character decides
     /// ([`plx_gfx::text::is_rtl_paragraph`]): an Arabic or Hebrew summary does, and is then laid
-    /// out from its right edge — right-aligned in a left-aligned column, its truncation dissolve
+    /// out from its right edge: right-aligned in a left-aligned column, its truncation dissolve
     /// and MORE mark on the left. A screen that pins its own mark asks this to know which corner.
     pub fn is_rtl(&self) -> bool {
         plx_gfx::text::is_rtl_paragraph(self.text)
@@ -689,7 +689,7 @@ impl<'a> TextView<'a> {
                 if rtl {
                     // Mirrored: the zone is at the column's LEFT, where a right-to-left line
                     // ends, and the line's head dissolves IN from it (alpha 0 at the zone's edge,
-                    // 1 a band further right) — the fade program's leading band, measured from
+                    // 1 a band further right), the fade program's leading band, measured from
                     // the string's own left edge.
                     let from = frame.x + self.fade_last - lx;
                     let band = Some((from, from + self.fade_band()));
