@@ -5,7 +5,9 @@
 //! measured at ~27 ms/frame and the whole gap between 60 fps and the 26 fps the detail page
 //! actually drew (2026-09-18). A write must still be observed on the very next call, a refused or
 //! non-durable write must never be mistaken for a fact about the file, and a Locked/Blocked read
-//! must be retried rather than latched forever. Replaces `session_write_rev_tests.rs`.
+//! must be retried (by the session owner's `RefreshCache`, which `refresh_blocking_for_test` and
+//! `refresh_cache_job` stand in for here) rather than latched forever: `peek` itself never reads.
+//! Replaces `session_write_rev_tests.rs`.
 
 use super::*;
 #[allow(unused_imports)]

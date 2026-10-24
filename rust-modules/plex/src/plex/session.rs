@@ -3156,7 +3156,7 @@ pub fn visible_generation() -> u64 {
 }
 
 /// Per-consumer cursor for cached session-derived views. Poll on Tick, including while storage
-/// is unavailable: peek schedules the bounded retry without blocking the frame.
+/// is unavailable: the owner's `RefreshCache` effect runs the bounded retry, so the frame never blocks.
 #[derive(Default)]
 pub struct VisibleSessionWatch(Option<(u64, bool)>);
 impl VisibleSessionWatch {
@@ -3339,6 +3339,10 @@ mod cache_timing_tests {
     fn a_slow_refresh_job_never_blocks_peek_and_lands_on_the_frame_step() {
         use std::sync::mpsc::{self, Receiver, Sender};
         static CHANNELS: Mutex<Option<(Sender<()>, Receiver<()>)>> = Mutex::new(None);
+        // Set by the read once its release (or its 5 s fallback) came: the clockless witness that a
+        // peek taking the read's `IO` would have had to wait for it.
+        static READ_RETURNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        READ_RETURNED.store(false, std::sync::atomic::Ordering::SeqCst);
         let _serial = plx_base::testlock::serial();
         let _session = test_support::TempSession::new("slow-production-landing");
         let _idle = ResetIdle;
@@ -3354,15 +3358,18 @@ mod cache_timing_tests {
             let (started, held) = CHANNELS.lock().unwrap().take().unwrap();
             started.send(()).unwrap();
             let _ = held.recv_timeout(std::time::Duration::from_secs(5));
+            READ_RETURNED.store(true, std::sync::atomic::Ordering::SeqCst);
             ReadState::Ready { session: std::sync::Arc::new(test_support::signed_in()), plaintext: false, retry_canonical: false }
         })));
         plx_machine::idle::reset_for_test();
         let ticket = plx_base::storage_worker::submit_retained(refresh_cache_job(need.generation));
         CACHE_READ_FOR_TEST.with(|slot| slot.set(None));
         entered.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
-        let start = std::time::Instant::now();
         for _ in 0..30 { assert!(peek().client_id.is_empty()); }
-        assert!(start.elapsed() < std::time::Duration::from_millis(200), "peek must not wait for the read");
+        assert!(
+            !READ_RETURNED.load(std::sync::atomic::Ordering::SeqCst),
+            "peek must not wait for the read: the peeks finished only after the parked read had returned"
+        );
         release.send(()).unwrap();
         assert_eq!(ticket.wait_blocking().unwrap(), CacheRefreshOutcome::Settled);
         plx_base::storage_worker::drain_for_test();
@@ -4304,12 +4311,7 @@ fn save_locked_with_authority(
     plx_platform::storage::wire::failure::clear();
     CANDIDATE_ERRNOS.with(|slot| slot.set([None; 8]));
     let protected_before = has_protected_authority();
-    let write_started = std::time::Instant::now();
-    let commit = persistence::write_session(s, authority);
-    plx_base::eventlog::log(&format!(
-        "session: canonical write took {} ms",
-        write_started.elapsed().as_millis()
-    ));
+    let commit = persistence::write_session_timed(s, authority);
     // Uncertain helper replies already own their evidence in CanonicalCommit. Only the older
     // StoreError-only failure variants still need this immediate thread-local snapshot.
     let helper_failure = match &commit {

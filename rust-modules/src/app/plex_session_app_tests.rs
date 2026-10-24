@@ -4,9 +4,10 @@
 //!
 //! They lived in `plex::session`'s own `cache_timing_tests` while that module could name the whole
 //! app; `plex` sits beneath `app`, `screens`, `player` and `ui` now, so each moved to the layer that
-//! owns all of its parts. What `plex` can grade alone (the single-flight refresh, the visible
-//! generation, a worker publishing no damage) stays there; this file keeps the halves that are an
-//! application's.
+//! owns all of its parts. What `plex` can grade alone (the refresh job's outcomes, the visible
+//! generation, a worker publishing no damage) stays there, and the single-flight refresh is the
+//! session owner's, graded in `owner::tests::cache_refresh`; this file keeps the halves that are an
+//! application's (the frame step's refill, the adapter slot, the bridge landing).
 
 use crate::app::bridge::Bridge;
 use plx_plex::plex::session::{self, Session};
