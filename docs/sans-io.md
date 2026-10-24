@@ -119,26 +119,43 @@ session owner leaves as an `Effects` value; the next section is the rule for the
 
 The Metadata store's detail request (`request_detail`) was the first to stop starting its own
 worker. Its three ledger lines are gone and the shape is the one the other `data/` stores copy.
+The Collection page's request is the second: its worker start and its three `client_for` reads are
+gone from `data/src/collection.rs`.
 
 - **The shape.** `plx_machine::job` holds `Job<R>` (an `Addr` and a request that carries everything
   the worker needs), `Port<T>` (where the one answer goes: exactly one `done` or `refused` per job)
   and `assert_fx!` (a step test reads the jobs it emitted instead of waiting on a thread). A store
   keeps its own job enum, request types and port: `plx_data::stores::StoreJob`,
-  `MetadataStore::take_jobs`, and `plx_data::metadata::{DetailReq, DetailPort}`. The app's `StoreRunner`
+  `MetadataStore::take_jobs`, `plx_data::metadata::{DetailReq, DetailPort}` and
+  `plx_data::collection::{CollectionReq, CollectionPort}`. The app's `StoreRunner`
   (`app/adapters/stores.rs`) executes a job and owns what `data/` must not: the tape's admission
   record, the thread and the `client_for` read. It is `Live` or `Held` (a test parks the job and
-  runs it on the test thread), chosen when the `Bridge` is constructed.
+  runs it on the test thread), chosen when the `Bridge` is constructed; a newer Detail request
+  retires only the parked Detail jobs, never another store's.
+- **A registry read is an input.** A step that decides from "which client does this server slot
+  hold" is handed `plx_plex::plex::ClientKeys` (one `ClientKey { instance, token }` per server) as
+  an argument. The Bridge owns one buffer and refills it in place
+  (`adapters::stores::refill_client_keys`, the only loop over `client_for` that feeds a step)
+  immediately before the step, so a pump that runs every frame allocates nothing for it. The job
+  carries the key its step decided on, and the runner starts it only if `client_for` still answers
+  that exact client inside the launch the tape's admission record holds: a replay and a recording
+  then agree on the one boolean they hold, and a refused job hands its claim back.
 - **Two drains, one rule.** A stepped machine (the session owner) emits its work through `Effects`,
-  and the owner's drain starts it. A store the Bridge runs emits through its own `take_jobs`, and
-  `Stores::take_jobs` aggregates every store's outbox: `Bridge::metadata_run` drains it right after
-  the store step, so a job is started in the same Bridge call that emitted it. A caller that holds
-  only the store (`describe_movie` gets a `&mut MetadataStore`) drains with
+  and the owner's drain starts it. A store the Bridge runs emits through its own `take_jobs`.
+  `Stores::take_jobs_of(StoreId)` takes ONE store's outbox and `Stores::take_jobs` aggregates every
+  store's, and each Bridge entry point drains only its own store, in the same call as the step:
+  `Bridge::metadata_run` steps then drains Metadata; `Bridge::collection_pump` refills the keys,
+  steps, then runs `Bridge::start_store_jobs_of(StoreId::Collection)`. Draining inside each pump,
+  not at the frame's end, keeps every store's admissions in the tape where they were. A caller that
+  holds only the store (`describe_movie` gets a `&mut MetadataStore`) drains with
   `Bridge::start_store_jobs` the moment its call returns. A new store joins by implementing its
-  own outbox and adding it to `Stores::take_jobs` and `Stores::has_jobs`, in that one place.
+  own outbox and adding it to `Stores::take_jobs_of` and `Stores::has_jobs_of`, in that one place.
 - **Whoever steps a store drains it.** `MetadataStore`'s `Machine::step` runs the command and does
   not drain: a `RequestDetail` stepped through it leaves its job on the outbox and nothing starts
   it. The same holds for the `pub` `Stores::metadata_run`. The owner drains in the same call, as
   `Bridge::metadata_run` does; no type enforces it, the counter below catches the lapse.
+  `CollectionStore`'s `Machine::step` is unreached and passes empty keys: a future sender must pass
+  the host's keys and drain.
 - **Results do not return as FIFO events.** A store's result goes back through the landing and its
   gate (`landgate`, the `adapter_rank` of the landing key), where the pump takes it by value. This
   is a deliberate exception to "every result returns as one addressed event in the same drain":
@@ -149,10 +166,11 @@ worker. Its three ledger lines are gone and the shape is the one the other `data
   cannot encode in controlled Home; and every `Fx::App` is an `"e":"App"` record, so the replay
   fixtures would change. A later store that routes its jobs through `AppFx` brings all three back.
 - **A bypassed drain is a red test, and in production a logged one.** `metadata_pump_detail` keeps
-  a backstop under the senders: a job it finds on an outbox is started there, so the request still
-  settles, and is counted in the Bridge's `late_store_jobs` and logged as one `stores: WARN` line.
+  a backstop under the senders: a job it finds on any store's outbox is started there, so the
+  request still settles, and is counted in the Bridge's `late_store_jobs` and logged as one `stores: WARN` line.
   `Bridge::assert_no_store_jobs_left_for_test` (`#[cfg(test)]`) fails a frame that ends with a job
-  still on an outbox or with that count above zero, so a sender that bypassed `Bridge::metadata_run`
+  still on an outbox or with that count above zero, so a sender that bypassed its store's Bridge
+  drain (`metadata_run`, `collection_pump`, `start_store_jobs_of`, `start_store_jobs`)
   is red in every rig that makes the check, the one that runs `update()`'s pump included. The rigs
   make it at the frame's end.
 - **The port holds the adapter `Arc`.** `Reset` replaces the adapter and the store keeps no handle to

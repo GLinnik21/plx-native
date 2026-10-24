@@ -117,11 +117,20 @@ fn a_server_without_a_client_emits_nothing_reads_failed_and_holds_off() {
     assert_eq!(store.view().current().expect("open").status, CollectionStatus::Failed);
     assert!(!store.adapter_for_test().busy_for_test(), "no claim was made");
 
-    // Still no client: every pump of the hold-off, and the ask after it, finds nothing to send.
-    for _ in 0..=RETRY_FRAMES {
+    // Still no client. For RETRY_FRAMES - 1 pumps the step does not look for one again, so it does
+    // not mark the page Failed again, and the view's revision (what the screen repaints on) stays
+    // where the first pump left it. Without the hold-off every frame re-enters the no-client
+    // branch and moves it.
+    let held_at = store.view().revision();
+    for _ in 1..RETRY_FRAMES {
         store.pump(fixture_gate(), &none);
         plx_machine::assert_fx!(store.take_jobs(), []);
+        assert_eq!(store.view().revision(), held_at, "held off: the page is not marked Failed again");
     }
+    // The hold-off ends: the ask is made again, finds no client again, and holds off again.
+    store.pump(fixture_gate(), &none);
+    plx_machine::assert_fx!(store.take_jobs(), []);
+    assert_ne!(store.view().revision(), held_at, "the hold-off ended and the step asked again");
 
     // The server comes up: the listing was read through no client, so it is rebuilt against the
     // one the registry now holds and asks at once, as a new listing.
