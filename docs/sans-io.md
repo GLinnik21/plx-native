@@ -192,6 +192,8 @@ out at once, so a pump emits several jobs, one per fetch slot, in ascending slot
   reads are made as; the gate's `session::peek(` spelling does not match it), the session watch, the
   refused-discover check (`discover::person_profile_refused` / `person_credits_refused`, which
   lands the refusal in the step with no job, because routing it through the runner would release
-  and respawn it every ~2 s), `server_ids()` (the source roster) and `server_roster_gen()`. Its
+  and respawn it every ~2 s), `plx_base::devtrig::read("personcredits")` (dev-trigger builds only:
+  `seed_dev_credits` reads it on every pump while a person is open and no tape is armed),
+  `server_ids()` (the source roster) and `server_roster_gen()`. Its
   two fetch bodies, `fetch_profile` and `fetch_credits`, stay in `data/person.rs`, so their `forks`
   ledger lines stay. A source whose server holds no key backs off in the step and emits no job.
