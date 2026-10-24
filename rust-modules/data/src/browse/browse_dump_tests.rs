@@ -1,6 +1,6 @@
 //! Dump mode at the Browse sites (discovery, genre and letters directories, listing page, section
 //! hubs): each takes through its OWN mailbox's claim (`src_fetching`, `genre_fetching`,
-//! `letters_fetching`, `fetching`, `hubs.fetching`), with a dump-armed local gate and a worker that
+//! `letters_fetching`, `fetching`, `hubs.fetch`), with a dump-armed local gate and a worker that
 //! posts late. Each test fails if its site's take reverts to a plain one: the first poll finds an
 //! empty mailbox, the pump moves on, and the claim is still held. See `plx_machine::landgate`'s
 //! module doc for which sites dump mode covers.
