@@ -175,6 +175,9 @@ const VS_ART_WASH: &CStr = glsl!(
 const FS_BLUR: &CStr = glsl!("shaders/fs_blur.frag");
 const FS_GLASS: &CStr = glsl_dithered!("shaders/fs_glass.frag");
 const FS_FLAT: &CStr = glsl!("shaders/fs_flat.frag");
+/// The PLAIN TEXTURE program's fragment half ([`PLAIN_IMAGE`]): `fs_img.frag`'s `u_card.z < 0.5`
+/// exit as a whole program, linked against [`VS_IMG`] like every other image program.
+const FS_TEX: &CStr = glsl!("shaders/fs_tex.frag");
 const VS_ART_SCRIM: &CStr = glsl!("shaders/vs_art_scrim.vert");
 const FS_ART_SCRIM: &CStr = glsl!("shaders/fs_art_scrim.frag");
 const GL_VERTEX_SHADER: c_uint = 0x8B31;
@@ -769,6 +772,22 @@ static mut STILL_IMAGE: Option<(c_uint, ImageUniforms, c_int, c_int)> = None;
 /// Optional FOCUSED-card specialization ([`VS_FOCUS`]/[`FS_FOCUS`]) — [`IPROG`] remains the
 /// fallback (the plain look, same as before this program existed) if this fails to link.
 static mut FOCUS_IMAGE: Option<(c_uint, ImageUniforms)> = None;
+/// What the plain texture program reads per draw: the quad ([`VS_IMG`]'s `u_trect`), the source
+/// window it samples (`u_uvrect`) and the tint (`fs_tex.frag`'s `u_tint`). Its screen size and
+/// sampler unit are set once at link time, like every image program's. Nothing else: no card
+/// geometry, rim, shadow or focus uniform exists in it.
+#[derive(Clone, Copy)]
+struct PlainUniforms {
+    rect: c_int, tint: c_int, uvrect: c_int,
+}
+/// Optional PLAIN TEXTURE program ([`VS_IMG`]/[`FS_TEX`]): a picture that `fs_img.frag` would leave
+/// through its `u_card.z < 0.5` exit for every fragment — a square-cornered image (the Home hero's
+/// photographs, a cached layer's composite) or the interior piece of a card drawn in pieces — is a
+/// texture fetch and a tint multiply, and the image program's card chain, which that exit never
+/// reaches, still sizes its registers and occupancy (Midgard allocates for the whole shader). Which
+/// draws go here is [`plain_texture_program`]. [`IPROG`] remains the fallback — the same picture,
+/// drawn by the larger program — if this fails to link.
+static mut PLAIN_IMAGE: Option<(c_uint, PlainUniforms)> = None;
 // ---- hero-ground program: the backdrop art with both scrim fields folded into it (fs_hero.frag).
 // Its own program because it is the SAME quad the art already draws, only carrying two more
 // closed-form fields — nothing else in the app wants them, and the card composite must not pay for
@@ -2054,6 +2073,17 @@ pub fn init_image() {
             log("focus image prog unavailable — focused cards keep the plain look");
         }
 
+        PLAIN_IMAGE = link_optional_program(VS_IMG.as_ptr(), FS_TEX.as_ptr()).map(|program| {
+            let loc = |name: &CStr| glGetUniformLocation(program, name.as_ptr());
+            use_prog(program);
+            glUniform2f(loc(c"u_tscreen"), SCR_W, SCR_H);
+            glUniform1i(loc(c"u_tex"), 0);
+            (program, PlainUniforms { rect: loc(c"u_trect"), tint: loc(c"u_tint"), uvrect: loc(c"u_uvrect") })
+        });
+        if std::ptr::addr_of!(PLAIN_IMAGE).read().is_none() {
+            log("plain image prog unavailable — square-cornered pictures and card interiors stay on the image program");
+        }
+
         ART_WASH = link_optional_program(VS_ART_WASH.as_ptr(), FS_ART_WASH.as_ptr()).map(|prog| {
             let loc = |name: &CStr| glGetUniformLocation(prog, name.as_ptr());
             // Binds `prog`, which the two constant uniforms below are then written to.
@@ -2602,6 +2632,39 @@ fn image_card_geometry(half_w: f32, half_h: f32, radius: f32) -> [f32; 4] {
     [half_w - radius, half_h - radius, radius, (radius - 2.0).min(0.0)]
 }
 
+/// Whether `fs_img.frag` leaves EVERY fragment of a draw with this corner `radius` through its first
+/// exit, plain texture x tint, before any card math runs: `u_card.z < 0.5`, and the packed `u_card.z`
+/// is the radius itself ([`image_card_geometry`]). The rim, the shadow and the pad around the quad
+/// play no part — a square-cornered draw with all three set still leaves there, which is why a
+/// hero photograph's shadow pad costs nothing and shows nothing. A NaN radius compares false on the
+/// CPU as it would on the GPU, and so keeps the full program it always had.
+#[inline]
+fn takes_plain_exit(radius: f32) -> bool {
+    radius < 0.5
+}
+
+/// `plain` (the plain texture program, if it linked) when a draw, or one piece of a split card,
+/// with corner `radius` is better shaded by it than by the image program: it [`takes_plain_exit`]
+/// and carries no `overridden` program of its own — the focus and still specializations have exit
+/// expressions of their own, and a still's is not plain. `None` leaves the draw on the image
+/// program ([`IPROG`], or the override), which for a draw that takes the exit is the same picture
+/// from the larger program.
+#[inline]
+fn plain_texture_program<P>(plain: Option<P>, overridden: bool, radius: f32) -> Option<P> {
+    plain.filter(|_| !overridden && takes_plain_exit(radius))
+}
+
+/// Bind the plain texture program for one quad and send it everything it reads that changes from
+/// draw to draw: the quad, the source window and the tint (its screen size and sampler unit were
+/// set at link time). Uniforms persist per program, so all three go on every call.
+#[inline]
+unsafe fn bind_plain_image(program: c_uint, loc: PlainUniforms, tint: *const f32, uv: [f32; 4], quad: [f32; 4]) {
+    use_prog(program);
+    glUniform4fv(loc.tint, 1, tint);
+    glUniform4f(loc.uvrect, uv[0], uv[1], uv[2], uv[3]);
+    glUniform4f(loc.rect, quad[0], quad[1], quad[2], quad[3]);
+}
+
 /// `u_focus`, the focused tile's lit-glass edge AND its risen shadow (see `fs_img.frag`'s FOCUS
 /// note): `(f, 1/gloss-gradient-length, shadow y-offset px)`. The gradient length is the card's own
 /// `w×h` box projected onto the 160deg CSS direction ([`tokens::CARD_GLOSS_DIR`]) — the
@@ -2624,10 +2687,11 @@ fn image_focus_geometry(focus: f32, half_w: f32, half_h: f32, dy: f32) -> [f32; 
     [f, if grad_len > 0.0 { 1.0 / grad_len } else { 0.0 }, dy.max(0.0)]
 }
 
-/// The IPROG draw, with every term already in the shader's own units: `q*` is the QUAD (shadow
-/// inflation included), `uv` the source sub-rect it samples, `ch` the CARD half-size the SDF is
-/// measured against. [`draw_tex_impl`] folds a card's parameters into these; the blur backdrop
-/// supplies its own, because its UV window is a screen-space rect rather than a card.
+/// The IPROG draw (or [`PLAIN_IMAGE`]'s, for a draw that [`takes_plain_exit`]), with every term
+/// already in the shader's own units: `q*` is the QUAD (shadow inflation included), `uv` the source
+/// sub-rect it samples, `ch` the CARD half-size the SDF is measured against. [`draw_tex_impl`] folds
+/// a card's parameters into these; the blur backdrop supplies its own, because its UV window is a
+/// screen-space rect rather than a card.
 #[allow(clippy::too_many_arguments)]
 fn draw_tex_core(
     class: Class,
@@ -2658,14 +2722,16 @@ fn draw_tex_core(
 /// [`draw_tex_core`], and `card` = what [`draw_tex_impl`] decided about a `Class::Card` draw
 /// ([`card_cut`]). A resting card ([`CardCut::Pieces`], with the card's own rect `(x, y, w, h)`) is
 /// drawn in pieces when it has an interior ([`card_boxes`]): the SAME quad is drawn five times, each
-/// under its own scissor box ([`card_plan`]) - once for the interior, through the shader's
-/// `u_card.z < 0.5` fast path (texture x tint, nothing else), and once for each of the four bands
-/// of the ring (the part with rim, anti-aliased edge and shadow) through the full card math. The
-/// vertices are the whole quad's every time, so `v_p`, `v_cuv` and the texture's derivatives are
-/// the very numbers the single draw interpolates, and the picture is the same pixel for pixel; the
-/// fragment shader just stops evaluating the card's SDF where its answer is "plain". The ledger and
-/// the cull above book and test the whole quad once, as before; the card-path ledger
-/// ([`note_card_path`]) books which way each card went.
+/// under its own scissor box ([`card_plan`]) - once for the interior, as plain texture x tint (the
+/// plain texture program, [`PLAIN_IMAGE`], and failing that the image program's `u_card.z < 0.5`
+/// exit), and once for each of the four bands of the ring (the part with rim, anti-aliased edge and
+/// shadow) through the full card math. The vertices are the whole quad's every time, so `v_cuv` and
+/// the texture's derivatives are the very numbers the single draw interpolates, and the picture is
+/// the same pixel for pixel; the fragment shader just stops evaluating the card's SDF where its
+/// answer is "plain". A whole draw with a square corner ([`takes_plain_exit`]) is that same plain
+/// texture and takes the same program ([`plain_texture_program`]). The ledger and the cull above
+/// book and test the whole quad once, as before, and the program is chosen after them; the
+/// card-path ledger ([`note_card_path`]) books which way each card went.
 ///
 /// DEV: a `drawmask` leg can refuse one PART of this work ([`CardPart`]; [`card_plan`],
 /// [`card_whole_refused`] and [`masked_part`] say how).
@@ -2695,24 +2761,35 @@ fn draw_tex_core_in(
         return;
     }
     unsafe {
+        let quad = [qx, qy, qw, qh];
         let (program, loc) = image.unwrap_or((IPROG, ImageUniforms {
             rect: IL_RECT, tint: IL_TINT, uvrect: IL_UVRECT, card: IL_CARD,
             rimw: IL_RIMW, rimcol: IL_RIMCOL, shinv: IL_SHINV, shcol: IL_SHCOL, focus: IL_FOCUS,
         }));
-        use_prog(program); // fixed screen size and sampler unit are initialized per program
-        if loc.tint >= 0 { glUniform4fv(loc.tint, 1, tint); }
-        glUniform4f(loc.uvrect, uv[0], uv[1], uv[2], uv[3]);
-        glUniform4fv(loc.card, 1, image_card_geometry(chw, chh, radius).as_ptr());
-        glUniform1f(loc.rimw, rimw);
-        glUniform4fv(loc.rimcol, 1, rimcol);
-        glUniform1f(loc.shinv, shinv);
-        glUniform4fv(loc.shcol, 1, shcol);
-        if loc.focus >= 0 {
-            let uf = image_focus_geometry(focus, chw, chh, dy);
-            glUniform3f(loc.focus, uf[0], uf[1], uf[2]);
+        // The plain texture program takes the whole draw when the image program would leave every
+        // fragment through its `u_card.z < 0.5` exit (a square-cornered picture), and a split
+        // card's interior piece below. It is chosen here, after `gate` has booked the quad and
+        // before the card-path ledger below books the card, and neither depends on it: the
+        // ledger counts the same draws with either program behind them.
+        let plain = std::ptr::addr_of!(PLAIN_IMAGE).read();
+        if let Some((program, loc)) = plain_texture_program(plain, image.is_some(), radius) {
+            bind_plain_image(program, loc, tint, uv, quad);
+        } else {
+            use_prog(program); // fixed screen size and sampler unit are initialized per program
+            if loc.tint >= 0 { glUniform4fv(loc.tint, 1, tint); }
+            glUniform4f(loc.uvrect, uv[0], uv[1], uv[2], uv[3]);
+            glUniform4fv(loc.card, 1, image_card_geometry(chw, chh, radius).as_ptr());
+            glUniform1f(loc.rimw, rimw);
+            glUniform4fv(loc.rimcol, 1, rimcol);
+            glUniform1f(loc.shinv, shinv);
+            glUniform4fv(loc.shcol, 1, shcol);
+            if loc.focus >= 0 {
+                let uf = image_focus_geometry(focus, chw, chh, dy);
+                glUniform3f(loc.focus, uf[0], uf[1], uf[2]);
+            }
+            glUniform4f(loc.rect, qx, qy, qw, qh);
         }
         glBindTexture(GL_TEXTURE_2D, tex);
-        glUniform4f(loc.rect, qx, qy, qw, qh);
         let boxes = match card {
             CardCut::None => None,
             CardCut::Whole(path) => {
@@ -2746,9 +2823,14 @@ fn draw_tex_core_in(
         glEnable(GL_SCISSOR_TEST);
         for piece in plan.pieces.iter().flatten() {
             // The ring first, under the real `u_card` the uniforms above carry; the interior is the
-            // last piece, and its `u_card.z` of 0 is the shader's own "plain texture" branch.
+            // last piece. It is the plain texture: through the plain texture program when it
+            // linked (the image program is never bound again by this draw, so nothing is put back),
+            // else through the image program with a `u_card.z` of 0, the shader's own plain exit.
             if piece.interior {
-                glUniform4fv(loc.card, 1, image_card_geometry(chw, chh, 0.0).as_ptr());
+                match plain_texture_program(plain, image.is_some(), 0.0) {
+                    Some((program, loc)) => bind_plain_image(program, loc, tint, uv, quad),
+                    None => glUniform4fv(loc.card, 1, image_card_geometry(chw, chh, 0.0).as_ptr()),
+                }
             }
             let b = piece.scissor;
             glScissor(b[0], b[1], b[2] - b[0], b[3] - b[1]);
@@ -2810,7 +2892,7 @@ fn card_cut(class: Class, radius: f32, focus: f32, dy: f32, enabled: bool, rect:
         CardCut::None
     } else if wants_focus_program(focus, dy) {
         CardCut::Whole(CardPath::Focus)
-    } else if radius < 0.5 {
+    } else if takes_plain_exit(radius) {
         CardCut::Whole(CardPath::Plain)
     } else if !enabled {
         CardCut::Whole(CardPath::Off)
@@ -7626,6 +7708,7 @@ mod tests {
             ("fs_src.frag", FS_SRC),
             ("fs_shadow.frag", FS_SHADOW),
             ("fs_flat.frag", FS_FLAT),
+            ("fs_tex.frag", FS_TEX),
             ("fs_art_scrim.frag", FS_ART_SCRIM),
             ("fs_ambient.frag (plain twin)", FS_AMBIENT_PLAIN),
         ] {
@@ -8040,6 +8123,52 @@ mod tests {
         }
     }
 
+    /// **`fs_tex.frag` is `fs_img.frag`'s plain exit, line for line.** The plain texture program
+    /// replaces the image program for every draw that leaves it through `u_card.z < 0.5`, so it is
+    /// the same picture only while it declares the same inputs at the same precision (fp16 `u_tint`
+    /// and sampler, fp32 `v_cuv`: a desktop GL ignores the qualifiers, a Mali does not) and writes
+    /// the same three statements in the same order. It reads NOTHING else - no card geometry, rim,
+    /// shadow, premultiply, scrim or crop clamp stands behind that exit - and the vertex source it
+    /// links against supplies what it reads and everything [`PlainUniforms`] sets.
+    #[test]
+    fn the_plain_texture_program_is_the_card_shaders_plain_exit() {
+        let img = preprocess(FS_IMG.to_str().unwrap(), &[]);
+        let tex = preprocess(FS_TEX.to_str().unwrap(), &[]);
+        let lines = [
+            "precision mediump float;",
+            "varying highp vec2 v_cuv;",
+            "uniform sampler2D u_tex;",
+            "uniform vec4 u_tint;",
+            "vec4 c = texture2D(u_tex, v_cuv);",
+            "vec3 tex = c.rgb*u_tint.rgb;",
+            "float ta = c.a*u_tint.a;",
+            "gl_FragColor = vec4(tex, ta);",
+        ];
+        for (name, src) in [("fs_img.frag", &img), ("fs_tex.frag", &tex)] {
+            let mut at = 0;
+            for line in lines {
+                let found = src[at..].find(line).unwrap_or_else(|| panic!("{name}: `{line}` is gone or out of order"));
+                at += found + line.len();
+            }
+        }
+        assert_eq!(tex.matches("uniform ").count(), 2, "the plain program reads u_tex and u_tint, nothing else");
+        assert_eq!(tex.matches("varying ").count(), 1, "and one varying: the texture coordinate");
+        assert_eq!(tex.matches("gl_FragColor").count(), 1, "and has one exit");
+        assert!(!tex.contains("if (") && !tex.contains("discard"), "no branch: the program IS the exit");
+        // The uniforms `init_image` looks up and `bind_plain_image` sends, and the varying it reads,
+        // all exist in the vertex source the program links against, under the same expressions.
+        let vs = preprocess(VS_IMG.to_str().unwrap(), &[]);
+        for line in [
+            "uniform vec4 u_trect;",
+            "uniform vec2 u_tscreen;",
+            "uniform vec4 u_uvrect;",
+            "varying vec2 v_cuv;",
+            "v_cuv = u_uvrect.xy + a_pos * u_uvrect.zw;",
+        ] {
+            assert!(vs.contains(line), "vs_img.vert no longer has `{line}`, which the plain texture program links against");
+        }
+    }
+
     /// `card_split_tests::plain_exit` is a transcription of `fs_img.frag`'s plain program; this is
     /// what keeps it one. The box distance it computes `straight` from, and the exits it tests it
     /// against, are pinned in the shader text (both the plain and the still program), so editing the
@@ -8072,6 +8201,73 @@ mod tests {
         assert!(wants_focus_program(0.0, 0.5), "a risen shadow alone also reaches for it");
         assert!(wants_focus_program(0.6, 9.0), "the ordinary focused+risen case");
         assert!(!wants_focus_program(0.0, -3.0), "a negative dy clamps to 0, still at rest");
+    }
+
+    /// **Which draws reach the plain texture program.** The rule is the shader's own first exit
+    /// (`u_card.z < 0.5`, `u_card.z` being the radius) and nothing about the rim, shadow or pad, which
+    /// that exit never reads: a square-cornered picture carrying a shadow pad is exactly as plain as
+    /// one without (a hero photograph's `Class::Card` pad draws no shadow today). A rounded draw keeps
+    /// the image program, and so does any draw with a program of its own (focus, still), whose
+    /// exits are theirs. A program that did not link leaves everything where it was.
+    #[test]
+    fn only_a_square_cornered_unoverridden_draw_reaches_for_the_plain_texture_program() {
+        const LINKED: Option<u32> = Some(7);
+        for radius in [0.0, 0.25, 0.4999, -1.0, f32::NEG_INFINITY] {
+            assert_eq!(plain_texture_program(LINKED, false, radius), LINKED, "radius {radius}: a plain texture");
+        }
+        for radius in [0.5, 1.0, 6.0, 14.0, 95.0, 1.0e6, f32::INFINITY, f32::NAN] {
+            assert_eq!(plain_texture_program(LINKED, false, radius), None, "radius {radius}: a card");
+        }
+        for radius in [0.0, 14.0] {
+            assert_eq!(plain_texture_program(LINKED, true, radius), None, "an overridden program keeps its own exits");
+            assert_eq!(plain_texture_program(None::<u32>, false, radius), None, "a program that did not link");
+            assert_eq!(plain_texture_program(None::<u32>, true, radius), None);
+        }
+        // The interior piece of a split card is drawn with `u_card` of radius 0 and nothing overriding it.
+        assert_eq!(plain_texture_program(LINKED, false, 0.0), LINKED);
+        // A split card's interior piece on the still program stays on it: its exit is `stillOver`,
+        // which is NOT the plain write (`the_plain_exits_of_the_card_shader_are_one_expression`).
+        assert_eq!(plain_texture_program(LINKED, true, 0.0), None);
+    }
+
+    /// The wiring no host test can drive, pinned in the source: the program is chosen AFTER the
+    /// ledger's `gate` (a masked or culled draw never reaches a program), from [`PLAIN_IMAGE`] only,
+    /// with `image.is_some()` as the override, for the whole draw (the draw's own radius) and for the
+    /// interior piece (radius 0); the ring pieces never leave the program the draw bound; and the
+    /// plain program is sent every uniform it reads (uniforms persist per program) from one helper.
+    #[test]
+    fn the_plain_texture_program_is_chosen_after_the_ledger_and_sent_everything_it_reads() {
+        let src = include_str!("gfx.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests").expect("the unit tests")];
+        let body = |head: &str| {
+            let from = prod.find(head).unwrap_or_else(|| panic!("`{head}` is gone"));
+            let rest = &prod[from..];
+            &rest[..rest.find("\n}\n").expect("the end of the function")]
+        };
+        let draw = body("fn draw_tex_core_in(");
+        let (gate, whole, interior) = (
+            draw.find("gate(class, qx, qy, qw, qh)").expect("the ledger's gate"),
+            draw.find("plain_texture_program(plain, image.is_some(), radius)").expect("the whole-draw choice"),
+            draw.find("plain_texture_program(plain, image.is_some(), 0.0)").expect("the interior piece's choice"),
+        );
+        let plan = draw.find("card_plan(&boxes").expect("the piece plan");
+        assert!(gate < whole && whole < plan && plan < interior, "gate {gate}, whole {whole}, plan {plan}, interior {interior}");
+        assert!(draw.contains("PLAIN_IMAGE).read()"), "the plain program is read from its own static");
+        let branch = draw.find("if piece.interior {").expect("the interior branch of the piece loop");
+        assert!(
+            plan < branch && branch < interior && draw[branch..interior].matches("glDrawArrays").count() == 0,
+            "the interior choice sits first inside the `if piece.interior` branch: the ring is never switched"
+        );
+        assert_eq!(draw.matches("bind_plain_image(").count(), 2, "one bind for the whole draw, one for the interior");
+        // Every uniform the program reads goes on every bind, and the bind is the only place it is bound.
+        let bind = body("unsafe fn bind_plain_image(");
+        for needle in ["use_prog(program)", "glUniform4fv(loc.tint, 1, tint)", "glUniform4f(loc.uvrect,", "glUniform4f(loc.rect,"] {
+            assert!(bind.contains(needle), "`{needle}` is gone from bind_plain_image");
+        }
+        let init = body("pub fn init_image(");
+        assert!(init.contains("link_optional_program(VS_IMG.as_ptr(), FS_TEX.as_ptr())"), "linked against the shared vertex shader");
+        assert!(init.contains("c\"u_tscreen\"") && init.contains("c\"u_tex\""), "screen size and sampler unit are set once at link");
+        assert!(init.contains("plain image prog unavailable"), "a link failure is logged and falls back");
     }
 
     #[test]
@@ -9098,7 +9294,8 @@ mod shadow_band_tests {
 mod card_split_tests {
     use super::{
         bands_around, card_cut, card_interior, card_pixel_boxes, card_plan, card_whole_refused, clip_px,
-        image_card_geometry, snap_inner, CardBoxes, CardCut, CardPart, CardPath, Class, Piece, PxBox, SCR_H,
+        image_card_geometry, plain_texture_program, snap_inner, CardBoxes, CardCut, CardPart, CardPath, Class,
+        Piece, PxBox, SCR_H,
     };
 
     /// The viewport box `[x0, y0, x1, y1]` of a 1920x1080 canvas at `s` px per authored px whose
@@ -9638,6 +9835,41 @@ mod card_split_tests {
         assert_eq!(cut(Class::Card, 14.0, 0.3, 0.0, false), CardCut::Whole(CardPath::Focus), "a focused card is the focus path whatever the switch says");
         assert_eq!(cut(Class::Image, 14.0, 0.0, 0.0, true), CardCut::None, "a rounded image without a pad is not a card");
         assert_eq!(cut(Class::Glass, 14.0, 0.0, 0.0, true), CardCut::None);
+    }
+
+    /// **The plain texture program is chosen exactly where the shader takes its first exit.** Graded
+    /// against the replica of `fs_img.frag` ([`plain_exit`]) over every card shape, a ladder of radii
+    /// around the 0.5 threshold and a spread of points: a draw is routed to the plain program iff the
+    /// shader would return 1 (`u_card.z < 0.5`) for ALL of them, whatever the rim and pad say, and a
+    /// card [`card_cut`] splits (rounded, resting) is never one. The interior piece of that split is
+    /// drawn with a radius of 0 and is routed, and the replica agrees it is plain at every point.
+    #[test]
+    fn the_plain_program_is_chosen_exactly_where_the_shader_takes_its_first_exit() {
+        let radii = [-2.0f32, 0.0, 0.25, 0.4999, 0.5, 0.5001, 1.0, 2.0, 14.0, 95.0, 125.0];
+        for (w, h, _, rimw, pad) in cards() {
+            let (chw, chh) = (w * 0.5, h * 0.5);
+            let points = [[0.0, 0.0], [chw - 1.0, 0.0], [0.0, chh - 1.0], [chw, chh], [chw + pad, chh + pad], [-chw, chh]];
+            for radius in radii {
+                let geo = image_card_geometry(chw, chh, radius);
+                let routed = plain_texture_program(Some(()), false, radius).is_some();
+                for p in points {
+                    assert_eq!(
+                        plain_exit(geo, p) == 1,
+                        routed,
+                        "card {w}x{h} r{radius} rim {rimw} pad {pad}: shader replica and routing disagree at {p:?}"
+                    );
+                }
+                let rect = [0.0, 0.0, w, h];
+                if matches!(card_cut(Class::Card, radius, 0.0, 0.0, true, rect), CardCut::Pieces(_)) {
+                    assert!(!routed, "card {w}x{h} r{radius}: a split card's ring is never the plain program");
+                }
+            }
+            let interior = image_card_geometry(chw, chh, 0.0);
+            assert!(plain_texture_program(Some(()), false, 0.0).is_some(), "the interior piece is routed");
+            for p in points {
+                assert_eq!(plain_exit(interior, p), 1, "the interior piece's u_card is the shader's plain exit at {p:?}");
+            }
+        }
     }
 
     /// `bands_around` of a snapped hole and `snap_inner` agree with the shadow's own contract

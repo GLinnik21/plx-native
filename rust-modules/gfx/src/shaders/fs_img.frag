@@ -10,14 +10,19 @@
 // seamless (a wider rim would be hard-cut there). The shadow sh = smoothstep(clamp(0.5 -
 // d/(2*blur))) is algebraically identical to 1 - smoothstep(-blur, blur, d). rgb = tex*m
 // premultiplies coverage (so a rounded texture's ~1px AA edge is very slightly darker under
-// straight-alpha blend - accepted). Full-screen art (radius 0) takes the flat fast-path.
+// straight-alpha blend - accepted). Full-screen art (radius 0) takes the flat fast-path - in
+// gfx.rs's `draw_tex_core_in`, as its own program (fs_tex.frag) when that linked: Midgard sizes
+// registers and occupancy for the WHOLE shader, so this file's card chain was charged to a
+// two-word exit that never runs it.
 // v_cuv/v_p and the SDF chain are highp - see the PRECISION note in fs_src.frag.
 //
 // RESTING CARDS ARE DRAWN IN PIECES (gfx.rs's `draw_tex_core_in`): the whole quad is drawn five times
-// under scissor boxes, the card's interior with `u_card.z = 0` (the `u_card.z < 0.5` exit below) and the
+// under scissor boxes, the card's interior as plain texture x tint (through fs_tex.frag when that
+// program linked, else through this file with `u_card.z = 0`, the `u_card.z < 0.5` exit below) and the
 // ring with the real card geometry. The three exits that write `vec4(tex, ta)` must stay one
-// expression (`the_plain_exits_of_the_card_shader_are_one_expression` pins it). A focused or risen
-// card (PLX_FOCUS) is not split.
+// expression (`the_plain_exits_of_the_card_shader_are_one_expression` pins it), and fs_tex.frag is that
+// expression as a program of its own (`the_plain_texture_program_is_the_card_shaders_plain_exit` pins
+// it). A focused or risen card (PLX_FOCUS) is not split.
 //
 // PLX_FOCUS (linked as its own program, gfx.rs's FOCUS_IMAGE/VS_FOCUS/FS_FOCUS): the lit-glass
 // edge and risen shadow for a FOCUSED ArtTile used to be inline here unconditionally, behind
