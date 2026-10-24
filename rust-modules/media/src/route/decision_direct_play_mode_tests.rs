@@ -104,10 +104,10 @@ fn force_retains_feed_limits_and_session_snapshot_across_retry_and_track_edits()
     assert!(forced_direct_play(&ps));
     assert_eq!(current_retry_context(&ps, 123).direct_play_mode, DirectPlayMode::Forced);
     assert!(forced_direct_play(&ps.publication()));
-    assert!(audio_track_direct_plays(&ps, "eac3", 8), "Force bypasses device channels");
-    assert!(!audio_track_direct_plays(&ps, "dca", 6), "Force admits DTS only with a table DTS row (assumed caps have none)");
-    assert!(!audio_track_direct_plays(&ps, "truehd", 8));
-    assert!(!audio_track_direct_plays(&ps, "", 0));
+    assert!(audio_track_direct_plays(&ps, "eac3", 8, 0), "Force bypasses device channels");
+    assert!(!audio_track_direct_plays(&ps, "dca", 6, 0), "Force admits DTS only with a table DTS row (assumed caps have none)");
+    assert!(!audio_track_direct_plays(&ps, "truehd", 8, 0));
+    assert!(!audio_track_direct_plays(&ps, "", 0, 0));
     assert!(!video_feed_supported("vp9", plx_data::metadata::DvPresentation::NotDv, &plx_platform::devcaps::Caps::assumed()));
     let blocked_dv = plx_data::metadata::Dovi { present: true, profile: 5, bl_compat: 0, ..plx_data::metadata::Dovi::NONE }
         .presentation(false, plx_platform::devcaps::dv::DvCapability::Unsupported, true);
@@ -118,7 +118,7 @@ fn force_retains_feed_limits_and_session_snapshot_across_retry_and_track_edits()
     assert!(fallback_auto_to_hls(&mut ps, 1000, 0).is_none());
     assert!(transcode_seek(&mut ps, 0).is_none());
     assert!(recover_auto_to_original(&mut ps, 0).is_none());
-    commit_audio_selection(&mut ps, CarriedAudio { sid: 9, ordinal: 0, codec: "truehd".into(), channels: 8, can_normalize_loudness: false, immersive: false });
+    commit_audio_selection(&mut ps, CarriedAudio { sid: 9, ordinal: 0, codec: "truehd".into(), channels: 8, can_normalize_loudness: false, immersive: false, sample_rate: 0, bit_depth: 0 });
     assert!(play_verdict(&ps).unwrap().contains("Force Direct Play is on"));
     assert_eq!(cur_audio_sid(&ps), 0, "refusing an unsupported track leaves the current selection intact");
     restore_direct_play_mode(DirectPlayMode::Auto);

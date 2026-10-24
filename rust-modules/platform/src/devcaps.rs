@@ -57,6 +57,42 @@ pub mod dv;
 /// (`plex::DP_AUDIO_CODECS`) for the profile string and route's plan.
 pub const DP_AUDIO_CODECS: &str = "aac,ac3,eac3,dts";
 
+/// Audio the app DECODES ITSELF and feeds as PCM, so no row of the device table is needed: the
+/// pipeline's PCM input (`libpf`'s `audio/x-raw` caps and the `contents.pcmInfo` node) is what
+/// carries it. FLAC is the case — libpf has no FLAC input of its own (its Load vocabulary is
+/// AAC/AC3/AC3 PLUS/DTS/MP3/MPEG/OPUS/VORBIS/WMA/PCM), but PCM decoded from it is bit-exact. Both
+/// the vocabulary and the PCM input were verified on webOS 4.4.3 (libpf-1.0 on an OLED55B8); other
+/// webOS versions are unconfirmed. Joins [`Caps::audio`] only on a table that was READ: the assumed
+/// fallback stays byte-for-byte what it was.
+pub const PCM_AUDIO_CODECS: &str = "flac";
+
+/// The channel ceiling of the PCM path: `pcmInfo.channelMode` has `mono` and `stereo` (and
+/// `dual`), nothing wider, so a multichannel FLAC stays a server conversion.
+pub const PCM_MAX_CHANNELS: u32 = 2;
+
+/// The rates the PCM path plays at their own speed: libpf's `LUT_SampleRateType` (8, 12, 16,
+/// 22.05, 24, 32 and 48 kHz) plus 44.1 kHz, which the table does not list but plays correctly.
+/// Any other `pcmInfo.sampleRate` plays slow and without an error: a 96 kHz FLAC audibly slow, a
+/// 192 kHz one slower still (measured on webOS 4.4.3, an OLED55B8, where 44.1 and 48 kHz played
+/// right). The table was read from libpf-1.0 on that set.
+pub const PCM_SAMPLE_RATES: [u32; 8] = [8_000, 12_000, 16_000, 22_050, 24_000, 32_000, 44_100, 48_000];
+
+/// Whether `codec` is one the app decodes itself and feeds as PCM ([`PCM_AUDIO_CODECS`]).
+pub fn is_pcm_codec(codec: &str) -> bool {
+    let id = audio_codec_id(codec);
+    PCM_AUDIO_CODECS.split(',').any(|c| c == id)
+}
+
+/// The PCM path's own limits for one track: one or two channels, at a rate the pipeline plays at
+/// its own speed. A codec that is not app-decoded passes; an unstated count or rate does not.
+/// These are limits of the PCM input, not of a hardware decoder, so Force Direct Play applies
+/// them as well.
+pub fn pcm_track_fits(codec: &str, channels: i64, sample_rate: i64) -> bool {
+    !is_pcm_codec(codec)
+        || ((1..=i64::from(PCM_MAX_CHANNELS)).contains(&channels)
+            && PCM_SAMPLE_RATES.iter().any(|&r| i64::from(r) == sample_rate))
+}
+
 const CAPS_TABLE: &str = "/etc/umediaserver/device_codec_capability_config.json";
 
 /// The decode-capability snapshot the playback stack derives from. `OnceLock` for the same
@@ -151,9 +187,11 @@ impl Caps {
         if !self.audio_has(&id) {
             return false;
         }
+        // DTS and the PCM path both need a stated channel count: an unknown one is not admitted.
+        let needs_count = id == "dts" || is_pcm_codec(&id);
         match self.audio_channels.get(id.as_ref()) {
-            Some(&limit) => (channels > 0 || id != "dts") && channels <= i64::from(limit),
-            None => id != "dts",
+            Some(&limit) => (channels > 0 || !needs_count) && channels <= i64::from(limit),
+            None => !needs_count,
         }
     }
 
@@ -164,6 +202,11 @@ impl Caps {
         let id = audio_codec_id(codec);
         if id == "dts" {
             return self.forced_admits_dts();
+        }
+        if is_pcm_codec(&id) {
+            // Decoded in the app, so only "is the PCM path on" — i.e. was the table read. The
+            // track's own limits are [`pcm_track_fits`], which the planner applies in both modes.
+            return self.audio_has(&id);
         }
         DP_AUDIO_CODECS.split(',').any(|c| c == id)
     }
@@ -398,7 +441,12 @@ fn parse(s: &str) -> Option<Caps> {
         // reading of it, not about the television. Same reasoning as the empty-video guard.
         Caps::assumed().audio
     } else {
-        audio.join(",")
+        // The app-decoded PCM formats follow the hardware ones, with the PCM path's own ceiling
+        // replacing whatever the table says about a decoder we never feed.
+        for c in PCM_AUDIO_CODECS.split(',') {
+            audio_channels.insert(c.to_string(), PCM_MAX_CHANNELS);
+        }
+        audio.into_iter().chain(PCM_AUDIO_CODECS.split(',')).collect::<Vec<_>>().join(",")
     };
     Some(Caps {
         hevc,
@@ -603,9 +651,9 @@ mod tests {
         // a fractional cap is a CEILING the stream must fit under: 59.94 reads as 60, never 59
         let frac = parse(r#"{"videoCodecs":[{"name":"H.264","maxWidth":1920,"maxHeight":1088,"maxFrameRate":59.94}]}"#).unwrap();
         assert_eq!(frac.h264_row, (1920, 1088, 60));
-        // FLAC/MPEG are in the table but not in the pipeline's decode set; the subset keeps
-        // DP_AUDIO_CODECS's own order, not the table's.
-        assert_eq!(c.audio, "aac,ac3,eac3,dts");
+        // MPEG is in the table but not in the pipeline's decode set; the subset keeps
+        // DP_AUDIO_CODECS's own order, not the table's, and the app-decoded PCM formats follow.
+        assert_eq!(c.audio, "aac,ac3,eac3,dts,flac");
     }
 
     /// PMS names DTS `dca` (every DTS entry in the profiles shipped with PMS spells it so); the
@@ -639,6 +687,46 @@ mod tests {
             assert!(Caps::assumed().forced_feeds_audio(c), "{c}");
         }
         assert!(!Caps::assumed().forced_feeds_audio("truehd"));
+    }
+
+    /// The PCM input plays only the rates in libpf's table (plus 44.1 kHz) at their own speed: a
+    /// 96 kHz or 192 kHz FLAC played audibly slow on the B8, with no error anywhere. The
+    /// track gate refuses those, and an unstated rate or channel count, for app-decoded codecs
+    /// only.
+    #[test]
+    fn the_pcm_path_admits_only_the_rates_and_channels_it_plays_correctly() {
+        for rate in [8_000, 22_050, 44_100, 48_000] {
+            assert!(pcm_track_fits("flac", 2, rate), "{rate}");
+        }
+        assert!(pcm_track_fits("FLAC", 1, 48_000));
+        for rate in [0, 11_025, 88_200, 96_000, 176_400, 192_000] {
+            assert!(!pcm_track_fits("flac", 2, rate), "{rate} plays at the wrong speed or is unknown");
+        }
+        assert!(!pcm_track_fits("flac", 6, 48_000));
+        assert!(!pcm_track_fits("flac", 0, 48_000));
+        // not app-decoded: the hardware decoder's own rules apply, not these
+        assert!(pcm_track_fits("ac3", 6, 0) && pcm_track_fits("dca", 8, 96_000));
+    }
+
+    /// FLAC is decoded in the app and fed as PCM: it needs no table row, but it does need a
+    /// table that was READ (the assumed fallback must stay exactly what shipped), a stated channel
+    /// count, and at most the PCM path's two channels — a 5.1 FLAC stays a server conversion. The
+    /// table's own FLAC row (6 channels on the dev set) says nothing about our decoder.
+    #[test]
+    fn flac_is_pcm_decoded_stereo_only_and_only_on_a_read_table() {
+        let caps = parse(REAL).unwrap();
+        assert!(caps.audio_has("flac") && caps.audio_has("FLAC"));
+        assert!(caps.audio_supports("flac", 1));
+        assert!(caps.audio_supports("flac", 2));
+        assert!(!caps.audio_supports("flac", 6));
+        assert!(!caps.audio_supports("flac", 0), "an unknown channel count is not admitted");
+        assert_eq!(caps.audio_channels.get("flac"), Some(&PCM_MAX_CHANNELS));
+        let no_row = parse(&REAL.replace("\"name\" : \"FLAC\"", "\"name\" : \"WMA\"")).unwrap();
+        assert!(no_row.audio_supports("flac", 2), "the PCM path does not need a FLAC decoder row");
+        assert!(!Caps::assumed().audio_has("flac"));
+        assert_eq!(Caps::assumed().audio, "aac,ac3,eac3");
+        assert!(caps.forced_feeds_audio("flac"));
+        assert!(!Caps::assumed().forced_feeds_audio("flac"));
     }
 
     #[test]
@@ -725,7 +813,7 @@ mod tests {
         .unwrap();
         assert!(!c.hevc);
         assert_eq!(c.hevc_max, (1920, 1088));
-        assert_eq!(c.audio, "aac");
+        assert_eq!(c.audio, "aac,flac");
     }
 
     /// Codec-name matching survives the spelling variants firmwares use: case, dots, dashes
@@ -739,7 +827,7 @@ mod tests {
         )
         .unwrap();
         assert!(c.hevc);
-        assert_eq!(c.audio, "aac,ac3,eac3");
+        assert_eq!(c.audio, "aac,ac3,eac3,flac");
     }
 
     /// Garbage in must not panic AND must not half-parse: every unusable input lands on None so

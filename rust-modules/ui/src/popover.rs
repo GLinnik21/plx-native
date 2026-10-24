@@ -1297,7 +1297,7 @@ pub mod host {
         // `moving` below is where it is taken. It used to be PUBLISHED here as well, for
         // `gfx::page_wash_dither` to read, until 2026-09-19 proved a page-wide verdict is the wrong
         // question for a wash: the wash's own dissolve is in it. (That function is gone too: every
-        // wash dithers on every frame now — `gfx::draw_ambient`.)
+        // wash with a gradient dithers on every frame now — `gfx::draw_ambient`.)
         // Taken every drawn frame, holder or not, so the count never carries over into the first
         // frame of the next panel to open.
         let page_dirty = plx_machine::idle::take_page_damage();

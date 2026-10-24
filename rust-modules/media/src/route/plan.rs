@@ -163,6 +163,10 @@ pub struct CarriedAudio {
     pub can_normalize_loudness: bool,
     /// Dolby Atmos (`metadata::Stream::has_atmos`) — the Load payload's `contents.immersive`.
     pub immersive: bool,
+    /// PMS `samplingRate` (Hz) and `bitDepth` — what a PCM Load declares for a track the app
+    /// decodes itself (FLAC, `devcaps::PCM_AUDIO_CODECS`). 0 = not said, and the Load refuses.
+    pub sample_rate: i64,
+    pub bit_depth: i64,
 }
 
 impl CarriedAudio {
@@ -180,6 +184,8 @@ impl CarriedAudio {
             channels: s.channels,
             can_normalize_loudness: s.can_normalize_loudness,
             immersive: s.has_atmos(),
+            sample_rate: s.sampling_rate,
+            bit_depth: s.bit_depth,
         }
     }
 
@@ -196,6 +202,8 @@ impl CarriedAudio {
             channels: 0,
             can_normalize_loudness: false,
             immersive: false,
+            sample_rate: 0,
+            bit_depth: 0,
         }
     }
 }
@@ -905,7 +913,7 @@ pub(super) fn classify_outcome(
     if audio.is_none() {
         return EnhancementOutcome::Off;
     }
-    let copyable = carried.is_some_and(|a| plx_plex::plex::is_dp_audio_track(&a.codec, a.channels));
+    let copyable = carried.is_some_and(|a| plx_plex::plex::is_dp_audio_track(&a.codec, a.channels, a.sample_rate));
     match mc.and_then(decision_audio) {
         Some("transcode") if copyable => EnhancementOutcome::Applied,
         _ => EnhancementOutcome::Unverified,
@@ -1825,11 +1833,11 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     //      through a remux) may still direct-play a non-commentary stand-in, provisionally — it is
     //      kept only if a direct play results — or, with only a commentary to stand in, burn it
     //      once the route is known to be the remux (see `burn_for_audio` below).
-    let eligible = |codec: &str, channels: i64| audio_direct_plays(env.direct_play_mode, codec, channels);
+    let eligible = |codec: &str, channels: i64, rate: i64| audio_direct_plays(env.direct_play_mode, codec, channels, rate);
     let copy_blocked = forced || no_video_copy;
     let pick_audio = |stand_in: StandIn| {
         let exact = (env.audio_sid > 0).then(|| {
-            tracks.iter().enumerate().find(|(_, t)| t.id == env.audio_sid && eligible(&t.codec, t.channels))
+            tracks.iter().enumerate().find(|(_, t)| t.id == env.audio_sid && eligible(&t.codec, t.channels, t.sampling_rate))
                 .map(|(i, t)| (i as i32, t.codec.to_lowercase(), t.id))
         }).flatten();
         // A forced direct play has no server to convert an unplayable SESSION pick, and naming
@@ -2043,14 +2051,14 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     // Media-level audio codec stands in: one the TV cannot decode (DTS-HD MA on a set with no DTS
     // row, #584) is the same case, since MDE judged the profile and not what the pipeline feeds.
     let mut directplay = (audio_sel.is_some()
-        || (tracks.is_empty() && (acodec.is_empty() || audio_direct_plays(env.direct_play_mode, acodec, 0))))
+        || (tracks.is_empty() && (acodec.is_empty() || audio_direct_plays(env.direct_play_mode, acodec, 0, 0))))
         && mde.as_ref().is_some_and(|v| v.original && (!forced || !v.video_forbids_copy));
     if forced {
         let mut refused_raw = String::new();
         let failure = if part.is_empty() { Some(ForcedFailure::NoOriginal) }
             else if !streamable { Some(ForcedFailure::Container) }
             else if !video_dp { Some(ForcedFailure::Video) }
-            else if audio_sel.is_none() && (!tracks.is_empty() || !audio_direct_plays(env.direct_play_mode, acodec, 0)) {
+            else if audio_sel.is_none() && (!tracks.is_empty() || !audio_direct_plays(env.direct_play_mode, acodec, 0, 0)) {
                 refused_raw = refused_audio_codec(tracks, acodec, audio_prefs, env.audio_sid);
                 Some(ForcedFailure::Audio { codec: plx_data::metadata::friendly_codec(&refused_raw) })
             } else if !rk.is_empty() && !directplay { Some(ForcedFailure::Unauthorized) }
@@ -2849,7 +2857,7 @@ fn account_audio_language_log(
                 lang_matches(lang, &track.lang_code)
             };
             let direct_playable_match = tracks.iter().any(|track| {
-                matching_track(track) && plx_plex::plex::is_dp_audio_track(&track.codec, track.channels)
+                matching_track(track) && plx_plex::plex::is_dp_audio_track(&track.codec, track.channels, track.sampling_rate)
             });
             let outcome = if picked_language {
                 "playing that track"
@@ -3000,20 +3008,25 @@ pub(super) fn pick_dp_audio_pref(
     pick_dp_audio_mode(tracks, default_acodec, prefs, DirectPlayMode::Auto)
 }
 
-pub(super) fn audio_direct_plays(mode: DirectPlayMode, codec: &str, channels: i64) -> bool {
-    audio_direct_plays_with(plx_platform::devcaps::caps(), mode, codec, channels)
+pub(super) fn audio_direct_plays(mode: DirectPlayMode, codec: &str, channels: i64, sample_rate: i64) -> bool {
+    audio_direct_plays_with(plx_platform::devcaps::caps(), mode, codec, channels, sample_rate)
 }
 
 /// [`audio_direct_plays`] over an explicit capability snapshot. Auto and Forced both go through
 /// `devcaps`' canonicaliser (PMS's `dca` is the pipeline's `dts`), so they cannot drift apart.
+/// Both also apply the PCM path's own limits ([`plx_platform::devcaps::pcm_track_fits`]): they
+/// belong to the app's decoder and LG's PCM input, not to a hardware decoder Forced may trust past
+/// its table, so a 5.1 or 96 kHz FLAC is refused under Forced instead of failing at the Load.
 pub(super) fn audio_direct_plays_with(
     caps: &plx_platform::devcaps::Caps, mode: DirectPlayMode, codec: &str, channels: i64,
+    sample_rate: i64,
 ) -> bool {
-    if mode == DirectPlayMode::Forced {
+    let feeds = if mode == DirectPlayMode::Forced {
         caps.forced_feeds_audio(codec)
     } else {
         caps.audio_supports(codec, channels)
-    }
+    };
+    feeds && plx_platform::devcaps::pcm_track_fits(codec, channels, sample_rate)
 }
 
 #[cfg(test)]
@@ -3022,7 +3035,7 @@ fn pick_dp_audio_mode(
     prefs: AudioLangPrefs<'_>, mode: DirectPlayMode,
 ) -> Option<(i32, String, i64)> {
     pick_dp_audio_eligible(tracks, default_acodec, prefs, 0, StandIn::Any,
-        |codec, channels| audio_direct_plays(mode, codec, channels))
+        |codec, channels, rate| audio_direct_plays(mode, codec, channels, rate))
 }
 
 /// The codec of the audio track a refused Force Direct Play was going to play: the first intent
@@ -3045,9 +3058,9 @@ fn refused_audio_codec(
 fn pick_dp_audio_eligible(
     tracks: &[plx_data::metadata::Stream], default_acodec: &str, prefs: AudioLangPrefs<'_>,
     session_pick: i64, stand_in: StandIn,
-    eligible: impl Fn(&str, i64) -> bool,
+    eligible: impl Fn(&str, i64, i64) -> bool,
 ) -> Option<(i32, String, i64)> {
-    let dp = |codec: &str| eligible(codec, 0);
+    let dp = |codec: &str| eligible(codec, 0, 0);
     if tracks.is_empty() {
         // no track info — fall back to the codec-default (or transcode if that isn't DP)
         return if dp(default_acodec) {
@@ -3057,7 +3070,7 @@ fn pick_dp_audio_eligible(
         };
     }
     let pick = |i: usize| (i as i32, tracks[i].codec.to_lowercase(), tracks[i].id);
-    let dp_at = |s: &plx_data::metadata::Stream| eligible(&s.codec, s.channels);
+    let dp_at = |s: &plx_data::metadata::Stream| eligible(&s.codec, s.channels, s.sampling_rate);
     if stand_in == StandIn::SameKind {
         return same_kind_pick(tracks, default_acodec, audio_intents(tracks, prefs, session_pick), dp_at).map(pick);
     }
@@ -3701,7 +3714,7 @@ pub(super) fn audio_intent_needs_conversion(
     if tracks.is_empty() {
         return false;
     }
-    let eligible = |codec: &str, channels: i64| plx_plex::plex::is_dp_audio_track(codec, channels);
+    let eligible = |codec: &str, channels: i64, rate: i64| plx_plex::plex::is_dp_audio_track(codec, channels, rate);
     let pick = |stand_in| pick_dp_audio_eligible(
         tracks, inputs.default_acodec, AudioLangPrefs::default(), 0, stand_in, eligible,
     );

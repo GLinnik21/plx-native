@@ -1,27 +1,13 @@
 //! A page read already in flight when a view-state edit is published lands carrying the pre-edit
 //! body; the ledger re-patches it. Every test here takes its stamp from the store's REAL request
 //! site (`maybe_spawn_owned`, `hubs_kick`) against a registered but unreachable server, so removing
-//! the stamp from a request site fails it.
+//! the stamp from a request site fails it. The section hubs' read is a job the test takes off the
+//! outbox and answers through its port, as the application's runner would.
 
 use super::test_support::*;
 use super::*;
 use crate::viewstate::{ViewAt, ViewEdit};
-
-/// `registered_page_source`, but on a loopback port nothing listens on: the request path really
-/// spawns its worker, which is refused at once instead of dialling 10.0.0.1.
-fn loopback_page_source() -> (RegisteredCleanup, TestBrowse, ServerId, &'static plx_plex::plex::Client) {
-    plx_plex::plex::reset_servers_for_test();
-    let sid = plx_plex::plex::register_for_test("browse-ledger", "127.0.0.1", 9, "old", "cid");
-    assert!(plx_plex::plex::set_current(sid));
-    let mut source = a_source("original", "", true);
-    source.sid = sid;
-    source.sections_done = true;
-    source.counts_done = true;
-    let mut browse = TestBrowse::default();
-    browse.seed_sources(vec![source]);
-    browse.append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
-    (RegisteredCleanup, browse, sid, plx_plex::plex::client_for(sid).unwrap())
-}
+use plx_machine::job::Port;
 
 fn row(sid: ServerId, rk: &str) -> PmsMovie {
     let mut m = PmsMovie::default();
@@ -73,23 +59,22 @@ fn a_page_read_in_flight_across_a_watched_edit_lands_watched() {
 #[test]
 fn a_section_hubs_read_in_flight_across_edits_lands_with_them_made_again() {
     let _g = plx_base::testlock::serial();
-    let (_cleanup, mut browse, sid, client) = loopback_page_source();
+    let (_cleanup, mut browse, sid, _client) = loopback_page_source();
     let ledger = browse.state.ledger.clone();
     let older = ledger.record(&ViewAt::leaf(sid, "0"), ViewEdit::Watched(true));
     ledger.landed(older); // before the request
-    browse.state.hubs_kick(0, &browse.adapter); // the hubs read goes out…
-    assert!(browse.adapter.hubs.fetching.load(Ordering::SeqCst), "the real request site claimed the fetch");
+    browse.hubs_kick(0); // the hubs read goes out…
+    assert!(browse.adapter.hubs.fetch.busy(), "the real request site claimed the fetch");
     ledger.record(&ViewAt::leaf(sid, "1"), ViewEdit::Watched(true)); // …then two presses
     ledger.record(&ViewAt::leaf(sid, "2"), ViewEdit::LeftDeck);
-    plx_base::task::drain_workers_for_test();
+    let (job, port) = browse.take_hubs_job();
     let card = |rk: &str| PmsMovie { sid, rk: rk.into(), unwatched: true, ..Default::default() };
     let shelves = vec![
         section_hubs::Shelf { is_continue: true, items: vec![card("1"), card("2")], ..Default::default() },
         section_hubs::Shelf { items: vec![card("0"), card("1"), card("2")], ..Default::default() },
     ];
-    *browse.adapter.hubs.result.lock().unwrap_or_else(|e| e.into_inner()) =
-        Some(section_hubs::HubResult::list_for_test(browse.state.table_epoch(), 0, client, client.token_gen(), shelves));
-    browse.state.hubs_land(&browse.adapter, plx_machine::landgate::fixture_gate());
+    port.done(job.addr, section_hubs::BrowseHubsAnswer::list_for_test(&job, shelves)); // the runner's worker answers
+    browse.hubs_land();
     assert!(browse.state.state_mut(0).unwrap().hubs.commit_staged(true));
     let landed = browse.state.states()[0].hubs.shelves().to_vec();
     let marks = |i: usize| landed[i].items.iter().map(|m| (m.rk.as_str(), m.watched)).collect::<Vec<_>>();
@@ -105,7 +90,7 @@ fn a_hub_row_page_in_flight_across_a_watched_edit_lands_watched() {
     const ID: &str = "movie.row0";
     const KEY: &str = "/hubs/sections/1/row0";
     let _g = plx_base::testlock::serial();
-    let (_cleanup, mut browse, sid, client) = loopback_page_source();
+    let (_cleanup, mut browse, sid, _client) = loopback_page_source();
     section_hubs::seed_named_shelves_for_owner_test(&mut browse.state, 0, &[(ID, KEY, "Row")], 12);
     {
         let st = browse.state.state_mut(0).unwrap();
@@ -117,19 +102,18 @@ fn a_hub_row_page_in_flight_across_a_watched_edit_lands_watched() {
     let older = ledger.record(&ViewAt::leaf(sid, "20"), ViewEdit::Watched(true));
     ledger.landed(older); // before the request
     let seen = browse.state.states()[0].hubs.revision;
-    assert!(browse.state.hubs_page(0, seen, ID, KEY, false, &browse.adapter), "the page ask was queued");
-    assert!(browse.adapter.hubs.fetching.load(Ordering::SeqCst), "the real row request site claimed the fetch");
+    assert!(browse.hubs_page(0, seen, ID, KEY, false), "the page ask was queued");
+    assert!(browse.adapter.hubs.fetch.busy(), "the real row request site claimed the fetch");
     ledger.record(&ViewAt::leaf(sid, "21"), ViewEdit::Watched(true)); // the press while the page is out
-    plx_base::task::drain_workers_for_test();
+    let (job, port) = browse.take_hubs_job();
     let mut next = browse.state.states()[0].hubs.committed[0].clone();
     let card = |rk: &str| PmsMovie { sid, rk: rk.into(), unwatched: true, ..Default::default() };
     next.items = vec![card("20"), card("21")];
     next.positions = vec![12, 13];
     next.offset = 12;
     next.end = 14;
-    *browse.adapter.hubs.result.lock().unwrap_or_else(|e| e.into_inner()) =
-        Some(section_hubs::HubResult::row_for_test(browse.state.table_epoch(), 0, client, client.token_gen(), ID, KEY, next));
-    browse.state.hubs_land(&browse.adapter, plx_machine::landgate::fixture_gate());
+    port.done(job.addr, section_hubs::BrowseHubsAnswer::row_for_test(&job, ID, KEY, next));
+    browse.hubs_land();
     let landed = &browse.state.states()[0].hubs.committed[0];
     let marks: Vec<_> = landed.items.iter().map(|m| (m.rk.as_str(), m.watched)).collect();
     assert_eq!(marks, [("20", false), ("21", true)]);
@@ -151,7 +135,8 @@ fn a_library_change_leaves_the_open_grid_alone_and_marks_it_stale() {
     }
     browse.state.want(PAGE - 10, PAGE + 20, Some(PAGE + 5));
     let gen = browse.state.query_gen();
-    assert!(browse.state.run_owned(&browse.adapter, crate::stores::browse::BrowseCmd::ListingsChanged { sid, library_on_stack: true }));
+    assert!(browse.state.run_owned(&browse.adapter, crate::stores::browse::BrowseCmd::ListingsChanged { sid, library_on_stack: true },
+        &ClientKeys::default(), &mut Vec::new()));
     browse.state.maybe_spawn_owned(&browse.adapter);
     assert!(!browse.adapter.fetching.load(Ordering::SeqCst), "the visible grid is not listed again");
     let state = &browse.state.states()[0];

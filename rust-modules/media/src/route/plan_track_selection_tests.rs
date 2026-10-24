@@ -768,9 +768,9 @@ fn known_audio_channels_cannot_fall_back_to_an_unknown_codec_default() {
     let mut track = trk(1, "aac", "eng", false);
     track.channels = 8;
     assert!(caps.audio_supports("aac", 0), "legacy unknown remains compatible");
-    assert_eq!(pick_dp_audio_eligible(&[track.clone()], "aac", AudioLangPrefs::default(), 0, StandIn::Any, |c, n| caps.audio_supports(c, n)), None);
+    assert_eq!(pick_dp_audio_eligible(&[track.clone()], "aac", AudioLangPrefs::default(), 0, StandIn::Any, |c, n, _| caps.audio_supports(c, n)), None);
     track.channels = 6;
-    assert_eq!(pick_dp_audio_eligible(&[track], "aac", AudioLangPrefs::default(), 0, StandIn::Any, |c, n| caps.audio_supports(c, n)), Some((0, "aac".into(), 1)));
+    assert_eq!(pick_dp_audio_eligible(&[track], "aac", AudioLangPrefs::default(), 0, StandIn::Any, |c, n, _| caps.audio_supports(c, n)), Some((0, "aac".into(), 1)));
 }
 
 // ---- StandIn::SameKind: never stand in a different KIND of track ---------------------------
@@ -789,7 +789,7 @@ fn pick_kind(tracks: &[plx_data::metadata::Stream], acodec: &str, prefs: AudioLa
     -> Option<i64>
 {
     let caps = aac_caps();
-    pick_dp_audio_eligible(tracks, acodec, prefs, session, stand_in, |c, n| caps.audio_supports(c, n))
+    pick_dp_audio_eligible(tracks, acodec, prefs, session, stand_in, |c, n, _| caps.audio_supports(c, n))
         .map(|(_, _, id)| id)
 }
 
@@ -962,7 +962,7 @@ fn a_selected_dca_track_is_picked_when_the_table_has_a_dts_row() {
     dca.channels = 6;
     let tracks = [trk(2663, "ac3", "rus", true), dca, trk(2673, "ac3", "eng", false)];
     let pick = pick_dp_audio_eligible(&tracks, "dca", AudioLangPrefs::default(), 0, StandIn::Any,
-        |c, n| caps.audio_supports(c, n));
+        |c, n, _| caps.audio_supports(c, n));
     assert_eq!(pick.map(|(_, _, id)| id), Some(2669));
 }
 
@@ -971,15 +971,47 @@ fn a_selected_dca_track_is_picked_when_the_table_has_a_dts_row() {
 #[test]
 fn auto_and_forced_agree_on_the_dca_spelling() {
     let caps = dts_row_caps();
-    assert!(audio_direct_plays_with(&caps, DirectPlayMode::Auto, "dca", 6));
-    assert!(!audio_direct_plays_with(&caps, DirectPlayMode::Auto, "dca", 8));
-    assert!(audio_direct_plays_with(&caps, DirectPlayMode::Forced, "dca", 6));
-    assert!(audio_direct_plays_with(&caps, DirectPlayMode::Forced, "dca", 8));
-    assert!(audio_direct_plays_with(&caps, DirectPlayMode::Forced, "DTS", 8));
+    assert!(audio_direct_plays_with(&caps, DirectPlayMode::Auto, "dca", 6, 0));
+    assert!(!audio_direct_plays_with(&caps, DirectPlayMode::Auto, "dca", 8, 0));
+    assert!(audio_direct_plays_with(&caps, DirectPlayMode::Forced, "dca", 6, 0));
+    assert!(audio_direct_plays_with(&caps, DirectPlayMode::Forced, "dca", 8, 0));
+    assert!(audio_direct_plays_with(&caps, DirectPlayMode::Forced, "DTS", 8, 0));
     let assumed = plx_platform::devcaps::Caps::assumed();
     for mode in [DirectPlayMode::Auto, DirectPlayMode::Forced] {
-        assert!(!audio_direct_plays_with(&assumed, mode, "dca", 6), "{mode:?}: no DTS row, no DTS");
+        assert!(!audio_direct_plays_with(&assumed, mode, "dca", 6, 0), "{mode:?}: no DTS row, no DTS");
     }
-    assert!(audio_direct_plays_with(&assumed, DirectPlayMode::Forced, "ac3", 8));
-    assert!(!audio_direct_plays_with(&assumed, DirectPlayMode::Forced, "truehd", 8));
+    assert!(audio_direct_plays_with(&assumed, DirectPlayMode::Forced, "ac3", 8, 0));
+    assert!(!audio_direct_plays_with(&assumed, DirectPlayMode::Forced, "truehd", 8, 0));
+}
+
+/// FLAC is decoded by the app and fed to LG's PCM input, whose limits are its own: two channels,
+/// and only the rates it plays at their own speed. Forced trusts a hardware decoder past its table,
+/// but not these, so on the B8 a 5.1 FLAC (the Load was refused after PMS had direct-played it)
+/// and a 96 kHz FLAC (played audibly slow) are refused before anything starts, in both modes.
+#[test]
+fn flac_is_gated_by_the_pcm_paths_own_limits_in_both_modes() {
+    let caps = plx_platform::devcaps::Caps {
+        audio: "aac,ac3,eac3,dts,flac".into(),
+        audio_channels: [("dts".into(), 6), ("flac".into(), plx_platform::devcaps::PCM_MAX_CHANNELS)].into(),
+        ..plx_platform::devcaps::Caps::assumed()
+    };
+    for mode in [DirectPlayMode::Auto, DirectPlayMode::Forced] {
+        assert!(audio_direct_plays_with(&caps, mode, "flac", 2, 48_000), "{mode:?}");
+        assert!(audio_direct_plays_with(&caps, mode, "flac", 1, 44_100), "{mode:?}");
+        assert!(!audio_direct_plays_with(&caps, mode, "flac", 6, 48_000), "{mode:?}: 5.1");
+        assert!(!audio_direct_plays_with(&caps, mode, "flac", 2, 96_000), "{mode:?}: 96 kHz");
+        assert!(!audio_direct_plays_with(&caps, mode, "flac", 2, 192_000), "{mode:?}: 192 kHz");
+        assert!(!audio_direct_plays_with(&caps, mode, "flac", 2, 0), "{mode:?}: unstated rate");
+    }
+    // the hardware codecs keep their own rules: Forced still feeds a 7.1 DTS core
+    assert!(audio_direct_plays_with(&caps, DirectPlayMode::Forced, "dca", 8, 96_000));
+    // a 96 kHz FLAC never wins the track pick over a stereo AC3 sibling it would play slow
+    let mut hi = trk(1, "flac", "eng", true);
+    hi.channels = 2;
+    hi.sampling_rate = 96_000;
+    let mut ac3 = trk(2, "ac3", "eng", false);
+    ac3.channels = 2;
+    let pick = pick_dp_audio_eligible(&[hi, ac3], "flac", AudioLangPrefs::default(), 0, StandIn::Any,
+        |c, n, r| audio_direct_plays_with(&caps, DirectPlayMode::Forced, c, n, r));
+    assert_eq!(pick.map(|(_, _, id)| id), Some(2));
 }

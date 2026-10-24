@@ -160,8 +160,19 @@ impl Stores {
     }
 
     /// Explicit synchronous Browse command path. The answer is available before this call returns.
-    pub fn browse_run(&self, cmd: browse::BrowseCmd) -> bool {
-        self.browse.borrow_mut().run(cmd)
+    /// `keys` is the registry's answer as of this call. A command may leave a
+    /// [`StoreJob::BrowseHubs`] on Browse's outbox: the caller that returns without
+    /// [`Stores::take_jobs_of`] and handing it to a runner has stranded the section's read. The one
+    /// production caller is `Bridge::browse_run`, which drains in the same call.
+    pub fn browse_run(&self, cmd: browse::BrowseCmd, keys: &plx_plex::plex::ClientKeys) -> bool {
+        self.browse.borrow_mut().run(cmd, keys)
+    }
+
+    /// [`Stores::browse_run`] on a registry that holds no client (no section-hubs read leaves): the
+    /// command of a test about something else.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn browse_run_for_test(&self, cmd: browse::BrowseCmd) -> bool {
+        self.browse_run(cmd, &plx_plex::plex::ClientKeys::default())
     }
 
     /// Is any shelf of the addressed section committed? (The Library pages' publication gate asks.)
@@ -256,6 +267,7 @@ impl Stores {
             StoreId::SubtitleSearch => self.subtitle_search.take_jobs(),
             StoreId::ViewReconcile => self.reconcile.take_jobs(),
             StoreId::Hubs => self.hubs.take_jobs(),
+            StoreId::Browse => self.browse.borrow_mut().take_jobs(),
             StoreId::Search => self.search.take_jobs(),
             // The other stores emit no jobs yet.
             _ => Vec::new(),
@@ -277,6 +289,7 @@ impl Stores {
             StoreId::SubtitleSearch => self.subtitle_search.has_jobs(),
             StoreId::ViewReconcile => self.reconcile.has_jobs(),
             StoreId::Hubs => self.hubs.has_jobs(),
+            StoreId::Browse => self.browse.borrow().has_jobs(),
             StoreId::Search => self.search.has_jobs(),
             // The other stores emit no jobs yet.
             _ => false,
@@ -329,10 +342,11 @@ impl Stores {
     }
 
     /// The outboxes [`Stores::viewstate_run`] and [`Stores::viewstate_pump`] can fill, in drain
-    /// order: ViewState's `RefetchHubs` and `Reset` reach the Hubs step. Their Browse, Person,
-    /// Collection, Search and Metadata edits emit no jobs from this call. The Bridge drains
-    /// exactly these after either call (`Bridge::start_store_jobs_in`).
-    pub const VIEWSTATE_FILLS: &'static [StoreId] = &[StoreId::Hubs];
+    /// order (`StoreId` order): ViewState's terminal `HubsInvalidateAll` reaches Browse's
+    /// section-hubs step, and its `RefetchHubs` and `Reset` reach the Hubs step. Its Person,
+    /// Collection, Search and Metadata edits emit no jobs from this call. The Bridge drains exactly
+    /// these after either call (`Bridge::start_store_jobs_in`).
+    pub const VIEWSTATE_FILLS: &'static [StoreId] = &[StoreId::Browse, StoreId::Hubs];
 
     /// ViewState's synchronous command path, with every Browse side effect addressed back to this
     /// aggregate. The callback is invoked inline, preserving the press-frame optimistic edit. The
@@ -357,7 +371,7 @@ impl Stores {
         let watchlist = &mut self.watchlist;
         self.viewstate.borrow_mut().run(
             cmd,
-            &mut |cmd| watchlist_tee(watchlist, cmd, |cmd| browse.borrow_mut().run(cmd)),
+            &mut |cmd| watchlist_tee(watchlist, cmd, |cmd| browse.borrow_mut().run(cmd, clients)),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory, clients),
             &mut |cmd| person.run(cmd),
             &mut |cmd| view_edit_collection(collection, cmd),
@@ -382,7 +396,7 @@ impl Stores {
         let watchlist = &mut self.watchlist;
         self.viewstate.borrow_mut().pump_with_gate(
             &self.landgate,
-            &mut |cmd| watchlist_tee(watchlist, cmd, |cmd| browse.borrow_mut().run(cmd)),
+            &mut |cmd| watchlist_tee(watchlist, cmd, |cmd| browse.borrow_mut().run(cmd, clients)),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory, clients),
             &mut |cmd| person.run(cmd),
             &mut |cmd| view_edit_collection(collection, cmd),
@@ -391,10 +405,11 @@ impl Stores {
         )
     }
 
-    /// The outboxes the notification map ([`Stores::notify_map`]) can fill, in drain order: a
-    /// server-side change reads the affected source back with `RefetchSourceQuiet`. The Bridge
-    /// drains exactly these after the map (`Bridge::start_store_jobs_in`).
-    pub const NOTIFY_FILLS: &'static [StoreId] = &[StoreId::Hubs];
+    /// The outboxes the notification map ([`Stores::notify_map`]) can fill, in drain order
+    /// (`StoreId` order): a server-side change re-reads its sections' shelves with
+    /// `HubsInvalidateServer` and reads the affected source back with `RefetchSourceQuiet`. The
+    /// Bridge drains exactly these after the map (`Bridge::start_store_jobs_in`).
+    pub const NOTIFY_FILLS: &'static [StoreId] = &[StoreId::Browse, StoreId::Hubs];
 
     /// The notification feed's per-frame pass. It stands down while the landing gate is armed (a
     /// recording, a replay or a dump owns the run), and never reads the registry's tokens.
@@ -480,7 +495,7 @@ impl Stores {
         let metadata = &mut self.metadata;
         crate::viewstate::publish_view(
             change,
-            &mut |cmd| browse.borrow_mut().run(cmd),
+            &mut |cmd| browse.borrow_mut().run(cmd, clients),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory, clients),
             &mut |cmd| person.run(cmd),
             &mut |cmd| view_edit_collection(collection, cmd),
@@ -509,7 +524,7 @@ impl Stores {
         let mut endpoints = EndpointRefreshSet::default();
         let changed = self.reconcile.pump_with_gate(&self.landgate, idle, clients, &mut |change| endpoints.merge(crate::viewstate::publish_view(
             { watchlist.apply_view(&change); change },
-            &mut |cmd| browse.borrow_mut().run(cmd),
+            &mut |cmd| browse.borrow_mut().run(cmd, clients),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory, clients),
             &mut |cmd| person.run(cmd),
             &mut |cmd| view_edit_collection(collection, cmd),
@@ -680,6 +695,12 @@ pub enum StoreJob {
     /// minted. Several are out at once, one per source. On the tape only through a controlled run
     /// ([`Admission::Home`]).
     Hubs(plx_machine::job::Job<crate::pms::HubRequest>, crate::pms::HubsPort),
+    /// One Library section-hubs read: a section's whole hub list, or one row's window. Emitted by
+    /// any Browse step that kicks a section's shelves (a page's `Hubs`, `HubPage`, `HubHold`, an
+    /// invalidation, the landing pass) and addressed by the request id the step minted. One is out
+    /// across all sections (the store's one claim). Not on the tape.
+    BrowseHubs(plx_machine::job::Job<crate::browse::section_hubs::BrowseHubsReq>,
+        crate::browse::section_hubs::BrowseHubsPort),
     /// One search fetch of one source: its first `/hubs/search` answer, or a read of depths of one
     /// result lane, emitted by the Search pump and addressed by the query's generation. Several are
     /// out at once, one per source, each answering into its own mailbox slot (the port names it).
@@ -695,7 +716,8 @@ pub enum StoreJob {
     /// answers the failure without a GET. Not on the tape.
     MetaSeason(plx_machine::job::Job<crate::metadata::MetaSeasonReq>, crate::metadata::MetaSeasonPort),
     /// One window of a long season's episode pages (`MetadataCmd::WantEpisodes`): at most
-    /// `EP_JOB_PAGES` pages, read in order and answered together. Not on the tape.
+    /// `EP_JOB_PAGES` pages, read in order and posted to the port page by page as they are read.
+    /// Not on the tape.
     MetaEpisodes(plx_machine::job::Job<crate::metadata::MetaEpisodesReq>, crate::metadata::MetaEpisodesPort),
 }
 
@@ -718,8 +740,17 @@ impl StoreJob {
         match self {
             Self::Detail(..) | Self::Collection(..) | Self::Person(..) => Admission::Tape,
             Self::Hubs(..) => Admission::Home,
-            Self::Catalog(..) | Self::SubtitleSearch(..) | Self::ViewReconcile(..) | Self::Search(..) | Self::SaveRecents(..)
-            | Self::MetaSeason(..) | Self::MetaEpisodes(..) => Admission::Direct,
+            // A controlled run never emits the section hubs' work: `bootstrap/effects.rs` `work_value()` refuses
+            // every `StoreWork` but `Hubs` and `BrowseDiscovery`, so no record exists to place it
+            // in and the launch is the whole decision (as for the kinds beside it).
+            Self::Catalog(..)
+            | Self::SubtitleSearch(..)
+            | Self::ViewReconcile(..)
+            | Self::BrowseHubs(..)
+            | Self::Search(..)
+            | Self::SaveRecents(..)
+            | Self::MetaSeason(..)
+            | Self::MetaEpisodes(..) => Admission::Direct,
         }
     }
 
@@ -732,6 +763,7 @@ impl StoreJob {
             Self::SubtitleSearch(..) => StoreId::SubtitleSearch,
             Self::ViewReconcile(..) => StoreId::ViewReconcile,
             Self::Hubs(..) => StoreId::Hubs,
+            Self::BrowseHubs(..) => StoreId::Browse,
             Self::Search(..) | Self::SaveRecents(..) => StoreId::Search,
         }
     }
@@ -1039,8 +1071,8 @@ impl<M> Fetch<M> {
         }
     }
 
-    /// Is mail waiting? A test's view of the mailbox without taking it.
-    #[cfg(any(test, feature = "test-support"))]
+    /// Is mail waiting? A pump's question before it takes, and a test's view of the mailbox without
+    /// taking it.
     pub fn has_mail(&self) -> bool {
         self.lock().is_some()
     }
@@ -1276,12 +1308,13 @@ mod tests {
     /// backstop, which the test rigs count as a bypass.
     #[test]
     fn the_fan_out_fill_lists_name_the_stores_the_calls_can_fill() {
-        assert_eq!(Stores::VIEWSTATE_FILLS, [StoreId::Hubs]);
-        assert_eq!(Stores::NOTIFY_FILLS, [StoreId::Hubs]);
+        assert_eq!(Stores::VIEWSTATE_FILLS, [StoreId::Browse, StoreId::Hubs]);
+        assert_eq!(Stores::NOTIFY_FILLS, [StoreId::Browse, StoreId::Hubs]);
         for list in [Stores::VIEWSTATE_FILLS, Stores::NOTIFY_FILLS] {
             for (i, id) in list.iter().enumerate() {
                 assert!(StoreId::ALL.contains(id), "{id:?} is a store");
                 assert!(!list[..i].contains(id), "{id:?} is listed once");
+                assert!(i == 0 || (list[i - 1] as u32) < (*id as u32), "{id:?} is listed in StoreId order");
             }
         }
     }

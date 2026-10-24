@@ -5,16 +5,62 @@ use super::*;
 pub(super) struct TestBrowse {
     pub(super) state: BrowseState,
     pub(super) adapter: Arc<BrowseAdapter>,
+    /// The registry's answer as of the last step ([`TestBrowse::refill`]); empty until a step ran.
+    pub(super) keys: ClientKeys,
+    /// The jobs the steps this rig ran have left on the outbox, as `BrowseStore::jobs` holds them.
+    pub(super) jobs: Vec<crate::stores::StoreJob>,
 }
 impl Default for TestBrowse {
     fn default() -> Self {
         Self {
             state: BrowseState::default(),
             adapter: Arc::new(BrowseAdapter::default()),
+            keys: ClientKeys::default(),
+            jobs: Vec::new(),
         }
     }
 }
 impl TestBrowse {
+    /// The registry's answer as of NOW, as the Bridge fills it immediately before each step.
+    pub(super) fn refill(&mut self) {
+        self.keys = crate::pms::registry_keys_for_test();
+    }
+
+    /// `hubs_kick` on the registry as of now: the section's read leaves on `jobs`.
+    pub(super) fn hubs_kick(&mut self, sec: usize) {
+        self.refill();
+        self.state.hubs_kick(sec, &self.adapter, &self.keys, &mut self.jobs);
+    }
+
+    /// `hubs_land` on the registry as of now (the fixture gate).
+    pub(super) fn hubs_land(&mut self) -> bool {
+        self.hubs_land_on(plx_machine::landgate::fixture_gate())
+    }
+
+    /// `hubs_land` on the registry as of now, on `gate`.
+    pub(super) fn hubs_land_on(&mut self, gate: &plx_machine::landgate::Gate) -> bool {
+        self.refill();
+        self.state.hubs_land(&self.adapter, gate, &self.keys)
+    }
+
+    /// `hubs_page` on the registry as of now.
+    pub(super) fn hubs_page(&mut self, sec: usize, seen: u64, id: &str, key: &str, before: bool) -> bool {
+        self.refill();
+        self.state.hubs_page(sec, seen, id, key, before, &self.adapter, &self.keys, &mut self.jobs)
+    }
+
+    /// The one section-hubs job the steps have left, taken off the outbox.
+    #[track_caller]
+    pub(super) fn take_hubs_job(&mut self) -> (plx_machine::job::Job<section_hubs::BrowseHubsReq>,
+        section_hubs::BrowseHubsPort) {
+        let mut jobs = std::mem::take(&mut self.jobs);
+        assert_eq!(jobs.len(), 1, "exactly one section-hubs job is on the outbox: {jobs:?}");
+        match jobs.remove(0) {
+            crate::stores::StoreJob::BrowseHubs(job, port) => (job, port),
+            other => panic!("a section-hubs job, not {other:?}"),
+        }
+    }
+
     pub(super) fn reset(&mut self) {
         self.state.reset_owned(&self.adapter);
     }
@@ -24,7 +70,9 @@ impl TestBrowse {
         if roster.retire_adapter {
             self.adapter = Arc::new(BrowseAdapter::default());
         }
-        let mut outcome = self.state.pump_owned(&self.adapter);
+        self.refill();
+        let mut outcome = self.state.pump_owned_with_gate(&self.adapter, plx_machine::landgate::fixture_gate(),
+            &self.keys, &mut self.jobs);
         outcome.changed |= roster.changed;
         outcome
     }
@@ -422,4 +470,20 @@ fn seed_pair(browse: &mut TestBrowse, house: BrowseSource) {
         ],
     );
     browse.append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
+}
+
+/// `registered_page_source`, but on a loopback port nothing listens on: the request path really
+/// spawns its worker, which is refused at once instead of dialling 10.0.0.1.
+pub(super) fn loopback_page_source() -> (RegisteredCleanup, TestBrowse, ServerId, &'static plx_plex::plex::Client) {
+    plx_plex::plex::reset_servers_for_test();
+    let sid = plx_plex::plex::register_for_test("browse-ledger", "127.0.0.1", 9, "old", "cid");
+    assert!(plx_plex::plex::set_current(sid));
+    let mut source = a_source("original", "", true);
+    source.sid = sid;
+    source.sections_done = true;
+    source.counts_done = true;
+    let mut browse = TestBrowse::default();
+    browse.seed_sources(vec![source]);
+    browse.append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
+    (RegisteredCleanup, browse, sid, plx_plex::plex::client_for(sid).unwrap())
 }

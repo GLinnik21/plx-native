@@ -8,8 +8,11 @@
 //! module answers the three questions that follow, and none of them needs a GPU counter:
 //!
 //! 1. **What does the APP submit?** [`gate`] sums, per draw class, the screen-visible area of every
-//!    quad the app actually issues, on the CPU, exactly. `/tmp/plxnative-overdraw` arms it and it
-//!    logs one `OVERDRAW` line a second. This is immune to the two traps that make per-phase HWCNT
+//!    quad the app actually issues, on the CPU, exactly, with one exception: `draw_ambient` books
+//!    its quad before it decides to draw a flat ground as a clear, so a wash of one colour is booked
+//!    as `ambient` fragments though none is shaded (`OVERDRAW` over-reports `ambient` on those
+//!    frames; HWCNT does not). `/tmp/plxnative-overdraw` arms it and it logs one `OVERDRAW` line a
+//!    second. This is immune to the two traps that make per-phase HWCNT
 //!    cycle counts a bad budget — it is not `glFinish`-serialised and it cannot be billed for
 //!    another process's work.
 //! 2. **What does a class COST?** `/tmp/plxnative-drawmask=<classes>` refuses every draw of the
@@ -44,7 +47,10 @@
 /// cost per pixel (a four-tap blur pass, a textured card composite, a flat SDF fill).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Class {
-    /// `draw_ambient` — the OPAQUE four-corner page wash.
+    /// `draw_ambient` — the OPAQUE four-corner page wash. A flat ground (four equal corners, no
+    /// ink) is drawn as a clear but booked here as the quad it would have been, so the ledger
+    /// over-reports this class on those frames; `drawmask=ambient` refuses the clear along with
+    /// the quad, so a mask A/B prices it correctly.
     Ambient = 0,
     /// `draw_grad4`/`draw_art_scrim` — translucent hero gradients and artwork bottom scrims.
     Grad = 1,

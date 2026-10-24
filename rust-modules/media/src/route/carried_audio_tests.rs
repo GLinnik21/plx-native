@@ -77,6 +77,8 @@ fn none_round_trips_publication_projection_pending() {
         channels: 2,
         can_normalize_loudness: false,
         immersive: false,
+        sample_rate: 0,
+        bit_depth: 0,
     });
     install_route_projection(&mut installed, &projection);
     assert!(
@@ -174,6 +176,8 @@ fn retarget_audio_marks_conversion_without_destroying_the_direct_facts() {
         channels: 8,
         can_normalize_loudness: true,
         immersive,
+        sample_rate: 0,
+        bit_depth: 0,
     };
     let mut c = test_original_candidate(Some(3));
     c.fps = 23.976;

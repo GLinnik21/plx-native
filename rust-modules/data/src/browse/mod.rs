@@ -56,7 +56,7 @@
 //! the old synchronous discovery's early-return was the only thing preventing that; appending is the property
 //! that replaces it, and it holds for every source that lands later rather than only for the
 //! second call.
-use plx_plex::plex::{SectionQuery, ServerId};
+use plx_plex::plex::{ClientKeys, SectionQuery, ServerId};
 use saved_view::ViewField;
 use crate::pms::{parse_item, PmsMovie};
 use crate::stores::page_cache::{kept_when_over_budget, Keep, PAGE};
@@ -858,8 +858,13 @@ pub struct BrowseState {
     /// The ledger stamp of the listing page read in flight (single flight: `BrowseAdapter::fetching`),
     /// taken when it was requested. Its landing is patched with every edit published since.
     page_stamp: crate::viewledger::Stamp,
-    /// The same for the section-hubs read in flight (`BrowseAdapter::hubs.fetching` is its claim).
+    /// The same for the section-hubs read in flight (`BrowseAdapter::hubs.fetch` holds its claim).
     hubs_stamp: crate::viewledger::Stamp,
+    /// The last section-hubs read's request id: each read the step emits takes the next one, and its
+    /// answer is told from a superseded read's by it ([`section_hubs::browse_hubs_addr`]).
+    hubs_gen: u32,
+    /// The section-hubs read the step has out, until it lands or a later step settles its refusal.
+    hubs_flight: Option<section_hubs::HubsFlight>,
     session_generation: u64,
     sources: Vec<BrowseSource>,
     sections: Vec<BrowseSection>,
@@ -959,9 +964,9 @@ impl BrowseAdapter {
         *self.genre_result.lock().unwrap_or_else(|e| e.into_inner()) = None;
         *self.letter_result.lock().unwrap_or_else(|e| e.into_inner()) = None;
         *self.src_result.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        *self.hubs.result.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.hubs.fetch.clear();
         for flag in [&self.fetching, &self.genre_fetching, &self.letters_fetching,
-            &self.src_fetching, &self.hubs.fetching] {
+            &self.src_fetching] {
             flag.store(false, Ordering::SeqCst);
         }
     }
@@ -973,6 +978,8 @@ impl Default for BrowseState {
             ledger: Default::default(),
             page_stamp: 0,
             hubs_stamp: 0,
+            hubs_gen: 0,
+            hubs_flight: None,
             sources: Vec::new(),
             sections: Vec::new(),
             states: Vec::new(),
@@ -1053,7 +1060,11 @@ impl BrowseState {
             || adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()).is_some()
             || adapter.genre_result.lock().unwrap_or_else(|e| e.into_inner()).is_some()
             || adapter.letter_result.lock().unwrap_or_else(|e| e.into_inner()).is_some()
-            || adapter.hubs.result.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+            || adapter.hubs.fetch.has_mail()
+            // A read the runner refused (or an adapter retired under) leaves its record with the claim
+            // down: the next step settles it ([`BrowseState::hubs_settle`]), and nothing else would
+            // wake it if the section's own timers are not running.
+            || (self.hubs_flight.is_some() && !adapter.hubs.fetch.busy())
             || self.states.iter().any(|state| state.hubs.needs_tick()) {
             return true;
         }
@@ -1740,6 +1751,8 @@ impl BrowseState {
         adapter: &Arc<BrowseAdapter>,
         target: crate::stores::browse::SectionAddress,
         work: crate::stores::browse::LibraryWork,
+        keys: &ClientKeys,
+        jobs: &mut Vec<crate::stores::StoreJob>,
     ) -> bool {
         use crate::stores::browse::{LibraryWork, QueryEdit};
         let Some(index) = self.resolve_section(target.epoch, target.sid, target.section) else {
@@ -1803,12 +1816,14 @@ impl BrowseState {
                 }
             }
             LibraryWork::Hubs { may_publish } => {
-                self.hubs_kick(index, adapter);
+                self.hubs_kick(index, adapter, keys, jobs);
                 self.hubs_commit_staged(index, may_publish)
             }
-            LibraryWork::HubPage { id, key, before, seen } => self.hubs_page(index, seen, &id, &key, before, adapter),
-            LibraryWork::HubPageCancel { id, key } => self.hubs_cancel_page(index, &id, &key, adapter),
-            LibraryWork::HubHold { lo, hi } => self.hubs_hold(index, lo, hi, adapter),
+            LibraryWork::HubPage { id, key, before, seen } => {
+                self.hubs_page(index, seen, &id, &key, before, adapter, keys, jobs)
+            }
+            LibraryWork::HubPageCancel { id, key } => self.hubs_cancel_page(index, &id, &key, adapter, keys, jobs),
+            LibraryWork::HubHold { lo, hi } => self.hubs_hold(index, lo, hi, adapter, keys, jobs),
             work => {
                 if self.cur() != index {
                     return false;
@@ -2393,6 +2408,9 @@ impl BrowseState {
         self.cur = 0;
         self.left = Vec::new();
         self.retry_cd = 0;
+        // The read out belonged to the tables just dropped (its answer is epoch-gated and its
+        // claim was cleared with the adapter's mailbox), so its record goes with them.
+        self.hubs_flight = None;
         self.refresh_tab_shape();
     }
     fn reset_owned(&mut self, adapter: &BrowseAdapter) {
@@ -2542,6 +2560,8 @@ impl BrowseState {
         &mut self,
         adapter: &Arc<BrowseAdapter>,
         cmd: crate::stores::browse::BrowseCmd,
+        keys: &ClientKeys,
+        jobs: &mut Vec<crate::stores::StoreJob>,
     ) -> bool {
         use crate::stores::browse::BrowseCmd;
         match cmd {
@@ -2549,7 +2569,7 @@ impl BrowseState {
                 record::apply_to(self, adapter, &result, None).changed
             }
             BrowseCmd::Addressed { target, work } => {
-                self.addressed_with_adapter(adapter, target, work)
+                self.addressed_with_adapter(adapter, target, work, keys, jobs)
             }
             BrowseCmd::RetrySource { epoch, sid } => self.retry_source(epoch, sid),
             #[cfg(any(test, feature = "test-support"))]
@@ -2574,11 +2594,11 @@ impl BrowseState {
                 true
             }
             BrowseCmd::HubsInvalidateAll => {
-                self.hubs_invalidate_all(adapter);
+                self.hubs_invalidate_all(adapter, keys, jobs);
                 true
             }
             BrowseCmd::HubsInvalidateServer { sid } => {
-                self.hubs_invalidate_server(sid, adapter);
+                self.hubs_invalidate_server(sid, adapter, keys, jobs);
                 true
             }
             BrowseCmd::ListingsChanged { sid, library_on_stack } => self.listings_changed(sid, library_on_stack),
@@ -2793,6 +2813,8 @@ impl BrowseState {
         &mut self,
         adapter: &Arc<BrowseAdapter>,
         gate: &plx_machine::landgate::Gate,
+        keys: &ClientKeys,
+        jobs: &mut Vec<crate::stores::StoreJob>,
     ) -> crate::stores::StoreOutcome {
         let mut changed = false;
         self.retry_cd = self.retry_cd.saturating_sub(1);
@@ -2800,8 +2822,8 @@ impl BrowseState {
         changed |= discovery.changed;
         let endpoints = discovery.endpoints;
         self.maybe_discover_owned(adapter, &mut execute_discovery);
-        changed |= self.hubs_land(adapter, gate);
-        changed |= self.hubs_tick_all(adapter);
+        changed |= self.hubs_land(adapter, gate, keys);
+        changed |= self.hubs_tick_all(adapter, keys, jobs);
         changed |= self.land_directory_owned_with_gate(
             gate,
             &adapter.genre_fetching, &adapter.genre_result, |state, list| {
@@ -2915,10 +2937,13 @@ impl BrowseState {
         self.maybe_spawn_owned(adapter);
         crate::stores::StoreOutcome { changed, endpoints }
     }
+    /// [`BrowseState::pump_owned_with_gate`] on the fixture gate and a registry that holds no client
+    /// (so no section-hubs read leaves): the pump of a test about something else.
     #[cfg(any(test, feature = "test-support"))]
     pub fn pump_owned(&mut self, adapter: &Arc<BrowseAdapter>)
         -> crate::stores::StoreOutcome {
-        self.pump_owned_with_gate(adapter, plx_machine::landgate::fixture_gate())
+        self.pump_owned_with_gate(adapter, plx_machine::landgate::fixture_gate(), &ClientKeys::default(),
+            &mut Vec::new())
     }
 }
 
@@ -4045,6 +4070,20 @@ pub fn adapter_fetching_for_test(adapter: &BrowseAdapter) -> bool {
 /// take that finds the mailbox empty while it reads true is waiting for a worker that is out.
 pub fn discovery_owed(adapter: &BrowseAdapter) -> bool {
     adapter.src_fetching.load(Ordering::SeqCst)
+}
+
+/// TEST ONLY: is the section hubs' one shared claim up on this adapter (a read is out, parked, or
+/// answered and not yet taken by the pump)?
+#[cfg(any(test, feature = "test-support"))]
+pub fn hubs_claim_up_for_test(adapter: &BrowseAdapter) -> bool {
+    adapter.hubs.fetch.busy()
+}
+
+/// TEST ONLY: has a section-hubs worker answered on this adapter, the answer still waiting for the
+/// pump?
+#[cfg(any(test, feature = "test-support"))]
+pub fn hubs_answer_waiting_for_test(adapter: &BrowseAdapter) -> bool {
+    adapter.hubs.fetch.has_mail()
 }
 
 #[cfg(any(test, feature = "test-support"))]

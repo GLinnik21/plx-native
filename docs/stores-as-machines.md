@@ -82,8 +82,10 @@ was the last to complete its port): each `Bridge` owns one of each store. `Brows
 state/adapter/notice, `HubsStore`'s `PmsState`/`Arc<PmsAdapter>`/notice, `SearchStore`'s
 state/adapter/notice, `MetadataStore`'s state/`Arc<MetadataAdapter>`/notice and `ViewStateStore`'s
 queue, flight, retry and refresh state, worker adapter and notice are per-instance. The Browse
-adapter holds Browse's page, genre, letter, source-discovery and section-hub mailboxes and
-single-flight flags. Person's adapter keeps the recorded fetch numbering (`slot * 3 + kind` for
+adapter holds Browse's page, genre, letter and source-discovery mailboxes and single-flight flags,
+and the section hubs' one `Fetch` (claim, mailbox and refusal list for both the list and the row
+reads); the section hubs' reads are started by the app's runner (`StoreJob::BrowseHubs`), not by
+the store. Person's adapter keeps the recorded fetch numbering (`slot * 3 + kind` for
 servers 0..15, the two global fetches at 48 and 49, then `50 + (slot - 16) * 3 + kind`; see
 `person::fx`) and the controlled-record schema; Person, Search, Metadata and ViewState all rotate adapters on reset
 (D3: Metadata's `Clear` is the one exception — see `stores/metadata.rs`'s struct doc). `metadata`'s
@@ -103,7 +105,7 @@ exactly these (file: callers):
 |---|---|---|
 | browse | `BrowseCmd` (including `Reset`) | owned screens emit `AppFx::Store`; `app/bridge.rs` delivers the command to that Bridge's `BrowseStore`; synchronous app boundaries call `Stores::browse_run` on an explicit aggregate |
 | browse | `StoreWork::{BrowseDiscovery,Browse}` | Onboard schedules the roster-only owned pass; Library schedules the full owned landing pass; `app/bridge.rs` delivers both to the addressed Bridge's `BrowseStore` |
-| browse::section_hubs | `kick`, `commit_staged`, `invalidate_all`, `set_watched_local`, `left_the_deck` (reached through `BrowseCmd::ApplyView`) | Library mutations are carried by `StoreCmd::Browse`; the BrowseStore owns the section-hub adapter and its per-section state |
+| browse::section_hubs | `kick`, `commit_staged`, `invalidate_all`, `set_watched_local`, `left_the_deck` (reached through `BrowseCmd::ApplyView`) | Library mutations are carried by `StoreCmd::Browse`; the BrowseStore owns the section-hub adapter and its per-section state. A step that needs a read decides it from the `ClientKeys` the Bridge filled and leaves it as a `StoreJob::BrowseHubs` on the store's outbox; every Bridge entry that can run such a step starts it in the same call (`Bridge::browse_run`, the `StoreWork::Browse` arm, `Bridge::reconcile_pump`, and `viewstate_pump` / `notify_pump` through their `*_FILLS` lists) |
 | viewstate | `ViewStateCmd::{Request,Reset}` | owned Detail emits `AppFx::Store`; `app/bridge.rs` delivers to its `ViewStateStore`; synchronous item-menu/boot boundaries call that Bridge; run pumps and drains addressed Detail refreshes through the same owner |
 | person | `PersonCmd::{Open,Close,Reset,ApplyView}` + owner pump | Person emits addressed Open/Close effects; Bridge boot/run and ViewState call the same aggregate's `PersonStore` |
 | collection | `CollectionCmd::{Open,Close,Reset,ApplyView}` + owner pump | Collection emits addressed Open/Close effects; Bridge boot/run and ViewState call the same aggregate's `CollectionStore` |

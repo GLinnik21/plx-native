@@ -25,7 +25,7 @@ fn browse_tab_generation_is_owned_and_chrome_never_replays_a_stale_shape() {
     assert!(before.faces.iter().any(|face| matches!(face, plx_ui::widgets::TabFace::Label(l) if l == "TV Shows")));
     let before_gen = before.generation;
 
-    rig.stores.browse.borrow_mut().run(
+    rig.stores.browse.borrow_mut().run_for_test(
         plx_data::stores::browse::BrowseCmd::ApplyPins(vec![(1, false)]));
     rig.capture_views(&mut pages);
     rig.capture_chrome(&mut pages);

@@ -1,6 +1,6 @@
 //! Dump mode at the Browse sites (discovery, genre and letters directories, listing page, section
 //! hubs): each takes through its OWN mailbox's claim (`src_fetching`, `genre_fetching`,
-//! `letters_fetching`, `fetching`, `hubs.fetching`), with a dump-armed local gate and a worker that
+//! `letters_fetching`, `fetching`, `hubs.fetch`), with a dump-armed local gate and a worker that
 //! posts late. Each test fails if its site's take reverts to a plain one: the first poll finds an
 //! empty mailbox, the pump moves on, and the claim is still held. See `plx_machine::landgate`'s
 //! module doc for which sites dump mode covers.
@@ -101,7 +101,7 @@ fn dump_mode_a_page_request_out_lands_on_the_pump_that_runs_whatever_the_worker(
         });
     });
     let gate = dump_gate();
-    let outcome = browse.state.pump_owned_with_gate(&browse.adapter, &gate);
+    let outcome = browse.state.pump_owned_with_gate(&browse.adapter, &gate, &ClientKeys::default(), &mut Vec::new());
     assert!(outcome.changed, "the answer the pump owed must be taken by the pump that asked");
     assert!(!browse.adapter.fetching.load(Ordering::SeqCst), "the take released the claim");
     assert_eq!(browse.state.cur_state().map(|st| st.total), Some(1));
@@ -111,18 +111,17 @@ fn dump_mode_a_page_request_out_lands_on_the_pump_that_runs_whatever_the_worker(
 #[test]
 fn dump_mode_a_hubs_request_out_lands_on_the_pump_that_runs_whatever_the_worker() {
     let _serial = plx_base::testlock::serial();
-    let (_cleanup, mut browse, _sid, client) = registered_page_source();
-    let (epoch, token_gen) = (browse.state.table_epoch(), client.token_gen());
-    browse.adapter.hubs.fetching.store(true, Ordering::SeqCst); // the section-hubs request is out
-    let worker = Arc::clone(&browse.adapter);
+    let (_cleanup, mut browse, _sid, _client) = registered_page_source();
+    browse.hubs_kick(0); // the section-hubs request is out
+    assert!(browse.adapter.hubs.fetch.busy(), "premise: the request holds the claim");
+    let (job, port) = browse.take_hubs_job();
     let join = late(move || {
-        *worker.hubs.result.lock().unwrap() =
-            Some(section_hubs::HubResult::failed_for_test(epoch, 0, client, token_gen));
+        plx_machine::job::Port::done(&port, job.addr, section_hubs::BrowseHubsAnswer::failed_for_test(&job));
     });
     let gate = dump_gate();
-    browse.state.hubs_land(&browse.adapter, &gate);
-    assert!(browse.adapter.hubs.result.lock().unwrap().is_none(), "the pump that asked took the answer");
-    assert!(!browse.adapter.hubs.fetching.load(Ordering::SeqCst), "the take released the claim");
+    browse.hubs_land_on(&gate);
+    assert!(!browse.adapter.hubs.fetch.has_mail(), "the pump that asked took the answer");
+    assert!(!browse.adapter.hubs.fetch.busy(), "the take released the claim");
     join.join().unwrap();
 }
 
