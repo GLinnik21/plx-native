@@ -88,8 +88,9 @@ impl StoreRunner {
         Self::Held(Vec::new())
     }
 
-    /// Admit `job` through the tape and start it. Exactly one answer reaches its port: the fetch's
-    /// own, or a refusal when nothing was started.
+    /// Start `job`, admitting it through the tape when its kind is taped (Detail, Collection,
+    /// Person; Catalog is not). Exactly one answer reaches its port: the fetch's own, or a refusal
+    /// when nothing was started.
     pub(crate) fn start(&mut self, job: StoreJob) {
         match job {
             StoreJob::Detail(job, port) => self.start_detail(job, port),

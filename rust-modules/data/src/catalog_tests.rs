@@ -281,6 +281,7 @@ fn a_late_landing_for_an_earlier_title_is_dropped() {
     let first = s.take_jobs();
     s.open(other_hex());
     let second = s.take_jobs();
+    assert_eq!((first.len(), second.len()), (1, 1), "each open emitted its one read");
     // The first request lands after the second was asked for: the page keeps waiting.
     first.into_iter().for_each(run);
     assert!(!s.pump());
@@ -303,9 +304,9 @@ fn a_landing_for_a_switched_profile_asks_again_under_the_new_one() {
     assert_eq!(s.load, Load::Loading, "the old profile's answer is not shown");
     assert_eq!(fake.captures.load(Ordering::SeqCst), 2, "captured again for the new profile");
     // The pump's re-open emitted the new profile's read: it is on the outbox for the Bridge's drain.
-    let (job, _) = one(&mut s);
+    let (job, port) = one(&mut s);
     assert_eq!(job.req, CatalogReq::for_test(auth(2), hex()), "asked as the new identity");
-    run(StoreJob::Catalog(job, s.catalog_port()));
+    run(StoreJob::Catalog(job, port));
     s.pump();
     assert!(matches!(s.load, Load::Loaded(_)));
 }
