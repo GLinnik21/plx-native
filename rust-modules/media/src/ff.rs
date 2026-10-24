@@ -440,9 +440,6 @@ plx_base::dynlib! {
     ) -> c_int;
     fn avsubtitle_free(sub: *mut AVSubtitle);
     fn avcodec_free_context(ctx: *mut *mut AVCodecContext);
-    // the FLAC → PCM decoder (`ff_pcm`)
-    fn avcodec_send_packet(ctx: *mut AVCodecContext, pkt: *const AVPacket) -> c_int;
-    fn avcodec_receive_frame(ctx: *mut AVCodecContext, frame: *mut c_void) -> c_int;
     // Scratch AVCodecParameters for `sub_canvas` — library-allocated so its true size (136 on
     // this build) is never our problem, and `from_context` starts by av_freep-ing par->extradata.
     // Both PRESENT on the device's own libavcodec.so.57.89.100 (`tools/abi-probe.sh has
@@ -456,7 +453,7 @@ plx_base::dynlib! {
     fn avcodec_receive_packet(ctx: *mut AVCodecContext, pkt: *mut AVPacket) -> c_int;
     fn avcodec_parameters_from_context(par: *mut AVCodecParameters, ctx: *const AVCodecContext) -> c_int;
     fn av_packet_rescale_ts(pkt: *mut AVPacket, tb_src: AVRational, tb_dst: AVRational);
-    // Audio decode for playback speed (`SpeedDecoder`): the only path where the app decodes sound.
+    // Audio decode, send/receive API: playback speed (`SpeedDecoder`) and FLAC → PCM (`ff_pcm`).
     fn avcodec_send_packet(ctx: *mut AVCodecContext, pkt: *const AVPacket) -> c_int;
     fn avcodec_receive_frame(ctx: *mut AVCodecContext, frame: *mut c_void) -> c_int;
     fn avcodec_find_decoder_by_name(name: *const c_char) -> *const AVCodec;
@@ -801,9 +798,6 @@ const OFF_FRAME_LINESIZE: usize = 32; // c_int[8]
 const OFF_FRAME_WIDTH: usize = 68;
 #[cfg(target_pointer_width = "32")]
 const OFF_FRAME_HEIGHT: usize = 72;
-// `nb_samples` (the FLAC → PCM decoder, `ff_pcm`) sits right after `height`.
-#[cfg(target_pointer_width = "32")]
-pub(crate) const OFF_FRAME_NB_SAMPLES: usize = 76;
 #[cfg(target_pointer_width = "32")]
 pub(crate) const OFF_FRAME_FORMAT: usize = 80;
 #[cfg(target_pointer_width = "32")]
@@ -818,18 +812,16 @@ const OFF_FRAME_WIDTH: usize = 104;
 #[cfg(target_pointer_width = "64")]
 const OFF_FRAME_HEIGHT: usize = 108;
 #[cfg(target_pointer_width = "64")]
-pub(crate) const OFF_FRAME_NB_SAMPLES: usize = 112;
-#[cfg(target_pointer_width = "64")]
 pub(crate) const OFF_FRAME_FORMAT: usize = 116;
 #[cfg(target_pointer_width = "64")]
 const OFF_FRAME_PTS: usize = 136;
-// The AUDIO half of AVFrame, read by `SpeedDecoder` (FFmpeg 9, the bundled build). `ch_layout` is an
+// The AUDIO half of AVFrame, read by `SpeedDecoder` and by `ff_pcm::PcmDecoder` (FFmpeg 9, the bundled build). `ch_layout` is an
 // embedded AVChannelLayout whose `nb_channels` sits 4 bytes in (after the `order` enum) on both
 // widths. Every one is asserted in `ci/ffabi-assert.c` against the bundled headers.
 #[cfg(target_pointer_width = "32")]
 const OFF_AFRAME_EXTENDED_DATA: usize = 64; // u8**
 #[cfg(target_pointer_width = "32")]
-const OFF_AFRAME_NB_SAMPLES: usize = 76;
+pub(crate) const OFF_AFRAME_NB_SAMPLES: usize = 76;
 #[cfg(target_pointer_width = "32")]
 const OFF_AFRAME_SAMPLE_RATE: usize = 132;
 #[cfg(target_pointer_width = "32")]
@@ -837,7 +829,7 @@ const OFF_AFRAME_NB_CHANNELS: usize = 256 + 4;
 #[cfg(target_pointer_width = "64")]
 const OFF_AFRAME_EXTENDED_DATA: usize = 96;
 #[cfg(target_pointer_width = "64")]
-const OFF_AFRAME_NB_SAMPLES: usize = 112;
+pub(crate) const OFF_AFRAME_NB_SAMPLES: usize = 112;
 #[cfg(target_pointer_width = "64")]
 const OFF_AFRAME_SAMPLE_RATE: usize = 180;
 #[cfg(target_pointer_width = "64")]
@@ -846,7 +838,9 @@ const OFF_AFRAME_NB_CHANNELS: usize = 384 + 4;
 /// **The audio decoder a playback-speed session runs** (`crate::speed_audio`): the selected audio
 /// stream decoded in software, downmixed to stereo and time-stretched to `permille`, then fed as
 /// PCM AUs. Exists only while the speed is not 1x; at 1x the compressed audio goes to the TV as it
-/// always has. Opened per demux run from the stream's own codec parameters.
+/// always has, except FLAC, which `ff_pcm::PcmDecoder` decodes and feeds as PCM. At a speed this
+/// decoder takes FLAC too and `PcmDecoder` is not opened. Opened per demux run from the stream's
+/// own codec parameters.
 pub(crate) struct SpeedDecoder {
     ctx: *mut AVCodecContext,
     frame: *mut c_void,
@@ -9220,13 +9214,23 @@ pub fn demux(
                 if dts_audio {
                     crate::player::log("ff: DTS core extraction on (DTS-HD extensions discarded)");
                 }
+                // Playback speed: this session's Load declared PCM, so the audio must be decoded,
+                // stretched and fed as PCM. A stream with no bundled decoder cannot honour it — the
+                // engine refused the speed at Load (`player::session_rate`), so this is a guard.
+                let speed_permille = SHARED.applied_rate_permille.load(Ordering::Relaxed);
                 // App-decoded audio (FLAC): decode to the PCM the Load declared, or refuse the
                 // stream — the Load and the file must agree, or the panel plays the wrong pitch.
+                // Not at a speed: that session's Load declares the speed decoder's own PCM
+                // (`engine::app_pcm_for_rate`), `SpeedDecoder` below decodes the FLAC too, and the
+                // two must never both decode one stream.
                 let flac_audio = ai >= 0 && std::ffi::CStr::from_ptr(avcodec_get_name(
                     (*stream_codecpar(*streams.add(ai as usize))).codec_id
                 )).to_bytes() == b"flac";
                 let mut pcm_dec: Option<crate::ff_pcm::PcmDecoder> = None;
-                if flac_audio && FEED_AUDIO.load(Ordering::Relaxed) {
+                if flac_audio
+                    && FEED_AUDIO.load(Ordering::Relaxed)
+                    && speed_permille == crate::player::RATE_NORMAL
+                {
                     let opened = match pcm_out() {
                         Some(out) => crate::ff_pcm::PcmDecoder::open(
                             stream_codecpar(*streams.add(ai as usize)), out,
@@ -9252,10 +9256,6 @@ pub fn demux(
                         "ff: AAC → ADTS reframing on (freq_idx={fi} ch={ch})"
                     ));
                 }
-                // Playback speed: this session's Load declared PCM, so the audio must be decoded,
-                // stretched and fed as PCM. A stream with no bundled decoder cannot honour it — the
-                // engine refused the speed at Load (`player::session_rate`), so this is a guard.
-                let speed_permille = SHARED.applied_rate_permille.load(Ordering::Relaxed);
                 let mut speed_dec = if ai >= 0 && speed_permille != crate::player::RATE_NORMAL {
                     let d = SpeedDecoder::open(stream_codecpar(*streams.add(ai as usize)), speed_permille);
                     crate::player::log(&format!(

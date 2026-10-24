@@ -168,9 +168,9 @@ fi
 #   bsf        AVCC -> Annex-B for mp4-family video, which the Starfish pipeline requires.
 #   decoders   SUBTITLES, and AUDIO decoded in the app. Video is decoded by the TV's hardware via
 #              Starfish; FFmpeg here never touches a video frame. The audio decoders run in two
-#              cases. (1) FLAC at any speed: libpf has no FLAC input, so the app decodes it and
-#              feeds the TV PCM. (2) Every other audio format only while the viewer has picked a
-#              speed other than 1x: LG's pipeline cannot change rate itself (see
+#              cases. (1) FLAC at 1x: libpf has no FLAC input, so the app decodes it and feeds the
+#              TV PCM. (2) Every audio format, FLAC included, while the viewer has picked a speed
+#              other than 1x: LG's pipeline cannot change rate itself (see
 #              docs/parity-gaps.md, Playback Speed), so the app decodes the sound, time-stretches
 #              it (rust-modules/media/src/speed_audio.rs) and feeds it as PCM. All are LGPL; the
 #              AC-3 patents have expired.

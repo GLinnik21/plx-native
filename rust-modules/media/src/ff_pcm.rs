@@ -14,7 +14,8 @@
 use std::os::raw::c_int;
 
 use crate::ff::{
-    AVCodecContext, AVCodecParameters, AVPacket, OFF_FRAME_DATA, OFF_FRAME_FORMAT, OFF_FRAME_NB_SAMPLES,
+    AVCodecContext, AVCodecParameters, AVPacket, OFF_AFRAME_NB_SAMPLES, OFF_FRAME_DATA,
+    OFF_FRAME_FORMAT,
 };
 
 /// FFmpeg `AVSampleFormat` values the FLAC decoder can produce. The enum has been stable since
@@ -92,7 +93,7 @@ impl PcmDecoder {
                 return Err(format!("avcodec_receive_frame failed ({r})"));
             }
             let base = self.frame as *const u8;
-            let nb = *(base.add(OFF_FRAME_NB_SAMPLES) as *const c_int) as usize;
+            let nb = *(base.add(OFF_AFRAME_NB_SAMPLES) as *const c_int) as usize;
             let format = *(base.add(OFF_FRAME_FORMAT) as *const c_int);
             let data = base.add(OFF_FRAME_DATA) as *const *const u8;
             let ch = self.out.channels as usize;

@@ -102,8 +102,6 @@ SAME32(offsetof(AVFrame, width), 68, "OFF_FRAME_WIDTH != 68");
 SAME64(offsetof(AVFrame, width), 104, "OFF_FRAME_WIDTH != 68 [host]");
 SAME32(offsetof(AVFrame, height), 72, "OFF_FRAME_HEIGHT != 72");
 SAME64(offsetof(AVFrame, height), 108, "OFF_FRAME_HEIGHT != 72 [host]");
-SAME32(offsetof(AVFrame, nb_samples), 76, "OFF_FRAME_NB_SAMPLES != 76");
-SAME64(offsetof(AVFrame, nb_samples), 112, "OFF_FRAME_NB_SAMPLES != 76 [host]");
 SAME32(offsetof(AVFrame, format), 80, "OFF_FRAME_FORMAT != 80");
 SAME64(offsetof(AVFrame, format), 116, "OFF_FRAME_FORMAT != 80 [host]");
 /* +96 on FFmpeg 9, +104 on 6 and on the n3.3 the TVs ship — AVFrame lost fields ahead of it.
@@ -111,7 +109,7 @@ SAME64(offsetof(AVFrame, format), 116, "OFF_FRAME_FORMAT != 80 [host]");
    likely to be got wrong by reading a struct definition on a 64-bit machine. This assertion is
    the reason the FFmpeg 9 bump did not ship a wrong PTS: it fired here, on a desk. */
 SAME32(offsetof(AVFrame, pts), 96, "OFF_FRAME_PTS != 96 (ARM EABI int64 alignment)");
-/* The audio half, read by ff.rs's SpeedDecoder (playback speed). */
+/* The audio half, read by ff.rs's SpeedDecoder (playback speed) and ff_pcm.rs's PcmDecoder (FLAC). */
 SAME32(offsetof(AVFrame, extended_data), 64, "OFF_AFRAME_EXTENDED_DATA != 64");
 SAME64(offsetof(AVFrame, extended_data), 96, "OFF_AFRAME_EXTENDED_DATA != 96 [host]");
 SAME32(offsetof(AVFrame, nb_samples), 76, "OFF_AFRAME_NB_SAMPLES != 76");

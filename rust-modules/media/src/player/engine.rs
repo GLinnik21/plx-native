@@ -1000,6 +1000,17 @@ fn audio_payload_codec(codec: &str) -> Option<(&'static str, u8)> {
     }
 }
 
+/// **Who owns the PCM a Load declares.** Audio the app decodes at 1x (FLAC, `ff_pcm`) declares its
+/// own shape; at any other speed the speed decoder (`ff::SpeedDecoder`) decodes every codec, FLAC
+/// included, and feeds stereo PCM that [`build_av_payload`] already declares. The FLAC shape is
+/// then dropped, so the Load carries ONE `pcmInfo` and the demuxer opens ONE decoder.
+/// PURE.
+fn app_pcm_for_rate(
+    session_rate: i32, pcm: Option<Result<crate::route::PcmFormat, String>>,
+) -> Option<Result<crate::route::PcmFormat, String>> {
+    if session_rate == super::RATE_NORMAL { pcm } else { None }
+}
+
 /// The `contents.pcmInfo` node a PCM Load needs — the only way the pipeline learns the raw
 /// stream's shape (libpf reads `pcmInfo.{format,channelMode,layout,sampleRate,bitsPerSample}`).
 /// PURE, spliced at the `provider` anchor like [`with_immersive`].
@@ -1070,7 +1081,11 @@ fn build_av_payload(ps: &crate::route::PlaybackSession, video: &str, audio: &str
         ));
     }
     let p = with_dolby_hdr_info(&p, video, crate::route::stream_dv_presentation(ps));
-    let p = with_pcm_info(&p, audio, crate::route::stream_pcm(ps).and_then(Result::ok));
+    let p = with_pcm_info(
+        &p,
+        audio,
+        app_pcm_for_rate(super::applied_rate_permille(), crate::route::stream_pcm(ps)).and_then(Result::ok),
+    );
     with_immersive(&p, audio, crate::route::stream_immersive(ps))
 }
 
@@ -1611,7 +1626,7 @@ fn start_bufferfeed_inner(
             };
             // App-decoded audio: the Load must state the PCM shape, and the demuxer must produce
             // exactly that. Missing facts refuse the Load — a guessed rate plays at the wrong pitch.
-            let pcm = match crate::route::stream_pcm(ps) {
+            let pcm = match app_pcm_for_rate(session_rate, crate::route::stream_pcm(ps)) {
                 Some(Ok(f)) => Some(f),
                 Some(Err(why)) => {
                     log(&format!("start_bufferfeed: PCM audio refused — {why}"));
@@ -6387,6 +6402,17 @@ mod pcm_info_tests {
         assert!(wide.contains(r#""format":"S32LE","channelMode":"mono""#) && wide.contains(r#""bitsPerSample":32"#), "{wide}");
         // the payload stays parseable JSON
         serde_json::from_str::<serde_json::Value>(&p).unwrap();
+    }
+
+    #[test]
+    fn a_speed_session_leaves_the_pcm_to_the_speed_decoder() {
+        let f = || Some(Ok(PcmFormat { sample_rate: 44_100, bits: 16, channels: 2 }));
+        assert_eq!(app_pcm_for_rate(crate::player::RATE_NORMAL, f()), f(), "1x: the FLAC decoder's shape");
+        assert!(app_pcm_for_rate(1500, f()).is_none(), "1.5x: the speed decoder declares its own");
+        // a FLAC track whose facts are missing only fails at 1x, where the FLAC decoder needs them
+        let missing = || Some(Err("unknown".to_string()));
+        assert!(app_pcm_for_rate(crate::player::RATE_NORMAL, missing()).is_some_and(|r| r.is_err()));
+        assert!(app_pcm_for_rate(750, missing()).is_none());
     }
 
     #[test]
