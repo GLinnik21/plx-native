@@ -1063,8 +1063,8 @@ mod tests {
         assert_eq!(v["tags"]["playback.transfer_age"], "unknown");
     }
 
-    /// Which demuxer exit raised a `media_source` failure rides on the report as a closed code, as
-    /// a searchable tag AND in the playback context, and a report with none recorded says `none`.
+    /// The demuxer exit that failed the session rides on every report as a closed code, as a
+    /// searchable tag AND in the playback context, and a report with none recorded says `none`.
     /// The fingerprint is untouched: the field explains a group, it does not split it.
     #[test]
     fn a_demux_exit_is_tagged_and_in_the_context() {

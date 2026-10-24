@@ -743,15 +743,19 @@ impl TransportClass {
     }
 }
 
-/// **Which demuxer exit raised `media_source`, as a class.** About half of all playback failures
+/// **Which demuxer exit failed the session, as a class.** About half of all playback failures
 /// reach the report as `media_source`, and more than ten places in the demuxer (and the Load
 /// builder) raise the one `demux_failed` flag that becomes it, so the report could not say which
 /// one dominates. The demuxer records the FIRST exit that failed the session (a later teardown
 /// cascade never overwrites the real cause) in a one-byte latch, and this is its closed reading.
+/// It rides on every handled playback error, whatever its kind: most exits end as `media_source`,
+/// but the audio/video-starvation and DTS-core exits (`NoAudioAu`, `NoUsableVideo`,
+/// `DtsCoreMissing`) raise `demux_io_failed` too and so report as `playback_interrupted`. The
+/// latch is per session, so a higher-ranked cause (`tv_pipeline`, `load_timeout`,
+/// `playback_interrupted`) can ride with a non-`None` exit.
 ///
 /// The numbers are the latch's stable mapping (`latch` / `from_latch`), pinned by a test: a value
-/// is never renumbered, only appended. `None` (0) is "no demux exit was recorded", which is every
-/// failure that is not a demux one.
+/// is never renumbered, only appended. `None` (0) is "no demux exit was recorded".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum DemuxExitClass {
@@ -930,7 +934,7 @@ pub struct PlaybackErrorContext {
     pub transport: TransportClass,
     /// How long that transfer had lived.
     pub transfer_age: TransferAgeClass,
-    /// Which demuxer exit raised a `media_source` failure (`none` when none was recorded).
+    /// Which demuxer exit failed the session (`none` when none was recorded); see [`DemuxExitClass`].
     pub demux_exit: DemuxExitClass,
     /// Whether the PLAYBACK ever put a picture on the panel (the session's own latch).
     pub started: bool,
