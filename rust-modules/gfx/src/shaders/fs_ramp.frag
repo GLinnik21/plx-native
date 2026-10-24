@@ -7,7 +7,7 @@
 // (~1.37M fragments a frame) and, through `fs_src.frag`, each of those fragments measured ~3
 // arithmetic words (`plxnative-hwcnt`, 2026-10-24) where one `mix` is 1-1.5: the three uniform
 // compares ahead of it are paid on every fragment, and Midgard sizes the register file for the
-// WHOLE 12 KB shader, so the SDF, capsule and glow code this path never runs still lowers the
+// whole shader, so the SDF, capsule and glow code this path never runs still lowers the
 // occupancy it runs at. Here there is nothing but the mix.
 //
 // UNDITHERED, exactly like the path it replaces: a rect carries no `dither.glsl` prelude (the shared

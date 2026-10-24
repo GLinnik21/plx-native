@@ -102,9 +102,10 @@ void main(){
   if (u_radius < 0.5 && u_radR < 0.5 && u_focus < 0.001) {
     // The flat fast path. `draw_rect` no longer sends scrims or backdrops here (`fs_flat.frag`,
     // `fs_ramp.frag`; this `mix` is the ramp's expression, character for character), so it is the
-    // fallback for their link failures and the path of a sheened/shaped draw with radius < 0.5.
+    // fallback for their programs failing to link (the ramp's also failing to compile) and the path
+    // of a sheened/shaped draw with radius < 0.5.
     // Undithered ON PURPOSE: this program
-    // runs on more fragments than any other (every rect, scrim, pill and row highlight), and the
+    // runs on a great many fragments (every rounded or focused rect, pill and row highlight), and the
     // shared dither's uniform branch alone was measured at +4M shader words a frame across the
     // hero paging scene (`docs/backdrop-blur-profiling.md`, 2026-09-04). The slow fields that band
     // — the ambient wash, the glass blur, the underlay field — carry `dither.glsl`; a rect does not.

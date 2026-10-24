@@ -615,8 +615,10 @@ static mut AL_BL: c_int = 0;
 static mut FPROG: c_uint = 0;
 static mut FL_RECT: c_int = 0;
 static mut FL_COL: c_int = 0;
-/// The two-stop ramp program (`shaders/fs_ramp.frag`) and its three uniforms; 0 when the link
-/// failed, in which case a square, unfocused gradient takes `fs_src.frag`'s flat path as before.
+/// The two-stop ramp program (`shaders/fs_ramp.frag`) and its three uniforms; 0 when it failed to
+/// compile or link (it is built with `link_optional_program`, so a driver's compile rejection
+/// degrades instead of exiting), in which case a square, unfocused gradient takes `fs_src.frag`'s
+/// flat path as before.
 static mut RPROG: c_uint = 0;
 static mut RP_RECT: c_int = 0;
 static mut RP_TOP: c_int = 0;
@@ -1151,8 +1153,11 @@ pub fn init_gl() {
             glUniform2f(glGetUniformLocation(FPROG, c"u_screen".as_ptr()), SCR_W, SCR_H);
         }
 
-        RPROG = link_program(VS_SRC.as_ptr(), FS_RAMP.as_ptr()).unwrap_or_else(|| {
-            log("ramp prog link failed — square gradients take the fill program's flat path");
+        // Optional on purpose: `link_program` exits the process on a compile rejection
+        // (`gfx_compile`), which would make `draw_ramp`'s fallback unreachable for the failure a
+        // driver is likeliest to give a new program. `try_compile` logs the compile error itself.
+        RPROG = link_optional_program(VS_SRC.as_ptr(), FS_RAMP.as_ptr()).unwrap_or_else(|| {
+            log("ramp prog compile/link failed — square gradients take the fill program's flat path");
             0
         });
         if RPROG != 0 {
@@ -1334,6 +1339,10 @@ enum RectFill {
 /// flat-path test (`u_radius < 0.5 && u_focus < 0.001`), so a rect is routed off that program only
 /// when the shader would have skipped the SDF for it; `pad` is not an input because that path never
 /// reads it.
+///
+/// The test is made in `f32` here. On the device `u_focus` is a mediump uniform, so the shader's
+/// `u_focus < 0.001` may compare in fp16 and round a focus just under 1e-3 differently; no caller
+/// passes such a value on a square rect, and `draw_flat` already had the same property.
 #[inline]
 fn rect_fill(radius: f32, focus: f32, one_colour: bool) -> RectFill {
     if radius < 0.5 && focus < 0.001 {
@@ -1376,7 +1385,7 @@ unsafe fn draw_flat(x: f32, y: f32, w: f32, h: f32, col: *const f32) {
 
 /// A top-to-bottom two-stop gradient over an axis-aligned quad through `shaders/fs_ramp.frag` — the
 /// hero backdrop's ramp bands. Falls back to the fill program's flat path (same pixels, dearer per
-/// fragment) when the ramp program failed to link. The quad is exactly `x, y, w, h` on both paths,
+/// fragment) when the ramp program failed to compile or link. The quad is exactly `x, y, w, h` on both paths,
 /// the AA bleed being the SDF path's alone.
 unsafe fn draw_ramp(x: f32, y: f32, w: f32, h: f32, top: *const f32, bot: *const f32) {
     if RPROG == 0 {
@@ -7838,7 +7847,10 @@ mod tests {
     /// fill program's own, so each is read out of both sources and compared; the draw must keep the
     /// rect's exact bounds (no AA bleed, which is the SDF path's alone), book the draw in the
     /// overdraw ledger BEFORE choosing a program, and fall back to the fill program rather than
-    /// draw nothing when the ramp program did not link.
+    /// draw nothing when the ramp program did not compile or link. Each arm of the routing must call
+    /// ITS program (a swap would still contain both calls), and the ramp program must be built from
+    /// `VS_SRC` + `FS_RAMP` through `link_optional_program`: `link_program` exits the process on a
+    /// compile rejection, so the fallback above would never be reached for it.
     #[test]
     fn the_ramp_program_is_the_fill_programs_flat_path_in_a_smaller_shader() {
         let ramp = shader_code(FS_RAMP);
@@ -7873,10 +7885,26 @@ mod tests {
             rect_draw.find("rect_fill(radius, focus, same_colour(top, bot))").expect("the routing"),
         );
         assert!(gated < routed, "the draw is booked in the ledger before a program is chosen");
+        // Each arm is cut out of the routing `match` (up to the next arm) and must call its own
+        // program and not the other's.
+        let arm = |head: &str, next: &str| {
+            let from = rect_draw.find(head).unwrap_or_else(|| panic!("`{head}` is gone"));
+            let rest = &rect_draw[from..];
+            &rest[..rest.find(next).unwrap_or_else(|| panic!("`{next}` no longer follows `{head}`"))]
+        };
+        let flat_arm = arm("RectFill::Flat =>", "RectFill::Ramp =>");
+        let ramp_arm = arm("RectFill::Ramp =>", "RectFill::Sdf =>");
         assert!(
-            rect_draw.contains("draw_ramp(x, y, w, h, top, bot)")
-                && rect_draw.contains("draw_flat(x, y, w, h, top)"),
-            "both fast programs are reached from draw_rect"
+            flat_arm.contains("draw_flat(x, y, w, h, top)") && !flat_arm.contains("draw_ramp("),
+            "the Flat arm draws through draw_flat with the one colour"
+        );
+        assert!(
+            ramp_arm.contains("draw_ramp(x, y, w, h, top, bot)") && !ramp_arm.contains("draw_flat("),
+            "the Ramp arm draws through draw_ramp with both colours"
+        );
+        assert!(
+            prod.contains("RPROG = link_optional_program(VS_SRC.as_ptr(), FS_RAMP.as_ptr())"),
+            "the ramp program is vs_src.vert + fs_ramp.frag, linked optionally so a compile rejection falls back"
         );
     }
 
