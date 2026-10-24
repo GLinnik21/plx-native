@@ -29,7 +29,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-24T23:26:24Z",
+ "generated": "2026-10-24T23:36:15Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -95,10 +95,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -50.7,
+   "change30_pct": -50.8,
    "change7_pct": -29.7,
-   "d30": 688,
-   "delta30": -349,
+   "d30": 689.5,
+   "delta30": -350.5,
    "delta7": -143.0,
    "group": "ci",
    "id": "pr_wait",
@@ -254,10 +254,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 53.3,
+   "change30_pct": 52.1,
    "change7_pct": -4.4,
-   "d30": 619,
-   "delta30": 330,
+   "d30": 624.0,
+   "delta30": 325.0,
    "delta7": -44,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
@@ -487,10 +487,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 22.6,
+   "change30_pct": 26.7,
    "change7_pct": 0.0,
-   "d30": 15.5,
-   "delta30": 3.5,
+   "d30": 15,
+   "delta30": 4,
    "delta7": 0,
    "group": "ci",
    "id": "nightly|publish nightly prerelease",
@@ -531,8 +531,8 @@
   {
    "change30_pct": 30.8,
    "change7_pct": 13.3,
-   "d30": 13,
-   "delta30": 4,
+   "d30": 13.0,
+   "delta30": 4.0,
    "delta7": 2,
    "group": "ci",
    "id": "nightly|plan today's nightly",
@@ -639,11 +639,6 @@
    "change_pct": 35.8,
    "commits": [
     {
-     "pr": 1004,
-     "sha": "2db8817a0",
-     "title": "Playback errors: name which demux exit raised media_source"
-    },
-    {
      "pr": 1005,
      "sha": "f5424652b",
      "title": "Site: fix the fan posters, phone nav pill, store note and duplicate Install link"
@@ -687,6 +682,11 @@
      "pr": 1023,
      "sha": "84a780d38",
      "title": "Metadata season switch and episode pages emit store jobs; the runner resolves the client and the detail chain is one-cli"
+    },
+    {
+     "pr": 1026,
+     "sha": "d51aff4b2",
+     "title": "ViewState writes emit store jobs keyed by ClientKey; a write whose profile or client moved is dropped, never sent as ano"
     }
    ],
    "from": 46.0,
@@ -700,11 +700,6 @@
    "change_pct": 34.7,
    "commits": [
     {
-     "pr": 1004,
-     "sha": "2db8817a0",
-     "title": "Playback errors: name which demux exit raised media_source"
-    },
-    {
      "pr": 1005,
      "sha": "f5424652b",
      "title": "Site: fix the fan posters, phone nav pill, store note and duplicate Install link"
@@ -748,6 +743,11 @@
      "pr": 1023,
      "sha": "84a780d38",
      "title": "Metadata season switch and episode pages emit store jobs; the runner resolves the client and the detail chain is one-cli"
+    },
+    {
+     "pr": 1026,
+     "sha": "d51aff4b2",
+     "title": "ViewState writes emit store jobs keyed by ClientKey; a write whose profile or client moved is dropped, never sent as ano"
     }
    ],
    "from": 154.0,
@@ -761,11 +761,6 @@
    "change_pct": 27.1,
    "commits": [
     {
-     "pr": 1004,
-     "sha": "2db8817a0",
-     "title": "Playback errors: name which demux exit raised media_source"
-    },
-    {
      "pr": 1005,
      "sha": "f5424652b",
      "title": "Site: fix the fan posters, phone nav pill, store note and duplicate Install link"
@@ -809,6 +804,11 @@
      "pr": 1023,
      "sha": "84a780d38",
      "title": "Metadata season switch and episode pages emit store jobs; the runner resolves the client and the detail chain is one-cli"
+    },
+    {
+     "pr": 1026,
+     "sha": "d51aff4b2",
+     "title": "ViewState writes emit store jobs keyed by ClientKey; a write whose profile or client moved is dropped, never sent as ano"
     }
    ],
    "from": 114.7,
