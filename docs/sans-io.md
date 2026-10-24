@@ -203,7 +203,8 @@ from `data/src/metadata.rs`. The household's watch-state writes are the eleventh
   record, the thread and the `client_for` read. It is `Live` or `Held` (a test parks the job and
   runs it on the test thread), chosen when the `Bridge` is constructed; a newer Detail request
   retires only the parked Detail jobs, never another store's. `Held` parks per kind
-  (`LiveKind`, test only; a kind and not a store, because Browse emits four): `StoreRunner::held()`
+  (`LiveKind`, test only; a kind and not a store, because Browse emits several kinds: `BrowseHubs`,
+  `BrowseDirectory`, `BrowsePage`): `StoreRunner::held()`
   leaves the Hubs read, the Metadata season switch and the Library grid's page read live, as
   production runs them (a rig that waits for a Home, a season or a grid landing needs a real
   worker; `menu_play_season_tests` polls for the season landing and never runs held jobs), and
@@ -378,7 +379,8 @@ from `data/src/metadata.rs`. The household's watch-state writes are the eleventh
   for. The Hubs read differs from the six before it in four ways.
   - **A third admission family.** `StoreJob::admission()` names `Tape` (Detail, Collection, Person),
     `Direct` (Catalog, subtitle search, view reconcile, Search's fetches and recents writes, the section
-    hubs' read, the view-state writes, the Metadata season switch and episode-page window) or `Home`,
+    hubs' read, the Library's directory and page reads, the view-state writes, the Metadata season switch
+    and episode-page window) or `Home`,
     as one exhaustive match. A `Home`
     job is recorded in a controlled Home run's own ordered ledger (`HomeIo::admit`), not on the tape,
     with the bytes `HubRequest::admission` returns (the bytes `hubs_descriptor` returned before it,

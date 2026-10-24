@@ -719,7 +719,7 @@ pub enum StoreJob {
     /// One Library section-hubs read: a section's whole hub list, or one row's window. Emitted by
     /// any Browse step that kicks a section's shelves (a page's `Hubs`, `HubPage`, `HubHold`, an
     /// invalidation, the landing pass) and addressed by the request id the step minted. One is out
-    /// across all sections (the store's one claim). Not on the tape.
+    /// across all sections (the section hubs' one claim, `BrowseAdapter::hubs.fetch`). Not on the tape.
     BrowseHubs(plx_machine::job::Job<crate::browse::section_hubs::BrowseHubsReq>,
         crate::browse::section_hubs::BrowseHubsPort),
     /// One of a Library section's value lists: its genres (the Filter menu) or its first letters

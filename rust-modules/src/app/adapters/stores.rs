@@ -10,8 +10,8 @@
 //! tape's admission record, the worker thread and the process-global client the request reads. A
 //! kind that is not on the tape (the catalog read, a plex.tv call that names no client; subtitle
 //! search; the Search screen's fetches and its recents writes; view reconcile; the Library's
-//! section-hubs read; the view-state writes; the Metadata season switch and episode-page window) is
-//! started with no admission record, as its inline spawn was. The detail pump keeps a counted
+//! section-hubs, directory and page reads; the view-state writes; the Metadata season switch and
+//! episode-page window) is started with no admission record, as its inline spawn was. The detail pump keeps a counted
 //! backstop for a sender that did neither (`Bridge::start_late_store_jobs`).
 //!
 //! **Three admission families** (`plx_data::stores::Admission`, stated by the job kind and matched
@@ -176,8 +176,9 @@ pub(crate) enum StoreRunner {
 }
 
 /// TEST ONLY: a kind of job a [`StoreRunner::Held`] starts on a worker instead of parking. It names
-/// a kind and not a store: Browse emits four, and a rig that waits for the Library grid's page
-/// landing must not also get the section hubs' read live; Metadata's season switch runs live while
+/// a kind and not a store: Browse emits several kinds (`BrowseHubs`, `BrowseDirectory`,
+/// `BrowsePage`), and a rig that waits for the Library grid's page landing must not also get the
+/// section hubs' read live; Metadata's season switch runs live while
 /// its detail fetch stays parked.
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -721,7 +722,7 @@ impl StoreRunner {
     /// A section-hubs read is not on the tape either (and a controlled run never emits it, so the
     /// Home ledger holds no record of it): the launch is the whole decision. A launch that did not
     /// happen (the registry no longer holds the client the step decided on, or the thread ceiling) is
-    /// refused, which hands the store's one claim back; the store's next step settles the section to
+    /// refused, which hands the section hubs' one claim back; the store's next step settles the section to
     /// the state a read that never started leaves, and the pump after asks again.
     fn start_browse_hubs(&mut self, job: Job<BrowseHubsReq>, port: BrowseHubsPort) {
         let addr = job.addr;
@@ -2555,7 +2556,7 @@ mod tests {
 
     /// A server registered at a port nothing listens on and a Browse store whose current section's
     /// hubs read is out: the job its step emitted, keyed to the client the registry held when it did,
-    /// with the store's one claim up from that step.
+    /// with the section hubs' one claim up from that step.
     fn browse_hubs_request() -> (ServerId, BrowseStore, StoreJob) {
         plx_plex::plex::reset_servers_for_test();
         let sid = plx_plex::plex::register_for_test("runner", "127.0.0.1", 9, "t", "cid");

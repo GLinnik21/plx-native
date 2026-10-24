@@ -5,7 +5,7 @@
 //! names it) and the runner has nothing parked. Each test names the kinds its entry starts.
 //!
 //! The rig is a Library section whose first read the system refused: its shelves are armed, the
-//! store's one claim is down and the refusal waits to be settled, so the next step the entry runs
+//! section hubs' one claim is down and the refusal waits to be settled, so the next step the entry runs
 //! asks for the read again. The grid's page and the value lists have never been asked for, so the
 //! entries that pump the store (or that carry `LibraryWork::Genres` / `Letters`) ask for those too.
 
