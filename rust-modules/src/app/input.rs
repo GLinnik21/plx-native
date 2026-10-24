@@ -69,7 +69,11 @@ impl Pointer {
 }
 
 /// How far from the top or bottom of the screen the pointer scrolls the page ([`EdgeScroll`]).
-pub(crate) const EDGE_BAND: f32 = 120.0;
+/// 80 px: at 120 the glide started too readily while the pointer was only on its way to the top
+/// or bottom row (tried on an LG C2 and C3).
+pub(crate) const EDGE_BAND: f32 = 80.0;
+/// How far from the left or right edge the pointer glides the row under it ([`EdgeScroll::pan`]).
+pub(crate) const EDGE_SIDE_BAND: f32 = 120.0;
 /// How long the pointer rests in an edge band before the page starts to move.
 pub(crate) const EDGE_DWELL_MS: u32 = 150;
 /// How long the glide takes to come up to its speed once it starts.
@@ -192,7 +196,7 @@ impl EdgeScroll {
 
     /// **The sideways glide**, one frame at `now` (ms): the `InputKind::Pan` `dx` (px, + shows more
     /// on the right) to hand the page for the row under the pointer, if any. A pointer resting in
-    /// the left or right [`EDGE_BAND`] (and in neither vertical band, which take the corners)
+    /// the left or right [`EDGE_SIDE_BAND`] (and in neither vertical band, which take the corners)
     /// glides the row it is over after the same dwell, on the same ease-in, faster nearer the edge,
     /// up to [`EDGE_PAN_PX_PER_S`]. Unlike the vertical glide it does not hold the pointer's hover:
     /// the side bands hold controls of their own (the Library's alphabet rail, Detail's Play), and
@@ -204,9 +208,9 @@ impl EdgeScroll {
         let side = self.at.filter(|_| !on_bar).and_then(|(x, y)| {
             if Self::band(y).is_some() {
                 None
-            } else if x < EDGE_BAND {
+            } else if x < EDGE_SIDE_BAND {
                 Some((-1, x))
-            } else if x >= plx_ui::consts::SCR_W - EDGE_BAND {
+            } else if x >= plx_ui::consts::SCR_W - EDGE_SIDE_BAND {
                 Some((1, plx_ui::consts::SCR_W - x))
             } else {
                 None
@@ -229,7 +233,7 @@ impl EdgeScroll {
         }
         let ramp = ((t - EDGE_DWELL_MS) as f32 / EDGE_RAMP_MS as f32).min(1.0);
         let ramp = ramp * ramp * (3.0 - 2.0 * ramp);
-        let depth = (1.0 - from_edge / EDGE_BAND).clamp(0.0, 1.0);
+        let depth = (1.0 - from_edge / EDGE_SIDE_BAND).clamp(0.0, 1.0);
         let share = EDGE_MIN_SHARE + (1.0 - EDGE_MIN_SHARE) * depth;
         let dx = dir as f32 * EDGE_PAN_PX_PER_S * share * ramp * dt;
         (dx != 0.0).then_some(dx)
@@ -1896,7 +1900,7 @@ mod click_is_ok_tests {
 
 #[cfg(test)]
 mod edge_scroll_tests {
-    use super::{EdgeScroll, EDGE_BAND, EDGE_DWELL_MS, EDGE_RAMP_MS};
+    use super::{EdgeScroll, EDGE_BAND, EDGE_DWELL_MS, EDGE_RAMP_MS, EDGE_SIDE_BAND};
     use plx_ui::consts::SCR_H;
 
     /// The `dy` an `EdgeScroll` hands out on every 16 ms frame of `ms` from `t0`.
@@ -1995,7 +1999,7 @@ mod edge_scroll_tests {
         let right = pan(SCR_W - 10.0, 540.0);
         assert!(right.len() > 60 && right.iter().all(|&dx| dx > 0.0), "right edge shows more on the right: {right:?}");
         let last = *right.last().unwrap();
-        let share = super::EDGE_MIN_SHARE + (1.0 - super::EDGE_MIN_SHARE) * (1.0 - 10.0 / EDGE_BAND);
+        let share = super::EDGE_MIN_SHARE + (1.0 - super::EDGE_MIN_SHARE) * (1.0 - 10.0 / EDGE_SIDE_BAND);
         assert!((last - super::EDGE_PAN_PX_PER_S * share * 0.016).abs() < 1e-3, "a 16 ms frame's pan: {last}");
         assert!(pan(10.0, 540.0).iter().all(|&dx| dx < 0.0) && !pan(10.0, 540.0).is_empty(), "left edge goes back");
         assert!(pan(10.0, 40.0).is_empty() && pan(SCR_W - 10.0, 1070.0).is_empty(), "the corners are the vertical glide's");

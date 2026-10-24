@@ -4196,11 +4196,14 @@ mod lifecycle_regression_tests {
         super::super::bridge::nav_root(&mut app.pages, AppArg::Home);
         frame(&mut app,0);
         app.pages.present_bar_stops(&app.bridge);
+        let band=super::super::input::EDGE_BAND;
         let tab=app.pages.input.hit.front().iter()
-            .find(|stop| stop.key.elem >= plx_ui::dispatch::STRIP_BASE && stop.rect.y + stop.rect.h / 2.0 < 120.0)
-            .map(|stop| stop.rect).expect("premise: the bar has a button in the top band");
+            .find(|stop| stop.key.elem >= plx_ui::dispatch::STRIP_BASE && stop.rect.y < band - 10.0)
+            .map(|stop| stop.rect).expect("premise: the bar has a button reaching into the top band");
+        // a height inside both the band and the button
+        let row=(tab.y.max(0.0) + band) / 2.0;
         let off=(5..1900).step_by(5).map(|x| x as f32)
-            .find(|&x| app.pages.input.hit.top_at(x, tab.cy()).is_none()).expect("premise: the band has room off the buttons");
+            .find(|&x| app.pages.input.hit.top_at(x, row).is_none()).expect("premise: the band has room off the buttons");
         let mut t=1_000u32;
         let mut glide=|app: &mut App, x: f32, y: f32| {
             app.ev=[0;128];
@@ -4219,9 +4222,9 @@ mod lifecycle_regression_tests {
             }
             wheels
         };
-        assert!(glide(&mut app, off, tab.cy()) > 30, "off the buttons, at the edge, the page glides");
-        assert_eq!(glide(&mut app, tab.cx(), tab.cy()), 0, "on a bar button the glide stops");
-        assert!(glide(&mut app, off, tab.cy()) > 30, "off it again the glide goes on");
+        assert!(glide(&mut app, off, row) > 30, "off the buttons, at the edge, the page glides");
+        assert_eq!(glide(&mut app, tab.cx(), row), 0, "on a bar button the glide stops");
+        assert!(glide(&mut app, off, row) > 30, "off it again the glide goes on");
     }
 
     #[test]
