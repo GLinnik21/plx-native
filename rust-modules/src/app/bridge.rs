@@ -1273,7 +1273,7 @@ impl Bridge {
     pub(crate) fn collection_pump(&mut self) -> bool {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
         let changed = self.stores.collection_pump(&self.client_keys);
-        self.start_store_jobs_of(plx_data::stores::StoreId::Collection);
+        self.start_store_jobs_of(StoreId::Collection);
         changed
     }
 
@@ -1302,7 +1302,7 @@ impl Bridge {
     /// the test rigs fail on that count.
     pub(crate) fn metadata_run(&mut self, cmd: plx_data::stores::metadata::MetadataCmd) -> bool {
         let changed = self.stores.metadata_run(cmd);
-        self.start_store_jobs_of(plx_data::stores::StoreId::Metadata);
+        self.start_store_jobs_of(StoreId::Metadata);
         changed
     }
 
@@ -1320,7 +1320,7 @@ impl Bridge {
     /// does in the same call as its step, after refilling the keys it decides from. A job some
     /// other sender left on another store's outbox is not started here, so the backstop still
     /// finds it and counts it as a bypass instead of this call hiding it.
-    pub(crate) fn start_store_jobs_of(&mut self, id: plx_data::stores::StoreId) -> usize {
+    pub(crate) fn start_store_jobs_of(&mut self, id: StoreId) -> usize {
         let jobs = self.stores.take_jobs_of(id);
         self.start_jobs(jobs)
     }
@@ -1354,6 +1354,15 @@ impl Bridge {
     #[cfg(test)]
     pub(crate) fn run_held_store_jobs_for_test(&mut self) -> usize {
         self.store_runner.run_held()
+    }
+
+    /// TEST ONLY: run the session cache refresh the fixture adapter is holding, on this thread,
+    /// through the production job; the next frame's result pass hands the owner its answer. A fixture
+    /// adapter starts no worker for the refresh, so without this call the owner's request stays in
+    /// flight and nothing reaches the dispatcher. Returns whether one ran.
+    #[cfg(test)]
+    pub(crate) fn run_held_cache_refresh_for_test(&mut self) -> bool {
+        self.session_adapter.run_held_cache_refresh()
     }
 
     /// TEST ONLY: no sender bypassed the drain. A frame's end is the moment to ask, and both halves

@@ -1560,8 +1560,12 @@ fn park_playback(app: &mut App) {
     // resolving would otherwise save (and restore to) the spot the user just
     // seeked AWAY from, with nothing left to correct it. See `intended_pos`.
     let saved_ns = intended_pos(&mut app.player.session);
-    let clock = super::lifecycle::clock_for_suspend_now(&app.player.lifecycle);
-    app.player.lifecycle.suspend(saved_ns, clock);
+    // The transport is read HERE, as the viewer sees it (a claim's presentation hold keeps a pause
+    // that is the hold's loan, not the viewer's): the machine reads no global.
+    let _ = app.player.lifecycle.step(
+        &ForegroundEvent::Park { saved_ns, viewer_paused: viewer_paused() },
+        &mut Vec::new(),
+    );
     // The session is preserved for the foreground reload, so
     // this is the RELOAD half of the reset — the in-flight gesture goes, the transport's
     // timer and the countdown stay. It is spelled as a delivery to the owner because
@@ -5077,10 +5081,10 @@ mod lifecycle_regression_tests {
             plx_media::route::has_url(&rig.app.player.session),
             "suspension preserves the session"
         );
-        let suspended = rig.app.player.lifecycle.state;
+        let suspended = rig.app.player.lifecycle.state();
         event(&mut rig.app, &mut fr, 0x103);
         assert_eq!(
-            rig.app.player.lifecycle.state, suspended,
+            rig.app.player.lifecycle.state(), suspended,
             "duplicate background must not resnapshot"
         );
     }
@@ -5117,9 +5121,9 @@ mod lifecycle_regression_tests {
         assert!(!rig.app.adapters.player.is_live(), "the dead pipeline is dropped");
         assert!(rig.app.player.lifecycle.awaiting_load(), "…and the session parked for a restore");
         assert!(plx_media::route::has_url(&rig.app.player.session), "the park keeps the session");
-        let parked = rig.app.player.lifecycle.state;
+        let parked = rig.app.player.lifecycle.state();
         unsafe { playback_tick(&mut rig.app, &mut fr); }
-        assert_eq!(rig.app.player.lifecycle.state, parked, "nothing rebuilds it before a press");
+        assert_eq!(rig.app.player.lifecycle.state(), parked, "nothing rebuilds it before a press");
 
         rig.app.ev = encode_key(plx_ui::consts::SDLK_DOWN, 0, true);
         event(&mut rig.app, &mut fr, SDL_KEYDOWN);
@@ -5127,11 +5131,11 @@ mod lifecycle_regression_tests {
         assert!(rig.app.inputs.is_empty(), "…and was spent on it, not handed to the page");
         assert!(
             matches!(
-                rig.app.player.lifecycle.state,
+                rig.app.player.lifecycle.state(),
                 ForegroundState::LoadPending { clock: ForegroundClock::Paused, .. }
             ),
             "a non-PLAY wake press keeps the saved pause, got {:?}",
-            rig.app.player.lifecycle.state
+            rig.app.player.lifecycle.state()
         );
         assert!(
             plx_media::player::seek_preroll_active(),
@@ -5246,11 +5250,11 @@ mod lifecycle_regression_tests {
             };
             assert!(
                 matches!(
-                    rig.app.player.lifecycle.state,
+                    rig.app.player.lifecycle.state(),
                     ForegroundState::LoadPending { clock: ForegroundClock::Playing, .. }
                 ),
                 "{press:?} must restore the paused snapshot Playing, got {:?}",
-                rig.app.player.lifecycle.state
+                rig.app.player.lifecycle.state()
             );
             assert!(!paused(), "{press:?}: the viewer's resume is published before the Load");
             assert!(
@@ -5263,7 +5267,7 @@ mod lifecycle_regression_tests {
             );
 
             land_the_wake_load(&mut rig, &mut fr);
-            assert_eq!(rig.app.player.lifecycle.state, ForegroundState::Idle, "{press:?}");
+            assert_eq!(rig.app.player.lifecycle.state(), ForegroundState::Idle, "{press:?}");
             assert!(!paused(), "{press:?}: the started restore plays");
             assert!(!plx_media::player::seek_preroll_active(), "{press:?}: and shows no preroll");
             assert!(
@@ -5291,11 +5295,11 @@ mod lifecycle_regression_tests {
         };
         assert!(
             matches!(
-                rig.app.player.lifecycle.state,
+                rig.app.player.lifecycle.state(),
                 ForegroundState::LoadPending { clock: ForegroundClock::Paused, .. }
             ),
             "OK keeps the saved pause, got {:?}",
-            rig.app.player.lifecycle.state
+            rig.app.player.lifecycle.state()
         );
         assert!(paused(), "the viewer's pause stands");
         assert!(plx_media::player::seek_preroll_active(), "…and the resume frame shows through the preroll");
@@ -5319,14 +5323,14 @@ mod lifecycle_regression_tests {
             };
             assert!(
                 matches!(
-                    rig.app.player.lifecycle.state,
+                    rig.app.player.lifecycle.state(),
                     ForegroundState::LoadPending { clock: ForegroundClock::Playing, .. }
                 ),
                 "{press:?} restores a playing save Playing, got {:?}",
-                rig.app.player.lifecycle.state
+                rig.app.player.lifecycle.state()
             );
             land_the_wake_load(&mut rig, &mut fr);
-            assert_eq!(rig.app.player.lifecycle.state, ForegroundState::Idle, "{press:?}");
+            assert_eq!(rig.app.player.lifecycle.state(), ForegroundState::Idle, "{press:?}");
             assert!(!paused(), "{press:?}: the restore plays");
         }
     }
@@ -5348,15 +5352,72 @@ mod lifecycle_regression_tests {
         };
         assert!(
             matches!(
-                rig.app.player.lifecycle.state,
+                rig.app.player.lifecycle.state(),
                 ForegroundState::LoadPending { clock: ForegroundClock::Paused, .. }
             ),
             "a click on a control keeps the saved pause, got {:?}",
-            rig.app.player.lifecycle.state
+            rig.app.player.lifecycle.state()
         );
         assert!(paused(), "the viewer's pause stands");
         assert!(plx_media::player::seek_preroll_active(), "…and the resume frame shows through the preroll");
         assert!(!rig.app.ptr.ok_from_click, "the click was not re-sent as OK, so this is the wake path");
+    }
+
+    /// A foreground actuator which prepares the resume on the spot and refuses the Load, touching
+    /// no player: it leaves the machine `Prepared` (the Load's refusal retains the prepared route)
+    /// with nothing else armed, which is the state a test then claims with the real actuator.
+    struct RefusedLoad;
+
+    impl ForegroundActuator for RefusedLoad {
+        type Attempt = plx_media::route::RouteStartAttempt;
+
+        fn prepare_resume(
+            &mut self,
+            _ps: &mut plx_media::route::PlaybackSession,
+            _resume_ns: i64,
+        ) -> plx_media::player::ResumeStart {
+            plx_media::player::ResumeStart::Settled(plx_media::player::ResumeOutcome::Prepared)
+        }
+
+        fn land_prepare(
+            &mut self,
+            _ps: &mut plx_media::route::PlaybackSession,
+        ) -> FlightLanding<plx_media::player::ResumeOutcome> {
+            unreachable!("RefusedLoad prepares on the spot")
+        }
+
+        fn land_recovery(
+            &mut self,
+            _ps: &mut plx_media::route::PlaybackSession,
+        ) -> FlightLanding<ForegroundLoadStart<Self::Attempt>> {
+            unreachable!("RefusedLoad starts no rollback")
+        }
+
+        fn before_load(&mut self, _resume_ns: i64, _clock: ForegroundClock) {}
+
+        fn start_load(
+            &mut self,
+            _ps: &mut plx_media::route::PlaybackSession,
+        ) -> ForegroundLoadStart<Self::Attempt> {
+            ForegroundLoadStart::Failed
+        }
+
+        fn load_status(&mut self, _attempt: Self::Attempt) -> ForegroundLoadStatus<Self::Attempt> {
+            unreachable!("RefusedLoad launches no attempt")
+        }
+
+        fn after_load(
+            &mut self,
+            _ps: &mut plx_media::route::PlaybackSession,
+            _attempt: Option<Self::Attempt>,
+            _clock: ForegroundClock,
+            _started: bool,
+        ) {
+        }
+
+        fn play_clock(&mut self) -> bool {
+            unreachable!("RefusedLoad starts no clock")
+        }
     }
 
     /// **A Playing Load over a LIVE Engine must not publish the viewer's resume.** `before_load`
@@ -5389,9 +5450,26 @@ mod lifecycle_regression_tests {
         // Prepared after a refused foreground Load, with the pump's replacement Engine live. (The
         // `PlayClock` that follows a CurrentAttempt landing is not driven here: the host rig arms
         // the Engine's initial hold from the pause at its START, so a pause pressed afterwards
-        // leaves `resume` no hold to release.)
-        rig.app.player.lifecycle.state =
-            ForegroundState::Prepared { id: 1, resume_ns: 0, clock: ForegroundClock::Paused };
+        // leaves `resume` no hold to release.) The machine is brought there through its events: a
+        // park, then a DID foreground whose Load is refused.
+        rig.app.player.lifecycle.step(
+            &ForegroundEvent::Park { saved_ns: 0, viewer_paused: true },
+            &mut Vec::new(),
+        );
+        drive_foreground(
+            &mut rig.app.player.lifecycle,
+            &mut rig.app.player.session,
+            ForegroundInput::DidForeground,
+            &mut RefusedLoad,
+        );
+        assert!(
+            matches!(
+                rig.app.player.lifecycle.state(),
+                ForegroundState::Prepared { resume_ns: 0, clock: ForegroundClock::Paused, .. }
+            ),
+            "the refused Load leaves the restore Prepared: {:?}",
+            rig.app.player.lifecycle.state()
+        );
         drive_foreground(
             &mut rig.app.player.lifecycle,
             &mut rig.app.player.session,
@@ -5478,7 +5556,7 @@ mod lifecycle_regression_tests {
         let instance = rig.app.pages.nav.instance_of(entry);
         event(&mut rig.app, &mut fr, 0x104);
         assert!(rig.app.player.lifecycle.awaiting_load());
-        let suspended = rig.app.player.lifecycle.state;
+        let suspended = rig.app.player.lifecycle.state();
         let url = plx_media::route::url(&rig.app.player.session);
         assert!(super::super::bridge::player(&rig.app.pages)
             .unwrap()
@@ -5498,7 +5576,7 @@ mod lifecycle_regression_tests {
             plx_media::route::up_next(&rig.app.player.session).unwrap().rk,
             "2"
         );
-        assert_eq!(rig.app.player.lifecycle.state, suspended);
+        assert_eq!(rig.app.player.lifecycle.state(), suspended);
         assert_eq!(rig.app.pages.nav.instance_of(entry), instance);
         event(&mut rig.app, &mut fr, 0x105);
         unsafe {
@@ -5703,7 +5781,7 @@ mod lifecycle_regression_tests {
         ));
         unsafe { playback_tick(&mut rig.app, &mut fr); }
         assert!(matches!(
-            rig.app.player.lifecycle.state,
+            rig.app.player.lifecycle.state(),
             ForegroundState::Prepared { .. }
         ));
         assert!(!rig.app.adapters.player.is_live());
@@ -5722,7 +5800,7 @@ mod lifecycle_regression_tests {
         );
         frame(&mut rig.app, 48);
         assert!(super::super::bridge::player(&rig.app.pages).is_none());
-        assert_eq!(rig.app.player.lifecycle.state, ForegroundState::Idle);
+        assert_eq!(rig.app.player.lifecycle.state(), ForegroundState::Idle);
 
         assert!(plx_media::route::request_play(
             &mut rig.app.player.session,
@@ -5737,7 +5815,7 @@ mod lifecycle_regression_tests {
         ));
         rig.accept_start();
         assert!(plx_media::route::play_pending());
-        assert_eq!(rig.app.player.lifecycle.state, ForegroundState::Idle);
+        assert_eq!(rig.app.player.lifecycle.state(), ForegroundState::Idle);
         poll_until("replacement landing remained blocked by the old lifecycle", || {
             unsafe {
                 playback_tick(&mut rig.app, &mut fr);
@@ -5746,7 +5824,7 @@ mod lifecycle_regression_tests {
             rig.app.adapters.player.is_live()
         });
         assert!(!plx_media::route::play_pending());
-        assert_eq!(rig.app.player.lifecycle.state, ForegroundState::Idle);
+        assert_eq!(rig.app.player.lifecycle.state(), ForegroundState::Idle);
         assert!(plx_media::route::has_url(&rig.app.player.session));
     }
 
