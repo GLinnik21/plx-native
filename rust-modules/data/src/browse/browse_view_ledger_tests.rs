@@ -29,10 +29,10 @@ fn a_page_read_in_flight_across_a_watched_edit_lands_watched() {
     let older = ledger.record(&ViewAt::leaf(sid, "6"), ViewEdit::Watched(true));
     ledger.landed(older); // before the request: the server has it
     browse.state.want(0, PAGE, None);
-    browse.state.maybe_spawn_owned(&browse.adapter); // the page read goes out…
-    assert!(browse.adapter.fetching.load(Ordering::SeqCst), "the real request site claimed the fetch");
+    browse.maybe_spawn(); // the page read goes out…
+    assert!(browse.adapter.page.busy(), "the real request site claimed the fetch");
+    assert_eq!(browse.jobs.len(), 1, "…as a job the application's runner starts");
     ledger.record(&ViewAt::leaf(sid, "7"), ViewEdit::Watched(true)); // …then the press
-    plx_base::task::drain_workers_for_test();
     let r = PageResult {
         client,
         token_gen: client.token_gen(),
@@ -44,9 +44,8 @@ fn a_page_read_in_flight_across_a_watched_edit_lands_watched() {
         sorts: None, restored: None, genres: None, genre: None,
         resolved: Default::default(),
     };
-    *browse.adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(r); // the refused worker's answer, replaced
+    browse.adapter.page.post(r, |_| true); // the read's answer, as the server described it before the press
     let _ = browse.state.pump_owned(&browse.adapter);
-    plx_base::task::drain_workers_for_test();
     let items = &browse.state.states()[0].items;
     let flags = |i| items.get(i).map(|m| (m.watched, m.unwatched, m.resume_ms));
     assert_eq!(flags(0), Some((false, true, 90_000)), "pressed before the request: the server's answer stands");
@@ -137,8 +136,9 @@ fn a_library_change_leaves_the_open_grid_alone_and_marks_it_stale() {
     let gen = browse.state.query_gen();
     assert!(browse.state.run_owned(&browse.adapter, crate::stores::browse::BrowseCmd::ListingsChanged { sid, library_on_stack: true },
         &ClientKeys::default(), &mut Vec::new()));
-    browse.state.maybe_spawn_owned(&browse.adapter);
-    assert!(!browse.adapter.fetching.load(Ordering::SeqCst), "the visible grid is not listed again");
+    browse.maybe_spawn();
+    assert!(!browse.adapter.page.busy(), "the visible grid is not listed again");
+    assert!(browse.jobs.is_empty(), "…and no job asks for it: {:?}", browse.jobs);
     let state = &browse.state.states()[0];
     assert_eq!((state.fetch, state.total), (SecFetch::Ready, 2 * PAGE as i64));
     assert!((0..2 * PAGE).all(|i| state.items.get(i).is_some()), "no tile turns into a skeleton");

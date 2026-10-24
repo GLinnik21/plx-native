@@ -92,6 +92,9 @@ fn pump_until_landed(browse: &mut TestBrowse) {
     while browse.state.cur_state().is_some_and(|state| state.total < 0)
         && std::time::Instant::now() < deadline {
         let _ = browse.pump();
+        // The runner's part, on this thread: the page the pump asked for is read against the
+        // scripted PMS and its answer waits for the next pump.
+        browse.run_listing_jobs();
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
 }

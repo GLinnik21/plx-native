@@ -106,8 +106,9 @@ pub struct BrowseStore {
     notice_dirty: AtomicBool,
     /// Endpoint refreshes a pump had no room to emit in its step; the next pump sends them first.
     endpoint_carry: super::EndpointRefreshSet,
-    /// The section-hubs reads this store's steps have asked for and nobody has started yet
-    /// ([`super::StoreJob::BrowseHubs`]); taken by [`BrowseStore::take_jobs`].
+    /// The reads this store's steps have asked for and nobody has started yet: a section's hubs
+    /// ([`super::StoreJob::BrowseHubs`]), a value list ([`super::StoreJob::BrowseDirectory`]) and a
+    /// listing page ([`super::StoreJob::BrowsePage`]); taken by [`BrowseStore::take_jobs`].
     jobs: Vec<super::StoreJob>,
 }
 
@@ -143,9 +144,10 @@ impl BrowseStore {
         self.notice_dirty.swap(false, Ordering::Relaxed).then(|| self.gen())
     }
 
-    /// Take the section-hubs reads this owner's steps have asked for since the last take, in the
-    /// order they were asked ([`super::StoreJob::BrowseHubs`]). The application's runner starts
-    /// each, in the call that ran the step (`Bridge::start_store_jobs_of`).
+    /// Take the reads this owner's steps have asked for since the last take, in the order they were
+    /// asked ([`super::StoreJob::BrowseHubs`], [`super::StoreJob::BrowseDirectory`],
+    /// [`super::StoreJob::BrowsePage`]). The application's runner starts each, in the call that ran
+    /// the step (`Bridge::start_store_jobs_of`).
     #[must_use]
     pub fn take_jobs(&mut self) -> Vec<super::StoreJob> {
         std::mem::take(&mut self.jobs)
@@ -398,6 +400,11 @@ impl BrowseStore {
     #[cfg(any(test, feature = "test-support"))]
     pub fn seed_letter_counts_for_test(&mut self, letters: &[(&str, i64)]) {
         crate::browse::seed_letter_counts_for_owner_test(&mut self.state, letters);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn owe_letters_for_test(&mut self) {
+        crate::browse::owe_letters_for_owner_test(&mut self.state);
     }
 
     #[cfg(any(test, feature = "test-support"))]

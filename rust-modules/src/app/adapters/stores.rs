@@ -28,8 +28,10 @@
 //! made both depend on the scheduler: a fetch for an unknown server returns in microseconds, so a
 //! fast run settled a request before an "in flight" assertion while a loaded CI runner had not
 //! settled it after a hundred `yield_now`s. `Held` parks per kind: [`StoreRunner::held`] leaves the
-//! Home Hubs read live (the rigs that poll for a landing, the dump and return-hold tests, need a real
-//! answer on a worker), and [`StoreRunner::held_all`] parks it as well.
+//! Home Hubs read and the Library listing's page read live (the rigs that poll for a landing, the
+//! dump and return-hold tests, the library route rigs that wait for a grid to settle, need a real
+//! answer on a worker), [`StoreRunner::park_page_reads`] parks the page read as well and
+//! [`StoreRunner::held_all`] parks every kind.
 //!
 //! **The registry is read here, not in a step.** A step that decides from "which client does this
 //! server slot hold" is handed the answer as an input (`plx_plex::plex::ClientKeys`), which the
@@ -39,6 +41,10 @@
 //! its server once, at the admission, and the chain runs through that client, bar the opening
 //! season's episodes; `docs/sans-io.md`, "The store job lane".)
 
+use plx_data::browse::listing_jobs::{
+    finish_browse_directory_job, finish_browse_page_job, BrowseDirectoryPort, BrowseDirectoryReq,
+    BrowsePagePort, BrowsePageReq,
+};
 use plx_data::browse::section_hubs::{finish_browse_hubs_job, BrowseHubsPort, BrowseHubsReq};
 use plx_data::collection::{finish_collection_job, CollectionPort, CollectionReq};
 use plx_data::metadata::{fetch_full, finish_detail_fetch, DetailPort, DetailReq};
@@ -128,7 +134,8 @@ fn with_hubs_launch_for_test<R>(mode: HubsLaunch, f: impl FnOnce() -> R) -> R {
 
 /// TEST ONLY: every Hubs launch this test thread makes inside `f` is refused by the system (no
 /// worker starts), including a launch made from a nested call into the Bridge. The section hubs'
-/// reads (`StoreJob::BrowseHubs`) are Hubs launches too: the system refuses their thread alike.
+/// reads (`StoreJob::BrowseHubs`) and the Library's listing reads (`StoreJob::BrowseDirectory`,
+/// `StoreJob::BrowsePage`) are launches of this seam too: the system refuses their thread alike.
 #[cfg(test)]
 pub(crate) fn with_refused_hubs_launches_for_test<R>(f: impl FnOnce() -> R) -> R {
     with_hubs_launch_for_test(HubsLaunch::Refused, f)
@@ -152,7 +159,19 @@ pub(crate) enum StoreRunner {
     /// that is not but reads a server, and with neither for a Catalog job (a plex.tv read that
     /// names no client). A kind in `live` starts as `Live` starts it.
     #[cfg(test)]
-    Held { parked: Vec<StoreJob>, live: &'static [plx_data::stores::StoreId] },
+    Held { parked: Vec<StoreJob>, live: &'static [LiveKind] },
+}
+
+/// TEST ONLY: a kind of job a [`StoreRunner::Held`] starts on a worker instead of parking. It names
+/// a kind and not a store: Browse emits four, and a rig that waits for the Library grid's page
+/// landing must not also get the section hubs' read live.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LiveKind {
+    /// The Home Hubs read (`StoreJob::Hubs`).
+    Hubs,
+    /// A Library listing page read (`StoreJob::BrowsePage`).
+    BrowsePage,
 }
 
 impl StoreRunner {
@@ -160,15 +179,25 @@ impl StoreRunner {
         Self::Live
     }
 
-    /// TEST ONLY: [`StoreRunner::Held`] for every kind but Hubs, which starts on a worker as it
-    /// does in production: a rig that waits for a Home landing needs a real one.
+    /// TEST ONLY: [`StoreRunner::Held`] for every kind but the Home Hubs read and the Library
+    /// listing's page read, which start on a worker as they do in production: a rig that waits for a
+    /// Home or a grid landing needs a real one.
     #[cfg(test)]
     pub(crate) fn held() -> Self {
-        Self::Held { parked: Vec::new(), live: &[plx_data::stores::StoreId::Hubs] }
+        Self::Held { parked: Vec::new(), live: &[LiveKind::Hubs, LiveKind::BrowsePage] }
     }
 
-    /// TEST ONLY: [`StoreRunner::Held`] for every kind, Hubs included. The test runs the parked
-    /// Hubs jobs (`Bridge::run_held_store_jobs_of_for_test`) when it chooses to settle them.
+    /// TEST ONLY: park the Library listing's page reads of a held runner too (the Home Hubs read
+    /// stays live): the rig that grades which reads an entry started takes them from the runner.
+    #[cfg(test)]
+    pub(crate) fn park_page_reads(&mut self) {
+        if let Self::Held { live, .. } = self {
+            *live = &[LiveKind::Hubs];
+        }
+    }
+
+    /// TEST ONLY: [`StoreRunner::Held`] for every kind, Hubs and the page read included. The test
+    /// runs the parked jobs (`Bridge::run_held_store_jobs_of_for_test`) when it chooses to settle them.
     #[cfg(test)]
     pub(crate) fn held_all() -> Self {
         Self::Held { parked: Vec::new(), live: &[] }
@@ -187,6 +216,8 @@ impl StoreRunner {
             StoreJob::SubtitleSearch(job, port) => self.start_subsearch(job, port),
             StoreJob::ViewReconcile(job, port) => self.start_reconcile(job, port),
             StoreJob::BrowseHubs(job, port) => self.start_browse_hubs(job, port),
+            StoreJob::BrowseDirectory(job, port) => self.start_browse_directory(job, port),
+            StoreJob::BrowsePage(job, port) => self.start_browse_page(job, port),
             StoreJob::Search(job, port) => self.start_search(job, port),
             StoreJob::SaveRecents(job, port) => self.start_save_recents(job, port),
         }
@@ -225,6 +256,8 @@ impl StoreRunner {
                 | StoreJob::SubtitleSearch(..)
                 | StoreJob::ViewReconcile(..)
                 | StoreJob::BrowseHubs(..)
+                | StoreJob::BrowseDirectory(..)
+                | StoreJob::BrowsePage(..)
                 | StoreJob::Search(..)
                 | StoreJob::SaveRecents(..)) => self.start(other),
         }
@@ -255,7 +288,7 @@ impl StoreRunner {
             (_, HubsLaunch::Refused) => return launch_hubs_job(job, port, client, |_work| false),
             (_, HubsLaunch::Late { extra, items }) => return plx_data::pms::launch_late_hubs_job_for_test(
                 job, port, client, |work| plx_base::task::spawn_small("hubs", work), extra, items),
-            (Self::Held { parked, live }, HubsLaunch::Real) if !live.contains(&plx_data::stores::StoreId::Hubs) => {
+            (Self::Held { parked, live }, HubsLaunch::Real) if !live.contains(&LiveKind::Hubs) => {
                 port.claim();
                 parked.push(StoreJob::Hubs(job, port));
                 return true;
@@ -311,6 +344,8 @@ impl StoreRunner {
                     | StoreJob::SubtitleSearch(..)
                     | StoreJob::ViewReconcile(..)
                     | StoreJob::BrowseHubs(..)
+                    | StoreJob::BrowseDirectory(..)
+                    | StoreJob::BrowsePage(..)
                     | StoreJob::Search(..)
                     | StoreJob::SaveRecents(..)
                 ) => held.push(kept),
@@ -594,10 +629,83 @@ impl StoreRunner {
         }
     }
 
+    /// A Library directory read (genres, first letters) is not on the tape either, and a controlled
+    /// run never emits it: the launch is the whole decision. A launch that did not happen (the
+    /// registry no longer holds the client the step decided on, or the thread ceiling) is refused,
+    /// which hands that directory's claim back; the store's next step settles the refusal, and the
+    /// menu's next tick asks again.
+    fn start_browse_directory(&mut self, job: Job<BrowseDirectoryReq>, port: BrowseDirectoryPort) {
+        let addr = job.addr;
+        let refusal = port.clone();
+        if !self.launch_browse_directory(job, port) {
+            refusal.refused(addr);
+        }
+    }
+
+    /// Start the read on a worker, if the registry still holds the client the step decided on. The
+    /// claim was raised by the step, so a parked job (`Held`) holds it from the park: it is dropped
+    /// back by the take of its landing, or by the refusal when the client is gone by the time the
+    /// job runs.
+    fn launch_browse_directory(&mut self, job: Job<BrowseDirectoryReq>, port: BrowseDirectoryPort) -> bool {
+        let (sid, key) = job.req.server();
+        let Some(client) = resolve(sid, key) else { return false };
+        #[cfg(test)]
+        if matches!(hubs_launch_for_test(), HubsLaunch::Refused) {
+            return false; // the OS refusing the thread
+        }
+        match self {
+            Self::Live => {
+                let Job { addr, req } = job;
+                plx_base::task::spawn_small("directory", move || {
+                    finish_browse_directory_job(&port, addr, client, req);
+                })
+            }
+            #[cfg(test)]
+            Self::Held { parked: held, .. } => {
+                held.push(StoreJob::BrowseDirectory(job, port));
+                true
+            }
+        }
+    }
+
+    /// A Library listing page read is not on the tape (a controlled run never emits it): the launch
+    /// is the whole decision, as for a directory read ([`Self::start_browse_directory`]). A refused
+    /// page hands the page claim back; the next pump asks again for the then-first missing page.
+    fn start_browse_page(&mut self, job: Job<BrowsePageReq>, port: BrowsePagePort) {
+        let addr = job.addr;
+        let refusal = port.clone();
+        if !self.launch_browse_page(job, port) {
+            refusal.refused(addr);
+        }
+    }
+
+    /// Start the read on a worker, if the registry still holds the client the step decided on (see
+    /// [`Self::launch_browse_directory`] for the claim of a parked job).
+    fn launch_browse_page(&mut self, job: Job<BrowsePageReq>, port: BrowsePagePort) -> bool {
+        let (sid, key) = job.req.server();
+        let Some(client) = resolve(sid, key) else { return false };
+        #[cfg(test)]
+        if matches!(hubs_launch_for_test(), HubsLaunch::Refused) {
+            return false; // the OS refusing the thread
+        }
+        #[cfg(test)]
+        if let Self::Held { parked, live } = self {
+            if !live.contains(&LiveKind::BrowsePage) {
+                parked.push(StoreJob::BrowsePage(job, port));
+                return true;
+            }
+        }
+        let Job { addr, req } = job;
+        plx_base::task::spawn_small("page", move || {
+            finish_browse_page_job(&port, addr, client, req);
+        })
+    }
+
     /// TEST ONLY: run every parked job on THIS thread through the production completion path
     /// (`finish_detail_fetch` over `fetch_full`, `finish_collection_job`, `finish_person_job`,
     /// `finish_hubs_job`, `finish_catalog_job`, `finish_subsearch_job`, `finish_search_job`,
-    /// `finish_save_recents_job`, `finish_reconcile_job`, `finish_browse_hubs_job`) and return how many ran.
+    /// `finish_save_recents_job`, `finish_reconcile_job`, `finish_browse_hubs_job`,
+    /// `finish_browse_directory_job`, `finish_browse_page_job`) and return how many ran.
     /// Their landings are queued for the next pump. Under `Live` there is nothing parked.
     #[cfg(test)]
     pub(crate) fn run_held(&mut self) -> usize {
@@ -692,6 +800,22 @@ impl StoreRunner {
                     let (sid, key) = job.req.server();
                     match resolve(sid, key) {
                         Some(client) => finish_browse_hubs_job(&port, job.addr, client, job.req),
+                        None => port.refused(job.addr),
+                    }
+                }
+                StoreJob::BrowseDirectory(job, port) => {
+                    // As for the section hubs' read: the claim was raised by the step, and a request
+                    // whose client is gone is refused, which gives it back.
+                    let (sid, key) = job.req.server();
+                    match resolve(sid, key) {
+                        Some(client) => finish_browse_directory_job(&port, job.addr, client, job.req),
+                        None => port.refused(job.addr),
+                    }
+                }
+                StoreJob::BrowsePage(job, port) => {
+                    let (sid, key) = job.req.server();
+                    match resolve(sid, key) {
+                        Some(client) => finish_browse_page_job(&port, job.addr, client, job.req),
                         None => port.refused(job.addr),
                     }
                 }
@@ -2130,7 +2254,11 @@ mod tests {
         let _outcome = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &registry_keys());
         assert!(!browse.hubs_answer_waiting_for_test(), "the pump took the one answer");
         assert!(!browse.hubs_read_out_for_test(), "…which lowered the claim");
-        assert!(!browse.has_jobs(), "and a read that landed asks for nothing more");
+        // The same pump asks for the grid's first page (the Library section it landed shelves for),
+        // which is the page job's: what a landed shelf read must not do is ask for shelves again.
+        let asked = browse.take_jobs();
+        assert!(asked.iter().all(|job| matches!(job, StoreJob::BrowsePage(..))),
+            "and a read that landed asks for no more shelves: {asked:?}");
     }
 
     /// The registry moved on between the step and the launch: nothing starts and the one answer is

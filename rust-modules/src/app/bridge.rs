@@ -1423,6 +1423,21 @@ impl Bridge {
         self.store_runner.run_held_of(id)
     }
 
+    /// TEST ONLY: the Library listing's page reads park in the test runner (it starts them on a
+    /// worker by default, like the Home Hubs read), for a rig that grades the reads an entry started.
+    #[cfg(test)]
+    pub(crate) fn park_page_reads_for_test(&mut self) {
+        self.store_runner.park_page_reads();
+    }
+
+    /// TEST ONLY: take the jobs the test runner is holding without running them, in the order they
+    /// were parked: the kinds an entry's drain started, for a rig that grades the entry and not the
+    /// read. The claims their steps raised stay up, as for a worker that has not answered.
+    #[cfg(test)]
+    pub(crate) fn take_held_store_jobs_for_test(&mut self) -> Vec<plx_data::stores::StoreJob> {
+        self.store_runner.take_held()
+    }
+
     /// TEST ONLY: run the session cache refresh the fixture adapter is holding, on this thread,
     /// through the production job; the next frame's result pass hands the owner its answer. A fixture
     /// adapter starts no worker for the refresh, so without this call the owner's request stays in

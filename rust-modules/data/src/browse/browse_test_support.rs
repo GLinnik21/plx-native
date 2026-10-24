@@ -32,6 +32,44 @@ impl TestBrowse {
         self.state.hubs_kick(sec, &self.adapter, &self.keys, &mut self.jobs);
     }
 
+    /// `maybe_spawn_owned` on the registry as of now: the page read that is due leaves on `jobs`.
+    pub(super) fn maybe_spawn(&mut self) {
+        self.refill();
+        self.state.maybe_spawn_owned(&self.adapter, &self.keys, &mut self.jobs);
+    }
+
+    /// The runner's work for the listing reads the steps left, on THIS thread: each page and
+    /// directory job is started through its production completion (`finish_browse_page_job`,
+    /// `finish_browse_directory_job`) if the registry still holds the client its step decided on,
+    /// and refused otherwise. Any other job stays on the outbox. Returns how many ran.
+    pub(super) fn run_listing_jobs(&mut self) -> usize {
+        let mut ran = 0;
+        for job in std::mem::take(&mut self.jobs) {
+            let held = |sid: ServerId, key: plx_plex::plex::ClientKey| plx_plex::plex::client_for(sid)
+                .filter(|client| plx_plex::plex::ClientKey::of(client) == key);
+            match job {
+                crate::stores::StoreJob::BrowsePage(job, port) => {
+                    ran += 1;
+                    let (sid, key) = job.req.server();
+                    match held(sid, key) {
+                        Some(client) => listing_jobs::finish_browse_page_job(&port, job.addr, client, job.req),
+                        None => plx_machine::job::Port::refused(&port, job.addr),
+                    }
+                }
+                crate::stores::StoreJob::BrowseDirectory(job, port) => {
+                    ran += 1;
+                    let (sid, key) = job.req.server();
+                    match held(sid, key) {
+                        Some(client) => listing_jobs::finish_browse_directory_job(&port, job.addr, client, job.req),
+                        None => plx_machine::job::Port::refused(&port, job.addr),
+                    }
+                }
+                other => self.jobs.push(other),
+            }
+        }
+        ran
+    }
+
     /// `hubs_land` on the registry as of now (the fixture gate).
     pub(super) fn hubs_land(&mut self) -> bool {
         self.hubs_land_on(plx_machine::landgate::fixture_gate())
@@ -250,7 +288,7 @@ pub(super) fn queue_page_from(
     client: &'static plx_plex::plex::Client,
     token_gen: u32,
 ) {
-    *browse.adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(PageResult {
+    browse.adapter.page.post(PageResult {
         client,
         token_gen,
         gen: browse.state.query_gen(),
@@ -260,8 +298,8 @@ pub(super) fn queue_page_from(
         total: 0,
         sorts: None, restored: None, genres: None, genre: None,
         resolved: Default::default(),
-    });
-    browse.adapter.fetching.store(true, Ordering::SeqCst);
+    }, |_| true);
+    browse.adapter.page.claim(0);
     let _outcome = browse.pump();
 }
 pub(super) fn queue_directories_from(
@@ -270,7 +308,7 @@ pub(super) fn queue_directories_from(
     token_gen: u32,
 ) {
     let epoch = browse.state.table_epoch();
-    *browse.adapter.genre_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(DirectoryResult {
+    browse.adapter.genres.post(DirectoryResult {
         library_type: browse.state.states[0].library_type,
         epoch,
         sec: 0,
@@ -280,24 +318,22 @@ pub(super) fn queue_directories_from(
             id: "stale".into(),
             title: "Stale Genre".into(),
         }],
-    });
-    *browse.adapter.letter_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(DirectoryResult {
+    }, |_| true);
+    browse.adapter.letters.post(DirectoryResult {
         library_type: browse.state.states[0].library_type,
         epoch,
         sec: 0,
         client,
         token_gen,
         list: vec![("S".into(), 99)],
-    });
-    browse.adapter.genre_fetching.store(true, Ordering::SeqCst);
-    browse.adapter.letters_fetching.store(true, Ordering::SeqCst);
-    browse.state.land_directory_owned(
-        &browse.adapter.genre_fetching, &browse.adapter.genre_result, |st, list| {
+    }, |_| true);
+    browse.adapter.genres.claim(0);
+    browse.adapter.letters.claim(0);
+    browse.state.land_directory_owned(&browse.adapter.genres, |st, list| {
         st.genres_done = true;
         st.genres = Arc::new(list);
     });
-    browse.state.land_directory_owned(
-        &browse.adapter.letters_fetching, &browse.adapter.letter_result, |st, list| {
+    browse.state.land_directory_owned(&browse.adapter.letters, |st, list| {
         st.letters_done = true;
         st.letters = Arc::new(list);
     });
@@ -322,7 +358,7 @@ pub(super) fn assert_new_directories_survive(browse: &TestBrowse) {
 /// One default state with no section table, used by store-only tests that never land a page.
 pub(super) fn seed_one_section(browse: &mut TestBrowse) {
     browse.reset();
-    *browse.adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    browse.adapter.page.clear();
     browse.state.states = vec![SecState::default()];
 }
 /// Land what a worker would post for the CURRENT query: `total < 0` is the failure sentinel.
@@ -339,7 +375,7 @@ pub(super) fn land_page(browse: &mut TestBrowse, total: i64, items: usize) {
         sorts: None, restored: None, genres: None, genre: None,
         resolved: Default::default(),
     };
-    *browse.adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+    browse.adapter.page.post(r, |_| true);
     let _outcome = browse.pump();
 }
 /// Same as [`land_page`], but carrying a server-advertised sort list (as `includeMeta=1` would)
@@ -358,7 +394,7 @@ pub(super) fn land_page_with_sorts(browse: &mut TestBrowse, sorts: Vec<SortEntry
         sorts: Some(sorts), restored: None, genres: None, genre: None,
         resolved: Default::default(),
     };
-    *browse.adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+    browse.adapter.page.post(r, |_| true);
     let _outcome = browse.pump();
 }
 // ---- the SOURCE's own state, one layer up ---------------------------------------------------

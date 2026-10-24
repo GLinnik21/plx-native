@@ -197,16 +197,17 @@ mod tests {
         browse.state.sections[0].kind = SecKind::Show;
         let captured_type = browse.state.states[0].library_type;
         assert!(browse.state.set_library_type(LibraryType::Episodes));
-        let mail = Mutex::new(Some(DirectoryResult {
+        let fetch = crate::stores::Fetch::default();
+        fetch.post(DirectoryResult {
             epoch: browse.state.table_epoch(), sec: 0, client, token_gen: client.token_gen(),
             library_type: captured_type, list: vec![("S".into(), 99)],
-        }));
-        let fetching = AtomicBool::new(true);
-        assert!(!browse.state.land_directory_owned(&fetching, &mail, |state, list| {
+        }, |_| true);
+        fetch.claim(0);
+        assert!(!browse.state.land_directory_owned(&fetch, |state, list| {
             state.letters = Arc::new(list);
             state.letters_done = true;
         }));
-        assert!(!fetching.load(Ordering::SeqCst));
+        assert!(!fetch.busy());
         assert!(browse.state.states[0].letters.is_empty());
         assert!(!browse.state.states[0].letters_done);
     }

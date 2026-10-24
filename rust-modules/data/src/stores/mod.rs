@@ -161,8 +161,8 @@ impl Stores {
 
     /// Explicit synchronous Browse command path. The answer is available before this call returns.
     /// `keys` is the registry's answer as of this call. A command may leave a
-    /// [`StoreJob::BrowseHubs`] on Browse's outbox: the caller that returns without
-    /// [`Stores::take_jobs_of`] and handing it to a runner has stranded the section's read. The one
+    /// [`StoreJob::BrowseHubs`] or a [`StoreJob::BrowseDirectory`] on Browse's outbox: the caller that
+    /// returns without [`Stores::take_jobs_of`] and handing it to a runner has stranded the read. The one
     /// production caller is `Bridge::browse_run`, which drains in the same call.
     pub fn browse_run(&self, cmd: browse::BrowseCmd, keys: &plx_plex::plex::ClientKeys) -> bool {
         self.browse.borrow_mut().run(cmd, keys)
@@ -701,6 +701,17 @@ pub enum StoreJob {
     /// across all sections (the store's one claim). Not on the tape.
     BrowseHubs(plx_machine::job::Job<crate::browse::section_hubs::BrowseHubsReq>,
         crate::browse::section_hubs::BrowseHubsPort),
+    /// One of a Library section's value lists: its genres (the Filter menu) or its first letters
+    /// (the A-Z rail), emitted by the Browse step that kicks the list and addressed by the request
+    /// id the step minted for that list. At most one per list is out (each has its own claim). Not
+    /// on the tape.
+    BrowseDirectory(plx_machine::job::Job<crate::browse::listing_jobs::BrowseDirectoryReq>,
+        crate::browse::listing_jobs::BrowseDirectoryPort),
+    /// One page of a Library section's listing, emitted by the Browse pump for the first page the
+    /// wanted window is missing and addressed by the request id the step minted. One is out (the
+    /// page claim). Not on the tape.
+    BrowsePage(plx_machine::job::Job<crate::browse::listing_jobs::BrowsePageReq>,
+        crate::browse::listing_jobs::BrowsePagePort),
     /// One search fetch of one source: its first `/hubs/search` answer, or a read of depths of one
     /// result lane, emitted by the Search pump and addressed by the query's generation. Several are
     /// out at once, one per source, each answering into its own mailbox slot (the port names it).
@@ -732,13 +743,18 @@ impl StoreJob {
         match self {
             Self::Detail(..) | Self::Collection(..) | Self::Person(..) => Admission::Tape,
             Self::Hubs(..) => Admission::Home,
-            // A controlled run never emits the section hubs' work: `bootstrap/effects.rs` `work_value()` refuses
-            // every `StoreWork` but `Hubs` and `BrowseDiscovery`, so no record exists to place it
-            // in and the launch is the whole decision (as for the kinds beside it).
+            // A controlled run never emits the section hubs' work, a listing page or a directory:
+            // `bootstrap/effects.rs` `store()` accepts only `Browse(Reset)` and `Browse(Discovery(..))`
+            // and `work_value()` refuses every `StoreWork` but `Hubs` and `BrowseDiscovery`, so no
+            // record exists to place them in and the launch is the whole decision (as for the kinds
+            // beside it). `app/store_admission_tests.rs` pins that a controlled Home run's Browse
+            // commands emit none of them.
             Self::Catalog(..)
             | Self::SubtitleSearch(..)
             | Self::ViewReconcile(..)
             | Self::BrowseHubs(..)
+            | Self::BrowseDirectory(..)
+            | Self::BrowsePage(..)
             | Self::Search(..)
             | Self::SaveRecents(..) => Admission::Direct,
         }
@@ -753,7 +769,7 @@ impl StoreJob {
             Self::SubtitleSearch(..) => StoreId::SubtitleSearch,
             Self::ViewReconcile(..) => StoreId::ViewReconcile,
             Self::Hubs(..) => StoreId::Hubs,
-            Self::BrowseHubs(..) => StoreId::Browse,
+            Self::BrowseHubs(..) | Self::BrowseDirectory(..) | Self::BrowsePage(..) => StoreId::Browse,
             Self::Search(..) | Self::SaveRecents(..) => StoreId::Search,
         }
     }
