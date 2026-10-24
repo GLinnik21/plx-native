@@ -55,7 +55,21 @@ pub mod dv;
 /// Defined here, not in `plex`, because this module is the one that intersects it with the
 /// device's own table and `plex` sits above the platform layer; `plex` re-exports it
 /// (`plex::DP_AUDIO_CODECS`) for the profile string and route's plan.
-pub const DP_AUDIO_CODECS: &str = "aac,ac3,eac3,dts";
+///
+/// `opus` is the one entry the table does not gate ([`PIPELINE_ONLY_AUDIO`]): umediaserver's
+/// table describes its own file player, and the dev set's lists no Opus row, while the buffer feed
+/// (LG's SMP `OPUS` + `opusInfo`, which moonlight-tv's ss4s feeds on webOS) decodes it.
+pub const DP_AUDIO_CODECS: &str = "aac,ac3,eac3,dts,opus";
+
+/// The [`DP_AUDIO_CODECS`] entries admitted on a parsed device table even when it has no row for
+/// them, because the codec is a property of the buffer-feed pipeline rather than of the table.
+const PIPELINE_ONLY_AUDIO: &[&str] = &["opus"];
+
+/// Auto's channel ceiling for Opus, whatever a table row claims: stereo plays cleanly on every set
+/// measured, while 5.1 stalls on a C1 (webOS 6) once packets pass ~1500 bytes, with nothing in the
+/// log (#917, #918). Wider tracks stay with the server; Force Direct Play applies no ceiling, as for
+/// every codec. A 5.1 Opus film did play through on a C5 (webOS 10.3), so this can loosen per model.
+const OPUS_AUTO_MAX_CHANNELS: u32 = 2;
 
 const CAPS_TABLE: &str = "/etc/umediaserver/device_codec_capability_config.json";
 
@@ -159,11 +173,15 @@ impl Caps {
 
     /// Force Direct Play's audio gate: the pipeline's feed formats ([`DP_AUDIO_CODECS`]), with
     /// no channel ceiling. DTS additionally needs the evidence Auto asks for
-    /// ([`Caps::forced_admits_dts`]). The planner and the forced profile both read this.
+    /// ([`Caps::forced_admits_dts`]), and a pipeline-only codec (Opus) the table read Auto needs
+    /// ([`Caps::audio_has`]). The planner and the forced profile both read this.
     pub fn forced_feeds_audio(&self, codec: &str) -> bool {
         let id = audio_codec_id(codec);
         if id == "dts" {
             return self.forced_admits_dts();
+        }
+        if PIPELINE_ONLY_AUDIO.contains(&id.as_ref()) {
+            return self.audio_has(&id);
         }
         DP_AUDIO_CODECS.split(',').any(|c| c == id)
     }
@@ -266,6 +284,21 @@ fn canon(name: &str) -> String {
         .filter(|c| !matches!(c, '.' | '-'))
         .collect::<String>()
         .to_ascii_lowercase()
+}
+
+/// The table's audio rows verbatim (`NAME/channels`, file order), for the boot log: [`Caps::audio`]
+/// only keeps the [`DP_AUDIO_CODECS`] subset, so without this a row the pipeline does not feed yet
+/// (FLAC, Opus) never shows up anywhere.
+fn table_audio_rows(s: &str) -> String {
+    serde_json::from_str::<Table>(s)
+        .map(|t| {
+            t.audio_codecs
+                .iter()
+                .map(|r| format!("{}/{}", r.name, r.channels))
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .unwrap_or_default()
 }
 
 /// Per-axis conservative merge: min of the nonzero values, 0 (= the row didn't say) only when
@@ -388,8 +421,10 @@ fn parse(s: &str) -> Option<Caps> {
         }
     }
     let table_audio: Vec<String> = t.audio_codecs.iter().map(|r| canon(&r.name)).collect();
+    let table_gated = |c: &&str| !PIPELINE_ONLY_AUDIO.contains(c);
     let audio: Vec<&str> = DP_AUDIO_CODECS
         .split(',')
+        .filter(table_gated)
         .filter(|c| table_audio.iter().any(|t| t == c))
         .filter(|c| *c != "dts" || audio_channels.contains_key("dts"))
         .collect();
@@ -398,8 +433,14 @@ fn parse(s: &str) -> Option<Caps> {
         // reading of it, not about the television. Same reasoning as the empty-video guard.
         Caps::assumed().audio
     } else {
-        audio.join(",")
+        // The pipeline-only codecs ride on a table we did read, never on the assumed fallback.
+        let pipeline = DP_AUDIO_CODECS.split(',').filter(|c| !table_gated(c));
+        audio.into_iter().chain(pipeline).collect::<Vec<_>>().join(",")
     };
+    if audio.split(',').any(|c| c == "opus") {
+        let old = audio_channels.get("opus").copied().unwrap_or(0);
+        audio_channels.insert("opus".to_owned(), min_nz(old, OPUS_AUTO_MAX_CHANNELS));
+    }
     Some(Caps {
         hevc,
         hevc_max,
@@ -452,6 +493,7 @@ pub fn probe() {
                     String::new()
                 };
                 let mut c = c;
+                plx_base::eventlog::log(&format!("devcaps: table audio rows: {}", table_audio_rows(&s)));
                 c.vp9_bit_depth = vp9_bit_depth_for(crate::tv::device::info().major);
                 plx_base::eventlog::log(&format!(
                     "devcaps: hevc={} {}x{} vp9={} av1={} audio={} rows: h264={}x{}@{} hevc={}x{}@{}{vp9_row}{av1_row} vp9bits={} (device table)",
@@ -604,8 +646,32 @@ mod tests {
         let frac = parse(r#"{"videoCodecs":[{"name":"H.264","maxWidth":1920,"maxHeight":1088,"maxFrameRate":59.94}]}"#).unwrap();
         assert_eq!(frac.h264_row, (1920, 1088, 60));
         // FLAC/MPEG are in the table but not in the pipeline's decode set; the subset keeps
-        // DP_AUDIO_CODECS's own order, not the table's.
-        assert_eq!(c.audio, "aac,ac3,eac3,dts");
+        // DP_AUDIO_CODECS's own order, not the table's. Opus has no row and is admitted anyway.
+        assert_eq!(c.audio, "aac,ac3,eac3,dts,opus");
+    }
+
+    /// Opus is a pipeline capability: admitted on a table without its row, but never on the assumed
+    /// fallback, and a table whose rows name no table-gated codec still falls back whole.
+    #[test]
+    fn opus_rides_on_a_read_table_only() {
+        assert!(parse(REAL).unwrap().audio_has("opus"));
+        assert!(!Caps::assumed().audio_has("opus"));
+        assert!(parse(REAL).unwrap().forced_feeds_audio("opus"));
+        assert!(!Caps::assumed().forced_feeds_audio("opus"), "Forced gates Opus on the table too");
+        // Auto takes stereo Opus only; a wider track goes to the server, even when a table row
+        // claims more (#918). Forced keeps no ceiling.
+        let real = parse(REAL).unwrap();
+        assert!(real.audio_supports("opus", 2) && real.audio_supports("opus", 1));
+        assert!(!real.audio_supports("opus", 6), "surround Opus is the server's in Auto");
+        assert_eq!(real.audio_channels.get("opus"), Some(&2));
+        let claims_six = r#"{"videoCodecs":[{"name":"H.264","maxWidth":1920,"maxHeight":1080}],
+            "audioCodecs":[{"name":"AAC","channels":6},{"name":"OPUS","channels":6}]}"#;
+        assert_eq!(parse(claims_six).unwrap().audio_channels.get("opus"), Some(&2));
+        assert!(!Caps::assumed().audio_channels.contains_key("opus"));
+        let no_audio = r#"{"videoCodecs":[{"name":"H.264","maxWidth":1920,"maxHeight":1080}],
+            "audioCodecs":[{"name":"WMA","channels":2}]}"#;
+        assert_eq!(parse(no_audio).unwrap().audio, Caps::assumed().audio);
+        assert_eq!(table_audio_rows(REAL), "MPEG/2,AAC/6,AC3/6,EAC3/8,DTS/6,FLAC/6");
     }
 
     /// PMS names DTS `dca` (every DTS entry in the profiles shipped with PMS spells it so); the
@@ -725,7 +791,7 @@ mod tests {
         .unwrap();
         assert!(!c.hevc);
         assert_eq!(c.hevc_max, (1920, 1088));
-        assert_eq!(c.audio, "aac");
+        assert_eq!(c.audio, "aac,opus");
     }
 
     /// Codec-name matching survives the spelling variants firmwares use: case, dots, dashes
@@ -739,7 +805,7 @@ mod tests {
         )
         .unwrap();
         assert!(c.hevc);
-        assert_eq!(c.audio, "aac,ac3,eac3");
+        assert_eq!(c.audio, "aac,ac3,eac3,opus");
     }
 
     /// Garbage in must not panic AND must not half-parse: every unusable input lands on None so

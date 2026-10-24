@@ -5463,6 +5463,15 @@ pub fn stream_vcodec(ps: &PlaybackSession) -> String {
 pub fn stream_acodec(ps: &PlaybackSession) -> String {
     ps.stream_acodec.clone()
 }
+/// The carried audio track's channel count when it is the codec the stream declares, else 0.
+/// An Opus Load needs it (`opusInfo`); a native track switch moves only `stream_acodec`, so a
+/// switch between two Opus tracks of different widths still reads the first one's count.
+pub fn stream_achannels(ps: &PlaybackSession) -> i64 {
+    ps.cur_audio
+        .as_ref()
+        .filter(|a| a.codec.eq_ignore_ascii_case(&ps.stream_acodec))
+        .map_or(0, |a| a.channels)
+}
 /// direct-play source video fps for the Load esInfo (0 = unknown/transcode → omit)
 pub fn stream_fps(ps: &PlaybackSession) -> f64 {
     ps.stream_fps

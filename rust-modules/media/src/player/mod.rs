@@ -1541,6 +1541,7 @@ impl Diag {
             2 => "AC3 PLUS",
             3 => "AAC",
             4 => "DTS",
+            5 => "OPUS",
             _ => "NONE (needAudio:false)",
         }
     }
