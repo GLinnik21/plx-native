@@ -1460,8 +1460,10 @@ impl Painter {
     /// a wash cross-fadeable BETWEEN two items — dissolving one item's colours into another's is
     /// still a spring per corner channel; see `AmbientWash`.
     ///
-    /// Always dithered (±1-LSB TPDF noise): an opaque, slow, full-screen gradient bands without it,
-    /// moving or not, and there is no flag to turn it off (`gfx::draw_ambient` says why).
+    /// A gradient is always dithered (±1-LSB TPDF noise): an opaque, slow, full-screen gradient
+    /// bands without it, moving or not, and there is no flag to turn it off (`gfx::draw_ambient`
+    /// says why). Four equal corners are not a gradient: nothing bands, and the renderer draws that
+    /// as a clear of the rect's box, on exact 8-bit codes, with no fragment shaded.
     ///
     /// `resting` is the wash's own at-rest signal ([`AmbientWash::at_rest`]): every spring that
     /// eases it has landed on its target, so `k` is final. A glass over the wash re-takes its

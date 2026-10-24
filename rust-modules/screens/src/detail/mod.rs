@@ -314,7 +314,8 @@ pub struct DetailScreen {
     /// not flat and dithers unconditionally, and both are wrong here. This wash must not be laid
     /// over a live video plane at all ([`keyed_ground_over_plane`]), which is a per-frame answer
     /// `PageGround` does not offer and should not. (Its dither is not a question: every wash
-    /// dithers, the photograph sliding over it included — `gfx::draw_ambient`.)
+    /// dithers once it has a gradient, the photograph sliding over it included — `gfx::draw_ambient`;
+    /// with no photograph yet it is one flat colour, drawn as a clear.)
     ground: AmbientWash,
     /// The catalog row for this item, captured ONCE at [`new`](Self::new) — the same
     /// construction-time-only snapshot [`ground`](Self::ground)'s blur envelope takes. This is a

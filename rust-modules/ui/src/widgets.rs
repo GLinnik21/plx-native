@@ -3779,9 +3779,10 @@ impl AmbientWash {
     /// Paint it over `r`. Opaque — this REPLACES what is under it (see the type docs), so it belongs
     /// at the bottom of a screen's draw, standing in for the flat clear.
     ///
-    /// Always dithered, on every screen and every frame — including under Home's diving hero and
-    /// Detail's scrolling still (`gfx::draw_ambient` records the three gates that were tried and
-    /// why each came back out).
+    /// A gradient is always dithered, on every screen and every frame — including under Home's
+    /// diving hero and Detail's scrolling still (`gfx::draw_ambient` records the three gates that
+    /// were tried and why each came back out). A wash whose four corners are one colour has no
+    /// gradient to band: the renderer draws it as a clear of `r` instead.
     pub fn draw(&self, p: Painter, r: Rect) {
         p.ambient(r, 1.0, self.drawn_corners(), self.at_rest());
     }
@@ -3803,6 +3804,13 @@ impl AmbientWash {
     /// TOOK THE RAMP: when it did not, the ramp is the caller's to draw as before, over all of
     /// this — which is also the answer whenever the ramp would have had to go UNDER an art that
     /// stayed a layer of its own. Every fallback is the layered picture, never a different one.
+    ///
+    /// **A ground with NO photograph is one flat colour** ([`flat_ground`](Self::flat_ground): the
+    /// wash and the ramp folded into their means), which the renderer draws as a clear of `r`
+    /// rather than a shader pass over it (`gfx::draw_ambient`). That is what Home's shelves and grid
+    /// stand on once the hero has left, and Detail's page while its still has no texture. It always
+    /// takes the ramp when there is one, so the caller draws none; where there IS art nothing
+    /// changes, and the two are never mixed within one call.
     pub fn draw_ground(
         &self,
         p: Painter,
@@ -3811,6 +3819,10 @@ impl AmbientWash {
         ramp: Option<WashRamp>,
     ) -> bool {
         let art = art.filter(|a| a.tex != 0);
+        if art.is_none() {
+            p.ambient(r, 1.0, [self.flat_ground(r, ramp); 4], self.at_rest());
+            return ramp.is_some();
+        }
         let split = art.and_then(|a| art_wash_split(r, a.rect)).filter(|_| plx_gfx::gfx::art_wash_ok());
         let art_taken = split.is_some();
         let resting = self.at_rest();
@@ -3848,6 +3860,27 @@ impl AmbientWash {
             }
         }
         ramp.is_some()
+    }
+
+    /// **The one colour a ground with no photograph is drawn as over `r`**: the wash's mean with
+    /// `ramp` mixed in at its mean alpha, snapped to exact 8-bit codes ([`code`]) so the clear that
+    /// draws it never depends on `GL_DITHER` or on how the GPU rounds.
+    ///
+    /// The wash is the bilinear of its [`drawn_corners`](Self::drawn_corners), whose mean over any
+    /// rect is the mean of the four corners (the `u*v` term averages to a quarter of its range).
+    /// The ramp's mean alpha is taken over 64 rows of `r`, and applied by the mix `vs_ambient.vert`
+    /// does per vertex: `wash + (ink - wash) * alpha`. A wash that is already one colour comes back
+    /// as exactly that colour.
+    fn flat_ground(&self, r: Rect, ramp: Option<WashRamp>) -> [f32; 3] {
+        const ROWS: usize = 64;
+        let corners = self.drawn_corners();
+        let mut mean: [f32; 3] = std::array::from_fn(|i| corners.iter().map(|c| c[i]).sum::<f32>() / 4.0);
+        if let Some(q) = ramp {
+            let row = |k: usize| r.y + r.h * (k as f32 + 0.5) / ROWS as f32;
+            let alpha = (0..ROWS).map(|k| q.alpha(row(k))).sum::<f32>() / ROWS as f32;
+            mean = std::array::from_fn(|i| mean[i] + (q.ink[i] - mean[i]) * alpha);
+        }
+        mean.map(code)
     }
 }
 
@@ -3959,9 +3992,10 @@ pub fn art_wash_split(r: Rect, art: Rect) -> Option<(Rect, [Option<Rect>; 4])> {
 /// * **A ground that has resolved to the app's own clear colour is not drawn.** It is a
 ///   ~2M-fragment full-screen pass that changes nothing; `AmbientWash::is_flat` is the test and
 ///   forgetting it costs a whole screen's fill-rate headroom for an invisible gradient.
-/// * **This ground always dithers** — as every wash does now, the two with artwork sliding over
-///   them included (`gfx::draw_ambient`). A browsing ground has nothing over it, so there is no
-///   frame on which it is not the thing being looked at. [`draw`](Self::draw) takes no flag.
+/// * **This ground always dithers** — as every gradient wash does now, the two with artwork sliding
+///   over them included (`gfx::draw_ambient`). A browsing ground has nothing over it, so there is no
+///   frame on which it is not the thing being looked at. [`draw`](Self::draw) takes no flag. (A
+///   ground whose four corners are one colour has no gradient to band and is drawn as a clear.)
 ///
 /// What stays the screen's business is the per-corner SHAPE — how far each corner leans — for the
 /// reason [`AmbientWash::GROUND_W`] gives: one strength, many arrangements. [`CARD_W`](Self::CARD_W)
@@ -4081,7 +4115,7 @@ impl PageGround {
     /// Paint the ground under everything, standing in for the flat clear — **skipped when it has
     /// resolved to that clear anyway**, which is the whole fill-rate argument in the type's doc.
     ///
-    /// **Dithered on every frame, unconditionally**, like every wash. A browsing screen's ground is
+    /// **Dithered on every frame, unconditionally**, like every gradient wash. A browsing screen's ground is
     /// directly visible in every gutter of the grid standing on it, at rest and while it dissolves,
     /// and an undithered gradient there bands in slow diagonal treads that CRAWL as the ground
     /// moves. The fill-rate answer

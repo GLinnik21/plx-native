@@ -135,3 +135,115 @@ fn one_opaque_fragment_is_the_wash_the_art_and_the_ramp_stacked() {
         }
     }
 }
+
+// ── A ground with no photograph is ONE flat colour (`AmbientWash::flat_ground`) ──────────────────
+
+/// A wash resting on `corners` (tl, tr, br, bl), the way `AmbientWash::jump` puts it there.
+fn wash_on(corners: [[f32; 3]; 4]) -> AmbientWash {
+    let mut w = AmbientWash::flat([0.0; 4]);
+    w.jump(corners.map(|c| [c[0], c[1], c[2], 1.0]));
+    w
+}
+
+/// An 8-bit code as the float the GPU is sent.
+fn code8(v: u8) -> f32 {
+    v as f32 / 255.0
+}
+
+/// A channel sits on an 8-bit code to float precision (the clear is exact only there).
+fn on_code(v: f32) -> bool {
+    ((v * 255.0) - (v * 255.0).round()).abs() < 1e-4
+}
+
+/// **A wash that is already one colour is that colour, to the code** - the page's resting ground
+/// and every artless poster's, so a flat clear of it is the shader's picture minus its dither.
+/// Off-code springs (a cascade mix, a settling tail) land on the nearest code, never between two.
+#[test]
+fn a_flat_wash_is_its_own_colour_on_exact_codes() {
+    let ink = [0.0, 0.0, 0.0, 1.0];
+    let still = WashRamp { ink, stops: [(0.0, 0.0), (SCR_H, 0.0), (SCR_H, 0.0)] };
+    for c in [[code8(31), code8(27), code8(40)], [0.0; 3], [1.0; 3], [0.2001, 0.5004, 0.9996]] {
+        let want = c.map(code);
+        let w = wash_on([c; 4]);
+        assert_eq!(w.flat_ground(Rect::FULL, None), want, "{c:?}");
+        assert!(want.into_iter().all(on_code), "{want:?}");
+        // A ramp of no alpha anywhere folds nothing in.
+        assert_eq!(w.flat_ground(Rect::FULL, Some(still)), want, "{c:?} under a ramp of no alpha");
+    }
+}
+
+/// **A gradient wash is the mean of the field the shader would have drawn**: the 8x8 grid of the
+/// bilinear (`sample`) over the panel, which for a bilinear is the mean of its four corners. Checked
+/// against the grid itself, on a field that leans a different way in every channel.
+#[test]
+fn a_gradient_wash_is_the_mean_of_its_eight_by_eight_field() {
+    let corners = [
+        [code8(200), code8(10), code8(90)],
+        [code8(20), code8(240), code8(90)],
+        [code8(60), code8(130), code8(5)],
+        [code8(250), code8(70), code8(180)],
+    ];
+    let w = wash_on(corners);
+    for r in [Rect::FULL, Rect::new(100.0, 50.0, 1200.0, 700.0)] {
+        let mut mean = [0.0f32; 3];
+        for j in 0..8 {
+            for i in 0..8 {
+                let c = w.sample(r, r.x + r.w * (i as f32 + 0.5) / 8.0, r.y + r.h * (j as f32 + 0.5) / 8.0);
+                for (m, v) in mean.iter_mut().zip(c) {
+                    *m += v / 64.0;
+                }
+            }
+        }
+        let got = w.flat_ground(r, None);
+        for ch in 0..3 {
+            assert!(on_code(got[ch]), "channel {ch}: {} is between codes", got[ch]);
+            // Rounding to the nearest code moves a channel by at most half of one.
+            assert!((got[ch] - mean[ch]).abs() <= 0.5 / 255.0 + 1e-5, "channel {ch}: {} vs mean {}", got[ch], mean[ch]);
+        }
+    }
+}
+
+/// **The ramp is folded in at its mean alpha over the rect's rows, by the mix the vertex shader
+/// does** (`wash + (ink - wash) * alpha`), and lands on a code. A ramp rising 0 to 0.6 down the
+/// panel has the mean 0.3. (A mix can sit on a half-code, where either neighbour is a right round,
+/// so each channel is held to the exact mix within half a code rather than to one rounding.)
+#[test]
+fn the_ramp_is_folded_in_at_its_mean_alpha() {
+    let wash = [code8(100), code8(200), code8(50)];
+    let w = wash_on([wash; 4]);
+    let ink = [code8(255), code8(0), code8(60), 1.0];
+    let ramp = WashRamp { ink, stops: [(0.0, 0.0), (SCR_H, 0.6), (SCR_H, 0.6)] };
+    let near = |got: [f32; 3], alpha: f32, what: &str| {
+        for ch in 0..3 {
+            let exact = wash[ch] + (ink[ch] - wash[ch]) * alpha;
+            assert!(on_code(got[ch]), "{what}: channel {ch} {} is between codes", got[ch]);
+            assert!((got[ch] - exact).abs() <= 0.5 / 255.0 + 1e-5, "{what}: channel {ch}: {} vs {exact}", got[ch]);
+        }
+    };
+    near(w.flat_ground(Rect::FULL, Some(ramp)), 0.3, "the whole panel");
+    // The same ramp over the top half only: its rows run 0 to 0.3, mean 0.15.
+    near(w.flat_ground(Rect::new(0.0, 0.0, SCR_W, SCR_H / 2.0), Some(ramp)), 0.15, "only the rows of the rect count");
+    // A ramp that has not begun by the rect's last row adds nothing.
+    let late = WashRamp { ink, stops: [(500.0, 0.0), (800.0, 0.5), (SCR_H, 0.9)] };
+    assert_eq!(w.flat_ground(Rect::new(0.0, 0.0, SCR_W, 400.0), Some(late)), wash.map(code));
+}
+
+/// Home's real ramp (a knee inside the panel) folded at 64 rows lands within one code of the
+/// ramp's true mean, taken over 4096 rows - the cost of the sampling is below what the eye can see.
+#[test]
+fn the_folded_home_ramp_is_within_a_code_of_its_true_mean() {
+    let wash = [code8(180), code8(120), code8(60)];
+    let w = wash_on([wash; 4]);
+    for hero_a in [0.02f32, 0.35, 1.0] {
+        let [y0, knee, mid, foot] = crate::landing_hero::base_scrim_ramp(hero_a);
+        let ink = theme::scrim(1.0);
+        let ramp = WashRamp { ink, stops: [(y0, 0.0), (knee, mid), (SCR_H, foot)] };
+        let n = 4096;
+        let alpha = (0..n).map(|k| ramp.alpha(SCR_H * (k as f32 + 0.5) / n as f32)).sum::<f32>() / n as f32;
+        let got = w.flat_ground(Rect::FULL, Some(ramp));
+        for ch in 0..3 {
+            let exact = wash[ch] + (ink[ch] - wash[ch]) * alpha;
+            assert!((got[ch] - exact).abs() <= 1.0 / 255.0, "hero_a {hero_a} channel {ch}: {} vs {exact}", got[ch]);
+        }
+    }
+}
