@@ -398,7 +398,6 @@ pub(crate) struct Bridge {
     /// The registry's answer for every server slot, refilled in place immediately before each step
     /// that decides from it (`adapters::stores::refill_client_keys`), in the same call. ONE value
     /// kept for the life of the Bridge, so a pump that runs every frame allocates nothing for it.
-    #[expect(dead_code, reason = "its first reader is the next commit's collection pump")]
     client_keys: plx_plex::plex::ClientKeys,
     stores: plx_data::stores::Stores,
     mounter: AppMounter,
@@ -1256,11 +1255,21 @@ impl Bridge {
         self.stores.person_view()
     }
 
+    /// Run one Collection command with the registry's answer as of now. A command emits no job
+    /// (the page's request is the pump's), so there is nothing to drain.
     pub(crate) fn collection_run(&mut self, cmd: plx_data::stores::collection::CollectionCmd) -> bool {
-        self.stores.collection_run(cmd)
+        super::adapters::stores::refill_client_keys(&mut self.client_keys);
+        self.stores.collection_run(cmd, &self.client_keys)
     }
 
-    pub(crate) fn collection_pump(&mut self) -> bool { self.stores.collection_pump() }
+    /// One frame's Collection pump: refill the keys, step, and start the request the step emitted,
+    /// all in this call, so the tape's admission record is written where the page asked for it.
+    pub(crate) fn collection_pump(&mut self) -> bool {
+        super::adapters::stores::refill_client_keys(&mut self.client_keys);
+        let changed = self.stores.collection_pump(&self.client_keys);
+        self.start_store_jobs_of(plx_data::stores::StoreId::Collection);
+        changed
+    }
 
     /// The bare store, for a seam that is handed a `&mut MetadataStore` instead of the Bridge
     /// (`playback::PlaybackResources`). A command run on it that emits a job leaves the job on the
