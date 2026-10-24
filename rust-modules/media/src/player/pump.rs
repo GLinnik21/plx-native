@@ -1969,7 +1969,7 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     // silence or a drifting sound. Video-only Loads (the `noaudio` trigger) have no audio to judge.
     if super::applied_rate_permille() != super::RATE_NORMAL
         && eng.stage >= Stage::Playing
-        && !plx_base::devtrig::flag("noaudio")
+        && !super::no_audio_armed()
         && TX.seek_to_ns.load(Relaxed) < 0
     {
         match SHARED.speed_audio_verdict.load(Relaxed) {

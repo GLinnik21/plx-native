@@ -1752,32 +1752,44 @@ pub fn set_play_rate(ps: &crate::route::PlaybackSession, permille: i32) -> bool 
     request_seek(intended_pos_ns(ps).max(0));
     true
 }
+plx_base::devtrig::latched_flag!(
+    /// `/tmp/plxnative-noaudio` — a video-only Load (`needAudio:false`, no audio ES fed), the dev A/B
+    /// that isolates the audio path. Latched: [`speed_offer`] runs every frame while the More menu
+    /// is open and the pump's speed check every tick, and a `devtrig::flag` read is a `stat(2)`
+    /// syscall per call.
+    pub(crate) fn no_audio_armed = "noaudio";
+);
+
 /// **The speeds this playback can offer** (Normal included), or none when speed is unavailable:
 /// a trailer preview, segmented HLS (not wired), audio the bundled FFmpeg cannot decode
-/// (`ff::speed_decoder_available`), or a television that has already failed a PCM session
-/// ([`speed_unsupported`]). The menu offers exactly these, and a Load plays only one of them.
+/// (`ff::speed_decoder_available`), a television that has already failed a PCM session
+/// ([`speed_unsupported`]), or a stream whose fed rate would pass the frame rate the Load can
+/// declare ([`engine::speed_fps_ceiling_now`]). The menu offers exactly these, and a Load plays
+/// only one of them.
 pub fn speed_offer(ps: &crate::route::PlaybackSession) -> Vec<i32> {
     if crate::route::is_preview(ps) || crate::route::is_segmented_hls(ps) || speed_unsupported() {
         return Vec::new();
     }
     let codec = crate::route::stream_acodec(ps);
-    let no_audio = plx_base::devtrig::flag("noaudio");
-    if !no_audio && !crate::ff::speed_decoder_available(&codec) {
+    if !no_audio_armed() && !crate::ff::speed_decoder_available(&codec) {
         return Vec::new();
     }
-    speeds_within(crate::route::stream_fps(ps))
+    speeds_within(crate::route::stream_fps(ps), engine::speed_fps_ceiling_now(ps))
 }
 
-/// The most frames per second a speed may ask the decoder to show: at speed `r` a `fps` source
-/// is fed at `fps * r` (every frame, closer together), and 60 is what every Load envelope this
-/// app declares can carry. 24p reaches 2x; 50p and 60p offer nothing above 1x.
+/// The most frames per second a speed may ask the decoder to show, at most: at speed `r` a `fps`
+/// source is fed at `fps * r` (every frame, closer together), and 60 is what every Load envelope
+/// this app declares can carry. It is the ceiling when the device's own table says nothing
+/// tighter; a measured decoder row below it lowers it ([`engine::speed_fps_ceiling`]). 24p
+/// reaches 2x there; 50p and 60p offer nothing above 1x.
 pub const SPEED_MAX_FPS: f64 = 60.5;
 
-/// [`PLAY_RATES`] a `fps` source can play without asking for more than [`SPEED_MAX_FPS`]. An
-/// unknown rate (0) is treated as film, the common case for a file whose rate PMS did not report.
-pub fn speeds_within(fps: f64) -> Vec<i32> {
+/// [`PLAY_RATES`] a `fps` source can play without being fed faster than `max_fps`: the ceiling for
+/// this playback, [`SPEED_MAX_FPS`] or a measured decoder row's lower rate. An unknown rate (0) is
+/// treated as film, the common case for a file whose rate PMS did not report.
+pub fn speeds_within(fps: f64, max_fps: f64) -> Vec<i32> {
     let fps = if fps > 0.0 { fps } else { 24.0 };
-    PLAY_RATES.iter().copied().filter(|r| fps * *r as f64 / 1000.0 <= SPEED_MAX_FPS).collect()
+    PLAY_RATES.iter().copied().filter(|r| fps * *r as f64 / 1000.0 <= max_fps).collect()
 }
 
 /// **The speed a Load is about to play at**: the viewer's, if this playback offers it, else 1x —
@@ -2643,11 +2655,11 @@ mod tests {
     /// (it would ask the decoder for more than 60 fps), and a Load plays only an offered speed.
     #[test]
     fn a_session_plays_only_an_offered_speed() {
-        assert_eq!(speeds_within(23.976), PLAY_RATES.to_vec());
-        assert_eq!(speeds_within(0.0), PLAY_RATES.to_vec(), "unknown is treated as film");
-        assert_eq!(speeds_within(30.0), PLAY_RATES.to_vec());
-        assert_eq!(speeds_within(50.0), vec![500, 750, 1000]);
-        assert_eq!(speeds_within(59.94), vec![500, 750, 1000]);
+        assert_eq!(speeds_within(23.976, SPEED_MAX_FPS), PLAY_RATES.to_vec());
+        assert_eq!(speeds_within(0.0, SPEED_MAX_FPS), PLAY_RATES.to_vec(), "unknown is treated as film");
+        assert_eq!(speeds_within(30.0, SPEED_MAX_FPS), PLAY_RATES.to_vec());
+        assert_eq!(speeds_within(50.0, SPEED_MAX_FPS), vec![500, 750, 1000]);
+        assert_eq!(speeds_within(59.94, SPEED_MAX_FPS), vec![500, 750, 1000]);
         assert_eq!(session_rate(1500, &PLAY_RATES), 1500);
         assert_eq!(session_rate(1500, &[500, 750, 1000]), RATE_NORMAL, "not offered");
         assert_eq!(session_rate(1500, &[]), RATE_NORMAL, "speed unavailable");

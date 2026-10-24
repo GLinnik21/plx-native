@@ -844,12 +844,7 @@ fn sink_envelope(
         env.fps = fps_class(stream_fps);
     }
     if measured {
-        let (rw, rh, rf) = match video {
-            LoadVideo::H264 => caps.h264_row,
-            LoadVideo::H265 => caps.hevc_row,
-            LoadVideo::Av1 => caps.av1_row,
-            LoadVideo::Vp9 => caps.vp9_row,
-        };
+        let (rw, rh, rf) = decoder_row(video, caps);
         let clamp = |v: u32, bound: u32| if bound == 0 { v } else { v.min(bound) };
         env.w = clamp(env.w, rw);
         env.h = clamp(env.h, rh);
@@ -859,6 +854,51 @@ fn sink_envelope(
         }
     }
     env
+}
+
+/// The device's measured decoder row (`(w, h, fps)`, 0 = no bound) for the codec a Load declares:
+/// what [`sink_envelope`] clamps to and [`speed_fps_ceiling`] reads.
+fn decoder_row(video: LoadVideo, caps: &plx_platform::devcaps::Caps) -> (u32, u32, u32) {
+    match video {
+        LoadVideo::H264 => caps.h264_row,
+        LoadVideo::H265 => caps.hevc_row,
+        LoadVideo::Av1 => caps.av1_row,
+        LoadVideo::Vp9 => caps.vp9_row,
+    }
+}
+
+/// **The frame rate a playback speed may feed this stream at**: [`super::SPEED_MAX_FPS`], or the
+/// measured decoder row's rate when that is lower. A speed feeds every frame `rate` times closer
+/// together and the Load declares that fed rate, which [`sink_envelope`] then clamps to the row; a
+/// speed past the row would play at the row's rate and the sound would run away from the picture,
+/// so the menu must not offer it. Only a table that was actually READ bounds anything (`measured`,
+/// the same condition [`sink_envelope_now`] clamps under), a stream whose codec the Load cannot
+/// declare has no row, and a row with no rate (0) is no bound. The `+ 0.5` is the 60.5 ceiling's own
+/// tolerance, so a 29.97 stream is not turned away from a 30 row. Pure; the wrapper feeds it the
+/// route.
+pub(crate) fn speed_fps_ceiling(
+    video: Option<LoadVideo>,
+    caps: &plx_platform::devcaps::Caps,
+    measured: bool,
+) -> f64 {
+    let row_fps = match video {
+        Some(video) if measured => decoder_row(video, caps).2,
+        _ => 0,
+    };
+    if row_fps == 0 {
+        return super::SPEED_MAX_FPS;
+    }
+    (f64::from(row_fps) + 0.5).min(super::SPEED_MAX_FPS)
+}
+
+/// [`speed_fps_ceiling`] for the playback on screen, from the live caps the way
+/// [`sink_envelope_now`] reads them.
+pub(crate) fn speed_fps_ceiling_now(ps: &crate::route::PlaybackSession) -> f64 {
+    speed_fps_ceiling(
+        LoadVideo::of_stream(&crate::route::stream_vcodec(ps)),
+        plx_platform::devcaps::caps(),
+        plx_platform::devcaps::measured() && !crate::route::forced_direct_play(ps),
+    )
 }
 
 /// The sink envelope for THIS Load, from the route (main thread), with the dev override applied.
@@ -1482,7 +1522,7 @@ fn start_bufferfeed_inner(
     // fixed payloads.)
     // dev A/B: /tmp/plxnative-noaudio feeds video only (needAudio:false + skip es=2) to isolate
     // whether the audio ES (E-AC3/Atmos) is what stalls the sink on 4K HEVC.
-    let no_audio = plx_base::devtrig::flag("noaudio");
+    let no_audio = super::no_audio_armed();
     crate::ff::set_feed_audio(!no_audio);
     let stream_payload;
     // Every arm below assigns this — the static payloads through `static_envelope`, the streamed
@@ -6312,6 +6352,57 @@ mod sink_envelope_tests {
         c.h264_row = h264;
         c.hevc_row = hevc;
         c
+    }
+
+    /// The speed menu offers only what the Load can declare: on a set whose measured H.264 row is
+    /// 4K@30, a 24p stream at 1.5x is fed at 36 fps and the envelope clamps the declaration to 30,
+    /// so 1.5x and above are not offered. Without a measured table, for a codec the Load cannot
+    /// declare, or for a row with no rate, the flat [`SPEED_MAX_FPS`] ceiling stands.
+    #[test]
+    fn the_speed_offer_stops_at_the_measured_rows_frame_rate() {
+        let row30 = plx_platform::devcaps::Caps {
+            h264_row: (3840, 2160, 30),
+            ..plx_platform::devcaps::Caps::assumed()
+        };
+        let offered = |fps: f64, video: Option<LoadVideo>, caps: &plx_platform::devcaps::Caps, measured: bool| {
+            crate::player::speeds_within(fps, speed_fps_ceiling(video, caps, measured))
+        };
+        assert_eq!(
+            offered(24.0, Some(LoadVideo::H264), &row30, true),
+            vec![500, 750, 1000, 1250],
+            "24p at 1.5x is fed at 36 fps, past a 30 fps row"
+        );
+        assert_eq!(
+            offered(29.97, Some(LoadVideo::H264), &row30, true),
+            vec![500, 750, 1000],
+            "29.97p is within the 30 row at 1x only"
+        );
+        assert_eq!(
+            offered(24.0, Some(LoadVideo::H265), &row30, true),
+            crate::player::PLAY_RATES.to_vec(),
+            "the H.264 row bounds H.264 only"
+        );
+        for (what, video, caps, measured) in [
+            ("an unmeasured table", Some(LoadVideo::H264), &row30, false),
+            ("a codec the Load cannot declare", None, &row30, true),
+            (
+                "a row with no rate",
+                Some(LoadVideo::H264),
+                &plx_platform::devcaps::Caps { h264_row: (3840, 2160, 0), ..plx_platform::devcaps::Caps::assumed() },
+                true,
+            ),
+        ] {
+            assert_eq!(speed_fps_ceiling(video, caps, measured), crate::player::SPEED_MAX_FPS, "{what}");
+        }
+        let row120 = plx_platform::devcaps::Caps {
+            h264_row: (3840, 2160, 120),
+            ..plx_platform::devcaps::Caps::assumed()
+        };
+        assert_eq!(
+            speed_fps_ceiling(Some(LoadVideo::H264), &row120, true),
+            crate::player::SPEED_MAX_FPS,
+            "a faster row never raises the ceiling"
+        );
     }
     #[test]
     fn audio_payload_names_dts_and_refuses_unsupported_formats() {
