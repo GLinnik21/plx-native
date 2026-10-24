@@ -1,116 +1,32 @@
-//! The player's transport-pause contract and its app-switch lifecycle machine.
+//! The player's app-switch lifecycle machine.
 //!
 //! `ForegroundLifecycle` is a tested `State + Event -> Effects` machine. Its state is private and
 //! its one writer is `step(&ForegroundEvent, &mut Vec<ForegroundEffect>) -> Handled`; callers read
 //! it through `awaiting_load`, `claimable_clock`, `pending_flight` and `pending_load_attempt` (and
-//! `state()` under `test` / `test-support`). The drivers (`drive_foreground`,
-//! `poll_foreground_flight`, `poll_foreground_load`) hold one event in a single slot, run the
-//! effects each step asks for through a `ForegroundActuator`, and feed every answering effect's
-//! answer back as the next event. The transport helpers (`paused`, `viewer_paused`,
-//! `set_transport_paused`, ...) are the one door every surface reaches the player's pause through.
-//! All of it describes the PLAYER's transport and its resume after an
-//! OS suspend, and the player machine ([`super::machine::Player`]), the detail page's trailer
-//! transport ([`super::preview::transport`]) and the claim hold ([`super::claim_hold`]) all name
-//! it, so it lives here rather than in `app::lifecycle` (a layer above the player). The loop's
-//! adapter for it, `PlayerForegroundActuator`, needs `app` state and stays in `app::lifecycle`,
-//! which re-exports everything below so app code spells the names it always did.
+//! `state()` under `test` / `test-support`). It reads no global: the pause it parks with arrives as
+//! a value on the event (`Park { viewer_paused, .. }`). The drivers which run it
+//! ([`super::foreground`]: `drive_foreground`, `poll_foreground_flight`, `poll_foreground_load`)
+//! hold one event in a single slot, run the effects each step asks for through a
+//! `ForegroundActuator`, and feed every answering effect's answer back as the next event. The
+//! transport helpers (`paused`, `viewer_paused`, `set_transport_paused`, ...) are the one door
+//! every surface reaches the player's pause through; they are [`super::transport`], the IO side of
+//! this contract, and nothing here names them.
+//! All of it describes the PLAYER's resume after an OS suspend, and the player machine
+//! ([`super::machine::Player`]) holds the `ForegroundLifecycle`, so it lives here rather than in
+//! `app::lifecycle` (a layer above the player). The loop's adapter for it,
+//! `PlayerForegroundActuator`, needs `app` state and stays in `app::lifecycle`, which re-exports
+//! the names of this module, [`super::foreground`] and [`super::transport`] so app code spells
+//! them as it always did.
 //!
 //! Moved out of `app/lifecycle.rs` verbatim in module-layer step L12 (a pure move; the
-//! `RESUME_REWIND_NS` constant came with it from `app/mod.rs`, and `resume_if_paused` from
-//! `app/playback.rs`).
+//! `RESUME_REWIND_NS` constant came with it from `app/mod.rs`). The drivers and the transport
+//! helpers left for `foreground.rs` and `transport.rs` in the Sans-IO lifecycle PR B.
 
 use plx_machine::machine::Handled;
-use std::sync::atomic::Ordering::Relaxed;
 
 /// How far an OS-suspended, still-playing session rewinds when it is resumed (a paused one resumes
 /// at exactly the saved offset).
 const RESUME_REWIND_NS: i64 = 5_000_000_000;
-
-// transport state — was the C playback globals; now crate::player (atomics)
-#[inline]
-pub fn paused() -> bool {
-    crate::player::TX.paused.load(Relaxed)
-}
-#[inline]
-pub fn set_paused(v: bool) {
-    crate::player::TX.commit_paused(v)
-}
-
-/// Publish the viewer's Play for a restore that is about to Load with no Engine. A park keeps
-/// `TX.paused` across the reload (`TX::reset_for_reload`), and the Load arms its initial clock
-/// hold from it (`engine::ClockStartGuard`): a paused save restored PLAYING would otherwise start
-/// under the viewer's pause, whose hold fences the Load's first Play behind a prime and leaves the
-/// real Play to the late `PlayClock`. There is nothing native to resume yet, so this is the commit
-/// half of [`set_transport_paused`] alone; the new Load's own first Play is the native half. The
-/// caller guarantees there is no Engine (`PlayerForegroundActuator::before_load` checks
-/// `is_live`): over a live one this would leave its pause standing while `TX` reads Playing.
-pub fn commit_viewer_resume_for_load() {
-    crate::player::claim_hold::note_user_transport();
-    crate::player::TX.commit_paused(false);
-}
-/// PURE: the paused value a transport request settles on. `Some(true)` is the remote's PLAY key,
-/// `Some(false)` its PAUSE, and `None` the single PLAYPAUSE toggle — which is the only one of the
-/// three that needs the current state at all.
-///
-/// One function rather than a `match` per caller: the player's `PlayerReq::Transport` and the
-/// detail page's full-trailer transport (`player::preview::transport`) answer the same key ladder,
-/// and two hand-spelled copies of a three-arm match is exactly how a PLAY key ends up toggling on
-/// one surface and resuming on the other.
-pub fn transport_target(play: Option<bool>, paused: bool) -> bool {
-    match play {
-        Some(true) => false,
-        Some(false) => true,
-        None => !paused,
-    }
-}
-
-/// The transport state the VIEWER sees and their next press toggles.
-///
-/// A claim's presentation hold (`player::claim_hold`) pauses the stream too, but that pause is the
-/// hold's loan, not the viewer's: while it stands the viewer sees a spinner over a playing intent,
-/// so the toggle means Pause (their intent, which the hold's restore then honours) and a seek's
-/// resume leaves the stream held until the landing.
-pub fn viewer_paused() -> bool {
-    paused() && !crate::player::claim_hold::owns_pause()
-}
-
-/// Ask the synchronized player clock to commit a user Pause/Resume. The player publishes the feed
-/// gate at the same accepted native boundary; keeping a second commit here used to leave a window
-/// in which deadline accounting still treated an already-accepted Pause as active playback.
-/// Resume during an internal HLS hold is accepted as a deferred transition: feeding reopens, while
-/// measured re-prime owns both the eventual Starfish Play and the matching ACB Resume.
-pub fn set_transport_paused(
-    pa: &mut crate::player::adapter::PlayerAdapter,
-    value: bool,
-) -> bool {
-    // PLAY while a hold owns the pause: the viewer sees a spinner over a playing intent, so Play is
-    // already satisfied. Resuming here would run the OLD stream mid-flight and replay its seconds
-    // after the landing, which still owes the play-back. Not a press that outranks the hold.
-    if !value && crate::player::claim_hold::owns_pause() {
-        return true;
-    }
-    // A viewer press outranks a claim's presentation hold (`player::claim_hold`), including the
-    // press that finds the transport already in the state it asks for.
-    crate::player::claim_hold::note_user_transport();
-    if paused() == value {
-        return true;
-    }
-    if value {
-        crate::player::pause(pa)
-    } else {
-        crate::player::resume(pa)
-    }
-}
-
-/// Resume if a seek landed while paused. Its stay-paused counterpart is the pump's
-/// `settle_paused_seek`, which re-pauses a paused-seek preroll the pump itself opened;
-/// `app::playback::commit_seek` is a bare seek and holds nothing. Written out four separate times
-/// in `app::playback` before it had a name.
-pub fn resume_if_paused(pa: &mut crate::player::adapter::PlayerAdapter) {
-    if viewer_paused() {
-        set_transport_paused(pa, false);
-    }
-}
 
 /// The inputs which move the foreground machine (carried by [`ForegroundEvent::Input`]).
 /// `DidForeground` and `PlayKey` may claim a parked playback session — one an OS suspend parked, or
@@ -248,7 +164,7 @@ pub enum ForegroundState<Attempt = crate::route::RouteStartAttempt> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ForegroundEvent<Attempt = crate::route::RouteStartAttempt> {
     /// The OS (or the pipeline's decoder release) took the playing session away. `saved_ns` is the
-    /// intended position; `viewer_paused` is the transport the VIEWER sees ([`viewer_paused`]),
+    /// intended position; `viewer_paused` is the transport the VIEWER sees ([`super::transport::viewer_paused`]),
     /// read by the caller because the machine reads no global.
     Park { saved_ns: i64, viewer_paused: bool },
     /// An app-switch suspend arrived while a flight was pending: drop it and park the session back
@@ -287,7 +203,7 @@ pub enum PrepareAnswer {
 
 impl PrepareAnswer {
     /// The answer a landed (or settled) resume gives.
-    fn of_outcome(outcome: crate::player::ResumeOutcome) -> Self {
+    pub(super) fn of_outcome(outcome: crate::player::ResumeOutcome) -> Self {
         if matches!(outcome, crate::player::ResumeOutcome::Prepared) {
             Self::Prepared
         } else {
@@ -296,7 +212,7 @@ impl PrepareAnswer {
     }
 
     /// The answer `begin_resume` gives.
-    fn of_start(start: crate::player::ResumeStart) -> Self {
+    pub(super) fn of_start(start: crate::player::ResumeStart) -> Self {
         match start {
             crate::player::ResumeStart::Settled(outcome) => Self::of_outcome(outcome),
             crate::player::ResumeStart::Pending => Self::Pending,
@@ -464,7 +380,7 @@ impl<Attempt: Copy + PartialEq> ForegroundLifecycle<Attempt> {
         self.state
     }
 
-    /// Whether the machine is waiting on a flight's landing ([`poll_foreground_flight`]).
+    /// Whether the machine is waiting on a flight's landing ([`super::foreground::poll_foreground_flight`]).
     pub fn flight_pending(&self) -> bool {
         self.pending_flight().is_some()
     }
@@ -886,7 +802,7 @@ pub enum ForegroundEffect<Attempt = crate::route::RouteStartAttempt> {
         started: bool,
     },
     /// The Load launched the exact attempt, so the caller mounts Player
-    /// ([`ForegroundActivation::Launched`]). The Load itself does not issue Play.
+    /// ([`super::foreground::ForegroundActivation::Launched`]). The Load itself does not issue Play.
     Launched { id: u64 },
     /// The pending flight was dropped by `ParkFlight`: stop what it registered
     /// (`suspend_bufferfeed`, the teardown an Engine's suspend takes).
@@ -895,7 +811,7 @@ pub enum ForegroundEffect<Attempt = crate::route::RouteStartAttempt> {
 
 impl<Attempt> ForegroundEffect<Attempt> {
     /// Whether the effect owes the machine an answer event (see the type's doc).
-    fn awaits_answer(&self) -> bool {
+    pub(super) fn awaits_answer(&self) -> bool {
         matches!(
             self,
             Self::Prepare { .. } | Self::Load { .. } | Self::PlayClock { .. }
@@ -904,63 +820,13 @@ impl<Attempt> ForegroundEffect<Attempt> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ForegroundActivation {
-    Ordinary,
-    Handled,
-    Launched,
-}
-
-pub trait ForegroundActuator {
-    type Attempt: Copy + PartialEq;
-
-    /// Prepare the resume at `resume_ns`: settled on the spot, or a flight the machine waits on
-    /// ([`Self::land_prepare`]).
-    fn prepare_resume(
-        &mut self,
-        ps: &mut crate::route::PlaybackSession,
-        resume_ns: i64,
-    ) -> crate::player::ResumeStart;
-    /// Drain the pending resume's landing, once a frame.
-    fn land_prepare(&mut self, ps: &mut crate::route::PlaybackSession) -> FlightLanding<crate::player::ResumeOutcome>;
-    /// Drain the pending Original rollback's landing, once a frame.
-    fn land_recovery(
-        &mut self,
-        ps: &mut crate::route::PlaybackSession,
-    ) -> FlightLanding<ForegroundLoadStart<Self::Attempt>>;
-    fn before_load(&mut self, resume_ns: i64, clock: ForegroundClock);
-    fn start_load(
-        &mut self,
-        ps: &mut crate::route::PlaybackSession,
-    ) -> ForegroundLoadStart<Self::Attempt>;
-    fn load_status(&mut self, attempt: Self::Attempt) -> ForegroundLoadStatus<Self::Attempt>;
-    fn after_load(
-        &mut self,
-        ps: &mut crate::route::PlaybackSession,
-        attempt: Option<Self::Attempt>,
-        clock: ForegroundClock,
-        started: bool,
-    );
-    fn play_clock(&mut self) -> bool;
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ForegroundLoadStart<Attempt> {
-    /// A rollback flight owns the way forward ([`ForegroundActuator::land_recovery`]).
+    /// A rollback flight owns the way forward ([`super::foreground::ForegroundActuator::land_recovery`]).
     Pending,
     AlreadyRunning,
     Launched(Attempt),
     Failed,
     Terminal,
-}
-
-/// What draining a pending flight's landing found.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FlightLanding<T> {
-    /// The worker has not landed.
-    Waiting,
-    /// The flight ended without landing here (a Back, a newer request): the machine lets go.
-    Stale,
-    Landed(T),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -972,260 +838,10 @@ pub enum ForegroundLoadStatus<Attempt> {
     Stale,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ForegroundPollOutcome {
-    Inactive,
-    Pending,
-    Started,
-    Failed,
-}
-
-/// What one run of the loop ([`run_foreground`]) reports to its driver.
-#[derive(Clone, Copy, Debug)]
-struct Run {
-    /// Whether the machine consumed the FIRST event; the answers fed back after it are addressed
-    /// by id to a state the machine itself just wrote.
-    handled: Handled,
-    /// A `Launched` effect ran: an exact attempt is in flight, so the caller mounts Player.
-    launched: bool,
-    /// `started` of the `AfterLoad` which ran, when a Load settled in this run.
-    settled: Option<bool>,
-}
-
-/// Feed `first` to the machine, execute the effects it asks for in order, and feed each answer
-/// back as the next event until nothing is owed. One slot, not a queue: `Prepare`, `Load` and
-/// `PlayClock` each owe exactly one answer and a step emits at most one of them (asserted), so
-/// there is never more than one event waiting. The effect buffer allocates only when a step emits
-/// something, so a frame which only polls (a `Pending` status) allocates nothing.
-fn run_foreground<A: ForegroundActuator>(
-    lifecycle: &mut ForegroundLifecycle<A::Attempt>,
-    ps: &mut crate::route::PlaybackSession,
-    actuator: &mut A,
-    first: ForegroundEvent<A::Attempt>,
-) -> Run {
-    let mut run = Run {
-        handled: Handled::No,
-        launched: false,
-        settled: None,
-    };
-    let mut fx = Vec::new();
-    let mut next = Some(first);
-    let mut fed_back = false;
-    while let Some(ev) = next.take() {
-        let handled = lifecycle.step(&ev, &mut fx);
-        if fed_back {
-            debug_assert_eq!(handled, Handled::Yes, "an answer is addressed to the claim it settles");
-        } else {
-            run.handled = handled;
-            fed_back = true;
-        }
-        debug_assert!(
-            fx.iter().filter(|e| e.awaits_answer()).count() <= 1,
-            "a step emits at most one effect which owes an answer"
-        );
-        for effect in fx.drain(..) {
-            match effect {
-                ForegroundEffect::Prepare { id, resume_ns } => {
-                    // The restore reopens the engine at the parked position: that open is a resume.
-                    crate::player::report::note_attempt(crate::player::report::AttemptOrigin::Resume);
-                    next = Some(ForegroundEvent::PrepareAnswered {
-                        id,
-                        answer: PrepareAnswer::of_start(actuator.prepare_resume(ps, resume_ns)),
-                    });
-                }
-                ForegroundEffect::Load {
-                    id,
-                    resume_ns,
-                    clock,
-                } => {
-                    actuator.before_load(resume_ns, clock);
-                    next = Some(ForegroundEvent::LoadAnswered {
-                        id,
-                        start: actuator.start_load(ps),
-                    });
-                }
-                ForegroundEffect::PlayClock { id } => {
-                    next = Some(ForegroundEvent::ClockAnswered {
-                        id,
-                        accepted: actuator.play_clock(),
-                    });
-                }
-                ForegroundEffect::AfterLoad {
-                    attempt,
-                    clock,
-                    started,
-                } => {
-                    actuator.after_load(ps, attempt, clock, started);
-                    run.settled = Some(started);
-                }
-                ForegroundEffect::Retire { clock, .. } => {
-                    actuator.after_load(ps, None, clock, false);
-                }
-                ForegroundEffect::Launched { .. } => run.launched = true,
-                // `park_pending_foreground_flight`'s: it holds the adapter this loop does not.
-                ForegroundEffect::DropFlight => {
-                    debug_assert!(false, "only the park driver executes DropFlight")
-                }
-            }
-        }
-    }
-    run
-}
-
-/// Claim first, then execute the claimed synchronous effects in order. Launching the native Load
-/// tells the caller to mount Player but deliberately does not issue Play: only the later exact
-/// attempt result observed by `poll_foreground_load` may advance the clock. A resume (or an
-/// Original rollback) whose rebuild is a flight parks the machine instead; the landing is
-/// [`poll_foreground_flight`]'s.
-pub fn drive_foreground<A: ForegroundActuator>(
-    lifecycle: &mut ForegroundLifecycle<A::Attempt>,
-    ps: &mut crate::route::PlaybackSession,
-    input: ForegroundInput,
-    actuator: &mut A,
-) -> ForegroundActivation {
-    // The restoring Load's window create is a step of the foreground cycle (`window::CycleScope`).
-    let _cycle = plx_telemetry::telemetry::window::CycleScope::enter();
-    let run = run_foreground(lifecycle, ps, actuator, ForegroundEvent::Input(input));
-    match run.handled {
-        Handled::No => ForegroundActivation::Ordinary,
-        Handled::Yes if run.launched => ForegroundActivation::Launched,
-        Handled::Yes => ForegroundActivation::Handled,
-    }
-}
-
-/// Once a frame while the machine waits on a flight ([`ForegroundLifecycle::flight_pending`]):
-/// drain its landing and carry on. A landed
-/// resume continues into the Load; a landed rollback settles the Load with its reload's outcome;
-/// a refused rebuild leaves the parked session waiting for the
-/// next foreground, and a flight that ended without landing releases the machine. `Launched`
-/// tells the caller to mount Player, as [`drive_foreground`]'s does.
-pub fn poll_foreground_flight<A: ForegroundActuator>(
-    lifecycle: &mut ForegroundLifecycle<A::Attempt>,
-    ps: &mut crate::route::PlaybackSession,
-    actuator: &mut A,
-) -> ForegroundActivation {
-    // A restore whose Load waited for a flight starts it here, frames after `foreground_done`;
-    // its exported-window create is still the foreground cycle's.
-    let _cycle = plx_telemetry::telemetry::window::CycleScope::enter();
-    let Some((flight, id)) = lifecycle.pending_flight() else {
-        return ForegroundActivation::Handled;
-    };
-    let landing = match flight {
-        Flight::Prepare => match actuator.land_prepare(ps) {
-            FlightLanding::Waiting => return ForegroundActivation::Handled,
-            FlightLanding::Stale => ForegroundEvent::FlightStale,
-            FlightLanding::Landed(outcome) => ForegroundEvent::PrepareAnswered {
-                id,
-                answer: PrepareAnswer::of_outcome(outcome),
-            },
-        },
-        Flight::Recovery => match actuator.land_recovery(ps) {
-            FlightLanding::Waiting => return ForegroundActivation::Handled,
-            FlightLanding::Stale => ForegroundEvent::FlightStale,
-            FlightLanding::Landed(start) => ForegroundEvent::LoadAnswered { id, start },
-        },
-    };
-    if run_foreground(lifecycle, ps, actuator, landing).launched {
-        ForegroundActivation::Launched
-    } else {
-        ForegroundActivation::Handled
-    }
-}
-
-/// The OS backgrounded the app again while the machine waits on a flight: drop the flight (its
-/// landing is discarded and only the replacement it registered is stopped — the same
-/// `suspend_bufferfeed` teardown an Engine's suspend takes) and park the session back where it was
-/// suspended, so the next foreground restores it from the start. False when no flight was pending.
-pub fn park_pending_foreground_flight<Attempt: Copy + PartialEq>(
-    lifecycle: &mut ForegroundLifecycle<Attempt>,
-    ps: &mut crate::route::PlaybackSession,
-    pa: &mut crate::player::adapter::PlayerAdapter,
-) -> bool {
-    let mut fx = Vec::new();
-    if lifecycle.step(&ForegroundEvent::ParkFlight, &mut fx) == Handled::No {
-        return false;
-    }
-    for effect in fx {
-        match effect {
-            ForegroundEffect::DropFlight => crate::player::suspend_bufferfeed(ps, pa),
-            _ => debug_assert!(false, "ParkFlight emits only DropFlight"),
-        }
-    }
-    true
-}
-
-/// Poll the exact native Load attempt after `player::pump` has drained its media-thread result.
-/// Only a confirmed `Started` result may advance the viewer clock; failure retains the already
-/// prepared route so a Play retry never repeats PMS preparation or `begin_resume`.
-pub fn poll_foreground_load<A: ForegroundActuator>(
-    lifecycle: &mut ForegroundLifecycle<A::Attempt>,
-    ps: &mut crate::route::PlaybackSession,
-    actuator: &mut A,
-) -> ForegroundPollOutcome {
-    let Some(attempt) = lifecycle.pending_load_attempt() else {
-        return ForegroundPollOutcome::Inactive;
-    };
-    let status = actuator.load_status(attempt);
-    let run = run_foreground(
-        lifecycle,
-        ps,
-        actuator,
-        ForegroundEvent::LoadStatus { attempt, status },
-    );
-    match (run.handled, run.settled) {
-        (Handled::No, _) => ForegroundPollOutcome::Inactive,
-        (Handled::Yes, None) => ForegroundPollOutcome::Pending,
-        (Handled::Yes, Some(true)) => ForegroundPollOutcome::Started,
-        (Handled::Yes, Some(false)) => ForegroundPollOutcome::Failed,
-    }
-}
-
-#[cfg(test)]
-mod transport_target_tests {
-    /// The three keys, both ways round. A PLAY key on an already-playing transport is a no-op
-    /// rather than a pause, and a PAUSE key on an already-paused one likewise — the property a
-    /// per-caller `match` kept getting wrong, and the reason the player's transport and the detail
-    /// page's trailer transport share this one function.
-    #[test]
-    fn only_the_toggle_depends_on_the_current_state() {
-        for paused in [false, true] {
-            assert!(!super::transport_target(Some(true), paused), "PLAY plays");
-            assert!(super::transport_target(Some(false), paused), "PAUSE pauses");
-        }
-        assert!(super::transport_target(None, false), "PLAYPAUSE pauses a playing transport");
-        assert!(!super::transport_target(None, true), "…and resumes a paused one");
-    }
-}
-
-#[cfg(test)]
-mod viewer_resume_for_load_tests {
-    use std::sync::atomic::Ordering;
-
-    /// **A restore that Loads Playing starts with the viewer's pause gone.** The park leaves
-    /// `TX.paused` standing and the Load arms its clock hold from it, so the helper must clear it
-    /// with no Engine in hand, and must not open the paused-seek preroll on the way.
-    #[test]
-    fn commit_viewer_resume_for_load_clears_the_standing_pause() {
-        let _guard = plx_base::testlock::serial();
-        struct Restore(bool);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                crate::player::TX.commit_paused(self.0);
-            }
-        }
-        let _restore = Restore(crate::player::TX.paused.load(Ordering::Acquire));
-        crate::player::TX.commit_paused(true);
-
-        super::commit_viewer_resume_for_load();
-        assert!(!super::paused(), "the viewer's Play is published");
-        assert!(!super::viewer_paused());
-        assert!(!crate::player::TX.seek_preroll_active(), "no preroll opens for a Playing Load");
-    }
-}
-
 #[cfg(test)]
 mod foreground_resume_tests {
     use super::*;
+    use crate::player::foreground::*;
 
     /// The three-way answer an `Input` used to return (`Handled::No` was `Ordinary`; `Yes` with
     /// nothing to execute was `Suppressed`), kept so the tables below read as they always did.
@@ -2852,199 +2468,5 @@ mod foreground_resume_tests {
                 assert_eq!(lifecycle.next_id, if parks { 2 } else { 1 }, "{label}: only a park takes an id");
             }
         }
-    }
-}
-
-#[cfg(all(test, feature = "hostsim"))]
-mod transport_pause_contract_tests {
-    use super::{
-        drive_foreground, paused, poll_foreground_load, set_transport_paused, FlightLanding,
-        ForegroundActivation, ForegroundActuator, ForegroundClock, ForegroundEvent, ForegroundInput,
-        ForegroundLifecycle, ForegroundLoadStart, ForegroundLoadStatus, ForegroundPollOutcome,
-        ForegroundState,
-    };
-    use std::sync::atomic::Ordering;
-
-    #[test]
-    fn a_refused_native_pause_or_play_cannot_diverge_the_feed_gate() {
-        let _guard = plx_base::testlock::serial();
-        let old_paused = crate::player::TX.paused.load(Ordering::Acquire);
-        crate::player::TX.commit_paused(false);
-        let old_rebuffering = crate::player::SHARED
-            .hls_rebuffering
-            .swap(false, Ordering::AcqRel);
-        struct Restore {
-            paused: bool,
-            rebuffering: bool,
-        }
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                crate::player::force_pause_result_for_test(None);
-                crate::player::force_play_result_for_test(None);
-                crate::player::TX.commit_paused(self.paused);
-                crate::player::SHARED
-                    .hls_rebuffering
-                    .store(self.rebuffering, Ordering::Release);
-            }
-        }
-        let _restore = Restore {
-            paused: old_paused,
-            rebuffering: old_rebuffering,
-        };
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
-            plx_base::task::MainThread::assume()
-        });
-
-        crate::player::force_pause_result_for_test(Some(0));
-        assert!(!set_transport_paused(&mut pa, true));
-        assert!(
-            !paused(),
-            "feed must continue when the native clock refused Pause"
-        );
-
-        crate::player::force_pause_result_for_test(Some(1));
-        assert!(set_transport_paused(&mut pa, true));
-        assert!(paused());
-
-        crate::player::force_play_result_for_test(Some(0));
-        assert!(!set_transport_paused(&mut pa, false));
-        assert!(
-            paused(),
-            "feed must remain stopped when the native clock refused Play"
-        );
-
-        crate::player::force_play_result_for_test(Some(1));
-        assert!(set_transport_paused(&mut pa, false));
-        assert!(!paused());
-    }
-
-    #[test]
-    fn refused_foreground_play_retries_the_native_clock_without_a_second_load() {
-        let mut ps = crate::route::PlaybackSession::IDLE;
-        let _guard = plx_base::testlock::serial();
-        let old_paused = crate::player::TX.paused.load(Ordering::Acquire);
-        struct Restore(bool);
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                crate::player::force_pause_result_for_test(None);
-                crate::player::force_play_result_for_test(None);
-                crate::player::SHARED.reset_hls_clock_for_test();
-                crate::player::TX.commit_paused(self.0);
-            }
-        }
-        let _restore = Restore(old_paused);
-        crate::player::SHARED.reset_hls_clock_for_test();
-        crate::player::TX.commit_paused(false);
-        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
-            plx_base::task::MainThread::assume()
-        });
-        crate::player::force_pause_result_for_test(Some(1));
-        assert!(set_transport_paused(&mut pa, true));
-
-        struct Actuator<'a> {
-            pa: &'a mut crate::player::adapter::PlayerAdapter,
-            prepares: usize,
-            loads: usize,
-        }
-        impl ForegroundActuator for Actuator<'_> {
-            type Attempt = u64;
-
-            fn prepare_resume(
-                &mut self,
-                _ps: &mut crate::route::PlaybackSession,
-                _resume_ns: i64,
-            ) -> crate::player::ResumeStart {
-                self.prepares += 1;
-                crate::player::ResumeStart::Settled(crate::player::ResumeOutcome::Prepared)
-            }
-
-            fn land_prepare(
-                &mut self,
-                _ps: &mut crate::route::PlaybackSession,
-            ) -> FlightLanding<crate::player::ResumeOutcome> {
-                unreachable!("this actuator never goes pending")
-            }
-
-            fn land_recovery(
-                &mut self,
-                _ps: &mut crate::route::PlaybackSession,
-            ) -> FlightLanding<ForegroundLoadStart<Self::Attempt>> {
-                unreachable!("this actuator never goes pending")
-            }
-
-            fn before_load(&mut self, _resume_ns: i64, _clock: ForegroundClock) {}
-
-            fn start_load(
-            &mut self,
-            _ps: &mut crate::route::PlaybackSession,
-        ) -> ForegroundLoadStart<Self::Attempt> {
-                self.loads += 1;
-                ForegroundLoadStart::Launched(1)
-            }
-
-            fn load_status(
-                &mut self,
-                attempt: Self::Attempt,
-            ) -> ForegroundLoadStatus<Self::Attempt> {
-                assert_eq!(attempt, 1);
-                ForegroundLoadStatus::Started
-            }
-
-            fn after_load(
-                &mut self,
-                _ps: &mut crate::route::PlaybackSession,
-                _attempt: Option<Self::Attempt>,
-                _clock: ForegroundClock,
-                _started: bool,
-            ) {
-            }
-
-            fn play_clock(&mut self) -> bool {
-                set_transport_paused(self.pa, false)
-            }
-        }
-
-        let mut lifecycle = ForegroundLifecycle::IDLE;
-        lifecycle.step(
-            &ForegroundEvent::Park { saved_ns: 42_000_000_000, viewer_paused: true },
-            &mut Vec::new(),
-        );
-        let mut actuator = Actuator {
-            pa: &mut pa,
-            prepares: 0,
-            loads: 0,
-        };
-        crate::player::force_play_result_for_test(Some(0));
-        assert_eq!(
-            drive_foreground(&mut lifecycle, &mut ps, ForegroundInput::PlayKey, &mut actuator,),
-            ForegroundActivation::Launched,
-        );
-        assert!(matches!(
-            lifecycle.state,
-            ForegroundState::LoadPending { .. }
-        ));
-        assert_eq!(
-            poll_foreground_load(&mut lifecycle, &mut ps, &mut actuator),
-            ForegroundPollOutcome::Started,
-        );
-        assert!(matches!(
-            lifecycle.state,
-            ForegroundState::ClockPending { .. }
-        ));
-        assert_eq!((actuator.prepares, actuator.loads), (1, 1));
-        assert!(paused(), "a refused native Play keeps the feed held");
-
-        crate::player::force_play_result_for_test(Some(1));
-        assert_eq!(
-            drive_foreground(&mut lifecycle, &mut ps, ForegroundInput::PlayKey, &mut actuator,),
-            ForegroundActivation::Handled,
-        );
-        assert_eq!(
-            (actuator.prepares, actuator.loads),
-            (1, 1),
-            "the retry reached preparation or Load instead of the native clock",
-        );
-        assert_eq!(lifecycle.state, ForegroundState::Idle);
-        assert!(!paused());
     }
 }

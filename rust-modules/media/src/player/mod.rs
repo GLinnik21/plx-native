@@ -26,6 +26,7 @@ pub mod ass_timing; // libass clock reading and the validity window of a rendere
 pub mod ass_script; // a sidecar script fed in windows around the playhead
 pub mod ass_source; // bounded embedded scripts and subtitle presentation clock
 pub mod engine;
+pub mod foreground;
 pub mod lifecycle;
 pub mod machine;
 pub mod playurl; // the `plxnative-playurl` dev trigger: a stream and its Load declaration, parsed beside the engine that acts on it
@@ -54,6 +55,7 @@ pub mod sim_video; // the simulator's decoded picture, for screenshots (see its 
 pub mod text_ass; // text subtitles to ASS: dialect converter, synthesized header, sidecar scripts (pure)
 pub mod text_style; // the viewer's size/position picks as the numbers that converter and the screen's lift use (pure)
 pub mod threads;
+pub mod transport;
 pub mod video_geometry;
 pub mod vp9_hdr; // HDR10 for a VP9 stream: the container's PQ tag, written into the sourceInfo envelope ACB is sent
 

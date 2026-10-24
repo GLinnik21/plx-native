@@ -2596,7 +2596,7 @@ mod flight_tests {
         rig.frame();
         assert!(!TX.seek_preroll_active(), "a claim hold's pause opened a preroll");
         SHARED.frames.store(1, Relaxed);
-        assert!(crate::player::lifecycle::set_transport_paused(&mut rig.pa, true), "the viewer's Pause press");
+        assert!(crate::player::transport::set_transport_paused(&mut rig.pa, true), "the viewer's Pause press");
         assert!(!super::super::claim_hold::owns_pause(), "the viewer's press outranks the hold");
         rig.flight.release_answers();
         rig.frames_until("the adaptive reload to settle", |r| {

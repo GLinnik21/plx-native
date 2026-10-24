@@ -2,7 +2,10 @@
 
 Status: the rule is written down and its four ledgers are gated (`ci/check-deps.sh`, inside
 `make check`). Nothing here changes product behaviour: each ledger freezes the sites that exist
-today, so that later changes can only shrink them.
+today, so that later changes can only shrink them. The player's foreground lifecycle is the first
+player machine: `player/lifecycle.rs` is the machine alone (private state, one writer, `step`),
+`player/foreground.rs` its drivers and `player/transport.rs` the transport-pause contract; its shape
+is gated by `ci/machines.ini` (see "Machine shape" below).
 
 ## The rule
 
@@ -27,7 +30,7 @@ and the lines are compared to the tree as an exact multiset.
 | Rule | A site is | Key |
 |---|---|---|
 | `workers` | a production call that starts a worker in a machine: `task::spawn(`, `spawn_small(`, `spawn_small_keeping(`, `spawn_small_or_inline(`, `spawn_off_frame(`, `spawn_off_frame_keeping(`, `storage_worker::submit(`, `submit_retained(`, the command worker's `.submit_ticket(` | `<path>::<enclosing fn>::<spelling>` |
-| `globals` | a production read of a process-global registry in a machine: `client_for`, `current_server`, `current_snapshot`, `keypin::revision`, `keypin::blocked_for`, `session::peek`, `grant::offers`, and `player::TX` in the player's lifecycle | `<path>::<enclosing fn>::<spelling>` |
+| `globals` | a production read of a process-global registry in a machine: `client_for`, `current_server`, `current_snapshot`, `keypin::revision`, `keypin::blocked_for`, `session::peek`, `grant::offers`, the player's transport-pause readers (`transport::paused`, `transport::viewer_paused`, `preview::paused`), and `player::TX` in the player's lifecycle (at zero) | `<path>::<enclosing fn>::<spelling>` |
 | `forks` | a production test/production fork whose predicate reads `test` or `feature = "test-support"`: a `#[cfg(..)]` attribute that a production build can satisfy (`not(test)`, `not(any(test, feature = "test-support"))`, `all(target_os = .., not(test))`, ...), or an inline `cfg!(..)` of any value | `<path>::<item name>`, or `<path>::<enclosing fn>` for a statement, a field or an inline `cfg!` |
 | `fxlanes` | an `AppFx::<Variant>` arm of `Bridge::app_effect` that does not push `Fx::Deliver(`: one site for each variant on its head, and one for an arm that names no variant (`other => ..`, `_ => ..`) | `<path>::AppFx::<Variant>`, or `<path>::AppFx::_` |
 
@@ -60,8 +63,18 @@ run the product's code. `fxlanes` reads the one fn, `Bridge::app_effect` in `rus
 - The command worker's `.submit(` is not covered: it is `#[cfg(any(test, feature = "test-support"))]`
   in `base/src/storage_worker.rs`, so no production line can call it. `.submit_ticket(` is covered
   although no machine calls it today: a machine that did would be starting a worker.
-- `player::TX` is read as logic only in `lifecycle.rs`, as `crate::player::TX`, `player::TX`,
-  `super::TX` or a bare `TX`; the HUD's reads are not a machine's.
+- The transport-pause atomic (`player::TX`) is reached by a machine through three readers,
+  `transport::paused`, `transport::viewer_paused` and `preview::paused` (each is `TX.paused` behind
+  a function), so those spellings are sites, qualified or bare after an import; a `use ... as`
+  rename of any of them fails outright. The spellings of `TX` itself (`crate::player::TX`,
+  `player::TX`, `super::TX`, a bare `TX`) stay pinned to `lifecycle.rs`, the machine, which now reads
+  none: that pin is a zero-guard (the machine takes the pause as a value on its event). The HUD's
+  direct `TX.paused` reads are not a machine's, and a writer (`set_paused`, `set_transport_paused`) is
+  an IO call, not a registry read. Moving the contract out of `lifecycle.rs` deleted its three `TX`
+  lines from `ci/allow/globals/media.txt`; the same change widened the rule to the readers above and
+  seeded the three `preview::paused` reads the screens already had (`screens/src/detail/mod.rs`) as a
+  coverage expansion, so this change's net effect on the pinned total is zero (a relocation lowers no
+  pin on its own).
 - `forks` counts an attribute the product can satisfy. `#[cfg(test)]` and `any(test, feature =
   "test-support")` items are skipped whole, to the end of their own body (only a test can see them);
   `all(test, ..)` too. `any(feature = "devtriggers", test)` is counted, because a dev build can
@@ -75,6 +88,16 @@ run the product's code. `fxlanes` reads the one fn, `Bridge::app_effect` in `rus
   the site `AppFx::_`.
 - A key names the file and the fn's name, and a ledger is a multiset of keys, so a site can move
   between two same-named fns of one file (a `new` in each of two `impl` blocks) without the gate seeing it.
+
+## Machine shape
+
+`ci/machines.ini` lists the state machines whose shape is gated, one `[file::Struct]` section each
+(paths relative to `rust-modules/`), with the machine's `event` and `effect` types and a `step`
+line saying how it is exposed, driven and owned. `ci/check-machine-shape.py` (in `make check`)
+fails on a `pub`, `pub(crate)` or `pub(super)` field of a listed struct, so its state stays
+private and its one writer stays `step`, and on an entry whose file or struct is gone. It also
+prints one line per machine with the number of its `bool` and `Option<..>` fields: a report-only
+flag ratchet, read in review and never red. The first entry is `ForegroundLifecycle`.
 
 ## Layout
 

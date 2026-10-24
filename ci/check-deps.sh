@@ -62,8 +62,10 @@
 #              `.submit_ticket`. A machine's work leaves as a typed effect the app runs.
 #   globals  — a production read of a process-global registry in a machine: `client_for`,
 #              `current_server`, `current_snapshot`, `keypin::revision`, `keypin::blocked_for`,
-#              `session::peek`, `grant::offers`, and `player::TX` in the player's lifecycle. The value
-#              arrives in an event or an argument instead.
+#              `session::peek`, `grant::offers`, the player's transport-pause readers
+#              (`transport::paused`, `transport::viewer_paused`, `preview::paused`), and `player::TX`
+#              in the player's lifecycle (at zero: the machine takes the pause as a value on its
+#              event). The value arrives in an event or an argument instead.
 #   forks    — a production test/production fork (`#[cfg(not(test))]`, `not(any(test, feature =
 #              "test-support"))`, `cfg!(not(test))` and the like) anywhere in data/, plex/, media/ or
 #              session/: logic has no `cfg(test)` branch; tests deliver events through the same seam.
@@ -615,8 +617,9 @@ gate ticks 'SDL_GetTicks\(' "$SRC" "$SRC_BASE" "$SRC_PLATFORM" "$SRC_GFX" "$SRC_
 #              `RefreshCache` effect, so a clock read there is an instrument or a defect; the write timing
 #              lives in persistence::write_session_timed, an IO body outside this scan.
 #   wall (widened Sans-IO store lane, Collection, 2026-10-24): also data/src/collection.rs, whose step emits its request as a store job and starts nothing, so a clock read there is an instrument or a defect (no hit when it joined).
+#   wall (widened Sans-IO lifecycle PR B, 2026-10-24): also media/src/player/lifecycle.rs, the foreground machine, once its drivers (which carry `CycleScope::enter`) became player/foreground.rs. `step` is a function of (state, event) and the pause it parks with arrives on the event, so a clock read there is an instrument or a defect (no hit when it joined).
 #   wall (widened Sans-IO store lane, subtitle search, 2026-10-24): also data/src/subsearch.rs, whose step emits its request as a store job and starts nothing, so a clock read there is an instrument or a defect (no hit when it joined; stores/viewreconcile.rs is already inside data/src/stores).
-gate wall '(Instant::now|SystemTime::now|\.elapsed\(\))' "$SRC_UI" "$SRC_MACHINE" "$SRC_APPKIT" "$SRC/app" "$SRC_MEDIA/route/plan.rs" "$SRC_MEDIA/route/plan_memory.rs" "$SRC_SCREENS" "$SRC_DATA/stores" "$SRC_PLEX/plex/session.rs" "$SRC_SESSION"/auth/owner*.rs "$SRC_DATA/collection.rs" "$SRC_DATA/subsearch.rs"
+gate wall '(Instant::now|SystemTime::now|\.elapsed\(\))' "$SRC_UI" "$SRC_MACHINE" "$SRC_APPKIT" "$SRC/app" "$SRC_MEDIA/route/plan.rs" "$SRC_MEDIA/route/plan_memory.rs" "$SRC_SCREENS" "$SRC_DATA/stores" "$SRC_PLEX/plex/session.rs" "$SRC_SESSION"/auth/owner*.rs "$SRC_DATA/collection.rs" "$SRC_DATA/subsearch.rs" "$SRC_MEDIA/player/lifecycle.rs"
 
 if grep -rnE 'fp-contract|fast-math|\+fma' rust-modules/Cargo.toml rust-modules/build.rs rust-modules/net/Cargo.toml rust-modules/plex/Cargo.toml rust-modules/telemetry/Cargo.toml rust-modules/data/Cargo.toml rust-modules/session/Cargo.toml rust-modules/media/Cargo.toml rust-modules/appkit/Cargo.toml rust-modules/screens/Cargo.toml rust-modules/platform/Cargo.toml rust-modules/platform/build.rs rust-modules/gfx/Cargo.toml rust-modules/gfx/build.rs rust-modules/ui/Cargo.toml rust-modules/ui/build.rs rust-modules/appkit/build.rs rust-modules/screens/build.rs rust-modules/storage/Cargo.toml rust-modules/storage/build.rs rust-modules/.cargo Makefile 2>/dev/null | grep -v '^[[:space:]]*#'; then
   fail "fpflags: a floating-point contraction flag is set (spec §4.2 assumes none)"
@@ -1214,7 +1217,7 @@ fork_scope_re=$(scope_re "${FORK_SCOPE[@]}")
 # has a line that could hold a site of that rule, and ci/ledger.awk then decides what is really one; a
 # file the pattern misses cannot hold one. W and G read the machines, F the four fork crates.
 workers_pat='spawn_small|spawn_off_frame|submit_retained|submit_ticket|task::(spawn|\{|\*)|storage_worker::(submit|\{|\*)|(task|storage_worker)[[:space:]]+as[[:space:]]'
-globals_pat='client_for|current_server|current_snapshot|keypin::(revision|blocked_for|\{|\*)|session::(peek|\{|\*)|grant::(offers|\{|\*)|player::TX|(session|keypin|grant|player|peek|revision|blocked_for|offers|TX)[[:space:]]+as[[:space:]]'
+globals_pat='client_for|current_server|current_snapshot|keypin::(revision|blocked_for|\{|\*)|session::(peek|\{|\*)|grant::(offers|\{|\*)|(^|[^A-Za-z0-9_])transport::(paused|viewer_paused|\{|\*)|(^|[^A-Za-z0-9_])preview::(paused|\{|\*)|player::TX|(session|keypin|grant|player|transport|preview|peek|revision|blocked_for|offers|paused|viewer_paused|TX)[[:space:]]+as[[:space:]]'
 # a cfg line: one with `test` on it, or an attribute / `cfg!` that opens on one line and closes on a later
 # one, where `test` may sit on the second. A line that is a test-only attribute outright — `#[cfg(test)]`,
 # `#[cfg(any(test, feature = "test-support"))]`, or an `all(<either>, <flat atoms>)` of them — is no
@@ -1270,22 +1273,28 @@ LG_LEDGERS="$(echo ci/allow/workers/*.txt)" LG_AREA_CHECK=1 \
   ledger_check workers "$workers_sites"
 
 # globals: a production read of a process-global registry in a MACHINE — `client_for(`, `current_server(`,
-# `current_snapshot(`, `keypin::revision(`, `keypin::blocked_for(`, `session::peek(`, `grant::offers(`, and
-# `player::TX` in the player's lifecycle (the one file where that atomic is read as logic, spelled
-# `crate::player::TX`, `player::TX`, `super::TX` or a bare `TX`; the HUD's reads are not machines). A bare
-# `peek(` / `revision(` / `blocked_for(` / `offers(` is a site in a file that imports it from `session` /
-# `keypin` / `grant` (alone, last in a braced group, or by glob) and, for `peek`, in
-# plex/src/plex/session.rs, the module that defines it. A getter named without a call (`.and_then(client_for)`)
-# reads the registry as surely as a call does, so it is a site too; only a rename (`use ... as`) is refused,
-# because the renamed calls are invisible. Each getter's own definition is not a site.
+# `current_snapshot(`, `keypin::revision(`, `keypin::blocked_for(`, `session::peek(`, `grant::offers(`, the
+# player's transport-pause readers `transport::paused(`, `transport::viewer_paused(` and `preview::paused(`
+# (each is `TX.paused` read behind a function; the lifecycle PR B move put them in player/transport.rs and
+# widened this rule to them, seeding the machines' existing reads as a coverage expansion), and `player::TX`
+# in the player's lifecycle (the machine, at zero: it takes the pause as a value on its event, and the
+# spelling stays pinned there as a guard; the HUD's direct reads are not machines). A bare
+# `peek(` / `revision(` / `blocked_for(` / `offers(` / `paused(` / `viewer_paused(` is a site in a file that
+# imports it from `session` / `keypin` / `grant` / `transport` / `preview` (alone, last in a braced group, or
+# by glob; `transport` and `preview` count only as a whole path segment, because `scrub_preview::*` and
+# `hud_transport::*` are common module names that import neither) and, for `peek`, in
+# plex/src/plex/session.rs, the module that defines it. A getter named without
+# a call (`.and_then(client_for)`) reads the registry as surely as a call does, so it is a site too; only a
+# rename (`use ... as`) is refused, because the renamed calls are invisible. Each getter's own definition is
+# not a site.
 globals_sites=$(
   { ledger_candidates G
     printf '%s\n' rust-modules/plex/src/plex/session.rs "$SRC_MEDIA/player/lifecycle.rs"; } \
     | LG_MODE=call LG_KEYSPELL=1 LG_USE_OK=1 LG_REF_USE_ONLY=1 \
-      LG_SITE='(^|[^A-Za-z0-9_.])(client_for|current_server|current_snapshot|keypin::revision|keypin::blocked_for|session::peek|grant::offers)([^A-Za-z0-9_]|$)' \
-      LG_DEF='fn[[:space:]]+(client_for|current_server|current_snapshot|peek|revision|blocked_for|offers)[[:space:]]*[(<]' \
-      LG_REF='(^|[^A-Za-z0-9_])(client_for|current_server|current_snapshot|peek|revision|blocked_for|offers|TX|session|keypin|grant|player)[[:space:]]+as[[:space:]]' \
-      LG_BARE='session::(peek([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?peek([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])peek([^A-Za-z0-9_]|$);;keypin::(revision([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?revision([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])revision([^A-Za-z0-9_]|$);;keypin::(blocked_for([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?blocked_for([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])blocked_for([^A-Za-z0-9_]|$);;grant::(offers([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?offers([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])offers([^A-Za-z0-9_]|$)' \
+      LG_SITE='(^|[^A-Za-z0-9_.])(client_for|current_server|current_snapshot|keypin::revision|keypin::blocked_for|session::peek|grant::offers|transport::paused|transport::viewer_paused|preview::paused)([^A-Za-z0-9_]|$)' \
+      LG_DEF='fn[[:space:]]+(client_for|current_server|current_snapshot|peek|revision|blocked_for|offers|paused|viewer_paused)[[:space:]]*[(<]' \
+      LG_REF='(^|[^A-Za-z0-9_])(client_for|current_server|current_snapshot|peek|revision|blocked_for|offers|paused|viewer_paused|TX|session|keypin|grant|player|transport|preview)[[:space:]]+as[[:space:]]' \
+      LG_BARE='session::(peek([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?peek([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])peek([^A-Za-z0-9_]|$);;keypin::(revision([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?revision([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])revision([^A-Za-z0-9_]|$);;keypin::(blocked_for([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?blocked_for([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])blocked_for([^A-Za-z0-9_]|$);;grant::(offers([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?offers([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])offers([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])transport::(paused([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?paused([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])paused([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])transport::(viewer_paused([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?viewer_paused([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])viewer_paused([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])preview::(paused([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?paused([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])paused([^A-Za-z0-9_]|$)' \
       LG_FILE_SITE='rust-modules/plex/src/plex/session.rs@@(^|[^A-Za-z0-9_.:])peek([^A-Za-z0-9_]|$);;rust-modules/media/src/player/lifecycle.rs@@(^|[^A-Za-z0-9_.])(player::TX|super::TX)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_.:])TX([^A-Za-z0-9_]|$)' \
       ledger_scan | sort
 )

@@ -17,6 +17,7 @@ use crate::aq::{AuNode, AuQueue};
 use plx_net::stream::HttpStream;
 use plx_base::task::MainThread;
 use plx_platform::tv::sink::UnloadTicket;
+use plx_telemetry::telemetry::classes::DemuxExitClass;
 use plx_telemetry::telemetry::window::Stage as WindowStage;
 use std::os::raw::{c_char, c_int, c_long, c_void};
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -1471,7 +1472,7 @@ fn start_bufferfeed_inner(
             log(&format!(
                 "start_bufferfeed: the pipeline cannot feed video codec {stream_vcodec:?}; refusing the Load instead of declaring it H.264"
             ));
-            SHARED.demux_failed.store(true, Ordering::Release);
+            SHARED.fail_demux(DemuxExitClass::LoadRefused);
             return Err(crate::route::RouteStartResult::StartFailed);
         };
         if load_video_refused(lv, plx_platform::devcaps::caps()) {
@@ -1479,7 +1480,7 @@ fn start_bufferfeed_inner(
                 "start_bufferfeed: {} stream but the device table lists no such decoder; refusing the Load",
                 lv.payload_name()
             ));
-            SHARED.demux_failed.store(true, Ordering::Release);
+            SHARED.fail_demux(DemuxExitClass::LoadRefused);
             return Err(crate::route::RouteStartResult::StartFailed);
         }
         video_declared = lv.payload_name();
@@ -1505,7 +1506,7 @@ fn start_bufferfeed_inner(
             let codec = crate::route::stream_acodec(ps);
             let Some((ac, diagnostic)) = audio_payload_codec(&codec) else {
                 log(&format!("start_bufferfeed: unsupported audio codec {codec:?}; refusing incorrect Load declaration"));
-                SHARED.demux_failed.store(true, Ordering::Release);
+                SHARED.fail_demux(DemuxExitClass::LoadRefused);
                 return Err(crate::route::RouteStartResult::StartFailed);
             };
             SHARED.dg_load_a.store(diagnostic, Ordering::Relaxed);
