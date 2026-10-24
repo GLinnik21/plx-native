@@ -264,7 +264,9 @@ pub struct SecHubs {
     /// promising "kick retries by itself" was true only of the spawn-refused path and only because
     /// `fails` happened to be non-zero there.
     ///
-    /// It is cleared when a worker is successfully CLAIMED, never when one is merely attempted.
+    /// It is cleared when the step emits the read (`hubs_spawn`). A read the runner refuses is put
+    /// back by `hubs_settle` at the head of the next step, so `!owed` means a read was sent, not
+    /// that a worker is running.
     owed: bool,
     /// Consecutive failures, for [`crate::pms::backoff_secs`]' ladder.
     fails: u32,
@@ -524,10 +526,10 @@ impl SecHubs {
     /// **An answer that arrived for a server this slot no longer is.** Not a landing at all: the
     /// response is discarded and the section is still OWED the fetch it asked for.
     ///
-    /// It has to say so explicitly, because `spawn` clears `owed` on a successful CLAIM — a worker
-    /// is then guaranteed to fill the mailbox, which is true and is not the same as "the answer
-    /// will be usable". `kick` cannot recover it either: it re-arms neither a published section nor
-    /// an unpublished one with `fails == 0`. So without this an ordinary `sync_roster` re-point or
+    /// It has to say so explicitly, because `hubs_spawn` clears `owed` when it emits the read. A
+    /// refused read is put back by `hubs_settle`, but a read that lands for a server the slot no
+    /// longer is has to say so itself. `kick` cannot recover it either: it re-arms neither a
+    /// published section nor an unpublished one with `fails == 0`. So without this an ordinary `sync_roster` re-point or
     /// a token refresh left a library's shelves empty, or a refresh stale, for the rest of the
     /// session, silently and with no failure anywhere to read.
     ///
@@ -1185,9 +1187,9 @@ pub fn seed_landscape_for_owner_test(
 /// predate the Library growing shelves of its own.
 // ---- the fetch ------------------------------------------------------------------------------
 
-/// One section's shelves, in flight. Same shape as [`super::DirectoryResult`] and for the same
-/// reasons: the landing gate is the CLIENT LIFECYCLE and not just a generation, because `EPOCH`
-/// does not move when a slot is re-pointed or retokened.
+/// One section's shelves, in flight. Gated on the client lifecycle for the reason
+/// [`super::DirectoryResult`] is (`EPOCH` does not move when a slot is re-pointed or retokened),
+/// but by `ClientKey` rather than a `&'static Client` and a `token_gen`.
 pub(super) struct HubResult {
     /// The request id of the job this answers ([`browse_hubs_addr`]), so a superseded read's late
     /// answer is dropped and never releases a newer read's claim.
@@ -2439,19 +2441,17 @@ mod tests {
     }
 
     /// **A landing rejected on the client's LIFECYCLE leaves the section still owed a fetch.**
-    /// `spawn` clears `owed` on a successful CLAIM, because a worker is then guaranteed to fill the
-    /// mailbox — which is true, and is not the same as "the answer will be usable". `land` discards
-    /// a response whose server slot was re-pointed or retokened since the spawn, and `kick` re-arms
+    /// `hubs_spawn` clears `owed` when it emits the read, and an answer that arrives is not the same
+    /// as "the answer will be usable". `land` discards a response whose server slot was re-pointed
+    /// or retokened since the read was emitted, and `kick` re-arms
     /// neither a published section nor an unpublished one with `fails == 0`. So an ordinary
     /// `sync_roster` re-point or a token refresh could leave a library's shelves empty, or a
     /// refresh stale, for the rest of the session — silently, with no failure anywhere to read.
     ///
-    /// **Graded on `landing_was_not_ours` rather than end to end, and the red was SIMULATED.**
-    /// `land`'s rejection arm needs a registered `plex::Client` to disagree with, and the host
-    /// suite registers none — `browse`'s seeder fabricates sources without installing clients, so
-    /// `client_for` returns `None` here and the whole branch is unreachable. A test that took the
-    /// early exit would report green having entered nothing, which is why the state change lives in
-    /// a named method this can drive instead.
+    /// **Graded here on `landing_was_not_ours` alone.** The end-to-end rejection, a landing whose
+    /// `ClientKey` moved, is `section_hubs_job_tests.rs`'s
+    /// `a_landing_whose_client_moved_is_not_ours_and_the_section_is_still_owed`; the state change
+    /// lives in a named method so this one can drive it without a registered client.
     #[test]
     fn a_lifecycle_rejected_landing_leaves_the_section_owed() {
         let mut h = armed();
@@ -2503,7 +2503,7 @@ mod tests {
     /// `kick` also returned early because the section WAS published and had no failures. Its
     /// Continue Watching row then stayed stale for the rest of the session.
     ///
-    /// Graded on the pure bits, because the spawn path itself needs a client and a task.
+    /// Graded on the pure bits; the step path is driven end to end in `section_hubs_job_tests.rs`.
     #[test]
     fn an_invalidate_blocked_by_another_sections_fetch_stays_owed() {
         let mut h = armed();

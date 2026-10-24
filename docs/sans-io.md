@@ -274,7 +274,7 @@ directory, page and source reads, discovery, the pins) is still on its ledger.
   `Bridge::assert_no_store_jobs_left_for_test` (`#[cfg(test)]`) fails a frame that ends with a job
   still on an outbox or with that count above zero, so a sender that bypassed its store's Bridge
   drain (`metadata_run`, `person_pump`, `collection_pump`, `catalog_open`, `catalog_pump`,
-  `subsearch_pump`, `search_run`, `search_pump`, `reconcile_pump`, `hubs_run`, `viewstate_run`, `viewstate_pump`, `notify_pump`,
+  `subsearch_pump`, `search_run`, `search_pump`, `reconcile_pump`, `browse_run`, `hubs_run`, `viewstate_run`, `viewstate_pump`, `notify_pump`,
   `start_store_jobs_of`, `start_store_jobs_in`, `start_store_jobs`)
   is red in every rig that makes the check, the one that runs `update()`'s pump included. The rigs
   make it at the frame's end.
@@ -348,7 +348,8 @@ directory, page and source reads, discovery, the pins) is still on its ledger.
   holds the adapter `Arc`, so a job emitted before a `Reset` answers into the adapter it was made
   for. The Hubs read differs from the six before it in four ways.
   - **A third admission family.** `StoreJob::admission()` names `Tape` (Detail, Collection, Person),
-    `Direct` (Catalog, subtitle search, view reconcile, Search's fetches and recents writes) or `Home`,
+    `Direct` (Catalog, subtitle search, view reconcile, Search's fetches and recents writes, the section
+    hubs' read) or `Home`,
     as one exhaustive match. A `Home`
     job is recorded in a controlled Home run's own ordered ledger (`HomeIo::admit`), not on the tape,
     with the bytes `HubRequest::admission` returns (the bytes `hubs_descriptor` returned before it,
