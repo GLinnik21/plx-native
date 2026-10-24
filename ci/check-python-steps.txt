@@ -324,3 +324,9 @@ python3 ci/test_disk_preflight.py
 # the previous library and says nothing. Reads manifests only, no cargo; the self-test plants a missing crate in a temp tree.
 python3 ci/test_check_rust_inputs.py
 python3 ci/check-rust-inputs.py
+# The machine-shape gate (ci/machines.ini, docs/sans-io.md): a state machine listed there keeps its state private (a `pub`,
+# `pub(crate)` or `pub(super)` field of the listed struct fails, as does a stale entry), so its one writer stays `step` and a new
+# way to change it is a new event. It also REPORTS, and never fails on, each machine's `bool` and `Option<..>` field counts: a
+# report-only flag ratchet. Pure lexing, no cargo; the self-tests run on synthetic trees in a private temp dir.
+python3 ci/test_check_machine_shape.py
+python3 ci/check-machine-shape.py
