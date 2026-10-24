@@ -415,16 +415,20 @@ mod tests {
 
     /// **The collection page's heading uses the noun its count uses** (design review N-g), in every
     /// shipped language: "Films" over "6 films", "Shows" over "3 shows", "Items" over "12 items".
+    /// A singular stem may match where an inflected plural does not: Russian "Фильмы" shares
+    /// "фильм" with "1 фильм", but not the whole noun with "2 фильма" or "5 фильмов".
     #[test]
     fn the_collection_heading_names_the_noun_the_count_uses() {
         use plx_platform::i18n::{language_on_this_thread_for_test, SHIPPED};
         for language in SHIPPED {
             let _g = language_on_this_thread_for_test(language);
             for subtype in [Some("movie"), Some("show"), Some("episode"), None] {
-                let count = collection_count(subtype, 2);
-                let noun = count.split_once(' ').map(|(_, noun)| noun.to_lowercase()).unwrap();
                 let heading = collection_noun(subtype);
-                assert!(heading.to_lowercase().starts_with(&noun), "{} {subtype:?}: {heading:?} over {count:?}", language.tag());
+                let counts: Vec<_> = [1, 2, 5].into_iter().map(|n| collection_count(subtype, n)).collect();
+                assert!(counts.iter().any(|count| {
+                    let noun = count.split_once(' ').map(|(_, noun)| noun.to_lowercase()).unwrap();
+                    heading.to_lowercase().starts_with(&noun)
+                }), "{} {subtype:?}: {heading:?} over {counts:?}", language.tag());
                 assert!(heading.chars().next().is_some_and(char::is_uppercase), "{heading:?} is a heading");
             }
         }

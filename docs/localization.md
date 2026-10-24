@@ -1,12 +1,12 @@
 # Help translate PlxNative
 
-PlxNative's interface is available in English, Spanish, French, Italian, European Portuguese, German, Hungarian and Belarusian
+PlxNative's interface is available in English, Spanish, French, Italian, European Portuguese, German, Hungarian, Russian and Belarusian
 (official Cyrillic orthography). Help improve a translation or contribute another language through a pull request
 at https://github.com/GLinnik21/plx-native.
 
 ## Translate a message
 
-Catalogs live in `locales/en`, `locales/es`, `locales/fr`, `locales/it`, `locales/pt`, `locales/de` and `locales/be`, split by UI area. English is the
+Catalogs live in `locales/en`, `locales/es`, `locales/fr`, `locales/it`, `locales/pt`, `locales/de`, `locales/hu`, `locales/ru` and `locales/be`, split by UI area. English is the
 source: each scoped, stable key has a `value`, translator `description`, and optional typed
 `args`. The other languages contain the same keys, except the English-only ones (described
 below), with translated string or plural values.
@@ -46,10 +46,10 @@ Double braces (`{{` and `}}`) render literal braces. A placeholder accepts `str`
 integers are formatted with the TV's regional settings. A plural message's `count` selects a
 CLDR cardinal category for the UI language. Other arguments must appear in every form; count
 may be omitted when the form spells it out. Each language needs exactly the categories its
-`plurals` entry in `locales/languages.json` declares, no more: Belarusian `one`, `few`, `many`, and
+`plurals` entry in `locales/languages.json` declares, no more: Belarusian and Russian `one`, `few`, `many`, and
 `other`; Spanish, French, Italian and Portuguese `one`, `many`, and `other`; English, German and Hungarian `one` and `other`.
 
-Use readable, natural wording. Belarusian switch labels use `Укл.` and `Выкл.`. Preserve the meaning of consent and privacy disclosures exactly.
+Use readable, natural wording. Belarusian switch labels use `Укл.` and `Выкл.`, Russian `Вкл.` and `Выкл.`. Preserve the meaning of consent and privacy disclosures exactly.
 Third-party license texts stay verbatim. Screenshots of the affected screen help reviewers assess
 context and wrapping; do not include tokens, private server addresses or personal media data.
 
@@ -69,7 +69,7 @@ the Library's Sort & Filter menu, and the
 collection page's meta line and season marks. When one of these tests fails, shorten
 the wording; do not abbreviate it past readability.
 
-Review the affected screens with the desktop simulator. `PLXNATIVE_LOCALE=es`, `fr`, `it`, `pt`, `de`, `be` or `en`
+Review the affected screens with the desktop simulator. `PLXNATIVE_LOCALE=es`, `fr`, `it`, `pt`, `de`, `hu`, `ru`, `be` or `en`
 selects a language for a simulator launch; `PLXNATIVE_FORMAT_LOCALE=de-DE` exercises separate
 regional formatting. `PLXNATIVE_LOCALE=qps-ploc` expands and accents text to reveal cramped
 layouts; English-only diagnostics text is not expanded. These environment overrides do not operate in the shipping TV build.
@@ -92,7 +92,10 @@ a sentence. Note any wording they changed and why.
 
 ## Adding a language
 
-A UI language is `locales/<tag>/` plus its entry in `locales/languages.json`; no Rust file changes.
+A UI language is `locales/<tag>/` plus its entry in `locales/languages.json`.
+Month-and-day captions also need the language's abbreviated and full format-month names in
+`LocaleContext::month_day` (`rust-modules/platform/src/i18n/mod.rs`), with tests for both widths.
+Use the grammatical form that follows a day number (for Russian, `12 марта`, not `12 март`).
 
 1. Add the catalog directory, named by the bare language tag (`it`, not `it-IT`), translating all
    source keys. A translation is a bare string or a plural map; `value`, `description` and `args`
@@ -121,7 +124,7 @@ requiring shaping or bidirectional layout need renderer work before being offere
 ## Runtime behavior
 
 Settings → Language defaults to the television's UI language. Explicit English, Spanish, French, Italian,
-Portuguese, German, Hungarian and Belarusian choices apply the next time the app starts. The running UI and Plex request language
+Portuguese, German, Hungarian, Russian and Belarusian choices apply the next time the app starts. The running UI and Plex request language
 remain unchanged until then; playback is not interrupted. The contribution action displays this
 guide's URL and QR code for opening on another device.
 
