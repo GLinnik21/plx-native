@@ -1713,6 +1713,15 @@ pub const RATE_NORMAL: i32 = 1000;
 /// The speeds the player offers, slowest first: the same seven as Plex Web's Playback Speed.
 pub const PLAY_RATES: [i32; 7] = [500, 750, RATE_NORMAL, 1250, 1500, 1750, 2000];
 
+/// A speed as a multiplier with no trailing zeros (`0.5×`, `1.25×`, `2×`, `1×`). The numerals are
+/// not localized — Plex Web's are not either.
+pub fn rate_name(permille: i32) -> String {
+    let whole = permille / 1000;
+    let frac = format!("{:03}", permille % 1000);
+    let frac = frac.trim_end_matches('0');
+    if frac.is_empty() { format!("{whole}×") } else { format!("{whole}.{frac}×") }
+}
+
 /// The viewer's playback speed, in thousandths (1500 = 1.5x).
 pub fn play_rate_permille() -> i32 {
     SHARED.play_rate_permille.load(Relaxed)
@@ -2663,6 +2672,13 @@ mod tests {
         assert_eq!(session_rate(1500, &PLAY_RATES), 1500);
         assert_eq!(session_rate(1500, &[500, 750, 1000]), RATE_NORMAL, "not offered");
         assert_eq!(session_rate(1500, &[]), RATE_NORMAL, "speed unavailable");
+    }
+
+    /// A speed reads as its multiplier with no trailing zeros, for every speed the player offers.
+    #[test]
+    fn a_rate_is_named_by_its_multiplier() {
+        let names: Vec<String> = PLAY_RATES.iter().map(|r| rate_name(*r)).collect();
+        assert_eq!(names, ["0.5×", "0.75×", "1×", "1.25×", "1.5×", "1.75×", "2×"]);
     }
 
     /// The safety net's evidence: the pipeline's audio-info report for a speed session. 48 kHz

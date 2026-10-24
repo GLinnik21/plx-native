@@ -980,10 +980,7 @@ fn speed_suffix(rate_permille: i32, report: Option<bool>, unsupported: bool) -> 
     if rate_permille == plx_media::player::RATE_NORMAL {
         return if unsupported { " · speed off (PCM refused)".to_string() } else { String::new() };
     }
-    let whole = rate_permille / 1000;
-    let frac = format!("{:03}", rate_permille % 1000);
-    let frac = frac.trim_end_matches('0');
-    let name = if frac.is_empty() { format!("{whole}×") } else { format!("{whole}.{frac}×") };
+    let name = plx_media::player::rate_name(rate_permille);
     let verdict = match report {
         Some(true) => "PCM 48 kHz stereo ok",
         Some(false) => "PCM NOT taken",

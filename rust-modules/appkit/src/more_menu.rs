@@ -279,16 +279,12 @@ fn speed_form(ps: &plx_media::route::PlaybackSession, speed: i32, speeds: &[i32]
     Form::new().section(sec)
 }
 
-/// A speed's name: `Normal` at 1x, else the multiplier with no trailing zeros (`0.5×`, `1.25×`,
-/// `2×`). The numerals are not localized — Plex Web's are not either.
+/// A speed's name: `Normal` at 1x, else the multiplier (`plx_media::player::rate_name`).
 fn speed_label(permille: i32) -> String {
     if permille == plx_media::player::RATE_NORMAL {
         return plx_platform::i18n::msg::widgets_speed_normal().to_string();
     }
-    let whole = permille / 1000;
-    let frac = format!("{:03}", permille % 1000);
-    let frac = frac.trim_end_matches('0');
-    if frac.is_empty() { format!("{whole}×") } else { format!("{whole}.{frac}×") }
+    plx_media::player::rate_name(permille)
 }
 
 /// **The Quality row's value: "{choice} · {playing}".** The first word is what was picked; the
