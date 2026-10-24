@@ -29,8 +29,29 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-24T23:36:15Z",
+ "generated": "2026-10-24T23:39:11Z",
  "metrics": [
+  {
+   "change30_pct": null,
+   "change7_pct": 36.4,
+   "d30": null,
+   "delta30": null,
+   "delta7": 56.0,
+   "group": "ci",
+   "id": "ci|host python/shell/C gates",
+   "kind": "job",
+   "label": "CI: host python/shell/C gates",
+   "n_now": 101,
+   "n_prev": 94,
+   "now": 210,
+   "prev7": 154.0,
+   "shown": true,
+   "state": "worse",
+   "state30": "new",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
   {
    "change30_pct": null,
    "change7_pct": 35.8,
@@ -50,27 +71,6 @@
    "state30": "new",
    "threshold_abs": 5.0,
    "threshold_pct": 25.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
-   "change7_pct": 34.7,
-   "d30": null,
-   "delta30": null,
-   "delta7": 53.5,
-   "group": "ci",
-   "id": "ci|host python/shell/C gates",
-   "kind": "job",
-   "label": "CI: host python/shell/C gates",
-   "n_now": 100,
-   "n_prev": 94,
-   "now": 207.5,
-   "prev7": 154.0,
-   "shown": true,
-   "state": "worse",
-   "state30": "new",
-   "threshold_abs": 20.0,
-   "threshold_pct": 20.0,
    "unit": "s"
   },
   {
@@ -276,17 +276,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -29.3,
+   "change7_pct": -29.0,
    "d30": null,
    "delta30": null,
-   "delta7": -135.0,
+   "delta7": -133.5,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 100,
+   "n_now": 101,
    "n_prev": 94,
-   "now": 325.5,
+   "now": 327,
    "prev7": 460.5,
    "shown": true,
    "state": "better",
@@ -305,9 +305,9 @@
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 100,
+   "n_now": 101,
    "n_prev": 10,
-   "now": 315.0,
+   "now": 315,
    "prev7": 329.5,
    "shown": true,
    "state": "flat",
@@ -318,17 +318,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -34.6,
+   "change7_pct": -35.1,
    "d30": null,
    "delta30": null,
-   "delta7": -143.0,
+   "delta7": -145.0,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 99,
+   "n_now": 100,
    "n_prev": 94,
-   "now": 270,
+   "now": 268.0,
    "prev7": 413.0,
    "shown": true,
    "state": "better",
@@ -381,17 +381,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 18.2,
+   "change7_pct": 18.5,
    "d30": null,
    "delta30": null,
-   "delta7": 29.0,
+   "delta7": 29.5,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 100,
+   "n_now": 101,
    "n_prev": 94,
-   "now": 188.5,
+   "now": 189,
    "prev7": 159.5,
    "shown": true,
    "state": "flat",
@@ -410,9 +410,9 @@
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 100,
+   "n_now": 101,
    "n_prev": 94,
-   "now": 162.0,
+   "now": 162,
    "prev7": 190.0,
    "shown": true,
    "state": "flat",
@@ -559,9 +559,9 @@
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 100,
+   "n_now": 101,
    "n_prev": 10,
-   "now": 5.0,
+   "now": 5,
    "prev7": 5.0,
    "shown": false,
    "state": "flat",
@@ -574,15 +574,15 @@
    "change30_pct": -98.7,
    "change7_pct": -99.1,
    "d30": 237,
-   "delta30": -234,
+   "delta30": -234.0,
    "delta7": -320.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 99,
+   "n_now": 100,
    "n_prev": 94,
-   "now": 3,
+   "now": 3.0,
    "prev7": 323.0,
    "shown": false,
    "state": "better",
@@ -595,15 +595,15 @@
    "change30_pct": -99.6,
    "change7_pct": 0.0,
    "d30": 693,
-   "delta30": -690,
+   "delta30": -690.0,
    "delta7": 0.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 99,
+   "n_now": 100,
    "n_prev": 94,
-   "now": 3,
+   "now": 3.0,
    "prev7": 3.0,
    "shown": false,
    "state": "flat",
@@ -635,6 +635,67 @@
   }
  ],
  "regressions": [
+  {
+   "change_pct": 36.4,
+   "commits": [
+    {
+     "pr": 1005,
+     "sha": "f5424652b",
+     "title": "Site: fix the fan posters, phone nav pill, store note and duplicate Install link"
+    },
+    {
+     "pr": 1011,
+     "sha": "c56e8cdd6",
+     "title": "Hubs store emits its read as a store job; the step decides its client from ClientKeys"
+    },
+    {
+     "pr": 805,
+     "sha": "4a551d0b0",
+     "title": "player: playback speed (0.5x-2x), done in the app"
+    },
+    {
+     "pr": 1013,
+     "sha": "ef3e55a4c",
+     "title": "Metadata detail chain runs its GETs through the client the runner resolved"
+    },
+    {
+     "pr": 1015,
+     "sha": "fba7a8113",
+     "title": "Search store emits store jobs for its fetch and recents save; the scope takes the household as an input"
+    },
+    {
+     "pr": 950,
+     "sha": "e87ca6583",
+     "title": "Audio: FLAC decoded in the app and fed as PCM (stereo, up to 48 kHz)"
+    },
+    {
+     "pr": 1021,
+     "sha": "15e843ee8",
+     "title": "Browse section hubs emit store jobs for the list and row reads; the step decides the client from ClientKeys"
+    },
+    {
+     "pr": 1017,
+     "sha": "19048eae9",
+     "title": "gfx: Home's ground under the shelves is one flat colour, drawn as a clear"
+    },
+    {
+     "pr": 1023,
+     "sha": "84a780d38",
+     "title": "Metadata season switch and episode pages emit store jobs; the runner resolves the client and the detail chain is one-cli"
+    },
+    {
+     "pr": 1026,
+     "sha": "d51aff4b2",
+     "title": "ViewState writes emit store jobs keyed by ClientKey; a write whose profile or client moved is dropped, never sent as ano"
+    }
+   ],
+   "from": 154.0,
+   "id": "ci|host python/shell/C gates",
+   "label": "CI: host python/shell/C gates",
+   "since": "2026-10-24",
+   "threshold_pct": 20.0,
+   "to": 210
+  },
   {
    "change_pct": 35.8,
    "commits": [
@@ -695,67 +756,6 @@
    "since": "2026-10-24",
    "threshold_pct": 25.0,
    "to": 62.5
-  },
-  {
-   "change_pct": 34.7,
-   "commits": [
-    {
-     "pr": 1005,
-     "sha": "f5424652b",
-     "title": "Site: fix the fan posters, phone nav pill, store note and duplicate Install link"
-    },
-    {
-     "pr": 1011,
-     "sha": "c56e8cdd6",
-     "title": "Hubs store emits its read as a store job; the step decides its client from ClientKeys"
-    },
-    {
-     "pr": 805,
-     "sha": "4a551d0b0",
-     "title": "player: playback speed (0.5x-2x), done in the app"
-    },
-    {
-     "pr": 1013,
-     "sha": "ef3e55a4c",
-     "title": "Metadata detail chain runs its GETs through the client the runner resolved"
-    },
-    {
-     "pr": 1015,
-     "sha": "fba7a8113",
-     "title": "Search store emits store jobs for its fetch and recents save; the scope takes the household as an input"
-    },
-    {
-     "pr": 950,
-     "sha": "e87ca6583",
-     "title": "Audio: FLAC decoded in the app and fed as PCM (stereo, up to 48 kHz)"
-    },
-    {
-     "pr": 1021,
-     "sha": "15e843ee8",
-     "title": "Browse section hubs emit store jobs for the list and row reads; the step decides the client from ClientKeys"
-    },
-    {
-     "pr": 1017,
-     "sha": "19048eae9",
-     "title": "gfx: Home's ground under the shelves is one flat colour, drawn as a clear"
-    },
-    {
-     "pr": 1023,
-     "sha": "84a780d38",
-     "title": "Metadata season switch and episode pages emit store jobs; the runner resolves the client and the detail chain is one-cli"
-    },
-    {
-     "pr": 1026,
-     "sha": "d51aff4b2",
-     "title": "ViewState writes emit store jobs keyed by ClientKey; a write whose profile or client moved is dropped, never sent as ano"
-    }
-   ],
-   "from": 154.0,
-   "id": "ci|host python/shell/C gates",
-   "label": "CI: host python/shell/C gates",
-   "since": "2026-10-24",
-   "threshold_pct": 20.0,
-   "to": 207.5
   },
   {
    "change_pct": 27.1,
@@ -831,19 +831,19 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 325.5
+   "now": 327
   },
   {
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 315.0
+   "now": 315
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 270
+   "now": 268.0
   },
   {
    "group": "ci",
