@@ -365,12 +365,14 @@ pub fn to_physical(lx: f32, ly: f32) -> (f32, f32) {
     (lx * s + vx as f32, ly * s + vy as f32)
 }
 
-/// Read back what we were actually given, once, after the GL context exists.
+/// The window's size in points and its drawable's size in pixels, as SDL reports them right now:
+/// `((window_w, window_h), (drawable_w, drawable_h))`.
 ///
-/// `SDL_GL_GetDrawableSize` is the authority — on a HiDPI-style surface it and `SDL_GetWindowSize`
-/// disagree, and it is the former that `glViewport` speaks. Both are logged because the pair is
-/// what tells you which situation you are in.
-pub fn probe(win: *mut c_void) {
+/// `SDL_GL_GetDrawableSize` is the authority for the second — on a HiDPI-style surface it and
+/// `SDL_GetWindowSize` disagree, and it is the former that `glViewport` speaks. The ratio of the
+/// two is the display's pixel density, which no call can give before a window exists (the
+/// desktop reads it here to size its window, `app::boot`); [`probe`] logs both.
+pub fn window_and_drawable_size(win: *mut c_void) -> ((i32, i32), (i32, i32)) {
     unsafe {
         let (mut ww, mut wh) = (0, 0);
         SDL_GetWindowSize(win, &mut ww, &mut wh);
@@ -382,11 +384,25 @@ pub fn probe(win: *mut c_void) {
             dw = ww;
             dh = wh;
         }
+        ((ww, wh), (dw, dh))
+    }
+}
+
+/// Read back what we were actually given, once, after the GL context exists.
+///
+/// See [`window_and_drawable_size`] for which number is the authority. Both are logged because the
+/// pair is what tells you which situation you are in.
+pub fn probe(win: *mut c_void) {
+    let ((ww, wh), (dw, dh)) = window_and_drawable_size(win);
+    // Only the supersampled simulator replaces the drawable it was given.
+    #[cfg(feature = "hostsim")]
+    let (mut dw, mut dh) = (dw, dh);
+    {
         #[cfg(feature = "hostsim")]
         if render_scale() > 1 && dw > 0 && dh > 0 {
             let n = render_scale();
             let (sw, sh) = (LOGICAL_W as i32 * n, LOGICAL_H as i32 * n);
-            match create_supersample_fb(sw, sh) {
+            match unsafe { create_supersample_fb(sw, sh) } {
                 Some(f) => {
                     // The window's mapping first, computed exactly as the viewport would be.
                     DRAWABLE_W.store(dw, Ordering::Relaxed);
@@ -432,7 +448,7 @@ pub fn probe(win: *mut c_void) {
             // not the canvas is either a webOS 1-3 owner's smaller Interface resolution (or the debug drawable trigger) or a firmware doing
             // something no set has been seen to do. On a desktop
             // it is the ordinary case — the window is an exact divisor of the canvas by design
-            // (`app.rs`'s `desktop_window_size`) — and asking a Mac user for their webOS version
+            // (`app::boot::plan_desktop_window`) — and asking a Mac user for their webOS version
             // reads as a malfunction. Same measurement either way; only the sentence differs.
             let tail = if cfg!(feature = "hostsim") {
                 "This is expected on a desktop: the window is a whole fraction of the canvas."

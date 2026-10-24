@@ -80,12 +80,16 @@ state. Close other WSL work, run `wsl.exe --shutdown`, and retry; accept the run
 `use_gfxredir = 1`.
 
 **Ask for `SIM_W=1920 SIM_H=1080` on any shot you intend to JUDGE.** The window is otherwise sized
-to fit the display (`app::boot::desktop_window_size`), and on a 1x screen that divisor lands on 2, so
+to fit the display (`app::boot::plan_desktop_window`), and on a 1x screen that divisor lands on 2, so
 every screenshot comes back 960x540 — half the canvas the UI is authored at. A 1px edge-sheen, a
 hairline, a snapped glyph and a specular rim are exactly the things that do not survive that
-halving, which makes a shot at the default size evidence about layout and nothing else. The window
-may then be larger than the display; for a headless grab that is fine, because the drawable is the
-window's own framebuffer, not the part of it a compositor happens to show.
+halving, which makes a shot at the default size evidence about layout and nothing else. The size is
+the DRAWABLE, in pixels, on any display: the simulator measures the display's pixel density from
+its window and sizes the window in points for it, so a Retina Mac opens a 960x540-point window for
+the 1920x1080 drawable (`surface: window=960x540 drawable=1920x1080 … scale=1.000`), never a
+3840x2160 one. The window may then be larger than the display on a 1x screen; for a headless grab
+that is fine, because the drawable is the window's own framebuffer, not the part of it a
+compositor happens to show.
 
 ```sh
 make sim-macos-shot SIM_DIR=$D SIM_W=1920 SIM_H=1080 SIM_SHOT=$D/home.png
@@ -348,8 +352,11 @@ Report these ONLY from the device, via the **`tv-session`** skill (and `wake-tv`
   `theme::size` ladder stay device questions — `tools/font-hint-audit.py` and a device capture.
   The window is no longer at an arbitrary fitted scale (`scale≈0.86` was the old fitted size): it
   opens at an exact divisor of the 1920x1080 canvas and is not resizable, so on a Retina display
-  the drawable is 1920x1080 and `scale` is exactly 1.0. Check the `surface:` line — it prints the
-  drawable and the scale, and a 0.5 there means glyphs are downscaled and softer by construction.
+  the drawable is 1920x1080 and `scale` is exactly 1.0 — whatever the display's size and with or
+  without `SIM_W`/`SIM_H`, since the window is sized in points from the density it measures. Check
+  the `surface:` line — it prints the drawable and the scale, and a 0.5 there means glyphs are
+  downscaled and softer by construction (a 2.0 would be a drawable larger than the canvas, which the
+  render-set ceiling in a debug build refuses by panicking).
 - **Anything about LG's DECODER** — resource-allocation refusals, the Load payload's Dolby
   declaration, `SOUND_ERROR_019`, frame pacing, which codecs the panel takes. The 29-symbol
   Starfish/ACB seam does not exist off-device, so by default `player::ffi`'s host arm reports the
