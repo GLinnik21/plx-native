@@ -1,6 +1,6 @@
 {
  "flaky": [],
- "generated": "2026-10-24T01:23:21Z",
+ "generated": "2026-10-24T01:57:01Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -67,17 +67,17 @@
   },
   {
    "change30_pct": -51.7,
-   "change7_pct": -30.7,
+   "change7_pct": -30.8,
    "d30": 688,
-   "delta30": -355.5,
-   "delta7": -147.5,
+   "delta30": -356,
+   "delta7": -148.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 154,
+   "n_now": 155,
    "n_prev": 268,
-   "now": 332.5,
+   "now": 332,
    "prev7": 480.0,
    "shown": true,
    "state": "better",
@@ -89,7 +89,7 @@
   {
    "change30_pct": -52.0,
    "change7_pct": -23.8,
-   "d30": 687.0,
+   "d30": 687,
    "delta30": -357.0,
    "delta7": -103.0,
    "group": "ci",
@@ -544,7 +544,7 @@
   {
    "change30_pct": -98.7,
    "change7_pct": -99.1,
-   "d30": 236,
+   "d30": 236.0,
    "delta30": -233.0,
    "delta7": -320.0,
    "group": "ci",
@@ -565,8 +565,8 @@
   {
    "change30_pct": -99.6,
    "change7_pct": 0.0,
-   "d30": 693,
-   "delta30": -690.0,
+   "d30": 694.5,
+   "delta30": -691.5,
    "delta7": 0.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
