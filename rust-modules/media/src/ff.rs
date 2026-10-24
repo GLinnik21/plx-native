@@ -532,7 +532,9 @@ pub const AV_CODEC_ID_AV1: c_int = 222;
 pub const AV_PKT_FLAG_KEY: c_int = 1;
 pub const AVSEEK_FLAG_BACKWARD: c_int = 1;
 pub const AVERROR_EOF: c_int = -541478725;
-pub const AVERROR_EAGAIN: c_int = -11;
+/// `AVERROR(EAGAIN)`: FFmpeg negates the HOST libc's errno, which is 11 on Linux (the television)
+/// but 35 on macOS (the simulator), so it cannot be a literal.
+pub const AVERROR_EAGAIN: c_int = -(libc::EAGAIN as c_int);
 /// `AVERROR(EIO)`: unlike EOF, tells libavformat and our producer that the source was truncated by
 /// a transport failure.
 pub const AVERROR_IO: c_int = -5;
@@ -8441,6 +8443,22 @@ mod audio_codec_name_tests {
         assert!(audio_name_matches("ac3", "ac3"));
         assert!(!audio_name_matches("truehd", "dca"));
         assert!(!audio_name_matches("ac3", "eac3"));
+    }
+}
+
+#[cfg(test)]
+mod averror_errno_tests {
+    use super::*;
+
+    /// `AVERROR(e)` is `-e` of the host libc: `EAGAIN` is 11 on Linux and 35 on macOS, so the drain
+    /// loop's "no more output yet" return must follow the platform, not a Linux literal.
+    #[test]
+    fn averror_eagain_is_the_negated_host_errno() {
+        assert_eq!(AVERROR_EAGAIN, -libc::EAGAIN);
+        #[cfg(target_os = "macos")]
+        assert_eq!(AVERROR_EAGAIN, -35);
+        #[cfg(target_os = "linux")]
+        assert_eq!(AVERROR_EAGAIN, -11);
     }
 }
 

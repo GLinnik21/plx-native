@@ -166,8 +166,9 @@ fi
 #              h264/hevc are the raw Annex-B paths (/tmp/sample.h264 and the dev triggers).
 #   parsers    needed by avformat_find_stream_info to fill AVCodecParameters.
 #   bsf        AVCC -> Annex-B for mp4-family video, which the Starfish pipeline requires.
-#   decoders   SUBTITLES ONLY. Video and audio are decoded by the TV's hardware via Starfish;
-#              FFmpeg here never touches a video frame.
+#   decoders   subtitles, plus flac. Video and the other audio formats are decoded by the TV's
+#              hardware via Starfish; FFmpeg here never touches a video frame. FLAC is decoded
+#              in the app (libpf has no FLAC input) and fed to the TV as PCM.
 #   encoder/   mpeg1video + mpegts are the DEV capture stream only, dropped by RELEASE=1 along
 #   muxer      with swscale, which nothing else uses.
 #
