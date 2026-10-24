@@ -1,8 +1,14 @@
 //! The player's transport-pause contract and its app-switch lifecycle machine.
 //!
-//! `ForegroundLifecycle` is a tested `State + Event -> Effects` machine, and the transport helpers
-//! (`paused`, `viewer_paused`, `set_transport_paused`, ...) are the one door every surface reaches
-//! the player's pause through. All of it describes the PLAYER's transport and its resume after an
+//! `ForegroundLifecycle` is a tested `State + Event -> Effects` machine. Its state is private and
+//! its one writer is `step(&ForegroundEvent, &mut Vec<ForegroundEffect>) -> Handled`; callers read
+//! it through `awaiting_load`, `claimable_clock`, `pending_flight` and `pending_load_attempt` (and
+//! `state()` under `test` / `test-support`). The drivers (`drive_foreground`,
+//! `poll_foreground_flight`, `poll_foreground_load`) hold one event in a single slot, run the
+//! effects each step asks for through a `ForegroundActuator`, and feed every answering effect's
+//! answer back as the next event. The transport helpers (`paused`, `viewer_paused`,
+//! `set_transport_paused`, ...) are the one door every surface reaches the player's pause through.
+//! All of it describes the PLAYER's transport and its resume after an
 //! OS suspend, and the player machine ([`super::machine::Player`]), the detail page's trailer
 //! transport ([`super::preview::transport`]) and the claim hold ([`super::claim_hold`]) all name
 //! it, so it lives here rather than in `app::lifecycle` (a layer above the player). The loop's
