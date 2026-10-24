@@ -130,8 +130,8 @@ impl<H: Host> Machine<H> for CollectionStore {
     fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, _fx: &mut Effects<'_, H>) -> Handled {
         // Unreached: nothing steps this store as a Machine (the only `StoreEv::Cmd` sender is
         // Browse, and nothing sends `StoreEv::Pump`). A future sender must pass the host's keys
-        // and drain the jobs the pump emits; these empty keys would read as "no server holds a
-        // client" and the job would be stranded.
+        // and drain the jobs the pump emits; these empty keys read as "no server holds a client"
+        // (the page fails), and real keys without the drain would strand the job.
         let keys = ClientKeys::default();
         match ev {
             StoreEv::Cmd(cmd) => { self.run(cmd.clone(), &keys); }
