@@ -18,7 +18,7 @@ All paths in this table are relative to `rust-modules/src/`. `small` means `spaw
 |---|---|---|
 | `app/adapters/poster.rs:992` | normal `poster`, called twice | Two interchangeable long-lived workers competing for images. **This proposal's scheduling domain.** |
 | `browse/mod.rs:994,1975,2630` | small `directory`, `page`, `sources` | One-shot directory/page/source discovery, adapter mailboxes and caller-owned epochs/latches. Leave alone. `directory` serves genres and letters. |
-| `browse/section_hubs.rs:406` | small `libhubs` | One-shot result with section/table/client validity checks. Leave alone. |
+| `app/adapters/stores.rs` (`launch_browse_hubs`) | small `libhubs` | The section hubs' list/row read, started by the app's runner for `StoreJob::BrowseHubs` (no longer in `browse/section_hubs.rs`). One-shot result with section/table/client validity checks. Leave alone. |
 | `metadata.rs:2753,3188,3582` | small `detail`, `altsrc`, `season` | Distinct request/landing protocols; season failure is separate from an empty answer. Leave alone. |
 | `person.rs:1472,1512` | small `person` at two locations | Profile/credits and per-server resolve/media/roles; per-slot claims and generation-tagged results. Leave alone. |
 | `auth.rs:2345,2399` | small `probe` at two launcher definitions | Deadline-bounded connection-candidate races, including profile-resource probing. Not a reusable image-style worker pool. |

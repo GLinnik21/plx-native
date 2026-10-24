@@ -154,7 +154,10 @@ Catalog step is not pure either (the bullet headed "What the Catalog step still 
 still reads). Subtitle search and the view-state read-back are the fifth and sixth (the bullet
 headed "Subtitle search and the view-state read-back"). Home's Hubs read is the seventh (the bullet
 headed "The Hubs lane"): the worker start and the `client_for` read are gone from `data/src/pms.rs`
-and its three `data-pms` ledger files are deleted.
+and its three `data-pms` ledger files are deleted. A library's section hubs, the Browse store's list
+and row reads, are the eighth (the bullet headed "The section hubs lane"): their two worker starts
+and three registry reads are gone from `data/src/browse/section_hubs.rs`; the rest of `browse/` (the
+directory, page and source reads, discovery, the pins) is still on its ledger.
 
 - **The shape.** `plx_machine::job` holds `Job<R>` (an `Addr` and a request that carries everything
   the worker needs), `Port<T>` (where the one answer goes: exactly one `done` or `refused` per job)
@@ -164,14 +167,17 @@ and its three `data-pms` ledger files are deleted.
   `plx_data::collection::{CollectionReq, CollectionPort}`,
   `plx_data::person::{PersonReq, PersonPort}` and
   `plx_data::stores::catalog::{CatalogReq, CatalogPort}` and
-  `plx_data::pms::{HubRequest, HubsPort}`. The app's `StoreRunner`
+  `plx_data::pms::{HubRequest, HubsPort}` and
+  `plx_data::browse::section_hubs::{BrowseHubsReq, BrowseHubsPort}` (`BrowseStore::take_jobs`). The app's `StoreRunner`
   (`app/adapters/stores.rs`) executes a job and owns what `data/` must not: the tape's admission
   record, the thread and the `client_for` read. It is `Live` or `Held` (a test parks the job and
   runs it on the test thread), chosen when the `Bridge` is constructed; a newer Detail request
   retires only the parked Detail jobs, never another store's. `Held` parks per kind:
   `StoreRunner::held()` leaves the Hubs read live, as production runs it (a rig that waits for a
   Home landing needs a real one), and `StoreRunner::held_all()` parks it too, for a test that
-  chooses when the read settles (`Bridge::run_held_store_jobs_of_for_test`).
+  chooses when the read settles (`Bridge::run_held_store_jobs_of_for_test`). Every other kind,
+  the section hubs' read included, parks under both: no rig of the suite waits for a section-hubs
+  landing from a real worker, and a parked read is one the test starts when it chooses.
 - **A registry read is an input.** A step that decides from "which client does this server slot
   hold" is handed `plx_plex::plex::ClientKeys` (one `ClientKey { instance, token }` per server) as
   an argument. The Bridge owns one buffer and refills it in place
@@ -192,7 +198,11 @@ and its three `data-pms` ledger files are deleted.
   `Bridge::start_store_jobs_of(StoreId::Person)` and `(StoreId::Collection)`;
   `Bridge::catalog_open` and `Bridge::catalog_pump` step the Catalog store and run
   `(StoreId::Catalog)` (no keys to refill; the pump drains because its retry and its profile-switch
-  re-open both emit). Draining inside each pump, not at the frame's end, keeps every store's
+  re-open both emit). Browse's section hubs are drained at five entries: `Bridge::browse_run` (which
+  the `Store(Browse(..))` arm calls), the `StoreWork::Browse` arm and `Bridge::reconcile_pump`'s
+  membership re-query each refill the keys, step and run `(StoreId::Browse)`, and `viewstate_pump`
+  and `notify_pump` reach Browse through their `*_FILLS` lists (ViewState's terminal
+  `HubsInvalidateAll`, the notification map's `HubsInvalidateServer`). Draining inside each pump, not at the frame's end, keeps every store's
   admissions in the tape where they were: the frame pumps Person, then Collection, then reconciles
   the Detail page. A caller that holds only the store (`describe_movie` gets a `&mut MetadataStore`)
   drains with `Bridge::start_store_jobs` the moment its call returns. A new store joins by implementing its
@@ -203,8 +213,9 @@ and its three `data-pms` ledger files are deleted.
   not drain: a `RequestDetail` stepped through it leaves its job on the outbox and nothing starts
   it. The same holds for the `pub` `Stores::metadata_run`. The owner drains in the same call, as
   `Bridge::metadata_run` does; no type enforces it, the counter below catches the lapse.
-  `CollectionStore`'s and `PersonStore`'s `Machine::step` are unreached and pass empty keys: a
-  future sender must pass the host's keys and drain. The same holds for the public
+  `CollectionStore`'s, `PersonStore`'s and `BrowseStore`'s `Machine::step` are unreached for these
+  reads and pass empty keys (a Browse step with no keys decides no section-hubs read): a future
+  sender must pass the host's keys and drain. The same holds for the public
   `CatalogStore::open` and `CatalogStore::pump`: `catalog_feed` and `catalog_reread` call
   `Bridge::catalog_open` and `Bridge::catalog_pump`, which drain in the same call. And for
   `HubsStore::run_with_directory`, `land_with_directory` and `tick_with_directory`: the
@@ -331,3 +342,37 @@ and its three `data-pms` ledger files are deleted.
   runner's, `with_refused_hubs_launches_for_test` and `with_late_hubs_launches_for_test`, `#[cfg(test)]`
   in `app/adapters/stores.rs` beside the boundary they stand for. A step test reads the jobs
   (`HubsStore::take_jobs`) or answers them (`refuse_jobs_for_test`).
+- **The section hubs lane.** A library's shelves (`data/src/browse/section_hubs.rs`) are the eighth
+  store on the lane: the whole-list read and each row's page read leave as one job kind,
+  `StoreJob::BrowseHubs(Job<BrowseHubsReq>, BrowseHubsPort)`, on `BrowseStore`'s outbox. The step
+  (`hubs_kick`, `hubs_page`, `hubs_invalidate*`, the pump's `hubs_tick_all`) is handed the
+  registry's `ClientKeys` and the outbox, and decides the server and the `ClientKey` to ask with;
+  `finish_browse_hubs_job` is the IO body (the old workers' bodies, unchanged) and the log line
+  `libhubs: section N landed ...` the landing writes is unchanged. Admission is `Direct`: a
+  controlled Home run never emits this work (`bootstrap/effects.rs` `work_value()` refuses every
+  `StoreWork` but `Hubs` and `BrowseDiscovery`), so no replay fixture moved. It differs from the
+  Hubs read in three ways.
+  - **One claim, one mailbox, one read in flight.** Both reads of every section share one
+    `Fetch<HubResult>` on the adapter: its claim is what `hubs_pump_spawns` is gated on, its mailbox
+    holds the one answer, its refusal list holds the runner's refusal. The claim is raised at the
+    STEP (where the job is emitted), not at the launch as Hubs' is: the pump is claim-gated and
+    several steps run before one drain (the ViewState closure sends a `HubsInvalidateAll` per
+    burst), so a launch-time claim would let a second step emit a second job for the same slot. The
+    landing's take, or the runner's refusal, lowers it.
+  - **A refusal is settled by the store's next step.** The runner refuses a job whose key moved by
+    the launch (`resolve` found a different client) or whose thread the system refused. The refusal
+    lowers the claim in the call that refused and records the request id; nothing else moves. The
+    store records the one read it has out (`hubs_flight`: request id, epoch, section, list or row)
+    and settles a refused one at the head of its next `hubs_pump_spawns` to the state of a read that
+    never started: the list is owed again, the row is no longer in flight. A flight whose adapter
+    has been replaced (a `Reset`, a roster retire) has no claim and no refusal and is dropped.
+    `pump_needs_work` is true while a flight is out with no claim, so a refusal is never left
+    waiting for another reason to wake the pump.
+  - **The identity compare is a compare of keys.** The landing carries the `ClientKey` its job asked
+    with; `hubs_land` takes it only if it equals `keys.key(sid)` of the section's server now, else
+    the answer is `landing_was_not_ours` and the section is owed the read again. The three
+    `client_for` reads (the two spawns and the landing's) are gone from the file.
+
+  A step test reads the jobs (`BrowseStore::take_jobs`, in the data crate `take_hubs_job`) or answers
+  them through the port; the runner's branches and every Bridge entry's drain have a test that fails
+  when the branch or the drain is removed (`app/adapters/stores.rs`, `app/browse_hubs_drain_tests.rs`).

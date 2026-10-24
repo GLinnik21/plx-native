@@ -48,7 +48,13 @@
 //!
 //! ## Who drives it
 //!
-//! [`kick`] is the only thing that issues a request. The owned Library emits `PublishShelves`;
+//! [`kick`] is what arms a section and asks for its first read; every read, whichever step asked
+//! (`kick`, a page ask, an invalidation, the tick), is decided in one place, `hubs_pump_spawns`,
+//! and **leaves the store as a [`crate::stores::StoreJob::BrowseHubs`] on its outbox**: nothing here
+//! starts a thread or reads the registry. The application's runner starts the job
+//! ([`finish_browse_hubs_job`] is its IO body) after checking that the client the step decided on
+//! is still the registry's, and the answer comes back to the pump as one addressed landing, or as
+//! a refusal the store's next step settles. The owned Library emits `PublishShelves`;
 //! the application combines its visibility flags with live press state (a press holds only
 //! committed shelves; a page's first publication is never held by one) and delivers addressed
 //! `LibraryWork::Hubs` to `stores::browse`, which calls `kick` and gates staged publication.
@@ -585,7 +591,8 @@ impl SecHubs {
 }
 
 /// Arm a section's shelves and let the first fetch happen. Idempotent; call it every frame the
-/// screen wants shelves. **This is the only thing in the module that issues a request.**
+/// screen wants shelves. Nothing is started here: a read that is due leaves as a
+/// [`StoreJob::BrowseHubs`] on `jobs` (see `hubs_pump_spawns`).
 impl super::BrowseState {
     pub(super) fn hubs_kick(&mut self, sec: usize, adapter: &Arc<super::BrowseAdapter>, keys: &ClientKeys,
         jobs: &mut Vec<StoreJob>) {
