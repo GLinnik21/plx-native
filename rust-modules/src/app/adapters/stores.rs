@@ -266,10 +266,10 @@ impl StoreRunner {
         let addr = job.addr;
         let (sid, gen) = (job.req.sid, addr.req.0);
         // The ONE read of the registry for this job: the admission records the instance of the
-        // client it names, and the launch runs the whole chain through that very client. A job
+        // client it names, and the launch runs the chain through that very client. A job
         // carries no `ClientKey` (the step that emitted it reads no registry), so what the
         // registry holds NOW is the client the page is opened on; the capture is made here, at the
-        // admission, and the chain never asks again.
+        // admission, and the chain asks again only for the opening season's episodes.
         let client = plx_plex::plex::client_for(sid);
         let request = serde_json::json!({"store":"metadata",
             "sid":sid.raw(),"rk":job.req.rk,"gen":gen,

@@ -3656,7 +3656,8 @@ fn selected_season_number(state: &MetadataState, sid: plx_plex::plex::ServerId, 
 /// 2 PMS round-trips for a movie, 5 for a show.
 ///
 /// Every GET but the opening season's episodes goes through `client`, the one the runner resolved
-/// for the job ([`finish_detail_fetch`]): the chain re-reads no registry between its GETs.
+/// for the job ([`finish_detail_fetch`]); those episodes still resolve their own client until the
+/// season worker moves.
 ///
 /// PURE NETWORK + PARSING — it touches no `static mut`, which is what let it run either on the
 /// main thread or on a worker (the app's `StoreRunner`, from the job [`request_detail`] emits)
@@ -3908,7 +3909,8 @@ fn begin_detail_request(adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId
 /// from the store at request time, [`selected_season_number`]); the worker must not read either
 /// from the current server or the store (see the fetch block's note), and the page being opened
 /// may belong to a machine that is not the current one at all. The runner resolves `sid` to its
-/// client once, at the admission, and the chain runs through that client ([`finish_detail_fetch`]).
+/// client once, at the admission, and the chain runs through that client, bar the opening season's
+/// episodes ([`finish_detail_fetch`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct DetailReq {
     pub sid: plx_plex::plex::ServerId,
@@ -4006,7 +4008,7 @@ fn request_detail_with_spawn(adapter: &MetadataAdapter, sid: plx_plex::plex::Ser
 /// `register_lazy`), so the rest of the chain asks tokenless and lands `None`. For a sign-out that
 /// is the old outcome, with the requests now sent and refused where they used to be skipped. For
 /// a re-point it is a page with its hero but empty seasons, streams, extras, trailer and related,
-/// where the old chain went on to the new origin and finished.
+/// where the old chain went on to the slot's new client and finished.
 ///
 /// `None` is a server the registry held no client for when the job was admitted: there is nothing
 /// to ask, so `fetch` is not called and the answer is the failure, as it was when the first

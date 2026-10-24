@@ -145,7 +145,7 @@ worker. Its three ledger lines are gone and the shape is the one the other `data
 The fetch chain behind that job now takes its client as an argument too (Metadata M1), as the
 Collection, Person, Hubs and subtitle-search bodies already do: `StoreRunner::start_detail` resolves
 the server's client once, at the admission, and `finish_detail_fetch` hands it to `fetch_full` and
-through it to every GET of the chain, so the eight `client_for` reads of `fetch_detail`,
+through it to the GETs of the chain, so the eight `client_for` reads of `fetch_detail`,
 `fetch_item_streams`, `fetch_seasons`, `fetch_primary_trailer`, `fetch_extras_rows`,
 `resolve_trailer`, `fetch_related` and `fetch_playing_item` (whose caller, the stream resolve,
 already holds its client) are gone from `data/src/metadata.rs`. The old chain re-resolved before
@@ -196,10 +196,10 @@ and its three `data-pms` ledger files are deleted.
   then agree on the one boolean they hold, and a refused job hands its claim back.
 - **The Detail job carries no key.** Its step reads no registry, so `DetailReq` names a server and
   no `ClientKey`: the runner reads `client_for(sid)` ONCE in `start_detail`, records that client's
-  instance in the admission and runs the chain through that same client. That is a presence check,
-  not the key compare of the jobs above. A server the registry holds no client for at the admission
-  still launches, and its worker answers the failure without asking anything, as the first read of
-  the old chain did.
+  instance in the admission and runs the chain through that same client (bar the opening season's
+  episodes). That is a presence check, not the key compare of the jobs above. A server the registry
+  holds no client for at the admission still launches, and its worker answers the failure without
+  asking anything, as the first read of the old chain did.
 - **Two drains, one rule.** A stepped machine (the session owner) emits its work through `Effects`,
   and the owner's drain starts it. A store the Bridge runs emits through its own `take_jobs`.
   `Stores::take_jobs_of(StoreId)` takes ONE store's outbox and `Stores::take_jobs` aggregates every

@@ -1,11 +1,16 @@
 //! The detail chain runs through the client it was handed (`finish_detail_fetch`), never through the
-//! registry: every GET of `fetch_full` (and the one `fetch_playing_item` makes) goes to the server
-//! the runner resolved for the job, whatever the registry says by the time each GET is made.
+//! registry: every GET of `fetch_full` but the opening season's episodes (`fetch_episodes`, which
+//! still resolves its own client), and the one `fetch_playing_item` makes, goes to the server the
+//! runner resolved for the job, whatever the registry says by the time each GET is made.
 //!
 //! The rig is two loopback PMSes. The slot is registered against `A` and its client taken, as the
 //! runner does at the admission; then the registry moves on (the slot re-pointed at `B`, or emptied
-//! as a sign-out does) and the chain runs with the client it already holds. A chain that asked the
-//! registry for a client in any sub-fetch would reach `B` (or none), and the recorded paths say so.
+//! by `reset_servers_for_test`, which neither raises the floor nor blanks the token, so this rig
+//! does not model a sign-out) and the chain runs with the client it already holds. A chain that
+//! asked the registry for a client in any sub-fetch would reach `B` (or none), and the recorded
+//! paths say so. The loopback PMS ignores `X-Plex-Token`, so these tests pin the routing, not that
+//! a chain survives the event: a real re-point or sign-out blanks the held client's token in place,
+//! and a real PMS refuses the tokenless GETs that follow.
 
 use super::*;
 use std::io::{Read, Write};
@@ -145,7 +150,8 @@ impl Rig {
     }
 
     /// The registry moves on: the same slot now answers with a client for the second server (a
-    /// re-registration at another address or under another credential).
+    /// re-registration at another address). It also blanks the first client's token in place, as a
+    /// real re-point does, which the loopback PMS does not look at.
     fn repoint(&self) {
         let again = plx_plex::plex::register_for_test("detail-client", "127.0.0.1", self.b.port, "token-b", "detail-client-b");
         assert_eq!(again, self.sid, "the same slot");
