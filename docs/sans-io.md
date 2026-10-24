@@ -1,0 +1,100 @@
+# Sans-IO: logic never performs IO
+
+Status: the rule is written down and its four ledgers are gated (`ci/check-deps.sh`, inside
+`make check`). Nothing here changes product behaviour: each ledger freezes the sites that exist
+today, so that later changes can only shrink them.
+
+## The rule
+
+Logic never performs IO. A machine (a screen, a `data/` store, the session owner, the player's
+foreground lifecycle, a route planner) starts no worker, makes no network, storage or LS2 call, and
+reads no wall clock or process-global registry; its work leaves only as a typed effect value
+carrying its address, the app's runners execute it, and every result returns as one addressed event
+in the same drain, so tests and replay deliver events and logic has no `cfg(test)` fork.
+Allowlists only shrink.
+
+The reason is testing. A machine that is a pure function of (state, event) has no seam to fake:
+a test and a replay feed it the same events the product does, so what the tests prove is what
+ships. Every site below is a place where that is not true yet. `docs/stores-as-machines.md` is how
+the `data/` stores became machines; this is the rule that finishes the job.
+
+## What the four ledgers cover
+
+Each ledger is a rule in `ci/check-deps.sh`, found by `ci/ledger.awk` (comments, string literals and
+test code are never sites; the awk's header says exactly how). Every production SITE is one line,
+and the lines are compared to the tree as an exact multiset.
+
+| Rule | A site is | Key |
+|---|---|---|
+| `workers` | a production call that starts a worker in a machine: `task::spawn(`, `spawn_small(`, `spawn_small_keeping(`, `spawn_small_or_inline(`, `spawn_off_frame(`, `spawn_off_frame_keeping(`, `storage_worker::submit(`, `submit_retained(`, the command worker's `.submit_ticket(` | `<path>::<enclosing fn>::<spelling>` |
+| `globals` | a production read of a process-global registry in a machine: `client_for`, `current_server`, `current_snapshot`, `keypin::revision`, `keypin::blocked_for`, `session::peek`, `grant::offers`, and `player::TX` in the player's lifecycle | `<path>::<enclosing fn>::<spelling>` |
+| `forks` | a production test/production fork: a `#[cfg(..)]` or `cfg!(..)` whose predicate reads `test` or `feature = "test-support"` and that a production build can satisfy (`not(test)`, `not(any(test, feature = "test-support"))`, `all(target_os = .., not(test))`, ...) | `<path>::<item name>`, or `<path>::<enclosing fn>` for a statement, a field or an inline `cfg!` |
+| `fxlanes` | an `AppFx::<Variant>` arm of `Bridge::app_effect` that does not push `Fx::Deliver(` | `<path>::AppFx::<Variant>` |
+
+`blocking` (the frame thread's `allow_blocking(` exceptions) is the older ledger these follow and is
+unchanged.
+
+**Scope.** `workers` and `globals` read the machines: everything under `rust-modules/data/src`,
+`session/src`, `screens/src`, `ui/src`, `appkit/src` and `machine/src`, plus
+`plex/src/plex/session.rs` (the session owner's state), the player's `lifecycle.rs` and the route
+planners `route/plan.rs` and `route/plan_memory.rs`. The IO layers (the rest of `plex/`, `media/`,
+`net/`, `platform/`) are where those calls belong, so they are not scanned. `forks` reads the whole
+of `data/`, `plex/`, `media/` and `session/`, because a fork anywhere in them is a test that does not
+run the product's code. `fxlanes` reads the one fn, `Bridge::app_effect` in `rust-modules/src/app/bridge.rs`.
+
+**Decisions the table hides.**
+
+- A bare `spawn(` / `submit(` / `peek(` is a site only in a file that imports it from `task`,
+  `storage_worker` or `session` (`Builder::spawn`, a local fn and `it.peek()` are not workers or
+  registry reads); `peek` is also a site in `plex/src/plex/session.rs`, the module that defines it.
+  A local wrapper (`spawn_discovery`) is no site of its own: the real call inside it is.
+- A getter named without a call (`.and_then(client_for)`) reads the registry as surely as a call
+  does, so it is a site. Only a rename (`use ...::client_for as x`) fails outright, because the
+  calls through `x` are invisible to the scan.
+- The command worker's `.submit(` is not covered: it is `#[cfg(any(test, feature = "test-support"))]`
+  in `base/src/storage_worker.rs`, so no production line can call it. `.submit_ticket(` is covered
+  although no machine calls it today: a machine that did would be starting a worker.
+- `player::TX` is read as logic only in `lifecycle.rs`; the HUD's reads are not a machine's.
+- `forks` counts an attribute the product can satisfy. `#[cfg(test)]` and `any(test, feature =
+  "test-support")` items are skipped whole (only a test can see them); `all(test, ..)` too.
+  `any(feature = "devtriggers", test)` is counted, because a dev build can satisfy it.
+- `fxlanes`: an arm that pushes `Fx::Deliver(` rides the ordered FIFO, where a result returns as one
+  addressed event in the same drain. An arm that parks its request on a side queue of the bridge
+  (`reqs`, `content_reqs`, ...) is a second lane with its own timing, so it is a ledger line, and a
+  NEW variant with a side queue fails the gate.
+
+## Layout
+
+One file per rule and area, `ci/allow/<rule>/<area>.txt`. The area is the crate (`app` for
+`rust-modules/src`), except in `data/`, where it is `data-<module>` for the top-level module under
+`data/src`, and `stores/<stem>.rs` joins the module of its own name (`stores/watchlist.rs` and
+`watchlist.rs` are one area, `data-watchlist`). One file per area means two migrations that touch
+different areas never edit the same `# count:` header. The directories do not collide with the flat
+`ci/allow/*.txt` rule names, which `allowed()` indexes.
+
+Each file starts with `# count: N` (it must equal the entry count), then a comment header saying what
+the rule is, then one key per line. A line filed in the wrong area fails the gate and names the right one.
+`tests/test_harness.py` pins each rule's total (`PINNED_LEDGER_TOTALS`), so a ledger and its count
+cannot grow together unseen.
+
+## What fails
+
+- a site that no ledger line names (the message names the file it belongs in);
+- a ledger line whose site is gone;
+- a `# count:` that is not the number of entries;
+- a line in the wrong area file;
+- a rename of a worker start or a registry getter (`workers`, `globals`).
+
+## How a migration shrinks a ledger
+
+A migration makes one machine pure: its worker start becomes a typed effect the app's runners
+execute, its registry read becomes a field of the event or an argument, its `cfg(not(test))` arm
+becomes one code path that tests and the product both drive. The PR then:
+
+1. deletes the machine's lines from its `ci/allow/<rule>/<area>.txt` files;
+2. lowers each file's `# count:` and the rule's number in `PINNED_LEDGER_TOTALS`;
+3. leaves the gate green (`ci/check-deps.sh`).
+
+It never edits a line to make a new site pass, and never adds one: a new worker start, registry read
+or fork in a machine is moved behind an effect instead. A ledger file that reaches zero entries is
+deleted; a rule whose last file is gone has a total of zero, and its pin says so.

@@ -268,3 +268,11 @@ there is no shim for an unowned store any more — every caller goes through its
 owner (`Bridge::<store>_run`, or the owner method a same-turn boundary already holds). Do not add
 a `pub(crate) fn` to the data module that a screen calls: `check-deps` will refuse it, and the
 point of the vocabulary is that the mutation set is one `match` a reviewer can read.
+
+The stores are machines in state but not yet in IO: their modules still start their own workers,
+read `client_for(current_server())` and the other process-global registries, and a few arms are
+`cfg(not(test))` forks. `docs/sans-io.md` states the rule that retires those (a machine performs no
+IO; its work leaves as a typed effect and every result returns as one addressed event) and the four
+ledgers, `ci/allow/{workers,globals,forks,fxlanes}/`, that freeze today's sites. A new worker start,
+registry read or test/production fork in a store fails `check-deps`; a migration shrinks the ledger
+by deleting the lines of the store it made pure.
