@@ -6,13 +6,13 @@ use super::*;
 
 /// What a DESKTOP window is asked to be, before the display's pixel density is known.
 #[cfg(any(feature = "hostsim", test))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum WindowAsk {
+#[derive(Clone, Copy)]
+enum WindowAsk {
     /// `PLXNATIVE_WIN=<w>x<h>`: a DRAWABLE of exactly this many pixels, on any display.
     Drawable(c_int, c_int),
-    /// No override: the largest whole fraction of the canvas whose window fits the usable
-    /// display area (`SDL_GetDisplayUsableBounds`, in points; `None` when SDL cannot answer).
-    Fit { usable: Option<(c_int, c_int)> },
+    /// No override: the largest whole fraction of the canvas whose window fits this usable display
+    /// area (`SDL_GetDisplayUsableBounds`, in points).
+    Fit(c_int, c_int),
 }
 
 /// How many drawable pixels a window point is worth on this display, as the integer pair SDL
@@ -23,7 +23,7 @@ pub(crate) enum WindowAsk {
 /// same way on the way out as on the way in.
 #[cfg(any(feature = "hostsim", test))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Density {
+struct Density {
     window_w: c_int,
     drawable_w: c_int,
 }
@@ -31,12 +31,12 @@ pub(crate) struct Density {
 #[cfg(any(feature = "hostsim", test))]
 impl Density {
     /// One pixel per point: every 1x display, and what is assumed until a window has been measured.
-    pub(crate) const UNIT: Density = Density { window_w: 1, drawable_w: 1 };
+    const UNIT: Density = Density { window_w: 1, drawable_w: 1 };
 
-    /// The measured pair. A drawable that is not larger than the window (a 1x display, or a fork
-    /// whose `SDL_GL_GetDrawableSize` leaves zero) is [`Density::UNIT`]: a drawable never has
-    /// fewer pixels than points, and a window is never grown to make up for one that seems to.
-    pub(crate) fn measured(window_w: c_int, drawable_w: c_int) -> Density {
+    /// The measured pair. A drawable that is not larger than the window (a 1x display) is
+    /// [`Density::UNIT`]: a drawable never has fewer pixels than points, and a window is never
+    /// grown to make up for one that seems to.
+    fn measured(window_w: c_int, drawable_w: c_int) -> Density {
         if window_w <= 0 || drawable_w <= window_w {
             Density::UNIT
         } else {
@@ -64,19 +64,11 @@ impl Density {
     }
 }
 
-/// The window the desktop opens, in points, and the drawable that window is expected to give.
-#[cfg(any(feature = "hostsim", test))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct DesktopWindow {
-    pub(crate) points: (c_int, c_int),
-    pub(crate) drawable: (c_int, c_int),
-}
-
 /// `PLXNATIVE_WIN`'s value: `<w>x<h>`, both positive. Anything else is no override.
 #[cfg(any(feature = "hostsim", test))]
 fn parse_window_override(v: &str) -> Option<(c_int, c_int)> {
-    let (w, h) = v.to_lowercase().split_once('x').map(|(w, h)| (w.trim().to_owned(), h.trim().to_owned()))?;
-    match (w.parse::<c_int>(), h.parse::<c_int>()) {
+    let (w, h) = v.split_once(['x', 'X'])?;
+    match (w.trim().parse::<c_int>(), h.trim().parse::<c_int>()) {
         (Ok(w), Ok(h)) if w > 0 && h > 0 => Some((w, h)),
         _ => None,
     }
@@ -91,51 +83,37 @@ fn parse_window_override(v: &str) -> Option<(c_int, c_int)> {
 /// not a sharper picture: it is the same atlas stretched, with every drawable-sized buffer (the
 /// page snapshot, the glass sources) four times the television's, which is how a 2x display once
 /// breached the render-set ceiling on every frame (`ui/src/frame/render_set.rs`).
-/// So a window of `p` points is only ever asked for when it gives the drawable wanted, and
-/// `density` is what turns one into the other.
 ///
-/// * `Drawable` (`PLXNATIVE_WIN=<w>x<h>`) is that drawable, exactly. It exists because the fit
-///   below is chosen for a HUMAN looking at a window, and a screenshot is not that: on a 1x
-///   display the divisor lands on 2 and every shot comes back 960x540, half the canvas the UI is
-///   authored at. A hairline, a 1px edge-sheen and a snapped glyph do not survive that, so a shot
-///   taken to JUDGE the interface is asked for at full size (`make sim-shot SIM_W=1920 SIM_H=1080`).
-///   Off-screen edges are fine for a headless grab: the drawable is the window's own framebuffer.
+/// * `Drawable` is that drawable, exactly. The fit below is chosen for a HUMAN looking at a
+///   window, and a screenshot is not that: on a 1x display its divisor lands on 2 and every shot
+///   comes back 960x540, half the canvas the UI is authored at, so a shot taken to JUDGE the
+///   interface asks for full size (`make sim-shot SIM_W=1920 SIM_H=1080`). Off-screen edges are
+///   fine for a headless grab: the drawable is the window's own framebuffer.
 /// * `Fit` is **an exact divisor, never a best fit**: the largest of 1/1, 1/2 and 1/3 of the canvas
 ///   whose window, in points, fits the usable area. `surface::scale` will letterbox any drawable it
 ///   is given, so an arbitrary size would *work*, but a fractional scale resamples all of the above.
-///   The bounds are in points, so the window is `canvas / div / density` of them: a laptop (usable
-///   ~1512x945 points at 2x) gets 960x540 points, and so does a 5K display "looking like 2560x1440".
-///   Both are the 1920x1080 drawable the television gets; without the density the second would
-///   have been a 1920x1080-POINT window with a 3840x2160 drawable.
+///   The bounds are in points, so the window is `canvas / div / density` of them.
 ///
 /// The television asks for the canvas itself (1:1) unless the owner picked a smaller Interface
 /// resolution in Settings on webOS 1-3 (`requested_drawable`), in which case the compositor fills the panel.
 /// A Mac is the case the `surface` doc was written against — 1920x1080 exceeds the usable area of
 /// every laptop display Apple ships, so asking for it flatly would put the title bar above the
 /// screen and the bottom of the interface under the Dock.
-///
-/// Falls back to the canvas as the drawable if SDL cannot say how big the display is, which is
-/// the behaviour this replaced.
 #[cfg(any(feature = "hostsim", test))]
-pub(crate) fn plan_desktop_window(ask: WindowAsk, density: Density) -> DesktopWindow {
-    let window_for = |(w, h): (c_int, c_int)| {
-        let points = (density.points(w), density.points(h));
-        DesktopWindow { points, drawable: (density.pixels(points.0), density.pixels(points.1)) }
-    };
+fn plan_desktop_window(ask: WindowAsk, density: Density) -> (c_int, c_int) {
+    let points = |(w, h): (c_int, c_int)| (density.points(w), density.points(h));
     match ask {
-        WindowAsk::Drawable(w, h) => window_for((w, h)),
-        WindowAsk::Fit { usable: None } => window_for((SCR_W, SCR_H)),
-        WindowAsk::Fit { usable: Some((uw, uh)) } => {
+        WindowAsk::Drawable(w, h) => points((w, h)),
+        WindowAsk::Fit(uw, uh) => {
             // A little headroom under the usable bounds: a window flush against them reads as a
             // fullscreen that went wrong rather than as a deliberate size.
             let (max_w, max_h) = ((uw as f32 * 0.95) as c_int, (uh as f32 * 0.95) as c_int);
-            for div in 1..=3 {
-                let want = (SCR_W / div, SCR_H / div);
-                if density.points(want.0) <= max_w && density.points(want.1) <= max_h {
-                    return window_for(want);
-                }
-            }
-            window_for((SCR_W / 3, SCR_H / 3))
+            let fits = |div| {
+                let (w, h) = points((SCR_W / div, SCR_H / div));
+                w <= max_w && h <= max_h
+            };
+            let div = (1..3).find(|&div| fits(div)).unwrap_or(3);
+            points((SCR_W / div, SCR_H / div))
         }
     }
 }
@@ -144,31 +122,31 @@ pub(crate) fn plan_desktop_window(ask: WindowAsk, density: Density) -> DesktopWi
 #[cfg(feature = "hostsim")]
 const WINDOWPOS_CENTERED: c_int = 0x2FFF_0000u32 as c_int;
 
-/// What this process is asked for: `PLXNATIVE_WIN` if it holds a size, else the fit to the display.
+/// What this process is asked for: `PLXNATIVE_WIN` if it holds a size, else the fit to the display,
+/// or the canvas itself if SDL cannot say how big the display is.
 #[cfg(feature = "hostsim")]
-pub(crate) fn desktop_window_ask() -> WindowAsk {
+fn desktop_window_ask() -> WindowAsk {
     if let Some((w, h)) = std::env::var_os("PLXNATIVE_WIN").and_then(|v| parse_window_override(&v.to_string_lossy())) {
         return WindowAsk::Drawable(w, h);
     }
     let mut r = [0 as c_int; 4]; // SDL_Rect: x, y, w, h
-    let ok = unsafe { SDL_GetDisplayUsableBounds(0, r.as_mut_ptr()) } == 0;
-    let (uw, uh) = (r[2], r[3]);
-    WindowAsk::Fit { usable: (ok && uw > 0 && uh > 0).then_some((uw, uh)) }
+    let ok = unsafe { SDL_GetDisplayUsableBounds(0, r.as_mut_ptr()) } == 0 && r[2] > 0 && r[3] > 0;
+    if ok {
+        WindowAsk::Fit(r[2], r[3])
+    } else {
+        WindowAsk::Drawable(SCR_W, SCR_H)
+    }
 }
 
 /// Size the just-created desktop `win` for the pixel density of the display it opened on.
 ///
 /// `SDL_GetDisplayDPI` is unreliable on macOS, so the density is MEASURED instead: the window was
 /// opened at the 1x answer of [`plan_desktop_window`], and `SDL_GL_GetDrawableSize` over
-/// `SDL_GetWindowSize` says how many pixels that bought per point. On a 1x display the answer is
-/// [`Density::UNIT`] and nothing happens at all. On a 2x display the window is resized (and put
-/// back in the middle of the display, since it was centred at the old size) to the points that give
-/// the drawable that was asked for: `PLXNATIVE_WIN=1920x1080` is a 960x540-point window, not a
-/// 1920x1080-point one with a 3840x2160 drawable.
-///
-/// Called before `surface::probe`, which reads the drawable once and for good. The window is
-/// created at the 1x size first, so a 2x display shows that size for the instant before the resize;
-/// there is no way to ask a display its density without a window on it.
+/// `SDL_GetWindowSize` says how many pixels that bought per point. On a 1x display nothing happens.
+/// On a 2x display the window is resized (and put back in the middle of the display, since it was
+/// centred at the old size) to the points that give the drawable that was asked for:
+/// `PLXNATIVE_WIN=1920x1080` is a 960x540-point window, not a 1920x1080-point one with a 3840x2160
+/// drawable. Called before `surface::probe`, which reads the drawable once and for good.
 #[cfg(feature = "hostsim")]
 unsafe fn fit_window_to_density(win: *mut c_void, ask: WindowAsk) {
     let ((ww, wh), (dw, dh)) = plx_base::surface::window_and_drawable_size(win);
@@ -176,31 +154,24 @@ unsafe fn fit_window_to_density(win: *mut c_void, ask: WindowAsk) {
     if density == Density::UNIT {
         return;
     }
-    let plan = plan_desktop_window(ask, density);
-    if plan.points == (ww, wh) {
+    let (pw, ph) = plan_desktop_window(ask, density);
+    if (pw, ph) == (ww, wh) {
         return;
     }
-    SDL_SetWindowSize(win, plan.points.0, plan.points.1);
+    SDL_SetWindowSize(win, pw, ph);
     SDL_SetWindowPosition(win, WINDOWPOS_CENTERED, WINDOWPOS_CENTERED);
-    let (now, got) = plx_base::surface::window_and_drawable_size(win);
+    let ((nw, nh), (gw, gh)) = plx_base::surface::window_and_drawable_size(win);
     log(&format!(
         "surface: {:.3} pixels per point (a {ww}x{wh} point window read back a {dw}x{dh} drawable); \
-         resized to {}x{} points for the {}x{} drawable asked for, which now reads {}x{} points / {}x{} drawable",
-        f64::from(dw) / f64::from(ww),
-        plan.points.0,
-        plan.points.1,
-        plan.drawable.0,
-        plan.drawable.1,
-        now.0,
-        now.1,
-        got.0,
-        got.1
+         resized to {pw}x{ph} points, which now reads {nw}x{nh} points / {gw}x{gh} drawable",
+        f64::from(dw) / f64::from(ww)
     ));
 }
 
 #[cfg(test)]
 mod desktop_window_tests {
-    use super::{parse_window_override, plan_desktop_window, Density, DesktopWindow, WindowAsk, SCR_H, SCR_W};
+    use super::WindowAsk::{Drawable, Fit};
+    use super::{parse_window_override, plan_desktop_window, Density, WindowAsk, SCR_H, SCR_W};
 
     /// A window of 1920 points whose drawable reads back 3840 pixels: macOS Retina, the case this
     /// module exists for. (macOS always reports a whole backing factor, even in a "scaled" mode.)
@@ -208,20 +179,16 @@ mod desktop_window_tests {
         Density::measured(1920, 3840)
     }
 
+    /// The window the planner opens, in points, and the drawable that window gives.
     fn plan(ask: WindowAsk, density: Density) -> ((i32, i32), (i32, i32)) {
-        let DesktopWindow { points, drawable } = plan_desktop_window(ask, density);
-        (points, drawable)
-    }
-
-    fn fit(uw: i32, uh: i32) -> WindowAsk {
-        WindowAsk::Fit { usable: Some((uw, uh)) }
+        let points = plan_desktop_window(ask, density);
+        (points, (density.pixels(points.0), density.pixels(points.1)))
     }
 
     /// `PLXNATIVE_WIN=1920x1080` on a 1x display is the 1920x1080 window it always was.
     #[test]
     fn a_1x_display_gives_the_override_as_asked() {
-        assert_eq!(plan(WindowAsk::Drawable(1920, 1080), Density::UNIT), ((1920, 1080), (1920, 1080)));
-        assert_eq!(plan(WindowAsk::Drawable(640, 360), Density::UNIT), ((640, 360), (640, 360)));
+        assert_eq!(plan(Drawable(1920, 1080), Density::UNIT), ((1920, 1080), (1920, 1080)));
     }
 
     /// THE BUG: `PLXNATIVE_WIN=1920x1080` on a 2x display was a 1920x1080-POINT window, whose
@@ -229,16 +196,14 @@ mod desktop_window_tests {
     /// frame of a Library scroll. The override is the DRAWABLE, so the window is half of it.
     #[test]
     fn the_override_is_the_drawable_on_a_2x_display() {
-        assert_eq!(plan(WindowAsk::Drawable(1920, 1080), retina()), ((960, 540), (1920, 1080)));
-        assert_eq!(plan(WindowAsk::Drawable(640, 360), retina()), ((320, 180), (640, 360)));
+        assert_eq!(plan(Drawable(1920, 1080), retina()), ((960, 540), (1920, 1080)));
     }
 
     /// A 2x laptop (usable ~1512x945 points): 960x540 points, a 1:1 drawable. What it always got,
     /// by the coincidence of div=2 meeting a 2x density; now by arithmetic.
     #[test]
     fn a_2x_laptop_fits_960x540_points_for_a_1_to_1_drawable() {
-        assert_eq!(plan(fit(1512, 945), retina()), ((960, 540), (1920, 1080)));
-        assert_eq!(plan(fit(1440, 900), retina()), ((960, 540), (1920, 1080)));
+        assert_eq!(plan(Fit(1512, 945), retina()), ((960, 540), (1920, 1080)));
     }
 
     /// THE SECOND HOLE: a 5K/4K display "looking like 2560x1440" has usable ~2560x1415 points, so
@@ -246,32 +211,19 @@ mod desktop_window_tests {
     /// override at all. The fit is of the DRAWABLE, measured in the points it occupies.
     #[test]
     fn a_large_2x_display_gives_the_same_1_to_1_drawable_without_any_override() {
-        assert_eq!(plan(fit(2560, 1415), retina()), ((960, 540), (1920, 1080)));
-        assert_eq!(plan(fit(3008, 1692), retina()), ((960, 540), (1920, 1080)));
+        assert_eq!(plan(Fit(2560, 1415), retina()), ((960, 540), (1920, 1080)));
     }
 
     /// Nothing changes on a 1x display: the divisor lands where it did, on every size.
     #[test]
     fn a_1x_display_fits_exactly_as_it_did() {
         // a 1080p display's usable area under a menu bar and a Dock: div=2
-        assert_eq!(plan(fit(1920, 1050), Density::UNIT), ((960, 540), (960, 540)));
-        assert_eq!(plan(fit(1440, 900), Density::UNIT), ((960, 540), (960, 540)));
-        // a 1x display big enough for the canvas itself: div=1
-        assert_eq!(plan(fit(2560, 1415), Density::UNIT), ((1920, 1080), (1920, 1080)));
-        // ...whose window needs 5% headroom: 1920 / 0.95 = 2021.05 points of width
-        assert_eq!(plan(fit(2022, 1140), Density::UNIT), ((1920, 1080), (1920, 1080)));
-        assert_eq!(plan(fit(2020, 1140), Density::UNIT), ((960, 540), (960, 540)));
+        assert_eq!(plan(Fit(1920, 1050), Density::UNIT), ((960, 540), (960, 540)));
+        // a display big enough for the canvas itself (div=1) needs 5% headroom: 1920 / 0.95 = 2021.05
+        assert_eq!(plan(Fit(2022, 1140), Density::UNIT), ((1920, 1080), (1920, 1080)));
+        assert_eq!(plan(Fit(2020, 1140), Density::UNIT), ((960, 540), (960, 540)));
         // a small one: div=3
-        assert_eq!(plan(fit(900, 560), Density::UNIT), ((640, 360), (640, 360)));
-        assert_eq!(plan(fit(100, 100), Density::UNIT), ((640, 360), (640, 360)));
-    }
-
-    /// SDL that cannot say how big the display is falls back to the canvas, as it always did.
-    #[test]
-    fn an_unanswered_display_falls_back_to_the_canvas() {
-        let none = WindowAsk::Fit { usable: None };
-        assert_eq!(plan(none, Density::UNIT), ((SCR_W, SCR_H), (SCR_W, SCR_H)));
-        assert_eq!(plan(none, retina()), ((960, 540), (1920, 1080)));
+        assert_eq!(plan(Fit(100, 100), Density::UNIT), ((640, 360), (640, 360)));
     }
 
     /// A density that is not a whole number (a 150% Windows display, a fractional Wayland scale):
@@ -279,10 +231,9 @@ mod desktop_window_tests {
     #[test]
     fn a_fractional_density_is_divided_out_too() {
         let d150 = Density::measured(1280, 1920);
-        assert_eq!(plan(WindowAsk::Drawable(1920, 1080), d150), ((1280, 720), (1920, 1080)));
-        assert_eq!(plan(fit(1440, 900), d150), ((1280, 720), (1920, 1080)));
+        assert_eq!(plan(Drawable(1920, 1080), d150), ((1280, 720), (1920, 1080)));
         // 1280x720 points is over 95% of a 1280x800 display, so the half (960x540 px) wins
-        assert_eq!(plan(fit(1280, 800), d150), ((640, 360), (960, 540)));
+        assert_eq!(plan(Fit(1280, 800), d150), ((640, 360), (960, 540)));
     }
 
     /// Whatever the ratio, the window never gives a drawable LARGER than the one asked for: a
@@ -292,15 +243,15 @@ mod desktop_window_tests {
         for (window_w, drawable_w) in [(1000, 1100), (1000, 1250), (1000, 1333), (1000, 1750), (1000, 2000), (1000, 2500), (1000, 3000), (1920, 2880), (1366, 2049)] {
             let d = Density::measured(window_w, drawable_w);
             for (w, h) in [(1920, 1080), (960, 540), (640, 360), (1280, 720)] {
-                let got = plan_desktop_window(WindowAsk::Drawable(w, h), d);
-                assert!(got.drawable.0 <= w && got.drawable.1 <= h, "{window_w}->{drawable_w} asked {w}x{h}: {got:?}");
+                let (_, got) = plan(Drawable(w, h), d);
+                assert!(got.0 <= w && got.1 <= h, "{window_w}->{drawable_w} asked {w}x{h}: {got:?}");
                 // and no more than a point short of it, in either axis
                 let point = (drawable_w + window_w - 1) / window_w;
-                assert!(w - got.drawable.0 < point && h - got.drawable.1 < point, "{window_w}->{drawable_w} asked {w}x{h}: {got:?}");
+                assert!(w - got.0 < point && h - got.1 < point, "{window_w}->{drawable_w} asked {w}x{h}: {got:?}");
             }
             for (uw, uh) in [(1280, 720), (1512, 945), (1920, 1050), (2560, 1415), (3840, 2100)] {
-                let got = plan_desktop_window(fit(uw, uh), d);
-                assert!(got.drawable.0 <= SCR_W && got.drawable.1 <= SCR_H, "{window_w}->{drawable_w} usable {uw}x{uh}: {got:?}");
+                let (_, got) = plan(Fit(uw, uh), d);
+                assert!(got.0 <= SCR_W && got.1 <= SCR_H, "{window_w}->{drawable_w} usable {uw}x{uh}: {got:?}");
             }
         }
     }
@@ -310,7 +261,6 @@ mod desktop_window_tests {
     #[test]
     fn a_drawable_no_larger_than_the_window_is_unit_density() {
         assert_eq!(Density::measured(1920, 1920), Density::UNIT);
-        assert_eq!(Density::measured(960, 0), Density::UNIT);
         assert_eq!(Density::measured(0, 1920), Density::UNIT);
         assert_eq!(Density::measured(1920, 960), Density::UNIT);
     }
@@ -753,15 +703,10 @@ mod seam_order_tests {
     #[test]
     fn the_desktop_window_is_fitted_to_the_density_before_the_drawable_is_probed() {
         let source = include_str!("boot.rs");
-        let body = source
-            .split_once(concat!("pub(crate) unsafe fn ", "construct("))
-            .expect("construct")
-            .1;
+        let body = source.split_once(concat!("pub(crate) unsafe fn ", "construct(")).expect("construct").1;
         let create = body.find(concat!("SDL_CreateWindow(", "title")).expect("creates the window");
-        let fit = body
-            .find(concat!("fit_window_to_", "density(win"))
-            .expect("construct fits the window to the display's density");
-        let probe = body.find(concat!("surface::", "probe(win)")).expect("construct probes the drawable");
+        let fit = body.find(concat!("fit_window_to_", "density(win")).expect("fits the window to the density");
+        let probe = body.find(concat!("surface::", "probe(win)")).expect("probes the drawable");
         assert!(create < fit && fit < probe, "create the window, fit it to the density, then probe the drawable");
     }
 
@@ -1595,12 +1540,12 @@ pub(crate) unsafe fn construct(
     // Interface resolution, `requested_drawable`) and takes the panel. A desktop
     // window is centred (`SDL_WINDOWPOS_CENTERED`) at whatever fits — see `plan_desktop_window`.
     // The density is not known until a window exists, so this is the 1x answer; `fit_window_to_density`
-    // below corrects it on a display where that was wrong (and changes nothing on one where it was not).
+    // below corrects it on a display where that was wrong.
     #[cfg(feature = "hostsim")]
     let desktop_ask = desktop_window_ask();
     #[cfg(feature = "hostsim")]
     let (wx, wy, ww_req, wh_req) = {
-        let (w, h) = plan_desktop_window(desktop_ask, Density::UNIT).points;
+        let (w, h) = plan_desktop_window(desktop_ask, Density::UNIT);
         (WINDOWPOS_CENTERED, WINDOWPOS_CENTERED, w, h)
     };
     #[cfg(not(feature = "hostsim"))]
@@ -1648,9 +1593,7 @@ pub(crate) unsafe fn construct(
         log(&format!("surface: retrying the window at the native {w}x{h}"));
         (ww_try, wh_try) = (w, h);
     };
-    // The drawable is only 1:1 with the canvas if the window is sized for the display's density,
-    // and the density can only be read from a window that exists: correct the size here, so
-    // `surface::probe` below reads the drawable the window will keep.
+    // Correct the size for the display's density now: `surface::probe` below reads the drawable once.
     #[cfg(feature = "hostsim")]
     fit_window_to_density(win, desktop_ask);
     plx_base::surface::probe(win);

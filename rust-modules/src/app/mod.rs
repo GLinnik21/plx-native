@@ -35,12 +35,9 @@ const SIM_TAG: &str = if cfg!(feature = "hostsim") {
 /// ALLOW_HIGHDPI is what makes that divisor land on a **1:1 surface** on the Mac people actually
 /// have: without it a Retina display gives a drawable equal to the window in POINTS, which the
 /// compositor then doubles, so the whole interface is an upscale of a half-size render. With it,
-/// the window's drawable is a whole number of pixels per point, and the density is MEASURED from
-/// the window once it exists (`boot::fit_window_to_density`) so the window is then sized in points
-/// for the drawable it is meant to give: 960x540 points for a 1920x1080 drawable on a 2x display,
-/// whatever the size of the display and whether or not `PLXNATIVE_WIN` named a size.
-/// `surface::scale() == 1.0`, the same 1:1 texel contract the television gets, and never a
-/// drawable larger than the canvas.
+/// `boot::fit_window_to_density` measures the pixels per point once the window exists and sizes
+/// it in points for the drawable it should give: 960x540 points for a 1920x1080 drawable on a 2x
+/// display, so `surface::scale() == 1.0`, the same 1:1 texel contract the television gets.
 const SDL_WINDOW_FLAGS: u32 = if cfg!(feature = "hostsim") {
     0x2 | 0x2000
 } else {
