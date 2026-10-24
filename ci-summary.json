@@ -15,7 +15,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-24T10:02:08Z",
+ "generated": "2026-10-24T10:04:19Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -102,10 +102,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -52.0,
+   "change30_pct": -51.9,
    "change7_pct": -23.8,
-   "d30": 687,
-   "delta30": -357,
+   "d30": 686.5,
+   "delta30": -356.5,
    "delta7": -103,
    "group": "ci",
    "id": "push_wait",
@@ -219,10 +219,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 78.8,
+   "change30_pct": 78.9,
    "change7_pct": -4.9,
-   "d30": 1160,
-   "delta30": 914.0,
+   "d30": 1159.0,
+   "delta30": 915.0,
    "delta7": -106.5,
    "group": "ci",
    "id": "minutes",
@@ -326,8 +326,8 @@
   {
    "change30_pct": 102.3,
    "change7_pct": 14.3,
-   "d30": 130.0,
-   "delta30": 133.0,
+   "d30": 130,
+   "delta30": 133,
    "delta7": 33,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
@@ -345,10 +345,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 180.4,
+   "change30_pct": 182.4,
    "change7_pct": 7.8,
-   "d30": 71.5,
-   "delta30": 129.0,
+   "d30": 71,
+   "delta30": 129.5,
    "delta7": 14.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
@@ -496,8 +496,8 @@
   {
    "change30_pct": 18.8,
    "change7_pct": 11.8,
-   "d30": 16.0,
-   "delta30": 3.0,
+   "d30": 16,
+   "delta30": 3,
    "delta7": 2,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
@@ -559,8 +559,8 @@
   {
    "change30_pct": -98.7,
    "change7_pct": -99.1,
-   "d30": 236.0,
-   "delta30": -233.0,
+   "d30": 236,
+   "delta30": -233,
    "delta7": -320,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
@@ -580,8 +580,8 @@
   {
    "change30_pct": -99.6,
    "change7_pct": 0.0,
-   "d30": 690.0,
-   "delta30": -687.0,
+   "d30": 687,
+   "delta30": -684,
    "delta7": 0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
