@@ -159,11 +159,12 @@ impl Port<BrowseDirectoryAnswer> for BrowseDirectoryPort {
     }
 }
 
-/// A directory request's address: the store and the id its step gave it. The id counts the reads of
-/// ONE directory (each has its own claim), so a genre and a letters request may share a number; the
-/// hubs and page counters address the same store, so an `Addr` is not an identity across kinds: every
-/// answer and refusal routes through its own job's port, which says which read it is.
-pub(super) fn browse_directory_addr(id: u32) -> Addr {
+/// A listing request's address: the store and the id its step gave it. Each read (a directory, the
+/// page) counts its own requests behind its own claim, so a genre and a letters request may share a
+/// number, and so may the hubs and page counters, which address the same store: an `Addr` is not an
+/// identity across kinds. Every answer and refusal routes through its own job's port, which says
+/// which read it is.
+pub(super) fn listing_addr(id: u32) -> Addr {
     Addr { to: MachineId::Store(crate::stores::StoreId::Browse.ord()), req: RequestId(id) }
 }
 
@@ -294,12 +295,6 @@ impl Port<BrowsePageAnswer> for BrowsePagePort {
     fn refused(&self, addr: Addr) {
         self.0.page.refuse_for(addr.req.0);
     }
-}
-
-/// A page request's address: the store and the id its step gave it. There is one page read in
-/// flight (the page claim).
-pub(super) fn browse_page_addr(id: u32) -> Addr {
-    Addr { to: MachineId::Store(crate::stores::StoreId::Browse.ord()), req: RequestId(id) }
 }
 
 /// The request's IO body and its completion: read the page through `client` and post the answer to

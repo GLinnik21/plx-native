@@ -1718,7 +1718,7 @@ impl BrowseState {
         which.claim(adapter, id);
         jobs.push(crate::stores::StoreJob::BrowseDirectory(
             plx_machine::job::Job {
-                addr: listing_jobs::browse_directory_addr(id),
+                addr: listing_jobs::listing_addr(id),
                 req: listing_jobs::BrowseDirectoryReq::new(
                     sid, key, self.table_epoch(), current, section, library_type, metadata_type, which),
             },
@@ -2776,7 +2776,7 @@ impl BrowseState {
         self.page_stamp = self.ledger.stamp();
         jobs.push(crate::stores::StoreJob::BrowsePage(
             plx_machine::job::Job {
-                addr: listing_jobs::browse_page_addr(id),
+                addr: listing_jobs::listing_addr(id),
                 req: listing_jobs::BrowsePageReq::new(
                     sid, key, gen, current, start, section_key, sort, filters, include_meta, confirm_sort, restore),
             },

@@ -34,7 +34,7 @@
 //! (the rigs that poll for a landing, the dump and return-hold tests, `menu_play_season_tests` and the
 //! library route rigs that wait for a grid to settle, need a real answer on a worker),
 //! [`StoreRunner::park_page_reads`] parks the page read as well, and [`StoreRunner::held_all`] parks
-//! every kind. Every runner parks episode-page jobs.
+//! every kind. Every held runner parks episode-page jobs.
 //!
 //! **The registry is read here, not in a step.** A step that decides from "which client does this
 //! server slot hold" is handed the answer as an input (`plx_plex::plex::ClientKeys`), which the
