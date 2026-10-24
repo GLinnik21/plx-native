@@ -122,8 +122,9 @@ worker. Its three ledger lines are gone and the shape is the one the other `data
 The Collection page's request is the second: its worker start and its three `client_for` reads are
 gone from `data/src/collection.rs`. The Person page's requests are the third: its two worker starts
 and its one `client_for` read are gone from `data/src/person.rs`, but unlike the two before it the
-Person step is not pure (the last bullet lists what it still reads). Person has up to six requests
-out at once, so a pump emits several jobs, one per fetch slot, in ascending slot order.
+Person step is not pure (the bullet headed "What the Person step still reads" lists what it still
+reads). Person has up to six requests out at once, so a pump emits several jobs, one per fetch slot,
+in ascending slot order.
 
 - **The shape.** `plx_machine::job` holds `Job<R>` (an `Addr` and a request that carries everything
   the worker needs), `Port<T>` (where the one answer goes: exactly one `done` or `refused` per job)
