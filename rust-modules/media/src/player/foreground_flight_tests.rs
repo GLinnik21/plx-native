@@ -6,6 +6,7 @@
 //! (`ForegroundState::PreparePending`, drained by `poll_foreground_flight`). These tests run every
 //! frame-thread half inside a `FrameScope`, against the loopback server of `route::flight_rig`.
 
+use super::foreground::*;
 use super::lifecycle::*;
 use super::*;
 use crate::route::flight_rig::FlightRig;

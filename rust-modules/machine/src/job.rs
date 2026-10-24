@@ -25,8 +25,10 @@ pub struct Job<R> {
 
 /// Where a job's ONE answer goes: **exactly one call per job**, `done` when the work produced an
 /// answer (a failed fetch answers with its failure value) and `refused` when it was never started
-/// (an admission refused, no worker to run it). Silence leaves the request's reservation held
-/// until its owner is reset, and a second call is a protocol error the landing refuses.
+/// (an admission refused, no worker to run it). Where the landing holds a reservation for the
+/// request, silence leaves it held until its owner is reset and a second call is a protocol error
+/// the landing refuses; a bare mailbox port (Catalog's) holds none, so silence strands the request
+/// unanswered (its page stays on Loading) and a second call is queued and applied.
 ///
 /// A port is captured when the job is emitted, so an answer lands where the request was made even
 /// if the owner has since replaced the thing it lands into.
@@ -34,13 +36,14 @@ pub struct Job<R> {
 /// **The type does not enforce "exactly one".** The methods take `&self` and a port is usually
 /// `Clone`, so a second call compiles. What checks the contract, and what does not:
 ///
-/// - **A second answer** reaches the landing, which refuses it (`PublishError::AlreadyTerminal`, or
-///   `Unknown` once the pump has taken the terminal). The store's publish step swallows that error
-///   unless its replay tracker is armed (a controlled run), so in production a double answer is
-///   silent.
-/// - **Silence** is checked by nothing. A runner that takes a job and drops it holds the
-///   reservation until the owner is reset, and four of them refuse every later request. The
-///   application's leftover-job check sees only jobs nobody took, not jobs taken and never
+/// - **A second answer** reaches the landing. Where the landing holds a reservation it refuses it
+///   (`PublishError::AlreadyTerminal`, or `Unknown` once the pump has taken the terminal), and the
+///   store's publish step swallows that error unless its replay tracker is armed (a controlled
+///   run), so in production a double answer is silent. A mailbox port refuses nothing: the second
+///   answer is queued with the first and the pump applies it.
+/// - **Silence** is checked by nothing. A runner that takes a job and drops it holds a reserving
+///   landing's reservation until the owner is reset, and four of them refuse every later request.
+///   The application's leftover-job check sees only jobs nobody took, not jobs taken and never
 ///   answered. A drop guard on the port would not do: replay legitimately drops the launch
 ///   closure unanswered, because the tape supplies its answers.
 /// - **The count per branch** is pinned by the runner's own tests (`app/adapters/stores.rs`): each

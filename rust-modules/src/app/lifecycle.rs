@@ -4,18 +4,24 @@
 //! The machine itself (`ForegroundLifecycle`, already a tested `State + Event -> Effects`
 //! machine), the foreground driver and the transport-pause contract (`paused`,
 //! `viewer_paused`, `set_transport_paused`, ...) describe the PLAYER's transport, so they live in
-//! [`plx_media::player::lifecycle`] (module-layer step L12: `player` may not name `app`) and are
-//! re-exported here, which keeps every `app` caller spelling the names it always did. Moved out of
-//! `app.rs` verbatim in phase 1a (a pure move; `pub(crate)` widening only).
+//! [`plx_media::player::lifecycle`] (the machine), [`plx_media::player::foreground`] (the driver
+//! and the actuator trait) and [`plx_media::player::transport`] (the pause contract; module-layer
+//! step L12: `player` may not name `app`) and are re-exported here, which keeps every `app` caller
+//! spelling the names it always did. Moved out of `app.rs` verbatim in phase 1a (a pure move;
+//! `pub(crate)` widening only).
 
 use super::*;
 
+pub(crate) use plx_media::player::foreground::{
+    drive_foreground, park_pending_foreground_flight, poll_foreground_flight,
+    poll_foreground_load, FlightLanding, ForegroundActivation, ForegroundActuator,
+};
 pub(crate) use plx_media::player::lifecycle::{
-    drive_foreground, park_pending_foreground_flight, paused, poll_foreground_flight,
-    poll_foreground_load, resume_if_paused, set_paused, set_transport_paused, transport_target,
-    viewer_paused, FlightLanding, ForegroundActivation, ForegroundActuator, ForegroundClock,
-    ForegroundEvent, ForegroundInput, ForegroundLifecycle, ForegroundLoadStart,
+    ForegroundClock, ForegroundEvent, ForegroundInput, ForegroundLifecycle, ForegroundLoadStart,
     ForegroundLoadStatus, Successor,
+};
+pub(crate) use plx_media::player::transport::{
+    paused, resume_if_paused, set_paused, set_transport_paused, transport_target, viewer_paused,
 };
 // Only `app::run`'s hostsim lifecycle tests name the machine's state, so a re-export outside
 // them would be an unused import.
@@ -83,7 +89,7 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
             // restore) owns its clock, and `PlayClock` resumes it after `Started`, which it does
             // only while `TX.paused` still reads Paused.
             ForegroundClock::Playing if paused() && !self.pa.is_live() => {
-                plx_media::player::lifecycle::commit_viewer_resume_for_load();
+                plx_media::player::transport::commit_viewer_resume_for_load();
             }
             ForegroundClock::Playing => {}
         }

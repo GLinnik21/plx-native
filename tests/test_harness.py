@@ -6665,6 +6665,63 @@ impl PersonOwnerGateFixture {
         self.assertEqual(out.count(f"{base}bare.rs::bare::revision  (ledger: "), 1,
                          "`it.revision()` is not a registry read\n" + out)
 
+    def test_globals_ledger_sees_the_player_transport_readers_in_a_machine(self):
+        """RED: `transport::paused`, `transport::viewer_paused` and `preview::paused` read `TX.paused` behind
+        a function (Sans-IO lifecycle PR B), so a machine that calls one reads the registry as surely as
+        `client_for` does. Qualified, bare-after-an-import (singly, in a group, through a glob) and the
+        rename that would hide the calls are all caught; the writers (`set_paused`, `set_transport_paused`)
+        and a file that merely has a local named `paused` are not registry reads. An import that only
+        ENDS in one of the module names (`plx_appkit::scrub_preview::*`, `plx_ui::hud_transport::{..}`) is not
+        an import of `preview` / `transport`, so a `paused` local beside it is no site either."""
+        crate = "screens"
+        r = self._plant_many({
+            "_check_deps_selftest_qualified.rs": (
+                "pub fn qualified() {\n"
+                "    let _ = plx_media::player::transport::paused();\n"
+                "    let _ = plx_media::player::transport::viewer_paused();\n"
+                "    let _ = plx_media::player::preview::paused();\n}\n"),
+            "_check_deps_selftest_renamed.rs": (
+                "use plx_media::player::transport::paused as is_paused;\n"
+                "use plx_media::player::transport::viewer_paused as vp;\n"
+                "use plx_media::player::preview::paused as pv;\n\n"
+                "pub fn renamed() {\n    let _ = (is_paused(), vp(), pv());\n}\n"),
+            "_check_deps_selftest_bare.rs": (
+                "use plx_media::player::transport::{self, viewer_paused};\n"
+                "use plx_media::player::preview::paused;\n\n"
+                "pub fn bare() {\n    let _ = (viewer_paused(), paused());\n    let _ = it.paused();\n}\n"),
+            "_check_deps_selftest_globbed.rs": (
+                "use plx_media::player::transport::*;\n\npub fn globbed() {\n    let _ = paused();\n}\n"),
+            "_check_deps_selftest_writers.rs": (
+                "use plx_media::player::transport::{self, set_paused, set_transport_paused};\n\n"
+                "pub fn writes(paused: bool) {\n    set_paused(paused);\n    set_transport_paused(None, paused);\n}\n"),
+            "_check_deps_selftest_scrub_glob.rs": (
+                "use plx_appkit::scrub_preview::*;\n\n"
+                "pub fn scrub_glob(x: u8) -> bool {\n    let paused = x > 0;\n    paused\n}\n"),
+            "_check_deps_selftest_suffix_group.rs": (
+                "use plx_ui::hud_transport::{self, paused_label};\nuse plx_ui::my_preview::{paused};\n\n"
+                "pub fn suffix_group(x: u8) -> bool {\n    let paused = x > 0;\n    paused\n}\n"),
+        }, crate)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("globals:", out)
+        base = f"rust-modules/{crate}/src/_check_deps_selftest_"
+        for spelling in ("transport::paused", "transport::viewer_paused", "preview::paused"):
+            with self.subTest(qualified=spelling):
+                self.assertIn(f"{base}qualified.rs::qualified::{spelling}  (ledger: ", out)
+        for line in (1, 2, 3):
+            with self.subTest(rename_line=line):
+                self.assertIn(f"{base}renamed.rs:{line}\n", out + "\n")
+        for fn, spelling in (("bare", "viewer_paused"), ("bare", "paused"), ("globbed", "paused")):
+            with self.subTest(fn=fn, spelling=spelling):
+                self.assertIn(f"{base}{fn}.rs::{fn}::{spelling}  (ledger: ", out)
+        self.assertEqual(out.count(f"{base}bare.rs::bare::paused  (ledger: "), 1,
+                         "`it.paused()` is not a registry read\n" + out)
+        self.assertNotIn(f"{base}writers.rs", out, "a writer is an IO call, not a registry read\n" + out)
+        for stem in ("scrub_glob", "suffix_group"):
+            with self.subTest(not_an_import_of_the_module=stem):
+                self.assertNotIn(f"{base}{stem}.rs", out,
+                                 "`..._preview::*` / `..._transport::{..}` is not `preview` / `transport`\n" + out)
+
     def test_a_bare_name_that_ends_a_braced_import_is_still_imported(self):
         """RED: `use plx_base::task::{self, spawn};` imports `spawn` as surely as `{spawn, self}` does, and
         so for `submit` and `peek`; the import pattern used to eat the closing `}` of a group whose
@@ -6719,9 +6776,10 @@ impl PersonOwnerGateFixture {
         self.assertNotIn(f"{key}Loop", out, "the variant the ledger already holds is not new")
 
     def test_globals_ledger_sees_every_spelling_of_the_player_transport_in_lifecycle(self):
-        """RED: lifecycle.rs reads `crate::player::TX` as logic, and `super::TX`, a bare `TX` and a
-        renamed import reach the same atomic from that file: the first two are sites of their own, the
-        rename fails outright (the calls through it are invisible)."""
+        """RED: lifecycle.rs, the machine, reads no `crate::player::TX` (the transport contract lives in
+        player/transport.rs), and the spellings stay pinned there as a zero-guard: planting `super::TX`,
+        a bare `TX` and a renamed import reaches the same atomic from that file. The first two are sites
+        of their own, the rename fails outright (the calls through it are invisible)."""
         rel = "rust-modules/media/src/player/lifecycle.rs"
         with open(os.path.join(self.tree, rel), encoding="utf-8") as f:
             before = f.read().count("\n")
@@ -7329,7 +7387,11 @@ impl PersonOwnerGateFixture {
     # the move. A migration PR lowers the number with the lines it deletes. Seeded 2026-10-24 from
     # the tool's own output on the tree this table was written for.
     PINNED_LEDGER_TOTALS = {
-        "workers": 20,  # production worker starts inside machines (`ci/allow/workers/`)
+        "workers": 19,  # production worker starts inside machines (`ci/allow/workers/`)
+        # Sans-IO lifecycle PR B moved the pin by nothing: -3 (the three `lifecycle.rs` `player::TX` lines left with the
+        # transport contract, `player/transport.rs`, the IO layer) and +3 (a relocation lowers no pin by itself, so the same
+        # diff widened the spellings to the transport readers `transport::paused`, `transport::viewer_paused` and
+        # `preview::paused`, and seeded the 3 `preview::paused` reads in screens/detail it found).
         "globals": 95,  # production process-global reads inside machines (`ci/allow/globals/`)
         "forks": 60,  # production test/production forks in data/, plex/, media/, session/ (`ci/allow/forks/`)
         "fxlanes": 11,  # Bridge::app_effect arms that do not push Fx::Deliver (`ci/allow/fxlanes/`)

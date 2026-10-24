@@ -3,12 +3,14 @@
 //! A store's step asks for IO by pushing a typed job on its outbox; it starts no thread and reads
 //! no clock. The `Bridge` takes the jobs right after the step that emitted them
 //! (`Bridge::metadata_run`, `Bridge::person_pump`, `Bridge::collection_pump`,
-//! `Bridge::subsearch_pump`, `Bridge::reconcile_pump`, or `Bridge::start_store_jobs` after a
-//! command run on the bare store) and hands each to [`StoreRunner::start`], which owns everything
-//! the data layer must not: the tape's admission record, the worker thread and the process-global
-//! client the request reads. A kind that is not on the tape (subtitle search, view reconcile) is
-//! started with no admission record. The detail pump keeps a counted backstop for a sender that
-//! did neither (`Bridge::start_late_store_jobs`).
+//! `Bridge::catalog_open`, `Bridge::catalog_pump`, `Bridge::subsearch_pump`,
+//! `Bridge::reconcile_pump`, or `Bridge::start_store_jobs` after a command run on the bare store)
+//! and hands each to [`StoreRunner::start`], which owns everything the data layer must not: the
+//! tape's admission record, the worker thread and the process-global client the request reads. A
+//! kind that is not on the tape (the catalog read, a plex.tv call that names no client; subtitle
+//! search; view reconcile) is started with no admission record, as its inline spawn was. The
+//! detail pump keeps a counted backstop for a sender that did neither
+//! (`Bridge::start_late_store_jobs`).
 //!
 //! **One runner per `Bridge`, chosen when the Bridge is built**, as the consent adapter is: `Live`
 //! in production, and in a host test the `Held` runner, which parks each job until the test runs
@@ -27,6 +29,7 @@
 use plx_data::collection::{finish_collection_job, CollectionPort, CollectionReq};
 use plx_data::metadata::{fetch_full, finish_detail_fetch, DetailPort, DetailReq};
 use plx_data::person::{finish_person_job, PersonPort, PersonReq};
+use plx_data::stores::catalog::{finish_catalog_job, CatalogPort, CatalogReq};
 use plx_data::stores::viewreconcile::{finish_reconcile_job, ReconcilePort, ReconcileReq};
 use plx_data::stores::StoreJob;
 use plx_data::subsearch::{finish_subsearch_job, SubSearchPort, SubSearchReq};
@@ -74,8 +77,10 @@ fn person_client(req: &PersonReq) -> Result<Option<&'static Client>, Gone> {
 pub(crate) enum StoreRunner {
     /// Start every job on a worker thread.
     Live,
-    /// TEST ONLY: park every job that starts (after its tape admission, for a kind that is on the
-    /// tape; after the registry's key check, for one that is not) until [`StoreRunner::run_held`].
+    /// TEST ONLY: park every job that starts until [`StoreRunner::run_held`]: after its tape
+    /// admission for a kind that is on the tape, after the registry's key check for one that is
+    /// not but reads a server, and with neither for a Catalog job (a plex.tv read that names no
+    /// client).
     #[cfg(test)]
     Held(Vec<StoreJob>),
 }
@@ -90,13 +95,15 @@ impl StoreRunner {
         Self::Held(Vec::new())
     }
 
-    /// Admit `job` (a taped kind only) and start it. Exactly one answer reaches its port: the
-    /// fetch's own, or a refusal when nothing was started.
+    /// Start `job`, admitting it through the tape when its kind is taped (Detail, Collection,
+    /// Person; Catalog, subtitle search and view reconcile are not). Exactly one answer reaches its
+    /// port: the fetch's own, or a refusal when nothing was started.
     pub(crate) fn start(&mut self, job: StoreJob) {
         match job {
             StoreJob::Detail(job, port) => self.start_detail(job, port),
             StoreJob::Collection(job, port) => self.start_collection(job, port),
             StoreJob::Person(job, port) => self.start_person(job, port),
+            StoreJob::Catalog(job, port) => self.start_catalog(job, port),
             StoreJob::SubtitleSearch(job, port) => self.start_subsearch(job, port),
             StoreJob::ViewReconcile(job, port) => self.start_reconcile(job, port),
         }
@@ -137,6 +144,7 @@ impl StoreRunner {
                 kept @ (
                     StoreJob::Collection(..)
                     | StoreJob::Person(..)
+                    | StoreJob::Catalog(..)
                     | StoreJob::SubtitleSearch(..)
                     | StoreJob::ViewReconcile(..)
                 ) => held.push(kept),
@@ -224,6 +232,34 @@ impl StoreRunner {
         }
     }
 
+    /// The catalog read is not on the tape and names no client, so the launch is the whole
+    /// decision, as it was for the inline spawn. A launch that did not happen is refused, and the
+    /// refusal is the job's answer: the pump that takes it owes the request and asks again after
+    /// the store's wait. (No host test can make `spawn_small` fail, so that branch is read, not run.)
+    fn start_catalog(&mut self, job: Job<CatalogReq>, port: CatalogPort) {
+        let addr = job.addr;
+        let refusal = port.clone();
+        if !self.launch_catalog(job, port) {
+            refusal.refused(addr);
+        }
+    }
+
+    fn launch_catalog(&mut self, job: Job<CatalogReq>, port: CatalogPort) -> bool {
+        match self {
+            Self::Live => {
+                let Job { addr, req } = job;
+                plx_base::task::spawn_small("catalog-fetch", move || {
+                    finish_catalog_job(&port, addr, req);
+                })
+            }
+            #[cfg(test)]
+            Self::Held(held) => {
+                held.push(StoreJob::Catalog(job, port));
+                true
+            }
+        }
+    }
+
     /// A subtitle-search request is not on the tape, so nothing is admitted or recorded: the
     /// launch is the whole decision. A launch that did not happen
     /// (the registry no longer holds the client the step decided on, or the thread ceiling) is
@@ -287,12 +323,26 @@ impl StoreRunner {
 
     /// TEST ONLY: run every parked job on THIS thread through the production completion path
     /// (`finish_detail_fetch` over `fetch_full`, `finish_collection_job`, `finish_person_job`,
-    /// `finish_subsearch_job`, `finish_reconcile_job`) and return how many ran.
+    /// `finish_catalog_job`, `finish_subsearch_job`, `finish_reconcile_job`) and return how many ran.
     /// Their landings are queued for the next pump. Under `Live` there is nothing parked.
     #[cfg(test)]
     pub(crate) fn run_held(&mut self) -> usize {
+        self.run_held_where(|_| true)
+    }
+
+    /// TEST ONLY: [`Self::run_held`] for the jobs ONE store emitted, leaving the others parked. A
+    /// rig that feeds one page runs only that page's reads, as a worker thread would have, and
+    /// does not settle a Detail fetch some other test is holding on purpose.
+    #[cfg(test)]
+    pub(crate) fn run_held_of(&mut self, id: plx_data::stores::StoreId) -> usize {
+        self.run_held_where(|job| job.store() == id)
+    }
+
+    #[cfg(test)]
+    fn run_held_where(&mut self, wanted: impl Fn(&StoreJob) -> bool) -> usize {
         let Self::Held(held) = self else { return 0 };
-        let run = std::mem::take(held);
+        let (run, keep): (Vec<_>, Vec<_>) = std::mem::take(held).into_iter().partition(|job| wanted(job));
+        *held = keep;
         let n = run.len();
         for job in run {
             match job {
@@ -316,6 +366,7 @@ impl StoreRunner {
                         Err(Gone) => port.refused(job.addr),
                     }
                 }
+                StoreJob::Catalog(job, port) => finish_catalog_job(&port, job.addr, job.req),
                 StoreJob::SubtitleSearch(job, port) => {
                     // The registry may have moved on since the job was parked: a request whose
                     // client is gone is refused, as the launch would have refused it.
@@ -1157,6 +1208,137 @@ mod tests {
         run_on_the_bare_store(&mut bridge);
         run_the_detail_pump(&mut bridge);
         assert!(!bridge.metadata_mut().has_jobs(), "the backstop started it: the outbox is empty");
+        bridge.assert_no_store_jobs_left_for_test();
+    }
+
+    // ---- the catalog lane: a plex.tv read, no tape record and no client to resolve ----
+
+    use plx_data::catalog::CatalogIo;
+    use plx_data::stores::catalog::CatalogStore;
+    use plx_data::watchlist::WatchlistAuth;
+    use plx_plex::plex::watchlist::{CatalogItem, WatchItem, WatchlistError};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    const HEX: [u8; 12] = [7; 12];
+
+    /// A scripted plex.tv: every read answers with a title, and the seated profile can move on.
+    struct Scripted {
+        reads: AtomicUsize,
+        current: AtomicBool,
+    }
+
+    impl Scripted {
+        fn new() -> Arc<Self> {
+            Arc::new(Self { reads: AtomicUsize::new(0), current: AtomicBool::new(true) })
+        }
+    }
+
+    impl CatalogIo for Scripted {
+        fn capture_auth(&self) -> Option<WatchlistAuth> {
+            Some(WatchlistAuth { client_id: "c".into(), credential: "t".into(), user: Default::default(), generation: 1 })
+        }
+        fn is_current(&self, _: &WatchlistAuth) -> bool {
+            self.current.load(Ordering::SeqCst)
+        }
+        fn fetch(&self, _: &WatchlistAuth, hex: &str) -> Result<CatalogItem, WatchlistError> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            Ok(CatalogItem {
+                item: WatchItem { hex: hex.into(), title: Some("T".into()), ..Default::default() },
+                genres: Vec::new(),
+                content_rating: None,
+                duration_ms: None,
+            })
+        }
+        fn today(&self) -> Option<String> {
+            None
+        }
+    }
+
+    fn catalog_request(io: &Arc<Scripted>) -> (CatalogStore, StoreJob) {
+        let mut store = CatalogStore::with_io(io.clone());
+        store.open(HEX);
+        let mut jobs = store.take_jobs();
+        assert_eq!(jobs.len(), 1, "an open emits one job");
+        (store, jobs.remove(0))
+    }
+
+    /// Live: the worker starts, reads once and posts its ONE answer; the kind is not on the tape,
+    /// so nothing is recorded, and the answer is the next pump's to take, once.
+    #[test]
+    fn a_catalog_job_is_started_answered_once_and_not_taped() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let io = Scripted::new();
+        let (mut store, job) = catalog_request(&io);
+        tape::init(None, false);
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert_eq!(tape::finish(), (vec![], None), "the kind is untaped: the runner records no admission");
+        tape::reset_for_test();
+        assert_eq!(io.reads.load(Ordering::SeqCst), 1, "one read");
+        assert!(store.pump(), "the answer landed");
+        assert!(matches!(store.load, plx_data::catalog::Load::Loaded(_)));
+        assert!(!store.pump(), "...once");
+        assert!(!store.has_jobs());
+    }
+
+    /// Held parks the job without running it, and `run_held` runs it through the same completion
+    /// path: one answer, and nothing left parked.
+    #[test]
+    fn a_held_catalog_job_runs_once_when_the_test_runs_it() {
+        let _serial = plx_base::testlock::serial();
+        let io = Scripted::new();
+        let (mut store, job) = catalog_request(&io);
+        let mut runner = StoreRunner::held();
+
+        runner.start(job);
+        assert!(!store.pump(), "parked: nothing has run");
+        assert_eq!(io.reads.load(Ordering::SeqCst), 0);
+        assert_eq!(runner.run_held(), 1);
+        assert!(store.pump());
+        assert_eq!(runner.run_held(), 0, "nothing left parked");
+        assert_eq!(io.reads.load(Ordering::SeqCst), 1);
+    }
+
+    /// A newer DETAIL request retires only the detail fetches parked before it: a catalog read is
+    /// not a request it supersedes. `run_held_of` takes one store's jobs and leaves the rest.
+    #[test]
+    fn a_newer_detail_request_leaves_a_parked_catalog_job_to_run() {
+        let _serial = plx_base::testlock::serial();
+        let io = Scripted::new();
+        let (mut store, job) = catalog_request(&io);
+        let mut runner = StoreRunner::held();
+        let mut metadata = MetadataStore::default();
+
+        runner.start(job);
+        runner.start(request(&mut metadata, ServerId::UNSET, "d1"));
+        assert_eq!(runner.run_held_of(plx_data::stores::StoreId::Catalog), 1, "the catalog read was kept");
+        assert!(store.pump());
+        assert_eq!(runner.run_held(), 1, "the detail job parked after it is still there for its own test");
+    }
+
+    /// The Bridge's catalog entry points start the read they emitted in the same call, the pump's
+    /// re-open under a new profile included, so the frame check finds nothing on an outbox.
+    #[test]
+    fn the_bridge_catalog_entry_points_start_the_read_they_emitted_in_the_same_call() {
+        let _serial = plx_base::testlock::serial();
+        let io = Scripted::new();
+        let mut bridge = Bridge::for_test(|| 0);
+        *bridge.catalog_for_test() = CatalogStore::with_io(io.clone());
+
+        bridge.catalog_open(HEX);
+        bridge.assert_no_store_jobs_left_for_test();
+        assert_eq!(bridge.run_held_store_jobs_for_test(), 1, "the open's read was parked by the runner");
+        io.current.store(false, Ordering::SeqCst);
+        assert!(bridge.catalog_pump(), "the landing is for a profile that is gone: the page asks again");
+        bridge.assert_no_store_jobs_left_for_test();
+        assert_eq!(bridge.run_held_store_jobs_for_test(), 1, "the pump's re-open was started in the pump's own call");
+        io.current.store(true, Ordering::SeqCst);
+        assert!(bridge.catalog_pump());
+        assert!(matches!(bridge.catalog_for_test().load, plx_data::catalog::Load::Loaded(_)));
         bridge.assert_no_store_jobs_left_for_test();
     }
 }
