@@ -65,7 +65,7 @@ pub(crate) fn refill_client_keys(keys: &mut ClientKeys) {
 /// only when it is the very client (and credential) the step's [`ClientKeys`] named. A job the
 /// registry has moved on from (a sign-out, a re-registration, a retoken) is not started.
 ///
-/// Capture at the spawn site (`pms::kick` states the rule): the worker is handed THIS server's own
+/// Capture at the step (`pms::kick_with` states the rule): the worker is handed THIS server's own
 /// `&'static Client`, never `client()`. A slot re-pointed mid-request cannot redirect a fetch
 /// already out (`plex::servers` leaks each client precisely so the reference stays live), and a
 /// worker that asked which server is current would answer for whichever machine the user has since

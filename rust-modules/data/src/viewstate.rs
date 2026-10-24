@@ -365,10 +365,11 @@ impl Write {
 }
 
 /// One queued write. Identity only — the `&'static Client` is resolved in [`kick`], on the main
-/// thread, at the moment the worker is spawned. `pms::kick`'s rule ("capture at the spawn site")
-/// says the worker must never ask which server is current; resolving a SLOT there is that rule, and
-/// it also means a share whose registration went away while this sat in the queue is turned away
-/// with a log line instead of being sent to whatever now occupies the slot.
+/// thread, at the moment the worker is spawned. `pms::kick_with`'s rule ("capture at the step":
+/// decide on the main thread) says the worker must never ask which server is current; resolving a
+/// SLOT there is that rule, and it also means a share whose registration went away while this sat
+/// in the queue is turned away with a log line instead of being sent to whatever now occupies the
+/// slot.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct RequestId(u64);
 
@@ -925,10 +926,10 @@ type Answer = (ServerId, Option<Vec<String>>);
 /// retry the write that has already gone out, and a source that never answers costs one log line.
 ///
 /// `c` is the item's OWN client — the one [`kick`] captured on the main thread and the write itself
-/// went out on, handed down rather than re-resolved from `sid` here. That is `pms::kick`'s
-/// capture-at-the-spawn-site rule (a worker never asks the registry about the server it was given),
-/// and it also keeps [`resolved_guid`]'s failure honest: a slot re-pointed or revoked mid-write
-/// cannot turn into a log line claiming the item has no portable id.
+/// went out on, handed down rather than re-resolved from `sid` here. That is `pms::kick_with`'s
+/// capture-at-the-step rule (decide on the main thread; a worker never asks the registry about the
+/// server it was given), and it also keeps [`resolved_guid`]'s failure honest: a slot re-pointed or
+/// revoked mid-write cannot turn into a log line claiming the item has no portable id.
 fn fan_out(
     c: &plx_plex::plex::Client,
     sid: ServerId,

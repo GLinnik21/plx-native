@@ -3064,8 +3064,9 @@ fn commit(state: &mut PmsState, build: HubBuild) -> c_int {
 fn landed_ok(s: &mut Src, b: SourceBuild) {
     // The success twin of `landed_fail`'s line. Without it a source that fetched and answered was
     // indistinguishable in the log from one still in flight — "hubs: source 1 fetching" with
-    // nothing after it says only that the worker started. The SLOT, never the handle (a plex.tv
-    // username is the friend's, and the event log is what users send us).
+    // nothing after it says only that the step emitted the request: the runner may still have
+    // parked it, or refused a quiet or page read, which logs no follow-up. The SLOT, never the
+    // handle (a plex.tv username is the friend's, and the event log is what users send us).
     plx_base::eventlog::log(&format!(
         "hubs: source {} ok — {} shelves, {} in CW",
         s.sid.raw(),
