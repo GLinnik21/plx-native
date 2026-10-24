@@ -921,13 +921,22 @@ fn the_prefetch_is_armed_only_from_a_settled_hero() {
     }
 }
 
+/// The env Home hands its backdrop at snap position `sp`: through `HomeScreen::env`, so `hero_a`
+/// is the real fade and not a number a test picked.
+fn env_at(sp: f32) -> Env {
+    let mut s = HomeScreen::new(EntryId(7), InstanceId(9));
+    s.snap.jump(sp);
+    s.env(0.0)
+}
+
 /// **The ground is ONE flat colour only once the hero is culled** (`sp >= HERO_ART_CULL`); every
-/// earlier frame is the layered gradient. The flat ground takes Home's ramp into its colour, so no
-/// ramp rect follows it; the layered ground on a host (no ink program: `gfx::wash_ink_ok`) hands the
-/// ramp back, and the two `rect`s `base_scrim_ramp` describes are drawn after it. So the ramp rects
-/// are the tell: present on a hero whose texture is still pending and on every frame of the dive up
-/// to its last, absent from the first culled frame on (a hero SLIDE has no ramp in the ground at all
-/// and draws the rects either way).
+/// earlier frame is the layered gradient. The tell is the corners the wash is handed
+/// (`draw_census::capture_grounds`): four equal codes are the flat colour, which the renderer
+/// clears; a lit wash's own four are the gradient. The ramp rects are the second tell, for the layered
+/// ramp that stays the only ramp drawer: on a host (no ink program: `gfx::wash_ink_ok`) the layered
+/// ground hands the ramp back and the two `rect`s `base_scrim_ramp` describes follow it, for as long
+/// as the hero is visible (`hero_a > 0.01`); the flat ground takes none, and has none to take. A
+/// hero SLIDE is the layered gradient up to the cull and flat from it, like any other frame.
 #[test]
 fn the_ground_goes_flat_only_once_the_hero_is_culled() {
     use plx_ui::draw_census;
@@ -939,31 +948,49 @@ fn the_ground_goes_flat_only_once_the_hero_is_culled() {
         [0.25, 0.25, 0.05, 1.0],
     ]);
     assert!(!b.wash.is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS), "the premise: a lit wash");
-    let ramp_rects = |sp: f32, slide: Option<(f32, f32)>| {
-        let mut env = Env::inert();
-        env.sp = sp;
-        env.hero_a = 1.0;
-        let [y0, knee, ..] = base_scrim_ramp(1.0);
-        let ramp = [Rect::new(0.0, y0, SCR_W, knee - y0), Rect::new(0.0, knee, SCR_W, SCR_H - knee)];
-        let drawn = draw_census::capture(|| b.draw(Painter::recording(), &env, slide));
-        ramp.into_iter().filter(|r| drawn.contains(&(1, *r))).count()
-    };
     // The premise: no host test links GL, so there is no ink program and the layered ground hands
     // the ramp back for the caller to draw as rects. (With one, a layered frame would carry the
-    // ramp in the wash and this tell would not exist.)
+    // ramp in the wash and the ramp rects would not be a tell.)
     assert!(!plx_gfx::gfx::wash_ink_ok(), "a host build has no wash ink program");
-    // Pending texture (nothing resident: `tex` is 0), the dive in flight, and its last frame.
-    for sp in [0.0, 0.4, HERO_ART_CULL - 0.001] {
-        assert_eq!(ramp_rects(sp, None), 2, "sp {sp}: the layered ground leaves the ramp to the caller");
+    // `(is the ground one colour, how many ramp rects follow it)` for one frame at `sp`.
+    let frame = |sp: f32, slide: Option<(f32, f32)>| {
+        let env = env_at(sp);
+        let [y0, knee, ..] = base_scrim_ramp(env.hero_a);
+        let ramp = [Rect::new(0.0, y0, SCR_W, knee - y0), Rect::new(0.0, knee, SCR_W, SCR_H - knee)];
+        let mut drawn = Vec::new();
+        let grounds = draw_census::capture_grounds(|| {
+            drawn = draw_census::capture(|| b.draw(Painter::recording(), &env, slide));
+        });
+        let [ground] = grounds[..] else { panic!("sp {sp}: {} grounds, want one", grounds.len()) };
+        let flat = ground[1..].iter().all(|c| *c == ground[0]);
+        (flat, ramp.into_iter().filter(|r| drawn.contains(&(1, *r))).count())
+    };
+    // Pending texture (nothing resident: `tex` is 0), the dive in flight, and its last frame: the
+    // layered gradient. The ramp is laid over it as rects while the hero is visible (`hero_a` is
+    // 0 from `sp = 0.55`, so the dive's last frames have none).
+    for (sp, ramp_rects) in [(0.0, 2), (0.4, 2), (HERO_ART_CULL - 0.001, 0)] {
+        assert_eq!(frame(sp, None), (false, ramp_rects), "sp {sp}: the layered ground");
     }
-    // A hero slide carries no ramp in the ground (`ramp` is None under a slide), so the ramp is
-    // drawn as its two rects once, whether the slide is before the cull or at it.
-    for sp in [0.0, HERO_ART_CULL] {
-        assert_eq!(ramp_rects(sp, Some((-SCR_W, 0.0))), 2, "sp {sp}: a slide draws the ramp as rects");
-    }
-    // Culled: the flat ground took the ramp.
+    // A hero slide before the cull is the layered gradient too, with no ramp in the ground, so the
+    // ramp is drawn as its two rects.
+    assert_eq!(frame(0.0, Some((-SCR_W, 0.0))), (false, 2), "a slide stays layered");
+    assert_eq!(frame(HERO_ART_CULL - 0.001, Some((-SCR_W, 0.0))), (false, 0), "…to its last frame");
+    // Culled: ONE colour, no ramp to draw (a slide or held layer notwithstanding: no art is drawn).
     for sp in [HERO_ART_CULL, 1.0] {
-        assert_eq!(ramp_rects(sp, None), 0, "sp {sp}: the flat ground folds the ramp into its colour");
+        assert_eq!(frame(sp, None), (true, 0), "sp {sp}: the flat ground, and no ramp");
+        assert_eq!(frame(sp, Some((-SCR_W, 0.0))), (true, 0), "sp {sp}: a culled slide is flat too");
+    }
+}
+
+/// **Home has no atmospheric ramp once the hero is culled** - the premise the flat ground rests on
+/// (`AmbientWash::draw_flat_ground` draws none). `Backdrop::draw` builds its ramp only while
+/// `hero_a > 0.01`, and `HomeScreen::env` fades the hero out by `sp = 0.55`, long before
+/// `HERO_ART_CULL`; a later fade end would lay a ramp over the flat ground here, so it fails this
+/// test first rather than layering one unannounced.
+#[test]
+fn home_has_no_ramp_at_the_cull() {
+    for sp in [HERO_ART_CULL, 1.0] {
+        assert_eq!(env_at(sp).hero_a, 0.0, "sp {sp}: the hero has faded out");
     }
 }
 

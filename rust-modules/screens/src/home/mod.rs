@@ -446,10 +446,14 @@ impl Backdrop {
         // rather than shades (`AmbientWash::draw_flat_ground`). Every earlier frame — a hero slide,
         // art held beneath a replacement, a texture still pending, the dive itself — is the
         // layered gradient exactly as it always was: those frames have a photograph, or are about
-        // to, and flattening them would jump the whole page between gradient and one colour.
+        // to, and flattening them would jump the whole page between gradient and one colour. The
+        // flat ground carries no ramp, and there is none to carry: `hero_a` is 0 from `sp = 0.55`
+        // (`HomeScreen::env`), so `ramp` is `None` at the cull and the layered ramp rects below
+        // are skipped for the same reason.
         let ramp_in_ground = wash
             && if env.sp >= HERO_ART_CULL {
-                self.wash.draw_flat_ground(p, Rect::FULL, ramp)
+                self.wash.draw_flat_ground(p, Rect::FULL);
+                false
             } else {
                 self.wash.draw_ground(
                     p,

@@ -188,18 +188,15 @@ fn a_ground_with_no_art_is_still_the_layered_picture() {
     }
 }
 
-/// **`draw_flat_ground` is the flat colour, and always takes the ramp**: one primitive over the
-/// rect (the renderer clears it), never the per-band split, and `true` exactly when there was a
-/// ramp for the caller not to draw.
+/// **`draw_flat_ground` is the flat colour, as ONE primitive over the rect** (the renderer clears
+/// it), never the per-band split of the layered ground, and it takes no ramp: it has nothing to
+/// hand back.
 #[test]
-fn the_flat_ground_is_one_primitive_and_takes_the_ramp() {
+fn the_flat_ground_is_one_primitive() {
     let w = wash_on([[code8(31), code8(27), code8(40)]; 4]);
-    let mut took = true;
-    assert_eq!(handed(|p| took = w.draw_flat_ground(p, Rect::FULL, None)), [(16, Rect::FULL)]);
-    assert!(!took, "nothing to take");
-    let mut took = false;
-    assert_eq!(handed(|p| took = w.draw_flat_ground(p, Rect::FULL, Some(knee_ramp()))), [(16, Rect::FULL)]);
-    assert!(took, "the ramp is folded into the colour, whatever the driver can carry");
+    assert_eq!(handed(|p| w.draw_flat_ground(p, Rect::FULL)), [(16, Rect::FULL)]);
+    let part = Rect::new(100.0, 50.0, 1200.0, 700.0);
+    assert_eq!(handed(|p| w.draw_flat_ground(p, part)), [(16, part)]);
 }
 
 // ── A ground with no photograph is ONE flat colour (`AmbientWash::flat_ground`) ──────────────────
@@ -226,15 +223,11 @@ fn on_code(v: f32) -> bool {
 /// Off-code springs (a cascade mix, a settling tail) land on the nearest code, never between two.
 #[test]
 fn a_flat_wash_is_its_own_colour_on_exact_codes() {
-    let ink = [0.0, 0.0, 0.0, 1.0];
-    let still = WashRamp { ink, stops: [(0.0, 0.0), (SCR_H, 0.0), (SCR_H, 0.0)] };
     for c in [[code8(31), code8(27), code8(40)], [0.0; 3], [1.0; 3], [0.2001, 0.5004, 0.9996]] {
         let want = c.map(code);
         let w = wash_on([c; 4]);
-        assert_eq!(w.flat_ground(Rect::FULL, None), want, "{c:?}");
+        assert_eq!(w.flat_ground(), want, "{c:?}");
         assert!(want.into_iter().all(on_code), "{want:?}");
-        // A ramp of no alpha anywhere folds nothing in.
-        assert_eq!(w.flat_ground(Rect::FULL, Some(still)), want, "{c:?} under a ramp of no alpha");
     }
 }
 
@@ -260,56 +253,11 @@ fn a_gradient_wash_is_the_mean_of_its_eight_by_eight_field() {
                 }
             }
         }
-        let got = w.flat_ground(r, None);
+        let got = w.flat_ground();
         for ch in 0..3 {
             assert!(on_code(got[ch]), "channel {ch}: {} is between codes", got[ch]);
             // Rounding to the nearest code moves a channel by at most half of one.
             assert!((got[ch] - mean[ch]).abs() <= 0.5 / 255.0 + 1e-5, "channel {ch}: {} vs mean {}", got[ch], mean[ch]);
-        }
-    }
-}
-
-/// **The ramp is folded in at its mean alpha over the rect's rows, by the mix the vertex shader
-/// does** (`wash + (ink - wash) * alpha`), and lands on a code. A ramp rising 0 to 0.6 down the
-/// panel has the mean 0.3. (A mix can sit on a half-code, where either neighbour is a right round,
-/// so each channel is held to the exact mix within half a code rather than to one rounding.)
-#[test]
-fn the_ramp_is_folded_in_at_its_mean_alpha() {
-    let wash = [code8(100), code8(200), code8(50)];
-    let w = wash_on([wash; 4]);
-    let ink = [code8(255), code8(0), code8(60), 1.0];
-    let ramp = WashRamp { ink, stops: [(0.0, 0.0), (SCR_H, 0.6), (SCR_H, 0.6)] };
-    let near = |got: [f32; 3], alpha: f32, what: &str| {
-        for ch in 0..3 {
-            let exact = wash[ch] + (ink[ch] - wash[ch]) * alpha;
-            assert!(on_code(got[ch]), "{what}: channel {ch} {} is between codes", got[ch]);
-            assert!((got[ch] - exact).abs() <= 0.5 / 255.0 + 1e-5, "{what}: channel {ch}: {} vs {exact}", got[ch]);
-        }
-    };
-    near(w.flat_ground(Rect::FULL, Some(ramp)), 0.3, "the whole panel");
-    // The same ramp over the top half only: its rows run 0 to 0.3, mean 0.15.
-    near(w.flat_ground(Rect::new(0.0, 0.0, SCR_W, SCR_H / 2.0), Some(ramp)), 0.15, "only the rows of the rect count");
-    // A ramp that has not begun by the rect's last row adds nothing.
-    let late = WashRamp { ink, stops: [(500.0, 0.0), (800.0, 0.5), (SCR_H, 0.9)] };
-    assert_eq!(w.flat_ground(Rect::new(0.0, 0.0, SCR_W, 400.0), Some(late)), wash.map(code));
-}
-
-/// Home's real ramp (a knee inside the panel) folded at 64 rows lands within one code of the
-/// ramp's true mean, taken over 4096 rows - the cost of the sampling is below what the eye can see.
-#[test]
-fn the_folded_home_ramp_is_within_a_code_of_its_true_mean() {
-    let wash = [code8(180), code8(120), code8(60)];
-    let w = wash_on([wash; 4]);
-    for hero_a in [0.02f32, 0.35, 1.0] {
-        let [y0, knee, mid, foot] = crate::landing_hero::base_scrim_ramp(hero_a);
-        let ink = theme::scrim(1.0);
-        let ramp = WashRamp { ink, stops: [(y0, 0.0), (knee, mid), (SCR_H, foot)] };
-        let n = 4096;
-        let alpha = (0..n).map(|k| ramp.alpha(SCR_H * (k as f32 + 0.5) / n as f32)).sum::<f32>() / n as f32;
-        let got = w.flat_ground(Rect::FULL, Some(ramp));
-        for ch in 0..3 {
-            let exact = wash[ch] + (ink[ch] - wash[ch]) * alpha;
-            assert!((got[ch] - exact).abs() <= 1.0 / 255.0, "hero_a {hero_a} channel {ch}: {} vs {exact}", got[ch]);
         }
     }
 }

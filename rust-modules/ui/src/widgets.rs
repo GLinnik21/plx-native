@@ -3665,8 +3665,9 @@ impl AmbientWash {
     /// difference. ([`theme::SURFACE_APP`] is snapped to exact 8-bit codes for the `GL_DITHER`
     /// reason in its own doc, so that is the unit this is reasoned in.)
     ///
-    /// It lives beside the type rather than in a screen because the skip is worth ~2.07M fragments
-    /// a frame on two different pages, and it was a private `home.rs` constant while `detail.rs`
+    /// It lives beside the type rather than in a screen because the skip is worth a full-screen
+    /// pass a frame on two different pages (~2.07M shaded fragments for a gradient, a clear once
+    /// the corners are four equal codes), and it was a private `home.rs` constant while `detail.rs`
     /// simply lacked the test — one value here is what stops the two from drifting apart again.
     pub const FLAT_EPS: f32 = 1.0 / 255.0;
 
@@ -3743,8 +3744,10 @@ impl AmbientWash {
         self.corners.iter().flatten().all(|sp| sp.vel == 0.0)
     }
     /// Is this wash within `eps` of the flat colour `c` on every corner channel? A wash that has
-    /// resolved to the app's own clear colour is a ~2M-fragment full-screen fill that changes
-    /// nothing, and a screen must be able to skip it. (`eps` is naturally one 8-bit code —
+    /// resolved to the app's own clear colour changes nothing, and a screen must be able to skip
+    /// it: drawn, it is a full-screen clear once its four corners are one colour's codes (a wash at
+    /// rest is exactly on its target) and a ~2M-fragment shaded pass until they are, the last frames
+    /// of a settle included. (`eps` is naturally one 8-bit code —
     /// [`theme::SURFACE_APP`] is snapped to exact codes for the `GL_DITHER` reason in its own doc,
     /// so that is the unit this value is reasoned in.) Its own method because the corner springs are
     /// private.
@@ -3852,10 +3855,8 @@ impl AmbientWash {
     }
 
     /// **Paint a ground that has NO photograph at all as ONE flat colour** over `r`
-    /// ([`flat_ground`](Self::flat_ground): the wash and the ramp folded into their means), which
-    /// the renderer draws as a clear of `r` rather than a shader pass over it
-    /// (`gfx::draw_ambient`). Returns whether it TOOK THE RAMP, as [`draw_ground`](Self::draw_ground)
-    /// does: it always does when there is one, so the caller draws none.
+    /// ([`flat_ground`](Self::flat_ground): the wash's mean), which the renderer draws as a clear
+    /// of `r` rather than a shader pass over it (`gfx::draw_ambient`).
     ///
     /// **This is not [`draw_ground`](Self::draw_ground)'s fallback for a photograph that is not
     /// there this frame, and must not be called as one.** A ground whose art is merely pending
@@ -3865,36 +3866,26 @@ impl AmbientWash {
     /// gradient and one colour in a frame. The caller calls this only once the photograph is gone
     /// for good: Home's shelves and grid after the hero has left (`sp >= HERO_ART_CULL`), where no
     /// art is drawn at all and what the page stands on is the wash alone.
-    pub fn draw_flat_ground(&self, p: Painter, r: Rect, ramp: Option<WashRamp>) -> bool {
-        p.ambient(r, 1.0, [self.flat_ground(r, ramp); 4], self.at_rest());
-        ramp.is_some()
+    ///
+    /// It draws no atmospheric ramp, and Home has none by then: the hero has faded out by
+    /// `sp = 0.55`, long before the cull. A caller that did have one would draw it layered over this
+    /// as usual.
+    pub fn draw_flat_ground(&self, p: Painter, r: Rect) {
+        p.ambient(r, 1.0, [self.flat_ground(); 4], self.at_rest());
     }
 
-    /// **The one colour a ground with no photograph is drawn as over `r`**: the wash's mean with
-    /// `ramp` mixed in at its mean alpha, snapped to exact 8-bit codes ([`code`]) so the clear that
-    /// draws it never depends on `GL_DITHER` or on how the GPU rounds.
+    /// **The one colour a ground with no photograph is drawn as**: the wash's mean, snapped to
+    /// exact 8-bit codes ([`code`]) so the clear that draws it never depends on `GL_DITHER` or on
+    /// how the GPU rounds.
     ///
     /// The wash is the bilinear of its [`drawn_corners`](Self::drawn_corners), whose mean over any
-    /// rect is the mean of the four corners (the `u*v` term averages to a quarter of its range).
-    /// The ramp's mean alpha is taken over [`RAMP_SAMPLES`](Self::RAMP_SAMPLES) rows of `r`, and
-    /// applied by the mix `vs_ambient.vert` does per vertex: `wash + (ink - wash) * alpha`. A wash
-    /// that is already one colour comes back as exactly that colour.
-    fn flat_ground(&self, r: Rect, ramp: Option<WashRamp>) -> [f32; 3] {
+    /// rect is the mean of the four corners (the `u*v` term averages to a quarter of its range). A
+    /// wash that is already one colour comes back as exactly that colour.
+    fn flat_ground(&self) -> [f32; 3] {
         let corners = self.drawn_corners();
-        let mut mean: [f32; 3] = std::array::from_fn(|i| corners.iter().map(|c| c[i]).sum::<f32>() / 4.0);
-        if let Some(q) = ramp {
-            let n = Self::RAMP_SAMPLES;
-            let row = |k: usize| r.y + r.h * (k as f32 + 0.5) / n as f32;
-            let alpha = (0..n).map(|k| q.alpha(row(k))).sum::<f32>() / n as f32;
-            mean = std::array::from_fn(|i| mean[i] + (q.ink[i] - mean[i]) * alpha);
-        }
+        let mean: [f32; 3] = std::array::from_fn(|i| corners.iter().map(|c| c[i]).sum::<f32>() / 4.0);
         mean.map(code)
     }
-
-    /// Rows of the rect the ramp's alpha is sampled at to take its mean ([`flat_ground`](Self::flat_ground)):
-    /// the ramp is at most two linear segments, so this is far finer than the eye can tell from the
-    /// exact mean (`the_folded_home_ramp_is_within_a_code_of_its_true_mean`).
-    const RAMP_SAMPLES: usize = 64;
 }
 
 /// A screen's ATMOSPHERIC RAMP as [`AmbientWash::draw_ground`] carries it: `ink` (a scrim colour;
@@ -4002,9 +3993,11 @@ pub fn art_wash_split(r: Rect, art: Rect) -> Option<(Rect, [Option<Rect>; 4])> {
 ///   dissolving to the flat surface. One artless poster in a row of colour would otherwise flash the
 ///   whole page grey and back on the way past — the person page states this rule in prose and this
 ///   is it as code, which is why that screen now shares this type.
-/// * **A ground that has resolved to the app's own clear colour is not drawn.** It is a
-///   ~2M-fragment full-screen pass that changes nothing; `AmbientWash::is_flat` is the test and
-///   forgetting it costs a whole screen's fill-rate headroom for an invisible gradient.
+/// * **A ground that has resolved to the app's own clear colour is not drawn.** It changes nothing,
+///   and drawn it is a full-screen clear once the wash's four corners are one colour's codes (at
+///   rest it is exactly on its target) and a ~2M-fragment shaded pass until they are, the last
+///   frames of a settle included; `AmbientWash::is_flat` is the test and forgetting it costs a
+///   whole screen's fill-rate headroom for an invisible gradient.
 /// * **This ground's gradient always dithers** — as every gradient wash does now, the two with
 ///   artwork sliding over them included (`gfx::draw_ambient`). A browsing ground has nothing over
 ///   it, so there is no frame on which it is not the thing being looked at. [`draw`](Self::draw)
@@ -4041,6 +4034,9 @@ impl PageGround {
     /// The corner arrangement every item-keyed page ground leans by: [`AmbientWash::GROUND_W`]
     /// across the top, nearly gone by the bottom. Strongest where the page's own subject is and
     /// faint under the content rows, which is what keeps it atmosphere rather than a tint.
+    /// (Home's culled shelves and grid are the one place this does not show: from
+    /// `sp >= HERO_ART_CULL` that wash is drawn flat, at the mean of its four corners
+    /// ([`AmbientWash::draw_flat_ground`]), so there the weights set a single colour.)
     ///
     /// One constant rather than one per screen: the STRENGTH is already shared
     /// ([`AmbientWash::GROUND_W`]), and two browsing screens leaning it in two different directions

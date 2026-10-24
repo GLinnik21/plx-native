@@ -106,8 +106,9 @@ pub fn scale() -> f32 {
 /// Returns `(x, y, w, h)` in physical pixels. On a 1:1 surface this is `(0, 0, 1920, 1080)` and on
 /// a 16:9 surface of any size the offsets are zero — so on every television, letterboxing costs
 /// nothing and this is a plain scale. The shaders divide by `u_screen`, which stays logical, so
-/// this rect is the entire logical->physical mapping; nothing else in the renderer knows the
-/// drawable size at all.
+/// this rect is the entire logical->physical mapping; nothing else in the renderer's drawing knows
+/// the drawable size at all, but for the one question [`viewport_fills_drawable`] answers for
+/// `gfx::clear_flat_ground` (may a bare `glClear` stand for the viewport's box?).
 #[inline]
 pub fn viewport() -> (i32, i32, i32, i32) {
     (
