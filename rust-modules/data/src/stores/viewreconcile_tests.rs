@@ -562,25 +562,33 @@ fn a_fanout_target_whose_key_moved_after_the_step_gets_no_request() {
     drop(stores);
 }
 
-/// The same profile with a REFRESHED token is still the user's press: the write is re-keyed to the
-/// credential the registry holds now and goes out (a token refresh is not a profile switch).
+/// **A token swap under a profile that still reads as the old one is dropped too.** A profile
+/// switch swaps the registry's tokens in the frame the session adopts them, but the new profile's
+/// identity (`Bridge::profile_scope`) is published by a LATER commit, so for a few frames a real
+/// switch looks to the step like a same-profile refresh: the key moved, the profile did not. The
+/// step cannot tell the two apart, so a key that moved since the press drops the write and retires
+/// its ledger entry, and nothing is sent under the next profile's token.
 #[test]
-fn a_write_whose_client_was_re_tokened_under_the_same_profile_is_re_keyed_and_sent() {
+fn a_write_whose_client_was_re_tokened_while_the_profile_still_reads_the_old_one_is_dropped_and_retired() {
     let _g = plx_base::testlock::serial();
     let pms = serve();
     let (mut stores, sid) = library_holding_item(&pms);
     stores.viewstate.borrow_mut().hold_inflight_for_test(sid, "held");
     press_as(&mut stores, sid, Write::Watched, 5);
-    plx_plex::plex::client_for(sid).unwrap().set_token("a-refreshed-token"); // same household member
+    assert_eq!(stores.view_ledger.since(0).len(), 1, "the press is in the ledger until its fate is known");
+    // the swap has landed, the new profile's identity has not: same slot, new token, same profile
+    plx_plex::plex::client_for(sid).unwrap().set_token("the-next-profiles-token");
     let land_held = stores.viewstate.borrow().late_completion_for_test();
     land_held();
     let directory = DirectorySnapshot::default();
-    for _ in 0..1000 {
+    for _ in 0..200 {
         let _ = stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test(), 5);
         super::rig::frame(&mut stores, &directory);
-        if settled(&stores) && pms.truth.scrobbles.load(Ordering::SeqCst) == 1 { break; }
+        if settled(&stores) { break; }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    assert_eq!(pms.truth.scrobbles.load(Ordering::SeqCst), 1, "the press went out once, re-keyed");
+    assert!(settled(&stores), "the queue emptied");
+    assert_eq!(pms.truth.scrobbles.load(Ordering::SeqCst), 0, "nothing was sent under the moved token");
+    assert!(stores.view_ledger.since(0).is_empty(), "the dropped press was retired");
     drop(stores);
 }

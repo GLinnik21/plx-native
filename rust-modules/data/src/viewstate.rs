@@ -53,12 +53,16 @@
 //! very client (and credential) the job names, and the job's [`ViewWritePort`] takes its one
 //! answer, [`finish_view_write_job`]'s write result or a refusal.
 //!
-//! * **The profile is an input.** [`Req`] captures it at the press. A profile switch re-tokens the
-//!   registry's clients IN PLACE, so a queued write's slot still answers, under the next profile's
-//!   credential; a write is one household member's statement, so at the kick and when a refusal
-//!   lands ([`ViewStateState::admit`]) a write whose profile moved is dropped and its ledger entry
-//!   retired. The same profile with a client re-tokened since the press (a refresh) is the user's
-//!   write still: it is re-keyed from the borrowed keys and goes on.
+//! * **The profile and the key are inputs.** [`Req`] captures both at the press. A profile switch
+//!   re-tokens the registry's clients IN PLACE, so a queued write's slot still answers, under the
+//!   next profile's credential; a write is one household member's statement, so at the kick and
+//!   when a refusal lands ([`ViewStateState::admit`]) a write whose profile moved, or whose client
+//!   carries another key than the press named, is dropped and its ledger entry retired. The key
+//!   compare is what covers the frames in which a switch has swapped the tokens and the new
+//!   profile's identity is not published yet: there the profile still reads as the press's, and a
+//!   switch looks like a refresh. So a genuine same-profile token refresh drops a press too (the
+//!   read-back restores what the server holds); sending it on would need an identity that moves
+//!   with the token swap, which is a Session owner change.
 //! * **The fan-out reaches other servers through the snapshot.** The job carries the whole
 //!   [`ClientKeys`] the step decided under, and the worker builds [`KeyedClients`] from it: a source
 //!   whose client no longer carries the key is neither asked for its copy nor written to.
@@ -407,8 +411,8 @@ struct Req {
     seq: crate::viewledger::Stamp,
     sid: ServerId,
     /// The client the step chose for `sid` when the write was queued, as the borrowed
-    /// [`ClientKeys`] named it. [`kick`] re-reads the slot from its own keys and re-keys a write
-    /// whose client was re-tokened under the SAME profile ([`Req::profile`]).
+    /// [`ClientKeys`] named it. [`ViewStateState::admit`] re-reads the slot from its own keys and
+    /// drops the write when the client carries another key by then, whatever [`Req::profile`] says.
     key: ClientKey,
     /// The profile the press was made under (`Bridge::profile_scope`, the Session owner's scope
     /// counter), an input to the step like the keys. A write whose profile has moved by the time it
@@ -833,9 +837,13 @@ impl ViewStateState {
     ///   a write is a statement about one household member's viewing record and is never sent as
     ///   another's.
     /// - A server that holds no client now: DROPPED, with a line, so no PMS write goes unrecorded.
-    /// - The same profile with a client re-tokened since the press (a refresh): the write is still
-    ///   the user's, so it is re-keyed to the credential the registry holds now and goes on.
-    fn admit(&mut self, mut req: Req, keys: &ClientKeys, profile: u32) -> Option<Req> {
+    /// - A client that carries another key than the press named (re-tokened since): DROPPED, with a
+    ///   line, even when `profile` still reads as the press's. A switch swaps the tokens in the
+    ///   frame the session adopts them and publishes the new profile's identity by a LATER commit,
+    ///   so in between it is indistinguishable from a same-profile refresh, and sending then would
+    ///   write one household member's press into the next one's record. The cost is a press dropped
+    ///   on a genuine refresh; the read-back restores what the server holds.
+    fn admit(&mut self, req: Req, keys: &ClientKeys, profile: u32) -> Option<Req> {
         if req.profile != profile {
             plx_base::eventlog::log(&format!(
                 "viewstate: rk={} {} DROPPED — the profile changed while it was queued",
@@ -857,12 +865,13 @@ impl ViewStateState {
         };
         if key != req.key {
             plx_base::eventlog::log(&format!(
-                "viewstate: rk={} {} re-keyed — server {} was re-tokened while it was queued",
+                "viewstate: rk={} {} DROPPED — server {} was re-tokened while it was queued",
                 req.rk,
                 req.w.name(),
                 req.sid.raw()
             ));
-            req.key = key;
+            self.ledger.retire(req.seq);
+            return None;
         }
         Some(req)
     }
@@ -870,21 +879,18 @@ impl ViewStateState {
     /// A write the runner never started ([`Outcome::NotStarted`]): nothing left the device. It goes
     /// back to the HEAD of the queue — dropping it would silently lose a press the user has already
     /// seen take effect on screen — after the same judgment [`Self::admit`] makes of any queued
-    /// write: a moved profile drops it, a re-tokened client re-keys it. A client that did not move
-    /// means the refusal was the system's (the thread ceiling), so the retry waits out the ladder,
-    /// exactly as `search.rs`/`browse.rs` do.
+    /// write: a moved profile, a vanished server or a re-tokened client drops it. A write that
+    /// survives it met a client that did not move, so the refusal was the system's (the thread
+    /// ceiling) and the retry waits out the ladder, exactly as `search.rs`/`browse.rs` do.
     fn restart_refused(&mut self, req: Req, keys: &ClientKeys, profile: u32) {
         plx_base::eventlog::log(&format!(
             "viewstate: rk={} {} not started by the runner",
             req.rk,
             req.w.name()
         ));
-        let client_unmoved = req.profile == profile && keys.key(req.sid) == Some(req.key);
         let Some(req) = self.admit(req, keys, profile) else { return };
         self.queue.insert(0, req);
-        if client_unmoved {
-            self.retry_cd = RETRY_FRAMES;
-        }
+        self.retry_cd = RETRY_FRAMES;
     }
 
     /// Take the writes the step has sent since the last take, in order. The caller OWES each one to
@@ -1892,11 +1898,12 @@ mod tests {
         assert_eq!(again[0].1.rk, "5");
     }
 
-    /// A refusal is judged again like any queued write. The same profile whose client was re-tokened
-    /// meanwhile (a refresh) re-keys, and as the client moved the refusal was not the system's, so
-    /// there is no ladder: it goes out in that very frame.
+    /// A refusal is judged again like any queued write. A client re-tokened meanwhile is dropped
+    /// and retired even though the profile still reads as the press's: a switch swaps the tokens
+    /// before it publishes the new profile, so the two cannot be told apart. As the refusal was
+    /// not the system's either, no ladder is armed.
     #[test]
-    fn a_refused_job_whose_client_was_retokened_under_the_same_profile_is_rekeyed_and_sent_at_once() {
+    fn a_refused_job_whose_client_was_retokened_while_the_profile_read_the_same_is_dropped_and_retired() {
         let mut state = ViewStateState::default();
         let adapter = Arc::new(ViewStateAdapter::default());
         press(&mut state, SRV_A, key(1, 1), "5", Write::Watched);
@@ -1907,19 +1914,17 @@ mod tests {
         let moved = keys_of(&[(SRV_A, key(1, 2))]);
         let _ = frame(&mut state, &adapter, &moved, PROFILE);
 
-        let again = sent_jobs(&mut state);
-        assert_eq!(again.len(), 1, "the write is still the user's, so it goes out");
-        assert_eq!(again[0].1.server(), (SRV_A, key(1, 2)), "under the credential the registry holds now");
-        assert_eq!(again[0].1.keys, moved);
-        assert_eq!(state.retry_cd, 0);
+        assert!(!state.has_jobs() && !state.is_busy(), "the write is dropped, not sent under the new key");
+        assert_eq!(state.retry_cd, 0, "and no ladder is armed for it");
+        assert!(state.ledger.since(0).is_empty(), "and the optimistic edit is taken back");
     }
 
-    /// A write is one household member's statement. A profile switch re-tokens the registry's
-    /// clients in place, so the slot still answers, under the NEW profile's credential: the write
-    /// is dropped and its ledger entry retired instead (queued, refused and about to be sent alike).
+    /// A write is one household member's statement. A profile that moved drops the write and
+    /// retires its ledger entry (queued, refused and about to be sent alike) on the profile alone:
+    /// the keys here are the ones the press saw, so the key compare cannot be what drops it.
     #[test]
     fn a_write_whose_profile_moved_is_dropped_and_retired_wherever_it_is_judged() {
-        let keys = keys_of(&[(SRV_A, key(1, 2))]); // re-tokened by the switch
+        let keys = keys_of(&[(SRV_A, key(1, 1))]);
         let next = PROFILE + 1;
 
         // queued, judged at the kick
@@ -1933,7 +1938,7 @@ mod tests {
         // refused, judged at the landing of the refusal
         let mut state = ViewStateState::default();
         press(&mut state, SRV_A, key(1, 1), "5", Write::Watched);
-        state.kick(&adapter, &keys_of(&[(SRV_A, key(1, 1))]), PROFILE);
+        state.kick(&adapter, &keys, PROFILE);
         let (addr, _, port) = sent_jobs(&mut state).remove(0);
         port.refused(addr);
         let _ = frame(&mut state, &adapter, &keys, next);
@@ -1954,17 +1959,18 @@ mod tests {
         assert!(state.ledger.since(0).is_empty());
     }
 
-    /// The same profile with a client re-tokened while the write waited: re-keyed, and sent.
+    /// A client re-tokened while the write waited, the profile still reading as the press's: the
+    /// frames in which a profile switch has swapped the tokens and not yet published the new
+    /// profile look exactly like this, so the write is dropped and retired, never sent under the
+    /// key the registry holds now.
     #[test]
-    fn a_queued_write_whose_client_was_retokened_under_the_same_profile_is_rekeyed_and_sent() {
+    fn a_queued_write_whose_client_was_retokened_while_the_profile_read_the_same_is_dropped_and_retired() {
         let mut state = ViewStateState::default();
         let adapter = Arc::new(ViewStateAdapter::default());
         press(&mut state, SRV_A, key(1, 1), "5", Write::Watched);
         state.kick(&adapter, &keys_of(&[(SRV_A, key(1, 2))]), PROFILE);
-        let jobs = sent_jobs(&mut state);
-        assert_eq!(jobs.len(), 1);
-        assert_eq!(jobs[0].1.server(), (SRV_A, key(1, 2)));
-        assert_eq!(state.sent.as_ref().map(|r| r.key), Some(key(1, 2)), "the request carries the new key too");
+        assert!(!state.has_jobs() && state.sent.is_none() && !state.is_busy(), "nothing is sent");
+        assert!(state.ledger.since(0).is_empty(), "and the optimistic edit is taken back");
     }
 
     /// A reset drops the queue and what is in flight, not the outbox: a job already sent answers

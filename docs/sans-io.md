@@ -468,11 +468,14 @@ ledger files are deleted.
     under (`Bridge::profile_scope()`, which is `plex::session::current_gen()`: the Session owner's
     profile-scope counter, allocated only when a profile is seated, detached or signed out, and
     never moved by a same-profile token refresh). `Req` captures both at the press. At the kick, and
-    when a refusal lands, a write whose profile moved is dropped and its ledger entry retired: a
-    profile switch re-tokens the registry's clients in place, so the slot still answers, under the
-    next profile's credential, and a write is one household member's statement. The same profile
-    with a re-tokened client is the user's write still: it is re-keyed from the borrowed keys and
-    goes on.
+    when a refusal lands, a write whose profile moved, or whose client carries another key than the
+    press named, is dropped and its ledger entry retired: a profile switch re-tokens the registry's
+    clients in place, so the slot still answers, under the next profile's credential, and a write
+    is one household member's statement. The key compare is not optional: a switch swaps the tokens
+    in the frame the session adopts them and the new scope is published by a later commit, so for
+    those frames the profile still reads as the press's. A genuine same-profile token refresh drops
+    a press too (the read-back restores what the server holds); keeping it would take an identity
+    that moves with the token swap.
   - **The fan-out reaches other servers through the snapshot.** The job carries the whole
     `ClientKeys` the step decided under, and the worker (`finish_view_write_job`) builds
     `plx_plex::plex::KeyedClients` from it, with the registry read the runner passes in as a `fn`
@@ -484,9 +487,9 @@ ledger files are deleted.
   - **A refusal is not a failure.** The runner refuses a write whose origin key moved by the launch
     (or by the time a parked job runs), or whose thread the system refused, and the port posts
     `NotStarted` into the owner's mailbox. Nothing left the device, so the pump changes no ledger
-    entry and owes no read-back or hub refresh: it judges the write again like any queued write and
-    puts it back at the head of the queue, and waits out the retry ladder only when its client did
-    not move. A worker that panics answers with a failed write, never `NotStarted`: the origin write
+    entry and owes no read-back or hub refresh: it judges the write again like any queued write (a
+    moved profile, a vanished server or a re-tokened client drops it) and puts it back at the head
+    of the queue, and waits out the retry ladder. A worker that panics answers with a failed write, never `NotStarted`: the origin write
     may already be on the server, and a second scrobble would add a second viewCount.
   - **One outbox, two fill lists.** ViewState sits in `Stores::VIEWSTATE_FILLS` at its `StoreId`
     position, and `Stores::RECONCILE_FILLS` is what `Bridge::reconcile_pump` drains. A reset keeps

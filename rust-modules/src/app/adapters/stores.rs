@@ -567,8 +567,8 @@ impl StoreRunner {
     /// A view-state write is not on the tape either: the launch is the whole decision (a controlled
     /// run refuses every write before it reaches the store, `viewstate_controlled_tests`). A launch
     /// that did not happen is refused, and the refusal is the write's answer: nothing left the
-    /// device, so the pump that takes it judges the write again from its own inputs (a moved profile
-    /// drops it, a re-tokened client re-keys it) and puts it back at the head of the queue.
+    /// device, so the pump that takes it judges the write again from its own inputs (a moved profile,
+    /// a vanished server or a re-tokened client drops it) and puts it back at the head of the queue.
     fn start_view_write(&mut self, job: Job<ViewWriteReq>, port: ViewWritePort) {
         let addr = job.addr;
         let refusal = port.clone();
@@ -1854,14 +1854,16 @@ mod tests {
         !stores.viewstate.borrow().is_busy_for_test()
     }
 
-    /// The write the step sent again after a refusal: one job, naming `sid`'s client as the registry
-    /// holds it now.
-    fn assert_sent_again_under_the_current_key(stores: &mut plx_data::stores::Stores, sid: ServerId) {
-        let mut again = stores.take_jobs_of(plx_data::stores::StoreId::ViewState);
-        assert_eq!(again.len(), 1, "the same profile's write is still the user's, so it goes out again");
-        let StoreJob::ViewWrite(job, _) = again.remove(0) else { panic!("a write goes out as a ViewWrite") };
-        let now = ClientKey::of(plx_plex::plex::client_for(sid).expect("registered"));
-        assert_eq!(job.req.server(), (sid, now), "re-keyed to the credential the registry holds now");
+    /// The step judged the refused write again from its own inputs and dropped it: no job goes
+    /// out under the credential the registry holds now, nothing is queued or in flight, and the
+    /// press is retired from the ledger.
+    fn assert_dropped_not_sent_again(stores: &mut plx_data::stores::Stores) {
+        assert!(
+            stores.take_jobs_of(plx_data::stores::StoreId::ViewState).is_empty(),
+            "a key that moved is never sent again under the new one"
+        );
+        assert!(view_idle(stores), "nothing is queued or in flight");
+        assert!(stores.view_ledger.since(0).is_empty(), "the press is retired");
     }
 
     /// Recording, the registry still holding the client the step chose: the worker starts, sends
@@ -1890,8 +1892,8 @@ mod tests {
 
     /// The registry moved on between the step and the launch (a retoken here): the runner does not
     /// start a write through a credential the step never decided on, and nothing leaves the device.
-    /// The refusal is the write's answer, so the next pump puts the SAME profile's write back out
-    /// under the credential the registry holds now.
+    /// The refusal is the write's answer, and the next pump drops the write rather than sending it
+    /// under the credential the registry holds now (it cannot tell a switch from a refresh).
     #[test]
     fn a_view_write_whose_origin_key_moved_is_not_started() {
         let _serial = plx_base::testlock::serial();
@@ -1906,8 +1908,7 @@ mod tests {
         assert_eq!(sink.settled_hits(), 0, "nothing was sent through the credential the step never asked with");
         assert!(!view_idle(&stores), "the refusal is the next pump's to take");
         view_pump(&mut stores, VIEW_PROFILE);
-        assert_sent_again_under_the_current_key(&mut stores, sid);
-        assert_eq!(stores.view_ledger.since(0).len(), 1, "a write not yet sent keeps its press on screen");
+        assert_dropped_not_sent_again(&mut stores);
     }
 
     /// `Held` parks the write without running it, and a newer DETAIL request retires only the
@@ -1955,7 +1956,7 @@ mod tests {
     }
 
     /// A parked write runs later, and the registry may have moved on by then: the held runner
-    /// refuses it as the launch would have, so nothing is sent and the write is owed again.
+    /// refuses it as the launch would have, so nothing is sent and the next pump drops the write.
     #[test]
     fn a_parked_view_write_whose_origin_key_moved_before_it_runs_is_refused() {
         let _serial = plx_base::testlock::serial();
@@ -1970,7 +1971,7 @@ mod tests {
 
         assert_eq!(sink.settled_hits(), 0, "the parked write was not sent through the moved credential");
         view_pump(&mut stores, VIEW_PROFILE);
-        assert_sent_again_under_the_current_key(&mut stores, sid);
+        assert_dropped_not_sent_again(&mut stores);
     }
 
     // ---- the Bridge's drain, which feeds the runner ----
