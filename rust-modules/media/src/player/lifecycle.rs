@@ -2278,6 +2278,575 @@ mod foreground_resume_tests {
             state: ForegroundState::Suspended { id: 1, saved_ns: 5, clock: paused }, next_id: 1 };
         assert!(matches!(claim(&mut parked, ForegroundInput::DidForeground), ForegroundClaimResult::Effect(_)));
     }
+
+    /// **PLAY pressed with no player on screen is ONE event.** It used to be two calls (a discard
+    /// of the started session's pending clock, then the PLAY claim), and the claim alone answered
+    /// `Effect(PlayClock)` for the pending clock of a player a real exit had removed. Off the
+    /// player a pending clock goes to `Idle` and the press answers `Ordinary`; every other state
+    /// answers it exactly as it answers `PlayKey`.
+    #[test]
+    fn play_off_player_is_one_event() {
+        use ForegroundClaimResult::{Effect, Ordinary, Suppressed};
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let pending_clocks: [(&str, ForegroundState<u64>); 2] = [
+            ("ClockPending", ForegroundState::ClockPending { id: 1 }),
+            (
+                "Claimed PlayClock",
+                ForegroundState::Claimed { id: 1, claim: ForegroundClaim::PlayClock },
+            ),
+        ];
+        for (name, state) in pending_clocks {
+            // On the player the press is the retry of the clock (or, mid-claim, consumed) ...
+            let mut on = ForegroundLifecycle::<u64> { state, next_id: 1 };
+            let want = if matches!(state, ForegroundState::ClockPending { .. }) {
+                Effect(ForegroundEffect::PlayClock { id: 1 })
+            } else {
+                Suppressed
+            };
+            assert_eq!(claim(&mut on, ForegroundInput::PlayKey), want, "{name}: PlayKey");
+            // ... off it, ONE event leaves the machine Idle and the press on the ordinary path.
+            let mut off = ForegroundLifecycle::<u64> { state, next_id: 1 };
+            assert_eq!(claim(&mut off, ForegroundInput::PlayKeyOffPlayer), Ordinary, "{name}");
+            assert_eq!(off.state, ForegroundState::Idle, "{name}: the pending clock is dropped");
+            // Driven, the actuator is not asked for the clock the exit removed.
+            let mut driven = ForegroundLifecycle::<u64> { state, next_id: 1 };
+            let mut actuator = FakeActuator::default();
+            let activation =
+                drive_foreground(&mut driven, &mut ps, ForegroundInput::PlayKeyOffPlayer, &mut actuator);
+            assert_eq!(activation, ForegroundActivation::Ordinary, "{name}: activation");
+            assert_eq!(driven.state, ForegroundState::Idle, "{name}: driven state");
+            assert_eq!(actuator.clock_calls, 0, "{name}: no clock retry");
+        }
+        let paused = ForegroundClock::Paused;
+        let others: [(&str, ForegroundState<u64>); 8] = [
+            ("Idle", ForegroundState::Idle),
+            ("Suspended", ForegroundState::Suspended { id: 1, saved_ns: 5, clock: paused }),
+            (
+                "Claimed Prepare",
+                ForegroundState::Claimed {
+                    id: 1,
+                    claim: ForegroundClaim::Prepare {
+                        saved_ns: 5,
+                        saved_clock: paused,
+                        resume_ns: 5,
+                        clock: paused,
+                    },
+                },
+            ),
+            (
+                "Claimed Load",
+                ForegroundState::Claimed {
+                    id: 1,
+                    claim: ForegroundClaim::Load { resume_ns: 5, clock: paused },
+                },
+            ),
+            ("Prepared", ForegroundState::Prepared { id: 1, resume_ns: 5, clock: paused }),
+            (
+                "LoadPending",
+                ForegroundState::LoadPending { id: 1, attempt: 7, resume_ns: 5, clock: paused },
+            ),
+            (
+                "PreparePending",
+                ForegroundState::PreparePending {
+                    id: 1,
+                    saved_ns: 5,
+                    saved_clock: paused,
+                    resume_ns: 5,
+                    clock: paused,
+                },
+            ),
+            (
+                "RecoveryPending",
+                ForegroundState::RecoveryPending { id: 1, resume_ns: 5, clock: paused },
+            ),
+        ];
+        for (name, state) in others {
+            let mut on = ForegroundLifecycle::<u64> { state, next_id: 1 };
+            let mut off = ForegroundLifecycle::<u64> { state, next_id: 1 };
+            assert_eq!(
+                claim(&mut off, ForegroundInput::PlayKeyOffPlayer),
+                claim(&mut on, ForegroundInput::PlayKey),
+                "{name}: the same answer as PlayKey"
+            );
+            assert_eq!(off.state, on.state, "{name}: the same state as PlayKey");
+        }
+    }
+
+    /// **The machine's whole transition relation: every state x every event.** The next state, the
+    /// effects in order and `Handled`, pinned. Each state lists only the cells which DO something;
+    /// every other cell must leave the state alone, emit nothing and answer `No` (an `Input` a
+    /// state consumes without acting on is `Yes`, so those are listed). `Park` is the same shape in
+    /// every state, so a state names only what it saves for the viewer's pause and its own.
+    #[test]
+    fn every_state_meets_every_event_as_the_table_says() {
+        type St = ForegroundState<u64>;
+        type Fx = ForegroundEffect<u64>;
+        type Ev = ForegroundEvent<u64>;
+        type Cell = (Ev, St, Vec<Fx>, Handled);
+        struct Row {
+            name: &'static str,
+            state: St,
+            /// The clock a `Park` saves when the viewer's transport reads (paused, playing).
+            park: (ForegroundClock, ForegroundClock),
+            cells: Vec<Cell>,
+        }
+        fn yes(ev: Ev, next: St, fx: Vec<Fx>) -> Cell {
+            (ev, next, fx, Handled::Yes)
+        }
+        fn no(ev: Ev, next: St, fx: Vec<Fx>) -> Cell {
+            (ev, next, fx, Handled::No)
+        }
+
+        const NS: i64 = 50_000_000_000;
+        const REWOUND: i64 = NS - RESUME_REWIND_NS;
+        const R: i64 = 7_000_000_000;
+        let paused = ForegroundClock::Paused;
+        let playing = ForegroundClock::Playing;
+        let idle = ForegroundState::Idle;
+
+        let did = Ev::Input(ForegroundInput::DidForeground);
+        let did_superseded = Ev::Input(ForegroundInput::DidForegroundSuperseded);
+        let play = Ev::Input(ForegroundInput::PlayKey);
+        let off_player = Ev::Input(ForegroundInput::PlayKeyOffPlayer);
+        let superseded_by_playback = Ev::Input(ForegroundInput::Superseded(Successor::Playback));
+        let superseded_by_exit = Ev::Input(ForegroundInput::Superseded(Successor::Exit));
+        let prepared = |id| Ev::PrepareAnswered { id, answer: PrepareAnswer::Prepared };
+        let refused = Ev::PrepareAnswered { id: 1, answer: PrepareAnswer::Refused };
+        let prepare_pending = Ev::PrepareAnswered { id: 1, answer: PrepareAnswer::Pending };
+        let load_answered = |id, start| Ev::LoadAnswered { id, start };
+        let status = |attempt, status| Ev::LoadStatus { attempt, status };
+        let clock_answered = |id, accepted| Ev::ClockAnswered { id, accepted };
+
+        let events: Vec<Ev> = vec![
+            Ev::Park { saved_ns: 777, viewer_paused: true },
+            Ev::Park { saved_ns: 777, viewer_paused: false },
+            Ev::ParkFlight,
+            did,
+            did_superseded,
+            play,
+            off_player,
+            superseded_by_playback,
+            superseded_by_exit,
+            prepared(1),
+            refused,
+            prepare_pending,
+            prepared(2),
+            load_answered(1, ForegroundLoadStart::Launched(8)),
+            load_answered(1, ForegroundLoadStart::Pending),
+            load_answered(1, ForegroundLoadStart::Failed),
+            load_answered(1, ForegroundLoadStart::AlreadyRunning),
+            load_answered(1, ForegroundLoadStart::Terminal),
+            load_answered(2, ForegroundLoadStart::Failed),
+            Ev::FlightStale,
+            status(7, ForegroundLoadStatus::Pending),
+            status(7, ForegroundLoadStatus::Started),
+            status(7, ForegroundLoadStatus::Failed),
+            status(7, ForegroundLoadStatus::Superseded(9)),
+            status(7, ForegroundLoadStatus::Stale),
+            status(8, ForegroundLoadStatus::Failed),
+            clock_answered(1, true),
+            clock_answered(1, false),
+            clock_answered(2, true),
+        ];
+
+        // The four inputs a state which is mid-claim, or waits on an answer, consumes unchanged.
+        let consumed = |state: St| -> Vec<Cell> {
+            [did, did_superseded, play, off_player]
+                .into_iter()
+                .map(|ev| yes(ev, state, vec![]))
+                .collect()
+        };
+        let retired = || -> Vec<Cell> {
+            vec![
+                yes(superseded_by_playback, idle, vec![]),
+                yes(superseded_by_exit, idle, vec![]),
+            ]
+        };
+        let join = |parts: Vec<Vec<Cell>>| -> Vec<Cell> { parts.into_iter().flatten().collect() };
+
+        let suspended_paused = ForegroundState::Suspended { id: 1, saved_ns: NS, clock: paused };
+        let suspended_playing = ForegroundState::Suspended { id: 1, saved_ns: NS, clock: playing };
+        let claimed_prepare = ForegroundState::Claimed {
+            id: 1,
+            claim: ForegroundClaim::Prepare {
+                saved_ns: NS,
+                saved_clock: paused,
+                resume_ns: NS,
+                clock: playing,
+            },
+        };
+        let preparing = |state: St| -> Vec<Cell> {
+            vec![
+                yes(
+                    prepared(1),
+                    ForegroundState::Claimed {
+                        id: 1,
+                        claim: ForegroundClaim::Load { resume_ns: NS, clock: playing },
+                    },
+                    vec![Fx::Load { id: 1, resume_ns: NS, clock: playing }],
+                ),
+                yes(refused, suspended_paused, vec![]),
+                yes(
+                    prepare_pending,
+                    ForegroundState::PreparePending {
+                        id: 1,
+                        saved_ns: NS,
+                        saved_clock: paused,
+                        resume_ns: NS,
+                        clock: playing,
+                    },
+                    vec![],
+                ),
+            ]
+            .into_iter()
+            .map(|cell| {
+                // A landing for a flight which is still pending leaves it pending.
+                if matches!(state, ForegroundState::PreparePending { .. }) && cell.0 == prepare_pending {
+                    (cell.0, state, cell.2, cell.3)
+                } else {
+                    cell
+                }
+            })
+            .collect()
+        };
+        let preparing_flight = ForegroundState::PreparePending {
+            id: 1,
+            saved_ns: NS,
+            saved_clock: paused,
+            resume_ns: NS,
+            clock: playing,
+        };
+        let claimed_load = ForegroundState::Claimed {
+            id: 1,
+            claim: ForegroundClaim::Load { resume_ns: R, clock: playing },
+        };
+        let recovering = ForegroundState::RecoveryPending { id: 1, resume_ns: R, clock: playing };
+        let loading = |state: St| -> Vec<Cell> {
+            vec![
+                yes(
+                    load_answered(1, ForegroundLoadStart::Launched(8)),
+                    ForegroundState::LoadPending { id: 1, attempt: 8, resume_ns: R, clock: playing },
+                    vec![Fx::Launched { id: 1 }],
+                ),
+                yes(
+                    load_answered(1, ForegroundLoadStart::Pending),
+                    recovering,
+                    vec![],
+                ),
+                yes(
+                    load_answered(1, ForegroundLoadStart::Failed),
+                    ForegroundState::Prepared { id: 1, resume_ns: R, clock: playing },
+                    vec![Fx::AfterLoad { attempt: None, clock: playing, started: false }],
+                ),
+                yes(
+                    load_answered(1, ForegroundLoadStart::AlreadyRunning),
+                    idle,
+                    vec![Fx::AfterLoad { attempt: None, clock: playing, started: false }],
+                ),
+                yes(
+                    load_answered(1, ForegroundLoadStart::Terminal),
+                    idle,
+                    vec![Fx::AfterLoad { attempt: None, clock: playing, started: false }],
+                ),
+            ]
+            .into_iter()
+            .map(|cell| {
+                // A landing for a rollback which is still a flight leaves it pending.
+                if state == recovering && cell.0 == load_answered(1, ForegroundLoadStart::Pending) {
+                    (cell.0, state, cell.2, cell.3)
+                } else {
+                    cell
+                }
+            })
+            .collect()
+        };
+        let prepared_state = ForegroundState::Prepared { id: 1, resume_ns: R, clock: paused };
+        let load_pending = |clock: ForegroundClock| -> Row {
+            let state = ForegroundState::LoadPending { id: 1, attempt: 7, resume_ns: R, clock };
+            let started = if matches!(clock, ForegroundClock::Paused) {
+                yes(
+                    status(7, ForegroundLoadStatus::Started),
+                    idle,
+                    vec![Fx::AfterLoad { attempt: Some(7), clock, started: true }],
+                )
+            } else {
+                yes(
+                    status(7, ForegroundLoadStatus::Started),
+                    ForegroundState::Claimed { id: 1, claim: ForegroundClaim::PlayClock },
+                    vec![
+                        Fx::AfterLoad { attempt: Some(7), clock, started: true },
+                        Fx::PlayClock { id: 1 },
+                    ],
+                )
+            };
+            Row {
+                name: if matches!(clock, ForegroundClock::Paused) {
+                    "LoadPending Paused"
+                } else {
+                    "LoadPending Playing"
+                },
+                state,
+                park: (clock, clock),
+                cells: join(vec![
+                    consumed(state),
+                    vec![
+                        yes(superseded_by_playback, state, vec![]),
+                        yes(superseded_by_exit, idle, vec![Fx::Retire { id: 1, clock }]),
+                        yes(status(7, ForegroundLoadStatus::Pending), state, vec![]),
+                        yes(
+                            status(7, ForegroundLoadStatus::Superseded(9)),
+                            ForegroundState::LoadPending { id: 1, attempt: 9, resume_ns: R, clock },
+                            vec![],
+                        ),
+                        yes(
+                            status(7, ForegroundLoadStatus::Failed),
+                            ForegroundState::Prepared { id: 1, resume_ns: R, clock },
+                            vec![Fx::AfterLoad { attempt: Some(7), clock, started: false }],
+                        ),
+                        yes(
+                            status(7, ForegroundLoadStatus::Stale),
+                            idle,
+                            vec![Fx::AfterLoad { attempt: None, clock, started: false }],
+                        ),
+                        started,
+                    ],
+                ]),
+            }
+        };
+        let claimed_clock = ForegroundState::Claimed { id: 1, claim: ForegroundClaim::PlayClock };
+        let clock_pending = ForegroundState::ClockPending { id: 1 };
+
+        let rows: Vec<Row> = vec![
+            Row { name: "Idle", state: idle, park: (paused, playing), cells: vec![] },
+            Row {
+                name: "Suspended Paused",
+                state: suspended_paused,
+                park: (paused, playing),
+                cells: join(vec![
+                    vec![
+                        yes(
+                            did,
+                            ForegroundState::Claimed {
+                                id: 1,
+                                claim: ForegroundClaim::Prepare {
+                                    saved_ns: NS,
+                                    saved_clock: paused,
+                                    resume_ns: NS,
+                                    clock: paused,
+                                },
+                            },
+                            vec![Fx::Prepare { id: 1, resume_ns: NS }],
+                        ),
+                        yes(did_superseded, suspended_paused, vec![]),
+                        yes(play, claimed_prepare, vec![Fx::Prepare { id: 1, resume_ns: NS }]),
+                        yes(off_player, claimed_prepare, vec![Fx::Prepare { id: 1, resume_ns: NS }]),
+                    ],
+                    retired(),
+                ]),
+            },
+            Row {
+                name: "Suspended Playing",
+                state: suspended_playing,
+                park: (paused, playing),
+                cells: {
+                    // A playing save rewinds; PLAY and DID restore it the same way.
+                    let claimed = ForegroundState::Claimed {
+                        id: 1,
+                        claim: ForegroundClaim::Prepare {
+                            saved_ns: NS,
+                            saved_clock: playing,
+                            resume_ns: REWOUND,
+                            clock: playing,
+                        },
+                    };
+                    let prepare = vec![Fx::Prepare { id: 1, resume_ns: REWOUND }];
+                    join(vec![
+                        vec![
+                            yes(did, claimed, prepare.clone()),
+                            yes(did_superseded, suspended_playing, vec![]),
+                            yes(play, claimed, prepare.clone()),
+                            yes(off_player, claimed, prepare),
+                        ],
+                        retired(),
+                    ])
+                },
+            },
+            Row {
+                name: "Claimed Prepare",
+                state: claimed_prepare,
+                park: (paused, playing),
+                cells: join(vec![consumed(claimed_prepare), retired(), preparing(claimed_prepare)]),
+            },
+            Row {
+                name: "PreparePending",
+                state: preparing_flight,
+                park: (paused, paused),
+                cells: join(vec![
+                    consumed(preparing_flight),
+                    retired(),
+                    preparing(preparing_flight),
+                    vec![
+                        yes(Ev::ParkFlight, suspended_paused, vec![Fx::DropFlight]),
+                        yes(Ev::FlightStale, idle, vec![]),
+                    ],
+                ]),
+            },
+            Row {
+                name: "Claimed Load",
+                state: claimed_load,
+                park: (paused, playing),
+                cells: join(vec![consumed(claimed_load), retired(), loading(claimed_load)]),
+            },
+            Row {
+                name: "RecoveryPending",
+                state: recovering,
+                park: (playing, playing),
+                cells: join(vec![
+                    consumed(recovering),
+                    retired(),
+                    loading(recovering),
+                    vec![
+                        yes(
+                            Ev::ParkFlight,
+                            ForegroundState::Suspended { id: 1, saved_ns: R, clock: playing },
+                            vec![Fx::DropFlight],
+                        ),
+                        yes(Ev::FlightStale, idle, vec![]),
+                    ],
+                ]),
+            },
+            Row {
+                name: "Prepared",
+                state: prepared_state,
+                park: (paused, playing),
+                cells: {
+                    let load = |clock| ForegroundState::Claimed {
+                        id: 1,
+                        claim: ForegroundClaim::Load { resume_ns: R, clock },
+                    };
+                    join(vec![
+                        vec![
+                            yes(
+                                did,
+                                load(paused),
+                                vec![Fx::Load { id: 1, resume_ns: R, clock: paused }],
+                            ),
+                            yes(did_superseded, prepared_state, vec![]),
+                            yes(
+                                play,
+                                load(playing),
+                                vec![Fx::Load { id: 1, resume_ns: R, clock: playing }],
+                            ),
+                            yes(
+                                off_player,
+                                load(playing),
+                                vec![Fx::Load { id: 1, resume_ns: R, clock: playing }],
+                            ),
+                        ],
+                        retired(),
+                    ])
+                },
+            },
+            load_pending(playing),
+            load_pending(paused),
+            Row {
+                name: "Claimed PlayClock",
+                state: claimed_clock,
+                park: (playing, playing),
+                cells: vec![
+                    yes(did, claimed_clock, vec![]),
+                    yes(did_superseded, claimed_clock, vec![]),
+                    yes(play, claimed_clock, vec![]),
+                    no(off_player, idle, vec![]),
+                    yes(superseded_by_playback, claimed_clock, vec![]),
+                    yes(superseded_by_exit, idle, vec![]),
+                    yes(clock_answered(1, true), idle, vec![]),
+                    yes(clock_answered(1, false), clock_pending, vec![]),
+                ],
+            },
+            Row {
+                name: "ClockPending",
+                state: clock_pending,
+                park: (playing, playing),
+                cells: vec![
+                    yes(did, clock_pending, vec![]),
+                    yes(did_superseded, clock_pending, vec![]),
+                    yes(play, claimed_clock, vec![Fx::PlayClock { id: 1 }]),
+                    no(off_player, idle, vec![]),
+                    yes(superseded_by_playback, clock_pending, vec![]),
+                    yes(superseded_by_exit, idle, vec![]),
+                ],
+            },
+        ];
+
+        // The table covers every state and every event: a new variant fails these before it fails
+        // silently.
+        let state_kind = |s: &St| match s {
+            ForegroundState::Idle => 0,
+            ForegroundState::Suspended { .. } => 1,
+            ForegroundState::Claimed { .. } => 2,
+            ForegroundState::Prepared { .. } => 3,
+            ForegroundState::LoadPending { .. } => 4,
+            ForegroundState::PreparePending { .. } => 5,
+            ForegroundState::RecoveryPending { .. } => 6,
+            ForegroundState::ClockPending { .. } => 7,
+        };
+        let event_kind = |e: &Ev| match e {
+            ForegroundEvent::Park { .. } => 0,
+            ForegroundEvent::ParkFlight => 1,
+            ForegroundEvent::Input(_) => 2,
+            ForegroundEvent::PrepareAnswered { .. } => 3,
+            ForegroundEvent::LoadAnswered { .. } => 4,
+            ForegroundEvent::FlightStale => 5,
+            ForegroundEvent::LoadStatus { .. } => 6,
+            ForegroundEvent::ClockAnswered { .. } => 7,
+        };
+        let mut states: Vec<_> = rows.iter().map(|row| state_kind(&row.state)).collect();
+        states.sort_unstable();
+        states.dedup();
+        assert_eq!(states.len(), 8, "a row for every ForegroundState");
+        let mut kinds: Vec<_> = events.iter().map(event_kind).collect();
+        kinds.sort_unstable();
+        kinds.dedup();
+        assert_eq!(kinds.len(), 8, "an event for every ForegroundEvent");
+
+        for row in &rows {
+            for (i, cell) in row.cells.iter().enumerate() {
+                assert!(events.contains(&cell.0), "{}: {:?} is not in the event list", row.name, cell.0);
+                assert!(
+                    row.cells[..i].iter().all(|earlier| earlier.0 != cell.0),
+                    "{}: {:?} is listed twice",
+                    row.name,
+                    cell.0
+                );
+            }
+            for ev in &events {
+                let parks = matches!(ev, ForegroundEvent::Park { .. });
+                let (next, fx, handled) = match *ev {
+                    ForegroundEvent::Park { saved_ns, viewer_paused } => (
+                        ForegroundState::Suspended {
+                            id: 2,
+                            saved_ns,
+                            clock: if viewer_paused { row.park.0 } else { row.park.1 },
+                        },
+                        vec![],
+                        Handled::Yes,
+                    ),
+                    _ => match row.cells.iter().find(|cell| cell.0 == *ev) {
+                        Some((_, next, fx, handled)) => (*next, fx.clone(), *handled),
+                        None => (row.state, vec![], Handled::No),
+                    },
+                };
+                let label = format!("{} x {ev:?}", row.name);
+                let mut lifecycle = ForegroundLifecycle::<u64> { state: row.state, next_id: 1 };
+                let mut got = Vec::new();
+                assert_eq!(lifecycle.step(ev, &mut got), handled, "{label}: handled");
+                assert_eq!(lifecycle.state, next, "{label}: state");
+                assert_eq!(got, fx, "{label}: effects");
+                assert_eq!(lifecycle.next_id, if parks { 2 } else { 1 }, "{label}: only a park takes an id");
+            }
+        }
+    }
 }
 
 #[cfg(all(test, feature = "hostsim"))]
