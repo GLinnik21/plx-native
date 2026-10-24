@@ -12,7 +12,7 @@
   "watchlist.action.on_list": "В списке просмотра",
   "watchlist.action.remove": "Убрать из списка просмотра",
   "watchlist.action.remove_show": "Убрать сериал…",
-  "watchlist.state.coming_on": "Выход {date}",
+  "watchlist.state.coming_on": "Выйдет {date}",
   "watchlist.state.coming_soon": "Скоро выйдет",
   "watchlist.state.on_no_server": "Нет на ваших серверах",
   "watchlist.state.server_offline": "Сервер недоступен",

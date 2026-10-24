@@ -9,7 +9,7 @@
   "core.season": "С{season}",
   "core.episode": "Э{episode}",
   "core.episode_ordinal": "С{season}, Э{episode}",
-  "core.shared_by": "Доступ от {handle}",
+  "core.shared_by": "Доступ предоставлен: {handle}",
   "core.preview_fault": "Резервный отчёт о сбое C",
   "core.preview_panic": "Резервный отчёт о панике Rust",
   "core.preview_domains": "Допустимые значения для обработанных ошибок воспроизведения:",

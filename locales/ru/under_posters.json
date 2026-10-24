@@ -1,6 +1,6 @@
 {
   "under_posters.title": "Под постерами",
-  "under_posters.detail": "Подписи под выбранным постером.",
+  "under_posters.detail": "Подписи под постером.",
   "under_posters.copy": "На большинстве постеров уже есть название. Выберите, что показывать под выбранным постером.",
   "under_posters.title_row": "Название",
   "under_posters.title_detail": "Название жирным шрифтом.",
@@ -10,7 +10,7 @@
   "under_posters.year_length": "Год · Длительность",
   "under_posters.genre": "Жанр",
   "under_posters.video": "Видео",
-  "under_posters.age_rating_score": "Возраст · Оценка",
+  "under_posters.age_rating_score": "Возрастной рейтинг · Оценка",
   "under_posters.none": "Ничего",
   "under_posters.reset": "Сбросить настройки",
   "under_posters.reset_detail": "Год и длительность, без названия.",
