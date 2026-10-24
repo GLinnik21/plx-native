@@ -398,7 +398,6 @@ pub(crate) struct Bridge {
     /// The registry's answer for every server slot, refilled in place immediately before each step
     /// that decides from it (`adapters::stores::refill_client_keys`), in the same call. ONE value
     /// kept for the life of the Bridge, so a pump that runs every frame allocates nothing for it.
-    #[expect(dead_code, reason = "its first reader is the next commit's collection pump")]
     client_keys: plx_plex::plex::ClientKeys,
     stores: plx_data::stores::Stores,
     mounter: AppMounter,
@@ -1262,6 +1261,25 @@ impl Bridge {
 
     pub(crate) fn collection_pump(&mut self) -> bool { self.stores.collection_pump() }
 
+    /// Run one subtitle-search command. A command decides from the model alone (the request is the
+    /// pump's, which is where the registry's answer is read), so it emits no job; the drain stays
+    /// so that a command which one day does is started in the call that ran it.
+    pub(crate) fn subsearch_run(&mut self, cmd: plx_data::subsearch::SubSearchCmd) -> bool {
+        let changed = self.stores.subtitle_search_run(cmd);
+        self.start_store_jobs_of(plx_data::stores::StoreId::SubtitleSearch);
+        changed
+    }
+
+    /// One frame's subtitle-search pump: refill the keys, step, and start the request the step
+    /// emitted, all in this call. The player's search panel is what pumps the store, so the refill
+    /// costs a registry walk only while that panel is open.
+    pub(crate) fn subsearch_pump(&mut self) -> bool {
+        super::adapters::stores::refill_client_keys(&mut self.client_keys);
+        let changed = self.stores.subtitle_search_pump(&self.client_keys);
+        self.start_store_jobs_of(plx_data::stores::StoreId::SubtitleSearch);
+        changed
+    }
+
     /// The bare store, for a seam that is handed a `&mut MetadataStore` instead of the Bridge
     /// (`playback::PlaybackResources`). A command run on it that emits a job leaves the job on the
     /// outbox: the caller owes [`Bridge::start_store_jobs`] as soon as that call returns.
@@ -1329,7 +1347,7 @@ impl Bridge {
         }
         self.late_store_jobs += late;
         plx_base::eventlog::log(&format!(
-            "stores: WARN {late} store job(s) reached a pump unstarted ({} so far): a sender bypassed its Bridge drain (metadata_run / collection_pump / start_store_jobs_of / start_store_jobs)",
+            "stores: WARN {late} store job(s) reached a pump unstarted ({} so far): a sender bypassed its Bridge drain (metadata_run / collection_pump / subsearch_pump / start_store_jobs_of / start_store_jobs)",
             self.late_store_jobs
         ));
     }
@@ -1343,7 +1361,7 @@ impl Bridge {
 
     /// TEST ONLY: no sender bypassed the drain. A frame's end is the moment to ask, and both halves
     /// matter: a job still on an outbox is a sender that neither went through its store's Bridge
-    /// method ([`Bridge::metadata_run`], [`Bridge::collection_pump`]) nor drained with
+    /// method ([`Bridge::metadata_run`], [`Bridge::collection_pump`], [`Bridge::subsearch_pump`]) nor drained with
     /// [`Bridge::start_store_jobs`] (the detail pump's
     /// backstop would start it a frame late), and a nonzero `late_store_jobs` is a sender the
     /// backstop has ALREADY rescued, which the job check alone cannot see once `update()` has run
@@ -1351,9 +1369,9 @@ impl Bridge {
     #[cfg(test)]
     pub(crate) fn assert_no_store_jobs_left_for_test(&self) {
         assert!(!self.stores.has_jobs(),
-            "a store job sits on an outbox: its sender neither ran through its store's Bridge drain (metadata_run / collection_pump / start_store_jobs_of) nor drained with Bridge::start_store_jobs");
+            "a store job sits on an outbox: its sender neither ran through its store's Bridge drain (metadata_run / collection_pump / subsearch_pump / start_store_jobs_of) nor drained with Bridge::start_store_jobs");
         assert_eq!(self.late_store_jobs, 0,
-            "a pump's backstop had to start store jobs their sender left unstarted: that sender bypassed its Bridge drain (metadata_run / collection_pump / start_store_jobs_of / start_store_jobs)");
+            "a pump's backstop had to start store jobs their sender left unstarted: that sender bypassed its Bridge drain (metadata_run / collection_pump / subsearch_pump / start_store_jobs_of / start_store_jobs)");
     }
 
     pub(crate) fn metadata_view(&self) -> plx_data::metadata::MetadataView<'_> {
@@ -1867,7 +1885,7 @@ impl Bridge {
                 return Handled::Yes;
             }
             AppMsg::Store(StoreCmd::SubtitleSearch(command)) => {
-                self.stores.subtitle_search_run(command.clone());
+                self.subsearch_run(command.clone());
                 return Handled::Yes;
             }
             AppMsg::Store(StoreCmd::ViewState(command)) => {
@@ -1918,7 +1936,7 @@ impl Bridge {
                 Handled::Yes
             }
             AppMsg::StoreWork(plx_data::stores::StoreWork::SubtitleSearch) => {
-                self.stores.subtitle_search_pump();
+                self.subsearch_pump();
                 Handled::Yes
             }
             _ => Handled::No,

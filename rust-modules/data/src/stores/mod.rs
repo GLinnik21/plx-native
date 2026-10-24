@@ -191,7 +191,13 @@ impl Stores {
         self.subtitle_search.run(cmd)
     }
 
-    pub fn subtitle_search_pump(&mut self) -> bool { self.subtitle_search.pump(&self.landgate) }
+    /// Pump the subtitle-search store; `keys` is the registry's answer as of this call. It does NOT
+    /// start the request it emitted: a caller that returns without [`Stores::take_jobs_of`] and
+    /// handing the job to a runner has stranded the search. The one production caller is
+    /// `Bridge::subsearch_pump`, which drains in the same call.
+    pub fn subtitle_search_pump(&mut self, keys: &plx_plex::plex::ClientKeys) -> bool {
+        self.subtitle_search.pump(&self.landgate, keys)
+    }
 
     pub fn subtitle_search_view(&self) -> crate::subsearch::SubSearchView<'_> {
         self.subtitle_search.view()
@@ -231,6 +237,7 @@ impl Stores {
     pub fn take_jobs_of(&mut self, id: StoreId) -> Vec<StoreJob> {
         match id {
             StoreId::Metadata => self.metadata.take_jobs(),
+            StoreId::SubtitleSearch => self.subtitle_search.take_jobs(),
             // The other stores emit no jobs yet.
             _ => Vec::new(),
         }
@@ -245,6 +252,7 @@ impl Stores {
     fn has_jobs_of(&self, id: StoreId) -> bool {
         match id {
             StoreId::Metadata => self.metadata.has_jobs(),
+            StoreId::SubtitleSearch => self.subtitle_search.has_jobs(),
             // The other stores emit no jobs yet.
             _ => false,
         }
@@ -587,11 +595,14 @@ impl StoreWork {
 pub enum StoreJob {
     /// One detail fetch (`MetadataCmd::RequestDetail`), addressed by its request generation.
     Detail(plx_machine::job::Job<crate::metadata::DetailReq>, crate::metadata::DetailPort),
+    /// One subtitle search, download or install poll, emitted by the subtitle-search pump and
+    /// addressed by the search generation. One is out at a time. Not on the tape.
+    SubtitleSearch(plx_machine::job::Job<crate::subsearch::SubSearchReq>, crate::subsearch::SubSearchPort),
 }
 
 impl StoreJob {
     pub fn store(&self) -> StoreId {
-        match self { Self::Detail(..) => StoreId::Metadata }
+        match self { Self::Detail(..) => StoreId::Metadata, Self::SubtitleSearch(..) => StoreId::SubtitleSearch }
     }
 }
 
