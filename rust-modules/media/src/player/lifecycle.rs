@@ -281,7 +281,7 @@ pub enum PrepareAnswer {
 
 impl PrepareAnswer {
     /// The answer a landed (or settled) resume gives.
-    pub fn of_outcome(outcome: crate::player::ResumeOutcome) -> Self {
+    fn of_outcome(outcome: crate::player::ResumeOutcome) -> Self {
         if matches!(outcome, crate::player::ResumeOutcome::Prepared) {
             Self::Prepared
         } else {
@@ -290,7 +290,7 @@ impl PrepareAnswer {
     }
 
     /// The answer `begin_resume` gives.
-    pub fn of_start(start: crate::player::ResumeStart) -> Self {
+    fn of_start(start: crate::player::ResumeStart) -> Self {
         match start {
             crate::player::ResumeStart::Settled(outcome) => Self::of_outcome(outcome),
             crate::player::ResumeStart::Pending => Self::Pending,
