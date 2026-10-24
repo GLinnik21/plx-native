@@ -103,6 +103,21 @@ pub(super) fn seek_reloads(mode: SeekMode) -> bool {
     mode == SeekMode::Reload
 }
 
+/// How long a speed session may wait after loadCompleted for the pipeline's audio report before the
+/// safety net assumes the PCM was not taken. On the 3.9.3 set the report arrives before
+/// loadCompleted itself.
+const SPEED_AUDIO_DEADLINE_MS: u32 = 8_000;
+
+/// Whether THIS direct-play seek must be a full fresh `Load`: always in a reload mode, and in an
+/// in-place mode whenever playback speed is involved. A speed change rides a seek to the current
+/// position (`player::set_play_rate`, the one-shot `rate_reload`), and while the speed is not 1x
+/// every seek reloads too: a speed is fixed per Load (its PCM declaration, its time-stretch and its
+/// timeline all start with the session), and an in-place seek re-anchors the segment at content
+/// time.
+pub(super) fn seek_must_reload(mode: SeekMode, rate_permille: i32, rate_reload: bool) -> bool {
+    seek_reloads(mode) || rate_reload || rate_permille != super::RATE_NORMAL
+}
+
 fn take_coalesced() -> u32 {
     TX.seek_reqs.swap(0, Relaxed).saturating_sub(1)
 }
@@ -1672,6 +1687,8 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     {
         TX.seek_to_ns.store(-1, Relaxed);
         let coalesced = take_coalesced(); // read here so BOTH branches consume this seek's requests
+        // Consumed by whichever branch lands this seek: a transcode seek is a fresh Load anyway.
+        let rate_reload = SHARED.rate_reload.swap(false, Relaxed);
         let t = t.max(0);
         // TRANSCODE seek: restart the encode at the new &offset and do a FULL RELOAD (fresh Load).
         // A flush()+refeed of the new start.mkv left a STALE GStreamer segment → visual artifacts on
@@ -1696,7 +1713,7 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         // libraries, or set by feed_stream when sendSegmentEvent can't find the pipeline or a
         // native Seek is refused — is reload-per-seek. reload_at REPLACES the ENGINE, so `eng`
         // dangles after it: return immediately.
-        if seek_reloads(seek_mode()) {
+        if seek_must_reload(seek_mode(), super::play_rate_permille(), rate_reload) {
             crate::route::commit_user_seek();
             own_seek_under_pause(t);
             settle_reload(super::engine::reload_at(ps, pa, t), "direct seek reload");
@@ -1941,6 +1958,30 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
                     super::report::LoadElapsedClass::Over20s,
                 );
             }
+        }
+    }
+
+    // ---------- playback speed: the safety net ----------
+    // A speed session's Load declared PCM. The pipeline reports what it set up (audio-info
+    // callback, `player::note_speed_audio_report`); a report that is not the declared 48 kHz
+    // stereo, or none within SPEED_AUDIO_DEADLINE_MS of loadCompleted, means this television
+    // does not take app-fed PCM the way the 3.9.3 set does — fall back to 1x rather than play
+    // silence or a drifting sound. Video-only Loads (the `noaudio` trigger) have no audio to judge.
+    if super::applied_rate_permille() != super::RATE_NORMAL
+        && eng.stage >= Stage::Playing
+        && !super::no_audio_armed()
+        && TX.seek_to_ns.load(Relaxed) < 0
+    {
+        match SHARED.speed_audio_verdict.load(Relaxed) {
+            super::SPEED_AUDIO_BAD => {
+                super::fall_back_from_speed(ps, "the pipeline set up different audio than the PCM declared");
+            }
+            super::SPEED_AUDIO_UNKNOWN
+                if now.wrapping_sub(SHARED.dg_load_at.load(Relaxed)) > SPEED_AUDIO_DEADLINE_MS =>
+            {
+                super::fall_back_from_speed(ps, "the pipeline never reported its audio");
+            }
+            _ => {}
         }
     }
 

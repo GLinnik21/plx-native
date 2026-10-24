@@ -598,6 +598,25 @@ pub struct Shared {
     // The synchronized route controller owns whether a reload is pending; keeping a second atomic
     // mailbox here used to let reset_session erase the request halfway through that reload.
     pub desired_audio_idx: AtomicI32,
+    // The viewer's playback speed in thousandths (1000 = 1x), from `player::set_play_rate`. Like
+    // desired_audio_idx it PERSISTS across seeks/reloads (each fresh Load re-applies it) and is
+    // reset only on a new item (`player::reset_play_rate`).
+    pub play_rate_permille: AtomicI32,
+    // The speed THIS session's Load plays at (`player::session_rate_for`, published by
+    // `start_bufferfeed` before the demuxer spawns): what the timeline conversion
+    // (`player::to_sink_ns`) and the demuxer's audio decode read. Per session: reset_session puts
+    // it back to 1x.
+    pub applied_rate_permille: AtomicI32,
+    // One-shot: the next direct-play seek must be a full reload even in an in-place seek mode,
+    // because it exists to carry a speed change (`player::set_play_rate`), and a speed is fixed
+    // per Load.
+    pub rate_reload: AtomicBool,
+    // This process's television did not take a speed session's PCM (`player::fall_back_from_speed`):
+    // speed stays off until the app restarts. Never reset by a session.
+    pub speed_unsupported: AtomicBool,
+    // What the pipeline reported setting up for THIS speed session's audio
+    // (`player::note_speed_audio_report`); per session.
+    pub speed_audio_verdict: AtomicU8,
     // the derived UI state (a `PlaybackState`), published by the pump once a frame and read by
     // the HUD. Written only on the main thread; atomic because it is read from the draw path.
     pub pb_state: AtomicU8,
@@ -1043,6 +1062,11 @@ impl Shared {
             seeking: AtomicBool::new(false),
             seek_display_ns: AtomicI64::new(-1),
             desired_audio_idx: AtomicI32::new(-1),
+            play_rate_permille: AtomicI32::new(super::RATE_NORMAL),
+            applied_rate_permille: AtomicI32::new(super::RATE_NORMAL),
+            rate_reload: AtomicBool::new(false),
+            speed_unsupported: AtomicBool::new(false),
+            speed_audio_verdict: AtomicU8::new(0),
             pb_state: AtomicU8::new(PlaybackState::Idle as u8),
             demux_failed: AtomicBool::new(false),
             demux_io_failed: AtomicBool::new(false),
@@ -1714,6 +1738,9 @@ impl Shared {
         self.seek_display_ns.store(-1, Ordering::Relaxed);
         // NB: desired_audio_idx is NOT reset here — it persists across seeks/reloads so a
         // native audio-track choice survives seeking. It is reset on a new item (route).
+        // play_rate_permille likewise; the APPLIED rate is the pipeline's, and a fresh one is 1x.
+        self.applied_rate_permille.store(super::RATE_NORMAL, Ordering::Relaxed);
+        self.speed_audio_verdict.store(super::SPEED_AUDIO_UNKNOWN, Ordering::Relaxed);
         self.pb_state
             .store(PlaybackState::Idle as u8, Ordering::Relaxed);
         self.demux_failed.store(false, Ordering::Relaxed);

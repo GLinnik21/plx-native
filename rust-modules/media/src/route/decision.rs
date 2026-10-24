@@ -8095,6 +8095,8 @@ fn reset_track_selection(sid: ServerId, rk: &str, retry: Option<RetryContext>) {
     match retry {
         Some(retry) => crate::player::restore_subtitle_offset(retry.sub_offset_ms),
         None => {
+            // A retry is the same item and keeps its speed; a new one starts at 1x.
+            crate::player::reset_play_rate();
             if let Some(offset_ms) = remembered_subtitle_offset(sid, rk) {
                 crate::player::restore_subtitle_offset(offset_ms);
             }
