@@ -1,4 +1,4 @@
-{"updated":"2026-10-24T06:01:28Z",
+{"updated":"2026-10-24T06:50:14Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -3425,7 +3425,8 @@
 {"id":40065411410,"at":"2026-10-24T05:13:28Z","sha":"ff14ceb55","title":"P1 review fixes: backoff holds by elapsed time; reconcile refuses only a begun refresh; prose","pr":973,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":115,"Windows launcher syntax":18,"macOS simulator build + launch":190,"Linux simulator build + launch":238}},
 {"id":40066010636,"at":"2026-10-24T05:22:39Z","sha":"088f6f764","title":"Session cache: peek is a pure read; the session owner refills it","pr":973,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":15,"Linux simulator build + launch":283,"macOS simulator build + launch":160,"macOS tests against bundled FFmpeg and ASS":152}},
 {"id":40067486384,"at":"2026-10-24T05:45:16Z","sha":"1326115a4","title":"Merge origin/main (P1 #973) into sansio/p2-detail-job","pr":975,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":180,"Linux simulator build + launch":287,"Windows launcher syntax":19,"macOS tests against bundled FFmpeg and ASS":133}},
-{"id":40068126418,"at":"2026-10-24T05:55:04Z","sha":"591362f7e","title":"Detail store: request_detail emits a job; the app's StoreRunner starts it","pr":975,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":187,"Windows launcher syntax":18,"Linux simulator build + launch":269,"macOS tests against bundled FFmpeg and ASS":151}}
+{"id":40068126418,"at":"2026-10-24T05:55:04Z","sha":"591362f7e","title":"Detail store: request_detail emits a job; the app's StoreRunner starts it","pr":975,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":187,"Windows launcher syntax":18,"Linux simulator build + launch":269,"macOS tests against bundled FFmpeg and ASS":151}},
+{"id":40071490102,"at":"2026-10-24T06:45:54Z","sha":"f596f952d","title":"Lifecycle docs: the foreground machine is driven by events","pr":977,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"macOS simulator build + launch":200,"Linux simulator build + launch":250,"Windows launcher syntax":17},"failed":["macOS tests against bundled FFmpeg and ASS"]}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
