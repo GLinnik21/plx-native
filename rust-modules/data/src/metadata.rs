@@ -5247,7 +5247,7 @@ impl plx_machine::job::Port<SeasonAnswer> for MetaSeasonPort {
     }
 }
 
-/// One read of a season job through the client the runner resolved: `None` when it held none for the
+/// One read of a season or page job through the client the runner resolved: `None` when it held none for the
 /// server (no GET is made), and `None` when the read failed or panicked. The panic is caught HERE,
 /// so a caller posts its answer outside the guard and a panicking read still lands, as a failure.
 fn read_through<T>(
