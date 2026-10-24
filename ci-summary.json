@@ -15,22 +15,43 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-24T08:29:14Z",
+ "generated": "2026-10-24T09:17:48Z",
  "metrics": [
   {
    "change30_pct": null,
-   "change7_pct": 35.8,
+   "change7_pct": 43.4,
    "d30": null,
    "delta30": null,
-   "delta7": 16.5,
+   "delta7": 19.1,
    "group": "local",
    "id": "bench.ui",
    "kind": "local",
    "label": "Rebuild after editing plx_ui",
-   "n_now": 7,
-   "n_prev": 7,
-   "now": 62.5,
-   "prev7": 46.0,
+   "n_now": 6,
+   "n_prev": 8,
+   "now": 63.1,
+   "prev7": 44.0,
+   "shown": true,
+   "state": "worse",
+   "state30": "new",
+   "threshold_abs": 5.0,
+   "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": 38.8,
+   "d30": null,
+   "delta30": null,
+   "delta7": 40.9,
+   "group": "local",
+   "id": "bench.leaf",
+   "kind": "local",
+   "label": "Rebuild after editing plx_base",
+   "n_now": 6,
+   "n_prev": 8,
+   "now": 146.4,
+   "prev7": 105.5,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -60,39 +81,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": null,
-   "change7_pct": 27.1,
-   "d30": null,
-   "delta30": null,
-   "delta7": 31.1,
-   "group": "local",
-   "id": "bench.leaf",
-   "kind": "local",
-   "label": "Rebuild after editing plx_base",
-   "n_now": 7,
-   "n_prev": 7,
-   "now": 145.8,
-   "prev7": 114.7,
-   "shown": true,
-   "state": "worse",
-   "state30": "new",
-   "threshold_abs": 5.0,
-   "threshold_pct": 25.0,
-   "unit": "s"
-  },
-  {
    "change30_pct": -51.6,
    "change7_pct": -30.6,
    "d30": 688,
-   "delta30": -355,
+   "delta30": -355.0,
    "delta7": -147.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 159,
+   "n_now": 160,
    "n_prev": 268,
-   "now": 333,
+   "now": 333.0,
    "prev7": 480.0,
    "shown": true,
    "state": "better",
@@ -104,8 +104,8 @@
   {
    "change30_pct": -52.0,
    "change7_pct": -23.8,
-   "d30": 687.0,
-   "delta30": -357.0,
+   "d30": 687,
+   "delta30": -357,
    "delta7": -103,
    "group": "ci",
    "id": "push_wait",
@@ -124,18 +124,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 9.5,
+   "change7_pct": 12.6,
    "d30": null,
    "delta30": null,
-   "delta7": 2.2,
+   "delta7": 2.8,
    "group": "local",
    "id": "bench.app",
    "kind": "local",
    "label": "Rebuild after editing the app crate",
-   "n_now": 7,
-   "n_prev": 7,
+   "n_now": 6,
+   "n_prev": 8,
    "now": 25.1,
-   "prev7": 22.9,
+   "prev7": 22.3,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -145,18 +145,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 6.8,
+   "change7_pct": 14.6,
    "d30": null,
    "delta30": null,
-   "delta7": 3.0,
+   "delta7": 6.2,
    "group": "local",
    "id": "bench.screens",
    "kind": "local",
    "label": "Rebuild after editing plx_screens",
-   "n_now": 7,
-   "n_prev": 7,
-   "now": 47.0,
-   "prev7": 44.0,
+   "n_now": 6,
+   "n_prev": 8,
+   "now": 49.1,
+   "prev7": 42.9,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -166,20 +166,20 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -30.3,
+   "change7_pct": -23.1,
    "d30": null,
    "delta30": null,
-   "delta7": -52.2,
+   "delta7": -38.3,
    "group": "local",
    "id": "bench.tests",
    "kind": "local",
    "label": "Unit suite",
-   "n_now": 6,
-   "n_prev": 6,
-   "now": 120.3,
-   "prev7": 172.5,
+   "n_now": 5,
+   "n_prev": 7,
+   "now": 127.3,
+   "prev7": 165.7,
    "shown": true,
-   "state": "better",
+   "state": "flat",
    "state30": "new",
    "threshold_abs": 5.0,
    "threshold_pct": 25.0,
@@ -187,30 +187,30 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -21.3,
+   "change7_pct": -8.8,
    "d30": null,
    "delta30": null,
-   "delta7": -302.2,
+   "delta7": -117.8,
    "group": "local",
    "id": "bench.check",
    "kind": "local",
    "label": "make check, the whole gate",
-   "n_now": 5,
-   "n_prev": 5,
-   "now": 1116.6,
+   "n_now": 4,
+   "n_prev": 6,
+   "now": 1225.8,
    "parts": [
     {
      "id": "bench.check.cargo",
      "label": "make check: cargo branch",
-     "now": 1116.0
+     "now": 1224.5
     },
     {
      "id": "bench.check.python",
      "label": "make check: python branch",
-     "now": 973.0
+     "now": 1028.5
     }
    ],
-   "prev7": 1418.8,
+   "prev7": 1343.6,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -430,19 +430,19 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -21.2,
+   "change7_pct": -8.8,
    "d30": null,
    "delta30": null,
-   "delta7": -301.0,
+   "delta7": -117.5,
    "group": "local",
    "id": "bench.check.cargo",
    "kind": "local",
    "label": "make check: cargo branch",
-   "n_now": 5,
-   "n_prev": 5,
-   "now": 1116.0,
+   "n_now": 4,
+   "n_prev": 6,
+   "now": 1224.5,
    "parent": "bench.check",
-   "prev7": 1417.0,
+   "prev7": 1342.0,
    "shown": false,
    "state": "flat",
    "state30": "new",
@@ -452,19 +452,19 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -2.8,
+   "change7_pct": 4.7,
    "d30": null,
    "delta30": null,
-   "delta7": -28.0,
+   "delta7": 46.0,
    "group": "local",
    "id": "bench.check.python",
    "kind": "local",
    "label": "make check: python branch",
-   "n_now": 5,
-   "n_prev": 5,
-   "now": 973.0,
+   "n_now": 4,
+   "n_prev": 6,
+   "now": 1028.5,
    "parent": "bench.check",
-   "prev7": 1001.0,
+   "prev7": 982.5,
    "shown": false,
    "state": "flat",
    "state30": "new",
@@ -559,8 +559,8 @@
   {
    "change30_pct": -98.7,
    "change7_pct": -99.1,
-   "d30": 236,
-   "delta30": -233,
+   "d30": 236.0,
+   "delta30": -233.0,
    "delta7": -320,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
@@ -580,8 +580,8 @@
   {
    "change30_pct": -99.6,
    "change7_pct": 0.0,
-   "d30": 693,
-   "delta30": -690,
+   "d30": 690.0,
+   "delta30": -687.0,
    "delta7": 0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
@@ -600,7 +600,7 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -17.1,
+   "change7_pct": -13.2,
    "d30": null,
    "delta30": null,
    "delta7": -0.1,
@@ -608,9 +608,9 @@
    "id": "bench.noop",
    "kind": "local",
    "label": "No-op build",
-   "n_now": 7,
-   "n_prev": 7,
-   "now": 0.6,
+   "n_now": 6,
+   "n_prev": 8,
+   "now": 0.7,
    "prev7": 0.8,
    "shown": false,
    "state": "flat",
@@ -622,7 +622,7 @@
  ],
  "regressions": [
   {
-   "change_pct": 35.8,
+   "change_pct": 43.4,
    "commits": [
     {
      "pr": 940,
@@ -675,12 +675,73 @@
      "title": "Detail store: request_detail emits a job; the app's StoreRunner starts it"
     }
    ],
-   "from": 46.0,
+   "from": 44.0,
    "id": "bench.ui",
    "label": "Rebuild after editing plx_ui",
    "since": "2026-10-19",
    "threshold_pct": 25.0,
-   "to": 62.5
+   "to": 63.1
+  },
+  {
+   "change_pct": 38.8,
+   "commits": [
+    {
+     "pr": 940,
+     "sha": "30233742f",
+     "title": "Deps: Bump the rust-minor-patch group in /rust-modules with 2 updates"
+    },
+    {
+     "pr": 960,
+     "sha": "8354a31e6",
+     "title": "Site: refresh the demo film and stills for v0.9.0 (and fix what broke their render)"
+    },
+    {
+     "pr": 963,
+     "sha": "d550676d1",
+     "title": "Site: stamp the hero's \"Version X.Y.Z\" from pkg/appinfo.json at deploy"
+    },
+    {
+     "pr": 962,
+     "sha": "5959398b2",
+     "title": "CI: push to main with a ruleset-bypass deploy key (release bump, audit, site film)"
+    },
+    {
+     "pr": 964,
+     "sha": "f33235569",
+     "title": "tv-session: `screen on` on an already-lit panel is a no-op success, not a refusal"
+    },
+    {
+     "pr": 941,
+     "sha": "c78dd374e",
+     "title": "net: a finished body reads as the clean end, not a wait on the open connection"
+    },
+    {
+     "pr": 959,
+     "sha": "263076a34",
+     "title": "Server updates: a library change refreshes Home, the shelves and the library grids"
+    },
+    {
+     "pr": 971,
+     "sha": "ae611ee4f",
+     "title": "Sans-IO baseline: make check ledgers that freeze IO in logic"
+    },
+    {
+     "pr": 973,
+     "sha": "088f6f764",
+     "title": "Session cache: peek is a pure read; the session owner refills it"
+    },
+    {
+     "pr": 975,
+     "sha": "591362f7e",
+     "title": "Detail store: request_detail emits a job; the app's StoreRunner starts it"
+    }
+   ],
+   "from": 105.5,
+   "id": "bench.leaf",
+   "label": "Rebuild after editing plx_base",
+   "since": "2026-10-19",
+   "threshold_pct": 25.0,
+   "to": 146.4
   },
   {
    "change_pct": 34.5,
@@ -742,67 +803,6 @@
    "since": "2026-10-23",
    "threshold_pct": 20.0,
    "to": 204.5
-  },
-  {
-   "change_pct": 27.1,
-   "commits": [
-    {
-     "pr": 940,
-     "sha": "30233742f",
-     "title": "Deps: Bump the rust-minor-patch group in /rust-modules with 2 updates"
-    },
-    {
-     "pr": 960,
-     "sha": "8354a31e6",
-     "title": "Site: refresh the demo film and stills for v0.9.0 (and fix what broke their render)"
-    },
-    {
-     "pr": 963,
-     "sha": "d550676d1",
-     "title": "Site: stamp the hero's \"Version X.Y.Z\" from pkg/appinfo.json at deploy"
-    },
-    {
-     "pr": 962,
-     "sha": "5959398b2",
-     "title": "CI: push to main with a ruleset-bypass deploy key (release bump, audit, site film)"
-    },
-    {
-     "pr": 964,
-     "sha": "f33235569",
-     "title": "tv-session: `screen on` on an already-lit panel is a no-op success, not a refusal"
-    },
-    {
-     "pr": 941,
-     "sha": "c78dd374e",
-     "title": "net: a finished body reads as the clean end, not a wait on the open connection"
-    },
-    {
-     "pr": 959,
-     "sha": "263076a34",
-     "title": "Server updates: a library change refreshes Home, the shelves and the library grids"
-    },
-    {
-     "pr": 971,
-     "sha": "ae611ee4f",
-     "title": "Sans-IO baseline: make check ledgers that freeze IO in logic"
-    },
-    {
-     "pr": 973,
-     "sha": "088f6f764",
-     "title": "Session cache: peek is a pure read; the session owner refills it"
-    },
-    {
-     "pr": 975,
-     "sha": "591362f7e",
-     "title": "Detail store: request_detail emits a job; the app's StoreRunner starts it"
-    }
-   ],
-   "from": 114.7,
-   "id": "bench.leaf",
-   "label": "Rebuild after editing plx_base",
-   "since": "2026-10-22",
-   "threshold_pct": 25.0,
-   "to": 145.8
   }
  ],
  "schema": 2,
@@ -843,31 +843,31 @@
    "group": "local",
    "id": "bench.check",
    "label": "make check, the whole gate",
-   "now": 1116.6
+   "now": 1225.8
   },
   {
    "group": "local",
    "id": "bench.leaf",
    "label": "Rebuild after editing plx_base",
-   "now": 145.8
+   "now": 146.4
   },
   {
    "group": "local",
    "id": "bench.tests",
    "label": "Unit suite",
-   "now": 120.3
+   "now": 127.3
   },
   {
    "group": "local",
    "id": "bench.ui",
    "label": "Rebuild after editing plx_ui",
-   "now": 62.5
+   "now": 63.1
   },
   {
    "group": "local",
    "id": "bench.screens",
    "label": "Rebuild after editing plx_screens",
-   "now": 47.0
+   "now": 49.1
   }
  ],
  "thresholds": {
