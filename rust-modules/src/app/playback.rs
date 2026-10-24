@@ -690,7 +690,7 @@ pub(super) fn return_from_player(
 /// It tells the foreground machine first (`ForegroundInput::Superseded(Successor::Exit)`): a
 /// restore parked or refused behind the exit (`Prepared`, `Suspended`, ...) is retired there rather
 /// than left standing until the next play, and a foreground Load still pending releases what
-/// `before_load` armed. `discard_started_state` stays the off-player PLAY's own, narrower reset.
+/// `before_load` armed. `PlayKeyOffPlayer` stays the off-player PLAY's own, narrower reset.
 ///
 /// The return target is [`plx_screens::player::Origin`]'s `entry` — the container entry that was on top when Play was
 /// pressed, seeded at the player's own mount by [`enter_player`] and read back off the mounted
@@ -987,7 +987,7 @@ pub(crate) fn play_up_next(
         .map(|p| p.sid)
         .unwrap_or_else(plx_plex::plex::current_server);
     bridge.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::RetirePlaying);
-    bridge.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::RequestDetail { sid: sid, rk: rk.to_string() });
+    bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::RequestDetail { sid: sid, rk: rk.to_string() });
     start_playback(
         ps,
         pa,
@@ -1053,6 +1053,11 @@ pub(super) fn play_item_now_with<R: PlaybackResources>(
     // route's own TITLE/CTXLINE, set synchronously by request_play_movie, still carry
     // this item), and the landing refills it via sync_now_playing.
     resources.describe_movie(bridge.metadata_mut(), mm.sid, &mm.rk);
+    // `describe_movie` holds only the store, so its request's job is still on the outbox: start it
+    // here, where the request was made, so the tape's admission record lands before the playback
+    // starts and not at some later pump (`Bridge::metadata_run` does the same for a command that
+    // goes through the Bridge).
+    bridge.start_store_jobs();
     start_playback_with(
         ps,
         pa,
@@ -1232,13 +1237,17 @@ pub(crate) unsafe fn key_play(
     bridge: &mut super::bridge::Bridge,
 ) {
     let was_off_player = super::bridge::player(pages).is_none();
-    if was_off_player {
-        foreground.discard_started_state();
-    }
+    // Off the player a started session's pending clock belongs to a player a real exit removed, so
+    // the press must not be intercepted by its retry: the machine drops it itself.
+    let input = if was_off_player {
+        ForegroundInput::PlayKeyOffPlayer
+    } else {
+        ForegroundInput::PlayKey
+    };
     let activation = drive_foreground(
         foreground,
         ps,
-        ForegroundInput::PlayKey,
+        input,
         &mut PlayerForegroundActuator { pa, repause_at },
     );
     if matches!(activation, ForegroundActivation::Launched) {

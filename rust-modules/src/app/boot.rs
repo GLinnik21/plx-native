@@ -1295,8 +1295,8 @@ pub(crate) unsafe fn construct(
     // **The stored session is read HERE, before the window.** The window size is a setting
     // (Settings > System > Interface resolution, install-wide: `Session::ui_resolution`), and
     // `SDL_CreateWindow` below is the only moment it can be applied, so the record has to be read
-    // first. `peek_settled` would not do: its first call only schedules a background read and
-    // answers "not yet". The seams `load` consults (`install_plex_seams`) are installed by
+    // first. `peek_settled` would not do: it only reads the cache, which the session owner fills
+    // after boot, so its first call answers "not yet". The seams `load` consults (`install_plex_seams`) are installed by
     // `enter_application`, before `boot`. A replay or captured boot brings its own session.
     let session = match &initial {
         Some(initial) => initial.session.persisted.clone(),

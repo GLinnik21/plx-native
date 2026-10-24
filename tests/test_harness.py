@@ -6431,6 +6431,394 @@ impl PersonOwnerGateFixture {
         self.assertIn("blocking:", out)
         self.assertIn("decision.rs::no_such_fn", out)
 
+    # ---- the Sans-IO ledgers (docs/sans-io.md) ----------------------------------------------------
+    # `blocking` keeps ONE file; workers, globals, forks and fxlanes keep one file per AREA under
+    # ci/allow/<rule>/<area>.txt (the crate, or for data/ the top-level module), so two migrations
+    # in different areas never edit the same `# count:` header.
+    LEDGER_RULES = ("workers", "globals", "forks", "fxlanes")
+
+    def _deps(self):
+        return subprocess.run([os.path.join(self.tree, "ci", "check-deps.sh")], capture_output=True, text=True)
+
+    def _ledger_files(self, rule):
+        root = os.path.join(self.tree, "ci", "allow", rule)
+        return sorted(os.path.join(root, fn) for fn in os.listdir(root) if fn.endswith(".txt"))
+
+    def test_blocking_ledger_keeps_its_multiset_shape_after_the_refactor(self):
+        """`blocking` now runs on the shared ledger scanner and must grade as it always did: every
+        call is its own ledger line (two calls in one fn are two lines), a call in a closure
+        belongs to the fn around the closure, and a call on the same line as its `fn` belongs to
+        that fn. The same test passes on the pre-refactor script."""
+        name = "_check_deps_selftest_blocking_shapes.rs"
+        body = ("pub fn two() {\n    let _a = plx_base::task::allow_blocking(L1);\n"
+                "    let _b = plx_base::task::allow_blocking(L2);\n}\n"
+                "pub fn closure() {\n    let f = || { let _c = plx_base::task::allow_blocking(L3); };\n    f();\n}\n"
+                "pub fn one_liner() { let _d = plx_base::task::allow_blocking(L4); }\n")
+        r = self._plant(name, body)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        new = sorted(line.rsplit("::", 1)[1] for line in out.splitlines()
+                     if "new frame-thread blocking exception:" in line and name in line)
+        self.assertEqual(new, ["closure", "one_liner", "two", "two"], out)
+        self.assertIn("new: 4, stale: 0, aliased: 0", out)
+
+    def test_workers_ledger_catches_a_new_worker_start_in_a_machine(self):
+        """RED: a production worker start in a machine (a data/ store, a screen, the session owner ...)
+        that no ci/allow/workers/<area>.txt names must fail `workers`, keyed by file, enclosing fn
+        and spelling, in every spelling the base layer offers -- qualified, bare after a `use`, the
+        typed command worker's `submit_ticket` -- and naming the ledger file its area owns."""
+        name = "_check_deps_selftest_workers.rs"
+        body = ("use plx_base::task::spawn_off_frame;\nuse plx_base::storage_worker::submit;\n\n"
+                "pub fn qualified() {\n    let _ = plx_base::task::spawn_small(\"x\", || {});\n}\n"
+                "pub fn bare() {\n    let _ = spawn_off_frame(\"y\", |_| {});\n    let _ = submit(|| ());\n}\n"
+                "pub fn typed(w: &Worker) {\n    let _ = w.submit_ticket(1);\n}\n"
+                "pub fn task_spawn() {\n    let _ = plx_base::task::spawn(\"z\", || {});\n}\n")
+        r = self._plant(name, body, crate_dir="data")
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("workers:", out)
+        key = f"rust-modules/data/src/{name}"
+        for site in ("qualified::spawn_small", "bare::spawn_off_frame", "bare::submit",
+                     "typed::submit_ticket", "task_spawn::task::spawn"):
+            with self.subTest(site=site):
+                self.assertIn(f"{key}::{site}", out)
+        self.assertIn("ci/allow/workers/data-_check_deps_selftest_workers.txt", out)
+
+    def test_globals_ledger_catches_a_new_registry_read_in_a_machine(self):
+        """RED: a production read of a process-global registry in a machine fails `globals`: the
+        getters, the qualified `session::peek`, and a bare `peek` only because this file imports it
+        from session -- `it.peek()` on any other value is not one."""
+        name = "_check_deps_selftest_globals.rs"
+        body = ("use plx_plex::plex::session::peek;\n\n"
+                "pub fn reads() {\n"
+                "    let _a = plx_plex::plex::client_for(plx_plex::plex::session::current_server());\n"
+                "    let _b = plx_plex::plex::session::peek();\n"
+                "    let _c = plx_net::net::keypin::revision();\n"
+                "    let _d = plx_plex::plex::grant::offers();\n"
+                "    let _e = peek();\n"
+                "    let _f = it.peek();\n"
+                "    let _g = plx_plex::plex::session::current_snapshot();\n"
+                "    let _h = plx_net::net::keypin::blocked_for(1);\n}\n")
+        r = self._plant(name, body, crate_dir="screens")
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("globals:", out)
+        key = f"rust-modules/screens/src/{name}::reads"
+        for spelling in ("client_for", "current_server", "session::peek", "keypin::revision",
+                         "grant::offers", "peek", "current_snapshot", "keypin::blocked_for"):
+            with self.subTest(spelling=spelling):
+                self.assertIn(f"{key}::{spelling}  (ledger: ", out)
+        self.assertEqual(out.count(f"{key}::peek  (ledger: "), 1, "`it.peek()` is not a registry read\n" + out)
+        self.assertIn("ci/allow/globals/screens.txt", out)
+
+    def test_forks_ledger_catches_a_new_production_test_fork(self):
+        """RED: a `#[cfg(not(test))]` / `cfg!(not(test))` / `not(feature = \"test-support\")` fork in
+        data/, plex/, media/ or session/ that no ci/allow/forks/<area>.txt names fails `forks`, keyed by
+        the item it sits on, or the fn around a statement or an inline `cfg!`."""
+        name = "_check_deps_selftest_forks.rs"
+        body = ("#[cfg(not(test))]\npub fn real_only() {}\n\n"
+                "pub fn inline() -> bool {\n    cfg!(not(test))\n}\n\n"
+                "#[cfg(not(any(test, feature = \"test-support\")))]\nconst LIVE: u8 = 1;\n\n"
+                "#[cfg(not(feature = \"test-support\"))]\npub fn gated() {}\n\n"
+                "pub fn stmt() {\n    #[cfg(not(test))]\n    let _x = 1;\n}\n\n"
+                "pub struct S;\nimpl S {\n    #[cfg(all(target_os = \"linux\", not(test)))]\n"
+                "    pub fn method(&self) {}\n}\n")
+        r = self._plant(name, body, crate_dir="session")
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("forks:", out)
+        key = f"rust-modules/session/src/{name}"
+        for item in ("real_only", "inline", "LIVE", "gated", "stmt", "method"):
+            with self.subTest(item=item):
+                self.assertIn(f"{key}::{item}  (ledger: ", out)
+        self.assertIn("ci/allow/forks/session.txt", out)
+
+    def test_fxlanes_ledger_fails_a_new_appfx_side_queue_but_not_a_deliver_arm(self):
+        """RED: in `Bridge::app_effect` an `AppFx` arm that pushes `Fx::Deliver(` rides the ordered
+        FIFO and costs nothing; an arm that parks its request on a side queue must be a ledger line,
+        so a NEW variant with a side queue fails `fxlanes` while a new Deliver arm does not."""
+        r = self._mutate(
+            "app/bridge.rs", "AppFx::Loop(req) => self.reqs.push(req),",
+            "AppFx::Loop(req) => self.reqs.push(req),\n"
+            "            AppFx::Sneaky(req) => self.sneaky_reqs.push(req),\n"
+            "            AppFx::Orderly(cmd) => out.push(Fx::Deliver(MachineId::Consent,\n"
+            "                Delivery::Machine(AppMsg::Consent(cmd)))),")
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("fxlanes:", out)
+        self.assertIn("rust-modules/src/app/bridge.rs::AppFx::Sneaky", out)
+        self.assertNotIn("AppFx::Orderly", out)
+        self.assertIn("ci/allow/fxlanes/app.txt", out)
+
+    def test_ledgers_ignore_tests_comments_strings_and_declarations(self):
+        """GREEN: the same shapes inside a `#[cfg(test)] mod`, under a test-only `cfg(any(test, ..))`
+        item, in a comment, a doc line or a string literal, are no site of any ledger -- so all
+        three call-site ledgers stay exact -- and a test-only item is not a production fork."""
+        name = "_check_deps_selftest_ledgers_ok.rs"
+        body = ("// spawn_small(\"c\", f) and client_for(x) are documented here\n"
+                "/// `session::peek()` and keypin::revision() in a doc line\n"
+                "pub fn fine() {\n    let _s = \"spawn_small( client_for( keypin::revision( cfg!(not(test))\";\n}\n"
+                "#[cfg(test)]\nmod tests {\n    fn t() {\n        plx_base::task::spawn_small(\"t\", || {});\n"
+                "        let _ = client_for(plx_plex::plex::session::current_server());\n    }\n}\n"
+                "#[cfg(any(test, feature = \"test-support\"))]\npub fn seam() { let _ = client_for(1); }\n"
+                "#[cfg(test)]\nfn only_test() { let _ = cfg!(not(test)); }\n")
+        r = self._plant(name, body, crate_dir="data")
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 0, out)
+        for rule in ("workers", "globals", "forks"):
+            with self.subTest(rule=rule):
+                self.assertRegex(r.stdout, rf"ok — {rule} \(\d+ sites\)")
+
+    def _plant_many(self, files, crate_dir):
+        """`_plant` for several orphan files of ONE crate, graded by a single gate run (a run is ~11 s):
+        each file isolates one import shape, because a `use` statement applies to its whole file."""
+        written = []
+        try:
+            for name, content in files.items():
+                target = os.path.join(self.tree, "rust-modules", crate_dir, "src", name)
+                self.assertFalse(os.path.exists(target), f"stale self-test artifact at {target} — remove it by hand")
+                with open(target, "w", encoding="utf-8") as f:
+                    f.write(content)
+                written.append(target)
+            return self._deps()
+        finally:
+            for target in written:
+                if os.path.exists(target):
+                    os.remove(target)
+
+    def _append_to(self, rel, text):
+        """Append `text` to a tracked file of THIS TEST'S private copy (the copy is nobody else's, so
+        nothing is restored) and return the gate's verdict. `_mutate` and `_prepend` know only the
+        data layer and the application crate; this one takes any repo-relative path."""
+        with open(os.path.join(self.tree, rel), "a", encoding="utf-8") as f:
+            f.write(text)
+        return self._deps()
+
+    def test_globals_ledger_sees_renamed_and_bare_keypin_and_grant_getters(self):
+        """RED: `keypin::revision`, `keypin::blocked_for` and `grant::offers` are registry reads like
+        `session::peek`, so the two ways to hide one from the call-site scan are shut the same way:
+        a rename (`use ... revision as rev;`) fails outright, and a bare name is a site in a file that
+        imports it -- singly, in a group that ends with it, or through a glob."""
+        crate = "screens"
+        r = self._plant_many({
+            "_check_deps_selftest_renamed.rs": (
+                "use plx_net::net::keypin::revision as rev;\n"
+                "use plx_net::net::keypin::blocked_for as blocked;\n"
+                "use plx_plex::plex::grant::offers as house_offers;\n\n"
+                "pub fn renamed() {\n    let _ = (rev(), blocked(1), house_offers());\n}\n"),
+            "_check_deps_selftest_bare.rs": (
+                "use plx_net::net::keypin::revision;\nuse plx_net::net::keypin::{self, blocked_for};\n"
+                "use plx_plex::plex::grant::offers;\n\n"
+                "pub fn bare() {\n    let _ = (revision(), blocked_for(1), offers());\n    let _ = it.revision();\n}\n"),
+            "_check_deps_selftest_globbed.rs": (
+                "use plx_net::net::keypin::*;\n\npub fn globbed() {\n    let _ = revision();\n}\n"),
+        }, crate)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("globals:", out)
+        base = f"rust-modules/{crate}/src/_check_deps_selftest_"
+        for line in (1, 2, 3):
+            with self.subTest(rename_line=line):
+                self.assertIn(f"{base}renamed.rs:{line}\n", out + "\n")
+        for fn, spelling in (("bare", "revision"), ("bare", "blocked_for"), ("bare", "offers"),
+                             ("globbed", "revision")):
+            with self.subTest(fn=fn, spelling=spelling):
+                self.assertIn(f"{base}{fn}.rs::{fn}::{spelling}  (ledger: ", out)
+        self.assertEqual(out.count(f"{base}bare.rs::bare::revision  (ledger: "), 1,
+                         "`it.revision()` is not a registry read\n" + out)
+
+    def test_a_bare_name_that_ends_a_braced_import_is_still_imported(self):
+        """RED: `use plx_base::task::{self, spawn};` imports `spawn` as surely as `{spawn, self}` does, and
+        so for `submit` and `peek`; the import pattern used to eat the closing `}` of a group whose
+        LAST item was the name and then wanted another one, so every such call went unseen. A group
+        that merely contains a longer name (`{self, spawn_small}`) imports no bare `spawn`."""
+        crate = "data"
+        r = self._plant_many({
+            "_check_deps_selftest_last.rs": (
+                "use plx_base::task::{self, spawn};\n\npub fn last() {\n    let _ = spawn(\"x\", || {});\n}\n"),
+            "_check_deps_selftest_alone.rs": (
+                "use plx_base::task::{spawn};\n\npub fn alone() {\n    let _ = spawn(\"x\", || {});\n}\n"),
+            "_check_deps_selftest_submit.rs": (
+                "use plx_base::storage_worker::{self, submit};\n\npub fn queued() {\n    let _ = submit(|| ());\n}\n"),
+            "_check_deps_selftest_peek.rs": (
+                "use plx_plex::plex::session::{self, peek};\n\npub fn peeks() {\n    let _ = peek();\n}\n"),
+            "_check_deps_selftest_peek_alone.rs": (
+                "use plx_plex::plex::session::{peek};\n\npub fn peeks_alone() {\n    let _ = peek();\n}\n"),
+            "_check_deps_selftest_other.rs": (
+                "use plx_base::task::{self, spawn_small};\nuse plx_plex::plex::session::{self, peek_all};\n\n"
+                "pub fn other() {\n    let _ = spawn(\"x\", || {});\n    let _ = peek();\n}\n"),
+        }, crate)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        base = f"rust-modules/{crate}/src/_check_deps_selftest_"
+        for stem, fn, spelling in (("last", "last", "spawn"), ("alone", "alone", "spawn"),
+                                   ("submit", "queued", "submit"), ("peek", "peeks", "peek"),
+                                   ("peek_alone", "peeks_alone", "peek")):
+            with self.subTest(stem=stem):
+                self.assertIn(f"{base}{stem}.rs::{fn}::{spelling}  (ledger: ", out)
+        self.assertNotIn(f"{base}other.rs", out, "`{self, spawn_small}` imports no bare `spawn`\n" + out)
+
+    def test_fxlanes_ledger_sees_every_variant_of_an_arm_and_a_catch_all_arm(self):
+        """RED: an or-pattern arm (`AppFx::A(r) | AppFx::B(r) => ..`, on one line or wrapped) is a site
+        for EVERY variant on its head, and an arm with no `AppFx::` head (`other => ..`, `_ => ..`) is a
+        site of its own, keyed `AppFx::_`: both used to ride on the first variant's line, or on nothing.
+        An or-pattern arm that pushes `Fx::Deliver(` is on the ordered lane and costs nothing."""
+        r = self._mutate(
+            "app/bridge.rs", "AppFx::Loop(req) => self.reqs.push(req),",
+            "AppFx::Loop(req) | AppFx::PlantedOr(req) => self.reqs.push(req),\n"
+            "            AppFx::PlantedFirst(req)\n"
+            "                | AppFx::PlantedWrapped(req) => self.planted_reqs.push(req),\n"
+            "            AppFx::PlantedOk(cmd) | AppFx::PlantedOk2(cmd) => out.push(Fx::Deliver(MachineId::Consent,\n"
+            "                Delivery::Machine(AppMsg::Consent(cmd)))),\n"
+            "            other => self.misc_reqs.push(other),")
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        key = "rust-modules/src/app/bridge.rs::AppFx::"
+        for variant in ("PlantedOr", "PlantedFirst", "PlantedWrapped", "_"):
+            with self.subTest(variant=variant):
+                self.assertIn(f"{key}{variant}  (ledger: ci/allow/fxlanes/app.txt)", out)
+        self.assertNotIn("PlantedOk", out)
+        self.assertNotIn(f"{key}Loop", out, "the variant the ledger already holds is not new")
+
+    def test_globals_ledger_sees_every_spelling_of_the_player_transport_in_lifecycle(self):
+        """RED: lifecycle.rs reads `crate::player::TX` as logic, and `super::TX`, a bare `TX` and a
+        renamed import reach the same atomic from that file: the first two are sites of their own, the
+        rename fails outright (the calls through it are invisible)."""
+        rel = "rust-modules/media/src/player/lifecycle.rs"
+        with open(os.path.join(self.tree, rel), encoding="utf-8") as f:
+            before = f.read().count("\n")
+        appended = ("\nfn planted_super_tx() -> bool {\n    super::TX.paused.load(Relaxed)\n}\n"
+                    "use super::TX;\nfn planted_bare_tx() {\n    TX.commit_paused(true);\n}\n"
+                    "use super::TX as Transport2;\n")
+        r = self._append_to(rel, appended)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("globals:", out)
+        self.assertIn(f"{rel}::planted_super_tx::super::TX  (ledger: ci/allow/globals/media.txt)", out)
+        self.assertIn(f"{rel}::planted_bare_tx::TX  (ledger: ci/allow/globals/media.txt)", out)
+        rename_line = before + appended.split("\n").index("use super::TX as Transport2;") + 1
+        self.assertIn(f"{rel}:{rename_line}\n", out + "\n")
+
+    def test_a_cfg_test_fn_with_a_where_clause_is_skipped_whole(self):
+        """RED: an item under `#[cfg(test)]` is skipped to the end of ITS body. A signature that spills
+        over several lines -- a long parameter list, a `where` clause whose bounds end in a comma -- used
+        to end the skip at the first such line, and the body was graded as production under the
+        unnamed fn `?`. The production fn after the test items is still graded."""
+        name = "_check_deps_selftest_where.rs"
+        body = ("#[cfg(test)]\nfn helper<T>(x: T)\nwhere\n    T: Clone,\n{\n"
+                "    plx_base::task::spawn_small(\"t\", || {});\n    let _ = cfg!(not(test));\n}\n\n"
+                "#[cfg(test)]\npub(crate) fn wrapped(\n    a: u8,\n) -> u8\nwhere\n    u8: Copy,\n{\n"
+                "    let _ = plx_plex::plex::client_for(1);\n    a\n}\n\n"
+                "#[cfg(test)]\nimpl<T> Marker for Vec<T>\nwhere\n    T: Clone,\n{\n"
+                "    fn method(&self) {\n        plx_base::task::spawn_small(\"i\", || {});\n    }\n}\n\n"
+                "pub fn production() {\n    plx_base::task::spawn_small(\"p\", || {});\n}\n")
+        r = self._plant(name, body, crate_dir="data")
+        out = r.stdout + r.stderr
+        key = f"rust-modules/data/src/{name}"
+        self.assertIn(f"{key}::production::spawn_small  (ledger: ", out)
+        self.assertNotIn(f"{key}::?", out, "a test fn's body was graded as production\n" + out)
+        self.assertEqual(out.count(key), 1, out)
+
+    def test_forks_ledger_names_a_path_qualified_macro_item_and_counts_an_inline_cfg_test(self):
+        """RED: `#[cfg(..)]` on `plx_base::devtrig::latched_flag!(..);` is an item named for its macro, like
+        an unqualified `cache!` is, not the unnamed `?`. And `cfg!(test)` still counts as a fork whatever it
+        evaluates to: `if cfg!(test) {..} else {..}` compiles an arm production runs and a test does not."""
+        name = "_check_deps_selftest_macro.rs"
+        body = ("#[cfg(not(test))]\nplx_base::devtrig::latched_flag!(\n    /// `/tmp/plxnative-planted`\n"
+                "    fn planted_armed = \"planted\";\n);\n\n"
+                "pub fn inline_test() -> bool {\n    if cfg!(test) { true } else { false }\n}\n")
+        r = self._plant(name, body, crate_dir="plex")
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        key = f"rust-modules/plex/src/{name}"
+        self.assertIn(f"{key}::latched_flag!  (ledger: ci/allow/forks/plex.txt)", out)
+        self.assertIn(f"{key}::inline_test  (ledger: ci/allow/forks/plex.txt)", out)
+        self.assertNotIn("::?", out)
+
+    def test_no_ledger_key_is_unnamed(self):
+        """A ledger line keyed `<path>::?` names no site: the scan could not say what it found. Every
+        site has a name (a macro item is named for its macro), so none may be ledgered."""
+        for rule in self.LEDGER_RULES:
+            for path in self._ledger_files(rule):
+                with open(path, encoding="utf-8") as f:
+                    for line in f.read().splitlines():
+                        key = line.split("\t")[0]
+                        if line.strip() and not line.startswith("#"):
+                            self.assertFalse(key.endswith("::?") or "::?::" in key,
+                                             f"{os.path.relpath(path, self.tree)}: {key}")
+
+    def test_worker_and_global_aliases_fail_because_the_scan_cannot_count_them(self):
+        """RED: `use ...::spawn_small as go;` renames a worker start or a registry getter, so every
+        `go(..)` after it is invisible to the call-site scan: the `use ... as` line fails its rule
+        outright, naming file and line. A getter or worker named WITHOUT a call (`let f =
+        client_for;`) is no alias -- the name is on the line -- so it is a site of its own."""
+        name = "_check_deps_selftest_ledger_alias.rs"
+        body = ("use plx_base::task::spawn_small as go;\nuse plx_plex::plex::client_for as cf;\n\n"
+                "pub fn f() {\n    let _a = go;\n    let _b = plx_base::task::spawn_off_frame;\n"
+                "    let _c = plx_plex::plex::current_server;\n}\n")
+        r = self._plant(name, body, crate_dir="data")
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        path = f"rust-modules/data/src/{name}"
+        for rule, line in (("workers", 1), ("globals", 2)):
+            with self.subTest(rule=rule, line=line):
+                self.assertIn(f"{rule}:", out)
+                self.assertIn(f"{path}:{line}\n", out + "\n")
+        for site in ("f::spawn_off_frame", "f::current_server"):
+            with self.subTest(site=site):
+                self.assertIn(f"{path}::{site}  (ledger: ", out)
+
+    def test_ledger_files_must_be_exact_stale_lines_and_misfiled_lines_fail(self):
+        """Every ledger only shrinks: a line whose site is gone fails its rule (so a migration has to
+        delete it), and a line filed under the wrong area fails too, so the layout cannot drift."""
+        stale = {
+            "workers": "rust-modules/data/src/_selftest_stale.rs::gone::spawn_small",
+            "globals": "rust-modules/data/src/_selftest_stale.rs::gone::client_for",
+            "forks": "rust-modules/data/src/_selftest_stale.rs::gone",
+            "fxlanes": "rust-modules/src/app/bridge.rs::AppFx::Gone",
+        }
+        for rule, entry in stale.items():
+            path = os.path.join(self.tree, "ci", "allow", rule, "data-_selftest_stale.txt")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(f"# count: 1\n# selftest\n{entry}\tgone\n")
+        # a forks line for a crate the rule does not cover, filed in an area that is not its own
+        first = self._ledger_files("forks")[0]
+        with open(first, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        declared = int(lines[0].split(":")[1])
+        lines[0] = f"# count: {declared + 1}"
+        lines.append("rust-modules/gfx/src/_selftest_misfiled.rs::f\tmisfiled")
+        with open(first, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        r = self._deps()
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        for rule, entry in stale.items():
+            with self.subTest(rule=rule):
+                self.assertIn(f"{rule}:", out)
+                self.assertIn(f"{entry}  (in ci/allow/{rule}/data-_selftest_stale.txt)", out)
+        self.assertIn("misfiled ledger line: rust-modules/gfx/src/_selftest_misfiled.rs::f", out)
+        self.assertIn("belongs in ci/allow/forks/gfx.txt", out)
+
+    def test_ledger_count_header_must_equal_its_entries_in_every_area_file(self):
+        """The `# count:` header of every ci/allow/<rule>/<area>.txt is held to its entries, exactly
+        like the flat allowlists: a line added or deleted without moving the header fails by name."""
+        bumped = {}
+        for rule in self.LEDGER_RULES:
+            first = self._ledger_files(rule)[0]
+            with open(first, encoding="utf-8") as f:
+                lines = f.read().splitlines()
+            lines[0] = f"# count: {int(lines[0].split(':')[1]) + 1}"
+            with open(first, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+            bumped[rule] = os.path.relpath(first, self.tree)
+        r = self._deps()
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        for rule, rel in bumped.items():
+            with self.subTest(rule=rule):
+                self.assertIn(f"{rel} declares count", out)
+
     def test_tmppath_gate_catches_a_path_built_on_one_line_and_opened_on_the_next(self):
         """The gate used to require the literal and a filesystem-open verb on the SAME line, so a
         value built on one line and opened on the next passed silently. RED: planting that split
@@ -6814,10 +7202,24 @@ impl PersonOwnerGateFixture {
             self.assertNotEqual(code, 0, out)
             self.assertIn("stale: rust-modules/gfx/src/a.rs cache!", out)
 
+    # The Sans-IO ledgers (docs/sans-io.md) live one directory per rule under ci/allow, one file per
+    # area: `ci/allow/<rule>/<area>.txt` (`LEDGER_RULES`, above). `allowed()` indexes the flat
+    # `ci/allow/*.txt` only, so a ledger directory cannot collide with a rule of that name.
+
+    def _allowlist_files(self):
+        """Every allowlist file under ci/allow, flat ones and the ledger areas, as repo-relative names."""
+        allow = os.path.join(self.ROOT, "ci", "allow")
+        found = [fn for fn in sorted(os.listdir(allow)) if os.path.isfile(os.path.join(allow, fn))]
+        for rule in self.LEDGER_RULES:
+            d = os.path.join(allow, rule)
+            if os.path.isdir(d):
+                found += [rule + "/" + fn for fn in sorted(os.listdir(d))]
+        return found
+
     def test_every_allowlist_declares_its_own_count(self):
         allow = os.path.join(self.ROOT, "ci", "allow")
         seen = 0
-        for fn in sorted(os.listdir(allow)):
+        for fn in self._allowlist_files():
             with open(os.path.join(allow, fn), encoding="utf-8") as f:
                 lines = f.read().splitlines()
             declared = int(lines[0].split(":")[1])
@@ -6884,9 +7286,42 @@ impl PersonOwnerGateFixture {
         "wall.txt": 3,
     }
 
+    # The Sans-IO ledgers' pins, one number per RULE (the sum over its area files): a ledger only
+    # shrinks, so growing one means raising its number here, in the same diff, where a reviewer sees
+    # the move. A migration PR lowers the number with the lines it deletes. Seeded 2026-10-24 from
+    # the tool's own output on the tree this table was written for.
+    PINNED_LEDGER_TOTALS = {
+        "workers": 25,  # production worker starts inside machines (`ci/allow/workers/`)
+        "globals": 101,  # production process-global reads inside machines (`ci/allow/globals/`)
+        "forks": 60,  # production test/production forks in data/, plex/, media/, session/ (`ci/allow/forks/`)
+        "fxlanes": 11,  # Bridge::app_effect arms that do not push Fx::Deliver (`ci/allow/fxlanes/`)
+    }
+
+    def test_ledger_totals_match_the_pinned_table(self):
+        allow = os.path.join(self.ROOT, "ci", "allow")
+        on_disk = sorted(d for d in os.listdir(allow) if os.path.isdir(os.path.join(allow, d)))
+        self.assertEqual(
+            set(on_disk) - set(self.PINNED_LEDGER_TOTALS), set(),
+            "a new ci/allow/<rule>/ ledger directory must add its own line to PINNED_LEDGER_TOTALS "
+            "(and its rule to check-deps.sh) deliberately",
+        )
+        for rule, pinned in self.PINNED_LEDGER_TOTALS.items():
+            total = 0
+            d = os.path.join(allow, rule)
+            # a rule whose last area file is gone has no directory left in git: its total is 0
+            for fn in (sorted(os.listdir(d)) if os.path.isdir(d) else []):
+                self.assertTrue(fn.endswith(".txt"), f"{rule}/{fn}: a ledger area file is <area>.txt")
+                with open(os.path.join(d, fn), encoding="utf-8") as f:
+                    total += int(f.readline().split(":")[1])
+            self.assertLessEqual(
+                total, pinned,
+                f"the {rule} ledger grew from the pinned {pinned} to {total} — a ledger only shrinks: "
+                "move the new site out of the machine instead of listing it (docs/sans-io.md)",
+            )
+
     def test_allowlist_counts_match_the_pinned_table(self):
         allow = os.path.join(self.ROOT, "ci", "allow")
-        on_disk = sorted(os.listdir(allow))
+        on_disk = sorted(fn for fn in os.listdir(allow) if os.path.isfile(os.path.join(allow, fn)))
         self.assertEqual(
             set(on_disk), set(self.PINNED_ALLOWLIST_COUNTS),
             "a new ci/allow/*.txt file (or a deleted one) must add (or remove) its own line in "

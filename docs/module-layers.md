@@ -1304,9 +1304,11 @@ ready. What it taught beyond the recipe:
   `with_refused_discovery_for_test`, `fixture_with_sources`, `queue_test_landing`,
   `reverse_test_hubs`, `remove_test_item`, `land_for_test`, `publish_shelves_for_test`,
   `hold_inflight_for_test`, `REFUSE_FETCH_FOR_TEST`, `REFUSE_DISCOVERY_FOR_TEST`,
-  `seed_items_for_owner_test`, `held_detail` or `seed_two_source_table_for_owner_test`; the
+  `seed_items_for_owner_test` or `seed_two_source_table_for_owner_test`; the
   `--features test-support` control build of the same crate finds every one (1 to 8 times each),
-  and `nm` matches the seam names in 4 symbols there against 0. The ARM shipping archive built the
+  and `nm` matches the seam names in 4 symbols there against 0. (The measured list also named
+  `held_detail`, the detail fetch's held lane. It no longer exists: the detail request emits a job
+  and the app's test runner parks it, `docs/sans-io.md`.) The ARM shipping archive built the
   way the release is (`PLX_RELEASE=1 cargo rustc --release --target arm-unknown-linux-gnueabi --lib
   --crate-type staticlib --no-default-features`) has none of them either.
 - **FFI and the final link are untouched.** The layer has no `extern "C"`, `#[link]`, `dynlib!`,

@@ -2,16 +2,6 @@
 //! bundle a generic library is compiled against, the newtypes, `Machine` + `Cx` + `Effects`, the
 //! effect vocabulary `Fx`, input events, navigation ops, addressing, and the `LogicalState` /
 //! `Canon` pair every hashed state implements.
-//!
-//! **Phase 2-i — the contract spike.** This module and its siblings (`screen`, `present`,
-//! `landing`, `tex`, `frame`, `dispatch`) are a COMPILING host-only skeleton; nothing in the
-//! product calls them until phase 2 replaces `app/run.rs`'s loop with `dispatch`. They exist so
-//! the boundaries are proven to COMPOSE against the layer rule (§2.1: this module names no
-//! application type, no widget, no engine, no screen — `stores/` will reach `ui::` through this
-//! module alone) before any real code moves. Every type here is what the spec names; where the
-//! spike narrows one (such as a `Timer` with no owner registry) the doc
-//! on it says so.
-#![allow(dead_code)] // phase 2-i: the contract has no consumer until phase 2 (spec §13)
 
 use std::ffi::CStr;
 use std::hash::Hash;

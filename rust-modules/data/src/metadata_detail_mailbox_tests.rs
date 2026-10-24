@@ -694,7 +694,7 @@ fn a_panicking_detail_fetch_acknowledges_and_settles_its_request() {
     clear(test_state(), test_adapter());
     let sid = plx_plex::plex::ServerId::UNSET;
     request_detail_with_spawn(test_adapter(), sid, "panic", |gen| {
-        finish_detail_fetch(test_adapter(), sid, "panic", gen, || panic!("synthetic fetch panic"));
+        finish_detail_fetch(&DetailPort::of(test_adapter()), detail_addr(gen), (sid, "panic".to_string()), || panic!("synthetic fetch panic"));
         true
     });
     assert!(detail_loading(test_adapter()), "terminal waits for pump");

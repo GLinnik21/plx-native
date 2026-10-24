@@ -59,8 +59,8 @@ impl PreferenceError {
 }
 
 impl PreferenceRequest {
-    /// Captures the active identity and session. No account request runs here, but session::peek
-    /// may schedule a background storage refresh; call only after live IO has been admitted.
+    /// Captures the active identity and session. No account request runs here (`session::peek` is a
+    /// pure read of the session cache and schedules nothing); call only after live IO has been admitted.
     pub fn capture() -> Option<Self> {
         let current = crate::plex::session::current_snapshot();
         let user = current.user.clone()?;

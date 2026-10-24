@@ -23,9 +23,14 @@ impl SessionHost for OwnerHost {
 }
 
 pub fn step(owner: &mut SessionMachine, event: SessionEvent) -> Vec<SessionFx> {
+    step_at(owner, event, 0)
+}
+
+/// [`step`] on the frame tick `ms`: the clock the owner's cache-refresh backoff reads.
+pub fn step_at(owner: &mut SessionMachine, event: SessionEvent, ms: u32) -> Vec<SessionFx> {
     use plx_machine::machine::{Cx, Effects, Fx, InputOwner, EntryId, Machine, Tick};
     let publication = owner.publication();
-    let cx = Cx::<OwnerHost> { views: publication.read(), tick: Tick::default(),
+    let cx = Cx::<OwnerHost> { views: publication.read(), tick: Tick { ms, ..Tick::default() },
         measure: &plx_machine::machine::BareMeasure, press: Default::default(),
         focus: Default::default(), owner: InputOwner::Entry(EntryId(0)) };
     let mut present = plx_machine::present::Present::new();
