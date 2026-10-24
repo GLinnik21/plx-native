@@ -1308,7 +1308,9 @@ ready. What it taught beyond the recipe:
   `--features test-support` control build of the same crate finds every one (1 to 8 times each),
   and `nm` matches the seam names in 4 symbols there against 0. (The measured list also named
   `held_detail`, the detail fetch's held lane. It no longer exists: the detail request emits a job
-  and the app's test runner parks it, `docs/sans-io.md`.) The ARM shipping archive built the
+  and the app's test runner parks it, `docs/sans-io.md`. `with_refused_fetches_for_test` and
+  `REFUSE_FETCH_FOR_TEST` are gone for the same reason: Home's Hubs read is a job too, and its
+  refusal is the runner's, `#[cfg(test)]` in the app.) The ARM shipping archive built the
   way the release is (`PLX_RELEASE=1 cargo rustc --release --target arm-unknown-linux-gnueabi --lib
   --crate-type staticlib --no-default-features`) has none of them either.
 - **FFI and the final link are untouched.** The layer has no `extern "C"`, `#[link]`, `dynlib!`,

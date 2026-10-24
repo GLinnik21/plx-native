@@ -1621,7 +1621,7 @@ impl Bridge {
         self.stores.hubs.snapshot()
     }
 
-    /// Does a Hubs worker still owe this owner a landing? False once every spawned fetch has been
+    /// Does a Hubs worker still owe this owner a landing? False once every launched fetch has been
     /// taken (applied or failed) and for a launch that was refused.
     pub(crate) fn hubs_owed(&self) -> bool {
         self.stores.hubs.owed()

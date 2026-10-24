@@ -541,7 +541,7 @@ fi
 
 # hubs-owner: Home's hub catalog model (`PmsState`) and its rotated worker mailbox/minter
 # (`Arc<PmsAdapter>`) belong to one `HubsStore` per Bridge (`app/bridge.rs`'s `hubs_run`/
-# `hubs_snapshot`, `app/bootstrap.rs`'s `HomeIo::hubs_with_directory`). Zero tolerance, no
+# `hubs_snapshot` and its controlled Home arms). Zero tolerance, no
 # allowlist: any free process-wide selector or module-level dispatcher reconnects those owners and
 # lets an unaddressed reset or landing cross the Bridge boundary — exactly the pre-port shape
 # `crate::stores::hubs::apply`/`apply_with_directory`/`controlled`/`controlled_with_directory` had,

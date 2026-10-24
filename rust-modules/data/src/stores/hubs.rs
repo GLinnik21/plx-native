@@ -284,7 +284,7 @@ impl HubsStore {
     #[cfg(any(test, feature = "test-support"))]
     pub fn refetch_count_for_test(&self) -> u32 { crate::pms::hub_gen_for_test(&self.state) }
 
-    /// Test hook: how many spawned workers still owe a landing.
+    /// Test hook: how many launched workers still owe a landing.
     #[cfg(any(test, feature = "test-support"))]
     pub fn owed_for_test(&self) -> u32 { crate::pms::owed_count_for_test(&self.adapter) }
 
@@ -439,9 +439,9 @@ mod contract_tests {
         plx_plex::plex::reset_servers_for_test();
     }
 
-    /// **The two-owner regression.** A worker captures a clone of its owner's `Arc<PmsAdapter>`
-    /// before it spawns (`HubsStore::adapter`); nothing about a landing knows which `HubsStore`
-    /// minted the request it answers except which `Arc` it lands into. Two independently-owned
+    /// **The two-owner regression.** A job's port holds a clone of its owner's `Arc<PmsAdapter>`
+    /// from the step that emitted it (`HubsStore::adapter`); nothing about a landing knows which
+    /// `HubsStore` minted the request it answers except which `Arc` it lands into. Two independently-owned
     /// stores (as two `Bridge`s would be, one per signed-in session) must not see each other's
     /// arrivals, and a `Reset`'s adapter rotation must make a worker started before it land into a
     /// mailbox nobody reads any more.

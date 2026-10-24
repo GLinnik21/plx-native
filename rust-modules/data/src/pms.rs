@@ -305,9 +305,9 @@ impl Default for PmsState {
 }
 
 /// The `Arc`'d worker half of one Hubs owner: the landing mailbox and the request-id minter. A
-/// worker captures a clone of the owning `Bridge`'s `Arc<PmsAdapter>` before it spawns; rotating
-/// the store's live `Arc` (on `HubsCmd::Reset`) orphans that clone harmlessly — the old worker can
-/// still land, but only into a mailbox nothing reads any more.
+/// job's [`HubsPort`] holds a clone of the owning `Bridge`'s `Arc<PmsAdapter>` from the step that
+/// emitted it; rotating the store's live `Arc` (on `HubsCmd::Reset`) orphans that clone harmlessly
+/// — the old worker can still land, but only into a mailbox nothing reads any more.
 pub struct PmsAdapter {
     results: Mutex<Vec<Landing>>,
     /// Request-id allocation, shared across sources so an addressed Hubs result has a unique
@@ -1782,7 +1782,7 @@ fn place_heroes(pool: Vec<(Arc<PmsMovie>, String, usize)>, build: &mut HubBuild)
 /// parse), which is NOT the same as a server with nothing on it (`Some` with an empty build) —
 /// that distinction is the whole reason an empty library reads as Ready and not as an error.
 ///
-/// The client AND its `sid` are passed IN, captured at the spawn site: a worker must never ask
+/// The client AND its `sid` are passed IN, resolved by the runner at the launch: a worker must never ask
 /// which server is current (`browse.rs` states the rule, and a server switch mid-fetch would
 /// otherwise stamp these rows with the other machine's id — the one thing every `(sid, rk)`
 /// comparison downstream then trusts). A `&'static Client` also pins the exact address this fetch
@@ -2322,8 +2322,8 @@ struct Src {
     /// the third before this field held a credit too (see `docs/shared-servers.md` §13).
     handle: String,
     state: HubState,
-    /// Single flight, PER SOURCE. Cleared only where a landing is taken, where the spawn was
-    /// refused, or where an authoritative fetch has invalidated everything in flight — drop one of
+    /// Single flight, PER SOURCE. Cleared only where a landing is taken, where the launch was
+    /// refused (settled by the next step), or where an authoritative fetch has invalidated everything in flight — drop one of
     /// those and this source never fetches again for the rest of the session.
     fetching: bool,
     /// Assigned by every [`kick`] from the store-wide request sequence. A landing whose seq is not
@@ -3354,7 +3354,7 @@ pub fn take_landings(adapter: &PmsAdapter) -> Vec<Landing> {
 /// then count each source down to its next automatic attempt. The supplier runs after roster
 /// reconciliation, exactly where the live mailbox used to be drained. Keeping it separate lets an
 /// adapter observe or substitute arrivals without a second state-application path. This is NOT an
-/// offline replay mode: retry scheduling and worker spawning remain live.
+/// offline replay mode: retry scheduling and job emission remain live.
 #[cfg(any(test, feature = "test-support"))]
 fn pump_with_landings(state: &mut PmsState, adapter: &Arc<PmsAdapter>, dt: f32,
     take: impl FnOnce() -> Vec<Landing>) -> crate::stores::EndpointRefreshSet {
