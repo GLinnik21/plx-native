@@ -652,6 +652,10 @@ strings. Set the two boot logs side by side:
 | `SWAP_BEHAVIOR_PRESERVED_BIT` | **0** (and `eglSurfaceAttrib` → `EGL_BAD_MATCH`) | **1** |
 | `buffer_age` after 120 presents | 2 | **3** |
 
+(The `buffer_age after 120 presents` row was read before 2026-10-24. That re-ask is now opt-in: it
+logs only when `/tmp/plxnative-eglage` was present at boot, because its query blocks a swap 13-16 ms
+on the dev set's Mali-T820. See `docs/egl-partial-update-and-damage.md`, section 7.)
+
 That document's verdict — *"On the extension string alone the whole direction is closed"* — is
 correct **for the dev set and only for it**. On webOS 10 hardware the extension is real, the
 preserved-swap bit is on the config, and a damage implementation would have to union **three**
