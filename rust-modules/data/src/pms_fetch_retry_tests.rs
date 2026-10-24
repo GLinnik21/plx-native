@@ -48,10 +48,14 @@ fn endpoint_outcomes_cover_missing_client_refusal_and_failed_arrival() {
 
     let id = plx_plex::plex::register_for_test("endpoint-hub", "127.0.0.1", 9, "synthetic", "cid");
     let mut s = Src::new(id, String::new(), &registry_keys_for_test());
-    assert_eq!(kick_with(o.state.hub_gen, &o.adapter, &mut s, &BrowseScope::standalone(), |_| false).unwrap().sid, id);
-    assert!(!s.fetching);
-    assert_eq!(s.retry_s, RETRY_MIN_S);
+    assert!(kick_with(o.state.hub_gen, &o.adapter, &mut s, &BrowseScope::standalone(), |_| false).is_none(),
+        "a refusal is found by the next step, not by the kick");
+    assert!(s.fetching, "the refused read is in flight until that step settles it");
     seed(&mut o.state, vec![s]);
+    let settled = step_landings(&mut o.state, &o.adapter, None, Vec::new);
+    assert_eq!(settled.iter().map(|r| r.sid).collect::<Vec<_>>(), [id]);
+    assert!(!o.state.srcs[0].fetching);
+    assert_eq!(o.state.srcs[0].retry_s, RETRY_MIN_S);
     land(&o.state, &o.adapter, id.raw(), None);
     let result = take_landings(&o.adapter).pop().unwrap();
     let outcome = super::land(&mut o.state, &o.adapter, &result);

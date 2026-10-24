@@ -497,6 +497,9 @@ fn a_launch_the_system_refused_is_not_a_failed_page() {
     let _ = request_page(&mut owner.state, &owner.adapter, sid(0), RECENT_ID, RECENT, false, &BrowseScope::standalone(),
         &mut |_| false);
     for round in 0..6 {
+        assert!(owner.state.srcs[0].fetching, "refusal {round}: the refused read is out until the next step settles it");
+        let settled = step_landings(&mut owner.state, &owner.adapter, None, Vec::new);
+        assert_eq!(settled.iter().map(|r| r.sid).collect::<Vec<_>>(), [sid(0)], "refusal {round}: the page ask backs off");
         let source = &mut owner.state.srcs[0];
         assert!(!source.fetching);
         assert_eq!(source.retry_n, 0, "refusal {round}: a refused spawn is not one of the three failures");

@@ -329,6 +329,12 @@ fn controlled_admission_records_real_hubs_spawn_refusal() {
     assert!(plx_data::pms::with_refused_fetches_for_test(|| io.hubs(&mut hubs, Some(plx_data::stores::hubs::HubsCmd::RefetchHubs), 0.0)).changed);
     assert_eq!(io.requests.len(), 1);
     assert_eq!(io.requests[0]["admitted"], serde_json::json!(false), "real refusal must be recorded");
+    assert!(!hubs.source_settled(sid), "the refused read stays out until the next step settles it");
+    let next = io.hubs(&mut hubs, None, 0.0);
+    assert_eq!(next.endpoints.iter().map(|r| r.sid).collect::<Vec<_>>(), [sid],
+        "the next step finds the refusal and asks for the endpoint again");
+    assert!(hubs.source_settled(sid));
+    assert_eq!(io.requests.len(), 1, "settling a refusal asks nothing new");
     plx_plex::plex::reset_servers_for_test();
 }
 
@@ -393,7 +399,8 @@ fn controlled_hubs_replays_refusal_retry_and_success() {
                 writer.flush_frame().unwrap();
                 transcript.push(requests); states.push(state);
             }
-            if frame == 0 { assert_eq!(outcome.endpoints.iter().count(),1); }
+            // the refusal recorded at frame 0 is settled by the next step, not by the kick
+            assert_eq!(outcome.endpoints.iter().count(), usize::from(frame == 1));
         }
         assert_eq!(attempts,if replay {0} else {2});
         assert!(completion.is_some(),"backoff must recover with an admitted result");

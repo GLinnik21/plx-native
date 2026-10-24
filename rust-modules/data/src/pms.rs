@@ -316,6 +316,14 @@ pub struct PmsAdapter {
     /// launcher that does not call [`spawn_fetch`] (a replay) is never counted. It lives on the
     /// adapter, so a reset's rotation retires the old count with the old mailbox.
     owed: AtomicU32,
+    /// Launches that were REFUSED since the last Hubs step: `(generation, request id, server)` of a
+    /// request whose launcher said no (the OS would not start a thread, or a replay's recorded
+    /// admission was `false`). Nothing will ever fill the mailbox for these, so the next step
+    /// settles each as the failure it is ([`settle_refused`]) before it reads anything else. It is
+    /// NOT the landing mailbox: only `results` becomes an `AppMsg::HubsResult`, which the recorder
+    /// writes, so a refusal reaches no recorded byte and replay settles it from its own recorded
+    /// admission. It lives on the adapter, so a reset's rotation retires it with the mailbox.
+    refused: Mutex<Vec<(u32, u32, ServerId)>>,
     /// Test only: how many times [`take_landings`] has finished, so a fake worker can post only
     /// AFTER a take has found its mailbox empty.
     #[cfg(any(test, feature = "test-support"))]
@@ -328,6 +336,7 @@ impl Default for PmsAdapter {
             results: Mutex::new(Vec::new()),
             next_request: AtomicU32::new(1),
             owed: AtomicU32::new(0),
+            refused: Mutex::new(Vec::new()),
             #[cfg(any(test, feature = "test-support"))]
             takes: AtomicU32::new(0),
         }
@@ -350,7 +359,7 @@ pub fn owed(adapter: &PmsAdapter) -> bool {
 }
 
 /// Has the source `sid` nothing out and nothing waiting for room: its read has landed or failed
-/// (a refused launch fails on the spot), and the fan-out gate is not holding one back for it? True
+/// (a refused launch fails at the next step, [`settle_refused`]), and the fan-out gate is not holding one back for it? True
 /// for a slot the roster does not hold, which has nothing to wait for. Unlike [`owed`] this is ONE
 /// source's answer, so a slow friend's server does not make everyone else's landing wait. A QUIET
 /// read in flight does not count: this asks whether a prompted read is out.
@@ -3034,7 +3043,8 @@ fn retry_due(s: &mut Src, dt: f32) -> bool {
 /// this path, including the primary during boot/profile activation: a blocking fetch on the SDL
 /// loop would draw no frames while the loading spinner is supposed to be visible.
 /// Keep request admission/state identical when another adapter holds the request instead of
-/// launching a worker. The returned admission decision still controls latch release/backoff.
+/// launching a worker. A launcher that refuses the request leaves the source in flight and
+/// records the refusal on the adapter; the next step settles it ([`settle_refused`]).
 fn kick_with(gen: u32, adapter: &PmsAdapter, s: &mut Src, scope: &BrowseScope, launch: impl FnOnce(HubRequest) -> bool) -> Option<crate::stores::EndpointRefresh> {
     refresh_src_lifecycle(s, &scope.clients);
     if s.fetching {
@@ -3056,24 +3066,44 @@ fn kick_with(gen: u32, adapter: &PmsAdapter, s: &mut Src, scope: &BrowseScope, l
         || adapter.next_request.fetch_add(1, Ordering::Relaxed)) else { return None };
     for (window, _, _) in &mut request.windows { window.hidden = hidden_sections(scope, request.sid); }
     if let Some((_, hidden)) = &mut request.lane { *hidden = hidden_sections(scope, request.sid); }
-    let sid = request.sid;
-    let spawned = launch(request);
-    if !spawned {
-        // nothing will ever fill the mailbox (the thread limit refused us), so release the latch
-        // here and back off — `pump` will try again on the ladder.
-        s.fetching = false;
-        if s.quiet { quiet_failed(s); return None; }
-        if s.page.is_some() {
-            // The system refusing a thread says nothing about the server, so a page ask does not
-            // spend one of its three attempts on it; it backs off and asks again.
-            s.retry_s = backoff_secs(s.retry_n.max(1));
-            return Some(crate::stores::EndpointRefresh { sid: s.sid });
-        }
-        Some(landed_fail(s))
-    } else {
+    let (sid, seq) = (request.sid, request.seq);
+    if launch(request) {
         plx_base::eventlog::log(&format!("hubs: source {} fetching (off-thread)", sid.raw()));
-        None
+    } else {
+        // Nothing will ever fill the mailbox (the thread limit refused us, or a replay recorded
+        // the refusal). The source stays in flight until the next step settles this, which
+        // releases the latch and backs off — `pump` then tries again on the ladder.
+        adapter.refused.lock().unwrap_or_else(|e| e.into_inner()).push((gen, seq, sid));
     }
+    None
+}
+
+/// Settle every launch refused since the last step, FIRST in that step. A refusal is the failure
+/// of the attempt it refused, found one step after the kick: for each `(gen, seq, sid)` still
+/// naming a source in flight with that request id, the latch is released and the source backs off
+/// by the same ladder a failed landing uses. A page ask does not spend one of its three attempts
+/// on it (the system refusing a thread says nothing about the server), and a quiet read just
+/// spaces its next try. An entry whose generation or request id no longer matches was superseded
+/// (a refetch, a cancel, a reset) and is dropped.
+fn settle_refused(state: &mut PmsState, adapter: &PmsAdapter) -> crate::stores::EndpointRefreshSet {
+    let mut endpoints = crate::stores::EndpointRefreshSet::default();
+    let refused = std::mem::take(&mut *adapter.refused.lock().unwrap_or_else(|e| e.into_inner()));
+    let mut settled = false;
+    for (gen, seq, sid) in refused {
+        if gen != state.hub_gen { continue; }
+        let Some(s) = state.srcs.iter_mut().find(|s| s.sid == sid && s.fetching && s.seq == seq) else { continue };
+        settled = true;
+        s.fetching = false;
+        if s.quiet { quiet_failed(s); continue; }
+        if s.page.is_some() {
+            s.retry_s = backoff_secs(s.retry_n.max(1));
+            endpoints.insert(crate::stores::EndpointRefresh { sid });
+            continue;
+        }
+        endpoints.insert(landed_fail(s));
+    }
+    if settled { plx_machine::idle::invalidate(); }
+    endpoints
 }
 
 /// The live worker adapter. Replay must replace this operation, not skip `begin_request` and
@@ -3307,7 +3337,22 @@ pub fn run_with_directory(
     run_with_scope(state, adapter, cmd, &BrowseScope::retained(directory, clients))
 }
 
+/// One addressed command. Launches refused since the last step are settled first
+/// ([`settle_refused`]), so the command reads the state they left, and their recovery joins the
+/// command's own.
 fn run_with_scope(
+    state: &mut PmsState,
+    adapter: &Arc<PmsAdapter>,
+    cmd: crate::stores::hubs::HubsCmd,
+    scope: &BrowseScope,
+) -> crate::stores::StoreOutcome {
+    let mut endpoints = settle_refused(state, adapter);
+    let out = run_settled(state, adapter, cmd, scope);
+    endpoints.merge(out.endpoints);
+    crate::stores::StoreOutcome { changed: out.changed, endpoints }
+}
+
+fn run_settled(
     state: &mut PmsState,
     adapter: &Arc<PmsAdapter>,
     cmd: crate::stores::hubs::HubsCmd,
@@ -3375,6 +3420,15 @@ pub fn controlled_work_with_directory(state: &mut PmsState, adapter: &Arc<PmsAda
 fn controlled_work_with_scope(state: &mut PmsState, adapter: &Arc<PmsAdapter>, cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
     scope: &BrowseScope,
     launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::StoreOutcome {
+    let mut endpoints = settle_refused(state, adapter);
+    let out = controlled_settled(state, adapter, cmd, dt, scope, launch);
+    endpoints.merge(out.endpoints);
+    crate::stores::StoreOutcome { changed: out.changed, endpoints }
+}
+
+fn controlled_settled(state: &mut PmsState, adapter: &Arc<PmsAdapter>, cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
+    scope: &BrowseScope,
+    launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::StoreOutcome {
     use crate::stores::hubs::HubsCmd;
     let before = state.catalog_gen;
     let command = cmd.as_ref().is_some_and(|cmd| !cmd.is_paging() && !cmd.is_background());
@@ -3419,7 +3473,7 @@ fn step_landings_with(state: &mut PmsState, adapter: &Arc<PmsAdapter>, dt: Optio
 fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Option<f32>, take: impl FnOnce() -> Vec<Landing>,
     scope: &BrowseScope,
     launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
-    let mut endpoints = crate::stores::EndpointRefreshSet::default();
+    let mut endpoints = settle_refused(state, adapter);
     sync_roster_with_scope(state, scope);
     let landed = take();
     let any_landed = !landed.is_empty();

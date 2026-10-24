@@ -383,6 +383,11 @@ fn hubs_land_and_tick_keep_the_frame_directory_policy() {
             &AppMsg::Store(StoreCmd::Hubs(plx_data::stores::hubs::HubsCmd::RefetchHubs)),
             &parts, &mut fx), Handled::Yes);
         drop(fx);
+        assert!(effects.is_empty(), "a refused launch is settled by the next Hubs step");
+        let mut fx = Effects::new(&mut effects, MachineId::Store(StoreId::Hubs.ord()), &mut present);
+        assert_eq!(rig.deliver(MachineId::Store(StoreId::Hubs.ord()),
+            &AppMsg::StoreWork(plx_data::stores::StoreWork::Hubs), &parts, &mut fx), Handled::Yes);
+        drop(fx);
         assert_eq!(effects.iter().map(|effect| match &effect.fx {
             Fx::App(AppFx::Session(plx_session::auth::SessionCmd::RequestEndpoint { sid })) => *sid,
             _ => panic!("Hubs recovery was not preserved as a Session effect"),
@@ -403,8 +408,10 @@ fn hubs_land_and_tick_keep_the_frame_directory_policy() {
         assert_eq!(generation, generation_before_landing + 1);
         assert_eq!(rig.stores.take_notices(), [(StoreId::Hubs, generation)],
             "one changed landing owes exactly one Hubs notice");
-        let sources_after_land = rig.stores.hubs.run_with_directory(
+        let retried = rig.stores.hubs.run_with_directory(
             plx_data::stores::hubs::HubsCmd::Retry, directory.view(), &keys);
+        assert!(retried.endpoints.iter().next().is_none(), "its refusals are settled by the next step");
+        let sources_after_land = rig.stores.hubs.tick_with_directory(0.0, directory.view(), &keys);
         assert_eq!(sources_after_land.endpoints.iter().map(|request| request.sid).collect::<Vec<_>>(), [own],
             "landing must keep the retained frame directory");
 
@@ -412,6 +419,8 @@ fn hubs_land_and_tick_keep_the_frame_directory_policy() {
             plx_data::stores::hubs::HubsCmd::Reset, directory.view(), &keys);
         let _ = rig.stores.hubs.run_with_directory(
             plx_data::stores::hubs::HubsCmd::RefetchHubs, directory.view(), &keys);
+        // the refusal that refetch left is settled here, so the tick below is graded on its own
+        let _ = rig.stores.hubs.tick_with_directory(0.0, directory.view(), &keys);
         let _ = rig.stores.take_notices();
         effects.clear();
         let mut fx = Effects::new(&mut effects, MachineId::Store(StoreId::Hubs.ord()), &mut present);

@@ -39,15 +39,20 @@ fn a_spawn_raises_the_claim_and_the_take_of_its_landing_releases_it() {
 #[test]
 fn a_refused_launch_gives_the_claim_back() {
     let _g = plx_base::testlock::serial();
-    let o = Owner::default();
+    let mut o = Owner::default();
     plx_plex::plex::reset_servers_for_test();
     let sid = plx_plex::plex::register_for_test("owed-refused", "127.0.0.1", 9, "synthetic", "cid");
     let mut s = Src::new(sid, String::new(), &registry_keys_for_test());
     let refused = with_refused_fetches_for_test(|| {
         kick_with(o.state.hub_gen, &o.adapter, &mut s, &BrowseScope::standalone(), |r| spawn_fetch(&o.adapter, r))
     });
-    assert!(refused.is_some(), "a refused launch is an endpoint failure");
-    assert!(!s.fetching && !owed(&o.adapter), "nothing will ever answer, so nothing is owed");
+    assert!(refused.is_none(), "a refusal is found by the next step, not by the kick");
+    assert!(!owed(&o.adapter), "nothing will ever answer, so nothing is owed");
+    assert!(s.fetching, "the refused read is in flight until that step settles it");
+    seed(&mut o.state, vec![s]);
+    let settled = step_landings(&mut o.state, &o.adapter, None, Vec::new);
+    assert_eq!(settled.iter().map(|r| r.sid).collect::<Vec<_>>(), [sid], "a refused launch is an endpoint failure");
+    assert!(!o.state.srcs[0].fetching && !owed(&o.adapter));
     plx_plex::plex::reset_servers_for_test();
 }
 

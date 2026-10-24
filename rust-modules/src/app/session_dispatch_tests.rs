@@ -516,12 +516,16 @@ fn endpoint_outcomes_cross_central_dispatch_machine_bridge_and_boot() {
     let expected = [b, a]; // Home's own-first observation order, deliberately not slot order.
     plx_data::pms::with_refused_fetches_for_test(|| {
         let mut rig = Bridge::for_test(|| 0);
-        for cmd in [plx_data::stores::hubs::HubsCmd::RefetchHubs, plx_data::stores::hubs::HubsCmd::Retry] {
+        // A refused launch is settled by the NEXT Hubs step: the refetch's refusals by the retry,
+        // the retry's by whatever steps Hubs after it.
+        for (cmd, settles) in [(plx_data::stores::hubs::HubsCmd::RefetchHubs, false),
+                               (plx_data::stores::hubs::HubsCmd::Retry, true)] {
             let _ = rig.stores.take_notices();
             let generation = rig.stores.gen(StoreId::Hubs);
             let outcome = rig.stores.hubs.run(cmd);
             assert!(outcome.changed);
-            assert_eq!(outcome.endpoints.iter().map(|r| r.sid).collect::<Vec<_>>(), expected);
+            assert_eq!(outcome.endpoints.iter().map(|r| r.sid).collect::<Vec<_>>(),
+                if settles { expected.to_vec() } else { Vec::new() });
             assert_eq!(rig.stores.take_notices(), [(StoreId::Hubs, generation + 1)]);
         }
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
@@ -563,12 +567,24 @@ fn endpoint_outcomes_cross_central_dispatch_machine_bridge_and_boot() {
             .then_some(()).expect("two servers fit one step");
         drop(fx);
         drop(cx);
-        assert_eq!(out.len(), 2);
-        let actual: Vec<_> = out.into_iter().map(|e| match e.fx {
-            Fx::App(AppFx::Session(plx_session::auth::SessionCmd::RequestEndpoint { sid })) => sid,
-            _ => panic!("ViewState pump discarded its recovery outcome"),
-        }).collect();
+        assert!(out.is_empty(), "the refetch's refusals are settled by the next Hubs step");
+        let mut actual = Vec::new();
+        execute_endpoint_outcomes_with(stores.hubs.controlled(None, 0.0, &mut |_| false).endpoints, |command| {
+            let plx_session::auth::SessionCmd::RequestEndpoint { sid } = command
+                else { panic!("ViewState pump discarded its recovery outcome") };
+            actual.push(sid);
+        });
         assert_eq!(actual, expected);
+        // the Retry delivered above left its own refusals: the next Hubs step settles them
+        let mut out = Vec::new();
+        let mut fx = Effects::new(&mut out, MachineId::Store(StoreId::Hubs.ord()), &mut present);
+        rig.deliver(MachineId::Store(StoreId::Hubs.ord()),
+            &AppMsg::StoreWork(plx_data::stores::StoreWork::Hubs), &parts, &mut fx);
+        drop(fx);
+        assert_eq!(out.iter().map(|e| match &e.fx {
+            Fx::App(AppFx::Session(plx_session::auth::SessionCmd::RequestEndpoint { sid })) => *sid,
+            _ => panic!("the settled refusals were not translated into Session commands"),
+        }).collect::<Vec<_>>(), expected);
         rig.stores.hubs.queue_test_landing(None);
         let result = rig.stores.hubs.take_results().pop().unwrap();
         let mut out = Vec::new();
@@ -597,7 +613,17 @@ fn endpoint_outcomes_cross_central_dispatch_machine_bridge_and_boot() {
                     else { panic!("boot emitted a non-endpoint command") };
                 boot_executed.push(sid);
             });
-            assert_eq!(boot_executed, expected);
+            assert!(boot_executed.iter().all(|sid| *sid == a),
+                "boot's own Hubs refetch is settled by the next Hubs step, not by boot");
+            let mut after = Vec::new();
+            let mut fx = Effects::new(&mut after, MachineId::Store(StoreId::Hubs.ord()), &mut present);
+            rig.deliver(MachineId::Store(StoreId::Hubs.ord()),
+                &AppMsg::StoreWork(plx_data::stores::StoreWork::Hubs), &parts, &mut fx);
+            drop(fx);
+            assert_eq!(after.iter().map(|e| match &e.fx {
+                Fx::App(AppFx::Session(plx_session::auth::SessionCmd::RequestEndpoint { sid })) => *sid,
+                _ => panic!("the settled refusals were not translated into Session commands"),
+            }).collect::<Vec<_>>(), expected);
         });
     });
     plx_plex::plex::reset_servers_for_test();

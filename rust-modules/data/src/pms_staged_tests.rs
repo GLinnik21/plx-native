@@ -421,6 +421,11 @@ fn a_quiet_launch_the_system_refused_leaves_the_source_alone() {
     let outcome = controlled_work(&mut r.o.state, &r.o.adapter, Some(HubsCmd::RefetchSourceQuiet { sid: sid0 }), 0.0,
         &mut |_| false);
     let s = &r.o.state.srcs[0];
+    assert_eq!((s.state, s.fetching, s.quiet, s.retry_n), (HubState::Ready, true, true, 0),
+        "the refused read is out until the next step settles it");
+    assert!(outcome.endpoints.iter().next().is_none());
+    let outcome = controlled_work(&mut r.o.state, &r.o.adapter, None, 0.0, &mut |_| false);
+    let s = &r.o.state.srcs[0];
     assert_eq!((s.state, s.fetching, s.quiet, s.retry_n), (HubState::Ready, false, false, 0));
     assert!(outcome.endpoints.iter().next().is_none(), "and asks no rediscovery");
 }
