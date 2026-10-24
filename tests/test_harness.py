@@ -6670,7 +6670,9 @@ impl PersonOwnerGateFixture {
         a function (Sans-IO lifecycle PR B), so a machine that calls one reads the registry as surely as
         `client_for` does. Qualified, bare-after-an-import (singly, in a group, through a glob) and the
         rename that would hide the calls are all caught; the writers (`set_paused`, `set_transport_paused`)
-        and a file that merely has a local named `paused` are not registry reads."""
+        and a file that merely has a local named `paused` are not registry reads. An import that only
+        ENDS in one of the module names (`plx_appkit::scrub_preview::*`, `plx_ui::hud_transport::{..}`) is not
+        an import of `preview` / `transport`, so a `paused` local beside it is no site either."""
         crate = "screens"
         r = self._plant_many({
             "_check_deps_selftest_qualified.rs": (
@@ -6692,6 +6694,12 @@ impl PersonOwnerGateFixture {
             "_check_deps_selftest_writers.rs": (
                 "use plx_media::player::transport::{self, set_paused, set_transport_paused};\n\n"
                 "pub fn writes(paused: bool) {\n    set_paused(paused);\n    set_transport_paused(None, paused);\n}\n"),
+            "_check_deps_selftest_scrub_glob.rs": (
+                "use plx_appkit::scrub_preview::*;\n\n"
+                "pub fn scrub_glob(x: u8) -> bool {\n    let paused = x > 0;\n    paused\n}\n"),
+            "_check_deps_selftest_suffix_group.rs": (
+                "use plx_ui::hud_transport::{self, paused_label};\nuse plx_ui::my_preview::{paused};\n\n"
+                "pub fn suffix_group(x: u8) -> bool {\n    let paused = x > 0;\n    paused\n}\n"),
         }, crate)
         out = r.stdout + r.stderr
         self.assertNotEqual(r.returncode, 0, out)
@@ -6709,6 +6717,10 @@ impl PersonOwnerGateFixture {
         self.assertEqual(out.count(f"{base}bare.rs::bare::paused  (ledger: "), 1,
                          "`it.paused()` is not a registry read\n" + out)
         self.assertNotIn(f"{base}writers.rs", out, "a writer is an IO call, not a registry read\n" + out)
+        for stem in ("scrub_glob", "suffix_group"):
+            with self.subTest(not_an_import_of_the_module=stem):
+                self.assertNotIn(f"{base}{stem}.rs", out,
+                                 "`..._preview::*` / `..._transport::{..}` is not `preview` / `transport`\n" + out)
 
     def test_a_bare_name_that_ends_a_braced_import_is_still_imported(self):
         """RED: `use plx_base::task::{self, spawn};` imports `spawn` as surely as `{spawn, self}` does, and
@@ -6764,9 +6776,10 @@ impl PersonOwnerGateFixture {
         self.assertNotIn(f"{key}Loop", out, "the variant the ledger already holds is not new")
 
     def test_globals_ledger_sees_every_spelling_of_the_player_transport_in_lifecycle(self):
-        """RED: lifecycle.rs reads `crate::player::TX` as logic, and `super::TX`, a bare `TX` and a
-        renamed import reach the same atomic from that file: the first two are sites of their own, the
-        rename fails outright (the calls through it are invisible)."""
+        """RED: lifecycle.rs, the machine, reads no `crate::player::TX` (the transport contract lives in
+        player/transport.rs), and the spellings stay pinned there as a zero-guard: planting `super::TX`,
+        a bare `TX` and a renamed import reaches the same atomic from that file. The first two are sites
+        of their own, the rename fails outright (the calls through it are invisible)."""
         rel = "rust-modules/media/src/player/lifecycle.rs"
         with open(os.path.join(self.tree, rel), encoding="utf-8") as f:
             before = f.read().count("\n")
