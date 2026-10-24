@@ -1217,10 +1217,11 @@ every thin back-edge with `file:line` (the work list for breaking it up); `--dot
   the tree — see `no_log_call_site_interpolates_viewing_content`. Adding a `log(&format!(…))` that
   interpolates an item title, a search query or subtitle text will fail `make check`.
   Identities come from `plex::session::publish_identities`, PUSHED on load/save; the scrubber must
-  never call `session::peek()` from the log path — it is now cache-served, with a refresh queued to
-  `storage_worker` and no direct file I/O, but worker startup holds `storage_worker::SHARED` across
-  `task::spawn`, whose refusal logs. A `peek()` that schedules a refresh from that log tries to take
-  `SHARED` again and deadlocks; `CACHE` and `REFRESH` are released before queue admission.
+  never call `session::peek()` from the log path. `peek()` is a pure read of the cache (it submits
+  nothing, so it can no longer reach `storage_worker` from a log line), and the refill that once hid
+  behind it is the session owner's `RefreshCache` effect; but worker startup holds
+  `storage_worker::SHARED` across `task::spawn`, whose refusal logs, so a log line must not grow
+  a path back into the queue, and the scrubber stays fed by the pushed identities.
 - `rust-modules/base/src/task/blocking.rs` / `watchdog.rs` — frame scopes reject synchronous work.
   Tests keep catchable panics. Release guards log elapsed time once per label; the watchdog logs
   once above 250 ms and once on recovery, polling every 100 ms after the first present.

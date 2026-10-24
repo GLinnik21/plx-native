@@ -85,7 +85,7 @@ pub struct AccountPreferenceReply {
 }
 
 pub enum PreferenceCmd {
-    /// Capture the live profile only after admission: even session::peek can schedule storage IO.
+    /// Capture the live profile only after admission.
     Load { reply: std::sync::mpsc::Sender<AccountPreferenceReply> },
     Save {
         request: plx_plex::plex::account::PreferenceRequest,

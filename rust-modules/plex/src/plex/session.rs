@@ -31,16 +31,19 @@
 //! - Only this module writes the session domain of the persisted record; every
 //!   `persistence::commit_*`/`write_session`/`commit_cleared` caller here ends by calling exactly
 //!   a read install, proven-write install, cache drop, or local revocation.
-//! - `peek` never takes `IO`. A miss schedules one refresh on the bounded persistence FIFO and
-//!   returns the last snapshot immediately. The worker reads and installs under `IO`; `CACHE`
-//!   is never held across `IO`. Queued and in-flight reads cannot overwrite a later revocation.
-//!   Cached views poll `VisibleSessionWatch` on Tick; `peek_settled` distinguishes recovery in
-//!   progress from an authoritative empty session, so pending preferences need not flash defaults.
+//! - `peek` is a pure read of memory: it takes no `IO`, submits nothing and reads no clock. A miss
+//!   returns the last snapshot (or the empty session). The refill is the session owner's job:
+//!   `refresh_need` says what the cache lacks, the app's frame step hands it to the owner, and the
+//!   owner's `RefreshCache` effect runs `refresh_cache_job` on the bounded persistence FIFO. The
+//!   job reads and installs under `IO`; `CACHE` is never held across `IO`. Queued and in-flight
+//!   reads cannot overwrite a later revocation (`CACHE_GENERATION` and `replace_cache`'s Revoked
+//!   guard). Cached views poll `VisibleSessionWatch` on Tick; `peek_settled` distinguishes recovery
+//!   in progress from an authoritative empty session, so pending preferences need not flash defaults.
 //! - Writers never read from the cache; they read the authority under `IO` (fence correctness),
 //!   then install their own outcome over it.
-//! - A `Locked`/`Blocked` read or fallback `Ready` during helper unavailability is transient:
-//!   served for `LOCKED_RETRY` (about a second) after it finishes, then re-read on the next call
-//!   rather than latched forever.
+//! - A `Locked`/`Blocked` read or fallback `Ready` during helper unavailability is transient: it
+//!   is served as the last known state, and the owner re-reads it no sooner than `LOCKED_RETRY_MS`
+//!   of frame time later (per generation), rather than latching it forever.
 //! - [`clear`] (sign-out) drops the cached `Arc` immediately — it holds the very account/server
 //!   tokens sign-out means to get rid of.
 //! - Other domains of the same record (consent) are not in this cache and their writes never
@@ -385,7 +388,6 @@ fn redirect_candidates_for_test(v: Option<Vec<std::path::PathBuf>>) {
 #[cfg(any(test, feature = "test-support"))]
 pub fn redirect_for_test(p: Option<std::path::PathBuf>) {
     plx_base::storage_worker::drain_for_test();
-    REFRESH.lock().unwrap_or_else(|e| e.into_inner()).retry_at = None;
     let _io = io();
     *TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()) = p;
     // A test swapping the scratch file changes what `peek` answers just as surely as a write
@@ -2823,16 +2825,17 @@ enum Cached {
     /// next write installs or drops it.
     Settled(std::sync::Arc<ReadState>),
     /// [`ReadState::Locked`], `Blocked`, or fallback `Ready`: a transient failure (a helper timeout, a keymanager
-    /// hiccup), not a fact about the file — served only until `retry_at`, never latched forever.
+    /// hiccup), not a fact about the file — served as the last known state, never latched forever:
+    /// [`refresh_need`] asks for another read and the session owner decides when (its backoff clock is
+    /// the frame tick, [`LOCKED_RETRY_MS`]).
     Transient {
         state: std::sync::Arc<ReadState>,
-        retry_at: std::time::Instant,
     },
 }
 
 /// **The live read cache** — what [`peek`] answers from memory instead of taking [`IO`]. A hit is
-/// one short `Mutex` lock and an `Arc` clone; a miss schedules a single worker refresh and serves
-/// the previous snapshot (or the empty session). See the module doc for the full invariant list;
+/// one short `Mutex` lock and an `Arc` clone; a miss serves the previous snapshot (or the empty
+/// session) and leaves the refill to the session owner's `RefreshCache` effect ([`refresh_need`]). See the module doc for the full invariant list;
 /// the two that matter for reasoning about a deadlock: nobody takes `IO` while holding this
 /// lock, and a writer always re-reads the authority under `IO` rather than trusting
 /// whatever is cached, so a miss can never overwrite a newer write. `player::preview`'s own
@@ -2841,12 +2844,13 @@ enum Cached {
 /// closure, unchanged by the cache.
 static CACHE: Mutex<Cached> = Mutex::new(Cached::Unloaded);
 
-/// How long a Locked/Blocked answer or fallback Ready is served from [`CACHE`] before
-/// the next reader tries canonical storage again, measured from the end of the read. These are
-/// transient by definition (see [`ReadState`]'s doc), so the interval only needs to be short enough
-/// that a real recovery is felt quickly, and long enough to limit background retries to about
-/// once a second. Per-frame callers never pay for these reads.
-const LOCKED_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
+/// How long (in frame-tick milliseconds) the session owner holds back another refresh of the
+/// generation whose read came back Locked/Blocked or as a fallback Ready, and of every generation
+/// after a refused or unwound job. These are transient by definition (see [`ReadState`]'s doc), so
+/// the interval only needs to be short enough that a real recovery is felt quickly, and long
+/// enough to limit background retries to about once a second. Per-frame callers never pay for
+/// these reads, and nothing here reads a clock: the owner measures it on `cx.tick.ms`.
+pub const LOCKED_RETRY_MS: u32 = 1000;
 
 /// The `Session` every non-`Ready` read answers with, shared so a Locked/Blocked retry window does
 /// not allocate a fresh default every time.
@@ -2864,42 +2868,40 @@ fn session_of(state: &ReadState) -> std::sync::Arc<Session> {
     }
 }
 
-/// Which [`Cached`] arm a fresh [`ReadState`] belongs in — shared by [`refresh_locked`] (a read)
-/// and [`install_locked`] (a write's proven outcome). `now` anchors a `Transient` arm's
-/// `retry_at`; a read supplies the later of the caller's clock and its completion time. Using
-/// only the caller's clock would install an already-expired entry after a slow helper timeout.
-/// `peek_at` supplies a simulated completion clock too, so its exact retry boundaries remain
-/// deterministic and a miss in the simulated future cannot move the retry anchor backwards.
-fn cached_arm(state: std::sync::Arc<ReadState>, now: std::time::Instant) -> Cached {
-    match &*state {
-        ReadState::Locked { .. } | ReadState::Blocked | ReadState::Ready { retry_canonical: true, .. } => Cached::Transient {
-            state,
-            retry_at: now + LOCKED_RETRY,
-        },
-        ReadState::Ready { .. } | ReadState::Missing | ReadState::Cleared { .. } => Cached::Settled(state),
+/// Whether a [`ReadState`] is a transient failure to read rather than a fact about the file.
+fn is_transient(state: &ReadState) -> bool {
+    match state {
+        ReadState::Locked { .. } | ReadState::Blocked | ReadState::Ready { retry_canonical: true, .. } => true,
+        ReadState::Ready { .. } | ReadState::Missing | ReadState::Cleared { .. } => false,
     }
 }
 
-/// A cache hit as of `now`, if one exists. Never takes [`IO`].
-fn cached_at(now: std::time::Instant) -> Option<std::sync::Arc<ReadState>> {
+/// Which [`Cached`] arm a fresh [`ReadState`] belongs in — shared by [`refresh_locked`] (a read)
+/// and [`install_locked`] (a write's proven outcome).
+fn cached_arm(state: std::sync::Arc<ReadState>) -> Cached {
+    if is_transient(&state) { Cached::Transient { state } } else { Cached::Settled(state) }
+}
+
+/// A settled cache hit, if one exists. Never takes [`IO`]. A transient entry is a miss here: the
+/// boot and background callers that ask ([`load_with_id`]) want a fact about the file.
+fn cached_settled() -> Option<std::sync::Arc<ReadState>> {
     match &*CACHE.lock().unwrap_or_else(|e| e.into_inner()) {
-        Cached::Unloaded | Cached::Revoked => None,
         Cached::Settled(state) => Some(state.clone()),
-        Cached::Transient { state, retry_at } if now < *retry_at => Some(state.clone()),
-        Cached::Transient { .. } => None,
+        Cached::Unloaded | Cached::Revoked | Cached::Transient { .. } => None,
     }
 }
 
 /// Read the authority (the caller must already hold [`IO`]), install the result into [`CACHE`],
 /// and return it. Publishes identities on a `Ready` read — the same hook [`load`] and every write
 /// already carry, so a cache-filling read is covered by the scrubber exactly as an uncached one
-/// always was. The retry anchor is at least `now` and at least the read's completion time, so a
-/// slow read cannot consume its own cache lifetime before the next frame gets to use it.
-fn refresh_locked(now: std::time::Instant) -> std::sync::Arc<ReadState> {
-    refresh_if_current_locked(now, None)
+/// always was.
+fn refresh_locked() -> std::sync::Arc<ReadState> {
+    read_into_cache_locked(None).0
 }
 
-fn refresh_if_current_locked(now: std::time::Instant, expected: Option<u64>) -> std::sync::Arc<ReadState> {
+/// [`refresh_locked`] that installs only while the cache generation is still `expected`, and says
+/// whether it did (`false`: a write, a drop or a revocation got in first, and the read was discarded).
+fn read_into_cache_locked(expected: Option<u64>) -> (std::sync::Arc<ReadState>, bool) {
     #[cfg(not(any(test, feature = "test-support")))]
     let state = std::sync::Arc::new(read_live_locked());
     #[cfg(any(test, feature = "test-support"))]
@@ -2908,23 +2910,16 @@ fn refresh_if_current_locked(now: std::time::Instant, expected: Option<u64>) -> 
     }));
     #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
     plx_base::eventlog::log("session: authority read reason=miss");
-    #[cfg(not(any(test, feature = "test-support")))]
-    let finished = std::time::Instant::now();
-    #[cfg(any(test, feature = "test-support"))]
-    let finished = CACHE_NOW_FOR_TEST.with(|clock| clock.get().unwrap_or_else(std::time::Instant::now));
-    let now = now.max(finished);
-    if !replace_cache(cached_arm(state.clone(), now), expected, false) { return state; }
+    if !replace_cache(cached_arm(state.clone()), expected, false) { return (state, false); }
     if let ReadState::Ready { session, .. } = &*state { publish_identities(session); }
-    state
+    (state, true)
 }
 
 /// Install a proven [`ReadState`] — a completed read, or the outcome of a write that IS provably
 /// the record (`Durable`, or on the `TEST_FILE` path a legacy persist that returned `Some(_)`) —
 /// as the new cache content. The caller must already hold [`IO`]; see the module doc's invariants.
-/// Always anchored to real wall-clock time: none of this function's callers are exercised through
-/// `peek_at`'s simulated clock, only real reads and writes.
 fn install_locked(state: std::sync::Arc<ReadState>) {
-    set_cache_locked(cached_arm(state, std::time::Instant::now()));
+    set_cache_locked(cached_arm(state));
 }
 
 /// Drop whatever is cached: a write whose outcome is not provably the record (`Uncertain`,
@@ -3031,44 +3026,94 @@ pub fn queue_update_settled(
 /// [`load`].
 ///
 /// **Cached** — see [`CACHE`]. Returns the same `Arc<Session>` across repeated calls as long as
-/// nothing in this process has written since the last one. Neither hits nor misses take [`IO`].
-/// A miss schedules at most one background read and immediately returns the last known state,
-/// or an empty session before the first read. A visible change advances a generation that the
-/// frame thread observes before invalidating; unchanged retries leave a settled UI alone.
+/// nothing in this process has written since the last one. **A pure read of memory:** it takes no
+/// [`IO`], submits nothing and reads no clock, so it answers the last known state (or the empty
+/// session before the first read) on a miss. Refilling a missing or transient cache is the session
+/// owner's job: [`refresh_need`] says what is missing, the owner's `RefreshCache` effect runs
+/// [`refresh_cache_job`], and the frame thread observes the visible generation move before
+/// invalidating; unchanged retries leave a settled UI alone.
 pub fn peek() -> std::sync::Arc<Session> {
-    peek_impl(std::time::Instant::now())
+    match &*CACHE.lock().unwrap_or_else(|e| e.into_inner()) {
+        Cached::Unloaded | Cached::Revoked => empty_session(),
+        Cached::Settled(state) | Cached::Transient { state } => session_of(state),
+    }
 }
 
-/// [`peek`], parameterized on "now" so a test can simulate [`LOCKED_RETRY`] elapsing without an
-/// actual one-second sleep. The supplied clock stays fixed through the read; call again with
-/// that same instant plus `LOCKED_RETRY` (or more) to observe the retry.
-#[cfg(any(test, feature = "test-support"))]
-pub fn peek_at(now: std::time::Instant) -> std::sync::Arc<Session> {
-    struct RestoreClock(Option<std::time::Instant>);
-    impl Drop for RestoreClock {
-        fn drop(&mut self) {
-            CACHE_NOW_FOR_TEST.with(|clock| clock.set(self.0));
+/// What the cache is missing, for the session owner's refresh decision.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct RefreshNeed {
+    /// The cache generation the need was observed at; the refresh installs only while it still holds.
+    pub generation: u64,
+    /// The cache holds a transient failure to read (a retry), not an `Unloaded` cache.
+    pub transient: bool,
+}
+
+/// Whether the cache needs a read, and at which generation. Pure: it takes no [`IO`] and reads no
+/// clock. `Settled` and `Revoked` need nothing; `Unloaded` and `Transient` do. Only the app's
+/// frame step asks, and answers with a `RefreshCache` effect once the owner's backoff allows it.
+pub fn refresh_need() -> Option<RefreshNeed> {
+    let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let transient = match &*cache {
+        Cached::Unloaded => false,
+        Cached::Transient { .. } => true,
+        Cached::Settled(_) | Cached::Revoked => return None,
+    };
+    Some(RefreshNeed { generation: CACHE_GENERATION.load(std::sync::atomic::Ordering::Relaxed), transient })
+}
+
+/// How a refresh job ended. `Refused` is never produced by [`refresh_cache_job`]: it is reported
+/// when the job never ran to completion. The adapter reports it when the queue refused the job or
+/// the job panicked; the app's bridge reports it, from its frame-step reconcile, when the adapter
+/// that began the job was replaced or dropped and so lost it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CacheRefreshOutcome {
+    /// A write, a drop or a revocation moved the cache before the read could land; nothing installed.
+    Superseded,
+    /// The read installed a fact about the file.
+    Settled,
+    /// The read installed a transient failure (Locked, Blocked, fallback Ready). `generation` is
+    /// the cache generation that entry stands at: the install itself moved it, so the owner holds
+    /// back only observations of THIS generation, and a drop or a write (which move it again)
+    /// refresh at once.
+    Transient { generation: u64 },
+    /// The job did not complete.
+    Refused,
+}
+
+/// The body of one cache refresh, for the storage worker: take [`IO`], quit if the cache generation
+/// moved since `generation` was observed, otherwise read the authority and install it (still
+/// fenced by `generation`, so a sign-out or write that lands mid-read wins). The two sign-out
+/// fences, [`CACHE_GENERATION`] and [`replace_cache`]'s Revoked guard, are exactly the ones the old
+/// scheduled refresh used. The test read substitute is captured here, on the submitting thread.
+pub fn refresh_cache_job(generation: u64) -> impl FnOnce() -> CacheRefreshOutcome + Send + 'static {
+    #[cfg(any(test, feature = "test-support"))]
+    let read = CACHE_READ_FOR_TEST.with(|read| read.get());
+    move || {
+        let _io = io();
+        if CACHE_GENERATION.load(std::sync::atomic::Ordering::Relaxed) != generation {
+            return CacheRefreshOutcome::Superseded;
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        CACHE_READ_FOR_TEST.with(|slot| slot.set(read));
+        let (state, installed) = read_into_cache_locked(Some(generation));
+        #[cfg(any(test, feature = "test-support"))]
+        CACHE_READ_FOR_TEST.with(|slot| slot.set(None));
+        match (installed, is_transient(&state)) {
+            (false, _) => CacheRefreshOutcome::Superseded,
+            (true, true) => CacheRefreshOutcome::Transient {
+                generation: CACHE_GENERATION.load(std::sync::atomic::Ordering::Relaxed),
+            },
+            (true, false) => CacheRefreshOutcome::Settled,
         }
     }
-    let _clock = RestoreClock(CACHE_NOW_FOR_TEST.with(|clock| clock.replace(Some(now))));
-    peek_blocking_at(now)
 }
 
+/// Fill the cache from the authority now, on the calling thread, and return what it says: for tests
+/// that need a filled cache without driving the owner's `RefreshCache` effect.
 #[cfg(any(test, feature = "test-support"))]
-fn peek_blocking_at(now: std::time::Instant) -> std::sync::Arc<Session> {
-    if let Some(state) = cached_at(now) {
-        return session_of(&state);
-    }
+pub fn refresh_blocking_for_test() -> std::sync::Arc<Session> {
     let _io = io();
-    // Two callers can both miss and then take turns on `IO`: by the time this one finally gets
-    // the lock, the caller ahead of it may have already installed the answer. Re-check before
-    // paying for another read of storage — the whole reason this cache exists is that a read is a
-    // `recv(2)` round trip to the storage helper (~27 ms/frame), so serving the second miss from
-    // the first one's fill rather than redoing it is not an optimization, it is the point.
-    if let Some(state) = cached_at(now) {
-        return session_of(&state);
-    }
-    session_of(&refresh_locked(now))
+    session_of(&refresh_locked())
 }
 
 /// A queued refresh is invalidated by any intervening write or cache drop. The worker checks
@@ -3081,14 +3126,14 @@ fn set_cache_locked(value: Cached) {
 
 /// Only an explicit, proven credential write may end local revocation.
 fn install_proven_locked(state: std::sync::Arc<ReadState>, generation: u64) {
-    replace_cache(cached_arm(state, std::time::Instant::now()), Some(generation), true);
+    replace_cache(cached_arm(state), Some(generation), true);
 }
 
 fn install_write_locked(state: std::sync::Arc<ReadState>, authority: SaveAuthority, generation: u64) {
     if authority == SaveAuthority::FreshReauthentication {
         install_proven_locked(state, generation);
     } else {
-        replace_cache(cached_arm(state, std::time::Instant::now()), Some(generation), false);
+        replace_cache(cached_arm(state), Some(generation), false);
     }
 }
 
@@ -3112,7 +3157,7 @@ pub fn visible_generation() -> u64 {
 }
 
 /// Per-consumer cursor for cached session-derived views. Poll on Tick, including while storage
-/// is unavailable: peek schedules the bounded retry without blocking the frame.
+/// is unavailable: the owner's `RefreshCache` effect runs the bounded retry, so the frame never blocks.
 #[derive(Default)]
 pub struct VisibleSessionWatch(Option<(u64, bool)>);
 impl VisibleSessionWatch {
@@ -3128,7 +3173,6 @@ impl VisibleSessionWatch {
 /// A settled visible authority, or None while a read is unloaded/Locked/Blocked. Local revocation
 /// is settled for UI purposes: retaining a pre-sign-out account would be misleading.
 pub fn peek_settled() -> Option<std::sync::Arc<Session>> {
-    let _ = peek();
     match &*CACHE.lock().unwrap_or_else(|e| e.into_inner()) {
         Cached::Settled(state) => Some(session_of(state)),
         Cached::Revoked => Some(empty_session()),
@@ -3138,7 +3182,7 @@ pub fn peek_settled() -> Option<std::sync::Arc<Session>> {
 
 fn same_visible_session(previous: &Cached, next: &Cached) -> bool {
     let ready = |cache: &Cached| match cache {
-        Cached::Settled(state) | Cached::Transient { state, .. } => match &**state {
+        Cached::Settled(state) | Cached::Transient { state } => match &**state {
             ReadState::Ready { session, .. } => Some(session.clone()),
             _ => None,
         },
@@ -3196,7 +3240,7 @@ fn key_projection(value: &Cached) -> Option<(std::sync::Arc<Session>, bool)> {
     match value {
         Cached::Revoked => Some((empty_session(), true)),
         Cached::Unloaded => None,
-        Cached::Settled(state) | Cached::Transient { state, .. } => match &**state {
+        Cached::Settled(state) | Cached::Transient { state } => match &**state {
             ReadState::Ready { session, .. } => Some((session.clone(), false)),
             ReadState::Missing | ReadState::Cleared { .. } => Some((empty_session(), true)),
             ReadState::Locked { .. } | ReadState::Blocked => None,
@@ -3238,82 +3282,8 @@ pub fn revoke_cached_session() {
     set_cache_locked(Cached::Revoked);
 }
 
-struct Refresh {
-    in_flight: bool,
-    retry_at: Option<std::time::Instant>,
-}
-static REFRESH: Mutex<Refresh> = Mutex::new(Refresh { in_flight: false, retry_at: None });
-
-struct RefreshFlight { completed: bool }
-impl Drop for RefreshFlight {
-    fn drop(&mut self) {
-        let mut refresh = REFRESH.lock().unwrap_or_else(|e| e.into_inner());
-        refresh.in_flight = false;
-        // Back off only refused/unwinding jobs. A completed read has its own cache deadline;
-        // an intervening write that drops that cache must be able to refresh immediately.
-        refresh.retry_at = (!self.completed).then(|| std::time::Instant::now() + LOCKED_RETRY);
-    }
-}
-
-fn peek_impl(now: std::time::Instant) -> std::sync::Arc<Session> {
-    let (last, needs_refresh, generation) = {
-        let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        let (last, needs_refresh) = match &*cache {
-            Cached::Unloaded => (empty_session(), true),
-            Cached::Revoked => (empty_session(), false),
-            Cached::Settled(state) => (session_of(state), false),
-            Cached::Transient { state, retry_at } => (session_of(state), now >= *retry_at),
-        };
-        (last, needs_refresh, CACHE_GENERATION.load(std::sync::atomic::Ordering::Relaxed))
-    };
-    if needs_refresh { schedule_refresh(now, generation); }
-    last
-}
-
-fn schedule_refresh(now: std::time::Instant, generation: u64) {
-    // Shared asynchronous fixtures opt in by holding testlock::serial. Its teardown drains the
-    // FIFO before another test can own the cache; incidental readers cannot leak jobs into it.
-    #[cfg(any(test, feature = "test-support"))]
-    if !plx_base::testlock::held() { return; }
-    {
-        let mut refresh = REFRESH.lock().unwrap_or_else(|e| e.into_inner());
-        if refresh.in_flight || refresh.retry_at.is_some_and(|retry| now < retry) { return; }
-        refresh.in_flight = true;
-    }
-    let flight = RefreshFlight { completed: false };
-    #[cfg(any(test, feature = "test-support"))]
-    let read = CACHE_READ_FOR_TEST.with(|read| read.get());
-    // The shared bounded FIFO uses task::spawn (Builder::spawn with an error return).
-    // A discarded ticket does not cancel the job; its result is the cache publication itself.
-    let _ = plx_base::storage_worker::submit(move || {
-        let mut flight = flight;
-        let _io = io();
-        if CACHE_GENERATION.load(std::sync::atomic::Ordering::Relaxed) != generation {
-            flight.completed = true;
-            return;
-        }
-        #[cfg(any(test, feature = "test-support"))]
-        CACHE_READ_FOR_TEST.with(|slot| slot.set(read));
-        refresh_if_current_locked(std::time::Instant::now(), Some(generation));
-        flight.completed = true;
-        #[cfg(any(test, feature = "test-support"))]
-        CACHE_READ_FOR_TEST.with(|slot| slot.set(None));
-    });
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub fn drain_refresh_for_test() {
-    if REFRESH.lock().unwrap_or_else(|e| e.into_inner()).in_flight {
-        plx_base::storage_worker::drain_for_test();
-    }
-}
-
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
-    /// `peek_at` advances this clock explicitly; ordinary `peek` still measures real read time.
-    static CACHE_NOW_FOR_TEST: std::cell::Cell<Option<std::time::Instant>> = const {
-        std::cell::Cell::new(None)
-    };
     /// Substitute a slow authority read without changing the storage or legacy-file paths.
     static CACHE_READ_FOR_TEST: std::cell::Cell<Option<fn() -> ReadState>> = const {
         std::cell::Cell::new(None)
@@ -3344,36 +3314,65 @@ mod cache_timing_tests {
         }
     }
 
+    /// `peek` is a read of memory and nothing else: it never submits a refresh, so an invalidated
+    /// cache stays invalidated until the session owner's `RefreshCache` effect runs
+    /// ([`refresh_need`]).
     #[test]
-    fn a_slow_production_peek_is_single_flight_and_lands_on_the_frame_step() {
-        use std::sync::{atomic::{AtomicUsize, Ordering}, mpsc::{self, Receiver, Sender}};
-        static CHANNELS: Mutex<Option<(Sender<()>, Receiver<()>)>> = Mutex::new(None);
+    fn peek_never_reads_storage() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
         static READS: AtomicUsize = AtomicUsize::new(0);
+        let _serial = plx_base::testlock::serial();
+        let _session = test_support::TempSession::new("peek-never-reads");
+        { let _io = io(); install_locked(std::sync::Arc::new(ReadState::Blocked)); }
+        invalidate_for_test();
+        READS.store(0, Ordering::SeqCst);
+        CACHE_READ_FOR_TEST.with(|slot| slot.set(Some(|| {
+            READS.fetch_add(1, Ordering::SeqCst);
+            ReadState::Missing
+        })));
+        for _ in 0..30 { assert!(peek().client_id.is_empty()); }
+        plx_base::storage_worker::drain_for_test();
+        CACHE_READ_FOR_TEST.with(|slot| slot.set(None));
+        assert_eq!(READS.load(Ordering::SeqCst), 0, "peek must not schedule a storage read");
+    }
+
+    #[test]
+    fn a_slow_refresh_job_never_blocks_peek_and_lands_on_the_frame_step() {
+        use std::sync::mpsc::{self, Receiver, Sender};
+        static CHANNELS: Mutex<Option<(Sender<()>, Receiver<()>)>> = Mutex::new(None);
+        // Set by the read once its release (or its 5 s fallback) came: the clockless witness that a
+        // peek taking the read's `IO` would have had to wait for it.
+        static READ_RETURNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        READ_RETURNED.store(false, std::sync::atomic::Ordering::SeqCst);
         let _serial = plx_base::testlock::serial();
         let _session = test_support::TempSession::new("slow-production-landing");
         let _idle = ResetIdle;
         { let _io = io(); install_locked(std::sync::Arc::new(ReadState::Blocked)); }
         let mut frame_step = FrameCursor::new();
         invalidate_for_test();
+        let need = refresh_need().expect("an invalidated cache needs a read");
+        assert!(!need.transient);
         let (started, entered) = mpsc::channel();
         let (release, held) = mpsc::channel();
         *CHANNELS.lock().unwrap() = Some((started, held));
-        READS.store(0, Ordering::SeqCst);
         CACHE_READ_FOR_TEST.with(|slot| slot.set(Some(|| {
-            READS.fetch_add(1, Ordering::SeqCst);
             let (started, held) = CHANNELS.lock().unwrap().take().unwrap();
             started.send(()).unwrap();
             let _ = held.recv_timeout(std::time::Duration::from_secs(5));
+            READ_RETURNED.store(true, std::sync::atomic::Ordering::SeqCst);
             ReadState::Ready { session: std::sync::Arc::new(test_support::signed_in()), plaintext: false, retry_canonical: false }
         })));
         plx_machine::idle::reset_for_test();
-        let start = std::time::Instant::now();
-        for _ in 0..30 { assert!(peek().client_id.is_empty()); }
+        let ticket = plx_base::storage_worker::submit_retained(refresh_cache_job(need.generation));
         CACHE_READ_FOR_TEST.with(|slot| slot.set(None));
-        assert!(start.elapsed() < std::time::Duration::from_millis(200));
         entered.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
-        assert_eq!(READS.load(Ordering::SeqCst), 1);
+        for _ in 0..30 { assert!(peek().client_id.is_empty()); }
+        assert!(
+            !READ_RETURNED.load(std::sync::atomic::Ordering::SeqCst),
+            "peek must not wait for the read: the peeks finished only after the parked read had returned"
+        );
         release.send(()).unwrap();
+        assert_eq!(ticket.wait_blocking().unwrap(), CacheRefreshOutcome::Settled);
         plx_base::storage_worker::drain_for_test();
         assert!(!plx_machine::idle::should_present(0), "the worker only publishes data");
         assert_eq!(plx_machine::idle::take_local_damage(), 0, "the peeks raise no frame damage of their own");
@@ -3442,13 +3441,15 @@ mod cache_timing_tests {
     fn a_queued_refresh_cannot_overwrite_a_newer_write() {
         let _serial = plx_base::testlock::serial();
         let _session = test_support::TempSession::new("cache-queued-write");
+        let need = refresh_need().expect("an unloaded cache needs a read");
         let held = io();
-        assert!(peek().client_id.is_empty());
+        let ticket = plx_base::storage_worker::submit_retained(refresh_cache_job(need.generation));
         install_locked(std::sync::Arc::new(ReadState::Ready {
             session: std::sync::Arc::new(test_support::signed_in()), plaintext: false, retry_canonical: false,
         }));
         drop(held);
-        drain_refresh_for_test();
+        assert_eq!(ticket.wait_blocking().unwrap(), CacheRefreshOutcome::Superseded,
+            "a write that landed first fences the queued read out");
         assert_eq!(peek().client_id, "cid-1");
     }
 
@@ -3467,53 +3468,16 @@ mod cache_timing_tests {
             let _ = release.recv_timeout(std::time::Duration::from_secs(5));
             ReadState::Ready { session: std::sync::Arc::new(test_support::signed_in()), plaintext: false, retry_canonical: false }
         })));
-        let _ = peek();
+        let need = refresh_need().expect("an unloaded cache needs a read");
+        let ticket = plx_base::storage_worker::submit_retained(refresh_cache_job(need.generation));
         CACHE_READ_FOR_TEST.with(|read| read.set(None));
         entered_rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
         revoke_cached_session();
         assert!(peek().account_token.is_empty());
         release_tx.send(()).unwrap();
-        drain_refresh_for_test();
+        assert_eq!(ticket.wait_blocking().unwrap(), CacheRefreshOutcome::Superseded);
         assert!(peek().account_token.is_empty(), "an old read must not republish revoked credentials");
         assert!(matches!(*CACHE.lock().unwrap(), Cached::Revoked));
-    }
-
-    #[test]
-    fn peek_does_not_wait_for_a_slow_backend() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static READS: AtomicUsize = AtomicUsize::new(0);
-        static FINISHED: Mutex<Option<std::time::Instant>> = Mutex::new(None);
-        let _serial = plx_base::testlock::serial();
-        let _session = test_support::TempSession::new("cache-background-blocked");
-        let _idle = ResetIdle;
-        struct ResetRead;
-        impl Drop for ResetRead {
-            fn drop(&mut self) {
-                plx_base::storage_worker::drain_for_test();
-                CACHE_READ_FOR_TEST.with(|read| read.set(None));
-            }
-        }
-        let _reset = ResetRead;
-        READS.store(0, Ordering::SeqCst);
-        CACHE_READ_FOR_TEST.with(|read| read.set(Some(|| {
-            READS.fetch_add(1, Ordering::SeqCst);
-            std::thread::sleep(LOCKED_RETRY + std::time::Duration::from_millis(50));
-            *FINISHED.lock().unwrap() = Some(std::time::Instant::now());
-            ReadState::Blocked
-        })));
-        plx_machine::idle::reset_for_test();
-        plx_machine::idle::note_present(10_000);
-        assert!(!plx_machine::idle::should_present(10_001));
-        let started = std::time::Instant::now();
-        for _ in 0..30 { assert!(peek().client_id.is_empty()); }
-        assert!(started.elapsed() < std::time::Duration::from_millis(200),
-            "per-frame peeks must return while the backend is still blocked");
-        plx_base::storage_worker::drain_for_test();
-        assert_eq!(READS.load(Ordering::SeqCst), 1, "one refresh for all thirty frames");
-        let finished = FINISHED.lock().unwrap().unwrap();
-        assert!(cached_at(finished + LOCKED_RETRY / 2).is_some(),
-            "a background timeout gets a full retry window after completion");
-        assert!(!plx_machine::idle::should_present(10_001), "an unchanged landing must leave the UI settled");
     }
 
     #[test]
@@ -3542,9 +3506,9 @@ mod cache_timing_tests {
             plx_machine::idle::reset_for_test();
             plx_machine::idle::note_present(10_000);
             CACHE_READ_FOR_TEST.with(|slot| slot.set(Some(read)));
-            schedule_refresh(std::time::Instant::now(),
-                CACHE_GENERATION.load(std::sync::atomic::Ordering::Relaxed));
+            let job = refresh_cache_job(CACHE_GENERATION.load(std::sync::atomic::Ordering::Relaxed));
             CACHE_READ_FOR_TEST.with(|slot| slot.set(None));
+            drop(plx_base::storage_worker::submit_retained(job));
             plx_base::storage_worker::drain_for_test();
             assert!(!plx_machine::idle::should_present(10_001), "workers cannot wake the UI");
             assert_eq!(plx_machine::idle::take_local_damage(), 0);
@@ -3556,45 +3520,41 @@ mod cache_timing_tests {
     }
 
     #[test]
-    fn an_unserialized_peek_cannot_leak_a_refresh_into_another_test() {
+    fn refresh_need_reports_what_the_cache_lacks() {
         let _serial = plx_base::testlock::serial();
-        let _session = test_support::TempSession::new("cache-unserialized-peek");
-        let held = io();
-        std::thread::Builder::new().spawn(|| {
-            assert!(!plx_base::testlock::held());
-            assert!(peek().client_id.is_empty());
-        }).unwrap().join().unwrap();
-        let in_flight = REFRESH.lock().unwrap().in_flight;
-        drop(held);
-        drain_refresh_for_test();
-        assert!(!in_flight, "a caller outside the serial fixture cannot admit shared work");
+        let _session = test_support::TempSession::new("refresh-need");
+        invalidate_for_test();
+        let unloaded = refresh_need().expect("Unloaded needs a read");
+        assert!(!unloaded.transient);
+        { let _io = io(); install_locked(std::sync::Arc::new(ReadState::Blocked)); }
+        let transient = refresh_need().expect("Transient needs a retry");
+        assert!(transient.transient);
+        assert_ne!(transient.generation, unloaded.generation, "the install moved the generation");
+        { let _io = io(); install_locked(std::sync::Arc::new(ReadState::Missing)); }
+        assert_eq!(refresh_need(), None, "Settled needs nothing");
+        revoke_cached_session();
+        assert_eq!(refresh_need(), None, "a local revocation is never refilled");
     }
 
     #[test]
-    fn a_slow_blocked_read_is_cached_from_its_completion() {
+    fn a_refresh_job_reports_how_it_ended() {
         let _serial = plx_base::testlock::serial();
-        let _session = test_support::TempSession::new("cache-slow-blocked");
-        struct ResetRead;
-        impl Drop for ResetRead {
-            fn drop(&mut self) {
-                CACHE_READ_FOR_TEST.with(|read| read.set(None));
-            }
-        }
-        let _reset = ResetRead;
-        CACHE_READ_FOR_TEST.with(|read| read.set(Some(|| {
-            READS_FOR_TEST.with(|count| count.set(count.get() + 1));
-            std::thread::sleep(LOCKED_RETRY + std::time::Duration::from_millis(50));
-            ReadState::Blocked
-        })));
-        reset_reads_for_test();
-
-        let started = std::time::Instant::now();
-        assert!(peek_blocking_at(started).client_id.is_empty());
-        let finished = std::time::Instant::now();
-        assert!(finished.duration_since(started) > LOCKED_RETRY);
-        assert_eq!(reads_for_test(), 1);
-        assert!(peek_at(finished + LOCKED_RETRY / 2).client_id.is_empty());
-        assert_eq!(reads_for_test(), 1, "the retry window must start after the slow read ends");
+        let _session = test_support::TempSession::new("refresh-outcomes");
+        let run = |read: fn() -> ReadState, generation: u64| {
+            CACHE_READ_FOR_TEST.with(|slot| slot.set(Some(read)));
+            let job = refresh_cache_job(generation);
+            CACHE_READ_FOR_TEST.with(|slot| slot.set(None));
+            plx_base::storage_worker::submit_retained(job).wait_blocking().unwrap()
+        };
+        invalidate_for_test();
+        let g = refresh_need().unwrap().generation;
+        assert_eq!(run(|| ReadState::Blocked, g), CacheRefreshOutcome::Transient { generation: g + 1 },
+            "the install moved the generation; the outcome names the one the entry stands at");
+        let g = refresh_need().unwrap().generation;
+        assert_eq!(run(|| ReadState::Missing, g), CacheRefreshOutcome::Settled);
+        assert_eq!(run(|| ReadState::Missing, g), CacheRefreshOutcome::Superseded,
+            "the generation the job was given has moved on");
+        assert_eq!(refresh_need(), None);
     }
 }
 
@@ -4002,7 +3962,8 @@ impl DeferredLoad {
         if read_identity(&read) != self.expected {
             // Refused, exactly like `update_with_outcome`'s own refusal path: install the record
             // this capture lost the race against, rather than leaving the cache empty for the
-            // next `peek()` to queue a duplicate of the read this call just took under `IO`.
+            // session owner to refill with a second read of what this call just established
+            // under `IO`.
             install_locked(read);
             return Err("session changed during capture");
         }
@@ -4012,8 +3973,8 @@ impl DeferredLoad {
             save_locked(&self.session);
         } else {
             // No write happens on this path, but the read above IS the verified record: install
-            // it so the boot path's first `peek()` does not queue a redundant read for a fact
-            // this call already established under `IO`.
+            // it so the cache is not left empty for the session owner to refill with a second
+            // read of what this call just established under `IO`.
             install_locked(read);
         }
         publish_identities(&self.session);
@@ -4052,8 +4013,7 @@ fn established(read: &ReadState) -> bool {
 
 fn load_with_id(mint: impl FnOnce() -> String) -> Session {
     if cache_revoked() { return Session::default(); }
-    let now = std::time::Instant::now();
-    if let Some(read) = cached_at(now) {
+    if let Some(read) = cached_settled() {
         if established(&read) {
             let (s, save) = prepare_load(&read, mint);
             debug_assert!(!save, "an established, protected record must never need a resave");
@@ -4065,7 +4025,7 @@ fn load_with_id(mint: impl FnOnce() -> String) -> Session {
     // The same race a synchronous cache fill guards against: another caller may have installed an established
     // record while this one waited for `IO`, in which case re-reading storage here would be a
     // second, needless read of a record already proved.
-    if let Some(read) = cached_at(now) {
+    if let Some(read) = cached_settled() {
         if established(&read) {
             let (s, save) = prepare_load(&read, mint);
             debug_assert!(!save, "an established, protected record must never need a resave");
@@ -4073,7 +4033,7 @@ fn load_with_id(mint: impl FnOnce() -> String) -> Session {
             return s;
         }
     }
-    let read = refresh_locked(now);
+    let read = refresh_locked();
     if cache_revoked() { return Session::default(); }
     let (s, save) = prepare_load(&read, mint);
     if save { save_locked(&s); }
@@ -4353,12 +4313,7 @@ fn save_locked_with_authority(
     plx_platform::storage::wire::failure::clear();
     CANDIDATE_ERRNOS.with(|slot| slot.set([None; 8]));
     let protected_before = has_protected_authority();
-    let write_started = std::time::Instant::now();
-    let commit = persistence::write_session(s, authority);
-    plx_base::eventlog::log(&format!(
-        "session: canonical write took {} ms",
-        write_started.elapsed().as_millis()
-    ));
+    let commit = persistence::write_session_timed(s, authority);
     // Uncertain helper replies already own their evidence in CanonicalCommit. Only the older
     // StoreError-only failure variants still need this immediate thread-local snapshot.
     let helper_failure = match &commit {
@@ -4395,7 +4350,7 @@ fn save_locked_with_authority(
         };
         // A `Durable` commit IS the record now — install it rather than drop it, so the very next
         // `peek()` (even the caller's own, right after this returns) is served from memory instead
-        // of forcing a re-read of what this call just proved.
+        // of finding the cache left `Unloaded` until the session owner refills it.
         install_write_locked(std::sync::Arc::new(ReadState::Ready {
             session: std::sync::Arc::new(s.clone()),
             plaintext: protection.is_none(),

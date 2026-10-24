@@ -52,6 +52,24 @@
 #   blocking — every production `allow_blocking(` call site is a line of
 #              ci/allow/blocking.txt, held as an exact multiset: a new site or a stale line fails.
 #
+# The Sans-IO ledgers (docs/sans-io.md): logic never performs IO. Each rule freezes today's sites in
+# one file per area under ci/allow/<rule>/ (exact multisets that only shrink: a new site, a stale
+# line, a wrong `# count:`, or a line filed in the wrong area fails; a migration lands by deleting
+# lines). A MACHINE is the scope of the first two: rust-modules/data, session, screens, ui, appkit
+# and machine, plex's session.rs, and the player's lifecycle.rs and route planners.
+#   workers  — a production worker start in a machine: `task::spawn`, `spawn_small*`,
+#              `spawn_off_frame*`, `storage_worker::submit`, `submit_retained`, the command worker's
+#              `.submit_ticket`. A machine's work leaves as a typed effect the app runs.
+#   globals  — a production read of a process-global registry in a machine: `client_for`,
+#              `current_server`, `current_snapshot`, `keypin::revision`, `keypin::blocked_for`,
+#              `session::peek`, `grant::offers`, and `player::TX` in the player's lifecycle. The value
+#              arrives in an event or an argument instead.
+#   forks    — a production test/production fork (`#[cfg(not(test))]`, `not(any(test, feature =
+#              "test-support"))`, `cfg!(not(test))` and the like) anywhere in data/, plex/, media/ or
+#              session/: logic has no `cfg(test)` branch; tests deliver events through the same seam.
+#   fxlanes  — an `AppFx` arm of `Bridge::app_effect` that does not push `Fx::Deliver(..)`: a result
+#              returns on the one ordered FIFO, not on a side queue with its own timing.
+#
 # Phase 8 rule (§14, §6.2):
 #   nav      — a screen under rust-modules/screens/src/ never calls `plx_ui::nav::` (`crate::ui::nav::` before the ui split; any
 #              function) live; it reads `DrawFrame::{page_alpha,chrome_alpha,view_tab,
@@ -592,7 +610,11 @@ gate ticks 'SDL_GetTicks\(' "$SRC" "$SRC_BASE" "$SRC_PLATFORM" "$SRC_GFX" "$SRC_
 #              screens/ and stores/ (screens/player/ is a subdirectory of screens/ and so already
 #              included) — every screen migrated out of ui/ carries the same "instrument only"
 #              rule its old home had. Re-verified clean on 2026-09-10 with no new violation.
-gate wall '(Instant::now|SystemTime::now|\.elapsed\(\))' "$SRC_UI" "$SRC_MACHINE" "$SRC_APPKIT" "$SRC/app" "$SRC_MEDIA/route/plan.rs" "$SRC_MEDIA/route/plan_memory.rs" "$SRC_SCREENS" "$SRC_DATA/stores"
+#   wall (widened Sans-IO P1, 2026-10-24): also plex/session.rs and the session owner files
+#              (session/src/auth/owner*.rs). session.rs's peek is a pure read and its refresh is the owner's
+#              `RefreshCache` effect, so a clock read there is an instrument or a defect; the write timing
+#              lives in persistence::write_session_timed, an IO body outside this scan.
+gate wall '(Instant::now|SystemTime::now|\.elapsed\(\))' "$SRC_UI" "$SRC_MACHINE" "$SRC_APPKIT" "$SRC/app" "$SRC_MEDIA/route/plan.rs" "$SRC_MEDIA/route/plan_memory.rs" "$SRC_SCREENS" "$SRC_DATA/stores" "$SRC_PLEX/plex/session.rs" "$SRC_SESSION"/auth/owner*.rs
 
 if grep -rnE 'fp-contract|fast-math|\+fma' rust-modules/Cargo.toml rust-modules/build.rs rust-modules/net/Cargo.toml rust-modules/plex/Cargo.toml rust-modules/telemetry/Cargo.toml rust-modules/data/Cargo.toml rust-modules/session/Cargo.toml rust-modules/media/Cargo.toml rust-modules/appkit/Cargo.toml rust-modules/screens/Cargo.toml rust-modules/platform/Cargo.toml rust-modules/platform/build.rs rust-modules/gfx/Cargo.toml rust-modules/gfx/build.rs rust-modules/ui/Cargo.toml rust-modules/ui/build.rs rust-modules/appkit/build.rs rust-modules/screens/build.rs rust-modules/storage/Cargo.toml rust-modules/storage/build.rs rust-modules/.cargo Makefile 2>/dev/null | grep -v '^[[:space:]]*#'; then
   fail "fpflags: a floating-point contraction flag is set (spec §4.2 assumes none)"
@@ -1006,6 +1028,124 @@ threads_declared=$(sed -n 's/^# count: *//p' ci/allow/threads.txt | head -1)
 if [ "$threads_bad" -eq "${threads_declared:-0}" ]; then ok "threads"
 else fail "threads: $threads_bad line(s) outside ci/allow/threads.txt (declared count is exactly ${threads_declared:-0}, not a ceiling)"; fi
 
+# ---- the ledger rules: blocking, workers, globals, forks, fxlanes -------------------------------
+# A LEDGER is an exact multiset of production SITES, one line per site, held under ci/allow and only
+# ever shrinking:
+#   - a site NOT in the ledger fails — new work moves behind the seam the rule names instead of being
+#     excused;
+#   - a ledger line whose site is gone fails — so the list can only shrink, and a migration lands by
+#     DELETING its lines (and lowering that file's `# count:`, which must equal its entries);
+#   - a rename (`use ... as x`) is an alias the call-site scan cannot count and fails outright;
+#     `blocking` refuses any other bare mention of its identifier the same way (`let f = name;`), while
+#     workers and globals count a getter named without a call as a site of its own.
+# `ci/ledger.awk` finds the sites (comments, string literals and test code are never sites; its header
+# says exactly how), `ledger_scan` runs it over candidate files, `ledger_check` compares the multisets.
+# `blocking` keeps ONE file, ci/allow/blocking.txt. The four rules of docs/sans-io.md keep one file per
+# AREA — ci/allow/<rule>/<area>.txt — so two migrations that touch different areas never edit the same
+# `# count:` header: the area is the crate (`app` for rust-modules/src), except in data/, where it is
+# `data-<module>` for the top-level module under data/src, and `stores/<stem>.rs` joins the module of
+# its own name (`stores/watchlist.rs` and `watchlist.rs` are one area). A line filed in the wrong area
+# fails too, so the layout cannot drift.
+
+# ledger_area <path>: the area a site in <path> belongs to, in $LG_AREA
+ledger_area() {
+  local p="$1" s
+  case "$p" in
+    rust-modules/data/src/stores/*) s="${p#rust-modules/data/src/stores/}"; s="${s%%[/.]*}"
+      [ "$s" = mod ] && s=stores; LG_AREA="data-$s" ;;
+    rust-modules/data/src/*) s="${p#rust-modules/data/src/}"; LG_AREA="data-${s%%[/.]*}" ;;
+    rust-modules/src/*) LG_AREA=app ;;
+    rust-modules/*/src/*) s="${p#rust-modules/}"; LG_AREA="${s%%/*}" ;;
+    *) LG_AREA="?" ;;
+  esac
+}
+
+# ledger_scan: candidate files on stdin (a wholly-test file is skipped, like an inline test `mod`); the
+# sites of each, as ci/ledger.awk prints them, on stdout. LG_* in the environment configure the awk
+# (its header lists them, including the spellings that are sites only in a file that imports them).
+ledger_scan() {
+  local files
+  # the wholly-test files go in ONE pass: `is_wholly_test`'s case-match over the whole index costs
+  # ~20 ms a file, which is seconds over the few hundred candidates of a rule that reads every crate
+  files=$(sort -u | comm -23 - <(printf '%s\n' "$wholly_test" | sort))
+  [ -z "$files" ] && return 0
+  # ONE awk for all of them: an awk start costs more than lexing a typical file (paths hold no spaces)
+  # shellcheck disable=SC2086
+  awk -f ci/ledger.awk $files
+}
+
+# ledger_check <rule> <scan output>: compares it with the ledger files in $LG_LEDGERS and reports.
+# Messages come from LG_MSG_NEW / LG_MSG_REF / LG_MSG_STALE (line prefixes), LG_NOUN and LG_TAIL;
+# LG_COUNT_FILE (one file) also checks its declared count here, LG_AREA_CHECK=1 files by area.
+ledger_check() {
+  local rule="$1" blob="$2" f key file stem line shown
+  local refs sites pairs declared new stale misfiled count count_declared n_new n_stale n_ref
+  refs=$(printf '%s\n' "$blob" | awk -F'\t' '$1 == "REF" {print $2}')
+  sites=$(printf '%s\n' "$blob" | awk -F'\t' '$1 != "REF"')
+  pairs=""
+  for f in $LG_LEDGERS; do
+    [ -f "$f" ] || continue
+    pairs="$pairs
+$(awk -F'\t' '/^[[:space:]]*(#|$)/ {next} {print $1 "\t" FILENAME}' "$f")"
+  done
+  pairs=$(printf '%s\n' "$pairs" | sed '/^$/d')
+  declared=$(printf '%s\n' "$pairs" | cut -f1 | sort)
+  new=$(comm -23 <(printf '%s\n' "$sites" | sed '/^$/d') <(printf '%s\n' "$declared" | sed '/^$/d'))
+  stale=$(comm -13 <(printf '%s\n' "$sites" | sed '/^$/d') <(printf '%s\n' "$declared" | sed '/^$/d'))
+  misfiled=""
+  if [ -n "${LG_AREA_CHECK:-}" ]; then
+    while IFS=$'\t' read -r key file; do
+      [ -z "$key" ] && continue
+      ledger_area "${key%%::*}"
+      stem="${file##*/}"; stem="${stem%.txt}"
+      if [ "$LG_AREA" != "$stem" ]; then
+        misfiled="$misfiled${misfiled:+
+}$key  (in $file, belongs in ci/allow/$rule/$LG_AREA.txt)"
+      fi
+    done <<EOF_PAIRS
+$pairs
+EOF_PAIRS
+  fi
+  count=$(printf '%s\n' "$declared" | sed '/^$/d' | wc -l | tr -d ' ')
+  count_declared=""
+  [ -n "${LG_COUNT_FILE:-}" ] && count_declared=$(sed -n 's/^# count: *//p' "$LG_COUNT_FILE" | head -1)
+  n_new=$(printf '%s\n' "$new" | sed '/^$/d' | wc -l | tr -d ' ')
+  n_stale=$(printf '%s\n' "$stale" | sed '/^$/d' | wc -l | tr -d ' ')
+  n_ref=$(printf '%s\n' "$refs" | sed '/^$/d' | wc -l | tr -d ' ')
+  if [ -z "$new" ] && [ -z "$stale" ] && [ -z "$refs" ] && [ -z "$misfiled" ] \
+     && { [ -z "${LG_COUNT_FILE:-}" ] || [ "$count" -eq "${count_declared:-0}" ]; }; then
+    ok "$rule ($count sites)"
+  else
+    if [ -n "$new" ]; then
+      while IFS= read -r key; do
+        shown="$key"
+        if [ -n "${LG_AREA_CHECK:-}" ]; then ledger_area "${key%%::*}"; shown="$key  (ledger: ci/allow/$rule/$LG_AREA.txt)"; fi
+        echo "    $LG_MSG_NEW$shown"
+      done <<EOF_NEW
+$new
+EOF_NEW
+    fi
+    [ -n "$refs" ] && printf '%s\n' "$refs" | sed "s|^|    $LG_MSG_REF|"
+    if [ -n "$stale" ]; then
+      while IFS= read -r key; do
+        shown="$key"
+        if [ -n "${LG_AREA_CHECK:-}" ]; then
+          file=$(printf '%s\n' "$pairs" | awk -F'\t' -v k="$key" '$1 == k {print $2; exit}')
+          shown="$key  (in $file)"
+        fi
+        echo "    $LG_MSG_STALE$shown"
+      done <<EOF_STALE
+$stale
+EOF_STALE
+    fi
+    [ -n "$misfiled" ] && printf '%s\n' "$misfiled" | sed 's|^|    misfiled ledger line: |'
+    line="new: $n_new, stale: $n_stale, aliased: $n_ref"
+    [ -n "$misfiled" ] && line="$line, misfiled: $(printf '%s\n' "$misfiled" | wc -l | tr -d ' ')"
+    [ -n "${LG_COUNT_FILE:-}" ] && line="$line, declared count ${count_declared:-0} vs $count entries"
+    fail "$rule: $LG_NOUN is not exact ($line) — $LG_TAIL"
+  fi
+}
+
 # blocking: the frame thread's blocking exceptions, as a ledger that only shrinks. Every
 # production `allow_blocking(` CALL SITE is listed in
 # ci/allow/blocking.txt as `<path>::<enclosing fn>` (one line per site, so a second site inside an
@@ -1014,57 +1154,188 @@ else fail "threads: $threads_bad line(s) outside ci/allow/threads.txt (declared 
 #     (`task::spawn_off_frame`, whose token a PMS half takes) instead of being excused;
 #   - an entry whose site no longer exists fails — so the list can only shrink, and a migration
 #     lands by deleting its line. The declared `# count:` must also equal the entry count.
-# Test code is skipped exactly as in `threads` (a wholly-test file, a `#[cfg(test)] mod` block).
+# Test code is skipped as `ci/ledger.awk` skips it, which is more than `threads` does: a wholly-test file,
+# and any item, statement or field under a `#[cfg(..)]` production can never satisfy (a `mod` with other
+# attributes in front of it, a `fn`, `feature = "test-support"`, `all(test, ..)`); strings and block comments
+# are blanked first, so a call after a `"http://"` string is seen. The same sites as before are listed.
 # The definition itself (`task/blocking.rs`), `fn` declarations and comment-only lines are not
 # call sites. Any OTHER non-test mention of the bare identifier — `use ...::allow_blocking as x`,
-# `let f = allow_blocking;` — is an alias the call-site grep cannot see, so it fails outright
-# (`blocking_refs`); the one tolerated mention is the exact re-export line in `base/src/task.rs`.
+# `let f = allow_blocking;` — is an alias the call-site scan cannot see, so it fails outright
+# (a REF line of the scan); the one tolerated mention is the exact re-export line in `base/src/task.rs`.
 # The enclosing fn is the innermost `fn <name>` whose body holds the call, tracked by
-# brace depth; a call in a closure belongs to the fn around the closure.
+# brace depth; a call in a closure belongs to the fn around the closure. The scan is the shared
+# `ci/ledger.awk` (the ledger machinery above).
 blocking_sites=$(
-  while IFS= read -r f; do
-    if is_wholly_test "$f"; then continue; fi
-    awk -v file="$f" -v reexport_file="$SRC_BASE/task.rs" '
-      function pop_to(d) { while (top > 0 && sdepth[top] > d) top-- }
-      skip>0 { n=gsub(/\{/,"{"); m=gsub(/\}/,"}"); depth+=n-m; if (depth<=0) skip=0; prev=$0; next }
-      prev ~ /^[[:space:]]*#\[cfg\((test|any\(test, feature = "test-support"\))\)\][[:space:]]*$/ && /^[[:space:]]*mod / { skip=1; depth=gsub(/\{/,"{")-gsub(/\}/,"}"); if (depth<=0) skip=0; prev=$0; next }
-      {
-        line=$0; prev=$0
-        code=line; sub(/\/\/.*/, "", code)
-        # a mention that is neither a call, the `fn` definition nor the listed re-export: an alias
-        if (code ~ /(^|[^A-Za-z0-9_])allow_blocking([^A-Za-z0-9_(]|$)/ && code !~ /fn[[:space:]]+allow_blocking\(/ \
-            && !(file == reexport_file && code ~ /^[[:space:]]*pub use blocking::\{allow_blocking, AllowBlocking\};[[:space:]]*$/))
-          print "REF\t" file ":" NR
-        if (match(code, /(^|[^A-Za-z0-9_])fn[[:space:]]+[A-Za-z0-9_]+/)) {
-          name=substr(code, RSTART, RLENGTH); sub(/.*fn[[:space:]]+/, "", name); pending=name
-        }
-        if (code ~ /(^|[^A-Za-z0-9_])allow_blocking\(/ && code !~ /fn[[:space:]]+allow_blocking\(/) {
-          hit=(top>0 ? stack[top] : (pending != "" ? pending : "?"))
-          # a call on the same line as the `fn` it sits in, before that fn pushes its body
-          if (pending != "" && code ~ /fn[[:space:]]/ && code ~ /\{/) hit=pending
-          print file "::" hit
-        }
-        n=gsub(/\{/,"{",code); m=gsub(/\}/,"}",code)
-        for (i=0; i<n; i++) { depth++; if (pending != "") { top++; stack[top]=pending; sdepth[top]=depth; pending="" } }
-        for (i=0; i<m; i++) { depth--; pop_to(depth) }
-        if (pending != "" && code ~ /;[[:space:]]*$/) pending=""
-      }' "$f"
-  done < <(grep -rlE --include='*.rs' 'allow_blocking' "$SRC" "$SRC_BASE" "$SRC_MACHINE" "$SRC_PLATFORM" "$SRC_GFX" "$SRC_NET" "$SRC_UI" "$SRC_PLEX" "$SRC_TELEMETRY" "$SRC_DATA" "$SRC_SESSION" "$SRC_MEDIA" "$SRC_APPKIT" "$SRC_SCREENS" 2>/dev/null | grep -v "^$SRC_BASE/task/blocking.rs\$" | sort) | sort
+  grep -rlE --include='*.rs' 'allow_blocking' "$SRC" "$SRC_BASE" "$SRC_MACHINE" "$SRC_PLATFORM" "$SRC_GFX" "$SRC_NET" "$SRC_UI" "$SRC_PLEX" "$SRC_TELEMETRY" "$SRC_DATA" "$SRC_SESSION" "$SRC_MEDIA" "$SRC_APPKIT" "$SRC_SCREENS" 2>/dev/null \
+    | grep -v "^$SRC_BASE/task/blocking.rs\$" | sort \
+    | LG_MODE=call LG_SITE='(^|[^A-Za-z0-9_])allow_blocking\(' LG_DEF='fn[[:space:]]+allow_blocking\(' \
+      LG_REF='(^|[^A-Za-z0-9_])allow_blocking([^A-Za-z0-9_(]|$)' LG_REEXPORT_FILE="$SRC_BASE/task.rs" \
+      LG_REEXPORT_RE='^[[:space:]]*pub use blocking::\{allow_blocking, AllowBlocking\};[[:space:]]*$' \
+      ledger_scan | sort
 )
-blocking_refs=$(printf '%s\n' "$blocking_sites" | awk -F'\t' '$1 == "REF" {print $2}')
-blocking_sites=$(printf '%s\n' "$blocking_sites" | awk -F'\t' '$1 != "REF"')
-blocking_declared=$(awk -F'\t' '/^[[:space:]]*(#|$)/ {next} {print $1}' ci/allow/blocking.txt | sort)
-blocking_new=$(comm -23 <(printf '%s\n' "$blocking_sites" | sed '/^$/d') <(printf '%s\n' "$blocking_declared" | sed '/^$/d'))
-blocking_stale=$(comm -13 <(printf '%s\n' "$blocking_sites" | sed '/^$/d') <(printf '%s\n' "$blocking_declared" | sed '/^$/d'))
-blocking_count=$(printf '%s\n' "$blocking_declared" | sed '/^$/d' | wc -l | tr -d ' ')
-blocking_count_declared=$(sed -n 's/^# count: *//p' ci/allow/blocking.txt | head -1)
-if [ -z "$blocking_new" ] && [ -z "$blocking_stale" ] && [ -z "$blocking_refs" ] && [ "$blocking_count" -eq "${blocking_count_declared:-0}" ]; then ok "blocking ($blocking_count sites)"
-else
-  [ -n "$blocking_new" ] && printf '%s\n' "$blocking_new" | sed 's/^/    new frame-thread blocking exception: /'
-  [ -n "$blocking_refs" ] && printf '%s\n' "$blocking_refs" | sed 's/^/    allow_blocking named without a call (an alias the ledger cannot count): /'
-  [ -n "$blocking_stale" ] && printf '%s\n' "$blocking_stale" | sed 's/^/    stale ci\/allow\/blocking.txt entry (site is gone — delete the line): /'
-  fail "blocking: the frame-thread exception ledger is not exact (new: $(printf '%s\n' "$blocking_new" | sed '/^$/d' | wc -l | tr -d ' '), stale: $(printf '%s\n' "$blocking_stale" | sed '/^$/d' | wc -l | tr -d ' '), aliased: $(printf '%s\n' "$blocking_refs" | sed '/^$/d' | wc -l | tr -d ' '), declared count ${blocking_count_declared:-0} vs $blocking_count entries) — a new allow_blocking site moves its work to a worker instead; the list only shrinks"
-fi
+LG_LEDGERS=ci/allow/blocking.txt LG_COUNT_FILE=ci/allow/blocking.txt \
+  LG_MSG_NEW='new frame-thread blocking exception: ' \
+  LG_MSG_REF='allow_blocking named without a call (an alias the ledger cannot count): ' \
+  LG_MSG_STALE='stale ci/allow/blocking.txt entry (site is gone — delete the line): ' \
+  LG_NOUN='the frame-thread exception ledger' \
+  LG_TAIL='a new allow_blocking site moves its work to a worker instead; the list only shrinks' \
+  ledger_check blocking "$blocking_sites"
+
+# ---- the Sans-IO ledgers (docs/sans-io.md): workers, globals, forks, fxlanes ------------------------
+# The rule they prepare: logic never performs IO. A MACHINE (a screen, a data/ store, the session
+# owner, the player's foreground lifecycle, a route planner) starts no worker, reads no
+# process-global registry and has no test/production fork; its work leaves as a typed effect the
+# app's runners execute. Today's sites are frozen here, each rule a ledger that only shrinks (the
+# layout and the exactness rules are the ledger machinery's, above); a migration PR deletes the
+# lines of the machine it made pure. MACHINES is the scope of workers and globals; forks reads the
+# whole of the four crates that own the data, the Plex client, the player and the session:
+MACHINES=("$SRC_DATA" "$SRC_SESSION" rust-modules/plex/src/plex/session.rs "$SRC_MEDIA/player/lifecycle.rs"
+  "$SRC_MEDIA/route/plan.rs" "$SRC_MEDIA/route/plan_memory.rs" "$SRC_SCREENS" "$SRC_UI" "$SRC_APPKIT" "$SRC_MACHINE")
+FORK_SCOPE=("$SRC_DATA" "$SRC_PLEX" "$SRC_MEDIA" "$SRC_SESSION")
+
+# scope_re <path>...: an ERE over repo-relative file paths that matches those paths (a `.rs` file
+# exactly, anything else as a directory prefix)
+scope_re() {
+  local re="" p
+  for p in "$@"; do
+    p=$(printf '%s' "$p" | sed 's/\./\\./g')
+    case "$p" in *.rs) re="$re|^$p\$" ;; *) re="$re|^$p/" ;; esac
+  done
+  printf '(%s)' "${re#|}"
+}
+machines_re=$(scope_re "${MACHINES[@]}")
+fork_scope_re=$(scope_re "${FORK_SCOPE[@]}")
+
+# ONE awk pass serves the three rules that scan files (this platform's grep costs 0.8-1.1 s a pass for
+# a long alternation over these crates, and each rule used to take its own; one awk pass over the same
+# files costs ~0.5 s for all of them). It prints `<W|G|F><TAB><file>` for every file of a rule's scope that
+# has a line that could hold a site of that rule, and ci/ledger.awk then decides what is really one; a
+# file the pattern misses cannot hold one. W and G read the machines, F the four fork crates.
+workers_pat='spawn_small|spawn_off_frame|submit_retained|submit_ticket|task::(spawn|\{|\*)|storage_worker::(submit|\{|\*)|(task|storage_worker)[[:space:]]+as[[:space:]]'
+globals_pat='client_for|current_server|current_snapshot|keypin::(revision|blocked_for|\{|\*)|session::(peek|\{|\*)|grant::(offers|\{|\*)|player::TX|(session|keypin|grant|player|peek|revision|blocked_for|offers|TX)[[:space:]]+as[[:space:]]'
+# a cfg line: one with `test` on it, or an attribute / `cfg!` that opens on one line and closes on a later
+# one, where `test` may sit on the second. A line that is a test-only attribute outright — `#[cfg(test)]`,
+# `#[cfg(any(test, feature = "test-support"))]`, or an `all(<either>, <flat atoms>)` of them — is no
+# candidate: an item under it is skipped whole.
+forks_pat='cfg.*test|test.*cfg|#!?\[cfg\([^]]*$|cfg!\([^)]*$'
+forks_plain_re='^[[:space:]]*#\[cfg\((test|any\(test, feature = "test-support"\)|all\((test|any\(test, feature = "test-support"\)), [^()]*\))\)\][[:space:]]*$'
+ledger_hits=$(
+  find "$SRC_DATA" "$SRC_SESSION" "$SRC_PLEX" "$SRC_MEDIA" "$SRC_SCREENS" "$SRC_UI" "$SRC_APPKIT" "$SRC_MACHINE" \
+      -name '*.rs' -type f 2>/dev/null \
+    | W_PAT="$workers_pat" G_PAT="$globals_pat" F_PAT="$forks_pat" F_PLAIN="$forks_plain_re" \
+      M_RE="$machines_re" K_RE="$fork_scope_re" \
+      xargs awk '
+        BEGIN { w = ENVIRON["W_PAT"]; g = ENVIRON["G_PAT"]; f = ENVIRON["F_PAT"]
+                p = ENVIRON["F_PLAIN"]; m = ENVIRON["M_RE"]; k = ENVIRON["K_RE"] }
+        FNR == 1 { dw = dg = df = 1; if (FILENAME ~ m) dw = dg = 0; if (FILENAME ~ k) df = 0 }
+        dw && dg && df { next }
+        !dw && $0 ~ w { print "W\t" FILENAME; dw = 1 }
+        !dg && $0 ~ g { print "G\t" FILENAME; dg = 1 }
+        !df && $0 ~ f && $0 !~ p { print "F\t" FILENAME; df = 1 }
+      '
+)
+# ledger_candidates <W|G|F>: the files of that rule's scope the prefilter kept
+ledger_candidates() {
+  printf '%s\n' "$ledger_hits" | awk -F'\t' -v r="$1" '$1 == r { print $2 }' | sort -u
+}
+
+# workers: a production call that starts a worker — `task::spawn(`, `spawn_small(`,
+# `spawn_small_keeping(`, `spawn_small_or_inline(`, `spawn_off_frame(`, `spawn_off_frame_keeping(` (base/src/task.rs),
+# `storage_worker::submit(`, `submit_retained(` (base/src/storage_worker.rs) and the typed command
+# worker's `.submit_ticket(`, keyed `<path>::<enclosing fn>::<spelling>`. A BARE `spawn(` / `submit(` is a
+# site only in a file that imports it from `task` / `storage_worker` (no other `spawn(` is a worker start:
+# `Builder::spawn`, a local fn). A local wrapper (`spawn_discovery`, `spawn_job`) is not itself a site —
+# the real call inside it is. The command worker's `.submit(` is not covered: it is `cfg(any(test,
+# feature = "test-support"))` in base, so no production line can call it; `.submit_ticket(` is covered
+# although no machine calls it today, because a machine that did would be starting a worker. A worker
+# named without a call (`.map(spawn_small)`) is a site too; only a rename (`use ... as`) is refused,
+# because the renamed calls are invisible.
+workers_sites=$(
+  ledger_candidates W \
+    | LG_MODE=call LG_KEYSPELL=1 LG_USE_OK=1 LG_REF_USE_ONLY=1 \
+      LG_SITE='(^|[^A-Za-z0-9_])(spawn_small|spawn_small_keeping|spawn_small_or_inline|spawn_off_frame|spawn_off_frame_keeping|submit_retained|submit_ticket|task::spawn|storage_worker::submit)([^A-Za-z0-9_]|$)' \
+      LG_DEF='fn[[:space:]]+(spawn|spawn_small|spawn_small_keeping|spawn_small_or_inline|spawn_off_frame|spawn_off_frame_keeping|submit|submit_retained|submit_ticket)[[:space:]]*[(<]' \
+      LG_REF='(^|[^A-Za-z0-9_])(spawn|spawn_small|spawn_small_keeping|spawn_small_or_inline|spawn_off_frame|spawn_off_frame_keeping|submit|submit_retained|submit_ticket|task|storage_worker)[[:space:]]+as[[:space:]]' \
+      LG_BARE='task::(spawn([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?spawn([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])spawn([^A-Za-z0-9_]|$);;storage_worker::(submit([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?submit([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])submit([^A-Za-z0-9_]|$)' \
+      ledger_scan | sort
+)
+LG_LEDGERS="$(echo ci/allow/workers/*.txt)" LG_AREA_CHECK=1 \
+  LG_MSG_NEW='new production worker start in a machine: ' \
+  LG_MSG_REF='a worker start renamed by `use ... as` (an alias the ledger cannot count): ' \
+  LG_MSG_STALE='stale worker ledger entry (site is gone — delete the line): ' \
+  LG_NOUN='the worker-start ledger' \
+  LG_TAIL='a machine starts no worker: its work leaves as a typed effect the app runs (docs/sans-io.md); the ledgers only shrink' \
+  ledger_check workers "$workers_sites"
+
+# globals: a production read of a process-global registry in a MACHINE — `client_for(`, `current_server(`,
+# `current_snapshot(`, `keypin::revision(`, `keypin::blocked_for(`, `session::peek(`, `grant::offers(`, and
+# `player::TX` in the player's lifecycle (the one file where that atomic is read as logic, spelled
+# `crate::player::TX`, `player::TX`, `super::TX` or a bare `TX`; the HUD's reads are not machines). A bare
+# `peek(` / `revision(` / `blocked_for(` / `offers(` is a site in a file that imports it from `session` /
+# `keypin` / `grant` (alone, last in a braced group, or by glob) and, for `peek`, in
+# plex/src/plex/session.rs, the module that defines it. A getter named without a call (`.and_then(client_for)`)
+# reads the registry as surely as a call does, so it is a site too; only a rename (`use ... as`) is refused,
+# because the renamed calls are invisible. Each getter's own definition is not a site.
+globals_sites=$(
+  { ledger_candidates G
+    printf '%s\n' rust-modules/plex/src/plex/session.rs "$SRC_MEDIA/player/lifecycle.rs"; } \
+    | LG_MODE=call LG_KEYSPELL=1 LG_USE_OK=1 LG_REF_USE_ONLY=1 \
+      LG_SITE='(^|[^A-Za-z0-9_.])(client_for|current_server|current_snapshot|keypin::revision|keypin::blocked_for|session::peek|grant::offers)([^A-Za-z0-9_]|$)' \
+      LG_DEF='fn[[:space:]]+(client_for|current_server|current_snapshot|peek|revision|blocked_for|offers)[[:space:]]*[(<]' \
+      LG_REF='(^|[^A-Za-z0-9_])(client_for|current_server|current_snapshot|peek|revision|blocked_for|offers|TX|session|keypin|grant|player)[[:space:]]+as[[:space:]]' \
+      LG_BARE='session::(peek([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?peek([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])peek([^A-Za-z0-9_]|$);;keypin::(revision([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?revision([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])revision([^A-Za-z0-9_]|$);;keypin::(blocked_for([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?blocked_for([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])blocked_for([^A-Za-z0-9_]|$);;grant::(offers([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?offers([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])offers([^A-Za-z0-9_]|$)' \
+      LG_FILE_SITE='rust-modules/plex/src/plex/session.rs@@(^|[^A-Za-z0-9_.:])peek([^A-Za-z0-9_]|$);;rust-modules/media/src/player/lifecycle.rs@@(^|[^A-Za-z0-9_.])(player::TX|super::TX)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_.:])TX([^A-Za-z0-9_]|$)' \
+      ledger_scan | sort
+)
+LG_LEDGERS="$(echo ci/allow/globals/*.txt)" LG_AREA_CHECK=1 \
+  LG_MSG_NEW='new production read of a process-global registry in a machine: ' \
+  LG_MSG_REF='a registry getter renamed by `use ... as` (an alias the ledger cannot count): ' \
+  LG_MSG_STALE='stale globals ledger entry (site is gone — delete the line): ' \
+  LG_NOUN='the process-global read ledger' \
+  LG_TAIL='a machine reads no registry: the value arrives in an event or an argument (docs/sans-io.md); the ledgers only shrink' \
+  ledger_check globals "$globals_sites"
+
+# forks: a production test/production fork across all of data/, plex/, media/ and session/ — a `#[cfg(..)]`
+# attribute that production CAN satisfy (`not(test)`, `not(any(test, feature = "test-support"))`,
+# `not(feature = "test-support")`, `all(target_os = .., not(test))`), or an inline `cfg!(..)` of any value,
+# whose predicate reads `test` or `feature = "test-support"`: code that is one thing in a test and another in
+# the product has a test the product never ran. An item that only a test can see (`#[cfg(test)]`,
+# `any(test, ..)`) is no fork, but `cfg!(test)` is: `if cfg!(test) {..} else {..}` compiles an arm production runs.
+# Keyed `<path>::<item name>` for an attribute on an item (a fn, a const, a mod, an impl, or a macro
+# invocation at module level, named for its macro: `latched_flag!`), or
+# `<path>::<enclosing fn>` for a statement, a field, or an inline `cfg!` — never a line number. A file can
+# hold a fork only if it has a cfg line that is not a plain test-only attribute (an item under one is
+# skipped whole), which is what the candidates are.
+forks_sites=$(
+  ledger_candidates F \
+    | LG_MODE=fork ledger_scan | sort
+)
+LG_LEDGERS="$(echo ci/allow/forks/*.txt)" LG_AREA_CHECK=1 \
+  LG_MSG_NEW='new production test/production fork: ' \
+  LG_MSG_REF='' \
+  LG_MSG_STALE='stale fork ledger entry (site is gone — delete the line): ' \
+  LG_NOUN='the test/production fork ledger' \
+  LG_TAIL='logic has no cfg(test) fork: the seam is a typed effect tests and replay deliver events through (docs/sans-io.md); the ledgers only shrink' \
+  ledger_check forks "$forks_sites"
+
+# fxlanes: in `Bridge::app_effect` every `AppFx::<Variant>` arm either pushes `Fx::Deliver(` — the ordered
+# FIFO, where a result returns as one addressed event in the same drain — or is a ledger line: an arm that
+# parks its request on a side queue of the bridge (`reqs`, `content_reqs`, ...) is a second lane with its
+# own timing. A NEW variant with a side queue fails; so does a new arm that is not on the FIFO. Keyed
+# `<path>::AppFx::<Variant>`, one line for EACH variant on an arm's head (`AppFx::A(r) | AppFx::B(r) => ..`
+# is two), and `<path>::AppFx::_` for an arm whose head names none (`other => ..`, `_ => ..`).
+fxlanes_sites=$(
+  grep -rlE --include='*.rs' 'fn app_effect' "$SRC" 2>/dev/null | sort \
+    | LG_MODE=arm LG_ARM_FN=app_effect LG_ARM_MATCH='(^|[^A-Za-z0-9_])match[[:space:]]+fx[[:space:]]*\{' LG_ARM_OK='Fx::Deliver\(' \
+      ledger_scan | sort
+)
+LG_LEDGERS="$(echo ci/allow/fxlanes/*.txt)" LG_AREA_CHECK=1 \
+  LG_MSG_NEW='new AppFx arm outside the ordered Deliver lane: ' \
+  LG_MSG_REF='' \
+  LG_MSG_STALE='stale fxlanes ledger entry (arm is gone or now delivers — delete the line): ' \
+  LG_NOUN='the Bridge::app_effect lane ledger' \
+  LG_TAIL='an AppFx arm pushes Fx::Deliver(..) onto the one ordered FIFO instead of a side queue (docs/sans-io.md); the ledgers only shrink' \
+  ledger_check fxlanes "$fxlanes_sites"
 
 # tmppath: a literal `/tmp/plxnative-` string outside dev.rs and the log sinks, = 0 (D4). The
 # earlier version matched only a literal and a filesystem-open VERB co-occurring on the SAME
@@ -1255,8 +1526,10 @@ else
   fail "paging: $(echo "$paging_hits" | grep -c . ) production literal(s) spell X-Plex-Container- outside rust-modules/plex/src/plex/paging.rs (use paged_path)"
 fi
 
-# every allowlist's declared count equals its entries
-for f in ci/allow/*.txt; do
+# every allowlist's declared count equals its entries — the flat lists, and the per-area ledger files
+# under ci/allow/<rule>/ (workers, globals, forks, fxlanes)
+for f in ci/allow/*.txt ci/allow/*/*.txt; do
+  [ -f "$f" ] || continue
   declared=$(sed -n 's/^# count: *//p' "$f" | head -1)
   entries=$(grep -cvE '^[[:space:]]*(#|$)' "$f")
   [ "$declared" = "$entries" ] || fail "$f declares count $declared but has $entries entries"
