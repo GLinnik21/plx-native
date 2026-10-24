@@ -606,8 +606,10 @@ unsafe fn present_and_swap(
             SDL_GL_SwapWindow(app.win);
         }
         app.window_activity.presented(fr.player);
-        // One increment, then nothing: re-ask EGL for the back buffer's AGE after real
-        // presents have happened. The boot reading is 0 by construction. See `egl.rs`.
+        // dev diagnostic, OFF unless `/tmp/plxnative-eglage` was present at boot: re-ask EGL for
+        // the back buffer's AGE after real presents have happened (the boot reading is 0 by
+        // construction). One null-handle branch per present when unarmed; armed, its one query
+        // blocks that present's swap 13-16 ms on the T820 (2026-10-24). See `egl.rs`.
         plx_gfx::egl::late_probe();
         #[cfg(feature = "devtools")]
         {
