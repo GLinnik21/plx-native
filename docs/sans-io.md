@@ -111,3 +111,40 @@ becomes one code path that tests and the product both drive. The PR then:
 It never edits a line to make a new site pass, and never adds one: a new worker start, registry read
 or fork in a machine is moved behind an effect instead. A ledger file that reaches zero entries is
 deleted; a rule whose last file is gone has a total of zero, and its pin says so.
+
+A store the Bridge runs leaves as a store job, not an `AppFx`, while a stepped machine such as the
+session owner leaves as an `Effects` value; the next section is the rule for the two.
+
+## The store job lane
+
+The Metadata store's detail request (`request_detail`) was the first to stop starting its own
+worker. Its three ledger lines are gone and the shape is the one the other `data/` stores copy.
+
+- **The shape.** `plx_machine::job` holds `Job<R>` (an `Addr` and a request that carries everything
+  the worker needs), `Port<T>` (where the one answer goes: exactly one `done` or `refused` per job)
+  and `assert_fx!` (a step test reads the jobs it emitted instead of waiting on a thread). A store
+  keeps its own job enum, request types and port: `plx_data::stores::StoreJob`,
+  `MetadataStore::take_jobs`, and `plx_data::metadata::{DetailReq, DetailPort}`. The app's `StoreRunner`
+  (`app/adapters/stores.rs`) executes a job and owns what `data/` must not: the tape's admission
+  record, the thread and the `client_for` read. It is `Live` or `Held` (a test parks the job and
+  runs it on the test thread), chosen when the `Bridge` is constructed.
+- **Two drains, one rule.** A stepped machine (the session owner) emits its work through `Effects`,
+  and the owner's drain starts it. A store the Bridge runs emits through `take_jobs`, which
+  `Bridge::metadata_run` drains right after the store step, so a job is started in the same Bridge
+  call that emitted it. `metadata_pump_detail` keeps a backstop drain for a caller that holds only
+  the store (`describe_movie`).
+- **Results do not return as FIFO events.** A store's result goes back through the landing and its
+  gate (`landgate`, the `adapter_rank` of the landing key), where the pump takes it by value. This
+  is a deliberate exception to "every result returns as one addressed event in the same drain":
+  it is kept so that the replay anchors hold, because the landing is where they already record a
+  result.
+- **Why the job is not an `AppFx`.** A new `app_effect` arm that starts IO without pushing
+  `Fx::Deliver(` is a new `fxlanes` site; `bootstrap::effects::app` fails closed on a variant it
+  cannot encode in controlled Home; and every `Fx::App` is an `"e":"App"` record, so the replay
+  fixtures would change. A later store that routes its jobs through `AppFx` brings all three back.
+- **A stranded job is a red test.** `Bridge::assert_no_store_jobs_left_for_test` (`#[cfg(test)]`)
+  fails a frame that ends with a job nobody started, which is a sender that bypassed
+  `Bridge::metadata_run`: its request would never settle. The test rigs call it at the frame's end.
+- **The port holds the adapter `Arc`.** `Reset` replaces the adapter and the store keeps no handle to
+  the retired one, so an epoch id could only reach it through a registry of retired adapters. A job
+  emitted before a `Reset` answers into the adapter it was made for, as the request did before.

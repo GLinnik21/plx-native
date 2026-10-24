@@ -3597,8 +3597,9 @@ fn selected_season_number(state: &MetadataState, sid: plx_plex::plex::ServerId, 
 /// 2 PMS round-trips for a movie, 5 for a show.
 ///
 /// PURE NETWORK + PARSING — it touches no `static mut`, which is what let it run either on the
-/// main thread or on a worker ([`request_detail`]) while a synchronous caller still existed
-/// (phase 12/D7 deleted the last one, `load_detail_now`; see that deletion's note below). Keep it
+/// main thread or on a worker (the app's `StoreRunner`, from the job [`request_detail`] emits)
+/// while a synchronous caller still existed (phase 12/D7 deleted the last one, `load_detail_now`;
+/// see that deletion's note below). Keep it
 /// that way: installing the result is the caller's job, and on the async path that must happen on
 /// the main thread (see the `DETAIL_LANDING`/`land_detail` note).
 pub fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) -> Option<Detail> {

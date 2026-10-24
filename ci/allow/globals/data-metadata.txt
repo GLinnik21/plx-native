@@ -1,4 +1,4 @@
-# count: 17
+# count: 16
 # Process-global reads inside machines (docs/sans-io.md), area `data-metadata`: one line per production read of a registry in a machine —
 # `client_for`, `current_server`, `current_snapshot`, `keypin::revision`, `keypin::blocked_for`, `session::peek`, `grant::offers`, `player::TX` — keyed `<path>::<enclosing fn>::<spelling>`.
 # A machine reads no registry: the value arrives in an event or an argument. Spec: ci/check-deps.sh `globals`.
@@ -17,6 +17,5 @@ rust-modules/data/src/metadata.rs::fetch_playing_item::client_for
 rust-modules/data/src/metadata.rs::fetch_primary_trailer::client_for
 rust-modules/data/src/metadata.rs::fetch_related::client_for
 rust-modules/data/src/metadata.rs::fetch_seasons::client_for
-rust-modules/data/src/metadata.rs::request_detail::client_for
 rust-modules/data/src/metadata.rs::resolve_alt_sources::client_for
 rust-modules/data/src/metadata.rs::resolve_trailer::client_for
