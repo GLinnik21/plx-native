@@ -149,7 +149,8 @@ fn a_superseded_season_landing_plays_nothing() {
     let mut rig = Rig::new(pms.port);
 
     rig.tick(0);
-    rig.bridge.metadata_mut().run(MetadataCmd::LoadSeason(0)); // the user's own tab press
+    // the user's own tab press, as the dispatcher runs it: the store's job starts in this call
+    rig.bridge.metadata_run(MetadataCmd::LoadSeason(0));
     assert!(rig.pump_until_landed());
     rig.tick(16);
 

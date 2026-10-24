@@ -766,6 +766,7 @@ mod tests {
     use plx_data::subsearch::{SearchStatus, SubSearchCmd};
     use plx_plex::plex::ServerId;
 
+    use crate::app::bridge::test_support::Pms;
     use crate::app::bridge::Bridge;
 
     /// Puts the tape back to its inactive state when a test ends, however it ends.
@@ -2249,11 +2250,43 @@ mod tests {
     /// metadata store holding a two-season show of it: season 1 listed, 200 episodes of which page 0
     /// is loaded, so the window below page 0 is a hole.
     fn show_store() -> (ServerId, MetadataStore) {
+        show_store_at(9)
+    }
+
+    /// [`show_store`] with the server registered at `port`. A test that claims the worker was
+    /// handed the client the runner resolved dials a loopback that answers (`episodes_server`): a
+    /// read that reaches it lands, and a worker handed no client answers the same failure a dead
+    /// port does, so only a landing tells the two apart.
+    fn show_store_at(port: i32) -> (ServerId, MetadataStore) {
+        assert!(plx_net::net::global_init() && plx_net::net::available() && plx_net::net::threaded_tls_ready());
         plx_plex::plex::reset_servers_for_test();
-        let sid = plx_plex::plex::register_for_test("runner", "127.0.0.1", 9, "t", "cid");
+        let sid = plx_plex::plex::register_for_test("runner", "127.0.0.1", port, "t", "cid");
+        plx_plex::plex::client_for(sid).unwrap().set_link(plx_plex::plex::probe::Location::Local);
         let mut store = MetadataStore::default();
         show_on(&mut store, sid);
         (sid, store)
+    }
+
+    /// A loopback PMS that answers every read with a two-episode `/children` list.
+    fn episodes_server() -> Pms {
+        Pms::serve(|_| {
+            ("200 OK", r#"{"MediaContainer":{"size":2,"Metadata":[
+                {"ratingKey":"ep-first","type":"episode","title":"First"},
+                {"ratingKey":"ep-second","type":"episode","title":"Second"}]}}"#.into())
+        })
+    }
+
+    /// The episode keys the show page lists, from the first page the list holds.
+    fn listed(store: &MetadataStore) -> Vec<String> {
+        store.view().current().map(|d| d.episodes.iter_loaded().map(|(_, e)| e.rk.clone()).collect()).unwrap_or_default()
+    }
+
+    /// The keys of the episodes the list holds from `EPISODE_PAGE` on: the page the window asked for.
+    fn second_page(store: &MetadataStore) -> Vec<String> {
+        use plx_data::metadata::EPISODE_PAGE;
+        store.view().current().map(|d| {
+            d.episodes.iter_loaded().filter(|(i, _)| *i >= EPISODE_PAGE).map(|(_, e)| e.rk.clone()).collect()
+        }).unwrap_or_default()
     }
 
     fn show_on(store: &mut MetadataStore, sid: ServerId) {
@@ -2271,7 +2304,11 @@ mod tests {
 
     /// The switch to season 2, as the season tabs ask for it: the job its step emitted.
     fn season_request() -> (ServerId, MetadataStore, StoreJob) {
-        let (sid, mut store) = show_store();
+        season_request_at(9)
+    }
+
+    fn season_request_at(port: i32) -> (ServerId, MetadataStore, StoreJob) {
+        let (sid, mut store) = show_store_at(port);
         assert!(store.run(MetadataCmd::LoadSeason(1)));
         let mut jobs = store.take_jobs();
         assert_eq!(jobs.len(), 1, "one switch, one request");
@@ -2285,7 +2322,11 @@ mod tests {
     }
 
     fn pages_request() -> (ServerId, MetadataStore, StoreJob) {
-        let (sid, mut store) = show_store();
+        pages_request_at(9)
+    }
+
+    fn pages_request_at(port: i32) -> (ServerId, MetadataStore, StoreJob) {
+        let (sid, mut store) = show_store_at(port);
         assert!(pages_want(&mut store));
         let mut jobs = store.take_jobs();
         assert_eq!(jobs.len(), 1, "one window, one request");
@@ -2310,14 +2351,16 @@ mod tests {
         !asked
     }
 
-    /// The registry still holds the client: the worker starts, reads (a failure: nothing listens),
-    /// and posts its ONE answer; the failed fetch puts the tab back and settles the request. The
-    /// kind is not on the tape, so nothing is recorded.
+    /// The registry still holds the client: the worker starts, reads from the server the launch
+    /// resolved a client for, and posts its ONE answer. The server answers, so a landing (the tab
+    /// stays on the new season, its episodes listed) is what a worker handed the client does; one
+    /// handed none puts the tab back. The kind is not on the tape, so nothing is recorded.
     #[test]
     fn a_season_job_whose_client_is_held_is_started_answered_once_and_not_taped() {
         let _serial = plx_base::testlock::serial();
         let _rig = CollectionRig;
-        let (_, mut store, job) = season_request();
+        let pms = episodes_server();
+        let (_, mut store, job) = season_request_at(pms.port);
         assert_eq!(job.admission(), Admission::Direct);
         assert_eq!(season_state(&store), (1, true), "the tab flipped and the request is out");
         tape::init(None, false);
@@ -2327,8 +2370,9 @@ mod tests {
 
         assert_eq!(tape::finish(), (vec![], None), "the kind is untaped: the runner records no admission");
         tape::reset_for_test();
-        assert!(!season_pump(&mut store), "a failed fetch changes no list");
-        assert_eq!(season_state(&store), (0, false), "the failure settled the request and put the tab back");
+        assert!(season_pump(&mut store), "the read reached the server and its answer landed");
+        assert_eq!(season_state(&store), (1, false), "the request settled with the tab on the new season");
+        assert_eq!(listed(&store), ["ep-first", "ep-second"]);
     }
 
     /// Replay launches the same worker the recording did: there is no admission record to consult.
@@ -2366,27 +2410,31 @@ mod tests {
     }
 
     /// `held()` runs the season switch on a worker as production does (the menu-play wait polls for
-    /// its landing and never runs held jobs); `held_all()` parks it until the test runs it.
+    /// its landing and never runs held jobs), with the client it resolved; `held_all()` parks it
+    /// until the test runs it.
     #[test]
     fn the_held_runner_starts_a_season_job_on_a_worker_as_production_does() {
         let _serial = plx_base::testlock::serial();
         let _rig = CollectionRig;
-        let (_, mut store, job) = season_request();
+        let pms = episodes_server();
+        let (_, mut store, job) = season_request_at(pms.port);
         let mut runner = StoreRunner::held();
 
         runner.start(job);
         plx_base::task::drain_workers_for_test();
 
         assert_eq!(runner.run_held(), 0, "nothing was parked: the job started");
-        season_pump(&mut store);
-        assert_eq!(season_state(&store), (0, false), "the worker answered");
+        assert!(season_pump(&mut store), "the worker read from the server and its answer landed");
+        assert_eq!(season_state(&store), (1, false), "the request settled with the tab on the new season");
     }
 
+    /// The parked job resolves its client when the test runs it, and reads through it.
     #[test]
     fn a_held_season_job_runs_once_when_the_test_runs_it() {
         let _serial = plx_base::testlock::serial();
         let _rig = CollectionRig;
-        let (_, mut store, job) = season_request();
+        let pms = episodes_server();
+        let (_, mut store, job) = season_request_at(pms.port);
         let mut runner = StoreRunner::held_all();
 
         runner.start(job);
@@ -2394,18 +2442,22 @@ mod tests {
         assert_eq!(season_state(&store), (1, true), "parked: still out");
         assert_eq!(runner.run_held(), 1);
 
-        season_pump(&mut store);
-        assert_eq!(season_state(&store), (0, false), "the run answered once");
+        assert!(season_pump(&mut store), "the run read from the server and its answer landed");
+        assert_eq!(season_state(&store), (1, false), "the run answered once");
+        assert_eq!(listed(&store), ["ep-first", "ep-second"]);
         assert_eq!(runner.run_held(), 0, "and nothing is left to run twice");
     }
 
-    /// The registry holds the client: the window's worker reads (a failure), posts its ONE answer
-    /// for the job's page and gives the page back, so the next window asks for it again. Not taped.
+    /// The registry holds the client: the window's worker reads the page from the server the launch
+    /// resolved a client for and posts its ONE answer. The server answers, so the page is seated
+    /// when the pump takes it; a worker handed no client lands the page as a failure instead. Not
+    /// taped.
     #[test]
     fn a_page_job_whose_client_is_held_is_started_answered_once_and_not_taped() {
         let _serial = plx_base::testlock::serial();
         let _rig = CollectionRig;
-        let (_, mut store, job) = pages_request();
+        let pms = episodes_server();
+        let (_, mut store, job) = pages_request_at(pms.port);
         assert_eq!(job.admission(), Admission::Direct);
         assert!(pages_held(&mut store), "the page is out: asking again starts nothing");
         tape::init(None, false);
@@ -2416,7 +2468,7 @@ mod tests {
         assert_eq!(tape::finish(), (vec![], None), "the kind is untaped: the runner records no admission");
         tape::reset_for_test();
         store.pump(plx_machine::landgate::fixture_gate());
-        assert!(!pages_held(&mut store), "answered: the page came back, and the window asks for it again");
+        assert_eq!(second_page(&store), ["ep-first", "ep-second"], "the read reached the server and its page is seated");
     }
 
     #[test]
@@ -2452,12 +2504,14 @@ mod tests {
         assert!(!pages_held(&mut store), "answered: the page came back");
     }
 
-    /// `held()` parks the page jobs (no rig waits for a page landing); the test runs them.
+    /// `held()` parks the page jobs (no rig waits for a page landing); the test runs them, and a
+    /// parked job resolves its client when it runs and reads through it.
     #[test]
     fn a_held_page_job_runs_once_when_the_test_runs_it() {
         let _serial = plx_base::testlock::serial();
         let _rig = CollectionRig;
-        let (_, mut store, job) = pages_request();
+        let pms = episodes_server();
+        let (_, mut store, job) = pages_request_at(pms.port);
         let mut runner = StoreRunner::held();
 
         runner.start(job);
@@ -2466,7 +2520,7 @@ mod tests {
         assert_eq!(runner.run_held(), 1);
 
         store.pump(plx_machine::landgate::fixture_gate());
-        assert!(!pages_held(&mut store), "the run answered once");
+        assert_eq!(second_page(&store), ["ep-first", "ep-second"], "the run read from the server and its page is seated");
         assert_eq!(runner.run_held(), 0);
     }
 
