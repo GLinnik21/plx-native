@@ -205,8 +205,12 @@ impl Stores {
         self.subtitle_search.view()
     }
 
-    pub fn person_pump(&mut self) -> bool {
-        self.person.pump(&self.landgate)
+    /// Pump the Person store; `keys` is the registry's answer as of this call. It does NOT start the
+    /// requests it emitted: a caller that returns without [`Stores::take_jobs_of`] and handing the
+    /// jobs to a runner has stranded the page's fetches. The one production caller is
+    /// `Bridge::person_pump`, which drains in the same call.
+    pub fn person_pump(&mut self, keys: &plx_plex::plex::ClientKeys) -> bool {
+        self.person.pump(&self.landgate, keys)
     }
 
     pub fn person_view(&self) -> crate::person::PersonView<'_> {
@@ -240,6 +244,7 @@ impl Stores {
         match id {
             StoreId::Metadata => self.metadata.take_jobs(),
             StoreId::Collection => self.collection.take_jobs(),
+            StoreId::Person => self.person.take_jobs(),
             // The other stores emit no jobs yet.
             _ => Vec::new(),
         }
@@ -255,6 +260,7 @@ impl Stores {
         match id {
             StoreId::Metadata => self.metadata.has_jobs(),
             StoreId::Collection => self.collection.has_jobs(),
+            StoreId::Person => self.person.has_jobs(),
             // The other stores emit no jobs yet.
             _ => false,
         }
@@ -600,11 +606,16 @@ pub enum StoreJob {
     /// One collection page request (resolve, header or children), emitted by the Collection pump
     /// and addressed by the listing's generation. One is out at a time.
     Collection(plx_machine::job::Job<crate::collection::CollectionReq>, crate::collection::CollectionPort),
+    /// One person fetch (a plex.tv read, or a read of one registered server), emitted by the Person
+    /// pump in ascending slot order. Several are out at once (the fan-out), each answering into its
+    /// own mailbox slot.
+    Person(plx_machine::job::Job<crate::person::PersonReq>, crate::person::PersonPort),
 }
 
 impl StoreJob {
     pub fn store(&self) -> StoreId {
-        match self { Self::Detail(..) => StoreId::Metadata, Self::Collection(..) => StoreId::Collection }
+        match self { Self::Detail(..) => StoreId::Metadata, Self::Collection(..) => StoreId::Collection,
+            Self::Person(..) => StoreId::Person }
     }
 }
 
