@@ -559,7 +559,7 @@ impl World {
             script: Some(script), _session: session, _serial: serial, feed: Some(|d, bridge| {
                 bridge.watchlist_for_test().pump();
                 bridge.watchlist_feed(d);
-                bridge.catalog_feed(d);
+                super::watchlist_press_tests::feed_catalog(bridge, d);
             }) }
     }
 

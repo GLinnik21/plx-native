@@ -245,6 +245,7 @@ impl Stores {
             StoreId::Metadata => self.metadata.take_jobs(),
             StoreId::Collection => self.collection.take_jobs(),
             StoreId::Person => self.person.take_jobs(),
+            StoreId::Catalog => self.catalog.take_jobs(),
             // The other stores emit no jobs yet.
             _ => Vec::new(),
         }
@@ -261,6 +262,7 @@ impl Stores {
             StoreId::Metadata => self.metadata.has_jobs(),
             StoreId::Collection => self.collection.has_jobs(),
             StoreId::Person => self.person.has_jobs(),
+            StoreId::Catalog => self.catalog.has_jobs(),
             // The other stores emit no jobs yet.
             _ => false,
         }
@@ -610,12 +612,17 @@ pub enum StoreJob {
     /// pump in ascending slot order. Several are out at once (the fan-out), each answering into its
     /// own mailbox slot.
     Person(plx_machine::job::Job<crate::person::PersonReq>, crate::person::PersonPort),
+    /// One catalog read: the plex.tv discover record of the title the catalog page is about,
+    /// emitted by `open` (and by the pump's retry and its profile-switch re-open) and addressed by
+    /// the request id. It names no server and no client: a plex.tv read as the captured identity.
+    /// One is out at a time.
+    Catalog(plx_machine::job::Job<catalog::CatalogReq>, catalog::CatalogPort),
 }
 
 impl StoreJob {
     pub fn store(&self) -> StoreId {
         match self { Self::Detail(..) => StoreId::Metadata, Self::Collection(..) => StoreId::Collection,
-            Self::Person(..) => StoreId::Person }
+            Self::Person(..) => StoreId::Person, Self::Catalog(..) => StoreId::Catalog }
     }
 }
 
