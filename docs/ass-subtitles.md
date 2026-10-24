@@ -34,7 +34,9 @@ libass structures through the same headers used to compile that library. No firm
 new Starfish API is required. Pins, checksums, license notices and corresponding source archives
 are part of the normal package/source-bundle workflow.
 
-The facade's ABI is 3 (`plx_ass_abi_version()`; `include/ass.h`): besides the load/render calls
+The facade's ABI is 4 (`plx_ass_abi_version()`; `include/ass.h`). Two callers check it and refuse any
+other number: `player/ass.rs` for the subtitles, and `plx_gfx::rtl` for the UI's Arabic and Hebrew
+text through the `plx_ass_text_*` calls ABI 4 added (`src/ass_text.c`). Besides the load/render calls
 it sets track features (`plx_ass_set_features`, Unicode line breaking), the libass cache bounds
 (`plx_ass_set_cache_limits`) and extra line spacing (`plx_ass_set_line_spacing`), reports counters
 (`plx_ass_stats`), and replaces the loaded track in place (`plx_ass_replace_track`). The renderer

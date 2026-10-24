@@ -41,9 +41,10 @@
 //! **Baseline, not top.** Two faces have two line boxes, so compositing by the surface top would
 //! shift Latin down whenever a CJK glyph shared the line. Every run is placed so its baseline
 //! lands on the BASE face's baseline (`TTF_RenderUTF8_Blended` puts the baseline `TTF_FontAscent`
-//! rows from the top), and the composite keeps the base face's box. That box provably contains the
-//! fallback's ink at every rung of `theme::size`: measured host-side through FreeType with
-//! SDL_ttf's own metric arithmetic, Noto Sans CJK's ink top is 16..53 px against Inter's 22..70 px
+//! rows from the top), and the composite keeps the base face's box, grown upward only by the `rise`
+//! of shaped Arabic or Hebrew ink above Inter's ascent ([`render_runs`]). That box provably
+//! contains the fallback's ink at every rung of `theme::size`: measured host-side through FreeType
+//! with SDL_ttf's own metric arithmetic, Noto Sans CJK's ink top is 16..53 px against Inter's 22..70 px
 //! ascent for 22..72 px sizes, and its descent is shallower at every rung. Swept across the whole
 //! Hangul / Han / Kana / fullwidth repertoire the fallback's ink reaches 0.842–0.939 em above the
 //! baseline against Inter's 0.9688 em ascent, so the `y < 0` guard in [`render_runs`] discards only
@@ -895,8 +896,8 @@ unsafe fn font_at(sz: c_int, bold: c_int) -> *mut TtfFont {
 /// the discriminants are load-bearing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Link {
-    /// Inter — `appfont.ttf` / `appfont-bold.ttf`. The app's typeface, and the ONLY link with a
-    /// bold companion. 2853 codepoints.
+    /// Inter — `appfont.ttf` / `appfont-bold.ttf`. The app's typeface, and with [`Link::Arabic`] and
+    /// [`Link::Hebrew`] one of three links with a real bold cut. 2853 codepoints.
     Base = 0,
     /// The bundled `appfont-cjk.ttf` (Noto Sans CJK KR, `tools/cut-noto-cjk.py`). 44810
     /// codepoints: all of Hangul, Kana, Han and CJK punctuation. Shipped rather than borrowed
@@ -1065,7 +1066,8 @@ unsafe fn shaped_face(link: Link, sz: c_int, bold: c_int) -> Option<std::mem::Ma
     Some(crate::rtl::Face::borrow_raw(p))
 }
 
-/// The face for one run. Bold exists only on [`Link::Base`]: the fallback ships at a single
+/// The face for one run. Among the SDL2_ttf links bold exists only on [`Link::Base`] (the shaped
+/// links open their own bold cuts, [`shaped_face`]): the fallback ships at a single
 /// weight, and SDL_ttf's synthetic bold turns dense ideographs into solid blocks at every UI size
 /// (measured — see this module's header). So a bold CJK run renders in the regular fallback face,
 /// which is also what halves the memory below.
@@ -2822,7 +2824,8 @@ fn hband_uv(band: Option<(f32, f32)>, dw: f32) -> (f32, f32) {
 /// per-fragment fade cost — see the shader's own header for why every ordinary glyph stays off
 /// it): two HORIZONTAL ones measured in px from the string's LEFT edge regardless of `align` —
 /// `hfade`, the TRAILING edge, glyph alpha 1→0 between `from`..`to` (the About card's and the
-/// person header bio's `MORE` dissolve, and a gliding marquee run's right edge), and `hlead`, the
+/// person header bio's `MORE` dissolve, and a gliding marquee run's right edge; a right-to-left
+/// paragraph's truncation dissolves through `hlead` at its left end instead), and `hlead`, the
 /// LEADING edge, glyph alpha 0→1 between `from`..`to` (a gliding run is cut by the LEFT of its
 /// window as well: `card_row::block_text`, where `from` is how far the string's head is past the
 /// window's edge) — and two VERTICAL ones in absolute logical screen y (`vfade_top` ramps 0→1

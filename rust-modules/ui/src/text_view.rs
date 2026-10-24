@@ -104,7 +104,7 @@ pub struct TextView<'a> {
     lead: Option<(&'a str, [f32; 4])>,
     /// is the lead run drawn BOLD (`lead`) or at the block's own weight (`lead_quiet`)
     lead_bold: bool,
-    fade_last: f32, // px reserved at the wrap width's right edge; >0 fades a truncated last line out before it
+    fade_last: f32, // px reserved where the last line ends (left if RTL); >0 fades a truncated last line out before it
     /// the mark `fade_last` reserves room for is drawn whether or not the text truncates — see
     /// [`mark_always`](Self::mark_always)
     mark_always: bool,
@@ -210,6 +210,7 @@ impl<'a> TextView<'a> {
     ///
     /// **The app's production truncation mark is [`fade_last`](Self::fade_last)'s**, not this one —
     /// both the About card and the person page's bio pin a quiet MORE to their column's right edge
+    /// (the left one for an Arabic or Hebrew text)
     /// and dissolve the last line into it. This stays because it is the right answer where there is
     /// no right edge to pin to (a centred or narrow block), and it is EXCLUSIVE with that one: see
     /// `fade_last` for why the two cannot both be set.
@@ -244,7 +245,8 @@ impl<'a> TextView<'a> {
             })
             .unwrap_or(0.0)
     }
-    /// Reserve `px` at the wrap width's right edge for an OUT-OF-FLOW affordance sitting on the last
+    /// Reserve `px` at the wrap width's right edge (the left for a right-to-left block,
+    /// [`is_rtl`](Self::is_rtl)) for an OUT-OF-FLOW affordance sitting on the last
     /// line (the About card's right-pinned MORE): when the text was truncated by `max_lines` AND the
     /// last line reaches into that zone, the line paints with a shader fade to transparency ending at
     /// `width − px` instead of colliding. A no-op on non-truncated text unless the mark is
@@ -537,7 +539,8 @@ impl<'a> TextView<'a> {
         top + drawn_h - self.line_h()
     }
 
-    /// Reserve [`fade_last`](Self::fade_last) room for a right-pinned [`more_mark`] at this
+    /// Reserve [`fade_last`](Self::fade_last) room for a [`more_mark`] pinned at the last line's end
+    /// (the right, or the left for a right-to-left block) at this
     /// block's own size, plus `gap` of air before it — the clamped-prose idiom of the Person bio
     /// and the Collection summary. Needs [`with_measure`](Self::with_measure) first; without a
     /// measure only the gap is reserved.
@@ -556,7 +559,8 @@ impl<'a> TextView<'a> {
         self
     }
 
-    /// Draw the [`more_mark`] pinned right on the last line of this block, drawn at `x`/`top` in a
+    /// Draw the [`more_mark`] on the last line of this block where its reading stops (the right edge,
+    /// or the left for a right-to-left block, [`is_rtl`](Self::is_rtl)), drawn at `x`/`top` in a
     /// `w`-wide column to `drawn_h`: `TEXT_SECONDARY` while `marked` (the block holds a pressed
     /// focus), `TEXT_TERTIARY` otherwise. The pair to [`fade_for_more`](Self::fade_for_more).
     pub fn draw_more(&self, p: Painter, x: f32, top: f32, w: f32, drawn_h: f32, marked: bool) {
