@@ -423,3 +423,19 @@ fn seed_pair(browse: &mut TestBrowse, house: BrowseSource) {
     );
     browse.append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
 }
+
+/// `registered_page_source`, but on a loopback port nothing listens on: the request path really
+/// spawns its worker, which is refused at once instead of dialling 10.0.0.1.
+pub(super) fn loopback_page_source() -> (RegisteredCleanup, TestBrowse, ServerId, &'static plx_plex::plex::Client) {
+    plx_plex::plex::reset_servers_for_test();
+    let sid = plx_plex::plex::register_for_test("browse-ledger", "127.0.0.1", 9, "old", "cid");
+    assert!(plx_plex::plex::set_current(sid));
+    let mut source = a_source("original", "", true);
+    source.sid = sid;
+    source.sections_done = true;
+    source.counts_done = true;
+    let mut browse = TestBrowse::default();
+    browse.seed_sources(vec![source]);
+    browse.append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
+    (RegisteredCleanup, browse, sid, plx_plex::plex::client_for(sid).unwrap())
+}

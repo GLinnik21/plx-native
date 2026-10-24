@@ -1441,6 +1441,10 @@ pub fn shelf_is_continue(id: &str, key: &str) -> bool {
 mod paging_tests;
 
 #[cfg(test)]
+#[path = "section_hubs_job_tests.rs"]
+mod job_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
