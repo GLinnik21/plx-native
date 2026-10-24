@@ -158,9 +158,11 @@ pub struct MetadataState {
     alt: AltStore,
     /// The IO this owner has asked the application to start and the application has not yet taken
     /// (`MetadataStore::take_jobs`): one [`crate::stores::StoreJob::Detail`] per accepted detail
-    /// request. The owner never starts the work itself, so no thread, clock or network read happens
-    /// in the step that asks. A job taken is a job owed to its runner: the application's `Bridge`
-    /// starts each one in the same call that stepped the store (`app::adapters::stores`).
+    /// request, one [`crate::stores::StoreJob::MetaSeason`] per season switch and one
+    /// [`crate::stores::StoreJob::MetaEpisodes`] per episode-page window. The owner never starts
+    /// the work itself, so no thread, clock or network read happens in the step that asks. A job
+    /// taken is a job owed to its runner: the application's `Bridge` starts each one in the same
+    /// call that stepped the store (`app::adapters::stores`).
     pub(crate) jobs: Vec<crate::stores::StoreJob>,
 }
 
@@ -5149,7 +5151,9 @@ pub fn pump_episode_pages(state: &mut MetadataState, adapter: &MetadataAdapter) 
 // outbox (`StoreJob::MetaSeason`, `StoreJob::MetaEpisodes`, both `Direct`: none is on the tape) and
 // the application's runner starts it with the client it resolved for the server at the launch
 // (`finish_season_job`, `finish_episodes_job`). The answer comes back through the job's port into
-// the mailboxes the pumps already read (`season_result`, `ep_pages`), ungated as before.
+// the mailboxes the pumps already read (`season_result`, `ep_pages`). The season landing is gated,
+// as before (`pump_season_with_gate` takes it through the landing gate, and a replay takes it on
+// its recorded frame); only the page landing (`pump_episode_pages`) is an ungated take.
 
 fn season_addr(gen: u32) -> plx_machine::machine::Addr {
     plx_machine::machine::Addr {

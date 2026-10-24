@@ -340,8 +340,8 @@ reads of `fetch_episodes` and `fetch_episode_page` are gone from `data/src/metad
   holds the adapter `Arc`, so a job emitted before a `Reset` answers into the adapter it was made
   for. The Hubs read differs from the six before it in four ways.
   - **A third admission family.** `StoreJob::admission()` names `Tape` (Detail, Collection, Person),
-    `Direct` (Catalog, subtitle search, view reconcile, Search's fetches and recents writes) or `Home`,
-    as one exhaustive match. A `Home`
+    `Direct` (Catalog, subtitle search, view reconcile, Search's fetches and recents writes, the
+    Metadata season switch and episode-page window) or `Home`, as one exhaustive match. A `Home`
     job is recorded in a controlled Home run's own ordered ledger (`HomeIo::admit`), not on the tape,
     with the bytes `HubRequest::admission` returns (the bytes `hubs_descriptor` returned before it,
     unchanged). A controlled arm of the Bridge steps Hubs, then admits what it emitted inside the
@@ -420,7 +420,11 @@ reads of `fetch_episodes` and `fetch_episode_page` are gone from `data/src/metad
   `ClientKey`); `fetch_episodes` and `fetch_episode_page` take it, so the detail chain is one client
   end to end. A server it holds none for still launches, and the body answers the failure without a
   GET (a season lands `eps: None`, a page `rows: None` and gives its key back). Both bodies keep the
-  `catch_unwind` guard and post their answer outside it. Landings stay ungated.
+  `catch_unwind` guard and post their answer outside it. The season landing is gated, as it was
+  before: `pump_season_with_gate` takes it through the landing gate, dump mode waits on it while
+  `season_loading()` holds, and a replay takes it on its recorded frame (which is why a refusal
+  catches `season_done` up in the call that refuses it). Only the page landing
+  (`pump_episode_pages`) is an ungated take.
   - **A refusal leaves what the inline spawn's `!spawned` arm left.** `MetaSeasonPort::refused`
     catches `season_done` up to the job's generation with `fetch_max`, in the call that refused it,
     so `season_loading()` is false at once and a refusal that arrives after a newer request landed

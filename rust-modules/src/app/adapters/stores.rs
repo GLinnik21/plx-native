@@ -8,9 +8,10 @@
 //! and hands each to [`StoreRunner::start`], which owns everything the data layer must not: the
 //! tape's admission record, the worker thread and the process-global client the request reads. A
 //! kind that is not on the tape (the catalog read, a plex.tv call that names no client; subtitle
-//! search; the Search screen's fetches and its recents writes; view reconcile) is started with no
-//! admission record, as its inline spawn was. The detail pump keeps a counted backstop for a
-//! sender that did neither (`Bridge::start_late_store_jobs`).
+//! search; the Search screen's fetches and its recents writes; view reconcile; the Metadata season
+//! switch and episode-page window) is started with no admission record, as its inline spawn was.
+//! The detail pump keeps a counted backstop for a sender that did neither
+//! (`Bridge::start_late_store_jobs`).
 //!
 //! **Three admission families** (`plx_data::stores::Admission`, stated by the job kind and matched
 //! exhaustively): `Tape` kinds record their launch on the tape; `Direct` kinds are started with no
@@ -27,9 +28,10 @@
 //! choose the moment a request is "in flight" and the moment it "settles", where a worker thread
 //! made both depend on the scheduler: a fetch for an unknown server returns in microseconds, so a
 //! fast run settled a request before an "in flight" assertion while a loaded CI runner had not
-//! settled it after a hundred `yield_now`s. `Held` parks per kind: [`StoreRunner::held`] leaves the
-//! Hubs read live (the rigs that poll for a landing, the dump and return-hold tests, need a real
-//! answer on a worker), and [`StoreRunner::held_all`] parks it as well.
+//! settled it after a hundred `yield_now`s. `Held` parks per kind (`LiveKind`): [`StoreRunner::held`]
+//! leaves the Hubs read and the Metadata season switch live (the rigs that poll for a landing, the
+//! dump and return-hold tests and `menu_play_season_tests`, need a real answer on a worker), and
+//! [`StoreRunner::held_all`] parks them as well. Both runners park episode-page jobs.
 //!
 //! **The registry is read here, not in a step.** A step that decides from "which client does this
 //! server slot hold" is handed the answer as an input (`plx_plex::plex::ClientKeys`), which the
@@ -153,7 +155,8 @@ pub(crate) enum StoreRunner {
     /// TEST ONLY: park the jobs of every kind not in `live` until [`StoreRunner::run_held`]: after
     /// its tape admission for a kind that is on the tape, after the registry's key check for one
     /// that is not but reads a server, and with neither for a Catalog job (a plex.tv read that
-    /// names no client). A kind in `live` starts as `Live` starts it.
+    /// names no client) or a season or episode-page job, which carries no key (`run_held` resolves
+    /// its client when it runs the job). A kind in `live` starts as `Live` starts it.
     #[cfg(test)]
     Held { parked: Vec<StoreJob>, live: &'static [LiveKind] },
 }
