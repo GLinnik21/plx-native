@@ -1,8 +1,8 @@
 //! Which `Client` a server slot holds, as a plain value.
 //!
 //! A store's step decides from its inputs, and "is the client I opened this page with still the
-//! one the registry holds" used to be answered by the step itself, by reading the process-global
-//! registry (`client_for`). That read is an input, so the host makes it and hands the answer in:
+//! one the registry holds" is not a read the step makes of the process-global registry
+//! (`client_for`). That read is an input, so the host makes it and hands the answer in:
 //! [`ClientKeys`] is the registry's answer for every active slot, taken immediately before a step
 //! in the same call, and the step looks a slot up with [`ClientKeys::key`].
 //!

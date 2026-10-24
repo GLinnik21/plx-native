@@ -6,7 +6,6 @@
 use super::*;
 use crate::stores::collection::{CollectionCmd, CollectionStore};
 use crate::stores::StoreJob;
-use plx_machine::job::Job;
 use plx_machine::landgate::fixture_gate;
 
 const KEY: ClientKey = ClientKey { instance: 7, token: 3 };
@@ -165,7 +164,6 @@ fn a_different_client_answer_rebuilds_the_page_and_asks_again() {
 /// refuses a job whose admission the tape declined or whose client the registry no longer holds.
 #[test]
 fn a_refused_request_releases_its_claim_and_is_asked_again() {
-    use plx_machine::job::Port;
     let _serial = plx_base::testlock::serial();
     let mut store = CollectionStore::default();
     open(&mut store, "50001", &holding());
@@ -185,7 +183,6 @@ fn a_refused_request_releases_its_claim_and_is_asked_again() {
 /// runner refuses a job on its own thread, and by then the page may have moved on.
 #[test]
 fn a_refusal_for_a_superseded_request_leaves_the_newer_claim() {
-    use plx_machine::job::Port;
     let _serial = plx_base::testlock::serial();
     let mut store = CollectionStore::default();
     open(&mut store, "50001", &holding());
@@ -243,7 +240,7 @@ fn a_job_emitted_before_a_reset_answers_into_the_retired_adapter() {
     assert_ne!(port, store.collection_port(), "the job holds the retired adapter's port");
     open(&mut store, "50001", &holding());
 
-    plx_machine::job::Port::done(&port, job.addr, CollectionAnswer(Landing::Header { rk: None, head: header("Old", 1) }));
+    port.done(job.addr, CollectionAnswer(Landing::Header { rk: None, head: header("Old", 1) }));
     assert!(!store.adapter_for_test().has_mail_for_test(), "the replacement's landing never sees the answer");
 }
 
