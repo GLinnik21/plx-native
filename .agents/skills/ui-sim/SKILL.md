@@ -408,8 +408,10 @@ device-verified" is a useful, honest status. "Verified" without a TV is not.
   needs Screen Recording permission — a GUI prompt that silently yields black frames headlessly —
   and it grabs whatever is actually on screen, so an occluded window or two parallel simulators
   corrupt it. The in-app shot needs no permission, works occluded, and is deterministic.
-- The window is not 1:1. `surface::probe` letterboxes 1920×1080 into whatever the drawable is, so
-  shots come out at the viewport size (e.g. 1650×928). Fine for layout, wrong for pixel work.
+- The window is 1:1 only where the display can give a 1920x1080 drawable: a Retina Mac always does,
+  and `SIM_W=1920 SIM_H=1080` asks for it anywhere. A fitted window on a 1x screen is a whole fraction
+  of the canvas (960x540, `scale` 0.5) and `surface::probe` letterboxes 1920×1080 into it, so shots
+  come out at the viewport size — fine for layout, wrong for pixel work. Read the `surface:` line.
 - Without `plxnative-clocksink` there is no `player` route to screenshot beyond the failure
   read-out and the HUD's busy states. With it there is a real one, driven by a real stream — but
   the video PLANE is empty, because the app decodes nothing and the wayland overlay is webOS-only:
