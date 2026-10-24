@@ -15,7 +15,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-24T11:03:39Z",
+ "generated": "2026-10-24T11:04:12Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -102,18 +102,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -51.8,
-   "change7_pct": -23.6,
+   "change30_pct": -51.9,
+   "change7_pct": -23.7,
    "d30": 686.5,
-   "delta30": -355.5,
-   "delta7": -102,
+   "delta30": -356.0,
+   "delta7": -102.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 83,
+   "n_now": 84,
    "n_prev": 119,
-   "now": 331,
+   "now": 330.5,
    "prev7": 433,
    "shown": true,
    "state": "better",
@@ -324,18 +324,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 102.3,
-   "change7_pct": 14.3,
+   "change30_pct": 101.5,
+   "change7_pct": 13.9,
    "d30": 130,
-   "delta30": 133,
-   "delta7": 33,
+   "delta30": 132.0,
+   "delta7": 32.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 71,
+   "n_now": 72,
    "n_prev": 115,
-   "now": 263,
+   "now": 262.0,
    "prev7": 230,
    "shown": true,
    "state": "flat",
@@ -345,18 +345,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 179.6,
-   "change7_pct": 6.7,
+   "change30_pct": 177.5,
+   "change7_pct": 5.9,
    "d30": 71,
-   "delta30": 127.5,
-   "delta7": 12.5,
+   "delta30": 126,
+   "delta7": 11,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 70,
+   "n_now": 71,
    "n_prev": 115,
-   "now": 198.5,
+   "now": 197,
    "prev7": 186,
    "shown": true,
    "state": "flat",
@@ -409,17 +409,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -7.2,
+   "change7_pct": -6.9,
    "d30": null,
    "delta30": null,
-   "delta7": -11,
+   "delta7": -10.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 71,
+   "n_now": 72,
    "n_prev": 115,
-   "now": 141,
+   "now": 141.5,
    "prev7": 152,
    "shown": true,
    "state": "flat",
@@ -497,15 +497,15 @@
    "change30_pct": 18.8,
    "change7_pct": 11.8,
    "d30": 16,
-   "delta30": 3,
-   "delta7": 2,
+   "delta30": 3.0,
+   "delta7": 2.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 71,
+   "n_now": 72,
    "n_prev": 115,
-   "now": 19,
+   "now": 19.0,
    "prev7": 17,
    "shown": false,
    "state": "flat",
@@ -625,11 +625,6 @@
    "change_pct": 35.8,
    "commits": [
     {
-     "pr": 964,
-     "sha": "f33235569",
-     "title": "tv-session: `screen on` on an already-lit panel is a no-op success, not a refusal"
-    },
-    {
      "pr": 941,
      "sha": "c78dd374e",
      "title": "net: a finished body reads as the clean end, not a wait on the open connection"
@@ -673,6 +668,11 @@
      "pr": 981,
      "sha": "65e976b01",
      "title": "gfx: a two-stop ramp program for square unfocused gradients"
+    },
+    {
+     "pr": 987,
+     "sha": "1e6f59162",
+     "title": "Collection store: emit store jobs and read the server registry as an input"
     }
    ],
    "from": 46.0,
@@ -686,11 +686,6 @@
    "change_pct": 34.5,
    "commits": [
     {
-     "pr": 964,
-     "sha": "f33235569",
-     "title": "tv-session: `screen on` on an already-lit panel is a no-op success, not a refusal"
-    },
-    {
      "pr": 941,
      "sha": "c78dd374e",
      "title": "net: a finished body reads as the clean end, not a wait on the open connection"
@@ -734,6 +729,11 @@
      "pr": 981,
      "sha": "65e976b01",
      "title": "gfx: a two-stop ramp program for square unfocused gradients"
+    },
+    {
+     "pr": 987,
+     "sha": "1e6f59162",
+     "title": "Collection store: emit store jobs and read the server registry as an input"
     }
    ],
    "from": 152,
@@ -747,11 +747,6 @@
    "change_pct": 27.1,
    "commits": [
     {
-     "pr": 964,
-     "sha": "f33235569",
-     "title": "tv-session: `screen on` on an already-lit panel is a no-op success, not a refusal"
-    },
-    {
      "pr": 941,
      "sha": "c78dd374e",
      "title": "net: a finished body reads as the clean end, not a wait on the open connection"
@@ -795,6 +790,11 @@
      "pr": 981,
      "sha": "65e976b01",
      "title": "gfx: a two-stop ramp program for square unfocused gradients"
+    },
+    {
+     "pr": 987,
+     "sha": "1e6f59162",
+     "title": "Collection store: emit store jobs and read the server registry as an input"
     }
    ],
    "from": 114.7,
@@ -835,7 +835,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 263
+   "now": 262.0
   }
  ],
  "slowest_local": [
