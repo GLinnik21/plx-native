@@ -11,6 +11,8 @@
 #   tv-session.sh screen off|on  blank the PANEL while the app keeps running (see below)
 #   tv-session.sh sound off|on|status
 #                                mute/unmute the TELEVISION, independent of the panel (see below)
+#   tv-session.sh background [APPID]|foreground|fg
+#                                send the app to the background / bring it back (see below)
 #   tv-session.sh wan off [TTL]|on|status
 #                                cut the TELEVISION's route to the internet, LAN intact (see below)
 #   tv-session.sh down           hand the TV back: strip automation, close the app (no relaunch)
@@ -80,13 +82,20 @@
 # taken this way. `power/turnOnScreen` is the reverse; both are on this firmware's api-permissions
 # list, unlike the newer-webOS `power/turnOff` the wake-tv skill records as `Unknown method` here.
 #
-# USE IT FOR the measurement tiers — ABR, transaction cost, anything read out of the event log —
-# where it saves the panel over long runs and costs nothing. DO NOT use it for the fps scenes,
-# `shot`, or the capture stream: `plx_machine::idle` gates presents and the panel is the thing those
-# measure, so a dark screen makes them either meaningless or silently wrong.
-# The one exception is a scene on the PLAYER route: the bound video plane forces presents
-# (`plx_machine::idle`'s VIDEO_PLANE gate), so its frame times are real with the panel off
-# (docs/player-submenus.md, "Device frame-time check").
+# Screen off is only the backlight, and it is fine for every measurement tier — ABR, transaction
+# cost, anything read out of the event log, and the fps scenes too (`tests/run.py --fps --mock`
+# blanks it by default). Nothing in the app reads the panel state, so the app keeps presenting at full rate:
+# `plx_machine::idle` keys on the UI's own changes ("nothing on screen changed, so don't repaint
+# it"), not on the physical panel. Measured on the dev TV 2026-10-24 (Home `grid-pong`, release
+# build): panel off 73 frames/cycle at 59.9 fps with 9 missed refreshes in cycles 2-60; panel on
+# 73 frames/cycle at 59.6-59.9 fps with 8, 13 and 14. It saves the panel over long runs and costs
+# nothing.
+# `shot` (the DISPLAY compositor read) works with the panel off: docs/measurements/
+# tv-session-7-2026-09-10.md ran `screen off` first and got a 1920x1080 DISPLAY capture with real
+# pixel values (opener p95 246.9, row-mate 167.0), and docs/measurements/
+# library-all-types-and-fps-2026-09-26.md checked native captures of the final card rendering with
+# the panel off. NOT on record: the live capture stream (`/tmp/plxnative-capture`, the app's own
+# GLES frames) with the panel off; check the first frame instead of assuming either way.
 #
 # SOUND is the television's own mute, separate from the panel above and from playback: it silences
 # whatever the set would otherwise put out, panel on or off, app running or not.
@@ -760,6 +769,7 @@ cmd_up() {
     if [ "$keep" = 1 ]; then bad "--mock-plextv cannot be combined with --keep (leftover triggers could select another identity)"; exit 2; fi
     no_token=1
     extra_arm+=("plextv=http://127.0.0.1:$mock_plextv")
+    extra_arm+=("discover=http://127.0.0.1:$mock_plextv")
   fi
   configure_direct_screen || exit 2
   # --remote is --stream plus a front door: there is nothing to publish without a stream, so it
@@ -1201,8 +1211,8 @@ cmd_down() {
   echo "== TV is yours"
 }
 
-# Blank or restore the PANEL, leaving the app and playback untouched. See the header for why
-# this is safe for the measurement tiers and disqualifying for the visual ones.
+# Blank or restore the PANEL, leaving the app and playback untouched. See the header: it is only
+# the backlight, so the app presents the same either way (`shot` works with it dark; see the header).
 cmd_screen() {
   local want="${1:-}"
   case "$want" in
@@ -1223,14 +1233,67 @@ cmd_screen() {
   flat=$(printf '%s' "$reply" | tr -d '\r\n' | tr -s ' ')
   if printf '%s' "$flat" | grep -q '"returnValue": *true'; then
     ok "panel $want ($(printf '%s' "$flat" | sed -n 's/.*"state": *"\([^"]*\)".*/\1/p'))"
-  elif printf '%s' "$flat" | grep -q '"errorCode": *"-101"'; then
+  elif [ "$want" = off ] && printf '%s' "$flat" | grep -q '"errorCode": *"-101"'; then
     # -101 "The current state must be 'Active'" means the panel is ALREADY off. Asking for a state
     # the set is already in is a no-op, not a failure -- and reporting it as one makes every script
-    # that re-asserts screen-off after a relaunch look broken.
+    # that re-asserts screen-off after a relaunch look broken. Only for `off`: a -101 answering
+    # `on` would say "panel already on" about a panel the reply calls dark, and skip a real
+    # turn-on, so it falls through to the refusal below.
     ok "panel already $want"
+  elif [ "$want" = on ] && printf '%s' "$flat" | grep -q '"errorCode": *"-102"' \
+    && printf '%s' "$flat" | grep -q '"state": *"Active"'; then
+    # The mirror: -102 "The current state must be 'Screen Off'" with state Active means the panel is
+    # ALREADY lit (`tests/run.py --fps --panel on` asks for `screen on` and would refuse to run on a
+    # lit set). Any other state -- "Active Standby" -- is a set that is NOT lit, so it stays a refusal.
+    ok "panel already on"
   else
     bad "screen $want refused: $flat"; return 1
   fi
+}
+
+# Send the app to the BACKGROUND and bring it back: the lifecycle edges (SDL WILL/DID enter
+# background `0x103`/`0x104`, WILL/DID enter foreground `0x105`/`0x106`) as the OS delivers them.
+# On this webOS 4.5 set the LG launcher/Home/Settings are OVERLAYS and deliver NO edge (see the
+# skill), so `background` launches a real full-screen app through the application manager instead
+# (default `org.webosbrew.hbchannel`, override with an argument or PLX_BG_APP) and asserts it is now
+# the foreground app. `foreground` launches THIS flavour's own id again -- the same call `up` makes,
+# but with NO close-first, so the pid must be unchanged (a changed pid means the app died, which is
+# a finding, not a relaunch) -- and asserts the app is the foreground app again. No setting is
+# changed and nothing is injected; `fg` only reads the foreground app (read-only, advisory lock).
+fg_app() {
+  tvq "script -qc \"luna-send -n 1 -f luna://com.webos.applicationManager/getForegroundAppInfo '{}'\" /dev/null" \
+    | tr -d '\r\n' | tr -s ' ' | sed -En 's/.*"appId": *"([^"]*)".*/\1/p'
+}
+launch_app() {  # $1 = app id. -i keeps the subscriber open for the launch to take (see relaunch).
+  tv "luna-send -i luna://com.webos.applicationManager/launch '{\"id\":\"$1\"}' >/dev/null 2>&1 & \
+      LP=\$!; sleep 5; kill \$LP 2>/dev/null" >/dev/null 2>&1
+}
+cmd_lifecycle() {
+  local what="${1:-}" target pid before after
+  case "$what" in
+    fg) advise_lock "tv-session fg"; ensure_awake || exit 1; info "foreground app: $(fg_app)"; return 0 ;;
+    background) target="${2:-${PLX_BG_APP:-org.webosbrew.hbchannel}}" ;;
+    foreground) target="$APPID" ;;
+    *) echo "usage: tv-session.sh background [APPID] | foreground | fg" >&2; exit 2 ;;
+  esac
+  require_lock "tv-session $what"
+  ensure_awake || exit 1
+  pid=$(app_pids)
+  [ -n "$pid" ] || { bad "$APPID is not running; nothing to $what"; return 1; }
+  before=$(fg_app)
+  if [ "$what" = background ] && [ "$before" != "$APPID" ]; then
+    bad "$APPID is not the foreground app ($before); refusing to launch over someone else's screen"; return 1
+  fi
+  info "foreground before: $before; launching $target (pid $pid)"
+  launch_app "$target"
+  after=$(fg_app)
+  if [ "$after" != "$target" ]; then
+    bad "foreground is '$after', not $target: the launch did not take"; return 1
+  fi
+  if [ "$(app_pids)" != "$pid" ]; then
+    bad "app pid changed ($pid -> $(app_pids)): the app died or restarted instead of $what"; return 1
+  fi
+  ok "$what: $target is the foreground app; $APPID still pid $pid"
 }
 
 # Mute/unmute the TELEVISION's own audio (see SOUND in the header), or just read the flag back.
@@ -1402,6 +1465,7 @@ case "${1:-}" in
   up)     shift; cmd_up "$@" ;;
   screen) shift; cmd_screen "$@" ;;
   sound)  shift; cmd_sound "$@" ;;
+  background|foreground|fg) cmd_lifecycle "$@" ;;
   status) shift; cmd_status ;;
   key)    shift; cmd_key "$@" ;;
   click)  shift; cmd_click "$@" ;;

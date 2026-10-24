@@ -10,7 +10,7 @@ page, a test and a later alerting job all get the same answer. The `ci-metrics` 
 after tools/ci-history.py and commits the result beside it.
 
 The document is `{"schema": 2, "generated", "thresholds", "metrics", "slowest_ci", "slowest_local",
-"regressions"}`:
+"regressions", "flaky"}`:
 
   metrics      one entry per series with a sample in the last 14 days (a removed job is not "now"),
                IN THE ORDER A READER WANTS THEM (see "Order and selection"): id, label, group ("ci" or
@@ -97,6 +97,18 @@ Regressions. For a metric that is worse, `since` is the first day of the trailin
 sit above prev7 * (1 + threshold_pct / 100) (the samples are single runs, so one slow run does not
 start it: the run must hold up to now), and `commits` are the push rows (sha, title, pr) of any
 workflow from the day before `since` until now, at most 10, newest last. No regression: the list is empty.
+
+Flaky tests. `flaky` is the list of tests that ci-history.json's `flaky` events (tools/ci-history.py says what
+makes an event: one job of one run gave the test both a pass and a fail) have recorded, one entry per (job,
+test): `{"test", "job", "first_seen", "last_seen" (ISO times), "count" (runs it flaked in), "status", "new",
+"last": {"run", "sha", "pr"}}`, active first, then by last_seen, newest first. The lifecycle is
+  Active        flaked within the last 30 days;
+  Quarantined   listed in ci/flaky.txt (`--quarantine`), whatever its age: a quarantined test is meant to
+                be skipped or watched, so its silence is not evidence that it is fixed;
+  Fixed         not quarantined, and no flake for 30 days (FIXED_AFTER) - the 30-day rule.
+`new` is true for a test whose first flake is within the last 24 hours (NEW_WITHIN) and that is not fixed:
+the "new flaky test" signal. It is derived from the data alone, with no memory of earlier summaries, so a
+test shows as new for a day however many runs the collector recorded in it. Nothing blocks on it.
 """
 from __future__ import annotations
 
@@ -131,6 +143,8 @@ LOCAL_LABEL = {
 }
 KIND = {"pr_wait": "wait", "push_wait": "wait", "minutes": "cost", "bench": "local"}
 MAX_COMMITS = 10
+FIXED_AFTER = timedelta(days=30)    # no flake for this long and a (not quarantined) test is considered fixed
+NEW_WITHIN = timedelta(hours=24)    # a test whose first flake is this recent is a "new flaky test"
 WF_LABEL = {"ci": "CI", "sim": "Simulator CI", "nightly": "Nightly"}
 
 # class -> (percent floor, absolute floor in seconds); the module docstring says where they come from
@@ -309,7 +323,46 @@ def commits_since(history: dict, since: str, now: datetime) -> list:
     return [c for _, c in sorted(out, key=lambda t: t[0])][-MAX_COMMITS:]
 
 
-def summarize(history: dict, bench: dict | None, now: datetime) -> dict:
+def load_quarantine(path: str | None) -> set:
+    """The tests named in ci/flaky.txt (`test<TAB>reason` per line, `#` comments, a `# count: N` first line).
+
+    A missing file or no path is an empty quarantine (the collector's checkout of main may predate the file).
+    A `# count:` that disagrees with the entries is an error, like the other allow-lists under ci/.
+    """
+    if not path or not Path(path).is_file():
+        return set()
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
+    entries = [ln.split("\t", 1)[0].strip() for ln in lines if ln.strip() and not ln.startswith("#")]
+    declared = next((int(ln.split(":", 1)[1]) for ln in lines if ln.startswith("# count:")), None)
+    if declared is not None and declared != len(entries):
+        raise ValueError(f"{path}: `# count:` says {declared} but there are {len(entries)} entries")
+    return set(entries)
+
+
+def flaky_list(history: dict, quarantined: set, now: datetime) -> list:
+    """One entry per (job, test) of the history's flaky events, with its lifecycle status (see the docstring)."""
+    groups: dict = {}
+    for e in history.get("flaky") or []:
+        groups.setdefault((e["job"], e["test"]), []).append(e)
+    out = []
+    for (job, test), events in groups.items():
+        events.sort(key=lambda e: (e["at"], e["run"]))
+        first, last = events[0], events[-1]
+        status = ("Quarantined" if test in quarantined
+                  else "Fixed" if parse_time(last["at"]) < now - FIXED_AFTER else "Active")
+        out.append({"test": test, "job": job, "first_seen": first["at"], "last_seen": last["at"],
+                    "count": len({e["run"] for e in events}), "status": status,
+                    "new": status != "Fixed" and parse_time(first["at"]) >= now - NEW_WITHIN,
+                    "last": {"run": last["run"], "sha": last["sha"], "pr": last.get("pr")}})
+    order = {"Active": 0, "Quarantined": 1, "Fixed": 2}
+    return sorted(out, key=lambda f: (order[f["status"]], _neg_time(f["last_seen"]), f["test"], f["job"]))
+
+
+def _neg_time(stamp: str) -> float:
+    return -parse_time(stamp).timestamp()
+
+
+def summarize(history: dict, bench: dict | None, now: datetime, quarantined: set = frozenset()) -> dict:
     metrics, regressions = [], []
     for sid, se in sorted(all_series(history, bench).items()):
         samples = se["samples"]
@@ -342,7 +395,8 @@ def summarize(history: dict, bench: dict | None, now: datetime) -> dict:
             "metrics": metrics,
             "slowest_ci": top(longest([m for m in metrics if m["kind"] == "job"])),
             "slowest_local": top(longest([m for m in metrics if m["kind"] == "local" and "parent" not in m and m["id"] != HEALTH_ROW])),
-            "regressions": sorted(regressions, key=lambda r: (-r["change_pct"], r["id"]))}
+            "regressions": sorted(regressions, key=lambda r: (-r["change_pct"], r["id"])),
+            "flaky": flaky_list(history, quarantined, now)}
 
 
 def link_parts(metrics: list) -> None:
@@ -415,6 +469,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--history", required=True, help="ci-history.json")
     ap.add_argument("--bench", help="build-history.json (optional)")
+    ap.add_argument("--quarantine", help="ci/flaky.txt, the quarantine list (optional; missing = nothing quarantined)")
     ap.add_argument("--out", help="where to write ci-summary.json")
     ap.add_argument("--now", help="ISO time to compute for (default: the clock)")
     ap.add_argument("--noise", action="store_true", help="print the week-over-week noise per class and write nothing")
@@ -425,13 +480,14 @@ def main(argv=None) -> int:
     try:
         history = json.loads(Path(args.history).read_text(encoding="utf-8") or "{}")
         bench = json.loads(Path(args.bench).read_text(encoding="utf-8")) if args.bench and Path(args.bench).is_file() else None
+        quarantined = load_quarantine(args.quarantine)
     except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     if args.noise:
         print(json.dumps(noise_report(history, bench, now), indent=1))
         return 0
-    doc = summarize(history, bench, now)
+    doc = summarize(history, bench, now, quarantined)
     tmp = f"{args.out}.tmp"
     Path(tmp).write_text(json.dumps(doc, indent=1, sort_keys=True) + "\n", encoding="utf-8")
     Path(tmp).replace(args.out)

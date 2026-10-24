@@ -3,7 +3,7 @@
 //!
 //! Each server is a [`Lane`]: the rows it has read of `/hubs/continueWatching/items`, with the
 //! positions `lo..hi` marking the ones the deck shows. The deck is the union of every lane's shown
-//! rows in one order, [`order`]: last viewed descending, then the lane's roster index, then the
+//! rows in one order, [`order`]: last viewed descending, then the card's server, then the
 //! row's position, which is total, so a tie cannot change places between two asks.
 //!
 //! A forward ask adds the next [`PAGE`] cards in that order and lets go of the oldest until the
@@ -20,6 +20,9 @@
 //! where it was moves onto its ledger: the keys it has emitted, in order. From then on it reads the
 //! listing from 0 and skips what the ledger holds, and a card behind the window is read back by key,
 //! so every item is still reached and none appears twice.
+//!
+//! Grouping happens after this merge, not in it: the lanes, the ledger, [`place`], [`reload`] and
+//! [`fit`] count every server's rows, and `stores::deck_group` then keeps one tile per show.
 //!
 //! A refresh does not snap a moved deck back to its head: [`reload`] reads a lane again at its own
 //! offsets and seats the window on the cards it showed, by rating key.

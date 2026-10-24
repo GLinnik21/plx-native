@@ -28,7 +28,8 @@ removed plays. One set measured; webOS 4+ and an unreadable version keep configd
 |---|---|---|
 | **P8 single-layer, CCID 1/2/4** | declare + direct play | no node; direct-play the HDR10/SDR/HLG base |
 | **P5** | declare + direct play | refuse direct play and video copy; request a video re-encode |
-| **Enhancement layer present** | refuse → transcode | refuse → transcode |
+| **P7 dual-layer, CCID ≠ 0** (UHD Blu-ray) | convert to 8.1 in-app; declare 8.1 + direct play | convert to 8.1 in-app; no node; direct-play the HDR10 base |
+| **Any other enhancement layer** | refuse → transcode | refuse → transcode |
 | **Non-DV / insufficient metadata** | existing behavior | existing behavior |
 
 Historical census taken 2026-08-21 on the dev server by fetching all 540 leaves and reading every
@@ -39,19 +40,44 @@ affirmative platform result above. The base-layer predicate accepts more compati
 than the measured 1/2/4 set, but reserved/unknown identifiers are not claimed here as validated
 fallback formats.
 
-**Profile 7 is the one real gap and it is structural, not policy.** Its picture is split across a
-base and an enhancement layer — two elementary streams — and BUFFERSTREAM buffer-feed hands the
-pipeline **one**. There is no payload key for the second; `Dovi::presentation` refuses on
-`el_present` before it reaches the declaration arm, which is also what keeps the emitted node's
-`trackType` at `"single"` and makes the pipeline's `dv-dual-svp` secure-video-path flag — which
-this app cannot satisfy — unreachable. Whether `gst_dvbin_pipeline_dovi_dual` (which sits beside
-the `_single` we do use) can be fed from a single appsrc is unexamined.
+**Profile 7 is played by converting it to Profile 8.1 on the feed path, as `dovi_tool -m 2`
+does.** Its picture is split across a base and an enhancement layer, and BUFFERSTREAM buffer-feed
+hands the pipeline **one** elementary stream; there is no payload key for the second. What the
+feed path can do instead is make the single-layer stream a Profile 8.1 file would have been:
+when the demuxer's configuration record says Profile 7 with an enhancement layer and a
+cross-compatible base layer (`ff::dovi_converts_to_p81`; a UHD Blu-ray remux carries CCID 6),
+`ff::packet_to_annexb` drops every enhancement-layer NAL — the `UNSPEC63` wrapper a single-track
+dual layer stores each one in, which is what `dovi_tool demux` splits on, and any NAL above
+`nuh_layer_id` 0 — and rewrites every RPU (`UNSPEC62`) to 8.1 with quietvoid's `dolby_vision`
+crate (`DoviRpu::parse_unspec62_nalu`, `convert_with_mode(To81)`, `write_hevc_unspec62_nalu`: the
+library `dovi_tool` itself is built on). An RPU that does not parse or convert is dropped, never
+forwarded as Profile 7. `Dovi::converts_to_p81` is the route-side twin of that test on the
+server's `DOVI*` fields: such a stream is declared as what is fed (`profileId 8`, `trackType
+"single"`) on a set with confirmed support, plays as its HDR10 base layer without a node
+otherwise, and is not `base_layer_unusable`, so the server may copy it. A host test holds the
+MEL rewrite to `dovi_tool`'s own mode-2 fixture byte for byte.
+
+**What it does not do.** The enhancement layer's own contribution is discarded: for a MEL that is
+nothing, for a FEL it is the residual detail the full enhancement layer adds above the base layer,
+exactly what `dovi_tool -m 2` discards — what reaches the panel is the base layer and the
+dynamic metadata. A dual layer whose base layer is not cross-compatible (CCID 0) has no picture
+the conversion could leave and is still refused on `el_present`, before the declaration arm,
+which is also what keeps the emitted node's `trackType` at `"single"` and makes the pipeline's
+`dv-dual-svp` secure-video-path flag — which this app cannot satisfy — unreachable. Whether
+`gst_dvbin_pipeline_dovi_dual` (which sits beside the `_single` we do use) can be fed from a
+single appsrc, which is what playing the enhancement layer would need, is unexamined.
 
 Profiles not present here: **4** is dual-layer and deprecated (P&L §1.1 p. 6); **9** is single-layer
 **AVC**, and now falls back without a node because codec eligibility is part of
 `Dovi::presentation` itself (the old gate/payload disagreement has a host regression); **10** and
-**20** are AV1 and MV-HEVC, and this panel has no Dolby Vision decoder for either. (A set whose
-codec table lists an AV1 decoder can direct-play plain AV1, but that is not a Dolby Vision path.)
+**20** are AV1 and MV-HEVC, and this panel has no Dolby Vision decoder for either.
+
+**Profile 10 on a set that decodes AV1** is declared like Profile 8: `metadata::dv_video_codec`
+admits `av1` beside `hevc`, the payload keeps `"video":"AV1"`, and the node is the same three
+fields with `profileId: 10`. Nothing here was decompiled: that libpf's AV1 caps branch reaches
+the same Dolby Vision tail was measured on a webOS 6 set (LG C1, webOS 6.5.3, 2026-10-18): an
+AV1 Profile 10.1 file direct-played with the node put the panel in Dolby Vision and played through,
+where without it the same file showed HDR10. It is unmeasured on any other firmware, and the webOS 4.5 dev set never reaches it (no AV1 row in its codec table).
 
 ---
 
@@ -424,6 +450,9 @@ chain rather than of Dolby Vision alone: **the Profile 7 refusal is confirmed by
 landing on HDR10 exactly as §1 says it should, which no amount of reading our own log could have
 shown. A log line proves what we sent; `dimension.dynamicRange` proves what the panel did with it.
 
+The Profile 7 row is the refusal as it was measured on 2026-08-22. That file now takes §1's
+conversion instead, and the conversion has not been measured with this read on the dev set.
+
 **Why this belongs beside §5's silent instruments.** §5 is about instruments that cannot see the
 thing they are pointed at. This is the opposite failure and worth naming as its own: an instrument
 that existed the whole time, answered the question in one call, and was never asked — while the
@@ -432,11 +461,11 @@ human at the panel, check whether the platform already publishes it.
 
 ## 7. Open
 
-- **Profile 7.** One film on the dev server. Would need to know whether `gst_dvbin_pipeline_dovi_dual`
-  can be fed from a single appsrc, or whether a second one can be created — unexamined. The REFUSAL
-  path is no longer open: §6a confirms it lands on HDR10 at the panel, which is the intended
-  outcome, so what remains is only whether Profile 7 could ever be played as DV rather than whether
-  declining it works.
+- **Profile 7.** Converted to 8.1 in-app (§1), which plays the base layer and the dynamic metadata
+  and discards a full enhancement layer's residual detail. Playing that detail would need to know
+  whether `gst_dvbin_pipeline_dovi_dual` can be fed from a single appsrc, or whether a second one
+  can be created — unexamined. Not measured on the dev set: the conversion's panel state
+  (`dimension.dynamicRange`, §6a), and its per-frame cost on that set's CPU.
 - **Anonymous configd access.** The key, parser and fail-closed policy are host-tested, but an
   unforced query from this app's anonymous LS2 registration has not yet been measured on device.
   The dev firmware ACL permits public `getConfigs`; that is not proof the registration receives it.

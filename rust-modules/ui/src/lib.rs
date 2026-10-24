@@ -30,7 +30,6 @@ pub mod card_motion;
 pub mod card_motion_metrics;
 #[cfg(feature = "devtriggers")]
 pub mod card_probe; // `plxnative-focusx`: the focused card's drawn rect/index/art of every Shelf and Grid
-pub mod value_chip; // shared label/value/owner capsule used by menu-opening controls
 pub mod containers; // RESTRUCTURE (spec §6.2): Navigation = TabContainer → NavStack → ModalStack, the transitions, the host fold
 pub mod collection_tile; // the neutral tile a thumb-less collection draws on every surface
 pub mod consts;
@@ -75,8 +74,18 @@ pub mod master_detail; // RESTRUCTURE (spec §10): reusable two-region focus/ret
 pub mod page_stack; // the drill-in page stack Tracks and More share
 pub mod panel_motion; // the resize/page-slide spring of the in-player table popovers (Tracks, More)
 pub mod nav; // the page transition's PRESENTATION, published once a frame from the container
+pub mod breadcrumb; // 'Films > Collections' crumb (PR5)
+pub mod hstack; // one gap between a run of measured items (UIStackView spacing)
+pub mod vstack; // the same stack top to bottom (VStack/VFlow over hstack's engine) + the alert head ladder
+pub mod page_header; // the page header row: one layout, paint, focus group and motion for the Library, Collections, Recommended and Watchlist pages
+pub mod page_regions; // the column NAV/HEADER/CONTENT/RAIL: one table for the pages' links, BACK and first seat
+pub mod caption_policy; // "Under posters": what a focused poster's caption band shows and how tall it is (CONTRACT FREEZE: P3 fills)
 pub mod pill; // THE CAPSULE OUTLINE — three blended arcs per corner, solved; not a stadium
 pub(crate) mod poster_grid; // uniform six-column portrait geometry for collection-like pages
+pub mod scroll_chrome; // the chrome/capsule handoff state a page owns, plus the capsule text and predicate, owned by the Library (and its Collections page) and the Watchlist; Home shares only its spatial clearance rule
+pub mod scroll_capsule; // the scroll capsule + top fade a tucked long page leaves (live nav-pill glass)
+pub mod popover_glass; // the popover panel's glass: gradient face, rim, highlight, shadow (DS6)
+pub mod popover_morph; // the morph open style (pill -> panel) beside the shared K_APPEAR fade+slide
 pub mod popover; // shared modal open/appear choreography (track menu / info / chapters / account)
 pub mod press; // tvOS-style click: OK-down dips the focused card, OK-up springs it back + activates
 pub use plx_gfx::gfx::profile; // the draw-phase profiler lives in `gfx` now (module-layers step L5)
@@ -174,6 +183,12 @@ pub struct Size {
     pub h: f32,
 }
 
+/// The distance (and per-frame travel), relative to `1 +` the larger magnitude, inside which
+/// [`Spring::land`] puts a spring on its target: 2^-14. Far above the ulp a released spring stalls
+/// at (1.2e-7 at 1.0), far below the idle gate's own `REST_REL` (1e-3), so a landing is never the
+/// visible end of a motion.
+pub const LAND_REL: f32 = 1.0 / 16384.0;
+
 /// One animated scalar, delegating to the existing critically-damped C spring so
 /// motion is byte-identical. "Springs live in views": a view owns one per value.
 #[derive(Clone, Copy, Default)]
@@ -195,6 +210,30 @@ impl Spring {
     #[inline]
     pub fn step_zeta(&mut self, target: f32, k: f32, zeta: f32, dt: f32) {
         plx_gfx::gfx::spring_zeta(&mut self.pos, &mut self.vel, target, k, zeta, dt);
+    }
+    /// Put a spring that has ARRIVED exactly on `target` (position and velocity both), and say whether
+    /// it is there. [`step`](Self::step) never does: the closed form's last addition rounds to the
+    /// nearest f32, so a released spring parks one ulp off its target with a velocity of about
+    /// 1e-6 and stays at that fixed point forever (a pop of `1.0000001`, an `f` of 1e-6 that sends
+    /// a card to the focus program for as long as the row keeps focus elsewhere).
+    ///
+    /// Arrived means within [`LAND_REL`] of the larger magnitude (plus one) and travelling less than
+    /// that per frame (`vel * dt`, the form [`plx_machine::idle::settled`] judges): about 1.2e-4 for
+    /// a 0..1 pop, a hundredth of a pixel on a 280 px scroll, a thousand times the ulp it has to
+    /// catch and a seventeenth of what the idle gate already treats as finished, so nothing visible moves.
+    /// The caller picks which springs: a cell that is NOT focused calls it with its rest value.
+    /// Change-guarded like [`jump`](Self::jump), so a spring already exactly there reports nothing.
+    #[inline]
+    pub fn land(&mut self, target: f32, dt: f32) -> bool {
+        if self.pos == target && self.vel == 0.0 {
+            return true;
+        }
+        let near = LAND_REL * (1.0 + self.pos.abs().max(target.abs()));
+        if (self.pos - target).abs() <= near && (self.vel * dt).abs() <= near {
+            self.jump(target);
+            return true;
+        }
+        false
     }
     /// Teleport, with no motion in between. Reports to [`plx_machine::idle`](plx_machine::idle) — a jump
     /// changes the drawn value without ever reaching a spring integrator, so nothing else would
@@ -288,6 +327,169 @@ pub mod draw_census {
         LOG.with(|l| *l.borrow_mut() = Some(Vec::new()));
         f();
         LOG.with(|l| l.borrow_mut().take()).unwrap_or_default()
+    }
+
+    thread_local! {
+        static INKS: RefCell<Option<Vec<(u64, Rect, f32)>>> = const { RefCell::new(None) };
+    }
+    /// A recording painter was handed a fill or shadow of command `tag` in `r` whose EFFECTIVE alpha
+    /// (the colour's own alpha times the painter's cascaded alpha) is `a`: [`note`] carries no
+    /// colour, and a test that asks whether a fade reaches every primitive of a control needs it.
+    pub fn note_ink(tag: u64, r: Rect, a: f32) {
+        INKS.with(|l| {
+            if let Some(v) = l.borrow_mut().as_mut() {
+                v.push((tag, r, a));
+            }
+        });
+    }
+    /// Every rounded-rect fill (tag 2), shadow (4), outside-only shadow (5) and rimmed fill (8) a recording painter is handed
+    /// while `f` runs, as `(tag, screen rect, effective alpha)`, in draw order.
+    pub fn capture_inks(f: impl FnOnce()) -> Vec<(u64, Rect, f32)> {
+        INKS.with(|l| *l.borrow_mut() = Some(Vec::new()));
+        f();
+        INKS.with(|l| l.borrow_mut().take()).unwrap_or_default()
+    }
+
+    thread_local! {
+        static TEXT: RefCell<Option<Vec<(String, Rect)>>> = const { RefCell::new(None) };
+    }
+    /// A recorded text run: WHAT it says and where (`rect` is the run's anchor and measured width).
+    pub fn note_text(s: String, r: Rect) {
+        TEXT.with(|l| {
+            if let Some(v) = l.borrow_mut().as_mut() {
+                v.push((s, r));
+            }
+        });
+    }
+    /// Every text run a recording painter is handed while `f` runs, as `(string, screen rect)`: the
+    /// census for a test that asks WHICH words a frame drew and where.
+    pub fn capture_text(f: impl FnOnce()) -> Vec<(String, Rect)> {
+        TEXT.with(|l| *l.borrow_mut() = Some(Vec::new()));
+        f();
+        TEXT.with(|l| l.borrow_mut().take()).unwrap_or_default()
+    }
+
+    thread_local! {
+        static MARKS: RefCell<Option<Vec<Rect>>> = const { RefCell::new(None) };
+    }
+    /// A recording painter was asked for the amber play mark that leads a caption line
+    /// (`card_row::draw_play_mark`): it paints no pixel, so this is how a test reads WHETHER the
+    /// mark was drawn and where.
+    pub fn note_play_mark(r: Rect) {
+        MARKS.with(|l| {
+            if let Some(v) = l.borrow_mut().as_mut() {
+                v.push(r);
+            }
+        });
+    }
+    /// Every play mark a recording painter is handed while `f` runs, as screen rects.
+    pub fn capture_play_marks(f: impl FnOnce()) -> Vec<Rect> {
+        MARKS.with(|l| *l.borrow_mut() = Some(Vec::new()));
+        f();
+        MARKS.with(|l| l.borrow_mut().take()).unwrap_or_default()
+    }
+
+    thread_local! {
+        static ICONS: RefCell<Option<Vec<(crate::icons::Icon, Rect)>>> = const { RefCell::new(None) };
+    }
+    /// A recording painter was asked for glyph `id` in `r` (`icons::draw_raster`): it paints no
+    /// pixel, so this is how a test reads WHICH glyph stood where.
+    pub fn note_icon(id: crate::icons::Icon, r: Rect) {
+        ICONS.with(|l| {
+            if let Some(v) = l.borrow_mut().as_mut() {
+                v.push((id, r));
+            }
+        });
+    }
+    /// Every glyph a recording painter is handed while `f` runs, as `(icon, screen box)`: the glyph
+    /// half of the painted-run census, for a gap measured from a glyph's INK ([`crate::icons::ink_x`])
+    /// to the text beside it.
+    pub fn capture_icons(f: impl FnOnce()) -> Vec<(crate::icons::Icon, Rect)> {
+        ICONS.with(|l| *l.borrow_mut() = Some(Vec::new()));
+        f();
+        ICONS.with(|l| l.borrow_mut().take()).unwrap_or_default()
+    }
+
+    /// A recorded text run with its STYLE: what a test needs to say "regular weight, 65% white".
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct Run {
+        pub text: String,
+        pub size: i32,
+        pub ink: [f32; 4],
+        pub bold: bool,
+        pub align: i32,
+        /// Anchor (x, y) and measured width, in screen space.
+        pub at: Rect,
+        /// The scissor window ([`Painter::clip`]) the run was drawn inside, in screen space; `None`
+        /// outside one. A recording painter paints no pixels, so this is how a test reads where a
+        /// gliding run is cut.
+        pub clip: Option<Rect>,
+        /// The horizontal dissolve ([`Painter::text_fade`]) as ABSOLUTE screen x, `(from, to)`:
+        /// glyph alpha 1 at `from`, 0 at `to`. `None` for a run drawn plain.
+        pub fade: Option<(f32, f32)>,
+        /// The LEADING dissolve, the mirror of `fade`, as ABSOLUTE screen x `(from, to)`: glyph
+        /// alpha 0 at `from`, 1 at `to`. `None` for a run with no leading band.
+        pub lead: Option<(f32, f32)>,
+        /// Drawn inside a focused tile's label block (`card_row::draw_label_block`), whatever its
+        /// ink: stamped by [`note_run`] from [`label_scope`], so a test reads the block's lines
+        /// without a list of words to look for or a style to recognise them by.
+        pub label: bool,
+    }
+    thread_local! {
+        static LABEL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static RUNS: RefCell<Option<Vec<Run>>> = const { RefCell::new(None) };
+        static CLIP: std::cell::Cell<Option<Rect>> = const { std::cell::Cell::new(None) };
+    }
+    pub fn note_run(mut run: Run) {
+        run.label = LABEL.with(|c| c.get());
+        RUNS.with(|l| {
+            if let Some(v) = l.borrow_mut().as_mut() {
+                v.push(run);
+            }
+        });
+    }
+    /// While this guard lives, every run noted is a label block's ([`Run::label`]).
+    pub struct LabelScope(bool);
+    pub fn label_scope() -> LabelScope {
+        LabelScope(LABEL.with(|c| c.replace(true)))
+    }
+    impl Drop for LabelScope {
+        fn drop(&mut self) {
+            LABEL.with(|c| c.set(self.0));
+        }
+    }
+    /// **The lines of the focused label block** in `runs`, top to bottom: the label block's own runs
+    /// whatever their ink (a shadowed Under posters caption AND a stray unshadowed legacy block alike),
+    /// each line once (a line's shadow sits a pixel below its ink, a gliding line's follower beside
+    /// it, both the same line), so two lines that read alike stay two lines.
+    pub fn label_lines(runs: &[Run]) -> Vec<String> {
+        let mut block: Vec<&Run> = runs.iter().filter(|run| run.label).collect();
+        block.sort_by(|a, b| a.at.y.total_cmp(&b.at.y).then(a.at.x.total_cmp(&b.at.x)));
+        let mut lines: Vec<(f32, &str)> = Vec::new();
+        for run in block {
+            // a line's shadow and follower stand within this many pixels of its ink; two lines of a block never do
+            if lines.last().is_some_and(|(y, text)| *text == run.text && (run.at.y - y).abs() < 3.0) {
+                continue;
+            }
+            lines.push((run.at.y, run.text.as_str()));
+        }
+        lines.into_iter().map(|(_, text)| text.to_owned()).collect()
+    }
+    /// A recording painter was handed a scissor window (`None`: it was released).
+    pub fn note_clip(window: Option<Rect>) {
+        CLIP.with(|c| c.set(window));
+    }
+    /// The scissor window in force now, for [`Run::clip`].
+    pub fn clip() -> Option<Rect> {
+        CLIP.with(|c| c.get())
+    }
+    /// Every text run a recording painter is handed while `f` runs, with size, ink, weight and
+    /// alignment: the census for a test that asks HOW a word was drawn.
+    pub fn capture_runs(f: impl FnOnce()) -> Vec<Run> {
+        CLIP.with(|c| c.set(None));
+        RUNS.with(|l| *l.borrow_mut() = Some(Vec::new()));
+        f();
+        RUNS.with(|l| l.borrow_mut().take()).unwrap_or_default()
     }
 
     thread_local! {
@@ -434,8 +636,32 @@ pub fn text_shadow_params(h: f32, f: f32) -> (f32, f32, f32) {
     (blur, off, a)
 }
 
+/// What a declared primitive offers a glass above it to take at composite ([`Painter::declare_as`]).
+enum Deferrable {
+    /// A modal dim: its ink and field, applied in `srcRGB` (`frame::backdrop::Dim`).
+    Dim(frame::backdrop::Dim),
+    /// The page's wash: its corners as the GPU receives them and the ink ramp laid over it in the
+    /// same pass, taken as a delta (`frame::backdrop::Ground`), and whether the wash's own springs
+    /// are at rest (`frame::backdrop::paint_ground`'s `resting`).
+    Ground { corners: [[f32; 3]; 4], ink: ([f32; 3], [f32; 2]), resting: bool },
+}
+
 impl Painter {
     fn declare(self, r: Rect, tag: u64, values: impl FnOnce(&mut Vec<u64>)) -> bool {
+        self.declare_as(r, tag, None, values)
+    }
+    /// [`declare`](Self::declare), with `mark` saying the primitive is one a glass above it may
+    /// apply at composite instead of in its source: a modal dim (`frame::backdrop::paint_dim`) or
+    /// the page's wash (`frame::backdrop::paint_ground`). The mark is DECLARED, never inferred from
+    /// the tag: `ambient_art` shares tag 22's family with card textures and is not a wash a glass
+    /// may take.
+    fn declare_as(
+        self,
+        r: Rect,
+        tag: u64,
+        mark: Option<Deferrable>,
+        values: impl FnOnce(&mut Vec<u64>),
+    ) -> bool {
         if self.records() {
             #[cfg(any(test, feature = "test-support"))]
             draw_census::note(tag, self.place(r));
@@ -446,15 +672,16 @@ impl Painter {
             // `paint` would discard this unconditionally (see its comment); skip building
             // `values` at all rather than build it only to throw it away.
             //
-            // Only the SURFACES half of that gate is a programming error for a glass. The other
-            // half — content under a frozen host boundary (the tab bar's glass on Home while an
-            // account or item menu holds Home as a snapshot) — is dead content that `paint`
-            // discards by the same rule, and asserting there panicked every such frame.
-            debug_assert!(
-                tag != frame::backdrop::GLASS_COMMAND || !frame::backdrop::in_surfaces_band(),
-                "a glass command was declared at/above the surfaces band, where recording is \
-                 skipped; this glass would never resolve"
-            );
+            // A GLASS command lands here on both halves of that gate, and neither is a bug. Under
+            // a frozen host boundary (the tab bar's glass on Home while an account or item menu
+            // holds Home as a snapshot) it is dead content. In the SURFACES band it is a glass
+            // drawn inside a surface's layer, above the scrim: its backdrop entry was already
+            // requested by `surface_with` before this call, and the entry's source is the page
+            // and scrim recorded below the band. What is skipped is only this command's own
+            // `Paint` — the word a glass ABOVE it would read, and nothing above the surfaces band
+            // is ever recorded or reads one. An assertion here once fired on every frame a menu's
+            // glass, then such a surface glass, was up. (A menu's glass now stands on frozen
+            // ground, `popover_glass`, and requests no entry at all.)
             return true;
         }
         use frame::backdrop::Value;
@@ -472,7 +699,16 @@ impl Painter {
         values(&mut data);
         // The primitive AA/rim can paint just outside its nominal rectangle.
         let bounds=Rect::new(m.x-4.0,m.y-4.0,m.w+8.0,m.h+8.0);
-        frame::backdrop::paint(bounds,data);
+        match mark {
+            Some(Deferrable::Dim(dim)) => frame::backdrop::paint_dim(bounds, data, dim),
+            Some(Deferrable::Ground { corners, ink: (ink, ink_a), resting }) => frame::backdrop::paint_ground(
+                bounds,
+                data,
+                frame::backdrop::Ground { corners, rect: [m.x, m.y, m.w, m.h], ink, ink_a },
+                resting,
+            ),
+            None => frame::backdrop::paint(bounds, data),
+        }
         true
     }
 
@@ -661,6 +897,8 @@ impl Painter {
         );
     }
     pub fn rrect(self, r: Rect, rl: f32, rr: f32, col: [f32; 4]) {
+        #[cfg(any(test, feature = "test-support"))]
+        if self.records() { draw_census::note_ink(2, self.place(r), self.c(col)[3]); }
         if self.declare(r, 2, |data| {
             use frame::backdrop::Value;
             rl.record(data);
@@ -737,6 +975,8 @@ impl Painter {
     /// occluder's own rim, ending in a hard step. A tile hides that; anything you can see through
     /// wears it as a drawn frame — use [`shadow_outside`](Self::shadow_outside) there.
     pub fn shadow(self, r: Rect, radius: f32, blur: f32, off_y: f32, col: [f32; 4]) {
+        #[cfg(any(test, feature = "test-support"))]
+        if self.records() { draw_census::note_ink(4, self.place(r), self.c(col)[3]); }
         if self.declare(Rect::new(r.x-blur,r.y+off_y-blur,r.w+2.0*blur,r.h+2.0*blur), 4, |data| {
             use frame::backdrop::Value;
             radius.record(data);
@@ -767,6 +1007,8 @@ impl Painter {
     /// `shadow`'s under-the-rim band would show as a frame; a separate entry point rather than a flag
     /// on the tile path, because a tile pays a rounded-rect SDF for a region it covers anyway.
     pub fn shadow_outside(self, r: Rect, radius: f32, blur: f32, off_y: f32, col: [f32; 4]) {
+        #[cfg(any(test, feature = "test-support"))]
+        if self.records() { draw_census::note_ink(5, self.place(r), self.c(col)[3]); }
         if self.declare(Rect::new(r.x-blur,r.y+off_y-blur,r.w+2.0*blur,r.h+2.0*blur), 5, |data| {
             use frame::backdrop::Value;
             radius.record(data);
@@ -853,6 +1095,8 @@ impl Painter {
         rim: [f32; 4],
         rim_top: f32,
     ) {
+        #[cfg(any(test, feature = "test-support"))]
+        if self.records() { draw_census::note_ink(8, self.place(r), self.c(top)[3]); }
         if self.declare(r, 8, |data| {
             use frame::backdrop::Value;
             rad.record(data);
@@ -998,6 +1242,11 @@ impl Painter {
         if self.records() { return; }
         let t = self.c(tint);
         let m = self.place(r);
+        // A plain mask (an icon) inside an ink clip (`widgets::paint_inked`) is cut per fragment by
+        // the clip's rounded shapes, through the text program: it samples the same coverage alpha.
+        if rad == 0.0 && uv == plx_gfx::gfx::UV_FULL && plx_gfx::text::draw_mask_inked(tex, m.x, m.y, m.w, m.h, t.as_ptr()) {
+            return;
+        }
         plx_gfx::gfx::draw_tex_uv(tex, uv, m.x, m.y, m.w, m.h, self.px(rad), t.as_ptr());
     }
     /// The FROSTED ground: what the frame drew behind `r`, blurred, clipped to `r`'s rounded rect.
@@ -1213,14 +1462,25 @@ impl Painter {
     ///
     /// Always dithered (±1-LSB TPDF noise): an opaque, slow, full-screen gradient bands without it,
     /// moving or not, and there is no flag to turn it off (`gfx::draw_ambient` says why).
-    pub fn ambient(self, r: Rect, dim: f32, k: [[f32; 3]; 4]) {
-        if self.declare(r, 16, |data| {
+    ///
+    /// `resting` is the wash's own at-rest signal ([`AmbientWash::at_rest`]): every spring that
+    /// eases it has landed on its target, so `k` is final. A glass over the wash re-takes its
+    /// source once when that turns true ([`Self::wash_rests`] says when the cascade lets it count).
+    /// A gradient with no springs behind it passes `false`.
+    ///
+    /// [`AmbientWash::at_rest`]: crate::widgets::AmbientWash::at_rest
+    pub fn ambient(self, r: Rect, dim: f32, k: [[f32; 3]; 4], resting: bool) {
+        // The corners as the GPU receives them (`gfx::draw_ambient` scales them by `dim`): the
+        // wash's mark for a glass above it, and what is drawn below.
+        let resting = resting && dim == 1.0 && self.wash_rests();
+        let k = self.wash_corners(k);
+        let drawn = k.map(|c| c.map(|v| v * dim));
+        if self.declare_as(r, 16, Some(Deferrable::Ground { corners: drawn, ink: ([0.0; 3], [0.0; 2]), resting }), |data| {
             use frame::backdrop::Value;
             dim.record(data);
             k.record(data);
         }) { return; }
         if self.records() { return; }
-        let k = self.wash_corners(k);
         let m = self.place(r);
         plx_gfx::gfx::draw_ambient(
             m.x, m.y, m.w, m.h,
@@ -1285,16 +1545,20 @@ impl Painter {
     /// replaces. Callers must check `gfx::wash_ink_ok` ([`AmbientWash::draw_ground`] does).
     ///
     /// [`AmbientWash::draw_ground`]: crate::widgets::AmbientWash::draw_ground
-    pub fn ambient_inked(self, r: Rect, k: [[f32; 3]; 4], ink: ([f32; 4], [f32; 2])) {
-        if self.declare(r, 23, |data| {
-            use frame::backdrop::Value;
-            k.record(data);
-            ink.0.record(data);
-            ink.1.record(data);
-        }) { return; }
-        if self.records() { return; }
+    ///
+    /// `resting` is [`ambient`](Self::ambient)'s: the wash's own springs have landed.
+    pub fn ambient_inked(self, r: Rect, k: [[f32; 3]; 4], ink: ([f32; 4], [f32; 2]), resting: bool) {
+        let (k_raw, ink_raw) = (k, ink);
+        let resting = resting && self.wash_rests();
         let k = self.wash_corners(k);
         let (ink, inka) = self.ink(ink);
+        if self.declare_as(r, 23, Some(Deferrable::Ground { corners: k, ink: (ink, inka), resting }), |data| {
+            use frame::backdrop::Value;
+            k_raw.record(data);
+            ink_raw.0.record(data);
+            ink_raw.1.record(data);
+        }) { return; }
+        if self.records() { return; }
         let m = self.place(r);
         plx_gfx::gfx::draw_ambient_inked(
             m.x, m.y, m.w, m.h,
@@ -1309,6 +1573,14 @@ impl Painter {
     fn ink(self, (ink, a): ([f32; 4], [f32; 2])) -> ([f32; 3], [f32; 2]) {
         let c = self.c(ink);
         ([c[0], c[1], c[2]], [a[0] * self.a, a[1] * self.a])
+    }
+    /// Does the cascade hand a wash's corners to the GPU as they are: no alpha mixing them toward
+    /// [`theme::SURFACE_APP`] (a page dipping for [`ui::nav`](crate::nav)'s route transition moves
+    /// the drawn corners every frame with every spring at rest) and no gain? Only then is a wash
+    /// whose springs have landed also a wash whose drawn corners have stopped changing, which is
+    /// what a glass above it re-takes its source on.
+    fn wash_rests(self) -> bool {
+        self.a >= 1.0 && self.out_rgb() == 1.0
     }
     /// A wash's corners through the cascade — [`ambient`](Self::ambient)'s rule, which
     /// [`ambient_art`](Self::ambient_art) must apply identically: the wash stays OPAQUE, so an alpha
@@ -1375,6 +1647,33 @@ impl Painter {
         let m = self.place(r);
         plx_gfx::gfx::draw_field(m.x, m.y, m.w, m.h, tex, t.as_ptr());
     }
+    /// **A modal DIM over `r`**: the field `tex` multiplied by `tint`, or — `tex == 0` — the flat
+    /// colour `tint` (`ui::underlay::plan`'s two answers). It draws exactly what
+    /// [`field`](Self::field) / [`rect`](Self::rect) would, and declares itself as a dim
+    /// (`frame::backdrop::Dim`), so a glass above it whose region it is the last draw under applies
+    /// it at composite: that glass's direct source replay skips it here, and its signature no
+    /// longer holds the alpha, ink or field revision. A ramping dim, or a field re-latched under a
+    /// standing menu, then re-filters nothing. `ModalStack::draw_scrims` is the one caller, through
+    /// `UnderlayField::draw`'s `Role::Dim`.
+    pub fn dim(self, r: Rect, tex: u32, tint: [f32; 4]) {
+        let ink = frame::backdrop::Dim { tex, tint: self.c(tint) };
+        if self.declare_as(r, 24, Some(Deferrable::Dim(ink)), |data| {
+            use frame::backdrop::Value;
+            tex.record(data);
+            plx_gfx::gfx::tex_ledger::revision(tex).record(data);
+            tint.record(data);
+        }) { return; }
+        if self.records() || frame::backdrop::dim_deferred() { return; }
+        // A menu's glass over this dim reads undimmed pictures and applies it at composite.
+        if !plx_gfx::gfx::blur_source_pass() {
+            crate::popover_glass::note_dim(ink);
+        }
+        if tex != 0 {
+            self.field(r, tex, tint);
+        } else {
+            self.rect(r, 0.0, tint, tint, 0.0);
+        }
+    }
     /// [`field`](Self::field) as an OPAQUE GROUND — the field counterpart of
     /// [`ambient`](Self::ambient), and it reads a fade the same way that one does: an alpha below 1
     /// mixes the ground toward [`theme::SURFACE_APP`], never toward transparency, because the app's
@@ -1430,6 +1729,39 @@ impl Painter {
             t.as_ptr(),
         )
     }
+    /// A menu's GLASS on frozen ground ([`plx_gfx::gfx::draw_glass_frozen`]): the glass composite
+    /// over `ground` (the latched underlay field) with `sharp` (the host snapshot, 0 for none) as
+    /// its rim's sharp source and the frame's modal `dim` applied to both. `false` when the glass
+    /// program or the ground is missing — the caller's cue for its field ground.
+    /// `crate::popover_glass::draw` is the component; reach for that.
+    #[allow(clippy::too_many_arguments)]
+    pub fn glass_frozen(
+        self,
+        r: Rect,
+        rad: f32,
+        ground: u32,
+        sharp: u32,
+        dim: Option<frame::backdrop::Dim>,
+        tint: [f32; 4],
+        rim: plx_gfx::gfx::GlassRim,
+        face: plx_gfx::gfx::GlassFace,
+    ) -> bool {
+        if self.declare(r, frame::backdrop::GLASS_FROZEN_COMMAND, |data| {
+            use frame::backdrop::Value;
+            rad.record(data);
+            ground.record(data);
+            plx_gfx::gfx::tex_ledger::revision(ground).record(data);
+            sharp.record(data);
+            (rim as u32).record(data);
+            tint.record(data);
+            face.scrim_top.record(data); face.scrim_bot.record(data);
+            face.rim.record(data); face.rim_lit.record(data); face.rim_w.record(data);
+        }) { return ground != 0; }
+        if self.records() { return false; }
+        let t = self.c(tint);
+        let m = self.place(r);
+        plx_gfx::gfx::draw_glass_frozen(m.x, m.y, m.w, m.h, self.px(rad), ground, sharp, dim, t.as_ptr(), rim, face)
+    }
     /// draw text at absolute (x,y) plus the cascade translate; returns width
     pub fn text(
         self,
@@ -1443,6 +1775,18 @@ impl Painter {
     ) -> f32 {
         if frame::backdrop::discovering() {
             let (width,height)=declared_text_bounds(s,sz,bold);
+            #[cfg(any(test, feature = "test-support"))]
+            if !s.is_null() {
+                let text = unsafe { CStr::from_ptr(s) }.to_string_lossy().into_owned();
+                let at = self.place(Rect::new(match align { 1 => x-width*0.5, 2 => x-width, _ => x },y,width,height));
+                draw_census::note_text(text.clone(), at);
+                // The discovery walk is the one a whole page is drawn through on a host, so the
+                // run's ink (with the cascade's alpha folded in) is read here too.
+                draw_census::note_run(draw_census::Run {
+                    text, size: sz, ink: self.c(col), bold: bold != 0, align, at,
+                    clip: draw_census::clip(), fade: None, lead: None, label: false,
+                });
+            }
             self.declare(Rect::new(match align { 1 => x-width*0.5, 2 => x-width, _ => x },y,width,height),100,|data| {
                 use frame::backdrop::Value;
                 frame::backdrop::text_value(s,data);
@@ -1457,14 +1801,60 @@ impl Painter {
             plx_gfx::text::queue_prewarm(s, sz, bold);
             let w = recorded_text_width(s, sz, bold);
             #[cfg(any(test, feature = "test-support"))]
-            draw_census::note(100, self.place(Rect::new(x, y, w, 0.0)));
+            {
+                let at = self.place(Rect::new(x, y, w, 0.0));
+                draw_census::note(100, at);
+                draw_census::note_text(unsafe { CStr::from_ptr(s) }.to_string_lossy().into_owned(), at);
+                draw_census::note_run(draw_census::Run {
+                    text: unsafe { CStr::from_ptr(s) }.to_string_lossy().into_owned(),
+                    size: sz, ink: self.c(col), bold: bold != 0, align, at,
+                    clip: draw_census::clip(), fade: None, lead: None, label: false,
+                });
+            }
             return w;
         }
         let c = self.c(col);
         plx_gfx::text::draw_text(s, x + self.dx, y + self.dy, sz, c.as_ptr(), align, bold, self.screen_zoom())
     }
+    /// [`text`](Self::text) with `letter_spacing` px of tracking between glyphs (DS8; negative
+    /// tightens, `plx_gfx::text::TRACKING_TITLE_TIGHT` is the DS8 title tracking, unused since the Watchlist took the Library's header row). At `0.0` this IS
+    /// `text`. The discovery pass sees the string's untracked declaration (the tracked draw only moves
+    /// glyph gaps inside it); the recording pass prewarms the per-cluster strings the live draw uses.
+    #[allow(clippy::too_many_arguments)]
+    pub fn text_tracked(
+        self,
+        s: *const c_char,
+        x: f32,
+        y: f32,
+        sz: c_int,
+        col: [f32; 4],
+        align: c_int,
+        bold: c_int,
+        letter_spacing: f32,
+    ) -> f32 {
+        if letter_spacing == 0.0 || frame::backdrop::discovering() {
+            return self.text(s, x, y, sz, col, align, bold);
+        }
+        if self.records() {
+            // The live draw rasterizes each CLUSTER as its own string, so that is what to prewarm.
+            plx_gfx::text::queue_prewarm_tracked(s, sz, bold);
+            let w = plx_gfx::text::text_width_tracked(s, sz, bold, letter_spacing);
+            #[cfg(any(test, feature = "test-support"))]
+            draw_census::note(100, self.place(Rect::new(x, y, w, 0.0)));
+            return w;
+        }
+        let c = self.c(col);
+        plx_gfx::text::draw_text_tracked(
+            s, x + self.dx, y + self.dy, sz, c.as_ptr(), align, bold, self.screen_zoom(), letter_spacing,
+        )
+    }
+    /// Width of `s` with `letter_spacing` tracking; at `0.0` the ordinary text width.
+    pub fn text_width_tracked(self, s: *const c_char, sz: c_int, bold: c_int, letter_spacing: f32) -> f32 {
+        plx_gfx::text::text_width_tracked(s, sz, bold, letter_spacing)
+    }
     /// [`text`](Self::text) with a horizontal fade-out: glyph alpha runs 1→0 between
     /// `fade_from`..`fade_to` px from the string's left edge (see `text::draw_text_fade`).
+    /// [`text_fade_edges`](Self::text_fade_edges) with no leading band.
     #[allow(clippy::too_many_arguments)]
     pub fn text_fade(
         self,
@@ -1477,16 +1867,48 @@ impl Painter {
         fade_from: f32,
         fade_to: f32,
     ) -> f32 {
+        self.text_fade_edges(s, x, y, sz, col, bold, None, Some((fade_from, fade_to)))
+    }
+    /// [`text`](Self::text) dissolving at either END of the string, measured in px from its left
+    /// edge: `trail` is glyph alpha 1→0 between `from`..`to` (the string's tail into a clip or a
+    /// truncation mark), `lead` is glyph alpha 0→1 between `from`..`to` (its head, out of the
+    /// window it has glided past: a marquee run is cut by the LEFT of its window as well as the
+    /// right). `None` leaves a band off and costs the shader nothing (see `text::draw_text_fade`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn text_fade_edges(
+        self,
+        s: *const c_char,
+        x: f32,
+        y: f32,
+        sz: c_int,
+        col: [f32; 4],
+        bold: c_int,
+        lead: Option<(f32, f32)>,
+        trail: Option<(f32, f32)>,
+    ) -> f32 {
         if frame::backdrop::discovering() {
             let (width,height)=declared_text_bounds(s,sz,bold);
+            // The discovery walk is the one a whole page is drawn through on a host, so a run that
+            // dissolves at its edges (a gliding caption) is read here too, as `text` does.
+            #[cfg(any(test, feature = "test-support"))]
+            if !s.is_null() {
+                let text = unsafe { CStr::from_ptr(s) }.to_string_lossy().into_owned();
+                let at = self.place(Rect::new(x, y, width, height));
+                draw_census::note_text(text.clone(), at);
+                let absolute = |b: Option<(f32, f32)>| b.map(|(from, to)| (at.x + from, at.x + to));
+                draw_census::note_run(draw_census::Run {
+                    text, size: sz, ink: self.c(col), bold: bold != 0, align: 0, at,
+                    clip: draw_census::clip(), fade: absolute(trail), lead: absolute(lead), label: false,
+                });
+            }
             self.declare(Rect::new(x,y,width,height),101,|data| {
                 use frame::backdrop::Value;
                 frame::backdrop::text_value(s,data);
                 sz.record(data);
                 col.record(data);
                 bold.record(data);
-                fade_from.record(data);
-                fade_to.record(data);
+                trail.record(data);
+                lead.record(data);
             });
             return width;
         }
@@ -1494,7 +1916,19 @@ impl Painter {
             plx_gfx::text::queue_prewarm(s, sz, bold);
             let w = recorded_text_width(s, sz, bold);
             #[cfg(any(test, feature = "test-support"))]
-            draw_census::note(100, self.place(Rect::new(x, y, w, 0.0)));
+            {
+                let at = self.place(Rect::new(x, y, w, 0.0));
+                draw_census::note(100, at);
+                if !s.is_null() {
+                    let text = unsafe { CStr::from_ptr(s) }.to_string_lossy().into_owned();
+                    draw_census::note_text(text.clone(), at);
+                    let absolute = |b: Option<(f32, f32)>| b.map(|(from, to)| (at.x + from, at.x + to));
+                    draw_census::note_run(draw_census::Run {
+                        text, size: sz, ink: self.c(col), bold: bold != 0, align: 0, at,
+                        clip: draw_census::clip(), fade: absolute(trail), lead: absolute(lead), label: false,
+                    });
+                }
+            }
             return w;
         }
         let c = self.c(col);
@@ -1506,7 +1940,8 @@ impl Painter {
             c.as_ptr(),
             0,
             bold,
-            Some((fade_from, fade_to)),
+            trail,
+            lead,
             None,
             None,
             self.screen_zoom(),
@@ -1569,6 +2004,7 @@ impl Painter {
             0,
             bold,
             None,
+            None,
             shift(top),
             shift(bot),
             self.screen_zoom(),
@@ -1580,14 +2016,22 @@ impl Painter {
     /// with [`clip_clear`](Self::clip_clear) before the frame ends — scissor is global GL state.
     pub fn clip(self, r: Rect) {
         if frame::backdrop::discovering() { frame::backdrop::clip(Some(self.place(r))); return; }
-        if self.records() { return; }
+        if self.records() {
+            #[cfg(any(test, feature = "test-support"))]
+            draw_census::note_clip(Some(self.place(r)));
+            return;
+        }
         let m = self.place(r);
         plx_gfx::gfx::clip_set(m.x, m.y, m.w, m.h);
     }
     /// Release the clip set by [`clip`](Self::clip).
     pub fn clip_clear(self) {
         if frame::backdrop::discovering() { frame::backdrop::clip(None); return; }
-        if self.records() { return; }
+        if self.records() {
+            #[cfg(any(test, feature = "test-support"))]
+            draw_census::note_clip(None);
+            return;
+        }
         plx_gfx::gfx::clip_clear();
     }
 }
@@ -2063,12 +2507,14 @@ mod tests {
         assert!(skipped, "an occluded glass is consumed without recording");
     }
 
-    /// …while a glass declared IN the surfaces band still trips the assertion: nothing there is
-    /// ever resolved, so the declaration itself is the bug.
+    /// …and so is a glass declared IN the surfaces band — a glass the dispatcher draws inside a
+    /// surface's layer, as a menu's was until it moved onto frozen ground (`popover_glass`). Its
+    /// entry is requested before the declare and resolves against the page below
+    /// (`frame::backdrop_tests::a_glass_command_in_the_surfaces_band_…`); only its command word
+    /// goes unrecorded, as everything at/above the band does. This was a `should_panic` pin until
+    /// the menus became glass, when it panicked every menu frame of a debug build.
     #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "surfaces band")]
-    fn a_glass_in_the_surfaces_band_still_asserts() {
+    fn a_glass_in_the_surfaces_band_is_consumed_without_recording() {
         use frame::backdrop::{self, Sources, Z};
         use std::{cell::RefCell, rc::Rc};
         let _guard = plx_base::testlock::serial();
@@ -2076,7 +2522,10 @@ mod tests {
         sources.borrow_mut().begin(vec![]);
         let _walk = backdrop::discover(sources.clone());
         let _surface = backdrop::layer(Z::surface(0), true);
-        let _ = Painter::root().declare(Rect::new(0.0, 0.0, 100.0, 40.0), backdrop::GLASS_COMMAND, |_| {});
+        assert!(backdrop::recording_excluded(), "the surfaces band records nothing");
+        let consumed = Painter::root().declare(Rect::new(0.0, 0.0, 100.0, 40.0), backdrop::GLASS_COMMAND, |_| {});
+        assert!(consumed, "the command is consumed, not drawn");
+        assert!(sources.borrow().paints.is_empty(), "and nothing is recorded for it");
     }
 }
 
@@ -2104,5 +2553,61 @@ mod spring_tests {
         frame_begin(1.0 / 60.0);
         s.jump(2.0); // teleported
         assert!(should_present(10_032));
+    }
+
+    /// `step` parks a released spring one ulp off its target and leaves it there; `land` is what puts
+    /// it on the target. Every pop/scroll-shaped spring of the app (stiffness `K_SCALE`/`K_SCROLL`,
+    /// targets 1.0, 1.09, 0 and a few hundred px, released from either side) must reach EXACT rest
+    /// within a second of release, and a landing must never take a spring that is still travelling.
+    #[test]
+    fn a_stepped_spring_lands_exactly_and_a_moving_one_is_left_alone() {
+        let _g = plx_base::testlock::serial();
+        let dt = 1.0 / 60.0;
+        let mut stalled = 0;
+        for k in [crate::consts::K_SCALE, crate::consts::K_SCROLL, crate::consts::K_SNAP] {
+            for target in [0.0f32, 1.0, 1.09, 1.18, 280.0, 1500.0] {
+                for start in [target + 0.09, target - 0.09, target + 300.0, target - 40.0] {
+                    let mut s = Spring::at(start);
+                    let mut stepped = s;
+                    for frame in 0..90 {
+                        s.step(target, k, dt);
+                        stepped.step(target, k, dt);
+                        let before = s;
+                        if s.land(target, dt) {
+                            assert!(
+                                (before.pos - target).abs() <= super::LAND_REL * (1.0 + target.abs().max(before.pos.abs())),
+                                "k={k} {start}->{target}: landed from {} (frame {frame}), still {} away",
+                                before.pos, (before.pos - target).abs()
+                            );
+                            assert_eq!((s.pos, s.vel), (target, 0.0));
+                        } else {
+                            assert_eq!((s.pos, s.vel), (before.pos, before.vel), "a spring that has not arrived is untouched");
+                        }
+                    }
+                    assert_eq!((s.pos, s.vel), (target, 0.0), "k={k} {start}->{target}: not on its target after 90 frames");
+                    stalled += (stepped.pos != target) as u32;
+                }
+            }
+        }
+        assert!(stalled > 0, "the premise: step alone leaves some of these springs off their target");
+    }
+
+    /// Landing a spring that is already exactly on its target reports nothing (the guard `jump` has),
+    /// and one that landed reports once, so a settled screen can still sleep.
+    #[test]
+    fn landing_reports_to_the_present_gate_only_when_it_moves_something() {
+        let _g = plx_base::testlock::serial();
+        reset_for_test();
+        let mut s = Spring { pos: 1.0 + 1.2e-7, vel: -9.8e-7 }; // where a released pop parks
+        note_present(10_000);
+        frame_begin(1.0 / 60.0);
+        assert!(s.land(1.0, 1.0 / 60.0));
+        assert!(should_present(10_016), "the landing is a change, so the exactly-resting frame is presented");
+        note_present(10_016);
+        frame_begin(1.0 / 60.0);
+        assert!(s.land(1.0, 1.0 / 60.0));
+        assert!(!should_present(10_032), "already there: nothing to report");
+        assert!(!Spring::at(1.5).land(1.0, 1.0 / 60.0), "a spring half a unit away has not arrived");
+        assert!(!Spring { pos: 1.0, vel: 5.0 }.land(1.0, 1.0 / 60.0), "on the target but still travelling is not arrived");
     }
 }

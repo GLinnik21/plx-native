@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::registry::{
-    unlive_excess, EvictOrder, LibraryIdentity, LibraryKey, LibraryMemory, LibrarySectionIdentity,
+    unlive_excess, Compaction, EvictOrder, LibraryIdentity, LibraryKey, LibraryMemory, LibrarySectionIdentity,
 };
 use plx_machine::machine::GroupId;
 
@@ -42,6 +42,8 @@ pub(super) struct KeyRegistry {
     // detach once for that mutation batch, retaining every older snapshot unchanged.
     keys: Arc<Vec<LibraryKey>>,
     next: [u32; 5],
+    /// How many keys each region holds, so a bound is read, not counted off the table.
+    counts: [usize; 5],
     identity_index: HashMap<LibraryIdentity, usize>,
     elem_index: HashMap<u32, usize>,
     #[cfg(test)]
@@ -50,14 +52,14 @@ pub(super) struct KeyRegistry {
 
 impl Default for KeyRegistry {
     fn default() -> Self {
-        Self { keys: Arc::new(Vec::new()), next: [0; 5], identity_index: HashMap::new(),
+        Self { keys: Arc::new(Vec::new()), next: [0; 5], counts: [0; 5], identity_index: HashMap::new(),
             elem_index: HashMap::new(), #[cfg(test)] register_probes: 0 }
     }
 }
 
 impl KeyRegistry {
     pub(super) fn restore(memory: &LibraryMemory) -> Self {
-        let mut out = Self { keys: Arc::clone(&memory.keys), next: [0; 5],
+        let mut out = Self { keys: Arc::clone(&memory.keys), next: [0; 5], counts: [0; 5],
             identity_index: HashMap::with_capacity(memory.keys.len()),
             elem_index: HashMap::with_capacity(memory.keys.len()),
             #[cfg(test)] register_probes: 0 };
@@ -66,6 +68,7 @@ impl KeyRegistry {
             // serialized; first wins to retain the old scan's answer for malformed duplicates.
             out.identity_index.entry(key.identity.clone()).or_insert(at);
             out.elem_index.entry(key.elem).or_insert(at);
+            out.counts[region_index(identity_region(&key.identity))] += 1;
             if let Some(region) = region_of_elem(key.elem) {
                 let slot = region_index(region);
                 out.next[slot] = out.next[slot].max((key.elem & !REGION_MASK) + 1);
@@ -114,6 +117,7 @@ impl KeyRegistry {
         let slot = region_index(region);
         let ordinal = self.next[slot];
         self.next[slot] = ordinal.checked_add(1).expect("Library element-key space exhausted");
+        self.counts[slot] += 1;
         let elem = region_base(region) | ordinal;
         let at = self.keys.len();
         self.identity_index.insert(identity.clone(), at);
@@ -130,7 +134,7 @@ impl KeyRegistry {
     /// Drop the oldest keys of `region` that `live` does not hold until at most `cap` remain;
     /// true when any went. Ordinals only grow, so a dropped number is never minted again.
     pub(super) fn prune(&mut self, region: KeyRegion, cap: usize, live: impl Fn(u32) -> bool) -> bool {
-        let count = self.keys.iter().filter(|key| identity_region(&key.identity) == region).count();
+        let count = self.count(region);
         if count <= cap { return false; }
         let drop = unlive_excess(
             self.keys.iter().filter(|key| identity_region(&key.identity) == region).map(|key| key.elem),
@@ -139,15 +143,19 @@ impl KeyRegistry {
             EvictOrder::Elem,
         );
         if drop.is_empty() { return false; }
-        Arc::make_mut(&mut self.keys).retain(|key| !drop.contains(&key.elem));
-        self.identity_index.clear();
-        self.elem_index.clear();
-        for (at, key) in self.keys.iter().enumerate() {
-            self.identity_index.entry(key.identity.clone()).or_insert(at);
-            self.elem_index.entry(key.elem).or_insert(at);
+        let gone: Vec<usize> = self.keys.iter().enumerate().filter(|(_, key)| drop.contains(&key.elem)).map(|(at, _)| at).collect();
+        // compact in place; the indexes follow the positions that moved and no identity is cloned
+        let removed = gone.len();
+        if let Some(moved) = Compaction::remove(Arc::make_mut(&mut self.keys), gone) {
+            self.identity_index.retain(|_, at| moved.follow_in_place(at));
+            self.elem_index.retain(|_, at| moved.follow_in_place(at));
         }
+        self.counts[region_index(region)] -= removed;
         true
     }
+
+    /// How many keys `region` holds.
+    pub(super) fn count(&self, region: KeyRegion) -> usize { self.counts[region_index(region)] }
 
     pub(super) fn key(&self, elem: u32) -> Option<&LibraryKey> {
         self.keys.get(*self.elem_index.get(&elem)?)

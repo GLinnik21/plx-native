@@ -14,7 +14,7 @@ use std::process::Command;
 pub fn emit(repo: &Path) {
     // The television target is the one build cargo does not link, so it is the one that wants
     // none of this. It is identified by ARCHITECTURE rather than by the full triple: the target is
-    // `arm-unknown-linux-gnueabi` (32-bit ARM, `target_arch = "arm"`), while every host that runs
+    // `armv7-unknown-linux-gnueabi` (32-bit ARM, `target_arch = "arm"`), while every host that runs
     // this crate's tests is `aarch64` or `x86_64` — including CI's `ubuntu-24.04-arm` runner, whose
     // own arch is `aarch64` and which only ever asks for the ARM32 target explicitly.
     //

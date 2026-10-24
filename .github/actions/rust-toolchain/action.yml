@@ -1,0 +1,24 @@
+name: Install the pinned Rust toolchain
+description: >
+  The ONE Rust toolchain every job uses -- the ARM cross-build, the host unit suites, clippy and
+  rustfmt -- read from rust-modules/rust-toolchain.toml (its `channel`), installed with clippy,
+  rustfmt and the ARMv7 rust-std, and exported as RUST_TOOLCHAIN for the jobs' `cargo +$RUST_TOOLCHAIN`
+  lines and for the Makefile (which reads the same variable). No workflow spells a Rust version.
+
+# Why a file read and not `rustup toolchain install` with no argument: the explicit install is
+# understood by every rustup a runner image ships, names what it installed in the log, and keeps
+# `rust-src` out (the build needs none: the target's std is prebuilt, there is no `-Z build-std`).
+# Needs the checkout, so the job's `actions/checkout` step comes first.
+
+runs:
+  using: composite
+  steps:
+    - name: Install the toolchain named by rust-modules/rust-toolchain.toml
+      shell: bash
+      run: |
+        channel="$(sed -n 's/^channel[[:space:]]*=[[:space:]]*"\(.*\)".*/\1/p' rust-modules/rust-toolchain.toml)"
+        [ -n "$channel" ] || { echo "::error::no channel in rust-modules/rust-toolchain.toml"; exit 1; }
+        rustup toolchain install "$channel" --profile minimal \
+          --component clippy --component rustfmt --target armv7-unknown-linux-gnueabi
+        rustup run "$channel" rustc --version
+        echo "RUST_TOOLCHAIN=$channel" >> "$GITHUB_ENV"

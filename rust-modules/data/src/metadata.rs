@@ -156,6 +156,12 @@ pub struct MetadataState {
     /// [`cached_playing`] refuses it for this item until a page read after the playback lands.
     played_since_load: Option<(plx_plex::plex::ServerId, String)>,
     alt: AltStore,
+    /// The IO this owner has asked the application to start and the application has not yet taken
+    /// (`MetadataStore::take_jobs`): one [`crate::stores::StoreJob::Detail`] per accepted detail
+    /// request. The owner never starts the work itself, so no thread, clock or network read happens
+    /// in the step that asks. A job taken is a job owed to its runner: the application's `Bridge`
+    /// starts each one in the same call that stepped the store (`app::adapters::stores`).
+    pub(crate) jobs: Vec<crate::stores::StoreJob>,
 }
 
 /// The `Arc`'d worker half of one Metadata owner: the detail/season/alt-sources landing mailboxes,
@@ -183,10 +189,6 @@ pub struct MetadataAdapter {
     /// The Related tail window read in flight and landed ([`want_related`]).
     rel_pages: std::sync::Mutex<RelPages>,
     tracker: std::sync::Mutex<record::Tracker>,
-    /// TEST ONLY: the detail fetches [`request_detail`] admitted, parked here instead of on a
-    /// worker thread — see [`MetadataAdapter::run_held_detail_fetches_for_test`].
-    #[cfg(any(test, feature = "test-support"))]
-    held_detail: std::sync::Mutex<Vec<(plx_plex::plex::ServerId, String, u32, Option<i64>)>>,
 }
 
 impl Default for MetadataAdapter {
@@ -207,52 +209,7 @@ impl Default for MetadataAdapter {
             ep_pages: std::sync::Mutex::new(EpPages::default()),
             rel_pages: std::sync::Mutex::new(RelPages::default()),
             tracker: std::sync::Mutex::new(record::Tracker::new(false)),
-            #[cfg(any(test, feature = "test-support"))]
-            held_detail: std::sync::Mutex::new(Vec::new()),
         }
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-impl MetadataAdapter {
-    /// Run every detail fetch [`request_detail`] admitted and has not yet run, on THIS thread,
-    /// through the production completion path (`finish_detail_fetch` over `fetch_full`); return
-    /// how many ran. Their landings are queued for the next `pump_detail`.
-    ///
-    /// Under `cfg(test)` a detail request never starts a worker thread. It did until 2026-09-19,
-    /// and every test that drove a request through a real `Bridge` raced that thread: a fetch
-    /// for an unknown server returns in microseconds, so a fast run settled the request before
-    /// an "in flight" assertion (`Some(false)` where `Some(true)` was pinned), while a loaded CI
-    /// runner had not settled it after the hundred `yield_now`s a drain helper spun
-    /// (`Some(true)` where `Some(false)` was pinned). Both halves failed intermittently in
-    /// `app::content::library_publication_tests`. Holding the CURRENT fetch until a test asks
-    /// makes "in flight" and "settled" states the test chooses rather than the scheduler.
-    pub fn run_held_detail_fetches_for_test(&self) -> usize {
-        self.run_held_detail_fetches(|_| true)
-    }
-
-    /// The superseded half only: fetches whose generation is no longer current, whose landings
-    /// `pump_detail` discards anyway. [`begin_detail_request`] runs these right after it
-    /// supersedes them, BEFORE admitting the new request, so a superseded fetch hands back its
-    /// admission reservation — as the thread it replaces did, well inside a test's next step —
-    /// instead of holding one of the landing's four in-flight slots until a test drains it.
-    fn run_superseded_detail_fetches(&self) -> usize {
-        let current = self.detail_gen.load(std::sync::atomic::Ordering::SeqCst);
-        self.run_held_detail_fetches(|gen| gen != current)
-    }
-
-    fn run_held_detail_fetches(&self, pick: impl Fn(u32) -> bool) -> usize {
-        let run: Vec<_> = {
-            let mut held = self.held_detail.lock().unwrap_or_else(|e| e.into_inner());
-            let (run, keep) = std::mem::take(&mut *held).into_iter().partition(|(_, _, gen, _)| pick(*gen));
-            *held = keep;
-            run
-        };
-        let n = run.len();
-        for (sid, rk, gen, prefer) in run {
-            finish_detail_fetch(self, sid, &rk, gen, || fetch_full(sid, &rk, prefer));
-        }
-        n
     }
 }
 
@@ -427,8 +384,10 @@ impl Cast {
 /// IS an HDR10 stream — ignoring the RPU costs the dynamic metadata and nothing else. It is not
 /// fine for **Profile 5**, which is single-layer IPT-PQ with no HDR10 fallback: decoded as
 /// ordinary HEVC it is not a dimmer picture but a WRONG one, with the washed, pink-green cast of
-/// IPT read as YCbCr. And it cannot work at all for **Profile 7**, whose picture is split across
-/// two layers we cannot interleave.
+/// IPT read as YCbCr. **Profile 7** splits its picture across two layers we cannot interleave,
+/// and is played only because the feed path converts it: a Profile 7 whose base layer is
+/// cross-compatible becomes a single-layer Profile 8.1 on the way to the pipeline (see
+/// [`Dovi::converts_to_p81`]); any other dual layer cannot work at all.
 ///
 /// All zero is "the server said nothing", which is also what a non-DV stream produces — see
 /// [`Dovi::base_layer_unusable`] for why silence must never convict.
@@ -523,17 +482,21 @@ impl Dovi {
     /// - the direct-play gate **when no node will be sent** (`presentation` is written in terms of
     ///   this, so the two can never contradict each other), and
     /// - the server's permission to **COPY** the video — a remux or a `directStream` transcode
-    ///   hands us the identical elementary stream one container down, and the Load payload built
-    ///   for that path declares nothing. `route::build_stream` reads it for both
-    ///   ([`plx_plex::plex::TranscodeSpec::no_video_copy`] and the `remux` gate) and that is why a
-    ///   declared Profile 5 still refuses a copy: the declaration rides the DIRECT PLAY, not the
-    ///   file, so the same pixels arriving by another route are as wrong as they ever were.
+    ///   hands us the identical elementary stream one container down. A copy of a usable base
+    ///   layer keeps the file's declaration (the DOVI record travels in the stream, so the Load
+    ///   payload describes it as a direct play's would), but a copy of an unusable one (Profile 5)
+    ///   is refused and never declared. `route::build_stream` reads it for both
+    ///   ([`plx_plex::plex::TranscodeSpec::no_video_copy`] and the `remux` gate): the same pixels
+    ///   arriving by another route are as wrong as they ever were.
     ///
     /// Two disqualifiers, and they are found by different fields:
-    /// - **an enhancement layer** (`el_present`, Profile 7) — one elementary stream is all the
-    ///   pipeline feeds, so the other layer simply never arrives. This is the only test that
-    ///   catches P7: measured live 2026-08-21, the dev server's P7 item reports `bl_compat = 6`,
-    ///   which sails through any `== 0` check.
+    /// - **an enhancement layer** (`el_present`) — one elementary stream is all the pipeline
+    ///   feeds, so the other layer simply never arrives. This is the only test that catches a dual
+    ///   layer: measured live 2026-08-21, the dev server's P7 item reports `bl_compat = 6`, which
+    ///   sails through any `== 0` check. The one exception is a Profile 7 the feed path converts
+    ///   ([`converts_to_p81`](Self::converts_to_p81)): what reaches the decoder is its base layer,
+    ///   which is the HDR10 picture it always was, so a copy of it is a copy of a displayable
+    ///   stream.
     /// - **no cross-compatible base layer** (Profile 5 / `bl_compat == 0`) — IPT-PQ, which an
     ///   HEVC decoder will happily decode and a panel will happily show, incorrectly.
     ///
@@ -559,7 +522,26 @@ impl Dovi {
         if !self.present {
             return false;
         }
+        if self.converts_to_p81() {
+            return false;
+        }
         self.el_present || self.profile == 5 || (self.profile > 0 && self.bl_compat == 0)
+    }
+
+    /// PURE: **a Profile 7 the feed path converts to Profile 8.1** — dual-layer (`el_present`)
+    /// with a cross-compatible base layer (`bl_compat != 0`; a UHD Blu-ray remux reports 6, the
+    /// only value the Dolby profile table assigns to profile 7). `plx_media`'s
+    /// `ff::packet_to_annexb` performs the conversion `dovi_tool -m 2` does: the enhancement
+    /// layer's NALs are dropped and each RPU is rewritten to 8.1, so the pipeline is fed exactly
+    /// the single-layer shape a Profile 8.1 file has. What is lost is the enhancement layer's own
+    /// contribution — a full enhancement layer's residual detail above the base layer — and
+    /// nothing else: the base layer and the dynamic metadata reach the panel.
+    ///
+    /// Profile 5 is untouched by this (no enhancement layer, `bl_compat` 0), and so is a Profile 7
+    /// whose base layer is not cross-compatible: there is no picture the conversion could leave,
+    /// so that one is still refused as `dual-layer`.
+    pub fn converts_to_p81(&self) -> bool {
+        self.present && self.el_present && self.profile == 7 && self.bl_compat != 0
     }
 
     /// PURE: **how this stream will be presented** — the ONE predicate behind both halves of the
@@ -569,21 +551,24 @@ impl Dovi {
     /// `signal` retains `nodv`'s diagnostic asymmetry: it withholds a Profile-5-style declaration,
     /// but does not suppress a compatible Profile 8 on a supported set. `capability` must be a
     /// definite [`Supported`](plx_platform::devcaps::dv::DvCapability::Supported), and
-    /// `video_is_hevc` closes the old Profile 9 disagreement where the gate declared AVC and the
-    /// payload's H265 guard silently discarded the node.
+    /// `video_carries_dv` ([`dv_video_codec`]) closes the old Profile 9 disagreement where the gate
+    /// declared AVC and the payload's codec guard silently discarded the node.
     ///
     /// The four arms, and why each is where it is:
     ///
     /// - **not `present`** → [`DvPresentation::NotDv`]. No Dolby Vision, nothing to say, and
     ///   nothing to refuse. This is every ordinary file in the library.
-    /// - **`el_present`** → refuse, always, `signal` or not. Profile 7 splits its picture across a
-    ///   base and an enhancement layer; the pipeline feeds ONE elementary stream and cannot
-    ///   interleave the other, so no payload key makes it displayable. (This is also the only
-    ///   thing that identifies a dual-layer file: the dev server's P7 reports `bl_compat = 6`.)
-    ///   It is deliberately checked BEFORE the declaration arm — which is what keeps the emitted
-    ///   node's `trackType` at `"single"` and, with `encryptionType` fixed at `"clear"`, makes the
-    ///   pipeline's `dv-dual-svp` secure-video-path flag unreachable. We cannot satisfy that flag.
-    /// - **no node will be sent** (capability absent/unknown, non-HEVC output, a profile the
+    /// - **`el_present`** → refuse, always, `signal` or not — unless the feed path converts it
+    ///   ([`converts_to_p81`](Self::converts_to_p81)), in which case it continues to the arms
+    ///   below as the single-layer Profile 8.1 that is actually fed, and is declared as profile 8.
+    ///   Any other dual layer splits its picture across a base and an enhancement layer; the
+    ///   pipeline feeds ONE elementary stream and cannot interleave the other, so no payload key
+    ///   makes it displayable. (This is also the only thing that identifies a dual-layer file:
+    ///   the dev server's P7 reports `bl_compat = 6`.) It is deliberately checked BEFORE the
+    ///   declaration arm — which is what keeps the emitted node's `trackType` at `"single"` and,
+    ///   with `encryptionType` fixed at `"clear"`, makes the pipeline's `dv-dual-svp`
+    ///   secure-video-path flag unreachable. We cannot satisfy that flag.
+    /// - **no node will be sent** (capability absent/unknown, output that is neither HEVC nor AV1, a profile the
     ///   server never named, or Profile 5 with the trigger armed) → fall back to
     ///   exactly the pre-declaration rule: refuse iff [`base_layer_unusable`](Self::base_layer_unusable).
     ///   That is what makes "keep the refusal for any case where we would not send the node" a
@@ -598,23 +583,31 @@ impl Dovi {
     ///   hint) to the `video/x-h265` caps it was already going to build. The codec string does not
     ///   change; the node is the entire difference between an IPT-PQ stream shown in wrong colours
     ///   and one the panel puts in Dolby Vision mode.
+    ///
+    ///   AV1 (Profile 10) is declared the same way, on a set whose codec table lists an AV1 decoder
+    ///   (the direct-play gate's own condition). That half is NOT from a decompile: it was measured
+    ///   on a webOS 6 set (LG C1, 2026-10-18), where an AV1 Profile 10.1 direct play put the panel
+    ///   in Dolby Vision, and is unmeasured on any other firmware.
     pub fn presentation(
         &self,
         signal: bool,
         capability: plx_platform::devcaps::dv::DvCapability,
-        video_is_hevc: bool,
+        video_carries_dv: bool,
     ) -> DvPresentation {
         if !self.present {
             return DvPresentation::NotDv;
         }
-        if self.el_present {
+        // A converted Profile 7 is a single layer by the time it is fed, so only a dual layer the
+        // feed path cannot convert is refused here.
+        let converted = self.converts_to_p81();
+        if self.el_present && !converted {
             return DvPresentation::Refuse("dual-layer");
         }
         // Presence of our node enables libpf's DV path even on a television which cannot display
         // it. libplayerAPIs' own platform metadata does not protect that seam, so only this app's
         // affirmative configd result may make the declaration eligible.
         let declare = capability == plx_platform::devcaps::dv::DvCapability::Supported
-            && video_is_hevc
+            && video_carries_dv
             && (signal || !self.base_layer_unusable());
         if !declare || self.profile <= 0 {
             return if self.base_layer_unusable() {
@@ -624,11 +617,13 @@ impl Dovi {
             };
         }
         DvPresentation::Declare(DolbyHdrInfo {
-            profile_id: self.profile,
+            // A converted Profile 7 declares what is fed: profile 8, one layer.
+            profile_id: if converted { 8 } else { self.profile },
             // Honest derivation, and unreachable as `"dual"` while the `el_present` arm above
-            // returns first — written this way so that the day an interleaver exists, the payload
-            // follows the refusal being relaxed instead of quietly lying about the track.
-            track_type: if self.el_present { "dual" } else { "single" },
+            // returns first for every dual layer that is not converted — written this way so that
+            // the day an interleaver exists, the payload follows the refusal being relaxed instead
+            // of quietly lying about the track.
+            track_type: if self.el_present && !converted { "dual" } else { "single" },
             // Never `"all"`: paired with `trackType: "dual"` that is what sets `dv-dual-svp`, the
             // secure-video-path flag, which this app cannot satisfy.
             encryption_type: "clear",
@@ -637,19 +632,19 @@ impl Dovi {
 
     /// Resolve a fresh decision from the cached platform answer and the boot-latched diagnostic
     /// signal. Call once at a route boundary; installed playback must retain the returned value.
-    pub fn presentation_now(&self, video_is_hevc: bool) -> DvPresentation {
+    pub fn presentation_now(&self, video_carries_dv: bool) -> DvPresentation {
         self.presentation(
             !dv_withheld(),
             plx_platform::devcaps::dv::capability(),
-            video_is_hevc,
+            video_carries_dv,
         )
     }
 
-    pub fn decision_now(&self, video_is_hevc: bool) -> DvDecision {
+    pub fn decision_now(&self, video_carries_dv: bool) -> DvDecision {
         let capability = plx_platform::devcaps::dv::capability();
         DvDecision {
             capability,
-            presentation: self.presentation(!dv_withheld(), capability, video_is_hevc),
+            presentation: self.presentation(!dv_withheld(), capability, video_carries_dv),
         }
     }
 }
@@ -721,15 +716,6 @@ impl DvPresentation {
         }
     }
 
-    /// [`Self::label`] in the UI language, for the diagnostics read-out. Logs keep `label`.
-    pub fn display(&self) -> &'static str {
-        match self {
-            Self::NotDv => plx_platform::i18n::msg::browse_diagnostics_dv_base_layer(),
-            Self::Declare(_) => plx_platform::i18n::msg::browse_diagnostics_dv_declare(),
-            Self::Refuse(_) => plx_platform::i18n::msg::browse_diagnostics_dv_refuse(),
-        }
-    }
-
     /// Direct play is refused (and, at `build_stream`, the reason for the log line).
     pub fn refusal(&self) -> Option<&'static str> {
         match self {
@@ -795,6 +781,14 @@ plx_base::devtrig::latched_flag!(
     /// capability answer nor a reload re-evaluates the installed play.
     pub fn dv_withheld = "nodv";
 );
+
+/// Can a Dolby Vision declaration ride on this video codec (the source's own spelling, `"hevc"`,
+/// `"av1"`)? HEVC carries Profiles 5, 7 and 8; AV1 carries Profile 10. Anything else (an AVC
+/// Profile 9, VP9) is never declared, because the Load payload names the codec the node is read
+/// against and the pipeline has no Dolby Vision path for it.
+pub fn dv_video_codec(vcodec: &str) -> bool {
+    vcodec.eq_ignore_ascii_case("hevc") || vcodec.eq_ignore_ascii_case("av1")
+}
 
 /// Prewarm both payload diagnostics before the first frame scope. Their getters are subsequently
 /// filesystem-free even when preview or payload construction first reaches them during a frame.
@@ -2604,16 +2598,12 @@ pub struct PlayingItem {
     pub bitrate: i64,
     /// The played leaf's Dolby Vision layering — the direct-play gate's other refusal, beside the
     /// frame size above and for the same reason: the local fallback never asks PMS, so a file
-    /// whose base layer we cannot display correctly (Profile 5, or a dual-layer Profile 7) would
-    /// otherwise be fed to the decoder verbatim and shown in the wrong colours. See [`Dovi`].
+    /// whose base layer we cannot display correctly (Profile 5, or a dual layer the feed path does
+    /// not convert to Profile 8.1) would otherwise be fed to the decoder verbatim and shown in the
+    /// wrong colours. See [`Dovi`].
     pub dovi: Dovi,
     pub markers: Vec<Marker>, // intro / credits segments — the in-player Skip prompt
     pub chapters: Vec<Chapter>, // chapter boundaries — the in-player Chapters tab/strip
-    /// The played leaf's own `UltraBlurColors` corners (tl, tr, br, bl), or `None` when the server
-    /// sent no usable envelope. What the player's panels dim WITH: GL cannot read the video plane,
-    /// so this is the one honest source of "the light under the panel" there
-    /// (`screen::Scrim::over_video`).
-    pub blur: Option<[[f32; 3]; 4]>,
     /// The played leaf's video stream is HDR: a PQ or HLG transfer, or Dolby Vision
     /// (`convert_streams`' `hdr`). The SOURCE's fact, not the picture's: a server re-encode to SDR
     /// keeps it true, so the HDR overlay dim also asks the route (`route::overlay_gain`).
@@ -2639,7 +2629,6 @@ impl PlayingItem {
             dovi: Default::default(),
             markers: Vec::new(),
             chapters: Vec::new(),
-            blur: None,
             hdr: false,
         }
     }
@@ -2688,7 +2677,6 @@ fn cached_playing(state: &MetadataState, sid: plx_plex::plex::ServerId, rk: &str
             dovi: d.dovi,
             markers: d.markers.clone(),
             chapters: d.chapters.clone(),
-            blur: d.has_blur.then_some(d.blur),
             hdr: d.hdr,
         })
 }
@@ -2734,10 +2722,6 @@ fn playing_item_from(sid: plx_plex::plex::ServerId, rk: &str, it: Option<&plx_pl
         .as_ref()
         .and_then(|it| it.primary_media().map(|m| (m.width, m.height, m.bitrate)))
         .unwrap_or((0, 0, 0));
-    let blur = it
-        .as_ref()
-        .and_then(|it| it.ultra_blur_colors)
-        .and_then(|u| u.corners());
     let kind = it.map(|it| it.kind.clone()).unwrap_or_default();
     PlayingItem {
         sid,
@@ -2753,7 +2737,6 @@ fn playing_item_from(sid: plx_plex::plex::ServerId, rk: &str, it: Option<&plx_pl
         dovi,
         markers,
         chapters,
-        blur,
         hdr,
     }
 }
@@ -3614,11 +3597,12 @@ fn selected_season_number(state: &MetadataState, sid: plx_plex::plex::ServerId, 
 /// 2 PMS round-trips for a movie, 5 for a show.
 ///
 /// PURE NETWORK + PARSING — it touches no `static mut`, which is what let it run either on the
-/// main thread or on a worker ([`request_detail`]) while a synchronous caller still existed
-/// (phase 12/D7 deleted the last one, `load_detail_now`; see that deletion's note below). Keep it
+/// main thread or on a worker (the app's `StoreRunner`, from the job [`request_detail`] emits)
+/// while a synchronous caller still existed (phase 12/D7 deleted the last one, `load_detail_now`;
+/// see that deletion's note below). Keep it
 /// that way: installing the result is the caller's job, and on the async path that must happen on
 /// the main thread (see the `DETAIL_LANDING`/`land_detail` note).
-fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) -> Option<Detail> {
+pub fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) -> Option<Detail> {
     // `ms=` is the whole chain's wall clock. It is the exact cost `request_detail` moves off the
     // SDL loop, so it is the number to read when judging whether a call site can afford to block
     // — note the framedrop breakdown CANNOT show it (fd_pc0 starts after event handling).
@@ -3736,9 +3720,9 @@ fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) -> O
 
 // ---- async detail load ---------------------------------------------------------------------
 // Opening a detail page used to block the SDL loop on 2 (movie) to 5 (show) sequential PMS
-// round-trips, straight off the key handler. `request_detail` spawns the fetch and `pump_detail`
-// installs the result — the page mounts THIS frame on the catalog row's art/title/summary and
-// fills in a beat later. Same shape as the season mailbox below and route.rs's play resolve.
+// round-trips, straight off the key handler. `request_detail` emits the fetch as a job (the app's
+// `StoreRunner` starts it) and `pump_detail` installs the result — the page mounts THIS frame on
+// the catalog row's art/title/summary and fills in a beat later. Same shape as the season mailbox below and route.rs's play resolve.
 //
 // The worker MUST NOT write CURRENT. `current()` (via `MetadataView`) hands out a `&'a Detail`,
 // borrowed from the owner, that ~25 draw sites read within a frame, so a background store would
@@ -3772,9 +3756,30 @@ pub fn begin_detail_for_test(adapter: &MetadataAdapter, sid: plx_plex::plex::Ser
     gen
 }
 
+/// Put the season fetch in flight (`season_loading()` true) with no worker behind it, or settle it
+/// again: the state a tab press leaves between `LoadSeason` and the landing, for a test that needs
+/// the loading half of a screen's behaviour without a network fetch.
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_season_loading_for_test(adapter: &MetadataAdapter, loading: bool) {
+    use std::sync::atomic::Ordering;
+    if loading {
+        adapter.season_gen.fetch_add(1, Ordering::SeqCst);
+    } else {
+        supersede_season(adapter);
+    }
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub fn detail_generation_for_test(adapter: &MetadataAdapter) -> u32 {
     adapter.detail_gen.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// How many detail reservations the adapter's landing holds: every request admitted and not yet
+/// answered and taken, a superseded one included (it keeps its slot until its fetch returns). A
+/// test that drives a runner reads it to prove a request's one answer handed its slot back.
+#[cfg(any(test, feature = "test-support"))]
+pub fn detail_inflight_for_test(adapter: &MetadataAdapter) -> u32 {
+    adapter.detail_landing_ref().inflight(detail_addr(0).to)
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -3815,7 +3820,8 @@ fn land_detail(adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId, rk: &st
 }
 
 /// Mint the request: supersede the season, bump the generation, record what the page awaits
-/// and admit the request. The spawn is the caller's; a refused one is `refused` back.
+/// and admit the request. Starting the fetch is not this function's: [`request_detail`] emits it
+/// as a job, and a launch that then starts nothing is `DetailPort::refused` back.
 fn begin_detail_request(adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId, rk: &str) -> (
     u32, plx_machine::machine::Addr, Result<(), plx_machine::landing::AdmissionError>,
 ) {
@@ -3826,8 +3832,6 @@ fn begin_detail_request(adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId
     // DETAIL_DONE must stay behind so `detail_loading()` reports this fetch as in flight
     let gen = adapter.detail_gen.fetch_add(1, Ordering::SeqCst) + 1;
     record::cancel_all(adapter);
-    #[cfg(any(test, feature = "test-support"))]
-    adapter.run_superseded_detail_fetches();
     *adapter.detail_want.lock().unwrap_or_else(|e| e.into_inner()) = Some((sid, rk.to_string()));
     let addr = detail_addr(gen);
     let admission = record::admit(adapter, addr);
@@ -3840,35 +3844,81 @@ fn begin_detail_request(adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId
     (gen, addr, admission)
 }
 
-/// MAIN THREAD, NON-BLOCKING. Supersedes any in-flight load and spawns the fetch; the result
-/// lands via [`pump_detail`]. The caller mounts the detail page this same frame.
-///
-/// `sid` names the server to ask and is captured by the CALLER, on the main thread — the worker
-/// must not read the current server (see the fetch block's note), and the page being opened may
-/// belong to a machine that is not the current one at all.
-fn request_detail(adapter: &std::sync::Arc<MetadataAdapter>, sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) {
-    request_detail_with_spawn(adapter, sid, rk, |gen| {
-        let rk = rk.to_string();
-        let adapter = std::sync::Arc::clone(adapter);
-        crate::stores::tape::admit(serde_json::json!({"store":"metadata",
-            "sid":sid.raw(),"rk":rk,"gen":gen,
-            "client":plx_plex::plex::client_for(sid).map(|c| c.instance_gen())}), || {
-            // See `MetadataAdapter::run_held_detail_fetches_for_test`: a test runs the fetch
-            // when it chooses, never on a thread racing its assertions.
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                adapter.held_detail.lock().unwrap_or_else(|e| e.into_inner()).push((sid, rk, gen, prefer));
-                true
-            }
-            #[cfg(not(any(test, feature = "test-support")))]
-            plx_base::task::spawn_small("detail", move || {
-                finish_detail_fetch(&adapter, sid, &rk, gen, || fetch_full(sid, &rk, prefer));
-            })
-        })
-    });
+/// The detail fetch one `RequestDetail` asks for: everything the worker needs, captured on the
+/// main thread. `sid` names the server to ask and `prefer` is the season the page opens on (read
+/// from the store at request time, [`selected_season_number`]); the worker must not read either
+/// from the current server or the store (see the fetch block's note), and the page being opened
+/// may belong to a machine that is not the current one at all.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DetailReq {
+    pub sid: plx_plex::plex::ServerId,
+    pub rk: String,
+    pub prefer: Option<i64>,
 }
 
-/// Shared admission/spawn path; tests inject a spawn outcome without starting network workers.
+/// Where a detail fetch's ONE answer goes: the owner's landing, captured with the job when it was
+/// emitted. An owner that has since been `Reset` holds a new adapter, and this port still lands
+/// into the one the request was made from, the retired one nobody pumps. Two ports are equal when
+/// they reach the same adapter.
+#[derive(Clone)]
+pub struct DetailPort(std::sync::Arc<MetadataAdapter>);
+
+impl DetailPort {
+    pub(crate) fn of(adapter: &std::sync::Arc<MetadataAdapter>) -> Self {
+        Self(std::sync::Arc::clone(adapter))
+    }
+}
+
+impl PartialEq for DetailPort {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl std::fmt::Debug for DetailPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "DetailPort({:p})", std::sync::Arc::as_ptr(&self.0))
+    }
+}
+
+impl plx_machine::job::Port<(DetailKey, Option<Detail>)> for DetailPort {
+    /// The fetch's answer (`None`: it failed). An answer for a superseded request only hands its
+    /// reservation back; [`pump_detail`]'s generation check discards it.
+    fn done(&self, addr: plx_machine::machine::Addr, (key, detail): (DetailKey, Option<Detail>)) {
+        land_detail(&self.0, key.0, &key.1, addr.req.0, detail);
+    }
+
+    /// The fetch was never started: the refusal record is what settles the spinner
+    /// ([`pump_detail`]), exactly one event for the request (§5.2).
+    fn refused(&self, addr: plx_machine::machine::Addr) {
+        record::refused(&self.0, addr);
+    }
+}
+
+/// MAIN THREAD, NON-BLOCKING. Supersedes any in-flight load and emits the fetch as a
+/// [`crate::stores::StoreJob::Detail`] on `state`'s outbox; the application starts it, and the
+/// result lands via [`pump_detail`]. The caller mounts the detail page this same frame.
+///
+/// `sid` names the server to ask and is captured by the CALLER, on the main thread: it travels in
+/// the job (see [`DetailReq`]).
+fn request_detail(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>, sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) {
+    let (_, addr, admission) = begin_detail_request(adapter, sid, rk);
+    // A request refused for capacity owns no worker and emits no job: `begin_detail_request` has
+    // already settled it synchronously, and nothing will ever answer it.
+    if admission.is_err() { return; }
+    state.jobs.push(crate::stores::StoreJob::Detail(
+        plx_machine::job::Job { addr, req: DetailReq { sid, rk: rk.to_string(), prefer } },
+        DetailPort::of(adapter),
+    ));
+}
+
+/// TEST ONLY: [`request_detail`] with the hand-off injected. `spawn` stands for the runner's
+/// launch of an admitted request and says whether anything was started; `false` takes the
+/// refusal path a runner takes when the tape does not admit a launch (`DetailPort::refused`).
+/// Production does not come through here: it emits the job and the app's runner owns the launch
+/// and the refusal, so this exists to let the data layer's mailbox tests inject either outcome
+/// without a thread.
+#[cfg(test)]
 fn request_detail_with_spawn(adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId, rk: &str, spawn: impl FnOnce(u32) -> bool) {
     let (gen, addr, admission) = begin_detail_request(adapter, sid, rk);
     if admission.is_err() { return; }
@@ -3879,13 +3929,16 @@ fn request_detail_with_spawn(adapter: &MetadataAdapter, sid: plx_plex::plex::Ser
     }
 }
 
-fn finish_detail_fetch(
-    adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId, rk: &str, gen: u32,
+/// The fetch's IO body's completion: run `fetch` and post its answer, or its failure, to `port`.
+/// A fetch that unwinds still answers (with `None`), so its reservation is always handed back.
+pub fn finish_detail_fetch(
+    port: &DetailPort, addr: plx_machine::machine::Addr, key: DetailKey,
     fetch: impl FnOnce() -> Option<Detail> + std::panic::UnwindSafe,
 ) {
+    use plx_machine::job::Port;
     // Publish outside the catch so fetch failure/unwind still acknowledges this reservation.
     let d = catch_unwind(fetch).unwrap_or(None);
-    land_detail(adapter, sid, rk, gen, d);
+    port.done(addr, (key, d));
 }
 
 /// `stores::metadata`'s one door onto every [`MetadataCmd`](crate::stores::metadata::MetadataCmd)
@@ -3900,7 +3953,7 @@ pub fn run(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>,
         MetadataCmd::RequestDetail { sid, rk } => {
             let prefer = selected_season_number(state, sid, &rk);
             state.detail_stamp = state.ledger.stamp();
-            request_detail(adapter, sid, &rk, prefer);
+            request_detail(state, adapter, sid, &rk, prefer);
             true
         }
         MetadataCmd::Clear => {
@@ -4187,8 +4240,10 @@ pub struct AltCopy {
     /// That server's ratingKey for the item — per-server, and the whole reason the identity above
     /// it is a guid. Where OK navigates.
     pub rk: String,
-    /// Runtime in ms, for the row's sub-line. 0 = unknown, and then the sub-line is the owner
-    /// alone rather than "0 min".
+    /// Runtime in ms, for the row's read-out. 0 = none, and then the slot is left empty rather
+    /// than "0 min". Only a leaf copy has one ([`has_runtime`]): a show or season copy is 0
+    /// whatever its container's `duration` says, because that is the agent's nominal per-episode
+    /// figure and no episode's.
     pub dur_ms: i64,
     /// `Media.videoResolution` ("4k" / "1080" / "sd"), plus the stored frame size as its fallback —
     /// exactly the trio `ui::fmt::resolution` takes, so the badge in the panel and the hero's media
@@ -4457,25 +4512,47 @@ fn resolve_alt_sources(
         let handle = plx_plex::plex::server_facts(id)
             .map(|f| f.handle.clone())
             .unwrap_or_default();
-        for m in mc.metadata.iter() {
+        out.extend(alt_copies_from(id, &handle, &mc));
+    }
+    out
+}
+
+/// Does an item of this PMS `type` have a runtime of its own? A leaf does (movie, episode, clip,
+/// and any other playable file); a container (show, season, and the music/collection kinds) does
+/// not, because its `Metadata.duration` is the metadata agent's nominal per-episode figure, which
+/// matches no episode and differs per server (#814). The one predicate behind both the
+/// *Also available* rows and the About footer's Runtime.
+pub fn has_runtime(kind: &str) -> bool {
+    !matches!(kind, "show" | "season" | "artist" | "album" | "collection" | "playlist")
+}
+
+/// PURE. One source's `find_by_guid` answer projected into *Also available* rows: `handle` is the
+/// source's credit (empty = nobody to credit, so the row reads "This account").
+fn alt_copies_from(
+    id: plx_plex::plex::ServerId,
+    handle: &str,
+    mc: &plx_plex::plex::MediaContainer,
+) -> Vec<AltCopy> {
+    mc.metadata
+        .iter()
+        .map(|m| {
             let media0 = m.media.first();
-            out.push(AltCopy {
+            AltCopy {
                 sid: id,
                 library: m.library_section_title.clone(),
                 // `None` is the ABSENCE of an owner, which is what the row spells "This account";
                 // an empty handle must not become `Some("")`.
-                owner: (!handle.is_empty()).then(|| handle.clone()),
+                owner: (!handle.is_empty()).then(|| handle.to_string()),
                 rk: m.rating_key.clone(),
-                dur_ms: m.duration,
+                dur_ms: if has_runtime(&m.kind) { m.duration } else { 0 },
                 res: media0
                     .map(|x| x.video_resolution.clone())
                     .unwrap_or_default(),
                 width: media0.map(|x| x.width).unwrap_or_default(),
                 height: media0.map(|x| x.height).unwrap_or_default(),
-            });
-        }
-    }
-    out
+            }
+        })
+        .collect()
 }
 
 /// MAIN THREAD, once a frame. Runs the store's whole per-frame half — the two registry epochs, the
@@ -6032,3 +6109,49 @@ mod related_tail_tests;
 #[cfg(test)]
 #[path = "metadata_initial_season_tests.rs"]
 mod initial_season_tests;
+
+#[cfg(test)]
+#[path = "metadata_detail_job_tests.rs"]
+mod detail_job_tests;
+
+/// #814: the runtime an *Also available* row carries is a fact about one FILE, so only a leaf has
+/// one. A show container's `duration` is the metadata agent's nominal per-episode figure.
+#[cfg(test)]
+mod alt_runtime_tests {
+    use super::*;
+
+    fn copies(kind: &str) -> Vec<AltCopy> {
+        let body = format!(
+            r#"{{"MediaContainer":{{"size":1,"Metadata":[{{"ratingKey":"100","type":"{kind}",
+                "librarySectionTitle":"Library","duration":6000000}}]}}}}"#
+        );
+        let mc = serde_json::from_str::<plx_plex::plex::Envelope>(&body).unwrap().media_container;
+        alt_copies_from(plx_plex::plex::ServerId::UNSET, "", &mc)
+    }
+
+    #[test]
+    fn a_show_or_season_copy_carries_no_runtime() {
+        for kind in ["show", "season"] {
+            let c = copies(kind);
+            assert_eq!(c.len(), 1);
+            assert_eq!(c[0].dur_ms, 0, "{kind}: the container's duration is no file's runtime");
+        }
+    }
+
+    #[test]
+    fn a_leaf_copy_keeps_its_runtime() {
+        for kind in ["movie", "episode", "clip"] {
+            assert_eq!(copies(kind)[0].dur_ms, 6_000_000, "{kind}");
+        }
+    }
+
+    #[test]
+    fn only_a_playable_leaf_kind_has_a_runtime() {
+        for k in ["movie", "episode", "clip"] {
+            assert!(has_runtime(k), "{k}");
+        }
+        for k in ["show", "season", "artist", "album", "collection"] {
+            assert!(!has_runtime(k), "{k}");
+        }
+    }
+}

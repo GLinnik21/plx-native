@@ -1,0 +1,26 @@
+{
+  "library_header.collections": {
+    "value": "Collections",
+    "description": "Library header control: opens the library's collections page. A count follows it after a middle dot once known (Collections · 12), so keep it to one short word."
+  },
+  "library_header.recommended": {
+    "value": "Recommended",
+    "description": "Library header control: opens the library's recommended page (the server's hubs for the library). One short word."
+  },
+  "library_header.sort_filter": {
+    "value": "Sort & Filter",
+    "description": "Library header control that opens the one menu holding the type to show, the sort order and the filters. The current sort follows it after a middle dot and a fold arrow ends it, so keep the label short."
+  },
+  "library_header.filtered_of": {
+    "value": "{shown} of {total}",
+    "args": {
+      "shown": "str",
+      "total": "str"
+    },
+    "description": "Library header read-out shown only while a filter is on: how many titles match, of how many the library holds (312 of 1,284). Both numbers arrive already formatted for the language."
+  },
+  "library_header.show": {
+    "value": "Show",
+    "description": "Heading of the first section of the Sort & Filter menu, over the list of what the library page shows (Films, Shows, Seasons, Episodes)."
+  }
+}

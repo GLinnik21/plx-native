@@ -31,16 +31,19 @@
 //! - Only this module writes the session domain of the persisted record; every
 //!   `persistence::commit_*`/`write_session`/`commit_cleared` caller here ends by calling exactly
 //!   a read install, proven-write install, cache drop, or local revocation.
-//! - `peek` never takes `IO`. A miss schedules one refresh on the bounded persistence FIFO and
-//!   returns the last snapshot immediately. The worker reads and installs under `IO`; `CACHE`
-//!   is never held across `IO`. Queued and in-flight reads cannot overwrite a later revocation.
-//!   Cached views poll `VisibleSessionWatch` on Tick; `peek_settled` distinguishes recovery in
-//!   progress from an authoritative empty session, so pending preferences need not flash defaults.
+//! - `peek` is a pure read of memory: it takes no `IO`, submits nothing and reads no clock. A miss
+//!   returns the last snapshot (or the empty session). The refill is the session owner's job:
+//!   `refresh_need` says what the cache lacks, the app's frame step hands it to the owner, and the
+//!   owner's `RefreshCache` effect runs `refresh_cache_job` on the bounded persistence FIFO. The
+//!   job reads and installs under `IO`; `CACHE` is never held across `IO`. Queued and in-flight
+//!   reads cannot overwrite a later revocation (`CACHE_GENERATION` and `replace_cache`'s Revoked
+//!   guard). Cached views poll `VisibleSessionWatch` on Tick; `peek_settled` distinguishes recovery
+//!   in progress from an authoritative empty session, so pending preferences need not flash defaults.
 //! - Writers never read from the cache; they read the authority under `IO` (fence correctness),
 //!   then install their own outcome over it.
-//! - A `Locked`/`Blocked` read or fallback `Ready` during helper unavailability is transient:
-//!   served for `LOCKED_RETRY` (about a second) after it finishes, then re-read on the next call
-//!   rather than latched forever.
+//! - A `Locked`/`Blocked` read or fallback `Ready` during helper unavailability is transient: it
+//!   is served as the last known state, and the owner re-reads it no sooner than `LOCKED_RETRY_MS`
+//!   of frame time later (per generation), rather than latching it forever.
 //! - [`clear`] (sign-out) drops the cached `Arc` immediately — it holds the very account/server
 //!   tokens sign-out means to get rid of.
 //! - Other domains of the same record (consent) are not in this cache and their writes never
@@ -49,10 +52,10 @@
 //!   cache rather than keep a second copy of the session live.
 use super::origin::Origin;
 use super::probe::Location;
-pub use prefs::{effective, own_prefs, persist_profile_pref, put_own, stored_effective, tenure, AudioEnhancementsPref,
+pub use prefs::{HoldHintTaughtPref, effective, own_prefs, persist_profile_pref, put_own, stored_effective, tenure, AudioEnhancementsPref,
     DeckPressPref, DirectPlayModePref, HdrOverlayBrightnessPref, NextEpisodeModePref, Preferences, ProfilePrefs, ProfilePrefsPref,
     ProfilePrefsRecord, ProfileSetting, ProfileWrite, QualityPref, Row, Setting, SkipIntervalPref,
-    SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref};
+    SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref, UiResolutionPref, UnderPostersPref};
 use prefs::ProfileMemory;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -385,7 +388,6 @@ fn redirect_candidates_for_test(v: Option<Vec<std::path::PathBuf>>) {
 #[cfg(any(test, feature = "test-support"))]
 pub fn redirect_for_test(p: Option<std::path::PathBuf>) {
     plx_base::storage_worker::drain_for_test();
-    REFRESH.lock().unwrap_or_else(|e| e.into_inner()).retry_at = None;
     let _io = io();
     *TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()) = p;
     // A test swapping the scratch file changes what `peek` answers just as surely as a write
@@ -611,7 +613,7 @@ pub struct Session {
     /// Soft-parsed like every list in this struct: an entry costs itself, never the credentials.
     #[serde(default, deserialize_with = "de_profile_cache")]
     pub profiles: Vec<ProfileCreds>,
-    /// Every preference key but `language` (`profile_prefs`, the per-profile home of the ten player
+    /// Every preference key but `language` (`ui_resolution`, `hold_hint_taught`, `profile_prefs`, the per-profile home of the ten player
     /// settings and of hero trailer autoplay, and those settings' frozen top-level keys every profile
     /// falls back to (`trailer_autoplay` among them), `auto_sign_in`,
     /// `last_hero_blur`, `plaintext_consent`, `server_key_pins`, `last_library`,
@@ -843,34 +845,6 @@ fn valid_profiles(profiles: Vec<ProfileCreds>) -> Vec<ProfileCreds> {
     }).collect()
 }
 
-/// Remember the hero envelope Home is showing right now, best-effort, for [`Preferences::last_hero_blur`].
-///
-/// Cheap to call on every route-ground latch: [`update`] is a single read-modify-write, and this
-/// skips the write entirely when the stored envelope already matches, so parking on the same hero
-/// for minutes costs nothing beyond the initial read. A session with no `client_id` yet (nothing
-/// signed in) is a deliberate no-op — see [`update`]'s doc — which is fine here: there is no
-/// pre-Home route to seed before an account exists.
-///
-/// Returns whether the file was actually rewritten — `false` both when nothing is signed in yet
-/// ([`update`]'s own no-op rule) and when the stored envelope already matches, which is how a test
-/// can grade the skip without inspecting file bytes.
-pub fn record_last_hero(blur: [[f32; 3]; 4]) -> bool {
-    update(|cur| {
-        if cur.prefs.last_hero_blur == Some(blur) {
-            return None;
-        }
-        let mut next = cur.clone();
-        next.prefs.last_hero_blur = Some(blur);
-        Some(next)
-    })
-}
-
-/// The last hero envelope recorded by [`record_last_hero`], or `None` on a fresh device that has
-/// never rendered one.
-pub fn last_hero() -> Option<[[f32; 3]; 4]> {
-    peek().prefs.last_hero_blur
-}
-
 /// Persist Automatically Sign In through [`update`], so a concurrent roster/recents write cannot
 /// lose the switch. Returns whether the file was rewritten.
 #[cfg(any(test, feature = "test-support"))]
@@ -963,6 +937,18 @@ impl PlaybackQuality {
         };
         // `1080p` is the format's own conventional name in every shipped language.
         format!("{lines}p \u{b7} {rate}")
+    }
+
+    /// The rung's SHORT name for a row that has another part to read beside it ("720p"): the
+    /// picture height alone, which is the format's own conventional name in every shipped language.
+    /// Auto and Original name themselves ([`Self::label`]).
+    pub fn short_label(self) -> String {
+        match self {
+            PlaybackQuality::Auto | PlaybackQuality::Original => self.label(),
+            PlaybackQuality::P1080High | PlaybackQuality::P1080 => "1080p".to_owned(),
+            PlaybackQuality::P720 | PlaybackQuality::P720Low => "720p".to_owned(),
+            PlaybackQuality::P480 => "480p".to_owned(),
+        }
     }
 
     /// A missing field in an OLD file is handled by [`Session::playback_quality`] and is always
@@ -1240,6 +1226,177 @@ impl DeckPress {
     /// triangle, its press and its menu's Play row are all derived from.
     pub fn press_plays(self) -> bool {
         self == DeckPress::Play
+    }
+}
+
+/// Which fact the details line under a focused poster carries (Settings > Libraries > Under
+/// posters > Details). plex's own enum, because plex does not name `ui`: `screens` maps it to the
+/// caption policy's `DetailsKind`. Absence, and any spelling this build does not know, is
+/// `YearLength`.
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnderPostersDetails {
+    /// "2019 · 2h 14m" (the default).
+    #[default]
+    #[serde(rename = "year_length")]
+    YearLength,
+    #[serde(rename = "genre")]
+    Genre,
+    /// "4K · HDR".
+    #[serde(rename = "video")]
+    Video,
+    /// "PG-13 · 7.8".
+    #[serde(rename = "age_rating_score")]
+    AgeRatingScore,
+    /// No details line.
+    #[serde(rename = "none")]
+    None,
+}
+
+impl UnderPostersDetails {
+    /// Every option, the order the picker lists them in.
+    pub const LADDER: [UnderPostersDetails; 5] = [
+        UnderPostersDetails::YearLength,
+        UnderPostersDetails::Genre,
+        UnderPostersDetails::Video,
+        UnderPostersDetails::AgeRatingScore,
+        UnderPostersDetails::None,
+    ];
+
+    /// An in-memory index back to an option — out of range is the default, for the reason
+    /// [`SubtitleTone::from_index`] gives: the ladder can grow or shrink.
+    pub fn from_index(i: u8) -> UnderPostersDetails {
+        Self::LADDER.get(i as usize).copied().unwrap_or_default()
+    }
+
+    pub fn index(self) -> u8 {
+        Self::LADDER.iter().position(|&m| m == self).unwrap_or(0) as u8
+    }
+}
+
+/// **What sits under the focused poster** — one setting for every poster grid and row (Library,
+/// Collections, Home, Search, Watchlist): whether the title shows, and which fact the details
+/// line carries. Per profile, like [`DeckPress`]. The default is no title and the year and length.
+///
+/// Each field is soft-parsed on its own, so a spelling a later build wrote for `details` costs the
+/// details alone and never the title.
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(default)]
+pub struct UnderPosters {
+    #[serde(deserialize_with = "de_soft_under_posters_title")]
+    pub title: bool,
+    #[serde(deserialize_with = "de_soft_under_posters_details")]
+    pub details: UnderPostersDetails,
+}
+
+fn de_soft_under_posters_title<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    let Ok(v) = Value::deserialize(d) else { return Ok(false) };
+    Ok(v.as_bool().unwrap_or(false))
+}
+
+fn de_soft_under_posters_details<'de, D: Deserializer<'de>>(d: D) -> Result<UnderPostersDetails, D::Error> {
+    let Ok(v) = Value::deserialize(d) else { return Ok(UnderPostersDetails::default()) };
+    Ok(serde_json::from_value::<UnderPostersDetails>(v).unwrap_or_default())
+}
+
+impl UnderPosters {
+    /// The defaults, as a `const` for callers that compare against them.
+    pub const DEFAULT: UnderPosters = UnderPosters { title: false, details: UnderPostersDetails::YearLength };
+
+    /// One byte for the media layer's live cell: the title in bit 0, the details' index in bits 1-3.
+    pub fn pack(self) -> u8 {
+        u8::from(self.title) | (self.details.index() << 1)
+    }
+
+    /// The inverse of [`UnderPosters::pack`]; an out-of-range details index is the default.
+    pub fn unpack(b: u8) -> UnderPosters {
+        UnderPosters { title: b & 1 != 0, details: UnderPostersDetails::from_index((b >> 1) & 0b111) }
+    }
+}
+
+/// **Which "Hold [OK] for options" hints this install has been taught** (`plx_ui::hold_hint`): one
+/// flag per surface, `card` for any media card and `pill` for the Detail season tabs. Each is set
+/// once a read showing happened on that surface (or an item menu was opened, which sets both) and
+/// is never cleared, so the self-appearing hint stands once per INSTALL and survives relaunches.
+/// Install-wide: kept across sign-out, shared by every profile. Absence is "not taught yet";
+/// each flag is soft-parsed on its own, so garbage costs only that flag.
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HoldHintTaught {
+    #[serde(default, deserialize_with = "de_soft_bool", skip_serializing_if = "std::ops::Not::not")]
+    pub card: bool,
+    #[serde(default, deserialize_with = "de_soft_bool", skip_serializing_if = "std::ops::Not::not")]
+    pub pill: bool,
+}
+
+impl HoldHintTaught {
+    /// Nothing taught: the default, and what an absent key reads.
+    pub const NONE: HoldHintTaught = HoldHintTaught { card: false, pill: false };
+
+    /// Both sets joined: a surface taught in either stays taught.
+    pub fn union(self, other: HoldHintTaught) -> HoldHintTaught {
+        HoldHintTaught { card: self.card || other.card, pill: self.pill || other.pill }
+    }
+}
+
+/// **The window the interface asks for at launch** (Settings > System > Interface resolution).
+///
+/// The UI is authored at 1920x1080 and `plx_base::surface` fits that canvas into whatever drawable
+/// webOS grants; a smaller one fills fewer pixels and the television's compositor upscales it.
+/// `Auto` is the native 1920x1080 canvas on EVERY set: a smaller window is always the owner's
+/// choice, because it trades text sharpness for smoother frames and only the owner can judge that trade
+/// on their own panel. Install-wide (not per profile) because the window is created once, before
+/// anyone is seated. Absence, and any spelling this build does not know, is `Auto`. The setting is
+/// offered, and the stored value honoured at boot, on webOS 1-3 only
+/// (`plx_platform::tv::device::offers_ui_resolution`); elsewhere the stored value is kept but unused.
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UiResolution {
+    #[default]
+    #[serde(rename = "auto")]
+    Auto,
+    #[serde(rename = "900p")]
+    Hd900,
+    #[serde(rename = "720p")]
+    Hd720,
+    /// Half the canvas in each direction: the one scale at which every texel maps to a whole
+    /// number of canvas pixels (see `plx_base::surface`).
+    #[serde(rename = "540p")]
+    Sd540,
+}
+
+impl UiResolution {
+    /// Every option, the order the picker lists them in. There is no 1920x1080 entry: Automatic
+    /// already is the native canvas, and an explicit one would be the same choice twice.
+    pub const LADDER: [UiResolution; 4] =
+        [UiResolution::Auto, UiResolution::Hd900, UiResolution::Hd720, UiResolution::Sd540];
+
+    /// The option's position in [`UiResolution::LADDER`], the row a picker highlights.
+    pub fn index(self) -> usize {
+        Self::LADDER.iter().position(|&m| m == self).unwrap_or(0)
+    }
+
+    /// The option at a picker row; an index past the end is `Auto`.
+    pub fn from_index(index: usize) -> UiResolution {
+        Self::LADDER.get(index).copied().unwrap_or_default()
+    }
+
+    /// The serialized spelling, for an identity comparison that must not depend on the language.
+    pub fn tag(self) -> &'static str {
+        match self {
+            UiResolution::Auto => "auto",
+            UiResolution::Hd900 => "900p",
+            UiResolution::Hd720 => "720p",
+            UiResolution::Sd540 => "540p",
+        }
+    }
+
+    /// The window size this option asks for. `Auto` is the native canvas, so it names no
+    /// smaller window: `None`.
+    pub fn size(self) -> Option<(i32, i32)> {
+        match self {
+            UiResolution::Auto => None,
+                        UiResolution::Hd900 => Some((1600, 900)),
+            UiResolution::Hd720 => Some((1280, 720)),
+            UiResolution::Sd540 => Some((960, 540)),
+        }
     }
 }
 
@@ -2187,6 +2344,29 @@ impl Session {
         self.prefs.auto_sign_in
     }
 
+    /// The Interface resolution the NEXT launch draws at; see [`UiResolution`].
+    pub fn ui_resolution(&self) -> UiResolution {
+        self.prefs.ui_resolution
+    }
+
+    /// Which hold hints this install has been taught; see [`HoldHintTaught`].
+    pub fn hold_hint_taught(&self) -> HoldHintTaught {
+        self.prefs.hold_hint_taught
+    }
+
+    /// This session with `taught` joined into what it already holds (a lesson is never unlearned).
+    pub fn with_hold_hint_taught(&self, taught: HoldHintTaught) -> Self {
+        let mut next = self.clone();
+        next.prefs.hold_hint_taught = next.prefs.hold_hint_taught.union(taught);
+        next
+    }
+
+    pub fn with_ui_resolution(&self, mode: UiResolution) -> Self {
+        let mut next = self.clone();
+        next.prefs.ui_resolution = mode;
+        next
+    }
+
     /// Record the Settings switch while leaving every unrelated session field intact.
     pub fn with_auto_sign_in(&self, on: bool) -> Self {
         let mut next = self.clone();
@@ -2276,6 +2456,10 @@ impl Session {
 
     pub fn deck_press(&self) -> DeckPress {
         self.prefs.deck_press
+    }
+
+    pub fn under_posters(&self) -> UnderPosters {
+        self.prefs.under_posters
     }
 
     pub fn hdr_overlay_brightness(&self) -> HdrOverlayBrightness {
@@ -2641,16 +2825,17 @@ enum Cached {
     /// next write installs or drops it.
     Settled(std::sync::Arc<ReadState>),
     /// [`ReadState::Locked`], `Blocked`, or fallback `Ready`: a transient failure (a helper timeout, a keymanager
-    /// hiccup), not a fact about the file — served only until `retry_at`, never latched forever.
+    /// hiccup), not a fact about the file — served as the last known state, never latched forever:
+    /// [`refresh_need`] asks for another read and the session owner decides when (its backoff clock is
+    /// the frame tick, [`LOCKED_RETRY_MS`]).
     Transient {
         state: std::sync::Arc<ReadState>,
-        retry_at: std::time::Instant,
     },
 }
 
 /// **The live read cache** — what [`peek`] answers from memory instead of taking [`IO`]. A hit is
-/// one short `Mutex` lock and an `Arc` clone; a miss schedules a single worker refresh and serves
-/// the previous snapshot (or the empty session). See the module doc for the full invariant list;
+/// one short `Mutex` lock and an `Arc` clone; a miss serves the previous snapshot (or the empty
+/// session) and leaves the refill to the session owner's `RefreshCache` effect ([`refresh_need`]). See the module doc for the full invariant list;
 /// the two that matter for reasoning about a deadlock: nobody takes `IO` while holding this
 /// lock, and a writer always re-reads the authority under `IO` rather than trusting
 /// whatever is cached, so a miss can never overwrite a newer write. `player::preview`'s own
@@ -2659,12 +2844,13 @@ enum Cached {
 /// closure, unchanged by the cache.
 static CACHE: Mutex<Cached> = Mutex::new(Cached::Unloaded);
 
-/// How long a Locked/Blocked answer or fallback Ready is served from [`CACHE`] before
-/// the next reader tries canonical storage again, measured from the end of the read. These are
-/// transient by definition (see [`ReadState`]'s doc), so the interval only needs to be short enough
-/// that a real recovery is felt quickly, and long enough to limit background retries to about
-/// once a second. Per-frame callers never pay for these reads.
-const LOCKED_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
+/// How long (in frame-tick milliseconds) the session owner holds back another refresh of the
+/// generation whose read came back Locked/Blocked or as a fallback Ready, and of every generation
+/// after a refused or unwound job. These are transient by definition (see [`ReadState`]'s doc), so
+/// the interval only needs to be short enough that a real recovery is felt quickly, and long
+/// enough to limit background retries to about once a second. Per-frame callers never pay for
+/// these reads, and nothing here reads a clock: the owner measures it on `cx.tick.ms`.
+pub const LOCKED_RETRY_MS: u32 = 1000;
 
 /// The `Session` every non-`Ready` read answers with, shared so a Locked/Blocked retry window does
 /// not allocate a fresh default every time.
@@ -2677,48 +2863,45 @@ fn empty_session() -> std::sync::Arc<Session> {
 fn session_of(state: &ReadState) -> std::sync::Arc<Session> {
     match state {
         ReadState::Ready { session, .. } => session.clone(),
-        ReadState::Cleared { language } | ReadState::Locked { language } =>
-            std::sync::Arc::new(Session { language: *language, ..Default::default() }),
+        ReadState::Cleared { kept } | ReadState::Locked { kept } => std::sync::Arc::new(kept.into_session()),
         ReadState::Missing | ReadState::Blocked => empty_session(),
     }
 }
 
-/// Which [`Cached`] arm a fresh [`ReadState`] belongs in — shared by [`refresh_locked`] (a read)
-/// and [`install_locked`] (a write's proven outcome). `now` anchors a `Transient` arm's
-/// `retry_at`; a read supplies the later of the caller's clock and its completion time. Using
-/// only the caller's clock would install an already-expired entry after a slow helper timeout.
-/// `peek_at` supplies a simulated completion clock too, so its exact retry boundaries remain
-/// deterministic and a miss in the simulated future cannot move the retry anchor backwards.
-fn cached_arm(state: std::sync::Arc<ReadState>, now: std::time::Instant) -> Cached {
-    match &*state {
-        ReadState::Locked { .. } | ReadState::Blocked | ReadState::Ready { retry_canonical: true, .. } => Cached::Transient {
-            state,
-            retry_at: now + LOCKED_RETRY,
-        },
-        ReadState::Ready { .. } | ReadState::Missing | ReadState::Cleared { .. } => Cached::Settled(state),
+/// Whether a [`ReadState`] is a transient failure to read rather than a fact about the file.
+fn is_transient(state: &ReadState) -> bool {
+    match state {
+        ReadState::Locked { .. } | ReadState::Blocked | ReadState::Ready { retry_canonical: true, .. } => true,
+        ReadState::Ready { .. } | ReadState::Missing | ReadState::Cleared { .. } => false,
     }
 }
 
-/// A cache hit as of `now`, if one exists. Never takes [`IO`].
-fn cached_at(now: std::time::Instant) -> Option<std::sync::Arc<ReadState>> {
+/// Which [`Cached`] arm a fresh [`ReadState`] belongs in — shared by [`refresh_locked`] (a read)
+/// and [`install_locked`] (a write's proven outcome).
+fn cached_arm(state: std::sync::Arc<ReadState>) -> Cached {
+    if is_transient(&state) { Cached::Transient { state } } else { Cached::Settled(state) }
+}
+
+/// A settled cache hit, if one exists. Never takes [`IO`]. A transient entry is a miss here: the
+/// boot and background callers that ask ([`load_with_id`]) want a fact about the file.
+fn cached_settled() -> Option<std::sync::Arc<ReadState>> {
     match &*CACHE.lock().unwrap_or_else(|e| e.into_inner()) {
-        Cached::Unloaded | Cached::Revoked => None,
         Cached::Settled(state) => Some(state.clone()),
-        Cached::Transient { state, retry_at } if now < *retry_at => Some(state.clone()),
-        Cached::Transient { .. } => None,
+        Cached::Unloaded | Cached::Revoked | Cached::Transient { .. } => None,
     }
 }
 
 /// Read the authority (the caller must already hold [`IO`]), install the result into [`CACHE`],
 /// and return it. Publishes identities on a `Ready` read — the same hook [`load`] and every write
 /// already carry, so a cache-filling read is covered by the scrubber exactly as an uncached one
-/// always was. The retry anchor is at least `now` and at least the read's completion time, so a
-/// slow read cannot consume its own cache lifetime before the next frame gets to use it.
-fn refresh_locked(now: std::time::Instant) -> std::sync::Arc<ReadState> {
-    refresh_if_current_locked(now, None)
+/// always was.
+fn refresh_locked() -> std::sync::Arc<ReadState> {
+    read_into_cache_locked(None).0
 }
 
-fn refresh_if_current_locked(now: std::time::Instant, expected: Option<u64>) -> std::sync::Arc<ReadState> {
+/// [`refresh_locked`] that installs only while the cache generation is still `expected`, and says
+/// whether it did (`false`: a write, a drop or a revocation got in first, and the read was discarded).
+fn read_into_cache_locked(expected: Option<u64>) -> (std::sync::Arc<ReadState>, bool) {
     #[cfg(not(any(test, feature = "test-support")))]
     let state = std::sync::Arc::new(read_live_locked());
     #[cfg(any(test, feature = "test-support"))]
@@ -2727,23 +2910,16 @@ fn refresh_if_current_locked(now: std::time::Instant, expected: Option<u64>) -> 
     }));
     #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
     plx_base::eventlog::log("session: authority read reason=miss");
-    #[cfg(not(any(test, feature = "test-support")))]
-    let finished = std::time::Instant::now();
-    #[cfg(any(test, feature = "test-support"))]
-    let finished = CACHE_NOW_FOR_TEST.with(|clock| clock.get().unwrap_or_else(std::time::Instant::now));
-    let now = now.max(finished);
-    if !replace_cache(cached_arm(state.clone(), now), expected, false) { return state; }
+    if !replace_cache(cached_arm(state.clone()), expected, false) { return (state, false); }
     if let ReadState::Ready { session, .. } = &*state { publish_identities(session); }
-    state
+    (state, true)
 }
 
 /// Install a proven [`ReadState`] — a completed read, or the outcome of a write that IS provably
 /// the record (`Durable`, or on the `TEST_FILE` path a legacy persist that returned `Some(_)`) —
 /// as the new cache content. The caller must already hold [`IO`]; see the module doc's invariants.
-/// Always anchored to real wall-clock time: none of this function's callers are exercised through
-/// `peek_at`'s simulated clock, only real reads and writes.
 fn install_locked(state: std::sync::Arc<ReadState>) {
-    set_cache_locked(cached_arm(state, std::time::Instant::now()));
+    set_cache_locked(cached_arm(state));
 }
 
 /// Drop whatever is cached: a write whose outcome is not provably the record (`Uncertain`,
@@ -2776,6 +2952,23 @@ pub fn learn_server_key(machine_id: &str, pin: &str) -> bool {
     // sign-out repopulate the table that sign-out just emptied.
     let (machine_id, pin) = (machine_id.to_owned(), pin.to_owned());
     queue_update(move |cur| cur.with_server_key_pin(&machine_id, &pin))
+}
+
+/// Remember that this install has been taught the hold hints in `taught` (`plx_ui::hold_hint`),
+/// off the caller's thread and best-effort: the frame thread calls it on the rising edge, the
+/// cached session says whether anything is new (nothing is queued when the stored flags already
+/// cover `taught`), and the queued edit re-checks under IO and writes only a change. Returns
+/// whether an edit was queued, not whether it was saved. With no stored session the edit finds
+/// nothing to write and the hint teaches once more on the next install of a session.
+pub fn learn_hold_hint_taught(taught: HoldHintTaught) -> bool {
+    let stored = peek().hold_hint_taught();
+    if stored.union(taught) == stored {
+        return false;
+    }
+    queue_update(move |cur| {
+        let next = cur.with_hold_hint_taught(taught);
+        (next.prefs.hold_hint_taught != cur.prefs.hold_hint_taught).then_some(next)
+    })
 }
 
 /// The UI may retain the receipt while showing its pending preference locally.
@@ -2833,44 +3026,94 @@ pub fn queue_update_settled(
 /// [`load`].
 ///
 /// **Cached** — see [`CACHE`]. Returns the same `Arc<Session>` across repeated calls as long as
-/// nothing in this process has written since the last one. Neither hits nor misses take [`IO`].
-/// A miss schedules at most one background read and immediately returns the last known state,
-/// or an empty session before the first read. A visible change advances a generation that the
-/// frame thread observes before invalidating; unchanged retries leave a settled UI alone.
+/// nothing in this process has written since the last one. **A pure read of memory:** it takes no
+/// [`IO`], submits nothing and reads no clock, so it answers the last known state (or the empty
+/// session before the first read) on a miss. Refilling a missing or transient cache is the session
+/// owner's job: [`refresh_need`] says what is missing, the owner's `RefreshCache` effect runs
+/// [`refresh_cache_job`], and the frame thread observes the visible generation move before
+/// invalidating; unchanged retries leave a settled UI alone.
 pub fn peek() -> std::sync::Arc<Session> {
-    peek_impl(std::time::Instant::now())
+    match &*CACHE.lock().unwrap_or_else(|e| e.into_inner()) {
+        Cached::Unloaded | Cached::Revoked => empty_session(),
+        Cached::Settled(state) | Cached::Transient { state } => session_of(state),
+    }
 }
 
-/// [`peek`], parameterized on "now" so a test can simulate [`LOCKED_RETRY`] elapsing without an
-/// actual one-second sleep. The supplied clock stays fixed through the read; call again with
-/// that same instant plus `LOCKED_RETRY` (or more) to observe the retry.
-#[cfg(any(test, feature = "test-support"))]
-pub fn peek_at(now: std::time::Instant) -> std::sync::Arc<Session> {
-    struct RestoreClock(Option<std::time::Instant>);
-    impl Drop for RestoreClock {
-        fn drop(&mut self) {
-            CACHE_NOW_FOR_TEST.with(|clock| clock.set(self.0));
+/// What the cache is missing, for the session owner's refresh decision.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct RefreshNeed {
+    /// The cache generation the need was observed at; the refresh installs only while it still holds.
+    pub generation: u64,
+    /// The cache holds a transient failure to read (a retry), not an `Unloaded` cache.
+    pub transient: bool,
+}
+
+/// Whether the cache needs a read, and at which generation. Pure: it takes no [`IO`] and reads no
+/// clock. `Settled` and `Revoked` need nothing; `Unloaded` and `Transient` do. Only the app's
+/// frame step asks, and answers with a `RefreshCache` effect once the owner's backoff allows it.
+pub fn refresh_need() -> Option<RefreshNeed> {
+    let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let transient = match &*cache {
+        Cached::Unloaded => false,
+        Cached::Transient { .. } => true,
+        Cached::Settled(_) | Cached::Revoked => return None,
+    };
+    Some(RefreshNeed { generation: CACHE_GENERATION.load(std::sync::atomic::Ordering::Relaxed), transient })
+}
+
+/// How a refresh job ended. `Refused` is never produced by [`refresh_cache_job`]: it is reported
+/// when the job never ran to completion. The adapter reports it when the queue refused the job or
+/// the job panicked; the app's bridge reports it, from its frame-step reconcile, when the adapter
+/// that began the job was replaced or dropped and so lost it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CacheRefreshOutcome {
+    /// A write, a drop or a revocation moved the cache before the read could land; nothing installed.
+    Superseded,
+    /// The read installed a fact about the file.
+    Settled,
+    /// The read installed a transient failure (Locked, Blocked, fallback Ready). `generation` is
+    /// the cache generation that entry stands at: the install itself moved it, so the owner holds
+    /// back only observations of THIS generation, and a drop or a write (which move it again)
+    /// refresh at once.
+    Transient { generation: u64 },
+    /// The job did not complete.
+    Refused,
+}
+
+/// The body of one cache refresh, for the storage worker: take [`IO`], quit if the cache generation
+/// moved since `generation` was observed, otherwise read the authority and install it (still
+/// fenced by `generation`, so a sign-out or write that lands mid-read wins). The two sign-out
+/// fences, [`CACHE_GENERATION`] and [`replace_cache`]'s Revoked guard, are exactly the ones the old
+/// scheduled refresh used. The test read substitute is captured here, on the submitting thread.
+pub fn refresh_cache_job(generation: u64) -> impl FnOnce() -> CacheRefreshOutcome + Send + 'static {
+    #[cfg(any(test, feature = "test-support"))]
+    let read = CACHE_READ_FOR_TEST.with(|read| read.get());
+    move || {
+        let _io = io();
+        if CACHE_GENERATION.load(std::sync::atomic::Ordering::Relaxed) != generation {
+            return CacheRefreshOutcome::Superseded;
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        CACHE_READ_FOR_TEST.with(|slot| slot.set(read));
+        let (state, installed) = read_into_cache_locked(Some(generation));
+        #[cfg(any(test, feature = "test-support"))]
+        CACHE_READ_FOR_TEST.with(|slot| slot.set(None));
+        match (installed, is_transient(&state)) {
+            (false, _) => CacheRefreshOutcome::Superseded,
+            (true, true) => CacheRefreshOutcome::Transient {
+                generation: CACHE_GENERATION.load(std::sync::atomic::Ordering::Relaxed),
+            },
+            (true, false) => CacheRefreshOutcome::Settled,
         }
     }
-    let _clock = RestoreClock(CACHE_NOW_FOR_TEST.with(|clock| clock.replace(Some(now))));
-    peek_blocking_at(now)
 }
 
+/// Fill the cache from the authority now, on the calling thread, and return what it says: for tests
+/// that need a filled cache without driving the owner's `RefreshCache` effect.
 #[cfg(any(test, feature = "test-support"))]
-fn peek_blocking_at(now: std::time::Instant) -> std::sync::Arc<Session> {
-    if let Some(state) = cached_at(now) {
-        return session_of(&state);
-    }
+pub fn refresh_blocking_for_test() -> std::sync::Arc<Session> {
     let _io = io();
-    // Two callers can both miss and then take turns on `IO`: by the time this one finally gets
-    // the lock, the caller ahead of it may have already installed the answer. Re-check before
-    // paying for another read of storage — the whole reason this cache exists is that a read is a
-    // `recv(2)` round trip to the storage helper (~27 ms/frame), so serving the second miss from
-    // the first one's fill rather than redoing it is not an optimization, it is the point.
-    if let Some(state) = cached_at(now) {
-        return session_of(&state);
-    }
-    session_of(&refresh_locked(now))
+    session_of(&refresh_locked())
 }
 
 /// A queued refresh is invalidated by any intervening write or cache drop. The worker checks
@@ -2883,14 +3126,14 @@ fn set_cache_locked(value: Cached) {
 
 /// Only an explicit, proven credential write may end local revocation.
 fn install_proven_locked(state: std::sync::Arc<ReadState>, generation: u64) {
-    replace_cache(cached_arm(state, std::time::Instant::now()), Some(generation), true);
+    replace_cache(cached_arm(state), Some(generation), true);
 }
 
 fn install_write_locked(state: std::sync::Arc<ReadState>, authority: SaveAuthority, generation: u64) {
     if authority == SaveAuthority::FreshReauthentication {
         install_proven_locked(state, generation);
     } else {
-        replace_cache(cached_arm(state, std::time::Instant::now()), Some(generation), false);
+        replace_cache(cached_arm(state), Some(generation), false);
     }
 }
 
@@ -2906,7 +3149,7 @@ static VISIBLE_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::Ato
 pub fn install_transient_for_test(locked: bool) {
     plx_base::testlock::assert_held("session read fixture");
     let _io = io();
-    install_locked(std::sync::Arc::new(if locked { ReadState::Locked { language: plx_platform::i18n::saved_preference() } } else { ReadState::Blocked }));
+    install_locked(std::sync::Arc::new(if locked { ReadState::Locked { kept: install_preferences::Retained { language: plx_platform::i18n::saved_preference(), ..Default::default() } } } else { ReadState::Blocked }));
 }
 
 pub fn visible_generation() -> u64 {
@@ -2914,7 +3157,7 @@ pub fn visible_generation() -> u64 {
 }
 
 /// Per-consumer cursor for cached session-derived views. Poll on Tick, including while storage
-/// is unavailable: peek schedules the bounded retry without blocking the frame.
+/// is unavailable: the owner's `RefreshCache` effect runs the bounded retry, so the frame never blocks.
 #[derive(Default)]
 pub struct VisibleSessionWatch(Option<(u64, bool)>);
 impl VisibleSessionWatch {
@@ -2930,7 +3173,6 @@ impl VisibleSessionWatch {
 /// A settled visible authority, or None while a read is unloaded/Locked/Blocked. Local revocation
 /// is settled for UI purposes: retaining a pre-sign-out account would be misleading.
 pub fn peek_settled() -> Option<std::sync::Arc<Session>> {
-    let _ = peek();
     match &*CACHE.lock().unwrap_or_else(|e| e.into_inner()) {
         Cached::Settled(state) => Some(session_of(state)),
         Cached::Revoked => Some(empty_session()),
@@ -2940,7 +3182,7 @@ pub fn peek_settled() -> Option<std::sync::Arc<Session>> {
 
 fn same_visible_session(previous: &Cached, next: &Cached) -> bool {
     let ready = |cache: &Cached| match cache {
-        Cached::Settled(state) | Cached::Transient { state, .. } => match &**state {
+        Cached::Settled(state) | Cached::Transient { state } => match &**state {
             ReadState::Ready { session, .. } => Some(session.clone()),
             _ => None,
         },
@@ -2998,7 +3240,7 @@ fn key_projection(value: &Cached) -> Option<(std::sync::Arc<Session>, bool)> {
     match value {
         Cached::Revoked => Some((empty_session(), true)),
         Cached::Unloaded => None,
-        Cached::Settled(state) | Cached::Transient { state, .. } => match &**state {
+        Cached::Settled(state) | Cached::Transient { state } => match &**state {
             ReadState::Ready { session, .. } => Some((session.clone(), false)),
             ReadState::Missing | ReadState::Cleared { .. } => Some((empty_session(), true)),
             ReadState::Locked { .. } | ReadState::Blocked => None,
@@ -3040,82 +3282,8 @@ pub fn revoke_cached_session() {
     set_cache_locked(Cached::Revoked);
 }
 
-struct Refresh {
-    in_flight: bool,
-    retry_at: Option<std::time::Instant>,
-}
-static REFRESH: Mutex<Refresh> = Mutex::new(Refresh { in_flight: false, retry_at: None });
-
-struct RefreshFlight { completed: bool }
-impl Drop for RefreshFlight {
-    fn drop(&mut self) {
-        let mut refresh = REFRESH.lock().unwrap_or_else(|e| e.into_inner());
-        refresh.in_flight = false;
-        // Back off only refused/unwinding jobs. A completed read has its own cache deadline;
-        // an intervening write that drops that cache must be able to refresh immediately.
-        refresh.retry_at = (!self.completed).then(|| std::time::Instant::now() + LOCKED_RETRY);
-    }
-}
-
-fn peek_impl(now: std::time::Instant) -> std::sync::Arc<Session> {
-    let (last, needs_refresh, generation) = {
-        let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-        let (last, needs_refresh) = match &*cache {
-            Cached::Unloaded => (empty_session(), true),
-            Cached::Revoked => (empty_session(), false),
-            Cached::Settled(state) => (session_of(state), false),
-            Cached::Transient { state, retry_at } => (session_of(state), now >= *retry_at),
-        };
-        (last, needs_refresh, CACHE_GENERATION.load(std::sync::atomic::Ordering::Relaxed))
-    };
-    if needs_refresh { schedule_refresh(now, generation); }
-    last
-}
-
-fn schedule_refresh(now: std::time::Instant, generation: u64) {
-    // Shared asynchronous fixtures opt in by holding testlock::serial. Its teardown drains the
-    // FIFO before another test can own the cache; incidental readers cannot leak jobs into it.
-    #[cfg(any(test, feature = "test-support"))]
-    if !plx_base::testlock::held() { return; }
-    {
-        let mut refresh = REFRESH.lock().unwrap_or_else(|e| e.into_inner());
-        if refresh.in_flight || refresh.retry_at.is_some_and(|retry| now < retry) { return; }
-        refresh.in_flight = true;
-    }
-    let flight = RefreshFlight { completed: false };
-    #[cfg(any(test, feature = "test-support"))]
-    let read = CACHE_READ_FOR_TEST.with(|read| read.get());
-    // The shared bounded FIFO uses task::spawn (Builder::spawn with an error return).
-    // A discarded ticket does not cancel the job; its result is the cache publication itself.
-    let _ = plx_base::storage_worker::submit(move || {
-        let mut flight = flight;
-        let _io = io();
-        if CACHE_GENERATION.load(std::sync::atomic::Ordering::Relaxed) != generation {
-            flight.completed = true;
-            return;
-        }
-        #[cfg(any(test, feature = "test-support"))]
-        CACHE_READ_FOR_TEST.with(|slot| slot.set(read));
-        refresh_if_current_locked(std::time::Instant::now(), Some(generation));
-        flight.completed = true;
-        #[cfg(any(test, feature = "test-support"))]
-        CACHE_READ_FOR_TEST.with(|slot| slot.set(None));
-    });
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub fn drain_refresh_for_test() {
-    if REFRESH.lock().unwrap_or_else(|e| e.into_inner()).in_flight {
-        plx_base::storage_worker::drain_for_test();
-    }
-}
-
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
-    /// `peek_at` advances this clock explicitly; ordinary `peek` still measures real read time.
-    static CACHE_NOW_FOR_TEST: std::cell::Cell<Option<std::time::Instant>> = const {
-        std::cell::Cell::new(None)
-    };
     /// Substitute a slow authority read without changing the storage or legacy-file paths.
     static CACHE_READ_FOR_TEST: std::cell::Cell<Option<fn() -> ReadState>> = const {
         std::cell::Cell::new(None)
@@ -3146,36 +3314,65 @@ mod cache_timing_tests {
         }
     }
 
+    /// `peek` is a read of memory and nothing else: it never submits a refresh, so an invalidated
+    /// cache stays invalidated until the session owner's `RefreshCache` effect runs
+    /// ([`refresh_need`]).
     #[test]
-    fn a_slow_production_peek_is_single_flight_and_lands_on_the_frame_step() {
-        use std::sync::{atomic::{AtomicUsize, Ordering}, mpsc::{self, Receiver, Sender}};
-        static CHANNELS: Mutex<Option<(Sender<()>, Receiver<()>)>> = Mutex::new(None);
+    fn peek_never_reads_storage() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
         static READS: AtomicUsize = AtomicUsize::new(0);
+        let _serial = plx_base::testlock::serial();
+        let _session = test_support::TempSession::new("peek-never-reads");
+        { let _io = io(); install_locked(std::sync::Arc::new(ReadState::Blocked)); }
+        invalidate_for_test();
+        READS.store(0, Ordering::SeqCst);
+        CACHE_READ_FOR_TEST.with(|slot| slot.set(Some(|| {
+            READS.fetch_add(1, Ordering::SeqCst);
+            ReadState::Missing
+        })));
+        for _ in 0..30 { assert!(peek().client_id.is_empty()); }
+        plx_base::storage_worker::drain_for_test();
+        CACHE_READ_FOR_TEST.with(|slot| slot.set(None));
+        assert_eq!(READS.load(Ordering::SeqCst), 0, "peek must not schedule a storage read");
+    }
+
+    #[test]
+    fn a_slow_refresh_job_never_blocks_peek_and_lands_on_the_frame_step() {
+        use std::sync::mpsc::{self, Receiver, Sender};
+        static CHANNELS: Mutex<Option<(Sender<()>, Receiver<()>)>> = Mutex::new(None);
+        // Set by the read once its release (or its 5 s fallback) came: the clockless witness that a
+        // peek taking the read's `IO` would have had to wait for it.
+        static READ_RETURNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        READ_RETURNED.store(false, std::sync::atomic::Ordering::SeqCst);
         let _serial = plx_base::testlock::serial();
         let _session = test_support::TempSession::new("slow-production-landing");
         let _idle = ResetIdle;
         { let _io = io(); install_locked(std::sync::Arc::new(ReadState::Blocked)); }
         let mut frame_step = FrameCursor::new();
         invalidate_for_test();
+        let need = refresh_need().expect("an invalidated cache needs a read");
+        assert!(!need.transient);
         let (started, entered) = mpsc::channel();
         let (release, held) = mpsc::channel();
         *CHANNELS.lock().unwrap() = Some((started, held));
-        READS.store(0, Ordering::SeqCst);
         CACHE_READ_FOR_TEST.with(|slot| slot.set(Some(|| {
-            READS.fetch_add(1, Ordering::SeqCst);
             let (started, held) = CHANNELS.lock().unwrap().take().unwrap();
             started.send(()).unwrap();
             let _ = held.recv_timeout(std::time::Duration::from_secs(5));
+            READ_RETURNED.store(true, std::sync::atomic::Ordering::SeqCst);
             ReadState::Ready { session: std::sync::Arc::new(test_support::signed_in()), plaintext: false, retry_canonical: false }
         })));
         plx_machine::idle::reset_for_test();
-        let start = std::time::Instant::now();
-        for _ in 0..30 { assert!(peek().client_id.is_empty()); }
+        let ticket = plx_base::storage_worker::submit_retained(refresh_cache_job(need.generation));
         CACHE_READ_FOR_TEST.with(|slot| slot.set(None));
-        assert!(start.elapsed() < std::time::Duration::from_millis(200));
         entered.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
-        assert_eq!(READS.load(Ordering::SeqCst), 1);
+        for _ in 0..30 { assert!(peek().client_id.is_empty()); }
+        assert!(
+            !READ_RETURNED.load(std::sync::atomic::Ordering::SeqCst),
+            "peek must not wait for the read: the peeks finished only after the parked read had returned"
+        );
         release.send(()).unwrap();
+        assert_eq!(ticket.wait_blocking().unwrap(), CacheRefreshOutcome::Settled);
         plx_base::storage_worker::drain_for_test();
         assert!(!plx_machine::idle::should_present(0), "the worker only publishes data");
         assert_eq!(plx_machine::idle::take_local_damage(), 0, "the peeks raise no frame damage of their own");
@@ -3244,13 +3441,15 @@ mod cache_timing_tests {
     fn a_queued_refresh_cannot_overwrite_a_newer_write() {
         let _serial = plx_base::testlock::serial();
         let _session = test_support::TempSession::new("cache-queued-write");
+        let need = refresh_need().expect("an unloaded cache needs a read");
         let held = io();
-        assert!(peek().client_id.is_empty());
+        let ticket = plx_base::storage_worker::submit_retained(refresh_cache_job(need.generation));
         install_locked(std::sync::Arc::new(ReadState::Ready {
             session: std::sync::Arc::new(test_support::signed_in()), plaintext: false, retry_canonical: false,
         }));
         drop(held);
-        drain_refresh_for_test();
+        assert_eq!(ticket.wait_blocking().unwrap(), CacheRefreshOutcome::Superseded,
+            "a write that landed first fences the queued read out");
         assert_eq!(peek().client_id, "cid-1");
     }
 
@@ -3269,53 +3468,16 @@ mod cache_timing_tests {
             let _ = release.recv_timeout(std::time::Duration::from_secs(5));
             ReadState::Ready { session: std::sync::Arc::new(test_support::signed_in()), plaintext: false, retry_canonical: false }
         })));
-        let _ = peek();
+        let need = refresh_need().expect("an unloaded cache needs a read");
+        let ticket = plx_base::storage_worker::submit_retained(refresh_cache_job(need.generation));
         CACHE_READ_FOR_TEST.with(|read| read.set(None));
         entered_rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
         revoke_cached_session();
         assert!(peek().account_token.is_empty());
         release_tx.send(()).unwrap();
-        drain_refresh_for_test();
+        assert_eq!(ticket.wait_blocking().unwrap(), CacheRefreshOutcome::Superseded);
         assert!(peek().account_token.is_empty(), "an old read must not republish revoked credentials");
         assert!(matches!(*CACHE.lock().unwrap(), Cached::Revoked));
-    }
-
-    #[test]
-    fn peek_does_not_wait_for_a_slow_backend() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static READS: AtomicUsize = AtomicUsize::new(0);
-        static FINISHED: Mutex<Option<std::time::Instant>> = Mutex::new(None);
-        let _serial = plx_base::testlock::serial();
-        let _session = test_support::TempSession::new("cache-background-blocked");
-        let _idle = ResetIdle;
-        struct ResetRead;
-        impl Drop for ResetRead {
-            fn drop(&mut self) {
-                plx_base::storage_worker::drain_for_test();
-                CACHE_READ_FOR_TEST.with(|read| read.set(None));
-            }
-        }
-        let _reset = ResetRead;
-        READS.store(0, Ordering::SeqCst);
-        CACHE_READ_FOR_TEST.with(|read| read.set(Some(|| {
-            READS.fetch_add(1, Ordering::SeqCst);
-            std::thread::sleep(LOCKED_RETRY + std::time::Duration::from_millis(50));
-            *FINISHED.lock().unwrap() = Some(std::time::Instant::now());
-            ReadState::Blocked
-        })));
-        plx_machine::idle::reset_for_test();
-        plx_machine::idle::note_present(10_000);
-        assert!(!plx_machine::idle::should_present(10_001));
-        let started = std::time::Instant::now();
-        for _ in 0..30 { assert!(peek().client_id.is_empty()); }
-        assert!(started.elapsed() < std::time::Duration::from_millis(200),
-            "per-frame peeks must return while the backend is still blocked");
-        plx_base::storage_worker::drain_for_test();
-        assert_eq!(READS.load(Ordering::SeqCst), 1, "one refresh for all thirty frames");
-        let finished = FINISHED.lock().unwrap().unwrap();
-        assert!(cached_at(finished + LOCKED_RETRY / 2).is_some(),
-            "a background timeout gets a full retry window after completion");
-        assert!(!plx_machine::idle::should_present(10_001), "an unchanged landing must leave the UI settled");
     }
 
     #[test]
@@ -3332,7 +3494,7 @@ mod cache_timing_tests {
         frame_step.lands();
         for (read, landed) in [
             ((|| ReadState::Blocked) as fn() -> ReadState, false),
-            ((|| ReadState::Locked { language: plx_platform::i18n::Preference::System }) as fn() -> ReadState, false),
+            ((|| ReadState::Locked { kept: Default::default() }) as fn() -> ReadState, false),
             ((|| ReadState::Ready {
                 session: std::sync::Arc::new(test_support::signed_in()), plaintext: false, retry_canonical: false,
             }) as fn() -> ReadState, true),
@@ -3344,9 +3506,9 @@ mod cache_timing_tests {
             plx_machine::idle::reset_for_test();
             plx_machine::idle::note_present(10_000);
             CACHE_READ_FOR_TEST.with(|slot| slot.set(Some(read)));
-            schedule_refresh(std::time::Instant::now(),
-                CACHE_GENERATION.load(std::sync::atomic::Ordering::Relaxed));
+            let job = refresh_cache_job(CACHE_GENERATION.load(std::sync::atomic::Ordering::Relaxed));
             CACHE_READ_FOR_TEST.with(|slot| slot.set(None));
+            drop(plx_base::storage_worker::submit_retained(job));
             plx_base::storage_worker::drain_for_test();
             assert!(!plx_machine::idle::should_present(10_001), "workers cannot wake the UI");
             assert_eq!(plx_machine::idle::take_local_damage(), 0);
@@ -3358,45 +3520,41 @@ mod cache_timing_tests {
     }
 
     #[test]
-    fn an_unserialized_peek_cannot_leak_a_refresh_into_another_test() {
+    fn refresh_need_reports_what_the_cache_lacks() {
         let _serial = plx_base::testlock::serial();
-        let _session = test_support::TempSession::new("cache-unserialized-peek");
-        let held = io();
-        std::thread::Builder::new().spawn(|| {
-            assert!(!plx_base::testlock::held());
-            assert!(peek().client_id.is_empty());
-        }).unwrap().join().unwrap();
-        let in_flight = REFRESH.lock().unwrap().in_flight;
-        drop(held);
-        drain_refresh_for_test();
-        assert!(!in_flight, "a caller outside the serial fixture cannot admit shared work");
+        let _session = test_support::TempSession::new("refresh-need");
+        invalidate_for_test();
+        let unloaded = refresh_need().expect("Unloaded needs a read");
+        assert!(!unloaded.transient);
+        { let _io = io(); install_locked(std::sync::Arc::new(ReadState::Blocked)); }
+        let transient = refresh_need().expect("Transient needs a retry");
+        assert!(transient.transient);
+        assert_ne!(transient.generation, unloaded.generation, "the install moved the generation");
+        { let _io = io(); install_locked(std::sync::Arc::new(ReadState::Missing)); }
+        assert_eq!(refresh_need(), None, "Settled needs nothing");
+        revoke_cached_session();
+        assert_eq!(refresh_need(), None, "a local revocation is never refilled");
     }
 
     #[test]
-    fn a_slow_blocked_read_is_cached_from_its_completion() {
+    fn a_refresh_job_reports_how_it_ended() {
         let _serial = plx_base::testlock::serial();
-        let _session = test_support::TempSession::new("cache-slow-blocked");
-        struct ResetRead;
-        impl Drop for ResetRead {
-            fn drop(&mut self) {
-                CACHE_READ_FOR_TEST.with(|read| read.set(None));
-            }
-        }
-        let _reset = ResetRead;
-        CACHE_READ_FOR_TEST.with(|read| read.set(Some(|| {
-            READS_FOR_TEST.with(|count| count.set(count.get() + 1));
-            std::thread::sleep(LOCKED_RETRY + std::time::Duration::from_millis(50));
-            ReadState::Blocked
-        })));
-        reset_reads_for_test();
-
-        let started = std::time::Instant::now();
-        assert!(peek_blocking_at(started).client_id.is_empty());
-        let finished = std::time::Instant::now();
-        assert!(finished.duration_since(started) > LOCKED_RETRY);
-        assert_eq!(reads_for_test(), 1);
-        assert!(peek_at(finished + LOCKED_RETRY / 2).client_id.is_empty());
-        assert_eq!(reads_for_test(), 1, "the retry window must start after the slow read ends");
+        let _session = test_support::TempSession::new("refresh-outcomes");
+        let run = |read: fn() -> ReadState, generation: u64| {
+            CACHE_READ_FOR_TEST.with(|slot| slot.set(Some(read)));
+            let job = refresh_cache_job(generation);
+            CACHE_READ_FOR_TEST.with(|slot| slot.set(None));
+            plx_base::storage_worker::submit_retained(job).wait_blocking().unwrap()
+        };
+        invalidate_for_test();
+        let g = refresh_need().unwrap().generation;
+        assert_eq!(run(|| ReadState::Blocked, g), CacheRefreshOutcome::Transient { generation: g + 1 },
+            "the install moved the generation; the outcome names the one the entry stands at");
+        let g = refresh_need().unwrap().generation;
+        assert_eq!(run(|| ReadState::Missing, g), CacheRefreshOutcome::Settled);
+        assert_eq!(run(|| ReadState::Missing, g), CacheRefreshOutcome::Superseded,
+            "the generation the job was given has moved on");
+        assert_eq!(refresh_need(), None);
     }
 }
 
@@ -3447,8 +3605,7 @@ fn peek_locked() -> Session {
 fn session_from_read(read: &ReadState) -> Session {
     match read {
         ReadState::Ready { session, .. } => (**session).clone(),
-        ReadState::Cleared { language } | ReadState::Locked { language } =>
-            Session { language: *language, ..Default::default() },
+        ReadState::Cleared { kept } | ReadState::Locked { kept } => kept.into_session(),
         ReadState::Missing | ReadState::Blocked => Session::default(),
     }
 }
@@ -3473,7 +3630,7 @@ enum ReadState {
     /// A recognized encrypted file whose device key is temporarily or permanently unavailable.
     /// It must shadow every lower-priority candidate: treating it as corrupt and then writing a
     /// fresh client id would destroy the only copy of the credentials.
-    Locked { language: plx_platform::i18n::Preference },
+    Locked { kept: install_preferences::Retained },
     /// The canonical authority could not answer safely. It shadows legacy candidates exactly as
     /// `Locked` does, so a fresh client id can never overwrite the only copy of the credentials.
     Blocked,
@@ -3484,7 +3641,7 @@ enum ReadState {
     /// variant rather than `Missing` itself for the one property it does NOT share with `Missing`:
     /// it must still shadow a reappearing legacy file, exactly as `Locked`/`Blocked` do, so a
     /// stale pre-DB8 `auth.json` can never resurrect a tenure this device already cleared.
-    Cleared { language: plx_platform::i18n::Preference },
+    Cleared { kept: install_preferences::Retained },
 }
 
 /// The canonical authority's answer, retaining whether protected data exists but cannot be opened.
@@ -3513,8 +3670,8 @@ fn read_locked(canonical: persistence::CanonicalRead) -> ReadState {
         // It is also deliberately not Blocked/Locked: those carry locked/blocked UI framing that a
         // cleanly signed-out device must not present. `ReadState::Cleared` is its own variant so
         // downstream `match`es are forced to decide, rather than silently inheriting either policy.
-        persistence::CanonicalRead::Cleared { language, .. } => ReadState::Cleared { language },
-        persistence::CanonicalRead::Locked { public, .. } => ReadState::Locked { language: public.language },
+        persistence::CanonicalRead::Cleared { kept, .. } => ReadState::Cleared { kept },
+        persistence::CanonicalRead::Locked { public, .. } => ReadState::Locked { kept: install_preferences::Retained::of(&public) },
         persistence::CanonicalRead::Pending { .. } => ReadState::Blocked,
         persistence::CanonicalRead::Blocked(_) => ReadState::Blocked,
     }
@@ -3544,8 +3701,8 @@ fn read_live_locked() -> ReadState {
                     plaintext,
                     retry_canonical: true,
                 },
-                ReadState::Locked { language } => ReadState::Locked { language },
-                ReadState::Cleared { language } => ReadState::Locked { language },
+                ReadState::Locked { kept } => ReadState::Locked { kept },
+                ReadState::Cleared { kept } => ReadState::Locked { kept },
                 _ => ReadState::Blocked,
             }
         }
@@ -3626,7 +3783,7 @@ fn read_legacy_filtered_locked(fallback_only: bool) -> ReadState {
             if envelope.format == SECURE_FORMAT && envelope.version == 1 {
                 let Some(plain) = plx_platform::tv::secure::open(&envelope.sealed) else {
                     plx_base::eventlog::log("session: secure file is present but its device key is unavailable");
-                    return ReadState::Locked { language: install_preferences::load().unwrap_or_default() };
+                    return ReadState::Locked { kept: install_preferences::load().unwrap_or_default() };
                 };
                 return serde_json::from_slice::<Session>(&plain)
                     .map(|session| ReadState::Ready {
@@ -3634,12 +3791,12 @@ fn read_legacy_filtered_locked(fallback_only: bool) -> ReadState {
                         plaintext: false,
                         retry_canonical: marked,
                     })
-                    .unwrap_or(ReadState::Locked { language: install_preferences::load().unwrap_or_default() });
+                    .unwrap_or(ReadState::Locked { kept: install_preferences::load().unwrap_or_default() });
             }
         }
         if identifies_secure_envelope(&bytes) {
             plx_base::eventlog::log("session: unsupported or damaged secure envelope is locked");
-            return ReadState::Locked { language: install_preferences::load().unwrap_or_default() };
+            return ReadState::Locked { kept: install_preferences::load().unwrap_or_default() };
         }
         if let Ok(session) = serde_json::from_value::<Session>(value) {
             return ReadState::Ready {
@@ -3649,7 +3806,7 @@ fn read_legacy_filtered_locked(fallback_only: bool) -> ReadState {
             };
         }
     }
-    install_preferences::load().map_or(ReadState::Missing, |language| ReadState::Cleared { language })
+    install_preferences::load().map_or(ReadState::Missing, |kept| ReadState::Cleared { kept })
 }
 
 
@@ -3788,11 +3945,11 @@ fn read_identity(read: &ReadState) -> Vec<u8> {
     match read {
         ReadState::Missing => vec![0],
         ReadState::Blocked => vec![1],
-        ReadState::Locked { language } => [vec![1], language.tag().as_bytes().to_vec()].concat(),
+        ReadState::Locked { kept } => [vec![1], kept.language.tag().as_bytes().to_vec(), kept.ui_resolution.tag().as_bytes().to_vec()].concat(),
         // Its own bucket, distinct from both Missing and Locked/Blocked: a concurrent transition
         // into or out of Cleared must be detectable by `DeferredLoad::apply`'s identity check, not
         // silently matched against whichever of those two buckets it happens to share a vec! with.
-        ReadState::Cleared { language } => [vec![2], language.tag().as_bytes().to_vec()].concat(),
+        ReadState::Cleared { kept } => [vec![2], kept.language.tag().as_bytes().to_vec(), kept.ui_resolution.tag().as_bytes().to_vec()].concat(),
         ReadState::Ready { session, .. } => serde_json::to_vec(&**session).expect("Session serialization"),
     }
 }
@@ -3805,7 +3962,8 @@ impl DeferredLoad {
         if read_identity(&read) != self.expected {
             // Refused, exactly like `update_with_outcome`'s own refusal path: install the record
             // this capture lost the race against, rather than leaving the cache empty for the
-            // next `peek()` to queue a duplicate of the read this call just took under `IO`.
+            // session owner to refill with a second read of what this call just established
+            // under `IO`.
             install_locked(read);
             return Err("session changed during capture");
         }
@@ -3815,8 +3973,8 @@ impl DeferredLoad {
             save_locked(&self.session);
         } else {
             // No write happens on this path, but the read above IS the verified record: install
-            // it so the boot path's first `peek()` does not queue a redundant read for a fact
-            // this call already established under `IO`.
+            // it so the cache is not left empty for the session owner to refill with a second
+            // read of what this call just established under `IO`.
             install_locked(read);
         }
         publish_identities(&self.session);
@@ -3855,8 +4013,7 @@ fn established(read: &ReadState) -> bool {
 
 fn load_with_id(mint: impl FnOnce() -> String) -> Session {
     if cache_revoked() { return Session::default(); }
-    let now = std::time::Instant::now();
-    if let Some(read) = cached_at(now) {
+    if let Some(read) = cached_settled() {
         if established(&read) {
             let (s, save) = prepare_load(&read, mint);
             debug_assert!(!save, "an established, protected record must never need a resave");
@@ -3868,7 +4025,7 @@ fn load_with_id(mint: impl FnOnce() -> String) -> Session {
     // The same race a synchronous cache fill guards against: another caller may have installed an established
     // record while this one waited for `IO`, in which case re-reading storage here would be a
     // second, needless read of a record already proved.
-    if let Some(read) = cached_at(now) {
+    if let Some(read) = cached_settled() {
         if established(&read) {
             let (s, save) = prepare_load(&read, mint);
             debug_assert!(!save, "an established, protected record must never need a resave");
@@ -3876,7 +4033,7 @@ fn load_with_id(mint: impl FnOnce() -> String) -> Session {
             return s;
         }
     }
-    let read = refresh_locked(now);
+    let read = refresh_locked();
     if cache_revoked() { return Session::default(); }
     let (s, save) = prepare_load(&read, mint);
     if save { save_locked(&s); }
@@ -3948,6 +4105,18 @@ pub fn set_language(language: plx_platform::i18n::Preference) -> bool {
         async_persistence::CompletionOutcome::Durable(_)));
     if saved { plx_platform::i18n::set_saved_preference(language); }
     saved
+}
+
+/// Blocking persistence seam for the Interface resolution picker, dispatched on the storage
+/// worker. The choice applies at the NEXT launch, so a pick is only claimed once it is durable.
+pub fn set_ui_resolution(mode: UiResolution) -> bool {
+    let mut already = false;
+    let write = update_with_outcome(|current| {
+        already = current.ui_resolution() == mode;
+        (!already).then(|| current.with_ui_resolution(mode))
+    });
+    // Already the stored choice is a pick that landed; an unreadable or refused record is not.
+    already || write.is_some_and(|write| matches!(write.classify(), async_persistence::CompletionOutcome::Durable(_)))
 }
 
 
@@ -4036,13 +4205,38 @@ pub fn replace_after_reauthentication_guarded_with_outcome(
     }
     // The one login that is not a sign-out: the stored session is still on disk, so no `ClearTenure`
     // ran. A different account must not open on the previous one's library views, which carry no
-    // account stamp to read as nothing under (`ACCOUNT_BOUND_PREFERENCES` is what sign-out clears).
-    if !cur.account_token.is_empty() && cur.account_token != next.account_token {
+    // account stamp to read as nothing under (`ACCOUNT_BOUND_PREFERENCES` is what sign-out clears),
+    // nor on its Home pins and search history: those are keyed by profile `uuid` with `""` for the
+    // owner of EVERY account, and sign-out drops them with the file.
+    //
+    // "Different account" is the OWNER'S IDENTITY (`owner_identity` of the roster each side holds),
+    // never the token: a fresh QR sign-in always mints a new plex.tv token, so the same person
+    // signing in again differs by token and must keep their pins, searches and library memory.
+    // Unknown on either side (a roster not yet fetched, or one without a nameable admin) clears.
+    if !cur.account_token.is_empty() && !same_owner(&cur.home_users, &next.home_users) {
         next.prefs.last_library.clear();
         next.prefs.library_views.clear();
+        next.home_pins.clear();
+        next.recent_searches.clear();
     }
     if !may_write() { return Err(()); }
     Ok(Some(save_locked_with_authority(&next, SaveAuthority::FreshReauthentication)))
+}
+
+/// The stable identity of the account a roster belongs to: its admin entry's plex.tv account id
+/// (the same id space as `account::Resource::owner_id`), else that entry's uuid when an old file
+/// carries no id. `None` when the roster is empty ("unknown", not "nobody"), has no admin, or the
+/// admin names neither. A token is NOT an identity: every sign-in mints a new one.
+pub fn owner_identity(roster: &[HomeUserRef]) -> Option<String> {
+    let admin = roster.iter().find(|u| u.admin)?;
+    if admin.id != 0 { Some(format!("id:{}", admin.id)) }
+    else if !admin.uuid.is_empty() { Some(format!("uuid:{}", admin.uuid)) }
+    else { None }
+}
+
+/// Do two rosters name the SAME account? Fails safe: an identity either side cannot name is "no".
+pub fn same_owner(a: &[HomeUserRef], b: &[HomeUserRef]) -> bool {
+    matches!((owner_identity(a), owner_identity(b)), (Some(x), Some(y)) if x == y)
 }
 
 /// What the routine-authority write actually did — the canonical verdict beside the
@@ -4119,12 +4313,7 @@ fn save_locked_with_authority(
     plx_platform::storage::wire::failure::clear();
     CANDIDATE_ERRNOS.with(|slot| slot.set([None; 8]));
     let protected_before = has_protected_authority();
-    let write_started = std::time::Instant::now();
-    let commit = persistence::write_session(s, authority);
-    plx_base::eventlog::log(&format!(
-        "session: canonical write took {} ms",
-        write_started.elapsed().as_millis()
-    ));
+    let commit = persistence::write_session_timed(s, authority);
     // Uncertain helper replies already own their evidence in CanonicalCommit. Only the older
     // StoreError-only failure variants still need this immediate thread-local snapshot.
     let helper_failure = match &commit {
@@ -4161,7 +4350,7 @@ fn save_locked_with_authority(
         };
         // A `Durable` commit IS the record now — install it rather than drop it, so the very next
         // `peek()` (even the caller's own, right after this returns) is served from memory instead
-        // of forcing a re-read of what this call just proved.
+        // of finding the cache left `Unloaded` until the session owner refills it.
         install_write_locked(std::sync::Arc::new(ReadState::Ready {
             session: std::sync::Arc::new(s.clone()),
             plaintext: protection.is_none(),
@@ -4721,23 +4910,26 @@ pub fn clear() -> ClearOutcome {
 /// Worker receipt: retaining/resetting a public preference never republishes credentials.
 pub struct Erasure {
     pub outcome: ClearOutcome,
-    pub retained_language: plx_platform::i18n::Preference,
+    /// What the next launch reads: kept by sign-out; after delete-all, the language is System and
+    /// (on the file backend, where the whole retained file goes) the resolution is Automatic.
+    pub retained: Retained,
     pub preference_failures: Vec<String>,
 }
 
 /// Clear the credentials for a sign-out (`all_local == false`), which retains the install-wide
-/// language, or for "Delete all local data", which then resets that language to System.
+/// language and Interface resolution, or for "Delete all local data", which then resets the
+/// language to System.
 ///
-/// A retry carries the first worker's confirmed language, so a failed auxiliary write cannot
-/// replace it with System after the credentials themselves have already been cleared.
-pub fn clear_for_erase(all_local: bool, retry_language: Option<plx_platform::i18n::Preference>) -> Erasure {
+/// A retry carries the first worker's confirmed choices, so a failed auxiliary write cannot
+/// replace them with the defaults after the credentials themselves have already been cleared.
+pub fn clear_for_erase(all_local: bool, retry: Option<Retained>) -> Erasure {
     let _io = io();
-    let language = retry_language.unwrap_or_else(|| session_from_read(&read_live_locked()).language);
+    let kept = retry.unwrap_or_else(|| Retained::of(&session_from_read(&read_live_locked())));
     let native = cfg!(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(any(test, feature = "test-support"))));
     // File backends need a credential-free resource before the credential file disappears.
     let mut preference_failures = Vec::new();
-    if !all_local && !native && !install_preferences::save(language) {
-        preference_failures.push("language preference could not be retained".into());
+    if !all_local && !native && !install_preferences::save(kept) {
+        preference_failures.push("install preferences could not be retained".into());
     }
     // Signing out changes what `peek` answers exactly as durably as a save does — and it must drop
     // the cached `Arc<Session>` immediately rather than merely marking it stale: that `Arc` holds
@@ -4858,7 +5050,7 @@ pub fn clear_for_erase(all_local: bool, retry_language: Option<plx_platform::i18
     if let ClearOutcome::Durable { legacy_swept: complete } = &mut outcome {
         *complete &= legacy_swept;
     }
-    let mut retained_language = language;
+    let mut retained = kept;
     if all_local {
         // Native ClearTenure deliberately retains preferences. Remove only language with a
         // public-only, same-generation CAS after confirmed clearing, never ReplaceAuth.
@@ -4866,13 +5058,18 @@ pub fn clear_for_erase(all_local: bool, retry_language: Option<plx_platform::i18
             persistence::CanonicalCommit::Durable { .. });
         if !reset { preference_failures.push("stored language preference could not be reset".into()); }
         preference_failures.extend(install_preferences::erase());
-        if reset && preference_failures.is_empty() { retained_language = plx_platform::i18n::Preference::System; }
+        if reset && preference_failures.is_empty() {
+            retained.language = plx_platform::i18n::Preference::System;
+            // The file backend's retained file is gone whole. Native ClearTenure keeps every other
+            // public preference, and its Cleared state accepts the removal of `language` alone.
+            if !native { retained.ui_resolution = UiResolution::Auto; }
+        }
     } else if native && !matches!(outcome, ClearOutcome::Durable { .. })
-        && !install_preferences::save(language) {
+        && !install_preferences::save(kept) {
         // A failed helper clear can still leave only an explicitly supported file fallback.
-        preference_failures.push("fallback language preference could not be retained".into());
+        preference_failures.push("fallback install preferences could not be retained".into());
     }
-    Erasure { outcome, retained_language, preference_failures }
+    Erasure { outcome, retained, preference_failures }
 }
 
 /// Sibling markers are independent of auth.json: a read-only credential inode/directory can
@@ -5294,6 +5491,7 @@ mod prefs_characterisation_tests;
 #[allow(dead_code)] // Stage B connects typed owner admission/completions.
 pub mod async_persistence;
 mod install_preferences;
+pub use install_preferences::Retained;
 pub mod prefs;
 #[cfg(test)]
 mod prefs_tests;
@@ -5418,6 +5616,120 @@ mod deck_press_tests {
         for mode in DeckPress::LADDER {
             assert_eq!(DeckPress::from_index(mode.index()), mode);
         }
+    }
+}
+
+/// `Session::ui_resolution`: absent or unknown is Automatic, the default is not serialized (so
+/// committed replay fixtures and every session written before the field serialize unchanged),
+/// a pick round-trips through both formats, and the option maps to the window it asks for.
+#[cfg(test)]
+mod ui_resolution_tests {
+    use super::*;
+
+    #[test]
+    fn absent_or_unknown_is_automatic() {
+        for value in [
+            serde_json::json!({}),
+            serde_json::json!({"ui_resolution": null}),
+            serde_json::json!({"ui_resolution": "8k"}),
+            serde_json::json!({"ui_resolution": "576p"}),
+            serde_json::json!({"ui_resolution": 720}),
+        ] {
+            let session: Session = serde_json::from_value(value.clone())
+                .unwrap_or_else(|e| panic!("{value}: a bad preference must not fail the session: {e}"));
+            assert_eq!(session.ui_resolution(), UiResolution::Auto, "{value}");
+        }
+    }
+
+    #[test]
+    fn the_default_is_not_serialized() {
+        let session = Session::default();
+        assert_eq!(session.ui_resolution(), UiResolution::Auto);
+        assert!(!serde_json::to_string(&session).unwrap().contains("ui_resolution"));
+        let prefs = serde_json::to_string(&split_public(&session).unwrap().preferences).unwrap();
+        assert!(!prefs.contains("ui_resolution"), "{prefs}");
+    }
+
+    #[test]
+    fn a_pick_round_trips_through_both_formats() {
+        let session = Session::default().with_ui_resolution(UiResolution::Hd720);
+        let json = serde_json::to_string(&session).unwrap();
+        assert!(json.contains("\"ui_resolution\":\"720p\""), "{json}");
+        let round: Session = serde_json::from_str(&json).unwrap();
+        assert_eq!(round.ui_resolution(), UiResolution::Hd720);
+        let (public, protected) = split_canonical(&session).unwrap();
+        assert_eq!(join_canonical(&public, &protected).unwrap().ui_resolution(), UiResolution::Hd720);
+        assert_eq!(public_session(&public).ui_resolution(), UiResolution::Hd720);
+    }
+
+    #[test]
+    fn the_ladder_lists_the_options_and_automatic_is_the_native_canvas() {
+        assert_eq!(UiResolution::Auto.size(), None, "Automatic asks for no smaller window on any set");
+        assert_eq!(UiResolution::Hd900.size(), Some((1600, 900)));
+        assert_eq!(UiResolution::Hd720.size(), Some((1280, 720)));
+        assert_eq!(UiResolution::Sd540.size(), Some((960, 540)));
+        assert_eq!(UiResolution::LADDER, [UiResolution::Auto, UiResolution::Hd900, UiResolution::Hd720, UiResolution::Sd540]);
+        for mode in UiResolution::LADDER {
+            assert_eq!(UiResolution::from_index(mode.index()), mode);
+            assert_eq!(serde_json::to_value(mode).unwrap(), serde_json::json!(mode.tag()), "tag is the serialized spelling");
+        }
+        assert_eq!(UiResolution::from_index(UiResolution::LADDER.len()), UiResolution::Auto);
+    }
+
+    /// An earlier build offered an explicit 1080p, which was the native canvas spelled out. It is no
+    /// option now, and a stored one reads as Automatic (which is the same window).
+    #[test]
+    fn a_stored_1080p_is_automatic() {
+        let session: Session = serde_json::from_value(serde_json::json!({"ui_resolution": "1080p"})).unwrap();
+        assert_eq!(session.ui_resolution(), UiResolution::Auto);
+        let (public, protected) = split_canonical(&Session::default()).unwrap();
+        let mut public = serde_json::to_value(&public).unwrap();
+        public["preferences"]["ui_resolution"] = serde_json::json!("1080p");
+        let public: plx_platform::storage::state::PublicPayload = serde_json::from_value(public).unwrap();
+        assert_eq!(join_canonical(&public, &protected).unwrap().ui_resolution(), UiResolution::Auto);
+    }
+
+    /// A signed-out read (Cleared or Locked) carries the resolution exactly as it carries the
+    /// language, in the cached session `peek` serves and in the owned one a writer starts from.
+    #[test]
+    fn a_signed_out_read_carries_the_resolution_like_the_language() {
+        let kept = Retained { language: plx_platform::i18n::Preference::Be, ui_resolution: UiResolution::Sd540 };
+        for read in [ReadState::Cleared { kept }, ReadState::Locked { kept }] {
+            for session in [session_from_read(&read), (*session_of(&read)).clone()] {
+                assert_eq!(session.language, plx_platform::i18n::Preference::Be);
+                assert_eq!(session.ui_resolution(), UiResolution::Sd540);
+                assert!(session.account_token.is_empty());
+            }
+        }
+        let other = Retained { ui_resolution: UiResolution::Hd720, ..kept };
+        assert_ne!(read_identity(&ReadState::Cleared { kept }), read_identity(&ReadState::Cleared { kept: other }),
+            "a change of resolution is a change of identity for a deferred load");
+    }
+
+    /// The retained file holds the resolution beside the language, a spelling this build does not
+    /// know (or the retired 1080p) costs the resolution and never the language, and Automatic is not written.
+    #[test]
+    fn the_retained_file_is_soft_about_the_resolution() {
+        let _serial = plx_base::testlock::serial();
+        let dir = std::env::temp_dir().join(format!("plx-retained-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        redirect_candidates_for_test(Some(vec![dir.join("auth.json")]));
+        let path = dir.join("auth.language.json");
+        for (body, language, resolution) in [
+            (r#"{"version":1,"language":"be","ui_resolution":"8k"}"#, plx_platform::i18n::Preference::Be, UiResolution::Auto),
+            (r#"{"version":1,"language":"be","ui_resolution":"1080p"}"#, plx_platform::i18n::Preference::Be, UiResolution::Auto),
+            (r#"{"version":1,"language":"be"}"#, plx_platform::i18n::Preference::Be, UiResolution::Auto),
+            (r#"{"version":1,"language":"be","ui_resolution":"720p"}"#, plx_platform::i18n::Preference::Be, UiResolution::Hd720),
+        ] {
+            std::fs::write(&path, body).unwrap();
+            let loaded = install_preferences::load();
+            assert_eq!(loaded, Some(Retained { language, ui_resolution: resolution }), "{body}");
+        }
+        assert!(install_preferences::save(Retained { language: plx_platform::i18n::Preference::Be, ui_resolution: UiResolution::Auto }));
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("ui_resolution"), "Automatic is not written");
+        redirect_candidates_for_test(None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -5636,7 +5948,7 @@ mod server_key_pin_tests {
             session: std::sync::Arc::new(Session::default()), plaintext: false, retry_canonical: false,
         }));
         for (what, ended) in [
-            ("a cleared record", Cached::Settled(std::sync::Arc::new(ReadState::Cleared { language }))),
+            ("a cleared record", Cached::Settled(std::sync::Arc::new(ReadState::Cleared { kept: install_preferences::Retained { language, ..Default::default() } }))),
             ("a missing record", Cached::Settled(std::sync::Arc::new(ReadState::Missing))),
             ("a local revocation", Cached::Revoked),
         ] {
@@ -5742,6 +6054,26 @@ mod server_key_pin_tests {
 
         clear();
         assert!(peek().prefs.server_key_pins.is_empty(), "cleared with the credentials");
+    }
+
+    /// `plx_ui::hold_hint` hands the application what an install was taught: the learn door queues a
+    /// write only for news, never un-teaches, and writes through the same ticketed door every
+    /// install-wide preference uses.
+    #[test]
+    fn learning_a_taught_hold_hint_writes_once_and_never_unlearns() {
+        let _serial = plx_base::testlock::serial();
+        let _session = test_support::TempSession::new("hold-hint-learn");
+        save(&test_support::signed_in());
+        let card = HoldHintTaught { card: true, pill: false };
+        assert!(learn_hold_hint_taught(card), "news is queued");
+        plx_base::storage_worker::drain_for_test();
+        assert_eq!(peek().hold_hint_taught(), card);
+        assert!(!learn_hold_hint_taught(card), "the same lesson is not");
+        assert!(!learn_hold_hint_taught(HoldHintTaught::NONE), "nothing taught is not news");
+        assert!(learn_hold_hint_taught(HoldHintTaught { card: false, pill: true }), "another surface is");
+        plx_base::storage_worker::drain_for_test();
+        assert_eq!(peek().hold_hint_taught(), HoldHintTaught { card: true, pill: true }, "joined, never replaced");
+        assert_eq!(peek().account_token, "acct", "the credentials are untouched");
     }
 
     // ---- Issue #378: the session → `net::keypin` projection. Each test uses its own machine id and

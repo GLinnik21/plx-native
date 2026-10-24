@@ -17,6 +17,7 @@ use crate::aq::{AuNode, AuQueue};
 use plx_net::stream::HttpStream;
 use plx_base::task::MainThread;
 use plx_platform::tv::sink::UnloadTicket;
+use plx_telemetry::telemetry::classes::DemuxExitClass;
 use plx_telemetry::telemetry::window::Stage as WindowStage;
 use std::os::raw::{c_char, c_int, c_long, c_void};
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -104,6 +105,9 @@ pub fn fed_totals() -> (i64, i64) {
 /// taken only when a video push would park at this cap with no audio yet. The reachable-reserve
 /// model (`abr::plant::b_max_est_ms`) wants exactly this steady-state number: the headroom is a
 /// transient of the start of one kind of file, gone before the buffer-driven controller acts.
+/// The audio lane's base cap is soft in the other direction: a file that stores more audio than
+/// this ahead of its video (issue #600) runs the lane up to `ff::AUDIO_AHEAD_HEADROOM` (16 MiB)
+/// beyond it for as long as the video lane holds less than `MAX_FEED_AHEAD_NS` of media.
 pub const fn aq_caps() -> (i64, i64) {
     (AQ_VIDEO_BYTES as i64, AQ_AUDIO_BYTES as i64)
 }
@@ -895,7 +899,8 @@ fn renamed_static_payload(video: LoadVideo) -> String {
 /// at 30.303 fps, so the declaration can sit about 1% below the fed rate. libpf has never been
 /// measured accepting `maxFrameRate` below `videoFps`; the esInfo rational deliberately stays the
 /// raw rate (it is a timing input for libpf's PTS lattice, not a ceiling), and only the ceiling
-/// is snapped. Only the H.264 path reaches this; HEVC and transcodes keep 60.
+/// is snapped. Only the H.264 path reaches this; HEVC and a video re-encode (no known rate) keep 60. A remux
+/// copies the source video, so it arrives here with the source's rate like a direct play.
 fn fps_class(fps: f64) -> u32 {
     for class in [24u32, 25, 30, 50, 60] {
         let c = f64::from(class);
@@ -943,7 +948,8 @@ fn parse_sinkmax(spec: &str) -> Option<SinkEnvelope> {
 /// getAudioCaps selects audio/x-dts and setAdecSinkInfo_ES configures dts-seamless (issue #221).
 /// Unsupported formats must never be mislabeled as AC3: that can stall the audio master clock.
 fn audio_payload_codec(codec: &str) -> Option<(&'static str, u8)> {
-    match codec {
+    // PMS names DTS `dca`; the shared canonicaliser maps every spelling onto the pipeline's.
+    match plx_platform::devcaps::audio_codec_id(codec).as_ref() {
         "ac3" => Some(("AC3", 1)),
         "eac3" => Some(("AC3 PLUS", 2)),
         "aac" => Some(("AAC", 3)),
@@ -1073,7 +1079,10 @@ fn with_immersive(p: &str, audio: &str, atmos: bool) -> String {
 ///   branch falls THROUGH into the Dolby Vision tail; there is no DVHE/DVH1 entry in its codec
 ///   table (those literals belong to AdaptivePipeline's RFC-6381 parser, a different pipeline).
 ///   LG's own Chromium client also reports `codec.video = "H265"` for a Dolby Vision stream. The
-///   `video == "H265"` guard below is therefore a consistency check, not a translation.
+///   codec guard below is therefore a consistency check, not a translation. It also admits
+///   `"AV1"` (Profile 10) with the codec string unchanged likewise; that the AV1 branch reaches
+///   the same tail is measured on a webOS 6 set, not decompiled
+///   ([`plx_data::metadata::Dovi::presentation`]).
 /// - **`profileId` must be a JSON integer** (`getInt`). Quoting it would leave the `-1` sentinel.
 /// - **the library's injected platform metadata is not a safety gate.** libplayerAPIs injects
 ///   `platformSupportDolbyVision` / `supportDolbyTVATMOS` at the root, but libpf enables DV from
@@ -1096,13 +1105,13 @@ fn with_dolby_hdr_info(p: &str, video: &str, dv: plx_data::metadata::DvPresentat
         ));
         return p.to_string();
     }
-    if video != "H265" {
+    if video != "H265" && video != "AV1" {
         // Unreachable by construction — `route` records the DV layering on the direct-play branch
-        // only, and that branch's payload codec is the file's own hevc — so this is the guard that
-        // says so out loud rather than declaring Dolby Vision over an H264 elementary stream. A
-        // malformed sourceInfo does not fail loudly; it wedges the sink.
+        // only, and that branch's payload codec is the file's own hevc or av1 — so this is the
+        // guard that says so out loud rather than declaring Dolby Vision over an H264 elementary
+        // stream. A malformed sourceInfo does not fail loudly; it wedges the sink.
         log(&format!(
-            "dv: DolbyHdrInfo P{} NOT sent — payload video codec is {video}, not H265",
+            "dv: DolbyHdrInfo P{} NOT sent — payload video codec is {video}, not H265 or AV1",
             n.profile_id
         ));
         return p.to_string();
@@ -1501,7 +1510,7 @@ fn start_bufferfeed_inner(
             log(&format!(
                 "start_bufferfeed: the pipeline cannot feed video codec {stream_vcodec:?}; refusing the Load instead of declaring it H.264"
             ));
-            SHARED.demux_failed.store(true, Ordering::Release);
+            SHARED.fail_demux(DemuxExitClass::LoadRefused);
             return Err(crate::route::RouteStartResult::StartFailed);
         };
         if load_video_refused(lv, plx_platform::devcaps::caps()) {
@@ -1509,7 +1518,7 @@ fn start_bufferfeed_inner(
                 "start_bufferfeed: {} stream but the device table lists no such decoder; refusing the Load",
                 lv.payload_name()
             ));
-            SHARED.demux_failed.store(true, Ordering::Release);
+            SHARED.fail_demux(DemuxExitClass::LoadRefused);
             return Err(crate::route::RouteStartResult::StartFailed);
         }
         video_declared = lv.payload_name();
@@ -1535,7 +1544,7 @@ fn start_bufferfeed_inner(
             let codec = crate::route::stream_acodec(ps);
             let Some((ac, diagnostic)) = audio_payload_codec(&codec) else {
                 log(&format!("start_bufferfeed: unsupported audio codec {codec:?}; refusing incorrect Load declaration"));
-                SHARED.demux_failed.store(true, Ordering::Release);
+                SHARED.fail_demux(DemuxExitClass::LoadRefused);
                 return Err(crate::route::RouteStartResult::StartFailed);
             };
             SHARED.dg_load_a.store(diagnostic, Ordering::Relaxed);
@@ -2448,14 +2457,14 @@ const PRIME_NS: i64 = 700_000_000;
 // start anyway once video buffers PRIME_VIDEO_MAX_NS without audio (audioless / briefly starved),
 // so a genuinely audioless region can't hang.
 const PRIME_AUDIO_NS: i64 = 300_000_000;
-const PRIME_VIDEO_MAX_NS: i64 = 2_500_000_000;
+pub(crate) const PRIME_VIDEO_MAX_NS: i64 = 2_500_000_000;
 // Feed-ahead throttle (Kodi-parity): keep the VIDEO lane at most this far ahead of the presented
 // position (SHARED.pres_fed) instead of feeding greedily to BufferFull. Bounding the buffer to
 // ~1.6s (was ~10-20s: aq 6MB + the pipeline's own ~8MB) makes seeks flush far less, keeps the
 // clock from running ahead, and cuts latency. AUDIO gets a looser bound so it can ride slightly
 // ahead (audio buffer is cheap and it's the master clock) without unbounded race on odd muxes.
 pub(crate) const MAX_FEED_AHEAD_NS: i64 = 1_600_000_000;
-const AUDIO_SLACK_NS: i64 = 2_000_000_000;
+pub(crate) const AUDIO_SLACK_NS: i64 = 2_000_000_000;
 // A fed pts this far below a lane's high-water is a stale pre-seek AU (past the B-frame reorder
 // distance) → drop it rather than feed a backward jump.
 const STALE_BACKJUMP_NS: i64 = 2_000_000_000;
@@ -3887,6 +3896,60 @@ mod payload_tests {
         assert!(!payload.contains("DolbyHdrInfo"), "{payload}");
     }
 
+    /// An AV1 Profile 10.1 direct play (HDR10-compatible base) on a set with confirmed Dolby Vision
+    /// support carries the node like an HEVC Profile 8 does, with the codec string left at `"AV1"`.
+    /// VP9 never does: no Dolby Vision profile rides on it.
+    #[test]
+    fn an_av1_profile_10_direct_play_declares_dolby_vision() {
+        let p10 = Dovi {
+            present: true,
+            profile: 10,
+            bl_compat: 1,
+            el_present: false,
+            ..Dovi::NONE
+        };
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        assert!(crate::route::set_stream_declaration_for_test(
+            &mut ps,
+            "av1",
+            "eac3",
+            23.976,
+            p10,
+            false,
+            plx_platform::devcaps::dv::DvCapability::Supported,
+        ));
+        assert_eq!(crate::route::stream_dovi(&ps).profile, 10);
+        let payload = build_av_payload(
+            &ps,
+            "AV1",
+            "AC3 PLUS",
+            SinkEnvelope { w: 3840, h: 2160, fps: 60 },
+        );
+        assert!(payload.contains(r#""video":"AV1""#), "{payload}");
+        assert!(
+            payload.contains(r#""DolbyHdrInfo":{"trackType":"single","encryptionType":"clear","profileId":10}"#),
+            "{payload}"
+        );
+
+        assert!(crate::route::set_stream_declaration_for_test(
+            &mut ps,
+            "vp9",
+            "eac3",
+            23.976,
+            p10,
+            false,
+            plx_platform::devcaps::dv::DvCapability::Supported,
+        ));
+        assert!(crate::route::stream_dv_presentation(&ps).declared().is_none());
+        let payload = build_av_payload(
+            &ps,
+            "VP9",
+            "AC3 PLUS",
+            SinkEnvelope { w: 3840, h: 2160, fps: 60 },
+        );
+        assert!(!payload.contains("DolbyHdrInfo"), "{payload}");
+    }
+
     #[test]
     fn late_capability_result_does_not_change_installed_decision() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -4057,11 +4120,32 @@ mod payload_tests {
     }
 
     /// The three ways the node is NOT sent, each of which must leave the payload byte-identical:
-    /// a file with no Dolby Vision, a Dolby Vision file we refuse (the dual-layer P7 — declaring a
-    /// layer we cannot feed is worse than refusing it), and the disarmed trigger, which is what a
-    /// `RELEASE=1` build compiles in and what every boot without `/tmp/plxnative-dv` does today.
+    /// a file with no Dolby Vision, a Dolby Vision file we refuse (a dual layer without a
+    /// cross-compatible base layer — declaring a layer we cannot feed is worse than refusing it),
+    /// and the disarmed trigger, which is what a `RELEASE=1` build compiles in and what every boot
+    /// without `/tmp/plxnative-dv` does today.
     #[test]
     fn nothing_is_spliced_unless_the_stream_is_declared() {
+        let unconvertible_p7 = Dovi {
+            present: true,
+            profile: 7,
+            bl_compat: 0,
+            el_present: true,
+            ..Dovi::NONE
+        };
+        for dv in [
+            Dovi::NONE.presentation(true, plx_platform::devcaps::dv::DvCapability::Supported, true),
+            unconvertible_p7.presentation(true, plx_platform::devcaps::dv::DvCapability::Supported, true),
+            p5().presentation(false, plx_platform::devcaps::dv::DvCapability::Supported, true),
+        ] {
+            assert_eq!(with_dolby_hdr_info(PAYLOAD_AV, "H265", dv), PAYLOAD_AV);
+        }
+    }
+
+    /// A Profile 7 with a cross-compatible base layer is fed as the 8.1 `ff::packet_to_annexb`
+    /// makes of it, and the node says so: `profileId` 8, one track — never 7, never `"dual"`.
+    #[test]
+    fn a_converted_profile_7_declares_profile_8_single() {
         let p7 = Dovi {
             present: true,
             profile: 7,
@@ -4069,13 +4153,15 @@ mod payload_tests {
             el_present: true,
             ..Dovi::NONE
         };
-        for dv in [
-            Dovi::NONE.presentation(true, plx_platform::devcaps::dv::DvCapability::Supported, true),
+        let out = with_dolby_hdr_info(
+            PAYLOAD_AV,
+            "H265",
             p7.presentation(true, plx_platform::devcaps::dv::DvCapability::Supported, true),
-            p5().presentation(false, plx_platform::devcaps::dv::DvCapability::Supported, true),
-        ] {
-            assert_eq!(with_dolby_hdr_info(PAYLOAD_AV, "H265", dv), PAYLOAD_AV);
-        }
+        );
+        const NODE: &str =
+            r#","DolbyHdrInfo":{"trackType":"single","encryptionType":"clear","profileId":8}"#;
+        assert!(out.contains(NODE), "{out}");
+        assert_eq!(out.replace(NODE, ""), PAYLOAD_AV);
     }
 
     /// **What we actually send for a Dolby Atmos track**, at the key path `libpf` reads
@@ -6231,6 +6317,10 @@ mod sink_envelope_tests {
     fn audio_payload_names_dts_and_refuses_unsupported_formats() {
         assert_eq!(audio_payload_codec("dts"), Some(("DTS", 4)));
         assert_eq!(audio_payload_codec("eac3"), Some(("AC3 PLUS", 2)));
+        // PMS's own spelling of DTS, and the other spellings the shared canonicaliser folds.
+        assert_eq!(audio_payload_codec("dca"), Some(("DTS", 4)));
+        assert_eq!(audio_payload_codec("DCA"), Some(("DTS", 4)));
+        assert_eq!(audio_payload_codec("ec-3"), Some(("AC3 PLUS", 2)));
         for codec in ["truehd", "flac", "", "unknown"] {
             assert_eq!(audio_payload_codec(codec), None);
         }

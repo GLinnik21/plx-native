@@ -732,3 +732,140 @@ fn a_press_armed_inside_the_previous_springback_dips_the_new_control() {
         prev = now;
     }
 }
+
+/// **The focus fill is a cross-fade on the lift spring, not a step beside it.** Frame by frame, as
+/// the hero row does it (`CtlPop::step`, then each control drawn at `CtlPop::focus`): focus moves
+/// from control 0 to control 1 and the plate of BOTH changes by no more than the lift spring itself
+/// moved, out = 1 - in, and the two land exactly on the rest faces (the INK is a choice between the
+/// rest inks, not a cross-fade: `the_ink_over_a_focus_ramp_is_one_of_the_two_rest_inks_and_flips_once`).
+/// Before the rule the
+/// plate flipped in the first frame (18,738 px on Home, 14,151 on Detail) while the lift took
+/// twenty.
+#[test]
+fn the_focus_fill_crossfades_on_the_lift_spring_out_equals_one_minus_in() {
+    let palette = ControlPalette::ambient([0.7, 0.3, 0.2]);
+    let idle = ControlStyle::Accent.face(false, ControlGround::Keyed, palette);
+    let lit = ControlStyle::Accent.face(true, ControlGround::Keyed, palette);
+    let mut pop = CtlPop::<2>::new();
+    for _ in 0..200 {
+        pop.step(Some(0), 1.0 / 60.0);
+    }
+    let draw = |pop: &CtlPop<2>, i: usize| {
+        let b = Button::new(c"Resume".as_ptr(), theme::size::BODY, Rect::new(0.0, 0.0, 200.0, 60.0)).palette(palette).focus_mix(pop.focus(i));
+        let c = CircleButton::new(c"".as_ptr()).palette(palette).focus_mix(pop.focus(i));
+        (b.face_now(), c.face_now())
+    };
+    let step = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max);
+    let span = step(idle.top, lit.top);
+    assert!(span > 0.2 && step(idle.ink, lit.ink) > 0.2, "the two faces must differ for the test to see a step");
+    let (mut prev0, mut prev1) = (pop.focus(0), pop.focus(1));
+    let (mut f0, mut f1) = (draw(&pop, 0).0, draw(&pop, 1).0);
+    let near = |a: [f32; 4], b: [f32; 4]| step(a, b) < 1e-3;
+    assert!(near(f0.top, lit.top) && near(f0.ink, lit.ink) && near(f1.top, idle.top) && near(f1.ink, idle.ink));
+    let mut frames_between = 0;
+    for _ in 0..60 {
+        pop.step(Some(1), 1.0 / 60.0);
+        let (t0, t1) = (pop.focus(0), pop.focus(1));
+        let (n0, n1) = (draw(&pop, 0), draw(&pop, 1));
+        // the plate moves by exactly the spring's step, never more
+        assert!(step(n0.0.top, f0.top) <= span * (prev0 - t0).abs() + 1e-4, "control 0's plate stepped past its spring");
+        assert!(step(n1.0.top, f1.top) <= span * (t1 - prev1).abs() + 1e-4, "control 1's plate stepped past its spring");
+        // out = 1 - in: the two controls' progress shares one spring and the disc agrees with the pill
+        assert!((t0 + t1 - 1.0).abs() < 1e-3, "out and in must sum to one: {t0} + {t1}");
+        assert_eq!(n0.0.top, n0.1.top);
+        if t0 > 0.05 && t0 < 0.95 {
+            frames_between += 1;
+        }
+        (prev0, prev1, f0, f1) = (t0, t1, n0.0, n1.0);
+    }
+    assert!(frames_between >= 4, "the fade must take several frames, took {frames_between}");
+    let (end0, end1) = (draw(&pop, 0).0, draw(&pop, 1).0);
+    assert!(near(end0.top, idle.top) && near(end0.ink, idle.ink) && near(end1.top, lit.top) && near(end1.ink, lit.ink));
+}
+
+/// The worst contrast a face's ink gets against its own plate: the label is read over the gradient,
+/// so the lower of the two stops, each laid over `INK_GROUND` by its alpha, the ink over each by its.
+fn worst_ink_contrast(face: &ControlFace) -> f32 {
+    [face.top, face.body]
+        .map(|c| over(INK_GROUND, c, c[3]))
+        .into_iter()
+        .map(|fill| contrast(over(fill, face.ink, face.ink[3]), fill))
+        .fold(f32::MAX, f32::min)
+}
+
+/// **A control's label is readable on EVERY tick of its focus ramp.** The hero's Resume pill went
+/// from a dark idle plate with white ink to a near-white plate with dark ink on the lift spring, and
+/// the ink was cross-faded on that same spring: half way, a mid-grey ink on a mid-grey plate (1.10:1
+/// to 2.92:1 in the Detail frames, 1.34:1 on Home). The ink is ONE choice per frame now: whichever of
+/// the two endpoint inks reads best against the plate composited at that tick (the flip sits where
+/// white and the dark ink have equal contrast, plate luma ~0.18), the same max-contrast rule the nav
+/// strip's pills wear, never a mix of the two.
+#[test]
+fn a_controls_ink_reads_at_three_to_one_on_every_tick_of_its_focus_ramp() {
+    let ambient: [[f32; 3]; 4] = [[0.7, 0.3, 0.2], [0.16, 0.22, 0.30], [0.95, 0.9, 0.8], [0.1, 0.5, 0.2]];
+    let mut worst = (f32::MAX, 0.0);
+    for ground in [ControlGround::Keyed, ControlGround::Unkeyed] {
+        let palettes = ambient.map(ControlPalette::ambient).into_iter().chain([ControlPalette::default()]);
+        for palette in palettes {
+            for (name, style) in [("Accent", ControlStyle::Accent), ("Keyline", ControlStyle::Keyline)] {
+                for tick in 0..=240 {
+                    let t = tick as f32 / 240.0;
+                    let c = worst_ink_contrast(&style.face_at(t, ground, palette));
+                    if c < worst.0 {
+                        worst = (c, t);
+                    }
+                    assert!(c >= 3.0, "{name} on {ground:?} at focus {t:.3}: the ink reads at {c:.2}:1");
+                }
+            }
+        }
+    }
+    // 3.92:1 at t=0.554 measured: the flip is where white and the dark ink are equally readable.
+    assert!(worst.0 >= 3.5, "worst ink contrast over the ramp: {:.2}:1 at t={:.3}", worst.0, worst.1);
+}
+
+/// The ink is a CHOICE between the two endpoint inks, so what a frame draws is always one of the
+/// two inks the face already owns (never a mix), it flips exactly once on the way in, and both rests
+/// are exactly the two faces `face` already drew.
+#[test]
+fn the_ink_over_a_focus_ramp_is_one_of_the_two_rest_inks_and_flips_once() {
+    let palette = ControlPalette::ambient([0.7, 0.3, 0.2]);
+    for ground in [ControlGround::Keyed, ControlGround::Unkeyed] {
+        let (idle, lit) = (ControlStyle::Accent.face(false, ground, palette), ControlStyle::Accent.face(true, ground, palette));
+        assert_ne!(idle.ink, lit.ink);
+        let mut flips = 0;
+        let mut prev = idle.ink;
+        for tick in 0..=480 {
+            let ink = ControlStyle::Accent.face_at(tick as f32 / 480.0, ground, palette).ink;
+            assert!(ink == idle.ink || ink == lit.ink, "{ground:?}: a mixed ink {ink:?} at tick {tick}");
+            flips += usize::from(ink != prev);
+            prev = ink;
+        }
+        assert_eq!(flips, 1, "{ground:?}: the ink flips once");
+        assert_eq!(ControlStyle::Accent.face_at(0.0, ground, palette).ink, idle.ink);
+        assert_eq!(ControlStyle::Accent.face_at(1.0, ground, palette).ink, lit.ink);
+    }
+}
+
+/// **A disc's glyph is drawn from ONE mask for the whole of its pop.** The glyph's raster size used
+/// to be rounded off the POPPED height, so `icons::draw` (which keys its cache on the box it is
+/// handed) swapped masks each time the lift spring crossed a whole pixel, and the last swap landed on
+/// the frame the spring settled: the filled hero bookmark re-rastered (122-225 px) with nothing
+/// moving. `icons::draw` returns early for a recording painter, so the choice is graded where it is
+/// made: `CircleButton::glyph_size`.
+#[test]
+fn a_discs_glyph_keeps_one_raster_across_its_whole_pop() {
+    let base_h = StatusOverlay::CTRL_H;
+    // The old arithmetic, to show the swap the new one removes: the mask the popped box asked for.
+    let old = |scale: f32| crate::icons::icon_raster_px((base_h * scale * DISC_ICON_RATIO).round() as i32);
+    assert_ne!(old(1.0), old(CTRL_FOCUS_SCALE), "the pop crossed a whole pixel of the old raster");
+    let (rest_side, rest_raster) = CircleButton::glyph_size(base_h, 1.0);
+    assert_eq!(rest_side, rest_raster as f32, "at rest the mask is drawn 1:1");
+    assert_eq!(rest_raster, crate::icons::icon_raster_px(rest_raster));
+    // Sampled finely across the dip (0.9x) through the pop (1.07x) and the settle exactly on it.
+    for tick in 0..=170 {
+        let scale = 0.9 + tick as f32 * 0.001;
+        let (side, raster) = CircleButton::glyph_size(base_h, scale);
+        assert_eq!(raster, rest_raster, "scale {scale}: the glyph changed mask");
+        assert!((side - rest_side * scale).abs() < 1e-3, "scale {scale}: the box follows the spring continuously");
+    }
+}

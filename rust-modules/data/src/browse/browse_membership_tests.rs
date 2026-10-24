@@ -146,3 +146,91 @@ fn an_agreeing_read_back_resets_a_stale_section_that_is_not_showing() {
     let first = &browse.state.states()[0];
     assert_eq!((first.fetch, first.total), (SecFetch::Loading, -1), "its next visit fetches afresh");
 }
+
+fn listings_changed(browse: &mut TestBrowse, sid: ServerId, library_on_stack: bool) -> bool {
+    browse.state.run_owned(&browse.adapter, crate::stores::browse::BrowseCmd::ListingsChanged { sid, library_on_stack })
+}
+
+#[test]
+fn created_or_removed_items_mark_the_open_section_stale_while_a_library_page_is_up() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, _) = registered_page_source();
+    resident(sid, &mut browse);
+    let gen = browse.state.query_gen();
+
+    assert!(listings_changed(&mut browse, sid, true), "marking the listing stale is a change the store must publish");
+    assert!(stale(&mut browse));
+    assert_eq!(browse.state.query_gen(), gen, "nothing is fetched under the reader: the Library page re-queries it when covered");
+    let state = &browse.state.states()[0];
+    assert_eq!((state.fetch, state.total), (SecFetch::Ready, 1));
+    assert!(state.items.get(0).is_some());
+    assert!(!browse.state.requery_owed());
+
+    assert!(!listings_changed(&mut browse, sid, true), "a second report changes nothing");
+}
+
+#[test]
+fn created_or_removed_items_re_query_at_once_when_no_library_page_is_up() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, _) = registered_page_source();
+    resident(sid, &mut browse);
+    let gen = browse.state.query_gen();
+    let shown = browse.state.listing_snapshot().view().id().unwrap().query;
+
+    assert!(listings_changed(&mut browse, sid, false));
+    assert_eq!(browse.state.query_gen(), gen.wrapping_add(1), "exactly one re-fetch: a late page of the old fetch is dropped");
+    assert_eq!(browse.state.listing_snapshot().view().id().unwrap().query, shown, "not a query edit");
+    assert!(!stale(&mut browse), "the flag is spent");
+    let state = &browse.state.states()[0];
+    assert_eq!((state.fetch, state.total), (SecFetch::Loading, -1));
+    assert!(state.cursor.is_some(), "nobody is looking, but the reader's place stands for their return");
+    assert!(browse.state.requery_owed(), "the first page is owed with no Library page ticking the store");
+}
+
+#[test]
+fn created_or_removed_items_make_the_servers_other_sections_forget_their_pages() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, _) = registered_page_source();
+    browse.append_sections(0, vec![(2, "Other".into(), SecKind::Movie)]);
+    resident(sid, &mut browse);
+    browse.state.set_cur(1);
+    assert!(listings_changed(&mut browse, sid, true));
+    let first = &browse.state.states()[0];
+    assert_eq!((first.fetch, first.total), (SecFetch::Loading, -1), "its next visit fetches afresh");
+}
+
+#[test]
+fn another_servers_listings_are_left_alone() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, _) = registered_page_source();
+    resident(sid, &mut browse);
+    let other = ServerId::from_raw(sid.raw().wrapping_add(7));
+    assert!(!listings_changed(&mut browse, other, false));
+    assert!(!listings_changed(&mut browse, other, true));
+    assert_eq!(browse.state.states()[0].fetch, SecFetch::Ready);
+    assert!(!stale(&mut browse));
+}
+
+#[test]
+fn a_stale_section_that_is_left_forgets_its_pages_and_a_current_one_keeps_its_window() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, _) = registered_page_source();
+    browse.append_sections(0, vec![(2, "Other".into(), SecKind::Movie)]);
+    resident(sid, &mut browse);
+    browse.state.want(0, PAGE, None);
+    assert!(listings_changed(&mut browse, sid, true));
+    assert!(stale(&mut browse));
+    browse.state.set_cur(1);
+    let first = &browse.state.states()[0];
+    assert_eq!((first.fetch, first.total), (SecFetch::Loading, -1), "coming back fetches afresh, not the list from before the change");
+    assert!(first.cursor.is_none() && !first.membership_stale);
+
+    // A section that was current and not stale keeps its recent window exactly as before.
+    browse.state.set_cur(0);
+    browse.state.want(0, PAGE, None);
+    resident(sid, &mut browse);
+    browse.state.set_cur(1);
+    let first = &browse.state.states()[0];
+    assert_eq!((first.fetch, first.total), (SecFetch::Ready, 1), "an up-to-date section left behind keeps its window");
+    assert!(first.items.get(0).is_some());
+}

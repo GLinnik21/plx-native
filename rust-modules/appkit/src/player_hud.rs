@@ -13,7 +13,9 @@ use plx_media::player::text_style::{
     position_lift, size_scale, wrap_width, CAPTION_ANCHOR_LINES, CAPTION_FACE, CAPTION_FLOOR_Y,
     CAPTION_LINE_PITCH, CAPTION_TEXT_INSET, HUD_CONTROLS_TOP_Y, SUB_BASE_Y, SUB_CEIL_Y,
 };
+use crate::knob_spring::KnobSpring;
 use plx_ui::consts::{SCR_H, SCR_W};
+use plx_ui::hstack::{Align, HStack, Item};
 use plx_ui::theme;
 use plx_ui::widgets::{
     ControlGround, Spinner, StatusKind, StatusOverlay, TabPill, TransportButton,
@@ -78,8 +80,8 @@ fn display_pos_ns(loading: bool, seekdisp: i64, scrub: i64, livepos: i64) -> i64
 pub struct ClockWarm {
     /// The (elapsed, remaining) seconds `strings` were formatted for.
     key: Option<(i64, i64)>,
-    /// `(text, bold)` exactly as [`draw_playbar`] hands them to `Painter::text`.
-    strings: Vec<(CString, c_int)>,
+    /// `(text, bold, size)` exactly as [`draw_playbar`] hands them to `Painter::text`.
+    strings: Vec<(CString, c_int, c_int)>,
 }
 
 impl ClockWarm {
@@ -103,16 +105,24 @@ impl ClockWarm {
             self.key = Some(key);
             self.strings.clear();
             let (el, rem) = key;
+            let (cap, grown) = (theme::size::CAPTION, crate::scrub_preview::CLOCK_GROWN_SZ);
             let clocks = [
-                (fmt_time(el * SEC_NS, false), 1),
-                (fmt_time(rem * SEC_NS, true), 0),
-                (fmt_time((el + 1) * SEC_NS, false), 1),
-                (fmt_time((rem - 1).max(0) * SEC_NS, true), 0),
+                (fmt_time(el * SEC_NS, false), 1, cap),
+                (fmt_time(rem * SEC_NS, true), 0, cap),
+                (fmt_time((el + 1) * SEC_NS, false), 1, cap),
+                (fmt_time((rem - 1).max(0) * SEC_NS, true), 0, cap),
+                // the elapsed clock also draws at the size it grows to during a scrub with no card
+                // (`scrub_preview::clock_faces`); cold, that is a font open and a rasterisation in
+                // the middle of a hold. Last, so the resting sizes are never starved of the frame's
+                // budget.
+                (fmt_time(el * SEC_NS, false), 1, grown),
+                (fmt_time((el + 1) * SEC_NS, false), 1, grown),
             ];
-            self.strings.extend(clocks.into_iter().filter_map(|(s, bold)| Some((CString::new(s).ok()?, bold))));
+            self.strings
+                .extend(clocks.into_iter().filter_map(|(s, bold, sz)| Some((CString::new(s).ok()?, bold, sz))));
         }
-        for (s, bold) in &self.strings {
-            plx_gfx::text::queue_prewarm(s.as_ptr(), theme::size::CAPTION, *bold);
+        for (s, bold, sz) in &self.strings {
+            plx_gfx::text::queue_prewarm(s.as_ptr(), *sz, *bold);
         }
     }
 }
@@ -463,7 +473,6 @@ pub const fn sb_w() -> f32 {
 const SB_Y: f32 = SCR_H - 198.0;
 const SB_H: f32 = 8.0;
 const BTN_S: f32 = 64.0; // right-side control button size (mockup ≈ 68)
-const BTN_GAP: f32 = 22.0;
 const BTN_Y: f32 = HUD_CONTROLS_TOP_Y;
 
 // The control row, exported for `skip_pill` — while a marker is under the playhead the Skip button
@@ -506,6 +515,8 @@ pub type RowPop = plx_ui::widgets::CtlPop<{ BTN_N as usize }>;
 /// exactly where [`step`](Self::step)'s doc says they must be.
 pub struct TransportRow {
     pop: RowPop,
+    /// The paused title's one-shot reveal clock; no motion remains after it reaches the end.
+    title_clock: plx_ui::marquee::Clock,
     /// **The measured width of every control-row stand-in label seen so far** — a RENDER memo, the
     /// one half of this struct that is not logical state.
     ///
@@ -522,6 +533,12 @@ pub struct TransportRow {
     /// without this a session that ended paused would hand the next one a spurious resume edge on
     /// its first frame and flash `Play` over a start nobody pressed play for.
     pause_seen: Option<bool>,
+    /// **The scrub preview's memo** — a RENDER memo like `widths`: which BIF still the draw can
+    /// show and which one is in flight. Stepped where that art is probed, in [`draw_hud`]; see
+    /// [`crate::scrub_preview`].
+    preview: crate::scrub_preview::ScrubPreview,
+    /// The knob's return to the playhead when a scrub is cancelled ([`crate::knob_spring`]).
+    spring: KnobSpring,
 }
 
 impl Default for TransportRow {
@@ -534,9 +551,12 @@ impl TransportRow {
     pub fn new() -> Self {
         Self {
             pop: RowPop::new(),
+            title_clock: plx_ui::marquee::Clock::new(),
             widths: Vec::new(),
             play_at: None,
             pause_seen: None,
+            preview: crate::scrub_preview::ScrubPreview::new(),
+            spring: KnobSpring::new(),
         }
     }
 
@@ -555,11 +575,33 @@ impl TransportRow {
     /// control the narrower one does not have.
     pub fn step(&mut self, slot: ControlSlot, focus: i32, btn: i32, dt: f32, now: u32) {
         self.note_transport(now);
+        // Here and not in the draw: a scrub can end with the transport hidden (UP-hide), when
+        // nothing draws, and the next one must not open on this one's last still.
+        let scrub_ns = plx_media::player::TX.scrub_ns.load(Relaxed);
+        let live = scrub_ns >= 0;
+        if !live {
+            self.preview.release();
+        }
+        self.preview.motion.step_live(live, now);
+        self.spring.step(scrub_ns, now);
         let f = (focus == 1)
             .then(|| usize::try_from(btn).ok())
             .flatten()
             .filter(|&i| i < slot.items().max(0) as usize);
         self.pop.step(f, dt);
+    }
+
+    /// Do the title block, control row and bottom tabs take the pointer? Not while a scrub has
+    /// them faded away, nor until they are back ([`crate::scrub_preview::Motion`]).
+    pub fn chrome_interactive(&self) -> bool {
+        self.preview.motion.chrome_interactive()
+    }
+
+    /// Does the scrub's choreography (chrome fade, card, knob clock) still move at `now`? Owed a
+    /// frame for as long as it does.
+    pub fn scrub_motion_animating(&self, now: u32) -> bool {
+        self.preview.motion.animating(now)
+            || self.spring.busy(now)
     }
 
     /// Control `i`'s focus pop this frame — the read half of the row's springs, for the two
@@ -576,13 +618,21 @@ impl TransportRow {
         self.play_at = Some(at);
     }
 
+    pub fn reset_title(&self) {
+        self.title_clock.release();
+    }
+
     pub fn note_transport(&mut self, now: u32) {
         if !plx_media::player::is_started() {
+            self.reset_title();
             self.play_at = None;
             self.pause_seen = None;
             return;
         }
         let paused = plx_media::player::TX.paused.load(Relaxed);
+        if !paused {
+            self.reset_title();
+        }
         if self.pause_seen == Some(true) && !paused {
             self.play_at = Some(now);
         }
@@ -614,7 +664,17 @@ impl TransportRow {
 /// was introduced to stop.
 pub const BTN_MORE: i32 = BTN_N - 1;
 /// width the disc row occupies, the floor for anything replacing it
-pub const CTRL_ROW_W: f32 = 3.0 * BTN_S + 2.0 * BTN_GAP;
+pub fn ctrl_row_w() -> f32 {
+    disc_row().width()
+}
+
+/// **The control row's discs as ONE run**: [`BTN_N`] discs of [`BTN_S`], `CONTROL_GAP` apart (the
+/// shared control-family gap), anchored on [`CTRL_RIGHT`]. [`btn_x`], the row's width
+/// ([`ctrl_row_w`]) and the hit rects all read this one stack.
+fn disc_row() -> HStack<'static> {
+    const DISCS: [Item; BTN_N as usize] = [Item::new(BTN_S); BTN_N as usize];
+    HStack::new(&DISCS, plx_ui::widgets::CONTROL_GAP, Align::Trailing(CTRL_RIGHT))
+}
 
 /// The shared control-row slot for anything that STANDS IN for the disc pair: right-aligned to the
 /// discs' own edge, and never narrower than the pair it replaces so the row does not visibly shrink
@@ -629,7 +689,7 @@ pub fn ctrl_slot(row: &mut TransportRow, label: &str, measure: &dyn plx_machine:
         None => {
             let measured = ctrl_slot_measure(label, measure);
             // `text_width` reads 0 until `init_text` has run — don't cache a pre-init measurement
-            if measured > CTRL_ROW_W {
+            if measured > ctrl_row_w() {
                 memo.push((label.to_string(), measured));
             }
             measured
@@ -646,7 +706,7 @@ pub fn ctrl_slot_w(row: &TransportRow, label: &str, measure: &dyn plx_machine::m
 
 fn ctrl_slot_measure(label: &str, measure: &dyn plx_machine::machine::Measure) -> f32 {
     const PAD_X: f32 = 34.0;
-    (measure.width_str(label, theme::size::BODY, true) + 2.0 * PAD_X).max(CTRL_ROW_W)
+    (measure.width_str(label, theme::size::BODY, true) + 2.0 * PAD_X).max(ctrl_row_w())
 }
 
 /// What currently occupies the transport's right-hand control row.
@@ -1270,7 +1330,7 @@ pub fn disc_hit_rect(idx: i32) -> Rect {
     Rect::new(btn_x(idx), BTN_Y, BTN_S, BTN_S)
 }
 
-/// **The control row's band at its floor width** ([`CTRL_ROW_W`]) — the row GROUP's extent only.
+/// **The control row's band at its floor width** ([`ctrl_row_w`]) — the row GROUP's extent only.
 ///
 /// It is not any item's hit region: every item of whatever occupies the row — a disc, the Skip
 /// pill, either Up Next button — is placed and registered at its own drawn rect by
@@ -1278,25 +1338,48 @@ pub fn disc_hit_rect(idx: i32) -> Rect {
 /// left *Watch Credits* (drawn left of it) unclickable and made a click on *Next Episode* land on
 /// item 0, *Watch Credits* (issue #162's audit).
 pub fn ctrl_row_hit_rect() -> Rect {
-    Rect::new(CTRL_RIGHT - CTRL_ROW_W, CTRL_Y, CTRL_ROW_W, CTRL_H)
+    let w = ctrl_row_w();
+    Rect::new(CTRL_RIGHT - w, CTRL_Y, w, CTRL_H)
 }
 
 /// One bottom tab's rect, matching the left-to-right layout [`draw_hud`] lays the pills out with.
 pub fn tab_hit_rect(idx: i32, has_chapters: bool, measure: &dyn plx_machine::machine::Measure) -> Option<Rect> {
-    let tabs: &[&str] = if has_chapters { &[plx_platform::i18n::msg::widgets_player_info(), plx_platform::i18n::msg::widgets_player_chapters()] } else { &[plx_platform::i18n::msg::widgets_player_info()] };
-    let label = *tabs.get(idx as usize)?;
-    let ph = BTN_S;
-    let py = (SB_Y + SCR_H) * 0.5 - ph * 0.5;
-    let mut px = SB_X;
-    for (i, l) in tabs.iter().enumerate() {
-        let pw = TabPill::width_measured(l, theme::size::BODY, measure);
-        if i as i32 == idx {
-            return Some(Rect::new(px, py, pw, ph));
-        }
-        px += pw + 16.0;
-    }
-    let _ = label;
-    None
+    let tabs = tab_labels(has_chapters);
+    let items = tab_items(tabs, measure);
+    let (px, pw) = tab_row(&items).span(usize::try_from(idx).ok()?)?;
+    Some(Rect::new(px, tab_y(), pw, BTN_S))
+}
+
+/// The bottom tab pills' labels: Info always, Chapters only when the item has any; `None` is a
+/// tab the row does not carry.
+fn tab_labels(has_chapters: bool) -> [Option<&'static str>; HUD_TABS] {
+    [
+        Some(plx_platform::i18n::msg::widgets_player_info()),
+        has_chapters.then(plx_platform::i18n::msg::widgets_player_chapters),
+    ]
+}
+
+/// The tabs' top: BTN_S tall, centred between the play bar (scrubber, at `SB_Y`) and the bottom edge.
+fn tab_y() -> f32 {
+    (SB_Y + SCR_H) * 0.5 - BTN_S * 0.5
+}
+
+/// One item per label, as wide as its pill ([`TabPill::width_measured`]); a tab the row does not
+/// carry is ABSENT. Both the draw and [`tab_hit_rect`] build the row from these, so a pill is drawn
+/// where it is hit.
+fn tab_items(tabs: [Option<&str>; HUD_TABS], measure: &dyn plx_machine::machine::Measure) -> [Item; HUD_TABS] {
+    tabs.map(|l| match l {
+        Some(l) => Item::new(TabPill::width_measured(l, theme::size::BODY, measure)),
+        None => Item::absent(),
+    })
+}
+
+/// How many tabs the bottom row can hold: Info, then Chapters.
+const HUD_TABS: usize = 2;
+
+/// The tab pills as ONE run from the scrubber's left edge, `space::SM` apart.
+fn tab_row(items: &[Item; HUD_TABS]) -> HStack<'_> {
+    HStack::new(items, theme::space::SM, Align::Leading(SB_X))
 }
 
 /// Is the failure read-out's row ON SCREEN — a failure owns the frame. The row always holds at
@@ -1341,7 +1424,7 @@ fn draw_failed_readout(
 /// the existing ones left instead of moving the row's right margin, which is what keeps the discs
 /// and every stand-in (`ctrl_slot`) sharing one edge.
 fn btn_x(idx: i32) -> f32 {
-    CTRL_RIGHT - BTN_S - (BTN_N - 1 - idx) as f32 * (BTN_S + BTN_GAP)
+    disc_row().span(idx as usize).map_or(CTRL_RIGHT, |(x, _)| x)
 }
 
 /// which control button a pointer at (cx,cy) is over: 0 = Subtitles, 1 = Audio, 2 = More, or None.
@@ -1444,7 +1527,7 @@ pub const LINGER_MS: u32 = 4500;
 // `ci/check-deps.sh`'s `sibling` gate forbids a file under `screens/detail/` from naming
 // `crate::screens::player` at all, the same rule that keeps `LINGER_MS` above defined here rather
 // than in `screens::player::input` for `trailer.rs` to import from a sibling. What stays per screen
-// is the preview position, the tap debounce and the HUD's reveal/drag flags.
+// is the preview position, the trailer's tap debounce and the HUD's reveal/drag flags.
 // `screens::player::input::Scrub::clamp_target` is a thin call-through to
 // [`scrub_clamp_target`] below so its own many call sites are untouched.
 /// What one fresh press hops: the Skip interval preference (10 s unless Settings changed it),
@@ -1469,14 +1552,15 @@ pub fn scrub_speed(held_ms: u32) -> f32 {
     let doublings = (held_ms / SCRUB_STEP_MS).min(16);
     (SCRUB_BASE * (1u32 << doublings) as f32).min(SCRUB_MAX)
 }
-// tap released → commit after this (further taps accumulate); see `screens::player::input`'s own
-// doc for why this debounce exists (coalescing a rapid tap burst into one Load/reload).
+// tap released → commit after this (further taps accumulate into one Load/reload). The TRAILER
+// transport's debounce (`screens::detail::trailer`); the player has none — its keys only move a
+// target that OK confirms (`screens::player`'s `step` doc).
 pub const TAP_COMMIT_MS: u32 = 450;
-pub const SCRUB_LOST_MS: u32 = 400; // holding but no repeat this long → lost keyup → commit
+pub const SCRUB_LOST_MS: u32 = 400; // holding but no repeat this long → lost keyup (the trailer commits, the player lets go)
 /// How long a key-up of a HELD scrub waits before it counts as the release. The remote's key
 /// driver was measured delivering `Up` and a fresh `Down` 0-17 ms apart in the middle of a hold; a
 /// thumb cannot release and press again that fast, so a same-direction `Down` inside this window
-/// is the same hold. Short enough that a true release commits imperceptibly later.
+/// is the same hold. Short enough that a true release lands imperceptibly later.
 pub const SCRUB_RELEASE_DEBOUNCE_MS: u32 = 50;
 /// How long the lost-keyup net waits after such a bounce: the re-press restarts the remote's
 /// ~500 ms auto-repeat delay (measured 499-519 ms), so no repeat can arrive sooner.
@@ -1537,31 +1621,85 @@ pub enum Kicker {
     Context(*const std::os::raw::c_char),
 }
 
-/// The title block above the playbar: the [`Kicker`] line over the [`HUD_TITLE_SZ`] display
-/// title. (Apple-TV layout.)
+/// The trailer's unbounded title block (it has no player control row).
 pub fn draw_title(p: Painter, kicker: Kicker, title: *const std::os::raw::c_char) {
     let (text, ink, bold) = match kicker {
         Kicker::Episode(text) => (text, theme::TEXT_PRIMARY, 1),
         Kicker::Context(text) => (text, theme::TEXT_SECONDARY, 0),
     };
-    p.text(
-        text,
-        SB_X,
-        SCR_H - 312.0,
-        theme::size::CAPTION,
-        ink,
-        0,
-        bold,
-    );
-    p.text(
-        title,
-        SB_X,
-        SCR_H - 278.0,
-        HUD_TITLE_SZ,
-        theme::TEXT_PRIMARY,
-        0,
-        1,
-    );
+    p.text(text, SB_X, SCR_H - 312.0, theme::size::CAPTION, ink, 0, bold);
+    p.text(title, SB_X, SCR_H - 278.0, HUD_TITLE_SZ, theme::TEXT_PRIMARY, 0, 1);
+}
+
+/// The player's title is always contained before the control row. While playing it is
+/// ellipsised; while paused the full line glides once to reveal its end, then rests.
+fn draw_player_title(
+    p: Painter,
+    kicker: Kicker,
+    title: *const std::os::raw::c_char,
+    right: f32,
+    measure: &dyn Measure,
+    paused: bool,
+    clock: &plx_ui::marquee::Clock,
+) {
+    let width = (right - SB_X).max(0.0);
+    let _clip = plx_ui::screen::ClipScope::open_in(p, Rect::new(SB_X, 0.0, width, SCR_H));
+    let (text, ink, bold) = match kicker {
+        Kicker::Episode(text) => (text, theme::TEXT_PRIMARY, true),
+        Kicker::Context(text) => (text, theme::TEXT_SECONDARY, false),
+    };
+    if !text.is_null() {
+        let label = unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy();
+        let fitted = measure.fit_line(&label, width, theme::size::CAPTION, bold);
+        p.text(fitted.as_ptr(), SB_X, SCR_H - 312.0, theme::size::CAPTION, ink, 0, i32::from(bold));
+    }
+    if title.is_null() {
+        clock.release();
+        return;
+    }
+    let full = unsafe { std::ffi::CStr::from_ptr(title) };
+    let label = full.to_string_lossy();
+    let full_width = measure.width(full, HUD_TITLE_SZ, true);
+    if paused && full_width > width {
+        // A show's display title can stay the same across episodes; the kicker is
+        // part of the visible identity and must restart the reveal when it changes.
+        let kicker = if text.is_null() { "" } else { unsafe { std::ffi::CStr::from_ptr(text) }.to_str().unwrap_or("") };
+        let key = format!("{kicker}\u{1}{label}");
+        let elapsed = clock.read(&key) as f32;
+        let offset = plx_ui::marquee::TITLE.reveal_once(elapsed, full_width, width);
+        if offset < full_width - width {
+            if elapsed < plx_ui::marquee::TITLE.hold_ms {
+                plx_machine::idle::wake();
+            } else {
+                plx_machine::idle::invalidate();
+            }
+        }
+        if offset > 0.0 {
+            p.text(title, SB_X - offset, SCR_H - 278.0, HUD_TITLE_SZ, theme::TEXT_PRIMARY, 0, 1);
+            return;
+        }
+    } else {
+        clock.release();
+    }
+    let fitted = measure.fit_line(&label, width, HUD_TITLE_SZ, true);
+    p.text(fitted.as_ptr(), SB_X, SCR_H - 278.0, HUD_TITLE_SZ, theme::TEXT_PRIMARY, 0, 1);
+}
+
+/// Reserve the same geometry used by focus placement, plus focus pop and a reading gap.
+/// Use at least the settled focus scale so moving focus does not make the title breathe; a
+/// spring overshoot still reserves its actual drawn extent. Stand-ins are measured, not guessed.
+fn title_right(slot: ControlSlot, row: &TransportRow, measure: &dyn Measure) -> f32 {
+    let mut left = CTRL_RIGHT;
+    for i in 0..slot.items() {
+        if let Some(rect) = slot.item_rect(row, i, measure) {
+            left = left.min(rect.scaled(row.scale(i).max(plx_ui::widgets::CTRL_FOCUS_SCALE)).x);
+        }
+    }
+    if matches!(slot, ControlSlot::UpNext(_)) {
+        let layout = crate::up_next::layout_peek(row, measure);
+        left = left.min(layout.still.x).min(layout.caption.x);
+    }
+    (left - theme::space::MD).max(SB_X)
 }
 
 /// How the playhead is drawn — see [`draw_playbar`].
@@ -1580,7 +1718,7 @@ pub enum Knob {
 /// differently: the player route from its own scrub gesture, seek target and focus ring
 /// ([`Playbar::live`]), and the detail page's full-trailer transport from a preview session that
 /// has none of the three.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Playbar {
     /// the DISPLAYED playhead (a seek target, a scrub preview or the published position)
     pub pos_ns: i64,
@@ -1590,6 +1728,11 @@ pub struct Playbar {
     pub mark: TransportMark,
     /// drives the inline spinner's rotation
     pub now: u32,
+    /// how far the knob clock has grown, 0 (resting, [`theme::size::CAPTION`]) to 1
+    /// ([`crate::scrub_preview::CLOCK_GROWN_SZ`]), while a scrub shows no card
+    /// ([`crate::scrub_preview::Motion::clock_grow`]). The two sizes are CROSSFADED on it
+    /// ([`crate::scrub_preview::clock_faces`]); a size is never tweened.
+    pub clock_grow: f32,
 }
 
 impl Playbar {
@@ -1630,6 +1773,7 @@ impl Playbar {
             knob,
             mark: transport_mark(paused, busy, scrub >= 0, dispos, livepos, since_play_ms),
             now,
+            clock_grow: 0.0,
         }
     }
 }
@@ -1701,17 +1845,18 @@ pub fn draw_playbar(p: Painter, bar: Playbar, measure: &dyn plx_machine::machine
     // elapsed under the playhead (':' centered on the knob, clamped to the bar); remaining at the
     // right — hidden once the moving elapsed label would overlap it (near the end of the movie).
     let ty = sy + 30.0;
-    let (el_l, el_r) = draw_clock(
-        p,
-        &fmt_time(dispos, false),
-        hx,
-        ty,
-        theme::size::CAPTION,
-        white,
-        sx,
-        sx + sw,
-        measure,
-    );
+    // A grown knob clock keeps its BASELINE, so it grows upward and never into the remaining clock's
+    // line. It is a CROSSFADE of two ladder rungs (the resting CAPTION and the one above it), each
+    // laid out at its own size, never a tweened size or a scaled texture; the extents the rest of
+    // the line clears are the union of the faces drawn.
+    let elapsed = fmt_time(dispos, false);
+    let (mut el_l, mut el_r) = (f32::INFINITY, f32::NEG_INFINITY);
+    for (sz, face_a) in crate::scrub_preview::clock_faces(theme::size::CAPTION, bar.clock_grow).into_iter().flatten() {
+        let ety = plx_gfx::text::baseline_y(sz, 1, theme::size::CAPTION, 1, ty);
+        let (l, r) = draw_clock(p.alpha(face_a), &elapsed, hx, ety, sz, white, sx, sx + sw, measure);
+        el_l = el_l.min(l);
+        el_r = el_r.max(r);
+    }
     let rem = fmt_time(dur - dispos, true);
     // MEASURE the label, never estimate it. `chars * CAPTION * 0.52` was an Arial-calibrated
     // constant guarding a real behaviour — the remaining clock hides before the moving elapsed
@@ -1842,12 +1987,23 @@ pub fn draw_hud(
     // doc exists to forbid. Deliberately NOT gated on `transport` — the Info card / Chapters strip
     // pass false and would otherwise put the bottom scrim + tabs back under a failure.
     if readout_owns_frame(busy) {
+        row.reset_title();
         return;
     }
     let p = Painter::root();
     let e = hud_env();
 
     draw_scrim(p);
+
+    // While a scrub is live the title block, the control row and the tabs fade away so the card has
+    // the room (and nothing hovers under it); the bar, the knob and both clocks stay. The same
+    // alpha restores them after the scrub — see `scrub_preview::Motion`.
+    let chrome_a = row.preview.motion.chrome_alpha(now);
+    let chrome = chrome_a > 0.004;
+    let pc = p.alpha(chrome_a);
+    if !transport || !chrome {
+        row.reset_title();
+    }
 
     if transport {
         // title block under the playbar: for an episode, "S1, E1 · Episode Name" (white) sits above the
@@ -1856,84 +2012,155 @@ pub fn draw_hud(
         // has `is_episode == true` (it still labels "Go to Show" elsewhere) but no real S#/E# address,
         // so it takes this same "Trailer" ctxline + title treatment a movie trailer already gets,
         // instead of a fabricated `S0 · E0` kicker.
-        if let Some(n) = meta.now_playing().filter(|n| n.is_real_episode) {
-            // `fmt::episode_kicker` outright — this line was a byte-identical hand-spelling of it, which
-            // is the drift that formatter exists to prevent (the pre-roll ctx line and the Up Next
-            // caption already read it, and the whole point is that all three say the same thing).
-            let kicker = CString::new(plx_ui::fmt::episode_kicker(
-                n.season,
-                n.index,
-                &n.ep_title,
-            ))
-            .unwrap_or_default();
-            // `if let Ok`, not `.unwrap_or_default()`: before this function was factored out, an
-            // interior-NUL title (the one CString::new can fail on) simply drew nothing — the
-            // refactor was supposed to be visual-no-op, and an `unwrap_or_default()` here draws an
-            // EMPTY title line instead of skipping it, which is a real (if rare) behavior change.
-            if let Ok(title) = CString::new(n.title.clone()) {
-                draw_title(p, Kicker::Episode(kicker.as_ptr()), title.as_ptr());
+        if chrome {
+            let right = title_right(slot, row, measure);
+            let paused = plx_media::player::TX.paused.load(Relaxed);
+            if let Some(n) = meta.now_playing().filter(|n| n.is_real_episode) {
+                // `fmt::episode_kicker` outright — this line was a byte-identical hand-spelling of it, which
+                // is the drift that formatter exists to prevent (the pre-roll ctx line and the Up Next
+                // caption already read it, and the whole point is that all three say the same thing).
+                let kicker = CString::new(plx_ui::fmt::episode_kicker(
+                    n.season,
+                    n.index,
+                    &n.ep_title,
+                ))
+                .unwrap_or_default();
+                // `if let Ok`, not `.unwrap_or_default()`: before this function was factored out, an
+                // interior-NUL title (the one CString::new can fail on) simply drew nothing — the
+                // refactor was supposed to be visual-no-op, and an `unwrap_or_default()` here draws an
+                // EMPTY title line instead of skipping it, which is a real (if rare) behavior change.
+                if let Ok(title) = CString::new(n.title.clone()) {
+                    draw_player_title(pc, Kicker::Episode(kicker.as_ptr()), title.as_ptr(),
+                        right, measure, paused, &row.title_clock);
+                }
+            } else {
+                draw_player_title(
+                    pc,
+                    Kicker::Context(plx_media::route::ctxline_cptr(ps)),
+                    plx_media::route::title_cptr(ps),
+                    right, measure, paused, &row.title_clock,
+                );
             }
-        } else {
-            draw_title(
-                p,
-                Kicker::Context(plx_media::route::ctxline_cptr(ps)),
-                plx_media::route::title_cptr(ps),
-            );
-        }
 
-        // The right control row, from the slot the CALLER resolved — so what is drawn and what a
-        // keypress activates are the same value, not two derivations of it.
-        match slot {
-            ControlSlot::UpNext(_) => {
-                crate::up_next::draw(ps, row, up, p, focus == 1, btn, now, measure);
-            }
-            ControlSlot::Skip(pr) => {
-                crate::skip_pill::draw(row, p, pr, focus == 1, measure);
-            }
-            ControlSlot::Discs => {
-                for i in 0..BTN_N {
-                    let pop = row.scale(i);
-                    TransportButton::new(i, Rect::new(btn_x(i), BTN_Y, BTN_S, BTN_S))
-                        .focused(focus == 1 && btn == i)
-                        // The whole control row stands on the VIDEO PLANE — see `ControlGround`. It is
-                        // the HUD's own bottom ramp (drawn at the top of this function) that makes the
-                        // unkeyed face legal: the picture is unreadable, but the ground under these
-                        // discs is known to be dark.
-                        .ground(ControlGround::Unkeyed)
-                        .scale(pop)
-                        .draw(&e, p);
+            // The right control row, from the slot the CALLER resolved — so what is drawn and what a
+            // keypress activates are the same value, not two derivations of it.
+            match slot {
+                ControlSlot::UpNext(_) => {
+                    crate::up_next::draw(ps, row, up, pc, focus == 1, btn, now, measure);
+                }
+                ControlSlot::Skip(pr) => {
+                    crate::skip_pill::draw(row, pc, pr, focus == 1, measure);
+                }
+                ControlSlot::Discs => {
+                    for i in 0..BTN_N {
+                        let pop = row.scale(i);
+                        TransportButton::new(i, Rect::new(btn_x(i), BTN_Y, BTN_S, BTN_S))
+                            .focused(focus == 1 && btn == i)
+                            // The whole control row stands on the VIDEO PLANE — see `ControlGround`. It is
+                            // the HUD's own bottom ramp (drawn at the top of this function) that makes the
+                            // unkeyed face legal: the picture is unreadable, but the ground under these
+                            // discs is known to be dark.
+                            .ground(ControlGround::Unkeyed)
+                            .scale(pop)
+                            .draw(&e, pc);
+                    }
                 }
             }
         }
 
-        draw_playbar(p, Playbar::live(ps, busy, focus, row.since_play_ms(now), now), measure);
+        let mut bar = Playbar::live(ps, busy, focus, row.since_play_ms(now), now);
+        bar.clock_grow = row.preview.motion.clock_grow(now);
+        // a cancelled scrub's knob returns to the playhead rather than jumping to it
+        bar.pos_ns = row.spring.apply(bar.pos_ns, now);
+        draw_playbar(p, bar, measure);
+        // last, so the still floats over the title block and the control row as well
+        draw_scrub_preview(p, ps, row, bar);
     } // end `if transport`
 
     // bottom tabs as pills — Chapters only appears when the item actually has chapters
-    let tabs: &[&str] = if crate::chapters_panel::has_chapters(meta) {
-        &[plx_platform::i18n::msg::widgets_player_info(), plx_platform::i18n::msg::widgets_player_chapters()]
-    } else {
-        &[plx_platform::i18n::msg::widgets_player_info()]
-    };
+    draw_tabs(&e, pc, crate::chapters_panel::has_chapters(meta), chrome, |i| hud_tab_state(transport, focus, tab, i), measure);
+}
+
+/// The bottom tab pills: ONE run from the scrubber's left edge ([`tab_row`]), the same one
+/// [`tab_hit_rect`] answers from. `state(i)` is tab `i`'s `(focused, selected)`; `chrome` false
+/// draws none (and measures none: a replay answers only the keys it recorded).
+fn draw_tabs(
+    e: &Env,
+    pc: Painter,
+    has_chapters: bool,
+    chrome: bool,
+    state: impl Fn(i32) -> (bool, bool),
+    measure: &dyn plx_machine::machine::Measure,
+) {
+    let tabs = tab_labels(has_chapters);
     // tabs match the transport control buttons' height (BTN_S), centred vertically between the
     // play bar (scrubber, at SB_Y) and the bottom edge of the screen
     let ph = BTN_S; // = 64, same as the Subtitles/Audio buttons
-    let py = (SB_Y + SCR_H) * 0.5 - ph * 0.5;
-    let mut px = SB_X;
-    for (i, label) in tabs.iter().enumerate() {
-        let (focused, selected) = hud_tab_state(transport, focus, tab, i as i32);
-        let pw = TabPill::width_measured(label, theme::size::BODY, measure);
-        if let Ok(cs) = CString::new(*label) {
+    let py = tab_y();
+    let items = if chrome { tab_items(tabs, measure) } else { [Item::absent(); HUD_TABS] };
+    for placed in tab_row(&items).placed() {
+        let (px, pw, i) = (placed.x, placed.w, placed.i);
+        let (focused, selected) = state(i as i32);
+        if let Some(Ok(cs)) = tabs[i].map(CString::new) {
             TabPill::new(cs.as_ptr(), theme::size::BODY, Rect::new(px, py, pw, ph))
                 .focused(focused)
                 .selected(selected)
                 // Same row band, same ramp, same ground as the transport discs — everything the
                 // HUD draws stands on the video plane (`ControlGround`).
                 .ground(ControlGround::Unkeyed)
-                .draw(&e, p);
+                .draw(e, pc);
         }
-        px += pw + 16.0;
     }
+}
+
+/// The bar's x for a position `pos_ns` of `dur_ns`, clamped to the bar's ends.
+fn bar_x(pos_ns: i64, dur_ns: i64) -> f32 {
+    SB_X + (sb_w() as f64 * (pos_ns as f64 / dur_ns.max(1) as f64).clamp(0.0, 1.0)) as f32
+}
+
+/// **The scrub preview** ([`crate::scrub_preview`]): while a live scrub preview is up, the still
+/// at the knob's position, floated above the knob; after it, the same still fading out. Draws
+/// nothing for a part with no BIF index, and nothing until the first still lands.
+fn draw_scrub_preview(p: Painter, ps: &plx_media::route::PlaybackSession, row: &mut TransportRow, bar: Playbar) {
+    use crate::scrub_preview::{card_rect, card_size, draw, scaled_about, still_ms, still_path, Look, REQ_H, REQ_W};
+    let part = plx_media::route::cur_part_id(ps);
+    let sid = plx_media::route::item_sid(plx_media::route::cur_sid(ps)).raw();
+    let show = if plx_media::player::TX.scrub_ns.load(Relaxed) < 0 {
+        row.preview.motion.exit(bar.now)
+    } else if bar.dur_ns <= 0 {
+        None
+    } else {
+        let generation = plx_media::route::sess(ps);
+        let target = still_ms(bar.pos_ns);
+        let look = |ms: i64| {
+            let path = still_path(part, ms);
+            if plx_ui::tex::resolve_on(sid, &path, REQ_W, REQ_H, false) != 0 {
+                Look::Ready
+            } else if plx_ui::tex::failed_on(sid, &path, REQ_W, REQ_H, false) {
+                Look::Failed
+            } else {
+                Look::Waiting
+            }
+        };
+        let shown = row.preview.step((part, &generation), target, bar.now, look);
+        let absent = row.preview.absent();
+        row.preview.motion.observe(shown, target, absent, bar_x(bar.pos_ns, bar.dur_ns), bar.now)
+    };
+    let Some(sh) = show else { return };
+    let (tex, tw, th) = plx_ui::tex::resolve_wh_on(sid, &still_path(part, sh.ms), REQ_W, REQ_H, false);
+    if tex == 0 || tw <= 0.0 || th <= 0.0 {
+        return;
+    }
+    // In-place crossfade only between two resident stills of the same aspect; otherwise the swap is
+    // immediate (the card's width would have to jump mid-fade).
+    let prev = sh.prev.and_then(|(old, t)| {
+        let (otex, ow, oh) = plx_ui::tex::resolve_wh_on(sid, &still_path(part, old), REQ_W, REQ_H, false);
+        (otex != 0 && oh > 0.0 && ((ow / oh) - (tw / th)).abs() < 0.01).then_some((otex, t))
+    });
+    let (w, _) = card_size(tw, th);
+    let rest = card_rect(sh.knob_x, SB_X, sb_w(), SB_Y, w);
+    let r = scaled_about(rest, sh.knob_x, SB_Y + SB_H * 0.5, sh.scale);
+    draw(p.alpha(sh.alpha), r, tex, tw, th, prev);
 }
 
 /// **The transport's outermost drawn chrome, for the overscan audit**
@@ -1950,7 +2177,7 @@ pub fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
     out.push(("player scrubber", Rect::new(SB_X, SB_Y, sb_w(), SB_H)));
     out.push((
         "player control row",
-        Rect::new(CTRL_RIGHT - CTRL_ROW_W, CTRL_Y, CTRL_ROW_W, CTRL_H),
+        ctrl_row_hit_rect(),
     ));
     let py = (SB_Y + SCR_H) * 0.5 - BTN_S * 0.5;
     out.push(("player bottom tab row", Rect::new(SB_X, py, 0.0, BTN_S)));
@@ -2003,6 +2230,87 @@ mod tests {
     }
 
     use super::*;
+    #[test]
+    fn long_hud_titles_fit_before_every_control_slot() {
+        use plx_base::fontcov::advances::ShippedMeasure;
+        let measure = &ShippedMeasure;
+        let long = CString::new("An extraordinarily long episode — Über den Wolken — ".repeat(20)).unwrap();
+        let clock = plx_ui::marquee::Clock::new();
+        for language in plx_platform::i18n::SHIPPED {
+            let _language = plx_platform::i18n::language_on_this_thread_for_test(language);
+            let slots = [
+                ControlSlot::Discs,
+                slot_for(Some(marker(MarkerKind::Intro, false)), false, NextEpisodeMode::Countdown),
+                slot_for(Some(marker(MarkerKind::Credits, true)), true, NextEpisodeMode::Countdown),
+            ];
+            for slot in slots {
+                let mut row = TransportRow::new();
+                for focused in 0..slot.items() {
+                    for _ in 0..30 {
+                        row.pop.step(Some(focused as usize), 1.0 / 60.0);
+                        let right = title_right(slot, &row, measure);
+                        for i in 0..slot.items() {
+                            let rect = slot.item_rect(&row, i, measure).unwrap();
+                            assert!(right + theme::space::MD <= rect.scaled(row.scale(i)).x + 0.001);
+                        }
+                        for kicker in [Kicker::Episode(long.as_ptr()), Kicker::Context(long.as_ptr())] {
+                            let runs = plx_ui::draw_census::capture_runs(|| {
+                                draw_player_title(Painter::recording(), kicker, long.as_ptr(),
+                                    right, measure, false, &clock);
+                            });
+                            assert_eq!(runs.len(), 2);
+                            for run in runs {
+                                assert!(run.text.ends_with('…'), "{}: expected ellipsis: {run:?}", language.tag());
+                                assert_eq!(run.at.x, SB_X);
+                                assert!(measure.width_str(&run.text, run.size, run.bold) <= right - SB_X + 1.0,
+                                    "{}: fitted title exceeds the control boundary: {run:?}", language.tag());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn short_hud_titles_keep_the_original_position_typography_and_ink() {
+        let clock = plx_ui::marquee::Clock::new();
+        for kicker in [Kicker::Episode(c"S1 · E1 · Pilot".as_ptr()), Kicker::Context(c"Trailer".as_ptr())] {
+            let original = plx_ui::draw_census::capture_runs(|| {
+                draw_title(Painter::recording(), kicker, c"Short title".as_ptr());
+            });
+            for paused in [false, true] {
+                let bounded = plx_ui::draw_census::capture_runs(|| {
+                    draw_player_title(Painter::recording(), kicker, c"Short title".as_ptr(),
+                        title_right(ControlSlot::Discs, &TransportRow::new(), &FM), &FM, paused, &clock);
+                });
+                assert_eq!(original, bounded);
+            }
+        }
+    }
+
+    #[test]
+    fn paused_title_reveals_once_and_resume_restores_ellipsis() {
+        let clock = plx_ui::marquee::Clock::new();
+        let long = c"A very long movie title that should slowly reveal its final words after pausing";
+        let right = title_right(ControlSlot::Discs, &TransportRow::new(), &FM);
+        let paint = |paused| plx_ui::draw_census::capture_runs(|| {
+            draw_player_title(Painter::recording(), Kicker::Context(c"Movie".as_ptr()),
+                long.as_ptr(), right, &FM, paused, &clock);
+        });
+        let start = paint(true);
+        assert!(start[1].text.ends_with('…'));
+        plx_machine::idle::frame_begin(2.0);
+        let moving = paint(true);
+        assert!(moving[1].at.x < SB_X);
+        plx_machine::idle::frame_begin(30.0);
+        let ended = paint(true);
+        assert_eq!(ended[1].at.x, SB_X - (FM.width(long, HUD_TITLE_SZ, true) - (right - SB_X)));
+        assert_eq!(paint(true)[1].at.x, ended[1].at.x, "the title must stay at the end");
+        assert!(paint(false)[1].text.ends_with('…'), "resume restores a static ellipsis");
+        assert!(paint(true)[1].text.ends_with('…'), "a later pause starts from the beginning");
+    }
+
     /// The host tests' text capability (half an em per byte).
     const FM: plx_ui::fixture::FixtureMeasure = plx_ui::fixture::FixtureMeasure;
 
@@ -2024,7 +2332,7 @@ mod tests {
         // `prepare` may run on a frame the loop then does not present: it records, uploads nothing.
         assert!(plx_gfx::text::prewarm_pending(), "prepare queued the clocks");
         assert!(!plx_gfx::text::prewarm_resident_for_test(b"1:23", sz, 1), "prepare itself uploaded");
-        // Four strings against a three-string frame budget: the second presented frame finishes them.
+        // Six strings against a three-string frame budget: the second presented frame finishes them.
         while plx_gfx::text::prewarm_pending() {
             plx_ui::panel_motion::PanelMotion::drain_queued_text_for_test();
         }
@@ -2032,6 +2340,16 @@ mod tests {
             assert!(
                 plx_gfx::text::prewarm_resident_for_test(text.as_bytes(), sz, bold),
                 "{text:?} (bold={bold}) was left for the draw to rasterise after the back-buffer wait"
+            );
+        }
+        // …and the elapsed clock at the size it GROWS to during a scrub with no card
+        // (`scrub_preview::clock_faces`): a cold rung there is a font open plus a rasterisation in
+        // the middle of a hold.
+        let grown = crate::scrub_preview::CLOCK_GROWN_SZ;
+        for text in ["1:23", "1:24"] {
+            assert!(
+                plx_gfx::text::prewarm_resident_for_test(text.as_bytes(), grown, 1),
+                "{text:?} at the grown size ({grown}) was left cold"
             );
         }
 
@@ -2114,9 +2432,62 @@ mod tests {
         }
     }
 
+    /// **Q5: the discs stand `CONTROL_GAP` (20) apart, not the old 22**, and the row's width — the
+    /// floor a stand-in (Skip pill, Up Next) may not shrink below — is the three discs and two of
+    /// those gaps.
+    #[test]
+    fn the_control_row_gap_is_the_shared_control_gap() {
+        assert_eq!(plx_ui::widgets::CONTROL_GAP, 20.0);
+        assert_eq!(btn_x(1) - (btn_x(0) + BTN_S), 20.0);
+        assert_eq!(ctrl_row_w(), 3.0 * BTN_S + 2.0 * 20.0);
+        assert_eq!(ctrl_slot_floor_for_test(), ctrl_row_w());
+    }
+
+    /// The failure-free floor `ctrl_slot` gives a stand-in whose label measures nothing.
+    fn ctrl_slot_floor_for_test() -> f32 {
+        ctrl_slot_measure("", &plx_ui::fixture::FixtureMeasure)
+    }
+
+    /// **The bottom tabs are one run `space::SM` apart**, and the hit rects and the painted pills
+    /// agree. Read off the PAINTED labels (each pill's label is centred on its plate, so the label
+    /// runs' centres stand `half + SM + half` apart), against `tab_hit_rect`.
+    #[test]
+    fn the_bottom_tabs_stand_one_sm_apart_and_are_drawn_where_they_are_hit() {
+        use plx_machine::machine::Measure as _;
+        let m = plx_ui::fixture::FixtureMeasure;
+        let hit: Vec<Rect> = (0..2).map(|i| tab_hit_rect(i, true, &m).unwrap()).collect();
+        assert_eq!(hit[0].x, SB_X);
+        assert_eq!(hit[1].x - (hit[0].x + hit[0].w), theme::space::SM);
+        // the same pills, painted
+        let runs = plx_ui::draw_census::capture_runs(|| {
+            draw_tabs(&hud_env(), Painter::recording(), true, true, |_| (false, false), &m);
+        });
+        let labels: Vec<_> = runs.iter().filter(|r| [plx_platform::i18n::msg::widgets_player_info(), plx_platform::i18n::msg::widgets_player_chapters()].contains(&r.text.as_str())).collect();
+        assert_eq!(labels.len(), 2, "{runs:?}");
+        for (run, rect) in labels.iter().zip(&hit) {
+            let centre = match run.align { 1 => run.at.x, _ => run.at.x + m.width_str(&run.text, run.size, run.bold) * 0.5 };
+            assert!((centre - rect.cx()).abs() < 0.5, "{} is drawn on its hit rect: {run:?} vs {rect:?}", run.text);
+        }
+        assert!(((labels[1].at.x - labels[0].at.x) - (hit[1].cx() - hit[0].cx())).abs() < 0.5);
+        // Hidden case: with no chapters there is one pill, at the same place, and no second hit rect
+        // (no double gap and no stray trailing one).
+        assert_eq!(tab_hit_rect(0, false, &m), Some(hit[0]));
+        assert_eq!(tab_hit_rect(1, false, &m), None);
+        assert_eq!(tab_hit_rect(-1, true, &m), None);
+        let one = plx_ui::draw_census::capture_runs(|| {
+            draw_tabs(&hud_env(), Painter::recording(), false, true, |_| (false, false), &m);
+        });
+        assert_eq!(one.iter().filter(|r| r.text == plx_platform::i18n::msg::widgets_player_chapters()).count(), 0);
+        // chrome off draws (and measures) nothing
+        let none = plx_ui::draw_census::capture_runs(|| {
+            draw_tabs(&hud_env(), Painter::recording(), true, false, |_| (false, false), &m);
+        });
+        assert!(none.is_empty());
+    }
+
     /// The row is right-anchored and does not overlap itself: the LAST disc ends exactly at
-    /// `CTRL_RIGHT`, each disc sits a full `BTN_GAP` clear of its neighbour, and the whole span is
-    /// `CTRL_ROW_W` — which is the floor `ctrl_slot` gives a stand-in, so a drifting span would
+    /// `CTRL_RIGHT`, each disc sits a full `CONTROL_GAP` clear of its neighbour, and the whole span is
+    /// `ctrl_row_w` — which is the floor `ctrl_slot` gives a stand-in, so a drifting span would
     /// silently let the Skip pill shrink the row.
     #[test]
     fn the_disc_row_is_right_anchored_and_spans_ctrl_row_w() {
@@ -2128,13 +2499,13 @@ mod tests {
         for i in 1..BTN_N {
             assert_eq!(
                 btn_x(i) - (btn_x(i - 1) + BTN_S),
-                BTN_GAP,
+                plx_ui::widgets::CONTROL_GAP,
                 "gap before disc {i}"
             );
         }
         assert_eq!(
             CTRL_RIGHT - btn_x(0),
-            CTRL_ROW_W,
+            ctrl_row_w(),
             "drawn span vs the stand-in floor"
         );
     }
@@ -2156,7 +2527,7 @@ mod tests {
             "right of the row"
         );
         for i in 1..BTN_N {
-            let mid = btn_x(i) - BTN_GAP * 0.5;
+            let mid = btn_x(i) - plx_ui::widgets::CONTROL_GAP * 0.5;
             assert_eq!(
                 icon_hit(ControlSlot::Discs, mid, cy),
                 None,
@@ -2657,7 +3028,7 @@ mod tests {
     #[test]
     fn the_forced_readout_says_what_and_why_once_and_draws_the_diagnostics_as_the_footer() {
         use plx_media::player::FailureAction as A;
-        let verdict = plx_media::route::PlayVerdict::Forced(plx_media::route::ForcedFailure::Video).text().to_owned();
+        let verdict = plx_media::route::PlayVerdict::Forced(plx_media::route::ForcedFailure::Video).text().into_owned();
         let e = plx_media::player::failtest_policy_shape_for_test(&verdict);
         let r = readout_of(&e);
         assert_eq!(r.reason(), verdict.as_str());
@@ -2677,7 +3048,7 @@ mod tests {
     #[test]
     fn the_diagnostics_footer_sits_below_the_row_inside_the_safe_bottom_band() {
         use plx_base::fontcov::advances::ShippedMeasure;
-        let verdict = plx_media::route::PlayVerdict::Forced(plx_media::route::ForcedFailure::Video).text().to_owned();
+        let verdict = plx_media::route::PlayVerdict::Forced(plx_media::route::ForcedFailure::Video).text().into_owned();
         let e = plx_media::player::failtest_policy_shape_for_test(&verdict);
         let r = readout_of(&e);
         let row_bottom = r.frames(&ShippedMeasure).iter().flatten().map(|f| f.y + f.h).fold(0.0, f32::max);
@@ -2696,7 +3067,7 @@ mod tests {
     fn every_failure_row_fits_the_screen_in_every_language() {
         use plx_base::fontcov::advances::ShippedMeasure;
         use plx_ui::fit::HEADROOM;
-        use plx_platform::i18n::{language_on_this_thread_for_test, Preference};
+        use plx_platform::i18n::{language_on_this_thread_for_test};
         use plx_media::player::FailureAction as A;
         let rows: [&[A]; 3] = [
             &[A::PlayAutomatically, A::TryAgain, A::Back],
@@ -2704,7 +3075,7 @@ mod tests {
             &[A::Repair, A::Back],
         ];
         let mut out = Vec::new();
-        for language in [Preference::En, Preference::Es, Preference::Be, Preference::Fr] {
+        for language in plx_platform::i18n::SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
             for row in rows {
                 let labels: Vec<&'static std::ffi::CStr> = row.iter().map(|a| failure_action_label(*a)).collect();
@@ -2729,9 +3100,9 @@ mod tests {
         use plx_base::fontcov::advances::ShippedMeasure;
         use plx_ui::fit::HEADROOM;
         use plx_ui::text_view::TextView;
-        use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference};
+        use plx_platform::i18n::{language_on_this_thread_for_test, msg};
         let mut out = Vec::new();
-        for language in [Preference::En, Preference::Es, Preference::Be, Preference::Fr] {
+        for language in plx_platform::i18n::SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
             let help = msg::widgets_reason_jail_help();
             let fits = !TextView::new(help, theme::size::CAPTION, theme::TEXT_TERTIARY)
@@ -2751,9 +3122,9 @@ mod tests {
     fn every_forced_verdict_fits_the_reason_slot_in_every_language() {
         use plx_base::fontcov::advances::ShippedMeasure;
         use plx_ui::fit::HEADROOM;
-        use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference};
+        use plx_platform::i18n::{language_on_this_thread_for_test, msg};
         let mut out = Vec::new();
-        for language in [Preference::En, Preference::Es, Preference::Be, Preference::Fr] {
+        for language in plx_platform::i18n::SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
             for s in [msg::widgets_verdict_forced_no_original(), msg::widgets_verdict_forced_container(),
                 msg::widgets_verdict_forced_video(), msg::widgets_verdict_forced_audio(),

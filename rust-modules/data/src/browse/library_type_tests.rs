@@ -20,6 +20,70 @@ mod tests {
         assert_eq!(sort.query(true), "addedAt:desc");
     }
 
+    /// **One noun beside a number, by what the listing holds.** The Sources list's "185 films" and
+    /// the Library header's "37 of 120 films" read-out both come from `LibraryType::count_label`,
+    /// so a screen cannot count the same library in two words.
+    #[test]
+    fn a_count_wears_the_noun_of_what_the_listing_holds() {
+        let _g = plx_platform::i18n::language_on_this_thread_for_test(plx_platform::i18n::Preference::En);
+        for (ty, kind, n, want) in [
+            (LibraryType::Primary, SecKind::Movie, 185, "185 films"),
+            (LibraryType::Primary, SecKind::Movie, 1, "1 film"),
+            (LibraryType::Primary, SecKind::Show, 40, "40 shows"),
+            (LibraryType::Seasons, SecKind::Show, 6, "6 seasons"),
+            (LibraryType::Episodes, SecKind::Show, 12, "12 episodes"),
+            (LibraryType::Collections, SecKind::Movie, 9, "9 items"),
+        ] {
+            assert_eq!(ty.count_label(kind, n), want, "{ty:?} of {kind:?}");
+        }
+        assert_eq!(count_line(185, SecKind::Movie), LibraryType::Primary.count_label(SecKind::Movie, 185),
+            "the Sources list reads the same table");
+    }
+
+    /// The Collections page borrows the section's one listing. The grid's sort and genre are
+    /// its view, not the page's: they must be there when the loan is repaid.
+    #[test]
+    fn the_collections_loan_gives_the_grids_sort_and_genre_back() {
+        let _guard = plx_base::testlock::serial();
+        let mut state = BrowseState::default();
+        seed_two_source_table_for_owner_test(&mut state);
+        let adapter = Arc::new(BrowseAdapter::default());
+        state.set_cur(1);
+        let target = crate::stores::browse::SectionAddress {
+            epoch: state.table_epoch(), sid: state.section_sid(1).unwrap(), section: 2,
+        };
+        // The page's own route: a committed `QueryEdit::LibraryType`.
+        let switch = |state: &mut BrowseState, to| assert!(state.addressed_with_adapter(
+            &adapter, target, crate::stores::browse::LibraryWork::Commit {
+                select: false, choice: false,
+                query: Some(crate::stores::browse::QueryEdit::LibraryType(to)),
+            }));
+        let current = &mut state.states[1];
+        current.sorts = Arc::new(vec![
+            SortEntry { desc_key: String::new(), key: "titleSort".into(), title: "Title".into(), default_desc: false },
+            SortEntry { desc_key: String::new(), key: "addedAt".into(), title: "Date Added".into(), default_desc: true },
+        ]);
+        current.sort_idx = 1;
+        current.sort_desc = true;
+        current.genre = Some(Arc::new(GenreEntry { id: "7".into(), title: "Drama".into() }));
+        current.genres = Arc::new(vec![GenreEntry { id: "7".into(), title: "Drama".into() }]);
+        current.genres_done = true;
+        current.letters = Arc::new(vec![("A".into(), 1)]);
+        current.letters_done = true;
+
+        switch(&mut state, LibraryType::Collections);
+        let on_loan = &state.states[1];
+        assert!(on_loan.sorts.is_empty() && on_loan.genre.is_none() && !on_loan.sort_desc,
+            "the Collections listing starts from its own defaults");
+        switch(&mut state, LibraryType::Primary);
+        let back = &state.states[1];
+        assert_eq!((back.sort_idx, back.sort_desc), (1, true), "the sort comes back");
+        assert_eq!(back.genre.as_ref().map(|genre| genre.id.as_str()), Some("7"), "the genre comes back");
+        assert_eq!(back.sorts.len(), 2);
+        assert!(back.genres_done && back.letters_done && back.loaned.is_none());
+        assert_eq!(state.listing_snapshot().view().library_type(), LibraryType::Primary);
+    }
+
     #[test]
     fn tv_library_type_changes_query_and_preserves_each_sections_choice() {
         let _guard = plx_base::testlock::serial();
@@ -122,8 +186,8 @@ mod tests {
 
         assert!(state.set_library_type(LibraryType::Primary));
         assert_eq!(state.states[0].query_filters(SecKind::Movie),
-            vec![("unwatched".into(), "1".into())],
-            "the films' Unwatched switch comes back with them");
+            vec![("unwatched".into(), "1".into()), ("genre".into(), "7".into())],
+            "the films' Unwatched switch and genre come back with them (the Collections loan gives the grid's view back)");
     }
 
     #[test]

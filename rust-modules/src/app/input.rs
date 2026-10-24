@@ -75,12 +75,22 @@ impl Pointer {
 /// 2026-10-15: Up, Right, Right, no OK key in the event log, and the player paused.) Where LG's
 /// call exists the system hides its own pointer and OK arrives as a key, so the click never comes.
 ///
-/// So while the D-pad owns focus and the pointer is hidden by the transparent cursor, a click that
-/// was not preceded by enough motion to leave D-pad mode is the OK key on the focused control.
-/// Motion past the gate still turns the pointer back on and makes the next click a real one.
-pub(crate) fn click_is_ok(dpad_mode: bool, cur_hidden: bool, transparent_cursor: bool) -> bool {
-    dpad_mode && cur_hidden && transparent_cursor
+/// So while the D-pad owns focus on a transparent-cursor set, a click is the OK key on the focused
+/// control when either the pointer has not travelled far enough to leave D-pad mode
+/// ([`DPAD_MOTION_GATE`]) or it lands on no control at all. **Not "while the pointer is
+/// hidden"**: pressing OK jiggles a Magic Remote, any motion at all shows the pointer again, and a
+/// fix keyed on `cur_hidden` never fired on the device. **Nor travel alone**: travel is summed
+/// since the last D-pad press, so a hand simply holding the remote drifts past any gate — measured
+/// 600 px between Up, Right, Right and OK over full-screen video, where the player never leaves
+/// D-pad mode, and the click paused the film under a lit `…` disc. A click that lands ON a control
+/// after real travel is still that control's.
+pub(crate) fn click_is_ok(dpad_mode: bool, motion_since_dpad: f32, on_control: bool, transparent_cursor: bool) -> bool {
+    dpad_mode && transparent_cursor && (motion_since_dpad < DPAD_MOTION_GATE || !on_control)
 }
+
+/// Pointer travel, in logical px accumulated since the last D-pad press, that hands focus back to
+/// the pointer: below it, motion is the hand holding the remote, not a deliberate move.
+pub(crate) const DPAD_MOTION_GATE: f32 = 120.0;
 
 // `home_activate` (the OK/pointer activation ladder for the legacy Home grid) was retired with
 // the legacy `ui::home` module when phase 8 made Home an owned `Screen` — its job (trail reset,
@@ -117,6 +127,11 @@ pub(crate) struct MenuPlayAwait {
     /// "this never got where it was going".
     deadline: u32,
     phase: MenuPlayPhase,
+    /// A landing opens the page instead of playing (a launch link's `open`).
+    open: bool,
+    /// A miss logs and leaves the stack as it is instead of opening the page: a launch link's key
+    /// came from outside the app, so a page for it may not exist (`app::deeplink`).
+    stay_on_miss: bool,
 }
 
 /// Which asynchronous load a [`MenuPlayAwait`] is waiting on. Both phases are polled by the one
@@ -137,7 +152,15 @@ impl MenuPlayAwait {
     /// The wait armed by a press at frame `now`: it starts on the detail request `activate_card`
     /// has just issued, and carries the same 12s ceiling for its whole life.
     fn new(sid: plx_plex::plex::ServerId, expect: String, season_index: Option<i64>, hud_ms: u32, now: u32) -> Self {
-        Self { sid, expect, season_index, hud_ms, deadline: now.wrapping_add(12_000), phase: MenuPlayPhase::Detail }
+        Self {
+            sid, expect, season_index, hud_ms, deadline: now.wrapping_add(12_000), phase: MenuPlayPhase::Detail,
+            open: false, stay_on_miss: false,
+        }
+    }
+
+    /// The wait for a launch link's item (`app::deeplink`), its detail request just issued.
+    pub(crate) fn for_link(sid: plx_plex::plex::ServerId, rk: String, open: bool, now: u32) -> Self {
+        Self { open, stay_on_miss: true, ..Self::new(sid, rk, None, plx_screens::player::input::HUD_LINGER_MS, now) }
     }
 }
 
@@ -198,7 +221,7 @@ pub(crate) unsafe fn activate_card(
                 };
                 // a show/season row's parent lives on the SAME server as the row itself
                 let sid = mm.sid;
-                bridge.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::RequestDetail { sid, rk: expect.clone() });
+                bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::RequestDetail { sid, rk: expect.clone() });
                 *menu_play_await = Some(MenuPlayAwait::new(
                     sid, expect, (mm.kind == 2).then_some(mm.season_index as i64), hud_ms, now));
             }
@@ -284,7 +307,7 @@ pub(crate) unsafe fn menu_play_tick(
     let Some(wait) = menu_play_await.clone() else {
         return;
     };
-    let MenuPlayAwait { sid, ref expect, season_index, hud_ms, deadline, phase } = wait;
+    let MenuPlayAwait { sid, ref expect, season_index, hud_ms, deadline, phase, open, stay_on_miss } = wait;
     // Something else already moved the app onto the player this frame (a different press, an
     // auto-advance) — the wait is moot and must not fire a second Play on top of it.
     if super::bridge::player(pages).is_some() {
@@ -312,13 +335,17 @@ pub(crate) unsafe fn menu_play_tick(
         if loading && !expired {
             return; // still waiting — try again next frame
         }
-        *menu_play_await = None;
         if loading || !landed {
+            *menu_play_await = None;
             // ceiling, or the fetch settled as a failure — land on the page, as the detail phase does
             super::bridge::open_detail(pages, bridge, sid, expect, None, None);
-        } else {
-            play_loaded_hero(ps, pa, pages, bridge, sid, expect, hud_ms);
+            return;
         }
+        if !play_door_open(ps, pa, pages, bridge, menu_play_await, (sid, expect, stay_on_miss), expired) {
+            return;
+        }
+        *menu_play_await = None;
+        play_loaded_hero(ps, pa, pages, bridge, sid, expect, hud_ms);
         return;
     }
     let landed = bridge.metadata_view().current()
@@ -335,9 +362,19 @@ pub(crate) unsafe fn menu_play_tick(
             return; // still waiting — try again next frame
         }
         *menu_play_await = None;
+        if stay_on_miss {
+            plx_base::eventlog::log(&format!(
+                "deeplink: not opened, rk={expect} ({})", if settled { "not returned" } else { "timed out" }));
+            return;
+        }
         // nothing playable / load failed — land on the page, through the transition. `season:
         // None`: the container's own reuse rule is what keeps a re-open from stacking a second
         // copy of a page the user is already standing on (`bridge::open_detail`).
+        super::bridge::open_detail(pages, bridge, sid, expect, None, None);
+        return;
+    }
+    if open {
+        *menu_play_await = None;
         super::bridge::open_detail(pages, bridge, sid, expect, None, None);
         return;
     }
@@ -361,8 +398,40 @@ pub(crate) unsafe fn menu_play_tick(
             }
         }
     }
+    if !play_door_open(ps, pa, pages, bridge, menu_play_await, (sid, expect, stay_on_miss), expired) {
+        return;
+    }
     *menu_play_await = None;
     play_loaded_hero(ps, pa, pages, bridge, sid, expect, hud_ms);
+}
+
+/// **The play door of a [`MenuPlayAwait`]:** the landing may play only through the one door every
+/// Play from a page goes through ([`super::content::clear_engine_for_play`]), because a preview
+/// can still be letting go of the engine when the item lands. `true` means the engine is free and
+/// the caller plays. `false` means the wait goes on, still armed, and is asked again next frame;
+/// at the wait's own `deadline` (`expired`) it ends instead, as the wait's other expiries do: a
+/// link logs why and leaves the stack alone, a card press lands on the item's page.
+unsafe fn play_door_open(
+    ps: &mut plx_media::route::PlaybackSession,
+    pa: &mut plx_media::player::adapter::PlayerAdapter,
+    pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    bridge: &mut super::bridge::Bridge,
+    menu_play_await: &mut Option<MenuPlayAwait>,
+    (sid, expect, stay_on_miss): (plx_plex::plex::ServerId, &str, bool),
+    expired: bool,
+) -> bool {
+    if super::content::clear_engine_for_play(ps, pa, super::bridge::player(pages).is_some()) {
+        return true;
+    }
+    if expired {
+        *menu_play_await = None;
+        if stay_on_miss {
+            plx_base::eventlog::log(&format!("deeplink: not opened, rk={expect} (engine busy)"));
+        } else {
+            super::bridge::open_detail(pages, bridge, sid, expect, None, None);
+        }
+    }
+    false
 }
 
 /// The end of a settled [`MenuPlayAwait`]: play the loaded item's hero (a show's next episode, or
@@ -644,6 +713,22 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
         Action::GoToItem(rk) => {
             let _ = from_home; // see the note below `apply_item_action`
             super::bridge::open_detail(pages, bridge, sid, &rk, None, None);
+        }
+        // The Watchlist hold menu's Remove: the store flips the tile at once, the page plays its
+        // removal landing and a refused write puts the tile back with no toast (Q8).
+        Action::WatchlistRemove(guid) => {
+            let from_page = super::bridge::Bridge::watchlist_page_on_top(pages);
+            bridge.watchlist_remove(&guid, from_page);
+        }
+        // The write is queued on the Watchlist store (the ledger flips the face at once and puts it
+        // back if plex.tv refuses) and the strip's bookmark pulses: the APP owns that, not the menu.
+        Action::WatchlistAdd { hex } => bridge.watchlist_add(hex),
+        // The hold menu's Go to row: the catalog page of the title, by the identity captured when
+        // the menu opened (a guid with no catalog id has no page).
+        Action::GoToCatalog(guid) => {
+            if let Some(hex) = super::bridge::hex_of_guid(&guid) {
+                super::bridge::open_catalog(pages, hex, None);
+            }
         }
         Action::GoToShow(show_rk, season) => {
             super::bridge::open_detail(pages, bridge, sid, &show_rk, (season > 0).then_some(season), None);
@@ -1261,7 +1346,8 @@ pub(crate) fn delete_all_local_data(meta: &mut plx_data::stores::metadata::Metad
             .into_iter()
             .chain(plx_base::paths::telemetry_candidates())
             .chain(plx_base::paths::telemetry_spool_candidates())
-            .chain(plx_base::paths::telemetry_crashmark_candidates()),
+            .chain(plx_base::paths::telemetry_crashmark_candidates())
+            .chain(plx_base::paths::telemetry_session_candidates()),
         plx_base::paths::runtime_dir(),
     ));
     meta.run(plx_data::stores::metadata::MetadataCmd::Clear);
@@ -1297,7 +1383,7 @@ mod delete_all_tests {
             Self(root)
         }
         fn persistent(&self) -> Vec<std::path::PathBuf> {
-            ["lastplace.json", "telemetry.json", "telemetry-spool.bin", "telemetry-crashmark.json"]
+            ["lastplace.json", "telemetry.json", "telemetry-spool.bin", "telemetry-crashmark.json", "telemetry-session.json"]
                 .iter()
                 .map(|name| self.0.join("persistent").join(format!(".com.beb.plxnative.debug-{name}")))
                 .collect()
@@ -1421,35 +1507,13 @@ pub(crate) fn chip_activate(
     // function with the television's own keyboard up — a pointer click on the chip from inside
     // the field.
     // That path is retired (phase 7 Search cutover): `owns_input()` in `app/run.rs` now takes
-    // every Search click before it ever reaches `chip_clicked`/`chip_activate`, and the owned
+    // every Search click before it ever reaches `chip_activate`, and the owned
     // path that replaces it (`content.rs`'s `SearchReq::Account`) does not call this function at
     // all — the owned screen releases its own keyboard before emitting the request, and calling
     // `end_editing` here a second time on an instance that already dismissed it would be the
     // stale-request problem `an_old_search_keyboard_request_cannot_close_the_new_instances_keyboard`
     // guards against.
     super::bridge::open_account_menu(pages);
-}
-
-/// The bar-wearing pages, i.e. the ones with a profile chip on them at all — `BarHost::of`'s
-/// successor, and the whole of what that type was still doing once the menu became a surface.
-/// DERIVED from [`plx_ui::screen::ScreenArg::chrome`] rather than listing Home/Library/Search a second time: the
-/// chip is a control ON the shared bar, so "is there a chip to press" is "does this page wear the
-/// bar", and the two cannot drift.
-pub(crate) fn wears_the_chip(route: &AppArg) -> bool {
-    use plx_ui::screen::ScreenArg;
-    route.chrome() == plx_machine::machine::Chrome::TabBar
-}
-
-/// Did this click land on the profile chip of a screen that is WEARING the shared bar? The pointer
-/// twin of [`chip_activate`]'s key path, and the route test is the whole of what makes it safe:
-/// `widgets::CHIP_FRAME` is a constant (the chip never moves), so nothing else bounds it to the
-/// screens that actually draw one.
-pub(crate) fn chip_clicked(route: &AppArg, ev: &[u8]) -> bool {
-    if !wears_the_chip(route) {
-        return false;
-    }
-    let (mx, my) = ptr_xy(ev);
-    plx_ui::widgets::profile_chip_at(mx, my)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1536,14 +1600,15 @@ pub(crate) unsafe fn key_ok(
 /// one of the two. (It matters most at Home's root, where "what BACK would otherwise do" is hand
 /// the screen back to the television — see [`back_at_root`].)
 pub(crate) fn key_back(
-    ps: &mut plx_media::route::PlaybackSession,
+    player: &mut plx_media::player::machine::Player,
     pa: &mut plx_media::player::adapter::PlayerAdapter,
+    repause_at: &mut i64,
     refresh_hubs: &mut bool,
     pages: &mut plx_ui::dispatch::Dispatcher<super::bridge::AppHost>,
 ) {
     if super::bridge::nav_cancel(pages) {
     } else if super::bridge::player(pages).is_some() {
-        exit_player(ps, pa, refresh_hubs, pages);
+        exit_player(player, pa, repause_at, refresh_hubs, pages);
     } else if matches!(pages.top_arg(), Some(AppArg::Content(_))) {
         // The two stacking screens, through the page transition. All three
         // halves of the pop — the outgoing page's teardown, the trail move and
@@ -1638,19 +1703,21 @@ mod click_is_ok_tests {
     use super::click_is_ok;
 
     /// Issue #642's set: arrows hid the pointer by the transparent cursor, so OK arrives as a
-    /// click — it is the OK key. Anywhere else a click is a click: the pointer is in use
-    /// (`dpad_mode` false after motion, or shown), or LG's own hide made OK a real key already.
+    /// click — it is the OK key, including after the jiggle a press itself causes. Anywhere else a
+    /// click is a click: the pointer was moved on purpose (past the gate, or out of D-pad mode),
+    /// or LG's own hide made OK a real key already.
     #[test]
-    fn only_a_click_under_a_transparent_hidden_pointer_in_dpad_mode_is_ok() {
-        assert!(click_is_ok(true, true, true));
-        for (dpad, hidden, transparent) in [
-            (false, true, true),
-            (true, false, true),
-            (true, true, false),
-            (false, false, true),
-            (false, false, false),
+    fn a_click_in_dpad_mode_on_a_transparent_cursor_set_is_ok_unless_the_pointer_moved_onto_a_control() {
+        assert!(click_is_ok(true, 0.0, true, true));
+        assert!(click_is_ok(true, 6.0, true, true), "the jiggle of pressing OK is still OK");
+        assert!(click_is_ok(true, 600.0, false, true), "drift onto bare video is still OK");
+        for (dpad, motion, on_control, transparent) in [
+            (true, super::DPAD_MOTION_GATE, true, true),
+            (true, 500.0, true, true),
+            (false, 0.0, false, true),
+            (true, 0.0, false, false),
         ] {
-            assert!(!click_is_ok(dpad, hidden, transparent), "{dpad} {hidden} {transparent}");
+            assert!(!click_is_ok(dpad, motion, on_control, transparent), "{dpad} {motion} {on_control} {transparent}");
         }
     }
 }

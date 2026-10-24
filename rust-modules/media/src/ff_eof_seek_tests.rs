@@ -27,7 +27,7 @@
 //! The FFmpeg tests need the host build of the bundled FFmpeg and the `ffmpeg` / `ffprobe` CLI, so
 //! they are `#[ignore]`d in the plain suite (they skip, loudly, when the CLI is absent):
 //! `cd rust-modules && PLX_FFMPEG_DIR=<dir holding libav*-plx.*.dylib> CARGO_INCREMENTAL=0
-//! cargo +nightly test --lib -p plx_media ff::eof_seek_tests -- --ignored`.
+//! cargo test --lib -p plx_media ff::eof_seek_tests -- --ignored`.
 
 use super::*;
 use std::io::{Read, Write};
@@ -219,6 +219,7 @@ fn avio_over(src: Src, size: i64, aq: *mut AuQueue) -> AvioState {
         bounce: Vec::new(),
         bounce_pos: 0,
         parked_at_end: false,
+        heal: HealBudget::default(),
     }
 }
 

@@ -18,9 +18,12 @@
 # FORK PULL REQUESTS. `workflow_run` fires for a run of a fork's pull request as well (its
 # `repository` is this one, its `head_repository` the fork). That is safe here and so they are
 # recorded: this workflow runs from main's copy of the file with a token that holds `actions: read` and
-# `contents: write`, checks out ONLY three tool files from main (the collector, the summary and the reader the collector imports) (never the pull request's code, never
+# `contents: write`, checks out ONLY three tool files and the quarantine list from main (the collector, the summary, the reader the collector imports and ci/flaky.txt) (never the pull request's code, never
 # `workflow_run.head_sha`), and reads public run and job timings through the API. The rows of a fork's
 # run carry `pr: null` (the API gives such a run no `pull_requests` list); everything else is the same.
+# The one thing that is NOT read for a fork is its per-test results artifact (the flaky-test list): a fork's
+# pull request runs its own copy of ci.yml, so what it uploads is whatever its author wrote; only runs whose
+# head repository is this one are read, in memory, as a zip of one validated JSON file (tools/ci-history.py).
 #
 # WHAT IT COSTS (#487 retired an earlier copy of this over that question): one ubuntu job of about
 # 20 s (median 21.5 s, p90 27 s over the 122 runs of the first copy; the very first, backfilling one
@@ -91,6 +94,7 @@ jobs:
             tools/ci-history.py
             tools/ci-summary.py
             tools/ci-durations.py
+            ci/flaky.txt
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
@@ -138,7 +142,7 @@ jobs:
             python3 tools/ci-history.py --in data/ci-history.json --out data/ci-history.json \
               --repo "$REPO" "${flags[@]}"
             python3 tools/ci-summary.py --history data/ci-history.json --bench data/build-history.json \
-              --out data/ci-summary.json
+              --quarantine ci/flaky.txt --out data/ci-summary.json
             git -C data add ci-history.json ci-summary.json
             if git -C data diff --cached --quiet; then
               echo "ci-history.json and ci-summary.json unchanged; nothing to commit"

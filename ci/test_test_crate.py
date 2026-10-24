@@ -56,6 +56,10 @@ if args[0] == "metadata":
     print(json.dumps({"packages": [{"name": n, "dependencies": [{"name": d} for d in deps]}
                                    for n, deps in data["workspace"].items()]}))
 elif "--unit-graph" in args:
+    # Stable cargo refuses -Z; RUSTC_BOOTSTRAP=1 is what lets the query through (the 2026-10 regression).
+    if "-Z" in args and os.environ.get("RUSTC_BOOTSTRAP") != "1":
+        sys.stderr.write("error: the `-Z` flag is only accepted on the nightly channel of Cargo\\n")
+        sys.exit(101)
     units = [{"pkg_id": "path+file:///r/%s#%s@0.0.0" % (n, n), "features": f, "dependencies": [],
               "target": {"kind": ["lib"]}, "mode": "test"} for n, f in data["features"].items()]
     print(json.dumps({"version": 1, "units": units, "roots": []}))
@@ -118,6 +122,15 @@ class CommandShape(unittest.TestCase):
                                      "plx_machine/test-support", "image/png"})
             self.assertNotIn("serde/derive", feats)
 
+    def test_unit_graph_query_works_on_stable_and_the_bootstrap_does_not_leak(self):
+        with World() as w:
+            w.command("ui")  # the fake refuses -Z without RUSTC_BOOTSTRAP=1, like stable cargo
+            out = subprocess.run([sys.executable, str(TOOL), "--suite", SUITE, "--cargo", str(w.dir / "cargo"),
+                                  "--dry-run", "ui"], capture_output=True, text=True,
+                                 env={k: v for k, v in os.environ.items() if k != "RUSTC_BOOTSTRAP"})
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertNotIn("RUSTC_BOOTSTRAP", out.stdout)
+
     def test_names_resolve_with_or_without_the_prefix_and_the_app_crate_is_app(self):
         with World() as w:
             for name in ("ui", "plx_ui"):
@@ -155,6 +168,9 @@ class MakeWiring(unittest.TestCase):
         full = dict(os.environ)
         for k in ("MAKEFLAGS", "MFLAGS"):
             full.pop(k, None)
+        # The recipes are under test; the disk preflight has its own test (ci/test_disk_preflight.py), and a real
+        # `make` would otherwise run it against this machine's disk and, below the comfort line, evict its trees.
+        full["PLX_DISK_BUDGET_DONE"] = "1"
         full.update(env or {})
         return subprocess.run(["make", *args], cwd=ROOT, env=full, capture_output=True, text=True)
 

@@ -55,16 +55,16 @@ def rule(target):
 # Each cargo gate, as a regex over a target's whole (comment-free) recipe, and the one target that
 # owns it. `lint` is a prerequisite rather than a recipe line, handled separately.
 GATES = {
-    "check-cargo-lint": [r"cargo \+\$\(RUST_NIGHTLY\) check --lib --tests -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens --features lab-diagnostics"],
+    "check-cargo-lint": [r"cargo \+\$\(RUST_TOOLCHAIN\) check --lib --tests -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens --features lab-diagnostics"],
     "check-cargo-unit-default": [
-        r"cargo \+\$\(RUST_NIGHTLY\) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens\n",
+        r"cargo \+\$\(RUST_TOOLCHAIN\) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens\n",
         r"ci/test_storage_service_package\.py",
         r"test -p plxnative-storage --bin plxnative-storage",
         r"ci/test_storage_package_isolated\.py",
         r"ci/test_no_host_staticlib\.py",
         r"ci/test_build_not_always_dirty\.py",
     ],
-    "check-cargo-unit-hostsim": [r"cargo \+\$\(RUST_NIGHTLY\) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens --features hostsim"],
+    "check-cargo-unit-hostsim": [r"cargo \+\$\(RUST_TOOLCHAIN\) test --lib -p plxnative-modules -p plx_base -p plx_machine -p plx_platform -p plx_gfx -p plx_net -p plx_ui -p plx_plex -p plx_telemetry -p plx_data -p plx_session -p plx_media -p plx_appkit -p plx_screens --features hostsim"],
 }
 
 
@@ -211,7 +211,7 @@ class CiRunsEveryTarget(unittest.TestCase):
         self.assertIn(f"name: {AGGREGATOR_NAME}", block)
         needs = re.search(r"^    needs: \[([^\]]*)\]", block, flags=re.M)
         self.assertIsNotNone(needs)
-        self.assertEqual(sorted(n.strip() for n in needs.group(1).split(",")), sorted(JOBS))
+        self.assertEqual(sorted(n.strip() for n in needs.group(1).split(",")), sorted(["changes", *JOBS]))
         self.assertRegex(block, re.compile(r"^    if: always\(\)", re.M), "a job that needs a failed job is skipped, and a skip is not red")
         for job in JOBS:
             self.assertIn(f"needs.{job}.result", block)

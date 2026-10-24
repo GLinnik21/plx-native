@@ -7,18 +7,46 @@ use super::test_support::*;
 type Container = plx_plex::plex::MediaContainer;
 
 /// One server's Continue Watching listing, newest first: `(rating key, last viewed)`.
+#[derive(Default)]
 struct Listing {
     items: Vec<(String, i64)>,
+    /// Rows that are episodes: rating key -> (show id byte, carries Media). Every other row is a movie.
+    shows: std::collections::HashMap<String, (u8, bool)>,
 }
 
 impl Listing {
     fn new(slot: u16, viewed: impl Iterator<Item = i64>) -> Listing {
-        Listing { items: viewed.enumerate().map(|(i, v)| (format!("s{slot}-{i}"), v)).collect() }
+        Listing { items: viewed.enumerate().map(|(i, v)| (format!("s{slot}-{i}"), v)).collect(), ..Listing::default() }
+    }
+
+    /// Makes row `at` an episode of show `show` (a Plex agent guid every server shares).
+    fn episode(mut self, at: usize, show: u8, media: bool) -> Listing {
+        let key = self.items[at].0.clone();
+        self.shows.insert(key, (show, media));
+        self
+    }
+
+    /// One row as the server sends it.
+    fn row_json(&self, key: &str, viewed: i64) -> serde_json::Value {
+        match self.shows.get(key) {
+            None => serde_json::json!({"ratingKey": key, "type": "movie", "title": "Movie", "thumb": "/poster",
+                "lastViewedAt": viewed}),
+            Some(&(show, media)) => {
+                let mut row = serde_json::json!({"ratingKey": key, "type": "episode", "title": "Episode",
+                    "thumb": "/still", "grandparentThumb": "/poster", "lastViewedAt": viewed,
+                    "grandparentRatingKey": format!("show{show}"), "grandparentTitle": format!("Show {show}"),
+                    "grandparentGuid": format!("plex://show/{}", format!("{show:02x}").repeat(12)),
+                    "parentIndex": 1, "index": 1});
+                if media {
+                    row["Media"] = serde_json::json!([{"videoCodec": "h264", "Part": [{"key": format!("/library/parts/{key}/file.mkv")}]}]);
+                }
+                row
+            }
+        }
     }
 
     fn page(&self, start: usize, size: usize) -> Option<Container> {
-        let metadata: Vec<_> = self.items.iter().skip(start).take(size).map(|(key, viewed)| serde_json::json!({
-            "ratingKey": key, "type": "movie", "title": "Movie", "thumb": "/poster", "lastViewedAt": viewed}))
+        let metadata: Vec<_> = self.items.iter().skip(start).take(size).map(|(key, viewed)| self.row_json(key, *viewed))
             .collect();
         serde_json::from_value(serde_json::json!({"offset": start, "totalSize": self.items.len(),
             "Metadata": metadata})).ok()
@@ -26,11 +54,9 @@ impl Listing {
 
     /// The source a refresh would build from this listing: the preview, then the lookahead page.
     fn source(&self, slot: u16) -> Src {
-        let preview = self.page(0, 12).unwrap();
         let hub = serde_json::json!({"hubIdentifier": "continueWatching", "more": self.items.len() > 12,
-            "Metadata": preview.metadata.iter().map(|m| serde_json::json!({
-                "ratingKey": m.rating_key, "type": "movie", "title": "Movie", "thumb": "/poster",
-                "lastViewedAt": m.last_viewed_at})).collect::<Vec<_>>(), "totalSize": self.items.len()});
+            "Metadata": self.items.iter().take(12).map(|(key, viewed)| self.row_json(key, *viewed)).collect::<Vec<_>>(),
+            "totalSize": self.items.len()});
         let cw: Container = serde_json::from_value(serde_json::json!({"Hub": [hub]})).unwrap();
         let mut build = project(&Container::default(), &cw, sid(slot));
         with_lookahead(&mut build, sid(slot), |start, size| self.page(start, size));
@@ -168,7 +194,7 @@ fn a_card_removed_from_the_deck_leaves_the_window_and_the_next_page_repeats_noth
     assert!(edit_item(&mut owner.state, &ViewAt::leaf(sid0, &gone), ViewEdit::LeftDeck));
     assert!(!rks(&owner.state, 0).contains(&gone));
     // The server drops it too, as `removeFromContinueWatching` does.
-    let a = Listing { items: a.items.iter().filter(|(key, _)| *key != gone).cloned().collect() };
+    let a = Listing { items: a.items.iter().filter(|(key, _)| *key != gone).cloned().collect(), ..Listing::default() };
     let listings = [&a];
     let mut shown = rks(&owner.state, 0);
     for _ in 0..10 {
@@ -378,5 +404,108 @@ fn every_landing_of_a_deck_read_publishes_so_the_row_needs_no_epoch_of_its_own()
         moves += 1;
     }
     assert!(moves >= 4, "the walk took {moves} moves");
+    plx_plex::plex::reset_servers_for_test();
+}
+
+
+// ---- one tile per show across servers (#892) -------------------------------------------------------
+
+/// Every rating key the deck has shown while it walks to its end, in the order first seen.
+fn walk_forward(owner: &mut Owner, listings: &[&Listing]) -> Vec<String> {
+    let mut shown = rks(&owner.state, 0);
+    for _ in 0..40 {
+        move_deck(owner, listings, false, None);
+        for key in rks(&owner.state, 0) { if !shown.contains(&key) { shown.push(key); } }
+        if !hubs(&owner.state)[0].more { break; }
+    }
+    shown
+}
+
+/// A copy the roster-first server lists deeper than the window is still the winner: the later
+/// server's copy at the head must stay hidden until the winner is paged in, never shown twice.
+#[test]
+fn a_copy_read_pages_later_stays_hidden() {
+    let _guard = plx_base::testlock::serial();
+    // A's show sits 21 rows down its deck, past the window but inside the lookahead its lane holds; B lists the same show first of all.
+    let a = Listing::new(0, (0..40).map(|i| 9000 - i * 20)).episode(21, 4, true);
+    let b = Listing::new(1, (0..6).map(|i| 9500 - i * 20)).episode(0, 4, true);
+    let listings = [&a, &b];
+    let mut owner = deck_owner(&listings);
+    assert!(!rks(&owner.state, 0).contains(&"s1-0".to_string()), "B's copy hides behind A's, which A lists later");
+    let shown = walk_forward(&mut owner, &listings);
+    assert!(!shown.contains(&"s1-0".to_string()), "B's copy never shows: {shown:?}");
+    assert_eq!(shown.iter().filter(|key| *key == "s0-21").count(), 1, "A's copy shows once, where it sorts");
+    plx_plex::plex::reset_servers_for_test();
+}
+
+/// The roster-first copy the window has already left behind keeps hiding the later server's.
+#[test]
+fn an_unshown_roster_first_copy_hides_a_later_servers_copy() {
+    let _guard = plx_base::testlock::serial();
+    let a = Listing::new(0, (0..50).map(|i| 9000 - i * 20)).episode(0, 4, true);
+    let b = Listing::new(1, (0..50).map(|i| 8990 - i * 20)).episode(30, 4, true);
+    let listings = [&a, &b];
+    let mut owner = deck_owner(&listings);
+    assert!(rks(&owner.state, 0).contains(&"s0-0".to_string()), "premise: A's copy is in the first window");
+    let shown = walk_forward(&mut owner, &listings);
+    assert!(!rks(&owner.state, 0).contains(&"s0-0".to_string()), "premise: the window has left A's copy behind");
+    assert!(!shown.contains(&"s1-30".to_string()), "B's copy of the same show never shows: {shown:?}");
+    plx_plex::plex::reset_servers_for_test();
+}
+
+/// A winner that left its server (removed from the deck) hides nothing; the other copy shows.
+#[test]
+fn a_winner_that_left_its_server_no_longer_hides_the_other_copy() {
+    let _guard = plx_base::testlock::serial();
+    let a = Listing::new(0, (0..50).map(|i| 9000 - i * 20)).episode(2, 4, true);
+    let b = Listing::new(1, (0..50).map(|i| 8990 - i * 20)).episode(30, 4, true);
+    let listings = [&a, &b];
+    let mut owner = deck_owner(&listings);
+    let sid0 = owner.state.srcs[0].sid;
+    assert!(edit_item(&mut owner.state, &ViewAt::leaf(sid0, "s0-2"), ViewEdit::LeftDeck));
+    let a = Listing { items: a.items.iter().filter(|(key, _)| key != "s0-2").cloned().collect(), shows: a.shows.clone() };
+    let listings = [&a, &b];
+    let shown = walk_forward(&mut owner, &listings);
+    assert!(shown.contains(&"s1-30".to_string()), "with A's copy gone B's copy is the tile: {shown:?}");
+    plx_plex::plex::reset_servers_for_test();
+}
+
+/// Twenty-four shows on both servers: the row pages to its end with every show once, however short
+/// a window the hidden copies leave, and it keeps asking on while a window of copies is all hidden.
+#[test]
+fn a_window_of_hidden_copies_asks_on() {
+    let _guard = plx_base::testlock::serial();
+    let (mut a, mut b) = (Listing::new(0, (0..30).map(|i| 9000 - i * 20)), Listing::new(1, (0..30).map(|i| 8990 - i * 20)));
+    for i in 0..30 { a = a.episode(i, i as u8, true); b = b.episode(i, i as u8, true); }
+    let listings = [&a, &b];
+    let mut owner = deck_owner(&listings);
+    assert!(hubs(&owner.state)[0].more, "premise: 30 shows are more than one window");
+    let shown = walk_forward(&mut owner, &listings);
+    let own: Vec<_> = shown.iter().filter(|key| key.starts_with("s0-")).collect();
+    assert_eq!(own.len(), 30, "every show once, from the roster-first server: {shown:?}");
+    assert!(shown.iter().all(|key| key.starts_with("s0-")), "and never the other server's copy: {shown:?}");
+    plx_plex::plex::reset_servers_for_test();
+}
+
+/// A mirrored household whose second server is read long ago: every copy on it sorts after the
+/// first server's. A forward ask can land on a window of nothing but hidden copies, and the row
+/// must not vanish while it has more to show: it asks on until a card is visible, and at the end
+/// of the listing it stays where the last visible card was.
+#[test]
+fn a_window_of_only_hidden_copies_keeps_the_row() {
+    let _guard = plx_base::testlock::serial();
+    let (mut a, mut b) = (Listing::new(0, (0..40).map(|i| 9000 - i * 20)), Listing::new(1, (0..40).map(|i| 5000 - i * 20)));
+    for i in 0..40 { a = a.episode(i, i as u8, true); b = b.episode(i, i as u8, true); }
+    let listings = [&a, &b];
+    let mut owner = deck_owner(&listings);
+    let mut shown = rks(&owner.state, 0);
+    for step in 0..12 {
+        move_deck(&mut owner, &listings, false, None);
+        assert!(hub_is_continue(&owner.state, 0), "step {step}: the row is still there ({} cards shown)", shown.len());
+        assert!(!rks(&owner.state, 0).is_empty(), "step {step}: and it holds a card");
+        for key in rks(&owner.state, 0) { if !shown.contains(&key) { shown.push(key); } }
+    }
+    assert_eq!(shown.iter().filter(|key| key.starts_with("s0-")).count(), 40, "every show once: {shown:?}");
+    assert!(shown.iter().all(|key| key.starts_with("s0-")), "never the other server's copy: {shown:?}");
     plx_plex::plex::reset_servers_for_test();
 }

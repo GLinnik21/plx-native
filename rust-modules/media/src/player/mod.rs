@@ -26,6 +26,7 @@ pub mod ass_timing; // libass clock reading and the validity window of a rendere
 pub mod ass_script; // a sidecar script fed in windows around the playhead
 pub mod ass_source; // bounded embedded scripts and subtitle presentation clock
 pub mod engine;
+pub mod foreground;
 pub mod lifecycle;
 pub mod machine;
 pub mod playurl; // the `plxnative-playurl` dev trigger: a stream and its Load declaration, parsed beside the engine that acts on it
@@ -54,6 +55,7 @@ pub mod sim_video; // the simulator's decoded picture, for screenshots (see its 
 pub mod text_ass; // text subtitles to ASS: dialect converter, synthesized header, sidecar scripts (pure)
 pub mod text_style; // the viewer's size/position picks as the numbers that converter and the screen's lift use (pure)
 pub mod threads;
+pub mod transport;
 pub mod video_geometry;
 pub mod vp9_hdr; // HDR10 for a VP9 stream: the container's PQ tag, written into the sourceInfo envelope ACB is sent
 
@@ -338,6 +340,10 @@ static PTYPE: AtomicI32 = AtomicI32::new(10); // g_ptype (PLAYER_TYPE_MSE)
 /// (`"VDEC resource is released by policy action"`). See `Shared::decoder_revoked`.
 const DECODER_REVOKED_BY_POLICY: i64 = 600;
 
+/// `PF_EVENT_TYPE_STR_STATE_UPDATE__ENDOFSTREAM` (0x1c): the last numbered type before the
+/// renumbering between webOS 4 and 5+, so the same on both. See `Shared::pipeline_eos`.
+const PIPELINE_END_OF_STREAM: c_int = 28;
+
 /// Did the pipeline take this session's video decoder back since the last ask? Consumes the
 /// answer: the app loop parks the session once per release.
 pub fn take_decoder_revoked() -> bool {
@@ -348,6 +354,13 @@ pub fn take_decoder_revoked() -> bool {
 #[cfg(any(test, feature = "test-support"))]
 pub fn note_decoder_revoked_for_test() {
     SHARED.decoder_revoked.store(true, std::sync::atomic::Ordering::Release);
+}
+
+/// Whether the session's native clock is held for the viewer's pause, for a test with no native
+/// session to observe the fenced first Play on.
+#[cfg(any(test, feature = "test-support"))]
+pub fn clock_user_held_for_test() -> bool {
+    SHARED.clock_user_held_for_test()
 }
 
 pub use engine::{
@@ -662,6 +675,7 @@ pub fn request_seek(ns: i64) {
     report::note_seek_for(crate::route::playback_trace_generation());
     crate::route::note_user_seek_intent(ns);
     SHARED.ended.store(false, Relaxed); // seeking back from the end un-ends the stream
+    SHARED.pipeline_eos.store(false, Relaxed);
     SHARED.seeking.store(true, Relaxed); // HUD: spinner + freeze the playhead until it lands
     SHARED.seek_display_ns.store(ns, Relaxed);
     TX.seek_to_ns.store(ns, Relaxed);
@@ -1254,7 +1268,7 @@ pub fn error_now(ps: &crate::route::PlaybackSession) -> ErrorShape {
         SHARED.demux_no_video.load(Relaxed),
         crate::route::is_transcoding(ps),
         playing_subscription(&ps),
-        crate::route::play_verdict(ps),
+        crate::route::play_verdict(ps).as_deref(),
         runtime_failure(
             demux_failed,
             demux_io_failed,
@@ -1310,7 +1324,7 @@ fn failtest_arm(ps: &crate::route::PlaybackSession) -> Option<ErrorShape> {
         // verdict sentence for a video format the engine cannot take, through the real resolver.
         "policy" => with_forced_playback_context(
             error_shape(false, false, sub,
-                Some(crate::route::PlayVerdict::Forced(crate::route::ForcedFailure::Video).text()),
+                Some(&crate::route::PlayVerdict::Forced(crate::route::ForcedFailure::Video).text()),
                 RuntimeFailure::Unknown),
             true,
         ),
@@ -2401,7 +2415,7 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::Event
         // Latch the FIRST error, with the callback index it arrived at. Sticky, because a later
         // healthy callback must not erase the one event that explains the session — and the index
         // separates "refused immediately" from "died after a long healthy run". Only `ty == 18`:
-        // it is the one value this project has ever acted on, and it sits below the 0x1c point
+        // it is the one ERROR type this project has ever acted on, and it sits below the 0x1c point
         // where the numbering shifts between webOS 4 and 5+, so it means the same on both. Naming
         // any higher type would be a confident lie on the firmware we cannot test.
         //
@@ -2472,6 +2486,14 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::Event
             log("smp: the pipeline released the video decoder (type=18 num=600) — parking the session");
             SHARED.decoder_revoked.store(true, std::sync::atomic::Ordering::Release);
         }
+    }
+    // The pipeline's end-of-stream (`Shared::pipeline_eos`): only after a picture, where it can
+    // mean the film was played out.
+    if ty == PIPELINE_END_OF_STREAM
+        && SHARED.seen_frame.load(Relaxed)
+        && !SHARED.pipeline_eos.swap(true, Relaxed)
+    {
+        log("smp: the pipeline reached end-of-stream");
     }
     if ty == 0 {
         // a POSITION UPDATE — map fed pts -> real content position.
@@ -2981,6 +3003,27 @@ mod tests {
         );
         SHARED.retire_native_session(epoch);
         SHARED.reset_session();
+    }
+
+    /// **The pipeline's end-of-stream is reported once there is a picture.** C1 event log,
+    /// 2026-10-20: the film's audio ran 3 s past its last video frame, the clock stopped at 5894 s
+    /// of 5897 s after the EOS, and `smp_cb type=28 num=1 str=true` was the only sign the
+    /// pipeline had finished. Before a picture it means nothing the app can act on.
+    #[test]
+    fn the_pipelines_end_of_stream_is_noted_after_a_picture() {
+        let _guard = plx_base::testlock::serial();
+        SHARED.reset_session();
+        let epoch = SHARED.begin_native_session().expect("session");
+        sf_on_event(epoch, 28, 1, c"true".as_ptr());
+        assert!(!SHARED.pipeline_eos.load(Relaxed), "not before a picture");
+        sf_on_event(epoch, 0, 7_000_000_000, std::ptr::null());
+        sf_on_event(epoch, 28, 1, c"true".as_ptr());
+        assert!(SHARED.pipeline_eos.load(Relaxed), "the pipeline said it reached the end");
+        request_seek(1_000_000_000);
+        assert!(!SHARED.pipeline_eos.load(Relaxed), "a seek back from the end un-ends it");
+        SHARED.retire_native_session(epoch);
+        SHARED.reset_session();
+        assert!(!SHARED.pipeline_eos.load(Relaxed));
     }
 
     /// **The decoder taken back from an established session is the one `type=18` after a picture

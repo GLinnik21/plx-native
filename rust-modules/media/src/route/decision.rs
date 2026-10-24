@@ -226,6 +226,9 @@ pub struct PlaybackSession {
     /// HLS is active: the HLS worker owns only measurements, while the main thread owns the
     /// codec/session transition back to this exact source declaration.
     auto_original: Option<AutoOriginalCandidate>,
+    /// Why `auto_original` is `None`, when it is known (see [`OriginalDeclined`]): read by the
+    /// audio-enhancement reason and nothing else.
+    original_declined: Option<OriginalDeclined>,
     /// Debug pipeline-tier substitute for PMS's fixed-rendition endpoints. Empty in every
     /// production plan; see [`arm_auto_fixture`].
     auto_fixture_base: String,
@@ -374,22 +377,32 @@ pub struct PlaybackSession {
     /// its output as though it were the source and the whole server-side transform was invisible.
     src_vcodec: String,
     src_acodec: String,
+    /// The file's own video frame rate (0 = unknown), kept beside `src_vcodec` for the same
+    /// reason: `stream_fps` is what the Load declares for the stream now playing, and a route
+    /// rebuilt mid-play needs the file's rate again ([`video_copy_fps`]).
+    src_fps: f64,
     /// The streamed item's Media video/audio codec (h264/hevc, ac3/eac3/aac), so the player picks
     /// the H265 Load payload for a native HEVC direct-play and the matching audio codec.
     stream_vcodec: String,
     stream_acodec: String,
-    /// Direct-play source video frame rate (0 = unknown/transcode → omit from the Load esInfo).
+    /// Source video frame rate of a stream that carries the source video (direct play, and a remux that copies it; 0 = unknown or a re-encode → omit from the Load esInfo).
     stream_fps: f64,
     /// The direct-played file's raw Dolby Vision layering, retained for diagnostics. The Load
     /// payload consumes `stream_dv_decision` below: re-evaluating this record after a late probe
     /// would make a reload describe a different route from the one which passed the gate.
     ///
-    /// `Dovi::NONE` on every transcode and remux: what arrives then is the server's output, and
-    /// the only DV file that reaches those paths is one we refused to declare in the first place.
+    /// `Dovi::NONE` on a re-encode: what arrives then is the server's output, not the file. A
+    /// remux that copies the video keeps it, because the DOVI record travels in the copied stream.
     stream_dovi: plx_data::metadata::Dovi,
     /// Capability and presentation frozen when `stream_dovi` entered this physical route. An
     /// audio switch, reload, Original recovery and rollback all copy this beside the raw record.
     stream_dv_decision: plx_data::metadata::DvDecision,
+    /// The FILE's own Dolby Vision record and the declaration it would make as a direct play,
+    /// frozen at the resolve whatever route was taken. `stream_dovi` above is what is being fed;
+    /// a rebuild that copies the video (an audio switch, a seek, Original recovery) hands this on
+    /// again instead of losing it with the first re-encode.
+    src_dovi: plx_data::metadata::Dovi,
+    src_dv_decision: plx_data::metadata::DvDecision,
     /// **Does the audio elementary stream we are feeding carry Dolby Atmos?** The Load payload's
     /// `contents.immersive` node turns on it ([`crate::player::engine`]).
     ///
@@ -496,6 +509,7 @@ impl PlaybackSession {
         cur_source_decodable: true,
         cur_auto_original_watched: false,
         auto_original: None,
+        original_declined: None,
         auto_fixture_base: String::new(),
         auto_switches: 0,
         auto_last_switch: None,
@@ -526,11 +540,14 @@ impl PlaybackSession {
         pq_item_id: String::new(),
         src_vcodec: String::new(),
         src_acodec: String::new(),
+        src_fps: 0.0,
         stream_vcodec: String::new(),
         stream_acodec: String::new(),
         stream_fps: 0.0,
         stream_dovi: plx_data::metadata::Dovi::NONE,
         stream_dv_decision: plx_data::metadata::DvDecision::NONE,
+        src_dovi: plx_data::metadata::Dovi::NONE,
+        src_dv_decision: plx_data::metadata::DvDecision::NONE,
         stream_immersive: false,
         title: [0; 128],
         ctxline: [0; 96],
@@ -577,6 +594,7 @@ impl PlaybackSession {
             cur_source_decodable,
             cur_auto_original_watched,
             auto_original,
+            original_declined,
             auto_fixture_base,
             auto_switches,
             auto_last_switch,
@@ -608,11 +626,14 @@ impl PlaybackSession {
             pq_item_id,
             src_vcodec,
             src_acodec,
+            src_fps,
             stream_vcodec,
             stream_acodec,
             stream_fps,
             stream_dovi,
             stream_dv_decision,
+            src_dovi,
+            src_dv_decision,
             stream_immersive,
             title,
             ctxline,
@@ -640,6 +661,7 @@ impl PlaybackSession {
             cur_source_decodable: *cur_source_decodable,
             cur_auto_original_watched: *cur_auto_original_watched,
             auto_original: auto_original.clone(),
+            original_declined: *original_declined,
             auto_fixture_base: auto_fixture_base.clone(),
             auto_switches: *auto_switches,
             auto_last_switch: *auto_last_switch,
@@ -670,11 +692,14 @@ impl PlaybackSession {
             pq_item_id: pq_item_id.clone(),
             src_vcodec: src_vcodec.clone(),
             src_acodec: src_acodec.clone(),
+            src_fps: *src_fps,
             stream_vcodec: stream_vcodec.clone(),
             stream_acodec: stream_acodec.clone(),
             stream_fps: *stream_fps,
             stream_dovi: *stream_dovi,
             stream_dv_decision: *stream_dv_decision,
+            src_dovi: *src_dovi,
+            src_dv_decision: *src_dv_decision,
             stream_immersive: *stream_immersive,
             title: *title,
             ctxline: *ctxline,
@@ -991,6 +1016,9 @@ pub(super) struct AppliedRouteProjection {
     side_subs_refused: bool,
     stream_vcodec: String,
     pub(super) stream_acodec: String,
+    /// The file's own frame rate. Not a route change, so [`install_route_projection`] never writes
+    /// it back; it is here so a projection can answer [`video_copy_fps`] for the contract it lands.
+    src_fps: f64,
     stream_fps: f64,
     stream_dovi: plx_data::metadata::Dovi,
     stream_dv_decision: plx_data::metadata::DvDecision,
@@ -1014,6 +1042,7 @@ fn route_projection(ps: &PlaybackSession) -> AppliedRouteProjection {
         side_subs_refused: s.side_subs_refused,
         stream_vcodec: s.stream_vcodec.clone(),
         stream_acodec: s.stream_acodec.clone(),
+        src_fps: s.src_fps,
         stream_fps: s.stream_fps,
         stream_dovi: s.stream_dovi,
         stream_dv_decision: s.stream_dv_decision,
@@ -1256,6 +1285,20 @@ pub(super) struct PlayerControl {
     start_deferred: Option<(u64, DeferredOriginalEffects)>,
     pending_original: Option<PendingOriginal>,
     timeline: Option<TimelineProjection>,
+    /// **The HLS encoder an automatic Original recovery was refused on** — the reducer's own
+    /// record of a [`RouteApplyResult::Rejected`] settlement of an automatic `HlsToOriginal`
+    /// action ([`finish_route_action`]), or of an Original trial PMS admitted whose Load then
+    /// failed, on the encoder its rollback's rebase installed ([`note_original_rolled_back_onto`]). The Auto worker exits to hand that action over, so the
+    /// pump reopens the retained HLS for a refusal, and the reopened route's worker used to start
+    /// with a fresh source gate: on a server that kept refusing it probed, asked and was refused
+    /// again every ~10 s, a visible reload each time. [`hls_abr_control`] hands a worker on THIS
+    /// encoder the refusal ([`HlsAbrControl::original_refused_on_this_route`]), whose source gate
+    /// then holds it the way `abr::RejectCause::Structural` holds an HLS ceiling PMS refused:
+    /// until the route changes — a new encoder (an HLS rung commit, a transcode seek, a user
+    /// change) is a new admission question, so a matching id is the whole test and a stale one
+    /// simply stops matching. No wall-clock dwell: none exists anywhere in Auto's source gate.
+    /// Cleared by a new playback request.
+    original_refused_on: Option<String>,
 }
 
 impl PlayerControl {
@@ -1305,6 +1348,7 @@ static PLAYER_CONTROL: std::sync::Mutex<PlayerControl> = std::sync::Mutex::new(P
     start_deferred: None,
     pending_original: None,
     timeline: None,
+    original_refused_on: None,
 });
 
 fn advance_route(active: &mut ActiveEncoderState) {
@@ -1488,6 +1532,7 @@ fn begin_playback_request() -> bool {
     control.displaced_pick = false;
     control.pending_auto = None;
     control.pending_seek_ns = None;
+    control.original_refused_on = None;
     if let Some(fallback) = fallback {
         control.resolve_fallback = Some(fallback);
     }
@@ -1781,6 +1826,15 @@ pub fn finish_route_action(ps: &mut PlaybackSession, action: &ClaimedRouteAction
         control.applied_projection = Some(projection);
         control.phase = ControlPhase::Prepared(action.serial);
         return true;
+    }
+    // A refused automatic Original recovery is remembered against the HLS encoder it was asked
+    // from, so the worker the pump reopens on that encoder does not ask again (see
+    // `PlayerControl::original_refused_on`). A cancellation (the ticket moved before the claim)
+    // refused nothing.
+    if let RouteIntent::Automatic(AutomaticRouteIntent::HlsToOriginal { ticket, .. }) = &action.intent {
+        if result == RouteApplyResult::Rejected {
+            note_original_refused_on(&mut control, ticket.encoder());
+        }
     }
     let restore = control.applied_projection.clone();
     drop(control);
@@ -2506,6 +2560,7 @@ pub fn reset_player_control_for_test(ps: &PlaybackSession) {
     control.start_deferred = None;
     control.pending_original = None;
     control.timeline = None;
+    control.original_refused_on = None;
 }
 
 /// **Candidate encoder names are allocated HERE, process-globally, and that is the whole point.**
@@ -2977,6 +3032,32 @@ fn sync_active_hls_to_session(ps: &mut PlaybackSession) -> Option<(WorkerTicket,
     Some(active)
 }
 
+/// The one writer of [`PlayerControl::original_refused_on`]: Original was refused, or admitted and
+/// then failed to load, from the HLS route served by `encoder`.
+fn note_original_refused_on(control: &mut PlayerControl, encoder: &str) {
+    control.original_refused_on = Some(encoder.to_owned());
+}
+
+/// **An Original trial that failed to load was rolled back onto `installed`.** The rollback rebases
+/// the retained HLS at the recovery position, which mints a NEW encoder ([`plan_rebase`]), so the
+/// record goes on the encoder the rebase installed — the one the reloaded worker captures. PMS
+/// admitted the Original and the set still could not play it: the same answer the route would get
+/// by asking again, so it is held the way a refusal is. A rebase that landed INSIDE a trial
+/// rebuilt the candidate rather than restoring the route ([`carry_rebase_into_trial`]), and
+/// records nothing.
+pub(super) fn note_original_rolled_back_onto(installed: &RebaseInstalled) {
+    let mut control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
+    if !matches!(control.phase, ControlPhase::OriginalTrial(_)) {
+        note_original_refused_on(&mut control, &installed.replacement);
+    }
+}
+
+/// Whether the reducer recorded an automatic Original recovery refused on `encoder`.
+fn original_refused_on(encoder: &str) -> bool {
+    let control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
+    control.original_refused_on.as_deref() == Some(encoder)
+}
+
 pub(super) fn is_worker_ticket_current(expected: &WorkerTicket) -> bool {
     let control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
     ticket_is_current(&control, expected)
@@ -3015,6 +3096,10 @@ pub struct HlsAbrControl {
     /// The source carries something no transcode can give back (Dolby Vision, Atmos). Makes
     /// Original's utility bonus about this file rather than about Original in general.
     pub original_features: crate::abr::SourceFeatures,
+    /// An automatic Original recovery was already refused on THIS worker's HLS encoder
+    /// ([`PlayerControl::original_refused_on`]): the worker's source gate starts held
+    /// ([`crate::abr::OriginalRecovery::after_route_refusal`]) instead of fresh.
+    original_refused: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3110,6 +3195,12 @@ impl HlsAbrControl {
         } else {
             true
         }
+    }
+
+    /// Was an automatic Original recovery already refused on the HLS encoder this worker
+    /// serves? See [`PlayerControl::original_refused_on`].
+    pub fn original_refused_on_this_route(&self) -> bool {
+        self.original_refused
     }
 
     pub fn can_recover_original(&self) -> bool {
@@ -3526,8 +3617,9 @@ pub fn hls_abr_control(ps: &PlaybackSession) -> Option<(HlsAbrControl, WorkerTic
     }
     // A manual Original open that failed is restored onto HLS while the picker still reflects the
     // user's attempted choice.  That route still needs rung control, but it must not immediately
-    // auto-retry the same failed source. Selecting Auto later adopts this worker in place; a
-    // subsequent seek/reload constructs a fresh controller with Original recovery enabled again.
+    // auto-retry the same failed source. Selecting Auto later adopts this worker in place. The
+    // rollback records its rebased encoder (`note_original_rolled_back_onto`), so a reload on that
+    // encoder starts held; a seek mints a new encoder, whose controller probes Original again.
     let original = (applied_quality() == Quality::Auto)
         .then(|| ps.auto_original.as_ref())
         .flatten();
@@ -3571,6 +3663,7 @@ pub fn hls_abr_control(ps: &PlaybackSession) -> Option<(HlsAbrControl, WorkerTic
             prior: auto_prior(ps),
             history: auto_history(ps, ps.now_ms),
             original_features: auto_original_features(ps),
+            original_refused: original_refused_on(ticket.encoder()),
         },
         ticket,
     ))
@@ -4089,8 +4182,10 @@ pub(super) struct AutoHlsInstalled {
 impl AutoHlsInstalled {
     /// The fields the install wrote to the session, on a projection: the reducer's restore point of
     /// a claim must describe the stream the landing installed ([`advance_claim_snapshot`]). HLS is
-    /// a full H.264/AAC encode: source FPS, Dolby Vision and E-AC3 JOC/Atmos belong to the Original
-    /// elementary streams and may not survive this route transition.
+    /// a full H.264/AAC encode that never copies the video (`transcode_query`: `copy_ok = !hls && …`,
+    /// so `directStream=0`): source FPS and E-AC3 JOC/Atmos belong to the Original elementary
+    /// streams and do not survive this route transition, and an HLS rung carries no Dolby Vision
+    /// declaration.
     pub(super) fn apply_to_projection(&self, p: &mut AppliedRouteProjection) {
         p.auto_original_watched = false;
         p.contract.remux = false;
@@ -4319,6 +4414,9 @@ pub(super) struct OriginalRecoveryPlan {
     flavour: RecoveryFlavour,
     /// Whether an enhancement this recovery carries is the subtitle-burning flavour.
     burn: bool,
+    /// The selected subtitle is one the candidate cannot show, so the replacement is a burn even
+    /// with no enhancement params and survives a refused enhancement.
+    subtitle_burn: bool,
     pub(super) client: Option<&'static plx_plex::plex::Client>,
     sid: ServerId,
     rk: String,
@@ -4333,11 +4431,15 @@ pub(super) struct OriginalRecoveryPlan {
     /// read that carries the id of a remux that is still running with 503 (`docs/pms-api.md` M8).
     direct_session: String,
     src_acodec: String,
+    /// The file's own Dolby Vision record and declaration ([`PlaybackSession::src_dovi`]): what an
+    /// Original remux that copies the video hands on.
+    src_dovi: plx_data::metadata::Dovi,
+    src_dv_decision: plx_data::metadata::DvDecision,
 }
 
 impl OriginalRecoveryPlan {
     fn force_burn_for(&self, audio: plx_plex::plex::AudioEnhancements) -> bool {
-        audio.any() && self.burn
+        (audio.any() && self.burn) || self.subtitle_burn
     }
 
     /// Whether the PMS half will actually reach the server: a replacement remux's selection PUT and
@@ -4386,7 +4488,15 @@ fn plan_original_recovery(
         || (cause == RecoveryCause::EnhancementReleased && applied_quality() == Quality::Auto);
     let candidate = ps.auto_original.clone()?;
     let route = recovery_route(ps, &candidate);
-    let flavour = recovery_flavour(&candidate, recovery_want(ps, &candidate));
+    // A subtitle only the server's burn can show stays burned: the recovery is the Original
+    // burn (an enhanced one when wanted), never a direct play or plain remux that drops it.
+    let subtitle_burn = !candidate_shows_selected_subtitle(ps, &candidate);
+    let want = recovery_want(ps, &candidate);
+    let flavour = if subtitle_burn {
+        RecoveryFlavour::Remux(want)
+    } else {
+        recovery_flavour(&candidate, want)
+    };
     // The worker may have committed several HLS encoders since the main-thread plan was installed.
     // Mirror the physical route into the session before replacing it, otherwise the rollback pairs
     // the newest encoder id with the bootstrap URL/rung and reopens different media at a different
@@ -4423,6 +4533,7 @@ fn plan_original_recovery(
     Some(OriginalRecoveryPlan {
         flavour,
         burn: matches!(route, Some(EnhancementRoute::Burn)),
+        subtitle_burn,
         client: cur_client(ps),
         sid: cur_sid(ps),
         rk: cur_rk(ps),
@@ -4431,6 +4542,8 @@ fn plan_original_recovery(
         namespace,
         direct_session,
         src_acodec: ps.src_acodec.clone(),
+        src_dovi: ps.src_dovi,
+        src_dv_decision: ps.src_dv_decision,
         candidate,
         expected: expected.clone(),
         cause,
@@ -4456,6 +4569,10 @@ pub(super) struct PreparedOriginalRemux {
     force_burn: bool,
     vcodec: String,
     acodec: String,
+    /// The Dolby Vision the remux feeds: the file's own when the server copies the video, else
+    /// `NONE` ([`copied_video_dv`]).
+    dovi: plx_data::metadata::Dovi,
+    dv_decision: plx_data::metadata::DvDecision,
     enhancement: EnhancementOutcome,
     /// The route's ticket as the PMS half's own commit left it; the install re-checks it, because
     /// when the PMS half ran on a worker the route may have moved again before the landing drained.
@@ -4502,7 +4619,7 @@ pub(super) fn run_original_recovery(
             }
             AdmitOrPlainRemux::PlainRemux => {
                 let none = plx_plex::plex::AudioEnhancements::NONE;
-                match prepare_original_remux(off, plan, none, false, true)? {
+                match prepare_original_remux(off, plan, none, plan.subtitle_burn, true)? {
                     OriginalRemux::Prepared(prepared) => Some(OriginalRecoveryNet::Remux(prepared)),
                     OriginalRemux::RefusedToDirect => None,
                 }
@@ -5149,11 +5266,12 @@ pub fn play_resolution_failed(ps: &PlaybackSession) -> bool {
 /// The refusal's own sentence for the read-out to quote — `None` when the server did not refuse,
 /// `Some("")` when it refused without saying why. MAIN THREAD (see [`PlaybackSession::play_verdict`]).
 ///
-/// Borrowed, not cloned: the read-out asks for this 2–3× on every frame of a failure (the HUD
+/// Borrowed, not cloned, for every sentence but the two Force Direct Play audio ones that name a
+/// codec (formatted on read): the read-out asks for this 2–3× on every frame of a failure (the HUD
 /// caption, the read-out itself, and the diagnostics panel when it is open), and every one of them
 /// only reads it. The borrow lives until the next main-thread write, which is `apply_plan` or
 /// `request_play` — neither of which can run inside a frame's draw.
-pub fn play_verdict(ps: &PlaybackSession) -> Option<&str> {
+pub fn play_verdict(ps: &PlaybackSession) -> Option<std::borrow::Cow<'_, str>> {
     ps.play_verdict.as_ref().map(PlayVerdict::text)
 }
 /// The verdict NUMBERS of a refusal the SERVER made at `/decision` — `None` when nothing was
@@ -5227,6 +5345,11 @@ pub fn refuse_by_server_for_test(
 pub fn resolve_as_preview_for_test(ps: &mut PlaybackSession) {
     ps.preview = false;
     ps.resolved_as_preview = true;
+}
+/// Test-only: mark `ps` as the hero preview's session, as `preview::start` does for a trailer.
+#[cfg(any(test, feature = "test-support"))]
+pub fn mark_preview_for_test(ps: &mut PlaybackSession) {
+    ps.preview = true;
 }
 /// Test-only: install a live transcode route (`encoder` session, optional remux, optional
 /// fixed-HLS delivery) the way a successful [`apply_plan`] leaves it.
@@ -5317,8 +5440,9 @@ pub fn cur_audio_sid(ps: &PlaybackSession) -> i64 {
 /// The currently-playing item's Part id. Written once per item by `build_stream` from its own
 /// `part` argument. In-playback callers (audio switch, subtitle toggle, retranscode) want this;
 /// `build_stream` must pass its freshly-derived local instead, since this is not yet updated
-/// for the item being started.
-fn cur_part_id(ps: &PlaybackSession) -> i64 {
+/// for the item being started. Also read outside the route: the scrub preview names its BIF
+/// stills by it. 0 with no item.
+pub fn cur_part_id(ps: &PlaybackSession) -> i64 {
     ps.cur_part_id
 }
 /// The stable app-owned playback generation (and the first encoder's PMS session id).
@@ -5343,23 +5467,24 @@ pub fn stream_acodec(ps: &PlaybackSession) -> String {
 pub fn stream_fps(ps: &PlaybackSession) -> f64 {
     ps.stream_fps
 }
-/// The direct-played file's Dolby Vision layering, for the Load payload's `DolbyHdrInfo` node.
-/// `Dovi::NONE` for anything the server is transcoding or remuxing, and for a DV file we refused
-/// to declare — in every one of those cases the payload must say nothing.
+/// The fed file's Dolby Vision layering, for the Load payload's `DolbyHdrInfo` node: a direct
+/// play's, or a server remux's that copies the video. `Dovi::NONE` for a re-encode and for a DV
+/// file we refused to declare — there the payload must say nothing.
 pub fn stream_dovi(ps: &PlaybackSession) -> plx_data::metadata::Dovi {
     let s = &*ps;
-    if s.stream_vcodec.eq_ignore_ascii_case("hevc") {
+    if plx_data::metadata::dv_video_codec(&s.stream_vcodec) {
         s.stream_dovi
     } else {
         // Last-line consistency guard for dev declarations and future route mutations: the LG
-        // payload cannot truthfully describe Dolby Vision on a non-HEVC elementary stream.
+        // payload cannot truthfully describe Dolby Vision on an elementary stream that is neither
+        // HEVC nor AV1.
         plx_data::metadata::Dovi::NONE
     }
 }
 /// The capability and presentation frozen into this installed route. Unlike the raw DOVI metadata,
 /// this is the value the Load payload must consume without consulting the live capability cache.
 pub fn stream_dv_presentation(ps: &PlaybackSession) -> plx_data::metadata::DvPresentation {
-    if ps.stream_vcodec.eq_ignore_ascii_case("hevc") {
+    if plx_data::metadata::dv_video_codec(&ps.stream_vcodec) {
         ps.stream_dv_decision.presentation
     } else {
         plx_data::metadata::DvPresentation::NotDv
@@ -5370,13 +5495,6 @@ pub fn stream_dv_decision(ps: &PlaybackSession) -> plx_data::metadata::DvDecisio
     ps.stream_dv_decision
 }
 
-/// Server output (HLS encode, progressive encode or container remux) carries no client-frozen
-/// source declaration. Centralizing the paired reset prevents a future route mutation from
-/// clearing the raw metadata while leaving a stale `Declare` behind for Load.
-fn clear_output_dv(session: &mut PlaybackSession) {
-    session.stream_dovi = plx_data::metadata::Dovi::NONE;
-    session.stream_dv_decision = plx_data::metadata::DvDecision::NONE;
-}
 /// Is the audio being fed a Dolby Atmos stream? — the Load payload's `contents.immersive` node.
 /// See [`PlaybackSession::stream_immersive`].
 pub fn stream_immersive(ps: &PlaybackSession) -> bool {
@@ -5505,7 +5623,7 @@ fn set_stream_declaration_with_capability(
         presentation: dovi.presentation(
             !plx_data::metadata::dv_withheld(),
             capability,
-            vc.eq_ignore_ascii_case("hevc"),
+            plx_data::metadata::dv_video_codec(vc),
         ),
     };
     if decision.presentation.refusal().is_some() {
@@ -7442,9 +7560,9 @@ fn playback_preview_with_capability(
         Some(capability) => d.dovi.presentation(
             !plx_data::metadata::dv_withheld(),
             capability,
-            vcodec.eq_ignore_ascii_case("hevc"),
+            plx_data::metadata::dv_video_codec(vcodec),
         ),
-        None => d.dovi.presentation_now(vcodec.eq_ignore_ascii_case("hevc")),
+        None => d.dovi.presentation_now(plx_data::metadata::dv_video_codec(vcodec)),
     };
     let mode = direct_play_mode();
     if mode == DirectPlayMode::Forced {
@@ -8326,6 +8444,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
         // truer to put in the stream pair, which is the Load payload's source of truth. The four
         // move together because `stream_*` is what arrives and `src_*` is what the file is, and the
         // diagnostics read-out needs both.
+        let src_fps = if plan.vcodec.is_empty() { s.src_fps } else { plan.src_fps };
         let (stream_vcodec, stream_acodec, src_vcodec, src_acodec) = if plan.vcodec.is_empty() {
             (
                 std::mem::take(&mut s.stream_vcodec),
@@ -8366,6 +8485,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             cur_source_decodable: plan.source_decodable,
             cur_auto_original_watched: plan.auto_original_watched,
             auto_original: plan.auto_original,
+            original_declined: plan.original_declined,
             auto_fixture_base: String::new(),
             // A NEW playback starts a new switch history: the count exists to stop this film
             // flapping, and inheriting the last one's would price a first decision as a fourth.
@@ -8409,11 +8529,14 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             pq_item_id: plan.pq_item_id,
             src_vcodec,
             src_acodec,
+            src_fps,
             stream_vcodec,
             stream_acodec,
             stream_fps: plan.fps,
             stream_dovi: plan.dovi,
             stream_dv_decision: plan.dv_decision,
+            src_dovi: plan.src_dovi,
+            src_dv_decision: plan.src_dv_decision,
             stream_immersive: plan.immersive,
             title,
             ctxline,
@@ -8547,13 +8670,13 @@ fn prepare_original_remux(
     // session replaces its registration; a direct candidate needs no remux at all.
     if enhancement_fallback(decision.as_ref(), audio) == Fallback::Retry {
         note_enhancement_refused(" in Original recovery; fell back", audio);
-        if candidate.feeds_part() {
+        if candidate.feeds_part() && !plan.subtitle_burn {
             let _ = c.transcode_stop(&replacement);
             return Some(OriginalRemux::RefusedToDirect);
         }
         enhancement_refused = true;
         audio = plx_plex::plex::AudioEnhancements::NONE;
-        force_burn = false;
+        force_burn = plan.subtitle_burn;
         spec = spec_for(audio, force_burn);
         decision = c.transcode_decision(off, &spec);
     }
@@ -8569,6 +8692,13 @@ fn prepare_original_remux(
         let _ = c.transcode_stop(&replacement);
         return None;
     }
+    // A server that did not answer follows the contract: a remux copies, a forced burn re-encodes.
+    let (dovi, dv_decision) = copied_video_dv(
+        decision.as_ref(),
+        &enhanced_remux_contract(audio, force_burn),
+        plan.src_dovi,
+        plan.src_dv_decision,
+    );
     let (vcodec, acodec) = decision.as_ref().and_then(decision_codecs).unwrap_or_else(|| {
         (
             candidate.vcodec.clone(),
@@ -8592,6 +8722,8 @@ fn prepare_original_remux(
         force_burn,
         vcodec,
         acodec,
+        dovi,
+        dv_decision,
         enhancement,
         ticket,
     }))
@@ -8614,8 +8746,9 @@ fn install_original_remux(
         s.cur_audio = candidate.audio.clone();
         s.stream_vcodec = prepared.vcodec.clone();
         s.stream_acodec = prepared.acodec.clone();
-        s.stream_fps = 0.0;
-        clear_output_dv(s);
+        s.stream_fps = video_copy_fps(&s.cur_contract, s.src_fps);
+        s.stream_dovi = prepared.dovi;
+        s.stream_dv_decision = prepared.dv_decision;
         s.stream_immersive = false;
     } };
     crate::player::log(&format!("decision output: v={} a={}", prepared.vcodec, prepared.acodec));
@@ -8835,6 +8968,8 @@ pub(super) struct RetranscodeClaimInputs {
     expected: WorkerTicket,
     src_vcodec: String,
     src_acodec: String,
+    src_dovi: plx_data::metadata::Dovi,
+    src_dv_decision: plx_data::metadata::DvDecision,
     carried_audio: Option<CarriedAudio>,
 }
 
@@ -8845,6 +8980,8 @@ pub(super) struct AppliedRetranscode {
     url: String,
     vcodec: String,
     acodec: String,
+    dovi: plx_data::metadata::Dovi,
+    dv_decision: plx_data::metadata::DvDecision,
     contract: plx_plex::plex::EncodeContract,
     enhancement: EnhancementOutcome,
     /// Returned by `replace_active_encoder_for`/`replace_active_hls_for` at the moment this
@@ -8928,6 +9065,8 @@ pub(super) struct PreparedEncode {
     url: String,
     vcodec: String,
     acodec: String,
+    dovi: plx_data::metadata::Dovi,
+    dv_decision: plx_data::metadata::DvDecision,
     contract: plx_plex::plex::EncodeContract,
     enhancement: EnhancementOutcome,
 }
@@ -8983,10 +9122,18 @@ pub(super) fn request_retranscode(
         return None;
     }
     let output_codecs = decision_codecs(&decision).unwrap_or((fallback_vcodec, fallback_acodec));
+    let (dovi, dv_decision) = copied_video_dv(
+        Some(&decision),
+        &contract,
+        inputs.src_dovi,
+        inputs.src_dv_decision,
+    );
     Some(PreparedEncode {
         url: inputs.client.transcode_start_url(&sp).to_url(),
         vcodec: output_codecs.0,
         acodec: output_codecs.1,
+        dovi,
+        dv_decision,
         contract,
         enhancement: classify_outcome(Some(&decision), inputs.carried_audio.as_ref(), audio),
         qsess,
@@ -9031,12 +9178,14 @@ pub(super) fn commit_retranscode(
         "retranscode rk={} audio={} sub={} offset={} -> transcode start",
         inputs.rk, inputs.audio_sid, inputs.subtitle_sid, inputs.offset_secs,
     ));
-    let PreparedEncode { qsess, url, vcodec, acodec, contract, enhancement } = prepared;
+    let PreparedEncode { qsess, url, vcodec, acodec, dovi, dv_decision, contract, enhancement } = prepared;
     Ok(AppliedRetranscode {
         qsess,
         url,
         vcodec,
         acodec,
+        dovi,
+        dv_decision,
         contract,
         enhancement,
         ticket,
@@ -9096,6 +9245,8 @@ fn prepare_retranscode_inputs(
         expected: expected.clone(),
         src_vcodec: ps.src_vcodec.clone(),
         src_acodec: ps.src_acodec.clone(),
+        src_dovi: ps.src_dovi,
+        src_dv_decision: ps.src_dv_decision,
         carried_audio: ps.cur_audio.clone(),
         rk,
     })
@@ -9112,9 +9263,9 @@ pub(super) fn apply_retranscode_outcome_to_projection(p: &mut AppliedRouteProjec
     p.url = applied.url.clone();
     p.stream_vcodec = applied.vcodec.clone();
     p.stream_acodec = applied.acodec.clone();
-    p.stream_fps = 0.0;
-    p.stream_dovi = plx_data::metadata::Dovi::NONE;
-    p.stream_dv_decision = plx_data::metadata::DvDecision::NONE;
+    p.stream_fps = video_copy_fps(&applied.contract, p.src_fps);
+    p.stream_dovi = applied.dovi;
+    p.stream_dv_decision = applied.dv_decision;
     p.stream_immersive = false;
 }
 
@@ -9171,7 +9322,80 @@ pub(super) fn facts(ps: &PlaybackSession) -> EnhancementFacts<'_> {
         carried: ps.cur_audio.as_ref(),
         subtitle_effect: subtitle_effect_of(ps),
         refused: ps.cur_enhancement == EnhancementOutcome::Refused,
+        quality: quality(),
+        declined: ps.original_declined,
     }
+}
+
+/// **Is "Original" picked while the video on screen is NOT the original?** The quality in force
+/// (the picker, which the HUD's Quality row reads) says Original, but the route playing is neither
+/// a direct play nor a codec-preserving remux: a fixed rung or HLS is still on screen, or the
+/// server is re-encoding the video (a burned subtitle, a forced fallback). A burn route is
+/// converted: its picture IS re-encoded, so the Quality row keeps "Original · Converted" there even
+/// though the Audio tab treats a burn as its own Original-family state (`enhancement_family`) and
+/// explains it with the burn note. The honest rule is that the row states the picture fact and the
+/// Audio tab explains its own state; the two read the same `quality()` but not always the same route
+/// family.
+pub fn original_is_converted(ps: &PlaybackSession) -> bool {
+    quality() == Quality::Original && live_family(ps) == RouteFamily::Other
+}
+
+/// What the Quality row reads after the picked choice ("Auto · 720p", "Original · Converted").
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PlayingQuality {
+    /// The stream has not resolved, or a switch is pending: the row shows the choice alone.
+    Unsettled,
+    /// The original picture plays (a direct play, or a remux that keeps the video).
+    Original,
+    /// The server is converting the picture and no rung names it ([`original_is_converted`] under
+    /// Original; under Auto a re-encode with no ceiling).
+    Converted,
+    /// Auto (or a fixed rung) is on a converted stream at this picture height, in lines.
+    Rung(i64),
+}
+
+/// **What is actually playing, for the Quality row.** Read when the popover opens or rebuilds,
+/// never while it is on screen. Settled means no start, switch or user edit is in flight.
+pub fn playing_quality(ps: &PlaybackSession) -> PlayingQuality {
+    let settled = {
+        let c = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
+        matches!(c.phase, ControlPhase::Idle | ControlPhase::Stable)
+            && c.pending_user.is_none()
+            && c.pending_auto.is_none()
+    };
+    if !settled {
+        return PlayingQuality::Unsettled;
+    }
+    if live_family(ps) != RouteFamily::Other {
+        return PlayingQuality::Original;
+    }
+    if original_is_converted(ps) {
+        return PlayingQuality::Converted;
+    }
+    match ps.cur_contract.ceiling {
+        Some(c) if c.max_h > 0 => PlayingQuality::Rung(c.max_h),
+        // Converted with no rung to name: a burn under Auto, or a picture this television cannot
+        // decode and the server therefore converts.
+        _ => PlayingQuality::Converted,
+    }
+}
+
+/// **Is the selected subtitle an external sidecar the app can draw itself?** `cur_sub_sidecar`
+/// alone only says the pick has no demuxer ordinal; an image sidecar the client cannot draw has
+/// none either and needs the server's burn.
+fn sidecar_drawn_by_client(ps: &PlaybackSession) -> bool {
+    ps.cur_sub_sidecar && ps.cur_sub_client_drawable
+}
+
+/// **Will the Original candidate SHOW the selected subtitle** when the route returns to it? No
+/// subtitle: trivially. Otherwise the candidate's own render ordinal (the demuxer draws it on a
+/// direct play, the side reader over a remux), or a sidecar the app fetches itself. Anything else
+/// (an image sidecar, a pick with no ordinal and no sidecar key) is shown only by the server's
+/// burn, so a route that returns to the candidate must keep the burn. This reads the candidate,
+/// not `cur_sub_client_drawable`: a cold start that lands on a Burn records that as `false` for a
+/// track the app can draw, and the candidate still names its ordinal.
+fn candidate_shows_selected_subtitle(ps: &PlaybackSession, candidate: &AutoOriginalCandidate) -> bool {
+    ps.cur_sub_sid == 0 || candidate.subtitle_ordinal.is_some() || sidecar_drawn_by_client(ps)
 }
 
 /// What the picked subtitle does to the route: nothing, a sidecar the client draws itself, or an
@@ -9179,7 +9403,8 @@ pub(super) fn facts(ps: &PlaybackSession) -> EnhancementFacts<'_> {
 fn subtitle_effect_of(ps: &PlaybackSession) -> SubtitleEffect {
     match ps.cur_sub_sid {
         0 => SubtitleEffect::None,
-        _ if ps.cur_sub_sidecar || side_subs_allowed(ps) => SubtitleEffect::Sidecar,
+        // A sidecar the app cannot draw (an image .sup/.idx) is a burn, never "unaffected".
+        _ if sidecar_drawn_by_client(ps) || side_subs_allowed(ps) => SubtitleEffect::Sidecar,
         _ => SubtitleEffect::Embedded,
     }
 }
@@ -9367,7 +9592,7 @@ fn live_is_original_burn(ps: &PlaybackSession) -> bool {
         && ps.cur_contract.ceiling.is_none()
         && !ps.cur_contract.no_video_copy
         && ps.cur_sub_sid != 0
-        && !ps.cur_sub_sidecar
+        && !sidecar_drawn_by_client(ps)
 }
 
 /// **The family the enhancement's own bookkeeping should read the live route as.** Identical to
@@ -9469,7 +9694,9 @@ pub fn enhancement_step(ps: &PlaybackSession) -> EnhancementStep {
     }
     if applied.any() && !want.any() {
         return match ps.auto_original.as_ref() {
-            Some(candidate) if candidate.feeds_part() => EnhancementStep::ReleaseToDirect,
+            Some(candidate) if candidate.feeds_part() && candidate_shows_selected_subtitle(ps, candidate) => {
+                EnhancementStep::ReleaseToDirect
+            }
             // An embedded subtitle still on screen is kept by the plain burn, never dropped by a
             // plain remux (which cannot carry it, M4/M7).
             Some(_) => EnhancementStep::Remux(enhanced_remux_contract(
@@ -9789,11 +10016,19 @@ fn plan_claim_flight(
             },
         },
     };
-    let Some(inputs) = prepare_retranscode_inputs(ps, &expected, offset_secs) else {
+    // The retranscode inputs serve an encode: the primary's, or the rebuild a refused recovery
+    // owes. An Original recovery's plan already holds what its own PMS half reads, and a direct
+    // automatic one reads nothing at all, so a recovery owing no rebuild does not need them —
+    // requiring them refused every automatic recovery on the no-Plex fixture, which has no client
+    // (`pipe_auto_original_slow_recover` reloaded the retained HLS every ~10 s instead).
+    let needs_inputs = !matches!(work, ClaimWork::RecoverOriginal(_))
+        || matches!(fallback, RetranscodeFallback::Retranscode(_));
+    let inputs = prepare_retranscode_inputs(ps, &expected, offset_secs);
+    if needs_inputs && inputs.is_none() {
         return RetranscodeClaimDispatch::Sync(claim_fallback(ps, dispatch.on_failure, primary_reject));
-    };
+    }
     let owner = begin_claim_flight(ps, action);
-    if spawn_flight(owner, pending_seek, user_target, Some(inputs), work, fallback) {
+    if spawn_flight(owner, pending_seek, user_target, inputs, work, fallback) {
         if holds_presentation {
             RetranscodeClaimDispatch::Pending
         } else {
@@ -10021,9 +10256,9 @@ pub struct EnhTestFixture {
     pub base_present: bool,
     /// The base route's own Dolby Vision declaration (I7).
     pub dv_declared: bool,
-    /// The base route's own [`plx_data::metadata::Dovi::base_layer_unusable`] (Profile 5 / P7 with an
-    /// enhancement layer) — a source the offer must refuse regardless of `dv_declared`, since a
-    /// declaration only ever accompanies a USABLE base layer.
+    /// The base route's own [`plx_data::metadata::Dovi::base_layer_unusable`] (Profile 5, or a dual
+    /// layer the feed path does not convert to 8.1) — a source the offer must refuse regardless of
+    /// `dv_declared`, since a declaration only ever accompanies a USABLE base layer.
     pub dv_base_unusable: bool,
     /// `None` = server default audio, facts unknown (fails closed). `Some(capable)` = a known
     /// carried track with or without `canNormalizeLoudness`.
@@ -10053,6 +10288,13 @@ pub struct EnhTestFixture {
     /// A remembered subtitle was chosen for this play but the route shows none of it
     /// ([`cur_memory_note`]): the Subtitles tab says why.
     pub memory_note: bool,
+    /// The quality the HUD's Quality row reads (the picker). Defaults to Original: the shape
+    /// whose "only at Original quality" note contradicted the row.
+    pub quality: Quality,
+    /// Why `base_present: false` is so (see [`OriginalDeclined`]); `None` = a fixed rung.
+    pub declined: Option<OriginalDeclined>,
+    /// The ladder rung an Auto stream is converting to (`cur_contract.ceiling`).
+    pub rung: Option<crate::abr::Rung>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -10073,6 +10315,9 @@ impl Default for EnhTestFixture {
             in_flight: false,
             side_reader: false,
             memory_note: false,
+            quality: Quality::Original,
+            declined: None,
+            rung: None,
         }
     }
 }
@@ -10106,6 +10351,8 @@ pub fn enhancement_test_session(route: EnhTestFixture) -> (PlaybackSession, Serv
     plx_plex::plex::serverinfo::store_for_test(sid, route.pass, "1.43.4");
 
     let mut ps = PlaybackSession::IDLE;
+    restore_quality(route.quality);
+    ps.original_declined = route.declined;
     ps.cur_sid = sid;
     ps.cur_sub_sid = if route.subtitle_effect == SubtitleEffect::None { 0 } else { 999 };
     ps.cur_sub_sidecar = route.subtitle_effect == SubtitleEffect::Sidecar;
@@ -10124,7 +10371,7 @@ pub fn enhancement_test_session(route: EnhTestFixture) -> (PlaybackSession, Serv
         remux: matches!(route.remux, Some(true)) && !(route.applied_burn && route.applied.any()),
         delivery: plx_plex::plex::TranscodeDelivery::ProgressiveMkv,
         no_video_copy: false,
-        ceiling: None,
+        ceiling: route.rung.map(|r| r.ceiling()),
         audio: route.applied,
     };
     ps.tsession = if route.remux.is_some() { "enh-menu-test-session".to_owned() } else { String::new() };
@@ -10211,7 +10458,13 @@ pub fn commit_audio_selection(ps: &mut PlaybackSession, audio: CarriedAudio) -> 
 /// The route half of [`commit_audio_selection`]: which way the pick reloads, and what it displaces.
 fn commit_audio_route(ps: &mut PlaybackSession, audio: CarriedAudio) -> bool {
     if forced_direct_play(ps) && !audio_track_direct_plays(ps, &audio.codec, audio.channels) {
-        ps.play_verdict = Some(PlayVerdict::Forced(ForcedFailure::AudioNeedsConversion));
+        let friendly = plx_data::metadata::friendly_codec(&audio.codec);
+        crate::player::log(&format!(
+            "playback_policy: Force Direct Play refused audio codec {} ({friendly})", audio.codec
+        ));
+        ps.play_verdict = Some(PlayVerdict::Forced(ForcedFailure::AudioNeedsConversion {
+            codec: friendly,
+        }));
         return false;
     }
     if original_recovery_pending() {
@@ -10244,6 +10497,7 @@ fn commit_audio_route(ps: &mut PlaybackSession, audio: CarriedAudio) -> bool {
                 plx_plex::plex::TranscodeDelivery::FixedHls { .. }
             ) {
                 ps.auto_original = None;
+                ps.original_declined = Some(OriginalDeclined::TrackPickDropped);
             }
         }
         // Issue #266: on the Original family the candidate is also the way back from an enhanced
@@ -10252,6 +10506,7 @@ fn commit_audio_route(ps: &mut PlaybackSession, audio: CarriedAudio) -> bool {
             if let Some(candidate) = ps.auto_original.as_mut() {
                 if !candidate.retarget_audio(&audio, direct_plays) {
                     ps.auto_original = None;
+                    ps.original_declined = Some(OriginalDeclined::TrackPickDropped);
                 }
             }
         }
@@ -10372,6 +10627,7 @@ fn commit_subtitle_selection_inner(
                     }
                 } else {
                     s.auto_original = None;
+                    s.original_declined = Some(OriginalDeclined::TrackPickDropped);
                 }
             }
         }
@@ -10380,9 +10636,7 @@ fn commit_subtitle_selection_inner(
         RouteFamily::Direct | RouteFamily::Remux => {
             let pick = (stream_id != 0).then_some(sub_idx);
             if let Some(candidate) = ps.auto_original.as_mut() {
-                if !candidate.retarget_subtitle(pick, client_renderable) {
-                    ps.auto_original = None;
-                }
+                candidate.retarget_subtitle(pick);
             }
         }
     }

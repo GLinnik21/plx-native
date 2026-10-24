@@ -536,6 +536,28 @@ fn pings_and_ignored_are_not_output_but_plays_are() {
 }
 
 #[test]
+fn library_changes_are_output_per_server_beside_the_plays() {
+    use plx_plex::plex::notify::{LibraryEntry, LibraryKind, LibraryState};
+    let mut r = rig();
+    r.pump_n(1);
+    let link = r.fake.link(0);
+    let entry = |id: &str, state| LibraryEntry {
+        item_id: id.into(),
+        kind: LibraryKind::Show,
+        state,
+        section: None,
+    };
+    link.push(Notification::Library(vec![entry("7", LibraryState::Created)]));
+    link.push(Notification::Library(vec![entry("8", LibraryState::Deleted)]));
+    let out = r.pump();
+    assert!(out.plays.is_empty());
+    assert_eq!(out.library.len(), 1, "one batch per server and pump");
+    assert_eq!(out.library[0].sid, r.sid);
+    let ids: Vec<&str> = out.library[0].entries.iter().map(|e| e.item_id.as_str()).collect();
+    assert_eq!(ids, ["7", "8"]);
+}
+
+#[test]
 fn reset_closes_everything_and_the_next_connect_is_a_first_connect() {
     let mut r = rig();
     r.pump_n(1);

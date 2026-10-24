@@ -1,0 +1,7 @@
+{
+  "library_header.collections": "Raccolte",
+  "library_header.recommended": "Consigliati",
+  "library_header.sort_filter": "Ordina e filtra",
+  "library_header.filtered_of": "{shown} di {total}",
+  "library_header.show": "Mostra"
+}

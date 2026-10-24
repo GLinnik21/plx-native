@@ -245,15 +245,28 @@ pub fn form(
         // is named, and the reason every other surface can say only the handle. A group that is not
         // working also SAYS so there, and says it FIRST — see [`accessory`]. It is a state in the
         // same register as the rows' own `On`/`Off`.
-        let sec = Section::new(g.name.clone())
-            .server_header();
-        let head = header_accessory(sec, g).dim(!usable(g));
+        //
+        // The Browse picker (the header's "+N" list) names a shared group by what it IS, "Shared
+        // with you", and puts the owner's handle on each row, dimmed (library-redesign board
+        // `LibraryMore`); the group's own state words still lead its header.
+        let shared_pick = level == Level::Browse && !g.handle.is_empty();
+        let head = if shared_pick {
+            let (words, _) = accessory_parts(g);
+            let sec = Section::new(plx_platform::i18n::msg::widgets_source_shared_with_you());
+            (if words.is_empty() { sec } else { sec.accessory(words) }).dim(!usable(g))
+        } else {
+            header_accessory(Section::new(g.name.clone()).server_header(), g).dim(!usable(g))
+        };
         let mut sec = FormSection::from_head(head);
         for r in mine {
             let mut row = Row::new(r.title.clone()).server_label();
             let kind = match level {
                 Level::Browse => {
-                    row = row.checked(r.current).detail(r.count_line.clone());
+                    // One line a row: the +N list holds only libraries the fold hid, so no tick
+                    // (the library on view is never in it) and no count line.
+                    if shared_pick {
+                        row = row.value(g.handle.clone()).server_value().value_dim(true);
+                    }
                     RowKind::Choice
                 }
                 Level::OnHome => {
@@ -481,7 +494,7 @@ mod tests {
     fn one_group_sections(g: SrcGroup) -> Vec<Section> {
         let rows = vec![plx_data::browse::SrcRow { src: 0, section: 0, title: "Movies".into(), count_line: "1 film".into(),
             pinned: true, last_pinned: false, current: false }];
-        sections(Level::Browse, &[g], &rows, Tail::None).0
+        sections(Level::OnHome, &[g], &rows, Tail::None).0
     }
 
     /// **Who owns the accessory.** No handle: the whole run is the app's `state · tier` words, so

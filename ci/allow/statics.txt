@@ -1,11 +1,6 @@
-# count: 10
-rust-modules/ui/src/icons.rs	CACHE: rasterised icon masks keyed by (name, size) — a GL texture cache, never read as state
-rust-modules/ui/src/text_view.rs	WRAP_CACHE: wrapped-line layout memo keyed by (text, width, size) — recomputed from the same inputs
-rust-modules/ui/src/testpat.rs	CURRENT: the dev synthetic ground pattern (plxnative-testpat / pat: token), draw-only
-rust-modules/ui/src/anim.rs	ENTRIES: per-key animation clocks for draw-time ramps, render half only
-rust-modules/ui/src/popover.rs	CACHE: THE single full-viewport FrameCache (8.29 MB) a covered host is drawn from as a quad
-rust-modules/ui/src/popover.rs	HELD: whether that FrameCache is held or being recaptured — the cache's own bookkeeping
-rust-modules/ui/src/popover.rs	TARGET: the FBO pass that draws the host page INTO that FrameCache this frame, opened and closed within one frame — the cache's own bookkeeping
-rust-modules/ui/src/widgets.rs	TAB_CACHE: tab-row CString/width memo keyed by the full captured (generation, labels) vocabulary; both normal chrome and its scrim lift pass the same Bridge-owned labels, and the cache is never read as state
+# count: 5
 rust-modules/data/src/search/recents.rs	STORE: write-behind persistence cache for the recents queue, keyed by the global session generation and drained to disk by background workers — a per-Bridge copy would duplicate the on-disk queue and risk a double write, not a store-ownership gap
 rust-modules/data/src/search/recents.rs	PENDING: the write-behind queue itself, coalesced per profile and drained by the same background workers — same persistence seam as STORE, not per-owner state
+rust-modules/gfx/src/gfx.rs	GROUND_PROBE: the top bar's ground sampler. Its heap, `ready: Option<Vec<u8>>`, is allocated only by `read_if_finished` from a `glReadPixels` of the probe's own FBO (`fbo_target`, which needs a live GL context) and dropped by `invalidate`, so it is touched only on the thread that owns the GL context, between frames, and no host test can reach an allocation; the two tests that touch the probe set its cadence counters under `testlock::serial()` and never read back. Not a frame-loop CPU cache that `thread_local!` would make private: it is GL bookkeeping that belongs with the context
+rust-modules/gfx/src/gfx.rs	CONTROL_PROBE: the Hero controls' ground sampler, the same `GroundProbe` type with the same owner (`read_if_finished`/`invalidate`), the same GL-context thread and the same cadence-only, serial-locked tests as GROUND_PROBE
+rust-modules/gfx/src/gfx.rs	FIELDST: the exact-2x reduction chain of GL framebuffers behind the dim field. Its `levels` Vec is built and replaced only by `field_lazy_init`, which stores a chain only after every `fbo_target` (`glGenFramebuffers`) in it succeeded, so only the thread that owns the GL context reaches it and no host test can (a host test has no chain: `FieldTicket::for_test`)

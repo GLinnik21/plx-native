@@ -141,6 +141,10 @@ pub(crate) enum Screen {
     Person,
     Collection,
     Search,
+    /// The Watchlist page (`screens::watchlist`), owned like Search: its fields ride on `content`.
+    Watchlist,
+    /// The catalog page of a title no server holds (`screens::catalog`); its fields ride on `content`.
+    Catalog,
     /// `overlay` is the same word the heartbeat prints after `overlay=`, supplied by `app.rs` from
     /// its own exhaustive match on the private `Overlay` enum.
     Player {
@@ -263,11 +267,11 @@ fn push_fields(ps: &plx_media::route::PlaybackSession, s: &mut String, screen: S
         }
         Screen::Home => s.push_str(content),
         Screen::Library => s.push_str(content),
-        Screen::Detail | Screen::Person | Screen::Collection => s.push_str(content),
+        Screen::Detail | Screen::Person | Screen::Collection | Screen::Catalog => s.push_str(content),
         // Owned like Library/Detail/Person: the content string is built generically by the
         // caller (`super::bridge::content_probe`, from the mounted `SearchScreen`'s own
         // `LogicalState::probe` output), not read off a legacy global here.
-        Screen::Search => s.push_str(content),
+        Screen::Search | Screen::Watchlist => s.push_str(content),
         // The panels' own fields ride on `content`, for the same reason Library's, Detail's and
         // Search's do: since restructure phase 9 each is the state of a MOUNTED INSTANCE
         // (`screens::player::overlay`), and this module cannot reach into the container — the
@@ -430,7 +434,9 @@ mod tests {
             ("detail", Screen::Detail),
             ("person", Screen::Person),
             ("collection", Screen::Collection),
+            ("catalog", Screen::Catalog),
             ("search", Screen::Search),
+            ("watchlist", Screen::Watchlist),
             ("player", Screen::Player { overlay: "none" }),
             ("player", Screen::Player { overlay: "info" }),
         ]

@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Rebuild an actual source bundle using isolated compiler, Cargo and dependency caches."""
+"""Rebuild an actual source bundle using isolated compiler, Cargo and dependency caches.
+
+The compiler is the pinned stable release with its PREBUILT std for armv7-unknown-linux-gnueabi. The
+copy of its sysroot made here leaves `lib/rustlib/src` (rust-src) out, and restore-source-inputs.py
+refuses a sysroot that has it or that lacks the prebuilt std: the rebuild proves it needs neither
+rust-src nor `-Z build-std`.
+"""
 import argparse
 import hashlib
 import json
@@ -9,11 +15,12 @@ import shutil
 import subprocess
 import sys
 from source_bundle import validate
+from rust_toolchain import pinned
 
 p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('archive',type=Path);p.add_argument('--expect-snapshot',required=True)
 p.add_argument('--work',type=Path,required=True,help='must not exist')
-p.add_argument('--rust-toolchain',default='nightly')
+p.add_argument('--rust-toolchain',default=pinned(),help='default: the pin in rust-modules/rust-toolchain.toml')
 p.add_argument('--private-values',required=True,type=Path)
 a=p.parse_args();manifest=validate(a.archive,a.expect_snapshot,[v.encode() for v in json.loads(a.private_values.read_text())])
 # The same NDK the release was built with (prepare-source-release.py recorded its hash); the
@@ -31,15 +38,18 @@ compiler=Path(subprocess.check_output(['rustc','+'+a.rust_toolchain,'--print','s
 isolated=work/'compiler'
 shutil.copytree(compiler,isolated,ignore=lambda directory,names:['src'] if Path(directory)==compiler/'lib/rustlib' else [])
 source=work/'source';env=dict(os.environ,RUSTUP_HOME=str(work/'rustup'),CARGO_HOME=str(work/'cargo'),CARGO_NET_OFFLINE='true',PLX_BUILD_CACHE=str(work/'cache'))
+# Under the isolated, offline RUSTUP_HOME any rustc/cargo call that is NOT `+source-rebuild` (the tree's own
+# rust-toolchain.toml names the pinned release) would try to download it; name the linked toolchain instead.
+build_env=dict(env,RUSTUP_TOOLCHAIN='source-rebuild',RUSTUP_AUTO_INSTALL='0')
 commands=[
  [sys.executable,str(Path(__file__).with_name('restore-source-inputs.py')),str(a.archive.resolve()),'--expect-snapshot',a.expect_snapshot,'--destination',str(source),'--rust-sysroot',str(isolated)],
  ['rustup','toolchain','link','source-rebuild',str(isolated)],
- ['make','-C',str(source),'RUST_NIGHTLY=source-rebuild','RELEASE=1','FLAVOR=stable',
+ ['make','-C',str(source),'RUST_TOOLCHAIN=source-rebuild','RELEASE=1','FLAVOR=stable',
   'PLX_SENTRY_DSN=','PLX_POSTHOG_KEY=','PLX_SENTRY_DSN_DEV=','PLX_POSTHOG_KEY_DEV=','ipk']]
-result={'ndk_gcc_sha256':ndk_hash,'source_snapshot_sha256':a.expect_snapshot,'rebuild_status':'FAIL','configuration':'production ARM stable, no private telemetry configuration','bit_for_bit':'NOT_CLAIMED','commands':commands}
+result={'ndk_gcc_sha256':ndk_hash,'source_snapshot_sha256':a.expect_snapshot,'rebuild_status':'FAIL','toolchain':{'rust':a.rust_toolchain,'std':'prebuilt armv7-unknown-linux-gnueabi','rust_src_in_sysroot':False,'build_std':False},'configuration':'production ARM stable, no private telemetry configuration','bit_for_bit':'NOT_CLAIMED','commands':commands}
 with (work/'build.log').open('w') as log:
  for command in commands:
-  run=subprocess.run(command,env=env,stdout=log,stderr=subprocess.STDOUT)
+  run=subprocess.run(command,env=build_env if command[0]=='make' else env,stdout=log,stderr=subprocess.STDOUT)
   if run.returncode:
    # The log is otherwise only a file in the workspace; a CI failure must explain itself.
    log.flush();tail=(work/'build.log').read_text(errors='replace').splitlines()[-200:]

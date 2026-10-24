@@ -114,6 +114,9 @@ fn person_completion(t: &mut Tape, slot: u32, data: &Value) -> Result<(), &'stat
 /// A generation-stamped store's landing take, recorded or gated: under controlled bootstrap the
 /// tape answers ([`poll`]) and the landing is reported to the gate itself; otherwise the landing
 /// gate schedules the take. The one spelling of that choice for the Person and Collection stores.
+/// `#[track_caller]`, like every wrapper between a gated take and its caller: the paced dump keys a
+/// claim by call site.
+#[track_caller]
 pub fn take_store_landing<T: serde::Serialize + serde::de::DeserializeOwned>(
     gate: &plx_machine::landgate::Gate, id: super::StoreId, store: &str, slot: u32,
     fetch: &super::Fetch<T>, gen_of: fn(&T) -> u32) -> Option<T> {

@@ -1,0 +1,7 @@
+{
+  "library_header.collections": "Gyűjtemények",
+  "library_header.recommended": "Ajánlott",
+  "library_header.sort_filter": "Rendezés és szűrés",
+  "library_header.filtered_of": "{shown} / {total}",
+  "library_header.show": "Megjelenítés"
+}

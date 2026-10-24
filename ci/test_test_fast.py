@@ -49,7 +49,7 @@ if "--no-run" in args:
         os.makedirs(os.path.dirname(exe), exist_ok=True)
         with open(exe, "w") as f:
             f.write("#!/bin/sh\\necho \\"bin=%s cwd=$(pwd) runtime=$PLXNATIVE_RUNTIME_DIR args=$*\\" >> \\"$FAKE_BIN_LOG\\"\\n"
-                    "echo \\"test result: ok. 1 passed; 0 failed; 0 ignored\\"\\n" % name)
+                    "echo \\"test result: ok. ${FAKE_PASSED:-1} passed; 0 failed; 0 ignored\\"\\n" % name)
         os.chmod(exe, 0o755)
         print(json.dumps({"reason": "compiler-artifact", "package_id": "path+file:///r/%s#%s@0.0.0" % (name, name),
                           "manifest_path": os.path.join(pkg, "Cargo.toml"), "target": {"name": name},
@@ -63,6 +63,9 @@ def make(*args, env=None, home=None):
     full = dict(os.environ)
     full.pop("MAKEFLAGS", None)
     full.pop("MFLAGS", None)
+    # The recipes are under test here; the disk preflight has its own test (ci/test_disk_preflight.py), and a real
+    # `make` would otherwise run it against this machine's disk and, below the comfort line, evict its trees.
+    full["PLX_DISK_BUDGET_DONE"] = "1"
     full.update(env or {})
     if home is not None:
         full["HOME"] = home

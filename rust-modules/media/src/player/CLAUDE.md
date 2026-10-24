@@ -117,16 +117,33 @@ something.
   no `LIFECYCLE: background`, and the dead pipeline refused every Play after it. It raises
   `decoder_revoked`; the app loop parks the session exactly as an app switch does
   (`run::park_on_decoder_release`) and the viewer's next key or click is spent on the foreground
-  claim that rebuilds it at the saved spot and clock. Every other `type=18` after a picture is
-  still only logged.
+  claim that rebuilds it at the saved spot. The claiming press chooses the clock (`run::wake_input`,
+  whose doc is the table): PLAY, and a play/pause TOGGLE (PLAYPAUSE, or a pointer click on no control — on the
+  player only that click is the toggle; a click on the scrub bar, a disc or a tab is a plain wake) over a save that was Paused, claim with `ForegroundInput::PlayKey`
+  and come back Playing at the exact saved offset; every other press, PAUSE included, claims with `DidForeground`
+  and keeps the saved clock. OK is deliberately one of those: it is also how a viewer dismisses
+  the screensaver, and whether that press reaches the app is unmeasured. A toggle over a save that
+  was Playing is spent as a wake (the machine has no claim that restores a Playing save Paused).
+  A Playing restore of a Paused save also clears the pause the park left standing BEFORE the Load
+  (`PlayerForegroundActuator::before_load` → `transport::commit_viewer_resume_for_load`):
+  `ClockStartGuard` arms the Load's initial hold from `TX.paused` (only with no live Engine: over one, `before_load` leaves the pause for `PlayClock`), and under the stale pause that
+  hold was the viewer's, which fenced the first Play behind a prime (`SMP Play fenced; priming
+  before retry`) and left the actual Play to the late `PlayClock`. That cleared pause, not the
+  order of `playback_tick`, is also what keeps the paused-seek preroll shut. The app-switch PLAY
+  key (`key_play` over a Paused snapshot) takes the same path. Every other `type=18` after a
+  picture is still only logged.
   **And the frame rate IS a discriminator, measured on the dev set the same day:** a 4K H.264 24p
   direct play declared at 60 makes the pipeline announce `frameRate:24` and then `:30` for the same
   stream (a 24p picture on a 30 fps lattice — the judder the maintainer saw on the Auto 4K rung);
   declared at 24 or 30 it announces 24 once and holds it — and the sink's displayed-frame counter
   measured the picture: **13.0 fps presented under the 60 declaration, 24.1 under 24**. So H.264
   declares the stream's rate class
-  (`fps_class`, with a 1 ms Matroska-timebase tolerance: 30.303 declares 30, issue #665; the esInfo rational stays the raw rate), HEVC keeps 60 (4K HEVC under 60 holds 24), and a transcode with no known rate
-  keeps 60. AV1 (only on a set whose codec table lists an AV1 decoder) keeps HEVC's 4K60 rule,
+  (`fps_class`, with a 1 ms Matroska-timebase tolerance: 30.303 declares 30, issue #665; the esInfo rational stays the raw rate), HEVC keeps 60 (4K HEVC under 60 holds 24), and a stream with no known rate
+  keeps 60. A REMUX (the enhanced `start.mkv`, `directStream=1`: video copied, audio re-encoded) copies the
+  source's video stream, so it declares the SOURCE rate (`route::video_copy_fps`, from `Plan::src_fps` /
+  `PlaybackSession::src_fps`) exactly as direct play does — until 2026-10-18 it carried 0, declared 60 and
+  presented ~16 fps on a 4K H.264 24p file; a real video re-encode (an HLS rung, `no_video_copy`, a forced
+  burn) still has no known rate and keeps 60. AV1 (only on a set whose codec table lists an AV1 decoder) keeps HEVC's 4K60 rule,
   clamped by `Caps::av1_row`; the clamp is unmeasured (one owner reports AV1 playing on a webOS 10.3.1 set, with no log). `/tmp/plxnative-sinkmax=WxH@F`
   overrides the envelope for the legs still unrun on 10.3.1.
 - **There IS a presented-frame instrument now, and it is not a GStreamer trace.** The payload's
@@ -170,10 +187,10 @@ something.
   transport spinner draws; a seek flight engages the same hold from
   `start_transcode_seek_flight`) and `take` + `release` AFTER `run_claim_tail`, so an accepted
   claim's Play lands on the new stream and a rejected one's on the kept Engine. A viewer press
-  (`player::lifecycle::set_transport_paused` -> `note_user_transport`) forgets the restore: the
+  (`player::transport::set_transport_paused` -> `note_user_transport`) forgets the restore: the
   viewer's last transport press always stands. A stream already paused at claim time stays paused.
   While the hold's pause stands the viewer's transport reads see PLAYING
-  (`player::lifecycle::viewer_paused`, `claim_hold::owns_pause`): the OK toggle means Pause and a
+  (`player::transport::viewer_paused`, `claim_hold::owns_pause`): the OK toggle means Pause and a
   seek's `resume_if_paused` leaves the hold alone (its seek is carried past the reload by
   `pump::commit_or_carry_seek`, including a seek pressed mid-flight when none was pending at
   claim time). A reload (or a Pause pressed before the first frame) under a VIEWER Pause leaves a
@@ -212,7 +229,11 @@ something.
     dispatches `Pending` for a replacement remux (PUT + `/decision`, landing at the offset the Auto
     worker published) and `PendingNoHold` for a direct Original the worker already sampled, which
     needs no round trip and keeps playing. A refused one reopens the retained HLS
-    (`pump::land_automatic_original`) because the Auto worker exited to hand the action over. The
+    (`pump::land_automatic_original`) because the Auto worker exited to hand the action over; the
+    reducer remembers the refusal against that HLS encoder (`PlayerControl::original_refused_on`;
+    an admitted trial whose Load fails is recorded the same way, on the encoder its rollback's
+    rebase installs), so the reopened worker's source gate starts held (`ProbeBlock::RouteRefused`) until an HLS
+    commit, a seek's rebuild or a new playback changes the route — no timer, no re-ask loop. The
     Original-to-HLS fallback (`route::execute_auto_hls_claim`) never holds, though its worker reaches
     PMS: the Original plays until the landing replaces it, and a refusal (`pump::land_automatic_hls`)
     raises `demux_io_failed`. A user pick made during an automatic flight WAITS in `pending_user` and
@@ -364,7 +385,7 @@ something.
   `play_pending()` is already false by then), and the app loop's drain starts the Load when it lands
   (`finish_landed_play`). So is the FOREGROUND restore's resume of a parked transcode: the
   foreground machine (`player/lifecycle.rs`) parks in `PreparePending` / `RecoveryPending` (both
-  `awaiting_load`, so playback and the cold drain stay off), and `poll_foreground_flight` — once a
+  `awaiting_load`, so playback and the cold drain stay off), and `poll_foreground_flight` (`player/foreground.rs`) — once a
   frame from `playback_tick`, outside `playback_may_run` — drains the landing with the same
   `land_resume` and carries on into the Load; a refused rebuild re-arms the suspended snapshot, a
   flight that ended without landing releases the machine, and a SECOND OS background while it flies
@@ -412,12 +433,24 @@ something.
   its own PUT as before. It holds itself to the
   subtitle the landing put on screen (`owed.landed_sub`, settled from the session by
   `settle_landing_selection`), so it never replaces a remembered sidecar the restore drew.
-- **App-switch lifecycle** (handled in `app/run.rs`, the frame loop; the machine and the
-  transport-pause contract are `player/lifecycle.rs`, which `app::lifecycle` re-exports; details in
-  the `docs/agent-reference.md` gotchas): OS
+- **App-switch lifecycle** (handled in `app/run.rs`, the frame loop; the machine is
+  `player/lifecycle.rs`, its drivers (`drive_foreground` and the `poll_`/`park_` fns) are
+  `player/foreground.rs`, and the transport-pause contract is `player/transport.rs`; `app::lifecycle`
+  re-exports all three; details in the `docs/agent-reference.md` gotchas): OS
   background suspends the buffer-feed preserving the session. Foreground tracks one exact Load
   attempt at a time, follows reducer-approved superseding or rollback attempts, retries an exact
-  failure without repeating route preparation, and applies the saved clock only after `Started`.
+  failure without repeating route preparation, and issues the clock's native Play only after
+  `Started` (a Playing restore over a standing pause publishes the viewer's resume BEFORE the
+  Load, `before_load`, so the Load is not armed under it).
+  The opposite edge is `ForegroundInput::Superseded(Successor)`: `exit_player` sends
+  `Superseded(Exit)` FIRST, retiring whatever a restore parked (a refused Load's `Prepared`, a
+  `Suspended`, a pending Load, via the `Retire` effect), and the accepted-resolve boundary in the
+  frame loop sends `Superseded(Playback)`, which retires the parked states but leaves a pending
+  Load to its own settlement. `DidForegroundSuperseded` is the DID edge that arrives together
+  with a launch link that is ending playback (`app/run.rs`, `did_foreground_with_link`): it claims
+  nothing, so a parked session stays parked (`Suppressed`) and the link's `Exit` retires it
+  instead of racing a restore. The per-state table is on `ForegroundLifecycle::step`; add no
+  event outside `ForegroundEvent`.
   Preserve the suspend/reload pairing if you touch playback.
 
 ## Verifying playback changes

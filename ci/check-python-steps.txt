@@ -39,6 +39,11 @@ python3 ci/test_build_bench.py
 # one record per day (a same-day re-run replaces it), nothing written for a failed benchmark, a red `check` costing only
 # its own rows, a noisy day marked and kept, nothing identifying in the runner block. Synthetic documents, no cargo.
 python3 ci/test_build_history.py
+# tools/build-gc.sh against disposable repositories, fleet dirs and caches: every OTHER reclaim mode refuses under a held FFmpeg lock, a
+# live checkout is spared, `--auto`'s order is the planner's (and its `--worktrees` stage spares a lane inside the idle window, and one holding an ignored file that is not build output),
+# `--worktrees` judges a lane against `origin/main` without refreshing its index, and `--evict PLAN` deletes exactly what the plan
+# names after re-probing it: it refuses paths that are not derived build trees, skips a tree that turned live, goes on under an
+# FFmpeg lock, and never takes a /tmp tree that only looks old. `--evict` runs only inside the fixture's own directories.
 python3 ci/test_build_gc.py
 python3 ci/test_check_elf.py
 # Nothing that runs at once may collide: two checkouts running the scratch-writing steps (test-compat.py,
@@ -60,7 +65,12 @@ python3 ci/test_source_bundle.py
 ci/check-deps.sh
 # Catalog completeness is checked by the Rust build; these check the UI text entry points too.
 make --no-print-directory check-localization
+# A UI language is a locales/ directory plus its languages.json entry: no hand-written list of
+# languages in Rust, "each language" loops read i18n::SHIPPED (docs/localization.md).
+python3 ci/check-language-lists.py
+python3 ci/test_check_language_lists.py
 python3 tests/test_mock_pms_library.py
+python3 tests/test_mock_pms_discover.py
 # `tools/tv-ssh`, the ssh/scp front door every TV caller shares, against FAKE ssh/sshpass on
 # PATH: key accepted -> sshpass never run; key refused -> sshpass; unreachable -> no password
 # attempt; no address or password on any line; and the Makefile's echoed commands stay silent about both.
@@ -74,6 +84,10 @@ python3 ci/test_tv_ssh.py
 python3 tools/plxnative-lab selftest
 # `make test-fast` (the opt-in incremental loop) is fenced off from every other target.
 python3 ci/test_test_fast.py
+# `make test-hostsim` / `make check-nodef`, the managed replacements for the `/tmp/<dir>` cargo recipes
+# AGENTS.md used to hand out: neither can put a cargo tree outside the checkout, and a filter that
+# matches no test fails instead of passing with "0 tests".
+python3 ci/test_managed_targets.py
 # The C unit tests (crash tracer, its signal handler, the shim's private log files), each compiled into
 # a private directory.
 make --no-print-directory check-c-unit
@@ -117,9 +131,11 @@ python3 ci/check-package.py --selftest
 # cycles while the crate split is under way, and webOS from spreading. ~3 s, no cargo.
 python3 ci/test_module_graph.py
 python3 ci/check-module-layers.py
-# The statics gate (spec §0 done-criterion 1): static mut under ui/ and screens/ is zero except
-# the named render caches in ci/allow/statics.txt and the legacy modules still awaiting their
-# phase in ci/allow/statics-migration.txt — a counted list that only shrinks.
+# The statics gate (spec §0 done-criterion 1): a static mut under ui/, screens/, appkit/ and the
+# gated data modules must be named in ci/allow/statics.txt or sit in a legacy module still awaiting
+# its phase in ci/allow/statics-migration.txt (a counted list that only shrinks). A static mut that
+# OWNS HEAP is refused anywhere under rust-modules unless ci/allow/statics.txt names it with the
+# thread that owns it (ci/check-statics-heap.py); a frame-loop render cache is a thread_local!.
 ci/check-statics.sh
 # The module-cycle ratchet: the top-level module cycle may shrink, never grow. The checker runs on the
 # real tree against ci/module-cycle-baseline.json (~1.5 s); its self-test uses a synthetic crate.
@@ -141,7 +157,7 @@ tools/plxnative-sample selftest
 # that `up` requires after launch. No SSH or television access occurs in this self-test.
 python3 tools/mock-guest.py --selftest
 tools/tv-session.sh selftest
-# The three PreToolUse/PostToolUse hooks' own suites (~0.6s together). They were not in this
+# The PreToolUse/PostToolUse hooks' own suites (~0.8s together). They were not in this
 # target until 2026-08-26, which meant the guard that decides whether a private value may
 # leave this machine was covered by a test nobody ran on a normal check -- the same shape as
 # the bug that produced the leak it exists to prevent, where the check computed its answer and
@@ -150,6 +166,7 @@ python3 .claude/hooks/outbound-guard-test.py
 python3 .claude/hooks/release-config-check-test.py
 python3 .claude/hooks/tv-lock-guard-test.py
 python3 .claude/hooks/cloud-unshallow-test.py
+python3 .claude/hooks/watchlist-live-guard-test.py
 # The PMS probe's own offline suite (~3ms). It talks to the maintainer's real server with a
 # real token, so its redaction and its session CLEANUP are the two things that must not
 # regress -- and both are only covered here. It sat outside this target until 2026-08-27,
@@ -185,6 +202,9 @@ python3 tools/test_ci_history.py
 # tools/ci-summary.py (the page's "now" block with its order and selection, the two slowest lists and regressions) against synthetic series: step up and down,
 # noisy flat, missing days, the re-run wall rule, PR/push separation; no network.
 python3 tools/test_ci_summary.py
+# tools/ci-test-results.py (the per-test outcomes of a host unit job's log, for the flaky-test list on the CI page) on libtest output
+# as tools/cargo-test-parallel.py and plain cargo print it; no network.
+python3 tools/test_ci_test_results.py
 # `make test-crate` (the crate-only loop: it must carry the full suite's feature set) and the parallel
 # test runner every unit recipe goes through (a failing binary fails the gate, a missing binary is not
 # a pass, every `test result:` line is printed), both against a fake cargo; nothing is compiled.
@@ -232,7 +252,8 @@ python3 ci/test_check_dump_consumers.py
 python3 ci/check-dump-consumers.py
 # The Plex request registry (ci/plex-requests.ini, rust-modules/plex/src/plex/): every request the plex
 # layer can make is a section that says what it is, its reason and its evidence, and a paged site reaches
-# paged_path or PageReq. This is what stops a new request from landing without a paging decision. Pure
+# paged_path or PageReq. This is what stops a new request from landing without a paging decision. It also keeps
+# the Discover host at its one definition (account.rs), so no request skips the harness's stand-in. Pure
 # lexing, no cargo; the self-tests run on synthetic trees in a private temp dir.
 python3 ci/test_check_plex_requests.py
 python3 ci/check-plex-requests.py
@@ -255,6 +276,9 @@ python3 ci/check-user-agent.py
 # The link conditioner and the mock's paging contract (rate, determinism, per-class, run-time change; the
 # mock's own --selftest rides along): real loopback sockets on port 0, a few seconds.
 python3 tests/test_link_conditioner.py
+# The fault-injecting TCP proxy for real-looking network loss (pass/blackhole/reset/refuse, control endpoint,
+# the mock's --advertise-port): loopback sockets on port 0, ~8 s.
+python3 tests/test_netloss_proxy.py
 # The conditioned paging test's analysis on synthetic logs (the run itself needs a window and minutes: not here).
 python3 tests/paging_link.py --selftest
 
@@ -267,7 +291,42 @@ python3 ci/test_dependencies.py
 python3 ci/test_deps_update.py
 # THIRD-PARTY-NOTICES.md section 2.4's package tables are generated from rust-modules/Cargo.lock (ci/gen-third-party-notices.py;
 # inputs in ci/third-party-crates.json): the gate fails when a dependency bump moved a version, a crate entered the lock
-# unclassified, or the std snapshot's nightly is not the one the workflows pin. Reads files only, no cargo; the self-test
+# unclassified, or the std snapshot's toolchain is not the one rust-modules/rust-toolchain.toml pins. Reads files only, no cargo; the self-test
 # runs on synthetic locks and data.
 python3 ci/test_gen_notices.py
 python3 ci/gen-third-party-notices.py --check
+# The soft-float guard: `-C target-feature=-soft-float` (what gives our crates VFP on the armv7 target) is an UNSTABLE
+# feature flag on stable rustc, so a release may stop honouring it. check-vfp.py compiles a tiny float probe with the
+# Makefile's exact codegen flags and fails on any __aeabi_f* libcall or a missing VFP op, with a negative control; its
+# self-test drives the scan and verdict on canned assembly and, where the pinned toolchain is installed, the real probe.
+# --skip-if-missing only so a runner without Rust is not red here: CI's host-lint job runs it strict.
+python3 ci/test_check_vfp.py
+python3 ci/check-vfp.py --skip-if-missing
+# tools/disk-budget.py, the disk budget's inventory and planner (docs/disk-budget.md): the ladder's order, stopping at the line,
+# refusing only when the whole ladder cannot free the build's estimate plus the reserve, and NEVER planning the current checkout
+# below rung 6 (nor, there, the tree being built), a live, tracked, pkg/, vendor/ or non-PlxNative tree; private-byte accounting under hard links; `origin/main` merged detection
+# (squash merges, a stale local main, nothing written to the repository); `report` changes nothing; the plan file `build-gc.sh --evict`
+# reads (format, order, the stale slot, rung-6 `current`), `settle`, the cargo seed never planned, a /tmp tree aged by ctime so a
+# backdated fixture is never a candidate, the probes (`probe`, `tmp-trees`), and that collecting an inventory never rewrites a
+# lane's index. Synthetic inventories plus private temp repositories, a stubbed lsof, no real /tmp scan.
+python3 ci/test_disk_budget.py
+# The disk budget at every build entry: `make disk-preflight` is `tools/disk-budget.py preflight` and an ORDER-ONLY prerequisite of
+# every Makefile target that runs cargo. Static: the Makefile is parsed and every target whose recipe runs cargo (directly or through a
+# script) must be in `make -s print-disk-entries`, with the prerequisite after the `|`, before the build starts, and the recursive
+# `$(MAKE)` lines carrying PLX_DISK_BUDGET_DONE. Dynamic, on a fixture repository with PLX_GC_TEST_FREE_KIB and stubbed lsof/pgrep:
+# at comfort nothing starts and the planner is not imported; below the reserve with nothing to evict it refuses with the reason; below
+# comfort it evicts idle trees and never the tree being built; the marker and PLX_MIN_FREE_MB=0 are no-ops; the auto lock is
+# taken, a live holder is waited on for a bounded time and no plan is made while it runs (a finished or stale holder is taken over); the inventory cache; a pretend emergency is never planned over real
+# trees. `make -n` and `make -s print-*` only, no cargo.
+python3 ci/test_disk_preflight.py
+# RUST_INPUTS (the Makefile's hand-kept list of directories whose edits rebuild the app library) must search every crate
+# the app reaches through `path` dependencies: a crate left out is one whose edits `make` never sees, so `make ipk` packages
+# the previous library and says nothing. Reads manifests only, no cargo; the self-test plants a missing crate in a temp tree.
+python3 ci/test_check_rust_inputs.py
+python3 ci/check-rust-inputs.py
+# The machine-shape gate (ci/machines.ini, docs/sans-io.md): a state machine listed there keeps its state private (a `pub`,
+# `pub(crate)` or `pub(super)` field of the listed struct fails, as does a stale entry), so its one writer stays `step` and a new
+# way to change it is a new event. It also REPORTS, and never fails on, each machine's `bool` and `Option<..>` field counts: a
+# report-only flag ratchet. Pure lexing, no cargo; the self-tests run on synthetic trees in a private temp dir.
+python3 ci/test_check_machine_shape.py
+python3 ci/check-machine-shape.py

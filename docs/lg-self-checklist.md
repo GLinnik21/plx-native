@@ -8,9 +8,10 @@ submission.
 Checklist version 5.0 (updated 2022-09-27), 53 items. Status taken **2026-08-24** against the
 integrated release candidate documented by this commit.
 
-Native eligibility is no longer the open question this file used to describe. Seller Lounge accepts
-this IPK as **File Type: Native** and asks for its native SDK version, chipset and resolution; see
-`docs/distribution.md` §2. The remaining questions are QA and submission-readiness questions.
+**Submission is not available.** LG Seller Lounge stated in writing on 2026-10-20 that its
+registration and Functional QA accept Web Type applications only and that Native Type applications
+are not eligible for submission or review (`docs/distribution.md` §2). This file is kept as a
+measured quality record against LG's checklist, not as a path to the Store.
 
 ## 1. Integrated-plan completion is not LG submission readiness
 
@@ -34,7 +35,7 @@ was type-checked and cross-built, not silently treated as the same artefact.
 
 ### #53 — factory reset, then execute the app: EXTERNAL EVIDENCE UNAVAILABLE
 
-Native Store submission is possible, but this item cannot be answered with a Developer Mode or
+Native Store submission is not available (§ above), and in any case this item cannot be answered with a Developer Mode or
 Homebrew sideload: a factory reset removes that installation route. It needs an actual
 Store-distributed build, followed by factory reset, install/restore through the supported
 distribution channel, and launch. That distribution evidence is not available yet, so this row is
@@ -77,7 +78,7 @@ where a background event IS expected) are still unmeasured.
 
 | # | Item | Evidence still required |
 | --- | --- | --- |
-| 3 | Reboot / lifecycle | Run the native **16-case lifecycle matrix**: remote power off/on, AC unplug/replug, Recent List close/relaunch, and both launch paths. Verify every cold relaunch settles on the credential-selected Home route (never an old Detail/Library page), while an app switch with the process still alive preserves the separate suspended-playback resume path. `handlesRelaunch: false` and `nativeLifeCycleInterfaceVersion: 2` do not answer native behaviour by themselves. |
+| 3 | Reboot / lifecycle | Run the native **16-case lifecycle matrix**: remote power off/on, AC unplug/replug, Recent List close/relaunch, and both launch paths. Verify every cold relaunch without launch params settles on the credential-selected Home route (never an old Detail/Library page; a launch link lands on its own title above Home, and a link that arrives over playback ends it the way STOP does, waits under sign-in, a sheet and the background, and works warm only where the guarded relaunch tap installs, `docs/launch-links.md`), while an app switch with the process still alive preserves the separate suspended-playback resume path. `handlesRelaunch: false` and `nativeLifeCycleInterfaceVersion: 2` do not answer native behaviour by themselves. |
 | 13 | LockUp / LatchUp | Run the exact **4-hour continuous soak**: `plxnative-homeosc` grid sweep for 1 h, full-length playback for 2 h, then `plxnative-navosc` route bounce for 1 h. Check `fuser` liveness and the crash log at every hand-off. Time accumulated during unrelated testing is not this evidence. |
 | 14 | Abnormal end | Run wired and wireless, each with static and dynamic IP, while applying the reproducible `rate:` and `blackhole` failure modes. The proxy can create the condition; it cannot reconfigure the television's network. |
 | 15 | Keyboard cursor/editing | On the LG VKB, verify cursor movement and editing with `<` and `>` rather than inferring SDL event delivery from the host simulator. |
@@ -144,8 +145,8 @@ skips; a partial green count is not equivalent to 21/21.
 
 ## 6. Decisions and N/A items
 
-**#41 — language setting.** Settings now offers System default, English, Spanish, French and Belarusian,
-with changes applied at the next app launch. Localized launcher metadata still follows webOS.
+**#41 — language setting.** Settings now offers System default, English, Spanish, Belarusian, French, Italian,
+Portuguese, German and Hungarian (the languages `locales/languages.json` registers), with changes applied at the next app launch. Localized launcher metadata still follows webOS.
 The native Settings Service supplies UI and formatting locales, and the resolved app language
 becomes `X-Plex-Language` for PMS. Native device checks on 2026-09-27 verified detection, persistence across restarts, Cyrillic
 text, consent scrolling and the contribution QR. See `docs/localization.md` for the scope.

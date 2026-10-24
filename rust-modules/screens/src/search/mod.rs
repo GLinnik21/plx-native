@@ -262,11 +262,17 @@ impl SearchScreen {
     }
 
     fn activate<H: SearchLike>(&mut self, elem: u32, held: bool, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
-        if let Some(tab) = elem.checked_sub(plx_ui::dispatch::STRIP_BASE) {
-            let request = match tab {
-                0 => SearchReq::Tab(HomeTab::Home), 1 => SearchReq::Tab(HomeTab::Movies),
-                2 => SearchReq::Tab(HomeTab::Shows), 3 => return Handled::Yes,
-                4 => SearchReq::Account, _ => return Handled::No,
+        use plx_ui::widgets::{TAB_KEY_CHIP, TAB_KEY_HOME, TAB_KEY_MOVIES, TAB_KEY_SEARCH, TAB_KEY_SHOWS, TAB_KEY_WATCHLIST};
+        if elem >= plx_ui::dispatch::STRIP_BASE {
+            let request = match elem {
+                TAB_KEY_HOME => SearchReq::Tab(HomeTab::Home),
+                TAB_KEY_MOVIES => SearchReq::Tab(HomeTab::Movies),
+                TAB_KEY_SHOWS => SearchReq::Tab(HomeTab::Shows),
+                TAB_KEY_WATCHLIST => SearchReq::Tab(HomeTab::Watchlist),
+                // The Search mark is the page the user is already on: nothing to request.
+                TAB_KEY_SEARCH => return Handled::Yes,
+                TAB_KEY_CHIP => SearchReq::Account,
+                _ => return Handled::No,
             };
             self.keyboard(false, true, fx);
             fx.push(Fx::App(AppFx::Search(request)));
@@ -400,7 +406,7 @@ impl<H: SearchLike> Machine<H> for SearchScreen {
                     }
                     if *key == Key::Up && cx.focus.current == Some(self.key(FIELD)) {
                         self.keyboard(false, true, fx);
-                        self.reseat(FocusTarget::Elem(self.key(plx_ui::dispatch::STRIP_BASE + 3)), fx);
+                        self.reseat(FocusTarget::Elem(self.key(plx_ui::widgets::TAB_KEY_SEARCH)), fx);
                         return Handled::Yes;
                     }
                     if *key == Key::Back {
@@ -630,7 +636,7 @@ fn group(id: GroupId, kind: GroupKind, len: usize, extent: Rect, elem: ElemKind,
 /// `render.rs` (the cards fade in with the results).
 fn new_stack(entry: EntryId) -> Stack<Sec> {
     let floor = plx_ui::widgets::TOP_BAR_BOTTOM;
-    Stack::new(entry).hold_hint(plx_ui::hold_hint::Kind::Search).reveal_on_move(true).clipped(Rect::new(0.0, floor, SCR_W, SCR_H - floor))
+    Stack::new(entry).hold_hint().reveal_on_move(true).clipped(Rect::new(0.0, floor, SCR_W, SCR_H - floor))
 }
 
 impl<H: SearchLike> StackPage<H> for SearchScreen {
@@ -667,6 +673,11 @@ impl<H: SearchLike> StackPage<H> for SearchScreen {
         }
     }
     fn fallback(&self, _cx: &Cx<'_, H>, out: &mut Vec<Sec>) { out.push(Sec::Head); }
+    /// The poster rows follow the Under posters setting; the Episode still row and the Person
+    /// headshot row are not posters and keep the legacy band.
+    fn caption_policy(&self, k: Sec) -> Option<plx_ui::caption_policy::CaptionPolicy> {
+        matches!(k, Sec::Row(kind, _) if layout::is_poster(kind)).then(crate::registry::captions::policy)
+    }
     fn cards<'a>(&'a self, cx: &'a Cx<'_, H>, k: Sec) -> Option<RowCards<'a>> {
         let Sec::Row(kind, _) = k else { return None };
         let row = self.rows.iter().position(|row| row.kind == kind)?;
@@ -731,7 +742,7 @@ impl<H: SearchLike> StackPage<H> for SearchScreen {
     /// Recents and the Clear control are part of the head's block: the page rests at its top.
     fn reveal_with(&self, k: Sec) -> Option<Sec> { matches!(k, Sec::Recents | Sec::Clear).then_some(Sec::Head) }
     fn reveal_margin(&self, _k: Sec) -> f32 { layout::CONTENT_TOP }
-    fn shelf_foot(&self, _k: Sec) -> f32 { plx_ui::consts::UNDER_LABEL_AIR }
+    fn shelf_foot(&self, _cx: &Cx<'_, H>, _k: Sec) -> f32 { plx_ui::consts::UNDER_LABEL_AIR }
     fn wide_extent(&self, _k: Sec) -> bool { false }
     /// A shown element that went away is replaced by the one now at its slot (the last of a
     /// shrunken group), else the field.

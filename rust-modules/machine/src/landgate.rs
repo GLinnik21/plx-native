@@ -28,7 +28,7 @@
 //! * A recorded landing that never arrives is counted as `missing` when the replay ends.
 //!
 //! **The due-frame wait is REPLAY-ONLY, bounded and taken at most once per (frame, owner, store)**
-//! (dump mode's `take_owed` wait is a separate poll with its own fail-closed timeout, below), so a store
+//! (dump mode's `take_owed` is separate, below: a blocking poll with its own fail-closed timeout, or the paced form's hold), so a store
 //! whose landing is due at a site that will not produce it cannot spend the budget twice on one
 //! frame. It is a stop-gap for one specific reason, worth saying plainly: the honest end state is
 //! §5.5's closed replay, where the recorded payload is INJECTED and no fetch happens at all. That
@@ -49,15 +49,17 @@
 //! their recorded frames exactly as they did. Gating a whole `pump()` would have suppressed the
 //! spawn that produces the very landing being waited for.
 //!
-//! **Dump mode** ([`Gate::arm_dump`], the deterministic frame dump) is the third way to arm a
-//! gate, and the one that needs no recording. The replay gate above keys a landing to a RECORDED
+//! **Dump mode** ([`Gate::arm_dump_paced`], the form the deterministic frame dump arms, and
+//! [`Gate::arm_dump`], its blocking twin) is the third way to arm a gate, and the one that needs no
+//! recording. The replay gate above keys a landing to a RECORDED
 //! frame; a dump has no recording, so it aims to make the landing frame a function of the request
 //! instead: a request issued in iteration k lands on the next execution of its site, whatever the
 //! worker's timing, including a request that superseded an earlier one whose worker is still out
 //! (a stale answer neither ends the wait nor releases the new request's claim). A site that asks
 //! through [`Gate::take_owed`] / [`Gate::take_all_owed`] says whether a request it spawned is still
 //! unanswered (`owed`, the site's own in-flight marker, per MAILBOX: a store-wide one would make
-//! one mailbox's pump wait on another's); the take polls until mail arrives. The marker is never
+//! one mailbox's pump wait on another's); the take delivers it (the blocking form polls until mail
+//! arrives; the paced form, below, returns nothing until it has). The marker is never
 //! cleared by the worker finishing, but WHEN it clears differs by site, and so does what keeps a
 //! stale answer from clearing it:
 //!
@@ -71,9 +73,33 @@
 //! queue take (`take_all_owed`) reads `owed` after every batch and hands it the batch collected so
 //! far. A claim is therefore either released INSIDE the take (Home's hubs) or read off the batch
 //! (Metadata's detail drain, whose `detail_done` is written after it); a claim that is neither
-//! never ends the wait. The wait is a poll count of [`WAIT_STEP_US`] sleeps (at least the timeout in
-//! real time) and fails closed: past it the gate panics naming the store rather than let a frame
-//! be written without the answer.
+//! never ends the wait. The blocking form's wait is a poll count of [`WAIT_STEP_US`] sleeps (at
+//! least the timeout in real time) and fails closed: past it the gate panics naming the store
+//! rather than let a frame be written without the answer.
+//!
+//! **Two forms of dump, because a frame must never sleep on the network.** The wait above is a
+//! BLOCKING wait ([`Gate::arm_dump`]), and a frame-thread wait on the network is exactly what
+//! `plx_base::task::assert_may_block` refuses: the wait passes that gate, so a host test or a
+//! dev build that waits inside a frame is refused instead of stalling it unlabelled (a Collections
+//! page over a 2 s listing held the simulator's main thread 3950 ms in `unlabeled` and the 2 s hang
+//! watchdog aborted the dump; and the loading frames of any page whose read took longer than a
+//! frame never existed, because the one frame that asked sat inside the sleep). The blocking form
+//! is therefore for a caller that is not on the frame thread: a store's own unit tests, a worker.
+//! The frame dump arms the PACED form ([`Gate::arm_dump_paced`]), whose takes never sleep:
+//!
+//! * a take whose answer is not there yet returns `None` and records the store it is waiting on
+//!   ([`Gate::take_starved`]); the driver holds the iteration (it repeats at the same virtual time,
+//!   the rule it already applies to every other debt) and the next take polls again. The landing
+//!   frame is still a function of the request and not of the worker, because the picture is not
+//!   written while a take is starved;
+//! * a queue take ([`Gate::take_all_owed`]) hands out nothing until the whole batch it owes is in
+//!   (the part that arrived is kept inside the gate), because a batch delivered in arrival order is
+//!   a worker-timing order, and the blocking form delivered it whole;
+//! * the dump's clock for a landing is the VIRTUAL frame ([`Gate::dump_frame`]), and a `lag` of
+//!   virtual frames ([`Gate::arm_dump_paced`]) holds an answer back until `lag` frames after its
+//!   claim was first seen open: a dump of a slow page films the frames the user would see while
+//!   the request is out, at a landing frame the dump chooses and not the network. `lag` 0 is the
+//!   blocking form's contract: it lands on the next execution of its site.
 //!
 //! **Which sites are protected: every landing site except the tape-active Metadata detail drain
 //! (below).**
@@ -129,9 +155,13 @@
 //! **Cost outside a recording, a replay or a dump is one relaxed `AtomicBool` load** (`Gate`'s armed flag): the
 //! helpers return the closure's own answer and never take the lock.
 
+use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::panic::Location;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+
+use plx_base::task::{assert_may_block, BlockingLabel};
 
 use super::machine::StoreOrd;
 
@@ -163,9 +193,19 @@ enum Mode {
     Recording,
     /// Hold an early landing to its recorded frame and grade the rest.
     Replaying,
-    /// DUMP MODE: a site that asks through [`Gate::take_owed`] waits (bounded, fail-closed) for
-    /// the answer its own request owes instead of taking whatever has arrived.
-    Dumping(std::time::Duration),
+    /// DUMP MODE: a site that asks through [`Gate::take_owed`] gets the answer its own request owes
+    /// instead of whatever has arrived: by waiting for it, or by holding the picture until it is in.
+    Dumping(Dump),
+}
+
+/// What a dump's takes do about an answer that is not there yet (the module doc's "two forms").
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Dump {
+    /// Sleep until it arrives, bounded and fail-closed. Refused on the frame thread.
+    Block(std::time::Duration),
+    /// Never sleep: report the store as starved and let the driver hold the iteration. An answer is
+    /// held back until `lag` virtual frames after its claim was first seen open.
+    Pace { lag: u64 },
 }
 
 struct State {
@@ -184,13 +224,29 @@ struct State {
     plain: BTreeMap<u32,u64>,
     /// Dump mode: a plain take panics instead of only counting ([`Gate::arm_dump_strict`]).
     strict: bool,
+    /// Paced dump: the virtual frame in flight ([`Gate::dump_frame`]).
+    vframe: u64,
+    /// Paced dump: the virtual frame each landing site first saw its claim open, until it lands.
+    sighted: BTreeMap<Site, u64>,
+    /// Paced dump: the stores whose take found its answer still out since the last drain.
+    starved: BTreeSet<String>,
+    /// Paced dump: the stores whose answer is being held back until its landing frame, since the
+    /// last drain ([`Gate::take_lagged`]).
+    lagged: BTreeSet<String>,
+    /// Paced dump: the part of a queue take's batch that arrived before the whole did, per site.
+    carry: BTreeMap<Site, Box<dyn Any + Send>>,
 }
+
+/// One landing SITE: the store and the call that takes from one of its mailboxes (a store has
+/// several, and each is a claim of its own).
+type Site = (u32, &'static Location<'static>);
 
 impl State {
     /// The empty state of `mode`: every counter and schedule cleared.
     fn new(mode: Mode) -> State {
         State { mode, frame: 0, lands: BTreeMap::new(), sched: BTreeMap::new(), waited: BTreeSet::new(),
-            diffs: Vec::new(), plain: BTreeMap::new(), strict: false }
+            diffs: Vec::new(), plain: BTreeMap::new(), strict: false, vframe: 0, sighted: BTreeMap::new(),
+            starved: BTreeSet::new(), lagged: BTreeSet::new(), carry: BTreeMap::new() }
     }
 }
 
@@ -264,7 +320,7 @@ pub fn arm_sparse_replay(&self, sched: BTreeMap<u32,Vec<(u64,u32)>>) {
     self.armed.store(true, Ordering::Relaxed);
 }
 
-/// Arm DUMP MODE (the deterministic frame dump): from here a landing site that consumes its
+/// Arm the BLOCKING form of DUMP MODE: from here a landing site that consumes its
 /// mailbox through [`Gate::take_owed`] / [`Gate::take_all_owed`] blocks until mail arrives for the
 /// claim it owes (it has been TAKEN), or a poll-count timeout of `timeout` passes, which panics
 /// naming the store (fail closed: a frame written past a missing answer would be a
@@ -273,6 +329,11 @@ pub fn arm_sparse_replay(&self, sched: BTreeMap<u32,Vec<(u64,u32)>>) {
 /// every other site still takes as before, and is counted in [`Gate::unconverted_takes`].
 /// [`Gate::disarm`] ends it.
 ///
+/// **The wait passes the blocking gate** (`plx_base::task::assert_may_block`), so it is refused
+/// on the frame thread (a panic in a host test, an abort or a log line in a `threadcheck` build):
+/// this form is for a caller that is not inside a frame. A frame loop arms
+/// [`Gate::arm_dump_paced`].
+///
 /// **Panics if a recording or a replay is armed on this gate**, the way the recorder and replayer
 /// refuse to be armed together: arming dump over one would silently wipe its schedule or its
 /// landings. Disarm first. Arming dump again over a dump just resets it.
@@ -280,7 +341,7 @@ pub fn arm_sparse_replay(&self, sched: BTreeMap<u32,Vec<(u64,u32)>>) {
 /// This is a runtime switch, off by default, armed only by the dump driver. Nothing in a shipping
 /// loop calls it, and an unarmed gate stays one relaxed load.
 pub fn arm_dump(&self, timeout: std::time::Duration) {
-    self.arm_dump_with(timeout, false);
+    self.arm_dump_with(Dump::Block(timeout), false);
 }
 
 /// [`Gate::arm_dump`] where a plain [`Gate::take`] / [`Gate::take_all`] PANICS naming the store
@@ -288,16 +349,61 @@ pub fn arm_dump(&self, timeout: std::time::Duration) {
 /// every landing site is converted: a site left on the plain take would otherwise hand the frame
 /// whatever the worker timing produced, without a word.
 pub fn arm_dump_strict(&self, timeout: std::time::Duration) {
-    self.arm_dump_with(timeout, true);
+    self.arm_dump_with(Dump::Block(timeout), true);
 }
 
-fn arm_dump_with(&self, timeout: std::time::Duration, strict: bool) {
+/// Arm the PACED form of DUMP MODE, the one a frame loop arms (the module doc's "two forms"): a
+/// take never sleeps. A take whose answer is not there yet returns `None` and names its store in
+/// [`Gate::take_starved`], which the driver holds the iteration on; an answer is also held back
+/// until `lag` virtual frames ([`Gate::dump_frame`]) after the frame its claim was first seen
+/// open (0: the next execution of its site). Strict, like [`Gate::arm_dump_strict`]: a plain take
+/// panics, because a site left on it would hand the frame whatever the worker timing produced.
+/// [`Gate::disarm`] ends it, and drops what a queue take kept.
+///
+/// Panics under the same condition as [`Gate::arm_dump`].
+pub fn arm_dump_paced(&self, lag: u64) {
+    self.arm_dump_with(Dump::Pace { lag }, true);
+}
+
+fn arm_dump_with(&self, form: Dump, strict: bool) {
     self.with(|s| {
         assert!(matches!(s.mode, Mode::Off | Mode::Dumping(_)),
             "landgate: arm_dump on a gate with a recording or a replay already armed; disarm it first");
-        *s = State { strict, ..State::new(Mode::Dumping(timeout)) };
+        *s = State { strict, ..State::new(Mode::Dumping(form)) };
     });
     self.armed.store(true, Ordering::Relaxed);
+}
+
+/// PACED DUMP: the virtual frame about to run, called once per iteration before any landing site.
+/// A held repeat of a frame passes the same number again, which is the point: a landing is due on
+/// a virtual frame, never on however many iterations the holds before it took.
+pub fn dump_frame(&self, v: u64) {
+    if !self.armed.load(Ordering::Relaxed) {
+        return;
+    }
+    self.with(|s| s.vframe = v);
+}
+
+/// PACED DUMP: the names of the stores whose take found its answer still out since the last call,
+/// sorted, and forgotten. Non-empty means the picture must not be written yet. Empty outside a
+/// paced dump.
+pub fn take_starved(&self) -> Vec<String> {
+    if !self.armed.load(Ordering::Relaxed) {
+        return Vec::new();
+    }
+    self.with(|s| std::mem::take(&mut s.starved).into_iter().collect())
+}
+
+/// PACED DUMP: the names of the stores whose answer was held back until its landing frame since
+/// the last call, sorted, and forgotten. These are NOT debt: the request is out on purpose (the
+/// frame shows its loading state, which is the point of a lag), so the driver must not hold the
+/// picture for the claim of a store named here, or the frames the lag counts would never run.
+/// Empty outside a paced dump.
+pub fn take_lagged(&self) -> Vec<String> {
+    if !self.armed.load(Ordering::Relaxed) {
+        return Vec::new();
+    }
+    self.with(|s| std::mem::take(&mut s.lagged).into_iter().collect())
 }
 
 /// DUMP MODE's fail-closed signal: `(ordinal, calls)` for every store whose landing site took
@@ -329,8 +435,8 @@ fn note_plain_take(&self, ord: StoreOrd) {
     }
 }
 
-fn dump_timeout(&self) -> Option<std::time::Duration> {
-    self.with(|s| match s.mode { Mode::Dumping(t) => Some(t), _ => None })
+fn dump_form(&self) -> Option<Dump> {
+    self.with(|s| match s.mode { Mode::Dumping(form) => Some(form), _ => None })
 }
 
 /// A site that OWES an answer: `owed` says whether a request this site spawned has not been taken
@@ -342,29 +448,51 @@ fn dump_timeout(&self) -> Option<std::time::Duration> {
 /// site uses `take_current`. It is per MAILBOX; a store-wide claim would make the
 /// detail pump wait on a season request's mailbox.
 ///
-/// Off dump mode this is [`Gate::take`]. In dump mode it polls `f` until it answers, or `owed`
-/// reads false after a poll (the request was superseded or abandoned, so nothing will land), or
-/// the dump timeout passes (panic naming `name`).
+/// Off dump mode this is [`Gate::take`]. In the blocking dump it polls `f` until it answers, or
+/// `owed` reads false after a poll (the request was superseded or abandoned, so nothing will land),
+/// or the dump timeout passes (panic naming `name`); that wait passes the blocking gate, so it is
+/// refused inside a frame. In the paced dump it polls `f` ONCE and never sleeps: no answer yet while
+/// `owed` still reads true makes it return `None` and name `name` in [`Gate::take_starved`], and
+/// an answer that has arrived is held back until its landing frame (the module doc).
 ///
 /// It returns on the FIRST `Some` that `f` returns, and cannot tell a superseded request's stale
 /// answer from the one it is waiting for, so `f` must return only the answer to a LIVE request and
 /// drop a stale one itself (`stores::Fetch::take_current`, or the site's own generation test inside
 /// `f`), leaving `owed` true.
+///
+/// `#[track_caller]`: the paced dump keeps one claim per CALL SITE, and a wrapper that forwards here
+/// must be `#[track_caller]` too, or every site behind it shares one claim.
+#[track_caller]
 pub fn take_owed<T>(&self, ord: StoreOrd, name: &str, owed: impl Fn() -> bool,
     mut f: impl FnMut() -> Option<T>) -> Option<T> {
     if !self.armed.load(Ordering::Relaxed) {
         return f();
     }
-    let Some(timeout) = self.dump_timeout() else { return self.take(ord, f) };
-    let mut polls = 0u64;
-    loop {
-        if let Some(v) = f() {
-            return Some(v);
+    let at = Location::caller();
+    match self.dump_form() {
+        None => self.take(ord, f),
+        Some(Dump::Pace { lag }) => {
+            if self.pace_hold(ord, at, name, lag, owed()) {
+                return None;
+            }
+            let got = f();
+            self.pace_settle(ord, at, name, got.is_some() || !owed());
+            got
         }
-        if !owed() {
-            return None;
+        Some(Dump::Block(timeout)) => {
+            let mut polls = 0u64;
+            let mut gate = None;
+            loop {
+                if let Some(v) = f() {
+                    return Some(v);
+                }
+                if !owed() {
+                    return None;
+                }
+                gate.get_or_insert_with(|| assert_may_block(Self::DUMP_WAIT));
+                Self::dump_wait(name, &mut polls, timeout);
+            }
         }
-        Self::dump_wait(name, &mut polls, timeout);
     }
 }
 
@@ -376,27 +504,102 @@ pub fn take_owed<T>(&self, ord: StoreOrd, name: &str, owed: impl Fn() -> bool,
 /// counts its landings down as it moves them out). As for [`Gate::take_owed`], `f` must return
 /// only mail that answers a live request (a stale answer is dropped or ignored by `owed`), or the
 /// wait ends on it.
-pub fn take_all_owed<T>(&self, ord: StoreOrd, name: &str, owed: impl Fn(&[T]) -> bool,
+///
+/// The paced dump hands out the batch only once `owed` reads false on it, and returns nothing
+/// (naming the store as starved) until then; what arrived meanwhile is kept inside the gate, in
+/// arrival order, so the site still sees ONE batch, as it does under the blocking dump. That is
+/// why `T` is `Send + 'static`: the batch waits in the gate, which does not know its type.
+#[track_caller]
+pub fn take_all_owed<T: Send + 'static>(&self, ord: StoreOrd, name: &str, owed: impl Fn(&[T]) -> bool,
     mut f: impl FnMut() -> Vec<T>) -> Vec<T> {
     if !self.armed.load(Ordering::Relaxed) {
         return f();
     }
-    let Some(timeout) = self.dump_timeout() else { return self.take_all(ord, f) };
-    let mut polls = 0u64;
-    let mut out = Vec::new();
-    loop {
-        out.extend(f());
-        if !owed(&out) {
-            return out;
+    let at = Location::caller();
+    match self.dump_form() {
+        None => self.take_all(ord, f),
+        Some(Dump::Pace { lag }) => {
+            let mut batch = self.carried::<T>((ord.0, at));
+            if self.pace_hold(ord, at, name, lag, owed(&batch)) {
+                self.carry((ord.0, at), batch);
+                return Vec::new();
+            }
+            batch.extend(f());
+            if owed(&batch) {
+                self.pace_settle(ord, at, name, false);
+                self.carry((ord.0, at), batch);
+                Vec::new()
+            } else {
+                self.pace_settle(ord, at, name, true);
+                batch
+            }
         }
-        Self::dump_wait(name, &mut polls, timeout);
+        Some(Dump::Block(timeout)) => {
+            let mut polls = 0u64;
+            let mut gate = None;
+            let mut out = Vec::new();
+            loop {
+                out.extend(f());
+                if !owed(&out) {
+                    return out;
+                }
+                gate.get_or_insert_with(|| assert_may_block(Self::DUMP_WAIT));
+                Self::dump_wait(name, &mut polls, timeout);
+            }
+        }
     }
 }
 
-/// One poll interval of a dump wait, or the fail-closed panic once `timeout` has passed. The
-/// timeout is a poll COUNT of [`WAIT_STEP_US`] sleeps, like [`WAIT_POLLS`] and for the same reason
-/// (`ci/check-deps.sh`'s `wall` rule keeps wall-clock reads out of this crate), so the real wait
-/// is the timeout or a little more, never less.
+/// The label the blocking dump's wait carries: the watchdog names it instead of `unlabeled`, and
+/// a frame refuses it.
+const DUMP_WAIT: &'static BlockingLabel = &BlockingLabel::new("landgate dump wait");
+
+/// Paced dump: must this site's answer wait for its landing frame? The first sighting of an open
+/// claim fixes the frame it lands on (`lag` virtual frames later); with `lag` 0 nothing ever waits.
+fn pace_hold(&self, ord: StoreOrd, at: &'static Location<'static>, name: &str, lag: u64, claim_open: bool) -> bool {
+    if lag == 0 || !claim_open {
+        return false;
+    }
+    self.with(|s| {
+        let since = *s.sighted.entry((ord.0, at)).or_insert(s.vframe);
+        let held = s.vframe < since + lag;
+        if held {
+            s.lagged.insert(name.to_string());
+        }
+        held
+    })
+}
+
+/// Paced dump: a take is over. `done` (it delivered, or nothing is owed any more) forgets the
+/// sighting; otherwise the store is starved, and the sighting stays so the landing frame is the
+/// first one's.
+fn pace_settle(&self, ord: StoreOrd, at: &'static Location<'static>, name: &str, done: bool) {
+    self.with(|s| {
+        if done {
+            s.sighted.remove(&(ord.0, at));
+        } else {
+            s.starved.insert(name.to_string());
+        }
+    });
+}
+
+/// Paced dump: the part of a batch a queue site kept from earlier takes, or nothing.
+fn carried<T: 'static>(&self, site: Site) -> Vec<T> {
+    let kept = self.with(|s| s.carry.remove(&site));
+    kept.and_then(|b| b.downcast::<Vec<T>>().ok()).map_or_else(Vec::new, |b| *b)
+}
+
+/// Paced dump: keep a partial batch for the site's next take.
+fn carry<T: Send + 'static>(&self, site: Site, batch: Vec<T>) {
+    if !batch.is_empty() {
+        self.with(|s| s.carry.insert(site, Box::new(batch)));
+    }
+}
+
+/// One poll interval of a blocking dump wait, or the fail-closed panic once `timeout` has passed.
+/// The timeout is a poll COUNT of [`WAIT_STEP_US`] sleeps, like [`WAIT_POLLS`] and for the same
+/// reason (`ci/check-deps.sh`'s `wall` rule keeps wall-clock reads out of this crate), so the real
+/// wait is the timeout or a little more, never less.
 fn dump_wait(name: &str, polls: &mut u64, timeout: std::time::Duration) {
     if *polls >= (timeout.as_micros() as u64 / WAIT_STEP_US).max(1) {
         panic!("landgate dump mode: the {name} store still owes an answer after {timeout:?}; failing closed");
@@ -621,11 +824,21 @@ pub fn arm_sparse_replay(sched: BTreeMap<u32,Vec<(u64,u32)>>) { FIXTURE_GATE.arm
 #[cfg(any(test, feature = "test-support"))]
 pub fn arm_dump(timeout: std::time::Duration) { FIXTURE_GATE.arm_dump(timeout); }
 #[cfg(any(test, feature = "test-support"))]
+pub fn arm_dump_paced(lag: u64) { FIXTURE_GATE.arm_dump_paced(lag); }
+#[cfg(any(test, feature = "test-support"))]
+pub fn dump_frame(v: u64) { FIXTURE_GATE.dump_frame(v); }
+#[cfg(any(test, feature = "test-support"))]
+pub fn take_starved() -> Vec<String> { FIXTURE_GATE.take_starved() }
+#[cfg(any(test, feature = "test-support"))]
+pub fn take_lagged() -> Vec<String> { FIXTURE_GATE.take_lagged() }
+#[cfg(any(test, feature = "test-support"))]
+#[track_caller]
 pub fn take_owed<T>(ord: StoreOrd, name: &str, owed: impl Fn() -> bool, f: impl FnMut() -> Option<T>) -> Option<T> {
     FIXTURE_GATE.take_owed(ord, name, owed, f)
 }
 #[cfg(any(test, feature = "test-support"))]
-pub fn take_all_owed<T>(ord: StoreOrd, name: &str, owed: impl Fn(&[T]) -> bool, f: impl FnMut() -> Vec<T>) -> Vec<T> {
+#[track_caller]
+pub fn take_all_owed<T: Send + 'static>(ord: StoreOrd, name: &str, owed: impl Fn(&[T]) -> bool, f: impl FnMut() -> Vec<T>) -> Vec<T> {
     FIXTURE_GATE.take_all_owed(ord, name, owed, f)
 }
 #[cfg(any(test, feature = "test-support"))]
@@ -949,6 +1162,153 @@ mod tests {
         store.owed.store(true, Ordering::SeqCst);
         begin_frame(0);
         let _ = take_owed(A, "fake", || store.owed(), || store.take());
+    }
+
+    /// The dump wait is a frame-thread wait on the network. The dispatcher drains the Browse pump
+    /// (`StoreWork::Browse`, `Bridge::step_app`) inside its `FrameScope`, and in dump mode that
+    /// pump's page take sleeps here until the worker's PMS round trip lands: a Collections page
+    /// over a 2 s `type=18` listing held the sim's main thread 3950 ms ("main-thread hang ended:
+    /// 3950ms in unlabeled"; SIGABRT at 2 s under the default guard). Every other frame-thread wait
+    /// passes the blocking gate (`plx_base::task::assert_may_block`), which refuses it inside a
+    /// frame unless a labelled exception is open; this one bypasses the gate, so the wait is
+    /// nobody's and reads as `unlabeled`.
+    #[test]
+    fn a_dump_wait_inside_a_frame_passes_the_blocking_gate() {
+        let _g = plx_base::testlock::serial();
+        let _armed = Armed;
+        arm_dump(std::time::Duration::from_secs(5));
+        let store = std::sync::Arc::new(FakeStore::default());
+        store.spawn(7, std::time::Duration::from_millis(50)); // the request is out; its answer is not
+        begin_frame(0);
+        let waited = {
+            let _frame = plx_base::task::FrameScope::enter();
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                take_owed(A, "fake", || store.owed(), || store.take())
+            }))
+        };
+        let refused = waited.expect_err("the dump wait slept on the frame thread without passing the blocking gate");
+        let text = refused.downcast_ref::<String>().cloned().unwrap_or_default();
+        assert!(text.contains("main-thread block"), "refused by the blocking gate, not by something else: {text}");
+    }
+
+    impl FakeStore {
+        /// The worker's answer, posted by the test at the point it chooses (no clock decides).
+        fn post(&self, answer: u32) { *self.slot.lock().unwrap() = Some(answer); }
+    }
+
+    /// The paced dump is what a frame loop arms: inside a frame its take polls once and never
+    /// sleeps, and says which store it is waiting on, so the driver can hold the iteration instead.
+    #[test]
+    fn a_paced_take_inside_a_frame_never_sleeps_and_names_the_store_it_waits_on() {
+        let _g = plx_base::testlock::serial();
+        let _armed = Armed;
+        arm_dump_paced(0);
+        let store = FakeStore::default();
+        store.owed.store(true, Ordering::SeqCst); // the request is out; its answer is not
+        dump_frame(0);
+        let _frame = plx_base::task::FrameScope::enter();
+        assert!(take_owed(A, "fake", || store.owed(), || store.take()).is_none(), "no answer: no wait");
+        assert_eq!(take_starved(), ["fake"], "the driver is told which store the picture is waiting on");
+        assert!(take_starved().is_empty(), "and told once");
+        store.post(7);
+        assert_eq!(take_owed(A, "fake", || store.owed(), || store.take()), Some(7));
+        assert!(take_starved().is_empty(), "a take that delivered is not starved");
+        // a claim nobody owes any more (superseded or abandoned) is not starved either
+        store.owed.store(false, Ordering::SeqCst);
+        assert!(take_owed(A, "fake", || store.owed(), || store.take()).is_none());
+        assert!(take_starved().is_empty());
+    }
+
+    /// With a lag the landing frame is the dump's choice: the same virtual frame whether the worker
+    /// answered at once, answered mid-way, or answers only after the frame is due, and the held
+    /// frames in between are not starved (nothing is owed to them).
+    #[test]
+    fn a_paced_landing_frame_follows_the_lag_and_not_the_worker() {
+        let _g = plx_base::testlock::serial();
+        let _armed = Armed;
+        // (name, the frame after whose FIRST take the answer is posted; None: already there)
+        for (when, posted_after) in [("at once", None), ("mid-way", Some(11u64)), ("after it is due", Some(13))] {
+            arm_dump_paced(3);
+            let store = FakeStore::default();
+            store.owed.store(true, Ordering::SeqCst);
+            if posted_after.is_none() {
+                store.post(7);
+            }
+            let mut landed = None;
+            let mut starved_before_due = false;
+            for v in 10..16u64 {
+                // each virtual frame runs twice: a held repeat must not move a landing
+                for pass in 0..2 {
+                    dump_frame(v);
+                    if let Some(got) = take_owed(A, "fake", || store.owed(), || store.take()) {
+                        assert_eq!(got, 7, "{when}");
+                        landed.get_or_insert((v, pass));
+                    }
+                    starved_before_due |= v < 13 && !take_starved().is_empty();
+                    // while the lag holds the answer back the store is named as LAGGED (not debt)
+                    assert_eq!(take_lagged().is_empty(), v >= 13, "{when}: frame {v} pass {pass}");
+                    if landed.is_none() && posted_after == Some(v) && pass == 0 {
+                        store.post(7);
+                    }
+                    take_starved();
+                }
+            }
+            // the claim is first seen open on frame 10 and lag 3 makes frame 13 its landing frame
+            let (frame, _) = landed.unwrap_or_else(|| panic!("{when}: never landed"));
+            assert_eq!(frame, 13, "{when}");
+            assert!(!starved_before_due, "{when}: a held frame is nobody's debt");
+            disarm();
+        }
+    }
+
+    /// Two mailboxes of one store are two claims: each lands `lag` frames after ITS first sighting.
+    #[test]
+    fn a_paced_lag_counts_from_each_sites_own_first_sighting() {
+        let _g = plx_base::testlock::serial();
+        let _armed = Armed;
+        arm_dump_paced(2);
+        let (x, y) = (FakeStore::default(), FakeStore::default());
+        x.owed.store(true, Ordering::SeqCst);
+        x.post(1);
+        let mut landed = (None, None);
+        for v in 0..8u64 {
+            dump_frame(v);
+            if v == 1 {
+                y.owed.store(true, Ordering::SeqCst);
+                y.post(2);
+            }
+            if take_owed(A, "x", || x.owed(), || x.take()).is_some() {
+                landed.0.get_or_insert(v);
+            }
+            if take_owed(A, "y", || y.owed(), || y.take()).is_some() {
+                landed.1.get_or_insert(v);
+            }
+        }
+        assert_eq!(landed, (Some(2), Some(3)), "x seen open on 0, y on 1");
+    }
+
+    /// A queue site sees ONE batch, in arrival order, as it does under the blocking dump: what
+    /// arrived before the whole did is kept in the gate, not handed out piecemeal.
+    #[test]
+    fn a_paced_queue_take_hands_out_the_whole_batch_or_nothing() {
+        let _g = plx_base::testlock::serial();
+        let _armed = Armed;
+        arm_dump_paced(0);
+        let queue = Mutex::new(Vec::<u32>::new());
+        let take = || std::mem::take(&mut *queue.lock().unwrap());
+        // two requests are out: the claim is open until both are in the batch. ONE call site, as a
+        // real pump has: the gate keeps the part-batch per site.
+        let owed = |batch: &[u32]| batch.len() < 2;
+        let site = || take_all_owed(A, "queue", owed, take);
+        dump_frame(0);
+        assert!(site().is_empty());
+        assert_eq!(take_starved(), ["queue"]);
+        queue.lock().unwrap().push(5);
+        assert!(site().is_empty(), "one of two is not a batch");
+        assert_eq!(take_starved(), ["queue"]);
+        queue.lock().unwrap().push(3);
+        assert_eq!(site(), [5, 3], "arrival order, whole");
+        assert!(take_starved().is_empty());
     }
 
     /// Arming dump mode over a recording or a replay would silently wipe it: refused, loudly.

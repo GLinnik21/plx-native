@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
 use crate::registry::{merged_ranges, row_neighbourhood, tile_facts, LibraryIdentity, LibraryLike, LibrarySectionIdentity};
+use plx_ui::caption_policy::CaptionPolicy;
 use plx_ui::cards as ui_cards;
 use plx_ui::cards::{CardSource, Grid, GridSpec, Tile};
 use plx_ui::consts::{MARGIN_X, SCR_H};
@@ -34,19 +35,16 @@ pub(super) fn grid_art(item: &plx_data::pms::PmsMovie) -> Art<'_> {
     if item.kind == 3 { Art::Still(Some(tile_facts::of(item))) } else { Art::Poster(Some(tile_facts::of(item))) }
 }
 
-/// One label construction for the normal and modal-lifted focused grid card.
-pub(super) fn grid_label(item: &plx_data::pms::PmsMovie) -> ui_cards::TileLabel {
-    if item.kind == 3 {
-        let name = if item.title.is_empty() || item.title == item.show_title {
-            plx_ui::fmt::episode_address(item.season_index as i64, item.ep_index as i64)
-        } else { item.title.clone() };
-        // The shared still overlay already names the show and episode address on the artwork.
-        // Focus reveals the episode title and release date, as it does on an episode shelf.
-        return if item.aired.is_empty() && item.year <= 0 { ui_cards::TileLabel::title(&name) }
-        else { ui_cards::TileLabel::titled(&name,
-            &plx_ui::fmt::pretty_date(&item.aired, item.year as i64)) };
-    }
-    ui_cards::poster_label(&tile_facts::of(item))
+/// The Under posters setting as the caption policy every Library grid card and band follows.
+pub(super) fn caption_policy() -> CaptionPolicy { crate::registry::captions::policy() }
+
+/// A grid card's label under `policy`: the focused caption band shows exactly what the Under
+/// posters setting chose, for every POSTER (a season is named for its show by the one builder, like
+/// a season on Home; a collection's details line is its size, and a name its face cuts rides it). An episode is a landscape still, not a poster, and keeps its own block in the
+/// legacy band ([`captions::still_label`](crate::registry::captions::still_label)).
+pub(super) fn grid_label(item: &plx_data::pms::PmsMovie, policy: &CaptionPolicy) -> ui_cards::TileLabel {
+    if item.kind == 3 { return crate::registry::captions::still_label(item, false, ""); }
+    crate::registry::captions::label(policy, &tile_facts::caption_facts(item), None, false)
 }
 
 #[derive(Default)]
@@ -121,11 +119,13 @@ pub(super) struct GridPart {
     target_layout: Layout,
     scroll_target: f32,
     /// The poster wall (`ui::cards::Grid`, [`ScrollMode::External`](plx_ui::cards::ScrollMode)):
-    /// the focused cell's pop and the previous one's let-go, the caption bands, drawing, stops,
+    /// the focused cell's pop and the let-gos of the cells it left, the caption bands, drawing, stops,
     /// placement and neighbours. The page scroll is the Library's; the grid is handed it
-    /// (`Grid::set_page`) before every call. A pop starts from REST only when a deliberate move
-    /// arms it; every other way a cell becomes focused is adopted at full scale, because a page
-    /// coming back from a Detail push must land exactly as it was left.
+    /// (`Grid::set_page`) before every call. A pop starts from REST when a deliberate move arms it
+    /// and when the first awake tick finds a focus no event announced since the last dormant tick;
+    /// a restore or reconcile announced after that is adopted at full scale (`ui::cards`, the pop
+    /// rule). A page returning from a Detail push is dormant under the BACK dip's held image, so
+    /// its focused poster regrows from rest when the image is let go.
     grid: Grid,
     snapshot: Option<plx_data::stores::browse::ListingSnapshot>,
     indexes: GridIndexes,
@@ -145,7 +145,7 @@ impl GridPart {
         self.snapshot = None;
     }
 
-    pub(super) const SHAPE: &'static str = "LibraryGrid{group:u32,total:u32,windows:[(first:u32,elems:[u32])],known:[(elem:u32,index:u32)],identity:Option<(epoch:u32,sid:u32,section:u64,query:u32)>,layout:LibraryLayout,scroll:f32,target_layout:LibraryLayout,scroll_target:f32,pop:(index:Option<u32>,sp:Spring{pos:f32,vel:f32}),shrink:(index:Option<u32>,sp:Spring{pos:f32,vel:f32}),bands:{focus:Option<u32>,slots:[(row:u32,sp:Spring{pos:f32,vel:f32})]}}";
+    pub(super) const SHAPE: &'static str = "LibraryGrid{group:u32,total:u32,windows:[(first:u32,elems:[u32])],known:[(elem:u32,index:u32)],identity:Option<(epoch:u32,sid:u32,section:u64,query:u32)>,layout:LibraryLayout,scroll:f32,target_layout:LibraryLayout,scroll_target:f32,pop:(index:Option<u32>,sp:Spring{pos:f32,vel:f32}),let_gos:[(index:u32,sp:Spring{pos:f32,vel:f32})],bands:{focus:Option<u32>,slots:[(row:u32,sp:Spring{pos:f32,vel:f32},card:Option<u32>)]}}";
 
     pub(super) fn write(&self, c: &mut plx_machine::machine::Canon) {
         // The retained snapshot is a read-publication cache, not another cursor. Its placement
@@ -171,7 +171,7 @@ impl GridPart {
     }
 
     pub(super) fn new(entry: EntryId, group: GroupId) -> Self {
-        let layout = Layout::new(false, &[], 0, false);
+        let layout = Layout::new(false, 0);
         Self {
             entry, group,
             total: 0,
@@ -204,10 +204,21 @@ impl GridPart {
     pub(super) fn on<H: LibraryLike>(&mut self, ev: &ScreenEvent<H>, cx: &Cx<'_, H>,
         fx: &mut Effects<'_, H>, scroll: f32) -> f32 {
         self.grid.set_page(CONTENT_TOP + self.layout.grid_top(), scroll);
-        let src = GridSrc { total: self.total, windows: &self.windows, indexes: &self.indexes, view: H::listing(cx) };
+        let src = GridSrc { total: self.total, windows: &self.windows, indexes: &self.indexes, view: H::listing(cx), policy: caption_policy() };
         let _ = self.grid.on(ev, cx, &src, fx);
         if matches!(ev, ScreenEvent::Tick(_)) { self.grid.landed_shift() } else { 0.0 }
     }
+
+    /// Hold the grid's cards at rest while the page is still dissolving in ([`Grid::dormant`]); the
+    /// lift begins on the first frame after. Set before each [`on`](Self::on).
+    pub(super) fn dormant(&mut self, held: bool) { self.grid.dormant(held); }
+
+    /// The focus the page seats next is its arrival, not a restore ([`Grid::arrive`]).
+    pub(super) fn arrive(&mut self) { self.grid.arrive(); }
+
+    /// The scale the focused card is drawn at now (see [`Grid::pop_probe`]).
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) fn pop_probe(&self, index: Option<usize>) -> f32 { self.grid.pop_probe(index) }
 
     /// The document shift the grid's next tick will report for the cards as they stand now (see
     /// [`Grid::pending_shift`]): a scroll target set against a document that already landed is held
@@ -228,7 +239,14 @@ impl GridPart {
         self.target_layout = target_layout;
         self.scroll_target = scroll_target;
         self.grid.set_columns(layout.cols(), layout.style(), MARGIN_X);
+        self.grid.set_caption_policy(Some(caption_policy()));
         self.grid.set_page(CONTENT_TOP + layout.grid_top(), scroll);
+    }
+
+    /// The policy the grid's focused band is sized by when the listing is not on the stored setting
+    /// (`None`: the Episodes listing's legacy band). After [`set_geometry`](Self::set_geometry).
+    pub(super) fn set_band_policy(&mut self, policy: Option<CaptionPolicy>) {
+        self.grid.set_caption_policy(policy);
     }
 
     pub(super) fn restore_keys(&mut self, keys: &KeyRegistry) {
@@ -400,6 +418,10 @@ impl GridPart {
     #[cfg(test)]
     pub(super) fn swap_for_test(&mut self, a: usize, b: usize) { self.windows[0].elems.swap(a, b); }
 
+    /// Card `i`'s settled cell, the focused band folded in (see [`Grid::cell_probe`]).
+    #[cfg(any(test, feature = "test-support"))]
+    pub(super) fn probe_cell(&self, i: usize) -> plx_ui::Rect { self.grid.cell_probe(i) }
+
     #[cfg(test)]
     pub(super) fn publication_ops(&self) -> (usize, usize) {
         (self.test_ops.slot_visits, self.test_ops.known_probes)
@@ -410,7 +432,7 @@ impl GridPart {
 
     /// The grid's content, read off the published items. O(1) to build: borrows, no copy.
     fn source<'a, 'v, H: LibraryLike>(&'a self, cx: &Cx<'v, H>) -> GridSrc<'a, 'v> {
-        GridSrc { total: self.total, windows: &self.windows, indexes: &self.indexes, view: H::listing(cx) }
+        GridSrc { total: self.total, windows: &self.windows, indexes: &self.indexes, view: H::listing(cx), policy: caption_policy() }
     }
 
     /// The painter the grid draws and registers stops through: the page's alpha, and the stops
@@ -473,6 +495,19 @@ struct GridSrc<'a, 'v> {
     windows: &'a [Window],
     indexes: &'a GridIndexes,
     view: plx_data::stores::browse::ListingView<'v>,
+    policy: CaptionPolicy,
+}
+
+impl GridSrc<'_, '_> {
+    /// The listing is the section's collections: the Collections page's tiles (caption "N films",
+    /// smart mark) rather than the library's.
+    fn collections(&self) -> bool { self.view.library_type() == plx_data::browse::LibraryType::Collections }
+
+    /// The label the grid draws under tile `i`: the one [`CardSource::label`] answers.
+    fn tile_label(&self, i: usize) -> ui_cards::TileLabel {
+        let Some(item) = self.view.item(i) else { return Default::default() };
+        grid_label(item, &self.policy)
+    }
 }
 
 impl<H: Host<Elem = u32>> CardSource<H> for GridSrc<'_, '_> {
@@ -482,9 +517,7 @@ impl<H: Host<Elem = u32>> CardSource<H> for GridSrc<'_, '_> {
     fn art(&self, i: usize) -> Art<'_> {
         self.view.item(i).map_or(Art::Poster(None), grid_art)
     }
-    fn label(&self, i: usize) -> ui_cards::TileLabel {
-        self.view.item(i).map(grid_label).unwrap_or_default()
-    }
+    fn label(&self, i: usize) -> ui_cards::TileLabel { self.tile_label(i) }
     fn progress(&self, i: usize) -> Option<f32> {
         self.view.item(i).filter(|item| item.kind != 3).and_then(|item| item.resume_frac())
     }
@@ -492,6 +525,10 @@ impl<H: Host<Elem = u32>> CardSource<H> for GridSrc<'_, '_> {
         #[cfg(test)] OVERLAID.with(|seen| seen.borrow_mut().push((i, tile.scale)));
         if let Some(item) = self.view.item(i).filter(|item| item.kind == 3) {
             plx_ui::widgets::still_overlay(p, &tile_facts::of(item), tile.rect, tile.radius, false, measure);
+        }
+        // A smart collection wears its mark, focused or not, on the popped tile's rect.
+        if self.collections() && self.view.item(i).is_some_and(|item| item.smart) {
+            plx_ui::collection_tile::draw_smart_mark(p, tile.rect);
         }
     }
     // Metadata still pages ahead via `LibraryWork::Want`; a slot whose page has not landed draws

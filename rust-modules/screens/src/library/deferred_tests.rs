@@ -193,7 +193,7 @@ fn newest_section_replaces_old_grid_work_and_commits_only_the_last_section() {
     let _guard = plx_base::testlock::serial();
     let mut fixture = Fixture::new();
     let mut page = fixture.screen();
-    let original = page.toolbar_chip(FILTER, &fixture.cx()).value;
+    let original = page.filter_active(&fixture.cx());
     fixture.step(
         &mut page,
         ScreenEvent::App(AppMsg::LibraryEdit {
@@ -201,7 +201,7 @@ fn newest_section_replaces_old_grid_work_and_commits_only_the_last_section() {
             edit: QueryEdit::Unwatched(true),
         }),
     );
-    assert_ne!(page.toolbar_chip(FILTER, &fixture.cx()).value, original);
+    assert_ne!(page.filter_active(&fixture.cx()), original);
     fixture.step(
         &mut page,
         ScreenEvent::App(AppMsg::LibrarySelect(fixture.address(2))),
@@ -210,7 +210,7 @@ fn newest_section_replaces_old_grid_work_and_commits_only_the_last_section() {
         page.pending.grid().is_none(),
         "the outgoing section's grid request must be discarded"
     );
-    assert_eq!(page.toolbar_chip(FILTER, &fixture.cx()).value, original);
+    assert_eq!(page.filter_active(&fixture.cx()), original);
     fixture.step(
         &mut page,
         ScreenEvent::App(AppMsg::LibrarySelect(fixture.address(1))),
@@ -220,7 +220,7 @@ fn newest_section_replaces_old_grid_work_and_commits_only_the_last_section() {
         Some(1),
         "chrome acknowledges the newest press immediately"
     );
-    assert!(page.page_fade.is_swapping());
+    assert!(page.grid_fade.is_swapping());
     assert_eq!(fixture.flush(&mut page), vec![true]);
     assert_eq!(fixture.directory.view().current(), Some(1));
     assert!(
@@ -319,7 +319,7 @@ fn foreign_grid_targets_neither_relabel_chips_nor_mutate_the_current_query() {
     let mut fixture = Fixture::new();
     for index in [1, 2] {
         let mut page = fixture.screen();
-        let before = page.toolbar_chip(FILTER, &fixture.cx()).value;
+        let before = page.filter_active(&fixture.cx());
         let query = fixture.listing.view().id().unwrap().query;
         fixture.step(
             &mut page,
@@ -328,7 +328,7 @@ fn foreign_grid_targets_neither_relabel_chips_nor_mutate_the_current_query() {
                 edit: QueryEdit::Unwatched(true),
             }),
         );
-        assert_eq!(page.toolbar_chip(FILTER, &fixture.cx()).value, before);
+        assert_eq!(page.filter_active(&fixture.cx()), before);
         assert_eq!(fixture.flush(&mut page), vec![false]);
         assert!(!fixture.listing.view().unwatched());
         assert_eq!(fixture.listing.view().id().unwrap().query, query);
@@ -390,7 +390,8 @@ fn back_before_commit_cancels_both_halves_and_their_outgoing_fades() {
         }),
     );
     assert!(page.pending.section().is_some() && page.pending.grid().is_some());
-    assert!(page.page_fade.is_swapping() && page.grid_fade.is_swapping());
+    assert!(page.grid_fade.is_swapping(), "a library switch fades the grid only; the header stays");
+    assert!(!page.page_fade.is_swapping());
     let out = fixture.step(&mut page, back());
     assert!(
         out.is_empty(),

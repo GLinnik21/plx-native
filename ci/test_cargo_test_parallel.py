@@ -14,7 +14,11 @@ the gate:
 * no binary inherits the caller's proxy (NO_PROXY=* for each);
 * a binary killed by a signal fails the run;
 * each binary runs with its own empty `TMPDIR`, and one that exits leaving anything in it fails the
-  run, names the leftover and has it removed (read-only subdirectories included).
+  run, names the leftover and has it removed (read-only subdirectories included);
+* `--require-match` turns a filter that matched no test in ANY binary into a failure (exit 1, the
+  filter named), because libtest reports that as `0 passed ... N filtered out` and exits 0, which a
+  mistyped test name reads exactly like. `make test-hostsim` passes it; it is opt-in because
+  `make test-fast T=...` / `make test-crate T=...` are also used as a build-only measurement.
 """
 from __future__ import annotations
 
@@ -52,7 +56,9 @@ for i, a in enumerate(args):
 
 # Behaviour by package name: `fail_*` exits 101 after printing a failing result, `kill_*` SIGKILLs
 # itself, `leak_*` passes but leaves a per-pid directory (with a read-only subdirectory) in its
-# TMPDIR, anything else passes. It records cwd/runtime/tmpdir/args so the tests can read them back.
+# TMPDIR, `nomatch_*` passes having run nothing (what libtest prints when the filter matches no
+# test in the binary), `ignored_*` matched only an #[ignore]d test, anything else passes. It records
+# cwd/runtime/tmpdir/args so the tests can read them back.
 FAKE_BIN = """#!/bin/sh
 name=$(basename "$0")
 echo "noproxy=$NO_PROXY,$no_proxy" >> "$FAKE_HOME/proxy.log"
@@ -61,6 +67,8 @@ case "$name" in
   fail_*) echo "test result: FAILED. 0 passed; 1 failed; 0 ignored"; exit 101;;
   kill_*) kill -9 $$;;
   leak_*) mkdir -p "$TMPDIR/plxnative-fixture-$$/sealed"; : > "$TMPDIR/plxnative-fixture-$$/sealed/f"; chmod 500 "$TMPDIR/plxnative-fixture-$$/sealed";;
+  nomatch_*) echo "running 0 tests"; echo "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 41 filtered out; finished in 0.00s"; exit 0;;
+  ignored_*) echo "running 1 test"; echo "test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 40 filtered out; finished in 0.00s"; exit 0;;
 esac
 echo "running 1 test"
 echo "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
@@ -234,6 +242,47 @@ class RunnerEnvironment(unittest.TestCase):
             runtime = dict(part.split("=", 1) for part in line.split(" ") if "=" in part)["runtime"]
             self.assertIn("plxnative-check.", runtime)
             self.assertFalse(Path(runtime).exists())
+
+
+class RequireMatch(unittest.TestCase):
+    """`--require-match`: a filter that ran nothing is a failure, not a pass."""
+
+    def test_a_filter_that_matches_nothing_in_any_binary_fails_and_is_named(self):
+        with Fixture() as f:
+            out = f.run(["nomatch_a", "nomatch_b"], "--filter", "no_such_test", "--require-match")
+            self.assertEqual(out.returncode, 1, out.stdout + out.stderr)
+            self.assertIn("no_such_test", out.stderr)
+            self.assertIn("matched no test", out.stderr)
+            # Both binaries ran and printed their own result line first; the refusal comes after.
+            self.assertEqual(len(f.started()), 2)
+            self.assertEqual(out.stdout.count("0 passed; 0 failed"), 2)
+
+    def test_a_filter_that_matched_only_an_ignored_test_ran_nothing_either(self):
+        with Fixture() as f:
+            out = f.run(["ignored_a"], "--filter", "slow_one", "--require-match")
+            self.assertEqual(out.returncode, 1, out.stdout + out.stderr)
+            self.assertIn("1 ignored", out.stderr)
+
+    def test_one_binary_that_ran_something_is_enough(self):
+        with Fixture() as f:
+            out = f.run(["nomatch_a", "plx_b"], "--filter", "route::", "--require-match")
+            self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+
+    def test_without_the_flag_a_filter_that_matches_nothing_is_still_a_pass(self):
+        # Libtest's own behaviour, kept for the callers that use the filter as a build-only run.
+        with Fixture() as f:
+            out = f.run(["nomatch_a"], "--filter", "no_such_test")
+            self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+
+    def test_the_flag_without_a_filter_changes_nothing(self):
+        with Fixture() as f:
+            out = f.run(["nomatch_a"], "--require-match")
+            self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+
+    def test_a_failing_binary_keeps_its_own_exit_status(self):
+        with Fixture() as f:
+            out = f.run(["fail_a", "nomatch_b"], "--filter", "x", "--require-match", "--jobs", "1")
+            self.assertEqual(out.returncode, 101, out.stdout + out.stderr)
 
 
 class RealCargoJson(unittest.TestCase):

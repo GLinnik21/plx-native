@@ -387,6 +387,10 @@ class BundleTests(unittest.TestCase):
         self.write()
         sysroot = self.root / 'isolated-toolchain'
         (sysroot / 'bin').mkdir(parents=True)
+        # the prebuilt ARMv7 std the rebuild links (restore refuses a sysroot without it)
+        std = sysroot / 'lib/rustlib/armv7-unknown-linux-gnueabi/lib'
+        std.mkdir(parents=True)
+        (std / 'libstd-0123456789abcdef.rlib').write_bytes(b'fixture prebuilt std')
         compiler = sysroot / 'bin/rustc'
         compiler.write_text('#!/bin/sh\nprintf "commit-hash: pinned-test\\n"\n')
         compiler.chmod(0o755)
@@ -396,7 +400,11 @@ class BundleTests(unittest.TestCase):
                                  '--destination', str(destination), '--rust-sysroot', str(sysroot)],
                                 capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual((sysroot / 'lib/rustlib/src/rust/library/Cargo.lock').read_bytes(), b'fixture runtime source')
+        # rust-src is the std's corresponding SOURCE, restored beside the tree; it is not installed
+        # into the toolchain, because the build uses the prebuilt std and needs none.
+        self.assertEqual((destination / 'rust-runtime-src/library/Cargo.lock').read_bytes(), b'fixture runtime source')
+        self.assertFalse((sysroot / 'lib/rustlib/src').exists())
+        self.assertEqual((destination / 'rust-runtime-notices/LICENSE').read_bytes(), b'fixture retained notice')
         self.assertTrue((destination / 'rust-modules/cargo-vendor/test-crate/Cargo.toml').is_file())
         self.assertIn(str(destination / 'rust-modules/cargo-vendor'),
                       (destination / 'rust-modules/.cargo/config.toml').read_text())

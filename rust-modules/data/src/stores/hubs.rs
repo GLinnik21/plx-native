@@ -168,6 +168,22 @@ impl HubsStore {
         crate::pms::seed_two_library_home_for_test(&mut self.state, sid, directory);
     }
 
+    /// Test hook: the Home a real library has, `items` Continue Watching episodes as the deck row
+    /// above one Recently Added shelf (`r1`..`r3`): see `crate::pms::seed_deck_home_for_test`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn seed_deck_home_for_test(&mut self, items: usize) {
+        let adapter = self.adapter_for_test();
+        crate::pms::seed_deck_home_for_test(&mut self.state, &adapter, items);
+    }
+
+    /// Test hook: Home as one server's `/hubs` answer makes it, projected as the refresh projects it
+    /// — see `crate::pms::seed_hubs_response_for_test`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn seed_hubs_response_for_test(&mut self, mc: &plx_plex::plex::MediaContainer) {
+        let adapter = self.adapter_for_test();
+        crate::pms::seed_hubs_response_for_test(&mut self.state, &adapter, mc);
+    }
+
     /// Test hook: a grid of `rows` shelves, `items` per shelf — see `crate::pms::seed_grid_for_test`.
     #[cfg(any(test, feature = "test-support"))]
     pub fn seed_grid_for_test(&mut self, rows: usize, items: usize) {

@@ -15,6 +15,7 @@ use crate::aq::AuQueue;
 use crate::player::threads::SendPtr;
 use crate::player::SHARED;
 use plx_net::stream::HttpStream;
+use plx_telemetry::telemetry::classes::DemuxExitClass;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_long, c_uchar, c_uint, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -711,12 +712,18 @@ unsafe fn audio_stream_matching(fmt: *mut AVFormatContext, want: &str) -> Option
         let cp = stream_codecpar(*streams.add(i as usize));
         if (*cp).codec_type == AVMEDIA_TYPE_AUDIO {
             let name = std::ffi::CStr::from_ptr(avcodec_get_name((*cp).codec_id)).to_string_lossy();
-            if name.eq_ignore_ascii_case(want) {
+            if audio_name_matches(&name, want) {
                 return Some(i as c_int);
             }
         }
     }
     None
+}
+
+/// FFmpeg's codec name against the payload codec, through the shared canonicaliser: FFmpeg says
+/// `dts` where PMS (and so the payload codec) says `dca`.
+fn audio_name_matches(ffmpeg_name: &str, want: &str) -> bool {
+    plx_platform::devcaps::audio_codec_id(ffmpeg_name) == plx_platform::devcaps::audio_codec_id(want)
 }
 
 /// The ffmpeg stream index of the `n`-th audio stream in file order (for native audio-track
@@ -2299,6 +2306,31 @@ struct AvioState {
     /// stream is somewhere else and `read_cb` must answer the clean end itself. Any other read at
     /// the end still asks the transport, which is how a failure there stays an error.
     parked_at_end: bool,
+    /// Reopens of a cut direct-play body that brought nothing back. See [`HealBudget`].
+    heal: HealBudget,
+}
+
+/// Reopens [`read_cb`] has spent at one byte of a cut body, across calls: libavformat retries a
+/// failed read with a fresh call, so a budget per call let a cut no reopen crosses be reopened
+/// round after round and then read as the end of the file. A byte read refills it.
+#[derive(Clone, Copy, Default)]
+struct HealBudget {
+    at: i64,
+    spent: u8,
+}
+
+impl HealBudget {
+    /// Charge one reopen at byte `at`, or `false` when the budget there is spent.
+    fn take(&mut self, at: i64) -> bool {
+        if self.at != at {
+            *self = HealBudget { at, spent: 0 };
+        }
+        if self.spent >= BODY_HEAL_ATTEMPTS {
+            return false;
+        }
+        self.spent += 1;
+        true
+    }
 }
 
 // TEST ONLY: a deterministic stand-in for the two `Instant::elapsed()` calls that measure
@@ -2418,6 +2450,19 @@ impl AvioState {
             Src::Socket { hs, .. } => plx_net::stream::http_body_done(*hs),
             Src::Curl(cs) => cs.body_complete(),
         }
+    }
+
+    /// Whether a cut at the byte reached may be healed by reopening there: a direct-play
+    /// (no acquisition, so not an HLS segment) plaintext socket with a known length and `off`
+    /// still inside it. Unsized transcodes cannot be reopened at a byte, curl heals on its own
+    /// terms, and a position at or past the end is a position, not a cut. One predicate for every
+    /// heal site, so the drain path cannot drift from the read path.
+    fn may_heal_at_offset(&self) -> bool {
+        self.acquisition.is_none()
+            && self.size > 0
+            && self.off >= 0
+            && self.off < self.size
+            && matches!(self.src, Src::Socket { .. })
     }
 
     /// Drain the live media socket into [`Self::bounce`] without blocking. Called from
@@ -2575,13 +2620,26 @@ fn avio_stopped(s: &mut AvioState) -> c_int {
     AVERROR_IO
 }
 
-/// Reopens [`read_cb`] tries, within one read, after the transfer is cut mid-body.
+/// Reopens [`read_cb`] tries at one byte, after the transfer is cut mid-body, before the cut is a
+/// transport failure.
 const BODY_HEAL_ATTEMPTS: u8 = 3;
+
+/// How long a direct-play socket read waits for a byte before the transfer counts as cut.
+#[cfg(not(test))]
+const BODY_SILENCE: std::time::Duration = std::time::Duration::from_secs(15);
+#[cfg(test)]
+const BODY_SILENCE: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// Reopen the source at the byte reached, through the same path a seek takes.
+fn heal_at_offset(s: &mut AvioState) -> bool {
+    let at = s.off;
+    crate::player::log(&format!("ff: body ended early at byte {at} of {}, reopening there", s.size));
+    seek_cb(s as *mut AvioState as *mut c_void, at, SEEK_SET) == at
+}
 
 extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
     unsafe {
         let s = &mut *(op as *mut AvioState);
-        let mut heals: u8 = 0;
         loop {
             // interrupt: bail out of a blocked read on teardown (aborted) only. A seek does NOT
             // interrupt the read — the demux thread services it itself between two av_read_frame
@@ -2598,6 +2656,15 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                 return bounced as c_int;
             }
             if park_read_fails_closed(s.bounce_remaining(), s.io_failed) {
+                // The failure was parked by `drain_wire` (the demuxer waits in
+                // `aq_push_with_drain` almost all the time, so it is the drain that meets a LAN
+                // reset or an early close), not by this read. The bounce is empty, so `s.off` is
+                // the first byte not yet delivered: reopen there as a cut read would. `seek_cb`
+                // clears `io_failed` on success and refuses a reopen that is not a 206 from the
+                // byte; the per-offset budget bounds a server that keeps cutting.
+                if s.may_heal_at_offset() && s.heal.take(s.off) && heal_at_offset(s) {
+                    continue;
+                }
                 return AVERROR_IO;
             }
             // The abort rule, evaluated where the numbers are — through the same runtime check
@@ -2624,7 +2691,14 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                         owner: BlockingDeadlineOwner::Reserve,
                     })
                 });
-            let live_deadline = blocking_deadline.map(|deadline| deadline.at);
+            // A direct-play socket read has no other clock, so a server that stops sending without
+            // closing would block it forever. Silence this long is answered like a cut: a reopen.
+            // Sized bodies only: a progressive transcode (`start.mkv`) has no length, may be
+            // silent that long while the PMS catches up, and cannot be reopened at a byte (its
+            // restart would answer 200 from the head). It keeps the pre-heal behaviour.
+            let direct_play = s.acquisition.is_none();
+            let silence_deadline = (s.may_heal_at_offset() && blocking_deadline.is_none()).then(|| std::time::Instant::now() + BODY_SILENCE);
+            let live_deadline = blocking_deadline.map(|deadline| deadline.at).or(silence_deadline);
             // Both sources use the same three-way return — >0 bytes, 0 clean end, <0 error — so
             // the EOF decision below stays one branch rather than one per transport.
             let read_started = std::time::Instant::now();
@@ -2720,14 +2794,16 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                 // Direct play only: an HLS segment read carries an acquisition runtime whose
                 // checkpoint and deadlines bound the transfer, but `cs.seek` reopens through
                 // `start()` with neither, and a failed segment is the HLS retry policy's to answer.
-                let direct_play = s.acquisition.is_none();
+                // The plaintext socket heals sized bodies only (see the silence deadline above).
+                if s.may_heal_at_offset() && s.heal.take(s.off) && heal_at_offset(s) {
+                    continue;
+                }
                 if let Src::Curl(cs) = &mut s.src {
                     let cut = cs
                         .body_failure()
                         .is_some_and(|f| matches!(f.rc, 18 | 55 | 56 | 92));
                     let inside = s.off >= 0 && (s.size < 0 || s.off < s.size);
-                    if direct_play && cut && inside && heals < BODY_HEAL_ATTEMPTS {
-                        heals += 1;
+                    if direct_play && cut && inside && s.heal.take(s.off) {
                         if cs.seek(s.off) {
                             continue;
                         }
@@ -2735,6 +2811,20 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                 }
                 // Teardown was handled above through the AU flag and remains EOF. A negative
                 // result here is therefore a real transport/range failure.
+                s.io_failed = true;
+                return AVERROR_IO;
+            }
+            // A clean close before the length is a cut too (a server that ends the response early
+            // rather than resetting it): reopen at the byte reached. One that no reopen crosses is
+            // still not the end of the file: it is the transfer failing, for the pump to answer.
+            if r == 0 && direct_play && s.size > 0 && s.off >= 0 && s.off < s.size {
+                if s.heal.take(s.off) && heal_at_offset(s) {
+                    continue;
+                }
+                crate::player::log(&format!(
+                    "ff: body cut at byte {} of {} and no reopen crossed it; transport failure, not EOF",
+                    s.off, s.size
+                ));
                 s.io_failed = true;
                 return AVERROR_IO;
             }
@@ -2747,6 +2837,7 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
             if let Some(watchdog) = &mut s.transport_watchdog {
                 watchdog.reset();
             }
+            s.heal = HealBudget::default();
             s.body_active_us = s
                 .body_active_us
                 .saturating_add(elapsed_since(read_started).as_micros().max(1) as u64);
@@ -2812,6 +2903,7 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
         }
         s.parked_at_end = false;
         let aq = s.aq;
+        let sized = s.size > 0;
         let mut hopped_to_tls = None;
         let reopen_began = std::time::Instant::now();
         let ok = match &mut s.src {
@@ -2849,7 +2941,24 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
                             *port = t.origin.port() as c_int;
                             *path = p;
                         }
-                        true
+                        // `stream.rs` takes any 2xx, so a server that ignored the Range answers
+                        // 200 from byte 0 and would be spliced in as the bytes at `target`:
+                        // corruption that looks like success (the curl arm refuses it below). A
+                        // sized body knows where it is going, so it is held to the same rule: a
+                        // 206 that starts at the byte asked for, or a 200 for a request from 0.
+                        // An unsized body (a transcode) has no such position to hold it to.
+                        let start = plx_net::stream::hs_range_start(*hs);
+                        let status = plx_net::stream::hs_status(*hs);
+                        let crossed = !sized
+                            || (status == 206 && start == target)
+                            || (status == 200 && target == 0);
+                        if !crossed {
+                            crate::player::log(&format!(
+                                "ff: seek_cb reopen refused: status={status} range_start={start} wanted={target}"
+                            ));
+                            plx_net::stream::http_close(*hs);
+                        }
+                        crossed
                     }
                     Ok(plx_net::stream::redirect::Opened::Tls(t)) => {
                         match open_curl_hop(&t.url(), target, aq) {
@@ -3323,38 +3432,169 @@ unsafe fn parse_extradata(ed: *const u8, len: usize, is_hevc: bool) -> (Vec<u8>,
 }
 
 static SEI_STRIPPED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+static DV_EL_DROPPED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+static DV_RPU_REWRITTEN: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+static DV_RPU_FAILED: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
-/// True if this HEVC NAL is an SEI (prefix=39 / suffix=40) carrying a user-data-registered
-/// ITU-T T.35 HDR10+ dynamic-metadata message (payloadType 4, country_code 0xB5, terminal
-/// provider 0x003C). webOS's HEVC decoder does NOT support per-frame HDR10+ metadata and
-/// stalls on it — Kodi strips it unconditionally ("webOS doesn't support HDR10+ and it can
-/// cause issues"). `nal` is the NAL payload WITHOUT the start code (starts at the 2-byte
-/// NAL header). Static HDR10 mastering-display / CLL SEI (payloadType 137/144) is kept.
-fn is_hdr10plus_sei(nal: &[u8]) -> bool {
+/// HEVC `UNSPEC62`: the NAL type Dolby Vision carries its RPU (the dynamic metadata) in.
+const HEVC_NAL_DV_RPU: u8 = 62;
+/// HEVC `UNSPEC63`: the NAL type a single-track Dolby Vision dual layer (a UHD Blu-ray remux)
+/// wraps each enhancement-layer NAL in. It is what `dovi_tool demux` splits the enhancement layer
+/// out by, and what `dovi_tool convert --discard` drops.
+const HEVC_NAL_DV_EL: u8 = 63;
+
+/// `nuh_layer_id` of an HEVC NAL (`nal` starts at the 2-byte NAL header): bit 0 of byte 0 is the
+/// high bit, the top five bits of byte 1 the rest. Zero throughout a single-layer stream.
+fn hevc_layer_id(nal: &[u8]) -> u8 {
     if nal.len() < 2 {
-        return false;
+        return 0;
+    }
+    ((nal[0] & 1) << 5) | (nal[1] >> 3)
+}
+
+/// True if this HEVC NAL belongs to a Dolby Vision enhancement layer: wrapped in `UNSPEC63`, as a
+/// single-track dual layer stores it, or carried in a layer above the base (`nuh_layer_id > 0`),
+/// which a single-layer decoder never decodes either. `nal` starts at the 2-byte NAL header.
+fn is_dv_enhancement_layer(nal: &[u8]) -> bool {
+    nal.len() >= 2 && (((nal[0] >> 1) & 0x3f) == HEVC_NAL_DV_EL || hevc_layer_id(nal) > 0)
+}
+
+/// PURE: does this configuration record describe a Dolby Vision **Profile 7 that is converted to
+/// Profile 8.1 on the feed path** — dual layer (`el_present_flag`) with a cross-compatible base
+/// layer? The demuxer-side twin of `plx_data::metadata::Dovi::converts_to_p81`, which decides the
+/// route and the Load payload from what the server reported; this one decides what is fed, from
+/// what the file itself carries.
+fn dovi_converts_to_p81(d: &AVDOVIDecoderConfigurationRecord) -> bool {
+    d.dv_profile == 7 && d.el_present_flag != 0 && d.dv_bl_signal_compatibility_id != 0
+}
+
+/// Rewrite a Dolby Vision RPU NAL (`UNSPEC62`; `nal` = 2-byte header + payload, emulation-
+/// prevention bytes still in place) from **Profile 7 to Profile 8.1**, with quietvoid's
+/// `dolby_vision` crate — the same parse, `convert_with_mode(2)` and write `dovi_tool -m 2`
+/// performs. An RPU that is not Profile 7 comes back unchanged. `None` means the RPU could not be
+/// parsed or converted; the caller DROPS it, because a frame without an RPU keeps the previous
+/// frame's dynamic metadata, which is far better than a Profile 8 declaration followed by a
+/// Profile 7 RPU.
+fn rewrite_dv_rpu_p7_to_p81(nal: &[u8]) -> Option<Vec<u8>> {
+    let mut rpu = dolby_vision::rpu::dovi_rpu::DoviRpu::parse_unspec62_nalu(nal).ok()?;
+    if rpu.dovi_profile != 7 {
+        return Some(nal.to_vec());
+    }
+    rpu.convert_with_mode(dolby_vision::rpu::ConversionMode::To81).ok()?;
+    rpu.write_hevc_unspec62_nalu().ok()
+}
+
+/// What to do with one HEVC NAL on its way to the decoder.
+#[derive(Debug, PartialEq, Eq)]
+enum SeiStrip {
+    /// Not an SEI, or an SEI without HDR10+: emit the original bytes (nothing allocated for a non-SEI).
+    Keep,
+    /// Every message was HDR10+ (or the SEI could not be parsed cleanly): emit nothing.
+    Drop,
+    /// The NAL minus its HDR10+ message(s), emulation prevention re-inserted.
+    Rewrite(Vec<u8>),
+}
+
+/// Strip the ITU-T T.35 HDR10+ dynamic-metadata message (SEI payloadType 4, country_code 0xB5,
+/// terminal provider 0x003C) from an HEVC SEI NAL (prefix=39 / suffix=40). webOS's HEVC decoder
+/// does NOT support per-frame HDR10+ metadata and stalls on it — Kodi strips it unconditionally
+/// ("webOS doesn't support HDR10+ and it can cause issues"). `nal` is the NAL payload WITHOUT the
+/// start code (starts at the 2-byte NAL header). Only the HDR10+ message goes: the other messages
+/// of the NAL, static HDR10 mastering-display / CLL (137/144) included, are kept byte for byte,
+/// because on HEVC the panel's HDR envelope comes from the pipeline's own parse of them.
+///
+/// Every message is walked, not just the first: an SEI NAL may carry several, and an HDR10+
+/// message behind another one reached the decoder. A list that does not parse cleanly (truncated
+/// header or payload, bytes after the trailing bits) falls back to the whole-NAL rule: dropped if
+/// an HDR10+ header was seen, kept unchanged otherwise.
+fn strip_hdr10plus_sei(nal: &[u8]) -> SeiStrip {
+    if nal.len() < 2 {
+        return SeiStrip::Keep;
     }
     let nal_type = (nal[0] >> 1) & 0x3f;
     if nal_type != 39 && nal_type != 40 {
-        return false;
+        return SeiStrip::Keep;
     }
-    let mut p = 2usize; // SEI RBSP starts after the 2-byte NAL header
-    let mut ptype = 0usize; // payloadType (0xFF-run + terminator)
-    while p < nal.len() && nal[p] == 0xff {
-        ptype += 255;
-        p += 1;
+    let rbsp = sei_rbsp(&nal[2..]);
+    // Byte ranges of the messages to keep, and whether any HDR10+ message was seen.
+    let mut kept: Vec<(usize, usize)> = Vec::new();
+    let mut found = false;
+    let mut clean = false;
+    let mut p = 0usize;
+    // Each message: payloadType and payloadSize as 0xFF runs plus a terminator, then the payload.
+    // The 0x80 trailing-bits byte ends the list.
+    while p < rbsp.len() {
+        if rbsp[p] == 0x80 {
+            clean = p + 1 == rbsp.len();
+            break;
+        }
+        let start = p;
+        let mut read = || {
+            let mut v = 0usize;
+            while p < rbsp.len() && rbsp[p] == 0xff {
+                v += 255;
+                p += 1;
+            }
+            let last = *rbsp.get(p)?;
+            p += 1;
+            Some(v + last as usize)
+        };
+        let (Some(ptype), Some(psize)) = (read(), read()) else {
+            break;
+        };
+        let end = p.saturating_add(psize);
+        let payload = rbsp.get(p..end.min(rbsp.len())).unwrap_or(&[]);
+        let is_plus = ptype == 4 && payload.len() >= 3 && payload[..3] == [0xb5, 0x00, 0x3c];
+        found |= is_plus;
+        if end > rbsp.len() {
+            break;
+        }
+        if !is_plus {
+            kept.push((start, end));
+        }
+        p = end;
     }
-    if p >= nal.len() {
-        return false;
+    if !found {
+        return SeiStrip::Keep;
     }
-    ptype += nal[p] as usize;
-    p += 1;
-    while p < nal.len() && nal[p] == 0xff {
-        p += 1; // skip payloadSize (0xFF-run + terminator); value unused
+    if !clean || kept.is_empty() {
+        return SeiStrip::Drop;
     }
-    p += 1;
-    // user_data_registered_itu_t_t35 == 4; T.35 header: country 0xB5, provider 0x003C
-    ptype == 4 && p + 3 <= nal.len() && nal[p] == 0xb5 && nal[p + 1] == 0x00 && nal[p + 2] == 0x3c
+    let mut out_rbsp = Vec::with_capacity(rbsp.len());
+    for (s, e) in kept {
+        out_rbsp.extend_from_slice(&rbsp[s..e]);
+    }
+    out_rbsp.push(0x80);
+    // Emulation prevention (H.265 7.4.2): 03 after two zeros when the next byte is <= 03. The
+    // RBSP ends in the 0x80 trailing byte, so the "ends in 00" case cannot arise.
+    let mut out = Vec::with_capacity(out_rbsp.len() + 4);
+    out.extend_from_slice(&nal[..2]);
+    let mut zeros = 0;
+    for b in out_rbsp {
+        if zeros >= 2 && b <= 3 {
+            out.push(3);
+            zeros = 0;
+        }
+        out.push(b);
+        zeros = if b == 0 { zeros + 1 } else { 0 };
+    }
+    SeiStrip::Rewrite(out)
+}
+
+/// An SEI payload with its emulation-prevention bytes removed (`00 00 03` reads as `00 00`), so
+/// message sizes count the bytes they describe.
+fn sei_rbsp(ebsp: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(ebsp.len());
+    let mut zeros = 0;
+    for &b in ebsp {
+        if zeros >= 2 && b == 3 {
+            zeros = 0;
+            continue;
+        }
+        zeros = if b == 0 { zeros + 1 } else { 0 };
+        out.push(b);
+    }
+    out
 }
 
 /// End offset of a NAL of length `nl` starting at `i`, or None if it is empty or would run
@@ -3377,11 +3617,17 @@ fn nal_end(i: usize, nl: usize, size: usize) -> Option<usize> {
 /// Convert one length-prefixed video packet to Annex-B (4-byte start codes) into `out`,
 /// prepending `param` (VPS/SPS/PPS) when the AU is a keyframe (H264 IDR type 5 / HEVC IRAP
 /// types 16-23). Returns true if it is a keyframe. Mirrors mkv_handle_block.
+///
+/// `dv_p7`: the stream is a Dolby Vision Profile 7 converted to 8.1 on the way to the pipeline
+/// ([`dovi_converts_to_p81`]). Every enhancement-layer NAL ([`is_dv_enhancement_layer`]) is
+/// dropped and every RPU is rewritten by [`rewrite_dv_rpu_p7_to_p81`], so what leaves here is the
+/// single-layer stream the Load payload declares (`DolbyHdrInfo profileId 8`).
 unsafe fn packet_to_annexb(
     data: *const u8,
     size: usize,
     nls: usize,
     is_hevc: bool,
+    dv_p7: bool,
     param: &[u8],
     out: &mut Vec<u8>,
 ) -> bool {
@@ -3417,7 +3663,8 @@ unsafe fn packet_to_annexb(
     if is_key {
         out.extend_from_slice(param);
     }
-    // pass 2: emit each NAL as 00 00 00 01 + bytes, dropping per-frame HDR10+ SEI (HEVC)
+    // pass 2: emit each NAL as 00 00 00 01 + bytes, dropping per-frame HDR10+ SEI (HEVC) and, on a
+    // converted Dolby Vision Profile 7, the enhancement layer (its RPUs are rewritten instead)
     let sc = [0u8, 0, 0, 1];
     let mut i = 0usize;
     while i + nls <= size {
@@ -3430,13 +3677,65 @@ unsafe fn packet_to_annexb(
             break;
         };
         let nal = &d[i..end];
-        if is_hevc && is_hdr10plus_sei(nal) {
-            let n = SEI_STRIPPED.fetch_add(1, Ordering::Relaxed) + 1;
-            if n <= 3 || n % 500 == 0 {
-                crate::player::log(&format!("ff: stripped HDR10+ SEI #{n} ({nl} bytes)"));
+        if is_hevc && dv_p7 {
+            if is_dv_enhancement_layer(nal) {
+                let n = DV_EL_DROPPED.fetch_add(1, Ordering::Relaxed) + 1;
+                if n <= 3 || n % 5000 == 0 {
+                    crate::player::log(&format!(
+                        "ff: dropped DV enhancement-layer NAL #{n} ({nl} bytes)"
+                    ));
+                }
+                i += nl;
+                continue;
             }
-            i += nl;
-            continue;
+            if ((nal[0] >> 1) & 0x3f) == HEVC_NAL_DV_RPU {
+                match rewrite_dv_rpu_p7_to_p81(nal) {
+                    Some(rpu) => {
+                        let n = DV_RPU_REWRITTEN.fetch_add(1, Ordering::Relaxed) + 1;
+                        if n <= 3 || n % 5000 == 0 {
+                            crate::player::log(&format!(
+                                "ff: rewrote DV RPU #{n} P7 -> P8.1 ({nl} -> {} bytes)",
+                                rpu.len()
+                            ));
+                        }
+                        out.extend_from_slice(&sc);
+                        out.extend_from_slice(&rpu);
+                    }
+                    None => {
+                        let n = DV_RPU_FAILED.fetch_add(1, Ordering::Relaxed) + 1;
+                        if n <= 3 || n % 500 == 0 {
+                            crate::player::log(&format!(
+                                "ff: DV RPU #{n} could not be converted, dropped ({nl} bytes)"
+                            ));
+                        }
+                    }
+                }
+                i += nl;
+                continue;
+            }
+        }
+        let mut nal = nal;
+        let rewritten;
+        if is_hevc {
+            match strip_hdr10plus_sei(nal) {
+                SeiStrip::Keep => {}
+                strip => {
+                    let n = SEI_STRIPPED.fetch_add(1, Ordering::Relaxed) + 1;
+                    if n <= 3 || n % 500 == 0 {
+                        crate::player::log(&format!("ff: stripped HDR10+ SEI #{n} ({nl} bytes)"));
+                    }
+                    match strip {
+                        SeiStrip::Rewrite(v) => {
+                            rewritten = v;
+                            nal = &rewritten;
+                        }
+                        _ => {
+                            i += nl;
+                            continue;
+                        }
+                    }
+                }
+            }
         }
         out.extend_from_slice(&sc);
         out.extend_from_slice(nal);
@@ -4357,6 +4656,7 @@ unsafe fn hls_input(
             bounce: Vec::new(),
             bounce_pos: 0,
             parked_at_end: false,
+            heal: HealBudget::default(),
         }),
         avio: std::ptr::null_mut(),
         fmt: std::ptr::null_mut(),
@@ -6517,7 +6817,22 @@ fn hls_demux(
                     control.catalog,
                 )
             })
-            .flatten();
+            .flatten()
+            // An automatic Original recovery was already refused on this HLS encoder (or admitted
+            // and rolled back onto it after its Load failed): this worker is the pump's reopen of
+            // the retained route, and a fresh gate would probe, ask and be refused again, a
+            // visible reload each round. Held until an HLS commit changes the
+            // route (`OriginalRecovery::on_hls_commit`).
+            .map(|gate| {
+                if control.original_refused_on_this_route() {
+                    crate::player::log(
+                        "abr: Original was refused on this HLS route; not asked again until the route changes",
+                    );
+                    gate.after_route_refusal()
+                } else {
+                    gate
+                }
+            });
         // **Observation only (plan I0-G).** A seek builds a FRESH controller here, so the live
         // link estimate does not survive it — the only thing that does is `prior`, whose writer on
         // the fallback path is the rate measured at the moment Original failed. One line, printed
@@ -8087,6 +8402,49 @@ fn open_input_failure_note(r: c_int, lane_aborted: bool) -> String {
 /// consumer's drain down to the base rather than dropping under the lane's occupancy.
 const PRE_AUDIO_VIDEO_HEADROOM: c_long = 24 * 1024 * 1024;
 
+/// **How far the AUDIO lane may run past its soft cap while the video lane is starved** (issue
+/// #600): the mirror image of [`PRE_AUDIO_VIDEO_HEADROOM`], and unlike it a standing rule rather
+/// than a one-shot grant.
+///
+/// A Matroska file whose muxer stored its audio ahead of its video (the reported film: ~48 s of
+/// 768 kbit/s E-AC-3, 4.6 MB, before the first video block, whose timestamp is still 0) fills the
+/// audio lane (`player::engine`'s `AQ_AUDIO_BYTES`, 1 MiB, ~10.9 s of that audio) before the first
+/// video packet is read. The demuxer parked in `aq_push` on it, nothing drains audio before the
+/// pipeline has video to start its clock on, and the first video block was never read: a start that
+/// buffered forever (`feed a#1..4` in the log, no `ff: AU#0`).
+///
+/// That skew does not end at the first video block. A muxer that wrote audio 48 s ahead keeps it
+/// for the whole file, so the audio lane has to hold ~the whole skew (3.7 MB at 640 kbit/s) for the
+/// whole film, and the demuxer must never park on it while the consumer is short of VIDEO: before
+/// Play the clock needs `PRIME_VIDEO_MAX_NS` of it, afterwards the pump refills the video lane to
+/// its feed-ahead target (`MAX_FEED_AHEAD_NS`). So every audio push past the 1 MiB soft cap is
+/// admitted, up to this hard ceiling, **while the video lane holds less than `MAX_FEED_AHEAD_NS`
+/// of media** ([`audio_push_gate`], `aq::PushGate`), and parks (timed, see `PushGate`) otherwise.
+/// Nothing is granted or latched: the soft cap is back as soon as the video lane is stocked or the
+/// audio lane drains under it, so an ordinary file (which never has 1 MiB of audio queued while its
+/// video is starved) never sees any of this. For a skewed file the consequence is a read-ahead
+/// that is just in time: the video lane is held at about the pump's own feed-ahead target instead
+/// of filling to its 10 MiB cap.
+///
+/// **The ceiling is base + this = 1 MiB + 16 MiB = 17 MiB.** It is a bound, not a measurement of
+/// what a file needs: 16 MiB holds ~2.9 min of the reported film's 768 kbit/s E-AC-3, ~3.5 min of
+/// 640 kbit/s AC-3, ~1.4 min of a 1.5 Mbit/s DTS core and ~22 s of a 6 Mbit/s E-AC-3 (the top of
+/// the codec's range), while a file whose video never comes cannot grow the lane without limit on
+/// a RAM-tight 32-bit set. Audio is the cheap lane per second, which is why it is smaller than the
+/// video grant.
+///
+/// **At the ceiling the stream fails** (`demux_io_failed`, the same surface as the late-audio
+/// failure: Auto Original falls back to HLS, which the server remuxes with the audio in step; the
+/// failure read-out otherwise) when the consumer provably cannot have started: the video read in
+/// this open or seek spans less than `PRIME_VIDEO_MAX_NS`, so neither of the engine's prime arms is
+/// satisfiable ([`PreAudioHeadroom::video_reach_ns`]). That test deliberately does not use the
+/// audio lane's pops: the engine pops audio before any video exists (`feed_audio_lane` feeds until
+/// the pipeline answers BufferFull), so a pop proves nothing about a clock that has not started.
+/// Once the video read spans the prime depth the clock may be running and the audio lane is
+/// draining at real time, so a ceiling reached then (an audio-only stretch, a sparse video track) is
+/// an ordinary full-lane park, not a failure.
+const AUDIO_AHEAD_HEADROOM: c_long = 16 * 1024 * 1024;
+
 /// Audio pushed past the engine's lead-in before the video lane's headroom is released: the lead-in
 /// is measured from the AU the engine ACCEPTS, in its own timeline, and the lane is pushed in whole
 /// AUs, so the demuxer reads a little beyond it rather than exactly to it.
@@ -8109,6 +8467,21 @@ struct PreAudioHeadroom {
     released: bool,
     first_audio_ns: Option<i64>,
     pops_at_grant: u64,
+    /// The first and the latest video AU pts pushed since the open or seek: how much video the
+    /// consumer has been given ([`video_reach_ns`](Self::video_reach_ns)).
+    video_first_ns: Option<i64>,
+    video_last_ns: i64,
+}
+
+/// The admission rule for an audio push past the audio lane's soft cap: see
+/// [`AUDIO_AHEAD_HEADROOM`]. `video_reach_ns` is [`PreAudioHeadroom::video_reach_ns`].
+fn audio_push_gate(video_lane: *mut AuQueue, video_reach_ns: i64) -> crate::aq::PushGate {
+    crate::aq::PushGate {
+        other: video_lane,
+        starved_below_ns: crate::player::engine::MAX_FEED_AHEAD_NS,
+        headroom: AUDIO_AHEAD_HEADROOM,
+        fail_at_ceiling: video_reach_ns < crate::player::engine::PRIME_VIDEO_MAX_NS,
+    }
 }
 
 /// What the video push about to be made means for the lane's headroom.
@@ -8154,6 +8527,17 @@ impl PreAudioHeadroom {
         }
     }
 
+    /// A video AU at `pts_ns` was pushed since the open or seek.
+    fn video_pushed(&mut self, pts_ns: i64) {
+        self.video_first_ns.get_or_insert(pts_ns);
+        self.video_last_ns = self.video_last_ns.max(pts_ns);
+    }
+
+    /// How much video the consumer has been given since the open or seek (0 before the first AU).
+    fn video_reach_ns(&self) -> i64 {
+        self.video_first_ns.map_or(0, |f| (self.video_last_ns - f).max(0))
+    }
+
     /// An audio AU at `pts_ns` was pushed since the open or seek.
     fn after_audio(&mut self, pts_ns: i64) -> AudioStep {
         let first = self.first_audio_ns.is_none();
@@ -8192,12 +8576,63 @@ struct AudioStep {
 }
 
 #[cfg(test)]
+mod audio_codec_name_tests {
+    use super::*;
+
+    /// FFmpeg names DTS `dts`; PMS (and so the payload codec reaching the matcher) says `dca`.
+    #[test]
+    fn the_payload_codec_matches_ffmpegs_name_across_spellings() {
+        assert!(audio_name_matches("dts", "dca"));
+        assert!(audio_name_matches("dts", "DTS"));
+        assert!(audio_name_matches("eac3", "ec-3"));
+        assert!(audio_name_matches("ac3", "ac3"));
+        assert!(!audio_name_matches("truehd", "dca"));
+        assert!(!audio_name_matches("ac3", "eac3"));
+    }
+}
+
+#[cfg(test)]
 mod pre_audio_headroom_tests {
     use super::*;
 
     const LEAD: i64 = crate::player::engine::AUDIO_LEAD_IN_NS + LEAD_IN_MARGIN_NS;
 
     const GRANT: VideoStep = VideoStep::Grant(PRE_AUDIO_VIDEO_HEADROOM);
+
+    /// The audio gate fails at its ceiling only while the video read since the open or seek is
+    /// shorter than the engine's prime, restarts with a seek, and always asks for the video
+    /// lane to be starved below the pump's own feed-ahead target.
+    #[test]
+    fn the_audio_gate_follows_how_much_video_the_consumer_has_been_given() {
+        let prime = crate::player::engine::PRIME_VIDEO_MAX_NS;
+        let mut h = PreAudioHeadroom::default();
+        assert_eq!(h.video_reach_ns(), 0);
+        let lane = std::ptr::null_mut();
+        assert!(audio_push_gate(lane, h.video_reach_ns()).fail_at_ceiling, "no video yet: the clock cannot start");
+        h.video_pushed(1_000);
+        h.video_pushed(1_000 + prime - 1);
+        assert!(audio_push_gate(lane, h.video_reach_ns()).fail_at_ceiling, "just under the prime depth");
+        h.video_pushed(1_000 + prime);
+        let g = audio_push_gate(lane, h.video_reach_ns());
+        assert!(!g.fail_at_ceiling, "the prime depth has been read: the clock may be running");
+        assert_eq!(g.starved_below_ns, crate::player::engine::MAX_FEED_AHEAD_NS);
+        assert_eq!(g.headroom, AUDIO_AHEAD_HEADROOM);
+        h.restart(std::ptr::null_mut());
+        assert_eq!(h.video_reach_ns(), 0, "a seek starts the count over");
+    }
+
+    /// The audio bound's geometry: the ceiling is base plus headroom, the reported film's 48 s of
+    /// 768 kbit/s fits with room, the top of the codec's range does not run unbounded.
+    #[test]
+    fn the_audio_ceiling_holds_the_reported_film_and_not_everything() {
+        let cap = crate::player::aq_caps().1 + AUDIO_AHEAD_HEADROOM as i64;
+        assert_eq!(cap, 17 * 1024 * 1024);
+        let bytes = |kbit: f64, secs: f64| (kbit * 1e3 / 8.0 * secs) as i64;
+        assert!(bytes(768.0, 48.0) < cap, "issue #600's 48 s lead");
+        assert!(bytes(768.0, 48.0) > crate::player::aq_caps().1, "and the base cap alone cannot hold it");
+        assert!(bytes(768.0, 180.0) > AUDIO_AHEAD_HEADROOM as i64 && bytes(768.0, 170.0) < AUDIO_AHEAD_HEADROOM as i64, "16 MiB is ~2.9 min of 768 kbit/s");
+        assert!(bytes(6_000.0, 60.0) > cap, "a bound, not a promise");
+    }
 
     /// The grant is LAZY and made once: only at a video push that would park at the base cap with an
     /// audio lane being fed and no audio read. A push that fits (an ordinary file: video a few
@@ -8411,7 +8846,7 @@ pub fn demux(
                 if PUSHED_ANY.load(Ordering::Relaxed) {
                     SHARED.demux_io_failed.store(true, Ordering::Release);
                 } else {
-                    SHARED.demux_failed.store(true, Ordering::Release);
+                    SHARED.fail_demux(DemuxExitClass::HlsFailed);
                 }
             }
             Ok(Err(HlsExit::NotReady)) => {
@@ -8419,7 +8854,7 @@ pub fn demux(
                 if PUSHED_ANY.load(Ordering::Relaxed) {
                     SHARED.demux_io_failed.store(true, Ordering::Release);
                 } else {
-                    SHARED.demux_failed.store(true, Ordering::Release);
+                    SHARED.fail_demux(DemuxExitClass::HlsNotReady);
                 }
             }
             Ok(Err(HlsExit::PrimeExpired)) => {
@@ -8434,13 +8869,13 @@ pub fn demux(
             }
             Err(_) => {
                 crate::player::log("hls: demux panicked");
-                SHARED.demux_failed.store(true, Ordering::Release);
+                SHARED.fail_demux(DemuxExitClass::DemuxPanicked);
             }
         }
         if unproductive_exit_failed(PUSHED_ANY.load(Ordering::Relaxed), unsafe {
             crate::aq::aq_is_aborted(aq_p)
         }) {
-            SHARED.demux_failed.store(true, Ordering::Release);
+            SHARED.fail_demux(DemuxExitClass::NoAccessUnits);
         }
         crate::aq::aq_set_eof(aq_p);
         crate::aq::aq_set_eof(aqa_p);
@@ -8530,7 +8965,7 @@ pub fn demux(
                         Ok(r) => Some(r),
                         Err(e) => {
                             crate::player::log(&format!("ff: https reservation FAILED: {e:?}"));
-                            SHARED.demux_failed.store(true, Ordering::Release);
+                            SHARED.fail_demux(DemuxExitClass::HttpsReserveFailed);
                             break;
                         }
                     }
@@ -8568,7 +9003,7 @@ pub fn demux(
                                 SHARED.dg_http_status.store(st, Ordering::Relaxed);
                             }
                             crate::player::log(&format!("ff: https open FAILED: {e:?}"));
-                            SHARED.demux_failed.store(true, Ordering::Release);
+                            SHARED.fail_demux(DemuxExitClass::HttpsOpenFailed);
                             break;
                         }
                     }
@@ -8581,7 +9016,7 @@ pub fn demux(
                             break;
                         }
                         Err(MediaOpenFail::Failed) => {
-                            SHARED.demux_failed.store(true, Ordering::Release);
+                            SHARED.fail_demux(DemuxExitClass::HttpOpenFailed);
                             break;
                         }
                     }
@@ -8606,10 +9041,12 @@ pub fn demux(
                     bounce: Vec::new(),
                     bounce_pos: 0,
                     parked_at_end: false,
+                    heal: HealBudget::default(),
                 });
                 let buf = av_malloc(65536) as *mut u8;
                 if buf.is_null() {
                     crate::player::log("ff: av_malloc failed");
+                    SHARED.note_demux_exit(DemuxExitClass::Other);
                     break;
                 }
                 let avio = avio_alloc_context(
@@ -8623,12 +9060,14 @@ pub fn demux(
                 );
                 if avio.is_null() {
                     crate::player::log("ff: avio_alloc_context failed");
+                    SHARED.note_demux_exit(DemuxExitClass::Other);
                     free_ptr(buf as *mut c_void);
                     break;
                 }
                 let mut fmt = avformat_alloc_context();
                 if fmt.is_null() {
                     crate::player::log("ff: avformat_alloc_context failed");
+                    SHARED.note_demux_exit(DemuxExitClass::Other);
                     free_avio(avio);
                     break;
                 }
@@ -8640,12 +9079,20 @@ pub fn demux(
                     std::ptr::null_mut(),
                 );
                 if r < 0 || fmt.is_null() {
-                    crate::player::log(&open_input_failure_note(r, crate::aq::aq_is_aborted(aq_p)));
+                    let lane_aborted = crate::aq::aq_is_aborted(aq_p);
+                    crate::player::log(&open_input_failure_note(r, lane_aborted));
+                    // A stop teardown asked for is not the source failing to open.
+                    if !lane_aborted {
+                        SHARED.note_demux_exit(DemuxExitClass::OpenInputFailed);
+                    }
                     free_avio(avio);
                     break;
                 }
                 if avformat_find_stream_info(fmt, std::ptr::null_mut()) < 0 {
                     crate::player::log("ff: find_stream_info failed");
+                    if !crate::aq::aq_is_aborted(aq_p) {
+                        SHARED.note_demux_exit(DemuxExitClass::FindStreamInfoFailed);
+                    }
                     avformat_close_input(&mut fmt);
                     free_avio(avio);
                     break;
@@ -8713,6 +9160,7 @@ pub fn demux(
                     } else {
                         crate::player::log("ff: no video stream");
                     }
+                    SHARED.note_demux_exit(DemuxExitClass::NoVideoStream);
                     avformat_close_input(&mut fmt);
                     free_avio(avio);
                     break;
@@ -8784,7 +9232,7 @@ pub fn demux(
                         "ff: no framing for video codec {cname} (codec_id={}); refusing the stream",
                         (*vcp).codec_id
                     ));
-                    SHARED.demux_failed.store(true, Ordering::Release);
+                    SHARED.fail_demux(DemuxExitClass::NoFraming);
                     avformat_close_input(&mut fmt);
                     free_avio(avio);
                     break;
@@ -8798,7 +9246,7 @@ pub fn demux(
                         "ff: the Load declared {} but the file is {cname}; refusing the stream",
                         crate::player::load_v_name(declared)
                     ));
-                    SHARED.demux_failed.store(true, Ordering::Release);
+                    SHARED.fail_demux(DemuxExitClass::LoadMismatch);
                     avformat_close_input(&mut fmt);
                     free_avio(avio);
                     break;
@@ -8868,6 +9316,17 @@ pub fn demux(
                 // AV1 is framed by av1_packet_to_tu as Section-5 temporal units with the av1C config
                 // in-band on keyframes, because the TV pipeline is given no codec_data for AV1.
                 let is_hevc = framing == VideoFraming::AnnexB { hevc: true };
+                // A Dolby Vision Profile 7 with a cross-compatible base layer is converted to
+                // Profile 8.1 while it is fed (`packet_to_annexb` drops the enhancement layer and
+                // rewrites the RPUs), so the pipeline is handed the single-layer stream the Load
+                // payload declares (`plx_data::metadata::Dovi::converts_to_p81`). Armed whether or
+                // not a node was sent: undeclared, what remains is the HDR10 base layer.
+                let dv_p7 = is_hevc && dovi_conf(vcp).is_some_and(|d| dovi_converts_to_p81(&d));
+                if dv_p7 {
+                    crate::player::log(
+                        "ff: Dolby Vision P7 -> P8.1 conversion armed (EL dropped, RPUs rewritten)",
+                    );
+                }
                 let is_av1 = framing == VideoFraming::Av1;
                 let is_vp9 = framing == VideoFraming::Vp9;
                 let (param_blob, nal_len_size) = if is_av1 || is_vp9 {
@@ -9032,6 +9491,7 @@ pub fn demux(
                                 (*pkt).size.max(0) as usize,
                                 nal_len_size,
                                 is_hevc,
+                                dv_p7,
                                 &param_blob,
                                 &mut aubuf,
                             )
@@ -9081,7 +9541,7 @@ pub fn demux(
                                     crate::aq::aq_cap(aq_p),
                                     PRE_AUDIO_VIDEO_HEADROOM
                                 ));
-                                SHARED.demux_failed.store(true, Ordering::Release);
+                                SHARED.fail_demux(DemuxExitClass::NoAudioAu);
                                 SHARED.demux_io_failed.store(true, Ordering::Release);
                                 av_packet_unref(pkt);
                                 break;
@@ -9102,6 +9562,7 @@ pub fn demux(
                         }
                         PUSHED_ANY.store(true, Ordering::Relaxed);
                         SHARED.hls_video_tail_ns.store(pts, Ordering::Release);
+                        headroom.video_pushed(pts);
                     } else if si == ai && FEED_AUDIO.load(Ordering::Relaxed) {
                         let ast = *streams.add(ai as usize);
                         let pts = pts_ns(pkt, ast);
@@ -9110,11 +9571,14 @@ pub fn demux(
                             // audio lane feeds a late-starting track's first AU on this mark.
                             SHARED.first_audio_pts.store(pts, Ordering::Release);
                         }
+                        // The audio lane runs past its soft cap while the video lane is starved
+                        // ([`AUDIO_AHEAD_HEADROOM`]); the gate is what makes that decision, here.
+                        let gate = audio_push_gate(aq_p, headroom.video_reach_ns());
                         let pushed = if let Some(dec) = speed_dec.as_mut() {
                             let mut rv = 0;
                             for (au_pts, pcm) in dec.decode(pkt, pts) {
-                                rv = crate::aq::aq_push_with_drain(
-                                    aqa_p, pcm.as_ptr(), pcm.len() as c_int, au_pts, 1, 2,
+                                rv = crate::aq::aq_push_gated(
+                                    aqa_p, pcm.as_ptr(), pcm.len() as c_int, au_pts, 1, 2, gate,
                                     || state.drain_wire(),
                                 );
                                 if rv != 0 {
@@ -9128,41 +9592,59 @@ pub fn demux(
                             let mut framed = Vec::with_capacity(7 + plen);
                             framed.extend_from_slice(&adts_header(freq_idx, chan_cfg, plen));
                             framed.extend_from_slice(std::slice::from_raw_parts((*pkt).data, plen));
-                            crate::aq::aq_push_with_drain(
+                            crate::aq::aq_push_gated(
                                 aqa_p,
                                 framed.as_ptr(),
                                 framed.len() as c_int,
                                 pts,
                                 1,
                                 2,
+                                gate,
                                 || state.drain_wire(),
                             )
                         } else if dts_audio {
                             let raw = std::slice::from_raw_parts((*pkt).data, (*pkt).size.max(0) as usize);
                             let Some(core) = dts_core_packet(raw) else {
                                 crate::player::log("ff: DTS packet has no complete supported core; refusing audio feed");
-                                SHARED.demux_failed.store(true, Ordering::Release);
+                                SHARED.fail_demux(DemuxExitClass::DtsCoreMissing);
                                 SHARED.demux_io_failed.store(true, Ordering::Release);
                                 av_packet_unref(pkt);
                                 break;
                             };
-                            crate::aq::aq_push_with_drain(
-                                aqa_p, core.as_ptr(), core.len() as c_int, pts, 1, 2,
+                            crate::aq::aq_push_gated(
+                                aqa_p, core.as_ptr(), core.len() as c_int, pts, 1, 2, gate,
                                 || state.drain_wire(),
                             )
                         } else {
-                            crate::aq::aq_push_with_drain(
+                            crate::aq::aq_push_gated(
                                 aqa_p,
                                 (*pkt).data,
                                 (*pkt).size,
                                 pts,
                                 1,
                                 2,
+                                gate,
                                 || state.drain_wire(),
                             )
                             // AUDIO lane
                         };
                         av_packet_unref(pkt);
+                        if pushed == crate::aq::PUSH_CEILING {
+                            // The audio lane is at its ceiling, the video lane is starved and the
+                            // video read so far cannot prime the clock: parking would be a spinner
+                            // nobody can leave. Fail the way the video side does, so the route
+                            // recovers (Auto Original -> HLS) or the failure read-out shows.
+                            crate::player::log(&format!(
+                                "ff: no usable video after {} bytes of audio queued (ceiling {} = base + the {} byte audio headroom; {} ms of video read); failing the stream",
+                                crate::aq::aq_bytes(aqa_p),
+                                crate::aq::aq_cap(aqa_p) + AUDIO_AHEAD_HEADROOM,
+                                AUDIO_AHEAD_HEADROOM,
+                                headroom.video_reach_ns() / 1_000_000
+                            ));
+                            SHARED.fail_demux(DemuxExitClass::NoUsableVideo);
+                            SHARED.demux_io_failed.store(true, Ordering::Release);
+                            break;
+                        }
                         if pushed != 0 {
                             break;
                         }
@@ -9347,7 +9829,7 @@ pub fn demux(
         // the pump waiting on a stage it can never reach. This is the same flag the `http_open`
         // failure above raises, and `pump` turns it into `PlaybackState::Error` (gated on
         // `frames == 0`, so a panic MID-playback is left to the EOF/EOS path below instead).
-        SHARED.demux_failed.store(true, Ordering::Release);
+        SHARED.fail_demux(DemuxExitClass::DemuxPanicked);
     }
     // A demux that ends having produced NOTHING is a failure, whatever route it took out.
     // Only two exits used to say so — the http_open failure and the panic handler — while every
@@ -9363,7 +9845,7 @@ pub fn demux(
         crate::aq::aq_is_aborted(aq_p)
     }) {
         crate::player::log("ff: demux produced no access units — treating as a failure");
-        SHARED.demux_failed.store(true, Ordering::Release);
+        SHARED.fail_demux(DemuxExitClass::NoAccessUnits);
     }
     crate::aq::aq_set_eof(aq_p);
     crate::aq::aq_set_eof(aqa_p); // EOF on the audio lane too
@@ -9418,3 +9900,6 @@ mod late_audio_tests;
 #[cfg(test)]
 #[path = "ff_eof_seek_tests.rs"]
 mod eof_seek_tests;
+#[cfg(test)]
+#[path = "ff_body_heal_tests.rs"]
+mod body_heal_tests;

@@ -1,0 +1,427 @@
+{
+ "environment": {
+  "chrome": "Google Chrome 155.0.8059.39",
+  "cpu": {
+   "logical": 4,
+   "model": "AMD EPYC 9V45 96-Core Processor"
+  },
+  "derive_ffmpeg": "ffmpeg version n9.0.2-35-g9a9b70bb8c-20261023 Copyright (c) 2000-2026 the FFmpeg developers",
+  "env": {
+   "GALLIUM_DRIVER": "llvmpipe",
+   "LC_ALL": "C",
+   "LIBGL_ALWAYS_SOFTWARE": "1",
+   "LP_NATIVE_VECTOR_WIDTH": "256",
+   "SDL_VIDEODRIVER": "x11",
+   "TZ": "UTC"
+  },
+  "gl": {
+   "llvm": "20.1.2",
+   "mesa": "25.2.8-0ubuntu0.24.04.4",
+   "renderer": "llvmpipe (LLVM 20.1.2, 256 bits)",
+   "version": "4.5 (Compatibility Profile) Mesa 25.2.8-0ubuntu0.24.04.4"
+  },
+  "glxinfo": "name of display: :99\ndisplay: :99  screen: 0\ndirect rendering: Yes\nExtended renderer info (GLX_MESA_query_renderer):\n    Vendor: Mesa (0xffffffff)\n    Device: llvmpipe (LLVM 20.1.2, 256 bits) (0xffffffff)\n    Version: 25.2.8\n    Accelerated: no\n    Video memory: 15989MB\n    Unified memory: yes\n    Preferred profile: core (0x1)\n    Max core profile version: 4.5\n    Max compat profile version: 4.5\n    Max GLES1 profile version: 1.1\n    Max GLES[23] profile version: 3.2\nMemory info (GL_ATI_meminfo):\n    VBO free memory - total: 0 MB, largest block: 0 MB\n    VBO free aux. memory - total: 14959 MB, largest block: 14959 MB\n    Texture free memory - total: 0 MB, largest block: 0 MB\n    Texture free aux. memory - total: 14959 MB, largest block: 14959 MB\n    Renderbuffer free memory - total: 0 MB, largest block: 0 MB\n    Renderbuffer free aux. memory - total: 14959 MB, largest block: 14959 MB\nMemory info (GL_NVX_gpu_memory_info):\n    Dedicated video memory: 0 MB\n    Total available memory: 15989 MB\n    Currently available dedicated video memory: 0 MB\nOpenGL vendor string: Mesa\nOpenGL renderer string: llvmpipe (LLVM 20.1.2, 256 bits)\nOpenGL core profile version string: 4.5 (Core Profile) Mesa 25.2.8-0ubuntu0.24.04.4\nOpenGL core profile shading language version string: 4.50\nOpenGL core profile context flags: (none)\nOpenGL core profile profile mask: core profile\n\nOpenGL version string: 4.5 (Compatibility Profile) Mesa 25.2.8-0ubuntu0.24.04.4\nOpenGL shading language version string: 4.50\nOpenGL context flags: (none)\nOpenGL profile mask: compatibility profile\n\nOpenGL ES profile version string: OpenGL ES 3.2 Mesa 25.2.8-0ubuntu0.24.04.4\nOpenGL ES profile shading language version string: OpenGL ES GLSL ES 3.20",
+  "kernel": "Linux 6.17.0-1022-azure",
+  "os": "Ubuntu 24.04.5 LTS",
+  "packages": {
+   "ffmpeg": "7:6.1.1-3ubuntu5",
+   "libgl1-mesa-dri": "25.2.8-0ubuntu0.24.04.4",
+   "libglx-mesa0": "25.2.8-0ubuntu0.24.04.4",
+   "libllvm16t64": "1:16.0.6-23ubuntu4",
+   "libllvm17t64": "1:17.0.6-9ubuntu1",
+   "libllvm18": "1:18.1.3-1ubuntu1",
+   "libllvm19": "1:19.1.1-1ubuntu1~24.04.2",
+   "libllvm20": "1:20.1.2-0ubuntu1~24.04.3",
+   "libsdl2-2.0-0": "2.30.0+dfsg-1ubuntu3.1",
+   "python3-pil": "10.2.0-1ubuntu1.3",
+   "xvfb": "2:21.1.12-1ubuntu1.9"
+  },
+  "pillow": "10.2.0",
+  "runner_image": {
+   "os": "ubuntu24",
+   "version": "20261012.334.1"
+  }
+ },
+ "files": {
+  "docs/screenshots/CREDITS.md": {
+   "bytes": 23977,
+   "sha256": "2164c3d13177867d6e880c103b11606a42d7086b25238360958c21f6c7578335"
+  },
+  "docs/screenshots/home.jpg": {
+   "bytes": 210924,
+   "sha256": "7fb558ddf7541304a5b653fb84bd553684a83027e63be7f45a7e3562e4de32ad"
+  },
+  "docs/screenshots/library.jpg": {
+   "bytes": 299424,
+   "sha256": "61fb5c6b3537330c6ef4dc71737271212dcfdb2ba071cba2fbdcc9828b5fa8c5"
+  },
+  "docs/screenshots/player.jpg": {
+   "bytes": 70543,
+   "sha256": "43842589339b88f85153d3c68180dfbbfbf261755d8fa49adb62c1c72a56d4bd"
+  },
+  "docs/screenshots/search.jpg": {
+   "bytes": 250357,
+   "sha256": "9e033cd919e0f319b4b60c087e8ec4007e34f474ef6a18418d061a2db0f5956d"
+  },
+  "docs/screenshots/ux-account-menu.jpg": {
+   "bytes": 230155,
+   "sha256": "77dc57d55c1510823c8a2cc8dec0e5a28d31a90a88f4c8b02aeccc878ff7a4f4"
+  },
+  "docs/screenshots/ux-detail.jpg": {
+   "bytes": 246047,
+   "sha256": "f14ccfd8a78f09705629d634739e8cb38013f8b65a720e2474f9936ad7629627"
+  },
+  "docs/screenshots/ux-failure.jpg": {
+   "bytes": 66655,
+   "sha256": "8316586f1806186753d3586dbb1673ae285a3d692a0effbe2c0efb5f47820ba6"
+  },
+  "docs/screenshots/ux-home-hero.jpg": {
+   "bytes": 272874,
+   "sha256": "c63d5cf0ccea45d9003d1c127175637105d9c8cf96f9dbf94c29ba4b4f6c6c4a"
+  },
+  "docs/screenshots/ux-home-shelves.jpg": {
+   "bytes": 453187,
+   "sha256": "28376fc086af7cb64926616048f14634b73ed2ed7f749425f314bd6face11914"
+  },
+  "docs/screenshots/ux-item-menu.jpg": {
+   "bytes": 380442,
+   "sha256": "ddb63868c872c03cd8c3a1c73e21b51c1e51b0f449ee98b6c9dd67c62ecc3721"
+  },
+  "docs/screenshots/ux-library-grid.jpg": {
+   "bytes": 395125,
+   "sha256": "ce2b612098a6b62af83773feea2adba1744f2bec32414aaf0ead1e3a39237ccc"
+  },
+  "docs/screenshots/ux-library-sort.jpg": {
+   "bytes": 324540,
+   "sha256": "025a96cc80925d335b11a33641819d147f129027300f1812e5aefcb41706f645"
+  },
+  "docs/screenshots/ux-search.jpg": {
+   "bytes": 316636,
+   "sha256": "985ac38672e53828a05f22c67ee7157f97ccae4ce04774ef339a8f20e9940646"
+  },
+  "docs/screenshots/ux-signin.jpg": {
+   "bytes": 86047,
+   "sha256": "1222acedc7f6ee6bb3b7192fce9e7f55921e36346ad626516f6773d580d37cb0"
+  },
+  "site/media/closeup-fan-caligari.jpg": {
+   "bytes": 29160,
+   "sha256": "1c57013498fd06fd257fc15df88cc3d011868a70f9673d5db461a8f58bb53a7d"
+  },
+  "site/media/closeup-fan-cosmos.jpg": {
+   "bytes": 18197,
+   "sha256": "caa193047aa70d1868573eb8ea4e226ecd947a238d7c8807ab0a14f1b0764662"
+  },
+  "site/media/closeup-fan-elephants.jpg": {
+   "bytes": 19180,
+   "sha256": "f1dafb31ff35d192175eeeb502fa262e3ff574ddc72e434fc214b91eb6a3f1b0"
+  },
+  "site/media/closeup-glass-glow.png": {
+   "bytes": 3948,
+   "sha256": "10d5b2b27553b60eae982819f5a7d70c613595ad938121ff12716c1f3f88f6a0"
+  },
+  "site/media/closeup-glass-narrow-glow.png": {
+   "bytes": 2346,
+   "sha256": "f816eb992f861b381a3de4ab014ded7ab59e7effc12af884117d3ffa47d548f3"
+  },
+  "site/media/closeup-glass-narrow.jpg": {
+   "bytes": 67883,
+   "sha256": "005875c8dc01753f2defa04a1f0d632e0a7ff64db9686a7904f4bd99fbe103fd"
+  },
+  "site/media/closeup-glass-narrow.webp": {
+   "bytes": 23908,
+   "sha256": "c4d38131afec1c7c03f87c10907df5861abc3c55635c69443ac4c54b7e3b1f10"
+  },
+  "site/media/closeup-glass.jpg": {
+   "bytes": 106671,
+   "sha256": "0f0720e7ac0542d91ec3fd6c3c0a87736aadd37c8a36140dcb3b2e5392c9741b"
+  },
+  "site/media/closeup-glass.webp": {
+   "bytes": 43412,
+   "sha256": "8a190928dab9475bd29b04d7ff983924f406d957ac6edd98afae393550476ba2"
+  },
+  "site/media/closeup-player-glow.png": {
+   "bytes": 3071,
+   "sha256": "2aa49c817161abb6f37ddcacab4c532d822b297f8df23c9e05b88ca272ea8092"
+  },
+  "site/media/closeup-player-narrow.jpg": {
+   "bytes": 71981,
+   "sha256": "6aa24cec7b8c87bd6128e5760f4e3b3277b50e8b3f6e150c6e04947ffa6ada6f"
+  },
+  "site/media/closeup-player-narrow.webp": {
+   "bytes": 37680,
+   "sha256": "da93a088942de57512f6978583872605b3a965002ab0e08fe67fc4fb7b992966"
+  },
+  "site/media/closeup-player.jpg": {
+   "bytes": 116095,
+   "sha256": "5a1d54452c2e8e92adac52301d8ddb8769fab36fffeb6758b5dcc9affbd8c1f3"
+  },
+  "site/media/closeup-player.webp": {
+   "bytes": 45560,
+   "sha256": "bb453a7773f8fffb383f9b3068aa3737bd2688fd3a5f9aa89b45d89ecc7eefd5"
+  },
+  "site/media/closeup-tiles-glow.png": {
+   "bytes": 3901,
+   "sha256": "20ef9ba498112763f4b9b9cdc6e617f1126018d76b37c741d0134f4a283c3885"
+  },
+  "site/media/closeup-tiles-narrow.jpg": {
+   "bytes": 136344,
+   "sha256": "d9592053d98203fadb2c41d8409f1e93f157428124130d26d30d955f0953cdc3"
+  },
+  "site/media/closeup-tiles-narrow.webp": {
+   "bytes": 82070,
+   "sha256": "f9bd6c79cb96ff8556c46d49b458679ac816a7428f50d39c2cada694fbe89645"
+  },
+  "site/media/closeup-tiles.jpg": {
+   "bytes": 327860,
+   "sha256": "61edc274b9b16f686bb99127c5d91a7644607c4af2797d7f424d4a38fd7b54df"
+  },
+  "site/media/closeup-tiles.webp": {
+   "bytes": 150258,
+   "sha256": "d7cb07dc327e05c1934fc0b64682ded214859c8f8eb31f7857cb3a83c7ed886d"
+  },
+  "site/media/og-card.jpg": {
+   "bytes": 80555,
+   "sha256": "9face91ce16adab7b83fa6f6a4b4c44b980c369eeb16d3b31bbbcfabf59505bd"
+  }
+ },
+ "platform": "linux-ci",
+ "schema": 1,
+ "stability": {
+  "method": "two captures of every scene (a third if they disagree), the first that another agrees with adopted",
+  "scenes": {
+   "account-menu": {
+    "bound": 1,
+    "captures": 2,
+    "files": [
+     "ux-account-menu.jpg"
+    ],
+    "free_regions": 0,
+    "identical": false,
+    "ok": true,
+    "pixels": 2,
+    "total": 2073600,
+    "worst": 1
+   },
+   "detail": {
+    "bound": 1,
+    "captures": 2,
+    "files": [
+     "ux-detail.jpg"
+    ],
+    "free_regions": 0,
+    "identical": true,
+    "ok": true,
+    "pixels": 0,
+    "worst": 0
+   },
+   "failure": {
+    "bound": 1,
+    "captures": 2,
+    "files": [
+     "ux-failure.jpg"
+    ],
+    "free_regions": 0,
+    "identical": true,
+    "ok": true,
+    "pixels": 0,
+    "worst": 0
+   },
+   "home": {
+    "bound": 1,
+    "captures": 2,
+    "files": [
+     "home.jpg",
+     "ux-home-hero.jpg",
+     "og-card.jpg"
+    ],
+    "free_regions": 0,
+    "identical": false,
+    "ok": true,
+    "pixels": 772,
+    "total": 2073600,
+    "worst": 1
+   },
+   "home-shelves": {
+    "bound": 1,
+    "captures": 2,
+    "files": [
+     "ux-home-shelves.jpg"
+    ],
+    "free_regions": 0,
+    "identical": true,
+    "ok": true,
+    "pixels": 0,
+    "worst": 0
+   },
+   "item-menu": {
+    "bound": 1,
+    "captures": 2,
+    "files": [
+     "ux-item-menu.jpg"
+    ],
+    "free_regions": 0,
+    "identical": false,
+    "ok": true,
+    "pixels": 15,
+    "total": 2073600,
+    "worst": 1
+   },
+   "library": {
+    "bound": 1,
+    "captures": 2,
+    "files": [
+     "library.jpg"
+    ],
+    "free_regions": 0,
+    "identical": true,
+    "ok": true,
+    "pixels": 0,
+    "worst": 0
+   },
+   "library-grid": {
+    "bound": 1,
+    "captures": 2,
+    "files": [
+     "ux-library-grid.jpg"
+    ],
+    "free_regions": 0,
+    "identical": true,
+    "ok": true,
+    "pixels": 0,
+    "worst": 0
+   },
+   "library-sort": {
+    "bound": 1,
+    "captures": 2,
+    "files": [
+     "ux-library-sort.jpg"
+    ],
+    "free_regions": 0,
+    "identical": false,
+    "ok": true,
+    "pixels": 62,
+    "total": 2073600,
+    "worst": 1
+   },
+   "player": {
+    "bound": 1,
+    "captures": 2,
+    "files": [
+     "player.jpg"
+    ],
+    "free_regions": 0,
+    "identical": true,
+    "ok": true,
+    "pixels": 0,
+    "worst": 0
+   },
+   "search": {
+    "bound": 1,
+    "captures": 2,
+    "files": [
+     "search.jpg",
+     "ux-search.jpg"
+    ],
+    "free_regions": 0,
+    "identical": true,
+    "ok": true,
+    "pixels": 0,
+    "worst": 0
+   },
+   "signin": {
+    "bound": 1,
+    "captures": 2,
+    "files": [
+     "ux-signin.jpg"
+    ],
+    "free_regions": 0,
+    "identical": true,
+    "ok": true,
+    "pixels": 0,
+    "worst": 0
+   },
+   "site-fan": {
+    "bound": 1,
+    "captures": 2,
+    "files": [
+     "closeup-fan-caligari.jpg",
+     "closeup-fan-cosmos.jpg",
+     "closeup-fan-elephants.jpg"
+    ],
+    "free_regions": 0,
+    "identical": true,
+    "ok": true,
+    "pixels": 0,
+    "worst": 0
+   },
+   "site-glass": {
+    "bound": 1,
+    "captures": 2,
+    "files": [
+     "closeup-glass.jpg"
+    ],
+    "free_regions": 0,
+    "identical": true,
+    "ok": true,
+    "pixels": 0,
+    "worst": 0
+   },
+   "site-glass-narrow": {
+    "bound": 1,
+    "captures": 2,
+    "files": [
+     "closeup-glass-narrow.jpg"
+    ],
+    "free_regions": 0,
+    "identical": true,
+    "ok": true,
+    "pixels": 0,
+    "worst": 0
+   },
+   "site-tiles": {
+    "bound": 1,
+    "captures": 2,
+    "files": [
+     "closeup-tiles.jpg"
+    ],
+    "free_regions": 0,
+    "identical": true,
+    "ok": true,
+    "pixels": 0,
+    "worst": 0
+   },
+   "site-up-next": {
+    "bound": 2,
+    "captures": 2,
+    "files": [
+     "closeup-player.jpg"
+    ],
+    "free_regions": 0,
+    "identical": true,
+    "ok": true,
+    "pixels": 0,
+    "worst": 0
+   }
+  }
+ },
+ "tree_hash": {
+  "assets": "2cfd47d642fb46f53a4487a779b0ee441e39e2d8",
+  "combined": "a23a1b0f25656955e3ff5680d8f80e397f6bb03909176d2e01cd0d3e75bbd42f",
+  "locales": "40b8ca5dd02c1a47863de78a3b35eb24cf65036e",
+  "pkg/appfont-bold.ttf": "fd85bda99fc074155621794b40b89d3430fc7806",
+  "pkg/appfont-cjk.ttf": "f2c42d8215ce27a59e3dcf2bb6f02a7a75b05329",
+  "pkg/appfont-emoji.ttf": "454eccccd9bc49f5698728d501adec4e3927149d",
+  "pkg/appfont.ttf": "a55d3a2b1b9723316ae65d3d1d7ac599b861c419",
+  "rust-modules": "273b7b605862a0ef86797437a032cd4a11cae82a",
+  "site/og": "29fec79cb6c2f39ebe51a4a47c937eaba36e6320",
+  "src": "274afa8530b1edf5f27b5eba0ac8ac3b8023068c",
+  "tests/demo_library": "56b529ab47a49f2b9131e7b6aa9c6a193ffeb3fb",
+  "tests/mock_pms.py": "376c057c9bedcb382aed6873a7b399bf1facda9e",
+  "tests/screenshots": "c045a706776bd5607e1fb17cbed84fbbe4617944",
+  "tools/render-og-card.sh": "356996eb0abcbdda78d44deefb2eb6237f52027f",
+  "tools/render-site-glows.py": "3c12193796b99064d259d5b92cde1b44a4ab1bcb",
+  "tools/render-site-variants.py": "b077ad599b409fe3d687ba7476fd726e8f978da6",
+  "tools/screenshots.py": "a562332dce5c9db9f546c5013ef9b9288bee1644",
+  "tools/site_stills.py": "52cb18b4a263c78633496e7724cf661132ae8031"
+ }
+}

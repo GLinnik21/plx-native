@@ -743,6 +743,135 @@ impl TransportClass {
     }
 }
 
+/// **Which demuxer exit failed the session, as a class.** About half of all playback failures
+/// reach the report as `media_source`, and more than ten places in the demuxer (and the Load
+/// builder) raise the one `demux_failed` flag that becomes it, so the report could not say which
+/// one dominates. The demuxer records the FIRST exit that failed the session (a later teardown
+/// cascade never overwrites the real cause) in a one-byte latch, and this is its closed reading.
+/// It rides on every handled playback error, whatever its kind: most exits end as `media_source`,
+/// but the audio/video-starvation and DTS-core exits (`NoAudioAu`, `NoUsableVideo`,
+/// `DtsCoreMissing`) raise `demux_io_failed` too and so report as `playback_interrupted`. The
+/// latch is per session, so a higher-ranked cause (`tv_pipeline`, `load_timeout`,
+/// `playback_interrupted`) can ride with a non-`None` exit.
+///
+/// The numbers are the latch's stable mapping (`latch` / `from_latch`), pinned by a test: a value
+/// is never renumbered, only appended. `None` (0) is "no demux exit was recorded".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum DemuxExitClass {
+    /// No demux exit was recorded.
+    None = 0,
+    /// The https source's connection slot could not be reserved before opening.
+    HttpsReserveFailed = 1,
+    /// The https media GET did not open (a transport failure or a status we could not stream).
+    HttpsOpenFailed = 2,
+    /// The plain-http progressive source did not open.
+    HttpOpenFailed = 3,
+    /// `avformat_open_input` returned no context (teardown's own abort is not recorded).
+    OpenInputFailed = 4,
+    /// `avformat_find_stream_info` failed.
+    FindStreamInfoFailed = 5,
+    /// The container has no video stream (an audio-only stream included).
+    NoVideoStream = 6,
+    /// The video codec has no framing the pipeline can be fed.
+    NoFraming = 7,
+    /// The Load declared a different video codec than the file carries.
+    LoadMismatch = 8,
+    /// Video filled the pre-audio ceiling and no audio access unit ever arrived.
+    NoAudioAu = 9,
+    /// Audio filled its ceiling and no usable video ever arrived.
+    NoUsableVideo = 10,
+    /// A DTS packet had no complete supported core to feed.
+    DtsCoreMissing = 11,
+    /// The HLS demuxer failed before delivering anything.
+    HlsFailed = 12,
+    /// The HLS playlist resource was not ready before anything was delivered.
+    HlsNotReady = 13,
+    /// The demux thread panicked.
+    DemuxPanicked = 14,
+    /// The demuxer ended without producing a single access unit, and no earlier exit named why.
+    NoAccessUnits = 15,
+    /// The engine refused to build the Load (a codec the pipeline cannot be declared to feed).
+    LoadRefused = 16,
+    /// Any other exit.
+    Other = 17,
+}
+
+impl DemuxExitClass {
+    pub const ALL: [Self; 18] = [
+        Self::None,
+        Self::HttpsReserveFailed,
+        Self::HttpsOpenFailed,
+        Self::HttpOpenFailed,
+        Self::OpenInputFailed,
+        Self::FindStreamInfoFailed,
+        Self::NoVideoStream,
+        Self::NoFraming,
+        Self::LoadMismatch,
+        Self::NoAudioAu,
+        Self::NoUsableVideo,
+        Self::DtsCoreMissing,
+        Self::HlsFailed,
+        Self::HlsNotReady,
+        Self::DemuxPanicked,
+        Self::NoAccessUnits,
+        Self::LoadRefused,
+        Self::Other,
+    ];
+
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::HttpsReserveFailed => "https_reserve_failed",
+            Self::HttpsOpenFailed => "https_open_failed",
+            Self::HttpOpenFailed => "http_open_failed",
+            Self::OpenInputFailed => "open_input_failed",
+            Self::FindStreamInfoFailed => "find_stream_info_failed",
+            Self::NoVideoStream => "no_video_stream",
+            Self::NoFraming => "no_framing",
+            Self::LoadMismatch => "load_mismatch",
+            Self::NoAudioAu => "no_audio_au",
+            Self::NoUsableVideo => "no_usable_video",
+            Self::DtsCoreMissing => "dts_core_missing",
+            Self::HlsFailed => "hls_failed",
+            Self::HlsNotReady => "hls_not_ready",
+            Self::DemuxPanicked => "demux_panicked",
+            Self::NoAccessUnits => "no_access_units",
+            Self::LoadRefused => "load_refused",
+            Self::Other => "other",
+        }
+    }
+
+    /// The byte the demuxer's latch stores for this exit.
+    pub const fn latch(self) -> u8 {
+        self as u8
+    }
+
+    /// The class a latch byte stands for; a byte no variant owns is `Other`, never a panic.
+    pub const fn from_latch(raw: u8) -> Self {
+        match raw {
+            0 => Self::None,
+            1 => Self::HttpsReserveFailed,
+            2 => Self::HttpsOpenFailed,
+            3 => Self::HttpOpenFailed,
+            4 => Self::OpenInputFailed,
+            5 => Self::FindStreamInfoFailed,
+            6 => Self::NoVideoStream,
+            7 => Self::NoFraming,
+            8 => Self::LoadMismatch,
+            9 => Self::NoAudioAu,
+            10 => Self::NoUsableVideo,
+            11 => Self::DtsCoreMissing,
+            12 => Self::HlsFailed,
+            13 => Self::HlsNotReady,
+            14 => Self::DemuxPanicked,
+            15 => Self::NoAccessUnits,
+            16 => Self::LoadRefused,
+            _ => Self::Other,
+        }
+    }
+}
+
 /// **How long the failed transfer had lived, as a bucket — never the millisecond count.** A proxy
 /// or middlebox that cuts every transfer at a fixed time shows up as one bucket on every report
 /// (30-90 s for a minute), which is the pattern that names it. `Unknown` is "no transport failure
@@ -805,6 +934,8 @@ pub struct PlaybackErrorContext {
     pub transport: TransportClass,
     /// How long that transfer had lived.
     pub transfer_age: TransferAgeClass,
+    /// Which demuxer exit failed the session (`none` when none was recorded); see [`DemuxExitClass`].
+    pub demux_exit: DemuxExitClass,
     /// Whether the PLAYBACK ever put a picture on the panel (the session's own latch).
     pub started: bool,
     /// The route the failed attempt was opening, as against `delivery`, which is the route the

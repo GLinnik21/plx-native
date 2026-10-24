@@ -84,7 +84,9 @@
 //! The paragraph is never shortened to make translated actions fit.
 
 use crate::consts::SAFE;
+use crate::hstack::{Align as StackAlign, HStack, Item as HItem};
 use crate::icons::{self, Icon};
+use crate::vstack::{Anchor, VSpan, VStack};
 use plx_machine::machine::Measure;
 use crate::text_view::TextView;
 use crate::underlay::{FrameLatch, Grade, Role, UnderlayField};
@@ -109,7 +111,12 @@ const CRUMB_MARK: f32 = theme::size::MICRO as f32;
 /// the font through SDL2_ttf, which the host suite cannot LINK, so a measured band would make
 /// every route's vertical flow ungradeable off-device — the boundary `ui/CLAUDE.md` records as
 /// stopping the whole suite linking rather than skipping one test.
-const CRUMB_BAND: f32 = CRUMB_MARK;
+pub const CRUMB_BAND: f32 = CRUMB_MARK;
+/// How far above a title's top a crumb's band starts: the band and one [`theme::space::SM`] of air
+/// (the "tight" rung, a caption over the line it belongs to). The narrative flow spends it
+/// ([`RouteLayout::narrative_top`]), and a page whose heading is its own big title but which is not
+/// laid out by [`RouteLayout`] (the Collection screen) reserves the same rise above its title.
+pub const CRUMB_RISE: f32 = CRUMB_BAND + theme::space::SM;
 
 /// Where the crumb's word starts so that its CAP BAND is centred on the mark's centre `cy`.
 ///
@@ -122,6 +129,35 @@ const CRUMB_BAND: f32 = CRUMB_MARK;
 fn crumb_label_top(cy: f32, cap_h: f32) -> f32 {
     cy - cap_h * 0.5
 }
+
+/// **The one back-crumb painter** — a left chevron and the name of the place BACK returns to, in the
+/// caption rung and the tertiary ink, centred on `band`'s middle (`band.h` is [`CRUMB_BAND`]) and
+/// clipped to `band.w`. [`RouteLayout::draw_narrative`] draws every Settings-family route's crumb
+/// through it, and so does any other page whose heading is its own big title (the Collection
+/// screen): the mark, the offsets and the type live here and nowhere else, so a page cannot carry a
+/// crumb of its own that drifts from the family's.
+pub fn draw_back_crumb(p: Painter, band: Rect, back_to: &str, measure: &dyn Measure) {
+    let cy = band.y + band.h * 0.5;
+    // The mark by its INK, then the word `XS` off it. The mark's box stands on `band.x` (the stack
+    // starts at the ink, a margin in), so the ink-less margin never moves the crumb.
+    let (ink_l, _) = icons::ink_x(Icon::ChevronLeft);
+    let items = [HItem::glyph(Icon::ChevronLeft, CRUMB_MARK), HItem::new(0.0)];
+    let stack = HStack::new(&items, theme::space::XS, StackAlign::Leading(band.x + ink_l * CRUMB_MARK));
+    let mut spans = stack.placed();
+    let (mark, word) = (spans.next().expect("two items"), spans.next().expect("two items"));
+    icons::draw(
+        p,
+        Icon::ChevronLeft,
+        Rect::new(mark.box_x, cy - CRUMB_MARK * 0.5, CRUMB_MARK, CRUMB_MARK),
+        theme::TEXT_TERTIARY,
+    );
+    let x = word.x;
+    let ty = crumb_label_top(cy, measure.cap_h(theme::size::CAPTION));
+    TextView::new(back_to, theme::size::CAPTION, theme::TEXT_TERTIARY)
+        .max_lines(1)
+        .draw(p, Rect::new(x, ty, band.x + band.w - x, band.h));
+}
+
 const PUSH_K: f32 = 200.0;
 const PARENT_TRAVEL: f32 = 0.35;
 const CHILD_LEAD: f32 = 0.22;
@@ -171,25 +207,24 @@ impl RouteGround {
 
     /// `theme::ROUTE_GROUND_FALLBACK`, dropping its alpha column — the corners every authored
     /// atmosphere below reaches for when it has no artwork to key from: the pre-Home fallback
-    /// ([`Self::for_home`]'s `None` seed, [`Self::draw_default`]) and, since PR2 stage B,
+    /// ([`Self::authored`], [`Self::draw_default`]) and, since PR2 stage B,
     /// [`Self::draw_host`]'s own answer when the live frame is not a readable source this frame.
     fn fallback_corners() -> [[f32; 3]; 4] {
         theme::ROUTE_GROUND_FALLBACK.map(|c| [c[0], c[1], c[2]])
     }
 
-    /// A pre-content page receives a numeric atmosphere from its application owner at mount.
+    /// A pre-content page's ground: the authored default ambient, latched at construction.
     /// Neither construction nor drawing this UI value reads a catalog or session file.
     ///
-    /// A real seed is ARTWORK — the future Home's initial hero — so it is graded exactly as a live
-    /// frame would be ([`Grade::Ground`]: capped and leaned toward the surface). The authored
-    /// fallback is not artwork, it IS the finished colour ([`Grade::Dim`], the identity grade) —
-    /// see `theme::ROUTE_GROUND_FALLBACK`'s own doc for why grading it again would be wrong.
-    pub fn for_home(seed: Option<[[f32; 3]; 4]>) -> Self {
+    /// It is deliberately NOT keyed from any artwork — not a hero's `UltraBlur` corners, not a
+    /// remembered one. The first-run pages (favourite libraries, the consent question) open before
+    /// Home has anything to show, and keying them from whatever hero the server happened to list
+    /// painted a saturated rainbow wherever the art's corners were. The authored fallback is not
+    /// artwork, it IS the finished colour ([`Grade::Dim`], the identity grade) — see
+    /// `theme::ROUTE_GROUND_FALLBACK`'s own doc for why grading it again would be wrong.
+    pub fn authored() -> Self {
         let mut ground = Self::new();
-        match seed {
-            Some(blur) => ground.field.latch_from_corners(blur, Grade::Ground),
-            None => ground.field.latch_from_corners(Self::fallback_corners(), Grade::Dim),
-        }
+        ground.field.latch_from_corners(Self::fallback_corners(), Grade::Dim);
         ground
     }
 
@@ -872,18 +907,41 @@ impl RouteLayout {
     /// a separate hint, and two peer answers at that distance read as two unrelated controls
     /// sharing a row rather than one question's two faces.
     pub fn action_pair(self, leading_w: f32, trailing_w: f32) -> (Rect, Rect) {
-        let gap = crate::widgets::CONTROL_GAP;
-        if leading_w + gap + trailing_w <= self.action.w {
-            let leading = Rect::new(self.action.x, self.action.y, leading_w, self.action.h);
-            let trailing = Rect::new(leading.x + leading.w + gap, self.action.y, trailing_w, self.action.h);
+        let pair = Self::pair_items(leading_w, trailing_w);
+        let row = Self::pair_row(&pair, self.action.x);
+        if row.width() <= self.action.w {
+            let mut spans = row.placed();
+            let (leading, trailing) = (spans.next().expect("two items"), spans.next().expect("two items"));
+            let (leading, trailing) = (Rect::new(leading.x, self.action.y, leading.w, self.action.h),
+                Rect::new(trailing.x, self.action.y, trailing.w, self.action.h));
             (leading, trailing)
         } else {
             // Preserve label size and equal treatment. The final control retains the bottom
             // anchor; the first moves up and the narrative reserves the resulting full extent.
-            let leading = Rect::new(self.action.x, self.action.y - self.action.h - gap, leading_w, self.action.h);
-            let trailing = Rect::new(self.action.x, self.action.y, trailing_w, self.action.h);
+            let heights = [HItem::new(self.action.h), HItem::new(self.action.h)];
+            let column = VStack::new(&heights, crate::widgets::CONTROL_GAP, Anchor::Bottom(self.action.y + self.action.h));
+            let mut spans = column.placed();
+            let (top, bottom) = (spans.next().expect("two items"), spans.next().expect("two items"));
+            let leading = Rect::new(self.action.x, top.y, leading_w, top.h);
+            let trailing = Rect::new(self.action.x, bottom.y, trailing_w, bottom.h);
             (leading, trailing)
         }
+    }
+
+    /// How wide [`Self::action_pair`]'s row is for these control widths: the SAME stack
+    /// (`pair_row`) that places it, so a caller that asks whether the pair fits one line reads the
+    /// width the layout uses and keeps no `a + CONTROL_GAP + b` of its own.
+    pub fn action_pair_w(leading_w: f32, trailing_w: f32) -> f32 {
+        Self::pair_row(&Self::pair_items(leading_w, trailing_w), 0.0).width()
+    }
+
+    fn pair_items(leading_w: f32, trailing_w: f32) -> [HItem; 2] {
+        [HItem::new(leading_w), HItem::new(trailing_w)]
+    }
+
+    /// The action pair as one row on `x`, [`widgets::CONTROL_GAP`] apart.
+    fn pair_row(pair: &[HItem; 2], x: f32) -> HStack<'_> {
+        HStack::new(pair, crate::widgets::CONTROL_GAP, StackAlign::Leading(x))
     }
 
     /// Draw the return crumb — `‹ <where BACK goes>` — in the band whose top is at `top`.
@@ -899,11 +957,27 @@ impl RouteLayout {
     /// grade it. The first version of this test compared `RouteLayout::screen().content.y` with
     /// its own `l.content.y` — a value against itself, which cannot fail.
     pub fn narrative_top(self, has_crumb: bool) -> f32 {
-        if has_crumb {
-            self.narrative.y + CRUMB_BAND + theme::space::SM
-        } else {
-            self.narrative.y
-        }
+        self.narrative_flow(has_crumb, 0.0).title.y
+    }
+
+    /// **The narrative column's vertical flow, stated once**: the crumb band ([`CRUMB_BAND`], absent
+    /// without a crumb), the title [`theme::space::SM`] under it (so the title stands
+    /// [`CRUMB_RISE`] below the column's top), and the copy [`theme::space::MD`] under the title.
+    /// `title_h` is the title's measured height (the title's own top does not depend on it).
+    /// [`Self::draw_narrative`] and [`Self::narrative_copy_frame`] both read these spans.
+    fn narrative_flow(self, has_crumb: bool, title_h: f32) -> NarrativeFlow {
+        let items = [
+            if has_crumb { HItem::new(CRUMB_BAND) } else { HItem::absent() },
+            HItem::new(title_h).before(theme::space::SM),
+            HItem::new(0.0),
+        ];
+        let stack = VStack::new(&items, theme::space::MD, Anchor::Top(self.narrative.y));
+        let mut spans = stack.placed();
+        let crumb = if has_crumb { spans.next() } else { None };
+        let (Some(title), Some(copy)) = (spans.next(), spans.next()) else {
+            unreachable!("the title and the copy anchor are always present")
+        };
+        NarrativeFlow { crumb, title, copy_top: copy.y }
     }
 
     /// The available prose region after the complete title and before the actual action group.
@@ -911,31 +985,13 @@ impl RouteLayout {
     pub fn narrative_copy_frame(self, has_crumb: bool, title: &str,
         actions_top: f32, measure: &dyn Measure) -> Rect {
         let title_h = Self::narrative_title(title).with_measure(measure).measure_h(self.narrative.w);
-        let top = self.narrative_top(has_crumb) + title_h + theme::space::MD;
+        let top = self.narrative_flow(has_crumb, title_h).copy_top;
         Rect::new(self.narrative.x, top, self.narrative.w,
             (actions_top - theme::space::MD - top).max(0.0))
     }
 
     fn draw_crumb(self, p: Painter, top: f32, back_to: &str, measure: &dyn Measure) {
-        let h = CRUMB_BAND;
-        let cy = top + h * 0.5;
-        icons::draw(
-            p,
-            Icon::ChevronLeft,
-            Rect::new(
-                self.narrative.x,
-                cy - CRUMB_MARK * 0.5,
-                CRUMB_MARK,
-                CRUMB_MARK,
-            ),
-            theme::TEXT_TERTIARY,
-        );
-        let (_, ink_r) = icons::ink_x(Icon::ChevronLeft);
-        let x = self.narrative.x + CRUMB_MARK * ink_r + theme::space::XS;
-        let ty = crumb_label_top(cy, measure.cap_h(theme::size::CAPTION));
-        TextView::new(back_to, theme::size::CAPTION, theme::TEXT_TERTIARY)
-            .max_lines(1)
-            .draw(p, Rect::new(x, ty, self.narrative.x + self.narrative.w - x, h));
+        draw_back_crumb(p, Rect::new(self.narrative.x, top, self.narrative.w, CRUMB_BAND), back_to, measure);
     }
 
     /// **The narrative title, as the view [`draw_narrative`] actually draws** — its rung, its
@@ -974,16 +1030,15 @@ impl RouteLayout {
         copy_size: std::os::raw::c_int,
         measure: &dyn Measure,
     ) -> f32 {
-        let top = self.narrative_top(back_to.is_some());
-        if let Some(back_to) = back_to {
-            self.draw_crumb(p, self.narrative.y, back_to, measure);
-        }
-
         let title = Self::narrative_title(title);
         let title_h = title.measure_h(self.narrative.w);
-        title.draw(p, Rect::new(self.narrative.x, top, self.narrative.w, title_h));
+        let flow = self.narrative_flow(back_to.is_some(), title_h);
+        if let (Some(back_to), Some(crumb)) = (back_to, flow.crumb) {
+            self.draw_crumb(p, crumb.y, back_to, measure);
+        }
+        title.draw(p, Rect::new(self.narrative.x, flow.title.y, self.narrative.w, flow.title.h));
 
-        let copy_top = top + title_h + theme::space::MD;
+        let copy_top = flow.copy_top;
         let copy_bottom = self.action.y - theme::space::XL;
         let copy_h = TextView::new(copy, copy_size, theme::TEXT_READING)
             .leading(copy_size as f32 + theme::space::XS)
@@ -999,6 +1054,14 @@ impl RouteLayout {
             );
         copy_top + copy_h
     }
+}
+
+/// Where [`RouteLayout::narrative_flow`] stands the narrative column's blocks.
+#[derive(Clone, Copy)]
+struct NarrativeFlow {
+    crumb: Option<VSpan>,
+    title: VSpan,
+    copy_top: f32,
 }
 
 /// **When a route ground reads its host**: on the frame that captured the host (nothing presents
@@ -1023,18 +1086,14 @@ mod tests {
     }
 
     #[test]
-    fn a_pre_home_ground_is_latched_from_its_explicit_seed_before_drawing() {
-        let rgb = [super::theme::SURFACE_APP[0], super::theme::SURFACE_APP[1], super::theme::SURFACE_APP[2]];
-        let seed = [rgb; 4];
-        let ground = super::RouteGround::for_home(Some(seed));
+    fn a_pre_home_ground_is_the_authored_fallback_latched_before_drawing() {
+        let ground = super::RouteGround::authored();
         assert!(ground.is_latched());
-        // The seed is graded exactly as `latch_from_corners(_, Grade::Ground)` would grade it on
-        // any other caller — a fresh field latched the same way is the reference, not a re-typed
-        // formula, so this cannot drift from the production path the way a duplicated mean could.
+        // The reference is a fresh field latched the way the authored fallback is documented to be
+        // (`Grade::Dim`, the identity grade), not a re-typed formula.
         let mut want = super::UnderlayField::new();
-        want.latch_from_corners(seed, super::Grade::Ground);
+        want.latch_from_corners(super::RouteGround::fallback_corners(), super::Grade::Dim);
         assert_eq!(ground.palette(), super::ControlPalette::ambient(want.key()));
-        assert!(super::RouteGround::for_home(None).is_latched());
     }
 
     use super::*;
@@ -1089,7 +1148,7 @@ mod tests {
         }
         let measure = TitleMeasure;
         let min_content = RouteLayout::screen().content.w;
-        for preference in [plx_platform::i18n::Preference::En, plx_platform::i18n::Preference::Es, plx_platform::i18n::Preference::Be, plx_platform::i18n::Preference::Fr] {
+        for preference in plx_platform::i18n::SHIPPED {
             let locale = plx_platform::i18n::LocaleContext::resolve(preference, None, None, None, None);
             let title = plx_platform::i18n::msg::browse_person_filmography_in(&locale);
             let layout = RouteLayout::screen_for_title(480.0, min_content, title, &measure);
@@ -1151,7 +1210,7 @@ mod tests {
         }
         let measure = QuestionMeasure;
         let layout = RouteLayout::screen();
-        for preference in [plx_platform::i18n::Preference::En, plx_platform::i18n::Preference::Es, plx_platform::i18n::Preference::Be, plx_platform::i18n::Preference::Fr] {
+        for preference in plx_platform::i18n::SHIPPED {
             let locale = plx_platform::i18n::LocaleContext::resolve(preference, None, None, None, None);
             for question in [plx_platform::i18n::msg::settings_consent_crash_title_in(&locale),
                 plx_platform::i18n::msg::settings_consent_product_title_in(&locale)] {
@@ -1182,6 +1241,36 @@ mod tests {
             "and a control-group gap is tighter than any rung of the block ladder"
         );
         assert!(inside_safe(trailing));
+    }
+
+    /// The pair's width is the row's: `action_pair_w` reads the stack `action_pair` places, and a
+    /// pair wider than the band stacks bottom-anchored one `CONTROL_GAP` apart, the trailing
+    /// control on the band's bottom edge.
+    #[test]
+    fn the_action_pair_width_and_its_column_read_one_gap() {
+        let l = RouteLayout::screen();
+        let gap = crate::widgets::CONTROL_GAP;
+        assert_eq!(RouteLayout::action_pair_w(280.0, 240.0), 280.0 + gap + 240.0);
+        let wide = l.action.w;
+        assert!(RouteLayout::action_pair_w(wide, wide) > l.action.w);
+        let (lead, trail) = l.action_pair(wide, wide);
+        assert_eq!((lead.x, trail.x), (l.action.x, l.action.x));
+        assert_eq!(trail.y, l.action.y);
+        assert_eq!(lead.y, l.action.y - l.action.h - gap);
+        assert_eq!((lead.w, trail.w, lead.h, trail.h), (wide, wide, l.action.h, l.action.h));
+    }
+
+    /// The crumb's word stands one `XS` past the chevron's ink, whose box is on the band's x.
+    #[test]
+    fn the_crumb_word_stands_xs_past_the_marks_ink() {
+        let items = [HItem::glyph(Icon::ChevronLeft, CRUMB_MARK), HItem::new(0.0)];
+        let (_, ink_r) = icons::ink_x(Icon::ChevronLeft);
+        let (ink_l, _) = icons::ink_x(Icon::ChevronLeft);
+        let x0 = 100.0;
+        let stack = HStack::new(&items, theme::space::XS, StackAlign::Leading(x0 + ink_l * CRUMB_MARK));
+        let spans: Vec<_> = stack.placed().collect();
+        assert_eq!(spans[0].box_x, x0);
+        assert!((spans[1].x - (x0 + CRUMB_MARK * ink_r + theme::space::XS)).abs() < 1e-4);
     }
 
     /// **The crumb costs the TITLE its own height and nothing else pays.** The content column is
@@ -1737,4 +1826,18 @@ mod tests {
         }
     }
 
+    /// The narrative flow: crumb band, SM, title, MD, copy; an absent crumb takes no room.
+    #[test]
+    fn the_narrative_flow_is_one_ladder_with_an_absent_crumb() {
+        let l = RouteLayout::screen();
+        let with = l.narrative_flow(true, 90.0);
+        let crumb = with.crumb.expect("crumb");
+        assert!((crumb.y - l.narrative.y).abs() < 0.01 && crumb.h == CRUMB_BAND);
+        assert!((with.title.y - (crumb.y + CRUMB_BAND + theme::space::SM)).abs() < 0.01);
+        assert!((with.copy_top - (with.title.y + 90.0 + theme::space::MD)).abs() < 0.01);
+        let bare = l.narrative_flow(false, 90.0);
+        assert!(bare.crumb.is_none());
+        assert!((bare.title.y - l.narrative.y).abs() < 0.01);
+        assert!((bare.copy_top - (l.narrative.y + 90.0 + theme::space::MD)).abs() < 0.01);
+    }
 }

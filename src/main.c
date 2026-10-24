@@ -31,6 +31,7 @@ FILE *elogf = NULL;   /* shared event/diagnostic log (extern in app.h); used by 
 extern int plex_run(const char *pms_host, int pms_port);  /* Rust app core (no creds — session or /tmp/plxnative-token) */
 extern int plx_sentry_spool_external(const char *path); /* Sentry daemon's spool-only re-entry */
 extern void plx_crash_write_image_marker(int fd); /* identify this binary in the append-only log */
+extern void plx_launch_args(const char *json); /* SAM's launch payload — see rust-modules/platform/src/tv/launch.rs */
 
 /* Where this INSTALL's runtime files live — `/tmp/plxnative-events.log` for the app users get,
  * `/tmp/com.beb.plxnative.debug/plxnative-events.log` for a developer build installed beside it.
@@ -185,6 +186,9 @@ int main(int argc, char **argv) {
         if (stderr_fd != STDERR_FILENO) close(stderr_fd);
     }
     plx_crash_install(event_fd, crash_fd);
+    /* A launch from SAM carries one argument, its JSON payload (`parameters` = what the launcher
+     * passed). Rust keeps it raw and decides what it means once the app has signed in. */
+    if (argc >= 2) plx_launch_args(argv[1]);
     /* request BACK key delivery from the webOS access policy (before SDL init) */
     setenv("SDL_WEBOS_ACCESS_POLICY_KEYS_BACK", "true", 1);
     return plex_run(PMS_HOST, PMS_PORT);

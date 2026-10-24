@@ -908,3 +908,78 @@ fn the_encoder_names_the_default_when_nothing_stands_in() {
     assert_eq!(encode_audio_id(true, 0, 0, &tracks, none), 2);
     assert_eq!(encode_audio_id(true, 0, 0, &[], none), 0);
 }
+
+/// An English subtitle stream as the PMS reports it: `title` and the two structured flags, which
+/// on a real library are often both unset while the NAME says Forced or SDH (#828).
+fn titled_sub(id: i64, index: i64, title: &str, forced: bool, sdh: bool) -> plx_data::metadata::Stream {
+    plx_data::metadata::Stream { title: title.into(), forced, sdh, ..sub(id, index, "eng", false) }
+}
+
+fn account_pick(subs: &[plx_data::metadata::Stream], forced: i64) -> Option<i64> {
+    let account = SubtitleLangPrefs { language: Some("en"), mode: 2, forced };
+    pick_dp_subtitle_account(subs, &plx_plex::plex::ShowLangPrefs::default(), account, "eng").map(|p| p.0)
+}
+
+/// **The account rule reads "forced" the way the track menu does (#828).** A track whose title
+/// says "Forced" but whose PMS flag is unset is FORCED in the menu (`sub_traits`), so "prefer not
+/// forced" must skip it for the full track behind it, and "forced only" must take it.
+#[test]
+fn the_account_rule_treats_a_track_titled_forced_as_forced() {
+    let subs = [titled_sub(1, 2, "Forced", false, false), titled_sub(2, 3, "", false, false)];
+    assert!(plx_data::metadata::sub_layout::sub_traits(&subs[0]).forced, "the menu calls track 1 Forced");
+    assert_eq!(account_pick(&subs, 0), Some(2), "prefer non-forced skips the track named Forced");
+    assert_eq!(account_pick(&subs, 3), Some(2), "never-forced skips it too");
+    assert_eq!(account_pick(&subs, 1), Some(1), "prefer forced takes it");
+    assert_eq!(account_pick(&subs, 2), Some(1), "forced only takes it");
+}
+
+/// The SDH half of #828: a track titled "English SDH" with no `sdh` flag is SDH in the menu, so
+/// the plain track behind it wins the first tier.
+#[test]
+fn the_account_rule_treats_a_track_titled_sdh_as_sdh() {
+    let subs = [titled_sub(1, 2, "English SDH", false, false), titled_sub(2, 3, "", false, false)];
+    assert!(plx_data::metadata::sub_layout::sub_traits(&subs[0]).sdh, "the menu calls track 1 SDH");
+    assert_eq!(account_pick(&subs, 0), Some(2), "pref non-SDH skips the track named SDH");
+}
+
+// ---- PMS spells DTS `dca`: the table-backed caps must admit it -----------------------------
+
+/// The dev set's table shape for DTS: the decoder is listed with a 6-channel ceiling.
+fn dts_row_caps() -> plx_platform::devcaps::Caps {
+    plx_platform::devcaps::Caps {
+        audio: "aac,ac3,eac3,dts".into(),
+        audio_channels: [("dts".into(), 6)].into(),
+        ..plx_platform::devcaps::Caps::assumed()
+    }
+}
+
+/// The PMS spelling of DTS direct-plays on a set whose table has a DTS row: the selected `dca`
+/// 5.1 track is picked, not the AC3 sibling (the spelling gap made every DTS file convert).
+#[test]
+fn a_selected_dca_track_is_picked_when_the_table_has_a_dts_row() {
+    let caps = dts_row_caps();
+    let mut dca = server_selected(trk(2669, "dca", "eng", false));
+    dca.channels = 6;
+    let tracks = [trk(2663, "ac3", "rus", true), dca, trk(2673, "ac3", "eng", false)];
+    let pick = pick_dp_audio_eligible(&tracks, "dca", AudioLangPrefs::default(), 0, StandIn::Any,
+        |c, n| caps.audio_supports(c, n));
+    assert_eq!(pick.map(|(_, _, id)| id), Some(2669));
+}
+
+/// Auto and Forced decide through the same canonicaliser, and Forced's DTS needs the table row
+/// but not the ceiling (7.1 DTS-HD MA: Auto converts, Forced feeds the core).
+#[test]
+fn auto_and_forced_agree_on_the_dca_spelling() {
+    let caps = dts_row_caps();
+    assert!(audio_direct_plays_with(&caps, DirectPlayMode::Auto, "dca", 6));
+    assert!(!audio_direct_plays_with(&caps, DirectPlayMode::Auto, "dca", 8));
+    assert!(audio_direct_plays_with(&caps, DirectPlayMode::Forced, "dca", 6));
+    assert!(audio_direct_plays_with(&caps, DirectPlayMode::Forced, "dca", 8));
+    assert!(audio_direct_plays_with(&caps, DirectPlayMode::Forced, "DTS", 8));
+    let assumed = plx_platform::devcaps::Caps::assumed();
+    for mode in [DirectPlayMode::Auto, DirectPlayMode::Forced] {
+        assert!(!audio_direct_plays_with(&assumed, mode, "dca", 6), "{mode:?}: no DTS row, no DTS");
+    }
+    assert!(audio_direct_plays_with(&assumed, DirectPlayMode::Forced, "ac3", 8));
+    assert!(!audio_direct_plays_with(&assumed, DirectPlayMode::Forced, "truehd", 8));
+}

@@ -216,7 +216,7 @@ icons::draw(p: Painter, id: Icon, r: Rect, tint: [f32;4])
 ```
 Color is entirely the `tint` (mask rendered white), so passing any token just works. Add
 `Icon::Plus` so detail's `+`/`i` glyph `CircleButton`s (`detail.rs:422/:426`) can become real
-AA icons matching the transport buttons (optional polish). Caveat: `static mut CACHE`,
+AA icons matching the transport buttons (optional polish). Caveat: `CACHE` is a `thread_local!`,
 main-GL-thread only.
 
 ### `Card` + focus-ring — **new**, unifies the two inline cards + `draw_card` + `draw_poster`

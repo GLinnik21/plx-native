@@ -1,0 +1,19 @@
+{
+  "under_posters.title": "Unter den Postern",
+  "under_posters.detail": "Was unter dem aktiven Poster steht.",
+  "under_posters.copy": "Die meisten Poster zeigen ihren Titel schon. Wähle, was unter dem Poster steht, auf dem du bist.",
+  "under_posters.title_row": "Titel",
+  "under_posters.title_detail": "Der Name, fett.",
+  "under_posters.details_row": "Details",
+  "under_posters.details_detail": "Eine Zeile mit Informationen.",
+  "under_posters.details_copy": "Begonnene oder bald erscheinende Titel und Sammlungen zeigen stattdessen: Restzeit, Erscheinungsdatum, Anzahl der Filme.",
+  "under_posters.year_length": "Jahr · Länge",
+  "under_posters.genre": "Genre",
+  "under_posters.video": "Video",
+  "under_posters.age_rating_score": "Altersfreigabe · Wertung",
+  "under_posters.none": "Nichts",
+  "under_posters.reset": "Zurücksetzen",
+  "under_posters.reset_detail": "Jahr und Länge, ohne Titel.",
+  "under_posters.sample_title": "Film",
+  "under_posters.sample_genre": "Drama"
+}

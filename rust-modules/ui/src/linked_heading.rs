@@ -3,6 +3,7 @@
 //! and becomes that same control face on focus. The component owns no application or Plex type.
 
 use super::card_row;
+use super::hstack::{Align, HStack, Item};
 use super::icons::{self, Icon};
 use plx_machine::machine::{FocusKey, FocusRead, GroupId, Host, Measure};
 use super::screen::{
@@ -21,6 +22,24 @@ const ENTRY_RUN_GAP: f32 = theme::space::XS;
 const CHEVRON_INK: (f32, f32) = icons::ink_x(Icon::Chevron);
 const CHEVRON_BEARING_L: f32 = CHEVRON_SIZE * CHEVRON_INK.0;
 const CHEVRON_BEARING_R: f32 = CHEVRON_SIZE * (1.0 - CHEVRON_INK.1);
+/// Where the chevron sits in [`LinkedMeasure::items`].
+const CHEVRON_AT: usize = 3;
+
+/// The room the chevron takes after the run, read off the face's own stack: its full width less
+/// the width without the chevron, for an empty run.
+fn chevron_room() -> f32 {
+    let empty = LinkedMeasure {
+        runs: Vec::new(),
+        total: String::new(),
+        run_w: 0.0,
+        lead_w: 0.0,
+        note: None,
+        face_w: 0.0,
+    };
+    let items = empty.items();
+    HStack::new(&items, ENTRY_RUN_GAP, Align::Leading(0.0)).width()
+        - HStack::new(&items[..CHEVRON_AT], ENTRY_RUN_GAP, Align::Leading(0.0)).width()
+}
 
 /// The face's scale at focus progress `focus_t`: 1 at rest, `CTRL_FOCUS_SCALE` focused.
 fn focus_scale(focus_t: f32) -> f32 {
@@ -46,13 +65,19 @@ struct Run {
 
 #[derive(Clone, Debug)]
 pub struct LinkedMeasure {
+    /// The text run: an `Entry`'s title, dot and count at `ENTRY_RUN_GAP`, or a `Heading`'s one
+    /// elided flow. The chevron is not in it.
     run_w: f32,
+    /// The run's first item: an `Entry`'s title advance, or a `Heading`'s whole flow (`run_w`).
+    lead_w: f32,
+    /// An `Entry`'s dot and count advances; `None` when it has no count (and for a `Heading`).
+    note: Option<(f32, f32)>,
     face_w: f32,
     /// A bounded `Heading`'s elided runs, kept so the draw reuses the measure's elision. Empty for
     /// every other heading, whose flow draws straight from the strings at no elision cost.
     runs: Vec<Run>,
-    /// A `Heading`'s annotation as drawn: its member count, its source, or "N · source".
-    note: String,
+    /// A `Heading`'s member count as drawn ("" when it has none); the source is `LinkedHeading::count`.
+    total: String,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -66,6 +91,26 @@ pub struct LinkedHeading<'a> {
     /// How many members the linked collection holds — the "· N" a `Heading` carries after its
     /// title (`Collections.dc.html` D1/E1). 0 draws no count.
     total: usize,
+}
+
+impl LinkedMeasure {
+    /// **The face's one run**, as `HStack` items at `ENTRY_RUN_GAP`: the title (or a `Heading`'s
+    /// whole elided flow), the dot and the count (absent without one), then the chevron by its ink
+    /// `CHEVRON_GAP` off the run. `measure` sizes the face from it, `draw` stands the pieces
+    /// from it (`LinkedHeading::content_x` is its first span), so the face and what it holds
+    /// cannot disagree.
+    fn items(&self) -> [Item; 4] {
+        let (dot, count) = match self.note {
+            Some((d, c)) => (Item::new(d), Item::new(c)),
+            None => (Item::absent(), Item::absent()),
+        };
+        [
+            Item::new(self.lead_w),
+            dot,
+            count,
+            Item::glyph(Icon::Chevron, CHEVRON_SIZE).before(CHEVRON_GAP),
+        ]
+    }
 }
 
 impl<'a> LinkedHeading<'a> {
@@ -106,38 +151,35 @@ impl<'a> LinkedHeading<'a> {
         self
     }
 
-    /// A `Heading`'s annotation: the count, the source, or both, count first.
-    fn note(&self) -> String {
-        match (self.total, self.count.is_empty()) {
-            (0, _) => self.count.to_owned(),
-            (n, true) => n.to_string(),
-            (n, false) => format!("{n} \u{b7} {}", self.count),
-        }
+    /// A `Heading`'s member count as the text `card_row::heading_parts` flows after the title.
+    fn total_text(&self) -> String {
+        if self.total == 0 { String::new() } else { self.total.to_string() }
     }
 
     fn text_room(&self) -> f32 {
-        self.max_w - (CHEVRON_GAP + CHEVRON_SIZE - CHEVRON_BEARING_L - CHEVRON_BEARING_R)
+        self.max_w - chevron_room()
     }
 
     pub fn measure(&self, measure: &dyn Measure) -> LinkedMeasure {
         let mut runs = Vec::new();
-        let note = if self.presentation == Presentation::Heading { self.note() } else { String::new() };
-        let run_w = match self.presentation {
+        let total = if self.presentation == Presentation::Heading { self.total_text() } else { String::new() };
+        let (lead_w, note) = match self.presentation {
             Presentation::Entry => {
-                let mut w = measure.width_str(self.title, theme::size::LABEL, true);
-                if !self.count.is_empty() {
-                    w += ENTRY_RUN_GAP
-                        + measure.width_str("\u{b7}", theme::size::LABEL, false)
-                        + ENTRY_RUN_GAP
-                        + measure.width_str(self.count, theme::size::LABEL, false);
-                }
-                w
+                let title = measure.width_str(self.title, theme::size::LABEL, true);
+                let note = (!self.count.is_empty()).then(|| {
+                    (
+                        measure.width_str("\u{b7}", theme::size::LABEL, false),
+                        measure.width_str(self.count, theme::size::LABEL, false),
+                    )
+                });
+                (title, note)
             }
             Presentation::Heading => {
                 let keep = self.max_w.is_finite();
-                card_row::bounded_heading_flow(
+                let flow = card_row::bounded_heading_flow(
                     self.title,
-                    &note,
+                    &total,
+                    self.count,
                     self.text_room(),
                     measure,
                     |s, dx, size, bold, ink| {
@@ -146,17 +188,15 @@ impl<'a> LinkedHeading<'a> {
                         }
                         measure.width_str(s, size, bold != 0)
                     },
-                )
+                );
+                (flow, None)
             }
         };
-        LinkedMeasure {
-            runs,
-            note,
-            run_w,
-            face_w: 2.0 * SIDE_PAD + run_w + CHEVRON_GAP + CHEVRON_SIZE
-                - CHEVRON_BEARING_L
-                - CHEVRON_BEARING_R,
-        }
+        let mut m = LinkedMeasure { runs, total, run_w: lead_w, lead_w, note, face_w: 0.0 };
+        let items = m.items();
+        m.run_w = HStack::new(&items[..CHEVRON_AT], ENTRY_RUN_GAP, Align::Leading(0.0)).width();
+        m.face_w = 2.0 * SIDE_PAD + HStack::new(&items, ENTRY_RUN_GAP, Align::Leading(0.0)).width();
+        m
     }
 
     /// `Entry` takes the face's top-left. `Heading` takes the title texture's resting top and
@@ -191,16 +231,21 @@ impl<'a> LinkedHeading<'a> {
         }
     }
 
+    /// The text run's leading edge: where the face's stack starts.
     fn content_x(&self, face: Rect, m: &LinkedMeasure) -> f32 {
+        let items = m.items();
+        HStack::new(&items, ENTRY_RUN_GAP, self.align(face))
+            .span(0)
+            .map_or(face.x, |(x, _)| x)
+    }
+
+    /// How the face's content stands in it, the ONE stack `measure`, `content_x` and `draw` read.
+    /// `Entry` centres its run and chevron whole (the Filmography pill); a `Heading` starts one
+    /// side-padding rung (scaled with the face) in.
+    fn align(&self, face: Rect) -> Align {
         match self.presentation {
-            Presentation::Entry => {
-                face.x
-                    + (face.w - m.run_w - CHEVRON_GAP - CHEVRON_SIZE
-                        + CHEVRON_BEARING_L
-                        + CHEVRON_BEARING_R)
-                        * 0.5
-            }
-            Presentation::Heading => face.x + SIDE_PAD * face.h / FACE_H,
+            Presentation::Entry => Align::Centre(face.x + face.w * 0.5),
+            Presentation::Heading => Align::Leading(face.x + SIDE_PAD * face.h / FACE_H),
         }
     }
 
@@ -229,15 +274,17 @@ impl<'a> LinkedHeading<'a> {
             );
         }
 
+        let items = m.items();
+        let stack = HStack::new(&items, ENTRY_RUN_GAP, self.align(face));
+        let at = |i: usize| stack.span(i).map_or(face.x, |(x, _)| x);
         let content_x = self.content_x(face, m);
-        let mut rx = content_x;
         match self.presentation {
             Presentation::Entry => {
                 let cy = face.cy();
-                rx += draw_middle(
+                draw_middle(
                     p,
                     self.title,
-                    rx,
+                    content_x,
                     cy,
                     theme::size::LABEL,
                     true,
@@ -247,22 +294,20 @@ impl<'a> LinkedHeading<'a> {
                         theme::TEXT_PRIMARY
                     },
                 );
-                if !self.count.is_empty() {
-                    rx += ENTRY_RUN_GAP;
-                    rx += draw_middle(
+                if m.note.is_some() {
+                    draw_middle(
                         p,
                         "\u{b7}",
-                        rx,
+                        at(1),
                         cy,
                         theme::size::LABEL,
                         false,
                         theme::TEXT_SEPARATOR,
                     );
-                    rx += ENTRY_RUN_GAP;
-                    rx += draw_middle(
+                    draw_middle(
                         p,
                         self.count,
-                        rx,
+                        at(2),
                         cy,
                         theme::size::LABEL,
                         false,
@@ -279,13 +324,13 @@ impl<'a> LinkedHeading<'a> {
                 for r in &m.runs {
                     draw_cap(p, &r.text, content_x + r.dx, y, r.size, r.bold != 0, ink(r.ink));
                 }
-                rx += m.run_w;
             }
             Presentation::Heading => {
                 let cap_y = y;
                 card_row::bounded_heading_flow(
                     self.title,
-                    &m.note,
+                    &m.total,
+                    self.count,
                     self.text_room(),
                     measure,
                     |s, dx, size, bold, ink| {
@@ -300,15 +345,14 @@ impl<'a> LinkedHeading<'a> {
                         )
                     },
                 );
-                rx += m.run_w;
             }
         }
-        rx += CHEVRON_GAP - CHEVRON_BEARING_L;
+        let chevron_x = stack.placed().find(|s| s.i == CHEVRON_AT).map_or(face.x, |s| s.box_x);
         icons::draw(
             p,
             Icon::Chevron,
             Rect::new(
-                rx,
+                chevron_x,
                 face.cy() - CHEVRON_SIZE * 0.5,
                 CHEVRON_SIZE,
                 CHEVRON_SIZE,
@@ -552,12 +596,88 @@ mod tests {
         let measure = FixtureMeasure;
         let plain = LinkedHeading::heading("Saga", "").measure(&measure);
         let counted = LinkedHeading::heading("Saga", "").total(12);
-        assert_eq!(counted.measure(&measure).note, "12");
+        assert_eq!(counted.measure(&measure).total, "12");
         assert!(counted.measure(&measure).run_w > plain.run_w);
-        assert_eq!(LinkedHeading::heading("Saga", "friend").total(12).measure(&measure).note,
-            "12 \u{b7} friend");
-        assert_eq!(LinkedHeading::heading("Saga", "friend").measure(&measure).note, "friend");
-        assert_eq!(LinkedHeading::heading("Saga", "").total(0).measure(&measure).note, "");
+        // the count and the source are two notes of the one idiom, each behind its own dot
+        let both = LinkedHeading::heading("Saga", "friend").total(12);
+        let notes = card_row::heading_parts("Saga", &both.total_text(), "friend", |_, _, _, _, _, _| 1.0);
+        assert_eq!(notes, 1.0 + 2.0 * (2.0 * card_row::HEADING_SOURCE_PAD + 2.0));
+        assert_eq!(LinkedHeading::heading("Saga", "").total(0).measure(&measure).total, "");
+    }
+
+    /// Q4, painted: a linked heading is the one heading + count idiom. The title, the count and the
+    /// source are PAINTED through a recording painter and read back run by run, each note behind
+    /// its own dot on `HEADING_SOURCE_PAD`; a heading with no count and no source is its title alone.
+    #[test]
+    fn a_painted_linked_heading_keeps_the_pad_between_title_dot_and_count() {
+        let _g = plx_base::testlock::serial();
+        let measure = widgets::LegacyMeasure;
+        let paint = |heading: LinkedHeading| {
+            let m = heading.measure(&measure);
+            let mut runs = crate::draw_census::capture_runs(|| {
+                heading.draw(Painter::recording(), 72.0, 200.0, 0.0, &m, &measure)
+            });
+            runs.sort_by(|a, b| a.at.x.total_cmp(&b.at.x));
+            runs
+        };
+        let runs = paint(LinkedHeading::heading("Saga", "friend").total(12));
+        assert_eq!(
+            runs.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+            ["Saga", "\u{b7}", "12", "\u{b7}", "friend"]
+        );
+        for pair in runs.windows(2) {
+            let gap = pair[1].at.x - (pair[0].at.x + pair[0].at.w);
+            assert!((gap - card_row::HEADING_SOURCE_PAD).abs() < 0.5, "{} -> {}: {gap}", pair[0].text, pair[1].text);
+        }
+        assert_eq!((runs[2].size, runs[2].ink), (theme::size::BODY, theme::TEXT_TERTIARY));
+        assert_eq!(paint(LinkedHeading::heading("Saga", "").total(0)).len(), 1, "no count, no source, no dot");
+    }
+
+    /// The Filmography `Entry`, painted: title, dot and count stand where the hand-summed pen put
+    /// them (`content_x` centred from the measured run, then `+ advance + ENTRY_RUN_GAP` per piece),
+    /// so folding the pen into the one `HStack` moved no run.
+    #[test]
+    fn a_painted_entry_stands_its_title_dot_and_count_where_the_pen_did() {
+        let _g = plx_base::testlock::serial();
+        let measure = widgets::LegacyMeasure;
+        for (count, focus_t) in [("23", 0.0), ("23", 1.0), ("", 0.0)] {
+            let entry = LinkedHeading::entry("Filmography", count);
+            let m = entry.measure(&measure);
+            let mut runs = crate::draw_census::capture_runs(|| {
+                entry.draw(Painter::recording(), 400.0, 300.0, focus_t, &m, &measure)
+            });
+            runs.sort_by(|a, b| a.at.x.total_cmp(&b.at.x));
+            let face = entry.face_rect(400.0, 300.0, focus_t, &m);
+            let title = measure.width_str("Filmography", theme::size::LABEL, true);
+            let dot = measure.width_str("\u{b7}", theme::size::LABEL, false);
+            let run_w = if count.is_empty() {
+                title
+            } else {
+                title + 2.0 * ENTRY_RUN_GAP + dot + measure.width_str(count, theme::size::LABEL, false)
+            };
+            assert_eq!(m.run_w, run_w);
+            let x0 = face.x
+                + (face.w - run_w - CHEVRON_GAP - CHEVRON_SIZE + CHEVRON_BEARING_L + CHEVRON_BEARING_R)
+                    * 0.5;
+            let mut want = vec![x0];
+            if !count.is_empty() {
+                want.push(x0 + title + ENTRY_RUN_GAP);
+                want.push(x0 + title + ENTRY_RUN_GAP + dot + ENTRY_RUN_GAP);
+            }
+            let got: Vec<f32> = runs.iter().map(|r| r.at.x).collect();
+            assert_eq!(got.len(), want.len(), "count {count:?}");
+            for (g, w) in got.iter().zip(&want) {
+                assert!((g - w).abs() < 0.001, "count {count:?} focus {focus_t}: {got:?} vs {want:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn chevron_room_is_the_gap_plus_the_chevron_ink_width() {
+        let by_hand = CHEVRON_GAP + CHEVRON_SIZE - CHEVRON_BEARING_L - CHEVRON_BEARING_R;
+        assert!((chevron_room() - by_hand).abs() < 0.001, "{} vs {by_hand}", chevron_room());
+        let h = LinkedHeading::heading("T", "").bounded(500.0);
+        assert!((h.text_room() - (500.0 - by_hand)).abs() < 0.001);
     }
 
     #[test]

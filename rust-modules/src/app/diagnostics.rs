@@ -106,8 +106,10 @@
 //! id is reduced to `window ready`/`NO WINDOW`; the only server-derived text is the PMS release and
 //! Pass state, never its name or address. There is no generic "push a string to diagnostics" path,
 //! so adding a field is a deliberate edit to the file that carries these rules.
+use plx_ui::hstack::Item;
 use plx_ui::label::Label;
 use plx_machine::machine::Measure;
+use plx_ui::vstack::VFlow;
 use plx_ui::widgets::{Field, FieldList, FIELD_COL_W};
 use plx_ui::{theme, Env, Painter, Rect, View};
 use std::cell::Cell;
@@ -266,7 +268,7 @@ const CHART_ROWS: usize = LEFT_ROWS - RIGHT_ROWS;
 /// Sixteen seconds at 2 Hz is long enough to show a segment acquisition, a quality transaction and
 /// its buffer consequence while keeping every cell wide enough to survive a phone camera.
 const HIST_N: usize = 32;
-/// The three plot keys, in the UI language. A function rather than a table because the catalog is
+/// The three plot keys, in English (every message here is `translate:false`). A function rather than a table because the catalog is
 /// the only place the words live; [`Diagnostics::chart_key_width`] measures exactly these runs.
 fn chart_labels() -> [&'static str; 3] {
     use plx_platform::i18n::msg;
@@ -420,6 +422,19 @@ impl Diagnostics {
             return;
         }
         self.next_sample = now.wrapping_add(SAMPLE_MS);
+        // The panel is the maintainer's instrument: its own messages are English-only, and the
+        // shared helpers it composes (units, decimals, quality labels) read the UI language, so
+        // the whole sample is taken in English. Nothing sampled here reaches product UI.
+        self.sample(ps, now);
+    }
+
+    /// Take the sample in English (see `update`). The one entry to `resample`.
+    fn sample(&mut self, ps: &plx_media::route::PlaybackSession, now: u32) {
+        plx_platform::i18n::render_in_english(|| self.resample(ps, now));
+    }
+
+    /// The sample itself: everything the panel will show until the next one.
+    fn resample(&mut self, ps: &plx_media::route::PlaybackSession, now: u32) {
         // ONE sample feeding the whole panel. Calling `diag()` per block would let one row report
         // "no frames" beside a position taken a moment later — a panel that tells a story that
         // never happened is worse than no panel.
@@ -678,8 +693,8 @@ fn pipeline_rows(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::
             " · Dolby Vision P{}.{} · {} ({})",
             dv.profile,
             dv.bl_compat,
-            decision.presentation.display(),
-            decision.capability.display(),
+            decision.presentation.label(),
+            decision.capability.label(),
         ));
     }
     v.push(Field::new(plx_platform::i18n::msg::browse_diagnostics_field_video(), video));
@@ -826,7 +841,7 @@ fn pipeline_rows(ps: &plx_media::route::PlaybackSession, d: &plx_media::player::
 
 use plx_ui::fmt::decimal;
 
-/// The video feeder's state in the UI language. `Diag::feed_state_str` is the lab snapshot's wire
+/// The video feeder's state, in English. `Diag::feed_state_str` is the lab snapshot's wire
 /// spelling of the same states and stays English.
 fn feed_state_label(d: &plx_media::player::Diag) -> &'static str {
     use plx_platform::i18n::msg;
@@ -1593,10 +1608,16 @@ fn mb(b: i64) -> String {
 const MARGIN: f32 = 60.0;
 const PAD: f32 = 24.0;
 const COL_GAP: f32 = 32.0;
-/// Minimum header height: title, single-line identity/verdict, and column headings.
+/// Minimum header height: title, single-line identity/verdict, and column headings. The ladder in
+/// [`HeaderLayout::new`] yields exactly this for one-line blocks; only the tests quote it.
+#[cfg(test)]
 const HEAD_H: f32 = 118.0;
 const HEAD_LINE_H: f32 = 24.0;
 const HEAD_IDENTITY_Y: f32 = 38.0;
+/// The air between the verdict's last line and the column headings (off the spacing ladder, kept).
+const SECTIONS_GAP: f32 = 4.0;
+/// The column headings' line to the field lists under them.
+const FIELDS_GAP: f32 = 4.0;
 const PANEL_W: f32 = 2.0 * FIELD_COL_W + COL_GAP + 2.0 * PAD;
 
 /// Identity and verdict remain complete; even opaque build identifiers wrap at a character
@@ -1619,9 +1640,18 @@ impl HeaderLayout {
     fn new(lines: &[Vec<String>; 2]) -> Self {
         let identity_h = lines[0].len().max(1) as f32 * HEAD_LINE_H;
         let verdict_h = lines[1].len().max(1) as f32 * HEAD_LINE_H;
-        let verdict_y = HEAD_IDENTITY_Y + identity_h;
-        let sections_y = verdict_y + verdict_h + 4.0;
-        let fields_y = HEAD_H + identity_h + verdict_h - 2.0 * HEAD_LINE_H;
+        // The identity block, the verdict under it with no gap, the column headings SECTIONS_GAP
+        // below the verdict, and the field lists FIELDS_GAP under the headings: one run.
+        let mut head = VFlow::new(HEAD_IDENTITY_Y, 0.0);
+        head.push(Item::new(identity_h));
+        let verdict_y = head.next_y();
+        head.push(Item::new(verdict_h).after(SECTIONS_GAP));
+        let (Some(sections), Some(fields)) =
+            (head.push(Item::new(HEAD_LINE_H).after(FIELDS_GAP)), head.push(Item::new(0.0)))
+        else {
+            unreachable!("the headings line and the field lists' top are always present")
+        };
+        let (sections_y, fields_y) = (sections.y, fields.y);
         Self { verdict_y, sections_y, fields_y }
     }
 }
@@ -3300,24 +3330,57 @@ mod tests {
     }
 
     /// Row keys are right-aligned into a [`FIELD_KEY_W`] gutter at the dense diagnostic size, so a
-    /// translation that grows past about a dozen characters runs into the panel's edge. Every
-    /// locale's keys are held to the English budget: "Conservative" and "Dolby Vision".
+    /// key that grows past about a dozen characters runs into the panel's edge. The keys are
+    /// English-only (no translation can widen them), so the English wording is the whole budget:
+    /// "Conservative" and "Dolby Vision".
     #[test]
-    fn every_locale_keeps_its_row_keys_inside_the_gutter() {
-        for lang in ["en", "es", "be", "fr"] {
-            let path = format!("{}/../locales/{lang}/browse.json", env!("CARGO_MANIFEST_DIR"));
-            let text = std::fs::read_to_string(&path).expect("catalog");
-            let catalog: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&text).expect("catalog JSON");
-            let mut keys = 0;
-            for (key, value) in &catalog {
-                if !key.starts_with("browse.diagnostics.field.") {
-                    continue;
-                }
-                let words = value.get("value").unwrap_or(value).as_str().expect("a plain string");
-                assert!(words.chars().count() <= 12, "{lang} {key} = {words:?} is too wide for the key gutter");
-                keys += 1;
+    fn the_english_row_keys_stay_inside_the_gutter() {
+        let path = format!("{}/../locales/en/browse.json", env!("CARGO_MANIFEST_DIR"));
+        let text = std::fs::read_to_string(&path).expect("catalog");
+        let catalog: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&text).expect("catalog JSON");
+        let mut keys = 0;
+        for (key, entry) in &catalog {
+            if !key.starts_with("browse.diagnostics.field.") {
+                continue;
             }
-            assert!(keys >= 27, "{lang}: every row key is in the catalog ({keys})");
+            let words = entry["value"].as_str().expect("a plain string");
+            assert!(words.chars().count() <= 12, "{key} = {words:?} is too wide for the key gutter");
+            assert_eq!(entry["translate"], false, "{key}: the panel's row keys are English-only");
+            keys += 1;
+        }
+        assert!(keys >= 27, "every row key is in the catalog ({keys})");
+    }
+
+    /// The panel is the maintainer's instrument, so every value it composes is English in every UI
+    /// language, including the shared helpers (units, decimals, quality labels) that read the UI
+    /// language elsewhere. Nothing but ASCII and the panel's own symbols may appear.
+    #[test]
+    fn panel_rows_are_english_in_every_language() {
+        let _g = plx_base::testlock::serial();
+        let ps = EnhTestSession::new(EnhTestFixture::default());
+        // Not idle: an idle panel shows only the device rows and builds no pipeline/model columns,
+        // which is where the shared localized helpers are reached.
+        struct RestoreState(u8);
+        impl Drop for RestoreState {
+            fn drop(&mut self) {
+                plx_media::player::restore_state_for_test(self.0);
+            }
+        }
+        let _state = RestoreState(plx_media::player::swap_state_for_test(plx_media::player::PlaybackState::Playing));
+        for pref in plx_platform::i18n::SHIPPED {
+            let _lang = plx_platform::i18n::language_on_this_thread_for_test(pref);
+            let mut panel = Diagnostics::default();
+            panel.sample(&ps, 1_000);
+            assert!(!panel.idle && panel.columns.iter().all(|c| !c.is_empty()), "{}: a live session builds column rows", pref.tag());
+            let mut text: Vec<String> = panel.head.to_vec();
+            text.extend(panel.rows.iter().chain(panel.columns.iter().flatten()).flat_map(|f| {
+                std::iter::once(f.key.to_string()).chain(f.val.clone())
+            }));
+            text.extend(panel.chart_values.iter().cloned());
+            for t in &text {
+                let stray: Vec<char> = t.chars().filter(|c| !c.is_ascii() && !"·×—≤±…→".contains(*c)).collect();
+                assert!(stray.is_empty(), "{}: {t:?} carries {stray:?}", pref.tag());
+            }
         }
     }
 
@@ -3372,5 +3435,20 @@ mod tests {
             head[1]
         );
         assert_eq!(head[1], "Idle", "a default Diag with no session is Idle");
+    }
+}
+
+#[cfg(test)]
+mod header_layout_tests {
+    use super::*;
+
+    /// The verdict stands straight under the identity block, and the column headings stand
+    /// SECTIONS_GAP under the verdict's last line.
+    #[test]
+    fn the_verdict_follows_the_identity_and_the_sections_sit_a_gap_under_it() {
+        let lines = [vec!["identity".to_string()], vec!["verdict".to_string(), "more".to_string()]];
+        let h = HeaderLayout::new(&lines);
+        assert_eq!(h.verdict_y, HEAD_IDENTITY_Y + HEAD_LINE_H);
+        assert_eq!(h.sections_y, h.verdict_y + 2.0 * HEAD_LINE_H + SECTIONS_GAP);
     }
 }

@@ -265,10 +265,17 @@ impl<T> PageCache<T> {
         self.pages.iter().map(|p| p.kept).collect()
     }
 
-    /// Replaces the directory with `counts` (one entry per page). No rows come back, so every page
-    /// reads as a hole until it lands again. The caller sets the total.
+    /// Replaces the directory with `counts` (one entry per page). The counts carry no rows: a page
+    /// this cache already holds whose kept count is the saved one keeps its rows (they still fit
+    /// the count), and every other page reads as a hole until it lands again. A page whose count
+    /// changed drops its rows because they no longer match the count; the pages after it keep
+    /// theirs, which now read from their new first indices. The caller sets the total.
     pub fn restore_kept_counts(&mut self, counts: &[u8]) {
-        self.pages = counts.iter().map(|&kept| Page { rows: None, kept }).collect();
+        let mut held = std::mem::take(&mut self.pages).into_iter();
+        self.pages = counts
+            .iter()
+            .map(|&kept| Page { rows: held.next().filter(|p| p.kept == kept).and_then(|p| p.rows), kept })
+            .collect();
         self.recount();
     }
 
@@ -405,6 +412,28 @@ mod tests {
         assert_eq!(back.kept_counts(), saved);
         assert_eq!(back.loaded_pages(), 0, "no rows come back with the counts");
         assert_eq!(back.first_index_of(4), 4 * PAGE - 3);
+    }
+
+    #[test]
+    fn restoring_a_caches_own_counts_keeps_every_loaded_page_and_a_changed_count_drops_that_page() {
+        let mut c = full(300);
+        c.set_page(2, rows(57, 120));
+        let own = c.kept_counts();
+        c.restore_kept_counts(&own);
+        assert_eq!(loaded_set(&c), vec![0, 1, 2, 3, 4], "its own counts take no page away");
+        assert_eq!(c.kept_counts(), own);
+        assert_eq!(c.get(119), Some(&119));
+        assert_eq!(c.get(120), Some(&120), "the short page's rows read at the same indices");
+
+        let mut changed = own.clone();
+        changed[1] = 58;
+        c.restore_kept_counts(&changed);
+        assert_eq!(loaded_set(&c), vec![0, 2, 3, 4], "only the page whose count changed becomes a hole");
+        assert_eq!(c.kept_counts(), changed);
+        assert_eq!(c.get(0), Some(&0));
+        assert_eq!(c.get(60), None);
+        assert_eq!(c.first_index_of(2), 118, "the indices after the changed page moved with its count");
+        assert_eq!(c.get(118), Some(&120), "a kept page reads at its new first index");
     }
 
     #[test]

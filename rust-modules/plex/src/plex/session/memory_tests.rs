@@ -360,7 +360,8 @@ fn a_session_stamps_the_offsets_it_records_with_its_own_account() {
 fn a_login_over_another_accounts_session_does_not_inherit_its_library_views() {
     let _serial = plx_base::testlock::serial();
     let _root = TempSession::new("relogin-library-views");
-    let mut first = Session { client_id: "cid-1".into(), account_token: "acct-1".into(), ..Default::default() };
+    let mut first = Session { client_id: "cid-1".into(), account_token: "acct-1".into(),
+        home_users: roster_of(7), ..Default::default() };
     first.set_view_for("u", LibraryView {
         machine_id: "m".into(), key: 1, sort: "addedAt".into(), desc: true, ..Default::default()
     });
@@ -373,14 +374,100 @@ fn a_login_over_another_accounts_session_does_not_inherit_its_library_views() {
     let views = |s: &Session| (s.prefs.library_views.len(), s.prefs.last_library.len());
     assert_eq!(views(&load()), (1, 1), "control: both lists are stored");
 
-    let login_as = |token: &str| {
-        let token = token.to_string();
-        replace_after_reauthentication_with_outcome(|_| true, move |cur| Session { account_token: token, ..cur.clone() })
-            .expect("not fenced")
-            .expect("written");
-    };
-    login_as("acct-1");
+    let login_as = |token: &str, owner: i64| login_with_roster(token, roster_of(owner));
+    login_as("acct-1", 7);
     assert_eq!(views(&load()), (1, 1), "the same account logging in again keeps its views");
-    login_as("acct-2");
+    login_as("acct-2", 8);
     assert_eq!(views(&load()), (0, 0), "another account does not inherit them");
+}
+
+/// **The same login does not inherit the previous account's Home pins or search history either.**
+/// Both are keyed by profile `uuid` with `""` for the account owner, carry no account stamp, and go
+/// with the file at sign-out; a login over another account's stored session replaces the credentials
+/// in place, so the next account's owner (key `""` again) opened on the previous owner's favourite
+/// libraries and was offered back what they had searched for. Same rule as the library views: a
+/// different account clears them, the same one keeps them.
+#[test]
+fn a_login_over_another_accounts_session_does_not_inherit_its_pins_or_searches() {
+    let _serial = plx_base::testlock::serial();
+    let _root = TempSession::new("relogin-pins-searches");
+    let first = Session {
+        client_id: "cid-1".into(),
+        account_token: "acct-1".into(), home_users: roster_of(7),
+        home_pins: vec![HomePins { user: String::new(), asked: true, ..Default::default() }],
+        recent_searches: vec![RecentSearches { user: String::new(), terms: vec!["synthetic term".into()],
+            ..Default::default() }],
+        ..Default::default()
+    };
+    save(&first);
+    let personal = |s: &Session| (s.home_pins.len(), s.recent_searches.len());
+    assert_eq!(personal(&load()), (1, 1), "control: both lists are stored");
+
+    let login_as = |token: &str, owner: i64| login_with_roster(token, roster_of(owner));
+    login_as("acct-1", 7);
+    assert_eq!(personal(&load()), (1, 1), "the same account logging in again keeps them");
+    login_as("acct-2", 8);
+    assert_eq!(personal(&load()), (0, 0), "another account does not inherit them");
+}
+
+/// The roster a sign-in's discovery save writes: one admin (the account owner) with this plex.tv id.
+fn roster_of(owner: i64) -> Vec<HomeUserRef> {
+    vec![HomeUserRef { id: owner, uuid: format!("synthetic-owner-{owner}"), title: "Synthetic".into(),
+        admin: true, ..Default::default() }]
+}
+
+/// A login over the stored session: the new token and the roster the discovery save carries.
+fn login_with_roster(token: &str, roster: Vec<HomeUserRef>) {
+    let token = token.to_string();
+    replace_after_reauthentication_with_outcome(|_| true,
+        move |cur| Session { account_token: token, home_users: roster, ..cur.clone() })
+        .expect("not fenced")
+        .expect("written");
+}
+
+/// **A fresh QR sign-in always mints a new account token, so the token cannot say "same account".**
+/// The same person signing in again (a new token, the same owner identity in the roster) keeps their
+/// pins, searches and library memory; a different owner, or a roster either side cannot name (empty
+/// on the disk or in the new save), loses them: unknown identity fails safe to clearing.
+#[test]
+fn a_login_keeps_what_belongs_to_the_same_account_identity_whatever_its_token() {
+    let _serial = plx_base::testlock::serial();
+    let _root = TempSession::new("relogin-identity");
+    let mut first = Session {
+        client_id: "cid-1".into(), account_token: "token-a".into(), home_users: roster_of(7),
+        home_pins: vec![HomePins { user: String::new(), asked: true, ..Default::default() }],
+        recent_searches: vec![RecentSearches { user: String::new(), terms: vec!["synthetic term".into()],
+            ..Default::default() }],
+        ..Default::default()
+    };
+    first.set_view_for("u", LibraryView {
+        machine_id: "m".into(), key: 1, sort: "addedAt".into(), desc: true, ..Default::default()
+    });
+    first.prefs.last_library.push(LastLibrary {
+        user: "u".into(),
+        libs: vec![TypedLib { kind: "movie".into(), machine_id: "m".into(), key: 1, extensions: Default::default() }],
+        extensions: Default::default(),
+    });
+    let kept = |s: &Session| (s.home_pins.len(), s.recent_searches.len(),
+        s.prefs.library_views.len(), s.prefs.last_library.len());
+    save(&first);
+    assert_eq!(kept(&load()), (1, 1, 1, 1), "control: all four are stored");
+
+    login_with_roster("token-b", roster_of(7));
+    assert_eq!(load().account_token, "token-b", "control: the new token was written");
+    assert_eq!(kept(&load()), (1, 1, 1, 1), "same owner identity, different token: kept");
+
+    login_with_roster("token-c", roster_of(8));
+    assert_eq!(kept(&load()), (0, 0, 0, 0), "a different owner identity clears all four");
+
+    // Unknown on the new side: the discovery save carried no roster.
+    save(&Session { home_users: roster_of(8), ..first.clone() });
+    login_with_roster("token-d", Vec::new());
+    assert_eq!(kept(&load()), (0, 0, 0, 0), "an unnamed new identity clears");
+
+    // Unknown on the disk side: the stored record never fetched a roster.
+    save(&Session { home_users: Vec::new(), ..first.clone() });
+    assert_eq!(kept(&load()), (1, 1, 1, 1), "control: stored again");
+    login_with_roster("token-e", roster_of(7));
+    assert_eq!(kept(&load()), (0, 0, 0, 0), "an unnamed stored identity clears");
 }

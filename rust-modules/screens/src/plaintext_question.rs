@@ -475,9 +475,9 @@ mod tests {
     fn every_answer_fits_its_pill_in_every_language() {
         use plx_base::fontcov::advances::ShippedMeasure;
         use plx_ui::fit::HEADROOM;
-        use plx_platform::i18n::{language_on_this_thread_for_test, msg, Preference};
+        use plx_platform::i18n::{language_on_this_thread_for_test, msg};
         let mut out = Vec::new();
-        for language in [Preference::En, Preference::Es, Preference::Be, Preference::Fr] {
+        for language in plx_platform::i18n::SHIPPED {
             let _guard = language_on_this_thread_for_test(language);
             let answers = [
                 msg::settings_cancel_c(),
@@ -491,7 +491,7 @@ mod tests {
                 PlaintextQuestion::verbs().1,
             ];
             for label in answers {
-                let w = Button::pill_w_measured(label, theme::size::BODY, false, false, &ShippedMeasure);
+                let w = Button::pill_w_measured(label, theme::size::BODY, false, None, &ShippedMeasure);
                 if w > BUTTON_W * HEADROOM {
                     out.push(format!("{}: {label:?} needs {w:.0}px of a {BUTTON_W}px pill", language.tag()));
                 }

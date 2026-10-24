@@ -1,7 +1,10 @@
 //! SDL2_ttf text rendering (was src/text.c): font cache + glyph-texture LRU +
-//! draw_text. Main-thread only (all GL), so the caches are plain statics (no
-//! locking). Uses gfx's link_program/use_prog (crate path). Mostly GL/TTF FFI —
-//! the retui text backend.
+//! draw_text. Main-thread only (all GL), so the font and glyph caches (GL names, `TTF_Font`
+//! pointers, fixed arrays) are plain statics (no locking). The caches that OWN HEAP are not:
+//! the elide and measured-bounds memos are `thread_local!`, and each fallback face's cmap loads
+//! once into a `OnceLock`, because a heap-owning `static mut` that one thread replaces frees what
+//! another is using (`ci/check-statics-heap.py`). Uses gfx's link_program/use_prog (crate path).
+//! Mostly GL/TTF FFI — the retui text backend.
 //!
 //! The glyph cache is an LRU **with a hot window** since phase 11 (spec §8.1): an entry drawn
 //! within the last eight frames is not evicted while any colder slot exists, and the case where
@@ -27,7 +30,9 @@
 //! determines the texture — and the `ink_t`/`ink_b` cap-band machinery still measures one texture.
 //!
 //! **The chain, in order:** Inter (`appfont.ttf`) → the **bundled** `appfont-cjk.ttf` → the
-//! television's own `/usr/share/fonts/DroidSansFallback.ttf`. The bundled face is the guarantee,
+//! bundled monochrome emoji face `appfont-emoji.ttf` (see [`run_text`] for how its runs reach a
+//! renderer that cannot address a glyph above U+FFFF) → the television's own
+//! `/usr/share/fonts/DroidSansFallback.ttf`. The bundled face is the guarantee,
 //! because a submission is graded on whatever firmware the reviewer happens to have; the system
 //! face behind it is free insurance, measured present on webOS 4.10.0 (2026-08-23: 11172/11172
 //! Hangul, 20902 Han, Kana, and — see below — no Hebrew and no Arabic).
@@ -70,7 +75,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::ffi::{CStr, CString};
 use std::hash::{Hash, Hasher};
 use std::os::raw::{c_char, c_int, c_uint, c_void};
@@ -108,6 +113,7 @@ fn app_font(bold: bool) -> &'static CStr {
 const VS_TEXT: &CStr = crate::gfx::glsl!("shaders/vs_text.vert");
 const FS_TEXT: &CStr = crate::gfx::glsl!("shaders/fs_text.frag");
 const FS_TEXT_FADE: &CStr = crate::gfx::glsl!("shaders/fs_text_fade.frag");
+const FS_TEXT_INK: &CStr = crate::gfx::glsl!("shaders/fs_text_ink.frag");
 // GL enums
 const GL_TEXTURE_2D: c_uint = 0x0DE1;
 const GL_TRIANGLE_STRIP: c_uint = 0x0005;
@@ -204,21 +210,119 @@ static mut TLF_SCREEN: c_int = 0;
 static mut TLF_COL: c_int = 0;
 static mut TLF_TEX: c_int = 0;
 static mut TLF_FADE: c_int = 0;
+/// **The LEADING horizontal band**, the mirror of [`TLF_FADE`]: `(from, to)` in the same string-
+/// texture uv.x, glyph alpha rising 0 -> 1 across it. `(0.0, 0.0)` is "off" (the shader's gate is
+/// `to > from`). A gliding marquee run is cut by the LEFT of its window as well as the right.
+static mut TLF_LEAD: c_int = 0;
 /// **Vertical edge-fade bands, in logical screen y** (the same absolute space `u_trect`'s `y`
 /// lives in) — the counterpart of [`TLF_FADE`]'s horizontal one. `(0.0, 0.0)` (the default, since
-/// `y1 > y0` is then false) means "off": the shader's gate skips the multiply rather than relying
-/// on a sentinel width like the horizontal band's, because a vertical band has no natural "past
-/// the string" edge to sentinel against. See [`draw_text_fade`] and `ui::widgets::edge_feather`'s
+/// `y1 > y0` is then false) means "off": the shader's gate skips the multiply. It is the same
+/// `to > from` gate the horizontal bands use ([`hband_uv`]), so neither axis needs a sentinel
+/// width to switch a band off. See [`draw_text_fade`] and `ui::widgets::edge_feather`'s
 /// replacement note in `screens::person_bio` for why this exists — a scrolling viewport's edge used to
 /// be an OPAQUE panel-coloured gradient painted over the glass, which read as a grey band rather
 /// than the text dissolving.
 static mut TLF_VTOP: c_int = 0;
 static mut TLF_VBOT: c_int = 0;
+// the ink program (bound only while an [`InkClip`] is set) + its own uniform locations
+static mut TPROGI: c_uint = 0;
+static mut TLI_RECT: c_int = 0;
+static mut TLI_SCREEN: c_int = 0;
+static mut TLI_COL: c_int = 0;
+static mut TLI_TEX: c_int = 0;
+static mut TLI_A: c_int = 0;
+static mut TLI_B: c_int = 0;
+static mut TLI_P: c_int = 0;
+
+/// Which side of an [`InkShape`] a draw is kept on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Keep {
+    Inside,
+    Outside,
+}
+
+/// A rounded rect in logical screen px (`radius` is clamped to half the shorter side) that a draw's
+/// coverage is multiplied by, kept on one side of it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InkShape {
+    pub x0: f32,
+    pub y0: f32,
+    pub x1: f32,
+    pub y1: f32,
+    pub radius: f32,
+    pub keep: Keep,
+}
+
+/// What a text or mask draw is clipped to, per fragment: up to two shapes, all of which a pixel must
+/// satisfy. Set by `ui::widgets::paint_inked` for the life of one region's paint; absent, every draw
+/// takes the plain program.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct InkClip {
+    pub shapes: [Option<InkShape>; 2],
+}
+
+thread_local! {
+    static INK_CLIP: std::cell::Cell<Option<InkClip>> = const { std::cell::Cell::new(None) };
+}
+
+/// Set (or clear) the ink clip every following text and mask draw wears, returning the previous one
+/// so a scope can restore it.
+pub fn set_ink_clip(clip: Option<InkClip>) -> Option<InkClip> {
+    INK_CLIP.with(|c| c.replace(clip))
+}
+
+/// The ink clip in force, if any.
+pub fn ink_clip() -> Option<InkClip> {
+    INK_CLIP.with(|c| c.get())
+}
+
+/// Bind the ink program with `clip`'s shapes as uniforms. `false` when the program did not link
+/// (the caller then draws plain).
+unsafe fn bind_ink(clip: &InkClip) -> bool {
+    if TPROGI == 0 {
+        return false;
+    }
+    crate::gfx::use_prog(TPROGI); // TLI_SCREEN / TLI_TEX / texture unit 0 set once at init
+    let one = |slot: Option<InkShape>| match slot {
+        Some(s) => {
+            let rad = s.radius.min((s.x1 - s.x0) * 0.5).min((s.y1 - s.y0) * 0.5).max(0.0);
+            ([s.x0, s.y0, s.x1, s.y1], rad, if s.keep == Keep::Inside { 1.0 } else { -1.0 })
+        }
+        None => ([0.0; 4], 0.0, 0.0),
+    };
+    let (a, ra, ka) = one(clip.shapes[0]);
+    let (b, rb, kb) = one(clip.shapes[1]);
+    glUniform4f(TLI_A, a[0], a[1], a[2], a[3]);
+    glUniform4f(TLI_B, b[0], b[1], b[2], b[3]);
+    glUniform4f(TLI_P, ra, ka, rb, kb);
+    true
+}
+
+/// Draw `tex`'s ALPHA channel tinted `tint` into the logical-screen quad `(x, y, w, h)` through the
+/// ink program: what an icon's coverage mask (a white texture whose alpha is the shape) needs to
+/// wear the same [`InkClip`] a label does. `false` when no ink clip is set or the program is absent:
+/// the caller draws the mask as it always has.
+pub fn draw_mask_inked(tex: c_uint, x: f32, y: f32, w: f32, h: f32, tint: *const f32) -> bool {
+    let Some(clip) = ink_clip() else { return false };
+    unsafe {
+        if !bind_ink(&clip) {
+            return false;
+        }
+        glUniform4fv(TLI_COL, 1, tint);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glUniform4f(TLI_RECT, x, y, w, h);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    }
+    true
+}
+
 /// One opened face per pixel size, per array. 80 covers the whole `theme::size` ladder; the
 /// simulator's supersampled rendering (`surface::render_scale`, up to 4x) rasterises at up to 4x it.
 const FONT_SLOTS: usize = if cfg!(feature = "hostsim") { 320 } else { 80 };
-static mut FONTS: [*mut TtfFont; FONT_SLOTS] = [std::ptr::null_mut(); FONT_SLOTS];
-static mut FONTS_B: [*mut TtfFont; FONT_SLOTS] = [std::ptr::null_mut(); FONT_SLOTS];
+static FONTS: [AtomicPtr<TtfFont>; FONT_SLOTS] =
+    [const { AtomicPtr::new(std::ptr::null_mut()) }; FONT_SLOTS];
+static FONTS_B: [AtomicPtr<TtfFont>; FONT_SLOTS] =
+    [const { AtomicPtr::new(std::ptr::null_mut()) }; FONT_SLOTS];
 static mut TEXT_OK: c_int = 0;
 
 #[derive(Clone, Copy)]
@@ -736,16 +840,15 @@ fn log_font_fallback_once() {
 
 unsafe fn font_at(sz: c_int, bold: c_int) -> *mut TtfFont {
     let sz = sz.clamp(8, FONT_SLOTS as c_int - 1) as usize;
-    let arr = if bold != 0 {
-        &mut *addr_of_mut!(FONTS_B)
-    } else {
-        &mut *addr_of_mut!(FONTS)
-    };
-    if arr[sz].is_null() {
-        arr[sz] = TTF_OpenFont(app_font(bold != 0).as_ptr(), sz as c_int);
-        if arr[sz].is_null() {
-            arr[sz] = TTF_OpenFont(app_font(false).as_ptr(), sz as c_int);
-            if arr[sz].is_null() {
+    // Rendering is main-thread-only, so `Relaxed` is all the slot needs; it is an `AtomicPtr` so
+    // the table is not a `static mut` that every access reborrows through a raw pointer.
+    let slot = if bold != 0 { &FONTS_B[sz] } else { &FONTS[sz] };
+    let mut f = slot.load(Ordering::Relaxed);
+    if f.is_null() {
+        f = TTF_OpenFont(app_font(bold != 0).as_ptr(), sz as c_int);
+        if f.is_null() {
+            f = TTF_OpenFont(app_font(false).as_ptr(), sz as c_int);
+            if f.is_null() {
                 // DroidSans is NOT an acceptable outcome, and it used to be an invisible one: the
                 // app booted looking plausible while every rung of the theme::size ladder rendered
                 // in a face the light-hinting/pixel-snapping contract was never tuned for — and
@@ -755,21 +858,23 @@ unsafe fn font_at(sz: c_int, bold: c_int) -> *mut TtfFont {
                 // tools/font-hint-audit.py reads HOST files, so it structurally cannot catch this.
                 // Say so once, loudly, so it is a reportable bug rather than a mystery.
                 log_font_fallback_once();
-                arr[sz] = TTF_OpenFont(DROIDSANS.as_ptr(), sz as c_int);
+                f = TTF_OpenFont(DROIDSANS.as_ptr(), sz as c_int);
             }
-            if !arr[sz].is_null() && bold != 0 {
-                TTF_SetFontStyle(arr[sz], TTF_STYLE_BOLD);
+            if !f.is_null() && bold != 0 {
+                TTF_SetFontStyle(f, TTF_STYLE_BOLD);
             }
         }
-        if !arr[sz].is_null() {
+        if !f.is_null() {
             // Light hinting y-snaps strokes to the NEAREST pixel. Arial's own bytecode (default
             // NORMAL hinting) rounds horizontal bars UP — at bold 26 that draws 4px bars over
             // 3px stems, inverting the design's stem>bar weight — so every size token had to
             // dodge "unlucky" px values. Light keeps the whole theme::size scale design-true.
-            TTF_SetFontHinting(arr[sz], TTF_HINTING_LIGHT);
+            TTF_SetFontHinting(f, TTF_HINTING_LIGHT);
         }
+        // A failed open stores null, so the next call retries.
+        slot.store(f, Ordering::Relaxed);
     }
-    arr[sz]
+    f
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -796,21 +901,37 @@ enum Link {
     /// releases; we have no images for them. This is precisely why link 2 is bundled rather than
     /// borrowed — this link is a bonus that may or may not exist, and the code treats it as such.
     Sys = 2,
+    /// The bundled `appfont-emoji.ttf` (monochrome Noto Emoji, `tools/cut-noto-emoji.py`): the
+    /// emoji in library and item names. Monochrome because the television's SDL2_ttf draws
+    /// outlines into the alpha mask `fs_text.frag` tints, and has no colour-font support. Its
+    /// runs are rewritten by [`run_text`] before SDL_ttf sees them.
+    Emoji = 3,
 }
-const CHAIN: [Link; 3] = [Link::Base, Link::Cjk, Link::Sys];
+const CHAIN: [Link; 4] = [Link::Base, Link::Cjk, Link::Emoji, Link::Sys];
 
 /// The bundled fallback face, cut by `tools/cut-noto-cjk.py` and staged beside the binary.
 const CJK_FONT: &str = "appfont-cjk.ttf";
+/// The bundled emoji face, cut by `tools/cut-noto-emoji.py` and staged beside the binary.
+const EMOJI_FONT: &str = "appfont-emoji.ttf";
 /// The television's pan-CJK fallback. Distinct from [`DROIDSANS`], which is the *Latin* face and a
 /// defect path: reaching this one is normal and expected on a Korean library.
 const DROIDSANS_FALLBACK: &str = "/usr/share/fonts/DroidSansFallback.ttf";
 
-static mut FONTS_CJK: [*mut TtfFont; FONT_SLOTS] = [std::ptr::null_mut(); FONT_SLOTS];
-static mut FONTS_SYS: [*mut TtfFont; FONT_SLOTS] = [std::ptr::null_mut(); FONT_SLOTS];
-/// Per-link coverage, read from the file's cmap on FIRST NEED and never again. `None` after
-/// `COV_TRIED` means the file is absent or unreadable, i.e. the link is empty.
-static mut COV: [Option<plx_base::fontcov::Coverage>; 3] = [None, None, None];
-static mut COV_TRIED: [bool; 3] = [false; 3];
+static FONTS_CJK: [AtomicPtr<TtfFont>; FONT_SLOTS] =
+    [const { AtomicPtr::new(std::ptr::null_mut()) }; FONT_SLOTS];
+static FONTS_SYS: [AtomicPtr<TtfFont>; FONT_SLOTS] =
+    [const { AtomicPtr::new(std::ptr::null_mut()) }; FONT_SLOTS];
+static FONTS_EMOJI: [AtomicPtr<TtfFont>; FONT_SLOTS] =
+    [const { AtomicPtr::new(std::ptr::null_mut()) }; FONT_SLOTS];
+/// Per-link coverage, read from the file's cmap on FIRST NEED and never again. A slot holding
+/// `None` means the file is absent or unreadable, i.e. the link is empty.
+///
+/// A `OnceLock` per link and not a `thread_local!`: the cmap is a pure function of a file, so one
+/// load serves every thread (a per-thread table would read the 44k-codepoint cmap once per thread
+/// for nothing), and `get_or_init` runs the load exactly once even when two threads ask for the
+/// same link first.
+static COV: [std::sync::OnceLock<Option<plx_base::fontcov::Coverage>>; 4] =
+    [const { std::sync::OnceLock::new() }; 4];
 
 /// The ONE place a link's file is named — both the coverage read and the `TTF_OpenFont` go
 /// through it, so the two can never disagree about which file a link is.
@@ -821,6 +942,7 @@ fn link_file(link: Link) -> std::path::PathBuf {
         // `make check` — the gate is not decoration here, it is what makes one read enough.
         Link::Base => plx_base::paths::in_app_dir("appfont.ttf"),
         Link::Cjk => plx_base::paths::in_app_dir(CJK_FONT),
+        Link::Emoji => plx_base::paths::in_app_dir(EMOJI_FONT),
         Link::Sys => std::path::PathBuf::from(DROIDSANS_FALLBACK),
     }
 }
@@ -832,13 +954,9 @@ fn link_file(link: Link) -> std::path::PathBuf {
 /// `font_at`'s DroidSans branch and logged loudly, and in that state the useful behaviour is the
 /// pre-chain one — render the whole string in one call with whatever face opened — not to split
 /// every string into runs against a coverage set of nothing.
-unsafe fn link_covers(link: Link, cp: u32) -> bool {
-    let i = link as usize;
-    let tried = &mut *addr_of_mut!(COV_TRIED);
-    if !tried[i] {
-        tried[i] = true;
+fn link_covers(link: Link, cp: u32) -> bool {
+    let loaded = COV[link as usize].get_or_init(|| {
         let path = link_file(link);
-        let cov = &mut *addr_of_mut!(COV);
         match plx_base::fontcov::of_file(&path) {
             Ok(c) => {
                 log(&format!(
@@ -846,19 +964,22 @@ unsafe fn link_covers(link: Link, cp: u32) -> bool {
                     path.display(),
                     c.len()
                 ));
-                cov[i] = Some(c);
+                Some(c)
             }
             // Not a failure for Cjk/Sys — a television without DroidSansFallback, or a host
             // simulator with no bundled face, simply has a shorter chain. Logged once either way,
             // WITH the path, because "why is this still tofu" is otherwise unanswerable from a log
             // and the answer is usually that the file is not where the install put it.
-            Err(e) => log(&format!(
-                "font chain: {link:?} unavailable — {}: {e}",
-                path.display()
-            )),
+            Err(e) => {
+                log(&format!(
+                    "font chain: {link:?} unavailable — {}: {e}",
+                    path.display()
+                ));
+                None
+            }
         }
-    }
-    match &(*addr_of!(COV))[i] {
+    });
+    match loaded {
         Some(c) => c.contains(cp),
         None => link == Link::Base,
     }
@@ -880,22 +1001,25 @@ unsafe fn link_font(link: Link, sz: c_int, bold: c_int) -> *mut TtfFont {
         return font_at(sz, bold);
     }
     let sz = sz.clamp(8, FONT_SLOTS as c_int - 1) as usize;
-    let arr = match link {
-        Link::Cjk => &mut *addr_of_mut!(FONTS_CJK),
-        _ => &mut *addr_of_mut!(FONTS_SYS),
+    let slot = match link {
+        Link::Cjk => &FONTS_CJK[sz],
+        Link::Emoji => &FONTS_EMOJI[sz],
+        _ => &FONTS_SYS[sz],
     };
-    if arr[sz].is_null() {
+    let mut f = slot.load(Ordering::Relaxed);
+    if f.is_null() {
         let file = link_file(link);
         let Ok(c) = CString::new(file.into_os_string().into_encoded_bytes()) else {
             return std::ptr::null_mut();
         };
-        arr[sz] = TTF_OpenFont(c.as_ptr(), sz as c_int);
-        if !arr[sz].is_null() {
+        f = TTF_OpenFont(c.as_ptr(), sz as c_int);
+        if !f.is_null() {
             // The same light-hinting contract the base face is opened under (see `font_at`).
-            TTF_SetFontHinting(arr[sz], TTF_HINTING_LIGHT);
+            TTF_SetFontHinting(f, TTF_HINTING_LIGHT);
         }
+        slot.store(f, Ordering::Relaxed);
     }
-    arr[sz]
+    f
 }
 
 /// A string's split into single-face runs. Fixed capacity so the common path allocates nothing;
@@ -913,13 +1037,13 @@ struct Runs {
 ///
 /// The ASCII shortcut is the reason an English library pays nothing at all for this feature: it
 /// returns before any coverage is loaded, so `appfont-cjk.ttf`'s cmap is never even opened.
-unsafe fn split_runs(s: &str) -> Option<Runs> {
-    split_runs_with(s, |link, cp| link_covers(link, cp))
+fn split_runs(s: &str) -> Option<Runs> {
+    split_runs_with(s, link_covers)
 }
 
 /// [`split_runs`] with the coverage oracle passed in — the pure half, so the host suite can drive
 /// it against the REAL shipped cmaps without a `TTF_Font`, a GL context or an install directory.
-/// The `unsafe` half is only the lazy file load behind `link_covers`.
+/// The lazy file load is behind `link_covers`.
 fn split_runs_with(s: &str, covers: impl Fn(Link, u32) -> bool) -> Option<Runs> {
     if s.is_ascii() {
         return None;
@@ -964,6 +1088,47 @@ fn split_runs_with(s: &str, covers: impl Fn(Link, u32) -> bool) -> Option<Runs> 
         return None;
     }
     Some(runs)
+}
+
+/// The text SDL_ttf is handed for one run. Unchanged for every link but [`Link::Emoji`], whose
+/// run is rewritten for a renderer with no shaper and 16-bit glyph keys (SDL2_ttf 2.0.x):
+///
+/// * an astral emoji becomes its mirror at U+E000 + rank (`tools/cut-noto-emoji.py`), since the
+///   television's SDL2_ttf cannot reach a glyph above U+FFFF;
+/// * the invisible joiners of emoji sequences are dropped: the variation selectors U+FE0E/U+FE0F,
+///   the zero-width joiner U+200D, the skin-tone modifiers U+1F3FB..U+1F3FF and the tag
+///   characters. Without a shaper a sequence cannot become one glyph, so 👨‍👩‍👧 draws as its parts
+///   and a toned 👍🏽 as the plain 👍, which beats a swatch or a box between them.
+///
+/// Can return an empty string (a run of nothing but joiners), which the callers skip.
+fn run_text(link: Link, s: &str, rank: impl Fn(u32) -> Option<u32>) -> std::borrow::Cow<'_, str> {
+    if link != Link::Emoji {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    s.chars()
+        .filter(|&ch| !is_emoji_joiner(ch as u32))
+        .map(|ch| match rank(ch as u32) {
+            Some(r) => char::from_u32(0xE000 + r).unwrap_or(ch),
+            None => ch,
+        })
+        .collect::<String>()
+        .into()
+}
+
+fn is_emoji_joiner(cp: u32) -> bool {
+    matches!(cp, 0xFE0E | 0xFE0F | 0x200D | 0x1F3FB..=0x1F3FF | 0xE0020..=0xE007F)
+}
+
+/// [`run_text`] against the emoji face's own cmap.
+fn run_text_live(link: Link, s: &str) -> std::borrow::Cow<'_, str> {
+    // Reads the table only if `split_runs` already loaded it: an emoji run exists only because
+    // `link_covers` asked the emoji face about a codepoint.
+    run_text(link, s, |cp| {
+        COV[Link::Emoji as usize]
+            .get()
+            .and_then(|c| c.as_ref())
+            .and_then(|c| c.astral_rank(cp))
+    })
 }
 
 /// vertical ink bounds of a packed RGBA buffer — the same scan [`surface_ink_v`] does, over a
@@ -1023,7 +1188,11 @@ unsafe fn render_runs(
         // A link whose face will not open is not fatal: fall back to the base face, which draws
         // the run's .notdef boxes — the pre-chain result for that run only.
         let f = if f.is_null() { base } else { f };
-        let Ok(c) = CString::new(&s[from..to]) else {
+        let text = run_text_live(link, &s[from..to]);
+        if text.is_empty() {
+            continue;
+        }
+        let Ok(c) = CString::new(text.as_bytes()) else {
             free_all(&parts);
             return None;
         };
@@ -1104,8 +1273,26 @@ pub fn init_text() {
             TLF_COL = glGetUniformLocation(TPROGF, c"u_tcol".as_ptr());
             TLF_TEX = glGetUniformLocation(TPROGF, c"u_tex".as_ptr());
             TLF_FADE = glGetUniformLocation(TPROGF, c"u_tfade".as_ptr());
+            TLF_LEAD = glGetUniformLocation(TPROGF, c"u_tlead".as_ptr());
             TLF_VTOP = glGetUniformLocation(TPROGF, c"u_vfadeT".as_ptr());
             TLF_VBOT = glGetUniformLocation(TPROGF, c"u_vfadeB".as_ptr());
+        }
+        // the ink program shares VS_TEXT too; without it a label crossed by a capsule's rounded end
+        // is painted plain (a nicety again: the stretches' ink is still chosen, only the edge is square)
+        TPROGI = crate::gfx::link_program(VS_TEXT.as_ptr(), FS_TEXT_INK.as_ptr()).unwrap_or_else(
+            || {
+                log("text ink prog link failed");
+                0
+            },
+        );
+        if TPROGI != 0 {
+            TLI_RECT = glGetUniformLocation(TPROGI, c"u_trect".as_ptr());
+            TLI_SCREEN = glGetUniformLocation(TPROGI, c"u_tscreen".as_ptr());
+            TLI_COL = glGetUniformLocation(TPROGI, c"u_tcol".as_ptr());
+            TLI_TEX = glGetUniformLocation(TPROGI, c"u_tex".as_ptr());
+            TLI_A = glGetUniformLocation(TPROGI, c"u_ma".as_ptr());
+            TLI_B = glGetUniformLocation(TPROGI, c"u_mb".as_ptr());
+            TLI_P = glGetUniformLocation(TPROGI, c"u_mp".as_ptr());
         }
         // Constant uniforms, set once per program (per-program state): the fixed 1920x1080
         // screen and sampler unit 0. draw_text/_fade no longer re-send them per string.
@@ -1116,6 +1303,11 @@ pub fn init_text() {
             crate::gfx::use_prog(TPROGF);
             glUniform2f(TLF_SCREEN, SCR_W, SCR_H);
             glUniform1i(TLF_TEX, 0);
+        }
+        if TPROGI != 0 {
+            crate::gfx::use_prog(TPROGI);
+            glUniform2f(TLI_SCREEN, SCR_W, SCR_H);
+            glUniform1i(TLI_TEX, 0);
         }
         if !font_at(28, 0).is_null() {
             TEXT_OK = 1;
@@ -1390,6 +1582,40 @@ pub fn text_width(s: *const c_char, sz: c_int, bold: c_int) -> f32 {
     text_bounds(s,sz,bold).0
 }
 
+/// [`text_width`] with `letter_spacing` px added after every glyph but the last (tracking). A
+/// spacing of 0 is exactly [`text_width`].
+pub fn text_width_tracked(s: *const c_char, sz: c_int, bold: c_int, letter_spacing: f32) -> f32 {
+    let w = text_width(s, sz, bold);
+    if letter_spacing == 0.0 || s.is_null() {
+        return w;
+    }
+    let text = unsafe { std::ffi::CStr::from_ptr(s) }.to_string_lossy();
+    w + letter_spacing * cluster_starts(&text).len().saturating_sub(1) as f32
+}
+
+/// Queue the per-cluster strings a live [`draw_text_tracked`] of `s` will rasterize, so the
+/// recording pass prewarms what the tracked draw actually draws (it draws each cluster as its own
+/// string, which a prewarm of the whole string does not cover). Whitespace-only clusters are not
+/// drawn and are not queued.
+pub fn queue_prewarm_tracked(s: *const c_char, sz: c_int, bold: c_int) {
+    if s.is_null() {
+        return;
+    }
+    let Ok(text) = (unsafe { CStr::from_ptr(s) }).to_str() else {
+        return;
+    };
+    let starts = cluster_starts(text);
+    for (k, &from) in starts.iter().enumerate() {
+        let to = starts.get(k + 1).copied().unwrap_or(text.len());
+        if text[from..to].chars().all(char::is_whitespace) {
+            continue;
+        }
+        if let Ok(c) = std::ffi::CString::new(&text[from..to]) {
+            queue_prewarm(c.as_ptr(), sz, bold);
+        }
+    }
+}
+
 /// CPU-only layout bounds, using the same baseline/descent composition as `render_runs`.
 /// A declaration pass needs the height too: an assumed em multiple can miss a linked face.
 /// This does not render or upload a glyph and does not spend the text-prewarm budget.
@@ -1428,7 +1654,11 @@ fn measure_native_bounds(s: &CStr, sz: c_int, bold: c_int) -> ((f32, f32), bool)
             for &(link, from, to) in &runs.at[..runs.n] {
                 let f = link_font(link, sz, bold);
                 let f = if f.is_null() { font_at(sz, bold) } else { f };
-                let Ok(c) = CString::new(&st[from..to]) else {
+                let text = run_text_live(link, &st[from..to]);
+                if text.is_empty() {
+                    continue;
+                }
+                let Ok(c) = CString::new(text.as_bytes()) else {
                     complete = false;
                     continue;
                 };
@@ -1501,7 +1731,11 @@ impl plx_machine::machine::Measure for TtfMeasure {
     }
 }
 
-static mut ELIDE_CACHE: Option<HashMap<u64, String>> = None;
+thread_local! {
+    /// [`elide`]'s memo: (text, budget, size, weight, continuation) hashed to the elided string.
+    /// Per thread because it owns `String`s that a full memo frees wholesale; see [`elide`].
+    static ELIDE_MEMO: RefCell<HashMap<u64, String>> = RefCell::default();
+}
 
 #[derive(Default)]
 pub struct MeasuredBounds {
@@ -1757,8 +1991,9 @@ mod fitted_line_tests {
 /// cont) makes every later frame a hash lookup, thrash-proof no matter how long the input. `cont=false`
 /// returns `s` unchanged when it already fits (a plain elide — track menu / chapters / info card);
 /// `cont=true` always marks the result with `…` (a continued line whose caller already knows more text
-/// follows — `TextView`). The single truncation impl for the whole UI. Main-thread only, like the
-/// glyph cache.
+/// follows — `TextView`). The single truncation impl for the whole UI. The memo is the calling
+/// thread's own ([`ELIDE_MEMO`]): the frame loop is the one caller that matters, and a memo shared
+/// by every test thread is one that a clearing thread frees under a reading one (2026-10-20).
 pub fn elide(s: &str, budget: f32, sz: c_int, bold: c_int, cont: bool) -> String {
     let mut hh = DefaultHasher::new();
     s.hash(&mut hh);
@@ -1767,15 +2002,19 @@ pub fn elide(s: &str, budget: f32, sz: c_int, bold: c_int, cont: bool) -> String
     bold.hash(&mut hh);
     cont.hash(&mut hh);
     let key = hh.finish();
-    let cache = unsafe { (*addr_of_mut!(ELIDE_CACHE)).get_or_insert_with(HashMap::new) };
-    if let Some(v) = cache.get(&key) {
-        return v.clone();
+    // The cell is borrowed twice, never across `elide_compute` (which measures through
+    // `text_width` and its own memo and never calls back into `elide`).
+    if let Some(hit) = ELIDE_MEMO.with(|memo| memo.borrow().get(&key).cloned()) {
+        return hit;
     }
     let out = elide_compute(s, budget, sz, bold, cont);
-    if cache.len() > 512 {
-        cache.clear(); // crude cap — plenty for every label/line across a few screens
-    }
-    cache.insert(key, out.clone());
+    ELIDE_MEMO.with(|memo| {
+        let mut memo = memo.borrow_mut();
+        if memo.len() > 512 {
+            memo.clear(); // crude cap — plenty for every label/line across a few screens
+        }
+        memo.insert(key, out.clone());
+    });
     out
 }
 
@@ -1815,6 +2054,34 @@ pub fn elide_middle_by(s: &str, budget: f32, measure: impl Fn(&str) -> f32) -> S
         }
     }
     cut(lo)
+}
+
+/// `elide`'s memo is read and replaced by the thread that paints, and `cargo test` paints from many
+/// threads at once. A shared memo that one thread clears while another reads is the crash `plx_ui`'s
+/// tab labels had (2026-10-20), so every thread must see only its own memo.
+#[cfg(test)]
+mod elide_memo_tests {
+    use super::*;
+
+    /// Eight threads elide disjoint strings, far past the memo's 512-entry cap so every thread
+    /// clears it again and again while the others insert. With one process-wide memo that is a
+    /// data race on a `HashMap` that frees `String`s the other threads are cloning: an abort in
+    /// libmalloc, a wrong string, or a corrupted table that spins forever (the unfixed code did
+    /// exactly that, at 320% CPU for 13 minutes, which is why `race` waits with a deadline).
+    #[test]
+    fn every_thread_elides_through_its_own_memo() {
+        const ROUNDS: usize = 4000;
+        plx_base::testrace::race(8, |t| {
+            let size = 20 + (t % 3) as c_int;
+            for i in 0..ROUNDS {
+                let text = format!("thread {t} row {i} a title long enough to be cut short");
+                let budget = 40.0 + (i % 7) as f32 * 8.0;
+                let got = elide(&text, budget, size, 0, i % 2 == 0);
+                let want = elide_compute(&text, budget, size, 0, i % 2 == 0);
+                assert_eq!(got, want, "round {i}: another thread's elided string");
+            }
+        });
+    }
 }
 
 #[cfg(test)]
@@ -2016,30 +2283,199 @@ pub fn draw_text(
             Ok(p) => p,
             Err(w) => return w,
         };
+        let (ox, oy) = p.origin(zoom);
+        // Inside an ink clip the glyphs take the ink program: each fragment's coverage is cut by
+        // the clip's rounded shapes, so ONE label can wear two inks along a capsule's arc.
+        if let Some(clip) = ink_clip().filter(|_| TPROGI != 0) {
+            if bind_ink(&clip) {
+                glUniform4fv(TLI_COL, 1, col);
+                glBindTexture(GL_TEXTURE_2D, p.tex);
+                glUniform4f(TLI_RECT, ox, oy, p.quad.w, p.quad.h);
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                return p.w;
+            }
+        }
         crate::gfx::use_prog(TPROG); // TL_SCREEN / TL_TEX / texture unit 0 set once at init
         glUniform4fv(TL_COL, 1, col);
         glBindTexture(GL_TEXTURE_2D, p.tex);
-        let (ox, oy) = p.origin(zoom);
         glUniform4f(TL_RECT, ox, oy, p.quad.w, p.quad.h);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         p.w
     }
 }
 
-/// [`draw_text`] with up to three independent fades (its OWN GL program, so plain text pays no
+/// Tracking of the Watchlist board's header title (design board: `letter-spacing: -0.5px`; the page's
+/// header is the Library's row now and draws no tracked text). CSS puts the
+/// spacing after every character; here it goes BETWEEN characters (n-1 gaps, see
+/// [`text_width_tracked`]), so a centred or right-aligned title has no trailing gap and the board's
+/// trailing 0.5 px is not reproduced (shipped layout wins; the difference is sub-pixel).
+pub const TRACKING_TITLE_TIGHT: f32 = -0.5;
+
+/// True for a char that rides on the previous one (combining mark, joiner, variation selector) and
+/// so must never be separated from it by tracking.
+fn attaches_to_previous(c: char) -> bool {
+    matches!(c as u32, 0x0300..=0x036F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x20D0..=0x20FF
+        | 0xFE00..=0xFE0F | 0xFE20..=0xFE2F | 0x200D | 0x200C | 0xE0100..=0xE01EF)
+}
+
+/// Byte offsets where each cluster (a char plus the marks that attach to it) starts: the ONE
+/// cluster rule, shared by the width (gaps = clusters - 1) and the draw.
+fn cluster_starts(s: &str) -> Vec<usize> {
+    let mut starts: Vec<usize> = Vec::new();
+    for (i, c) in s.char_indices() {
+        if starts.is_empty() || !attaches_to_previous(c) {
+            starts.push(i);
+        }
+    }
+    starts
+}
+
+/// Pure layout of a tracked string: for every drawable cluster, its byte range in `s` and its
+/// x offset from the string's left edge. The offset is the measured width of everything before the
+/// cluster (`prefix_width`, so kerning and mixed-font runs keep their native advances) plus
+/// `letter_spacing` per preceding gap. Whitespace-only clusters advance but are not returned.
+fn tracked_clusters(
+    s: &str,
+    letter_spacing: f32,
+    mut prefix_width: impl FnMut(&str) -> f32,
+) -> Vec<(std::ops::Range<usize>, f32)> {
+    let mut out = Vec::new();
+    let starts = cluster_starts(s);
+    for (k, &from) in starts.iter().enumerate() {
+        let to = starts.get(k + 1).copied().unwrap_or(s.len());
+        if s[from..to].chars().all(char::is_whitespace) {
+            continue;
+        }
+        out.push((from..to, prefix_width(&s[..from]) + letter_spacing * k as f32));
+    }
+    out
+}
+
+/// Draws a tracked string cluster by cluster through `draw_one(cluster, x, hfade_shift)`.
+/// Returns the tracked width.
+#[allow(clippy::too_many_arguments)]
+unsafe fn draw_tracked_with(
+    s: *const c_char,
+    x: f32,
+    sz: c_int,
+    align: c_int,
+    bold: c_int,
+    letter_spacing: f32,
+    mut draw_one: impl FnMut(*const c_char, f32, f32),
+) -> f32 {
+    let width = text_width_tracked(s, sz, bold, letter_spacing);
+    if s.is_null() {
+        return width;
+    }
+    let Ok(text) = CStr::from_ptr(s).to_str() else {
+        return width;
+    };
+    let left = match align {
+        1 => x - width * 0.5,
+        2 => x - width,
+        _ => x,
+    };
+    let clusters = tracked_clusters(text, letter_spacing, |prefix| {
+        match std::ffi::CString::new(prefix) {
+            Ok(c) if !prefix.is_empty() => text_width(c.as_ptr(), sz, bold),
+            _ => 0.0,
+        }
+    });
+    for (range, off) in clusters {
+        if let Ok(c) = std::ffi::CString::new(&text[range]) {
+            draw_one(c.as_ptr(), left + off, off);
+        }
+    }
+    width
+}
+
+/// [`draw_text`] with `letter_spacing` px of tracking between glyphs (negative tightens). At
+/// `letter_spacing == 0.0` this IS [`draw_text`] (same call, same cache keys, same draw calls).
+/// Otherwise each cluster is drawn as its own cached string at the measured prefix width plus the
+/// spacing, so kerning and mixed-font runs keep their native advances and only the gaps change.
+/// Returns the tracked width (what [`text_width_tracked`] reports).
+#[allow(clippy::too_many_arguments)]
+pub fn draw_text_tracked(
+    s: *const c_char,
+    x: f32,
+    y: f32,
+    sz: c_int,
+    col: *const f32,
+    align: c_int,
+    bold: c_int,
+    zoom: crate::gfx::Zoom,
+    letter_spacing: f32,
+) -> f32 {
+    if letter_spacing == 0.0 {
+        return draw_text(s, x, y, sz, col, align, bold, zoom);
+    }
+    unsafe {
+        draw_tracked_with(s, x, sz, align, bold, letter_spacing, |c, gx, _| {
+            draw_text(c, gx, y, sz, col, 0, bold, zoom);
+        })
+    }
+}
+
+/// [`draw_text_fade`] with tracking; at 0 it IS [`draw_text_fade`]. The horizontal fade bands stay
+/// anchored to the whole string's left edge (each cluster's bands are shifted by its offset,
+/// [`shift_hband`]).
+#[allow(clippy::too_many_arguments)]
+pub fn draw_text_fade_tracked(
+    s: *const c_char,
+    x: f32,
+    y: f32,
+    sz: c_int,
+    col: *const f32,
+    align: c_int,
+    bold: c_int,
+    hfade: Option<(f32, f32)>,
+    hlead: Option<(f32, f32)>,
+    vfade_top: Option<(f32, f32)>,
+    vfade_bot: Option<(f32, f32)>,
+    zoom: crate::gfx::Zoom,
+    letter_spacing: f32,
+) -> f32 {
+    if letter_spacing == 0.0 {
+        return draw_text_fade(s, x, y, sz, col, align, bold, hfade, hlead, vfade_top, vfade_bot, zoom);
+    }
+    unsafe {
+        draw_tracked_with(s, x, sz, align, bold, letter_spacing, |c, gx, off| {
+            let (fade, lead) = (shift_hband(hfade, off), shift_hband(hlead, off));
+            draw_text_fade(c, gx, y, sz, col, 0, bold, fade, lead, vfade_top, vfade_bot, zoom);
+        })
+    }
+}
+
+/// A horizontal band given from the WHOLE string's left edge, re-anchored to a cluster that starts
+/// `off` px into it ([`draw_text_fade_tracked`] draws each cluster as its own string).
+fn shift_hband(band: Option<(f32, f32)>, off: f32) -> Option<(f32, f32)> {
+    band.map(|(a, z)| (a - off, z - off))
+}
+
+/// A horizontal band in px from the string's left edge, as the fade program's uv.x pair: `dw` is
+/// the texture's unzoomed width. `None` is `(0.0, 0.0)`, which the shader's `to > from` gate reads
+/// as off, so a caller with no band need not sentinel against the string's own width.
+fn hband_uv(band: Option<(f32, f32)>, dw: f32) -> (f32, f32) {
+    band.map_or((0.0, 0.0), |(a, z)| (a / dw, z / dw))
+}
+
+/// [`draw_text`] with up to four independent fades (its OWN GL program, so plain text pays no
 /// per-fragment fade cost — see the shader's own header for why every ordinary glyph stays off
-/// it): a HORIZONTAL one (`hfade`, glyph alpha 1→0 between `from`..`to` px from the string's LEFT
-/// edge regardless of `align` — the About card's and the person header bio's `MORE` dissolve), and
-/// two VERTICAL ones in absolute logical screen y (`vfade_top` ramps 0→1 rising through the band,
-/// `vfade_bot` ramps 1→0 falling through it — a line crossing a SCROLLING viewport's clipped edge,
-/// see `ui::text_view::TextView::edge_fade`). Each is `None` by default and costs the shader
-/// nothing extra to skip (a uniform compare, not a texture sample). Falls back to plain
-/// [`draw_text`] if the fade program failed to link — a device with no working fade shader still
-/// shows every word, just without the dissolve.
+/// it): two HORIZONTAL ones measured in px from the string's LEFT edge regardless of `align` —
+/// `hfade`, the TRAILING edge, glyph alpha 1→0 between `from`..`to` (the About card's and the
+/// person header bio's `MORE` dissolve, and a gliding marquee run's right edge), and `hlead`, the
+/// LEADING edge, glyph alpha 0→1 between `from`..`to` (a gliding run is cut by the LEFT of its
+/// window as well: `card_row::block_text`, where `from` is how far the string's head is past the
+/// window's edge) — and two VERTICAL ones in absolute logical screen y (`vfade_top` ramps 0→1
+/// rising through the band, `vfade_bot` ramps 1→0 falling through it — a line crossing a SCROLLING
+/// viewport's clipped edge, see `ui::text_view::TextView::edge_fade`). Each is `None` by default
+/// and costs the shader nothing extra to skip (a uniform compare, not a texture sample). Falls
+/// back to plain [`draw_text`] if the fade program failed to link — a device with no working fade
+/// shader still shows every word, just without the dissolve.
 ///
 /// `zoom` is [`draw_text`]'s: a dissolving line inside a lifted block grows with the lines above
-/// it. The horizontal band is a fraction of the string's own texture, so it needs no mapping; the
-/// vertical bands are screen y and go through the same zoom as the quad.
+/// it. The horizontal bands are a fraction of the string's own texture, so they need no mapping;
+/// the vertical bands are screen y and go through the same zoom as the quad.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_text_fade(
     s: *const c_char,
@@ -2050,6 +2486,7 @@ pub fn draw_text_fade(
     align: c_int,
     bold: c_int,
     hfade: Option<(f32, f32)>,
+    hlead: Option<(f32, f32)>,
     vfade_top: Option<(f32, f32)>,
     vfade_bot: Option<(f32, f32)>,
     zoom: crate::gfx::Zoom,
@@ -2064,11 +2501,11 @@ pub fn draw_text_fade(
         };
         crate::gfx::use_prog(TPROGF); // TLF_SCREEN / TLF_TEX / texture unit 0 set once at init
         glUniform4fv(TLF_COL, 1, col);
-        // px → string-texture uv (the varying spans the one-quad string). `(0.0, 0.0)` is "off" —
-        // the shader gates on `to > from`, so a caller with no horizontal fade need not sentinel
-        // against the string's own width.
-        let (hf0, hf1) = hfade.unwrap_or((0.0, 0.0));
-        glUniform2f(TLF_FADE, hf0 / p.dw, hf1 / p.dw);
+        // px → string-texture uv (the varying spans the one-quad string); see [`hband_uv`].
+        let (hf0, hf1) = hband_uv(hfade, p.dw);
+        glUniform2f(TLF_FADE, hf0, hf1);
+        let (hl0, hl1) = hband_uv(hlead, p.dw);
+        glUniform2f(TLF_LEAD, hl0, hl1);
         let band = |b: Option<(f32, f32)>| {
             b.map_or((0.0, 0.0), |(a, z)| (zoom.map_y(a), zoom.map_y(z)))
         };
@@ -2100,17 +2537,130 @@ mod tests {
     //! regression that named this unit was found by a photograph, not by a test.
 
     use super::*;
+
+    #[test]
+    fn tracking_zero_is_the_untracked_width() {
+        let s = std::ffi::CString::new("Watchlist").unwrap();
+        assert_eq!(
+            text_width_tracked(s.as_ptr(), 20, 0, 0.0).to_bits(),
+            text_width(s.as_ptr(), 20, 0).to_bits()
+        );
+    }
+
+    #[test]
+    fn tracking_adds_one_gap_between_each_pair_of_characters() {
+        let s = std::ffi::CString::new("Watchlist").unwrap();
+        let w = text_width(s.as_ptr(), 20, 0);
+        let tight = text_width_tracked(s.as_ptr(), 20, 0, TRACKING_TITLE_TIGHT);
+        assert_eq!(tight, w + TRACKING_TITLE_TIGHT * 8.0);
+        let one = std::ffi::CString::new("W").unwrap();
+        assert_eq!(text_width_tracked(one.as_ptr(), 20, 0, 3.0), text_width(one.as_ptr(), 20, 0));
+    }
+
+    /// The recording pass queues what the tracked draw rasterizes: one string per cluster.
+    #[test]
+    fn tracked_prewarm_queues_the_clusters_the_draw_will_use() {
+        let s = std::ffi::CString::new("ab e\u{301}").unwrap();
+        let got = capture_text_runs_for_test(|| queue_prewarm_tracked(s.as_ptr(), 20, 0));
+        assert_eq!(got, vec!["a", "b", "e\u{301}"]);
+    }
+
+    /// One gap per CLUSTER: a combining mark attaches to its base and adds no gap.
+    #[test]
+    fn tracked_width_counts_clusters_not_code_points() {
+        let s = std::ffi::CString::new("e\u{301}x").unwrap();
+        let plain = text_width(s.as_ptr(), 20, 0);
+        assert_eq!(text_width_tracked(s.as_ptr(), 20, 0, -0.5), plain - 0.5);
+    }
+
+    #[test]
+    fn tracked_clusters_offset_by_prefix_width_plus_gaps() {
+        // Fixed 10 px per char stand-in for the measurer; "e" + U+0301 is one cluster; the space
+        // advances but is not drawn.
+        let s = "ab e\u{301}";
+        let got = tracked_clusters(s, -0.5, |p| p.chars().count() as f32 * 10.0);
+        let offs: Vec<(&str, f32)> = got.iter().map(|(r, o)| (&s[r.clone()], *o)).collect();
+        assert_eq!(offs, vec![("a", 0.0), ("b", 9.5), ("e\u{301}", 28.5)]);
+    }
+
+    #[test]
+    fn tracked_clusters_at_zero_spacing_are_the_untracked_positions() {
+        let got = tracked_clusters("abc", 0.0, |p| p.len() as f32 * 7.0);
+        assert_eq!(got.iter().map(|c| c.1).collect::<Vec<_>>(), vec![0.0, 7.0, 14.0]);
+    }
+
+    /// The horizontal fade bands are given from the WHOLE string's left edge; a tracked string is
+    /// drawn a cluster at a time, so each cluster's copy of a band (trailing AND leading) is
+    /// re-anchored by its offset. An absent band stays absent.
+    #[test]
+    fn a_tracked_clusters_horizontal_bands_are_reanchored_by_its_offset() {
+        assert_eq!(shift_hband(Some((100.0, 124.0)), 0.0), Some((100.0, 124.0)));
+        assert_eq!(shift_hband(Some((100.0, 124.0)), 28.5), Some((71.5, 95.5)));
+        assert_eq!(shift_hband(Some((12.0, 36.0)), 28.5), Some((-16.5, 7.5)), "a band may start before the cluster");
+        assert_eq!(shift_hband(None, 28.5), None);
+    }
+
+    /// A band reaches the shader as a uv.x pair over the texture's width, and no band is the
+    /// `(0, 0)` pair the shader's `to > from` gate reads as off (`u_tfade` and `u_tlead` alike).
+    #[test]
+    fn a_horizontal_band_is_a_uv_pair_and_no_band_is_the_off_pair() {
+        assert_eq!(hband_uv(Some((50.0, 100.0)), 200.0), (0.25, 0.5));
+        let (from, to) = hband_uv(None, 200.0);
+        assert!(!(to > from), "off: the shader's gate `to > from` must be false for {from}..{to}");
+    }
+
     use plx_base::fontcov;
 
     /// The real shipped cmaps, parsed once for the whole test binary (see `fontcov::shipped`).
     /// `Link::Sys` is `None` on purpose: the television's DroidSansFallback does not exist on a
     /// build host, so this is also the "the chain is SHORT" configuration under test.
-    fn chain() -> [Option<&'static fontcov::Coverage>; 3] {
+    fn chain() -> [Option<&'static fontcov::Coverage>; 4] {
         [
             fontcov::shipped("appfont.ttf").as_ref().ok(),
             fontcov::shipped("appfont-cjk.ttf").as_ref().ok(),
             None,
+            fontcov::shipped("appfont-emoji.ttf").as_ref().ok(),
         ]
+    }
+
+    /// A run as SDL_ttf will receive it, against the shipped emoji cmap.
+    fn drawn(link: Link, s: &str) -> String {
+        let emoji = fontcov::shipped("appfont-emoji.ttf").as_ref().expect("emoji face");
+        run_text(link, s, |cp| emoji.astral_rank(cp)).into_owned()
+    }
+
+    /// The owner's case: kids' libraries told apart by an emoji. Those were a box beside the name.
+    #[test]
+    fn a_library_name_with_an_emoji_splits_onto_the_emoji_face() {
+        assert_eq!(
+            runs_of("Movies \u{1F9F8}"),
+            vec![(Link::Base, "Movies "), (Link::Emoji, "\u{1F9F8}")]
+        );
+        assert_eq!(
+            runs_of("\u{1F3AC} Filmes"),
+            vec![(Link::Emoji, "\u{1F3AC}"), (Link::Base, " Filmes")]
+        );
+    }
+
+    /// The television's SDL2_ttf cannot reach a glyph above U+FFFF, so every emoji it is handed
+    /// must be in the BMP, and must be the mirror of the emoji asked for.
+    #[test]
+    fn an_emoji_run_reaches_sdl_ttf_in_the_bmp_as_the_same_glyph() {
+        let emoji = fontcov::shipped("appfont-emoji.ttf").as_ref().expect("emoji face");
+        for s in ["\u{1F9F8}", "\u{1F476}\u{1F9D2}", "\u{1F3AC}\u{FE0F}", "\u{2B50}"] {
+            let out = drawn(Link::Emoji, s);
+            assert!(!out.is_empty(), "{s:?} drew nothing");
+            for ch in out.chars() {
+                assert!((ch as u32) <= 0xFFFF, "{s:?} hands SDL_ttf U+{:X}", ch as u32);
+                assert!(emoji.contains(ch as u32), "{s:?}: the face has no U+{:X}", ch as u32);
+            }
+        }
+        // a family sequence draws its members, a toned thumb the plain one, with no joiner left
+        assert_eq!(drawn(Link::Emoji, "\u{1F44D}\u{1F3FD}"), drawn(Link::Emoji, "\u{1F44D}"));
+        assert_eq!(drawn(Link::Emoji, "\u{1F468}\u{200D}\u{1F469}").chars().count(), 2);
+        assert_eq!(drawn(Link::Emoji, "\u{FE0F}"), "");
+        // every other link is handed its text untouched
+        assert_eq!(drawn(Link::Cjk, "君の名は"), "君の名は");
     }
 
     fn split(s: &str) -> Option<Runs> {

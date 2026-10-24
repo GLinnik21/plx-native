@@ -17,11 +17,19 @@
 //! neighbours unfocused too, exactly as this neutral tile is.
 //!
 //! Both names are set by ONE fitting policy, [`fit_name`]: sized, cased and wrapped from the tile's
-//! RESTING width and memoised, so a focus pop moves the laid-out lines rather than re-wrapping them.
+//! RESTING width and memoised, so a focus pop grows the laid-out lines rather than re-wrapping them.
+//!
+//! **The name magnifies with the card, and costs nothing to.** A string is already an image: its
+//! glyph texture is cached by (string, size, weight), and a zoom only resizes that texture's quad
+//! (`text_lift`'s module doc; `gfx::text::draw_text`'s `zoom`). So a tile lays its mark and name out
+//! on the RESTING rect and draws them through the card's own zoom ([`grown`]): the same cache key at
+//! every frame of a pop, no re-shaping, no new rasterisation, and exactly the card's scale.
 //! It measures through the live-font `widgets::LegacyMeasure` (`card` is drawn by callers that hold
 //! no `Measure`, and the card composite skips recording passes, so no recorded layout depends on
 //! this text); tests hand it the shipped faces' real advances.
+use crate::hstack::Item;
 use crate::icons::{self, Icon};
+use crate::vstack::{Anchor, VStack};
 use crate::label::{HAlign, Label, VAlign};
 use plx_machine::machine::Measure;
 use std::cell::RefCell;
@@ -29,7 +37,7 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::os::raw::c_int;
 use std::rc::Rc;
-use crate::{theme, Painter, Rect};
+use crate::{theme, Painter, Rect, Zoom};
 
 /// The mock's grid tile width (`Collections.dc.html` G1, a 250×375 poster): the unit the FAN's
 /// geometry is written in, scaled by the tile's resting width over it (the fan is a picture).
@@ -309,6 +317,29 @@ pub fn fit_name(name: &str, style: &NameStyle, rest_w: f32, band: f32,
     FittedName { lines, sz: step, pitch: pitch(step), column }
 }
 
+/// Which name a collection's face sets: the live name over a baked fan, or the neutral tile's (a
+/// collection with no artwork). A custom poster is artwork and sets none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Face {
+    Fan,
+    Neutral,
+}
+
+/// **Does the face cut this collection's name?** True when [`fit_name`], on a `rest` tile of the
+/// face's style, could not set the whole name: its last line ends in an ellipsis (or a lone
+/// over-wide word is elided). The tile's focused caption then carries the full name, whatever the
+/// Under posters setting, because the face is the only other place the name is told.
+pub fn name_is_cut(face: Face, name: &str, rest: Rect) -> bool {
+    let (style, band) = match face {
+        Face::Fan => (&FAN_NAME, fan_band(rest).1),
+        Face::Neutral => (&NEUTRAL_NAME, neutral_band(rest)),
+    };
+    let fit = fitted(name, style, rest, band);
+    let set = fit.lines.iter().map(|line| line.text.as_str()).collect::<Vec<_>>().join(" ");
+    let whole = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    set != if style.upper { whole.to_uppercase() } else { whole }
+}
+
 /// The band a fan's name is centred in on a `rest` tile, as (top, height) from the tile's top:
 /// from the deck's lowest point — the rotated back members' corners included — and its drop
 /// shadow (and never above the scrim) down to the mock's bottom inset. The fan's geometry scales
@@ -372,25 +403,45 @@ const GLYPH_RATIO: f32 = 0.3;
 /// Air between the mark and the name's cap band, as a fraction of the tile's width.
 const GAP_RATIO: f32 = 0.08;
 
-/// The mark's raster size for a tile `w` wide — quantized to 4px so a focus pop reuses a handful
-/// of cached masks instead of rasterizing one per rounded pixel (the person glyph's discipline).
+/// The mark's raster size for a tile `w` wide — quantized to 4px so the tile widths of different
+/// pages share a handful of cached masks instead of rasterizing one per rounded pixel (the person
+/// glyph's discipline). A focus pop does not change it: the mark is laid out on the RESTING width
+/// and grown with the card ([`grown`]).
 pub fn glyph_px(w: f32) -> f32 {
     ((w * GLYPH_RATIO) / 4.0).round() * 4.0
 }
 
 /// Where the mark and the name block sit in `r`: the pair is centred vertically as one block,
-/// the mark above, sized from the tile so a scaled (popped) tile scales its layout with it.
+/// the mark above, sized from the tile's width.
 pub fn layout(r: Rect, name_w: f32, name_h: f32) -> (Rect, Rect) {
     let d = glyph_px(r.w);
-    let gap = r.w * GAP_RATIO;
-    let top = r.y + (r.h - (d + gap + name_h)) * 0.5;
+    let items = [Item::new(d), Item::new(name_h)];
+    let stack = VStack::new(&items, r.w * GAP_RATIO, Anchor::Centre(r.cy()));
+    let (Some((top, _)), Some((name_top, _))) = (stack.span(0), stack.span(1)) else {
+        unreachable!("the mark and the name are always present")
+    };
     let glyph = Rect::new(r.cx() - d * 0.5, top, d, d);
-    let name = Rect::new(r.cx() - name_w * 0.5, top + d + gap, name_w, name_h);
+    let name = Rect::new(r.cx() - name_w * 0.5, name_top, name_w, name_h);
     (glyph, name)
 }
 
+/// Run `content`, laid out against the tile's RESTING rect, on a painter that grows it onto `r`, the
+/// rect the tile is drawn at (popped when focused): the card's own scale about the card's centre,
+/// carried by [`Painter::zoomed`] — the one transform `text_lift` uses — so a glyph run is the SAME
+/// cached texture at every frame of a pop, resized. Scoped to the closure, so nothing drawn after it
+/// inherits the zoom. At rest (`r == rest`) it is the plain painter.
+fn grown(p: Painter, rest: Rect, r: Rect, content: impl FnOnce(Painter)) {
+    let s = r.w / rest.w.max(1.0);
+    let (dx, dy) = (r.cx() - rest.cx(), r.cy() - rest.cy());
+    if s == 1.0 && dx == 0.0 && dy == 0.0 {
+        return content(p);
+    }
+    content(p.translate(dx, dy).zoomed(Zoom::about(rest, (0.5, 0.5), s)));
+}
+
 /// Draw the neutral tile at `r` (the rect it is drawn at, popped when focused) with corner radius
-/// `rad`; `rest` is its RESTING rect, which the name is fitted to. The caller has already decided
+/// `rad`; `rest` is its RESTING rect, which the mark and name are laid out on and fitted to, then
+/// grown with the card ([`grown`]). The caller has already decided
 /// the row is a collection with no artwork (`thumb` empty) — an unresolved texture with a path
 /// behind it is merely still loading and keeps the ordinary skeleton.
 pub fn draw(p: Painter, rest: Rect, r: Rect, rad: f32, name: &str) {
@@ -399,9 +450,11 @@ pub fn draw(p: Painter, rest: Rect, r: Rect, rad: f32, name: &str) {
     // placeholder-exempt: absence, a collection whose server sent no artwork; nothing will arrive
     p.rrect_sheened(r, rad, theme::CARD_ABSENT);
     let fit = fitted(name, &NEUTRAL_NAME, rest, neutral_band(rest));
-    let (glyph, column) = layout(r, fit.column, fit.height());
-    icons::draw(p, Icon::Collection, glyph, theme::TEXT_TERTIARY);
-    draw_lines(p, &fit, column.cx(), column.y + NAME_CAP_DROP * fit.sz as f32, theme::TEXT_SECONDARY);
+    grown(p, rest, r, |p| {
+        let (glyph, column) = layout(rest, fit.column, fit.height());
+        icons::draw(p, Icon::Collection, glyph, theme::TEXT_TERTIARY);
+        draw_lines(p, &fit, column.cx(), column.y + NAME_CAP_DROP * fit.sz as f32, theme::TEXT_SECONDARY);
+    });
 }
 
 // ── The name on a baked fan: G1's `.art b`, set by [`fit_name`] and centred under the fan.
@@ -425,8 +478,8 @@ pub fn fan_name_top(rest: Rect, fit: &FittedName, m: &dyn Measure) -> f32 {
 /// between the front member and the bottom inset, over a drop.
 ///
 /// `rest` is the tile's RESTING rect and `r` the rect it is drawn at (popped when focused). The
-/// fit comes from `rest`, so a focus pop never re-wraps; the block's centre rides `r`'s scale so it
-/// moves with the art.
+/// block is fitted and placed on `rest`, so a focus pop never re-wraps, and drawn through the card's
+/// zoom ([`grown`]), so it magnifies with the art about the same centre.
 ///
 /// **The caller has already decided the thumb IS a baked fan** — whether a path is the server's
 /// generated composite is the application's fact (`TileFacts::composite_thumb`), so this draws the
@@ -436,13 +489,48 @@ pub fn draw_fan_name(p: Painter, rest: Rect, r: Rect, name: &str) {
     if fit.lines.is_empty() {
         return;
     }
-    let m = crate::widgets::LegacyMeasure;
-    let ink = fit.ink(&m);
-    let centre = (fan_name_top(rest, &fit, &m) + ink * 0.5) * (r.h / rest.h.max(1.0));
-    let top = r.y + centre - ink * 0.5;
+    let top = rest.y + fan_name_top(rest, &fit, &crate::widgets::LegacyMeasure);
     let k = type_k(rest.w);
-    draw_lines(p, &fit, r.cx(), top + FAN_NAME_SHADOW_DY * k, theme::FAN_NAME_SHADOW);
-    draw_lines(p, &fit, r.cx(), top, theme::FAN_NAME_INK);
+    grown(p, rest, r, |p| {
+        draw_lines(p, &fit, rest.cx(), top + FAN_NAME_SHADOW_DY * k, theme::FAN_NAME_SHADOW);
+        draw_lines(p, &fit, rest.cx(), top, theme::FAN_NAME_INK);
+    });
+}
+
+// ── The smart mark: a smart collection fills itself from a saved filter, and its tile says so
+// with one small sparkle in the top-right corner (spec, "Collections page").
+
+/// The mark's disc, as a fraction of the tile's width (250 -> 40).
+const SMART_DISC_RATIO: f32 = 0.16;
+/// The disc's inset from the tile's top-right corner, as a fraction of the tile's width.
+const SMART_INSET_RATIO: f32 = 0.056;
+
+/// The mark's box on a tile at `r`: a disc `0.16 w` across, inset `0.056 w` from the top-right.
+pub fn smart_mark_rect(r: Rect) -> Rect {
+    let d = (r.w * SMART_DISC_RATIO).round();
+    let inset = (r.w * SMART_INSET_RATIO).round();
+    Rect::new(r.x + r.w - inset - d, r.y + inset, d, d)
+}
+
+/// Draw the smart mark on the tile `r`: a dark scrim disc under a four-point sparkle (a long cross
+/// and a small one at its upper right, the shape every "smart" mark takes), in plain primitives so
+/// no mask is rasterised for it. Drawn on every smart collection, focused or not; it moves with the
+/// tile's pop because the caller passes the popped rect.
+pub fn draw_smart_mark(p: Painter, r: Rect) {
+    let d = smart_mark_rect(r);
+    p.rrect(d, d.h * 0.5, d.h * 0.5, with_scrim());
+    let cross = |cx: f32, cy: f32, len: f32| {
+        let t = (len * 0.2).max(2.0);
+        p.rrect(Rect::new(cx - t * 0.5, cy - len * 0.5, t, len), t * 0.5, t * 0.5, theme::TEXT_PRIMARY);
+        p.rrect(Rect::new(cx - len * 0.5, cy - t * 0.5, len, t), t * 0.5, t * 0.5, theme::TEXT_PRIMARY);
+    };
+    cross(d.x + d.w * 0.44, d.y + d.h * 0.56, d.w * 0.5);
+    cross(d.x + d.w * 0.70, d.y + d.h * 0.30, d.w * 0.26);
+}
+
+fn with_scrim() -> [f32; 4] {
+    let k = theme::SCRIM_INK;
+    [k[0], k[1], k[2], 0.55]
 }
 
 #[cfg(test)]
@@ -480,6 +568,22 @@ mod tests {
     /// The band's top as the owner defines it: the lowest corner plus the shadow.
     fn deck_line(w: f32) -> f32 { corners(w).2 + FAN_SHADOW_REACH * w / MOCK_W }
 
+    /// **S23, the rule's trigger.** A face "cuts" a name when it could not set it whole: a short
+    /// name never, a name too long for the band's lines always, on both faces.
+    #[test]
+    fn a_name_is_cut_when_the_face_cannot_set_it_whole() {
+        let rest = Rect::new(0.0, 0.0, 250.0, 375.0);
+        let long = "The Complete Extended Director's Cut Anniversary Edition Saga Collection Box Set";
+        // The neutral tile's band is the taller (no deck above the name), so it takes a longer name.
+        let longer = [long; 3].join(" ");
+        for face in [Face::Fan, Face::Neutral] {
+            assert!(!name_is_cut(face, "Marvel", rest), "{face:?}: a short name is set whole");
+            assert!(!name_is_cut(face, "", rest), "{face:?}: no name is no cut");
+            assert!(name_is_cut(face, &longer, rest), "{face:?}: a name past the band's lines is cut");
+        }
+        assert!(name_is_cut(Face::Fan, long, rest), "the fan's band is the shorter");
+    }
+
     #[test]
     fn the_mark_and_name_are_one_block_centred_on_the_tile() {
         let r = Rect::new(100.0, 200.0, 250.0, 375.0);
@@ -492,12 +596,23 @@ mod tests {
         assert!(name.y > glyph.y + glyph.h, "the name sits under the mark");
     }
 
+    /// The mark and the name are one centred stack: the air between them is the tile-width gap.
     #[test]
-    fn a_pop_reuses_quantized_mark_sizes() {
+    fn the_mark_and_name_stand_one_gap_apart() {
+        let r = Rect::new(100.0, 200.0, 250.0, 375.0);
+        let (glyph, name) = layout(r, 200.0, 64.0);
+        assert!((name.y - (glyph.y + glyph.h) - r.w * GAP_RATIO).abs() < 1e-4);
+        assert_eq!(name.h, 64.0);
+    }
+
+    /// Resting widths within 8% of a 250 tile (the grids differ by that much) share at most two
+    /// cached masks; a focus pop is not among them, it grows the mask by the card's zoom.
+    #[test]
+    fn nearby_resting_widths_share_quantized_mark_sizes() {
         let sizes: std::collections::BTreeSet<i32> = (0..=20)
             .map(|step| glyph_px(250.0 * (1.0 + step as f32 * 0.004)) as i32)
             .collect();
-        assert!(sizes.len() <= 2, "a 1.08 pop spans at most two cached masks: {sizes:?}");
+        assert!(sizes.len() <= 2, "resting widths within 8% span at most two cached masks: {sizes:?}");
         assert!(sizes.iter().all(|px| px % 4 == 0));
     }
 
@@ -698,5 +813,88 @@ mod tests {
         }
         let neutral = fit_name("Paper Kites", &NEUTRAL_NAME, 250.0, neutral_band(tile(250.0)), &ShippedMeasure);
         assert_eq!(texts(&neutral), ["Paper Kites"], "the neutral tile keeps the name's own case");
+    }
+
+    // ── The name grows with the card. The text is already an image: a string's glyph texture is
+    // cached by (string, size, weight) and a zoom only resizes its quad (`text_lift`'s module doc),
+    // so the tile lays its name out on the RESTING rect and draws it through the card's own zoom.
+
+    /// What a tile's text draws as one frame: the runs a recording painter is handed.
+    fn runs(fan: bool, rest: Rect, scale: f32, name: &str) -> Vec<crate::draw_census::Run> {
+        crate::draw_census::capture_runs(|| {
+            let p = Painter::recording();
+            let r = rest.scaled(scale);
+            if fan { draw_fan_name(p, rest, r, name) } else { draw(p, rest, r, 14.0, name) }
+        })
+    }
+
+    /// The card's pop in the draw path's own words: `Rect::scaled` about the centre.
+    fn pop(rest: Rect, s: f32) -> crate::Zoom { crate::Zoom::about(rest, (0.5, 0.5), s) }
+
+    fn near(a: Rect, b: Rect) -> bool {
+        [(a.x, b.x), (a.y, b.y), (a.w, b.w), (a.h, b.h)].iter().all(|(x, y)| (x - y).abs() < 0.01)
+    }
+
+    /// **At focus progress 0 and 1 (and between) every run of the name is the resting run grown by
+    /// the card's scale about the card's centre**, and it is the SAME glyph-cache key: same string,
+    /// same size, same weight. The size was the defect: it stayed at its resting pixels while the
+    /// card around it magnified.
+    #[test]
+    fn the_name_grows_by_the_cards_scale_about_the_cards_centre() {
+        let _g = plx_base::testlock::serial();
+        let rest = Rect::new(300.0, 200.0, 250.0, 375.0);
+        for fan in [false, true] {
+            let flat = runs(fan, rest, 1.0, "Marvel Cinematic Universe");
+            assert!(!flat.is_empty(), "fan={fan}: the name drew nothing");
+            for s in [1.0, 1.035, crate::widgets::CARD_FOCUS_SCALE] {
+                let grown = runs(fan, rest, s, "Marvel Cinematic Universe");
+                assert_eq!(grown.len(), flat.len(), "fan={fan} s={s}");
+                for (g, f) in grown.iter().zip(&flat) {
+                    assert_eq!((&g.text, g.size, g.bold), (&f.text, f.size, f.bold),
+                        "fan={fan} s={s}: a pop must not change the glyph-cache key");
+                    assert!(near(g.at, pop(rest, s).map(f.at)),
+                        "fan={fan} s={s}: {:?} is not {:?} grown about the card's centre", g.at, f.at);
+                }
+            }
+        }
+    }
+
+    /// The fit is memoised by name and RESTING geometry: 60 focused frames at a moving scale
+    /// settle one fit and the same runs every frame (no re-wrap, no new glyph texture), re-focusing
+    /// hits it again, and a different title is a different fit.
+    #[test]
+    fn a_focused_run_of_frames_reuses_one_fit_and_a_new_title_makes_another() {
+        let _g = plx_base::testlock::serial();
+        FITTED.with(|m| m.borrow_mut().clear());
+        let rest = Rect::new(300.0, 200.0, 250.0, 375.0);
+        let keys = |fan: bool, s: f32, name: &str| -> Vec<(String, i32, bool)> {
+            runs(fan, rest, s, name).into_iter().map(|r| (r.text, r.size, r.bold)).collect()
+        };
+        for fan in [false, true] {
+            FITTED.with(|m| m.borrow_mut().clear());
+            let first = keys(fan, 1.0, "Pixar");
+            for f in 0..60 {
+                let s = 1.0 + (crate::widgets::CARD_FOCUS_SCALE - 1.0) * (f as f32 / 59.0);
+                assert_eq!(keys(fan, s, "Pixar"), first, "fan={fan} frame {f}");
+            }
+            assert_eq!(keys(fan, 1.0, "Pixar"), first, "fan={fan}: re-focus");
+            assert_eq!(FITTED.with(|m| m.borrow().len()), 1, "fan={fan}: one fit for sixty-two frames");
+            let other = keys(fan, 1.0, "Studio Ghibli");
+            assert_ne!(other, first, "fan={fan}: a new title draws new text");
+            assert_eq!(FITTED.with(|m| m.borrow().len()), 2, "fan={fan}: and is a fit of its own");
+        }
+    }
+
+    #[test]
+    fn the_smart_mark_sits_inside_the_tiles_top_right_corner() {
+        for w in [200.0, 250.0] {
+            let tile = Rect::new(100.0, 244.0, w, w * 1.5);
+            let d = smart_mark_rect(tile);
+            assert!(d.x >= tile.x && d.x + d.w <= tile.x + tile.w, "{w}: {d:?}");
+            assert!(d.y >= tile.y && d.y + d.h < tile.y + 80.0, "{w}: {d:?}");
+            assert_eq!(d.w, d.h);
+            assert!(tile.x + tile.w - (d.x + d.w) >= 10.0, "{w}: clear of the corner radius");
+        }
+        assert_eq!(smart_mark_rect(Rect::new(0.0, 0.0, 250.0, 375.0)).w, 40.0);
     }
 }

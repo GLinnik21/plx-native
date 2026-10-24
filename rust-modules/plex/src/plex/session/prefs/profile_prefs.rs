@@ -35,16 +35,16 @@
 use super::{
     Fallback, Parse, ProfileKeyed, ProfileRecords, Preferences, Row, Scope, Setting, SettingsWrite,
     AudioEnhancementsPref, DeckPressPref, DirectPlayModePref, HdrOverlayBrightnessPref, NextEpisodeModePref, QualityPref, SkipIntervalPref,
-    SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref,
+    SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref, UnderPostersPref,
 };
 use crate::plex::session::{
     DeckPress, DirectPlayMode, HdrOverlayBrightness, NextEpisodeMode, PlaybackQuality, Seat, Session, SkipInterval, SubtitlePosition,
-    SubtitleSize, SubtitleTone,
+    SubtitleSize, SubtitleTone, UnderPosters,
 };
 use crate::plex::AudioEnhancements;
 use serde::{Deserialize, Serialize};
 
-/// One profile's own values of the eleven settings; `None` is "this profile has no value of its own".
+/// One profile's own values of the twelve settings; `None` is "this profile has no value of its own".
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ProfilePrefs {
@@ -66,6 +66,8 @@ pub struct ProfilePrefs {
     pub skip_interval: Option<SkipInterval>,
     #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "super::de_soft_opt")]
     pub deck_press: Option<DeckPress>,
+    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "super::de_soft_opt")]
+    pub under_posters: Option<UnderPosters>,
     #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "super::de_soft_opt")]
     pub audio_enhancements: Option<AudioEnhancements>,
     /// Hero trailer autoplay (P1c). An absent value reads the legacy key, which itself reads ON when
@@ -127,7 +129,7 @@ impl Row for ProfilePrefsPref {
 }
 
 /// A [`Setting`] a profile can own: the accessors over [`ProfilePrefs`]. Implemented for exactly the
-/// eleven rows whose `FALLBACK` is [`Fallback::LegacyInstallKey`].
+/// twelve rows whose `FALLBACK` is [`Fallback::LegacyInstallKey`].
 pub trait ProfileSetting: Setting {
     /// The profile's own value, if it has picked one.
     fn own(p: &ProfilePrefs) -> Option<Self::Value>;
@@ -153,6 +155,7 @@ profile_setting!(
     NextEpisodeModePref = next_episode_mode,
     SkipIntervalPref = skip_interval,
     DeckPressPref = deck_press,
+    UnderPostersPref = under_posters,
     AudioEnhancementsPref = audio_enhancements,
     TrailerAutoplayPref = trailer_autoplay,
 );

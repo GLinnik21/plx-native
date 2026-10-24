@@ -1,0 +1,19 @@
+{
+  "under_posters.title": "Bajo los carteles",
+  "under_posters.detail": "Lo que se ve bajo el cartel en el que estás.",
+  "under_posters.copy": "La mayoría de los carteles ya muestran su título. Elige qué aparece bajo el cartel en el que estás.",
+  "under_posters.title_row": "Título",
+  "under_posters.title_detail": "El nombre, en negrita.",
+  "under_posters.details_row": "Detalles",
+  "under_posters.details_detail": "Una línea de información.",
+  "under_posters.details_copy": "Los títulos empezados, próximos o las colecciones muestran eso en su lugar: tiempo restante, fecha de estreno, número de películas.",
+  "under_posters.year_length": "Año · Duración",
+  "under_posters.genre": "Género",
+  "under_posters.video": "Vídeo",
+  "under_posters.age_rating_score": "Clasificación · Nota",
+  "under_posters.none": "Nada",
+  "under_posters.reset": "Restablecer",
+  "under_posters.reset_detail": "Año y duración, sin título.",
+  "under_posters.sample_title": "Película",
+  "under_posters.sample_genre": "Drama"
+}

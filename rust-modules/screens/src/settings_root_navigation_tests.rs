@@ -19,8 +19,7 @@ fn mounting_the_surface_names_its_root_page() {
         EntryId(0),
         InstanceId(0),
         Family::Settings,
-        SettingsPage::Root,
-        plx_data::pms::HubsSnapshot::empty_for_test().view(),
+        SettingsPage::Root
     );
     step(&mut s, ScreenEvent::Mount, None);
     assert_eq!(name(&s), word::SETTINGS);
@@ -36,8 +35,7 @@ fn signed_out_root_does_not_offer_automatically_sign_in() {
         EntryId(0),
         InstanceId(0),
         Family::Settings,
-        SettingsPage::Root,
-        plx_data::pms::HubsSnapshot::empty_for_test().view(),
+        SettingsPage::Root
     );
     step(&mut s, ScreenEvent::Mount, None);
     // Playback / Language / Privacy / Legal / About — About is a door, not a switch.
@@ -72,8 +70,7 @@ fn a_multi_user_root_toggles_automatically_sign_in_in_place() {
         EntryId(0),
         InstanceId(0),
         Family::Settings,
-        SettingsPage::Root,
-        plx_data::pms::HubsSnapshot::empty_for_test().view(),
+        SettingsPage::Root
     );
     step(&mut s, ScreenEvent::Mount, None);
     let row = FocusKey {
@@ -115,8 +112,7 @@ fn right_on_automatically_sign_in_does_not_push() {
         EntryId(0),
         InstanceId(0),
         Family::Settings,
-        SettingsPage::Root,
-        plx_data::pms::HubsSnapshot::empty_for_test().view(),
+        SettingsPage::Root
     );
     step(&mut s, ScreenEvent::Mount, None);
     let row = FocusKey {
@@ -162,8 +158,7 @@ fn back_at_the_surface_s_own_root_is_not_handled() {
         EntryId(0),
         InstanceId(0),
         Family::Settings,
-        SettingsPage::Root,
-        plx_data::pms::HubsSnapshot::empty_for_test().view(),
+        SettingsPage::Root
     );
     step(&mut s, ScreenEvent::Mount, None);
     let back: ScreenEvent<InnerHost> = ScreenEvent::Input(InputEvent {
@@ -206,8 +201,7 @@ fn a_pop_from_legal_restores_focus_to_the_row_that_opened_it() {
         EntryId(0),
         InstanceId(0),
         Family::Settings,
-        SettingsPage::Root,
-        plx_data::pms::HubsSnapshot::empty_for_test().view(),
+        SettingsPage::Root
     );
     step(&mut s, ScreenEvent::Mount, None);
 
@@ -294,8 +288,7 @@ fn a_push_seats_the_new_page_fresh_rather_than_from_the_remembered_list() {
         EntryId(0),
         InstanceId(0),
         Family::Settings,
-        SettingsPage::Root,
-        plx_data::pms::HubsSnapshot::empty_for_test().view(),
+        SettingsPage::Root
     );
     step(&mut s, ScreenEvent::Mount, None);
     let root_row = FocusKey {
@@ -338,8 +331,7 @@ fn remembered_does_not_grow_across_repeated_visits_to_the_same_page() {
         EntryId(0),
         InstanceId(0),
         Family::Settings,
-        SettingsPage::Root,
-        plx_data::pms::HubsSnapshot::empty_for_test().view(),
+        SettingsPage::Root
     );
     step(&mut s, ScreenEvent::Mount, None);
     let legal_row = FocusKey {
@@ -402,8 +394,7 @@ fn a_settled_pop_leaves_the_surface_at_rest_at_depth_two() {
         EntryId(0),
         InstanceId(0),
         Family::Settings,
-        SettingsPage::Root,
-        plx_data::pms::HubsSnapshot::empty_for_test().view(),
+        SettingsPage::Root
     );
     step(&mut s, ScreenEvent::Mount, None);
     assert!(
@@ -506,8 +497,7 @@ fn the_logical_state_follows_the_inner_stack() {
         EntryId(0),
         InstanceId(0),
         Family::Settings,
-        SettingsPage::Root,
-        plx_data::pms::HubsSnapshot::empty_for_test().view(),
+        SettingsPage::Root
     );
     step(&mut s, ScreenEvent::Mount, None);
     let at_root = <RouteSurface as Screen<InnerHost>>::state(&s).hash();
@@ -704,9 +694,70 @@ fn turning_an_unencrypted_connection_on_asks_the_shared_question_first() {
 
 fn inputs_for(signed_in: bool) -> RootInputs {
     RootInputs {
-        signed_in, multi_user: true, library_count: 3, auto_sign_in: false, trailer_autoplay: true,
-        language: plx_platform::i18n::Preference::System, plaintext: Vec::new(),
+        signed_in, multi_user: true, library_count: 3, auto_sign_in: false, trailer_autoplay: true, resolution: UiResolution::Auto, resolution_offered: true,
+        language: plx_platform::i18n::Preference::System,
+        under_posters: plx_plex::plex::session::UnderPosters::DEFAULT, plaintext: Vec::new(),
     }
+}
+
+/// **Interface resolution is a signed-in row that opens its picker** (Automatic, 1600x900, 1280x720,
+/// 960x540), and Automatic is the native canvas rather than any smaller size.
+#[test]
+fn the_interface_resolution_row_is_signed_in_only_and_reads_each_option() {
+    let row_value = |signed_in: bool, resolution: UiResolution| -> Option<String> {
+        let mut real = FormTable::<RootId, Action, SettingsPage>::new(super::super::registry::BAND);
+        real.set(root_form(&RootInputs { resolution, ..inputs_for(signed_in) }), None);
+        let i = real.index_of(&RootId::Resolution)?;
+        real.table.sections.iter().flat_map(|s| s.rows.iter()).nth(i).expect("the row exists").value.clone()
+    };
+    assert_eq!(row_value(false, UiResolution::Auto), None, "the signed-out root is the sign-in path's short list");
+    assert_eq!(row_value(true, UiResolution::Auto).as_deref(), Some(plx_platform::i18n::msg::settings_resolution_auto()));
+    assert_eq!(row_value(true, UiResolution::Hd900).as_deref(), Some("1600x900"));
+    assert_eq!(row_value(true, UiResolution::Hd720).as_deref(), Some("1280x720"));
+    assert_eq!(row_value(true, UiResolution::Sd540).as_deref(), Some("960x540"));
+    let mut real = FormTable::<RootId, Action, SettingsPage>::new(super::super::registry::BAND);
+    real.set(root_form(&inputs_for(true)), None);
+    let i = real.index_of(&RootId::Resolution).expect("the row exists");
+    assert_eq!(real.binding_at(i).expect("bound").kind.clone(), RowKind::Nav(SettingsPage::Picker(PickerKind::UiResolution)),
+        "OK opens the picker like every other multi-value setting; it does not cycle");
+}
+
+/// **The Interface resolution row exists on webOS 1-3 only.** Hidden (`resolution_offered` false,
+/// every webOS 4+ set and an unknown one) the root is exactly the root without the row, in the same
+/// order, signed in or out; shown (webOS 1-3) it is that same list with one more row between the
+/// rows it sits between. The rule the flag is fed from is `device::offers_ui_resolution`.
+#[test]
+fn the_interface_resolution_row_is_offered_on_webos_1_to_3_only() {
+    let keys = |inputs: RootInputs| -> (Vec<u32>, Option<usize>) {
+        let mut real = FormTable::<RootId, Action, SettingsPage>::new(super::super::registry::BAND);
+        real.set(root_form(&inputs), None);
+        let all = (0..real.table.n_rows() as usize).filter_map(|i| real.key_at(i)).map(|k| k.0).collect();
+        (all, real.index_of(&RootId::Resolution))
+    };
+    for signed_in in [false, true] {
+        let (hidden, at_hidden) = keys(RootInputs { resolution_offered: false, ..inputs_for(signed_in) });
+        let (shown, at_shown) = keys(RootInputs { resolution_offered: true, ..inputs_for(signed_in) });
+        assert_eq!(at_hidden, None, "hidden on webOS 4+ (signed_in={signed_in})");
+        if signed_in {
+            let at = at_shown.expect("visible on webOS 1-3 when signed in");
+            let mut without = shown.clone();
+            assert_eq!(without.remove(at), RootId::Resolution.key().0);
+            assert_eq!(without, hidden, "the webOS 4+ root is the same rows in the same order");
+            assert_eq!(shown.len(), hidden.len() + 1, "and the extra row is the only difference");
+        } else {
+            assert_eq!(at_shown, None, "the signed-out root never shows it");
+            assert_eq!(shown, hidden);
+        }
+    }
+    // the rule the flag is fed from
+    for (major, offered) in [(0, false), (1, true), (2, true), (3, true), (4, false), (5, false), (6, false), (22, false)] {
+        assert_eq!(plx_platform::tv::device::offers_ui_resolution(major), offered, "webOS major {major}");
+    }
+    // a host test has no television: the real page is the webOS 4+ shape and has no such row
+    let _g = plx_base::testlock::serial();
+    let _sess = multi_user_session("root-resolution-gate");
+    let page = RootPage::new(EntryId(0), cx(None).views);
+    assert_eq!(page.form.index_of(&RootId::Resolution), None);
 }
 
 /// **Reordering the root moves no identity.** A form that declares the same rows in a different
@@ -783,8 +834,7 @@ fn back_from_each_root_door_reseats_focus_on_the_same_root_id() {
         (RootId::About, SettingsPage::About),
     ] {
         let mut s = RouteSurface::new(
-            EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Root,
-            plx_data::pms::HubsSnapshot::empty_for_test().view(),
+            EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Root
         );
         step(&mut s, ScreenEvent::Mount, None);
         let row = FocusKey { entry: EntryId(0), elem: root_key(id.clone()) };

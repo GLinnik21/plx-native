@@ -23,6 +23,27 @@
 //! a Detail the viewer is looking at is not re-fetched for the sake of a card beneath it. The Detail
 //! itself is never touched here; only its landed read-back reaches it.
 //!
+//! **Library changes follow the Watchlist** (plan §1.11). A finished movie or show created or
+//! deleted on a server ([`NotifyLibrary`]) owes the Watchlist store one re-match of that server: a
+//! DELETE of an item a tile is matched to asks again about that guid, a create asks again about the
+//! titles of that kind the server was not seen to hold, in chunks of `GUIDS_PER_REQUEST`. The owe is
+//! one per `(server, kind)` however many entries arrive, is made at most once per
+//! [`LIBRARY_SPACING_FRAMES`] (the quiet-refetch spacing), waits for the Watchlist to have loaded
+//! (the first read matches the library as it is then: a change that arrives while the list is not
+//! ready and no read is out is dropped, since the read that follows asks after it; one that arrives
+//! while the first read is out is kept, since that read's matching may already have asked) and is made through the store's own
+//! worker; the tile flips when the answer lands, through the same §1.5 derivation as any
+//! re-match.
+//!
+//! **Library changes also move the server's lists.** The same entries owe that server one quiet
+//! Home refetch and one section-shelf invalidate (coalesced and spaced like a `stopped`'s), and its
+//! library listings one `BrowseCmd::ListingsChanged`, spent at most once per
+//! [`LIBRARY_SPACING_FRAMES`] per server (a change inside the spacing stays owed, coalesced, until
+//! it is due). The open grid is never listed again while it is visible: it is marked stale and
+//! re-queried, keeping the reader's place, when a page covers it (at once when no Library page is
+//! on the navigation stack, `Shown::library`); the server's other sections forget their pages, and
+//! a section left while stale forgets its pages too.
+//!
 //! **Owed work is spent only when [`Stores::reread_allowed`]** (not under the player, not while a
 //! recording or replay is armed). Until then it is queued, not dropped, and coalesced.
 //!
@@ -31,15 +52,21 @@
 //! comes back after a gap: nothing said before the gap is known to still hold, so the first
 //! report after it is news again.
 
-use super::notify::NotifyOut;
+use super::notify::{NotifyLibrary, NotifyOut, FRAMES_PER_S};
 use super::{browse, ContentArg, HeldKeys, Stores};
-use plx_plex::plex::notify::PlayState;
+use crate::watchlist::model::Kind as WatchKind;
+use plx_plex::plex::notify::{LibraryKind, LibraryState, PlayState};
 use plx_plex::plex::ServerId;
+use std::collections::HashSet;
 
 /// Sessions remembered across all servers. A busy household's concurrent sessions are far fewer;
 /// the bound is only a ceiling against a feed that mints keys forever, and an evicted session is
 /// at worst treated as new (one more bounded read-back).
 pub const MAX_SESSIONS: usize = 64;
+
+/// The least spacing between two library re-matches of one `(server, kind)`, in pumped frames: the
+/// quiet-refetch spacing of a Home source (`pms::QUIET_SPACING_S`).
+pub const LIBRARY_SPACING_FRAMES: u64 = crate::pms::QUIET_SPACING_S as u64 * FRAMES_PER_S;
 
 type Key = (ServerId, String);
 
@@ -81,6 +108,8 @@ pub struct Spent {
     pub refetched: Vec<ServerId>,
     /// Servers whose section shelves were invalidated (`BrowseCmd::HubsInvalidateServer`).
     pub invalidated: Vec<ServerId>,
+    /// Servers whose library listings were told of a change (`BrowseCmd::ListingsChanged`).
+    pub relisted: Vec<ServerId>,
 }
 
 /// Read-backs and refetches a notification owes, not yet spent.
@@ -90,6 +119,8 @@ struct Owed {
     reads: Vec<(Key, bool)>,
     refetch: Vec<ServerId>,
     invalidate: Vec<ServerId>,
+    /// Servers whose library listings are out of date (`BrowseCmd::ListingsChanged`).
+    listings: Vec<ServerId>,
 }
 
 fn push_unique(servers: &mut Vec<ServerId>, sid: ServerId) {
@@ -100,7 +131,7 @@ fn push_unique(servers: &mut Vec<ServerId>, sid: ServerId) {
 
 impl Owed {
     fn is_empty(&self) -> bool {
-        self.reads.is_empty() && self.refetch.is_empty() && self.invalidate.is_empty()
+        self.reads.is_empty() && self.refetch.is_empty() && self.invalidate.is_empty() && self.listings.is_empty()
     }
     fn read(&mut self, key: Key, owing: bool) {
         match self.reads.iter_mut().find(|(k, _)| plx_plex::plex::same_item((k.0, &k.1), (key.0, &key.1))) {
@@ -116,11 +147,31 @@ impl Owed {
     }
 }
 
+/// What a server's library changes owe the Watchlist for one kind, not yet spent.
+#[derive(Default)]
+struct LibraryOwed {
+    /// Guids a tile was matched to by an item that has since been deleted on the server.
+    gone: Vec<String>,
+    /// An item was created: ask again about every title the server was not seen to hold.
+    added: bool,
+    /// The exact change was not followed (the Watchlist had not loaded, or the feed had a gap):
+    /// ask again about every title of the kind.
+    sweep: bool,
+}
+
 #[derive(Default)]
 pub struct NotifyMap {
     /// `((server, sessionKey), (ratingKey, state))`, least recently seen first.
     last_state: Vec<((ServerId, String), (String, PlayState))>,
     owed: Owed,
+    /// Library re-matches owed to the Watchlist, one per `(server, kind)`.
+    library: Vec<((ServerId, WatchKind), LibraryOwed)>,
+    /// The frame from which a `(server, kind)` may be re-matched again.
+    library_next: Vec<((ServerId, WatchKind), u64)>,
+    /// The frame from which a server's library listings may be told of a change again.
+    listings_next: Vec<(ServerId, u64)>,
+    /// Calls of [`Stores::notify_map`] so far: the clock the spacing is counted in.
+    frame: u64,
 }
 
 impl NotifyMap {
@@ -129,7 +180,7 @@ impl NotifyMap {
     }
 
     pub fn owed_is_empty(&self) -> bool {
-        self.owed.is_empty()
+        self.owed.is_empty() && self.library.is_empty()
     }
 
     /// Forget everything: the identity changed.
@@ -167,20 +218,73 @@ impl NotifyMap {
     fn forget_server(&mut self, sid: ServerId) {
         self.last_state.retain(|((s, _), _)| *s != sid);
     }
+
+    fn library_owe(&mut self, sid: ServerId, kind: WatchKind) -> &mut LibraryOwed {
+        let at = match self.library.iter().position(|(k, _)| *k == (sid, kind)) {
+            Some(at) => at,
+            None => {
+                self.library.push(((sid, kind), LibraryOwed::default()));
+                self.library.len() - 1
+            }
+        };
+        &mut self.library[at].1
+    }
+
+    fn library_due(&self, sid: ServerId, kind: WatchKind) -> bool {
+        self.library_next.iter().find(|(k, _)| *k == (sid, kind)).is_none_or(|(_, at)| self.frame >= *at)
+    }
+
+    /// Take the owed work that may be spent now: all of it but the listings of a server still inside
+    /// its spacing, which stay owed (a change that arrives meanwhile coalesces into them).
+    fn take_due(&mut self) -> Owed {
+        let mut owed = std::mem::take(&mut self.owed);
+        let (frame, next) = (self.frame, &self.listings_next);
+        let (due, waiting): (Vec<_>, Vec<_>) = owed
+            .listings
+            .drain(..)
+            .partition(|sid| next.iter().find(|(s, _)| s == sid).is_none_or(|(_, at)| frame >= *at));
+        owed.listings = due;
+        self.owed.listings = waiting;
+        owed
+    }
+
+    fn listings_spent(&mut self, sid: ServerId) {
+        let next = self.frame + LIBRARY_SPACING_FRAMES;
+        match self.listings_next.iter_mut().find(|(s, _)| *s == sid) {
+            Some((_, at)) => *at = next,
+            None => self.listings_next.push((sid, next)),
+        }
+    }
+
+    fn library_spent(&mut self, sid: ServerId, kind: WatchKind) {
+        let next = self.frame + LIBRARY_SPACING_FRAMES;
+        match self.library_next.iter_mut().find(|(k, _)| *k == (sid, kind)) {
+            Some((_, at)) => *at = next,
+            None => self.library_next.push(((sid, kind), next)),
+        }
+    }
 }
 
-/// Which of the app's list pages are on the navigation stack, visible or covered. The Home, Library
-/// and Search stores each keep the last page's rows after the page is popped, so what they
+fn watch_kind(kind: LibraryKind) -> WatchKind {
+    match kind {
+        LibraryKind::Movie => WatchKind::Movie,
+        LibraryKind::Show => WatchKind::Show,
+    }
+}
+
+/// Which of the app's list pages are on the navigation stack, visible or covered. The Home, Library,
+/// Search and Watchlist stores each keep the last page's rows after the page is popped, so what they
 /// enumerate is held only while their page is still there.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Shown {
     pub home: bool,
     pub library: bool,
     pub search: bool,
+    pub watchlist: bool,
 }
 
 impl Shown {
-    pub const ALL: Self = Self { home: true, library: true, search: true };
+    pub const ALL: Self = Self { home: true, library: true, search: true, watchlist: true };
 }
 
 /// What the pages hold: the stores' enumerated cards, and the items of the Detail pages on the stack.
@@ -215,6 +319,9 @@ impl Stores {
         if shown.search {
             add(self.search.held_keys());
         }
+        if shown.watchlist {
+            add(self.watchlist.held_keys());
+        }
         let mut details = Vec::new();
         for page in pages {
             match page {
@@ -228,6 +335,8 @@ impl Stores {
                 }
                 ContentArg::Person { .. } | ContentArg::Filmography { .. } => add(self.person.held_keys(page)),
                 ContentArg::Collection(_) => add(self.collection.held_keys(page)),
+                // A title no server holds: no card of its own to owe a read-back.
+                ContentArg::Catalog { .. } => {}
             }
         }
         Held { cards, details }
@@ -250,8 +359,23 @@ impl Stores {
         shown: Shown,
         directory: browse::DirectoryView<'_>,
     ) -> Spent {
+        self.notify_map.frame += 1;
         for (sid, _epoch) in &out.resynced {
             self.notify_map.forget_server(*sid);
+            // Whatever the library did during the gap was missed.
+            if self.watchlist.is_ready() {
+                for kind in [WatchKind::Movie, WatchKind::Show] {
+                    self.notify_map.library_owe(*sid, kind).sweep = true;
+                }
+            }
+        }
+        for library in &out.library {
+            self.owe_library(library);
+            // The server's lists moved: its Home source, its section shelves and its grids.
+            let owed = &mut self.notify_map.owed;
+            owed.refetch(library.sid);
+            owed.invalidate(library.sid);
+            push_unique(&mut owed.listings, library.sid);
         }
         if !out.plays.is_empty() {
             let mut changed = Transitions::default();
@@ -285,21 +409,103 @@ impl Stores {
             }
             changed.emit();
         }
-        self.spend_notify_owed(directory)
+        self.spend_notify_owed(shown, directory)
     }
 
-    fn spend_notify_owed(&mut self, directory: browse::DirectoryView<'_>) -> Spent {
+    /// Note what a server's finished creates and deletes owe the Watchlist. Counts only are logged:
+    /// an item names a title in somebody's library.
+    fn owe_library(&mut self, library: &NotifyLibrary) {
+        let sid = library.sid;
+        let ready = self.watchlist.is_ready();
+        // Before the first load the read to come matches the library as it is then, which already
+        // holds this change: owing a re-match for it would only ask the whole list again right after
+        // boot. A read already out may have asked before the change landed on the server, so that
+        // one keeps its owe (and is spent once the list is ready).
+        let follow = ready || self.watchlist.read_in_flight();
+        // A delete is followed to the tile it was matched to; one lookup table per server and frame.
+        let held = (ready && library.entries.iter().any(|e| e.state == LibraryState::Deleted))
+            .then(|| self.watchlist.held_by_rk(sid));
+        let (mut created, mut deleted) = (0, 0);
+        for e in &library.entries {
+            let kind = watch_kind(e.kind);
+            match e.state {
+                LibraryState::Created if !follow => created += 1,
+                LibraryState::Deleted if !follow => deleted += 1,
+                LibraryState::Created => {
+                    created += 1;
+                    self.notify_map.library_owe(sid, kind).added = true;
+                }
+                LibraryState::Deleted => {
+                    deleted += 1;
+                    let Some(held) = &held else {
+                        self.notify_map.library_owe(sid, kind).sweep = true;
+                        continue;
+                    };
+                    let tile = e.item_id.trim().parse::<i64>().ok().and_then(|rk| held.get(&rk));
+                    if let Some((guid, _)) = tile {
+                        let gone = &mut self.notify_map.library_owe(sid, kind).gone;
+                        if !gone.contains(guid) {
+                            gone.push(guid.clone());
+                        }
+                    }
+                }
+            }
+        }
+        plx_base::eventlog::log(&format!(
+            "notify: library sid={} created={created} deleted={deleted}",
+            sid.raw()
+        ));
+    }
+
+    /// Spend the library re-matches that are due: the Watchlist has loaded, the `(server, kind)` is
+    /// outside its spacing and the store could start its worker. Anything else stays queued.
+    fn spend_library_owed(&mut self) {
+        let queued = std::mem::take(&mut self.notify_map.library);
+        let mut kept = Vec::new();
+        for ((sid, kind), owe) in queued {
+            if !self.watchlist.is_ready() || !self.notify_map.library_due(sid, kind) {
+                kept.push(((sid, kind), owe));
+                continue;
+            }
+            let mut asks: Vec<(String, WatchKind)> = owe.gone.iter().map(|g| (g.clone(), kind)).collect();
+            if owe.sweep {
+                asks.extend(self.watchlist.rows_of(kind));
+            } else if owe.added {
+                asks.extend(self.watchlist.unmatched_on(sid, kind));
+            }
+            let mut seen = HashSet::new();
+            asks.retain(|(g, _)| seen.insert(g.clone()));
+            let n = asks.len();
+            if !self.watchlist.rematch_on(sid, asks) {
+                kept.push(((sid, kind), owe));
+                continue;
+            }
+            if n > 0 {
+                self.notify_map.library_spent(sid, kind);
+                plx_base::eventlog::log(&format!("notify: library re-match sid={} guids={n}", sid.raw()));
+            }
+        }
+        self.notify_map.library = kept;
+    }
+
+    fn spend_notify_owed(&mut self, shown: Shown, directory: browse::DirectoryView<'_>) -> Spent {
         let mut spent = Spent::default();
-        if self.notify_map.owed.is_empty() || !self.reread_allowed() {
+        if self.notify_map.owed_is_empty() || !self.reread_allowed() {
             return spent;
         }
-        let owed = std::mem::take(&mut self.notify_map.owed);
+        self.spend_library_owed();
+        // What waits only for a spacing is not spent, and is not logged every frame it waits.
+        let owed = self.notify_map.take_due();
+        if owed.is_empty() {
+            return spent;
+        }
         plx_base::eventlog::log(&format!(
-            "notify: owes reads={} (detail={}) refetch={} invalidate={}",
+            "notify: owes reads={} (detail={}) refetch={} invalidate={} listings={}",
             owed.reads.len(),
             owed.reads.iter().filter(|(_, d)| *d).count(),
             owed.refetch.len(),
-            owed.invalidate.len()
+            owed.invalidate.len(),
+            owed.listings.len()
         ));
         for (key, owing) in owed.reads {
             if owing {
@@ -311,6 +517,12 @@ impl Stores {
         for sid in owed.refetch {
             let _ = self.hubs.run_with_directory(super::hubs::HubsCmd::RefetchSourceQuiet { sid }, directory);
             spent.refetched.push(sid);
+        }
+        for sid in owed.listings {
+            let cmd = browse::BrowseCmd::ListingsChanged { sid, library_on_stack: shown.library };
+            let _ = self.browse.borrow_mut().run(cmd);
+            self.notify_map.listings_spent(sid);
+            spent.relisted.push(sid);
         }
         for sid in owed.invalidate {
             let _ = self.browse.borrow_mut().run(browse::BrowseCmd::HubsInvalidateServer { sid });
@@ -325,6 +537,8 @@ impl Stores {
         let mut all: Vec<_> = owed.reads.iter().map(|(k, _)| k.clone()).collect();
         all.extend(owed.refetch.iter().map(|s| (*s, String::new())));
         all.extend(owed.invalidate.iter().map(|s| (*s, "invalidate".into())));
+        all.extend(owed.listings.iter().map(|s| (*s, "listings".into())));
+        all.extend(self.notify_map.library.iter().map(|((s, _), _)| (*s, "library".into())));
         all
     }
 

@@ -11,7 +11,7 @@
 //!   it. (`RouteGround`'s own live-frame sample used to read this way, through the four
 //!   `glReadPixels` taps of `gfx::sample_modal_ambient`; PR2 stage B retired both in favour of the
 //!   field below, and [`UnderlayField::latch_from_corners`] is what a caller with no readable
-//!   frame — the video plane, a route that opens before Home has drawn — still reaches for.)
+//!   frame — a route that opens before Home has drawn — still reaches for.)
 //!
 //! This is the third: a 15x8 grid reduced from the frame itself (`gfx::field_kick`),
 //! low-passed, graded, reconstructed to 60x32 and drawn as one magnified quad with the shared
@@ -211,6 +211,15 @@ impl UnderlayField {
         }
     }
 
+    /// A field that holds texture `tex` as if a latch had uploaded it — a host test links GL but
+    /// has no context, so [`upload`] mints no name there unless [`stand_in_upload_for_test`] is
+    /// armed. Its re-latch is a `tex_ledger::specified(tex, ..)` call, which is exactly what a
+    /// real upload records.
+    #[cfg(test)]
+    pub(crate) fn latched_for_test(tex: u32) -> Self {
+        Self { tex, latched: true, ..Self::new() }
+    }
+
     /// **Freeze the frame that has already been drawn — without ever waiting for it.** Idempotent
     /// while latched, which is what makes it safe to call from a `draw` that runs every frame.
     ///
@@ -258,8 +267,7 @@ impl UnderlayField {
     }
 
     /// **Latch from a four-corner envelope instead of the framebuffer** — the CPU source, for the
-    /// two cases that have no readable frame: an overlay over the hardware video plane, and a
-    /// route that opens before Home has ever drawn.
+    /// case that has no readable frame: a route that opens before Home has ever drawn.
     ///
     /// It deliberately does NOT low-pass. The source is already a bilinear surface, i.e. band-
     /// limited far below this grid, and the edge-clamped kernel would only flatten it against the
@@ -296,6 +304,12 @@ impl UnderlayField {
 
     pub fn is_latched(&self) -> bool {
         self.latched
+    }
+
+    /// The field's texture once it is latched — the frozen ground a menu's glass shows through its
+    /// body (`popover_glass::draw`) — and `None` before, when there is no picture of the page yet.
+    pub fn ground_tex(&self) -> Option<u32> {
+        (self.latched && self.tex != 0).then_some(self.tex)
     }
 
     /// **The field's own colour at one screen point**, display-encoded — the same contract as
@@ -337,9 +351,11 @@ impl UnderlayField {
                 }
                 p.field_ground(r, self.tex, alpha);
             }
+            // `Painter::dim` draws the same two primitives and declares them as a DIM, which a
+            // glass above may apply at composite instead of re-filtering its source per frame.
             Role::Dim { weight } => match plan(self.latched && self.tex != 0, weight, alpha) {
-                Draw::Flat(c) => p.rect(r, 0.0, c, c, 0.0),
-                Draw::Field(tint) => p.field(r, self.tex, tint),
+                Draw::Flat(c) => p.dim(r, 0, c),
+                Draw::Field(tint) => p.dim(r, self.tex, tint),
             },
         }
     }
@@ -423,7 +439,10 @@ impl Drop for UnderlayField {
 /// binary LINKS OpenGL but never creates a context, so the driver's per-thread dispatch table is a
 /// null vtable and `glTexImage2D` dereferences a fixed offset into it — an immediate SIGSEGV that
 /// takes the whole test binary down. Everything a test wants to grade about this module is the
-/// arithmetic above the upload, and it is all reachable with `tex` left at 0.
+/// arithmetic above the upload, and it is all reachable with `tex` left at 0 — except the one
+/// thing downstream of [`ground_tex`](UnderlayField::ground_tex): a host test that must see the
+/// glass an owner draws ON a field it latched through the production path arms
+/// [`stand_in_upload_for_test`], and the latch records that name as a real upload would.
 fn upload(prev: u32, px: &[u8]) -> u32 {
     #[cfg(not(any(test, feature = "test-support")))]
     {
@@ -432,7 +451,41 @@ fn upload(prev: u32, px: &[u8]) -> u32 {
     #[cfg(any(test, feature = "test-support"))]
     {
         let _ = px;
-        prev
+        let tex = if prev != 0 { prev } else { STAND_IN_UPLOAD.with(|t| t.get()) };
+        if tex != 0 {
+            gfx::tex_ledger::specified(tex, TEX_W as i32, TEX_H as i32);
+        }
+        tex
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static STAND_IN_UPLOAD: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// **A host test's stand-in for the upload a latch cannot perform.** While the guard lives, a
+/// latch on this thread that would mint a texture name adopts `tex` instead and specs it in
+/// `gfx::tex_ledger` exactly as `upload_rgba` would — so a field latched through its owner's
+/// production path answers [`ground_tex`](UnderlayField::ground_tex), and the frozen glass the
+/// owner stands on it (`popover_glass::draw`) is declared, not the flat fallback. A field that
+/// already holds a name keeps it. Dropping the guard disarms; the field's own `Drop` retires the
+/// name from the ledger as on the device.
+#[cfg(any(test, feature = "test-support"))]
+pub fn stand_in_upload_for_test(tex: u32) -> StandInUpload {
+    assert!(tex != 0, "0 is 'no texture': a stand-in needs a name");
+    STAND_IN_UPLOAD.with(|t| t.set(tex));
+    StandInUpload(())
+}
+
+/// The guard [`stand_in_upload_for_test`] returns.
+#[cfg(any(test, feature = "test-support"))]
+pub struct StandInUpload(());
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for StandInUpload {
+    fn drop(&mut self) {
+        STAND_IN_UPLOAD.with(|t| t.set(0));
     }
 }
 

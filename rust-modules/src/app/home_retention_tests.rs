@@ -2,6 +2,7 @@
 //! worker-result addressing and directory-discovery landing order.
 
 use super::*;
+use plx_ui::screen::DrawFrame;
 #[allow(unused_imports)]
 use super::test_support::*;
 use super::test_support::{frame, frame_with_tap, frame_with_results};
@@ -397,7 +398,7 @@ fn library_publishes_the_actual_container_strip() {
     bridge.capture_chrome(&mut dispatcher);
     let base = plx_ui::dispatch::STRIP_BASE;
     assert_eq!(dispatcher.nav.tabs.strip.iter().map(|member| member.elem).collect::<Vec<_>>(),
-        vec![base + 4, base, base + 1, base + 2, base + 3]);
+        vec![base + 4, base, base + 1, base + 2, plx_ui::widgets::TAB_KEY_WATCHLIST, base + 3]);
     assert_eq!(dispatcher.nav.tabs.strip_fallback, Some(base));
 }
 
@@ -532,6 +533,15 @@ fn home_worker_results_cross_the_addressed_dispatcher_ingest_once() {
         }
     }
     let _guard = plx_base::testlock::serial();
+    // The process-global session cache can be `Unloaded` here (a fresh process, or after any test
+    // that dropped a `TempSession`), and then the session owner's refill asks the fixture adapter
+    // for a read on the first frame. Start from that case: the tap must see only hub results
+    // whatever the cache holds, and a fixture adapter starts no worker for it. `invalidate_for_test`
+    // leaves a `Revoked` cache as it is (a sign-out is never overwritten), and a `Revoked` cache
+    // needs no read, so the premise is asserted: without it this test would pass having asked
+    // for nothing.
+    plx_plex::plex::session::invalidate_for_test();
+    assert!(plx_plex::plex::session::refresh_need().is_some(), "premise: the owner will ask for a read");
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     rig.stores.hubs.seed_for_test(2, plx_data::pms::HubState::Ready);
@@ -542,6 +552,9 @@ fn home_worker_results_cross_the_addressed_dispatcher_ingest_once() {
     assert_eq!(tap.0, vec![Addr {
         to: MachineId::Store(StoreId::Hubs.ord()), req: plx_machine::machine::RequestId(req),
     }]);
+    // Whatever a worker was going to answer has landed before the second frame, so a refill that
+    // did start one fails here every time, not on whichever run the worker beats the frame.
+    plx_base::storage_worker::drain_for_test();
     frame_with_tap(&mut d, &mut rig, AppArg::Home, tick(1), vec![], &mut tap);
     assert_eq!(tap.0.len(), 1, "the store tick must not re-deliver the result");
 

@@ -73,6 +73,29 @@ class TheFixtureMapIsReadNotCopied(unittest.TestCase):
                           if f'"{rung}": "{name}"' not in text else text)
 
 
+class AQuickStubIsNeverProbed(unittest.TestCase):
+    """ffprobe reads 160.26 kbps off a 2 s stub of the 160k encode where the full clip reads 159,
+    so probing a `--quick` pack failed `sim.rs` against fixtures that are not suite-valid."""
+
+    def test_quick_clip_has_no_audio_rate_and_full_clip_does(self):
+        import json, shutil, subprocess, tempfile
+        if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+            self.skipTest("ffmpeg/ffprobe unavailable")
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            for name in ("quick_clip", "full_clip"):
+                subprocess.run(
+                    ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "sine=d=2", "-c:a", "aac",
+                     "-b:a", "160k", "-f", "mpegts", str(root / f"{name}.ts")], check=True)
+            (root / "fixtures.json").write_text(json.dumps(
+                {"shapes": {"quick_clip": {"quick": True}, "full_clip": {"quick": False}}}))
+            self.assertTrue(cp.is_quick_clip(root / "quick_clip.ts"))
+            self.assertFalse(cp.is_quick_clip(root / "full_clip.ts"))
+            self.assertFalse(cp.is_quick_clip(root / "unlisted.ts"))
+            self.assertIsNone(cp.audio_es_kbps(root / "quick_clip.ts"))
+            self.assertIsNotNone(cp.audio_es_kbps(root / "full_clip.ts"))
+
+
 class TheCaptureChronology(unittest.TestCase):
     """The order captures are preferred in is DERIVED from git, after two wrong answers."""
 
@@ -220,8 +243,9 @@ class TheShippedTableMatchesTheEvidence(unittest.TestCase):
                 if p["audio_es_kbps"] is None:
                     self.skipTest(
                         f"rung {rung}: the audio ES rate is probed from the generated fixture "
-                        f"clip, and {cp.DEFAULT_FIXTURES} or ffprobe is unavailable here — the "
-                        "five log-derived fields above were still checked")
+                        f"clip, and {cp.DEFAULT_FIXTURES} is absent, holds a `--quick` stub "
+                        "(`make fixtures-pipeline` builds the full-length pack) or ffprobe is "
+                        "unavailable here — the five log-derived fields above were still checked")
                 self.assertEqual(
                     arm[1], p["audio_es_kbps"],
                     f"rung {rung}: sim.rs's audio ES rate is not the fixture's. Regenerate with "

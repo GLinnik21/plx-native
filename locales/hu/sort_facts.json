@@ -1,0 +1,15 @@
+{
+  "sort_facts.title": "Cím",
+  "sort_facts.date_added": "Hozzáadás dátuma",
+  "sort_facts.release_date": "Megjelenés dátuma",
+  "sort_facts.rating": "Értékelés",
+  "sort_facts.audience_rating": "Közönségértékelés",
+  "sort_facts.last_viewed": "Megtekintés dátuma",
+  "sort_facts.random": "Véletlenszerű",
+  "sort_facts.a_to_z": "A–Z",
+  "sort_facts.z_to_a": "Z–A",
+  "sort_facts.oldest_first": "A legrégebbiek elöl",
+  "sort_facts.newest_first": "A legújabbak elöl",
+  "sort_facts.lowest_first": "A legalacsonyabbak elöl",
+  "sort_facts.highest_first": "A legmagasabbak elöl"
+}

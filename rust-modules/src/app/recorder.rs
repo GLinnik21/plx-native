@@ -578,6 +578,7 @@ impl plx_ui::dispatch::Tap<super::bridge::AppHost> for Recplay {
         }
     }
     fn result(&mut self, _frame: u64, addr: &plx_machine::machine::Addr, msg: &plx_screens::registry::AppMsg) {
+        if off_tape(msg) { return; }
         if let Self::Replaying(replay) = self {
             let payload = match msg {
                 plx_screens::registry::AppMsg::HubsResult(result) => Some(plx_data::pms::record::encode(result)),
@@ -588,7 +589,7 @@ impl plx_ui::dispatch::Tap<super::bridge::AppHost> for Recplay {
             let frame = replay.rec.frames.get(replay.at);
             let expected = frame.and_then(|f| f.results.get(replay.result_at));
             let matches = expected.is_some_and(|e| {
-                payload.as_ref().is_some_and(|p| e.get("payload") == Some(p))
+                payload.as_ref().is_some_and(|p| e.get("payload") == Some(&reparsed(p)))
                     && e["to"] == machine_name(addr.to) && e["req"] == addr.req.0
             });
             if !matches {
@@ -618,6 +619,7 @@ impl plx_ui::dispatch::Tap<super::bridge::AppHost> for Recplay {
         if matches!(self,Self::Off) { return; }
         use plx_machine::machine::{Delivery, Fx, MachineId};
         use plx_ui::screen::ScreenEvent;
+        if matches!(&stamped.fx, Fx::Deliver(_, Delivery::Machine(msg)) if off_tape(msg)) { return; }
         let name = match &stamped.fx {
             Fx::Nav(_) => "Nav", Fx::Mount(_) => "Mount", Fx::Unmount(_) => "Unmount",
             Fx::Deliver(_, _) => "Deliver", Fx::Timer { .. } => "Timer",
@@ -641,6 +643,20 @@ impl plx_ui::dispatch::Tap<super::bridge::AppHost> for Recplay {
         rec.events = true;
         rec.spent_ns += start.elapsed().as_nanos() as u64;
     }
+}
+
+/// The two events of the session owner's cache refresh (`SessionEvent::CacheObserved` and
+/// `CacheRefreshed`) are skipped by `effect`: they refill the live process's session cache and
+/// change no recorded state. This filter covers exactly those two events. The
+/// `SessionFx::RefreshCache` effect that sits between them is NOT filtered; it cannot arise under
+/// `home_io` (Record and Replay both run through `controlled_home`, where
+/// `Bridge::land_session_cache` is skipped and `session_effect` refuses the effect loudly), so a
+/// tape never holds one. Only a test rig that records a live `Bridge::for_test` over an unloaded
+/// cache would emit it, and that tape would carry its process-global `generation`.
+fn off_tape(msg: &plx_screens::registry::AppMsg) -> bool {
+    use plx_session::auth::owner::SessionEvent;
+    matches!(msg, plx_screens::registry::AppMsg::Session(
+        SessionEvent::CacheObserved(_) | SessionEvent::CacheRefreshed { .. }))
 }
 
 pub(crate) fn machine_name(id: plx_machine::machine::MachineId) -> String {
@@ -703,7 +719,7 @@ impl Recplay {
                 Self::Recording(r) => { r.w.result(r.f, &to, req, payload); r.events = true; }
                 Self::Replaying(r) => {
                     let expected = r.rec.frames.get(r.at).and_then(|f| f.results.get(r.result_at));
-                    if expected.is_none_or(|v| v["payload"] != payload || v["to"] != to || v["req"] != req) {
+                    if expected.is_none_or(|v| v["payload"] != reparsed(&payload) || v["to"] != to || v["req"] != req) {
                         r.result_diffs += 1;
                     }
                     r.result_at += 1;
@@ -755,7 +771,7 @@ impl Recplay {
                 let frame = replay.rec.frames.get(replay.at);
                 let expected = frame.and_then(|frame| frame.effects.get(replay.effect_at));
                 if expected.is_none_or(|value| value["from"] != from || value["e"] != name
-                    || value["payload"] != payload) {
+                    || value["payload"] != reparsed(&payload)) {
                     replay.effect_diffs += 1;
                     plx_base::eventlog::log(&format!("replay: effect diverge f={} index={}",
                         frame.map_or(replay.at as u64, |frame| frame.f), replay.effect_at));
@@ -2673,4 +2689,11 @@ mod fixture_preflight_tests {
             assert_eq!(validate_controlled(&recording, &initial), Ok(()), "{name}");
         }
     }
+}
+
+/// `payload` as the recording's reader sees it. The segments are parsed without `float_roundtrip`,
+/// so a recorded f32 widened to f64 (9.600000381469727) reads back one ulp off; a live value
+/// compared against the file must make the same trip or a fresh recording would diverge from itself.
+fn reparsed(payload: &Value) -> Value {
+    serde_json::from_str(&payload.to_string()).unwrap_or_else(|_| payload.clone())
 }

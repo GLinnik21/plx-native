@@ -1,5 +1,7 @@
 //! Shared detail hero geometry, also used by the contrast and safe-area audits.
 use super::{consts::{MARGIN_X, MARGIN_Y, SCR_H}, theme, widgets};
+use super::hstack::Item;
+use super::vstack::{Anchor, VStack};
 #[cfg(any(test, feature = "test-support"))]
 use super::{consts::SCR_W, Rect};
 
@@ -72,35 +74,36 @@ pub fn hero_chain(
     has_ratings: bool,
     measure: &dyn plx_machine::machine::Measure,
 ) -> HeroChain {
-    let meta_y = TITLE_BOTTOM + theme::space::SM;
-    // The identity line's own bounding box is its BADGE, not its caption: `draw_identity_line`
-    // centres the resolution/HDR/audio badges on the text's cap band, and at `BADGE_H` (34) they
-    // stand taller than the `BODY` caption (cap_h ~21) that shares their row.
-    let meta_h = widgets::BADGE_H;
-    let ratings_y = meta_y + meta_h + theme::space::SM;
-    // Same reasoning: the rating marks (`RATING_MARK_D`, 30) are centred on the caption's cap band
-    // and are the row's tallest element, not the `LABEL` text (cap_h ~19.5) beside them.
-    let ratings_h = widgets::RATING_MARK_D;
-    let syn_y = (if has_ratings { ratings_y + ratings_h } else { meta_y + meta_h }) + theme::space::SM;
-    let facts_y = syn_y + syn_h.max(34.0) + theme::space::MD;
-    // The facts row's own icons (`FACTS_GLYPH_D`/capsule) are sized to the `CAPTION` text itself,
-    // unlike the two rows above, so its measured height is the plain cap band — read through the
-    // `Measure` seam (`check-deps.sh`'s "textmeasure" gate: raw `plx_gfx::text::cap_h` is not
-    // reachable outside `text.rs`/`ui/text_view.rs`/`ui/text_buffer.rs`/a `Measure` impl body),
-    // the same capability `compute_hero_chain`'s caller already threads down for the synopsis.
-    let facts_h = measure.cap_h(theme::size::CAPTION);
-    // The one rung in this chain that is a JUDGEMENT rather than a measurement, and the one place
-    // the ladder steps twice. Everything above this line is information about the item and is
-    // spaced by how closely it belongs together — `SM` inside the identity group, `MD` where the
-    // kind of information changes. The action row is not information: it is what you can DO, so
-    // the step up to `LG` is the grammar saying so.
+    // Heights, by the convention the notes below give for each row: the identity line's BADGE, the
+    // ratings MARK, the synopsis (never under 34), the facts row's `CAPTION` cap band — read
+    // through the `Measure` seam (`check-deps.sh`'s "textmeasure" gate: raw `plx_gfx::text::cap_h`
+    // is not reachable outside `text.rs`/`ui/text_view.rs`/`ui/text_buffer.rs`/a `Measure` impl
+    // body) — and the action row, which is only a position (height 0), so its `y` is the facts
+    // row's bottom plus the LG rung.
     //
-    // It is also an optical correction, which is why it is not simply "the next rung". The Play
-    // pill is a filled white capsule ~72 tall against a `CAPTION` line of ~18 — at an equal
-    // mathematical gap the heavier object reads as CLOSER, because its mass crowds the air above
-    // it. Equal by eye is what the page is judged on, and that is one rung more here.
-    let btn_y = facts_y + facts_h + theme::space::LG;
-    HeroChain { meta_y, ratings_y, syn_y, facts_y, btn_y }
+    // * The identity line's own bounding box is its BADGE, not its caption: `draw_identity_line`
+    //   centres the resolution/HDR/audio badges on the text's cap band, and at `BADGE_H` (34) they
+    //   stand taller than the `BODY` caption (cap_h ~21) that shares their row.
+    // * Same reasoning for the rating marks (`RATING_MARK_D`, 30): centred on the caption's cap
+    //   band and the row's tallest element, not the `LABEL` text (cap_h ~19.5) beside them.
+    // * The facts row's own icons are sized to the `CAPTION` text itself, so its measured height is
+    //   the plain cap band.
+    //
+    // The one rung that is a JUDGEMENT rather than a measurement is the last: the action row is not
+    // information but what you can DO, so the step up to `LG` is the grammar saying so, and an
+    // optical correction too — the Play pill is a filled white capsule ~72 tall against a `CAPTION`
+    // line of ~18, and at an equal gap the heavier object reads as CLOSER.
+    let items = [
+        Item::new(widgets::BADGE_H),
+        if has_ratings { Item::new(widgets::RATING_MARK_D) } else { Item::absent() },
+        Item::new(syn_h.max(34.0)),
+        Item::new(measure.cap_h(theme::size::CAPTION)).before(theme::space::MD),
+        Item::new(0.0).before(theme::space::LG),
+    ];
+    let stack = VStack::new(&items, theme::space::SM, Anchor::Top(TITLE_BOTTOM + theme::space::SM));
+    let y = |i| stack.span(i).map_or(0.0, |(y, _)| y);
+    // An absent ratings row has no place of its own; it reads where the synopsis would start.
+    HeroChain { meta_y: y(0), ratings_y: stack.span(1).map_or_else(|| y(2), |(y, _)| y), syn_y: y(2), facts_y: y(3), btn_y: y(4) }
 }
 
 pub fn people_top(btn_y: f32, lines: usize) -> f32 {
@@ -126,6 +129,22 @@ pub fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
 mod tests {
     use super::*;
     use plx_machine::machine::Measure;
+
+    /// Each row stands one named rung under the previous row's bottom, and an absent ratings row
+    /// leaves no gap behind: SM, SM, SM, MD, LG.
+    #[test]
+    fn the_hero_chain_steps_sm_sm_sm_md_lg_and_skips_absent_ratings() {
+        let measure = crate::fixture::FixtureMeasure;
+        let with = hero_chain(76.0, true, &measure);
+        let close = |a: f32, b: f32| (a - b).abs() < 0.01;
+        assert!(close(with.ratings_y, with.meta_y + widgets::BADGE_H + theme::space::SM));
+        assert!(close(with.syn_y, with.ratings_y + widgets::RATING_MARK_D + theme::space::SM));
+        assert!(close(with.facts_y, with.syn_y + 76.0 + theme::space::MD));
+        assert!(close(with.btn_y, with.facts_y + measure.cap_h(theme::size::CAPTION) + theme::space::LG));
+        let bare = hero_chain(10.0, false, &measure);
+        assert!(close(bare.syn_y, bare.meta_y + widgets::BADGE_H + theme::space::SM), "no ratings row, one gap");
+        assert!(close(bare.facts_y, bare.syn_y + 34.0 + theme::space::MD), "synopsis floor is 34");
+    }
 
     /// The facts row and the people column are LEVEL, so the thing that keeps them apart is a
     /// width bound and nothing else.

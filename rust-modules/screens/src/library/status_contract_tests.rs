@@ -1,4 +1,4 @@
-use super::super::{readout, LibraryScreen, Readout, FILTER, LIBRARY_GROUP, RETRY, SORT, STATUS_GROUP};
+use super::super::{readout, LibraryScreen, Readout, LIBRARY_GROUP, RETRY, SORTFILTER, STATUS_GROUP};
 use plx_data::stores::browse::{SecFetch, SecKind, SrcGroup, SourceState, SrcRow};
 use crate::registry::{LibraryLike, PageMemory};
 use plx_ui::fixture::FixtureMeasure;
@@ -151,11 +151,9 @@ fn failed_status_occupies_content_and_keeps_only_navigation_and_retry() {
     page.groups(&cx, &mut groups);
     assert!(groups.iter().any(|group| group.id == LIBRARY_GROUP), "the library row remains the way out");
     assert!(groups.iter().any(|group| group.id == STATUS_GROUP), "failure publishes its Retry control");
-    assert!(!groups.iter().any(|group| group.id == page.toolbar_group()));
     assert!(!groups.iter().any(|group| group.id == page.pair.groups_config().detail));
     assert!(!groups.iter().any(|group| group.id == page.pair.groups_config().master));
-    assert!(page.place(&SORT, &cx, At::SpringTarget).is_none());
-    assert!(page.place(&FILTER, &cx, At::SpringTarget).is_none());
+    assert!(page.place(&SORTFILTER, &cx, At::SpringTarget).is_some(), "the header stays: it is the way out");
 
     let frame = page.status_frame();
     let retry = page.place(&RETRY, &cx, At::SpringTarget).expect("failed status publishes Retry placement").rect;
@@ -195,10 +193,9 @@ fn empty_loading_and_failed_discovery_publish_no_false_grid_controls() {
         page.groups(&cx, &mut groups);
         assert_eq!(groups.iter().any(|group| group.id == STATUS_GROUP), retry, "{name}");
         assert_eq!(page.place(&RETRY, &cx, At::SpringTarget).is_some(), retry, "{name}");
-        assert!(page.place(&SORT, &cx, At::SpringTarget).is_none(), "{name}");
-        assert!(page.place(&FILTER, &cx, At::SpringTarget).is_none(), "{name}");
-        assert!(!groups.iter().any(|group| group.id == page.toolbar_group()), "{name}");
-        assert!(!groups.iter().any(|group| group.id == page.pair.groups_config().detail), "{name}");
+        assert!(page.place(&SORTFILTER, &cx, At::SpringTarget).is_some(), "{name}");
+        // (A loading listing declares its grid group EMPTY, `PageRegions::declare_pending`: no control.)
+        assert!(!groups.iter().any(|group| group.id == page.pair.groups_config().detail && group.len > 0), "{name}");
         assert!(!groups.iter().any(|group| group.id == page.pair.groups_config().master), "{name}");
     }
 }

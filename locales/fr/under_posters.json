@@ -1,0 +1,19 @@
+{
+  "under_posters.title": "Sous les affiches",
+  "under_posters.detail": "Ce qui s’affiche sous l’affiche en cours.",
+  "under_posters.copy": "La plupart des affiches affichent déjà leur titre. Choisissez ce qui apparaît sous l’affiche où vous êtes.",
+  "under_posters.title_row": "Titre",
+  "under_posters.title_detail": "Le nom, en gras.",
+  "under_posters.details_row": "Détails",
+  "under_posters.details_detail": "Une ligne d’informations.",
+  "under_posters.details_copy": "Les titres commencés, à venir ou les collections affichent plutôt ceci : le temps restant, la date de sortie, le nombre de films.",
+  "under_posters.year_length": "Année · Durée",
+  "under_posters.genre": "Genre",
+  "under_posters.video": "Vidéo",
+  "under_posters.age_rating_score": "Classification · Note",
+  "under_posters.none": "Rien",
+  "under_posters.reset": "Rétablir par défaut",
+  "under_posters.reset_detail": "Année et durée, sans titre.",
+  "under_posters.sample_title": "Film",
+  "under_posters.sample_genre": "Drame"
+}

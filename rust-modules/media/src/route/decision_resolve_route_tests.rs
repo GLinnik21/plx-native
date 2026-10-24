@@ -1672,6 +1672,7 @@ fn source_probe_reuses_live_hls_resource_instead_of_entering_adhoc_mde() {
         prior: None,
         history: crate::abr::TransitionHistory::default(),
         original_features: crate::abr::SourceFeatures::default(),
+        original_refused: false,
     };
     let result = control.probe_original_while_hls(&active_route, source_plan);
     assert!(
@@ -1773,6 +1774,7 @@ fn a_rejected_original_probe_keeps_hls_and_produces_no_capacity_observation() {
         prior: None,
         history: crate::abr::TransitionHistory::default(),
         original_features: crate::abr::SourceFeatures::default(),
+        original_refused: false,
     };
     let plan = crate::abr::source_probe_plan(320, crate::abr::PROBE_BUDGET_MS).unwrap();
     let result = control.probe_original_while_hls(&active_route, plan);
@@ -1864,6 +1866,7 @@ fn a_source_sample_from_a_superseded_hls_resource_is_discarded() {
         prior: None,
         history: crate::abr::TransitionHistory::default(),
         original_features: crate::abr::SourceFeatures::default(),
+        original_refused: false,
     };
 
     assert_eq!(
@@ -2635,7 +2638,43 @@ fn forced_direct_play_refuses_an_unplayable_session_pick() {
         "ac3",
         |env, _| { env.direct_play_mode = DirectPlayMode::Forced; env.audio_sid = 2; },
     );
-    assert!(matches!(plan.verdict, Some(PlayVerdict::Forced(ForcedFailure::Audio))), "{:?}", plan.verdict);
+    assert!(matches!(plan.verdict, Some(PlayVerdict::Forced(ForcedFailure::Audio { .. }))), "{:?}", plan.verdict);
+}
+
+/// The Force Direct Play audio refusal names the codec it refused, by the one codec->name map: PMS
+/// spells DTS `dca`, and the read-out must say "DTS" for it, "Dolby TrueHD" for `truehd`.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn forced_audio_refusal_names_the_codec() {
+    for (name, raw, shown) in [("cold-forced-names-dca", "dca", "DTS"), ("cold-forced-names-truehd", "truehd", "Dolby TrueHD")] {
+        let (plan, _) = cold_audio_resolve(
+            name,
+            2,
+            MDE_DIRECTPLAY,
+            vec![cold_track(1, "ac3", "rus", true, ""), cold_track(2, raw, "eng", false, "")],
+            Vec::new(),
+            "ac3",
+            |env, _| { env.direct_play_mode = DirectPlayMode::Forced; env.audio_sid = 2; },
+        );
+        let Some(PlayVerdict::Forced(ForcedFailure::Audio { codec })) = &plan.verdict else {
+            panic!("{raw}: {:?}", plan.verdict);
+        };
+        assert_eq!(codec, shown, "{raw}");
+        let sentence = plan.verdict.as_ref().unwrap().text();
+        assert!(sentence.contains(shown), "{raw}: {sentence}");
+    }
+}
+
+/// With no codec known (no tracks, no Media-level audio codec) the refusal keeps the generic
+/// sentence rather than naming an empty codec.
+#[test]
+fn forced_audio_refusal_without_a_codec_keeps_the_generic_sentence() {
+    let blank = PlayVerdict::Forced(ForcedFailure::Audio { codec: String::new() });
+    assert_eq!(blank.text(), plx_platform::i18n::msg::widgets_verdict_forced_audio());
+    let blank = PlayVerdict::Forced(ForcedFailure::AudioNeedsConversion { codec: String::new() });
+    assert_eq!(blank.text(), plx_platform::i18n::msg::widgets_verdict_forced_audio_conversion());
+    let named = PlayVerdict::Forced(ForcedFailure::AudioNeedsConversion { codec: "DTS".into() });
+    assert!(named.text().contains("DTS"), "{}", named.text());
 }
 
 /// Rule 2: with no copy to fall back on, today's ladder stays — a non-commentary stand-in first.
@@ -2681,4 +2720,26 @@ fn uncopyable_video_keeps_its_stand_in() {
     );
     assert!(plan.url.contains("/library/parts/36013/"), "{}", plan.url);
     assert!(request_with(&requests, "hasMDE=1").iter().all(|l| query_param(l, "audioStreamID") == Some("3")), "{requests:?}");
+}
+
+/// Force Direct Play with a PMS-spelled `dca` track on a set whose table has no DTS row: refused
+/// with `ForcedFailure::Audio` and no part URL to Load, not a Load the pipeline cannot decode
+/// (#584's endless spinner). The test-process caps are `Caps::assumed()`, which lists no DTS.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn forced_direct_play_refuses_dca_without_a_dts_row() {
+    let (plan, _) = cold_audio_resolve(
+        "cold-forced-dca-no-row",
+        2,
+        MDE_DIRECTPLAY,
+        vec![cold_track(1, "dca", "eng", true, "")],
+        Vec::new(),
+        "dca",
+        |env, _| { env.direct_play_mode = DirectPlayMode::Forced; },
+    );
+    let Some(PlayVerdict::Forced(ForcedFailure::Audio { codec })) = &plan.verdict else {
+        panic!("{:?}", plan.verdict);
+    };
+    assert_eq!(codec, "DTS");
+    assert!(!plan.url.contains("/library/parts/"), "no part URL may reach the Load: {}", plan.url);
 }

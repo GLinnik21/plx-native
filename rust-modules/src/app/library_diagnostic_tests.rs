@@ -119,6 +119,8 @@ fn library_switch_menu_steps_drive_the_input_owning_menu_and_genre_return() {
             host,
             kind: LibraryMenuKind::Filter,
             anchor: [0; 4],
+            folded: Vec::new(),
+            opener: None,
             target: plx_data::stores::browse::SectionAddress {
                 epoch: 1,
                 sid: plx_plex::plex::ServerId::from_raw(0),
@@ -263,12 +265,10 @@ fn library_sweep_visits_the_whole_document_and_reverses_at_its_ends() {
     }
     assert_eq!(
         visited,
-        ["library", "shelf", "toolbar", "grid"]
-            .into_iter()
-            .collect(),
+        ["library", "grid"].into_iter().collect(),
         "{path:?}"
     );
-    assert_eq!(shelves, (0..12).collect());
+    assert!(shelves.is_empty(), "the production page mounts without shelves");
     assert_eq!(grid_rows, (0..20).collect());
     assert!(
         returned,

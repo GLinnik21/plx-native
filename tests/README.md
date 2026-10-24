@@ -88,8 +88,8 @@ them, the **frame-rate axis** — `pipe_h264_1080p5994` is the only fixture in t
 `engine::fps_rational`'s 1001-denominator branch (`esInfo: videoFps 60000/1001`), and
 `pipe_hevc_4k_60fps` is 4K60 HEVC, the most demanding thing the device table claims; every other
 fixture in both packs is 24p — the **resolution × codec matrix** (SD/HD/FHD/UHD × h264/hevc, eight
-cells, §*The resolution × codec matrix* below), and one clip played to its **end**
-(`pipe_finish_eos`).
+cells, §*The resolution × codec matrix* below), and clips played to their **end**
+(`pipe_finish_eos`, and `pipe_finish_audio_tail` for one whose audio outlasts its picture).
 
 Still uncovered, and worth knowing before quoting a green run: **HLG, HDR10+, DV P5/P7, Atmos**
 (the `atmos` declaration field exists and no case sets it), the **4096-wide edge** and any file
@@ -220,6 +220,10 @@ account stays clean. It works without storing any new secret:
   access token** from `GET https://plex.tv/api/servers/<machineId>/shared_servers` (keyed by
   `userID` — which is what `test_user.id` is). The managed user must already have the libraries
   shared with it.
+- An installation without an owner token in `config.local.h` can instead set
+  `test_user.token_file`: the path of a private file, outside the tree, holding that managed
+  user's per-server token on one line (`~` is expanded). `run.py` reads it at run time, skips the
+  plex.tv lookup, and never prints it; `--print-test-token` honours the same key.
 - That token is used for the `/:/progress` resume seed **and** written to `plxnative-token` in the
   TV's runtime root. The binary carries **no** token, so this file is the only way an automated run
   gets PMS access at all (see `plex_run`); the **app itself** then plays and scrobbles as the
@@ -343,7 +347,7 @@ library you care about — which is what `test_user` is for.
 ## Prerequisites
 
 - The same toolchain the main dev loop needs: the webOS NDK (`make setup-env`), `sshpass`
-  (only when the TV refuses your ssh key), and (for `--build`) the Rust nightly + `rust-src` (see the repo `Makefile` / `docs/agent-reference.md`).
+  (only when the TV refuses your ssh key), and (for `--build`) the pinned stable Rust toolchain with its armv7 rust-std (`make setup-rust`; see the repo `Makefile` / `docs/agent-reference.md`).
 - `tests/manifest.local.json` present — `cp tests/manifest.local.json.example` and fill in the
   PMS host/port, the TV address, `test_user`, and **as many `item` ratingKeys as your library can
   actually supply**; leave the rest bracketed and the cases that need them are skipped (below).
@@ -454,8 +458,19 @@ that address. It boots the synthetic guest `tools/tv-session.sh up --guest --moc
 is then checked against the app's own log: no `pms: server N version=1.41.0.0000-synthetic` line,
 or any other server version, fails the scene before it is graded. Debug flavor only; `tests/run.py` does not deploy the binary, so deploy the build you mean to measure first (`make deploy` under the TV lock, or `tools/tv-session.sh up`, which deploys when stale; for FPS or frame pacing build with `ARM_PROFILE=release`, e.g. `make ARM_PROFILE=release deploy`, because a bare `make deploy` ships the no-LTO `tvdev` build, which `--fps*` and `tools/profile-graphics` refuse to grade; see `docs/agent-reference.md` "ARM_PROFILE") — a stress run once measured an older binary this way. `--server`,
 `--owner`, `--shared-server`, `--suite` and `--graphics-profile` are refused with it. The panel is
-turned off (`tv-session.sh screen off`, before every scene) and the sound muted (`sound off`) —
-the run stops if either cannot be done — and neither is ever turned back on.
+kept OFF (`tv-session.sh screen off`, asserted before every scene: it is only the backlight, and the
+app keeps presenting at full rate, measured 2026-10-24 on Home `grid-pong`: 73 frames/cycle at 59.9 fps
+off, 59.6-59.9 on) and the sound muted (`sound off`, once per run); the run stops if either cannot be
+done, and the sound is never un-muted. `--panel on` lights the panel instead (`screen on` before every
+scene), for a run someone wants to watch.
+**A person page on a `--mock` or `--guest` boot has no biography and no filmography credits.** Both
+write `plxnative-token`, and a dev-token boot with no Discover stand-in armed has the app refuse the
+page's two provider reads itself (`discover: GET … refused` in the log, `discover: base=real
+reads=refused` at boot). That is a standing decision (fail closed), and it settles the page as for a
+person the provider has never heard of, once, with nothing retried; `person-page`, `person-bio`,
+`filmography-idle`, `push-100` and `deep-100` are the scenes that open one. Arming the
+stand-in (`plxnative-discover`, or a loopback `plxnative-plextv`) brings the mock's synthetic reads
+back; `plxnative-personbio` and `plxnative-personcredits` seed the content instead.
 
 A scene is runnable under `--mock` only if it carries a `"mock"` block (`{}` for the default
 library); everything else needs real library content and is skipped with that reason. `"only":
@@ -471,6 +486,8 @@ skipped with the ffmpeg commands' location), and whose `expect` block reuses a p
 (`load_max`, `sink_echo`, `decision`, `codec`/`video_size`, `min_timeline_climb_s`; `no_error` always).
 `quality` pins the rung (`480p_720_kbps`). Run it: `tools/tv-lock.sh with --why "fixed 480p declaration" --
 ./tests/run.py --fps-player --mock --filter fixed-480p-reencode-declaration`.
+
+`boost-remux-declares-source-rate` (#832) is the second such scene: `plxnative-audioenh=boost` turns a direct-playable 4K H.264 24p file into an enhanced remux, and it grades `load_fps: 24.0`, `load_max: 3840x2160@24`, the set's echo, and (`presented_rate: true`, optionally `presented_rate_tol_pct`) the sink's presented rate against the declared one. Fixtures live in `boost-remux/` under the same root; the ffmpeg commands are in the scene's `comment`. Run it: `tools/tv-lock.sh with --why "boost remux declaration" -- ./tests/run.py --fps-player --mock --filter boost-remux-declares-source-rate`.
 
 `home-grid-deep` is the Home-with-many-rows scene (#395): `--home-hubs 170`. `plxnative-homeosc`
 only sweeps about nine rows either side of the top, so it instead presses **Down once per landed
@@ -489,22 +506,28 @@ wait included (a harness test holds every `walk` scene to that).
 (`mock.section.<key>.shelf.<i>`, each listing the recent items of its kind; the default 48-movie
 library is unchanged), 40 of them promoted collections (`custom.collection.<section>.<rk>.<n>`
 keyed `/library/collections/<rk>/children`, which the mock resolves) whose headings the app links.
-Without the flags `/hubs/sections/<id>` is byte-for-byte what it was. The scene arms
-`plxnative-library` (the preferred Movies library), `plxnative-framedrop` and `plxnative-focus`,
-and the walk (`"landed": "library"`) is sized from the **seated section's**
+Without the flags `/hubs/sections/<id>` is byte-for-byte what it was. The shelves live on the
+Library's **Recommended page** (the Library page itself mounts none), so the scene arms
+`plxnative-library` (the preferred Movies library), `plxnative-libtype` = `recommended` (presses
+the header's Recommended control), `plxnative-framedrop` and `plxnative-focus`, and the walk
+(`"landed": "library"`) is sized from the **seated section's**
 `libhubs: section N landed S shelves` line (index 0 for Movies; `plxnative-library` content `1`
 seats Shows, index 1 — the last landing of that section, not the last such line in the log):
 **Down once per shelf, a second time for each linked shelf** (its heading is a stop of its own,
-then its row), and `extra_rows` more (6) to cross the toolbar into the grid, then **Up** back. It
-grades keys sent against that count, a `focus route=library … region=grid` fingerprint inside the
-walk window (the turn-around), `loop_floor` 50 and `fps_floor` 30; frame drops are reported, not
-graded. This is the instrument for #412: the section has no shelf cap, so all 170 land, and
-`walk.min_landed` (150) fails the scene when fewer do (a build that bounds each section at twelve
-shelves would land 12 and the walk, which follows what landed, would otherwise pass on those 12).
+then its row), and `extra_rows` more (0: the Recommended page seats its first shelf on arrival and
+has no toolbar to cross), then **Up** back. It
+grades keys sent against that count, a `focus route=library … region=shelf` fingerprint inside the
+walk window (`fingerprint_region` `shelf`; the Recommended page prints the Library's fingerprint
+grammar, `region=shelf row=R col=C` on a card and `heading`/`crumb`/`strip` elsewhere, and a harness
+test holds every scene's `fingerprint_region` / `reach.region` to a word its page prints),
+`loop_floor` 50 and `fps_floor` 30; frame drops are
+reported, not graded. This is the instrument for #412: the section has no shelf cap, so all 170
+land, and `walk.min_landed` (150) fails the scene when fewer do (a build that bounds each section at
+twelve shelves would land 12 and the walk, which follows what landed, would otherwise pass on those 12).
 The landed count is the data layer's, so a library walk with `min_landed` also requires a
 `focus route=library … region=shelf row=R` fingerprint in the walk window with `R >= min_landed - 1`
 (row 169 on a passing run): the screen must show the deep shelves the store published, or a screen
-that capped its rows again (store 170, page 12) would still walk into the grid and pass.
+that capped its rows again (store 170, page 12) would still pass.
 The linked-shelf count is derived from the mock's own arguments, not read from the app.
 
 `library-burst` is an **instrument, not a gate**: how many loading (placeholder) poster tiles a
@@ -553,8 +576,9 @@ window must request and upload missing art and then draw every artwork-bearing c
 A high FPS with no poster work cannot pass. The reversal also requires real texture losses,
 refusals of evicted slots during reversal, and rearming afterward. The dive records
 actual snap plus shelf offset/velocity throughout Hero, dive and settle, requiring
-its horizontal spring to stay stationary while the retained offset is transformed.
-The dive hands over at snap 0.9, while that horizontal product is still moving fast;
+its horizontal spring to stay stationary (a Home shelf draws at the offset it holds and the
+dive does not scale it), so the motion it grades is the page's vertical travel (snap 0 to 1 is
+617 px for every shelf). The dive hands over at snap 0.9, while the dive is still moving;
 the settle phase captures its natural deceleration and resulting art arrivals.
 
 These scenes send focus commands only, and size their targets to the catalog they boot into
@@ -603,6 +627,16 @@ marks pacing invalid if a render-profiler trigger is armed.
     scene that bounces rather than animates continuously, a 1 s window can land wholly inside the
     settled gap and read 0 with a perfectly healthy animation (measured: `home-detail-nav` min=0,
     median=15). A frozen animator reads ~1/s — the keepalive alone — so the two are far apart.
+    A scene whose graded windows are a live stretch plus a long idle tail (`library-switch`: the
+    back of a 14-step cycle with idle steps, then the spent-cycle keepalive `0 1 0 1 0 1`, so the
+    median flips with the boot's timing, 7-11 for one animation) opts into a **count of live
+    windows** with `"fps_floor_stat": "live"` and `"fps_floor_windows": N`: at least N of the graded
+    windows must each draw at least `fps_floor` frames. A frozen animator has none, a freeze after
+    two graded seconds has two, a frozen run with one burst has one, and the healthy runs have 8 or
+    9, against N = 6. The mean was tried and rejected (a freeze after two seconds still averages
+    3.8-4.7, above any floor the healthy runs also clear). A freeze after the first N live seconds
+    reads as a cycle that ended early and is not caught. `fps_floor_verdict` in `run.py` is the
+    grader; the scene's `_fps_floor_note` carries the measurements.
   - `fps_ceiling` grades `fps=` on the **2nd-highest** — "does this screen actually STOP".
     This is the only guard on over-reporting, which silently gives back the whole ~38-points-of-a-
     core saving while every floor in the suite still passes.
@@ -621,7 +655,10 @@ marks pacing invalid if a render-profiler trigger is armed.
   `unsupported`), the observed slow scenes are exactly the two with the most full-screen passes,
   and 50 fps is also precisely the European panel refresh on this SKU. Discriminate with a soak
   (same scene cold vs hot vs recovered), never from one sample. See
-  `docs/perf-view-buffers-and-thermal.md`.
+  `docs/perf-view-buffers-and-thermal.md`. (2026-10-24: a temperature can be read after all. LG's
+  power manager reports the SoC temperature in `/proc/lg/pm/temperature` (39-61 °C on 2026-10-24)
+  and the CPU frequency in `/proc/lg/pm/frequency`, although there is still no `thermal_zone` or
+  `cpufreq`; see `.agents/skills/profile-tv/SKILL.md`, "Mali T820 facts".)
 - **False-negative guard:** a scene with <5 post-warmup samples for its route FAILs (it never reached
   that screen — app crash, or a `detail`/`play` rk that isn't in the home catalog), never a vacuous
   pass. `detail-transition`'s item (`movie_in_home_catalog`) must be an **in-home-catalog
@@ -740,6 +777,12 @@ pieces make that reproducible:
 4. `make run TV=<tv> RUN_SECS=<n> FLAVOR=<f>` — relaunch, wait, and cat that install's
    `plxnative-events.log` back.
 5. Filter the `smp_cb type=43 num=0 str=` flood and evaluate the assertions.
+6. `crash_gate` (`run.py`): if the case's log holds a `*** SIGNAL` line, or `plxnative-crash.log`
+   gained a record since step 3 counted it, the case FAILS (`app_alive`) unless it sets
+   `expect_crash: true`, and the set's `plxnative-stderr.log` (the abort message; the next launch
+   truncates it) is copied to `<name>.stderr.log` / `<name>.crash.log` in the `--save-logs`
+   directory, else `$TMPDIR/plxnative-crash-evidence/`, with the path printed. `--save-logs`
+   keeps `<name>.stderr.log` for every case. The FPS tier does not run this gate.
 
 ## The `plxnative-play=<rk>` trigger (added for this harness)
 
@@ -932,8 +975,9 @@ A **synthetic** case is a `pipeline_cases` entry instead, and its `expect` keys 
 under *Assertions* below. Two are worth naming here because they are recent and easy to miss:
 **`video_size`** (`"1920x1080"`) grades the demuxed raster EXACTLY and is what the resolution
 matrix is built on — prefer it to `min_video_width` in any case where the resolution is the point;
-and **`reaches_eos`** turns on the `finished` assertion, which only `pipe_finish_eos` may set,
-because it needs a fixture short enough to actually run out.
+and **`reaches_eos`** turns on the `finished` assertion, which only the cases that play a clip to
+its end may set (`pipe_finish_eos`, `pipe_replay_after_eos`, `pipe_finish_audio_tail`), because it
+needs a fixture short enough to actually run out.
 
 ## The synthetic tier (the default) — the player, with no Plex behind it
 
@@ -1098,14 +1142,19 @@ grades the whole-path symptom (`min_pos_climb_s`) and the second stall on its ow
 
 ### Playing to the END, and then again (LG #46)
 
-`pipe_finish_eos` and `pipe_replay_after_eos` are **the only cases in either tier that are supposed
-to run out**. Every other clip in both packs is sized so it *cannot* hit EOF inside a case's window
-(`make_fixtures.py` trap 9's second half), because a finish tears the session down under assertions
-that were only ever about playing — so those two share a 20 s fixture, `pipe_h264_ac3_short.mkv`,
-which only a case declaring `reaches_eos` may name. The `finished` assertion wants two lines **in order**: `EOS reached: … → ended` (the pump
-gates that on `eos_pushed && pos >= dur - 1s`, so a truncated transfer does not reach it) and then
-`stop_bufferfeed: torn down`. The order is the assertion — every stop tears the engine down, the
-harness's own close included.
+`pipe_finish_eos`, `pipe_replay_after_eos` and `pipe_finish_audio_tail` are **the only cases in
+either tier that are supposed to run out**. Every other clip in both packs is sized so it *cannot*
+hit EOF inside a case's window (`make_fixtures.py` trap 9's second half), because a finish tears the
+session down under assertions that were only ever about playing — so the first two share a 20 s
+fixture, `pipe_h264_ac3_short.mkv`, and the third has its own, `pipe_h264_ac3_audio_tail.mkv`
+(below). A clip that runs out may be named only by a case declaring `reaches_eos`, and
+`tests/test_harness.py` pins that for every clip such a case names, not for one in particular. The
+`finished` assertion wants two lines **in order**: `EOS reached: … → ended` (the pump logs it once
+the EOS has been pushed at true EOF AND either the pipeline has reported its own end-of-stream after
+a picture — `smp: the pipeline reached end-of-stream`, since #865 — or the playhead is within 1 s of
+the container's duration; so the line alone no longer proves the transfer ran to its end, and its
+`playpos=N/M` is what shows how far the playhead was) and then `stop_bufferfeed: torn down`. The
+order is the assertion — every stop tears the engine down, the harness's own close included.
 
 **And the second half — starting the same content *again* — is `pipe_replay_after_eos`**, which
 plays the same clip, lets it end, and restarts it. That needed an app change and got the smallest
@@ -1135,6 +1184,23 @@ is the wire-side half: the second viewing has to fetch the clip again, which no 
 Two things it still does not cover: **replay driven by a user** rather than by a trigger — that is
 a Play control on a detail page, so it belongs to the server tier — and replay of a **transcode**,
 which has a server session behind it that a synthetic clip has no equivalent for.
+
+**A film whose audio outlasts its picture is `pipe_finish_audio_tail`** (#865).
+`pipe_h264_ac3_audio_tail.mkv` is 20 s of 720x480 H.264 and 23 s of AC-3 5.1: `make_fixtures.py`'s
+`audio_tail_s: 3` is the one knob that lets the audio run past the picture, and its `verify()` reads
+both streams' last packet times back out of the finished file and fails the build unless the audio
+ends at least 2 s after the video, so a regenerated clip that lost the tail cannot pass quietly. The
+container's duration is the longest track's, so the playhead stops at the last frame (~19 s of 23)
+and never comes within the pump's second of it: before #865 such a film sat on its last frame for
+good (the C1's was 5894 s of 5897 s). What ends it is the pipeline's own end-of-stream (`smp_cb
+type=28 num=1 str=true`, logged `smp: the pipeline reached end-of-stream`). The case grades the same
+`finished` pair as `pipe_finish_eos` and stays separate for the same reason `pipe_replay_after_eos`
+does: the failures differ — a stream that ends on the playhead and one that only the pipeline's word
+ends — and one case would report either as the other. Its `EOS reached` line reads `playpos=19s/23s`,
+four seconds short of the duration by construction, which is why `a_finished` does not compare the
+two. It was built from a device run (webOS 4.10.2) of a hand-made clip of this shape under
+`pipe_finish_eos`'s fixture name: `main` ended it in 33 s, the build before #865 logged `EOS pushed
+at true EOF` and `type=28` and then nothing, with no `EOS reached` line and a 36 s max stall.
 
 **`serve_fixtures.py`, and why not `python3 -m http.server`.** The demuxer seeks by closing the
 socket and reopening with `Range: bytes=<n>-`, and `stream.rs` accepts any 2xx. A server that
@@ -1209,7 +1275,9 @@ secondary to the real item shapes, and still to be labelled synthetic:
   (`contents.DolbyHdrInfo`, the node LG's own pipeline has parsed all along), and a declared
   single-layer Profile 5 direct-plays *correctly* — so with it armed the P5 item's expectation is a
   playing stream, one `dv: sourceInfo contents.DolbyHdrInfo …` line in the event log, and a picture
-  only a human can grade. The dual-layer P7 is refused either way. `metadata::Dovi::presentation` is
+  only a human can grade. A dual layer without a cross-compatible base layer is refused either
+  way; a P7 with one (the dev server's, CCID 6) is converted to 8.1 on the feed path and
+  direct-plays (`docs/dolby-vision.md` §1). `metadata::Dovi::presentation` is
   the single predicate behind both the gate and the node; `base_layer_unusable` is now specifically
   the COPY question (a remux carries no declaration), which is why `no_video_copy` still rides a
   declared P5 that ends up on the transcode branch for some other reason.

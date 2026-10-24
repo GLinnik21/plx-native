@@ -110,6 +110,44 @@ else
   # nothing", and the check would pass vacuously forever.
   [ "$DMB" -gt 100 ] || fail "only $DMB dmb instructions — the disassembly scan is not working"
   ok "0 CP15 barriers, $DMB dmb (scan verified live)"
+
+  echo "== VFP (the -soft-float codegen flag took effect) =="
+  # `-C target-feature=-soft-float` is what gives OUR crates VFP instructions on the armv7 target,
+  # which defaults to +soft-float (every float op a libcall). On stable rustc it is an UNSTABLE
+  # feature flag (rustc prints "unstable feature specified for -Ctarget-feature: soft-float ...
+  # its behavior can change in the future"), so a rustc release is free to stop honouring it. The
+  # binary then still links and runs, only every float multiply in the app becomes a call to
+  # __aeabi_fmul: nothing fails, the UI just gets slower. ci/check-vfp.py catches the flag
+  # directly with a probe compile; this is the same question asked of the linked binary.
+  # Measured on the stable build (2026-10-16, -lm ahead of the staticlib): 3057 `vmul.f32` against
+  # 2 `bl __aeabi_fmul`, both in core's float PARSING (std is prebuilt, its float code stays soft).
+  # So the test is a ratio, not zero. Both objdumps (GNU, llvm) print `bl\t<addr> <__aeabi_fmul>`.
+  VFPMUL=$(grep -cE '[[:space:]]vmul\.f32[[:space:]]+s[0-9]' <<<"$D" || true)
+  SOFTMUL=$(grep -cE '[[:space:]]bl[[:space:]].*<__aeabi_fmul' <<<"$D" || true)
+  # Positive control, as for dmb: a floor far below the measured count but far above noise, so an
+  # objdump that printed the instructions in another form fails here instead of passing vacuously.
+  [ "$VFPMUL" -gt 100 ] || fail "only $VFPMUL vmul.f32 instructions — our crates are not using VFP (is -C target-feature=-soft-float still in RUST_CODEGEN?) or the disassembly scan is not working"
+  [ $((SOFTMUL * 20)) -lt "$VFPMUL" ] || fail "$SOFTMUL calls to __aeabi_fmul against $VFPMUL vmul.f32 — float math is going through software libcalls"
+  ok "$VFPMUL vmul.f32, $SOFTMUL __aeabi_fmul calls (core's float parsing)"
+
+  echo "== libm calls reach glibc, not compiler_builtins' soft-float copies =="
+  # round/floor/ceil/trunc/fmod/cbrt (and C's sqrtf) are CALLS on ARMv7: there is no VFPv3
+  # instruction for them. The prebuilt armv7 std ships WEAK definitions of those names inside
+  # compiler_builtins, compiled +soft-float (roundf's body is a call to __aeabi_fadd). A weak
+  # definition taken from an archive member is a regular-object definition, which a shared library
+  # later on the command line never overrides, so with `-lm` only at the end of the link every
+  # roundf in the app (119 call sites, text and layout among them) ran soft. The Makefile names -lm
+  # AHEAD of the staticlib so the names are already defined by libm.so and those members are never
+  # extracted. The residue is about 9 soft arithmetic calls in core's prebuilt float parsing (the
+  # bound below is 16), and the i64<->float conversions (__aeabi_d2lz, __aeabi_l2d & co), which are
+  # libcalls on ARMv7 whatever the float ABI, VFPv3 having no instruction for them; the pattern
+  # below leaves those out.
+  LOCALMATH=$(grep -oE '^[0-9a-f]+ <(roundf?|floorf?|ceilf?|truncf?|sqrtf?|fmaf?|cbrtf?|fmodf?)>:$' <<<"$D" \
+    | sed -E 's/.*<(.*)>:/\1/' | tr '\n' ' ' || true)
+  [ -z "$LOCALMATH" ] || fail "local definitions of libm functions ($LOCALMATH) — compiler_builtins' soft-float copies won over glibc's libm; is -lm still ahead of the Rust staticlib on the link?"
+  SOFTARITH=$(grep -cE '[[:space:]]bl[[:space:]].*<__aeabi_[fd](add|sub|rsub|mul|div|cmp[a-z]*|2f|2d)>' <<<"$D" || true)
+  [ "$SOFTARITH" -le 16 ] || fail "$SOFTARITH soft-float arithmetic libcalls (measured 9: core's float parsing) — some float code is running in software"
+  ok "no local libm bodies, $SOFTARITH soft-float arithmetic calls"
 fi
 
 echo "== DT_NEEDED =="
@@ -170,9 +208,10 @@ echo "== build-host identity =="
 #   (src/app.h's __has_include falls back to YOUR_PMS_HOST only in a clean checkout) — so those
 #   assertions genuinely can only hold in CI;
 #
-#   the HOME DIRECTORY has nothing to do with config.local.h. It arrives through `-Z build-std`
-#   compiling std and every dependency from absolute paths under $RUSTUP_HOME/$CARGO_HOME, and
-#   it is fixed by the Makefile's --remap-path-prefix. That check can and should run everywhere.
+#   the HOME DIRECTORY has nothing to do with config.local.h. It arrives through every dependency being
+#   compiled from absolute paths under $CARGO_HOME (and $HOME for the workspace; the prebuilt std
+#   only carries /rustc/<hash> paths, but under the old `-Z build-std` it was compiled from
+#   $RUSTUP_HOME too), and it is fixed by the Makefile's --remap-path-prefix. That check can and should run everywhere.
 #
 # Skipping the whole section on a dev machine meant the host-path gate had never once executed
 # against a real build. It also cannot be left CI-only now: the remap is the thing that makes the

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build and run only the lib tests of the crate(s) you touched: `make test-crate C=plx_ui`.
 
-    tools/test-crate.py --suite 'plxnative-modules plx_base ...' [--cargo 'cargo +nightly']
+    tools/test-crate.py --suite 'plxnative-modules plx_base ...' [--cargo 'cargo +<pinned>']
                         [--deps] [--filter NAME] [--dry-run] CRATE [CRATE ...]
 
 An edit in a low crate makes `cargo test --lib -p <all 14>` rebuild and relink every dependent
@@ -16,7 +16,7 @@ layer crate, and cargo only unifies features across the packages it was ASKED to
 2026-10-05: the `devtriggers` ones are missing) and a different `plx_base` under it, which
 neither grades the same code nor shares a single compiled artifact with `make test-fast`. So the
 full suite's resolution is read first (`--unit-graph` on the whole `--suite`: nothing is
-compiled), and for every workspace crate the selected packages depend on, each feature the full
+compiled; nightly-only, so that one query runs with RUSTC_BOOTSTRAP=1 on the stable pin), and for every workspace crate the selected packages depend on, each feature the full
 build enables on it is requested explicitly (`-p plx_ui --features plx_base/devtriggers,...`).
 That reproduces the full build's per-crate feature sets, so the fingerprints are the ones
 `make test-fast` already wrote: a warm `make test-fast` tree answers `make test-crate` without
@@ -37,8 +37,8 @@ APP = "plxnative-modules"
 APP_ALIASES = {"app", "plxnative-modules", "plxnative_modules", "modules"}
 
 
-def run_json(argv: list[str], what: str):
-    proc = subprocess.run(argv, stdout=subprocess.PIPE, text=True)
+def run_json(argv: list[str], what: str, env: dict[str, str] | None = None):
+    proc = subprocess.run(argv, stdout=subprocess.PIPE, text=True, env=env)
     if proc.returncode != 0:
         raise SystemExit(f"test-crate: {what} failed (exit {proc.returncode}): {' '.join(argv)}")
     return json.loads(proc.stdout)
@@ -126,8 +126,14 @@ def main() -> int:
                 if dep not in packages:
                     packages.append(dep)
 
+    # `--unit-graph` is cargo's only interface to the resolved compile units and is nightly-only
+    # (`-Z unstable-options`); the pinned toolchain is stable. RUSTC_BOOTSTRAP=1 lets this one
+    # read-only query through (nothing is compiled; ci/test_no_host_staticlib.py does the same). It
+    # is set for this call ONLY, so the test build that follows keeps the stable environment and
+    # the fingerprints `make test-fast` wrote.
     full = run_json([*cargo, "test", "--lib", "--no-run", "--unit-graph", "-Z", "unstable-options",
-                     *[a for p in suite for a in ("-p", p)]], "cargo --unit-graph")
+                     *[a for p in suite for a in ("-p", p)]], "cargo --unit-graph",
+                    env={**os.environ, "RUSTC_BOOTSTRAP": "1"})
     flags = feature_flags(full, direct_names(metadata, packages))
     # The application crate is the one that sets the default features; selecting it already
     # resolves them the way the full build does, and naming its own features again is redundant.

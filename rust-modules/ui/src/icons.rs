@@ -25,10 +25,9 @@
 //! sub-255 pixel more than 2px inside the ink except where the geometry really is notched (it
 //! resolves to a clean gap at 4×), and no ink on the border.
 #![allow(dead_code)]
-use plx_gfx::gfx::upload_rgba;
 use crate::{Painter, Rect};
+use std::cell::RefCell;
 use std::os::raw::c_uint;
-use std::ptr::addr_of_mut;
 
 // `Debug` so a host test can name the glyph it expected: `widgets`' play-indicator table grades
 // an Option<Icon> per cell and an assertion that cannot print the two sides is one nobody reads.
@@ -226,6 +225,22 @@ pub enum Icon {
     ServerBadgeXmark,
     /// A crossed-out wifi arc — no internet to even reach plex.tv (`IncidentKind::PinCreate`).
     WifiSlash,
+    // ---- Watchlist marks (docs/watchlist-plan.md, DS1) ----
+    //
+    // Baked by `tools/readout-glyphs.py`'s INLINE table at the inline 2.2 weight (search, restart,
+    // info), one even-odd path each, so they sit beside the stroked family without a weight step.
+    /// A bookmark ribbon, outline — the Watchlist's not-on-the-list mark.
+    Bookmark,
+    /// The same silhouette filled, so the outline-to-filled state flip never moves an edge.
+    BookmarkFill,
+    /// A plain clock face — the Watchlist's coming-soon mark (the read-out's clock base, inline weight).
+    Clock,
+    /// A server with a slash through it — the Watchlist's server-offline mark (the read-out's server
+    /// base, slashed the way [`Icon::WifiSlash`] is).
+    ServerSlash,
+    /// A ring with a bar through it — the Watchlist's on-no-server mark, the universal "unavailable"
+    /// sign at the inline weight.
+    CircleSlash,
 }
 
 /// **Where a mark's INK sits inside its 24-unit viewBox**, as `(left, right)` fractions — and
@@ -248,6 +263,12 @@ pub const fn ink_x(id: Icon) -> (f32, f32) {
         Icon::Rewind | Icon::FastForward => (2.6 / 24.0, 21.4 / 24.0),
         // One entry for the mirrored pair: the reflected path has the same ink bounds.
         Icon::Chevron | Icon::ChevronLeft => (7.5 / 24.0, 16.5 / 24.0),
+        // The fold pair: path x 6..18 plus the 3-unit stroke's 1.5 each side. One entry, the pair
+        // reflected about y=12 (`the_fold_chevrons_ink_matches_their_assets`).
+        Icon::ChevronDown | Icon::ChevronUp => (4.5 / 24.0, 19.5 / 24.0),
+        // The bookmark pair share one silhouette, so one entry (the fill is the outline's own shape).
+        Icon::Bookmark | Icon::BookmarkFill => (4.4 / 24.0, 19.6 / 24.0),
+        Icon::Clock | Icon::ServerSlash | Icon::CircleSlash => (1.9 / 24.0, 22.1 / 24.0),
         _ => (0.0, 1.0),
     }
 }
@@ -262,6 +283,10 @@ pub const fn band(id: Icon) -> f32 {
     match id {
         Icon::Pause | Icon::Rewind | Icon::FastForward => 14.0 / 24.0,
         Icon::Play => 16.0 / 24.0,
+        // Measured ink heights of the Watchlist marks (y 1.9..21.4, 1.9..22.1, 1.5..22.5).
+        Icon::Bookmark | Icon::BookmarkFill => 19.5 / 24.0,
+        Icon::Clock | Icon::CircleSlash => 20.2 / 24.0,
+        Icon::ServerSlash => 21.0 / 24.0,
         _ => 1.0,
     }
 }
@@ -312,17 +337,28 @@ fn src(id: Icon) -> &'static str {
         Icon::ServerBadgePlus => include_str!("../../../assets/icons/server-badge-plus.svg"),
         Icon::ServerBadgeXmark => include_str!("../../../assets/icons/server-badge-xmark.svg"),
         Icon::WifiSlash => include_str!("../../../assets/icons/wifi-slash.svg"),
+        Icon::Bookmark => include_str!("../../../assets/icons/bookmark.svg"),
+        Icon::BookmarkFill => include_str!("../../../assets/icons/bookmark-fill.svg"),
+        Icon::Clock => include_str!("../../../assets/icons/clock.svg"),
+        Icon::ServerSlash => include_str!("../../../assets/icons/server-slash.svg"),
+        Icon::CircleSlash => include_str!("../../../assets/icons/circle-slash.svg"),
     }
 }
 
 // (icon, px) → GL texture. The UI is fixed 1080p so only a handful of (icon,size) pairs ever
 // appear; a flat Vec is plenty. Rasterize+upload once, then reuse.
+//
+// A `thread_local!`, because the texture names it holds belong to the GL context of the thread that
+// uploaded them: the render thread, the only one that draws. (The entries have no destructor, so
+// nothing runs GL at thread exit; the textures live for the process, as `CACHE` never evicts.)
 struct Entry {
     id: Icon,
     px: i32,
     tex: c_uint,
 }
-static mut CACHE: Vec<Entry> = Vec::new();
+thread_local! {
+    static CACHE: RefCell<Vec<Entry>> = const { RefCell::new(Vec::new()) };
+}
 
 // Antialias the way text does — rasterise the vector at the *exact* draw size and keep nanosvg's own
 // coverage-AA edge (SS = 1: no supersample). The old path rasterised SS× larger and let GL minify it
@@ -354,30 +390,57 @@ pub fn icon_raster_px(px: i32) -> i32 {
 }
 
 fn tex_for(id: Icon, px: i32) -> c_uint {
-    unsafe {
-        let cache = &mut *addr_of_mut!(CACHE);
-        // Keyed on the CLAMPED size, not the caller's raw `px` — two different `px` values that
-        // land on the same `icon_raster_px` result rasterize identically, so they share one
-        // texture instead of minting a duplicate. This is also what makes `MAX_ICON_PX`'s own
-        // doc claim ("a runaway caller cannot blow the cache open-ended") actually true: keyed on
-        // the raw `px`, a caller sweeping through distinct oversized values still minted one
-        // entry per value, unbounded, the clamp having capped only the RASTER, not the cache.
-        let raster_px = icon_raster_px(px);
-        if let Some(e) = cache.iter().find(|e| e.id == id && e.px == raster_px) {
-            return e.tex;
+    // Keyed on the CLAMPED size, not the caller's raw `px` — two different `px` values that
+    // land on the same `icon_raster_px` result rasterize identically, so they share one
+    // texture instead of minting a duplicate. This is also what makes `MAX_ICON_PX`'s own
+    // doc claim ("a runaway caller cannot blow the cache open-ended") actually true: keyed on
+    // the raw `px`, a caller sweeping through distinct oversized values still minted one
+    // entry per value, unbounded, the clamp having capped only the RASTER, not the cache.
+    let raster_px = icon_raster_px(px);
+    // The cell is borrowed only for the lookup and, below, for the push: the rasteriser and the
+    // upload run with no borrow held, so nothing they call can meet one.
+    if let Some(tex) = CACHE.with(|cache| {
+        cache.borrow().iter().find(|e| e.id == id && e.px == raster_px).map(|e| e.tex)
+    }) {
+        return tex;
+    }
+    // `render_scale` is the simulator's supersampling (1 on a television): the mask is
+    // rasterised at physical size and still drawn into the same logical rect.
+    let target = raster_px * plx_base::surface::render_scale();
+    let hi = target * SS;
+    let tex = match plx_gfx::svg::rasterize(src(id), hi, hi) {
+        Some(rgba) => {
+            let small = downsample_alpha(&rgba, hi, SS);
+            upload(target, &small)
         }
-        // `render_scale` is the simulator's supersampling (1 on a television): the mask is
-        // rasterised at physical size and still drawn into the same logical rect.
-        let target = raster_px * plx_base::surface::render_scale();
-        let hi = target * SS;
-        let tex = match plx_gfx::svg::rasterize(src(id), hi, hi) {
-            Some(rgba) => {
-                let small = downsample_alpha(&rgba, hi, SS);
-                upload_rgba(0, target, target, small.as_ptr())
-            }
-            None => 0,
-        };
-        cache.push(Entry { id, px: raster_px, tex });
+        None => 0,
+    };
+    CACHE.with(|cache| cache.borrow_mut().push(Entry { id, px: raster_px, tex }));
+    tex
+}
+
+/// Upload a rasterized mask, or — in a HOST TEST — do not.
+///
+/// The same seam, and the same reason, as `underlay::upload`: the test binary LINKS OpenGL but
+/// never creates a context, so `glGenTextures` dereferences a null dispatch table and takes the
+/// whole binary down. A host test that draws a whole page descriptively (`frame::backdrop::discover`)
+/// reaches this through the page header's icons; it is handed a stand-in name per cache entry,
+/// specced in `gfx::tex_ledger` as the real upload would be, so the paint the icon declares still
+/// carries a texture and the cache keeps its one-entry-per-size shape.
+fn upload(side: i32, px: &[u8]) -> c_uint {
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        plx_gfx::gfx::upload_rgba(0, side, side, px.as_ptr())
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let _ = px;
+        /// Far above any name a test hand-picks for its own stand-in fields.
+        const STAND_IN_BASE: u32 = 0x4943_0000;
+        static NEXT: AtomicU32 = AtomicU32::new(STAND_IN_BASE);
+        let tex = NEXT.fetch_add(1, Ordering::Relaxed);
+        plx_gfx::gfx::tex_ledger::specified(tex, side, side);
         tex
     }
 }
@@ -407,10 +470,24 @@ fn downsample_alpha(src: &[u8], sw: i32, ss: i32) -> Vec<u8> {
 /// Draw icon `id` filling `r` (rasterized+cached at r's pixel size), tinted `tint` (a white mask
 /// times the tint = a solid-colour icon; tint alpha fades it). No-op if rasterization failed.
 pub fn draw(p: Painter, id: Icon, r: Rect, tint: [f32; 4]) {
-    let px = r.w.max(r.h).round() as i32;
+    draw_raster(p, id, r, r.w.max(r.h).round() as i32, tint);
+}
+
+/// [`draw`] with the RASTER's size chosen by the caller instead of read off `r`: the mask cached at
+/// `raster_px` is stretched over `r`. For a glyph whose box moves continuously (a control popping
+/// on its lift spring) so the mask it is drawn from stays ONE texture for the whole motion: sized
+/// from `r`, the cache key would change at each whole pixel the box crosses, and the glyph would be
+/// re-rasterized (a different edge, with nothing moving) on the frame the spring settles. At
+/// `r.w == raster_px` this is exactly [`draw`], 1:1.
+pub fn draw_raster(p: Painter, id: Icon, r: Rect, raster_px: i32, tint: [f32; 4]) {
+    let px = raster_px;
     // A text-recording painter submits no primitive; rasterising the mask for it would only
     // spend the transition's prewarm budget on something it then does not draw.
     if px <= 0 || p.is_recording() {
+        #[cfg(any(test, feature = "test-support"))]
+        if p.is_recording() {
+            crate::draw_census::note_icon(id, p.place(r));
+        }
         return;
     }
     let tex = tex_for(id, px);
@@ -459,6 +536,8 @@ mod ink_tests {
             Icon::FastForward,
             Icon::Chevron,
             Icon::ChevronLeft,
+            Icon::ChevronDown,
+            Icon::ChevronUp,
             Icon::Check,
         ] {
             let (l, r) = ink_x(id);
@@ -478,6 +557,17 @@ mod ink_tests {
         assert_eq!(ink_x(Icon::ChevronLeft), ink_x(Icon::Chevron));
         assert!(src(Icon::Chevron).contains(r#"d="M9 6l6 6-6 6""#));
         assert!(src(Icon::ChevronLeft).contains(r#"d="M15 6l-6 6 6 6""#));
+    }
+
+    /// The fold chevrons' `ink_x` is their asset's own bounds (path x 6..18, stroke 3), and the up
+    /// mark is the down mark reflected about y=12, so one entry serves the pair.
+    #[test]
+    fn the_fold_chevrons_ink_matches_their_assets() {
+        assert_eq!(ink_x(Icon::ChevronDown), ink_x(Icon::ChevronUp));
+        assert!(src(Icon::ChevronDown).contains(r#"d="M6 9l6 6 6-6""#));
+        assert!(src(Icon::ChevronUp).contains(r#"d="M6 15l6-6 6 6""#));
+        let (l, r) = ink_x(Icon::ChevronDown);
+        assert!((l - (6.0 - 1.5) / 24.0).abs() < 1e-6 && (r - (18.0 + 1.5) / 24.0).abs() < 1e-6);
     }
 
     #[test]
@@ -538,8 +628,9 @@ mod ink_tests {
         }
     }
 
-    /// The collection mark at the sizes its tile draws it (`collection_tile::glyph_px` across a
-    /// grid poster's rest and pop, and a shelf's): full opacity inside, nothing on the border.
+    /// The collection mark at the sizes its tiles draw it (`collection_tile::glyph_px` of each
+    /// page's RESTING tile width; a focus pop does not change the size, the card's zoom grows the
+    /// cached mask): full opacity inside, nothing on the border.
     #[test]
     fn the_collection_mark_rasterizes_clean_at_its_tile_sizes() {
         for px in [64, 72, 76, 80, 84] {
@@ -576,6 +667,63 @@ mod ink_tests {
             let alpha = |x: i32, y: i32| rgba[((y * size + x) * 4 + 3) as usize];
             let max_alpha = (0..size).flat_map(|y| (0..size).map(move |x| alpha(x, y))).max().unwrap();
             assert_eq!(max_alpha, 255, "WifiSlash never reaches full opacity at {size}px");
+        }
+    }
+
+    /// The `d` attribute's coordinates as `(x, y)` pairs. The Watchlist assets are baked absolute
+    /// `M`/`z` paths of bare coordinate pairs, so splitting on letters and whitespace is exact.
+    fn path_points(svg: &str) -> Vec<(f32, f32)> {
+        let start = svg.find(" d=\"").expect("asset has a path") + 4;
+        let d = &svg[start..start + svg[start..].find('"').unwrap()];
+        let nums: Vec<f32> = d
+            .split(|c: char| c.is_ascii_alphabetic() || c.is_whitespace())
+            .filter(|t| !t.is_empty())
+            .map(|t| t.parse().unwrap())
+            .collect();
+        assert_eq!(nums.len() % 2, 0, "path is not coordinate pairs");
+        nums.chunks(2).map(|p| (p[0], p[1])).collect()
+    }
+
+    /// The five Watchlist marks rasterize at the two sizes the Watchlist draws them at (the 28px
+    /// control-size mark and the 112px read-out) through the production clamp: full opacity reached,
+    /// no ink on the border. Same two checks the read-out family is graded by.
+    #[test]
+    fn the_watchlist_marks_rasterize_clean_at_28_and_112() {
+        for id in [Icon::Bookmark, Icon::BookmarkFill, Icon::Clock, Icon::ServerSlash, Icon::CircleSlash] {
+            for px in [28, 112] {
+                let px = icon_raster_px(px);
+                let rgba = plx_gfx::svg::rasterize(src(id), px, px)
+                    .unwrap_or_else(|| panic!("{id:?} failed to rasterize at {px}px"));
+                assert_eq!(rgba.len(), (px * px * 4) as usize, "{id:?} wrong buffer size");
+                let alpha = |x: i32, y: i32| rgba[((y * px + x) * 4 + 3) as usize];
+                let max_alpha =
+                    (0..px).flat_map(|y| (0..px).map(move |x| alpha(x, y))).max().unwrap();
+                assert_eq!(max_alpha, 255, "{id:?} never reaches full opacity at {px}px");
+                for i in 0..px {
+                    for (x, y) in [(i, 0), (i, px - 1), (0, i), (px - 1, i)] {
+                        assert_eq!(alpha(x, y), 0, "{id:?} has ink on the border at {px}px ({x},{y})");
+                    }
+                }
+            }
+        }
+    }
+
+    /// The Watchlist marks' `ink_x` and `band` entries are the bounds of their own assets, not
+    /// transcriptions of them: the same drift guard `the_crumb_chevron_is_the_row_chevron_mirrored`
+    /// gives the chevron, measured from the path data this time.
+    #[test]
+    fn the_watchlist_marks_ink_entries_match_their_assets() {
+        for id in [Icon::Bookmark, Icon::BookmarkFill, Icon::Clock, Icon::ServerSlash, Icon::CircleSlash] {
+            let pts = path_points(src(id));
+            let xs = pts.iter().map(|p| p.0);
+            let ys = pts.iter().map(|p| p.1);
+            let (min_x, max_x) = (xs.clone().fold(f32::MAX, f32::min), xs.fold(f32::MIN, f32::max));
+            let (min_y, max_y) = (ys.clone().fold(f32::MAX, f32::min), ys.fold(f32::MIN, f32::max));
+            let (l, r) = ink_x(id);
+            assert!((l - min_x / 24.0).abs() < 0.005, "{id:?} ink left {l} vs asset {}", min_x / 24.0);
+            assert!((r - max_x / 24.0).abs() < 0.005, "{id:?} ink right {r} vs asset {}", max_x / 24.0);
+            let height = (max_y - min_y) / 24.0;
+            assert!((band(id) - height).abs() < 0.005, "{id:?} band {} vs asset {height}", band(id));
         }
     }
 }

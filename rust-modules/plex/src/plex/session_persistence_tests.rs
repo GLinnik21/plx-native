@@ -730,7 +730,7 @@ fn clear_reports_a_non_durable_outcome_when_the_canonical_commit_is_refused() {
 #[test]
 fn prepare_load_seeds_a_fresh_playback_quality_for_cleared_exactly_as_for_missing() {
     let missing = prepare_load(&ReadState::Missing, || "id-missing".to_string()).0;
-    let cleared = prepare_load(&ReadState::Cleared { language: plx_platform::i18n::Preference::System }, || "id-cleared".to_string()).0;
+    let cleared = prepare_load(&ReadState::Cleared { kept: Default::default() }, || "id-cleared".to_string()).0;
     assert!(
         missing.prefs.playback_quality.is_some(),
         "setup: a Missing read must seed a fresh quality"
@@ -749,37 +749,10 @@ fn prepare_load_seeds_a_fresh_playback_quality_for_cleared_exactly_as_for_missin
 /// (the `Locked | Blocked` bucket) leaves the rest of this module's suite green.
 #[test]
 fn read_identity_gives_cleared_its_own_bucket_distinct_from_every_other_state() {
-    let cleared = read_identity(&ReadState::Cleared { language: plx_platform::i18n::Preference::System });
+    let cleared = read_identity(&ReadState::Cleared { kept: Default::default() });
     assert_ne!(cleared, read_identity(&ReadState::Missing));
-    assert_ne!(cleared, read_identity(&ReadState::Locked { language: plx_platform::i18n::Preference::System }));
+    assert_ne!(cleared, read_identity(&ReadState::Locked { kept: Default::default() }));
     assert_ne!(cleared, read_identity(&ReadState::Blocked));
-}
-
-/// **The route ground's one persisted seed.** A fresh device has recorded nothing, a real
-/// hero is remembered across the read-modify-write cycle `update` uses everywhere else, and
-/// recording the SAME envelope again is a no-op rather than a second disk write.
-#[test]
-fn last_hero_blur_round_trips_and_skips_a_redundant_write() {
-    let _g = plx_base::testlock::serial();
-    let _t = TempSession::new("last-hero");
-    save(&signed_in());
-    assert_eq!(last_hero(), None, "a fresh device has shown no hero yet");
-
-    let envelope = [[0.1, 0.2, 0.3]; 4];
-    assert!(record_last_hero(envelope), "a new envelope is a real write");
-    assert_eq!(last_hero(), Some(envelope));
-
-    assert!(
-        !record_last_hero(envelope),
-        "recording the same envelope again must not touch the file"
-    );
-
-    let second = [[0.9, 0.8, 0.7]; 4];
-    assert!(
-        record_last_hero(second),
-        "a genuinely different hero writes"
-    );
-    assert_eq!(last_hero(), Some(second), "…and replaces the stored one");
 }
 
 /// A temporary LS2/key-store failure must never turn ciphertext back into plaintext or make
@@ -1210,7 +1183,7 @@ fn unavailable_helper_fallback_survives_cache_drop_and_restart() {
     for _ in 0..2 {
         // No cache/Session survives: read the on-disk candidates as a new process would.
         invalidate_for_test();
-        let actual = peek_at(std::time::Instant::now());
+        let actual = refresh_blocking_for_test();
         assert_eq!(actual.account_token, expected.account_token);
         assert_eq!(actual.client_id, expected.client_id);
     }
@@ -1236,7 +1209,7 @@ fn fallback_never_outranks_present_or_untrusted_canonical_state() {
             public: Session::default(),
             protection: None,
         },
-        || C::Cleared { revision: 1, language: plx_platform::i18n::Preference::System },
+        || C::Cleared { revision: 1, kept: Default::default() },
         || C::Data {
             revision: 1,
             payload: "not json".into(),
@@ -1302,15 +1275,15 @@ fn fallback_cache_retries_and_observes_recovery_without_reviving_revocation() {
     let _helper = CanonicalReadOverride::unavailable();
     assert!(save_legacy_fallback_locked(&signed_in(), false, false).is_some());
     reset_reads_for_test();
-    let now = std::time::Instant::now();
-    assert_eq!(peek_at(now).account_token, "acct");
+    assert_eq!(refresh_blocking_for_test().account_token, "acct");
     assert!(peek_settled().is_none());
     let mut watch = VisibleSessionWatch::default();
     assert!(watch.changed());
     let generation = visible_generation();
-    assert_eq!(peek_at(now + LOCKED_RETRY / 2).account_token, "acct");
-    assert_eq!(reads_for_test(), 1);
-    assert_eq!(peek_at(now + LOCKED_RETRY).account_token, "acct");
+    assert!(refresh_need().is_some_and(|need| need.transient), "the fallback stays a standing request to retry");
+    assert_eq!(peek().account_token, "acct");
+    assert_eq!(reads_for_test(), 1, "peek never re-reads");
+    assert_eq!(refresh_blocking_for_test().account_token, "acct");
     assert_eq!(reads_for_test(), 2);
     assert_eq!(visible_generation(), generation);
     assert!(!watch.changed());
@@ -1320,7 +1293,7 @@ fn fallback_cache_retries_and_observes_recovery_without_reviving_revocation() {
             session: signed_in(),
         }))
     });
-    assert_eq!(peek_at(now + LOCKED_RETRY * 2).account_token, "acct");
+    assert_eq!(refresh_blocking_for_test().account_token, "acct");
     assert!(peek_settled().is_some());
     assert!(
         watch.changed(),
@@ -1330,7 +1303,7 @@ fn fallback_cache_retries_and_observes_recovery_without_reviving_revocation() {
     revoke_cached_session();
     {
         let _io = io();
-        refresh_locked(now + LOCKED_RETRY * 3);
+        refresh_locked();
     }
     assert!(cache_revoked());
     assert!(!update(|s| Some(s.with_auto_sign_in(true))));
@@ -1363,7 +1336,7 @@ fn signout_with_unavailable_helper_removes_all_fallback_candidates() {
     assert!(files.iter().all(|p| !p.exists()));
     redirect_for_test(None); // new process: no local Revoked barrier
     assert!(matches!(read_live_locked(), ReadState::Blocked));
-    assert!(peek_at(std::time::Instant::now()).account_token.is_empty());
+    assert!(refresh_blocking_for_test().account_token.is_empty());
     std::fs::remove_file(&root.dir).unwrap();
 }
 
@@ -1537,7 +1510,7 @@ fn p1_authoritative_reads_retire_only_marked_files() {
     for read in [
         (|| C::Opened { revision: 1, session: signed_in() }) as fn() -> C,
         || C::Data { revision: 1, payload: serde_json::to_string(&signed_in()).unwrap() },
-        || C::Cleared { revision: 1, language: plx_platform::i18n::Preference::System },
+        || C::Cleared { revision: 1, kept: Default::default() },
     ] {
         assert!(save_legacy_fallback_locked(&signed_in(), false, false).is_some());
         persistence::READ_FOR_TEST.with(|hook| hook.set(Some(read)));
@@ -1728,7 +1701,7 @@ fn signout_sweeps_cannot_complete_while_a_recovery_flush_is_pending() {
     RETIRE_PARENT_SYNC_FOR_TEST.with(|hook| hook.set(Some(|| Some(libc::EIO))));
     assert!(!with_io_for_test(retire_marked_fallbacks_locked));
     assert!(!file.file().exists());
-    persistence::READ_FOR_TEST.with(|hook| hook.set(Some(|| persistence::CanonicalRead::Cleared { revision: 1, language: plx_platform::i18n::Preference::System })));
+    persistence::READ_FOR_TEST.with(|hook| hook.set(Some(|| persistence::CanonicalRead::Cleared { revision: 1, kept: Default::default() })));
     assert_eq!(with_io_for_test(persistence::cleanup_after_confirmed_clear),
         persistence::ClearCleanupOutcome::LegacyRetireFailed);
     assert_eq!(clear(), ClearOutcome::Durable { legacy_swept: false });
@@ -2000,9 +1973,8 @@ fn marked_missing_migration_failure_stays_transient_and_retries() {
         assert_eq!(load().account_token, "acct");
         assert!(peek_settled().is_none(), "a failed marked migration must remain retryable");
         assert!(matches!(*CACHE.lock().unwrap(), Cached::Transient { .. }));
-        let now = std::time::Instant::now();
         assert!(candidates[2].exists());
-        assert_eq!(peek_at(now + LOCKED_RETRY).account_token, "acct");
+        assert_eq!(refresh_blocking_for_test().account_token, "acct");
         assert!(peek_settled().is_some());
         assert!(matches!(persistence::load(), persistence::CanonicalRead::Data { .. }));
         assert!(!candidates[2].exists());

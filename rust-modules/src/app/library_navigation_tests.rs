@@ -41,7 +41,7 @@ fn library_strip_profile_navigation_and_armed_pill_use_the_actual_engine_identit
             .iter()
             .map(|member| member.elem)
             .collect::<Vec<_>>(),
-        vec![base + 4, base, base + 1, base + 2, base + 3]
+        vec![base + 4, base, base + 1, base + 2, plx_ui::widgets::TAB_KEY_WATCHLIST, base + 3]
     );
     let seat = |d: &mut Dispatcher<AppHost>, elem| {
         d.emit(
@@ -126,7 +126,7 @@ fn library_strip_profile_navigation_and_armed_pill_use_the_actual_engine_identit
             .strip
             .iter()
             .position(|member| member.elem == search.elem),
-        Some(4),
+        Some(5),
         "Search's displayed slot is not its stable control identity"
     );
     rig.take_library_reqs();
@@ -192,6 +192,8 @@ fn library_strip_profile_navigation_and_armed_pill_use_the_actual_engine_identit
                 host: instance,
                 kind: plx_screens::registry::LibraryMenuKind::Filter,
                 anchor: [0; 4],
+                folded: Vec::new(),
+                opener: None,
                 target: plx_data::stores::browse::SectionAddress {
                     epoch: id.epoch,
                     sid: id.sid,

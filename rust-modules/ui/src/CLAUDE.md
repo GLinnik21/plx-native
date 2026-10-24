@@ -56,11 +56,41 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
    paint): use `ui::label::Label` (single run) or `ui::text_view::TextView` (multi-line, pixel-
    wrapped), or if you must call `Painter::text` directly, derive the y from `text::text_vcenter_y` /
    `text::text_cap_band`. See `label.rs`'s module docs for the rule.
+   Tracking (DS8): a string that needs letter-spacing goes through `Painter::text_tracked` with a
+   named constant (`theme::TRACKING_TITLE_TIGHT`, -0.5 px, the DS8 title tracking the Watchlist header wore before it took the Library's header row); at `0.0` it is
+   exactly `text`. The gaps are n-1 between characters (CSS adds one after the last too, a
+   sub-pixel difference shipped code keeps), and no screen adopts it yet.
 
-4. **Improve a component before forking one.** If a shared widget almost does what you need, add a
-   builder method / style variant to it (e.g. `Button::style(ControlStyle)`), don't copy it. A new
-   bespoke widget is only justified when nothing here is close — and then it lands *here*, as a
-   reusable `View`, so the next screen gets it for free.
+4. **Improve a component before forking one, and never write an ad-hoc mechanism.** If a shared
+   widget almost does what you need, add a builder method / style variant to it (e.g.
+   `Button::style(ControlStyle)`), don't copy it. A new bespoke widget is only justified when
+   nothing here is close — and then it lands *here*, as a reusable `View`, so the next screen gets
+   it for free.
+
+   A mechanism is forked the same way and more quietly, because it looks like three lines of glue.
+   Find the ready-made one first; if it almost fits, extend it in place for every caller; if it
+   truly cannot do the job, say why before writing a new one, which then lands here. PR #843
+   hand-routed the Up key in a screen and gave its header pills no motion while all of these existed:
+
+   - **Focus travel between regions** (nav, header, content, rail): `FocusEngine` (`focus.rs`) over
+     the owner's `Focusable` contract (`screen.rs`: `neighbour`, `Link`, `EdgeRule`, `Seat`). A
+     screen declares its groups and edges; it never matches a direction key to move focus between
+     regions.
+   - **A row of pills** (selection and focus capsules that travel): `widgets::TabStrip` and
+     `SelMark` (`widgets.rs`), the nav bar's own motion.
+   - **Menus**: `Popover` (`popover.rs`) around a `TableView` (`table.rs`). **Strips and grids of
+     tiles**: `cards::Shelf` / `cards::Grid` (`cards/`, next section).
+   - **A row of items an equal gap apart** (a header row, a crumb, a name packer): `hstack::HStack`
+     (`hstack.rs`), UIStackView's spacing for widths the caller already measured. It places, sums
+     (`width`) and budgets (`budget_w`); it never measures, so a replay gains no `Width` key, and a
+     slot sizes the budget, never the air. A run whose items are not in a slice (their count is the
+     data's, or each is measured as it is painted, or it stops lazily at the first item that will not
+     fit) uses `hstack::Flow`: the same gap rule, placing while measuring/painting
+     (`push`/`place`), `next_x` for the lazy break. Never write `x += w + GAP` for a new row.
+     The same stack top to bottom is `vstack::VStack`/`VFlow` (`Anchor::{Top,Bottom,Centre}`, `Item::before` for a
+     gap that belongs to the item below it, `AlertHead` for the alert family's eyebrow/title/path ladder); never `y += h + GAP`.
+   - **Springs**: `Spring` (`lib.rs`) stepped at the shared stiffness (`consts::K_SCALE`,
+     `K_SCROLL`, `K_SNAP`; `popover::K_APPEAR`), not a new constant or a hand-made easing.
 
 ## Card shelves and grids: `cards::Shelf` / `cards::Grid`
 
@@ -85,6 +115,12 @@ screen does not re-seat anything (a scroll TARGET it sets against content that a
 in the scroll's own coordinates, `Grid::pending_shift`); and read a shelf through `heading_lift()` / `under_band()`, not through
 the L0 `CardRow`.
 
+The `Grid` asks for its FOCUSED card's art first even though that card paints last (over its
+neighbours): the source serves the newest frame's requests in the order they were made, so a seated
+first poster used to arrive after every sibling (`card_row::lead_focused` resolves it once, before
+the others, and `draw_focused_led` draws with that answer; one `card_motion` occurrence per card per
+walk, never a second `resolve_card_art`). A `Shelf` still asks in paint order.
+
 A `Shelf` built with `animate_landings(true)` (Home's Continue Watching row) PLAYS a landing that no
 move announced instead of cutting it (`cards/landing.rs`): a removed card fades out as a ghost, named by its
 element (`ghost_keys()`) so the owner keeps only the cards that left (`Arc` clones, while `landing_pending()`) and paints them
@@ -94,7 +130,7 @@ of the strip even it can move on screen. There is no cap on the cards diffed (a 
 on-axis at either end get a spring, a fade or a ghost, the rest cut. A slide of the window the source holds
 (`global` / `page_epoch` moved) is adopted whole. These springs are layout motion, so a landing seen while the page
 is a held transition image starts at once (the first live frame shows the start state) and steps once the
-image is released (`containers::transition::page_image_held`). Off by default; `Grid` has none yet.
+image is released (`containers::transition::page_image_held`). Off by default. A `Grid` built from a `GridSpec` with `.animate_landings(true)` plays the same landing over 2-D slots (`Scene::slot` is index -> (x, y), the scroll shift is an (x, y) pair): a removed card is a ghost (`ghost_keys()`, `paint_ghosts`) that fades in its cell on `style.k_scale`, easing from its lifted scale when it was the focused card; every card that keeps its row slides to its new cell on `style.k_scroll`, ALL on one frame (no stagger); a card that crosses a line break never flies over the row between: it crossfades on `style.k_scale`, a leaving copy (`Landing::leaving`, painted by `Grid::draw` under the sliding cards; a new card or a row-changer fading in is drawn after the still cards and before every mover, `DrawRole::Arriving`, and a new card begins to fade once the cards in flight cover less than half its cell: `Occupancy`) fading out where it stood while the card fades in at its new cell, `out = 1 - in` (a card that only moves with the scroll shift keeps the 2-D spring); the card focus reconciles to after the focused card left rises from rest (`GridPop::rise`) as the ghost sinks, so two lifted tiles never stand side by side (the app reconciles a frame late: until it does the pop belongs to no card, `GridPop::vacate`); the focused card's ghost keeps `Tile::focused`, and when a hold menu removed it the opener lift carries it above the dim while the menu fades (`Screen::opener_departing`, `DrawFrame::lifting`; the page pass leaves it out), so it never drops into the dim on the OK frame; and nothing of a landing steps while a menu veils the page (`containers::modal::page_veiled`: a surface opening, open, or closing above `CLOSING_GONE`, i.e. still holding the host, stated by the dispatcher before the pages tick; the springs start on the first frame after, no beat), and the app's Watchlist feed hands the page nothing either (the Remove's tile commits on that same frame), and while veiled it reports no motion, so the menu's fade-out stays on its cached host, and until the landing steps NOTHING on the grid changes (slots, scales, the new focus card's rest, the caption band under the focused row, the title the focus caption reads (the removed card's ghost keeps it, and it reads the next card's on the landing's first moving frame, the frame the owner's count follows), the owner's count: the vacated pop draws the reconciled card at rest, `Grid::landing_waiting` is the owner's cue); the takeover rising from rest into the focus pop as the ghost sinks is the INTENDED look (design Motion board "takeover" spring), not a departure from the board; a card with neither end on screen snaps (no cap: a map, not a scan); focus lands on the card that took the removed card's index, the next card (the engine's reconcile; `conformance::removal_focuses_next`). Slots are measured under the caption bands as they stand NOW, but where a card stood is measured under the bands the last frame drew (`Scene::was`; a focus the reader did not move settles the caption band on its new row at once, and the layout that moves with it plays on the landing's springs, the caption with its card: `Landing::rebase` does the same for a band that settles while a landing plays), and the page shift a landing needs (`landed_shift`) is carried into the ghost, which stays where it stood on screen. The owner must keep the removed card for the ghost, as Home does for the shelf.
 
 A row that goes on past an edge (`CardSource::more_after`, `more()` unless the source overrides it, / `more_before`, `false`
 unless the source says its window slid off the start: Home, Library and Search do) paints the skeleton of an unloaded poster in the cells past that edge, a screenful at
@@ -114,13 +150,18 @@ so still asks only from focus; Detail's Related and Search's rows are not gated.
 `GridSpec::new(top, edge)` is the six-column `cards::GRID_STYLE` grid from `MARGIN_X`;
 `.columns(cols, style, left)` sets the column count, card style and left edge (a rail-aware or
 episode grid), and `.external()` selects `ScrollMode::External`, for a grid inside a document whose page scroll
-another owner drives: the Library's All grid runs under the Library's scroll and every grid section
+another owner drives: the Library's grid runs under the Library's scroll and every grid section
 of a `cards::Stack` under the stack's. Both shipped grids are external; `ScrollMode::Own` is the
 default a spec is built with and no screen runs it, so a scroll fault on a stack page is in
 `cards/stack.rs`, not in `Grid`. An external grid never steps a scroll: the owner calls
 `set_page(top, scroll)` before each
-`on` / `draw` / `place`, may read the scroll the focused row wants from `reveal_target()` (the
-Library does not: it reveals by its own rule over the settled layout) and applies the document
+`on` / `draw` / `place`, may read the scroll the focused row wants from `reveal_target()` for a
+snapping grid (`GridSpec::new`; a grid built with `GridSpec::resting` is read through
+`rest_target(end)` instead, because `reveal_target()` has no document end in it and `Stack::wanted`
+passes its own; the Library applies the same rule through `Layout::row_reveal` ->
+`poster_grid::rest_scroll`, and Home's shelf grid through `home::rest_scroll` -> `cards::grid_rest_scroll`,
+so the focused shelf rests with its heading at `GRID_TOP_Y - TITLE_DY` whatever the Under posters band
+and whichever way focus arrived) and applies the document
 shift a content landing needs, `landed_shift()`, to its scroll and scroll target; the grid does
 not home when focus is elsewhere. An owner whose columns, style or document top change at run time
 (the Library's episode listing, its shelf run) hands them over with `set_columns` / `set_page`;
@@ -141,7 +182,12 @@ the card's own right edge and reaches LEFT over the room the neighbours leave (n
 `margin_x`), and every line is right-aligned to that edge, so a caption does not run off the card
 into the margin. Only a trailing block may be wider than `under_budget` (it is given what it
 wants, up to that room); a block that still does not fit glides inside its window, in lockstep
-through the one `marquee::Block`. All of it is judged where the tile will REST
+through the one `marquee::Block`. A label that names a tile whose face cut the name (the
+Collections page) is held to its tile instead: `TileLabel::within_tile` gives the block a
+tile-wide window (never the neighbours' room) and the run dissolves at BOTH of the window's edges
+over `card_row::LABEL_EDGE_FADE` px (`Painter::text_fade_edges`: out into the right edge, in from the
+left edge once the run has glided past it, a band that grows with the travel and is none at rest)
+as the shared marquee glides it. All of it is judged where the tile will REST
 (`CardRow::settle_lag`, passed through `TileLabel::settling`), so a scroll glide never flips the
 block's alignment or width mid-flight. A headshot's credit label is not placed this way: it is a
 box inside its own slot (`draw_credit_label`), which cannot cross the margin, and it never moves.
@@ -176,7 +222,7 @@ on the QR allocation.
 
 **Text fit is a rule about who owns the text, and it is tested, not eyeballed.** App-owned text
 (`i18n::msg`, `plex::languages` names, `Quality::label`) never elides in any shipped language
-(`i18n::SHIPPED`: en, es, be, fr) at the shipped sizes; server- and user-owned text (machine names,
+(`i18n::SHIPPED`, generated from `locales/languages.json`; a new language is a catalog directory and one registry line, `docs/localization.md#adding-a-language`) at the shipped sizes; server- and user-owned text (machine names,
 handles, profile names, titles) may. `ui::table` types that at the call site with
 `Origin { App, Server }` per text slot, defaulting to App; `Row::server_label`/`server_detail`/
 `server_value` and `Section::server_header`/`server_accessory` mark a slot Server. There is no
@@ -325,8 +371,11 @@ A guard's own `abort()` instead records the abort path; its log label identifies
 To investigate without termination, write `log` into `/tmp/plxnative-guard` before launch
 (`/tmp/plxnative-guard=log` notation; simulator: instance runtime directory). This DIAG trigger
 is latched at loop start and downgrades both fatal paths to log plus warning. It requires
-`devtriggers`; it never suppresses the profile picker. Release builds contain neither warning,
-fatal policy nor signal call, and keep the existing guard/watchdog logs.
+`devtriggers`; it never suppresses the profile picker. Release builds contain neither warning nor
+fatal policy and send no `SIGABRT`, and keep the existing guard/watchdog logs; they do send one
+signal, the freeze probe (`SIGUSR2` to the main thread after 5 s without loop progress in the
+foreground, at most four per process), which `src/crashtrace.c`'s `freeze_handler` answers with a
+`*** FREEZE` record. That probe can cause one `EINTR` in a blocking call in closed library code.
 
 **Damage is not an effect in the queue.** `fx.invalidate(provenance)` calls `Present::note` at
 once, because a draw-phase report has to survive into the frame it belongs to. `Provenance` is
@@ -366,6 +415,30 @@ presentation in a design pass.
    `Row::destructive(true)` and open the table with `TableView::open_sections`, whose
    `opening_row` is also the focus fallback when a focused row disappears.
 
+   **Popover open styles.** Two exist. `Appear` (default) is the shared `K_APPEAR` fade+slide.
+   `Morph` (`Popover::morphing()` is the one selector; open with `open_from(opener.rect)`) is the glass opener's pill-to-panel
+   morph in `popover_morph.rs`: width spring k 620 and height spring k 950 critically damped, radius
+   pill -> THE CALLER'S panel radius with a bulge (so settle and the start of a close do not snap),
+   rows 0.82 -> 1 at zeta 0.6 k 720, and a 0.92 -> 1 fade+scale fallback when the opener has no
+   rect. The glass is laid whole at the morphing rect and the rows come in over it (from 30%,
+   opaque by 60%, clipped to the current rect), all on one clock (the slower rect spring).
+   **The header menus morph the glass ONLY (design review S11/S12):** Library Sort & Filter, the
+   Library's `+N` list and the Watchlist's Sort & Filter all open this way, and their opener is
+   never part of the morph. A morphing surface names its opener (`Screen::opener`), the page
+   leaves it out of its pass (`DrawFrame::lifted`: a pill left on the page sits under the menu's
+   glass, and the rim's lens refracts its label into the panel's edge), and the dispatcher's lift
+   pass (`Dispatcher::draw_with`, `Z::OPENER`: ONE place, after the last surface, on every page
+   plan; the account chip, a `Screen::bar_opener`, is lifted by the same pass through `Rig::lift_bar_member`) calls `Screen::redraw_focused`
+   -> `PageHeader::draw_opener`, the ONE paint of a header opener, which draws it focused above the
+   scrim AND the panel, so the glass grows out from under a pill that does not change and a close
+   shrinks back into it (`the_page_openers_lift_is_drawn_after_the_surfaces_on_both_plans`). The shared painters are
+   `Popover::panel` (the glass at the morphing rect) and `Popover::morph_rows` (the rows, scaled
+   about the panel anchor by the row spring). The morph draws no opener face: every header
+   opener, the profile chip included, is the lift pass's, and the morph starts and ends on the opener's LIVE drawn rect (`Screen::opener_rect` -> `Popover::track_opener`, so the chip follows the bar's tuck). The morph is not
+   faded by the container's appear: the surface begins and ends as the opener. A held surface is ticked with no time, so a morph starts on the first
+   frame anyone sees. The item hold menu keeps lift+appear. A new morph constant is named in
+   `popover_morph.rs`.
+
 2. **Clickable text marks are ALL CAPS.** `MORE` and every other pressable text mark is
    capitalised, overriding the design system's sentence-case rule for app-written text: the mark is
    a control, not prose, and caps is how the app says *pressable*. Use the shared
@@ -379,9 +452,7 @@ presentation in a design pass.
    small glyph in that same indicator slot at the clock's cap height — never a control, and never a
    fourth entry in the HUD control row (`appkit/player_hud.rs`'s `BTN_N`, currently 3).
 
-4. **Failure read-outs are never red — the app does not scold.** A failed verdict is inked bold at
-   `size::TITLE` in `theme::TEXT_SECONDARY`, per the design system's `StatusOverlay` contract.
-   Home, Library, sign-in and the player's failure read-outs share ONE placement: the verdict hangs
+4. **Failure read-outs are never red — the app does not scold.** A read-out's verdict (DS3) is inked `theme::TEXT_PRIMARY`: bright, because it is the line the eye lands on — a `Failed` read-out's verdict, and an `Empty` read-out's caption, which is not bold. Its body, the reason under it, is `theme::TEXT_SECONDARY`. Emphasis is ink only: never a warning colour, a rule, a capsule or a tint. A `Failed` verdict is bold `size::TITLE` (per the design system's `StatusOverlay` contract). Home, Library, sign-in and the player's failure read-outs share ONE placement: the verdict hangs
    from `FULL_ANCHOR_TOP` with the reason and action row stacked directly under it, and a 112 px
    `theme::TEXT_SECONDARY` glyph above the verdict (`StatusOverlay::page`'s `glyph` argument). A
    read-out centred in its own container instead lands visibly off that verdict line and reads as a
@@ -393,6 +464,22 @@ presentation in a design pass.
    or focus pop — and an accent underline was rejected on sight. A punch-list line like "make focus
    more visible" is satisfied WITHIN the contract (widen the ink step), never with a new primitive.
 
+6. **An icon tab and a bookmark disc are both a mark, never a label.** The strip's faces are
+   `TabFace::{Label, Icon}` (the Watchlist bookmark and Search are `Icon` faces: square, 60 x 60,
+   the mark at `TAB_ICON_D`), and a destination is found by its KEY (`TAB_KEY_WATCHLIST` is
+   `STRIP_BASE + 5`, drawn before Search), never by "the last face". The strip PULSES a mark once
+   after a title is put on the list: `StripRender::pulse(idx)` (`TAB_PULSE_S` 0.4 s, the GLYPH
+   grown to `TAB_PULSE_SCALE` about 1.35x with a soft white `TAB_PULSE_GLOW_A` glow around it,
+   `tab_pulse_look`) is time-driven, ends at exactly rest, reports through `idle::note_motion`, and
+   runs inside `idle::decorative` so a page image is never held for it. **No plate behind the
+   mark**: a disc there is the strip's selected plate and reads as "this tab is selected". The APPLICATION asks
+   (`ChromeSnapshot::pulse`); no screen does, and a screen that wants one reports an `AppFx`. A
+   hero disc that swaps a glyph for its filled twin (the Detail and Home hero bookmark) uses
+   `CircleButton::icon_fill(filled, fill, dy)`: the filled glyph is revealed from the box's bottom
+   up with a downward nudge, the two icons share one silhouette, and a settled control passes the
+   resting icon alone so nothing of the animation lingers. The 3 px ribbon drop is a named constant
+   in `plx_appkit::watchlist_disc` (`RIBBON_DROP`), since no theme token is 3 px.
+
 ## The route family says where BACK goes ONCE, as a crumb
 
 Every Settings-family route — Settings, Privacy & data, Legal notices, a legal document, About, the
@@ -403,6 +490,29 @@ entry) and the name of the place BACK returns to. `RouteLayout::draw_narrative` 
 inside the app"** — three routes qualify today (the Settings modal, the first first-run consent
 question, and the QR sign-in), but take the census with
 `git grep -A2 'draw_narrative(' -- 'rust-modules/ui/src/*.rs'` rather than trusting that number.
+
+**One crumb rule, keyed on where the page's heading lives.** A page whose heading is in its header
+row reads `Parent › Current` in that row (the Library family, `page_header`'s `Crumb`). A page whose
+heading is its own big title carries `‹ Parent` above that title, and both forms say the parent
+page's own title string (one catalog entry, never a second spelling). The big-title form has ONE
+painter, `route_screen::draw_back_crumb`: `draw_narrative` draws the Settings family's through it,
+and the Collection screen draws its `‹ Parent` through it in the title column, in the page's
+top margin (`route_screen::CRUMB_RISE` above the title's cap top, so nothing below moved). Neither
+is a focus stop; BACK already returns. A page that wears the second form calls the painter rather
+than drawing a chevron of its own.
+
+**`‹ Parent` names the entry BENEATH the page on the navigation stack, read from the container
+once.** A page with ONE opener may name it (the Settings family, filmography: correct by
+construction), but the Collection screen is opened from the Collections page, a Home hub,
+Recommended, a library page, Search and an item's Detail, and a constant named the wrong place
+whenever BACK went elsewhere. So the dispatcher builds each page's context with the screen id of the
+entry beneath it (`NavStack::beneath_id`, folded in by `Host::views_over` through
+`CxParts::page_cx`; `None` for the root), and the host turns that kind into the title that page
+wears (`app::page_title`: Home, the library's name, Collections, Recommended, Watchlist, Search, an
+item's title; a page it does not name gets no caption). The screen reads it
+(`CollectionLike::back_to`), is never told by its opener, and draws no caption when BACK leaves the
+page stack or the page beneath has no name. A new big-title page that can be opened from several
+places reads the same answer rather than carrying a parent of its own.
 
 **It replaced `Press [BACK] to return` in the bottom action band across the whole family**, and the
 trade is the point: the hint spent a 60px band restating a key the remote already has and could not
@@ -451,10 +561,81 @@ tried first. None of it is reconstructable from the code without repeating the m
   glass's own and higher layers, checks occlusion and compares the ordered draw arguments beneath
   each sampling region.
 
-- **A popover panel does not frost a backdrop blur.** Every panel stands on
-  `widgets::panel_ground` — the 15×8 underlay field the modal dim already latched (`ui::underlay`,
-  reaching a surface as `DrawFrame::underlay`), windowed to the panel's rect and graded under
-  `PANEL_LUMA_MAX`. A source-grep test keeps `Glass` out of every other file.
+- **Two live glasses whose blur footprints meet never share a frame; a page that hands a place from
+  one to another sequences them.** The upper glass has a lower live glass inside its footprint, so
+  the engine drops it from `jobs()` (`composite_capture`: a "composite" band) and it captures
+  INLINE in the visible pass: a mid-frame `glCopyTexSubImage2D` and the six-pass chain, where a
+  direct job replays the page at 1/4 in three. Measured on the television (2026-10-19): the inline
+  band costs about **1.4M GPU cycles per frame over its own direct job** (12.91M against 10.73M on
+  the Library's tuck ramp with the capsule up; 25.6% of those frames late against 2.4% without it),
+  and a direct job plus an inline capture on one frame is the FRAG_NUM_TILES class above 6300 that
+  the 4096 / ~5000 / ~6050 bins never named. The engine keeps composite capture as the correct
+  fallback (the pixels are right, and the composite tests stay); it is the page's job not to need
+  it. The Library's chrome band and its scroll capsule are the case: the page owns one
+  `scroll_chrome::Handoff`, decided on the key frame from the scroll target and run on the `xfade`
+  clock, in sequence in both directions (the departing glass fades to exactly 0 and only then does
+  the arriving one start), so no frame has both. Home keeps its nav and chip shown and owns no
+  `Handoff`; a heading that rides under them fades by where it stands through the same spatial rule
+  (`scroll_chrome::clearance_under_shown_chrome`). The chip and the
+  tab track (`GLASS_TRACK_MAX`, `BAND_AIR`) and the hold hint and the band (`hold_hint.rs`) keep
+  apart the same way. Any new live glass that can stand within a band's blur reach of another
+  (68 px past the visible members) must be sequenced with it, or it prices ~1.4M a frame.
+
+- **A MENU is glass on the frozen ground (DS6); nothing else is glass.** The scope is
+  MENUS ONLY (owner decision, wave 2 review): Sort & Filter, the account menu, the item hold menu,
+  the Library menu (the player's "…" menu stands over the video plane and keeps its own ground).
+  Every other `panel_ground` user — the alerts, About, Track information, the person bio, the
+  Also-available sheet, the decision alert — keeps the pre-DS6 ground, the latched underlay field
+  under the frost. The choice is explicit at each call, `widgets::Ground::Menu` or
+  `Ground::Sheet` (`panel_ground`'s last argument, `Popover::panel`'s too); there is no global
+  switch. A `Menu` ground's first act is `popover_glass::draw`: `fs_glass.frag`'s composite through
+  `gfx::draw_glass_frozen`, wearing a gradient face (`FACE_TOP`/`FACE_BOT`), the 1 px
+  `theme::GLASS_RIM`, the lit top edge `GLASS_RIM_LIGHT` and `GlassRim::Menu`, then a soft shadow
+  cut out around the panel's rounded shape. **It reads no framebuffer** (owner decision,
+  2026-10-17: menus stand on main's frozen ground and never live-refract a re-rendered page). Its
+  body shows the latched underlay field (`ui::underlay`, the 60x32 reconstruction the modal dim
+  draws, reaching a surface as `DrawFrame::underlay`); its rim's lens refracts the host snapshot
+  (`popover::host::page_tex`, the one capture of the undimmed page) with the SAME rounded-rect SDF
+  that rounds the panel, at `tokens::MENU_SHARP`; the frame's one modal dim (noted by
+  `Painter::dim`) is applied to both at composite (`u_dim`, and `u_dim_sharp` for the snapshot).
+  So a menu requests no backdrop entry, runs no blur source pass (`src`, `pagex2`) and copies no
+  band (`glass.sharp`): its open, stay and close cost one panel quad (profiler phase
+  `glass.frozen`) and its shadow, and a morph or a slide moves that quad over pictures that do not
+  change. What the pictures do not hold, the glass does not show: an opener lifted over the dim
+  (the item menu's card, the account chip) is absent from the lens, and a menu stacked over
+  another surface's dim, or drawn before the field has latched (the first frames of a modal), or
+  over the video plane, falls back to the field ground (`draw` returns `false`), windowed to the
+  panel's rect and graded under `PANEL_LUMA_MAX`. The opener lift is frozen too: the account
+  menu's profile chip, lifted above the dim and the panel (`widgets::lift_profile_chip`, called by the
+  lift pass through `Rig::lift_bar_member`), is a `glass_frozen`
+  capsule on the stack's latched field (`ModalStack::lift_field`, no dim, the host snapshot behind its
+  rim) and requests no backdrop entry or `src` pass; before the field latches the lift draws
+  nothing (the bar's own chip is already on screen at that rect). Only the chip on the tab strip, with no menu up, is live glass. The scrim behind a compact menu is
+  `theme::underlay::DIM_COMPACT`, 30%. The face colours and shadow are theme roles
+  (`MENU_GLASS_TOP/BOT`, `MENU_SHADOW*`); the face fades with the panel's cascaded alpha.
+  `GlassRim::Menu` over the LIVE path (`draw_blur_backdrop`) would turn on a per-frame sharp band
+  copy; no menu takes that path any more. A source-grep test (`widgets_glass_budget_tests`) keeps `Glass` and
+  `Painter::backdrop_blur` out of every file except the chrome list — no popover and no screen
+  names the blur path — and pins the scope: the menu files name `Ground::Menu`, the sheet files
+  `Ground::Sheet`, and none names the other.
+
+- **Glass over a page stands on the frozen host; the page does not move while a menu is up, except
+  under a menu that lets it reflow.**
+  A menu (opening, open or closing, until it has let go of the host at `CLOSING_GONE`) stands on
+  the page as the host snapshot holds it (`popover.rs` module doc, "A modal stands on a page that is
+  not moving"): nothing on the page animates, reflows or lands under it. A layout motion a menu's
+  choice starts (the Watchlist's Remove) and the data that would change the page (the app's
+  `watchlist_feed`) wait until the menu is gone and start on the first frame after
+  (`containers::modal::page_veiled`). **The one exception is a surface whose body answers
+  `Screen::lets_host_reflow` (the Watchlist's Sort & Filter menu):** it casts no veil, the grid
+  reflows under it, the host is drawn live while the cards move (`popover::host::set_reflow`: no
+  per-frame capture, `page_epoch` does not move) and is retaken ONCE when they stop, the old look
+  fading into the new ground over `host::CROSSFADE_S` from a second retained copy. The menu's glass samples only that frozen ground (above), so
+  even a page that did move under it would rebuild nothing for the glass. **Do not add new
+  live-refracting glass over a page unless the owner asks.** Live glass measured about 2 to 2.6M
+  Mali GPU cycles per frame more than frozen ground (2026-10-17, release build, mock, panel off),
+  with the page re-drawn at quarter resolution on each frame its draws changed (the `src` and
+  `pagex2` spans).
 
 - **A modal's dim is DRAWN, never applied to the source.** The variant that multiplied the host
   page's RGB going into the backdrop was measured and removed: dimming the source destroys the
@@ -465,7 +646,39 @@ tried first. None of it is reconstructable from the code without repeating the m
   screen around it. Since phase 10 the pairing is the container's (`Screen::scrim` +
   `ModalStack::draw_scrims`), not each panel's. **The dim's ink is the page's own light, not
   black**: a surface names a ROLE (`theme::underlay::DIM_COMPACT`/`DIM_PANEL`/…), never a literal,
-  and a test greps for one.
+  and a test greps for one. **Drawn, yet a glass whose LAST source paint is the dim applies it at
+  composite** (`backdrop::Dim`, `Painter::dim`, `fs_glass.frag`'s `u_dim`): that glass's retained
+  source is the page without the dim, and its composite mixes this frame's dim ink over the
+  filtered page — the same result by linearity (`blur(mix(P, ink, a)) = mix(blur(P), ink, a)`),
+  so a ramping or re-latched dim re-blurs nothing. That is NOT the removed source multiply: the
+  page's modulation is still filtered, and the dim is still a scrim drawn in the visible frame.
+  Anything drawn above the dim under the glass (an opener lift, a lower glass in the DIM band,
+  as the account menu's chip is) keeps the dim in the source, and that glass re-captures while
+  the dim moves.
+  **The page's WASH is deferred the same way, as a DELTA** (`backdrop::Ground`,
+  `Painter::ambient` / `ambient_inked`, `fs_glass.frag`'s `u_wash_*`): `AmbientWash` eases each
+  corner on its own spring, so a library switch or an art-less focus move moves the exact 8-bit
+  codes every frame, and the wash is full-screen, so it sat in the prefix of every live glass
+  under it (the tab bar's band, the hold hint) and re-sourced each one on every frame of the ease.
+  Now a glass whose first draw under its region THAT CAN SHOW is a marked wash (the only one
+  there, covering the whole region, no dim and no lower glass under it) keys on the wash's rect and
+  ink and not its corners; the frame clear every page records first is overwritten by the opaque
+  wash and does not count (a test list that omits it passes while the feature never runs: the wash
+  tests record `gfx::frame_clear` as a page does); its source keeps the wash it was drawn under and the composite adds `wash now - wash
+  captured`, at the refracted uv, weighted by what the ink ramp lets through. **The marker is
+  DECLARED** (`declare_as`, never the tag): `ambient_art` (tag 22, a photograph in the ground) is
+  never marked, and a ramp knee inside the footprint (two washes) keeps the wash in the source.
+  **Bounded, not exact:** over card content the term adds the ease as if the wash showed
+  everywhere, so the error is at most the ease's amplitude times the content's coverage under the
+  filter, and it is gone when the wash comes to rest, where the source is re-taken ONCE. **Rest is
+  the wash's OWN statement**, not a reading of its codes or of the page: `AmbientWash::step` lands a
+  spring on its target the moment it settles, `AmbientWash::at_rest` (all twelve velocities exactly
+  zero) rides `Painter::ambient`'s `resting` to the glass, and the re-take fires on the frame it is
+  true and the held wash differs. A critically damped tail holds an 8-bit code for whole frames
+  while it moves, and a card can keep the page moving long after the wash is still, so neither
+  "the codes did not change" nor "nothing moves" is rest. A page dip (the painter's alpha mixing the
+  wash toward the app ground) is not rest either: `resting` counts only through an identity
+  cascade. A card moving under the band keeps every frame owed, as before.
 
 - **Freezing the host page is a separate, shared policy** — `Popover::caching_host()` +
   `ui::popover::host`. The mechanism is a REFUSAL at the renderer's one shared gate
@@ -484,8 +697,20 @@ tried first. None of it is reconstructable from the code without repeating the m
 
 ## Card marks — three marks, three meanings, and no card may blur them
 
-Library All uses the shared caption-band policy for movies, shows, seasons and episodes:
-only the focused row opens its caption; a bounded set of springs closes rows left behind.
+Library All uses the shared caption-band policy for movies, shows, seasons and collections (so does every other POSTER tile: Home's shelves,
+Recommended's poster shelves, Search's poster rows, the person page's filmography, Detail's Related and collection shelves and the Collection
+screen's members; `Shelf::set_caption_policy(Some(policy))` sizes the band a shelf reserves and the caption block it reveals by
+`caption_policy::band_h`, and a `Stack` page hands it to a shelf or grid section through `StackPage::caption_policy`; a shelf or grid with
+no policy (`None`: a landscape still row or a headshot row, and the Library's Episodes listing, a grid of stills) keeps the legacy 114 px
+band and its two-line block, under every setting; the band must follow the label, never the setting):
+only the focused row opens its caption; a bounded set of springs closes rows left behind, and
+each LINE of a row's caption is drawn only once the room under its card holds the line's box, and
+never beyond its band's own expansion (`card_row::line_reveal_for`, one rule for a shelf and a grid), so
+a move hands the title over from the departing row to the arriving one with no line over what is under
+it AS DRAWN: a grid measures to the drawn top of the tile below (its live pop and press), and the owner
+of stacked shelves hands each one the lift of the next shelf's heading (`SectionFrame::below_rise`;
+`Stack`, Home, Recommended and Detail do; a `Stack` page keeps its shelves adjacent, the air under one its
+`StackPage::shelf_foot`, never a `Custom` gap section between two); `GridBands::closing` names the card a closing band's caption belongs to.
 Live and target geometry include these bands, so painting, paging, scrolling and restored
 viewports agree. Episode rows use landscape stills. `Art::Still` supplies the label ground;
 `widgets::still_overlay` draws its labels and resume bar afterward. Both the artwork and
@@ -494,7 +719,14 @@ its ground participate in backdrop discovery, including texture changes and UV c
 - An **amber ▶** means **this press starts the video**. It is drawn where that is true and nowhere
   else: the detail page's episode filmstrip always, and a Continue Watching deck only while
   Settings > Playback > Continue Watching is "Play" (`DeckPress::Play`; the default opens the page
-  and draws none). Watch state does not
+  and draws none). On a poster deck (Home's, Recommended's) the mark leads the FIRST line the Under
+  posters setting draws (`registry::captions::label`): the title when Title is On, else the details
+  line ("8m left"), hanging to the left of a line that is centred as if it were not there; with the
+  title and the details both off (Nothing) no line is drawn and so no mark, EXCEPT on the deck: its
+  progress line ("S3 · E4 · 18m left") is the tile's state and is always shown, Nothing included (the
+  owner's 2026-10-22 call; `captions::deck_policy`), so the deck's band keeps one line (two with the
+  Title On) and the mark leads that line. The band is per shelf, so it never changes as focus walks
+  the row. Watch state does not
   withdraw it — `widgets::still_glyph` is the whole rule, graded by an exhaustive table, because
   the clause that failed first was the absent one: the glyph used to be decided by `PosterMark`
   FIRST, so an in-progress tile drew nothing and a Continue Watching deck — almost entirely
@@ -505,7 +737,8 @@ its ground participate in backdrop discovery, including texture changes and UV c
   always the mark that read as "this will play".
 - A **`✓`** means **finished** — likewise a state, not a promise.
 
-**A card with no play indicator NAVIGATES**, and an episode navigates to its own detail page —
+**A card with no play indicator NAVIGATES** (a poster deck set to Play with the title and details both Off draws no
+line to carry the mark, the one exception), and an episode navigates to its own detail page —
 except on Continue Watching, where it opens the SHOW on the card's season
 (`app::input::activate_deck_card`; the card menu's Go to Episode is the way to the episode).
 Until 2026-09-05 `want_play` was `from_deck || kind == 3` on both Home and the Library, so an
@@ -534,6 +767,19 @@ cover) in the one exact `theme::PLACEHOLDER_SENTINEL` at alpha 1 with no sheen, 
 find them by pixel. The two oracles fail differently (the counter misses a site nobody hooked, the
 pixels miss a colour nobody overrode), which is why both exist.
 
+**Art that lands late dissolves in over its skeleton, and that skeleton is not counted**: a card whose
+texture arrives after it drew a skeleton (`card_motion::Scope::arrival`, the card's render history, not
+`LogicalState`) draws the art at `ArtImage::shown` over `placeholder::skeleton_under` / `ground_under`
+(exempt: the picture is here) on the page fade's own duration and curve (`xfade::arrived`); art that
+was resident at the card's first draw shows whole. The count must not include that sheet, or a frame
+dump (which holds on any counted placeholder at a frozen clock) would never write the dissolve's frame.
+**The history advances once per card per frame, whatever the number of walks**: the frame's first walk
+that draws a card (discovery) works its verdict and art phase out, and every later walk (a glass source
+replay, the visible walk) reuses that answer, so the picture a glass filters is the picture the panel
+shows (`card_motion` module docs; `backdrop::walk_serial` names the walk). Keyed by the draw's place in
+the whole frame, a replay that started with the landing moved the visible draw to an occurrence with no
+history, and the art showed whole in one frame (DEBUG-5).
+
 **The count is zero or non-zero, never "how many"**: the page closure runs once per walk (discovery,
 each blur source job, the visible pass) and each walk ticks. **A page shown as a held image** (a
 `PageDip` push's IN half and its quiescence hold) draws nothing, so its capture's placeholders are
@@ -549,7 +795,7 @@ placeholders are; read the count as zero or
 non-zero only; wait out reveal springs and the dip alpha after arrival (an `Xfade` In ramp plays in a
 dump as in the product, under the dip: a dump films a pushed page live, never as a held image,
 `plx_gfx::dump`'s one picture-changing page rule); cover
-late-arriving sections (Home shelves, Detail's related/cast/extras/ratings, Library shelves, an
+late-arriving sections (Home shelves, Detail's related/cast/extras/ratings, Recommended-page shelves, an
 `Xfade` Hold) with the landing predicate, since neither oracle sees an absent section; fail fast on
 `Frame::absent` and on an entry whose key is `""` instead of holding; scan connected components
 against exactly (255,0,254), never scanline runs, and report as COUNTER-ONLY the reasons no pixel
@@ -645,3 +891,6 @@ Then **`make`** must stay green (ARM cross-build). Then the device: there is no 
 nothing above draws a single pixel. For anything that moves pixels, capture the panel on the TV
 (`tools/capture-screen.sh out.png DISPLAY|GRAPHIC`) and eyeball it — the token collapses and
 cap-band re-centering are invisible until deployed.
+
+Note (library redesign): `cards::draw_label` is re-exported so screens can draw a poster caption
+through the shared label path; Settings > Libraries has two rows (Favorite libraries, Under posters).

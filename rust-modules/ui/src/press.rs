@@ -197,8 +197,8 @@ impl Press {
     /// TOOK (the item menu opens over the card). The last is deliberately the same spring: the
     /// card goes from its dip (a press-in on the focus pop; [`DIP`] is a popped card's unpopped
     /// size) back up to its pop on the underdamped release a normal OK press gets, as the menu
-    /// opens, and whoever draws the card draws that scale: the opener's lift alone for a card a card
-    /// section left out of the page pass, the page as well for an opener no card section draws (see
+    /// opens, and whoever draws the card draws that scale: the opener's lift alone for a card a page left
+    /// out of its pass (`DrawFrame::leaves_out`), the page as well for an opener no page leaves out (see
     /// [`tick`](Self::tick) for how the frozen host snapshot keeps up in each case). Ending the press at rest instead — which this
     /// module did from 2026-10-07 to rc.3 — pops the card in one frame, the "still no animation"
     /// of the 0.8.0-rc.3 report.
@@ -290,13 +290,14 @@ impl Press {
     /// So the card is not in the snapshot at all while a menu lifts it: the card sections skip the
     /// lifted element (`DrawFrame::lifted`) and say so through
     /// [`popover::set_lift_owns`](crate::popover::set_lift_owns), and the opener lift
-    /// (`redraw_opener`) draws the ONE copy live above the snapshot at the press's own scale.
+    /// (the dispatcher's lift pass, `Screen::redraw_focused`) draws the ONE copy live above the
+    /// snapshot at the press's own scale.
     /// While that holds, the press reports nothing as page damage, not even the landing on rest
     /// (its spring is the panel's business, not the page's); the present gate still sees the motion.
     ///
     /// **Everything else keeps the old rule**: a long hold whose opener is not drawn by a card
-    /// section (Detail's episode strip and season tabs, a hero button) has its card in the
-    /// snapshot, so the snapshot is re-taken on every frame the press visibly moves it and on the
+    /// section (Detail's season tabs, a hero button; the episode strip leaves its lifted still out
+    /// through `DrawFrame::leaves_out`) has its card in the snapshot, so the snapshot is re-taken on every frame the press visibly moves it and on the
     /// phase changes (the release, the landing on rest), with the invisible tails of the spring
     /// ([`idle::settled`](plx_machine::idle::settled)) left alone. A tap that opens a cached
     /// surface (a Library chip, the account menu) springs back under it too but is not a long

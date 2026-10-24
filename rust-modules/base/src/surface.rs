@@ -7,10 +7,16 @@
 //! crispness contract (`gfx::snap`) assumes 1:1 texels. That canvas is not going to change, and
 //! it should not — see [`scale`] for why rendering at panel resolution is the wrong trade.
 //!
-//! What can change is the **drawable**: the pixel buffer GL renders into. Today it is 1920x1080
-//! because that is what `SDL_CreateWindow` asks for and webOS grants, on a 4K panel that composites
-//! the result up to 3840x2160 in hardware, for free. That is the right arrangement and this module
-//! exists to keep it working, not to replace it.
+//! What can change is the **drawable**: the pixel buffer GL renders into. By default it is
+//! 1920x1080 on every set, because that is what `SDL_CreateWindow` asks for and webOS grants, on a
+//! 4K panel that composites the result up to 3840x2160 in hardware, for free. That is the right
+//! arrangement and this module exists to keep it working, not to replace it. On webOS 1-3 the owner can opt in
+//! to a smaller window (Settings > System > Interface resolution, applied at the next launch:
+//! 1600x900, 1280x720 or 960x540, webOS 1-3 only; `app::boot::requested_drawable` has what was measured), and the
+//! same compositor upscale fills the panel. A smaller window trades text sharpness for smoother
+//! frames; only 1/2 (960x540) is a clean texel scale, while 2/3 (1280x720) and 5/6 (1600x900) resample
+//! and may shimmer while scrolling. The Home underlay field also needs a width that is a
+//! power-of-two multiple of its 15 cells: 1920 and 960 keep it, 1600 and 1280 turn it off.
 //!
 //! The trap is the third number. **`SDL_webOSGetPanelResolution` reports the PANEL** — 3840x2160
 //! on a 2019 4K set whose UI surface is 1080p. It is present on every webOS release, which makes
@@ -71,8 +77,10 @@ fn drawable() -> (i32, i32) {
 
 /// **Uniform** logical -> physical scale: `min(dw/1920, dh/1080)`.
 ///
-/// 1.0 on every device this has ever run on, and the fast path stays exactly that — `scale() == 1.0`
-/// means every drawn coordinate is already a pixel and the crispness contract holds unchanged.
+/// 1.0 by default, and the fast path stays exactly that — `scale() == 1.0` means every drawn
+/// coordinate is already a pixel and the crispness contract holds unchanged. Below 1.0 only when
+/// a webOS 1-3 owner chose a smaller Interface resolution, or the debug drawable trigger asked for one (5/6, 2/3 or 1/2; 1/2 is the only one that keeps
+/// whole texels whole, the others may shimmer while scrolling); the compositor fills the panel.
 ///
 /// It is `min`, not `dw/1920`, because the alternative is a stretched interface. Stretching to fill
 /// only looks harmless while every drawable is 16:9 — which is true of televisions, and is exactly
@@ -337,8 +345,8 @@ fn pointer_map() -> (f32, i32, i32) {
 ///
 /// SDL reports pointer positions in window pixels, and the UI compares them against layout
 /// constants in logical units. Those are the same numbers only while the scale is 1.0 — which it
-/// is on every television seen so far, and which is precisely the assumption worth not making
-/// twice. Without this, a scaled surface would draw the interface correctly and put every touch
+/// is 1:1 unless a webOS 1-3 owner picks a smaller Interface resolution (or the debug drawable trigger asks for one), which is precisely the assumption
+/// worth not making twice. Without this, a scaled surface would draw the interface correctly and put every touch
 /// and Magic-Remote click in the wrong place, which reads as "the pointer is broken" rather than
 /// as a resolution problem.
 #[inline]
@@ -421,15 +429,16 @@ pub fn probe(win: *mut c_void) {
         ));
         if (dw, dh) != (LOGICAL_W as i32, LOGICAL_H as i32) {
             // The plea for a bug report belongs to the TELEVISION alone: there, a drawable that is
-            // not the canvas is a firmware doing something no set has been seen to do. On a desktop
+            // not the canvas is either a webOS 1-3 owner's smaller Interface resolution (or the debug drawable trigger) or a firmware doing
+            // something no set has been seen to do. On a desktop
             // it is the ordinary case — the window is an exact divisor of the canvas by design
             // (`app.rs`'s `desktop_window_size`) — and asking a Mac user for their webOS version
             // reads as a malfunction. Same measurement either way; only the sentence differs.
             let tail = if cfg!(feature = "hostsim") {
                 "This is expected on a desktop: the window is a whole fraction of the canvas."
             } else {
-                "Please report this with your webOS version; the app has only ever been seen on a \
-                 1:1 surface."
+                "Expected when Settings > System > Interface resolution asked for a smaller window; \
+                 otherwise please report this with your webOS version."
             };
             log(&format!(
                 "surface: drawable is NOT the {}x{} the UI is authored at — scaling the whole \

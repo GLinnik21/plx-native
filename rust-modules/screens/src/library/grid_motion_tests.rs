@@ -54,24 +54,23 @@ fn an_all_grid_tile_and_its_rows_animate_back_when_focus_leaves() {
 
 /// Owner report items 8 and 9: switching TYPE (Shows / Seasons / Episodes) in an All grid
 /// scrolled to its heading. The grid fades out, the store empties on the commit, and the answer
-/// lands some frames later. Across that wait the chrome around the dark grid — shelves, heading,
+/// lands some frames later. Across that wait the chrome around the dark grid — heading,
 /// TYPE chip — must not move, and the incoming cards must first draw where they settle.
 #[test]
 fn a_type_switch_never_draws_the_empty_interim_layout() {
     use plx_data::browse::LibraryType;
     let _guard = plx_base::testlock::serial();
-    let mut fixture = Fixture::shelves(&["movie.inprogress.1", "movie.recentlyadded.1"], 12);
+    let mut fixture = Fixture::new();
     let mut page = fixture.screen();
     page.initial = false;
     let mut engine = FocusEngine::new();
     settle(&mut page, &mut engine, &fixture, 0);
-    let chip = page.key(TYPE);
-    engine.set(OWNER, chip, Some(page.toolbar), By::Restore);
+    let chip = page.key(page.pair.detail.elem_at(0).unwrap());
+    engine.set(OWNER, chip, Some(page.pair.groups_config().detail), By::Restore);
     deliver(&mut page, &mut engine, &fixture, ScreenEvent::FocusMoved { from: None, to: chip, by: By::Dir });
     settle(&mut page, &mut engine, &fixture, 2000);
-    let head = |page: &LibraryScreen| page.layout.grid_block_top() - page.scroll.pos;
+    let head = |page: &LibraryScreen| page.layout.grid_top() - page.scroll.pos;
     let at_rest = head(&page);
-    assert!(page.scroll.pos > 0.0, "the heading sits below shelves, so the page is scrolled to it");
 
     let (mut out, mut present) = (Vec::new(), plx_machine::present::Present::new());
     page.command(LibraryCmd::SetType(LibraryType::Seasons), &fixture.cx(engine.current(OWNER)),
@@ -105,22 +104,13 @@ fn a_type_switch_never_draws_the_empty_interim_layout() {
         "the incoming cards first draw where they settle: {first:?}");
 }
 
-/// Which half of an incoming section's document answers first.
-#[derive(Clone, Copy, Debug)]
-enum Arrival { GridFirst, HubsFirst, Together }
-
-/// Owner report item 9, the LIBRARY half: entering another section (Movies → TV Shows). The
-/// section's listing and its shelves are two independent fetches (`browse::section_hubs`' module
-/// doc), and the shelves set the grid's absolute offset — so whichever order they answer in, the
-/// incoming grid must first draw where it settles, never above it and then jump.
-fn a_section_switch_draws_card_zero_where_it_settles(order: Arrival) -> LibraryScreen {
-    a_section_switch_settles(order, 120, None)
-}
-
-/// `restore` is a bookmarked scroll (`ListingView::cursor`) the incoming section reopens at.
-fn a_section_switch_settles(order: Arrival, items: usize, restore: Option<f32>) -> LibraryScreen {
+/// Owner report item 9: entering another section (Movies → TV Shows). The section's listing
+/// answers some frames after the switch (`Loading` first), and the incoming grid must first draw
+/// where it settles, never above it and then jump. `restore` is a bookmarked scroll
+/// (`ListingView::cursor`) the incoming section reopens at.
+fn a_section_switch_settles(items: usize, restore: Option<f32>) -> LibraryScreen {
     let _guard = plx_base::testlock::serial();
-    let mut fixture = Fixture::shelves(&["movie.inprogress.1", "movie.recentlyadded.1"], 12);
+    let mut fixture = Fixture::shelves(&["movie.inprogress.1"], 12);
     let mut page = fixture.screen();
     page.initial = false;
     let mut engine = FocusEngine::new();
@@ -128,12 +118,8 @@ fn a_section_switch_settles(order: Arrival, items: usize, restore: Option<f32>) 
 
     let stores = fixture.stores.take().unwrap();
     stores.browse_run(BrowseCmd::SetCur(1));
-    let publish = |fixture: &mut Fixture, grid: bool, hubs: bool| {
-        {
-            let mut browse = stores.browse.borrow_mut();
-            if grid { browse.seed_items_for_test(items); }
-            if hubs { browse.seed_shelves_for_test(1, &["show.inprogress.2", "show.recentlyadded.2"], 12); }
-        }
+    let publish = |fixture: &mut Fixture, grid: bool| {
+        if grid { stores.browse.borrow_mut().seed_items_for_test(items); }
         let publication = stores.capture_browse(&mut fixture.directory);
         fixture.listing = publication.listing;
         if !grid { fixture.listing = fixture.listing.clone().with_fetch(SecFetch::Loading, -1).with_total(0); }
@@ -141,19 +127,12 @@ fn a_section_switch_settles(order: Arrival, items: usize, restore: Option<f32>) 
             fixture.listing = fixture.listing.clone().with_cursor(plx_data::stores::browse::Cursor {
                 at: plx_data::stores::browse::CursorAt::SlotIndex(0), scroll });
         }
-        fixture.hubs = publication.section_hubs;
     };
-    let (first, second) = match order {
-        Arrival::GridFirst => ((true, false), (true, true)),
-        Arrival::HubsFirst => ((false, true), (true, true)),
-        Arrival::Together => ((true, true), (true, true)),
-    };
-    publish(&mut fixture, first.0, first.1);
-    assert!(fixture.hubs.view().id().is_some());
+    publish(&mut fixture, false);
     let mut ms = 4000;
     let mut drawn = Vec::new();
     for i in 0..120 {
-        if i == 10 { publish(&mut fixture, second.0, second.1); }
+        if i == 10 { publish(&mut fixture, true); }
         page.sync(&fixture.cx(engine.current(OWNER)));
         frame(&mut page, &mut engine, &fixture, ms);
         ms += 16;
@@ -162,38 +141,24 @@ fn a_section_switch_settles(order: Arrival, items: usize, restore: Option<f32>) 
             drawn.push((i, [r.x, r.y, r.w, r.h]));
         }
     }
-    assert!(!page.shelves.is_empty(), "the incoming section's shelves committed");
     let settled = drawn.last().expect("the incoming grid was drawn").1;
     let wrong: Vec<_> = drawn.iter().filter(|(_, r)| *r != settled).collect();
-    assert!(wrong.is_empty(), "{order:?}: card 0 drew away from its settled rect {settled:?} on {wrong:?}");
+    assert!(wrong.is_empty(), "card 0 drew away from its settled rect {settled:?} on {wrong:?}");
     page
 }
 
 #[test]
-fn a_section_switch_whose_grid_answers_before_its_shelves_draws_the_grid_where_it_settles() {
-    a_section_switch_draws_card_zero_where_it_settles(Arrival::GridFirst);
+fn a_section_switch_draws_the_grid_where_it_settles() {
+    a_section_switch_settles(120, None);
 }
 
-#[test]
-fn a_section_switch_whose_shelves_answer_before_its_grid_draws_the_grid_where_it_settles() {
-    a_section_switch_draws_card_zero_where_it_settles(Arrival::HubsFirst);
-}
-
-#[test]
-fn a_section_switch_answered_all_at_once_draws_the_grid_where_it_settles() {
-    a_section_switch_draws_card_zero_where_it_settles(Arrival::Together);
-}
-
-/// A bookmarked scroll belongs to the document WITH its shelves: applied (and clamped) against
-/// the shelfless interim it lands short, and the grid then draws somewhere the reader never left.
+/// A bookmarked scroll is applied against the settled document, not the empty interim.
 #[test]
 fn a_section_switch_restores_its_bookmark_against_the_settled_document() {
     let saved = 900.0;
-    for order in [Arrival::GridFirst, Arrival::HubsFirst, Arrival::Together] {
-        let page = a_section_switch_settles(order, 12, Some(saved));
-        assert_eq!(page.scroll.pos, saved.min(page.layout.max_scroll()), "{order:?}: the bookmark reopened where it was saved");
-        assert!(page.layout.max_scroll() >= saved, "the fixture's settled document can hold the bookmark");
-    }
+    let page = a_section_switch_settles(120, Some(saved));
+    assert_eq!(page.scroll.pos, saved.min(page.layout.max_scroll()), "the bookmark reopened where it was saved");
+    assert!(page.layout.max_scroll() >= saved, "the fixture's settled document can hold the bookmark");
 }
 
 /// A movie listing of items `rks`, each identified by its number (an element keeps its identity
@@ -370,4 +335,32 @@ fn a_membership_requery_under_a_page_keeps_focus_and_scroll_when_refilled_before
 fn a_membership_requery_under_a_page_keeps_focus_and_scroll_when_refilled_after_uncover() {
     let _guard = plx_base::testlock::serial();
     a_membership_refresh_under_a_page_push(false, false);
+}
+
+/// The Under posters setting reaches the grid: a policy that shows nothing opens no caption band, so
+/// focusing a tile moves no row below it, while the default opens one and pushes them down.
+#[test]
+fn the_under_posters_policy_sizes_the_focused_rows_band() {
+    use plx_plex::plex::session::{UnderPosters, UnderPostersDetails};
+    let _guard = plx_base::testlock::serial();
+    let below_focus = |setting: UnderPosters| {
+        crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(Some(setting)));
+        let fixture = Fixture::new();
+        let mut page = fixture.screen();
+        page.initial = false;
+        let mut engine = FocusEngine::new();
+        let rest = page.layout.row_y(4, 0.0);
+        let start = page.key(page.pair.detail.elem_at(12).unwrap());
+        engine.set(OWNER, start, Some(page.pair.groups_config().detail), By::Restore);
+        deliver(&mut page, &mut engine, &fixture, ScreenEvent::FocusMoved { from: None, to: start, by: By::Restore });
+        settle(&mut page, &mut engine, &fixture, 0);
+        page.layout.row_y(4, 0.0) - rest
+    };
+    let nothing = below_focus(UnderPosters { title: false, details: UnderPostersDetails::None });
+    let one_line = below_focus(UnderPosters { title: false, details: UnderPostersDetails::Genre });
+    let two_lines = below_focus(UnderPosters { title: true, details: UnderPostersDetails::Genre });
+    crate::registry::captions::TEST_UNDER_POSTERS.with(|cell| cell.set(None));
+    assert!(nothing.abs() < 0.01, "a policy showing nothing opens no band: {nothing}");
+    assert!((one_line - 40.0).abs() < 0.01, "one line opens 80 - 40 px: {one_line}");
+    assert!((two_lines - 72.0).abs() < 0.01, "two lines open 112 - 40 px: {two_lines}");
 }

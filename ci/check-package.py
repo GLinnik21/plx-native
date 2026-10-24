@@ -1600,8 +1600,8 @@ print("== shipped fonts ==")
 # Landed 2026-08-01: Inter (SIL OFL 1.1). This is now a REAL gate, not an XFAIL — its job is to
 # stop Monotype Arial coming back through a stale local copy, which is exactly how it would
 # return (the files are named appfont*.ttf, so nothing about the filename reveals the swap).
-ALLOWED = {"Inter", "Arimo", "Roboto", "Noto Sans", "Source Sans 3", "Noto Sans CJK KR"}
-for f in ("pkg/appfont.ttf", "pkg/appfont-bold.ttf", "pkg/appfont-cjk.ttf"):
+ALLOWED = {"Inter", "Arimo", "Roboto", "Noto Sans", "Source Sans 3", "Noto Sans CJK KR", "Noto Emoji"}
+for f in ("pkg/appfont.ttf", "pkg/appfont-bold.ttf", "pkg/appfont-cjk.ttf", "pkg/appfont-emoji.ttf"):
     fam = font_family(ROOT / f)
     check(fam in ALLOWED, f"{f} family={fam!r} is redistributable (allowed: {sorted(ALLOWED)})")
 # The fallback face, checked for PRESENCE separately: the payload assertion below only runs when
@@ -1723,6 +1723,8 @@ expected = {
     # appfont-cjk.ttf is the fallback face. Its absence is not a cosmetic loss: every Korean,
     # Japanese and Chinese title in the library becomes tofu, which is LG checklist #6 and #48.
     "appfont.ttf", "appfont-bold.ttf", "appfont-cjk.ttf", "OFL.txt",
+    # appfont-emoji.ttf is the emoji face: without it an emoji in a library name is a box.
+    "appfont-emoji.ttf",
     # le-roots.pem is the roots-mode fallback bundle (`net::keypin::Mode::Roots`): without it a
     # `*.plex.direct` server whose certificate chains to a 2025 Let's Encrypt root is unreachable on
     # a 2020 firmware, silently — the fallback just never engages.

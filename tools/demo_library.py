@@ -1384,7 +1384,6 @@ def site_credits(assets, catalog, dst=SITE_CREDITS):
             <nav class="site-nav" aria-label="Primary navigation">
               <a href="./#features">Features</a>
               <a href="./#approach">Approach</a>
-              <a href="./#install">Install</a>
               <a href="./#faq">FAQ</a>
             </nav>
             <div class="header-actions">

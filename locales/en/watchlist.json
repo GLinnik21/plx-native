@@ -1,0 +1,105 @@
+{
+  "watchlist.page.title": {
+    "value": "Watchlist",
+    "description": "Title of the Watchlist page, the destination of the bookmark tab in the tab strip."
+  },
+  "watchlist.page.sort_filter": {
+    "value": "Sort & Filter",
+    "description": "Label of the single pill on the Watchlist header that opens the sort and filter popover."
+  },
+  "watchlist.filter.type_all": {
+    "value": "Movies & TV Shows",
+    "description": "Type filter choice: both movies and TV shows in the Watchlist."
+  },
+  "watchlist.filter.type_movies": {
+    "value": "Movies",
+    "description": "Type filter choice: movies only in the Watchlist."
+  },
+  "watchlist.filter.type_shows": {
+    "value": "TV Shows",
+    "description": "Type filter choice: TV shows only in the Watchlist."
+  },
+  "watchlist.filter.show_all": {
+    "value": "All",
+    "description": "Availability filter choice: every title on the Watchlist."
+  },
+  "watchlist.filter.show_released": {
+    "value": "Released",
+    "description": "Availability filter choice: only titles that have been released."
+  },
+  "watchlist.filter.show_on_servers": {
+    "value": "On your servers",
+    "description": "Availability filter choice: only titles found on one of the account's reachable servers."
+  },
+  "watchlist.action.add": {
+    "value": "Add to Watchlist",
+    "description": "Button and menu row that adds a movie or a catalogue title to the Watchlist. Also the outline face of the catalogue page's Watchlist pill."
+  },
+  "watchlist.action.add_show": {
+    "value": "Add Show to Watchlist",
+    "description": "Episode hold-menu row that adds the whole show to the Watchlist."
+  },
+  "watchlist.action.on_list": {
+    "value": "On Watchlist",
+    "description": "Filled face of the catalogue page's Watchlist pill when the title is already on the Watchlist. Shows state, not an action."
+  },
+  "watchlist.action.remove": {
+    "value": "Remove from Watchlist",
+    "description": "Menu row that removes a movie or catalogue title from the Watchlist. Destructive styling."
+  },
+  "watchlist.action.remove_show": {
+    "value": "Remove Show…",
+    "description": "Episode hold-menu row that removes the show from the Watchlist. The ellipsis is part of the label."
+  },
+  "watchlist.state.coming_on": {
+    "value": "Coming {date}",
+    "description": "The one release-date phrase of an unreleased title: the Watchlist's focus caption and the catalogue page's line. The date is a short month-and-day phrase such as 12 Mar (caption) or 12 March (page).",
+    "args": {
+      "date": "str"
+    }
+  },
+  "watchlist.state.coming_soon": {
+    "value": "Coming soon",
+    "description": "Status line on a catalogue title that has no release date on a server yet and is not on any server."
+  },
+  "watchlist.state.on_no_server": {
+    "value": "Not on your servers",
+    "description": "Status line on a released Watchlist title that none of the account's servers has."
+  },
+  "watchlist.state.server_offline": {
+    "value": "Server offline",
+    "description": "Status line on a Watchlist title whose only matching servers are currently unreachable."
+  },
+  "watchlist.empty.list": {
+    "value": "Your watchlist is empty",
+    "description": "Full-screen verdict on the Watchlist page when the account has no titles on it."
+  },
+  "watchlist.empty.filtered": {
+    "value": "Nothing matches these filters",
+    "description": "Full-screen verdict on the Watchlist page when the sort and filter choices leave no title."
+  },
+  "watchlist.empty.no_token": {
+    "value": "Watchlist isn’t available for this profile",
+    "description": "Full-screen verdict on the Watchlist page for a managed profile that has no plex.tv sign-in to read a list with."
+  },
+  "watchlist.empty.list_body": {
+    "value": "Titles you add to your Watchlist on any device show up here.",
+    "description": "Line under the empty-Watchlist verdict."
+  },
+  "watchlist.empty.filtered_body": {
+    "value": "Change Sort & Filter to see the rest of your Watchlist.",
+    "description": "Line under the verdict shown when the Watchlist's sort and filter choices leave no title."
+  },
+  "watchlist.empty.unreachable": {
+    "value": "Can’t reach your Watchlist",
+    "description": "Full-screen verdict on the Watchlist page when plex.tv could not be read and no list had loaded yet; it carries a Try again button."
+  },
+  "watchlist.detail.trailer": {
+    "value": "Trailer",
+    "description": "Button on a catalogue title's page that plays its trailer. Shown only where a trailer exists."
+  },
+  "watchlist.page.debug_write_blocked": {
+    "value": "Debug: watchlist write blocked",
+    "description": "Developer builds only, never shown to users: a line under the Watchlist title saying the last add or remove was not sent, because a test build does not write to the real account."
+  }
+}

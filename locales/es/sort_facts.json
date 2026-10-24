@@ -1,0 +1,15 @@
+{
+  "sort_facts.title": "Título",
+  "sort_facts.date_added": "Fecha de adición",
+  "sort_facts.release_date": "Fecha de estreno",
+  "sort_facts.rating": "Nota",
+  "sort_facts.audience_rating": "Nota del público",
+  "sort_facts.last_viewed": "Fecha de visualización",
+  "sort_facts.random": "Aleatorio",
+  "sort_facts.a_to_z": "A–Z",
+  "sort_facts.z_to_a": "Z–A",
+  "sort_facts.oldest_first": "Antiguos primero",
+  "sort_facts.newest_first": "Recientes primero",
+  "sort_facts.lowest_first": "Más bajos primero",
+  "sort_facts.highest_first": "Más altos primero"
+}

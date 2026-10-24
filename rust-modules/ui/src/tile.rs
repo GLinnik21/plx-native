@@ -35,7 +35,7 @@ pub enum TileKind {
 pub struct Resume {
     /// Played fraction, 0..1 — the resume bar's width.
     pub frac: f32,
-    /// Milliseconds left to play — the Continue Watching caption's "8 min left".
+    /// Milliseconds left to play — the Continue Watching caption's "8m left".
     pub left_ms: i64,
 }
 
@@ -84,6 +84,23 @@ pub struct TileFacts<'a> {
     /// The four-corner ambient colours the item's artwork lends the page behind it, when it has
     /// any.
     pub blur: Option<[[f32; 3]; 4]>,
+    // ---- CONTRACT FREEZE: the facts the "Under posters" caption reads (P2 fills them in
+    // `screens::registry::tile_facts::of`; `child_count` above is generalised by P2 to a show's
+    // season count). All are the row's own facts copied across; `None` / `false` = unknown.
+    pub subtype: Option<&'a str>,
+    /// A smart collection.
+    pub smart: bool,
+    /// The first genre tag.
+    pub genre: Option<&'a str>,
+    /// `4k` / `1080` / `720` / `sd` …
+    pub video_resolution: Option<&'a str>,
+    pub hdr: bool,
+    /// 0..10.
+    pub audience_rating: Option<f32>,
+    pub leaf_count: Option<u32>,
+    pub viewed_leaf_count: Option<u32>,
+    /// Seconds since the epoch.
+    pub added_at: Option<i64>,
 }
 
 impl Tile for TileFacts<'_> {

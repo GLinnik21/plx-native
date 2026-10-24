@@ -43,10 +43,11 @@ tool for the C++ interop.
 
 ## Build (see the Makefile for the full toolchain)
 
-Cross-compiled (the `.a` via `cargo +nightly rustc --lib --crate-type staticlib`, with
-`-Z build-std=std,panic_unwind`) for `arm-unknown-linux-gnueabi`; the C side and the final link use the webOS NDK
-(`make setup-env`). Critical TV flags: `-C target-cpu=cortex-a9` (the default
-ARMv6 codegen emits a CP15 memory barrier that SIGILLs on this SoC; cortex-a9
-emits the dedicated `dmb`) and `-C target-feature=-neon`, with `-Z build-std`
-rebuilding std under those flags. The Makefile owns this invocation — nothing
+Cross-compiled on the pinned STABLE toolchain (`rust-toolchain.toml`; the `.a` via `cargo
++$(RUST_TOOLCHAIN) rustc --lib --crate-type staticlib`) for `armv7-unknown-linux-gnueabi`, whose
+prebuilt ARMv7 std needs no `-Z build-std`; the C side and the final link use the webOS NDK
+(`make setup-env`). Critical TV flags: the ARMv7 target itself (the old ARMv6 target's std emits a
+CP15 memory barrier that SIGILLs on this SoC; ARMv7 emits the dedicated `dmb`),
+`-C target-cpu=cortex-a9`, `-C target-feature=-neon,-soft-float` (VFP back on; `ci/check-vfp.py`
+guards it) and frame pointers. The Makefile owns this invocation — nothing
 else should duplicate it.

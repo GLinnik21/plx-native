@@ -61,17 +61,18 @@
 //! it spends whatever is left inside the screen's glass keep-out and never less than one line. Prose
 //! beyond that budget scrolls (see above) rather than being cut.
 //!
-//! **Its ground is the latched underlay field, not glass** (`widgets::panel_ground`): the page
-//! under it sampled once into the 15×8 field the modal dim already latched, windowed to the
-//! panel's own rect and graded toward the panel material, under the frost. So it reads no
-//! framebuffer, pays no blur region however far it grows, and the page behind it standing still is
-//! a property of the host snapshot rather than a condition of the material. It still clears the
+//! **Its ground is `widgets::panel_ground` with `Ground::Sheet`: NOT glass** (DS6 put glass on
+//! menus only). The latched underlay field: the page under it sampled once into the 15×8 field the
+//! modal dim already latched, windowed to the panel's own rect and graded toward the panel
+//! material, under the frost. It still clears the
 //! design's `--glass-edge-clear` 68 on all four sides ([`EDGE_CLEAR`]) — a layout margin now.
 
 use plx_ui::consts::{SCR_H, SCR_W};
+use plx_ui::hstack::Item;
 use plx_ui::prose_scroll::{self, paging, ProseScroll};
 use plx_ui::text_view::TextView;
 use plx_ui::theme;
+use plx_ui::vstack::{Anchor, VStack};
 use plx_ui::widgets;
 use plx_ui::widgets::KeyHint;
 use plx_ui::{Painter, Rect};
@@ -160,34 +161,34 @@ pub struct Stack {
 /// bracketing a facts grid, with the grid's own two coming and going with it; with the grid gone
 /// there is one block to close and one rule to close it.)
 pub fn stack(b: Blocks) -> Stack {
-    let mut s = Stack::default();
-    let mut y = PAD;
-
-    s.eyebrow = y;
-    y += EYEBROW_LEAD;
-
-    if b.synopsis > 0.0 {
-        s.synopsis = y + G_SYNOPSIS;
-        y = s.synopsis + b.synopsis;
-    }
-
-    if b.tagline > 0.0 {
-        s.tagline = y + G_TAGLINE;
-        y = s.tagline + b.tagline;
-    }
-
-    s.rule = y + G_RULE;
-    y = s.rule + widgets::HAIRLINE_H;
-
-    s.footer = y + G_FOOTER;
-    y = s.footer + KeyHint::height();
+    // Each gap is the block's own `margin-top` ([`Item::before`]), so an absent block takes neither
+    // its height nor the gap above it and the block after it keeps its own. `Blocks` says "absent"
+    // as 0.0 (its callers measure that way); this is the one place that reads it as such.
+    let present = |h: f32, gap: f32| if h > 0.0 { Item::new(h).before(gap) } else { Item::absent() };
+    let items = [
+        Item::new(EYEBROW_LEAD),
+        present(b.synopsis, G_SYNOPSIS),
+        present(b.tagline, G_TAGLINE),
+        Item::new(widgets::HAIRLINE_H).before(G_RULE),
+        Item::new(KeyHint::height()).before(G_FOOTER),
+    ];
+    let v = VStack::new(&items, 0.0, Anchor::Top(PAD));
+    let y_of = |i: usize| v.span(i).map_or(0.0, |(y, _)| y);
+    let footer = v.span(4).map_or(PAD, |(y, h)| y + h);
 
     // …and the footer closes on ITS OWN pad, not the panel's: `KeyHint::pad_below` is `G_FOOTER`'s
     // twin, so the line sits centred in the band the rule opens. `PAD` here made the panel exactly
     // symmetric against its own frame and 24-over/48-under against the hairline, which is the edge
     // this line is actually read from — the argument, with the ink numbers, is on `pad_below`.
-    s.h = y + KeyHint::pad_below();
-    s
+    // (The rule is unconditional: it closes the prose whatever the prose turned out to be.)
+    Stack {
+        eyebrow: y_of(0),
+        synopsis: y_of(1),
+        tagline: y_of(2),
+        rule: y_of(3),
+        footer: y_of(4),
+        h: footer + KeyHint::pad_below(),
+    }
 }
 
 /// The tallest the panel is allowed to be — the screen less the glass keep-out on both edges.
@@ -356,8 +357,7 @@ impl AboutPanelScreen {
         measure: &dyn plx_machine::machine::Measure,
         field: Option<&plx_ui::underlay::UnderlayField>,
     ) {
-        let slide = RISE * (1.0 - appear);
-        let p = Painter::root().alpha(appear).translate(0.0, slide);
+        let p = sheet_painter(appear);
 
         // ---- measure ----
         // The tagline first, because the synopsis's line budget is what is LEFT after it.
@@ -378,7 +378,7 @@ impl AboutPanelScreen {
         let r = panel_rect(s.h);
 
         // ---- ground ----
-        plx_ui::widgets::panel_ground(p, r, theme::ALERT_PANEL_RAD, field);
+        plx_ui::widgets::panel_ground(p, r, theme::ALERT_PANEL_RAD, field, plx_ui::widgets::Ground::Sheet);
 
         // ---- content ----
         let cx = r.x + PAD;
@@ -613,14 +613,14 @@ impl<H: crate::registry::AppLike + crate::registry::MetadataLike + crate::regist
     fn prepare(&mut self, _b: &mut plx_ui::frame::Budget, _cx: &plx_machine::machine::Cx<'_, H>) {}
     /// The modal dim, asked for rather than drawn.
     ///
-    /// **Nothing is LIFTED back out of it.** `Scrim::lifting` exists for a panel that is ABOUT an
+    /// **Nothing is LIFTED back out of it.** `Screen::opener` / `Screen::bar_opener` exist for a panel that is ABOUT an
     /// element still on screen; this one is about the card it was opened from and says everything
     /// that card says, at length — lifting it would put a truncated copy of this panel's own first
     /// three runs alongside it. The mock lifts nothing either.
     ///
     /// **The ordering this replaces was load-bearing and is now the container's** (§16.3): the
     /// panel's ground once sampled the framebuffer (`Glass::CACHED`), so the dim had to be down
-    /// before the backdrop was taken; the ground is the latched underlay field now, latched at the
+    /// before the backdrop was taken; the ground is the latched underlay field (a sheet is never glass; DS6 glass is for menus), latched at the
     /// head of the dims from the undimmed page. `ModalStack::draw_scrims` draws it at the end of the PAGE pass — strictly
     /// earlier than the surface pass this `draw` runs in — and multiplies by the appear spring and
     /// by `nav::page_alpha`, which is `Popover::scrim`'s own arithmetic and one factor more than
@@ -675,6 +675,11 @@ impl<H: crate::registry::AppLike + crate::registry::MetadataLike + crate::regist
 /// One full-width hairline across the content column.
 fn rule(p: Painter, r: Rect, y: f32) {
     widgets::hairline(p, r.x + PAD, r.y + y, CONTENT_W);
+}
+
+/// The painter every frame of the sheet draws through: the appear fade and the rise.
+fn sheet_painter(appear: f32) -> Painter {
+    Painter::root().alpha(appear).translate(0.0, RISE * (1.0 - appear))
 }
 
 #[cfg(test)]
@@ -1169,4 +1174,17 @@ mod tests {
         assert_eq!(panel.scroll.offset(0.0), 0.0);
         plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
     }
+
+    /// An ABSENT synopsis takes neither its height nor its gap, and the tagline keeps its OWN 20
+    /// (not the synopsis's 24); an absent tagline likewise leaves the rule its 32 under the prose.
+    #[test]
+    fn an_absent_block_costs_no_gap_and_the_next_keeps_its_own() {
+        let s = stack(Blocks { synopsis: 0.0, tagline: FINE_LEAD });
+        assert_eq!(s.synopsis, 0.0, "absent reads as y 0");
+        assert_eq!(s.tagline, s.eyebrow + EYEBROW_LEAD + G_TAGLINE);
+        let bare = stack(Blocks::default());
+        assert_eq!((bare.synopsis, bare.tagline), (0.0, 0.0));
+        assert_eq!(bare.rule, bare.eyebrow + EYEBROW_LEAD + G_RULE);
+    }
+
 }

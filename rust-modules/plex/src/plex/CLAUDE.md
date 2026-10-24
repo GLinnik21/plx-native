@@ -377,11 +377,15 @@ a dead source is **absent** from Home and states itself in its own library secti
 ## Gotchas that bite (all verified in code)
 
 - **`notify.rs` is the PMS server-sent-event feed, and it is not a playback signal.** It parses
-  `/:/eventsource/notifications?filters=playing` (`docs/pms-api.md` §9: the parameter is `filters`,
-  the spec's `filter` is wrong) into lenient `Notification`s over `http::stream`, dropping this
+  `/:/eventsource/notifications?filters=playing%2Ctimeline` (`docs/pms-api.md` §9: the parameter is
+  `filters`, the spec's `filter` is wrong; the encoded comma list was measured to deliver `timeline`) into
+  lenient `Notification`s (`Play`, `Library` for finished movie/show timeline entries, `Ping`,
+  `Ignored`; a `timeline` frame is `event: timeline` + one `{"TimelineEntry":{...}}` object, state 5 both opens
+  and closes a sequence so "created" is state 5 with no `metadataState`, and state 9 for a delete is UNVERIFIED,
+  never captured) over `http::stream`, dropping this
   device's own sessions at the source, and never mints a client id (`client_id` is the persisted
   one; a new id raises a new-device alert). Its policy lives in `plx_data::stores::notify`: shipped
-  OFF, owned servers only. Nothing here may call a stop, an end-of-stream candidate or an Offset
+  ON (`NOTIFY_ENABLED`), owned servers only. Nothing here may call a stop, an end-of-stream candidate or an Offset
   publish: a stranger's `stopped` session would otherwise scrobble our other servers.
 
 - **A hub's `title` is PMS's own localized text — except for the standard hubs, which this app
@@ -485,12 +489,12 @@ a dead source is **absent** from Home and states itself in its own library secti
   reader may now call `session::peek()`, because `peek()` is backed by a live in-memory read
   cache, not a per-call file transaction.
 - **Every preference key but `language` lives in ONE struct, `session/prefs.rs`'s `Preferences`**
-  (the ten player settings' and `trailer_autoplay`'s FROZEN top-level keys, `profile_prefs` (their per-profile home, below), `auto_sign_in`, `last_hero_blur`, the account-bound
+  (the ten player settings' and `trailer_autoplay`'s FROZEN top-level keys, `profile_prefs` (their per-profile home, below), `auto_sign_in`, `last_hero_blur`, `hold_hint_taught`, the account-bound
   `plaintext_consent` and `server_key_pins`, the per-profile `last_library` and `library_sorts` (cleared
   at sign-out like every `ACCOUNT_BOUND = true` row in `prefs::DESCRIPTORS`, but their records carry no
   account stamp, so the one login that is not a sign-out, a stored session that could not be activated
   in `app/boot.rs`, would leave them to the next account: `replace_after_reauthentication_guarded_with_outcome`
-  clears both when the login's account token differs from the stored one), and the two memory-door lists `track_memory` and `subtitle_offsets`), flattened (`#[serde(flatten)] prefs`) into BOTH on-disk
+  clears both, and the Home pins and recent searches, when the login's owner identity (`owner_identity`, the roster admin's plex.tv id; never the token, which every sign-in mints anew) differs from the stored one or either is unknown), and the two memory-door lists `track_memory` and `subtitle_offsets`), flattened (`#[serde(flatten)] prefs`) into BOTH on-disk
   forms — the legacy file's `Session` and the canonical preference record — declared before each
   form's own `extensions`, so the flatten takes its keys first and the unknown-key map still sees
   only keys nobody models. A new key of that kind is a `Preferences` field (its serde attributes
@@ -509,6 +513,9 @@ a dead source is **absent** from Home and states itself in its own library secti
   records of other accounts). `profile_prefs` is account-bound (`ACCOUNT_BOUND_PREFERENCES`, so
   sign-out drops it and the legacy keys stay). Who is seated is `session::Seat`
   (`Seat::of(profile, stamp)`, `current_seat()`); the live cells follow it in `plx_media::route`.
+  `hold_hint_taught` is Install and never account-bound, so sign-out keeps it: which hold hints
+  (`card`, `pill`) this television has been taught; the application seeds `plx_ui::hold_hint` from
+  it at boot and writes it on the frame tick (`app/hint_taught.rs`, `session::learn_hold_hint_taught`).
   `auto_sign_in` is Install and never
   account-bound: `boot_shows_picker` reads it before any profile is seated. `trailer_autoplay` is
   NOT Install any more (P1c): the DETAIL page's hero reads the seated profile's value, the top-level key
@@ -623,9 +630,10 @@ a dead source is **absent** from Home and states itself in its own library secti
   has no cap and no guard. A stored document already AT the cap leaves no room for the strict tier's
   second copy (old and new halves side by side), which the guard cannot create. A record created on
   webOS 4.x is ACL-only; a record that already holds a keymanager envelope still stages.
-- **`session::peek()` is a write-through cache over the persisted session, not a fresh read.** A
-  hit is one uncontended `Mutex` lock and an `Arc<Session>` clone — no `IO`, no helper round trip —
-  which is what makes it safe to call every frame. The invariants
+- **`session::peek()` is a write-through cache over the persisted session, not a fresh read.** It
+  is a pure read of that cache: one uncontended `Mutex` lock and an `Arc<Session>` clone — no `IO`,
+  no helper round trip, no submit, no clock, on a hit or a miss — which is what makes it safe to
+  call every frame. The invariants
   that keep it correct, all in `session.rs`'s module doc and worth knowing before touching either
   the cache or a write path:
   - Cached records come from completed reads or durable writes under `IO`. `Revoked` separately
@@ -634,10 +642,15 @@ a dead source is **absent** from Home and states itself in its own library secti
   - Only `session.rs` writes the session domain of the record; every `persistence::commit_*`/
     `write_session`/`commit_cleared` caller updates the cache through a read install, proven-write
     install, cache drop, or local revocation. Read installs cannot undo revocation.
-  - `peek` never takes `IO`, including on a miss. It returns the previous snapshot and schedules
-    one refresh on `storage_worker`'s bounded FIFO. The worker reads and installs under `IO`,
-    then advances a visible-session generation only if the served content changed. The bridge
-    observes it and invalidates on the frame thread. Cached views also observe it through
+  - `peek` never takes `IO` and never refills the cache, including on a miss: it returns the
+    previous snapshot (or the empty session). The refill belongs to the session owner
+    (`SessionMachine`): the application's frame step asks `refresh_need()` what the cache lacks
+    and delivers `SessionEvent::CacheObserved`, the owner answers with its `SessionFx::RefreshCache`
+    effect, the application's session adapter runs `refresh_cache_job` on `storage_worker`'s
+    bounded FIFO, and the outcome returns as `SessionEvent::CacheRefreshed` (one refresh in
+    flight, owned by the machine rather than a `peek` side channel). The job reads and installs
+    under `IO`, then advances a visible-session generation only if the served content changed. The
+    bridge observes it and invalidates on the frame thread. Cached views also observe it through
     `VisibleSessionWatch` (or include `visible_generation()` in their cache key) and rebuild;
     invalidating drawing alone cannot refresh a retained value. `peek_settled()` keeps transient
     reads distinct from an authoritative empty session. Unchanged retries remain quiet. A queued
@@ -646,8 +659,11 @@ a dead source is **absent** from Home and states itself in its own library secti
     `IO` first (the fence/OCC check), then install their own proven outcome. A miss can therefore
     never overwrite a newer concurrent write.
   - A `Locked`/`Blocked` read (keymanager unavailable, a helper hiccup) is cached only
-    transiently, for `LOCKED_RETRY` (about a second) after completion — never latched forever the way a naive
-    per-field cache once was (the bug PR #120's stopgap shipped and this cache replaced).
+    transiently: `peek` serves the last known state and the owner re-reads it no sooner than
+    `LOCKED_RETRY_MS` (1000) of frame time later, per cache generation (a backoff counted on the
+    frame tick the owner receives, not a wall-clock deadline in `session.rs`) — never latched
+    forever the way a naive per-field cache once was (the bug PR #120's stopgap shipped and this
+    cache replaced).
   - Sign-out (`clear()`) drops the cached `Arc` immediately; the tokens it held must not remain
     reachable in memory after a sign-out just because nothing had overwritten the cache yet.
   - `plex::session::async_persistence`'s Stage B coordinator is unwired and keeps its own,

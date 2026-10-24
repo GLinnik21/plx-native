@@ -32,7 +32,7 @@ name = "plxnative-modules"
 # rather than equal to it: build.rs publishes `PLX_VERSION`, which is this number exactly for a
 # RELEASE build and the next minor plus `-dev` for every other build, so a working tree does not
 # report itself as the last published release.
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
 # The crate is linked into the C app as a staticlib (see [lib] below) and is never published to
 # crates.io, so these are not for a registry — they are so `cargo metadata` and any SBOM tool agree
@@ -173,8 +173,7 @@ hostsim = ["dep:xxhash-rust", "plx_base/hostsim", "plx_machine/hostsim", "plx_pl
 #
 # **In the manifest's lint tables, deliberately, and not `-D warnings` in RUSTFLAGS.**
 # `[workspace.lints]` applies to the two workspace packages (this one and the storage helper) and
-# nothing else. RUSTFLAGS reaches every dependency and — because `-Z build-std` compiles the
-# standard library from source — std itself, so a warning in code we neither own nor can patch
+# nothing else. RUSTFLAGS reaches every dependency (and, under the old `-Z build-std`, std itself), so a warning in code we neither own nor can patch
 # would break our build, and the usual escape (`--cap-lints`) cannot separate the two. Same
 # reasoning as `.cargo/config.toml`'s codegen flags: bind the rule to the thing it is about.
 #

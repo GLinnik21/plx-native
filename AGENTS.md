@@ -27,6 +27,15 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
 
 ## Working rules
 
+- **Never write an ad-hoc mechanism when a shared one exists.** Before building any behaviour, find
+  the mechanism the codebase already has for it and use it: focus travel and key routing, motion
+  and springs, glass and materials, scrolling and chrome, captions, menus and popovers, data
+  fetching. If the shared one almost fits, extend it in place for every caller. If it truly cannot
+  do the job, stop and say why before writing a new one, and the new one lands in the shared layer,
+  never in a screen. PR #843's library redesign routed the Up key by hand, so Up from the
+  Recommended page's breadcrumb could not reach the top navigation, and its new header pills had
+  no transitions, while the shared `FocusEngine` and the nav pill's animated `TabStrip` already
+  existed. `rust-modules/ui/src/CLAUDE.md` (rule 4) names the ready-made ones for UI work.
 - **Trunk-based development, and `main` takes SQUASH merges only.** Work happens on short-lived
   branches or worktrees cut from `main`. Commit as often as is useful on a branch — there is no
   limit on how many commits a branch carries and no need to tidy them. When the work is verified it
@@ -49,6 +58,12 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   `[port webos]` to `webos`, `keymanager`, `system`, `player::ffi` or `port`. Fix the reference
   (`docs/module-layers.md` says where code belongs and how to cut an upward name) instead of
   adding a (file, member) pair to `ci/allow/layers.txt`, which is empty and only shrinks.
+- **Logic never performs IO.** A machine (a screen, a `data/` store, the session owner, the player's
+  foreground lifecycle, a route planner) starts no worker, reads no process-global registry and has
+  no `cfg(test)` fork: its work leaves as a typed effect the app's runners execute, and every result
+  returns as one addressed event. `ci/check-deps.sh` freezes today's sites in the ledgers under
+  `ci/allow/{workers,globals,forks,fxlanes}/`, which only shrink: a new site fails `make check`, and
+  a migration lands by deleting lines (`docs/sans-io.md`).
 - **Re-basing a stacked PR after the one below it squashes:** on the upper branch, `git merge
   <lower's final head>`, `git merge <squash>^`, `git merge -s ours <squash>`, then
   `git merge origin/main`. `-s ours` on the squash alone drops whatever `main` gained before it.
@@ -68,6 +83,9 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   the broken behavior. Observe the failure, implement the fix, then observe it pass.
 - Do not use `make -p` or `make -pn`; recursive variables such as `TV` are misleading there. Use
   the `make -s print-*` query targets documented in `docs/agent-reference.md`.
+- Edition 2021 keeps a `while let`/`match` scrutinee's temporaries alive for the whole body:
+  `while let Some(x) = m.lock().next() { io(x) }` holds the lock across `io`. Bind first
+  (`let next = m.lock().next();`) whenever the body blocks (#908).
 
 ## Build and verification
 
@@ -100,11 +118,20 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
 - While iterating on one crate, `make test-crate C=plx_ui [T=filter] [DEPS=1]` builds and runs only
   that crate's lib tests in `make test-fast`'s incremental tree. It is a loop, not a gate.
 - `make test-crate` does NOT enable `hostsim`: tests under `#[cfg(all(test, feature = "hostsim"))]`
-  (`app/run.rs` `lifecycle_regression_tests`, the player-return rig) run as `cd rust-modules &&
-  CARGO_INCREMENTAL=1 CARGO_TARGET_DIR=/tmp/<dir> PLXNATIVE_RUNTIME_DIR=$(mktemp -d)
-  cargo +nightly test --lib -p plxnative-modules --features hostsim -- <filter>`; a filter that
-  matches nothing reports `0 tests` and still exits 0. Keep that target dir OUTSIDE the checkout
-  and `git add` explicit paths: an untracked `rust-modules/target-*` is not ignored, and
+  (the application crate's `app/run.rs` `lifecycle_regression_tests`, the player-return rig;
+  `plx_media`'s `player/engine.rs`, `pump.rs`, `route/decision.rs`) run as `make test-hostsim
+  [C=<crate>] [T=filter]`. `C` defaults to the application crate; `C=plx_media` (or `C=media`)
+  runs that crate's `hostsim` tests, the same ones `make check`'s hostsim pass runs for it. It runs
+  `cargo test --lib -p <crate> --features hostsim` on the pinned
+  toolchain with a throwaway `PLXNATIVE_RUNTIME_DIR` (removed afterwards), incrementally in its own
+  gitignored `rust-modules/target-hostsim`: inside the checkout, so `make disk` and
+  `tools/build-gc.sh` see it and it goes with the worktree, like `target-fast`. A `T=` that matches
+  no test FAILS (libtest reports `0 passed` and exits 0 for a mistyped name), which includes a
+  correctly spelled test that lives in another crate than `C`. Do not hand-roll a
+  cargo run whose `CARGO_TARGET_DIR` points into `/tmp`: nothing tracks those trees, and 28 of them
+  (45.6 GiB) had piled up there when this target replaced the recipe. The "matches nothing, exits 0" trap
+  still applies to `make test-crate T=` and `make test-fast T=`. `git add` explicit paths: an
+  untracked `rust-modules/target-*` that is not listed in `.gitignore` is not ignored, and
   `git add -A rust-modules` commits it.
 - `make sim-macos` / `make` fail with `make: cargo: No such file` from a non-login shell: prefix
   `PATH="$HOME/.cargo/bin:$PATH"`. Test builds deny warnings, so a new `App` field must be read
@@ -125,9 +152,10 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   `tvdev` binary (`make deploy` records the profile on the set); build with `make ARM_PROFILE=release
   deploy` before any other FPS or smoothness measurement (`docs/agent-reference.md`, "ARM_PROFILE").
 - After editing `rust-modules/src/**/*.rs` or a layer crate's `rust-modules/*/src/**/*.rs`, also check the shipping feature set with
-  `CARGO_INCREMENTAL=0 cargo +nightly check --manifest-path rust-modules/Cargo.toml --lib
-  --no-default-features` when the Claude-only release hook did not run. Keep the
-  `CARGO_INCREMENTAL=0` prefix on this and on every other direct `cargo` call: they bypass `make`,
+  `make check-nodef` (`cargo check --lib --no-default-features`, non-incremental, in the checkout's
+  own `target/`: it shares the third-party units `make lint` built and adds no tree) when the
+  Claude-only release hook did not run. Keep the `CARGO_INCREMENTAL=0` prefix on every other direct
+  `cargo` call: they bypass `make`,
   so the Makefile's linked-worktree setting cannot reach them, and a one-shot gate has no use for
   a multi-gigabyte incremental cache. `tools/build-gc.sh` also installs
   `.claude/worktrees/.cargo/config.toml` (`plx-build-gc-policy`) with `incremental = false`,
@@ -136,14 +164,34 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
 - **`make disk` before and after a fleet.** Build trees are per-checkout; the cargo
   **incremental cache**, not FFmpeg, is most of the bulk.
   `tools/build-gc.sh --incremental|--lanes|--stale|--all` deletes only rebuildable output. After tearing
-  a fleet down, run `--worktrees` (removes finished lanes — clean, unlocked, already on `main` —
-  which `git branch --merged` cannot see once they are squash-merged) and then `--orphans` (lane
+  a fleet down, run `--worktrees` (removes finished lanes — clean, unlocked, already on `origin/main` —
+  which `git branch --merged` cannot see once they are squash-merged; the removal takes the lane's
+  IGNORED files too, so `-n` lists the ones that are not build output, e.g. `src/config.local.h`) and then `--orphans` (lane
   target dirs live outside the repo under `$PLX_FLEET_DIR` and outlive their worktree).
   `docs/agent-reference.md` keeps the measurements behind this. None of this has to be run by
-  hand any more: `tools/build-gc.sh --auto` stages the same reclaim on its own, gated by free
-  space and (for `--lanes`) an idle guard, from a `SessionEnd` hook and the optional hourly
-  `make disk-watch` launchd agent — `make disk` stays the report to read before intervening
-  yourself, or when the volume needs relief faster than the automatic trigger provides it.
+  hand any more: `tools/build-gc.sh --auto` reclaims on its own, gated by free space, from a
+  `SessionEnd` hook and the optional hourly `make disk-watch` launchd agent. Past `--orphans` and
+  an idle-guarded `--worktrees` (which also keeps any lane holding an ignored file that is not build
+  output, and logs which) it follows the PLANNER's order (`tools/disk-budget.py`,
+  `docs/disk-budget.md`): `build-gc.sh --evict PLAN` is the one narrow deleting mode, and it
+  re-checks every path of a plan against the live machine immediately before it renames it away
+  (a live or idle-window-young tree is skipped, a path that is not a derived build tree is
+  refused). It never evicts the cargo seed, and unlike the other modes it does not stop for a
+  held FFmpeg cache lock. Preview a plan with `python3 tools/disk-budget.py reclaim --to GIB
+  --emit > plan; tools/build-gc.sh --evict plan -n`; never run `--evict` for real from a test
+  or an experiment outside a fixture. The budget is also checked at every build entry: each
+  cargo-running `make` target (`make -s print-disk-entries` lists them) takes `disk-preflight` as an
+  order-only prerequisite, which is `python3 tools/disk-budget.py preflight`. At or above the
+  comfort line (`PLX_GC_MIN_FREE_GIB`, 20) it is one `statvfs` and a Python start (tens of
+  milliseconds); below it, it evicts through the planner and `--evict`, which spare the tree being
+  built and every live tree (the current checkout's incremental dirs in its other trees go only when
+  nothing cheaper covers the build), and it refuses only when the whole ladder cannot cover the build
+  plus the `PLX_MIN_FREE_MB` reserve. That eviction is real deletion time before cargo starts, so a
+  `make` below the comfort line that sits in the preflight is working, not hung. A new
+  cargo-running target joins `DISK_ENTRIES` in the Makefile (`ci/test_disk_preflight.py` fails
+  until it does), and a `$(MAKE)` line inside an entry passes `PLX_DISK_BUDGET_DONE=1`. `make disk`
+  stays the report to read before intervening yourself, or when the volume needs relief faster than
+  the automatic trigger provides it.
 - Use the `which-tier` skill to choose between host checks, `ui-sim`, and real-device verification.
   Pixel output, LG text rasterization, video-plane composition, performance, and native playback
   generally need the TV before being called verified.
@@ -153,6 +201,10 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   is named. A count of late frames, an A/B between two builds, or a reading of the heartbeat line
   is not a diagnosis, and "probably the upload" is not a finding. State a cause only with the
   counter or trace evidence behind it; what was not measured is reported as not determined.
+- A main-thread stall (one long `navcommit=`/`results=` leg on a `FRAMEDROP` line, `--arm
+  framedrop=N`) is attributed by wrapping that leg's calls in temporary
+  `plx_base::diag::spans::span("label", || …)` on a scratch branch: the labels print in that
+  frame's `spans=` field, so one deploy names the call.
 - FFI, linkage, `dynlib!`, Starfish, ACB, curl, or bundled-FFmpeg changes require the
   `fw-compat-reviewer` custom agent (`fw_compat_reviewer` in Codex), or the equivalent manual
   review, before push.
@@ -172,10 +224,15 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   is "Play" (the default, "Open details", opens the page) — and the setting is saved on the set
   PER PROFILE (a profile that never chose reads the install's older value), so never assume which
   one a given install, or a given profile on it, has. In the default the card's hold menu opens ON a
-  Play/Continue row, so hold-then-OK plays too. That press is how two separate sessions started
+  Play/Resume row, so hold-then-OK plays too. That press is how two separate sessions started
   real playback on the owner's account. Seeding, scrobbling, unscrobbling, marking watched and
   "Remove from Deck" are all writes to a household's actual viewing record — the managed and Guest profiles
   are real users too. When screenshot or demo work needs particular content, mock the server.
+  So is the plex.tv Watchlist: a debug build refuses every add/remove unless the mock's discover
+  stand-in is armed or `plxnative-watchlist-live` exists in the install's runtime root. **Never
+  create that file unless the owner asks for it in that same session** — with it, a debug build
+  writes to the owner's real Watchlist. `.claude/hooks/watchlist-live-guard.py` refuses a command
+  that would (`docs/watchlist.md`, "The live switch").
 - Hold the TV lock around the device commands themselves and release as soon as the device work
   pauses. Do not hold a lease while building, reading screenshots or writing Markdown; other lanes
   queue behind it.

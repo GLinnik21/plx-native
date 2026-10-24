@@ -1,0 +1,6 @@
+{
+  "recommended_page.empty": {
+    "value": "No recommendations for this library yet",
+    "description": "Recommended page (a library's server hubs): the line shown when the server has no hubs for the library. A plain statement, one line in a centred panel about 960 px wide, no punctuation at the end."
+  }
+}

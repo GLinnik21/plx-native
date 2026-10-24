@@ -5,6 +5,26 @@
 use super::modal::{HostRender, HostUpdate, Phase, Style};
 use super::stack::CAP;
 
+/// **The stack names the kind of page beneath each entry** — the one answer a page that says where
+/// BACK goes reads ([`plx_machine::machine::Host::views_over`]): none for the root (BACK leaves),
+/// the page it was pushed over for the rest, and for an entry staged behind a dip the current top.
+#[test]
+fn the_stack_names_the_kind_of_page_beneath_each_entry() {
+    use plx_machine::machine::ScreenId;
+    let (mut d, mut rig, _) = booted();
+    let root = d.nav.top_page().unwrap().id;
+    d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(20)));
+    for i in 0..40 {
+        d.frame(&mut rig, tick(16 + i * 16), vec![], vec![], &mut NoTap);
+        if d.nav.tabs.stack.depth() == 2 { break; }
+    }
+    assert_eq!(d.nav.tabs.stack.depth(), 2, "premise: the push committed");
+    let top = d.nav.top_page().unwrap().id;
+    assert_eq!(d.nav.tabs.stack.beneath_id(root), None, "the root: BACK leaves the page stack");
+    assert_eq!(d.nav.tabs.stack.beneath_id(top), Some(ScreenId(1)), "the page it was pushed over");
+    assert_eq!(d.nav.tabs.stack.beneath_id(EntryId(9999)), Some(ScreenId(2)), "an entry not on the stack lands over the top");
+}
+
 #[test]
 fn restored_live_and_evicted_bodies_receive_memory_before_enter() {
     for evict in [false, true] {
@@ -27,7 +47,7 @@ fn restored_live_and_evicted_bodies_receive_memory_before_enter() {
     }
 }
 use super::transition::PageDip;
-use crate::dispatch::{Dispatcher, NoTap};
+use crate::dispatch::{Dispatcher, NoTap, Tap};
 use crate::fixture::{booted, events_of, key, tick, FixtureArg, FixtureHost, FixtureRig, QUIESCENCE_PAGE};
 use plx_machine::machine::{EntryId, FocusKey, InputOwner, Key, MachineId, NavOp};
 
@@ -100,6 +120,52 @@ fn the_page_pass_is_the_only_place_a_scrim_is_asked_for() {
     assert_eq!(modal_of(&d, id).scrim_at.get(), once, "a surfaces-only pass draws no dim");
 }
 
+/// **A bar member is lifted by the ONE opener pass, once per frame, where the chrome pass drew it**
+/// (N-a): the profile chip is a surface's opener like a header pill or a card, so
+/// `Dispatcher::lifted_opener` answers for it and the `Z::OPENER` pass asks the rig to redraw it lit
+/// above the dim and the panel (`Rig::lift_bar_member`) on the stack's latched field. There is no
+/// second path (`ModalStack::draw_lifts`, `Scrim::lift`, `redraw_profile_chip` are gone). Red on the
+/// tree where the chip was lifted by `draw_lifts`: `lifted_opener` answered `None` for it, and the
+/// surface was never told where the chip is drawn.
+///
+/// The lift lies on the presentation the chrome pass drew the bar with, so a TUCKED bar is lifted at
+/// its tucked position and alpha, and the surface hanging from it is handed that same rect before it
+/// draws (`Screen::opener_rect`) for its morph to start and end on. A surfaces-only pass owes no lift.
+#[test]
+fn a_bar_opener_is_lifted_once_per_frame_by_the_opener_pass_on_the_live_presentation() {
+    let _guard = plx_base::testlock::serial();
+    let (mut d, mut rig, _) = booted();
+    let id = open_modal(&mut d, &mut rig, Style::Sheet, 16);
+    let host = d.nav.top_page().map(|e| e.id).expect("the booted page");
+    // no dim declared: a host test has no GL context to paint one through, and the lift is the
+    // opener's, not the dim's
+    modal_mut(&mut d, id).bar_opener = Some(7);
+    d.nav.modals.surface_mut(id).unwrap().motion = super::modal::PopoverMotion::at(1.0);
+    let chip = FocusKey { entry: host, elem: 7 };
+    assert_eq!(d.lifted_opener(), Some((host, Some(chip))), "the chip is the surface's opener, hosted by the page on top");
+
+    d.frame(&mut rig, tick(32), vec![], vec![], &mut NoTap);
+    rig.bar_lifts.clear();
+    d.draw(&mut rig, true);
+    assert_eq!(rig.bar_lifts.len(), 1, "one lift in a drawn frame");
+    assert_eq!(rig.bar_lifts[0].0, 7);
+    d.draw(&mut rig, true);
+    assert_eq!(rig.bar_lifts.len(), 2, "one lift per drawn frame, not one per surface-and-pass");
+    d.draw(&mut rig, false);
+    assert_eq!(rig.bar_lifts.len(), 2, "a surfaces-only pass owes none: the bar and its dim were not drawn");
+
+    // a half-tucked bar: the lift, and the rect the surface is told, are where the bar is drawn
+    let page = d.nav.tabs.stack.top_mut().unwrap().inst.as_mut().unwrap().screen.as_any_mut().unwrap();
+    page.downcast_mut::<crate::fixture::FixtureScreen>().expect("fixture screen").tuck = 0.5;
+    d.draw(&mut rig, true);
+    let lift = crate::screen::chrome_lift(0.5);
+    let (_, presented) = *rig.bar_lifts.last().unwrap();
+    assert_eq!(presented.chrome_lift, lift, "the lift lies on the tucked presentation the chrome pass drew");
+    assert!((presented.chrome_alpha - 0.5).abs() < 1e-6, "…at its faded alpha");
+    assert_eq!(modal_of(&d, id).opener_seen.last().copied(), Some(crate::Rect::new(76.0, 40.0 - lift, 60.0, 60.0)),
+        "the surface is handed the live drawn rect of the opener");
+}
+
 /// An `Opaque` surface is the mechanism's one documented boundary: it REPLACES its host once the
 /// ground is drawn, so there is no page pass to draw into and no snapshot for a dim to belong to
 /// — its dim is composed with its own ground, in its own `draw`.
@@ -140,45 +206,6 @@ fn the_scrim_ladder_scales_by_appear_and_the_route_dip() {
     // settled and no transition: exactly what the surface declared
     d.nav.modals.surface_mut(id).unwrap().motion = super::modal::PopoverMotion::at(1.0);
     assert!((d.nav.modals.scrims(1.0)[0].1 - 0.5).abs() < 1e-6);
-}
-
-/// The production dispatcher supplies one borrowed chrome projection to the bare lift callback;
-/// it must include the profile, labels and the material the normal chrome draw just published.
-#[test]
-fn the_scrim_callback_receives_the_normal_chromes_borrowed_frame_read() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    static SEEN: AtomicBool = AtomicBool::new(false);
-    fn lift(read: crate::screen::ScrimLiftRead<'_>) {
-        let chrome = read.chrome.expect("the fixture rig supplied chrome");
-        assert_eq!(chrome.profile.name.to_bytes(), b"Captured A");
-        assert_eq!(chrome.profile.initial.to_bytes(), b"A");
-        assert_eq!(chrome.labels.labels, ["Home", "Movies", ""]);
-        assert!((chrome.chip_expand - 0.625).abs() < 1e-6);
-        let face = read.bar_material.expect("the frame plan supplied the tab face");
-        assert_eq!(face.scrim_top, [0.1, 0.2, 0.3, 0.4]);
-        SEEN.store(true, Ordering::Relaxed);
-    }
-
-    let _guard = plx_base::testlock::serial();
-    SEEN.store(false, Ordering::Relaxed);
-    let (mut d, mut rig, _) = booted();
-    rig.seed_scrim_chrome_for_test("Captured A", "A", &["Home", "Movies", ""], 0.625);
-    let id = open_modal(&mut d, &mut rig, Style::Sheet, 16);
-    let modal = modal_mut(&mut d, id);
-    modal.scrim_alpha = 0.5;
-    modal.scrim_lift = Some(lift);
-    d.nav.modals.surface_mut(id).unwrap().motion = super::modal::PopoverMotion::at(1.0);
-    let mut glass = crate::frame::glass::GlassPlan::new();
-    glass.set_tab_face_for_test(plx_gfx::gfx::GlassFace {
-        scrim_top: [0.1, 0.2, 0.3, 0.4],
-        scrim_bot: [0.5, 0.6, 0.7, 0.8],
-        rim: [0.0; 4], rim_lit: [0.0; 4], rim_w: 1.0,
-    });
-    let read = crate::dispatch::scrim_lift_read::<FixtureHost>(&rig, Some(&glass));
-    let lifts = d.nav.modals.scrims(1.0);
-    assert_eq!(lifts.len(), 1, "the live surface contributes exactly one lift");
-    (lifts[0].2)(read);
-    assert!(SEEN.load(Ordering::Relaxed), "the dispatcher never invoked the lift callback");
 }
 
 // ── The inherited dim: one field per stack, latched from a page no dim has touched ────────────
@@ -284,8 +311,8 @@ fn key_level(d: &Dispatcher<FixtureHost>) -> f32 {
 
 /// Draw one frame's dims through `fb`.
 fn dims_frame(d: &mut Dispatcher<FixtureHost>, rig: &FixtureRig, fb: &mut FakeFb) {
-    let read = crate::dispatch::scrim_lift_read::<FixtureHost>(rig, None);
-    d.nav.modals.draw_scrims_on(1.0, read, fb);
+    let _ = rig;
+    d.nav.modals.draw_scrims_on(1.0, fb);
 }
 
 /// **The field is latched from the page BEFORE any dim is on it — and so it can never inherit its
@@ -453,321 +480,21 @@ fn a_recaptured_host_relatches_and_the_last_dismissal_resets_the_field() {
     assert_eq!(d.nav.modals.underlay.held(), super::modal::Latched::Nothing);
 }
 
-/// **A corner latch outlives the last dismissal, so the next open of the same player pays nothing.**
-/// Latching the envelope is a 1920-texel reconstruction plus a texture upload: 5.5-7.3 ms inside
-/// the open frame of every player Tracks/More popover on the television (`ulatch`, 2026-10-01),
-/// because `prune` reset the field on every close. The envelope is the PLAYING ITEM's, not the
-/// popover's, so a close and re-open over the same item has nothing new to read.
-///
-/// Observed RED against the old `prune`, which dropped the field (`is_latched()` was false).
-#[test]
-fn a_corner_latch_survives_the_last_dismissal_and_the_same_corners_keep_it() {
-    use crate::screen::UnderlaySource as U;
-    let (mut d, mut rig, _) = booted();
-    let a = open_modal(&mut d, &mut rig, Style::Sheet, 16);
-    let c = [[0.2, 0.4, 0.1], [0.3, 0.1, 0.5], [0.6, 0.2, 0.2], [0.1, 0.1, 0.4]];
-    let mut fb = FakeFb::new(0.5);
-    fb.video_plane = true;
-    d.nav.modals.underlay.sync(Some(U::Corners(c)), &mut fb);
-    assert_eq!(d.nav.modals.underlay.held(), super::modal::Latched::Corners(c));
-    let key = d.nav.modals.underlay.field().key();
-
-    assert!(d.nav.modals.hide(a));
-    d.nav.modals.prune();
-    assert!(d.nav.modals.is_empty());
-    assert!(d.nav.modals.underlay.field().is_latched(), "the envelope's field is kept across the close");
-
-    // The same player re-opens: nothing is re-read or re-latched.
-    let n = d.nav.modals.underlay.corner_latches();
-    d.nav.modals.underlay.sync(Some(U::Corners(c)), &mut fb);
-    assert_eq!(d.nav.modals.underlay.corner_latches(), n, "same corners: no second latch");
-    assert_eq!(d.nav.modals.underlay.field().key(), key);
-    assert!(fb.events.is_empty());
-}
-
-/// **What the kept field must never do: show through as the opening frames of a different
-/// stack.** A page-sourced stack opens on the flat ink until its read lands (the doc of
-/// `ModalUnderlay::sync`), a changed envelope re-latches, and a flat source resets.
-#[test]
-fn a_kept_corner_field_never_leaks_into_a_different_stack_or_other_corners() {
-    use crate::screen::UnderlaySource as U;
-    let c = [[0.2, 0.4, 0.1]; 4];
-    let c2 = [[0.7, 0.1, 0.3]; 4];
-    for case in 0..4 {
-        let (mut d, mut rig, _) = booted();
-        let mut fb = FakeFb::new(0.5);
-        fb.video_plane = true;
-        d.nav.modals.underlay.sync(Some(U::Corners(c)), &mut fb);
-        let id = open_modal(&mut d, &mut rig, Style::Sheet, 16);
-        assert!(d.nav.modals.hide(id));
-        d.nav.modals.prune();
-        assert!(d.nav.modals.underlay.field().is_latched());
-        match case {
-            // a page-sourced stack: flat ink until its own read lands (refused here)
-            0 => {
-                fb.video_plane = false;
-                fb.refuse = true;
-                d.nav.modals.underlay.sync(Some(U::Page), &mut fb);
-                assert!(!d.nav.modals.underlay.field().is_latched(), "page stack opens on the flat ink");
-                assert_eq!(d.nav.modals.underlay.held(), super::modal::Latched::Nothing);
-            }
-            // other corners
-            1 => {
-                d.nav.modals.underlay.sync(Some(U::Corners(c2)), &mut fb);
-                assert_eq!(d.nav.modals.underlay.held(), super::modal::Latched::Corners(c2));
-                assert!(d.nav.modals.underlay.field().is_latched());
-            }
-            // an envelope-less player
-            2 => {
-                d.nav.modals.underlay.sync(Some(U::Flat), &mut fb);
-                assert!(!d.nav.modals.underlay.field().is_latched());
-            }
-            // a non-player surface presented over the kept field: its panel reads the field
-            // before any dim could replace it, so the present itself drops it
-            _ => {
-                let _ = open_modal(&mut d, &mut rig, Style::Sheet, 16);
-                assert!(!d.nav.modals.underlay.field().is_latched(), "a Sheet never sees the player's light");
-            }
-        }
-    }
-}
-
-/// **The envelope is latched BEFORE the first popover opens**, on a presenting frame with nothing up,
-/// so even the first open of a playback pays no `ulatch` (5.5-7.3 ms in the open frame on the TV).
-/// A live stack's field is never replaced by it.
-#[test]
-fn a_noted_envelope_is_preloaded_for_the_first_open_and_never_over_a_live_field() {
-    use crate::screen::UnderlaySource as U;
-    let (mut d, mut rig, _) = booted();
-    let c = [[0.2, 0.4, 0.1], [0.3, 0.1, 0.5], [0.6, 0.2, 0.2], [0.1, 0.1, 0.4]];
-    let u = &mut d.nav.modals.underlay;
-    u.preload();
-    assert!(!u.field().is_latched(), "nothing was asked for: nothing is latched");
-    u.want_corners(Some(c));
-    assert!(!u.field().is_latched(), "noting is not latching: it uploads nothing");
-    u.preload();
-    assert_eq!(u.held(), super::modal::Latched::Corners(c));
-    assert!(u.field().is_latched());
-    let n = u.corner_latches();
-    // the popover opens: the same envelope is adopted as it stands
-    let mut fb = FakeFb::new(0.5);
-    fb.video_plane = true;
-    u.sync(Some(U::Corners(c)), &mut fb);
-    assert_eq!(u.corner_latches(), n, "the open frame latched nothing");
-    // asking again for what is held does nothing; a live Page latch is never replaced
-    u.want_corners(Some(c));
-    u.preload();
-    assert_eq!(u.corner_latches(), n);
-    let a = open_modal(&mut d, &mut rig, Style::Sheet, 16);
-    let _ = a;
-    let mut fb = FakeFb::new(0.5);
-    d.nav.modals.underlay.reset();
-    d.nav.modals.underlay.sync(Some(U::Page), &mut fb);
-    d.nav.modals.underlay.want_corners(Some(c));
-    d.nav.modals.underlay.preload();
-    assert_ne!(d.nav.modals.underlay.held(), super::modal::Latched::Corners(c), "a live stack's field stands");
-}
-
-/// **The page pass draws the stack's dims every frame, an EMPTY stack included, and that must not
-/// wake the kept field.** On the television the first cut of the retained envelope was dropped by
-/// the very next frame (`upre` re-latched at 2-3 ms on frame after frame): `draw_scrims_on` synced
-/// the field against "no surface declares a dim" and reset it.
-#[test]
-fn an_empty_stacks_dim_pass_leaves_the_kept_envelope_alone() {
-    use crate::screen::UnderlaySource as U;
-    let (mut d, rig, _) = booted();
-    let c = [[0.2, 0.4, 0.1]; 4];
-    let mut fb = FakeFb::new(0.5);
-    fb.video_plane = true;
-    d.nav.modals.underlay.want_corners(Some(c));
-    d.nav.modals.underlay.preload();
-    assert!(d.nav.modals.is_empty());
-    for _ in 0..3 {
-        fb.frame(0.5);
-        dims_frame(&mut d, &rig, &mut fb);
-    }
-    assert_eq!(d.nav.modals.underlay.held(), super::modal::Latched::Corners(c));
-    assert!(d.nav.modals.underlay.field().is_latched());
-    let n = d.nav.modals.underlay.corner_latches();
-    d.nav.modals.underlay.sync(Some(U::Corners(c)), &mut fb);
-    assert_eq!(d.nav.modals.underlay.corner_latches(), n);
-}
-
-/// **An Info/Chapters/Timing-style player panel (a `PlayerPanel` with no dim) leaves the kept
-/// envelope alone**, open and closed: its `Scrim::NONE` makes the source `None`, and syncing the
-/// field against "nobody dims" used to drop it, so the next presenting frame paid `upre` again.
-#[test]
-fn a_dimless_player_panel_opening_and_closing_keeps_the_envelope() {
-    let (mut d, mut rig, _) = booted();
-    let c = [[0.2, 0.4, 0.1]; 4];
-    let mut fb = FakeFb::new(0.5);
-    fb.video_plane = true;
-    d.nav.modals.underlay.want_corners(Some(c));
-    d.nav.modals.preload_underlay();
-    let n = d.nav.modals.underlay.corner_latches();
-    let id = open_modal(&mut d, &mut rig, Style::PlayerPanel { survives_failure: false }, 16);
-    for _ in 0..2 {
-        fb.frame(0.5);
-        dims_frame(&mut d, &rig, &mut fb);
-    }
-    assert!(d.nav.modals.underlay.field().is_latched(), "open: the envelope stands");
-    assert!(d.nav.modals.hide(id));
-    d.nav.modals.prune();
-    fb.frame(0.5);
-    dims_frame(&mut d, &rig, &mut fb);
-    assert_eq!(d.nav.modals.underlay.held(), super::modal::Latched::Corners(c), "closed: still kept");
-    assert_eq!(d.nav.modals.underlay.corner_latches(), n);
-}
-
-/// **A dimming PlayerPanel presented over the kept envelope adopts it through `draw_scrims_on`**,
-/// latching nothing; one over DIFFERENT corners re-latches.
-#[test]
-fn a_player_panel_presented_over_the_kept_field_adopts_it_through_the_dim_pass() {
-    let (mut d, mut rig, _) = booted();
-    let c = [[0.2, 0.4, 0.1]; 4];
-    let c2 = [[0.7, 0.1, 0.3]; 4];
-    let mut fb = FakeFb::new(0.5);
-    fb.video_plane = true;
-    d.nav.modals.underlay.want_corners(Some(c));
-    d.nav.modals.preload_underlay();
-    let n = d.nav.modals.underlay.corner_latches();
-    let id = open_modal(&mut d, &mut rig, Style::PlayerPanel { survives_failure: false }, 16);
-    modal_mut(&mut d, id).scrim_alpha = 0.5;
-    modal_mut(&mut d, id).scrim_corners = Some(c);
-    d.nav.modals.surface_mut(id).unwrap().motion = super::modal::PopoverMotion::at(1.0);
-    dims_frame(&mut d, &rig, &mut fb);
-    assert_eq!(d.nav.modals.underlay.corner_latches(), n, "adopted, not re-latched");
-    assert_eq!(fb.events, ["dim"]);
-    modal_mut(&mut d, id).scrim_corners = Some(c2);
-    fb.frame(0.5);
-    dims_frame(&mut d, &rig, &mut fb);
-    assert_eq!(d.nav.modals.underlay.held(), super::modal::Latched::Corners(c2));
-}
-
-/// **A noted envelope never outlives its frame or lands over a live stack.**
-#[test]
-fn a_stale_noted_envelope_is_not_preloaded_over_a_live_stack() {
-    let (mut d, mut rig, _) = booted();
-    let c = [[0.2, 0.4, 0.1]; 4];
-    d.nav.modals.underlay.want_corners(Some(c));
-    let _ = open_modal(&mut d, &mut rig, Style::Sheet, 16);
-    d.nav.modals.preload_underlay();
-    assert!(!d.nav.modals.underlay.field().is_latched(), "a live stack's field is not preloaded over");
-    // the note was consumed: closing the stack and preloading again does nothing
-    d.nav.modals.hide(d.nav.modals.top().unwrap().entry.id);
-    d.nav.modals.prune();
-    d.nav.modals.preload_underlay();
-    assert!(!d.nav.modals.underlay.field().is_latched());
-}
-
-/// **The preload waits for a page at rest, through the dispatcher's own prepare pass.** The unit
-/// test of `note_at_rest` passed while production called `want_corners` instead and the debounce
-/// never gated anything: the first presenting frame latched, on the playback-start frame the
-/// wait exists to avoid (`dip=held`, `results=12-17`, 8-11 ms on a 27-37 ms frame).
-///
-/// (a) nothing latches until `PRELOAD_REST_FRAMES` presenting frames in a row over one envelope;
-/// (b) a changed envelope, or a frame with none, restarts the count;
-/// (c) a frame that does not reach the note (a surface on the stack, no live top entry) leaves
-/// nothing for a later `preload_underlay`.
-#[test]
-fn the_dispatchers_prepare_notes_the_envelope_only_after_the_page_has_rested() {
-    use crate::fixture::set_video_plane_corners as corners;
-    let _g = plx_base::testlock::serial();
-    let n = super::modal::PRELOAD_REST_FRAMES as usize;
-    let c = [[0.2, 0.4, 0.1]; 4];
-    let c2 = [[0.7, 0.1, 0.3]; 4];
-    let mut d: Dispatcher<FixtureHost> = Dispatcher::new();
-    let mut rig = FixtureRig::new();
-    d.request(MachineId::Nav, NavOp::Root(FixtureArg::VideoPlane));
-    let mut ms = 0;
-    // One PRESENTING frame (prepare runs only on those), then the presenting side's preload
-    // unless the test wants the note left standing.
-    let mut rested = |d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, preload: bool| {
-        use plx_machine::present::{PresentEvent, Provenance};
-        ms += 16;
-        d.present.note(PresentEvent::Damage(Provenance::Input));
-        assert!(d.frame(rig, tick(ms), vec![], vec![], &mut NoTap).presented);
-        if preload {
-            d.nav.modals.preload_underlay();
-        }
-    };
-    corners(Some(c));
-    for i in 1..n {
-        rested(&mut d, &mut rig, true);
-        assert!(!d.nav.modals.underlay.field().is_latched(), "frame {i} of {n}: nothing latched yet");
-    }
-    rested(&mut d, &mut rig, true);
-    assert_eq!(d.nav.modals.underlay.held(), super::modal::Latched::Corners(c), "frame {n}: latched");
-
-    // (b) a different envelope restarts the count, and so does a frame with none
-    d.nav.modals.underlay.reset();
-    // …and withdraws a note nobody consumed (the frame between did not present): left standing,
-    // it would latch the OLD envelope
-    corners(Some(c));
-    for _ in 0..n {
-        rested(&mut d, &mut rig, false);
-    }
-    assert_eq!(d.nav.modals.underlay.wanted(), Some(c), "the fixture: a note stands, unconsumed");
-    corners(Some(c2));
-    rested(&mut d, &mut rig, false);
-    assert_eq!(d.nav.modals.underlay.wanted(), None, "a changed envelope withdraws the old note");
-    // the count starts over for what follows (a `reset` clears the field, not the rest count)
-    corners(None);
-    rested(&mut d, &mut rig, true);
-    d.nav.modals.underlay.reset();
-    corners(Some(c2));
-    for _ in 1..n {
-        rested(&mut d, &mut rig, true);
-    }
-    corners(None);
-    rested(&mut d, &mut rig, true);
-    corners(Some(c2));
-    for _ in 1..n {
-        rested(&mut d, &mut rig, true);
-    }
-    assert!(!d.nav.modals.underlay.field().is_latched(), "a frame with no envelope restarted the count");
-    rested(&mut d, &mut rig, true);
-    assert_eq!(d.nav.modals.underlay.held(), super::modal::Latched::Corners(c2));
-
-    // (c) a surface on the stack: the note is not reached, and nothing stale survives it
-    d.nav.modals.underlay.reset();
-    for _ in 0..n {
-        rested(&mut d, &mut rig, true);
-    }
-    assert_eq!(d.nav.modals.underlay.held(), super::modal::Latched::Corners(c2));
-    d.nav.modals.underlay.reset();
-    let _id = open_modal(&mut d, &mut rig, Style::Sheet, 4000);
-    // a note left standing, as if the page had rested: the dispatcher's own pass must withdraw it
-    // (read BEFORE `preload_underlay`, whose empty-stack check would clear it anyway)
-    d.nav.modals.underlay.want_corners(Some(c2));
-    rested(&mut d, &mut rig, false);
-    assert_eq!(d.nav.modals.underlay.wanted(), None, "a surface is up: no note stands");
-    for _ in 0..3 {
-        rested(&mut d, &mut rig, true);
-    }
-    assert!(!d.nav.modals.underlay.field().is_latched(), "nothing was preloaded under a surface");
-    corners(None);
-}
-
 /// The latch policy, as the pure table it is.
 #[test]
 fn the_latch_policy_reads_the_page_once_per_snapshot_and_never_over_the_video_plane() {
     use super::modal::{latch_step, LatchStep as S, Latched as L};
     use crate::screen::UnderlaySource as U;
-    let c = [[0.2, 0.4, 0.1]; 4];
-    let c2 = [[0.4, 0.1, 0.2]; 4];
     // the page, never read / re-captured / unchanged
     assert_eq!(latch_step(Some(U::Page), L::Nothing, 3, false), S::SamplePage);
     assert_eq!(latch_step(Some(U::Page), L::Page(2), 3, false), S::SamplePage);
     assert_eq!(latch_step(Some(U::Page), L::Page(3), 3, false), S::Keep);
     // framebuffer 0 is the punch-through hole on a video-plane frame: never read it
     assert_eq!(latch_step(Some(U::Page), L::Nothing, 3, true), S::Keep);
-    // the video plane's stand-in: an envelope, re-latched only when it changes
-    assert_eq!(latch_step(Some(U::Corners(c)), L::Nothing, 0, true), S::Corners(c));
-    assert_eq!(latch_step(Some(U::Corners(c)), L::Corners(c), 0, true), S::Keep);
-    assert_eq!(latch_step(Some(U::Corners(c2)), L::Corners(c), 0, true), S::Corners(c2));
-    // nothing to inherit, or nobody dimming: the flat ink
-    assert_eq!(latch_step(Some(U::Flat), L::Corners(c), 0, true), S::Reset);
+    // the video plane's dim has nothing to inherit: the flat ink, whatever was held
+    assert_eq!(latch_step(Some(U::Flat), L::Nothing, 0, true), S::Keep);
+    assert_eq!(latch_step(Some(U::Flat), L::Page(1), 0, true), S::Reset);
+    // nobody dimming: the flat ink
     assert_eq!(latch_step(None, L::Page(1), 1, false), S::Reset);
     assert_eq!(latch_step(None, L::Nothing, 1, false), S::Keep);
 }
@@ -828,7 +555,7 @@ fn no_surface_states_its_own_dim_weight() {
         let src = std::fs::read_to_string(f).unwrap();
         for (n, line) in src.lines().enumerate() {
             let code = line.split("//").next().unwrap_or("");
-            let hit = ["Scrim::dim(", "Scrim::lifting(", "Scrim::over_video(", ".scrim("]
+            let hit = ["Scrim::dim(", "Scrim::over_video(", ".scrim("]
                 .iter()
                 .any(|c| literal_after(code, c))
                 || code.contains("const SCRIM_A")
@@ -946,6 +673,121 @@ fn the_lifted_element_reaches_the_page_pass_and_every_change_of_it_retakes_the_s
     }
 }
 
+
+/// **The top page's opener lift is the dispatcher's, drawn in the ONE lift pass after the last
+/// surface, on BOTH plans** (`Dispatcher::draw_with`, review R1/R3). The element a menu was opened
+/// from (a header pill, a card) is lit above the dim AND the panel so a panel grows out from under
+/// it; it was drawn by the application's page closure instead, so its place against the surfaces
+/// depended on the plan: after them on `Owned` (`draw(.., true)`), BEFORE them on
+/// `LegacyThenSurfaces` (the closure ran, then `draw(.., false)` drew the panel on top of it). Red
+/// while the dispatcher never called `Screen::redraw_focused`.
+///
+/// `draw(.., false)` is the surfaces-only second call: it draws no dim and so owes no
+/// the bar opener's lift (`a_bar_opener_is_lifted_once_per_frame_by_the_opener_pass_on_the_live_presentation`), but the page opener
+/// is not a dim's lift and is owed on every plan the host is not REPLACED on. The stand-down rule
+/// (the lift stops once focus left the opener while the menu fades) is `lifted_opener`'s, so it
+/// holds for both.
+#[test]
+fn the_page_openers_lift_is_drawn_after_the_surfaces_on_both_plans() {
+    use crate::fixture::{FixtureModal, FixtureScreen};
+    let _guard = plx_base::testlock::serial();
+    let (mut d, mut rig, _) = booted();
+    let home = d.nav.top_page().unwrap().id;
+    let opener = FocusKey { entry: home, elem: 0 };
+    let mut ms = 16;
+    let mut step = |d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, keys: Vec<_>| {
+        ms += 16;
+        let r = d.frame(rig, tick(ms), keys, vec![], &mut NoTap);
+        d.draw(rig, true);
+        d.prune(&r.unmounted);
+    };
+    let page = |d: &Dispatcher<FixtureHost>| {
+        let p = d.nav.entry(home).unwrap().inst.as_ref().unwrap().screen.as_any().unwrap().downcast_ref::<FixtureScreen>().unwrap();
+        (p.redrawn_at.get(), p.redraws.get())
+    };
+    let panel = |d: &Dispatcher<FixtureHost>| d.nav.modals.top().unwrap().entry.inst.as_ref().unwrap().screen.as_any().unwrap()
+        .downcast_ref::<FixtureModal>().unwrap().draw_at;
+    d.set_focus(Some(opener));
+    d.nav.next_style = Style::Compact;
+    d.request(MachineId::Nav, NavOp::Present(FixtureArg::Modal));
+    step(&mut d, &mut rig, vec![]);
+    let id = d.nav.modals.top().expect("presented").entry.id;
+    modal_mut(&mut d, id).opener = Some((home, Some(opener)));
+    for _ in 0..200 {
+        step(&mut d, &mut rig, vec![]);
+        if d.nav.modals.top().is_some_and(|s| s.phase == Phase::Open) { break; }
+    }
+    assert_eq!(d.nav.modals.top().unwrap().phase, Phase::Open, "the menu is up");
+    assert_eq!(d.lifted_opener(), Some((home, Some(opener))), "premise: the page's opener is lifted");
+
+    for pages in [true, false] {
+        let (_, before) = page(&d);
+        d.draw(&mut rig, pages);
+        let (lift_at, after) = page(&d);
+        assert_eq!(after, before + 1, "pages={pages}: the opener is lifted once per draw");
+        assert!(lift_at > panel(&d), "pages={pages}: the opener is drawn AFTER the panel, not under it (lift {lift_at}, panel {})", panel(&d));
+    }
+
+    // Back: the menu fades and input is the page's again, its focus still on the opener: still lifted
+    step(&mut d, &mut rig, vec![key(Key::Back, tick(0))]);
+    assert_eq!(d.nav.modals.top().unwrap().phase, Phase::Closing);
+    for pages in [true, false] {
+        let (_, before) = page(&d);
+        d.draw(&mut rig, pages);
+        assert_eq!(page(&d).1, before + 1, "pages={pages}: closing with focus on the opener: still lifted");
+    }
+    // focus left the opener while the menu fades: the lift stands down on either plan
+    d.set_focus(Some(FocusKey { entry: home, elem: 6 }));
+    assert_eq!(d.lifted_opener(), None);
+    for pages in [true, false] {
+        let (_, before) = page(&d);
+        d.draw(&mut rig, pages);
+        assert_eq!(page(&d).1, before, "pages={pages}: focus moved off the opener: the page draws it, the lift stands down");
+    }
+}
+
+/// **An opener that LEFT the page keeps its lift while the menu fades** (Remove from Watchlist): the
+/// focus reconciles to the next card, but the opener element is not a card focus moved off — it is
+/// the removed card, still drawn as its landing's ghost. Standing the lift down there dropped the
+/// ghost from above the dim into it on the OK frame (sim render 2026-10-16: luminance 103 to 64 in
+/// one frame). The lift holds while the page says the opener is departing, and stands down as
+/// before once it is not.
+#[test]
+fn a_departing_opener_keeps_its_lift_while_the_menu_fades() {
+    let _guard = plx_base::testlock::serial();
+    let (mut d, mut rig, _) = booted();
+    let home = d.nav.top_page().unwrap().id;
+    let opener = FocusKey { entry: home, elem: 0 };
+    let mut ms = 16;
+    let mut step = |d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, keys: Vec<_>| {
+        ms += 16;
+        let r = d.frame(rig, tick(ms), keys, vec![], &mut NoTap);
+        d.draw(rig, true);
+        d.prune(&r.unmounted);
+    };
+    d.set_focus(Some(opener));
+    d.nav.next_style = Style::Compact;
+    d.request(MachineId::Nav, NavOp::Present(FixtureArg::Modal));
+    step(&mut d, &mut rig, vec![]);
+    let id = d.nav.modals.top().expect("presented").entry.id;
+    modal_mut(&mut d, id).opener = Some((home, Some(opener)));
+    step(&mut d, &mut rig, vec![]);
+    step(&mut d, &mut rig, vec![key(Key::Back, tick(0))]);
+    assert_eq!(d.nav.modals.top().unwrap().phase, Phase::Closing);
+    fn page(d: &mut Dispatcher<FixtureHost>, home: EntryId) -> &mut crate::fixture::FixtureScreen {
+        d.nav.entry_mut(home).unwrap().inst.as_mut().unwrap().screen.as_any_mut().unwrap()
+            .downcast_mut::<crate::fixture::FixtureScreen>().unwrap()
+    }
+    // the opener card was removed: focus reconciles to the next one, the page still draws it going
+    page(&mut d, home).departing = Some(opener.elem);
+    d.set_focus(Some(FocusKey { entry: home, elem: 6 }));
+    step(&mut d, &mut rig, vec![]);
+    assert_eq!(d.lifted_opener(), Some((home, Some(opener))), "the lift holds the departing opener");
+    // once it is gone, the lift stands down as for any focus that moved off
+    page(&mut d, home).departing = None;
+    step(&mut d, &mut rig, vec![]);
+    assert_eq!(d.lifted_opener(), None, "nothing departing: the lift stands down");
+}
 
 #[test]
 fn a_request_freezes_inactive_group_cursors_before_focus_moves_during_the_fade() {
@@ -1496,6 +1338,13 @@ fn a_surface_spring_and_a_page_spring_are_told_apart_by_the_idle_gate() {
     );
 }
 
+/// A tap that grades the logical-state hash (the recorder's, the fixture's) asks for it by calling
+/// the thunk it is offered.
+struct Hashing;
+impl Tap<FixtureHost> for Hashing {
+    fn state(&mut self, _f: u64, hash: &mut dyn FnMut() -> u64) { hash(); }
+}
+
 /// §5.4: a presenting frame's prepare pass leaves the logical-state hash where it was. The
 /// dispatcher asserts it on every presenting frame of a debug build; this is the named test.
 #[test]
@@ -1503,10 +1352,20 @@ fn prepare_does_not_change_the_logical_state_hash() {
     let (mut d, mut rig, _) = booted();
     // an event frame that presents: `r.state_hash` is taken after the drains and BEFORE prepare
     // and draw; the hash after the frame must be the same number
-    let r = d.frame(&mut rig, tick(16), vec![key(Key::Ok, tick(16))], vec![], &mut NoTap);
+    let r = d.frame(&mut rig, tick(16), vec![key(Key::Ok, tick(16))], vec![], &mut Hashing);
     assert!(r.presented, "the key invalidated");
-    let pre_prepare = r.state_hash.expect("an event frame hashes");
+    let pre_prepare = r.state_hash.expect("an event frame hashes for a tap that wants it");
     assert_eq!(d.state_hash(), pre_prepare);
+}
+
+/// DEBUG-7b: the hash walks every live instance's state (Home's whole key table), so an event
+/// frame whose tap reads nothing (production's `NoTap`) does not compute it.
+#[test]
+fn an_unread_logical_state_hash_is_not_computed() {
+    let (mut d, mut rig, _) = booted();
+    let r = d.frame(&mut rig, tick(16), vec![key(Key::Ok, tick(16))], vec![], &mut NoTap);
+    assert!(r.presented, "the key invalidated: an event frame");
+    assert_eq!(r.state_hash, None, "no tap wants the hash, so the frame does not pay for it");
 }
 
 /// The dip lifted off `ui::nav`: over a `PageDip` the op applies at the FLOOR, several frames
@@ -1617,6 +1476,88 @@ fn a_held_surface_warms_its_text_instead_of_rasterising_it() {
     assert!(!d.nav.modals.top().unwrap().motion.held(), "nothing pending: the ramp starts");
     crate::fixture::modal_draws_text(false);
     plx_gfx::text::reset_prewarm_for_test();
+}
+
+/// **A held surface's clock does not run, and its opener face is still drawn live.** A surface is
+/// HELD (`PopoverMotion::held`) for its capture frame and while its text warms — up to
+/// `SURFACE_TEXT_HOLD_MAX_MS`, six frames — at appear 0, walked through the text recorder. Two
+/// things went wrong on those frames for the Watchlist's Sort & Filter morph (frame dump at
+/// 572f46d07, n180–181):
+///
+/// - its `Tick`s carried the real `dt`, so the morph's springs ran through frames nobody saw and
+///   the first visible frame landed mid-morph, a small glass with rows already on it;
+/// - the page leaves a lifted opener out from the surface's first frame (`lifted_opener`), and
+///   the recorder paints nothing, so the focused pill VANISHED on OK.
+///
+/// So a held surface is delivered `Tick { dt_us: 0 }`, and `Screen::draw_held` is asked for the
+/// part of it that is already on screen, through a LIVE painter.
+#[test]
+fn a_held_surface_ticks_with_no_time_and_draws_its_held_face_live() {
+    let (mut d, mut rig, _) = booted();
+    plx_gfx::text::reset_prewarm_for_test();
+    crate::fixture::modal_draws_text(true);
+    let id = open_modal(&mut d, &mut rig, Style::Compact, 16);
+    let (mut ms, mut held_frames, mut live_frames) = (16, 0, 0);
+    for _ in 0..12 {
+        ms += 16;
+        let r = d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+        let held = d.nav.modals.top().unwrap().motion.held();
+        d.draw(&mut rig, true);
+        d.prune(&r.unmounted);
+        let m = modal_mut(&mut d, id);
+        let dt = *m.tick_dts.last().expect("the surface is ticked every frame");
+        let faces = std::mem::take(&mut m.held_faces);
+        if held {
+            held_frames += 1;
+            assert_eq!(dt, 0, "a held surface's clock does not run");
+            // once per walk of the frame (the backdrop discovery walk and the visible one)
+            assert!(!faces.is_empty() && faces.iter().all(|&live| live), "a held surface draws its face through a live painter: {faces:?}");
+        } else {
+            live_frames += 1;
+            assert!(dt > 0, "an unheld surface gets the frame's time");
+            assert!(faces.is_empty(), "an unheld surface draws itself whole");
+        }
+    }
+    assert!(held_frames >= 2 && live_frames >= 2, "premise: both kinds of frame ran ({held_frames} held, {live_frames} live)");
+    crate::fixture::modal_draws_text(false);
+    plx_gfx::text::reset_prewarm_for_test();
+}
+
+/// **The page knows when a menu veils it, before it ticks.** The dispatcher states the veil right
+/// after it steps the surfaces: full while a surface opens or stands open, the surface's own
+/// appear while it fades out, nothing once it has gone. A landing reads it on the page's tick in
+/// the same frame (`cards::landing`), so a Remove chosen in a menu moves the grid only after it.
+#[test]
+fn the_veil_follows_a_surface_through_its_fade_and_clears_when_it_goes() {
+    use crate::containers::modal::{page_veiled, VEIL, CLOSING_GONE};
+    let (mut d, mut rig, _) = booted();
+    let id = open_modal(&mut d, &mut rig, Style::Compact, 16);
+    let mut ms = 16;
+    for _ in 0..40 {
+        ms += 16;
+        let r = d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+        d.prune(&r.unmounted);
+        assert!(page_veiled() && VEIL.with(|v| v.get()) == 1.0, "an opening or open surface veils the page");
+    }
+    d.request(MachineId::Nav, NavOp::Dismiss(id));
+    let mut frames = 0;
+    while d.nav.modals.top().is_some() && frames < 200 {
+        ms += 16;
+        frames += 1;
+        let r = d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+        let veil = VEIL.with(|v| v.get());
+        if let Some(s) = d.nav.modals.top().filter(|s| s.phase == Phase::Closing) {
+            assert_eq!(veil, s.motion.appear.clamp(0.0, 1.0), "a fading surface veils by its appear");
+            assert_eq!(page_veiled(), veil >= CLOSING_GONE);
+        }
+        d.prune(&r.unmounted);
+    }
+    // a menu holds the page until it is gone: the veil clears when the menu is pruned (its
+    // `CLOSING_GONE` frame), not in a tail the menu is still drawn through
+    assert!(frames < 200 && !page_veiled(), "the veil is clear by the time the surface is gone");
+    ms += 16;
+    d.frame(&mut rig, tick(ms), vec![], vec![], &mut NoTap);
+    assert!(!page_veiled() && VEIL.with(|v| v.get()) == 0.0, "no surface, no veil");
 }
 
 /// **Asking for the page that is already on its way is not a second navigation.** The dip-out
@@ -2014,6 +1955,78 @@ fn frozen_dispatch_skips_the_page_but_keeps_chrome_live() {
     d.draw(&mut rig, true); // held
     assert_eq!(page_draw_order(&d), before, "OUT must not invoke the live page");
     assert_eq!(rig.chrome_draws, chrome + 1, "chrome is outside the captured page");
+}
+
+/// **A fully tucked chrome band declares nothing by RULE, not by geometry.** The Library lifts a
+/// tucked bar off canvas ([`crate::screen::chrome_lift`]) and `surface_with` clips what is off
+/// canvas away, so it declared no glass at tuck 1 only because of where the lift put it; the track
+/// still ran its draw (a `sample_ground` framebuffer copy and a glass declaration) at alpha 0.
+/// Were the lift removed (it once was, as "unused") the invisible bar would go on sourcing every
+/// scrolled frame. The dispatcher therefore draws no chrome at `chrome_alpha` 0, whatever the lift.
+///
+/// This is a FIXTURE frame, not a Library frame: `Bridge::draw_chrome` cannot run on a host (it
+/// measures real text with no font loaded), so `FixtureRig::chrome_glass` stands the bar's track
+/// in at its REST rect and ignores `chrome_lift`: the lift forced to 0.
+#[test]
+fn a_fully_tucked_chrome_band_is_not_drawn_at_all() {
+    use crate::frame::backdrop::{self, Z};
+    use crate::frame::glass::GlassPlan;
+    let _guard = plx_base::testlock::serial();
+    plx_machine::idle::frame_begin(1.0 / 60.0);
+    let (mut d, mut rig, _) = booted();
+    rig.chrome_glass = true;
+    let frame = |d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, tuck: f32| -> (usize, Vec<Z>) {
+        let entry = d.nav.tabs.stack.top_mut().expect("the booted page");
+        let page = entry.inst.as_mut().expect("mounted").screen.as_any_mut().expect("fixture page");
+        page.downcast_mut::<crate::fixture::FixtureScreen>().expect("fixture screen").tuck = tuck;
+        let before = rig.chrome_draws;
+        let mut glass = GlassPlan::new();
+        glass.sources.borrow_mut().begin(vec![]);
+        {
+            let _walk = backdrop::discover(glass.sources.clone());
+            d.draw_with_glass_below(rig, &mut glass, true, Z::ALL);
+        }
+        glass.sources.borrow_mut().resolve();
+        let bands = glass.sources.borrow().entries.keys().copied().collect();
+        (rig.chrome_draws - before, bands)
+    };
+    assert_eq!(frame(&mut d, &mut rig, 0.0), (1, vec![Z::CHROME]), "an untucked bar draws and declares its glass");
+    assert_eq!(frame(&mut d, &mut rig, 0.5), (1, vec![Z::CHROME]), "a half-tucked bar is still on screen");
+    assert_eq!(frame(&mut d, &mut rig, 1.0), (0, vec![]), "a fully tucked bar is not drawn: no glass, no entry");
+}
+
+/// **A chrome frame the dispatcher skips leaves the bar's material Flat.** The material (flat capsule or
+/// the glass track's solved face) is what the bar's draw publishes into the `GlassPlan` for the chip and
+/// for the account menu's chip lift (`Rig::lift_bar_member`); a skipped frame publishes nothing, so without a
+/// reset they read the LAST DRAWN frame's face, for a bar that is not on screen.
+///
+/// The fixture's `draw_chrome` never touches the band (a real bar's draw resets it first, then solves),
+/// so a face seeded here survives every drawn frame and only the skip can clear it.
+#[test]
+fn a_skipped_chrome_frame_leaves_the_bar_material_flat() {
+    use crate::frame::backdrop::{self, Z};
+    use crate::frame::glass::GlassPlan;
+    let _guard = plx_base::testlock::serial();
+    plx_machine::idle::frame_begin(1.0 / 60.0);
+    let (mut d, mut rig, _) = booted();
+    let mut glass = GlassPlan::new();
+    glass.set_tab_face_for_test(plx_gfx::gfx::GlassFace::NONE);
+    assert!(glass.tab_face().is_some(), "premise: the seeded face reads back");
+    let frame = |d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, glass: &mut GlassPlan, tuck: f32| -> (usize, bool) {
+        let entry = d.nav.tabs.stack.top_mut().expect("the booted page");
+        let page = entry.inst.as_mut().expect("mounted").screen.as_any_mut().expect("fixture page");
+        page.downcast_mut::<crate::fixture::FixtureScreen>().expect("fixture screen").tuck = tuck;
+        let before = rig.chrome_draws;
+        glass.sources.borrow_mut().begin(vec![]);
+        {
+            let _walk = backdrop::discover(glass.sources.clone());
+            d.draw_with_glass_below(rig, glass, true, Z::ALL);
+        }
+        glass.sources.borrow_mut().resolve();
+        (rig.chrome_draws - before, glass.tab_face().is_some())
+    };
+    assert_eq!(frame(&mut d, &mut rig, &mut glass, 0.5), (1, true), "a drawn frame leaves what the bar's own draw published");
+    assert_eq!(frame(&mut d, &mut rig, &mut glass, 1.0), (0, false), "a skipped frame resets the material: the bar is not drawn, so it is Flat");
 }
 
 #[test]

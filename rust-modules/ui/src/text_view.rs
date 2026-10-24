@@ -17,8 +17,12 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::hash::{Hash, Hasher};
 use std::os::raw::c_int;
-use std::ptr::addr_of_mut;
 use std::rc::Rc;
+
+/// The air between a truncated last line and its trailing run ("MORE"): the spacing scale's hairline
+/// rung. The run's reserved width is this on each side of it, so the clipped line and the run stand
+/// one gap apart with one gap of slack after.
+const TRAILING_GAP: f32 = crate::theme::space::XS;
 
 // Wrapping is pixel-measured (text_width per word), which is far too slow to redo every frame for
 // every block — the text is stable, so memoize the wrapped lines by (text, sz, bold, width, lines).
@@ -38,7 +42,11 @@ struct Wrapped {
     widths: Vec<f32>,
     truncated: bool,
 }
-static mut WRAP_CACHE: Option<HashMap<u64, Rc<Wrapped>>> = None;
+// A `thread_local!`: the memo holds `Rc`s, which are `!Send` by design, and only the render thread
+// wraps text.
+thread_local! {
+    static WRAP_CACHE: std::cell::RefCell<HashMap<u64, Rc<Wrapped>>> = std::cell::RefCell::default();
+}
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! { static FORBID_LIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
@@ -54,15 +62,18 @@ impl Drop for ForbidLive {
 }
 
 fn wrap_memo(key: u64, compute: impl FnOnce() -> Wrapped) -> Rc<Wrapped> {
-    let cache = unsafe { (*addr_of_mut!(WRAP_CACHE)).get_or_insert_with(HashMap::new) };
-    if let Some(v) = cache.get(&key) {
-        return Rc::clone(v);
+    if let Some(v) = WRAP_CACHE.with(|cache| cache.borrow().get(&key).map(Rc::clone)) {
+        return v;
     }
-    if cache.len() > 512 {
-        cache.clear(); // crude cap — plenty for a page's worth of blocks across a few items
-    }
+    // No borrow is held while `compute` runs.
     let v = Rc::new(compute());
-    cache.insert(key, Rc::clone(&v));
+    WRAP_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() > 512 {
+            cache.clear(); // crude cap — plenty for a page's worth of blocks across a few items
+        }
+        cache.insert(key, Rc::clone(&v));
+    });
     v
 }
 
@@ -144,7 +155,7 @@ impl<'a> TextView<'a> {
         self
     }
     /// Borrow the frame's measurement capability for wrapping and inline-run placement.
-    /// Capability-backed wraps never consult the process-wide live-font memo: its entries
+    /// Capability-backed wraps never consult the render thread's live-font memo: its entries
     /// belong to a different measurement source and could hide a missing replay metric.
     pub fn with_measure(mut self, measure: &'a dyn plx_machine::machine::Measure) -> Self {
         self.measure = Some(measure);
@@ -329,7 +340,7 @@ impl<'a> TextView<'a> {
             // One borrowed view owns at most one wrap. Exact width/weight matter here;
             // nothing can survive a new capability, replay, or frame through this memo —
             // UNLESS the capability is the live font itself, whose answers are the ones the
-            // process memo already holds (`Measure::live_font`). Then the paragraph is wrapped
+            // thread's memo already holds (`Measure::live_font`). Then the paragraph is wrapped
             // once, not once per frame.
             width.to_bits().hash(&mut h);
             self.lead_bold.hash(&mut h);
@@ -567,7 +578,7 @@ impl<'a> TextView<'a> {
         // reserve the run's (bold) width so the last line clips short and "… MORE" never spills the column
         let reserve = run
             .and_then(|(r, _)| CString::new(r).ok())
-            .map(|c| self.width(&c, true) + 16.0)
+            .map(|c| self.width(&c, true) + 2.0 * TRAILING_GAP)
             .unwrap_or(0.0);
         // fade_last: the last line dissolves to nothing across this band ending at the wrap width
         // minus the reserved affordance gap. Loop-invariant, so hoisted out.
@@ -669,7 +680,7 @@ impl<'a> TextView<'a> {
             if is_last {
                 if let Some((r, rc)) = run {
                     if let Ok(cs) = CString::new(r) {
-                        let rx = frame.x + text_w + 8.0;
+                        let rx = frame.x + text_w + TRAILING_GAP;
                         Label::new(cs.as_ptr(), self.sz, rc)
                             .bold()
                             .h(HAlign::Left)
@@ -724,7 +735,7 @@ mod tests {
     /// silently drifting one screen away from every other.
     #[test]
     fn the_more_mark_is_uppercase_in_supported_locales() {
-        for preference in [plx_platform::i18n::Preference::En, plx_platform::i18n::Preference::Es, plx_platform::i18n::Preference::Be, plx_platform::i18n::Preference::Fr] {
+        for preference in plx_platform::i18n::SHIPPED {
         let locale = plx_platform::i18n::LocaleContext::resolve(preference, None, None, None, None);
         let s = plx_platform::i18n::msg::browse_action_more_in(&locale);
         assert_eq!(
@@ -775,7 +786,7 @@ mod tests {
     /// a fresh `TextView`, so a memo owned by the view dies with it; the Detail page re-wrapped
     /// its whole about/hero text through TrueType on every frame this way and was CPU-bound at
     /// 50 fps with nothing drawn (2026-09-19, stack samples + `drawmask=all`). A capability that
-    /// IS the live font shares the process memo; the test above still proves a table does not.
+    /// IS the live font shares the thread's memo; the test above still proves a table does not.
     #[test]
     fn a_live_font_capability_wraps_once_across_frames() {
         use plx_machine::machine::Measure;
@@ -792,7 +803,7 @@ mod tests {
             fn live_font(&self) -> bool { true }
         }
         let font = CountingLive(Cell::new(0));
-        // A text no other test wraps, so the process memo cannot already hold it.
+        // A text of its own, so the memo cannot already hold it.
         let text = "zq-live-memo alpha beta gamma delta epsilon zeta eta theta iota";
         let frame = || {
             TextView::new(text, theme::size::BODY, theme::TEXT_PRIMARY)
@@ -807,6 +818,38 @@ mod tests {
         assert_eq!(font.0.get(), after_first, "the next frame's fresh view re-measured the paragraph");
         assert_eq!(first.lines, second.lines);
         plx_gfx::text::take_measure_fault();
+    }
+
+    /// **The trailing run stands one `TRAILING_GAP` after the clipped last line**, and the width it
+    /// reserved is that gap on each side of it: read off the PAINTED runs, not the constant.
+    #[test]
+    fn a_trailing_run_stands_one_gap_after_the_clipped_last_line() {
+        struct Tens;
+        impl plx_machine::machine::Measure for Tens {
+            fn width(&self, s: &std::ffi::CStr, _: i32, _: bool) -> f32 {
+                s.to_string_lossy().chars().count() as f32 * 10.0
+            }
+            fn cap_h(&self, _: i32) -> f32 { 20.0 }
+            fn line_h(&self, _: i32) -> f32 { 28.0 }
+        }
+        let _serial = plx_base::testlock::serial();
+        let frame = Rect::new(30.0, 10.0, 200.0, 0.0);
+        let view = TextView::new("alpha beta gamma delta epsilon zeta eta theta", theme::size::BODY, theme::TEXT_PRIMARY)
+            .max_lines(1)
+            .trailing("MORE", theme::TEXT_PRIMARY)
+            .with_measure(&Tens);
+        let runs = crate::draw_census::capture_runs(|| {
+            view.draw(Painter::recording(), frame);
+        });
+        let more = runs.iter().find(|r| r.text == "MORE").expect("MORE painted");
+        let line = runs.iter().find(|r| r.text != "MORE").expect("the clipped line painted");
+        // (the recording painter's own run widths are the real font's; the view measured with `Tens`)
+        let line_w = line.text.chars().count() as f32 * 10.0;
+        assert_eq!(more.at.x, line.at.x + line_w + theme::space::XS, "{runs:?}");
+        assert!(
+            line_w + 2.0 * theme::space::XS + 40.0 <= frame.w,
+            "the line was clipped to leave the run's width and a gap each side: {runs:?}"
+        );
     }
 
     #[test]

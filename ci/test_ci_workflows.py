@@ -11,7 +11,9 @@
 * the host FFmpeg and libass builds in the simulator jobs are CACHED where the build scripts really
   write, under a key that names every input the scripts key on (a cache that "hits" and still
   rebuilds, or one that outlives a changed input, both stay green);
-* ci.yml's `paths` filter (`CiPathFilter`): evaluated with GitHub's rules, a docs-only or
+* ci.yml starts on every pull request and its `changes` job gates the heavy jobs; both required
+  status names report always (`RequiredChecksReportOnEveryPr`);
+* ci.yml's `paths` filter (`CiPathFilter`, evaluated by ci/ci_paths.py, the code the `changes` job runs): evaluated with GitHub's rules, a docs-only or
   repository-metadata-only change (issue forms, a PR template, prose, images) starts no run, while
   every file a gate reads (PRIVACY.md, the credits pair, an `include_str!` target, the workflows)
   still does, and no other workflow carries a catch-all `'**'` filter;
@@ -23,6 +25,7 @@ Text-level on purpose, like ci/test_ci_timeouts.py (no YAML library on a stock r
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -34,6 +37,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS = ROOT / ".github/workflows"
 sys.path.insert(0, str(ROOT / "ci"))
+import ci_paths  # noqa: E402
 import deps  # noqa: E402
 
 
@@ -213,6 +217,17 @@ class NightlyHomebrewRepository(unittest.TestCase):
         # the repository files must land AFTER the guide page, in the same directory
         self.assertLess(pages.index("docs/nightly-builds.md > _site/nightly/index.html"),
                         pages.index("ci/nightly.py repo-json"))
+
+    def test_the_site_stamps_the_hero_version_from_the_package(self):
+        pages = code("pages.yml")
+        self.assertIn('"pkg/appinfo.json"', pages)
+        self.assertIn('json.load(open("pkg/appinfo.json"))["version"]', pages)
+        # the stamp edits the staged copy, after it is copied, and fails unless it hit exactly one line
+        self.assertLess(pages.index("cp site/index.html _site/index.html"), pages.index('path = "_site/index.html"'))
+        self.assertIn("if n != 1:", pages)
+        # the pattern it rewrites is still the source's hero line
+        hero = re.findall(r"Version \d+\.\d+\.\d+(?=<span)", (ROOT / "site/index.html").read_text())
+        self.assertEqual(len(hero), 1, hero)
 
 
 class HostToolTests(unittest.TestCase):
@@ -414,7 +429,8 @@ class DependabotNotices(unittest.TestCase):
 
     def test_pull_request_code_is_data_never_executed(self):
         job = job_body(self.NAME, "regenerate")
-        checkouts = re.findall(r"actions/checkout@[0-9a-f]{40} # v\d+\n        with:\n((?:          .*\n)+)", job)
+        # any pinned SHA and any `# vX.Y.Z` comment: Dependabot bumps both, the security shape is what is asserted
+        checkouts = re.findall(r"actions/checkout@[0-9a-f]{40}[^\n]*\n        with:\n((?:          .*\n)+)", job)
         self.assertEqual(len(checkouts), 2)
         for block in checkouts:
             self.assertIn("persist-credentials: false", block)
@@ -432,10 +448,28 @@ class DependabotNotices(unittest.TestCase):
 
     def test_a_new_crate_stops_the_job_before_anything_is_committed(self):
         job = job_body(self.NAME, "regenerate")
-        refusal = job[job.index("\n            2)"):job.index("\n            *)")]
-        self.assertIn("exit 1", refusal)
-        self.assertIn("licence decision", refusal)
-        self.assertLess(job.index("exit 1"), job.index("git -C pr commit"))
+        # two generator steps (the std snapshot of a toolchain bump, then the lock): both refuse a new crate
+        refusals = re.findall(r"\n            2\)(.*?)\n            \*\)", job, re.S)
+        self.assertEqual(len(refusals), 2)
+        for refusal in refusals:
+            self.assertIn("exit 1", refusal)
+            self.assertIn("licence decision", refusal)
+        self.assertLess(job.rindex("exit 1"), job.index("git -C pr commit"))
+
+    def test_a_toolchain_bump_is_re_derived_from_the_new_release_before_the_notices_are_generated(self):
+        job = job_body(self.NAME, "regenerate")
+        triggers = code(self.NAME)
+        self.assertIn("rust-modules/rust-toolchain.toml", triggers[:triggers.index("jobs:")])
+        steps = [job.index(s) for s in ("--print-stale-pin", "rustup toolchain install", "--derive-toolchain",
+                                        "gen-third-party-notices.py --root pr >gen.out")]
+        self.assertEqual(steps, sorted(steps))
+        # the install and the derive run only when the pin moved; the pin reaches the shell through env:
+        self.assertEqual(job.count("if: steps.pin.outputs.pin != ''"), 2)
+        self.assertIn("PIN: ${{ steps.pin.outputs.pin }}", job)
+        self.assertIn('rustup toolchain install "$PIN" --profile minimal --component rust-src', job)
+        # the data file may be pushed only with a moved pin
+        self.assertIn("PIN_MOVED", job)
+        self.assertIn("ci/third-party-crates.json", job[job.index("allowed="):])
 
     def test_cargo_never_runs_here_and_the_backstop_is_in_ci(self):
         # A PR's .cargo/config.toml can name a credential-provider program, so cargo on its files with a
@@ -446,6 +480,41 @@ class DependabotNotices(unittest.TestCase):
         header = (WORKFLOWS / self.NAME).read_text()
         self.assertIn("@dependabot recreate", header)
         self.assertNotIn("`@dependabot rebase` or", header)
+
+
+class ToolchainPin(unittest.TestCase):
+    """`rust-modules/rust-toolchain.toml` is the ONE spelling of the Rust release, so a Dependabot bump of it
+    (the `rust-toolchain` entry of dependabot.yml) is a one-line change that cannot leave a stale copy."""
+
+    # The files that must carry the release: the pin itself, and the snapshot / generated table derived from it
+    # (ci/gen-third-party-notices.py checks them against the pin, and --derive-toolchain rewrites them).
+    DERIVED = {"rust-modules/rust-toolchain.toml", "ci/third-party-crates.json", "THIRD-PARTY-NOTICES.md"}
+
+    def test_dependabot_bumps_the_toolchain_file(self):
+        body = (ROOT / ".github/dependabot.yml").read_text()
+        entry = body[body.index("- package-ecosystem: rust-toolchain"):]
+        entry = entry[:entry.index("\n\n")]
+        self.assertIn("directory: /rust-modules", entry)
+        self.assertIn("interval: weekly", entry)
+        self.assertIn("prefix: Deps", entry)
+        self.assertRegex((ROOT / "rust-modules/rust-toolchain.toml").read_text(), r'(?m)^channel = "1\.\d+\.\d+"$')
+
+    def test_no_second_file_spells_the_release(self):
+        import rust_toolchain
+        pin = rust_toolchain.pinned_channel()
+        literal = re.compile(r"(?<![\w.])" + re.escape(pin) + r"(?![\w.]|-)")
+        files = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z"], capture_output=True, text=True, check=True).stdout.split("\0")
+        stray = []
+        for rel in filter(None, files):
+            if rel in self.DERIVED or rel.endswith((".lock", ".svg", ".png", ".jpg", ".ico", ".woff2", ".ttf", ".gz", ".zip")):
+                continue
+            try:
+                body = (ROOT / rel).read_text()
+            except (UnicodeDecodeError, OSError):
+                continue
+            if literal.search(body):
+                stray.append(rel)
+        self.assertEqual(stray, [], f"{pin} is spelled outside rust-modules/rust-toolchain.toml: read the file instead of copying the version")
 
 
 class BuildBenchWorkflow(unittest.TestCase):
@@ -532,7 +601,7 @@ class BuildBenchWorkflow(unittest.TestCase):
         # a leg that left no document records nothing, rather than a day without half its rows
         self.assertIn("left no document: nothing recorded", publish)
         self.assertRegex(publish, r"python3 \.\./tools/build-history\.py")
-        self.assertRegex(publish, r"python3 \.\./tools/ci-summary\.py --history ci-history\.json --bench build-history\.json --out ci-summary\.json")
+        self.assertRegex(publish, r"python3 \.\./tools/ci-summary\.py --history ci-history\.json --bench build-history\.json --quarantine \.\./ci/flaky\.txt --out ci-summary\.json")
 
     def test_measurements_do_not_overlap_and_a_lost_push_race_is_retried(self):
         body = code(self.NAME)
@@ -548,7 +617,7 @@ class BuildBenchWorkflow(unittest.TestCase):
     def test_every_action_is_pinned_to_a_commit(self):
         for line in code(self.NAME).splitlines():
             m = re.match(r"\s*(?:- )?uses: (\S+)", line)
-            if m:
+            if m and not m.group(1).startswith("./"):  # a composite action in this repository is not a pin target
                 self.assertRegex(m.group(1), r"@[0-9a-f]{40}$", line)
 
     def test_the_daily_set_is_one_the_benchmark_knows(self):
@@ -575,51 +644,35 @@ class CiPathFilter(unittest.TestCase):
 
     @staticmethod
     def anchor():
-        lines = text("ci.yml").splitlines()
-        start = next(i for i, l in enumerate(lines) if l.strip() == "paths: &ci_paths")
-        patterns = []
-        for line in lines[start + 1:]:
-            stripped = line.strip()
-            if stripped.startswith("#") or not stripped:
-                continue
-            if not stripped.startswith("- "):
-                break
-            patterns.append(stripped[2:].strip().strip("'\""))
-        return patterns
+        return ci_paths.patterns(text("ci.yml"))
 
     @staticmethod
-    def regex(pattern):
-        out, i = [], 0
-        while i < len(pattern):
-            if pattern.startswith("**/", i):
-                out.append("(?:.*/)?")
-                i += 3
-            elif pattern.startswith("**", i):
-                out.append(".*")
-                i += 2
-            elif pattern[i] == "*":
-                out.append("[^/]*")
-                i += 1
-            elif pattern[i] == "?":
-                out.append("[^/]")
-                i += 1
-            else:
-                out.append(re.escape(pattern[i]))
-                i += 1
-        return re.compile("".join(out) + r"\Z")
+    def triggers(path, patterns=None):
+        return ci_paths.triggers(path, patterns if patterns is not None else CiPathFilter.anchor())
 
-    @classmethod
-    def triggers(cls, path, patterns=None):
-        included = False
-        for pattern in patterns if patterns is not None else cls.anchor():
-            negative = pattern.startswith("!")
-            if cls.regex(pattern[1:] if negative else pattern).match(path):
-                included = not negative
-        return included
-
-    def test_pull_request_uses_the_same_list_as_push(self):
-        self.assertRegex(text("ci.yml"), r"(?m)^  pull_request:\n    paths: \*ci_paths$")
+    def test_only_push_filters_by_path_and_pull_request_starts_on_every_pr(self):
+        # A PR the filter skips starts no run, so the required checks never report. The `changes` job
+        # applies the same list to the PR's files instead (RequiredChecksReportOnEveryPr).
+        self.assertRegex(code("ci.yml"), r"(?m)^  pull_request:\n  workflow_dispatch:")
+        self.assertEqual(len(re.findall(r"(?m)^\s+paths:", code("ci.yml"))), 1)
         self.assertEqual(len(re.findall(r"(?m)^\s+paths: &ci_paths$", text("ci.yml"))), 1)
+        self.assertNotIn("*ci_paths", code("ci.yml"))
+        self.assertIn("paths: &ci_paths", code("ci.yml").split("  pull_request:")[0])
+
+    def test_the_changes_jobs_evaluator_is_this_evaluator(self):
+        # ci/ci_paths.py is what the job runs, on the list it reads from ci.yml: same code, same cases.
+        def run(files):
+            return subprocess.run(
+                [sys.executable, str(ROOT / "ci/ci_paths.py")], input="\n".join(files), text=True,
+                capture_output=True, check=True).stdout.strip()
+        self.assertEqual(run(list(self.MUST_NOT_TRIGGER)), "false")
+        self.assertEqual(run(["README.md", "docs/x.md", "Makefile"]), "true")
+        for path in self.MUST_TRIGGER:
+            self.assertEqual(run([path]), "true", path)
+        for path in self.MUST_NOT_TRIGGER:
+            self.assertEqual(run([path]), "false", path)
+        self.assertEqual(run(["tools/requirements-docs.txt"]), "false")
+        self.assertEqual(run([]), "true", "no files learned: fail closed")
 
     def test_the_matcher_follows_githubs_rules(self):
         t = self.triggers
@@ -705,6 +758,61 @@ class CiPathFilter(unittest.TestCase):
             self.assertEqual(len(catch_all), 1 if wf.name == "ci.yml" else 0, wf.name)
 
 
+class RequiredChecksReportOnEveryPr(unittest.TestCase):
+    """`main` requires `host checks (NOT a device gate)` and `cross-build (armv7) + artifact assertions`.
+    ci.yml starts on every PR; a `changes` job decides whether the heavy jobs run, and each required
+    name is an always-running aggregator that is green when they were skipped for a reason."""
+
+    HEAVY = ("host-lint", "host-unit-default", "host-unit-hostsim", "host-python", "host-python-harness", "cross-build")
+    REQUIRED = {"host-checks": "host checks (NOT a device gate)",
+                "cross-build-required": "cross-build (armv7) + artifact assertions"}
+
+    def test_every_heavy_job_waits_for_changes_and_is_gated(self):
+        for job in self.HEAVY:
+            body = job_body("ci.yml", job)
+            with self.subTest(job):
+                self.assertRegex(body, r"(?m)^    needs: changes$")
+                self.assertRegex(body, r"(?m)^    if: needs\.changes\.outputs\.gated == 'true'$")
+
+    def test_no_job_escapes_the_gate(self):
+        jobs = re.findall(r"(?m)^  ([a-z][a-z0-9-]*):$", code("ci.yml").split("\njobs:\n", 1)[1])
+        self.assertEqual(sorted(jobs), sorted(("changes",) + self.HEAVY + tuple(self.REQUIRED)))
+
+    def test_changes_job_is_cheap_least_privileged_and_fails_closed(self):
+        body = job_body("ci.yml", "changes")
+        self.assertIn("runs-on: ubuntu-latest", body)
+        self.assertIn("pull-requests: read", body)
+        self.assertEqual(code("ci.yml").count("pull-requests: read"), 1, "only that job may read pull requests")
+        self.assertRegex(body, r"gated: \$\{\{ steps\.gate\.outputs\.gated \}\}")
+        self.assertIn("ci/ci_paths.py", body)
+        self.assertRegex(body, r"(?m)^          gated=true$")
+        self.assertIn("--paginate", body)
+
+    def test_required_names_exist_once_and_run_always(self):
+        for job, name in self.REQUIRED.items():
+            body = job_body("ci.yml", job)
+            with self.subTest(job):
+                self.assertIn(f"name: {name}", body)
+                self.assertRegex(body, r"(?m)^    if: always\(\)$")
+                self.assertIn("needs.changes.outputs.gated", body)
+                self.assertIn("needs.changes.result", body)
+            self.assertEqual(len(re.findall(rf"(?m)^    name: {re.escape(name)}$", code("ci.yml"))), 1, name)
+
+    def test_the_heavy_cross_build_does_not_carry_the_required_name(self):
+        self.assertNotIn("name: cross-build (armv7) + artifact assertions", job_body("ci.yml", "cross-build"))
+        self.assertRegex(job_body("ci.yml", "cross-build-required"), r"needs: \[changes, cross-build\]")
+
+    def test_a_skip_is_green_only_when_changes_said_gated_false(self):
+        body = job_body("ci.yml", "cross-build-required")
+        self.assertIn('[ "$CHANGES" = success ]', body)
+        self.assertIn('[ "$BUILD" = success ]', body)
+        self.assertIn('[ "$GATED" = false ] && [ "$BUILD" = skipped ]', body)
+        host = job_body("ci.yml", "host-checks")
+        self.assertIn('[ "$GATED" = false ]', host)
+        self.assertIn("=skipped$", host)
+        self.assertIn("=success$", host)
+
+
 class SiteVideoRelease(unittest.TestCase):
     """The site's film refreshes after a STABLE release and never blocks one (docs/agent-reference.md, "The site
     demo video"). A hole in any of these stays green: a schedule would render hourly-long jobs for nothing, a
@@ -756,7 +864,12 @@ class SiteVideoRelease(unittest.TestCase):
         publish = job_body("site-video.yml", "publish")
         self.assertEqual(publish.count("persist-credentials: true"), 1)
         self.assertEqual(publish.count("persist-credentials: false"), 1)
-        self.assertNotIn("secrets.", body)
+        # the one secret is the deploy key main's ruleset lets push, and only a publish's checkout of main holds it
+        self.assertEqual(re.findall(r"secrets\.\w+", body), ["secrets.MAIN_PUSH_KEY"])
+        with_key = [c for c in self.checkouts("publish") if "secrets.MAIN_PUSH_KEY" in c]
+        self.assertEqual(len(with_key), 1)
+        self.assertRegex(with_key[0], r"(?m)^\s+ref: main\s*$")
+        self.assertIn("env.PUBLISH == 'true'", with_key[0])
 
     def checkouts(self, job):
         """[(step text)] for each `actions/checkout` step of a job."""
@@ -920,6 +1033,61 @@ class SiteVideoRelease(unittest.TestCase):
         # `publish` is the job that creates the release; the hook must come after it, never gate it
         self.assertNotIn("site-video", job_body("release.yml", "publish"))
         self.assertNotIn("site-video", job_body("release.yml", "build"))
+
+
+class ReleaseMainPushKey(unittest.TestCase):
+    """main's required-checks ruleset rejects the workflow token, so the two jobs that push a line check out with the
+    MAIN_PUSH_KEY deploy key; the release TAG must still go over the token, or it fires `push: tags` a second time."""
+
+    def test_the_pushing_checkouts_carry_the_deploy_key(self):
+        for job in ("prepare", "publish"):
+            self.assertIn("ssh-key: ${{ secrets.MAIN_PUSH_KEY }}", job_body("release.yml", job))
+        self.assertEqual(code("release.yml").count("secrets.MAIN_PUSH_KEY"), 2)
+
+    def test_the_tag_is_pushed_with_the_token_not_the_key(self):
+        prepare = job_body("release.yml", "prepare")
+        pushes = re.findall(r"(?m)^\s+git push .*$", prepare)
+        self.assertEqual(len(pushes), 2, pushes)
+        tag_push = [p for p in pushes if "$tag" in p]
+        self.assertEqual(len(tag_push), 1, pushes)
+        self.assertIn("x-access-token:${GH_TOKEN}@", tag_push[0])
+        self.assertNotIn("origin", tag_push[0])
+        self.assertIn("GH_TOKEN: ${{ github.token }}", prepare)
+        self.assertIn("tags: ['v*']", code("release.yml"))
+
+
+class PerTestResults(unittest.TestCase):
+    """The flaky-test pipeline (tools/ci-test-results.py -> artifact -> tools/ci-history.py -> tools/ci-summary.py).
+    Every link of it is silent when it breaks: a job that stops uploading, an artifact name the collector no
+    longer matches, or a summary that stops reading the quarantine list just leaves the page empty."""
+
+    JOBS = {"host-unit-default": "host unit tests (default features)", "host-unit-hostsim": "host unit tests (hostsim)"}
+
+    def test_both_host_unit_jobs_record_and_upload_their_results_under_a_name_the_collector_reads(self):
+        history = importlib.util.spec_from_file_location("ci_history", ROOT / "tools/ci-history.py")
+        module = importlib.util.module_from_spec(history)
+        history.loader.exec_module(module)
+        for job, name in self.JOBS.items():
+            body = job_body("ci.yml", job)
+            self.assertIn(f"name: {name}", body, "the job renamed: the page's job label must follow")
+            self.assertIn(f'--job "{name}"', body)
+            self.assertIn('--log "$RUNNER_TEMP/make-check.log"', body)
+            m = re.search(r"name: (test-results-[a-z-]+-)\$\{\{ github\.run_attempt \}\}", body)
+            self.assertTrue(m, f"{job} must upload test-results-<slug>-<run_attempt>")
+            self.assertRegex(m.group(1) + "1", module.RESULTS_ARTIFACT.pattern)
+            # a red job is the one whose results matter, and a job that died before `make` has no log to read
+            step = body[body.index("Record the per-test results"):]
+            self.assertIn("if: always()", step)
+            self.assertIn("if-no-files-found: ignore", body)
+
+    def test_the_collector_reads_the_quarantine_list_from_main_in_both_writers_of_the_summary(self):
+        metrics = code("ci-metrics.yml")
+        self.assertIn("ci/flaky.txt", metrics)
+        self.assertIn("--quarantine ci/flaky.txt", metrics)
+        self.assertIn("ci/flaky.txt", code("build-bench.yml"))
+        # artifacts are listed through the same token that lists the jobs: no new permission
+        self.assertRegex(metrics, r"(?m)^      actions: read ")
+        self.assertNotIn("actions: write", metrics)
 
 
 if __name__ == "__main__":

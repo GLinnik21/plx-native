@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Restore checked source inputs into a fresh tree and an isolated pinned Rust sysroot."""
+"""Restore checked source inputs into a fresh tree and check the isolated pinned Rust sysroot.
+
+The bundled rust-src is restored NEXT TO the tree (`rust-runtime-src`) as the corresponding source of the
+prebuilt std; it is never installed into the toolchain, because the build does not use it.
+"""
 import argparse
 import json
 import os
@@ -12,6 +16,7 @@ import tarfile
 import tempfile
 
 import deps as deps_module
+from rust_toolchain import TARGET
 from source_bundle import fail, safe_name, validate
 
 
@@ -31,29 +36,15 @@ def extract_regular(archive_path, destination):
             path.chmod(entry.mode & 0o777)
 
 
-def merge_runtime_vendor(runtime, application):
-    """Cargo source replacement also covers build-std's registry dependencies."""
-    def identity(folder):
-        text = (folder / 'Cargo.toml').read_text()
-        fields = []
-        for name in ('name', 'version'):
-            match = re.search(r'^' + name + r'\s*=\s*"([^"]+)"', text, re.M)
-            if not match: fail('missing vendor package identity')
-            fields.append(match.group(1))
-        return tuple(fields)
-    existing = {identity(p): p for p in application.iterdir() if (p / 'Cargo.toml').is_file()}
-    for source in runtime.iterdir():
-        if not (source / 'Cargo.toml').is_file(): continue
-        key = identity(source)
-        if key in existing:
-            a = json.loads((source / '.cargo-checksum.json').read_text()).get('package')
-            b = json.loads((existing[key] / '.cargo-checksum.json').read_text()).get('package')
-            if not a or a != b: fail('conflicting runtime/application vendor package: ' + key[0])
-            continue
-        target = application / ('rust-runtime-' + source.name)
-        if target.exists(): fail('runtime vendor target already exists')
-        shutil.copytree(source, target)
-        existing[key] = target
+def require_prebuilt_std(sysroot, target=TARGET):
+    """The rebuild links the toolchain's PREBUILT std for `target`; refuse a sysroot that has none.
+
+    The release this project builds with (rust-modules/rust-toolchain.toml) needs neither `rust-src`
+    nor `-Z build-std`: its ARMv7 std ships as a rust-std component. A sysroot without it would send
+    cargo looking for std sources, which this restore deliberately does not provide.
+    """
+    if not list((sysroot / 'lib/rustlib' / target / 'lib').glob('libstd-*.rlib')):
+        fail('isolated toolchain has no prebuilt std for ' + target + ' (rustup target add ' + target + ')')
 
 
 def main():
@@ -62,7 +53,7 @@ def main():
     parser.add_argument('--expect-snapshot', required=True)
     parser.add_argument('--destination', required=True, type=Path, help='must not exist')
     parser.add_argument('--rust-sysroot', required=True, type=Path,
-                        help='isolated pinned public toolchain with no rust-src installed; shared rustup paths refused')
+                        help='isolated pinned public toolchain: prebuilt std for the ARM target, NO rust-src; shared rustup paths refused')
     args = parser.parse_args()
     manifest = validate(args.archive, args.expect_snapshot)
     destination = args.destination.resolve()
@@ -71,9 +62,9 @@ def main():
         fail('source destination must not exist')
     if '.rustup' in sysroot.parts or not (sysroot / 'bin/rustc').is_file():
         fail('provide an isolated public Rust toolchain outside shared rustup')
-    runtime_target = sysroot / 'lib/rustlib/src/rust'
-    if runtime_target.exists() or runtime_target.is_symlink():
-        fail('isolated toolchain already has rust-src; supply a fresh toolchain without it')
+    if (sysroot / 'lib/rustlib/src').exists() or (sysroot / 'lib/rustlib/src').is_symlink():
+        fail('isolated toolchain has rust-src; supply a sysroot without it (the rebuild must not need it)')
+    require_prebuilt_std(sysroot)
     deps = {dep['id']: dep for dep in manifest['dependencies']}
     identity = subprocess.check_output([str(sysroot / 'bin/rustc'), '-Vv']).decode()
     if 'commit-hash: ' + deps['rust-runtime']['version'] + '\n' not in identity:
@@ -115,15 +106,11 @@ def main():
     with tempfile.TemporaryDirectory(prefix='rust-source-', dir=destination) as temp:
         staging = Path(temp)
         extract_regular(destination / deps['rust-runtime']['sources'][0]['path'], staging)
-        runtime_target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(staging / 'rust-src'), str(runtime_target))
+        shutil.move(str(staging / 'rust-src'), str(destination / 'rust-runtime-src'))
         shutil.move(str(staging / 'rust-notices'), str(destination / 'rust-runtime-notices'))
-    runtime_vendor = runtime_target / 'library/vendor'
-    if runtime_vendor.is_dir():
-        merge_runtime_vendor(runtime_vendor, crate_root / 'cargo-vendor')
     print(json.dumps({'restore': 'PASS', 'rebuild': 'NOT_RUN',
                       'configuration_change': 'Cargo source replacement points to supplied vendor tree',
-                      'next_step': 'Link this isolated toolchain with rustup, then make RUST_NIGHTLY=<link-name> RELEASE=1 using isolated build outputs'}))
+                      'next_step': 'Link this isolated toolchain with rustup, then make RUST_TOOLCHAIN=<link-name> RELEASE=1 using isolated build outputs'}))
 
 
 if __name__ == '__main__':

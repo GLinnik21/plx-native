@@ -15,7 +15,7 @@ NDK has no x86_64 Linux build. The UI-only simulator also builds on x86_64 Ubunt
 Windows and needs no webOS NDK; run `tools/sim.ps1 setup` there.
 
 - The **webOS NDK**, fetched by `make setup-env` (a few hundred MB, once).
-- A **Rust nightly** toolchain with `rust-src` (for `-Z build-std`) and `clippy` (the lint gate).
+- The **pinned stable Rust toolchain** (`channel` in `rust-modules/rust-toolchain.toml`) with the `armv7-unknown-linux-gnueabi` rust-std and `clippy` (the lint gate). No nightly, no `rust-src`.
 - **CMake** — the normal build cross-compiles Sentry Native, and `ci/build-sentry-native.sh` stops
   with an explicit error without it.
 - `sshpass`, for the deploy/run targets that talk to a television. Optional if your ssh key is
@@ -23,8 +23,7 @@ Windows and needs no webOS NDK; run `tools/sim.ps1 setup` there.
   key is refused.
 
 ```sh
-make setup-env
-rustup toolchain install nightly --component rust-src --component clippy
+make setup-env                    # the NDK, and `make setup-rust`: the pinned toolchain, clippy, rustfmt, armv7 std
 brew install cmake sshpass        # or your distribution's equivalent
 make                              # builds pkg/plxnative — a developer build
 make ipk                          # pkg/com.beb.plxnative.debug_<version>_arm.ipk
@@ -37,14 +36,26 @@ Build trees are per-checkout and large. `make disk` reports what this machine is
 rebuild. Run `tools/build-gc.sh --orphans` after tearing down a set of worktrees: lane target
 directories live outside the repo and outlive the worktree that made them. `--worktrees` is
 different in kind, not degree: it removes FINISHED lane checkouts themselves (clean, unlocked,
-already on `main`) — not just their build output — so it is not part of `--all`.
+already on `origin/main`) — not just their build output — so it is not part of `--all`. A removed
+checkout takes its gitignored files with it (a `src/config.local.h`, a `pkg/auth.json`, a lane's notes):
+by hand `-n` lists the ones that are not build output, and unattended (`--auto`) a lane holding any is kept.
 
-None of the above has to be run by hand: `tools/build-gc.sh --auto` stages the same reclaim on its
-own, gated by free space on the volume (`PLX_GC_MIN_FREE_GIB`, default 20) and, for `--lanes`, by
-a lane idle guard (`PLX_GC_IDLE_MIN`, default 60) so a lane an agent might resume soon is spared.
+None of the above has to be run by hand: `tools/build-gc.sh --auto` reclaims on its own, gated by
+free space on the volume (`PLX_GC_MIN_FREE_GIB`, default 20) and by a lane idle guard
+(`PLX_GC_IDLE_MIN`, default 60) so a lane an agent might resume soon is spared. After `--orphans`
+and `--worktrees` (which keeps a lane that holds private ignored files) it follows the order `tools/disk-budget.py` plans (`docs/disk-budget.md`): garbage
+first, then other lanes' incremental caches, then idle lanes' trees, and the main checkout's
+incremental cache only as the last resort. The cargo seed is never evicted by it.
 It runs from a Claude Code `SessionEnd` hook and from the hourly launchd agent `make disk-watch`
 installs (`tools/install-disk-watch.sh`, macOS only — run it yourself; nothing here installs it
 for you). Logs land in `~/Library/Logs/plxnative-build-gc.log` (or `$PLX_GC_LOG`).
+
+A build also checks the budget when it starts: every cargo-running `make` target runs
+`make disk-preflight` first (`make -s print-disk-entries` lists them). With room it costs one
+`statvfs`; below the comfort line it evicts idle trees through the same planner, never the tree it
+is building (and the current checkout's other trees only lose their incremental dirs, and only when
+nothing cheaper covers the build), and it refuses only when everything it may take still cannot
+cover the build plus a 3 GiB reserve. `PLX_MIN_FREE_MB=0` skips it.
 
 The bundled FFmpeg is not rebuilt per checkout. Its source and object tree is machine-wide under
 `$PLX_BUILD_CACHE` (default `~/.cache/plxnative`), keyed by configure flags and toolchain, so a
@@ -130,8 +141,9 @@ FLAVOR=<f>` when you need to know where a given flavour's binary, logs and dev t
 
 **`make check`** — the host gate: the lint pass plus the Rust unit suite run twice (default features
 and `hostsim`), alongside the package, C, harness and tooling self-tests. Seconds once warm, no
-television. Run it before you push, and run it **on nightly** — `make check` uses `cargo +nightly`
-while a bare `cargo test` picks up your default toolchain, and the two have disagreed.
+television. Run it before you push, and run it on the pinned toolchain — `make check` uses `cargo +$(RUST_TOOLCHAIN)`
+(the `channel` in `rust-modules/rust-toolchain.toml`) while a bare `cargo test` from the repository root picks up
+your default toolchain, and the two have disagreed.
 
 **`./tests/run.py`** — the synthetic device tier. Generated clips served off the host and played
 through a dev trigger; it needs a television address and `make fixtures-pipeline`, and nothing else.
@@ -156,7 +168,7 @@ floors live in `tests/manifest.json`. This tier is opt-in and runs on a real tel
 grade frame rate, so a green CI run says nothing about pacing.
 
 **Two checks CI runs that `make check` does not**, and which are easy to break locally: the shipping
-feature set (`cargo +nightly check --manifest-path rust-modules/Cargo.toml --lib
+feature set (`cargo +$(make -s print-rust-toolchain) check --manifest-path rust-modules/Cargo.toml --lib
 --no-default-features`) after any `rust-modules/src/**.rs` or `rust-modules/*/src/**.rs` edit, and a firmware-compatibility review
 of anything touching FFI, linkage, `dynlib!`, Starfish, ACB, curl or the bundled FFmpeg —
 `tools/fwcompat.py` grades the binary against 14 real firmware images in under a second.

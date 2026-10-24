@@ -1,10 +1,16 @@
 //! Collection-page data model: one physically owned state machine, one generation-stamped
-//! mailbox, and one small worker at a time. Resolution, header metadata, and paged children are
-//! separate jobs so a tag-only route can publish its resolved ratingKey before later requests
-//! finish. All network work runs off the frame thread; landings are applied by [`CollectionState::pump_with_gate`].
+//! mailbox, and one fetch at a time. Resolution, header metadata, and paged children are
+//! separate requests so a tag-only route can publish its resolved ratingKey before later requests
+//! finish. The step starts nothing: it emits the next request as a [`StoreJob`](crate::stores::StoreJob)
+//! (`CollectionReq`, with the [`ClientKey`] it decided on) and the application's runner starts it
+//! on a worker, off the frame thread. It reads no registry either: which client a server slot
+//! holds is an argument ([`ClientKeys`]), filled by the host immediately before the step.
+//! Landings are applied by [`CollectionState::pump_with_gate`].
 
+use plx_machine::job::{Job, Port};
+use plx_machine::machine::{Addr, MachineId, RequestId};
 use plx_plex::plex::collections::{resolve_tag, CollectionOutcome, CollectionRef};
-use plx_plex::plex::ServerId;
+use plx_plex::plex::{ClientKey, ClientKeys, ServerId};
 use crate::pms::{parse_item, PmsMovie};
 use crate::stores::page_cache::{Keep, PageCache, PAGE};
 use std::ops::Range;
@@ -61,6 +67,8 @@ pub struct Collection {
     pub summary: String,
     pub thumb: String,
     pub child_count: usize,
+    /// The PMS `subtype` the header stated (`movie`, `show`, …), which names what the members are.
+    pub subtype: Option<String>,
     /// The member order the header stated, if it stated one.
     pub order: Option<CollectionOrder>,
     /// The rows by absolute index. A hole (a page not read, or evicted) reads as `None`.
@@ -80,17 +88,20 @@ pub struct Collection {
     /// refills it, so a restore without kept counts reads forward a bounded stretch at a time.
     budget: u8,
     header_ready: bool,
-    client_key: Option<(u32, u32)>,
+    /// The client the listing was read through, `None` when its server held none.
+    client_key: Option<ClientKey>,
+    /// The store's request epoch this listing was opened under (see [`Collection::generation`]).
+    generation: u32,
 }
 
 impl Collection {
-    /// A collection opened (or reopened) with nothing landed yet: its title is the link's name
-    /// until the header replaces it.
-    fn loading(id: CollectionRef, want: usize, client_key: Option<(u32, u32)>) -> Self {
+    /// A collection opened (or reopened) with nothing landed yet, under the store's request epoch
+    /// `generation`: its title is the link's name until the header replaces it.
+    fn loading(id: CollectionRef, want: usize, client_key: Option<ClientKey>, generation: u32) -> Self {
         Self { title: id.name.clone(), id, summary: String::new(), thumb: String::new(),
-            child_count: 0, order: None, pages: PageCache::default(), read: 0, total: 0,
+            child_count: 0, subtype: None, order: None, pages: PageCache::default(), read: 0, total: 0,
             status: CollectionStatus::Loading, more: true, wanted: 0..want, focus: None, restore: None,
-            budget: FRONTIER_ASK, header_ready: false, client_key }
+            budget: FRONTIER_ASK, header_ready: false, client_key, generation }
     }
 
     /// Whether the header (title, art, summary) has landed — before it, an empty `thumb` is not
@@ -120,9 +131,17 @@ impl Collection {
     /// Every row held, with its absolute index.
     pub fn loaded_rows(&self) -> impl Iterator<Item = (usize, &PmsMovie)> + '_ { self.pages.loaded_rows() }
 
-    /// One kept-row count per page read, for a screen to save with its position and send back as
+    /// One kept-row count per page of the listing, for a screen to save with its position and its
+    /// [`generation`](Self::generation) and send back as
     /// [`CollectionCmd::Restore`](crate::stores::collection::CollectionCmd::Restore).
     pub fn kept_counts(&self) -> Vec<u8> { self.pages.kept_counts() }
+
+    /// Which listing this is, for a page to save with its [`kept_counts`](Self::kept_counts): the
+    /// store's request epoch when the listing was opened. Only a store superseding its listing moves
+    /// it (another collection opened, a close or reset, a rebuild for a changed client), never
+    /// paging, so a page handing it back in [`CollectionCmd::Restore`](crate::stores::collection::CollectionCmd::Restore)
+    /// says whether the store still holds the listing the page was saved from.
+    pub fn generation(&self) -> u32 { self.generation }
 
     /// Pages the screen shows or is restoring to whose rows are not held, below the frontier.
     fn wanted_pages(&self) -> Vec<usize> {
@@ -208,11 +227,15 @@ pub struct CollectionState {
     /// The content counter [`CollectionView::revision`] reads.
     revision: u64,
     retry_cd: u32,
+    /// The requests the step asked the application to start, in order, until the owner takes them
+    /// (`CollectionStore::take_jobs`).
+    pub(crate) jobs: Vec<crate::stores::StoreJob>,
 }
 
 impl Default for CollectionState {
     fn default() -> Self {
-        Self { ledger: Default::default(), stamp: 0, current: None, generation: 0, revision: 0, retry_cd: 0 }
+        Self { ledger: Default::default(), stamp: 0, current: None, generation: 0, revision: 0, retry_cd: 0,
+            jobs: Vec::new() }
     }
 }
 
@@ -227,13 +250,17 @@ impl CollectionState {
         self.retry_cd = 0;
     }
 
-    pub fn run(&mut self, adapter: &Arc<CollectionAdapter>, cmd: crate::stores::collection::CollectionCmd) -> bool {
-        let changed = self.run_cmd(adapter, cmd);
+    /// Run a command. `keys` is the registry's answer as of this call (see [`ClientKeys`]): an
+    /// `Open` records the client its listing is read through.
+    pub fn run(&mut self, adapter: &Arc<CollectionAdapter>, cmd: crate::stores::collection::CollectionCmd,
+               keys: &ClientKeys) -> bool {
+        let changed = self.run_cmd(adapter, cmd, keys);
         self.revision += u64::from(changed);
         changed
     }
 
-    fn run_cmd(&mut self, adapter: &Arc<CollectionAdapter>, cmd: crate::stores::collection::CollectionCmd) -> bool {
+    fn run_cmd(&mut self, adapter: &Arc<CollectionAdapter>, cmd: crate::stores::collection::CollectionCmd,
+               keys: &ClientKeys) -> bool {
         use crate::stores::collection::CollectionCmd;
         match cmd {
             CollectionCmd::Open { target } => {
@@ -249,8 +276,8 @@ impl CollectionState {
                     return current.wanted.end != old || retry;
                 }
                 self.supersede(adapter);
-                let client_key = plx_plex::plex::client_for(target.id.sid).map(|c| (c.instance_gen(), c.token_gen()));
-                self.current = Some(Collection::loading(target.id, target.want.max(PAGE_SIZE), client_key));
+                let client_key = keys.key(target.id.sid);
+                self.current = Some(Collection::loading(target.id, target.want.max(PAGE_SIZE), client_key, self.generation));
                 true
             }
             CollectionCmd::Window { wanted, focus, restore } => {
@@ -260,11 +287,19 @@ impl CollectionState {
                 c.budget = FRONTIER_ASK;
                 changed
             }
-            CollectionCmd::Restore { total, counts } => {
+            CollectionCmd::Restore { total, counts, generation } => {
                 // The counts describe a listing of `total` items, one entry per page; any other
                 // shape is not this listing's directory and is not guessed at.
                 let Some(c) = self.current.as_mut() else { return false };
                 if counts.len() != total.div_ceil(PAGE_SIZE) { return false; }
+                // A page whose surface was closed over it (a menu, a sheet, Back from Detail) is
+                // handed the directory it saved while this store still holds the listing it was
+                // saved from: the same generation, however much has been read since (a page landed
+                // while covered, a moved total). Nothing is to be restored: the rows are held, and
+                // the store's own counts, read position and paging stand. Equal counts would not
+                // prove it, for a store rebuilt since (a retoken, a server re-point) reads the same
+                // numbers off the same server; a different generation takes the saved directory.
+                if c.generation == generation { return false; }
                 c.total = total;
                 c.pages.set_total(total);
                 c.pages.restore_kept_counts(&counts);
@@ -299,22 +334,26 @@ impl CollectionState {
         }
     }
 
-    fn refresh_if_client_changed(&mut self, adapter: &CollectionAdapter) -> bool {
+    fn refresh_if_client_changed(&mut self, adapter: &CollectionAdapter, keys: &ClientKeys) -> bool {
         let Some(c) = self.current.as_ref() else { return false };
-        let now = plx_plex::plex::client_for(c.id.sid).map(|x| (x.instance_gen(), x.token_gen()));
+        let now = keys.key(c.id.sid);
         if now == c.client_key { return false; }
         let (id, want) = (c.id.clone(), c.wanted.end);
         let (window, focus, restore) = (c.wanted.clone(), c.focus, c.restore);
         self.supersede(adapter);
-        let mut fresh = Collection::loading(id, want, now);
+        let mut fresh = Collection::loading(id, want, now, self.generation);
         (fresh.wanted, fresh.focus, fresh.restore) = (window, focus, restore);
         self.current = Some(fresh);
         self.revision += 1;
         true
     }
 
-    pub fn pump_with_gate(&mut self, adapter: &Arc<CollectionAdapter>, gate: &plx_machine::landgate::Gate) -> bool {
-        let mut changed = self.refresh_if_client_changed(adapter);
+    /// The pump: rebuild for a changed client, take the landing, and emit the next request as a job.
+    /// `keys` is the registry's answer as of this call. The job is NOT started here; the owner
+    /// takes it (`CollectionStore::take_jobs`) and owes it to a runner in the same turn.
+    pub fn pump_with_gate(&mut self, adapter: &Arc<CollectionAdapter>, gate: &plx_machine::landgate::Gate,
+                          keys: &ClientKeys) -> bool {
+        let mut changed = self.refresh_if_client_changed(adapter, keys);
         if self.retry_cd > 0 { self.retry_cd -= 1; }
         let reply = crate::stores::tape::take_store_landing(
             gate, crate::stores::StoreId::Collection, "collection", 0, &adapter.fetch, |m| m.gen);
@@ -322,36 +361,40 @@ impl CollectionState {
             plx_machine::idle::invalidate();
             if reply.gen == self.generation { changed |= self.apply(reply.what); }
         }
-        self.maybe_spawn(adapter);
+        self.maybe_spawn(adapter, keys);
         changed
     }
 
-    fn job(&self) -> Option<Job> {
+    fn work(&self) -> Option<Work> {
         let c = self.current.as_ref()?;
         if c.status == CollectionStatus::Unavailable || c.status == CollectionStatus::Empty { return None; }
         if c.id.rk.is_empty() {
-            return (c.id.sec != 0 && c.id.tag != 0).then(|| Job::Resolve {
+            return (c.id.sec != 0 && c.id.tag != 0).then(|| Work::Resolve {
                 sec: c.id.sec, tag: c.id.tag, name: c.id.name.clone(),
             });
         }
-        if !c.header_ready { return Some(Job::Header { rk: c.id.rk.clone() }); }
+        if !c.header_ready { return Some(Work::Header { rk: c.id.rk.clone() }); }
         // A page the screen shows or restores to, read earlier and since evicted: a re-read at its
         // own offset, which the directory's known count makes safe.
         if let Some(page) = c.wanted_pages().into_iter().find(|&p| p < c.read) {
-            return Some(Job::Children { rk: c.id.rk.clone(), start: page * PAGE_SIZE });
+            return Some(Work::Children { rk: c.id.rk.clone(), start: page * PAGE_SIZE });
         }
         // Otherwise the frontier, in order, while the window needs indices it has not counted.
         if c.more && c.budget > 0 && c.need() > c.shown() {
-            return Some(Job::Children { rk: c.id.rk.clone(), start: c.read * PAGE_SIZE });
+            return Some(Work::Children { rk: c.id.rk.clone(), start: c.read * PAGE_SIZE });
         }
         None
     }
 
-    fn maybe_spawn(&mut self, adapter: &Arc<CollectionAdapter>) {
+    /// The next request, if the window needs one and nothing is out: claim the fetch and emit the
+    /// request as a job. A server that holds no client has nothing to ask, so the page reads
+    /// Failed (when it shows nothing yet) and the next attempt is held off.
+    fn maybe_spawn(&mut self, adapter: &Arc<CollectionAdapter>, keys: &ClientKeys) {
         if adapter.fetch.busy() || self.retry_cd > 0 { return; }
-        let Some(job) = self.job() else { return };
+        let Some(work) = self.work() else { return };
         let Some(c) = self.current.as_ref() else { return };
-        let Some(client) = plx_plex::plex::client_for(c.id.sid) else {
+        let sid = c.id.sid;
+        let Some(key) = keys.key(sid) else {
             self.retry_cd = RETRY_FRAMES;
             if c.shown() == 0 {
                 self.current.as_mut().unwrap().status = CollectionStatus::Failed;
@@ -360,17 +403,12 @@ impl CollectionState {
             return;
         };
         let generation = self.generation;
-        let sid = c.id.sid;
         adapter.fetch.claim(generation);
         self.stamp = self.ledger.stamp();
-        let worker_adapter = Arc::clone(adapter);
-        let request = serde_json::json!({"store":"collection","slot":0,"gen":generation,
-            "sid":sid.raw(),"client":client.instance_gen(),"job":job});
-        let spawned = crate::stores::tape::admit(request, || plx_base::task::spawn_small("collection", move || {
-            let what = catch_unwind(|| run_job(client, sid, job)).unwrap_or(Landing::Transport);
-            worker_adapter.land(generation, what);
-        }));
-        if !spawned { adapter.fetch.release(); }
+        self.jobs.push(crate::stores::StoreJob::Collection(
+            Job { addr: collection_addr(generation), req: CollectionReq { sid, key, work } },
+            CollectionPort::of(adapter),
+        ));
     }
 
     fn apply(&mut self, landing: Landing) -> bool {
@@ -391,6 +429,7 @@ impl CollectionState {
                 c.thumb = head.thumb;
                 c.summary = head.summary;
                 c.child_count = head.child_count;
+                c.subtype = head.subtype;
                 c.order = head.order;
                 c.header_ready = true;
                 c.status = CollectionStatus::Loading;
@@ -473,11 +512,92 @@ impl CollectionState {
     }
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
-enum Job {
+/// What one request asks the server for. Serialized into the tape's admission record
+/// (`CollectionReq::admission`), where the externally tagged variant names are part of the
+/// recorded bytes.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+enum Work {
     Resolve { sec: i64, tag: i64, name: String },
     Header { rk: String },
     Children { rk: String, start: usize },
+}
+
+/// The one request a [`StoreJob::Collection`](crate::stores::StoreJob::Collection) carries:
+/// everything the worker needs, captured by the step. `key` is the client the step decided on; a
+/// runner starts the request only if the registry still holds that client at the launch.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CollectionReq {
+    sid: ServerId,
+    key: ClientKey,
+    work: Work,
+}
+
+impl CollectionReq {
+    /// The server to ask and the client the step decided to ask it through.
+    pub fn server(&self) -> (ServerId, ClientKey) { (self.sid, self.key) }
+
+    /// The tape's admission record for this request, a pure function of the job: the shape a
+    /// recording holds and a replay compares byte for byte (`stores::tape::admit`).
+    pub fn admission(&self, addr: Addr) -> serde_json::Value {
+        serde_json::json!({"store":"collection","slot":0,"gen":addr.req.0,
+            "sid":self.sid.raw(),"client":self.key.instance,"job":self.work})
+    }
+}
+
+/// A request's answer, opaque to the runner: the landing the step applies. The runner never
+/// names [`Landing`].
+pub struct CollectionAnswer(Landing);
+
+/// Where a collection request's ONE answer goes: the store's landing, captured with the job when it
+/// was emitted. A store that has since been `Reset` holds a new adapter, and this port still lands
+/// into the one the request was made from, the retired one nobody pumps. Two ports are equal when
+/// they reach the same adapter.
+#[derive(Clone)]
+pub struct CollectionPort(Arc<CollectionAdapter>);
+
+impl CollectionPort {
+    pub(crate) fn of(adapter: &Arc<CollectionAdapter>) -> Self { Self(Arc::clone(adapter)) }
+}
+
+impl PartialEq for CollectionPort {
+    fn eq(&self, other: &Self) -> bool { Arc::ptr_eq(&self.0, &other.0) }
+}
+
+impl std::fmt::Debug for CollectionPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CollectionPort({:p})", Arc::as_ptr(&self.0))
+    }
+}
+
+impl Port<CollectionAnswer> for CollectionPort {
+    /// The request's answer (a failed read answers `Transport`). Stamped with the request's
+    /// generation, so the pump discards an answer for a listing it has since superseded.
+    fn done(&self, addr: Addr, out: CollectionAnswer) {
+        self.0.land(addr.req.0, out.0);
+    }
+
+    /// The request was never started, so nothing will land and nothing will release its claim:
+    /// hand it back, so the next pump asks again. A refusal that comes after a newer request has
+    /// claimed leaves that claim alone ([`Fetch::release_for`](crate::stores::Fetch::release_for)).
+    fn refused(&self, addr: Addr) {
+        self.0.fetch.release_for(addr.req.0);
+    }
+}
+
+/// A collection request's address: its store and the listing generation it was made for. One
+/// request is out at a time (`maybe_spawn`'s claim), so no two are in flight at one address.
+fn collection_addr(generation: u32) -> Addr {
+    Addr { to: MachineId::Store(crate::stores::StoreId::Collection.ord()), req: RequestId(generation) }
+}
+
+/// The request's IO body and its completion: read the server through `client` and post the answer,
+/// or its failure, to `port`. A read that unwinds still answers (`Transport`), so the claim is
+/// always released by the take of its answer.
+pub fn finish_collection_job(port: &CollectionPort, addr: Addr, client: &'static plx_plex::plex::Client,
+                             req: CollectionReq) {
+    let CollectionReq { sid, work, .. } = req;
+    let what = catch_unwind(|| run_job(client, sid, work)).unwrap_or(Landing::Transport);
+    port.done(addr, CollectionAnswer(what));
 }
 
 /// A collection row's header fields, as both the tag resolution and the metadata GET read them.
@@ -488,13 +608,16 @@ struct Header {
     summary: String,
     child_count: usize,
     #[serde(default)]
+    subtype: Option<String>,
+    #[serde(default)]
     order: Option<CollectionOrder>,
 }
 
 impl Header {
     fn of(row: &plx_plex::plex::Metadata) -> Self {
         Self { title: row.title.clone(), thumb: row.thumb.clone(), summary: row.summary.clone(),
-            child_count: row.child_count.max(0) as usize, order: CollectionOrder::of(row.collection_sort) }
+            child_count: row.child_count.max(0) as usize, subtype: Some(row.subtype.clone()).filter(|s| !s.is_empty()),
+            order: CollectionOrder::of(row.collection_sort) }
     }
 }
 
@@ -535,10 +658,10 @@ fn answered(outcome: CollectionOutcome) -> Result<plx_plex::plex::MediaContainer
     }
 }
 
-fn run_job(client: &'static plx_plex::plex::Client, sid: ServerId, job: Job) -> Landing {
+fn run_job(client: &'static plx_plex::plex::Client, sid: ServerId, work: Work) -> Landing {
     let run = || -> Result<Landing, Landing> {
-        Ok(match job {
-            Job::Resolve { sec, tag, name } => {
+        Ok(match work {
+            Work::Resolve { sec, tag, name } => {
                 let mut start = 0i64;
                 loop {
                     let page = answered(client.section_collections(sec, start, PAGE_SIZE as i64))?;
@@ -551,9 +674,9 @@ fn run_job(client: &'static plx_plex::plex::Client, sid: ServerId, job: Job) -> 
                     start += got;
                 }
             }
-            Job::Header { rk } => answered(client.collection(&rk))?.metadata.first()
+            Work::Header { rk } => answered(client.collection(&rk))?.metadata.first()
                 .map_or(Landing::Missing, |row| Landing::Header { rk: None, head: Header::of(row) }),
-            Job::Children { rk, start } => {
+            Work::Children { rk, start } => {
                 let page = answered(client.collection_children(&rk, start as i64, PAGE_SIZE as i64))?;
                 let total = page.total_size.max(page.size).max(0) as usize;
                 let got = page.metadata.len();
@@ -569,7 +692,7 @@ fn run_job(client: &'static plx_plex::plex::Client, sid: ServerId, job: Job) -> 
 
 #[cfg(any(test, feature = "test-support"))]
 fn header(title: &str, child_count: usize) -> Header {
-    Header { title: title.into(), thumb: String::new(), summary: String::new(), child_count, order: None }
+    Header { title: title.into(), thumb: String::new(), summary: String::new(), child_count, subtype: None, order: None }
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -579,7 +702,7 @@ pub fn validate_record(slot: u32, value: &serde_json::Value) -> Result<(), &'sta
     if slot != 0 { return Err("invalid collection slot"); }
     let mail: Mail = serde_json::from_value(value.clone()).map_err(|_| "invalid collection reply")?;
     if mail.gen == 0 { return Err("invalid collection reply generation"); }
-    if serde_json::to_value(&mail).ok().as_ref() != Some(value) { return Err("noncanonical collection reply"); }
+    if serde_json::to_value(&mail).ok().as_ref() != Some(value) && reread(&mail).as_ref() != Some(value) { return Err("noncanonical collection reply"); }
     Ok(())
 }
 
@@ -590,6 +713,14 @@ impl CollectionAdapter {
     fn land(&self, generation: u32, what: Landing) {
         self.fetch.post(Mail { gen: generation, what }, |old| old.gen < generation);
     }
+
+    /// Is a request's claim held? (A test's view of the single flight.)
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn busy_for_test(&self) -> bool { self.fetch.busy() }
+
+    /// Is an answer waiting to be taken? (A test's view of the mailbox, without taking it.)
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn has_mail_for_test(&self) -> bool { self.fetch.has_mail() }
 
     #[cfg(any(test, feature = "test-support"))]
     pub fn land_status_for_test(&self, generation: u32, status: CollectionStatus) {
@@ -616,9 +747,21 @@ impl CollectionAdapter {
 
 
 #[cfg(test)]
+#[path = "collection_job_tests.rs"]
+mod job_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::stores::collection::CollectionCmd;
+
+    impl CollectionState {
+        /// A command run when no server holds a client: what the registry answers for the
+        /// `ServerId::UNSET` these tests name, so an `Open` records no client.
+        fn run_bare(&mut self, adapter: &Arc<CollectionAdapter>, cmd: CollectionCmd) -> bool {
+            self.run(adapter, cmd, &ClientKeys::default())
+        }
+    }
 
     fn set_target(rk: &str, tag: i64, name: &str) -> CollectionTarget {
         CollectionTarget { id: CollectionRef { sid: ServerId::UNSET, rk: rk.into(), sec: 1, tag,
@@ -665,7 +808,7 @@ mod tests {
     fn the_revision_follows_content_while_the_generation_follows_requests() {
         let adapter = Arc::new(CollectionAdapter::default());
         let mut state = CollectionState::default();
-        state.run(&adapter, CollectionCmd::Open { target: set_target("50001", 7, "Set") });
+        state.run_bare(&adapter, CollectionCmd::Open { target: set_target("50001", 7, "Set") });
         let (generation, opened) = (state.generation(), state.view().revision());
         adapter.land(generation, Landing::Header { rk: None, head: header("Set", 130) });
         assert!(state.take_landing_for_test(&adapter));
@@ -691,7 +834,7 @@ mod tests {
         plx_plex::plex::reset_servers_for_test();
         let adapter = Arc::new(CollectionAdapter::default());
         let mut state = CollectionState::default();
-        state.run(&adapter, CollectionCmd::Open { target: set_target("50001", 7, "Set") });
+        state.run_bare(&adapter, CollectionCmd::Open { target: set_target("50001", 7, "Set") });
         let generation = state.generation();
         adapter.fetch.claim(generation);
         let gate = plx_machine::landgate::Gate::default();
@@ -701,7 +844,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(25));
             worker.land(generation, Landing::Header { rk: None, head: header("Set", 130) });
         });
-        assert!(state.pump_with_gate(&adapter, &gate),
+        assert!(state.pump_with_gate(&adapter, &gate, &ClientKeys::default()),
             "the header the pump owed must be taken by the pump that asked");
         assert!(state.view().current().unwrap().header_ready);
         assert!(!adapter.fetch.busy(), "the TAKE released the claim");
@@ -716,10 +859,10 @@ mod tests {
         plx_plex::plex::reset_servers_for_test();
         let adapter = Arc::new(CollectionAdapter::default());
         let mut state = CollectionState::default();
-        state.run(&adapter, CollectionCmd::Open { target: set_target("50001", 7, "Set") });
+        state.run_bare(&adapter, CollectionCmd::Open { target: set_target("50001", 7, "Set") });
         let stale = state.generation();
         adapter.fetch.claim(stale); // request A is out
-        state.run(&adapter, CollectionCmd::Open { target: set_target("50002", 7, "Other") }); // supersedes A
+        state.run_bare(&adapter, CollectionCmd::Open { target: set_target("50002", 7, "Other") }); // supersedes A
         let current = state.generation();
         assert_ne!(stale, current);
         adapter.fetch.claim(current); // request B is out
@@ -732,7 +875,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(25));
             worker.land(current, Landing::Header { rk: None, head: header("Other", 7) });
         });
-        assert!(state.pump_with_gate(&adapter, &gate),
+        assert!(state.pump_with_gate(&adapter, &gate, &ClientKeys::default()),
             "B was out when the pump ran, so B's answer must land on this pump");
         assert!(state.view().current().unwrap().header_ready);
         assert!(!adapter.fetch.busy(), "B's own answer released B's claim");
@@ -744,25 +887,25 @@ mod tests {
         let adapter = Arc::new(CollectionAdapter::default());
         let mut state = CollectionState::default();
         let target = set_target("50001", 7, "Set");
-        state.run(&adapter, CollectionCmd::Open { target: target.clone() });
-        assert!(matches!(state.job(), Some(Job::Header { .. })));
+        state.run_bare(&adapter, CollectionCmd::Open { target: target.clone() });
+        assert!(matches!(state.work(), Some(Work::Header { .. })));
         let generation = state.generation();
         adapter.land(generation, Landing::Header { rk: None, head: header("Set", 130) });
         assert!(state.take_landing_for_test(&adapter));
-        assert!(matches!(state.job(), Some(Job::Children { start: 0, .. })));
+        assert!(matches!(state.work(), Some(Work::Children { start: 0, .. })));
         let page = (0..PAGE_SIZE).map(|i| PmsMovie { rk: i.to_string(), ..Default::default() }).collect();
         adapter.land(generation, Landing::Page { start: 0, got: PAGE_SIZE, pages: vec![page], total: 130 });
         assert!(state.take_landing_for_test(&adapter));
         let c = state.view().current().unwrap();
         assert_eq!((c.shown(), c.more, c.status), (PAGE_SIZE, true, CollectionStatus::Ready));
-        assert!(state.job().is_none(), "the grid has not asked for more yet");
+        assert!(state.work().is_none(), "the grid has not asked for more yet");
 
         let mut more = target;
         more.want = 2 * PAGE_SIZE;
-        assert!(state.run(&adapter, CollectionCmd::Open { target: more }),
+        assert!(state.run_bare(&adapter, CollectionCmd::Open { target: more }),
             "a larger want on the same identity is a change, not a reopen");
         assert_eq!(state.generation(), generation, "paging does not supersede the collection");
-        assert!(matches!(state.job(), Some(Job::Children { start, .. }) if start == PAGE_SIZE));
+        assert!(matches!(state.work(), Some(Work::Children { start, .. }) if start == PAGE_SIZE));
         adapter.land(generation, Landing::Page { start: 5 * PAGE_SIZE, got: 0, pages: vec![], total: 130 });
         assert!(!state.take_landing_for_test(&adapter), "a page past the frontier is dropped");
     }
@@ -774,21 +917,21 @@ mod tests {
     fn a_page_with_unlisted_rows_advances_by_the_rows_the_server_sent() {
         let adapter = Arc::new(CollectionAdapter::default());
         let mut state = CollectionState::default();
-        state.run(&adapter, CollectionCmd::Open { target: set_target("50001", 7, "Set") });
+        state.run_bare(&adapter, CollectionCmd::Open { target: set_target("50001", 7, "Set") });
         let generation = state.generation();
         adapter.land(generation, Landing::Header { rk: None, head: header("Set", 130) });
         assert!(state.take_landing_for_test(&adapter));
         let listed = (0..PAGE_SIZE - 5).map(|i| PmsMovie { rk: i.to_string(), ..Default::default() }).collect();
         adapter.land(generation, Landing::Page { start: 0, got: PAGE_SIZE, pages: vec![listed], total: 130 });
         assert!(state.take_landing_for_test(&adapter));
-        state.run(&adapter, CollectionCmd::Open { target: CollectionTarget {
+        state.run_bare(&adapter, CollectionCmd::Open { target: CollectionTarget {
             want: 2 * PAGE_SIZE, ..set_target("50001", 7, "Set") } });
-        assert!(matches!(state.job(), Some(Job::Children { start, .. }) if start == PAGE_SIZE),
+        assert!(matches!(state.work(), Some(Work::Children { start, .. }) if start == PAGE_SIZE),
             "the next page starts after every row the server sent, listed or not");
 
         // A collection whose every row is unlisted ends Empty rather than paging forever.
         let mut state = CollectionState::default();
-        state.run(&adapter, CollectionCmd::Open { target: set_target("50002", 8, "Clips") });
+        state.run_bare(&adapter, CollectionCmd::Open { target: set_target("50002", 8, "Clips") });
         let generation = state.generation();
         adapter.land(generation, Landing::Header { rk: None, head: header("Clips", 3) });
         assert!(state.take_landing_for_test(&adapter));
@@ -796,45 +939,7 @@ mod tests {
         assert!(state.take_landing_for_test(&adapter));
         let c = state.view().current().unwrap();
         assert_eq!((c.status, c.more), (CollectionStatus::Empty, false));
-        assert!(state.job().is_none());
-    }
-
-    /// A members page read while a Mark Watched was pressed lands with the member as the server
-    /// described it before the press; the ledger makes the press again on it, and only the ones
-    /// published after the read's own request. The stamp is taken by the REAL request
-    /// (`maybe_spawn`, against a registered but unreachable server), not assigned.
-    #[test]
-    fn a_members_page_in_flight_across_a_watched_edit_lands_watched() {
-        use crate::viewstate::{ViewAt, ViewEdit};
-        let _g = plx_base::testlock::serial();
-        plx_plex::plex::reset_servers_for_test();
-        let sid = plx_plex::plex::register_for_test("collection-ledger", "127.0.0.1", 9, "t", "cid");
-        let adapter = Arc::new(CollectionAdapter::default());
-        let mut state = CollectionState::default();
-        let mut target = set_target("50003", 9, "Set");
-        target.id.sid = sid;
-        state.run(&adapter, CollectionCmd::Open { target });
-        let generation = state.generation();
-        // the header request goes out for real; what it brings is replaced by a canned header
-        let _ = state.pump_with_gate(&adapter, plx_machine::landgate::fixture_gate());
-        plx_base::task::drain_workers_for_test();
-        let _ = adapter.fetch.take();
-        adapter.land(generation, Landing::Header { rk: None, head: header("Set", 2) });
-        assert!(state.take_landing_for_test(&adapter));
-
-        let older = state.ledger.record(&ViewAt::leaf(sid, "m0"), ViewEdit::Watched(true));
-        state.ledger.landed(older); // before the page request: the server has it
-        state.maybe_spawn(&adapter); // the members page request goes out
-        state.ledger.record(&ViewAt::leaf(sid, "m1"), ViewEdit::Watched(true)); // …then the press
-        plx_base::task::drain_workers_for_test();
-        let _ = adapter.fetch.take(); // the unreachable server's answer
-        let member = |rk: &str| PmsMovie { sid, rk: rk.into(), unwatched: true, resume_ms: 7, ..Default::default() };
-        adapter.land(generation, Landing::Page { start: 0, got: 3, pages: vec![vec![member("m0"), member("m1"), member("m2")]], total: 3 });
-        assert!(state.take_landing_for_test(&adapter));
-        let c = state.current.as_ref().unwrap();
-        let marks: Vec<_> = (0..c.shown()).filter_map(|i| c.pages.get(i)).map(|m| (m.rk.clone(), m.watched, m.resume_ms)).collect();
-        assert_eq!(marks, vec![("m0".to_string(), false, 7), ("m1".to_string(), true, 0), ("m2".to_string(), false, 7)]);
-        plx_plex::plex::reset_servers_for_test();
+        assert!(state.work().is_none());
     }
 
     /// A tag route resolves from the section's collection listing, whose row IS the collection's
@@ -844,26 +949,26 @@ mod tests {
     fn a_tag_resolution_lands_the_header_and_pages_next() {
         let adapter = Arc::new(CollectionAdapter::default());
         let mut state = CollectionState::default();
-        state.run(&adapter, CollectionCmd::Open { target: set_target("", 7, "Set") });
-        assert!(matches!(state.job(), Some(Job::Resolve { tag: 7, .. })));
+        state.run_bare(&adapter, CollectionCmd::Open { target: set_target("", 7, "Set") });
+        assert!(matches!(state.work(), Some(Work::Resolve { tag: 7, .. })));
         adapter.land_resolved_for_test(state.generation(), "50007");
         assert!(state.take_landing_for_test(&adapter));
         let c = state.view().current().unwrap();
         assert_eq!((c.id.rk.as_str(), c.title.as_str()), ("50007", "Resolved"));
-        assert!(matches!(state.job(), Some(Job::Children { start: 0, .. })), "no second header request");
+        assert!(matches!(state.work(), Some(Work::Children { start: 0, .. })), "no second header request");
     }
 
     #[test]
     fn a_local_watched_edit_flips_the_member_in_place() {
         let adapter = Arc::new(CollectionAdapter::default());
         let mut state = CollectionState::default();
-        state.run(&adapter, CollectionCmd::Open { target: set_target("50001", 7, "Set") });
+        state.run_bare(&adapter, CollectionCmd::Open { target: set_target("50001", 7, "Set") });
         state.install_for_test(vec![PmsMovie { rk: "a".into(), unwatched: true, ..Default::default() }],
             CollectionStatus::Ready);
-        assert!(!state.run(&adapter, CollectionCmd::ApplyView {
+        assert!(!state.run_bare(&adapter, CollectionCmd::ApplyView {
             at: crate::viewstate::ViewAt::leaf(ServerId::UNSET, "b"),
             edit: crate::viewstate::ViewEdit::Watched(true) }), "an item not on the page changes nothing");
-        assert!(state.run(&adapter, CollectionCmd::ApplyView {
+        assert!(state.run_bare(&adapter, CollectionCmd::ApplyView {
             at: crate::viewstate::ViewAt::leaf(ServerId::UNSET, "a"),
             edit: crate::viewstate::ViewEdit::Watched(true) }));
         let item = &state.view().current().unwrap().item(0).unwrap();
@@ -875,12 +980,12 @@ mod tests {
         use crate::viewstate::{ViewAt, ViewEdit};
         let adapter = Arc::new(CollectionAdapter::default());
         let mut state = CollectionState::default();
-        state.run(&adapter, CollectionCmd::Open { target: set_target("50001", 7, "Set") });
+        state.run_bare(&adapter, CollectionCmd::Open { target: set_target("50001", 7, "Set") });
         state.install_for_test(vec![
             PmsMovie { rk: "a".into(), unwatched: true, resume_ms: 4, ..Default::default() },
             PmsMovie { rk: "b".into(), unwatched: true, ..Default::default() },
         ], CollectionStatus::Ready);
-        let mut run = |rk: &str, edit| state.run(&adapter, CollectionCmd::ApplyView {
+        let mut run = |rk: &str, edit| state.run_bare(&adapter, CollectionCmd::ApplyView {
             at: ViewAt::leaf(ServerId::UNSET, rk), edit });
         let facts = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0 };
         assert!(run("a", facts));
@@ -897,10 +1002,37 @@ mod tests {
     fn opened(total: usize) -> (CollectionState, Arc<CollectionAdapter>) {
         let adapter = Arc::new(CollectionAdapter::default());
         let mut state = CollectionState::default();
-        state.run(&adapter, CollectionCmd::Open { target: set_target("50001", 7, "Set") });
+        state.run_bare(&adapter, CollectionCmd::Open { target: set_target("50001", 7, "Set") });
         adapter.land(state.generation(), Landing::Header { rk: None, head: header("Set", total) });
         assert!(state.take_landing_for_test(&adapter));
         (state, adapter)
+    }
+
+    /// The collection closed and opened again, as a page entered anew does it: the store supersedes
+    /// the listing it held and holds nothing of the new one yet but its header.
+    fn reopen(state: &mut CollectionState, adapter: &Arc<CollectionAdapter>, total: usize) {
+        state.run_bare(adapter, CollectionCmd::Close);
+        state.run_bare(adapter, CollectionCmd::Open { target: set_target("50001", 7, "Set") });
+        adapter.land(state.generation(), Landing::Header { rk: None, head: header("Set", total) });
+        assert!(state.take_landing_for_test(adapter));
+    }
+
+    /// A retoken or a server re-point while a surface covers the page: the pump rebuilds the listing
+    /// from its first page (`refresh_if_client_changed`), keeping the window the page asked for. The
+    /// listing was read through client `(1, 1)` and the keys now answer `(2, 1)` for its server.
+    fn rebuild(state: &mut CollectionState, adapter: &Arc<CollectionAdapter>, total: usize) {
+        state.current.as_mut().unwrap().client_key = Some(ClientKey { instance: 1, token: 1 });
+        let now = ClientKeys::from_keys([(ServerId::UNSET, ClientKey { instance: 2, token: 1 })]);
+        assert!(state.refresh_if_client_changed(adapter, &now));
+        adapter.land(state.generation(), Landing::Header { rk: None, head: header("Set", total) });
+        assert!(state.take_landing_for_test(adapter));
+    }
+
+    /// What a page saves of the listing it reads (`kept_counts` and `generation`) and hands back in a
+    /// [`CollectionCmd::Restore`].
+    fn directory(state: &CollectionState) -> (usize, Vec<u8>, u32) {
+        let c = state.view().current().unwrap();
+        (c.total, c.kept_counts(), c.generation())
     }
 
     fn movie(rk: usize) -> PmsMovie {
@@ -911,7 +1043,7 @@ mod tests {
     /// `rk` `s`, and a row `keep` rejects is filtered out of its page. Records each request's start.
     fn serve(state: &mut CollectionState, adapter: &Arc<CollectionAdapter>, total: usize,
              keep: &dyn Fn(usize) -> bool, requests: &mut Vec<usize>) {
-        while let Some(Job::Children { start, .. }) = state.job() {
+        while let Some(Work::Children { start, .. }) = state.work() {
             requests.push(start);
             let got = PAGE_SIZE.min(total - start);
             let rows = (start..start + got).filter(|&s| keep(s)).map(movie).collect();
@@ -923,7 +1055,7 @@ mod tests {
     /// Moves the window to `wanted`, asks for what it needs, and returns the requests made.
     fn show(state: &mut CollectionState, adapter: &Arc<CollectionAdapter>, total: usize,
             wanted: Range<usize>, focus: Option<usize>, restore: Option<usize>, keep: &dyn Fn(usize) -> bool) -> Vec<usize> {
-        state.run(adapter, CollectionCmd::Window { wanted, focus, restore });
+        state.run_bare(adapter, CollectionCmd::Window { wanted, focus, restore });
         let mut requests = Vec::new();
         serve(state, adapter, total, keep, &mut requests);
         requests
@@ -1000,7 +1132,7 @@ mod tests {
         let keep = |s: usize| s % 7 != 3;
         let (mut state, adapter) = opened(total);
         walk_down(&mut state, &adapter, total, &keep);
-        let counts = state.view().current().unwrap().pages.kept_counts();
+        let (_, counts, generation) = directory(&state);
         assert!(counts.iter().any(|&k| k < 60), "a filtered listing has short pages");
 
         // Kept rows per page are short, so index 3000 sits on a later server page than 3000 / 60.
@@ -1012,12 +1144,136 @@ mod tests {
         let pages: Vec<usize> = (page_of(3000)..=page_of(3119)).map(|p| p * PAGE_SIZE).collect();
         assert!(pages[0] > 3000, "the window is not where an unfiltered listing would put it");
 
-        let (mut back, adapter) = opened(total);
-        assert!(back.run(&adapter, CollectionCmd::Restore { total, counts }));
-        let requests = show(&mut back, &adapter, total, 3000..3120, Some(3000), Some(3000), &keep);
+        reopen(&mut state, &adapter, total);
+        assert!(state.run_bare(&adapter, CollectionCmd::Restore { total, counts, generation }));
+        let requests = show(&mut state, &adapter, total, 3000..3120, Some(3000), Some(3000), &keep);
         assert_eq!(requests, pages, "only the pages the window covers");
         let kept: Vec<usize> = (0..total).filter(|&s| keep(s)).collect();
-        assert!((3000..3120).all(|i| rk_at(&back, i) == Some(kept[i].to_string())));
+        assert!((3000..3120).all(|i| rk_at(&state, i) == Some(kept[i].to_string())));
+    }
+
+    /// Where a store's reading stands: the pages read, whether the frontier goes on, the indices
+    /// counted, the pages whose rows are held and the content revision.
+    fn standing(state: &CollectionState) -> (usize, bool, usize, usize, u64) {
+        let view = state.view();
+        let c = view.current().unwrap();
+        (c.read, c.more, c.shown(), c.pages.loaded_pages(), view.revision())
+    }
+
+    /// A surface closed over a live page (a card's hold menu, a sheet) or a Back from Detail hands
+    /// the page its own saved directory while the store still holds the listing it was saved from.
+    /// That restores nothing: the rows stay held (no member turns into a not-yet-loaded card), and in
+    /// a long, partly read list the read position stays where the reading left it and paging stays
+    /// on, instead of "read" to the last page with the frontier switched off.
+    #[test]
+    fn a_restore_of_the_listing_the_store_holds_changes_nothing_in_a_long_partly_read_list() {
+        let total = 5_000;
+        let keep = |s: usize| s % 7 != 3;
+        let (mut state, adapter) = opened(total);
+        show(&mut state, &adapter, total, 0..120, Some(0), None, &keep);
+        let (_, counts, generation) = directory(&state);
+        assert_eq!(counts.len(), total.div_ceil(PAGE_SIZE));
+        let before = standing(&state);
+        let (read, more, shown, loaded_pages, _) = before;
+        assert!(read >= 2 && read < counts.len() && more, "a long list read only part of the way: {before:?}");
+        assert!(counts[..read].iter().all(|&k| k < 60) && loaded_pages == read, "short pages, every one held: {before:?}");
+
+        assert!(!state.run_bare(&adapter, CollectionCmd::Restore { total, counts: counts.clone(), generation }),
+            "the store holds this listing: nothing changed");
+        assert_eq!(standing(&state), before, "no row dropped, the read position and paging untouched");
+        assert!((0..shown).all(|i| rk_at(&state, i).is_some()), "every member the store counted is still held");
+
+        let requests = show(&mut state, &adapter, total, 0..shown + PAGE_SIZE, Some(0), None, &keep);
+        assert!(!requests.is_empty(), "paging is still on");
+        assert_eq!(requests, (read..read + requests.len()).map(|p| p * PAGE_SIZE).collect::<Vec<_>>(),
+            "the frontier goes on in order from the page it had reached");
+
+        // A store opened again since is another listing, so it takes the saved directory whole.
+        reopen(&mut state, &adapter, total);
+        assert!(state.run_bare(&adapter, CollectionCmd::Restore { total, counts: counts.clone(), generation }));
+        let (read, more, _, loaded_pages, _) = standing(&state);
+        assert_eq!((read, more, loaded_pages), (counts.len(), false, 0), "the directory, no rows");
+        assert_eq!(state.view().current().unwrap().kept_counts(), counts);
+    }
+
+    /// A directory saved from another listing is a restore: a page whose kept count differs becomes
+    /// a hole (its rows no longer match its count), and the pages that agree keep their rows.
+    #[test]
+    fn a_restore_of_another_listings_directory_drops_only_the_pages_whose_counts_changed() {
+        let total = 300;
+        let (mut state, adapter) = opened(total);
+        show(&mut state, &adapter, total, 0..300, Some(0), None, &|_| true);
+        let (_, mut counts, generation) = directory(&state);
+        counts[1] = 57;
+        rebuild(&mut state, &adapter, total);
+        show(&mut state, &adapter, total, 0..300, Some(0), None, &|_| true);
+        assert_eq!(loaded(&state), 5);
+        assert!(state.run_bare(&adapter, CollectionCmd::Restore { total, counts: counts.clone(), generation }));
+        assert_eq!(loaded(&state), 4, "the page whose count changed is a hole");
+        assert_eq!(state.view().current().unwrap().kept_counts(), counts);
+        assert_eq!(rk_at(&state, 0).as_deref(), Some("0"), "a page that agrees keeps its rows");
+        assert_eq!(rk_at(&state, 60), None);
+        assert_eq!(rk_at(&state, 117).as_deref(), Some("120"), "the pages after the changed one keep their rows, read from their new first index");
+    }
+
+    /// A retoken or a server re-point while a surface covers the page rebuilds the store from its
+    /// first page (`refresh_if_client_changed`); the covered page's own per-frame pump then reads the
+    /// header and a stretch of the frontier, so the NEW store can hold the very counts the page saved
+    /// (an unfiltered list: every page 60, the total the same) without being the listing they were
+    /// saved from. The Back is a full restore of the target page, as #605 designed, not a no-op that
+    /// leaves the store reading forward from page 8 to page 50 with focus held on skeletons.
+    #[test]
+    fn a_restore_after_the_store_was_rebuilt_while_covered_takes_the_saved_directory() {
+        let total = 5_000;
+        let (mut state, adapter) = opened(total);
+        for start in (0..=3000).step_by(45) {
+            show(&mut state, &adapter, total, start..start + PAGE_SIZE, Some(start), None, &|_| true);
+        }
+        let (saved_total, counts, generation) = directory(&state);
+        let (read, more, ..) = standing(&state);
+        assert!(more && read < counts.len() && counts.iter().all(|&k| k == 60), "deep in an unfiltered list: read {read}");
+
+        rebuild(&mut state, &adapter, total);
+        let mut frontier = Vec::new();
+        serve(&mut state, &adapter, total, &|_| true, &mut frontier);
+        assert_eq!(frontier.len(), usize::from(FRONTIER_ASK), "the covered page's pump read a stretch of the frontier");
+        let (now_total, now_counts, now_generation) = directory(&state);
+        assert_eq!((now_total, &now_counts), (saved_total, &counts), "the new store holds the saved counts");
+        assert_ne!(now_generation, generation, "…as another listing");
+
+        assert!(state.run_bare(&adapter, CollectionCmd::Restore { total, counts: counts.clone(), generation }),
+            "a store rebuilt since the page was saved is not the listing the directory came from");
+        let c = state.view().current().unwrap();
+        assert_eq!((c.read, c.more), (counts.len(), false), "the directory is whole again");
+        let requests = show(&mut state, &adapter, total, 3000..3120, Some(3000), Some(3000), &|_| true);
+        assert_eq!(requests, vec![3000, 3060], "only the target's pages, not a read forward from the frontier");
+        assert_eq!(rk_at(&state, 3000).as_deref(), Some("3000"));
+    }
+
+    /// The listing keeps being read while a surface covers the page (`/children` reads continue under
+    /// a menu or Detail): a short page lands, so the store's counts are newer than the page's. The
+    /// Back is not a restore of the older counts over them (the landed page's count back to 60, its
+    /// rows dropped and read again, the read position jumped to the end, paging off).
+    #[test]
+    fn a_short_page_landing_while_covered_survives_the_restore() {
+        let total = 300;
+        let keep = |s: usize| !(120..123).contains(&s);
+        let (mut state, adapter) = opened(total);
+        show(&mut state, &adapter, total, 0..120, Some(0), None, &keep);
+        let (_, counts, generation) = directory(&state);
+        assert_eq!(standing(&state).0, 2, "two pages read, the third is the frontier");
+
+        // Covered: the frontier goes on and page 2 lands with three rows filtered out.
+        show(&mut state, &adapter, total, 0..150, Some(0), None, &keep);
+        let before = standing(&state);
+        assert_eq!(state.view().current().unwrap().kept_counts()[2], 57, "the landed page counts its kept rows");
+        assert_eq!((before.0, before.1), (3, true), "three pages read, paging on");
+
+        assert!(!state.run_bare(&adapter, CollectionCmd::Restore { total, counts, generation }),
+            "the store is still the listing the page was saved from: its newer counts stand");
+        assert_eq!(standing(&state), before, "the landed page keeps its count and rows; read and paging stay");
+        assert_eq!(rk_at(&state, 119).as_deref(), Some("119"));
+        assert_eq!(rk_at(&state, 120).as_deref(), Some("123"), "page 2's rows are held at the indices they landed at");
     }
 
     /// The focused card's page and a pending restore's target page survive the eviction a far-away
@@ -1052,7 +1308,7 @@ mod tests {
         let wanted = |state: &CollectionState| state.current.as_ref().map(|c| (c.wanted.clone(), c.focus, c.restore));
         let after_stale = wanted(&state);
         assert_eq!(after_stale, Some((0..60, Some(0), None)), "the last ask stands whatever came before it");
-        assert!(!state.run(&adapter, CollectionCmd::Window { wanted: 0..60, focus: Some(0), restore: None }),
+        assert!(!state.run_bare(&adapter, CollectionCmd::Window { wanted: 0..60, focus: Some(0), restore: None }),
             "saying it again changes nothing");
         assert_eq!(show(&mut state, &adapter, total, 0..60, Some(0), None, &|_| true), Vec::<usize>::new(),
             "and asks for no page twice");
@@ -1083,7 +1339,7 @@ mod tests {
         let (mut state, adapter) = opened(total);
         let whole = |state: &mut CollectionState| -> usize {
             let mut answers = 0;
-            while let Some(Job::Children { start, .. }) = state.job() {
+            while let Some(Work::Children { start, .. }) = state.work() {
                 let rows: Vec<Vec<PmsMovie>> = (0..total).map(movie).collect::<Vec<_>>()
                     .chunks(PAGE_SIZE).map(|page| page.to_vec()).collect();
                 adapter.land(state.generation(), Landing::Page { start, got: total, pages: rows, total });
@@ -1093,13 +1349,13 @@ mod tests {
             }
             answers
         };
-        state.run(&adapter, CollectionCmd::Window { wanted: 300..360, focus: Some(300), restore: None });
+        state.run_bare(&adapter, CollectionCmd::Window { wanted: 300..360, focus: Some(300), restore: None });
         assert_eq!(whole(&mut state), 1, "one answer carries the whole listing");
         assert_eq!(rk_at(&state, 300).as_deref(), Some("300"));
         assert!(loaded(&state) <= crate::stores::page_cache::MAX_LOADED, "the rest is dropped");
         assert_eq!(rk_at(&state, 1200), None, "page 20 was not wanted");
 
-        state.run(&adapter, CollectionCmd::Window { wanted: 1200..1260, focus: Some(1200), restore: None });
+        state.run_bare(&adapter, CollectionCmd::Window { wanted: 1200..1260, focus: Some(1200), restore: None });
         assert_eq!(whole(&mut state), 1, "a re-read is asked for and answered whole again");
         assert_eq!(rk_at(&state, 1200).as_deref(), Some("1200"));
         assert!(loaded(&state) <= crate::stores::page_cache::MAX_LOADED);
@@ -1110,8 +1366,8 @@ mod tests {
     #[test]
     fn a_page_read_that_fails_is_the_same_job_again_after_every_failure() {
         let (mut state, adapter) = opened(300);
-        state.run(&adapter, CollectionCmd::Window { wanted: 60..120, focus: Some(60), restore: None });
-        let job = |s: &CollectionState| match s.job() { Some(Job::Children { start, .. }) => Some(start), _ => None };
+        state.run_bare(&adapter, CollectionCmd::Window { wanted: 60..120, focus: Some(60), restore: None });
+        let job = |s: &CollectionState| match s.work() { Some(Work::Children { start, .. }) => Some(start), _ => None };
         let first = job(&state);
         assert_eq!(first, Some(0), "the frontier, in order");
         for _ in 0..5 {
@@ -1128,13 +1384,21 @@ mod tests {
     fn the_frontier_waits_for_the_next_window_command_once_its_budget_is_spent() {
         let total = 5_000;
         let (mut state, adapter) = opened(total);
-        let ask = |s: &mut CollectionState| s.run(&adapter, CollectionCmd::Window { wanted: 3000..3060, focus: Some(3000), restore: Some(3000) });
+        let ask = |s: &mut CollectionState| s.run_bare(&adapter, CollectionCmd::Window { wanted: 3000..3060, focus: Some(3000), restore: Some(3000) });
         ask(&mut state);
         let mut requests = Vec::new();
         serve(&mut state, &adapter, total, &|_| true, &mut requests);
         assert_eq!(requests.len(), usize::from(FRONTIER_ASK));
-        assert!(state.job().is_none(), "idle with the target unread");
+        assert!(state.work().is_none(), "idle with the target unread");
         assert!(!ask(&mut state), "the same window changes nothing in the view");
-        assert!(state.job().is_some(), "but is an ask: the budget is back");
+        assert!(state.work().is_some(), "but is an ask: the budget is back");
     }
+}
+
+/// `mail` re-serialized and read back the way the recording's segment reader parses numbers.
+/// Without `float_roundtrip` an f32 widened to f64 (9.600000381469727) reads back one ulp off, so
+/// comparing `to_value` against the parsed file would refuse a recording of ordinary mock ratings.
+fn reread(mail: &impl serde::Serialize) -> Option<serde_json::Value> {
+    let text = serde_json::to_value(mail).ok()?.to_string();
+    serde_json::from_str(&text).ok()
 }

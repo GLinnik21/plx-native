@@ -288,6 +288,33 @@ class CheckPlexRequests(unittest.TestCase):
         self.assertIn('hubs.rs::lazy', sites)
         self.assertNotIn('hubs.rs::move', sites)
 
+    def test_the_discover_host_is_allowed_only_at_its_one_definition(self):
+        host = 'https://discover.provider.plex.tv'
+        definition = f'const DISCOVER: &str = "{host}";\n'
+        account = BASE[f'{PLEX}/account.rs'] + definition
+        # The one definition in account.rs, a comment and a #[cfg(test)] item elsewhere: clean.
+        clean = {f'{PLEX}/account.rs': account,
+                 f'{PLEX}/discover.rs': (f'// the host is {host}\n'
+                                         '#[cfg(test)]\nmod tests {\n'
+                                         f'    const REAL: &str = "{host}/library";\n}}\n')}
+        self.assertEqual(self.tree(clean).check()[1], [])
+        # A request site that spells the host again skips the stand-in.
+        leak = dict(clean, **{f'{PLEX}/discover.rs': (
+            'impl AccountClient {\n'
+            '    pub fn person(&self, g: &str) -> Option<Vec<u8>> {\n'
+            f'        self.get(&format!("{host}/library/people/{{g}}"))\n'
+            '    }\n}\n')})
+        _, problems = self.tree(leak).check()
+        self.assertProblem(problems, 'discover.rs', 'spells the Discover host', 'account::discover()')
+        # A second spelling in account.rs itself is as bad as one elsewhere.
+        twice = dict(clean, **{f'{PLEX}/account.rs': account + f'fn other() -> &\'static str {{ "{host}" }}\n'})
+        _, problems = self.tree(twice).check()
+        self.assertProblem(problems, 'account.rs', '2 time(s)')
+        # Another crate is scanned too.
+        elsewhere = dict(clean, **{'rust-modules/data/src/person.rs': f'pub const H: &str = "{host}";\n'})
+        _, problems = self.tree(elsewhere).check()
+        self.assertProblem(problems, 'rust-modules/data/src/person.rs')
+
 
 if __name__ == '__main__':
     unittest.main()

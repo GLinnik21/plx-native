@@ -172,6 +172,7 @@ pub fn event_body(
             "playback.http_status": context.http_status.to_string(),
             "playback.transport": context.transport.code(),
             "playback.transfer_age": context.transfer_age.code(),
+            "playback.demux_exit": context.demux_exit.code(),
             "playback.pipeline_error": context.pipeline_error.to_string(),
         },
         "contexts": {"playback": {
@@ -192,6 +193,7 @@ pub fn event_body(
             "buffer": context.buffer.code(),
             "transport": context.transport.code(),
             "transfer_age": context.transfer_age.code(),
+            "demux_exit": context.demux_exit.code(),
             "pipeline_error": context.pipeline_error,
             "started": context.started,
         }},
@@ -285,6 +287,7 @@ pub fn preview_event() -> Vec<u8> {
         AttemptOrdinal, AttemptOrigin, AudioCodecClass, BufferClass, DecisionCodeClass, DeliveryClass,
         DeliveryReason, HttpClass, OriginalProbePhase, PipelineClass, QualityClass, RasterClass, RateClass, RefusalContext,
         TraceAge, TraceDirection, TraceOutcome, TransferAgeClass, TransportClass, VideoCodecClass,
+        DemuxExitClass,
     };
     let trace = [
         TraceStep {
@@ -358,6 +361,7 @@ pub fn preview_event() -> Vec<u8> {
             buffer: BufferClass::S3To10,
             transport: TransportClass::RecvError,
             transfer_age: TransferAgeClass::S30To90,
+            demux_exit: DemuxExitClass::HttpsOpenFailed,
             started: true,
             attempted_delivery: DeliveryClass::Direct,
             attempt_started: false,
@@ -397,14 +401,14 @@ pub fn preview_domains() -> String {
         BufferClass as B, DeliveryClass as D, DeliveryReason as W, HttpClass as H,
         OriginalProbePhase as P, PipelineClass as L, QualityClass as Q, RasterClass as X,
         RateClass as R, TraceAge as A, TraceDirection as I, TraceOutcome as O,
-        TransferAgeClass as T, TransportClass as K,
+        DemuxExitClass as E, TransferAgeClass as T, TransportClass as K,
     };
     use crate::telemetry::classes::{AudioCodecClass as Z, DecisionCodeClass as N, VideoCodecClass as V};
     use crate::telemetry::classes::{AttemptOrdinal, AttemptOrigin};
     use FailureClass as F;
     use plx_platform::i18n::msg;
     // The labels are the reader's words; the codes after them are the wire values themselves.
-    let domains: [(&str, String); 24] = [
+    let domains: [(&str, String); 25] = [
         (msg::core_preview_domain_failure_kind(), codes(
             &[
                 F::DecisionRefused,
@@ -494,6 +498,7 @@ pub fn preview_domains() -> String {
         )),
         (msg::core_preview_domain_transport(), codes(&K::ALL, K::code)),
         (msg::core_preview_domain_transfer_age(), codes(&T::ALL, T::code)),
+        (msg::core_preview_domain_demux_exit(), codes(&E::ALL, E::code)),
         (msg::core_preview_domain_elapsed(), codes(
             &[
                 A::Under1s,
@@ -546,7 +551,7 @@ mod tests {
     use crate::telemetry::classes::{
         AttemptOrdinal, AttemptOrigin, AudioCodecClass, BufferClass, DecisionCodeClass,
         DeliveryClass, HttpClass, OriginalProbePhase, PipelineClass, QualityClass, RasterClass, RateClass, RefusalContext,
-        TraceAge, TraceOutcome, TransferAgeClass, TransportClass, VideoCodecClass,
+        TraceAge, TraceOutcome, TransferAgeClass, TransportClass, VideoCodecClass, DemuxExitClass,
     };
 
     fn context() -> PlaybackErrorContext {
@@ -562,6 +567,7 @@ mod tests {
             buffer: BufferClass::S3To10,
             transport: TransportClass::None,
             transfer_age: TransferAgeClass::Unknown,
+            demux_exit: DemuxExitClass::None,
             started: true,
             attempted_delivery: DeliveryClass::Hls,
             attempt_started: true,
@@ -818,6 +824,7 @@ mod tests {
                 "buffer",
                 "declared_rate",
                 "delivery",
+                "demux_exit",
                 "http",
                 "http_status",
                 "media_rate",
@@ -841,6 +848,7 @@ mod tests {
                 "playback.attempted_delivery",
                 "playback.declared_rate",
                 "playback.delivery",
+                "playback.demux_exit",
                 "playback.http_status",
                 "playback.kind",
                 "playback.pipeline_error",
@@ -940,6 +948,7 @@ mod tests {
                 "playback.attempted_delivery",
                 "playback.declared_rate",
                 "playback.delivery",
+                "playback.demux_exit",
                 "playback.http_status",
                 "playback.kind",
                 "playback.pipeline_error",
@@ -1052,6 +1061,76 @@ mod tests {
         .expect("handled event JSON");
         assert_eq!(v["tags"]["playback.transport"], "none");
         assert_eq!(v["tags"]["playback.transfer_age"], "unknown");
+    }
+
+    /// The demuxer exit that failed the session rides on every report as a closed code, as a
+    /// searchable tag AND in the playback context, and a report with none recorded says `none`.
+    /// The fingerprint is untouched: the field explains a group, it does not split it.
+    #[test]
+    fn a_demux_exit_is_tagged_and_in_the_context() {
+        let mut ctx = context();
+        ctx.demux_exit = DemuxExitClass::NoFraming;
+        let v: Value = serde_json::from_slice(&event_body(
+            &"a".repeat(32),
+            "0123456789abcdef",
+            Some(&"e".repeat(32)),
+            FailureClass::MediaSource,
+            ctx,
+            &[],
+        ))
+        .expect("handled event JSON");
+        assert_eq!(v["tags"]["playback.demux_exit"], "no_framing");
+        assert_eq!(v["contexts"]["playback"]["demux_exit"], "no_framing");
+        assert_eq!(v["fingerprint"], serde_json::json!(["playback-error", "media_source"]));
+        let v: Value = serde_json::from_slice(&event_body(
+            &"a".repeat(32),
+            "0123456789abcdef",
+            None,
+            FailureClass::MediaSource,
+            context(),
+            &[],
+        ))
+        .expect("handled event JSON");
+        assert_eq!(v["tags"]["playback.demux_exit"], "none");
+        assert_eq!(v["contexts"]["playback"]["demux_exit"], "none");
+    }
+
+    /// The demux-exit domain is closed and its wire strings and latch numbers are STABLE: a code
+    /// is never renamed or renumbered (production dashboards group on them), only appended.
+    #[test]
+    fn demux_exit_codes_are_unique_and_the_latch_mapping_is_pinned() {
+        let pinned: [(u8, DemuxExitClass, &str); 18] = [
+            (0, DemuxExitClass::None, "none"),
+            (1, DemuxExitClass::HttpsReserveFailed, "https_reserve_failed"),
+            (2, DemuxExitClass::HttpsOpenFailed, "https_open_failed"),
+            (3, DemuxExitClass::HttpOpenFailed, "http_open_failed"),
+            (4, DemuxExitClass::OpenInputFailed, "open_input_failed"),
+            (5, DemuxExitClass::FindStreamInfoFailed, "find_stream_info_failed"),
+            (6, DemuxExitClass::NoVideoStream, "no_video_stream"),
+            (7, DemuxExitClass::NoFraming, "no_framing"),
+            (8, DemuxExitClass::LoadMismatch, "load_mismatch"),
+            (9, DemuxExitClass::NoAudioAu, "no_audio_au"),
+            (10, DemuxExitClass::NoUsableVideo, "no_usable_video"),
+            (11, DemuxExitClass::DtsCoreMissing, "dts_core_missing"),
+            (12, DemuxExitClass::HlsFailed, "hls_failed"),
+            (13, DemuxExitClass::HlsNotReady, "hls_not_ready"),
+            (14, DemuxExitClass::DemuxPanicked, "demux_panicked"),
+            (15, DemuxExitClass::NoAccessUnits, "no_access_units"),
+            (16, DemuxExitClass::LoadRefused, "load_refused"),
+            (17, DemuxExitClass::Other, "other"),
+        ];
+        for (n, class, code) in pinned {
+            assert_eq!(class.latch(), n, "{code}");
+            assert_eq!(DemuxExitClass::from_latch(n), class, "{code}");
+            assert_eq!(class.code(), code);
+        }
+        assert_eq!(DemuxExitClass::from_latch(200), DemuxExitClass::Other, "an unowned byte is `other`");
+        let listed: Vec<DemuxExitClass> = pinned.iter().map(|p| p.1).collect();
+        assert_eq!(DemuxExitClass::ALL.to_vec(), listed, "ALL lists every variant, in latch order");
+        let mut codes: Vec<&str> = DemuxExitClass::ALL.iter().map(|c| c.code()).collect();
+        codes.sort_unstable();
+        codes.dedup();
+        assert_eq!(codes.len(), DemuxExitClass::ALL.len(), "every code is distinct");
     }
 
     /// The mapping from the code libcurl returned: every code a mid-body death produces has its
@@ -1364,5 +1443,7 @@ mod tests {
         assert!(v["contexts"]["playback"]["transfer_age"].is_string());
         assert!(v["tags"]["playback.transport"].is_string());
         assert!(v["tags"]["playback.transfer_age"].is_string());
+        assert!(v["contexts"]["playback"]["demux_exit"].is_string());
+        assert!(v["tags"]["playback.demux_exit"].is_string());
     }
 }

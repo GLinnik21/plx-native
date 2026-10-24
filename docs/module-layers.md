@@ -106,7 +106,7 @@ base
 
 | layer | members | prod lines | an edit there recompiles |
 |---|---|---:|---:|
-| base | `eventlog paths task cbuf sha256 b64 spki dynlib checkpoint storage_worker fontcov surface tile devtrig diag::{zlib,spans,heartbeat} testlock testnet testscratch` | 9k | everything |
+| base | `eventlog paths task cbuf sha256 b64 spki dynlib checkpoint storage_worker fontcov surface tile hold devtrig diag::{zlib,spans,heartbeat} testlock testnet testscratch testrace` | 9k | everything |
 | machine | `ui::{machine,present,idle,landgate,landing,motion}` | 4k | 97% |
 | platform | `webos storage keymanager devcaps imgcache i18n labcfg tv` | 11k | 96% |
 | gfx | `gfx egl text img svg gpu_timer hwcnt overdraw dump` | 15k | 68% |
@@ -114,7 +114,7 @@ base
 | plex | `plex http` | 26k | 72% |
 | telemetry | `telemetry diag` (the event schema) | 16k | 64% |
 | ui | `ui` (the library) | 51k | 47% |
-| data | `stores browse metadata person collection search viewstate viewledger pms` | 27k | 56% |
+| data | `stores browse metadata person collection search subsearch viewstate viewledger pms watchlist catalog` | 27k | 56% |
 | session | `auth` | 11k | 35% |
 | media | `ff aq abr hls curlio player route` | 56k | 49% |
 | appkit | `appkit` (the player panels and the Sources row several screens draw) | 13k | 32% |
@@ -127,6 +127,13 @@ for build time here; they are not measured build times. Today every row would re
 the split has not happened. Of the last 33 commits that touched `rust-modules/src` at baseline, 26
 touched `screens/` or `ui/`, so a screens-only edit dropping from 100% to about 28% is where most
 of the payoff is. L10 took the player widgets out of `ui` (66k lines at baseline, 51k now).
+
+The Watchlist adds two data modules and no new edge. `watchlist` (rows, match table, `TileState`,
+intent ledger, comparator; with `stores::watchlist`) and `catalog` (the Discover-only item page; with
+`stores::catalog`) name only layers below data, chiefly `plx_plex`: `plex::watchlist`, `Client::find_by_guids`, `plex::session`
+for the plex.tv credential, and `plex::servers` for the roster, reachability and `facts_gen`
+epochs. Neither names `net` or `media`; the screens (`watchlist`, `catalog`) and the tab pulse sit
+above them, and the application alone routes between them (`docs/watchlist.md`).
 
 Four choices that were not obvious:
 
@@ -237,7 +244,7 @@ proves the references are gone and nothing more; L15b is open.
 | **L9** telemetry owns its wire schema — **done** | 5 / 69 | The `*Class`/`Trace*` vocabulary and a new `FailureClass` are `telemetry::classes` (`player::report` re-exports them and converts through `FailureKind::class()`), clearing the error trace is a hook (`player::report::install_trace_eraser`, run at boot by `app::enter_application`, not by the first attempt: a failed preview traces without one), an incident hands over a telemetry-owned `ReadoutGlyph` that `screens::login` maps to an icon, and the consent adapter's live half is `telemetry::transition`. |
 | **L10** player and Plex-aware widgets out of ui — **done** | 38 / 511 | Part a moved `ui/{player_hud,track_menu,more_menu,info_panel,up_next,chapters_panel,timing_capsule,source_list}.rs` and `screens/player/skip_pill.rs` to the new `appkit` layer rather than `screens/` (the third choice above); part b gave `widgets`, `card_row`, `hero_logo`, `collection_tile` and `fmt` plain values (`ui::tile::TileFacts`, a raw `u16` server id, `fmt::RatingScale`), with `screens::registry::tile_facts::of` the one `PmsMovie` converter. |
 | **L11** data owns its seams — **done** | 13 / 74 | `app::bootstrap::stores` is `stores::tape`, `metadata` takes a `Playhead` value and owns `track_names`, `ContentArg` is `stores::content_arg`, `search` sizes its row window from `pms::MAX_SHELF_ITEMS`, and the `Tile` trait is the base module `tile`. |
-| **L12** media owns its lifecycle seams — **done** | 7 / 28 | The foreground-resume reducer and the transport-pause contract are `player::lifecycle` (`app::lifecycle` re-exports them), the stats switch is `player::DIAG_READOUT_ON`, `Venc::open` takes the capture socket writer as an argument, and `route` takes the HUD context line as a parameter, with the up-next still prefetch a hook the app installs. |
+| **L12** media owns its lifecycle seams — **done** | 7 / 28 | The foreground-resume machine is `player::lifecycle`, its drivers `player::foreground` and the transport-pause contract `player::transport` (`app::lifecycle` re-exports them), the stats switch is `player::DIAG_READOUT_ON`, `Venc::open` takes the capture socket writer as an argument, and `route` takes the HUD context line as a parameter, with the up-next still prefetch a hook the app installs. |
 | **L13** tests move up to the layer that owns their parts — **done** | 41 / 96 | Part a moved the auth, plex, i18n, task and fontcov tests that named upper layers to `app/` (`session_*_tests.rs`), `screens/login_text_fit_tests.rs`, `plex`, `auth::owner` and `storage::client`, and moved `fontcov`'s `Measure` impl beside the trait, with `ui::machine`'s new `BareArg`/`BareMeasure` fixtures for the rest; part b moved the data, media and ui ones to `app/` (`dispatch_return_tests.rs`, `overscan_audit_tests.rs`) and `screens/` (`plaintext_question`, `library/labels_tests.rs`, `search/tests.rs`, `player`), and rewrote two against their own layer. |
 | **L14** session-layer presentation to screens — **done** | 2 / 4 | `auth::signed_in_reason` is a private fn of `screens::login`, its only caller, with its two tests; `auth` already handed over the plain account name. |
 | **L15** the webOS port — **gate-complete** | 44 / 205 | Everything outside `[port webos]` reaches the television through the `tv` interfaces in `platform` that the port fills at boot: `tv::{device, sandbox, secure, home, toast, window}`, `devcaps::dv`, and `tv::sink::VideoSink`, a Starfish-shaped verb trait that `player::ffi::StarfishSink` and `player::ffi_host::HostSink` implement. `plex_run` is `port::plex_run`. The allowlist is empty. Not "done": the sink is not OS-neutral and the simulator is not its own port (L15b). |
@@ -549,7 +556,7 @@ suite is 5603 tests before and after (157 + 66 + 218 + 5162). What it taught bey
 
 - **The generated code is the layer's, and so is the build script that generates it.**
   `platform/build.rs` runs the catalog generator (`platform/build_support/catalog.rs`, reading
-  `locales/`) and the install-identity generator (`rust-modules/build_support/install_identities.rs`,
+  `locales/` and the language registry `locales/languages.json`) and the install-identity generator (`rust-modules/build_support/install_identities.rs`,
   which stays where it is because the storage helper's build script calls it too). It reads no
   `PLX_*` variable and emits no `rustc-link-*`, so it is never dirty on a second run:
   `ci/test_build_not_always_dirty.py` now fails on `plx_platform` as well as on the application
@@ -594,8 +601,8 @@ suite is 5603 tests before and after (157 + 66 + 218 + 5162). What it taught bey
   (the only files with C declarations in the layer; there is no `#[link]` and no `dynlib!` in it)
   differ from their old text in `pub(crate)` alone, and the new build script links nothing, so
   `LIBS_REAL` and `ci/expected-dt-needed.txt` are untouched. The host never compiles the ARM arms:
-  `cargo check --target arm-unknown-linux-gnueabi --lib -p plxnative-modules` (`.cargo/config.toml`'s
-  `build-std`, no NDK, no link step) does, and passes with and without default features; use it for
+  `cargo +$(make -s print-rust-toolchain) check --target armv7-unknown-linux-gnueabi --lib -p plxnative-modules` (the target's
+  prebuilt std since the move to stable; it was `.cargo/config.toml`'s `build-std` on nightly; no NDK, no link step) does, and passes with and without default features; use it for
   any split that moves FFI when no NDK is at hand.
 - **Gates scoped by the path of a moved file stopped seeing it, and some by its spelling.**
   `ci/check-deps.sh` reads `SRC_PLATFORM` where it read `SRC_MACHINE`; the `frame` and `uistorage`
@@ -1237,7 +1244,7 @@ ready. What it taught beyond the recipe:
   attribute and body of `mod tests` / `mod *_tests` / `mod test_support` and the wholly-test files).
   No `cfg(not(test))` arm hid from it except the shipping arms it switches: `metadata`'s detail
   fetch (a test holds the fetch instead of spawning a thread), its two dev stand-ins, `person`'s two
-  plex.tv fetches (a test that reaches them fails to link) and `pms::run`'s `EditItem` arm (since replaced by the stores' `ApplyView` commands, which carry no cfg split). Then
+  plex.tv fetches (libcurl is bound at run time, so a test that reaches them links and then either finds no libcurl or sends a real request; cut for that reason) and `pms::run`'s `EditItem` arm (since replaced by the stores' `ApplyView` commands, which carry no cfg split). Then
   the exceptions the compiler found under `--features test-support`: what only the layer's own
   tests use stays `cfg(test)` (13 private items and two imports, because under `test-support`
   alone they are dead code; `split-data-revert.py` flips them).
@@ -1297,9 +1304,11 @@ ready. What it taught beyond the recipe:
   `with_refused_discovery_for_test`, `fixture_with_sources`, `queue_test_landing`,
   `reverse_test_hubs`, `remove_test_item`, `land_for_test`, `publish_shelves_for_test`,
   `hold_inflight_for_test`, `REFUSE_FETCH_FOR_TEST`, `REFUSE_DISCOVERY_FOR_TEST`,
-  `seed_items_for_owner_test`, `held_detail` or `seed_two_source_table_for_owner_test`; the
+  `seed_items_for_owner_test` or `seed_two_source_table_for_owner_test`; the
   `--features test-support` control build of the same crate finds every one (1 to 8 times each),
-  and `nm` matches the seam names in 4 symbols there against 0. The ARM shipping archive built the
+  and `nm` matches the seam names in 4 symbols there against 0. (The measured list also named
+  `held_detail`, the detail fetch's held lane. It no longer exists: the detail request emits a job
+  and the app's test runner parks it, `docs/sans-io.md`.) The ARM shipping archive built the
   way the release is (`PLX_RELEASE=1 cargo rustc --release --target arm-unknown-linux-gnueabi --lib
   --crate-type staticlib --no-default-features`) has none of them either.
 - **FFI and the final link are untouched.** The layer has no `extern "C"`, `#[link]`, `dynlib!`,

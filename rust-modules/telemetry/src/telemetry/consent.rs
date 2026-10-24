@@ -71,6 +71,11 @@ use std::sync::RwLock;
 // there is no version-4 answer in the world to expand — only the maintainer's own debug installs,
 // which are re-answered by hand. The first release that ships the question ships it with the
 // identifier already in it. The rule above stands for every bump after that one.
+//
+// The release-health session record (`telemetry::session`, 2026-10-22) is covered by the SAME
+// crash-report switch and did NOT bump this either, by owner decision: the crash-report question
+// and the Privacy page now name it (start, length, how it ended, with the Crash report ID, no
+// content), and nobody is re-asked.
 pub const POLICY_VERSION: u32 = 4;
 
 /// The stored decision. Serde-serialised to the telemetry file; every field is read and written, so

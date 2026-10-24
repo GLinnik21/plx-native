@@ -18,47 +18,6 @@ use plx_ui::widgets::ControlPalette;
 
 use super::registry::{AppFx, AppMsg, DirectoryLike};
 
-/// A first-run background may mount before the persisted hero seed arrives. Keep the same
-/// generation cursor as other session-derived views, while a live hub seed remains authoritative.
-pub struct SessionGround {
-    ground: plx_ui::route_screen::RouteGround,
-    watch: plx_plex::plex::session::VisibleSessionWatch,
-    from_session: bool,
-    seed: Option<[[f32; 3]; 4]>,
-}
-impl SessionGround {
-    pub fn new() -> Self {
-        Self { ground: plx_ui::route_screen::RouteGround::new(), watch: Default::default(),
-            from_session: false, seed: None }
-    }
-    pub fn refresh(&mut self) -> bool {
-        if !self.from_session || !self.watch.changed() { return false; }
-        let Some(session) = plx_plex::plex::session::peek_settled() else { return false; };
-        if self.seed == session.prefs.last_hero_blur { return false; }
-        self.seed = session.prefs.last_hero_blur;
-        self.ground = plx_ui::route_screen::RouteGround::for_home(self.seed);
-        true
-    }
-}
-impl std::ops::Deref for SessionGround {
-    type Target = plx_ui::route_screen::RouteGround;
-    fn deref(&self) -> &Self::Target { &self.ground }
-}
-impl std::ops::DerefMut for SessionGround {
-    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.ground }
-}
-
-/// Prefer the already-published Home hero; otherwise observe the persisted seed as it lands.
-pub fn pre_home_ground(hubs: plx_data::pms::HubsView<'_>) -> SessionGround {
-    let live = hubs.hero(0).filter(|hero| hero.item.has_blur).map(|hero| hero.item.blur);
-    if let Some(blur) = live {
-        let _ = plx_base::storage_worker::submit_retained(move || plx_plex::plex::session::record_last_hero(blur));
-    }
-    let seed = live.or_else(plx_plex::plex::session::last_hero);
-    SessionGround { ground: plx_ui::route_screen::RouteGround::for_home(seed),
-        watch: Default::default(), from_session: live.is_none(), seed }
-}
-
 /// A page of the surface's own stack (§6.2: root → Privacy | Legal | Favourites → Document).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SettingsPage {
@@ -66,6 +25,10 @@ pub enum SettingsPage {
     Root,
     /// Install-wide language choice, applied next launch.
     Language,
+    /// Settings > Libraries > Under posters: what the focused poster's caption band shows.
+    UnderPosters,
+    /// Settings > Libraries > Under posters > Details: the picker of the one details line.
+    UnderPostersDetails,
     /// Translation contribution guide with an offline QR link.
     Contribute,
     /// Playback settings: each profile's own picks (a profile that has not chosen reads the install's older value). The page names the seated profile; while nobody is seated its rows are read-only.
@@ -108,14 +71,17 @@ pub enum PickerKind {
     SubtitleMode,
     SubtitleLanguage,
     ForcedSubtitles,
+    /// Settings > System > Interface resolution (install-wide; pushed from the Settings root).
+    UiResolution,
 }
 
 impl SettingsPage {
     /// The pages a boot target opens the surface over, root first: `plxnative-settings=picker-…`
-    /// is reached as root → Playback → the picker, so BACK from it lands where an interactive
-    /// visit would. Every other page is booted as the surface's root.
+    /// is reached as root → Playback → the picker (root → the picker for a root row's), so BACK from it
+    /// lands where an interactive visit would. Every other page is booted as the surface's root.
     pub fn boot_trail(self) -> Vec<SettingsPage> {
         match self {
+            SettingsPage::Picker(kind) if kind.parent() == SettingsPage::Root => vec![SettingsPage::Root, self],
             SettingsPage::Picker(kind) => vec![SettingsPage::Root, kind.parent(), self],
             page => vec![page],
         }
@@ -128,6 +94,7 @@ impl PickerKind {
         match self {
             PickerKind::Quality | PickerKind::DirectPlay | PickerKind::SubtitleSize | PickerKind::SubtitlePosition | PickerKind::HdrOverlay | PickerKind::NextEpisode | PickerKind::DeckPress | PickerKind::SkipInterval => SettingsPage::Playback,
             PickerKind::AudioLanguage | PickerKind::SubtitleMode | PickerKind::SubtitleLanguage | PickerKind::ForcedSubtitles => SettingsPage::AudioSubtitles,
+            PickerKind::UiResolution => SettingsPage::Root,
         }
     }
 }
@@ -143,6 +110,8 @@ impl ScreenArg for SettingsPage {
             SettingsPage::AudioSubtitles => 109,
             SettingsPage::Language => 110,
             SettingsPage::Contribute => 111,
+            SettingsPage::UnderPosters => 113,
+            SettingsPage::UnderPostersDetails => 114,
             SettingsPage::Favourites => 101,
             SettingsPage::Privacy => 102,
             SettingsPage::Legal => 103,
@@ -180,6 +149,8 @@ impl LogicalState for SettingsPage {
         w.u8(match self {
             SettingsPage::Root
             | SettingsPage::Language
+            | SettingsPage::UnderPosters
+            | SettingsPage::UnderPostersDetails
             | SettingsPage::Contribute
             | SettingsPage::Playback
             | SettingsPage::AudioSubtitles
@@ -196,6 +167,8 @@ impl LogicalState for SettingsPage {
             SettingsPage::Root => "root",
             SettingsPage::Language => "language",
             SettingsPage::Contribute => "contribute",
+            SettingsPage::UnderPosters => "under-posters",
+            SettingsPage::UnderPostersDetails => "under-posters-details",
             SettingsPage::Playback => "playback",
             SettingsPage::AudioSubtitles => "audio-subtitles",
             SettingsPage::Favourites => "favourites",
@@ -353,6 +326,8 @@ mod tests {
         let pages = [
             SettingsPage::Root,
             SettingsPage::Language,
+            SettingsPage::UnderPosters,
+            SettingsPage::UnderPostersDetails,
             SettingsPage::Contribute,
             SettingsPage::Playback,
             SettingsPage::AudioSubtitles,
@@ -383,23 +358,5 @@ mod tests {
         assert_eq!(SettingsPage::ConsentStage(0).id(), SettingsPage::ConsentStage(1).id());
         // …but `same_instance` still tells them apart, since it is bare equality here:
         assert!(!SettingsPage::Document(0).same_instance(&SettingsPage::Document(1)));
-    }
-}
-
-#[cfg(test)]
-mod session_tests {
-    #[test]
-    fn session_refresh_restores_first_run_ground() {
-        let _serial = plx_base::testlock::serial();
-        let _session = plx_plex::plex::session::TempSession::new("first-run-seed-refresh");
-        let mut saved = (*plx_plex::plex::session::peek()).clone();
-        saved.prefs.last_hero_blur = Some([[0.2, 0.3, 0.4]; 4]);
-        plx_plex::plex::session::install_transient_for_test(true);
-        let mut ground = super::pre_home_ground(plx_data::pms::HubsSnapshot::empty_for_test().view());
-        assert!(ground.seed.is_none());
-        plx_plex::plex::session::save(&saved);
-        assert!(ground.refresh());
-        assert_eq!(ground.seed, saved.prefs.last_hero_blur);
-        assert!(!ground.refresh());
     }
 }

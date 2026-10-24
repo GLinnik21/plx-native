@@ -10,6 +10,7 @@
 //! belongs in `decision.rs`.
 
 use plx_data::metadata::lang_matches;
+use plx_data::metadata::sub_layout::{sub_traits, SubTraits};
 use plx_plex::plex::session::prefs::{SubtitleMemo, TrackMemoryEntry};
 use super::track_memory::{blank_lang, match_audio, memory_subtitle, Miss, SubMode, TrackContext};
 
@@ -295,14 +296,15 @@ impl AutoOriginalCandidate {
     /// is `None` for Off and `Some(render ordinal)` for a pick; an external sidecar pick has no
     /// demuxer ordinal (`-1`), which is stored as `None` because `player::sidecar` draws it once
     /// the route is direct and `request_subtitle(-1)` never touches that renderer. A pick the
-    /// client cannot draw would need a burn, which the Original route by definition does not do:
-    /// `false`, and the caller drops the candidate.
-    pub(super) fn retarget_subtitle(&mut self, ordinal: Option<i32>, client_renderable: bool) -> bool {
-        if ordinal.is_some() && !client_renderable {
-            return false;
-        }
+    /// client cannot draw (an image sidecar, a pick with no ordinal and no sidecar key) is KEPT
+    /// with `None` too: the Original route never shows it client-side, and the server burns it
+    /// wherever the route is enhanced (M7's Burn). That is a deliberate mid-play behaviour, not
+    /// parity with a cold start (an image sidecar selected at cold start plays with the subtitle
+    /// off). Releasing or recovering to a route that would silently drop it is prevented by
+    /// `candidate_shows_selected_subtitle`, not here. Unlike the audio sibling this cannot fail,
+    /// so the candidate is never dropped by a subtitle pick.
+    pub(super) fn retarget_subtitle(&mut self, ordinal: Option<i32>) {
         self.subtitle_ordinal = ordinal.filter(|o| *o >= 0);
-        true
     }
 }
 
@@ -600,6 +602,44 @@ pub(super) struct EnhancementFacts<'a> {
     pub(super) subtitle_effect: SubtitleEffect,
     /// This playback's server already refused or ignored the params once.
     pub(super) refused: bool,
+    /// The quality in force: the picker's value (what the HUD's Quality row reads) on the live
+    /// session, the resolve's own copy at resolve time. Only a quality that is NOT Original may
+    /// be blamed with [`DisabledReason::NotOriginalQuality`].
+    pub(super) quality: Quality,
+    /// Why `base` is `None` when the resolve (or a mid-play pick) is the reason; `None` for a
+    /// fixed rung, which never asks for an Original candidate.
+    pub(super) declined: Option<OriginalDeclined>,
+}
+
+/// **Why no [`AutoOriginalCandidate`] exists** — recorded where it is not built or is dropped, so
+/// the menu can say the true reason instead of blaming the quality picker. Behaviour never reads
+/// it; only [`enhancement_availability`] and the decline log line do.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum OriginalDeclined {
+    /// Settings > Force Direct Play is on: the server never gets to copy the video.
+    ForcedDirectPlay,
+    /// The link is a Plex relay, which never carries an Original candidate.
+    Relay,
+    /// The video cannot be copied as it is (the television cannot decode it, or the server must
+    /// convert it).
+    VideoNeedsConverting,
+    /// No file path or no measured link to build the candidate from.
+    NoSource,
+    /// A mid-play audio or subtitle pick the candidate could not follow dropped it.
+    TrackPickDropped,
+}
+
+impl OriginalDeclined {
+    /// One short word-phrase for the decline log line.
+    pub fn log_name(self) -> &'static str {
+        match self {
+            Self::ForcedDirectPlay => "forced direct play",
+            Self::Relay => "relay link",
+            Self::VideoNeedsConverting => "video needs converting",
+            Self::NoSource => "no part or link",
+            Self::TrackPickDropped => "track pick dropped it",
+        }
+    }
 }
 
 /// What the enhancement, once offered, actually asks the server for — the one fork the menu, the
@@ -607,13 +647,11 @@ pub(super) struct EnhancementFacts<'a> {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EnhancementRoute {
     /// The ordinary uncapped progressive-MKV remux: no subtitle on screen, or an external one the
-    /// client draws itself.
+    /// client draws itself. A declared Dolby Vision source whose base layer IS self-displayable
+    /// (P7/P8, `!dovi.base_layer_unusable()`) takes this route too: a server that copies the video
+    /// keeps the `DolbyHdrInfo` the direct play would have declared (`copied_video_dv`); one
+    /// that re-encodes the lane drops it.
     Remux,
-    /// The same remux, for a declared Dolby Vision source whose base layer IS self-displayable
-    /// (P7/P8, `!dovi.base_layer_unusable()`). A remux never carries `DolbyHdrInfo` — the
-    /// declaration rides the direct play only (`fill_direct_plan`'s own doc) — so this is the SAME
-    /// wire shape as [`Self::Remux`]; only the menu's wording differs (Dolby Vision turns off).
-    RemuxDropsDolbyVision,
     /// A forced re-encode carrying `subtitleStreamID=<id>&subtitles=burn` (M7): the only shape that
     /// keeps an EMBEDDED subtitle in view once the audio enhancement is on.
     Burn,
@@ -634,10 +672,20 @@ pub enum DisabledReason {
     /// the DV video regardless of a burn request and silently dropping the subtitle — neither half
     /// of the ask is honoured, so it is never sent.
     DolbyVisionSubtitle,
-    /// The live route is not Direct or Remux (a fixed quality rung, HLS, a relay…), or no Original
-    /// candidate was ever computed for it (I5's exclusion list) — the enhanced route is always an
-    /// uncapped Original.
+    /// The quality in force is not Original (a fixed rung, or Auto currently on HLS) — picking
+    /// Original is the way in. Never used while Original is the quality in force.
     NotOriginalQuality,
+    /// Settings > Force Direct Play is on, so the server cannot add the enhancement.
+    ForcedDirectPlay,
+    /// Original is picked but the route does not copy the video (the live session's
+    /// `original_is_converted`): the Quality row reads "Original · Converted" and this note says the
+    /// same fact. A burn route is also `Converted` (its picture is re-encoded) yet the Audio tab
+    /// explains its own state there (the burn note): the row states the picture fact, the tab its own.
+    ServerConverting,
+    /// Original is in force and the route copies the video, but no Original candidate exists to
+    /// decorate (a relay link, a video that had to be converted, a track pick the Original route
+    /// could not follow). The viewer cannot act on the differences, so one reason.
+    NotCopyable,
     /// This playback's server already refused or ignored the params once.
     ServerRefused,
 }
@@ -661,15 +709,32 @@ pub(super) fn enhancement_availability(f: &EnhancementFacts, target: RouteFamily
     if f.refused {
         return Disabled(DisabledReason::ServerRefused);
     }
-    // I5: Direct or Remux only, and only when an Original candidate was actually computed for it
-    // (forced direct play, a fixed rung, relay, a non-Original MDE… all read the same to a viewer:
-    // "only at Original quality").
-    if !matches!(target, RouteFamily::Direct | RouteFamily::Remux) {
-        return Disabled(DisabledReason::NotOriginalQuality);
-    }
-    let Some(base) = f.base else {
-        return Disabled(DisabledReason::NotOriginalQuality);
+    // I5: Direct or Remux only, and only when an Original candidate was actually computed for it.
+    // The reason is the true one: "only at Original quality" is said ONLY when the quality in
+    // force is not Original (a fixed rung, Auto on HLS) — saying it under "Quality: Original"
+    // contradicts the Quality row. A missing candidate names why it is missing.
+    let converting = f.quality == Quality::Original && !matches!(target, RouteFamily::Direct | RouteFamily::Remux);
+    let not_original = f.quality != Quality::Original;
+    let unreachable = || {
+        Disabled(match f.declined {
+            Some(OriginalDeclined::ForcedDirectPlay) => DisabledReason::ForcedDirectPlay,
+            _ if converting => DisabledReason::ServerConverting,
+            // A pick the Original route could not follow dropped the candidate; under Auto or a
+            // rung the quality in force is the honest thing to name.
+            Some(OriginalDeclined::TrackPickDropped) | None if not_original => DisabledReason::NotOriginalQuality,
+            _ => DisabledReason::NotCopyable,
+        })
     };
+    let Some(base) = f.base else {
+        return unreachable();
+    };
+    if !matches!(target, RouteFamily::Direct | RouteFamily::Remux) {
+        return Disabled(if converting {
+            DisabledReason::ServerConverting
+        } else {
+            DisabledReason::NotOriginalQuality
+        });
+    }
     // I7: an unusable Dolby Vision base layer is never copied at all — nothing to decorate.
     if base.dovi.base_layer_unusable() {
         return Disabled(DisabledReason::DolbyVisionUnusable);
@@ -687,10 +752,9 @@ pub(super) fn enhancement_availability(f: &EnhancementFacts, target: RouteFamily
     if !analyzed {
         return Disabled(DisabledReason::NotAnalyzed);
     }
-    Offered(match (dv_declared, f.subtitle_effect) {
-        (_, SubtitleEffect::Embedded) => EnhancementRoute::Burn,
-        (true, SubtitleEffect::None | SubtitleEffect::Sidecar) => EnhancementRoute::RemuxDropsDolbyVision,
-        (false, SubtitleEffect::None | SubtitleEffect::Sidecar) => EnhancementRoute::Remux,
+    Offered(match f.subtitle_effect {
+        SubtitleEffect::Embedded => EnhancementRoute::Burn,
+        SubtitleEffect::None | SubtitleEffect::Sidecar => EnhancementRoute::Remux,
     })
 }
 
@@ -877,6 +941,59 @@ pub(super) fn decision_codecs(mc: &plx_plex::plex::MediaContainer) -> Option<(St
 }
 
 
+/// Does the server's `/decision` copy the video lane — hand on the source's own elementary stream,
+/// re-encoding only the audio (or nothing)? A lane that says `copy` does; one that says
+/// `transcode` does not; a body silent about the lane follows the contract (`remux` copies by
+/// definition, anything else re-encodes). Dolby Vision survives a copy: the DOVI configuration
+/// record is part of the stream, so a copied lane may keep the declaration the file would have
+/// made as a direct play.
+///
+/// Measured on the dev PMS (`docs/pms-api.md`, M9): an enhanced remux of a Profile 8 and a
+/// Profile 7 FEL source answered `decision=copy` on the video lane and its output kept the DOVI
+/// record (a Jellyfin DirectStream showed the same). Callers ask
+/// [`copied_video_dv`], never this directly, so the route's contract is applied once.
+pub(super) fn decision_copies_video(mc: &plx_plex::plex::MediaContainer, remux: bool) -> bool {
+    let lane = mc
+        .metadata
+        .first()
+        .and_then(|m| m.first_part())
+        .and_then(|p| p.stream.iter().find(|s| s.stream_type == 1))
+        .map(|s| s.decision.as_str());
+    match lane {
+        Some("copy") => true,
+        Some("") | None => remux,
+        Some(_) => false,
+    }
+}
+
+/// The Dolby Vision declaration a server-built stream feeds, as the raw record and its frozen
+/// decision (always paired, so a route mutation cannot clear one and leave a stale `Declare` of
+/// the other for Load). **The one place the rule lives** — the cold-start plan, the Original
+/// recovery and the live retranscode all ask it, so none of them spells "is the video copied"
+/// its own way.
+///
+/// The video is copied when the contract allows a copy (`!no_video_copy`) and the server's
+/// `/decision` says so ([`decision_copies_video`]); with no `/decision` body (the server did not
+/// answer) the contract alone decides, and only a `remux` copies. A re-encode carries no
+/// client-frozen source declaration, and neither does a copy of a base layer that is wrong
+/// undeclared (Profile 5, [`plx_data::metadata::Dovi::base_layer_unusable`]). A copy of a usable
+/// one is still the file's stream, DOVI configuration record included, so it keeps what the
+/// direct play would have declared.
+pub(super) fn copied_video_dv(
+    decision: Option<&plx_plex::plex::MediaContainer>,
+    contract: &plx_plex::plex::EncodeContract,
+    src_dovi: plx_data::metadata::Dovi,
+    src_dv_decision: plx_data::metadata::DvDecision,
+) -> (plx_data::metadata::Dovi, plx_data::metadata::DvDecision) {
+    let copies_video = !contract.no_video_copy
+        && decision.map_or(contract.remux, |mc| decision_copies_video(mc, contract.remux));
+    if copies_video && !src_dovi.base_layer_unusable() {
+        (src_dovi, src_dv_decision)
+    } else {
+        (plx_data::metadata::Dovi::NONE, plx_data::metadata::DvDecision::NONE)
+    }
+}
+
 /// `generalDecisionCode` 2000 — "Neither direct play nor conversion is available." The server has
 /// adjudicated the whole request and can serve NEITHER lane; there is nothing left for the client
 /// to try, which is what makes it a stop rather than another fallback.
@@ -926,34 +1043,47 @@ pub enum PlayVerdict {
 }
 
 /// The limitation a Force Direct Play verdict names. Each one carries the same recovery step.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ForcedFailure {
     NoOriginal,
     Container,
     Video,
-    Audio,
+    /// No audio track the TV can play without conversion. `codec` is the refused track's display
+    /// name ([`plx_data::metadata::friendly_codec`], the codec only, no profile); empty when the
+    /// codec is unknown, which keeps the generic sentence.
+    Audio { codec: String },
     Unauthorized,
     /// The resolve reached the transcode path, which Force never takes.
     OpenFailed,
-    /// A later audio-track pick needs conversion.
-    AudioNeedsConversion,
+    /// A later audio-track pick needs conversion; `codec` as in [`ForcedFailure::Audio`].
+    AudioNeedsConversion { codec: String },
 }
 
 impl PlayVerdict {
     /// The read-out's sentence: the server's verbatim, or the app's own from the catalog.
-    pub fn text(&self) -> &str {
+    ///
+    /// Borrowed for every sentence but the two that name a codec, which are formatted (an
+    /// allocation on the failure path only).
+    pub fn text(&self) -> std::borrow::Cow<'_, str> {
         use plx_platform::i18n::msg;
+        use std::borrow::Cow::{Borrowed, Owned};
         match self {
-            Self::Server(sentence, _) => sentence,
-            Self::DirectPlayDisabled => msg::widgets_verdict_direct_play_disabled(),
+            Self::Server(sentence, _) => Borrowed(sentence),
+            Self::DirectPlayDisabled => Borrowed(msg::widgets_verdict_direct_play_disabled()),
             Self::Forced(why) => match why {
-                ForcedFailure::NoOriginal => msg::widgets_verdict_forced_no_original(),
-                ForcedFailure::Container => msg::widgets_verdict_forced_container(),
-                ForcedFailure::Video => msg::widgets_verdict_forced_video(),
-                ForcedFailure::Audio => msg::widgets_verdict_forced_audio(),
-                ForcedFailure::Unauthorized => msg::widgets_verdict_forced_unauthorized(),
-                ForcedFailure::OpenFailed => msg::widgets_verdict_forced_open(),
-                ForcedFailure::AudioNeedsConversion => msg::widgets_verdict_forced_audio_conversion(),
+                ForcedFailure::NoOriginal => Borrowed(msg::widgets_verdict_forced_no_original()),
+                ForcedFailure::Container => Borrowed(msg::widgets_verdict_forced_container()),
+                ForcedFailure::Video => Borrowed(msg::widgets_verdict_forced_video()),
+                ForcedFailure::Audio { codec } if codec.is_empty() => Borrowed(msg::widgets_verdict_forced_audio()),
+                ForcedFailure::Audio { codec } => Owned(msg::widgets_verdict_forced_audio_codec(codec)),
+                ForcedFailure::Unauthorized => Borrowed(msg::widgets_verdict_forced_unauthorized()),
+                ForcedFailure::OpenFailed => Borrowed(msg::widgets_verdict_forced_open()),
+                ForcedFailure::AudioNeedsConversion { codec } if codec.is_empty() => {
+                    Borrowed(msg::widgets_verdict_forced_audio_conversion())
+                }
+                ForcedFailure::AudioNeedsConversion { codec } => {
+                    Owned(msg::widgets_verdict_forced_audio_conversion_codec(codec))
+                }
             },
         }
     }
@@ -1245,14 +1375,26 @@ pub struct Plan {
     /// only one half is recorded. Equal to `vcodec`/`acodec` for a direct play and for a remux.
     pub src_vcodec: String,
     pub src_acodec: String,
+    /// The SOURCE file's video frame rate (0 = unknown), whichever route carries it. Beside
+    /// `src_*` and not beside `fps`: `fps` is what the Load declares for THIS stream (direct play
+    /// and remux, whose video is the source's own elementary stream; 0 on a re-encode), while this
+    /// stays the file's, so a later rebuild of the route ([`video_copy_fps`]) can decide again.
+    pub src_fps: f64,
     pub fps: f64,
-    /// The direct-played file's Dolby Vision layering, for the Load payload's `DolbyHdrInfo`
-    /// node. Set on the DIRECT-PLAY branch only, beside `fps` and for the same reason: the
-    /// transcode branch's payload describes the server's OUTPUT, which is not this file.
+    /// The fed file's Dolby Vision layering, for the Load payload's `DolbyHdrInfo` node. Set on
+    /// the DIRECT-PLAY branch, beside `fps`, and on a transcode-branch remux whose `/decision`
+    /// copies the video; a re-encode's payload describes the server's OUTPUT, which is not this
+    /// file.
     pub dovi: plx_data::metadata::Dovi,
     /// The direct-play declaration resolved from one cached capability snapshot. Payload builds,
-    /// reloads and recovery consume this stored answer; remux/transcode leave it at `NONE`.
+    /// reloads and recovery consume this stored answer. A remux whose `/decision` copies the video
+    /// carries it too; a re-encode leaves it at `NONE`.
     pub dv_decision: plx_data::metadata::DvDecision,
+    /// The FILE's own Dolby Vision record and the declaration it would make as a direct play,
+    /// whichever route was taken. `dovi`/`dv_decision` above describe what is being fed; these
+    /// are what a later rebuild that copies the video hands on again.
+    pub src_dovi: plx_data::metadata::Dovi,
+    pub src_dv_decision: plx_data::metadata::DvDecision,
     /// Does the direct-played audio track carry Dolby Atmos, for the Load payload's
     /// `contents.immersive` node. Set on the DIRECT-PLAY branch only, for the same reason `dovi`
     /// is: it describes the FILE's own elementary stream.
@@ -1299,6 +1441,9 @@ pub struct Plan {
     /// A measured Remote can begin on HLS and later recover. Preserve the exact no-video-encode
     /// source declaration even when this plan's immediate output is H264/AAC HLS.
     pub(super) auto_original: Option<AutoOriginalCandidate>,
+    /// Why `auto_original` is `None` (see [`OriginalDeclined`]); `None` while a candidate exists
+    /// and for a fixed rung, which never asks for one.
+    pub(super) original_declined: Option<OriginalDeclined>,
     /// demuxer stream ordinal to feed (direct-play, non-default track). None = leave as-is.
     pub feed_audio_ordinal: Option<i32>,
     /// the subtitle selected for this part or by the show preference (0 = none/off), so the
@@ -1445,6 +1590,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         .cached_item
         .clone()
         .or_else(|| plx_data::metadata::fetch_playing_item(env.sid, rk));
+    plan.src_fps = plan.playing.as_ref().map_or(0.0, |p| p.video_fps);
     plan.playing_fresh = env.cached_item.is_none() && plan.playing.is_some();
     if let (Some(id), Some(item)) = (env.subtitle_override, plan.playing.as_mut()) {
         // The retry's explicit selection owns both embedded and sidecar restoration; a stale
@@ -1494,13 +1640,13 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             presentation: dovi.presentation(
                 !plx_data::metadata::dv_withheld(),
                 capability,
-                vcodec == "hevc",
+                plx_data::metadata::dv_video_codec(vcodec),
             ),
         },
-        None => dovi.decision_now(vcodec == "hevc"),
+        None => dovi.decision_now(plx_data::metadata::dv_video_codec(vcodec)),
     };
     #[cfg(not(any(test, feature = "test-support")))]
-    let dv_decision = dovi.decision_now(vcodec == "hevc");
+    let dv_decision = dovi.decision_now(plx_data::metadata::dv_video_codec(vcodec));
     let dv = dv_decision.presentation;
     let video_dp = if forced { video_feed_supported(vcodec, dv, plx_platform::devcaps::caps()) } else {
         video_direct_plays(vcodec, src_w, src_h, dv, plx_platform::devcaps::caps())
@@ -1508,6 +1654,8 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     // Carried to the session so the quality menu can say whether "Original" means anything for
     // this item without evaluating the gate a second time against a different set of facts.
     plan.source_decodable = video_dp;
+    plan.src_dovi = dovi;
+    plan.src_dv_decision = dv_decision;
     // **Refusing direct play is only half of it.** The transcode query below grants the server
     // `directStream=1` — permission to COPY the video rather than encode it — and PMS takes that
     // permission whenever the source fits the caps the query carries. Those caps are resolution,
@@ -1521,8 +1669,9 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     // them is a free win worth keeping.
     //
     // **This stays the base-layer question, and does NOT become `dv.refusal().is_some()`.** A copy
-    // arrives with no `DolbyHdrInfo` node attached — the declaration rides the direct play, not
-    // the file — so the test is the pre-declaration one: is this bitstream a correct picture when
+    // arrives with no `DolbyHdrInfo` node unless somebody declares it, and a Profile 5 copy is
+    // never declared (`copied_video_dv` withdraws it), so the test is the
+    // pre-declaration one: is this bitstream a correct picture when
     // nobody has been told what it is? Declaring a Profile 5 makes direct play right and leaves a
     // copy of it exactly as wrong as before.
     let no_video_copy = dovi.base_layer_unusable();
@@ -1863,14 +2012,23 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         || (tracks.is_empty() && (acodec.is_empty() || audio_direct_plays(env.direct_play_mode, acodec, 0))))
         && mde.as_ref().is_some_and(|v| v.original && (!forced || !v.video_forbids_copy));
     if forced {
+        let mut refused_raw = String::new();
         let failure = if part.is_empty() { Some(ForcedFailure::NoOriginal) }
             else if !streamable { Some(ForcedFailure::Container) }
             else if !video_dp { Some(ForcedFailure::Video) }
             else if audio_sel.is_none() && (!tracks.is_empty() || !audio_direct_plays(env.direct_play_mode, acodec, 0)) {
-                Some(ForcedFailure::Audio)
+                refused_raw = refused_audio_codec(tracks, acodec, audio_prefs, env.audio_sid);
+                Some(ForcedFailure::Audio { codec: plx_data::metadata::friendly_codec(&refused_raw) })
             } else if !rk.is_empty() && !directplay { Some(ForcedFailure::Unauthorized) }
             else { None };
         if let Some(failure) = failure {
+            // The field-report line: the raw PMS spelling and the name the read-out shows, so a
+            // report can tell `dca` from `dts` and still names the codec.
+            if let ForcedFailure::Audio { codec } = &failure {
+                crate::player::log(&format!(
+                    "playback_policy: Force Direct Play refused audio codec {refused_raw} ({codec})"
+                ));
+            }
             plan.verdict = Some(PlayVerdict::Forced(failure));
             log_memory(false);
             return plan;
@@ -1935,6 +2093,20 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             audio_converted: false,
             subtitle_ordinal,
         });
+    } else if matches!(playback_quality, Quality::Auto | Quality::Original) {
+        // Record WHY Original is unreachable, so the audio-enhancement note can say the true
+        // reason; behaviour never reads this. A fixed rung is not a decline: it never asks.
+        let why = if forced {
+            OriginalDeclined::ForcedDirectPlay
+        } else if location == Some(plx_plex::plex::probe::Location::Relay) {
+            OriginalDeclined::Relay
+        } else if !(directplay || remux_candidate) {
+            OriginalDeclined::VideoNeedsConverting
+        } else {
+            OriginalDeclined::NoSource
+        };
+        plan.original_declined = Some(why);
+        crate::player::log(&format!("original: no candidate ({})", why.log_name()));
     }
     // Issue #266: the audio enhancement decorates the Original route only (I5), so it is judged
     // against the candidate captured above — its DV facts (I7), its carried track, and the family
@@ -1960,6 +2132,8 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 carried: $candidate.and_then(|c| c.audio.as_ref()),
                 subtitle_effect,
                 refused: false,
+                quality: env.quality,
+                declined: plan.original_declined,
             }
         };
     }
@@ -2335,6 +2509,9 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     // to our own server, which answers 200 and changes nothing on theirs.
     plan.contract.remux = remux;
     plan.contract.no_video_copy = no_video_copy;
+    // A remux's video is the source's own elementary stream, so the Load declares the source's rate
+    // (a 4K H.264 24p stream declared at the 60 an unknown rate keeps is presented at ~13 fps).
+    plan.fps = video_copy_fps(&plan.contract, plan.src_fps);
     // `plan.contract.ceiling` is NOT set here — it was set for every flavour up at the decision,
     // which is what the direct-play branch needed too. Spending it below is the third reader of
     // the same reasoning `remux` and `no_video_copy` carry: a seek and an audio switch rebuild
@@ -2428,7 +2605,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             audio,
         );
     }
-    if let Some(mc) = decision {
+    if let Some(mc) = &decision {
         // The server has already answered, and it is allowed to answer NO. Stop here rather than
         // stream a `start.mkv` it has just said it cannot produce: the plan leaves with no URL —
         // the ordinary "this did not resolve" failure — and carries the verdict so the read-out can
@@ -2447,11 +2624,23 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             plan.acodec = a;
         }
     }
+    // A video copy is still the file's elementary stream, DOVI record included, so the
+    // declaration the direct play would have made rides it ([`copied_video_dv`] is the rule).
+    (plan.dovi, plan.dv_decision) = copied_video_dv(decision.as_ref(), &plan.contract, dovi, dv_decision);
     plan.url = client.transcode_start_url(&sp).to_url();
     plan.tsession = session;
     plan
 }
 
+
+/// The video frame rate the Load may declare for a route with this contract: the SOURCE's own when
+/// the server copies the video stream (a remux, so direct play's rule holds there too), 0 (unknown)
+/// when it re-encodes it (an HLS rung, `no_video_copy`, a burned subtitle) — the encoder owns that
+/// rate and nothing here knows it. The one place the rule lives: the plan, the recovery install and
+/// the retranscode landing all ask it.
+pub(super) fn video_copy_fps(contract: &plx_plex::plex::EncodeContract, src_fps: f64) -> f64 {
+    if contract.remux && !contract.no_video_copy { src_fps } else { 0.0 }
+}
 
 /// The direct-play plan: the pipeline decodes the SOURCE codecs natively, so the Load payload uses
 /// them (h264/hevc + the chosen audio track's codec). If a specific track was picked (aidx >= 0),
@@ -2479,8 +2668,9 @@ fn fill_direct_plan(
     plan.vcodec = vcodec.to_string();
     plan.acodec = achosen.clone();
     plan.fps = fps;
-    // Only here: this is the branch that feeds the FILE's own elementary stream, so it is the
-    // only one whose Load payload may describe the file's Dolby Vision.
+    // Set here for the direct play, which feeds the FILE's own elementary stream; a server remux
+    // that copies the video sets the same pair after its `/decision` (`copied_video_dv`).
+    // A re-encode never does.
     plan.dovi = dovi;
     plan.dv_decision = dv_decision;
     // **Dolby Atmos, and it is the same sentence one codec over.** `contents.immersive` tells
@@ -2496,11 +2686,12 @@ fn fill_direct_plan(
     // **Set on this branch only, and the omission on the others is deliberate.** A transcode's
     // audio is re-encoded and its Atmos is gone, so declaring it would be false. A REMUX copies
     // the audio only when the profile admits it (then JOC survives; a converted track arrives in
-    // the profile's target codec without it) — so it can in fact still carry JOC, but `plan.dovi`
-    // already draws the line at this branch on the same reasoning (a copy's payload describes what the server sends, and
-    // the declaration rides the direct play), and one rule that is occasionally conservative
-    // beats two rules that can disagree. Nothing is lost visibly: an undeclared Atmos plays as
-    // ordinary E-AC3, which is what it does today.
+    // the profile's target codec without it) — so it can in fact still carry JOC. On a remux the
+    // audio is usually converted (measured 2026-10-19: the enhanced remux's decision output was
+    // `a=aac`), and only a copied JOC track would keep Atmos; declaring it is left to the direct
+    // play as the conservative rule, since a wrong declaration is worse than a missing one.
+    // Nothing is lost visibly: an undeclared Atmos plays as ordinary E-AC3, which is what it does
+    // today.
     plan.immersive = plan
         .playing
         .as_ref()
@@ -2773,10 +2964,18 @@ pub(super) fn pick_dp_audio_pref(
 }
 
 pub(super) fn audio_direct_plays(mode: DirectPlayMode, codec: &str, channels: i64) -> bool {
+    audio_direct_plays_with(plx_platform::devcaps::caps(), mode, codec, channels)
+}
+
+/// [`audio_direct_plays`] over an explicit capability snapshot. Auto and Forced both go through
+/// `devcaps`' canonicaliser (PMS's `dca` is the pipeline's `dts`), so they cannot drift apart.
+pub(super) fn audio_direct_plays_with(
+    caps: &plx_platform::devcaps::Caps, mode: DirectPlayMode, codec: &str, channels: i64,
+) -> bool {
     if mode == DirectPlayMode::Forced {
-        plx_plex::plex::DP_AUDIO_CODECS.split(',').any(|c| c.eq_ignore_ascii_case(codec))
+        caps.forced_feeds_audio(codec)
     } else {
-        plx_plex::plex::is_dp_audio_track(codec, channels)
+        caps.audio_supports(codec, channels)
     }
 }
 
@@ -2787,6 +2986,23 @@ fn pick_dp_audio_mode(
 ) -> Option<(i32, String, i64)> {
     pick_dp_audio_eligible(tracks, default_acodec, prefs, 0, StandIn::Any,
         |codec, channels| audio_direct_plays(mode, codec, channels))
+}
+
+/// The codec of the audio track a refused Force Direct Play was going to play: the first intent
+/// ([`audio_intents`]) that names a track, else the file's default, else the first track; with no
+/// track list, the Media-level `acodec` (possibly empty). Raw PMS spelling.
+fn refused_audio_codec(
+    tracks: &[plx_data::metadata::Stream], acodec: &str, prefs: AudioLangPrefs<'_>, session_pick: i64,
+) -> String {
+    let index = audio_intents(tracks, prefs, session_pick).into_iter().find_map(|intent| match intent {
+        AudioIntent::Selection(i) => Some(i),
+        AudioIntent::Language(l) => tracks.iter().position(|s| lang_matches(l, &s.lang_code)),
+        AudioIntent::FileDefault => tracks.iter().position(|s| s.default),
+    });
+    match index.or((!tracks.is_empty()).then_some(0)) {
+        Some(i) => tracks[i].codec.clone(),
+        None => acodec.to_owned(),
+    }
 }
 
 fn pick_dp_audio_eligible(
@@ -3133,6 +3349,8 @@ fn mde_subtitle_id_of(subs: &[plx_data::metadata::Stream], pick: Option<(i64, i3
 /// that selection ([`pick_subtitle`] orders the rungs). Automatic picks stay embedded/client-rendered:
 /// selecting an account default never requests a subtitle burn on the transcode path. (Only a
 /// remembered pick burns, and only where the route re-encodes video anyway: Q-TOP (b).)
+/// `forced` is the account's forced preference; the tiers that apply it (and the SDH tier) read the
+/// track menu's `sub_traits`, so a track that only NAMES itself Forced or SDH counts as one.
 #[derive(Clone, Copy, Default)]
 pub(super) struct SubtitleLangPrefs<'a> {
     pub language: Option<&'a str>,
@@ -3171,19 +3389,24 @@ fn pick_dp_subtitle_account(
         let ord = plx_data::metadata::sub_render_ordinal(subs, i);
         (ord >= 0 && subs[i].id > 0).then_some((subs[i].id, ord))
     };
+    // Forced and SDH are the track menu's reading (`sub_traits`, which also reads the title): the
+    // PMS flags alone miss a track that only NAMES itself Forced or SDH, most of a real library's.
     let prefer_forced = account.forced == 1 || account.forced == 2;
-    let tiers: [&dyn Fn(&plx_data::metadata::Stream) -> bool; 3] = [
-        &|s| s.forced == prefer_forced && !s.sdh,
-        &|s| s.forced == prefer_forced,
+    let tiers: [&dyn Fn(SubTraits) -> bool; 3] = [
+        &|t| t.forced == prefer_forced && !t.sdh,
+        &|t| t.forced == prefer_forced,
         &|_| true,
     ];
     tiers.iter().find_map(|tier| {
         (0..subs.len())
-            .filter(|&i| !subs[i].external && embedded_subtitle_renderable(&subs[i].codec)
-                && lang_matches(lang, &subs[i].lang_code)
-                && (account.forced != 2 || subs[i].forced)
-                && (account.forced != 3 || !subs[i].forced)
-                && tier(&subs[i]))
+            .filter(|&i| {
+                let traits = sub_traits(&subs[i]);
+                !subs[i].external && embedded_subtitle_renderable(&subs[i].codec)
+                    && lang_matches(lang, &subs[i].lang_code)
+                    && (account.forced != 2 || traits.forced)
+                    && (account.forced != 3 || !traits.forced)
+                    && tier(traits)
+            })
             .find_map(embedded)
     })
 }

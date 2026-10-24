@@ -43,8 +43,8 @@ and re-queued once), stamps the batch from the ledger, drops any row a newer pre
 the rest as `ViewFact::Facts` edits at leaf scope, which, like the stop's `Offset`, patch Home's hubs, Browse's listing, the rows Search, Person and
 Collection hold, and a Detail page's Related and collection-member tiles. Each store counts a Facts
 or Offset row as a hit (a merge, a commit, a notice) only when it differs from the row (`ViewEdit::changes`); a Detail page's own
-item, episodes and seasons take no Facts (they are re-read), only a stop's Offset, which also lands on the loaded item and its episode (exact key); Browse's section shelves take neither (they are re-read). A stop the server refused asks for no read-back, but it lists its item for the Detail pages' own re-read. The read-back never spawns a
-read while a view-state write is queued or out (the stamp is taken at spawn, so a press whose write had not
+item, episodes and seasons take no Facts (they are re-read), only a stop's Offset, which also lands on the loaded item and its episode (exact key); Browse's section shelves take neither (they are re-read). A stop the server refused asks for no read-back, but it lists its item for the Detail pages' own re-read. The read-back never sends a
+read while a view-state write is queued or out (the stamp is taken when the batch is sent, so a press whose write had not
 landed would otherwise sit before it and be undone by the read's older body); queued items wait for the
 burst to be idle, and for the player to leave the top (`Stores::hold_network`). A refused scrobble returns the tile to what the server holds, for the item (and the
 copies the fan-out took) a read-back asks about: a refused Show- or Season-scope press re-reads only the show
@@ -268,3 +268,11 @@ there is no shim for an unowned store any more — every caller goes through its
 owner (`Bridge::<store>_run`, or the owner method a same-turn boundary already holds). Do not add
 a `pub(crate) fn` to the data module that a screen calls: `check-deps` will refuse it, and the
 point of the vocabulary is that the mutation set is one `match` a reviewer can read.
+
+The stores are machines in state but not yet in IO: their modules still start their own workers,
+read `client_for(current_server())` and the other process-global registries, and a few arms are
+`cfg(not(test))` forks. `docs/sans-io.md` states the rule that retires those (a machine performs no
+IO; its work leaves as a typed effect and every result returns as one addressed event) and the four
+ledgers, `ci/allow/{workers,globals,forks,fxlanes}/`, that freeze today's sites. A new worker start,
+registry read or test/production fork in a store fails `check-deps`; a migration shrinks the ledger
+by deleting the lines of the store it made pure.

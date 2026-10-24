@@ -8,6 +8,8 @@ fn menu_arg(kind: LibraryMenuKind, anchor: [u32; 4]) -> LibraryMenuArg {
         },
         kind,
         anchor,
+        folded: if kind == LibraryMenuKind::Sources { (0..9).collect() } else { Vec::new() },
+        opener: None,
     }
 }
 
@@ -91,7 +93,8 @@ fn menu_anchor_is_frozen_and_a_new_open_uses_the_new_anchor() {
     let mut fresh_groups = Vec::new();
     fresh.groups(&cx_changed, &mut fresh_groups);
     assert_ne!(anchor_bits(fresh_groups[0].extent), anchor_bits(old_extent), "a new open releases the old anchor");
-    assert_eq!(fresh_groups[0].extent.x, 760.0);
+    assert_eq!(fresh_groups[0].extent.x, 760.0 - plx_ui::widgets::PILL_FOCUS_OUTSET,
+        "the +N list hangs from its +N pill's near edge (the focused pill's outer edge), as Sort & Filter does");
 }
 
 #[test]
@@ -109,7 +112,7 @@ fn menu_side_actions_keep_source_sort_and_filter_row_identity() {
     let filter_key = filter.form.key_at(0).unwrap().0;
     let (groups, sections) = source_sections();
     let mut sources = LibraryMenu::new(EntryId(7), menu_arg(LibraryMenuKind::Sources, [0; 4]));
-    sources.apply_draft(source_draft(11, 0, &groups, &sections));
+    sources.apply_draft(source_draft(11, 0, &groups, &sections, &(0..9).collect::<Vec<u32>>()));
     let source_key = sources.form.key_at(1).unwrap().0;
 
     with_cx(|cx| {
@@ -180,7 +183,7 @@ fn sources_menu_left_is_an_engine_edge_not_an_editor_transition() {
     let _guard = plx_base::testlock::serial();
     let (groups, sections) = source_sections();
     let mut menu = LibraryMenu::new(EntryId(7), menu_arg(LibraryMenuKind::Sources, [0; 4]));
-    menu.apply_draft(source_draft(11, 0, &groups, &sections));
+    menu.apply_draft(source_draft(11, 0, &groups, &sections, &(0..9).collect::<Vec<u32>>()));
     let owner = InputOwner::Entry(EntryId(7));
     with_cx(|cx| {
         let mut engine = FocusEngine::new();
@@ -268,4 +271,27 @@ fn open_sources_refreshes_metadata_once_then_settles() {
     assert_eq!(menu.form.key_at(0).unwrap().0, first_key);
     assert_eq!(menu.form.table.sel, first_selection);
     assert_eq!(menu.draft_rebuilds, 2);
+}
+
+/// S11 + S24: the +N list opens under its own pill (the same `frame` rule as Sort & Filter: the
+/// pill's near edge, 16 below it), and is as wide as its widest row up to the safe width, so a long
+/// library name is read whole rather than cut in a 650 px panel with room to spare.
+#[test]
+fn the_plus_n_list_hangs_from_its_pill_and_fits_its_widest_row() {
+    let _guard = plx_base::testlock::serial();
+    let (groups, mut sections) = source_sections();
+    sections[0].row.title = "A long library name that outgrows the shared".into();
+    let anchor = [648.0f32.to_bits(), 148.0f32.to_bits(), 59.0f32.to_bits(), 56.0f32.to_bits()];
+    let mut menu = LibraryMenu::new(EntryId(7), menu_arg(LibraryMenuKind::Sources, anchor));
+    menu.apply_draft(source_draft(11, 0, &groups, &sections, &(0..9).collect::<Vec<u32>>()));
+    with_cx(|cx| {
+        let frame = menu.frame(cx.measure);
+        let widest = menu.form.table.measured_width(cx.measure);
+        assert_eq!(frame.x, 648.0 - plx_ui::widgets::PILL_FOCUS_OUTSET, "the near edge is the +N pill's outer edge");
+        assert_eq!(frame.y, 148.0 + 56.0 + 16.0, "16 under the pill, as Sort & Filter");
+        assert!(widest > plx_ui::table::MENU_MAX_W, "the fixture name must outgrow the shared cap ({widest})");
+        assert!(frame.w >= widest, "the panel fits its widest row ({} < {widest})", frame.w);
+        let safe = plx_ui::consts::SAFE;
+        assert!(frame.x + frame.w <= safe.x + safe.w + 0.5, "inside the safe frame");
+    });
 }

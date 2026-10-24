@@ -191,6 +191,134 @@ int main(void) {
 
     eq_int("plxnative-sim is a different name", kind("00010000-00020000 r-xp 0 0:0 1 /x/plxnative-sim\n", 0, 0), 0);
 
+    /* ---- the FREEZE record (`plx_fmt_freeze` and the frame walk) ---- */
+    {
+        char out[256];
+        size_t n = plx_fmt_freeze(out, sizeof out - 1, 3, 0xb6f2a1c4UL, 0xb6f2a0e8UL);
+        out[n] = 0;
+        eq_str("freeze header", out, "\n*** FREEZE seq=3 pc=0xb6f2a1c4 lr=0xb6f2a0e8\n");
+        /* Never a fault's header: every tool that scans for `*** SIGNAL` must keep skipping it. */
+        eq_int("freeze header is not a SIGNAL line", strstr(out, "SIGNAL") == NULL, 1);
+        /* Bounded like every formatter here: a short buffer truncates and never overruns. */
+        char tiny[8];
+        n = plx_fmt_freeze(tiny, sizeof tiny, 1, 0x1UL, 0x2UL);
+        eq_int("a short buffer truncates the freeze header", (long)n, (long)sizeof tiny);
+
+        unsigned long fr[10];
+        for (unsigned i = 0; i < 10; i++) fr[i] = 0x10000UL + i;
+        size_t len = 0;
+        size_t put = plx_fmt_frames(out, sizeof out - 1, fr, 10, 0, 4, &len);
+        out[len] = 0;
+        eq_int("frames line holds per_line addresses", (long)put, 4);
+        eq_str("frames line", out, "frames: 0x10000 0x10001 0x10002 0x10003\n");
+        put = plx_fmt_frames(out, sizeof out - 1, fr, 10, 8, 4, &len);
+        out[len] = 0;
+        eq_int("the last frames line holds the remainder", (long)put, 2);
+        eq_str("last frames line", out, "frames: 0x10008 0x10009\n");
+    }
+
+    /* Executable-range and `[stack]` recognition. */
+    {
+        struct plx_range r;
+        eq_int("an r-xp line is executable",
+               plx_map_line_exec("00010000-0097f000 r-xp 00000000 b3:35 1 /x/plxnative\n", 56, &r), 1);
+        eq_int("lo of the range", (long)r.lo, 0x10000);
+        eq_int("hi of the range", (long)r.hi, 0x97f000);
+        const char *rw = "b5000000-b5001000 rw-p 00000000 00:00 0 \n";
+        eq_int("rw-p is not executable", plx_map_line_exec(rw, strlen(rw), &r), 0);
+        const char *ro = "b5000000-b5001000 r--p 00000000 00:00 0 \n";
+        eq_int("r--p is not executable", plx_map_line_exec(ro, strlen(ro), &r), 0);
+        const char *junk = "not a maps line\n";
+        eq_int("junk is not a range", plx_map_line_exec(junk, strlen(junk), &r), 0);
+        const char *trunc = "00010000-0097f000 r-";
+        eq_int("a truncated permission field is rejected", plx_map_line_exec(trunc, strlen(trunc), &r), 0);
+
+        unsigned long hi = 0;
+        const char *stk = "be800000-bf000000 rw-p 00000000 00:00 0          [stack]\n";
+        eq_int("the [stack] line containing the address",
+               plx_map_line_stack_end(stk, strlen(stk), 0xbefff000UL, &hi), 1);
+        eq_int("its end", (long)hi, 0xbf000000L);
+        eq_int("an address outside it", plx_map_line_stack_end(stk, strlen(stk), 0xb0000000UL, &hi), 0);
+        const char *heap = "00a00000-00a21000 rw-p 00000000 00:00 0          [heap]\n";
+        eq_int("[heap] is not the stack", plx_map_line_stack_end(heap, strlen(heap), 0xa10000UL, &hi), 0);
+    }
+
+    /* The frame walk, on a synthetic stack, in BOTH layouts and the ways it must stop. The words
+     * are `unsigned long`, so the layout offsets are `sizeof(unsigned long)`; addresses are real
+     * pointers into `stack`, which is what the walk dereferences. */
+    {
+        enum { N = 64 };
+        static unsigned long stack[N];
+        const unsigned long lo = (unsigned long)&stack[0], hi = (unsigned long)&stack[N];
+        const struct plx_range code[] = { { 0x10000, 0x20000 } };
+        unsigned long out[8];
+        const unsigned long A = 0x10100, B = 0x10200, C = 0x10301;   /* C has the Thumb bit set */
+        #define W(i) ((unsigned long)&stack[i])
+
+        /* LLVM layout: [fp] = caller's fp, [fp+w] = return address. Three frames, the last one's
+         * saved fp is zero, which ends the chain. */
+        memset(stack, 0, sizeof stack);
+        stack[10] = W(20); stack[11] = A;
+        stack[20] = W(30); stack[21] = B;
+        stack[30] = 0;     stack[31] = C;
+        size_t n = plx_fp_walk(lo, W(10), hi, code, 1, out, 8);
+        eq_int("LLVM layout: three frames", (long)n, 3);
+        eq_int("LLVM frame 0", (long)out[0], (long)A);
+        eq_int("LLVM frame 1", (long)out[1], (long)B);
+        eq_int("the Thumb bit is cleared", (long)out[2], (long)(C & ~1ul));
+
+        /* GCC layout: [fp] = return address, [fp-w] = caller's fp. */
+        memset(stack, 0, sizeof stack);
+        stack[11] = W(21); stack[12] = A;
+        stack[21] = W(31); stack[22] = B;
+        stack[31] = 0;     stack[32] = C;
+        n = plx_fp_walk(lo, W(12), hi, code, 1, out, 8);
+        eq_int("GCC layout: three frames", (long)n, 3);
+        eq_int("GCC frame 0", (long)out[0], (long)A);
+        eq_int("GCC frame 2", (long)out[2], (long)(C & ~1ul));
+
+        /* A chain that crosses from a Rust frame into a C frame and back. */
+        memset(stack, 0, sizeof stack);
+        stack[10] = W(21); stack[11] = A;    /* LLVM frame; its saved fp is the GCC frame's fp */
+        stack[21] = B;     stack[20] = W(40);/* GCC frame at fp=W(21): [fp]=ret, [fp-w]=caller fp */
+        stack[40] = 0;     stack[41] = C;    /* LLVM frame, end of chain */
+        n = plx_fp_walk(lo, W(10), hi, code, 1, out, 8);
+        eq_int("a mixed chain walks through both layouts", (long)n, 3);
+        eq_int("mixed frame 1", (long)out[1], (long)B);
+
+        /* The count is capped. */
+        memset(stack, 0, sizeof stack);
+        stack[10] = W(20); stack[11] = A;
+        stack[20] = W(30); stack[21] = B;
+        stack[30] = 0;     stack[31] = C;
+        eq_int("max frames caps the walk", (long)plx_fp_walk(lo, W(10), hi, code, 1, out, 2), 2);
+
+        /* It must not touch memory outside [sp, hi): each of these starts at a frame pointer the
+         * window excludes, and returns zero frames without dereferencing it. */
+        eq_int("fp below sp", (long)plx_fp_walk(W(20), W(10), hi, code, 1, out, 8), 0);
+        eq_int("fp at hi", (long)plx_fp_walk(lo, hi, hi, code, 1, out, 8), 0);
+        eq_int("fp whose frame record straddles hi", (long)plx_fp_walk(lo, W(N - 1), hi, code, 1, out, 8), 0);
+        eq_int("an unaligned fp", (long)plx_fp_walk(lo, W(10) + 1, hi, code, 1, out, 8), 0);
+        eq_int("fp zero", (long)plx_fp_walk(lo, 0, hi, code, 1, out, 8), 0);
+        /* A frame pointer near the top of the address space must not wrap the bound check. */
+        eq_int("fp -w wraps", (long)plx_fp_walk(lo, (unsigned long)0 - sizeof(unsigned long), hi, code, 1, out, 8), 0);
+        eq_int("fp -2w wraps", (long)plx_fp_walk(lo, (unsigned long)0 - 2 * sizeof(unsigned long), hi, code, 1, out, 8), 0);
+
+        /* A return address that is not in executable memory is not a frame. */
+        memset(stack, 0, sizeof stack);
+        stack[10] = W(20); stack[11] = 0x999999;
+        eq_int("a return address outside code ends the walk", (long)plx_fp_walk(lo, W(10), hi, code, 1, out, 8), 0);
+
+        /* A chain that does not strictly rise (a self-loop, a step back) terminates. */
+        memset(stack, 0, sizeof stack);
+        stack[10] = W(10); stack[11] = A;    /* saved fp == fp */
+        eq_int("a self-loop does not walk", (long)plx_fp_walk(lo, W(10), hi, code, 1, out, 8), 0);
+        memset(stack, 0, sizeof stack);
+        stack[20] = W(10); stack[21] = A;    /* saved fp below fp */
+        eq_int("a descending chain does not walk", (long)plx_fp_walk(lo, W(20), hi, code, 1, out, 8), 0);
+        #undef W
+    }
+
     if (failures) {
         fprintf(stderr, "crashfmt: %d assertion(s) failed\n", failures);
         return 1;

@@ -133,17 +133,26 @@ static inline int plx_names_our_binary(const char *line, size_t n) {
 /* Classify a maps line. Returns 0 for a line that says nothing — including one that does not
  * begin with a `lo-hi` range at all, which is how a truncated read or a header line is rejected
  * rather than parsed into a range of zero that then "contains" a null PC. */
-static inline int plx_map_line_kind(const char *line, size_t n, unsigned long pc, unsigned long lr) {
+static inline int plx_map_line_kind_n(const char *line, size_t n,
+                                      const unsigned long *addrs, size_t n_addrs) {
     unsigned long lo = 0, hi = 0;
     const char *p = plx_parse_hex(line, &lo);
     int kind = 0;
     if (!p || *p != '-' || !plx_parse_hex(p + 1, &hi)) return 0;
     /* Half-open, and `lr` is checked as well as `pc`: on ARM the link register is the return
      * address of the frame that faulted, so on a jump through a bad function pointer the PC is
-     * garbage and the LR is the only thing that names a real module. */
-    if ((pc >= lo && pc < hi) || (lr >= lo && lr < hi)) kind |= PLX_MAP_AT;
+     * garbage and the LR is the only thing that names a real module. A fault passes those two;
+     * a freeze passes them and every frame its walk found. */
+    for (size_t i = 0; i < n_addrs; i++)
+        if (addrs[i] >= lo && addrs[i] < hi) { kind |= PLX_MAP_AT; break; }
     if (plx_names_our_binary(line, n)) kind |= PLX_MAP_BIN;
     return kind;
+}
+
+/* A fault's form of the above: the two addresses it knows. */
+static inline int plx_map_line_kind(const char *line, size_t n, unsigned long pc, unsigned long lr) {
+    const unsigned long a[2] = { pc, lr };
+    return plx_map_line_kind_n(line, n, a, 2);
 }
 
 /* The record's FIRST line, which is the one every tool parses:
@@ -186,6 +195,153 @@ static inline size_t plx_fmt_time(char *out, size_t cap, unsigned long secs) {
     plx_s_dec(&b, secs);
     plx_s_ch(&b, '\n');
     return b.n;
+}
+
+/* ---------------------------------------------------------------------------------------------
+ * The FREEZE record: what the main thread was doing when the watchdog saw it stand still.
+ *
+ * A freeze is not a death, so it has its own header (`*** FREEZE`, never `*** SIGNAL`) and every
+ * tool that scans the log for faults keeps skipping it. It is written by the freeze probe's signal
+ * handler on the FROZEN thread (`src/crashtrace.c`), and its lines mirror a fault's: the header
+ * carries `pc=` and `lr=` (and nothing else of the registers), `time:` the wall-clock second, `reg:`
+ * the registers, `at:`/`bin:` the mappings, and one thing a fault does not have, `frames:`.
+ * ------------------------------------------------------------------------------------------- */
+
+/* One executable mapping, as the frame walk needs it: `[lo, hi)`. */
+struct plx_range { unsigned long lo, hi; };
+
+/* The most executable ranges the walk remembers. A television's app has far fewer than this
+ * (the binary, libc, the loader and about thirty libraries), and a range beyond the last slot is
+ * dropped: a frame the walk then cannot vouch for ends the walk early, which loses frames and
+ * nothing else. */
+#define PLX_MAX_EXEC_RANGES 96
+/* The most frames one freeze record walks. */
+#define PLX_MAX_FREEZE_FRAMES 24
+/* The most addresses one freeze record asks the maps scan about: pc, lr and the walked frames. */
+#define PLX_MAX_FREEZE_ADDRS (PLX_MAX_FREEZE_FRAMES + 2)
+
+/* If `line` is a `lo-hi perms ...` maps line whose permissions include `x`, store its range. */
+static inline int plx_map_line_exec(const char *line, size_t n, struct plx_range *out) {
+    unsigned long lo = 0, hi = 0;
+    const char *p = plx_parse_hex(line, &lo);
+    if (!p || *p != '-') return 0;
+    p = plx_parse_hex(p + 1, &hi);
+    if (!p || *p != ' ' || hi <= lo) return 0;
+    /* "r-xp": four permission characters after the space, the third is execute. */
+    if ((size_t)(p + 1 - line) + 4 > n) return 0;
+    if (p[3] != 'x') return 0;
+    out->lo = lo;
+    out->hi = hi;
+    return 1;
+}
+
+static inline int plx_in_ranges(const struct plx_range *r, size_t nr, unsigned long a) {
+    for (size_t i = 0; i < nr; i++)
+        if (a >= r[i].lo && a < r[i].hi) return 1;
+    return 0;
+}
+
+/* If `line` is the `[stack]` mapping and it contains `addr`, store its end. The freeze walk's
+ * upper bound: read once at install, on the thread whose stack it is, so the handler never has to
+ * ask the kernel which stack a frame pointer belongs to. */
+static inline int plx_map_line_stack_end(const char *line, size_t n, unsigned long addr,
+                                         unsigned long *hi_out) {
+    static const char TAG[] = "[stack]";
+    const size_t t = sizeof TAG - 1;
+    unsigned long lo = 0, hi = 0;
+    const char *p = plx_parse_hex(line, &lo);
+    if (!p || *p != '-' || !plx_parse_hex(p + 1, &hi)) return 0;
+    while (n && (line[n - 1] == '\n' || line[n - 1] == ' ')) n--;
+    if (n < t) return 0;
+    for (size_t i = 0; i < t; i++)
+        if (line[n - t + i] != TAG[i]) return 0;
+    if (addr < lo || addr >= hi) return 0;
+    *hi_out = hi;
+    return 1;
+}
+
+/* Walk the frame-pointer chain from `fp`, writing up to `max` return addresses to `out`.
+ *
+ * **It only ever dereferences addresses inside `[sp, hi)`**, the interrupted thread's own stack
+ * (`hi` is the end of the main thread's `[stack]` mapping, read at install): a fault in the walk
+ * would turn a freeze into a crash, so the bound is what is checked, never the pointer's luck.
+ * A frame pointer must be word-aligned, inside the window and STRICTLY above the previous one, so
+ * the walk terminates and cannot loop on a corrupt chain.
+ *
+ * **Two frame layouts, because this binary has both.** `force-frame-pointers` makes LLVM (every
+ * Rust frame) keep r11 pointing at the saved r11 with the return address one word above it;
+ * GCC's ARM-mode frames (the C sources, `-fno-omit-frame-pointer`) keep r11 pointing at the saved
+ * return address with the caller's r11 one word BELOW. A chain through Rust and C alternates, and a
+ * frame is accepted only when its return address lies in an executable mapping (`exec`), which a
+ * stack address or a stale word never does, so trying LLVM's shape first and GCC's second cannot
+ * confuse the two. The return address's Thumb bit is cleared. A frame whose layout fits neither
+ * ends the walk. The host test grades both layouts on a synthetic stack; that the ARM binary's
+ * real frames take those shapes is a claim only a television can show. */
+static inline size_t plx_fp_walk(unsigned long sp, unsigned long fp, unsigned long hi,
+                                 const struct plx_range *exec, size_t nexec,
+                                 unsigned long *out, size_t max) {
+    const unsigned long w = sizeof(unsigned long);
+    size_t n = 0;
+    unsigned long cur = fp;
+    while (n < max) {
+        /* Written without `cur + 2 * w`: an r11 of 0xFFFFFFF8 (an ordinary value in code with no frame
+         * pointer) would wrap that sum to 0 and pass the bound. */
+        if (cur % w || cur < sp || cur - sp < w || cur >= hi || hi - cur < 2 * w) break;
+        const unsigned long *f = (const unsigned long *)cur;
+        unsigned long prev, ret;
+        /* A caller's fp is 0 (the chain's end, which a thread's first frame leaves) or strictly
+         * above this one and inside the window. */
+#define PLX_FP_OK(p) ((p) == 0 || ((p) > cur && (p) < hi))
+        if (plx_in_ranges(exec, nexec, f[1]) && PLX_FP_OK(f[0])) {
+            prev = f[0]; ret = f[1];                       /* LLVM: [fp]=prev, [fp+w]=ret */
+        } else if (plx_in_ranges(exec, nexec, f[0]) && PLX_FP_OK(f[-1])) {
+            prev = f[-1]; ret = f[0];                      /* GCC:  [fp]=ret, [fp-w]=prev */
+        } else {
+            break;
+        }
+#undef PLX_FP_OK
+        out[n++] = ret & ~1ul;
+        if (prev == 0) break;
+        cur = prev;
+    }
+    return n;
+}
+
+/* The freeze record's FIRST line:
+ *
+ *     *** FREEZE seq=1 pc=0xb6f2a1c4 lr=0xb6f2a0e8
+ *
+ * `seq` counts this process's freeze probes from 1; the watchdog's recovery line
+ * (`freeze-end: seq=N bucket=...`) names the same number, which is how a recovery finds its
+ * record. Like `plx_fmt_signal`, it repeats `pc=`/`lr=` on no later line. */
+static inline size_t plx_fmt_freeze(char *out, size_t cap, unsigned long seq,
+                                    unsigned long pc, unsigned long lr) {
+    struct plx_sbuf b = { out, 0, cap };
+    plx_s_str(&b, "\n*** FREEZE seq=");
+    plx_s_dec(&b, seq);
+    plx_s_str(&b, " pc=");
+    plx_s_hex(&b, pc);
+    plx_s_str(&b, " lr=");
+    plx_s_hex(&b, lr);
+    plx_s_ch(&b, '\n');
+    return b.n;
+}
+
+/* `frames: 0x.. 0x.. ...` — up to `per_line` of the walked return addresses, nearest first,
+ * starting at index `from`. Writes the line's length to `*len` and returns how many addresses it
+ * held (the caller loops until all are out). */
+static inline size_t plx_fmt_frames(char *out, size_t cap, const unsigned long *f, size_t n,
+                                    size_t from, size_t per_line, size_t *len) {
+    struct plx_sbuf b = { out, 0, cap };
+    size_t i = from;
+    plx_s_str(&b, "frames:");
+    for (; i < n && i - from < per_line; i++) {
+        plx_s_ch(&b, ' ');
+        plx_s_hex(&b, f[i]);
+    }
+    plx_s_ch(&b, '\n');
+    *len = b.n;
+    return i - from;
 }
 
 #endif /* PLX_CRASHFMT_H */

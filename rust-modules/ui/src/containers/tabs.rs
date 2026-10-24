@@ -59,6 +59,15 @@ pub struct TabContainer<H: Host> {
     /// Preferred surviving destination if the focused member disappears. Independent of visual
     /// order: a profile chip may be first without being the application's recovery destination.
     pub strip_fallback: Option<H::Elem>,
+    /// **The page's OWN pill** — the member whose destination is the page on top (or the one being
+    /// travelled to), published by the application with the members. It is where a move UP from the
+    /// page lands on the strip (the tvOS convention: you go back to the tab you are on), whichever
+    /// page and wherever on it focus was. `None` publishes no preference and the strip seats the
+    /// pill nearest the key that left the page.
+    ///
+    /// Not hashed, like the members' geometry: it is rewritten every frame from state the hash
+    /// already holds (the route and the directory), so two replays of one input stream agree on it.
+    pub strip_selected: Option<H::Elem>,
     /// The selected pill: the destination's while a transition is in flight (`ui::nav::view_tab`).
     pub selected: usize,
 }
@@ -70,6 +79,7 @@ impl<H: Host> TabContainer<H> {
             pills: Vec::new(),
             strip: Vec::new(),
             strip_fallback: None,
+            strip_selected: None,
             selected: 0,
         }
     }

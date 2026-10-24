@@ -70,7 +70,7 @@ pub fn classify(server_namespace: &str, built_key: &str) -> Option<DiskKey> {
         return None;
     }
     let source_index = source_indices[0];
-    if params[source_index].1.is_empty() {
+    if params[source_index].1.is_empty() || is_preview_frame(&params[source_index].1) {
         return None;
     }
     let avatar = is_avatar(&params[source_index].1);
@@ -155,6 +155,17 @@ fn hex_digest(bytes: &[u8]) -> String {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect()
+}
+
+/// A still out of a part's BIF index (`/library/parts/{id}/indexes/{kind}/{ms}`), the scrub
+/// preview's source. Ephemeral by nature — one per scrub position, rarely asked for twice — so it is
+/// never given a disk identity: the LRU it would churn is the posters'.
+fn is_preview_frame(source: &str) -> bool {
+    let mut parts = source.split('?').next().unwrap_or(source).split('/');
+    matches!(
+        (parts.next(), parts.next(), parts.next(), parts.next(), parts.next()),
+        (Some(""), Some("library"), Some("parts"), Some(id), Some("indexes")) if !id.is_empty()
+    )
 }
 
 fn is_avatar(source: &str) -> bool {

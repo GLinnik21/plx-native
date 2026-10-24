@@ -13,6 +13,7 @@ fn content(arg: &plx_screens::registry::ContentArg) -> Value {
         ContentArg::Person { sid, key, guid, name, thumb } => json!({"person":[sid.raw(),key,guid,name,thumb]}),
         ContentArg::Filmography { sid, key } => json!({"filmography":[sid.raw(),key]}),
         ContentArg::Collection(id) => json!({"collection":[id.sid.raw(),id.rk,id.sec,id.tag,id.name]}),
+        ContentArg::Catalog { hex } => json!({"catalog":plx_data::watchlist::encode_hex(hex)}),
     }
 }
 fn argument(arg: &plx_screens::registry::AppArg) -> Result<Value, &'static str> {
@@ -28,7 +29,8 @@ fn home_command(command: &plx_screens::registry::HomeCmd) -> Value {
         HomeCmd::FocusGrid { row,col } => json!({"focus_grid":[row,col]}),
         HomeCmd::Hero => json!("hero"),
         HomeCmd::FocusStrip(tab) => json!({"focus_strip":match tab {
-            HomeTab::Home => "home", HomeTab::Movies => "movies", HomeTab::Shows => "shows", HomeTab::Search => "search" }}),
+            HomeTab::Home => "home", HomeTab::Movies => "movies", HomeTab::Shows => "shows", HomeTab::Search => "search",
+            HomeTab::Watchlist => "watchlist" }}),
         HomeCmd::Flip(delta) => json!({"flip":delta}),
         HomeCmd::SelectHero(index) => json!({"select_hero":index}),
         HomeCmd::PinHero(index) => json!({"pin_hero":index}),
@@ -81,7 +83,7 @@ fn page_memory(memory: &plx_screens::registry::PageMemory) -> Result<Value, &'st
             "header_marked":m.header_marked,"card_keys":card_keys(&m.cards)}}),
         PageMemory::Collection(m) => json!({"collection":{"next_elem":m.cards.next,
             "header_marked":m.header_marked,"card_keys":card_keys(&m.cards),
-            "total":m.total,"counts":m.counts,"focus_index":m.focus_index,"focus_elem":m.focus_elem}}),
+            "total":m.total,"counts":m.counts,"generation":m.generation,"focus_index":m.focus_index,"focus_elem":m.focus_elem}}),
         PageMemory::Filmography(m) => json!({"filmography":{"next_elem":m.next_elem,
             "department":m.department,"preview":m.preview,"keys":m.keys.iter()
                 .map(|k| json!([k.department,k.catalog_id,k.elem])).collect::<Vec<_>>()}}),
@@ -252,7 +254,7 @@ fn store(command: &plx_data::stores::StoreCmd) -> Result<Value, &'static str> {
                 CollectionCmd::Open { target } => json!({"open":[target.id.sid.raw(),target.id.rk,target.id.sec,target.id.tag,target.id.name,target.want]}),
                 CollectionCmd::Window { wanted, focus, restore } =>
                     json!({"window":[wanted.start,wanted.end,focus,restore]}),
-                CollectionCmd::Restore { total, counts } => json!({"restore":[total,counts]}),
+                CollectionCmd::Restore { total, counts, generation } => json!({"restore":[total,counts,generation]}),
                 CollectionCmd::Close => json!("close"),
                 CollectionCmd::Reset => json!("reset"),
                 CollectionCmd::ApplyView { .. } => return Err("unsupported controlled collection command"),

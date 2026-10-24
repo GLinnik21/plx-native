@@ -108,9 +108,10 @@ pub trait CardHarness {
 pub type Mount = fn(n: usize) -> Box<dyn CardHarness>;
 
 /// The cases, in the order the suite runs them. The name is the key of the expected-failure list.
-pub const CASES: [(&str, fn(Mount) -> Outcome); 7] = [
+pub const CASES: [(&str, fn(Mount) -> Outcome); 8] = [
     ("walk", walk),
     ("hold_then_move", hold_then_move),
+    ("released_card_lands_at_rest", released_card_lands_at_rest),
     ("pop_rule", pop_rule),
     ("geometry", geometry),
     ("landing", landing),
@@ -209,6 +210,33 @@ pub fn hold_then_move(mount: Mount) -> Outcome {
         return fail(format!("did not settle: new {new} (want {full}), old {old} (want {rest})"));
     }
     Outcome::Pass
+}
+
+/// Released card: a held key walks the focus along the cards, and every card the walk left comes to
+/// EXACT rest (`scale == 1.0`, so its pop factor is `0.0` and it draws with the plain card program and
+/// the resting split), not one ulp above it, whatever the screen. `gfx::spring` never lands a released
+/// spring on its target; `Spring::land` (called by `CardRow::update`) does.
+pub fn released_card_lands_at_rest(mount: Mount) -> Outcome {
+    let (mut h, cards) = match settled_first(mount) {
+        Ok(v) => v,
+        Err(out) => return out,
+    };
+    // five cards of a held walk are plenty to leave four behind; a screen with fewer walks them all
+    let walk = if cards.len() > 5 { 5 } else { cards.len() };
+    for &card in &cards[1..walk] {
+        h.focus(card, By::Dir);
+        h.tick(2);
+    }
+    h.tick(SETTLE);
+    let mut bad = Vec::new();
+    for &card in &cards[..walk - 1] {
+        match h.scale(card) {
+            None => return Outcome::Unsupported("the screen exposes no tile scale read"),
+            Some(s) if s != 1.0 => bad.push(format!("{card} rests at {s}")),
+            Some(_) => {}
+        }
+    }
+    if bad.is_empty() { Outcome::Pass } else { fail(bad.join("; ")) }
 }
 
 /// Pop rule: a Dir or Pointer move grows from rest; a restore or reconcile arrival is adopted whole.
@@ -353,6 +381,49 @@ pub fn landing(mount: Mount) -> Outcome {
                 bad.push(format!("{l:?}: focus moved from {before} to {identity}"))
             }
             _ => {}
+        }
+    }
+    if bad.is_empty() { Outcome::Pass } else { fail(bad.join("; ")) }
+}
+
+/// Removal: when the focused card leaves, focus goes to the card that FOLLOWED it (the one before
+/// only when it was the last), the new focus is placeable, and no card but that one is lifted once
+/// it has settled. Not in [`CASES`]: it is the DS4 contract for sections that play their removals,
+/// run by the Tier-1 suite against the animated mounts.
+pub fn removal_focuses_next(mount: Mount) -> Outcome {
+    let mut bad = Vec::new();
+    for at in [2usize, 7] {
+        let mut h = mount(8);
+        let cards = h.cards();
+        if cards.len() < 8 {
+            return fail("fewer than 8 cards");
+        }
+        h.tick(2);
+        h.focus(cards[at], By::Restore);
+        h.tick(SETTLE);
+        if let Err(why) = h.landing(Landing::RemoveFocused) {
+            return Outcome::Unsupported(why);
+        }
+        let want = cards[if at + 1 < cards.len() { at + 1 } else { at - 1 }];
+        h.tick(1);
+        if h.focused() != Some(want) {
+            bad.push(format!("removing card {at}: focus is {:?}, not the next card {want}", h.focused()));
+        }
+        h.tick(SETTLE);
+        if h.focused() != Some(want) {
+            bad.push(format!("removing card {at}: focus drifted to {:?} while the landing played", h.focused()));
+        }
+        let Some(now) = h.focused() else { continue };
+        if h.place(now, At::Drawn).is_none() {
+            bad.push(format!("removing card {at}: the new focus is unplaceable"));
+        }
+        if h.scale(now).is_some_and(|s| (s - h.focus_scale()).abs() > 0.002) {
+            bad.push(format!("removing card {at}: the next card is not at the focus scale once settled"));
+        }
+        let lifted: Vec<u32> =
+            h.cards().into_iter().filter(|&c| c != now && h.scale(c).is_some_and(|s| (s - 1.0).abs() > 0.001)).collect();
+        if !lifted.is_empty() {
+            bad.push(format!("removing card {at}: cards {lifted:?} are off rest once settled"));
         }
     }
     if bad.is_empty() { Outcome::Pass } else { fail(bad.join("; ")) }

@@ -7,7 +7,8 @@
 //! `base` and `machine` and nothing else. `webos` and `keymanager` are also the port's
 //! (`[port webos]`), and nothing outside the port names them.
 //!
-//! The crate owns its build script: it generates the `i18n::msg` catalog from `locales/` and the
+//! The crate owns its build script: it generates the `i18n::msg` catalog and the `Preference`/`Language` enums from `locales/` and
+//! `locales/languages.json`, and the
 //! install-identity `Flavor` enum `storage::state` includes (the storage helper includes the same
 //! file, through the same generator). The application's version string is NOT known here; the
 //! application hands it to `storage::diagnostics::start`.

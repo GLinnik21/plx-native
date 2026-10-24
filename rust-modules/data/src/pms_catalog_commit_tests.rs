@@ -20,8 +20,8 @@ fn collection_rows_have_their_own_kind_and_unknown_types_are_not_listable() {
     }
 }
 
-/// A collection row keeps its member count (the Library caption's "N items"); no other kind reads
-/// `childCount` into it, so a show's season count never masquerades as one.
+/// A collection row keeps its member count (the Library caption's "N items") and a show its season
+/// count; a season or episode reads no `childCount`, so the field never means something else there.
 #[test]
 fn a_collection_row_carries_its_member_count() {
     let row = |kind: &str, child_count: i64| plx_plex::plex::Metadata {
@@ -30,7 +30,8 @@ fn a_collection_row_carries_its_member_count() {
     };
     assert_eq!(parse_item(&row("collection", 3), sid(0)).child_count, 3);
     assert_eq!(parse_item(&row("collection", -1), sid(0)).child_count, 0, "a nonsense count reads as none");
-    assert_eq!(parse_item(&row("show", 5), sid(0)).child_count, 0);
+    assert_eq!(parse_item(&row("show", 5), sid(0)).child_count, 5, "a show's season count");
+    assert_eq!(parse_item(&row("season", 5), sid(0)).child_count, 0);
 }
 
 /// A collection has no watch or resume state of its own, whatever counters the server sends with
@@ -288,4 +289,31 @@ fn an_episode_without_a_parent_index_has_an_unknown_season_not_specials() {
     let json = r#"{"ratingKey":"9","type":"episode","index":2}"#;
     let parsed: plx_plex::plex::Metadata = serde_json::from_str(json).expect("lenient parse");
     assert_eq!(parsed.parent_index, None, "an absent field stays absent through the wire parse");
+}
+
+/// **A card is named by what it IS, not by whether the server titled it.** A real PMS can send an
+/// empty `title` (a season 0 nobody named; the mock's `--caption-edge-cases` does), and that season
+/// is still a poster a household wants to open: its caption says "Specials" itself. Every place a
+/// hub row becomes a card used to drop an item with an empty title (Home's `shelf_card`, the
+/// Library's Recommended `parse_window`, the sliding-window ledger's two reads), so the untitled
+/// season vanished from "Recently Added Seasons" and came back the moment it was titled.
+#[test]
+fn an_untitled_season_is_still_a_card_on_every_hub_path() {
+    let season = r#"{"ratingKey":"982010","type":"season","title":"","index":0,"parentTitle":"Show",
+        "parentRatingKey":"980009","thumb":"/library/metadata/982010/thumb/1"}"#;
+    let body = format!(r#"{{"MediaContainer":{{"Hub":[{{"type":"season","hubIdentifier":"mock.seasons",
+        "title":"Recently Added Seasons","key":"/hubs/mock/seasons","Metadata":[{season}]}}]}}}}"#);
+    let mc = serde_json::from_str::<plx_plex::plex::Envelope>(&body).unwrap().media_container;
+
+    let home = project(&mc, &plx_plex::plex::MediaContainer::default(), sid(0));
+    assert_eq!(home.shelves.len(), 1, "Home's projection keeps the shelf");
+    assert_eq!(home.shelves[0].items.iter().map(|m| m.rk.as_str()).collect::<Vec<_>>(), ["982010"], "Home's shelf holds the untitled season");
+    let kept = &home.shelves[0].items[0];
+    assert_eq!((kept.kind, kept.season_index, kept.title.as_str(), kept.show_title.as_str()), (2, 0, "", "Show"));
+
+    let recommended = crate::browse::section_hubs::parse_hubs(&mc, sid(0), 1).shelves;
+    assert_eq!(recommended.iter().map(|s| s.items.len()).collect::<Vec<_>>(), [1], "the Recommended page's shelf holds it too");
+
+    let row = &mc.hub[0].metadata[0];
+    assert!(crate::stores::paging::card(sid(0), row, &[]).is_some(), "so does the sliding window's per-row read");
 }

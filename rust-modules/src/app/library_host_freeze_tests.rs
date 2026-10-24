@@ -55,6 +55,8 @@ fn a_compact_library_menu_holds_a_frozen_host_and_gives_it_back_on_dismissal() {
                 host,
                 kind: plx_screens::registry::LibraryMenuKind::Sort,
                 anchor: [0; 4],
+                folded: Vec::new(),
+                opener: None,
                 target: plx_data::stores::browse::SectionAddress {
                     epoch: listing.epoch,
                     sid: listing.sid,
@@ -150,6 +152,8 @@ fn a_host_page_spring_under_an_open_panel_is_host_motion() {
             host,
             kind: plx_screens::registry::LibraryMenuKind::Sort,
             anchor: [0; 4],
+            folded: Vec::new(),
+            opener: None,
             target: plx_data::stores::browse::SectionAddress {
                 epoch: listing.epoch,
                 sid: listing.sid,
@@ -176,18 +180,17 @@ fn a_host_page_spring_under_an_open_panel_is_host_motion() {
     for i in 122..136u32 {
         plx_machine::idle::frame_begin(1.0 / 60.0);
         let (_, report) = frame(&mut d, &mut rig, AppArg::Library, tick(i), vec![]);
-        if !plx_machine::idle::present_moving() {
+        // The panel's own close MORPH is motion too (S11: the menu runs back into its control), in
+        // the panel's scope; it is not the page's. A frame counts here when the page's own spring
+        // moved, and the attribution bug this pins shows as that never happening.
+        if !plx_machine::idle::page_moving() {
             continue;
         }
         moved += 1;
         assert!(
             d.surface_up(),
-            "frame {i}: the reproduction needs the panel still up (fading) while the page moves"
-        );
-        assert!(
-            plx_machine::idle::page_moving(),
-            "frame {i}: the page's own scroll spring is in flight and nothing else is — \
-             it is the HOST that is moving (report.underlay_moving={})",
+            "frame {i}: the reproduction needs the panel still up (fading) while the page moves \
+             (report.underlay_moving={})",
             report.underlay_moving
         );
         assert!(

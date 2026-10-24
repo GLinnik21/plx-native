@@ -222,7 +222,7 @@ def read_make_config(repo: Path) -> dict[str, str]:
     if proc.returncode != 0:
         raise Refused("`make -s print-bench-config` failed: " + proc.stderr.strip()[-400:])
     cfg = dict(line.split("=", 1) for line in proc.stdout.splitlines() if "=" in line)
-    missing = [k for k in ("RUST_NIGHTLY", "RUST_TDIR", "RUST_TARGET", "RUST_LIB", "RUST_ENV",
+    missing = [k for k in ("RUST_TOOLCHAIN", "RUST_TDIR", "RUST_TARGET", "RUST_LIB", "RUST_ENV",
                            "TEST_FAST_TDIR", "UNIT_RUN") if k not in cfg]
     if missing:
         raise Refused("print-bench-config did not report: " + ", ".join(missing))
@@ -234,7 +234,7 @@ def read_make_config(repo: Path) -> dict[str, str]:
 
 
 def arm_argv(cfg: dict[str, str]) -> list[str]:
-    """The ARM staticlib cargo argv, in the Makefile's order, after `cargo +<nightly>`."""
+    """The ARM staticlib cargo argv, in the Makefile's order, after `cargo +<RUST_TOOLCHAIN>`."""
     return [*ARM_ARGS_HEAD, *shlex.split(cfg.get("ARM_PROFILE_FLAG", "--release")), *ARM_ARGS_TARGET,
             cfg["RUST_TARGET"], *ARM_ARGS_LIB, cfg["RUST_TDIR"],
             *shlex.split(cfg.get("RUST_FEATFLAGS", "")), *ARM_ARGS_TAIL]
@@ -303,7 +303,7 @@ class Cargo:
         self.base_env.pop("CARGO_TARGET_DIR", None)
         self.runtime_dir = tempfile.mkdtemp(prefix="plxnative-bench.")
         self.base_env["PLXNATIVE_RUNTIME_DIR"] = self.runtime_dir
-        self.toolchain = f"+{cfg['RUST_NIGHTLY']}"
+        self.toolchain = f"+{cfg['RUST_TOOLCHAIN']}"
 
     def env(self, incremental: bool) -> dict[str, str]:
         e = dict(self.base_env)
@@ -312,9 +312,9 @@ class Cargo:
             e["CARGO_TARGET_DIR"] = self.cfg["TEST_FAST_TDIR"]
         return e
 
-    def run(self, args, env, what: str, check: bool = True):
+    def run(self, args, env, what: str, check: bool = True, toolchain: str | None = None):
         t0 = time.monotonic()
-        proc = subprocess.run(["cargo", self.toolchain, *args], cwd=self.cwd, env=env,
+        proc = subprocess.run(["cargo", toolchain or self.toolchain, *args], cwd=self.cwd, env=env,
                               capture_output=True, text=True)
         secs = time.monotonic() - t0
         if check and proc.returncode != 0:
@@ -640,7 +640,8 @@ class Bench:
                 k, v = word.split("=", 1)
                 env[k] = v
         os.utime(self.repo / TOUCH_FILE, None)
-        secs, _ = self.cargo.run(arm_argv(self.cfg), env, "ARM staticlib rebuild")
+        secs, _ = self.cargo.run(arm_argv(self.cfg), env, "ARM staticlib rebuild",
+                                 toolchain="+" + self.cfg["RUST_TOOLCHAIN"])
         lib = self.repo / self.cfg["RUST_LIB"]
         if not lib.is_file():
             raise BenchError(f"ARM staticlib rebuild: {self.cfg['RUST_LIB']} missing after cargo succeeded")
@@ -907,7 +908,7 @@ def main(argv=None) -> int:
         "host": host,
         "runner": runner_info(host),
         "runs": runs,
-        "config": {k: cfg[k] for k in ("RUST_NIGHTLY", "RUST_TDIR", "RUST_TARGET", "RUST_FEATFLAGS",
+        "config": {k: cfg[k] for k in ("RUST_TOOLCHAIN", "RUST_TDIR", "RUST_TARGET", "RUST_FEATFLAGS",
                                        "TEST_FAST_TDIR")},
         "via_make": via_make,
         "front_end_threads": front_end_threads(bench.cargo.base_env),

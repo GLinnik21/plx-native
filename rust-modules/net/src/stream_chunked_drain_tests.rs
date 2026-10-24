@@ -467,3 +467,32 @@ fn drain_mid_body_eof_is_a_transport_error() {
         panic!("park-time mid-body FIN must surface as a drain error, not idle-done");
     });
 }
+
+/// A keep-alive chunked response whose last chunk the drain has already consumed is finished: a
+/// blocking read after it is the clean end of the body, answered at once. It used to parse chunk
+/// framing off the finished response, wait out the socket's idle bound on the connection the server
+/// keeps open, and fail as a transport error (`EAGAIN`) at the very end of a live stream.
+#[test]
+fn a_read_after_the_drain_consumed_the_last_chunk_is_a_clean_end() {
+    with_keepalive_listener(
+        |port, _, _| {
+            let host = std::ffi::CString::new("127.0.0.1").unwrap();
+            let path = std::ffi::CString::new("/live").unwrap();
+            let mut hs = http_stream_boxed();
+            assert_eq!(
+                http_open(&mut *hs, host.as_ptr(), port as c_int, path.as_ptr(), std::ptr::null(), "GET"),
+                0
+            );
+            drain_body(&mut *hs);
+            assert!(http_body_done(&*hs), "the drain consumed the terminating chunk");
+            let started = std::time::Instant::now();
+            let mut dst = [0u8; 32];
+            let wake = Some(started + std::time::Duration::from_millis(300));
+            let n = http_read_until(&mut *hs, dst.as_mut_ptr(), dst.len() as c_int, wake, &mut NoCheckpoint);
+            assert_eq!(n, 0, "a finished body reads as end of stream");
+            assert!(started.elapsed() < std::time::Duration::from_millis(200), "and does not wait on the open socket");
+            http_close(&mut *hs);
+        },
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n8\r\nABCDEFGH\r\n0\r\n\r\n",
+    );
+}

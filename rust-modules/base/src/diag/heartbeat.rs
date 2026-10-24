@@ -18,7 +18,12 @@
 //! `heartbeat_tail`'s doc for why a counting allocator was not invented to fill it.
 //!
 //! Armed by `plxnative-framedrop[=<ms>]`; unarmed, every stamp is the frame's origin and every
-//! phase reads 0.0 — the counter is never read, so an unarmed frame pays nothing.
+//! phase reads 0.0 — the counter is never read, so an unarmed frame pays nothing for the phases.
+//! The one clock read an unarmed frame does pay is [`health`]'s, two per iteration (the loop top
+//! and the swap), which is what lets the usage event `route.left` report smoothness in a release
+//! build; it feeds no heartbeat field.
+
+pub mod health;
 
 #[cfg(not(any(test, feature = "test-support")))]
 extern "C" {
@@ -216,6 +221,8 @@ pub struct Instruments {
     thresh_ms: f64,
     perf_freq: f64,
     stamps: [u64; 9],
+    /// The watchdog label of the leg `mark` last opened (label-only; a no-op without `threadcheck`).
+    leg: crate::task::watchdog::LoopPhases,
     /// Worst frame total this second (presented frames only), for the heartbeat peak.
     worst: f64,
     /// Worst prepare phase this second, timed on EVERY iteration (ungated by present).
@@ -227,6 +234,9 @@ pub struct Instruments {
     pacing: FramePacing,
     /// `plxnative-framering`: write slow frames with their context instead of every frame.
     ring: Option<FrameRing>,
+    /// The per-visit frame health the usage event `route.left` reports. UNARMED: it keeps its own
+    /// clock reads (`health` says why), so it is live in every build.
+    health: health::FrameHealth,
 }
 
 /// **The frame-drop detector's context ring** (`/tmp/plxnative-framering[=<ms>]`).
@@ -287,13 +297,43 @@ impl Instruments {
             // loop that owns this value exists.
             perf_freq: unsafe { SDL_GetPerformanceFrequency() } as f64,
             stamps: [0; 9],
+            leg: Default::default(),
             worst: 0.0,
             worst_prep: 0.0,
             counters: FrameCounters::default(),
             previous_present: None,
             pacing: FramePacing::default(),
             ring: None,
+            health: health::FrameHealth::default(),
         }
+    }
+
+    /// The top of a loop iteration, for the visit's hang rate. Every build, armed or not; called
+    /// by [`Self::mark`] on `Phase::Top`, so the loop needs no second call.
+    fn begin_iteration(&mut self) {
+        self.health.iteration(now_us());
+    }
+
+    /// A frame was presented: the swap has returned. Every build, armed or not.
+    pub fn frame_presented(&mut self) {
+        self.health.presented(now_us());
+    }
+
+    /// The app left (`true`) or re-entered (`false`) the foreground; nothing is measured across it.
+    pub fn set_suspended(&mut self, suspended: bool) {
+        self.health.suspend(suspended);
+    }
+
+    /// End the screen visit being measured: its classes, or `None` for a visit too short to mean
+    /// anything. `dead_bursts` is the dispatcher's repeated-key count over the same visit.
+    pub fn finish_visit(&mut self, dead_bursts: u32) -> Option<health::HealthClasses> {
+        self.health.finish(dead_bursts)
+    }
+
+    /// [`Self::finish_visit`] for a route change seen after this iteration's present: the frame
+    /// just presented belongs to the screen being opened, and moves to its visit.
+    pub fn finish_visit_at_transition(&mut self, dead_bursts: u32) -> Option<health::HealthClasses> {
+        self.health.finish_at_transition(dead_bursts)
     }
 
     /// Arm the context ring ([`FrameRing`]): every presented frame formats its line, so the
@@ -317,6 +357,22 @@ impl Instruments {
 
     /// Stamp the end of a phase. Unarmed, a phase inherits the origin so every span reads 0.
     pub fn mark(&mut self, phase: Phase) {
+        use crate::task::watchdog::LoopPhase as Leg;
+        // A mark ends the leg it names and opens the next one: the watchdog names the leg a hang
+        // lands in. Draw and Capture open nothing new (`draw_scope` / `present_scope` label them).
+        match phase {
+            Phase::Top => {
+                self.leg.enter(Leg::EventIngest);
+                self.begin_iteration();
+            }
+            Phase::Ingest => self.leg.enter(Leg::Results),
+            Phase::Results => self.leg.enter(Leg::Navcommit),
+            Phase::NavCommit => self.leg.enter(Leg::Update),
+            Phase::TickDrain => self.leg.enter(Leg::PrepareWindow),
+            Phase::Prepare => self.leg.enter(Leg::PresentAndSwap),
+            Phase::Swap => self.leg.enter(Leg::FrameReport),
+            Phase::Draw | Phase::Capture => {}
+        }
         let i = phase as usize;
         self.stamps[i] = if self.armed {
             // SAFETY: as `new`.
@@ -342,6 +398,7 @@ impl Instruments {
     pub fn skip_present_phases(&mut self) {
         self.seed_present_phases();
         self.previous_present = None;
+        self.health.idle();
     }
 
     /// An iteration whose present the capture fence deferred. Same stamps as a skip, but the
