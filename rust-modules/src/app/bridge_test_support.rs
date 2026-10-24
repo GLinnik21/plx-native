@@ -18,7 +18,9 @@ pub(super) fn goto(d: &mut Dispatcher<AppHost>, want: AppArg) {
 
 pub(super) fn frame(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, route: AppArg, tick: Tick, inputs: Vec<InputEvent<u32>>) -> (&'static str, FrameReport) {
     goto(d, route);
-    presented(super::frame(d, rig, tick, inputs))
+    let out = presented(super::frame(d, rig, tick, inputs));
+    rig.assert_no_store_jobs_left_for_test();
+    out
 }
 
 /// …and the same driver for the two frames that also want the effect tap or a supplied result
@@ -27,14 +29,18 @@ pub(super) fn frame_with_tap(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, rout
     inputs: Vec<InputEvent<u32>>, tap: &mut dyn plx_ui::dispatch::Tap<AppHost>)
     -> (&'static str, FrameReport) {
     goto(d, route);
-    presented(super::frame_with_tap(d, rig, tick, inputs, tap))
+    let out = presented(super::frame_with_tap(d, rig, tick, inputs, tap));
+    rig.assert_no_store_jobs_left_for_test();
+    out
 }
 
 pub(super) fn frame_with_results(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, route: AppArg, tick: Tick,
     inputs: Vec<InputEvent<u32>>, take: impl FnOnce() -> AppResults,
     tap: &mut dyn plx_ui::dispatch::Tap<AppHost>) -> (&'static str, FrameReport) {
     goto(d, route);
-    presented(super::frame_with_results(d, rig, tick, inputs, take, tap))
+    let out = presented(super::frame_with_results(d, rig, tick, inputs, take, tap));
+    rig.assert_no_store_jobs_left_for_test();
+    out
 }
 
 /// A detail page's argument, for the tests that used to name `Route::Detail` and let a trail
@@ -205,6 +211,9 @@ fn pump_requests(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, mut item: Option
             (Some(_), None) => format!("unperformed watchlist:{label}"),
         });
     }
+    // The requests above include an item menu's Play, whose `describe_movie` emits a store job: the
+    // drain after it must have started it, as the loop's own `update` pump is not run here.
+    rig.assert_no_store_jobs_left_for_test();
     seen
 }
 

@@ -53,8 +53,9 @@
 //!
 //! ## 2. The WRITE surface — every [`MetadataCmd`] variant, and what it wraps
 //!
-//! - `RequestDetail{sid, rk}` → `metadata::request_detail` — supersede any in-flight load, fetch
-//!   off-thread; lands through the identity-keyed `DETAIL_LANDING` and `pump_detail`. A show opens on
+//! - `RequestDetail{sid, rk}` → `metadata::request_detail` — supersede any in-flight load, emit the
+//!   fetch as a job the application starts off-thread; lands through the identity-keyed
+//!   `DETAIL_LANDING` and `pump_detail`. A show opens on
 //!   its on-deck episode's season; a re-read of the show already loaded keeps the season selected on
 //!   it (read from the store at request time, `metadata::selected_season_number`).
 //! - `Clear` → `metadata::clear` — drop the loaded item, supersede everything in flight.
@@ -170,7 +171,8 @@ use super::StoreEv;
 
 #[derive(Clone)]
 pub enum MetadataCmd {
-    /// Supersede any in-flight load and fetch `(sid, rk)` off-thread; lands through `pump_detail`.
+    /// Supersede any in-flight load and emit the fetch of `(sid, rk)` as a job the application
+    /// starts off-thread; lands through `pump_detail`.
     RequestDetail { sid: ServerId, rk: String },
     /// Close the page: drop the item and supersede everything in flight.
     Clear,
@@ -309,6 +311,26 @@ impl MetadataStore {
 
     pub fn adapter_ref(&self) -> &crate::metadata::MetadataAdapter { &self.adapter }
 
+    /// Take the jobs this owner's commands have emitted since the last take, in order. The caller
+    /// OWES each one to a runner: a job dropped here is a request whose reservation is never
+    /// handed back and whose spinner never settles, so the application drains them in the same
+    /// call that ran the command (`Bridge::metadata_run`).
+    #[must_use]
+    pub fn take_jobs(&mut self) -> Vec<super::StoreJob> {
+        std::mem::take(&mut self.state.jobs)
+    }
+
+    /// Does the outbox hold a job nobody has taken yet?
+    pub fn has_jobs(&self) -> bool {
+        !self.state.jobs.is_empty()
+    }
+
+    /// The port that lands a detail answer into THIS owner's current adapter: what a job emitted
+    /// now carries (`assert_fx!` compares it by adapter identity).
+    pub fn detail_port(&self) -> crate::metadata::DetailPort {
+        crate::metadata::DetailPort::of(&self.adapter)
+    }
+
     /// Arms this owner's replay-tracking `Tracker` for controlled-content recording/replay. Call
     /// exactly once, right after construction (`crate::metadata::record::arm`'s own doc has the
     /// full rationale and history) — the one caller is `Bridge::controlled_home`.
@@ -403,6 +425,11 @@ impl MetadataStore {
     }
 }
 
+/// **`step` does not drain the outbox.** It runs the command, so a `RequestDetail` stepped through
+/// here leaves its job in [`MetadataStore::take_jobs`] and nothing starts it: whoever steps this
+/// store owns draining it, in the same call. The application's Bridge runs a command through
+/// `Stores::metadata_run` and drains right after it (`docs/sans-io.md`, "The store job lane"),
+/// which is the rule a new caller of this `step` has to meet by itself.
 impl<H: Host> Machine<H> for MetadataStore {
     type Ev = StoreEv<MetadataCmd>;
     fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, _fx: &mut Effects<'_, H>) -> Handled {

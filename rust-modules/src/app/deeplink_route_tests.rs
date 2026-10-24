@@ -88,9 +88,9 @@ impl Rig {
     /// One production frame with the link and the menu-play wait ticked where `run.rs` ticks them.
     fn once(&mut self) {
         {
-            // Under `cfg(test)` a detail fetch is parked until the test runs it; run it here, off
-            // the frame, where the worker thread would have.
-            self.bridge.metadata_mut().adapter_ref().run_held_detail_fetches_for_test();
+            // A test Bridge's store runner parks a detail fetch until the test runs it; run it
+            // here, off the frame, where the worker thread would have.
+            self.bridge.run_held_store_jobs_for_test();
             {
                 let _frame = plx_base::task::FrameScope::enter();
                 self.bridge.metadata_pump_detail();
@@ -102,6 +102,7 @@ impl Rig {
                 }
             }
             super::frame(&mut self.d, &mut self.bridge, tick(self.i), vec![]);
+            self.bridge.assert_no_store_jobs_left_for_test();
             self.i += 1;
         }
     }

@@ -558,10 +558,10 @@ distinction §6.1 draws.
 | **Rewind / Fast-forward** | the same as LEFT / RIGHT (§1.2) |
 | **UP / DOWN** | move between the HUD's three bands; a press on a hidden HUD is spent raising it |
 | **Stop** | leave the player |
-| **BACK** | cancel a scrub in progress (§6.6); otherwise hide the HUD if it is up, and leave the player from a bare picture |
+| **BACK** | cancel a scrub in progress (§6.6); otherwise hide the HUD if it is up, and leave the player from a bare picture. While playback is still loading, buffering or seeking, the HUD cannot come down: the first BACK hides it with nothing visible, and the next BACK leaves. Any other key in between, or the load finishing, makes it a first BACK again |
 | **EXIT** | terminate the app (§2.3) |
 
-**Stop, and a BACK that finds nothing to cancel or hide, do the same thing here**: both run one teardown ritual — cancel any play still being
+**Stop, and a BACK that finds nothing to cancel or hide (or that is the second in a row while the player is busy), do the same thing here**: both run one teardown ritual — cancel any play still being
 resolved, close every panel, stop the buffer feed — and return to **the page playback started
 from**. For an episode that is the **show page, scrolled to the episode that played**, not the
 generic show root. The final position is reported to the server on the way out, so the item resumes
@@ -647,7 +647,9 @@ up commits the drag. A playing film plays on from the new spot; a paused film se
    goes, the knob eases back to the playhead over about 0.3 s, and the HUD stays up; BACK did not
    hide it or leave.
 2. **Otherwise BACK is the ordinary one**: with the HUD up it hides it (the film keeps playing), and
-   from a bare picture it leaves the player (§6.4). **A committed scrub is final** — an OK / Play
+   from a bare picture it leaves the player (§6.4); while the player is still loading, buffering or
+   seeking, the HUD cannot come down, so the first BACK hides it unseen and the next one leaves.
+   **A committed scrub is final** — an OK / Play
    confirmation or a pointer drag's release is not followed by a way back to where the scrub
    started; BACK straight afterwards hides the HUD like any other BACK.
 

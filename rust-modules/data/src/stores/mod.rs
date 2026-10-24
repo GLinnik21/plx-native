@@ -205,8 +205,29 @@ impl Stores {
         self.person.view()
     }
 
+    /// Run one Metadata command. It does NOT start the jobs the command emitted: a `RequestDetail`
+    /// leaves its fetch on the outbox, and a caller that returns without [`Stores::take_jobs`] and
+    /// handing each job to a runner has stranded the request. The one production caller is
+    /// `Bridge::metadata_run`, which drains in the same call; the application's test rigs fail a
+    /// frame that ends with a job still here (`Bridge::assert_no_store_jobs_left_for_test`).
     pub fn metadata_run(&mut self, cmd: metadata::MetadataCmd) -> bool {
         self.metadata.run(cmd)
+    }
+
+    /// Take every job any store has emitted since the last take, store by store in a fixed order.
+    /// The caller OWES each one to a runner (see [`StoreJob`]). A store with an outbox joins here,
+    /// in this one place: the Bridge's drain and its leftover-job check both read this aggregate.
+    #[must_use]
+    pub fn take_jobs(&mut self) -> Vec<StoreJob> {
+        let mut jobs = Vec::new();
+        jobs.append(&mut self.metadata.take_jobs());
+        jobs
+    }
+
+    /// Does any store hold an emitted job nobody has taken? Aggregates every outbox, as
+    /// [`Stores::take_jobs`] does.
+    pub fn has_jobs(&self) -> bool {
+        self.metadata.has_jobs()
     }
 
     pub fn metadata_pump(&mut self) -> bool {
@@ -534,6 +555,23 @@ impl StoreWork {
     pub fn store(self) -> StoreId {
         match self { Self::Hubs => StoreId::Hubs, Self::BrowseDiscovery | Self::Browse => StoreId::Browse,
             Self::Search { .. } => StoreId::Search, Self::SubtitleSearch => StoreId::SubtitleSearch }
+    }
+}
+
+/// IO a store's step asked the application to start, as a value: the store emits it
+/// (`Stores::take_jobs`, over each store's own outbox), the application's runner
+/// (`app::adapters::stores`) starts it, and
+/// its [`Port`](plx_machine::job::Port) takes the one answer. Unlike [`StoreWork`], which is a timing
+/// lane a store is pumped on, a job carries the request itself and the port its answer goes to.
+#[derive(Debug, PartialEq)]
+pub enum StoreJob {
+    /// One detail fetch (`MetadataCmd::RequestDetail`), addressed by its request generation.
+    Detail(plx_machine::job::Job<crate::metadata::DetailReq>, crate::metadata::DetailPort),
+}
+
+impl StoreJob {
+    pub fn store(&self) -> StoreId {
+        match self { Self::Detail(..) => StoreId::Metadata }
     }
 }
 

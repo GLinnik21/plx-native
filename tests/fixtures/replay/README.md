@@ -566,6 +566,15 @@ passed `plxnative-rec check`, and only `1-boot-home-chip-grid/rec-0000.jsonl` wa
 (anchor flag included) stands. `tests/replay_fixtures.py` replays all three with `verdict=SAME` in Targets
 and Resolve and every difference counter at zero.
 
+The player's two-press BACK while the pipeline is busy (`HudState::exit_armed` and
+`back_leaves_at_press`, both in `PlayerScreen`'s canon and shape string; `SCREEN_SHAPES_PIN`
+`0x6b71_df9e_04db_2b76` -> `0x209b_8063_1907_d7c8`) moved the state shape from 2896094977091175041 to
+4253715640610457423, read from the old and the new recorder headers by `tools/plxnative-rec rerecord`.
+All three anchors were refused on load (`StateShape` in the fixture preflight), then recorded afresh
+against the synthetic server with `tests/focusfp.sh --rec --only 1,6,12`, passed `plxnative-rec
+check`, and were installed with `tools/plxnative-rec rerecord`, anchors retained. `make check-replay`
+replays all three with `verdict=SAME` in Targets and Resolve and every difference counter at zero.
+
 Play Version (the item menu's version page) added two `Action` variants to `item_menu::SHAPE`,
 which moved the state shape from 2896094977091175041 to 2556366498870773725 (`SCREEN_SHAPES_PIN`
 `0x2085_d42d_b9be_8eae`). All three anchors were refused on load, then recorded again against the
@@ -584,3 +593,10 @@ recording ran past the reader's record budget (`Malformed { what: "record JSON/b
 was recorded once more with the final settle halved as well and only its `rec-0000.jsonl` was
 replaced. `make check-replay` replays all three with `verdict=SAME` in Targets and Resolve and
 every difference counter at zero.
+
+Merging `main`'s two-press BACK into the Play Version branch combined both shape moves
+(`SCREEN_SHAPES_PIN` `0x3cf2_5b06_5ed9_8faa`), which moved the state shape from 4253715640610457423
+to 17882145870915066293. All three anchors were recorded again on the merged tree at the 350 ms key
+interval and halved idle sleeps, passed `plxnative-rec check`, and were installed with
+`tools/plxnative-rec rerecord`, anchors retained. `make check-replay` replays all three with
+`verdict=SAME` in Targets and Resolve and every difference counter at zero.

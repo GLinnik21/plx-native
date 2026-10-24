@@ -602,8 +602,9 @@ struct SecState {
     items: SecItems,
     cursor: Option<Arc<Cursor>>,
     /// A read-back changed a row this section's QUERY depends on (see
-    /// [`BrowseState::apply_view_local`]): what it lists is out of date though every row on screen
-    /// is right. Cleared by any re-query.
+    /// [`BrowseState::apply_view_local`]), or the server created or removed items
+    /// ([`BrowseState::listings_changed`]): what it lists is out of date though every row on
+    /// screen is right. Cleared by any re-query.
     membership_stale: bool,
 }
 
@@ -1161,10 +1162,16 @@ impl BrowseState {
         activate_source_of(i);
     }
     /// The grid's memory of the sections it is not showing: the recent few keep their last
-    /// window, the rest keep no pages. Runs on a switch, never per frame.
+    /// window, the rest keep no pages, and a section left while stale
+    /// ([`SecState::membership_stale`]) keeps none either, so that coming back fetches it afresh
+    /// rather than showing the list it had before the change. Runs on a switch, never per frame.
     fn apply_section_rule(&mut self) {
         for (section, state) in self.states.iter_mut().enumerate() {
             if section == self.cur {
+                continue;
+            }
+            if state.membership_stale {
+                state.reset_listing();
                 continue;
             }
             match self.left.iter().find(|&&(left, _)| left == section) {
@@ -1403,6 +1410,39 @@ impl BrowseState {
         }
         self.requery_gen = Some(self.gen);
         true
+    }
+    /// Items were created or removed on `sid` (a notification, never a press).
+    ///
+    /// Every other section of the server forgets its pages AND its cursor (`reset_listing`): its
+    /// next visit fetches afresh. The current section, when it is one of the server's and lists
+    /// something, is only marked stale, as a read-back that moved a row's membership marks it: the
+    /// grid on screen is never listed again under the reader, and the Library page re-queries it
+    /// (keeping the reader's place, [`Self::requery_stale`]) when a page is pushed over it. With no
+    /// Library page on the stack nobody is looking (`library_on_stack` is false), so the re-query
+    /// starts at once and `requery_owed` has the store pumped to land its first page.
+    /// True when a section was marked or reset, or a re-query was started.
+    fn listings_changed(&mut self, sid: ServerId, library_on_stack: bool) -> bool {
+        let current = self.cur();
+        let mut hit = false;
+        let mut marked = false;
+        for i in 0..self.states.len() {
+            if self.section_sid(i) != Some(sid) {
+                continue;
+            }
+            let Some(state) = self.states.get_mut(i) else { continue };
+            if i != current {
+                state.reset_listing();
+                hit = true;
+            } else if state.total >= 0 || state.fetch == SecFetch::Loading {
+                hit |= !state.membership_stale;
+                state.membership_stale = true;
+                marked = true;
+            }
+        }
+        if marked && !library_on_stack {
+            hit |= self.requery_stale();
+        }
+        hit
     }
     /// Is a membership re-query's first page still owed, so that the store must be pumped even
     /// though no Library page is on top to do it?
@@ -2541,6 +2581,7 @@ impl BrowseState {
                 self.hubs_invalidate_server(sid, adapter);
                 true
             }
+            BrowseCmd::ListingsChanged { sid, library_on_stack } => self.listings_changed(sid, library_on_stack),
             BrowseCmd::ApplyView { at, edit } => match edit {
                 crate::viewstate::ViewEdit::Watched(on) => {
                     let listing = self.apply_view_local(&at, edit);

@@ -35,7 +35,10 @@ class FileSet(unittest.TestCase):
         self.assertFalse(auto & manual)
         committed = tracked("docs/screenshots") | tracked("site/media")
         film = {p for p in committed if p.startswith("site/media/feel")}
-        # what is committed and in neither set is the film and the photograph taken on the television, nothing else
+        # the stills' manifest is written by `adopt` beside the stills, not rendered as one
+        film.add("site/media/stills.manifest.json")
+        # what is committed and in neither set is the film, the stills' manifest and the photograph taken on the
+        # television, nothing else
         self.assertEqual(committed - auto - manual - film, {"docs/screenshots/navblur-transition.jpg"})
         self.assertLessEqual(auto | manual, committed)
 
@@ -294,6 +297,24 @@ class Stability(unittest.TestCase):
         self.assertEqual(len(over), 1)
         self.assertIn("home.jpg, og-card.jpg", over[0])
         self.assertIn("60", over[0])
+
+
+class CaptureSize(unittest.TestCase):
+    """The simulator writes its drawable, which a HiDPI window makes 2x the canvas; the crops assume the canvas."""
+
+    def test_a_retina_capture_is_brought_back_to_the_canvas_not_cropped_to_its_quadrant(self):
+        if not shutil.which("ffmpeg"):
+            self.skipTest("no ffmpeg")
+        got = shots.fit_capture(png(3840, 2160, lambda x, y: (10, 20, 30)), 1920, 1080)
+        self.assertEqual(shots.png_size(got), (1920, 1080))
+
+    def test_an_exact_capture_passes_through_untouched(self):
+        data = png(1920, 1080, lambda x, y: (1, 2, 3))
+        self.assertIs(shots.fit_capture(data, 1920, 1080), data)
+
+    def test_a_capture_that_is_no_whole_multiple_is_refused(self):
+        with self.assertRaises(RuntimeError):
+            shots.fit_capture(png(2000, 1080, lambda x, y: (1, 2, 3)), 1920, 1080)
 
 
 class NeedsRender(unittest.TestCase):

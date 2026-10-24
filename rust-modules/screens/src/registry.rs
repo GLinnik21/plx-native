@@ -85,7 +85,7 @@ pub struct AccountPreferenceReply {
 }
 
 pub enum PreferenceCmd {
-    /// Capture the live profile only after admission: even session::peek can schedule storage IO.
+    /// Capture the live profile only after admission.
     Load { reply: std::sync::mpsc::Sender<AccountPreferenceReply> },
     Save {
         request: plx_plex::plex::account::PreferenceRequest,
@@ -2601,13 +2601,16 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // `(row:u32,sp:..,card:Option<u32>)`, in write order; the Collection and Watchlist grids name
 // `bands` symbolically, so their shape strings did not change. One bump; the three replay fixtures
 // were re-recorded against it; the previous pin was 0x0803_2f8d_c828_6d70.
+// Player two-press BACK while busy: `PlayerScreen`'s `hud` gains `exit_armed` (a BACK hid the
+// transport while the pipeline was busy, so the hide cannot show) and `back_leaves_at_press` (that
+// arming, sampled before the press un-dismisses), both after `visible_at_press` in the canon and
+// the shape string. One bump; the three replay fixtures were re-recorded against it; the previous
+// pin was 0x6b71_df9e_04db_2b76.
 // Play Version: `item_menu::SHAPE`'s `Action` gains `ChooseVersion` (tag 12) and `PlayVersion`
-// (tag 13, with its `media:u64` id). One bump; the three replay fixtures were re-recorded against
-// it; the previous pin was 0x6b71_df9e_04db_2b76.
-// Play Version disc: `ARG_SHAPE` gains `VersionsPanel{host,sid,rk,anchor}` and
+// (tag 13, with its `media:u64` id); `ARG_SHAPE` gains `VersionsPanel{host,sid,rk,anchor}` and
 // `screens::versions_panel::SHAPE` is appended. One bump; the three replay fixtures were
-// re-recorded against it; the previous pin was 0x2085_d42d_b9be_8eae.
-const SCREEN_SHAPES_PIN: u64 = 0x2628_df23_3445_5f80;
+// re-recorded against it; the previous pin was 0x209b_8063_1907_d7c8.
+const SCREEN_SHAPES_PIN: u64 = 0x3cf2_5b06_5ed9_8faa;
 
 #[cfg(test)]
 mod arg_tests {

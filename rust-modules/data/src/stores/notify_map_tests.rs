@@ -133,6 +133,27 @@ fn stopped_unheld_coalesced_source_refetch_and_invalidate() {
 }
 
 #[test]
+fn created_or_removed_items_owe_the_servers_grids_one_re_list() {
+    let _g = plx_base::testlock::serial();
+    let mut stores = holding(&[]);
+    use crate::stores::notify::NotifyLibrary;
+    use plx_plex::plex::notify::{LibraryEntry, LibraryKind, LibraryState};
+    let entry = |id: &str, state| LibraryEntry { item_id: id.into(), kind: LibraryKind::Movie, state, section: None };
+    let out = NotifyOut {
+        library: vec![
+            NotifyLibrary { sid: SID, entries: vec![entry("a", LibraryState::Created)] },
+            NotifyLibrary { sid: SID, entries: vec![entry("b", LibraryState::Deleted)] },
+        ],
+        ..Default::default()
+    };
+    let spent = map(&mut stores, &out, &[]);
+    assert_eq!(spent.relisted, [SID], "two reports in one pump are one re-list");
+    assert_eq!(spent.refetched, [SID], "and one quiet Home refetch");
+    assert_eq!(spent.invalidated, [SID], "and one section-shelf invalidate");
+    assert!(map(&mut stores, &NotifyOut::default(), &[]).relisted.is_empty(), "spent once");
+}
+
+#[test]
 fn owed_work_waits_for_network_release() {
     let _g = plx_base::testlock::serial();
     let mut stores = holding(&["s1"]);
@@ -687,10 +708,83 @@ fn a_feed_that_came_back_after_a_gap_sweeps_the_titles_of_that_server() {
 }
 
 #[test]
-fn a_library_change_leaves_home_and_the_reads_alone() {
+fn a_library_change_moves_the_servers_lists_and_reads_no_item() {
     let _g = plx_base::testlock::serial();
     let (mut stores, _script, sid) = watchlist_of_three();
     let spent = map(&mut stores, &library(sid, vec![created("20"), deleted("11")]), &[]);
-    assert_eq!(spent, Default::default(), "no Home refetch, no shelf invalidation");
-    assert!(pending(&stores).is_empty());
+    assert_eq!(spent.refetched, [sid], "one quiet Home refetch");
+    assert_eq!(spent.invalidated, [sid], "one section-shelf invalidate");
+    assert_eq!(spent.relisted, [sid], "one re-list of its grids");
+    assert!(pending(&stores).is_empty(), "no per-item read-back");
+}
+
+fn owes_lines() -> usize {
+    std::fs::read_to_string(plx_base::eventlog::events_log())
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| l.contains("notify: owes"))
+        .count()
+}
+
+/// A scan reports a create every few seconds: the server's listings are told once per spacing, the
+/// change that lands inside it waits (one entry, however many arrive) and is spent when it is due,
+/// and the waiting is not logged frame after frame.
+#[test]
+fn a_servers_listings_are_told_at_most_once_per_spacing() {
+    let _g = plx_base::testlock::serial();
+    plx_base::eventlog::with_private_log(|| {
+        let mut stores = holding(&[]);
+        let change = library(SID, vec![created("20")]);
+        let mut calls = 0u64;
+        let mut tick = |stores: &mut Stores, out: &NotifyOut| {
+            calls += 1;
+            (map(stores, out, &[]).relisted, calls)
+        };
+        let (relisted, first) = tick(&mut stores, &change);
+        assert_eq!(relisted, [SID], "the first change is told at once");
+        let logged = owes_lines();
+        for _ in 0..3 {
+            assert!(tick(&mut stores, &NotifyOut::default()).0.is_empty());
+        }
+        for _ in 0..2 {
+            assert!(tick(&mut stores, &change).0.is_empty(), "inside the spacing it waits, coalesced");
+        }
+        assert!(stores.notify_owed_for_test().contains(&(SID, "listings".to_string())), "owed, not dropped");
+        let mut spent_at = Vec::new();
+        for _ in 0..2 * LIBRARY_SPACING_FRAMES {
+            let (relisted, at) = tick(&mut stores, &NotifyOut::default());
+            if !relisted.is_empty() {
+                assert_eq!(relisted, [SID]);
+                spent_at.push(at);
+            }
+        }
+        assert_eq!(spent_at, [first + LIBRARY_SPACING_FRAMES], "told once, the frame the spacing is up");
+        assert!(stores.notify_owed_for_test().is_empty());
+        // The refetch and the invalidate of the two changes inside the spacing are spent as they come
+        // (their own spacing is downstream), so those frames log; the frames that only wait do not.
+        assert_eq!(owes_lines() - logged, 3, "the two changes and the deferred listings: three lines, none per waiting frame");
+    });
+}
+
+/// `Shown::library` reaches the browse store: with a Library page on the stack the open grid is
+/// only marked stale (the page re-queries it when covered), with none it re-queries at once.
+#[test]
+fn a_library_change_tells_the_browse_store_whether_a_library_page_is_up() {
+    let _g = plx_base::testlock::serial();
+    for (library_up, requeried) in [(true, false), (false, true)] {
+        let mut stores = holding(&[]);
+        let sid = plx_plex::plex::current_server();
+        {
+            let mut browse = stores.browse.borrow_mut();
+            browse.seed_sources_for_test(1, true);
+            browse.append_section_for_test(0, 1, "Movies", crate::browse::SecKind::Movie);
+            browse.seed_items_for_test(3);
+        }
+        let shown = Shown { library: library_up, ..Shown::ALL };
+        let spent = map_shown(&mut stores, &library(sid, vec![created("20")]), &[], shown);
+        assert_eq!(spent.relisted, [sid]);
+        let mut browse = stores.browse.borrow_mut();
+        assert_eq!(browse.requery_owed(), requeried, "library page up: {library_up}");
+        assert_eq!(browse.listing_snapshot().view().membership_stale(), !requeried, "library page up: {library_up}");
+    }
 }
