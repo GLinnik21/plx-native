@@ -3995,14 +3995,18 @@ fn request_detail_with_spawn(adapter: &MetadataAdapter, sid: plx_plex::plex::Ser
 ///
 /// `client` is the one the runner resolved for the job, once, when it admitted it
 /// (`StoreRunner::start_detail`), and `fetch` is handed it for the GETs of the chain
-/// ([`fetch_full`]): the chain asks no registry. The capture has a consequence the old chain hid.
-/// It re-resolved its client before each sub-fetch, so a sign-out (or a slot re-pointed) halfway
-/// through turned every later GET into `None`; this one keeps the client it was handed for the
-/// rest of its GETs, all against the server the page was opened on. That is `pms::kick_with`'s
-/// capture-at-the-step rule, and what `ask_related` already does. The registry leaks its clients,
-/// so the reference outlives a slot that is re-pointed under it. The one exception is the opening
-/// season's episodes (`fetch_episodes`), which still resolve their own client until the season and
-/// episode workers move.
+/// ([`fetch_full`]): bar the opening season's episodes (`fetch_episodes`, which still resolves its
+/// own client until the season and episode workers move) the chain asks no registry. The capture
+/// changes what a sign-out or a re-point halfway through does to a page. The old chain
+/// re-resolved its client before each sub-fetch, so after a sign-out its later GETs found no
+/// client (`None`) and after a re-point they went to the slot's new client. This one keeps the
+/// client it was handed, which is `pms::kick_with`'s capture-at-the-step rule and what
+/// `ask_related` already does (the registry leaks its clients, so the reference stays valid). The
+/// registry blanks that client's token on both events (`revoke_all`, and the re-point arm of
+/// `register_lazy`), so the rest of the chain asks tokenless and lands `None`. For a sign-out that
+/// is the old outcome, with the requests now sent and refused where they used to be skipped. For
+/// a re-point it is a page with its hero but empty seasons, streams, extras, trailer and related,
+/// where the old chain went on to the new origin and finished.
 ///
 /// `None` is a server the registry held no client for when the job was admitted: there is nothing
 /// to ask, so `fetch` is not called and the answer is the failure, as it was when the first
