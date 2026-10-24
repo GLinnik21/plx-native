@@ -31,11 +31,12 @@
 //!
 //! **The chain, in order:** Inter (`appfont.ttf`) → the **bundled** `appfont-cjk.ttf` → the
 //! bundled monochrome emoji face `appfont-emoji.ttf` (see [`run_text`] for how its runs reach a
-//! renderer that cannot address a glyph above U+FFFF) → the television's own
-//! `/usr/share/fonts/DroidSansFallback.ttf`. The bundled face is the guarantee,
+//! renderer that cannot address a glyph above U+FFFF) → the bundled Arabic and Hebrew faces
+//! (`appfont-arabic.ttf`, `appfont-hebrew.ttf`, each with a bold cut; shaped, see below) → the
+//! television's own `/usr/share/fonts/DroidSansFallback.ttf`. The bundled face is the guarantee,
 //! because a submission is graded on whatever firmware the reviewer happens to have; the system
 //! face behind it is free insurance, measured present on webOS 4.10.0 (2026-08-23: 11172/11172
-//! Hangul, 20902 Han, Kana, and — see below — no Hebrew and no Arabic).
+//! Hangul, 20902 Han, Kana, and no Hebrew and no Arabic).
 //!
 //! **Baseline, not top.** Two faces have two line boxes, so compositing by the surface top would
 //! shift Latin down whenever a CJK glyph shared the line. Every run is placed so its baseline
@@ -65,13 +66,17 @@
 //! typographic compromise; an illegible ideograph is a defect, so bold runs use the regular
 //! fallback face.
 //!
-//! **RTL is out of scope.** No link of the chain has Hebrew or Arabic, and that is deliberate
-//! twice over: coverage is not support. Arabic needs joining and contextual shaping, Hebrew needs
-//! bidi reordering, and neither exists anywhere in this module — `TTF_RenderUTF8_Blended` in
-//! SDL2_ttf 2.0.x is a left-to-right advance loop with no shaper behind it. Adding a face without
-//! a shaper would turn tofu into fluent-looking WRONG text, which is harder to notice and worse to
-//! ship. `fontcov`'s `rtl_is_out_of_scope_and_stays_that_way` asserts the absence so this stays a
-//! decision rather than an oversight.
+//! **Right-to-left text is shaped, never handed to SDL2_ttf.** Coverage is not support: Arabic
+//! needs joining and contextual shaping, Hebrew needs bidi reordering, and `TTF_RenderUTF8_Blended`
+//! in SDL2_ttf 2.0.x is a left-to-right advance loop with no shaper behind it, so a face without a
+//! shaper would turn tofu into fluent-looking WRONG text. A line with any right-to-left character
+//! is therefore analysed by FriBidi and cut into runs in VISUAL order ([`layout`]); the Arabic and
+//! Hebrew runs are shaped by HarfBuzz and rasterised by FreeType inside the bundled libass-plx
+//! ([`crate::rtl`], the `plx_ass_text_*` surface of `include/ass.h`), and every other run is drawn
+//! by SDL2_ttf as before. If that library cannot be loaded the two links cover nothing, so such
+//! text is boxes again rather than unjoined, backwards letters. `fontcov`'s
+//! `only_the_shaped_faces_carry_hebrew_or_arabic` keeps every SDL2_ttf face free of both scripts,
+//! so the chain can never pick an unshaped face for them.
 use std::collections::hash_map::DefaultHasher;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};

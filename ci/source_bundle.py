@@ -21,6 +21,7 @@ ROOT_FILES = {'Makefile', 'LICENSE', 'LICENSING.md', 'THIRD-PARTY-NOTICES.md',
               'TRADEMARKS.md', '.gitignore', 'AGENTS.md', 'CLAUDE.md'}
 ROOT_DIRS = {'src', 'include', 'rust-modules', 'assets', 'ci', 'tools', 'docs', 'tests', 'licenses', 'locales', '.agents'}
 PKG_FILES = {'OFL.txt', 'appfont.ttf', 'appfont-bold.ttf', 'appfont-cjk.ttf', 'appfont-emoji.ttf', 'le-roots.pem',
+             'appfont-arabic.ttf', 'appfont-arabic-bold.ttf', 'appfont-hebrew.ttf', 'appfont-hebrew-bold.ttf',
              'appinfo.json', 'icon.png', 'icon160.png', 'icon320.png', 'icon400.png',
              'largeIcon.png', 'splash.png', 'telemetry.local.json.example'}
 # `tv-host`/`tv-mac` (no dot) are the per-user copies of the first two (tools/tv-config.sh,
