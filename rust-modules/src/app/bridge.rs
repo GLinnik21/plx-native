@@ -382,6 +382,9 @@ pub(crate) struct Bridge {
     /// The seat the per-profile cells (the player settings and trailer autoplay) were last restored for ([`SeatWatch`]).
     seat_watch: SeatWatch,
     consent_adapter: super::adapters::consent::ConsentAdapter,
+    /// Starts the jobs the stores emit (`adapters::stores`). Chosen when the Bridge is built: `Live`
+    /// in production, the `Held` runner in a host test.
+    store_runner: super::adapters::stores::StoreRunner,
     stores: plx_data::stores::Stores,
     mounter: AppMounter,
     /// This frame's publication of the playback session — see `AppViews::session`. Refreshed by
@@ -500,7 +503,7 @@ impl Bridge {
         let mut bridge = Self::with_publications_and_stores(&TTF, now_us, initial.session.clone(),
             super::adapters::session::SessionAdapter::controlled_home(mt, replay),
             initial.consent.clone(), super::adapters::consent::ConsentAdapter::live(),
-            StorePublications {
+            super::adapters::stores::StoreRunner::live(), StorePublications {
                 hubs, listing:plx_data::stores::browse::ListingSnapshot::empty(),
                 directory:Default::default(), section_hubs:plx_data::stores::browse::HubsSnapshot::empty(),
                 search:Default::default(),
@@ -521,7 +524,8 @@ impl Bridge {
         // `screens::settings`'s test module writes out beside its own measure.
         static TTF: plx_gfx::text::TtfMeasure = plx_gfx::text::TtfMeasure;
         Self::with_measure(&TTF, now_us, init, super::adapters::session::SessionAdapter::live(mt),
-            consent, super::adapters::consent::ConsentAdapter::live())
+            consent, super::adapters::consent::ConsentAdapter::live(),
+            super::adapters::stores::StoreRunner::live())
     }
 
     /// The same bridge over a measure that needs no fonts — the ONLY constructor a host test may
@@ -533,19 +537,21 @@ impl Bridge {
         Self::with_measure(&FIXTURE, now_us,
             plx_session::auth::SessionInit::captured(plx_plex::plex::session::Session::default()),
             super::adapters::session::SessionAdapter::fixture(), Default::default(),
-            super::adapters::consent::ConsentAdapter::fixture())
+            super::adapters::consent::ConsentAdapter::fixture(),
+            super::adapters::stores::StoreRunner::held())
     }
 
     fn with_measure(measure: &'static dyn Measure, now_us: fn() -> u64,
         init: plx_session::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter,
         consent: plx_telemetry::telemetry::consent::Consent,
-        consent_adapter: super::adapters::consent::ConsentAdapter) -> Self {
+        consent_adapter: super::adapters::consent::ConsentAdapter,
+        store_runner: super::adapters::stores::StoreRunner) -> Self {
         let stores = plx_data::stores::Stores::default();
         let mut directory = plx_data::stores::browse::DirectorySnapshot::default();
         let browse = stores.capture_browse(&mut directory);
         let search = stores.search_snapshot(browse.directory.view());
         Self::with_publications_and_stores(measure, now_us, init, session_adapter, consent,
-            consent_adapter,
+            consent_adapter, store_runner,
             StorePublications {
             hubs: stores.hubs.snapshot(), listing: browse.listing,
             directory: browse.directory, section_hubs: browse.section_hubs,
@@ -601,13 +607,14 @@ impl Bridge {
         consent_adapter: super::adapters::consent::ConsentAdapter,
         reads: StorePublications) -> Self {
         Self::with_publications_and_stores(measure, now_us, init, session_adapter, consent,
-            consent_adapter, reads, Default::default())
+            consent_adapter, super::adapters::stores::StoreRunner::held(), reads, Default::default())
     }
 
     fn with_publications_and_stores(measure: &'static dyn Measure, now_us: fn() -> u64,
         init: plx_session::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter,
         consent: plx_telemetry::telemetry::consent::Consent,
         consent_adapter: super::adapters::consent::ConsentAdapter,
+        store_runner: super::adapters::stores::StoreRunner,
         reads: StorePublications, stores: plx_data::stores::Stores) -> Self {
         Self {
             session_cache_generation: plx_plex::plex::session::visible_generation(),
@@ -620,6 +627,7 @@ impl Bridge {
             session_ready: None,
             seat_watch: SeatWatch::new(),
             consent_adapter,
+            store_runner,
             stores,
             mounter: AppMounter::default(),
             playback: plx_media::route::PlaybackSession::IDLE,
@@ -1221,8 +1229,43 @@ impl Bridge {
     /// phase becomes observable the moment the command returns (trap T2). Screen-issued Metadata
     /// commands that are not same-turn boundaries still cross `AppFx::Store` like every other
     /// store's; see `app/content.rs`'s `reconcile_details`.
+    ///
+    /// **Every Metadata command that can emit a job reaches the store through here**, the dispatcher's
+    /// `StoreCmd::Metadata` arm included: the jobs the step emitted (a `RequestDetail`'s fetch) are
+    /// started before this returns, in the same call, so the tape's admission record follows the
+    /// cancellation record the same step wrote with nothing between them. A direct
+    /// `metadata_mut().run(..)` of such a command would leave its job in the outbox, owed to nobody:
+    /// [`Bridge::metadata_pump_detail`] backstops one that only holds the store (`describe_movie`),
+    /// and the test rig fails a frame that ends with one still there.
     pub(crate) fn metadata_run(&mut self, cmd: plx_data::stores::metadata::MetadataCmd) -> bool {
-        self.stores.metadata_run(cmd)
+        let changed = self.stores.metadata_run(cmd);
+        self.start_store_jobs();
+        changed
+    }
+
+    /// Hand every job the stores have emitted to this Bridge's runner (`adapters::stores`).
+    fn start_store_jobs(&mut self) {
+        let jobs = self.stores.metadata.take_jobs();
+        for job in jobs {
+            self.store_runner.start(job);
+        }
+    }
+
+    /// TEST ONLY: run every job the test runner is holding, on this thread, through the production
+    /// completion path; returns how many ran. Their landings are queued for the next pump.
+    #[cfg(test)]
+    pub(crate) fn run_held_store_jobs_for_test(&mut self) -> usize {
+        self.store_runner.run_held()
+    }
+
+    /// TEST ONLY: no store holds an emitted job nobody started. A frame's end is the moment to ask:
+    /// the dispatcher starts the jobs of the commands it delivers, and the detail pump starts any a
+    /// caller holding only the store left, so a job still here is a sender that bypassed
+    /// [`Bridge::metadata_run`], whose request would never settle.
+    #[cfg(test)]
+    pub(crate) fn assert_no_store_jobs_left_for_test(&self) {
+        assert!(!self.stores.metadata.has_jobs(),
+            "a store job was emitted and never started: its sender bypassed Bridge::metadata_run");
     }
 
     pub(crate) fn metadata_view(&self) -> plx_data::metadata::MetadataView<'_> {
@@ -1441,6 +1484,9 @@ impl Bridge {
 
     /// The `MetadataStore`'s own async detail landing — `app/run.rs`'s route-unconditional pump.
     pub(crate) fn metadata_pump_detail(&mut self) -> bool {
+        // The backstop: a caller that holds only the store (`playback::describe_movie`) cannot start
+        // the job its request emitted, and the pump below would block on a request nothing runs.
+        self.start_store_jobs();
         self.stores.metadata.pump_detail_with_gate(&self.stores.landgate)
     }
 
@@ -1737,7 +1783,7 @@ impl Bridge {
                 return Handled::Yes;
             }
             AppMsg::Store(StoreCmd::Metadata(command)) => {
-                self.stores.metadata_run(command.clone());
+                self.metadata_run(command.clone());
                 return Handled::Yes;
             }
             _ => {}

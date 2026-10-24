@@ -3623,6 +3623,7 @@ mod lifecycle_regression_tests {
             },
             vec![],
         );
+        app.bridge.assert_no_store_jobs_left_for_test();
     }
 
     fn event(app: &mut App, fr: &mut Frame, et: u32) {
@@ -4723,6 +4724,7 @@ mod lifecycle_regression_tests {
     /// (`fr.present == false`) `present_and_swap` takes only its `else` branch, so this is the
     /// whole frame the loop runs between WILL background and DID foreground.
     fn backgrounded_iteration(app: &mut App, t: &mut u32) -> bool {
+        app.bridge.assert_no_store_jobs_left_for_test();
         *t += 16;
         let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
         fr.now = *t;
@@ -4833,7 +4835,7 @@ mod lifecycle_regression_tests {
         event(&mut rig.app, &mut fr, 0x106);
         for _ in 0..1500 {
             // A test build parks a detail fetch until the test runs it, off the frame.
-            rig.app.bridge.metadata_mut().adapter_ref().run_held_detail_fetches_for_test();
+            rig.app.bridge.run_held_store_jobs_for_test();
             step(&mut rig.app, &mut t, vec![]);
             if top(&rig.app).as_ref() == Some(&linked) { break; }
             std::thread::sleep(Duration::from_millis(2));
@@ -4874,7 +4876,7 @@ mod lifecycle_regression_tests {
         let linked = AppArg::Content(ContentArg::Detail { sid: rig.sid, rk: "777".into() });
         for _ in 0..1500 {
             // A test build parks a detail fetch until the test runs it, off the frame.
-            rig.app.bridge.metadata_mut().adapter_ref().run_held_detail_fetches_for_test();
+            rig.app.bridge.run_held_store_jobs_for_test();
             step(&mut rig.app, t, vec![]);
             if rig.app.pages.nav.tabs.stack.entries.last().map(|e| &e.arg) == Some(&linked) { return true; }
             std::thread::sleep(Duration::from_millis(2));
@@ -5754,6 +5756,9 @@ mod lifecycle_regression_tests {
     use plx_ui::screen::ScreenArg;
 
     fn step(app: &mut App, t: &mut u32, inputs: Vec<plx_machine::machine::InputEvent<u32>>) {
+        // Nothing may sit in a store's job outbox between frames: a test that sent its request
+        // around `Bridge::metadata_run` would otherwise be rescued by the detail pump's backstop.
+        app.bridge.assert_no_store_jobs_left_for_test();
         *t += 16;
         app.inputs.extend(inputs);
         let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
@@ -5769,6 +5774,7 @@ mod lifecycle_regression_tests {
         content_requests(app, &fr);
         loop_requests(app);
         unsafe { update(app, &mut fr); }
+        app.bridge.assert_no_store_jobs_left_for_test();
     }
 
     /// The page stack on the transition `boot.rs` builds it with. `app()`'s dispatcher commits
@@ -6135,7 +6141,7 @@ mod lifecycle_regression_tests {
         settle(&mut rig.app, &mut t);
         super::super::bridge::open_detail(&mut rig.app.pages, &mut rig.app.bridge, rig.sid, "100", None, None);
         settle(&mut rig.app, &mut t);
-        rig.app.bridge.metadata_mut().adapter_ref().run_held_detail_fetches_for_test();
+        rig.app.bridge.run_held_store_jobs_for_test();
         rig.app.bridge.metadata_mut().pump_detail();
         settle(&mut rig.app, &mut t);
         let watched = |rig: &mut Rig| rig.app.bridge.metadata_view().current()
@@ -6167,7 +6173,7 @@ mod lifecycle_regression_tests {
         // episode's answer names), each a worker round trip: wait for the re-read, not for frames.
         poll_until("the episode strip still shows the read the page opened with", || {
             step(&mut rig.app, &mut t, vec![]);
-            rig.app.bridge.metadata_mut().adapter_ref().run_held_detail_fetches_for_test();
+            rig.app.bridge.run_held_store_jobs_for_test();
             rig.app.bridge.metadata_mut().pump_detail();
             watched(&mut rig) == Some(("1".into(), true))
         });
@@ -6219,7 +6225,7 @@ mod lifecycle_regression_tests {
 
     /// Run the held detail fetches (tests do not race a worker) and install what they brought.
     fn land_detail_reads(rig: &mut Rig, t: &mut u32) {
-        rig.app.bridge.metadata_mut().adapter_ref().run_held_detail_fetches_for_test();
+        rig.app.bridge.run_held_store_jobs_for_test();
         rig.app.bridge.metadata_mut().pump_detail();
         settle(&mut rig.app, t);
     }

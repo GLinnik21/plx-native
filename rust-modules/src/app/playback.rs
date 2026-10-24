@@ -987,7 +987,7 @@ pub(crate) fn play_up_next(
         .map(|p| p.sid)
         .unwrap_or_else(plx_plex::plex::current_server);
     bridge.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::RetirePlaying);
-    bridge.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::RequestDetail { sid: sid, rk: rk.to_string() });
+    bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::RequestDetail { sid: sid, rk: rk.to_string() });
     start_playback(
         ps,
         pa,
