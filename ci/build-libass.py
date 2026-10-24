@@ -308,9 +308,13 @@ def build_locked(host, darwin, target, prefix, work, sources):
     output = prefix / 'lib' / name
     objects = [prefix / 'lib' / n for n in static_names]
     wrapper_flags = [f for f in flags if f != '-fvisibility=hidden']
+    # src/ass_text.c is the UI text surface (ABI 4); it includes <ft2build.h>, whose own includes
+    # are relative to the freetype2 directory.
     command = [cc, *wrapper_flags, '-I' + str(ROOT / 'include'), '-I' + str(prefix / 'include'),
+               '-I' + str(prefix / 'include/freetype2'),
                '-I' + str(prefix / 'include/plx-libass-private'),
-               str(ROOT / 'src/ass.c'), str(ROOT / 'src/ass_fonts.c'), *map(str, objects), '-lm']
+               str(ROOT / 'src/ass.c'), str(ROOT / 'src/ass_fonts.c'), str(ROOT / 'src/ass_text.c'),
+               *map(str, objects), '-lm']
     if darwin:
         symbols = sorted(set(re.findall(r'\b(plx_ass_\w+)\s*\(', (ROOT / 'include/ass.h').read_text())))
         if not symbols:

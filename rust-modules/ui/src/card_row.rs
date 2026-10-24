@@ -1550,11 +1550,23 @@ fn lead_band(x: f32, left: f32) -> Option<(f32, f32)> {
     (past > LEAD_REST_EPS).then(|| (past, past + past.min(LABEL_EDGE_FADE)))
 }
 
+/// **The mirror of [`lead_band`] for a right-to-left run**, whose head is its RIGHT end: the
+/// dissolve over the part of the run that is `x + run_w - right` px past the window's right edge,
+/// as `(from, to)` px from the string's own left edge, glyph alpha 1 at `from` and 0 at the
+/// window's edge. `None` at rest, where the run's first words sit on that edge and draw crisp.
+/// It grows with the travel for the same reason the leading band does.
+fn head_band_right(x: f32, run_w: f32, right: f32) -> Option<(f32, f32)> {
+    let past = x + run_w - right;
+    (past > LEAD_REST_EPS).then(|| (right - x - past.min(LABEL_EDGE_FADE), right - x))
+}
+
 /// One line of a label block at `x`, plain, or — given the window it glides inside, `(left, right)`
 /// — dissolving over the window's first [`LABEL_EDGE_FADE`] px for the part of a run that has
 /// glided past the left edge ([`lead_band`]) and over its last [`LABEL_EDGE_FADE`] px for the part
 /// that reaches the right. `run_w` is the line's drawn width; a run clear of both edges takes the
-/// plain program.
+/// plain program. A right-to-left run (`rtl`) is the mirror image: its head is at the right, so
+/// the band that grows with the travel is the right one ([`head_band_right`]), and its cut tail
+/// dissolves over the window's first [`LABEL_EDGE_FADE`] px at the left.
 fn block_text(
     p: Painter,
     text: *const c_char,
@@ -1565,12 +1577,20 @@ fn block_text(
     bold: std::os::raw::c_int,
     run_w: f32,
     window: Option<(f32, f32)>,
+    rtl: bool,
 ) {
     let (lead, trail) = window.map_or((None, None), |(left, right)| {
-        (
-            lead_band(x, left),
-            (x + run_w > right - LABEL_EDGE_FADE).then_some((right - LABEL_EDGE_FADE - x, right - x)),
-        )
+        if rtl {
+            (
+                (x < left + LABEL_EDGE_FADE).then_some((left - x, left + LABEL_EDGE_FADE - x)),
+                head_band_right(x, run_w, right),
+            )
+        } else {
+            (
+                lead_band(x, left),
+                (x + run_w > right - LABEL_EDGE_FADE).then_some((right - LABEL_EDGE_FADE - x, right - x)),
+            )
+        }
     });
     if lead.is_none() && trail.is_none() {
         p.text(text, x, y, sz, ink, 0, bold);
@@ -1669,6 +1689,8 @@ fn title_marquee(
         draw_play_mark(p, at.x, y, sz, bold);
     }
     let text_x0 = at.x + lead;
+    // an Arabic or Hebrew title glides mirrored, from its first words at the window's right edge
+    let rtl = !text.is_null() && plx_gfx::text::is_rtl_paragraph(&unsafe { std::ffi::CStr::from_ptr(text) }.to_string_lossy());
     TITLE_CLOCK.with(|clock| {
         MARQUEE.glide_in(
             clock,
@@ -1677,13 +1699,14 @@ fn title_marquee(
             w,
             block.cycle_w,
             Rect::new(text_x0, y - MARQUEE_AIR, budget, UNDER_LINE_H + 2.0 * MARQUEE_AIR),
+            rtl,
             |dx| {
                 let window = fade.then_some((text_x0, text_x0 + budget));
                 if shadowed {
                     block_text(p, text, text_x0 + dx, y + crate::caption_policy::CAPTION_SHADOW_DY, sz,
-                        crate::caption_policy::CAPTION_SHADOW, bold, w, window);
+                        crate::caption_policy::CAPTION_SHADOW, bold, w, window, rtl);
                 }
-                block_text(p, text, text_x0 + dx, y, sz, theme::TEXT_PRIMARY, bold, w, window);
+                block_text(p, text, text_x0 + dx, y, sz, theme::TEXT_PRIMARY, bold, w, window, rtl);
             },
         )
     });
@@ -1803,6 +1826,7 @@ fn draw_label_block(
                 draw_play_mark(p, at.x, y, csz, 0);
             }
             let x0 = at.x + caption_lead;
+            let caption_rtl = plx_gfx::text::is_rtl_paragraph(s);
             TITLE_CLOCK.with(|clock| {
                 MARQUEE.glide_in(
                     clock,
@@ -1811,13 +1835,15 @@ fn draw_label_block(
                     caption_w,
                     block.cycle_w,
                     Rect::new(x0, y - MARQUEE_AIR, (at.w - caption_lead).max(0.0), UNDER_CAPTION_H + 2.0 * MARQUEE_AIR),
+                    caption_rtl,
                     |dx| {
                         let window = label.within_tile.then_some((x0, at.x + at.w));
                         if label.shadowed {
                             block_text(p, tc.as_ptr(), x0 + dx, y + crate::caption_policy::CAPTION_SHADOW_DY, csz,
-                                crate::caption_policy::CAPTION_SHADOW, 0, caption_w, window);
+                                crate::caption_policy::CAPTION_SHADOW, 0, caption_w, window, caption_rtl);
                         }
-                        block_text(p, tc.as_ptr(), x0 + dx, y, csz, theme::CAPTION_DETAIL_INK, 0, caption_w, window);
+                        block_text(p, tc.as_ptr(), x0 + dx, y, csz, theme::CAPTION_DETAIL_INK, 0, caption_w, window,
+                            caption_rtl);
                     },
                 )
             });
@@ -1909,6 +1935,7 @@ pub fn draw_credit_label(
                 run_w,
                 block.cycle_w,
                 Rect::new(frame.x, frame.y - MARQUEE_AIR, frame.w, frame.h + 2.0 * MARQUEE_AIR),
+                plx_gfx::text::is_rtl_paragraph(text),
                 |dx| {
                     label.draw(p, Rect::new(frame.x + dx, frame.y, frame.w, frame.h));
                 },
@@ -3359,5 +3386,127 @@ mod tests {
         let _ = plx_machine::idle::take_local_damage();
         assert_eq!(credit_runs("Ana", "Director", true).len(), 2);
         assert_eq!(plx_machine::idle::take_local_damage(), 0, "a fitting label never reports");
+    }
+
+    // ---- right-to-left lines glide mirrored ---------------------------------------------------
+
+    const LONG_ARABIC_TITLE: &str = "المغامرات الطويلة جدا لألكسندرا وولكوفيتش هارينغتون سميث وأطبائها الكثيرين في البيت الملكي";
+    const LONG_ARABIC_CAPTION: &str = "الدكتورة ألكسندرا وولكوفيتش هارينغتون سميث، كبيرة الأطباء في البيت الملكي";
+
+    /// `text`'s run and its follower in `runs`, as (follower, run), and the clip they glide in.
+    fn glide_pair(runs: &[crate::draw_census::Run], text: &str) -> (f32, f32, Rect) {
+        let mut xs: Vec<&crate::draw_census::Run> = runs.iter().filter(|r| r.text == text).collect();
+        assert_eq!(xs.len(), 2, "{text:?} glides as a run and its follower: {runs:?}");
+        xs.sort_by(|a, b| a.at.x.total_cmp(&b.at.x));
+        (xs[0].at.x, xs[1].at.x, xs[1].clip.expect("a gliding run is clipped to its window"))
+    }
+
+    /// The mirror image, checked line by line: at rest the run's RIGHT edge is on its window's (the
+    /// first words show), its follower waits one gap to its LEFT; 500 ms into the glide it has
+    /// moved 20 px RIGHT (40 px/s).
+    fn assert_glides_mirrored(rest: &[crate::draw_census::Run], moved: &[crate::draw_census::Run], text: &str, sz: i32) {
+        let w = measure_w(text, sz);
+        let (follower, run, clip) = glide_pair(rest, text);
+        assert!((run + w - (clip.x + clip.w)).abs() < 0.01, "{text:?} rests flush right: {run} + {w} vs {clip:?}");
+        assert!((follower + w + marquee::GAP - run).abs() < 0.01, "the follower one gap to the left");
+        let (_, later, _) = glide_pair(moved, text);
+        assert!((later - run - 20.0).abs() < 0.01, "{text:?} glides right: {run} -> {later}");
+    }
+
+    /// **An Arabic title reads from its right edge**, so a focused one that overflows glides as the
+    /// mirror image of a Latin one, and its caption with it.
+    #[test]
+    fn a_right_to_left_title_and_caption_rest_on_their_first_words_and_glide_right() {
+        let _serial = plx_base::testlock::serial();
+        let sty = RowStyle::HOME;
+        let rect = Rect::new(700.0, 300.0, sty.w, sty.h);
+        let label = TileLabel::titled(LONG_ARABIC_TITLE, LONG_ARABIC_CAPTION);
+        let draw = || crate::draw_census::capture_runs(|| {
+            draw_focused(Painter::recording(), Art::Poster(None), rect, 1.0, &sty, None, &label,
+                &crate::fixture::FixtureMeasure);
+        });
+        TITLE_CLOCK.with(|c| c.release());
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        let rest = draw();
+        plx_machine::idle::frame_begin(MARQUEE.hold_ms / 1000.0);
+        let _ = draw();
+        plx_machine::idle::frame_begin(0.5);
+        let moved = draw();
+        assert_glides_mirrored(&rest, &moved, LONG_ARABIC_TITLE, theme::size::LABEL);
+        assert_glides_mirrored(&rest, &moved, LONG_ARABIC_CAPTION, theme::size::CAPTION);
+        TITLE_CLOCK.with(|c| c.release());
+    }
+
+    /// And a headshot's Arabic name and role.
+    #[test]
+    fn a_right_to_left_credit_label_glides_mirrored() {
+        let _serial = plx_base::testlock::serial();
+        let at = Rect::new(500.0, 100.0, 222.0, 60.0);
+        let draw = || crate::draw_census::capture_runs(|| {
+            CREDIT_CLOCK.with(|c| draw_credit_label(Painter::recording(), c, at, LONG_ARABIC_TITLE,
+                LONG_ARABIC_CAPTION, true, &crate::fixture::FixtureMeasure));
+        });
+        CREDIT_CLOCK.with(|c| c.release());
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        let rest = draw();
+        plx_machine::idle::frame_begin(MARQUEE.hold_ms / 1000.0);
+        let _ = draw();
+        plx_machine::idle::frame_begin(0.5);
+        let moved = draw();
+        assert_glides_mirrored(&rest, &moved, LONG_ARABIC_TITLE, theme::size::LABEL);
+        assert_glides_mirrored(&rest, &moved, LONG_ARABIC_CAPTION, theme::size::CAPTION);
+        CREDIT_CLOCK.with(|c| c.release());
+    }
+
+    /// **A right-to-left line dissolves where it is cut, the mirror of a Latin one.** At rest an
+    /// overflowing Arabic line sits flush right on its first words, so it draws crisp at the
+    /// window's right edge and dissolves into the LEFT one, where its last words are cut.
+    #[test]
+    fn a_right_to_left_within_tile_line_at_rest_is_crisp_at_its_head_and_dissolves_at_its_left() {
+        let _serial = plx_base::testlock::serial();
+        TITLE_CLOCK.with(|c| c.release());
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        let runs = within_tile_caption_runs("Alien", LONG_ARABIC_CAPTION);
+        assert_eq!(runs.len(), 2, "a run and its follower: {runs:?}");
+        let run = &runs[1];
+        let (left, right) = window_of(run);
+        let w = measure_w(LONG_ARABIC_CAPTION, theme::size::CAPTION);
+        assert!(near(run.at.x + w, right), "at rest the first words sit on the window's right edge: {run:?}");
+        assert!(run.fade.is_none(), "the head draws crisp at the window's right edge at rest: {run:?}");
+        let (from, to) = run.lead.expect("the cut tail dissolves into the window's left edge");
+        assert!(near(from, left) && near(to, left + LABEL_EDGE_FADE),
+            "the left band covers [{left}, {}], got {from}..{to}", left + LABEL_EDGE_FADE);
+        TITLE_CLOCK.with(|c| c.release());
+    }
+
+    /// Once it glides right, the head leaves through the window's right edge, and that band grows
+    /// with the travel up to the full [`LABEL_EDGE_FADE`] (the leading band's rule, mirrored), so
+    /// the first glide frame is the rest picture.
+    #[test]
+    fn a_gliding_right_to_left_line_dissolves_out_at_the_right_edge_growing_with_the_travel() {
+        let _serial = plx_base::testlock::serial();
+        TITLE_CLOCK.with(|c| c.release());
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        let _ = within_tile_caption_runs("Alien", LONG_ARABIC_CAPTION);
+        let w = measure_w(LONG_ARABIC_CAPTION, theme::size::CAPTION);
+        // a quarter second into the glide: 10 px travelled at 40 px/s
+        plx_machine::idle::frame_begin((MARQUEE.hold_ms + 250.0) / 1000.0);
+        let runs = within_tile_caption_runs("Alien", LONG_ARABIC_CAPTION);
+        let run = &runs[1];
+        let (_, right) = window_of(run);
+        let travelled = run.at.x + w - right;
+        assert!(travelled > 5.0 && travelled < LABEL_EDGE_FADE, "10 px into the glide: {travelled}");
+        let (from, to) = run.fade.expect("a head past the right edge dissolves out there");
+        assert!(near(from, right - travelled) && near(to, right),
+            "the band is as wide as the travel ({travelled} px to {right}): {from}..{to}");
+        // two seconds on, past the full band
+        plx_machine::idle::frame_begin(1.75);
+        let runs = within_tile_caption_runs("Alien", LONG_ARABIC_CAPTION);
+        let run = &runs[1];
+        let (_, right) = window_of(run);
+        assert!(run.at.x + w - right > LABEL_EDGE_FADE, "well into the glide: {run:?}");
+        let (from, to) = run.fade.expect("the head still dissolves out at the right edge");
+        assert!(near(from, right - LABEL_EDGE_FADE) && near(to, right), "the full band: {from}..{to}");
+        TITLE_CLOCK.with(|c| c.release());
     }
 }

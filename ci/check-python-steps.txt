@@ -60,6 +60,8 @@ python3 -W ignore tools/test_tv_sched_trace.py
 python3 tools/test_check_parallel.py
 python3 ci/test_tv_session.py
 python3 ci/test_source_bundle.py
+python3 ci/test_renderer_sources.py
+python3 ci/test_shipped_faces.py
 # The restructure's structure gates (spec §15.2): greps with counted allowlists under
 # ci/allow/. tests/test_harness.py runs the same script; this line is the one a reader sees.
 ci/check-deps.sh

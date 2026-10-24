@@ -1807,9 +1807,11 @@ impl TableView {
                     // scissored to the label's column on the row's band; nests inside the table's
                     // own frame clip and restores it on drop
                     let _clip = crate::screen::ClipScope::open_in(p, Rect::new(label_x, sy, text_w, h));
-                    p.text(cs.as_ptr(), label_x - off, y, msz, base, 0, mbold);
-                    let follower = label_x - off + full_w + crate::marquee::GAP;
-                    p.text(cs.as_ptr(), follower, y, msz, base, 0, mbold);
+                    // the shared placement rule: an Arabic or Hebrew label glides mirrored
+                    let rtl = plx_gfx::text::is_rtl_paragraph(&row.label);
+                    let (run, follower) = crate::marquee::placements(full_w, text_w, off, rtl);
+                    p.text(cs.as_ptr(), label_x + run, y, msz, base, 0, mbold);
+                    p.text(cs.as_ptr(), label_x + follower, y, msz, base, 0, mbold);
                 }
             } else {
                 if focused {
@@ -2544,6 +2546,44 @@ mod tests {
         let x1 = gliding.iter().copied().fold(f32::MAX, f32::min);
         assert!(x1 < x0, "the run has moved left: {x0} -> {x1}");
         assert!(plx_machine::idle::take_local_damage() > 0, "a gliding frame reports");
+    }
+
+    /// **An Arabic release name scrolls mirrored**: it rests with its right edge (its first
+    /// words) on the column's, its follower one gap to the left, and glides right.
+    #[test]
+    fn a_focused_right_to_left_label_rests_on_its_first_words_and_scrolls_right() {
+        let _serial = plx_base::testlock::serial();
+        use plx_machine::machine::Measure as _;
+        let frame = Rect::new(0.0, 0.0, 500.0, 400.0);
+        let long = "مسلسل الهيبة الموسم الثالث الحلقة الأولى ترجمة عربية كاملة بجودة عالية";
+        let mut t = TableView::new();
+        t.set_sections(vec![Section::new("S").row(Row::new(long).server_label()).row(Row::new("Off"))], 0, false);
+        let draw = || {
+            let mut runs: Vec<crate::draw_census::Run> = crate::draw_census::capture_runs(|| {
+                t.draw(crate::Painter::recording(), frame, &crate::fixture::FixtureMeasure)
+            })
+            .into_iter()
+            .filter(|r| r.text == long)
+            .collect();
+            runs.sort_by(|a, b| a.at.x.total_cmp(&b.at.x));
+            runs
+        };
+        // the label's column: its left edge is where a Latin label rests, its width the row's
+        ROW_MARQUEE.with(|c| c.release());
+        plx_machine::idle::frame_begin(1.0 / 60.0);
+        let col_x = row_text_xs(&marquee_table(0), frame, 0).into_iter().fold(f32::MAX, f32::min);
+        let col_w = t.label_width(&Row::new(long).server_label(), frame.w, &crate::fixture::FixtureMeasure);
+        ROW_MARQUEE.with(|c| c.release());
+        let rest = draw();
+        assert_eq!(rest.len(), 2, "a run and its follower: {rest:?}");
+        let w = crate::fixture::FixtureMeasure.width_str(long, rest[1].size, rest[1].bold);
+        assert!(w > col_w, "the fixture label overflows its column");
+        assert!((rest[1].at.x + w - (col_x + col_w)).abs() < 0.01, "flush right: {rest:?} w {w} column {col_x}+{col_w}");
+        assert!((rest[0].at.x + w + crate::marquee::GAP - rest[1].at.x).abs() < 0.01, "follower on the left");
+        plx_machine::idle::frame_begin((crate::marquee::ROW.hold_ms + 500.0) / 1000.0);
+        let moved = draw();
+        assert!((moved[1].at.x - rest[1].at.x - 20.0).abs() < 0.01, "it glides right: {rest:?} -> {moved:?}");
+        ROW_MARQUEE.with(|c| c.release());
     }
 
     /// **And nothing else moves**: a focused label that fits, and an overflowing label on a row
