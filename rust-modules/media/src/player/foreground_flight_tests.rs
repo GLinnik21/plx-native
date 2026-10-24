@@ -77,7 +77,10 @@ impl Rig {
         claim_hold::clear();
         let pa = adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
         let mut lifecycle = ForegroundLifecycle::<u64>::IDLE;
-        lifecycle.suspend(RESUME_NS, ForegroundClock::Paused);
+        lifecycle.step(
+            &ForegroundEvent::Park { saved_ns: RESUME_NS, viewer_paused: true },
+            &mut Vec::new(),
+        );
         let actuator = RigActuator { loads: Vec::new() };
         Rig { ps, pa, flight, lifecycle, actuator }
     }
@@ -158,7 +161,7 @@ fn a_foreground_resume_frame_makes_no_pms_call_and_the_worker_lands_the_load_at_
 
     assert_eq!(rig.frames_until_settled(), ForegroundActivation::Launched);
     assert_eq!(rig.flight.decisions(), 1, "exactly one /decision for the restore");
-    assert!(matches!(rig.lifecycle.state, ForegroundState::LoadPending { attempt: 7, resume_ns: RESUME_NS, .. }));
+    assert!(matches!(rig.lifecycle.state(), ForegroundState::LoadPending { attempt: 7, resume_ns: RESUME_NS, .. }));
     let [(disp_base, url)] = rig.actuator.loads.as_slice() else { panic!("{:?}", rig.actuator.loads) };
     assert_eq!(*disp_base, RESUME_NS, "the Load starts at the resumed offset");
     assert!(url.contains("offset=1800"), "{url}");
@@ -172,11 +175,11 @@ fn a_foreground_resume_frame_makes_no_pms_call_and_the_worker_lands_the_load_at_
 #[test]
 fn a_refused_foreground_rebuild_rearms_the_snapshot_and_hangs_nothing() {
     let mut rig = Rig::new(40);
-    let suspended = rig.lifecycle.state;
+    let suspended = rig.lifecycle.state();
     rig.flight.refuse_decisions(1);
     assert_eq!(rig.did_foreground(), ForegroundActivation::Handled);
     assert_eq!(rig.frames_until_settled(), ForegroundActivation::Handled);
-    assert_eq!(rig.lifecycle.state, suspended, "the refusal re-arms the exact suspended snapshot");
+    assert_eq!(rig.lifecycle.state(), suspended, "the refusal re-arms the exact suspended snapshot");
     assert!(rig.actuator.loads.is_empty(), "a refused rebuild starts no Load");
     assert_eq!(crate::route::transcode_session(&rig.ps), "rig-1");
     assert_ne!(state(&rig.ps), PlaybackState::Resolving);
@@ -194,12 +197,12 @@ fn a_refused_foreground_rebuild_rearms_the_snapshot_and_hangs_nothing() {
 #[test]
 fn a_second_background_during_the_foreground_flight_parks_the_restore_and_stops_only_its_replacement() {
     let mut rig = Rig::new(150);
-    let suspended = rig.lifecycle.state;
+    let suspended = rig.lifecycle.state();
     assert_eq!(rig.did_foreground(), ForegroundActivation::Handled);
     rig.flight.wait_for("the restore's request", |f| f.decisions() == 1);
 
     assert!(park_pending_foreground_flight(&mut rig.lifecycle, &mut rig.ps, &mut rig.pa));
-    assert_eq!(rig.lifecycle.state, suspended);
+    assert_eq!(rig.lifecycle.state(), suspended);
     assert!(!crate::route::engineless_flight_outstanding());
     assert!(crate::route::control_phase_label().contains("Stable"), "{}", crate::route::control_phase_label());
     // The worker lands after the park: the loop's per-frame reap finds it stale.
@@ -230,7 +233,7 @@ fn a_teardown_during_the_foreground_flight_releases_the_machine_and_stops_only_i
     rig.flight.wait_for("the restore's request", |f| f.decisions() == 1);
     stop_bufferfeed(&mut rig.ps, &mut rig.pa);
     assert_eq!(rig.poll_frame(), ForegroundActivation::Handled);
-    assert_eq!(rig.lifecycle.state, ForegroundState::Idle, "a flight that ended releases the machine");
+    assert_eq!(rig.lifecycle.state(), ForegroundState::Idle, "a flight that ended releases the machine");
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while rig.replacement_stops() == 0 {
         assert!(std::time::Instant::now() < deadline, "the discarded replacement was never stopped");
@@ -275,7 +278,7 @@ fn a_foreground_restore_after_a_suspend_inside_an_original_trial_flies_and_keeps
     FlightRig::suspend_in_original_trial(&mut rig.ps);
     let armed = rig.flight.decisions();
     let answered = rig.flight.answered();
-    let suspended = rig.lifecycle.state;
+    let suspended = rig.lifecycle.state();
 
     rig.flight.hold_answers();
     assert_eq!(rig.did_foreground(), ForegroundActivation::Handled);
@@ -283,7 +286,7 @@ fn a_foreground_restore_after_a_suspend_inside_an_original_trial_flies_and_keeps
         rig.lifecycle.flight_pending(),
         "the restore of a session suspended mid-trial was refused ({}): state {:?} instead of {:?}",
         crate::route::control_phase_label(),
-        rig.lifecycle.state,
+        rig.lifecycle.state(),
         suspended,
     );
     assert_eq!(rig.flight.answered(), answered, "the DID frame waited for a PMS answer on the frame thread");
