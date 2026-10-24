@@ -8257,6 +8257,14 @@ mod tests {
         }
     }
 
+    /// The programs the card's pad exit lives in: (name, preprocessor defines, the one closing
+    /// `gl_FragColor` expression the exit's identity was worked out for).
+    const PAD_EXIT_PROGRAMS: [(&str, &[&str], &str); 3] = [
+        ("plain", &[], "gl_FragColor = vec4(tex*m, ta*m + sh);"),
+        ("still", &["PLX_STILL_GROUND"], "gl_FragColor = stillOver(tex*m, ta*m + sh, m, ramp);"),
+        ("focus", &["PLX_FOCUS"], "gl_FragColor = vec4(tex*m, ta*m + sh);"),
+    ];
+
     /// **A card fragment outside the body leaves `fs_img.frag` as the shadow alone, before any of the
     /// card's own work.** `m = 1.0 - smoothstep(-1.0, 1.0, d)` is exactly 0.0 from `d >= 1.0` (the
     /// GLSL `smoothstep` clamps to exactly 1.0 at its top edge), so the closing `vec4(tex*m, ta*m +
@@ -8275,12 +8283,7 @@ mod tests {
         const CARD_WORK: [&str; 11] = [
             "tex", "ta", "glow", "gloss", "glareTop", "rim", "smoothstep", "stillOver", "texture2D", "u_rimcol", "u_tint",
         ];
-        let programs: [(&str, &[&str], &str); 3] = [
-            ("plain", &[], "gl_FragColor = vec4(tex*m, ta*m + sh);"),
-            ("still", &["PLX_STILL_GROUND"], "gl_FragColor = stillOver(tex*m, ta*m + sh, m, ramp);"),
-            ("focus", &["PLX_FOCUS"], "gl_FragColor = vec4(tex*m, ta*m + sh);"),
-        ];
-        for (name, defined, closing) in programs {
+        for (name, defined, closing) in PAD_EXIT_PROGRAMS {
             let fs = preprocess(FS_IMG.to_str().unwrap(), defined);
             let at = |needle: &str| fs.find(needle).unwrap_or_else(|| panic!("{name}: `{needle}` is gone from the shader"));
             let open = at("if (d >= 1.0) {");
@@ -8325,12 +8328,32 @@ mod tests {
                 assert!(exit.contains(line), "{name}: the exit lost `{line}`");
             }
         }
-        // The focus program keeps its cheaper first case: a fragment whose shadow's box proxy has
-        // already cleared the falloff writes plain zero without the shadow's `length()`.
+        // The focus program keeps its cheaper first case INSIDE the pad exit: a fragment whose
+        // shadow's box proxy has already cleared the falloff writes plain zero without the shadow's
+        // `length()`. The guard must be nested in `if (d >= 1.0)` - the proxy is only a lower bound on
+        // the shadow's distance, and it is `d >= 1.0` that makes zero equal to the body's output; hoisted
+        // out, it would zero fragments the body still paints - and it must come before the shadow's own
+        // `length()`, which is the cost it exists to skip.
         let focus = preprocess(FS_IMG.to_str().unwrap(), &["PLX_FOCUS"]);
-        let box_clear = focus.find("if ((0.5 - dShadowBox * u_shinv) <= 0.0) {").expect("the box-proxy exit");
-        assert!(focus[box_clear..].contains("gl_FragColor = vec4(0.0);"));
-        assert!(box_clear < focus.find("length(qs)").unwrap(), "the box-proxy exit must precede the shadow's `length()`");
+        let box_guard = "if ((0.5 - dShadowBox * u_shinv) <= 0.0) {";
+        let zero_write = "gl_FragColor = vec4(0.0);";
+        assert_eq!(focus.matches(box_guard).count(), 1, "focus: exactly one box-proxy guard");
+        assert_eq!(focus.matches(zero_write).count(), 1, "focus: exactly one plain-zero write");
+        let open = focus.find("if (d >= 1.0) {").expect("focus: the pad exit");
+        let close = open + focus[open..].find("\n  }\n").expect("the pad exit closes at the indent of main's body");
+        let exit = &focus[open..close];
+        let guard_at = exit
+            .find(box_guard)
+            .unwrap_or_else(|| panic!("focus: the box-proxy guard is not inside the `if (d >= 1.0)` exit:\n{exit}"));
+        let guard = &exit[guard_at..guard_at + exit[guard_at..].find('}').expect("the box-proxy guard closes")];
+        assert!(
+            guard.contains(zero_write) && guard.contains("return;"),
+            "focus: the box-proxy guard no longer writes zero and returns:\n{guard}"
+        );
+        let after_guard = &exit[guard_at + guard.len()..];
+        let length_at = after_guard.find("length(qs)").expect("focus: the exit's shadow distance");
+        let shadow_at = after_guard.find("gl_FragColor = vec4(0.0, 0.0, 0.0, sh").expect("focus: the exit's shadow-alone write");
+        assert!(length_at < shadow_at, "focus: the shadow's `length()` must precede the shadow-alone write:\n{exit}");
 
         // The identity itself, replayed in f32 over the exit's domain (`d >= 1.0`): coverage is exactly
         // 0, so the full path's colour is the shadow alone, to the bit.
@@ -8351,6 +8374,68 @@ mod tests {
                     assert_eq!(full.0.to_bits(), 0.0_f32.to_bits(), "d = {d}: no colour outside the body");
                     assert_eq!(full.1.to_bits(), shadow.to_bits(), "d = {d}, blur {blur}: alpha is the shadow alone");
                 }
+            }
+        }
+    }
+
+    /// **What the card's pad exit relies on must still be true where the body ends.** The exit
+    /// returns `vec4(0, 0, 0, sh)` for `d >= 1.0` because the body would have ended in `vec4(tex*m,
+    /// ta*m + sh)` with `m == 0.0` and `sh` already multiplied by `1.0 - m`. That holds only while (1)
+    /// the statements after the body's last `sh = ... * (1.0 - m);` are exactly the closing
+    /// `gl_FragColor` expression, so nothing reshapes `sh` or the colour on the way out, and (2) neither
+    /// `d` (after the exit) nor `m` (after it is computed) is assigned again, so the `d >= 1.0` the exit
+    /// tested is the `d` that `m` is computed from and `m` is still the smoothstep's value at the
+    /// closing expression.
+    #[test]
+    fn the_card_shaders_pad_exit_tail_and_inputs_are_untouched() {
+        let squash = |s: &str| s.split_whitespace().collect::<String>();
+        // The first assignment (`=`, `+=`, `++`, ...) to the whole identifier `name` in `src`: `==`, `<=`,
+        // `>=` and `!=` compare, and `dShadow` or `q.d` are other names.
+        fn assigns(src: &str, name: &str) -> Option<usize> {
+            let ident = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '.';
+            src.match_indices(name).map(|(i, _)| i).find(|&i| {
+                if src[..i].ends_with(ident) || src[i + name.len()..].starts_with(ident) {
+                    return false;
+                }
+                let rest = src[i + name.len()..].trim_start();
+                let before = src[..i].trim_end();
+                (rest.starts_with('=') && !rest.starts_with("=="))
+                    || ["+=", "-=", "*=", "/=", "++", "--"].iter().any(|op| rest.starts_with(op))
+                    || before.ends_with("++")
+                    || before.ends_with("--")
+            })
+        }
+        for (name, defined, closing) in PAD_EXIT_PROGRAMS {
+            let fs = preprocess(FS_IMG.to_str().unwrap(), defined);
+            let at = |needle: &str| fs.find(needle).unwrap_or_else(|| panic!("{name}: `{needle}` is gone from the shader"));
+            // (1) After the body's last shadow line, only the closing expression and main's `}` remain.
+            let last_sh = "sh = sh*sh*(3.0 - 2.0*sh) * u_shcol.a * (1.0 - m);";
+            assert_eq!(fs.matches(last_sh).count(), 1, "{name}: exactly one `{last_sh}`");
+            let tail = &fs[at(last_sh) + last_sh.len()..];
+            assert_eq!(
+                squash(tail),
+                format!("{}}}", squash(closing)),
+                "{name}: statements besides `{closing}` follow the body's last shadow line:\n{tail}"
+            );
+            // (2) `d` is not assigned after the exit tested it, and `m` not after its definition.
+            let open = at("if (d >= 1.0) {");
+            let after_exit = &fs[open + fs[open..].find("\n  }\n").expect("the pad exit closes at the indent of main's body")..];
+            if let Some(i) = assigns(after_exit, "d") {
+                panic!("{name}: `d` is assigned after the pad exit tested it:\n{}", &after_exit[i..]);
+            }
+            let m_def = "float m = 1.0 - smoothstep(-1.0, 1.0, d);";
+            let after_m = &fs[at(m_def) + m_def.len()..];
+            if let Some(i) = assigns(after_m, "m") {
+                panic!("{name}: `m` is assigned after it is computed:\n{}", &after_m[i..]);
+            }
+        }
+        // The scanner itself: it sees assignments, and ignores comparisons, reads and other names.
+        for (assigned, name) in [("d = 1.0;", "d"), ("d  += 2.0;", "d"), ("m=3.0;", "m"), ("x = ++d;", "d"), ("(m *= 2.0);", "m")] {
+            assert!(assigns(assigned, name).is_some(), "`{assigned}` assigns `{name}`");
+        }
+        for read in ["if (d >= 1.0) {", "x = d;", "dShadow = d;", "d == 2.0", "vec4(tex*m, ta*m + sh);", "q.d = 1.0;"] {
+            for name in ["d", "m"] {
+                assert!(assigns(read, name).is_none(), "`{read}` does not assign `{name}`");
             }
         }
     }

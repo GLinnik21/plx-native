@@ -217,10 +217,8 @@ void main(){
   // fully transparent without ever computing the shadow's `length()` - the bigger, further-falling
   // risen shadow otherwise pays that across ~35% more padded fragments than the plain symmetric halo
   // it replaced. That was this exit's only case before; the rest of the pad, where the shadow still
-  // reaches and the lit-glass work ran for nothing, now leaves here too. Midgard branches per 2x2
-  // quad: a quad that straddles the card's edge takes the long side, and both sides write the same
-  // bits for the fragments that left early. `discard` is expensive on Mali, so this writes the
-  // colour and returns instead.
+  // reaches and the lit-glass work ran for nothing, now leaves here too. `discard` is expensive on
+  // Mali, so this writes the colour and returns instead.
   if (d >= 1.0) {
     if ((0.5 - dShadowBox * u_shinv) <= 0.0) {
       gl_FragColor = vec4(0.0);
@@ -265,7 +263,7 @@ void main(){
   // `sh*(1 - 0)` - is `vec4(0, 0, 0, sh)` whatever the rim and the texture are. The shadow is the
   // same text the body ends with (`the_card_shaders_pad_exit_is_the_shadow_alone`). A resting card's
   // ring pieces and a card drawn whole both reach this; the fast path above (`u_card.z < 0.5`:
-  // glyphs, blur reductions, plain pictures) never does, so those draws pay nothing for it.
+  // glyphs, blur reductions, plain pictures) never does, so those draws never execute it.
   if (d >= 1.0) {
     float sh = clamp(0.5 - d*u_shinv, 0.0, 1.0);
     gl_FragColor = vec4(0.0, 0.0, 0.0, sh*sh*(3.0 - 2.0*sh) * u_shcol.a);
