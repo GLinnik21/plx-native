@@ -2209,10 +2209,13 @@ pub fn trailer_now_playing(
 
 // ---- fetches (all via the typed plx_plex::plex client; serde DTOs, no Value scraping) ----
 //
-// Every one of them takes the `ServerId` rather than reaching for `plex::client()`: they run on the
-// detail/season workers, and the house rule is that a worker reads no statics (`pms::parse_item`
-// carries the same note). It is also what stamps the row — an item fetched from slot 1 must be
-// recorded as slot 1's whatever `client()` answers with by the time the fetch returns.
+// None of them reaches for `plex::client()`: they run on the detail/season workers, and the house
+// rule is that a worker reads no statics (`pms::parse_item` carries the same note). The detail
+// chain's fetches are handed the `&'static Client` the runner resolved when it admitted the job,
+// plus the `ServerId` where they stamp the row (`fetch_detail`, `fetch_related`). The season
+// worker's (`fetch_episodes`, `fetch_episode_page`) still take a `ServerId` and resolve it
+// themselves, by slot. Either way the row is stamped with its slot — an item fetched from slot 1
+// must be recorded as slot 1's whatever `client()` answers with by the time the fetch returns.
 /// The stand-in handle, read ONCE. The trigger surface is boot state, and [`Detail::source`] is
 /// reached from a draw — a `stat` per frame inside one is exactly what `crate::dev`'s doc forbids.
 /// Compiled out with the `devtriggers` feature, like every other trigger, so a release build folds
@@ -4002,13 +4005,14 @@ fn request_detail_with_spawn(adapter: &MetadataAdapter, sid: plx_plex::plex::Ser
 /// changes what a sign-out or a re-point halfway through does to a page. The old chain
 /// re-resolved its client before each sub-fetch, so after a sign-out its later GETs found no
 /// client (`None`) and after a re-point they went to the slot's new client. This one keeps the
-/// client it was handed, which is `pms::kick_with`'s capture-at-the-step rule and what
-/// `ask_related` already does (the registry leaks its clients, so the reference stays valid). The
-/// registry blanks that client's token on both events (`revoke_all`, and the re-point arm of
-/// `register_lazy`), so the rest of the chain asks tokenless and lands `None`. For a sign-out that
-/// is the old outcome, with the requests now sent and refused where they used to be skipped. For
-/// a re-point it is a page with its hero but empty seasons, streams, extras, trailer and related,
-/// where the old chain went on to the slot's new client and finished.
+/// client it was handed (the registry leaks its clients, so the reference stays valid), which is
+/// `pms::kick_with`'s capture-at-the-step rule. (`ask_related` also keeps one client for its whole
+/// window, but it resolves that client inside its worker, which is why it is still on the globals
+/// ledger.) The registry blanks that client's token on both events (`revoke_all`, and the
+/// re-point arm of `register_lazy`), so the rest of the chain asks tokenless and lands `None`. For
+/// a sign-out that is the old outcome, with the requests now sent and refused where they used to
+/// be skipped. For a re-point it is a page with its hero but empty seasons, streams, extras,
+/// trailer and related, where the old chain went on to the slot's new client and finished.
 ///
 /// `None` is a server the registry held no client for when the job was admitted: there is nothing
 /// to ask, so `fetch` is not called and the answer is the failure, as it was when the first
