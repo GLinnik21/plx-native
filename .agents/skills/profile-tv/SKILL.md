@@ -137,8 +137,10 @@ umount /sys/kernel/debug
 
 **CPU and thermal.** LG's power manager governs the CPU only.
 
-- Its files are `/proc/lg/pm/status`, `/proc/lg/pm/tune/` (min 600 MHz, max 1008 MHz) and
-  `/proc/lg/pm/temperature`. Its GPU thermal parameters `ts_gpu_aparam`/`ts_gpu_bparam` read 0.
+- Its files are `/proc/lg/pm/status` (its `temp:` line is the SoC temperature), `/proc/lg/pm/tune/`
+  (min 600 MHz, max 1008 MHz), `/proc/lg/pm/frequency` (the current CPU frequency) and
+  `/proc/lg/pm/temperature` (the SoC temperature, 39-61 °C on 2026-10-24). Its GPU thermal
+  parameters `ts_gpu_aparam`/`ts_gpu_bparam` read 0.
 - There is no cpufreq, devfreq or thermal-zone sysfs.
 - The owner's Glasshouse dashboard on the TV's port 8080 serves `/api/stats` with SoC `temp`, CPU
   `mhz` and the foreground `app_id`. Its `gpuMhz` field is null on this set.
