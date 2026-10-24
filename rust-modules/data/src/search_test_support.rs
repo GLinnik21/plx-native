@@ -22,11 +22,14 @@ pub(super) use plx_plex::plex::{Hub, MediaContainer, Metadata, Tag};
 pub(super) struct Owner {
     pub(super) state: SearchState,
     pub(super) adapter: Arc<SearchAdapter>,
+    /// The fake server this fixture's runner answers every request with ([`Owner::serve`]). With
+    /// none, a request waits on [`SearchState::jobs`] unanswered, as a fetch no worker has finished.
+    pub(super) io: Option<Arc<Mutex<dyn tail::Io + Send>>>,
 }
 
 impl Default for Owner {
     fn default() -> Self {
-        Self { state: SearchState::default(), adapter: Arc::new(SearchAdapter::default()) }
+        Self { state: SearchState::default(), adapter: Arc::new(SearchAdapter::default()), io: None }
     }
 }
 
@@ -60,15 +63,40 @@ impl Owner {
     pub(super) fn land(&self, i: usize, gen: u32, what: Option<Projection>) {
         land(&self.adapter, i, gen, what);
     }
+    /// Answer every request from now on with `fake`, on the calling thread right after each pump, so
+    /// a pump is deterministic: the fixture plays the runner. The returned handle reads and steers
+    /// the fake.
+    pub(super) fn serve(&mut self, fake: tail_tests::Fake) -> Arc<Mutex<tail_tests::Fake>> {
+        let fake = Arc::new(Mutex::new(fake));
+        self.io = Some(fake.clone());
+        fake
+    }
+    /// Run the requests the last step emitted against the fake server ([`Owner::serve`]) and post
+    /// their answers; returns how many ran. Without a fake they stay on the outbox.
+    pub(super) fn run_jobs(&mut self) -> usize {
+        let Some(io) = self.io.clone() else { return 0 };
+        let jobs = std::mem::take(&mut self.state.jobs);
+        let n = jobs.len();
+        for job in jobs {
+            let crate::stores::StoreJob::Search(job, port) = job else { panic!("not a search job") };
+            let mut io = io.lock().unwrap_or_else(|e| e.into_inner());
+            finish_with_io(&port, job.addr, &mut *io, job.req);
+        }
+        n
+    }
     pub(super) fn pump(&mut self, dt: f32) -> bool {
-        self.state.pump(&self.adapter, dt)
+        let changed = self.state.pump(&self.adapter, dt);
+        self.run_jobs();
+        changed
     }
     pub(super) fn pump_with_directory(
         &mut self,
         dt: f32,
         directory: crate::stores::browse::DirectoryView<'_>,
     ) -> bool {
-        self.state.pump_with_directory(&self.adapter, dt, directory)
+        let changed = self.state.pump_with_directory(&self.adapter, dt, directory);
+        self.run_jobs();
+        changed
     }
     pub(super) fn favs(&self) -> Vec<(ServerId, i64, bool)> {
         favs(&self.state)
