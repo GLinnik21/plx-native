@@ -2853,8 +2853,9 @@ mod foreground_resume_tests {
 mod transport_pause_contract_tests {
     use super::{
         drive_foreground, paused, poll_foreground_load, set_transport_paused, FlightLanding,
-        ForegroundActivation, ForegroundActuator, ForegroundClock, ForegroundInput, ForegroundLifecycle,
-        ForegroundLoadStart, ForegroundLoadStatus, ForegroundPollOutcome, ForegroundState,
+        ForegroundActivation, ForegroundActuator, ForegroundClock, ForegroundEvent, ForegroundInput,
+        ForegroundLifecycle, ForegroundLoadStart, ForegroundLoadStatus, ForegroundPollOutcome,
+        ForegroundState,
     };
     use std::sync::atomic::Ordering;
 
@@ -2998,7 +2999,10 @@ mod transport_pause_contract_tests {
         }
 
         let mut lifecycle = ForegroundLifecycle::IDLE;
-        suspend(&mut lifecycle, 42_000_000_000, ForegroundClock::Paused);
+        lifecycle.step(
+            &ForegroundEvent::Park { saved_ns: 42_000_000_000, viewer_paused: true },
+            &mut Vec::new(),
+        );
         let mut actuator = Actuator {
             pa: &mut pa,
             prepares: 0,

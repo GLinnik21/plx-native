@@ -391,7 +391,7 @@ mod tests {
         engage(&mut rig.pa, 7);
         crate::route::force_applying_for_test(7);
         assert!(TX.paused.load(Acquire));
-        let mut lifecycle = ForegroundLifecycle::IDLE;
+        let mut lifecycle: ForegroundLifecycle = ForegroundLifecycle::IDLE;
         lifecycle.step(
             &ForegroundEvent::Park { saved_ns: CLAIM_OFFSET_NS, viewer_paused: viewer_paused() },
             &mut Vec::new(),
@@ -415,7 +415,7 @@ mod tests {
         engage(&mut rig.pa, 7);
         crate::route::force_applying_for_test(7);
         assert!(crate::player::lifecycle::set_transport_paused(&mut rig.pa, true));
-        let mut lifecycle = ForegroundLifecycle::IDLE;
+        let mut lifecycle: ForegroundLifecycle = ForegroundLifecycle::IDLE;
         lifecycle.step(
             &ForegroundEvent::Park { saved_ns: CLAIM_OFFSET_NS, viewer_paused: viewer_paused() },
             &mut Vec::new(),
