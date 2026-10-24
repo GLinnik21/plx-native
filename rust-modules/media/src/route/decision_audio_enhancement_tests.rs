@@ -4035,17 +4035,17 @@ fn plain_rebuild_stays_remux_with_a_drawable_sidecar() {
 fn transcode_spec_never_names_a_subtitle_on_a_remux() {
     let remux = enhanced_remux_contract(NONE, false);
     let spec = crate::route::plan::transcode_spec(
-        "5", "s", "s", plx_plex::plex::TranscodeOffset::Fresh, 14, 78, remux,
+        "5", 0, "s", "s", plx_plex::plex::TranscodeOffset::Fresh, 14, 78, remux,
     );
     assert_eq!(spec.subtitle_stream_id, 0, "no subtitle id rides a remux");
     assert!(spec.client_subtitles, "the app draws it, and the query says so");
     let none = crate::route::plan::transcode_spec(
-        "5", "s", "s", plx_plex::plex::TranscodeOffset::Fresh, 14, 0, remux,
+        "5", 0, "s", "s", plx_plex::plex::TranscodeOffset::Fresh, 14, 0, remux,
     );
     assert!(!none.client_subtitles, "no subtitle, nothing to say");
     // Every burn is a `remux: false` contract and keeps its id.
     let burn = crate::route::plan::transcode_spec(
-        "5", "s", "s", plx_plex::plex::TranscodeOffset::Fresh, 14, 77, enhanced_remux_contract(NONE, true),
+        "5", 0, "s", "s", plx_plex::plex::TranscodeOffset::Fresh, 14, 77, enhanced_remux_contract(NONE, true),
     );
     assert_eq!((burn.subtitle_stream_id, burn.client_subtitles), (77, false));
 }
@@ -4127,6 +4127,7 @@ fn admit_side_reader(ps: &mut PlaybackSession) {
         title: String::new(),
         ctx: String::new(),
         preview: false,
+        version: None,
     });
 }
 

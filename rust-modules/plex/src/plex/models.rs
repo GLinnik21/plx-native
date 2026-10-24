@@ -524,7 +524,7 @@ impl Metadata {
     pub fn listing_facts(&self) -> ListingFacts {
         let some = |s: &str| (!s.trim().is_empty()).then(|| s.trim().to_owned());
         let count = |n: i64| (n > 0).then(|| n.min(i64::from(u32::MAX)) as u32);
-        let media = self.media.first();
+        let media = self.media_version(None).map(|(_, m)| m);
         let leaf_count = count(self.leaf_count);
         ListingFacts {
             genre: self.genre.first().and_then(|g| some(&g.tag)),
@@ -556,26 +556,55 @@ impl Metadata {
         catalog_hex_of_guid(guid)
     }
 
-    /// Media[0].Part[0] — the primary playable part (None for a show container, which carries
-    /// no Media). The part holds the direct-play `key` and the `Stream[]` list.
-    pub fn first_part(&self) -> Option<&MediaPart> {
-        self.media.first().and_then(|m| m.part.first())
+    /// **The version a play takes, and its position in `Media[]`**: the one accessor every reader
+    /// of a version goes through, so none can take `Media[0]` without saying so. An item can carry
+    /// several versions (docs/pms-api.md §4: the dev library has an episode with a 4k and a 1080
+    /// one). `None` asks for the default, the first listed (what PMS plays unasked); `Some(id)`
+    /// asks for the version the viewer picked and answers `None` when this answer no longer lists
+    /// it, so the caller decides what a vanished version means. The index is the transcoder's
+    /// `mediaIndex`; it is resolved from the id on every read because a refetch may reorder
+    /// `Media[]`.
+    pub fn media_version(&self, want: Option<MediaId>) -> Option<(usize, &Media)> {
+        match want {
+            None => self.media.first().map(|m| (0, m)),
+            Some(id) => self.media.iter().enumerate().find(|(_, m)| m.id == id),
+        }
     }
 
-    /// `Media[0]` — the FIRST version listed, **not** a chosen-best one, and the honest name for
-    /// what every caller here actually reads. An item can carry SEVERAL `Media[]` versions
-    /// (docs/pms-api.md §4; the dev library really does — one episode ships a 4k and a 1080
-    /// version, another two 4k versions at different bitrates), and picking among them by
-    /// codec/resolution needs a version picker this client does not have yet. So anything derived
-    /// from this describes **version 0**, and a UI that shows it should be read that way.
-    /// [`first_part`](Self::first_part) carries the same caveat.
-    pub fn primary_media(&self) -> Option<&Media> {
-        self.media.first()
+    /// The default version's first part ([`media_version`](Self::media_version) of `None`).
+    pub fn default_part(&self) -> Option<&MediaPart> {
+        self.media_version(None).and_then(|(_, m)| m.part.first())
     }
+
+    /// The version a `/decision` body describes: the one PMS marks `selected`, else its first.
+    /// A decision answers for the `mediaIndex` it was asked about, so this is the chosen
+    /// version's output, never version 0's by position.
+    pub fn decided_media(&self) -> Option<&Media> {
+        self.media.iter().find(|m| m.selected).or_else(|| self.media.first())
+    }
+}
+
+/// A version's identity: PMS's `Media.id`. Stable across refetches, unlike a position in
+/// `Media[]`, so a choice is carried as this and resolved to an index only when it is played
+/// ([`Metadata::media_version`]). `0` is "the server sent none".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct MediaId(pub i64);
+
+fn de_media_id<'de, D: serde::Deserializer<'de>>(d: D) -> Result<MediaId, D::Error> {
+    de_i64(d).map(MediaId)
 }
 
 #[derive(Deserialize, Default)]
 pub struct Media {
+    #[serde(default, deserialize_with = "de_media_id")]
+    pub id: MediaId,
+    /// `/decision` only: the version the answer is about.
+    #[serde(default, deserialize_with = "de_bool")]
+    pub selected: bool,
+    /// The default audio track's channel count (`6` for 5.1). Descriptive only.
+    #[serde(rename = "audioChannels", default, deserialize_with = "de_i64")]
+    pub audio_channels: i64,
     #[serde(rename = "videoCodec", default)]
     pub video_codec: String,
     #[serde(rename = "audioCodec", default)]
@@ -1210,7 +1239,7 @@ fn de_ultrablur<'de, D: serde::Deserializer<'de>>(
 
 #[cfg(test)]
 mod tests {
-    use super::{catalog_hex_of_guid, resolve_catalog_hex, Envelope};
+    use super::{catalog_hex_of_guid, resolve_catalog_hex, Envelope, MediaId};
 
     const HEX: &str = "5d7768264de0ee001fcc87e4";
     const BYTES: [u8; 12] = [0x5d, 0x77, 0x68, 0x26, 0x4d, 0xe0, 0xee, 0x00, 0x1f, 0xcc, 0x87, 0xe4];
@@ -1284,7 +1313,7 @@ mod tests {
     /// The `Media[]` technical fields feed the resolution badge and (later) the quality ladder, and
     /// PMS is free to string-encode any of them. A strict field there does not lose one number —
     /// it fails the WHOLE `MediaContainer`, i.e. the entire detail page. Both encodings must land,
-    /// and the several-versions case must stay several (`primary_media` is version 0, not the only
+    /// and the several-versions case must stay several (`media_version(None)` is version 0, not the only
     /// one) — see docs/pms-api.md §4.
     #[test]
     fn media_technical_fields_survive_both_encodings_and_keep_every_version() {
@@ -1300,10 +1329,10 @@ mod tests {
         assert_eq!(
             it.media.len(),
             2,
-            "both versions are kept for a future picker"
+            "both versions are kept, so the Play Version picker can offer each"
         );
 
-        let v0 = it.primary_media().expect("Media[0]");
+        let v0 = it.media_version(None).map(|(_, m)| m).expect("Media[0]");
         assert_eq!((v0.bitrate, v0.width, v0.height), (14663, 3840, 2160));
         assert_eq!(v0.video_resolution, "4k");
         // version 1 sends the same fields string-encoded, and videoResolution as a bare NUMBER
@@ -1312,6 +1341,36 @@ mod tests {
         assert_eq!(v1.video_resolution, "1080");
         // the two versions therefore badge differently ("4K" vs "1080p" — see ui::fmt::resolution's
         // own tests), which is the whole reason the accessor has to name WHICH one it returned.
+    }
+
+    /// A version is found by its `Media.id` wherever the answer lists it, so a refetch that
+    /// reorders `Media[]` still names the right index; an id the answer lost is `None`, never a
+    /// silent `Media[0]`.
+    #[test]
+    fn a_version_is_resolved_by_id_and_a_lost_one_is_not_replaced() {
+        let json = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"1859","Media":[
+              {"id":"3086","videoResolution":"1080","audioChannels":"6","Part":[{"key":"/p/3134"}]},
+              {"id":3082,"videoResolution":"4k","Part":[{"key":"/p/3130"}]}]}]}}"#;
+        let env: Envelope = serde_json::from_slice(json).expect("parse");
+        let it = &env.media_container.metadata[0];
+        let (i, m) = it.media_version(Some(MediaId(3082))).expect("listed");
+        assert_eq!((i, m.part[0].key.as_str()), (1, "/p/3130"));
+        let (i, m) = it.media_version(None).expect("default");
+        assert_eq!((i, m.id, m.audio_channels), (0, MediaId(3086), 6));
+        assert!(it.media_version(Some(MediaId(9))).is_none());
+        assert_eq!(it.default_part().map(|p| p.key.as_str()), Some("/p/3134"));
+    }
+
+    /// A `/decision` body is read off the version it marks `selected`.
+    #[test]
+    fn a_decision_reads_the_selected_version() {
+        let json = br#"{"MediaContainer":{"Metadata":[{"Media":[
+              {"id":1,"videoCodec":"hevc"},{"id":2,"selected":true,"videoCodec":"h264"}]}]}}"#;
+        let env: Envelope = serde_json::from_slice(json).expect("parse");
+        assert_eq!(env.media_container.metadata[0].decided_media().map(|m| m.id), Some(MediaId(2)));
+        let one = br#"{"MediaContainer":{"Metadata":[{"Media":[{"id":7}]}]}}"#;
+        let env: Envelope = serde_json::from_slice(one).expect("parse");
+        assert_eq!(env.media_container.metadata[0].decided_media().map(|m| m.id), Some(MediaId(7)));
     }
 
     /// The `/decision` verdict block, in BOTH encodings PMS uses for it. This body is the one the
@@ -1400,10 +1459,10 @@ mod tests {
     /// A show container carries no `Media` at all — the accessor must say so rather than panic,
     /// because the detail page asks every item for its primary version.
     #[test]
-    fn a_show_container_has_no_primary_media() {
+    fn a_show_container_has_no_default_version() {
         let json = br#"{"MediaContainer":{"Metadata":[{"ratingKey":"9","type":"show","title":"A Show"}]}}"#;
         let env: Envelope = serde_json::from_slice(json).expect("parse");
-        assert!(env.media_container.metadata[0].primary_media().is_none());
+        assert!(env.media_container.metadata[0].media_version(None).map(|(_, m)| m).is_none());
     }
 
     // ---- /hubs/search ----

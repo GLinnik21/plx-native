@@ -143,18 +143,18 @@ pub(super) fn request_play_intent(
 ) -> bool {
     match play {
         plx_screens::registry::PlayIntent::Item {
-            sid, rk, part, vcodec, acodec, title, context,
+            sid, rk, part, vcodec, acodec, title, context, version,
         } => {
             let ok = plx_media::route::request_play(
-                session, meta, *sid, rk, part, vcodec, acodec, title, context,
+                session, meta, *sid, rk, part, vcodec, acodec, title, context, *version,
             );
             if ok {
                 note_extra_now_playing(meta, *sid, rk, context);
             }
             ok
         }
-        plx_screens::registry::PlayIntent::Movie(m) =>
-            plx_media::route::request_play_movie(session, meta, m, &super::playback::movie_ctx(m)),
+        plx_screens::registry::PlayIntent::Movie { item, version } =>
+            plx_media::route::request_play_movie(session, meta, item, &super::playback::movie_ctx(item), *version),
     }
 }
 
@@ -349,6 +349,7 @@ mod held_feature_tests {
             acodec: String::new(),
             title: "Official Trailer".into(),
             context: context.into(),
+            version: None,
         }
     }
 

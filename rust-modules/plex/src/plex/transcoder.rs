@@ -402,7 +402,7 @@ impl Client {
         let protocol = if hls { "hls" } else { "http" };
         let mut q = QueryBuilder::new("")
             .str("path", &format!("/library/metadata/{}", s.rating_key))
-            .int("mediaIndex", 0)
+            .int("mediaIndex", s.media_index as i64)
             .int("partIndex", 0)
             .str("protocol", protocol)
             .int("directPlay", 0)
@@ -511,11 +511,12 @@ impl Client {
     pub fn mde_decision(
         &self,
         rating_key: &str,
+        media_index: usize,
         session: &str,
         audio_stream_id: i64,
         subtitle_stream_id: i64,
     ) -> Option<MediaContainer> {
-        self.mde_decision_with_profile(rating_key, session, audio_stream_id, subtitle_stream_id, false)
+        self.mde_decision_with_profile(rating_key, media_index, session, audio_stream_id, subtitle_stream_id, false)
     }
 
     /// Strict Original override: advertise the software feed formats without device limits.
@@ -524,16 +525,18 @@ impl Client {
     pub fn mde_decision_forced(
         &self,
         rating_key: &str,
+        media_index: usize,
         session: &str,
         audio_stream_id: i64,
         subtitle_stream_id: i64,
     ) -> Option<MediaContainer> {
-        self.mde_decision_with_profile(rating_key, session, audio_stream_id, subtitle_stream_id, true)
+        self.mde_decision_with_profile(rating_key, media_index, session, audio_stream_id, subtitle_stream_id, true)
     }
 
     fn mde_decision_with_profile(
         &self,
         rating_key: &str,
+        media_index: usize,
         session: &str,
         audio_stream_id: i64,
         subtitle_stream_id: i64,
@@ -541,7 +544,7 @@ impl Client {
     ) -> Option<MediaContainer> {
         let q = QueryBuilder::new("/video/:/transcode/universal/decision")
             .str("path", &format!("/library/metadata/{rating_key}"))
-            .int("mediaIndex", 0)
+            .int("mediaIndex", media_index as i64)
             .int("partIndex", 0)
             .str("protocol", "http")
             .int("hasMDE", 1)
@@ -731,6 +734,7 @@ mod tests {
     ) -> TranscodeSpec<'a> {
         TranscodeSpec {
             rating_key: "5",
+            media_index: 0,
             session: "s1",
             encoder_session: "s1",
             contract: EncodeContract {
@@ -1727,11 +1731,24 @@ mod tests {
             "tok",
             "cid",
         );
-        let _ = client.mde_decision("5", "s1", 0, 0);
+        let _ = client.mde_decision("5", 1, "s1", 0, 0);
         let line = rx.recv().expect("captured decision request");
+        assert!(line.contains("mediaIndex=1&"), "the MDE asks about the chosen version: {line}");
         assert!(!line.contains("boostDialog"), "{line}");
         assert!(!line.contains("normalizeLoudness"), "{line}");
         server.join().unwrap();
+    }
+
+    /// A picked version is addressed by its position on both the decision and the start URL, which
+    /// share this query; the default stays the `mediaIndex=0` it always sent.
+    #[test]
+    fn the_transcode_query_names_the_played_version() {
+        let picked = TranscodeSpec { media_index: 1, ..spec(false, false) };
+        let q = a_client().transcode_query(&picked);
+        assert!(q.contains("mediaIndex=1&partIndex=0"), "{q}");
+        let start = a_client().transcode_start_url(&picked);
+        assert!(start.to_url().contains("mediaIndex=1&"), "the start URL carries it too");
+        assert!(a_client().transcode_query(&spec(false, false)).contains("mediaIndex=0&"));
     }
 
     /// `AudioEnhancements::NONE` — every path this PR builds — must not change a single byte of

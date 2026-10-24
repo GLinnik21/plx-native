@@ -382,6 +382,7 @@ pub(super) fn classify_prime_decision(
 /// and options a reader has to keep straight by position.
 pub(super) fn transcode_spec<'a>(
     rk: &'a str,
+    media_index: usize,
     session: &'a str,
     encoder_session: &'a str,
     offset: plx_plex::plex::TranscodeOffset,
@@ -396,7 +397,7 @@ pub(super) fn transcode_spec<'a>(
     // selection. Every burn is a `remux: false` contract and keeps its id. (A cold start that
     // CARRIES a burn into a remux-shaped plan asks for it explicitly: [`transcode_spec_carrying_burn`].)
     let (sub, client_subtitles) = if contract.remux { (0, sub != 0) } else { (sub, false) };
-    transcode_spec_carrying_burn(rk, session, encoder_session, offset, aud, sub, client_subtitles, contract)
+    transcode_spec_carrying_burn(rk, media_index, session, encoder_session, offset, aud, sub, client_subtitles, contract)
 }
 
 /// [`transcode_spec`] without the remux rule: the subtitle id is sent as given. The cold start's
@@ -404,6 +405,7 @@ pub(super) fn transcode_spec<'a>(
 /// remux-shaped contract and the server re-encodes for the burn), which the rule must not erase.
 pub(super) fn transcode_spec_carrying_burn<'a>(
     rk: &'a str,
+    media_index: usize,
     session: &'a str,
     encoder_session: &'a str,
     offset: plx_plex::plex::TranscodeOffset,
@@ -414,6 +416,7 @@ pub(super) fn transcode_spec_carrying_burn<'a>(
 ) -> plx_plex::plex::TranscodeSpec<'a> {
     plx_plex::plex::TranscodeSpec {
         rating_key: rk,
+        media_index,
         session,
         encoder_session,
         contract,
@@ -881,7 +884,7 @@ pub(super) fn note_enhancement_refused(context: &str, audio: plx_plex::plex::Aud
 fn decision_audio(mc: &plx_plex::plex::MediaContainer) -> Option<&str> {
     mc.metadata
         .first()
-        .and_then(|m| m.first_part())
+        .and_then(|m| m.decided_media()).and_then(|md| md.part.first())
         .and_then(|p| p.stream.iter().find(|s| s.stream_type == 2))
         .map(|s| s.decision.as_str())
 }
@@ -923,7 +926,7 @@ pub(super) fn decision_codecs(mc: &plx_plex::plex::MediaContainer) -> Option<(St
     let streams = mc
         .metadata
         .first()
-        .and_then(|m| m.media.first())
+        .and_then(|m| m.decided_media())
         .and_then(|md| md.part.first())
         .map(|p| &p.stream)?;
     let (mut vc, mut ac) = (None, None);
@@ -956,7 +959,7 @@ pub(super) fn decision_copies_video(mc: &plx_plex::plex::MediaContainer, remux: 
     let lane = mc
         .metadata
         .first()
-        .and_then(|m| m.first_part())
+        .and_then(|m| m.decided_media()).and_then(|md| md.part.first())
         .and_then(|p| p.stream.iter().find(|s| s.stream_type == 1))
         .map(|s| s.decision.as_str());
     match lane {
@@ -1223,6 +1226,9 @@ pub struct ResolveEnv {
     pub forced_lang: String,
     /// the loaded detail's streams when it IS this item — saves the worker a GET
     pub cached_item: Option<plx_data::metadata::PlayingItem>,
+    /// The version the viewer picked (Play Version); `None` plays the default. A picked version
+    /// never uses `cached_item`, which describes the default.
+    pub version: Option<plx_plex::plex::MediaId>,
     /// The user's pick off the quality ladder, captured at the press like everything else here.
     /// The worker must not call [`quality`] itself for the reason this struct exists: it reads a
     /// process-global the main thread can move while the resolve is in flight.
@@ -1365,6 +1371,9 @@ pub struct Plan {
     pub tsession: String,
     pub sess: String,
     pub part_id: i64,
+    /// The played version's `mediaIndex`: 0 for the default, else the picked version's position
+    /// in the item this resolve fetched. `part_id` and the source codecs are that version's too.
+    pub media_index: usize,
     pub pq_id: String,
     pub pq_item_id: String,
     pub machine_id: String, // "" = leave the cached one alone
@@ -1586,10 +1595,35 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     // the playing item's OWN track lists (menu + audio pick + esInfo fps read them) — the
     // loaded detail can be a different item (show page / straight-from-Home play)
     // detail already had this item's streams — no GET
-    plan.playing = env
-        .cached_item
-        .clone()
-        .or_else(|| plx_data::metadata::fetch_playing_item(env.sid, rk));
+    let (playing, played) = match env.version {
+        None => (
+            env.cached_item
+                .clone()
+                .or_else(|| plx_data::metadata::fetch_playing_item(env.sid, rk, None).map(|(item, _)| item)),
+            None,
+        ),
+        Some(want) => match plx_data::metadata::fetch_playing_item(env.sid, rk, Some(want)) {
+            Some((item, played)) => (Some(item), played),
+            None => (None, None),
+        },
+    };
+    if let (Some(want), None) = (env.version, played.as_ref()) {
+        crate::player::log(&format!("route: version {} is gone from the item; playing the default", want.0));
+    }
+    // The picked version's part, codecs and `mediaIndex` replace the caller's (the default's)
+    // together, so nothing below can pair one version's part with another's streams.
+    let (part, vcodec, acodec) = match played.as_ref() {
+        Some(v) => (v.part.as_str(), v.vcodec.as_str(), v.acodec.as_str()),
+        None => (part, vcodec, acodec),
+    };
+    if let Some(v) = played.as_ref() {
+        plan.media_index = v.index;
+        plan.part_id = part_id_of(part);
+        plan.src_vcodec = vcodec.to_string();
+        plan.src_acodec = acodec.to_string();
+    }
+    let media_index = plan.media_index;
+    plan.playing = playing;
     plan.src_fps = plan.playing.as_ref().map_or(0.0, |p| p.video_fps);
     plan.playing_fresh = env.cached_item.is_none() && plan.playing.is_some();
     if let (Some(id), Some(item)) = (env.subtitle_override, plan.playing.as_mut()) {
@@ -2001,8 +2035,8 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         // names the same; a re-encode walks the `audio_intents` ranking (the remembered pick, then
         // the PMS selection, then show/account language, then the direct-play pick), so 720p does
         // not copy a foreign AC3.
-        if forced { forced_server_decision(client, rk, &session, carry_audio_id, subtitle_id) }
-        else { server_decision(client, rk, &session, carry_audio_id, subtitle_id) }
+        if forced { forced_server_decision(client, rk, media_index, &session, carry_audio_id, subtitle_id) }
+        else { server_decision(client, rk, media_index, &session, carry_audio_id, subtitle_id) }
     };
     // A direct play needs a track to play: with none the server converts the intended one, which
     // is not Original whatever MDE said about the (omitted) audio. With no track list yet, the
@@ -2216,6 +2250,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                             off,
                             client,
                             rk,
+                            media_index,
                             &session,
                             probe_audio,
                             if drawn { 0 } else { env.sub_sid },
@@ -2536,6 +2571,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     }
     let mut sp = transcode_spec_carrying_burn(
         rk,
+        media_index,
         &session,
         &session,
         plx_plex::plex::TranscodeOffset::Fresh,
@@ -2560,7 +2596,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
             // Back to the direct play the enhancement decorated. The MDE is re-asked first so the
             // Part GET follows a decision that is the direct play's own — M5 found PMS serving the
             // Part regardless, so this is belt-and-braces, not a 503 workaround.
-            let _ = server_decision(client, rk, &session, carry_audio_id, subtitle_id);
+            let _ = server_decision(client, rk, media_index, &session, carry_audio_id, subtitle_id);
             plan.contract.remux = false;
             plan.contract.no_video_copy = false;
             fill_direct_plan(&mut plan, client, part, &session, vcodec, acodec, audio_sel.as_ref(), dovi, dv_decision, sub_pick);
@@ -2573,6 +2609,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         }
         sp = transcode_spec_carrying_burn(
             rk,
+            media_index,
             &session,
             &session,
             plx_plex::plex::TranscodeOffset::Fresh,

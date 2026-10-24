@@ -75,16 +75,16 @@ fn an_unreachable_service_omits_the_row() {
         let m = card(kind, None);
         assert!(!m.offers(ItemRow::WatchlistAdd) && !m.offers(ItemRow::WatchlistRemove), "kind {kind}");
     }
-    for m in [menu(build_episode("1", PosterMark::None, None)), menu(build_season("1", PosterMark::None, None))] {
+    for m in [menu(build_episode("1", PosterMark::None, &[], None)), menu(build_season("1", PosterMark::None, None))] {
         assert!(!m.offers(ItemRow::WatchlistAdd) && !m.offers(ItemRow::WatchlistRemove));
     }
 }
 
 #[test]
 fn an_episode_names_the_show() {
-    let add = menu(build_episode("9", PosterMark::None, Some(&face(Membership::Off, Kind::Show, true))));
+    let add = menu(build_episode("9", PosterMark::None, &[], Some(&face(Membership::Off, Kind::Show, true))));
     assert_eq!(add.label(ItemRow::WatchlistAdd), "Add Show to Watchlist");
-    let on = menu(build_episode("9", PosterMark::None, Some(&face(Membership::On, Kind::Show, true))));
+    let on = menu(build_episode("9", PosterMark::None, &[], Some(&face(Membership::On, Kind::Show, true))));
     assert_eq!(on.label(ItemRow::WatchlistRemove), plx_platform::i18n::msg::watchlist_action_remove_show());
     assert_eq!(on.action(ItemRow::WatchlistRemove), Action::WatchlistRemove(guid_of(Kind::Show, &HEX)));
     let ep_card = card(3, Some(&face(Membership::Off, Kind::Show, true)));

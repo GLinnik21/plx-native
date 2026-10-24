@@ -152,7 +152,7 @@ pub(super) fn bare_held(sid: ServerId, rk: &str) -> DetailScreen {
         tabs: TabStrip::new(),
         season_pop: CtlPop::new(),
         ctl_pop: CtlPop::new(),
-        disc_unfurl: [Spring::at(0.0); 3],
+        disc_unfurl: [Spring::at(0.0); hero::DISCS],
         watchlist: plx_appkit::watchlist_disc::Disc::new(plx_data::catalog::Membership::Unknown), watchlist_hex: None,
         season_metrics: season::Metrics::new(),
         about_rows: about::Rows::new(),
@@ -1235,6 +1235,7 @@ fn hero_focus_follows_its_control_when_the_set_grows_under_it() {
 fn hero_focus_survives_a_control_appearing_in_the_middle_of_the_row() {
     let before = hero::HeroSet {
         watchlist: true,
+        version: false,
         restart: true,
         trailer: false,
         alt: false,
@@ -1242,6 +1243,7 @@ fn hero_focus_survives_a_control_appearing_in_the_middle_of_the_row() {
     };
     let after = hero::HeroSet {
         watchlist: true,
+        version: false,
         alt: true,
         ..before
     };
@@ -1400,6 +1402,7 @@ fn a_pointer_lands_on_the_capsule_the_unfurl_drew() {
     let y = 812.0;
     let set = hero::HeroSet {
         watchlist: true,
+        version: false,
         restart: true,
         trailer: false,
         alt: false,
@@ -1408,7 +1411,7 @@ fn a_pointer_lands_on_the_capsule_the_unfurl_drew() {
     let index = hero::watch_index(set).unwrap();
     assert_eq!(hero::ctl_at(set, index - 1), Some(hero::HeroCtl::Restart));
     for unfurl in [0.2, 0.6, 1.0] {
-        let disc = hero::disc_caps_at(set, 230.0, 0.0, [0.0, 0.0, unfurl], [201.0, 0.0, 267.0]);
+        let disc = hero::disc_caps_at(set, 230.0, 0.0, [0.0, 0.0, unfurl, 0.0], [201.0, 0.0, 267.0, 0.0]);
         let widths = hero::HeroWidths {
             pill: 230.0,
             alt: 0.0,
@@ -1480,12 +1483,12 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
                     assert_eq!(n, 3 + usize::from(restart) + usize::from(alt));
                     sizes.insert(n);
                     for unfurl in [
-                        [0.0, 0.0, 0.0],
-                        [0.0, 0.0, 1.0],
-                        [0.0, 1.0, 0.0],
-                        [0.3, 0.0, 0.7],
-                        [1.0, 0.0, 0.0],
-                        [0.0, 1.0, 1.0],
+                        [0.0, 0.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0, 0.0],
+                        [0.0, 1.0, 0.0, 0.0],
+                        [0.3, 0.0, 0.7, 0.0],
+                        [1.0, 0.0, 0.0, 0.0],
+                        [0.0, 1.0, 1.0, 0.0],
                     ] {
                         screen.disc_unfurl = unfurl.map(Spring::at);
                         for scroll in [0.0, 48.0] {
@@ -2732,7 +2735,7 @@ fn a_show_trailer_disc_plays_the_extra_not_the_on_deck_episode() {
             assert_ne!(part.as_str(), "/library/parts/trailer");
             assert_ne!(context.as_str(), plx_data::metadata::TRAILER_CONTEXT);
         }
-        (PlayIntent::Movie(_), _) => {}
+        (PlayIntent::Movie { .. }, _) => {}
     }
     clear();
 }
@@ -5290,5 +5293,77 @@ fn the_hold_hint_over_an_episode_still_waits_while_the_season_loads() {
     assert!(!hinted(&screen), "no hint while the season loads: the hold would open nothing");
     plx_data::metadata::set_season_loading_for_test(test_store().adapter_ref(), false);
     assert!(hinted(&screen), "the hint is back once the season has landed");
+    clear();
+}
+
+fn versioned(kind: &str, versions: usize) -> Detail {
+    Detail {
+        sid: ServerId::UNSET,
+        rk: "leaf".into(),
+        kind: kind.into(),
+        title: "Leaf".into(),
+        part: "/library/parts/leaf".into(),
+        resume_ms: 600_000,
+        dur_ms: 6_000_000,
+        versions: plx_appkit::version_list::sample().into_iter().take(versions).collect(),
+        ..Default::default()
+    }
+}
+
+/// A version the panel reports plays THAT version of the page's item, resuming as Play does, on a
+/// movie page and an episode page alike.
+#[test]
+fn a_picked_version_plays_it_resuming_like_play() {
+    for kind in ["movie", "episode"] {
+        let _guard = install(versioned(kind, 2));
+        let mut screen = bare(&_guard, ServerId::UNSET, "leaf");
+        let pick = plx_appkit::version_list::sample()[1].id;
+        let (_, effects) = step(&mut screen, &ScreenEvent::App(AppMsg::PlayVersion(pick)), None);
+        let (play, resume_ns) = play_item(&effects).expect("a pick plays");
+        match play {
+            PlayIntent::Item { rk, version, .. } => {
+                assert_eq!(rk, "leaf", "{kind}");
+                assert_eq!(*version, Some(pick), "{kind}");
+            }
+            PlayIntent::Movie { .. } => panic!("{kind}: the loaded item, not a hub row"),
+        }
+        assert_eq!(resume_ns, plx_data::metadata::resume_ns(600_000, 6_000_000), "{kind} resumes");
+        let (_, effects) = step(&mut screen, &ScreenEvent::Activate(hero::ELEM_PLAY), Some(hero::ELEM_PLAY));
+        assert!(
+            matches!(play_item(&effects), Some((PlayIntent::Item { version: None, .. }, _))),
+            "{kind}: the Play pill still plays the default version"
+        );
+        clear();
+    }
+}
+
+/// On a show page the disc offers the versions of the episode the hero's Play plays (the on-deck
+/// one once the show is started), and a pick plays THAT episode in that version.
+#[test]
+fn a_show_page_offers_and_plays_its_hero_episodes_versions() {
+    let two = || plx_appkit::version_list::sample().into_iter().take(2).collect::<Vec<_>>();
+    let on_deck = plx_data::metadata::Episode { resume_ms: 30_000, versions: two(), ..episode("e2", 2) };
+    let mut d = detail(ServerId::UNSET, "show");
+    d.episodes = vec![episode("e1", 1), on_deck.clone()].into();
+    d.on_deck = Some(on_deck);
+    let _guard = install(d);
+    let mut screen = bare(&_guard, ServerId::UNSET, "show");
+    assert!(screen.hero_set(test_store().view()).version, "the on-deck episode has two versions");
+    let pick = plx_appkit::version_list::sample()[1].id;
+    let (_, effects) = step(&mut screen, &ScreenEvent::App(AppMsg::PlayVersion(pick)), None);
+    match play_item(&effects).map(|(play, _)| play) {
+        Some(PlayIntent::Item { rk, version, .. }) => {
+            assert_eq!(rk, "e2", "the hero's episode");
+            assert_eq!(*version, Some(pick));
+        }
+        _ => panic!("a pick plays the hero's episode"),
+    }
+    clear();
+    drop(_guard);
+
+    // The first episode has one version and no episode is on deck: nothing to choose.
+    let _guard = install(detail(ServerId::UNSET, "show"));
+    let screen = bare(&_guard, ServerId::UNSET, "show");
+    assert!(!screen.hero_set(test_store().view()).version);
     clear();
 }

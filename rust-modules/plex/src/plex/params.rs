@@ -193,6 +193,9 @@ impl EncodeContract {
 /// and 4 pin that a remux is only ever reached for a source under it.
 pub struct TranscodeSpec<'a> {
     pub rating_key: &'a str,
+    /// The played version's position in `Media[]` (`mediaIndex`), resolved from its id
+    /// (`Metadata::media_version`); 0 is the default version.
+    pub media_index: usize,
     /// The active encoder's PMS playback/timeline wire id.
     pub session: &'a str,
     /// Physical universal-transcoder identity. Production keeps it equal to `session`; the two

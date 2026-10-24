@@ -1135,7 +1135,11 @@ impl Bridge {
             }
             if let Some((rk, mark)) = page.focused_episode(ret.focus, meta) {
                 // the ONE entry point whose item is a leaf of the season this page has loaded
-                let mut arg = strip_menu_arg(sid, &rk, ItemMenuKind::Episode { mark }, entry, ret.focus, rect);
+                let versions = meta.current()
+                    .and_then(|d| d.episodes.position(&rk).and_then(|i| d.episodes.get(i)))
+                    .map(|ep| ep.versions.clone())
+                    .unwrap_or_default();
+                let mut arg = strip_menu_arg(sid, &rk, ItemMenuKind::Episode { mark, versions }, entry, ret.focus, rect);
                 arg.watchlist = self.watchlist_face(page.watchlist_hex(), plx_data::watchlist::model::Kind::Show, true);
                 return Some(arg);
             }

@@ -227,10 +227,16 @@ tools below are the how-to; the findings follow.
 
 1. **Kernel scheduler trace.** Boot with `--arm framedrop=17 --arm framering=17 --arm framecb`
    (the ring only exists while `framedrop` is armed). During the leg run
-   `tools/tv-sched-trace.sh --secs 6 --tid <app pid> --out sched.gz`: it mounts tracefs if needed,
+   `tools/tv-sched-trace.sh --secs 6 --app --out sched.gz` (`--app [FLAVOR]` finds the running
+   app's pid on the set by the SUFFIX of `/proc/<pid>/exe`, because a jailed app's exe reads
+   `/var/palm/jail/<app id>/<appdir>/plxnative`, and refuses in one line, before touching tracefs,
+   when no pid or more than one matches; `--tid N` names a thread instead, never both): it mounts
+   tracefs if needed,
    records `sched_switch`, `sched_wakeup`, `irq_handler_entry/exit` (arch timer filtered out), any
-   mali/kbase/gpu event category and, with `--tid`, that thread's raw syscalls, on
-   `trace_clock=mono`, drains `trace_pipe` (bounded by `--read-timeout`, default 90 s; a stopped
+   mali/kbase/gpu event category and, with `--tid`/`--app`, that thread's raw syscalls, on
+   `trace_clock=mono`, writes a thread table (`# plx-task tgid= tid= comm=` lines, one per thread of
+   that process and of every `surface-manager` process, ahead of the events in the same gzip: a trace
+   line names a pid, never its process), drains `trace_pipe` (bounded by `--read-timeout`, default 90 s; a stopped
    read-back leaves a valid partial gzip and exit status 3), and restores the set afterwards. On the
    television's 4.4.84 kernel (event tracing, no function tracer, no SCHEDSTATS) the string filter
    `name != "arch_timer"` is rejected and the tool falls back to the arch timer's irq numbers; the
@@ -247,6 +253,45 @@ tools below are the how-to; the findings follow.
    the trace has syscall events, who ran instead, who woke it) and where the vsync (`osd_irq`) and
    GPU interrupts and surface-manager's threads fell in the wait and commit windows.
    `tools/analyze-sched-trace.py --self-test` runs on the host.
+
+   **Which side made a frame miss its refresh: `--latch`.** It scores the frame pairs (k, k+1)
+   whose two FRAMEDROP lines both carry `wait_at=`. Run the fps leg with `tests/run.py --fps --mock
+   --filter <scene> --extra-trigger plxnative-framecb --extra-trigger plxnative-framering=17
+   --save-logs DIR`: `framecb` only adds `wait_at=` to the lines the detector writes, and the ring
+   writes each frame of 17 ms or more with the 4 frames before and the 3 after it (not
+   `framedrop=0.01`, which logs every frame at about 60 open/append/close round trips a second on the
+   frame thread, in the phase measured). The ring only works while `plxnative-framedrop` is armed:
+   the harness arms it for a scene with a frame ceiling (`frame_ceiling_threshold`) or one whose
+   manifest triggers name it (grid-pong does); for any other scene add `--extra-trigger
+   plxnative-framedrop=17`. While the bench runs, take one or more windows with
+   `tools/tv-sched-trace.sh --app --secs 6 --out w1.gz` (from the leg's own checkout, which holds the
+   lease; a subagent keeps its `PLX_TV_LOCK_LANE=<worktree>` prefix: `tv-lock` skill, "A lane is a
+   checkout"). Then
+   `tools/analyze-sched-trace.py DIR/fps-<scene>.log w1.gz w2.gz --tid <app pid> --latch`.
+
+   Reading it. The compositor composes just after every other `osd_irq` and takes the app's newest
+   buffer only if the app's GPU work on it is done; taking buffer k releases k-1 at once. Frame k's
+   wait ended just after one such tick, so the report's `aim`, the pass that should take frame k, is
+   the `osd_irq` nearest that tick + 16.67 ms. Mali defers the fragment work to the swap, so the
+   app's GPU work runs after the commit: "GPU done" is the app's last job completion after the commit
+   (a `mali` irq that wakes the app's `mali-event-hnd`, found through the thread table) and before
+   frame k+1's wait ended. Each wait of `--wait-min` (10) ms or more prints `+N
+   ticks`, how far k+1's release slipped past the aim in 8.33 ms ticks (1 = half a refresh, 2 = a
+   whole missed one), and a class: `CPU-late` (frame k committed after the aim; see `wake->commit`
+   and the run-queue fields), `GPU-late` (committed in time, GPU done over 0.65 ms after the aim),
+   `edge` (GPU done 0-0.65 ms after the aim, where frames that did make it also land) or
+   `compositor` (commit and GPU both before the aim, and the buffer still came late). The number to
+   quote is the margin on the last line: GPU done minus aim over the on-time (0-tick) frames the ring
+   wrote, so those near a slow frame, p50 near zero or above meaning one hiccup from a missed
+   refresh. A trace from before the thread table needs `--app-gpu-tid` and `--sm-gpu-tid`, the two
+   `mali-event-hnd` tids (`gzip -dc w1.gz | grep -o 'comm=mali-event-hnd pid=[0-9]*' | sort |
+   uniq -c`: the compositor's has about 720 wakeups in a 6 s window, the app's several thousand).
+
+   Two traps. Tracing loads the set: the read-back between windows raised the in-window long waits
+   about threefold over untraced legs (one per 86 frame pairs against one per 240 frames), so report
+   the mechanism a trace shows, never the window's rates. And a wakeup from another CPU is recorded
+   as woken by `<idle>-0` (the IPI path): the report labels it, it is not the waker, and the trace
+   does not say who was.
 2. **Mali HWCNT.** Boot with `--arm hwcnt=frame.ui` and nothing else profiling; the `glFinish`
    brackets serialize the pipeline, so no `fps=` from this leg. Pull `plxnative-hwcnt.jsonl` from
    the app's runtime directory, then `tools/analyze-hwcnt.py FILE --phase frame.ui --discard 60`
@@ -285,8 +330,9 @@ Findings:
    after seq 3032 committed 3.45 ms after its interrupt with 4.88 ms to spare; the frame thread was
    blocked in `poll` with its CPU idle for 11.5 ms of that. In those frames `w=` shows one voluntary
    sleep, ~0.3-0.45 ms of CPU and ~0 run-queue wait. That is the compositor releasing the buffer a
-   cycle late; nothing in the app's frame can change it. (Part of that count was taken while the
-   trace was being read back, which loads the set.)
+   cycle late; nothing in the app's frame CPU can change it. (Part of that count was taken while the
+   trace was being read back, which loads the set. This analysis had no GPU job attribution, so it
+   could not tell a late compositor from a late app GPU job: see the worked example below.)
 4. **Frame-thread preemption over the 8 s:** 4,922 preemptions while runnable, 419 ms in total
    (about 5% of the time), 8 over 1 ms, 2 over 3 ms (12.6 ms on CPU 0, 3.6 ms on CPU 3). Wake-up
    latency was never over 1.4 ms. The set runs at a load average of about 12 because every system
@@ -310,6 +356,17 @@ Findings:
 7. **Leg 3 produced nothing.** `--arm wldebug` set `WAYLAND_DEBUG=client` (the `wldebug:` line is in
    the event log) but libwayland-client printed no protocol lines to `plxnative-stderr.log` on this
    firmware (webOS 4.10.2). The trigger is unverified as an instrument on this set.
+
+**Worked example, 2026-10-24: grid-pong with `--latch`** (mock, panel off, ARM release, 3 x 6 s
+windows per leg). Main at 9.8 M GPU_ACTIVE cycles a frame: the app's GPU work ends about 11.4 ms
+after the commit, at the latch +0.24..+0.28 ms (p50; p95 +0.65..+0.67), so about zero margin. All 9
+full-refresh (20-22 ms) waits in 1,548 traced frame pairs were GPU-late: the commit was on time
+(7.8-10.5 ms early) and the GPU finished +4.0..+6.6 ms after the latch, the compositor's own ~3 ms
+job landing in the middle of ours. The 9 half-tick (12-15 ms) waits split 5 GPU-late, 3 edge, 1
+compositor-side. A lighter-ground experiment build (6.7 M cycles a frame, not on main) ended its
+GPU work 6.9 ms after the commit, 4.0 ms before the latch (p50), and its 2 long waits in 1,595
+pairs were compositor-side. The structural budget: with two buffers, wake-to-commit CPU (~4.8 ms)
+plus the post-commit GPU work must fit in one refresh. Window rates are inflated by the tracing.
 
 The probe's run-queue field (`w=<wall>/<cpu>/<runq>`, from `/proc/thread-self/schedstat`) does
 report non-zero values on this kernel (for example `w=16.13/0.38/3.96`), and
