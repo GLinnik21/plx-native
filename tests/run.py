@@ -6599,7 +6599,13 @@ def fps_for_tiers(scenes, include_player, name_filter=None):
     return [s for s in in_tier if not name_filter or name_filter in s["name"]]
 
 
-def quiet_tv(tv, sound=False, panel="off"):
+# The one panel default for every `--fps --mock` entry: the CLI flag (`--panel`), `quiet_tv`, and the
+# two `cfg.get("panel", ...)` fallbacks a cfg built without the CLI reaches. They share this one name
+# so they cannot drift apart; `QuietTv` in tests/test_harness.py pins each of them to it.
+PANEL_DEFAULT = "off"
+
+
+def quiet_tv(tv, sound=False, panel=PANEL_DEFAULT):
     """Set the panel (`panel` = "on"|"off") and, once per run (`sound=True`), MUTE the sound,
     through `tools/tv-session.sh`. Fails closed: a run that cannot meet the requested panel/sound
     state stops instead of measuring a different one. Never un-mutes.
@@ -6631,7 +6637,7 @@ def run_mock_fps_scene(scene, cfg):
     any server that is not the synthetic one, and the panel state (`--panel`, default off: it is only
     the backlight, see `quiet_tv`) is re-asserted before every launch.
     """
-    quiet_tv(cfg["tv"], panel=cfg.get("panel", "off"))
+    quiet_tv(cfg["tv"], panel=cfg.get("panel", PANEL_DEFAULT))
     log = os.path.join(tempfile.gettempdir(), f"plx-mock-pms-{os.getpid()}-{scene['name']}.log")
     args = mock_fps.mock_server_args(scene)
     print(f"    mock: tests/mock_pms.py {' '.join(args) or '(default library)'}")
@@ -6654,7 +6660,7 @@ def run_fps_suite(scenes, cfg, token, include_player, skipped=()):
     # in the app reads the panel state. Measured 2026-10-24 (Home `grid-pong`, release build): panel
     # off 73 frames/cycle at 59.9 fps, 9 misses in cycles 2-60; on 73 at 59.6-59.9 fps, 8/13/14.
     # `--panel on` lights it for a run someone wants to watch.
-    panel = cfg.get("panel", "off")
+    panel = cfg.get("panel", PANEL_DEFAULT)
     print(f"    panel rule: panel {panel.upper()} and sound OFF (muted) for this suite "
           "(tools/tv-session.sh screen on|off; tools/tv-session.sh sound off)")
     results = []
@@ -6955,7 +6961,7 @@ def main():
                          "`tools/tv-session.sh up --guest --mock`, refuses a log whose server is "
                          "not the synthetic one, and keeps the panel OFF (see --panel) and the sound muted. "
                          "Debug flavor only. Scenes with no `mock` block are skipped with a reason")
-    ap.add_argument("--panel", choices=("on", "off"), default="off",
+    ap.add_argument("--panel", choices=("on", "off"), default=PANEL_DEFAULT,
                     help="with --mock: the TV panel state for the run (default: off). A dark panel "
                          "is only the backlight; the app keeps presenting at full rate, so fps and "
                          "smoothness runs read the same either way (Home grid-pong, 2026-10-24: "

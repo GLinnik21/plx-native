@@ -90,9 +90,12 @@
 # build): panel off 73 frames/cycle at 59.9 fps with 9 missed refreshes in cycles 2-60; panel on
 # 73 frames/cycle at 59.6-59.9 fps with 8, 13 and 14. It saves the panel over long runs and costs
 # nothing.
-# NOT verified: `shot` and the capture stream with the panel off. Nobody has checked whether the
-# capture service still returns the picture on a dark panel, so do not assume it works or that it
-# fails; check the first capture and record what you saw.
+# `shot` (the DISPLAY compositor read) works with the panel off: docs/measurements/
+# tv-session-7-2026-09-10.md ran `screen off` first and got a 1920x1080 DISPLAY capture with real
+# pixel values (opener p95 246.9, row-mate 167.0), and docs/measurements/
+# library-all-types-and-fps-2026-09-26.md checked native captures of the final card rendering with
+# the panel off. NOT on record: the live capture stream (`/tmp/plxnative-capture`, the app's own
+# GLES frames) with the panel off; check the first frame instead of assuming either way.
 #
 # SOUND is the television's own mute, separate from the panel above and from playback: it silences
 # whatever the set would otherwise put out, panel on or off, app running or not.
@@ -1209,7 +1212,7 @@ cmd_down() {
 }
 
 # Blank or restore the PANEL, leaving the app and playback untouched. See the header: it is only
-# the backlight, so the app presents the same either way (capture with the panel off is unverified).
+# the backlight, so the app presents the same either way (`shot` works with it dark; see the header).
 cmd_screen() {
   local want="${1:-}"
   case "$want" in

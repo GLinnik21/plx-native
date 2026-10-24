@@ -104,9 +104,12 @@ panel is only the backlight, and the app keeps presenting at full rate with it d
 release build: 73 frames/cycle at 59.9 fps panel off, 59.6-59.9 on; the panel state changed neither
 pacing nor misses). `tests/run.py --fps --mock` blanks it by default; `--panel on` lights it for a run
 someone wants to watch. `tools/tv-session.sh screen on|off` and `tools/tv-session.sh sound off` are
-both it. Capture (`shot`, the capture stream) with the panel off is NOT verified: check the first
-capture instead of assuming either way. See `docs/agent-reference.md` (Tier 2) for the full history of
-this rule.
+both it. `shot` (the DISPLAY compositor read) works with the panel off:
+`docs/measurements/tv-session-7-2026-09-10.md` ran `screen off` first and got a 1920x1080 capture
+with real pixel values, and `docs/measurements/library-all-types-and-fps-2026-09-26.md` checked
+native captures with the panel off. The live capture stream (the app's own GLES frames) with the
+panel off is not on record: check its first frame instead of assuming either way. See
+`docs/agent-reference.md` (Tier 2) for the full history of this rule.
 
 `wan off` is the offline-mode test condition: a netfilter chain on the television rejects every
 v4 packet leaving the LAN and every DNS query, an `unreachable 2000::/3` route cuts public v6

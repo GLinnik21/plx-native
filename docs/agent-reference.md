@@ -1976,9 +1976,13 @@ before every scene (`--panel on` lights it for a run someone wants to watch). Th
 2026-10 form ("ON for every smoothness / fps run, because a dark panel lets `plx_machine::idle` hold
 presents back"), which that measurement contradicts, and the 2026-09-07 form before it ("panel OFF for fps
 too, rendering continues with the LCD off"), which named the same-session screen-on vs screen-off
-`fps=` comparison as owed — the 2026-10-24 measurement is that comparison. **Not verified:** `shot`
-and the capture stream with the panel off; check the first capture instead of assuming either way.
-The command is `tools/tv-session.sh screen off|on` (a PANEL state, not an app state —
+`fps=` comparison as owed — the 2026-10-24 measurement is that comparison. **Capture with the panel
+off:** `shot` (the DISPLAY compositor read) is on record as working: `docs/measurements/
+tv-session-7-2026-09-10.md` ran `screen off` first and got a 1920x1080 DISPLAY capture with real
+pixel values (opener p95 246.9 against a row-mate's 167.0), and `docs/measurements/
+library-all-types-and-fps-2026-09-26.md` checked native captures with the panel off. **Not on
+record:** the live capture stream (`/tmp/plxnative-capture`, the app's own GLES frames) with the
+panel off; check its first frame instead of assuming either way. The command is `tools/tv-session.sh screen off|on` (a PANEL state, not an app state —
 the app keeps running and playback keeps decoding). The sound half is now the same shape of
 command: `tools/tv-session.sh sound off|on|status` calls `com.webos.service.audio/setMuted` and
 reads `getVolume` back to confirm — this is the sanctioned path, so no lane needs
