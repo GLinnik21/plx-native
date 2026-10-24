@@ -351,17 +351,20 @@ recents writes are the eighth (the bullet headed "The Search lane"): both worker
   answer, or one window of a lane read on a copy of the source's lane), addressed by the query's
   generation. `finish_search_job` is the runner's call. The body keeps the `catch_unwind` guard the
   old worker had and posts its answer outside it, so a fetch that panics lands as a failed fetch
-  and the source backs off instead of staying out. It differs from the lanes before it in four ways.
+  and the source backs off instead of staying out. It reuses two earlier shapes, the
+  `refuse_for`/`take_refused` backoff (as subtitle search) and the runner-resolved `&'static Client`
+  (as every lane), and differs in two ways: several jobs share one address, and a second kind has a
+  unit answer.
   - **Several jobs, one per source, and the slot is in the port.** `Addr.req` is the query's
     generation, so `SearchPort` carries the slot it answers into and the adapter it was made from:
     `done` stamps the landing with the generation, `refused` names the slot. A `Reset` rotates the
     adapter, and a job emitted before it answers into the retired one.
-  - **A refusal backs the source off.** `SearchPort::refused` is `Fetch::refuse_for(generation)`: it
+  - **A refusal backs the source off (reused).** `SearchPort::refused` is `Fetch::refuse_for(generation)`: it
     gives the claim back and remembers the refusal only while the claim is still that generation's.
     The next pump reads it (`take_refused`) before it decides to ask, so a refused source waits
     `RETRY_FRAMES` instead of being emitted again every frame, which is what the refused inline
     spawn did. A refusal for a request a newer query has superseded leaves the newer claim alone.
-  - **The client is resolved once, by the runner.** `StoreRunner::launch_search` resolves the slot's
+  - **The client is resolved once, by the runner (reused).** `StoreRunner::launch_search` resolves the slot's
     client against the step's key and hands the worker that `&'static Client`; the worker body reads
     no registry, so both `client_for` reads are gone from the ledger. A slot a roster change
     re-points while a fetch is out is caught by the roster-generation supersede, which drops its

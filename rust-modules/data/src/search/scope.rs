@@ -8,7 +8,8 @@
 //!
 //! The Plex Home roster a source's `household` mark is graded against is an ARGUMENT of the
 //! snapshot, read by the application's `Bridge` from the session and handed in: this module reads
-//! the server registry, never the session cache.
+//! the server registry and the session's two generation counters (`current_gen`,
+//! `visible_generation`, as memo keys), never the session's contents (`peek`).
 
 use plx_plex::plex::ServerId;
 use std::cell::RefCell;
@@ -183,8 +184,9 @@ impl ScopeCache {
     ///
     /// `household` is the signed-in profile's household member ids
     /// (`Session::household_ids`). The caller reads the session and passes it in, as the Hubs and
-    /// ViewState steps are handed their registry keys: this module reads the server registry
-    /// itself but never the session cache.
+    /// ViewState steps are handed their registry keys: this module reads the server registry and
+    /// the session's two generation counters (`current_gen`, `visible_generation`, as memo keys),
+    /// never the session's contents (`peek`).
     pub fn snapshot(&self, household: &[i64]) -> SourceScopeSnapshot {
         let key = read_key();
         let mut cache = self.cache.borrow_mut();

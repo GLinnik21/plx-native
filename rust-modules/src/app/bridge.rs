@@ -1621,8 +1621,9 @@ impl Bridge {
     /// Search commands snapshot their initial favourite-library ranking from the same retained
     /// directory the screen read when it emitted the command.
     ///
-    /// A command emits no fetch (the requests are the pump's, where the registry's answer is read),
-    /// but the drain stays so that a command that does is started in the call that ran it.
+    /// A command emits no fetch (the requests are the pump's), but a recents edit
+    /// (`RememberRecent` / `ClearRecents`) emits its `StoreJob::SaveRecents` here, and this drain is
+    /// what starts it.
     pub(crate) fn search_run(&mut self, cmd: plx_data::stores::search::SearchCmd) -> bool {
         let changed = self.stores.search_run(cmd, self.directory.view());
         self.start_store_jobs_of(StoreId::Search);
