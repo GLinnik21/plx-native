@@ -728,6 +728,7 @@ class ScreenSubcommand(unittest.TestCase):
         '}'
     )
     OFF_WHILE_LIT_REFUSED = ON_WHILE_LIT  # -102 asked of `off`: the mirror reading must not apply
+    ON_REFUSED_WITH_101 = OFF_WHILE_DARK  # -101 asked of `on`: "already off" must not read as lit
     ACCEPTED = '{\n    "state": "%s",\n    "returnValue": true\n}'
 
     def _run(self, want, reply):
@@ -795,6 +796,15 @@ class ScreenSubcommand(unittest.TestCase):
         out = self._run("off", self.OFF_WHILE_LIT_REFUSED)
         self.assertIn("RC:1", out)
         self.assertIn("screen off refused", out)
+        self.assertNotIn("panel already", out)
+
+    def test_on_refused_with_101_is_still_a_refusal(self):
+        # -101 means "already off" only for `off`; asked of `on` it would report a lit panel that
+        # the reply says is dark, and skip a real turn-on. Whether turnOnScreen can return -101 at
+        # all is unknown; if it ever does, it is a refusal to report, never "panel already on".
+        out = self._run("on", self.ON_REFUSED_WITH_101)
+        self.assertIn("RC:1", out)
+        self.assertIn("screen on refused", out)
         self.assertNotIn("panel already", out)
 
 
