@@ -2504,7 +2504,7 @@ mod flight_tests {
     }
 
     /// A Home press while a seek flight is out saves the SEEK TARGET (what `app::intended_pos`
-    /// snapshots for `lifecycle.suspend`), not the playhead the viewer just left: the published
+    /// snapshots for the lifecycle's `Park`), not the playhead the viewer just left: the published
     /// `playpos_ns` still reads the pre-seek 60 s for the whole flight.
     #[test]
     fn a_suspend_snapshot_during_a_seek_flight_is_the_seek_target() {
