@@ -441,13 +441,23 @@ impl Backdrop {
             && !self.wash.is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS);
         let art_in_ground = wash && slide.is_none() && !held && env.sp < HERO_ART_CULL;
         let ramp = (env.hero_a > 0.01 && slide.is_none()).then(|| hero_ramp(env.hero_a));
+        // Once the hero is culled NO art is drawn at all, a slide or held layer notwithstanding, and
+        // the shelves and grid stand on the wash alone: ONE colour, which the renderer clears
+        // rather than shades (`AmbientWash::draw_flat_ground`). Every earlier frame — a hero slide,
+        // art held beneath a replacement, a texture still pending, the dive itself — is the
+        // layered gradient exactly as it always was: those frames have a photograph, or are about
+        // to, and flattening them would jump the whole page between gradient and one colour.
         let ramp_in_ground = wash
-            && self.wash.draw_ground(
-                p,
-                Rect::FULL,
-                art_in_ground.then(|| hero_art(self.tex, env.sp, incoming_a)),
-                ramp,
-            );
+            && if env.sp >= HERO_ART_CULL {
+                self.wash.draw_flat_ground(p, Rect::FULL, ramp)
+            } else {
+                self.wash.draw_ground(
+                    p,
+                    Rect::FULL,
+                    art_in_ground.then(|| hero_art(self.tex, env.sp, incoming_a)),
+                    ramp,
+                )
+            };
 
         let folded = !wash
             && env.hero_a > 0.01

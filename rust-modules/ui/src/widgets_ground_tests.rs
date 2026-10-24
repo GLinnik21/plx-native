@@ -136,6 +136,72 @@ fn one_opaque_fragment_is_the_wash_the_art_and_the_ramp_stacked() {
     }
 }
 
+// ── The flat ground (`AmbientWash::draw_flat_ground`) is its own call; `draw_ground` stays layered ──
+
+/// A ramp with both knees inside the panel, so the layered path cuts the wash into three bands.
+fn knee_ramp() -> WashRamp {
+    WashRamp { ink: [0.0, 0.0, 0.0, 1.0], stops: [(300.0, 0.0), (700.0, 0.4), (SCR_H, 0.7)] }
+}
+
+/// What a recording painter was handed while `f` ran: `(command tag, screen rect)` in draw order.
+fn handed(f: impl FnOnce(Painter)) -> Vec<(u64, Rect)> {
+    crate::draw_census::capture(|| f(Painter::recording()))
+}
+
+/// **`draw_ground` with no photograph is still the layered picture, and never takes the ramp the
+/// driver cannot carry.** A ground whose art is pending, held, sliding or scrolled to nothing is a
+/// gradient with a photograph about to go over it; folding it to one colour for those frames jumps
+/// the page in a frame. So the call is main's: the wash as the four sampled corners, the ramp riding
+/// the wash per band only where the ink program exists (`gfx::wash_ink_ok`) and otherwise left to
+/// the caller (`false`). Art whose texture is 0 is no art.
+#[test]
+fn a_ground_with_no_art_is_still_the_layered_picture() {
+    let w = wash_on([
+        [code8(200), code8(10), code8(90)],
+        [code8(20), code8(240), code8(90)],
+        [code8(60), code8(130), code8(5)],
+        [code8(250), code8(70), code8(180)],
+    ]);
+    let pending = WashArt {
+        tex: 0,
+        rect: Rect::FULL.cover(1280.0, 720.0),
+        uv: plx_gfx::gfx::UV_FULL,
+        tint: [1.0; 4],
+    };
+    let inked = plx_gfx::gfx::wash_ink_ok();
+    let ramp = knee_ramp();
+    for art in [None, Some(pending)] {
+        // No ramp: one plain wash pass over the rect, and nothing taken.
+        let mut took = true;
+        assert_eq!(handed(|p| took = w.draw_ground(p, Rect::FULL, art, None)), [(16, Rect::FULL)]);
+        assert!(!took, "no ramp to take");
+        // A ramp: carried per band (tag 23) only where the driver has the program, else the caller's.
+        let mut took = !inked;
+        let got = handed(|p| took = w.draw_ground(p, Rect::FULL, art, Some(ramp)));
+        let want: Vec<(u64, Rect)> = if inked {
+            cut_at(Rect::FULL, [Some(300.0), Some(700.0)]).map(|b| (23, b)).collect()
+        } else {
+            vec![(16, Rect::FULL)]
+        };
+        assert_eq!(got, want, "art {:?}", art.map(|a| a.tex));
+        assert_eq!(took, inked, "the ramp is taken exactly when the wash can carry it");
+    }
+}
+
+/// **`draw_flat_ground` is the flat colour, and always takes the ramp**: one primitive over the
+/// rect (the renderer clears it), never the per-band split, and `true` exactly when there was a
+/// ramp for the caller not to draw.
+#[test]
+fn the_flat_ground_is_one_primitive_and_takes_the_ramp() {
+    let w = wash_on([[code8(31), code8(27), code8(40)]; 4]);
+    let mut took = true;
+    assert_eq!(handed(|p| took = w.draw_flat_ground(p, Rect::FULL, None)), [(16, Rect::FULL)]);
+    assert!(!took, "nothing to take");
+    let mut took = false;
+    assert_eq!(handed(|p| took = w.draw_flat_ground(p, Rect::FULL, Some(knee_ramp()))), [(16, Rect::FULL)]);
+    assert!(took, "the ramp is folded into the colour, whatever the driver can carry");
+}
+
 // ── A ground with no photograph is ONE flat colour (`AmbientWash::flat_ground`) ──────────────────
 
 /// A wash resting on `corners` (tl, tr, br, bl), the way `AmbientWash::jump` puts it there.

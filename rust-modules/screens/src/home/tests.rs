@@ -921,6 +921,52 @@ fn the_prefetch_is_armed_only_from_a_settled_hero() {
     }
 }
 
+/// **The ground is ONE flat colour only once the hero is culled** (`sp >= HERO_ART_CULL`); every
+/// earlier frame is the layered gradient. The flat ground takes Home's ramp into its colour, so no
+/// ramp rect follows it; the layered ground on a host (no ink program: `gfx::wash_ink_ok`) hands the
+/// ramp back, and the two `rect`s `base_scrim_ramp` describes are drawn after it. So the ramp rects
+/// are the tell: present on a hero whose texture is still pending and on every frame of the dive up
+/// to its last, absent from the first culled frame on (a hero SLIDE has no ramp in the ground at all
+/// and draws the rects either way).
+#[test]
+fn the_ground_goes_flat_only_once_the_hero_is_culled() {
+    use plx_ui::draw_census;
+    let mut b = Backdrop::new();
+    b.wash.jump([
+        [0.30, 0.10, 0.10, 1.0],
+        [0.10, 0.30, 0.10, 1.0],
+        [0.10, 0.10, 0.30, 1.0],
+        [0.25, 0.25, 0.05, 1.0],
+    ]);
+    assert!(!b.wash.is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS), "the premise: a lit wash");
+    let ramp_rects = |sp: f32, slide: Option<(f32, f32)>| {
+        let mut env = Env::inert();
+        env.sp = sp;
+        env.hero_a = 1.0;
+        let [y0, knee, ..] = base_scrim_ramp(1.0);
+        let ramp = [Rect::new(0.0, y0, SCR_W, knee - y0), Rect::new(0.0, knee, SCR_W, SCR_H - knee)];
+        let drawn = draw_census::capture(|| b.draw(Painter::recording(), &env, slide));
+        ramp.into_iter().filter(|r| drawn.contains(&(1, *r))).count()
+    };
+    // The premise: no host test links GL, so there is no ink program and the layered ground hands
+    // the ramp back for the caller to draw as rects. (With one, a layered frame would carry the
+    // ramp in the wash and this tell would not exist.)
+    assert!(!plx_gfx::gfx::wash_ink_ok(), "a host build has no wash ink program");
+    // Pending texture (nothing resident: `tex` is 0), the dive in flight, and its last frame.
+    for sp in [0.0, 0.4, HERO_ART_CULL - 0.001] {
+        assert_eq!(ramp_rects(sp, None), 2, "sp {sp}: the layered ground leaves the ramp to the caller");
+    }
+    // A hero slide carries no ramp in the ground (`ramp` is None under a slide), so the ramp is
+    // drawn as its two rects once, whether the slide is before the cull or at it.
+    for sp in [0.0, HERO_ART_CULL] {
+        assert_eq!(ramp_rects(sp, Some((-SCR_W, 0.0))), 2, "sp {sp}: a slide draws the ramp as rects");
+    }
+    // Culled: the flat ground took the ramp.
+    for sp in [HERO_ART_CULL, 1.0] {
+        assert_eq!(ramp_rects(sp, None), 0, "sp {sp}: the flat ground folds the ramp into its colour");
+    }
+}
+
 #[test]
 fn the_ground_is_skipped_only_when_opaque_art_covers_it() {
     assert!(

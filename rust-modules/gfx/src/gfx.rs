@@ -80,8 +80,9 @@ pub(crate) use glsl;
 ///
 /// Every program built with this owes `gfx` two things at link time: `u_dither_tex` set to texture
 /// unit 2 ([`bind_dither_tile`]), and `u_dither` set per draw from [`dither_for_field`] (the ambient
-/// wash takes [`DITHER_LSB`] on every draw: it is always broad, and since 2026-09-19 nothing may
-/// switch its noise off).
+/// wash takes [`DITHER_LSB`] on every draw that reaches its program: it is always broad, and since
+/// 2026-09-19 nothing may switch its noise off. A wash of one colour never reaches the program: it
+/// is a clear, [`flat_clear`]).
 ///
 /// **Only the SLOW-FIELD programs are built with it** — `fs_ambient`, `fs_field` (and its panel
 /// twin `fs_field_panel`) and `fs_glass`, the ones whose ramp is a blur, a field or a full-screen
@@ -1742,7 +1743,9 @@ enum ClearBox {
 /// area `view` and to the clip `live` the context holds (`None` = the test is off), or `None` when
 /// nothing of it is left. `bare` says `view` is the whole of the surface a clear reaches, which is
 /// what lets a box that fills it clear with the test off; a letterboxed surface's bars belong to the
-/// frame clear, and a bare clear would paint them.
+/// frame clear, and a bare clear would paint them. It is `surface::viewport_fills_drawable()`, which
+/// takes the viewport's SIZE against the drawable's as well as its origin: a one-pixel remainder the
+/// centring floors away leaves an origin of zero and a column outside the viewport.
 ///
 /// A box that IS the whole of what is open - the live clip, or the target with the test off - clears
 /// under the state as it stands: a full-surface clear is one a tiler can fold into its tile clear,
@@ -1772,7 +1775,10 @@ unsafe fn clear_flat_ground(x: f32, y: f32, w: f32, h: f32, rgb: [f32; 3]) {
         Some((_, _, _, tw, th)) => ([0, 0, tw, th], false),
         None => {
             let (.., vw, vh) = plx_base::surface::viewport();
-            ([vx, vy, vx + vw, vy + vh], vx == 0 && vy == 0)
+            // Bare only when the viewport IS the drawable. An origin of zero is not proof: the
+            // centring is floored, so a drawable a pixel past the canvas has `vx == 0` and a column
+            // the viewport does not cover.
+            ([vx, vy, vx + vw, vy + vh], plx_base::surface::viewport_fills_drawable())
         }
     };
     let live = LIVE_SCISSOR;
@@ -5885,7 +5891,8 @@ pub const DITHER_LSB: f32 = 2.0 / 255.0;
 /// **THE ONE RULE for whether a surface's output needs dithering**, shared by the three programs
 /// built with `glsl_dithered!`. `shaders/dither.glsl` is the argument; this is the decision.
 ///
-/// **A field dithers whenever it is drawn, and so does every page wash.** The noise is one texture
+/// **A field dithers whenever it is drawn, and so does every page wash with a gradient** (one of a
+/// single colour is a clear, `flat_clear`, with nothing to band). The noise is one texture
 /// fetch and one add per fragment (`dither.glsl`'s cost rules), priced by AREA. On the 2M-fragment
 /// wash it was once the difference between 45 and 50 fps on Home's fold (2026-09-02), and for that
 /// the wash under moving artwork — Home's, Detail's — was for a while allowed to drop it while the
@@ -9497,6 +9504,9 @@ mod tests {
         // A letterboxed surface: its bars are not the ground's, so even the full viewport is scissored.
         let boxed: PxBox = [0, 135, 1920, 1215];
         assert_eq!(ground_clear(boxed, boxed, None, false), Some(ClearBox::Within(boxed)));
+        // ...and so is one whose viewport starts at the origin but stops short of the drawable (the
+        // centring floors a 1-px remainder to an offset of zero): not bare, so scissored to the box.
+        assert_eq!(ground_clear(full, view, None, false), Some(ClearBox::Within(full)));
         // A live clip: a box that IS the clip clears under it; a larger rect is cut to it and does too.
         let clip = Some([100, 200, 900, 700]);
         assert_eq!(ground_clear([100, 200, 900, 700], view, clip, true), Some(ClearBox::Open));
