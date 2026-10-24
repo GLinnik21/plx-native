@@ -555,7 +555,6 @@ fn reset_clears_the_single_flight_flags_with_the_mailboxes() {
     browse.adapter.page.claim(0);
     browse.adapter.genres.claim(0);
     browse.adapter.letters.claim(0);
-    browse.adapter.page.clear();
 
     browse.reset();
 
