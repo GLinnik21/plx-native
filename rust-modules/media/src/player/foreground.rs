@@ -7,7 +7,7 @@
 //! the names below, so app code spells them as it always did.
 //!
 //! Moved out of `lifecycle.rs` verbatim in the Sans-IO lifecycle PR B (a pure move). The only
-//! change to the machine's file is that three of its helpers which the loop calls
+//! code change to the machine's file is that three of its helpers which the loop calls
 //! (`ForegroundEffect::awaits_answer`, `PrepareAnswer::of_outcome`, `PrepareAnswer::of_start`) became
 //! `pub(super)`.
 

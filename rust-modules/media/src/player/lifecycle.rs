@@ -11,13 +11,12 @@
 //! transport helpers (`paused`, `viewer_paused`, `set_transport_paused`, ...) are the one door
 //! every surface reaches the player's pause through; they are [`super::transport`], the IO side of
 //! this contract, and nothing here names them.
-//! All of it describes the PLAYER's transport and its resume after an
-//! OS suspend, and the player machine ([`super::machine::Player`]), the detail page's trailer
-//! transport ([`super::preview::transport`]) and the claim hold ([`super::claim_hold`]) all name
-//! it, so it lives here rather than in `app::lifecycle` (a layer above the player). The loop's
-//! adapter for it, `PlayerForegroundActuator`, needs `app` state and stays in `app::lifecycle`,
-//! which re-exports the names of this module, [`super::foreground`] and [`super::transport`] so
-//! app code spells them as it always did.
+//! All of it describes the PLAYER's resume after an OS suspend, and the player machine
+//! ([`super::machine::Player`]) holds the `ForegroundLifecycle`, so it lives here rather than in
+//! `app::lifecycle` (a layer above the player). The loop's adapter for it,
+//! `PlayerForegroundActuator`, needs `app` state and stays in `app::lifecycle`, which re-exports
+//! the names of this module, [`super::foreground`] and [`super::transport`] so app code spells
+//! them as it always did.
 //!
 //! Moved out of `app/lifecycle.rs` verbatim in module-layer step L12 (a pure move; the
 //! `RESUME_REWIND_NS` constant came with it from `app/mod.rs`). The drivers and the transport
