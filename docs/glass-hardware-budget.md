@@ -482,6 +482,11 @@ sensor and no GPU clock at all** (there is no thermal zone and no frequency node
 `/sys`; this was checked, read-only, at the start and end of every batch). So I cannot say what a
 set that has been off overnight does. What I can say is that **a set this warm shows no decay and
 holds a clean 60**, which removes the reason to design against a 50 fps ceiling.
+(2026-10-24: the GPU does have a clock, fixed at 672 MHz; sysfs just does not show it. The TV's
+`mali_kbase.ko` declares it and has no clock-setting path, and debugfs `mali0/gpu_utilization`
+agrees; see `.agents/skills/profile-tv/SKILL.md`, "Mali T820 facts". The set does have a
+temperature sensor, though no `thermal_zone`: LG's power manager reports the SoC temperature in
+`/proc/lg/pm/temperature` (39-61 °C on 2026-10-24) and the CPU frequency in `/proc/lg/pm/frequency`.)
 
 ---
 
@@ -745,7 +750,10 @@ same dial in the same launch.
 
 * **A cold television.** No temperature sensor and no clock are exposed, and the set was warm and
   busy throughout. §7 shows no decay over hours of continuous load, which is strong, but a
-  from-standby comparison was not possible.
+  from-standby comparison was not possible. (2026-10-24: a temperature is exposed after all, in
+  `/proc/lg/pm/temperature` (39-61 °C on 2026-10-24), and the GPU clock is known: fixed at
+  672 MHz. There is still no `thermal_zone`. See `.agents/skills/profile-tv/SKILL.md`, "Mali T820
+  facts".)
 * **How much room is left inside the 8.9 ms base frame.** That figure is an inference from the card
   ramp, good to about ±1 ms. It is not a direct measurement, and it is specific to Home with the
   grid moving; other screens will differ, probably downward (Home's hero photograph is the single

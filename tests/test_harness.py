@@ -980,8 +980,9 @@ class TestUserTokenFile(unittest.TestCase):
 
 
 class QuietTv(unittest.TestCase):
-    """`quiet_tv` is what `--fps --mock` uses to set the panel and sound. The panel stays ON for
-    smoothness runs (a dark one makes the frame times meaningless); only `--panel off` blanks it."""
+    """`quiet_tv` is what `--fps --mock` uses to set the panel and sound. The panel is OFF by
+    default, fps runs included: it is only the backlight, and the app keeps presenting at full
+    rate (measured 2026-10-24); only `--panel on` lights it, for a run someone wants to watch."""
 
     def _steps(self, **kw):
         calls = []
@@ -993,13 +994,13 @@ class QuietTv(unittest.TestCase):
             run.quiet_tv("tv.invalid", **kw)
         return calls
 
-    def test_default_keeps_the_panel_on_and_mutes_once(self):
-        self.assertEqual(self._steps(), [("screen", "on")])
-        self.assertEqual(self._steps(sound=True), [("screen", "on"), ("sound", "off")])
+    def test_default_blanks_the_panel_and_mutes_once(self):
+        self.assertEqual(self._steps(), [("screen", "off")])
+        self.assertEqual(self._steps(sound=True), [("screen", "off"), ("sound", "off")])
 
-    def test_panel_off_is_the_opt_in(self):
-        self.assertEqual(self._steps(sound=True, panel="off"),
-                         [("screen", "off"), ("sound", "off")])
+    def test_panel_on_is_the_opt_in_and_the_sound_is_muted_either_way(self):
+        self.assertEqual(self._steps(sound=True, panel="on"),
+                         [("screen", "on"), ("sound", "off")])
 
     def test_a_bad_panel_value_is_refused_and_a_failed_step_stops_the_run(self):
         with self.assertRaises(ValueError):
@@ -1008,10 +1009,47 @@ class QuietTv(unittest.TestCase):
         with mock.patch.object(run.subprocess, "run", fail), self.assertRaises(SystemExit):
             run.quiet_tv("tv.invalid")
 
-    def test_the_cli_exposes_panel_with_on_as_default(self):
+    def test_the_cli_exposes_panel_with_off_as_default(self):
+        # One constant feeds the flag, `quiet_tv`'s default and both `cfg.get("panel", ...)`
+        # fallbacks, so the value is pinned once here and each user of it is pinned below.
+        self.assertEqual(run.PANEL_DEFAULT, "off")
         src = inspect.getsource(run.main)
-        self.assertIn('"--panel", choices=("on", "off"), default="on"', src)
+        self.assertIn('"--panel", choices=("on", "off"), default=PANEL_DEFAULT', src)
         self.assertIn('cfg["panel"] = args.panel', src)
+
+    def test_quiet_tv_defaults_to_the_shared_panel_default(self):
+        self.assertEqual(inspect.signature(run.quiet_tv).parameters["panel"].default,
+                         run.PANEL_DEFAULT)
+
+    def test_a_config_without_a_panel_key_falls_back_to_off(self):
+        # `run_mock_fps_scene` and `run_fps_suite` read `cfg.get("panel", ...)`: a cfg built
+        # without the CLI (a test, a caller) must get the same default the CLI has.
+        seen = []
+        with mock.patch.object(run, "quiet_tv", lambda tv, sound=False, panel="?": seen.append(panel)), \
+                mock.patch.object(run, "run_fps_scene", return_value=(True, "")), \
+                mock.patch.object(run.mock_fps, "MockPms"), \
+                mock.patch.object(run.mock_fps, "mock_server_args", return_value=[]), \
+                mock.patch.object(run.mock_fps, "resolve_mock_token", return_value="t"):
+            run.run_mock_fps_scene({"name": "x"}, {"tv": "tv.invalid", "mock": {"host": "h", "port": 1}})
+        self.assertEqual(seen, ["off"])
+
+    def test_the_fps_suite_without_a_panel_key_blanks_the_panel_too(self):
+        # `run_fps_suite` asserts the panel and mutes the sound once, up front, from its own
+        # `cfg.get("panel", ...)`; `run_mock_fps_scene` (stubbed here) re-asserts it per scene.
+        calls = []
+
+        def fake_quiet_tv(tv, sound=False, panel="?"):
+            calls.append((sound, panel))
+
+        cfg = {"tv": "tv.invalid", "mock": {"host": "h", "port": 1}}
+        out = io.StringIO()
+        with mock.patch.object(run, "quiet_tv", fake_quiet_tv), \
+                mock.patch.object(run, "run_mock_fps_scene", return_value=(True, "")), \
+                contextlib.redirect_stdout(out):
+            rc = run.run_fps_suite([{"name": "x"}], cfg, "tok", False)
+        self.assertEqual(rc, 0)
+        self.assertEqual(calls, [(True, "off")])
+        self.assertIn("panel rule: panel OFF", out.getvalue())
 
 
 class StoredSessionGate(unittest.TestCase):
