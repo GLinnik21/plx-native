@@ -28,11 +28,15 @@ and the lines are compared to the tree as an exact multiset.
 |---|---|---|
 | `workers` | a production call that starts a worker in a machine: `task::spawn(`, `spawn_small(`, `spawn_small_keeping(`, `spawn_small_or_inline(`, `spawn_off_frame(`, `spawn_off_frame_keeping(`, `storage_worker::submit(`, `submit_retained(`, the command worker's `.submit_ticket(` | `<path>::<enclosing fn>::<spelling>` |
 | `globals` | a production read of a process-global registry in a machine: `client_for`, `current_server`, `current_snapshot`, `keypin::revision`, `keypin::blocked_for`, `session::peek`, `grant::offers`, and `player::TX` in the player's lifecycle | `<path>::<enclosing fn>::<spelling>` |
-| `forks` | a production test/production fork: a `#[cfg(..)]` or `cfg!(..)` whose predicate reads `test` or `feature = "test-support"` and that a production build can satisfy (`not(test)`, `not(any(test, feature = "test-support"))`, `all(target_os = .., not(test))`, ...) | `<path>::<item name>`, or `<path>::<enclosing fn>` for a statement, a field or an inline `cfg!` |
-| `fxlanes` | an `AppFx::<Variant>` arm of `Bridge::app_effect` that does not push `Fx::Deliver(` | `<path>::AppFx::<Variant>` |
+| `forks` | a production test/production fork whose predicate reads `test` or `feature = "test-support"`: a `#[cfg(..)]` attribute that a production build can satisfy (`not(test)`, `not(any(test, feature = "test-support"))`, `all(target_os = .., not(test))`, ...), or an inline `cfg!(..)` of any value | `<path>::<item name>`, or `<path>::<enclosing fn>` for a statement, a field or an inline `cfg!` |
+| `fxlanes` | an `AppFx::<Variant>` arm of `Bridge::app_effect` that does not push `Fx::Deliver(`: one site for each variant on its head, and one for an arm that names no variant (`other => ..`, `_ => ..`) | `<path>::AppFx::<Variant>`, or `<path>::AppFx::_` |
 
-`blocking` (the frame thread's `allow_blocking(` exceptions) is the older ledger these follow and is
-unchanged.
+`blocking` (the frame thread's `allow_blocking(` exceptions) is the older ledger these follow. It now
+runs on the same scanner, so it lists the same sites as before but reads them more accurately: it skips
+any item under a `#[cfg(..)]` that production can never satisfy (not only a `mod`; also a `mod` with
+other attributes in front, and `feature = "test-support"` and `all(test, ..)` items), ignores string
+literals and block comments, and sees a call after a `"http://"` string that the old `//` stripping
+dropped.
 
 **Scope.** `workers` and `globals` read the machines: everything under `rust-modules/data/src`,
 `session/src`, `screens/src`, `ui/src`, `appkit/src` and `machine/src`, plus
@@ -44,24 +48,33 @@ run the product's code. `fxlanes` reads the one fn, `Bridge::app_effect` in `rus
 
 **Decisions the table hides.**
 
-- A bare `spawn(` / `submit(` / `peek(` is a site only in a file that imports it from `task`,
-  `storage_worker` or `session` (`Builder::spawn`, a local fn and `it.peek()` are not workers or
-  registry reads); `peek` is also a site in `plex/src/plex/session.rs`, the module that defines it.
-  A local wrapper (`spawn_discovery`) is no site of its own: the real call inside it is.
+- A bare `spawn(` / `submit(` / `peek(` / `revision(` / `blocked_for(` / `offers(` is a site only in a
+  file that imports it from `task`, `storage_worker`, `session`, `keypin` or `grant` (singly, as the
+  last or any other item of a braced group, or through a glob; `Builder::spawn`, a local fn and
+  `it.peek()` are not workers or registry reads); `peek` is also a site in
+  `plex/src/plex/session.rs`, the module that defines it. A local wrapper (`spawn_discovery`) is no
+  site of its own: the real call inside it is.
 - A getter named without a call (`.and_then(client_for)`) reads the registry as surely as a call
   does, so it is a site. Only a rename (`use ...::client_for as x`) fails outright, because the
   calls through `x` are invisible to the scan.
 - The command worker's `.submit(` is not covered: it is `#[cfg(any(test, feature = "test-support"))]`
   in `base/src/storage_worker.rs`, so no production line can call it. `.submit_ticket(` is covered
   although no machine calls it today: a machine that did would be starting a worker.
-- `player::TX` is read as logic only in `lifecycle.rs`; the HUD's reads are not a machine's.
+- `player::TX` is read as logic only in `lifecycle.rs`, as `crate::player::TX`, `player::TX`,
+  `super::TX` or a bare `TX`; the HUD's reads are not a machine's.
 - `forks` counts an attribute the product can satisfy. `#[cfg(test)]` and `any(test, feature =
-  "test-support")` items are skipped whole (only a test can see them); `all(test, ..)` too.
-  `any(feature = "devtriggers", test)` is counted, because a dev build can satisfy it.
+  "test-support")` items are skipped whole, to the end of their own body (only a test can see them);
+  `all(test, ..)` too. `any(feature = "devtriggers", test)` is counted, because a dev build can
+  satisfy it. An inline `cfg!(..)` is counted whatever it evaluates to, `cfg!(test)` included:
+  `if cfg!(test) {..} else {..}` compiles an arm that production runs and a test does not.
 - `fxlanes`: an arm that pushes `Fx::Deliver(` rides the ordered FIFO, where a result returns as one
   addressed event in the same drain. An arm that parks its request on a side queue of the bridge
   (`reqs`, `content_reqs`, ...) is a second lane with its own timing, so it is a ledger line, and a
-  NEW variant with a side queue fails the gate.
+  NEW variant with a side queue fails the gate. An or-pattern arm (`AppFx::A(r) | AppFx::B(r) =>
+  ..`) is one site for each variant, and an arm that names no variant (`other => ..`, `_ => ..`) is
+  the site `AppFx::_`.
+- A key names the file and the fn's name, and a ledger is a multiset of keys, so a site can move
+  between two same-named fns of one file (a `new` in each of two `impl` blocks) without the gate seeing it.
 
 ## Layout
 

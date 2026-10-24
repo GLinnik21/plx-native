@@ -4,7 +4,7 @@
 #
 #     <path>::<enclosing fn>                 blocking, forks
 #     <path>::<enclosing fn>::<spelling>     workers, globals   (LG_KEYSPELL=1)
-#     <path>::AppFx::<Variant>               fxlanes            (LG_MODE=arm)
+#     <path>::AppFx::<Variant>               fxlanes            (LG_MODE=arm; `AppFx::_` for an arm with no variant)
 #
 # and, in call mode, `REF<TAB><path>:<line>` for a line that names the identifier without calling it
 # (an alias the call-site grep cannot count). Everything is configured through the environment,
@@ -27,11 +27,17 @@
 #   LG_FILE_SITE `PATH@@SITE;;..`: SITE joins LG_SITE in the file PATH alone (the module that defines a
 #                getter calls it bare, and no `use` says so)
 #   LG_REEXPORT_FILE / LG_REEXPORT_RE   the one bare mention tolerated, by file and exact line
-#   -- fork: a `#[cfg(..)]` or `cfg!(..)` whose predicate reads `test` / `feature = "test-support"` in
-#      a way that production can see (see `fork_attr`); no variables --
-#   -- arm: every arm `LG_ARM_HEAD` of the match inside `fn LG_ARM_FN` whose text lacks LG_ARM_OK --
+#   -- fork: an attribute `#[cfg(..)]` or an inline `cfg!(..)` whose predicate reads `test` /
+#      `feature = "test-support"`. An attribute counts only when production can satisfy it (an item no
+#      production build compiles is skipped whole); an inline `cfg!(..)` counts whatever it evaluates
+#      to, because `if cfg!(test) {..} else {..}` compiles an arm production runs and a test does not.
+#      No variables --
+#   -- arm: every arm of the match inside `fn LG_ARM_FN` whose text lacks LG_ARM_OK. One site per
+#      `AppFx::<Variant>` on the arm's head (the text before its `=>`, wrapped over lines or not), so
+#      `AppFx::A(r) | AppFx::B(r) => ..` is two; an arm whose head names no variant (`other => ..`,
+#      `_ => ..`) is one site, `AppFx::_` --
 #   LG_ARM_FN    the fn that holds the match
-#   LG_ARM_HEAD  ERE of an arm's first line (the variant is read from its `AppFx::<Variant>`)
+#   LG_ARM_MATCH ERE of the line that opens the match; its arms are the lines the body is made of
 #   LG_ARM_OK    ERE; an arm that matches it is on the ordered lane and is not a site
 #
 # What counts as production, in every mode: comments, string and char literals (raw strings, block
@@ -190,8 +196,11 @@ function itemname(code,    s) {
     s = code; sub(/^[[:space:]]*(pub(\([^)]*\))?[[:space:]]+)?use[[:space:]]+/, "use ", s)
     sub(/[[:space:]]*[;{].*$/, "", s); return s
   }
-  if (match(code, /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*![[:space:]]*[({]/)) {
-    s = substr(code, RSTART, RLENGTH); sub(/^[[:space:]]*/, "", s); sub(/[[:space:]]*[({]$/, "", s); return s
+  # a macro invocation outside every fn is an item named for its macro, qualified or not
+  # (`plx_base::devtrig::latched_flag!(..);` is `latched_flag!`); inside a fn it is a statement
+  if (top == 0 && match(code, /^[[:space:]]*(::)?([A-Za-z_][A-Za-z0-9_]*::)*[A-Za-z_][A-Za-z0-9_]*![[:space:]]*[({]/)) {
+    s = substr(code, RSTART, RLENGTH); sub(/^[[:space:]]*/, "", s); sub(/[[:space:]]*[({]$/, "", s)
+    sub(/^.*::/, "", s); return s
   }
   return ""
 }
@@ -246,9 +255,31 @@ function gather_cfg_macro(i, p,    j, s, k, ch, bal, t, line) {
   return t
 }
 
-function flush_arm() {
-  if (curarm != "" && !armok) print file "::AppFx::" curarm
-  curarm = ""; armok = 0
+# the arm in hand ends: one site per `AppFx::<Variant>` on its head, or `AppFx::_` when it names none,
+# unless it rides the ordered lane
+function flush_arm(    n, v) {
+  if (inarm && !armok) {
+    n = 0; v = armhead
+    while (match(v, /AppFx::[A-Za-z0-9_]+/)) { print file "::" substr(v, RSTART, RLENGTH); v = substr(v, RSTART + RLENGTH); n++ }
+    if (n == 0) print file "::AppFx::_"
+  }
+  inarm = 0; armhead = ""; armok = 0
+}
+
+# one line of the match body of LG_ARM_FN (armdepth > 0 while it is open). An arm starts on the first
+# line after the previous one ended, and ends on the first line that leaves every bracket balanced and
+# ends in `,` or `}` once its `=>` has been read; its head is the text before that `=>`. The match's own
+# closing brace is a `}` at the body's depth that follows a finished arm.
+function arm_line(code,    p) {
+  if (depth == armdepth && abal == 0 && code ~ /^[[:space:]]*\}/) { flush_arm(); armdepth = -1; return }
+  if (!inarm) { inarm = 1; armhead = ""; headdone = 0; armok = 0; abal = 0 }
+  if (!headdone) {
+    p = index(code, "=>")
+    if (p > 0) { armhead = armhead " " substr(code, 1, p - 1); headdone = 1 } else armhead = armhead " " code
+  }
+  if (code ~ ARMOK) armok = 1
+  abal += balance(code)
+  if (headdone && abal == 0 && code ~ /[,}][[:space:]]*$/) flush_arm()
 }
 
 # widen SITE with the spellings this file alone makes sites: its own path's, and the bare names it
@@ -270,13 +301,22 @@ function widen_site(    i, code, stmt, k) {
 }
 
 function scan_file(    i, code, scan, uline, name, k, hit, rest, p, txt, v, n, o, c, v0, v1, nf) {
-  depth = 0; top = 0; pending = ""; skipping = 0; pendfork = 0; inuse = 0; curarm = ""; armok = 0; armdepth = 0
+  depth = 0; top = 0; pending = ""; skipping = 0; pendfork = 0; inuse = 0
+  inarm = 0; armhead = ""; armok = 0; armdepth = 0; armopen = 0; abal = 0; headdone = 0
   if (MODE == "call") widen_site()
   for (i = 1; i <= N; i++) {
     code = C[i]
     if (skipping) {
+      # what is skipped ends where its item does. The item's kind is read from its first line that is not
+      # an attribute (an attribute is balanced, so sbal is 0 there): an item (`fn`, `impl`, `mod`, ..)
+      # runs to the `;` that ends it before any `{`, or to the close of its first `{`..`}` -- a signature
+      # that spills over lines, or a `where` clause whose bounds end in a comma, is not its end; a field,
+      # an arm, a variant or a statement ends at the first balanced `,`, `;` or `}`
+      if (skind == "" && sbal == 0 && code !~ /^[[:space:]]*#/) skind = (code ~ ITEMKW) ? "item" : "plain"
+      if (code ~ /\{/) sopen = 1
       sbal += balance(code)
-      if (sbal <= 0 && code ~ /[;},][[:space:]]*$/) skipping = 0
+      if (sbal <= 0 && (skind == "item" ? (sopen ? code ~ /[;}][[:space:]]*$/ : code ~ /;[[:space:]]*$/) \
+                                        : code ~ /[;},][[:space:]]*$/)) skipping = 0
       continue
     }
     if (code ~ /^[[:space:]]*#!?\[/) {
@@ -284,7 +324,7 @@ function scan_file(    i, code, scan, uline, name, k, hit, rest, p, txt, v, n, o
       v0 = eval_cfg(AT, 0)
       if (v0 >= 0) {
         sawtest0 = sawtest
-        if (v0 == 0) { skipping = 1; sbal = 0 }
+        if (v0 == 0) { skipping = 1; sbal = 0; skind = ""; sopen = 0 }
         else if (MODE == "fork" && sawtest0) pendfork++
       }
       rest = substr(C[AEND], APOS)
@@ -332,19 +372,15 @@ function scan_file(    i, code, scan, uline, name, k, hit, rest, p, txt, v, n, o
         p = (n > 0) ? p + 5 + n - 1 : 0
       }
     } else if (MODE == "arm") {
-      if (top > 0 && stack[top] == ARMFN && code ~ ARMHEAD && (armdepth == 0 || depth == armdepth)) {
-        flush_arm()
-        if (armdepth == 0) armdepth = depth
-        match(code, /AppFx::[A-Za-z0-9_]+/); curarm = substr(code, RSTART + 7, RLENGTH - 7)
-      }
-      if (curarm != "" && code ~ ARMOK) armok = 1
+      if (armdepth == 0 && top > 0 && stack[top] == ARMFN && code ~ ARMMATCH) armopen = 1
+      else if (armdepth > 0) arm_line(code)
     }
 
     o = gsub(/\{/, "{", code); c = gsub(/\}/, "}", code)
     for (k = 0; k < o; k++) { depth++; if (pending != "") { top++; stack[top] = pending; sdepth[top] = depth; pending = "" } }
     for (k = 0; k < c; k++) { depth--; pop_to(depth) }
     if (pending != "" && code ~ /;[[:space:]]*$/) pending = ""
-    if (MODE == "arm" && curarm != "" && depth < armdepth) flush_arm()
+    if (armopen) { armdepth = depth; armopen = 0 }
   }
   flush_arm()
 }
@@ -354,7 +390,9 @@ BEGIN {
   SITE = ENVIRON["LG_SITE"]; DEF = ENVIRON["LG_DEF"]; REF = ENVIRON["LG_REF"]
   USEOK = ENVIRON["LG_USE_OK"]; KEYSPELL = ENVIRON["LG_KEYSPELL"]
   REXF = ENVIRON["LG_REEXPORT_FILE"]; REXR = ENVIRON["LG_REEXPORT_RE"]
-  ARMFN = ENVIRON["LG_ARM_FN"]; ARMHEAD = ENVIRON["LG_ARM_HEAD"]; ARMOK = ENVIRON["LG_ARM_OK"]
+  ARMFN = ENVIRON["LG_ARM_FN"]; ARMMATCH = ENVIRON["LG_ARM_MATCH"]; ARMOK = ENVIRON["LG_ARM_OK"]
+  # the first line of an item: its keyword, after a visibility and any qualifiers
+  ITEMKW = "^[[:space:]]*(pub(\\([^)]*\\))?[[:space:]]+)?((unsafe|async|default|const|extern([[:space:]]+\"[^\"]*\")?)[[:space:]]+)*(fn|impl|mod|trait|struct|enum|union|type|static|const|use|extern|macro_rules!)([^A-Za-z0-9_]|$)"
   REFUSEONLY = ENVIRON["LG_REF_USE_ONLY"]
   ASRE = "(^|[^A-Za-z0-9_])as[[:space:]]"
   NBARE = split_pairs(ENVIRON["LG_BARE"], BIM, BSI)

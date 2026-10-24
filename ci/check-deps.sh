@@ -1150,7 +1150,10 @@ EOF_STALE
 #     (`task::spawn_off_frame`, whose token a PMS half takes) instead of being excused;
 #   - an entry whose site no longer exists fails — so the list can only shrink, and a migration
 #     lands by deleting its line. The declared `# count:` must also equal the entry count.
-# Test code is skipped exactly as in `threads` (a wholly-test file, a `#[cfg(test)] mod` block).
+# Test code is skipped as `ci/ledger.awk` skips it, which is more than `threads` does: a wholly-test file,
+# and any item, statement or field under a `#[cfg(..)]` production can never satisfy (a `mod` with other
+# attributes in front of it, a `fn`, `feature = "test-support"`, `all(test, ..)`); strings and block comments
+# are blanked first, so a call after a `"http://"` string is seen. The same sites as before are listed.
 # The definition itself (`task/blocking.rs`), `fn` declarations and comment-only lines are not
 # call sites. Any OTHER non-test mention of the bare identifier — `use ...::allow_blocking as x`,
 # `let f = allow_blocking;` — is an alias the call-site scan cannot see, so it fails outright
@@ -1205,7 +1208,7 @@ fork_scope_re=$(scope_re "${FORK_SCOPE[@]}")
 # has a line that could hold a site of that rule, and ci/ledger.awk then decides what is really one; a
 # file the pattern misses cannot hold one. W and G read the machines, F the four fork crates.
 workers_pat='spawn_small|spawn_off_frame|submit_retained|submit_ticket|task::(spawn|\{|\*)|storage_worker::(submit|\{|\*)|(task|storage_worker)[[:space:]]+as[[:space:]]'
-globals_pat='client_for|current_server|current_snapshot|keypin::(revision|blocked_for)|session::(peek|\{|\*)|grant::offers|player::TX|(session|keypin|grant|peek)[[:space:]]+as[[:space:]]'
+globals_pat='client_for|current_server|current_snapshot|keypin::(revision|blocked_for|\{|\*)|session::(peek|\{|\*)|grant::(offers|\{|\*)|player::TX|(session|keypin|grant|player|peek|revision|blocked_for|offers|TX)[[:space:]]+as[[:space:]]'
 # a cfg line: one with `test` on it, or an attribute / `cfg!` that opens on one line and closes on a later
 # one, where `test` may sit on the second. A line that is a test-only attribute outright — `#[cfg(test)]`,
 # `#[cfg(any(test, feature = "test-support"))]`, or an `all(<either>, <flat atoms>)` of them — is no
@@ -1249,7 +1252,7 @@ workers_sites=$(
       LG_SITE='(^|[^A-Za-z0-9_])(spawn_small|spawn_small_keeping|spawn_small_or_inline|spawn_off_frame|spawn_off_frame_keeping|submit_retained|submit_ticket|task::spawn|storage_worker::submit)([^A-Za-z0-9_]|$)' \
       LG_DEF='fn[[:space:]]+(spawn|spawn_small|spawn_small_keeping|spawn_small_or_inline|spawn_off_frame|spawn_off_frame_keeping|submit|submit_retained|submit_ticket)[[:space:]]*[(<]' \
       LG_REF='(^|[^A-Za-z0-9_])(spawn|spawn_small|spawn_small_keeping|spawn_small_or_inline|spawn_off_frame|spawn_off_frame_keeping|submit|submit_retained|submit_ticket|task|storage_worker)[[:space:]]+as[[:space:]]' \
-      LG_BARE='task::(spawn([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?spawn[^A-Za-z0-9_][^}]*\})@@(^|[^A-Za-z0-9_.:])spawn([^A-Za-z0-9_]|$);;storage_worker::(submit([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?submit[^A-Za-z0-9_][^}]*\})@@(^|[^A-Za-z0-9_.:])submit([^A-Za-z0-9_]|$)' \
+      LG_BARE='task::(spawn([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?spawn([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])spawn([^A-Za-z0-9_]|$);;storage_worker::(submit([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?submit([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])submit([^A-Za-z0-9_]|$)' \
       ledger_scan | sort
 )
 LG_LEDGERS="$(echo ci/allow/workers/*.txt)" LG_AREA_CHECK=1 \
@@ -1262,20 +1265,22 @@ LG_LEDGERS="$(echo ci/allow/workers/*.txt)" LG_AREA_CHECK=1 \
 
 # globals: a production read of a process-global registry in a MACHINE — `client_for(`, `current_server(`,
 # `current_snapshot(`, `keypin::revision(`, `keypin::blocked_for(`, `session::peek(`, `grant::offers(`, and
-# `player::TX` in the player's lifecycle (the one file where that atomic is read as logic; the HUD's reads
-# are not machines). A bare `peek(` is a site in a file that imports it from `session` and in
+# `player::TX` in the player's lifecycle (the one file where that atomic is read as logic, spelled
+# `crate::player::TX`, `player::TX`, `super::TX` or a bare `TX`; the HUD's reads are not machines). A bare
+# `peek(` / `revision(` / `blocked_for(` / `offers(` is a site in a file that imports it from `session` /
+# `keypin` / `grant` (alone, last in a braced group, or by glob) and, for `peek`, in
 # plex/src/plex/session.rs, the module that defines it. A getter named without a call (`.and_then(client_for)`)
 # reads the registry as surely as a call does, so it is a site too; only a rename (`use ... as`) is refused,
 # because the renamed calls are invisible. Each getter's own definition is not a site.
 globals_sites=$(
   { ledger_candidates G
-    printf '%s\n' rust-modules/plex/src/plex/session.rs; } \
+    printf '%s\n' rust-modules/plex/src/plex/session.rs "$SRC_MEDIA/player/lifecycle.rs"; } \
     | LG_MODE=call LG_KEYSPELL=1 LG_USE_OK=1 LG_REF_USE_ONLY=1 \
       LG_SITE='(^|[^A-Za-z0-9_.])(client_for|current_server|current_snapshot|keypin::revision|keypin::blocked_for|session::peek|grant::offers)([^A-Za-z0-9_]|$)' \
-      LG_DEF='fn[[:space:]]+(client_for|current_server|current_snapshot|peek)[[:space:]]*[(<]' \
-      LG_REF='(^|[^A-Za-z0-9_])(client_for|current_server|current_snapshot|peek|session|keypin|grant)[[:space:]]+as[[:space:]]' \
-      LG_BARE='session::(peek([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?peek[^A-Za-z0-9_][^}]*\})@@(^|[^A-Za-z0-9_.:])peek([^A-Za-z0-9_]|$)' \
-      LG_FILE_SITE='rust-modules/plex/src/plex/session.rs@@(^|[^A-Za-z0-9_.:])peek([^A-Za-z0-9_]|$);;rust-modules/media/src/player/lifecycle.rs@@(^|[^A-Za-z0-9_.])player::TX([^A-Za-z0-9_]|$)' \
+      LG_DEF='fn[[:space:]]+(client_for|current_server|current_snapshot|peek|revision|blocked_for|offers)[[:space:]]*[(<]' \
+      LG_REF='(^|[^A-Za-z0-9_])(client_for|current_server|current_snapshot|peek|revision|blocked_for|offers|TX|session|keypin|grant|player)[[:space:]]+as[[:space:]]' \
+      LG_BARE='session::(peek([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?peek([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])peek([^A-Za-z0-9_]|$);;keypin::(revision([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?revision([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])revision([^A-Za-z0-9_]|$);;keypin::(blocked_for([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?blocked_for([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])blocked_for([^A-Za-z0-9_]|$);;grant::(offers([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?offers([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])offers([^A-Za-z0-9_]|$)' \
+      LG_FILE_SITE='rust-modules/plex/src/plex/session.rs@@(^|[^A-Za-z0-9_.:])peek([^A-Za-z0-9_]|$);;rust-modules/media/src/player/lifecycle.rs@@(^|[^A-Za-z0-9_.])(player::TX|super::TX)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_.:])TX([^A-Za-z0-9_]|$)' \
       ledger_scan | sort
 )
 LG_LEDGERS="$(echo ci/allow/globals/*.txt)" LG_AREA_CHECK=1 \
@@ -1287,11 +1292,13 @@ LG_LEDGERS="$(echo ci/allow/globals/*.txt)" LG_AREA_CHECK=1 \
   ledger_check globals "$globals_sites"
 
 # forks: a production test/production fork across all of data/, plex/, media/ and session/ — a `#[cfg(..)]`
-# attribute or `cfg!(..)` whose predicate reads `test` or `feature = "test-support"` and that production
-# CAN satisfy (`not(test)`, `not(any(test, feature = "test-support"))`, `not(feature = "test-support")`,
-# `all(target_os = .., not(test))`): code that is one thing in a test and another in the product has a
-# test the product never ran. An item that only a test can see (`cfg(test)`, `any(test, ..)`) is no fork.
-# Keyed `<path>::<item name>` for an attribute on an item (a fn, a const, a mod, an impl), or
+# attribute that production CAN satisfy (`not(test)`, `not(any(test, feature = "test-support"))`,
+# `not(feature = "test-support")`, `all(target_os = .., not(test))`), or an inline `cfg!(..)` of any value,
+# whose predicate reads `test` or `feature = "test-support"`: code that is one thing in a test and another in
+# the product has a test the product never ran. An item that only a test can see (`#[cfg(test)]`,
+# `any(test, ..)`) is no fork, but `cfg!(test)` is: `if cfg!(test) {..} else {..}` compiles an arm production runs.
+# Keyed `<path>::<item name>` for an attribute on an item (a fn, a const, a mod, an impl, or a macro
+# invocation at module level, named for its macro: `latched_flag!`), or
 # `<path>::<enclosing fn>` for a statement, a field, or an inline `cfg!` — never a line number. A file can
 # hold a fork only if it has a cfg line that is not a plain test-only attribute (an item under one is
 # skipped whole), which is what the candidates are.
@@ -1311,10 +1318,11 @@ LG_LEDGERS="$(echo ci/allow/forks/*.txt)" LG_AREA_CHECK=1 \
 # FIFO, where a result returns as one addressed event in the same drain — or is a ledger line: an arm that
 # parks its request on a side queue of the bridge (`reqs`, `content_reqs`, ...) is a second lane with its
 # own timing. A NEW variant with a side queue fails; so does a new arm that is not on the FIFO. Keyed
-# `<path>::AppFx::<Variant>`.
+# `<path>::AppFx::<Variant>`, one line for EACH variant on an arm's head (`AppFx::A(r) | AppFx::B(r) => ..`
+# is two), and `<path>::AppFx::_` for an arm whose head names none (`other => ..`, `_ => ..`).
 fxlanes_sites=$(
   grep -rlE --include='*.rs' 'fn app_effect' "$SRC" 2>/dev/null | sort \
-    | LG_MODE=arm LG_ARM_FN=app_effect LG_ARM_HEAD='^[[:space:]]*AppFx::[A-Za-z0-9_]+' LG_ARM_OK='Fx::Deliver\(' \
+    | LG_MODE=arm LG_ARM_FN=app_effect LG_ARM_MATCH='(^|[^A-Za-z0-9_])match[[:space:]]+fx[[:space:]]*\{' LG_ARM_OK='Fx::Deliver\(' \
       ledger_scan | sort
 )
 LG_LEDGERS="$(echo ci/allow/fxlanes/*.txt)" LG_AREA_CHECK=1 \
