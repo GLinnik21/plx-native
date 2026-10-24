@@ -1,4 +1,4 @@
-# count: 6
+# count: 4
 # Process-global reads inside machines (docs/sans-io.md), area `data-search`: one line per production read of a registry in a machine —
 # `client_for`, `current_server`, `current_snapshot`, `keypin::revision`, `keypin::blocked_for`, `session::peek`, `grant::offers`, `player::TX` — keyed `<path>::<enclosing fn>::<spelling>`.
 # A machine reads no registry: the value arrives in an event or an argument. Spec: ci/check-deps.sh `globals`.
@@ -7,5 +7,3 @@ rust-modules/data/src/search.rs::hubs::client_for
 rust-modules/data/src/search.rs::listing::client_for
 rust-modules/data/src/search/scope.rs::build::session::peek
 rust-modules/data/src/search/scope.rs::build_with_directory::session::peek
-rust-modules/data/src/search/scope.rs::read_key::session::peek
-rust-modules/data/src/search/scope.rs::read_key_with_directory::session::peek

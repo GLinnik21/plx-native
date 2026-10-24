@@ -135,8 +135,8 @@ fn a_chosen_sort_survives_a_restart() {
     // ---- the restart: a cold session cache read from disk, and a brand-new store -------------
     plx_plex::plex::reset_servers_for_test();
     plx_plex::plex::session::redirect_for_test(Some(session.path()));
-    let _ = plx_plex::plex::session::peek();
     plx_base::storage_worker::drain_for_test();
+    let _ = plx_plex::plex::session::refresh_blocking_for_test();
     session.watching("u-sorter");
     let pms = loopback_pms("sort-machine", vec![MENU_PAGE, PLAYS_PAGE]);
     let mut browse = movies_on(&pms, "sort-machine");
@@ -306,8 +306,8 @@ fn the_remembered_views_are_capped_most_recent_first() {
 fn restart(session: &TempPins, user: &str) {
     plx_plex::plex::reset_servers_for_test();
     plx_plex::plex::session::redirect_for_test(Some(session.path()));
-    let _ = plx_plex::plex::session::peek();
     plx_base::storage_worker::drain_for_test();
+    let _ = plx_plex::plex::session::refresh_blocking_for_test();
     session.watching(user);
 }
 

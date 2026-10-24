@@ -7292,7 +7292,7 @@ impl PersonOwnerGateFixture {
     # the tool's own output on the tree this table was written for.
     PINNED_LEDGER_TOTALS = {
         "workers": 26,  # production worker starts inside machines (`ci/allow/workers/`)
-        "globals": 104,  # production process-global reads inside machines (`ci/allow/globals/`)
+        "globals": 102,  # production process-global reads inside machines (`ci/allow/globals/`)
         "forks": 61,  # production test/production forks in data/, plex/, media/, session/ (`ci/allow/forks/`)
         "fxlanes": 11,  # Bridge::app_effect arms that do not push Fx::Deliver (`ci/allow/fxlanes/`)
     }
