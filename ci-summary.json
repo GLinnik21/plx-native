@@ -29,7 +29,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-24T18:52:10Z",
+ "generated": "2026-10-24T18:57:17Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -639,11 +639,6 @@
    "change_pct": 35.8,
    "commits": [
     {
-     "pr": 988,
-     "sha": "e843b99f1",
-     "title": "tv-session: -101 means \"already off\" only for screen off"
-    },
-    {
      "pr": 990,
      "sha": "10e9287ff",
      "title": "Person store: emit store jobs and read the server registry as an input"
@@ -687,6 +682,11 @@
      "pr": 1011,
      "sha": "c56e8cdd6",
      "title": "Hubs store emits its read as a store job; the step decides its client from ClientKeys"
+    },
+    {
+     "pr": 805,
+     "sha": "4a551d0b0",
+     "title": "player: playback speed (0.5x-2x), done in the app"
     }
    ],
    "from": 46.0,
@@ -700,11 +700,6 @@
    "change_pct": 33.7,
    "commits": [
     {
-     "pr": 988,
-     "sha": "e843b99f1",
-     "title": "tv-session: -101 means \"already off\" only for screen off"
-    },
-    {
      "pr": 990,
      "sha": "10e9287ff",
      "title": "Person store: emit store jobs and read the server registry as an input"
@@ -748,6 +743,11 @@
      "pr": 1011,
      "sha": "c56e8cdd6",
      "title": "Hubs store emits its read as a store job; the step decides its client from ClientKeys"
+    },
+    {
+     "pr": 805,
+     "sha": "4a551d0b0",
+     "title": "player: playback speed (0.5x-2x), done in the app"
     }
    ],
    "from": 153.0,
@@ -761,11 +761,6 @@
    "change_pct": 27.1,
    "commits": [
     {
-     "pr": 988,
-     "sha": "e843b99f1",
-     "title": "tv-session: -101 means \"already off\" only for screen off"
-    },
-    {
      "pr": 990,
      "sha": "10e9287ff",
      "title": "Person store: emit store jobs and read the server registry as an input"
@@ -809,6 +804,11 @@
      "pr": 1011,
      "sha": "c56e8cdd6",
      "title": "Hubs store emits its read as a store job; the step decides its client from ClientKeys"
+    },
+    {
+     "pr": 805,
+     "sha": "4a551d0b0",
+     "title": "player: playback speed (0.5x-2x), done in the app"
     }
    ],
    "from": 114.7,
