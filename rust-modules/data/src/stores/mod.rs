@@ -199,7 +199,13 @@ impl Stores {
         self.subtitle_search.run(cmd)
     }
 
-    pub fn subtitle_search_pump(&mut self) -> bool { self.subtitle_search.pump(&self.landgate) }
+    /// Pump the subtitle-search store; `keys` is the registry's answer as of this call. It does NOT
+    /// start the request it emitted: a caller that returns without [`Stores::take_jobs_of`] and
+    /// handing the job to a runner has stranded the search. The one production caller is
+    /// `Bridge::subsearch_pump`, which drains in the same call.
+    pub fn subtitle_search_pump(&mut self, keys: &plx_plex::plex::ClientKeys) -> bool {
+        self.subtitle_search.pump(&self.landgate, keys)
+    }
 
     pub fn subtitle_search_view(&self) -> crate::subsearch::SubSearchView<'_> {
         self.subtitle_search.view()
@@ -246,6 +252,8 @@ impl Stores {
             StoreId::Collection => self.collection.take_jobs(),
             StoreId::Person => self.person.take_jobs(),
             StoreId::Catalog => self.catalog.take_jobs(),
+            StoreId::SubtitleSearch => self.subtitle_search.take_jobs(),
+            StoreId::ViewReconcile => self.reconcile.take_jobs(),
             // The other stores emit no jobs yet.
             _ => Vec::new(),
         }
@@ -263,6 +271,8 @@ impl Stores {
             StoreId::Collection => self.collection.has_jobs(),
             StoreId::Person => self.person.has_jobs(),
             StoreId::Catalog => self.catalog.has_jobs(),
+            StoreId::SubtitleSearch => self.subtitle_search.has_jobs(),
+            StoreId::ViewReconcile => self.reconcile.has_jobs(),
             // The other stores emit no jobs yet.
             _ => false,
         }
@@ -443,8 +453,11 @@ impl Stores {
     }
 
     /// The read-back worker's route-unconditional pass: hand it what landed writes owe, send its
-    /// reads, and publish the facts it brought back to the stores that hold the rows.
-    pub fn reconcile_pump(&mut self, directory: browse::DirectoryView<'_>) -> bool {
+    /// reads, and publish the facts it brought back to the stores that hold the rows. `clients` is
+    /// the registry's answer as of this call. It does NOT start the reads it sent: a caller that
+    /// returns without taking them ([`Stores::take_jobs_of`]) and handing them to a runner has
+    /// stranded the flights. The one production caller is `Bridge::reconcile_pump`.
+    pub fn reconcile_pump(&mut self, directory: browse::DirectoryView<'_>, clients: &plx_plex::plex::ClientKeys) -> bool {
         let owed = self.viewstate.borrow_mut().take_reread();
         self.reconcile.enqueue(owed);
         let idle = !self.viewstate.borrow().is_busy() && !self.network_held;
@@ -455,7 +468,7 @@ impl Stores {
         let search = &mut self.search;
         let metadata = &mut self.metadata;
         let watchlist = &mut self.watchlist;
-        let changed = self.reconcile.pump_with_gate(&self.landgate, idle, &mut |change| crate::viewstate::publish_view(
+        let changed = self.reconcile.pump_with_gate(&self.landgate, idle, clients, &mut |change| crate::viewstate::publish_view(
             { watchlist.apply_view(&change); change },
             &mut |cmd| browse.borrow_mut().run(cmd),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory),
@@ -617,12 +630,24 @@ pub enum StoreJob {
     /// the request id. It names no server and no client: a plex.tv read as the captured identity.
     /// One is out at a time.
     Catalog(plx_machine::job::Job<catalog::CatalogReq>, catalog::CatalogPort),
+    /// One subtitle search, download or install poll, emitted by the subtitle-search pump and
+    /// addressed by the search generation. One is out at a time. Not on the tape.
+    SubtitleSearch(plx_machine::job::Job<crate::subsearch::SubSearchReq>, crate::subsearch::SubSearchPort),
+    /// One read-back batch (`/library/metadata/{k1,k2,…}` of one server), emitted by the reconcile
+    /// pump and addressed by its flight id. One is out per server. Not on the tape.
+    ViewReconcile(plx_machine::job::Job<viewreconcile::ReconcileReq>, viewreconcile::ReconcilePort),
 }
 
 impl StoreJob {
     pub fn store(&self) -> StoreId {
-        match self { Self::Detail(..) => StoreId::Metadata, Self::Collection(..) => StoreId::Collection,
-            Self::Person(..) => StoreId::Person, Self::Catalog(..) => StoreId::Catalog }
+        match self {
+            Self::Detail(..) => StoreId::Metadata,
+            Self::Collection(..) => StoreId::Collection,
+            Self::Person(..) => StoreId::Person,
+            Self::Catalog(..) => StoreId::Catalog,
+            Self::SubtitleSearch(..) => StoreId::SubtitleSearch,
+            Self::ViewReconcile(..) => StoreId::ViewReconcile,
+        }
     }
 }
 
@@ -778,6 +803,9 @@ pub struct Fetch<M> {
     in_flight: std::sync::atomic::AtomicBool,
     /// The generation the current claim was made for; meaningful only while `in_flight`.
     claimed: std::sync::atomic::AtomicU32,
+    /// The generation a REFUSED request was made for and nobody has observed yet
+    /// ([`Fetch::refuse_for`], [`Fetch::take_refused`]); [`Fetch::NO_REFUSAL`] when none waits.
+    refused: std::sync::atomic::AtomicU64,
     /// Where the worker posts what it came back with. `None` means nothing has landed since the
     /// last take.
     slot: std::sync::Mutex<Option<M>>,
@@ -791,8 +819,12 @@ impl<M> Fetch<M> {
     pub const IDLE: Self = Self {
         in_flight: std::sync::atomic::AtomicBool::new(false),
         claimed: std::sync::atomic::AtomicU32::new(0),
+        refused: std::sync::atomic::AtomicU64::new(Self::NO_REFUSAL),
         slot: std::sync::Mutex::new(None),
     };
+
+    /// The `refused` value that names no generation (a generation is a `u32`).
+    const NO_REFUSAL: u64 = u64::MAX;
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Option<M>> {
         self.slot.lock().unwrap_or_else(|e| e.into_inner())
@@ -828,9 +860,46 @@ impl<M> Fetch<M> {
     /// answered later (one a runner holds, or refuses after a newer step has claimed again) finds
     /// the claim is a newer request's and leaves it alone.
     pub fn release_for(&self, gen: u32) {
-        if self.claimed.load(std::sync::atomic::Ordering::SeqCst) == gen {
+        if self.holds(gen) {
             self.release();
         }
+    }
+
+    /// Is the claim held, and was it made for `gen`? What [`Fetch::release_for`] and
+    /// [`Fetch::refuse_for`] hand back, and what neither touches otherwise.
+    fn holds(&self, gen: u32) -> bool {
+        self.busy() && self.claimed.load(std::sync::atomic::Ordering::SeqCst) == gen
+    }
+
+    /// [`Fetch::release_for`] that the owner's step can SEE: the claim made for `gen` is handed
+    /// back and the refusal is remembered, for [`Fetch::take_refused`] to answer once.
+    ///
+    /// A bare release frees the claim and says nothing, so a step that backs off after a launch
+    /// that did not happen would find the claim free on its next pump and ask again at once, a
+    /// spin. The step reads the refusal at the head of that pump, before it decides to spawn, and
+    /// backs off. The claim is still freed in the same call as the refusal, so a take that is
+    /// owed on `busy` (dump mode) is never left waiting on a request that will not answer.
+    ///
+    /// Remembered only when the claim handed back was this request's. A refusal of a request the
+    /// owner has since superseded (a parked job refused after a newer one claimed, or after a
+    /// [`Fetch::clear`]) names a generation the owner no longer asks about: it releases nothing
+    /// and records nothing, so it cannot overwrite the unread refusal of the request that is
+    /// current. The refusal is written before the claim is freed, so a reader that finds the claim
+    /// free also finds the refusal.
+    pub fn refuse_for(&self, gen: u32) {
+        if self.holds(gen) {
+            self.refused.store(u64::from(gen), std::sync::atomic::Ordering::SeqCst);
+            self.release();
+        }
+    }
+
+    /// Has the request made for `gen` been refused since the last answer to this? True once: the
+    /// refusal is consumed. A refusal of any other generation is left where it is, and a
+    /// supersede ([`Fetch::clear`]) discards it, since what the retired request was refused no
+    /// longer matters.
+    pub fn take_refused(&self, gen: u32) -> bool {
+        self.refused.compare_exchange(u64::from(gen), Self::NO_REFUSAL,
+            std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst).is_ok()
     }
 
     /// Take whatever landed, RELEASING the claim with it, whatever the mail turns out to be. An
@@ -866,10 +935,12 @@ impl<M> Fetch<M> {
 
     /// Drop the mailbox and release the claim with it — a supersede's per-fetch half. Releases
     /// unconditionally, unlike [`Fetch::take`]: the worker holding this claim is still out, and
-    /// what it will answer about is no longer open.
+    /// what it will answer about is no longer open. A refusal nobody has observed yet
+    /// ([`Fetch::refuse_for`]) is discarded with it, for the same reason.
     pub fn clear(&self) {
         *self.lock() = None;
         self.release();
+        self.refused.store(Self::NO_REFUSAL, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// WORKER THREAD: post `mail` unless the mail already waiting wins — `beats(old)` answers
@@ -996,6 +1067,79 @@ mod tests {
         assert!(!fetch.busy());
         fetch.release_for(2);
         assert!(!fetch.busy(), "releasing a released claim is a no-op");
+    }
+
+    /// A refusal is a release the owner's step can see: it frees the claim, and the step's next
+    /// look at that generation answers `true` ONCE. Without the memory the step would find the
+    /// claim free and ask again at once.
+    #[test]
+    fn a_refusal_frees_the_claim_and_is_observed_once() {
+        let fetch = Fetch::<u32>::IDLE;
+        assert!(!fetch.take_refused(1), "nothing was refused");
+        fetch.claim(1);
+        fetch.refuse_for(1);
+        assert!(!fetch.busy(), "the refused request's claim is handed back in the same call");
+        assert!(fetch.take_refused(1), "the owner's next pump sees the refusal");
+        assert!(!fetch.take_refused(1), "...once");
+
+        // generation 0 is a generation like any other
+        fetch.claim(0);
+        fetch.refuse_for(0);
+        assert!(fetch.take_refused(0));
+    }
+
+    /// The refusal belongs to the generation it answers: another generation's step does not
+    /// take it, and a refusal of a request the owner has since superseded does not free the newer
+    /// request's claim.
+    #[test]
+    fn a_refusal_is_for_its_own_generation_only() {
+        let fetch = Fetch::<u32>::IDLE;
+        fetch.claim(1);
+        fetch.refuse_for(1);
+        assert!(!fetch.take_refused(2), "generation 2 was not refused");
+        assert!(fetch.take_refused(1), "...and asking about it did not consume generation 1's");
+
+        fetch.claim(1);
+        fetch.clear();
+        fetch.claim(2);
+        fetch.refuse_for(1); // request 1's launch is refused after request 2 has claimed
+        assert!(fetch.busy(), "request 2's claim is not request 1's to hand back");
+        assert!(!fetch.take_refused(2));
+        assert!(!fetch.take_refused(1), "...and a superseded request's refusal is not remembered");
+    }
+
+    /// The order that overwrote: the CURRENT request's refusal is unread when a superseded
+    /// request's refusal arrives (a `Held` runner refuses a parked job after the newer one). The
+    /// late one must leave the unread one to be taken, or the owner finds no refusal and asks
+    /// again at once.
+    #[test]
+    fn a_superseded_refusal_does_not_overwrite_the_current_ones() {
+        let fetch = Fetch::<u32>::IDLE;
+        fetch.claim(1);
+        fetch.clear(); // request 1 is superseded while its job is parked
+        fetch.claim(2);
+        fetch.refuse_for(2); // request 2 is refused at its start
+        fetch.refuse_for(1); // then the parked request 1 is refused
+        assert!(!fetch.busy());
+        assert!(fetch.take_refused(2), "request 2's refusal is still there for its owner");
+        assert!(!fetch.take_refused(1), "request 1's was never recorded");
+
+        // after a clear, with nothing claimed, a stale refusal records nothing either
+        fetch.claim(3);
+        fetch.clear();
+        fetch.refuse_for(3);
+        assert!(!fetch.take_refused(3));
+    }
+
+    /// A supersede retires whatever the old request was going to say, a refusal included: it is not
+    /// left to be taken by a later request that happens to carry the same generation.
+    #[test]
+    fn a_supersede_discards_an_unobserved_refusal() {
+        let fetch = Fetch::<u32>::IDLE;
+        fetch.claim(1);
+        fetch.refuse_for(1);
+        fetch.clear();
+        assert!(!fetch.take_refused(1));
     }
 
     /// With NO claim held there is nothing to protect: mail is taken as before and the owner's

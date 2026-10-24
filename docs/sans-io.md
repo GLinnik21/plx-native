@@ -122,12 +122,14 @@ worker. Its three ledger lines are gone and the shape is the one the other `data
 The Collection page's request is the second: its worker start and its three `client_for` reads are
 gone from `data/src/collection.rs`. The Person page's requests are the third: its two worker starts
 and its one `client_for` read are gone from `data/src/person.rs`, but unlike the two before it the
-Person step is not pure (the bullet on what it still reads lists them). Person has up to six requests
-out at once, so a pump emits several jobs, one per fetch slot, in ascending slot order. The catalog
-page's read is the fourth: its one worker start is gone from `data/src/stores/catalog.rs`. Unlike
-the other three it names no server and no client (it is a plex.tv read as the captured identity),
-so it takes no `ClientKeys` and no tape admission, and the Catalog step is not pure either (the
-last bullet lists what it still reads).
+Person step is not pure (the bullet headed "What the Person step still reads" lists what it still
+reads). Person has up to six requests out at once, so a pump emits several jobs, one per fetch slot,
+in ascending slot order. The catalog page's read is the fourth: its one worker start is gone from
+`data/src/stores/catalog.rs`. Unlike the other three it names no server and no client (it is a
+plex.tv read as the captured identity), so it takes no `ClientKeys` and no tape admission, and the
+Catalog step is not pure either (the bullet headed "What the Catalog step still reads" lists what it
+still reads). Subtitle search and the view-state read-back are the fifth and sixth (the bullet
+headed "Subtitle search and the view-state read-back").
 
 - **The shape.** `plx_machine::job` holds `Job<R>` (an `Addr` and a request that carries everything
   the worker needs), `Port<T>` (where the one answer goes: exactly one `done` or `refused` per job)
@@ -171,14 +173,14 @@ last bullet lists what it still reads).
   future sender must pass the host's keys and drain. The same holds for the public
   `CatalogStore::open` and `CatalogStore::pump`: `catalog_feed` and `catalog_reread` call
   `Bridge::catalog_open` and `Bridge::catalog_pump`, which drain in the same call.
-- **Results do not return as FIFO events.** A gated store's result (Detail, Collection, Person)
-  goes back through the landing and its gate (`landgate`, the `adapter_rank` of the landing key),
-  where the pump takes it by value. This is a deliberate exception to "every result returns as one
-  addressed event in the same drain": it is kept so that the replay anchors hold, because the
-  landing is where they already record a result. Catalog's landing is an ungated mailbox take
-  (`CatalogStore::pump` takes no `Gate`): its answer, its `NotStarted` refusal and its panic all
-  return as a plain landing that the next `Bridge::catalog_pump` takes, and the replay anchors do
-  not record them.
+- **Results do not return as FIFO events.** A gated store's result (Detail, Collection, Person,
+  subtitle search, the view-state read-back) goes back through the landing and its gate
+  (`landgate`, the `adapter_rank` of the landing key), where the pump takes it by value. This is a
+  deliberate exception to "every result returns as one addressed event in the same drain": it is
+  kept so that the replay anchors hold, because the landing is where they already record a result.
+  Catalog's landing is an ungated mailbox take (`CatalogStore::pump` takes no `Gate`): its answer,
+  its `NotStarted` refusal and its panic all return as a plain landing that the next
+  `Bridge::catalog_pump` takes, and the replay anchors do not record them.
 - **Why the job is not an `AppFx`.** A new `app_effect` arm that starts IO without pushing
   `Fx::Deliver(` is a new `fxlanes` site; `bootstrap::effects::app` fails closed on a variant it
   cannot encode in controlled Home; and every `Fx::App` is an `"e":"App"` record, so the replay
@@ -189,7 +191,7 @@ last bullet lists what it still reads).
   `Bridge::assert_no_store_jobs_left_for_test` (`#[cfg(test)]`) fails a frame that ends with a job
   still on an outbox or with that count above zero, so a sender that bypassed its store's Bridge
   drain (`metadata_run`, `person_pump`, `collection_pump`, `catalog_open`, `catalog_pump`,
-  `start_store_jobs_of`, `start_store_jobs`)
+  `subsearch_pump`, `reconcile_pump`, `start_store_jobs_of`, `start_store_jobs`)
   is red in every rig that makes the check, the one that runs `update()`'s pump included. The rigs
   make it at the frame's end.
 - **The port holds the adapter `Arc`.** `Reset` replaces the adapter and the store keeps no handle to
@@ -229,3 +231,27 @@ last bullet lists what it still reads).
   `is_current::current_snapshot`) and leave only with the Watchlist store's own migration. The
   Catalog step is therefore not pure, and claims no purity. Its test seam, `with_spawn_for_test`, is
   gone: a test runs the emitted job through `finish_catalog_job`.
+- **A refusal the step can observe.** The runner may decline to start a job: the thread ceiling, a
+  registry that moved on between the step and the launch (the client the job names is no longer the
+  one the slot holds), or a `Held` runner whose client is gone. It then calls the port's `refused`,
+  so every job gets exactly one answer, a refusal included. A refusal that only released the claim
+  would have the next pump send the same request at once, every frame, so the step has to see it. A store whose claim is a `Fetch` (subtitle search)
+  reads `Fetch::take_refused(gen)` at the head of its next pump: the port's
+  `Fetch::refuse_for(gen)` frees that generation's claim and remembers the refusal for
+  `take_refused` to answer once, and a refusal for a superseded generation (one whose claim a newer
+  request or a supersede has replaced) frees nothing and records nothing. A store whose claim is a mailbox of landings
+  (the view-state read-back) has its port post a store-local `NotStarted` landing, and the next pump
+  puts the flight's items back and waits. A refusal never goes into a recorded mailbox (a recorded
+  take would write it as an async result and change the bytes). It reaches the step one pump after
+  the launch; no fixture holds a refused start, so no recorded byte moves.
+- **Subtitle search and the view-state read-back** are the fifth and sixth stores on the lane. The
+  worker start and the `client_for` read are gone from `data/src/subsearch.rs` and
+  `data/src/stores/viewreconcile.rs`, and their four ledger lines are deleted. Each step reads
+  `plx_plex::plex::ClientKeys` as an argument and emits a `StoreJob`
+  (`plx_data::subsearch::{SubSearchReq, SubSearchPort}` and
+  `plx_data::stores::viewreconcile::{ReconcileReq, ReconcilePort}`); the runner starts the job
+  only if `client_for` still answers the key the step decided on. `Bridge::subsearch_pump` and
+  `Bridge::reconcile_pump` refill the keys, step, then run `Bridge::start_store_jobs_of` for their
+  own store in the same call; `Bridge::subsearch_run` only drains, because the command step takes no
+  keys and emits nothing. Neither kind is on the tape, so the runner makes no admission record for
+  them and a replay launches them live.

@@ -5858,6 +5858,14 @@ mod lifecycle_regression_tests {
         app.bridge.assert_no_store_jobs_left_for_test();
     }
 
+    /// One frame, then the jobs the stores sent in it run on this thread (the test runner parks
+    /// them, as it parks a detail fetch): a read-back's request reaches the server in the frame
+    /// that sent it, as a worker's would, and its answer is the next frame's to take.
+    fn step_and_run_jobs(rig: &mut Rig, t: &mut u32) {
+        step(&mut rig.app, t, vec![]);
+        rig.app.bridge.run_held_store_jobs_for_test();
+    }
+
     /// The page stack on the transition `boot.rs` builds it with. `app()`'s dispatcher commits
     /// immediately, and an immediate commit never has a dip-out to prepare a destination in —
     /// which is the whole window the tests below are about. Returns the frame clock's start.
@@ -6172,7 +6180,7 @@ mod lifecycle_regression_tests {
         plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 30_000, 60_000)), None);
         plx_media::route::drain_scrobble();
         poll_until("returning to the page re-read nothing: its resume point is still the one it opened with", || {
-            step(&mut rig.app, &mut t, vec![]);
+            step_and_run_jobs(&mut rig, &mut t);
             plx_data::metadata::detail_generation_for_test(rig.app.bridge.metadata_mut().adapter_ref()) > reads_before
         });
     }
@@ -6329,7 +6337,7 @@ mod lifecycle_regression_tests {
             scope: plx_data::viewstate::Scope::Show, guid: String::new(),
         }));
         poll_until("the write and its read-back never finished", || {
-            step(&mut rig.app, t, vec![]);
+            step_and_run_jobs(rig, t);
             let seen = rig.requests.lock().unwrap();
             seen.iter().position(|r| r.contains("/:/scrobble"))
                 .is_some_and(|at| seen.iter().skip(at).any(|r| r.contains("GET /library/metadata/100") && !r.contains("children")))
@@ -7148,7 +7156,7 @@ mod lifecycle_regression_tests {
         plx_media::route::scrobble_stop(&mut rig.app.player.session, Some(("1".into(), 600_000, 600_000)), None);
         plx_media::route::drain_scrobble();
         poll_until("the grid tile never read watched", || {
-            step(&mut rig.app, &mut t, vec![]);
+            step_and_run_jobs(&mut rig, &mut t);
             rig.app.bridge.grid_tile_for_test(0) == Some((true, false, 0))
         });
         // The read-back that found the end queued the fan-out-only request (a second server is
@@ -7389,7 +7397,8 @@ mod lifecycle_regression_tests {
         assert!(!plx_media::route::stops_owed(), "the retired stop is no longer owed");
         // before any frame: the mailbox itself, which the app would otherwise drain into the new stores
         assert!(plx_media::route::take_landed_stops().is_empty(), "the old identity's stop reached the mailbox");
-        for _ in 0..12 { step(&mut rig.app, &mut t, vec![]); }
+        // the read-back is a `StoreJob`: the rig's `Held` runner parks it, and only the sweep runs it
+        for _ in 0..12 { step_and_run_jobs(&mut rig, &mut t); }
         assert_eq!(requests_matching(&rig, "GET /library/metadata/", from), 0, "the old identity's stop was read back");
     }
 
@@ -7451,20 +7460,22 @@ mod lifecycle_regression_tests {
             scope: plx_data::viewstate::Scope::Leaf, guid: String::new(),
         }));
         poll_until("the write never reached the server", || {
-            step(&mut rig.app, &mut t, vec![]);
+            step_and_run_jobs(&mut rig, &mut t);
             requests_matching(&rig, "/:/scrobble", reads_from) == 1
         });
-        for _ in 0..12 { step(&mut rig.app, &mut t, vec![]); }
+        // The held jobs run in these frames too: a read-back sent under the player would reach the
+        // server here, so the count below is a statement about what the store sent.
+        for _ in 0..12 { step_and_run_jobs(&mut rig, &mut t); }
         assert!(super::super::bridge::player(&rig.app.pages).is_some(), "premise: still under the player");
         assert_eq!(requests_matching(&rig, "GET /library/metadata/", reads_from), 0, "a read-back went out under the player");
         assert_eq!(rig.app.bridge.hub_refetches_for_test(), refetches, "a hubs refetch started under the player");
         let back = back_key(t + 16);
         step(&mut rig.app, &mut t, vec![back]);
         poll_until("the read-back never went out after the player left", || {
-            step(&mut rig.app, &mut t, vec![]);
+            step_and_run_jobs(&mut rig, &mut t);
             requests_matching(&rig, "GET /library/metadata/", reads_from) >= 1
         });
-        for _ in 0..12 { step(&mut rig.app, &mut t, vec![]); }
+        for _ in 0..12 { step_and_run_jobs(&mut rig, &mut t); }
         assert_eq!(requests_matching(&rig, "GET /library/metadata/", reads_from), 1, "one batch, at the exit");
     }
 
