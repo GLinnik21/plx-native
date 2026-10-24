@@ -159,8 +159,8 @@ impl BrowseStore {
     }
 
     /// Run one command; `keys` is the registry's answer as of this call (the Bridge fills it
-    /// immediately before, `refill_client_keys`), which the section-hubs reads it may emit are
-    /// decided from.
+    /// immediately before, `refill_client_keys`), which the section-hubs or directory reads it may emit
+    /// are decided from.
     pub fn run(&mut self, cmd: BrowseCmd, keys: &ClientKeys) -> bool {
         use crate::viewstate::ViewEdit;
         let change_sensitive = matches!(&cmd, BrowseCmd::Discovery(_) | BrowseCmd::Addressed {
@@ -185,7 +185,7 @@ impl BrowseStore {
         changed
     }
 
-    /// Run one command on a registry that holds no client (no section-hubs read leaves): the
+    /// Run one command on a registry that holds no client (no section-hubs or directory read leaves): the
     /// command of a test about something else.
     #[cfg(any(test, feature = "test-support"))]
     pub fn run_for_test(&mut self, cmd: BrowseCmd) -> bool {
@@ -206,7 +206,7 @@ impl BrowseStore {
         outcome
     }
     /// [`BrowseStore::pump_with_gate`] on the fixture gate and a registry that holds no client (no
-    /// section-hubs read leaves): the pump of a test about something else.
+    /// section-hubs or page read leaves): the pump of a test about something else.
     #[cfg(any(test, feature = "test-support"))]
     pub fn pump(&mut self) -> super::StoreOutcome {
         self.pump_with_gate(plx_machine::landgate::fixture_gate(), &ClientKeys::default())
@@ -679,7 +679,7 @@ impl<H: super::StoreEffectHost> Machine<H> for BrowseStore {
     fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         match ev {
             // The registry is read by the host, never in a step (`plx_plex::plex::ClientKeys`), and
-            // a machine step is handed no keys: this arm cannot decide a section-hubs read. It is
+            // a machine step is handed no keys: this arm cannot decide a section-hubs or directory read. It is
             // not how the application drives Browse, which calls `Stores::browse_run` and
             // `BrowseStore::pump_with_gate` with the keys it filled and starts the jobs they leave
             // (`Bridge::browse_run`); no sender of `StoreEv::Pump` exists either.

@@ -1,4 +1,4 @@
-# count: 8
+# count: 6
 # Process-global reads inside machines (docs/sans-io.md), area `data-metadata`: one line per production read of a registry in a machine —
 # (the spellings are ci/check-deps.sh's `globals` rule) — keyed `<path>::<enclosing fn>::<spelling>`.
 # A machine reads no registry: the value arrives in an event or an argument. Spec: ci/check-deps.sh `globals`.
@@ -8,6 +8,4 @@ rust-modules/data/src/metadata.rs::alt_prune_inactive::client_for
 rust-modules/data/src/metadata.rs::alt_stand_in_slot::client_for
 rust-modules/data/src/metadata.rs::alt_stand_in_slot::current_server
 rust-modules/data/src/metadata.rs::ask_related::client_for
-rust-modules/data/src/metadata.rs::fetch_episode_page::client_for
-rust-modules/data/src/metadata.rs::fetch_episodes::client_for
 rust-modules/data/src/metadata.rs::resolve_alt_sources::client_for

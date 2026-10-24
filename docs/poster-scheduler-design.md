@@ -33,7 +33,7 @@ All paths in this table are relative to `rust-modules/src/`. `small` means `spaw
 | `search.rs:1207` | small `search` | Per-server request/response with generation and captured favourite projection. |
 | `search/recents.rs:86` | small `recents-save` | Persistence flush, not a visual response. |
 | `plex/serverinfo.rs:159` | small `serverinfo` | Per-server single-flight facts refresh, retaining old facts on failure. |
-| `viewstate.rs:434` | small `viewstate` | Serial queued writes; requeues at the head on refused spawn. FIFO expresses mutation ordering, not visual urgency. |
+| `app/adapters/stores.rs` (`launch_view_write`) | small `viewstate` | Serial queued writes, started by the runner for one `StoreJob::ViewWrite` at a time; a refused launch requeues at the head. FIFO expresses mutation ordering, not visual urgency. |
 | `telemetry/mod.rs:236,248`; `telemetry/oneoff.rs:104` | small `telemetry`, `telemetry-retry`, `oneoff` | Coalesced flush, delayed retry worker, and bounded fallback delivery. No shared poster-capacity competition. |
 | `storage_worker.rs:170` | normal, parameterized name (`persistence` in shared use) | Bounded serial persistence FIFO, capacity eight plus executing work, typed replies. Already has its own required ordering. |
 | `dev/scenarios.rs:191` | small `logintest` | Diagnostic one-shot. |

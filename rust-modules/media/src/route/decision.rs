@@ -8103,8 +8103,9 @@ fn request_play_inner(
             // the replacement encoder, so pay that wait here, on the resolve worker.
             drain_scrobble();
         }
-        // catch_unwind OUTSIDE the mailbox write, like load_season: a panicking resolve must still
-        // land (as !ok) or PLAY_BUSY latches and the screen wedges on a spinner forever.
+        // catch_unwind OUTSIDE the mailbox write, like `metadata::finish_season_job`: a panicking
+        // resolve must still land (as !ok) or PLAY_BUSY latches and the screen wedges on a spinner
+        // forever.
         let plan = std::panic::catch_unwind(|| build_stream(off, &rk, &part, &vc, &ac, &env))
             .unwrap_or_else(|_| Plan { direct_play_mode: env.direct_play_mode, ..Default::default() });
         let landing = PlayLanding {

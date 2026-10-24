@@ -1233,9 +1233,9 @@ impl Drop for Bridge {
 impl Bridge {
     /// Synchronous application boundary for callers whose answer is consumed in the same turn.
     /// This borrows the one store owned by this Bridge. The keys are refilled first and the section
-    /// hubs' reads the step sent (`StoreJob::BrowseHubs`) are started before this returns, in the
-    /// same call: the store's hub pump is claim-gated, and a step that left its job on the outbox
-    /// would read as a read in flight with nothing running.
+    /// hubs' or directory reads the step sent (`StoreJob::BrowseHubs`, `StoreJob::BrowseDirectory`) are
+    /// started before this returns, in the same call: the store's read claims gate its pumps, and a
+    /// step that left its job on the outbox would read as a read in flight with nothing running.
     pub(crate) fn browse_run(&mut self, cmd: plx_data::stores::browse::BrowseCmd) -> bool {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
         let changed = self.stores.browse_run(cmd, &self.client_keys);
@@ -1342,15 +1342,16 @@ impl Bridge {
     /// commands that are not same-turn boundaries still cross `AppFx::Store` like every other
     /// store's; see `app/content.rs`'s `reconcile_details`.
     ///
-    /// **Every command the dispatcher or a Bridge-holding caller runs reaches the store through
-    /// here**, the dispatcher's `StoreCmd::Metadata` arm included: the jobs the step emitted (a
-    /// `RequestDetail`'s fetch) are started before this returns, in the same call, so the tape's
-    /// admission record follows the cancellation record the same step wrote with nothing between
-    /// them. A caller that holds only the store (`playback::describe_movie`, which gets a
-    /// `&mut MetadataStore`) leaves its job on the outbox and drains it itself the moment the call
-    /// returns ([`Bridge::start_store_jobs`]). A sender that does neither is not lost: the next
-    /// pump's backstop starts the job a frame late, counts it in `late_store_jobs` and logs it, and
-    /// the test rigs fail on that count.
+    /// **Every command the dispatcher runs reaches the store through here**, the dispatcher's
+    /// `StoreCmd::Metadata` arm included: the jobs the step emitted (a `RequestDetail`'s fetch, a
+    /// season switch, an episode-page window) are started before this returns, in the same call,
+    /// so the tape's admission record follows the cancellation record the same step wrote with
+    /// nothing between them. A caller that steps the bare store, whether it holds only the store
+    /// (`playback::describe_movie`, which gets a `&mut MetadataStore`) or holds the Bridge
+    /// (`input::menu_play_tick`'s season press), leaves its job on the outbox and drains it itself
+    /// the moment the call returns ([`Bridge::start_store_jobs`]). A sender that does neither is
+    /// not lost: the next pump's backstop starts the job a frame late, counts it in
+    /// `late_store_jobs` and logs it, and the test rigs fail on that count.
     pub(crate) fn metadata_run(&mut self, cmd: plx_data::stores::metadata::MetadataCmd) -> bool {
         let changed = self.stores.metadata_run(cmd);
         self.start_store_jobs_of(StoreId::Metadata);
@@ -1404,7 +1405,7 @@ impl Bridge {
         }
         self.late_store_jobs += late;
         plx_base::eventlog::log(&format!(
-            "stores: WARN {late} store job(s) reached a pump unstarted ({} so far): a sender bypassed its Bridge drain (metadata_run / person_pump / collection_pump / catalog_open / catalog_pump / subsearch_pump / search_run / search_pump / reconcile_pump / browse_run / hubs_run / viewstate_run / viewstate_pump / notify_pump / start_store_jobs_in / start_store_jobs_of / start_store_jobs)",
+            "stores: WARN {late} store job(s) reached a pump unstarted ({} so far): a sender bypassed its Bridge drain (metadata_run / metadata_pump_season / person_pump / collection_pump / catalog_open / catalog_pump / subsearch_pump / search_run / search_pump / reconcile_pump / browse_run / hubs_run / viewstate_run / viewstate_pump / notify_pump / start_store_jobs_in / start_store_jobs_of / start_store_jobs)",
             self.late_store_jobs
         ));
     }
@@ -1457,9 +1458,9 @@ impl Bridge {
     #[cfg(test)]
     pub(crate) fn assert_no_store_jobs_left_for_test(&self) {
         assert!(!self.stores.has_jobs(),
-            "a store job sits on an outbox: its sender neither ran through its store's Bridge drain (metadata_run / person_pump / collection_pump / catalog_open / catalog_pump / subsearch_pump / search_run / search_pump / reconcile_pump / browse_run / hubs_run / viewstate_run / viewstate_pump / notify_pump / start_store_jobs_in / start_store_jobs_of) nor drained with Bridge::start_store_jobs");
+            "a store job sits on an outbox: its sender neither ran through its store's Bridge drain (metadata_run / metadata_pump_season / person_pump / collection_pump / catalog_open / catalog_pump / subsearch_pump / search_run / search_pump / reconcile_pump / browse_run / hubs_run / viewstate_run / viewstate_pump / notify_pump / start_store_jobs_in / start_store_jobs_of) nor drained with Bridge::start_store_jobs");
         assert_eq!(self.late_store_jobs, 0,
-            "a pump's backstop had to start store jobs their sender left unstarted: that sender bypassed its Bridge drain (metadata_run / person_pump / collection_pump / catalog_open / catalog_pump / subsearch_pump / search_run / search_pump / reconcile_pump / browse_run / hubs_run / viewstate_run / viewstate_pump / notify_pump / start_store_jobs_in / start_store_jobs_of / start_store_jobs)");
+            "a pump's backstop had to start store jobs their sender left unstarted: that sender bypassed its Bridge drain (metadata_run / metadata_pump_season / person_pump / collection_pump / catalog_open / catalog_pump / subsearch_pump / search_run / search_pump / reconcile_pump / browse_run / hubs_run / viewstate_run / viewstate_pump / notify_pump / start_store_jobs_in / start_store_jobs_of / start_store_jobs)");
     }
 
     pub(crate) fn metadata_view(&self) -> plx_data::metadata::MetadataView<'_> {
@@ -1479,7 +1480,7 @@ impl Bridge {
     /// carries them.
     pub(crate) fn viewstate_run(&mut self, cmd: plx_data::stores::viewstate::ViewStateCmd) -> plx_data::stores::StoreOutcome {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
-        let outcome = self.stores.viewstate_run(cmd, self.directory.view(), &self.client_keys);
+        let outcome = self.stores.viewstate_run(cmd, self.directory.view(), &self.client_keys, Self::profile_scope());
         self.start_store_jobs_in(plx_data::stores::Stores::VIEWSTATE_FILLS);
         outcome
     }
@@ -1522,20 +1523,21 @@ impl Bridge {
 
     pub(crate) fn viewstate_pump(&mut self) -> plx_data::stores::EndpointRefreshSet {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
-        let endpoints = self.stores.viewstate_pump(self.directory.view(), &self.client_keys);
+        let endpoints = self.stores.viewstate_pump(self.directory.view(), &self.client_keys, Self::profile_scope());
         self.start_store_jobs_in(plx_data::stores::Stores::VIEWSTATE_FILLS);
         endpoints
     }
 
     /// The read-back worker's pass (`stores::viewreconcile`), and the Browse pump a membership
     /// re-query needs while a page is pushed over the Library page and so it is not ticked to pump its own store.
-    /// The keys are refilled first and the reads the step sent are started before this goes on, in
-    /// the same call; only the reconcile outbox is drained here, the shared `Stores` call's other
-    /// fan-outs emit no jobs of their own.
+    /// The keys are refilled first and the writes and reads the step sent are started before this
+    /// goes on, in the same call: an end-of-stream fan-out it queues starts ViewState's next write,
+    /// so both outboxes are drained here (`Stores::RECONCILE_FILLS`); the shared `Stores` call's
+    /// other fan-outs emit no jobs of their own.
     pub(crate) fn reconcile_pump(&mut self) -> plx_data::stores::EndpointRefreshSet {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
-        let mut outcome = self.stores.reconcile_pump(self.directory.view(), &self.client_keys);
-        self.start_store_jobs_of(StoreId::ViewReconcile);
+        let mut outcome = self.stores.reconcile_pump(self.directory.view(), &self.client_keys, Self::profile_scope());
+        self.start_store_jobs_in(plx_data::stores::Stores::RECONCILE_FILLS);
         if outcome.changed {
             plx_machine::idle::invalidate();
         }
@@ -1647,6 +1649,14 @@ impl Bridge {
         plx_plex::plex::session::peek().household_ids()
     }
 
+    /// The profile the Session owner has seated, as the scope counter it allocated and published
+    /// (`session::current_gen`): it moves when a profile is seated, detached or signed out and
+    /// never on a same-profile token refresh. ViewState's step takes it as an argument and drops a
+    /// write pressed under another one; the Bridge reads the session here, the data layer does not.
+    fn profile_scope() -> u32 {
+        plx_plex::plex::session::current_gen()
+    }
+
     /// Search commands snapshot their initial favourite-library ranking from the same retained
     /// directory the screen read when it emitted the command.
     ///
@@ -1745,7 +1755,12 @@ impl Bridge {
 
     /// The `MetadataStore`'s own async season landing — `app/run.rs`'s route-unconditional pump.
     pub(crate) fn metadata_pump_season(&mut self) -> bool {
-        self.stores.metadata.pump_season_with_gate(&self.stores.landgate)
+        let changed = self.stores.metadata.pump_season_with_gate(&self.stores.landgate);
+        // A guard, not a sender: neither `pump_season_with_gate` nor `pump_episode_pages` emits a
+        // job today (they install landings and request nothing), so this finds nothing. A season or
+        // page request a landing one day emits is started in the call that emitted it.
+        self.start_store_jobs_of(StoreId::Metadata);
+        changed
     }
 
     /// The `MetadataStore`'s cross-source alt-sources resolve, scoped by this owner's retained
@@ -4340,6 +4355,9 @@ mod collection_lifecycle_tests;
 #[cfg(test)]
 #[path = "store_admission_tests.rs"]
 mod store_admission_tests;
+#[cfg(test)]
+#[path = "viewstate_controlled_tests.rs"]
+mod viewstate_controlled_tests;
 #[cfg(test)]
 #[path = "browse_hubs_drain_tests.rs"]
 mod browse_hubs_drain_tests;

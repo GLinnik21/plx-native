@@ -168,7 +168,7 @@ impl Stores {
         self.browse.borrow_mut().run(cmd, keys)
     }
 
-    /// [`Stores::browse_run`] on a registry that holds no client (no section-hubs read leaves): the
+    /// [`Stores::browse_run`] on a registry that holds no client (no section-hubs or directory read leaves): the
     /// command of a test about something else.
     #[cfg(any(test, feature = "test-support"))]
     pub fn browse_run_for_test(&self, cmd: browse::BrowseCmd) -> bool {
@@ -269,6 +269,7 @@ impl Stores {
             StoreId::Hubs => self.hubs.take_jobs(),
             StoreId::Browse => self.browse.borrow_mut().take_jobs(),
             StoreId::Search => self.search.take_jobs(),
+            StoreId::ViewState => self.viewstate.borrow_mut().take_jobs(),
             // The other stores emit no jobs yet.
             _ => Vec::new(),
         }
@@ -291,6 +292,7 @@ impl Stores {
             StoreId::Hubs => self.hubs.has_jobs(),
             StoreId::Browse => self.browse.borrow().has_jobs(),
             StoreId::Search => self.search.has_jobs(),
+            StoreId::ViewState => self.viewstate.borrow().has_jobs(),
             // The other stores emit no jobs yet.
             _ => false,
         }
@@ -343,19 +345,23 @@ impl Stores {
 
     /// The outboxes [`Stores::viewstate_run`] and [`Stores::viewstate_pump`] can fill, in drain
     /// order (`StoreId` order): ViewState's terminal `HubsInvalidateAll` reaches Browse's
-    /// section-hubs step, and its `RefetchHubs` and `Reset` reach the Hubs step. Its Person,
-    /// Collection, Search and Metadata edits emit no jobs from this call. The Bridge drains exactly
-    /// these after either call (`Bridge::start_store_jobs_in`).
-    pub const VIEWSTATE_FILLS: &'static [StoreId] = &[StoreId::Browse, StoreId::Hubs];
+    /// section-hubs step, and its `RefetchHubs` and `Reset` reach the Hubs step; its own step sends
+    /// the next queued write ([`StoreJob::ViewWrite`]). Its Person, Collection, Search and Metadata
+    /// edits emit no jobs from this call. The Bridge drains exactly these after either call
+    /// (`Bridge::start_store_jobs_in`).
+    pub const VIEWSTATE_FILLS: &'static [StoreId] = &[StoreId::Browse, StoreId::Hubs, StoreId::ViewState];
 
     /// ViewState's synchronous command path, with every Browse side effect addressed back to this
     /// aggregate. The callback is invoked inline, preserving the press-frame optimistic edit. The
     /// outcome's `endpoints` are the refreshes the edit's Hubs step settled: the caller carries them.
+    /// `clients` is the registry's answer as of this call and `profile` the profile the Session owner
+    /// has seated (`Bridge::profile_scope`): a write is sent only under the profile it was pressed under.
     pub fn viewstate_run(
         &mut self,
         cmd: viewstate::ViewStateCmd,
         directory: browse::DirectoryView<'_>,
         clients: &plx_plex::plex::ClientKeys,
+        profile: u32,
     ) -> StoreOutcome {
         if matches!(cmd, viewstate::ViewStateCmd::Reset) {
             self.reconcile.reset();
@@ -371,6 +377,8 @@ impl Stores {
         let watchlist = &mut self.watchlist;
         self.viewstate.borrow_mut().run(
             cmd,
+            clients,
+            profile,
             &mut |cmd| watchlist_tee(watchlist, cmd, |cmd| browse.borrow_mut().run(cmd, clients)),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory, clients),
             &mut |cmd| person.run(cmd),
@@ -381,11 +389,13 @@ impl Stores {
     }
 
     /// ViewState's route-unconditional landing pass. Fan-out edits and the terminal section-hubs
-    /// invalidation are applied to this aggregate's Browse owner before the pump returns.
+    /// invalidation are applied to this aggregate's Browse owner before the pump returns. `clients`
+    /// and `profile` are the step's inputs, as for [`Stores::viewstate_run`].
     pub fn viewstate_pump(
         &mut self,
         directory: browse::DirectoryView<'_>,
         clients: &plx_plex::plex::ClientKeys,
+        profile: u32,
     ) -> EndpointRefreshSet {
         let browse = std::rc::Rc::clone(&self.browse);
         let hubs = &mut self.hubs;
@@ -396,6 +406,8 @@ impl Stores {
         let watchlist = &mut self.watchlist;
         self.viewstate.borrow_mut().pump_with_gate(
             &self.landgate,
+            clients,
+            profile,
             &mut |cmd| watchlist_tee(watchlist, cmd, |cmd| browse.borrow_mut().run(cmd, clients)),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory, clients),
             &mut |cmd| person.run(cmd),
@@ -504,13 +516,22 @@ impl Stores {
         )
     }
 
+    /// The outboxes [`Stores::reconcile_pump`] can fill, in drain order (`StoreId` order): the
+    /// end-of-stream fan-out it queues on ViewState's serial queue starts the write at once
+    /// ([`StoreJob::ViewWrite`]), and its own step sends the reads ([`StoreJob::ViewReconcile`]).
+    /// The Browse requery `Bridge::reconcile_pump` runs after it is a separate step with its own
+    /// drain.
+    pub const RECONCILE_FILLS: &'static [StoreId] = &[StoreId::ViewState, StoreId::ViewReconcile];
+
     /// The read-back worker's route-unconditional pass: hand it what landed writes owe, send its
     /// reads, and publish the facts it brought back to the stores that hold the rows. `clients` is
     /// the registry's answer as of this call. It does NOT start the reads it sent: a caller that
     /// returns without taking them ([`Stores::take_jobs_of`]) and handing them to a runner has
     /// stranded the flights. The one production caller is `Bridge::reconcile_pump`. The outcome's
-    /// `endpoints` are the refreshes the published facts' Hubs steps settled.
-    pub fn reconcile_pump(&mut self, directory: browse::DirectoryView<'_>, clients: &plx_plex::plex::ClientKeys) -> StoreOutcome {
+    /// `endpoints` are the refreshes the published facts' Hubs steps settled. `profile` is the one
+    /// the end-of-stream fan-outs it queues are made under ([`Stores::viewstate_run`]).
+    pub fn reconcile_pump(&mut self, directory: browse::DirectoryView<'_>, clients: &plx_plex::plex::ClientKeys,
+        profile: u32) -> StoreOutcome {
         let owed = self.viewstate.borrow_mut().take_reread();
         self.reconcile.enqueue(owed);
         let idle = !self.viewstate.borrow().is_busy() && !self.network_held;
@@ -534,7 +555,7 @@ impl Stores {
         // A first watch whose read-back found the stream's end: the other servers' copies are
         // owed the same watched write, through ViewState's serial queue (the origin already holds it).
         for (sid, rk) in self.reconcile.take_watched_ends() {
-            self.viewstate.borrow_mut().fan_out_origin_watched(sid, &rk);
+            self.viewstate.borrow_mut().fan_out_origin_watched(sid, &rk, clients, profile);
         }
         StoreOutcome { changed, endpoints }
     }
@@ -722,6 +743,19 @@ pub enum StoreJob {
     /// carries nothing and answers with nothing: a refusal is remembered, and the next edit asks
     /// again. Not on the tape.
     SaveRecents(plx_machine::job::Job<crate::search::recents::SaveRecentsReq>, crate::search::recents::SaveRecentsPort),
+    /// One view-state write (a scrobble, an unscrobble or a Remove from Continue Watching) and the
+    /// fan-out of a watched toggle to the title's other copies, emitted by the ViewState step
+    /// (`request`, the landing pass, or an end-of-stream fan-out) and addressed by the write's id.
+    /// One is out at a time: the queue is drained in the order pressed. Not on the tape.
+    ViewWrite(plx_machine::job::Job<crate::viewstate::ViewWriteReq>, crate::viewstate::ViewWritePort),
+    /// One season switch (`MetadataCmd::LoadSeason`), addressed by the season generation it minted.
+    /// The runner resolves the show's server to its client at the launch; a server with none
+    /// answers the failure without a GET. Not on the tape.
+    MetaSeason(plx_machine::job::Job<crate::metadata::MetaSeasonReq>, crate::metadata::MetaSeasonPort),
+    /// One window of a long season's episode pages (`MetadataCmd::WantEpisodes`): at most
+    /// `EP_JOB_PAGES` pages, read in order and posted to the port page by page as they are read.
+    /// Not on the tape.
+    MetaEpisodes(plx_machine::job::Job<crate::metadata::MetaEpisodesReq>, crate::metadata::MetaEpisodesPort),
 }
 
 /// How the runner admits a job before it starts it: the policy a job kind belongs to, stated on
@@ -762,13 +796,16 @@ impl StoreJob {
             | Self::SubtitleSearch(..)
             | Self::ViewReconcile(..)
             | Self::Search(..)
-            | Self::SaveRecents(..) => Admission::Direct,
+            | Self::SaveRecents(..)
+            | Self::ViewWrite(..)
+            | Self::MetaSeason(..)
+            | Self::MetaEpisodes(..) => Admission::Direct,
         }
     }
 
     pub fn store(&self) -> StoreId {
         match self {
-            Self::Detail(..) => StoreId::Metadata,
+            Self::Detail(..) | Self::MetaSeason(..) | Self::MetaEpisodes(..) => StoreId::Metadata,
             Self::Collection(..) => StoreId::Collection,
             Self::Person(..) => StoreId::Person,
             Self::Catalog(..) => StoreId::Catalog,
@@ -777,6 +814,7 @@ impl StoreJob {
             Self::Hubs(..) => StoreId::Hubs,
             Self::BrowseHubs(..) | Self::BrowseDirectory(..) | Self::BrowsePage(..) => StoreId::Browse,
             Self::Search(..) | Self::SaveRecents(..) => StoreId::Search,
+            Self::ViewWrite(..) => StoreId::ViewState,
         }
     }
 }
@@ -1320,9 +1358,10 @@ mod tests {
     /// backstop, which the test rigs count as a bypass.
     #[test]
     fn the_fan_out_fill_lists_name_the_stores_the_calls_can_fill() {
-        assert_eq!(Stores::VIEWSTATE_FILLS, [StoreId::Browse, StoreId::Hubs]);
+        assert_eq!(Stores::VIEWSTATE_FILLS, [StoreId::Browse, StoreId::Hubs, StoreId::ViewState]);
         assert_eq!(Stores::NOTIFY_FILLS, [StoreId::Browse, StoreId::Hubs]);
-        for list in [Stores::VIEWSTATE_FILLS, Stores::NOTIFY_FILLS] {
+        assert_eq!(Stores::RECONCILE_FILLS, [StoreId::ViewState, StoreId::ViewReconcile]);
+        for list in [Stores::VIEWSTATE_FILLS, Stores::NOTIFY_FILLS, Stores::RECONCILE_FILLS] {
             for (i, id) in list.iter().enumerate() {
                 assert!(StoreId::ALL.contains(id), "{id:?} is a store");
                 assert!(!list[..i].contains(id), "{id:?} is listed once");

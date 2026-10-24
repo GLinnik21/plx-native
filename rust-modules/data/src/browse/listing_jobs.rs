@@ -160,7 +160,9 @@ impl Port<BrowseDirectoryAnswer> for BrowseDirectoryPort {
 }
 
 /// A directory request's address: the store and the id its step gave it. The id counts the reads of
-/// ONE directory (each has its own claim), so a genre and a letters request may share a number.
+/// ONE directory (each has its own claim), so a genre and a letters request may share a number; the
+/// hubs and page counters address the same store, so an `Addr` is not an identity across kinds: every
+/// answer and refusal routes through its own job's port, which says which read it is.
 pub(super) fn browse_directory_addr(id: u32) -> Addr {
     Addr { to: MachineId::Store(crate::stores::StoreId::Browse.ord()), req: RequestId(id) }
 }
