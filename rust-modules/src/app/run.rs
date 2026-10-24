@@ -7179,7 +7179,9 @@ mod lifecycle_regression_tests {
     /// The Recommended page's rows ARE the server's hubs, and nothing else fetches them: a page
     /// mounted on `LibraryRecommended` (no shelf seeded by the test) must reach the server's
     /// `/hubs/sections/{id}`. The publish request it sends was once dropped because only the
-    /// full grid's route was let through.
+    /// full grid's route was let through. A test build parks the section hubs' read until the test
+    /// runs it off the frame (`StoreRunner::Held`), so each pass of the wait runs what the page's
+    /// step left parked, and the request it sends is the one the server counts.
     #[test]
     fn the_recommended_page_fetches_the_sections_hubs() {
         let _serial = plx_base::testlock::serial();
@@ -7194,6 +7196,7 @@ mod lifecycle_regression_tests {
         assert!(matches!(rig.app.route(), AppArg::LibraryRecommended { .. }), "premise: the Recommended page is on top");
         poll_until("the Recommended page never fetched the section's hubs", || {
             step(&mut rig.app, &mut t, vec![]);
+            rig.app.bridge.run_held_store_jobs_of_for_test(plx_data::stores::StoreId::Browse);
             requests_matching(&rig, "/hubs/sections/", 0) > 0
         });
     }

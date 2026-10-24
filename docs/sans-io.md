@@ -177,7 +177,9 @@ directory, page and source reads, discovery, the pins) is still on its ledger.
   Home landing needs a real one), and `StoreRunner::held_all()` parks it too, for a test that
   chooses when the read settles (`Bridge::run_held_store_jobs_of_for_test`). Every other kind,
   the section hubs' read included, parks under both: no rig of the suite waits for a section-hubs
-  landing from a real worker, and a parked read is one the test starts when it chooses.
+  landing from a real worker, and a parked read is one the test starts when it chooses (the one
+  `hostsim` rig that needs the read to reach the server, `the_recommended_page_fetches_the_sections_hubs`,
+  runs it from the parked set with `Bridge::run_held_store_jobs_of_for_test(StoreId::Browse)`).
 - **A registry read is an input.** A step that decides from "which client does this server slot
   hold" is handed `plx_plex::plex::ClientKeys` (one `ClientKey { instance, token }` per server) as
   an argument. The Bridge owns one buffer and refills it in place

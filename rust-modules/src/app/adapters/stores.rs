@@ -1881,7 +1881,9 @@ mod tests {
 
     /// `held` parks the section hubs' read, unlike Hubs' (which stays live): no rig of the suite
     /// waits for a section-hubs landing from a real worker, and a parked read is one the test
-    /// settles when it chooses to. The id on the parked job is the one the store addressed.
+    /// settles when it chooses to (the `hostsim` rig that needs the request to reach the server runs
+    /// it with `run_held_store_jobs_of_for_test`). The id on the parked job is the one the store
+    /// addressed.
     #[test]
     fn the_held_runner_parks_a_browse_hubs_job() {
         let _serial = plx_base::testlock::serial();
