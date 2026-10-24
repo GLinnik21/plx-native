@@ -785,7 +785,15 @@ RUST_CFG       = features:$(RUST_FEATFLAGS)$(if $(filter-out release,$(ARM_PROFI
 # `test-hostsim` and `check-nodef` join `build-bench` for the same reason: each only runs host cargo
 # in a tree under `rust-modules/`, builds none of the TV artifacts, and must not delete a release
 # binary because its caller's configuration differs from the stamp.
-SIDE_EFFECT_FREE = $(QUERY_GOALS) release-guard lab-guard disk disk-preflight build-bench build-bench-quick test-hostsim check-nodef
+#
+# The goals that only DRIVE the television join them: `kill`, `run`, `run-stream`, `verify-deploy`,
+# `uninstall`, `fetch-profile` and `softfloat-probe` each have `tv-lock-require` as their one
+# prerequisite and an ssh/scp recipe, so they build and ship nothing. `tools/tv-session.sh` runs
+# `make kill` with no ARM_PROFILE, which is the tvdev configuration, so after a
+# `make ARM_PROFILE=release` build its `make kill` deleted the release-built `pkg/plxnative` and
+# rewrote the stamp, and the next `tv-session.sh up` died on "no pkg/plxnative". `deploy` and
+# `install` are deliberately NOT here: they build and ship the binary, so they must stamp.
+SIDE_EFFECT_FREE = $(QUERY_GOALS) release-guard lab-guard disk disk-preflight build-bench build-bench-quick test-hostsim check-nodef kill run run-stream verify-deploy uninstall fetch-profile softfloat-probe
 PURE_QUERY := $(if $(MAKECMDGOALS),$(if $(filter-out $(SIDE_EFFECT_FREE),$(MAKECMDGOALS)),,yes),)
 ifneq ($(PURE_QUERY),yes)
 ifneq ($(RUST_CFG),$(shell cat $(RUST_STAMP) 2>/dev/null))

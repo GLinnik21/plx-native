@@ -755,9 +755,12 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew; deploy/run use y
   `make RELEASE=1 SYMBOLS=1 ipk symbols`. `make symbols` without the flag REFUSES rather than
   writing the empty shell `objcopy --only-keep-debug` produces from a binary with no DWARF.
   **`SYMBOLS=1` is sticky the way `RELEASE=1` is: pass it to EVERY invocation in the session.** It
-  is in the stamp, so a bare `make run` after `make SYMBOLS=1 deploy` deletes `pkg/plxnative` at
+  is in the stamp, so a bare `make deploy` after `make SYMBOLS=1 deploy` deletes `pkg/plxnative` at
   parse time and leaves you unable to symbolize the crash you just captured — the stamp working as
-  designed, but it costs a rebuild to notice. **Device-verified end to end 2026-08-29**: a
+  designed, but it costs a rebuild to notice. (The goals that only drive the TV — `kill`, `run`,
+  `run-stream`, `verify-deploy`, `uninstall` — are in `SIDE_EFFECT_FREE` and leave the stamp and the
+  binary alone, so `tv-session.sh` and `tests/run.py` can run them whatever the last build was.)
+  **Device-verified end to end 2026-08-29**: a
   deliberate SIGSEGV on the set resolved through `pkg/plxnative.debug` to
   `dev::crash_on_purpose at rust-modules/src/dev.rs:218` — file and line, from a binary the
   television runs, matched by build id alone.
