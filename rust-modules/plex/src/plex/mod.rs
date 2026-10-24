@@ -17,6 +17,8 @@
 #![allow(dead_code)]
 
 mod client;
+// WHICH client a slot holds, as a value a step is handed instead of reading the registry itself.
+mod client_keys;
 pub mod identity; // ONE X-Plex-* identity for both transports (plex.tv headers + PMS query)
 mod models;
 mod params;
@@ -107,6 +109,7 @@ pub use client::urlenc_str;
 pub use client::{decode_ip, decode_link, encode_ip, encode_link};
 #[allow(unused_imports)]
 pub use client::{Client, IpVersion, StreamUrl};
+pub use client_keys::{ClientKey, ClientKeys};
 // `Client::find_by_guids`' vocabulary (library.rs stays private).
 pub use library::{GuidKind, GuidLookupError, GuidMatch, GUIDS_PER_REQUEST};
 // WHERE a server is, as one value. `Origin` is what `register_origin`/`install` take and what a

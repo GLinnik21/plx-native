@@ -15,10 +15,29 @@
 //! made both depend on the scheduler: a fetch for an unknown server returns in microseconds, so a
 //! fast run settled a request before an "in flight" assertion while a loaded CI runner had not
 //! settled it after a hundred `yield_now`s.
+//!
+//! **The registry is read here, not in a step.** A step that decides from "which client does this
+//! server slot hold" is handed the answer as an input (`plx_plex::plex::ClientKeys`), which the
+//! Bridge fills with [`refill_client_keys`] immediately before the step, in the same call. A job
+//! carries the key its step decided on, and the runner starts it only if the registry still holds
+//! that client at the moment of the launch.
 
 use plx_data::metadata::{fetch_full, finish_detail_fetch, DetailPort, DetailReq};
 use plx_data::stores::StoreJob;
 use plx_machine::job::{Job, Port};
+use plx_plex::plex::{ClientKey, ClientKeys};
+
+/// Fill `keys` with the registry's answer for every active server slot, in place (a pump that runs
+/// every frame allocates nothing for it). The only loop over `client_for` that feeds a step: an
+/// active slot can still hold no client, so the walk asks each slot for its client and keeps the
+/// ones that answer, which makes `keys.key(sid)` equal `client_for(sid).map(ClientKey::of)` for
+/// every `sid`, a retired or unregistered one included.
+#[expect(dead_code, reason = "its first caller is the next commit's collection pump")]
+pub(crate) fn refill_client_keys(keys: &mut ClientKeys) {
+    keys.refill(plx_plex::plex::server_ids().filter_map(|sid| {
+        plx_plex::plex::client_for(sid).map(|client| (sid, ClientKey::of(client)))
+    }));
+}
 
 pub(crate) enum StoreRunner {
     /// Start every job on a worker thread.
@@ -52,10 +71,7 @@ impl StoreRunner {
         // so its landing reservation can be handed back; the answer is discarded by the pump.
         #[cfg(test)]
         if let Self::Held(held) = self {
-            for superseded in std::mem::take(held) {
-                let StoreJob::Detail(old, old_port) = superseded;
-                old_port.done(old.addr, ((old.req.sid, old.req.rk), None));
-            }
+            Self::retire_parked_details(held);
         }
         let addr = job.addr;
         let (sid, gen) = (job.req.sid, addr.req.0);
@@ -67,6 +83,20 @@ impl StoreRunner {
             // Nothing was started, so nothing will ever answer on its own: the refusal is what
             // settles the spinner, exactly one event for the request.
             admission.refused(addr);
+        }
+    }
+
+    /// TEST ONLY: answer the detail fetches still parked as superseded (see [`Self::start_detail`]).
+    /// A `match` over every job kind, so a store that joins the lane must say what a newer detail
+    /// request does to its parked jobs.
+    #[cfg(test)]
+    fn retire_parked_details(held: &mut Vec<StoreJob>) {
+        for parked in std::mem::take(held) {
+            match parked {
+                StoreJob::Detail(old, old_port) => {
+                    old_port.done(old.addr, ((old.req.sid, old.req.rk), None));
+                }
+            }
         }
     }
 
@@ -95,9 +125,12 @@ impl StoreRunner {
         let run = std::mem::take(held);
         let n = run.len();
         for job in run {
-            let StoreJob::Detail(job, port) = job;
-            let DetailReq { sid, rk, prefer } = job.req;
-            finish_detail_fetch(&port, job.addr, (sid, rk.clone()), || fetch_full(sid, &rk, prefer));
+            match job {
+                StoreJob::Detail(job, port) => {
+                    let DetailReq { sid, rk, prefer } = job.req;
+                    finish_detail_fetch(&port, job.addr, (sid, rk.clone()), || fetch_full(sid, &rk, prefer));
+                }
+            }
         }
         n
     }
