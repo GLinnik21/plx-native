@@ -73,7 +73,8 @@ fn person_client(req: &PersonReq) -> Result<Option<&'static Client>, Gone> {
 pub(crate) enum StoreRunner {
     /// Start every job on a worker thread.
     Live,
-    /// TEST ONLY: park every job (after its tape admission) until [`StoreRunner::run_held`].
+    /// TEST ONLY: park every job until [`StoreRunner::run_held`], after its tape admission for the
+    /// kinds that are taped; a Catalog job is parked with none.
     #[cfg(test)]
     Held(Vec<StoreJob>),
 }

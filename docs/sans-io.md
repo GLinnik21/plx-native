@@ -171,11 +171,14 @@ last bullet lists what it still reads).
   future sender must pass the host's keys and drain. The same holds for the public
   `CatalogStore::open` and `CatalogStore::pump`: `catalog_feed` and `catalog_reread` call
   `Bridge::catalog_open` and `Bridge::catalog_pump`, which drain in the same call.
-- **Results do not return as FIFO events.** A store's result goes back through the landing and its
-  gate (`landgate`, the `adapter_rank` of the landing key), where the pump takes it by value. This
-  is a deliberate exception to "every result returns as one addressed event in the same drain":
-  it is kept so that the replay anchors hold, because the landing is where they already record a
-  result.
+- **Results do not return as FIFO events.** A gated store's result (Detail, Collection, Person)
+  goes back through the landing and its gate (`landgate`, the `adapter_rank` of the landing key),
+  where the pump takes it by value. This is a deliberate exception to "every result returns as one
+  addressed event in the same drain": it is kept so that the replay anchors hold, because the
+  landing is where they already record a result. Catalog's landing is an ungated mailbox take
+  (`CatalogStore::pump` takes no `Gate`): its answer, its `NotStarted` refusal and its panic all
+  return as a plain landing that the next `Bridge::catalog_pump` takes, and the replay anchors do
+  not record them.
 - **Why the job is not an `AppFx`.** A new `app_effect` arm that starts IO without pushing
   `Fx::Deliver(` is a new `fxlanes` site; `bootstrap::effects::app` fails closed on a variant it
   cannot encode in controlled Home; and every `Fx::App` is an `"e":"App"` record, so the replay
