@@ -248,3 +248,38 @@ fn a_panicking_page_read_lands_as_a_failure() {
     assert_eq!(ep.landed.len(), 1);
     assert!(ep.landed[0].rows.is_none());
 }
+
+/// A page job lands each page as it is read, not all of them after the last read. The window of a
+/// restore far down a long season asks for the restore page first and two more behind it, so the
+/// page the strip is waiting on must seat after ITS read, not after three serial ones (on a relayed
+/// server that is two round trips of a visible hole).
+#[test]
+fn a_page_job_lands_each_page_as_it_is_read() {
+    let _serial = plx_base::testlock::serial();
+    let sid = dead_server();
+    let mut store = MetadataStore::default();
+    show_on(&mut store, sid);
+    assert!(store.run(MetadataCmd::WantEpisodes {
+        lo: EPISODE_PAGE, hi: 4 * EPISODE_PAGE, focus: None, restore: Some(2 * EPISODE_PAGE),
+    }));
+    let adapter = store.adapter_for_test();
+    let (addr, req, port) = pages_job(&mut store);
+    assert_eq!(req.pages, [2, 1, 3], "the restore page first, then the holes in order");
+
+    let seen = std::sync::Mutex::new(Vec::new());
+    let landed_before_each_read = |_: &'static plx_plex::plex::Client, _: &str, page: usize| {
+        let ep = adapter.ep_pages.lock().unwrap();
+        seen.lock().unwrap().push((page, ep.landed.iter().map(|l| l.page).collect::<Vec<_>>()));
+        Some(vec![episode(&format!("e-page-{page}"))])
+    };
+    finish_episodes_with(&port, addr, plx_plex::plex::client_for(sid), req, landed_before_each_read);
+
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [(2, vec![]), (1, vec![2]), (3, vec![2, 1])],
+        "each read found the earlier pages already landed"
+    );
+    let ep = adapter.ep_pages.lock().unwrap();
+    assert!(ep.inflight.is_empty(), "every page gave its key back");
+    assert_eq!(ep.landed.iter().map(|l| l.page).collect::<Vec<_>>(), [2, 1, 3]);
+}

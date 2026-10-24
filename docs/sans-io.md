@@ -427,9 +427,11 @@ reads of `fetch_episodes` and `fetch_episode_page` are gone from `data/src/metad
     cannot turn it back on; the tab stays on the flipped season and the old episodes stay listed.
     `MetaEpisodesPort::refused` drops the inflight keys the job held (the port carries them,
     because a refusal is told only the address), so the next `WantEpisodes` asks again.
-  - **A page job answers once, with all its pages.** The body reads its pages in order and the
-    port lands them together, where the inline worker landed each page as it arrived: an earlier
-    page of a multi-page job now lands with the last one.
+  - **A page job posts each page as it is read.** The body reads its pages in order and posts each
+    to the port as it arrives, as the inline worker landed it: the window asks for a restore target
+    first, and the strip waits on it, not on the pages behind it. Each post lands the page and gives
+    its inflight key back; the job's one `done` carries nothing and is only the end, so it releases
+    no key (a later window may have asked for the same page again since it landed).
   - **Drains.** `load_season` and `want_episodes` are reached through `Bridge::metadata_run` (the
     dispatcher) or on the bare store (`input.rs`, which drains with `start_store_jobs`). No fan-out
     reaches either (the view-state closures send `ApplyView` only), so no `*_FILLS` list names

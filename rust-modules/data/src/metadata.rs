@@ -5158,6 +5158,11 @@ fn season_addr(gen: u32) -> plx_machine::machine::Addr {
     }
 }
 
+/// A page job's address: the sequence of its own (`EpPages.sent`). It shares the id space of
+/// [`season_addr`] and of the Detail job's address (`Addr { to: Store(Metadata), req }`), so a page
+/// job, a season job and a detail job can carry an identical `Addr`. Nothing routes by `Addr`
+/// alone (each typed port keeps its answers apart); anything that later keys by it has to add the
+/// kind, or give the kinds disjoint ranges.
 fn pages_addr(seq: u32) -> plx_machine::machine::Addr {
     season_addr(seq)
 }
@@ -5279,6 +5284,16 @@ impl MetaEpisodesPort {
     fn new(adapter: &std::sync::Arc<MetadataAdapter>, keys: Vec<(plx_plex::plex::ServerId, String, usize)>) -> Self {
         Self { adapter: std::sync::Arc::clone(adapter), keys }
     }
+
+    /// One page of the job was read: land it and give its inflight key back now, ahead of the
+    /// job's later pages. The pages are posted as they arrive, the way the inline worker pushed
+    /// them (the window asks for the restore page first, and the strip waits on it), and the job's
+    /// one `done` is only the end.
+    fn page(&self, page: EpLanded) {
+        let mut ep = self.adapter.ep_pages.lock().unwrap_or_else(|e| e.into_inner());
+        ep.inflight.retain(|k| *k != (page.sid, page.season.clone(), page.page));
+        ep.landed.push(page);
+    }
 }
 
 impl PartialEq for MetaEpisodesPort {
@@ -5293,18 +5308,15 @@ impl std::fmt::Debug for MetaEpisodesPort {
     }
 }
 
-/// A page job's answer, opaque to the runner: every page of the job, `rows: None` for a FAILED read.
-pub struct EpisodePagesAnswer(Vec<EpLanded>);
+/// A page job's end, opaque to the runner. It carries nothing: each page, `rows: None` for a FAILED
+/// read, was posted through [`MetaEpisodesPort::page`] as it was read.
+pub struct EpisodePagesDone;
 
-impl plx_machine::job::Port<EpisodePagesAnswer> for MetaEpisodesPort {
-    /// The job's pages land together and release their inflight keys.
-    fn done(&self, _addr: plx_machine::machine::Addr, EpisodePagesAnswer(landed): EpisodePagesAnswer) {
-        let mut ep = self.adapter.ep_pages.lock().unwrap_or_else(|e| e.into_inner());
-        for page in landed {
-            ep.inflight.retain(|k| *k != (page.sid, page.season.clone(), page.page));
-            ep.landed.push(page);
-        }
-    }
+impl plx_machine::job::Port<EpisodePagesDone> for MetaEpisodesPort {
+    /// The terminal of the job's posts: every page has landed and released its own key, so there is
+    /// nothing left to give back. A key is not released here by the job's list, because a later
+    /// window may have asked for the same page again since it landed.
+    fn done(&self, _addr: plx_machine::machine::Addr, _end: EpisodePagesDone) {}
 
     /// The job was never started: drop the keys it holds, so the next `WantEpisodes` asks again.
     fn refused(&self, _addr: plx_machine::machine::Addr) {
@@ -5314,8 +5326,9 @@ impl plx_machine::job::Port<EpisodePagesAnswer> for MetaEpisodesPort {
 }
 
 /// The page job's IO body and its completion: read each page through `client` in order and post
-/// the answer to `port`. `None` is a server the runner held no client for: every page answers the
-/// failure without a GET. A read that panics lands as a failure, outside the guard.
+/// each to `port` as it is read, then end the job. `None` is a server the runner held no client
+/// for: every page answers the failure without a GET. A read that panics lands as a failure,
+/// outside the guard.
 ///
 /// WORKER THREAD.
 pub fn finish_episodes_job(
@@ -5332,13 +5345,13 @@ fn finish_episodes_with(
 ) {
     use plx_machine::job::Port;
     let MetaEpisodesReq { sid, show, season, pages, stamp } = req;
-    let landed = pages.into_iter().map(|page| {
+    for page in pages {
         let rows = client.and_then(|client| {
             catch_unwind(std::panic::AssertUnwindSafe(|| fetch(client, &season, page))).unwrap_or(None)
         });
-        EpLanded { sid, show: show.clone(), season: season.clone(), page, rows, stamp }
-    }).collect();
-    port.done(addr, EpisodePagesAnswer(landed));
+        port.page(EpLanded { sid, show: show.clone(), season: season.clone(), page, rows, stamp });
+    }
+    port.done(addr, EpisodePagesDone);
 }
 
 // ---- Related tail window ----------------------------------------------------------------------
