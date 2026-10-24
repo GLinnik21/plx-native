@@ -125,6 +125,41 @@ fn a_landing_whose_client_moved_is_not_ours_and_the_section_is_still_owed() {
     assert!(browse.state.hubs_flight.is_none(), "and the record of the read is gone");
 }
 
+/// The compare is on the whole key, not on the credential alone: an answer made by another client
+/// OBJECT (the slot was re-pointed while the read was out, so the registry's key has a different
+/// `instance`) is not ours even when the token generation agrees.
+#[test]
+fn a_landing_from_another_client_instance_is_not_ours_even_with_the_same_token() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, _sid, client) = loopback_page_source();
+    browse.hubs_kick(0);
+    let (job, port) = browse.take_hubs_job();
+    let current = ClientKey::of(client);
+    let other = ClientKey { instance: current.instance.wrapping_add(1), token: current.token };
+    port.done(job.addr, BrowseHubsAnswer::list_for_test(&job, vec![Shelf::default()]).from_client_for_test(other));
+    assert!(!browse.hubs_land(), "nothing landed");
+    assert!(browse.state.states()[0].hubs.staged.is_none(), "the other client's shelves were dropped");
+    assert!(browse.state.states()[0].hubs.owed, "the section is still owed the read");
+    assert!(!browse.adapter.hubs.fetch.busy(), "the take gave the claim back");
+}
+
+/// A server that holds no client by the time the answer lands (a sign-out retired its slot) has no
+/// key to equal the answer's: the shelves are dropped and the section is owed its read again.
+#[test]
+fn a_landing_for_a_server_that_holds_no_client_any_more_is_not_ours() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, _client) = loopback_page_source();
+    browse.hubs_kick(0);
+    let (job, port) = browse.take_hubs_job();
+    plx_plex::plex::reset_servers_for_test();
+    assert!(plx_plex::plex::client_for(sid).is_none(), "premise: the slot holds no client at the landing");
+    port.done(job.addr, BrowseHubsAnswer::list_for_test(&job, vec![Shelf::default()]));
+    assert!(!browse.hubs_land(), "nothing landed");
+    assert!(browse.state.states()[0].hubs.staged.is_none(), "the signed-out client's shelves were dropped");
+    assert!(browse.state.states()[0].hubs.owed, "the section is still owed the read");
+    assert!(!browse.adapter.hubs.fetch.busy(), "the take gave the claim back");
+}
+
 /// The answer to a read the store has since superseded (here: the mailbox was cleared under it and a
 /// newer read took the claim) is dropped and leaves the newer read's claim alone.
 #[test]

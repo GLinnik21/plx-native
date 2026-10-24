@@ -342,11 +342,11 @@ impl Stores {
     }
 
     /// The outboxes [`Stores::viewstate_run`] and [`Stores::viewstate_pump`] can fill, in drain
-    /// order: ViewState's `RefetchHubs` and `Reset` reach the Hubs step, and its terminal
-    /// `HubsInvalidateAll` reaches Browse's section-hubs step. Its Person, Collection, Search and
-    /// Metadata edits emit no jobs from this call. The Bridge drains exactly these after either call
-    /// (`Bridge::start_store_jobs_in`).
-    pub const VIEWSTATE_FILLS: &'static [StoreId] = &[StoreId::Hubs, StoreId::Browse];
+    /// order (`StoreId` order): ViewState's terminal `HubsInvalidateAll` reaches Browse's
+    /// section-hubs step, and its `RefetchHubs` and `Reset` reach the Hubs step. Its Person,
+    /// Collection, Search and Metadata edits emit no jobs from this call. The Bridge drains exactly
+    /// these after either call (`Bridge::start_store_jobs_in`).
+    pub const VIEWSTATE_FILLS: &'static [StoreId] = &[StoreId::Browse, StoreId::Hubs];
 
     /// ViewState's synchronous command path, with every Browse side effect addressed back to this
     /// aggregate. The callback is invoked inline, preserving the press-frame optimistic edit. The
@@ -405,11 +405,11 @@ impl Stores {
         )
     }
 
-    /// The outboxes the notification map ([`Stores::notify_map`]) can fill, in drain order: a
-    /// server-side change reads the affected source back with `RefetchSourceQuiet` and re-reads its
-    /// sections' shelves with `HubsInvalidateServer`. The Bridge drains exactly these after the map
-    /// (`Bridge::start_store_jobs_in`).
-    pub const NOTIFY_FILLS: &'static [StoreId] = &[StoreId::Hubs, StoreId::Browse];
+    /// The outboxes the notification map ([`Stores::notify_map`]) can fill, in drain order
+    /// (`StoreId` order): a server-side change re-reads its sections' shelves with
+    /// `HubsInvalidateServer` and reads the affected source back with `RefetchSourceQuiet`. The
+    /// Bridge drains exactly these after the map (`Bridge::start_store_jobs_in`).
+    pub const NOTIFY_FILLS: &'static [StoreId] = &[StoreId::Browse, StoreId::Hubs];
 
     /// The notification feed's per-frame pass. It stands down while the landing gate is armed (a
     /// recording, a replay or a dump owns the run), and never reads the registry's tokens.
@@ -1298,12 +1298,13 @@ mod tests {
     /// backstop, which the test rigs count as a bypass.
     #[test]
     fn the_fan_out_fill_lists_name_the_stores_the_calls_can_fill() {
-        assert_eq!(Stores::VIEWSTATE_FILLS, [StoreId::Hubs, StoreId::Browse]);
-        assert_eq!(Stores::NOTIFY_FILLS, [StoreId::Hubs, StoreId::Browse]);
+        assert_eq!(Stores::VIEWSTATE_FILLS, [StoreId::Browse, StoreId::Hubs]);
+        assert_eq!(Stores::NOTIFY_FILLS, [StoreId::Browse, StoreId::Hubs]);
         for list in [Stores::VIEWSTATE_FILLS, Stores::NOTIFY_FILLS] {
             for (i, id) in list.iter().enumerate() {
                 assert!(StoreId::ALL.contains(id), "{id:?} is a store");
                 assert!(!list[..i].contains(id), "{id:?} is listed once");
+                assert!(i == 0 || (list[i - 1] as u32) < (*id as u32), "{id:?} is listed in StoreId order");
             }
         }
     }
