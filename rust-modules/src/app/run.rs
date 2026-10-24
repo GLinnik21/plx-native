@@ -5445,7 +5445,7 @@ mod lifecycle_regression_tests {
         // The viewer pauses the live Engine through the real transport, so it owns a user hold
         // that only a real resume releases.
         assert!(
-            plx_media::player::lifecycle::set_transport_paused(&mut rig.app.adapters.player, true),
+            plx_media::player::transport::set_transport_paused(&mut rig.app.adapters.player, true),
             "the fixture's pause is accepted"
         );
         assert!(paused(), "the Engine is under the viewer's pause");

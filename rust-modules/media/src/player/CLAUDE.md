@@ -125,7 +125,7 @@ something.
   the screensaver, and whether that press reaches the app is unmeasured. A toggle over a save that
   was Playing is spent as a wake (the machine has no claim that restores a Playing save Paused).
   A Playing restore of a Paused save also clears the pause the park left standing BEFORE the Load
-  (`PlayerForegroundActuator::before_load` → `lifecycle::commit_viewer_resume_for_load`):
+  (`PlayerForegroundActuator::before_load` → `transport::commit_viewer_resume_for_load`):
   `ClockStartGuard` arms the Load's initial hold from `TX.paused` (only with no live Engine: over one, `before_load` leaves the pause for `PlayClock`), and under the stale pause that
   hold was the viewer's, which fenced the first Play behind a prime (`SMP Play fenced; priming
   before retry`) and left the actual Play to the late `PlayClock`. That cleared pause, not the
@@ -187,10 +187,10 @@ something.
   transport spinner draws; a seek flight engages the same hold from
   `start_transcode_seek_flight`) and `take` + `release` AFTER `run_claim_tail`, so an accepted
   claim's Play lands on the new stream and a rejected one's on the kept Engine. A viewer press
-  (`player::lifecycle::set_transport_paused` -> `note_user_transport`) forgets the restore: the
+  (`player::transport::set_transport_paused` -> `note_user_transport`) forgets the restore: the
   viewer's last transport press always stands. A stream already paused at claim time stays paused.
   While the hold's pause stands the viewer's transport reads see PLAYING
-  (`player::lifecycle::viewer_paused`, `claim_hold::owns_pause`): the OK toggle means Pause and a
+  (`player::transport::viewer_paused`, `claim_hold::owns_pause`): the OK toggle means Pause and a
   seek's `resume_if_paused` leaves the hold alone (its seek is carried past the reload by
   `pump::commit_or_carry_seek`, including a seek pressed mid-flight when none was pending at
   claim time). A reload (or a Pause pressed before the first frame) under a VIEWER Pause leaves a
@@ -376,7 +376,7 @@ something.
   `play_pending()` is already false by then), and the app loop's drain starts the Load when it lands
   (`finish_landed_play`). So is the FOREGROUND restore's resume of a parked transcode: the
   foreground machine (`player/lifecycle.rs`) parks in `PreparePending` / `RecoveryPending` (both
-  `awaiting_load`, so playback and the cold drain stay off), and `poll_foreground_flight` — once a
+  `awaiting_load`, so playback and the cold drain stay off), and `poll_foreground_flight` (`player/foreground.rs`) — once a
   frame from `playback_tick`, outside `playback_may_run` — drains the landing with the same
   `land_resume` and carries on into the Load; a refused rebuild re-arms the suspended snapshot, a
   flight that ended without landing releases the machine, and a SECOND OS background while it flies
@@ -424,9 +424,10 @@ something.
   its own PUT as before. It holds itself to the
   subtitle the landing put on screen (`owed.landed_sub`, settled from the session by
   `settle_landing_selection`), so it never replaces a remembered sidecar the restore drew.
-- **App-switch lifecycle** (handled in `app/run.rs`, the frame loop; the machine and the
-  transport-pause contract are `player/lifecycle.rs`, which `app::lifecycle` re-exports; details in
-  the `docs/agent-reference.md` gotchas): OS
+- **App-switch lifecycle** (handled in `app/run.rs`, the frame loop; the machine is
+  `player/lifecycle.rs`, its drivers (`drive_foreground` and the `poll_`/`park_` fns) are
+  `player/foreground.rs`, and the transport-pause contract is `player/transport.rs`; `app::lifecycle`
+  re-exports all three; details in the `docs/agent-reference.md` gotchas): OS
   background suspends the buffer-feed preserving the session. Foreground tracks one exact Load
   attempt at a time, follows reducer-approved superseding or rollback attempts, retries an exact
   failure without repeating route preparation, and issues the clock's native Play only after
