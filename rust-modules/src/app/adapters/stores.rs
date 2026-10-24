@@ -35,7 +35,9 @@
 //! server slot hold" is handed the answer as an input (`plx_plex::plex::ClientKeys`), which the
 //! Bridge fills with [`refill_client_keys`] immediately before the step, in the same call. A job
 //! carries the key its step decided on, and the runner starts it only if the registry still holds
-//! that client at the moment of the launch.
+//! that client at the moment of the launch. (The Detail job carries no key: `start_detail` resolves
+//! its server once, at the admission, and the chain runs through that client, bar the opening
+//! season's episodes; `docs/sans-io.md`, "The store job lane".)
 
 use plx_data::collection::{finish_collection_job, CollectionPort, CollectionReq};
 use plx_data::metadata::{fetch_full, finish_detail_fetch, DetailPort, DetailReq};
@@ -263,11 +265,17 @@ impl StoreRunner {
         }
         let addr = job.addr;
         let (sid, gen) = (job.req.sid, addr.req.0);
+        // The ONE read of the registry for this job: the admission records the instance of the
+        // client it names, and the launch runs the chain through that very client. A job
+        // carries no `ClientKey` (the step that emitted it reads no registry), so what the
+        // registry holds NOW is the client the page is opened on; the capture is made here, at the
+        // admission, and the chain asks again only for the opening season's episodes.
+        let client = plx_plex::plex::client_for(sid);
         let request = serde_json::json!({"store":"metadata",
             "sid":sid.raw(),"rk":job.req.rk,"gen":gen,
-            "client":plx_plex::plex::client_for(sid).map(|c| c.instance_gen())});
+            "client":client.map(|c| c.instance_gen())});
         let admission = port.clone();
-        if !plx_data::stores::tape::admit(request, || self.launch_detail(job, port)) {
+        if !plx_data::stores::tape::admit(request, || self.launch_detail(job, port, client)) {
             // Nothing was started, so nothing will ever answer on its own: the refusal is what
             // settles the spinner, exactly one event for the request.
             admission.refused(addr);
@@ -297,12 +305,17 @@ impl StoreRunner {
         }
     }
 
-    fn launch_detail(&mut self, job: Job<DetailReq>, port: DetailPort) -> bool {
+    /// Start the fetch on a worker through `client`, the one [`Self::start_detail`] resolved. A
+    /// server the registry holds no client for still starts (the worker answers the failure, as
+    /// the chain always did when its first read found no client): the page settles on that answer.
+    fn launch_detail(&mut self, job: Job<DetailReq>, port: DetailPort, client: Option<&'static Client>) -> bool {
         match self {
             Self::Live => {
                 let Job { addr, req: DetailReq { sid, rk, prefer } } = job;
                 plx_base::task::spawn_small("detail", move || {
-                    finish_detail_fetch(&port, addr, (sid, rk.clone()), || fetch_full(sid, &rk, prefer));
+                    finish_detail_fetch(&port, addr, (sid, rk.clone()), client, |client| {
+                        fetch_full(client, sid, &rk, prefer)
+                    });
                 })
             }
             #[cfg(test)]
@@ -504,8 +517,12 @@ impl StoreRunner {
         for job in run {
             match job {
                 StoreJob::Detail(job, port) => {
+                    // The client is resolved when the job runs (a live one is resolved by
+                    // `start_detail`, at the admission); a server with none answers the failure.
                     let DetailReq { sid, rk, prefer } = job.req;
-                    finish_detail_fetch(&port, job.addr, (sid, rk.clone()), || fetch_full(sid, &rk, prefer));
+                    finish_detail_fetch(&port, job.addr, (sid, rk.clone()), plx_plex::plex::client_for(sid), |client| {
+                        fetch_full(client, sid, &rk, prefer)
+                    });
                 }
                 StoreJob::Collection(job, port) => {
                     // The registry may have moved on since the job was parked: a request whose
