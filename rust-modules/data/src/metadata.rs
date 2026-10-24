@@ -5090,33 +5090,32 @@ fn want_episodes(
     let mut order: Vec<usize> = keep.restore.into_iter().chain(keep.focus).map(page_of).collect();
     order.extend(d.episodes.missing(keep.wanted.start, keep.wanted.end));
     let mut want = Vec::new();
-    {
+    let mut keys = Vec::new();
+    let seq = {
         let mut ep = adapter.ep_pages.lock().unwrap_or_else(|e| e.into_inner());
         for p in order {
             let hole = d.episodes.missing(p * EPISODE_PAGE, p * EPISODE_PAGE + 1).next() == Some(p);
             let key = (sid, season.clone(), p);
             if hole && !want.contains(&p) && !ep.inflight.contains(&key) && want.len() < EP_JOB_PAGES {
                 want.push(p);
+                keys.push(key);
             }
         }
-        for &p in &want {
-            ep.inflight.push((sid, season.clone(), p));
-        }
+        ep.inflight.extend(keys.iter().cloned());
         ep.keep = Some(keep);
-    }
+        // The job's own sequence, minted only for a job that is sent.
+        if !want.is_empty() {
+            ep.sent += 1;
+        }
+        ep.sent
+    };
     if want.is_empty() {
         return false;
     }
     let stamp = state.ledger.stamp(); // at the request, before any page of the job is read
-    let seq = {
-        let mut ep = adapter.ep_pages.lock().unwrap_or_else(|e| e.into_inner());
-        ep.sent += 1;
-        ep.sent
-    };
     // The reads are the application's to start. A launch that starts nothing is
     // `MetaEpisodesPort::refused`, which drops the keys held above, so the next `WantEpisodes`
     // asks for the pages again.
-    let keys = want.iter().map(|&p| (sid, season.clone(), p)).collect();
     state.jobs.push(crate::stores::StoreJob::MetaEpisodes(
         plx_machine::job::Job { addr: pages_addr(seq), req: MetaEpisodesReq { sid, show, season, pages: want, stamp } },
         MetaEpisodesPort::new(adapter, keys),
@@ -5248,6 +5247,16 @@ impl plx_machine::job::Port<SeasonAnswer> for MetaSeasonPort {
     }
 }
 
+/// One read of a season job through the client the runner resolved: `None` when it held none for the
+/// server (no GET is made), and `None` when the read failed or panicked. The panic is caught HERE,
+/// so a caller posts its answer outside the guard and a panicking read still lands, as a failure.
+fn read_through<T>(
+    client: Option<&'static plx_plex::plex::Client>,
+    read: impl FnOnce(&'static plx_plex::plex::Client) -> Option<T>,
+) -> Option<T> {
+    client.and_then(|client| catch_unwind(std::panic::AssertUnwindSafe(|| read(client))).unwrap_or(None))
+}
+
 /// The season fetch's IO body and its completion: read the episodes through `client` and post the
 /// answer to `port`. `client` is the one the runner resolved at the launch; `None` is a server it
 /// held none for, which answers the failure without a GET. The answer is posted OUTSIDE the guard,
@@ -5268,9 +5277,7 @@ fn finish_season_with(
 ) {
     use plx_machine::job::Port;
     let MetaSeasonReq { sid, show, season, idx, prev, stamp } = req;
-    let eps = client.and_then(|client| {
-        catch_unwind(std::panic::AssertUnwindSafe(|| fetch(client, &season))).unwrap_or(None)
-    });
+    let eps = read_through(client, |client| fetch(client, &season));
     port.done(addr, SeasonAnswer { sid, rk: show, idx, prev, eps, stamp });
 }
 
@@ -5305,7 +5312,7 @@ impl MetaEpisodesPort {
     /// one `done` is only the end.
     fn page(&self, page: EpLanded) {
         let mut ep = self.adapter.ep_pages.lock().unwrap_or_else(|e| e.into_inner());
-        ep.inflight.retain(|k| *k != (page.sid, page.season.clone(), page.page));
+        ep.inflight.retain(|(sid, season, p)| !(*sid == page.sid && *season == page.season && *p == page.page));
         ep.landed.push(page);
     }
 }
@@ -5360,9 +5367,7 @@ fn finish_episodes_with(
     use plx_machine::job::Port;
     let MetaEpisodesReq { sid, show, season, pages, stamp } = req;
     for page in pages {
-        let rows = client.and_then(|client| {
-            catch_unwind(std::panic::AssertUnwindSafe(|| fetch(client, &season, page))).unwrap_or(None)
-        });
+        let rows = read_through(client, |client| fetch(client, &season, page));
         port.page(EpLanded { sid, show: show.clone(), season: season.clone(), page, rows, stamp });
     }
     port.done(addr, EpisodePagesDone);
