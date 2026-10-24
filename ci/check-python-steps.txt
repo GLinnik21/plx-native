@@ -319,3 +319,8 @@ python3 ci/test_disk_budget.py
 # taken, a live holder is waited on for a bounded time and no plan is made while it runs (a finished or stale holder is taken over); the inventory cache; a pretend emergency is never planned over real
 # trees. `make -n` and `make -s print-*` only, no cargo.
 python3 ci/test_disk_preflight.py
+# RUST_INPUTS (the Makefile's hand-kept list of directories whose edits rebuild the app library) must search every crate
+# the app reaches through `path` dependencies: a crate left out is one whose edits `make` never sees, so `make ipk` packages
+# the previous library and says nothing. Reads manifests only, no cargo; the self-test plants a missing crate in a temp tree.
+python3 ci/test_check_rust_inputs.py
+python3 ci/check-rust-inputs.py

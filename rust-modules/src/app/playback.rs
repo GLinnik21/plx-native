@@ -987,7 +987,7 @@ pub(crate) fn play_up_next(
         .map(|p| p.sid)
         .unwrap_or_else(plx_plex::plex::current_server);
     bridge.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::RetirePlaying);
-    bridge.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::RequestDetail { sid: sid, rk: rk.to_string() });
+    bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::RequestDetail { sid: sid, rk: rk.to_string() });
     start_playback(
         ps,
         pa,
@@ -1053,6 +1053,11 @@ pub(super) fn play_item_now_with<R: PlaybackResources>(
     // route's own TITLE/CTXLINE, set synchronously by request_play_movie, still carry
     // this item), and the landing refills it via sync_now_playing.
     resources.describe_movie(bridge.metadata_mut(), mm.sid, &mm.rk);
+    // `describe_movie` holds only the store, so its request's job is still on the outbox: start it
+    // here, where the request was made, so the tape's admission record lands before the playback
+    // starts and not at some later pump (`Bridge::metadata_run` does the same for a command that
+    // goes through the Bridge).
+    bridge.start_store_jobs();
     start_playback_with(
         ps,
         pa,

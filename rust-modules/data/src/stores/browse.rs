@@ -85,6 +85,13 @@ pub enum BrowseCmd {
     /// One server's section shelves may have moved (a notification, never a press): only its
     /// sections are re-read, behind its failure ladder and spaced like the quiet Home refetch.
     HubsInvalidateServer { sid: ServerId },
+    /// Items were created or removed on one server (a notification, never a press). The open
+    /// library grid is never listed again while it is visible: it is marked stale, and the Library
+    /// page re-queries it, keeping the reader's place, when a page covers it
+    /// (`library_on_stack`: a Library page is on the navigation stack, visible or covered; when
+    /// none is, nobody is looking and the re-query starts at once). Every other section of the
+    /// server forgets its pages and fetches afresh on its next visit.
+    ListingsChanged { sid: ServerId, library_on_stack: bool },
     /// The optimistic half of a view-state change (`viewstate::publish_view`), on the grid and the
     /// shelves: a watched edit reaches the listing and the section shelves, a deck removal the
     /// section shelves' Continue Watching.

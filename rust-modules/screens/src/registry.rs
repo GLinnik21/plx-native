@@ -85,7 +85,7 @@ pub struct AccountPreferenceReply {
 }
 
 pub enum PreferenceCmd {
-    /// Capture the live profile only after admission: even session::peek can schedule storage IO.
+    /// Capture the live profile only after admission.
     Load { reply: std::sync::mpsc::Sender<AccountPreferenceReply> },
     Save {
         request: plx_plex::plex::account::PreferenceRequest,
@@ -2552,7 +2552,12 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // `(row:u32,sp:..,card:Option<u32>)`, in write order; the Collection and Watchlist grids name
 // `bands` symbolically, so their shape strings did not change. One bump; the three replay fixtures
 // were re-recorded against it; the previous pin was 0x0803_2f8d_c828_6d70.
-const SCREEN_SHAPES_PIN: u64 = 0x6b71_df9e_04db_2b76;
+// Player two-press BACK while busy: `PlayerScreen`'s `hud` gains `exit_armed` (a BACK hid the
+// transport while the pipeline was busy, so the hide cannot show) and `back_leaves_at_press` (that
+// arming, sampled before the press un-dismisses), both after `visible_at_press` in the canon and
+// the shape string. One bump; the three replay fixtures were re-recorded against it; the previous
+// pin was 0x6b71_df9e_04db_2b76.
+const SCREEN_SHAPES_PIN: u64 = 0x209b_8063_1907_d7c8;
 
 #[cfg(test)]
 mod arg_tests {

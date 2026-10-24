@@ -137,7 +137,14 @@ fn first_episode_rk(d: &Detail) -> Option<String> {
 /// Request `show-1` through the store's own command and land it, as a page open or a re-read does.
 fn read_show(sid: plx_plex::plex::ServerId) {
     run(test_state(), test_adapter(), MetadataCmd::RequestDetail { sid, rk: "show-1".into() });
-    assert_eq!(test_adapter().run_held_detail_fetches_for_test(), 1);
+    let jobs = std::mem::take(&mut test_state().jobs);
+    assert_eq!(jobs.len(), 1, "one request, one job");
+    for job in jobs {
+        let crate::stores::StoreJob::Detail(job, port) = job;
+        let DetailReq { sid, rk, prefer } = job.req;
+        // The runner's completion path, on this thread: the fetch, then its answer to the port.
+        finish_detail_fetch(&port, job.addr, (sid, rk.clone()), || fetch_full(sid, &rk, prefer));
+    }
     assert!(pump_detail(test_state(), test_adapter()), "the read landed");
 }
 

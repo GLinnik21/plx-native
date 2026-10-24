@@ -396,7 +396,7 @@ pub(crate) unsafe fn activate_card(
                 };
                 // a show/season row's parent lives on the SAME server as the row itself
                 let sid = mm.sid;
-                bridge.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::RequestDetail { sid, rk: expect.clone() });
+                bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::RequestDetail { sid, rk: expect.clone() });
                 *menu_play_await = Some(MenuPlayAwait::new(
                     sid, expect, (mm.kind == 2).then_some(mm.season_index as i64), hud_ms, now));
             }

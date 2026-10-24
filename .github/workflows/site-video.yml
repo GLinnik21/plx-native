@@ -580,6 +580,9 @@ jobs:
           ref: main
           fetch-depth: 0
           persist-credentials: true
+          # `main`'s required-checks ruleset rejects the workflow token (GH013); MAIN_PUSH_KEY is a write
+          # deploy key the ruleset names as a bypass actor (release.yml uses the same one)
+          ssh-key: ${{ secrets.MAIN_PUSH_KEY }}
       - name: Check out the dispatched ref (a dry run)
         if: env.PUBLISH != 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

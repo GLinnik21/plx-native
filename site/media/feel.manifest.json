@@ -1,43 +1,43 @@
 {
  "artifacts": {
   "contact-sheet.jpg": {
-   "bytes": 973820,
-   "sha256": "b71b471914b37fb84bc492e694a4162c545f046ad93cdf7e10cd24121a618e25"
+   "bytes": 958101,
+   "sha256": "af763f5a89e1b37e43d588e5e3ca1873a0923b61cb9afe0f16d06c2914b33360"
   },
   "derived.sha256": {
    "bytes": 13620,
    "sha256": "aa8d28d6995e052fd275435b419f07fcbcf2316e4d392318b350b7d12b91466d"
   },
   "dump-a.json": {
-   "bytes": 333,
-   "sha256": "db9bdbb05da3e445c9d41627a11126ff7719c8015f23fcc4115fd679c1507451"
+   "bytes": 366,
+   "sha256": "0701845c8bc6feb661004e73d3a59cca84f0b5b301a55a94371ce24be1957809"
   },
   "dump-b.json": {
-   "bytes": 318,
-   "sha256": "99431575a9d4c6afa6af5e43b8951b1760c59953724a7c93286b5435561cfb7d"
+   "bytes": 366,
+   "sha256": "a2e4bf8f880a4e57d69915e3daa956acfc8e0247aaad32338ad6b96c112bfc60"
   },
   "frames.tsv": {
-   "bytes": 56684,
-   "sha256": "624aebd47981c9ca807ca95bd40695b8040183ede75db13058274914f4a45565"
+   "bytes": 49292,
+   "sha256": "b20368eab7a605d247a28eaa66f51d5224116424fcf58f7e407ce3b35063675c"
   },
   "gates.json": {
-   "bytes": 6537,
-   "sha256": "f8a5f7127517d700b64c21f849d3da8255912442ce8614c2c3b01f96c4a33faa"
+   "bytes": 6536,
+   "sha256": "2eb3be24cad54dc080f26bfbd64d931a3a4d5f55c12821b2200e092f91bc1bd5"
   },
   "master.framemd5": {
-   "bytes": 146296,
-   "sha256": "340a3a5a8dab3501dc02a2aa3aea063a56c63555edcec0865d66f136e1fa779d"
+   "bytes": 127816,
+   "sha256": "e3e207f5f6b7122570815e512654adcaf35052c0dcf50ad1fcca040d0b71ddc6"
   },
   "render.json": {
-   "bytes": 6706,
-   "sha256": "f0bbf7f0b2a310508986ae71dd4f9c28f83a17a2cad83469f4f92c1bfa983176"
+   "bytes": 6414,
+   "sha256": "2a7d6cf12ded03fb7be75f85d09cb314de54859aa1ad935aaf5b4309af1fbc15"
   }
  },
  "catalog_sha256": "e190cb50dc1f1b95c903e45ebc0eafa6b88f8fa3ccd73c64e8cb410b38c76ebf",
  "environment": {
   "cpu": {
    "logical": 4,
-   "model": "Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz"
+   "model": "Intel(R) Xeon(R) 6973P-C"
   },
   "derive_ffmpeg": "ffmpeg version 6.1.1-3ubuntu5 Copyright (c) 2000-2023 the FFmpeg developers",
   "env": {
@@ -54,7 +54,7 @@
    "renderer": "llvmpipe (LLVM 20.1.2, 256 bits)",
    "version": "4.5 (Compatibility Profile) Mesa 25.2.8-0ubuntu0.24.04.4"
   },
-  "glxinfo": "name of display: :99\ndisplay: :99  screen: 0\ndirect rendering: Yes\nExtended renderer info (GLX_MESA_query_renderer):\n    Vendor: Mesa (0xffffffff)\n    Device: llvmpipe (LLVM 20.1.2, 256 bits) (0xffffffff)\n    Version: 25.2.8\n    Accelerated: no\n    Video memory: 15988MB\n    Unified memory: yes\n    Preferred profile: core (0x1)\n    Max core profile version: 4.5\n    Max compat profile version: 4.5\n    Max GLES1 profile version: 1.1\n    Max GLES[23] profile version: 3.2\nMemory info (GL_ATI_meminfo):\n    VBO free memory - total: 1069136 MB, largest block: 1069136 MB\n    VBO free aux. memory - total: 14877 MB, largest block: 14877 MB\n    Texture free memory - total: 1069136 MB, largest block: 1069136 MB\n    Texture free aux. memory - total: 14877 MB, largest block: 14877 MB\n    Renderbuffer free memory - total: 1069136 MB, largest block: 1069136 MB\n    Renderbuffer free aux. memory - total: 14877 MB, largest block: 14877 MB\nMemory info (GL_NVX_gpu_memory_info):\n    Dedicated video memory: 1069136 MB\n    Total available memory: 1085125 MB\n    Currently available dedicated video memory: 1069136 MB\nOpenGL vendor string: Mesa\nOpenGL renderer string: llvmpipe (LLVM 20.1.2, 256 bits)\nOpenGL core profile version string: 4.5 (Core Profile) Mesa 25.2.8-0ubuntu0.24.04.4\nOpenGL core profile shading language version string: 4.50\nOpenGL core profile context flags: (none)\nOpenGL core profile profile mask: core profile\n\nOpenGL version string: 4.5 (Compatibility Profile) Mesa 25.2.8-0ubuntu0.24.04.4\nOpenGL shading language version string: 4.50\nOpenGL context flags: (none)\nOpenGL profile mask: compatibility profile\n\nOpenGL ES profile version string: OpenGL ES 3.2 Mesa 25.2.8-0ubuntu0.24.04.4\nOpenGL ES profile shading language version string: OpenGL ES GLSL ES 3.20",
+  "glxinfo": "name of display: :99\ndisplay: :99  screen: 0\ndirect rendering: Yes\nExtended renderer info (GLX_MESA_query_renderer):\n    Vendor: Mesa (0xffffffff)\n    Device: llvmpipe (LLVM 20.1.2, 256 bits) (0xffffffff)\n    Version: 25.2.8\n    Accelerated: no\n    Video memory: 15988MB\n    Unified memory: yes\n    Preferred profile: core (0x1)\n    Max core profile version: 4.5\n    Max compat profile version: 4.5\n    Max GLES1 profile version: 1.1\n    Max GLES[23] profile version: 3.2\nMemory info (GL_ATI_meminfo):\n    VBO free memory - total: 1069136 MB, largest block: 1069136 MB\n    VBO free aux. memory - total: 14855 MB, largest block: 14855 MB\n    Texture free memory - total: 1069136 MB, largest block: 1069136 MB\n    Texture free aux. memory - total: 14855 MB, largest block: 14855 MB\n    Renderbuffer free memory - total: 1069136 MB, largest block: 1069136 MB\n    Renderbuffer free aux. memory - total: 14855 MB, largest block: 14855 MB\nMemory info (GL_NVX_gpu_memory_info):\n    Dedicated video memory: 1069136 MB\n    Total available memory: 1085125 MB\n    Currently available dedicated video memory: 1069136 MB\nOpenGL vendor string: Mesa\nOpenGL renderer string: llvmpipe (LLVM 20.1.2, 256 bits)\nOpenGL core profile version string: 4.5 (Core Profile) Mesa 25.2.8-0ubuntu0.24.04.4\nOpenGL core profile shading language version string: 4.50\nOpenGL core profile context flags: (none)\nOpenGL core profile profile mask: core profile\n\nOpenGL version string: 4.5 (Compatibility Profile) Mesa 25.2.8-0ubuntu0.24.04.4\nOpenGL shading language version string: 4.50\nOpenGL context flags: (none)\nOpenGL profile mask: compatibility profile\n\nOpenGL ES profile version string: OpenGL ES 3.2 Mesa 25.2.8-0ubuntu0.24.04.4\nOpenGL ES profile shading language version string: OpenGL ES GLSL ES 3.20",
   "kernel": "Linux 6.17.0-1022-azure",
   "os": "Ubuntu 24.04.5 LTS",
   "packages": {
@@ -68,49 +68,49 @@
    "libllvm20": "1:20.1.2-0ubuntu1~24.04.3",
    "libsdl2-2.0-0": "2.30.0+dfsg-1ubuntu3.1",
    "python3-pil": "10.2.0-1ubuntu1.3",
-   "xvfb": "2:21.1.12-1ubuntu1.8"
+   "xvfb": "2:21.1.12-1ubuntu1.9"
   },
   "pillow": "10.2.0",
   "runner_image": {
    "os": "ubuntu24",
-   "version": "20261004.327.1"
+   "version": "20261012.334.1"
   }
  },
  "gates": {
   "passed": true,
   "results": [
    {
-    "detail": "ffv1 1920x1080 bgr0, 1826 frames (want ffv1 1920x1080)",
+    "detail": "ffv1 1920x1080 bgr0, 1595 frames (want ffv1 1920x1080)",
     "name": "master/format",
     "status": "pass"
    },
    {
-    "detail": "all 1826 rows are T(n) = round(n*1000/60) ms",
+    "detail": "all 1595 rows are T(n) = round(n*1000/60) ms",
     "name": "frames/t_ms",
     "status": "pass"
    },
    {
-    "detail": "1826 frames agree",
+    "detail": "1595 frames agree",
     "name": "frames/count",
     "status": "pass"
    },
    {
-    "detail": "0 of 1826 written frames carry placeholder debt",
+    "detail": "0 of 1595 written frames carry placeholder debt",
     "name": "placeholder-debt",
     "status": "pass"
    },
    {
-    "detail": "1826 frames scanned inline, 0 flagged",
+    "detail": "1595 frames scanned inline, 0 flagged",
     "name": "sentinel/inline",
     "status": "pass"
    },
    {
-    "detail": "1826 master frames rescanned, none holds a connected 64-pixel run of #FF00FE",
+    "detail": "1595 master frames rescanned, none holds a connected 64-pixel run of #FF00FE",
     "name": "sentinel/master",
     "status": "pass"
    },
    {
-    "detail": "both renders agree on 1826 frames (n, t_ms, xxh3, debt: c587028c7bb0)",
+    "detail": "both renders agree on 1595 frames (n, t_ms, xxh3, debt: ff0e734be681)",
     "name": "run-twice",
     "status": "pass"
    },
@@ -135,37 +135,37 @@
     "status": "pass"
    },
    {
-    "detail": "the last frame (1825) is 12 px from the first, by at most 1/255 on a channel (limit 1/255): the film loops without a visible seam",
+    "detail": "the last frame (1594) is 15 px from the first, by at most 1/255 on a channel (limit 1/255): the film loops without a visible seam",
     "name": "storyboard/loop",
     "status": "pass"
    },
    {
-    "detail": "9,131,329 bytes against 10,500,000 (a new storyboard: the film is not today's)",
+    "detail": "7,557,659 bytes against 10,500,000 (a new storyboard: the film is not today's)",
     "name": "size/feel-720p60.av1.mp4",
     "status": "pass"
    },
    {
-    "detail": "10,841,452 bytes against 12,500,000 (a new storyboard: the film is not today's)",
+    "detail": "8,012,045 bytes against 12,500,000 (a new storyboard: the film is not today's)",
     "name": "size/feel-720p60.h264.mp4",
     "status": "pass"
    },
    {
-    "detail": "16,263,008 bytes against 19,000,000 (a new storyboard: the film is not today's)",
+    "detail": "13,721,808 bytes against 19,000,000 (a new storyboard: the film is not today's)",
     "name": "size/feel-1080p60.av1.mp4",
     "status": "pass"
    },
    {
-    "detail": "19,302,996 bytes against 22,000,000 (a new storyboard: the film is not today's)",
+    "detail": "14,800,950 bytes against 22,000,000 (a new storyboard: the film is not today's)",
     "name": "size/feel-1080p60.h264.mp4",
     "status": "pass"
    },
    {
-    "detail": "215,916 bytes is 1.00x today's 215,941 (limit 1.25x)",
+    "detail": "216,440 bytes is 1.00x today's 215,916 (limit 1.25x)",
     "name": "size/feel-poster.jpg",
     "status": "pass"
    },
    {
-    "detail": "78,468 bytes is 1.00x today's 78,468 (limit 1.25x)",
+    "detail": "78,500 bytes is 1.00x today's 78,468 (limit 1.25x)",
     "name": "size/feel-poster-narrow.jpg",
     "status": "pass"
    },
@@ -175,22 +175,22 @@
     "status": "pass"
    },
    {
-    "detail": "min 0.9829 (floor 0.97), mean 0.9972 (floor 0.985)",
+    "detail": "min 0.9807 (floor 0.97), mean 0.9975 (floor 0.985)",
     "name": "ssim/feel-720p60.av1.mp4",
     "status": "pass"
    },
    {
-    "detail": "mean 98.28, min 84.34 (provisional floors)",
+    "detail": "mean 98.07, min 84.74 (provisional floors)",
     "name": "vmaf/feel-720p60.av1.mp4",
     "status": "pass"
    },
    {
-    "detail": "flat-pair fraction 0.522 vs master 0.494: excess +0.028 (limit 0.1, provisional ROI (0, 446, 448, 216))",
+    "detail": "flat-pair fraction 0.499 vs master 0.486: excess +0.013 (limit 0.1, provisional ROI (0, 446, 448, 216))",
     "name": "banding/feel-720p60.av1.mp4",
     "status": "pass"
    },
    {
-    "detail": "SSIM(first, last) 0.9986 >= 0.995",
+    "detail": "SSIM(first, last) 0.9990 >= 0.995",
     "name": "seam/feel-720p60.av1.mp4",
     "status": "pass"
    },
@@ -200,17 +200,17 @@
     "status": "pass"
    },
    {
-    "detail": "min 0.9838 (floor 0.97), mean 0.9936 (floor 0.985)",
+    "detail": "min 0.9834 (floor 0.97), mean 0.9940 (floor 0.985)",
     "name": "ssim/feel-720p60.h264.mp4",
     "status": "pass"
    },
    {
-    "detail": "mean 97.61, min 89.90 (provisional floors)",
+    "detail": "mean 97.35, min 90.00 (provisional floors)",
     "name": "vmaf/feel-720p60.h264.mp4",
     "status": "pass"
    },
    {
-    "detail": "flat-pair fraction 0.549 vs master 0.494: excess +0.055 (limit 0.1, provisional ROI (0, 446, 448, 216))",
+    "detail": "flat-pair fraction 0.526 vs master 0.486: excess +0.040 (limit 0.1, provisional ROI (0, 446, 448, 216))",
     "name": "banding/feel-720p60.h264.mp4",
     "status": "pass"
    },
@@ -225,22 +225,22 @@
     "status": "pass"
    },
    {
-    "detail": "min 0.9846 (floor 0.97), mean 0.9972 (floor 0.985)",
+    "detail": "min 0.9846 (floor 0.97), mean 0.9975 (floor 0.985)",
     "name": "ssim/feel-1080p60.av1.mp4",
     "status": "pass"
    },
    {
-    "detail": "mean 98.28, min 85.53 (provisional floors)",
+    "detail": "mean 98.07, min 85.57 (provisional floors)",
     "name": "vmaf/feel-1080p60.av1.mp4",
     "status": "pass"
    },
    {
-    "detail": "flat-pair fraction 0.582 vs master 0.513: excess +0.068 (limit 0.1, provisional ROI (0, 668, 672, 324))",
+    "detail": "flat-pair fraction 0.553 vs master 0.514: excess +0.039 (limit 0.1, provisional ROI (0, 668, 672, 324))",
     "name": "banding/feel-1080p60.av1.mp4",
     "status": "pass"
    },
    {
-    "detail": "SSIM(first, last) 0.9984 >= 0.995",
+    "detail": "SSIM(first, last) 0.9989 >= 0.995",
     "name": "seam/feel-1080p60.av1.mp4",
     "status": "pass"
    },
@@ -250,22 +250,22 @@
     "status": "pass"
    },
    {
-    "detail": "min 0.9857 (floor 0.97), mean 0.9940 (floor 0.985)",
+    "detail": "min 0.9863 (floor 0.97), mean 0.9945 (floor 0.985)",
     "name": "ssim/feel-1080p60.h264.mp4",
     "status": "pass"
    },
    {
-    "detail": "mean 97.63, min 89.66 (provisional floors)",
+    "detail": "mean 97.39, min 90.12 (provisional floors)",
     "name": "vmaf/feel-1080p60.h264.mp4",
     "status": "pass"
    },
    {
-    "detail": "flat-pair fraction 0.596 vs master 0.513: excess +0.082 (limit 0.1, provisional ROI (0, 668, 672, 324))",
+    "detail": "flat-pair fraction 0.576 vs master 0.514: excess +0.062 (limit 0.1, provisional ROI (0, 668, 672, 324))",
     "name": "banding/feel-1080p60.h264.mp4",
     "status": "pass"
    },
    {
-    "detail": "SSIM(first, last) 0.9960 >= 0.995",
+    "detail": "SSIM(first, last) 0.9963 >= 0.995",
     "name": "seam/feel-1080p60.h264.mp4",
     "status": "pass"
    },
@@ -322,28 +322,28 @@
  ],
  "outputs": {
   "feel-1080p60.av1.mp4": {
-   "bytes": 16263008,
-   "sha256": "57f6f40ec7bda58181cfb5feaa4e70f2820ba666532d43c0fc57851960f56bb5"
+   "bytes": 13721808,
+   "sha256": "3e43beb0cde50a3acf25d013fbfd4fac39595b8d7cd89130d37a2aecc4dadcd6"
   },
   "feel-1080p60.h264.mp4": {
-   "bytes": 19302996,
-   "sha256": "a801fd6a035fd47a49c94103f93e442c538e25b6bea2b82a399653a4b774ea71"
+   "bytes": 14800950,
+   "sha256": "42f803c4e459dec292418e76e5c1a58f32f0a9b551542aeacf7809acc32d5f6e"
   },
   "feel-720p60.av1.mp4": {
-   "bytes": 9131329,
-   "sha256": "f58780b703a3a22f8b458252f88cbe8b1e951f6673b2fbe64a267486dc251a50"
+   "bytes": 7557659,
+   "sha256": "03dd06f541925008143b62436e7183c78db33cf336f7c2e4c8e08436878e65f5"
   },
   "feel-720p60.h264.mp4": {
-   "bytes": 10841452,
-   "sha256": "556f2b8f738d274231673c5578a01d2ba3b75807d22dd401b4ce63c58e44747d"
+   "bytes": 8012045,
+   "sha256": "dca6c69ef4c3d09716deb07967a7a5890554e8796667b62fbc6fd42e026a33b7"
   },
   "feel-poster-narrow.jpg": {
-   "bytes": 78468,
-   "sha256": "2189a751786811eb1746a1da2ea261ba39292161c7dde7f097e14d34edbc53c3"
+   "bytes": 78500,
+   "sha256": "1399847af0f4579aaa106d524ea4f77165fbe581b7d08334c88a9c986538c11a"
   },
   "feel-poster.jpg": {
-   "bytes": 215916,
-   "sha256": "6e4969f7dc28390a98cd0496d9a752d1031ed5364fc81589cdffa7a4036d161f"
+   "bytes": 216440,
+   "sha256": "cdb8b4923df6e2a9bc7028ea5795d7476a5e18adf8bf7631494c4416d9980b5d"
   }
  },
  "platform": "linux-ci",
@@ -352,21 +352,23 @@
    "clock_origin_ms": 1000000,
    "hold_reasons": {
     "carried-work": 4,
-    "claim:browse": 1,
+    "claim:browse": 2,
     "claim:hubs": 1,
-    "placeholder": 97,
-    "settling": 1952,
-    "source-busy": 278,
-    "tex-pending": 1
+    "owed:browse": 2,
+    "owed:hubs": 1,
+    "owed:metadata": 1,
+    "placeholder": 138,
+    "settling": 1721,
+    "source-busy": 330
    },
-   "holds": 2238,
-   "iterations": 4184,
+   "holds": 2061,
+   "iterations": 3776,
    "preroll": 120,
    "unconverted_takes": [],
-   "wall_ms": 189734
+   "wall_ms": 119694
   },
   "frames": {
-   "count": 1826,
+   "count": 1595,
    "fps": 60,
    "height": 1080,
    "width": 1920
@@ -412,7 +414,7 @@
   "schema": 1,
   "sentinel": {
    "hits": 0,
-   "scanned_frames": 1826
+   "scanned_frames": 1595
   },
   "storyboard": {
    "beats": [
@@ -486,92 +488,80 @@
      "start": 751
     },
     {
-     "end": 940,
+     "end": 917,
      "keys": [
       "up",
       "up",
-      "right",
       "right"
      ],
      "name": "to-tab-bar",
      "start": 811
     },
     {
-     "end": 1042,
+     "end": 1019,
      "keys": [
       "ok"
      ],
      "name": "library",
-     "start": 940
+     "start": 917
     },
     {
-     "end": 1226,
+     "end": 1103,
      "keys": [
-      "down",
-      "down",
-      "down",
-      "down",
-      "down",
       "down"
      ],
-     "name": "to-all",
-     "start": 1042
+     "name": "to-grid",
+     "start": 1019
     },
     {
-     "end": 1420,
+     "end": 1253,
      "keys": [
       "right",
       "right",
       "down",
-      "down",
-      "right",
       "right"
      ],
      "name": "grid",
-     "start": 1226
+     "start": 1103
     },
     {
-     "end": 1604,
+     "end": 1373,
      "keys": [
-      "up",
-      "up",
-      "up",
-      "up",
       "up",
       "up",
       "up",
       "up"
      ],
      "name": "back-up",
-     "start": 1420
+     "start": 1253
     },
     {
-     "end": 1676,
+     "end": 1445,
      "keys": [
       "back"
      ],
      "name": "return-home",
-     "start": 1604
+     "start": 1373
     },
     {
-     "end": 1826,
+     "end": 1595,
      "keys": [
       "down"
      ],
      "name": "to-hero",
-     "start": 1676
+     "start": 1445
     }
    ],
    "extra_holds": null,
-   "file_sha256": "ab38bad0311294f29b9e72dc954739cb8e04b76223a04b2ff0a5b63be0e3726a",
-   "frames": 1826,
+   "file_sha256": "9c06ece088101e5486683b6245508e92975b50fdda73818e4b5dcf6fa4063558",
+   "frames": 1595,
    "hold_hint": "suppressed",
-   "keys": "174:right,201:right,297:left,324:left,414:down,443:right,472:right,532:ok,610:down,694:down,721:down,748:down,775:down,871:back,931:up,954:up,977:right,1000:right,1060:ok,1162:down,1182:down,1202:down,1222:down,1242:down,1262:down,1346:right,1368:right,1390:down,1412:down,1434:right,1456:right,1540:up,1556:up,1572:up,1588:up,1604:up,1620:up,1636:up,1652:up,1724:back,1796:down",
+   "keys": "174:right,201:right,297:left,324:left,414:down,443:right,472:right,532:ok,610:down,694:down,721:down,748:down,775:down,871:back,931:up,954:up,977:right,1037:ok,1139:down,1223:right,1245:right,1267:down,1289:right,1373:up,1389:up,1405:up,1421:up,1493:back,1565:down",
    "loop": {
-    "differing": 12,
+    "differing": 15,
     "frames": [
      0,
-     1825
+     1594
     ],
     "max_delta": 1
    },
@@ -653,8 +643,8 @@
     {
      "beat": "to-tab-bar",
      "frames": [
-      927,
-      939
+      904,
+      916
      ],
      "max_delta": 2,
      "moved": 0.0
@@ -662,17 +652,17 @@
     {
      "beat": "library",
      "frames": [
-      1029,
-      1041
+      1006,
+      1018
      ],
      "max_delta": 2,
      "moved": 0.0
     },
     {
-     "beat": "to-all",
+     "beat": "to-grid",
      "frames": [
-      1213,
-      1225
+      1090,
+      1102
      ],
      "max_delta": 2,
      "moved": 0.0
@@ -680,26 +670,26 @@
     {
      "beat": "grid",
      "frames": [
-      1407,
-      1419
+      1240,
+      1252
      ],
-     "max_delta": 1,
+     "max_delta": 0,
      "moved": 0.0
     },
     {
      "beat": "back-up",
      "frames": [
-      1591,
-      1603
+      1360,
+      1372
      ],
-     "max_delta": 4,
-     "moved": 2.4112654320987654e-06
+     "max_delta": 1,
+     "moved": 0.0
     },
     {
      "beat": "return-home",
      "frames": [
-      1663,
-      1675
+      1432,
+      1444
      ],
      "max_delta": 1,
      "moved": 0.0
@@ -707,8 +697,8 @@
     {
      "beat": "to-hero",
      "frames": [
-      1813,
-      1825
+      1582,
+      1594
      ],
      "max_delta": 0,
      "moved": 0.0
@@ -718,27 +708,27 @@
    "script": "storyboard",
    "triggers": {}
   },
-  "storyboard_sha256": "004a102c64bad1d5bf84d020a460c987facc46a99faeeafa362108a73fb14515"
+  "storyboard_sha256": "6a681b7effdf753300628dadda25a02d3836cba6d7d09825543e1a8eca1baf28"
  },
  "schema": 1,
- "storyboard_sha256": "004a102c64bad1d5bf84d020a460c987facc46a99faeeafa362108a73fb14515",
+ "storyboard_sha256": "6a681b7effdf753300628dadda25a02d3836cba6d7d09825543e1a8eca1baf28",
  "tools": {
   "ffmpeg": {
-   "archive_sha256": "c03023a986dec781a5ab6bb8821d6544b40eb86e96f34283880a0fae8105da67",
+   "archive_sha256": "143e31ca53d65d95bde12cc861e331fd2275e48a6ca988e62c46e8f5b77b9811",
    "canonical": true,
    "pin": "linux-x86_64",
-   "sha256": "a6201b7a10dc4f6c90938fce42041eec18c6af49aa0116131fb942ce733b247f",
-   "version": "ffmpeg version n9.0.2-22-g46d8f462ee-20261007 Copyright (c) 2000-2026 the FFmpeg developers"
+   "sha256": "efe9247b244a0d9633374fa339a9f28d8b896a0c2c87fbc9e208b1510054e663",
+   "version": "ffmpeg version n9.0.2-35-g9a9b70bb8c-20261023 Copyright (c) 2000-2026 the FFmpeg developers"
   },
   "python": "3.12.3"
  },
  "tree_dirty": false,
  "tree_hash": {
-  "assets": "d1cad6f4b465b935156793b577f2e743100e4ce0",
-  "combined": "5e9ac48b506907664789591b146ffd87ead1211760ecb1275282c07051ed85d6",
-  "locales": "10b8bebc701fb2a2fb435c2added6cec57c4ad72",
-  "rust-modules": "a1b6f74a0858ffbf9223978d74e8798142673050",
-  "src": "1856985995e9ac05a422095503f6871c5bf83825",
-  "tests/video": "65cc621889dc40ebcb01a817bb23343d049b8236"
+  "assets": "2cfd47d642fb46f53a4487a779b0ee441e39e2d8",
+  "combined": "ea9d44c6b97785bff8b6796c56eb75f9286a9b58cdecd4967acfc8a4eea8a633",
+  "locales": "40b8ca5dd02c1a47863de78a3b35eb24cf65036e",
+  "rust-modules": "273b7b605862a0ef86797437a032cd4a11cae82a",
+  "src": "274afa8530b1edf5f27b5eba0ac8ac3b8023068c",
+  "tests/video": "e575cb0c0054b0f252a0612e234d449c4eb6385e"
  }
 }

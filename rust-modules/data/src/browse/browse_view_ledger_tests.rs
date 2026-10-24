@@ -134,3 +134,29 @@ fn a_hub_row_page_in_flight_across_a_watched_edit_lands_watched() {
     let marks: Vec<_> = landed.items.iter().map(|m| (m.rk.as_str(), m.watched)).collect();
     assert_eq!(marks, [("20", false), ("21", true)]);
 }
+
+/// A server's created or removed items never re-list the open grid under the reader: the rows stay
+/// exactly as they are, no page is read, and the listing is only marked stale (the Library page
+/// re-queries it when a page covers it). The wanted window straddles a page boundary, which is
+/// where a re-list that refilled one page would turn the other page's tiles into skeletons.
+#[test]
+fn a_library_change_leaves_the_open_grid_alone_and_marks_it_stale() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, sid, _) = loopback_page_source();
+    {
+        let state = browse.state.state_mut(0).unwrap();
+        state.fetch = SecFetch::Ready;
+        state.total = 2 * PAGE as i64;
+        state.items = SecItems::from_vec((0..2 * PAGE).map(|i| Some(row(sid, &i.to_string()))).collect());
+    }
+    browse.state.want(PAGE - 10, PAGE + 20, Some(PAGE + 5));
+    let gen = browse.state.query_gen();
+    assert!(browse.state.run_owned(&browse.adapter, crate::stores::browse::BrowseCmd::ListingsChanged { sid, library_on_stack: true }));
+    browse.state.maybe_spawn_owned(&browse.adapter);
+    assert!(!browse.adapter.fetching.load(Ordering::SeqCst), "the visible grid is not listed again");
+    let state = &browse.state.states()[0];
+    assert_eq!((state.fetch, state.total), (SecFetch::Ready, 2 * PAGE as i64));
+    assert!((0..2 * PAGE).all(|i| state.items.get(i).is_some()), "no tile turns into a skeleton");
+    assert_eq!(browse.state.query_gen(), gen, "no fetch generation moved: nothing is dropped or asked");
+    assert!(browse.state.listing_snapshot().view().membership_stale(), "the listing knows it is out of date");
+}

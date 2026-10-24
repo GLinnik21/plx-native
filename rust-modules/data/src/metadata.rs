@@ -156,6 +156,12 @@ pub struct MetadataState {
     /// [`cached_playing`] refuses it for this item until a page read after the playback lands.
     played_since_load: Option<(plx_plex::plex::ServerId, String)>,
     alt: AltStore,
+    /// The IO this owner has asked the application to start and the application has not yet taken
+    /// (`MetadataStore::take_jobs`): one [`crate::stores::StoreJob::Detail`] per accepted detail
+    /// request. The owner never starts the work itself, so no thread, clock or network read happens
+    /// in the step that asks. A job taken is a job owed to its runner: the application's `Bridge`
+    /// starts each one in the same call that stepped the store (`app::adapters::stores`).
+    pub(crate) jobs: Vec<crate::stores::StoreJob>,
 }
 
 /// The `Arc`'d worker half of one Metadata owner: the detail/season/alt-sources landing mailboxes,
@@ -183,10 +189,6 @@ pub struct MetadataAdapter {
     /// The Related tail window read in flight and landed ([`want_related`]).
     rel_pages: std::sync::Mutex<RelPages>,
     tracker: std::sync::Mutex<record::Tracker>,
-    /// TEST ONLY: the detail fetches [`request_detail`] admitted, parked here instead of on a
-    /// worker thread — see [`MetadataAdapter::run_held_detail_fetches_for_test`].
-    #[cfg(any(test, feature = "test-support"))]
-    held_detail: std::sync::Mutex<Vec<(plx_plex::plex::ServerId, String, u32, Option<i64>)>>,
 }
 
 impl Default for MetadataAdapter {
@@ -207,52 +209,7 @@ impl Default for MetadataAdapter {
             ep_pages: std::sync::Mutex::new(EpPages::default()),
             rel_pages: std::sync::Mutex::new(RelPages::default()),
             tracker: std::sync::Mutex::new(record::Tracker::new(false)),
-            #[cfg(any(test, feature = "test-support"))]
-            held_detail: std::sync::Mutex::new(Vec::new()),
         }
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-impl MetadataAdapter {
-    /// Run every detail fetch [`request_detail`] admitted and has not yet run, on THIS thread,
-    /// through the production completion path (`finish_detail_fetch` over `fetch_full`); return
-    /// how many ran. Their landings are queued for the next `pump_detail`.
-    ///
-    /// Under `cfg(test)` a detail request never starts a worker thread. It did until 2026-09-19,
-    /// and every test that drove a request through a real `Bridge` raced that thread: a fetch
-    /// for an unknown server returns in microseconds, so a fast run settled the request before
-    /// an "in flight" assertion (`Some(false)` where `Some(true)` was pinned), while a loaded CI
-    /// runner had not settled it after the hundred `yield_now`s a drain helper spun
-    /// (`Some(true)` where `Some(false)` was pinned). Both halves failed intermittently in
-    /// `app::content::library_publication_tests`. Holding the CURRENT fetch until a test asks
-    /// makes "in flight" and "settled" states the test chooses rather than the scheduler.
-    pub fn run_held_detail_fetches_for_test(&self) -> usize {
-        self.run_held_detail_fetches(|_| true)
-    }
-
-    /// The superseded half only: fetches whose generation is no longer current, whose landings
-    /// `pump_detail` discards anyway. [`begin_detail_request`] runs these right after it
-    /// supersedes them, BEFORE admitting the new request, so a superseded fetch hands back its
-    /// admission reservation — as the thread it replaces did, well inside a test's next step —
-    /// instead of holding one of the landing's four in-flight slots until a test drains it.
-    fn run_superseded_detail_fetches(&self) -> usize {
-        let current = self.detail_gen.load(std::sync::atomic::Ordering::SeqCst);
-        self.run_held_detail_fetches(|gen| gen != current)
-    }
-
-    fn run_held_detail_fetches(&self, pick: impl Fn(u32) -> bool) -> usize {
-        let run: Vec<_> = {
-            let mut held = self.held_detail.lock().unwrap_or_else(|e| e.into_inner());
-            let (run, keep) = std::mem::take(&mut *held).into_iter().partition(|(_, _, gen, _)| pick(*gen));
-            *held = keep;
-            run
-        };
-        let n = run.len();
-        for (sid, rk, gen, prefer) in run {
-            finish_detail_fetch(self, sid, &rk, gen, || fetch_full(sid, &rk, prefer));
-        }
-        n
     }
 }
 
@@ -3640,11 +3597,12 @@ fn selected_season_number(state: &MetadataState, sid: plx_plex::plex::ServerId, 
 /// 2 PMS round-trips for a movie, 5 for a show.
 ///
 /// PURE NETWORK + PARSING — it touches no `static mut`, which is what let it run either on the
-/// main thread or on a worker ([`request_detail`]) while a synchronous caller still existed
-/// (phase 12/D7 deleted the last one, `load_detail_now`; see that deletion's note below). Keep it
+/// main thread or on a worker (the app's `StoreRunner`, from the job [`request_detail`] emits)
+/// while a synchronous caller still existed (phase 12/D7 deleted the last one, `load_detail_now`;
+/// see that deletion's note below). Keep it
 /// that way: installing the result is the caller's job, and on the async path that must happen on
 /// the main thread (see the `DETAIL_LANDING`/`land_detail` note).
-fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) -> Option<Detail> {
+pub fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) -> Option<Detail> {
     // `ms=` is the whole chain's wall clock. It is the exact cost `request_detail` moves off the
     // SDL loop, so it is the number to read when judging whether a call site can afford to block
     // — note the framedrop breakdown CANNOT show it (fd_pc0 starts after event handling).
@@ -3762,9 +3720,9 @@ fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) -> O
 
 // ---- async detail load ---------------------------------------------------------------------
 // Opening a detail page used to block the SDL loop on 2 (movie) to 5 (show) sequential PMS
-// round-trips, straight off the key handler. `request_detail` spawns the fetch and `pump_detail`
-// installs the result — the page mounts THIS frame on the catalog row's art/title/summary and
-// fills in a beat later. Same shape as the season mailbox below and route.rs's play resolve.
+// round-trips, straight off the key handler. `request_detail` emits the fetch as a job (the app's
+// `StoreRunner` starts it) and `pump_detail` installs the result — the page mounts THIS frame on
+// the catalog row's art/title/summary and fills in a beat later. Same shape as the season mailbox below and route.rs's play resolve.
 //
 // The worker MUST NOT write CURRENT. `current()` (via `MetadataView`) hands out a `&'a Detail`,
 // borrowed from the owner, that ~25 draw sites read within a frame, so a background store would
@@ -3816,6 +3774,14 @@ pub fn detail_generation_for_test(adapter: &MetadataAdapter) -> u32 {
     adapter.detail_gen.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+/// How many detail reservations the adapter's landing holds: every request admitted and not yet
+/// answered and taken, a superseded one included (it keeps its slot until its fetch returns). A
+/// test that drives a runner reads it to prove a request's one answer handed its slot back.
+#[cfg(any(test, feature = "test-support"))]
+pub fn detail_inflight_for_test(adapter: &MetadataAdapter) -> u32 {
+    adapter.detail_landing_ref().inflight(detail_addr(0).to)
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub fn land_detail_for_test(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>, sid: plx_plex::plex::ServerId, rk: &str, gen: u32, detail: Option<Detail>) -> bool {
     plx_base::testlock::assert_held("the detail store (land_detail_for_test)");
@@ -3854,7 +3820,8 @@ fn land_detail(adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId, rk: &st
 }
 
 /// Mint the request: supersede the season, bump the generation, record what the page awaits
-/// and admit the request. The spawn is the caller's; a refused one is `refused` back.
+/// and admit the request. Starting the fetch is not this function's: [`request_detail`] emits it
+/// as a job, and a launch that then starts nothing is `DetailPort::refused` back.
 fn begin_detail_request(adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId, rk: &str) -> (
     u32, plx_machine::machine::Addr, Result<(), plx_machine::landing::AdmissionError>,
 ) {
@@ -3865,8 +3832,6 @@ fn begin_detail_request(adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId
     // DETAIL_DONE must stay behind so `detail_loading()` reports this fetch as in flight
     let gen = adapter.detail_gen.fetch_add(1, Ordering::SeqCst) + 1;
     record::cancel_all(adapter);
-    #[cfg(any(test, feature = "test-support"))]
-    adapter.run_superseded_detail_fetches();
     *adapter.detail_want.lock().unwrap_or_else(|e| e.into_inner()) = Some((sid, rk.to_string()));
     let addr = detail_addr(gen);
     let admission = record::admit(adapter, addr);
@@ -3879,35 +3844,81 @@ fn begin_detail_request(adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId
     (gen, addr, admission)
 }
 
-/// MAIN THREAD, NON-BLOCKING. Supersedes any in-flight load and spawns the fetch; the result
-/// lands via [`pump_detail`]. The caller mounts the detail page this same frame.
-///
-/// `sid` names the server to ask and is captured by the CALLER, on the main thread — the worker
-/// must not read the current server (see the fetch block's note), and the page being opened may
-/// belong to a machine that is not the current one at all.
-fn request_detail(adapter: &std::sync::Arc<MetadataAdapter>, sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) {
-    request_detail_with_spawn(adapter, sid, rk, |gen| {
-        let rk = rk.to_string();
-        let adapter = std::sync::Arc::clone(adapter);
-        crate::stores::tape::admit(serde_json::json!({"store":"metadata",
-            "sid":sid.raw(),"rk":rk,"gen":gen,
-            "client":plx_plex::plex::client_for(sid).map(|c| c.instance_gen())}), || {
-            // See `MetadataAdapter::run_held_detail_fetches_for_test`: a test runs the fetch
-            // when it chooses, never on a thread racing its assertions.
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                adapter.held_detail.lock().unwrap_or_else(|e| e.into_inner()).push((sid, rk, gen, prefer));
-                true
-            }
-            #[cfg(not(any(test, feature = "test-support")))]
-            plx_base::task::spawn_small("detail", move || {
-                finish_detail_fetch(&adapter, sid, &rk, gen, || fetch_full(sid, &rk, prefer));
-            })
-        })
-    });
+/// The detail fetch one `RequestDetail` asks for: everything the worker needs, captured on the
+/// main thread. `sid` names the server to ask and `prefer` is the season the page opens on (read
+/// from the store at request time, [`selected_season_number`]); the worker must not read either
+/// from the current server or the store (see the fetch block's note), and the page being opened
+/// may belong to a machine that is not the current one at all.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DetailReq {
+    pub sid: plx_plex::plex::ServerId,
+    pub rk: String,
+    pub prefer: Option<i64>,
 }
 
-/// Shared admission/spawn path; tests inject a spawn outcome without starting network workers.
+/// Where a detail fetch's ONE answer goes: the owner's landing, captured with the job when it was
+/// emitted. An owner that has since been `Reset` holds a new adapter, and this port still lands
+/// into the one the request was made from, the retired one nobody pumps. Two ports are equal when
+/// they reach the same adapter.
+#[derive(Clone)]
+pub struct DetailPort(std::sync::Arc<MetadataAdapter>);
+
+impl DetailPort {
+    pub(crate) fn of(adapter: &std::sync::Arc<MetadataAdapter>) -> Self {
+        Self(std::sync::Arc::clone(adapter))
+    }
+}
+
+impl PartialEq for DetailPort {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl std::fmt::Debug for DetailPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "DetailPort({:p})", std::sync::Arc::as_ptr(&self.0))
+    }
+}
+
+impl plx_machine::job::Port<(DetailKey, Option<Detail>)> for DetailPort {
+    /// The fetch's answer (`None`: it failed). An answer for a superseded request only hands its
+    /// reservation back; [`pump_detail`]'s generation check discards it.
+    fn done(&self, addr: plx_machine::machine::Addr, (key, detail): (DetailKey, Option<Detail>)) {
+        land_detail(&self.0, key.0, &key.1, addr.req.0, detail);
+    }
+
+    /// The fetch was never started: the refusal record is what settles the spinner
+    /// ([`pump_detail`]), exactly one event for the request (§5.2).
+    fn refused(&self, addr: plx_machine::machine::Addr) {
+        record::refused(&self.0, addr);
+    }
+}
+
+/// MAIN THREAD, NON-BLOCKING. Supersedes any in-flight load and emits the fetch as a
+/// [`crate::stores::StoreJob::Detail`] on `state`'s outbox; the application starts it, and the
+/// result lands via [`pump_detail`]. The caller mounts the detail page this same frame.
+///
+/// `sid` names the server to ask and is captured by the CALLER, on the main thread: it travels in
+/// the job (see [`DetailReq`]).
+fn request_detail(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>, sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) {
+    let (_, addr, admission) = begin_detail_request(adapter, sid, rk);
+    // A request refused for capacity owns no worker and emits no job: `begin_detail_request` has
+    // already settled it synchronously, and nothing will ever answer it.
+    if admission.is_err() { return; }
+    state.jobs.push(crate::stores::StoreJob::Detail(
+        plx_machine::job::Job { addr, req: DetailReq { sid, rk: rk.to_string(), prefer } },
+        DetailPort::of(adapter),
+    ));
+}
+
+/// TEST ONLY: [`request_detail`] with the hand-off injected. `spawn` stands for the runner's
+/// launch of an admitted request and says whether anything was started; `false` takes the
+/// refusal path a runner takes when the tape does not admit a launch (`DetailPort::refused`).
+/// Production does not come through here: it emits the job and the app's runner owns the launch
+/// and the refusal, so this exists to let the data layer's mailbox tests inject either outcome
+/// without a thread.
+#[cfg(test)]
 fn request_detail_with_spawn(adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId, rk: &str, spawn: impl FnOnce(u32) -> bool) {
     let (gen, addr, admission) = begin_detail_request(adapter, sid, rk);
     if admission.is_err() { return; }
@@ -3918,13 +3929,16 @@ fn request_detail_with_spawn(adapter: &MetadataAdapter, sid: plx_plex::plex::Ser
     }
 }
 
-fn finish_detail_fetch(
-    adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId, rk: &str, gen: u32,
+/// The fetch's IO body's completion: run `fetch` and post its answer, or its failure, to `port`.
+/// A fetch that unwinds still answers (with `None`), so its reservation is always handed back.
+pub fn finish_detail_fetch(
+    port: &DetailPort, addr: plx_machine::machine::Addr, key: DetailKey,
     fetch: impl FnOnce() -> Option<Detail> + std::panic::UnwindSafe,
 ) {
+    use plx_machine::job::Port;
     // Publish outside the catch so fetch failure/unwind still acknowledges this reservation.
     let d = catch_unwind(fetch).unwrap_or(None);
-    land_detail(adapter, sid, rk, gen, d);
+    port.done(addr, (key, d));
 }
 
 /// `stores::metadata`'s one door onto every [`MetadataCmd`](crate::stores::metadata::MetadataCmd)
@@ -3939,7 +3953,7 @@ pub fn run(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>,
         MetadataCmd::RequestDetail { sid, rk } => {
             let prefer = selected_season_number(state, sid, &rk);
             state.detail_stamp = state.ledger.stamp();
-            request_detail(adapter, sid, &rk, prefer);
+            request_detail(state, adapter, sid, &rk, prefer);
             true
         }
         MetadataCmd::Clear => {
@@ -6095,6 +6109,10 @@ mod related_tail_tests;
 #[cfg(test)]
 #[path = "metadata_initial_season_tests.rs"]
 mod initial_season_tests;
+
+#[cfg(test)]
+#[path = "metadata_detail_job_tests.rs"]
+mod detail_job_tests;
 
 /// #814: the runtime an *Also available* row carries is a fact about one FILE, so only a leaf has
 /// one. A show container's `duration` is the metadata agent's nominal per-episode figure.

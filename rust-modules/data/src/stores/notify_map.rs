@@ -33,7 +33,16 @@
 //! ready and no read is out is dropped, since the read that follows asks after it; one that arrives
 //! while the first read is out is kept, since that read's matching may already have asked) and is made through the store's own
 //! worker; the tile flips when the answer lands, through the same §1.5 derivation as any
-//! re-match. Home, Library and Search are not touched.
+//! re-match.
+//!
+//! **Library changes also move the server's lists.** The same entries owe that server one quiet
+//! Home refetch and one section-shelf invalidate (coalesced and spaced like a `stopped`'s), and its
+//! library listings one `BrowseCmd::ListingsChanged`, spent at most once per
+//! [`LIBRARY_SPACING_FRAMES`] per server (a change inside the spacing stays owed, coalesced, until
+//! it is due). The open grid is never listed again while it is visible: it is marked stale and
+//! re-queried, keeping the reader's place, when a page covers it (at once when no Library page is
+//! on the navigation stack, `Shown::library`); the server's other sections forget their pages, and
+//! a section left while stale forgets its pages too.
 //!
 //! **Owed work is spent only when [`Stores::reread_allowed`]** (not under the player, not while a
 //! recording or replay is armed). Until then it is queued, not dropped, and coalesced.
@@ -99,6 +108,8 @@ pub struct Spent {
     pub refetched: Vec<ServerId>,
     /// Servers whose section shelves were invalidated (`BrowseCmd::HubsInvalidateServer`).
     pub invalidated: Vec<ServerId>,
+    /// Servers whose library listings were told of a change (`BrowseCmd::ListingsChanged`).
+    pub relisted: Vec<ServerId>,
 }
 
 /// Read-backs and refetches a notification owes, not yet spent.
@@ -108,6 +119,8 @@ struct Owed {
     reads: Vec<(Key, bool)>,
     refetch: Vec<ServerId>,
     invalidate: Vec<ServerId>,
+    /// Servers whose library listings are out of date (`BrowseCmd::ListingsChanged`).
+    listings: Vec<ServerId>,
 }
 
 fn push_unique(servers: &mut Vec<ServerId>, sid: ServerId) {
@@ -118,7 +131,7 @@ fn push_unique(servers: &mut Vec<ServerId>, sid: ServerId) {
 
 impl Owed {
     fn is_empty(&self) -> bool {
-        self.reads.is_empty() && self.refetch.is_empty() && self.invalidate.is_empty()
+        self.reads.is_empty() && self.refetch.is_empty() && self.invalidate.is_empty() && self.listings.is_empty()
     }
     fn read(&mut self, key: Key, owing: bool) {
         match self.reads.iter_mut().find(|(k, _)| plx_plex::plex::same_item((k.0, &k.1), (key.0, &key.1))) {
@@ -155,6 +168,8 @@ pub struct NotifyMap {
     library: Vec<((ServerId, WatchKind), LibraryOwed)>,
     /// The frame from which a `(server, kind)` may be re-matched again.
     library_next: Vec<((ServerId, WatchKind), u64)>,
+    /// The frame from which a server's library listings may be told of a change again.
+    listings_next: Vec<(ServerId, u64)>,
     /// Calls of [`Stores::notify_map`] so far: the clock the spacing is counted in.
     frame: u64,
 }
@@ -217,6 +232,28 @@ impl NotifyMap {
 
     fn library_due(&self, sid: ServerId, kind: WatchKind) -> bool {
         self.library_next.iter().find(|(k, _)| *k == (sid, kind)).is_none_or(|(_, at)| self.frame >= *at)
+    }
+
+    /// Take the owed work that may be spent now: all of it but the listings of a server still inside
+    /// its spacing, which stay owed (a change that arrives meanwhile coalesces into them).
+    fn take_due(&mut self) -> Owed {
+        let mut owed = std::mem::take(&mut self.owed);
+        let (frame, next) = (self.frame, &self.listings_next);
+        let (due, waiting): (Vec<_>, Vec<_>) = owed
+            .listings
+            .drain(..)
+            .partition(|sid| next.iter().find(|(s, _)| s == sid).is_none_or(|(_, at)| frame >= *at));
+        owed.listings = due;
+        self.owed.listings = waiting;
+        owed
+    }
+
+    fn listings_spent(&mut self, sid: ServerId) {
+        let next = self.frame + LIBRARY_SPACING_FRAMES;
+        match self.listings_next.iter_mut().find(|(s, _)| *s == sid) {
+            Some((_, at)) => *at = next,
+            None => self.listings_next.push((sid, next)),
+        }
     }
 
     fn library_spent(&mut self, sid: ServerId, kind: WatchKind) {
@@ -334,6 +371,11 @@ impl Stores {
         }
         for library in &out.library {
             self.owe_library(library);
+            // The server's lists moved: its Home source, its section shelves and its grids.
+            let owed = &mut self.notify_map.owed;
+            owed.refetch(library.sid);
+            owed.invalidate(library.sid);
+            push_unique(&mut owed.listings, library.sid);
         }
         if !out.plays.is_empty() {
             let mut changed = Transitions::default();
@@ -367,7 +409,7 @@ impl Stores {
             }
             changed.emit();
         }
-        self.spend_notify_owed(directory)
+        self.spend_notify_owed(shown, directory)
     }
 
     /// Note what a server's finished creates and deletes owe the Watchlist. Counts only are logged:
@@ -446,22 +488,24 @@ impl Stores {
         self.notify_map.library = kept;
     }
 
-    fn spend_notify_owed(&mut self, directory: browse::DirectoryView<'_>) -> Spent {
+    fn spend_notify_owed(&mut self, shown: Shown, directory: browse::DirectoryView<'_>) -> Spent {
         let mut spent = Spent::default();
         if self.notify_map.owed_is_empty() || !self.reread_allowed() {
             return spent;
         }
         self.spend_library_owed();
-        if self.notify_map.owed.is_empty() {
+        // What waits only for a spacing is not spent, and is not logged every frame it waits.
+        let owed = self.notify_map.take_due();
+        if owed.is_empty() {
             return spent;
         }
-        let owed = std::mem::take(&mut self.notify_map.owed);
         plx_base::eventlog::log(&format!(
-            "notify: owes reads={} (detail={}) refetch={} invalidate={}",
+            "notify: owes reads={} (detail={}) refetch={} invalidate={} listings={}",
             owed.reads.len(),
             owed.reads.iter().filter(|(_, d)| *d).count(),
             owed.refetch.len(),
-            owed.invalidate.len()
+            owed.invalidate.len(),
+            owed.listings.len()
         ));
         for (key, owing) in owed.reads {
             if owing {
@@ -473,6 +517,12 @@ impl Stores {
         for sid in owed.refetch {
             let _ = self.hubs.run_with_directory(super::hubs::HubsCmd::RefetchSourceQuiet { sid }, directory);
             spent.refetched.push(sid);
+        }
+        for sid in owed.listings {
+            let cmd = browse::BrowseCmd::ListingsChanged { sid, library_on_stack: shown.library };
+            let _ = self.browse.borrow_mut().run(cmd);
+            self.notify_map.listings_spent(sid);
+            spent.relisted.push(sid);
         }
         for sid in owed.invalidate {
             let _ = self.browse.borrow_mut().run(browse::BrowseCmd::HubsInvalidateServer { sid });
@@ -487,6 +537,7 @@ impl Stores {
         let mut all: Vec<_> = owed.reads.iter().map(|(k, _)| k.clone()).collect();
         all.extend(owed.refetch.iter().map(|s| (*s, String::new())));
         all.extend(owed.invalidate.iter().map(|s| (*s, "invalidate".into())));
+        all.extend(owed.listings.iter().map(|s| (*s, "listings".into())));
         all.extend(self.notify_map.library.iter().map(|((s, _), _)| (*s, "library".into())));
         all
     }

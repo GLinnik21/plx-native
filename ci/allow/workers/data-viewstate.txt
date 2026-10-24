@@ -1,0 +1,6 @@
+# count: 1
+# Worker starts inside machines (docs/sans-io.md), area `data-viewstate`: one line per production call that starts a worker in a machine —
+# `task::spawn`, `spawn_small*`, `spawn_off_frame*`, `storage_worker::submit`, `submit_retained`, a command worker's `.submit_ticket` — keyed `<path>::<enclosing fn>::<spelling>`.
+# A machine starts no worker: its work leaves as a typed effect the app's runners execute, and the result returns as one addressed event. Spec: ci/check-deps.sh `workers`.
+# The gate compares this list to the tree as an exact multiset: a new site fails it, and so does a line whose site is gone, so it only shrinks. A migration lands by deleting its lines; do not add one to make a new site pass.
+rust-modules/data/src/viewstate.rs::kick::spawn_small

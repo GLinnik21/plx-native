@@ -58,6 +58,12 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   `[port webos]` to `webos`, `keymanager`, `system`, `player::ffi` or `port`. Fix the reference
   (`docs/module-layers.md` says where code belongs and how to cut an upward name) instead of
   adding a (file, member) pair to `ci/allow/layers.txt`, which is empty and only shrinks.
+- **Logic never performs IO.** A machine (a screen, a `data/` store, the session owner, the player's
+  foreground lifecycle, a route planner) starts no worker, reads no process-global registry and has
+  no `cfg(test)` fork: its work leaves as a typed effect the app's runners execute, and every result
+  returns as one addressed event. `ci/check-deps.sh` freezes today's sites in the ledgers under
+  `ci/allow/{workers,globals,forks,fxlanes}/`, which only shrink: a new site fails `make check`, and
+  a migration lands by deleting lines (`docs/sans-io.md`).
 - **Re-basing a stacked PR after the one below it squashes:** on the upper branch, `git merge
   <lower's final head>`, `git merge <squash>^`, `git merge -s ours <squash>`, then
   `git merge origin/main`. `-s ours` on the squash alone drops whatever `main` gained before it.

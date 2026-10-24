@@ -1536,8 +1536,8 @@ class StoryboardTests(unittest.TestCase):
         keys = [(int(v), k) for v, k in (part.split(":") for part in plan["keys"].split(","))]
         self.assertEqual([k for _, k in keys], ["right", "right", "left", "left", "down", "right", "right", "ok",
                           "down", "down", "down", "down", "down", "back",
-                          "up", "up", "right", "ok", "down", "down", "down", "down", "down", "down",
-                          "right", "right", "down", "down", "right", "right", *["up"] * 8, "back", "down"])
+                          "up", "up", "right", "ok", "down",
+                          "right", "right", "down", "right", *["up"] * 4, "back", "down"])
         self.assertEqual([v for v, _ in keys], sorted(v for v, _ in keys))
         self.assertLess(keys[-1][0] + sv.KEY_DOWN_FRAMES, plan["preroll"] + plan["frames"])
         self.assertTrue(24 * 60 <= plan["frames"] <= 31 * 60, plan["frames"])
@@ -1621,29 +1621,28 @@ class StoryboardTests(unittest.TestCase):
 
     def test_the_storyboard_walks_the_movies_page_with_arrows_only_and_leaves_from_its_top(self):
         # Nothing on the Movies page is opened: a miscounted press there can then change what the film
-        # shows but never open a title, a collection or a menu. It is left from its top: as many `up`s
-        # as `down`s return focus to the first shelf, where one `back` is Home. (A `back` lower down
-        # jumps the page to its top first; that jump failed the hold-injection gate and is not filmed.)
-        # Between the Type chip and the first `down` into the grid there are two `right`s, never three:
-        # the third would leave the toolbar for the letter rail.
+        # shows but never open a title, a collection or a menu. Since the Library redesign the page is
+        # a header row over the poster grid: one `down` from the header into the grid, a few moves
+        # inside its columns, then `up`s walk back out through the first row to the header, where the
+        # film's `back` goes to the bar and one more is Home. (A `back` lower down jumps the page to
+        # its top first; that jump failed the hold-injection gate and is not filmed.)
         sb, _ = sv.load_storyboard()
         flat = [k for b in sb["beats"] for k in b.get("keys", ())]
         tab = len(flat) - 1 - flat[::-1].index("ok")
         walk = flat[tab + 1:]
         self.assertEqual(walk[-2:], ["back", "down"], "Home, then the hero")
         arrows = walk[:-2]
-        self.assertEqual(arrows.count("up"), arrows.count("down"), "the page is left from the shelf it was entered on")
+        self.assertEqual(arrows[:1], ["down"], "from the header into the grid")
         self.assertEqual(arrows[-arrows.count("up"):], ["up"] * arrows.count("up"), "the `up`s come last, together")
+        self.assertGreater(arrows.count("up"), arrows.count("down"), "out of the grid, through its first row, to the header")
         self.assertEqual(walk.count("back"), 1, "one `back`, from the top of the page")
         self.assertTrue(set(arrows) <= {"up", "down", "left", "right"}, arrows)
-        self.assertEqual(arrows[:6], ["down"] * 6, "four shelves, two linked headings: the sixth lands on Type")
         column, widest = 0, 0
-        for key in arrows[6:]:
+        for key in arrows:
             column += {"right": 1, "left": -1}.get(key, 0)
             widest = max(widest, column)
             self.assertGreaterEqual(column, 0)
         self.assertLessEqual(widest, 4, "the sixth column's `right` is the letter rail")
-        self.assertEqual(arrows[6:9], ["right", "right", "down"], "Type to Filter, then into the grid")
 
     def test_a_rest_verdict_tolerates_a_springs_tail_and_a_sliver(self):
         self.assertTrue(sv.rest_verdict(0, 0.0))

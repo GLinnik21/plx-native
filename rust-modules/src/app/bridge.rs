@@ -373,6 +373,12 @@ pub(crate) struct Bridge {
     /// Endpoint refreshes a store step had no room to emit (`EndpointRefreshSet::emit`).
     endpoint_carry: plx_data::stores::EndpointRefreshSet,
     session_cache_generation: u64,
+    /// The `req` of the last `SessionFx::RefreshCache` this bridge handed its adapter. The frame
+    /// step's reconcile (`land_session_cache`) refuses an in-flight refresh only when it is this
+    /// one: an effect the drain budget carried past the frame has not been begun, so nobody has
+    /// lost it. It lives here, not in the adapter, so a replaced adapter (which begins nothing and
+    /// loses its predecessor's job) still reads as a refresh begun and lost.
+    cache_refresh_begun: Option<u32>,
     home_io: Option<super::bootstrap::HomeIo>,
     recorded_clients: std::collections::BTreeMap<u32, &'static plx_plex::plex::Client>,
     initial_subhash: u64,
@@ -382,6 +388,13 @@ pub(crate) struct Bridge {
     /// The seat the per-profile cells (the player settings and trailer autoplay) were last restored for ([`SeatWatch`]).
     seat_watch: SeatWatch,
     consent_adapter: super::adapters::consent::ConsentAdapter,
+    /// Starts the jobs the stores emit (`adapters::stores`). Chosen when the Bridge is built: `Live`
+    /// in production, the `Held` runner in a host test.
+    store_runner: super::adapters::stores::StoreRunner,
+    /// How many store jobs a pump had to start because their sender left them on a store's outbox
+    /// ([`Bridge::start_late_store_jobs`]). Zero while every sender drains its own jobs; the test
+    /// rigs assert it stays zero, so a bypass is a red test and not a silent rescue.
+    late_store_jobs: usize,
     stores: plx_data::stores::Stores,
     mounter: AppMounter,
     /// This frame's publication of the playback session — see `AppViews::session`. Refreshed by
@@ -483,6 +496,13 @@ impl Bridge {
             io.admissions = admissions;
         }
     }
+    /// A Bridge booted from a controlled Home. It always runs the `Live` store runner, whatever
+    /// `replay` says: in a recording (`replay == false`) a detail request starts a real worker
+    /// thread, and under replay the tape answers its admission and no worker starts. A recording
+    /// test that opens Detail on this Bridge therefore races that worker, the scheduler race the
+    /// `Held` runner exists to remove (`Some(true)`/`Some(false)` flakes), and none does today; a
+    /// test that needs to choose when a fetch settles builds its Bridge with `Held`
+    /// (`StoreRunner::held`) instead.
     pub(crate) fn controlled_home(now_us: fn() -> u64, initial: &super::bootstrap::Initial,
         mt: &plx_base::task::MainThread, replay: bool) -> Self {
         static TTF: plx_gfx::text::TtfMeasure = plx_gfx::text::TtfMeasure;
@@ -500,7 +520,7 @@ impl Bridge {
         let mut bridge = Self::with_publications_and_stores(&TTF, now_us, initial.session.clone(),
             super::adapters::session::SessionAdapter::controlled_home(mt, replay),
             initial.consent.clone(), super::adapters::consent::ConsentAdapter::live(),
-            StorePublications {
+            super::adapters::stores::StoreRunner::live(), StorePublications {
                 hubs, listing:plx_data::stores::browse::ListingSnapshot::empty(),
                 directory:Default::default(), section_hubs:plx_data::stores::browse::HubsSnapshot::empty(),
                 search:Default::default(),
@@ -521,7 +541,8 @@ impl Bridge {
         // `screens::settings`'s test module writes out beside its own measure.
         static TTF: plx_gfx::text::TtfMeasure = plx_gfx::text::TtfMeasure;
         Self::with_measure(&TTF, now_us, init, super::adapters::session::SessionAdapter::live(mt),
-            consent, super::adapters::consent::ConsentAdapter::live())
+            consent, super::adapters::consent::ConsentAdapter::live(),
+            super::adapters::stores::StoreRunner::live())
     }
 
     /// The same bridge over a measure that needs no fonts — the ONLY constructor a host test may
@@ -533,19 +554,21 @@ impl Bridge {
         Self::with_measure(&FIXTURE, now_us,
             plx_session::auth::SessionInit::captured(plx_plex::plex::session::Session::default()),
             super::adapters::session::SessionAdapter::fixture(), Default::default(),
-            super::adapters::consent::ConsentAdapter::fixture())
+            super::adapters::consent::ConsentAdapter::fixture(),
+            super::adapters::stores::StoreRunner::held())
     }
 
     fn with_measure(measure: &'static dyn Measure, now_us: fn() -> u64,
         init: plx_session::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter,
         consent: plx_telemetry::telemetry::consent::Consent,
-        consent_adapter: super::adapters::consent::ConsentAdapter) -> Self {
+        consent_adapter: super::adapters::consent::ConsentAdapter,
+        store_runner: super::adapters::stores::StoreRunner) -> Self {
         let stores = plx_data::stores::Stores::default();
         let mut directory = plx_data::stores::browse::DirectorySnapshot::default();
         let browse = stores.capture_browse(&mut directory);
         let search = stores.search_snapshot(browse.directory.view());
         Self::with_publications_and_stores(measure, now_us, init, session_adapter, consent,
-            consent_adapter,
+            consent_adapter, store_runner,
             StorePublications {
             hubs: stores.hubs.snapshot(), listing: browse.listing,
             directory: browse.directory, section_hubs: browse.section_hubs,
@@ -601,16 +624,18 @@ impl Bridge {
         consent_adapter: super::adapters::consent::ConsentAdapter,
         reads: StorePublications) -> Self {
         Self::with_publications_and_stores(measure, now_us, init, session_adapter, consent,
-            consent_adapter, reads, Default::default())
+            consent_adapter, super::adapters::stores::StoreRunner::held(), reads, Default::default())
     }
 
     fn with_publications_and_stores(measure: &'static dyn Measure, now_us: fn() -> u64,
         init: plx_session::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter,
         consent: plx_telemetry::telemetry::consent::Consent,
         consent_adapter: super::adapters::consent::ConsentAdapter,
+        store_runner: super::adapters::stores::StoreRunner,
         reads: StorePublications, stores: plx_data::stores::Stores) -> Self {
         Self {
             session_cache_generation: plx_plex::plex::session::visible_generation(),
+            cache_refresh_begun: None,
             endpoint_carry: Default::default(),
             home_io: None,
             recorded_clients: std::collections::BTreeMap::new(),
@@ -620,6 +645,8 @@ impl Bridge {
             session_ready: None,
             seat_watch: SeatWatch::new(),
             consent_adapter,
+            store_runner,
+            late_store_jobs: 0,
             stores,
             mounter: AppMounter::default(),
             playback: plx_media::route::PlaybackSession::IDLE,
@@ -657,13 +684,31 @@ impl Bridge {
         }
     }
 
-    /// Observe storage landings on the frame thread, alongside store/adapter publications.
-    pub(crate) fn land_session_cache(&mut self) {
+    /// Observe storage landings on the frame thread, alongside store/adapter publications, and
+    /// tell the session owner when the cache lacks a read: `peek` never reads, so the owner's
+    /// `RefreshCache` effect is the only thing that refills it. The owner decides (one in flight,
+    /// backoff on the frame tick); this only reports, on frames where a need exists.
+    pub(crate) fn land_session_cache(&mut self, d: &mut Dispatcher<AppHost>) {
         let generation = plx_plex::plex::session::visible_generation();
         if self.session_cache_generation != generation {
             self.session_cache_generation = generation;
             plx_machine::idle::invalidate();
         }
+        let event = if let Some(req) = self.session.cache_refresh_in_flight() {
+            // The owner is waiting on a refresh. If this bridge began it and the adapter holds no
+            // job and no result for it now (the adapter was replaced or dropped, which loses the
+            // job's ticket), nothing will ever answer: refuse it, so the in-flight marker cannot
+            // stick. A refresh not begun yet (its effect is still queued behind the drain
+            // budget) is not lost, and its own answer is coming.
+            if self.cache_refresh_begun != Some(req)
+                || self.session_adapter.cache_refresh_req() == Some(req) { return; }
+            plx_session::auth::owner::SessionEvent::CacheRefreshed { req,
+                outcome: plx_plex::plex::session::CacheRefreshOutcome::Refused }
+        } else {
+            let Some(need) = plx_plex::plex::session::refresh_need() else { return };
+            plx_session::auth::owner::SessionEvent::CacheObserved(need)
+        };
+        d.emit(MachineId::Nav, Fx::Deliver(MachineId::Session, Delivery::Machine(AppMsg::Session(event))));
     }
 
     pub(crate) fn take_reqs(&mut self) -> Vec<LoopReq> {
@@ -1211,6 +1256,9 @@ impl Bridge {
 
     pub(crate) fn collection_pump(&mut self) -> bool { self.stores.collection_pump() }
 
+    /// The bare store, for a seam that is handed a `&mut MetadataStore` instead of the Bridge
+    /// (`playback::PlaybackResources`). A command run on it that emits a job leaves the job on the
+    /// outbox: the caller owes [`Bridge::start_store_jobs`] as soon as that call returns.
     pub(crate) fn metadata_mut(&mut self) -> &mut plx_data::stores::metadata::MetadataStore {
         &mut self.stores.metadata
     }
@@ -1221,16 +1269,81 @@ impl Bridge {
     /// phase becomes observable the moment the command returns (trap T2). Screen-issued Metadata
     /// commands that are not same-turn boundaries still cross `AppFx::Store` like every other
     /// store's; see `app/content.rs`'s `reconcile_details`.
+    ///
+    /// **Every command the dispatcher or a Bridge-holding caller runs reaches the store through
+    /// here**, the dispatcher's `StoreCmd::Metadata` arm included: the jobs the step emitted (a
+    /// `RequestDetail`'s fetch) are started before this returns, in the same call, so the tape's
+    /// admission record follows the cancellation record the same step wrote with nothing between
+    /// them. A caller that holds only the store (`playback::describe_movie`, which gets a
+    /// `&mut MetadataStore`) leaves its job on the outbox and drains it itself the moment the call
+    /// returns ([`Bridge::start_store_jobs`]). A sender that does neither is not lost: the next
+    /// pump's backstop starts the job a frame late, counts it in `late_store_jobs` and logs it, and
+    /// the test rigs fail on that count.
     pub(crate) fn metadata_run(&mut self, cmd: plx_data::stores::metadata::MetadataCmd) -> bool {
-        self.stores.metadata_run(cmd)
+        let changed = self.stores.metadata_run(cmd);
+        self.start_store_jobs();
+        changed
+    }
+
+    /// Hand every job the stores have emitted to this Bridge's runner (`adapters::stores`), and
+    /// return how many there were. Called by [`Bridge::metadata_run`] right after its step, and by
+    /// a caller that ran a command on the bare store ([`Bridge::metadata_mut`]) right after that
+    /// call, so the tape's admission record is written where the command was issued.
+    pub(crate) fn start_store_jobs(&mut self) -> usize {
+        let jobs = self.stores.take_jobs();
+        let started = jobs.len();
+        for job in jobs {
+            self.store_runner.start(job);
+        }
+        started
+    }
+
+    /// The backstop under the Metadata pumps: start whatever job a sender left on an outbox, so its
+    /// request still settles, and make that visible. A sender drains its own jobs
+    /// ([`Bridge::start_store_jobs`]), so a job found here is a bypass the pump had to rescue: it
+    /// is added to `late_store_jobs` (which every test rig asserts is zero) and logged.
+    fn start_late_store_jobs(&mut self) {
+        let late = self.start_store_jobs();
+        if late == 0 {
+            return;
+        }
+        self.late_store_jobs += late;
+        plx_base::eventlog::log(&format!(
+            "stores: WARN {late} store job(s) reached a pump unstarted ({} so far): a sender bypassed Bridge::metadata_run",
+            self.late_store_jobs
+        ));
+    }
+
+    /// TEST ONLY: run every job the test runner is holding, on this thread, through the production
+    /// completion path; returns how many ran. Their landings are queued for the next pump.
+    #[cfg(test)]
+    pub(crate) fn run_held_store_jobs_for_test(&mut self) -> usize {
+        self.store_runner.run_held()
+    }
+
+    /// TEST ONLY: no sender bypassed the drain. A frame's end is the moment to ask, and both halves
+    /// matter: a job still on an outbox is a sender that neither went through
+    /// [`Bridge::metadata_run`] nor drained with [`Bridge::start_store_jobs`] (the detail pump's
+    /// backstop would start it a frame late), and a nonzero `late_store_jobs` is a sender the
+    /// backstop has ALREADY rescued, which the job check alone cannot see once `update()` has run
+    /// its pump.
+    #[cfg(test)]
+    pub(crate) fn assert_no_store_jobs_left_for_test(&self) {
+        assert!(!self.stores.has_jobs(),
+            "a store job sits on an outbox: its sender neither ran through Bridge::metadata_run nor drained with Bridge::start_store_jobs");
+        assert_eq!(self.late_store_jobs, 0,
+            "a pump's backstop had to start store jobs their sender left unstarted: that sender bypassed Bridge::metadata_run");
     }
 
     pub(crate) fn metadata_view(&self) -> plx_data::metadata::MetadataView<'_> {
         self.stores.metadata_view()
     }
 
-    #[allow(dead_code)]
+    /// TEST ONLY: the aggregate Metadata pump (every landing at once), behind the same counted
+    /// backstop as [`Bridge::metadata_pump_detail`].
+    #[cfg(test)]
     pub(crate) fn metadata_pump(&mut self) -> bool {
+        self.start_late_store_jobs();
         self.stores.metadata_pump()
     }
 
@@ -1441,6 +1554,10 @@ impl Bridge {
 
     /// The `MetadataStore`'s own async detail landing — `app/run.rs`'s route-unconditional pump.
     pub(crate) fn metadata_pump_detail(&mut self) -> bool {
+        // The backstop: every sender drains its own jobs, so nothing is found here. A job that is
+        // found would leave a request nothing runs, and the pump below would wait on it; it is
+        // started now, so the request settles, and counted and logged so the bypass is not silent.
+        self.start_late_store_jobs();
         self.stores.metadata.pump_detail_with_gate(&self.stores.landgate)
     }
 
@@ -1737,7 +1854,7 @@ impl Bridge {
                 return Handled::Yes;
             }
             AppMsg::Store(StoreCmd::Metadata(command)) => {
-                self.stores.metadata_run(command.clone());
+                self.metadata_run(command.clone());
                 return Handled::Yes;
             }
             _ => {}
@@ -1956,7 +2073,8 @@ impl Bridge {
         use plx_machine::machine::{Addr, RequestId};
         if let Some(io) = &mut self.home_io {
             if matches!(effect, SessionFx::Capture { .. } | SessionFx::Work { .. }
-                | SessionFx::Coordinator(_) | SessionFx::Erase { .. } | SessionFx::Incident { .. }) {
+                | SessionFx::Coordinator(_) | SessionFx::Erase { .. } | SessionFx::Incident { .. }
+                | SessionFx::RefreshCache { .. }) {
                 io.failure = Some("unsupported controlled Home Session operation");
                 return;
             }
@@ -2027,6 +2145,17 @@ impl Bridge {
             SessionFx::Incident { id, lane, report } => {
                 let delivery = self.session_adapter.report_incident(id, lane, report);
                 deliver(SessionEvent::IncidentReported { id, delivery });
+            }
+            // A refresh reaches the owner as at most one `CacheRefreshed`: here when the queue
+            // refuses it, from `take_live_results` when the job finishes (or panics), or from
+            // `land_session_cache` when the adapter that held it is gone. A controlled run is
+            // refused above and answers none; the owner drops any answer that is not for the
+            // request it has in flight.
+            SessionFx::RefreshCache { req, generation } => {
+                self.cache_refresh_begun = Some(req);
+                if let Some(outcome) = self.session_adapter.begin_cache_refresh(req, generation) {
+                    deliver(SessionEvent::CacheRefreshed { req, outcome });
+                }
             }
             SessionFx::Coordinator(action) => {
                 if matches!(action, plx_session::auth::owner::CoordinatorAction::LocalDataErased) {
@@ -2172,6 +2301,10 @@ impl Bridge {
             results.push((plx_machine::machine::Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(0) },
                 AppMsg::Session(event)));
         }
+        if let Some((req, outcome)) = self.session_adapter.take_cache_refresh() {
+            results.push((plx_machine::machine::Addr { to: MachineId::Session, req: plx_machine::machine::RequestId(0) },
+                AppMsg::Session(plx_session::auth::owner::SessionEvent::CacheRefreshed { req, outcome })));
+        }
         // What became of the report whose Report ID the sign-in screen shows: held, delivered or
         // dropped.
         if let Some((id, delivery)) = self.session_adapter.take_incident_delivery() {
@@ -2241,7 +2374,7 @@ fn frame_ingest(
     // execution instead recaptures at its addressed result delivery above, preserving recording.
     if rig.home_io.is_none() {
         plx_base::storage_worker::pump_retained();
-        rig.land_session_cache();
+        rig.land_session_cache(d);
         let outcome = rig.stores.browse_discover_pump();
         execute_endpoint_outcomes(d, outcome.endpoints);
     }
