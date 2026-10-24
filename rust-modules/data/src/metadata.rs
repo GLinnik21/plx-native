@@ -1614,8 +1614,8 @@ pub struct Detail {
     #[serde(with = "record::float_bits")]
     pub video_fps: f64, // video Stream frameRate (0 = unknown); feeds the Load esInfo
     // ---- the PRIMARY version's technical fields (plex::Metadata::media_version(None) = Media[0], NOT a
-    // best-of pick — a multi-version item has more, and choosing among them needs a version picker
-    // that does not exist yet). For a SHOW these are borrowed from its first episode, like the
+    // best-of pick — a multi-version item has more, and the user chooses among them in the Play Version
+    // picker, by `MediaId`). For a SHOW these are borrowed from its first episode, like the
     // About footer's audio/subtitle lists. `bitrate`/`width`/`height` are unused by the UI today
     // and carried for the video-quality ladder ("26.1 Mbps 4K (Original)").
     pub video_resolution: String, // "4k" | "1080" | "720" | "sd" — the hero's media badge

@@ -1329,7 +1329,7 @@ mod tests {
         assert_eq!(
             it.media.len(),
             2,
-            "both versions are kept for a future picker"
+            "both versions are kept, so the Play Version picker can offer each"
         );
 
         let v0 = it.media_version(None).map(|(_, m)| m).expect("Media[0]");
