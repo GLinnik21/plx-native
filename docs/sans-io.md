@@ -122,16 +122,21 @@ worker. Its three ledger lines are gone and the shape is the one the other `data
 The Collection page's request is the second: its worker start and its three `client_for` reads are
 gone from `data/src/collection.rs`. The Person page's requests are the third: its two worker starts
 and its one `client_for` read are gone from `data/src/person.rs`, but unlike the two before it the
-Person step is not pure (the last bullet lists what it still reads). Person has up to six requests
-out at once, so a pump emits several jobs, one per fetch slot, in ascending slot order.
+Person step is not pure (the bullet on what it still reads lists them). Person has up to six requests
+out at once, so a pump emits several jobs, one per fetch slot, in ascending slot order. The catalog
+page's read is the fourth: its one worker start is gone from `data/src/stores/catalog.rs`. Unlike
+the other three it names no server and no client (it is a plex.tv read as the captured identity),
+so it takes no `ClientKeys` and no tape admission, and the Catalog step is not pure either (the
+last bullet lists what it still reads).
 
 - **The shape.** `plx_machine::job` holds `Job<R>` (an `Addr` and a request that carries everything
   the worker needs), `Port<T>` (where the one answer goes: exactly one `done` or `refused` per job)
   and `assert_fx!` (a step test reads the jobs it emitted instead of waiting on a thread). A store
   keeps its own job enum, request types and port: `plx_data::stores::StoreJob`,
   `MetadataStore::take_jobs`, `plx_data::metadata::{DetailReq, DetailPort}`,
-  `plx_data::collection::{CollectionReq, CollectionPort}` and
-  `plx_data::person::{PersonReq, PersonPort}`. The app's `StoreRunner`
+  `plx_data::collection::{CollectionReq, CollectionPort}`,
+  `plx_data::person::{PersonReq, PersonPort}` and
+  `plx_data::stores::catalog::{CatalogReq, CatalogPort}`. The app's `StoreRunner`
   (`app/adapters/stores.rs`) executes a job and owns what `data/` must not: the tape's admission
   record, the thread and the `client_for` read. It is `Live` or `Held` (a test parks the job and
   runs it on the test thread), chosen when the `Bridge` is constructed; a newer Detail request
@@ -150,18 +155,22 @@ out at once, so a pump emits several jobs, one per fetch slot, in ascending slot
   store's, and each Bridge entry point drains only its own store, in the same call as the step:
   `Bridge::metadata_run` steps then drains Metadata; `Bridge::person_pump` and
   `Bridge::collection_pump` refill the keys, step, then run
-  `Bridge::start_store_jobs_of(StoreId::Person)` and `(StoreId::Collection)`. Draining inside each
-  pump, not at the frame's end, keeps every store's admissions in the tape where they were: the
-  frame pumps Person, then Collection, then reconciles the Detail page. A caller that
-  holds only the store (`describe_movie` gets a `&mut MetadataStore`) drains with
-  `Bridge::start_store_jobs` the moment its call returns. A new store joins by implementing its
+  `Bridge::start_store_jobs_of(StoreId::Person)` and `(StoreId::Collection)`;
+  `Bridge::catalog_open` and `Bridge::catalog_pump` step the Catalog store and run
+  `(StoreId::Catalog)` (no keys to refill; the pump drains because its retry and its profile-switch
+  re-open both emit). Draining inside each pump, not at the frame's end, keeps every store's
+  admissions in the tape where they were: the frame pumps Person, then Collection, then reconciles
+  the Detail page. A caller that holds only the store (`describe_movie` gets a `&mut MetadataStore`)
+  drains with `Bridge::start_store_jobs` the moment its call returns. A new store joins by implementing its
   own outbox and adding it to `Stores::take_jobs_of` and `Stores::has_jobs_of`, in that one place.
 - **Whoever steps a store drains it.** `MetadataStore`'s `Machine::step` runs the command and does
   not drain: a `RequestDetail` stepped through it leaves its job on the outbox and nothing starts
   it. The same holds for the `pub` `Stores::metadata_run`. The owner drains in the same call, as
   `Bridge::metadata_run` does; no type enforces it, the counter below catches the lapse.
   `CollectionStore`'s and `PersonStore`'s `Machine::step` are unreached and pass empty keys: a
-  future sender must pass the host's keys and drain.
+  future sender must pass the host's keys and drain. The same holds for the public
+  `CatalogStore::open` and `CatalogStore::pump`: `catalog_feed` and `catalog_reread` call
+  `Bridge::catalog_open` and `Bridge::catalog_pump`, which drain in the same call.
 - **Results do not return as FIFO events.** A store's result goes back through the landing and its
   gate (`landgate`, the `adapter_rank` of the landing key), where the pump takes it by value. This
   is a deliberate exception to "every result returns as one addressed event in the same drain":
@@ -176,7 +185,8 @@ out at once, so a pump emits several jobs, one per fetch slot, in ascending slot
   request still settles, and is counted in the Bridge's `late_store_jobs` and logged as one `stores: WARN` line.
   `Bridge::assert_no_store_jobs_left_for_test` (`#[cfg(test)]`) fails a frame that ends with a job
   still on an outbox or with that count above zero, so a sender that bypassed its store's Bridge
-  drain (`metadata_run`, `person_pump`, `collection_pump`, `start_store_jobs_of`, `start_store_jobs`)
+  drain (`metadata_run`, `person_pump`, `collection_pump`, `catalog_open`, `catalog_pump`,
+  `start_store_jobs_of`, `start_store_jobs`)
   is red in every rig that makes the check, the one that runs `update()`'s pump included. The rigs
   make it at the frame's end.
 - **The port holds the adapter `Arc`.** `Reset` replaces the adapter and the store keeps no handle to
@@ -197,3 +207,22 @@ out at once, so a pump emits several jobs, one per fetch slot, in ascending slot
   `server_ids()` (the source roster) and `server_roster_gen()`. Its
   two fetch bodies, `fetch_profile` and `fetch_credits`, stay in `data/person.rs`, so their `forks`
   ledger lines stay. A source whose server holds no key backs off in the step and emits no job.
+- **What the Catalog lane does, and does not, change.** Catalog is a plex.tv read: the job carries
+  the captured `WatchlistAuth` and the title, and the read goes through the store's `CatalogIo`
+  seam, which rides on the job's `CatalogPort` (so the request is a comparable value). The body is
+  the one the store's worker ran: `LiveCatalogIo::fetch`, so the dev-build read refusal inside
+  `AccountClient::watchlist_transport` is unchanged. Two behaviours are new. The body runs under
+  `catch_unwind` and posts its answer outside the guard, so a read that panics lands as
+  `Load::Unreachable` instead of leaving the page on `Loading` for ever. And a job the runner
+  could not start (the OS refused the thread) answers through the port's `refused`, which posts a
+  store-local `NotStarted` landing into the store's mailbox: the next pump marks the request owed
+  and asks again after `RETRY_FRAMES` (120) pumps, with no job in between. That refusal is applied
+  one pump later than the failed spawn it replaces was. A landing, a refusal or a panic: every job
+  is answered once.
+- **What the Catalog step still reads.** `open` and `pump` call the store's `CatalogIo`, whose
+  production seam (`LiveCatalogIo`) calls `WatchlistAuth::capture()` and `WatchlistAuth::is_current()`
+  in `data/src/watchlist.rs`, whose `session::peek` and `current_snapshot` reads stay on the
+  `data-watchlist` globals ledger (`capture::current_snapshot`, `capture::session::peek`,
+  `is_current::current_snapshot`) and leave only with the Watchlist store's own migration. The
+  Catalog step is therefore not pure, and claims no purity. Its test seam, `with_spawn_for_test`, is
+  gone: a test runs the emitted job through `finish_catalog_job`.
