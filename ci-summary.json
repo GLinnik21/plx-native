@@ -2,6 +2,20 @@
  "flaky": [
   {
    "count": 1,
+   "first_seen": "2026-10-24T12:52:27Z",
+   "job": "host unit tests (hostsim)",
+   "last": {
+    "pr": 996,
+    "run": 40095074837,
+    "sha": "13b6d88dc"
+   },
+   "last_seen": "2026-10-24T12:52:27Z",
+   "new": true,
+   "status": "Active",
+   "test": "plx_media::ff::body_heal_tests::an_unsized_body_is_not_given_the_silence_deadline"
+  },
+  {
+   "count": 1,
    "first_seen": "2026-10-24T06:58:17Z",
    "job": "host unit tests (default features)",
    "last": {
@@ -15,7 +29,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-24T12:52:18Z",
+ "generated": "2026-10-24T12:56:39Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -90,9 +104,9 @@
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 177,
+   "n_now": 178,
    "n_prev": 268,
-   "now": 335,
+   "now": 335.0,
    "prev7": 480.0,
    "shown": true,
    "state": "better",
