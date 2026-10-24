@@ -692,14 +692,34 @@ fn rapid_detail_supersedes_bound_spawns_and_settle_capacity_refusal() {
 fn a_panicking_detail_fetch_acknowledges_and_settles_its_request() {
     let _serial = plx_base::testlock::serial();
     clear(test_state(), test_adapter());
+    let client = super::test_support::offline_client();
     let sid = plx_plex::plex::ServerId::UNSET;
     request_detail_with_spawn(test_adapter(), sid, "panic", |gen| {
-        finish_detail_fetch(&DetailPort::of(test_adapter()), detail_addr(gen), (sid, "panic".to_string()), || panic!("synthetic fetch panic"));
+        finish_detail_fetch(&DetailPort::of(test_adapter()), detail_addr(gen), (sid, "panic".to_string()), Some(client.0), |_| panic!("synthetic fetch panic"));
         true
     });
     assert!(detail_loading(test_adapter()), "terminal waits for pump");
     assert!(!pump_detail(test_state(), test_adapter()));
     assert!(!detail_loading(test_adapter()));
+    assert_eq!(test_adapter().detail_landing.inflight(detail_addr(0).to), 0);
+    clear(test_state(), test_adapter());
+}
+
+#[test]
+fn a_detail_job_without_a_client_answers_the_failure_and_asks_nothing() {
+    let _serial = plx_base::testlock::serial();
+    clear(test_state(), test_adapter());
+    let sid = plx_plex::plex::ServerId::UNSET;
+    request_detail_with_spawn(test_adapter(), sid, "no-client", |gen| {
+        finish_detail_fetch(
+            &DetailPort::of(test_adapter()), detail_addr(gen), (sid, "no-client".to_string()), None,
+            |_| panic!("a job with no client has nothing to fetch through"),
+        );
+        true
+    });
+    assert!(detail_loading(test_adapter()), "terminal waits for pump");
+    assert!(!pump_detail(test_state(), test_adapter()), "nothing landed");
+    assert!(!detail_loading(test_adapter()), "and the spinner settled");
     assert_eq!(test_adapter().detail_landing.inflight(detail_addr(0).to), 0);
     clear(test_state(), test_adapter());
 }

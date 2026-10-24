@@ -130,6 +130,11 @@ fn open(server: &Pms) -> plx_plex::plex::ServerId {
     sid
 }
 
+/// The client the runner would resolve for `sid` and hand the chain.
+fn client_of(sid: plx_plex::plex::ServerId) -> &'static plx_plex::plex::Client {
+    plx_plex::plex::client_for(sid).expect("the server is registered")
+}
+
 fn first_episode_rk(d: &Detail) -> Option<String> {
     d.episodes.get(0).map(|e| e.rk.clone())
 }
@@ -143,7 +148,7 @@ fn read_show(sid: plx_plex::plex::ServerId) {
         let crate::stores::StoreJob::Detail(job, port) = job else { panic!("a detail request emits a detail job") };
         let DetailReq { sid, rk, prefer } = job.req;
         // The runner's completion path, on this thread: the fetch, then its answer to the port.
-        finish_detail_fetch(&port, job.addr, (sid, rk.clone()), || fetch_full(sid, &rk, prefer));
+        finish_detail_fetch(&port, job.addr, (sid, rk.clone()), Some(client_of(sid)), |client| fetch_full(client, sid, &rk, prefer));
     }
     assert!(pump_detail(test_state(), test_adapter()), "the read landed");
 }
@@ -153,7 +158,7 @@ fn a_show_with_an_on_deck_episode_in_season_three_opens_on_season_three() {
     let _serial = plx_base::testlock::serial();
     let server = serve();
     let sid = open(&server);
-    let d = fetch_full(sid, "show-1", None).expect("the show page answers");
+    let d = fetch_full(client_of(sid), sid, "show-1", None).expect("the show page answers");
     assert_eq!(d.cur_season, 2, "season 3 is the third tab");
     assert_eq!(d.seasons[d.cur_season].index, 3);
     assert_eq!(first_episode_rk(&d).as_deref(), Some("s3e1"), "and its episodes are the ones loaded, not season 1's");
