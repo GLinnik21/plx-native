@@ -58,7 +58,8 @@ fn login_frames_never_wait_for_the_session_io_lock() {
     let _serial = plx_base::testlock::serial();
     let _session = session::TempSession::new("login-frame-storage-blocked");
     // The scratch session's own save primed the cache; start from the unloaded one a first frame
-    // finds, so the owner has a refresh to run behind the held lock.
+    // finds, so the owner asks for a refresh while the lock is held (the fixture adapter parks it:
+    // the frames must neither take the lock nor read, whoever would have run it).
     session::invalidate_for_test();
     session::reset_reads_for_test();
     session::with_io_for_test(|| {
@@ -111,12 +112,14 @@ fn audio_enhancements_persist_and_restore() {
     plx_media::route::unseed_profile_prefs_for_test();
 }
 
-/// Frames of 16 ms from `*ms`, letting the storage worker finish between them so a refresh's answer
-/// is collected by the very next frame. Every refresh the frames start is awaited before returning.
+/// Frames of 16 ms from `*ms`, running the refresh the fixture adapter parked and letting the
+/// storage worker finish between them, so a refresh's answer is collected by the very next frame.
+/// Every refresh the frames start is awaited before returning.
 fn frames(pages: &mut plx_ui::dispatch::Dispatcher<crate::app::bridge::AppHost>, bridge: &mut Bridge,
     ms: &mut u32, count: u32) {
     for _ in 0..count {
         crate::app::bridge::frame(pages, bridge, plx_machine::machine::Tick { ms: *ms, dt_us: 16_000 }, Vec::new());
+        bridge.run_held_cache_refresh_for_test();
         plx_base::storage_worker::drain_for_test();
         *ms += 16;
     }
@@ -227,6 +230,7 @@ fn a_refresh_effect_still_queued_is_not_reconciled_as_lost() {
         &mut Effects::new(&mut effects, MachineId::Session, &mut present));
     assert!(effects.is_empty(), "the queue took the job");
     assert_eq!(bridge.session_adapter.cache_refresh_req(), Some(req));
+    bridge.run_held_cache_refresh_for_test();
     plx_base::storage_worker::drain_for_test();
     let mut ms = 16;
     frames(&mut pages, &mut bridge, &mut ms, 2);

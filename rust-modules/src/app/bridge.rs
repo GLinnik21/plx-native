@@ -1321,6 +1321,15 @@ impl Bridge {
         self.store_runner.run_held()
     }
 
+    /// TEST ONLY: run the session cache refresh the fixture adapter is holding, on this thread,
+    /// through the production job; the next frame's result pass hands the owner its answer. A fixture
+    /// adapter starts no worker for the refresh, so without this call the owner's request stays in
+    /// flight and nothing reaches the dispatcher. Returns whether one ran.
+    #[cfg(test)]
+    pub(crate) fn run_held_cache_refresh_for_test(&mut self) -> bool {
+        self.session_adapter.run_held_cache_refresh()
+    }
+
     /// TEST ONLY: no sender bypassed the drain. A frame's end is the moment to ask, and both halves
     /// matter: a job still on an outbox is a sender that neither went through
     /// [`Bridge::metadata_run`] nor drained with [`Bridge::start_store_jobs`] (the detail pump's
