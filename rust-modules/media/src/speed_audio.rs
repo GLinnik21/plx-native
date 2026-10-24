@@ -57,7 +57,7 @@ impl SampleFormat {
         })
     }
 
-    fn bytes(self) -> usize {
+    pub(crate) fn bytes(self) -> usize {
         match self {
             Self::U8 => 1,
             Self::S16 => 2,

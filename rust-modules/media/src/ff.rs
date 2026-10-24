@@ -815,11 +815,6 @@ const OFF_AFRAME_NB_SAMPLES: usize = 112;
 const OFF_AFRAME_SAMPLE_RATE: usize = 180;
 #[cfg(target_pointer_width = "64")]
 const OFF_AFRAME_NB_CHANNELS: usize = 384 + 4;
-/// `AVFrame.format`, which the audio path reads as an `AVSampleFormat` (same field as video's).
-#[cfg(target_pointer_width = "32")]
-const OFF_AFRAME_FORMAT: usize = 80;
-#[cfg(target_pointer_width = "64")]
-const OFF_AFRAME_FORMAT: usize = 116;
 
 /// **The audio decoder a playback-speed session runs** (`crate::speed_audio`): the selected audio
 /// stream decoded in software, downmixed to stereo and time-stretched to `permille`, then fed as
@@ -877,7 +872,7 @@ impl SpeedDecoder {
             let nb = rd(OFF_AFRAME_NB_SAMPLES).max(0) as usize;
             let rate = rd(OFF_AFRAME_SAMPLE_RATE).max(0) as u32;
             let channels = rd(OFF_AFRAME_NB_CHANNELS).max(0) as usize;
-            let fmt = rd(OFF_AFRAME_FORMAT);
+            let fmt = rd(OFF_FRAME_FORMAT); // video's field, read here as an `AVSampleFormat`
             let ext = std::ptr::read_unaligned(f.add(OFF_AFRAME_EXTENDED_DATA) as *const *const *const u8);
             if !self.logged {
                 self.logged = true;
@@ -887,12 +882,7 @@ impl SpeedDecoder {
             }
             if let Some((sf, planar)) = crate::speed_audio::SampleFormat::from_av(fmt) {
                 if nb > 0 && channels > 0 && !ext.is_null() {
-                    let width = match sf {
-                        crate::speed_audio::SampleFormat::U8 => 1,
-                        crate::speed_audio::SampleFormat::S16 => 2,
-                        crate::speed_audio::SampleFormat::Dbl => 8,
-                        _ => 4,
-                    };
+                    let width = sf.bytes();
                     let planes: Vec<&[u8]> = if planar {
                         (0..channels).map(|c| std::slice::from_raw_parts(*ext.add(c), nb * width)).collect()
                     } else {
