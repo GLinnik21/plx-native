@@ -1247,8 +1247,14 @@ impl Bridge {
         self.stores.person_run(cmd)
     }
 
+    /// One frame's Person pump: refill the keys, step, and start the requests the step emitted, all
+    /// in this call, so the tape's admissions are written where the page asked for them, before
+    /// the next store's (`collection_pump`, then the detail reconciliation) record theirs.
     pub(crate) fn person_pump(&mut self) -> bool {
-        self.stores.person_pump()
+        super::adapters::stores::refill_client_keys(&mut self.client_keys);
+        let changed = self.stores.person_pump(&self.client_keys);
+        self.start_store_jobs_of(StoreId::Person);
+        changed
     }
 
     pub(crate) fn person_view(&self) -> plx_data::person::PersonView<'_> {
@@ -1338,7 +1344,7 @@ impl Bridge {
         }
         self.late_store_jobs += late;
         plx_base::eventlog::log(&format!(
-            "stores: WARN {late} store job(s) reached a pump unstarted ({} so far): a sender bypassed its Bridge drain (metadata_run / collection_pump / start_store_jobs_of / start_store_jobs)",
+            "stores: WARN {late} store job(s) reached a pump unstarted ({} so far): a sender bypassed its Bridge drain (metadata_run / person_pump / collection_pump / start_store_jobs_of / start_store_jobs)",
             self.late_store_jobs
         ));
     }
@@ -1361,7 +1367,7 @@ impl Bridge {
 
     /// TEST ONLY: no sender bypassed the drain. A frame's end is the moment to ask, and both halves
     /// matter: a job still on an outbox is a sender that neither went through its store's Bridge
-    /// method ([`Bridge::metadata_run`], [`Bridge::collection_pump`]) nor drained with
+    /// method ([`Bridge::metadata_run`], [`Bridge::person_pump`], [`Bridge::collection_pump`]) nor drained with
     /// [`Bridge::start_store_jobs`] (the detail pump's
     /// backstop would start it a frame late), and a nonzero `late_store_jobs` is a sender the
     /// backstop has ALREADY rescued, which the job check alone cannot see once `update()` has run
@@ -1369,9 +1375,9 @@ impl Bridge {
     #[cfg(test)]
     pub(crate) fn assert_no_store_jobs_left_for_test(&self) {
         assert!(!self.stores.has_jobs(),
-            "a store job sits on an outbox: its sender neither ran through its store's Bridge drain (metadata_run / collection_pump / start_store_jobs_of) nor drained with Bridge::start_store_jobs");
+            "a store job sits on an outbox: its sender neither ran through its store's Bridge drain (metadata_run / person_pump / collection_pump / start_store_jobs_of) nor drained with Bridge::start_store_jobs");
         assert_eq!(self.late_store_jobs, 0,
-            "a pump's backstop had to start store jobs their sender left unstarted: that sender bypassed its Bridge drain (metadata_run / collection_pump / start_store_jobs_of / start_store_jobs)");
+            "a pump's backstop had to start store jobs their sender left unstarted: that sender bypassed its Bridge drain (metadata_run / person_pump / collection_pump / start_store_jobs_of / start_store_jobs)");
     }
 
     pub(crate) fn metadata_view(&self) -> plx_data::metadata::MetadataView<'_> {
@@ -4168,6 +4174,9 @@ mod collection_lifecycle_tests;
 #[cfg(test)]
 #[path = "store_admission_tests.rs"]
 mod store_admission_tests;
+#[cfg(test)]
+#[path = "person_admission_tests.rs"]
+mod person_admission_tests;
 
 // The route-test lanes: key-driven tests of the Library / Collections redesign's routes, over one
 // shared driver (`test_support::World`).
