@@ -5760,6 +5760,12 @@ pub fn set_stream_declaration_for_test(
     set_stream_declaration_with_capability(ps, vc, ac, fps, dovi, immersive, capability)
 }
 
+/// Carry `audio` as the playing track, so [`stream_pcm`] reads its facts (rate, depth, channels).
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_carried_audio_for_test(ps: &mut PlaybackSession, audio: CarriedAudio) {
+    ps.cur_audio = Some(audio);
+}
+
 // (`set_source_codecs` stood here: a two-line setter for `src_vcodec`/`src_acodec` whose one
 // caller was `apply_plan`, which now installs them as part of its single assignment. The rule it
 // carried survives on [`PlaybackSession::src_vcodec`] itself — those two are the FILE's codecs and
