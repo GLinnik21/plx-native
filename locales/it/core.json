@@ -33,6 +33,7 @@
   "core.preview_domain_buffer": "buffer",
   "core.preview_domain_transport": "errore di trasferimento",
   "core.preview_domain_transfer_age": "durata del trasferimento prima dell'errore",
+  "core.preview_domain_demux_exit": "fase in cui il flusso multimediale è fallito",
   "core.preview_domain_elapsed": "tempo trascorso",
   "core.preview_domain_hls_direction": "variazione qualità HLS",
   "core.preview_domain_delivery_reason": "motivo della trasmissione",

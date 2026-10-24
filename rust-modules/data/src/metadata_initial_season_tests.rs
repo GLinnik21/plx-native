@@ -140,7 +140,7 @@ fn read_show(sid: plx_plex::plex::ServerId) {
     let jobs = std::mem::take(&mut test_state().jobs);
     assert_eq!(jobs.len(), 1, "one request, one job");
     for job in jobs {
-        let crate::stores::StoreJob::Detail(job, port) = job;
+        let crate::stores::StoreJob::Detail(job, port) = job else { panic!("a detail request emits a detail job") };
         let DetailReq { sid, rk, prefer } = job.req;
         // The runner's completion path, on this thread: the fetch, then its answer to the port.
         finish_detail_fetch(&port, job.addr, (sid, rk.clone()), || fetch_full(sid, &rk, prefer));

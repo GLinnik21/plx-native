@@ -70,6 +70,22 @@ pub(crate) struct FixtureResources {
     /// Every onboarding report the owner asked for, in order. The fixture answers a standing
     /// report as queued and a one-off with [`FIXTURE_RECEIPT`].
     pub incident_reports: Vec<(plx_session::auth::owner::IncidentLane, plx_session::auth::owner::IncidentReport)>,
+    /// The session cache refresh the owner asked for. A fixture adapter starts no storage-worker
+    /// job for it (`SessionAdapter::begin_cache_refresh`), so its answer cannot depend on which
+    /// frame a worker happened to beat: the refresh is parked here and a test runs it when it
+    /// chooses (`SessionAdapter::run_held_cache_refresh`).
+    pub cache_refresh: FixtureRefresh,
+}
+
+/// Where a fixture adapter's one cache refresh stands.
+#[cfg(test)]
+pub(crate) enum FixtureRefresh {
+    /// Nothing was asked for, or the answer has been taken.
+    Idle,
+    /// The owner's request `.0`, parked: the production job, not yet run.
+    Held(u32, Box<dyn FnOnce() -> plx_plex::plex::session::CacheRefreshOutcome + Send>),
+    /// The request `.0` ran on the test thread and ended as `.1`; `take_cache_refresh` hands it back.
+    Ran(u32, plx_plex::plex::session::CacheRefreshOutcome),
 }
 
 /// The Report ID a fixture adapter answers a one-off with.
@@ -292,7 +308,8 @@ pub(crate) struct SessionAdapter {
     /// `cancel`/`cancel_all` clear captures by request id and the owner's refresh ids come from
     /// its own counter, so a login `Cancel` must never reach it. Dropped with the adapter, which is
     /// why the bridge reconciles an owner still waiting on a slot that holds nothing
-    /// ([`Self::cache_refresh_req`]).
+    /// ([`Self::cache_refresh_req`]). A fixture adapter keeps its refresh in `FixtureResources`
+    /// instead and never submits one.
     cache_refresh: Option<(u32, plx_base::storage_worker::TypedTicket<plx_plex::plex::session::CacheRefreshOutcome>)>,
     erasures: std::collections::VecDeque<PendingErase>,
     commits: std::collections::VecDeque<PendingCommit>,
@@ -375,7 +392,7 @@ impl SessionAdapter {
             disk, endpoints: BTreeMap::new(), native_endpoints: BTreeMap::new(), registry_writes: Vec::new(), profile: None,
             recently_unreachable: false, minted_client_id: "synthetic-client".into(),
             coordinator_events: Vec::new(), root_press_available: true, back_results: Vec::new(), sweep_leftovers: 0,
-            next_completion_outcome: None, incident_reports: Vec::new(),
+            next_completion_outcome: None, incident_reports: Vec::new(), cache_refresh: FixtureRefresh::Idle,
         }))
     }
 
@@ -427,8 +444,19 @@ impl SessionAdapter {
     /// Run one `RefreshCache` on the storage worker. `Some(Refused)` when the queue refused it, so
     /// the owner hears at once and backs off; otherwise the answer comes from
     /// [`Self::take_cache_refresh`].
+    ///
+    /// A fixture adapter submits nothing: the job is parked in its `FixtureResources` and runs
+    /// only when a test calls `run_held_cache_refresh`, the way `StoreRunner::Held` parks the
+    /// store jobs.
     pub(crate) fn begin_cache_refresh(&mut self, req: u32, generation: u64)
         -> Option<plx_plex::plex::session::CacheRefreshOutcome> {
+        #[cfg(test)]
+        if let Resources::Fixture(fixture) = &mut self.resources {
+            debug_assert!(matches!(fixture.cache_refresh, FixtureRefresh::Idle), "one refresh in flight");
+            fixture.cache_refresh = FixtureRefresh::Held(req,
+                Box::new(plx_plex::plex::session::refresh_cache_job(generation)));
+            return None;
+        }
         match plx_base::storage_worker::submit(plx_plex::plex::session::refresh_cache_job(generation)) {
             Ok(ticket) => { self.cache_refresh = Some((req, ticket)); None }
             Err(_) => Some(plx_plex::plex::session::CacheRefreshOutcome::Refused),
@@ -440,6 +468,13 @@ impl SessionAdapter {
     pub(crate) fn take_cache_refresh(&mut self)
         -> Option<(u32, plx_plex::plex::session::CacheRefreshOutcome)> {
         use plx_plex::plex::session::CacheRefreshOutcome;
+        #[cfg(test)]
+        if let Resources::Fixture(fixture) = &mut self.resources {
+            return match std::mem::replace(&mut fixture.cache_refresh, FixtureRefresh::Idle) {
+                FixtureRefresh::Ran(req, outcome) => Some((req, outcome)),
+                held => { fixture.cache_refresh = held; None }
+            };
+        }
         let (_, ticket) = self.cache_refresh.as_ref()?;
         let outcome = match ticket.try_recv() {
             Err(std::sync::mpsc::TryRecvError::Empty) => return None,
@@ -450,8 +485,37 @@ impl SessionAdapter {
         Some((req, outcome))
     }
 
-    /// The request of the refresh this adapter holds (running, or finished and not yet taken).
-    pub(crate) fn cache_refresh_req(&self) -> Option<u32> { self.cache_refresh.as_ref().map(|(req, _)| *req) }
+    /// The request of the refresh this adapter holds (running, parked, or finished and not yet taken).
+    pub(crate) fn cache_refresh_req(&self) -> Option<u32> {
+        #[cfg(test)]
+        if let Resources::Fixture(fixture) = &self.resources {
+            return match &fixture.cache_refresh {
+                FixtureRefresh::Idle => None,
+                FixtureRefresh::Held(req, _) | FixtureRefresh::Ran(req, _) => Some(*req),
+            };
+        }
+        self.cache_refresh.as_ref().map(|(req, _)| *req)
+    }
+
+    /// TEST ONLY: run the cache refresh a fixture adapter is holding, on THIS thread, through the
+    /// production job (`refresh_cache_job`); the next [`Self::take_cache_refresh`] hands its
+    /// outcome back. Returns whether one ran: `false` for a live adapter (its job runs on the
+    /// worker) and when nothing is parked.
+    ///
+    /// The job takes the session IO lock on the CALLER's thread, so the caller must not hold it
+    /// (`session::with_io_for_test`) and must not be inside a `FrameScope`: the first deadlocks and
+    /// the second trips `task::assert_may_block`.
+    #[cfg(test)]
+    pub(crate) fn run_held_cache_refresh(&mut self) -> bool {
+        let Resources::Fixture(fixture) = &mut self.resources else { return false };
+        match std::mem::replace(&mut fixture.cache_refresh, FixtureRefresh::Idle) {
+            FixtureRefresh::Held(req, job) => {
+                fixture.cache_refresh = FixtureRefresh::Ran(req, job());
+                true
+            }
+            other => { fixture.cache_refresh = other; false }
+        }
+    }
 
     pub(crate) fn capture(&mut self, req: u32, epoch: u64, request: SessionReadRequest) -> SessionReadReply {
         #[cfg(test)]
@@ -1232,6 +1296,68 @@ mod tests {
         assert_eq!(adapter.cache_refresh_req(), None, "answered once");
         assert_eq!(adapter.take_cache_refresh(), None);
     }
+
+    /// A fixture adapter is the test resource boundary, so it starts no storage-worker job for a
+    /// cache refresh: a worker would answer on whatever later frame it beat, and every
+    /// `Bridge::for_test` message stream would depend on that timing. The refresh is parked and runs
+    /// only when the test asks.
+    #[test]
+    fn a_fixture_adapter_submits_no_storage_worker_job_for_a_cache_refresh() {
+        use plx_plex::plex::session::{self, CacheRefreshOutcome};
+        let _serial = plx_base::testlock::serial();
+        let _session = session::TempSession::new("fixture-cache-refresh");
+        session::save(&session::Session {
+            client_id: "cid-1".into(), account_token: "acct".into(), ..Default::default()
+        });
+        session::invalidate_for_test();
+        let need = session::refresh_need().expect("an unloaded cache needs a read");
+        let mut adapter = SessionAdapter::fixture();
+        assert_eq!(adapter.begin_cache_refresh(7, need.generation), None, "a parked refresh answers nothing at once");
+        assert_eq!(adapter.cache_refresh_req(), Some(7), "the adapter holds the owner's request");
+        plx_base::storage_worker::drain_for_test();
+        assert!(session::peek_settled().is_none(), "no worker ran the read");
+        assert_eq!(adapter.take_cache_refresh(), None, "and nothing answers until the test runs it");
+        assert!(adapter.run_held_cache_refresh(), "the test runs the parked job, on its own thread");
+        assert!(session::peek_settled().is_some(), "the production job filled the cache");
+        assert_eq!(adapter.cache_refresh_req(), Some(7), "the answer is held until it is taken");
+        assert_eq!(adapter.take_cache_refresh(), Some((7, CacheRefreshOutcome::Settled)));
+        assert_eq!(adapter.cache_refresh_req(), None, "answered once");
+        assert_eq!(adapter.take_cache_refresh(), None);
+        assert!(!adapter.run_held_cache_refresh(), "nothing is left to run");
+    }
+
+    /// The live `begin_cache_refresh` is the one a frame runs, so it may only SUBMIT the job: it must
+    /// not take the session IO lock, wait on the job's ticket, or read. This thread holds the lock
+    /// inside a `FrameScope`, so a begin that took it panics on `task::assert_may_block` (and
+    /// without the scope would deadlock) instead of merely running slowly. The admitted job queues
+    /// behind the held lock on the storage worker and runs once the lock is released.
+    #[test]
+    fn a_live_adapter_begins_a_cache_refresh_without_taking_the_session_io_lock() {
+        use plx_plex::plex::session::{self, CacheRefreshOutcome};
+        let _serial = plx_base::testlock::serial();
+        let _session = session::TempSession::new("live-cache-refresh-lock-held");
+        session::save(&session::Session {
+            client_id: "cid-1".into(), account_token: "acct".into(), ..Default::default()
+        });
+        session::invalidate_for_test();
+        let need = session::refresh_need().expect("an unloaded cache needs a read");
+        let mt = unsafe { plx_base::task::MainThread::assume() };
+        let mut adapter = SessionAdapter::live_resources_for_test(&mt, false);
+        session::reset_reads_for_test();
+        session::with_io_for_test(|| {
+            let _frame = plx_base::task::FrameScope::enter();
+            assert_eq!(adapter.begin_cache_refresh(7, need.generation), None, "the queue admitted the job");
+            assert_eq!(adapter.cache_refresh_req(), Some(7), "and the adapter holds its ticket");
+            assert_eq!(adapter.take_cache_refresh(), None, "the job cannot have run behind the held lock");
+            assert_eq!(session::reads_for_test(), 0, "beginning a refresh reads nothing on this thread");
+        });
+        plx_base::storage_worker::drain_for_test();
+        assert_eq!(adapter.take_cache_refresh(), Some((7, CacheRefreshOutcome::Settled)),
+            "released, the production job ran on the worker and settled the cache");
+        assert!(session::peek_settled().is_some());
+        assert_eq!(adapter.cache_refresh_req(), None, "answered once");
+    }
+
     use plx_session::auth::{LoginProgress, owner::SessionOp};
     use plx_session::auth::owner::ObservationSink;
 

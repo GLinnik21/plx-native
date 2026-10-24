@@ -826,8 +826,8 @@ pub fn transport(
     if !crate::route::is_preview(ps) || !bound_or_playing() || !pa.is_live() {
         return false;
     }
-    let want = super::lifecycle::transport_target(play, super::lifecycle::paused());
-    super::lifecycle::set_transport_paused(pa, want)
+    let want = super::transport::transport_target(play, super::transport::paused());
+    super::transport::set_transport_paused(pa, want)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

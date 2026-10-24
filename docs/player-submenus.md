@@ -336,11 +336,11 @@ and pushes nothing, and the scene's `require_log` (`moreosc: depth=1`) fails the
 grading a screen that never moved. Same 25 ms budget, same
 "not yet measured on the TV".
 
-Panel OFF does not stop presents on the player route: while the hardware video plane is bound
-`ui::idle`'s `VIDEO_PLANE` gate forces a present every frame, so the frame times are the real
-ones. (The general advice against `screen off` for fps scenes is about screens that DO rely on the
-gate.) Sequence, each device command under the TV lock, the lock released between the device work
-and any building or reading:
+Run it with the panel OFF, like every fps scene: the panel is only the backlight and the app keeps
+presenting at full rate (`docs/agent-reference.md`, "The panel rule"). On the player route there is
+also a second reason presents never stop: while the hardware video plane is bound `ui::idle`'s
+`VIDEO_PLANE` gate forces a present every frame. Sequence, each device command under the TV lock,
+the lock released between the device work and any building or reading:
 
 1. `tools/tv-lock.sh acquire --why 'submenu osc frame-time'`; wake the set.
 2. On the host, mock PMS reachable from the TV: `python3 tests/mock_pms.py --host 0.0.0.0 --port

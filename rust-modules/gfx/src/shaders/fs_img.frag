@@ -10,24 +10,34 @@
 // seamless (a wider rim would be hard-cut there). The shadow sh = smoothstep(clamp(0.5 -
 // d/(2*blur))) is algebraically identical to 1 - smoothstep(-blur, blur, d). rgb = tex*m
 // premultiplies coverage (so a rounded texture's ~1px AA edge is very slightly darker under
-// straight-alpha blend - accepted). Full-screen art (radius 0) takes the flat fast-path.
+// straight-alpha blend - accepted). Full-screen art (radius 0) takes the flat fast-path - in
+// gfx.rs's `draw_tex_core_in`, as its own program (fs_tex.frag) when that linked: Midgard sizes
+// registers and occupancy for the WHOLE shader, so this file's card chain was charged to a
+// two-word exit that never runs it.
 // v_cuv/v_p and the SDF chain are highp - see the PRECISION note in fs_src.frag.
 //
 // RESTING CARDS ARE DRAWN IN PIECES (gfx.rs's `draw_tex_core_in`): the whole quad is drawn five times
-// under scissor boxes, the card's interior with `u_card.z = 0` (the `u_card.z < 0.5` exit below) and the
-// ring with the real card geometry. The three exits that write `vec4(tex, ta)` must stay one
-// expression (`the_plain_exits_of_the_card_shader_are_one_expression` pins it). A focused or risen
-// card (PLX_FOCUS) is not split.
+// under scissor boxes, the card's interior as plain texture x tint (through fs_tex.frag when that
+// program linked, else through this file with `u_card.z = 0`, the `u_card.z < 0.5` exit below) and the
+// ring with the real card geometry. A still-fused card (PLX_STILL_GROUND) is split too, but its
+// interior is NOT plain texture x tint and never reaches fs_tex.frag: it stays on this file's still
+// program and leaves through the `u_card.z < 0.5` exit's `stillOver`, which adds the label ground.
+// The three exits that write `vec4(tex, ta)` must stay one
+// expression (`the_plain_exits_of_the_card_shader_are_one_expression` pins it), and fs_tex.frag is that
+// expression as a program of its own (`the_plain_texture_program_is_the_card_shaders_plain_exit` pins
+// it). A focused or risen card (PLX_FOCUS) is not split.
 //
 // PLX_FOCUS (linked as its own program, gfx.rs's FOCUS_IMAGE/VS_FOCUS/FS_FOCUS): the lit-glass
 // edge and risen shadow for a FOCUSED ArtTile used to be inline here unconditionally, behind
 // `u_focus.x > 0.0` uniform branches. A TV A/B measured real backpressure from that: EVERY IPROG
-// draw (every resting card, glyph, blur reduction, `field_kick`, `FrameCache` quad) paid for the
+// draw (then every resting card, glyph, blur reduction, `field_kick`, `FrameCache` quad) paid for the
 // bigger program even with nothing focused - Midgard flattens the extra uniform branches into
 // selects, and the `v_gloss` varying load costs something on every fragment regardless of
 // `u_focus.x`. The plain (non-`PLX_FOCUS`) path below is therefore BYTE-FOR-BYTE the pre-focus
-// program (main's `fs_img.frag` at 78a823eea, comments aside): `IPROG`, `FS_STILL` and every
-// resting-card draw compile and run exactly that, unaffected by any of this file's FOCUS code.
+// program (main's `fs_img.frag` at 78a823eea, comments aside): `IPROG` and `FS_STILL` compile
+// exactly that, and the draws that still run it - a rounded card, a split card's ring, a fused
+// still - are unaffected by any of this file's FOCUS code. (The square-cornered draws and a split
+// card's interior no longer run it at all: fs_tex.frag is their program, when it linked.)
 // `gfx::draw_tex_impl` only reaches for the `PLX_FOCUS` program when a draw is actually focused or
 // risen (`focus > 0.0 || dy > 0.0` - at most one card on screen), falling back to the plain
 // program if it fails to link.

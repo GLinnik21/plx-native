@@ -170,6 +170,10 @@
     "value": "transfer time before the failure",
     "description": "Field name in the consent preview's list of possible playback-error values: how long the media transfer had been running when it failed, as a time class."
   },
+  "core.preview_domain_demux_exit": {
+    "value": "media stream step that failed",
+    "description": "Field name in the consent preview's list of possible playback-error values: which step of reading the media stream raised the failure, as a fixed code."
+  },
   "core.preview_domain_elapsed": {
     "value": "elapsed",
     "description": "Field name in the consent preview's list of possible playback-error values: time since an event."

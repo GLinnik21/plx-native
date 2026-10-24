@@ -156,6 +156,16 @@ error, and `reopen_failed` when the retry after it was refused as well) — and 
 running, so a connection cut at a fixed time is visible as one bucket). Both appear as a tag and
 in the playback context; both are `none` / `unknown` when no transfer failure was recorded.
 
+Every playback-error report also carries `demux_exit`, one more closed field naming the first step
+of reading the media stream that failed, whatever the report's `kind` — `none` /
+`https_reserve_failed` / `https_open_failed` / `http_open_failed` / `open_input_failed` /
+`find_stream_info_failed` / `no_video_stream` / `no_framing` / `load_mismatch` / `no_audio_au` /
+`no_usable_video` / `dts_core_missing` / `hls_failed` / `hls_not_ready` / `demux_panicked` /
+`no_access_units` / `load_refused` / `other` (the first step that failed, never a file name,
+address or error text). It appears as a tag and in the playback context, and is `none` when no
+such step was recorded; the stalls `no_audio_au`, `no_usable_video` and `dts_core_missing` are
+reported under `playback_interrupted`, not `media_source`.
+
 The report also carries `pipeline_error`, which explains a `tv_pipeline` failure: the whole number
 the television's own video pipeline gave with its first error in that playback (for example `601`
 for a resource-allocation refusal), `0` when it gave none, and otherwise any 32-bit integer. It is

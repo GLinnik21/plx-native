@@ -15,7 +15,7 @@
 //! * **Triggered by a landed write, whatever the outcome, and by a stopped playback the server
 //!   took** (`enqueue_stop`, from `Stores::stops_landed`; it involves no write). `ViewStateState` hands over the
 //!   `(server, ratingKey)` of the item and of every copy the fan-out took
-//!   ([`crate::viewstate::ViewStateState::take_reread`]) once its burst is idle. No read is spawned while the player is on top
+//!   ([`crate::viewstate::ViewStateState::take_reread`]) once its burst is idle. No read is sent while the player is on top
 //!   (`Stores::hold_network`) either: the items stay owed. On success the
 //!   answer confirms the optimistic edit; on refusal it is the only thing that returns the tile to
 //!   what the server holds, because the ledger entry of a refused write is retired. Only the rows
@@ -25,9 +25,9 @@
 //!   `metadata_many` (`/library/metadata/{k1,k2,…}`, already used by the hub windows and the person
 //!   page), one batch per server at a time. An item asked for while its read is out is not read
 //!   twice at once: it is marked dirty and re-queued ONCE when that read lands. There is no time cap.
-//! * **No read is spawned while a write is queued or out.** The stamp below is taken at spawn, and
-//!   items can wait in the queue (one flight per server, [`BATCH_KEYS`], the retry wait) past a
-//!   later press; the spawn is gated on the same idleness `take_reread` is.
+//! * **No read is sent while a write is queued or out.** The stamp below is taken when the batch is
+//!   sent, and items can wait in the queue (one flight per server, [`BATCH_KEYS`], the retry wait)
+//!   past a later press; the send is gated on the same idleness `take_reread` is.
 //! * **A result older than a press is dropped.** Each batch is stamped from the shared
 //!   [`crate::viewledger::ViewLedger`] when it is requested. A row some edit published AFTER that
 //!   stamp covers (a press made while the read was out) is discarded: the read describes the server
@@ -57,21 +57,41 @@
 //!   Detail pages were patched with the position the viewer reached (`Offset` reaches the loaded
 //!   item and its episode), and their own re-read puts the server's word back.
 //! * **A failed read is not re-queued**, and the optimistic patch stands (the same "a failure never
-//!   blanks a populated screen" rule as every other read here). A refused spawn is retried after
-//!   [`RETRY_FRAMES`].
+//!   blanks a populated screen" rule as every other read here). A read that was never STARTED is
+//!   retried after [`RETRY_FRAMES`] (`Outcome::NotStarted`).
+//!
+//! ## Jobs, not threads
+//!
+//! The step starts no worker and reads no registry. [`ViewReconcileStore::pump_with_gate`] is handed
+//! the registry's answer as an input ([`ClientKeys`]), and each batch it sends is a typed
+//! [`StoreJob::ViewReconcile`] on an outbox ([`ViewReconcileStore::take_jobs`]) that the application's
+//! runner starts in the same call (`Bridge::reconcile_pump`). The job names the client the step
+//! decided on ([`ReconcileReq::server`]); the runner starts it only if the registry still holds that
+//! client at the launch. The kind is not on the tape, so the runner records nothing for it.
+//!
+//! **Every job is answered once, a refusal included.** A read that is never started (the thread
+//! ceiling, or a registry that has moved on between the step and the launch) answers
+//! `Outcome::NotStarted` through the port's `refused`: the next pump takes it as the flight's
+//! landing, puts the flight's items back and waits [`RETRY_FRAMES`]. Without the answer the flight
+//! would stay owed for ever, and the landing's dump-mode wait with it.
 //!
 //! Reset (sign-out, profile switch) drops the queue and rotates the adapter, so an old worker can
-//! only post into a mailbox nobody reads. The landing is taken through `landgate` like every other
-//! store's, and in dump mode it is owed exactly while a batch it has not yet received is out.
+//! only post into a mailbox nobody reads, and a job's port keeps reaching the adapter it was made
+//! with (a job still on the outbox is kept for the drain, not dropped). The landing is taken
+//! through `landgate` like every other store's, and in dump mode it is owed exactly while a batch
+//! it has not yet received is out.
 
+use super::StoreJob;
 use crate::viewledger::{Stamp, ViewLedger};
 use crate::viewstate::{Scope, ViewChange, ViewEdit, ViewFact};
-use plx_plex::plex::ServerId;
+use plx_machine::job::{Job, Port};
+use plx_machine::machine::{Addr, MachineId, RequestId};
+use plx_plex::plex::{Client, ClientKey, ClientKeys, ServerId};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// ~2 s at 60 fps, the wait every store here gives a refused spawn.
+/// ~2 s at 60 fps, the wait every store here gives a job that was refused.
 const RETRY_FRAMES: u32 = 120;
 
 /// Keys per `metadata_many`: the URL carries them all, so a long burst is split.
@@ -81,7 +101,9 @@ type Key = (ServerId, String);
 
 /// One read that is out: where, what, and where in the publish order it was requested.
 struct Flight {
-    id: u64,
+    /// Unique among the store's flights; also the job's [`RequestId`]. A `u32` so it fits there: a
+    /// flight is minted only when a batch goes out, and four billion of them is not a lifetime.
+    id: u32,
     sid: ServerId,
     /// Everything this read asked for: the items owed a read-back, then `parents`.
     keys: Vec<String>,
@@ -99,10 +121,101 @@ struct ReadRow {
     grandparent: String,
 }
 
-/// What a worker brings back. `rows` is `None` when the server did not answer.
+/// What a flight comes back with.
+enum Outcome {
+    /// The read ran. `None` when the server did not answer.
+    Read(Option<Vec<ReadRow>>),
+    /// The read was never started: the runner refused the job. Nothing was asked of the server, so
+    /// nothing is published and no stop candidate is settled; the flight's items go back in the
+    /// queue and wait out [`RETRY_FRAMES`].
+    NotStarted,
+}
+
+/// What a flight brings back to the mailbox, whichever way it ended.
 struct Landing {
-    id: u64,
-    rows: Option<Vec<ReadRow>>,
+    id: u32,
+    outcome: Outcome,
+}
+
+/// The one read a [`StoreJob::ViewReconcile`] carries: everything the worker needs, captured by the
+/// step. `key` is the client the step decided on; a runner starts the read only if the registry
+/// still holds that client at the launch.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReconcileReq {
+    sid: ServerId,
+    key: ClientKey,
+    /// The ratingKeys of the batch: the items owed a read-back, then the parents that ride with them.
+    keys: Vec<String>,
+}
+
+impl ReconcileReq {
+    /// The server to ask and the client the step decided to ask it through.
+    pub fn server(&self) -> (ServerId, ClientKey) { (self.sid, self.key) }
+}
+
+/// A read's answer, opaque to the runner: the rows the pump publishes. The runner never names
+/// `ReadRow`.
+pub struct ReconcileAnswer(Option<Vec<ReadRow>>);
+
+/// Where a read's ONE answer goes: the store's mailbox, captured with the job when it was emitted.
+/// A store that has since been reset holds a new adapter, and this port still reaches the one the
+/// read was made from, the retired one nobody pumps. Two ports are equal when they reach the same
+/// adapter.
+#[derive(Clone)]
+pub struct ReconcilePort(Arc<ViewReconcileAdapter>);
+
+impl ReconcilePort {
+    fn of(adapter: &Arc<ViewReconcileAdapter>) -> Self { Self(Arc::clone(adapter)) }
+
+    fn post(&self, id: u32, outcome: Outcome) {
+        self.0.mail.lock().unwrap_or_else(|e| e.into_inner()).push(Landing { id, outcome });
+    }
+}
+
+impl PartialEq for ReconcilePort {
+    fn eq(&self, other: &Self) -> bool { Arc::ptr_eq(&self.0, &other.0) }
+}
+
+impl std::fmt::Debug for ReconcilePort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ReconcilePort({:p})", Arc::as_ptr(&self.0))
+    }
+}
+
+impl Port<ReconcileAnswer> for ReconcilePort {
+    /// The flight's rows (`None`: the server did not answer), under the flight's id.
+    fn done(&self, addr: Addr, out: ReconcileAnswer) {
+        self.post(addr.req.0, Outcome::Read(out.0));
+    }
+
+    /// The read was never started, so nothing will land: say so under the flight's id, which is what
+    /// takes the flight off the owed list and sends its items back to the queue.
+    fn refused(&self, addr: Addr) {
+        self.post(addr.req.0, Outcome::NotStarted);
+    }
+}
+
+/// A flight's address: its store and its id. Flights are unique, so no two reads share an address.
+fn reconcile_addr(id: u32) -> Addr {
+    Addr { to: MachineId::Store(super::StoreId::ViewReconcile.ord()), req: RequestId(id) }
+}
+
+/// The read's IO body and its completion: ask `client` for the batch and post the rows to `port`.
+/// The answer is posted OUTSIDE the guard, so a read that panics lands as "the server did not
+/// answer" and never as a missing answer.
+pub fn finish_reconcile_job(port: &ReconcilePort, addr: Addr, client: &'static Client, req: ReconcileReq) {
+    let ReconcileReq { sid, keys, .. } = req;
+    let rows = catch_unwind(AssertUnwindSafe(|| {
+        let refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+        client.metadata_many(&refs).map(|mc| {
+            mc.metadata.iter().map(|m| ReadRow {
+                movie: crate::pms::parse_item(m, sid),
+                parent: crate::pms::clean(&m.parent_rating_key),
+                grandparent: crate::pms::clean(&m.grandparent_rating_key),
+            }).collect::<Vec<_>>()
+        })
+    })).unwrap_or(None);
+    port.done(addr, ReconcileAnswer(rows));
 }
 
 /// Cross-thread transport for one owner; reset replaces it.
@@ -125,9 +238,9 @@ pub struct ViewReconcileStore {
     /// watched, the stream reached its end and the title is owed a fan-out (`take_watched_ends`).
     /// Dropped when their read lands, fails or is overtaken, and on reset. Each carries the id the
     /// NEXT flight will be minted with when the stop was enqueued: only a flight with an id at or
-    /// past it was spawned after the stop, and only its body can settle the candidate. A read that
+    /// past it was sent after the stop, and only its body can settle the candidate. A read that
     /// was already out describes the server from before the stop.
-    candidates: Vec<(Key, u64)>,
+    candidates: Vec<(Key, u32)>,
     watched_ends: Vec<Key>,
     /// Rows published since the last [`Self::take_landed`]: the application's cue to re-read the
     /// Detail pages that show them.
@@ -137,7 +250,9 @@ pub struct ViewReconcileStore {
     /// names ride along quiet.
     quiet: Vec<Key>,
     retry_cd: u32,
-    next_id: u64,
+    next_id: u32,
+    /// The reads the step has sent and nobody has taken to a runner yet ([`Self::take_jobs`]).
+    jobs: Vec<StoreJob>,
     notice_gen: AtomicU32,
     notice_dirty: AtomicBool,
 }
@@ -157,6 +272,7 @@ impl Default for ViewReconcileStore {
             quiet: Vec::new(),
             retry_cd: 0,
             next_id: 1,
+            jobs: Vec::new(),
             notice_gen: AtomicU32::new(0),
             notice_dirty: AtomicBool::new(false),
         }
@@ -255,7 +371,9 @@ impl ViewReconcileStore {
     }
 
     /// Drop everything: the identity changed. The adapter is replaced first, so a worker still out
-    /// can only post to the retired one.
+    /// can only post to the retired one. A read the step sent and nobody has taken to a runner yet
+    /// stays on the outbox, as a job does in the other stores: it answers into the adapter it was
+    /// made for, and a drain that missed it is still seen by the backstop.
     pub fn reset(&mut self) {
         self.adapter = Arc::new(Default::default());
         self.pending.clear();
@@ -270,8 +388,10 @@ impl ViewReconcileStore {
         self.bump();
     }
 
-    /// Spawn one read per server that has queued items and none out. MAIN THREAD.
-    fn kick(&mut self) {
+    /// Send one read per server that has queued items and none out, as a job each. MAIN THREAD.
+    /// `clients` is the registry's answer as of this pump; a server it holds no client for has
+    /// nowhere to read from, and its batch is dropped.
+    fn kick(&mut self, clients: &ClientKeys) {
         if self.retry_cd > 0 {
             self.retry_cd -= 1;
             return;
@@ -305,9 +425,10 @@ impl ViewReconcileStore {
                 }
                 false
             });
-            // Resolved here, at the spawn site; the worker never asks which server is current. A
-            // slot that left the registry while queued has nowhere to read from.
-            let Some(client) = plx_plex::plex::client_for(sid) else {
+            // The client is the registry's answer as of this pump; the job carries its key and the
+            // runner starts the read only through that client. A slot that left the registry
+            // while queued has nowhere to read from.
+            let Some(key) = clients.key(sid) else {
                 plx_base::eventlog::log(&format!(
                     "viewreconcile: {} item(s) DROPPED — server {} is not registered", keys.len(), sid.raw()));
                 continue;
@@ -315,54 +436,85 @@ impl ViewReconcileStore {
             let id = self.next_id;
             self.next_id += 1;
             let stamp = self.ledger.stamp();
-            let mail = Arc::clone(&self.adapter);
-            let asked = keys.clone();
-            let spawned = plx_base::task::spawn_small("viewreconcile", move || {
-                let rows = catch_unwind(AssertUnwindSafe(|| {
-                    let refs: Vec<&str> = asked.iter().map(String::as_str).collect();
-                    client.metadata_many(&refs).map(|mc| {
-                        mc.metadata.iter().map(|m| ReadRow {
-                            movie: crate::pms::parse_item(m, sid),
-                            parent: crate::pms::clean(&m.parent_rating_key),
-                            grandparent: crate::pms::clean(&m.grandparent_rating_key),
-                        }).collect::<Vec<_>>()
-                    })
-                })).unwrap_or(None);
-                mail.mail.lock().unwrap_or_else(|e| e.into_inner()).push(Landing { id, rows });
-            });
-            if !spawned {
-                // Nothing will ever land. Keep the items and wait out the ladder.
-                self.requeue_unspawned(sid, keys, parents.len());
-                return;
-            }
             plx_base::eventlog::log(&format!(
-                "viewreconcile: {} item(s) → server {} (off-thread)", keys.len(), sid.raw()));
+                "viewreconcile: {} item(s) → server {} (sent to the runner)", keys.len(), sid.raw()));
+            self.jobs.push(StoreJob::ViewReconcile(
+                Job { addr: reconcile_addr(id), req: ReconcileReq { sid, key, keys: keys.clone() } },
+                ReconcilePort::of(&self.adapter),
+            ));
             self.flights.push(Flight { id, sid, keys, parents, stamp });
         }
     }
 
-    /// A batch that could not be spawned goes back where it came from: its leaves into `pending`,
-    /// its trailing `parent_count` keys into `pending_parents`, and the retry wait starts.
-    fn requeue_unspawned(&mut self, sid: ServerId, keys: Vec<String>, parent_count: usize) {
-        let leaves = keys.len() - parent_count;
+    /// Take the reads the step has sent since the last take, in order. The caller OWES each one to
+    /// a runner: a job dropped here is a flight that is never answered.
+    #[must_use]
+    pub fn take_jobs(&mut self) -> Vec<StoreJob> {
+        std::mem::take(&mut self.jobs)
+    }
+
+    /// Does the outbox hold a job nobody has taken yet?
+    pub fn has_jobs(&self) -> bool {
+        !self.jobs.is_empty()
+    }
+
+    /// Take out of `dirty` every item asked for again while a read of `keys` on `sid` was out.
+    fn take_asked_again(&mut self, sid: ServerId, keys: &[String]) -> Vec<Key> {
+        let (again, rest) = std::mem::take(&mut self.dirty).into_iter().partition(|(s, rk)| {
+            *s == sid && keys.iter().any(|k| plx_plex::plex::same_item((sid, k), (*s, rk)))
+        });
+        self.dirty = rest;
+        again
+    }
+
+    /// A flight whose read was never started goes back where it came from: its leaves into
+    /// `pending`, its trailing parents into `pending_parents`, and the retry wait starts. Nothing
+    /// was asked of the server, so this publishes nothing and settles nothing: the stop candidates,
+    /// the quiet marks and the pages owed are exactly as they were. An item asked for again while
+    /// the flight was out is already coming back with it, so its dirty mark is dropped rather than
+    /// queueing it a second time. A parent that was also asked for as an item goes back as the item
+    /// it was asked for (a leaf), as a landing's re-queue of its dirty marks does, so its own season
+    /// and show are read after it.
+    fn requeue_unstarted(&mut self, flight: Flight) {
+        let Flight { sid, keys, parents, .. } = flight;
+        let asked_again = self.take_asked_again(sid, &keys);
+        let queued = |list: &[Key], rk: &str| list.iter().any(|k| plx_plex::plex::same_item((k.0, &k.1), (sid, rk)));
+        let leaves = keys.len() - parents.len();
         let mut keys = keys.into_iter();
-        self.pending.extend(keys.by_ref().take(leaves).map(|rk| (sid, rk)));
-        self.pending_parents.extend(keys.map(|rk| (sid, rk)));
+        for rk in keys.by_ref().take(leaves) {
+            if !queued(&self.pending, &rk) {
+                self.pending.push((sid, rk));
+            }
+        }
+        for rk in keys {
+            if queued(&self.pending, &rk) || queued(&self.pending_parents, &rk) {
+                continue;
+            }
+            if queued(&asked_again, &rk) {
+                self.pending.push((sid, rk));
+            } else {
+                self.pending_parents.push((sid, rk));
+            }
+        }
         self.retry_cd = RETRY_FRAMES;
+        plx_base::eventlog::log(&format!(
+            "viewreconcile: server {} read NOT STARTED; its item(s) wait {RETRY_FRAMES} frames", sid.raw()));
     }
 
     /// Land what arrived, hand each surviving row to `publish` as a facts change, re-queue the
     /// items that went dirty, and send the next reads. MAIN THREAD, route-unconditional. True when
     /// a landing changed something a screen may be drawing.
     ///
-    /// `may_spawn` is false while a view-state write is queued or out: a read's stamp is taken when
-    /// it is spawned, so a press whose write has not landed would sit before the stamp and the
+    /// `may_send` is false while a view-state write is queued or out: a read's stamp is taken when
+    /// it is sent, so a press whose write has not landed would sit before the stamp and the
     /// read's body (from before that write) would undo it. Queued items wait for the burst to be
-    /// idle; landings are always taken.
+    /// idle; landings are always taken. `clients` is the registry's answer as of this call; the
+    /// reads this pump sends are on the outbox ([`Self::take_jobs`]) when it returns.
     pub fn pump_with_gate(
         &mut self,
         gate: &plx_machine::landgate::Gate,
-        may_spawn: bool,
+        may_send: bool,
+        clients: &ClientKeys,
         publish: &mut dyn FnMut(ViewChange),
     ) -> bool {
         let adapter = Arc::clone(&self.adapter);
@@ -377,6 +529,13 @@ impl ViewReconcileStore {
                 continue;
             };
             let flight = self.flights.remove(at);
+            let rows = match landing.outcome {
+                Outcome::Read(rows) => rows,
+                Outcome::NotStarted => {
+                    self.requeue_unstarted(flight);
+                    continue;
+                }
+            };
             // Quiet only for this flight: a later ask for the same key is its own.
             let quiet: Vec<Key> = flight.keys.iter().map(|k| (flight.sid, k.clone()))
                 .filter(|key| self.quiet.iter().any(|q| plx_plex::plex::same_item((q.0, &q.1), (key.0, &key.1))))
@@ -388,7 +547,7 @@ impl ViewReconcileStore {
                 .filter(|(_, edit)| matches!(edit, ViewEdit::Watched(_)))
                 .map(|(at, _)| at)
                 .collect();
-            match landing.rows {
+            match rows {
                 None => plx_base::eventlog::log(&format!(
                     "viewreconcile: server {} did not answer; the patch stands", flight.sid.raw())),
                 Some(rows) => {
@@ -444,20 +603,17 @@ impl ViewReconcileStore {
                 }
             }
             // a candidate this read did not settle (no answer, no row, overtaken) is dropped: no
-            // fan-out on a guess. One enqueued after the read was spawned is not this read's to
-            // drop: its item is dirty and the re-read spawned after the stop decides it.
+            // fan-out on a guess. One enqueued after the read was sent is not this read's to
+            // drop: its item is dirty and the re-read sent after the stop decides it.
             self.candidates.retain(|(k, born)| *born > flight.id || !(k.0 == flight.sid && flight.keys.iter()
                 .any(|f| plx_plex::plex::same_item((flight.sid, f), (k.0, &k.1)))));
             // Asked for again while this was out: once more, now.
-            let again: Vec<Key> = self.dirty.iter()
-                .filter(|(s, rk)| *s == flight.sid && flight.keys.iter().any(|k| plx_plex::plex::same_item((*s, k), (*s, rk))))
-                .cloned().collect();
-            self.dirty.retain(|k| !again.contains(k));
+            let again = self.take_asked_again(flight.sid, &flight.keys);
             self.pending.extend(again);
             changed = true;
         }
-        if may_spawn {
-            self.kick();
+        if may_send {
+            self.kick(clients);
         }
         if changed {
             self.bump();
@@ -499,3 +655,11 @@ mod tests;
 #[cfg(test)]
 #[path = "viewreconcile_parents_tests.rs"]
 mod parents_tests;
+
+#[cfg(test)]
+#[path = "viewreconcile_rig.rs"]
+mod rig;
+
+#[cfg(test)]
+#[path = "viewreconcile_job_tests.rs"]
+mod job_tests;

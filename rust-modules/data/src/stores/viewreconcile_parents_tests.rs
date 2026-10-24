@@ -122,7 +122,7 @@ fn drive(stores: &mut Stores, done: impl Fn(&Stores) -> bool) {
     let directory = DirectorySnapshot::default();
     for _ in 0..1000 {
         let _ = stores.viewstate_pump(directory.view());
-        stores.reconcile_pump(directory.view());
+        super::rig::frame(stores, &directory);
         if done(stores) { return; }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
@@ -242,24 +242,48 @@ fn a_show_scope_press_overtakes_an_out_parent_read() {
         parents: vec!["2".into(), "1".into(), "9".into()], stamp: ledger.stamp(),
     });
     ledger.record(&crate::viewstate::ViewAt { sid, rk: "1".into(), scope: Scope::Show }, ViewEdit::Watched(true));
-    store.adapter.mail.lock().unwrap().push(Landing { id: 1, rows: Some(vec![
+    store.adapter.mail.lock().unwrap().push(Landing { id: 1, outcome: Outcome::Read(Some(vec![
         parent_row(sid, "2", 2, "1"), parent_row(sid, "1", 1, ""), parent_row(sid, "9", 1, ""),
-    ]) });
+    ])) });
     let mut published = Vec::new();
-    store.pump_with_gate(&plx_machine::landgate::Gate::default(), false, &mut |c| published.push(c.rk));
+    store.pump_with_gate(&plx_machine::landgate::Gate::default(), false, &ClientKeys::default(), &mut |c| published.push(c.rk));
     assert_eq!(published, ["9"], "the stale show and season rows are dropped; the unrelated show lands");
 }
 
-/// A batch that could not be spawned goes back split as it came: leaves to `pending`, the parents
-/// that rode with them to `pending_parents`, so the retry batches them the same way.
+/// A batch whose read was never started goes back split as it came: leaves to `pending`, the
+/// parents that rode with them to `pending_parents`, so the retry batches them the same way.
 #[test]
-fn an_unspawned_batch_splits_back_into_leaves_and_parents() {
+fn an_unstarted_batch_splits_back_into_leaves_and_parents() {
     let sid = ServerId::from_raw(0);
     let mut store = ViewReconcileStore::default();
-    store.requeue_unspawned(sid, vec!["3".into(), "4".into(), "2".into(), "1".into()], 2);
+    store.requeue_unstarted(Flight {
+        id: 1, sid, keys: vec!["3".into(), "4".into(), "2".into(), "1".into()],
+        parents: vec!["2".into(), "1".into()], stamp: 0,
+    });
     assert_eq!(store.pending_for_test(), [(sid, "3".to_string()), (sid, "4".to_string())]);
     assert_eq!(store.pending_parents, [(sid, "2".to_string()), (sid, "1".to_string())]);
     assert_eq!(store.retry_cd, RETRY_FRAMES);
+}
+
+/// A season that rode in a refused batch as a parent and was asked for as an item while the batch
+/// was out goes back as the item (a leaf): read as a leaf, its own show is read after it, where
+/// going back as a parent would stop the walk at the season. Its dirty mark is dropped, as the
+/// other covered items' are.
+#[test]
+fn an_unstarted_parent_that_was_asked_for_again_goes_back_as_an_item() {
+    let sid = ServerId::from_raw(0);
+    let mut store = ViewReconcileStore::default();
+    store.flights.push(Flight {
+        id: 1, sid, keys: vec!["3".into(), "2".into(), "1".into()],
+        parents: vec!["2".into(), "1".into()], stamp: 0,
+    });
+    store.enqueue([(sid, "2".to_string())]); // the season's own press, while the batch is out
+    assert_eq!(store.dirty_for_test(), [(sid, "2".to_string())], "premise: the ask went dirty, not pending");
+    let flight = store.flights.remove(0);
+    store.requeue_unstarted(flight);
+    assert_eq!(store.pending_for_test(), [(sid, "3".to_string()), (sid, "2".to_string())]);
+    assert_eq!(store.pending_parents, [(sid, "1".to_string())], "the show that was not asked for stays a parent");
+    assert!(store.dirty_for_test().is_empty(), "the covered mark is dropped, not queued twice");
 }
 
 /// Two episodes of one season pressed in a burst: one read of both, one of the season and show —
