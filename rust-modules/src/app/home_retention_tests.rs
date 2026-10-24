@@ -527,12 +527,21 @@ fn home_worker_results_cross_the_addressed_dispatcher_ingest_once() {
     struct Results(Vec<Addr>);
     impl Tap<AppHost> for Results {
         fn result(&mut self, _f: u64, addr: &Addr, msg: &AppMsg) {
-            let AppMsg::HubsResult(result) = msg else { panic!("wrong result type") };
+            let AppMsg::HubsResult(result) = msg else { panic!("wrong result type: not a HubsResult, addressed {addr:?}") };
             assert_eq!(addr.req.0, result.request_id());
             self.0.push(*addr);
         }
     }
     let _guard = plx_base::testlock::serial();
+    // This tap grades hub results only, but every frame also runs the session owner's cache refill
+    // (`Bridge::land_session_cache`): while the process-global session cache is `Unloaded` the first
+    // frame begins a refresh on the storage worker, and its `CacheRefreshed` answer is a Session
+    // result on a later frame. The cache starts `Unloaded` in a fresh process and is left that way
+    // by any test that drops a `TempSession` (`redirect_for_test`), so whether the worker's answer
+    // beat the second frame depended on what ran before and on the runner's load. Start from a
+    // filled cache instead (`refresh_blocking_for_test` is the helper for exactly that).
+    plx_base::storage_worker::drain_for_test();
+    plx_plex::plex::session::refresh_blocking_for_test();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     rig.stores.hubs.seed_for_test(2, plx_data::pms::HubState::Ready);
@@ -543,6 +552,9 @@ fn home_worker_results_cross_the_addressed_dispatcher_ingest_once() {
     assert_eq!(tap.0, vec![Addr {
         to: MachineId::Store(StoreId::Hubs.ord()), req: plx_machine::machine::RequestId(req),
     }]);
+    // Close the race the other way: whatever the worker was going to answer has landed before the
+    // second frame, so a cache left to refill fails here every time rather than on a loaded runner.
+    plx_base::storage_worker::drain_for_test();
     frame_with_tap(&mut d, &mut rig, AppArg::Home, tick(1), vec![], &mut tap);
     assert_eq!(tap.0.len(), 1, "the store tick must not re-deliver the result");
 
