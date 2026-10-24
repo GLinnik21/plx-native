@@ -747,6 +747,9 @@ pub struct Fetch<M> {
     in_flight: std::sync::atomic::AtomicBool,
     /// The generation the current claim was made for; meaningful only while `in_flight`.
     claimed: std::sync::atomic::AtomicU32,
+    /// The generation a REFUSED request was made for and nobody has observed yet
+    /// ([`Fetch::refuse_for`], [`Fetch::take_refused`]); [`Fetch::NO_REFUSAL`] when none waits.
+    refused: std::sync::atomic::AtomicU64,
     /// Where the worker posts what it came back with. `None` means nothing has landed since the
     /// last take.
     slot: std::sync::Mutex<Option<M>>,
@@ -760,8 +763,12 @@ impl<M> Fetch<M> {
     pub const IDLE: Self = Self {
         in_flight: std::sync::atomic::AtomicBool::new(false),
         claimed: std::sync::atomic::AtomicU32::new(0),
+        refused: std::sync::atomic::AtomicU64::new(Self::NO_REFUSAL),
         slot: std::sync::Mutex::new(None),
     };
+
+    /// The `refused` value that names no generation (a generation is a `u32`).
+    const NO_REFUSAL: u64 = u64::MAX;
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Option<M>> {
         self.slot.lock().unwrap_or_else(|e| e.into_inner())
@@ -802,6 +809,32 @@ impl<M> Fetch<M> {
         }
     }
 
+    /// [`Fetch::release_for`] that the owner's step can SEE: the claim made for `gen` is handed
+    /// back and the refusal is remembered, for [`Fetch::take_refused`] to answer once.
+    ///
+    /// A bare release frees the claim and says nothing, so a step that backs off after a launch
+    /// that did not happen (it used to learn that from the failed spawn, in the same call) would
+    /// find the claim free on its next pump and ask again at once, a spin. The step reads the
+    /// refusal at the head of that pump, before it decides to spawn, and applies the backoff it
+    /// always did. The claim is still freed in the same call as the refusal, so a take that is
+    /// owed on `busy` (dump mode) is never left waiting on a request that will not answer.
+    ///
+    /// Remembered whichever claim is held: a refusal of a request the owner has since superseded
+    /// names a generation the owner no longer asks about, and is never taken.
+    pub fn refuse_for(&self, gen: u32) {
+        self.release_for(gen);
+        self.refused.store(u64::from(gen), std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Has the request made for `gen` been refused since the last answer to this? True once: the
+    /// refusal is consumed. A refusal of any other generation is left where it is, and a
+    /// supersede ([`Fetch::clear`]) discards it, since what the retired request was refused no
+    /// longer matters.
+    pub fn take_refused(&self, gen: u32) -> bool {
+        self.refused.compare_exchange(u64::from(gen), Self::NO_REFUSAL,
+            std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst).is_ok()
+    }
+
     /// Take whatever landed, RELEASING the claim with it, whatever the mail turns out to be. An
     /// EMPTY mailbox releases nothing: the claim it would clear belongs to a worker still running,
     /// and the next frame would spawn a duplicate.
@@ -835,10 +868,12 @@ impl<M> Fetch<M> {
 
     /// Drop the mailbox and release the claim with it — a supersede's per-fetch half. Releases
     /// unconditionally, unlike [`Fetch::take`]: the worker holding this claim is still out, and
-    /// what it will answer about is no longer open.
+    /// what it will answer about is no longer open. A refusal nobody has observed yet
+    /// ([`Fetch::refuse_for`]) is discarded with it, for the same reason.
     pub fn clear(&self) {
         *self.lock() = None;
         self.release();
+        self.refused.store(Self::NO_REFUSAL, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// WORKER THREAD: post `mail` unless the mail already waiting wins — `beats(old)` answers
@@ -965,6 +1000,55 @@ mod tests {
         assert!(!fetch.busy());
         fetch.release_for(2);
         assert!(!fetch.busy(), "releasing a released claim is a no-op");
+    }
+
+    /// A refusal is a release the owner's step can see: it frees the claim, and the step's next
+    /// look at that generation answers `true` ONCE. Without the memory the step would find the
+    /// claim free and ask again at once.
+    #[test]
+    fn a_refusal_frees_the_claim_and_is_observed_once() {
+        let fetch = Fetch::<u32>::IDLE;
+        assert!(!fetch.take_refused(1), "nothing was refused");
+        fetch.claim(1);
+        fetch.refuse_for(1);
+        assert!(!fetch.busy(), "the refused request's claim is handed back in the same call");
+        assert!(fetch.take_refused(1), "the owner's next pump sees the refusal");
+        assert!(!fetch.take_refused(1), "...once");
+
+        // generation 0 is a generation like any other
+        fetch.claim(0);
+        fetch.refuse_for(0);
+        assert!(fetch.take_refused(0));
+    }
+
+    /// The refusal belongs to the generation it answers: another generation's step does not
+    /// take it, and a refusal of a request the owner has since superseded does not free the newer
+    /// request's claim.
+    #[test]
+    fn a_refusal_is_for_its_own_generation_only() {
+        let fetch = Fetch::<u32>::IDLE;
+        fetch.claim(1);
+        fetch.refuse_for(1);
+        assert!(!fetch.take_refused(2), "generation 2 was not refused");
+        assert!(fetch.take_refused(1), "...and asking about it did not consume generation 1's");
+
+        fetch.claim(1);
+        fetch.clear();
+        fetch.claim(2);
+        fetch.refuse_for(1); // request 1's launch is refused after request 2 has claimed
+        assert!(fetch.busy(), "request 2's claim is not request 1's to hand back");
+        assert!(!fetch.take_refused(2));
+    }
+
+    /// A supersede retires whatever the old request was going to say, a refusal included: it is not
+    /// left to be taken by a later request that happens to carry the same generation.
+    #[test]
+    fn a_supersede_discards_an_unobserved_refusal() {
+        let fetch = Fetch::<u32>::IDLE;
+        fetch.claim(1);
+        fetch.refuse_for(1);
+        fetch.clear();
+        assert!(!fetch.take_refused(1));
     }
 
     /// With NO claim held there is nothing to protect: mail is taken as before and the owner's
