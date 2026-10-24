@@ -115,7 +115,7 @@ fn press(stores: &mut Stores, sid: ServerId, rk: &str, write: Write) {
     let directory = DirectorySnapshot::default();
     assert!(stores.viewstate_run(ViewStateCmd::Request {
         sid, rk: rk.into(), write, scope: Scope::Leaf, guid: String::new(),
-    }, directory.view(), &crate::pms::registry_keys_for_test()));
+    }, directory.view(), &crate::pms::registry_keys_for_test()).changed);
 }
 
 fn drive(stores: &mut Stores, done: impl Fn(&Stores) -> bool) {

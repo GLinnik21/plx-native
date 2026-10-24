@@ -768,9 +768,10 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             // A show or season row also changes every episode row under it, wherever one is held
             // (a Search result, a Continue Watching card): the scope is read off the row in hand.
             let scope = mark_scope(rk, item.as_ref(), season.as_ref());
-            bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Request {
+            let outcome = bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Request {
                 sid, rk: rk.to_string(), write: w, scope, guid: String::new(),
             });
+            super::bridge::execute_endpoint_outcomes(pages, outcome.endpoints);
         }
         Action::RemoveFromDeck(rk) => {
             // A HIDE, not a reset: the server keeps the item's `viewOffset`, so the card leaves
@@ -788,10 +789,11 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             // No guid, and it would be ignored if there were one: a deck removal does not follow
             // the title across sources (`viewstate::Write::propagates`) — your Continue Watching
             // row is yours, and hiding a friend's item from it is not a claim about their deck.
-            bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Request {
+            let outcome = bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Request {
                 sid, rk: rk.to_string(), write: plx_data::viewstate::Write::RemoveFromDeck,
                 scope: plx_data::viewstate::Scope::Leaf, guid: String::new(),
             });
+            super::bridge::execute_endpoint_outcomes(pages, outcome.endpoints);
         }
         // The deck card's Play row (OK opens the page): the same captured-row launch as Play from
         // Start, resuming instead of restarting. The row only exists on a Card menu, never on the

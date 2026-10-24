@@ -1106,9 +1106,9 @@ pub(super) fn activate_server_owned(
     bridge.collection_run(plx_data::stores::collection::CollectionCmd::Reset);
     // before the stores reset: a stop the previous identity left in flight must not land on this one
     plx_media::route::retire_pending_stops();
-    bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Reset);
+    let mut endpoints = bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Reset).endpoints;
     bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::Reset);
-    let mut endpoints = bridge.hubs_run(plx_data::stores::hubs::HubsCmd::RefetchHubs).endpoints;
+    endpoints.merge(bridge.hubs_run(plx_data::stores::hubs::HubsCmd::RefetchHubs).endpoints);
     endpoints.merge(bridge.browse_discover_pump().endpoints);
     log("pms: catalog activation queued");
     endpoints

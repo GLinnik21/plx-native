@@ -2577,7 +2577,8 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // costs one batch at its exit); the patches below are not held.
         app.bridge.hold_network(matches!(app.route(), AppArg::Player));
         // Stops first: the resume patch lands before any read of the item is asked for.
-        app.bridge.stops_pump();
+        let endpoints = app.bridge.stops_pump();
+        super::bridge::execute_endpoint_outcomes(&mut app.pages, endpoints);
         app.bridge.catalog_feed(&mut app.pages);
         let endpoints = app.bridge.viewstate_pump();
         super::bridge::execute_endpoint_outcomes(&mut app.pages, endpoints);
@@ -2602,7 +2603,9 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                 }
                 shown
             });
-        if app.bridge.notify_pump(&content, shown) {
+        let (resynced, endpoints) = app.bridge.notify_pump(&content, shown);
+        super::bridge::execute_endpoint_outcomes(&mut app.pages, endpoints);
+        if resynced {
             app.reread.resync(); // a lost stream: events were missed, every covered page is owed a re-read
         }
         // …and the covered pages' own re-read, once each cover episode (`app/reread.rs`).
@@ -6335,7 +6338,7 @@ mod lifecycle_regression_tests {
         assert!(rig.app.bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Request {
             sid: rig.sid, rk: "100".into(), write: plx_data::viewstate::Write::Watched,
             scope: plx_data::viewstate::Scope::Show, guid: String::new(),
-        }));
+        }).changed);
         poll_until("the write and its read-back never finished", || {
             step_and_run_jobs(rig, t);
             let seen = rig.requests.lock().unwrap();
@@ -7458,7 +7461,7 @@ mod lifecycle_regression_tests {
         assert!(rig.app.bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Request {
             sid: rig.sid, rk: "1".into(), write: plx_data::viewstate::Write::Watched,
             scope: plx_data::viewstate::Scope::Leaf, guid: String::new(),
-        }));
+        }).changed);
         poll_until("the write never reached the server", || {
             step_and_run_jobs(&mut rig, &mut t);
             requests_matching(&rig, "/:/scrobble", reads_from) == 1

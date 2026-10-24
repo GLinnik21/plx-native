@@ -26,7 +26,7 @@ fn viewstate_optimistic_home_edit_keeps_the_frame_directory_policy() {
         write: plx_data::viewstate::Write::Watched,
         scope: plx_data::viewstate::Scope::Leaf,
         guid: String::new(),
-    }));
+    }).changed);
 
     let snapshot = rig.stores.hubs.snapshot();
     let hub = snapshot.view().hub(0).expect("the pinned library's shelf");
@@ -48,7 +48,7 @@ fn separate_bridges_do_not_share_any_viewstate_owner_state_or_notice() {
 
     first.stores.viewstate.borrow_mut().seed_ownership_fixture_for_test();
     let before_reset = first.stores.viewstate.borrow().ownership_fixture_for_test();
-    second.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Reset);
+    let _ = second.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Reset);
     let after_reset = first.stores.viewstate.borrow().ownership_fixture_for_test();
 
     first.stores.viewstate.borrow_mut().seed_ownership_fixture_for_test();
@@ -74,7 +74,7 @@ fn reset_fences_a_late_old_viewstate_worker_from_the_post_reset_request() {
     let old_adapter = bridge.stores.viewstate.borrow().adapter_for_test();
     let finish_old_worker = bridge.stores.viewstate.borrow().late_completion_for_test();
 
-    bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Reset);
+    let _ = bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Reset);
     bridge.stores.viewstate.borrow_mut().seed_post_reset_flight_for_test();
     let new_adapter = bridge.stores.viewstate.borrow().adapter_for_test();
     assert!(!std::sync::Arc::ptr_eq(&old_adapter, &new_adapter),
@@ -264,7 +264,7 @@ fn viewstate_optimistic_edit_mutates_only_its_bridge_person_store() {
         write: plx_data::viewstate::Write::Watched,
         scope: plx_data::viewstate::Scope::Leaf,
         guid: String::new(),
-    }));
+    }).changed);
 
     assert!(first.person_view().current().unwrap().shelf(0)[0].watched);
     assert!(!second.person_view().current().unwrap().shelf(0)[0].watched,

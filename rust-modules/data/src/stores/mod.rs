@@ -319,13 +319,14 @@ impl Stores {
     pub const VIEWSTATE_FILLS: &'static [StoreId] = &[StoreId::Hubs];
 
     /// ViewState's synchronous command path, with every Browse side effect addressed back to this
-    /// aggregate. The callback is invoked inline, preserving the press-frame optimistic edit.
+    /// aggregate. The callback is invoked inline, preserving the press-frame optimistic edit. The
+    /// outcome's `endpoints` are the refreshes the edit's Hubs step settled: the caller carries them.
     pub fn viewstate_run(
         &mut self,
         cmd: viewstate::ViewStateCmd,
         directory: browse::DirectoryView<'_>,
         clients: &plx_plex::plex::ClientKeys,
-    ) -> bool {
+    ) -> StoreOutcome {
         if matches!(cmd, viewstate::ViewStateCmd::Reset) {
             self.reconcile.reset();
             self.notify.reset();
@@ -429,16 +430,18 @@ impl Stores {
     /// on the stores that show the item, so a tile reads the new resume point before any read; and,
     /// when the server took the `stopped` POST, a read-back through the reconcile worker (which
     /// stays queued while the network is held); when it did not, only the Detail pages' own re-read
-    /// is owed. MAIN THREAD, route-unconditional.
+    /// is owed. The patches' Hubs steps settle refused launches, so the endpoint refreshes they owe
+    /// are returned for the caller to carry. MAIN THREAD, route-unconditional.
     pub fn stops_landed(&mut self, stops: Vec<crate::viewstate::StopRecord>, directory: browse::DirectoryView<'_>,
-        clients: &plx_plex::plex::ClientKeys) {
+        clients: &plx_plex::plex::ClientKeys) -> EndpointRefreshSet {
+        let mut endpoints = EndpointRefreshSet::default();
         for stop in stops {
-            self.publish(crate::viewstate::ViewChange {
+            endpoints.merge(self.publish(crate::viewstate::ViewChange {
                 sid: stop.sid,
                 rk: stop.rk.clone(),
                 scope: crate::viewstate::Scope::Leaf,
                 fact: crate::viewstate::ViewFact::Offset { ms: stop.pos_ms, dur_ms: stop.dur_ms },
-            }, directory, clients);
+            }, directory, clients));
             if stop.ok {
                 self.reconcile.enqueue_stop((stop.sid, stop.rk), stop.was_watched);
             } else {
@@ -447,10 +450,11 @@ impl Stores {
                 self.reconcile.owe_page((stop.sid, stop.rk));
             }
         }
+        endpoints
     }
 
     fn publish(&mut self, change: crate::viewstate::ViewChange, directory: browse::DirectoryView<'_>,
-        clients: &plx_plex::plex::ClientKeys) {
+        clients: &plx_plex::plex::ClientKeys) -> EndpointRefreshSet {
         self.watchlist.apply_view(&change);
         let browse = std::rc::Rc::clone(&self.browse);
         let hubs = &mut self.hubs;
@@ -466,15 +470,16 @@ impl Stores {
             &mut |cmd| view_edit_collection(collection, cmd),
             &mut |cmd| search.run_with_directory(cmd, directory),
             &mut |cmd| metadata.run(cmd),
-        );
+        )
     }
 
     /// The read-back worker's route-unconditional pass: hand it what landed writes owe, send its
     /// reads, and publish the facts it brought back to the stores that hold the rows. `clients` is
     /// the registry's answer as of this call. It does NOT start the reads it sent: a caller that
     /// returns without taking them ([`Stores::take_jobs_of`]) and handing them to a runner has
-    /// stranded the flights. The one production caller is `Bridge::reconcile_pump`.
-    pub fn reconcile_pump(&mut self, directory: browse::DirectoryView<'_>, clients: &plx_plex::plex::ClientKeys) -> bool {
+    /// stranded the flights. The one production caller is `Bridge::reconcile_pump`. The outcome's
+    /// `endpoints` are the refreshes the published facts' Hubs steps settled.
+    pub fn reconcile_pump(&mut self, directory: browse::DirectoryView<'_>, clients: &plx_plex::plex::ClientKeys) -> StoreOutcome {
         let owed = self.viewstate.borrow_mut().take_reread();
         self.reconcile.enqueue(owed);
         let idle = !self.viewstate.borrow().is_busy() && !self.network_held;
@@ -485,7 +490,8 @@ impl Stores {
         let search = &mut self.search;
         let metadata = &mut self.metadata;
         let watchlist = &mut self.watchlist;
-        let changed = self.reconcile.pump_with_gate(&self.landgate, idle, clients, &mut |change| crate::viewstate::publish_view(
+        let mut endpoints = EndpointRefreshSet::default();
+        let changed = self.reconcile.pump_with_gate(&self.landgate, idle, clients, &mut |change| endpoints.merge(crate::viewstate::publish_view(
             { watchlist.apply_view(&change); change },
             &mut |cmd| browse.borrow_mut().run(cmd),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory, clients),
@@ -493,13 +499,13 @@ impl Stores {
             &mut |cmd| view_edit_collection(collection, cmd),
             &mut |cmd| search.run_with_directory(cmd, directory),
             &mut |cmd| metadata.run(cmd),
-        ));
+        )));
         // A first watch whose read-back found the stream's end: the other servers' copies are
         // owed the same watched write, through ViewState's serial queue (the origin already holds it).
         for (sid, rk) in self.reconcile.take_watched_ends() {
             self.viewstate.borrow_mut().fan_out_origin_watched(sid, &rk);
         }
-        changed
+        StoreOutcome { changed, endpoints }
     }
 
     /// The `(server, ratingKey)` of every row a read-back has landed since the last call: what the

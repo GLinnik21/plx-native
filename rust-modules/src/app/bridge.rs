@@ -1447,11 +1447,14 @@ impl Bridge {
         self.stores.metadata_pump()
     }
 
-    pub(crate) fn viewstate_run(&mut self, cmd: plx_data::stores::viewstate::ViewStateCmd) -> bool {
+    /// The outcome's `endpoints` are the refreshes the edit's Hubs step settled (a launch the
+    /// runner refused since the last Hubs step is settled by whatever steps Hubs next): the caller
+    /// carries them.
+    pub(crate) fn viewstate_run(&mut self, cmd: plx_data::stores::viewstate::ViewStateCmd) -> plx_data::stores::StoreOutcome {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
-        let changed = self.stores.viewstate_run(cmd, self.directory.view(), &self.client_keys);
+        let outcome = self.stores.viewstate_run(cmd, self.directory.view(), &self.client_keys);
         self.start_store_jobs_in(plx_data::stores::Stores::VIEWSTATE_FILLS);
-        changed
+        outcome
     }
 
     /// Keep the view-state reconcile network work owed while the player is on top
@@ -1463,19 +1466,23 @@ impl Bridge {
     /// Take the stops whose `stopped` POST was attempted or abandoned, patch each item's resume
     /// point at once, and owe it a read-back (`Stores::stops_landed`). Route-unconditional: an Up
     /// Next chain stops one episode after another without ever leaving the player. The patches
-    /// reach Hubs as `ApplyView` only, which launches nothing, so this drains no outbox.
-    pub(crate) fn stops_pump(&mut self) {
+    /// reach Hubs as `ApplyView` only, which launches nothing, so this drains no outbox; the step
+    /// still settles a refused launch, so the endpoint refreshes it owes are returned for the caller
+    /// to carry.
+    pub(crate) fn stops_pump(&mut self) -> plx_data::stores::EndpointRefreshSet {
         let stops = plx_data::stores::take_landings_owed(
             &self.stores.landgate,
             plx_data::stores::StoreId::ViewStop,
             |got: &[plx_data::viewstate::StopRecord]| got.is_empty() && plx_media::route::stops_owed(),
             plx_media::route::take_landed_stops,
         );
-        if !stops.is_empty() {
-            super::adapters::stores::refill_client_keys(&mut self.client_keys);
-            self.stores.stops_landed(stops, self.directory.view(), &self.client_keys);
-            plx_machine::idle::invalidate();
+        if stops.is_empty() {
+            return Default::default();
         }
+        super::adapters::stores::refill_client_keys(&mut self.client_keys);
+        let endpoints = self.stores.stops_landed(stops, self.directory.view(), &self.client_keys);
+        plx_machine::idle::invalidate();
+        endpoints
     }
 
     /// The Watchlist store's landing pass, once a frame and route-unconditional: a write burst
@@ -1500,19 +1507,19 @@ impl Bridge {
     /// fan-outs emit no jobs of their own.
     pub(crate) fn reconcile_pump(&mut self) -> plx_data::stores::EndpointRefreshSet {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
-        let changed = self.stores.reconcile_pump(self.directory.view(), &self.client_keys);
+        let mut outcome = self.stores.reconcile_pump(self.directory.view(), &self.client_keys);
         self.start_store_jobs_of(StoreId::ViewReconcile);
-        if changed {
+        if outcome.changed {
             plx_machine::idle::invalidate();
         }
         if self.stores.network_held() {
-            return Default::default(); // a membership re-query is a network read
+            return outcome.endpoints; // a membership re-query is a network read
         }
         let mut browse = self.stores.browse.borrow_mut();
         if browse.requery_owed() {
-            return browse.pump_with_gate(&self.stores.landgate).endpoints;
+            outcome.endpoints.merge(browse.pump_with_gate(&self.stores.landgate).endpoints);
         }
-        Default::default()
+        outcome.endpoints
     }
 
     /// The PMS notification feed's per-frame pass (`stores::notify`), and the mapping of what it
@@ -1522,11 +1529,13 @@ impl Bridge {
     /// are on it: what they hold decides which hints are read back.
     /// A notification never reaches the stop queue or the playback Offset (S5). The event log gets
     /// only server slots and counts, never a session, key or identifier.
-    /// `true` when a feed came back after a gap, so the caller owes the covered pages a re-read.
-    pub(crate) fn notify_pump(&mut self, pages: &[ContentArg], shown: plx_data::stores::notify_map::Shown) -> bool {
+    /// `true` when a feed came back after a gap, so the caller owes the covered pages a re-read;
+    /// and the endpoint refreshes the map's quiet refetches settled, for the caller to carry.
+    pub(crate) fn notify_pump(&mut self, pages: &[ContentArg], shown: plx_data::stores::notify_map::Shown)
+        -> (bool, plx_data::stores::EndpointRefreshSet) {
         let out = self.stores.notify_pump();
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
-        let spent = self.stores.notify_map(&out, pages, shown, self.directory.view(), &self.client_keys);
+        let mut spent = self.stores.notify_map(&out, pages, shown, self.directory.view(), &self.client_keys);
         self.start_store_jobs_in(plx_data::stores::Stores::NOTIFY_FILLS);
         if !spent.refetched.is_empty() || !spent.invalidated.is_empty() {
             plx_base::eventlog::log(&format!(
@@ -1538,7 +1547,7 @@ impl Bridge {
         for (sid, epoch) in &out.resynced {
             plx_base::eventlog::log(&format!("notify: sid={} resync epoch={epoch}", sid.raw()));
         }
-        !out.resynced.is_empty()
+        (!out.resynced.is_empty(), std::mem::take(&mut spent.endpoints))
     }
 
     /// WILL background: the feed's connections are cancelled now and stay closed until resume.
@@ -1985,8 +1994,8 @@ impl Bridge {
                 return Handled::Yes;
             }
             AppMsg::Store(StoreCmd::ViewState(command)) => {
-                self.viewstate_run(command.clone());
-                return Handled::Yes;
+                let due = self.viewstate_run(command.clone()).endpoints;
+                return Self::carry(&mut self.endpoint_carry, due);
             }
             AppMsg::Store(StoreCmd::Metadata(command)) => {
                 self.metadata_run(command.clone());

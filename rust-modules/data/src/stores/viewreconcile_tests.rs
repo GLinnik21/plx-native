@@ -123,7 +123,7 @@ fn press(stores: &mut Stores, sid: ServerId, write: Write) {
     let directory = DirectorySnapshot::default();
     assert!(stores.viewstate_run(ViewStateCmd::Request {
         sid, rk: "1".into(), write, scope: Scope::Leaf, guid: String::new(),
-    }, directory.view(), &crate::pms::registry_keys_for_test()));
+    }, directory.view(), &crate::pms::registry_keys_for_test()).changed);
 }
 
 /// Pump both owners as the frame loop does until `done`, failing after ~5 s.
@@ -290,7 +290,7 @@ fn a_stop_patches_the_resume_point_before_the_read_back_is_asked() {
     pms.truth.hold_next_read.store(true, Ordering::SeqCst);
     let (mut stores, sid) = library_holding_item(&pms);
     let directory = DirectorySnapshot::default();
-    stores.stops_landed(vec![stop(sid, 30_000, true, true)], directory.view(), &crate::pms::registry_keys_for_test());
+    let _ = stores.stops_landed(vec![stop(sid, 30_000, true, true)], directory.view(), &crate::pms::registry_keys_for_test());
     assert_eq!(pms.truth.reads.load(Ordering::SeqCst), 0, "nothing has been read yet");
     assert_eq!(tile_resume(&stores), 30_000, "the tile already shows where the viewer stopped");
     drive(&mut stores, |_| pms.truth.holding.load(Ordering::SeqCst));
@@ -306,7 +306,7 @@ fn a_stop_the_server_refused_patches_the_tile_and_reads_nothing_back() {
     let pms = serve();
     let (mut stores, sid) = library_holding_item(&pms);
     let directory = DirectorySnapshot::default();
-    stores.stops_landed(vec![stop(sid, 30_000, true, false)], directory.view(), &crate::pms::registry_keys_for_test());
+    let _ = stores.stops_landed(vec![stop(sid, 30_000, true, false)], directory.view(), &crate::pms::registry_keys_for_test());
     drive(&mut stores, |s| settled(s));
     std::thread::sleep(std::time::Duration::from_millis(50));
     assert_eq!(pms.truth.reads.load(Ordering::SeqCst), 0);
@@ -324,7 +324,7 @@ fn a_stop_the_server_refused_still_owes_the_detail_pages_a_re_read() {
     let pms = serve();
     let (mut stores, sid) = library_holding_item(&pms);
     let directory = DirectorySnapshot::default();
-    stores.stops_landed(vec![stop(sid, 30_000, true, false)], directory.view(), &crate::pms::registry_keys_for_test());
+    let _ = stores.stops_landed(vec![stop(sid, 30_000, true, false)], directory.view(), &crate::pms::registry_keys_for_test());
     let owed = stores.take_landed_views();
     assert_eq!(owed.len(), 1, "one page re-read for the one refused stop");
     assert!(plx_plex::plex::same_item((owed[0].0, &owed[0].1), (sid, "1")));
@@ -362,7 +362,7 @@ fn the_read_back_of_a_stop_waits_while_the_network_is_held() {
     let (mut stores, sid) = library_holding_item(&pms);
     let directory = DirectorySnapshot::default();
     stores.hold_network(true);
-    stores.stops_landed(vec![stop(sid, 30_000, true, true)], directory.view(), &crate::pms::registry_keys_for_test());
+    let _ = stores.stops_landed(vec![stop(sid, 30_000, true, true)], directory.view(), &crate::pms::registry_keys_for_test());
     for _ in 0..40 {
         let _ = stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test());
         super::rig::frame(&mut stores, &directory);
@@ -384,7 +384,7 @@ fn an_end_of_stream_scrobbles_the_other_servers_copy_but_not_the_origin_again() 
     a.truth.watched.lock().unwrap().insert("1".into()); // what A holds once the stream has ended
     let (mut stores, sid_a, _sid_b) = two_servers(&a, &b);
     let directory = DirectorySnapshot::default();
-    stores.stops_landed(vec![stop(sid_a, 60_000, false, true)], directory.view(), &crate::pms::registry_keys_for_test());
+    let _ = stores.stops_landed(vec![stop(sid_a, 60_000, false, true)], directory.view(), &crate::pms::registry_keys_for_test());
     drive(&mut stores, |s| settled(s) && b.truth.scrobbles.load(Ordering::SeqCst) == 1);
     assert_eq!(a.truth.scrobbles.load(Ordering::SeqCst), 0, "the origin already counted the view");
     assert_eq!(tile(&stores), (true, false), "A's tile reads watched");
@@ -423,7 +423,7 @@ fn after_an_end_of_stream_the_other_servers_search_tile_reads_watched() {
         "premise: B's tile already reads watched but still carries a stale resume point"
     );
     let directory = DirectorySnapshot::default();
-    stores.stops_landed(vec![stop(sid_a, 60_000, false, true)], directory.view(), &crate::pms::registry_keys_for_test());
+    let _ = stores.stops_landed(vec![stop(sid_a, 60_000, false, true)], directory.view(), &crate::pms::registry_keys_for_test());
     drive(&mut stores, |s| settled(s) && b.truth.scrobbles.load(Ordering::SeqCst) == 1);
     assert_eq!(
         search_tile(&stores), Some((true, false, 7_000)),
@@ -440,7 +440,7 @@ fn a_rewatch_does_not_fan_out() {
     a.truth.watched.lock().unwrap().insert("1".into());
     let (mut stores, sid_a, _sid_b) = two_servers(&a, &b);
     let directory = DirectorySnapshot::default();
-    stores.stops_landed(vec![stop(sid_a, 60_000, true, true)], directory.view(), &crate::pms::registry_keys_for_test());
+    let _ = stores.stops_landed(vec![stop(sid_a, 60_000, true, true)], directory.view(), &crate::pms::registry_keys_for_test());
     drive(&mut stores, |s| settled(s) && a.truth.reads.load(Ordering::SeqCst) == 1);
     std::thread::sleep(std::time::Duration::from_millis(50));
     let _ = stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test());
@@ -456,7 +456,7 @@ fn a_stop_in_the_middle_does_not_fan_out() {
     let (a, b) = (serve(), serve());
     let (mut stores, sid_a, _sid_b) = two_servers(&a, &b);
     let directory = DirectorySnapshot::default();
-    stores.stops_landed(vec![stop(sid_a, 30_000, false, true)], directory.view(), &crate::pms::registry_keys_for_test());
+    let _ = stores.stops_landed(vec![stop(sid_a, 30_000, false, true)], directory.view(), &crate::pms::registry_keys_for_test());
     drive(&mut stores, |s| settled(s) && a.truth.reads.load(Ordering::SeqCst) == 1);
     std::thread::sleep(std::time::Duration::from_millis(50));
     let _ = stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test());

@@ -61,6 +61,7 @@ impl ViewStateStore {
     }
 
     /// Synchronous command path. Optimistic edits reach every supplied owner before this returns.
+    /// The outcome's `endpoints` are the ones the edits' Hubs step settled: the caller carries them.
     pub fn run(
         &mut self,
         cmd: ViewStateCmd,
@@ -70,7 +71,7 @@ impl ViewStateStore {
         collection: &mut dyn FnMut(crate::stores::collection::CollectionCmd) -> bool,
         search: &mut dyn FnMut(crate::stores::search::SearchCmd) -> bool,
         metadata: &mut dyn FnMut(crate::stores::metadata::MetadataCmd) -> bool,
-    ) -> bool {
+    ) -> super::StoreOutcome {
         if matches!(&cmd, ViewStateCmd::Reset) {
             self.adapter = Arc::new(Default::default());
         }

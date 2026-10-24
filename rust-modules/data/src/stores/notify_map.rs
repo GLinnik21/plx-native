@@ -110,6 +110,9 @@ pub struct Spent {
     pub invalidated: Vec<ServerId>,
     /// Servers whose library listings were told of a change (`BrowseCmd::ListingsChanged`).
     pub relisted: Vec<ServerId>,
+    /// The endpoint refreshes the quiet refetches' Hubs steps owe (a launch the runner refused is
+    /// settled by the next Hubs step, this one included): the caller carries them.
+    pub endpoints: super::EndpointRefreshSet,
 }
 
 /// Read-backs and refetches a notification owes, not yet spent.
@@ -517,7 +520,9 @@ impl Stores {
             }
         }
         for sid in owed.refetch {
-            let _ = self.hubs.run_with_directory(super::hubs::HubsCmd::RefetchSourceQuiet { sid }, directory, clients);
+            // a Hubs step settles the launches the runner refused since the last one: the refreshes
+            // it owes leave with the pass
+            spent.endpoints.merge(self.hubs.run_with_directory(super::hubs::HubsCmd::RefetchSourceQuiet { sid }, directory, clients).endpoints);
             spent.refetched.push(sid);
         }
         for sid in owed.listings {
