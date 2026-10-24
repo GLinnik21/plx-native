@@ -294,8 +294,9 @@ and its three `data-pms` ledger files are deleted.
     `AppMsg::HubsResult`, so a refusal reaches no recorded byte. The next Hubs step settles it first
     (`settle_refused`), as the failure it is, one step after the launch that failed. A `Reset`
     rotates the adapter and retires the list with it.
-  - **Replay identity.** The landing compare keys on the client's `instance_gen()`, not on the
-    `ClientKey` the request carries.
+  - **Replay identity.** The landing compare builds its key from the landing's bound client
+    (`resource.instance_gen()`), never from the logical `instance` the landing records: a replayed
+    landing carries the recording's id there, and only the resource it was bound to is the registry's.
 
   The two test seams the old inline spawn had (a refused spawn and a late worker) are the
   runner's, `with_refused_hubs_launches_for_test` and `with_late_hubs_launches_for_test`, `#[cfg(test)]`
