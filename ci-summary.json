@@ -1,6 +1,21 @@
 {
- "flaky": [],
- "generated": "2026-10-24T07:02:16Z",
+ "flaky": [
+  {
+   "count": 1,
+   "first_seen": "2026-10-24T06:58:17Z",
+   "job": "host unit tests (default features)",
+   "last": {
+    "pr": 977,
+    "run": 40071490036,
+    "sha": "f596f952d"
+   },
+   "last_seen": "2026-10-24T06:58:17Z",
+   "new": true,
+   "status": "Active",
+   "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
+  }
+ ],
+ "generated": "2026-10-24T07:05:20Z",
  "metrics": [
   {
    "change30_pct": null,
