@@ -984,6 +984,10 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             let activation = did_foreground_with_link(app);
             if matches!(activation, ForegroundActivation::Launched) {
                 finish_foreground_launch(app);
+            } else if app.player.lifecycle.claimable_clock().is_some() {
+                // The Load was refused: on a plaintext-granted server the grant `network_changed`
+                // just withdrew is re-proven a moment later, after this claim. Claim again then.
+                app.foreground_retry = Some((plx_plex::plex::grant::revision(), FOREGROUND_RETRIES));
             }
             window_step(plx_telemetry::telemetry::window::Stage::ForegroundDone, Some(playing));
         }
@@ -1684,6 +1688,46 @@ fn claim_press_after_decoder_release(app: &mut App, press: WakePress) -> bool {
     }
     plx_machine::idle::invalidate();
     true
+}
+
+/// How many times a refused foreground Load is claimed again as the plaintext grants return.
+const FOREGROUND_RETRIES: u8 = 3;
+
+/// **A foreground Load refused for want of a credential is claimed again when the grants move.**
+/// The DID edge withdraws every plaintext grant (`grant::network_changed`) and claims the Load in
+/// the same breath, so a server on a plaintext grant (a LAN server without TLS) refused it
+/// (`stream: refused insecure credential transport`); the re-discovery minted the grant back
+/// ~250 ms later and nothing claimed the Load again, leaving the film on a still frame. Retries
+/// stop when a claim launches, when the session is no longer waiting, or after
+/// [`FOREGROUND_RETRIES`] claims.
+fn retry_refused_foreground(app: &mut App) {
+    let Some((seen, left)) = app.foreground_retry else {
+        return;
+    };
+    if !app.player.lifecycle.awaiting_load() || app.player.lifecycle.claimable_clock().is_none() {
+        app.foreground_retry = None;
+        return;
+    }
+    let now = plx_plex::plex::grant::revision();
+    if now == seen || app.pages.surface_up() {
+        return;
+    }
+    app.foreground_retry = left.checked_sub(1).filter(|l| *l > 0).map(|l| (now, l));
+    let input = wake_input(WakePress::Wake, app.player.lifecycle.claimable_clock());
+    let activation = drive_foreground(
+        &mut app.player.lifecycle,
+        &mut app.player.session,
+        input,
+        &mut PlayerForegroundActuator {
+            pa: &mut app.adapters.player,
+            repause_at: &mut app.repause_at,
+        },
+    );
+    if matches!(activation, ForegroundActivation::Launched) {
+        app.foreground_retry = None;
+        finish_foreground_launch(app);
+    }
+    plx_machine::idle::invalidate();
 }
 
 /// The warm-launch DID composes its two children in order: the launch link sees the arrival
@@ -2613,6 +2657,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // A server on a plaintext grant keeps trying HTTPS (`plex::grant::UpgradeRetry`): its
         // endpoint re-discovery races every HTTPS route first and retires the grant when one
         // verifies. Route-unconditional — the upgrade is owed whatever is on screen.
+        retry_refused_foreground(app);
         let upgrades = app.plaintext_upgrade.due(fr.now);
         super::bridge::execute_endpoint_outcomes(&mut app.pages, upgrades);
         app.bridge.person_pump();
@@ -3505,6 +3550,7 @@ mod lifecycle_regression_tests {
             },
             repause_at: -1,
             decoder_parked: false,
+            foreground_retry: None,
             ok_armed: Default::default(),
             last_route_reported: Default::default(),
             ptr: Pointer::IDLE,
