@@ -33,6 +33,7 @@
   "core.preview_domain_buffer": "буфер",
   "core.preview_domain_transport": "ошибка передачи",
   "core.preview_domain_transfer_age": "время передачи до сбоя",
+  "core.preview_domain_demux_exit": "этап чтения медиапотока, на котором произошёл сбой",
   "core.preview_domain_elapsed": "прошедшее время",
   "core.preview_domain_hls_direction": "направление изменения качества HLS",
   "core.preview_domain_delivery_reason": "причина выбора способа передачи",
