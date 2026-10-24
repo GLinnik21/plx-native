@@ -6,11 +6,13 @@
 //!
 //! Each test makes ONE pump, so it does not depend on when any worker completes. It is written
 //! against signatures that did not change when the Collection store moved onto the job lane
-//! (`Bridge::collection_run`, `Bridge::collection_pump`, `assert_no_store_jobs_left_for_test`), so
-//! the same file compiles and passes on both sides of that change.
+//! (`Bridge::collection_run`, `Bridge::collection_pump`, `Bridge::person_run`,
+//! `Bridge::person_pump`, `assert_no_store_jobs_left_for_test`), so the same file compiles and
+//! passes on both sides of that change.
 
 use plx_data::collection::{CollectionStatus, CollectionTarget, PAGE_SIZE};
 use plx_data::stores::collection::CollectionCmd;
+use plx_data::stores::person::PersonCmd;
 use plx_data::stores::tape;
 use plx_plex::plex::collections::CollectionRef;
 use plx_plex::plex::ServerId;
@@ -45,6 +47,14 @@ fn open(bridge: &mut Bridge, sid: ServerId, rk: &str, sec: i64, tag: i64) {
 /// One frame's collection pump, as `run.rs` makes it.
 fn pump_once(bridge: &mut Bridge) {
     let _frame = plx_base::task::FrameScope::enter();
+    bridge.collection_pump();
+}
+
+/// One frame's person pump and then its collection pump, in the order `run.rs` makes them
+/// (`person_pump`, `collection_pump`, then `reconcile_details`).
+fn pump_person_then_collection(bridge: &mut Bridge) {
+    let _frame = plx_base::task::FrameScope::enter();
+    bridge.person_pump();
     bridge.collection_pump();
 }
 
@@ -101,5 +111,43 @@ fn a_collection_for_an_unregistered_server_admits_nothing_and_reads_failed() {
 
     assert_eq!(tape::finish(), (vec![], None), "no request was admitted");
     assert_eq!(bridge.stores.collection_view().current().expect("open").status, CollectionStatus::Failed);
+    bridge.assert_no_store_jobs_left_for_test();
+}
+
+/// The order across stores inside one frame is part of what a replay compares: the admission list
+/// is positional (`stores::tape::admit`), so a frame that has a person and a collection to ask
+/// for records the person's requests, in slot order, and then the collection's. Each store's
+/// requests leave in its own pump, before the next store's, so moving a drain to the end of the
+/// frame (or to a backstop that runs under the detail pump) would swap them and diverge a
+/// fixture that carries both.
+#[test]
+fn a_frame_with_a_person_and_a_collection_admits_the_person_first() {
+    let _serial = plx_base::testlock::serial();
+    let _reset = Reset;
+    let sid = recording();
+    assert_eq!(sid.raw(), 0, "the first server registered is slot 0, which the person slots below name");
+    let client = plx_plex::plex::client_for(sid).expect("registered").instance_gen();
+    let mut bridge = Bridge::for_test(|| 0);
+
+    assert!(bridge.person_run(PersonCmd::Open { sid, key: "19".into(), guid: "sf06c144a".into(),
+        name: "Actor".into(), thumb: String::new() }));
+    open(&mut bridge, sid, "50001", 1, 7);
+    pump_person_then_collection(&mut bridge);
+
+    let admitted = |request: serde_json::Value| serde_json::json!({
+        "content_resource": true, "admitted": true, "request": request });
+    assert_eq!(tape::finish(), (vec![
+        // the person's source on this server (slot 1: server 0, media), then its two plex.tv reads
+        // (slots 48 and 49): the shapes fixture 12 records
+        admitted(serde_json::json!({"store":"person","slot":1,"gen":1,"arg":["19"],"guid":"sf06c144a",
+            "local":"19","client":client,"sid":sid.raw()})),
+        admitted(serde_json::json!({"store":"person","slot":48,"gen":1,"arg":["sf06c144a"],
+            "guid":"sf06c144a"})),
+        admitted(serde_json::json!({"store":"person","slot":49,"gen":1,"arg":["sf06c144a"],
+            "guid":"sf06c144a"})),
+        // and only then the collection's header read
+        admitted(serde_json::json!({"store":"collection","slot":0,"gen":1,"sid":sid.raw(),
+            "client":client,"job":{"Header":{"rk":"50001"}}})),
+    ], None), "the person's requests in slot order, then the collection's");
     bridge.assert_no_store_jobs_left_for_test();
 }

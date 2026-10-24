@@ -2,13 +2,13 @@
 //!
 //! A store's step asks for IO by pushing a typed job on its outbox; it starts no thread and reads
 //! no clock. The `Bridge` takes the jobs right after the step that emitted them
-//! (`Bridge::metadata_run`, `Bridge::subsearch_pump`, `Bridge::reconcile_pump`, or
-//! `Bridge::start_store_jobs` after a command run on the bare store) and hands each to
-//! [`StoreRunner::start`], which owns everything the data layer must not: the tape's admission
-//! record, the worker thread and the process-global client the request reads. A kind that is not
-//! on the tape (subtitle search, view reconcile) is started with no admission record, exactly as
-//! its inline spawn was. The detail pump keeps a counted backstop for a sender that did neither
-//! (`Bridge::start_late_store_jobs`).
+//! (`Bridge::metadata_run`, `Bridge::person_pump`, `Bridge::collection_pump`,
+//! `Bridge::subsearch_pump`, `Bridge::reconcile_pump`, or `Bridge::start_store_jobs` after a
+//! command run on the bare store) and hands each to [`StoreRunner::start`], which owns everything
+//! the data layer must not: the tape's admission record, the worker thread and the process-global
+//! client the request reads. A kind that is not on the tape (subtitle search, view reconcile) is
+//! started with no admission record, exactly as its inline spawn was. The detail pump keeps a
+//! counted backstop for a sender that did neither (`Bridge::start_late_store_jobs`).
 //!
 //! **One runner per `Bridge`, chosen when the Bridge is built**, as the consent adapter is: `Live`
 //! in production, and in a host test the `Held` runner, which parks each job until the test runs
@@ -24,7 +24,9 @@
 //! carries the key its step decided on, and the runner starts it only if the registry still holds
 //! that client at the moment of the launch.
 
+use plx_data::collection::{finish_collection_job, CollectionPort, CollectionReq};
 use plx_data::metadata::{fetch_full, finish_detail_fetch, DetailPort, DetailReq};
+use plx_data::person::{finish_person_job, PersonPort, PersonReq};
 use plx_data::stores::viewreconcile::{finish_reconcile_job, ReconcilePort, ReconcileReq};
 use plx_data::stores::StoreJob;
 use plx_data::subsearch::{finish_subsearch_job, SubSearchPort, SubSearchReq};
@@ -45,8 +47,28 @@ pub(crate) fn refill_client_keys(keys: &mut ClientKeys) {
 /// The client a job's step decided on, if the registry still holds it: `client_for(sid)` accepted
 /// only when it is the very client (and credential) the step's [`ClientKeys`] named. A job the
 /// registry has moved on from (a sign-out, a re-registration, a retoken) is not started.
+///
+/// Capture at the spawn site (`pms::kick` states the rule): the worker is handed THIS server's own
+/// `&'static Client`, never `client()`. A slot re-pointed mid-request cannot redirect a fetch
+/// already out (`plex::servers` leaks each client precisely so the reference stays live), and a
+/// worker that asked which server is current would answer for whichever machine the user has since
+/// walked onto. The key compare is what makes the step's decision and the launch agree on one
+/// object, since the registry can move between the two.
 fn resolve(sid: plx_plex::plex::ServerId, key: ClientKey) -> Option<&'static Client> {
     plx_plex::plex::client_for(sid).filter(|client| ClientKey::of(client) == key)
+}
+
+/// The registry no longer holds the client a job's step decided on.
+struct Gone;
+
+/// The client a person job runs through: none for the two plex.tv reads, which ask no server; for a
+/// read of a server, [`resolve`]'s answer, or [`Gone`] when the registry has moved on from the
+/// client the step named.
+fn person_client(req: &PersonReq) -> Result<Option<&'static Client>, Gone> {
+    match req.server() {
+        None => Ok(None),
+        Some((sid, key)) => resolve(sid, key).map(Some).ok_or(Gone),
+    }
 }
 
 pub(crate) enum StoreRunner {
@@ -73,6 +95,8 @@ impl StoreRunner {
     pub(crate) fn start(&mut self, job: StoreJob) {
         match job {
             StoreJob::Detail(job, port) => self.start_detail(job, port),
+            StoreJob::Collection(job, port) => self.start_collection(job, port),
+            StoreJob::Person(job, port) => self.start_person(job, port),
             StoreJob::SubtitleSearch(job, port) => self.start_subsearch(job, port),
             StoreJob::ViewReconcile(job, port) => self.start_reconcile(job, port),
         }
@@ -110,7 +134,12 @@ impl StoreRunner {
                 StoreJob::Detail(old, old_port) => {
                     old_port.done(old.addr, ((old.req.sid, old.req.rk), None));
                 }
-                kept @ (StoreJob::SubtitleSearch(..) | StoreJob::ViewReconcile(..)) => held.push(kept),
+                kept @ (
+                    StoreJob::Collection(..)
+                    | StoreJob::Person(..)
+                    | StoreJob::SubtitleSearch(..)
+                    | StoreJob::ViewReconcile(..)
+                ) => held.push(kept),
             }
         }
     }
@@ -126,6 +155,70 @@ impl StoreRunner {
             #[cfg(test)]
             Self::Held(held) => {
                 held.push(StoreJob::Detail(job, port));
+                true
+            }
+        }
+    }
+
+    fn start_collection(&mut self, job: Job<CollectionReq>, port: CollectionPort) {
+        let addr = job.addr;
+        let request = job.req.admission(addr);
+        let admission = port.clone();
+        if !plx_data::stores::tape::admit(request, || self.launch_collection(job, port)) {
+            // Nothing was started, so nothing will ever answer on its own: the refusal hands the
+            // page's claim back, and the next pump asks again.
+            admission.refused(addr);
+        }
+    }
+
+    /// Start the request on a worker, if the registry still holds the client the step decided on.
+    /// The check is made HERE, at the launch the tape records, so a replay (which never launches)
+    /// and a recording agree on the one boolean they both hold.
+    fn launch_collection(&mut self, job: Job<CollectionReq>, port: CollectionPort) -> bool {
+        let (sid, key) = job.req.server();
+        let Some(client) = resolve(sid, key) else { return false };
+        match self {
+            Self::Live => {
+                let Job { addr, req } = job;
+                plx_base::task::spawn_small("collection", move || {
+                    finish_collection_job(&port, addr, client, req);
+                })
+            }
+            #[cfg(test)]
+            Self::Held(held) => {
+                held.push(StoreJob::Collection(job, port));
+                true
+            }
+        }
+    }
+
+    fn start_person(&mut self, job: Job<PersonReq>, port: PersonPort) {
+        let addr = job.addr;
+        let request = job.req.admission();
+        let admission = port.clone();
+        if !plx_data::stores::tape::admit(request, || self.launch_person(job, port)) {
+            // Nothing was started, so nothing will ever answer on its own: the refusal hands the
+            // slot's claim back, and the next pump asks again.
+            admission.refused(addr);
+        }
+    }
+
+    /// Start the request on a worker, if the registry still holds the client the step decided on
+    /// (a local job; the two plex.tv reads name no client). The check is made HERE, at the launch
+    /// the tape records, so a replay (which never launches) and a recording agree on the one
+    /// boolean they both hold.
+    fn launch_person(&mut self, job: Job<PersonReq>, port: PersonPort) -> bool {
+        let Ok(client) = person_client(&job.req) else { return false };
+        match self {
+            Self::Live => {
+                let Job { addr, req } = job;
+                plx_base::task::spawn_small("person", move || {
+                    finish_person_job(&port, addr, client, req);
+                })
+            }
+            #[cfg(test)]
+            Self::Held(held) => {
+                held.push(StoreJob::Person(job, port));
                 true
             }
         }
@@ -193,8 +286,8 @@ impl StoreRunner {
     }
 
     /// TEST ONLY: run every parked job on THIS thread through the production completion path
-    /// (`finish_detail_fetch` over `fetch_full`, `finish_subsearch_job`, `finish_reconcile_job`)
-    /// and return how many ran.
+    /// (`finish_detail_fetch` over `fetch_full`, `finish_collection_job`, `finish_person_job`,
+    /// `finish_subsearch_job`, `finish_reconcile_job`) and return how many ran.
     /// Their landings are queued for the next pump. Under `Live` there is nothing parked.
     #[cfg(test)]
     pub(crate) fn run_held(&mut self) -> usize {
@@ -206,6 +299,22 @@ impl StoreRunner {
                 StoreJob::Detail(job, port) => {
                     let DetailReq { sid, rk, prefer } = job.req;
                     finish_detail_fetch(&port, job.addr, (sid, rk.clone()), || fetch_full(sid, &rk, prefer));
+                }
+                StoreJob::Collection(job, port) => {
+                    // The registry may have moved on since the job was parked: a request whose
+                    // client is gone is refused, as the launch would have refused it.
+                    let (sid, key) = job.req.server();
+                    match resolve(sid, key) {
+                        Some(client) => finish_collection_job(&port, job.addr, client, job.req),
+                        None => port.refused(job.addr),
+                    }
+                }
+                StoreJob::Person(job, port) => {
+                    // As above, for a local job; the two plex.tv reads name no client.
+                    match person_client(&job.req) {
+                        Ok(client) => finish_person_job(&port, job.addr, client, job.req),
+                        Err(Gone) => port.refused(job.addr),
+                    }
                 }
                 StoreJob::SubtitleSearch(job, port) => {
                     // The registry may have moved on since the job was parked: a request whose
@@ -232,7 +341,9 @@ impl StoreRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use plx_data::stores::collection::{CollectionCmd, CollectionStore};
     use plx_data::stores::metadata::{MetadataCmd, MetadataStore};
+    use plx_data::stores::person::{PersonCmd, PersonStore};
     use plx_data::stores::subsearch::SubSearchStore;
     use plx_data::stores::tape;
     use plx_data::stores::viewreconcile::ViewReconcileStore;
@@ -352,17 +463,35 @@ mod tests {
         assert_eq!(plx_data::metadata::detail_inflight_for_test(store.adapter_ref()), 0);
     }
 
-    // ---- the subtitle-search lane: each outcome of a search job reaches its port once ----
+    // ---- the Collection lane: each outcome of a collection job reaches its port once ----
 
     /// Puts the tape, the registry and the workers back to their inactive state when a test ends,
     /// however it ends. Declare it AFTER the serial guard, so it drops first.
-    struct LaneRig;
-    impl Drop for LaneRig {
+    struct CollectionRig;
+    impl Drop for CollectionRig {
         fn drop(&mut self) {
             plx_base::task::drain_workers_for_test();
             tape::reset_for_test();
             plx_plex::plex::reset_servers_for_test();
         }
+    }
+
+    /// A server registered at a port nothing listens on (a read that starts fails at once) and a
+    /// collection store whose first request, the header of `50001`, is out: the job its pump
+    /// emitted, keyed to the client the registry held when it did.
+    fn collection_request() -> (ServerId, CollectionStore, StoreJob) {
+        use plx_data::collection::{CollectionTarget, PAGE_SIZE};
+        use plx_plex::plex::collections::CollectionRef;
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test("runner", "127.0.0.1", 9, "t", "cid");
+        let keys = registry_keys();
+        let mut store = CollectionStore::default();
+        let id = CollectionRef { sid, rk: "50001".into(), sec: 1, tag: 7, name: "Set".into() };
+        assert!(store.run(CollectionCmd::Open { target: CollectionTarget { id, want: PAGE_SIZE } }, &keys));
+        store.pump(plx_machine::landgate::fixture_gate(), &keys);
+        let mut jobs = store.take_jobs();
+        assert_eq!(jobs.len(), 1, "one open page, one request");
+        (sid, store, jobs.remove(0))
     }
 
     /// The registry's answer as of now, as the Bridge fills it before a step.
@@ -371,6 +500,332 @@ mod tests {
         refill_client_keys(&mut keys);
         keys
     }
+
+    /// The admission record of that request, `admitted` as given.
+    fn collection_admission(sid: ServerId, admitted: bool) -> serde_json::Value {
+        let client = plx_plex::plex::client_for(sid).expect("registered").instance_gen();
+        serde_json::json!({"content_resource":true,"admitted":admitted,
+            "request":{"store":"collection","slot":0,"gen":1,"sid":sid.raw(),"client":client,
+                "job":{"Header":{"rk":"50001"}}}})
+    }
+
+    fn collection_claim_held(store: &CollectionStore) -> bool { store.adapter_for_test().busy_for_test() }
+
+    /// Recording, the registry still holding the client the step decided on: the worker starts,
+    /// reads, and posts its ONE answer; taking it releases the claim.
+    #[test]
+    fn a_collection_job_whose_client_is_still_held_is_admitted_and_answered_once() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (sid, mut store, job) = collection_request();
+        tape::init(None, false);
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert_eq!(tape::finish(), (vec![collection_admission(sid, true)], None),
+            "the request the runner admitted is the recorded shape, admitted");
+        assert!(store.adapter_for_test().has_mail_for_test(), "the worker answered");
+        tape::reset_for_test();
+        let generation = store.generation_for_test();
+        store.pump(plx_machine::landgate::fixture_gate(), &registry_keys());
+        assert_eq!(store.generation_for_test(), generation, "the same listing took the answer: it was not rebuilt");
+        assert!(!collection_claim_held(&store), "the one answer released the claim");
+        assert_eq!(store.view().current().expect("open").status, plx_data::collection::CollectionStatus::Failed,
+            "the unreachable server's failure is what landed");
+        assert!(!store.has_jobs(), "a failed read is retried after its hold-off, not at once");
+    }
+
+    /// Replay with `"admitted":false`: the recorded run's launch was refused, so nothing starts and
+    /// the runner settles the request with one refusal, handing the claim back. The tape's own
+    /// verdict has to read clean too: a request whose bytes drifted from the record also answers
+    /// "not admitted".
+    #[test]
+    fn a_collection_job_the_tape_does_not_admit_is_refused_once_and_its_claim_comes_back() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (sid, mut store, job) = collection_request();
+        let admission = collection_admission(sid, false);
+        tape::init(None, true);
+        tape::begin([admission.clone()].into(), Default::default());
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert_eq!(tape::finish(), (vec![admission], None),
+            "the request the runner admitted is byte-for-byte the recorded one");
+        assert!(!collection_claim_held(&store), "the refusal handed the claim back");
+        assert!(!store.adapter_for_test().has_mail_for_test(), "a refusal answers nothing");
+        tape::reset_for_test();
+        store.pump(plx_machine::landgate::fixture_gate(), &registry_keys());
+        assert_eq!(store.take_jobs().len(), 1, "the next pump asks again");
+    }
+
+    /// Replay with `"admitted":true`: the recorded run launched a worker and replay never does, so
+    /// the runner answers nothing. The request stays owed, to be settled by the replayed landing.
+    #[test]
+    fn a_collection_job_the_tape_admits_launches_nothing_under_replay_and_stays_owed() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (sid, store, job) = collection_request();
+        let admission = collection_admission(sid, true);
+        tape::init(None, true);
+        tape::begin([admission.clone()].into(), Default::default());
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert_eq!(tape::finish(), (vec![admission], None));
+        assert!(collection_claim_held(&store), "no worker and no refusal answered: the claim is held");
+        assert!(!store.adapter_for_test().has_mail_for_test());
+    }
+
+    /// The registry moved on between the step and the launch (a retoken here): the runner does not
+    /// start a request through a credential the step never asked with. The tape records the launch
+    /// as not admitted, and the refusal hands the claim back.
+    #[test]
+    fn a_collection_job_whose_client_the_registry_has_moved_on_from_is_not_started() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (sid, store, job) = collection_request();
+        plx_plex::plex::client_for(sid).expect("registered").set_token("rotated");
+        tape::init(None, false);
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert_eq!(tape::finish(), (vec![collection_admission(sid, false)], None),
+            "recorded as a launch that did not happen");
+        assert!(!collection_claim_held(&store), "the refusal handed the claim back");
+        assert!(!store.adapter_for_test().has_mail_for_test(), "nothing was read, so nothing answered");
+    }
+
+    /// `Held` parks each admitted job, and a newer DETAIL request retires only the detail fetches
+    /// parked before it: another store's parked job is not a request that detail request supersedes.
+    #[test]
+    fn a_newer_detail_request_leaves_a_parked_collection_job_to_run() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_, mut store, job) = collection_request();
+        let mut runner = StoreRunner::held();
+        let mut metadata = MetadataStore::default();
+
+        runner.start(job);
+        runner.start(request(&mut metadata, ServerId::UNSET, "d1"));
+        assert_eq!(runner.run_held(), 2, "the collection job was kept, and the detail job parked after it");
+
+        assert!(store.adapter_for_test().has_mail_for_test(), "the kept job ran and answered");
+        let generation = store.generation_for_test();
+        store.pump(plx_machine::landgate::fixture_gate(), &registry_keys());
+        assert_eq!(store.generation_for_test(), generation, "the same listing took the answer");
+        assert!(!collection_claim_held(&store), "the answer released the claim");
+    }
+
+    /// A parked job runs later, and the registry may have moved on by then: the held runner
+    /// refuses it, as the launch would have, so the claim is handed back and nothing answers.
+    #[test]
+    fn a_parked_collection_job_whose_client_is_gone_when_it_runs_is_refused() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_, store, job) = collection_request();
+        let mut runner = StoreRunner::held();
+
+        runner.start(job);
+        assert!(collection_claim_held(&store), "parked, still out");
+        plx_plex::plex::reset_servers_for_test();
+        assert_eq!(runner.run_held(), 1);
+
+        assert!(!collection_claim_held(&store), "the refusal handed the claim back");
+        assert!(!store.adapter_for_test().has_mail_for_test());
+    }
+
+    // ---- the Person lane: each outcome of a person job reaches its port once ----
+
+    const PERSON_GUID: &str = "sf06c144a";
+    /// The Media read of server 0: slot `0 * 3 + K_MEDIA`. The plex.tv reads are slots 48 and 49.
+    const MEDIA: usize = 1;
+    const PROFILE: usize = 48;
+
+    /// A server registered at a port nothing listens on (a read that starts fails at once) and a
+    /// person store opened on it, with the jobs its first pump emitted, keyed to the client the
+    /// registry held when it did. `controlled` arms the tape first, so the pump also emits the two
+    /// plex.tv reads (a controlled run needs no session). Returns the server's id, the store, and
+    /// the Media read and the plex.tv reads apart.
+    fn person_requests(controlled: bool) -> (ServerId, PersonStore, StoreJob, Vec<StoreJob>) {
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test("runner", "127.0.0.1", 9, "t", "cid");
+        assert_eq!(sid.raw(), 0, "slot arithmetic below assumes the first server");
+        if controlled { tape::init(None, false); }
+        let mut store = PersonStore::default();
+        assert!(store.run(PersonCmd::Open {
+            sid, key: "19".into(), guid: PERSON_GUID.into(), name: "Actor".into(), thumb: String::new() }));
+        store.pump(plx_machine::landgate::fixture_gate(), &registry_keys());
+        let (mut local, mut global) = (Vec::new(), Vec::new());
+        for job in store.take_jobs() {
+            let StoreJob::Person(ref j, _) = job else { panic!("not a person job") };
+            if j.req.server().is_some() { local.push(job) } else { global.push(job) }
+        }
+        assert_eq!(local.len(), 1, "one source, one read to start with");
+        (sid, store, local.remove(0), global)
+    }
+
+    /// The admission record of the Media read, `admitted` as given.
+    fn media_admission(sid: ServerId, admitted: bool) -> serde_json::Value {
+        let client = plx_plex::plex::client_for(sid).expect("registered").instance_gen();
+        serde_json::json!({"content_resource":true,"admitted":admitted,
+            "request":{"store":"person","slot":MEDIA,"gen":1,"arg":["19"],"guid":PERSON_GUID,
+                "local":"19","client":client,"sid":sid.raw()}})
+    }
+
+    fn profile_admission(admitted: bool) -> serde_json::Value {
+        serde_json::json!({"content_resource":true,"admitted":admitted,
+            "request":{"store":"person","slot":PROFILE,"gen":1,"arg":[PERSON_GUID],"guid":PERSON_GUID}})
+    }
+
+    /// Recording, the registry still holding the client the step decided on: the worker starts,
+    /// reads, and posts its ONE answer; taking it releases the claim.
+    #[test]
+    fn a_person_job_whose_client_is_still_held_is_admitted_and_answered_once() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (sid, mut store, job, _) = person_requests(false);
+        tape::init(None, false);
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert_eq!(tape::finish(), (vec![media_admission(sid, true)], None),
+            "the request the runner admitted is the recorded shape, admitted");
+        assert!(store.adapter_for_test().has_mail_for_test(MEDIA), "the worker answered");
+        tape::reset_for_test();
+        store.pump(plx_machine::landgate::fixture_gate(), &registry_keys());
+        assert!(!store.adapter_for_test().busy_for_test(MEDIA), "taking the one answer released the claim");
+    }
+
+    /// The plex.tv reads name no client, so the registry has no say: a controlled run's Profile
+    /// job is admitted and answered (the failure value) with no server registered at all.
+    #[test]
+    fn a_plex_tv_job_is_admitted_whatever_the_registry_holds_and_answered_once() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_, store, _, mut global) = person_requests(true);
+        let profile = global.remove(0);
+        plx_plex::plex::reset_servers_for_test();
+
+        StoreRunner::live().start(profile);
+        plx_base::task::drain_workers_for_test();
+
+        let (requests, failure) = tape::finish();
+        assert_eq!(failure, None);
+        assert_eq!(requests, vec![profile_admission(true)]);
+        assert!(store.adapter_for_test().has_mail_for_test(PROFILE), "the worker answered");
+    }
+
+    /// Replay with `"admitted":false`: the recorded run's launch was refused, so nothing starts and
+    /// the runner settles the request with one refusal, handing the claim back. The tape's own
+    /// verdict has to read clean too.
+    #[test]
+    fn a_person_job_the_tape_does_not_admit_is_refused_once_and_its_claim_comes_back() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (sid, store, job, _) = person_requests(false);
+        let admission = media_admission(sid, false);
+        tape::init(None, true);
+        tape::begin([admission.clone()].into(), Default::default());
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert_eq!(tape::finish(), (vec![admission], None),
+            "the request the runner admitted is byte-for-byte the recorded one");
+        assert!(!store.adapter_for_test().busy_for_test(MEDIA), "the refusal handed the claim back");
+        assert!(!store.adapter_for_test().has_mail_for_test(MEDIA), "a refusal answers nothing");
+    }
+
+    /// Replay with `"admitted":true`: the recorded run launched a worker and replay never does, so
+    /// the runner answers nothing. The request stays owed, to be settled by the replayed landing.
+    #[test]
+    fn a_person_job_the_tape_admits_launches_nothing_under_replay_and_stays_owed() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (sid, store, job, _) = person_requests(false);
+        let admission = media_admission(sid, true);
+        tape::init(None, true);
+        tape::begin([admission.clone()].into(), Default::default());
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert_eq!(tape::finish(), (vec![admission], None));
+        assert!(store.adapter_for_test().busy_for_test(MEDIA), "no worker and no refusal answered: the claim is held");
+        assert!(!store.adapter_for_test().has_mail_for_test(MEDIA));
+    }
+
+    /// The registry moved on between the step and the launch (a retoken here): the runner does not
+    /// start a request through a credential the step never asked with. The tape records the launch
+    /// as not admitted, and the refusal hands the claim back.
+    #[test]
+    fn a_person_job_whose_client_the_registry_has_moved_on_from_is_not_started() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (sid, store, job, _) = person_requests(false);
+        plx_plex::plex::client_for(sid).expect("registered").set_token("rotated");
+        tape::init(None, false);
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert_eq!(tape::finish(), (vec![media_admission(sid, false)], None),
+            "recorded as a launch that did not happen");
+        assert!(!store.adapter_for_test().busy_for_test(MEDIA), "the refusal handed the claim back");
+        assert!(!store.adapter_for_test().has_mail_for_test(MEDIA), "nothing was read, so nothing answered");
+    }
+
+    /// `Held` parks each admitted job, and a newer DETAIL request retires only the detail fetches
+    /// parked before it: parked person jobs (up to six at once) are not requests it supersedes, and
+    /// each is answered exactly once when the held jobs run.
+    #[test]
+    fn a_newer_detail_request_leaves_parked_person_jobs_to_run() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_, store, job, global) = person_requests(true);
+        let mut runner = StoreRunner::held();
+        let mut metadata = MetadataStore::default();
+
+        runner.start(job);
+        for job in global { runner.start(job); }
+        runner.start(request(&mut metadata, ServerId::UNSET, "d1"));
+        assert_eq!(runner.run_held(), 4, "the media read and both plex.tv reads were kept; the detail job parked after them");
+
+        let adapter = store.adapter_for_test();
+        for slot in [MEDIA, PROFILE, PROFILE + 1] {
+            assert!(adapter.has_mail_for_test(slot), "slot {slot}'s kept job ran and answered");
+        }
+    }
+
+    /// A parked job runs later, and the registry may have moved on by then: the held runner refuses
+    /// it, as the launch would have, so the claim is handed back and nothing answers. A plex.tv job
+    /// parked beside it names no client and runs.
+    #[test]
+    fn a_parked_person_job_whose_client_is_gone_when_it_runs_is_refused() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_, store, job, mut global) = person_requests(true);
+        let mut runner = StoreRunner::held();
+
+        runner.start(job);
+        runner.start(global.remove(0));
+        let adapter = store.adapter_for_test();
+        assert!(adapter.busy_for_test(MEDIA) && adapter.busy_for_test(PROFILE), "parked, still out");
+        plx_plex::plex::reset_servers_for_test();
+        assert_eq!(runner.run_held(), 2);
+
+        assert!(!adapter.busy_for_test(MEDIA), "the refusal handed the claim back");
+        assert!(!adapter.has_mail_for_test(MEDIA));
+        assert!(adapter.has_mail_for_test(PROFILE), "the plex.tv read needs no client and answered");
+    }
+
+    // ---- the subtitle-search lane: each outcome of a search job reaches its port once ----
 
     /// A server registered at a port nothing listens on (a read that starts fails at once) and a
     /// search store whose first request is out: the job its pump emitted, keyed to the client the
@@ -394,7 +849,7 @@ mod tests {
     #[test]
     fn a_search_job_whose_client_is_still_held_is_started_answered_once_and_not_taped() {
         let _serial = plx_base::testlock::serial();
-        let _rig = LaneRig;
+        let _rig = CollectionRig;
         let (_, mut store, job) = search_request();
         tape::init(None, false);
 
@@ -415,7 +870,7 @@ mod tests {
     #[test]
     fn a_search_job_launches_live_under_replay_as_the_inline_spawn_did() {
         let _serial = plx_base::testlock::serial();
-        let _rig = LaneRig;
+        let _rig = CollectionRig;
         let (_, store, job) = search_request();
         tape::init(None, true);
         tape::begin(Default::default(), Default::default());
@@ -433,7 +888,7 @@ mod tests {
     #[test]
     fn a_search_job_whose_client_the_registry_has_moved_on_from_is_refused() {
         let _serial = plx_base::testlock::serial();
-        let _rig = LaneRig;
+        let _rig = CollectionRig;
         let (sid, mut store, job) = search_request();
         plx_plex::plex::client_for(sid).expect("registered").set_token("rotated");
 
@@ -452,7 +907,7 @@ mod tests {
     #[test]
     fn a_newer_detail_request_leaves_a_parked_search_job_to_run() {
         let _serial = plx_base::testlock::serial();
-        let _rig = LaneRig;
+        let _rig = CollectionRig;
         let (_, mut store, job) = search_request();
         let mut runner = StoreRunner::held();
         let mut metadata = MetadataStore::default();
@@ -472,7 +927,7 @@ mod tests {
     #[test]
     fn a_parked_search_job_whose_client_is_gone_when_it_runs_is_refused() {
         let _serial = plx_base::testlock::serial();
-        let _rig = LaneRig;
+        let _rig = CollectionRig;
         let (_, store, job) = search_request();
         let mut runner = StoreRunner::held();
 
@@ -491,7 +946,7 @@ mod tests {
     #[test]
     fn the_bridge_pump_starts_the_search_it_emitted_in_the_same_call() {
         let _serial = plx_base::testlock::serial();
-        let _rig = LaneRig;
+        let _rig = CollectionRig;
         plx_plex::plex::reset_servers_for_test();
         let sid = plx_plex::plex::register_for_test("runner", "127.0.0.1", 9, "t", "cid");
         let mut bridge = Bridge::for_test(|| 0);
@@ -535,7 +990,7 @@ mod tests {
     #[test]
     fn a_reconcile_job_whose_client_is_still_held_is_started_answered_once_and_not_taped() {
         let _serial = plx_base::testlock::serial();
-        let _rig = LaneRig;
+        let _rig = CollectionRig;
         let (_, mut store, job) = reconcile_request();
         tape::init(None, false);
 
@@ -555,7 +1010,7 @@ mod tests {
     #[test]
     fn a_reconcile_job_launches_live_under_replay_as_the_inline_spawn_did() {
         let _serial = plx_base::testlock::serial();
-        let _rig = LaneRig;
+        let _rig = CollectionRig;
         let (_, mut store, job) = reconcile_request();
         tape::init(None, true);
         tape::begin(Default::default(), Default::default());
@@ -576,7 +1031,7 @@ mod tests {
     #[test]
     fn a_reconcile_job_whose_client_the_registry_has_moved_on_from_is_refused_and_requeued() {
         let _serial = plx_base::testlock::serial();
-        let _rig = LaneRig;
+        let _rig = CollectionRig;
         let (sid, mut store, job) = reconcile_request();
         plx_plex::plex::client_for(sid).expect("registered").set_token("rotated");
 
@@ -595,7 +1050,7 @@ mod tests {
     #[test]
     fn a_newer_detail_request_leaves_a_parked_reconcile_job_to_run() {
         let _serial = plx_base::testlock::serial();
-        let _rig = LaneRig;
+        let _rig = CollectionRig;
         let (_, mut store, job) = reconcile_request();
         let mut runner = StoreRunner::held();
         let mut metadata = MetadataStore::default();
@@ -614,7 +1069,7 @@ mod tests {
     #[test]
     fn a_parked_reconcile_job_whose_client_is_gone_when_it_runs_is_refused() {
         let _serial = plx_base::testlock::serial();
-        let _rig = LaneRig;
+        let _rig = CollectionRig;
         let (sid, mut store, job) = reconcile_request();
         let mut runner = StoreRunner::held();
 
@@ -634,7 +1089,7 @@ mod tests {
     #[test]
     fn the_bridge_pump_starts_the_read_it_sent_in_the_same_call() {
         let _serial = plx_base::testlock::serial();
-        let _rig = LaneRig;
+        let _rig = CollectionRig;
         plx_plex::plex::reset_servers_for_test();
         let sid = plx_plex::plex::register_for_test("runner", "127.0.0.1", 9, "t", "cid");
         let mut bridge = Bridge::for_test(|| 0);

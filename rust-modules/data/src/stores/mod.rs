@@ -177,11 +177,19 @@ impl Stores {
         self.person.run(cmd)
     }
 
-    pub fn collection_run(&mut self, cmd: collection::CollectionCmd) -> bool {
-        self.collection.run(cmd)
+    /// Run one Collection command; `keys` is the registry's answer as of this call. A command
+    /// emits no job.
+    pub fn collection_run(&mut self, cmd: collection::CollectionCmd, keys: &plx_plex::plex::ClientKeys) -> bool {
+        self.collection.run(cmd, keys)
     }
 
-    pub fn collection_pump(&mut self) -> bool { self.collection.pump(&self.landgate) }
+    /// Pump the Collection store; `keys` is the registry's answer as of this call. It does NOT start
+    /// the request it emitted: a caller that returns without [`Stores::take_jobs_of`] and handing
+    /// the job to a runner has stranded the page's fetch. The one production caller is
+    /// `Bridge::collection_pump`, which drains in the same call.
+    pub fn collection_pump(&mut self, keys: &plx_plex::plex::ClientKeys) -> bool {
+        self.collection.pump(&self.landgate, keys)
+    }
 
     pub fn collection_view(&self) -> crate::collection::CollectionView<'_> {
         self.collection.view()
@@ -203,8 +211,12 @@ impl Stores {
         self.subtitle_search.view()
     }
 
-    pub fn person_pump(&mut self) -> bool {
-        self.person.pump(&self.landgate)
+    /// Pump the Person store; `keys` is the registry's answer as of this call. It does NOT start the
+    /// requests it emitted: a caller that returns without [`Stores::take_jobs_of`] and handing the
+    /// jobs to a runner has stranded the page's fetches. The one production caller is
+    /// `Bridge::person_pump`, which drains in the same call.
+    pub fn person_pump(&mut self, keys: &plx_plex::plex::ClientKeys) -> bool {
+        self.person.pump(&self.landgate, keys)
     }
 
     pub fn person_view(&self) -> crate::person::PersonView<'_> {
@@ -237,6 +249,8 @@ impl Stores {
     pub fn take_jobs_of(&mut self, id: StoreId) -> Vec<StoreJob> {
         match id {
             StoreId::Metadata => self.metadata.take_jobs(),
+            StoreId::Collection => self.collection.take_jobs(),
+            StoreId::Person => self.person.take_jobs(),
             StoreId::SubtitleSearch => self.subtitle_search.take_jobs(),
             StoreId::ViewReconcile => self.reconcile.take_jobs(),
             // The other stores emit no jobs yet.
@@ -253,6 +267,8 @@ impl Stores {
     fn has_jobs_of(&self, id: StoreId) -> bool {
         match id {
             StoreId::Metadata => self.metadata.has_jobs(),
+            StoreId::Collection => self.collection.has_jobs(),
+            StoreId::Person => self.person.has_jobs(),
             StoreId::SubtitleSearch => self.subtitle_search.has_jobs(),
             StoreId::ViewReconcile => self.reconcile.has_jobs(),
             // The other stores emit no jobs yet.
@@ -316,7 +332,7 @@ impl Stores {
             &mut |cmd| watchlist_tee(watchlist, cmd, |cmd| browse.borrow_mut().run(cmd)),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory),
             &mut |cmd| person.run(cmd),
-            &mut |cmd| collection.run(cmd),
+            &mut |cmd| view_edit_collection(collection, cmd),
             &mut |cmd| search.run_with_directory(cmd, directory),
             &mut |cmd| metadata.run(cmd),
         )
@@ -340,7 +356,7 @@ impl Stores {
             &mut |cmd| watchlist_tee(watchlist, cmd, |cmd| browse.borrow_mut().run(cmd)),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory),
             &mut |cmd| person.run(cmd),
-            &mut |cmd| collection.run(cmd),
+            &mut |cmd| view_edit_collection(collection, cmd),
             &mut |cmd| search.run_with_directory(cmd, directory),
             &mut |cmd| metadata.run(cmd),
         )
@@ -428,7 +444,7 @@ impl Stores {
             &mut |cmd| browse.borrow_mut().run(cmd),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory),
             &mut |cmd| person.run(cmd),
-            &mut |cmd| collection.run(cmd),
+            &mut |cmd| view_edit_collection(collection, cmd),
             &mut |cmd| search.run_with_directory(cmd, directory),
             &mut |cmd| metadata.run(cmd),
         );
@@ -455,7 +471,7 @@ impl Stores {
             &mut |cmd| browse.borrow_mut().run(cmd),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory),
             &mut |cmd| person.run(cmd),
-            &mut |cmd| collection.run(cmd),
+            &mut |cmd| view_edit_collection(collection, cmd),
             &mut |cmd| search.run_with_directory(cmd, directory),
             &mut |cmd| metadata.run(cmd),
         ));
@@ -600,6 +616,13 @@ impl StoreWork {
 pub enum StoreJob {
     /// One detail fetch (`MetadataCmd::RequestDetail`), addressed by its request generation.
     Detail(plx_machine::job::Job<crate::metadata::DetailReq>, crate::metadata::DetailPort),
+    /// One collection page request (resolve, header or children), emitted by the Collection pump
+    /// and addressed by the listing's generation. One is out at a time.
+    Collection(plx_machine::job::Job<crate::collection::CollectionReq>, crate::collection::CollectionPort),
+    /// One person fetch (a plex.tv read, or a read of one registered server), emitted by the Person
+    /// pump in ascending slot order. Several are out at once (the fan-out), each answering into its
+    /// own mailbox slot.
+    Person(plx_machine::job::Job<crate::person::PersonReq>, crate::person::PersonPort),
     /// One subtitle search, download or install poll, emitted by the subtitle-search pump and
     /// addressed by the search generation. One is out at a time. Not on the tape.
     SubtitleSearch(plx_machine::job::Job<crate::subsearch::SubSearchReq>, crate::subsearch::SubSearchPort),
@@ -612,6 +635,8 @@ impl StoreJob {
     pub fn store(&self) -> StoreId {
         match self {
             Self::Detail(..) => StoreId::Metadata,
+            Self::Collection(..) => StoreId::Collection,
+            Self::Person(..) => StoreId::Person,
             Self::SubtitleSearch(..) => StoreId::SubtitleSearch,
             Self::ViewReconcile(..) => StoreId::ViewReconcile,
         }
@@ -1174,4 +1199,14 @@ fn watchlist_tee(
         watchlist.apply_edit(at.sid, &at.rk, *edit, None);
     }
     run(cmd)
+}
+
+/// ViewState's route into the Collection store. The only command ViewState sends it is
+/// `ApplyView` (an optimistic edit of a member), which neither reads a client nor emits a job, so
+/// it runs with no keys. Any other command would read "no server holds a client" and must come
+/// through `Stores::collection_run` with the host's keys instead.
+fn view_edit_collection(collection: &mut collection::CollectionStore, cmd: collection::CollectionCmd) -> bool {
+    debug_assert!(matches!(cmd, collection::CollectionCmd::ApplyView { .. }),
+        "ViewState sends the Collection store only ApplyView; anything else needs the host's client keys");
+    collection.run(cmd, &plx_plex::plex::ClientKeys::default())
 }
