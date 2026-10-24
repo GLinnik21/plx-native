@@ -1,4 +1,4 @@
-{"updated":"2026-10-24T12:04:30Z",
+{"updated":"2026-10-24T12:06:00Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -3652,7 +3652,8 @@
 {"id":39247167259,"at":"2026-10-19T11:47:16Z","sha":"ea4734322","title":"build-gc tests: timeouts become hang guards; the ancestor walk is one process-table read","pr":849,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"plan today's nightly":28,"ARM build + gates / build + verify":945,"publish nightly prerelease":18}},
 {"id":39300245782,"at":"2026-10-19T18:09:59Z","sha":"644b0813a","title":"Merge remote-tracking branch 'origin/main' into disk-budget-preflight","pr":849,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"plan today's nightly":16,"ARM build + gates / build + verify":949,"publish nightly prerelease":18}},
 {"id":39467407073,"at":"2026-10-20T17:35:25Z","sha":"3061a6d89","title":"Merge remote-tracking branch 'origin/main' into fix/600-early-audio","pr":874,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"plan today's nightly":18,"ARM build + gates / build + verify":977,"publish nightly prerelease":26}},
-{"id":39572844513,"at":"2026-10-21T08:54:36Z","sha":"c3cf2273b","title":"tests: the constant-skew fixture keeps each track's decode order","pr":874,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"plan today's nightly":19,"ARM build + gates / build + verify":933,"publish nightly prerelease":18}}
+{"id":39572844513,"at":"2026-10-21T08:54:36Z","sha":"c3cf2273b","title":"tests: the constant-skew fixture keeps each track's decode order","pr":874,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"plan today's nightly":19,"ARM build + gates / build + verify":933,"publish nightly prerelease":18}},
+{"id":40092051493,"at":"2026-10-24T11:58:59Z","sha":"42782f4cc","title":"Makefile: device-control goals keep a release-built pkg/plxnative","pr":991,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":17},"failed":["ARM build + gates / build + verify"]}
 ],
 "cancelled":{"2026-10-16":{"push":9,"pull_request":1},"2026-10-18":{"push":4,"pull_request":0},"2026-10-19":{"push":0,"pull_request":1},"2026-10-20":{"push":0,"pull_request":2},"2026-10-22":{"push":4,"pull_request":1},"2026-10-23":{"push":5,"pull_request":2},"2026-10-24":{"push":3,"pull_request":2}},
 "daily":[],
