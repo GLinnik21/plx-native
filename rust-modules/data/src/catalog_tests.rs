@@ -52,6 +52,8 @@ struct Fake {
     generation: AtomicU32,
     fetched: Mutex<Vec<String>>,
     captures: AtomicUsize,
+    /// The read panics instead of answering.
+    panics: AtomicBool,
 }
 
 impl Fake {
@@ -63,6 +65,7 @@ impl Fake {
             generation: AtomicU32::new(1),
             fetched: Mutex::new(Vec::new()),
             captures: AtomicUsize::new(0),
+            panics: AtomicBool::new(false),
         })
     }
 }
@@ -77,6 +80,7 @@ impl CatalogIo for Fake {
     }
     fn fetch(&self, _: &WatchlistAuth, hex: &str) -> Result<CatalogItem, WatchlistError> {
         self.fetched.lock().unwrap().push(hex.to_owned());
+        assert!(!self.panics.load(Ordering::SeqCst), "scripted panic in the catalog read");
         self.answer.lock().unwrap().clone()
     }
     fn today(&self) -> Option<String> {
@@ -188,6 +192,21 @@ fn try_again_reads_again_and_a_landing_raises_one_notice() {
     assert!(s.take_notice().is_some());
     assert!(s.take_notice().is_none());
     assert_eq!(fake.captures.load(Ordering::SeqCst), 1, "the identity is captured once while it is still seated");
+}
+
+/// A read that panics on its worker must still end the page's wait. The worker's thread dies with
+/// the panic (here the unwind is caught at the job's boundary, as a thread's would be), so no
+/// landing is ever posted; the page has to read as unreachable, not stay on `Loading` for ever.
+#[test]
+fn a_read_that_panics_leaves_loading_for_the_unreachable_page() {
+    let fake = Fake::new(Ok(item("X", None)));
+    fake.panics.store(true, Ordering::SeqCst);
+    let mut s = CatalogStore::with_io(fake.clone()).with_spawn_for_test(park);
+    s.open(hex());
+    let job = PARKED.with(|p| p.borrow_mut().pop()).unwrap();
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+    s.pump();
+    assert_eq!(s.load, Load::Unreachable, "a read that panicked answers as a failed one does");
 }
 
 #[test]
