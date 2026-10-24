@@ -3291,8 +3291,11 @@ fn fetch_seasons(client: &'static plx_plex::plex::Client, rk: &str) -> Vec<Seaso
 /// Page 0 of a season only: a short season is that one request and a complete list (which encodes
 /// as the plain array it always did); a long one lands with its other pages as holes, and
 /// [`MetadataCmd::WantEpisodes`] fetches them as the screen reaches them.
-fn fetch_episodes(sid: plx_plex::plex::ServerId, season_rk: &str) -> Option<EpisodeList> {
-    let mc = plx_plex::plex::client_for(sid)?.children_paged(season_rk, 0, EPISODE_PAGE as i64)?;
+///
+/// `client` is the one the runner resolved for the job (`StoreRunner`), or the one the detail chain
+/// was handed: this read asks no registry.
+fn fetch_episodes(client: &'static plx_plex::plex::Client, season_rk: &str) -> Option<EpisodeList> {
+    let mc = client.children_paged(season_rk, 0, EPISODE_PAGE as i64)?;
     let rows = episode_window(&mc, 0);
     let mut list = EpisodeList::with_total((mc.total_size.max(0) as usize).max(rows.len()));
     list.set_page(0, rows);
@@ -3300,9 +3303,9 @@ fn fetch_episodes(sid: plx_plex::plex::ServerId, season_rk: &str) -> Option<Epis
 }
 
 /// One window of a season, or **None when the GET failed**.
-fn fetch_episode_page(sid: plx_plex::plex::ServerId, season_rk: &str, page: usize) -> Option<Vec<Episode>> {
+fn fetch_episode_page(client: &'static plx_plex::plex::Client, season_rk: &str, page: usize) -> Option<Vec<Episode>> {
     let start = page * EPISODE_PAGE;
-    let mc = plx_plex::plex::client_for(sid)?.children_paged(season_rk, start as i64, EPISODE_PAGE as i64)?;
+    let mc = client.children_paged(season_rk, start as i64, EPISODE_PAGE as i64)?;
     Some(episode_window(&mc, start))
 }
 
@@ -3609,14 +3612,14 @@ fn collection_shelf(
 /// The season is chosen HERE, in the fetch, and its episodes are loaded in the same pass: picking
 /// it later (a `LoadSeason` once the page landed) would flash season 1's row first and spend a
 /// round trip fetching episodes nobody looks at.
-fn load_show_seasons(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::ServerId, rk: &str, d: &mut Detail, prefer: Option<i64>) {
+fn load_show_seasons(client: &'static plx_plex::plex::Client, rk: &str, d: &mut Detail, prefer: Option<i64>) {
     d.seasons = fetch_seasons(client, rk);
     d.cur_season = initial_season(&d.seasons, d.on_deck.as_ref(), prefer);
     if let Some(season) = d.seasons.get(d.cur_season) {
         // a season failure is not worth failing the whole page over — the hero, cast
         // and Related still load, and there is no previous list here to protect. It is still
         // named, because the `eps=` in the summary line cannot tell it from a season with no episodes.
-        d.episodes = fetch_episodes(sid, &season.rk).unwrap_or_else(|| {
+        d.episodes = fetch_episodes(client, &season.rk).unwrap_or_else(|| {
             plx_base::eventlog::log(&format!(
                 "detail: rk={rk} season rk={} /children did not answer — the eps= below is that refusal",
                 season.rk));
@@ -3658,9 +3661,8 @@ fn selected_season_number(state: &MetadataState, sid: plx_plex::plex::ServerId, 
 /// the related hub.
 /// 2 PMS round-trips for a movie, 5 for a show.
 ///
-/// Every GET but the opening season's episodes goes through `client`, the one the runner resolved
-/// for the job ([`finish_detail_fetch`]); those episodes still resolve their own client until the
-/// season worker moves.
+/// Every GET goes through `client`, the one the runner resolved for the job
+/// ([`finish_detail_fetch`]), the opening season's episodes included.
 ///
 /// PURE NETWORK + PARSING — it touches no `static mut`, which is what let it run either on the
 /// main thread or on a worker (the app's `StoreRunner`, from the job [`request_detail`] emits)
@@ -3690,7 +3692,7 @@ pub fn fetch_full(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::
         return None;
     };
     if d.is_show {
-        load_show_seasons(client, sid, rk, &mut d, prefer);
+        load_show_seasons(client, rk, &mut d, prefer);
         // A show carries no streams itself — backfill from ONE episode: the one the hero is
         // about, which is the one Play starts (`on_deck` when the show has been started, else
         // its first). Everything downstream reads this as "the show's" media, so borrowing from
@@ -3912,8 +3914,8 @@ fn begin_detail_request(adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId
 /// from the store at request time, [`selected_season_number`]); the worker must not read either
 /// from the current server or the store (see the fetch block's note), and the page being opened
 /// may belong to a machine that is not the current one at all. The runner resolves `sid` to its
-/// client once, at the admission, and the chain runs through that client, bar the opening season's
-/// episodes ([`finish_detail_fetch`]).
+/// client once, at the admission, and the whole chain runs through that client
+/// ([`finish_detail_fetch`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct DetailReq {
     pub sid: plx_plex::plex::ServerId,
@@ -4000,8 +4002,7 @@ fn request_detail_with_spawn(adapter: &MetadataAdapter, sid: plx_plex::plex::Ser
 ///
 /// `client` is the one the runner resolved for the job, once, when it admitted it
 /// (`StoreRunner::start_detail`), and `fetch` is handed it for the GETs of the chain
-/// ([`fetch_full`]): bar the opening season's episodes (`fetch_episodes`, which still resolves its
-/// own client until the season and episode workers move) the chain asks no registry. The capture
+/// ([`fetch_full`]): the chain asks no registry, the opening season's episodes included. The capture
 /// changes what a sign-out or a re-point halfway through does to a page. The old chain
 /// re-resolved its client before each sub-fetch, so after a sign-out its later GETs found no
 /// client (`None`) and after a re-point they went to the slot's new client. This one keeps the
@@ -5008,20 +5009,17 @@ fn load_season(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapt
     // Stamped at THIS request, not at the page's install: the season may be asked for long after.
     let stamp = state.ledger.stamp();
     let gen = adapter.season_gen.fetch_add(1, Ordering::SeqCst) + 1;
-    let adapter_worker = std::sync::Arc::clone(adapter);
-    let spawned = plx_base::task::spawn_small("season", move || {
-        // the mailbox is filled OUTSIDE the guard so a panicking fetch still lands — as a
-        // FAILURE (None), not as an empty season: a panic is not "this season has no episodes",
-        // and otherwise season_loading() would report an in-flight fetch forever
-        let eps = catch_unwind(|| fetch_episodes(sid, &season_rk)).unwrap_or(None);
-        land_season(&adapter_worker, gen, sid, rk, idx, prev, eps, stamp);
-    });
-    if !spawned {
-        // no worker means nothing will ever land: catch DONE up or the episode row keeps its
-        // loading dim + spinner for the rest of the session. `cur_season` already moved, so the
-        // tab highlight stays where the user put it and the old episodes stay listed.
-        adapter.season_done.store(gen, Ordering::SeqCst);
-    }
+    // The fetch is the application's to start: the request leaves as a job and the answer lands
+    // through `MetaSeasonPort` (a failed fetch, or a panicking one, lands as `eps: None`, not as an
+    // empty season: a panic is not "this season has no episodes", and otherwise `season_loading()`
+    // would report an in-flight fetch forever). A launch that starts nothing is
+    // `MetaSeasonPort::refused`, which catches DONE up so the episode row does not keep its loading
+    // dim + spinner; `cur_season` already moved, so the tab highlight stays where the user put it
+    // and the old episodes stay listed.
+    state.jobs.push(crate::stores::StoreJob::MetaSeason(
+        plx_machine::job::Job { addr: season_addr(gen), req: MetaSeasonReq { sid, show: rk, season: season_rk, idx, prev, stamp } },
+        MetaSeasonPort::of(adapter),
+    ));
 }
 
 // ---- long-season episode pages ---------------------------------------------------------------
@@ -5042,6 +5040,8 @@ struct EpPages {
     landed: Vec<EpLanded>,
     /// What the screen wants right now; eviction after a landing keeps exactly this.
     keep: Option<crate::stores::page_cache::Keep>,
+    /// Page jobs emitted so far: the next job's address.
+    sent: u32,
 }
 
 struct EpLanded {
@@ -5094,22 +5094,20 @@ fn want_episodes(
     if want.is_empty() {
         return false;
     }
-    let worker = std::sync::Arc::clone(adapter);
-    let job = want.clone();
-    let season_job = season.clone();
     let stamp = state.ledger.stamp(); // at the request, before any page of the job is read
-    let spawned = plx_base::task::spawn_small("episode-pages", move || {
-        for page in job {
-            let rows = catch_unwind(|| fetch_episode_page(sid, &season_job, page)).unwrap_or(None);
-            let mut ep = worker.ep_pages.lock().unwrap_or_else(|e| e.into_inner());
-            ep.inflight.retain(|k| *k != (sid, season_job.clone(), page));
-            ep.landed.push(EpLanded { sid, show: show.clone(), season: season_job.clone(), page, rows, stamp });
-        }
-    });
-    if !spawned {
+    let seq = {
         let mut ep = adapter.ep_pages.lock().unwrap_or_else(|e| e.into_inner());
-        ep.inflight.retain(|(s, k, p)| !(*s == sid && *k == season && want.contains(p)));
-    }
+        ep.sent += 1;
+        ep.sent
+    };
+    // The reads are the application's to start. A launch that starts nothing is
+    // `MetaEpisodesPort::refused`, which drops the keys held above, so the next `WantEpisodes`
+    // asks for the pages again.
+    let keys = want.iter().map(|&p| (sid, season.clone(), p)).collect();
+    state.jobs.push(crate::stores::StoreJob::MetaEpisodes(
+        plx_machine::job::Job { addr: pages_addr(seq), req: MetaEpisodesReq { sid, show, season, pages: want, stamp } },
+        MetaEpisodesPort::new(adapter, keys),
+    ));
     true
 }
 
@@ -5143,6 +5141,203 @@ pub fn pump_episode_pages(state: &mut MetadataState, adapter: &MetadataAdapter) 
         replay_views(state, since);
     }
     changed
+}
+
+// ---- the season and episode-page jobs --------------------------------------------------------
+// Neither read starts a worker here. `load_season` and `want_episodes` leave a typed job on the
+// outbox (`StoreJob::MetaSeason`, `StoreJob::MetaEpisodes`, both `Direct`: none is on the tape) and
+// the application's runner starts it with the client it resolved for the server at the launch
+// (`finish_season_job`, `finish_episodes_job`). The answer comes back through the job's port into
+// the mailboxes the pumps already read (`season_result`, `ep_pages`), ungated as before.
+
+fn season_addr(gen: u32) -> plx_machine::machine::Addr {
+    plx_machine::machine::Addr {
+        to: plx_machine::machine::MachineId::Store(crate::stores::StoreId::Metadata.ord()),
+        req: plx_machine::machine::RequestId(gen),
+    }
+}
+
+fn pages_addr(seq: u32) -> plx_machine::machine::Addr {
+    season_addr(seq)
+}
+
+/// The season switch one `LoadSeason` asks for, everything the worker needs captured on the main
+/// thread. The generation is the job's address. `sid` is the loaded show's own server (never
+/// `current_server()`), `prev` the season `cur_season` held before the optimistic flip (restored
+/// on a failed fetch by [`pump_season_with_gate`]), `stamp` the view-state publish order at the
+/// request. The runner resolves `sid` to its client at the launch; a server it holds none for
+/// answers the failure without a GET.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MetaSeasonReq {
+    pub sid: plx_plex::plex::ServerId,
+    pub show: String,
+    pub season: String,
+    pub idx: usize,
+    pub prev: usize,
+    pub stamp: crate::viewledger::Stamp,
+}
+
+/// Where a season fetch's ONE answer goes: the mailbox of the adapter the request was made from
+/// (an owner that has since been `Reset` holds a new one; this port still lands into the retired
+/// one nobody pumps). Two ports are equal when they reach the same adapter.
+#[derive(Clone)]
+pub struct MetaSeasonPort(std::sync::Arc<MetadataAdapter>);
+
+impl MetaSeasonPort {
+    pub(crate) fn of(adapter: &std::sync::Arc<MetadataAdapter>) -> Self {
+        Self(std::sync::Arc::clone(adapter))
+    }
+}
+
+impl PartialEq for MetaSeasonPort {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl std::fmt::Debug for MetaSeasonPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "MetaSeasonPort({:p})", std::sync::Arc::as_ptr(&self.0))
+    }
+}
+
+/// A season fetch's answer, opaque to the runner: `eps` is `None` for a FAILED fetch.
+pub struct SeasonAnswer {
+    sid: plx_plex::plex::ServerId,
+    rk: String,
+    idx: usize,
+    prev: usize,
+    eps: Option<EpisodeList>,
+    stamp: crate::viewledger::Stamp,
+}
+
+impl plx_machine::job::Port<SeasonAnswer> for MetaSeasonPort {
+    /// The answer, posted to the monotone mailbox ([`land_season`]); the pump discards one for a
+    /// generation it has since superseded.
+    fn done(&self, addr: plx_machine::machine::Addr, a: SeasonAnswer) {
+        land_season(&self.0, addr.req.0, a.sid, a.rk, a.idx, a.prev, a.eps, a.stamp);
+    }
+
+    /// The fetch was never started: catch DONE up to the job's generation, or the episode row keeps
+    /// its loading dim + spinner for the rest of the session. Settled here, in the call that
+    /// refused it, because that is where the inline spawn's `!spawned` arm settled it. Never down
+    /// (`fetch_max`): a refusal that arrives after a newer request landed must not make
+    /// `season_loading()` true again.
+    fn refused(&self, addr: plx_machine::machine::Addr) {
+        self.0.season_done.fetch_max(addr.req.0, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// The season fetch's IO body and its completion: read the episodes through `client` and post the
+/// answer to `port`. `client` is the one the runner resolved at the launch; `None` is a server it
+/// held none for, which answers the failure without a GET. The answer is posted OUTSIDE the guard,
+/// so a fetch that panics still lands, as a FAILURE.
+///
+/// WORKER THREAD.
+pub fn finish_season_job(
+    port: &MetaSeasonPort, addr: plx_machine::machine::Addr,
+    client: Option<&'static plx_plex::plex::Client>, req: MetaSeasonReq,
+) {
+    finish_season_with(port, addr, client, req, fetch_episodes);
+}
+
+fn finish_season_with(
+    port: &MetaSeasonPort, addr: plx_machine::machine::Addr,
+    client: Option<&'static plx_plex::plex::Client>, req: MetaSeasonReq,
+    fetch: impl FnOnce(&'static plx_plex::plex::Client, &str) -> Option<EpisodeList>,
+) {
+    use plx_machine::job::Port;
+    let MetaSeasonReq { sid, show, season, idx, prev, stamp } = req;
+    let eps = client.and_then(|client| {
+        catch_unwind(std::panic::AssertUnwindSafe(|| fetch(client, &season))).unwrap_or(None)
+    });
+    port.done(addr, SeasonAnswer { sid, rk: show, idx, prev, eps, stamp });
+}
+
+/// The pages one `WantEpisodes` window asks for (at most [`EP_JOB_PAGES`]) of one season of one
+/// show, with the publish order at the request. Pages are keyed by `(server, season, page)`, not by
+/// a generation: the job's address is a sequence of its own.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MetaEpisodesReq {
+    pub sid: plx_plex::plex::ServerId,
+    pub show: String,
+    pub season: String,
+    pub pages: Vec<usize>,
+    pub stamp: crate::viewledger::Stamp,
+}
+
+/// Where a page job's answer goes, and the inflight keys the job holds (a refusal is told only the
+/// address). Two ports are equal when they reach the same adapter and hold the same keys.
+#[derive(Clone)]
+pub struct MetaEpisodesPort {
+    adapter: std::sync::Arc<MetadataAdapter>,
+    keys: Vec<(plx_plex::plex::ServerId, String, usize)>,
+}
+
+impl MetaEpisodesPort {
+    fn new(adapter: &std::sync::Arc<MetadataAdapter>, keys: Vec<(plx_plex::plex::ServerId, String, usize)>) -> Self {
+        Self { adapter: std::sync::Arc::clone(adapter), keys }
+    }
+}
+
+impl PartialEq for MetaEpisodesPort {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.adapter, &other.adapter) && self.keys == other.keys
+    }
+}
+
+impl std::fmt::Debug for MetaEpisodesPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "MetaEpisodesPort({:p}, {} page(s))", std::sync::Arc::as_ptr(&self.adapter), self.keys.len())
+    }
+}
+
+/// A page job's answer, opaque to the runner: every page of the job, `rows: None` for a FAILED read.
+pub struct EpisodePagesAnswer(Vec<EpLanded>);
+
+impl plx_machine::job::Port<EpisodePagesAnswer> for MetaEpisodesPort {
+    /// The job's pages land together and release their inflight keys.
+    fn done(&self, _addr: plx_machine::machine::Addr, EpisodePagesAnswer(landed): EpisodePagesAnswer) {
+        let mut ep = self.adapter.ep_pages.lock().unwrap_or_else(|e| e.into_inner());
+        for page in landed {
+            ep.inflight.retain(|k| *k != (page.sid, page.season.clone(), page.page));
+            ep.landed.push(page);
+        }
+    }
+
+    /// The job was never started: drop the keys it holds, so the next `WantEpisodes` asks again.
+    fn refused(&self, _addr: plx_machine::machine::Addr) {
+        let mut ep = self.adapter.ep_pages.lock().unwrap_or_else(|e| e.into_inner());
+        ep.inflight.retain(|k| !self.keys.contains(k));
+    }
+}
+
+/// The page job's IO body and its completion: read each page through `client` in order and post
+/// the answer to `port`. `None` is a server the runner held no client for: every page answers the
+/// failure without a GET. A read that panics lands as a failure, outside the guard.
+///
+/// WORKER THREAD.
+pub fn finish_episodes_job(
+    port: &MetaEpisodesPort, addr: plx_machine::machine::Addr,
+    client: Option<&'static plx_plex::plex::Client>, req: MetaEpisodesReq,
+) {
+    finish_episodes_with(port, addr, client, req, fetch_episode_page);
+}
+
+fn finish_episodes_with(
+    port: &MetaEpisodesPort, addr: plx_machine::machine::Addr,
+    client: Option<&'static plx_plex::plex::Client>, req: MetaEpisodesReq,
+    fetch: impl Fn(&'static plx_plex::plex::Client, &str, usize) -> Option<Vec<Episode>>,
+) {
+    use plx_machine::job::Port;
+    let MetaEpisodesReq { sid, show, season, pages, stamp } = req;
+    let landed = pages.into_iter().map(|page| {
+        let rows = client.and_then(|client| {
+            catch_unwind(std::panic::AssertUnwindSafe(|| fetch(client, &season, page))).unwrap_or(None)
+        });
+        EpLanded { sid, show: show.clone(), season: season.clone(), page, rows, stamp }
+    }).collect();
+    port.done(addr, EpisodePagesAnswer(landed));
 }
 
 // ---- Related tail window ----------------------------------------------------------------------

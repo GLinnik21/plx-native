@@ -265,6 +265,7 @@ fn menu_play_season_load_inside_a_frame_needs_no_blocking_exception() {
 
     let frame = plx_base::task::FrameScope::enter();
     load_season(test_state(), test_adapter(), 1);
+    start_season_jobs();
     assert_eq!(listed_eps(), ["stale"], "the frame fetched nothing: the list is still the old season's");
     assert!(season_loading(test_adapter()), "the fetch is in flight on a worker");
     drop(frame);
@@ -315,6 +316,7 @@ fn a_season_read_replays_only_the_edits_published_after_its_own_request() {
 
     ledger.record(&ViewAt::leaf(sid, "ea"), ViewEdit::Watched(true)); // before the request: the server has it
     load_season(test_state(), test_adapter(), 1);
+    start_season_jobs();
     ledger.record(&ViewAt::leaf(sid, "eb"), ViewEdit::Watched(true)); // while the read is out
 
     let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
