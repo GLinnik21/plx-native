@@ -25,6 +25,8 @@
 //! keyword-level `pub(super)` genuinely cannot add on top of that count.
 use crate::stores::{deck, paging};
 use crate::viewstate::{ViewAt, ViewEdit};
+use plx_machine::job::{Job, Port};
+use plx_machine::machine::{Addr, MachineId, RequestId};
 use plx_plex::plex::{ClientKey, ClientKeys, ServerId};
 use std::os::raw::c_int;
 use std::panic::catch_unwind;
@@ -250,6 +252,12 @@ pub struct PmsState {
     /// The last [`HubsCmd::Publish`] verdict that was to WAIT, and what it was a verdict on: the
     /// same question asked again next frame is answered from this, not by merging again.
     publish_memo: Option<PublishKey>,
+    /// The fetches this owner's steps have asked for and nobody has started yet, in the order they
+    /// were asked ([`crate::stores::StoreJob::Hubs`]). A step only pushes here; the application's
+    /// runner takes them ([`crate::stores::hubs::HubsStore::take_jobs`]) and starts each, because
+    /// starting a worker is IO and a step does none. A `Reset` clears it: the sources the jobs were
+    /// asked for are gone with it.
+    pub(crate) jobs: Vec<crate::stores::StoreJob>,
 }
 
 /// Everything a [`publish_staged`] verdict depends on.
@@ -291,6 +299,7 @@ impl Default for PmsState {
             hold: (0, HOLD_ROWS - 1),
             staged_gen: 0,
             publish_memo: None,
+            jobs: Vec::new(),
         }
     }
 }
@@ -306,24 +315,28 @@ pub struct PmsAdapter {
     /// process-wide) is enough: a still-running old worker captured the RETIRED adapter and can
     /// only ever mint (or land) into it, never into the one a reset rotated in.
     next_request: AtomicU32,
-    /// Workers spawned through [`spawn_fetch`] whose landing [`take_landings`] has not yet taken:
-    /// `+1` on the main thread before the worker exists, `-1` when the OS refuses the spawn, `-n`
-    /// when a take moves `n` landings out. It is the claim dump mode's `take_all_owed` reads
-    /// ([`owed`]): the blocking dump waits on it, the paced one starves the take and the frame dump
-    /// holds the iteration. It has to live here rather than on [`Src::fetching`], which clears when
-    /// a landing is APPLIED, after the take that delivered it. Every admitted worker answers exactly
-    /// once (a panicking fetch posts a failure), so it reaches zero. A request handed to a
-    /// launcher that does not call [`spawn_fetch`] (a replay) is never counted. It lives on the
+    /// Fetches the runner has launched ([`launch_hubs_job`]) whose landing [`take_landings`] has not
+    /// yet taken: `+1` on the main thread before the worker exists ([`HubsPort::claim`]), `-1` when
+    /// the OS refuses the spawn, `-n` when a take moves `n` landings out. It is the claim dump
+    /// mode's `take_all_owed` reads ([`owed`]): the blocking dump waits on it, the paced one starves
+    /// the take and the frame dump holds the iteration. It has to live here rather than on
+    /// [`Src::fetching`], which clears when a landing is APPLIED, after the take that delivered it.
+    /// Every launched worker answers exactly once (a panicking fetch posts a failure), so it
+    /// reaches zero. It is raised at the LAUNCH, never at the emission of a job: a job the runner
+    /// never launches (a replay's recorded admission, a refusal, a client the registry no longer
+    /// holds) holds no claim, and `Port` has no drop guard that could lower one. It lives on the
     /// adapter, so a reset's rotation retires the old count with the old mailbox.
     owed: AtomicU32,
-    /// Launches that were REFUSED since the last Hubs step: `(generation, request id, server)` of a
-    /// request whose launcher said no (the OS would not start a thread, or a replay's recorded
-    /// admission was `false`). Nothing will ever fill the mailbox for these, so the next step
-    /// settles each as the failure it is ([`settle_refused`]) before it reads anything else. It is
-    /// NOT the landing mailbox: only `results` becomes an `AppMsg::HubsResult`, which the recorder
-    /// writes, so a refusal reaches no recorded byte and replay settles it from its own recorded
-    /// admission. It lives on the adapter, so a reset's rotation retires it with the mailbox.
-    refused: Mutex<Vec<(u32, u32, ServerId)>>,
+    /// Fetches the runner REFUSED since the last Hubs step, by request id: the launch did not
+    /// happen (the OS would not start a thread, the registry no longer holds the client the step
+    /// decided on, or a replay's recorded admission was `false`). Nothing will ever fill the
+    /// mailbox for these, so the next step settles each as the failure it is ([`settle_refused`])
+    /// before it reads anything else. A request id is minted by this adapter alone, so it names one
+    /// request; the source that still has it in flight is the one it belongs to. It is NOT the
+    /// landing mailbox: only `results` becomes an `AppMsg::HubsResult`, which the recorder writes,
+    /// so a refusal reaches no recorded byte and replay settles it from its own recorded admission.
+    /// It lives on the adapter, so a reset's rotation retires it with the mailbox.
+    refused: Mutex<Vec<u32>>,
     /// Test only: how many times [`take_landings`] has finished, so a fake worker can post only
     /// AFTER a take has found its mailbox empty.
     #[cfg(any(test, feature = "test-support"))]
@@ -346,11 +359,18 @@ impl Default for PmsAdapter {
 #[cfg(any(test, feature = "test-support"))]
 pub fn owed_count_for_test(adapter: &PmsAdapter) -> u32 { adapter.owed.load(Ordering::SeqCst) }
 
+/// Test hook: the request ids of the launches refused since the last step, in the order they were
+/// answered. The next step settles them ([`settle_refused`]) and empties the list.
+#[cfg(any(test, feature = "test-support"))]
+pub fn refused_for_test(adapter: &PmsAdapter) -> Vec<u32> {
+    adapter.refused.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 /// Test hook: how many authoritative hub refetches this owner has started (`RefetchHubs` bumps it).
 #[cfg(any(test, feature = "test-support"))]
 pub fn hub_gen_for_test(state: &PmsState) -> u32 { state.hub_gen }
 
-/// Is a worker spawned through [`spawn_fetch`] still owing this adapter a landing? Read by the
+/// Is a worker the runner launched ([`launch_hubs_job`]) still owing this adapter a landing? Read by the
 /// landing gate's dump mode, which delivers the answer a request it issued owes
 /// (`plx_machine::landgate::Gate::take_all_owed`): the blocking dump waits for it, the paced dump
 /// (the frame dump's) returns nothing and names the store until it is in.
@@ -772,7 +792,7 @@ pub fn hub_item(state: &PmsState, hub: usize, col: usize) -> Option<&PmsMovie> {
 /// No reconcile call here, and none is owed anywhere: [`commit`] performs the re-selection and the
 /// repaint itself, at the only moment the catalog those surfaces index into actually moves.
 fn request_refetch_hubs_with_scope(state: &mut PmsState, adapter: &Arc<PmsAdapter>, scope: &BrowseScope,
-    launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
+    launch: &mut dyn FnMut(HubRequest)) -> crate::stores::EndpointRefreshSet {
     // A test reaching this outside `plx_base::testlock::serial()` races some other module's test — see
     // `lib.rs::testlock`.
     #[cfg(any(test, feature = "test-support"))]
@@ -1015,7 +1035,7 @@ fn find_shelf<'a>(shelves: &'a [Shelf], id: &str, key: &str) -> Option<&'a Shelf
 }
 
 fn request_page(state: &mut PmsState, adapter: &PmsAdapter, sid: ServerId,
-    id: &str, key: &str, before: bool, scope: &BrowseScope, launch: &mut dyn FnMut(HubRequest) -> bool) -> Option<crate::stores::EndpointRefresh> {
+    id: &str, key: &str, before: bool, scope: &BrowseScope, launch: &mut dyn FnMut(HubRequest)) -> Option<crate::stores::EndpointRefresh> {
     let Some(source) = state.srcs.iter_mut().find(|source| source.sid == sid) else { return None };
     if refresh_src_lifecycle(source, &scope.clients) { return None; }
     if source.adoptable && !source.fetching && source.page.is_none() && source.abandoned.last()
@@ -1062,7 +1082,7 @@ fn cancel_page(state: &mut PmsState, sid: ServerId, id: &str, key: &str) {
 
 /// The shared body of `Page` and `CancelPage`, for both command runners.
 fn run_page_cmd(state: &mut PmsState, adapter: &PmsAdapter, scope: &BrowseScope, cmd: crate::stores::hubs::HubsCmd,
-    launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
+    launch: &mut dyn FnMut(HubRequest)) -> crate::stores::EndpointRefreshSet {
     use crate::stores::hubs::HubsCmd;
     let mut endpoints = crate::stores::EndpointRefreshSet::default();
     match cmd {
@@ -1224,7 +1244,7 @@ fn deck_after(srcs: &[Src], scope: &BrowseScope, before: bool, pages: usize) -> 
 /// cards is read through the fan-out gate; when each of those has landed (or is retrying) the deck
 /// moves. With nothing to read, it moves at once.
 fn request_deck_page(state: &mut PmsState, adapter: &PmsAdapter, before: bool, scope: &BrowseScope,
-    launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
+    launch: &mut dyn FnMut(HubRequest)) -> crate::stores::EndpointRefreshSet {
     if state.deck_ask.is_some() { return Default::default(); }
     ask_deck(state, adapter, before, 1, scope, launch)
 }
@@ -1234,7 +1254,7 @@ fn request_deck_page(state: &mut PmsState, adapter: &PmsAdapter, before: bool, s
 /// server) is not stopped at: the same ask goes on a page further, which reads further, until a
 /// window has a card or the listing ends. Nothing is published in between, so the row never blanks.
 fn ask_deck(state: &mut PmsState, adapter: &PmsAdapter, before: bool, mut pages: usize, scope: &BrowseScope,
-    launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
+    launch: &mut dyn FnMut(HubRequest)) -> crate::stores::EndpointRefreshSet {
     let mut endpoints = crate::stores::EndpointRefreshSet::default();
     let gen = state.hub_gen;
     let mut srcs = std::mem::take(&mut state.srcs);
@@ -1488,7 +1508,7 @@ fn wanted_reloads(srcs: &[Src], pins: &[(ServerId, i64, bool)], published_rows: 
 /// its read started is dropped from the queue, so a key held through hundreds of rows asks for the
 /// rows it stopped on and never for the ones it passed.
 fn pump_reloads(state: &mut PmsState, adapter: &PmsAdapter, scope: &BrowseScope,
-    launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
+    launch: &mut dyn FnMut(HubRequest)) -> crate::stores::EndpointRefreshSet {
     let mut endpoints = crate::stores::EndpointRefreshSet::default();
     let wanted = wanted_reloads(&state.srcs, &scope.pins, published_home(state).hubs.len(), state.hold);
     let mut srcs = std::mem::take(&mut state.srcs);
@@ -1574,7 +1594,7 @@ fn quiet_failed(s: &mut Src) {
 /// while this source has a page read out, nor inside the spacing after its last quiet read; those
 /// two are owed (`Src::quiet_owed`) and made by a later tick.
 fn refetch_source_quiet(state: &mut PmsState, adapter: &PmsAdapter, scope: &BrowseScope, sid: ServerId,
-    launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
+    launch: &mut dyn FnMut(HubRequest)) -> crate::stores::EndpointRefreshSet {
     let mut endpoints = crate::stores::EndpointRefreshSet::default();
     let mut srcs = std::mem::take(&mut state.srcs);
     let prompted_out = srcs.iter().any(|s| (s.fetching || s.deferred) && !s.quiet && s.page.is_none());
@@ -1601,7 +1621,7 @@ fn refetch_source_quiet(state: &mut PmsState, adapter: &PmsAdapter, scope: &Brow
 
 /// The quiet reads that were wanted and could not be made, made now that their source is idle.
 fn pump_owed_quiet(state: &mut PmsState, adapter: &PmsAdapter, scope: &BrowseScope,
-    launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
+    launch: &mut dyn FnMut(HubRequest)) -> crate::stores::EndpointRefreshSet {
     let mut endpoints = crate::stores::EndpointRefreshSet::default();
     let owed: Vec<ServerId> = state.srcs.iter()
         .filter(|s| s.quiet_owed && s.page.is_none() && !s.fetching && !s.deferred && s.quiet_after <= 0.0)
@@ -1709,7 +1729,7 @@ fn publish_staged(state: &mut PmsState, scope: &BrowseScope, home_top_visible: b
 /// `HubsCmd::Hold`: the screen holds rows `lo..=hi`. Rows that left the range give their cards up;
 /// rows that entered it without cards are read at their windows.
 fn run_hold(state: &mut PmsState, adapter: &PmsAdapter, scope: &BrowseScope, lo: usize, hi: usize,
-    launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
+    launch: &mut dyn FnMut(HubRequest)) -> crate::stores::EndpointRefreshSet {
     if !apply_hold(state, scope, lo, hi) { return Default::default(); }
     pump_reloads(state, adapter, scope, launch)
 }
@@ -2383,7 +2403,7 @@ impl Src {
     /// after admission to this source's single flight; the adapter receives the captured value.
     fn begin_request(
         &mut self,
-        client: &'static plx_plex::plex::Client,
+        key: ClientKey,
         generation: u32,
         mint: impl FnOnce() -> u32,
     ) -> Option<HubRequest> {
@@ -2397,8 +2417,7 @@ impl Src {
         }
         self.adoptable = false;
         let request = HubRequest {
-            gen: generation, seq: mint(), sid: self.sid,
-            client: LandingClient::live(client), token_gen: client.token_gen(),
+            gen: generation, seq: mint(), sid: self.sid, key,
             page: self.page.clone(),
             lane: self.last.as_ref().filter(|build| build.lane.placed).map(|build| (build.lane.clone(), Vec::new())),
             window: self.page.as_ref().and_then(|page| self.last.as_ref().and_then(|build|
@@ -2414,7 +2433,7 @@ impl Src {
                     && (shelf.offset > 0 || shelf.end > HUB_FETCH_COUNT as usize))
                 .map(|shelf| (PageQuery { id: shelf.hub_id.clone(), key: shelf.key.clone(), start: shelf.offset, before: false, hidden: Vec::new(), reload: false }, shelf.end, shelf.clone())).collect()),
         };
-        self.key = Some(ClientKey::of(client));
+        self.key = Some(key);
         self.fetching = true;
         self.stamp = self.ledger.stamp(); // this read already carries every edit published so far
         if self.page.is_none() && !self.quiet { self.state = HubState::Loading; }
@@ -2522,6 +2541,7 @@ struct LandingClient {
     resource: &'static plx_plex::plex::Client,
 }
 
+#[cfg(test)]
 impl LandingClient {
     fn live(resource: &'static plx_plex::plex::Client) -> Self {
         Self { instance: resource.instance_gen(), resource }
@@ -2534,8 +2554,10 @@ pub struct HubRequest {
     gen: u32,
     seq: u32,
     sid: ServerId,
-    client: LandingClient,
-    token_gen: u32,
+    /// The client (and credential) the step decided to ask through. The runner starts the request
+    /// only if the registry still holds that very client at the launch ([`HubRequest::server`]),
+    /// and hands it to [`HubRequest::fetch`].
+    key: ClientKey,
     page: Option<PageQuery>,
     /// Each row that has moved off its preview: where to reload it, how far it had read, and the row
     /// itself (a sample or ledger row cannot be re-read at an offset, so the refresh keeps it).
@@ -2551,13 +2573,28 @@ pub struct HubRequest {
 
 impl HubRequest {
     pub fn descriptor(&self) -> (u32, u32, u16, u32, u32) {
-        (self.gen, self.seq, self.sid.raw(), self.client.instance, self.token_gen)
+        (self.gen, self.seq, self.sid.raw(), self.key.instance, self.key.token)
     }
     pub fn page_descriptor(&self) -> Option<serde_json::Value> {
         self.page.as_ref().map(|page| serde_json::json!({"id":page.id,"key":page.key,"start":page.start,"before":page.before,"hidden":page.hidden}))
     }
-    fn fetch(&self) -> Option<SourceBuild> {
-        let client = self.client.resource;
+
+    /// The server to ask and the client the step decided to ask it through.
+    pub fn server(&self) -> (ServerId, ClientKey) { (self.sid, self.key) }
+
+    /// What a controlled run records for this request (`HomeIo::admit` adds `"admitted"`): a pure
+    /// function of the job, the shape a recording holds and a replay compares byte for byte.
+    pub fn admission(&self) -> serde_json::Value {
+        let (epoch, req, sid, client, token_gen) = self.descriptor();
+        let mut admission = serde_json::json!({"kind":"hubs", "epoch":epoch, "req":req, "sid":sid,
+            "client":client, "token_gen":token_gen});
+        if let Some(page) = self.page_descriptor() { admission["page"] = page; }
+        admission
+    }
+
+    /// The request's IO body: read the server through `client`, which is the registry's object for
+    /// [`HubRequest::server`]'s key. `None` is a failed read, never "the server returned nothing".
+    fn fetch(&self, client: &'static plx_plex::plex::Client) -> Option<SourceBuild> {
         match &self.page {
             Some(page) if page.id == DECK_ID => {
                 let (mut lane, hidden) = self.lane.clone()?;
@@ -2571,12 +2608,12 @@ impl HubRequest {
                 Some(SourceBuild { lane, ..SourceBuild::default() })
             }
             Some(page) if self.window.as_ref().is_some_and(|window| page.reload && !window.row.kept.is_empty()) =>
-                fetch_kept(self.sid, page, self.window.as_ref()?, &mut |keys| many_items(self.client.resource, keys)),
+                fetch_kept(self.sid, page, self.window.as_ref()?, &mut |keys| many_items(client, keys)),
             Some(page) => fetch_row(self.sid, page, self.window.as_ref(), 0,
-                |start, size| self.client.resource.hub_items_paged(&page.key, start as i64, size as i64),
-                |keys| many_items(self.client.resource, keys)),
+                |start, size| client.hub_items_paged(&page.key, start as i64, size as i64),
+                |keys| many_items(client, keys)),
             None => {
-                let mut build = fetch_source(self.client.resource, self.sid, &self.held)?;
+                let mut build = fetch_source(client, self.sid, &self.held)?;
                 if let Some((old, hidden)) = &self.lane {
                     // A deck that has moved stays where it is: the lane is read again at its own
                     // offsets, which also brings the progress of its cards up to date.
@@ -2595,7 +2632,7 @@ impl HubRequest {
                         continue;
                     }
                     // `/hubs` itself answered: a failed window reload keeps the first-page shelf.
-                    let Some(mut refreshed) = fetch_page(self.client.resource, self.sid, window, *end)
+                    let Some(mut refreshed) = fetch_page(client, self.sid, window, *end)
                         .and_then(|page| page.shelves.into_iter().next()) else { continue };
                     if !refreshed.items.is_empty() {
                         refreshed.title = shelf.title.clone();
@@ -2611,9 +2648,50 @@ impl HubRequest {
             },
         }
     }
-    fn complete(self, build: Option<SourceBuild>) -> Landing {
+
+    /// The request's answer. `client` is the object [`HubRequest::fetch`] read through; the landing
+    /// carries the logical identity the step decided on (`key`), which is what a recording writes.
+    fn complete(self, client: &'static plx_plex::plex::Client, build: Option<SourceBuild>) -> Landing {
         Landing { gen: self.gen, seq: self.seq, sid: self.sid,
-            client: Some(self.client), token_gen: self.token_gen, build }
+            client: Some(LandingClient { instance: self.key.instance, resource: client }),
+            token_gen: self.key.token, build }
+    }
+}
+
+/// Two requests are the same when they ask the same thing of the same source: a request id is
+/// minted by one adapter alone, so `(generation, id, server, client, page)` names it. (Its captured
+/// shelves are what the request was built from, not what it is.)
+impl PartialEq for HubRequest {
+    fn eq(&self, other: &Self) -> bool {
+        self.descriptor() == other.descriptor() && self.page_descriptor() == other.page_descriptor()
+    }
+}
+
+#[cfg(test)]
+impl HubRequest {
+    /// TEST ONLY: the client the registry holds for this request's server now. The runner hands the
+    /// worker the client its key resolved at the launch; a test that re-registers the slot after
+    /// the request was made passes the original to [`HubRequest::fetch`] / [`HubRequest::complete`]
+    /// itself.
+    fn client_for_test(&self) -> &'static plx_plex::plex::Client {
+        plx_plex::plex::client_for(self.sid).expect("the registry holds a client for this request's server")
+    }
+
+    /// TEST ONLY: [`HubRequest::fetch`] through that client.
+    fn fetch_for_test(&self) -> Option<SourceBuild> { self.fetch(self.client_for_test()) }
+
+    /// TEST ONLY: [`HubRequest::complete`] as the runner completes it, through that client.
+    fn complete_for_test(self, build: Option<SourceBuild>) -> Landing {
+        let client = self.client_for_test();
+        self.complete(client, build)
+    }
+}
+
+impl std::fmt::Debug for HubRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (gen, seq, sid, instance, token) = self.descriptor();
+        write!(f, "HubRequest {{ gen: {gen}, seq: {seq}, sid: {sid}, client: {instance}/{token}, page: {:?} }}",
+            self.page_descriptor())
     }
 }
 
@@ -3039,59 +3117,69 @@ fn retry_due(s: &mut Src, dt: f32) -> bool {
     left <= 0.0
 }
 
-/// Spawn an off-thread fetch for ONE source (single flight); [`pump`] lands it. Every source takes
+/// Ask for an off-thread fetch of ONE source (single flight); [`pump`] lands it. Every source takes
 /// this path, including the primary during boot/profile activation: a blocking fetch on the SDL
 /// loop would draw no frames while the loading spinner is supposed to be visible.
-/// Keep request admission/state identical when another adapter holds the request instead of
-/// launching a worker. A launcher that refuses the request leaves the source in flight and
-/// records the refusal on the adapter; the next step settles it ([`settle_refused`]).
-fn kick_with(gen: u32, adapter: &PmsAdapter, s: &mut Src, scope: &BrowseScope, launch: impl FnOnce(HubRequest) -> bool) -> Option<crate::stores::EndpointRefresh> {
+///
+/// The request is handed to `launch`, which only collects it ([`emitting`]): the step starts no
+/// thread. The source is in flight from here, and stays so until a landing answers it or the
+/// runner's refusal is settled by the next step ([`settle_refused`]).
+fn kick_with(gen: u32, adapter: &PmsAdapter, s: &mut Src, scope: &BrowseScope, launch: impl FnOnce(HubRequest)) -> Option<crate::stores::EndpointRefresh> {
     refresh_src_lifecycle(s, &scope.clients);
     if s.fetching {
         return None; // one in flight already — its spinner is the honest answer
     }
-    // CAPTURE AT THE SPAWN SITE. The worker is handed this server's own `&'static Client` and its
-    // slot id; it never asks which server is current, and a slot re-pointed mid-request cannot
-    // redirect a fetch that is already out (`plex::servers` leaks each client precisely so that
-    // reference stays live).
-    // The decision is the step's input (`scope.clients`); the `&'static Client` is the registry's
-    // object for that very key, so the launch and the decision agree on one client even if the
-    // slot has moved since the host took the keys. (The read goes with the worker in C4.)
-    let Some(c) = scope.clients.key(s.sid)
-        .and_then(|key| plx_plex::plex::client_for(s.sid).filter(|c| ClientKey::of(c) == key)) else {
+    // CAPTURE AT THE STEP. The decision is the step's input (`scope.clients`): the request names
+    // this server's slot and the very client (and credential) it was decided on, and the runner
+    // starts it only if the registry still holds that client at the launch. A slot re-pointed
+    // mid-request cannot redirect a fetch already out (`plex::servers` leaks each client precisely
+    // so the reference stays live), and the fetch never asks which server is current.
+    let Some(key) = scope.clients.key(s.sid) else {
         if s.quiet { quiet_failed(s); return None; }
         return Some(landed_fail(s));
     };
-    let Some(mut request) = s.begin_request(c, gen,
+    let Some(mut request) = s.begin_request(key, gen,
         || adapter.next_request.fetch_add(1, Ordering::Relaxed)) else { return None };
     for (window, _, _) in &mut request.windows { window.hidden = hidden_sections(scope, request.sid); }
     if let Some((_, hidden)) = &mut request.lane { *hidden = hidden_sections(scope, request.sid); }
-    let (sid, seq) = (request.sid, request.seq);
-    if launch(request) {
-        plx_base::eventlog::log(&format!("hubs: source {} fetching (off-thread)", sid.raw()));
-    } else {
-        // Nothing will ever fill the mailbox (the thread limit refused us, or a replay recorded
-        // the refusal). The source stays in flight until the next step settles this, which
-        // releases the latch and backs off — `pump` then tries again on the ladder.
-        adapter.refused.lock().unwrap_or_else(|e| e.into_inner()).push((gen, seq, sid));
-    }
+    plx_base::eventlog::log(&format!("hubs: source {} fetching (off-thread)", request.sid.raw()));
+    launch(request);
     None
 }
 
+/// Where the fetch of request id `seq` is addressed: this store, and the request's own id (a
+/// landing's [`Landing::request_id`] is the same number).
+fn hubs_addr(seq: u32) -> Addr {
+    Addr { to: MachineId::Store(crate::stores::StoreId::Hubs.ord()), req: RequestId(seq) }
+}
+
+/// Run one step with a launcher that collects the requests the step makes, then put each on the
+/// owner's outbox as a job whose answer lands in `adapter`. A step starts nothing: the application
+/// takes the jobs ([`crate::stores::hubs::HubsStore::take_jobs`]) and starts them.
+fn emitting<R>(state: &mut PmsState, adapter: &Arc<PmsAdapter>,
+    step: impl FnOnce(&mut PmsState, &mut dyn FnMut(HubRequest)) -> R) -> R {
+    let mut requests = Vec::new();
+    let out = step(state, &mut |request| requests.push(request));
+    state.jobs.extend(requests.into_iter().map(|request| crate::stores::StoreJob::Hubs(
+        Job { addr: hubs_addr(request.seq), req: request },
+        HubsPort::of(adapter),
+    )));
+    out
+}
+
 /// Settle every launch refused since the last step, FIRST in that step. A refusal is the failure
-/// of the attempt it refused, found one step after the kick: for each `(gen, seq, sid)` still
-/// naming a source in flight with that request id, the latch is released and the source backs off
-/// by the same ladder a failed landing uses. A page ask does not spend one of its three attempts
-/// on it (the system refusing a thread says nothing about the server), and a quiet read just
-/// spaces its next try. An entry whose generation or request id no longer matches was superseded
-/// (a refetch, a cancel, a reset) and is dropped.
+/// of the attempt it refused, found one step after the kick: for each request id still naming a
+/// source in flight, the latch is released and the source backs off by the same ladder a failed
+/// landing uses. A page ask does not spend one of its three attempts on it (the system refusing a
+/// thread says nothing about the server), and a quiet read just spaces its next try. An id no
+/// source has in flight any more was superseded (a refetch, a cancel, a reset) and is dropped.
 fn settle_refused(state: &mut PmsState, adapter: &PmsAdapter) -> crate::stores::EndpointRefreshSet {
     let mut endpoints = crate::stores::EndpointRefreshSet::default();
     let refused = std::mem::take(&mut *adapter.refused.lock().unwrap_or_else(|e| e.into_inner()));
     let mut settled = false;
-    for (gen, seq, sid) in refused {
-        if gen != state.hub_gen { continue; }
-        let Some(s) = state.srcs.iter_mut().find(|s| s.sid == sid && s.fetching && s.seq == seq) else { continue };
+    for seq in refused {
+        let Some(s) = state.srcs.iter_mut().find(|s| s.fetching && s.seq == seq) else { continue };
+        let sid = s.sid;
         settled = true;
         s.fetching = false;
         if s.quiet { quiet_failed(s); continue; }
@@ -3106,60 +3194,91 @@ fn settle_refused(state: &mut PmsState, adapter: &PmsAdapter) -> crate::stores::
     endpoints
 }
 
-/// The live worker adapter. Replay must replace this operation, not skip `begin_request` and
-/// thereby leave its recorded result with no matching in-flight state.
-///
-/// The claim ([`owed`]) is raised here, on the calling (main) thread, before the worker exists, and
-/// dropped again if the OS refuses the spawn: a launcher that does not come through here never
-/// raises it.
-pub fn spawn_fetch(adapter: &Arc<PmsAdapter>, request: HubRequest) -> bool {
-    // A test's refusal stands in for the OS refusing the thread, so it is taken AFTER the claim is
-    // raised and must give it back, exactly as the real refusal does.
-    #[cfg(any(test, feature = "test-support"))]
-    let refused = REFUSE_FETCH_FOR_TEST.with(|flag| flag.get());
-    #[cfg(not(any(test, feature = "test-support")))]
-    let refused = false;
-    #[cfg(any(test, feature = "test-support"))]
-    let late = LATE_FETCH_FOR_TEST.with(|late| late.get())
-        .map(|(extra, items)| (extra, items, adapter.takes.load(Ordering::SeqCst)));
-    let worker_adapter = Arc::clone(adapter);
-    adapter.owed.fetch_add(1, Ordering::SeqCst);
-    let spawned = !refused && plx_base::task::spawn_small("hubs", move || {
-        #[cfg(any(test, feature = "test-support"))]
-        let build = match late {
-            Some((extra, items, takes_at_spawn)) =>
-                late_build_for_test(&worker_adapter, takes_at_spawn, extra, items),
-            None => catch_unwind(std::panic::AssertUnwindSafe(|| request.fetch())).ok().flatten(),
-        };
-        #[cfg(not(any(test, feature = "test-support")))]
-        let build = catch_unwind(std::panic::AssertUnwindSafe(|| request.fetch())).ok().flatten();
-        // Outside the panic guard: every admitted worker answers, including a panicking fetch.
-        worker_adapter.results.lock().unwrap_or_else(|e| e.into_inner()).push(request.complete(build));
-    });
-    if !spawned {
-        adapter.owed.fetch_sub(1, Ordering::SeqCst);
-    }
-    spawned
+/// Where a Home fetch's ONE answer goes: the owner's landing mailbox, captured with the job when it
+/// was emitted. An owner that has since been `Reset` holds a new adapter, and this port still lands
+/// into the one the request was made from, the retired one nobody pumps. Two ports are equal when
+/// they reach the same adapter.
+#[derive(Clone)]
+pub struct HubsPort(Arc<PmsAdapter>);
+
+impl HubsPort {
+    pub(crate) fn of(adapter: &Arc<PmsAdapter>) -> Self { Self(Arc::clone(adapter)) }
+
+    /// The runner is about to start a fetch for this owner: raise the claim [`owed`] reads. On the
+    /// calling (main) thread, before the worker exists; lowered by [`HubsPort::unclaim`] if no
+    /// worker is started, and by [`take_landings`] when the landing is taken.
+    pub fn claim(&self) { self.0.owed.fetch_add(1, Ordering::SeqCst); }
+
+    /// The worker the claim was raised for was never started.
+    pub fn unclaim(&self) { self.0.owed.fetch_sub(1, Ordering::SeqCst); }
 }
 
-#[cfg(any(test, feature = "test-support"))]
-thread_local! {
-    static LATE_FETCH_FOR_TEST: std::cell::Cell<Option<(u32, usize)>> = const { std::cell::Cell::new(None) };
+impl PartialEq for HubsPort {
+    fn eq(&self, other: &Self) -> bool { Arc::ptr_eq(&self.0, &other.0) }
 }
 
-/// Replace only the network fetch of every [`spawn_fetch`] this test thread makes inside `f` with
-/// a worker that answers with `items` movies LATE: it posts only after the adapter's mailbox has
-/// been taken at least once since the spawn (so a take that does not wait finds it empty, every
-/// time), then yields `extra` more times so its post lands at a varying point of the poll loop of
-/// a take that does. Both waits are counts, never clocks, and bounded.
-#[cfg(any(test, feature = "test-support"))]
-pub fn with_late_fetches_for_test<R>(extra: u32, items: usize, f: impl FnOnce() -> R) -> R {
-    struct Restore(Option<(u32, usize)>);
-    impl Drop for Restore {
-        fn drop(&mut self) { LATE_FETCH_FOR_TEST.with(|late| late.set(self.0)); }
+impl std::fmt::Debug for HubsPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "HubsPort({:p})", Arc::as_ptr(&self.0))
     }
-    let _restore = Restore(LATE_FETCH_FOR_TEST.with(|late| late.replace(Some((extra, items)))));
-    f()
+}
+
+impl Port<Landing> for HubsPort {
+    /// The fetch's answer, a failed read included (`build: None`). It joins the mailbox, the one
+    /// path a landing takes to the store (the recorder writes it from there).
+    fn done(&self, _addr: Addr, landing: Landing) {
+        self.0.results.lock().unwrap_or_else(|e| e.into_inner()).push(landing);
+    }
+
+    /// The fetch was never started. Nothing will ever fill the mailbox for it and the source stays
+    /// in flight, so the refusal is queued on the adapter and the next step settles it
+    /// ([`settle_refused`]); no recorded byte is involved.
+    fn refused(&self, addr: Addr) {
+        self.0.refused.lock().unwrap_or_else(|e| e.into_inner()).push(addr.req.0);
+    }
+}
+
+/// The fetch's IO body and its completion: read the server through `client` (the registry's object
+/// for the job's key) and post the answer to `port`. A read that unwinds still answers (with a
+/// failure), so the claim is always released by the take of its answer.
+pub fn finish_hubs_job(job: Job<HubRequest>, client: &'static plx_plex::plex::Client, port: &HubsPort) {
+    let Job { addr, req } = job;
+    let build = catch_unwind(std::panic::AssertUnwindSafe(|| req.fetch(client))).ok().flatten();
+    // Outside the panic guard: every launched fetch answers, including a panicking one.
+    port.done(addr, req.complete(client, build));
+}
+
+/// Start `job`'s fetch through `spawn`, which stands for the runner's worker start and says whether
+/// anything was started. The claim ([`owed`]) is raised here, on the calling (main) thread, before
+/// the worker exists, and given back if `spawn` starts nothing. True when the worker was started;
+/// on false the caller owes the port its refusal ([`Port::refused`]), exactly one answer per job.
+pub fn launch_hubs_job(job: Job<HubRequest>, port: HubsPort, client: &'static plx_plex::plex::Client,
+    spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> bool) -> bool {
+    launch_with(job, port, spawn, move |job, port| finish_hubs_job(job, client, port))
+}
+
+fn launch_with(job: Job<HubRequest>, port: HubsPort, spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> bool,
+    finish: impl FnOnce(Job<HubRequest>, &HubsPort) + Send + 'static) -> bool {
+    port.claim();
+    let work = { let port = port.clone(); move || finish(job, &port) };
+    if spawn(Box::new(work)) { return true; }
+    port.unclaim();
+    false
+}
+
+/// [`launch_hubs_job`] with only the network fetch replaced by a worker that answers with `items`
+/// movies LATE: it posts only after the adapter's mailbox has been taken at least once since the
+/// launch (so a take that does not wait finds it empty, every time), then yields `extra` more
+/// times so its post lands at a varying point of the poll loop of a take that does. Both waits are
+/// counts, never clocks, and bounded.
+#[cfg(any(test, feature = "test-support"))]
+pub fn launch_late_hubs_job_for_test(job: Job<HubRequest>, port: HubsPort, client: &'static plx_plex::plex::Client,
+    spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> bool, extra: u32, items: usize) -> bool {
+    let takes_at_launch = port.0.takes.load(Ordering::SeqCst);
+    launch_with(job, port, spawn, move |job, port| {
+        let build = late_build_for_test(&port.0, takes_at_launch, extra, items);
+        port.done(job.addr, job.req.complete(client, build));
+    })
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -3170,22 +3289,6 @@ fn late_build_for_test(adapter: &PmsAdapter, takes_at_spawn: u32, extra: u32, it
     }
     for _ in 0..extra { std::thread::yield_now(); }
     Some(build_test(items))
-}
-
-#[cfg(any(test, feature = "test-support"))]
-thread_local! {
-    static REFUSE_FETCH_FOR_TEST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Replace only the OS spawn boundary on this test thread, including nested callers in stores.
-#[cfg(any(test, feature = "test-support"))]
-pub fn with_refused_fetches_for_test<R>(f: impl FnOnce() -> R) -> R {
-    struct Restore(bool);
-    impl Drop for Restore {
-        fn drop(&mut self) { REFUSE_FETCH_FOR_TEST.with(|flag| flag.set(self.0)); }
-    }
-    let _restore = Restore(REFUSE_FETCH_FOR_TEST.with(|flag| flag.replace(true)));
-    f()
 }
 
 /// Is this source waiting on a fetch the tick should start (its countdown aside)? Not Ready, a page
@@ -3208,7 +3311,7 @@ fn fanout_turn(fanout: &mut crate::stores::fanout::Fanout, srcs: &[Src],
 /// [`kick_with`] behind the fan-out gate. A source that is out already is not asking; one the gate
 /// has no room for is marked [`Src::deferred`] and kicked by a later tick.
 fn kick_gated(turn: &mut crate::stores::fanout::FanoutTurn, gen: u32, adapter: &PmsAdapter, s: &mut Src,
-    scope: &BrowseScope, launch: &mut dyn FnMut(HubRequest) -> bool) -> Option<crate::stores::EndpointRefresh> {
+    scope: &BrowseScope, launch: &mut dyn FnMut(HubRequest)) -> Option<crate::stores::EndpointRefresh> {
     if s.fetching {
         return None;
     }
@@ -3225,7 +3328,7 @@ fn kick_gated(turn: &mut crate::stores::fanout::FanoutTurn, gen: u32, adapter: &
 /// source whose fetch is already in flight; a pending page request is re-sent by the same kick.
 /// Behind the fan-out gate: the sources it has no room for are kicked by the following ticks.
 fn retry_now_gated(turn: &mut crate::stores::fanout::FanoutTurn, gen: u32, adapter: &PmsAdapter, s: &mut Src,
-    scope: &BrowseScope, launch: &mut dyn FnMut(HubRequest) -> bool) -> Option<crate::stores::EndpointRefresh> {
+    scope: &BrowseScope, launch: &mut dyn FnMut(HubRequest)) -> Option<crate::stores::EndpointRefresh> {
     s.retry_n = 0;
     s.retry_s = 0.0;
     kick_gated(turn, gen, adapter, s, scope, launch)
@@ -3279,9 +3382,8 @@ pub fn tick_with_directory(
 ) -> crate::stores::EndpointRefreshSet {
     #[cfg(any(test, feature = "test-support"))]
     plx_base::testlock::assert_held("the pms hub catalog (owned tick)");
-    let mut launch = |r| spawn_fetch(adapter, r);
-    step_landings_with_scope(state, adapter, Some(dt), Vec::new, &BrowseScope::retained(directory, clients),
-        &mut launch)
+    emitting(state, adapter, |state, launch| step_landings_with_scope(state, adapter, Some(dt), Vec::new,
+        &BrowseScope::retained(directory, clients), launch))
 }
 
 /// An addressed arrival may update the catalog behind another page, but must not advance retry
@@ -3310,9 +3412,8 @@ pub fn land_with_directory(
     clients: &ClientKeys,
 ) -> crate::stores::StoreOutcome {
     let before = state.catalog_gen;
-    let mut launch = |r| spawn_fetch(adapter, r);
-    let endpoints = step_landings_with_scope(state, adapter, None, || vec![landing.clone()],
-        &BrowseScope::retained(directory, clients), &mut launch);
+    let endpoints = emitting(state, adapter, |state, launch| step_landings_with_scope(state, adapter, None,
+        || vec![landing.clone()], &BrowseScope::retained(directory, clients), launch));
     crate::stores::StoreOutcome { changed: state.catalog_gen != before, endpoints }
 }
 
@@ -3339,7 +3440,7 @@ pub fn run_with_directory(
 
 /// One addressed command. Launches refused since the last step are settled first
 /// ([`settle_refused`]), so the command reads the state they left, and their recovery joins the
-/// command's own.
+/// command's own. The fetches the command asks for are left on the owner's outbox.
 fn run_with_scope(
     state: &mut PmsState,
     adapter: &Arc<PmsAdapter>,
@@ -3347,7 +3448,7 @@ fn run_with_scope(
     scope: &BrowseScope,
 ) -> crate::stores::StoreOutcome {
     let mut endpoints = settle_refused(state, adapter);
-    let out = run_settled(state, adapter, cmd, scope);
+    let out = emitting(state, adapter, |state, launch| run_settled(state, adapter, cmd, scope, launch));
     endpoints.merge(out.endpoints);
     crate::stores::StoreOutcome { changed: out.changed, endpoints }
 }
@@ -3357,31 +3458,34 @@ fn run_settled(
     adapter: &Arc<PmsAdapter>,
     cmd: crate::stores::hubs::HubsCmd,
     scope: &BrowseScope,
+    launch: &mut dyn FnMut(HubRequest),
 ) -> crate::stores::StoreOutcome {
     use crate::stores::hubs::HubsCmd;
     match cmd {
         paging @ (HubsCmd::Page { .. } | HubsCmd::CancelPage { .. }) => {
-            let mut launch = |r| spawn_fetch(adapter, r);
             let before = state.catalog_gen;
-            let endpoints = run_page_cmd(state, adapter, scope, paging, &mut launch);
+            let endpoints = run_page_cmd(state, adapter, scope, paging, launch);
             crate::stores::StoreOutcome { changed: before != state.catalog_gen, endpoints }
         }
-        HubsCmd::RefetchHubs => {
-            let mut launch = |r| spawn_fetch(adapter, r);
-            crate::stores::StoreOutcome {
-                changed: true,
-                endpoints: request_refetch_hubs_with_scope(state, adapter, scope, &mut launch),
-            }
-        }
+        HubsCmd::RefetchHubs => crate::stores::StoreOutcome {
+            changed: true,
+            endpoints: request_refetch_hubs_with_scope(state, adapter, scope, launch),
+        },
         HubsCmd::Hold { lo, hi } => {
-            let mut launch = |r| spawn_fetch(adapter, r);
             let before = state.catalog_gen;
-            let endpoints = run_hold(state, adapter, scope, lo, hi, &mut launch);
+            let endpoints = run_hold(state, adapter, scope, lo, hi, launch);
             crate::stores::StoreOutcome { changed: before != state.catalog_gen, endpoints }
         }
         HubsCmd::Retry => {
-            let mut launch = |request| spawn_fetch(adapter, request);
-            controlled_work_with_scope(state, adapter, Some(cmd), 0.0, scope, &mut launch)
+            let gen = state.hub_gen;
+            let mut srcs = std::mem::take(&mut state.srcs);
+            let mut endpoints = crate::stores::EndpointRefreshSet::default();
+            let mut turn = fanout_turn(&mut state.fanout, &srcs, |_| true);
+            for source in srcs.iter_mut() {
+                if let Some(request) = retry_now_gated(&mut turn, gen, adapter, source, scope, &mut *launch) { endpoints.insert(request); }
+            }
+            state.srcs = srcs;
+            crate::stores::StoreOutcome { changed: true, endpoints }
         },
         HubsCmd::ApplyView { at, edit } => crate::stores::StoreOutcome::changed(
             edit_item_with_scope(state, &at, edit, scope)),
@@ -3389,13 +3493,10 @@ fn run_settled(
             reset_with_scope(state, adapter, scope);
             crate::stores::StoreOutcome::changed(true)
         }
-        HubsCmd::RefetchSourceQuiet { sid } => {
-            let mut launch = |r| spawn_fetch(adapter, r);
-            crate::stores::StoreOutcome {
-                changed: false,
-                endpoints: refetch_source_quiet(state, adapter, scope, sid, &mut launch),
-            }
-        }
+        HubsCmd::RefetchSourceQuiet { sid } => crate::stores::StoreOutcome {
+            changed: false,
+            endpoints: refetch_source_quiet(state, adapter, scope, sid, launch),
+        },
         HubsCmd::Publish { home_top_visible, focused_hub, press_live } => {
             let before = state.catalog_gen;
             publish_staged(state, scope, home_top_visible, focused_hub, press_live);
@@ -3404,75 +3505,53 @@ fn run_settled(
     }
 }
 
-/// Test-only compatibility shape for bootstrap fixtures that do not retain a directory.
+/// TEST ONLY: one step, with each fetch it asks for handed to `launch` as the runner would
+/// start it. `launch` says whether anything was started; `false` is the refusal the runner
+/// answers (`Port::refused`), so the source stays in flight until the next step settles it. A
+/// data-layer test reads the requests a step made, and answers them, without a thread or a
+/// runner. `cmd: None` is the store's tick.
 #[cfg(any(test, feature = "test-support"))]
 pub fn controlled_work(state: &mut PmsState, adapter: &Arc<PmsAdapter>, cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
     launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::StoreOutcome {
-    controlled_work_with_scope(state, adapter, cmd, dt, &BrowseScope::standalone(), launch)
-}
-
-pub fn controlled_work_with_directory(state: &mut PmsState, adapter: &Arc<PmsAdapter>, cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
-    directory: crate::stores::browse::DirectoryView<'_>, clients: &ClientKeys,
-    launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::StoreOutcome {
-    controlled_work_with_scope(state, adapter, cmd, dt, &BrowseScope::retained(directory, clients), launch)
-}
-
-fn controlled_work_with_scope(state: &mut PmsState, adapter: &Arc<PmsAdapter>, cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
-    scope: &BrowseScope,
-    launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::StoreOutcome {
-    let mut endpoints = settle_refused(state, adapter);
-    let out = controlled_settled(state, adapter, cmd, dt, scope, launch);
-    endpoints.merge(out.endpoints);
-    crate::stores::StoreOutcome { changed: out.changed, endpoints }
-}
-
-fn controlled_settled(state: &mut PmsState, adapter: &Arc<PmsAdapter>, cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
-    scope: &BrowseScope,
-    launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::StoreOutcome {
-    use crate::stores::hubs::HubsCmd;
-    let before = state.catalog_gen;
-    let command = cmd.as_ref().is_some_and(|cmd| !cmd.is_paging() && !cmd.is_background());
-    let endpoints = match cmd {
-        Some(paging) if paging.is_paging() => run_page_cmd(state, adapter, scope, paging, launch),
-        Some(HubsCmd::RefetchHubs) => request_refetch_hubs_with_scope(state, adapter, scope, launch),
-        Some(HubsCmd::Hold { lo, hi }) => run_hold(state, adapter, scope, lo, hi, launch),
-        Some(HubsCmd::RefetchSourceQuiet { sid }) => refetch_source_quiet(state, adapter, scope, sid, launch),
-        Some(HubsCmd::Retry) => {
-            let gen = state.hub_gen;
-            let mut srcs = std::mem::take(&mut state.srcs);
-            let mut endpoints = crate::stores::EndpointRefreshSet::default();
-            let mut turn = fanout_turn(&mut state.fanout, &srcs, |_| true);
-            for source in srcs.iter_mut() {
-                if let Some(request) = retry_now_gated(&mut turn, gen, adapter, source, scope, launch) { endpoints.insert(request); }
-            }
-            state.srcs = srcs;
-            endpoints
+    let out = match cmd {
+        Some(cmd) => run_with_scope(state, adapter, cmd, &BrowseScope::standalone()),
+        None => {
+            let before = state.catalog_gen;
+            let endpoints = pump_with_landings(state, adapter, dt, Vec::new);
+            crate::stores::StoreOutcome { changed: state.catalog_gen != before, endpoints }
         }
-        Some(HubsCmd::Reset) => {
-            reset_with_scope(state, adapter, scope);
-            crate::stores::EndpointRefreshSet::default()
-        }
-        Some(other) => return run_with_scope(state, adapter, other, scope),
-        None => step_landings_with_scope(state, adapter, Some(dt), Vec::new, scope, launch),
     };
-    crate::stores::StoreOutcome { changed: command || before != state.catalog_gen, endpoints }
+    start_for_test(state, launch);
+    out
+}
+
+/// TEST ONLY: hand every job on the outbox to `launch` (see [`controlled_work`]).
+#[cfg(any(test, feature = "test-support"))]
+fn start_for_test(state: &mut PmsState, launch: &mut dyn FnMut(HubRequest) -> bool) {
+    for job in std::mem::take(&mut state.jobs) {
+        let crate::stores::StoreJob::Hubs(job, port) = job else { unreachable!("another store's job on the Hubs outbox") };
+        let addr = job.addr;
+        if !launch(job.req) { port.refused(addr); }
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
 fn step_landings(state: &mut PmsState, adapter: &Arc<PmsAdapter>, dt: Option<f32>, take: impl FnOnce() -> Vec<Landing>) -> crate::stores::EndpointRefreshSet {
-    let mut launch = |r| spawn_fetch(adapter, r);
-    step_landings_with(state, adapter, dt, take, &mut launch)
+    emitting(state, adapter, |state, launch| step_landings_with_scope(state, adapter, dt, take,
+        &BrowseScope::standalone(), launch))
 }
 
-#[cfg(any(test, feature = "test-support"))]
-fn step_landings_with(state: &mut PmsState, adapter: &Arc<PmsAdapter>, dt: Option<f32>, take: impl FnOnce() -> Vec<Landing>,
-    launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
+/// TEST ONLY: [`step_landings_with_scope`] on the standalone scope, the requests the step makes
+/// handed to `launch` as they are asked.
+#[cfg(test)]
+fn step_landings_with(state: &mut PmsState, adapter: &PmsAdapter, dt: Option<f32>, take: impl FnOnce() -> Vec<Landing>,
+    launch: &mut dyn FnMut(HubRequest)) -> crate::stores::EndpointRefreshSet {
     step_landings_with_scope(state, adapter, dt, take, &BrowseScope::standalone(), launch)
 }
 
 fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Option<f32>, take: impl FnOnce() -> Vec<Landing>,
     scope: &BrowseScope,
-    launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::EndpointRefreshSet {
+    launch: &mut dyn FnMut(HubRequest)) -> crate::stores::EndpointRefreshSet {
     let mut endpoints = settle_refused(state, adapter);
     sync_roster_with_scope(state, scope);
     let landed = take();
@@ -3774,6 +3853,9 @@ fn reset_with_scope(state: &mut PmsState, adapter: &Arc<PmsAdapter>, scope: &Bro
     let _ = adapter; // every HubsStore command path rotates before applying `HubsCmd::Reset`
     state.hub_gen = state.hub_gen.wrapping_add(1); // a worker still running belongs to the old identity
     state.srcs = Vec::new();
+    // The sources those fetches were asked for are gone: a fetch not yet started would answer into
+    // a store that no longer waits for it.
+    state.jobs.clear();
     state.deck_ask = None;
     forget_roster(state);
     state.seen_facts = u32::MAX;

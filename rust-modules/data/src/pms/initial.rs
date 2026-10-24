@@ -114,6 +114,7 @@ impl Initial {
             hold: (0, super::HOLD_ROWS - 1),
             staged_gen: 0,
             publish_memo: None,
+            jobs: Vec::new(),
         };
         let adapter = super::PmsAdapter {
             next_request: AtomicU32::new(self.next_request),

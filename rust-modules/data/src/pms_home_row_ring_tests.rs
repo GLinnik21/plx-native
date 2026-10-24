@@ -77,7 +77,7 @@ fn serve(request: HubRequest) -> Landing {
             Some(serde_json::from_value(serde_json::json!({"Metadata": items})).unwrap())
         };
         let build = fetch_kept(request.sid, &page, window, &mut many);
-        return request.complete(build);
+        return request.complete_for_test(build);
     }
     // a listing that is a different sample every time it is read
     let keys: Vec<String> = (page.start..page.start + CARDS).map(|c| format!("fresh-{row}-{c}")).collect();
@@ -89,7 +89,7 @@ fn serve(request: HubRequest) -> Landing {
     answer.more = true;
     answer.total = 1000;
     let build = SourceBuild { shelves: vec![answer], ..Default::default() };
-    request.complete(Some(build))
+    request.complete_for_test(Some(build))
 }
 
 struct Ring { o: Owner, launched: Vec<(String, usize, usize)>, pending: Vec<Landing> }
@@ -107,7 +107,6 @@ impl Ring {
             let page = request.page.clone().unwrap();
             launched.push((page.id.clone(), page.start, request.window.as_ref().map_or(0, |w| w.end)));
             pending.push(serve(request));
-            true
         };
         let _ = run_hold(&mut self.o.state, &self.o.adapter, &scope, lo, hi, &mut launch);
     }
@@ -121,7 +120,6 @@ impl Ring {
             let page = request.page.clone().unwrap();
             launched.push((page.id.clone(), page.start, request.window.as_ref().map_or(0, |w| w.end)));
             pending.push(serve(request));
-            true
         };
         let _ = step_landings_with_scope(&mut self.o.state, &self.o.adapter, Some(0.0), move || landed, &scope, &mut launch);
         n

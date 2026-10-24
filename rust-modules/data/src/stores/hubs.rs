@@ -225,11 +225,34 @@ impl HubsStore {
         crate::pms::hub_item(&self.state, hub, col)
     }
 
-    /// A clone of this owner's current worker adapter, for a caller that must spawn its own
-    /// fetch (`crate::pms::spawn_fetch`) rather than go through `controlled_with_directory`'s
-    /// default launcher. Capture it BEFORE calling into this store again — see the module doc
-    /// on why an old worker landing into a retired `Arc` is the whole point of rotation.
+    /// A clone of this owner's current worker adapter. Capture it BEFORE calling into this store
+    /// again: a `Reset` rotates it, and a port made from the old one lands into a mailbox nothing
+    /// reads any more, which is the whole point of rotation.
     pub fn adapter(&self) -> Arc<crate::pms::PmsAdapter> { Arc::clone(&self.adapter) }
+
+    /// Take the fetches this owner's steps have asked for since the last take, in the order they were
+    /// asked ([`crate::stores::StoreJob::Hubs`]). The application's runner starts each, right after the step
+    /// that asked (`Bridge::start_store_jobs_of`).
+    #[must_use]
+    pub fn take_jobs(&mut self) -> Vec<crate::stores::StoreJob> {
+        std::mem::take(&mut self.state.jobs)
+    }
+
+    /// Does the outbox hold a job nobody has taken yet?
+    pub fn has_jobs(&self) -> bool {
+        !self.state.jobs.is_empty()
+    }
+
+    /// TEST ONLY: answer every job on the outbox the way a runner that starts nothing does
+    /// (`Port::refused`), once each.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn refuse_jobs_for_test(&mut self) {
+        use plx_machine::job::Port;
+        for job in self.take_jobs() {
+            let crate::stores::StoreJob::Hubs(job, port) = job else { panic!("another store's job on the Hubs outbox") };
+            port.refused(job.addr);
+        }
+    }
 
     /// The adapter boundary: drain owned results without applying any store state.
     pub fn take_results(&self) -> Vec<HubsResult> {
@@ -265,6 +288,10 @@ impl HubsStore {
     #[cfg(any(test, feature = "test-support"))]
     pub fn owed_for_test(&self) -> u32 { crate::pms::owed_count_for_test(&self.adapter) }
 
+    /// Test hook: the request ids of the launches refused and not yet settled by a step.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn refused_for_test(&self) -> Vec<u32> { crate::pms::refused_for_test(&self.adapter) }
+
     pub fn land_with_directory(
         &mut self,
         result: &HubsResult,
@@ -287,32 +314,6 @@ impl HubsStore {
         let changed = self.state.catalog_gen != before;
         if changed { self.bump(); }
         super::StoreOutcome { changed, endpoints }
-    }
-
-    /// Test-only standalone shape for bootstrap fixtures with no Browse directory.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn controlled(&mut self, cmd: Option<HubsCmd>, dt: f32,
-        launch: &mut dyn FnMut(crate::pms::HubRequest) -> bool) -> super::StoreOutcome {
-        plx_base::testlock::assert_held("controlled hubs store");
-        self.prepare_command(cmd.as_ref());
-        let command = cmd.as_ref().is_some_and(HubsCmd::always_notifies);
-        let outcome = crate::pms::controlled_work(&mut self.state, &self.adapter, cmd, dt, launch);
-        if command || outcome.changed { self.bump(); }
-        outcome
-    }
-
-    /// Controlled Home work scoped by the Bridge's retained Browse directory. The retained view is
-    /// the decision input for this frame.
-    pub fn controlled_with_directory(&mut self, cmd: Option<HubsCmd>, dt: f32,
-        directory: crate::stores::browse::DirectoryView<'_>, clients: &plx_plex::plex::ClientKeys,
-        launch: &mut dyn FnMut(crate::pms::HubRequest) -> bool) -> super::StoreOutcome {
-        #[cfg(any(test, feature = "test-support"))]
-        plx_base::testlock::assert_held("controlled hubs store with Browse owner");
-        self.prepare_command(cmd.as_ref());
-        let command = cmd.as_ref().is_some_and(HubsCmd::always_notifies);
-        let outcome = crate::pms::controlled_work_with_directory(&mut self.state, &self.adapter, cmd, dt, directory, clients, launch);
-        if command || outcome.changed { self.bump(); }
-        outcome
     }
 
     /// Synchronous addressed command path. Reset rotates the adapter before clearing state, so an
@@ -352,7 +353,7 @@ mod contract_tests {
         let _guard = plx_base::testlock::serial();
         let directory = crate::stores::browse::DirectorySnapshot::fixture(0, 0, vec![]);
         let keys = crate::pms::registry_keys_for_test();
-        for path in ["run", "run_with_directory", "controlled", "controlled_with_directory"] {
+        for path in ["run", "run_with_directory"] {
             let mut store = HubsStore::default();
             store.seed_for_test(1, crate::pms::HubState::Ready);
             let retired = store.adapter();
@@ -361,10 +362,6 @@ mod contract_tests {
             match path {
                 "run" => { let _ = store.run(HubsCmd::Reset); }
                 "run_with_directory" => { let _ = store.run_with_directory(HubsCmd::Reset, directory.view(), &keys); }
-                "controlled" => { let _ = store.controlled(Some(HubsCmd::Reset), 0.0, &mut |_| false); }
-                "controlled_with_directory" => {
-                    let _ = store.controlled_with_directory(Some(HubsCmd::Reset), 0.0, directory.view(), &keys, &mut |_| false);
-                }
                 _ => unreachable!(),
             }
 
@@ -396,11 +393,6 @@ mod contract_tests {
         }
         assert_eq!(store.gen(), before, "Publish with nothing staged does not raise the notice");
         assert_eq!(store.take_notice(), None);
-        let out = store.controlled_with_directory(
-            Some(HubsCmd::Publish { home_top_visible: true, focused_hub: None, press_live: false }), 0.0,
-            directory.view(), &keys, &mut |_| false);
-        assert!(!out.changed);
-        assert_eq!(store.gen(), before, "…on the controlled path too");
         assert!(HubsCmd::Publish { home_top_visible: true, focused_hub: None, press_live: false }.is_background());
         assert!(!HubsCmd::RefetchHubs.is_background());
     }
@@ -422,7 +414,7 @@ mod contract_tests {
     }
 
     #[test]
-    fn controlled_hubs_uses_the_supplied_directory() {
+    fn a_hubs_step_asks_only_for_the_sources_the_supplied_directory_pins() {
         let _guard = plx_base::testlock::serial();
         plx_plex::plex::reset_servers_for_test();
         let own = plx_plex::plex::register_for_test(
@@ -433,19 +425,17 @@ mod contract_tests {
             7, 0, vec![section(own, 0, true), section(hidden, 1, false)]);
         let keys = crate::pms::registry_keys_for_test();
         let mut store = HubsStore::default();
-        let mut ignored = |_| false;
-        let _ = store.controlled_with_directory(Some(HubsCmd::Reset), 0.0, directory.view(), &keys, &mut ignored);
-        let mut launched = Vec::new();
+        let _ = store.run_with_directory(HubsCmd::Reset, directory.view(), &keys);
 
-        let _ = store.controlled_with_directory(Some(HubsCmd::RefetchHubs), 0.0, directory.view(), &keys,
-            &mut |request| {
-                launched.push(request.descriptor().2);
-                false
-            });
+        let _ = store.run_with_directory(HubsCmd::RefetchHubs, directory.view(), &keys);
 
-        assert_eq!(launched, [own.raw()],
-            "the retained pin table excludes the unpinned source");
-        let _ = store.controlled_with_directory(Some(HubsCmd::Reset), 0.0, directory.view(), &keys, &mut ignored);
+        let asked: Vec<u16> = store.take_jobs().into_iter().map(|job| {
+            let crate::stores::StoreJob::Hubs(job, _) = job else { panic!("another store's job on the Hubs outbox") };
+            job.req.descriptor().2
+        }).collect();
+        assert_eq!(asked, [own.raw()], "the retained pin table excludes the unpinned source");
+        assert!(!store.has_jobs(), "taking the jobs empties the outbox");
+        let _ = store.run_with_directory(HubsCmd::Reset, directory.view(), &keys);
         plx_plex::plex::reset_servers_for_test();
     }
 

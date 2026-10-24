@@ -12,13 +12,24 @@
 //! detail pump keeps a counted backstop for a sender that did neither
 //! (`Bridge::start_late_store_jobs`).
 //!
+//! **Three admission families** (`plx_data::stores::Admission`, stated by the job kind and matched
+//! exhaustively): `Tape` kinds record their launch on the tape; `Direct` kinds are started with no
+//! record; a `Home` kind (the Hubs read) records its launch in a controlled Home run's own
+//! ordered ledger (`HomeIo::admit`). A controlled arm starts its Home jobs with
+//! [`StoreRunner::start_admitted`], handing over the run's `HomeIo`; every other sender, the live
+//! arms and the landing and fan-out drains included, starts them with [`StoreRunner::start`], which
+//! launches a Home kind as a direct one. A Home job that reaches `start` from a controlled arm has
+//! skipped its admission, which a replay would catch as a missing line.
+//!
 //! **One runner per `Bridge`, chosen when the Bridge is built**, as the consent adapter is: `Live`
 //! in production, and in a host test the `Held` runner, which parks each job until the test runs
 //! it on the test thread (`Bridge::run_held_store_jobs_for_test`). Holding is what lets a test
 //! choose the moment a request is "in flight" and the moment it "settles", where a worker thread
 //! made both depend on the scheduler: a fetch for an unknown server returns in microseconds, so a
 //! fast run settled a request before an "in flight" assertion while a loaded CI runner had not
-//! settled it after a hundred `yield_now`s.
+//! settled it after a hundred `yield_now`s. `Held` parks per kind: [`StoreRunner::held`] leaves the
+//! Hubs read live (the rigs that poll for a landing, the dump and return-hold tests, need a real
+//! answer on a worker), and [`StoreRunner::held_all`] parks it as well.
 //!
 //! **The registry is read here, not in a step.** A step that decides from "which client does this
 //! server slot hold" is handed the answer as an input (`plx_plex::plex::ClientKeys`), which the
@@ -31,10 +42,13 @@ use plx_data::metadata::{fetch_full, finish_detail_fetch, DetailPort, DetailReq}
 use plx_data::person::{finish_person_job, PersonPort, PersonReq};
 use plx_data::stores::catalog::{finish_catalog_job, CatalogPort, CatalogReq};
 use plx_data::stores::viewreconcile::{finish_reconcile_job, ReconcilePort, ReconcileReq};
-use plx_data::stores::StoreJob;
+use plx_data::pms::{launch_hubs_job, HubRequest, HubsPort};
+use plx_data::stores::{Admission, StoreJob};
 use plx_data::subsearch::{finish_subsearch_job, SubSearchPort, SubSearchReq};
 use plx_machine::job::{Job, Port};
 use plx_plex::plex::{Client, ClientKey, ClientKeys};
+
+use crate::app::bootstrap::HomeIo;
 
 /// Fill `keys` with the registry's answer for every active server slot, in place (a pump that runs
 /// every frame allocates nothing for it). The only loop over `client_for` that feeds a step: an
@@ -74,15 +88,65 @@ fn person_client(req: &PersonReq) -> Result<Option<&'static Client>, Gone> {
     }
 }
 
+/// TEST ONLY: what [`StoreRunner::launch_hubs`] does on this test thread in place of starting the
+/// worker. The seams stand where the production boundary is: the OS refusing a thread (below the
+/// claim `owed` reads, which the refusal gives back) and a worker whose answer comes late.
+#[cfg(test)]
+#[derive(Clone, Copy)]
+enum HubsLaunch {
+    Real,
+    Refused,
+    Late { extra: u32, items: usize },
+}
+
+#[cfg(test)]
+thread_local! {
+    static HUBS_LAUNCH_FOR_TEST: std::cell::Cell<HubsLaunch> = const { std::cell::Cell::new(HubsLaunch::Real) };
+}
+
+#[cfg(test)]
+fn hubs_launch_for_test() -> HubsLaunch {
+    HUBS_LAUNCH_FOR_TEST.with(|mode| mode.get())
+}
+
+#[cfg(test)]
+fn with_hubs_launch_for_test<R>(mode: HubsLaunch, f: impl FnOnce() -> R) -> R {
+    struct Restore(HubsLaunch);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            HUBS_LAUNCH_FOR_TEST.with(|mode| mode.set(self.0));
+        }
+    }
+    let _restore = Restore(HUBS_LAUNCH_FOR_TEST.with(|current| current.replace(mode)));
+    f()
+}
+
+/// TEST ONLY: every Hubs launch this test thread makes inside `f` is refused by the system (no
+/// worker starts), including a launch made from a nested call into the Bridge.
+#[cfg(test)]
+pub(crate) fn with_refused_hubs_launches_for_test<R>(f: impl FnOnce() -> R) -> R {
+    with_hubs_launch_for_test(HubsLaunch::Refused, f)
+}
+
+/// TEST ONLY: replace only the network read of every Hubs launch this test thread makes inside `f`
+/// with a worker that answers with `items` movies LATE: it posts only after the adapter's mailbox
+/// has been taken at least once since the launch (so a take that does not wait finds it empty,
+/// every time), then yields `extra` more times so its post lands at a varying point of the poll
+/// loop of a take that does. Both waits are counts, never clocks, and bounded.
+#[cfg(test)]
+pub(crate) fn with_late_hubs_launches_for_test<R>(extra: u32, items: usize, f: impl FnOnce() -> R) -> R {
+    with_hubs_launch_for_test(HubsLaunch::Late { extra, items }, f)
+}
+
 pub(crate) enum StoreRunner {
     /// Start every job on a worker thread.
     Live,
-    /// TEST ONLY: park every job that starts until [`StoreRunner::run_held`]: after its tape
-    /// admission for a kind that is on the tape, after the registry's key check for one that is
-    /// not but reads a server, and with neither for a Catalog job (a plex.tv read that names no
-    /// client).
+    /// TEST ONLY: park the jobs of every kind not in `live` until [`StoreRunner::run_held`]: after
+    /// its tape admission for a kind that is on the tape, after the registry's key check for one
+    /// that is not but reads a server, and with neither for a Catalog job (a plex.tv read that
+    /// names no client). A kind in `live` starts as `Live` starts it.
     #[cfg(test)]
-    Held(Vec<StoreJob>),
+    Held { parked: Vec<StoreJob>, live: &'static [plx_data::stores::StoreId] },
 }
 
 impl StoreRunner {
@@ -90,9 +154,18 @@ impl StoreRunner {
         Self::Live
     }
 
+    /// TEST ONLY: [`StoreRunner::Held`] for every kind but Hubs, which starts on a worker as it
+    /// does in production: a rig that waits for a Home landing needs a real one.
     #[cfg(test)]
     pub(crate) fn held() -> Self {
-        Self::Held(Vec::new())
+        Self::Held { parked: Vec::new(), live: &[plx_data::stores::StoreId::Hubs] }
+    }
+
+    /// TEST ONLY: [`StoreRunner::Held`] for every kind, Hubs included. The test runs the parked
+    /// Hubs jobs (`Bridge::run_held_store_jobs_of_for_test`) when it chooses to settle them.
+    #[cfg(test)]
+    pub(crate) fn held_all() -> Self {
+        Self::Held { parked: Vec::new(), live: &[] }
     }
 
     /// Start `job`, admitting it through the tape when its kind is taped (Detail, Collection,
@@ -103,10 +176,81 @@ impl StoreRunner {
             StoreJob::Detail(job, port) => self.start_detail(job, port),
             StoreJob::Collection(job, port) => self.start_collection(job, port),
             StoreJob::Person(job, port) => self.start_person(job, port),
+            StoreJob::Hubs(job, port) => self.start_hubs(job, port),
             StoreJob::Catalog(job, port) => self.start_catalog(job, port),
             StoreJob::SubtitleSearch(job, port) => self.start_subsearch(job, port),
             StoreJob::ViewReconcile(job, port) => self.start_reconcile(job, port),
         }
+    }
+
+    /// [`StoreRunner::start`] for a controlled Home run's arm: a job of the `Home` family is
+    /// admitted through the run's own ledger (`home`), which records the launch or, under replay,
+    /// answers it from the recording. Every other family starts as `start` starts it. A step run
+    /// outside a controlled run has no ledger (`home: None`) and starts its Home jobs directly.
+    pub(crate) fn start_admitted(&mut self, job: StoreJob, home: Option<&mut HomeIo>) {
+        match (job.admission(), home) {
+            (Admission::Home, Some(io)) => self.admit_home(job, io),
+            (Admission::Tape | Admission::Home | Admission::Direct, _) => self.start(job),
+        }
+    }
+
+    /// Admit one Home job through `io`. Exactly one answer reaches its port, or none under replay: a
+    /// recorded launch (`admitted: true`) starts nothing now, because the tape's own recorded result
+    /// answers it, and a recorded refusal is answered here, once. Recording, the launch is the
+    /// recorded boolean.
+    fn admit_home(&mut self, job: StoreJob, io: &mut HomeIo) {
+        match job {
+            StoreJob::Hubs(job, port) => {
+                let addr = job.addr;
+                let request = job.req.admission();
+                let refusal = port.clone();
+                if !io.admit(request, || self.launch_hubs(job, port)) {
+                    refusal.refused(addr);
+                }
+            }
+            // Not a Home kind: `Admission::Home` routed here only the kinds the arm above names.
+            other @ (StoreJob::Detail(..)
+                | StoreJob::Collection(..)
+                | StoreJob::Person(..)
+                | StoreJob::Catalog(..)
+                | StoreJob::SubtitleSearch(..)
+                | StoreJob::ViewReconcile(..)) => self.start(other),
+        }
+    }
+
+    /// A Hubs read outside a controlled run's ledger starts with no record, as its inline spawn
+    /// did. A launch that did not happen is refused, and the refusal is the job's answer: the next
+    /// Hubs step finds it and backs the source off.
+    fn start_hubs(&mut self, job: Job<HubRequest>, port: HubsPort) {
+        let addr = job.addr;
+        let refusal = port.clone();
+        if !self.launch_hubs(job, port) {
+            refusal.refused(addr);
+        }
+    }
+
+    /// Start the fetch on a worker, if the registry still holds the client the step decided on. The
+    /// claim `owed` reads is raised here (`launch_hubs_job`), on the calling thread before the
+    /// worker exists; a launch that starts nothing gives it back and the caller refuses the job. A
+    /// parked job (`Held`) holds the claim from the park: it is dropped back by the take of its
+    /// landing, or by the refusal when the client is gone by the time the job runs.
+    fn launch_hubs(&mut self, job: Job<HubRequest>, port: HubsPort) -> bool {
+        let (sid, key) = job.req.server();
+        let Some(client) = resolve(sid, key) else { return false };
+        #[cfg(test)]
+        match (&mut *self, hubs_launch_for_test()) {
+            // The OS refusing the thread, below the claim.
+            (_, HubsLaunch::Refused) => return launch_hubs_job(job, port, client, |_work| false),
+            (_, HubsLaunch::Late { extra, items }) => return plx_data::pms::launch_late_hubs_job_for_test(
+                job, port, client, |work| plx_base::task::spawn_small("hubs", work), extra, items),
+            (Self::Held { parked, live }, HubsLaunch::Real) if !live.contains(&plx_data::stores::StoreId::Hubs) => {
+                port.claim();
+                parked.push(StoreJob::Hubs(job, port));
+                return true;
+            }
+            _ => {}
+        }
+        launch_hubs_job(job, port, client, |work| plx_base::task::spawn_small("hubs", work))
     }
 
     fn start_detail(&mut self, job: Job<DetailReq>, port: DetailPort) {
@@ -114,8 +258,8 @@ impl StoreRunner {
         // request that is already retired. Answer it, as the thread it stands for would have,
         // so its landing reservation can be handed back; the answer is discarded by the pump.
         #[cfg(test)]
-        if let Self::Held(held) = self {
-            Self::retire_parked_details(held);
+        if let Self::Held { parked, .. } = self {
+            Self::retire_parked_details(parked);
         }
         let addr = job.addr;
         let (sid, gen) = (job.req.sid, addr.req.0);
@@ -144,6 +288,7 @@ impl StoreRunner {
                 kept @ (
                     StoreJob::Collection(..)
                     | StoreJob::Person(..)
+                    | StoreJob::Hubs(..)
                     | StoreJob::Catalog(..)
                     | StoreJob::SubtitleSearch(..)
                     | StoreJob::ViewReconcile(..)
@@ -161,7 +306,7 @@ impl StoreRunner {
                 })
             }
             #[cfg(test)]
-            Self::Held(held) => {
+            Self::Held { parked: held, .. } => {
                 held.push(StoreJob::Detail(job, port));
                 true
             }
@@ -193,7 +338,7 @@ impl StoreRunner {
                 })
             }
             #[cfg(test)]
-            Self::Held(held) => {
+            Self::Held { parked: held, .. } => {
                 held.push(StoreJob::Collection(job, port));
                 true
             }
@@ -225,7 +370,7 @@ impl StoreRunner {
                 })
             }
             #[cfg(test)]
-            Self::Held(held) => {
+            Self::Held { parked: held, .. } => {
                 held.push(StoreJob::Person(job, port));
                 true
             }
@@ -253,7 +398,7 @@ impl StoreRunner {
                 })
             }
             #[cfg(test)]
-            Self::Held(held) => {
+            Self::Held { parked: held, .. } => {
                 held.push(StoreJob::Catalog(job, port));
                 true
             }
@@ -284,7 +429,7 @@ impl StoreRunner {
                 })
             }
             #[cfg(test)]
-            Self::Held(held) => {
+            Self::Held { parked: held, .. } => {
                 held.push(StoreJob::SubtitleSearch(job, port));
                 true
             }
@@ -314,7 +459,7 @@ impl StoreRunner {
                 })
             }
             #[cfg(test)]
-            Self::Held(held) => {
+            Self::Held { parked: held, .. } => {
                 held.push(StoreJob::ViewReconcile(job, port));
                 true
             }
@@ -323,11 +468,23 @@ impl StoreRunner {
 
     /// TEST ONLY: run every parked job on THIS thread through the production completion path
     /// (`finish_detail_fetch` over `fetch_full`, `finish_collection_job`, `finish_person_job`,
-    /// `finish_catalog_job`, `finish_subsearch_job`, `finish_reconcile_job`) and return how many ran.
+    /// `finish_hubs_job`, `finish_catalog_job`, `finish_subsearch_job`, `finish_reconcile_job`) and
+    /// return how many ran.
     /// Their landings are queued for the next pump. Under `Live` there is nothing parked.
     #[cfg(test)]
     pub(crate) fn run_held(&mut self) -> usize {
         self.run_held_where(|_| true)
+    }
+
+    /// TEST ONLY: take the parked jobs without running them, in the order they were parked. A test
+    /// that fabricates the answer itself reads each job and drops it; the claim a parked Hubs job
+    /// raised stays up, as it does for a worker that has not answered.
+    #[cfg(test)]
+    pub(crate) fn take_held(&mut self) -> Vec<StoreJob> {
+        match self {
+            Self::Live => Vec::new(),
+            Self::Held { parked, .. } => std::mem::take(parked),
+        }
     }
 
     /// TEST ONLY: [`Self::run_held`] for the jobs ONE store emitted, leaving the others parked. A
@@ -340,9 +497,9 @@ impl StoreRunner {
 
     #[cfg(test)]
     fn run_held_where(&mut self, wanted: impl Fn(&StoreJob) -> bool) -> usize {
-        let Self::Held(held) = self else { return 0 };
-        let (run, keep): (Vec<_>, Vec<_>) = std::mem::take(held).into_iter().partition(|job| wanted(job));
-        *held = keep;
+        let Self::Held { parked, .. } = self else { return 0 };
+        let (run, keep): (Vec<_>, Vec<_>) = std::mem::take(parked).into_iter().partition(|job| wanted(job));
+        *parked = keep;
         let n = run.len();
         for job in run {
             match job {
@@ -364,6 +521,19 @@ impl StoreRunner {
                     match person_client(&job.req) {
                         Ok(client) => finish_person_job(&port, job.addr, client, job.req),
                         Err(Gone) => port.refused(job.addr),
+                    }
+                }
+                StoreJob::Hubs(job, port) => {
+                    // The claim was raised at the park. The registry may have moved on since: a
+                    // request whose client is gone gives the claim back and is refused, as the
+                    // launch would have refused it before raising it.
+                    let (sid, key) = job.req.server();
+                    match resolve(sid, key) {
+                        Some(client) => plx_data::pms::finish_hubs_job(job, client, &port),
+                        None => {
+                            port.unclaim();
+                            port.refused(job.addr);
+                        }
                     }
                 }
                 StoreJob::Catalog(job, port) => finish_catalog_job(&port, job.addr, job.req),
@@ -392,7 +562,9 @@ impl StoreRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use plx_data::stores::browse::DirectorySnapshot;
     use plx_data::stores::collection::{CollectionCmd, CollectionStore};
+    use plx_data::stores::hubs::{HubsCmd, HubsStore};
     use plx_data::stores::metadata::{MetadataCmd, MetadataStore};
     use plx_data::stores::person::{PersonCmd, PersonStore};
     use plx_data::stores::subsearch::SubSearchStore;
@@ -1340,5 +1512,311 @@ mod tests {
         assert!(bridge.catalog_pump());
         assert!(matches!(bridge.catalog_for_test().load, plx_data::catalog::Load::Loaded(_)));
         bridge.assert_no_store_jobs_left_for_test();
+    }
+
+    // ---- the Hubs lane: each outcome of a Hubs job reaches its port once ----
+
+    /// A server registered at a port nothing listens on and a Hubs store whose refetch is out: the
+    /// job its step emitted, keyed to the client the registry held when it did.
+    fn hubs_request() -> (ServerId, HubsStore, StoreJob) {
+        plx_plex::plex::reset_servers_for_test();
+        let mut hubs = HubsStore::default();
+        assert!(hubs.run(HubsCmd::Reset).changed);
+        let sid = plx_plex::plex::register_for_test("runner", "127.0.0.1", 9, "t", "cid");
+        assert!(plx_plex::plex::set_current(sid));
+        let directory = DirectorySnapshot::default();
+        assert!(hubs.run_with_directory(HubsCmd::RefetchHubs, directory.view(), &registry_keys()).changed);
+        let mut jobs = hubs.take_jobs();
+        assert_eq!(jobs.len(), 1, "one source, one read");
+        (sid, hubs, jobs.remove(0))
+    }
+
+    /// The request id the job's one answer is filed under.
+    fn hubs_id(job: &StoreJob) -> u32 {
+        let StoreJob::Hubs(job, _) = job else { panic!("not a Hubs job") };
+        job.addr.req.0
+    }
+
+    /// What a controlled Home run records for the job, `admitted` as given.
+    fn hubs_record(job: &StoreJob, admitted: bool) -> serde_json::Value {
+        let StoreJob::Hubs(job, _) = job else { panic!("not a Hubs job") };
+        let mut record = job.req.admission();
+        record["admitted"] = serde_json::json!(admitted);
+        record
+    }
+
+    /// A controlled Home run's ledger: recording (`replay: false`), or replaying `admissions`.
+    fn home_io(replay: bool, admissions: Vec<serde_json::Value>) -> HomeIo {
+        let mt = unsafe { plx_base::task::MainThread::assume() };
+        let publisher = plx_plex::plex::session::ProfilePublisher::scoped(&mt);
+        HomeIo { replay, preferences: Default::default(), requests: Vec::new(),
+            admissions: admissions.into(), failure: None, profile: publisher.snapshot() }
+    }
+
+    /// The registry holds a different client for `sid` than the one the job's step decided on, as
+    /// after a sign-out and a sign-in to the same slot.
+    fn replace_the_client() {
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test("runner", "127.0.0.1", 9, "t2", "cid2");
+        assert!(plx_plex::plex::set_current(sid));
+    }
+
+    /// Recording, the registry still holding the client the step decided on: the claim is raised on
+    /// this thread before the worker exists, the worker posts its ONE answer, and taking it lowers
+    /// the claim.
+    #[test]
+    fn a_hubs_job_whose_client_is_still_held_runs_on_a_worker_and_answers_once() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, hubs, job) = hubs_request();
+        assert!(!hubs.owed(), "nothing is out until the runner launches it");
+
+        StoreRunner::live().start(job);
+        assert!(hubs.owed(), "the claim was raised by the launch, before any answer");
+        plx_base::task::drain_workers_for_test();
+
+        assert_eq!(hubs.take_results().len(), 1, "the worker answered once");
+        assert!(!hubs.owed(), "taking the one answer lowered the claim");
+        assert!(hubs.refused_for_test().is_empty(), "a launch that happened is never also refused");
+        assert!(!hubs.has_jobs());
+    }
+
+    /// The registry moved on between the step and the launch: nothing starts, no claim is raised,
+    /// and the one answer is the refusal.
+    #[test]
+    fn a_hubs_job_whose_client_is_gone_is_refused_once_and_raises_no_claim() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, hubs, job) = hubs_request();
+        let id = hubs_id(&job);
+        replace_the_client();
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert_eq!(hubs.refused_for_test(), [id], "one refusal, filed under the request");
+        assert!(!hubs.owed(), "a launch that never happened holds no claim");
+        assert!(hubs.take_results().is_empty(), "no worker, so no landing");
+    }
+
+    /// The system refuses the thread, below the claim: the claim is given back and the one answer
+    /// is the refusal.
+    #[test]
+    fn a_hubs_job_the_system_refuses_to_start_gives_its_claim_back_and_is_refused_once() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, hubs, job) = hubs_request();
+        let id = hubs_id(&job);
+
+        with_refused_hubs_launches_for_test(|| StoreRunner::live().start(job));
+        plx_base::task::drain_workers_for_test();
+
+        assert_eq!(hubs.refused_for_test(), [id]);
+        assert!(!hubs.owed(), "the refused launch gave its claim back");
+        assert!(hubs.take_results().is_empty());
+    }
+
+    /// `held_all` parks the job with its claim up, and `run_held` runs it on the test thread
+    /// through the production completion: one answer, nothing left parked.
+    #[test]
+    fn a_held_hubs_job_holds_its_claim_and_runs_once_when_the_test_runs_it() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, hubs, job) = hubs_request();
+        let mut runner = StoreRunner::held_all();
+
+        runner.start(job);
+        assert!(hubs.owed(), "a parked job is a worker that has not answered");
+        assert!(hubs.take_results().is_empty());
+
+        assert_eq!(runner.run_held_of(plx_data::stores::StoreId::Hubs), 1);
+        assert_eq!(hubs.take_results().len(), 1);
+        assert!(!hubs.owed());
+        assert_eq!(runner.run_held(), 0, "nothing left parked");
+        assert!(hubs.refused_for_test().is_empty());
+    }
+
+    /// A parked job whose client is gone by the time the test runs it gives the claim back and is
+    /// refused, as the launch would have refused it.
+    #[test]
+    fn a_held_hubs_job_whose_client_is_gone_by_then_gives_its_claim_back_and_is_refused() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, hubs, job) = hubs_request();
+        let id = hubs_id(&job);
+        let mut runner = StoreRunner::held_all();
+
+        runner.start(job);
+        assert!(hubs.owed());
+        replace_the_client();
+        assert_eq!(runner.run_held(), 1);
+
+        assert_eq!(hubs.refused_for_test(), [id]);
+        assert!(!hubs.owed(), "the gone branch lowered the claim the park raised");
+        assert!(hubs.take_results().is_empty());
+    }
+
+    /// `held` leaves the Hubs read live, as production runs it: a rig that waits for a Home landing
+    /// gets a real one, and nothing is parked for it.
+    #[test]
+    fn the_held_runner_starts_a_hubs_job_on_a_worker_as_production_does() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, hubs, job) = hubs_request();
+        let mut runner = StoreRunner::held();
+
+        runner.start(job);
+        assert_eq!(runner.run_held(), 0, "nothing was parked");
+        plx_base::task::drain_workers_for_test();
+
+        assert_eq!(hubs.take_results().len(), 1, "the worker answered");
+        assert!(!hubs.owed());
+    }
+
+    /// A controlled run recording: the launch is the recorded boolean. The ledger holds the job's
+    /// own descriptor, and a worker answers.
+    #[test]
+    fn a_home_job_recorded_as_launched_starts_a_worker_and_is_recorded_admitted() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, hubs, job) = hubs_request();
+        let record = hubs_record(&job, true);
+        let mut io = home_io(false, Vec::new());
+
+        StoreRunner::live().start_admitted(job, Some(&mut io));
+        plx_base::task::drain_workers_for_test();
+
+        assert_eq!(io.requests, [record]);
+        assert!(io.failure.is_none());
+        assert_eq!(hubs.take_results().len(), 1);
+        assert!(hubs.refused_for_test().is_empty());
+    }
+
+    /// A controlled run recording a launch the system refused: `admitted:false` is what the ledger
+    /// holds, the claim is back, and the one answer is the refusal.
+    #[test]
+    fn a_home_job_the_system_refuses_is_recorded_not_admitted_and_refused_once() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, hubs, job) = hubs_request();
+        let (id, record) = (hubs_id(&job), hubs_record(&job, false));
+        let mut io = home_io(false, Vec::new());
+
+        with_refused_hubs_launches_for_test(|| StoreRunner::live().start_admitted(job, Some(&mut io)));
+
+        assert_eq!(io.requests, [record]);
+        assert_eq!(hubs.refused_for_test(), [id]);
+        assert!(!hubs.owed());
+    }
+
+    /// A controlled run recording a job whose client is already gone: the same refusal, recorded.
+    #[test]
+    fn a_home_job_whose_client_is_gone_is_recorded_not_admitted_and_refused_once() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, hubs, job) = hubs_request();
+        let (id, record) = (hubs_id(&job), hubs_record(&job, false));
+        replace_the_client();
+        let mut io = home_io(false, Vec::new());
+
+        StoreRunner::live().start_admitted(job, Some(&mut io));
+
+        assert_eq!(io.requests, [record]);
+        assert_eq!(hubs.refused_for_test(), [id]);
+        assert!(!hubs.owed());
+    }
+
+    /// Replay with `"admitted":true`: the recorded run launched a worker, and replay never does, so
+    /// the runner answers nothing and raises no claim: the recording's own landing settles it.
+    #[test]
+    fn a_home_job_the_ledger_admits_launches_nothing_under_replay_and_answers_nothing() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, hubs, job) = hubs_request();
+        let record = hubs_record(&job, true);
+        let mut io = home_io(true, vec![record.clone()]);
+
+        StoreRunner::live().start_admitted(job, Some(&mut io));
+        // Had a worker been started it would have answered by the time this returns.
+        plx_base::task::drain_workers_for_test();
+
+        assert_eq!(io.requests, [record], "the replay re-records what it was told");
+        assert!(io.admissions.is_empty() && io.failure.is_none(), "the one recorded line was consumed clean");
+        assert!(hubs.take_results().is_empty(), "no worker ran");
+        assert!(hubs.refused_for_test().is_empty(), "and no refusal was invented");
+        assert!(!hubs.owed(), "replay never raises the claim a worker would have");
+    }
+
+    /// Replay with `"admitted":false`: the recorded launch was refused, so nothing starts and the
+    /// runner settles the job with exactly one refusal.
+    #[test]
+    fn a_home_job_the_ledger_refuses_is_refused_once_under_replay_and_starts_nothing() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, hubs, job) = hubs_request();
+        let (id, record) = (hubs_id(&job), hubs_record(&job, false));
+        let mut io = home_io(true, vec![record.clone()]);
+
+        StoreRunner::live().start_admitted(job, Some(&mut io));
+        plx_base::task::drain_workers_for_test();
+
+        assert_eq!(io.requests, [record]);
+        assert!(io.failure.is_none());
+        assert_eq!(hubs.refused_for_test(), [id], "one refusal, not two");
+        assert!(hubs.take_results().is_empty());
+        assert!(!hubs.owed());
+    }
+
+    /// Replay against a ledger line that is not this request: the run has failed (`failure`), the
+    /// runner does not launch, and the job is still answered exactly once.
+    #[test]
+    fn a_home_job_the_ledger_does_not_recognise_fails_the_run_and_is_refused_once() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, hubs, job) = hubs_request();
+        let id = hubs_id(&job);
+        let mut other = hubs_record(&job, true);
+        other["req"] = serde_json::json!(id + 1000);
+        let mut io = home_io(true, vec![other]);
+
+        StoreRunner::live().start_admitted(job, Some(&mut io));
+        plx_base::task::drain_workers_for_test();
+
+        assert_eq!(io.failure, Some("mismatched synchronous admission"));
+        assert_eq!(hubs.refused_for_test(), [id]);
+        assert!(hubs.take_results().is_empty());
+        assert!(!hubs.owed());
+    }
+
+    /// A Home job from a step run outside a controlled run has no ledger: it starts directly and
+    /// nothing is recorded.
+    #[test]
+    fn a_home_job_with_no_ledger_starts_directly() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, hubs, job) = hubs_request();
+
+        StoreRunner::live().start_admitted(job, None);
+        plx_base::task::drain_workers_for_test();
+
+        assert_eq!(hubs.take_results().len(), 1);
+        assert!(hubs.refused_for_test().is_empty());
+    }
+
+    /// A job of another family is started as `start` starts it, whether or not a ledger is handed
+    /// over: the ledger records Home jobs only.
+    #[test]
+    fn a_job_of_another_admission_family_leaves_the_home_ledger_untouched() {
+        let _serial = plx_base::testlock::serial();
+        let mut store = MetadataStore::default();
+        let job = request(&mut store, ServerId::UNSET, "d1");
+        assert_eq!(job.admission(), Admission::Tape);
+        let mut runner = StoreRunner::held();
+        let mut io = home_io(false, Vec::new());
+
+        runner.start_admitted(job, Some(&mut io));
+
+        assert!(io.requests.is_empty(), "a Tape job records on the tape, not in the Home ledger");
+        assert_eq!(runner.run_held(), 1, "and it was started as `start` starts it");
     }
 }

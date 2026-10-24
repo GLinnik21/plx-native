@@ -1272,7 +1272,7 @@ fn refreshing(h: &[(ServerId, String)]) -> (Owner, Vec<HubRequest>) {
     assert_eq!(rks(&o.state, 0), ["own", "own-film", "their-film"], "premise");
     let mut held = Vec::new();
     let _ = request_refetch_hubs_with_scope(&mut o.state, &o.adapter, &BrowseScope::standalone(),
-        &mut |request| { held.push(request); true });
+        &mut |request| { held.push(request); });
     assert_eq!(held.len(), 2, "premise: both sources read again");
     (o, held)
 }
@@ -1284,7 +1284,7 @@ fn answer(o: &mut Owner, request: HubRequest, mut build: SourceBuild) {
     build.lane = deck::Lane::preview(&key(build.cw.first()), &key(build.cw.last()), build.cw.len(), build.cw.len(), true);
     // a refreshed lane comes back seated where the deck stood (`deck::reload`)
     deck::place(std::slice::from_mut(&mut build.lane), &[build.cw.as_slice()]);
-    let landing = request.complete(Some(build));
+    let landing = request.complete_for_test(Some(build));
     let _ = super::land(&mut o.state, &o.adapter, &landing);
 }
 

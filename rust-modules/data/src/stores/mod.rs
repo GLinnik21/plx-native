@@ -254,6 +254,7 @@ impl Stores {
             StoreId::Catalog => self.catalog.take_jobs(),
             StoreId::SubtitleSearch => self.subtitle_search.take_jobs(),
             StoreId::ViewReconcile => self.reconcile.take_jobs(),
+            StoreId::Hubs => self.hubs.take_jobs(),
             // The other stores emit no jobs yet.
             _ => Vec::new(),
         }
@@ -273,6 +274,7 @@ impl Stores {
             StoreId::Catalog => self.catalog.has_jobs(),
             StoreId::SubtitleSearch => self.subtitle_search.has_jobs(),
             StoreId::ViewReconcile => self.reconcile.has_jobs(),
+            StoreId::Hubs => self.hubs.has_jobs(),
             // The other stores emit no jobs yet.
             _ => false,
         }
@@ -651,9 +653,36 @@ pub enum StoreJob {
     /// One read-back batch (`/library/metadata/{k1,k2,…}` of one server), emitted by the reconcile
     /// pump and addressed by its flight id. One is out per server. Not on the tape.
     ViewReconcile(plx_machine::job::Job<viewreconcile::ReconcileReq>, viewreconcile::ReconcilePort),
+    /// One Home fetch (a source's whole `/hubs`, a row's page, or the Continue Watching deck),
+    /// emitted by any Hubs step that kicks a source and addressed by the request id its adapter
+    /// minted. Several are out at once, one per source. On the tape only through a controlled run
+    /// ([`Admission::Home`]).
+    Hubs(plx_machine::job::Job<crate::pms::HubRequest>, crate::pms::HubsPort),
+}
+
+/// How the runner admits a job before it starts it: the policy a job kind belongs to, stated on
+/// the kind so a new kind cannot skip the question ([`StoreJob::admission`] is an exhaustive match).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Admission {
+    /// Every launch is recorded on the tape (`stores::tape::admit`) and a replay answers it.
+    Tape,
+    /// Recorded in a controlled Home run (`HomeIo::admit`, in the order the run asks), and started
+    /// with no record anywhere else: the live arms, the landing's follow-up reads and the fan-outs.
+    Home,
+    /// Never recorded: the launch is the whole decision.
+    Direct,
 }
 
 impl StoreJob {
+    /// The admission family of this job's kind.
+    pub fn admission(&self) -> Admission {
+        match self {
+            Self::Detail(..) | Self::Collection(..) | Self::Person(..) => Admission::Tape,
+            Self::Hubs(..) => Admission::Home,
+            Self::Catalog(..) | Self::SubtitleSearch(..) | Self::ViewReconcile(..) => Admission::Direct,
+        }
+    }
+
     pub fn store(&self) -> StoreId {
         match self {
             Self::Detail(..) => StoreId::Metadata,
@@ -662,6 +691,7 @@ impl StoreJob {
             Self::Catalog(..) => StoreId::Catalog,
             Self::SubtitleSearch(..) => StoreId::SubtitleSearch,
             Self::ViewReconcile(..) => StoreId::ViewReconcile,
+            Self::Hubs(..) => StoreId::Hubs,
         }
     }
 }

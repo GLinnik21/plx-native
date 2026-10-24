@@ -371,7 +371,7 @@ fn hubs_land_and_tick_keep_the_frame_directory_policy() {
     let directory = rig.directory.clone();
 
     let keys = plx_data::pms::registry_keys_for_test();
-    plx_data::pms::with_refused_fetches_for_test(|| {
+    crate::app::adapters::stores::with_refused_hubs_launches_for_test(|| {
         let _ = rig.stores.hubs.run_with_directory(
             plx_data::stores::hubs::HubsCmd::Reset, directory.view(), &keys);
         let parts = CxParts { tick: tick(0), press: Default::default(), focus: Default::default(),
@@ -411,6 +411,8 @@ fn hubs_land_and_tick_keep_the_frame_directory_policy() {
         let retried = rig.stores.hubs.run_with_directory(
             plx_data::stores::hubs::HubsCmd::Retry, directory.view(), &keys);
         assert!(retried.endpoints.iter().next().is_none(), "its refusals are settled by the next step");
+        // The bare store starts nothing: the system's refusal of the retry's read is the answer.
+        rig.stores.hubs.refuse_jobs_for_test();
         let sources_after_land = rig.stores.hubs.tick_with_directory(0.0, directory.view(), &keys);
         assert_eq!(sources_after_land.endpoints.iter().map(|request| request.sid).collect::<Vec<_>>(), [own],
             "landing must keep the retained frame directory");
@@ -419,6 +421,7 @@ fn hubs_land_and_tick_keep_the_frame_directory_policy() {
             plx_data::stores::hubs::HubsCmd::Reset, directory.view(), &keys);
         let _ = rig.stores.hubs.run_with_directory(
             plx_data::stores::hubs::HubsCmd::RefetchHubs, directory.view(), &keys);
+        rig.stores.hubs.refuse_jobs_for_test();
         // the refusal that refetch left is settled here, so the tick below is graded on its own
         let _ = rig.stores.hubs.tick_with_directory(0.0, directory.view(), &keys);
         let _ = rig.stores.take_notices();

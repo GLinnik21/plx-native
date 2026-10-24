@@ -1362,8 +1362,8 @@ mod tests {
         let mut stores = crate::stores::Stores::default();
         stores.viewstate.borrow_mut().owe_hubs_refresh_for_test();
         let directory = crate::stores::browse::DirectorySnapshot::default();
-        let endpoints = crate::pms::with_refused_fetches_for_test(||
-            stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test()));
+        let endpoints = stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test());
+        stores.hubs.refuse_jobs_for_test(); // the runner starts nothing
         assert_eq!(endpoints.iter().count(), 0, "a refused refetch is settled by the next Hubs step");
         let settled = stores.hubs.tick_with_directory(0.0, directory.view(), &crate::pms::registry_keys_for_test());
         assert_eq!(settled.endpoints.iter().map(|r| r.sid).collect::<Vec<_>>(), [sid]);

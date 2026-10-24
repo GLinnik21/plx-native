@@ -345,7 +345,7 @@ fn a_source_request_takes_its_ledger_stamp_at_the_request() {
     let client = plx_plex::plex::client_for(registered).unwrap();
     let mut s = Src::new(sid(0), String::new(), &registry_keys_for_test());
     s.ledger.record(&ViewAt::leaf(sid(0), "7"), ViewEdit::Watched(true)); // before the request
-    assert!(s.begin_request(client, 1, || 1).is_some());
+    assert!(s.begin_request(ClientKey::of(client), 1, || 1).is_some());
     s.ledger.record(&ViewAt::leaf(sid(0), "8"), ViewEdit::Watched(true)); // while it is out
     let mut brought = SourceBuild { lane: Default::default(), cw: Vec::new(),
         shelves: vec![shelf(0, "Recently Added", "home.movies.recent", &["7", "8"])] };

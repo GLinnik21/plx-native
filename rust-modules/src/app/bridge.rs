@@ -1870,6 +1870,18 @@ impl Bridge {
         Handled::Yes
     }
 
+    /// Start the Hubs jobs a controlled Home arm's step just emitted, each admitted through the
+    /// run's ledger ([`super::adapters::stores::StoreRunner::start_admitted`]). Inside the arm, so the
+    /// hubs line is written before a later arm of the same turn (`StoreWork::BrowseDiscovery`)
+    /// writes the discovery line: the ledger is one ordered queue. An associated function over the
+    /// fields (not `&mut self`) so an arm holding `home_io` can call it.
+    fn admit_hubs_jobs(stores: &mut plx_data::stores::Stores,
+        runner: &mut super::adapters::stores::StoreRunner, io: &mut super::bootstrap::HomeIo) {
+        for job in stores.take_jobs_of(StoreId::Hubs) {
+            runner.start_admitted(job, Some(io));
+        }
+    }
+
     fn deliver_inner(&mut self, to: MachineId, msg: &AppMsg, parts: &CxParts<u32>, fx: &mut Effects<'_, AppHost>) -> Handled {
         if let AppMsg::Consent(command) = msg {
             if to != MachineId::Consent { return Handled::No; }
@@ -1928,7 +1940,8 @@ impl Bridge {
                 AppMsg::Store(StoreCmd::Hubs(cmd)) => {
                     super::adapters::stores::refill_client_keys(&mut self.client_keys);
                     let directory = self.directory.view();
-                    let due = io.hubs_with_directory(&mut self.stores.hubs, Some(cmd.clone()), 0.0, directory, &self.client_keys).endpoints;
+                    let due = self.stores.hubs.run_with_directory(cmd.clone(), directory, &self.client_keys).endpoints;
+                    Self::admit_hubs_jobs(&mut self.stores, &mut self.store_runner, io);
                     return Self::carry(&mut self.endpoint_carry, due);
                 }
                 AppMsg::Store(StoreCmd::Browse(plx_data::stores::browse::BrowseCmd::Discovery(result))) => {
@@ -1947,7 +1960,8 @@ impl Bridge {
                 AppMsg::StoreWork(plx_data::stores::StoreWork::Hubs) => {
                     super::adapters::stores::refill_client_keys(&mut self.client_keys);
                     let directory = self.directory.view();
-                    let due = io.hubs_with_directory(&mut self.stores.hubs, None, parts.tick.dt(), directory, &self.client_keys).endpoints;
+                    let due = self.stores.hubs.tick_with_directory(parts.tick.dt(), directory, &self.client_keys).endpoints;
+                    Self::admit_hubs_jobs(&mut self.stores, &mut self.store_runner, io);
                     return Self::carry(&mut self.endpoint_carry, due);
                 }
                 AppMsg::StoreWork(plx_data::stores::StoreWork::BrowseDiscovery) => {

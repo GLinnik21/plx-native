@@ -19,15 +19,15 @@ fn request_addresses_do_not_alias_across_sources_or_profile_resets() {
     let mut second = Src::new(b_sid, String::new(), &registry_keys_for_test());
     let mint = || o.adapter.next_request.fetch_add(1, Ordering::Relaxed);
     let mut held = None;
-    kick_with(o.state.hub_gen, &o.adapter, &mut first, &BrowseScope::standalone(), |request| { held = Some(request); true });
+    kick_with(o.state.hub_gen, &o.adapter, &mut first, &BrowseScope::standalone(), |request| { held = Some(request); });
     let a = held.unwrap().seq;
     kick_with(o.state.hub_gen, &o.adapter, &mut first, &BrowseScope::standalone(), |_| panic!("an in-flight source must not invoke the adapter again"));
-    assert!(first.begin_request(ca, 1, || panic!("single flight must not mint again")).is_none());
-    let b = second.begin_request(cb, 1, mint).unwrap().seq;
+    assert!(first.begin_request(ClientKey::of(ca), 1, || panic!("single flight must not mint again")).is_none());
+    let b = second.begin_request(ClientKey::of(cb), 1, mint).unwrap().seq;
     first.fetching = false; // the prior attempt completed
-    let retry = first.begin_request(ca, 1, mint).unwrap().seq;
+    let retry = first.begin_request(ClientKey::of(ca), 1, mint).unwrap().seq;
     reset(&mut o.state, &o.adapter);
-    let next_profile = Src::new(a_sid, String::new(), &registry_keys_for_test()).begin_request(ca, 2, mint).unwrap().seq;
+    let next_profile = Src::new(a_sid, String::new(), &registry_keys_for_test()).begin_request(ClientKey::of(ca), 2, mint).unwrap().seq;
     let mut ids = vec![a, b, retry, next_profile];
     ids.sort_unstable();
     ids.dedup();
@@ -48,7 +48,7 @@ fn endpoint_outcomes_cover_missing_client_refusal_and_failed_arrival() {
 
     let id = plx_plex::plex::register_for_test("endpoint-hub", "127.0.0.1", 9, "synthetic", "cid");
     let mut s = Src::new(id, String::new(), &registry_keys_for_test());
-    assert!(kick_with(o.state.hub_gen, &o.adapter, &mut s, &BrowseScope::standalone(), |_| false).is_none(),
+    assert!(kick_with(o.state.hub_gen, &o.adapter, &mut s, &BrowseScope::standalone(), |request| HubsPort::of(&o.adapter).refused(hubs_addr(request.seq))).is_none(),
         "a refusal is found by the next step, not by the kick");
     assert!(s.fetching, "the refused read is in flight until that step settles it");
     seed(&mut o.state, vec![s]);
@@ -79,7 +79,7 @@ fn a_prepared_request_keeps_its_original_context_without_running_an_adapter() {
     source.retry_n = 3;
     source.retry_s = 8.0;
     let generation = o.state.hub_gen;
-    let request = source.begin_request(client, generation, || 23).unwrap();
+    let request = source.begin_request(ClientKey::of(client), generation, || 23).unwrap();
     assert!(source.fetching);
     assert_eq!(source.state, HubState::Loading);
     assert_eq!(source.retry_s, 0.0);
@@ -90,7 +90,7 @@ fn a_prepared_request_keeps_its_original_context_without_running_an_adapter() {
     assert_eq!(plx_plex::plex::register_for_test("request", "new.invalid", 32400, "new", "cid"), sid);
     reset(&mut o.state, &o.adapter); // a different account epoch must not retag the request already handed out
     assert_ne!(o.state.hub_gen, generation);
-    let result = request.complete(None);
+    let result = request.complete(client, None); // the client the request was made through, not the slot's new one
     assert_eq!((result.gen, result.seq, result.sid, result.token_gen), (generation, 23, sid, token_gen));
     assert!(std::ptr::eq(result.client.unwrap().resource, client));
     assert!(result.build.is_none(), "a failed request is not an empty success");
@@ -338,7 +338,7 @@ fn home_hubs_over_forty_servers_are_fetched_four_at_a_time() {
     let mut first = true;
     for _ in 0..200 {
         let mut launched = Vec::new();
-        let mut launch = |request: HubRequest| { launched.push(request.sid.raw()); true };
+        let mut launch = |request: HubRequest| { launched.push(request.sid.raw()); };
         if first {
             first = false;
             let _ = request_refetch_hubs_with_scope(&mut o.state, &o.adapter, &BrowseScope::standalone(), &mut launch);
