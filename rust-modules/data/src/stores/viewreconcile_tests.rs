@@ -120,17 +120,22 @@ fn tile(stores: &Stores) -> (bool, bool) {
 }
 
 fn press(stores: &mut Stores, sid: ServerId, write: Write) {
+    press_as(stores, sid, write, 0);
+}
+
+/// A press made under the profile whose identity (`session::current_gen`) is `profile`.
+fn press_as(stores: &mut Stores, sid: ServerId, write: Write, profile: u32) {
     let directory = DirectorySnapshot::default();
     assert!(stores.viewstate_run(ViewStateCmd::Request {
         sid, rk: "1".into(), write, scope: Scope::Leaf, guid: String::new(),
-    }, directory.view(), &crate::pms::registry_keys_for_test()).changed);
+    }, directory.view(), &crate::pms::registry_keys_for_test(), profile).changed);
 }
 
 /// Pump both owners as the frame loop does until `done`, failing after ~5 s.
 fn drive(stores: &mut Stores, done: impl Fn(&Stores) -> bool) {
     let directory = DirectorySnapshot::default();
     for _ in 0..1000 {
-        let _ = stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test());
+        let _ = stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test(), 0);
         super::rig::frame(stores, &directory);
         if done(stores) { return; }
         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -364,7 +369,7 @@ fn the_read_back_of_a_stop_waits_while_the_network_is_held() {
     stores.hold_network(true);
     let _ = stores.stops_landed(vec![stop(sid, 30_000, true, true)], directory.view(), &crate::pms::registry_keys_for_test());
     for _ in 0..40 {
-        let _ = stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test());
+        let _ = stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test(), 0);
         super::rig::frame(&mut stores, &directory);
         std::thread::sleep(std::time::Duration::from_millis(3));
     }
@@ -443,7 +448,7 @@ fn a_rewatch_does_not_fan_out() {
     let _ = stores.stops_landed(vec![stop(sid_a, 60_000, true, true)], directory.view(), &crate::pms::registry_keys_for_test());
     drive(&mut stores, |s| settled(s) && a.truth.reads.load(Ordering::SeqCst) == 1);
     std::thread::sleep(std::time::Duration::from_millis(50));
-    let _ = stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test());
+    let _ = stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test(), 0);
     assert_eq!(b.truth.scrobbles.load(Ordering::SeqCst), 0);
     assert_eq!(a.truth.scrobbles.load(Ordering::SeqCst), 0);
     drop(stores);
@@ -459,7 +464,7 @@ fn a_stop_in_the_middle_does_not_fan_out() {
     let _ = stores.stops_landed(vec![stop(sid_a, 30_000, false, true)], directory.view(), &crate::pms::registry_keys_for_test());
     drive(&mut stores, |s| settled(s) && a.truth.reads.load(Ordering::SeqCst) == 1);
     std::thread::sleep(std::time::Duration::from_millis(50));
-    let _ = stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test());
+    let _ = stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test(), 0);
     assert_eq!(b.truth.scrobbles.load(Ordering::SeqCst), 0);
     drop(stores);
 }
@@ -492,5 +497,58 @@ fn a_flight_sent_before_the_candidate_does_not_settle_it() {
     drive(&mut stores, |s| settled(s) && b.truth.scrobbles.load(Ordering::SeqCst) == 1);
     assert!(stores.reconcile.candidates_for_test().is_empty(), "the later flight settled it");
     assert_eq!(a.truth.scrobbles.load(Ordering::SeqCst), 0, "the origin already counted the view");
+    drop(stores);
+}
+
+/// **A write pressed under one profile is never sent as the next profile's.** A switch re-tokens the
+/// registry's clients IN PLACE, so a queued write's server still resolves, now to the new profile's
+/// credential. The press recorded the profile; the kick finds it moved, drops the write, retires its
+/// ledger entry and sends nothing: a scrobble is a statement about one household member's viewing
+/// record.
+#[test]
+fn a_write_pressed_under_another_profile_is_dropped_and_retired_not_sent_as_the_new_one() {
+    let _g = plx_base::testlock::serial();
+    let pms = serve();
+    let (mut stores, sid) = library_holding_item(&pms);
+    stores.viewstate.borrow_mut().hold_inflight_for_test(sid, "held"); // the press must queue behind it
+    press_as(&mut stores, sid, Write::Watched, 5);
+    assert_eq!(stores.view_ledger.since(0).len(), 1, "the press is in the ledger until its fate is known");
+    // the switch: the SAME slot and client object, the new profile's token, a new profile identity
+    plx_plex::plex::client_for(sid).unwrap().set_token("the-next-profiles-token");
+    let land_held = stores.viewstate.borrow().late_completion_for_test();
+    land_held();
+    let directory = DirectorySnapshot::default();
+    for _ in 0..200 {
+        let _ = stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test(), 6);
+        super::rig::frame(&mut stores, &directory);
+        if settled(&stores) { break; }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(settled(&stores), "the queue emptied");
+    assert_eq!(pms.truth.scrobbles.load(Ordering::SeqCst), 0, "nothing was sent under the new profile's token");
+    assert!(stores.view_ledger.since(0).is_empty(), "the dropped press was retired");
+    drop(stores);
+}
+
+/// The same profile with a REFRESHED token is still the user's press: the write is re-keyed to the
+/// credential the registry holds now and goes out (a token refresh is not a profile switch).
+#[test]
+fn a_write_whose_client_was_re_tokened_under_the_same_profile_is_re_keyed_and_sent() {
+    let _g = plx_base::testlock::serial();
+    let pms = serve();
+    let (mut stores, sid) = library_holding_item(&pms);
+    stores.viewstate.borrow_mut().hold_inflight_for_test(sid, "held");
+    press_as(&mut stores, sid, Write::Watched, 5);
+    plx_plex::plex::client_for(sid).unwrap().set_token("a-refreshed-token"); // same household member
+    let land_held = stores.viewstate.borrow().late_completion_for_test();
+    land_held();
+    let directory = DirectorySnapshot::default();
+    for _ in 0..1000 {
+        let _ = stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test(), 5);
+        super::rig::frame(&mut stores, &directory);
+        if settled(&stores) && pms.truth.scrobbles.load(Ordering::SeqCst) == 1 { break; }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(pms.truth.scrobbles.load(Ordering::SeqCst), 1, "the press went out once, re-keyed");
     drop(stores);
 }

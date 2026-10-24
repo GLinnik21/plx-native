@@ -351,11 +351,14 @@ impl Stores {
     /// ViewState's synchronous command path, with every Browse side effect addressed back to this
     /// aggregate. The callback is invoked inline, preserving the press-frame optimistic edit. The
     /// outcome's `endpoints` are the refreshes the edit's Hubs step settled: the caller carries them.
+    /// `clients` is the registry's answer as of this call and `profile` the profile the Session owner
+    /// has seated (`Bridge::profile_scope`): a write is sent only under the profile it was pressed under.
     pub fn viewstate_run(
         &mut self,
         cmd: viewstate::ViewStateCmd,
         directory: browse::DirectoryView<'_>,
         clients: &plx_plex::plex::ClientKeys,
+        profile: u32,
     ) -> StoreOutcome {
         if matches!(cmd, viewstate::ViewStateCmd::Reset) {
             self.reconcile.reset();
@@ -371,6 +374,8 @@ impl Stores {
         let watchlist = &mut self.watchlist;
         self.viewstate.borrow_mut().run(
             cmd,
+            clients,
+            profile,
             &mut |cmd| watchlist_tee(watchlist, cmd, |cmd| browse.borrow_mut().run(cmd, clients)),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory, clients),
             &mut |cmd| person.run(cmd),
@@ -381,11 +386,13 @@ impl Stores {
     }
 
     /// ViewState's route-unconditional landing pass. Fan-out edits and the terminal section-hubs
-    /// invalidation are applied to this aggregate's Browse owner before the pump returns.
+    /// invalidation are applied to this aggregate's Browse owner before the pump returns. `clients`
+    /// and `profile` are the step's inputs, as for [`Stores::viewstate_run`].
     pub fn viewstate_pump(
         &mut self,
         directory: browse::DirectoryView<'_>,
         clients: &plx_plex::plex::ClientKeys,
+        profile: u32,
     ) -> EndpointRefreshSet {
         let browse = std::rc::Rc::clone(&self.browse);
         let hubs = &mut self.hubs;
@@ -396,6 +403,8 @@ impl Stores {
         let watchlist = &mut self.watchlist;
         self.viewstate.borrow_mut().pump_with_gate(
             &self.landgate,
+            clients,
+            profile,
             &mut |cmd| watchlist_tee(watchlist, cmd, |cmd| browse.borrow_mut().run(cmd, clients)),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory, clients),
             &mut |cmd| person.run(cmd),
@@ -509,8 +518,10 @@ impl Stores {
     /// the registry's answer as of this call. It does NOT start the reads it sent: a caller that
     /// returns without taking them ([`Stores::take_jobs_of`]) and handing them to a runner has
     /// stranded the flights. The one production caller is `Bridge::reconcile_pump`. The outcome's
-    /// `endpoints` are the refreshes the published facts' Hubs steps settled.
-    pub fn reconcile_pump(&mut self, directory: browse::DirectoryView<'_>, clients: &plx_plex::plex::ClientKeys) -> StoreOutcome {
+    /// `endpoints` are the refreshes the published facts' Hubs steps settled. `profile` is the one
+    /// the end-of-stream fan-outs it queues are made under ([`Stores::viewstate_run`]).
+    pub fn reconcile_pump(&mut self, directory: browse::DirectoryView<'_>, clients: &plx_plex::plex::ClientKeys,
+        profile: u32) -> StoreOutcome {
         let owed = self.viewstate.borrow_mut().take_reread();
         self.reconcile.enqueue(owed);
         let idle = !self.viewstate.borrow().is_busy() && !self.network_held;
@@ -534,7 +545,7 @@ impl Stores {
         // A first watch whose read-back found the stream's end: the other servers' copies are
         // owed the same watched write, through ViewState's serial queue (the origin already holds it).
         for (sid, rk) in self.reconcile.take_watched_ends() {
-            self.viewstate.borrow_mut().fan_out_origin_watched(sid, &rk);
+            self.viewstate.borrow_mut().fan_out_origin_watched(sid, &rk, clients, profile);
         }
         StoreOutcome { changed, endpoints }
     }

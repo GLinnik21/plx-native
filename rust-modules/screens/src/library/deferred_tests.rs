@@ -168,7 +168,7 @@ fn apply(
                 Some(stores.search_run(command, directory))
             }
             Fx::App(AppFx::Store(_, StoreCmd::ViewState(command))) => {
-                Some(stores.viewstate_run(command, directory, &plx_data::pms::registry_keys_for_test()).changed)
+                Some(stores.viewstate_run(command, directory, &plx_data::pms::registry_keys_for_test(), 0).changed)
             }
             _ => None,
         })

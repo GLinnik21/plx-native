@@ -37,7 +37,7 @@ pub(super) fn start_jobs(stores: &mut Stores) {
 
 /// One frame of the reconcile pass: the registry's answer, the step, and the reads it sent started.
 pub(super) fn frame(stores: &mut Stores, directory: &DirectorySnapshot) -> bool {
-    let changed = stores.reconcile_pump(directory.view(), &registry_keys()).changed;
+    let changed = stores.reconcile_pump(directory.view(), &registry_keys(), 0).changed;
     start_jobs(stores);
     changed
 }

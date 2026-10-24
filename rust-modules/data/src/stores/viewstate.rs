@@ -1,7 +1,7 @@
 //! The physically owned view-state write queue (`docs/stores-as-machines.md`). Each production
 //! `Bridge` owns one [`ViewStateStore`]: main-thread state, an `Arc` worker adapter, and notice.
 
-use plx_plex::plex::ServerId;
+use plx_plex::plex::{ClientKeys, ServerId};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
@@ -65,6 +65,8 @@ impl ViewStateStore {
     pub fn run(
         &mut self,
         cmd: ViewStateCmd,
+        keys: &ClientKeys,
+        profile: u32,
         browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
         hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> super::StoreOutcome,
         person: &mut dyn FnMut(crate::stores::person::PersonCmd) -> bool,
@@ -75,7 +77,7 @@ impl ViewStateStore {
         if matches!(&cmd, ViewStateCmd::Reset) {
             self.adapter = Arc::new(Default::default());
         }
-        let answer = self.state.run(&self.adapter, cmd, browse, hubs, person, collection, search, metadata);
+        let answer = self.state.run(&self.adapter, cmd, keys, profile, browse, hubs, person, collection, search, metadata);
         self.bump();
         answer
     }
@@ -84,6 +86,8 @@ impl ViewStateStore {
     pub fn pump_with_gate(
         &mut self,
         gate: &plx_machine::landgate::Gate,
+        keys: &ClientKeys,
+        profile: u32,
         browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
         hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> super::StoreOutcome,
         person: &mut dyn FnMut(crate::stores::person::PersonCmd) -> bool,
@@ -92,7 +96,7 @@ impl ViewStateStore {
         metadata: &mut dyn FnMut(crate::stores::metadata::MetadataCmd) -> bool,
     ) -> super::EndpointRefreshSet {
         let busy = self.state.is_busy();
-        let endpoints = self.state.pump_with_gate(&self.adapter, gate,
+        let endpoints = self.state.pump_with_gate(&self.adapter, gate, keys, profile,
             browse, hubs, person, collection, search, metadata);
         if busy != self.state.is_busy() {
             self.bump();
@@ -110,8 +114,8 @@ impl ViewStateStore {
         search: &mut dyn FnMut(crate::stores::search::SearchCmd) -> bool,
         metadata: &mut dyn FnMut(crate::stores::metadata::MetadataCmd) -> bool,
     ) -> super::EndpointRefreshSet {
-        self.pump_with_gate(plx_machine::landgate::fixture_gate(), browse, hubs, person, collection, search,
-            metadata)
+        self.pump_with_gate(plx_machine::landgate::fixture_gate(), &ClientKeys::default(), 0, browse, hubs, person,
+            collection, search, metadata)
     }
 
     /// Hold the terminal hub refetch while the player is on top; see
@@ -122,8 +126,8 @@ impl ViewStateStore {
 
     /// Fan an end-of-stream watch out to the title's other copies; see
     /// [`crate::viewstate::ViewStateState::fan_out_origin_watched`].
-    pub fn fan_out_origin_watched(&mut self, sid: ServerId, rk: &str) -> bool {
-        let queued = self.state.fan_out_origin_watched(&self.adapter, sid, rk);
+    pub fn fan_out_origin_watched(&mut self, sid: ServerId, rk: &str, keys: &ClientKeys, profile: u32) -> bool {
+        let queued = self.state.fan_out_origin_watched(&self.adapter, sid, rk, keys, profile);
         if queued {
             self.bump();
         }

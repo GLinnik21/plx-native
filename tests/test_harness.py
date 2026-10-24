@@ -7394,7 +7394,9 @@ impl PersonOwnerGateFixture {
         # transport contract, `player/transport.rs`, the IO layer) and +3 (a relocation lowers no pin by itself, so the same
         # diff widened the spellings to the transport readers `transport::paused`, `transport::viewer_paused` and
         # `preview::paused`, and seeded the 3 `preview::paused` reads in screens/detail it found).
-        "globals": 75,  # production process-global reads inside machines (`ci/allow/globals/`)
+        # ViewState C2 (the step decides from the borrowed `ClientKeys`): -2 on globals (`request` and
+        # `fan_out_origin_watched` no longer read the registry). `kick`'s read leaves with the job lane (C3).
+        "globals": 73,  # production process-global reads inside machines (`ci/allow/globals/`)
         "forks": 58,  # production test/production forks in data/, plex/, media/, session/ (`ci/allow/forks/`)
         "fxlanes": 11,  # Bridge::app_effect arms that do not push Fx::Deliver (`ci/allow/fxlanes/`)
     }

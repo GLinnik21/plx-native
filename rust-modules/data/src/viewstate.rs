@@ -105,7 +105,7 @@
 //! worker, and its notice. Reset rotates the adapter, and request IDs fence malformed or stale
 //! completions even within one adapter. There is no process-global ViewState transport or state.
 
-use plx_plex::plex::ServerId;
+use plx_plex::plex::{ClientKey, ClientKeys, ServerId};
 use std::panic::catch_unwind;
 use std::sync::{Arc, Mutex};
 
@@ -379,6 +379,15 @@ struct Req {
     /// (`landed`) or retires that exact entry; a newer press that replaced it is left alone.
     seq: crate::viewledger::Stamp,
     sid: ServerId,
+    /// The client the step chose for `sid` when the write was queued, as the borrowed
+    /// [`ClientKeys`] named it. [`kick`] re-reads the slot from its own keys and re-keys a write
+    /// whose client was re-tokened under the SAME profile ([`Req::profile`]).
+    key: ClientKey,
+    /// The profile the press was made under (`Bridge::profile_scope`, the Session owner's scope
+    /// counter), an input to the step like the keys. A write whose profile has moved by the time it
+    /// is sent belongs to someone else's household: it is dropped and retired, never sent under the
+    /// new profile's credential.
+    profile: u32,
     rk: String,
     w: Write,
     /// How far down the library the press reaches (a show's episodes, a season's).
@@ -495,6 +504,8 @@ impl ViewStateState {
     w: Write,
     scope: Scope,
     guid: &str,
+    keys: &ClientKeys,
+    profile: u32,
     browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
     hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome,
     person: &mut dyn FnMut(crate::stores::person::PersonCmd) -> bool,
@@ -502,18 +513,18 @@ impl ViewStateState {
     search: &mut dyn FnMut(crate::stores::search::SearchCmd) -> bool,
     metadata: &mut dyn FnMut(crate::stores::metadata::MetadataCmd) -> bool,
 ) -> crate::stores::StoreOutcome {
-    // `client_for`, never `client()`: the item may live on a share, and a scrobble sent to the wrong
-    // machine marks a DIFFERENT film watched there (both servers number their items from 1). None is
-    // a slot that is not registered, where `client()` panics — a view-state write is exactly the
-    // operation to skip and log rather than take to the wrong machine.
-    if plx_plex::plex::client_for(sid).is_none() {
+    // The slot's own key, never "the current server": the item may live on a share, and a scrobble
+    // sent to the wrong machine marks a DIFFERENT film watched there (both servers number their
+    // items from 1). None is a slot the registry holds no client for — a view-state write is exactly
+    // the operation to skip and log rather than take to the wrong machine.
+    let Some(key) = keys.key(sid) else {
         plx_base::eventlog::log(&format!(
             "viewstate: rk={rk} {} DROPPED — server {} is not registered",
             w.name(),
             sid.raw()
         ));
         return crate::stores::StoreOutcome::default();
-    }
+    };
     // OPTIMISTIC, before the request: the press must land on the panel now, not one WAN round trip
     // from now. Only THIS copy — the other sources' keys are not known until the fan-out resolves
     // them, which is what [`pump`] finishes the job with.
@@ -526,13 +537,15 @@ impl ViewStateState {
         id,
         seq,
         sid,
+        key,
+        profile,
         rk: rk.to_string(),
         w,
         scope,
         guid: guid.to_string(),
         origin_done: false,
     });
-    self.kick(adapter);
+    self.kick(adapter, keys, profile);
     crate::stores::StoreOutcome { changed: true, endpoints }
     }
 }
@@ -595,20 +608,21 @@ impl ViewStateState {
     /// this same serial queue so it stays ordered with the user's toggles. `false` when the item
     /// already has a write queued or out — a press newer than the stream's end wins, and its own
     /// fan-out (or its absence) decides.
-    pub(crate) fn fan_out_origin_watched(&mut self, adapter: &Arc<ViewStateAdapter>, sid: ServerId, rk: &str) -> bool {
+    pub(crate) fn fan_out_origin_watched(&mut self, adapter: &Arc<ViewStateAdapter>, sid: ServerId, rk: &str,
+        keys: &ClientKeys, profile: u32) -> bool {
         // One server has no other copy to reach: the request would only cost a second hub refetch.
+        let Some(key) = keys.key(sid) else { return false };
         if plx_plex::plex::server_ids().nth(1).is_none()
-            || plx_plex::plex::client_for(sid).is_none()
             || self.queue.iter().chain(self.sent.iter()).any(|r| plx_plex::plex::same_item((r.sid, &r.rk), (sid, rk)))
         {
             return false;
         }
         let id = self.mint_request_id();
         self.queue.push(Req {
-            id, seq: 0, sid, rk: rk.to_string(), w: Write::Watched, scope: Scope::Leaf,
+            id, seq: 0, sid, key, profile, rk: rk.to_string(), w: Write::Watched, scope: Scope::Leaf,
             guid: String::new(), origin_done: true,
         });
-        self.kick(adapter);
+        self.kick(adapter, keys, profile);
         true
     }
 
@@ -628,16 +642,54 @@ impl ViewStateState {
     }
 
 /// Start the next queued write if nothing is out. MAIN THREAD.
-    fn kick(&mut self, adapter: &Arc<ViewStateAdapter>) {
+    ///
+    /// The decision is made from the step's inputs: `keys` is the registry's answer as of this
+    /// call and `profile` the profile the Session owner has seated now. A write goes out only
+    /// under the profile it was pressed under.
+    fn kick(&mut self, adapter: &Arc<ViewStateAdapter>, keys: &ClientKeys, profile: u32) {
         if self.sent.is_some() || self.retry_cd > 0 {
             return;
         }
     while !self.queue.is_empty() {
-        let req = self.queue.remove(0);
-        // Resolved HERE, at the spawn site, and never inside the worker. A slot that has since
-        // stopped holding a client is a write with nowhere to go: dropping it silently would be the
-        // one PMS write with no line at all, which is what the request-time check above exists to
-        // prevent, so it says so here too.
+        let mut req = self.queue.remove(0);
+        // A profile switch re-tokens the registry's clients in place: the slot still answers, under
+        // the NEW profile's credential. A write pressed under another profile is a statement about
+        // that household's viewing record and must not be sent as this one's.
+        if req.profile != profile {
+            plx_base::eventlog::log(&format!(
+                "viewstate: rk={} {} DROPPED — the profile changed while it was queued",
+                req.rk,
+                req.w.name()
+            ));
+            self.ledger.retire(req.seq); // it never left, so nothing will ever confirm it
+            continue;
+        }
+        // A slot that has since stopped holding a client is a write with nowhere to go: dropping it
+        // silently would be the one PMS write with no line at all, which is what the request-time
+        // check above exists to prevent, so it says so here too.
+        let Some(key) = keys.key(req.sid) else {
+            plx_base::eventlog::log(&format!(
+                "viewstate: rk={} {} DROPPED — server {} left the registry while queued",
+                req.rk,
+                req.w.name(),
+                req.sid.raw()
+            ));
+            self.ledger.retire(req.seq);
+            continue;
+        };
+        // The same profile with a re-tokened client (a refresh): the write is still the user's, so it
+        // is re-keyed to the credential the registry holds now and proceeds.
+        if key != req.key {
+            plx_base::eventlog::log(&format!(
+                "viewstate: rk={} {} re-keyed — server {} was re-tokened while it was queued",
+                req.rk,
+                req.w.name(),
+                req.sid.raw()
+            ));
+            req.key = key;
+        }
+        // Resolved HERE, at the spawn site, and never inside the worker. (The next commit moves this
+        // read to the runner, which starts the job only through the client `req.key` names.)
         let Some(c) = plx_plex::plex::client_for(req.sid) else {
             plx_base::eventlog::log(&format!(
                 "viewstate: rk={} {} DROPPED — server {} left the registry while queued",
@@ -645,7 +697,7 @@ impl ViewStateState {
                 req.w.name(),
                 req.sid.raw()
             ));
-            self.ledger.retire(req.seq); // it never left, so nothing will ever confirm it
+            self.ledger.retire(req.seq);
             continue;
         };
         let (id, sid, rk, w, guid) = (req.id, req.sid, req.rk.clone(), req.w, req.guid.clone());
@@ -700,6 +752,8 @@ pub fn pump_with_gate(
     &mut self,
     adapter: &Arc<ViewStateAdapter>,
     gate: &plx_machine::landgate::Gate,
+    keys: &ClientKeys,
+    profile: u32,
     browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
     hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome,
     person: &mut dyn FnMut(crate::stores::person::PersonCmd) -> bool,
@@ -784,7 +838,7 @@ pub fn pump_with_gate(
         }
     }
     if due {
-        self.kick(adapter);
+        self.kick(adapter, keys, profile);
     }
     if self.is_busy() || self.hold_refresh {
         return endpoints; // a burst still has writes to send — one refresh at the end of it, not per write
@@ -800,6 +854,8 @@ pub fn pump_with_gate(
     endpoints
 }
 
+/// [`Self::pump_with_gate`] on the fixture gate with no registry (empty keys) and profile 0: a write
+/// that is kicked here finds no client, as a host test with nothing registered always has.
 #[cfg(any(test, feature = "test-support"))]
 pub fn pump(
     &mut self,
@@ -811,8 +867,8 @@ pub fn pump(
     search: &mut dyn FnMut(crate::stores::search::SearchCmd) -> bool,
     metadata: &mut dyn FnMut(crate::stores::metadata::MetadataCmd) -> bool,
 ) -> crate::stores::EndpointRefreshSet {
-    self.pump_with_gate(adapter, plx_machine::landgate::fixture_gate(), browse, hubs, person, collection,
-        search, metadata)
+    self.pump_with_gate(adapter, plx_machine::landgate::fixture_gate(), &ClientKeys::default(), 0, browse, hubs,
+        person, collection, search, metadata)
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -826,7 +882,7 @@ pub fn hold_inflight_for_test(&mut self, sid: ServerId, rk: &str) {
         self.sent = Some(Req {
             id,
             seq: 0,
-            sid,
+            sid, key: UNKEYED, profile: 0,
             rk: rk.into(),
             w: Write::Watched,
             scope: Scope::Leaf,
@@ -843,6 +899,10 @@ pub fn take_reread(&mut self) -> Vec<(ServerId, String)> {
 }
 
 }
+
+/// The key a hand-built [`Req`] of a fixture carries: no registry stands behind it.
+#[cfg(any(test, feature = "test-support"))]
+const UNKEYED: ClientKey = ClientKey { instance: 0, token: 0 };
 
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Debug, PartialEq, Eq)]
@@ -861,7 +921,7 @@ impl ViewStateState {
         Req {
             id,
             seq: 0,
-            sid: ServerId::UNSET,
+            sid: ServerId::UNSET, key: UNKEYED, profile: 0,
             rk: rk.into(),
             w: Write::Watched,
             scope: Scope::Leaf,
@@ -1068,6 +1128,8 @@ pub fn run(
     &mut self,
     adapter: &Arc<ViewStateAdapter>,
     cmd: crate::stores::viewstate::ViewStateCmd,
+    keys: &ClientKeys,
+    profile: u32,
     browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
     hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome,
     person: &mut dyn FnMut(crate::stores::person::PersonCmd) -> bool,
@@ -1078,7 +1140,8 @@ pub fn run(
     use crate::stores::viewstate::ViewStateCmd;
     match cmd {
         ViewStateCmd::Request { sid, rk, write, scope, guid } => {
-            self.request(adapter, sid, &rk, write, scope, &guid, browse, hubs, person, collection, search, metadata)
+            self.request(adapter, sid, &rk, write, scope, &guid, keys, profile, browse, hubs, person, collection,
+                search, metadata)
         }
         ViewStateCmd::Reset => {
             self.reset();
@@ -1119,6 +1182,8 @@ mod tests {
                 scope: Scope::Leaf,
                     guid: String::new(),
             },
+            &crate::pms::registry_keys_for_test(),
+            0,
             &mut |cmd| { browse.push(cmd); true },
             &mut |cmd| {
                 hubs.push(cmd);
@@ -1192,7 +1257,7 @@ mod tests {
         let directory = crate::stores::browse::DirectorySnapshot::default();
         assert!(stores.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
             sid, rk: "S".into(), write: Write::Watched, scope: Scope::Show, guid: String::new(),
-        }, directory.view(), &crate::pms::registry_keys_for_test()).changed);
+        }, directory.view(), &crate::pms::registry_keys_for_test(), 0).changed);
         let marks = search_marks(&stores);
         let mark = |rk: &str| marks.iter().find(|m| m.0 == rk).unwrap().clone();
         assert_eq!(mark("S"), ("S".into(), true, false, 0), "the show row itself");
@@ -1214,7 +1279,7 @@ mod tests {
         let before = stores.view_ledger.stamp();
         assert!(stores.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
             sid, rk: "S".into(), write: Write::Watched, scope: Scope::Show, guid: String::new(),
-        }, directory.view(), &crate::pms::registry_keys_for_test()).changed);
+        }, directory.view(), &crate::pms::registry_keys_for_test(), 0).changed);
         let seen = stores.view_ledger.since(before);
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].0, ViewAt { sid, rk: "S".into(), scope: Scope::Show });
@@ -1261,7 +1326,7 @@ mod tests {
         }
         assert!(stores.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
             sid, rk: "S".into(), write: Write::Unwatched, scope: Scope::Show, guid: String::new(),
-        }, directory.view(), &crate::pms::registry_keys_for_test()).changed);
+        }, directory.view(), &crate::pms::registry_keys_for_test(), 0).changed);
         for (rk, watched, unwatched, _) in search_marks(&stores).into_iter().filter(|m| m.0 != "other") {
             assert!(!watched && unwatched, "{rk} reads unwatched after its show was marked unwatched");
         }
@@ -1277,7 +1342,7 @@ mod tests {
         assert!(stores.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
             sid, rk: "S1".into(), write: Write::Watched,
             scope: Scope::Season { show_rk: "S".into(), index: 1 }, guid: String::new(),
-        }, directory.view(), &crate::pms::registry_keys_for_test()).changed);
+        }, directory.view(), &crate::pms::registry_keys_for_test(), 0).changed);
         let marks = search_marks(&stores);
         let watched = |rk: &str| marks.iter().find(|m| m.0 == rk).unwrap().1;
         assert!(watched("e11") && watched("e12"), "season 1's episodes");
@@ -1306,7 +1371,7 @@ mod tests {
             write: Write::Watched,
             scope: Scope::Leaf,
             guid: String::new(),
-        }, directory.view(), &crate::pms::registry_keys_for_test()).changed);
+        }, directory.view(), &crate::pms::registry_keys_for_test(), 0).changed);
 
         assert!(!selected.browse.borrow_mut().listing_snapshot().view().item(0).unwrap().unwatched,
             "the selected owner changes before the command returns");
@@ -1324,7 +1389,7 @@ mod tests {
         let mut state = ViewStateState::default();
         let adapter = Arc::new(ViewStateAdapter::default());
         let id = state.mint_request_id();
-        state.sent = Some(Req { id, seq: 0, sid: origin, rk: "7".into(), w: Write::Watched,
+        state.sent = Some(Req { id, seq: 0, sid: origin, key: UNKEYED, profile: 0, rk: "7".into(), w: Write::Watched,
             scope: Scope::Leaf, guid: "plex://movie/7".into(), origin_done: false });
         *adapter.mail.lock().unwrap_or_else(|e| e.into_inner()) = Some(Completion {
             id,
@@ -1367,12 +1432,12 @@ mod tests {
         let mut stores = crate::stores::Stores::default();
         stores.viewstate.borrow_mut().owe_hubs_refresh_for_test();
         let directory = crate::stores::browse::DirectorySnapshot::default();
-        let endpoints = stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test());
+        let endpoints = stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test(), 0);
         stores.hubs.refuse_jobs_for_test(); // the runner starts nothing
         assert_eq!(endpoints.iter().count(), 0, "a refused refetch is settled by the next Hubs step");
         let settled = stores.hubs.tick_with_directory(0.0, directory.view(), &crate::pms::registry_keys_for_test());
         assert_eq!(settled.endpoints.iter().map(|r| r.sid).collect::<Vec<_>>(), [sid]);
-        assert_eq!(stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test()).iter().count(), 0,
+        assert_eq!(stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test(), 0).iter().count(), 0,
             "refetch is consumed once");
                 plx_plex::plex::reset_servers_for_test();
     }
@@ -1398,7 +1463,7 @@ mod tests {
         refused_refetch(&mut stores);
         let press = stores.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
             sid, rk: "7".into(), write: Write::Watched, scope: Scope::Leaf, guid: String::new(),
-        }, directory.view(), &keys);
+        }, directory.view(), &keys, 0);
         assert!(press.changed);
         assert_eq!(sids(press.endpoints), [sid], "the press's ApplyView step settled the refusal");
 
@@ -1432,7 +1497,7 @@ mod tests {
         Req {
             id,
             seq: 0,
-            sid: ServerId::UNSET,
+            sid: ServerId::UNSET, key: UNKEYED, profile: 0,
             rk: rk.into(),
             w,
             scope: Scope::Leaf,
@@ -1595,7 +1660,7 @@ mod tests {
                 Some(Completion { id, done: Done { ok: true, also: Vec::new() } });
         });
         let mut hubs = Vec::new();
-        let _ = state.pump_with_gate(&adapter, &gate, &mut |_| false,
+        let _ = state.pump_with_gate(&adapter, &gate, &ClientKeys::default(), 0, &mut |_| false,
             &mut |cmd| { hubs.push(cmd); crate::stores::StoreOutcome::default() },
             &mut |_| false, &mut |_| false, &mut |_| false, &mut |_| false);
         assert!(state.sent.is_none(), "the answer the pump owed must be taken by the pump that asked");
@@ -1627,7 +1692,7 @@ mod tests {
             *worker.mail.lock().unwrap_or_else(|e| e.into_inner()) =
                 Some(Completion { id, done: Done { ok: true, also: Vec::new() } });
         });
-        let _ = state.pump_with_gate(&adapter, &gate, &mut |_| false,
+        let _ = state.pump_with_gate(&adapter, &gate, &ClientKeys::default(), 0, &mut |_| false,
             &mut |_| crate::stores::StoreOutcome::default(),
             &mut |_| false, &mut |_| false, &mut |_| false, &mut |_| false);
         assert!(state.sent.is_none(), "the write on the wire was answered by ITS completion");
@@ -1641,7 +1706,7 @@ mod tests {
         let mut state = ViewStateState::default();
         let adapter = Arc::new(ViewStateAdapter::default());
         let id = state.mint_request_id();
-        state.sent = Some(Req { id, seq: 0, sid: ServerId::from_raw(0), rk: "7".into(), w: Write::Watched,
+        state.sent = Some(Req { id, seq: 0, sid: ServerId::from_raw(0), key: UNKEYED, profile: 0, rk: "7".into(), w: Write::Watched,
             scope: Scope::Leaf, guid: String::new(), origin_done: true });
         *adapter.mail.lock().unwrap_or_else(|e| e.into_inner()) =
             Some(Completion { id, done: Done { ok: true, also } });
@@ -1674,7 +1739,7 @@ mod tests {
         let sid = plx_plex::plex::register_for_test("viewstate-one-server", "127.0.0.1", 9, "synthetic", "fixture");
         let mut state = ViewStateState::default();
         let adapter = Arc::new(ViewStateAdapter::default());
-        assert!(!state.fan_out_origin_watched(&adapter, sid, "7"));
+        assert!(!state.fan_out_origin_watched(&adapter, sid, "7", &crate::pms::registry_keys_for_test(), 0));
         assert!(!state.is_busy(), "no request for a fan-out that has nowhere to go");
         plx_plex::plex::reset_servers_for_test();
     }
@@ -1898,7 +1963,7 @@ mod tests {
         state.sent = Some(Req {
             id,
             seq: 0,
-            sid: SRV_A,
+            sid: SRV_A, key: UNKEYED, profile: 0,
             rk: "4".into(),
             w: Write::Watched,
             scope: Scope::Leaf,
@@ -1941,7 +2006,7 @@ mod tests {
         let read_stamp = state.ledger.stamp();
         let id = state.mint_request_id();
         state.sent = Some(Req {
-            id, seq, sid: SRV_A, rk: "4".into(), w: Write::Watched, scope: Scope::Leaf,
+            id, seq, sid: SRV_A, key: UNKEYED, profile: 0, rk: "4".into(), w: Write::Watched, scope: Scope::Leaf,
             guid: String::new(),
             origin_done: false,
         });
@@ -1997,7 +2062,7 @@ mod tests {
         let stamp = state.ledger.stamp();
         let id = state.mint_request_id();
         state.sent = Some(Req {
-            id, seq: first, sid: SRV_A, rk: "4".into(), w: Write::Watched, scope: Scope::Leaf,
+            id, seq: first, sid: SRV_A, key: UNKEYED, profile: 0, rk: "4".into(), w: Write::Watched, scope: Scope::Leaf,
             guid: String::new(),
             origin_done: false,
         });
