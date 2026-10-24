@@ -41,7 +41,7 @@ pub(crate) fn mount(n: usize) -> Box<dyn CardHarness> { Box::new(Harness::new(n)
 impl Harness {
     fn new(n: usize) -> Self {
         let mut store = plx_data::stores::collection::CollectionStore::default();
-        store.run(CollectionCmd::Open { target: CollectionTarget { id: set(), want: PAGE_SIZE } });
+        store.run(CollectionCmd::Open { target: CollectionTarget { id: set(), want: PAGE_SIZE } }, &plx_plex::plex::ClientKeys::default());
         store.install_for_test((0..n).map(|i| item(&format!("m{i}"))).collect(), CollectionStatus::Ready);
         let mut screen = CollectionScreen::new(ENTRY, set());
         screen.page.sync(store.view().current().unwrap(), &FixtureMeasure);

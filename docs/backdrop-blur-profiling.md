@@ -190,6 +190,10 @@ Four things to hold onto when reading counter output:
 - **Report cycles.** There is no GPU clock node anywhere in this TV's sysfs — no
   `/sys/class/devfreq` entry, no frequency file under `/sys/devices/platform/mali.0`. Cycles cannot
   be converted to milliseconds here, so compare cycles between legs and do not invent a clock.
+  (2026-10-24: wrong. The clock is in fact fixed at 672 MHz, so one 60 Hz refresh is about 11.2M
+  `GPU_ACTIVE` cycles. The TV's `mali_kbase.ko` declares it and has no clock-setting path, and
+  debugfs `mali0/gpu_utilization` agrees; see `.agents/skills/profile-tv/SKILL.md`, "Mali T820
+  facts".)
 - **Words 0..3 of every block are the block header, not counters.** Word 2 is `PRFCNT_EN`, and each
   of its bits enables a group of four counters. The profiler logs all five masks once per run.
   On this television they are jm `0xff`, tiler `0x1f`, l2 `0xffff`, sc0/sc1 `0xffff` — so **tiler
@@ -747,6 +751,10 @@ framebuffer 0. Whether that is Mali kbase DVFS reacting to a gap-free submission
 starting the frame's fragment work earlier is NOT settled — but the consequence is: **lowering
 the glass cadence or removing the source pass to "save work" costs 20% of the frame rate, and any
 change to that path has to be re-measured on the set.**
+(2026-10-24: the DVFS half is ruled out. The GPU clock is in fact fixed at 672 MHz — the TV's
+`mali_kbase.ko` declares it and has no clock-setting path, and debugfs `mali0/gpu_utilization`
+agrees; see `.agents/skills/profile-tv/SKILL.md`, "Mali T820 facts". Only the driver-scheduling
+explanation is left open.)
 
 **3. The census: `plxnative-hwcnt` (`frame.ui`) + `plxnative-drawmask=<class>`, hero paging,
 flat tabs.** Control 13.81M GPU_ACTIVE per frame — against 8.76M for a hero frame on 2026-08-22,
@@ -1427,9 +1435,11 @@ changed here.
   frames: `clear` 26–28 ms, `page` 31–32 ms, the page's own CPU 4.5 ms. Nothing in the app changes
   on those frames. The settled Detail frame sits within about a millisecond of the vsync on the
   GPU, so any disturbance tips it into two-vsync frames until the backlog drains. That disturbance
-  can be a probe kick's render-pass split, a texture arriving, or GPU clock scaling. This is now the
-  main warm-cycle failure (22 of 34 Detail cycles). Only fill-rate work on the settled Detail
-  frame can fix it. Price it class by class with production `drawmask` A/B runs.
+  can be a probe kick's render-pass split, a texture arriving, or GPU clock scaling. (2026-10-24:
+  not clock scaling. The GPU clock is in fact fixed at 672 MHz — the TV's `mali_kbase.ko` declares
+  it and has no clock-setting path; see `.agents/skills/profile-tv/SKILL.md`, "Mali T820 facts".)
+  This is now the main warm-cycle failure (22 of 34 Detail cycles). Only fill-rate work on the
+  settled Detail frame can fix it. Price it class by class with production `drawmask` A/B runs.
 - **The cold first cycle of each page (cycle 1 Detail ~100 ms, the first Person 30–45 ms, the
   first Library 38–41 ms).** On the cold Detail frame (106.8 ms in total), 47 new strings each paid
   a `TTF_RenderUTF8_Blended` (24.7 ms together) and a texture upload (`upload_rgba`, 26.2 ms
@@ -1498,7 +1508,9 @@ This is not a promise to skip the first pop-back frame or a still-changing page 
 
 **Elimination versus cadence.** The earlier experiment in this document measured 46 fps with
 source work every present, 35 without glass, and 36 at one-in-eight. The source pass paces the
-GPU; its exact driver/DVFS explanation remains unproven. We have not changed the cadence for
+GPU; its exact driver/DVFS explanation remains unproven. (2026-10-24: DVFS is ruled out — the GPU
+clock is in fact fixed at 672 MHz, see `.agents/skills/profile-tv/SKILL.md`, "Mali T820 facts"; the
+driver-side explanation remains unproven.) We have not changed the cadence for
 changing pages (`DEFAULT_DYNAMIC_PERIOD` remains 1), nor disabled glass globally. We eliminate
 an invisible source under a modal, and reuse a valid source when only its foreground chrome
 moves. This avoids redundant work without temporally undersampling changing artwork. It still
@@ -1615,12 +1627,14 @@ same logical surfaces participate in declaration and visible walks. Existing ren
 
 The earlier result remains a constraint: 46 fps refreshing every changing present versus 35
 without glass and 36 at one-in-eight. The source pass **paces** this Mali GPU; the driver/DVFS
-explanation remains unproven. This mechanism skips only occluded or unchanged sources. It does
-not undersample changing underlays. The extra declaration traversal, retained-output copy and
-per-band storage are deliberate costs for structural correctness; the prefix-copy path for
-stacked glass also needs a device comparison before any performance claim. Host-only tests cover
-the layer walk, geometry, validity, union scheduling, upload identity and frozen-host bookkeeping.
-No television was contacted and no new GPU measurements or visual verification are claimed here.
+explanation remains unproven (2026-10-24: DVFS is ruled out, the GPU clock is in fact fixed at
+672 MHz; see `.agents/skills/profile-tv/SKILL.md`, "Mali T820 facts"). This mechanism skips only
+occluded or unchanged sources. It does not undersample changing underlays. The extra declaration
+traversal, retained-output copy and per-band storage are deliberate costs for structural
+correctness; the prefix-copy path for stacked glass also needs a device comparison before any
+performance claim. Host-only tests cover the layer walk, geometry, validity, union scheduling,
+upload identity and frozen-host bookkeeping. No television was contacted and no new GPU
+measurements or visual verification are claimed here.
 
 ## 2026-09-19: two declaration-traversal costs, `modal-100`/`push-100` still regressed after the fix
 
@@ -1771,7 +1785,8 @@ from the television, with the panel off and the sound muted.
   one full-screen quad and the chrome. The frames before them were normal. The backlog they wait
   on is not this frame's work, and no span attributes it. Whether it is the Home capture's GPU
   cost, the compositor holding a buffer, or GPU DVFS is still open; `gpu_timer` saw the UI pass
-  average ~16 ms during transitions.
+  average ~16 ms during transitions. (2026-10-24: not GPU DVFS. The GPU clock is in fact fixed at
+  672 MHz; see `.agents/skills/profile-tv/SKILL.md`, "Mali T820 facts".)
 - **modal-100.** Its steady misses are close frames whose `draw` is 25–31 ms with under 2 ms in
   named spans, so the wait sits in an unspanned GL call.
 - **Cycle 1.** A 1080p backdrop upload (2 073 600 px) spent 22.5 ms in `upload_rgba` in one held

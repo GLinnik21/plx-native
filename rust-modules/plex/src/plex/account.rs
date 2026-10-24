@@ -189,7 +189,7 @@ pub(super) fn stand_in_armed() -> bool {
 ///
 /// **A refusal is terminal.** It cannot change during the process (the trigger files and the
 /// dev-token boot are read once), so the person store asks [`super::discover::person_profile_refused`] /
-/// [`super::discover::person_credits_refused`] before it spawns a worker and settles its page on a refusal;
+/// [`super::discover::person_credits_refused`] before it launches the read and settles its page on a refusal;
 /// the Watchlist and catalog land it once as `WatchlistError::Refused` and have no timer that asks
 /// again.
 fn permit_read(devtriggers_build: bool, token_boot: bool, armed: bool) -> bool {

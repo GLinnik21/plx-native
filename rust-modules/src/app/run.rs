@@ -7225,10 +7225,20 @@ mod lifecycle_regression_tests {
         for _ in 0..40 { step(&mut rig.app, &mut t, vec![]); }
         assert!(rig.app.bridge.grid_tile_for_test(0).is_some(), "premise: the page lists the server's collection");
         press_ok(&mut rig.app, &mut t);
-        for _ in 0..60 { step(&mut rig.app, &mut t, vec![]); std::thread::sleep(Duration::from_millis(2)); }
+        // A test build parks the collection's requests until the test runs them, off the frame
+        // (`StoreRunner::Held`): each frame's pump emits the next one, which runs before the next frame.
+        for _ in 0..60 {
+            rig.app.bridge.run_held_store_jobs_for_test();
+            step(&mut rig.app, &mut t, vec![]);
+            std::thread::sleep(Duration::from_millis(2));
+        }
         assert_eq!(super::super::words::route_word(&rig.app.route()), "collection",
             "OK on the collection tile opens the collection");
-        for _ in 0..40 { step(&mut rig.app, &mut t, vec![]); std::thread::sleep(Duration::from_millis(2)); }
+        for _ in 0..40 {
+            rig.app.bridge.run_held_store_jobs_for_test();
+            step(&mut rig.app, &mut t, vec![]);
+            std::thread::sleep(Duration::from_millis(2));
+        }
         // Down off the header onto the first member, rest, then OK.
         let tick = |t: u32| plx_machine::machine::Tick { ms: t + 16, dt_us: 16_000 };
         for _ in 0..3 {
@@ -7237,7 +7247,10 @@ mod lifecycle_regression_tests {
             step(&mut rig.app, &mut t, vec![down]);
             let up = plx_ui::fixture::key_up(plx_machine::machine::Key::Down, tick(t));
             step(&mut rig.app, &mut t, vec![up]);
-            for _ in 0..40 { step(&mut rig.app, &mut t, vec![]); }
+            for _ in 0..40 {
+                rig.app.bridge.run_held_store_jobs_for_test();
+                step(&mut rig.app, &mut t, vec![]);
+            }
         }
         assert!(rig.app.bridge.collection_card_focused(&rig.app.pages), "premise: a member holds the focus");
         press_ok(&mut rig.app, &mut t);

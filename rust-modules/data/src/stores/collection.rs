@@ -1,7 +1,11 @@
-//! Physically owned Collection model and its worker adapter.
+//! Physically owned Collection model and its landing adapter. The store starts no worker: its pump
+//! emits the next request as a [`StoreJob`](super::StoreJob) that its owner takes and owes to a
+//! runner (`Stores::collection_pump`'s caller, `Bridge::collection_pump`), and it reads no registry:
+//! which client a server holds arrives as [`ClientKeys`], filled by the host right before the call.
 
-use crate::collection::{CollectionAdapter, CollectionState, CollectionTarget, CollectionView};
+use crate::collection::{CollectionAdapter, CollectionPort, CollectionState, CollectionTarget, CollectionView};
 use plx_machine::machine::{Cx, Effects, Handled, Host, Machine};
+use plx_plex::plex::ClientKeys;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
@@ -63,16 +67,40 @@ impl CollectionStore {
         if c.id.same_collection(r) { c.held_keys(&mut keys); }
         keys
     }
-    pub fn run(&mut self, cmd: CollectionCmd) -> bool {
+    /// Run one command. `keys` is the registry's answer as of this call. A command emits no job.
+    pub fn run(&mut self, cmd: CollectionCmd, keys: &ClientKeys) -> bool {
         if matches!(cmd, CollectionCmd::Reset) { self.adapter = Arc::new(Default::default()); }
-        let changed = self.state.run(&self.adapter, cmd);
+        let changed = self.state.run(&self.adapter, cmd, keys);
         if changed { self.bump(); }
         changed
     }
-    pub fn pump(&mut self, gate: &plx_machine::landgate::Gate) -> bool {
-        let changed = self.state.pump_with_gate(&self.adapter, gate);
+    /// One pump: take the landing and emit the next request, if the window needs one. `keys` is the
+    /// registry's answer as of this call. It does NOT start the request it emitted: the caller
+    /// takes it with [`CollectionStore::take_jobs`] and hands it to a runner in the same turn (the
+    /// one production caller is `Bridge::collection_pump`; the application's test rigs fail a frame
+    /// that ends with a job still here, `Bridge::assert_no_store_jobs_left_for_test`).
+    pub fn pump(&mut self, gate: &plx_machine::landgate::Gate, keys: &ClientKeys) -> bool {
+        let changed = self.state.pump_with_gate(&self.adapter, gate, keys);
         if changed { self.bump(); }
         changed
+    }
+
+    /// Take the jobs the pump has emitted since the last take, in order. The caller OWES each one
+    /// to a runner: a job dropped here is a request whose claim is never released.
+    #[must_use]
+    pub fn take_jobs(&mut self) -> Vec<super::StoreJob> {
+        std::mem::take(&mut self.state.jobs)
+    }
+
+    /// Does the outbox hold a job nobody has taken yet?
+    pub fn has_jobs(&self) -> bool {
+        !self.state.jobs.is_empty()
+    }
+
+    /// The port that lands an answer into THIS store's current adapter: what a job emitted now
+    /// carries (`assert_fx!` compares it by adapter identity).
+    pub fn collection_port(&self) -> CollectionPort {
+        CollectionPort::of(&self.adapter)
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -100,9 +128,14 @@ impl CollectionStore {
 impl<H: Host> Machine<H> for CollectionStore {
     type Ev = StoreEv<CollectionCmd>;
     fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, _fx: &mut Effects<'_, H>) -> Handled {
+        // Unreached: nothing steps this store as a Machine (the only `StoreEv::Cmd` sender is
+        // Browse, and nothing sends `StoreEv::Pump`). A future sender must pass the host's keys
+        // and drain the jobs the pump emits; these empty keys read as "no server holds a client"
+        // (the page fails), and real keys without the drain would strand the job.
+        let keys = ClientKeys::default();
         match ev {
-            StoreEv::Cmd(cmd) => { self.run(cmd.clone()); }
-            StoreEv::Pump { .. } => { self.pump(&plx_machine::landgate::Gate::default()); }
+            StoreEv::Cmd(cmd) => { self.run(cmd.clone(), &keys); }
+            StoreEv::Pump { .. } => { self.pump(&plx_machine::landgate::Gate::default(), &keys); }
         }
         Handled::Yes
     }
