@@ -2738,9 +2738,8 @@ fn image_card_geometry(half_w: f32, half_h: f32, radius: f32) -> [f32; 4] {
 /// play no part in the rule — a square-cornered draw with all three set still leaves there, so it
 /// draws no rim and no shadow at all. That is NOT a free pad: the exit masks nothing, so the pad's
 /// fragments are rasterized and run it like the card's own, one texture fetch and a tint each in
-/// either program, writing whatever the sampler returns beyond the card's window
-/// ([`uv_rect_padded`]: a clamped texture repeats its edge texels there). A NaN radius compares
-/// false on the CPU as it would on the GPU, and so keeps the full program it always had.
+/// either program. A NaN radius compares false on the CPU as it would on the GPU, and so keeps the
+/// full program it always had.
 #[inline]
 fn takes_plain_exit(radius: f32) -> bool {
     radius < 0.5
@@ -8258,9 +8257,10 @@ mod tests {
         out
     }
 
-    /// The whole reason [`FOCUS_IMAGE`] exists: a resting card, a glyph, a blur reduction, a
-    /// `field_kick`, a `FrameCache` quad — every draw through the PLAIN program — must compile and
-    /// run EXACTLY what main shipped before the lit-glass/risen-shadow feature, with no trace of
+    /// The whole reason [`FOCUS_IMAGE`] exists: every draw through the unfocused image program (a
+    /// rounded resting card and a split card's ring, a fused still; before [`PLAIN_IMAGE`] took the
+    /// square-cornered draws, also a blur reduction, a `field_kick` and a `FrameCache` quad) must
+    /// compile and run EXACTLY what main shipped before the lit-glass/risen-shadow feature, with no trace of
     /// `u_focus`/`v_gloss` left in by a stray `#ifdef PLX_FOCUS` that didn't close where intended.
     /// Preprocessing with `PLX_FOCUS` absent (mirroring what the GL driver does for `FS_IMG`/
     /// `VS_IMG`, `FS_STILL`/`VS_STILL`) and grepping the result is what actually answers that,
