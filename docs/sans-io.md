@@ -154,8 +154,8 @@ slot's new client. This chain keeps the client it was handed. The registry blank
 token on both events (`revoke_all`, and the re-point arm of `register_lazy`), so the rest of the
 chain asks tokenless and lands `None`: the same as before for a sign-out (the requests are now sent
 and refused where they used to be skipped), and a partial page where the old chain followed a
-re-point. Bar the opening season's episodes it never mixes clients within one page. The one read
-left in it is those episodes (`fetch_episodes`), shared with the season worker until that moves.
+re-point. It never mixes clients within one page: the opening season's episodes
+(`fetch_episodes`) are read through the same client (Metadata M2, below).
 The Collection page's request is the second: its worker start and its three `client_for` reads are
 gone from `data/src/collection.rs`. The Person page's requests are the third: its two worker starts
 and its one `client_for` read are gone from `data/src/person.rs`, but unlike the two before it the
@@ -174,10 +174,12 @@ recents writes are the eighth (the bullet headed "The Search lane"): both worker
 `data-search` ledger files are deleted. A library's section hubs, the Browse store's list
 and row reads, are the ninth (the bullet headed "The section hubs lane"): their two worker starts
 and three registry reads are gone from `data/src/browse/section_hubs.rs`; the rest of `browse/` (the
-directory, page and source reads, discovery, the pins) is still on its ledger. The household's
-watch-state writes are the tenth (the bullet headed "The view-state write lane"): the worker start
-and all five `client_for` reads are gone from `data/src/viewstate.rs`, and its two `data-viewstate`
-ledger files are deleted.
+directory, page and source reads, discovery, the pins) is still on its ledger. The Metadata store's
+season switch and episode-page window are the tenth (the bullet headed "The Metadata reads"): their
+two worker starts and the `client_for` reads of `fetch_episodes` and `fetch_episode_page` are gone
+from `data/src/metadata.rs`. The household's watch-state writes are the eleventh (the bullet headed
+"The view-state write lane"): the worker start and all five `client_for` reads are gone from
+`data/src/viewstate.rs`, and its two `data-viewstate` ledger files are deleted.
 
 - **The shape.** `plx_machine::job` holds `Job<R>` (an `Addr` and a request that carries everything
   the worker needs), `Port<T>` (where the one answer goes: exactly one `done` or `refused` per job)
@@ -189,16 +191,19 @@ ledger files are deleted.
   `plx_data::stores::catalog::{CatalogReq, CatalogPort}`,
   `plx_data::pms::{HubRequest, HubsPort}`,
   `plx_data::search::{SearchReq, SearchPort}`,
-  `plx_data::search::recents::{SaveRecentsReq, SaveRecentsPort}` and
-  `plx_data::browse::section_hubs::{BrowseHubsReq, BrowseHubsPort}` (`BrowseStore::take_jobs`). The app's `StoreRunner`
+  `plx_data::search::recents::{SaveRecentsReq, SaveRecentsPort}`,
+  `plx_data::browse::section_hubs::{BrowseHubsReq, BrowseHubsPort}` (`BrowseStore::take_jobs`) and
+  `plx_data::metadata::{MetaSeasonReq, MetaSeasonPort, MetaEpisodesReq, MetaEpisodesPort}`. The app's `StoreRunner`
   (`app/adapters/stores.rs`) executes a job and owns what `data/` must not: the tape's admission
   record, the thread and the `client_for` read. It is `Live` or `Held` (a test parks the job and
   runs it on the test thread), chosen when the `Bridge` is constructed; a newer Detail request
-  retires only the parked Detail jobs, never another store's. `Held` parks per kind:
-  `StoreRunner::held()` leaves the Hubs read live, as production runs it (a rig that waits for a
-  Home landing needs a real one), and `StoreRunner::held_all()` parks it too, for a test that
-  chooses when the read settles (`Bridge::run_held_store_jobs_of_for_test`). Every other kind,
-  the section hubs' read included, parks under both: no rig of the suite waits for a section-hubs
+  retires only the parked Detail jobs, never another store's. `Held` parks per kind (the test-only
+  `LiveKind`): `StoreRunner::held()` leaves the Hubs read and the Metadata season switch live, as
+  production runs them (a rig that waits for a Home or a season landing needs a real one;
+  `menu_play_season_tests` polls for the latter and never runs held jobs), and
+  `StoreRunner::held_all()` parks them too, for a test that chooses when the read settles
+  (`Bridge::run_held_store_jobs_of_for_test`). Every other kind, the section hubs' read and the
+  episode-page jobs included, parks under both: no rig of the suite waits for a section-hubs
   landing from a real worker, and a parked read is one the test starts when it chooses (the one
   `hostsim` rig that needs the read to reach the server, `the_recommended_page_fetches_the_sections_hubs`,
   runs it from the parked set with `Bridge::run_held_store_jobs_of_for_test(StoreId::Browse)`).
@@ -212,8 +217,8 @@ ledger files are deleted.
   then agree on the one boolean they hold, and a refused job hands its claim back.
 - **The Detail job carries no key.** Its step reads no registry, so `DetailReq` names a server and
   no `ClientKey`: the runner reads `client_for(sid)` ONCE in `start_detail`, records that client's
-  instance in the admission and runs the chain through that same client (bar the opening season's
-  episodes). That is a presence check, not the key compare of the jobs above. A server the registry
+  instance in the admission and runs the whole chain through that same client, the opening
+  season's episodes included. That is a presence check, not the key compare of the jobs above. A server the registry
   holds no client for at the admission still launches, and its worker answers the failure without
   asking anything, as the first read of the old chain did.
 - **Two drains, one rule.** A stepped machine (the session owner) emits its work through `Effects`,
@@ -223,7 +228,9 @@ ledger files are deleted.
   the step. A step that touches only its own store drains it with `start_store_jobs_of`; a `Stores`
   call that fans out to other stores (`viewstate_run`, `viewstate_pump`, `reconcile_pump`,
   `notify_pump`) drains every outbox named in its `*_FILLS` list (`Stores::VIEWSTATE_FILLS`,
-  `Stores::RECONCILE_FILLS`, `Stores::NOTIFY_FILLS`) with `Bridge::start_store_jobs_in`. `Bridge::metadata_run` steps then drains Metadata; `Bridge::person_pump` and
+  `Stores::RECONCILE_FILLS`, `Stores::NOTIFY_FILLS`) with `Bridge::start_store_jobs_in`.
+  `Bridge::metadata_run` steps then drains Metadata, and so does `Bridge::metadata_pump_season`
+  (a guard: no landing pump emits a job today, so it finds nothing); `Bridge::person_pump` and
   `Bridge::collection_pump` refill the keys, step, then run
   `Bridge::start_store_jobs_of(StoreId::Person)` and `(StoreId::Collection)`;
   `Bridge::catalog_open` and `Bridge::catalog_pump` step the Catalog store and run
@@ -240,7 +247,8 @@ ledger files are deleted.
   (`[ViewState, ViewReconcile]`) because an end-of-stream fan-out it queues starts the next write.
   Draining inside each pump, not at the frame's end, keeps every store's
   admissions in the tape where they were: the frame pumps Person, then Collection, then reconciles
-  the Detail page. A caller that holds only the store (`describe_movie` gets a `&mut MetadataStore`)
+  the Detail page. A caller that holds only the store (`describe_movie` gets a `&mut MetadataStore`, and the
+  menu-play wait's season press in `input.rs` runs `LoadSeason` on the bare store)
   drains with `Bridge::start_store_jobs` the moment its call returns. A new store joins by implementing its
   own outbox and adding it to `Stores::take_jobs_of` and `Stores::has_jobs_of` AND to the `*_FILLS`
   list of every fanning call that reaches it. Joining only the first pair strands its jobs until the
@@ -356,7 +364,7 @@ ledger files are deleted.
   for. The Hubs read differs from the six before it in four ways.
   - **A third admission family.** `StoreJob::admission()` names `Tape` (Detail, Collection, Person),
     `Direct` (Catalog, subtitle search, view reconcile, Search's fetches and recents writes, the section
-    hubs' read, the view-state writes) or `Home`,
+    hubs' read, the view-state writes, the Metadata season switch and episode-page window) or `Home`,
     as one exhaustive match. A `Home`
     job is recorded in a controlled Home run's own ordered ledger (`HomeIo::admit`), not on the tape,
     with the bytes `HubRequest::admission` returns (the bytes `hubs_descriptor` returned before it,
@@ -459,9 +467,43 @@ ledger files are deleted.
   A step test reads the jobs (`BrowseStore::take_jobs`, in the data crate `take_hubs_job`) or answers
   them through the port; the runner's branches and every Bridge entry's drain have a test that fails
   when the branch or the drain is removed (`app/adapters/stores.rs`, `app/browse_hubs_drain_tests.rs`).
+- **The Metadata reads.** The season tabs and the long-season page window (`data/src/metadata.rs`)
+  are the tenth store reads on the lane. `load_season` flips the tab and emits
+  `StoreJob::MetaSeason(Job<MetaSeasonReq>, MetaSeasonPort)`, addressed by the season generation it
+  minted; `want_episodes` emits `StoreJob::MetaEpisodes(Job<MetaEpisodesReq>, MetaEpisodesPort)` for
+  at most `EP_JOB_PAGES` pages, addressed by a sequence of its own (pages are keyed by
+  `(server, season, page)`, not by generation). Both are `Direct` and never taped. The runner
+  resolves `client_for(sid)` once, at the launch, and hands `finish_season_job` /
+  `finish_episodes_job` that `&'static Client` (a presence check: the requests carry no
+  `ClientKey`); `fetch_episodes` and `fetch_episode_page` take it, so the detail chain is one client
+  end to end. A server it holds none for still launches, and the body answers the failure without a
+  GET (a season lands `eps: None`, a page `rows: None` and gives its key back). Both bodies keep the
+  `catch_unwind` guard and post their answer outside it. The season landing is gated, as it was
+  before: `pump_season_with_gate` takes it through the landing gate, dump mode waits on it while
+  `season_loading()` holds, and a replay takes it on its recorded frame (which is why a refusal
+  catches `season_done` up in the call that refuses it). Only the page landing
+  (`pump_episode_pages`) is an ungated take.
+  - **A refusal leaves what the inline spawn's `!spawned` arm left.** `MetaSeasonPort::refused`
+    catches `season_done` up to the job's generation with `fetch_max`, in the call that refused it,
+    so `season_loading()` is false at once and a refusal that arrives after a newer request landed
+    cannot turn it back on; the tab stays on the flipped season and the old episodes stay listed.
+    `MetaEpisodesPort::refused` drops the inflight keys the job held (the port carries them,
+    because a refusal is told only the address), so the next `WantEpisodes` asks again.
+  - **A page job posts each page as it is read.** The body reads its pages in order and posts each
+    to the port as it arrives, as the inline worker landed it: the window asks for a restore target
+    first, and the strip waits on it, not on the pages behind it. Each post lands the page and gives
+    its inflight key back; the job's one `done` carries nothing and is only the end, so it releases
+    no key (a later window may have asked for the same page again since it landed).
+  - **Drains.** `load_season` and `want_episodes` are reached through `Bridge::metadata_run` (the
+    dispatcher) or on the bare store (`input.rs`, which drains with `start_store_jobs`). No fan-out
+    reaches either (the view-state closures send `ApplyView` only), so no `*_FILLS` list names
+    Metadata for them. The runner's branches are pinned in `adapters/stores.rs`'s tests; the OS
+    refusing the thread cannot be forced on a host, so the refused branches are pinned at the port
+    (`a_refused_season_job_ends_season_loading_and_leaves_the_tab_and_the_list`,
+    `a_refused_page_job_releases_its_inflight_keys_and_the_next_want_asks_again`).
 - **The view-state write lane.** The household's watch-state writes (`data/src/viewstate.rs`: mark
   watched, mark unwatched, remove from Continue Watching, and the fan-out of a watched write, or of
-  an end of stream, to the title's other copies) are the tenth store on the lane. `kick` starts no
+  an end of stream, to the title's other copies) are the eleventh store on the lane. `kick` starts no
   worker: it emits `StoreJob::ViewWrite(Job<ViewWriteReq>, ViewWritePort)` on `ViewStateStore`'s
   outbox, one write out at a time. Admission is `Direct`, and a controlled Home run refuses every
   write before it reaches the store (`app/viewstate_controlled_tests.rs`), so no replay fixture moved.

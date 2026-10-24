@@ -155,3 +155,23 @@ pub(super) fn begin_switch(to: usize) -> (u32, usize) {
     }
     (test_adapter().season_gen.fetch_add(1, Ordering::SeqCst) + 1, prev)
 }
+
+/// TEST ONLY: start the season and page jobs `load_season` / `want_episodes` left on the outbox, each
+/// on a worker thread through the production body, as the application's `Live` runner starts them
+/// (the client is resolved here, at the launch). Any other job stays where it is.
+pub(super) fn start_season_jobs() {
+    use crate::stores::StoreJob;
+    for job in std::mem::take(&mut test_state().jobs) {
+        match job {
+            StoreJob::MetaSeason(job, port) => {
+                let client = plx_plex::plex::client_for(job.req.sid);
+                assert!(plx_base::task::spawn_small("season", move || finish_season_job(&port, job.addr, client, job.req)));
+            }
+            StoreJob::MetaEpisodes(job, port) => {
+                let client = plx_plex::plex::client_for(job.req.sid);
+                assert!(plx_base::task::spawn_small("episode-pages", move || finish_episodes_job(&port, job.addr, client, job.req)));
+            }
+            other => test_state().jobs.push(other),
+        }
+    }
+}

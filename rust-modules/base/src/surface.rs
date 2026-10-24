@@ -106,8 +106,9 @@ pub fn scale() -> f32 {
 /// Returns `(x, y, w, h)` in physical pixels. On a 1:1 surface this is `(0, 0, 1920, 1080)` and on
 /// a 16:9 surface of any size the offsets are zero — so on every television, letterboxing costs
 /// nothing and this is a plain scale. The shaders divide by `u_screen`, which stays logical, so
-/// this rect is the entire logical->physical mapping; nothing else in the renderer knows the
-/// drawable size at all.
+/// this rect is the entire logical->physical mapping; nothing else in the renderer's drawing knows
+/// the drawable size at all, but for the one question [`viewport_fills_drawable`] answers for
+/// `gfx::clear_flat_ground` (may a bare `glClear` stand for the viewport's box?).
 #[inline]
 pub fn viewport() -> (i32, i32, i32, i32) {
     (
@@ -116,6 +117,21 @@ pub fn viewport() -> (i32, i32, i32, i32) {
         VW.load(Ordering::Relaxed),
         VH.load(Ordering::Relaxed),
     )
+}
+
+/// **Does the viewport cover the whole drawable?** True only when its origin is `(0, 0)` AND its
+/// size is the drawable's: a letterbox that costs nothing on every 16:9 surface and is a bar on any
+/// other. An origin of zero alone proves nothing, because [`recompute`] floors the centring: a
+/// drawable one pixel wider than the canvas has `x == 0` and a column outside the viewport. A bare
+/// `glClear` (no scissor) reaches the whole drawable, so it is the viewport's only when this holds.
+#[inline]
+pub fn viewport_fills_drawable() -> bool {
+    viewport_is(drawable(), viewport())
+}
+
+/// [`viewport_fills_drawable`] on given values.
+fn viewport_is((dw, dh): (i32, i32), vp: (i32, i32, i32, i32)) -> bool {
+    vp == (0, 0, dw, dh)
 }
 
 /// Derive [`scale`] and [`viewport`] from the drawable. Called by [`probe`], and by the tests.
@@ -519,6 +535,30 @@ mod tests {
             assert_eq!(scale(), 1.0);
             assert_eq!(viewport(), (0, 180, 1920, 1080));
         });
+    }
+
+    /// A viewport fills the drawable only when its origin is zero AND its size is the drawable's.
+    /// `recompute` floors the centring, so a drawable one pixel past the canvas has `x == 0` and a
+    /// column outside the viewport: an origin of zero is not proof (a bare clear would paint it).
+    #[test]
+    fn the_viewport_fills_the_drawable_only_when_it_is_all_of_it() {
+        for (w, h) in [(1920, 1080), (3840, 2160), (2560, 1440), (7680, 4320)] {
+            with_drawable(w, h, || assert!(viewport_fills_drawable(), "{w}x{h} is 16:9, no bars"));
+        }
+        // Bars on one axis, or a 1-px remainder the floor leaves outside: origin zero, not filled.
+        for (w, h, vp) in [
+            (1921, 1080, (0, 0, 1920, 1080)),
+            (1920, 1081, (0, 0, 1920, 1080)),
+            (2560, 1080, (320, 0, 1920, 1080)),
+            (1920, 1440, (0, 180, 1920, 1080)),
+        ] {
+            with_drawable(w, h, || {
+                assert_eq!(viewport(), vp, "the premise: the viewport at {w}x{h}");
+                assert!(!viewport_fills_drawable(), "{w}x{h} has a bar the viewport does not cover");
+            });
+        }
+        assert!(viewport_is((100, 50), (0, 0, 100, 50)));
+        assert!(!viewport_is((100, 50), (0, 0, 99, 50)) && !viewport_is((100, 50), (1, 0, 100, 50)));
     }
 
     /// The two pointer transforms must compose to the identity, letterbox offset included —

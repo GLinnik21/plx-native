@@ -737,6 +737,14 @@ pub enum StoreJob {
     /// (`request`, the landing pass, or an end-of-stream fan-out) and addressed by the write's id.
     /// One is out at a time: the queue is drained in the order pressed. Not on the tape.
     ViewWrite(plx_machine::job::Job<crate::viewstate::ViewWriteReq>, crate::viewstate::ViewWritePort),
+    /// One season switch (`MetadataCmd::LoadSeason`), addressed by the season generation it minted.
+    /// The runner resolves the show's server to its client at the launch; a server with none
+    /// answers the failure without a GET. Not on the tape.
+    MetaSeason(plx_machine::job::Job<crate::metadata::MetaSeasonReq>, crate::metadata::MetaSeasonPort),
+    /// One window of a long season's episode pages (`MetadataCmd::WantEpisodes`): at most
+    /// `EP_JOB_PAGES` pages, read in order and posted to the port page by page as they are read.
+    /// Not on the tape.
+    MetaEpisodes(plx_machine::job::Job<crate::metadata::MetaEpisodesReq>, crate::metadata::MetaEpisodesPort),
 }
 
 /// How the runner admits a job before it starts it: the policy a job kind belongs to, stated on
@@ -767,13 +775,15 @@ impl StoreJob {
             | Self::BrowseHubs(..)
             | Self::Search(..)
             | Self::SaveRecents(..)
-            | Self::ViewWrite(..) => Admission::Direct,
+            | Self::ViewWrite(..)
+            | Self::MetaSeason(..)
+            | Self::MetaEpisodes(..) => Admission::Direct,
         }
     }
 
     pub fn store(&self) -> StoreId {
         match self {
-            Self::Detail(..) => StoreId::Metadata,
+            Self::Detail(..) | Self::MetaSeason(..) | Self::MetaEpisodes(..) => StoreId::Metadata,
             Self::Collection(..) => StoreId::Collection,
             Self::Person(..) => StoreId::Person,
             Self::Catalog(..) => StoreId::Catalog,

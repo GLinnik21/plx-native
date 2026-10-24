@@ -392,6 +392,8 @@ pub(crate) unsafe fn menu_play_tick(
         if let Some((idx, cur_season)) = pick {
             if idx != cur_season {
                 bridge.metadata_mut().run(plx_data::stores::metadata::MetadataCmd::LoadSeason(idx));
+                // The bare store leaves the season job on its outbox: start it in this call.
+                bridge.start_store_jobs();
                 let gen = bridge.metadata_view().season_gen();
                 *menu_play_await = Some(MenuPlayAwait { phase: MenuPlayPhase::Season { gen, idx }, ..wait });
                 return;
