@@ -224,7 +224,7 @@ impl StoreRunner {
                 | StoreJob::Catalog(..)
                 | StoreJob::SubtitleSearch(..)
                 | StoreJob::ViewReconcile(..)
-                | StoreJob::BrowseHubs(..)) => self.start(other),
+                | StoreJob::BrowseHubs(..)
                 | StoreJob::Search(..)
                 | StoreJob::SaveRecents(..)) => self.start(other),
         }
