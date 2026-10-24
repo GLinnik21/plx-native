@@ -25,7 +25,7 @@ use std::sync::atomic::Ordering;
 
 use super::decision::{
     measure_remote_original, measure_remote_remux, put_selection, resolve_playqueue,
-    server_decision, forced_server_decision, ActiveEncoderState, AutomaticRouteIntent, MdeVerdict, PlayerControl,
+    server_decision, forced_server_decision, ActiveEncoderState, AutomaticRouteIntent, MdeVerdict, PlayerControl, QueueInfo,
     ENCODER_GENERATION,
 };
 
@@ -1531,6 +1531,41 @@ pub enum SubWrite {
 /// the wrong authority for every id in this function. The server arrives in `env.sid` and the only
 /// client here is `client_for` of it.
 pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str, vcodec: &str, acodec: &str, env: &ResolveEnv) -> Plan {
+    // The play queue is asked for beside the rest of the plan (the playing item, the server's
+    // decision), not before it: nothing below reads it, so a playback start waits for the slower
+    // of the two rather than for both one after the other. It lands once the plan is built,
+    // whichever exit built it.
+    let mut queue = None;
+    let mut plan = build_stream_beside_queue(off, rk, part, vcodec, acodec, env, &mut queue);
+    let q = match queue {
+        Some(PendingQueue::Asked(h)) => h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)),
+        Some(PendingQueue::Got(q)) => q,
+        None => return plan,
+    };
+    plan.machine_id = q.machine_id;
+    plan.pq_id = q.id;
+    plan.pq_item_id = q.item_id;
+    plan.up_next = q.up_next;
+    plan.queue = q.rows;
+    plan
+}
+
+/// The play queue of a [`build_stream`]: asked for on a thread of its own, or answered already
+/// when that thread could not be started.
+enum PendingQueue {
+    Asked(std::thread::JoinHandle<QueueInfo>),
+    Got(QueueInfo),
+}
+
+fn build_stream_beside_queue(
+    off: &plx_base::task::OffFrame,
+    rk: &str,
+    part: &str,
+    vcodec: &str,
+    acodec: &str,
+    env: &ResolveEnv,
+    queue: &mut Option<PendingQueue>,
+) -> Plan {
     // The part id is derived from THIS call's `part`, before anything else runs, and published
     // here rather than by the caller after we return. It used to be written by play_movie /
     // play_episode *after* build_stream finished, so `put_selection` — which runs inside this
@@ -1570,18 +1605,13 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     let session = new_sess(rk);
     plan.sess = session.clone();
     if !rk.is_empty() && !env.preview {
-        let q = resolve_playqueue(
-            client,
-            rk,
-            &session,
-            &env.machine_id,
-            !env.omit_queue_continuous,
-        );
-        plan.machine_id = q.machine_id;
-        plan.pq_id = q.id;
-        plan.pq_item_id = q.item_id;
-        plan.up_next = q.up_next;
-        plan.queue = q.rows;
+        let (rk, session, cached, continuous) = (rk.to_string(), session.clone(), env.machine_id.clone(), !env.omit_queue_continuous);
+        let ask = move || resolve_playqueue(client, &rk, &session, &cached, continuous);
+        // Spawn failure asks inline, as before the queue had a thread of its own.
+        *queue = Some(match std::thread::Builder::new().name("route-queue".into()).spawn(ask.clone()) {
+            Ok(h) => PendingQueue::Asked(h),
+            Err(_) => PendingQueue::Got(ask()),
+        });
     }
     // the playing item's OWN track lists (menu + audio pick + esInfo fps read them) — the
     // loaded detail can be a different item (show page / straight-from-Home play)
