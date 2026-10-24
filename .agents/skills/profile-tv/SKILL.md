@@ -88,6 +88,22 @@ If layer 1 says frames are slow, use `/tmp/plxnative-framedrop` and then
 `/tmp/plxnative-profile` for GPU phase time. Arm only one profiler mode per launch. The HWCNT and
 GL-timer triggers invalidate production pacing even when their output looks plausible.
 
+## Why a back buffer is late (kernel trace)
+
+A frame whose first framebuffer command waits a whole refresh longer than usual missed a
+compositor pass; which side made it miss (the app's CPU, the app's GPU job, or the compositor) is
+answered by a kernel trace, not by a count of late frames. During an fps leg armed with
+`--extra-trigger plxnative-framecb` (every frame logged, `--save-logs DIR`), take 6 s windows with
+`tools/tv-sched-trace.sh --app --secs 6 --out w1.gz` (`--app [FLAVOR]` finds that install's pid by
+the suffix of `/proc/<pid>/exe`, jail prefix and all; the file opens with a `# plx-task` thread table),
+then `tools/analyze-sched-trace.py DIR/fps-<scene>.log w1.gz ... --tid <pid> --latch`. It sorts every
+long wait into CPU-late, GPU-late, edge or compositor-side, in 8.33 ms osd ticks, and ends with the
+on-time margin (GPU done minus the compositor's pass): the number to quote. Procedure, how to read
+the classes, a worked example and two traps (tracing loads the set, so never quote a window's rates;
+a wakeup by `<idle>-0` is the cross-CPU IPI path, not a waker) are in `docs/player-submenus.md`
+(step 1 of the 2026-10-02 capture, "Kernel scheduler trace", and its `--latch` paragraph). Run it
+with HWCNT off.
+
 ## Mali T820 facts for reading the counters
 
 Measured facts for reading HWCNT, `plxnative-drawmask` and bench output. For `plxnative-drawmask`
