@@ -452,6 +452,7 @@ impl SessionAdapter {
         -> Option<plx_plex::plex::session::CacheRefreshOutcome> {
         #[cfg(test)]
         if let Resources::Fixture(fixture) = &mut self.resources {
+            debug_assert!(matches!(fixture.cache_refresh, FixtureRefresh::Idle), "one refresh in flight");
             fixture.cache_refresh = FixtureRefresh::Held(req,
                 Box::new(plx_plex::plex::session::refresh_cache_job(generation)));
             return None;
@@ -500,6 +501,10 @@ impl SessionAdapter {
     /// production job (`refresh_cache_job`); the next [`Self::take_cache_refresh`] hands its
     /// outcome back. Returns whether one ran: `false` for a live adapter (its job runs on the
     /// worker) and when nothing is parked.
+    ///
+    /// The job takes the session IO lock on the CALLER's thread, so the caller must not hold it
+    /// (`session::with_io_for_test`) and must not be inside a `FrameScope`: the first deadlocks and
+    /// the second trips `task::assert_may_block`.
     #[cfg(test)]
     pub(crate) fn run_held_cache_refresh(&mut self) -> bool {
         let Resources::Fixture(fixture) = &mut self.resources else { return false };
@@ -1307,7 +1312,7 @@ mod tests {
         session::invalidate_for_test();
         let need = session::refresh_need().expect("an unloaded cache needs a read");
         let mut adapter = SessionAdapter::fixture();
-        assert_eq!(adapter.begin_cache_refresh(7, need.generation), None, "the queue refused nothing");
+        assert_eq!(adapter.begin_cache_refresh(7, need.generation), None, "a parked refresh answers nothing at once");
         assert_eq!(adapter.cache_refresh_req(), Some(7), "the adapter holds the owner's request");
         plx_base::storage_worker::drain_for_test();
         assert!(session::peek_settled().is_none(), "no worker ran the read");
@@ -1319,6 +1324,38 @@ mod tests {
         assert_eq!(adapter.cache_refresh_req(), None, "answered once");
         assert_eq!(adapter.take_cache_refresh(), None);
         assert!(!adapter.run_held_cache_refresh(), "nothing is left to run");
+    }
+
+    /// The live `begin_cache_refresh` is the one a frame runs, so it may only SUBMIT the job: it must
+    /// not take the session IO lock, wait on the job's ticket, or read. This thread holds the lock
+    /// inside a `FrameScope`, so a begin that took it panics on `task::assert_may_block` (and
+    /// without the scope would deadlock) instead of merely running slowly. The admitted job queues
+    /// behind the held lock on the storage worker and runs once the lock is released.
+    #[test]
+    fn a_live_adapter_begins_a_cache_refresh_without_taking_the_session_io_lock() {
+        use plx_plex::plex::session::{self, CacheRefreshOutcome};
+        let _serial = plx_base::testlock::serial();
+        let _session = session::TempSession::new("live-cache-refresh-lock-held");
+        session::save(&session::Session {
+            client_id: "cid-1".into(), account_token: "acct".into(), ..Default::default()
+        });
+        session::invalidate_for_test();
+        let need = session::refresh_need().expect("an unloaded cache needs a read");
+        let mt = unsafe { plx_base::task::MainThread::assume() };
+        let mut adapter = SessionAdapter::live_resources_for_test(&mt, false);
+        session::reset_reads_for_test();
+        session::with_io_for_test(|| {
+            let _frame = plx_base::task::FrameScope::enter();
+            assert_eq!(adapter.begin_cache_refresh(7, need.generation), None, "the queue admitted the job");
+            assert_eq!(adapter.cache_refresh_req(), Some(7), "and the adapter holds its ticket");
+            assert_eq!(adapter.take_cache_refresh(), None, "the job cannot have run behind the held lock");
+            assert_eq!(session::reads_for_test(), 0, "beginning a refresh reads nothing on this thread");
+        });
+        plx_base::storage_worker::drain_for_test();
+        assert_eq!(adapter.take_cache_refresh(), Some((7, CacheRefreshOutcome::Settled)),
+            "released, the production job ran on the worker and settled the cache");
+        assert!(session::peek_settled().is_some());
+        assert_eq!(adapter.cache_refresh_req(), None, "answered once");
     }
 
     use plx_session::auth::{LoginProgress, owner::SessionOp};

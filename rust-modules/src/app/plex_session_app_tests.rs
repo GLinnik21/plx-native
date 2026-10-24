@@ -59,7 +59,9 @@ fn login_frames_never_wait_for_the_session_io_lock() {
     let _session = session::TempSession::new("login-frame-storage-blocked");
     // The scratch session's own save primed the cache; start from the unloaded one a first frame
     // finds, so the owner asks for a refresh while the lock is held (the fixture adapter parks it:
-    // the frames must neither take the lock nor read, whoever would have run it).
+    // the frames must neither take the lock nor read, whoever would have run it; the live
+    // adapter's submit under the held lock is graded by
+    // `a_live_adapter_begins_a_cache_refresh_without_taking_the_session_io_lock`).
     session::invalidate_for_test();
     session::reset_reads_for_test();
     session::with_io_for_test(|| {
@@ -126,8 +128,8 @@ fn frames(pages: &mut plx_ui::dispatch::Dispatcher<crate::app::bridge::AppHost>,
 }
 
 /// `peek` never reads, so an `Unloaded` cache in a live frame is refilled by the session owner's
-/// `RefreshCache` effect: observed by the frame step, run on the storage worker, answered to the
-/// owner. Within a few frames the cache is settled (what Settings' pending preference edits and
+/// `RefreshCache` effect: observed by the frame step, run by the adapter (the storage worker live;
+/// the test thread under a fixture adapter), answered to the owner. Within a few frames the cache is settled (what Settings' pending preference edits and
 /// the account menu wait for), the visible generation moved ONCE, and nothing is left in flight.
 #[test]
 fn an_unloaded_cache_is_refilled_by_the_owner_within_a_few_frames() {
@@ -157,7 +159,7 @@ fn an_unloaded_cache_is_refilled_by_the_owner_within_a_few_frames() {
     assert_eq!(session::visible_generation(), generation + 1, "a settled cache raises no more landings");
 }
 
-/// An adapter that is replaced (or dropped) loses its job's ticket, so nothing would ever answer
+/// An adapter that is replaced (or dropped) loses its job (ticket or parked refresh), so nothing would ever answer
 /// the owner: the frame step reconciles it with `Refused`, the owner backs off about a second, and
 /// then asks again.
 #[test]
@@ -175,8 +177,7 @@ fn a_replaced_adapter_cannot_strand_an_in_flight_refresh() {
     assert!(bridge.session.cache_refresh_in_flight().is_some(), "the first frame asked for a refresh");
     let mt = unsafe { plx_base::task::MainThread::assume() };
     bridge.session_adapter = crate::app::adapters::session::SessionAdapter::live_resources_for_test(&mt, false);
-    plx_base::storage_worker::drain_for_test();
-    session::invalidate_for_test(); // the lost job's fill is gone again: a need exists
+    assert!(session::refresh_need().is_some(), "the dropped adapter's parked job never ran: the need still stands");
     frames(&mut pages, &mut bridge, &mut ms, 1);
     assert_eq!(bridge.session.cache_refresh_in_flight(), None, "the reconcile answered the lost job");
     assert!(session::peek_settled().is_none(), "and the owner is now backing off");
@@ -228,10 +229,9 @@ fn a_refresh_effect_still_queued_is_not_reconciled_as_lost() {
     let mut effects = Vec::new();
     bridge.session_effect(SessionFx::RefreshCache { req, generation },
         &mut Effects::new(&mut effects, MachineId::Session, &mut present));
-    assert!(effects.is_empty(), "the queue took the job");
+    assert!(effects.is_empty(), "the adapter took the job");
     assert_eq!(bridge.session_adapter.cache_refresh_req(), Some(req));
     bridge.run_held_cache_refresh_for_test();
-    plx_base::storage_worker::drain_for_test();
     let mut ms = 16;
     frames(&mut pages, &mut bridge, &mut ms, 2);
     assert!(session::peek_settled().is_some(), "the job filled the cache");

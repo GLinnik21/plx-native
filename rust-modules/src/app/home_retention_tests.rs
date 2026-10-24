@@ -535,9 +535,13 @@ fn home_worker_results_cross_the_addressed_dispatcher_ingest_once() {
     let _guard = plx_base::testlock::serial();
     // The process-global session cache can be `Unloaded` here (a fresh process, or after any test
     // that dropped a `TempSession`), and then the session owner's refill asks the fixture adapter
-    // for a read on the first frame. Start from that case, always: the tap must see only hub
-    // results whatever the cache holds, and a fixture adapter starts no worker for it.
+    // for a read on the first frame. Start from that case: the tap must see only hub results
+    // whatever the cache holds, and a fixture adapter starts no worker for it. `invalidate_for_test`
+    // leaves a `Revoked` cache as it is (a sign-out is never overwritten), and a `Revoked` cache
+    // needs no read, so the premise is asserted: without it this test would pass having asked
+    // for nothing.
     plx_plex::plex::session::invalidate_for_test();
+    assert!(plx_plex::plex::session::refresh_need().is_some(), "premise: the owner will ask for a read");
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     rig.stores.hubs.seed_for_test(2, plx_data::pms::HubState::Ready);
