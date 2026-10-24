@@ -619,7 +619,8 @@ gate ticks 'SDL_GetTicks\(' "$SRC" "$SRC_BASE" "$SRC_PLATFORM" "$SRC_GFX" "$SRC_
 #   wall (widened Sans-IO store lane, Collection, 2026-10-24): also data/src/collection.rs, whose step emits its request as a store job and starts nothing, so a clock read there is an instrument or a defect (no hit when it joined).
 #   wall (widened Sans-IO lifecycle PR B, 2026-10-24): also media/src/player/lifecycle.rs, the foreground machine, once its drivers (which carry `CycleScope::enter`) became player/foreground.rs. `step` is a function of (state, event) and the pause it parks with arrives on the event, so a clock read there is an instrument or a defect (no hit when it joined).
 #   wall (widened Sans-IO store lane, subtitle search, 2026-10-24): also data/src/subsearch.rs, whose step emits its request as a store job and starts nothing, so a clock read there is an instrument or a defect (no hit when it joined; stores/viewreconcile.rs is already inside data/src/stores).
-gate wall '(Instant::now|SystemTime::now|\.elapsed\(\))' "$SRC_UI" "$SRC_MACHINE" "$SRC_APPKIT" "$SRC/app" "$SRC_MEDIA/route/plan.rs" "$SRC_MEDIA/route/plan_memory.rs" "$SRC_SCREENS" "$SRC_DATA/stores" "$SRC_PLEX/plex/session.rs" "$SRC_SESSION"/auth/owner*.rs "$SRC_DATA/collection.rs" "$SRC_DATA/subsearch.rs" "$SRC_MEDIA/player/lifecycle.rs"
+#   wall (widened Sans-IO store lane, Search, 2026-10-24): also data/src/search.rs and data/src/search/, whose step emits its fetches as store jobs and starts nothing (its debounce and backoff count the `dt` the pump is handed), so a clock read there is an instrument or a defect (no hit when they joined).
+gate wall '(Instant::now|SystemTime::now|\.elapsed\(\))' "$SRC_UI" "$SRC_MACHINE" "$SRC_APPKIT" "$SRC/app" "$SRC_MEDIA/route/plan.rs" "$SRC_MEDIA/route/plan_memory.rs" "$SRC_SCREENS" "$SRC_DATA/stores" "$SRC_PLEX/plex/session.rs" "$SRC_SESSION"/auth/owner*.rs "$SRC_DATA/collection.rs" "$SRC_DATA/subsearch.rs" "$SRC_DATA/search.rs" "$SRC_DATA/search" "$SRC_MEDIA/player/lifecycle.rs"
 
 if grep -rnE 'fp-contract|fast-math|\+fma' rust-modules/Cargo.toml rust-modules/build.rs rust-modules/net/Cargo.toml rust-modules/plex/Cargo.toml rust-modules/telemetry/Cargo.toml rust-modules/data/Cargo.toml rust-modules/session/Cargo.toml rust-modules/media/Cargo.toml rust-modules/appkit/Cargo.toml rust-modules/screens/Cargo.toml rust-modules/platform/Cargo.toml rust-modules/platform/build.rs rust-modules/gfx/Cargo.toml rust-modules/gfx/build.rs rust-modules/ui/Cargo.toml rust-modules/ui/build.rs rust-modules/appkit/build.rs rust-modules/screens/build.rs rust-modules/storage/Cargo.toml rust-modules/storage/build.rs rust-modules/.cargo Makefile 2>/dev/null | grep -v '^[[:space:]]*#'; then
   fail "fpflags: a floating-point contraction flag is set (spec §4.2 assumes none)"
@@ -1249,7 +1250,7 @@ ledger_candidates() {
 # `storage_worker::submit(`, `submit_retained(` (base/src/storage_worker.rs) and the typed command
 # worker's `.submit_ticket(`, keyed `<path>::<enclosing fn>::<spelling>`. A BARE `spawn(` / `submit(` is a
 # site only in a file that imports it from `task` / `storage_worker` (no other `spawn(` is a worker start:
-# `Builder::spawn`, a local fn). A local wrapper (`spawn_discovery`, `spawn_job`) is not itself a site —
+# `Builder::spawn`, a local fn). A local wrapper (`spawn_discovery`) is not itself a site —
 # the real call inside it is. The command worker's `.submit(` is not covered: it is `cfg(any(test,
 # feature = "test-support"))` in base, so no production line can call it; `.submit_ticket(` is covered
 # although no machine calls it today, because a machine that did would be starting a worker. A worker

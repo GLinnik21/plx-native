@@ -28,6 +28,26 @@ pub(super) fn test_adapter() -> &'static std::sync::Arc<MetadataAdapter> {
     TEST_ADAPTER.with(|cell| unsafe { &*cell.get() })
 }
 
+/// TEST ONLY: a registered server's client, for the tests of the detail chain's pure helpers. The
+/// chain's fetches are handed a client (`finish_detail_fetch`), and these tests pin inputs that
+/// return before any GET (empty extras rows, an empty `primaryExtraKey`, trailers that already
+/// carry a Part), so the server behind it is a closed port that is never dialled. The registry is
+/// process-global: hold `plx_base::testlock::serial()`. Dropping the guard empties the registry
+/// again; the client itself is leaked by the registry and stays valid.
+pub(super) struct OfflineClient(pub &'static plx_plex::plex::Client);
+
+pub(super) fn offline_client() -> OfflineClient {
+    plx_plex::plex::reset_servers_for_test();
+    let sid = plx_plex::plex::register_for_test("metadata-offline", "127.0.0.1", 9, "synthetic", "cid");
+    OfflineClient(plx_plex::plex::client_for(sid).expect("the server just registered"))
+}
+
+impl Drop for OfflineClient {
+    fn drop(&mut self) {
+        plx_plex::plex::reset_servers_for_test();
+    }
+}
+
 // ---- convert_streams: the Dolby Vision record's survival ------------------------------
 
 pub(super) fn video_stream(dovi: Option<(i64, i64, i64)>) -> plx_plex::plex::Stream {
