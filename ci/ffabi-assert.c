@@ -94,7 +94,7 @@ SAME64(offsetof(AVFormatContext, streams), 48, "AVFormatContext.streams moved [h
 SAME32(offsetof(AVFormatContext, duration), 64, "OFF_FMT_DURATION != 64");
 SAME64(offsetof(AVFormatContext, duration), 104, "OFF_FMT_DURATION != 64 [host]");
 
-/* --- AVFrame: poked directly by the encode path. --- */
+/* --- AVFrame: poked directly by the encode path, and read by the FLAC → PCM decoder. --- */
 SAME(offsetof(AVFrame, data), 0, "OFF_FRAME_DATA != 0");
 SAME32(offsetof(AVFrame, linesize), 32, "OFF_FRAME_LINESIZE != 32");
 SAME64(offsetof(AVFrame, linesize), 64, "OFF_FRAME_LINESIZE != 32 [host]");
@@ -109,7 +109,7 @@ SAME64(offsetof(AVFrame, format), 116, "OFF_FRAME_FORMAT != 80 [host]");
    likely to be got wrong by reading a struct definition on a 64-bit machine. This assertion is
    the reason the FFmpeg 9 bump did not ship a wrong PTS: it fired here, on a desk. */
 SAME32(offsetof(AVFrame, pts), 96, "OFF_FRAME_PTS != 96 (ARM EABI int64 alignment)");
-/* The audio half, read by ff.rs's SpeedDecoder (playback speed). */
+/* The audio half, read by ff.rs's SpeedDecoder (playback speed) and ff_pcm.rs's PcmDecoder (FLAC). */
 SAME32(offsetof(AVFrame, extended_data), 64, "OFF_AFRAME_EXTENDED_DATA != 64");
 SAME64(offsetof(AVFrame, extended_data), 96, "OFF_AFRAME_EXTENDED_DATA != 96 [host]");
 SAME32(offsetof(AVFrame, nb_samples), 76, "OFF_AFRAME_NB_SAMPLES != 76");

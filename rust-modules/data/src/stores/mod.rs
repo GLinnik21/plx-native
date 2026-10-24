@@ -268,6 +268,7 @@ impl Stores {
             StoreId::ViewReconcile => self.reconcile.take_jobs(),
             StoreId::Hubs => self.hubs.take_jobs(),
             StoreId::Browse => self.browse.borrow_mut().take_jobs(),
+            StoreId::Search => self.search.take_jobs(),
             // The other stores emit no jobs yet.
             _ => Vec::new(),
         }
@@ -289,6 +290,7 @@ impl Stores {
             StoreId::ViewReconcile => self.reconcile.has_jobs(),
             StoreId::Hubs => self.hubs.has_jobs(),
             StoreId::Browse => self.browse.borrow().has_jobs(),
+            StoreId::Search => self.search.has_jobs(),
             // The other stores emit no jobs yet.
             _ => false,
         }
@@ -310,12 +312,25 @@ impl Stores {
         self.search.run_with_directory(cmd, directory)
     }
 
-    pub fn search_pump(&mut self, dt: f32, directory: browse::DirectoryView<'_>) -> bool {
-        self.search.pump_with_directory_and_gate(dt, directory, &self.landgate)
+    /// Pump the Search store; `keys` is the registry's answer as of this call. It does NOT start the
+    /// requests it emitted: a caller that returns without [`Stores::take_jobs_of`] and handing the
+    /// jobs to a runner has stranded the sources' fetches. The one production caller is
+    /// `Bridge::search_pump`, which drains in the same call.
+    pub fn search_pump(
+        &mut self,
+        dt: f32,
+        directory: browse::DirectoryView<'_>,
+        keys: &plx_plex::plex::ClientKeys,
+    ) -> bool {
+        self.search.pump_with_directory_and_gate(dt, directory, &self.landgate, keys)
     }
 
-    pub fn search_snapshot(&self, directory: browse::DirectoryView<'_>) -> search::SearchSnapshot {
-        self.search.snapshot_with_directory(directory)
+    pub fn search_snapshot(
+        &self,
+        directory: browse::DirectoryView<'_>,
+        household: &[i64],
+    ) -> search::SearchSnapshot {
+        self.search.snapshot_with_directory(directory, household)
     }
 
     /// Controlled discovery against this aggregate's Browse owner.
@@ -686,6 +701,16 @@ pub enum StoreJob {
     /// across all sections (the store's one claim). Not on the tape.
     BrowseHubs(plx_machine::job::Job<crate::browse::section_hubs::BrowseHubsReq>,
         crate::browse::section_hubs::BrowseHubsPort),
+    /// One search fetch of one source: its first `/hubs/search` answer, or a read of depths of one
+    /// result lane, emitted by the Search pump and addressed by the query's generation. Several are
+    /// out at once, one per source, each answering into its own mailbox slot (the port names it).
+    /// Not on the tape.
+    Search(plx_machine::job::Job<crate::search::SearchReq>, crate::search::SearchPort),
+    /// One write of the recent Search terms, emitted by the Search step that edited them
+    /// (`SearchCmd::RememberRecent` / `ClearRecents`) and addressed by a sequence of its own. It
+    /// carries nothing and answers with nothing: a refusal is remembered, and the next edit asks
+    /// again. Not on the tape.
+    SaveRecents(plx_machine::job::Job<crate::search::recents::SaveRecentsReq>, crate::search::recents::SaveRecentsPort),
 }
 
 /// How the runner admits a job before it starts it: the policy a job kind belongs to, stated on
@@ -707,12 +732,15 @@ impl StoreJob {
         match self {
             Self::Detail(..) | Self::Collection(..) | Self::Person(..) => Admission::Tape,
             Self::Hubs(..) => Admission::Home,
-            // A controlled run never emits this work: `bootstrap/effects.rs` `work_value()` refuses
+            // A controlled run never emits the section hubs' work: `bootstrap/effects.rs` `work_value()` refuses
             // every `StoreWork` but `Hubs` and `BrowseDiscovery`, so no record exists to place it
-            // in and the launch is the whole decision (as for the three kinds beside it).
-            Self::Catalog(..) | Self::SubtitleSearch(..) | Self::ViewReconcile(..) | Self::BrowseHubs(..) => {
-                Admission::Direct
-            }
+            // in and the launch is the whole decision (as for the kinds beside it).
+            Self::Catalog(..)
+            | Self::SubtitleSearch(..)
+            | Self::ViewReconcile(..)
+            | Self::BrowseHubs(..)
+            | Self::Search(..)
+            | Self::SaveRecents(..) => Admission::Direct,
         }
     }
 
@@ -726,6 +754,7 @@ impl StoreJob {
             Self::ViewReconcile(..) => StoreId::ViewReconcile,
             Self::Hubs(..) => StoreId::Hubs,
             Self::BrowseHubs(..) => StoreId::Browse,
+            Self::Search(..) | Self::SaveRecents(..) => StoreId::Search,
         }
     }
 }

@@ -1178,7 +1178,7 @@ mod tests {
     /// `(rk, watched, unwatched, resume_ms)` of every Search row, in shelf order.
     fn search_marks(stores: &crate::stores::Stores) -> Vec<(String, bool, bool, i64)> {
         let directory = crate::stores::browse::DirectorySnapshot::default();
-        let snap = stores.search_snapshot(directory.view());
+        let snap = stores.search_snapshot(directory.view(), &[]);
         snap.view().shelves().iter().flat_map(|s| &s.items).filter_map(|it| match it {
             crate::search::Item::Media(m) => Some((m.rk.clone(), m.watched, m.unwatched, m.resume_ms)),
             _ => None,

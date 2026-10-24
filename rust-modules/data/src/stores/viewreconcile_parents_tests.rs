@@ -135,7 +135,7 @@ fn settled(stores: &Stores) -> bool {
 
 fn search_row(stores: &Stores, sid: ServerId, rk: &str) -> bool {
     let directory = DirectorySnapshot::default();
-    let snap = stores.search_snapshot(directory.view());
+    let snap = stores.search_snapshot(directory.view(), &[]);
     snap.view().shelves().iter().flat_map(|s| &s.items).find_map(|it| match it {
         Item::Media(m) if m.sid == sid && m.rk == rk => Some(m.watched),
         _ => None,

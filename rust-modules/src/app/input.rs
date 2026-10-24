@@ -1376,9 +1376,8 @@ pub(crate) fn delete_all_local_data(meta: &mut plx_data::stores::metadata::Metad
     meta.run(plx_data::stores::metadata::MetadataCmd::Clear);
     // No explicit `ClearRecents` here (phase 7 Search cutover retired the legacy screen's own
     // thin `recents::clear()` wrapper this used to call): recent Search terms
-    // live INSIDE the session file (`plx_data::search::recents`'s doc — "profile-scoped … the
-    // session's atomic worker door"), and the adapter already deleted that file
-    // before this completion sweep. An explicit clear here would queue its own save
+    // live INSIDE the session file (`plx_data::search::recents`), and the adapter already deleted that
+    // file before this completion sweep. An explicit clear here would emit its own save job
     // racing the ordered credential deletion — the worse of the two orders resurrects a stub session file
     // AFTER "delete everything" already removed it. Letting the file deletion alone answer
     // for recents removes that race rather than leaving it to chance ordering.

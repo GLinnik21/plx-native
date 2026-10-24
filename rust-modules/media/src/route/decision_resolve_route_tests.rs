@@ -978,7 +978,7 @@ fn audio_change_invalidates_a_pending_original_recovery() {
     );
     request_user_route_intent(&ps, UserRouteIntent::RecoverOriginal(RecoveryCause::ManualOriginal));
 
-    commit_audio_selection(&mut ps, CarriedAudio { sid: 99, ordinal: 1, codec: "aac".into(), channels: 2, can_normalize_loudness: false, immersive: false });
+    commit_audio_selection(&mut ps, CarriedAudio { sid: 99, ordinal: 1, codec: "aac".into(), channels: 2, can_normalize_loudness: false, immersive: false, sample_rate: 0, bit_depth: 0 });
 
     assert!(ps.auto_original.is_none());
     let action = claim_route_action().expect("the new audio track needs HLS retranscode");

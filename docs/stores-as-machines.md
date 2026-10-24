@@ -111,7 +111,7 @@ exactly these (file: callers):
 | collection | `CollectionCmd::{Open,Close,Reset,ApplyView}` + owner pump | Collection emits addressed Open/Close effects; Bridge boot/run and ViewState call the same aggregate's `CollectionStore` |
 | metadata | `MetadataCmd::{RequestDetail,Clear,ClearItem,Withdraw,Reset,LoadSeason,SetNowPlaying,ApplyView,InstallPlaying,MarkSkipped}` — the private `request_detail`/`clear`/`clear_item`/`withdraw`/`load_season`/`set_now_playing`/`set_watched_local`/`install_playing`/`mark_skipped` functions behind them are not reachable directly | Detail emits `AppFx::Store` (the mount-time `RequestDetail` `screens/registry.rs` used to queue for a fresh Detail page raced `DetailScreen`'s own `Enter(Fresh)` decision and issued it twice; `registry.rs` no longer queues one, so `Enter` is the one place a page decides it needs a fetch — nothing re-asks on `Tick` or `StoreChanged`, because the slot is a mailbox other flows (the item menu's Play, the play paths) fill by design; a Detail SURFACE that is dismissed sends `Withdraw` on `ScreenEvent::Closing`, ahead of its host's `Enter(Restored)`, so its unlanded request cannot displace the item that page found loaded, and its `ClearItem` follows at teardown unless the page withdrew and then asked for its own address again — `data/src/stores/metadata.rs` says which cases); `app/bridge.rs` delivers to that Bridge's `MetadataStore`; `app/boot.rs` and `app/content.rs` call `Bridge::metadata_run` directly (`load_detail_now` is deleted, D7) |
 | metadata | `pump_detail`, `pump_season`, `pump_alt_sources` | PUMP doors, `pub(crate)` by design — stepped by the store's own `run`/pump path, not called by a screen |
-| search | `set_query`, `reset`, `pump` | none direct — reached only through `StoreCmd::Search` from the owned `screens/search/mod.rs` (`ui/search/mod.rs` and `ui/search/recents.rs` are both deleted) |
+| search | `set_query`, `reset`, `pump` | none direct — reached only through `StoreCmd::Search` from the owned `screens/search/mod.rs` (`ui/search/mod.rs` and `ui/search/recents.rs` are both deleted). Every pump emits its per-source fetches as `StoreJob::Search` and every recents edit its write as `StoreJob::SaveRecents`; `Bridge::search_run` and `Bridge::search_pump` drain them to the app's runner in the same call (`docs/sans-io.md`, "The Search lane") |
 | pms | `run_with_directory`, `tick_with_directory`, and result landing | HubsStore owns the state and adapter. Home emits `StoreCmd::Hubs(..)`. Every step, Retry and page work included, captures its immutable request and the current Browse scope and emits it as a `StoreJob::Hubs` the app's runner starts. |
 
 The phase-4 CENSUS is historical: the 87/51/24/21/17/4 `pub(crate) fn` counts above are a
@@ -274,7 +274,9 @@ a `pub(crate) fn` to the data module that a screen calls: `check-deps` will refu
 point of the vocabulary is that the mutation set is one `match` a reviewer can read.
 
 The stores are machines in state but not yet in IO: their modules still start their own workers,
-read `client_for(current_server())` and the other process-global registries, and a few arms are
+read `client_for(current_server())` and the other process-global registries (the Metadata detail
+fetch chain no longer does, bar the opening season's episodes: it runs through the one client the
+runner resolved for the job, `docs/sans-io.md`, "The store job lane"), and a few arms are
 `cfg(not(test))` forks. `docs/sans-io.md` states the rule that retires those (a machine performs no
 IO; its work leaves as a typed effect and every result returns as one addressed event) and the four
 ledgers, `ci/allow/{workers,globals,forks,fxlanes}/`, that freeze today's sites. A new worker start,

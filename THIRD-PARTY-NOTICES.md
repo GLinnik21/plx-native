@@ -53,10 +53,12 @@ has always done).
 
 **Configuration.** Built with `--disable-everything` plus an explicit component list, **without**
 `--enable-gpl`, `--enable-version3` or `--enable-nonfree`, so no GPL-licensed or non-free FFmpeg
-component is present. Only demuxers, parsers, bitstream filters and *subtitle* decoders are
-enabled — video and audio are decoded by the television's hardware, not by FFmpeg. The one
-external library enabled is **zlib**, the television's own `libz.so.1` (not redistributed — see
-section 3), which the Matroska demuxer needs to inflate compressed subtitle tracks.
+component is present. Only demuxers, parsers, bitstream filters, *subtitle* decoders and the
+LGPL FLAC audio decoder are enabled — video and the other audio formats are decoded by the
+television's hardware, not by FFmpeg. FLAC is decoded by the app because the television's player
+has no FLAC input; the result is fed to it as PCM. The one external library enabled is **zlib**,
+the television's own `libz.so.1` (not redistributed — see section 3), which the Matroska demuxer
+needs to inflate compressed subtitle tracks.
 
 **You may modify and replace them.** They are ordinary shared libraries, loaded at run time by
 `dlopen` from the application's own directory; no FFmpeg code is linked into the `plxnative`

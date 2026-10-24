@@ -7389,12 +7389,12 @@ impl PersonOwnerGateFixture {
     PINNED_LEDGER_TOTALS = {
         # Browse B-A (the section hubs' list and row reads leave as `StoreJob::BrowseHubs`): -2 here (`hubs_spawn`,
         # `hubs_spawn_row` `spawn_small`), -3 on globals (their `client_for` reads and `hubs_land`'s).
-        "workers": 16,  # production worker starts inside machines (`ci/allow/workers/`)
+        "workers": 14,  # production worker starts inside machines (`ci/allow/workers/`)
         # Sans-IO lifecycle PR B moved the pin by nothing: -3 (the three `lifecycle.rs` `player::TX` lines left with the
         # transport contract, `player/transport.rs`, the IO layer) and +3 (a relocation lowers no pin by itself, so the same
         # diff widened the spellings to the transport readers `transport::paused`, `transport::viewer_paused` and
         # `preview::paused`, and seeded the 3 `preview::paused` reads in screens/detail it found).
-        "globals": 87,  # production process-global reads inside machines (`ci/allow/globals/`)
+        "globals": 75,  # production process-global reads inside machines (`ci/allow/globals/`)
         "forks": 58,  # production test/production forks in data/, plex/, media/, session/ (`ci/allow/forks/`)
         "fxlanes": 11,  # Bridge::app_effect arms that do not push Fx::Deliver (`ci/allow/fxlanes/`)
     }

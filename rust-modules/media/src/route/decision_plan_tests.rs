@@ -138,6 +138,8 @@ fn apply_plan_installs_contract_outcome_audio() {
         channels: 8,
         can_normalize_loudness: true,
         immersive: false,
+        sample_rate: 0,
+        bit_depth: 0,
     };
     let audio = plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false };
     apply_plan(

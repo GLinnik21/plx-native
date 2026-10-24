@@ -412,7 +412,7 @@ fn after_an_end_of_stream_the_other_servers_search_tile_reads_watched() {
     }]);
     let search_tile = |stores: &Stores| {
         let directory = DirectorySnapshot::default();
-        let snap = stores.search_snapshot(directory.view());
+        let snap = stores.search_snapshot(directory.view(), &[]);
         snap.view().shelves().iter().flat_map(|s| &s.items).find_map(|it| match it {
             Item::Media(m) if m.sid == sid_b => Some((m.watched, m.unwatched, m.resume_ms)),
             _ => None,
