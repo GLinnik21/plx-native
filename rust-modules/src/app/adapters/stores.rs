@@ -2699,7 +2699,11 @@ mod tests {
     fn the_listing_jobs_are_started_directly_and_leave_the_home_ledger_untouched() {
         let _serial = plx_base::testlock::serial();
         let _rig = CollectionRig;
-        for (_sid, browse, job) in [browse_page_request(), browse_directory_request()] {
+        // Each request builds its own registry, so one is built per turn: both up front would leave
+        // the first job's client gone by the time the runner resolves it.
+        let requests: [fn() -> (ServerId, BrowseStore, StoreJob); 2] = [browse_page_request, browse_directory_request];
+        for request in requests {
+            let (_sid, browse, job) = request();
             assert_eq!(job.admission(), Admission::Direct);
             let mut runner = StoreRunner::held_all();
             let mut io = home_io(true, Vec::new());
