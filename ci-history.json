@@ -1,4 +1,4 @@
-{"updated":"2026-10-24T12:56:12Z",
+{"updated":"2026-10-24T12:57:27Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -3666,7 +3666,7 @@
 {"id":40092051493,"at":"2026-10-24T11:58:59Z","sha":"42782f4cc","title":"Makefile: device-control goals keep a release-built pkg/plxnative","pr":991,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":17},"failed":["ARM build + gates / build + verify"]},
 {"id":40094220032,"at":"2026-10-24T12:30:35Z","sha":"a267feb80","title":"Merge branch 'main' into tools/kill-keeps-release-binary","pr":991,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"plan today's nightly":16,"ARM build + gates / build + verify":980,"publish nightly prerelease":19}}
 ],
-"cancelled":{"2026-10-16":{"push":9,"pull_request":1},"2026-10-18":{"push":4,"pull_request":0},"2026-10-19":{"push":0,"pull_request":1},"2026-10-20":{"push":0,"pull_request":2},"2026-10-22":{"push":4,"pull_request":1},"2026-10-23":{"push":5,"pull_request":2},"2026-10-24":{"push":3,"pull_request":2}},
+"cancelled":{"2026-10-16":{"push":9,"pull_request":1},"2026-10-18":{"push":4,"pull_request":0},"2026-10-19":{"push":0,"pull_request":1},"2026-10-20":{"push":0,"pull_request":2},"2026-10-22":{"push":4,"pull_request":1},"2026-10-23":{"push":5,"pull_request":2},"2026-10-24":{"push":5,"pull_request":2}},
 "daily":[],
 "flaky":[
 {"run":40071490036,"at":"2026-10-24T06:58:17Z","sha":"f596f952d","pr":977,"job":"host unit tests (default features)","test":"plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once","fail":[1],"pass":[2]},
