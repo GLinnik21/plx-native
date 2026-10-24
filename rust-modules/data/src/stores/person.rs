@@ -15,7 +15,7 @@ use super::StoreEv;
 
 #[derive(Clone, Debug)]
 pub enum PersonCmd {
-    /// Mount a person from the header a cast row handed in; the fetches spawn on the next pump.
+    /// Mount a person from the header a cast row handed in; the next pump emits the fetches as jobs.
     Open {
         sid: ServerId,
         key: String,

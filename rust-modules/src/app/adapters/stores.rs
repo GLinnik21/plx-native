@@ -43,6 +43,13 @@ pub(crate) fn refill_client_keys(keys: &mut ClientKeys) {
 /// The client a job's step decided on, if the registry still holds it: `client_for(sid)` accepted
 /// only when it is the very client (and credential) the step's [`ClientKeys`] named. A job the
 /// registry has moved on from (a sign-out, a re-registration, a retoken) is not started.
+///
+/// Capture at the spawn site (`pms::kick` states the rule): the worker is handed THIS server's own
+/// `&'static Client`, never `client()`. A slot re-pointed mid-request cannot redirect a fetch
+/// already out (`plex::servers` leaks each client precisely so the reference stays live), and a
+/// worker that asked which server is current would answer for whichever machine the user has since
+/// walked onto. The key compare is what makes the step's decision and the launch agree on one
+/// object, since the registry can move between the two.
 fn resolve(sid: plx_plex::plex::ServerId, key: ClientKey) -> Option<&'static Client> {
     plx_plex::plex::client_for(sid).filter(|client| ClientKey::of(client) == key)
 }

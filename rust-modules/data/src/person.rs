@@ -937,8 +937,8 @@ fn apply_view(state: &mut PersonState, at: &crate::viewstate::ViewAt, edit: crat
 
 /// Open the page for the person the ORIGIN server `sid` knows as `key`, with the header the caller
 /// already has — the cast row's name + headshot. MAIN THREAD, NON-BLOCKING: nothing is fetched
-/// here, [`PersonState::pump`] spawns every request on the next frame, so the page mounts on its header
-/// immediately and fills in around it.
+/// here, [`PersonState::pump`] emits every request as a job on the next frame, so the page mounts on
+/// its header immediately and fills in around it.
 ///
 /// `sid` is the server whose credit row this is, captured by the caller. It is where `key` means
 /// something and where the headshot comes from — but it is NOT the only server read: [`sources`]
