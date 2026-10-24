@@ -10,25 +10,35 @@
 // seamless (a wider rim would be hard-cut there). The shadow sh = smoothstep(clamp(0.5 -
 // d/(2*blur))) is algebraically identical to 1 - smoothstep(-blur, blur, d). rgb = tex*m
 // premultiplies coverage (so a rounded texture's ~1px AA edge is very slightly darker under
-// straight-alpha blend - accepted). Full-screen art (radius 0) takes the flat fast-path.
+// straight-alpha blend - accepted). Full-screen art (radius 0) takes the flat fast-path - in
+// gfx.rs's `draw_tex_core_in`, as its own program (fs_tex.frag) when that linked: Midgard sizes
+// registers and occupancy for the WHOLE shader, so this file's card chain was charged to a
+// two-word exit that never runs it.
 // v_cuv/v_p and the SDF chain are highp - see the PRECISION note in fs_src.frag.
 //
 // RESTING CARDS ARE DRAWN IN PIECES (gfx.rs's `draw_tex_core_in`): the whole quad is drawn five times
-// under scissor boxes, the card's interior with `u_card.z = 0` (the `u_card.z < 0.5` exit below) and the
-// ring with the real card geometry. The three exits that write `vec4(tex, ta)` must stay one
-// expression (`the_plain_exits_of_the_card_shader_are_one_expression` pins it). A focused or risen
-// card (PLX_FOCUS) is not split.
+// under scissor boxes, the card's interior as plain texture x tint (through fs_tex.frag when that
+// program linked, else through this file with `u_card.z = 0`, the `u_card.z < 0.5` exit below) and the
+// ring with the real card geometry. A still-fused card (PLX_STILL_GROUND) is split too, but its
+// interior is NOT plain texture x tint and never reaches fs_tex.frag: it stays on this file's still
+// program and leaves through the `u_card.z < 0.5` exit's `stillOver`, which adds the label ground.
+// The three exits that write `vec4(tex, ta)` must stay one
+// expression (`the_plain_exits_of_the_card_shader_are_one_expression` pins it), and fs_tex.frag is that
+// expression as a program of its own (`the_plain_texture_program_is_the_card_shaders_plain_exit` pins
+// it). A focused or risen card (PLX_FOCUS) is not split.
 //
 // PLX_FOCUS (linked as its own program, gfx.rs's FOCUS_IMAGE/VS_FOCUS/FS_FOCUS): the lit-glass
 // edge and risen shadow for a FOCUSED ArtTile used to be inline here unconditionally, behind
 // `u_focus.x > 0.0` uniform branches. A TV A/B measured real backpressure from that: EVERY IPROG
-// draw (every resting card, glyph, blur reduction, `field_kick`, `FrameCache` quad) paid for the
+// draw (then every resting card, glyph, blur reduction, `field_kick`, `FrameCache` quad) paid for the
 // bigger program even with nothing focused - Midgard flattens the extra uniform branches into
 // selects, and the `v_gloss` varying load costs something on every fragment regardless of
 // `u_focus.x`. The plain (non-`PLX_FOCUS`) path below is therefore the pre-focus program (main's
-// `fs_img.frag` at 78a823eea, comments aside) plus ONE later addition, its pad exit (`d >= 1.0`, see
-// there): `IPROG`, `FS_STILL` and every resting-card draw compile and run exactly that, unaffected
-// by any of this file's FOCUS code.
+// `fs_img.frag` at 78a823eea, comments aside) plus ONE later addition, its pad path (`d < 1.0`, see
+// there): `IPROG` and `FS_STILL` compile exactly that, and the draws that still run it - a rounded
+// card, a split card's ring, a fused still - are unaffected by any of this file's FOCUS code. (The
+// square-cornered draws and a split card's interior no longer run it at all: fs_tex.frag is their
+// program, when it linked.)
 // `gfx::draw_tex_impl` only reaches for the `PLX_FOCUS` program when a draw is actually focused or
 // risen (`focus > 0.0 || dy > 0.0` - at most one card on screen), falling back to the plain
 // program if it fails to link.
@@ -205,78 +215,59 @@ void main(){
   // A box-only (no `length()`) lower bound on the true shadow distance - safe for a "definitely
   // past the falloff" test since the true rounded distance is never smaller than the box one.
   highp float dShadowBox = straightS - u_card.z;
-  // THE PAD EXIT. Once `d >= 1.0` this fragment lies outside the card body and its output is the
-  // shadow alone. `smoothstep` clamps to exactly 1.0 past its top edge (GLSL ES 1.00 spec: `t =
-  // clamp((x - edge0)/(edge1 - edge0), 0, 1)`, then `t*t*(3 - 2t)`, which is exactly 1.0 at t = 1),
-  // so `m = 1.0 - smoothstep(-1.0, 1.0, d)` is exactly 0.0 there and `1.0 - m` is exactly 1.0. The
-  // final `vec4(tex*m, ta*m + sh)` is therefore `vec4(0, 0, 0, sh)` whatever the glow, glare, gloss
-  // and rim made of `tex`: they reach only `tex`, which `m` zeroes, and never the alpha. None of
-  // them is computed. The shadow below is the same text the body ends with (`dShadow`, `sh`;
-  // `the_card_shaders_pad_exit_is_the_shadow_alone` pins the two together). If the shadow's box proxy
-  // (a lower bound on its distance, no `length()`) has ALSO cleared its own falloff the fragment is
-  // fully transparent without ever computing the shadow's `length()` - the bigger, further-falling
-  // risen shadow otherwise pays that across ~35% more padded fragments than the plain symmetric halo
-  // it replaced. That was this exit's only case before; the rest of the pad, where the shadow still
-  // reaches and the lit-glass work ran for nothing, now leaves here too. `discard` is expensive on
-  // Mali, so this writes the colour and returns instead.
-  if (d >= 1.0) {
-    if ((0.5 - dShadowBox * u_shinv) <= 0.0) {
-      gl_FragColor = vec4(0.0);
-      return;
-    }
-    highp float dShadow = d;
-    if (u_focus.z > 0.0) {
-      dShadow = dShadowBox;
-      if (min(qs.x, qs.y) > 0.0) dShadow = length(qs) - u_card.z;
-    }
-    float sh = clamp(0.5 - dShadow*u_shinv, 0.0, 1.0);
-    gl_FragColor = vec4(0.0, 0.0, 0.0, sh*sh*(3.0 - 2.0*sh) * u_shcol.a);
-    return;
-  }
-  float glareTop = 0.0;
-  if (u_focus.x > 0.0) {
-    // RIM: three additive inset layers against the SAME rounded `d` the rim/shadow below already
-    // computed - `clamp(1 + d/px, 0, 1)` is 1 at the edge (d=0), fading to 0 by `px` inward, so it
-    // follows the corner curve exactly as an inset `box-shadow` does. The top/bottom bands are also
-    // weighted by `vp.y/chh` so they read as one edge's light, not a band that wraps every side.
-    highp float chh = u_card.y + u_card.z;
-    highp float glow = clamp(1.0 + d / 12.0, 0.0, 1.0) * 0.08
-         + clamp(1.0 + d / 6.0, 0.0, 1.0) * 0.12 * clamp(-vp.y / chh, 0.0, 1.0)
-         + clamp(1.0 + d / 4.0, 0.0, 1.0) * 0.06 * clamp(vp.y / chh, 0.0, 1.0);
-    // GLARE: the crown's extra alpha over the resting rim, full for the top 12px, easing back to 0
-    // (plain CARD_SHEEN) by 16% of the tile height (`chh * 0.32` is `(2*chh) * 0.16`, the full height
-    // times the ease fraction CARD_GLARE_EASE, folded into the one constant `chh` is multiplied by).
-    // `glareZone` is that same product, guarded against a degenerate tiny tile.
-    highp float glareZone = max(chh * 0.32, 1.0);
-    highp float ease = max(glareZone - 12.0, 1.0);
-    highp float topDist = vp.y + chh;
-    glareTop = clamp((glareZone - topDist) / ease, 0.0, 1.0) * (0.45 - u_rimcol.a) * u_focus.x;
-    // GLOSS: linear-gradient(160deg, white .14 0%, transparent 34%) from the top-left corner,
-    // `v_gloss` interpolated from `vs_img.vert` rather than re-derived per fragment.
-    highp float gloss = clamp(1.0 - v_gloss / 0.34, 0.0, 1.0) * 0.14 * u_focus.x;
-    tex = mix(tex, vec3(1.0), clamp(glow * u_focus.x + gloss, 0.0, 1.0));
-  }
-#else
-  // THE PAD EXIT, as in the FOCUS program: `d >= 1.0` makes `m` below exactly 0.0 (`smoothstep`
-  // clamps to exactly 1.0 past its top edge) and `1.0 - m` exactly 1.0, so `vec4(tex*m, ta*m + sh)`
-  // - and `stillOver(tex*m, ta*m + sh, m, ramp)`, whose scrim is `ramp*m` = 0 and whose keep is then
-  // `sh*(1 - 0)` - is `vec4(0, 0, 0, sh)` whatever the rim and the texture are. The shadow is the
-  // same text the body ends with (`the_card_shaders_pad_exit_is_the_shadow_alone`). A resting card's
-  // ring pieces and a card drawn whole both reach this; the fast path above (`u_card.z < 0.5`:
-  // glyphs, blur reductions, plain pictures) never does, so those draws never execute it.
-  if (d >= 1.0) {
-    float sh = clamp(0.5 - d*u_shinv, 0.0, 1.0);
-    gl_FragColor = vec4(0.0, 0.0, 0.0, sh*sh*(3.0 - 2.0*sh) * u_shcol.a);
+  // Past this point the card's own AA/rim is exactly zero once `d >= 1.0` (`m`'s own smoothstep
+  // ceiling - GLSL's `smoothstep` clamps to exactly 1.0 past its top edge, and `rim` is already 0
+  // once `d >= 0.0`). If the shadow's box proxy has ALSO already cleared its own falloff, the whole
+  // fragment is provably transparent without ever computing the shadow's `length()` - the bigger,
+  // further-falling risen shadow otherwise pays that across ~35% more padded fragments than the
+  // plain symmetric halo it replaced. `discard` is expensive on Mali, so this writes `vec4(0)`
+  // directly rather than discarding.
+  if (d >= 1.0 && (0.5 - dShadowBox * u_shinv) <= 0.0) {
+    gl_FragColor = vec4(0.0);
     return;
   }
 #endif
   float m = 1.0 - smoothstep(-1.0, 1.0, d);
+  // THE PAD PATH. A fragment with `d >= 1.0` lies outside the card body, where `m` is the coverage
+  // that zeroes `tex`, so the work below that only ever changes `tex` (the lit glass, if any, and the
+  // rim) is skipped there and `tex` stays the raw sample. Nothing else is skipped: `m` above, the
+  // shadow and the closing write are ONE copy, run by the pad and the body alike, so the pad's output
+  // is the body's own instructions rather than a second transcription of them: an exit that wrote
+  // `vec4(0, 0, 0, sh)` from its own copy of the shadow measured 1/255 lower in red on 1,118 pad pixels
+  // of the Home shelves on the Mali-T820 (2026-10-24; under `mediump` the compiler may round two
+  // copies of one expression differently). The gate writes no fragment and never returns;
+  // `the_card_shaders_pad_path_runs_the_bodys_shadow_tail` pins both, and that the tail exists once.
+  if (d < 1.0) {
 #ifdef PLX_FOCUS
-  float rim = max(0.0, 1.0 - abs(d + u_rimw)) * (u_rimcol.a + glareTop);
+    float glareTop = 0.0;
+    if (u_focus.x > 0.0) {
+      // RIM: three additive inset layers against the SAME rounded `d` the rim/shadow below already
+      // computed - `clamp(1 + d/px, 0, 1)` is 1 at the edge (d=0), fading to 0 by `px` inward, so it
+      // follows the corner curve exactly as an inset `box-shadow` does. The top/bottom bands are also
+      // weighted by `vp.y/chh` so they read as one edge's light, not a band that wraps every side.
+      highp float chh = u_card.y + u_card.z;
+      highp float glow = clamp(1.0 + d / 12.0, 0.0, 1.0) * 0.08
+           + clamp(1.0 + d / 6.0, 0.0, 1.0) * 0.12 * clamp(-vp.y / chh, 0.0, 1.0)
+           + clamp(1.0 + d / 4.0, 0.0, 1.0) * 0.06 * clamp(vp.y / chh, 0.0, 1.0);
+      // GLARE: the crown's extra alpha over the resting rim, full for the top 12px, easing back to 0
+      // (plain CARD_SHEEN) by 16% of the tile height (`chh * 0.32` is `(2*chh) * 0.16`, the full height
+      // times the ease fraction CARD_GLARE_EASE, folded into the one constant `chh` is multiplied by).
+      // `glareZone` is that same product, guarded against a degenerate tiny tile.
+      highp float glareZone = max(chh * 0.32, 1.0);
+      highp float ease = max(glareZone - 12.0, 1.0);
+      highp float topDist = vp.y + chh;
+      glareTop = clamp((glareZone - topDist) / ease, 0.0, 1.0) * (0.45 - u_rimcol.a) * u_focus.x;
+      // GLOSS: linear-gradient(160deg, white .14 0%, transparent 34%) from the top-left corner,
+      // `v_gloss` interpolated from `vs_img.vert` rather than re-derived per fragment.
+      highp float gloss = clamp(1.0 - v_gloss / 0.34, 0.0, 1.0) * 0.14 * u_focus.x;
+      tex = mix(tex, vec3(1.0), clamp(glow * u_focus.x + gloss, 0.0, 1.0));
+    }
+    float rim = max(0.0, 1.0 - abs(d + u_rimw)) * (u_rimcol.a + glareTop);
 #else
-  float rim = max(0.0, 1.0 - abs(d + u_rimw)) * u_rimcol.a;
+    float rim = max(0.0, 1.0 - abs(d + u_rimw)) * u_rimcol.a;
 #endif
-  tex = mix(tex, u_rimcol.rgb, rim);
+    tex = mix(tex, u_rimcol.rgb, rim);
+  }
 #ifdef PLX_FOCUS
   // The exact shadow distance. `u_focus.z <= 0` reuses `d` (exact already, `length()` and all) -
   // the box proxy above is only ever a safe LOWER bound, not the true rounded distance, so it must

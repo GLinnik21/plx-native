@@ -5,7 +5,7 @@
 //
 // It exists for ONE surface class: the hero's backdrop ramps. Home draws two full-width ramp bands
 // (~1.37M fragments a frame) and, through `fs_src.frag`, each of those fragments measured ~3
-// arithmetic words (`plxnative-hwcnt`, 2026-10-24) where one `mix` is 1-1.5: the three uniform
+// arithmetic words (HWCNT, 2026-10-24) where one `mix` is 1-1.5: the three uniform
 // compares ahead of it are paid on every fragment, and Midgard sizes the register file for the
 // whole shader, so the SDF, capsule and glow code this path never runs still lowers the
 // occupancy it runs at. Here there is nothing but the mix.

@@ -458,10 +458,11 @@ that address. It boots the synthetic guest `tools/tv-session.sh up --guest --moc
 is then checked against the app's own log: no `pms: server N version=1.41.0.0000-synthetic` line,
 or any other server version, fails the scene before it is graded. Debug flavor only; `tests/run.py` does not deploy the binary, so deploy the build you mean to measure first (`make deploy` under the TV lock, or `tools/tv-session.sh up`, which deploys when stale; for FPS or frame pacing build with `ARM_PROFILE=release`, e.g. `make ARM_PROFILE=release deploy`, because a bare `make deploy` ships the no-LTO `tvdev` build, which `--fps*` and `tools/profile-graphics` refuse to grade; see `docs/agent-reference.md` "ARM_PROFILE") — a stress run once measured an older binary this way. `--server`,
 `--owner`, `--shared-server`, `--suite` and `--graphics-profile` are refused with it. The panel is
-kept ON (`tv-session.sh screen on`, asserted before every scene: a dark panel lets the app's idle
-gate hold presents back, which makes frame times meaningless) and the sound muted (`sound off`, once
-per run); the run stops if either cannot be done, and the sound is never un-muted. `--panel off`
-blanks the panel instead (`screen off` before every scene), for an unattended soak where only the log matters.
+kept OFF (`tv-session.sh screen off`, asserted before every scene: it is only the backlight, and the
+app keeps presenting at full rate, measured 2026-10-24 on Home `grid-pong`: 73 frames/cycle at 59.9 fps
+off, 59.6-59.9 on) and the sound muted (`sound off`, once per run); the run stops if either cannot be
+done, and the sound is never un-muted. `--panel on` lights the panel instead (`screen on` before every
+scene), for a run someone wants to watch.
 **A person page on a `--mock` or `--guest` boot has no biography and no filmography credits.** Both
 write `plxnative-token`, and a dev-token boot with no Discover stand-in armed has the app refuse the
 page's two provider reads itself (`discover: GET … refused` in the log, `discover: base=real
@@ -654,7 +655,10 @@ marks pacing invalid if a render-profiler trigger is armed.
   `unsupported`), the observed slow scenes are exactly the two with the most full-screen passes,
   and 50 fps is also precisely the European panel refresh on this SKU. Discriminate with a soak
   (same scene cold vs hot vs recovered), never from one sample. See
-  `docs/perf-view-buffers-and-thermal.md`.
+  `docs/perf-view-buffers-and-thermal.md`. (2026-10-24: a temperature can be read after all. LG's
+  power manager reports the SoC temperature in `/proc/lg/pm/temperature` (39-61 °C on 2026-10-24)
+  and the CPU frequency in `/proc/lg/pm/frequency`, although there is still no `thermal_zone` or
+  `cpufreq`; see `.agents/skills/profile-tv/SKILL.md`, "Mali T820 facts".)
 - **False-negative guard:** a scene with <5 post-warmup samples for its route FAILs (it never reached
   that screen — app crash, or a `detail`/`play` rk that isn't in the home catalog), never a vacuous
   pass. `detail-transition`'s item (`movie_in_home_catalog`) must be an **in-home-catalog

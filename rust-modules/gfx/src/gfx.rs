@@ -154,11 +154,12 @@ const FS_FIELD_PANEL: &CStr = glsl_dithered!("shaders/fs_field_panel.frag");
 const VS_STILL: &CStr = glsl!("shaders/vs_img.vert", "#define PLX_STILL_GROUND\n");
 const FS_STILL: &CStr = glsl!("shaders/fs_img.frag", "#define PLX_STILL_GROUND\n");
 /// The FOCUSED-tile specialization: the lit-glass edge + risen shadow, in their own program rather
-/// than a branch every plain IPROG draw (resting cards, glyphs, blur reductions, `field_kick`,
-/// `FrameCache`) pays for. A TV A/B measured real backpressure from the bigger program running on
-/// EVERY card even with nothing focused — Midgard's per-thread tiler flattens the extra uniform
-/// branches into selects and the `v_gloss` varying load costs something on every fragment
-/// regardless of `u_focus.x`. [`draw_tex_impl`] only ever reaches for this when a draw is actually
+/// than a branch every plain IPROG draw paid for (when this was measured, that was every resting
+/// card, glyph, blur reduction, `field_kick` and `FrameCache` quad; the square-cornered ones among
+/// them now run [`PLAIN_IMAGE`] instead). A TV A/B measured real backpressure from the bigger
+/// program running on EVERY card even with nothing focused — Midgard's per-thread tiler flattens
+/// the extra uniform branches into selects and the `v_gloss` varying load costs something on every
+/// fragment regardless of `u_focus.x`. [`draw_tex_impl`] only ever reaches for this when a draw is actually
 /// focused or risen (`focus > 0.0 || dy > 0.0` — at most one card on screen), falling back to
 /// [`IPROG`] with the plain look if it fails to link, same as [`STILL_IMAGE`]'s own fallback.
 const VS_FOCUS: &CStr = glsl!("shaders/vs_img.vert", "#define PLX_FOCUS\n");
@@ -176,6 +177,9 @@ const FS_BLUR: &CStr = glsl!("shaders/fs_blur.frag");
 const FS_GLASS: &CStr = glsl_dithered!("shaders/fs_glass.frag");
 const FS_FLAT: &CStr = glsl!("shaders/fs_flat.frag");
 const FS_RAMP: &CStr = glsl!("shaders/fs_ramp.frag");
+/// The PLAIN TEXTURE program's fragment half ([`PLAIN_IMAGE`]): `fs_img.frag`'s `u_card.z < 0.5`
+/// exit as a whole program, linked against [`VS_IMG`] like every other image program.
+const FS_TEX: &CStr = glsl!("shaders/fs_tex.frag");
 const VS_ART_SCRIM: &CStr = glsl!("shaders/vs_art_scrim.vert");
 const FS_ART_SCRIM: &CStr = glsl!("shaders/fs_art_scrim.frag");
 const GL_VERTEX_SHADER: c_uint = 0x8B31;
@@ -778,6 +782,22 @@ static mut STILL_IMAGE: Option<(c_uint, ImageUniforms, c_int, c_int)> = None;
 /// Optional FOCUSED-card specialization ([`VS_FOCUS`]/[`FS_FOCUS`]) — [`IPROG`] remains the
 /// fallback (the plain look, same as before this program existed) if this fails to link.
 static mut FOCUS_IMAGE: Option<(c_uint, ImageUniforms)> = None;
+/// What the plain texture program reads per draw: the quad ([`VS_IMG`]'s `u_trect`), the source
+/// window it samples (`u_uvrect`) and the tint (`fs_tex.frag`'s `u_tint`). Its screen size and
+/// sampler unit are set once at link time, like every image program's. Nothing else: no card
+/// geometry, rim, shadow or focus uniform exists in it.
+#[derive(Clone, Copy)]
+struct PlainUniforms {
+    rect: c_int, tint: c_int, uvrect: c_int,
+}
+/// Optional PLAIN TEXTURE program ([`VS_IMG`]/[`FS_TEX`]): a picture that `fs_img.frag` would leave
+/// through its `u_card.z < 0.5` exit for every fragment — a square-cornered image (the Home hero's
+/// photographs, a cached layer's composite) or the interior piece of a card drawn in pieces — is a
+/// texture fetch and a tint multiply, and the image program's card chain, which that exit never
+/// reaches, still sizes its registers and occupancy (Midgard allocates for the whole shader). Which
+/// draws go here is [`plain_texture_program`]. [`IPROG`] remains the fallback — the same picture,
+/// drawn by the larger program — if this fails to link.
+static mut PLAIN_IMAGE: Option<(c_uint, PlainUniforms)> = None;
 // ---- hero-ground program: the backdrop art with both scrim fields folded into it (fs_hero.frag).
 // Its own program because it is the SAME quad the art already draws, only carrying two more
 // closed-form fields — nothing else in the app wants them, and the card composite must not pay for
@@ -2153,6 +2173,17 @@ pub fn init_image() {
             log("focus image prog unavailable — focused cards keep the plain look");
         }
 
+        PLAIN_IMAGE = link_optional_program(VS_IMG.as_ptr(), FS_TEX.as_ptr()).map(|program| {
+            let loc = |name: &CStr| glGetUniformLocation(program, name.as_ptr());
+            use_prog(program);
+            glUniform2f(loc(c"u_tscreen"), SCR_W, SCR_H);
+            glUniform1i(loc(c"u_tex"), 0);
+            (program, PlainUniforms { rect: loc(c"u_trect"), tint: loc(c"u_tint"), uvrect: loc(c"u_uvrect") })
+        });
+        if std::ptr::addr_of!(PLAIN_IMAGE).read().is_none() {
+            log("plain image prog unavailable — square-cornered pictures and card interiors stay on the image program");
+        }
+
         ART_WASH = link_optional_program(VS_ART_WASH.as_ptr(), FS_ART_WASH.as_ptr()).map(|prog| {
             let loc = |name: &CStr| glGetUniformLocation(prog, name.as_ptr());
             // Binds `prog`, which the two constant uniforms below are then written to.
@@ -2701,6 +2732,45 @@ fn image_card_geometry(half_w: f32, half_h: f32, radius: f32) -> [f32; 4] {
     [half_w - radius, half_h - radius, radius, (radius - 2.0).min(0.0)]
 }
 
+/// Whether `fs_img.frag` leaves EVERY fragment of a draw with this corner `radius` through its first
+/// exit, plain texture x tint, before any card math runs: `u_card.z < 0.5`, and the packed `u_card.z`
+/// is the radius itself ([`image_card_geometry`]). The rim, the shadow and the pad around the quad
+/// play no part in the rule — a square-cornered draw with all three set still leaves there, so it
+/// draws no rim and no shadow at all. That is NOT a free pad: the exit masks nothing, so the pad's
+/// fragments are rasterized and run it like the card's own, one texture fetch and a tint each in
+/// either program. A NaN radius compares false on the CPU as it would on the GPU, and so keeps the
+/// full program it always had.
+#[inline]
+fn takes_plain_exit(radius: f32) -> bool {
+    radius < 0.5
+}
+
+/// `plain` (the plain texture program, if it linked) when a draw, or one piece of a split card,
+/// with corner `radius` is better shaded by it than by the image program: it [`takes_plain_exit`]
+/// and carries no `overridden` program of its own. The focus specialization's `u_card.z < 0.5` exit
+/// IS the plain `vec4(tex, ta)` (it sits before all `PLX_FOCUS` code), so it is not excluded for a
+/// different exit; a focused draw stays on its program for the fragments past that exit, the lit
+/// edge, glare and risen shadow that are what a focus draw is for. Only the still specialization's
+/// exit differs (`stillOver`, not the plain write), and `overridden` does not say which of the two
+/// it carries, so both keep their program. `None` leaves the draw on the image program ([`IPROG`],
+/// or the override), which for a draw that takes the exit is the same picture from the larger
+/// program.
+#[inline]
+fn plain_texture_program<P>(plain: Option<P>, overridden: bool, radius: f32) -> Option<P> {
+    plain.filter(|_| !overridden && takes_plain_exit(radius))
+}
+
+/// Bind the plain texture program for one quad and send it everything it reads that changes from
+/// draw to draw: the quad, the source window and the tint (its screen size and sampler unit were
+/// set at link time). Uniforms persist per program, so all three go on every call.
+#[inline]
+unsafe fn bind_plain_image(program: c_uint, loc: PlainUniforms, tint: *const f32, uv: [f32; 4], quad: [f32; 4]) {
+    use_prog(program);
+    glUniform4fv(loc.tint, 1, tint);
+    glUniform4f(loc.uvrect, uv[0], uv[1], uv[2], uv[3]);
+    glUniform4f(loc.rect, quad[0], quad[1], quad[2], quad[3]);
+}
+
 /// `u_focus`, the focused tile's lit-glass edge AND its risen shadow (see `fs_img.frag`'s FOCUS
 /// note): `(f, 1/gloss-gradient-length, shadow y-offset px)`. The gradient length is the card's own
 /// `w×h` box projected onto the 160deg CSS direction ([`tokens::CARD_GLOSS_DIR`]) — the
@@ -2723,10 +2793,11 @@ fn image_focus_geometry(focus: f32, half_w: f32, half_h: f32, dy: f32) -> [f32; 
     [f, if grad_len > 0.0 { 1.0 / grad_len } else { 0.0 }, dy.max(0.0)]
 }
 
-/// The IPROG draw, with every term already in the shader's own units: `q*` is the QUAD (shadow
-/// inflation included), `uv` the source sub-rect it samples, `ch` the CARD half-size the SDF is
-/// measured against. [`draw_tex_impl`] folds a card's parameters into these; the blur backdrop
-/// supplies its own, because its UV window is a screen-space rect rather than a card.
+/// The IPROG draw (or [`PLAIN_IMAGE`]'s, for a draw that [`takes_plain_exit`]), with every term
+/// already in the shader's own units: `q*` is the QUAD (shadow inflation included), `uv` the source
+/// sub-rect it samples, `ch` the CARD half-size the SDF is measured against. [`draw_tex_impl`] folds
+/// a card's parameters into these; the blur backdrop supplies its own, because its UV window is a
+/// screen-space rect rather than a card.
 #[allow(clippy::too_many_arguments)]
 fn draw_tex_core(
     class: Class,
@@ -2757,14 +2828,20 @@ fn draw_tex_core(
 /// [`draw_tex_core`], and `card` = what [`draw_tex_impl`] decided about a `Class::Card` draw
 /// ([`card_cut`]). A resting card ([`CardCut::Pieces`], with the card's own rect `(x, y, w, h)`) is
 /// drawn in pieces when it has an interior ([`card_boxes`]): the SAME quad is drawn five times, each
-/// under its own scissor box ([`card_plan`]) - once for the interior, through the shader's
-/// `u_card.z < 0.5` fast path (texture x tint, nothing else), and once for each of the four bands
-/// of the ring (the part with rim, anti-aliased edge and shadow) through the full card math. The
-/// vertices are the whole quad's every time, so `v_p`, `v_cuv` and the texture's derivatives are
-/// the very numbers the single draw interpolates, and the picture is the same pixel for pixel; the
-/// fragment shader just stops evaluating the card's SDF where its answer is "plain". The ledger and
-/// the cull above book and test the whole quad once, as before; the card-path ledger
-/// ([`note_card_path`]) books which way each card went.
+/// under its own scissor box ([`card_plan`]) - once for the interior, as plain texture x tint (the
+/// plain texture program, [`PLAIN_IMAGE`], and failing that the image program's `u_card.z < 0.5`
+/// exit), and once for each of the four bands of the ring (the part with rim, anti-aliased edge and
+/// shadow) through the full card math. A still-fused card ([`draw_tex_carded_still`], an `image`
+/// override) is split the same way, but its interior is not plain texture x tint: it stays on the
+/// still program and leaves through that program's `u_card.z < 0.5` exit, `stillOver`, which adds
+/// the label ground ([`plain_texture_program`] refuses an override for exactly that). The vertices
+/// are the whole quad's every time, so `v_cuv` and the texture's derivatives are the very numbers
+/// the single draw interpolates, and the picture is the same pixel for pixel; the fragment shader
+/// just stops evaluating the card's SDF where its answer is "plain". A whole draw with a square
+/// corner ([`takes_plain_exit`]) is that same plain
+/// texture and takes the same program ([`plain_texture_program`]). The ledger and the cull above
+/// book and test the whole quad once, as before, and the program is chosen after them; the
+/// card-path ledger ([`note_card_path`]) books which way each card went.
 ///
 /// DEV: a `drawmask` leg can refuse one PART of this work ([`CardPart`]; [`card_plan`],
 /// [`card_whole_refused`] and [`masked_part`] say how).
@@ -2794,24 +2871,35 @@ fn draw_tex_core_in(
         return;
     }
     unsafe {
+        let quad = [qx, qy, qw, qh];
         let (program, loc) = image.unwrap_or((IPROG, ImageUniforms {
             rect: IL_RECT, tint: IL_TINT, uvrect: IL_UVRECT, card: IL_CARD,
             rimw: IL_RIMW, rimcol: IL_RIMCOL, shinv: IL_SHINV, shcol: IL_SHCOL, focus: IL_FOCUS,
         }));
-        use_prog(program); // fixed screen size and sampler unit are initialized per program
-        if loc.tint >= 0 { glUniform4fv(loc.tint, 1, tint); }
-        glUniform4f(loc.uvrect, uv[0], uv[1], uv[2], uv[3]);
-        glUniform4fv(loc.card, 1, image_card_geometry(chw, chh, radius).as_ptr());
-        glUniform1f(loc.rimw, rimw);
-        glUniform4fv(loc.rimcol, 1, rimcol);
-        glUniform1f(loc.shinv, shinv);
-        glUniform4fv(loc.shcol, 1, shcol);
-        if loc.focus >= 0 {
-            let uf = image_focus_geometry(focus, chw, chh, dy);
-            glUniform3f(loc.focus, uf[0], uf[1], uf[2]);
+        // The plain texture program takes the whole draw when the image program would leave every
+        // fragment through its `u_card.z < 0.5` exit (a square-cornered picture), and a split
+        // card's interior piece below. It is chosen here, after `gate` has booked the quad and
+        // before the card-path ledger below books the card, and neither depends on it: the
+        // ledger counts the same draws with either program behind them.
+        let plain = std::ptr::addr_of!(PLAIN_IMAGE).read();
+        if let Some((program, loc)) = plain_texture_program(plain, image.is_some(), radius) {
+            bind_plain_image(program, loc, tint, uv, quad);
+        } else {
+            use_prog(program); // fixed screen size and sampler unit are initialized per program
+            if loc.tint >= 0 { glUniform4fv(loc.tint, 1, tint); }
+            glUniform4f(loc.uvrect, uv[0], uv[1], uv[2], uv[3]);
+            glUniform4fv(loc.card, 1, image_card_geometry(chw, chh, radius).as_ptr());
+            glUniform1f(loc.rimw, rimw);
+            glUniform4fv(loc.rimcol, 1, rimcol);
+            glUniform1f(loc.shinv, shinv);
+            glUniform4fv(loc.shcol, 1, shcol);
+            if loc.focus >= 0 {
+                let uf = image_focus_geometry(focus, chw, chh, dy);
+                glUniform3f(loc.focus, uf[0], uf[1], uf[2]);
+            }
+            glUniform4f(loc.rect, qx, qy, qw, qh);
         }
         glBindTexture(GL_TEXTURE_2D, tex);
-        glUniform4f(loc.rect, qx, qy, qw, qh);
         let boxes = match card {
             CardCut::None => None,
             CardCut::Whole(path) => {
@@ -2845,9 +2933,16 @@ fn draw_tex_core_in(
         glEnable(GL_SCISSOR_TEST);
         for piece in plan.pieces.iter().flatten() {
             // The ring first, under the real `u_card` the uniforms above carry; the interior is the
-            // last piece, and its `u_card.z` of 0 is the shader's own "plain texture" branch.
+            // last piece. It is the plain texture: through the plain texture program when it
+            // linked (the image program is never bound again by this draw, so nothing is put back),
+            // else through the image program with a `u_card.z` of 0, the shader's own plain exit.
+            // A still-fused card's interior is neither: its override keeps it on the still program
+            // (`plain_texture_program` refuses it), whose `u_card.z` of 0 exits through `stillOver`.
             if piece.interior {
-                glUniform4fv(loc.card, 1, image_card_geometry(chw, chh, 0.0).as_ptr());
+                match plain_texture_program(plain, image.is_some(), 0.0) {
+                    Some((program, loc)) => bind_plain_image(program, loc, tint, uv, quad),
+                    None => glUniform4fv(loc.card, 1, image_card_geometry(chw, chh, 0.0).as_ptr()),
+                }
             }
             let b = piece.scissor;
             glScissor(b[0], b[1], b[2] - b[0], b[3] - b[1]);
@@ -2909,7 +3004,7 @@ fn card_cut(class: Class, radius: f32, focus: f32, dy: f32, enabled: bool, rect:
         CardCut::None
     } else if wants_focus_program(focus, dy) {
         CardCut::Whole(CardPath::Focus)
-    } else if radius < 0.5 {
+    } else if takes_plain_exit(radius) {
         CardCut::Whole(CardPath::Plain)
     } else if !enabled {
         CardCut::Whole(CardPath::Off)
@@ -3055,10 +3150,12 @@ fn draw_tex_impl(
     let shinv = if shblur > 0.0 { 0.5 / shblur } else { 0.0 };
     // An explicit `image` override (the still-fusion program) always wins — it is a whole different
     // specialization, never the plain/focus choice below. Otherwise, only a draw that is actually
-    // focused or risen reaches for `FOCUS_IMAGE`: every resting card, glyph, blur reduction,
-    // `field_kick` and `FrameCache` quad keeps drawing through the smaller `IPROG` (via `None`,
-    // which `draw_tex_core` already defaults to `IPROG`) exactly as before this program existed —
-    // see `FOCUS_IMAGE`'s own comment for why that split exists.
+    // focused or risen reaches for `FOCUS_IMAGE`; every other draw passes `None`, which
+    // `draw_tex_core_in` resolves. A rounded resting card keeps drawing through the smaller `IPROG`
+    // exactly as before this program existed, and a square-cornered draw (the blur reductions,
+    // `warm_tex`, the `FrameCache` quads and the `field_kick` chain enter `draw_tex_core` that way
+    // directly) and a split card's interior go to `PLAIN_IMAGE` (`takes_plain_exit`) — see
+    // `FOCUS_IMAGE`'s own comment for why the focus split exists.
     let image = image.or_else(|| if wants_focus_program(focus, dy) { unsafe { FOCUS_IMAGE } } else { None });
     // A resting card's quad is symmetric about the card (`sides == top == bottom == pad`), which is
     // what lets its interior be drawn apart from its ring; see `draw_tex_core_in`.
@@ -7437,6 +7534,44 @@ mod tests {
             .join("\n")
     }
 
+    /// **No shader source names a dev trigger, in code or in a comment.** Every file under
+    /// `shaders/` is embedded whole by `include_str!` (the `glsl!` family strips nothing, comments
+    /// included; [`shader_code`] strips them for the tests only), so a comment that spells
+    /// `plxnative-hwcnt` puts that string in the binary. The stable and nightly package gate
+    /// (`ci/check-package.py`, "carries no dev-trigger surface") refuses every catalog name
+    /// (`plxnative-<name>` from `dev.rs`'s `DIAG` and `devtrig.rs`'s `CONTROLLED`) anywhere in the
+    /// packaged binary, and #981's `fs_ramp.frag` comment did exactly that and failed the Nightly
+    /// `make ipk`. The scan matches the catalog's names; this matches the whole `plxnative-` prefix,
+    /// which nothing in a shader needs and which a new trigger cannot slip past. It lists the
+    /// directory, so a new shader is covered by being added.
+    #[test]
+    fn no_shader_source_names_a_dev_trigger() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/shaders");
+        let mut scanned = 0;
+        let mut found = Vec::new();
+        for entry in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
+            let path = entry.expect("a directory entry").path();
+            // Lossy: a stray non-UTF-8 file (a Finder `.DS_Store`) is not a shader and must not
+            // turn this red; the bytes the scan reads are the same either way.
+            let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            let text = String::from_utf8_lossy(&bytes);
+            scanned += 1;
+            for (n, line) in text.lines().enumerate() {
+                if line.contains("plxnative-") {
+                    found.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+                }
+            }
+        }
+        assert!(scanned > 0, "no shader sources under {}", dir.display());
+        assert!(
+            found.is_empty(),
+            "shader sources are embedded verbatim in the binary, comments included, and the \
+             stable/nightly package scan (ci/check-package.py) refuses any dev-trigger name in it; \
+             reword these without the `plxnative-` name:\n{}",
+            found.join("\n")
+        );
+    }
+
     /// **A frozen menu glass reads its ground ONCE per fragment, dim included.** The modal dim's
     /// ink on a menu is the latched underlay field times a weight (`underlay::Role::Dim`), and the
     /// glass's body is that same field (`UnderlayField::ground_tex`), both read at the screen point
@@ -7726,6 +7861,7 @@ mod tests {
             ("fs_shadow.frag", FS_SHADOW),
             ("fs_flat.frag", FS_FLAT),
             ("fs_ramp.frag", FS_RAMP),
+            ("fs_tex.frag", FS_TEX),
             ("fs_art_scrim.frag", FS_ART_SCRIM),
             ("fs_ambient.frag (plain twin)", FS_AMBIENT_PLAIN),
         ] {
@@ -8159,12 +8295,13 @@ mod tests {
         out
     }
 
-    /// The whole reason [`FOCUS_IMAGE`] exists: a resting card, a glyph, a blur reduction, a
-    /// `field_kick`, a `FrameCache` quad — every draw through the PLAIN program — must compile and
-    /// run what main shipped before the lit-glass/risen-shadow feature (plus its one later
-    /// addition, the card's pad exit, which `the_card_shaders_pad_exit_is_the_shadow_alone` pins),
-    /// with no trace of `u_focus`/`v_gloss` left in by a stray `#ifdef PLX_FOCUS` that didn't close
-    /// where intended.
+    /// The whole reason [`FOCUS_IMAGE`] exists: every draw through the unfocused image program (a
+    /// rounded resting card and a split card's ring, a fused still; before [`PLAIN_IMAGE`] took the
+    /// square-cornered draws, also a blur reduction, a `field_kick` and a `FrameCache` quad) must
+    /// compile and run what main shipped before the lit-glass/risen-shadow feature (plus its one later
+    /// addition, the card's pad path, which `the_card_shaders_pad_path_runs_the_bodys_shadow_tail`
+    /// pins), with no trace of `u_focus`/`v_gloss` left in by a stray `#ifdef PLX_FOCUS` that didn't
+    /// close where intended.
     /// Preprocessing with `PLX_FOCUS` absent (mirroring what the GL driver does for `FS_IMG`/
     /// `VS_IMG`, `FS_STILL`/`VS_STILL`) and grepping the result is what actually answers that,
     /// unlike a raw-text search against `shader_code`.
@@ -8237,6 +8374,80 @@ mod tests {
         }
     }
 
+    /// A shader's tokens apart from its comments: every `//` tail cut and all whitespace gone, so
+    /// two sources compare by their statements and a reflow is not a difference.
+    fn squash(src: &str) -> String {
+        src.lines()
+            .map(|l| l.split("//").next().unwrap_or(""))
+            .flat_map(|l| l.chars().filter(|c| !c.is_whitespace()))
+            .collect()
+    }
+
+    /// The one-line declarations of kind `kw` (`uniform`, `varying`) a source makes, comments cut and
+    /// whitespace collapsed to single spaces, in file order.
+    fn declared(src: &str, kw: &str) -> Vec<String> {
+        src.lines()
+            .map(|l| l.split("//").next().unwrap_or("").split_whitespace().collect::<Vec<_>>())
+            .filter(|words| words.first() == Some(&kw))
+            .map(|words| words.join(" "))
+            .collect()
+    }
+
+    /// **`fs_tex.frag` is `fs_img.frag`'s plain exit, statement for statement.** The plain texture
+    /// program replaces the image program for every draw that leaves it through `u_card.z < 0.5`, so it
+    /// is the same picture only while it declares the same inputs at the same precision (fp16 `u_tint`
+    /// and sampler, fp32 `v_cuv`: a desktop GL ignores the qualifiers, a Mali does not) and its `main`
+    /// is, token for token, the image program's `main` from its opening brace THROUGH that exit - one
+    /// contiguous block, so a statement slipped in ahead of the exit (a crop clamp, a premultiply)
+    /// that the image program would run and this one would not fails here. It reads NOTHING else, and
+    /// the vertex source it links against declares exactly the three uniforms [`PlainUniforms`] sends,
+    /// so a pad or inflation uniform added there (which this program would never set) fails too.
+    #[test]
+    fn the_plain_texture_program_is_the_card_shaders_plain_exit() {
+        const MAIN: &str = "voidmain(){";
+        let img = squash(&preprocess(FS_IMG.to_str().unwrap(), &[]));
+        let tex = squash(&preprocess(FS_TEX.to_str().unwrap(), &[]));
+        let (img_decls, img_main) = img.split_once(MAIN).expect("fs_img.frag's main");
+        let (tex_decls, tex_main) = tex.split_once(MAIN).expect("fs_tex.frag's main");
+        // What the plain program declares is exactly its four inputs, and the image program declares
+        // each of them the same way.
+        assert_eq!(
+            tex_decls,
+            "precisionmediumpfloat;varyinghighpvec2v_cuv;uniformsampler2Du_tex;uniformvec4u_tint;",
+            "the plain program reads u_tex and u_tint and the one varying, nothing else"
+        );
+        for decl in tex_decls.split_inclusive(';') {
+            assert!(img_decls.contains(decl), "fs_img.frag no longer declares `{decl}` as fs_tex.frag does");
+        }
+        // The body: fs_tex's `main` is the statements, then the single write. The image program's
+        // `main`, from its brace through the `u_card.z < 0.5` exit, is those statements and that write
+        // inside the exit's braces - nothing before, between or after.
+        let tex_main = tex_main.strip_suffix('}').expect("fs_tex.frag ends with its main");
+        let cut = tex_main[..tex_main.len() - 1].rfind(';').map_or(0, |i| i + 1);
+        let (statements, write) = tex_main.split_at(cut);
+        assert_eq!(write, "gl_FragColor=vec4(tex,ta);", "fs_tex.frag's one write");
+        let exit = format!("if(u_card.z<0.5){{{write}return;}}");
+        let through_exit = &img_main[..img_main.find(&exit).expect("fs_img.frag's u_card.z < 0.5 exit") + exit.len()];
+        assert_eq!(
+            through_exit,
+            format!("{statements}{exit}"),
+            "fs_img.frag's main up to its plain exit is not fs_tex.frag's main"
+        );
+        // The vertex source both link against: the three uniforms `init_image` looks up and
+        // `bind_plain_image` sends are ALL it declares, and the varying and its expression are the
+        // ones fs_tex.frag reads.
+        let vs = preprocess(VS_IMG.to_str().unwrap(), &[]);
+        let mut uniforms = declared(&vs, "uniform");
+        uniforms.sort();
+        assert_eq!(
+            uniforms,
+            ["uniform vec2 u_tscreen;", "uniform vec4 u_trect;", "uniform vec4 u_uvrect;"],
+            "vs_img.vert must declare exactly u_trect, u_tscreen and u_uvrect: a uniform the plain program never sets is a different picture"
+        );
+        assert!(declared(&vs, "varying").contains(&"varying vec2 v_cuv;".to_string()));
+        assert!(vs.contains("v_cuv = u_uvrect.xy + a_pos * u_uvrect.zw;"), "the texture coordinate fs_tex.frag samples");
+    }
+
     /// `card_split_tests::plain_exit` is a transcription of `fs_img.frag`'s plain program; this is
     /// what keeps it one. The box distance it computes `straight` from, and the exits it tests it
     /// against, are pinned in the shader text (both the plain and the still program), so editing the
@@ -8257,178 +8468,59 @@ mod tests {
         }
     }
 
-    /// The programs the card's pad exit lives in: (name, preprocessor defines, the one closing
-    /// `gl_FragColor` expression the exit's identity was worked out for).
-    const PAD_EXIT_PROGRAMS: [(&str, &[&str], &str); 3] = [
+    /// The programs the card's pad path lives in: (name, preprocessor defines, the one closing
+    /// `gl_FragColor` expression the body ends with).
+    const PAD_PATH_PROGRAMS: [(&str, &[&str], &str); 3] = [
         ("plain", &[], "gl_FragColor = vec4(tex*m, ta*m + sh);"),
         ("still", &["PLX_STILL_GROUND"], "gl_FragColor = stillOver(tex*m, ta*m + sh, m, ramp);"),
         ("focus", &["PLX_FOCUS"], "gl_FragColor = vec4(tex*m, ta*m + sh);"),
     ];
 
-    /// **A card fragment outside the body leaves `fs_img.frag` as the shadow alone, before any of the
-    /// card's own work.** `m = 1.0 - smoothstep(-1.0, 1.0, d)` is exactly 0.0 from `d >= 1.0` (the
-    /// GLSL `smoothstep` clamps to exactly 1.0 at its top edge), so the closing `vec4(tex*m, ta*m +
-    /// sh)` - or `stillOver(...)`, whose scrim is `ramp*m` - is `vec4(0, 0, 0, sh)` whatever the glow,
-    /// glare, gloss, rim and texture made of `tex`, and the shader returns that without computing
-    /// them (the pad of a card is ~14% of its quad, all of it shaded by the full path before). Three
-    /// things have to stay true for that to be the same picture, and each is pinned here: the exit
-    /// threshold is `m`'s own top edge, the closing expression is still the one the identity was
-    /// worked out for, and the shadow the exit writes is the SAME text the body ends with (a copy
-    /// that drifts from it would show as a seam at `d = 1`). The model at the bottom replays the
-    /// identity in `f32`; the simulator ignores `mediump`, so the device is the other half of the proof.
+    /// **A card fragment outside the body runs the body's own coverage, shadow and closing write; the
+    /// pad path skips only the work that changes `tex`.** From `d >= 1.0` the coverage `m =
+    /// 1.0 - smoothstep(-1.0, 1.0, d)` is what zeroes `tex`, so the glow, glare, gloss and rim (which
+    /// reach only `tex`) are not computed there (the pad of a card is ~14% of its quad). The first
+    /// version of that wrote `vec4(0, 0, 0, sh)` from its own copy of the shadow expression and
+    /// measured 1/255 lower in red on 1,118 pad pixels on the TV (Mali-T820, 2026-10-24), so the pad
+    /// path no longer has an exit of its own: `m`, the shadow and the closing write exist ONCE, after a
+    /// gate (`if (d < 1.0)`) that only wraps the `tex` work, and both paths run them. Pinned here: the
+    /// shadow-and-output text appears once in each program, the lit work lives only inside the gate,
+    /// the gate writes no fragment, never returns (so neither path can skip the tail) and assigns
+    /// nothing but `tex` among the values the tail reads, what follows the gate is exactly the shadow
+    /// and the closing write, and the focus program's fully-transparent early exit is still main's,
+    /// ahead of the shadow's `length()`.
     #[test]
-    fn the_card_shaders_pad_exit_is_the_shadow_alone() {
-        // Everything a fragment of the card path computes for the lit glass, the rim and the picture:
-        // none of it may appear inside the exit, which writes the shadow and returns.
-        const CARD_WORK: [&str; 11] = [
-            "tex", "ta", "glow", "gloss", "glareTop", "rim", "smoothstep", "stillOver", "texture2D", "u_rimcol", "u_tint",
-        ];
-        for (name, defined, closing) in PAD_EXIT_PROGRAMS {
-            let fs = preprocess(FS_IMG.to_str().unwrap(), defined);
-            let at = |needle: &str| fs.find(needle).unwrap_or_else(|| panic!("{name}: `{needle}` is gone from the shader"));
-            let open = at("if (d >= 1.0) {");
-            assert_eq!(fs.matches("if (d >= 1.0) {").count(), 1, "{name}: exactly one pad exit");
-            let close = open + fs[open..].find("\n  }\n").expect("the pad exit closes at the indent of main's body");
-            let exit = &fs[open..close];
-            // 1. The threshold is the top edge of the coverage smoothstep, and the exit comes before it.
-            let m = at("float m = 1.0 - smoothstep(-1.0, 1.0, d);");
-            assert!(close < m, "{name}: the pad exit must precede the coverage `m`");
-            // 2. The identity was worked out for this closing expression and this coverage shape.
-            assert_eq!(fs.matches(closing).count(), 1, "{name}: the closing expression changed from `{closing}`");
-            assert!(
-                fs.contains("sh = sh*sh*(3.0 - 2.0*sh) * u_shcol.a * (1.0 - m);"),
-                "{name}: the body's shadow is no longer `shadow * (1.0 - m)`, which is exactly `shadow` at m == 0"
-            );
-            // 3. The exit writes the shadow (alpha) and nothing else, and none of the card's own work runs in it.
-            assert!(
-                exit.contains("gl_FragColor = vec4(0.0, 0.0, 0.0, sh*sh*(3.0 - 2.0*sh) * u_shcol.a);"),
-                "{name}: the pad exit is not the shadow alone:\n{exit}"
-            );
-            for work in CARD_WORK {
-                let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
-                let hit = exit
-                    .match_indices(work)
-                    .any(|(i, w)| !exit[..i].ends_with(ident) && !exit[i + w.len()..].starts_with(ident));
-                assert!(!hit, "{name}: the pad exit computes `{work}`:\n{exit}");
-            }
-            // 4. The shadow's own distance and falloff are the body's text, verbatim: every line the
-            // exit uses to build `sh` appears once in the exit and once in the body.
-            let shadow: &[&str] = if defined.contains(&"PLX_FOCUS") {
-                &[
-                    "highp float dShadow = d;",
-                    "dShadow = dShadowBox;",
-                    "if (min(qs.x, qs.y) > 0.0) dShadow = length(qs) - u_card.z;",
-                    "float sh = clamp(0.5 - dShadow*u_shinv, 0.0, 1.0);",
-                ]
-            } else {
-                &["float sh = clamp(0.5 - d*u_shinv, 0.0, 1.0);"]
-            };
-            for line in shadow {
-                assert_eq!(fs.matches(line).count(), 2, "{name}: `{line}` must be the same text in the exit and in the body");
-                assert!(exit.contains(line), "{name}: the exit lost `{line}`");
-            }
-        }
-        // The focus program keeps its cheaper first case INSIDE the pad exit: a fragment whose
-        // shadow's box proxy has already cleared the falloff writes plain zero without the shadow's
-        // `length()`. The guard must be nested in `if (d >= 1.0)` - the proxy is only a lower bound on
-        // the shadow's distance, and it is `d >= 1.0` that makes zero equal to the body's output; hoisted
-        // out, it would zero fragments the body still paints - and it must come before the shadow's own
-        // `length()`, which is the cost it exists to skip.
-        let focus = preprocess(FS_IMG.to_str().unwrap(), &["PLX_FOCUS"]);
-        let box_guard = "if ((0.5 - dShadowBox * u_shinv) <= 0.0) {";
-        let zero_write = "gl_FragColor = vec4(0.0);";
-        assert_eq!(focus.matches(box_guard).count(), 1, "focus: exactly one box-proxy guard");
-        assert_eq!(focus.matches(zero_write).count(), 1, "focus: exactly one plain-zero write");
-        let open = focus.find("if (d >= 1.0) {").expect("focus: the pad exit");
-        let close = open + focus[open..].find("\n  }\n").expect("the pad exit closes at the indent of main's body");
-        let exit = &focus[open..close];
-        let guard_at = exit
-            .find(box_guard)
-            .unwrap_or_else(|| panic!("focus: the box-proxy guard is not inside the `if (d >= 1.0)` exit:\n{exit}"));
-        let guard = &exit[guard_at..guard_at + exit[guard_at..].find('}').expect("the box-proxy guard closes")];
-        assert!(
-            guard.contains(zero_write) && guard.contains("return;"),
-            "focus: the box-proxy guard no longer writes zero and returns:\n{guard}"
-        );
-        let after_guard = &exit[guard_at + guard.len()..];
-        let length_at = after_guard.find("length(qs)").expect("focus: the exit's shadow distance");
-        let shadow_at = after_guard.find("gl_FragColor = vec4(0.0, 0.0, 0.0, sh").expect("focus: the exit's shadow-alone write");
-        assert!(length_at < shadow_at, "focus: the shadow's `length()` must precede the shadow-alone write:\n{exit}");
-
-        // The identity itself, replayed in f32 over the exit's domain (`d >= 1.0`): coverage is exactly
-        // 0, so the full path's colour is the shadow alone, to the bit.
-        fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
-            let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
-            t * t * (3.0 - 2.0 * t)
-        }
-        for blur in [1.0_f32, 4.0, 12.0, 24.0] {
-            let shinv = 0.5 / blur;
-            for step in 0..4000 {
-                let d = 1.0 + step as f32 * 0.0125;
-                for (tex, ta, a) in [(0.0_f32, 0.0_f32, 0.0_f32), (0.25, 1.0, 0.35), (1.0, 0.5, 1.0)] {
-                    let m = 1.0 - smoothstep(-1.0, 1.0, d);
-                    assert_eq!(m.to_bits(), 0.0_f32.to_bits(), "d = {d}: coverage is exactly zero");
-                    let sh0 = (0.5 - d * shinv).clamp(0.0, 1.0);
-                    let shadow = sh0 * sh0 * (3.0 - 2.0 * sh0) * a;
-                    let full = (tex * m, ta * m + shadow * (1.0 - m));
-                    assert_eq!(full.0.to_bits(), 0.0_f32.to_bits(), "d = {d}: no colour outside the body");
-                    assert_eq!(full.1.to_bits(), shadow.to_bits(), "d = {d}, blur {blur}: alpha is the shadow alone");
-                }
-            }
-        }
-    }
-
-    /// **What the card's pad exit relies on must still be true where the body ends.** The exit
-    /// returns `vec4(0, 0, 0, sh)` for `d >= 1.0` because the body would have ended in `vec4(tex*m,
-    /// ta*m + sh)` with `m == 0.0` and `sh` already multiplied by `1.0 - m`. That holds only while (1)
-    /// the statements after the body's last `sh = ... * (1.0 - m);` are exactly the closing
-    /// `gl_FragColor` expression, so nothing reshapes `sh` or the colour on the way out, and (2) neither
-    /// `d` (after the exit) nor `m` (after it is computed) is assigned again, so the `d >= 1.0` the exit
-    /// tested is the `d` that `m` is computed from and `m` is still the smoothstep's value at the
-    /// closing expression.
-    #[test]
-    fn the_card_shaders_pad_exit_tail_and_inputs_are_untouched() {
-        let squash = |s: &str| s.split_whitespace().collect::<String>();
+    fn the_card_shaders_pad_path_runs_the_bodys_shadow_tail() {
+        // Everything the card computes for the lit glass and the rim: it changes `tex` and nothing else.
+        const LIT_WORK: [&str; 10] = ["glow", "gloss", "glareTop", "glareZone", "ease", "topDist", "chh", "rim", "u_rimcol", "u_rimw"];
+        const COVERAGE: &str = "float m = 1.0 - smoothstep(-1.0, 1.0, d);";
+        const SHADOW: &str = "sh = sh*sh*(3.0 - 2.0*sh) * u_shcol.a * (1.0 - m);";
+        const GATE: &str = "if (d < 1.0) {";
+        // The end of a block that opens at main's indent.
+        const CLOSE: &str = "\n  }\n";
+        let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+        // Where the whole identifier `word` occurs in `src`.
+        let words = |src: &str, word: &str| -> Vec<usize> {
+            src.match_indices(word)
+                .map(|(i, _)| i)
+                .filter(|&i| !src[..i].ends_with(ident) && !src[i + word.len()..].starts_with(ident))
+                .collect()
+        };
         // The first assignment (`=`, `+=`, `++`, ...) to the whole identifier `name` in `src`: `==`, `<=`,
         // `>=` and `!=` compare, and `dShadow` or `q.d` are other names.
-        fn assigns(src: &str, name: &str) -> Option<usize> {
-            let ident = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '.';
+        let assigns = |src: &str, name: &str| -> Option<usize> {
+            let ident = |c: char| ident(c) || c == '.';
             src.match_indices(name).map(|(i, _)| i).find(|&i| {
                 if src[..i].ends_with(ident) || src[i + name.len()..].starts_with(ident) {
                     return false;
                 }
-                let rest = src[i + name.len()..].trim_start();
-                let before = src[..i].trim_end();
+                let (before, rest) = (src[..i].trim_end(), src[i + name.len()..].trim_start());
                 (rest.starts_with('=') && !rest.starts_with("=="))
                     || ["+=", "-=", "*=", "/=", "++", "--"].iter().any(|op| rest.starts_with(op))
                     || before.ends_with("++")
                     || before.ends_with("--")
             })
-        }
-        for (name, defined, closing) in PAD_EXIT_PROGRAMS {
-            let fs = preprocess(FS_IMG.to_str().unwrap(), defined);
-            let at = |needle: &str| fs.find(needle).unwrap_or_else(|| panic!("{name}: `{needle}` is gone from the shader"));
-            // (1) After the body's last shadow line, only the closing expression and main's `}` remain.
-            let last_sh = "sh = sh*sh*(3.0 - 2.0*sh) * u_shcol.a * (1.0 - m);";
-            assert_eq!(fs.matches(last_sh).count(), 1, "{name}: exactly one `{last_sh}`");
-            let tail = &fs[at(last_sh) + last_sh.len()..];
-            assert_eq!(
-                squash(tail),
-                format!("{}}}", squash(closing)),
-                "{name}: statements besides `{closing}` follow the body's last shadow line:\n{tail}"
-            );
-            // (2) `d` is not assigned after the exit tested it, and `m` not after its definition.
-            let open = at("if (d >= 1.0) {");
-            let after_exit = &fs[open + fs[open..].find("\n  }\n").expect("the pad exit closes at the indent of main's body")..];
-            if let Some(i) = assigns(after_exit, "d") {
-                panic!("{name}: `d` is assigned after the pad exit tested it:\n{}", &after_exit[i..]);
-            }
-            let m_def = "float m = 1.0 - smoothstep(-1.0, 1.0, d);";
-            let after_m = &fs[at(m_def) + m_def.len()..];
-            if let Some(i) = assigns(after_m, "m") {
-                panic!("{name}: `m` is assigned after it is computed:\n{}", &after_m[i..]);
-            }
-        }
+        };
         // The scanner itself: it sees assignments, and ignores comparisons, reads and other names.
         for (assigned, name) in [("d = 1.0;", "d"), ("d  += 2.0;", "d"), ("m=3.0;", "m"), ("x = ++d;", "d"), ("(m *= 2.0);", "m")] {
             assert!(assigns(assigned, name).is_some(), "`{assigned}` assigns `{name}`");
@@ -8438,6 +8530,89 @@ mod tests {
                 assert!(assigns(read, name).is_none(), "`{read}` does not assign `{name}`");
             }
         }
+        for (name, defined, closing) in PAD_PATH_PROGRAMS {
+            let focus = defined.contains(&"PLX_FOCUS");
+            let fs = preprocess(FS_IMG.to_str().unwrap(), defined);
+            let at = |needle: &str| fs.find(needle).unwrap_or_else(|| panic!("{name}: `{needle}` is gone from the shader"));
+            // 1. The shadow and the output are written ONCE: a second copy, in an exit of its own or
+            // anywhere else, is what drifted by a bit on the device.
+            for once in [COVERAGE, SHADOW, closing] {
+                assert_eq!(fs.matches(once).count(), 1, "{name}: `{once}` must appear exactly once");
+            }
+            assert_eq!(fs.matches("u_shcol.a").count(), 1, "{name}: the shadow's strength is read in more than one place");
+            assert_eq!(fs.matches("smoothstep").count(), 1, "{name}: the coverage is computed in more than one place");
+            // 2. The gate wraps the `tex` work, follows the coverage, and cannot skip the tail.
+            assert_eq!(fs.matches(GATE).count(), 1, "{name}: exactly one pad gate");
+            let open = at(GATE);
+            let close = open + fs[open..].find(CLOSE).expect("the pad gate closes at the indent of main's body");
+            assert!(at(COVERAGE) < open, "{name}: the coverage `m` must be computed before the gate, for both paths");
+            assert_eq!(squash(&fs[at(COVERAGE) + COVERAGE.len()..open]), "", "{name}: something sits between the coverage and the pad gate");
+            let block = &fs[open..close];
+            // The gate changes `tex` and nothing else the tail reads: the coverage, the alpha, the distance
+            // and the shadow are the same values on both paths.
+            for read in ["m", "ta", "d", "sh", "dShadow"] {
+                if let Some(i) = assigns(block, read) {
+                    panic!("{name}: the pad gate assigns `{read}`, which the tail reads on both paths:\n{}", &block[i..]);
+                }
+            }
+            for forbidden in ["return", "gl_FragColor", "else", "discard"] {
+                assert!(
+                    words(block, forbidden).is_empty(),
+                    "{name}: the pad gate must fall through to the tail, but it has `{forbidden}`:\n{block}"
+                );
+            }
+            // 3. The lit work is inside the gate and nowhere else, so the pad path does not run it.
+            for work in LIT_WORK {
+                for i in words(&fs, work) {
+                    // A uniform's declaration names it without computing anything.
+                    let line = &fs[fs[..i].rfind('\n').map_or(0, |n| n + 1)..];
+                    assert!(
+                        (open..close).contains(&i) || line.starts_with("uniform "),
+                        "{name}: `{work}` is computed outside the pad gate (at byte {i})"
+                    );
+                }
+            }
+            let lit: &[&str] = if focus { &LIT_WORK } else { &["rim", "u_rimcol", "u_rimw"] };
+            for work in lit {
+                assert!(!words(block, work).is_empty(), "{name}: the pad gate no longer holds `{work}`");
+            }
+            // 4. After the gate: the shadow and the closing write, as the body had them, and nothing else.
+            let shadow_distance = if focus {
+                "highp float dShadow = d;
+                 if (u_focus.z > 0.0) {
+                   dShadow = dShadowBox;
+                   if (min(qs.x, qs.y) > 0.0) dShadow = length(qs) - u_card.z;
+                 }
+                 float sh = clamp(0.5 - dShadow*u_shinv, 0.0, 1.0);"
+            } else {
+                "float sh = clamp(0.5 - d*u_shinv, 0.0, 1.0);"
+            };
+            assert_eq!(
+                squash(&fs[close + CLOSE.len()..]),
+                squash(&format!("{shadow_distance}\n{SHADOW}\n{closing}\n}}")),
+                "{name}: what follows the pad gate is not the body's shadow and closing write:\n{}",
+                &fs[close..]
+            );
+        }
+        // The focus program keeps main's fully-transparent early exit, verbatim and ahead of the
+        // shadow's `length()` (the cost it exists to skip): a fragment outside the body whose shadow's
+        // box proxy (a lower bound on its distance) has cleared the falloff writes plain zero. It is
+        // not the pad path - it is a case of the body's own output - and the pad gate comes after it.
+        let focus = preprocess(FS_IMG.to_str().unwrap(), &["PLX_FOCUS"]);
+        let zero_exit = "if (d >= 1.0 && (0.5 - dShadowBox * u_shinv) <= 0.0) {
+                           gl_FragColor = vec4(0.0);
+                           return;
+                         }";
+        assert_eq!(focus.matches("if (d >= 1.0").count(), 1, "focus: exactly one `d >= 1.0` test");
+        assert_eq!(focus.matches("gl_FragColor = vec4(0.0);").count(), 1, "focus: exactly one plain-zero write");
+        let zero_at = focus.find("if (d >= 1.0 &&").expect("focus: the transparent early exit");
+        let zero_end = zero_at + focus[zero_at..].find(CLOSE).expect("the early exit closes at the indent of main's body") + CLOSE.len();
+        assert_eq!(squash(&focus[zero_at..zero_end]), squash(zero_exit), "focus: the transparent early exit is not main's");
+        assert!(
+            zero_at < focus.find("length(qs)").expect("focus: the shadow's distance"),
+            "focus: the transparent early exit must come before the shadow's `length()`"
+        );
+        assert!(zero_end <= focus.find(GATE).expect("focus: the pad gate"), "focus: the pad gate comes after the early exit");
     }
 
     /// `draw_tex_impl` must reach for [`FOCUS_IMAGE`] exactly when a draw is actually focused or
@@ -8452,6 +8627,103 @@ mod tests {
         assert!(wants_focus_program(0.0, 0.5), "a risen shadow alone also reaches for it");
         assert!(wants_focus_program(0.6, 9.0), "the ordinary focused+risen case");
         assert!(!wants_focus_program(0.0, -3.0), "a negative dy clamps to 0, still at rest");
+    }
+
+    /// **Which draws reach the plain texture program.** The rule is the shader's own first exit
+    /// (`u_card.z < 0.5`, `u_card.z` being the radius) and nothing about the rim, shadow or pad, which
+    /// that exit never reads: a square-cornered picture carrying a shadow pad is exactly as plain as
+    /// one without (the exit draws no shadow in it, though the pad's fragments still run it). A
+    /// rounded draw keeps the image program, and so does any draw with a program of its own (focus,
+    /// still): the still's exit is not the plain write, and the focus program's fragments past the
+    /// exit are what it is for. A program that did not link leaves everything where it was.
+    #[test]
+    fn only_a_square_cornered_unoverridden_draw_reaches_for_the_plain_texture_program() {
+        const LINKED: Option<u32> = Some(7);
+        for radius in [0.0, 0.25, 0.4999, -1.0, f32::NEG_INFINITY] {
+            assert_eq!(plain_texture_program(LINKED, false, radius), LINKED, "radius {radius}: a plain texture");
+        }
+        for radius in [0.5, 1.0, 6.0, 14.0, 95.0, 1.0e6, f32::INFINITY, f32::NAN] {
+            assert_eq!(plain_texture_program(LINKED, false, radius), None, "radius {radius}: a card");
+        }
+        for radius in [0.0, 14.0] {
+            assert_eq!(plain_texture_program(LINKED, true, radius), None, "an overridden program keeps its draw");
+            assert_eq!(plain_texture_program(None::<u32>, false, radius), None, "a program that did not link");
+            assert_eq!(plain_texture_program(None::<u32>, true, radius), None);
+        }
+        // The interior piece of a split card is drawn with `u_card` of radius 0 and nothing overriding it.
+        assert_eq!(plain_texture_program(LINKED, false, 0.0), LINKED);
+        // A split card's interior piece on the still program stays on it: its exit is `stillOver`,
+        // which is NOT the plain write (`the_plain_exits_of_the_card_shader_are_one_expression`).
+        assert_eq!(plain_texture_program(LINKED, true, 0.0), None);
+    }
+
+    /// The wiring no host test can drive, pinned in the source: the program is chosen AFTER the
+    /// ledger's `gate` (a masked or culled draw never reaches a program), from [`PLAIN_IMAGE`] only,
+    /// with `image.is_some()` as the override, for the whole draw (the draw's own radius) and for the
+    /// interior piece (radius 0); the ring pieces never leave the program the draw bound; and the
+    /// plain program is sent every uniform it reads (uniforms persist per program) from one helper.
+    /// The argument wiring is pinned as whole statements, because the types cannot: `quad` and `uv`
+    /// are both `[f32; 4]`, so a call site or an init field with the two swapped compiles.
+    #[test]
+    fn the_plain_texture_program_is_chosen_after_the_ledger_and_sent_everything_it_reads() {
+        let src = include_str!("gfx.rs");
+        let prod = &src[..src.find("\n#[cfg(test)]\nmod tests").expect("the unit tests")];
+        let body = |head: &str| {
+            let from = prod.find(head).unwrap_or_else(|| panic!("`{head}` is gone"));
+            let rest = &prod[from..];
+            &rest[..rest.find("\n}\n").expect("the end of the function")]
+        };
+        let draw = body("fn draw_tex_core_in(");
+        let (gate, whole, interior) = (
+            draw.find("gate(class, qx, qy, qw, qh)").expect("the ledger's gate"),
+            draw.find("plain_texture_program(plain, image.is_some(), radius)").expect("the whole-draw choice"),
+            draw.find("plain_texture_program(plain, image.is_some(), 0.0)").expect("the interior piece's choice"),
+        );
+        let plan = draw.find("card_plan(&boxes").expect("the piece plan");
+        assert!(gate < whole && whole < plan && plan < interior, "gate {gate}, whole {whole}, plan {plan}, interior {interior}");
+        assert!(draw.contains("PLAIN_IMAGE).read()"), "the plain program is read from its own static");
+        let branch = draw.find("if piece.interior {").expect("the interior branch of the piece loop");
+        assert!(
+            plan < branch && branch < interior && draw[branch..interior].matches("glDrawArrays").count() == 0,
+            "the interior choice sits first inside the `if piece.interior` branch: the ring is never switched"
+        );
+        // One bind for the whole draw, one for the interior, each with its arguments in the signature's
+        // order. `quad` and `uv` are both `[f32; 4]`, so a swap COMPILES and draws the wrong picture:
+        // the full statements are what is pinned.
+        assert_eq!(draw.matches("bind_plain_image(").count(), 2, "one bind for the whole draw, one for the interior");
+        assert_eq!(draw.matches("bind_plain_image(program, loc, tint, uv, quad);").count(), 1, "the whole draw's bind");
+        assert_eq!(draw.matches("=> bind_plain_image(program, loc, tint, uv, quad),").count(), 1, "the interior piece's bind");
+        assert!(draw.contains("let quad = [qx, qy, qw, qh];"), "`quad` is the inflated rect the card path draws");
+        assert!(
+            prod.contains(
+                "unsafe fn bind_plain_image(program: c_uint, loc: PlainUniforms, tint: *const f32, uv: [f32; 4], quad: [f32; 4]) {"
+            ),
+            "bind_plain_image's signature: the argument order every call site is pinned to"
+        );
+        // Every uniform the program reads goes on every bind, and the bind is the only place it is bound.
+        let bind = body("unsafe fn bind_plain_image(");
+        for needle in [
+            "use_prog(program);",
+            "glUniform4fv(loc.tint, 1, tint);",
+            "glUniform4f(loc.uvrect, uv[0], uv[1], uv[2], uv[3]);",
+            "glUniform4f(loc.rect, quad[0], quad[1], quad[2], quad[3]);",
+        ] {
+            assert!(bind.contains(needle), "`{needle}` is gone from bind_plain_image");
+        }
+        // The program's own link block: which vertex source it links against, what is set once, and
+        // which looked-up location lands in which field.
+        let init = body("pub fn init_image(");
+        let link = &init[init.find("PLAIN_IMAGE = link_optional_program(").expect("the plain program's link")..];
+        let link = &link[..link.find("});").expect("the end of its link closure")];
+        for needle in [
+            "link_optional_program(VS_IMG.as_ptr(), FS_TEX.as_ptr())",
+            "glUniform2f(loc(c\"u_tscreen\"), SCR_W, SCR_H);",
+            "glUniform1i(loc(c\"u_tex\"), 0);",
+            "(program, PlainUniforms { rect: loc(c\"u_trect\"), tint: loc(c\"u_tint\"), uvrect: loc(c\"u_uvrect\") })",
+        ] {
+            assert!(link.contains(needle), "`{needle}` is gone from the plain program's link block:\n{link}");
+        }
+        assert!(init.contains("plain image prog unavailable"), "a link failure is logged and falls back");
     }
 
     #[test]
@@ -9478,7 +9750,8 @@ mod shadow_band_tests {
 mod card_split_tests {
     use super::{
         bands_around, card_cut, card_interior, card_pixel_boxes, card_plan, card_whole_refused, clip_px,
-        image_card_geometry, snap_inner, CardBoxes, CardCut, CardPart, CardPath, Class, Piece, PxBox, SCR_H,
+        image_card_geometry, plain_texture_program, snap_inner, CardBoxes, CardCut, CardPart, CardPath, Class,
+        Piece, PxBox, SCR_H,
     };
 
     /// The viewport box `[x0, y0, x1, y1]` of a 1920x1080 canvas at `s` px per authored px whose
@@ -10018,6 +10291,41 @@ mod card_split_tests {
         assert_eq!(cut(Class::Card, 14.0, 0.3, 0.0, false), CardCut::Whole(CardPath::Focus), "a focused card is the focus path whatever the switch says");
         assert_eq!(cut(Class::Image, 14.0, 0.0, 0.0, true), CardCut::None, "a rounded image without a pad is not a card");
         assert_eq!(cut(Class::Glass, 14.0, 0.0, 0.0, true), CardCut::None);
+    }
+
+    /// **The plain texture program is chosen exactly where the shader takes its first exit.** Graded
+    /// against the replica of `fs_img.frag` ([`plain_exit`]) over every card shape, a ladder of radii
+    /// around the 0.5 threshold and a spread of points: a draw is routed to the plain program iff the
+    /// shader would return 1 (`u_card.z < 0.5`) for ALL of them, whatever the rim and pad say, and a
+    /// card [`card_cut`] splits (rounded, resting) is never one. The interior piece of that split is
+    /// drawn with a radius of 0 and is routed, and the replica agrees it is plain at every point.
+    #[test]
+    fn the_plain_program_is_chosen_exactly_where_the_shader_takes_its_first_exit() {
+        let radii = [-2.0f32, 0.0, 0.25, 0.4999, 0.5, 0.5001, 1.0, 2.0, 14.0, 95.0, 125.0];
+        for (w, h, _, rimw, pad) in cards() {
+            let (chw, chh) = (w * 0.5, h * 0.5);
+            let points = [[0.0, 0.0], [chw - 1.0, 0.0], [0.0, chh - 1.0], [chw, chh], [chw + pad, chh + pad], [-chw, chh]];
+            for radius in radii {
+                let geo = image_card_geometry(chw, chh, radius);
+                let routed = plain_texture_program(Some(()), false, radius).is_some();
+                for p in points {
+                    assert_eq!(
+                        plain_exit(geo, p) == 1,
+                        routed,
+                        "card {w}x{h} r{radius} rim {rimw} pad {pad}: shader replica and routing disagree at {p:?}"
+                    );
+                }
+                let rect = [0.0, 0.0, w, h];
+                if matches!(card_cut(Class::Card, radius, 0.0, 0.0, true, rect), CardCut::Pieces(_)) {
+                    assert!(!routed, "card {w}x{h} r{radius}: a split card's ring is never the plain program");
+                }
+            }
+            let interior = image_card_geometry(chw, chh, 0.0);
+            assert!(plain_texture_program(Some(()), false, 0.0).is_some(), "the interior piece is routed");
+            for p in points {
+                assert_eq!(plain_exit(interior, p), 1, "the interior piece's u_card is the shader's plain exit at {p:?}");
+            }
+        }
     }
 
     /// `bands_around` of a snapped hole and `snap_inner` agree with the shadow's own contract

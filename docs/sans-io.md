@@ -120,14 +120,18 @@ session owner leaves as an `Effects` value; the next section is the rule for the
 The Metadata store's detail request (`request_detail`) was the first to stop starting its own
 worker. Its three ledger lines are gone and the shape is the one the other `data/` stores copy.
 The Collection page's request is the second: its worker start and its three `client_for` reads are
-gone from `data/src/collection.rs`.
+gone from `data/src/collection.rs`. The Person page's requests are the third: its two worker starts
+and its one `client_for` read are gone from `data/src/person.rs`, but unlike the two before it the
+Person step is not pure (the last bullet lists what it still reads). Person has up to six requests
+out at once, so a pump emits several jobs, one per fetch slot, in ascending slot order.
 
 - **The shape.** `plx_machine::job` holds `Job<R>` (an `Addr` and a request that carries everything
   the worker needs), `Port<T>` (where the one answer goes: exactly one `done` or `refused` per job)
   and `assert_fx!` (a step test reads the jobs it emitted instead of waiting on a thread). A store
   keeps its own job enum, request types and port: `plx_data::stores::StoreJob`,
-  `MetadataStore::take_jobs`, `plx_data::metadata::{DetailReq, DetailPort}` and
-  `plx_data::collection::{CollectionReq, CollectionPort}`. The app's `StoreRunner`
+  `MetadataStore::take_jobs`, `plx_data::metadata::{DetailReq, DetailPort}`,
+  `plx_data::collection::{CollectionReq, CollectionPort}` and
+  `plx_data::person::{PersonReq, PersonPort}`. The app's `StoreRunner`
   (`app/adapters/stores.rs`) executes a job and owns what `data/` must not: the tape's admission
   record, the thread and the `client_for` read. It is `Live` or `Held` (a test parks the job and
   runs it on the test thread), chosen when the `Bridge` is constructed; a newer Detail request
@@ -144,9 +148,11 @@ gone from `data/src/collection.rs`.
   and the owner's drain starts it. A store the Bridge runs emits through its own `take_jobs`.
   `Stores::take_jobs_of(StoreId)` takes ONE store's outbox and `Stores::take_jobs` aggregates every
   store's, and each Bridge entry point drains only its own store, in the same call as the step:
-  `Bridge::metadata_run` steps then drains Metadata; `Bridge::collection_pump` refills the keys,
-  steps, then runs `Bridge::start_store_jobs_of(StoreId::Collection)`. Draining inside each pump,
-  not at the frame's end, keeps every store's admissions in the tape where they were. A caller that
+  `Bridge::metadata_run` steps then drains Metadata; `Bridge::person_pump` and
+  `Bridge::collection_pump` refill the keys, step, then run
+  `Bridge::start_store_jobs_of(StoreId::Person)` and `(StoreId::Collection)`. Draining inside each
+  pump, not at the frame's end, keeps every store's admissions in the tape where they were: the
+  frame pumps Person, then Collection, then reconciles the Detail page. A caller that
   holds only the store (`describe_movie` gets a `&mut MetadataStore`) drains with
   `Bridge::start_store_jobs` the moment its call returns. A new store joins by implementing its
   own outbox and adding it to `Stores::take_jobs_of` and `Stores::has_jobs_of`, in that one place.
@@ -154,8 +160,8 @@ gone from `data/src/collection.rs`.
   not drain: a `RequestDetail` stepped through it leaves its job on the outbox and nothing starts
   it. The same holds for the `pub` `Stores::metadata_run`. The owner drains in the same call, as
   `Bridge::metadata_run` does; no type enforces it, the counter below catches the lapse.
-  `CollectionStore`'s `Machine::step` is unreached and passes empty keys: a future sender must pass
-  the host's keys and drain.
+  `CollectionStore`'s and `PersonStore`'s `Machine::step` are unreached and pass empty keys: a
+  future sender must pass the host's keys and drain.
 - **Results do not return as FIFO events.** A store's result goes back through the landing and its
   gate (`landgate`, the `adapter_rank` of the landing key), where the pump takes it by value. This
   is a deliberate exception to "every result returns as one addressed event in the same drain":
@@ -170,9 +176,24 @@ gone from `data/src/collection.rs`.
   request still settles, and is counted in the Bridge's `late_store_jobs` and logged as one `stores: WARN` line.
   `Bridge::assert_no_store_jobs_left_for_test` (`#[cfg(test)]`) fails a frame that ends with a job
   still on an outbox or with that count above zero, so a sender that bypassed its store's Bridge
-  drain (`metadata_run`, `collection_pump`, `start_store_jobs_of`, `start_store_jobs`)
+  drain (`metadata_run`, `person_pump`, `collection_pump`, `start_store_jobs_of`, `start_store_jobs`)
   is red in every rig that makes the check, the one that runs `update()`'s pump included. The rigs
   make it at the frame's end.
 - **The port holds the adapter `Arc`.** `Reset` replaces the adapter and the store keeps no handle to
   the retired one, so an epoch id could only reach it through a registry of retired adapters. A job
   emitted before a `Reset` answers into the adapter it was made for, as the request did before.
+  `PersonPort` also carries the slot and the generation its claim was made under, because several
+  Person jobs are out at once and `Addr.req` is only a per-job sequence there (`RequestId` stays
+  unique per addressee): `done` and `refused` use the port's slot and generation, never the
+  address, so a refusal gives back only its own generation's claim.
+- **What the Person step still reads.** Person starts no worker and reads no `client_for`, but its
+  step is NOT pure. It still reads `tape::active()` (which decides whether a job exists and carries
+  the controlled identity), `session::peek_settled()` (the settled plex.tv account the two global
+  reads are made as; the gate's `session::peek(` spelling does not match it), the session watch, the
+  refused-discover check (`discover::person_profile_refused` / `person_credits_refused`, which
+  lands the refusal in the step with no job, because routing it through the runner would release
+  and respawn it every ~2 s), `plx_base::devtrig::read("personcredits")` (dev-trigger builds only:
+  `seed_dev_credits` reads it on every pump while a person is open and no tape is armed),
+  `server_ids()` (the source roster) and `server_roster_gen()`. Its
+  two fetch bodies, `fetch_profile` and `fetch_credits`, stay in `data/person.rs`, so their `forks`
+  ledger lines stay. A source whose server holds no key backs off in the step and emits no job.
