@@ -226,11 +226,11 @@ fn reset_forgets_the_queue_and_the_flights() {
     assert!(!store.is_busy() && store.dirty_for_test().is_empty());
 }
 
-/// A read is stamped when it is SPAWNED, so a press whose write has not landed yet would sit before
-/// that stamp and be undone by the read's older body. The read is therefore not spawned while the
+/// A read is stamped when it is SENT, so a press whose write has not landed yet would sit before
+/// that stamp and be undone by the read's older body. The read is therefore not sent while the
 /// owner has a write queued or out; it waits in the queue and goes when the burst is idle.
 #[test]
-fn a_read_is_not_spawned_while_a_write_is_queued_so_the_press_survives_it() {
+fn a_read_is_not_sent_while_a_write_is_queued_so_the_press_survives_it() {
     let _g = plx_base::testlock::serial();
     let pms = serve();
     let (mut stores, sid) = library_holding_item(&pms);
@@ -464,12 +464,12 @@ fn a_stop_in_the_middle_does_not_fan_out() {
     drop(stores);
 }
 
-/// **A landing settles only a candidate its own flight could have seen.** A read spawned BEFORE the
+/// **A landing settles only a candidate its own flight could have seen.** A read sent BEFORE the
 /// stop was enqueued describes the server from before the stop; it must neither drop the candidate
-/// (our own fan-out would be lost) nor decide it. The dirty re-read spawned after the stop does, and
+/// (our own fan-out would be lost) nor decide it. The dirty re-read sent after the stop does, and
 /// the other server's copy is then scrobbled.
 #[test]
-fn a_flight_spawned_before_the_candidate_does_not_settle_it() {
+fn a_flight_sent_before_the_candidate_does_not_settle_it() {
     let _g = plx_base::testlock::serial();
     let (a, b) = (serve(), serve());
     a.truth.hold_next_read.store(true, Ordering::SeqCst);
@@ -478,7 +478,7 @@ fn a_flight_spawned_before_the_candidate_does_not_settle_it() {
     let key = (sid, "1".to_string());
     stores.reconcile.enqueue([key.clone()]);
     drive(&mut stores, |_| a.truth.holding.load(Ordering::SeqCst)); // the early read is out, held
-    stores.reconcile.enqueue_stop(key.clone(), false); // the stop arrives after it was spawned
+    stores.reconcile.enqueue_stop(key.clone(), false); // the stop arrives after it was sent
     a.truth.watched.lock().unwrap().insert("1".into()); // the stream ended: later reads see it
     stores.hold_network(true); // landings are taken, the re-read waits: the stale landing is observed alone
     a.truth.release.store(true, Ordering::SeqCst); // the early read answers with its OLD body

@@ -91,7 +91,8 @@ impl<H: Host> Machine<H> for SubSearchStore {
     fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, _fx: &mut Effects<'_, H>) -> Handled {
         // Unreached: nothing steps this store as a Machine (`step_store` is `unreachable!` for it).
         // A future sender must pass the host's keys and drain the jobs the pump emits; these empty
-        // keys would read as "no server holds a client" and a job would be stranded.
+        // keys read as "no server holds a client" (the pump backs off and emits nothing), and real
+        // keys without the drain would strand the job.
         match ev {
             StoreEv::Cmd(cmd) => { self.run(cmd.clone()); }
             StoreEv::Pump { .. } => { self.pump(&plx_machine::landgate::Gate::default(), &ClientKeys::default()); }

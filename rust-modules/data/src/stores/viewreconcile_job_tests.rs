@@ -21,9 +21,9 @@ fn owe(store: &mut ViewReconcileStore, n: u16, rks: &[&str]) {
 
 /// One pump on a plain gate with the registry's answer `clients`; whether it changed anything and
 /// the rows it published.
-fn pump(store: &mut ViewReconcileStore, may_spawn: bool, clients: &ClientKeys) -> (bool, Vec<String>) {
+fn pump(store: &mut ViewReconcileStore, may_send: bool, clients: &ClientKeys) -> (bool, Vec<String>) {
     let mut published = Vec::new();
-    let changed = store.pump_with_gate(&Gate::default(), may_spawn, clients, &mut |c| published.push(c.rk));
+    let changed = store.pump_with_gate(&Gate::default(), may_send, clients, &mut |c| published.push(c.rk));
     (changed, published)
 }
 

@@ -15,7 +15,7 @@
 //! * **Triggered by a landed write, whatever the outcome, and by a stopped playback the server
 //!   took** (`enqueue_stop`, from `Stores::stops_landed`; it involves no write). `ViewStateState` hands over the
 //!   `(server, ratingKey)` of the item and of every copy the fan-out took
-//!   ([`crate::viewstate::ViewStateState::take_reread`]) once its burst is idle. No read is spawned while the player is on top
+//!   ([`crate::viewstate::ViewStateState::take_reread`]) once its burst is idle. No read is sent while the player is on top
 //!   (`Stores::hold_network`) either: the items stay owed. On success the
 //!   answer confirms the optimistic edit; on refusal it is the only thing that returns the tile to
 //!   what the server holds, because the ledger entry of a refused write is retired. Only the rows
@@ -25,9 +25,9 @@
 //!   `metadata_many` (`/library/metadata/{k1,k2,…}`, already used by the hub windows and the person
 //!   page), one batch per server at a time. An item asked for while its read is out is not read
 //!   twice at once: it is marked dirty and re-queued ONCE when that read lands. There is no time cap.
-//! * **No read is spawned while a write is queued or out.** The stamp below is taken at spawn, and
-//!   items can wait in the queue (one flight per server, [`BATCH_KEYS`], the retry wait) past a
-//!   later press; the spawn is gated on the same idleness `take_reread` is.
+//! * **No read is sent while a write is queued or out.** The stamp below is taken when the batch is
+//!   sent, and items can wait in the queue (one flight per server, [`BATCH_KEYS`], the retry wait)
+//!   past a later press; the send is gated on the same idleness `take_reread` is.
 //! * **A result older than a press is dropped.** Each batch is stamped from the shared
 //!   [`crate::viewledger::ViewLedger`] when it is requested. A row some edit published AFTER that
 //!   stamp covers (a press made while the read was out) is discarded: the read describes the server
@@ -90,7 +90,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// ~2 s at 60 fps, the wait every store here gives a refused spawn.
+/// ~2 s at 60 fps, the wait every store here gives a job that was refused.
 const RETRY_FRAMES: u32 = 120;
 
 /// Keys per `metadata_many`: the URL carries them all, so a long burst is split.
@@ -237,7 +237,7 @@ pub struct ViewReconcileStore {
     /// watched, the stream reached its end and the title is owed a fan-out (`take_watched_ends`).
     /// Dropped when their read lands, fails or is overtaken, and on reset. Each carries the id the
     /// NEXT flight will be minted with when the stop was enqueued: only a flight with an id at or
-    /// past it was spawned after the stop, and only its body can settle the candidate. A read that
+    /// past it was sent after the stop, and only its body can settle the candidate. A read that
     /// was already out describes the server from before the stop.
     candidates: Vec<(Key, u32)>,
     watched_ends: Vec<Key>,
@@ -489,7 +489,7 @@ impl ViewReconcileStore {
     /// items that went dirty, and send the next reads. MAIN THREAD, route-unconditional. True when
     /// a landing changed something a screen may be drawing.
     ///
-    /// `may_spawn` is false while a view-state write is queued or out: a read's stamp is taken when
+    /// `may_send` is false while a view-state write is queued or out: a read's stamp is taken when
     /// it is sent, so a press whose write has not landed would sit before the stamp and the
     /// read's body (from before that write) would undo it. Queued items wait for the burst to be
     /// idle; landings are always taken. `clients` is the registry's answer as of this call; the
@@ -497,7 +497,7 @@ impl ViewReconcileStore {
     pub fn pump_with_gate(
         &mut self,
         gate: &plx_machine::landgate::Gate,
-        may_spawn: bool,
+        may_send: bool,
         clients: &ClientKeys,
         publish: &mut dyn FnMut(ViewChange),
     ) -> bool {
@@ -587,8 +587,8 @@ impl ViewReconcileStore {
                 }
             }
             // a candidate this read did not settle (no answer, no row, overtaken) is dropped: no
-            // fan-out on a guess. One enqueued after the read was spawned is not this read's to
-            // drop: its item is dirty and the re-read spawned after the stop decides it.
+            // fan-out on a guess. One enqueued after the read was sent is not this read's to
+            // drop: its item is dirty and the re-read sent after the stop decides it.
             self.candidates.retain(|(k, born)| *born > flight.id || !(k.0 == flight.sid && flight.keys.iter()
                 .any(|f| plx_plex::plex::same_item((flight.sid, f), (k.0, &k.1)))));
             // Asked for again while this was out: once more, now.
@@ -599,7 +599,7 @@ impl ViewReconcileStore {
             self.pending.extend(again);
             changed = true;
         }
-        if may_spawn {
+        if may_send {
             self.kick(clients);
         }
         if changed {

@@ -158,3 +158,27 @@ worker. Its three ledger lines are gone and the shape is the one the other `data
 - **The port holds the adapter `Arc`.** `Reset` replaces the adapter and the store keeps no handle to
   the retired one, so an epoch id could only reach it through a registry of retired adapters. A job
   emitted before a `Reset` answers into the adapter it was made for, as the request did before.
+- **A refusal the step can observe.** The runner may decline to start a job: the thread ceiling, a
+  registry that moved on between the step and the launch (the client the job names is no longer the
+  one the slot holds), or a `Held` runner whose client is gone. It then calls the port's `refused`,
+  so every job gets exactly one answer, a refusal included. A refusal that only released the claim
+  would have the next pump send the same request at once, every frame, where the inline spawn that
+  failed backed off, so the step has to see it. A store whose claim is a `Fetch` (subtitle search)
+  reads `Fetch::take_refused(gen)` at the head of its next pump: the port's
+  `Fetch::refuse_for(gen)` frees that generation's claim and remembers the refusal for
+  `take_refused` to answer once, and a refusal for a superseded generation does neither. A store whose claim is a mailbox of landings
+  (the view-state read-back) has its port post a store-local `NotStarted` landing, and the next pump
+  puts the flight's items back and waits. A refusal never goes into a recorded mailbox (a recorded
+  take would write it as an async result and change the bytes). It reaches the step one pump later
+  than a failed inline spawn did; no fixture holds a refused start, so no recorded byte moves.
+- **Subtitle search and the view-state read-back** are the next two stores on the lane. The worker
+  start and the `client_for` read are gone from `data/src/subsearch.rs` and
+  `data/src/stores/viewreconcile.rs`, and their four ledger lines are deleted. Each step reads
+  `plx_plex::plex::ClientKeys` as an argument and emits a `StoreJob`
+  (`plx_data::subsearch::{SubSearchReq, SubSearchPort}` and
+  `plx_data::stores::viewreconcile::{ReconcileReq, ReconcilePort}`); the runner starts the job
+  only if `client_for` still answers the key the step decided on. `Bridge::subsearch_pump` and
+  `Bridge::reconcile_pump` refill the keys, step, then run `Bridge::start_store_jobs_of` for their
+  own store in the same call; `Bridge::subsearch_run` only drains, because the command step takes no
+  keys and emits nothing. Neither kind is on the tape, so the runner makes no admission record for
+  them and a replay launches them live, as the inline spawn did.
