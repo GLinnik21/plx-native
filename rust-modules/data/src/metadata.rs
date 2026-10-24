@@ -6206,6 +6206,10 @@ mod initial_season_tests;
 #[path = "metadata_detail_job_tests.rs"]
 mod detail_job_tests;
 
+#[cfg(test)]
+#[path = "metadata_detail_client_tests.rs"]
+mod detail_client_tests;
+
 /// #814: the runtime an *Also available* row carries is a fact about one FILE, so only a leaf has
 /// one. A show container's `duration` is the metadata agent's nominal per-episode figure.
 #[cfg(test)]
