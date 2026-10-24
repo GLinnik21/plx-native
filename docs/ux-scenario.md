@@ -669,8 +669,10 @@ full-screen sheet. All three are modal while open: they take every key, and BACK
   in the language of the audio that plays, or nothing; remembered per show like *Off*); both text and
   image (PGS/VobSub) subtitles render. Audio offers the item's audio tracks. Switching is a **server-side** selection,
   so it persists as the item's preference rather than lasting only this session.
-- **More** opens a popover led by the **Quality** ladder — Auto plus the fixed rungs — with an
-  *Options* section beneath it: **Stats for nerds**, an On/Off toggle that overlays live playback
+- **More** opens a popover led by the **Quality** ladder — Auto plus the fixed rungs — then
+  **Playback speed** (0.5× to 2×, Plex Web's seven, back to Normal on a new item; a pick reloads the
+  stream at the same position; shown only where the playback can play a speed — not over segmented
+  HLS, and not above 60 fps fed), with an *Options* section beneath them: **Stats for nerds**, an On/Off toggle that overlays live playback
   statistics, plus **Send diagnostics** when that row is enabled. LEFT/RIGHT are deliberately
   swallowed here: it is one column.
 

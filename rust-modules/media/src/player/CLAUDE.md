@@ -346,6 +346,15 @@ something.
   survived a long time because the test suite's cases inherited a server-side `viewOffset`, so the
   seek under test usually had nowhere to go (fixed 2026-07-28; see the
   `docs/agent-reference.md` testing note).
+- **Playback speed is done in the app, fixed per Load.** LG's `SetPlayRate` cannot work here (its rate
+  seek is reset to 1x by the buffer-feed source's next SEGMENT, a mid-play call freezes the pipeline,
+  and libpf mutes audio off 1x), so a speed session declares PCM audio, `ff::SpeedDecoder` decodes and
+  `speed_audio` time-stretches the sound, and every timestamp to the pipeline is divided by the speed
+  (`player::to_sink_ns`, inverted on the presented-frame callback by `from_sink_ns`).
+  A speed change is a seek to the viewer's own position marked `rate_reload`, and while the speed is not
+  1x every direct-play seek reloads in every mode (`pump::seek_must_reload`). `play_rate_permille` is the
+  viewer's choice and persists across reloads; `applied_rate_permille` is the current pipeline's and is
+  reset by `reset_session`. The feed throttle's run-on reads the applied one (`FeedPace::reference_at`).
 - **Seeks are in-place**, in one of three per-session modes (`player::SeekMode`, chosen by
   `engine::select_seek_mode` in `start_bufferfeed`, the `/tmp/plxnative-seekmode` dev trigger
   `native|segment|reload` wins): the demuxer is `av_seek_frame`d to the target, then on the first
