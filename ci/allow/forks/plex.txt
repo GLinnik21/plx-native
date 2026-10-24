@@ -1,4 +1,4 @@
-# count: 34
+# count: 33
 # Test/production forks (docs/sans-io.md), area `plex`: one line per production-visible `#[cfg(..)]` / `cfg!(..)` whose predicate reads `test` or `feature = "test-support"`
 # (`not(test)`, `not(any(test, feature = "test-support"))`, ...) in data/, plex/, media/ and session/, keyed `<path>::<item name>` (an attribute on an item) or `<path>::<enclosing fn>` (a statement or an inline `cfg!`).
 # Logic is one thing in production and tests deliver it events: there is no cfg(test) fork. Spec: ci/check-deps.sh `forks`.
@@ -15,9 +15,8 @@ rust-modules/plex/src/plex/session.rs::clear_for_erase
 rust-modules/plex/src/plex/session.rs::clear_for_erase
 rust-modules/plex/src/plex/session.rs::install_account_clear_cleanup
 rust-modules/plex/src/plex/session.rs::publish
-rust-modules/plex/src/plex/session.rs::refresh_if_current_locked
-rust-modules/plex/src/plex/session.rs::refresh_if_current_locked
-rust-modules/plex/src/plex/session.rs::refresh_if_current_locked
+rust-modules/plex/src/plex/session.rs::read_into_cache_locked
+rust-modules/plex/src/plex/session.rs::read_into_cache_locked
 rust-modules/plex/src/plex/session/install_preferences.rs::candidates
 rust-modules/plex/src/plex/session/install_preferences.rs::candidates
 rust-modules/plex/src/plex/session/persistence.rs::bootstrap
