@@ -1,5 +1,6 @@
 //! The physically owned view-state write queue (`docs/stores-as-machines.md`). Each production
-//! `Bridge` owns one [`ViewStateStore`]: main-thread state, an `Arc` worker adapter, and notice.
+//! `Bridge` owns one [`ViewStateStore`]: main-thread state, an `Arc` mailbox adapter every sent
+//! write's port captures, and notice.
 
 use plx_plex::plex::{ClientKeys, ServerId};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -21,8 +22,8 @@ pub enum ViewStateCmd {
     Reset,
 }
 
-/// One ViewState owner. Reset rotates `adapter` before clearing `state`, so a detached old worker
-/// can only complete into the retired mailbox it captured.
+/// One ViewState owner. Reset rotates `adapter` before clearing `state`, so a write sent before the
+/// reset can only answer into the retired mailbox its port captured.
 pub struct ViewStateStore {
     state: crate::viewstate::ViewStateState,
     adapter: Arc<crate::viewstate::ViewStateAdapter>,

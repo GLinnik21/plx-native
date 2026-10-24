@@ -33,15 +33,39 @@
 //!   failure never blanks a populated Home" rule `pms.rs` keeps for a fetch, applied to a write.
 //! * **One write at a time, in order.** These are not idempotent reads: a watched/unwatched pair
 //!   landing out of order leaves the server saying the opposite of what the user last asked for. So
-//!   the queue is drained strictly one worker at a time, and a second press on the SAME item
+//!   the queue is drained strictly one write at a time (one job out, answered, before the next
+//!   leaves), and a second press on the SAME item
 //!   replaces the queued one rather than joining it ([`coalesce`]) — the newest intent for an item
 //!   is the only one worth a round trip.
 //! * **One refresh per burst.** The hub refetch is deferred until the queue
 //!   empties, so ticking four episodes watched in a row costs four writes and one refresh.
-//! * **A refused spawn is a retry, never a panic and never a fallback to blocking.**
-//!   `task::spawn_small` returning false means the OS is out of threads; the queue keeps its head
-//!   and [`pump`] tries again after [`RETRY_FRAMES`], the same degradation `search.rs` and
-//!   `browse.rs` apply to a refused fetch.
+//! * **A refused launch is a retry, never a panic and never a fallback to blocking.** The runner
+//!   declines a write when the OS is out of threads (or the registry moved on, below); that is the
+//!   job's `refused` answer, the queue keeps its head and [`pump`] tries again after
+//!   [`RETRY_FRAMES`], the same degradation `search.rs` and `browse.rs` apply to a refused fetch.
+//!
+//! ## The job lane
+//!
+//! The step starts no worker and reads no registry. [`ViewStateState::kick`] decides from its
+//! inputs, the borrowed [`ClientKeys`] and the `profile` the Bridge read from the session, and
+//! emits one [`StoreJob::ViewWrite`] on the owner's outbox ([`ViewStateState::take_jobs`]); the
+//! app's `StoreRunner` starts it, through the origin's client only if the registry still holds the
+//! very client (and credential) the job names, and the job's [`ViewWritePort`] takes its one
+//! answer, [`finish_view_write_job`]'s write result or a refusal.
+//!
+//! * **The profile is an input.** [`Req`] captures it at the press. A profile switch re-tokens the
+//!   registry's clients IN PLACE, so a queued write's slot still answers, under the next profile's
+//!   credential; a write is one household member's statement, so at the kick and when a refusal
+//!   lands ([`ViewStateState::admit`]) a write whose profile moved is dropped and its ledger entry
+//!   retired. The same profile with a client re-tokened since the press (a refresh) is the user's
+//!   write still: it is re-keyed from the borrowed keys and goes on.
+//! * **The fan-out reaches other servers through the snapshot.** The job carries the whole
+//!   [`ClientKeys`] the step decided under, and the worker builds [`KeyedClients`] from it: a source
+//!   whose client no longer carries the key is neither asked for its copy nor written to.
+//! * **A refusal is not a failure.** [`Outcome::NotStarted`] changes no ledger entry and owes no
+//!   read-back or hub refresh ([`ViewStateState::restart_refused`]); a worker that panics answers a
+//!   failed write instead, never `NotStarted`, because the origin write may already be on the
+//!   server and a second scrobble adds a second viewCount.
 //!
 //! ## Watch state follows the TITLE, not the server
 //!
@@ -102,7 +126,7 @@
 //!
 //! Physical ownership now follows Browse's pattern: `stores::viewstate::ViewStateStore` owns this
 //! module's main-thread `ViewStateState`, an `Arc<ViewStateAdapter>` mailbox captured by every
-//! worker, and its notice. Reset rotates the adapter, and request IDs fence malformed or stale
+//! job's port, and its notice. Reset rotates the adapter, and request IDs fence malformed or stale
 //! completions even within one adapter. There is no process-global ViewState transport or state.
 
 use crate::stores::{StoreId, StoreJob};
@@ -535,8 +559,8 @@ pub fn finish_view_write_job(
     port.done(addr, done);
 }
 
-/// Cross-thread transport for one physical owner. Every worker captures the exact adapter that
-/// admitted it; reset replaces the owner's `Arc`, fencing any completion still headed here.
+/// Cross-thread transport for one physical owner. Every job's port captures the exact adapter that
+/// emitted it; reset replaces the owner's `Arc`, fencing any completion still headed here.
 #[derive(Default)]
 pub struct ViewStateAdapter {
     mail: Mutex<Option<Completion>>,
@@ -580,7 +604,7 @@ impl Default for ViewStateState {
     }
 }
 
-/// ~2 s at 60 fps — the same wait `search.rs` gives a refused spawn. Without it, a process at the
+/// ~2 s at 60 fps — the same wait `search.rs` gives a refused spawn (here, a refused launch). Without it, a process at the
 /// thread ceiling would re-attempt (and log a refusal) every single frame.
 const RETRY_FRAMES: u32 = 120;
 
@@ -749,7 +773,7 @@ impl ViewStateState {
     self.queue.retain(|r| !(plx_plex::plex::same_item((r.sid, &r.rk), (sid, rk)) && r.w.family() == fam));
     }
 
-/// Spend one frame of the refused-spawn ladder; true when the next attempt is due. Split out so the
+/// Spend one frame of the refused-launch ladder; true when the next attempt is due. Split out so the
 /// ladder is gradeable without a registry or a socket — `pms::retry_due`'s twin.
     fn retry_tick(&mut self) -> bool {
         let cd = self.retry_cd;
@@ -896,7 +920,7 @@ pub fn pump_with_gate(
     let due = self.retry_tick();
     // the landing GATE (§3.3 step 3, `plx_machine::landgate`): under a replay the server's answer is taken
     // on the frame the recording took it on. The retry tick and `kick` below stay outside it.
-    // DUMP MODE: owed while a write is on the wire (`sent`, set at the spawn and cleared by the
+    // DUMP MODE: owed while a write is on the wire (`sent`, set when its job is emitted and cleared by the
     // landing it answers). A completion that answers no in-flight request is dropped INSIDE the take
     // (and logged), so it neither ends the wait nor stands in for the one owed.
     let landed = crate::stores::take_landing_owed(gate, crate::stores::StoreId::ViewState,
@@ -1653,7 +1677,7 @@ mod tests {
         }
     }
 
-    /// Queue a write without spawning anything — the half of [`request`] under test here.
+    /// Queue a write without sending anything — the half of [`request`] under test here.
     fn enqueue(state: &mut ViewStateState, rk: &str, w: Write) {
         state.coalesce(ServerId::UNSET, rk, w);
         let req = req(state, rk, w);

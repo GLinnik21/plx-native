@@ -1,8 +1,8 @@
 //! The application's reconcile frame, played by the data crate's tests: refill the registry's
-//! answer, step, and start the reads the step sent, the way `Bridge::reconcile_pump` and the
-//! application's `StoreRunner` do (the data crate cannot name either). The loopback-PMS tests run
-//! their reads on a real worker thread through it, so a read can be held out while the frame loop
-//! goes on, as in production.
+//! answer, step, and start the writes and reads the step sent, the way `Bridge::reconcile_pump` and
+//! the application's `StoreRunner` do (the data crate cannot name either). The loopback-PMS tests
+//! run their writes and reads on a real worker thread through it, so a read can be held out while
+//! the frame loop goes on, as in production.
 
 use super::*;
 use crate::stores::browse::DirectorySnapshot;

@@ -4,13 +4,15 @@
 //! no clock. The `Bridge` takes the jobs right after the step that emitted them
 //! (`Bridge::metadata_run`, `Bridge::person_pump`, `Bridge::collection_pump`,
 //! `Bridge::catalog_open`, `Bridge::catalog_pump`, `Bridge::subsearch_pump`, `Bridge::search_pump`,
-//! `Bridge::reconcile_pump`, or `Bridge::start_store_jobs` after a command run on the bare store)
+//! `Bridge::reconcile_pump`, `Bridge::viewstate_run`, `Bridge::viewstate_pump`, or
+//! `Bridge::start_store_jobs` after a command run on the bare store)
 //! and hands each to [`StoreRunner::start`], which owns everything the data layer must not: the
 //! tape's admission record, the worker thread and the process-global client the request reads. A
 //! kind that is not on the tape (the catalog read, a plex.tv call that names no client; subtitle
 //! search; the Search screen's fetches and its recents writes; view reconcile; the Library's
-//! section-hubs read; the view-state writes) is started with no admission record, as its inline spawn was. The detail pump
-//! keeps a counted backstop for a sender that did neither (`Bridge::start_late_store_jobs`).
+//! section-hubs read; the view-state writes) is started with no admission record, as its inline
+//! spawn was. The detail pump keeps a counted backstop for a sender that did neither
+//! (`Bridge::start_late_store_jobs`).
 //!
 //! **Three admission families** (`plx_data::stores::Admission`, stated by the job kind and matched
 //! exhaustively): `Tape` kinds record their launch on the tape; `Direct` kinds are started with no
@@ -35,7 +37,10 @@
 //! server slot hold" is handed the answer as an input (`plx_plex::plex::ClientKeys`), which the
 //! Bridge fills with [`refill_client_keys`] immediately before the step, in the same call. A job
 //! carries the key its step decided on, and the runner starts it only if the registry still holds
-//! that client at the moment of the launch. (The Detail job carries no key: `start_detail` resolves
+//! that client at the moment of the launch. (A view-state write also carries the whole snapshot its
+//! step decided under: its worker reaches the title's OTHER copies only through
+//! `plx_plex::plex::KeyedClients` built from it, with the registry read passed in from here. The
+//! Detail job carries no key: `start_detail` resolves
 //! its server once, at the admission, and the chain runs through that client, bar the opening
 //! season's episodes; `docs/sans-io.md`, "The store job lane".)
 

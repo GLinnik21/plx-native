@@ -10,6 +10,10 @@
 //! registry is the application's (`app::adapters::stores::refill_client_keys`), beside the IO the
 //! answer feeds, so no data-layer step can reach the registry through this type. [`ClientKeys::of`]
 //! and [`ClientKeys::from_keys`] build one from values, for the tests that drive a step.
+//!
+//! A WORKER that holds the snapshot its step decided under reaches other servers through
+//! [`KeyedClients`], which takes the registry read as an argument from its host for the same
+//! reason (the view-state write's fan-out, `data::viewstate::finish_view_write_job`).
 
 use super::{Client, ServerId};
 

@@ -174,7 +174,10 @@ recents writes are the eighth (the bullet headed "The Search lane"): both worker
 `data-search` ledger files are deleted. A library's section hubs, the Browse store's list
 and row reads, are the ninth (the bullet headed "The section hubs lane"): their two worker starts
 and three registry reads are gone from `data/src/browse/section_hubs.rs`; the rest of `browse/` (the
-directory, page and source reads, discovery, the pins) is still on its ledger.
+directory, page and source reads, discovery, the pins) is still on its ledger. The household's
+watch-state writes are the tenth (the bullet headed "The view-state write lane"): the worker start
+and the three `client_for` reads are gone from `data/src/viewstate.rs`, and its two `data-viewstate`
+ledger files are deleted.
 
 - **The shape.** `plx_machine::job` holds `Job<R>` (an `Addr` and a request that carries everything
   the worker needs), `Port<T>` (where the one answer goes: exactly one `done` or `refused` per job)
@@ -231,8 +234,10 @@ directory, page and source reads, discovery, the pins) is still on its ledger.
   the `Store(Browse(..))` arm calls), the `StoreWork::Browse` arm and `Bridge::reconcile_pump`'s
   membership re-query each refill the keys, step and run `(StoreId::Browse)`, and `viewstate_pump`
   and `notify_pump` reach Browse through their `*_FILLS` lists (ViewState's terminal
-  `HubsInvalidateAll`, the notification map's `HubsInvalidateServer`); `viewstate_run` drains the same
-  `VIEWSTATE_FILLS` list, though its `ApplyView` edits emit nothing today.
+  `HubsInvalidateAll`, the notification map's `HubsInvalidateServer`); `viewstate_run` and
+  `viewstate_pump` drain `VIEWSTATE_FILLS` too, whose ViewState entry is where a household write
+  leaves (`StoreJob::ViewWrite`), and `reconcile_pump` drains `RECONCILE_FILLS`
+  (`[ViewState, ViewReconcile]`) because an end-of-stream fan-out it queues starts the next write.
   Draining inside each pump, not at the frame's end, keeps every store's
   admissions in the tape where they were: the frame pumps Person, then Collection, then reconciles
   the Detail page. A caller that holds only the store (`describe_movie` gets a `&mut MetadataStore`)
@@ -257,7 +262,7 @@ directory, page and source reads, discovery, the pins) is still on its ledger.
   `Store(Search(..))` and `StoreWork::Search` arms, `boot.rs`'s reset and `dev/scenarios.rs`'s query
   all reach them through `Bridge::search_run` and `Bridge::search_pump`, which drain in the same call.
 - **Results do not return as FIFO events.** A gated store's result (Detail, Collection, Person,
-  Search, subtitle search, the view-state read-back) goes back through the landing and its gate
+  Search, subtitle search, the view-state read-back, the view-state write) goes back through the landing and its gate
   (`landgate`, the `adapter_rank` of the landing key), where the pump takes it by value. This is a
   deliberate exception to "every result returns as one addressed event in the same drain": it is
   kept so that the replay anchors hold, because the landing is where they already record a result.
@@ -324,8 +329,8 @@ directory, page and source reads, discovery, the pins) is still on its ledger.
   `Fetch::refuse_for(gen)` frees that generation's claim and remembers the refusal for
   `take_refused` to answer once, and a refusal for a superseded generation (one whose claim a newer
   request or a supersede has replaced) frees nothing and records nothing. A store whose claim is a mailbox of landings
-  (the view-state read-back) has its port post a store-local `NotStarted` landing, and the next pump
-  puts the flight's items back and waits. A refusal never goes into a recorded mailbox (a recorded
+  (the view-state read-back and the view-state write) has its port post a store-local `NotStarted`
+  landing, and the next pump puts the flight's items (the write) back and waits. A refusal never goes into a recorded mailbox (a recorded
   take would write it as an async result and change the bytes). It reaches the step one pump after
   the launch; no fixture holds a refused start, so no recorded byte moves.
 - **Subtitle search and the view-state read-back** are the fifth and sixth stores on the lane. The
@@ -452,3 +457,43 @@ directory, page and source reads, discovery, the pins) is still on its ledger.
   A step test reads the jobs (`BrowseStore::take_jobs`, in the data crate `take_hubs_job`) or answers
   them through the port; the runner's branches and every Bridge entry's drain have a test that fails
   when the branch or the drain is removed (`app/adapters/stores.rs`, `app/browse_hubs_drain_tests.rs`).
+- **The view-state write lane.** The household's watch-state writes (`data/src/viewstate.rs`: mark
+  watched, mark unwatched, remove from Continue Watching, and the fan-out of a watched write, or of
+  an end of stream, to the title's other copies) are the tenth store on the lane. `kick` starts no
+  worker: it emits `StoreJob::ViewWrite(Job<ViewWriteReq>, ViewWritePort)` on `ViewStateStore`'s
+  outbox, one write out at a time. Admission is `Direct`, and a controlled Home run refuses every
+  write before it reaches the store (`app/viewstate_controlled_tests.rs`), so no replay fixture moved.
+  It differs from the reads above in four ways.
+  - **Two inputs, not one.** The step takes the `ClientKeys` and the profile the press was made
+    under (`Bridge::profile_scope()`, which is `plex::session::current_gen()`: the Session owner's
+    profile-scope counter, allocated only when a profile is seated, detached or signed out, and
+    never moved by a same-profile token refresh). `Req` captures both at the press. At the kick, and
+    when a refusal lands, a write whose profile moved is dropped and its ledger entry retired: a
+    profile switch re-tokens the registry's clients in place, so the slot still answers, under the
+    next profile's credential, and a write is one household member's statement. The same profile
+    with a re-tokened client is the user's write still: it is re-keyed from the borrowed keys and
+    goes on.
+  - **The fan-out reaches other servers through the snapshot.** The job carries the whole
+    `ClientKeys` the step decided under, and the worker (`finish_view_write_job`) builds
+    `plx_plex::plex::KeyedClients` from it, with the registry read the runner passes in as a `fn`
+    pointer, so no data-layer line names `client_for`. `fan_out` and `ask_sources` ask it for each
+    other source, and a source whose client no longer carries the key (re-tokened by a switch after
+    the press) is sent neither the lookup nor the write. The origin's client is resolved once, at the
+    launch, and the worker is handed that `&'static Client`. The check covers the moment a request
+    is built: one already on the wire is not recalled.
+  - **A refusal is not a failure.** The runner refuses a write whose origin key moved by the launch
+    (or by the time a parked job runs), or whose thread the system refused, and the port posts
+    `NotStarted` into the owner's mailbox. Nothing left the device, so the pump changes no ledger
+    entry and owes no read-back or hub refresh: it judges the write again like any queued write and
+    puts it back at the head of the queue, and waits out the retry ladder only when its client did
+    not move. A worker that panics answers with a failed write, never `NotStarted`: the origin write
+    may already be on the server, and a second scrobble would add a second viewCount.
+  - **One outbox, two fill lists.** ViewState sits in `Stores::VIEWSTATE_FILLS` at its `StoreId`
+    position, and `Stores::RECONCILE_FILLS` is what `Bridge::reconcile_pump` drains. A reset keeps
+    the outbox: a job already sent answers into the adapter it was emitted under, which the owning
+    store has retired.
+
+  A step test drives the lane through the job's port (`data/src/viewstate.rs`), the key-checked
+  fan-out has a test that fails when `fan_out` reads the registry again
+  (`stores/viewreconcile_tests.rs`), and the runner's branches have tests that fail without the key
+  compare in `resolve` (`app/adapters/stores.rs`).
