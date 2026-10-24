@@ -53,8 +53,9 @@
 //!
 //! ## 2. The WRITE surface — every [`MetadataCmd`] variant, and what it wraps
 //!
-//! - `RequestDetail{sid, rk}` → `metadata::request_detail` — supersede any in-flight load, fetch
-//!   off-thread; lands through the identity-keyed `DETAIL_LANDING` and `pump_detail`. A show opens on
+//! - `RequestDetail{sid, rk}` → `metadata::request_detail` — supersede any in-flight load, emit the
+//!   fetch as a job the application starts off-thread; lands through the identity-keyed
+//!   `DETAIL_LANDING` and `pump_detail`. A show opens on
 //!   its on-deck episode's season; a re-read of the show already loaded keeps the season selected on
 //!   it (read from the store at request time, `metadata::selected_season_number`).
 //! - `Clear` → `metadata::clear` — drop the loaded item, supersede everything in flight.
@@ -170,7 +171,8 @@ use super::StoreEv;
 
 #[derive(Clone)]
 pub enum MetadataCmd {
-    /// Supersede any in-flight load and fetch `(sid, rk)` off-thread; lands through `pump_detail`.
+    /// Supersede any in-flight load and emit the fetch of `(sid, rk)` as a job the application
+    /// starts off-thread; lands through `pump_detail`.
     RequestDetail { sid: ServerId, rk: String },
     /// Close the page: drop the item and supersede everything in flight.
     Clear,
@@ -423,6 +425,11 @@ impl MetadataStore {
     }
 }
 
+/// **`step` does not drain the outbox.** It runs the command, so a `RequestDetail` stepped through
+/// here leaves its job in [`MetadataStore::take_jobs`] and nothing starts it: whoever steps this
+/// store owns draining it, in the same call. The application's Bridge runs a command through
+/// `Stores::metadata_run` and drains right after it (`docs/sans-io.md`, "The store job lane"),
+/// which is the rule a new caller of this `step` has to meet by itself.
 impl<H: Host> Machine<H> for MetadataStore {
     type Ev = StoreEv<MetadataCmd>;
     fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, _fx: &mut Effects<'_, H>) -> Handled {

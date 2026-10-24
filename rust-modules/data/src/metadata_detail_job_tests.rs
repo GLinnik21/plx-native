@@ -81,6 +81,52 @@ fn a_detail_request_emits_one_job_carrying_everything_the_worker_needs() {
             store.detail_port(),
         ),
     ]);
+
+    // The exactly-once property on the refusal side: a request the landing will not admit (four
+    // answers already owed, none returned) is settled synchronously and emits NO job, so no runner
+    // can answer it a second time. The fourth request is the last the landing admits.
+    request(&mut store, sid, "45");
+    request(&mut store, sid, "46");
+    plx_machine::assert_fx!(store.take_jobs(), [
+        StoreJob::Detail(
+            Job { addr: detail_addr(4), req: DetailReq { sid, rk: "45".into(), prefer: None } },
+            store.detail_port(),
+        ),
+    ]);
+    assert_eq!(store.view().detail_request_status(sid, "46"), Some(false),
+        "the refused request settled in the step that refused it");
+    assert!(!store.view().detail_loading());
+}
+
+/// The season the page already shows travels in the job: the worker must not read the store, so
+/// `prefer` is captured when the request is made, and only for the item the page is showing.
+#[test]
+fn a_detail_job_captures_the_season_the_page_shows_for_the_same_item_only() {
+    use crate::stores::StoreJob;
+    use plx_machine::job::Job;
+    let _serial = plx_base::testlock::serial();
+    let sid = plx_plex::plex::ServerId::UNSET;
+    let mut store = MetadataStore::default();
+    let season = |index| Season {
+        rk: format!("s{index}"), index, title: format!("Season {index}"), leaf_count: 0, viewed_leaf_count: 0,
+    };
+    set_current_for_test(store.state_mut(), Some(Detail {
+        sid, rk: "show".into(), is_show: true, seasons: vec![season(1), season(3)], cur_season: 1,
+        ..Default::default()
+    }));
+
+    request(&mut store, sid, "show");
+    request(&mut store, sid, "another");
+    plx_machine::assert_fx!(store.take_jobs(), [
+        StoreJob::Detail(
+            Job { addr: detail_addr(1), req: DetailReq { sid, rk: "show".into(), prefer: Some(3) } },
+            store.detail_port(),
+        ),
+        StoreJob::Detail(
+            Job { addr: detail_addr(2), req: DetailReq { sid, rk: "another".into(), prefer: None } },
+            store.detail_port(),
+        ),
+    ]);
 }
 
 /// A job's port is captured when the job is emitted. A `Reset` between the request and the

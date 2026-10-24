@@ -1815,13 +1815,6 @@ mod library_publication_tests {
             activate_card(&mut ps, &mut pa, &card, true, HUD_LINGER_MS, None,
                 &mut pages, &mut rig, &mut wait, frame_no * 16);
         }
-        // A movie's play describes it through `describe_movie`, which holds only the store, so the
-        // job its request emitted is started by the detail pump the app's `update` runs right after
-        // `content_requests`. This rig has no `update`: run that pump here, where it would run.
-        {
-            let _frame = plx_base::task::FrameScope::enter();
-            rig.metadata_pump_detail();
-        }
         let gen_x = gen(&mut rig);
         assert_eq!(rig.metadata_mut().view().detail_request_status(sid, x_rk), Some(true));
         // X lands in the very next frame's update, ahead of that frame's dispatcher pass (whose

@@ -3720,9 +3720,9 @@ pub fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) 
 
 // ---- async detail load ---------------------------------------------------------------------
 // Opening a detail page used to block the SDL loop on 2 (movie) to 5 (show) sequential PMS
-// round-trips, straight off the key handler. `request_detail` spawns the fetch and `pump_detail`
-// installs the result — the page mounts THIS frame on the catalog row's art/title/summary and
-// fills in a beat later. Same shape as the season mailbox below and route.rs's play resolve.
+// round-trips, straight off the key handler. `request_detail` emits the fetch as a job (the app's
+// `StoreRunner` starts it) and `pump_detail` installs the result — the page mounts THIS frame on
+// the catalog row's art/title/summary and fills in a beat later. Same shape as the season mailbox below and route.rs's play resolve.
 //
 // The worker MUST NOT write CURRENT. `current()` (via `MetadataView`) hands out a `&'a Detail`,
 // borrowed from the owner, that ~25 draw sites read within a frame, so a background store would
@@ -3774,6 +3774,14 @@ pub fn detail_generation_for_test(adapter: &MetadataAdapter) -> u32 {
     adapter.detail_gen.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+/// How many detail reservations the adapter's landing holds: every request admitted and not yet
+/// answered and taken, a superseded one included (it keeps its slot until its fetch returns). A
+/// test that drives a runner reads it to prove a request's one answer handed its slot back.
+#[cfg(any(test, feature = "test-support"))]
+pub fn detail_inflight_for_test(adapter: &MetadataAdapter) -> u32 {
+    adapter.detail_landing_ref().inflight(detail_addr(0).to)
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub fn land_detail_for_test(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>, sid: plx_plex::plex::ServerId, rk: &str, gen: u32, detail: Option<Detail>) -> bool {
     plx_base::testlock::assert_held("the detail store (land_detail_for_test)");
@@ -3812,7 +3820,8 @@ fn land_detail(adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId, rk: &st
 }
 
 /// Mint the request: supersede the season, bump the generation, record what the page awaits
-/// and admit the request. The spawn is the caller's; a refused one is `refused` back.
+/// and admit the request. Starting the fetch is not this function's: [`request_detail`] emits it
+/// as a job, and a launch that then starts nothing is `DetailPort::refused` back.
 fn begin_detail_request(adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId, rk: &str) -> (
     u32, plx_machine::machine::Addr, Result<(), plx_machine::landing::AdmissionError>,
 ) {
@@ -3893,17 +3902,23 @@ impl plx_machine::job::Port<(DetailKey, Option<Detail>)> for DetailPort {
 /// `sid` names the server to ask and is captured by the CALLER, on the main thread: it travels in
 /// the job (see [`DetailReq`]).
 fn request_detail(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>, sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) {
-    request_detail_with_spawn(adapter, sid, rk, |gen| {
-        state.jobs.push(crate::stores::StoreJob::Detail(
-            plx_machine::job::Job { addr: detail_addr(gen), req: DetailReq { sid, rk: rk.to_string(), prefer } },
-            DetailPort::of(adapter),
-        ));
-        true
-    });
+    let (_, addr, admission) = begin_detail_request(adapter, sid, rk);
+    // A request refused for capacity owns no worker and emits no job: `begin_detail_request` has
+    // already settled it synchronously, and nothing will ever answer it.
+    if admission.is_err() { return; }
+    state.jobs.push(crate::stores::StoreJob::Detail(
+        plx_machine::job::Job { addr, req: DetailReq { sid, rk: rk.to_string(), prefer } },
+        DetailPort::of(adapter),
+    ));
 }
 
-/// Shared admission/hand-off path; `spawn` is how an admitted request is handed on (production
-/// emits its job), and tests inject an outcome without starting network workers.
+/// TEST ONLY: [`request_detail`] with the hand-off injected. `spawn` stands for the runner's
+/// launch of an admitted request and says whether anything was started; `false` takes the
+/// refusal path a runner takes when the tape does not admit a launch (`DetailPort::refused`).
+/// Production does not come through here: it emits the job and the app's runner owns the launch
+/// and the refusal, so this exists to let the data layer's mailbox tests inject either outcome
+/// without a thread.
+#[cfg(test)]
 fn request_detail_with_spawn(adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId, rk: &str, spawn: impl FnOnce(u32) -> bool) {
     let (gen, addr, admission) = begin_detail_request(adapter, sid, rk);
     if admission.is_err() { return; }

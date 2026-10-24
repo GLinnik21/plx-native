@@ -385,6 +385,10 @@ pub(crate) struct Bridge {
     /// Starts the jobs the stores emit (`adapters::stores`). Chosen when the Bridge is built: `Live`
     /// in production, the `Held` runner in a host test.
     store_runner: super::adapters::stores::StoreRunner,
+    /// How many store jobs a pump had to start because their sender left them on a store's outbox
+    /// ([`Bridge::start_late_store_jobs`]). Zero while every sender drains its own jobs; the test
+    /// rigs assert it stays zero, so a bypass is a red test and not a silent rescue.
+    late_store_jobs: usize,
     stores: plx_data::stores::Stores,
     mounter: AppMounter,
     /// This frame's publication of the playback session — see `AppViews::session`. Refreshed by
@@ -486,6 +490,13 @@ impl Bridge {
             io.admissions = admissions;
         }
     }
+    /// A Bridge booted from a controlled Home. It always runs the `Live` store runner, whatever
+    /// `replay` says: in a recording (`replay == false`) a detail request starts a real worker
+    /// thread, and under replay the tape answers its admission and no worker starts. A recording
+    /// test that opens Detail on this Bridge therefore races that worker, the scheduler race the
+    /// `Held` runner exists to remove (`Some(true)`/`Some(false)` flakes), and none does today; a
+    /// test that needs to choose when a fetch settles builds its Bridge with `Held`
+    /// (`StoreRunner::held`) instead.
     pub(crate) fn controlled_home(now_us: fn() -> u64, initial: &super::bootstrap::Initial,
         mt: &plx_base::task::MainThread, replay: bool) -> Self {
         static TTF: plx_gfx::text::TtfMeasure = plx_gfx::text::TtfMeasure;
@@ -628,6 +639,7 @@ impl Bridge {
             seat_watch: SeatWatch::new(),
             consent_adapter,
             store_runner,
+            late_store_jobs: 0,
             stores,
             mounter: AppMounter::default(),
             playback: plx_media::route::PlaybackSession::IDLE,
@@ -1219,6 +1231,9 @@ impl Bridge {
 
     pub(crate) fn collection_pump(&mut self) -> bool { self.stores.collection_pump() }
 
+    /// The bare store, for a seam that is handed a `&mut MetadataStore` instead of the Bridge
+    /// (`playback::PlaybackResources`). A command run on it that emits a job leaves the job on the
+    /// outbox: the caller owes [`Bridge::start_store_jobs`] as soon as that call returns.
     pub(crate) fn metadata_mut(&mut self) -> &mut plx_data::stores::metadata::MetadataStore {
         &mut self.stores.metadata
     }
@@ -1230,25 +1245,48 @@ impl Bridge {
     /// commands that are not same-turn boundaries still cross `AppFx::Store` like every other
     /// store's; see `app/content.rs`'s `reconcile_details`.
     ///
-    /// **Every Metadata command that can emit a job reaches the store through here**, the dispatcher's
-    /// `StoreCmd::Metadata` arm included: the jobs the step emitted (a `RequestDetail`'s fetch) are
-    /// started before this returns, in the same call, so the tape's admission record follows the
-    /// cancellation record the same step wrote with nothing between them. A direct
-    /// `metadata_mut().run(..)` of such a command would leave its job in the outbox, owed to nobody:
-    /// [`Bridge::metadata_pump_detail`] backstops one that only holds the store (`describe_movie`),
-    /// and the test rig fails a frame that ends with one still there.
+    /// **Every command the dispatcher or a Bridge-holding caller runs reaches the store through
+    /// here**, the dispatcher's `StoreCmd::Metadata` arm included: the jobs the step emitted (a
+    /// `RequestDetail`'s fetch) are started before this returns, in the same call, so the tape's
+    /// admission record follows the cancellation record the same step wrote with nothing between
+    /// them. A caller that holds only the store (`playback::describe_movie`, which gets a
+    /// `&mut MetadataStore`) leaves its job on the outbox and drains it itself the moment the call
+    /// returns ([`Bridge::start_store_jobs`]). A sender that does neither is not lost: the next
+    /// pump's backstop starts the job a frame late, counts it in `late_store_jobs` and logs it, and
+    /// the test rigs fail on that count.
     pub(crate) fn metadata_run(&mut self, cmd: plx_data::stores::metadata::MetadataCmd) -> bool {
         let changed = self.stores.metadata_run(cmd);
         self.start_store_jobs();
         changed
     }
 
-    /// Hand every job the stores have emitted to this Bridge's runner (`adapters::stores`).
-    fn start_store_jobs(&mut self) {
-        let jobs = self.stores.metadata.take_jobs();
+    /// Hand every job the stores have emitted to this Bridge's runner (`adapters::stores`), and
+    /// return how many there were. Called by [`Bridge::metadata_run`] right after its step, and by
+    /// a caller that ran a command on the bare store ([`Bridge::metadata_mut`]) right after that
+    /// call, so the tape's admission record is written where the command was issued.
+    pub(crate) fn start_store_jobs(&mut self) -> usize {
+        let jobs = self.stores.take_jobs();
+        let started = jobs.len();
         for job in jobs {
             self.store_runner.start(job);
         }
+        started
+    }
+
+    /// The backstop under the Metadata pumps: start whatever job a sender left on an outbox, so its
+    /// request still settles, and make that visible. A sender drains its own jobs
+    /// ([`Bridge::start_store_jobs`]), so a job found here is a bypass the pump had to rescue: it
+    /// is added to `late_store_jobs` (which every test rig asserts is zero) and logged.
+    fn start_late_store_jobs(&mut self) {
+        let late = self.start_store_jobs();
+        if late == 0 {
+            return;
+        }
+        self.late_store_jobs += late;
+        plx_base::eventlog::log(&format!(
+            "stores: WARN {late} store job(s) reached a pump unstarted ({} so far): a sender bypassed Bridge::metadata_run",
+            self.late_store_jobs
+        ));
     }
 
     /// TEST ONLY: run every job the test runner is holding, on this thread, through the production
@@ -1258,22 +1296,29 @@ impl Bridge {
         self.store_runner.run_held()
     }
 
-    /// TEST ONLY: no store holds an emitted job nobody started. A frame's end is the moment to ask:
-    /// the dispatcher starts the jobs of the commands it delivers, and the detail pump starts any a
-    /// caller holding only the store left, so a job still here is a sender that bypassed
-    /// [`Bridge::metadata_run`], whose request would never settle.
+    /// TEST ONLY: no sender bypassed the drain. A frame's end is the moment to ask, and both halves
+    /// matter: a job still on an outbox is a sender that neither went through
+    /// [`Bridge::metadata_run`] nor drained with [`Bridge::start_store_jobs`] (the detail pump's
+    /// backstop would start it a frame late), and a nonzero `late_store_jobs` is a sender the
+    /// backstop has ALREADY rescued, which the job check alone cannot see once `update()` has run
+    /// its pump.
     #[cfg(test)]
     pub(crate) fn assert_no_store_jobs_left_for_test(&self) {
-        assert!(!self.stores.metadata.has_jobs(),
-            "a store job was emitted and never started: its sender bypassed Bridge::metadata_run");
+        assert!(!self.stores.has_jobs(),
+            "a store job sits on an outbox: its sender neither ran through Bridge::metadata_run nor drained with Bridge::start_store_jobs");
+        assert_eq!(self.late_store_jobs, 0,
+            "a pump's backstop had to start store jobs their sender left unstarted: that sender bypassed Bridge::metadata_run");
     }
 
     pub(crate) fn metadata_view(&self) -> plx_data::metadata::MetadataView<'_> {
         self.stores.metadata_view()
     }
 
-    #[allow(dead_code)]
+    /// TEST ONLY: the aggregate Metadata pump (every landing at once), behind the same counted
+    /// backstop as [`Bridge::metadata_pump_detail`].
+    #[cfg(test)]
     pub(crate) fn metadata_pump(&mut self) -> bool {
+        self.start_late_store_jobs();
         self.stores.metadata_pump()
     }
 
@@ -1484,9 +1529,10 @@ impl Bridge {
 
     /// The `MetadataStore`'s own async detail landing — `app/run.rs`'s route-unconditional pump.
     pub(crate) fn metadata_pump_detail(&mut self) -> bool {
-        // The backstop: a caller that holds only the store (`playback::describe_movie`) cannot start
-        // the job its request emitted, and the pump below would block on a request nothing runs.
-        self.start_store_jobs();
+        // The backstop: every sender drains its own jobs, so nothing is found here. A job that is
+        // found would leave a request nothing runs, and the pump below would wait on it; it is
+        // started now, so the request settles, and counted and logged so the bypass is not silent.
+        self.start_late_store_jobs();
         self.stores.metadata.pump_detail_with_gate(&self.stores.landgate)
     }
 

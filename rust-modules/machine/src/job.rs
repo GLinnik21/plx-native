@@ -26,10 +26,27 @@ pub struct Job<R> {
 /// Where a job's ONE answer goes: **exactly one call per job**, `done` when the work produced an
 /// answer (a failed fetch answers with its failure value) and `refused` when it was never started
 /// (an admission refused, no worker to run it). Silence leaves the request's reservation held
-/// forever, and a second call is a protocol error the landing refuses.
+/// until its owner is reset, and a second call is a protocol error the landing refuses.
 ///
 /// A port is captured when the job is emitted, so an answer lands where the request was made even
 /// if the owner has since replaced the thing it lands into.
+///
+/// **The type does not enforce "exactly one".** The methods take `&self` and a port is usually
+/// `Clone`, so a second call compiles. What checks the contract, and what does not:
+///
+/// - **A second answer** reaches the landing, which refuses it (`PublishError::AlreadyTerminal`, or
+///   `Unknown` once the pump has taken the terminal). The store's publish step swallows that error
+///   unless its replay tracker is armed (a controlled run), so in production a double answer is
+///   silent.
+/// - **Silence** is checked by nothing. A runner that takes a job and drops it holds the
+///   reservation until the owner is reset, and four of them refuse every later request. The
+///   application's leftover-job check sees only jobs nobody took, not jobs taken and never
+///   answered. A drop guard on the port would not do: replay legitimately drops the launch
+///   closure unanswered, because the tape supplies its answers.
+/// - **The count per branch** is pinned by the runner's own tests (`app/adapters/stores.rs`): each
+///   outcome of a job reaches `done` or `refused` once. A runner written on this lane carries the
+///   same test for each of its branches; nothing else will notice a branch that answers twice or
+///   not at all.
 pub trait Port<T>: Send + Sync + 'static {
     /// The work's answer.
     fn done(&self, addr: Addr, out: T);
