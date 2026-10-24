@@ -3216,7 +3216,10 @@ impl HubsPort {
     pub fn claim(&self) { self.0.owed.fetch_add(1, Ordering::SeqCst); }
 
     /// The worker the claim was raised for was never started.
-    pub fn unclaim(&self) { self.0.owed.fetch_sub(1, Ordering::SeqCst); }
+    pub fn unclaim(&self) {
+        // saturating, like the take that also lowers it: a landing taken first must not wrap the count
+        let _ = self.0.owed.try_update(Ordering::SeqCst, Ordering::SeqCst, |n| Some(n.saturating_sub(1)));
+    }
 }
 
 impl PartialEq for HubsPort {

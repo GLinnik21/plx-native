@@ -549,7 +549,7 @@ fi
 # `crate::stores::hubs::apply`/`apply_with_directory`/`controlled`/`controlled_with_directory` had,
 # each a free function reading/writing process-wide `pms.rs` statics instead of one owner's
 # `PmsState`/`Arc<PmsAdapter>` pair. `hubs_snapshot`/`run`/`run_with_directory`/
-# `land_with_directory`/`tick_with_directory`/`controlled_work`/`controlled_work_with_directory`
+# `land_with_directory`/`tick_with_directory`/`controlled_work`
 # are deliberately NOT listed: `pms.rs` keeps the current explicit-parameter architecture, taking
 # `state`/`adapter` in, exactly like search's own `reset(state, adapter)`.
 hubs_facades='apply|apply_with_directory|controlled|controlled_with_directory'
