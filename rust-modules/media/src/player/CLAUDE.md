@@ -439,8 +439,8 @@ something.
   Load to its own settlement. `DidForegroundSuperseded` is the DID edge that arrives together
   with a launch link that is ending playback (`app/run.rs`, `did_foreground_with_link`): it claims
   nothing, so a parked session stays parked (`Suppressed`) and the link's `Exit` retires it
-  instead of racing a restore. The per-state table is on `ForegroundLifecycle::claim`; add no
-  mutator beside it.
+  instead of racing a restore. The per-state table is on `ForegroundLifecycle::step`; add no
+  event outside `ForegroundEvent`.
   Preserve the suspend/reload pairing if you touch playback.
 
 ## Verifying playback changes

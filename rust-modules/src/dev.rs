@@ -66,7 +66,7 @@ pub(crate) mod framedump;
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 41] = [
+const DIAG: [&str; 42] = [
     "plxnative-diag.log",
     "plxnative-events.log",
     "plxnative-stderr.log",
@@ -132,6 +132,13 @@ const DIAG: [&str; 41] = [
     // The compositor frame-callback probe (`system.rs`): extra fields on that same line, from one
     // `wl_surface.frame` request per present. An observer for the reason `framedrop` is.
     "plxnative-framecb",
+    // The post-120-present `EGL_BUFFER_AGE` re-ask (`plx_gfx::egl::late_probe`, off unless armed).
+    // It changes nothing on screen, which is what DIAG membership means: a boot that arms it stays
+    // on the screen it was going to, where a non-DIAG trigger would move it off the who's-watching
+    // picker. It is NOT free: that one query blocks a swap 13-16 ms on the T820 at present 120, so
+    // never arm it for a smoothness run. The two EGL triggers that DO change something (`eglprobe`,
+    // `egldamage`) are deliberately not here.
+    "plxnative-eglage",
     // The detector's context ring: which of the same lines are written, never which screen they
     // are written about.
     "plxnative-framering",

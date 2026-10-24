@@ -384,24 +384,49 @@ mod tests {
     /// Finding: suspend saved `paused()`, i.e. the hold's own pause, as the viewer's.
     #[test]
     fn a_suspend_during_a_hold_saves_playing() {
-        use crate::player::lifecycle::{clock_for_suspend_now, ForegroundClock, ForegroundLifecycle};
+        use crate::player::lifecycle::{
+            viewer_paused, ForegroundClock, ForegroundEvent, ForegroundLifecycle, ForegroundState,
+        };
         let mut rig = Rig::playing();
         engage(&mut rig.pa, 7);
         crate::route::force_applying_for_test(7);
         assert!(TX.paused.load(Acquire));
-        let mut lifecycle = ForegroundLifecycle::IDLE;
-        let clock = clock_for_suspend_now(&lifecycle);
-        lifecycle.suspend(CLAIM_OFFSET_NS, clock);
-        assert_eq!(clock, ForegroundClock::Playing, "the hold's pause was saved as the viewer's");
+        let mut lifecycle: ForegroundLifecycle = ForegroundLifecycle::IDLE;
+        lifecycle.step(
+            &ForegroundEvent::Park { saved_ns: CLAIM_OFFSET_NS, viewer_paused: viewer_paused() },
+            &mut Vec::new(),
+        );
+        assert!(
+            matches!(
+                lifecycle.state(),
+                ForegroundState::Suspended { clock: ForegroundClock::Playing, .. }
+            ),
+            "the hold's pause was saved as the viewer's: {:?}",
+            lifecycle.state()
+        );
     }
 
     #[test]
     fn a_suspend_after_a_viewer_pause_during_a_hold_saves_paused() {
-        use crate::player::lifecycle::{clock_for_suspend_now, ForegroundClock, ForegroundLifecycle};
+        use crate::player::lifecycle::{
+            viewer_paused, ForegroundClock, ForegroundEvent, ForegroundLifecycle, ForegroundState,
+        };
         let mut rig = Rig::playing();
         engage(&mut rig.pa, 7);
         crate::route::force_applying_for_test(7);
         assert!(crate::player::lifecycle::set_transport_paused(&mut rig.pa, true));
-        assert_eq!(clock_for_suspend_now(&ForegroundLifecycle::IDLE), ForegroundClock::Paused);
+        let mut lifecycle: ForegroundLifecycle = ForegroundLifecycle::IDLE;
+        lifecycle.step(
+            &ForegroundEvent::Park { saved_ns: CLAIM_OFFSET_NS, viewer_paused: viewer_paused() },
+            &mut Vec::new(),
+        );
+        assert!(
+            matches!(
+                lifecycle.state(),
+                ForegroundState::Suspended { clock: ForegroundClock::Paused, .. }
+            ),
+            "the viewer's pause was saved: {:?}",
+            lifecycle.state()
+        );
     }
 }
