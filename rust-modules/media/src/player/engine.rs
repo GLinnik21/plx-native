@@ -1022,11 +1022,14 @@ fn with_pcm_info(p: &str, audio: &str, pcm: Option<crate::route::PcmFormat>) -> 
     let anchor = r#""provider":"plxnative""#;
     let format = if f.bits == 16 { "S16LE" } else { "S32LE" };
     let mode = if f.channels == 1 { "mono" } else { "stereo" };
+    // KILOHERTZ, like the speed decoder's node: libpf matches the number against a table of
+    // kilohertz values, and hertz match nothing and fall back to 44.1 kHz (`pcm_rate_khz`).
+    let khz = plx_platform::devcaps::pcm_rate_khz(f.sample_rate).unwrap_or("44.1");
     p.replace(
         anchor,
         &format!(
-            r#"{anchor},"pcmInfo":{{"format":"{format}","channelMode":"{mode}","layout":"interleaved","sampleRate":{},"bitsPerSample":{}}}"#,
-            f.sample_rate, f.bits
+            r#"{anchor},"pcmInfo":{{"format":"{format}","channelMode":"{mode}","layout":"interleaved","sampleRate":{khz},"bitsPerSample":{}}}"#,
+            f.bits
         ),
     )
 }
@@ -1056,9 +1059,10 @@ fn build_av_payload_at(
         // with getFloat and matches it against a KILOHERTZ table (48, 44.1, 32, …): `48000`
         // matches nothing and silently falls back to 44.1, which plays 48 kHz audio 9% slow and
         // resyncs every few seconds (measured 2026-10-15). `channelMode` is one of
-        // mono/dual/stereo/joint stereo. So THIS node's rate is in kHz; the FLAC node
-        // `with_pcm_info` splices below states Hz (44100/48000) — whether the 3.9.3/4.5 firmware
-        // reads that unit correctly has not been checked on a set.
+        // mono/dual/stereo/joint stereo. So this node's rate is in kHz, and so is the FLAC node
+        // `with_pcm_info` splices below (it declared hertz first: on a C1, webOS 6.5.3, every PCM
+        // Load then ran at 44.1 kHz — GStreamer caps `rate=44100` — so a 48 kHz FLAC was 9% slow and
+        // 32/22.05 kHz stuttered).
         .replace(r#""esInfo":"#, if audio == "PCM" && app_pcm.is_none() {
             r#""pcmInfo":{"bitsPerSample":16,"sampleRate":48,"channelMode":"stereo"},"esInfo":"#
         } else {
@@ -1100,7 +1104,7 @@ fn build_av_payload_at(
         ));
     }
     let p = with_dolby_hdr_info(&p, video, crate::route::stream_dv_presentation(ps));
-    // The app-decoded (FLAC, 1x) node: sampleRate in HERTZ and a format name. The speed decoder's
+    // The app-decoded (FLAC, 1x) node: sampleRate in kilohertz and a format name. The speed decoder's
     // fixed node above is the only other `pcmInfo` a Load can carry, and never together with this.
     let p = with_pcm_info(&p, audio, app_pcm);
     with_immersive(&p, audio, crate::route::stream_immersive(ps))
@@ -6414,7 +6418,16 @@ mod pcm_info_tests {
     fn a_pcm_load_states_the_shape_the_decoder_produces() {
         let f = PcmFormat { sample_rate: 48_000, bits: 16, channels: 2 };
         let p = with_pcm_info(BASE, "PCM", Some(f));
-        assert!(p.contains(r#""pcmInfo":{"format":"S16LE","channelMode":"stereo","layout":"interleaved","sampleRate":48000,"bitsPerSample":16}"#), "{p}");
+        assert!(p.contains(r#""pcmInfo":{"format":"S16LE","channelMode":"stereo","layout":"interleaved","sampleRate":48,"bitsPerSample":16}"#), "{p}");
+        // The rate is a number of KILOHERTZ, the unit libpf's table is in: hertz match nothing and
+        // fall back to 44.1 kHz (a C1 played a 48 kHz FLAC 9% slow and a 32 kHz one fast).
+        for (hz, khz) in [(8_000, "8"), (22_050, "22.05"), (32_000, "32"), (44_100, "44.1"), (48_000, "48")] {
+            let q = with_pcm_info(BASE, "PCM", Some(PcmFormat { sample_rate: hz, bits: 16, channels: 2 }));
+            assert!(q.contains(&format!(r#""sampleRate":{khz},"bitsPerSample":16"#)), "{hz}: {q}");
+            let v: serde_json::Value = serde_json::from_str(&q).unwrap();
+            let n = v["contents"]["pcmInfo"]["sampleRate"].as_f64().unwrap();
+            assert!(n < 100.0, "{hz} Hz must not be declared in hertz: {n}");
+        }
         let wide = with_pcm_info(BASE, "PCM", Some(PcmFormat { sample_rate: 96_000, bits: 32, channels: 1 }));
         assert!(wide.contains(r#""format":"S32LE","channelMode":"mono""#) && wide.contains(r#""bitsPerSample":32"#), "{wide}");
         // the payload stays parseable JSON
@@ -6677,7 +6690,7 @@ mod sink_envelope_tests {
         let p = build_av_payload_at(&flac_session(), "H264", "PCM", ENVELOPE_FHD60, crate::player::RATE_NORMAL);
         assert_eq!(p.matches("pcmInfo").count(), 1, "{p}");
         assert!(
-            p.contains(r#""pcmInfo":{"format":"S16LE","channelMode":"stereo","layout":"interleaved","sampleRate":44100,"bitsPerSample":16}"#),
+            p.contains(r#""pcmInfo":{"format":"S16LE","channelMode":"stereo","layout":"interleaved","sampleRate":44.1,"bitsPerSample":16}"#),
             "{p}"
         );
         assert!(!p.contains(r#""sampleRate":48,"#), "the speed decoder's node must be absent: {p}");

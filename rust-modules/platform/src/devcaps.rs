@@ -70,12 +70,30 @@ pub const PCM_AUDIO_CODECS: &str = "flac";
 /// `dual`), nothing wider, so a multichannel FLAC stays a server conversion.
 pub const PCM_MAX_CHANNELS: u32 = 2;
 
-/// The rates the PCM path plays at their own speed: libpf's `LUT_SampleRateType` (8, 12, 16,
-/// 22.05, 24, 32 and 48 kHz) plus 44.1 kHz, which the table does not list but plays correctly.
-/// Any other `pcmInfo.sampleRate` plays slow and without an error: a 96 kHz FLAC audibly slow, a
-/// 192 kHz one slower still (measured on webOS 4.4.3, an OLED55B8, where 44.1 and 48 kHz played
-/// right). The table was read from libpf-1.0 on that set.
+/// The rates `pcmInfo.sampleRate` can name: libpf's `LUT_SampleRateType` (8, 12, 16, 22.05, 24, 32
+/// and 48 kHz) plus 44.1 kHz, its fallback. libpf matches the value as a number of KILOHERTZ
+/// ([`pcm_rate_khz`]); any value that matches nothing (a rate in hertz, 96 kHz, 192 kHz) silently
+/// becomes 44.1 kHz and plays at the wrong speed with no error (a 96 kHz FLAC audibly slow on an
+/// OLED55B8, webOS 4.4.3; a 48 kHz one 9% slow, a 32 kHz one fast and stuttering on a C1, webOS
+/// 6.5.3, when the rate was declared in hertz). The table was read from libpf-1.0 on the B8.
 pub const PCM_SAMPLE_RATES: [u32; 8] = [8_000, 12_000, 16_000, 22_050, 24_000, 32_000, 44_100, 48_000];
+
+/// `rate_hz` as the kilohertz number `pcmInfo.sampleRate` carries (`48`, `44.1`, `22.05`), for a rate
+/// in [`PCM_SAMPLE_RATES`]. The text is exact (no float formatting) and is the one place the unit
+/// is decided; the playback-speed decoder's fixed node (`48`) states the same unit.
+pub fn pcm_rate_khz(rate_hz: u32) -> Option<&'static str> {
+    Some(match rate_hz {
+        8_000 => "8",
+        12_000 => "12",
+        16_000 => "16",
+        22_050 => "22.05",
+        24_000 => "24",
+        32_000 => "32",
+        44_100 => "44.1",
+        48_000 => "48",
+        _ => return None,
+    })
+}
 
 /// Whether `codec` is one the app decodes itself and feeds as PCM ([`PCM_AUDIO_CODECS`]).
 pub fn is_pcm_codec(codec: &str) -> bool {
@@ -83,8 +101,8 @@ pub fn is_pcm_codec(codec: &str) -> bool {
     PCM_AUDIO_CODECS.split(',').any(|c| c == id)
 }
 
-/// The PCM path's own limits for one track: one or two channels, at a rate the pipeline plays at
-/// its own speed. A codec that is not app-decoded passes; an unstated count or rate does not.
+/// The PCM path's own limits for one track: one or two channels, at a rate `pcmInfo` can name
+/// ([`PCM_SAMPLE_RATES`]). A codec that is not app-decoded passes; an unstated count or rate does not.
 /// These are limits of the PCM input, not of a hardware decoder, so Force Direct Play applies
 /// them as well.
 pub fn pcm_track_fits(codec: &str, channels: i64, sample_rate: i64) -> bool {
@@ -689,10 +707,9 @@ mod tests {
         assert!(!Caps::assumed().forced_feeds_audio("truehd"));
     }
 
-    /// The PCM input plays only the rates in libpf's table (plus 44.1 kHz) at their own speed: a
-    /// 96 kHz or 192 kHz FLAC played audibly slow on the B8, with no error anywhere. The
-    /// track gate refuses those, and an unstated rate or channel count, for app-decoded codecs
-    /// only.
+    /// `pcmInfo` can name only the rates in libpf's table (plus 44.1 kHz): a 96 kHz or 192 kHz FLAC
+    /// played audibly slow on the B8, with no error anywhere. The track gate refuses those, and an
+    /// unstated rate or channel count, for app-decoded codecs only.
     #[test]
     fn the_pcm_path_admits_only_the_rates_and_channels_it_plays_correctly() {
         for rate in [8_000, 22_050, 44_100, 48_000] {
@@ -706,6 +723,22 @@ mod tests {
         assert!(!pcm_track_fits("flac", 0, 48_000));
         // not app-decoded: the hardware decoder's own rules apply, not these
         assert!(pcm_track_fits("ac3", 6, 0) && pcm_track_fits("dca", 8, 96_000));
+    }
+
+    /// Every rate the gate admits has its kilohertz spelling, and no other rate does: the unit
+    /// libpf matches (`48`, never `48000`), so the list and the spelling cannot drift apart.
+    #[test]
+    fn every_admitted_pcm_rate_has_its_kilohertz_spelling() {
+        for rate in PCM_SAMPLE_RATES {
+            assert!(pcm_rate_khz(rate).is_some(), "{rate}");
+        }
+        assert_eq!(pcm_rate_khz(48_000), Some("48"));
+        assert_eq!(pcm_rate_khz(44_100), Some("44.1"));
+        assert_eq!(pcm_rate_khz(32_000), Some("32"));
+        assert_eq!(pcm_rate_khz(22_050), Some("22.05"));
+        for rate in [0, 11_025, 88_200, 96_000, 192_000] {
+            assert_eq!(pcm_rate_khz(rate), None, "{rate}");
+        }
     }
 
     /// FLAC is decoded in the app and fed as PCM: it needs no table row, but it does need a

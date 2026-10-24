@@ -5562,7 +5562,7 @@ pub(crate) fn pcm_format_of(audio: Option<&CarriedAudio>, codec: &str) -> Result
     let sample_rate = u32::try_from(a.sample_rate).ok().filter(|r| rates.contains(r));
     let Some(sample_rate) = sample_rate else {
         return Err(format!(
-            "{codec}: sampling rate {} is not one the PCM input plays at its own speed",
+            "{codec}: sampling rate {} is not one the PCM input's table names",
             a.sample_rate
         ));
     };
