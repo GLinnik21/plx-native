@@ -1543,6 +1543,7 @@ impl Diag {
             2 => "AC3 PLUS",
             3 => "AAC",
             4 => "DTS",
+            5 => "PCM (decoded FLAC)",
             _ => "NONE (needAudio:false)",
         }
     }

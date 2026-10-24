@@ -954,8 +954,29 @@ fn audio_payload_codec(codec: &str) -> Option<(&'static str, u8)> {
         "eac3" => Some(("AC3 PLUS", 2)),
         "aac" => Some(("AAC", 3)),
         "dts" => Some(("DTS", 4)),
+        // decoded in the app (`ff::PcmDecoder`) and fed as PCM: libpf has no FLAC input
+        "flac" => Some(("PCM", 5)),
         _ => None,
     }
+}
+
+/// The `contents.pcmInfo` node a PCM Load needs — the only way the pipeline learns the raw
+/// stream's shape (libpf reads `pcmInfo.{format,channelMode,layout,sampleRate,bitsPerSample}`).
+/// PURE, spliced at the `provider` anchor like [`with_immersive`].
+fn with_pcm_info(p: &str, audio: &str, pcm: Option<crate::route::PcmFormat>) -> String {
+    let (Some(f), "PCM") = (pcm, audio) else {
+        return p.to_string();
+    };
+    let anchor = r#""provider":"plxnative""#;
+    let format = if f.bits == 16 { "S16LE" } else { "S32LE" };
+    let mode = if f.channels == 1 { "mono" } else { "stereo" };
+    p.replace(
+        anchor,
+        &format!(
+            r#"{anchor},"pcmInfo":{{"format":"{format}","channelMode":"{mode}","layout":"interleaved","sampleRate":{},"bitsPerSample":{}}}"#,
+            f.sample_rate, f.bits
+        ),
+    )
 }
 
 /// The pipeline reads the true dimensions from the SPS (Phase 0 HEVC probe), so mw/mh are only
@@ -1000,6 +1021,7 @@ fn build_av_payload(ps: &crate::route::PlaybackSession, video: &str, audio: &str
         ));
     }
     let p = with_dolby_hdr_info(&p, video, crate::route::stream_dv_presentation(ps));
+    let p = with_pcm_info(&p, audio, crate::route::stream_pcm(ps).and_then(Result::ok));
     with_immersive(&p, audio, crate::route::stream_immersive(ps))
 }
 
@@ -1509,6 +1531,24 @@ fn start_bufferfeed_inner(
                 SHARED.fail_demux(DemuxExitClass::LoadRefused);
                 return Err(crate::route::RouteStartResult::StartFailed);
             };
+            // App-decoded audio: the Load must state the PCM shape, and the demuxer must produce
+            // exactly that. Missing facts refuse the Load — a guessed rate plays at the wrong pitch.
+            let pcm = match crate::route::stream_pcm(ps) {
+                Some(Ok(f)) => Some(f),
+                Some(Err(why)) => {
+                    log(&format!("start_bufferfeed: PCM audio refused — {why}"));
+                    SHARED.demux_failed.store(true, Ordering::Release);
+                    return Err(crate::route::RouteStartResult::StartFailed);
+                }
+                None => None,
+            };
+            crate::ff::set_pcm_out(pcm.map(|f| (f.sample_rate, f.bits, f.channels)));
+            if let Some(f) = pcm {
+                log(&format!(
+                    "pcm: {codec} decoded in-app -> {}Hz {}-bit {}ch",
+                    f.sample_rate, f.bits, f.channels
+                ));
+            }
             SHARED.dg_load_a.store(diagnostic, Ordering::Relaxed);
             audio_declared = ac;
             // The sink envelope — `adaptiveStreaming`'s maxWidth/maxHeight/maxFrameRate — used
@@ -6212,6 +6252,32 @@ mod load_in_flight_tests {
     }
 }
 
+#[cfg(test)]
+mod pcm_info_tests {
+    use super::*;
+    use crate::route::PcmFormat;
+
+    const BASE: &str = r#"{"contents":{"codec":{"audio":"PCM"},"provider":"plxnative"}}"#;
+
+    #[test]
+    fn a_pcm_load_states_the_shape_the_decoder_produces() {
+        let f = PcmFormat { sample_rate: 48_000, bits: 16, channels: 2 };
+        let p = with_pcm_info(BASE, "PCM", Some(f));
+        assert!(p.contains(r#""pcmInfo":{"format":"S16LE","channelMode":"stereo","layout":"interleaved","sampleRate":48000,"bitsPerSample":16}"#), "{p}");
+        let wide = with_pcm_info(BASE, "PCM", Some(PcmFormat { sample_rate: 96_000, bits: 32, channels: 1 }));
+        assert!(wide.contains(r#""format":"S32LE","channelMode":"mono""#) && wide.contains(r#""bitsPerSample":32"#), "{wide}");
+        // the payload stays parseable JSON
+        serde_json::from_str::<serde_json::Value>(&p).unwrap();
+    }
+
+    #[test]
+    fn only_a_pcm_load_carries_pcm_info() {
+        let f = PcmFormat { sample_rate: 48_000, bits: 16, channels: 2 };
+        assert_eq!(with_pcm_info(BASE, "AC3", Some(f)), BASE);
+        assert_eq!(with_pcm_info(BASE, "PCM", None), BASE);
+    }
+}
+
 /// **The webOS 10.3.1 refusal, replayed.** `docs/webos10-lab-report.md` §3.2 records the exact
 /// callback order the pipeline produced when it refused the 4K60 H.264 envelope: `13/1`, `14/0`,
 /// the `type=5` sink echo, `15/0`, `8/0`, then `18/601 Resource Allocation Error` — with `Load()`
@@ -6242,7 +6308,9 @@ mod sink_envelope_tests {
         assert_eq!(audio_payload_codec("dca"), Some(("DTS", 4)));
         assert_eq!(audio_payload_codec("DCA"), Some(("DTS", 4)));
         assert_eq!(audio_payload_codec("ec-3"), Some(("AC3 PLUS", 2)));
-        for codec in ["truehd", "flac", "", "unknown"] {
+        assert_eq!(audio_payload_codec("flac"), Some(("PCM", 5)));
+        assert_eq!(audio_payload_codec("FLAC"), Some(("PCM", 5)));
+        for codec in ["truehd", "", "unknown"] {
             assert_eq!(audio_payload_codec(codec), None);
         }
         let ps = crate::route::PlaybackSession::IDLE;

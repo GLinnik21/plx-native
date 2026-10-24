@@ -827,8 +827,13 @@ pub struct Stream {
     /// is** — `"dolby digital plus + dolby atmos"` (probed live 2026-08-21); on the video track it
     /// is `"main 10"`. See [`Stream::has_atmos`].
     pub profile: String,
-    /// Video track only: bits per component (10 for Main 10); 0 = not said.
+    /// Bits per component on a video track (10 for Main 10), bits per sample on an audio track
+    /// (PMS sends `bitDepth` on both, e.g. 24 on a FLAC); 0 = not said.
     pub bit_depth: i64,
+    /// Audio track only: PMS `samplingRate` in Hz; 0 = not said. What the PCM Load declares for
+    /// an app-decoded FLAC. Same round-trip rule as `language_tag`: absent stays absent.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub sampling_rate: i64,
     /// Video track only: chroma subsampling as PMS spells it, e.g. `"4:2:0"`.
     pub chroma: String,
     pub title: String,
@@ -864,6 +869,10 @@ pub struct Stream {
 
 fn is_false(b: &bool) -> bool {
     !*b
+}
+
+fn is_zero(n: &i64) -> bool {
+    *n == 0
 }
 
 impl Stream {
@@ -2416,6 +2425,7 @@ fn convert_streams(streams: &[plx_plex::plex::Stream]) -> Streams {
             bitrate: s.bitrate,
             profile: s.profile.clone(),
             bit_depth: s.bit_depth,
+            sampling_rate: s.sampling_rate,
             chroma: s.chroma_subsampling.clone(),
             sdh: s.hearing_impaired != 0,
             ad: s.audio_description != 0 || s.title.to_lowercase().contains("descri"),

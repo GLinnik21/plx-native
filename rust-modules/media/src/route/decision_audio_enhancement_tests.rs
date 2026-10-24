@@ -27,6 +27,8 @@ fn track(sid: i64, ordinal: i32, codec: &str, channels: i64, capable: bool, imme
         channels,
         can_normalize_loudness: capable,
         immersive,
+        sample_rate: 0,
+        bit_depth: 0,
     }
 }
 fn a1() -> CarriedAudio { track(11, 1, "ac3", 2, true, false) }
