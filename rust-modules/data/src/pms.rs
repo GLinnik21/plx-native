@@ -2785,22 +2785,28 @@ fn feeds_home(sid: ServerId, pinned: &[ServerId], known: &[ServerId]) -> bool {
 /// step knows which client a slot holds without reading the registry itself. Standalone Home
 /// fixtures have no Browse owner and therefore no known pin table; the normal unknown-library
 /// policy remains in force for them.
-struct BrowseScope {
+struct BrowseScope<'a> {
     sections_gen: u32,
     pins: Vec<(ServerId, i64, bool)>,
-    clients: ClientKeys,
+    /// Borrowed from the host's one buffer ([`BrowseScope::retained`]), so an idle per-frame step
+    /// allocates nothing for it; a standalone fixture owns the keys it read.
+    clients: std::borrow::Cow<'a, ClientKeys>,
 }
 
-impl BrowseScope {
+impl<'a> BrowseScope<'a> {
     /// A fixture with no Browse owner. The keys are the registry's as of this call, read in test
     /// code only: a production step is handed them ([`BrowseScope::retained`]).
     #[cfg(any(test, feature = "test-support"))]
     fn standalone() -> Self {
-        Self { sections_gen: 0, pins: Vec::new(), clients: registry_keys_for_test() }
+        Self { sections_gen: 0, pins: Vec::new(), clients: std::borrow::Cow::Owned(registry_keys_for_test()) }
     }
 
-    fn retained(directory: crate::stores::browse::DirectoryView<'_>, clients: &ClientKeys) -> Self {
-        Self { sections_gen: directory.sections_gen(), pins: directory.favorite_sections().to_vec(), clients: clients.clone() }
+    fn retained(directory: crate::stores::browse::DirectoryView<'_>, clients: &'a ClientKeys) -> Self {
+        Self {
+            sections_gen: directory.sections_gen(),
+            pins: directory.favorite_sections().to_vec(),
+            clients: std::borrow::Cow::Borrowed(clients),
+        }
     }
 
     /// Semantic pin-table identity. Browse generations are owner-local, so two independent stores
@@ -3777,7 +3783,8 @@ pub fn seed_two_library_home_for_test(
         art: "/a.jpg".into(),
         ..Default::default()
     });
-    let scope = BrowseScope::retained(directory, &registry_keys_for_test());
+    let keys = registry_keys_for_test();
+    let scope = BrowseScope::retained(directory, &keys);
     let mut source = Src::new(sid, String::new(), &scope.clients);
     source.state = HubState::Ready;
     source.last = Some(SourceBuild {

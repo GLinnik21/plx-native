@@ -730,8 +730,9 @@ fn equal_generation_browse_owners_rebuild_the_pms_home_projection() {
         "equal-generation-home", "127.0.0.1", 9, "synthetic", "fixture");
     let alpha = two_library_directory(sid, true);
     let beta = two_library_directory(sid, false);
-    let alpha_scope = BrowseScope::retained(alpha.view(), &registry_keys_for_test());
-    let beta_scope = BrowseScope::retained(beta.view(), &registry_keys_for_test());
+    let keys = registry_keys_for_test();
+    let alpha_scope = BrowseScope::retained(alpha.view(), &keys);
+    let beta_scope = BrowseScope::retained(beta.view(), &keys);
     assert_eq!(alpha_scope.sections_gen, beta_scope.sections_gen,
         "the regression requires equal owner-local generations");
     seed_two_library_home_for_test(&mut o.state, sid, alpha.view());
