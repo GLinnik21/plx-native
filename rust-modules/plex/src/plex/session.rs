@@ -3061,9 +3061,10 @@ pub fn refresh_need() -> Option<RefreshNeed> {
     Some(RefreshNeed { generation: CACHE_GENERATION.load(std::sync::atomic::Ordering::Relaxed), transient })
 }
 
-/// How a refresh job ended. `Refused` is never produced by [`refresh_cache_job`]: the adapter
-/// reports it when the job never ran to completion (the queue refused it, it panicked, or the
-/// adapter that held it was dropped).
+/// How a refresh job ended. `Refused` is never produced by [`refresh_cache_job`]: it is reported
+/// when the job never ran to completion. The adapter reports it when the queue refused the job or
+/// the job panicked; the app's bridge reports it, from its frame-step reconcile, when the adapter
+/// that began the job was replaced or dropped and so lost it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum CacheRefreshOutcome {
     /// A write, a drop or a revocation moved the cache before the read could land; nothing installed.
@@ -3961,7 +3962,8 @@ impl DeferredLoad {
         if read_identity(&read) != self.expected {
             // Refused, exactly like `update_with_outcome`'s own refusal path: install the record
             // this capture lost the race against, rather than leaving the cache empty for the
-            // next `peek()` to queue a duplicate of the read this call just took under `IO`.
+            // session owner to refill with a second read of what this call just established
+            // under `IO`.
             install_locked(read);
             return Err("session changed during capture");
         }
@@ -3971,8 +3973,8 @@ impl DeferredLoad {
             save_locked(&self.session);
         } else {
             // No write happens on this path, but the read above IS the verified record: install
-            // it so the boot path's first `peek()` does not queue a redundant read for a fact
-            // this call already established under `IO`.
+            // it so the cache is not left empty for the session owner to refill with a second
+            // read of what this call just established under `IO`.
             install_locked(read);
         }
         publish_identities(&self.session);
@@ -4348,7 +4350,7 @@ fn save_locked_with_authority(
         };
         // A `Durable` commit IS the record now — install it rather than drop it, so the very next
         // `peek()` (even the caller's own, right after this returns) is served from memory instead
-        // of forcing a re-read of what this call just proved.
+        // of finding the cache left `Unloaded` until the session owner refills it.
         install_write_locked(std::sync::Arc::new(ReadState::Ready {
             session: std::sync::Arc::new(s.clone()),
             plaintext: protection.is_none(),

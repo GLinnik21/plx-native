@@ -580,9 +580,12 @@ pub enum SessionFx {
     PlaintextAnswer { machine_id: String, choice: plx_plex::plex::session::PlaintextChoice, account: String },
     /// Read the session cache's authority once and install it (`plex::session::refresh_cache_job`),
     /// installing only while the cache is still at `generation`. The adapter answers EVERY one of
-    /// these with exactly one [`SessionEvent::CacheRefreshed`] carrying the same `req`. `req` comes
-    /// from the owner's own counter, not [`SessionInit::next_req`]: it names no pending work and
-    /// never enters the recorded state.
+    /// these with at most one [`SessionEvent::CacheRefreshed`] carrying the same `req`: the
+    /// adapter when the queue refuses the job or the job ends, the app's frame step when the
+    /// adapter that began it was replaced. A controlled run (it has no cache to refill) answers
+    /// with none and fails loudly instead. The owner takes only the answer for the request in
+    /// flight and drops any other. `req` comes from the owner's own counter, not
+    /// [`SessionInit::next_req`]: it names no pending work and never enters the recorded state.
     RefreshCache { req: u32, generation: u64 },
 }
 
@@ -627,11 +630,18 @@ pub enum CacheRefresh {
     Idle,
     /// One [`SessionFx::RefreshCache`] is out, waiting for its [`SessionEvent::CacheRefreshed`].
     InFlight { req: u32, generation: u64 },
-    /// Hold the next refresh back until the frame clock reaches `until_ms` (compared wrapping).
+    /// Hold the next refresh back for [`LOCKED_RETRY_MS`] after the frame tick `armed_ms` it was
+    /// armed at: held while `now.wrapping_sub(armed_ms) < LOCKED_RETRY_MS`. That is the unsigned
+    /// time since arming, so a backoff nothing ever observed again (its need went away inside the
+    /// second) cannot come back to hold a later need after the tick has run 2^31 ms past it, as a
+    /// signed compare against a deadline would; it can only alias inside one second of every
+    /// 2^32 ms (49.7 days), at the cost of one extra second of hold.
     /// `generation: Some(g)` holds back only observations of cache generation `g` (a transient
     /// read that is still standing: a drop to `Unloaded` bumps the generation and refreshes at
     /// once); `None` holds back every generation (the job was refused or never completed).
-    Backoff { until_ms: u32, generation: Option<u64> },
+    ///
+    /// [`LOCKED_RETRY_MS`]: plx_plex::plex::session::LOCKED_RETRY_MS
+    Backoff { armed_ms: u32, generation: Option<u64> },
 }
 
 impl CredentialPatch {
@@ -1275,7 +1285,8 @@ impl SessionMachine {
     pub fn read(&self) -> SessionRead<'_> { self.publication.read() }
     pub fn publication(&self) -> Arc<SessionSnapshot> { Arc::clone(&self.publication) }
     /// The request of the [`SessionFx::RefreshCache`] still awaiting its answer, if any. The app's
-    /// frame step compares it with the adapter's own slot to reconcile a job the adapter lost.
+    /// frame step compares it with the adapter's own slot to reconcile a job the adapter began and
+    /// then lost.
     pub fn cache_refresh_in_flight(&self) -> Option<u32> {
         match self.cache_refresh { CacheRefresh::InFlight { req, .. } => Some(req), _ => None }
     }
@@ -2781,19 +2792,18 @@ impl SessionMachine {
     /// about a second later, as the in-line retry timer did, not on frame one.
     fn observe_cache(&mut self, need: plx_plex::plex::session::RefreshNeed, now_ms: u32,
         emit: &mut impl FnMut(SessionFx)) {
-        let backoff_over = |until_ms: u32| now_ms.wrapping_sub(until_ms) as i32 >= 0;
+        use plx_plex::plex::session::LOCKED_RETRY_MS;
         let tracked = match self.cache_refresh {
             CacheRefresh::InFlight { .. } => return,
-            CacheRefresh::Backoff { until_ms, generation } => {
+            CacheRefresh::Backoff { armed_ms, generation } => {
                 let covers = generation.is_none_or(|g| g == need.generation);
-                if covers && !backoff_over(until_ms) { return; }
+                if covers && now_ms.wrapping_sub(armed_ms) < LOCKED_RETRY_MS { return; }
                 covers
             }
             CacheRefresh::Idle => false,
         };
-        let retry_at = |now_ms: u32| now_ms.wrapping_add(plx_plex::plex::session::LOCKED_RETRY_MS);
         if need.transient && !tracked {
-            self.cache_refresh = CacheRefresh::Backoff { until_ms: retry_at(now_ms), generation: Some(need.generation) };
+            self.cache_refresh = CacheRefresh::Backoff { armed_ms: now_ms, generation: Some(need.generation) };
             return;
         }
         self.next_cache_req = self.next_cache_req.wrapping_add(1);
@@ -2804,13 +2814,13 @@ impl SessionMachine {
 
     /// A refresh ended. Only the request in flight can end it: a duplicate or stale answer is dropped.
     fn cache_refreshed(&mut self, req: u32, outcome: plx_plex::plex::session::CacheRefreshOutcome, now_ms: u32) -> bool {
-        use plx_plex::plex::session::{CacheRefreshOutcome, LOCKED_RETRY_MS};
+        use plx_plex::plex::session::CacheRefreshOutcome;
         if self.cache_refresh_in_flight() != Some(req) { return false; }
-        let until_ms = now_ms.wrapping_add(LOCKED_RETRY_MS);
+        let armed_ms = now_ms;
         self.cache_refresh = match outcome {
             CacheRefreshOutcome::Settled | CacheRefreshOutcome::Superseded => CacheRefresh::Idle,
-            CacheRefreshOutcome::Transient { generation } => CacheRefresh::Backoff { until_ms, generation: Some(generation) },
-            CacheRefreshOutcome::Refused => CacheRefresh::Backoff { until_ms, generation: None },
+            CacheRefreshOutcome::Transient { generation } => CacheRefresh::Backoff { armed_ms, generation: Some(generation) },
+            CacheRefreshOutcome::Refused => CacheRefresh::Backoff { armed_ms, generation: None },
         };
         true
     }
@@ -3016,6 +3026,29 @@ mod tests {
             assert!(step_at(&mut owner, need(4, false), 10).is_empty(), "16 ms into the window");
             assert!(step_at(&mut owner, need(4, false), LOCKED_RETRY_MS - 7).is_empty());
             assert_eq!(refreshes(&step_at(&mut owner, need(4, false), LOCKED_RETRY_MS - 6)), [(2, 4)]);
+        }
+
+        /// A backoff that outlives its need (a write filled the cache inside its second, so no
+        /// observation ever cleared it) must not come back to hold a much later need: a deadline
+        /// compared as a signed wrapping difference flips to "not over" once the process has run
+        /// 2^31 ms (24.8 days) past it. The hold is the unsigned time since it was armed.
+        #[test]
+        fn a_backoff_left_behind_does_not_hold_a_need_a_long_time_later() {
+            // `10 + 2^31 + 1` is the review's tick; the signed deadline compare first flips at
+            // `10 + LOCKED_RETRY_MS + 2^31`, so both are asked.
+            for later in [10u32.wrapping_add(1 << 31).wrapping_add(1),
+                10u32.wrapping_add(LOCKED_RETRY_MS).wrapping_add(1 << 31)] {
+                let mut owner = owner();
+                step_at(&mut owner, need(4, false), 0);
+                step_at(&mut owner, refreshed(1, CacheRefreshOutcome::Refused), 10);
+                assert_eq!(refreshes(&step_at(&mut owner, need(4, false), later)), [(2, 4)], "at tick {later}");
+            }
+            // The transient arm reads the same clock: armed on the first observation, asked again
+            // a long gap later.
+            let mut owner = owner();
+            assert!(step_at(&mut owner, need(3, true), 10).is_empty());
+            let later = 10u32.wrapping_add(LOCKED_RETRY_MS).wrapping_add(1 << 31);
+            assert_eq!(refreshes(&step_at(&mut owner, need(3, true), later)), [(1, 3)], "at tick {later}");
         }
 
         #[test]

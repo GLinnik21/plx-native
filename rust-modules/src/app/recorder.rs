@@ -645,11 +645,14 @@ impl plx_ui::dispatch::Tap<super::bridge::AppHost> for Recplay {
     }
 }
 
-/// The session owner's cache-refresh traffic (`SessionEvent::CacheObserved`/`CacheRefreshed`) is
-/// off the tape by design: it refills the live process's session cache, a controlled run never
-/// starts one (`Bridge::land_session_cache` is skipped under `home_io`), and nothing it does
-/// changes the recorded state. Recording or refusing it would make every live recording stop
-/// whenever the cache is missing a read.
+/// The two events of the session owner's cache refresh (`SessionEvent::CacheObserved` and
+/// `CacheRefreshed`) are skipped by `effect`: they refill the live process's session cache and
+/// change no recorded state. This filter covers exactly those two events. The
+/// `SessionFx::RefreshCache` effect that sits between them is NOT filtered; it cannot arise under
+/// `home_io` (Record and Replay both run through `controlled_home`, where
+/// `Bridge::land_session_cache` is skipped and `session_effect` refuses the effect loudly), so a
+/// tape never holds one. Only a test rig that records a live `Bridge::for_test` over an unloaded
+/// cache would emit it, and that tape would carry its process-global `generation`.
 fn off_tape(msg: &plx_screens::registry::AppMsg) -> bool {
     use plx_session::auth::owner::SessionEvent;
     matches!(msg, plx_screens::registry::AppMsg::Session(

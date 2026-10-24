@@ -186,6 +186,59 @@ fn a_replaced_adapter_cannot_strand_an_in_flight_refresh() {
     assert_eq!(bridge.session.cache_refresh_in_flight(), None);
 }
 
+/// The reconcile refuses a refresh only after the adapter BEGAN it and lost it. An owner that is
+/// `InFlight` while its `RefreshCache` effect is still queued (the drain budget carried the effect
+/// to the next frame) has not been lost by anyone: answering `Refused` for it would back the owner
+/// off, and the job the carried effect then starts would be answered into a stale `req`.
+#[test]
+fn a_refresh_effect_still_queued_is_not_reconciled_as_lost() {
+    use plx_machine::machine::{Effects, MachineId};
+    use plx_session::auth::owner::{scenarios::step_at, SessionEvent, SessionFx};
+    let _serial = plx_base::testlock::serial();
+    let _session = session::TempSession::new("bridge-cache-effect-queued");
+    struct ResetIdle;
+    impl Drop for ResetIdle {
+        fn drop(&mut self) { plx_machine::idle::reset_for_test(); }
+    }
+    let _idle = ResetIdle;
+    session::save(&signed_in());
+    session::invalidate_for_test();
+    let mut bridge = Bridge::for_test(|| 0);
+    let mut pages = plx_ui::dispatch::Dispatcher::new();
+    crate::app::bridge::nav_root(&mut pages, plx_screens::registry::AppArg::Login);
+    let need = session::refresh_need().expect("an unloaded cache needs a read");
+    // The owner asked on the previous frame; its effect is still waiting in the queue.
+    let mut asked = step_at(&mut bridge.session, SessionEvent::CacheObserved(need), 0);
+    let Some(SessionFx::RefreshCache { req, generation }) = asked.pop() else { panic!("the owner asked for a read") };
+    assert_eq!(bridge.session.cache_refresh_in_flight(), Some(req));
+    assert_eq!(bridge.session_adapter.cache_refresh_req(), None, "the adapter has begun nothing");
+    // This frame's reconcile must leave it alone.
+    let queued = pages.queued();
+    {
+        let _frame = plx_base::task::FrameScope::enter();
+        bridge.land_session_cache(&mut pages);
+    }
+    assert_eq!(pages.queued(), queued, "no answer was made up for a job that has not begun");
+    assert_eq!(bridge.session.cache_refresh_in_flight(), Some(req));
+    // The carried effect reaches the adapter and the job's own answer is the one the owner takes.
+    let mut present = plx_machine::present::Present::new();
+    let mut effects = Vec::new();
+    bridge.session_effect(SessionFx::RefreshCache { req, generation },
+        &mut Effects::new(&mut effects, MachineId::Session, &mut present));
+    assert!(effects.is_empty(), "the queue took the job");
+    assert_eq!(bridge.session_adapter.cache_refresh_req(), Some(req));
+    plx_base::storage_worker::drain_for_test();
+    let mut ms = 16;
+    frames(&mut pages, &mut bridge, &mut ms, 2);
+    assert!(session::peek_settled().is_some(), "the job filled the cache");
+    assert_eq!(bridge.session.cache_refresh_in_flight(), None, "and its answer reached the owner");
+    // Had a made-up `Refused` taken the owner first, its backoff would still hold: a later need
+    // goes unanswered for a second. The owner is Idle, so it asks again at once.
+    session::invalidate_for_test();
+    frames(&mut pages, &mut bridge, &mut ms, 3);
+    assert!(session::peek_settled().is_some(), "no backoff was left behind by a made-up refusal");
+}
+
 /// A controlled run records its resources: a cache refresh is real storage IO it never recorded, so
 /// the Bridge fails the run loudly instead of executing it (the same refusal as `Capture`/`Work`).
 #[test]

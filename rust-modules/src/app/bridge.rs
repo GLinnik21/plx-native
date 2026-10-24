@@ -373,6 +373,12 @@ pub(crate) struct Bridge {
     /// Endpoint refreshes a store step had no room to emit (`EndpointRefreshSet::emit`).
     endpoint_carry: plx_data::stores::EndpointRefreshSet,
     session_cache_generation: u64,
+    /// The `req` of the last `SessionFx::RefreshCache` this bridge handed its adapter. The frame
+    /// step's reconcile (`land_session_cache`) refuses an in-flight refresh only when it is this
+    /// one: an effect the drain budget carried past the frame has not been begun, so nobody has
+    /// lost it. It lives here, not in the adapter, so a replaced adapter (which begins nothing and
+    /// loses its predecessor's job) still reads as a refresh begun and lost.
+    cache_refresh_begun: Option<u32>,
     home_io: Option<super::bootstrap::HomeIo>,
     recorded_clients: std::collections::BTreeMap<u32, &'static plx_plex::plex::Client>,
     initial_subhash: u64,
@@ -611,6 +617,7 @@ impl Bridge {
         reads: StorePublications, stores: plx_data::stores::Stores) -> Self {
         Self {
             session_cache_generation: plx_plex::plex::session::visible_generation(),
+            cache_refresh_begun: None,
             endpoint_carry: Default::default(),
             home_io: None,
             recorded_clients: std::collections::BTreeMap::new(),
@@ -668,10 +675,13 @@ impl Bridge {
             plx_machine::idle::invalidate();
         }
         let event = if let Some(req) = self.session.cache_refresh_in_flight() {
-            // The owner is waiting on a refresh. If the adapter holds no job and no result for it
-            // (the adapter was replaced or dropped, which loses the job's ticket), nothing will
-            // ever answer: refuse it, so the in-flight marker cannot stick.
-            if self.session_adapter.cache_refresh_req() == Some(req) { return; }
+            // The owner is waiting on a refresh. If this bridge began it and the adapter holds no
+            // job and no result for it now (the adapter was replaced or dropped, which loses the
+            // job's ticket), nothing will ever answer: refuse it, so the in-flight marker cannot
+            // stick. A refresh not begun yet (its effect is still queued behind the drain
+            // budget) is not lost, and its own answer is coming.
+            if self.cache_refresh_begun != Some(req)
+                || self.session_adapter.cache_refresh_req() == Some(req) { return; }
             plx_session::auth::owner::SessionEvent::CacheRefreshed { req,
                 outcome: plx_plex::plex::session::CacheRefreshOutcome::Refused }
         } else {
@@ -2044,10 +2054,13 @@ impl Bridge {
                 let delivery = self.session_adapter.report_incident(id, lane, report);
                 deliver(SessionEvent::IncidentReported { id, delivery });
             }
-            // Every refresh ends in exactly one `CacheRefreshed`: here when the queue refuses it,
-            // from `take_live_results` when the job finishes (or panics), and from
-            // `land_session_cache` when the adapter that held it is gone.
+            // A refresh reaches the owner as at most one `CacheRefreshed`: here when the queue
+            // refuses it, from `take_live_results` when the job finishes (or panics), or from
+            // `land_session_cache` when the adapter that held it is gone. A controlled run is
+            // refused above and answers none; the owner drops any answer that is not for the
+            // request it has in flight.
             SessionFx::RefreshCache { req, generation } => {
+                self.cache_refresh_begun = Some(req);
                 if let Some(outcome) = self.session_adapter.begin_cache_refresh(req, generation) {
                     deliver(SessionEvent::CacheRefreshed { req, outcome });
                 }
