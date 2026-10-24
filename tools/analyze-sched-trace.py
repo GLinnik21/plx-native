@@ -34,9 +34,15 @@ commit phase after it:
     threads ran, so "GPU idle, compositor not yet run" is told from "GPU busy".
 
 --latch answers a different question: for a back-buffer wait of --wait-min ms or more, was it the
-app's CPU, the app's GPU work, or the compositor that made the frame miss its refresh? Needs FRAMEDROP
-lines for EVERY frame (the pairs k, k+1 are scored; arm `plxnative-framedrop=0.01` with
-`plxnative-framecb`). One or more TRACEs of the same run may be given; the summary spans them.
+app's CPU, the app's GPU work, or the compositor that made the frame miss its refresh? It scores the
+frame pairs (k, k+1) whose two FRAMEDROP lines both carry `wait_at=` (`plxnative-framecb`). The
+recipe is `plxnative-framecb` with `plxnative-framering=17`: the ring writes every frame of 17 ms or
+more with the 4 frames before it and the 3 after (`diag::heartbeat::FrameRing`), so the pairs around
+every slow frame are in the log, and it only works while `plxnative-framedrop` is armed (the fps
+harness arms it for a scene with a frame ceiling; add `plxnative-framedrop=17` otherwise).
+`plxnative-framedrop=0.01` would log every frame instead, but at about 60 log-file open/append/close
+round trips a second ON THE FRAME THREAD, in the phase being measured. One or more TRACEs of the
+same run may be given; the summary spans them.
   * The compositor (surface-manager) composes at 60 Hz, just after every other `osd_irq` (they fire
     every 8.33 ms), and takes the app's newest buffer if the app's GPU work on it is done; taking
     buffer k releases k-1 at once. Frame k's wait ends just after one such tick; the tick that
@@ -50,8 +56,9 @@ lines for EVERY frame (the pairs k, k+1 are scored; arm `plxnative-framedrop=0.0
     whole missed refresh). Class: CPU-late (commit_k after aim), GPU-late (commit on time, GPU done
     more than 0.65 ms after aim), edge (GPU done in (aim, aim + 0.65]: the compositor takes the
     buffer or not by a hair), compositor (both before aim, the release still came late).
-  * The headline is the margin: GPU done minus aim over the on-time (0-tick) waited frames. About
-    zero or positive means the frame is one hiccup from a missed refresh.
+  * The headline is the margin: GPU done minus aim over the on-time (0-tick) waited frames the log
+    holds (with the ring, those near a slow frame, not every frame of the run). About zero or
+    positive means the frame is one hiccup from a missed refresh.
 
 Host-only: reads files, touches no device.
 """
@@ -370,7 +377,8 @@ def latch_trace(path, frames, args, acc):
 def latch(log, traces, args):
     frames = {f["seq"]: f for f in load_frames(log, 0.0)}
     if not frames:
-        sys.exit(f"{log}: no FRAMEDROP line carries wait_at= (arm plxnative-framedrop=0.01 and plxnative-framecb)")
+        sys.exit(f"{log}: no FRAMEDROP line carries wait_at= (arm plxnative-framecb, with plxnative-framering=17 "
+                 "so the slow frames and their neighbours are logged)")
     acc = dict(pairs=0, rows=[], margin=[])
     for path in traces:
         latch_trace(path, frames, args, acc)

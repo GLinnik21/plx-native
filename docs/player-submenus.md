@@ -254,37 +254,44 @@ tools below are the how-to; the findings follow.
    GPU interrupts and surface-manager's threads fell in the wait and commit windows.
    `tools/analyze-sched-trace.py --self-test` runs on the host.
 
-   **Which side made a frame miss its refresh: `--latch`.** It scores each frame pair (k, k+1), so
-   the log needs a FRAMEDROP line for every frame with `wait_at=`. Run the fps leg with
-   `tests/run.py --fps --mock --filter <scene> --extra-trigger plxnative-framecb
-   --extra-trigger plxnative-framering=17 --save-logs DIR` (add `--extra-trigger
-   plxnative-framedrop=0.01` when the scene's own threshold logs only the slow frames), and while
-   the bench runs take one or more windows with `tools/tv-sched-trace.sh --app --secs 6 --out
-   w1.gz` (the read-back takes tens of seconds; run it from the leg's own checkout, whose lease
-   it inherits, with the `PLX_TV_LOCK_LANE=<worktree>` prefix when you are a subagent: `tv-lock`
-   skill, "A lane is a checkout"). Then
-   `tools/analyze-sched-trace.py DIR/fps-<scene>.log w1.gz w2.gz --tid <app pid> --latch`. The
-   compositor composes just after every other `osd_irq` and takes the app's newest buffer only if the
-   app's GPU work on it is done; taking buffer k releases k-1 at once. Frame k's wait ended just
-   after one such tick, so the report's `aim`, the pass that should take frame k, is the
-   `osd_irq` nearest that tick + 16.67 ms. Mali defers the fragment work to the swap, so the app's GPU work runs after the
-   commit: "GPU done" is the app's last job completion after the commit (a `mali` irq that wakes
-   a `mali-event-hnd` thread of the app's process, found through the thread table) and before frame
-   k+1's wait ended. Each wait of `--wait-min` (10) ms or more prints `+N ticks`, how far k+1's
-   release slipped past the aim in 8.33 ms ticks (1 = half a refresh, 2 = a whole missed one), and
-   a class: `CPU-late` (frame k committed after the aim; see `wake->commit` and the run-queue
-   fields), `GPU-late` (committed in time, GPU done over 0.65 ms after the aim), `edge` (GPU done
-   0-0.65 ms after the aim, where frames that did make it also land) or `compositor` (commit and
-   GPU both before the aim, and the buffer still came late). The number to quote is the margin on the
-   last line: GPU done minus aim over the on-time (0-tick) frames, p50 near zero or above meaning
-   one hiccup from a missed refresh. A trace from before the thread table needs `--app-gpu-tid` and
-   `--sm-gpu-tid`, the two `mali-event-hnd` tids (`gzip -dc w1.gz | grep -o 'comm=mali-event-hnd
-   pid=[0-9]*' | sort | uniq -c`: the compositor's has about 720 wakeups in a 6 s window, the
-   app's several thousand). Two traps. Tracing loads the set: the read-back between windows
-   raised the in-window long waits about threefold over untraced legs (one per 86 frame pairs
-   against one per 240 frames), so report the mechanism a trace shows, never the window's rates.
-   And a wakeup from another CPU is recorded as woken by `<idle>-0` (the IPI path): the report
-   labels it, it is not the waker, and the trace does not say who was.
+   **Which side made a frame miss its refresh: `--latch`.** It scores the frame pairs (k, k+1)
+   whose two FRAMEDROP lines both carry `wait_at=`. Run the fps leg with `tests/run.py --fps --mock
+   --filter <scene> --extra-trigger plxnative-framecb --extra-trigger plxnative-framering=17
+   --save-logs DIR`: `framecb` only adds `wait_at=` to the lines the detector writes, and the ring
+   writes each frame of 17 ms or more with the 4 frames before and the 3 after it (not
+   `framedrop=0.01`, which logs every frame at about 60 open/append/close round trips a second on the
+   frame thread, in the phase measured). The ring only works while `plxnative-framedrop` is armed:
+   the harness arms it for a scene with a frame ceiling (`frame_ceiling_threshold`) or one whose
+   manifest triggers name it (grid-pong does); for any other scene add `--extra-trigger
+   plxnative-framedrop=17`. While the bench runs, take one or more windows with
+   `tools/tv-sched-trace.sh --app --secs 6 --out w1.gz` (from the leg's own checkout, which holds the
+   lease; a subagent keeps its `PLX_TV_LOCK_LANE=<worktree>` prefix: `tv-lock` skill, "A lane is a
+   checkout"). Then
+   `tools/analyze-sched-trace.py DIR/fps-<scene>.log w1.gz w2.gz --tid <app pid> --latch`.
+
+   Reading it. The compositor composes just after every other `osd_irq` and takes the app's newest
+   buffer only if the app's GPU work on it is done; taking buffer k releases k-1 at once. Frame k's
+   wait ended just after one such tick, so the report's `aim`, the pass that should take frame k, is
+   the `osd_irq` nearest that tick + 16.67 ms. Mali defers the fragment work to the swap, so the
+   app's GPU work runs after the commit: "GPU done" is the app's last job completion after the commit
+   (a `mali` irq that wakes the app's `mali-event-hnd`, found through the thread table) and before
+   frame k+1's wait ended. Each wait of `--wait-min` (10) ms or more prints `+N
+   ticks`, how far k+1's release slipped past the aim in 8.33 ms ticks (1 = half a refresh, 2 = a
+   whole missed one), and a class: `CPU-late` (frame k committed after the aim; see `wake->commit`
+   and the run-queue fields), `GPU-late` (committed in time, GPU done over 0.65 ms after the aim),
+   `edge` (GPU done 0-0.65 ms after the aim, where frames that did make it also land) or
+   `compositor` (commit and GPU both before the aim, and the buffer still came late). The number to
+   quote is the margin on the last line: GPU done minus aim over the on-time (0-tick) frames the ring
+   wrote, so those near a slow frame, p50 near zero or above meaning one hiccup from a missed
+   refresh. A trace from before the thread table needs `--app-gpu-tid` and `--sm-gpu-tid`, the two
+   `mali-event-hnd` tids (`gzip -dc w1.gz | grep -o 'comm=mali-event-hnd pid=[0-9]*' | sort |
+   uniq -c`: the compositor's has about 720 wakeups in a 6 s window, the app's several thousand).
+
+   Two traps. Tracing loads the set: the read-back between windows raised the in-window long waits
+   about threefold over untraced legs (one per 86 frame pairs against one per 240 frames), so report
+   the mechanism a trace shows, never the window's rates. And a wakeup from another CPU is recorded
+   as woken by `<idle>-0` (the IPI path): the report labels it, it is not the waker, and the trace
+   does not say who was.
 2. **Mali HWCNT.** Boot with `--arm hwcnt=frame.ui` and nothing else profiling; the `glFinish`
    brackets serialize the pipeline, so no `fps=` from this leg. Pull `plxnative-hwcnt.jsonl` from
    the app's runtime directory, then `tools/analyze-hwcnt.py FILE --phase frame.ui --discard 60`
