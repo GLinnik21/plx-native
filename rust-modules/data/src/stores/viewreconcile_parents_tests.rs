@@ -115,13 +115,13 @@ fn press(stores: &mut Stores, sid: ServerId, rk: &str, write: Write) {
     let directory = DirectorySnapshot::default();
     assert!(stores.viewstate_run(ViewStateCmd::Request {
         sid, rk: rk.into(), write, scope: Scope::Leaf, guid: String::new(),
-    }, directory.view()));
+    }, directory.view(), &crate::pms::registry_keys_for_test()));
 }
 
 fn drive(stores: &mut Stores, done: impl Fn(&Stores) -> bool) {
     let directory = DirectorySnapshot::default();
     for _ in 0..1000 {
-        let _ = stores.viewstate_pump(directory.view());
+        let _ = stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test());
         super::rig::frame(stores, &directory);
         if done(stores) { return; }
         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -354,7 +354,8 @@ fn show_detail_open(stores: &mut Stores, sid: ServerId) {
 
 fn map(stores: &mut Stores, out: &crate::stores::notify::NotifyOut, pages: &[crate::stores::ContentArg]) {
     let directory = DirectorySnapshot::default();
-    let _ = stores.notify_map(out, pages, crate::stores::notify_map::Shown::default(), directory.view());
+    let _ = stores.notify_map(out, pages, crate::stores::notify_map::Shown::default(), directory.view(),
+        &crate::pms::registry_keys_for_test());
 }
 
 /// **A show's open Detail learns of an episode played elsewhere.** The page holds its own item
@@ -403,7 +404,8 @@ fn detail_item_stop_routes_via_detail_reconcile_delivery() {
     let page = crate::stores::ContentArg::Detail { sid, rk: "m".into() };
     let directory = DirectorySnapshot::default();
     let _ = stores.notify_map(&stranger_stops(sid, &["m", "3"]), &[page],
-        crate::stores::notify_map::Shown { search: true, ..Default::default() }, directory.view());
+        crate::stores::notify_map::Shown { search: true, ..Default::default() }, directory.view(),
+        &crate::pms::registry_keys_for_test());
     drive(&mut stores, settled);
     assert_eq!(stores.take_landed_views(), [(sid, "m".to_string())],
         "only the Detail's item reaches reconcile_details; the card's read-back (and its season and show) was quiet");

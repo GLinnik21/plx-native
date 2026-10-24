@@ -370,9 +370,10 @@ fn hubs_land_and_tick_keep_the_frame_directory_policy() {
     rig.directory = directory_policy_fixture(own, hidden);
     let directory = rig.directory.clone();
 
+    let keys = plx_data::pms::registry_keys_for_test();
     plx_data::pms::with_refused_fetches_for_test(|| {
         let _ = rig.stores.hubs.run_with_directory(
-            plx_data::stores::hubs::HubsCmd::Reset, directory.view());
+            plx_data::stores::hubs::HubsCmd::Reset, directory.view(), &keys);
         let parts = CxParts { tick: tick(0), press: Default::default(), focus: Default::default(),
             owner: InputOwner::Entry(EntryId(0)) };
         let mut present = Present::new();
@@ -403,14 +404,14 @@ fn hubs_land_and_tick_keep_the_frame_directory_policy() {
         assert_eq!(rig.stores.take_notices(), [(StoreId::Hubs, generation)],
             "one changed landing owes exactly one Hubs notice");
         let sources_after_land = rig.stores.hubs.run_with_directory(
-            plx_data::stores::hubs::HubsCmd::Retry, directory.view());
+            plx_data::stores::hubs::HubsCmd::Retry, directory.view(), &keys);
         assert_eq!(sources_after_land.endpoints.iter().map(|request| request.sid).collect::<Vec<_>>(), [own],
             "landing must keep the retained frame directory");
 
         let _ = rig.stores.hubs.run_with_directory(
-            plx_data::stores::hubs::HubsCmd::Reset, directory.view());
+            plx_data::stores::hubs::HubsCmd::Reset, directory.view(), &keys);
         let _ = rig.stores.hubs.run_with_directory(
-            plx_data::stores::hubs::HubsCmd::RefetchHubs, directory.view());
+            plx_data::stores::hubs::HubsCmd::RefetchHubs, directory.view(), &keys);
         let _ = rig.stores.take_notices();
         effects.clear();
         let mut fx = Effects::new(&mut effects, MachineId::Store(StoreId::Hubs.ord()), &mut present);

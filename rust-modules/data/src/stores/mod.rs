@@ -316,6 +316,7 @@ impl Stores {
         &mut self,
         cmd: viewstate::ViewStateCmd,
         directory: browse::DirectoryView<'_>,
+        clients: &plx_plex::plex::ClientKeys,
     ) -> bool {
         if matches!(cmd, viewstate::ViewStateCmd::Reset) {
             self.reconcile.reset();
@@ -332,7 +333,7 @@ impl Stores {
         self.viewstate.borrow_mut().run(
             cmd,
             &mut |cmd| watchlist_tee(watchlist, cmd, |cmd| browse.borrow_mut().run(cmd)),
-            &mut |hubcmd| hubs.run_with_directory(hubcmd, directory),
+            &mut |hubcmd| hubs.run_with_directory(hubcmd, directory, clients),
             &mut |cmd| person.run(cmd),
             &mut |cmd| view_edit_collection(collection, cmd),
             &mut |cmd| search.run_with_directory(cmd, directory),
@@ -345,6 +346,7 @@ impl Stores {
     pub fn viewstate_pump(
         &mut self,
         directory: browse::DirectoryView<'_>,
+        clients: &plx_plex::plex::ClientKeys,
     ) -> EndpointRefreshSet {
         let browse = std::rc::Rc::clone(&self.browse);
         let hubs = &mut self.hubs;
@@ -356,7 +358,7 @@ impl Stores {
         self.viewstate.borrow_mut().pump_with_gate(
             &self.landgate,
             &mut |cmd| watchlist_tee(watchlist, cmd, |cmd| browse.borrow_mut().run(cmd)),
-            &mut |hubcmd| hubs.run_with_directory(hubcmd, directory),
+            &mut |hubcmd| hubs.run_with_directory(hubcmd, directory, clients),
             &mut |cmd| person.run(cmd),
             &mut |cmd| view_edit_collection(collection, cmd),
             &mut |cmd| search.run_with_directory(cmd, directory),
@@ -415,14 +417,15 @@ impl Stores {
     /// when the server took the `stopped` POST, a read-back through the reconcile worker (which
     /// stays queued while the network is held); when it did not, only the Detail pages' own re-read
     /// is owed. MAIN THREAD, route-unconditional.
-    pub fn stops_landed(&mut self, stops: Vec<crate::viewstate::StopRecord>, directory: browse::DirectoryView<'_>) {
+    pub fn stops_landed(&mut self, stops: Vec<crate::viewstate::StopRecord>, directory: browse::DirectoryView<'_>,
+        clients: &plx_plex::plex::ClientKeys) {
         for stop in stops {
             self.publish(crate::viewstate::ViewChange {
                 sid: stop.sid,
                 rk: stop.rk.clone(),
                 scope: crate::viewstate::Scope::Leaf,
                 fact: crate::viewstate::ViewFact::Offset { ms: stop.pos_ms, dur_ms: stop.dur_ms },
-            }, directory);
+            }, directory, clients);
             if stop.ok {
                 self.reconcile.enqueue_stop((stop.sid, stop.rk), stop.was_watched);
             } else {
@@ -433,7 +436,8 @@ impl Stores {
         }
     }
 
-    fn publish(&mut self, change: crate::viewstate::ViewChange, directory: browse::DirectoryView<'_>) {
+    fn publish(&mut self, change: crate::viewstate::ViewChange, directory: browse::DirectoryView<'_>,
+        clients: &plx_plex::plex::ClientKeys) {
         self.watchlist.apply_view(&change);
         let browse = std::rc::Rc::clone(&self.browse);
         let hubs = &mut self.hubs;
@@ -444,7 +448,7 @@ impl Stores {
         crate::viewstate::publish_view(
             change,
             &mut |cmd| browse.borrow_mut().run(cmd),
-            &mut |hubcmd| hubs.run_with_directory(hubcmd, directory),
+            &mut |hubcmd| hubs.run_with_directory(hubcmd, directory, clients),
             &mut |cmd| person.run(cmd),
             &mut |cmd| view_edit_collection(collection, cmd),
             &mut |cmd| search.run_with_directory(cmd, directory),
@@ -471,7 +475,7 @@ impl Stores {
         let changed = self.reconcile.pump_with_gate(&self.landgate, idle, clients, &mut |change| crate::viewstate::publish_view(
             { watchlist.apply_view(&change); change },
             &mut |cmd| browse.borrow_mut().run(cmd),
-            &mut |hubcmd| hubs.run_with_directory(hubcmd, directory),
+            &mut |hubcmd| hubs.run_with_directory(hubcmd, directory, clients),
             &mut |cmd| person.run(cmd),
             &mut |cmd| view_edit_collection(collection, cmd),
             &mut |cmd| search.run_with_directory(cmd, directory),

@@ -730,8 +730,8 @@ fn equal_generation_browse_owners_rebuild_the_pms_home_projection() {
         "equal-generation-home", "127.0.0.1", 9, "synthetic", "fixture");
     let alpha = two_library_directory(sid, true);
     let beta = two_library_directory(sid, false);
-    let alpha_scope = BrowseScope::retained(alpha.view());
-    let beta_scope = BrowseScope::retained(beta.view());
+    let alpha_scope = BrowseScope::retained(alpha.view(), &registry_keys_for_test());
+    let beta_scope = BrowseScope::retained(beta.view(), &registry_keys_for_test());
     assert_eq!(alpha_scope.sections_gen, beta_scope.sections_gen,
         "the regression requires equal owner-local generations");
     seed_two_library_home_for_test(&mut o.state, sid, alpha.view());
@@ -906,6 +906,7 @@ fn an_unpinned_library_publishes_nothing() {
     let scope = BrowseScope {
         sections_gen: 0,
         pins: vec![(sid(0), 1, true), (sid(1), 1, false)],
+        clients: Default::default(),
     };
     let (items, hubs, _) = merge_with_scope(&srcs, &scope);
     assert!(hubs.iter().all(|h| h.source.is_empty()), "nothing of the unpinned library is drawn");
@@ -972,7 +973,7 @@ fn paging_a_recent_row_does_not_remove_other_home_rows() {
     }).collect();
     shelves[0].key = "/hubs/home/recentlyAdded?type=1".into();
     shelves[0].items.extend((12..24).map(|j| row(0, &format!("0-{j}"))));
-    let mut source = Src::new(sid(0), String::new());
+    let mut source = Src::new(sid(0), String::new(), &registry_keys_for_test());
     source.state = HubState::Ready;
     source.last = Some(built(0, &[], shelves));
     let (_, hubs, _) = merge(&[source]);
@@ -1019,7 +1020,7 @@ fn owner_with(sources: Vec<Src>) -> Owner {
 }
 
 fn ready(s: ServerId, handle: &str, cards: Vec<CwItem>) -> Src {
-    let mut source = Src::new(s, handle.into());
+    let mut source = Src::new(s, handle.into(), &registry_keys_for_test());
     source.state = HubState::Ready;
     source.deck_read = DeckRead::Answered;
     source.last = Some(deck_of(cards));
@@ -1189,7 +1190,7 @@ fn an_unpinned_roster_first_copy_does_not_hide_the_pinned_one() {
         ready(h[0].0, "", vec![card(h[0].0, "own", "Estudios sociales", Some(4), 2, true, 100)]),
         ready(h[1].0, "friend", vec![card(h[1].0, "theirs", "Social Studies", Some(4), 1, true, 900)]),
     ]);
-    let scope = BrowseScope { sections_gen: 1, pins: vec![(h[0].0, 2, false), (h[1].0, 1, true)] };
+    let scope = BrowseScope { sections_gen: 1, pins: vec![(h[0].0, 2, false), (h[1].0, 1, true)], clients: Default::default() };
     let (cat, hubs, _) = merge_with_scope(&o.state.srcs, &scope);
     let deck: Vec<_> = cat[hubs[0].start..hubs[0].start + hubs[0].len].iter().map(|m| m.rk.clone()).collect();
     assert_eq!(deck, ["theirs"], "the show does not vanish");

@@ -56,16 +56,17 @@ impl HomeIo {
     }
     pub(crate) fn hubs_with_directory(&mut self, hubs: &mut plx_data::stores::hubs::HubsStore,
         cmd: Option<plx_data::stores::hubs::HubsCmd>, dt: f32,
-        directory: plx_data::stores::browse::DirectoryView<'_>) -> plx_data::stores::StoreOutcome {
+        directory: plx_data::stores::browse::DirectoryView<'_>,
+        clients: &plx_plex::plex::ClientKeys) -> plx_data::stores::StoreOutcome {
         let adapter = hubs.adapter();
-        self.hubs_with_directory_and_launch(hubs, cmd, dt, directory,
+        self.hubs_with_directory_and_launch(hubs, cmd, dt, directory, clients,
             &mut |request| plx_data::pms::spawn_fetch(&adapter, request))
     }
     fn hubs_with_directory_and_launch(&mut self, hubs: &mut plx_data::stores::hubs::HubsStore,
         cmd: Option<plx_data::stores::hubs::HubsCmd>, dt: f32,
-        directory: plx_data::stores::browse::DirectoryView<'_>,
+        directory: plx_data::stores::browse::DirectoryView<'_>, clients: &plx_plex::plex::ClientKeys,
         launch: &mut dyn FnMut(plx_data::pms::HubRequest) -> bool) -> plx_data::stores::StoreOutcome {
-        hubs.controlled_with_directory(cmd, dt, directory, &mut |request| {
+        hubs.controlled_with_directory(cmd, dt, directory, clients, &mut |request| {
             self.admit(hubs_descriptor(&request), || launch(request))
         })
     }

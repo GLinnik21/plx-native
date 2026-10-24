@@ -358,6 +358,7 @@ impl Stores {
         pages: &[ContentArg],
         shown: Shown,
         directory: browse::DirectoryView<'_>,
+        clients: &plx_plex::plex::ClientKeys,
     ) -> Spent {
         self.notify_map.frame += 1;
         for (sid, _epoch) in &out.resynced {
@@ -409,7 +410,7 @@ impl Stores {
             }
             changed.emit();
         }
-        self.spend_notify_owed(shown, directory)
+        self.spend_notify_owed(shown, directory, clients)
     }
 
     /// Note what a server's finished creates and deletes owe the Watchlist. Counts only are logged:
@@ -488,7 +489,8 @@ impl Stores {
         self.notify_map.library = kept;
     }
 
-    fn spend_notify_owed(&mut self, shown: Shown, directory: browse::DirectoryView<'_>) -> Spent {
+    fn spend_notify_owed(&mut self, shown: Shown, directory: browse::DirectoryView<'_>,
+        clients: &plx_plex::plex::ClientKeys) -> Spent {
         let mut spent = Spent::default();
         if self.notify_map.owed_is_empty() || !self.reread_allowed() {
             return spent;
@@ -515,7 +517,7 @@ impl Stores {
             }
         }
         for sid in owed.refetch {
-            let _ = self.hubs.run_with_directory(super::hubs::HubsCmd::RefetchSourceQuiet { sid }, directory);
+            let _ = self.hubs.run_with_directory(super::hubs::HubsCmd::RefetchSourceQuiet { sid }, directory, clients);
             spent.refetched.push(sid);
         }
         for sid in owed.listings {

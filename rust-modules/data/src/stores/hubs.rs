@@ -269,8 +269,9 @@ impl HubsStore {
         &mut self,
         result: &HubsResult,
         directory: crate::stores::browse::DirectoryView<'_>,
+        clients: &plx_plex::plex::ClientKeys,
     ) -> super::StoreOutcome {
-        let outcome = crate::pms::land_with_directory(&mut self.state, &self.adapter, result, directory);
+        let outcome = crate::pms::land_with_directory(&mut self.state, &self.adapter, result, directory, clients);
         if outcome.changed { self.bump(); }
         outcome
     }
@@ -279,9 +280,10 @@ impl HubsStore {
         &mut self,
         dt: f32,
         directory: crate::stores::browse::DirectoryView<'_>,
+        clients: &plx_plex::plex::ClientKeys,
     ) -> super::StoreOutcome {
         let before = self.state.catalog_gen;
-        let endpoints = crate::pms::tick_with_directory(&mut self.state, &self.adapter, dt, directory);
+        let endpoints = crate::pms::tick_with_directory(&mut self.state, &self.adapter, dt, directory, clients);
         let changed = self.state.catalog_gen != before;
         if changed { self.bump(); }
         super::StoreOutcome { changed, endpoints }
@@ -302,13 +304,13 @@ impl HubsStore {
     /// Controlled Home work scoped by the Bridge's retained Browse directory. The retained view is
     /// the decision input for this frame.
     pub fn controlled_with_directory(&mut self, cmd: Option<HubsCmd>, dt: f32,
-        directory: crate::stores::browse::DirectoryView<'_>,
+        directory: crate::stores::browse::DirectoryView<'_>, clients: &plx_plex::plex::ClientKeys,
         launch: &mut dyn FnMut(crate::pms::HubRequest) -> bool) -> super::StoreOutcome {
         #[cfg(any(test, feature = "test-support"))]
         plx_base::testlock::assert_held("controlled hubs store with Browse owner");
         self.prepare_command(cmd.as_ref());
         let command = cmd.as_ref().is_some_and(HubsCmd::always_notifies);
-        let outcome = crate::pms::controlled_work_with_directory(&mut self.state, &self.adapter, cmd, dt, directory, launch);
+        let outcome = crate::pms::controlled_work_with_directory(&mut self.state, &self.adapter, cmd, dt, directory, clients, launch);
         if command || outcome.changed { self.bump(); }
         outcome
     }
@@ -331,10 +333,11 @@ impl HubsStore {
         &mut self,
         cmd: HubsCmd,
         directory: crate::stores::browse::DirectoryView<'_>,
+        clients: &plx_plex::plex::ClientKeys,
     ) -> super::StoreOutcome {
         self.prepare_command(Some(&cmd));
         let notice = cmd.always_notifies();
-        let answer = crate::pms::run_with_directory(&mut self.state, &self.adapter, cmd, directory);
+        let answer = crate::pms::run_with_directory(&mut self.state, &self.adapter, cmd, directory, clients);
         if notice || answer.changed { self.bump(); }
         answer
     }
@@ -348,6 +351,7 @@ mod contract_tests {
     fn every_reset_entry_point_retires_workers_and_accepts_new_landings() {
         let _guard = plx_base::testlock::serial();
         let directory = crate::stores::browse::DirectorySnapshot::fixture(0, 0, vec![]);
+        let keys = crate::pms::registry_keys_for_test();
         for path in ["run", "run_with_directory", "controlled", "controlled_with_directory"] {
             let mut store = HubsStore::default();
             store.seed_for_test(1, crate::pms::HubState::Ready);
@@ -356,10 +360,10 @@ mod contract_tests {
 
             match path {
                 "run" => { let _ = store.run(HubsCmd::Reset); }
-                "run_with_directory" => { let _ = store.run_with_directory(HubsCmd::Reset, directory.view()); }
+                "run_with_directory" => { let _ = store.run_with_directory(HubsCmd::Reset, directory.view(), &keys); }
                 "controlled" => { let _ = store.controlled(Some(HubsCmd::Reset), 0.0, &mut |_| false); }
                 "controlled_with_directory" => {
-                    let _ = store.controlled_with_directory(Some(HubsCmd::Reset), 0.0, directory.view(), &mut |_| false);
+                    let _ = store.controlled_with_directory(Some(HubsCmd::Reset), 0.0, directory.view(), &keys, &mut |_| false);
                 }
                 _ => unreachable!(),
             }
@@ -381,19 +385,20 @@ mod contract_tests {
     fn background_commands_raise_the_notice_only_when_they_change_something() {
         let _guard = plx_base::testlock::serial();
         let directory = crate::stores::browse::DirectorySnapshot::fixture(0, 0, vec![]);
+        let keys = crate::pms::registry_keys_for_test();
         let mut store = HubsStore::default();
         store.seed_for_test(2, crate::pms::HubState::Ready);
         let before = store.gen();
         for visible in [true, false] {
             let out = store.run_with_directory(
-                HubsCmd::Publish { home_top_visible: visible, focused_hub: None, press_live: false }, directory.view());
+                HubsCmd::Publish { home_top_visible: visible, focused_hub: None, press_live: false }, directory.view(), &keys);
             assert!(!out.changed);
         }
         assert_eq!(store.gen(), before, "Publish with nothing staged does not raise the notice");
         assert_eq!(store.take_notice(), None);
         let out = store.controlled_with_directory(
             Some(HubsCmd::Publish { home_top_visible: true, focused_hub: None, press_live: false }), 0.0,
-            directory.view(), &mut |_| false);
+            directory.view(), &keys, &mut |_| false);
         assert!(!out.changed);
         assert_eq!(store.gen(), before, "…on the controlled path too");
         assert!(HubsCmd::Publish { home_top_visible: true, focused_hub: None, press_live: false }.is_background());
@@ -426,12 +431,13 @@ mod contract_tests {
             "hubs-hidden", "127.0.0.1", 10, "synthetic", "fixture");
         let directory = crate::stores::browse::DirectorySnapshot::fixture(
             7, 0, vec![section(own, 0, true), section(hidden, 1, false)]);
+        let keys = crate::pms::registry_keys_for_test();
         let mut store = HubsStore::default();
         let mut ignored = |_| false;
-        let _ = store.controlled_with_directory(Some(HubsCmd::Reset), 0.0, directory.view(), &mut ignored);
+        let _ = store.controlled_with_directory(Some(HubsCmd::Reset), 0.0, directory.view(), &keys, &mut ignored);
         let mut launched = Vec::new();
 
-        let _ = store.controlled_with_directory(Some(HubsCmd::RefetchHubs), 0.0, directory.view(),
+        let _ = store.controlled_with_directory(Some(HubsCmd::RefetchHubs), 0.0, directory.view(), &keys,
             &mut |request| {
                 launched.push(request.descriptor().2);
                 false
@@ -439,7 +445,7 @@ mod contract_tests {
 
         assert_eq!(launched, [own.raw()],
             "the retained pin table excludes the unpinned source");
-        let _ = store.controlled_with_directory(Some(HubsCmd::Reset), 0.0, directory.view(), &mut ignored);
+        let _ = store.controlled_with_directory(Some(HubsCmd::Reset), 0.0, directory.view(), &keys, &mut ignored);
         plx_plex::plex::reset_servers_for_test();
     }
 

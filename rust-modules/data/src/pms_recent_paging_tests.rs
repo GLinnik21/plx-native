@@ -312,7 +312,7 @@ fn paging_a_sparse_pinned_row_retains_its_selected_visible_card() {
         Arc::make_mut(item).sec=if i%8==0 { 7 } else { 8 };
     }
     seed(&mut owner.state,vec![src(registered.raw(),"",HubState::Ready,Some(build))]);
-    let scope=BrowseScope { sections_gen:1,pins:vec![(registered,7,true),(registered,8,false)] };
+    let scope=BrowseScope { sections_gen:1,pins:vec![(registered,7,true),(registered,8,false)],clients:registry_keys_for_test() };
     let mut held=None;
     let seen=owner.state.catalog_gen;
     let _=controlled_work_with_scope(&mut owner.state,&owner.adapter,

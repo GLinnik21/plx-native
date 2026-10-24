@@ -80,7 +80,7 @@ pub(super) fn sid(slot: u16) -> ServerId {
 
 /// One source of the table, seeded directly. `handle` empty = a server of our own.
 pub(super) fn src(slot: u16, handle: &str, state: HubState, last: Option<SourceBuild>) -> Src {
-    let mut s = Src::new(sid(slot), handle.into());
+    let mut s = Src::new(sid(slot), handle.into(), &registry_keys_for_test());
     s.state = state;
     s.last = last;
     // a Ready fixture is a source that answered

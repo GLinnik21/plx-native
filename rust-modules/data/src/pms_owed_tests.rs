@@ -21,7 +21,7 @@ fn a_spawn_raises_the_claim_and_the_take_of_its_landing_releases_it() {
     let o = Owner::default();
     plx_plex::plex::reset_servers_for_test();
     let sid = plx_plex::plex::register_for_test("owed-hub", "127.0.0.1", 9, "synthetic", "cid");
-    let mut s = Src::new(sid, String::new());
+    let mut s = Src::new(sid, String::new(), &registry_keys_for_test());
     assert!(!owed(&o.adapter), "nothing spawned, nothing owed");
     with_late_fetches_for_test(0, 1, || {
         assert!(kick_with(o.state.hub_gen, &o.adapter, &mut s, &BrowseScope::standalone(), |r| spawn_fetch(&o.adapter, r)).is_none());
@@ -42,7 +42,7 @@ fn a_refused_launch_gives_the_claim_back() {
     let o = Owner::default();
     plx_plex::plex::reset_servers_for_test();
     let sid = plx_plex::plex::register_for_test("owed-refused", "127.0.0.1", 9, "synthetic", "cid");
-    let mut s = Src::new(sid, String::new());
+    let mut s = Src::new(sid, String::new(), &registry_keys_for_test());
     let refused = with_refused_fetches_for_test(|| {
         kick_with(o.state.hub_gen, &o.adapter, &mut s, &BrowseScope::standalone(), |r| spawn_fetch(&o.adapter, r))
     });
@@ -57,7 +57,7 @@ fn a_launcher_that_does_not_spawn_here_is_never_counted() {
     let o = Owner::default();
     plx_plex::plex::reset_servers_for_test();
     let sid = plx_plex::plex::register_for_test("owed-held", "127.0.0.1", 9, "synthetic", "cid");
-    let mut s = Src::new(sid, String::new());
+    let mut s = Src::new(sid, String::new(), &registry_keys_for_test());
     let mut held = None;
     kick_with(o.state.hub_gen, &o.adapter, &mut s, &BrowseScope::standalone(), |r| { held = Some(r); true });
     assert!(held.is_some() && s.fetching);
@@ -72,7 +72,7 @@ fn exactly_one_landing_answers_each_spawned_request_and_the_claim_counts_them_do
     plx_plex::plex::reset_servers_for_test();
     let a = plx_plex::plex::register_for_test("owed-a", "127.0.0.1", 9, "synthetic", "cid");
     let b = plx_plex::plex::register_for_test("owed-b", "127.0.0.1", 10, "synthetic", "cid");
-    let (mut sa, mut sb) = (Src::new(a, String::new()), Src::new(b, String::new()));
+    let (mut sa, mut sb) = (Src::new(a, String::new(), &registry_keys_for_test()), Src::new(b, String::new(), &registry_keys_for_test()));
     with_late_fetches_for_test(0, 1, || {
         for s in [&mut sa, &mut sb] {
             kick_with(o.state.hub_gen, &o.adapter, s, &BrowseScope::standalone(), |r| spawn_fetch(&o.adapter, r));

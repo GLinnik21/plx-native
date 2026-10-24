@@ -1187,7 +1187,7 @@ mod tests {
         let directory = crate::stores::browse::DirectorySnapshot::default();
         assert!(stores.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
             sid, rk: "S".into(), write: Write::Watched, scope: Scope::Show, guid: String::new(),
-        }, directory.view()));
+        }, directory.view(), &crate::pms::registry_keys_for_test()));
         let marks = search_marks(&stores);
         let mark = |rk: &str| marks.iter().find(|m| m.0 == rk).unwrap().clone();
         assert_eq!(mark("S"), ("S".into(), true, false, 0), "the show row itself");
@@ -1209,7 +1209,7 @@ mod tests {
         let before = stores.view_ledger.stamp();
         assert!(stores.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
             sid, rk: "S".into(), write: Write::Watched, scope: Scope::Show, guid: String::new(),
-        }, directory.view()));
+        }, directory.view(), &crate::pms::registry_keys_for_test()));
         let seen = stores.view_ledger.since(before);
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].0, ViewAt { sid, rk: "S".into(), scope: Scope::Show });
@@ -1256,7 +1256,7 @@ mod tests {
         }
         assert!(stores.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
             sid, rk: "S".into(), write: Write::Unwatched, scope: Scope::Show, guid: String::new(),
-        }, directory.view()));
+        }, directory.view(), &crate::pms::registry_keys_for_test()));
         for (rk, watched, unwatched, _) in search_marks(&stores).into_iter().filter(|m| m.0 != "other") {
             assert!(!watched && unwatched, "{rk} reads unwatched after its show was marked unwatched");
         }
@@ -1272,7 +1272,7 @@ mod tests {
         assert!(stores.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
             sid, rk: "S1".into(), write: Write::Watched,
             scope: Scope::Season { show_rk: "S".into(), index: 1 }, guid: String::new(),
-        }, directory.view()));
+        }, directory.view(), &crate::pms::registry_keys_for_test()));
         let marks = search_marks(&stores);
         let watched = |rk: &str| marks.iter().find(|m| m.0 == rk).unwrap().1;
         assert!(watched("e11") && watched("e12"), "season 1's episodes");
@@ -1301,7 +1301,7 @@ mod tests {
             write: Write::Watched,
             scope: Scope::Leaf,
             guid: String::new(),
-        }, directory.view()));
+        }, directory.view(), &crate::pms::registry_keys_for_test()));
 
         assert!(!selected.browse.borrow_mut().listing_snapshot().view().item(0).unwrap().unwatched,
             "the selected owner changes before the command returns");
@@ -1363,9 +1363,9 @@ mod tests {
         stores.viewstate.borrow_mut().owe_hubs_refresh_for_test();
         let directory = crate::stores::browse::DirectorySnapshot::default();
         let endpoints = crate::pms::with_refused_fetches_for_test(||
-            stores.viewstate_pump(directory.view()));
+            stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test()));
         assert_eq!(endpoints.iter().map(|r| r.sid).collect::<Vec<_>>(), [sid]);
-        assert_eq!(stores.viewstate_pump(directory.view()).iter().count(), 0,
+        assert_eq!(stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test()).iter().count(), 0,
             "refetch is consumed once");
                 plx_plex::plex::reset_servers_for_test();
     }

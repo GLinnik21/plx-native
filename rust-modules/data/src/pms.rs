@@ -25,7 +25,7 @@
 //! keyword-level `pub(super)` genuinely cannot add on top of that count.
 use crate::stores::{deck, paging};
 use crate::viewstate::{ViewAt, ViewEdit};
-use plx_plex::plex::ServerId;
+use plx_plex::plex::{ClientKey, ClientKeys, ServerId};
 use std::os::raw::c_int;
 use std::panic::catch_unwind;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -1008,7 +1008,7 @@ fn find_shelf<'a>(shelves: &'a [Shelf], id: &str, key: &str) -> Option<&'a Shelf
 fn request_page(state: &mut PmsState, adapter: &PmsAdapter, sid: ServerId,
     id: &str, key: &str, before: bool, scope: &BrowseScope, launch: &mut dyn FnMut(HubRequest) -> bool) -> Option<crate::stores::EndpointRefresh> {
     let Some(source) = state.srcs.iter_mut().find(|source| source.sid == sid) else { return None };
-    if refresh_src_lifecycle(source) { return None; }
+    if refresh_src_lifecycle(source, &scope.clients) { return None; }
     if source.adoptable && !source.fetching && source.page.is_none() && source.abandoned.last()
         .is_some_and(|a| a.page.id == id && a.page.key == key && a.page.before == before) {
         // The read the user walked away from is still out and is the one being asked for again.
@@ -1240,7 +1240,7 @@ fn ask_deck(state: &mut PmsState, adapter: &PmsAdapter, before: bool, mut pages:
         let mut waiting = Vec::new();
         for &i in &short {
             let s = &mut srcs[i];
-            if refresh_src_lifecycle(s) || s.fetching || s.page.is_some() || s.state != HubState::Ready
+            if refresh_src_lifecycle(s, &scope.clients) || s.fetching || s.page.is_some() || s.state != HubState::Ready
                 || s.abandoned.iter().any(|a| a.page.id == DECK_ID) { continue; }
             s.retry_n = 0;
             s.page = Some(PageQuery { id: DECK_ID.into(), key: String::new(), start: 0, before, hidden: Vec::new(), reload: false });
@@ -2278,10 +2278,10 @@ struct Src {
     /// The registry slot every fetch for this source is issued through — and the id stamped onto
     /// every row it parses.
     sid: ServerId,
-    /// Registry lifecycle currently represented by this slot. A slot id survives repoint, so the
-    /// pointer and credential generation are part of the source identity too.
-    client: Option<&'static plx_plex::plex::Client>,
-    token_gen: u32,
+    /// Registry lifecycle currently represented by this slot: the client the slot held and the
+    /// credential it held then. A slot id survives repoint, so both are part of the source
+    /// identity ([`ClientKey`]).
+    key: Option<ClientKey>,
     /// **The CREDIT** for this source — `plex::servers::owner_credit`'s answer, stamped onto every
     /// shelf and hero row this source contributes. `"friend"` for a borrowed server; **empty when
     /// there is nobody to credit**, which is our own server, the household's own server whichever
@@ -2405,8 +2405,7 @@ impl Src {
                     && (shelf.offset > 0 || shelf.end > HUB_FETCH_COUNT as usize))
                 .map(|shelf| (PageQuery { id: shelf.hub_id.clone(), key: shelf.key.clone(), start: shelf.offset, before: false, hidden: Vec::new(), reload: false }, shelf.end, shelf.clone())).collect()),
         };
-        self.client = Some(client);
-        self.token_gen = request.token_gen;
+        self.key = Some(ClientKey::of(client));
         self.fetching = true;
         self.stamp = self.ledger.stamp(); // this read already carries every edit published so far
         if self.page.is_none() && !self.quiet { self.state = HubState::Loading; }
@@ -2429,15 +2428,13 @@ impl Src {
     /// answered this load.) A refresh in flight does not count against it, and neither does another
     /// shelf's failing page: the copies it holds are the facts of its last deck answer.
     fn deck_eligible(&self) -> bool {
-        self.last.is_some() && self.deck_read == DeckRead::Answered && self.client.is_some()
+        self.last.is_some() && self.deck_read == DeckRead::Answered && self.key.is_some()
     }
 
-    fn new(sid: ServerId, handle: String) -> Src {
-        let client = plx_plex::plex::client_for(sid);
+    fn new(sid: ServerId, handle: String, clients: &ClientKeys) -> Src {
         Src {
             sid,
-            client,
-            token_gen: client.map_or(0, |c| c.token_gen()),
+            key: clients.key(sid),
             handle,
             state: HubState::Loading,
             fetching: false,
@@ -2471,19 +2468,12 @@ impl PmsState {
     }
 }
 
-fn refresh_src_lifecycle(s: &mut Src) -> bool {
-    let client = plx_plex::plex::client_for(s.sid);
-    let token_gen = client.map_or(0, |c| c.token_gen());
-    let same = match (s.client, client) {
-        (Some(a), Some(b)) => std::ptr::eq(a, b) && s.token_gen == token_gen,
-        (None, None) => true,
-        _ => false,
-    };
-    if same {
+fn refresh_src_lifecycle(s: &mut Src, clients: &ClientKeys) -> bool {
+    let key = clients.key(s.sid);
+    if s.key == key {
         return false;
     }
-    s.client = client;
-    s.token_gen = token_gen;
+    s.key = key;
     s.fetching = false;
     s.abandoned.clear();
     s.adoptable = false;
@@ -2702,21 +2692,28 @@ fn feeds_home(sid: ServerId, pinned: &[ServerId], known: &[ServerId]) -> bool {
     pinned.is_empty() || pinned.contains(&sid) || !known.contains(&sid)
 }
 
-/// The only Browse facts Home consumes. Controlled execution snapshots these from the Bridge's
-/// retained directory. Standalone Home fixtures have no Browse owner and therefore no known pin
-/// table; the normal unknown-library policy remains in force for them.
+/// What a Home step is handed from outside, taken by the host immediately before it runs: the
+/// Browse facts Home consumes (controlled execution snapshots them from the Bridge's retained
+/// directory) and the registry's answer for every server slot ([`ClientKeys`]), which is how a
+/// step knows which client a slot holds without reading the registry itself. Standalone Home
+/// fixtures have no Browse owner and therefore no known pin table; the normal unknown-library
+/// policy remains in force for them.
 struct BrowseScope {
     sections_gen: u32,
     pins: Vec<(ServerId, i64, bool)>,
+    clients: ClientKeys,
 }
 
 impl BrowseScope {
+    /// A fixture with no Browse owner. The keys are the registry's as of this call, read in test
+    /// code only: a production step is handed them ([`BrowseScope::retained`]).
+    #[cfg(any(test, feature = "test-support"))]
     fn standalone() -> Self {
-        Self { sections_gen: 0, pins: Vec::new() }
+        Self { sections_gen: 0, pins: Vec::new(), clients: registry_keys_for_test() }
     }
 
-    fn retained(directory: crate::stores::browse::DirectoryView<'_>) -> Self {
-        Self { sections_gen: directory.sections_gen(), pins: directory.favorite_sections().to_vec() }
+    fn retained(directory: crate::stores::browse::DirectoryView<'_>, clients: &ClientKeys) -> Self {
+        Self { sections_gen: directory.sections_gen(), pins: directory.favorite_sections().to_vec(), clients: clients.clone() }
     }
 
     /// Semantic pin-table identity. Browse generations are owner-local, so two independent stores
@@ -2742,6 +2739,15 @@ impl BrowseScope {
         }
         hash
     }
+}
+
+/// The registry's answer for every active server slot as of now, for a test that drives a step: the
+/// production host fills the same value with `app::adapters::stores::refill_client_keys` before each
+/// call and hands it in. Test code only, so it is no read of the registry by a machine.
+#[cfg(any(test, feature = "test-support"))]
+pub fn registry_keys_for_test() -> ClientKeys {
+    ClientKeys::of(plx_plex::plex::server_ids()
+        .filter_map(|sid| plx_plex::plex::client_for(sid).map(|client| (sid, client))))
 }
 
 /// May this row appear on Home? **Per LIBRARY, which is the grain the switch offers.**
@@ -2796,7 +2802,7 @@ fn roster_with_scope(scope: &BrowseScope) -> Vec<(ServerId, String)> {
     let mut own: Vec<(ServerId, String)> = Vec::new();
     let mut shared: Vec<(ServerId, String)> = Vec::new();
     for sid in plx_plex::plex::server_ids() {
-        if plx_plex::plex::client_for(sid).is_none() || !feeds_home(sid, &pinned, &known) {
+        if scope.clients.key(sid).is_none() || !feeds_home(sid, &pinned, &known) {
             continue;
         }
         let handle = plx_plex::plex::server_facts(sid)
@@ -2821,6 +2827,7 @@ fn roster_with_scope(scope: &BrowseScope) -> Vec<(ServerId, String)> {
 /// forever. A Browse generation was insufficient too: two independent owners legitimately start
 /// at the same local generation while naming different libraries. `BrowseScope` already owns the
 /// small pin snapshot this function folds, so the per-frame cache gate adds no table walk.
+#[cfg(any(test, feature = "test-support"))]
 #[allow(dead_code)] // Standalone Home fixtures have no retained Browse directory.
 fn roster_key() -> u64 {
     roster_key_with_scope(&BrowseScope::standalone())
@@ -2866,6 +2873,7 @@ fn facts_key() -> u32 {
 /// Bring the source table in line with the roster: a surviving source keeps everything it has
 /// (its state, its backoff, and the build it last answered with), a new one arrives Loading and is
 /// picked up by the next [`pump`], and one that has left takes its shelves with it.
+#[cfg(any(test, feature = "test-support"))]
 #[allow(dead_code)] // Standalone Home fixtures have no retained Browse directory.
 fn sync_roster(state: &mut PmsState) {
     sync_roster_with_scope(state, &BrowseScope::standalone());
@@ -2910,11 +2918,11 @@ fn sync_roster_with_scope(state: &mut PmsState, scope: &BrowseScope) {
                 drop_staged(&mut keep);
                 // Preserve the last good shelves while the replacement lifecycle fetches, but
                 // release and supersede the old single-flight so it cannot wedge this slot.
-                refresh_src_lifecycle(&mut keep);
+                refresh_src_lifecycle(&mut keep, &scope.clients);
                 out.push(keep);
             }
             None => {
-                let mut fresh = Src::new(sid, handle);
+                let mut fresh = Src::new(sid, handle, &scope.clients);
                 fresh.ledger = state.ledger.clone();
                 out.push(fresh);
             }
@@ -3028,7 +3036,7 @@ fn retry_due(s: &mut Src, dt: f32) -> bool {
 /// Keep request admission/state identical when another adapter holds the request instead of
 /// launching a worker. The returned admission decision still controls latch release/backoff.
 fn kick_with(gen: u32, adapter: &PmsAdapter, s: &mut Src, scope: &BrowseScope, launch: impl FnOnce(HubRequest) -> bool) -> Option<crate::stores::EndpointRefresh> {
-    refresh_src_lifecycle(s);
+    refresh_src_lifecycle(s, &scope.clients);
     if s.fetching {
         return None; // one in flight already — its spinner is the honest answer
     }
@@ -3036,7 +3044,11 @@ fn kick_with(gen: u32, adapter: &PmsAdapter, s: &mut Src, scope: &BrowseScope, l
     // slot id; it never asks which server is current, and a slot re-pointed mid-request cannot
     // redirect a fetch that is already out (`plex::servers` leaks each client precisely so that
     // reference stays live).
-    let Some(c) = plx_plex::plex::client_for(s.sid) else {
+    // The decision is the step's input (`scope.clients`); the `&'static Client` is the registry's
+    // object for that very key, so the launch and the decision agree on one client even if the
+    // slot has moved since the host took the keys. (The read goes with the worker in C4.)
+    let Some(c) = scope.clients.key(s.sid)
+        .and_then(|key| plx_plex::plex::client_for(s.sid).filter(|c| ClientKey::of(c) == key)) else {
         if s.quiet { quiet_failed(s); return None; }
         return Some(landed_fail(s));
     };
@@ -3233,11 +3245,12 @@ pub fn tick_with_directory(
     adapter: &Arc<PmsAdapter>,
     dt: f32,
     directory: crate::stores::browse::DirectoryView<'_>,
+    clients: &ClientKeys,
 ) -> crate::stores::EndpointRefreshSet {
     #[cfg(any(test, feature = "test-support"))]
     plx_base::testlock::assert_held("the pms hub catalog (owned tick)");
     let mut launch = |r| spawn_fetch(adapter, r);
-    step_landings_with_scope(state, adapter, Some(dt), Vec::new, &BrowseScope::retained(directory),
+    step_landings_with_scope(state, adapter, Some(dt), Vec::new, &BrowseScope::retained(directory, clients),
         &mut launch)
 }
 
@@ -3264,11 +3277,12 @@ pub fn land_with_directory(
     adapter: &Arc<PmsAdapter>,
     landing: &Landing,
     directory: crate::stores::browse::DirectoryView<'_>,
+    clients: &ClientKeys,
 ) -> crate::stores::StoreOutcome {
     let before = state.catalog_gen;
     let mut launch = |r| spawn_fetch(adapter, r);
     let endpoints = step_landings_with_scope(state, adapter, None, || vec![landing.clone()],
-        &BrowseScope::retained(directory), &mut launch);
+        &BrowseScope::retained(directory, clients), &mut launch);
     crate::stores::StoreOutcome { changed: state.catalog_gen != before, endpoints }
 }
 
@@ -3285,11 +3299,12 @@ pub fn run_with_directory(
     adapter: &Arc<PmsAdapter>,
     cmd: crate::stores::hubs::HubsCmd,
     directory: crate::stores::browse::DirectoryView<'_>,
+    clients: &ClientKeys,
 ) -> crate::stores::StoreOutcome {
     if matches!(cmd, crate::stores::hubs::HubsCmd::Publish { .. }) && !has_staged(state) {
         return crate::stores::StoreOutcome::default(); // the per-frame question, before anything is built
     }
-    run_with_scope(state, adapter, cmd, &BrowseScope::retained(directory))
+    run_with_scope(state, adapter, cmd, &BrowseScope::retained(directory, clients))
 }
 
 fn run_with_scope(
@@ -3352,9 +3367,9 @@ pub fn controlled_work(state: &mut PmsState, adapter: &Arc<PmsAdapter>, cmd: Opt
 }
 
 pub fn controlled_work_with_directory(state: &mut PmsState, adapter: &Arc<PmsAdapter>, cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
-    directory: crate::stores::browse::DirectoryView<'_>,
+    directory: crate::stores::browse::DirectoryView<'_>, clients: &ClientKeys,
     launch: &mut dyn FnMut(HubRequest) -> bool) -> crate::stores::StoreOutcome {
-    controlled_work_with_scope(state, adapter, cmd, dt, &BrowseScope::retained(directory), launch)
+    controlled_work_with_scope(state, adapter, cmd, dt, &BrowseScope::retained(directory, clients), launch)
 }
 
 fn controlled_work_with_scope(state: &mut PmsState, adapter: &Arc<PmsAdapter>, cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
@@ -3420,9 +3435,12 @@ fn step_landings_with_scope(state: &mut PmsState, adapter: &PmsAdapter, dt: Opti
         let Some(s) = srcs.iter_mut().find(|s| s.sid == l.sid) else {
             continue; // its source left the roster while it was out
         };
+        // The client OBJECT the request was made through is `resource.instance_gen()`, never the
+        // landing's `instance`: a replayed landing carries the recording's logical id there, and
+        // only the resource it was bound to is the registry's.
         let lifecycle_matches = l.client.is_none_or(|client| {
-            plx_plex::plex::client_for(l.sid)
-                .is_some_and(|now| std::ptr::eq(now, client.resource) && now.token_gen() == l.token_gen)
+            scope.clients.key(l.sid)
+                == Some(ClientKey { instance: client.resource.instance_gen(), token: l.token_gen })
         });
         if l.gen != cur || l.seq != s.seq || !lifecycle_matches {
             if l.gen == cur && l.seq == s.seq && !lifecycle_matches {
@@ -3600,7 +3618,7 @@ pub fn seed_for_directory_test(
     plx_base::testlock::assert_held("the pms hub catalog (seed_for_directory_test)");
     assert!(directory.sections().iter().any(|section| section.sid == Some(sid)),
         "a directory-scoped Hubs fixture requires its server in the retained Browse directory");
-    seed_with_scope_for_test(state, adapter, sid, items, hub_state, &BrowseScope::retained(directory));
+    seed_with_scope_for_test(state, adapter, sid, items, hub_state, &BrowseScope::retained(directory, &registry_keys_for_test()));
 }
 
 /// Two-library Home fixture for the application-boundary watch-state regression. Both rows remain
@@ -3626,7 +3644,8 @@ pub fn seed_two_library_home_for_test(
         art: "/a.jpg".into(),
         ..Default::default()
     });
-    let mut source = Src::new(sid, String::new());
+    let scope = BrowseScope::retained(directory, &registry_keys_for_test());
+    let mut source = Src::new(sid, String::new(), &scope.clients);
     source.state = HubState::Ready;
     source.last = Some(SourceBuild {
         cw: Vec::new(),
@@ -3639,7 +3658,6 @@ pub fn seed_two_library_home_for_test(
             total: 0, offset: 0, end: 0, more: false, shown: 0, positions: Vec::new(), row: Default::default(),
         }],
     });
-    let scope = BrowseScope::retained(directory);
     let sources = vec![source];
     let build = merge_with_scope(&sources, &scope);
     state.srcs = sources;
@@ -3655,7 +3673,7 @@ fn seed_with_scope_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, sid
     let handle = plx_plex::plex::server_facts(sid)
         .map(|facts| facts.handle.clone())
         .unwrap_or_default();
-    let mut s = Src::new(sid, handle);
+    let mut s = Src::new(sid, handle, &scope.clients);
     s.ledger = state.ledger.clone();
     s.state = hub_state;
     if items > 0 {
@@ -3954,7 +3972,7 @@ pub fn seed_continue_window_for_test(state: &mut PmsState, adapter: &Arc<PmsAdap
             ..Default::default() }),
         position: i,
     }).collect();
-    let mut source = Src::new(sid, String::new());
+    let mut source = Src::new(sid, String::new(), &registry_keys_for_test());
     source.state = HubState::Ready;
     let lane = deck::Lane::preview("0", &items.saturating_sub(1).to_string(), items, items + usize::from(more), !more);
     source.last = Some(SourceBuild { cw, lane, shelves: Vec::new() });
@@ -4048,7 +4066,7 @@ pub fn seed_deck_home_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>, 
     recent.hub_id = "home.movies.recent".into();
     recent.title = "Recently Added".into();
     for (i, item) in recent.items.iter_mut().enumerate() { Arc::make_mut(item).rk = format!("r{}", i + 1); }
-    let mut source = Src::new(ServerId::UNSET, String::new());
+    let mut source = Src::new(ServerId::UNSET, String::new(), &registry_keys_for_test());
     source.state = HubState::Ready;
     source.ledger = state.ledger.clone();
     source.last = Some(SourceBuild {
@@ -4073,7 +4091,7 @@ pub fn seed_hubs_response_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapte
     seed_with_scope_for_test(state, adapter, ServerId::UNSET, 0, HubState::Ready, &BrowseScope::standalone());
     let mut projection = Projection::new(ServerId::UNSET, None);
     projection.take(&mc.hub);
-    let mut source = Src::new(ServerId::UNSET, String::new());
+    let mut source = Src::new(ServerId::UNSET, String::new(), &registry_keys_for_test());
     source.state = HubState::Ready;
     source.ledger = state.ledger.clone();
     source.last = Some(projection.finish());

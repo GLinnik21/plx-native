@@ -15,8 +15,8 @@ fn request_addresses_do_not_alias_across_sources_or_profile_resets() {
     let b_sid = plx_plex::plex::register_for_test("request-b", "b.invalid", 32400, "test", "cid");
     let ca = plx_plex::plex::client_for(a_sid).unwrap();
     let cb = plx_plex::plex::client_for(b_sid).unwrap();
-    let mut first = Src::new(a_sid, String::new());
-    let mut second = Src::new(b_sid, String::new());
+    let mut first = Src::new(a_sid, String::new(), &registry_keys_for_test());
+    let mut second = Src::new(b_sid, String::new(), &registry_keys_for_test());
     let mint = || o.adapter.next_request.fetch_add(1, Ordering::Relaxed);
     let mut held = None;
     kick_with(o.state.hub_gen, &o.adapter, &mut first, &BrowseScope::standalone(), |request| { held = Some(request); true });
@@ -27,7 +27,7 @@ fn request_addresses_do_not_alias_across_sources_or_profile_resets() {
     first.fetching = false; // the prior attempt completed
     let retry = first.begin_request(ca, 1, mint).unwrap().seq;
     reset(&mut o.state, &o.adapter);
-    let next_profile = Src::new(a_sid, String::new()).begin_request(ca, 2, mint).unwrap().seq;
+    let next_profile = Src::new(a_sid, String::new(), &registry_keys_for_test()).begin_request(ca, 2, mint).unwrap().seq;
     let mut ids = vec![a, b, retry, next_profile];
     ids.sort_unstable();
     ids.dedup();
@@ -41,13 +41,13 @@ fn endpoint_outcomes_cover_missing_client_refusal_and_failed_arrival() {
     let mut o = Owner::default();
     plx_plex::plex::reset_servers_for_test();
     reset(&mut o.state, &o.adapter);
-    let mut missing = Src::new(sid(0), String::new());
+    let mut missing = Src::new(sid(0), String::new(), &registry_keys_for_test());
     assert_eq!(kick_with(o.state.hub_gen, &o.adapter, &mut missing, &BrowseScope::standalone(), |_| panic!("missing client cannot spawn")).unwrap().sid, sid(0));
     assert_eq!(missing.state, HubState::Failed);
     assert_eq!(missing.retry_s, RETRY_MIN_S);
 
     let id = plx_plex::plex::register_for_test("endpoint-hub", "127.0.0.1", 9, "synthetic", "cid");
-    let mut s = Src::new(id, String::new());
+    let mut s = Src::new(id, String::new(), &registry_keys_for_test());
     assert_eq!(kick_with(o.state.hub_gen, &o.adapter, &mut s, &BrowseScope::standalone(), |_| false).unwrap().sid, id);
     assert!(!s.fetching);
     assert_eq!(s.retry_s, RETRY_MIN_S);
@@ -69,7 +69,7 @@ fn a_prepared_request_keeps_its_original_context_without_running_an_adapter() {
     let sid = plx_plex::plex::register_for_test("request", "old.invalid", 32400, "old", "cid");
     let client = plx_plex::plex::client_for(sid).unwrap();
     let token_gen = client.token_gen();
-    let mut source = Src::new(sid, String::new());
+    let mut source = Src::new(sid, String::new(), &registry_keys_for_test());
     source.last = Some(build_test(2));
     source.state = HubState::Failed;
     source.retry_n = 3;
@@ -166,7 +166,7 @@ fn a_same_slot_repoint_drops_the_old_flight_and_rearms_home() {
     let sid = plx_plex::plex::register_for_test("home-life", "10.0.0.1", 32400, "old", "cid");
     let old = plx_plex::plex::client_for(sid).unwrap();
     let old_gen = old.token_gen();
-    let mut s = Src::new(sid, String::new());
+    let mut s = Src::new(sid, String::new(), &registry_keys_for_test());
     s.state = HubState::Ready;
     s.fetching = true;
     s.last = Some(build_test(2));
@@ -175,7 +175,7 @@ fn a_same_slot_repoint_drops_the_old_flight_and_rearms_home() {
         sid
     );
 
-    assert!(refresh_src_lifecycle(&mut s));
+    assert!(refresh_src_lifecycle(&mut s, &registry_keys_for_test()));
     assert_eq!(s.state, HubState::Loading);
     assert!(!s.fetching);
     assert!(

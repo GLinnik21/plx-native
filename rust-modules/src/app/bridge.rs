@@ -1441,7 +1441,8 @@ impl Bridge {
     }
 
     pub(crate) fn viewstate_run(&mut self, cmd: plx_data::stores::viewstate::ViewStateCmd) -> bool {
-        self.stores.viewstate_run(cmd, self.directory.view())
+        super::adapters::stores::refill_client_keys(&mut self.client_keys);
+        self.stores.viewstate_run(cmd, self.directory.view(), &self.client_keys)
     }
 
     /// Keep the view-state reconcile network work owed while the player is on top
@@ -1461,7 +1462,8 @@ impl Bridge {
             plx_media::route::take_landed_stops,
         );
         if !stops.is_empty() {
-            self.stores.stops_landed(stops, self.directory.view());
+            super::adapters::stores::refill_client_keys(&mut self.client_keys);
+            self.stores.stops_landed(stops, self.directory.view(), &self.client_keys);
             plx_machine::idle::invalidate();
         }
     }
@@ -1475,7 +1477,8 @@ impl Bridge {
     }
 
     pub(crate) fn viewstate_pump(&mut self) -> plx_data::stores::EndpointRefreshSet {
-        self.stores.viewstate_pump(self.directory.view())
+        super::adapters::stores::refill_client_keys(&mut self.client_keys);
+        self.stores.viewstate_pump(self.directory.view(), &self.client_keys)
     }
 
     /// The read-back worker's pass (`stores::viewreconcile`), and the Browse pump a membership
@@ -1510,7 +1513,8 @@ impl Bridge {
     /// `true` when a feed came back after a gap, so the caller owes the covered pages a re-read.
     pub(crate) fn notify_pump(&mut self, pages: &[ContentArg], shown: plx_data::stores::notify_map::Shown) -> bool {
         let out = self.stores.notify_pump();
-        let spent = self.stores.notify_map(&out, pages, shown, self.directory.view());
+        super::adapters::stores::refill_client_keys(&mut self.client_keys);
+        let spent = self.stores.notify_map(&out, pages, shown, self.directory.view(), &self.client_keys);
         if !spent.refetched.is_empty() || !spent.invalidated.is_empty() {
             plx_base::eventlog::log(&format!(
                 "notify: refetched {} source(s) invalidated {} server(s)", spent.refetched.len(), spent.invalidated.len()));
@@ -1618,8 +1622,9 @@ impl Bridge {
     /// Synchronous addressed Hubs command against this owner's retained Browse directory. Used by
     /// callers outside the per-frame dispatch (server activation, boot).
     pub(crate) fn hubs_run(&mut self, cmd: plx_data::stores::hubs::HubsCmd) -> plx_data::stores::StoreOutcome {
+        super::adapters::stores::refill_client_keys(&mut self.client_keys);
         let directory = self.directory.view();
-        self.stores.hubs.run_with_directory(cmd, directory)
+        self.stores.hubs.run_with_directory(cmd, directory, &self.client_keys)
     }
 
     /// One store's generation, for the recorder's per-frame landing scan
@@ -1906,8 +1911,9 @@ impl Bridge {
         if let Some(io) = &mut self.home_io {
             match msg {
                 AppMsg::Store(StoreCmd::Hubs(cmd)) => {
+                    super::adapters::stores::refill_client_keys(&mut self.client_keys);
                     let directory = self.directory.view();
-                    let due = io.hubs_with_directory(&mut self.stores.hubs, Some(cmd.clone()), 0.0, directory).endpoints;
+                    let due = io.hubs_with_directory(&mut self.stores.hubs, Some(cmd.clone()), 0.0, directory, &self.client_keys).endpoints;
                     return Self::carry(&mut self.endpoint_carry, due);
                 }
                 AppMsg::Store(StoreCmd::Browse(plx_data::stores::browse::BrowseCmd::Discovery(result))) => {
@@ -1924,8 +1930,9 @@ impl Bridge {
                     return Self::carry(&mut self.endpoint_carry, endpoints);
                 }
                 AppMsg::StoreWork(plx_data::stores::StoreWork::Hubs) => {
+                    super::adapters::stores::refill_client_keys(&mut self.client_keys);
                     let directory = self.directory.view();
-                    let due = io.hubs_with_directory(&mut self.stores.hubs, None, parts.tick.dt(), directory).endpoints;
+                    let due = io.hubs_with_directory(&mut self.stores.hubs, None, parts.tick.dt(), directory, &self.client_keys).endpoints;
                     return Self::carry(&mut self.endpoint_carry, due);
                 }
                 AppMsg::StoreWork(plx_data::stores::StoreWork::BrowseDiscovery) => {
@@ -1968,19 +1975,22 @@ impl Bridge {
                 Handled::Yes
             }
             AppMsg::Store(StoreCmd::Hubs(c)) => {
+                super::adapters::stores::refill_client_keys(&mut self.client_keys);
                 let directory = self.directory.view();
-                let due = self.stores.hubs.run_with_directory(c.clone(), directory).endpoints;
+                let due = self.stores.hubs.run_with_directory(c.clone(), directory, &self.client_keys).endpoints;
                 Self::carry(&mut self.endpoint_carry, due)
             }
             AppMsg::Store(cmd) => step_store(cmd, &cx, fx),
             AppMsg::HubsResult(result) => {
+                super::adapters::stores::refill_client_keys(&mut self.client_keys);
                 let directory = self.directory.view();
-                let due = self.stores.hubs.land_with_directory(result, directory).endpoints;
+                let due = self.stores.hubs.land_with_directory(result, directory, &self.client_keys).endpoints;
                 Self::carry(&mut self.endpoint_carry, due)
             }
             AppMsg::StoreWork(plx_data::stores::StoreWork::Hubs) => {
+                super::adapters::stores::refill_client_keys(&mut self.client_keys);
                 let directory = self.directory.view();
-                let due = self.stores.hubs.tick_with_directory(parts.tick.dt(), directory).endpoints;
+                let due = self.stores.hubs.tick_with_directory(parts.tick.dt(), directory, &self.client_keys).endpoints;
                 Self::carry(&mut self.endpoint_carry, due)
             }
             AppMsg::StoreWork(plx_data::stores::StoreWork::BrowseDiscovery) => {
