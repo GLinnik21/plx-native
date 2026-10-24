@@ -201,16 +201,15 @@ out at once, so a pump emits several jobs, one per fetch slot, in ascending slot
   registry that moved on between the step and the launch (the client the job names is no longer the
   one the slot holds), or a `Held` runner whose client is gone. It then calls the port's `refused`,
   so every job gets exactly one answer, a refusal included. A refusal that only released the claim
-  would have the next pump send the same request at once, every frame, where the inline spawn that
-  failed backed off, so the step has to see it. A store whose claim is a `Fetch` (subtitle search)
+  would have the next pump send the same request at once, every frame, so the step has to see it. A store whose claim is a `Fetch` (subtitle search)
   reads `Fetch::take_refused(gen)` at the head of its next pump: the port's
   `Fetch::refuse_for(gen)` frees that generation's claim and remembers the refusal for
   `take_refused` to answer once, and a refusal for a superseded generation (one whose claim a newer
   request or a supersede has replaced) frees nothing and records nothing. A store whose claim is a mailbox of landings
   (the view-state read-back) has its port post a store-local `NotStarted` landing, and the next pump
   puts the flight's items back and waits. A refusal never goes into a recorded mailbox (a recorded
-  take would write it as an async result and change the bytes). It reaches the step one pump later
-  than a failed inline spawn did; no fixture holds a refused start, so no recorded byte moves.
+  take would write it as an async result and change the bytes). It reaches the step one pump after
+  the launch; no fixture holds a refused start, so no recorded byte moves.
 - **Subtitle search and the view-state read-back** are the next two stores on the lane. The worker
   start and the `client_for` read are gone from `data/src/subsearch.rs` and
   `data/src/stores/viewreconcile.rs`, and their four ledger lines are deleted. Each step reads
@@ -221,4 +220,4 @@ out at once, so a pump emits several jobs, one per fetch slot, in ascending slot
   `Bridge::reconcile_pump` refill the keys, step, then run `Bridge::start_store_jobs_of` for their
   own store in the same call; `Bridge::subsearch_run` only drains, because the command step takes no
   keys and emits nothing. Neither kind is on the tape, so the runner makes no admission record for
-  them and a replay launches them live, as the inline spawn did.
+  them and a replay launches them live.

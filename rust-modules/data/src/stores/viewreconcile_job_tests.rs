@@ -99,7 +99,7 @@ fn a_write_in_flight_sends_nothing() {
     plx_machine::assert_fx!(store.take_jobs(), [job(&store, 1, 0, &["1"])]);
 }
 
-/// A server that holds no client has nowhere to read from: its batch is dropped, as before, no
+/// A server that holds no client has nowhere to read from: its batch is dropped, no
 /// flight is made and no wait begins; another server's batch is still sent.
 #[test]
 fn a_server_without_a_client_drops_its_batch_and_the_others_are_still_sent() {
@@ -282,7 +282,7 @@ fn a_key_mismatch_at_launch_requeues_and_the_next_kick_asks_the_new_client() {
     let mut store = ViewReconcileStore::default();
     store.enqueue([(id, "1".to_string())]);
     let clients = super::rig::registry_keys();
-    store.pump_with_gate(&Gate::default(), true, &clients, &mut |_| {});
+    pump(&mut store, true, &clients);
     let (sent, port) = one(&mut store);
     let asked_with = sent.req.server().1;
     assert_eq!(Some(asked_with), clients.key(id));
@@ -294,10 +294,10 @@ fn a_key_mismatch_at_launch_requeues_and_the_next_kick_asks_the_new_client() {
 
     let clients = super::rig::registry_keys();
     assert_ne!(clients.key(id), Some(asked_with), "the registry's answer changed with the token");
-    store.pump_with_gate(&Gate::default(), true, &clients, &mut |_| {});
+    pump(&mut store, true, &clients);
     assert_eq!(store.flights_for_test(), 0);
     for _ in 0..RETRY_FRAMES {
-        store.pump_with_gate(&Gate::default(), true, &clients, &mut |_| {});
+        pump(&mut store, true, &clients);
     }
     let (retry, _) = one(&mut store);
     assert_eq!(retry.req.server(), (id, clients.key(id).expect("held")), "the retry names the new client");

@@ -122,8 +122,8 @@ fn a_server_without_a_client_emits_nothing_and_holds_off() {
 }
 
 /// A refusal hands the request's claim back in the call that refuses it. The pump after it reads
-/// the refusal BEFORE it decides to spawn and backs off as a failed spawn always did: with only
-/// the release it would find the claim free and emit the same request again, every pump.
+/// the refusal BEFORE it decides to spawn and backs off: with only the release it would find the
+/// claim free and emit the same request again, every pump.
 #[test]
 fn a_refused_request_is_asked_again_only_after_the_backoff() {
     let mut rig = Rig::opened("nl");
@@ -135,7 +135,7 @@ fn a_refused_request_is_asked_again_only_after_the_backoff() {
     assert!(!rig.claim_held(), "the refusal released the claim in the same call");
     assert!(!rig.adapter.has_mail_for_test(), "a refusal answers nothing");
 
-    // The refusal is applied one pump later than the spawn it replaces, and holds the full wait.
+    // The refusal is seen one pump after it is made, and holds the full wait.
     plx_machine::assert_fx!(rig.pump(&holding()), []);
     assert_eq!(rig.state.retry_for_test(), RETRY_FRAMES, "the pump that saw it backed off");
     for _ in 1..RETRY_FRAMES { plx_machine::assert_fx!(rig.pump(&holding()), []); }

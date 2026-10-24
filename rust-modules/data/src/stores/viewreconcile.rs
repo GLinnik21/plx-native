@@ -458,6 +458,15 @@ impl ViewReconcileStore {
         !self.jobs.is_empty()
     }
 
+    /// Take out of `dirty` every item asked for again while a read of `keys` on `sid` was out.
+    fn take_asked_again(&mut self, sid: ServerId, keys: &[String]) -> Vec<Key> {
+        let (again, rest) = std::mem::take(&mut self.dirty).into_iter().partition(|(s, rk)| {
+            *s == sid && keys.iter().any(|k| plx_plex::plex::same_item((sid, k), (*s, rk)))
+        });
+        self.dirty = rest;
+        again
+    }
+
     /// A flight whose read was never started goes back where it came from: its leaves into
     /// `pending`, its trailing parents into `pending_parents`, and the retry wait starts. Nothing
     /// was asked of the server, so this publishes nothing and settles nothing: the stop candidates,
@@ -468,9 +477,7 @@ impl ViewReconcileStore {
     /// and show are read after it.
     fn requeue_unstarted(&mut self, flight: Flight) {
         let Flight { sid, keys, parents, .. } = flight;
-        let covered = |k: &Key| k.0 == sid && keys.iter().any(|f| plx_plex::plex::same_item((sid, f), (k.0, &k.1)));
-        let asked_again: Vec<Key> = self.dirty.iter().filter(|k| covered(k)).cloned().collect();
-        self.dirty.retain(|k| !covered(k));
+        let asked_again = self.take_asked_again(sid, &keys);
         let queued = |list: &[Key], rk: &str| list.iter().any(|k| plx_plex::plex::same_item((k.0, &k.1), (sid, rk)));
         let leaves = keys.len() - parents.len();
         let mut keys = keys.into_iter();
@@ -601,10 +608,7 @@ impl ViewReconcileStore {
             self.candidates.retain(|(k, born)| *born > flight.id || !(k.0 == flight.sid && flight.keys.iter()
                 .any(|f| plx_plex::plex::same_item((flight.sid, f), (k.0, &k.1)))));
             // Asked for again while this was out: once more, now.
-            let again: Vec<Key> = self.dirty.iter()
-                .filter(|(s, rk)| *s == flight.sid && flight.keys.iter().any(|k| plx_plex::plex::same_item((*s, k), (*s, rk))))
-                .cloned().collect();
-            self.dirty.retain(|k| !again.contains(k));
+            let again = self.take_asked_again(flight.sid, &flight.keys);
             self.pending.extend(again);
             changed = true;
         }

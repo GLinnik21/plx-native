@@ -350,8 +350,7 @@ impl SubSearchState {
             if mail.gen == self.generation { changed |= self.apply(mail.what); }
         }
         // A launch the runner refused freed its claim in the call that refused it, and said so:
-        // back off here, as a spawn that failed in this very pump always did, or the claim being
-        // free would have the next request go out at once, every pump.
+        // back off here, or the free claim would have the next request go out at once, every pump.
         if adapter.fetch.take_refused(self.generation) { self.retry_cd = RETRY_FRAMES; }
         self.maybe_spawn(adapter, keys);
         changed

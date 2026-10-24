@@ -1282,7 +1282,7 @@ impl Bridge {
     /// so that a command which one day does is started in the call that ran it.
     pub(crate) fn subsearch_run(&mut self, cmd: plx_data::subsearch::SubSearchCmd) -> bool {
         let changed = self.stores.subtitle_search_run(cmd);
-        self.start_store_jobs_of(plx_data::stores::StoreId::SubtitleSearch);
+        self.start_store_jobs_of(StoreId::SubtitleSearch);
         changed
     }
 
@@ -1292,7 +1292,7 @@ impl Bridge {
     pub(crate) fn subsearch_pump(&mut self) -> bool {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
         let changed = self.stores.subtitle_search_pump(&self.client_keys);
-        self.start_store_jobs_of(plx_data::stores::StoreId::SubtitleSearch);
+        self.start_store_jobs_of(StoreId::SubtitleSearch);
         changed
     }
 
@@ -1457,7 +1457,7 @@ impl Bridge {
     pub(crate) fn reconcile_pump(&mut self) -> plx_data::stores::EndpointRefreshSet {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
         let changed = self.stores.reconcile_pump(self.directory.view(), &self.client_keys);
-        self.start_store_jobs_of(plx_data::stores::StoreId::ViewReconcile);
+        self.start_store_jobs_of(StoreId::ViewReconcile);
         if changed {
             plx_machine::idle::invalidate();
         }

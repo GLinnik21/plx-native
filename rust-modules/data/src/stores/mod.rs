@@ -867,10 +867,9 @@ impl<M> Fetch<M> {
     /// back and the refusal is remembered, for [`Fetch::take_refused`] to answer once.
     ///
     /// A bare release frees the claim and says nothing, so a step that backs off after a launch
-    /// that did not happen (it used to learn that from the failed spawn, in the same call) would
-    /// find the claim free on its next pump and ask again at once, a spin. The step reads the
-    /// refusal at the head of that pump, before it decides to spawn, and applies the backoff it
-    /// always did. The claim is still freed in the same call as the refusal, so a take that is
+    /// that did not happen would find the claim free on its next pump and ask again at once, a
+    /// spin. The step reads the refusal at the head of that pump, before it decides to spawn, and
+    /// backs off. The claim is still freed in the same call as the refusal, so a take that is
     /// owed on `busy` (dump mode) is never left waiting on a request that will not answer.
     ///
     /// Remembered only when the claim handed back was this request's. A refusal of a request the

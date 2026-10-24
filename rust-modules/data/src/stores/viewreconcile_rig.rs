@@ -10,11 +10,7 @@ use crate::stores::Stores;
 
 /// The registry's answer as of now: what the Bridge's refill makes of it before a step.
 pub(super) fn registry_keys() -> ClientKeys {
-    let mut keys = ClientKeys::default();
-    keys.refill(plx_plex::plex::server_ids().filter_map(|sid| {
-        plx_plex::plex::client_for(sid).map(|client| (sid, ClientKey::of(client)))
-    }));
-    keys
+    ClientKeys::of(plx_plex::plex::server_ids().filter_map(|sid| plx_plex::plex::client_for(sid).map(|c| (sid, c))))
 }
 
 /// What the runner does with one read: start it on a worker through the client the step decided on,

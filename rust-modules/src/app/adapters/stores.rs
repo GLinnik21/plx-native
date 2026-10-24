@@ -7,8 +7,8 @@
 //! command run on the bare store) and hands each to [`StoreRunner::start`], which owns everything
 //! the data layer must not: the tape's admission record, the worker thread and the process-global
 //! client the request reads. A kind that is not on the tape (subtitle search, view reconcile) is
-//! started with no admission record, exactly as its inline spawn was. The detail pump keeps a
-//! counted backstop for a sender that did neither (`Bridge::start_late_store_jobs`).
+//! started with no admission record. The detail pump keeps a counted backstop for a sender that
+//! did neither (`Bridge::start_late_store_jobs`).
 //!
 //! **One runner per `Bridge`, chosen when the Bridge is built**, as the consent adapter is: `Live`
 //! in production, and in a host test the `Held` runner, which parks each job until the test runs
@@ -225,7 +225,7 @@ impl StoreRunner {
     }
 
     /// A subtitle-search request is not on the tape, so nothing is admitted or recorded: the
-    /// launch is the whole decision, as the inline spawn's was. A launch that did not happen
+    /// launch is the whole decision. A launch that did not happen
     /// (the registry no longer holds the client the step decided on, or the thread ceiling) is
     /// refused, which hands the request's claim back and tells the pump to back off.
     fn start_subsearch(&mut self, job: Job<SubSearchReq>, port: SubSearchPort) {
@@ -845,7 +845,7 @@ mod tests {
 
     /// Recording, the registry still holding the client the step decided on: the worker starts,
     /// reads, and posts its ONE answer; taking it releases the claim. The kind is not on the tape,
-    /// so nothing is recorded: it launches as the inline spawn did, under replay too.
+    /// so nothing is recorded: it launches live, under replay too.
     #[test]
     fn a_search_job_whose_client_is_still_held_is_started_answered_once_and_not_taped() {
         let _serial = plx_base::testlock::serial();
