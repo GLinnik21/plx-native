@@ -1019,12 +1019,7 @@ fn app_pcm_for_rate(
 /// a 22.05 kHz one at about 2006 Hz: each is 1000 x 44100 / the file's rate.
 /// PURE.
 fn pcm_rate_khz(hz: u32) -> String {
-    let (whole, frac) = (hz / 1000, hz % 1000);
-    if frac == 0 {
-        whole.to_string()
-    } else {
-        format!("{whole}.{}", format!("{frac:03}").trim_end_matches('0'))
-    }
+    (f64::from(hz) / 1000.0).to_string()
 }
 
 /// The `contents.pcmInfo` node a PCM Load needs — the only way the pipeline learns the raw
