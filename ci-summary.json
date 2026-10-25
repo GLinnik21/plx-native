@@ -29,7 +29,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-24T23:49:38Z",
+ "generated": "2026-10-25T00:07:19Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -95,19 +95,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -50.7,
-   "change7_pct": -29.5,
+   "change30_pct": -50.8,
+   "change7_pct": -29.6,
    "d30": 689.5,
-   "delta30": -349.5,
-   "delta7": -142.0,
+   "delta30": -350.0,
+   "delta7": -142.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 205,
-   "n_prev": 266,
-   "now": 340,
-   "prev7": 482.0,
+   "n_now": 204,
+   "n_prev": 267,
+   "now": 339.5,
+   "prev7": 482,
    "shown": true,
    "state": "better",
    "state30": "better",
@@ -125,9 +125,9 @@
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 100,
+   "n_now": 101,
    "n_prev": 116,
-   "now": 331.0,
+   "now": 331,
    "prev7": 435.5,
    "shown": true,
    "state": "better",
@@ -254,19 +254,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 52.1,
-   "change7_pct": -4.4,
+   "change30_pct": 51.8,
+   "change7_pct": -4.1,
    "d30": 624.0,
-   "delta30": 325.0,
-   "delta7": -44,
+   "delta30": 323.0,
+   "delta7": -40.5,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "kind": "job",
    "label": "Nightly: ARM build + gates / build + verify",
-   "n_now": 17,
-   "n_prev": 21,
-   "now": 949,
-   "prev7": 993,
+   "n_now": 16,
+   "n_prev": 22,
+   "now": 947.0,
+   "prev7": 987.5,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -338,18 +338,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 101.9,
-   "change7_pct": 13.6,
+   "change30_pct": 102.3,
+   "change7_pct": 13.8,
    "d30": 130.5,
-   "delta30": 133.0,
-   "delta7": 31.5,
+   "delta30": 133.5,
+   "delta7": 32.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 86,
+   "n_now": 87,
    "n_prev": 112,
-   "now": 263.5,
+   "now": 264,
    "prev7": 232.0,
    "shown": true,
    "state": "flat",
@@ -359,18 +359,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 183.7,
-   "change7_pct": 7.5,
+   "change30_pct": 181.6,
+   "change7_pct": 6.7,
    "d30": 70.5,
-   "delta30": 129.5,
-   "delta7": 14.0,
+   "delta30": 128.0,
+   "delta7": 12.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 85,
+   "n_now": 86,
    "n_prev": 112,
-   "now": 200,
+   "now": 198.5,
    "prev7": 186.0,
    "shown": true,
    "state": "flat",
@@ -423,17 +423,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -6.5,
+   "change7_pct": -5.9,
    "d30": null,
    "delta30": null,
-   "delta7": -10.0,
+   "delta7": -9.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 86,
+   "n_now": 87,
    "n_prev": 112,
-   "now": 143.0,
+   "now": 144,
    "prev7": 153.0,
    "shown": true,
    "state": "flat",
@@ -487,27 +487,6 @@
    "unit": "s"
   },
   {
-   "change30_pct": 26.7,
-   "change7_pct": 0.0,
-   "d30": 15,
-   "delta30": 4,
-   "delta7": 0,
-   "group": "ci",
-   "id": "nightly|publish nightly prerelease",
-   "kind": "job",
-   "label": "Nightly: publish nightly prerelease",
-   "n_now": 17,
-   "n_prev": 21,
-   "now": 19,
-   "prev7": 19,
-   "shown": false,
-   "state": "flat",
-   "state30": "flat",
-   "threshold_abs": 120.0,
-   "threshold_pct": 25.0,
-   "unit": "s"
-  },
-  {
    "change30_pct": 18.8,
    "change7_pct": 11.8,
    "d30": 16.0,
@@ -517,9 +496,9 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 86,
+   "n_now": 87,
    "n_prev": 112,
-   "now": 19.0,
+   "now": 19,
    "prev7": 17.0,
    "shown": false,
    "state": "flat",
@@ -529,19 +508,40 @@
    "unit": "s"
   },
   {
+   "change30_pct": 23.3,
+   "change7_pct": -2.6,
+   "d30": 15,
+   "delta30": 3.5,
+   "delta7": -0.5,
+   "group": "ci",
+   "id": "nightly|publish nightly prerelease",
+   "kind": "job",
+   "label": "Nightly: publish nightly prerelease",
+   "n_now": 16,
+   "n_prev": 22,
+   "now": 18.5,
+   "prev7": 19.0,
+   "shown": false,
+   "state": "flat",
+   "state30": "flat",
+   "threshold_abs": 120.0,
+   "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
    "change30_pct": 30.8,
    "change7_pct": 13.3,
    "d30": 13.0,
    "delta30": 4.0,
-   "delta7": 2,
+   "delta7": 2.0,
    "group": "ci",
    "id": "nightly|plan today's nightly",
    "kind": "job",
    "label": "Nightly: plan today's nightly",
-   "n_now": 17,
-   "n_prev": 21,
-   "now": 17,
-   "prev7": 15,
+   "n_now": 16,
+   "n_prev": 22,
+   "now": 17.0,
+   "prev7": 15.0,
    "shown": false,
    "state": "flat",
    "state30": "flat",
@@ -639,11 +639,6 @@
    "change_pct": 36.4,
    "commits": [
     {
-     "pr": 1005,
-     "sha": "f5424652b",
-     "title": "Site: fix the fan posters, phone nav pill, store note and duplicate Install link"
-    },
-    {
      "pr": 1011,
      "sha": "c56e8cdd6",
      "title": "Hubs store emits its read as a store job; the step decides its client from ClientKeys"
@@ -687,6 +682,11 @@
      "pr": 1026,
      "sha": "d51aff4b2",
      "title": "ViewState writes emit store jobs keyed by ClientKey; a write whose profile or client moved is dropped, never sent as ano"
+    },
+    {
+     "pr": 1000,
+     "sha": "d18aedde5",
+     "title": "Simulator: the desktop drawable is 1:1 with the canvas on any pixel density (Retina debug crash)"
     }
    ],
    "from": 154.0,
@@ -700,11 +700,6 @@
    "change_pct": 35.8,
    "commits": [
     {
-     "pr": 1005,
-     "sha": "f5424652b",
-     "title": "Site: fix the fan posters, phone nav pill, store note and duplicate Install link"
-    },
-    {
      "pr": 1011,
      "sha": "c56e8cdd6",
      "title": "Hubs store emits its read as a store job; the step decides its client from ClientKeys"
@@ -748,6 +743,11 @@
      "pr": 1026,
      "sha": "d51aff4b2",
      "title": "ViewState writes emit store jobs keyed by ClientKey; a write whose profile or client moved is dropped, never sent as ano"
+    },
+    {
+     "pr": 1000,
+     "sha": "d18aedde5",
+     "title": "Simulator: the desktop drawable is 1:1 with the canvas on any pixel density (Retina debug crash)"
     }
    ],
    "from": 46.0,
@@ -761,11 +761,6 @@
    "change_pct": 27.1,
    "commits": [
     {
-     "pr": 1005,
-     "sha": "f5424652b",
-     "title": "Site: fix the fan posters, phone nav pill, store note and duplicate Install link"
-    },
-    {
      "pr": 1011,
      "sha": "c56e8cdd6",
      "title": "Hubs store emits its read as a store job; the step decides its client from ClientKeys"
@@ -809,6 +804,11 @@
      "pr": 1026,
      "sha": "d51aff4b2",
      "title": "ViewState writes emit store jobs keyed by ClientKey; a write whose profile or client moved is dropped, never sent as ano"
+    },
+    {
+     "pr": 1000,
+     "sha": "d18aedde5",
+     "title": "Simulator: the desktop drawable is 1:1 with the canvas on any pixel density (Retina debug crash)"
     }
    ],
    "from": 114.7,
@@ -825,7 +825,7 @@
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
    "label": "Nightly: ARM build + gates / build + verify",
-   "now": 949
+   "now": 947.0
   },
   {
    "group": "ci",
@@ -849,7 +849,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 263.5
+   "now": 264
   }
  ],
  "slowest_local": [
