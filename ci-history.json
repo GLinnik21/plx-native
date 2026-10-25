@@ -1,4 +1,4 @@
-{"updated":"2026-10-25T01:17:54Z",
+{"updated":"2026-10-25T08:20:49Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -3579,7 +3579,8 @@
 {"id":40111129570,"at":"2026-10-24T23:42:57Z","sha":"781b6917a","title":"i18n: translate the new upstream media-stream failure field","pr":1006,"event":"pull_request","conclusion":"success","attempt":2,"jobs":{"Linux simulator build + launch":284,"macOS tests against bundled FFmpeg and ASS":115,"macOS simulator build + launch":110,"Windows launcher syntax":16},"wall":26817},
 {"id":40145105420,"at":"2026-10-25T00:02:11Z","sha":"d18aedde5","title":"Simulator: the desktop drawable is 1:1 with the canvas on any pixel density (Retina debug crash)","pr":1000,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":191,"macOS tests against bundled FFmpeg and ASS":168,"Linux simulator build + launch":277,"Windows launcher syntax":13}},
 {"id":40145181137,"at":"2026-10-25T00:03:19Z","sha":"d9956c7fc","title":"Browse listing jobs simplify: one address helper for the directory and page reads","pr":1028,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":114,"macOS tests against bundled FFmpeg and ASS":129,"Windows launcher syntax":21,"Linux simulator build + launch":256}},
-{"id":40146060670,"at":"2026-10-25T00:16:37Z","sha":"b835afb86","title":"Add Russian (ru) localization","pr":1006,"conclusion":"failure","attempt":1,"jobs":{"Windows launcher syntax":21},"failed":["Linux simulator build + launch","macOS simulator build + launch","macOS tests against bundled FFmpeg and ASS"]}
+{"id":40146060670,"at":"2026-10-25T00:16:37Z","sha":"b835afb86","title":"Add Russian (ru) localization","pr":1006,"conclusion":"failure","attempt":1,"jobs":{"Windows launcher syntax":21},"failed":["Linux simulator build + launch","macOS simulator build + launch","macOS tests against bundled FFmpeg and ASS"]},
+{"id":40176120786,"at":"2026-10-25T08:18:54Z","sha":"dabe44977","title":"Audio: declare the FLAC PCM sample rate in kilohertz","pr":1032,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"Windows launcher syntax":16},"failed":["Linux simulator build + launch","macOS simulator build + launch","macOS tests against bundled FFmpeg and ASS"]}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
