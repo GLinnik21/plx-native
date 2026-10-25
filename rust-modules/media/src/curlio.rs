@@ -957,9 +957,34 @@ impl CurlSource {
         // Whether an attempt of this hop has already run against the bundled roots: the bundle is
         // never offered twice ([`keypin::after_failure`]).
         let mut roots_tried = false;
+        // Cloudflare answers the FIRST Range request of every URL its edge has not seen with a
+        // 200 and the whole body, then honours Range from the second request on. A server that
+        // mints a URL per play (Jellyfin: PlaySessionId and token in the query) is a fresh URL at
+        // every open and seek, so behind Cloudflare each of them would be refused without one
+        // retry. A server that really ignores Range answers the retry with a 200 too and is
+        // refused as before; a 206 naming the wrong (or no) offset is not that case and is
+        // refused at once.
+        let mut range_retried = false;
         loop {
             roots_tried |= matches!(mode, keypin::Mode::Roots { .. });
-            match self.start_attempt(at, range_end, deadline, checkpoint, original, hop, &mode, roots_tried)? {
+            let attempt = match self.start_attempt(
+                at,
+                range_end,
+                deadline,
+                checkpoint,
+                original,
+                hop,
+                &mode,
+                roots_tried,
+            ) {
+                Err(OpenErr::RangeIgnored) if !range_retried && self.xfer.status == 200 => {
+                    range_retried = true;
+                    crate::player::log("curlio: Range answered 200 once — retrying the request once");
+                    continue;
+                }
+                other => other?,
+            };
+            match attempt {
                 Attempt::Done => return Ok(None),
                 Attempt::Redirect(next) => return Ok(Some(next)),
                 Attempt::Retry(next, why) => {
@@ -2491,6 +2516,9 @@ mod tests {
         OmitContentRange,
         /// Fail the first seek request with 503, then honour a later retry.
         FailFirstSeek,
+        /// Answer the first seek's Range with a 200 and the whole body, then honour Range:
+        /// Cloudflare's behaviour for a URL its edge has not seen before.
+        IgnoreFirstRange,
         /// Answer requests before the numbered one normally; from it on, read the request and
         /// never answer — a server slow to produce headers, held until the test ends.
         WithholdFrom(usize),
@@ -2736,14 +2764,14 @@ mod tests {
                 continue;
             }
             let ranged = start > 0
-                && matches!(
+                && (matches!(
                     mode,
                     RangeMode::Honour
                         | RangeMode::OmitContentRange
                         | RangeMode::FailFirstSeek
                         | RangeMode::TruncateFirst
                         | RangeMode::TruncateFirstThen503
-                );
+                ) || (mode == RangeMode::IgnoreFirstRange && request_no != 2));
             let hdr = if ranged && mode == RangeMode::OmitContentRange {
                 format!(
                     "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\n\r\n",
@@ -3092,6 +3120,27 @@ mod tests {
                 CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 4).err(),
                 Some(OpenErr::RangeIgnored),
                 "and an OPEN at a non-zero offset must refuse for the same reason"
+            );
+        });
+    }
+
+    /// Cloudflare answers the first Range for a URL its edge has not seen with a 200 and the
+    /// whole body, and honours the next. A server that mints a URL per play is a fresh URL at
+    /// every open and seek, so refusing on that first answer failed every seek and resume
+    /// through it; one retry is what tells it apart from a server that ignores Range.
+    #[test]
+    fn a_range_ignored_once_is_retried_and_served_from_the_right_offset() {
+        let Some(_gate) = curl_gate() else { return };
+        with_server(RangeMode::IgnoreFirstRange, |port, _, requests| {
+            let mut src =
+                CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
+            assert!(src.seek(4), "the retry's 206 must carry the seek");
+            assert!(!src.poisoned);
+            assert_eq!(read_all(&mut src), b"EFGH");
+            assert_eq!(
+                requests.load(Ordering::Acquire),
+                3,
+                "open, the 200 the seek refused, the retried 206"
             );
         });
     }
