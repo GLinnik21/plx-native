@@ -283,6 +283,10 @@ pub(crate) struct App {
     /// The playing session is parked because the pipeline took its video decoder back, not
     /// because the app left the screen; the next press restores it (`run::park_on_decoder_release`).
     decoder_parked: bool,
+    /// The foreground Load was refused while the plaintext grants were still being re-proven (the
+    /// DID edge withdraws them), as `(grant revision at the refusal, retries left)`; the frame
+    /// step claims again once the revision moves (`run::retry_refused_foreground`).
+    foreground_retry: Option<(u64, u8)>,
     pub(crate) ok_armed: bool,
     last_route_reported: &'static str,
     pub(crate) ptr: Pointer,

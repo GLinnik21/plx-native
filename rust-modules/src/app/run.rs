@@ -984,6 +984,10 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             let activation = did_foreground_with_link(app);
             if matches!(activation, ForegroundActivation::Launched) {
                 finish_foreground_launch(app);
+            } else if app.player.lifecycle.claimable_clock().is_some() {
+                // The Load was refused: on a plaintext-granted server the grant `network_changed`
+                // just withdrew is re-proven a moment later, after this claim. Claim again then.
+                app.foreground_retry = Some((plx_plex::plex::grant::revision(), FOREGROUND_RETRIES));
             }
             window_step(plx_telemetry::telemetry::window::Stage::ForegroundDone, Some(playing));
         }
@@ -1689,6 +1693,13 @@ fn claim_press_after_decoder_release(app: &mut App, press: WakePress) -> bool {
     }
     app.decoder_parked = false;
     let input = wake_input(press, app.player.lifecycle.claimable_clock());
+    claim_parked_foreground(app, input);
+    true
+}
+
+/// Claim the parked session's foreground Load with `input` and, when it launches, mount the
+/// player ([`finish_foreground_launch`]). `true` when the Load launched.
+fn claim_parked_foreground(app: &mut App, input: ForegroundInput) -> bool {
     let activation = drive_foreground(
         &mut app.player.lifecycle,
         &mut app.player.session,
@@ -1698,11 +1709,41 @@ fn claim_press_after_decoder_release(app: &mut App, press: WakePress) -> bool {
             repause_at: &mut app.repause_at,
         },
     );
-    if matches!(activation, ForegroundActivation::Launched) {
+    let launched = matches!(activation, ForegroundActivation::Launched);
+    if launched {
         finish_foreground_launch(app);
     }
     plx_machine::idle::invalidate();
-    true
+    launched
+}
+
+/// How many times a refused foreground Load is claimed again as the plaintext grants return.
+const FOREGROUND_RETRIES: u8 = 3;
+
+/// **A foreground Load refused for want of a credential is claimed again when the grants move.**
+/// The DID edge withdraws every plaintext grant (`grant::network_changed`) and claims the Load in
+/// the same breath, so a server on a plaintext grant (a LAN server without TLS) refused it
+/// (`stream: refused insecure credential transport`); the re-discovery minted the grant back
+/// ~250 ms later and nothing claimed the Load again, leaving the film on a still frame. Retries
+/// stop when a claim launches, when the session is no longer waiting, or after
+/// [`FOREGROUND_RETRIES`] claims.
+fn retry_refused_foreground(app: &mut App) {
+    let Some((seen, left)) = app.foreground_retry else {
+        return;
+    };
+    // Nothing parked for a claim to restore any more: it launched, ended or was superseded.
+    if app.player.lifecycle.claimable_clock().is_none() {
+        app.foreground_retry = None;
+        return;
+    }
+    let now = plx_plex::plex::grant::revision();
+    if now == seen || app.pages.surface_up() {
+        return;
+    }
+    app.foreground_retry = (left > 1).then_some((now, left - 1));
+    if claim_parked_foreground(app, ForegroundInput::DidForeground) {
+        app.foreground_retry = None;
+    }
 }
 
 /// The warm-launch DID composes its two children in order: the launch link sees the arrival
@@ -2630,6 +2671,9 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         }
         // …and the covered pages' own re-read, once each cover episode (`app/reread.rs`).
         super::reread::run(&mut app.reread, &mut app.pages, &mut app.bridge);
+        // A foreground Load the DID edge's withdrawn grants refused is claimed again once they
+        // return (`retry_refused_foreground`).
+        retry_refused_foreground(app);
         // A server on a plaintext grant keeps trying HTTPS (`plex::grant::UpgradeRetry`): its
         // endpoint re-discovery races every HTTPS route first and retires the grant when one
         // verifies. Route-unconditional — the upgrade is owed whatever is on screen.
@@ -3525,6 +3569,7 @@ mod lifecycle_regression_tests {
             },
             repause_at: -1,
             decoder_parked: false,
+            foreground_retry: None,
             ok_armed: Default::default(),
             last_route_reported: Default::default(),
             ptr: Pointer::IDLE,
