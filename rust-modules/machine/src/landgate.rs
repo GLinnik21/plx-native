@@ -112,7 +112,7 @@
 //!   spawned and a refused spawn settle it, so the site never waits for an answer nobody owes).
 //! * Browse's five mailboxes, each on its own flag: the discovery landing taken by
 //!   `pump_owned` / `discover_pump` (`src_fetching`), the genre and letters directories, the
-//!   listing page (`fetching`) and the section hubs (`hubs.fetching`). The stale-answer rule is
+//!   listing page (`fetching`) and the section hubs (`hubs.fetch`, a `stores::Fetch`). The stale-answer rule is
 //!   per mailbox. Genre, letters, page and hubs release their flag on the take whatever the epoch.
 //!   Discovery releases `src_fetching` only inside `apply_discovery`, after its epoch check; that is
 //!   safe because every epoch bump that reaches a live adapter rotates it (which retires the old

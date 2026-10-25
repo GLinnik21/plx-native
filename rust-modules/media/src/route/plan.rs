@@ -1257,6 +1257,8 @@ pub struct ResolveEnv {
     pub src_kbps: i64,
     /// Trailer sessions omit `continuous=1` so EOS cannot Up-Next into a sibling extra.
     pub omit_queue_continuous: bool,
+    /// An explicit queue-item handoff reuses the existing queue instead of POSTing a new tail.
+    pub queue_continuation: Option<super::queue_navigation::QueueContinuation>,
     /// Hero preview. Skip the PlayQueue entirely, and refuse anything that is not a direct play.
     pub preview: bool,
     /// The viewer's Plex Pass audio-DSP preference (`player::audio_enhancements`), captured at the
@@ -1587,13 +1589,10 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     let session = new_sess(rk);
     plan.sess = session.clone();
     if !rk.is_empty() && !env.preview {
-        let q = resolve_playqueue(
-            client,
-            rk,
-            &session,
-            &env.machine_id,
-            !env.omit_queue_continuous,
-        );
+        let q = env.queue_continuation.as_ref().filter(|queue| queue.matches(env.sid, rk))
+            .map(|queue| queue.refreshed(client).resolve()).unwrap_or_else(|| resolve_playqueue(
+                client, rk, &session, &env.machine_id, !env.omit_queue_continuous,
+            ));
         plan.machine_id = q.machine_id;
         plan.pq_id = q.id;
         plan.pq_item_id = q.item_id;

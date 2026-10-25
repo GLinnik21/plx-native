@@ -17,8 +17,9 @@ All paths in this table are relative to `rust-modules/src/`. `small` means `spaw
 | Source location(s) | Calls / labels | Shape and disposition |
 |---|---|---|
 | `app/adapters/poster.rs:992` | normal `poster`, called twice | Two interchangeable long-lived workers competing for images. **This proposal's scheduling domain.** |
-| `browse/mod.rs:994,1975,2630` | small `directory`, `page`, `sources` | One-shot directory/page/source discovery, adapter mailboxes and caller-owned epochs/latches. Leave alone. `directory` serves genres and letters. |
-| `browse/section_hubs.rs:406` | small `libhubs` | One-shot result with section/table/client validity checks. Leave alone. |
+| `browse/mod.rs:3644` | small `sources` | One-shot source discovery, adapter mailboxes and caller-owned epochs/latches. Leave alone. |
+| `app/adapters/stores.rs` (`launch_browse_directory`, `launch_browse_page`) | small `directory`, `page` | The Library's value-list and listing-page reads, started by the app's runner for `StoreJob::BrowseDirectory` / `BrowsePage` (no longer in `browse/mod.rs`). One-shot results behind each read's own claim and mailbox. Leave alone. `directory` serves genres and letters. |
+| `app/adapters/stores.rs` (`launch_browse_hubs`) | small `libhubs` | The section hubs' list/row read, started by the app's runner for `StoreJob::BrowseHubs` (no longer in `browse/section_hubs.rs`). One-shot result with section/table/client validity checks. Leave alone. |
 | `metadata.rs:2753,3188,3582` | small `detail`, `altsrc`, `season` | Distinct request/landing protocols; season failure is separate from an empty answer. Leave alone. |
 | `person.rs:1472,1512` | small `person` at two locations | Profile/credits and per-server resolve/media/roles; per-slot claims and generation-tagged results. Leave alone. |
 | `auth.rs:2345,2399` | small `probe` at two launcher definitions | Deadline-bounded connection-candidate races, including profile-resource probing. Not a reusable image-style worker pool. |
@@ -33,7 +34,7 @@ All paths in this table are relative to `rust-modules/src/`. `small` means `spaw
 | `search.rs:1207` | small `search` | Per-server request/response with generation and captured favourite projection. |
 | `search/recents.rs:86` | small `recents-save` | Persistence flush, not a visual response. |
 | `plex/serverinfo.rs:159` | small `serverinfo` | Per-server single-flight facts refresh, retaining old facts on failure. |
-| `viewstate.rs:434` | small `viewstate` | Serial queued writes; requeues at the head on refused spawn. FIFO expresses mutation ordering, not visual urgency. |
+| `app/adapters/stores.rs` (`launch_view_write`) | small `viewstate` | Serial queued writes, started by the runner for one `StoreJob::ViewWrite` at a time; a refused launch requeues at the head. FIFO expresses mutation ordering, not visual urgency. |
 | `telemetry/mod.rs:236,248`; `telemetry/oneoff.rs:104` | small `telemetry`, `telemetry-retry`, `oneoff` | Coalesced flush, delayed retry worker, and bounded fallback delivery. No shared poster-capacity competition. |
 | `storage_worker.rs:170` | normal, parameterized name (`persistence` in shared use) | Bounded serial persistence FIFO, capacity eight plus executing work, typed replies. Already has its own required ordering. |
 | `dev/scenarios.rs:191` | small `logintest` | Diagnostic one-shot. |
@@ -307,7 +308,7 @@ And, specifically:
 
 > **"if any caller needs a per-site flag to fit" — fired outright.** `browse.rs` gates its spawn on `done` — a landed-empty list is an answer, not an absence — which is screen state, not in-flight state, and `Job` cannot own it.
 
-It also records that the three in-flight forms (`PLAY_BUSY`, `GEN`/`DONE`, single-flight `AtomicBool`) drive different spinners, and concludes: **“The piece worth sharing was the spawn, not the mailbox.”** The current `browse/mod.rs::kick_directory` still takes `done` and declines spawning when it is true; this objection remains concrete, not merely historical.
+It also records that the three in-flight forms (`PLAY_BUSY`, `GEN`/`DONE`, single-flight `AtomicBool`) drive different spinners, and concludes: **“The piece worth sharing was the spawn, not the mailbox.”** The current `browse/mod.rs::kick_directory` still reads its list's `*_done` flag and declines to emit its read (a `StoreJob::BrowseDirectory`; it once declined to spawn the worker) when it is true; this objection remains concrete, not merely historical.
 
 This design shares typed outcomes, generation rejection, explicit admission, caller-visible refusal, and main-loop result application with the declined proposal. Those are properties of the house idiom, not evidence that it needs a reusable `Job<T>`. The proposed queue has one domain, fixed payloads and one real contested resource: two poster workers. Priority is an image-request property; `started_speculative` is physical-capacity accounting, and retry/negative art results are image-domain state. None is an accommodation for a screen's loaded-empty list, spinner, navigation history, or mutation acknowledgment. The owner still decides when to draw/warm; the queue answers whether and when that requested image work can run.
 

@@ -30,13 +30,14 @@ const SIM_TAG: &str = if cfg!(feature = "hostsim") {
 /// **not RESIZABLE**: `surface::probe` reads the drawable once, at boot, so a dragged edge would
 /// leave the viewport describing a window that no longer exists, and the interface would sit in a
 /// 1920x1080-shaped corner of the new one with every pointer hit landing somewhere else. The window
-/// opens at an exact divisor of the canvas instead — see `desktop_window_size`.
+/// opens at an exact divisor of the canvas instead — see `boot::plan_desktop_window`.
 ///
 /// ALLOW_HIGHDPI is what makes that divisor land on a **1:1 surface** on the Mac people actually
 /// have: without it a Retina display gives a drawable equal to the window in POINTS, which the
 /// compositor then doubles, so the whole interface is an upscale of a half-size render. With it,
-/// the 960x540-point window `desktop_window_size` picks on a laptop has a 1920x1080 drawable —
-/// `surface::scale() == 1.0`, the same 1:1 texel contract the television gets.
+/// `boot::fit_window_to_density` measures the pixels per point once the window exists and sizes
+/// it in points for the drawable it should give: 960x540 points for a 1920x1080 drawable on a 2x
+/// display, so `surface::scale() == 1.0`, the same 1:1 texel contract the television gets.
 const SDL_WINDOW_FLAGS: u32 = if cfg!(feature = "hostsim") {
     0x2 | 0x2000
 } else {
@@ -98,6 +99,10 @@ extern "C" {
     /// `SDL_GetDisplayUsableBounds` — the display minus the menu bar and the Dock, which is what
     /// a window may actually occupy. The out parameter is an `SDL_Rect`: exactly four `c_int`.
     fn SDL_GetDisplayUsableBounds(display: c_int, rect: *mut c_int) -> c_int;
+    /// `SDL_SetWindowSize` / `SDL_SetWindowPosition` — `app::boot::fit_window_to_density` re-sizes
+    /// and re-centres the window once the display's pixel density has been measured from it.
+    fn SDL_SetWindowSize(win: *mut c_void, w: c_int, h: c_int);
+    fn SDL_SetWindowPosition(win: *mut c_void, x: c_int, y: c_int);
 }
 
 // Phase 1a of the UI restructure split this file: everything above `run_application` moved into
@@ -194,7 +199,6 @@ extern "C" {
     pub(crate) fn SDL_LogSetPriority(category: c_int, priority: c_int);
     fn glGetString(name: c_uint) -> *const c_char;
     fn glViewport(x: c_int, y: c_int, w: c_int, h: c_int);
-    fn glClearColor(r: f32, g: f32, b: f32, a: f32);
     fn glClear(mask: c_uint);
 }
 

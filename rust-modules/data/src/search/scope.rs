@@ -688,7 +688,7 @@ mod tests {
             plx_plex::plex::register_for_test("replacement", "127.0.0.1", 3, "replacement", "scope");
         let other = plx_plex::plex::register_for_test("other", "127.0.0.1", 4, "other", "scope");
         assert_ne!(old_share, replacement);
-        stores.browse_run(crate::stores::browse::BrowseCmd::Reset);
+        stores.browse_run_for_test(crate::stores::browse::BrowseCmd::Reset);
         stores.capture_browse(&mut directory);
         let next = cache.snapshot_with_directory(directory.view(), &household());
 

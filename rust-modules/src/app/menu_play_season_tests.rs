@@ -126,6 +126,9 @@ fn an_unloaded_season_is_fetched_off_the_frame_and_its_first_episode_plays_on_la
 
     rig.tick(0);
     assert!(rig.wait.is_some(), "the wait must outlive the frame that issued the season fetch");
+    // The press ran on the bare store, which leaves its job on the outbox: the frame that issued
+    // it started it, rather than leaving it for a pump to find.
+    rig.bridge.assert_no_store_jobs_left_for_test();
     assert!(rig.bridge.metadata_view().season_loading(), "the season is in flight on a worker");
     assert_eq!(rig.episodes(), ["stale"], "nothing was fetched on the frame");
     assert_eq!(rig.played(), None, "nothing plays before the season lands");
@@ -146,7 +149,8 @@ fn a_superseded_season_landing_plays_nothing() {
     let mut rig = Rig::new(pms.port);
 
     rig.tick(0);
-    rig.bridge.metadata_mut().run(MetadataCmd::LoadSeason(0)); // the user's own tab press
+    // the user's own tab press, as the dispatcher runs it: the store's job starts in this call
+    rig.bridge.metadata_run(MetadataCmd::LoadSeason(0));
     assert!(rig.pump_until_landed());
     rig.tick(16);
 

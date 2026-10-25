@@ -10,6 +10,10 @@
 //! registry is the application's (`app::adapters::stores::refill_client_keys`), beside the IO the
 //! answer feeds, so no data-layer step can reach the registry through this type. [`ClientKeys::of`]
 //! and [`ClientKeys::from_keys`] build one from values, for the tests that drive a step.
+//!
+//! A WORKER that holds the snapshot its step decided under reaches other servers through
+//! [`KeyedClients`], which takes the registry read as an argument from its host for the same
+//! reason (the view-state write's fan-out, `data::viewstate::finish_view_write_job`).
 
 use super::{Client, ServerId};
 
@@ -64,6 +68,40 @@ impl ClientKeys {
     }
 }
 
+/// A key-checked way to a server's client, for a WORKER that holds the snapshot its step decided
+/// under. A step decides from a [`ClientKeys`] taken just before it; the worker runs later, and a
+/// profile switch re-tokens the registry's `Client` objects IN PLACE (`servers::revoke_for_profile_switch`):
+/// `instance` stays and `token` moves. A worker that read the registry again would send the
+/// request under the NEW profile's credential, to a server the old profile's step chose.
+///
+/// [`KeyedClients::client`] answers a slot only while the registry's client still carries the key
+/// the snapshot holds. The check covers the moment a request is BUILT; a swap while a request is
+/// already on the wire is not covered, the same limit as the runner's own launch check.
+///
+/// The registry read itself is the `lookup` the host passes in (the application passes
+/// `plex::client_for`), so building a [`KeyedClients`] names no registry and a data-layer worker
+/// that holds one reads none. `lookup` is a `fn` pointer, which is `Send + Copy`: the value can be
+/// built inside a worker, from the job's own snapshot, and cannot capture the caller's stack.
+#[derive(Clone, Copy)]
+pub struct KeyedClients<'a> {
+    keys: &'a ClientKeys,
+    lookup: fn(ServerId) -> Option<&'static Client>,
+}
+
+impl<'a> KeyedClients<'a> {
+    pub fn new(keys: &'a ClientKeys, lookup: fn(ServerId) -> Option<&'static Client>) -> Self {
+        Self { keys, lookup }
+    }
+
+    /// The client `sid` holds, only while its key matches the snapshot. `None` when the snapshot
+    /// holds no key for `sid` (the step never saw that slot), when the registry holds no client
+    /// for it, or when the client it holds is a different object or carries a moved credential.
+    pub fn client(&self, sid: ServerId) -> Option<&'static Client> {
+        let key = self.keys.key(sid)?;
+        (self.lookup)(sid).filter(|client| ClientKey::of(client) == key)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,5 +152,60 @@ mod tests {
         assert_eq!(keys, ClientKeys::from_keys([(ServerId::from_raw(0), new)]));
         assert_eq!(keys.key(ServerId::from_raw(1)), None, "an entry the refill did not name is gone");
         assert_eq!(keys.0.capacity(), capacity, "the allocation is reused, not replaced");
+    }
+
+    // The registry as a test double: a `fn` pointer cannot capture, so the slots live in a static.
+    // Each test uses slots of its own, so the parallel tests never read each other's.
+    static SLOTS: std::sync::Mutex<Vec<(ServerId, &'static Client)>> = std::sync::Mutex::new(Vec::new());
+
+    fn registry(sid: ServerId) -> Option<&'static Client> {
+        SLOTS.lock().unwrap().iter().find(|(slot, _)| *slot == sid).map(|&(_, client)| client)
+    }
+
+    fn register(slot: u16, token: &str) -> (ServerId, &'static Client) {
+        let sid = ServerId::from_raw(slot);
+        let client: &'static Client = Box::leak(Box::new(a_client(slot, token)));
+        let mut slots = SLOTS.lock().unwrap();
+        slots.retain(|(held, _)| *held != sid);
+        slots.push((sid, client));
+        (sid, client)
+    }
+
+    #[test]
+    fn a_slot_whose_key_matches_answers_with_its_client() {
+        let (sid, client) = register(901, "tok-a");
+        let keys = ClientKeys::of([(sid, client)]);
+        let found = KeyedClients::new(&keys, registry).client(sid).expect("the key matches");
+        assert!(std::ptr::eq(found, client), "the registry's own client, not a copy");
+    }
+
+    #[test]
+    fn a_slot_whose_credential_moved_after_the_snapshot_answers_with_none() {
+        let (sid, client) = register(902, "tok-a");
+        let keys = ClientKeys::of([(sid, client)]);
+        let clients = KeyedClients::new(&keys, registry);
+        assert!(clients.client(sid).is_some(), "before the swap");
+        client.set_token("tok-b"); // a profile switch re-tokens the same object in place
+        assert!(clients.client(sid).is_none(), "the same object under another credential is not the client the step chose");
+    }
+
+    #[test]
+    fn a_slot_the_snapshot_never_held_answers_with_none() {
+        let (held, client) = register(903, "tok-a");
+        let (unseen, _) = register(904, "tok-b");
+        let keys = ClientKeys::of([(held, client)]);
+        let clients = KeyedClients::new(&keys, registry);
+        assert!(clients.client(unseen).is_none(), "registered after the snapshot: not the step's to use");
+        assert!(clients.client(ServerId::UNSET).is_none());
+        assert!(clients.client(ServerId::from_raw(905)).is_none(), "never registered");
+    }
+
+    #[test]
+    fn a_slot_re_pointed_at_a_new_client_after_the_snapshot_answers_with_none() {
+        let (sid, old) = register(906, "tok-a");
+        let keys = ClientKeys::of([(sid, old)]);
+        let (_, replaced) = register(906, "tok-a"); // same slot, same token text, a different object
+        assert!(!std::ptr::eq(old, replaced));
+        assert!(KeyedClients::new(&keys, registry).client(sid).is_none(), "the instance moved");
     }
 }

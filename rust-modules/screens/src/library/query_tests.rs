@@ -52,7 +52,7 @@ fn accepted_queries_reset_engine_grid_memory_but_keep_the_toolbar_during_loading
             let stores = plx_data::stores::Stores::default();
             stores.browse.borrow_mut().seed_two_source_table_for_test();
             stores.capture_browse(&mut fixture.directory);
-            stores.browse_run(BrowseCmd::SetCur(0));
+            stores.browse_run_for_test(BrowseCmd::SetCur(0));
             {
                 let mut browse = stores.browse.borrow_mut();
                 browse.seed_items_for_test(120);
@@ -138,7 +138,7 @@ fn accepted_queries_reset_engine_grid_memory_but_keep_the_toolbar_during_loading
                             }
                         ) {
                             assert!(
-                                stores.browse_run(command),
+                                stores.browse_run_for_test(command),
                                 "{edit:?} must be accepted by the real store"
                             );
                             committed = true;

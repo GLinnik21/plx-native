@@ -363,7 +363,7 @@ fn a_stale_failure_landing_does_not_blame_the_current_query() {
         sorts: None, restored: None, genres: None, genre: None,
         resolved: Default::default(),
     };
-    *browse.adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+    browse.adapter.page.post(r, |_| true);
     let _outcome = browse.pump();
     assert_eq!(
         browse.fetch_state(),

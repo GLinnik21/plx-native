@@ -1032,23 +1032,9 @@ fn opus_head(channels: i64) -> Option<Vec<u8>> {
     Some(head)
 }
 
-/// Standard padded base64, the encoding `opusInfo.streamHeader` takes (ss4s: `g_base64_encode`).
-fn base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for c in bytes.chunks(3) {
-        let v = u32::from(c[0]) << 16
-            | u32::from(c.get(1).copied().unwrap_or(0)) << 8
-            | u32::from(c.get(2).copied().unwrap_or(0));
-        for (i, shift) in [18, 12, 6, 0].into_iter().enumerate() {
-            out.push(if i <= c.len() { ALPHABET[((v >> shift) & 63) as usize] as char } else { '=' });
-        }
-    }
-    out
-}
-
 /// The `contents.opusInfo` node an `OPUS` Load needs: SMP has no in-band way to learn a
-/// multistream layout, so the channel count and the identification header travel in the payload.
+/// multistream layout, so the channel count and the identification header travel in the payload
+/// (`streamHeader` is standard padded base64, as ss4s sends it).
 /// `None` when the count cannot be described or the payload has no `contents` anchor: the caller
 /// refuses the Load rather than declaring a layout the stream does not have.
 fn with_opus_info(p: &str, channels: i64) -> Option<String> {
@@ -1059,7 +1045,7 @@ fn with_opus_info(p: &str, channels: i64) -> Option<String> {
             anchor,
             &format!(
                 r#"{anchor},"opusInfo":{{"channels":{channels},"sampleRate":48,"streamHeader":"{}"}}"#,
-                base64(&head)
+                plx_base::b64::encode(&head)
             ),
         )
     })
@@ -4809,6 +4795,10 @@ mod prime_livelock_tests {
         let lead0 = 100_000_000;
         eng.max_fed_video_pts = PRES + lead0;
         eng.max_fed_audio_pts = PRES + lead0;
+        // This fixture holds the presented position fixed. Keep FeedPace's existing anchor
+        // ahead of the real clock so host preemption cannot extrapolate that position while
+        // the simulated feed clock is testing the slice. FeedPace's run-on has its own tests.
+        eng.feed_pace.last = Some((PRES, u32::MAX));
         push_segment_at(&mut eng, PRES + lead0 + 1);
 
         tick(&mt, &mut eng);
@@ -6571,14 +6561,6 @@ mod sink_envelope_tests {
         }
     }
 
-    #[test]
-    fn base64_matches_the_rfc_4648_vectors() {
-        for (raw, enc) in [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foob", "Zm9vYg=="),
-            ("fooba", "Zm9vYmE="), ("foobar", "Zm9vYmFy")] {
-            assert_eq!(base64(raw.as_bytes()), enc);
-        }
-    }
-
     /// An OPUS Load declares the codec and carries exactly one `opusInfo` inside `contents`, and
     /// the result is still one valid JSON document.
     #[test]
@@ -6591,7 +6573,7 @@ mod sink_envelope_tests {
         let contents = &v["args"][0]["option"]["externalStreamingInfo"]["contents"];
         assert_eq!(contents["codec"]["audio"], "OPUS");
         assert_eq!(contents["opusInfo"]["channels"], 6);
-        assert_eq!(contents["opusInfo"]["streamHeader"], base64(&opus_head(6).unwrap()));
+        assert_eq!(contents["opusInfo"]["streamHeader"], plx_base::b64::encode(&opus_head(6).unwrap()));
         assert_eq!(with_opus_info(&p, 0), None);
     }
 
@@ -6645,7 +6627,6 @@ mod sink_envelope_tests {
             "a faster row never raises the ceiling"
         );
     }
-
     #[test]
     fn audio_payload_names_dts_and_refuses_unsupported_formats() {
         assert_eq!(audio_payload_codec("dts"), Some(("DTS", 4)));

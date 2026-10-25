@@ -53,13 +53,9 @@ fn step_index<K: IndexElem>(entry: EntryId, k: FocusKey<K>, dir: Dir, n: usize, 
     } else {
         (Dir::Up, Dir::Down)
     };
-    if dir == back && i > 0 {
-        Step::Move(key(entry, i - 1))
-    } else if dir == fwd && i + 1 < n {
-        Step::Move(key(entry, i + 1))
-    } else {
-        Step::Edge
-    }
+    if dir != back && dir != fwd { return Step::Edge; }
+    super::focus::next_enabled_index(i, n, dir == fwd, |_| true)
+        .map_or(Step::Edge, |i| Step::Move(key(entry, i)))
 }
 
 /// **Where a plain index ends and a key namespace begins.** A widget's items are keyed by their own

@@ -84,7 +84,7 @@ fn a_kept_rows_refused_ask_is_asked_again_on_the_next_tick_after_a_publication()
     let seen = seen_by(&first);
     assert_eq!(seen.len(), 1, "premise: the trailing edge asks: {first:?}");
     let target = plx_data::stores::browse::SectionAddress { epoch: id.epoch, sid: id.sid, section: id.section };
-    for work in first { stores.browse_run(BrowseCmd::Addressed { target, work }); }
+    for work in first { stores.browse_run_for_test(BrowseCmd::Addressed { target, work }); }
     fixture.republish();
     let now = fixture.hubs.view().revision().expect("a published section");
     assert_ne!(seen[0], now, "premise: the store refused the ask for the window it had left");
@@ -165,7 +165,7 @@ fn settle_holds(
     let id = fixture.listing.view().id().unwrap();
     let stores = fixture.stores.take().unwrap();
     for &(lo, hi) in asked {
-        stores.browse_run(BrowseCmd::Addressed {
+        stores.browse_run_for_test(BrowseCmd::Addressed {
             target: plx_data::stores::browse::SectionAddress { epoch: id.epoch, sid: id.sid, section: id.section },
             work: LibraryWork::HubHold { lo, hi },
         });
@@ -241,7 +241,7 @@ fn a_row_the_store_gave_its_cards_up_is_laid_out_as_placeholders_and_keeps_its_l
     assert_eq!(page.shelves[20].elems.len(), 12, "a released row keeps its card count as slots");
     let id = fixture.listing.view().id().unwrap();
     let stores = fixture.stores.take().unwrap();
-    stores.browse_run(BrowseCmd::Addressed {
+    stores.browse_run_for_test(BrowseCmd::Addressed {
         target: plx_data::stores::browse::SectionAddress { epoch: id.epoch, sid: id.sid, section: id.section },
         work: LibraryWork::HubHold { lo: 20, hi: 25 },
     });
@@ -288,7 +288,7 @@ fn holding_down_onto_a_row_whose_cards_have_not_landed_keeps_row_and_column_when
     // the ring moves onto the row and its cards land
     let id = fixture.listing.view().id().unwrap();
     let stores = fixture.stores.take().unwrap();
-    stores.browse_run(BrowseCmd::Addressed {
+    stores.browse_run_for_test(BrowseCmd::Addressed {
         target: plx_data::stores::browse::SectionAddress { epoch: id.epoch, sid: id.sid, section: id.section },
         work: LibraryWork::HubHold { lo: target - 3, hi: target + 3 },
     });

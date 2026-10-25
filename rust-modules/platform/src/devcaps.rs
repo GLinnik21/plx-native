@@ -753,10 +753,9 @@ fn parse(s: &str) -> Option<Caps> {
         }
     }
     let table_audio: Vec<String> = t.audio_codecs.iter().map(|r| canon(&r.name)).collect();
-    let table_gated = |c: &&str| !PIPELINE_ONLY_AUDIO.contains(c);
     let audio: Vec<&str> = DP_AUDIO_CODECS
         .split(',')
-        .filter(table_gated)
+        .filter(|c| !PIPELINE_ONLY_AUDIO.contains(c))
         .filter(|c| table_audio.iter().any(|t| t == c))
         .filter(|c| *c != "dts" || audio_channels.contains_key("dts"))
         .collect();
@@ -766,7 +765,7 @@ fn parse(s: &str) -> Option<Caps> {
         Caps::assumed().audio
     } else {
         // The pipeline-only codecs ride on a table we did read, never on the assumed fallback.
-        let pipeline = DP_AUDIO_CODECS.split(',').filter(|c| !table_gated(c));
+        let pipeline = DP_AUDIO_CODECS.split(',').filter(|c| PIPELINE_ONLY_AUDIO.contains(c));
         // The app-decoded PCM formats follow the hardware ones, with the PCM path's own ceiling
         // replacing whatever the table says about a decoder we never feed.
         for c in PCM_AUDIO_CODECS.split(',') {
@@ -775,8 +774,8 @@ fn parse(s: &str) -> Option<Caps> {
         audio.into_iter().chain(pipeline).chain(PCM_AUDIO_CODECS.split(',')).collect::<Vec<_>>().join(",")
     };
     if audio.split(',').any(|c| c == "opus") {
-        let old = audio_channels.get("opus").copied().unwrap_or(0);
-        audio_channels.insert("opus".to_owned(), min_nz(old, OPUS_AUTO_MAX_CHANNELS));
+        let limit = audio_channels.entry("opus".to_owned()).or_default();
+        *limit = min_nz(*limit, OPUS_AUTO_MAX_CHANNELS);
     }
     Some(Caps {
         hevc,

@@ -48,7 +48,13 @@
 //!
 //! ## Who drives it
 //!
-//! [`kick`] is the only thing that issues a request. The owned Library emits `PublishShelves`;
+//! [`kick`] is what arms a section and asks for its first read; every read, whichever step asked
+//! (`kick`, a page ask, an invalidation, the tick), is decided in one place, `hubs_pump_spawns`,
+//! and **leaves the store as a [`crate::stores::StoreJob::BrowseHubs`] on its outbox**: nothing here
+//! starts a thread or reads the registry. The application's runner starts the job
+//! ([`finish_browse_hubs_job`] is its IO body) after checking that the client the step decided on
+//! is still the registry's, and the answer comes back to the pump as one addressed landing, or as
+//! a refusal the store's next step settles. The owned Library emits `PublishShelves`;
 //! the application combines its visibility flags with live press state (a press holds only
 //! committed shelves; a page's first publication is never held by one) and delivers addressed
 //! `LibraryWork::Hubs` to `stores::browse`, which calls `kick` and gates staged publication.
@@ -57,12 +63,14 @@
 //! dormancy at all — and the screen that draws the shelves is what woke it.
 #![allow(dead_code)] // the accessors are Landing 3's; see the Dormant note above
 
-use plx_plex::plex::ServerId;
+use plx_machine::job::{Job, Port};
+use plx_machine::machine::{Addr, MachineId, RequestId};
+use plx_plex::plex::{Client, ClientKey, ClientKeys, ServerId};
 use crate::pms::{clamp_hold, PmsMovie, HOLD_ROWS, MAX_SHELF_ITEMS};
 use crate::stores::paging::{self, Ask, PageInfo, Row, RowMode, RowState};
-use std::panic::catch_unwind;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use crate::stores::StoreJob;
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::Arc;
 
 /// Items asked for per hub. The server defaults to 6 and honours at least 24 (§3a); it is
 /// items-per-hub and never changes how many hubs come back.
@@ -256,7 +264,9 @@ pub struct SecHubs {
     /// promising "kick retries by itself" was true only of the spawn-refused path and only because
     /// `fails` happened to be non-zero there.
     ///
-    /// It is cleared when a worker is successfully CLAIMED, never when one is merely attempted.
+    /// It is cleared when the step emits the read (`hubs_spawn`). A read the runner refuses is put
+    /// back by `hubs_settle` at the head of the next step, so `!owed` means a read was sent, not
+    /// that a worker is running.
     owed: bool,
     /// Consecutive failures, for [`crate::pms::backoff_secs`]' ladder.
     fails: u32,
@@ -292,15 +302,14 @@ pub(super) struct RowAsk {
     reload: bool,
 }
 
+/// The worker-visible half of the section hubs: the ONE claim every section's read shares, the
+/// mailbox its answer goes to, and the refusal of a read that was never started
+/// ([`crate::stores::Fetch`]). The claim is raised by the step that emits the read
+/// ([`super::BrowseState::hubs_pump_spawns`]) and lowered by the take of its answer or by its
+/// refusal.
+#[derive(Default)]
 pub(super) struct HubAdapter {
-    pub(super) result: Mutex<Option<HubResult>>,
-    pub(super) fetching: AtomicBool,
-}
-
-impl Default for HubAdapter {
-    fn default() -> Self {
-        Self { result: Mutex::new(None), fetching: AtomicBool::new(false) }
-    }
+    pub(super) fetch: crate::stores::Fetch<HubResult>,
 }
 
 impl SecHubs {
@@ -517,12 +526,12 @@ impl SecHubs {
     /// **An answer that arrived for a server this slot no longer is.** Not a landing at all: the
     /// response is discarded and the section is still OWED the fetch it asked for.
     ///
-    /// It has to say so explicitly, because `spawn` clears `owed` on a successful CLAIM — a worker
-    /// is then guaranteed to fill the mailbox, which is true and is not the same as "the answer
-    /// will be usable". `kick` cannot recover it either: it re-arms neither a published section nor
-    /// an unpublished one with `fails == 0`. So without this an ordinary `sync_roster` re-point or
-    /// a token refresh left a library's shelves empty, or a refresh stale, for the rest of the
-    /// session, silently and with no failure anywhere to read.
+    /// It has to say so explicitly, because `hubs_spawn` clears `owed` when it emits the read. A
+    /// refused read is put back by `hubs_settle`, but a read that lands for a server the slot no
+    /// longer is has to say so itself. `kick` cannot recover it either: it re-arms neither a
+    /// published section nor an unpublished one with `fails == 0`. So without this an ordinary
+    /// `sync_roster` re-point or a token refresh left a library's shelves empty, or a refresh
+    /// stale, for the rest of the session, silently and with no failure anywhere to read.
     ///
     /// The ladder is deliberately NOT armed: it exists for a server that answered badly, and this
     /// one may never have answered at all.
@@ -584,9 +593,11 @@ impl SecHubs {
 }
 
 /// Arm a section's shelves and let the first fetch happen. Idempotent; call it every frame the
-/// screen wants shelves. **This is the only thing in the module that issues a request.**
+/// screen wants shelves. Nothing is started here: a read that is due leaves as a
+/// [`StoreJob::BrowseHubs`] on `jobs` (see `hubs_pump_spawns`).
 impl super::BrowseState {
-    pub(super) fn hubs_kick(&mut self, sec: usize, adapter: &Arc<super::BrowseAdapter>) {
+    pub(super) fn hubs_kick(&mut self, sec: usize, adapter: &Arc<super::BrowseAdapter>, keys: &ClientKeys,
+        jobs: &mut Vec<StoreJob>) {
         let Some(st) = self.state_mut(sec) else {
             return;
         };
@@ -600,134 +611,119 @@ impl super::BrowseState {
         if st.hubs.fails > 0 && !st.hubs.published {
             st.hubs.owed = true;
         }
-        self.hubs_pump_spawns(adapter);
+        self.hubs_pump_spawns(adapter, keys, jobs);
     }
 
-    fn hubs_pump_spawns(&mut self, adapter: &Arc<super::BrowseAdapter>) {
-        if adapter.hubs.fetching.load(Ordering::SeqCst) {
+    /// Emit the one read that is due, if the shared claim is free: the list of a section that is
+    /// owed one, else a row read of a published section. Nothing is started here: the read leaves
+    /// as a [`StoreJob::BrowseHubs`] on `jobs` and the application's runner starts it, so the
+    /// registry is read by the host (`keys`), never by this step.
+    fn hubs_pump_spawns(&mut self, adapter: &Arc<super::BrowseAdapter>, keys: &ClientKeys, jobs: &mut Vec<StoreJob>) {
+        if adapter.hubs.fetch.busy() {
             return;
         }
+        // A read the runner refused freed the claim in the call that refused it; its section is
+        // settled FIRST, so the state below is the one a read that never started leaves.
+        self.hubs_settle(adapter);
         let want = self
             .states()
             .iter()
             .position(|st| st.hubs.armed && st.hubs.owed && st.hubs.retry_left == 0);
         if let Some(sec) = want {
-            self.hubs_spawn(sec, adapter);
+            self.hubs_spawn(sec, adapter, keys, jobs);
             return;
         }
-        // The one claim every section's worker shares is the gate: a row read waits for the list
+        // The one claim every section's read shares is the gate: a row read waits for the list
         // and for any other read, one at a time, whatever the number of rows.
         let row = self.states().iter().position(|st| st.hubs.armed && st.hubs.published && st.hubs.next_ask().is_some());
         if let Some(sec) = row {
-            self.hubs_spawn_row(sec, adapter);
+            self.hubs_spawn_row(sec, adapter, keys, jobs);
         }
+    }
+
+    /// Raise the shared claim for a read of `sec` and record it as the one in flight. The claim is
+    /// raised HERE, at the step, because this step is claim-gated and several run before one drain
+    /// (a burst of invalidations); the runner's refusal gives it back.
+    fn hubs_emit(&mut self, adapter: &Arc<super::BrowseAdapter>, jobs: &mut Vec<StoreJob>, sec: usize,
+        sid: ServerId, key: ClientKey, flight: Flight, read: Read) {
+        let epoch = self.table_epoch();
+        self.hubs_stamp = self.ledger.stamp();
+        self.hubs_gen = self.hubs_gen.wrapping_add(1);
+        let gen = self.hubs_gen;
+        adapter.hubs.fetch.claim(gen);
+        self.hubs_flight = Some(HubsFlight { gen, epoch, sec, flight });
+        jobs.push(StoreJob::BrowseHubs(
+            Job { addr: browse_hubs_addr(gen), req: BrowseHubsReq { sid, key, epoch, sec, read } },
+            BrowseHubsPort::of(adapter),
+        ));
+    }
+
+    /// Settle the read the runner refused since the last step, if one was: the state a read that
+    /// never started leaves. A list read is owed again (`hubs_spawn` cleared that when it emitted),
+    /// a row read is no longer in flight. A flight with no claim and no refusal belongs to an
+    /// adapter that has since been retired, and is dropped. Never recorded anywhere.
+    fn hubs_settle(&mut self, adapter: &Arc<super::BrowseAdapter>) {
+        let Some(out) = self.hubs_flight.take() else { return };
+        if !adapter.hubs.fetch.take_refused(out.gen) || out.epoch != self.table_epoch() {
+            return;
+        }
+        if let Some(st) = self.state_mut(out.sec) {
+            match out.flight {
+                Flight::List => st.hubs.owed = true,
+                Flight::Row => st.hubs.inflight = None,
+            }
+        }
+        plx_machine::idle::invalidate();
     }
 
     /// Reads one row's window: a page the reader walked to, or the cards of a row that came back
     /// into the held range, at the offset it left.
-    fn hubs_spawn_row(&mut self, sec: usize, adapter: &Arc<super::BrowseAdapter>) {
+    fn hubs_spawn_row(&mut self, sec: usize, adapter: &Arc<super::BrowseAdapter>, keys: &ClientKeys,
+        jobs: &mut Vec<StoreJob>) {
         let Some(sid) = self.section_sid(sec) else { return };
-        let Some(client) = plx_plex::plex::client_for(sid) else { return };
+        let Some(key) = keys.key(sid) else { return };
         let Some(ask) = self.state_mut(sec).and_then(|st| st.hubs.next_ask()) else { return };
         let window = self.states().get(sec).and_then(|st| st.hubs.committed.iter()
             .find(|shelf| shelf.is(&ask.id, &ask.key)).cloned());
-        let token_gen = client.token_gen();
-        if adapter.hubs.fetching.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        let epoch = self.table_epoch();
-        self.hubs_stamp = self.ledger.stamp();
-        let worker_adapter = Arc::clone(adapter);
-        let worker_ask = ask.clone();
         if let Some(st) = self.state_mut(sec) { st.hubs.inflight = Some((ask.clone(), false)); }
-        let spawned = plx_base::task::spawn_small("libhubs", move || {
-            let shelf = catch_unwind(|| {
-                read_shelf(sid, window.as_ref()?, &worker_ask,
-                    |start, size| client.hub_items_paged(&worker_ask.key, start as i64, size as i64),
-                    |keys| client.metadata_many(&keys.iter().map(String::as_str).collect::<Vec<_>>()))
-            })
-            .unwrap_or(None);
-            *worker_adapter.hubs.result.lock().unwrap_or_else(|e| e.into_inner()) = Some(HubResult {
-                epoch,
-                sec,
-                client,
-                token_gen,
-                outcome: Outcome::Row { ask: worker_ask, shelf },
-            });
-        });
-        if !spawned {
-            adapter.hubs.fetching.store(false, Ordering::SeqCst);
-            if let Some(st) = self.state_mut(sec) { st.hubs.inflight = None; }
-        }
+        self.hubs_emit(adapter, jobs, sec, sid, key, Flight::Row, Read::Row { ask, window });
     }
 
-    fn hubs_spawn(&mut self, sec: usize, adapter: &Arc<super::BrowseAdapter>) {
-        let Some(key) = self.sections().get(sec).map(|s| s.key) else {
+    fn hubs_spawn(&mut self, sec: usize, adapter: &Arc<super::BrowseAdapter>, keys: &ClientKeys,
+        jobs: &mut Vec<StoreJob>) {
+        let Some(section) = self.sections().get(sec).map(|s| s.key) else {
             return;
         };
         let Some(sid) = self.section_sid(sec) else {
             return;
         };
-        let Some(client) = plx_plex::plex::client_for(sid) else {
+        let Some(key) = keys.key(sid) else {
             return;
         };
-        let token_gen = client.token_gen();
-        if adapter.hubs.fetching.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        let epoch = self.table_epoch();
-        self.hubs_stamp = self.ledger.stamp();
-        let worker_adapter = Arc::clone(&adapter);
         let hold = self.states().get(sec).map_or((0, HOLD_ROWS - 1), |st| st.hubs.held());
-        let spawned = plx_base::task::spawn_small("libhubs", move || {
-            // `/hubs/sections/{id}` pages by hub (docs/pms-api.md, Paging, observed): the list is read
-            // a window of hubs at a time and parsed into descriptors here, off the main thread, so
-            // only the held rows and one window of 12-card previews are ever held.
-            let shelves = catch_unwind(|| {
-                parse_hub_list(sid, key, hold, |req| match req {
-                    Some(req) => client.library_hubs_page(key, HUB_FETCH_COUNT, req),
-                    None => client.library_hubs(key, HUB_FETCH_COUNT),
-                })
-            })
-            .unwrap_or(None);
-            *worker_adapter.hubs.result.lock().unwrap_or_else(|e| e.into_inner()) = Some(HubResult {
-                epoch,
-                sec,
-                client,
-                token_gen,
-                outcome: Outcome::List(shelves),
-            });
-        });
-        if spawned {
-            if let Some(st) = self.state_mut(sec) {
-                st.hubs.owed = false;
-            }
-        } else {
-            adapter.hubs.fetching.store(false, Ordering::SeqCst);
+        if let Some(st) = self.state_mut(sec) {
+            st.hubs.owed = false;
         }
+        self.hubs_emit(adapter, jobs, sec, sid, key, Flight::List, Read::List { section, hold });
     }
 
     pub fn hubs_land(&mut self, adapter: &Arc<super::BrowseAdapter>,
-        gate: &plx_machine::landgate::Gate) -> bool {
-        // DUMP MODE: owed while the section-hubs claim (`hubs.fetching`) is held.
+        gate: &plx_machine::landgate::Gate, keys: &ClientKeys) -> bool {
+        // DUMP MODE: owed while the section-hubs claim is held.
         let taken = crate::stores::take_landing_owed(gate, crate::stores::StoreId::Browse,
-            || adapter.hubs.fetching.load(Ordering::SeqCst), || {
-            adapter.hubs.result.lock().unwrap_or_else(|e| e.into_inner()).take()
-        });
+            || adapter.hubs.fetch.busy(), || adapter.hubs.fetch.take_current(|mail| mail.gen));
         let Some(result) = taken else {
             return false;
         };
-        adapter.hubs.fetching.store(false, Ordering::SeqCst);
+        if self.hubs_flight.as_ref().is_some_and(|out| out.gen == result.gen) {
+            self.hubs_flight = None;
+        }
         if result.epoch != self.table_epoch() {
             return false;
         }
-        let still_current = self
-            .section_sid(result.sec)
-            .and_then(plx_plex::plex::client_for)
-            .map(|client| {
-                std::ptr::eq(client, result.client) && client.token_gen() == result.token_gen
-            })
-            .unwrap_or(false);
+        // The identity the read was made with, against the registry's answer as of this call: a
+        // slot re-pointed or retokened while the read was out is not the server it asked.
+        let still_current = self.section_sid(result.sec).and_then(|sid| keys.key(sid)) == Some(result.key);
         if !still_current {
             if let Some(state) = self.state_mut(result.sec) {
                 state.hubs.landing_was_not_ours();
@@ -776,7 +772,8 @@ impl super::BrowseState {
         true
     }
 
-    fn hubs_invalidate(&mut self, sec: usize, adapter: &Arc<super::BrowseAdapter>) {
+    fn hubs_invalidate(&mut self, sec: usize, adapter: &Arc<super::BrowseAdapter>, keys: &ClientKeys,
+        jobs: &mut Vec<StoreJob>) {
         if let Some(st) = self.state_mut(sec) {
             if st.hubs.armed {
                 st.hubs.fails = 0;
@@ -784,15 +781,16 @@ impl super::BrowseState {
                 st.hubs.owed = true;
             }
         }
-        self.hubs_pump_spawns(adapter);
+        self.hubs_pump_spawns(adapter, keys, jobs);
     }
 
-    pub fn hubs_tick_all(&mut self, adapter: &Arc<super::BrowseAdapter>) -> bool {
+    pub fn hubs_tick_all(&mut self, adapter: &Arc<super::BrowseAdapter>, keys: &ClientKeys,
+        jobs: &mut Vec<StoreJob>) -> bool {
         let mut moved = false;
         for st in self.states_mut() {
             moved |= st.hubs.tick();
         }
-        self.hubs_pump_spawns(adapter);
+        self.hubs_pump_spawns(adapter, keys, jobs);
         moved
     }
 
@@ -834,25 +832,25 @@ impl super::BrowseState {
 
     /// The page asks to move row `id`'s window. Returns whether a read was queued.
     pub(super) fn hubs_page(&mut self, sec: usize, seen: u64, id: &str, key: &str, before: bool,
-        adapter: &Arc<super::BrowseAdapter>) -> bool {
+        adapter: &Arc<super::BrowseAdapter>, keys: &ClientKeys, jobs: &mut Vec<StoreJob>) -> bool {
         let asked = self.state_mut(sec).is_some_and(|st| st.hubs.want_page(seen, id, key, before));
-        self.hubs_pump_spawns(adapter);
+        self.hubs_pump_spawns(adapter, keys, jobs);
         asked
     }
 
     /// The page withdraws its ask for row `id`. Nothing the page shows changes.
     pub(super) fn hubs_cancel_page(&mut self, sec: usize, id: &str, key: &str,
-        adapter: &Arc<super::BrowseAdapter>) -> bool {
+        adapter: &Arc<super::BrowseAdapter>, keys: &ClientKeys, jobs: &mut Vec<StoreJob>) -> bool {
         if let Some(st) = self.state_mut(sec) { st.hubs.cancel_page(id, key); }
-        self.hubs_pump_spawns(adapter);
+        self.hubs_pump_spawns(adapter, keys, jobs);
         false
     }
 
     /// The page holds rows `lo..=hi`. Returns whether the published rows changed.
     pub(super) fn hubs_hold(&mut self, sec: usize, lo: usize, hi: usize,
-        adapter: &Arc<super::BrowseAdapter>) -> bool {
+        adapter: &Arc<super::BrowseAdapter>, keys: &ClientKeys, jobs: &mut Vec<StoreJob>) -> bool {
         let changed = self.state_mut(sec).is_some_and(|st| st.hubs.set_hold(lo, hi));
-        self.hubs_pump_spawns(adapter);
+        self.hubs_pump_spawns(adapter, keys, jobs);
         changed
     }
 
@@ -892,7 +890,8 @@ impl super::BrowseState {
 
     /// A notification from `sid`: its sections' shelves may have moved. No other server's section
     /// is touched and the failure ladder is kept (see [`SecHubs::invalidate_notified`]).
-    pub(super) fn hubs_invalidate_server(&mut self, sid: ServerId, adapter: &Arc<super::BrowseAdapter>) {
+    pub(super) fn hubs_invalidate_server(&mut self, sid: ServerId, adapter: &Arc<super::BrowseAdapter>,
+        keys: &ClientKeys, jobs: &mut Vec<StoreJob>) {
         for sec in 0..self.sections().len() {
             if self.section_sid(sec) == Some(sid) {
                 if let Some(st) = self.state_mut(sec) {
@@ -900,14 +899,15 @@ impl super::BrowseState {
                 }
             }
         }
-        self.hubs_pump_spawns(adapter);
+        self.hubs_pump_spawns(adapter, keys, jobs);
     }
 
-    pub(super) fn hubs_invalidate_all(&mut self, adapter: &Arc<super::BrowseAdapter>) {
+    pub(super) fn hubs_invalidate_all(&mut self, adapter: &Arc<super::BrowseAdapter>, keys: &ClientKeys,
+        jobs: &mut Vec<StoreJob>) {
         for sec in 0..self.sections().len() {
-            self.hubs_invalidate(sec, adapter);
+            self.hubs_invalidate(sec, adapter, keys, jobs);
         }
-        self.hubs_pump_spawns(adapter);
+        self.hubs_pump_spawns(adapter, keys, jobs);
     }
 }
 
@@ -1187,14 +1187,17 @@ pub fn seed_landscape_for_owner_test(
 /// predate the Library growing shelves of its own.
 // ---- the fetch ------------------------------------------------------------------------------
 
-/// One section's shelves, in flight. Same shape as [`super::DirectoryResult`] and for the same
-/// reasons: the landing gate is the CLIENT LIFECYCLE and not just a generation, because `EPOCH`
-/// does not move when a slot is re-pointed or retokened.
+/// One section's shelves, in flight. Gated on the client lifecycle for the reason
+/// [`super::DirectoryResult`] is (`EPOCH` does not move when a slot is re-pointed or retokened),
+/// but by `ClientKey` rather than a `&'static Client` and a `token_gen`.
 pub(super) struct HubResult {
+    /// The request id of the job this answers ([`browse_hubs_addr`]), so a superseded read's late
+    /// answer is dropped and never releases a newer read's claim.
+    gen: u32,
     epoch: u32,
     sec: usize,
-    client: &'static plx_plex::plex::Client,
-    token_gen: u32,
+    /// The client the step decided on; the landing is ours only while the registry still holds it.
+    key: ClientKey,
     outcome: Outcome,
 }
 
@@ -1207,25 +1210,196 @@ pub(super) enum Outcome {
     Row { ask: RowAsk, shelf: Option<Shelf> },
 }
 
+/// Which read a step emitted, and so which state its refusal puts back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Flight {
+    /// A section's whole hub list: its `owed` was cleared when the job left.
+    List,
+    /// One row's window: the row's `inflight` was set when the job left.
+    Row,
+}
+
+/// The read the step has out: recorded by the step that emitted it and read by the next step,
+/// which settles it if the runner refused it ([`super::BrowseState::hubs_settle`]) and drops it when
+/// it lands. The record is the store's own memory of what it asked and is never recorded or replayed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct HubsFlight {
+    gen: u32,
+    epoch: u32,
+    sec: usize,
+    flight: Flight,
+}
+
+/// What a [`BrowseHubsReq`] reads, captured whole by the step: a worker never reads the machine.
+enum Read {
+    /// The section's whole hub list, with the rows the page holds cards for.
+    List { section: i64, hold: (usize, usize) },
+    /// One row's window (`window` is the row as it stood when the step decided), moved by `ask`.
+    Row { ask: RowAsk, window: Option<Shelf> },
+}
+
+impl PartialEq for Read {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Read::List { section: a, hold: b }, Read::List { section: c, hold: d }) => a == c && b == d,
+            (Read::Row { ask: a, window: w }, Read::Row { ask: b, window: v }) => a == b && match (w, v) {
+                (None, None) => true,
+                (Some(w), Some(v)) => w.is(&v.id, &v.key) && (w.offset, w.end, w.items.len()) == (v.offset, v.end, v.items.len()),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+}
+
+impl std::fmt::Debug for Read {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Read::List { section, hold } => write!(f, "List(section {section}, hold {hold:?})"),
+            Read::Row { ask, window } => write!(f, "Row({ask:?}, window {:?})",
+                window.as_ref().map(|w| (&w.id, &w.key, w.offset, w.end, w.items.len()))),
+        }
+    }
+}
+
+/// The one request a [`StoreJob::BrowseHubs`] carries: everything the worker needs, captured by the
+/// step. `key` is the client the step decided on; the runner starts the request only if the registry
+/// still holds that client at the launch, and the landing is ours only while it still does.
+pub struct BrowseHubsReq {
+    sid: ServerId,
+    key: ClientKey,
+    epoch: u32,
+    sec: usize,
+    read: Read,
+}
+
+impl BrowseHubsReq {
+    /// The server to ask and the client the step decided to ask it through.
+    pub fn server(&self) -> (ServerId, ClientKey) { (self.sid, self.key) }
+}
+
+impl PartialEq for BrowseHubsReq {
+    fn eq(&self, other: &Self) -> bool {
+        (self.sid, self.key, self.epoch, self.sec) == (other.sid, other.key, other.epoch, other.sec)
+            && self.read == other.read
+    }
+}
+
+impl std::fmt::Debug for BrowseHubsReq {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "BrowseHubsReq({:?}, {:?}, epoch {}, section {}, {:?})", self.sid, self.key, self.epoch,
+            self.sec, self.read)
+    }
+}
+
+/// A request's answer, opaque to the runner: the result the step lands. The runner never names
+/// [`HubResult`].
+pub struct BrowseHubsAnswer(HubResult);
+
+/// Where a request's ONE answer goes: the store's mailbox, captured with the job when it was
+/// emitted. A store that has since been `Reset` holds a new adapter, and this port still reaches
+/// the one the request was made from, the retired one nobody pumps. Two ports are equal when they
+/// reach the same adapter.
+#[derive(Clone)]
+pub struct BrowseHubsPort(Arc<super::BrowseAdapter>);
+
+impl BrowseHubsPort {
+    pub(super) fn of(adapter: &Arc<super::BrowseAdapter>) -> Self { Self(Arc::clone(adapter)) }
+}
+
+impl PartialEq for BrowseHubsPort {
+    fn eq(&self, other: &Self) -> bool { Arc::ptr_eq(&self.0, &other.0) }
+}
+
+impl std::fmt::Debug for BrowseHubsPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "BrowseHubsPort({:p})", Arc::as_ptr(&self.0))
+    }
+}
+
+impl Port<BrowseHubsAnswer> for BrowseHubsPort {
+    /// The request's answer (a panicked read answers a failure of its kind), stamped with the
+    /// request's id so the pump drops the answer of a read it has since superseded.
+    fn done(&self, addr: Addr, out: BrowseHubsAnswer) {
+        let gen = addr.req.0;
+        self.0.hubs.fetch.post(out.0, |old| old.gen < gen);
+    }
+
+    /// The request was never started, so nothing will land and nothing will release its claim:
+    /// hand the claim back and remember the refusal ([`crate::stores::Fetch::refuse_for`]); the
+    /// store settles it at the head of its next step. A refusal that comes after a newer request has
+    /// claimed leaves that claim alone.
+    fn refused(&self, addr: Addr) {
+        self.0.hubs.fetch.refuse_for(addr.req.0);
+    }
+}
+
+/// A request's address: the store and the id its step gave it. There is one read in flight across
+/// every section (the shared claim), so no two are at one address.
+fn browse_hubs_addr(generation: u32) -> Addr {
+    Addr { to: MachineId::Store(crate::stores::StoreId::Browse.ord()), req: RequestId(generation) }
+}
+
+/// The request's IO body and its completion: read the server through `client` and post the answer
+/// to `port`. The answer is posted OUTSIDE the guard, so a read that panics lands as a FAILED fetch
+/// (`None` inside) and never as an empty answer.
+pub fn finish_browse_hubs_job(port: &BrowseHubsPort, addr: Addr, client: &'static Client, req: BrowseHubsReq) {
+    let BrowseHubsReq { sid, key, epoch, sec, read } = req;
+    let outcome = match read {
+        Read::List { section, hold } => {
+            // `/hubs/sections/{id}` pages by hub (docs/pms-api.md, Paging, observed): the list is read
+            // a window of hubs at a time and parsed into descriptors here, off the main thread, so
+            // only the held rows and one window of 12-card previews are ever held.
+            let shelves = catch_unwind(AssertUnwindSafe(|| {
+                parse_hub_list(sid, section, hold, |page| match page {
+                    Some(page) => client.library_hubs_page(section, HUB_FETCH_COUNT, page),
+                    None => client.library_hubs(section, HUB_FETCH_COUNT),
+                })
+            }))
+            .unwrap_or(None);
+            Outcome::List(shelves)
+        }
+        Read::Row { ask, window } => {
+            let shelf = catch_unwind(AssertUnwindSafe(|| {
+                read_shelf(sid, window.as_ref()?, &ask,
+                    |start, size| client.hub_items_paged(&ask.key, start as i64, size as i64),
+                    |keys| client.metadata_many(&keys.iter().map(String::as_str).collect::<Vec<_>>()))
+            }))
+            .unwrap_or(None);
+            Outcome::Row { ask, shelf }
+        }
+    };
+    port.done(addr, BrowseHubsAnswer(HubResult { gen: addr.req.0, epoch, sec, key, outcome }));
+}
+
 #[cfg(test)]
-impl HubResult {
-    /// A FAILED fetch for `sec` on `client`, as a worker posts it.
-    pub(super) fn failed_for_test(epoch: u32, sec: usize, client: &'static plx_plex::plex::Client,
-        token_gen: u32) -> Self {
-        Self { epoch, sec, client, token_gen, outcome: Outcome::List(None) }
+impl BrowseHubsAnswer {
+    /// A FAILED whole-list read, as a worker answers `job`.
+    pub(super) fn failed_for_test(job: &Job<BrowseHubsReq>) -> Self {
+        Self::of_job(job, Outcome::List(None))
     }
 
-    /// A successful whole-list answer for `sec` carrying `shelves`, as a worker posts it.
-    pub(super) fn list_for_test(epoch: u32, sec: usize, client: &'static plx_plex::plex::Client,
-        token_gen: u32, shelves: Vec<Shelf>) -> Self {
-        Self { epoch, sec, client, token_gen, outcome: Outcome::List(Some(Parsed { shelves })) }
+    /// A successful whole-list read carrying `shelves`, as a worker answers `job`.
+    pub(super) fn list_for_test(job: &Job<BrowseHubsReq>, shelves: Vec<Shelf>) -> Self {
+        Self::of_job(job, Outcome::List(Some(Parsed { shelves })))
     }
 
-    /// A successful read of row `(id, key)` of `sec`, one page forward, carrying `shelf`.
-    pub(super) fn row_for_test(epoch: u32, sec: usize, client: &'static plx_plex::plex::Client,
-        token_gen: u32, id: &str, key: &str, shelf: Shelf) -> Self {
+    /// A successful read of row `(id, key)`, one page forward, carrying `shelf`, as a worker
+    /// answers `job`.
+    pub(super) fn row_for_test(job: &Job<BrowseHubsReq>, id: &str, key: &str, shelf: Shelf) -> Self {
         let ask = RowAsk { id: id.into(), key: key.into(), before: false, reload: false };
-        Self { epoch, sec, client, token_gen, outcome: Outcome::Row { ask, shelf: Some(shelf) } }
+        Self::of_job(job, Outcome::Row { ask, shelf: Some(shelf) })
+    }
+
+    /// The same answer, but for a client the registry has since replaced: its key is `key`.
+    pub(super) fn from_client_for_test(mut self, key: ClientKey) -> Self {
+        self.0.key = key;
+        self
+    }
+
+    fn of_job(job: &Job<BrowseHubsReq>, outcome: Outcome) -> Self {
+        let BrowseHubsReq { key, epoch, sec, .. } = job.req;
+        Self(HubResult { gen: job.addr.req.0, epoch, sec, key, outcome })
     }
 }
 
@@ -1439,6 +1613,10 @@ pub fn shelf_is_continue(id: &str, key: &str) -> bool {
 #[cfg(test)]
 #[path = "section_hubs_paging_tests.rs"]
 mod paging_tests;
+
+#[cfg(test)]
+#[path = "section_hubs_job_tests.rs"]
+mod job_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2263,19 +2441,17 @@ mod tests {
     }
 
     /// **A landing rejected on the client's LIFECYCLE leaves the section still owed a fetch.**
-    /// `spawn` clears `owed` on a successful CLAIM, because a worker is then guaranteed to fill the
-    /// mailbox — which is true, and is not the same as "the answer will be usable". `land` discards
-    /// a response whose server slot was re-pointed or retokened since the spawn, and `kick` re-arms
-    /// neither a published section nor an unpublished one with `fails == 0`. So an ordinary
-    /// `sync_roster` re-point or a token refresh could leave a library's shelves empty, or a
-    /// refresh stale, for the rest of the session — silently, with no failure anywhere to read.
+    /// `hubs_spawn` clears `owed` when it emits the read, and an answer that arrives is not the same
+    /// as "the answer will be usable". `land` discards a response whose server slot was re-pointed
+    /// or retokened since the read was emitted, and `kick` re-arms neither a published section nor
+    /// an unpublished one with `fails == 0`. So an ordinary `sync_roster` re-point or a token
+    /// refresh could leave a library's shelves empty, or a refresh stale, for the rest of the
+    /// session — silently, with no failure anywhere to read.
     ///
-    /// **Graded on `landing_was_not_ours` rather than end to end, and the red was SIMULATED.**
-    /// `land`'s rejection arm needs a registered `plex::Client` to disagree with, and the host
-    /// suite registers none — `browse`'s seeder fabricates sources without installing clients, so
-    /// `client_for` returns `None` here and the whole branch is unreachable. A test that took the
-    /// early exit would report green having entered nothing, which is why the state change lives in
-    /// a named method this can drive instead.
+    /// **Graded here on `landing_was_not_ours` alone.** The end-to-end rejection, a landing whose
+    /// `ClientKey` moved, is `section_hubs_job_tests.rs`'s
+    /// `a_landing_whose_client_moved_is_not_ours_and_the_section_is_still_owed`; the state change
+    /// lives in a named method so this one can drive it without a registered client.
     #[test]
     fn a_lifecycle_rejected_landing_leaves_the_section_owed() {
         let mut h = armed();
@@ -2327,7 +2503,7 @@ mod tests {
     /// `kick` also returned early because the section WAS published and had no failures. Its
     /// Continue Watching row then stayed stale for the rest of the session.
     ///
-    /// Graded on the pure bits, because the spawn path itself needs a client and a task.
+    /// Graded on the pure bits; the step path is driven end to end in `section_hubs_job_tests.rs`.
     #[test]
     fn an_invalidate_blocked_by_another_sections_fetch_stays_owed() {
         let mut h = armed();
@@ -2409,7 +2585,7 @@ mod tests {
     fn a_notified_invalidate_leaves_the_other_servers_sections_alone() {
         let _g = plx_base::testlock::serial();
         let (mut state, adapter) = two_servers();
-        state.hubs_invalidate_server(SERVER_A, &adapter);
+        state.hubs_invalidate_server(SERVER_A, &adapter, &ClientKeys::default(), &mut Vec::new());
         assert_eq!(owed_by_server(&state, SERVER_A), [true, true], "the notifying server is re-read");
         assert_eq!(owed_by_server(&state, SERVER_B), [false, false], "another server's shelves are untouched");
     }
@@ -2424,12 +2600,12 @@ mod tests {
             h.fails = 4;
             h.retry_left = 900;
         }
-        state.hubs_invalidate_server(SERVER_A, &adapter);
+        state.hubs_invalidate_server(SERVER_A, &adapter, &ClientKeys::default(), &mut Vec::new());
         let h = &state.states()[sec].hubs;
         assert_eq!((h.fails, h.retry_left), (4, 900), "a stranger's stop does not forgive a failing server");
         assert!(h.owed, "the read is still owed behind the ladder");
         // …whereas the view-state invalidate (the user's own press) does reset it
-        state.hubs_invalidate_all(&adapter);
+        state.hubs_invalidate_all(&adapter, &ClientKeys::default(), &mut Vec::new());
         let h = &state.states()[sec].hubs;
         assert_eq!((h.fails, h.retry_left), (0, 0));
     }
@@ -2438,27 +2614,27 @@ mod tests {
     fn a_burst_of_notified_invalidates_is_one_read_per_spacing() {
         let _g = plx_base::testlock::serial();
         let (mut state, adapter) = two_servers();
-        state.hubs_invalidate_server(SERVER_A, &adapter);
+        state.hubs_invalidate_server(SERVER_A, &adapter, &ClientKeys::default(), &mut Vec::new());
         assert_eq!(owed_by_server(&state, SERVER_A), [true, true]);
         for sec in 0..state.sections().len() {
             state.state_mut(sec).unwrap().hubs.owed = false; // the reads were claimed
         }
         for _ in 0..10 {
-            state.hubs_invalidate_server(SERVER_A, &adapter); // …and a burst follows inside the spacing
+            state.hubs_invalidate_server(SERVER_A, &adapter, &ClientKeys::default(), &mut Vec::new()); // …and a burst follows inside the spacing
         }
         assert_eq!(owed_by_server(&state, SERVER_A), [false, false], "coalesced, not read again at once");
         let spacing = NOTIFY_SPACING_FRAMES as usize;
         for _ in 0..spacing - 1 {
-            state.hubs_tick_all(&adapter);
+            state.hubs_tick_all(&adapter, &ClientKeys::default(), &mut Vec::new());
         }
         assert_eq!(owed_by_server(&state, SERVER_A), [false, false], "still inside the spacing");
-        state.hubs_tick_all(&adapter);
+        state.hubs_tick_all(&adapter, &ClientKeys::default(), &mut Vec::new());
         assert_eq!(owed_by_server(&state, SERVER_A), [true, true], "the whole burst is ONE read once the spacing is over");
         for sec in 0..state.sections().len() {
             state.state_mut(sec).unwrap().hubs.owed = false;
         }
         for _ in 0..spacing * 2 {
-            state.hubs_tick_all(&adapter);
+            state.hubs_tick_all(&adapter, &ClientKeys::default(), &mut Vec::new());
         }
         assert_eq!(owed_by_server(&state, SERVER_A), [false, false], "and no more than one");
     }
