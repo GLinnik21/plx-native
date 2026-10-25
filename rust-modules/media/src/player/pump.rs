@@ -657,12 +657,16 @@ fn recover_failed_source_route(ps: &mut crate::route::PlaybackSession) -> Source
 fn fail_or_wait_for_recovery(ps: &mut crate::route::PlaybackSession, eng: &Engine) {
     match recover_failed_source_route(ps) {
         SourceRecovery::Flying => hold_connecting_state(eng),
-        SourceRecovery::Failed => {
-            crate::route::fail_current_engine();
-            set_state(super::shared::PlaybackState::Error);
-            super::engine::arm_failed_engine_release();
-        }
+        SourceRecovery::Failed => fail_engine_for_good(),
     }
+}
+
+/// The Engine fails for good: any flight ends, the viewer gets the read-out, and the Engine's
+/// pipeline is released next frame ([`super::engine::release_failed_engine`]).
+fn fail_engine_for_good() {
+    crate::route::fail_current_engine();
+    set_state(super::shared::PlaybackState::Error);
+    super::engine::arm_failed_engine_release();
 }
 
 /// What the viewer sees while a recovery flies: the connecting spinner the failed open left, not a
@@ -690,11 +694,7 @@ fn land_recovery_flight(
                 "HLS recovery after failed source open",
             );
         }
-        crate::route::RecoveryVerdict::Refused => {
-            crate::route::fail_current_engine();
-            set_state(super::shared::PlaybackState::Error);
-            super::engine::arm_failed_engine_release();
-        }
+        crate::route::RecoveryVerdict::Refused => fail_engine_for_good(),
     }
 }
 

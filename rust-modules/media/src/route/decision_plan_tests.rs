@@ -137,7 +137,7 @@ fn a_new_request_ends_the_standing_error_of_a_released_engine() {
     assert_eq!(unpresented_resume_ns(&ps), 60_000_000_000, "and a retry resumes from the playhead");
 
     assert!(request_play(
-        &mut ps, &mut meta, ServerId::from_raw(0), "film", "/library/parts/2/file.mkv", "h264", "aac", "Film", "",
+        &mut ps, &mut meta, ServerId::from_raw(0), "film", "/library/parts/2/file.mkv", "h264", "aac", "Film", "", None,
     ));
     assert!(engine_failure(&ps).is_none(), "the new attempt ends the standing error");
     assert_ne!(crate::player::state(&ps), crate::player::PlaybackState::Error);

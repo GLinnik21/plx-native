@@ -2277,29 +2277,24 @@ pub fn release_failed_engine(ps: &mut crate::route::PlaybackSession, pa: &mut su
         return false;
     }
     // Armed by an Engine that has since been replaced (an automatic retry started a new playback
-    // in the same frame), or one a recovery is still flying for: not this Engine's end.
-    if !pa.is_live()
-        || crate::route::is_preview(ps)
+    // in the same frame): not this Engine's end, and nothing left to release.
+    if !pa.is_live() {
+        FAILED_ENGINE_RELEASE_ARMED.store(false, Ordering::Release);
+        return false;
+    }
+    // Not this Engine's end: a preview, one a recovery is still flying for, or one that never put
+    // a picture up (a Load that failed, an open that never produced a frame) and so holds nothing
+    // the television mistakes for playback.
+    if crate::route::is_preview(ps)
         || SHARED.pb_state.load(Ordering::Relaxed) != super::shared::PlaybackState::Error as u8
-        // Only an Engine that put a picture up holds a playing pipeline; one that never did (a Load
-        // that failed, an open that never produced a frame) has nothing the television mistakes for
-        // playback.
         || SHARED.frames.load(Ordering::Relaxed) == 0
         || crate::route::recovery_flight_outstanding()
         || crate::route::engineless_flight_outstanding()
     {
-        if !pa.is_live() {
-            FAILED_ENGINE_RELEASE_ARMED.store(false, Ordering::Release);
-        }
         return false;
     }
     FAILED_ENGINE_RELEASE_ARMED.store(false, Ordering::Release);
-    let cause = super::runtime_failure(
-        SHARED.demux_failed.load(Ordering::Acquire),
-        SHARED.demux_io_failed.load(Ordering::Acquire),
-        SHARED.load_failed.load(Ordering::Relaxed),
-        SHARED.load_timed_out.load(Ordering::Relaxed) || ps.native_start_refused,
-    );
+    let cause = super::live_runtime_failure(ps);
     crate::route::note_engine_failure(ps, cause, super::intended_pos_ns(ps));
     log("player: the failed Engine's pipeline is released under the failure read-out");
     teardown(ps, pa, true);
@@ -2343,14 +2338,14 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
             // A real stop under the failure read-out whose Engine was released
             // ([`release_failed_engine`]) ends the playback the Engine would have ended: the
             // position it stopped at is the one the server keeps.
-            let released = crate::route::engine_failure(ps).is_some();
-            let dur = SHARED.duration_ns.load(Ordering::Relaxed);
-            let pos = crate::route::unpresented_resume_ns(ps);
-            if released {
+            let mut final_report = None;
+            if crate::route::engine_failure(ps).is_some() {
+                let dur = SHARED.duration_ns.load(Ordering::Relaxed);
+                let pos = crate::route::unpresented_resume_ns(ps);
                 crate::player::report::ended(ps, pos, dur);
+                let rk = crate::route::cur_rk(ps);
+                final_report = (!rk.is_empty() && dur > 0).then(|| (rk, pos / 1_000_000, dur / 1_000_000));
             }
-            let rk = crate::route::cur_rk(ps);
-            let final_report = (released && !rk.is_empty() && dur > 0).then(|| (rk, pos / 1_000_000, dur / 1_000_000));
             crate::route::scrobble_stop(ps, final_report, None);
             crate::route::begin_engine_teardown(false);
             crate::route::drop_original_recovery(ps);
