@@ -1372,16 +1372,14 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         // loop retry the play, which now converts it. The failure state is the ordinary one, so a
         // retry that cannot run leaves the read-out the viewer would have had.
         if learn_native_audio_refusal("Audio Codec Not Supported", plx_plex::plex::session::learn_native_audio_refusal) {
-            crate::route::fail_current_engine();
-            set_state(super::shared::PlaybackState::Error);
+            fail_engine_for_good();
             return;
         }
         fail_or_wait_for_recovery(ps, eng);
         return;
     }
     if !eng.preview_abandon && native_audio_stall_fired(eng, now) {
-        crate::route::fail_current_engine();
-        set_state(super::shared::PlaybackState::Error);
+        fail_engine_for_good();
         return;
     }
     // wait for the media-thread ctor
