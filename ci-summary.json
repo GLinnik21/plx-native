@@ -29,7 +29,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-25T00:17:42Z",
+ "generated": "2026-10-25T00:18:52Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -639,11 +639,6 @@
    "change_pct": 36.7,
    "commits": [
     {
-     "pr": 1011,
-     "sha": "c56e8cdd6",
-     "title": "Hubs store emits its read as a store job; the step decides its client from ClientKeys"
-    },
-    {
      "pr": 805,
      "sha": "4a551d0b0",
      "title": "player: playback speed (0.5x-2x), done in the app"
@@ -687,6 +682,11 @@
      "pr": 1000,
      "sha": "d18aedde5",
      "title": "Simulator: the desktop drawable is 1:1 with the canvas on any pixel density (Retina debug crash)"
+    },
+    {
+     "pr": 1006,
+     "sha": "b835afb86",
+     "title": "Add Russian (ru) localization"
     }
    ],
    "from": 154.0,
@@ -700,11 +700,6 @@
    "change_pct": 35.8,
    "commits": [
     {
-     "pr": 1011,
-     "sha": "c56e8cdd6",
-     "title": "Hubs store emits its read as a store job; the step decides its client from ClientKeys"
-    },
-    {
      "pr": 805,
      "sha": "4a551d0b0",
      "title": "player: playback speed (0.5x-2x), done in the app"
@@ -748,6 +743,11 @@
      "pr": 1000,
      "sha": "d18aedde5",
      "title": "Simulator: the desktop drawable is 1:1 with the canvas on any pixel density (Retina debug crash)"
+    },
+    {
+     "pr": 1006,
+     "sha": "b835afb86",
+     "title": "Add Russian (ru) localization"
     }
    ],
    "from": 46.0,
@@ -761,11 +761,6 @@
    "change_pct": 27.1,
    "commits": [
     {
-     "pr": 1011,
-     "sha": "c56e8cdd6",
-     "title": "Hubs store emits its read as a store job; the step decides its client from ClientKeys"
-    },
-    {
      "pr": 805,
      "sha": "4a551d0b0",
      "title": "player: playback speed (0.5x-2x), done in the app"
@@ -809,6 +804,11 @@
      "pr": 1000,
      "sha": "d18aedde5",
      "title": "Simulator: the desktop drawable is 1:1 with the canvas on any pixel density (Retina debug crash)"
+    },
+    {
+     "pr": 1006,
+     "sha": "b835afb86",
+     "title": "Add Russian (ru) localization"
     }
    ],
    "from": 114.7,
