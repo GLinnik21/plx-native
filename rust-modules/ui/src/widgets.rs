@@ -4867,9 +4867,9 @@ impl TransportButton {
         }
     }
     pub fn icon(mut self, icon: crate::icons::Icon) -> Self { self.icon = Some(icon); self }
-    pub fn enabled(mut self, enabled: bool) -> Self { self.enabled = enabled; self }
+    pub fn enabled(mut self, enabled: bool) -> Self { self.enabled = enabled; self.focused &= enabled; self }
     pub fn focused(mut self, f: bool) -> Self {
-        self.focused = f;
+        self.focused = f && self.enabled;
         self
     }
     /// Stand this disc on a named [`ControlGround`] — see [`Button::ground`].
@@ -4893,7 +4893,8 @@ impl View for TransportButton {
         // The design system builds this disc AS a `CircleButton` at 64px, so it takes the shared
         // control face rather than spelling one of its own: the two used to be the same three
         // tokens written twice, which is how a ground (or a palette) reaches one and not the other.
-        let face = ControlStyle::Accent.face(self.focused, self.ground, self.palette);
+        let focused = self.enabled && self.focused;
+        let face = ControlStyle::Accent.face(focused, self.ground, self.palette);
         let ink = if self.enabled { face.ink } else { theme::INK_DISABLED };
         // **The same edge every other control wears** — [`control_rim`], not a bare `rect`. This was
         // the one control family the rim missed: `Button` and `CircleButton` both took it and these
@@ -4908,7 +4909,7 @@ impl View for TransportButton {
         // in the picture. `ControlGround::Unkeyed` is the answer the HUD passes in, and it holds
         // because the HUD's own ramp is under the disc — the glyph's contrast comes from the ramp
         // plus the film, not from the plate alone.
-        if self.focused {
+        if focused {
             control_cast(p, r, r.w * 0.5);
         }
         control_rim(
@@ -4917,7 +4918,7 @@ impl View for TransportButton {
             r.w * 0.5,
             face.top,
             face.body,
-            self.focused,
+            focused,
             self.ground,
         );
         let id = self.icon.unwrap_or(match self.which {
@@ -9184,4 +9185,12 @@ fn a_painted_still_line_stands_its_sub_line_one_gap_from_the_glyphs_ink() {
         still_line(Painter::recording(), card, PosterMark::None, "Show", "S1 E2", false, false, &m);
     });
     assert_eq!(bare.iter().find(|r| r.text == "S1 E2").unwrap().at.x, card.x + STILL_LINE_INSET);
+}
+
+#[cfg(test)]
+#[test]
+fn transport_button_disabled_never_keeps_a_focused_face() {
+    let rect = Rect::new(0.0, 0.0, 64.0, 64.0);
+    assert!(!TransportButton::new(0, rect).enabled(false).focused(true).focused);
+    assert!(!TransportButton::new(0, rect).focused(true).enabled(false).focused);
 }

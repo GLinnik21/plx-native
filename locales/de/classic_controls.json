@@ -1,6 +1,0 @@
-{
-  "settings.playback.classic_controls": "Klassische Wiedergabesteuerung",
-  "settings.playback.classic_controls.copy": "Bei ausgeblendeten Bedienelementen mit Links oder Rechts sofort springen. Bei sichtbaren Bedienelementen mit OK bestätigen. Zurück startet nach fünf Sekunden neu, davor das vorherige Element.",
-  "settings.playback.classic_controls.off": "Aus",
-  "settings.playback.classic_controls.on": "Ein"
-}

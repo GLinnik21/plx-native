@@ -36,7 +36,7 @@
 //! frozen top-level keys: no pick in this module ever writes one.
 use super::plan::{supported_quality, Quality, QUALITY_LADDER};
 use plx_plex::plex::session::{
-    PlaybackControls, PlaybackControlsPref, effective, own_prefs, persist_profile_pref, AudioEnhancementsPref, DeckPress, DeckPressPref, DirectPlayMode,
+    InstantDpadSeeking, EpisodeNavigationButtons, InstantDpadSeekingPref, EpisodeNavigationButtonsPref, effective, own_prefs, persist_profile_pref, AudioEnhancementsPref, DeckPress, DeckPressPref, DirectPlayMode,
     DirectPlayModePref, HdrOverlayBrightness, HdrOverlayBrightnessPref, NextEpisodeMode, NextEpisodeModePref, Preferences, ProfilePrefs, ProfilePrefsRecord,
     ProfileSetting, ProfileWrite, QualityPref, Row, Setting, SkipInterval, SkipIntervalPref, SubtitlePosition,
     SubtitlePositionPref, SubtitleSize, SubtitleSizePref, SubtitleTone, SubtitleTonePref, TrailerAutoplayPref, UnderPosters,
@@ -142,7 +142,7 @@ macro_rules! packed_by_index {
         }
     )*};
 }
-packed_by_index!(PlaybackControls = 0, NextEpisodeMode = 0, SkipInterval = 1, DeckPress = 0, SubtitleSize = 1, SubtitlePosition = 0, SubtitleTone = 0, HdrOverlayBrightness = 1);
+packed_by_index!(InstantDpadSeeking = 0, EpisodeNavigationButtons = 1, NextEpisodeMode = 0, SkipInterval = 1, DeckPress = 0, SubtitleSize = 1, SubtitlePosition = 0, SubtitleTone = 0, HdrOverlayBrightness = 1);
 
 impl Packed for DirectPlayMode {
     const SEED: u8 = 0;
@@ -229,7 +229,8 @@ impl Packed for AudioEnhancements {
     }
 }
 
-live_cell!(pub(super) PLAYBACK_CONTROLS: PlaybackControls, "playback controls");
+live_cell!(pub(super) INSTANT_DPAD_SEEKING: InstantDpadSeeking, "instant D-pad seeking");
+live_cell!(pub(super) EPISODE_NAVIGATION_BUTTONS: EpisodeNavigationButtons, "episode navigation buttons");
 
 // ---- the cells ------------------------------------------------------------------------------
 
@@ -323,7 +324,8 @@ macro_rules! live_setting {
 }
 
 live_setting!(DirectPlayModePref, DIRECT_PLAY_MODE, "direct play mode");
-live_setting!(PlaybackControlsPref, PLAYBACK_CONTROLS, "playback controls");
+live_setting!(InstantDpadSeekingPref, INSTANT_DPAD_SEEKING, "instant D-pad seeking");
+live_setting!(EpisodeNavigationButtonsPref, EPISODE_NAVIGATION_BUTTONS, "episode navigation buttons");
 live_setting!(DeckPressPref, DECK_PRESS, "deck press");
 live_setting!(UnderPostersPref, UNDER_POSTERS, "under posters");
 live_setting!(SubtitleSizePref, SUBTITLE_SIZE, "subtitle size");
@@ -383,7 +385,8 @@ pub const LIVE_ROWS: &[LiveRow] = &[
     LiveRow::of::<HdrOverlayBrightnessPref>(),
     LiveRow::of::<NextEpisodeModePref>(),
     LiveRow::of::<SkipIntervalPref>(),
-    LiveRow::of::<PlaybackControlsPref>(),
+    LiveRow::of::<InstantDpadSeekingPref>(),
+    LiveRow::of::<EpisodeNavigationButtonsPref>(),
     LiveRow::of::<DeckPressPref>(),
     LiveRow::of::<UnderPostersPref>(),
     LiveRow::of::<AudioEnhancementsPref>(),
@@ -767,7 +770,8 @@ choices! {
     DirectPlay => DirectPlayModePref,
     NextEpisode => NextEpisodeModePref,
     SkipInterval => SkipIntervalPref,
-    PlaybackControls => PlaybackControlsPref,
+    InstantDpadSeeking => InstantDpadSeekingPref,
+    EpisodeNavigationButtons => EpisodeNavigationButtonsPref,
     DeckPress => DeckPressPref,
     UnderPosters => UnderPostersPref,
     TrailerAutoplay => TrailerAutoplayPref,
@@ -887,8 +891,10 @@ pub fn restore_next_episode_mode(mode: NextEpisodeMode) { restore_live::<NextEpi
 /// save claims nothing.
 pub fn set_next_episode_mode(mode: NextEpisodeMode) -> bool { confirm::<NextEpisodeModePref>(mode) }
 
-pub fn playback_controls() -> PlaybackControls { PlaybackControlsPref::live() }
-pub fn restore_playback_controls(controls: PlaybackControls) { restore_live::<PlaybackControlsPref>(controls) }
+pub fn instant_dpad_seeking() -> InstantDpadSeeking { InstantDpadSeekingPref::live() }
+pub fn restore_instant_dpad_seeking(controls: InstantDpadSeeking) { restore_live::<InstantDpadSeekingPref>(controls) }
+pub fn episode_navigation_buttons() -> EpisodeNavigationButtons { EpisodeNavigationButtonsPref::live() }
+pub fn restore_episode_navigation_buttons(value: EpisodeNavigationButtons) { restore_live::<EpisodeNavigationButtonsPref>(value) }
 
 pub fn skip_interval() -> SkipInterval { SkipIntervalPref::live() }
 pub fn restore_skip_interval(interval: SkipInterval) { restore_live::<SkipIntervalPref>(interval) }

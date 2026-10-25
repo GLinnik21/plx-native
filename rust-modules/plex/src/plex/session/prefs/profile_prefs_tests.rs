@@ -3,7 +3,7 @@
 //! seats. The live half (cells, the door, the restore) is `media::route::prefs_tests`; the seat
 //! trigger is the app's `restore_characterisation_tests`.
 use super::super::{
-    PlaybackControls, current_seat, AudioEnhancementsPref, CurrentProfile, DeckPress, DeckPressPref, UnderPosters, UnderPostersDetails, DirectPlayMode, DirectPlayModePref,
+    InstantDpadSeeking, EpisodeNavigationButtons, current_seat, AudioEnhancementsPref, CurrentProfile, DeckPress, DeckPressPref, UnderPosters, UnderPostersDetails, DirectPlayMode, DirectPlayModePref,
     HdrOverlayBrightness, HdrOverlayBrightnessPref, NextEpisodeMode, NextEpisodeModePref, PlaybackQuality, QualityPref, Seat, Session, SkipInterval, SkipIntervalPref,
     SubtitlePosition, SubtitlePositionPref, SubtitleSize, SubtitleSizePref, SubtitleTone, SubtitleTonePref, TempSession,
     TrailerAutoplayPref, UserRef,
@@ -56,7 +56,8 @@ fn the_record_has_one_field_for_each_setting_with_a_legacy_fallback() {
         hdr_overlay_brightness: Some(HdrOverlayBrightness::Half),
         next_episode_mode: Some(NextEpisodeMode::AfterCredits),
         skip_interval: Some(SkipInterval::Seconds30),
-        playback_controls: Some(PlaybackControls::Classic),
+        instant_dpad_seeking: Some(InstantDpadSeeking::On),
+        episode_navigation_buttons: Some(EpisodeNavigationButtons::Off),
         deck_press: Some(DeckPress::Play),
         under_posters: Some(UnderPosters { title: true, details: UnderPostersDetails::Video }),
         audio_enhancements: Some(AudioEnhancements { boost_dialog: true, normalize_loudness: true }),

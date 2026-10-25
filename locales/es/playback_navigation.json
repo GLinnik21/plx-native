@@ -1,0 +1,8 @@
+{
+  "settings.playback.instant_dpad_seeking": "Salto inmediato con cruceta",
+  "settings.playback.instant_dpad_seeking.copy": "Con los controles ocultos, Izquierda/Derecha salta el intervalo elegido. Con los controles visibles, confirma con OK. Desactivado muestra primero los controles.",
+  "settings.playback.episode_navigation_buttons": "Botones Anterior/Siguiente",
+  "settings.playback.episode_navigation_buttons.copy": "Muestra Anterior y Siguiente en las colas de episodios. Anterior reinicia a partir de cinco segundos; antes reproduce el episodio anterior.",
+  "settings.playback.instant_dpad_seeking.off": "Desactivados",
+  "settings.playback.instant_dpad_seeking.on": "Activados"
+}

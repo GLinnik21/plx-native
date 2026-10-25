@@ -36,7 +36,7 @@
 //! assignment. `subtitle_offsets` is the other tenant of the door and is declared the same way
 //! ([`SubtitleOffsetsPref`]).
 use super::{
-    PlaybackControls, DeckPress, DirectPlayMode, HdrOverlayBrightness, LastLibrary, LibraryViews, NextEpisodeMode, OpaqueExtensions, PlaintextConsent,
+    InstantDpadSeeking, EpisodeNavigationButtons, DeckPress, DirectPlayMode, HdrOverlayBrightness, LastLibrary, LibraryViews, NextEpisodeMode, OpaqueExtensions, PlaintextConsent,
     HoldHintTaught, PlaybackQuality, ServerKeyPin, Session, SkipInterval, SubtitleOffsetEntry, SubtitleOffsets, SubtitlePosition,
     SubtitleSize, SubtitleTone, UiResolution, UnderPosters,
 };
@@ -122,9 +122,12 @@ pub struct Preferences {
     /// field — committed replay fixtures included — serializes exactly as it did before.
     #[serde(default, deserialize_with = "de_soft_skip_interval", skip_serializing_if = "is_default_skip_interval")]
     pub skip_interval: SkipInterval,
-    /// Opt-in classic transport; absent and unrecognized values keep the modern controls.
-    #[serde(default, deserialize_with = "super::playback_controls::deserialize", skip_serializing_if = "PlaybackControls::is_modern")]
-    pub playback_controls: PlaybackControls,
+    /// Hidden-HUD D-pad jumps; off by default. Independent of the episode buttons.
+    #[serde(default, deserialize_with = "super::playback_options::deserialize", skip_serializing_if = "InstantDpadSeeking::is_default")]
+    pub instant_dpad_seeking: InstantDpadSeeking,
+    /// Previous/Next for episode queues; on by default.
+    #[serde(default, deserialize_with = "super::playback_options::deserialize", skip_serializing_if = "EpisodeNavigationButtons::is_default")]
+    pub episode_navigation_buttons: EpisodeNavigationButtons,
     /// **What OK does on a Continue Watching card** — see [`DeckPress`]. A frozen fallback like
     /// [`Preferences::playback_quality`]: each profile keeps its own pick in `profile_prefs`, and a
     /// profile that has not picked reads this top-level key. Absence is Details, so a session written
@@ -495,7 +498,9 @@ setting!(DirectPlayModePref: DirectPlayMode = direct_play_mode, "direct_play_mod
     account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
 setting!(NextEpisodeModePref: NextEpisodeMode = next_episode_mode, "next_episode_mode", Profile fallback LegacyInstallKey,
     account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
-setting!(PlaybackControlsPref: PlaybackControls = playback_controls, "playback_controls", Profile fallback LegacyInstallKey,
+setting!(InstantDpadSeekingPref: InstantDpadSeeking = instant_dpad_seeking, "instant_dpad_seeking", Profile fallback LegacyInstallKey,
+    account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
+setting!(EpisodeNavigationButtonsPref: EpisodeNavigationButtons = episode_navigation_buttons, "episode_navigation_buttons", Profile fallback LegacyInstallKey,
     account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
 setting!(SkipIntervalPref: SkipInterval = skip_interval, "skip_interval", Profile fallback LegacyInstallKey,
     account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
@@ -610,7 +615,8 @@ pub const DESCRIPTORS: &[Descriptor] = &[
     Descriptor::of::<HdrOverlayBrightnessPref>(),
     Descriptor::of::<NextEpisodeModePref>(),
     Descriptor::of::<SkipIntervalPref>(),
-    Descriptor::of::<PlaybackControlsPref>(),
+    Descriptor::of::<InstantDpadSeekingPref>(),
+    Descriptor::of::<EpisodeNavigationButtonsPref>(),
     Descriptor::of::<DeckPressPref>(),
     Descriptor::of::<UnderPostersPref>(),
     Descriptor::of::<AudioEnhancementsPref>(),

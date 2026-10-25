@@ -1,0 +1,8 @@
+{
+  "settings.playback.instant_dpad_seeking": "Direktsprung per Steuerkreuz",
+  "settings.playback.instant_dpad_seeking.copy": "Bei ausgeblendeten Bedienelementen springt Links/Rechts um das gewählte Intervall. Sonst bestätigt OK. Aus blendet zuerst die Bedienelemente ein.",
+  "settings.playback.episode_navigation_buttons": "Zurück-/Weiter-Tasten",
+  "settings.playback.episode_navigation_buttons.copy": "Zeigt Zurück und Weiter für Episodenwarteschlangen. Ab fünf Sekunden startet Zurück die Folge neu, davor die vorherige Folge.",
+  "settings.playback.instant_dpad_seeking.off": "Aus",
+  "settings.playback.instant_dpad_seeking.on": "Ein"
+}

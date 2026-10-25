@@ -1,4 +1,4 @@
-//! Queue transport policy and existing-queue window refresh for the optional classic HUD.
+//! Queue transport policy and existing-queue window refresh for the episode controls.
 use super::{cur_rk, cur_sid, pq_id, pq_item_id, with_queue, PlaybackSession};
 use plx_plex::plex::{queue_index_of, QueueRow, ServerId};
 use std::sync::Arc;
@@ -123,7 +123,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn classic_controls_previous_has_a_five_second_boundary() {
+    fn queue_navigation_previous_has_a_five_second_boundary() {
         assert!(!previous_restarts(0));
         assert!(!previous_restarts(4_999_999_999));
         assert!(previous_restarts(5_000_000_000));
@@ -131,7 +131,7 @@ mod tests {
     }
 
     #[test]
-    fn classic_controls_queue_handoff_retains_the_predecessor_and_original_queue_ids() {
+    fn queue_navigation_queue_handoff_retains_the_predecessor_and_original_queue_ids() {
         let sid = ServerId::from_raw(1);
         let rows: Vec<_> = [11, 12]
             .into_iter()
@@ -167,7 +167,7 @@ mod tests {
     }
 
     #[test]
-    fn classic_controls_queue_window_moves_forward_without_losing_the_selected_item() {
+    fn queue_navigation_queue_window_moves_forward_without_losing_the_selected_item() {
         let sid = ServerId::from_raw(1);
         let rows: Vec<_> = [11, 12, 13]
             .into_iter()
@@ -191,7 +191,7 @@ mod tests {
     }
 
     #[test]
-    fn classic_controls_neighbors_use_queue_identity_and_never_wrap() {
+    fn queue_navigation_neighbors_use_queue_identity_and_never_wrap() {
         let sid = ServerId::from_raw(1);
         let rows: Vec<_> = [11, 12, 13]
             .into_iter()

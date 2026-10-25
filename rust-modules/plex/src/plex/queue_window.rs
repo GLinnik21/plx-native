@@ -46,7 +46,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn classic_controls_queue_window_uses_item_identity_and_does_not_take_ownership() {
+    fn queue_window_queue_window_uses_item_identity_and_does_not_take_ownership() {
         let query = window_query("7", 12).unwrap();
         assert_eq!(
             query,

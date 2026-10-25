@@ -124,7 +124,7 @@ fn every_playback_field_pushes_its_picker() {
         [SettingsPage::Picker(PickerKind::Quality), SettingsPage::Picker(PickerKind::DirectPlay),
          SettingsPage::Picker(PickerKind::SubtitleSize), SettingsPage::Picker(PickerKind::SubtitlePosition),
          SettingsPage::Picker(PickerKind::HdrOverlay), SettingsPage::Picker(PickerKind::NextEpisode), SettingsPage::Picker(PickerKind::DeckPress),
-         SettingsPage::Picker(PickerKind::SkipInterval), SettingsPage::Picker(PickerKind::PlaybackControls)]);
+         SettingsPage::Picker(PickerKind::SkipInterval), SettingsPage::Picker(PickerKind::InstantDpadSeeking), SettingsPage::Picker(PickerKind::EpisodeNavigationButtons)]);
     assert_every_nav_item_pushes_exactly_its_dest("playback", &items, &|| consent_opened(SettingsPage::Playback));
 }
 
@@ -244,7 +244,8 @@ struct PlaybackCells {
     position: plx_media::route::SubtitlePosition,
     hdr: plx_media::route::HdrOverlayBrightness,
     next_episode: plx_media::route::NextEpisodeMode,
-    playback_controls: plx_plex::plex::session::PlaybackControls,
+    instant_dpad_seeking: plx_plex::plex::session::InstantDpadSeeking,
+    episode_buttons: plx_plex::plex::session::EpisodeNavigationButtons,
     deck_press: plx_media::route::DeckPress,
     skip: plx_media::route::SkipInterval,
 }
@@ -252,7 +253,7 @@ impl PlaybackCells {
     fn capture() -> Self {
         use plx_media::route as r;
         PlaybackCells { quality: r::quality(), direct_play: r::direct_play_mode(), size: r::subtitle_size(),
-            position: r::subtitle_position(), hdr: r::hdr_overlay_brightness(), next_episode: r::next_episode_mode(), playback_controls: r::playback_controls(),
+            position: r::subtitle_position(), hdr: r::hdr_overlay_brightness(), next_episode: r::next_episode_mode(), instant_dpad_seeking: r::instant_dpad_seeking(), episode_buttons: r::episode_navigation_buttons(),
             deck_press: r::deck_press(), skip: r::skip_interval() }
     }
 }
@@ -261,7 +262,7 @@ impl Drop for PlaybackCells {
         use plx_media::route as r;
         r::restore_quality(self.quality); r::restore_direct_play_mode(self.direct_play);
         r::restore_subtitle_size(self.size); r::restore_subtitle_position(self.position);
-        r::restore_hdr_overlay_brightness(self.hdr); r::restore_next_episode_mode(self.next_episode); r::restore_playback_controls(self.playback_controls);
+        r::restore_hdr_overlay_brightness(self.hdr); r::restore_next_episode_mode(self.next_episode); r::restore_instant_dpad_seeking(self.instant_dpad_seeking); r::restore_episode_navigation_buttons(self.episode_buttons);
         r::restore_deck_press(self.deck_press); r::restore_skip_interval(self.skip);
     }
 }
@@ -312,7 +313,8 @@ fn every_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row() {
     r::restore_next_episode_mode(*ses::NextEpisodeMode::LADDER.last().unwrap());
     r::restore_deck_press(*ses::DeckPress::LADDER.last().unwrap());
     r::restore_skip_interval(*ses::SkipInterval::LADDER.last().unwrap());
-    r::restore_playback_controls(ses::PlaybackControls::Classic);
+    r::restore_instant_dpad_seeking(ses::InstantDpadSeeking::On);
+    r::restore_episode_navigation_buttons(ses::EpisodeNavigationButtons::On);
     let lines = |kind: PickerKind| match kind {
         PickerKind::Quality => ladder_last(r::available_quality_ladder().len()),
         PickerKind::DirectPlay => 2,
@@ -322,11 +324,11 @@ fn every_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row() {
         PickerKind::NextEpisode => ladder_last(ses::NextEpisodeMode::LADDER.len()),
         PickerKind::DeckPress => ladder_last(ses::DeckPress::LADDER.len()),
         PickerKind::SkipInterval => ladder_last(ses::SkipInterval::LADDER.len()),
-        PickerKind::PlaybackControls => 1,
+        PickerKind::InstantDpadSeeking | PickerKind::EpisodeNavigationButtons => 1,
         other => panic!("{other:?} is not a Playback picker"),
     };
     let playback = super::super::preferences::nav_items_for_test(super::super::preferences::Kind::Playback, None);
-    assert_eq!(playback.len(), 9, "every Playback picker is in the table: {playback:?}");
+    assert_eq!(playback.len(), 10, "every Playback picker is in the table: {playback:?}");
     for &(row, dest) in &playback {
         let SettingsPage::Picker(kind) = dest else { panic!("a Playback row pushes a picker: {dest:?}") };
         assert_a_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row(

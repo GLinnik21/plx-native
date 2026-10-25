@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise classic transport against synthetic Plex media, using the shared simulator driver.
+"""Exercise playback navigation against synthetic Plex media, using the shared simulator driver.
 
 Generate media with tests/fixtures/make_fixtures.py --only mockverify --out <directory>, then
 run this with --sim rust-modules/target-sim/debug/plxnative-sim --media <directory>.
@@ -16,9 +16,9 @@ import mock_pms
 from paging_link import SimRun
 
 
-def verify(binary, media, output):
+def verify(binary, media, output, instant_dpad=False):
     output.mkdir(parents=True, exist_ok=False)
-    (output / "auth.json").write_text(json.dumps({"playback_controls": "classic", "trailer_autoplay": False}))
+    (output / "auth.json").write_text(json.dumps({"instant_dpad_seeking": "on" if instant_dpad else "off", "trailer_autoplay": False}))
     server, pms = mock_pms.serve(0, media=media, media_next_episode=True)
     port = server.server_address[1]
     stand_in = f"http://127.0.0.1:{port}"
@@ -41,7 +41,7 @@ def verify(binary, media, output):
         for _ in range(3):
             stamp = sim.key("up")
             wait(r"key type=0x301", stamp)
-            if sim.wait_for(r"^focus route=player .*hud=1 f=1 .*slot=classic items=5", 1, after=stamp):
+            if sim.wait_for(r"^focus route=player .*hud=1 f=1 .*slot=discs items=5", 1, after=stamp):
                 return
         latest = sim.latest(lambda _, line: line.startswith("focus "))[1]
         raise AssertionError(f"control row not reached: {latest}")
@@ -49,10 +49,8 @@ def verify(binary, media, output):
     try:
         wait(r"boot: dev token")
         wait(rf"playing item: rk={mock_pms.V1_RATING_KEY} ")
-        wait(r"^focus route=player .*slot=classic items=5")
+        wait(r"^focus route=player .*slot=discs items=5")
         control_row()
-        stamp = sim.key("right")
-        wait(r"^focus route=player .*f=1 btn=1", stamp)
         stamp = sim.key("ok")
         wait(rf"queue transport: Next rk={mock_pms.V3_RATING_KEY}", stamp)
         wait(rf"playing item: rk={mock_pms.V3_RATING_KEY} ", stamp)
@@ -72,6 +70,8 @@ def verify(binary, media, output):
 
         wait(r"loop=.*route=player .*pos=(?:[5-9]|[1-9][0-9]+)s", stamp)
         control_row()
+        stamp = sim.key("left")
+        wait(r"^focus route=player .*f=1 btn=0", stamp)
         stamp = sim.key("ok")
         wait(r"seek\(in-place\): av_seek t=0 ", stamp)
         wait(r"loop=.*route=player .*pos=[12]s", stamp)
@@ -81,7 +81,7 @@ def verify(binary, media, output):
         # input time, so its timer-only sample cannot establish an automatic timeout by itself.
         stamp = sim.key("up")
         wait(r"^focus route=player .*hud=0 ", stamp)
-        stamp = sim.key("right")
+        stamp = sim.key("right" if instant_dpad else "ff")
         wait(r"seek\(in-place\): av_seek t=[1-9][0-9]* ", stamp)
         wait(r"loop=.*route=player .*pos=1[1-9]s", stamp)
         flashes = [line for at, line in sim.snapshot() if at >= stamp
@@ -111,7 +111,7 @@ def verify(binary, media, output):
 def verify_rapid(binary, media, output):
     """Use a clip with keyframes more than one skip interval apart (e.g. 12s vs 10s)."""
     output.mkdir(parents=True, exist_ok=False)
-    (output / "auth.json").write_text(json.dumps({"playback_controls": "classic", "trailer_autoplay": False}))
+    (output / "auth.json").write_text(json.dumps({"trailer_autoplay": False}))
     server, pms = mock_pms.serve(0, media=media, media_next_episode=True)
     server.media_kbit = 20_000  # stay ahead of playback without reading the whole clip to EOF
     port = server.server_address[1]
@@ -137,7 +137,7 @@ def verify_rapid(binary, media, output):
         landings = []
         presses = []
         for _ in range(3):
-            stamp = sim.key("right")
+            stamp = sim.key("ff")
             presses.append(stamp)
             if len(presses) > 1:
                 assert presses[-1] - presses[-2] < 1.5, "host too slow to exercise one tap burst"
@@ -167,14 +167,19 @@ def main():
     parser.add_argument("--sim", type=Path, required=True)
     parser.add_argument("--media", type=Path, required=True)
     parser.add_argument("--out", type=Path, help="new directory for runtime, screenshots and logs")
+    parser.add_argument("--instant-dpad", action="store_true", help="exercise the opt-in hidden-HUD D-pad path")
     parser.add_argument("--rapid-seeks", action="store_true", help="verify tap accumulation with a long-GOP fixture")
     args = parser.parse_args()
-    run = verify_rapid if args.rapid_seeks else verify
+    def run(binary, media, output):
+        if args.rapid_seeks:
+            verify_rapid(binary, media, output)
+        else:
+            verify(binary, media, output, args.instant_dpad)
     if args.out:
         run(args.sim, args.media, args.out)
         print(f"Evidence: {args.out}")
     else:
-        with tempfile.TemporaryDirectory(prefix="plx-classic-controls-") as root:
+        with tempfile.TemporaryDirectory(prefix="plx-playback-navigation-") as root:
             run(args.sim, args.media, Path(root) / "runtime")
 
 

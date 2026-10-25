@@ -1,62 +1,90 @@
-//! The classic remote policy lives beside, rather than inside, the modern scrub gesture.
-
+//! Immediate FF/REW taps and optional hidden-HUD D-pad jumps, sharing one seek path.
 use super::*;
-use plx_plex::plex::session::PlaybackControls;
+use plx_plex::plex::session::InstantDpadSeeking;
 
-/// A seek requested over a dismissed classic HUD stays invisible through the first new picture.
-/// Ordinary rebuffering and failures retain the shared read-out policy.
+/// Dismissed immediate seeks stay bare through the first new picture. Ordinary buffering and
+/// failures retain the shared read-out policy, independently of the D-pad preference.
 pub(super) fn seek_stays_hidden(ps: &plx_media::route::PlaybackSession, dismissed: bool) -> bool {
     use plx_media::player::{self, PlaybackState};
-    // Play clears Seeking before the first presented-frame callback. The pump then derives
-    // Buffering until the first new picture. Its cached state can outlive frames=0 for a frame,
-    // so use the existing seek target and rebuffer marker rather than re-sampling frame counts.
     let state = player::state(ps);
-    let seeking = state == PlaybackState::Seeking
-        || (state == PlaybackState::Buffering
-            && !player::rebuffering()
-            && player::seek_display_ns() >= 0);
-    dismissed && plx_media::route::playback_controls() == PlaybackControls::Classic && seeking
+    dismissed && (state == PlaybackState::Seeking
+        || (state == PlaybackState::Buffering && !player::rebuffering() && player::seek_display_ns() >= 0))
 }
 
 impl PlayerScreen {
-    pub(super) fn classic_hidden_seek<H: AppLike>(
-        &mut self,
-        ps: &plx_media::route::PlaybackSession,
-        key: consts::Key,
-        edge: Edge,
-        now: u32,
-        fx: &mut Effects<'_, H>,
-    ) -> bool {
-        if plx_media::route::playback_controls() != PlaybackControls::Classic
-            || self.hud.visible_at_press
-        {
-            self.classic_seek.reset();
-            return false;
-        }
-        let forward = match key {
-            consts::Key::Left { .. } => false,
-            consts::Key::Right { .. } => true,
+    fn commit_jump<H: AppLike>(&mut self, ps: &plx_media::route::PlaybackSession,
+        forward: bool, now: u32, fx: &mut Effects<'_, H>) {
+        let duration = plx_media::player::duration_ns();
+        if duration <= 0 { return; }
+        let step = input::scrub_step_ns() * if forward { 1 } else { -1 };
+        let target = self.seek_burst.jump(now, plx_media::player::intended_pos_ns(ps), step, duration);
+        self.scrub.cancel();
+        self.hud.dismissed = true;
+        Self::ask(fx, PlayerReq::CommitSeek(target));
+        self.publish();
+    }
+
+    pub(super) fn jump_key<H: AppLike>(&mut self, ps: &plx_media::route::PlaybackSession,
+        key: consts::Key, edge: Edge, now: u32, fx: &mut Effects<'_, H>) -> bool {
+        let (forward, transport) = match key {
+            consts::Key::Left { alt } => (false, alt),
+            consts::Key::Right { alt } => (true, alt),
             _ => return false,
         };
-        if edge == Edge::Down {
-            let duration = plx_media::player::duration_ns();
-            if duration > 0 {
-                let step = input::scrub_step_ns() * if forward { 1 } else { -1 };
-                let target = self.classic_seek.jump(
-                    now,
-                    plx_media::player::intended_pos_ns(ps),
-                    step,
-                    duration,
-                );
+        if transport {
+            if plx_media::player::duration_ns() <= 0 {
+                self.transport_tap = false;
                 self.scrub.cancel();
-                // note_global_press cleared dismissal after sampling visibility. Keep the picture
-                // bare through the seek; the next non-seek press can reveal the HUD normally.
-                self.hud.dismissed = true;
-                Self::ask(fx, PlayerReq::CommitSeek(target));
-                self.publish();
+                return true;
             }
+            match edge {
+                Edge::Down => {
+                    if self.scrub.key.bounce(now, forward) { return true; }
+                    // Tap/hold is decided by the shared HeldKey's first hardware repeat.
+                    // No seek is sent on Down: a hold must never begin with a committed jump.
+                    let seed = if self.scrub.is_live() && !self.scrub.reveal && !self.scrub.drag {
+                        self.scrub.ns
+                    } else { plx_media::player::intended_pos_ns(ps) };
+                    self.transport_tap = true;
+                    self.scrub.cancel();
+                    self.scrub.begin(now, forward);
+                    self.scrub.ns = seed;
+                    self.scrub.reveal = true;
+                    self.hud.nav.focus = 0;
+                    if !self.hud.visible_at_press { self.hud.dismissed = true; }
+                }
+                Edge::Repeat => {
+                    if self.transport_tap && self.hud.visible_at_press {
+                        let step = input::scrub_step_ns() * if forward { 1 } else { -1 };
+                        self.scrub.ns = Scrub::clamp_target(self.scrub.ns.saturating_add(step), plx_media::player::duration_ns());
+                        self.scrub.reveal = false;
+                    }
+                    self.hud.dismissed = false;
+                    self.transport_tap = false;
+                    self.seek_burst.reset();
+                    self.key_scrub_repeat(now);
+                    self.hud.extend(now, input::HUD_LINGER_MS);
+                }
+                Edge::Up => {
+                    if self.transport_tap {
+                        self.transport_tap = false;
+                        self.commit_jump(ps, forward, now, fx);
+                    } else { self.key_scrub_release(now); }
+                }
+            }
+            self.publish();
+            return true;
         }
-        // One immediate jump per press. Repeats and release must not create a pending preview.
+        if edge == Edge::Down && self.transport_tap {
+            self.transport_tap = false;
+            self.scrub.cancel();
+        }
+        if plx_media::route::instant_dpad_seeking() != InstantDpadSeeking::On || self.hud.visible_at_press {
+            self.seek_burst.reset();
+            return false;
+        }
+        if edge == Edge::Down { self.commit_jump(ps, forward, now, fx); }
+        // The opt-in D-pad path is one immediate jump per fresh press, without a held scrub.
         true
     }
 }
@@ -66,14 +94,14 @@ mod tests {
     use super::super::*;
     use crate::player::overlay_tests::TestHost;
     use plx_machine::machine::{InputEvent, InputOwner, MachineId, Source, Tick};
-    use plx_plex::plex::session::PlaybackControls;
+    use plx_plex::plex::session::InstantDpadSeeking;
     use plx_ui::fixture::FixtureMeasure;
     use std::sync::atomic::Ordering::Relaxed;
 
     struct PlaybackFixture {
         duration: i64,
         position: i64,
-        controls: PlaybackControls,
+        controls: InstantDpadSeeking,
         state: u8,
         rebuffering: bool,
         seek_display: i64,
@@ -87,7 +115,7 @@ mod tests {
                 position: plx_media::player::SHARED
                     .playpos_ns
                     .swap(40_000_000_000, Relaxed),
-                controls: plx_media::route::playback_controls(),
+                controls: plx_media::route::instant_dpad_seeking(),
                 state: plx_media::player::swap_state_for_test(
                     plx_media::player::PlaybackState::Playing,
                 ),
@@ -96,7 +124,7 @@ mod tests {
                     .swap(false, Relaxed),
                 seek_display: plx_media::player::SHARED.seek_display_ns.swap(-1, Relaxed),
             };
-            plx_media::route::restore_playback_controls(PlaybackControls::Classic);
+            plx_media::route::restore_instant_dpad_seeking(InstantDpadSeeking::On);
             saved
         }
     }
@@ -108,7 +136,7 @@ mod tests {
             plx_media::player::SHARED
                 .playpos_ns
                 .store(self.position, Relaxed);
-            plx_media::route::restore_playback_controls(self.controls);
+            plx_media::route::restore_instant_dpad_seeking(self.controls);
             plx_media::player::restore_state_for_test(self.state);
             plx_media::player::SHARED
                 .hls_rebuffering
@@ -154,7 +182,96 @@ mod tests {
     }
 
     #[test]
-    fn classic_controls_rapid_taps_accumulate_past_an_earlier_keyframe_landing() {
+    fn transport_ff_tap_jumps_without_the_dpad_option_or_hud() {
+        let _g = plx_base::testlock::serial();
+        let _playback = PlaybackFixture::new();
+        plx_media::route::restore_instant_dpad_seeking(InstantDpadSeeking::Off);
+        let _interval = player_hud::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
+        let mut page = PlayerScreen::new(EntryId(9));
+        page.hud.dismissed = true;
+        assert!(key(&mut page, consts::WCODE_FASTFORWARD, Edge::Down, 1_000).is_empty());
+        assert!(page.hud.dismissed);
+        assert_eq!(key(&mut page, consts::WCODE_FASTFORWARD, Edge::Up, 1_050),
+            vec![PlayerReq::CommitSeek(50_000_000_000)]);
+    }
+
+    #[test]
+    fn seek_jump_ff_burst_accumulates_and_rew_reverses_with_dpad_off() {
+        let _g = plx_base::testlock::serial();
+        let _playback = PlaybackFixture::new();
+        plx_media::route::restore_instant_dpad_seeking(InstantDpadSeeking::Off);
+        let _interval = player_hud::SkipIntervalGuard::set(plx_media::route::SkipInterval::Seconds10);
+        let mut page = PlayerScreen::new(EntryId(9));
+        for (sym, at, target) in [(consts::WCODE_FASTFORWARD, 1_000, 50_000_000_000),
+            (consts::WCODE_FASTFORWARD, 1_300, 60_000_000_000),
+            (consts::WCODE_REWIND, 1_600, 50_000_000_000)] {
+            assert!(key(&mut page, sym, Edge::Down, at).is_empty());
+            assert_eq!(key(&mut page, sym, Edge::Up, at + 40), vec![PlayerReq::CommitSeek(target)]);
+            plx_media::player::SHARED.playpos_ns.store(40_000_000_000, Relaxed);
+        }
+    }
+
+    #[test]
+    fn seek_jump_ff_hold_scrubs_and_waits_for_ok_without_an_initial_seek() {
+        let _g = plx_base::testlock::serial();
+        let _playback = PlaybackFixture::new();
+        plx_media::route::restore_instant_dpad_seeking(InstantDpadSeeking::Off);
+        let mut page = PlayerScreen::new(EntryId(9));
+        page.hud.dismissed = true;
+        assert!(key(&mut page, consts::WCODE_FASTFORWARD, Edge::Down, 1_000).is_empty());
+        assert!(key(&mut page, consts::WCODE_FASTFORWARD, Edge::Repeat, 1_500).is_empty());
+        page.step_scrub_hold(1_600);
+        assert!(page.scrub.ns > 40_000_000_000);
+        assert!(!page.hud.dismissed);
+        assert!(key(&mut page, consts::WCODE_FASTFORWARD, Edge::Up, 1_610).is_empty());
+        page.step_scrub_hold(1_800);
+        let target = page.scrub.ns;
+        assert_eq!(key(&mut page, consts::SDLK_RETURN, Edge::Down, 1_810), vec![PlayerReq::SeekTo(target)]);
+    }
+
+    #[test]
+    fn episode_row_focus_uses_engine_and_skips_disabled_or_absent_controls() {
+        use plx_ui::focus::{FocusEngine, Outcome};
+        use plx_ui::screen::By;
+        let _g = plx_base::testlock::serial();
+        let _playback = PlaybackFixture::new();
+        let mut page = PlayerScreen::new(EntryId(9));
+        let cx: Cx<'_, TestHost> = Cx { views: (), tick: Tick::default(), measure: &FixtureMeasure,
+            focus: Default::default(), press: Default::default(), owner: InputOwner::Entry(EntryId(9)) };
+        for (controls, primary, right, left) in [
+            (player_hud::Controls::for_item(true, true, false, true, false), 1, 2, 1),
+            (player_hud::Controls::for_item(true, true, true, false, false), 0, 2, 0),
+            (player_hud::Controls::NONE, 2, 3, 2),
+        ] {
+            page.slot = ControlSlot::Discs(controls);
+            page.hud.nav.focus = 0;
+            page.hud.visible_at_press = true;
+            page.key_updown(consts::Key::Up, 1_000);
+            assert_eq!(page.hud.nav.btn, primary);
+            let mut engine = FocusEngine::new();
+            let start = <PlayerScreen as Focusable<TestHost>>::seat(&page, GROUP_ROW,
+                Placed { rect: Rect::FULL, rest_rect: Rect::FULL, clip: Rect::FULL, index: None }, &cx);
+            assert_eq!(start.elem, player_hud::ELEM_ROW_BASE + primary as u32);
+            engine.set(cx.owner, start, Some(GROUP_ROW), By::Restore);
+            for (dir, expected) in [(Dir::Right, right), (Dir::Left, left)] {
+                let outcome = engine.move_dir(cx.owner, &page, &[], dir, &cx);
+                let Outcome::Moved { from, to, by } = outcome else { panic!("{outcome:?}") };
+                assert_eq!(to.elem, player_hud::ELEM_ROW_BASE + expected as u32);
+                let mut out = Vec::new();
+                let mut present = plx_machine::present::Present::new();
+                page.step(&ScreenEvent::FocusMoved { from, to, by }, &cx,
+                    &mut Effects::new(&mut out, MachineId::Instance(InstanceId(3)), &mut present));
+                assert_eq!(page.hud.nav.btn, expected);
+            }
+            for i in 0..page.slot.items() {
+                assert_eq!(<PlayerScreen as Focusable<TestHost>>::place(&page,
+                    &(player_hud::ELEM_ROW_BASE + i as u32), &cx, At::Drawn).is_some(), controls.enabled(i));
+            }
+        }
+    }
+
+    #[test]
+    fn seek_jump_rapid_taps_accumulate_past_an_earlier_keyframe_landing() {
         let _g = plx_base::testlock::serial();
         let _playback = PlaybackFixture::new();
         let _interval =
@@ -183,7 +300,7 @@ mod tests {
     }
 
     #[test]
-    fn classic_controls_burst_expires_and_other_controls_clear_it() {
+    fn seek_jump_burst_expires_and_other_controls_clear_it() {
         let _g = plx_base::testlock::serial();
         let _playback = PlaybackFixture::new();
         let _interval =
@@ -219,7 +336,7 @@ mod tests {
     }
 
     #[test]
-    fn classic_controls_burst_survives_a_seek_reload_but_not_an_item_change() {
+    fn seek_jump_burst_survives_a_seek_reload_but_not_an_item_change() {
         let _g = plx_base::testlock::serial();
         let _playback = PlaybackFixture::new();
         let _interval =
@@ -242,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn classic_controls_hidden_press_seeks_immediately_without_raising_the_hud() {
+    fn seek_jump_hidden_press_seeks_immediately_without_raising_the_hud() {
         let _g = plx_base::testlock::serial();
         let _playback = PlaybackFixture::new();
         let _interval =
@@ -268,7 +385,7 @@ mod tests {
     }
 
     #[test]
-    fn classic_controls_visible_seek_still_waits_for_confirmation() {
+    fn seek_jump_visible_seek_still_waits_for_confirmation() {
         let _g = plx_base::testlock::serial();
         let _playback = PlaybackFixture::new();
         let _interval =
@@ -285,7 +402,7 @@ mod tests {
     }
 
     #[test]
-    fn classic_controls_do_not_raise_the_hud_during_seeking_but_buffering_still_does() {
+    fn seek_jump_do_not_raise_the_hud_during_seeking_but_buffering_still_does() {
         let _g = plx_base::testlock::serial();
         let _playback = PlaybackFixture::new();
         let ps = plx_media::route::PlaybackSession::IDLE;
@@ -310,10 +427,10 @@ mod tests {
     }
 
     #[test]
-    fn classic_controls_off_keeps_the_modern_reveal_first_behavior() {
+    fn seek_jump_off_keeps_the_modern_reveal_first_behavior() {
         let _g = plx_base::testlock::serial();
         let _playback = PlaybackFixture::new();
-        plx_media::route::restore_playback_controls(PlaybackControls::Modern);
+        plx_media::route::restore_instant_dpad_seeking(InstantDpadSeeking::Off);
         let mut page = PlayerScreen::new(EntryId(9));
         assert!(key(&mut page, consts::SDLK_RIGHT, Edge::Down, 1_000).is_empty());
         assert!(page.scrub.reveal);
@@ -321,7 +438,7 @@ mod tests {
     }
 
     #[test]
-    fn classic_controls_hidden_jumps_clamp_and_repeats_do_not_create_a_scrub() {
+    fn seek_jump_hidden_jumps_clamp_and_repeats_do_not_create_a_scrub() {
         let _g = plx_base::testlock::serial();
         let _playback = PlaybackFixture::new();
         let _interval =
