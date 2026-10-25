@@ -1,0 +1,6 @@
+{
+  "settings.playback.instant_dpad_seeking": "Мгновенная перемотка стрелками",
+  "settings.playback.instant_dpad_seeking.copy": "При скрытом управлении стрелки перематывают на выбранный интервал. При видимом — подтвердите кнопкой OK. Если выключено, сначала показывается управление.",
+  "settings.playback.instant_dpad_seeking.off": "Выкл.",
+  "settings.playback.instant_dpad_seeking.on": "Вкл."
+}

@@ -717,6 +717,10 @@ pub fn abandon_seek() {
 pub fn loading(ps: &crate::route::PlaybackSession) -> bool {
     state(ps).is_busy()
 }
+/// Runtime rebuffering, distinct from the brief Buffering state after seek priming.
+pub fn rebuffering() -> bool {
+    SHARED.hls_rebuffering.load(Relaxed)
+}
 /// true only while the pipeline is actually presenting frames — not resolving, connecting,
 /// buffering or seeking. app.rs gates the heartbeat's `pos=` field on this: on a **direct-play**
 /// resume `begin_resume` only arms the seek (it does not seed `playpos_ns`, unlike the transcode

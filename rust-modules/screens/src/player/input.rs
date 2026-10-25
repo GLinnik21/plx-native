@@ -22,7 +22,8 @@ use std::os::raw::c_int;
 
 /// Is the transport HUD on screen? Its timer is live, OR playback is paused, OR the pipeline is
 /// BUSY — unless the user explicitly dismissed it (UP from the top row), which holds until the
-/// next key but cannot hide a stalled pipeline's read-out.
+/// next key but cannot hide a stalled pipeline's read-out. A dismissed HUD also stays
+/// hidden through an immediate seek; ordinary buffering retains the read-out.
 ///
 /// **The `loading()` term is load-bearing and there must be exactly ONE predicate.** The draw path
 /// and the pointer path used to spell it out inline while the three KEY sites and the focus PARKER
@@ -37,7 +38,8 @@ use std::os::raw::c_int;
 /// obvious one to reach for. One predicate, no wrong choice.
 #[inline]
 pub fn hud_visible(ps: &plx_media::route::PlaybackSession, now: u32, until: u32, is_paused: bool, dismissed: bool) -> bool {
-    ((now < until || is_paused) && !dismissed) || plx_media::player::loading(ps)
+    ((now < until || is_paused) && !dismissed)
+        || (plx_media::player::loading(ps) && !super::seek_jump::seek_stays_hidden(ps, dismissed))
 }
 
 // (A different `struct HeldKey` stood here, unrelated to `appkit::held_key::HeldKey` — WHICH key the remote is holding, as one value: the sym the
@@ -57,13 +59,13 @@ pub fn hud_visible(ps: &plx_media::route::PlaybackSession, now: u32, until: u32,
 
 /// Scrub-seek gesture state. This Magic Remote emits a HELD key as auto-repeat keydowns
 /// (state 0x101, ~50ms apart) followed by ONE keyup on release; a TAP is a lone
-/// keydown(0x001)+keyup(0x000). So: a fresh press does the fixed jump; the 0x101 repeats
+/// keydown(0x001)+keyup(0x000). A default D-pad press moves the fixed-step target; 0x101 repeats
 /// engage the continuous scrub. A held key's keyup is provisional — the driver can bounce `Up`
 /// then `Down` mid-hold — so the hold ends only after `SCRUB_RELEASE_DEBOUNCE_MS` passes without
-/// the same key returning (`appkit::held_key::HeldKey`). **Neither a hold's end nor a tap's keyup
+/// the same key returning (`appkit::held_key::HeldKey`). **Neither a hold's end nor a D-pad tap's keyup
 /// seeks:** the keys only move the TARGET, which stays pending (the film plays on underneath)
 /// until OK / PLAY takes it or BACK drops it — click-to-confirm. Only a pointer drag commits by
-/// itself, on its release.
+/// itself, on its release. Dedicated FF/REW taps are handled by `seek_jump` before this release path.
 pub struct Scrub {
     /// The key-hold half — direction, the engaged ramp, the bounce debounce and the lost-keyup net —
     /// owned once in `appkit::held_key`, which the trailer transport's hold-to-scrub shares.
@@ -163,7 +165,7 @@ impl Scrub {
 #[derive(Clone, Copy)]
 pub struct HudNav {
     pub focus: i32, // 0 = scrubber, 1 = right buttons (Subtitles/Audio/More), 2 = bottom tabs
-    pub btn: i32,   // 0 = Subtitles, 1 = Audio, 2 = More (within the buttons row)
+    pub btn: i32,   // 0 = Previous, 1 = Next, 2 = Subtitles, 3 = Audio, 4 = More
     pub tab: i32,   // 0 = Info, 1 = Chapters (within the tabs row)
 }
 impl HudNav {

@@ -68,6 +68,9 @@ pub enum Icon {
     /// be two circles saying one thing. Its user is the detail hero's *mark unwatched* disc, beside
     /// a `Check` on the same ground: the pair `detail::hero_ctls` draws for a part-watched item.
     Minus,
+    /// The player row's Previous/Next episode discs.
+    Previous,
+    Next,
     Play,
     Pause,
     /// The transport pair — two filled triangles, pointing back and forward. Worn by ONE surface:
@@ -317,6 +320,8 @@ fn src(id: Icon) -> &'static str {
         Icon::Episode => include_str!("../../../assets/icons/episode.svg"),
         Icon::Show => include_str!("../../../assets/icons/show.svg"),
         Icon::Collection => include_str!("../../../assets/icons/collection.svg"),
+        Icon::Previous => include_str!("../../../assets/icons/previous.svg"),
+        Icon::Next => include_str!("../../../assets/icons/next.svg"),
         Icon::PlayStart => include_str!("../../../assets/icons/play-start.svg"),
         Icon::Close => include_str!("../../../assets/icons/close.svg"),
         Icon::More => include_str!("../../../assets/icons/more.svg"),

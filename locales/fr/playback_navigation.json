@@ -1,0 +1,6 @@
+{
+  "settings.playback.instant_dpad_seeking": "Saut direct avec la croix",
+  "settings.playback.instant_dpad_seeking.copy": "Commandes masquées, Gauche/Droite saute de l’intervalle choisi. Commandes visibles, OK confirme. Désactivé, le premier appui affiche les commandes.",
+  "settings.playback.instant_dpad_seeking.off": "Désactivées",
+  "settings.playback.instant_dpad_seeking.on": "Activées"
+}
