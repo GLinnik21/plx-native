@@ -1,0 +1,19 @@
+{
+  "under_posters.title": "Under plakatene",
+  "under_posters.detail": "Det som står under plakaten.",
+  "under_posters.copy": "De fleste plakater viser allerede tittelen. Velg hva som vises under plakaten du står på.",
+  "under_posters.title_row": "Tittel",
+  "under_posters.title_detail": "Navnet, i fet skrift.",
+  "under_posters.details_row": "Detaljer",
+  "under_posters.details_detail": "Én linje med informasjon.",
+  "under_posters.details_copy": "Påbegynte titler, titler som kommer snart og samlinger viser heller: tid igjen, utgivelsesdato, antall filmer.",
+  "under_posters.year_length": "År · Lengde",
+  "under_posters.genre": "Sjanger",
+  "under_posters.video": "Video",
+  "under_posters.age_rating_score": "Aldersgrense · Vurdering",
+  "under_posters.none": "Ingenting",
+  "under_posters.reset": "Tilbakestill",
+  "under_posters.reset_detail": "År og lengde, ingen tittel.",
+  "under_posters.sample_title": "Film",
+  "under_posters.sample_genre": "Drama"
+}

@@ -1,0 +1,7 @@
+{
+  "library_header.collections": "Samlinger",
+  "library_header.recommended": "Anbefalt",
+  "library_header.sort_filter": "Sorter og filtrer",
+  "library_header.filtered_of": "{shown} av {total}",
+  "library_header.show": "Vis"
+}
