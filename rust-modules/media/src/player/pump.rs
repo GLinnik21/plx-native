@@ -651,6 +651,76 @@ fn recover_failed_source_route(ps: &mut crate::route::PlaybackSession) -> Source
     }
 }
 
+/// The Load was refused with `type=18 num=200` while the audio was fed natively: remember the
+/// codec and channel count as refused on this firmware (`learn`, which is
+/// `session::learn_native_audio_refusal` in the player and a recorder in the tests) and arm one retry
+/// for the app loop. False when nothing was refused that way, or the combination was already known
+/// (a retry that still feeds it natively must end in the ordinary failure, not loop).
+fn learn_native_audio_refusal(why: &str, learn: impl FnOnce(&str, u32) -> bool) -> bool {
+    if !SHARED.native_audio_refused.swap(false, Release) {
+        return false;
+    }
+    let Some((kind, channels)) = crate::ff::native_audio::fed() else {
+        return false;
+    };
+    super::log(&format!(
+        "native audio: the pipeline refused {} with {channels} channels ({why})",
+        kind.ffmpeg_name()
+    ));
+    let learned = learn(kind.ffmpeg_name(), channels);
+    if learned {
+        super::log("native audio: retrying the play, the server converts it");
+        SHARED.native_audio_retry.store(true, Release);
+    }
+    learned
+}
+
+/// The native surround audio watchdog ([`super::native_stall`]): the pipeline took the Load and a few
+/// access units of a native Opus track with more than two channels, then stopped
+/// accepting with both our queues full and no picture. True when it fired and the combination was
+/// learned (one retry is armed, the Engine is failed and the caller returns); a
+/// combination the install already knew only logs, so the retry cannot loop.
+fn native_audio_stall_fired(eng: &Engine, now: u32) -> bool {
+    use super::native_stall::{Probe, Step, NATIVE_AUDIO_STALL_MS, SIZES, WATCH};
+    let fed = crate::ff::native_audio::fed();
+    let queue = |q: &Option<Box<crate::aq::AuQueue>>| q.as_ref().map_or(0, |q| crate::aq::aq_bytes(&**q as *const _ as *mut _) as i64);
+    let (qa, qv) = (queue(&eng.aq_audio), queue(&eng.aq_video));
+    let accepted = super::engine::fed_totals().1;
+    let probe = Probe {
+        now,
+        channels: fed.map_or(0, |(_, c)| c),
+        load_returned: SHARED.native_load_returned(eng.native_epoch),
+        frames: SHARED.frames.load(Relaxed),
+        accepted,
+        audio_queue_bytes: qa,
+        video_queue_bytes: qv,
+    };
+    match WATCH.lock().unwrap_or_else(|e| e.into_inner()).step(&probe) {
+        Step::Quiet => false,
+        Step::Armed => {
+            if let Some((kind, channels)) = fed {
+                super::log(&format!(
+                    "native audio: watching {} with {channels} channels ({} accepted AUs, audio queue {qa} B, video queue {qv} B); \
+                     fires if nothing is accepted for {} ms with no picture",
+                    kind.ffmpeg_name(),
+                    accepted,
+                    NATIVE_AUDIO_STALL_MS
+                ));
+            }
+            false
+        }
+        Step::Fire { armed_ms, stalled_ms, accepted } => {
+            let sizes = SIZES.lock().unwrap_or_else(|e| e.into_inner()).summary().unwrap_or_else(|| "none".into());
+            super::log(&format!(
+                "native audio: STALL, no picture: {accepted} AUs accepted, none for {stalled_ms} ms (watching for {armed_ms} ms), \
+                 audio queue {qa} B, video queue {qv} B, fed packet sizes {sizes}"
+            ));
+            SHARED.native_audio_refused.store(true, Release);
+            learn_native_audio_refusal("it swallowed the feed: no picture", plx_plex::plex::session::learn_native_audio_refusal)
+        }
+    }
+}
+
 /// The three source-failure branches' shared answer: either a recovery is flying (the frame is
 /// done, the spinner stays up) or the Engine fails and the viewer gets the read-out. Always the
 /// frame's last act.
@@ -1289,7 +1359,20 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
             finish_preview_open_failure(ps, pa);
             return;
         }
+        // The pipeline refused AUDIO it was fed natively: learn the combination, and let the app
+        // loop retry the play, which now converts it. The failure state is the ordinary one, so a
+        // retry that cannot run leaves the read-out the viewer would have had.
+        if learn_native_audio_refusal("Audio Codec Not Supported", plx_plex::plex::session::learn_native_audio_refusal) {
+            crate::route::fail_current_engine();
+            set_state(super::shared::PlaybackState::Error);
+            return;
+        }
         fail_or_wait_for_recovery(ps, eng);
+        return;
+    }
+    if !eng.preview_abandon && native_audio_stall_fired(eng, now) {
+        crate::route::fail_current_engine();
+        set_state(super::shared::PlaybackState::Error);
         return;
     }
     // wait for the media-thread ctor
@@ -2136,6 +2219,54 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
 
 #[cfg(test)]
 mod tests {
+
+    /// **A native audio refusal is learned once and arms exactly one retry.** The `type=18
+    /// num=200` callback sets the flag only for a session that fed its audio natively; the pump
+    /// turns it into a learned combination (the fake learner stands for
+    /// `session::learn_native_audio_refusal`) and a retry request for the app loop.
+    #[test]
+    fn a_refused_native_audio_load_is_learned_and_arms_one_retry() {
+        use std::sync::atomic::Ordering::{Acquire, Release};
+        let _guard = plx_base::testlock::serial();
+        let learned = std::cell::RefCell::new(Vec::new());
+        let learner = |codec: &str, channels: u32| {
+            learned.borrow_mut().push((codec.to_string(), channels));
+            true
+        };
+        let publish = |kind, channels: u32| {
+            crate::ff::native_audio::reset();
+            crate::ff::native_audio::publish_fed(kind, channels);
+        };
+
+        // Nothing refused: nothing learned.
+        super::SHARED.reset_session();
+        assert!(!super::learn_native_audio_refusal("test", learner));
+        assert!(learned.borrow().is_empty());
+
+        // Refused, but the audio was not fed natively (converted, or an AC3 file): nothing learned.
+        crate::ff::native_audio::reset();
+        super::SHARED.native_audio_refused.store(true, Release);
+        assert!(!super::learn_native_audio_refusal("test", learner));
+        assert!(learned.borrow().is_empty());
+        assert!(!super::SHARED.native_audio_retry.load(Acquire));
+
+        // Refused with native Opus stereo fed: learned, one retry armed, flag consumed.
+        publish(crate::ff::native_audio::Kind::Opus, 2);
+        super::SHARED.native_audio_refused.store(true, Release);
+        assert!(super::learn_native_audio_refusal("test", learner));
+        assert_eq!(*learned.borrow(), [("opus".to_string(), 2)]);
+        assert!(crate::player::take_native_audio_retry(), "the app loop is asked to retry");
+        assert!(!crate::player::take_native_audio_retry(), "…once");
+        assert!(!super::learn_native_audio_refusal("test", learner), "the refusal flag was consumed");
+
+        // A combination the install already knew (the learner says no) arms no retry, so a retry
+        // that is still refused ends in the ordinary failure instead of looping.
+        super::SHARED.native_audio_refused.store(true, Release);
+        assert!(!super::learn_native_audio_refusal("test", |_, _| false));
+        assert!(!crate::player::take_native_audio_retry());
+        crate::ff::native_audio::reset();
+        super::SHARED.reset_session();
+    }
     use super::{
         commit_or_carry_seek, rearm_carried_seek, TX,
         hls_buffered_ms, native_clock_silence_ms, native_clock_stopped, open_failure_action,

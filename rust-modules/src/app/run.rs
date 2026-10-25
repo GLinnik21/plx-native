@@ -1608,6 +1608,25 @@ fn park_on_decoder_release(app: &mut App) {
     plx_machine::idle::invalidate();
 }
 
+/// **The pipeline refused the audio the app fed it natively, and the player learned that**
+/// (`player::take_native_audio_retry`): play the item again exactly as the Retry press does, which
+/// plans against the new capability answer and so has the server convert that audio,
+/// instead of leaving the viewer on a failure read-out. Once per learned combination: the retry
+/// cannot refuse it again, because the combination is no longer announced.
+fn retry_after_native_audio_refusal(app: &mut App) {
+    if !plx_media::player::take_native_audio_retry() {
+        return;
+    }
+    log("native audio: retrying the failed play with the refused audio converted");
+    super::playback::retry_failed_playback(
+        &mut app.player.session,
+        &mut app.adapters.player,
+        app.bridge.metadata_mut(),
+        None,
+        plx_media::player::report::AttemptOrigin::Recovery,
+    );
+}
+
 /// What the press that wakes a decoder-release park asks of the transport, as far as the restore
 /// is concerned ([`wake_input`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1754,6 +1773,7 @@ fn playback_may_run(app: &App) -> bool {
 /// seek — everything that reads `fr.now` and no `dt`.
 pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         park_on_decoder_release(app);
+        retry_after_native_audio_refusal(app);
         if playback_may_run(app) {
             if is_started() {
                 plx_media::player::pump(&mut app.player.session, &mut app.adapters.player, fr.now);

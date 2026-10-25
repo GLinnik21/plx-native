@@ -37,7 +37,7 @@
 //! ([`SubtitleOffsetsPref`]).
 use super::{
     DeckPress, DirectPlayMode, HdrOverlayBrightness, LastLibrary, LibraryViews, NextEpisodeMode, OpaqueExtensions, PlaintextConsent,
-    HoldHintTaught, PlaybackQuality, ServerKeyPin, Session, SkipInterval, SubtitleOffsetEntry, SubtitleOffsets, SubtitlePosition,
+    HoldHintTaught, NativeAudioRefusal, PlaybackQuality, ServerKeyPin, Session, SkipInterval, SubtitleOffsetEntry, SubtitleOffsets, SubtitlePosition,
     SubtitleSize, SubtitleTone, UiResolution, UnderPosters,
 };
 use serde::de::DeserializeOwned;
@@ -239,6 +239,14 @@ pub struct Preferences {
     /// unreadable entry costs that entry.
     #[serde(default, deserialize_with = "super::de_soft_vec", skip_serializing_if = "Vec::is_empty")]
     pub server_key_pins: Vec<ServerKeyPin>,
+    /// **Native audio the pipeline of this television was watched refusing** — firmware family,
+    /// codec and channel count ([`NativeAudioRefusal`]). The player learns one when a native Load
+    /// ends in `type=18 num=200 Audio Codec Not Supported`, and `devcaps` then stops announcing the
+    /// combination, so the next play (and the automatic retry of the one that failed) is converted.
+    /// An INSTALL fact: a property of this television's firmware, kept across sign-out and
+    /// across profiles. Skipped while empty, soft-parsed per entry.
+    #[serde(default, deserialize_with = "super::de_soft_vec", skip_serializing_if = "Vec::is_empty")]
+    pub native_audio_refused: Vec<NativeAudioRefusal>,
     /// **The library each top tab was last browsed in**, per profile — so a household with two TV
     /// libraries opens the one it actually watches instead of whichever the server happens to list
     /// first.
@@ -562,6 +570,8 @@ macro_rules! list_row {
 // The two lists of the account itself (`ACCOUNT_BOUND_PREFERENCES`).
 list_row!(PlaintextConsentRow: PlaintextConsent = plaintext_consent, "plaintext_consent", Account, account true);
 list_row!(ServerKeyPinsRow: ServerKeyPin = server_key_pins, "server_key_pins", Account, account true);
+// What this television's firmware refused: an install fact, so it survives sign-out.
+list_row!(NativeAudioRefusedRow: NativeAudioRefusal = native_audio_refused, "native_audio_refused", Install, account false);
 // The per-profile library lists. Sign-out clears them (`ACCOUNT_BOUND_PREFERENCES`), but their
 // records are not stamped: the one login that is not a sign-out (boot.rs, a stored session that
 // could not be activated) leaves them to the next account, as it always has.
@@ -616,6 +626,7 @@ pub const DESCRIPTORS: &[Descriptor] = &[
     Descriptor::of::<HoldHintTaughtPref>(),
     Descriptor::of::<PlaintextConsentRow>(),
     Descriptor::of::<ServerKeyPinsRow>(),
+    Descriptor::of::<NativeAudioRefusedRow>(),
     Descriptor::of::<LastLibraryRow>(),
     Descriptor::of::<LibraryViewsRow>(),
     // The per-profile player settings' own values.

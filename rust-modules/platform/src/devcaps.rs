@@ -59,6 +59,9 @@ pub mod dv;
 /// `opus` is the one entry the table does not gate ([`PIPELINE_ONLY_AUDIO`]): umediaserver's
 /// table describes its own file player, and the dev set's lists no Opus row, while the buffer feed
 /// (LG's SMP `OPUS` + `opusInfo`, which moonlight-tv's ss4s feeds on webOS) decodes it.
+///
+/// What a set announces is this list intersected with ITS table, with the table's channel counts; a
+/// combination measured broken on a firmware family is taken off by [`EXCLUSIONS`], not here.
 pub const DP_AUDIO_CODECS: &str = "aac,ac3,eac3,dts,opus";
 
 /// The [`DP_AUDIO_CODECS`] entries admitted on a parsed device table even when it has no row for
@@ -108,6 +111,174 @@ pub fn pcm_track_fits(codec: &str, channels: i64, sample_rate: i64) -> bool {
 }
 
 const CAPS_TABLE: &str = "/etc/umediaserver/device_codec_capability_config.json";
+
+/// One native-audio combination that is **measured broken** on a firmware family, and so is not
+/// announced for it although the family's own codec table lists it. An excluded track is
+/// converted exactly as one the set never listed: by the server.
+///
+/// The key is the firmware codename (`tv::device::Info::codename`, nyx's `webos_release_codename`),
+/// the one identity the app reads reliably on every set: it groups the sets that run the same
+/// build of the media stack, which is what decides the decoder's behaviour, where the retail model
+/// name (`product_id`, absent on some firmware) and the SoC class would split one stack or merge two.
+/// A row says `max_channels` native channels of `codec`, `0` meaning the codec is not announced at
+/// all. A set no row names announces what its table lists; a row only takes away, so an unmeasured
+/// family is never promised less than the firmware says.
+pub struct Exclusion {
+    pub codename: &'static str,
+    pub codec: &'static str,
+    pub max_channels: u32,
+    pub evidence: &'static str,
+}
+
+pub const EXCLUSIONS: &[Exclusion] = &[
+    // LG C1 (OLED55C14LB), webOS 6.5.3, measured 2026-10-21 and 2026-10-23.
+    Exclusion {
+        codename: "kisscurl-koli",
+        codec: "opus",
+        max_channels: 2,
+        evidence: "6-channel Opus stalls the pipeline (Load returns, nothing is accepted, no picture) once \
+                   packets pass 1500 bytes: CBR files with 1500 B packets play, 1536 B CBR and VBR noise \
+                   (2264-3411 B) stall after ~190 AUs; stereo Opus (<=635 B) is clean. Emby topic 132334 \
+                   reports corrupted 5.1 Opus on a 2021 webOS 6 LG (43UP78006LB).",
+    },
+    Exclusion {
+        codename: "kisscurl-koli",
+        codec: "vorbis",
+        max_channels: 0,
+        evidence: "the pipeline refuses the first buffers with type=18 num=200 'Audio Codec Not \
+                   Supported' (stereo 44.1/48 kHz and 5.1, with the three header packets fed in-band); \
+                   libpf's payload has no key for Vorbis headers.",
+    },
+];
+
+/// Bound the native channels of `codec` in `caps` to `max` (`0`: the codec is not announced at all),
+/// never raising what the table said. Returns what was applied as `codec<=N` / `codec=none`, or
+/// nothing when the set does not announce the codec.
+fn limit_codec(caps: &mut Caps, codec: &str, max: u32) -> Option<String> {
+    if !caps.audio_has(codec) {
+        return None;
+    }
+    if max == 0 {
+        caps.audio = caps.audio.split(',').filter(|c| *c != codec).collect::<Vec<_>>().join(",");
+        caps.audio_channels.remove(codec);
+        return Some(format!("{codec}=none"));
+    }
+    let limit = caps.audio_channels.get(codec).copied().filter(|l| *l > 0).map_or(max, |l| l.min(max));
+    caps.audio_channels.insert(codec.to_string(), limit);
+    // Force Direct Play applies no table ceiling, but it does honour a measured one.
+    let native = caps.native_ceiling.get(codec).copied().map_or(max, |l| l.min(max));
+    caps.native_ceiling.insert(codec.to_string(), native);
+    Some(format!("{codec}<={limit}"))
+}
+
+/// Take the exclusions for `codename` off `caps`, returning what was applied as `codec<=N` or
+/// `codec=none`. `ignore` (the debug flag `/tmp/plxnative-nativeaudiowide`) applies none, so a
+/// combination the table keeps off the pipeline can be tried on a set.
+pub fn apply_exclusions(caps: &mut Caps, codename: &str, ignore: bool, table: &[Exclusion]) -> Vec<String> {
+    if ignore || codename.is_empty() {
+        return Vec::new();
+    }
+    table
+        .iter()
+        .filter(|e| e.codename.eq_ignore_ascii_case(codename))
+        .filter_map(|e| limit_codec(caps, e.codec, e.max_channels))
+        .collect()
+}
+
+/// A native audio combination this install **watched the pipeline refuse**, remembered so the next
+/// play goes straight to conversion (`plex::session`'s `native_audio_refused` preference stores
+/// the list; [`merge_learned`] receives it). `channels` is the refused track's channel count.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Refusal {
+    pub firmware: String,
+    pub codec: String,
+    pub channels: u32,
+    /// The firmware BUILD the refusal was watched on (`tv::device::Info::build`; empty for an entry
+    /// stored before builds were recorded). A different build is a different decoder, so the
+    /// session drops entries whose build is not the running one.
+    pub build: String,
+}
+
+/// Take the learned refusals for `codename` off `caps`, as [`apply_exclusions`] does. A refusal of a
+/// stereo (or mono) track takes the codec away altogether; a refusal of a surround track keeps the
+/// codec to stereo, which is what the static rows do for the same measurements. `ignore` is the debug
+/// flag again.
+pub fn apply_learned(caps: &mut Caps, codename: &str, ignore: bool, learned: &[Refusal]) -> Vec<String> {
+    if ignore || codename.is_empty() {
+        return Vec::new();
+    }
+    learned
+        .iter()
+        .filter(|r| r.firmware.eq_ignore_ascii_case(codename))
+        .filter_map(|r| limit_codec(caps, &r.codec, if r.channels <= 2 { 0 } else { 2 }))
+        .collect()
+}
+
+/// gst's rank file: which decoder elements the firmware leaves switched on.
+const GST_CONF: &str = "/etc/gst/gstcool.conf";
+
+/// For each audio codec the pipeline can be fed, the gst decoder elements that can decode it: LG's
+/// hardware `<codec>_audiodec` first, then the software decoders (`avdec_dca` is DTS's, which
+/// webosbrew's `dts_restore` re-ranks). Codec ids are [`audio_codec_id`]'s.
+const DECODER_ELEMENTS: &[(&str, &[&str])] = &[
+    ("aac", &["aac_audiodec", "avdec_aac", "faad"]),
+    ("ac3", &["ac3_audiodec", "avdec_ac3"]),
+    ("eac3", &["ac3_audiodec", "avdec_eac3"]),
+    ("dts", &["dts_audiodec", "avdec_dca"]),
+    ("opus", &["opus_audiodec", "opusdec", "avdec_opus"]),
+    ("vorbis", &["vorbis_audiodec", "vorbisdec", "ivorbisdec"]),
+];
+
+/// `[rank]` and `[sw_decoder]` of `gstcool.conf` as `element -> rank` (the later line wins). Other
+/// sections, comments and lines that are not `name=integer` are ignored.
+pub fn parse_gst_ranks(text: &str) -> std::collections::BTreeMap<String, i64> {
+    let mut ranks = std::collections::BTreeMap::new();
+    let mut wanted = false;
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(section) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            wanted = matches!(section.trim(), "rank" | "sw_decoder");
+        } else if wanted {
+            if let Some((name, value)) = line.split_once('=') {
+                if let Ok(rank) = value.trim().parse::<i64>() {
+                    ranks.insert(name.trim().to_string(), rank);
+                }
+            }
+        }
+    }
+    ranks
+}
+
+/// Drop from `caps` the audio codecs that `gstcool.conf` shows **nothing can decode**, and say what
+/// happened as `(dropped, kept because the file never names a decoder for them)`.
+///
+/// The device table says what the hardware block can do; this file says which gst decoder elements
+/// the firmware left switched on. A codec is dropped only on positive evidence: some decoder element
+/// of it is listed and every listed one is rank 0 (the C5 whose table lists DTS has `avdec_dca=0` and
+/// no hardware `dts_audiodec`; `dts_restore` gives `avdec_dca` a rank again). A codec the file does
+/// not mention at all (Opus on a C1: `opus_audiodec` keeps its default rank) stays: no line means the
+/// default rank, not unsupported. An empty or unreadable file therefore changes nothing. The channel
+/// ceiling goes with the codec, so Force Direct Play's "DTS needs a surviving table row" rule sees
+/// the same answer.
+pub fn apply_gst_decoders(caps: &mut Caps, conf: &str) -> (Vec<&'static str>, Vec<&'static str>) {
+    let ranks = parse_gst_ranks(conf);
+    let (mut dropped, mut unlisted) = (Vec::new(), Vec::new());
+    for (codec, elements) in DECODER_ELEMENTS {
+        if !caps.audio_has(codec) {
+            continue;
+        }
+        let listed: Vec<i64> = elements.iter().filter_map(|e| ranks.get(*e).copied()).collect();
+        if listed.is_empty() {
+            unlisted.push(*codec);
+        } else if listed.iter().all(|r| *r <= 0) {
+            caps.audio = caps.audio.split(',').filter(|c| *c != *codec).collect::<Vec<_>>().join(",");
+            caps.audio_channels.remove(*codec);
+            dropped.push(*codec);
+        }
+    }
+    (dropped, unlisted)
+}
+
 
 /// The decode-capability snapshot the playback stack derives from. `OnceLock` for the same
 /// reason as `tv::device::Info`: written exactly once, at boot, then read on every play decision.
@@ -166,6 +337,10 @@ pub struct Caps {
     /// Nonzero, per-codec channel ceilings from the device table, duplicate rows MIN-merged.
     /// Missing legacy limits remain unknown; DTS is admitted only with a measured limit.
     pub audio_channels: std::collections::BTreeMap<String, u32>,
+    /// Per-codec channel ceilings that were **measured** on this firmware ([`EXCLUSIONS`]) or
+    /// learned from a refusal, as opposed to the table's. Force Direct Play applies no table
+    /// ceiling but does honour these ([`Caps::forced_feeds_audio_track`]).
+    pub native_ceiling: std::collections::BTreeMap<String, u32>,
 }
 
 impl Caps {
@@ -185,6 +360,7 @@ impl Caps {
             av1_row: (0, 0, 0),
             audio: "aac,ac3,eac3".to_string(),
             audio_channels: Default::default(),
+            native_ceiling: Default::default(),
         }
     }
 
@@ -226,6 +402,19 @@ impl Caps {
         DP_AUDIO_CODECS.split(',').any(|c| c == id)
     }
 
+    /// [`Caps::forced_feeds_audio`] for one TRACK: Force Direct Play applies no table ceiling, but a
+    /// ceiling measured on this firmware ([`EXCLUSIONS`], or a refusal learned from it) holds, so a
+    /// 5.1 Opus track that stalls a C1's pipeline is not forced into it. `channels` 0 = not known.
+    pub fn forced_feeds_audio_track(&self, codec: &str, channels: i64) -> bool {
+        if !self.forced_feeds_audio(codec) {
+            return false;
+        }
+        match self.native_ceiling.get(audio_codec_id(codec).as_ref()) {
+            Some(&max) => channels <= i64::from(max),
+            None => true,
+        }
+    }
+
     /// The Forced-mode DTS rule, one predicate so the owner can flip it: the table has a DTS
     /// row with a stated channel count (an absent decoder would hang the Load like #584 instead
     /// of refusing). The channel ceiling itself is not applied.
@@ -251,7 +440,30 @@ impl Caps {
     }
 }
 
-static CAPS: OnceLock<Caps> = OnceLock::new();
+/// `nativeaudiowide` ignores the learned refusals as it ignores the static rows; `nativeaudiolearn`
+/// beside it keeps the learned layer (and the learning) on.
+fn ignores_learned(wide: bool, learn: bool) -> bool {
+    wide && !learn
+}
+
+/// What the layers below start from: the table, minus the codecs gstcool.conf shows nothing can
+/// decode. [`rebuild`] derives [`caps`]'s answer from it, so the answer can change at runtime when
+/// the install learns a refusal.
+struct Layers {
+    base: Caps,
+    codename: String,
+    wide: bool,
+    /// `plxnative-nativeaudiolearn` beside `wide`: the learned refusals still apply and are still
+    /// learned, so the learn-and-retry path can be shown on a set the exclusions would keep off it.
+    learn: bool,
+}
+static LAYERS: OnceLock<Layers> = OnceLock::new();
+static ASSUMED: OnceLock<Caps> = OnceLock::new();
+/// The current answer. Each rebuild publishes a new leaked snapshot (a few hundred bytes, a refusal
+/// is learned at most a handful of times per install), so a `&'static Caps` handed out earlier stays
+/// valid and a reader never takes a lock for longer than the pointer read.
+static CURRENT: std::sync::RwLock<Option<&'static Caps>> = std::sync::RwLock::new(None);
+static LEARNED: std::sync::Mutex<Vec<Refusal>> = std::sync::Mutex::new(Vec::new());
 /// Did [`probe`] READ the table, or is [`caps`] returning [`Caps::assumed`]?
 ///
 /// The two are indistinguishable from the values alone — on the 49SM9000PLA they are equal by
@@ -273,7 +485,87 @@ pub fn caps() -> &'static Caps {
     if let Some(caps) = THREAD_CAPS.with(std::cell::Cell::get) {
         return caps;
     }
-    CAPS.get_or_init(Caps::assumed)
+    if let Some(caps) = *CURRENT.read().unwrap_or_else(|e| e.into_inner()) {
+        return caps;
+    }
+    ASSUMED.get_or_init(Caps::assumed)
+}
+
+/// Layer the learned refusals and the static exclusions over the base and publish the result.
+/// Order: the table, minus gstcool.conf's no-decoder codecs (the base), minus [`EXCLUSIONS`], minus
+/// the learned refusals. The debug flag skips the last two. Logs each layer's effect.
+fn rebuild() {
+    let Some(layers) = LAYERS.get() else { return };
+    let learned = LEARNED.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let mut caps = layers.base.clone();
+    let excluded = apply_exclusions(&mut caps, &layers.codename, layers.wide, EXCLUSIONS);
+    let refused = apply_learned(&mut caps, &layers.codename, ignores_learned(layers.wide, layers.learn), &learned);
+    plx_base::eventlog::log(&format!(
+        "devcaps: firmware={:?} audio layers: table+gst={} | exclusions: {} | learned: {} | -> audio={}{}",
+        layers.codename,
+        layers.base.audio,
+        if excluded.is_empty() { "none".to_string() } else { excluded.join(" ") },
+        if refused.is_empty() { "none".to_string() } else { refused.join(" ") },
+        caps.audio,
+        match (layers.wide, layers.learn) {
+            (true, true) => " (nativeaudiowide: exclusions ignored; nativeaudiolearn: refusals still learned)",
+            (true, false) => " (nativeaudiowide: exclusions and learned entries ignored)",
+            _ => "",
+        }
+    ));
+    *CURRENT.write().unwrap_or_else(|e| e.into_inner()) = Some(Box::leak(Box::new(caps)));
+}
+
+/// Add `list` to the refusals this install has learned (never removing one) and rebuild if that
+/// changed anything. The plex session calls it with the stored list whenever it is read or written.
+pub fn merge_learned(list: &[Refusal]) -> bool {
+    let changed = {
+        let mut learned = LEARNED.lock().unwrap_or_else(|e| e.into_inner());
+        let before = learned.len();
+        for r in list {
+            if !learned.contains(r) {
+                learned.push(r.clone());
+            }
+        }
+        learned.sort();
+        learned.len() != before
+    };
+    if changed {
+        rebuild();
+    }
+    changed
+}
+
+/// Forget every learned refusal (the debug trigger `plxnative-nativeaudioforget`, read once at
+/// start) and rebuild. Returns what was forgotten.
+pub fn forget_learned() -> Vec<Refusal> {
+    let gone = std::mem::take(&mut *LEARNED.lock().unwrap_or_else(|e| e.into_inner()));
+    if !gone.is_empty() {
+        rebuild();
+    }
+    gone
+}
+
+/// The refusals learned so far, for the preference write.
+pub fn learned() -> Vec<Refusal> {
+    LEARNED.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// The pipeline refused `codec` with `channels` channels on this firmware, fed natively: remember it
+/// at once (the retry that follows plans against the new answer) and return the entry for the
+/// caller to persist. `None` when the set does not announce the codec any more, or it is known.
+pub fn learn_refusal(codec: &str, channels: u32) -> Option<Refusal> {
+    let layers = LAYERS.get()?;
+    if ignores_learned(layers.wide, layers.learn) || layers.codename.is_empty() || !caps().audio_has(&codec.to_ascii_lowercase()) {
+        return None;
+    }
+    // The pipeline's spelling (PMS says `dca` where the table and the pipeline say `dts`).
+    let codec = match codec.to_ascii_lowercase().as_str() {
+        "dca" => "dts".to_string(),
+        other => other.to_string(),
+    };
+    let refusal = Refusal { firmware: layers.codename.clone(), codec, channels, build: crate::tv::device::info().build.clone() };
+    merge_learned(std::slice::from_ref(&refusal)).then_some(refusal)
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -502,6 +794,7 @@ fn parse(s: &str) -> Option<Caps> {
         av1_row: (av1_wh.0, av1_wh.1, av1_fps),
         audio,
         audio_channels,
+        native_ceiling: Default::default(),
     })
 }
 
@@ -540,6 +833,14 @@ pub fn probe() {
                 let mut c = c;
                 plx_base::eventlog::log(&format!("devcaps: table audio rows: {}", table_audio_rows(&s)));
                 c.vp9_bit_depth = vp9_bit_depth_for(crate::tv::device::info().major);
+                // Before the exclusions: a codec nothing can decode is not a candidate to limit.
+                let (gst_dropped, gst_unlisted) = match std::fs::read_to_string(GST_CONF) {
+                    Ok(conf) => apply_gst_decoders(&mut c, &conf),
+                    Err(_) => (Vec::new(), Vec::new()),
+                };
+                plx_base::eventlog::log(&format!(
+                    "devcaps: gstcool dropped={gst_dropped:?} kept-unlisted={gst_unlisted:?}"
+                ));
                 plx_base::eventlog::log(&format!(
                     "devcaps: hevc={} {}x{} vp9={} av1={} audio={} rows: h264={}x{}@{} hevc={}x{}@{}{vp9_row}{av1_row} vp9bits={} (device table)",
                     c.hevc,
@@ -573,7 +874,13 @@ pub fn probe() {
         }
     };
     let _ = MEASURED.set(measured);
-    let _ = CAPS.set(caps);
+    let _ = LAYERS.set(Layers {
+        base: caps,
+        codename: crate::tv::device::info().codename.clone(),
+        wide: plx_base::devtrig::flag("nativeaudiowide"),
+        learn: plx_base::devtrig::flag("nativeaudiolearn"),
+    });
+    rebuild();
 }
 
 /// Whether [`caps`] reflects THIS set's table or the assumed profile — see [`MEASURED`].
@@ -584,6 +891,14 @@ pub fn measured() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_learn_switch_keeps_the_learned_layer_under_the_wide_flag() {
+        assert!(!ignores_learned(false, false));
+        assert!(!ignores_learned(false, true));
+        assert!(ignores_learned(true, false));
+        assert!(!ignores_learned(true, true));
+    }
 
     /// The dev set's real file, trimmed but formatting-verbatim (the ` : ` spacing, the license
     /// blurb, the fields nothing consumes): the parser has to survive the platform's own
@@ -718,6 +1033,187 @@ mod tests {
             "audioCodecs":[{"name":"WMA","channels":2}]}"#;
         assert_eq!(parse(no_audio).unwrap().audio, Caps::assumed().audio);
         assert_eq!(table_audio_rows(REAL), "MPEG/2,AAC/6,AC3/6,EAC3/8,DTS/6,FLAC/6");
+    }
+
+    /// The dev table: FLAC listed at six channels, Opus admitted by the pipeline (Auto: stereo).
+    fn native_set() -> Caps {
+        parse(REAL).unwrap()
+    }
+
+    #[test]
+    fn an_unknown_firmware_family_announces_what_its_table_lists() {
+        for codename in ["", "goldilocks2-grampians", "some-future-build"] {
+            let mut c = native_set();
+            assert!(apply_exclusions(&mut c, codename, false, EXCLUSIONS).is_empty(), "{codename:?}");
+            assert_eq!(c, native_set(), "{codename:?}");
+            assert!(c.audio_supports("opus", 2));
+            assert!(c.forced_feeds_audio_track("opus", 6), "no row, no ceiling");
+        }
+    }
+
+    #[test]
+    fn the_c1s_firmware_family_loses_the_combinations_measured_broken() {
+        let mut c = native_set();
+        let applied = apply_exclusions(&mut c, "kisscurl-koli", false, EXCLUSIONS);
+        // The Vorbis row has nothing to take away: the pipeline's list does not feed Vorbis at all.
+        assert_eq!(applied, ["opus<=2"]);
+        assert_eq!(c.audio, "aac,ac3,eac3,dts,opus,flac");
+        assert!(c.audio_supports("opus", 2) && !c.audio_supports("opus", 6));
+        // Force Direct Play applies no table ceiling, but it holds a measured one.
+        assert!(c.forced_feeds_audio_track("opus", 2) && !c.forced_feeds_audio_track("opus", 6));
+        assert!(c.forced_feeds_audio_track("eac3", 8), "a codec without a row keeps its freedom");
+        // The rest of the table is untouched.
+        assert!(c.audio_supports("eac3", 8) && c.audio_supports("dts", 6) && c.audio_supports("aac", 6));
+        // The codename compares without regard to case.
+        let mut d = native_set();
+        assert_eq!(apply_exclusions(&mut d, "Kisscurl-Koli", false, EXCLUSIONS).len(), 1);
+    }
+
+    #[test]
+    fn the_debug_flag_ignores_the_exclusions() {
+        let mut c = native_set();
+        assert!(apply_exclusions(&mut c, "kisscurl-koli", true, EXCLUSIONS).is_empty());
+        assert_eq!(c, native_set());
+    }
+
+    #[test]
+    fn an_exclusion_only_takes_away() {
+        // A table row of two channels is not raised to the exclusion's four; a codec the table
+        // never listed is not added.
+        let table = [
+            Exclusion { codename: "x", codec: "opus", max_channels: 4, evidence: "" },
+            Exclusion { codename: "x", codec: "truehd", max_channels: 2, evidence: "" },
+        ];
+        let mut c = parse(&REAL.replace(
+            "\"name\" : \"FLAC\"",
+            "\"name\" : \"OPUS\", \"channels\" : 2 }, { \"name\" : \"FLAC\"",
+        ))
+        .unwrap();
+        assert_eq!(apply_exclusions(&mut c, "x", false, &table), ["opus<=2"]);
+        assert_eq!(c.audio_channels.get("opus"), Some(&2));
+        assert!(!c.audio_has("truehd"));
+    }
+
+    fn refusal(codec: &str, channels: u32) -> Refusal {
+        Refusal { firmware: "kisscurl-koli".into(), codec: codec.into(), channels, build: String::new() }
+    }
+
+    #[test]
+    fn a_learned_refusal_of_a_stereo_track_takes_the_codec_away_and_a_surround_one_keeps_stereo() {
+        let mut c = native_set();
+        let applied = apply_learned(&mut c, "kisscurl-koli", false, &[refusal("opus", 2), refusal("eac3", 8)]);
+        assert_eq!(applied, ["opus=none", "eac3<=2"]);
+        assert!(!c.audio_has("opus") && !c.forced_feeds_audio("opus"));
+        assert!(c.audio_supports("eac3", 2) && !c.audio_supports("eac3", 6));
+        assert!(!c.forced_feeds_audio_track("eac3", 6), "Force holds a learned ceiling too");
+        // Another firmware's lessons, an unannounced codec and the debug flag do nothing.
+        for (name, ignore) in [("goldilocks2-grampians", false), ("", false), ("kisscurl-koli", true)] {
+            let mut d = native_set();
+            assert!(apply_learned(&mut d, name, ignore, &[refusal("opus", 2)]).is_empty(), "{name:?} {ignore}");
+            assert_eq!(d, native_set());
+        }
+        let mut e = Caps::assumed();
+        assert!(apply_learned(&mut e, "kisscurl-koli", false, &[refusal("opus", 6)]).is_empty(), "the fallback never announced Opus");
+    }
+
+    #[test]
+    fn the_layers_stack_in_order_table_gst_exclusions_learned() {
+        // gstcool.conf drops DTS; the C1 row bounds Opus to stereo; a learned refusal then removes
+        // the codec the row left (stereo Opus).
+        let mut c = native_set();
+        assert_eq!(apply_gst_decoders(&mut c, &GST_C1.replace("dts_audiodec=290\n", "")).0, ["dts"]);
+        assert_eq!(apply_exclusions(&mut c, "kisscurl-koli", false, EXCLUSIONS), ["opus<=2"]);
+        assert_eq!(apply_learned(&mut c, "kisscurl-koli", false, &[refusal("opus", 2)]), ["opus=none"]);
+        assert_eq!(c.audio, "aac,ac3,eac3,flac");
+    }
+
+    #[test]
+    fn merging_learned_refusals_only_ever_adds() {
+        let a = Refusal { firmware: "test-only-firmware".into(), codec: "vorbis".into(), channels: 2, build: String::new() };
+        let b = Refusal { firmware: "test-only-firmware".into(), codec: "flac".into(), channels: 6, build: String::new() };
+        assert!(merge_learned(&[a.clone()]));
+        assert!(!merge_learned(&[a.clone()]), "the same lesson is not news");
+        assert!(merge_learned(&[a.clone(), b.clone()]), "a new one is");
+        assert!(!merge_learned(&[]), "an empty list removes nothing");
+        let all = learned();
+        assert!(all.contains(&a) && all.contains(&b));
+        // No layers were probed on a host test, so nothing can be learned about THIS set.
+        assert_eq!(learn_refusal("vorbis", 2), None);
+    }
+
+    /// The C1's real `/etc/gst/gstcool.conf` (webOS 6.5.3, `kisscurl-koli`), read over ssh 2026-10-21;
+    /// the license, debug and buffering sections are trimmed.
+    const GST_C1: &str = "[buffering]\nmax-size-buffers=0\n\n[rank]\nmpegpsdemux=310\naudio_sink=0\ndecproxy=300\naudiodec=0\naudio_dec=0\nac4_dec=0\nomx_lxvideosink=256\nomx_lxdumpsink=0\nomx_lxvideodec=290\nalsasink=0\npulsesink=0\nmediainfo=64\nosssink=0\noss4sink=0\naac_audiodec=290\nac3_audiodec=290\nac4_audiodec=290\nadpcm_audiodec=290\namr_audiodec=290\ndts_audiodec=290\nflac_audiodec=290\nmpegh_audiodec=290\npcm_audiodec=290\nvorbis_audiodec=290\nwma_audiodec=290\navenc_ac3=0\navenc_eac3=0\n\n[sw_decoder]\navdec_mp3=0\navdec_aac=0\navdec_ac3=0\navdec_dca=0\navdec_alac=0\navdec_amrnb=0\navdec_amrwb=0\navdec_eac3=0\nwavpackdec=0\navdec_wmapro=0\navdec_wmav1=0\navdec_wmav2=0\navdec_wmavoice=0\nalawdec=0\nmulawdec=0\navdec_flac=0\nadpcmdec=0\nfaad=0\ndvdlpcmdec=0\nvorbisdec=0\n\n[sw_video_decoder]\navdec_h264=0\n\n[default_sink]\nvideo=omx_lxvideosink\naudio=audiosink\n";
+
+    #[test]
+    fn the_c1s_gstcool_conf_drops_nothing_and_keeps_opus_unlisted() {
+        let mut c = native_set();
+        let before = c.clone();
+        let (dropped, unlisted) = apply_gst_decoders(&mut c, GST_C1);
+        assert!(dropped.is_empty(), "{dropped:?}");
+        // The file names no Opus decoder at all: no line means the default rank, not unsupported.
+        assert_eq!(unlisted, ["opus"]);
+        assert_eq!(c, before);
+        assert!(c.audio_has("opus") && c.audio_supports("dts", 6));
+    }
+
+    #[test]
+    fn a_set_with_no_dts_decoder_loses_dts_and_its_forced_evidence() {
+        // The C5 shape (#899): the table lists DTS, gstcool.conf has no hardware dts_audiodec and
+        // switches avdec_dca off.
+        let conf = GST_C1.replace("dts_audiodec=290\n", "");
+        let mut c = native_set();
+        let (dropped, _) = apply_gst_decoders(&mut c, &conf);
+        assert_eq!(dropped, ["dts"]);
+        assert!(!c.audio_has("dts") && !c.audio_supports("dts", 6));
+        // The table row goes with it, so a rule that asks for a DTS row (Force Direct Play) agrees.
+        assert!(!c.audio_channels.contains_key("dts"));
+        assert_eq!(c.audio, "aac,ac3,eac3,opus,flac");
+        // A hardware element listed at rank 0 is the same evidence.
+        let mut d = native_set();
+        let off = GST_C1.replace("dts_audiodec=290", "dts_audiodec=0");
+        assert_eq!(apply_gst_decoders(&mut d, &off).0, ["dts"]);
+    }
+
+    #[test]
+    fn a_dts_restore_patched_set_keeps_dts() {
+        // webosbrew's dts_restore gives the software decoder a rank again.
+        let conf = GST_C1.replace("dts_audiodec=290\n", "").replace("avdec_dca=0", "avdec_dca=290");
+        let mut c = native_set();
+        let before = c.clone();
+        let (dropped, _) = apply_gst_decoders(&mut c, &conf);
+        assert!(dropped.is_empty());
+        assert_eq!(c, before);
+    }
+
+    #[test]
+    fn a_missing_empty_or_unreadable_gstcool_conf_changes_nothing() {
+        for conf in ["", "\n\n", "garbage", "[rank]\nnot a line\n=\n=5\nx=notanumber\n", "[sw_decoder]\navdec_dca\n"] {
+            let mut c = native_set();
+            let before = c.clone();
+            let (dropped, _) = apply_gst_decoders(&mut c, conf);
+            assert!(dropped.is_empty(), "{conf:?}");
+            assert_eq!(c, before, "{conf:?}");
+        }
+    }
+
+    #[test]
+    fn only_rank_and_sw_decoder_sections_count_and_the_last_line_wins() {
+        let ranks = parse_gst_ranks("[other]\navdec_dca=0\n[rank]\n avdec_dca = 5 \n; comment\n[sw_decoder]\navdec_dca=0\nvorbisdec=-1\n");
+        assert_eq!(ranks.get("avdec_dca"), Some(&0));
+        assert_eq!(ranks.get("vorbisdec"), Some(&-1));
+        assert_eq!(ranks.len(), 2);
+    }
+
+    #[test]
+    fn a_codec_with_a_listed_working_decoder_is_kept_whatever_the_others_say() {
+        // Only the software element has rank, the hardware one is off: still decodable.
+        let conf = "[rank]\naac_audiodec=0\n[sw_decoder]\navdec_aac=250\nopusdec=0\n";
+        let mut c = native_set();
+        let (dropped, unlisted) = apply_gst_decoders(&mut c, conf);
+        assert_eq!(dropped, ["opus"]);
+        assert!(c.audio_has("aac") && !c.audio_has("opus"));
+        assert!(unlisted.contains(&"dts"));
     }
 
     /// PMS names DTS `dca` (every DTS entry in the profiles shipped with PMS spells it so); the

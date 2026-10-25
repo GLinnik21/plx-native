@@ -297,6 +297,39 @@ something.
   `acb_send_atmos` in `src/starfish.c`. `AcbAPI_setMediaVideoData`/`setState`/
   `setDisplayWindow` take a `long *taskId` out-param as their last arg — the 3-arg ABI is required
   (2-arg calls corrupt memory / segfault).
+- **Opus goes to LG's own decoder only as far as the set is known to take it** (`ff_native_audio.rs`,
+  `devcaps.rs`). What a set announces is layered, in this order and logged at boot as `devcaps: ...
+  audio layers:`: the codec table, minus the codecs `/etc/gst/gstcool.conf` shows nothing can decode
+  (`apply_gst_decoders`), minus `devcaps::EXCLUSIONS` (rows per firmware codename, each carrying its
+  evidence: the C1's `kisscurl-koli` limits Opus to stereo, and records that Vorbis is refused),
+  minus the refusals this install learned. Auto's own stereo ceiling for Opus
+  (`OPUS_AUTO_MAX_CHANNELS`) stays as it is; the rows add a ceiling Force Direct Play also holds
+  (`Caps::forced_feeds_audio_track`). FLAC is not native: the app decodes it and feeds PCM
+  (`ff_pcm.rs`), so it is outside these layers. A learned refusal comes from a native Load that ends
+  in `type=18 num=200 Audio Codec Not Supported` before any picture (`mod.rs`'s callback sets
+  `native_audio_refused` only while `native_audio::fed()` says the audio was fed natively; the pump
+  turns it into `session::learn_native_audio_refusal`, which changes the answer at once and persists the
+  install-scope `native_audio_refused` preference; the app loop then retries through the same
+  `retry_failed_playback` the Retry press uses, which now plans the audio as the server's to convert). A
+  silent stall is learned too, for surround only (`native_stall.rs`, checked in the pump): a native
+  Opus track with more than two channels, Load returned, no picture, both AU queues holding data and no
+  AU accepted for `NATIVE_AUDIO_STALL_MS` (4 s; a slow server has empty queues) goes the same
+  learn-and-retry way, and never after the first picture. Garbled playback (no stall, no event) still
+  needs a static row. The event log has `native audio: watching`, `STALL, no picture`, the
+  `remembered` line, `retrying the play`, and once per play the fed packets' `max` and `p95` size (the
+  C1's 6-channel Opus decoder stalls at packets of 1536 B and above).
+  A learned row records the firmware BUILD it was watched on (`tv::device::Info::build`, nyx's
+  `core_os_release`, e.g. `6.5.3-47`); at boot the session drops rows of another build (and rows an
+  older record never tagged), logging `native audio: firmware changed (<old> -> <new>), forgetting N
+  learned refusal(s)`, so an LG update gets a fresh native try. The static rows are keyed on the
+  codename and are not forgotten.
+  Debug switches (debug builds, files under `/tmp/<app id>/`, read at app start):
+  `plxnative-nativeaudiowide` ignores the last two layers; with `plxnative-nativeaudiolearn` beside it
+  the exclusions stay ignored but refusals are learned and applied (the demo: a stall, a learned row,
+  an automatic server-converted replay); `plxnative-nativeaudioforget` clears the learned list (and its
+  stored record) at start, logging what it cleared. Vorbis is not fed natively: LG's Vorbis element
+  needs a caps `streamheader` and libpf's payload has no key for it (`setVORBISinfo` reads only
+  channels and sampleRate; Opus has `opusInfo.streamHeader`), and a C1 refuses every Vorbis Load.
 - **The Load payload's codecs must come from the `/decision` OUTPUT, not the source file.** A
   transcode changes the codec/rate; building the Starfish Load config from the *source* metadata gives
   the decoder the wrong description → **silent audio / glitches**. Read the output codecs from the

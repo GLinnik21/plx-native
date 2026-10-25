@@ -3022,7 +3022,8 @@ pub(super) fn audio_direct_plays_with(
     sample_rate: i64,
 ) -> bool {
     let feeds = if mode == DirectPlayMode::Forced {
-        caps.forced_feeds_audio(codec)
+        // No table ceiling, but a ceiling measured on this firmware holds (`devcaps::EXCLUSIONS`).
+        caps.forced_feeds_audio_track(codec, channels)
     } else {
         caps.audio_supports(codec, channels)
     };
