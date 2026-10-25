@@ -71,10 +71,10 @@ pub const PCM_AUDIO_CODECS: &str = "flac";
 pub const PCM_MAX_CHANNELS: u32 = 2;
 
 /// The rates the PCM path plays at their own speed: libpf's `LUT_SampleRateType` (8, 12, 16,
-/// 22.05, 24, 32 and 48 kHz) plus 44.1 kHz, which the table does not list but plays correctly.
-/// Any other `pcmInfo.sampleRate` plays slow and without an error: a 96 kHz FLAC audibly slow, a
-/// 192 kHz one slower still (measured on webOS 4.4.3, an OLED55B8, where 44.1 and 48 kHz played
-/// right). The table was read from libpf-1.0 on that set.
+/// 22.05, 24, 32 and 48 kHz) plus 44.1 kHz, which the table does not list but is what any rate
+/// it does not find plays at. The table is in kilohertz, so the Load states the rate that way
+/// (`player::engine`); a rate the table lacks plays slow and without an error, as a 96 kHz or
+/// 192 kHz FLAC did on webOS 4.4.3 (an OLED55B8). The table was read from libpf-1.0 on that set.
 pub const PCM_SAMPLE_RATES: [u32; 8] = [8_000, 12_000, 16_000, 22_050, 24_000, 32_000, 44_100, 48_000];
 
 /// Whether `codec` is one the app decodes itself and feeds as PCM ([`PCM_AUDIO_CODECS`]).
@@ -689,8 +689,8 @@ mod tests {
         assert!(!Caps::assumed().forced_feeds_audio("truehd"));
     }
 
-    /// The PCM input plays only the rates in libpf's table (plus 44.1 kHz) at their own speed: a
-    /// 96 kHz or 192 kHz FLAC played audibly slow on the B8, with no error anywhere. The
+    /// The PCM input plays only the rates in libpf's table (plus 44.1 kHz) at their own speed: any
+    /// other plays at 44.1 kHz, so a 96 kHz or 192 kHz FLAC played audibly slow on the B8. The
     /// track gate refuses those, and an unstated rate or channel count, for app-decoded codecs
     /// only.
     #[test]

@@ -1012,8 +1012,24 @@ fn app_pcm_for_rate(
     if session_rate == super::RATE_NORMAL { pcm } else { None }
 }
 
+/// `hz` as the kilohertz number `pcmInfo.sampleRate` is matched as: `48`, `44.1`, `22.05`. libpf
+/// reads the key with getFloat and looks it up in a kilohertz table; a rate in hertz matches
+/// nothing and plays at the 44.1 kHz fallback. Declared as `48000`, a 1 kHz tone in a 48 kHz FLAC
+/// was recorded from the room at 918.8 Hz on webOS 4.4.3 (OLED55B8), a 32 kHz one at 1378 Hz and
+/// a 22.05 kHz one at about 2006 Hz: each is 1000 x 44100 / the file's rate.
+/// PURE.
+fn pcm_rate_khz(hz: u32) -> String {
+    let (whole, frac) = (hz / 1000, hz % 1000);
+    if frac == 0 {
+        whole.to_string()
+    } else {
+        format!("{whole}.{}", format!("{frac:03}").trim_end_matches('0'))
+    }
+}
+
 /// The `contents.pcmInfo` node a PCM Load needs — the only way the pipeline learns the raw
 /// stream's shape (libpf reads `pcmInfo.{format,channelMode,layout,sampleRate,bitsPerSample}`).
+/// `sampleRate` is in kilohertz ([`pcm_rate_khz`]), the unit the speed decoder's node uses too.
 /// PURE, spliced at the `provider` anchor like [`with_immersive`].
 fn with_pcm_info(p: &str, audio: &str, pcm: Option<crate::route::PcmFormat>) -> String {
     let (Some(f), "PCM") = (pcm, audio) else {
@@ -1026,7 +1042,8 @@ fn with_pcm_info(p: &str, audio: &str, pcm: Option<crate::route::PcmFormat>) -> 
         anchor,
         &format!(
             r#"{anchor},"pcmInfo":{{"format":"{format}","channelMode":"{mode}","layout":"interleaved","sampleRate":{},"bitsPerSample":{}}}"#,
-            f.sample_rate, f.bits
+            pcm_rate_khz(f.sample_rate),
+            f.bits
         ),
     )
 }
@@ -1056,9 +1073,8 @@ fn build_av_payload_at(
         // with getFloat and matches it against a KILOHERTZ table (48, 44.1, 32, …): `48000`
         // matches nothing and silently falls back to 44.1, which plays 48 kHz audio 9% slow and
         // resyncs every few seconds (measured 2026-10-15). `channelMode` is one of
-        // mono/dual/stereo/joint stereo. So THIS node's rate is in kHz; the FLAC node
-        // `with_pcm_info` splices below states Hz (44100/48000) — whether the 3.9.3/4.5 firmware
-        // reads that unit correctly has not been checked on a set.
+        // mono/dual/stereo/joint stereo. So the rate is in kHz, here and in the FLAC node
+        // `with_pcm_info` splices below (4.4.3 played that one at 44.1 when it said 48000).
         .replace(r#""esInfo":"#, if audio == "PCM" && app_pcm.is_none() {
             r#""pcmInfo":{"bitsPerSample":16,"sampleRate":48,"channelMode":"stereo"},"esInfo":"#
         } else {
@@ -1100,7 +1116,7 @@ fn build_av_payload_at(
         ));
     }
     let p = with_dolby_hdr_info(&p, video, crate::route::stream_dv_presentation(ps));
-    // The app-decoded (FLAC, 1x) node: sampleRate in HERTZ and a format name. The speed decoder's
+    // The app-decoded (FLAC, 1x) node: sampleRate in kHz and a format name. The speed decoder's
     // fixed node above is the only other `pcmInfo` a Load can carry, and never together with this.
     let p = with_pcm_info(&p, audio, app_pcm);
     with_immersive(&p, audio, crate::route::stream_immersive(ps))
@@ -6414,11 +6430,26 @@ mod pcm_info_tests {
     fn a_pcm_load_states_the_shape_the_decoder_produces() {
         let f = PcmFormat { sample_rate: 48_000, bits: 16, channels: 2 };
         let p = with_pcm_info(BASE, "PCM", Some(f));
-        assert!(p.contains(r#""pcmInfo":{"format":"S16LE","channelMode":"stereo","layout":"interleaved","sampleRate":48000,"bitsPerSample":16}"#), "{p}");
+        assert!(p.contains(r#""pcmInfo":{"format":"S16LE","channelMode":"stereo","layout":"interleaved","sampleRate":48,"bitsPerSample":16}"#), "{p}");
         let wide = with_pcm_info(BASE, "PCM", Some(PcmFormat { sample_rate: 96_000, bits: 32, channels: 1 }));
         assert!(wide.contains(r#""format":"S32LE","channelMode":"mono""#) && wide.contains(r#""bitsPerSample":32"#), "{wide}");
         // the payload stays parseable JSON
         serde_json::from_str::<serde_json::Value>(&p).unwrap();
+    }
+
+    /// Every rate the PCM path admits is declared in kilohertz, the unit libpf's table is in. In
+    /// hertz each of them played at the 44.1 kHz fallback on the B8, with no error anywhere.
+    #[test]
+    fn the_sample_rate_is_declared_in_kilohertz() {
+        let want = ["8", "12", "16", "22.05", "24", "32", "44.1", "48"];
+        for (hz, khz) in plx_platform::devcaps::PCM_SAMPLE_RATES.into_iter().zip(want) {
+            assert_eq!(pcm_rate_khz(hz), khz);
+            let p = with_pcm_info(BASE, "PCM", Some(PcmFormat { sample_rate: hz, bits: 16, channels: 2 }));
+            let v: serde_json::Value = serde_json::from_str(&p).unwrap();
+            let declared = v["contents"]["pcmInfo"]["sampleRate"].as_f64().unwrap();
+            assert!((declared * 1000.0 - f64::from(hz)).abs() < 1e-6, "{hz}: {p}");
+        }
+        assert_eq!(pcm_rate_khz(11_025), "11.025");
     }
 
     #[test]
@@ -6677,7 +6708,7 @@ mod sink_envelope_tests {
         let p = build_av_payload_at(&flac_session(), "H264", "PCM", ENVELOPE_FHD60, crate::player::RATE_NORMAL);
         assert_eq!(p.matches("pcmInfo").count(), 1, "{p}");
         assert!(
-            p.contains(r#""pcmInfo":{"format":"S16LE","channelMode":"stereo","layout":"interleaved","sampleRate":44100,"bitsPerSample":16}"#),
+            p.contains(r#""pcmInfo":{"format":"S16LE","channelMode":"stereo","layout":"interleaved","sampleRate":44.1,"bitsPerSample":16}"#),
             "{p}"
         );
         assert!(!p.contains(r#""sampleRate":48,"#), "the speed decoder's node must be absent: {p}");
