@@ -1,8 +1,6 @@
 {
   "settings.playback.instant_dpad_seeking": "Saut direct avec la croix",
   "settings.playback.instant_dpad_seeking.copy": "Commandes masquées, Gauche/Droite saute de l’intervalle choisi. Commandes visibles, OK confirme. Désactivé, le premier appui affiche les commandes.",
-  "settings.playback.episode_navigation_buttons": "Boutons Précédent/Suivant",
-  "settings.playback.episode_navigation_buttons.copy": "Affiche Précédent et Suivant pour les épisodes en file. Après cinq secondes, Précédent recommence l’épisode ; avant, il lit le précédent.",
   "settings.playback.instant_dpad_seeking.off": "Désactivées",
   "settings.playback.instant_dpad_seeking.on": "Activées"
 }

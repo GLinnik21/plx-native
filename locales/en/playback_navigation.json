@@ -7,20 +7,12 @@
     "value": "With controls hidden, Left/Right jumps by the skip interval. With controls visible, OK confirms. Off keeps reveal-first navigation.",
     "description": "Explanation of optional D-pad seeking. Dedicated rewind and fast-forward work independently."
   },
-  "settings.playback.episode_navigation_buttons": {
-    "value": "Previous/Next buttons",
-    "description": "Playback setting title. Previous/Next episode buttons; default On."
-  },
-  "settings.playback.episode_navigation_buttons.copy": {
-    "value": "Show Previous and Next for episode queues. Previous restarts at five seconds; before that it plays the previous episode.",
-    "description": "Explanation of episode queue buttons and the five-second restart rule."
-  },
   "settings.playback.instant_dpad_seeking.off": {
     "value": "Off",
-    "description": "Switch choice shared by the independent playback options."
+    "description": "Choice for the Instant D-pad seeking setting."
   },
   "settings.playback.instant_dpad_seeking.on": {
     "value": "On",
-    "description": "Switch choice shared by the independent playback options."
+    "description": "Choice for the Instant D-pad seeking setting."
   }
 }

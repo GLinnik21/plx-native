@@ -1175,10 +1175,8 @@ impl PlayerScreen {
                     self.scrub.ns = plx_media::player::intended_pos_ns(ps);
                 }
             }
-            input::ScrubPress::Row => {
-                // Horizontal row travel is delegated to FocusEngine in handle_key.
-
-            }
+            // Horizontal row travel is delegated to FocusEngine in handle_key.
+            input::ScrubPress::Row => {}
             input::ScrubPress::Tabs => {
                 let max_tab = if plx_appkit::chapters_panel::has_chapters(meta) { 1 } else { 0 };
                 self.hud.nav.tab =

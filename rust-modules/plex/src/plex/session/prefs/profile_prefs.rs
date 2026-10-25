@@ -34,11 +34,11 @@
 //! * **No `extensions`**: a field a later build adds is not carried by this one.
 use super::{
     Fallback, Parse, ProfileKeyed, ProfileRecords, Preferences, Row, Scope, Setting, SettingsWrite,
-    InstantDpadSeekingPref, EpisodeNavigationButtonsPref, AudioEnhancementsPref, DeckPressPref, DirectPlayModePref, HdrOverlayBrightnessPref, NextEpisodeModePref, QualityPref, SkipIntervalPref,
+    InstantDpadSeekingPref, AudioEnhancementsPref, DeckPressPref, DirectPlayModePref, HdrOverlayBrightnessPref, NextEpisodeModePref, QualityPref, SkipIntervalPref,
     SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref, TrailerAutoplayPref, UnderPostersPref,
 };
 use crate::plex::session::{
-    InstantDpadSeeking, EpisodeNavigationButtons, DeckPress, DirectPlayMode, HdrOverlayBrightness, NextEpisodeMode, PlaybackQuality, Seat, Session, SkipInterval, SubtitlePosition,
+    InstantDpadSeeking, DeckPress, DirectPlayMode, HdrOverlayBrightness, NextEpisodeMode, PlaybackQuality, Seat, Session, SkipInterval, SubtitlePosition,
     SubtitleSize, SubtitleTone, UnderPosters,
 };
 use crate::plex::AudioEnhancements;
@@ -66,8 +66,6 @@ pub struct ProfilePrefs {
     pub skip_interval: Option<SkipInterval>,
     #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "super::de_soft_opt")]
     pub instant_dpad_seeking: Option<InstantDpadSeeking>,
-    #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "super::de_soft_opt")]
-    pub episode_navigation_buttons: Option<EpisodeNavigationButtons>,
     #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "super::de_soft_opt")]
     pub deck_press: Option<DeckPress>,
     #[serde(skip_serializing_if = "Option::is_none", deserialize_with = "super::de_soft_opt")]
@@ -159,7 +157,6 @@ profile_setting!(
     NextEpisodeModePref = next_episode_mode,
     SkipIntervalPref = skip_interval,
     InstantDpadSeekingPref = instant_dpad_seeking,
-    EpisodeNavigationButtonsPref = episode_navigation_buttons,
     DeckPressPref = deck_press,
     UnderPostersPref = under_posters,
     AudioEnhancementsPref = audio_enhancements,

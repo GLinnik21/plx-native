@@ -9,12 +9,12 @@
 //! T-live and T-settings sit in media (`route/prefs_tests.rs`), where the lists they hold to these
 //! descriptors are declared.
 use super::prefs::{Descriptor, Fallback, ListRow, Parse, ProfileMemory, Row, Scope, Setting, SettingsWrite, DESCRIPTORS};
-use super::prefs::{InstantDpadSeekingPref, EpisodeNavigationButtonsPref, AudioEnhancementsPref, AutoSignInPref, DeckPressPref, UnderPostersPref, DirectPlayModePref, LastHeroBlurPref,
+use super::prefs::{InstantDpadSeekingPref, AudioEnhancementsPref, AutoSignInPref, DeckPressPref, UnderPostersPref, DirectPlayModePref, LastHeroBlurPref,
     LastLibraryRow, LibraryViewsRow, NextEpisodeModePref, PlaintextConsentRow, QualityPref, ServerKeyPinsRow,
     HdrOverlayBrightnessPref, SkipIntervalPref, SubtitleOffsetsPref, SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref,
     HoldHintTaughtPref, TrailerAutoplayPref, UiResolutionPref};
 use super::{
-    InstantDpadSeeking, EpisodeNavigationButtons, CanonicalSessionPreferences, DeckPress, UnderPosters, UnderPostersDetails, DirectPlayMode, LastLibrary, LibraryViews, NextEpisodeMode,
+    InstantDpadSeeking, CanonicalSessionPreferences, DeckPress, UnderPosters, UnderPostersDetails, DirectPlayMode, LastLibrary, LibraryViews, NextEpisodeMode,
     PlaintextChoice, PlaintextConsent, PlaybackQuality, Preferences, ServerKeyPin, Session, SkipInterval,
     HdrOverlayBrightness, HoldHintTaught, SubtitleOffsetEntry, SubtitlePosition, SubtitleSize, SubtitleTone, UiResolution,
 };
@@ -111,7 +111,6 @@ fn every_marker_names_its_own_field() {
     check_row::<NextEpisodeModePref>(NextEpisodeMode::Off);
     check_row::<SkipIntervalPref>(SkipInterval::Seconds30);
     check_row::<InstantDpadSeekingPref>(InstantDpadSeeking::On);
-    check_row::<EpisodeNavigationButtonsPref>(EpisodeNavigationButtons::Off);
     check_row::<DeckPressPref>(DeckPress::Play);
     check_row::<UnderPostersPref>(UnderPosters { title: true, details: UnderPostersDetails::Genre });
     check_row::<AudioEnhancementsPref>(crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false });
@@ -127,7 +126,7 @@ fn every_marker_names_its_own_field() {
     // `the_subtitle_offsets_row_names_its_own_field`) and the per-profile record list
     // (`ProfilePrefsPref`, `profile_prefs_tests::nothing_picked_serializes_to_no_key`): a row needs
     // its line in one of the four places.
-    assert_eq!(DESCRIPTORS.len(), 18 + 4 + 2 + 1);
+    assert_eq!(DESCRIPTORS.len(), 17 + 4 + 2 + 1);
 }
 
 /// The list rows do what `check_row` proves for the `Copy` ones: the marker names its own field
@@ -220,7 +219,6 @@ fn the_declared_live_and_settings_facts_are_the_ones_main_has() {
         ("next_episode_mode", Some(Confirm)),
         ("skip_interval", Some(Confirm)),
         ("instant_dpad_seeking", Some(Confirm)),
-        ("episode_navigation_buttons", Some(Confirm)),
         ("deck_press", Some(Confirm)),
         ("under_posters", Some(Confirm)),
         ("subtitle_size", Some(Optimistic)),
@@ -335,7 +333,6 @@ fn garbage_fixtures() -> Vec<(&'static str, Vec<Value>)> {
         ("next_episode_mode", generic()),
         ("skip_interval", generic()),
         ("instant_dpad_seeking", generic()),
-        ("episode_navigation_buttons", generic()),
         ("deck_press", generic()),
         ("under_posters", generic()),
         ("audio_enhancements", generic()),

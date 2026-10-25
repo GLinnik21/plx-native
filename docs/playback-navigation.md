@@ -1,16 +1,16 @@
 # Playback navigation
 
-Settings → Video & playback has two independent per-profile options:
+**Previous/Next** are always part of the default control row for an episode with a neighbor
+in its existing PlayQueue; there is no setting for them. Movies, extras and a queue without
+either neighbor omit both, which leaves the three existing discs at exactly the same positions.
 
-- **Instant D-pad seeking** defaults to **Off**. Off preserves reveal → target → OK for
-  Left/Right. On makes a fresh Left/Right press jump immediately by the configured Skip
-  interval when the controls are hidden. With controls visible, it still previews and waits
-  for OK. Holding the D-pad in this optional hidden-controls path does not start a scrub.
-- **Previous/Next buttons** defaults to **On**. Show the pair for an episode with a neighbor
-  in its existing PlayQueue. Movies, extras and a queue without either neighbor omit both.
-  Turning this option Off leaves the three existing discs at exactly the same positions.
+Settings → Video & playback has one per-profile option, **Instant D-pad seeking**, Off by
+default. Off preserves reveal → target → OK for Left/Right. On makes a fresh Left/Right press
+jump immediately by the configured Skip interval when the controls are hidden. With controls
+visible, it still previews and waits for OK. Holding the D-pad in this optional
+hidden-controls path does not start a scrub.
 
-Dedicated **rewind/fast-forward** keys work independently of both options. A tap commits one
+Dedicated **rewind/fast-forward** keys work independently of that option. A tap commits one
 Skip interval jump on release, without opening the controls or requiring OK. Waiting for the
 release lets a hold use the existing shared held-key mechanism without first seeking. A hold
 raises the scrubber, moves its pending target continuously and waits for OK; Back cancels it.
@@ -53,7 +53,6 @@ retain the known snapshot. The queue-window behavior is shared with automatic ad
 
 The D-pad option serves remotes without dedicated FF/REW keys. It can also make frequent jumps
 through filler sections in anime more convenient while preserving the ordinary D-pad default.
-It is independent of whether the viewer wants episode navigation buttons.
 
 ## Synthetic regression
 

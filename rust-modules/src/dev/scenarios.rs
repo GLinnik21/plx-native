@@ -1245,7 +1245,6 @@ fn settings_boot_arm(app: &mut App, fr: &mut Frame) {
                 // root → the Interface resolution picker
                 "picker-resolution" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::UiResolution),
                 "picker-instant-dpad-seeking" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::InstantDpadSeeking),
-                "picker-episode-navigation" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::EpisodeNavigationButtons),
                 "picker-skip-interval" => plx_screens::family::SettingsPage::Picker(plx_screens::family::PickerKind::SkipInterval),
                 "audio" => plx_screens::family::SettingsPage::AudioSubtitles,
                 _other => {

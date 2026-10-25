@@ -738,12 +738,10 @@ impl Controls {
     pub fn now(ps: &plx_media::route::PlaybackSession) -> Self {
         let (previous, next) = plx_media::route::queue_neighbors(ps);
         let restart = plx_media::route::previous_restarts(plx_media::player::intended_pos_ns(ps));
-        Self::for_item(plx_media::route::cur_kind(ps) == "episode",
-            plx_media::route::episode_navigation_buttons() == plx_plex::plex::session::EpisodeNavigationButtons::On,
-            previous, next, restart)
+        Self::for_item(plx_media::route::cur_kind(ps) == "episode", previous, next, restart)
     }
-    pub fn for_item(episode: bool, enabled: bool, previous: bool, next: bool, restart: bool) -> Self {
-        if !episode || !enabled || !(previous || next) { return Self::NONE; }
+    pub fn for_item(episode: bool, previous: bool, next: bool, restart: bool) -> Self {
+        if !episode || !(previous || next) { return Self::NONE; }
         Self { pair: true, previous: previous || restart, next, restart }
     }
     pub fn enabled(self, i: i32) -> bool {
@@ -1623,7 +1621,7 @@ pub fn scrub_speed(held_ms: u32) -> f32 {
     (SCRUB_BASE * (1u32 << doublings) as f32).min(SCRUB_MAX)
 }
 // tap released → commit after this (further taps accumulate into one Load/reload). The TRAILER
-// transport's debounce (`screens::detail::trailer`); the modern player has none — its keys only
+// transport's debounce (`screens::detail::trailer`); the player's D-pad has none — its keys only
 // move a target that OK confirms. Immediate tap jumps use SeekBurst; it
 // retains requested travel without delaying the commit.
 pub const TAP_COMMIT_MS: u32 = 450;
@@ -3557,7 +3555,7 @@ mod playback_navigation_tests {
 
     #[test]
     fn episode_pair_uses_custom_gap_without_moving_existing_discs() {
-        let pair = Controls::for_item(true, true, false, true, false);
+        let pair = Controls::for_item(true, false, true, false);
         for i in BTN_SUBTITLES..=BTN_MORE {
             assert_eq!(pair.rect(i), Controls::NONE.rect(i));
             let rect = pair.rect(i).unwrap();
@@ -3574,20 +3572,19 @@ mod playback_navigation_tests {
         assert_eq!(pair.primary(), BTN_NEXT);
         assert_eq!(pair.action(BTN_PREVIOUS), None);
         assert_eq!(pair.icon(BTN_PREVIOUS), Icon::Previous);
-        let restarting = Controls::for_item(true, true, false, true, true);
+        let restarting = Controls::for_item(true, false, true, true);
         assert_eq!(restarting.icon(BTN_PREVIOUS), Icon::Restart);
         assert_eq!(restarting.action(BTN_PREVIOUS), Some(Action::Previous));
     }
 
     #[test]
-    fn episode_pair_is_absent_for_movies_extras_disabled_options_and_single_items() {
-        for controls in [Controls::for_item(false, true, true, true, true),
-            Controls::for_item(true, false, true, true, true),
-            Controls::for_item(true, true, false, false, true)] {
+    fn episode_pair_is_absent_for_movies_extras_and_single_items() {
+        for controls in [Controls::for_item(false, true, true, true),
+            Controls::for_item(true, false, false, true)] {
             assert_eq!(controls, Controls::NONE);
             assert_eq!(controls.primary(), BTN_SUBTITLES);
         }
-        let last = Controls::for_item(true, true, true, false, false);
+        let last = Controls::for_item(true, true, false, false);
         assert_eq!(last.primary(), BTN_PREVIOUS);
         assert_eq!(last.action(BTN_NEXT), None);
     }

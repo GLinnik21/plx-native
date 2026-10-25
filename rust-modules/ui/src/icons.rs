@@ -68,7 +68,7 @@ pub enum Icon {
     /// be two circles saying one thing. Its user is the detail hero's *mark unwatched* disc, beside
     /// a `Check` on the same ground: the pair `detail::hero_ctls` draws for a part-watched item.
     Minus,
-    /// Queue transport buttons, used by the opt-in legacy player controls.
+    /// The player row's Previous/Next episode discs.
     Previous,
     Next,
     Play,

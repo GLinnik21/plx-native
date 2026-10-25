@@ -1,4 +1,4 @@
-//! Independent per-profile choices for D-pad seeking and episode navigation buttons.
+//! The per-profile choice for instant D-pad seeking.
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 macro_rules! switch {
@@ -15,7 +15,6 @@ macro_rules! switch {
     };
 }
 switch!(InstantDpadSeeking, Off);
-switch!(EpisodeNavigationButtons, On);
 
 pub(super) fn deserialize<'de, D: serde::Deserializer<'de>, T: DeserializeOwned + Default>(d: D) -> Result<T, D::Error> {
     let value = serde_json::Value::deserialize(d)?;
@@ -26,27 +25,22 @@ pub(super) fn deserialize<'de, D: serde::Deserializer<'de>, T: DeserializeOwned 
 mod tests {
     use super::*;
     use crate::plex::session::{effective, own_prefs, put_own, InstantDpadSeekingPref,
-        EpisodeNavigationButtonsPref, Preferences, ProfilePrefs};
+        Preferences, ProfilePrefs};
 
     #[test]
-    fn playback_options_are_independent_defaulted_and_scoped_per_profile() {
-        for json in ["{}", r#"{"instant_dpad_seeking":"future","episode_navigation_buttons":null}"#] {
+    fn instant_dpad_seeking_is_defaulted_and_scoped_per_profile() {
+        for json in ["{}", r#"{"instant_dpad_seeking":"future"}"#, r#"{"instant_dpad_seeking":null}"#] {
             let prefs: Preferences = serde_json::from_str(json).unwrap();
             assert_eq!(prefs.instant_dpad_seeking, InstantDpadSeeking::Off);
-            assert_eq!(prefs.episode_navigation_buttons, EpisodeNavigationButtons::On);
             let encoded = serde_json::to_value(&prefs).unwrap();
             assert!(encoded.get("instant_dpad_seeking").is_none());
-            assert!(encoded.get("episode_navigation_buttons").is_none());
         }
         let prefs = Preferences::default();
         let mut records = Vec::new();
         assert!(put_own::<InstantDpadSeekingPref>(&mut records, "alice", "account", InstantDpadSeeking::On));
-        assert!(put_own::<EpisodeNavigationButtonsPref>(&mut records, "alice", "account", EpisodeNavigationButtons::Off));
         assert_eq!(effective::<InstantDpadSeekingPref>(&prefs, own_prefs(&records, "alice", "account")), InstantDpadSeeking::On);
-        assert_eq!(effective::<EpisodeNavigationButtonsPref>(&prefs, own_prefs(&records, "alice", "account")), EpisodeNavigationButtons::Off);
         for (user, account) in [("bob", "account"), ("alice", "other")] {
             assert_eq!(effective::<InstantDpadSeekingPref>(&prefs, own_prefs(&records, user, account)), InstantDpadSeeking::Off);
-            assert_eq!(effective::<EpisodeNavigationButtonsPref>(&prefs, own_prefs(&records, user, account)), EpisodeNavigationButtons::On);
         }
         let encoded = serde_json::to_string(&records[0].prefs).unwrap();
         assert_eq!(serde_json::from_str::<ProfilePrefs>(&encoded).unwrap(), records[0].prefs);

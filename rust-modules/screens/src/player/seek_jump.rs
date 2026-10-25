@@ -239,8 +239,8 @@ mod tests {
         let cx: Cx<'_, TestHost> = Cx { views: (), tick: Tick::default(), measure: &FixtureMeasure,
             focus: Default::default(), press: Default::default(), owner: InputOwner::Entry(EntryId(9)) };
         for (controls, primary, right, left) in [
-            (player_hud::Controls::for_item(true, true, false, true, false), 1, 2, 1),
-            (player_hud::Controls::for_item(true, true, true, false, false), 0, 2, 0),
+            (player_hud::Controls::for_item(true, false, true, false), 1, 2, 1),
+            (player_hud::Controls::for_item(true, true, false, false), 0, 2, 0),
             (player_hud::Controls::NONE, 2, 3, 2),
         ] {
             page.slot = ControlSlot::Discs(controls);
@@ -427,7 +427,7 @@ mod tests {
     }
 
     #[test]
-    fn seek_jump_off_keeps_the_modern_reveal_first_behavior() {
+    fn seek_jump_off_keeps_the_reveal_first_behavior() {
         let _g = plx_base::testlock::serial();
         let _playback = PlaybackFixture::new();
         plx_media::route::restore_instant_dpad_seeking(InstantDpadSeeking::Off);
