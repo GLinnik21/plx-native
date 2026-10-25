@@ -311,10 +311,14 @@ fn push_player(ps: &plx_media::route::PlaybackSession, s: &mut String, overlay: 
         ctrl.items(),
         b(plx_appkit::player_hud::transport_hidden(ps))
     );
-    if let ControlSlot::Discs(controls) = ctrl {
-        let _ = write!(s, " pair={} previous={} next={} restart={}",
-            b(controls.pair), b(controls.previous), b(controls.next), b(controls.restart));
-    }
+    // The episode pair's state is emitted whatever occupies the row (all zero under a stand-in),
+    // so an occupant change is a value change and never a schema change.
+    let controls = match ctrl {
+        ControlSlot::Discs(controls) => controls,
+        ControlSlot::Skip(_) | ControlSlot::UpNext(_) => plx_appkit::player_hud::Controls::NONE,
+    };
+    let _ = write!(s, " pair={} previous={} next={} restart={}",
+        b(controls.pair()), b(controls.previous), b(controls.next), b(controls.restart));
     // Whether this item HAS chapters at all — a fact about the item, not about a panel, which is
     // why it stays here while each overlay's own open flag and cursor arrive on `content` from the
     // surface (`app::bridge::content_probe`).

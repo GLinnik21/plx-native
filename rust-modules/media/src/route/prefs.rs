@@ -1,5 +1,5 @@
 //! **Per-profile settings, live: one cell each, one restore, one write door.**
-//! Includes playback controls, hero trailer autoplay and Under posters.
+//! Includes instant D-pad seeking, hero trailer autoplay and Under posters.
 //!
 //! The persisted half of each setting is a [`Setting`] row in `plex::session::prefs`; this is the
 //! other half, the in-memory copy the player reads every frame (a process-global [`LiveCell`], an
@@ -888,7 +888,7 @@ pub fn restore_next_episode_mode(mode: NextEpisodeMode) { restore_live::<NextEpi
 pub fn set_next_episode_mode(mode: NextEpisodeMode) -> bool { confirm::<NextEpisodeModePref>(mode) }
 
 pub fn instant_dpad_seeking() -> InstantDpadSeeking { InstantDpadSeekingPref::live() }
-pub fn restore_instant_dpad_seeking(controls: InstantDpadSeeking) { restore_live::<InstantDpadSeekingPref>(controls) }
+pub fn restore_instant_dpad_seeking(seeking: InstantDpadSeeking) { restore_live::<InstantDpadSeekingPref>(seeking) }
 
 pub fn skip_interval() -> SkipInterval { SkipIntervalPref::live() }
 pub fn restore_skip_interval(interval: SkipInterval) { restore_live::<SkipIntervalPref>(interval) }

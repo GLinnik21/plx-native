@@ -1165,19 +1165,23 @@ pub(crate) unsafe fn activate_player_row(
     // The cursor is the instance's; read the one field this dispatch turns on, so the container
     // is borrowed once and the arms below are free to present a panel on it.
     let btn = super::bridge::player(pages).map_or(0, |player| player.hud.nav.btn);
-    let btn = if let plx_appkit::player_hud::ControlSlot::Discs(controls) = ctrl {
+    if let plx_appkit::player_hud::ControlSlot::Discs(controls) = ctrl {
+        // The discs are what row 1 holds — the complement of the stand-in arm below, and the
+        // row's only other occupant. OK on a control disc PRESENTS its panel on this page's own
+        // stack; Previous/Next hand the queue to the transport instead.
         use plx_appkit::player_hud::Action;
         use plx_media::route::QueueStep;
-        match controls.action(btn) {
+        use plx_screens::player::overlay::OverlayKind;
+        let overlay = match controls.action(btn) {
             Some(Action::Previous) => { queue_transport::step(&mut player.session, pa, QueueStep::Previous, pages, bridge); return; }
             Some(Action::Next) => { queue_transport::step(&mut player.session, pa, QueueStep::Next, pages, bridge); return; }
-            Some(Action::Subtitles) => 0,
-            Some(Action::Audio) => 1,
-            Some(Action::More) => plx_appkit::player_hud::BTN_MORE,
+            Some(Action::Subtitles) => OverlayKind::Tracks { tab: 1 },
+            Some(Action::Audio) => OverlayKind::Tracks { tab: 0 },
+            Some(Action::More) => OverlayKind::More { quality: false },
             None => return,
-        }
-    } else { btn };
-    if !ctrl.is_discs() {
+        };
+        super::bridge::open_player_overlay(&mut player.session, bridge.metadata_view(), pages, overlay);
+    } else {
         // A stand-in owns row 1 — activate it. Same value the draw used. (Its `true` answer used
         // to clear the loop's client-side hold-repeat sym as well, so an async route flip could
         // not repeat a held key into the next screen. That timer is gone with phase 10 — see
@@ -1192,17 +1196,6 @@ pub(crate) unsafe fn activate_player_row(
             btn,
             pages,
             bridge,
-        );
-    } else if btn == plx_appkit::player_hud::BTN_MORE {
-        // …so the discs are what row 1 holds — the complement of the arm above, and the row's only
-        // other occupant. OK on a control disc PRESENTS its panel on this page's own stack.
-        super::bridge::open_player_overlay(&mut player.session, bridge.metadata_view(), pages, plx_screens::player::overlay::OverlayKind::More { quality: false });
-    } else {
-        super::bridge::open_player_overlay(
-            &mut player.session,
-            bridge.metadata_view(),
-            pages,
-            plx_screens::player::overlay::OverlayKind::Tracks { tab: if btn == 0 { 1 } else { 0 } },
         );
     }
     if let Some(player) = super::bridge::player_mut(pages) {

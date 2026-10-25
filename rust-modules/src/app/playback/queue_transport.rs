@@ -34,11 +34,6 @@ pub(super) fn play(
     // The row is owned before the outgoing queue or engine can be retired. Its server identity
     // follows it across the handoff, independent of the server being browsed behind the player.
     let resume = plx_data::metadata::resume_ns(row.resume_ms, row.dur_ms);
-    let title = if row.show_title.is_empty() {
-        &row.title
-    } else {
-        &row.show_title
-    };
     let context = if row.kind == "episode" {
         plx_ui::fmt::episode_kicker(row.season, row.index, &row.title)
     } else {
@@ -46,7 +41,7 @@ pub(super) fn play(
     };
     close_player_overlays(pages);
     plx_media::player::stop_bufferfeed(ps, pa);
-    let requested = plx_media::route::request_play_queue_item(ps, bridge.metadata_mut(), &row, title, &context);
+    let requested = plx_media::route::request_play_queue_item(ps, bridge.metadata_mut(), &row, &context);
     bridge.start_store_jobs();
     if !requested { return false; }
     bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::RetirePlaying);

@@ -1,7 +1,7 @@
 //! **Playback and display settings, per profile.**
 //!
 //! Quality, Direct Play, subtitle size, position and tone, the HDR overlay brightness, audio enhancements, the next-episode
-//! mode, the skip interval, the playback controls style, what OK does on a Continue Watching card, and (since P1c) whether the
+//! mode, the skip interval, instant D-pad seeking, what OK does on a Continue Watching card, and (since P1c) whether the
 //! detail page's hero autoplays its trailer used to be one value for
 //! the whole television. Each is now a value of the SEATED profile ([`Seat`]), kept in
 //! `profile_prefs`:

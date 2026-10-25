@@ -290,7 +290,7 @@ fn assert_a_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row(
 /// queued after, it put every one of them back on the first row. Each row stores the LAST line of
 /// its ladder, so a first-row seat is a red row:
 /// Playback (Quality, Direct play, Subtitle size, Subtitle position, HDR overlay, Next episode,
-/// Deck press, Skip interval), Audio & Subtitles (Audio language, Subtitle mode, Subtitle language,
+/// Deck press, Skip interval, Instant D-pad seeking), Audio & Subtitles (Audio language, Subtitle mode, Subtitle language,
 /// Forced subtitles), Under posters (Details), the Settings root (Language). The Interface
 /// resolution picker is not in the table: its row exists only where the platform offers it.
 #[test]
@@ -312,7 +312,7 @@ fn every_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row() {
     r::restore_next_episode_mode(*ses::NextEpisodeMode::LADDER.last().unwrap());
     r::restore_deck_press(*ses::DeckPress::LADDER.last().unwrap());
     r::restore_skip_interval(*ses::SkipInterval::LADDER.last().unwrap());
-    r::restore_instant_dpad_seeking(ses::InstantDpadSeeking::On);
+    r::restore_instant_dpad_seeking(*ses::InstantDpadSeeking::LADDER.last().unwrap());
     let lines = |kind: PickerKind| match kind {
         PickerKind::Quality => ladder_last(r::available_quality_ladder().len()),
         PickerKind::DirectPlay => 2,
@@ -322,11 +322,11 @@ fn every_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row() {
         PickerKind::NextEpisode => ladder_last(ses::NextEpisodeMode::LADDER.len()),
         PickerKind::DeckPress => ladder_last(ses::DeckPress::LADDER.len()),
         PickerKind::SkipInterval => ladder_last(ses::SkipInterval::LADDER.len()),
-        PickerKind::InstantDpadSeeking => 1,
+        PickerKind::InstantDpadSeeking => ladder_last(ses::InstantDpadSeeking::LADDER.len()),
         other => panic!("{other:?} is not a Playback picker"),
     };
     let playback = super::super::preferences::nav_items_for_test(super::super::preferences::Kind::Playback, None);
-    assert_eq!(playback.len(), 10, "every Playback picker is in the table: {playback:?}");
+    assert_eq!(playback.len(), 9, "every Playback picker is in the table: {playback:?}");
     for &(row, dest) in &playback {
         let SettingsPage::Picker(kind) = dest else { panic!("a Playback row pushes a picker: {dest:?}") };
         assert_a_pushed_picker_opens_on_its_checked_line_and_pops_to_its_row(

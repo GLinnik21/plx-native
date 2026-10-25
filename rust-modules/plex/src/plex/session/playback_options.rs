@@ -1,24 +1,36 @@
 //! The per-profile choice for instant D-pad seeking.
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 
-macro_rules! switch {
-    ($name:ident, $default:ident) => {
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-        #[serde(rename_all = "snake_case")]
-        pub enum $name { Off, On }
-        impl Default for $name { fn default() -> Self { Self::$default } }
-        impl $name {
-            pub fn index(self) -> u8 { u8::from(self == Self::On) }
-            pub fn from_index(index: u8) -> Self { if index == 1 { Self::On } else { Self::Off } }
-            pub fn is_default(&self) -> bool { *self == Self::default() }
-        }
-    };
+/// Whether Left/Right on a hidden transport jumps at once instead of first revealing the scrubber —
+/// one per profile, like [`super::DeckPress`]. Absence is `Off`, the reveal-first behaviour every
+/// build before the preference had.
+#[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InstantDpadSeeking {
+    #[default]
+    #[serde(rename = "off")]
+    Off,
+    #[serde(rename = "on")]
+    On,
 }
-switch!(InstantDpadSeeking, Off);
 
-pub(super) fn deserialize<'de, D: serde::Deserializer<'de>, T: DeserializeOwned + Default>(d: D) -> Result<T, D::Error> {
-    let value = serde_json::Value::deserialize(d)?;
-    Ok(serde_json::from_value(value).unwrap_or_default())
+impl InstantDpadSeeking {
+    /// Every option, the order the picker lists them in.
+    pub const LADDER: [InstantDpadSeeking; 2] = [InstantDpadSeeking::Off, InstantDpadSeeking::On];
+
+    /// An in-memory index back to an option — out of range is the default, for the reason
+    /// [`super::SubtitleTone::from_index`] gives: the ladder can grow or shrink.
+    pub fn from_index(i: u8) -> InstantDpadSeeking {
+        Self::LADDER.get(i as usize).copied().unwrap_or_default()
+    }
+
+    pub fn index(self) -> u8 {
+        Self::LADDER.iter().position(|&m| m == self).unwrap_or(0) as u8
+    }
+
+    /// `skip_serializing_if` needs a function, not just `PartialEq` with `Default::default()`.
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 #[cfg(test)]

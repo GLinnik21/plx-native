@@ -6,18 +6,39 @@ use plx_plex::plex::session::InstantDpadSeeking;
 /// failures retain the shared read-out policy, independently of the D-pad preference.
 pub(super) fn seek_stays_hidden(ps: &plx_media::route::PlaybackSession, dismissed: bool) -> bool {
     use plx_media::player::{self, PlaybackState};
+    if !dismissed { return false; }
     let state = player::state(ps);
-    dismissed && (state == PlaybackState::Seeking
-        || (state == PlaybackState::Buffering && !player::rebuffering() && player::seek_display_ns() >= 0))
+    state == PlaybackState::Seeking
+        || (state == PlaybackState::Buffering && !player::rebuffering() && player::seek_display_ns() >= 0)
+}
+
+/// One scrub step toward `forward`'s end of the bar.
+fn signed_step(forward: bool) -> i64 {
+    input::scrub_step_ns() * if forward { 1 } else { -1 }
 }
 
 impl PlayerScreen {
+    /// A gesture other than a transport tap has begun: the pending tap is no longer one, and the
+    /// relative jump burst restarts from the playhead.
+    pub(super) fn end_jump_gesture(&mut self) {
+        self.transport_tap = false;
+        self.seek_burst.reset();
+    }
+
+    /// Another key has interrupted an FF/REW tap that has not been released: its armed scrub goes
+    /// with it, uncommitted.
+    pub(super) fn drop_transport_tap(&mut self) {
+        if self.transport_tap {
+            self.transport_tap = false;
+            self.scrub.cancel();
+        }
+    }
+
     fn commit_jump<H: AppLike>(&mut self, ps: &plx_media::route::PlaybackSession,
         forward: bool, now: u32, fx: &mut Effects<'_, H>) {
         let duration = plx_media::player::duration_ns();
         if duration <= 0 { return; }
-        let step = input::scrub_step_ns() * if forward { 1 } else { -1 };
-        let target = self.seek_burst.jump(now, plx_media::player::intended_pos_ns(ps), step, duration);
+        let target = self.seek_burst.jump(now, plx_media::player::intended_pos_ns(ps), signed_step(forward), duration);
         self.scrub.cancel();
         self.hud.hide(false);
         Self::ask(fx, PlayerReq::CommitSeek(target));
@@ -55,30 +76,28 @@ impl PlayerScreen {
                 }
                 Edge::Repeat => {
                     if self.transport_tap && self.hud.visible_at_press {
-                        let step = input::scrub_step_ns() * if forward { 1 } else { -1 };
-                        self.scrub.ns = Scrub::clamp_target(self.scrub.ns.saturating_add(step), plx_media::player::duration_ns());
+                        self.scrub.ns = Scrub::clamp_target(self.scrub.ns.saturating_add(signed_step(forward)), plx_media::player::duration_ns());
                         self.scrub.reveal = false;
                     }
                     self.hud.dismissed = false;
-                    self.transport_tap = false;
-                    self.seek_burst.reset();
+                    self.end_jump_gesture();
                     self.key_scrub_repeat(now);
                     self.hud.extend(now, input::HUD_LINGER_MS);
                 }
                 Edge::Up => {
                     if self.transport_tap {
                         self.transport_tap = false;
+                        // `commit_jump` publishes its own result
                         self.commit_jump(ps, forward, now, fx);
-                    } else { self.key_scrub_release(now); }
+                        return true;
+                    }
+                    self.key_scrub_release(now);
                 }
             }
             self.publish();
             return true;
         }
-        if edge == Edge::Down && self.transport_tap {
-            self.transport_tap = false;
-            self.scrub.cancel();
-        }
+        if edge == Edge::Down { self.drop_transport_tap(); }
         if plx_media::route::instant_dpad_seeking() != InstantDpadSeeking::On || self.hud.visible_at_press {
             self.seek_burst.reset();
             return false;
@@ -101,7 +120,7 @@ mod tests {
     struct PlaybackFixture {
         duration: i64,
         position: i64,
-        controls: InstantDpadSeeking,
+        dpad_seeking: InstantDpadSeeking,
         state: u8,
         rebuffering: bool,
         seek_display: i64,
@@ -115,7 +134,7 @@ mod tests {
                 position: plx_media::player::SHARED
                     .playpos_ns
                     .swap(40_000_000_000, Relaxed),
-                controls: plx_media::route::instant_dpad_seeking(),
+                dpad_seeking: plx_media::route::instant_dpad_seeking(),
                 state: plx_media::player::swap_state_for_test(
                     plx_media::player::PlaybackState::Playing,
                 ),
@@ -136,7 +155,7 @@ mod tests {
             plx_media::player::SHARED
                 .playpos_ns
                 .store(self.position, Relaxed);
-            plx_media::route::restore_instant_dpad_seeking(self.controls);
+            plx_media::route::restore_instant_dpad_seeking(self.dpad_seeking);
             plx_media::player::restore_state_for_test(self.state);
             plx_media::player::SHARED
                 .hls_rebuffering

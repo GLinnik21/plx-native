@@ -4913,9 +4913,14 @@ impl TransportButton {
         }
     }
     pub fn icon(mut self, icon: crate::icons::Icon) -> Self { self.icon = Some(icon); self }
-    pub fn enabled(mut self, enabled: bool) -> Self { self.enabled = enabled; self.focused &= enabled; self }
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+    /// Asks for the focused face. A disabled disc never wears it whatever order the two are set
+    /// in: [`View::draw`] is the one place that decides.
     pub fn focused(mut self, f: bool) -> Self {
-        self.focused = f && self.enabled;
+        self.focused = f;
         self
     }
     /// Stand this disc on a named [`ControlGround`] — see [`Button::ground`].
@@ -4939,6 +4944,7 @@ impl View for TransportButton {
         // The design system builds this disc AS a `CircleButton` at 64px, so it takes the shared
         // control face rather than spelling one of its own: the two used to be the same three
         // tokens written twice, which is how a ground (or a palette) reaches one and not the other.
+        // A disabled disc is never focused, however the builder was called.
         let focused = self.enabled && self.focused;
         let face = ControlStyle::Accent.face(focused, self.ground, self.palette);
         let ink = if self.enabled { face.ink } else { theme::INK_DISABLED };
@@ -9246,8 +9252,15 @@ fn a_painted_still_line_stands_its_sub_line_one_gap_from_the_glyphs_ink() {
 
 #[cfg(test)]
 #[test]
-fn transport_button_disabled_never_keeps_a_focused_face() {
+fn transport_button_disabled_never_draws_a_focused_face() {
     let rect = Rect::new(0.0, 0.0, 64.0, 64.0);
-    assert!(!TransportButton::new(0, rect).enabled(false).focused(true).focused);
-    assert!(!TransportButton::new(0, rect).focused(true).enabled(false).focused);
+    let census = |b: TransportButton| crate::draw_census::capture_inks(|| b.draw(&Env::inert(), Painter::recording()));
+    let focused = census(TransportButton::new(0, rect).focused(true));
+    let idle = census(TransportButton::new(0, rect));
+    assert_ne!(focused, idle, "the focused face is distinguishable from idle");
+    for disabled in [TransportButton::new(0, rect).enabled(false).focused(true),
+        TransportButton::new(0, rect).focused(true).enabled(false)] {
+        assert_eq!(census(disabled), census(TransportButton::new(0, rect).enabled(false)),
+            "a disabled disc draws its idle face whatever order the builder ran in");
+    }
 }

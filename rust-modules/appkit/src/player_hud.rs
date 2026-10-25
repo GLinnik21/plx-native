@@ -678,7 +678,12 @@ pub fn ctrl_row_w() -> f32 {
 /// ([`ctrl_row_w`]) and the hit rects all read this one stack.
 fn disc_row() -> HStack<'static> {
     const DISCS: [Item; BTN_N as usize] = disc_items(false);
-    HStack::new(&DISCS, plx_ui::widgets::CONTROL_GAP, Align::Trailing(CTRL_RIGHT))
+    disc_stack(&DISCS)
+}
+
+/// The disc row's one layout — its gap and its anchor on [`CTRL_RIGHT`] — over either item set.
+fn disc_stack(items: &[Item]) -> HStack<'_> {
+    HStack::new(items, plx_ui::widgets::CONTROL_GAP, Align::Trailing(CTRL_RIGHT))
 }
 
 /// The shared control-row slot for anything that STANDS IN for the disc pair: right-aligned to the
@@ -728,24 +733,30 @@ pub enum Action { Previous, Next, Subtitles, Audio, More }
 /// A frame's episode-button eligibility, availability and restart glyph, sampled once.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Controls {
-    pub pair: bool,
     pub previous: bool,
     pub next: bool,
     pub restart: bool,
 }
 impl Controls {
-    pub const NONE: Self = Self { pair: false, previous: false, next: false, restart: false };
+    pub const NONE: Self = Self { previous: false, next: false, restart: false };
     pub fn now(ps: &plx_media::route::PlaybackSession) -> Self {
+        if plx_media::route::cur_kind(ps) != "episode" { return Self::NONE; }
         let (previous, next) = plx_media::route::queue_neighbors(ps);
+        if !(previous || next) { return Self::NONE; }
         let restart = plx_media::route::previous_restarts(plx_media::player::intended_pos_ns(ps));
-        Self::for_item(plx_media::route::cur_kind(ps) == "episode", previous, next, restart)
+        Self::for_item(true, previous, next, restart)
     }
     pub fn for_item(episode: bool, previous: bool, next: bool, restart: bool) -> Self {
         if !episode || !(previous || next) { return Self::NONE; }
-        Self { pair: true, previous: previous || restart, next, restart }
+        Self { previous: previous || restart, next, restart }
+    }
+    /// Whether the Previous/Next pair is on the row at all: [`Self::for_item`] only ever builds a
+    /// pair with at least one of its two buttons live.
+    pub fn pair(self) -> bool {
+        self.previous || self.next
     }
     pub fn enabled(self, i: i32) -> bool {
-        match i { BTN_PREVIOUS => self.pair && self.previous, BTN_NEXT => self.pair && self.next,
+        match i { BTN_PREVIOUS => self.previous, BTN_NEXT => self.next,
             BTN_SUBTITLES..=BTN_MORE => true, _ => false }
     }
     pub fn primary(self) -> i32 {
@@ -764,9 +775,8 @@ impl Controls {
             BTN_NEXT => Icon::Next, BTN_AUDIO => Icon::Audio, BTN_MORE => Icon::More, _ => Icon::Cc }
     }
     pub fn rect(self, i: i32) -> Option<Rect> {
-        let items = disc_items(self.pair);
-        let (x, w) = HStack::new(&items, plx_ui::widgets::CONTROL_GAP, Align::Trailing(CTRL_RIGHT))
-            .span(usize::try_from(i).ok()?)?;
+        let items = disc_items(self.pair());
+        let (x, w) = disc_stack(&items).span(usize::try_from(i).ok()?)?;
         Some(Rect::new(x, BTN_Y, w, BTN_S))
     }
 }
@@ -1377,6 +1387,10 @@ pub const ELEM_SCRUB: u32 = 0;
 pub const ELEM_ROW_BASE: u32 = 10;
 /// `+ 0..=1` — Info, then Chapters when the item has any.
 pub const ELEM_TAB_BASE: u32 = 20;
+/// The control-row item index an element addresses, `None` for any element off the row.
+pub fn row_index(elem: u32) -> Option<i32> {
+    (ELEM_ROW_BASE..ELEM_TAB_BASE).contains(&elem).then(|| (elem - ELEM_ROW_BASE) as i32)
+}
 /// `+ 0..actions().len()` — the failure read-out's row, one element per
 /// [`plx_media::player::FailureAction`] in [`FailureReadout::actions`] order: the only controls a
 /// FAILED playback draws.
@@ -1390,11 +1404,6 @@ pub const ELEM_FAILURE_END: u32 = ELEM_FAILURE_BASE + plx_ui::widgets::STATUS_RO
 /// the hit map the one thing that tests it.
 pub fn scrub_hit_rect() -> Rect {
     Rect::new(SB_X, SCR_H - 270.0, sb_w(), 160.0)
-}
-
-/// One disc's rect — [`icon_hit`]'s own per-button geometry, exposed for registration.
-pub fn disc_hit_rect(idx: i32) -> Option<Rect> {
-    Controls::NONE.rect(idx)
 }
 
 /// **The control row's band at its floor width** ([`ctrl_row_w`]) — the row GROUP's extent only.
@@ -1501,11 +1510,11 @@ fn btn_x(idx: i32) -> f32 {
 /// `slot` is passed in rather than re-derived: while a stand-in owns the row the discs are not on
 /// screen, and a click in that band must not open a track menu the user cannot see.
 pub fn icon_hit(slot: ControlSlot, cx: f32, cy: f32) -> Option<i32> {
-    if !slot.is_discs() || cy < BTN_Y || cy > BTN_Y + BTN_S {
+    let ControlSlot::Discs(controls) = slot else { return None };
+    if cy < BTN_Y || cy > BTN_Y + BTN_S {
         return None;
     }
     (0..slot.items()).find(|&idx| {
-        let ControlSlot::Discs(controls) = slot else { return false };
         controls.enabled(idx) && controls.rect(idx).is_some_and(|r| cx >= r.x && cx <= r.x + r.w)
     })
 }
@@ -2307,7 +2316,7 @@ mod tests {
             let _language = plx_platform::i18n::language_on_this_thread_for_test(language);
             let slots = [
                 ControlSlot::Discs(Controls::NONE),
-                ControlSlot::Discs(Controls { pair: true, previous: true, next: true, restart: true }),
+                ControlSlot::Discs(Controls { previous: true, next: true, restart: true }),
                 slot_for(Some(marker(MarkerKind::Intro, false)), false, NextEpisodeMode::Countdown),
                 slot_for(Some(marker(MarkerKind::Credits, true)), true, NextEpisodeMode::Countdown),
             ];

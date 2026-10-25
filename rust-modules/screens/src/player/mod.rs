@@ -413,7 +413,7 @@ impl PlayerScreen {
                 .is_some_and(|d| d < plx_appkit::player_hud::PLAY_MARK_MS),
         ));
         mix(match self.slot {
-            ControlSlot::Discs(controls) => 4 + u64::from(controls.pair) + 2 * u64::from(controls.previous) + 4 * u64::from(controls.next) + 8 * u64::from(controls.restart),
+            ControlSlot::Discs(controls) => 4 + u64::from(controls.pair()) + 2 * u64::from(controls.previous) + 4 * u64::from(controls.next) + 8 * u64::from(controls.restart),
             ControlSlot::Skip(_) => 2,
             ControlSlot::UpNext(_) => 3,
         });
@@ -455,8 +455,7 @@ impl PlayerScreen {
         }
         if self.hud_policy == HudPolicy::Normal && policy != HudPolicy::Normal {
             self.scrub.cancel();
-            self.transport_tap = false;
-            self.seek_burst.reset();
+            self.end_jump_gesture();
             self.publish();
         }
         self.hud_policy = policy;
@@ -588,8 +587,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
             }
         }
         match ev {
-            ScreenEvent::FocusMoved { to, .. } if (player_hud::ELEM_ROW_BASE..player_hud::ELEM_TAB_BASE).contains(&to.elem) => {
-                let btn = (to.elem - player_hud::ELEM_ROW_BASE) as i32;
+            ScreenEvent::FocusMoved { to, .. } if let Some(btn) = player_hud::row_index(to.elem) => {
                 if self.slot.enabled(btn) {
                     self.hud.nav.focus = 1;
                     self.hud.nav.btn = btn;
@@ -645,16 +643,14 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                         self.handle_key(ps, consts::classify_input(*key, *sym, *wcode), *edge, input.at.ms, fx, H::metadata(cx))
                     }
                     InputKind::Click { hit, x, .. } => {
-                        self.transport_tap = false;
-                        self.seek_burst.reset();
+                        self.end_jump_gesture();
                         self.handle_click(ps, *hit, *x, input.at.ms, fx)
                     }
                     // §7.5: a drag drives its CONTROL. Only the scrubber has one here, and only
                     // once a click has seated the gesture on it — a drag that began anywhere else
                     // must not capture the bar the moment it passes over it.
                     InputKind::Drag { x, .. } => {
-                        self.transport_tap = false;
-                        self.seek_burst.reset();
+                        self.end_jump_gesture();
                         self.handle_drag(*x, input.at.ms)
                     },
                     // Pointer MOTION over the bare transport raises it and clears a hand
@@ -662,8 +658,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
                     // video. `app/run.rs`'s own motion arm did this and then RETURNED, so the page
                     // never saw a pointer event at all.
                     InputKind::Pointer { .. } => {
-                        self.transport_tap = false;
-                        self.seek_burst.reset();
+                        self.end_jump_gesture();
                         self.hud.dismissed = false;
                         self.hud.extend(input.at.ms, input::HUD_LINGER_MS);
                         self.publish();
@@ -745,7 +740,7 @@ impl PlayerScreen {
         now: u32,
         fx: &mut Effects<'_, H>,
     ) -> Handled {
-        use player_hud::{ELEM_FAILURE_BASE, ELEM_FAILURE_END, ELEM_ROW_BASE, ELEM_SCRUB, ELEM_TAB_BASE};
+        use player_hud::{ELEM_FAILURE_BASE, ELEM_FAILURE_END, ELEM_SCRUB, ELEM_TAB_BASE};
         let failed = plx_appkit::player_hud::transport_hidden(ps);
         let Some(elem) = hit else {
             // **A click that lands on no control at all toggles play/pause** — the `else` arm of
@@ -788,9 +783,8 @@ impl PlayerScreen {
                 }
                 Handled::Yes
             }
-            e if (ELEM_ROW_BASE..ELEM_TAB_BASE).contains(&e) => {
+            e if let Some(btn) = player_hud::row_index(e) => {
                 self.hud.nav.focus = 1;
-                let btn = (e - ELEM_ROW_BASE) as i32;
                 if !self.slot.enabled(btn) { return Handled::Yes; }
                 self.hud.nav.btn = btn;
                 self.arm_control_row(fx);
@@ -871,8 +865,7 @@ impl PlayerScreen {
         use consts::Key;
         if edge == Edge::Down && !matches!(key, Key::Left { .. } | Key::Right { .. }) {
             self.seek_burst.reset();
-            if self.transport_tap { self.scrub.cancel(); }
-            self.transport_tap = false;
+            self.drop_transport_tap();
         }
         // **A terminal failure owns the whole frame, so almost nothing may be driven on it.**
         // `draw_hud` returns before painting anything under a `Failed` read-out, and a control
@@ -1403,10 +1396,9 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
             };
             return Step::Move(FocusKey { entry: self.entry, elem });
         }
-        if (player_hud::ELEM_ROW_BASE..player_hud::ELEM_TAB_BASE).contains(&key.elem) {
+        if let Some(index) = player_hud::row_index(key.elem) {
             let forward = match dir { Dir::Left => false, Dir::Right => true, _ => return Step::Edge };
-            let index = (key.elem - player_hud::ELEM_ROW_BASE) as usize;
-            if let Some(next) = plx_ui::focus::next_enabled_index(index, self.slot.items() as usize, forward,
+            if let Some(next) = plx_ui::focus::next_enabled_index(index as usize, self.slot.items() as usize, forward,
                 |i| self.slot.enabled(i as i32)) {
                 return Step::Move(FocusKey { entry: self.entry, elem: player_hud::ELEM_ROW_BASE + next as u32 });
             }
@@ -1414,7 +1406,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
         Step::Edge
     }
     fn place(&self, key: &u32, cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
-        use player_hud::{ELEM_FAILURE_BASE, ELEM_FAILURE_END, ELEM_ROW_BASE, ELEM_SCRUB, ELEM_TAB_BASE};
+        use player_hud::{ELEM_FAILURE_BASE, ELEM_FAILURE_END, ELEM_SCRUB, ELEM_TAB_BASE};
         if self.repair_alert.visible() {
             if !matches!(*key, REPAIR_CANCEL | REPAIR_CONFIRM) { return None; }
             let rect = self.repair_rect(*key == REPAIR_CONFIRM, cx.measure);
@@ -1422,8 +1414,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
         }
         let rect = match *key {
             e if e == ELEM_SCRUB => player_hud::scrub_hit_rect(),
-            e if (ELEM_ROW_BASE..ELEM_TAB_BASE).contains(&e) => {
-                let index = (e - ELEM_ROW_BASE) as i32;
+            e if let Some(index) = player_hud::row_index(e) => {
                 if !self.slot.enabled(index) { return None; }
                 self.slot.item_rect(&self.row, index, cx.measure)?
             }
@@ -1440,8 +1431,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
         Some(Placed { rect, rest_rect: rect, clip: Rect::FULL, index: None })
     }
     fn reconcile(&self, want: FocusKey<u32>, _cx: &Cx<'_, H>) -> FocusKey<u32> {
-        if (player_hud::ELEM_ROW_BASE..player_hud::ELEM_TAB_BASE).contains(&want.elem)
-            && !self.slot.enabled((want.elem - player_hud::ELEM_ROW_BASE) as i32) {
+        if player_hud::row_index(want.elem).is_some_and(|i| !self.slot.enabled(i)) {
             FocusKey { entry: self.entry, elem: player_hud::ELEM_ROW_BASE + self.slot.primary_btn() as u32 }
         } else { want }
     }
@@ -2093,7 +2083,7 @@ mod step_ladder_tests {
         assert!(failure_n >= 1, "Back is always offered");
         let cases: [(&str, ControlSlot, Busy, Vec<u32>); 5] = [
             ("discs", ControlSlot::Discs(player_hud::Controls::NONE), Busy::None, [(2..5).map(|i| ELEM_ROW_BASE + i).collect::<Vec<_>>(), vec![ELEM_TAB_BASE]].concat()),
-            ("episode", ControlSlot::Discs(player_hud::Controls { pair: true, previous: true, next: true, restart: false }),
+            ("episode", ControlSlot::Discs(player_hud::Controls { previous: true, next: true, restart: false }),
                 Busy::None, [row(5), vec![ELEM_TAB_BASE]].concat()),
             ("skip", skip, Busy::None, [row(1), vec![ELEM_TAB_BASE]].concat()),
             ("up next", up_next, Busy::None, [row(2), vec![ELEM_TAB_BASE]].concat()),

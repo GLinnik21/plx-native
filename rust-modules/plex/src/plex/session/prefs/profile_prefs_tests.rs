@@ -68,7 +68,7 @@ fn the_record_has_one_field_for_each_setting_with_a_legacy_fallback() {
         .filter(|d| d.fallback == Fallback::LegacyInstallKey)
         .map(|d| d.key.to_string())
         .collect();
-    assert_eq!(rows.len(), 12, "every per-profile setting has a legacy fallback");
+    assert_eq!(rows.len(), 13, "every per-profile setting has a legacy fallback");
     assert_eq!(fields, rows, "ProfilePrefs and the rows with a legacy fallback drifted");
     assert!(DESCRIPTORS.iter().filter(|d| d.fallback == Fallback::LegacyInstallKey).all(|d| d.scope == Scope::Profile));
 }

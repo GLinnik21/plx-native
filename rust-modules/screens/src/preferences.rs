@@ -260,7 +260,7 @@ impl Txn {
             Value::HdrOverlay(brightness) => PreferenceCmd::Choose(Choice::HdrOverlayBrightness(brightness), reply),
             Value::NextEpisode(mode) => PreferenceCmd::Choose(Choice::NextEpisode(mode), reply),
             Value::DeckPress(mode) => PreferenceCmd::Choose(Choice::DeckPress(mode), reply),
-            Value::InstantDpadSeeking(controls) => PreferenceCmd::Choose(Choice::InstantDpadSeeking(controls), reply),
+            Value::InstantDpadSeeking(seeking) => PreferenceCmd::Choose(Choice::InstantDpadSeeking(seeking), reply),
             Value::SkipInterval(interval) => PreferenceCmd::Choose(Choice::SkipInterval(interval), reply),
             // Install-wide, not a seated profile's live setting, so it has no `Choice`.
             Value::UiResolution(mode) => PreferenceCmd::UiResolution { mode, reply },
@@ -497,10 +497,8 @@ fn field_options(field: PickerKind, quality: Quality, direct_play: DirectPlayMod
             .map(|m| (next_episode_label(m).into(), Value::NextEpisode(m))).collect(),
         PickerKind::DeckPress => DeckPress::LADDER.into_iter()
             .map(|m| (deck_press_label(m).into(), Value::DeckPress(m))).collect(),
-        PickerKind::InstantDpadSeeking => [
-            (plx_platform::i18n::msg::settings_playback_instant_dpad_seeking_off(), InstantDpadSeeking::Off),
-            (plx_platform::i18n::msg::settings_playback_instant_dpad_seeking_on(), InstantDpadSeeking::On),
-        ].into_iter().map(|(label, value)| (label.into(), Value::InstantDpadSeeking(value))).collect(),
+        PickerKind::InstantDpadSeeking => InstantDpadSeeking::LADDER.into_iter()
+            .map(|m| (instant_dpad_seeking_label(m).into(), Value::InstantDpadSeeking(m))).collect(),
         PickerKind::SkipInterval => SkipInterval::LADDER.into_iter()
             .map(|i| (skip_interval_label(i), Value::SkipInterval(i))).collect(),
         PickerKind::UiResolution => UiResolution::LADDER.into_iter()
@@ -599,6 +597,12 @@ fn deck_press_label(mode: DeckPress) -> &'static str {
     match mode {
         DeckPress::Details => plx_platform::i18n::msg::settings_playback_deck_press_details(),
         DeckPress::Play => plx_platform::i18n::msg::settings_playback_deck_press_play(),
+    }
+}
+fn instant_dpad_seeking_label(mode: InstantDpadSeeking) -> &'static str {
+    match mode {
+        InstantDpadSeeking::Off => plx_platform::i18n::msg::settings_playback_instant_dpad_seeking_off(),
+        InstantDpadSeeking::On => plx_platform::i18n::msg::settings_playback_instant_dpad_seeking_on(),
     }
 }
 /// What the Interface resolution reads, on the Settings root and in its picker. The sizes are

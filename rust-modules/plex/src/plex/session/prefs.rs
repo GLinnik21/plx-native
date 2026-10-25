@@ -123,7 +123,7 @@ pub struct Preferences {
     #[serde(default, deserialize_with = "de_soft_skip_interval", skip_serializing_if = "is_default_skip_interval")]
     pub skip_interval: SkipInterval,
     /// Hidden-HUD D-pad jumps; off by default.
-    #[serde(default, deserialize_with = "super::playback_options::deserialize", skip_serializing_if = "InstantDpadSeeking::is_default")]
+    #[serde(default, deserialize_with = "de_soft_instant_dpad_seeking", skip_serializing_if = "InstantDpadSeeking::is_default")]
     pub instant_dpad_seeking: InstantDpadSeeking,
     /// **What OK does on a Continue Watching card** — see [`DeckPress`]. A frozen fallback like
     /// [`Preferences::playback_quality`]: each profile keeps its own pick in `profile_prefs`, and a
@@ -1312,6 +1312,17 @@ where
 /// `skip_serializing_if` needs a function, not just `PartialEq` with `Default::default()`.
 fn is_default_skip_interval(interval: &SkipInterval) -> bool {
     *interval == SkipInterval::default()
+}
+
+/// Instant D-pad seeking is a preference too: a spelling this build does not know degrades to Off.
+fn de_soft_instant_dpad_seeking<'de, D>(d: D) -> Result<InstantDpadSeeking, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Ok(v) = serde_json::Value::deserialize(d) else {
+        return Ok(InstantDpadSeeking::default());
+    };
+    Ok(serde_json::from_value::<InstantDpadSeeking>(v).unwrap_or_default())
 }
 
 /// The deck-press mode is a preference too: a spelling this build does not know degrades to Details.

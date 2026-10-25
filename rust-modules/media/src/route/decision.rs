@@ -7508,8 +7508,8 @@ pub fn up_next(ps: &PlaybackSession) -> Option<&UpNext> {
 ///
 /// MAIN THREAD ONLY. Unlike [`up_next`] this lends the rows to a closure instead of handing out a
 /// `&'static`, and that is deliberate: `request_play` FREES this Vec as its first act, so a
-/// borrowed row used to start playback would be read after free — exactly the aliasing bug
-/// `request_play_up_next`'s by-value signature exists to make unrepresentable. A caller that wants
+/// borrowed row used to start playback would be read after free — the aliasing bug a
+/// [`request_play_queue_item`] caller avoids by owning the row it passes. A caller that wants
 /// to keep a row past the call clones it out (`with_queue(|q| q.get(i).cloned())`); the borrow
 /// checker cannot police a `&'static`, but it does police this.
 pub fn with_queue<R>(ps: &PlaybackSession, f: impl FnOnce(&[plx_plex::plex::QueueRow]) -> R) -> R {
@@ -7930,17 +7930,22 @@ pub fn request_play(
 
 /// Start an existing queue item without replacing the queue and losing its preceding rows.
 /// The continuation is captured before the common request transaction retires the outgoing queue.
+/// The HUD title is the row's show title, its own title when it has none (a movie, a clip).
 pub fn request_play_queue_item(
     ps: &mut PlaybackSession,
     meta: &mut plx_data::stores::metadata::MetadataStore,
     row: &plx_plex::plex::QueueRow,
-    title: &str,
     ctx: &str,
 ) -> bool {
+    let title = if row.show_title.is_empty() {
+        &row.title
+    } else {
+        &row.show_title
+    };
     let queue = super::queue_navigation::QueueContinuation::capture(ps, row);
     request_play_with_queue(ps, meta, PlaybackRequest {
         sid: row.sid, rk: row.rk.clone(), part: row.part.clone(), vcodec: row.vcodec.clone(),
-        acodec: row.acodec.clone(), title: title.into(), ctx: ctx.into(), preview: false, version: None,
+        acodec: row.acodec.clone(), title: title.clone(), ctx: ctx.into(), preview: false, version: None,
     }, None, None, false, crate::player::report::AttemptOrigin::Fresh, queue)
 }
 
@@ -8387,33 +8392,6 @@ pub fn item_sid(sid: ServerId) -> ServerId {
     } else {
         surface_sid()
     }
-}
-
-/// Start the queued next episode. Takes the descriptor BY VALUE, and that is load-bearing rather
-/// than stylistic: [`up_next`] hands out a `&'static`, `request_play` clears `up_next` as its
-/// first act, and a `&UpNext` argument would therefore be pointing at a dropped `String` by the
-/// time this reads it — an aliasing bug the borrow checker cannot see through a `'static`. Callers
-/// clone (`route::up_next().cloned()`); the signature is what forces them to.
-///
-/// The HUD strings mirror the episode layout `draw_hud` uses once `now_playing` lands, so the
-/// pre-roll doesn't change shape underneath the user when it does. `ctx` is the context line, the
-/// episode kicker (`ui::fmt::episode_kicker(u.season, u.index, &u.ep_title)`): the caller formats it
-/// before handing `u` over, because `route` sits below `ui`.
-pub fn request_play_up_next(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::MetadataStore, u: UpNext, ctx: &str) -> bool {
-    let title = if u.show_title.is_empty() {
-        &u.ep_title
-    } else {
-        &u.show_title
-    };
-    // The successor comes out of the PlayQueue of the item now playing, so its server is that
-    // item's — [`cur_sid`], not whatever surface is behind the player. Falls back to the browsing
-    // surface only if nothing is playing, which the Up Next control cannot actually reach.
-    let sid = if cur_sid(ps).is_set() {
-        cur_sid(ps)
-    } else {
-        surface_sid()
-    };
-    request_play(ps, meta, sid, &u.rk, &u.part, &u.vcodec, &u.acodec, title, ctx, None)
 }
 
 /// Supersede an in-flight resolve (BACK during a load). The landing is dropped by generation.
