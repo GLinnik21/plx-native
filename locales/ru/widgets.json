@@ -1,5 +1,7 @@
 {
   "widgets.menu.options": "Параметры",
+  "widgets.menu.speed": "Скорость",
+  "widgets.speed.normal": "Обычная",
   "widgets.menu.quality": "Качество",
   "widgets.menu.quality_converted": "Преобраз.",
   "widgets.menu.quality_converted_note": "Сервер Plex преобразует это видео.",
@@ -254,7 +256,5 @@
   "widgets.region.nl": "Нидерланды",
   "widgets.region.latin_america": "Латинская Америка",
   "widgets.failure.play_auto": "Включить «Авто» и смотреть",
-  "widgets.failure.change_quality": "Изменить качество",
-  "widgets.menu.speed": "Скорость воспроизведения",
-  "widgets.speed.normal": "Обычная"
+  "widgets.failure.change_quality": "Изменить качество"
 }
