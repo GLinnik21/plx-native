@@ -7136,13 +7136,19 @@ mod native_seek_tests {
         feed_both_lanes(&mt, eng);
     }
 
+    /// The mode a set on release `major` (old-ABI Feed when `cow`) gets from a window of kind
+    /// `window_mode`, composed from the same facts `start_bufferfeed_inner` composes.
+    fn mode_for(major: u32, cow: bool, window_mode: c_int) -> SeekMode {
+        select_seek_mode(inplace_layout_known(major, cow), old_abi_seek_tested(major), window_mode, None)
+    }
+
     #[test]
     fn a_webos5_session_seeks_natively_and_never_reloads() {
         let _serial = plx_base::testlock::serial();
         let _restore = arm(None);
         let sink_mode = sink().window_mode();
         assert_eq!(sink_mode, crate::player::VP_EXPORTED, "PRECONDITION: the armed host sink is the webOS 5+ one");
-        let mode = select_seek_mode(inplace_layout_known(5, false), old_abi_seek_tested(5), sink_mode, None);
+        let mode = mode_for(5, false, sink_mode);
         assert_eq!(mode, SeekMode::NativeSeek, "VP_EXPORTED selects LG's public Seek");
         assert!(
             !crate::player::pump::seek_reloads(mode),
@@ -7153,16 +7159,13 @@ mod native_seek_tests {
     #[test]
     fn each_firmware_gets_its_seek_mode() {
         use crate::player::{VP_ACB, VP_EXPORTED, VP_NONE};
-        let pick = |major: u32, cow: bool, vp| {
-            select_seek_mode(inplace_layout_known(major, cow), old_abi_seek_tested(major), vp, None)
-        };
-        assert_eq!(pick(4, false, VP_ACB), SeekMode::Segment, "webOS 4.x is unchanged");
-        assert_eq!(pick(5, false, VP_EXPORTED), SeekMode::NativeSeek, "webOS 5+ is unchanged");
-        assert_eq!(pick(3, true, VP_ACB), SeekMode::NativeSeek, "webOS 3 (a 3.9.3 set: COW Feed) uses LG's public Seek");
-        assert_eq!(pick(2, true, VP_ACB), SeekMode::Reload, "webOS 2 is untested and reloads, as before");
-        assert_eq!(pick(4, true, VP_ACB), SeekMode::Reload, "an old-ABI 4.x build is untested and reloads");
-        assert_eq!(pick(0, true, VP_ACB), SeekMode::Reload, "an unknown release with the old ABI reloads");
-        assert_eq!(pick(3, true, VP_NONE), SeekMode::Reload, "no video plane, nothing to seek in place");
+        assert_eq!(mode_for(4, false, VP_ACB), SeekMode::Segment, "webOS 4.x is unchanged");
+        assert_eq!(mode_for(5, false, VP_EXPORTED), SeekMode::NativeSeek, "webOS 5+ is unchanged");
+        assert_eq!(mode_for(3, true, VP_ACB), SeekMode::NativeSeek, "webOS 3 (a 3.9.3 set: COW Feed) uses LG's public Seek");
+        assert_eq!(mode_for(2, true, VP_ACB), SeekMode::Reload, "webOS 2 is untested and reloads, as before");
+        assert_eq!(mode_for(4, true, VP_ACB), SeekMode::Reload, "an old-ABI 4.x build is untested and reloads");
+        assert_eq!(mode_for(0, true, VP_ACB), SeekMode::Reload, "an unknown release with the old ABI reloads");
+        assert_eq!(mode_for(3, true, VP_NONE), SeekMode::Reload, "no video plane, nothing to seek in place");
         assert_eq!(select_seek_mode(true, false, VP_ACB, Some(SeekMode::NativeSeek)), SeekMode::NativeSeek, "the dev trigger wins");
         assert!(crate::player::pump::seek_reloads(SeekMode::Reload));
         assert!(!crate::player::pump::seek_reloads(SeekMode::Segment));

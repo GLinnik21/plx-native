@@ -1710,9 +1710,10 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         // with NO fresh segment left a STALE GStreamer segment → the HW sink stops draining ~48 s
         // later → permanent BufferFull + "Playing error" (root-caused by decompiling
         // libpipeline/lxvideosink; see engine::reload_at). `Reload` mode — selected for a set
-        // with no video plane, or set by feed_stream when sendSegmentEvent can't find the pipeline
-        // or a native Seek is refused — is reload-per-seek. reload_at REPLACES the ENGINE, so `eng`
-        // dangles after it: return immediately.
+        // with no video plane or a layout-unknown library `Seek` is not tested on (see
+        // engine::select_seek_mode), or set by feed_stream when sendSegmentEvent can't find the
+        // pipeline or a native Seek is refused — is reload-per-seek. reload_at REPLACES the ENGINE,
+        // so `eng` dangles after it: return immediately.
         if seek_must_reload(seek_mode(), super::play_rate_permille(), rate_reload) {
             crate::route::commit_user_seek();
             own_seek_under_pause(t);
