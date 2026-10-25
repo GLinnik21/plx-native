@@ -360,7 +360,8 @@ something.
   `native|segment|reload` wins): the demuxer is `av_seek_frame`d to the target, then on the first
   post-seek keyframe `feed_stream` re-anchors the pipeline — no reload/decoder re-init.
   `Segment` (webOS 4.x) is Kodi-style: pump `flush()`, then `setTimeToDecode` + `sendSegmentEvent`
-  through decompile-derived private offsets. `NativeSeek` (`VP_EXPORTED`, webOS 5+; issue #568) is
+  through decompile-derived private offsets. `NativeSeek` (`VP_EXPORTED`, webOS 5+, issue #568; and a
+  known webOS 3 release on the ACB plane, `engine::old_abi_seek_tested`) is
   LG's PUBLIC `StarfishMediaAPIs::Seek(millis)` (`sink().seek`, `sf_seek_ms`): it flushes itself, so
   the pump does NOT `flush()` and nothing may flush after it (a `flush()` is a seek to 0 and re-creates
   the stale-segment stall); it re-anchors the segment AT the millis passed, so `feed_stream` feeds
@@ -371,7 +372,8 @@ something.
   mode anchors nothing: the private Segment offsets never run on webOS 5+), and latches
   `native_seek_refused` so the reload's fresh session stays `Reload` for the rest of THAT playback;
   a fresh play (`start_bufferfeed_tracked` with no live Engine) clears the latch. `Reload`
-  (old-ABI 3.x, and the fallback of both) is a fresh `Load` per seek. Otherwise the mode is
+  (the fallback of both, every other layout-unknown library, and a set with no video plane) is a
+  fresh `Load` per seek. Otherwise the mode is
   re-selected per session. The evidence is in `docs/webos5-port.md` ("The public `Seek`"). A transcode seek instead
   restarts the encode at `&offset` with a full fresh `Load`, and the PMS half of that restart is a
   FLIGHT, never frame-thread I/O: `route::dispatch_transcode_seek` plans on the frame, a worker

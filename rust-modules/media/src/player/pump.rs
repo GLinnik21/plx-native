@@ -1709,9 +1709,9 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         // `NativeSeek` = LG's public Seek(millis), which flushes by itself. A plain flush()+refeed
         // with NO fresh segment left a STALE GStreamer segment → the HW sink stops draining ~48 s
         // later → permanent BufferFull + "Playing error" (root-caused by decompiling
-        // libpipeline/lxvideosink; see engine::reload_at). `Reload` mode — selected for old-ABI
-        // libraries, or set by feed_stream when sendSegmentEvent can't find the pipeline or a
-        // native Seek is refused — is reload-per-seek. reload_at REPLACES the ENGINE, so `eng`
+        // libpipeline/lxvideosink; see engine::reload_at). `Reload` mode — selected for a set
+        // with no video plane, or set by feed_stream when sendSegmentEvent can't find the pipeline
+        // or a native Seek is refused — is reload-per-seek. reload_at REPLACES the ENGINE, so `eng`
         // dangles after it: return immediately.
         if seek_must_reload(seek_mode(), super::play_rate_permille(), rate_reload) {
             crate::route::commit_user_seek();
@@ -3591,7 +3591,7 @@ mod native_seek_pump_tests {
         assert_eq!(reloads(), vec![TARGET_NS]);
 
         // The reload starts a NEW session in the same playback: it must not re-offer the Seek.
-        let mode = super::super::engine::session_seek_mode(true, crate::player::VP_EXPORTED, None);
+        let mode = super::super::engine::session_seek_mode(true, false, crate::player::VP_EXPORTED, None);
         assert_eq!(mode, SeekMode::Reload, "the downgrade survives reload_at");
         crate::player::set_seek_mode(mode);
         // Stand in for the reload's new Engine.

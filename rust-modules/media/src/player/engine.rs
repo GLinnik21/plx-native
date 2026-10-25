@@ -1907,12 +1907,11 @@ fn start_bufferfeed_inner(
     // about the TV, so it is re-selected here for every session. Placed HERE rather than at the
     // top of this function on purpose: the `engine_is_live` no-op return above must NOT re-select,
     // or a stray PLAY landing mid-session would cancel a downgrade that is still needed.
-    let layout_known = inplace_layout_known(
-        plx_platform::tv::device::info().major,
-        sink().feed_abi_is_cow(),
-    );
-    let mode = session_seek_mode(layout_known, sink().window_mode(), dev_seek_mode());
-    log(&format!("seek mode: {mode:?} (layout_known={layout_known})"));
+    let major = plx_platform::tv::device::info().major;
+    let layout_known = inplace_layout_known(major, sink().feed_abi_is_cow());
+    let old_abi_seek = old_abi_seek_tested(major);
+    let mode = session_seek_mode(layout_known, old_abi_seek, sink().window_mode(), dev_seek_mode());
+    log(&format!("seek mode: {mode:?} (layout_known={layout_known} old_abi_seek={old_abi_seek})"));
     super::set_seek_mode(mode);
     pa.install(eng);
     native_start.commit();
@@ -2474,7 +2473,7 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     // reload has no transcode session anyway, so the skip only matters for the URL).
     // The DURATION is a fact about the FILE, and a reload plays the same file: keep it across
     // the reset so the playbar has a denominator while the demuxer reopens. Without this every
-    // reload-based seek (old-ABI 3.x, a refused native Seek, a transcode seek) drew
+    // reload-based seek (a refused native Seek, a speed seek, a transcode seek) drew
     // the playhead at position ÷ 0, i.e. the far left, for the few hundred ms until `ff.rs`
     // re-published it, while the clock beside it (position alone, seeded by `arm_seek`) read
     // correctly. Reported on an LG C3 (webOS 23). A real stop still zeroes it: the next item is
@@ -3488,11 +3487,26 @@ fn inplace_layout_known(major: u32, feed_abi_is_cow: bool) -> bool {
     !feed_abi_is_cow && (major == 0 || major >= 4)
 }
 
+/// **Is LG's public `Seek` device-tested where the private layout is not known?** Only on a KNOWN
+/// webOS 3 release: 80 seeks on platform release 3.9.3 (`docs/webos5-port.md`, "The public
+/// `Seek`"). It reads the release alone, not the Feed ABI: every 3.x library seen has the old
+/// (COW) one, and a release-3 set with the cxx11 Feed would get `Seek` too. webOS 2, an old-ABI
+/// 4.x build and an unknown release (`major == 0`) keep reloading, because an accepted `Seek` that
+/// anchors wrong is caught by no net ([`select_seek_mode`]).
+fn old_abi_seek_tested(major: u32) -> bool {
+    major == 3
+}
+
 /// [`select_seek_mode`] for a session that is starting: a `NativeSeek` this playback already had
 /// REFUSED stays `Reload` (the latch `feed_stream` sets, which `reload_at` preserves and a fresh
 /// play clears), instead of paying reopen + keyframe + refused `Seek` + full `Load` on every seek.
-pub(super) fn session_seek_mode(layout_known: bool, window_mode: c_int, dev: Option<SeekMode>) -> SeekMode {
-    match select_seek_mode(layout_known, window_mode, dev) {
+pub(super) fn session_seek_mode(
+    layout_known: bool,
+    old_abi_seek: bool,
+    window_mode: c_int,
+    dev: Option<SeekMode>,
+) -> SeekMode {
+    match select_seek_mode(layout_known, old_abi_seek, window_mode, dev) {
         SeekMode::NativeSeek if super::native_seek_refused() => SeekMode::Reload,
         mode => mode,
     }
@@ -3509,16 +3523,31 @@ pub(super) fn session_seek_mode(layout_known: bool, window_mode: c_int, dev: Opt
 ///   seek dereferences whatever now lives there. `Seek` is an exported symbol, present on every
 ///   firmware 1.2 to 11.2, so it assumes no layout at all.
 /// - A known layout without `VP_EXPORTED` (webOS 4.x) -> [`SeekMode::Segment`], unchanged.
-/// - NOR when the library is the pre-C++11 build (`inplace_layout_known` false): its
+/// - NOT `Segment` when the library is the pre-C++11 build (`inplace_layout_known` false): its
 ///   StarfishMediaAPIs is a different object from the 4.5 one, and the first fast-forward on a
 ///   3.4.0 set crashed through those offsets. The old-ABI Feed (`sf_feed_abi_is_cow`) is the
-///   direct evidence, and it covers 3.9.x too. That COW Feed ABI is also unverified for `Seek`, so
-///   this is [`SeekMode::Reload`], as before. A KNOWN release below 4 is refused as well; an
+///   direct evidence, and it covers 3.9.x too. A KNOWN release below 4 is refused as well; an
 ///   UNKNOWN one (`major == 0`, os_info unreadable) with the C++11 Feed keeps in-place seek, as
 ///   before #578, because that Feed says the library is 4.x or later.
+/// - A layout-unknown library on the ACB plane in a KNOWN webOS 3 release
+///   ([`old_abi_seek_tested`]) -> [`SeekMode::NativeSeek`] too. `Seek` takes a `const char*`, so
+///   its symbol and calling convention are the same on both C++ ABIs; that it also behaves the
+///   same rests on the device test in `docs/webos5-port.md` ("The public `Seek`"), not on the
+///   decompile, which is of 4.5.
+///   The nets are the ones webOS 5+ has: a refused `Seek` drops the playback to `Reload`
+///   (`native_seek_refused`), and a seek that does not anchor within `SEEK_STUCK_MS` is retried,
+///   then reloaded. Neither catches a `Seek` that is accepted and then anchors wrong (the
+///   stale-segment stall, about 48 s later), which is why the release is gated to the one tested.
+/// - Any other layout-unknown library (webOS 2, an old-ABI 4.x build, an unknown release) and no
+///   video plane (`VP_NONE`) -> [`SeekMode::Reload`], as before.
 /// `dev` is the `plxnative-seekmode` dev trigger and wins when present, so a webOS 4.5 set can
 /// exercise `NativeSeek`.
-pub(super) fn select_seek_mode(layout_known: bool, window_mode: c_int, dev: Option<SeekMode>) -> SeekMode {
+pub(super) fn select_seek_mode(
+    layout_known: bool,
+    old_abi_seek: bool,
+    window_mode: c_int,
+    dev: Option<SeekMode>,
+) -> SeekMode {
     if let Some(forced) = dev {
         return forced;
     }
@@ -3526,6 +3555,8 @@ pub(super) fn select_seek_mode(layout_known: bool, window_mode: c_int, dev: Opti
         SeekMode::NativeSeek
     } else if layout_known {
         SeekMode::Segment
+    } else if old_abi_seek && window_mode == super::VP_ACB {
+        SeekMode::NativeSeek
     } else {
         SeekMode::Reload
     }
@@ -7107,7 +7138,7 @@ mod native_seek_tests {
         let _restore = arm(None);
         let sink_mode = sink().window_mode();
         assert_eq!(sink_mode, crate::player::VP_EXPORTED, "PRECONDITION: the armed host sink is the webOS 5+ one");
-        let mode = select_seek_mode(inplace_layout_known(5, false), sink_mode, None);
+        let mode = select_seek_mode(inplace_layout_known(5, false), old_abi_seek_tested(5), sink_mode, None);
         assert_eq!(mode, SeekMode::NativeSeek, "VP_EXPORTED selects LG's public Seek");
         assert!(
             !crate::player::pump::seek_reloads(mode),
@@ -7116,14 +7147,34 @@ mod native_seek_tests {
     }
 
     #[test]
-    fn the_other_firmwares_keep_their_modes() {
-        assert_eq!(select_seek_mode(true, crate::player::VP_ACB, None), SeekMode::Segment, "webOS 4.x is unchanged");
-        assert_eq!(select_seek_mode(false, crate::player::VP_ACB, None), SeekMode::Reload, "the old ABI reloads, as before");
-        assert_eq!(select_seek_mode(false, crate::player::VP_NONE, None), SeekMode::Reload);
-        assert_eq!(select_seek_mode(true, crate::player::VP_ACB, Some(SeekMode::NativeSeek)), SeekMode::NativeSeek, "the dev trigger wins");
+    fn each_firmware_gets_its_seek_mode() {
+        use crate::player::{VP_ACB, VP_EXPORTED, VP_NONE};
+        let pick = |major: u32, cow: bool, vp| {
+            select_seek_mode(inplace_layout_known(major, cow), old_abi_seek_tested(major), vp, None)
+        };
+        assert_eq!(pick(4, false, VP_ACB), SeekMode::Segment, "webOS 4.x is unchanged");
+        assert_eq!(pick(5, false, VP_EXPORTED), SeekMode::NativeSeek, "webOS 5+ is unchanged");
+        assert_eq!(pick(3, true, VP_ACB), SeekMode::NativeSeek, "webOS 3 (a 3.9.3 set: COW Feed) uses LG's public Seek");
+        assert_eq!(pick(2, true, VP_ACB), SeekMode::Reload, "webOS 2 is untested and reloads, as before");
+        assert_eq!(pick(4, true, VP_ACB), SeekMode::Reload, "an old-ABI 4.x build is untested and reloads");
+        assert_eq!(pick(0, true, VP_ACB), SeekMode::Reload, "an unknown release with the old ABI reloads");
+        assert_eq!(pick(3, true, VP_NONE), SeekMode::Reload, "no video plane, nothing to seek in place");
+        assert_eq!(select_seek_mode(true, false, VP_ACB, Some(SeekMode::NativeSeek)), SeekMode::NativeSeek, "the dev trigger wins");
         assert!(crate::player::pump::seek_reloads(SeekMode::Reload));
         assert!(!crate::player::pump::seek_reloads(SeekMode::Segment));
         assert!(!crate::player::pump::seek_reloads(SeekMode::NativeSeek));
+    }
+
+    /// A webOS 3 playback whose `Seek` was refused stays on the reload path across the reload's
+    /// fresh session, as a webOS 5+ one does (`pump`'s refused-Seek test); a fresh play clears it.
+    #[test]
+    fn a_refused_seek_on_webos3_keeps_the_playback_on_reload() {
+        let _serial = plx_base::testlock::serial();
+        let webos3 = || session_seek_mode(inplace_layout_known(3, true), old_abi_seek_tested(3), crate::player::VP_ACB, None);
+        crate::player::set_native_seek_refused(true);
+        assert_eq!(webos3(), SeekMode::Reload, "the downgrade survives reload_at");
+        crate::player::set_native_seek_refused(false);
+        assert_eq!(webos3(), SeekMode::NativeSeek, "a fresh play offers Seek again");
     }
 
     /// A speed is applied only to a freshly loaded pipeline, so a seek that carries a speed

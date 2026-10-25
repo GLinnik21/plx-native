@@ -253,10 +253,13 @@ pub const ABR_WHY_SWITCH_COST: u8 = 14;
 ///   (`_ZN17StarfishMediaAPIs4SeekEPKc`, present on every firmware 1.2 to 11.2): a flushing
 ///   `gst_element_seek` whose segment starts at the millis passed. No private offset, no
 ///   `flush()` (Seek flushes itself, and a `flush()` after it re-anchors the segment at 0 — the
-///   stale-segment stall), no decoder re-init. This is what `VP_EXPORTED` (webOS 5+) uses.
+///   stale-segment stall), no decoder re-init. This is what `VP_EXPORTED` (webOS 5+) uses, and
+///   a known webOS 3 release on the ACB plane, whose old-ABI library `Segment` cannot assume
+///   (`engine::old_abi_seek_tested`).
 /// - [`Reload`](SeekMode::Reload) — a full fresh Starfish `Load` per seek (`engine::reload_at`),
-///   built out of Load/Play alone and assuming no layout at all: the old-ABI (3.x) libraries, and
-///   the fallback both of the others drop to.
+///   built out of Load/Play alone and assuming no layout at all: the fallback both of the others
+///   drop to, and every layout-unknown library `NativeSeek` is not tested on (webOS 2, an old-ABI
+///   4.x build, an unknown release) or a set with no video plane.
 ///
 /// SCOPE: this is a **per-session mode, not a device-capability latch**, and
 /// `engine::start_bufferfeed` re-selects it for every new session. The one exception is a refused
@@ -4264,8 +4267,9 @@ mod native_failure_regressions {
 }
 
 /// The two halves of "the playbar jumps on a seek", reported on an LG C3 (webOS 23), where
-/// before #568 every seek was a reload. The guard still applies to `Reload` mode (old-ABI 3.x, a
-/// refused native `Seek`).
+/// before #568 every seek was a reload. The guard still applies to every reload-based seek: `Reload`
+/// mode (a refused native `Seek`, `sendSegment=0`, an untested old-ABI release), a stuck in-place
+/// seek's reload, and every seek at a speed other than 1x.
 #[cfg(test)]
 mod seek_hud_regressions {
     use super::*;
