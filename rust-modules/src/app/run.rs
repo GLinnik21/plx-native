@@ -1674,6 +1674,13 @@ fn claim_press_after_decoder_release(app: &mut App, press: WakePress) -> bool {
     }
     app.decoder_parked = false;
     let input = wake_input(press, app.player.lifecycle.claimable_clock());
+    claim_parked_foreground(app, input);
+    true
+}
+
+/// Claim the parked session's foreground Load with `input` and, when it launches, mount the
+/// player ([`finish_foreground_launch`]). `true` when the Load launched.
+fn claim_parked_foreground(app: &mut App, input: ForegroundInput) -> bool {
     let activation = drive_foreground(
         &mut app.player.lifecycle,
         &mut app.player.session,
@@ -1683,11 +1690,12 @@ fn claim_press_after_decoder_release(app: &mut App, press: WakePress) -> bool {
             repause_at: &mut app.repause_at,
         },
     );
-    if matches!(activation, ForegroundActivation::Launched) {
+    let launched = matches!(activation, ForegroundActivation::Launched);
+    if launched {
         finish_foreground_launch(app);
     }
     plx_machine::idle::invalidate();
-    true
+    launched
 }
 
 /// How many times a refused foreground Load is claimed again as the plaintext grants return.
@@ -1704,7 +1712,8 @@ fn retry_refused_foreground(app: &mut App) {
     let Some((seen, left)) = app.foreground_retry else {
         return;
     };
-    if !app.player.lifecycle.awaiting_load() || app.player.lifecycle.claimable_clock().is_none() {
+    // Nothing parked for a claim to restore any more: it launched, ended or was superseded.
+    if app.player.lifecycle.claimable_clock().is_none() {
         app.foreground_retry = None;
         return;
     }
@@ -1712,22 +1721,10 @@ fn retry_refused_foreground(app: &mut App) {
     if now == seen || app.pages.surface_up() {
         return;
     }
-    app.foreground_retry = left.checked_sub(1).filter(|l| *l > 0).map(|l| (now, l));
-    let input = wake_input(WakePress::Wake, app.player.lifecycle.claimable_clock());
-    let activation = drive_foreground(
-        &mut app.player.lifecycle,
-        &mut app.player.session,
-        input,
-        &mut PlayerForegroundActuator {
-            pa: &mut app.adapters.player,
-            repause_at: &mut app.repause_at,
-        },
-    );
-    if matches!(activation, ForegroundActivation::Launched) {
+    app.foreground_retry = (left > 1).then_some((now, left - 1));
+    if claim_parked_foreground(app, ForegroundInput::DidForeground) {
         app.foreground_retry = None;
-        finish_foreground_launch(app);
     }
-    plx_machine::idle::invalidate();
 }
 
 /// The warm-launch DID composes its two children in order: the launch link sees the arrival
@@ -2654,10 +2651,12 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         }
         // …and the covered pages' own re-read, once each cover episode (`app/reread.rs`).
         super::reread::run(&mut app.reread, &mut app.pages, &mut app.bridge);
+        // A foreground Load the DID edge's withdrawn grants refused is claimed again once they
+        // return (`retry_refused_foreground`).
+        retry_refused_foreground(app);
         // A server on a plaintext grant keeps trying HTTPS (`plex::grant::UpgradeRetry`): its
         // endpoint re-discovery races every HTTPS route first and retires the grant when one
         // verifies. Route-unconditional — the upgrade is owed whatever is on screen.
-        retry_refused_foreground(app);
         let upgrades = app.plaintext_upgrade.due(fr.now);
         super::bridge::execute_endpoint_outcomes(&mut app.pages, upgrades);
         app.bridge.person_pump();
