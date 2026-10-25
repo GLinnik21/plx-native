@@ -254,10 +254,13 @@ pub const ABR_WHY_SWITCH_COST: u8 = 14;
 ///   (`_ZN17StarfishMediaAPIs4SeekEPKc`, present on every firmware 1.2 to 11.2): a flushing
 ///   `gst_element_seek` whose segment starts at the millis passed. No private offset, no
 ///   `flush()` (Seek flushes itself, and a `flush()` after it re-anchors the segment at 0 — the
-///   stale-segment stall), no decoder re-init. This is what `VP_EXPORTED` (webOS 5+) uses.
+///   stale-segment stall), no decoder re-init. This is what `VP_EXPORTED` (webOS 5+) uses, and
+///   a known webOS 3 release on the ACB plane, whose old-ABI library `Segment` cannot assume
+///   (`engine::old_abi_seek_tested`).
 /// - [`Reload`](SeekMode::Reload) — a full fresh Starfish `Load` per seek (`engine::reload_at`),
-///   built out of Load/Play alone and assuming no layout at all: the old-ABI (3.x) libraries, and
-///   the fallback both of the others drop to.
+///   built out of Load/Play alone and assuming no layout at all: the fallback both of the others
+///   drop to, and every layout-unknown library `NativeSeek` is not tested on (webOS 2, an old-ABI
+///   4.x build, an unknown release) or a set with no video plane.
 ///
 /// SCOPE: this is a **per-session mode, not a device-capability latch**, and
 /// `engine::start_bufferfeed` re-selects it for every new session. The one exception is a refused
@@ -768,6 +771,7 @@ pub fn state(ps: &crate::route::PlaybackSession) -> shared::PlaybackState {
         || ps.native_start_refused
         || crate::route::play_refused(ps)
         || crate::route::play_resolution_failed(ps)
+        || crate::route::engine_failure(ps).is_some()
     {
         return shared::PlaybackState::Error;
     }
@@ -1055,7 +1059,7 @@ pub struct ErrorShape {
 /// variant is backed by a distinct signal the worker already publishes, so the HUD never parses
 /// log strings or guesses from elapsed time.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum RuntimeFailure {
+pub(crate) enum RuntimeFailure {
     /// No worker supplied a cause. Say that honestly rather than leaving the reason slot blank.
     Unknown,
     /// The producer never opened a usable media stream or produced a video access unit.
@@ -1093,6 +1097,18 @@ fn runtime_failure(
     } else {
         RuntimeFailure::Unknown
     }
+}
+
+/// The cause the worker signals publish right now: what [`error_now`] reads while an Engine is up,
+/// and what a failed Engine freezes into the session as it is released.
+fn live_runtime_failure(ps: &crate::route::PlaybackSession) -> RuntimeFailure {
+    runtime_failure(
+        SHARED.demux_failed.load(std::sync::atomic::Ordering::Acquire),
+        SHARED.demux_io_failed.load(std::sync::atomic::Ordering::Acquire),
+        SHARED.load_failed.load(Relaxed),
+        // The refused start's cause: an abandoned Load exists only after the budget fired.
+        SHARED.load_timed_out.load(Relaxed) || ps.native_start_refused,
+    )
 }
 
 /// The read-out for [`FailureKind::JailMissingRtkmem`] — the one `ErrorShape` not produced by
@@ -1274,24 +1290,13 @@ pub fn error_now(ps: &crate::route::PlaybackSession) -> ErrorShape {
     if ps.jail_load_blocked {
         return jail_error_shape();
     }
-    let demux_failed = SHARED
-        .demux_failed
-        .load(std::sync::atomic::Ordering::Acquire);
-    let demux_io_failed = SHARED
-        .demux_io_failed
-        .load(std::sync::atomic::Ordering::Acquire);
     with_forced_playback_context(error_shape(
         SHARED.demux_no_video.load(Relaxed),
         crate::route::is_transcoding(ps),
         playing_subscription(&ps),
         crate::route::play_verdict(ps).as_deref(),
-        runtime_failure(
-            demux_failed,
-            demux_io_failed,
-            SHARED.load_failed.load(Relaxed),
-            // The refused start's cause: an abandoned Load exists only after the budget fired.
-            SHARED.load_timed_out.load(Relaxed) || ps.native_start_refused,
-        ),
+        // The cause a released Engine left behind, else the live worker signals.
+        crate::route::engine_failure(ps).unwrap_or_else(|| live_runtime_failure(ps)),
     ), crate::route::forced_direct_play(ps))
 }
 
@@ -4333,8 +4338,9 @@ mod native_failure_regressions {
 }
 
 /// The two halves of "the playbar jumps on a seek", reported on an LG C3 (webOS 23), where
-/// before #568 every seek was a reload. The guard still applies to `Reload` mode (old-ABI 3.x, a
-/// refused native `Seek`).
+/// before #568 every seek was a reload. The guard still applies to every reload-based seek: `Reload`
+/// mode (a refused native `Seek`, `sendSegment=0`, an untested old-ABI release), a stuck in-place
+/// seek's reload, and every seek at a speed other than 1x.
 #[cfg(test)]
 mod seek_hud_regressions {
     use super::*;

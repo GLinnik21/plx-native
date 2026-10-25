@@ -1063,8 +1063,19 @@ fn app_pcm_for_rate(
     if session_rate == super::RATE_NORMAL { pcm } else { None }
 }
 
+/// `hz` as the kilohertz number `pcmInfo.sampleRate` is matched as: `48`, `44.1`, `22.05`. libpf
+/// reads the key with getFloat and looks it up in a kilohertz table; a rate in hertz matches
+/// nothing and plays at the 44.1 kHz fallback. Declared as `48000`, a 1 kHz tone in a 48 kHz FLAC
+/// was recorded from the room at 918.8 Hz on webOS 4.4.3 (OLED55B8), a 32 kHz one at 1378 Hz and
+/// a 22.05 kHz one at about 2006 Hz: each is 1000 x 44100 / the file's rate.
+/// PURE.
+fn pcm_rate_khz(hz: u32) -> String {
+    (f64::from(hz) / 1000.0).to_string()
+}
+
 /// The `contents.pcmInfo` node a PCM Load needs — the only way the pipeline learns the raw
 /// stream's shape (libpf reads `pcmInfo.{format,channelMode,layout,sampleRate,bitsPerSample}`).
+/// `sampleRate` is in kilohertz ([`pcm_rate_khz`]), the unit the speed decoder's node uses too.
 /// PURE, spliced at the `provider` anchor like [`with_immersive`].
 fn with_pcm_info(p: &str, audio: &str, pcm: Option<crate::route::PcmFormat>) -> String {
     let (Some(f), "PCM") = (pcm, audio) else {
@@ -1077,7 +1088,8 @@ fn with_pcm_info(p: &str, audio: &str, pcm: Option<crate::route::PcmFormat>) -> 
         anchor,
         &format!(
             r#"{anchor},"pcmInfo":{{"format":"{format}","channelMode":"{mode}","layout":"interleaved","sampleRate":{},"bitsPerSample":{}}}"#,
-            f.sample_rate, f.bits
+            pcm_rate_khz(f.sample_rate),
+            f.bits
         ),
     )
 }
@@ -1107,9 +1119,10 @@ fn build_av_payload_at(
         // with getFloat and matches it against a KILOHERTZ table (48, 44.1, 32, …): `48000`
         // matches nothing and silently falls back to 44.1, which plays 48 kHz audio 9% slow and
         // resyncs every few seconds (measured 2026-10-15). `channelMode` is one of
-        // mono/dual/stereo/joint stereo. So THIS node's rate is in kHz; the FLAC node
-        // `with_pcm_info` splices below states Hz (44100/48000) — whether the 3.9.3/4.5 firmware
-        // reads that unit correctly has not been checked on a set.
+        // mono/dual/stereo/joint stereo. So this node's rate is in kHz, and so is the FLAC node
+        // `with_pcm_info` splices below (it declared hertz first: on a C1, webOS 6.5.3, every PCM
+        // Load then ran at 44.1 kHz — GStreamer caps `rate=44100` — so a 48 kHz FLAC was 9% slow
+        // and 32/22.05 kHz stuttered; an OLED55B8, webOS 4.4.3, did the same).
         .replace(r#""esInfo":"#, if audio == "PCM" && app_pcm.is_none() {
             r#""pcmInfo":{"bitsPerSample":16,"sampleRate":48,"channelMode":"stereo"},"esInfo":"#
         } else {
@@ -1151,7 +1164,7 @@ fn build_av_payload_at(
         ));
     }
     let p = with_dolby_hdr_info(&p, video, crate::route::stream_dv_presentation(ps));
-    // The app-decoded (FLAC, 1x) node: sampleRate in HERTZ and a format name. The speed decoder's
+    // The app-decoded (FLAC, 1x) node: sampleRate in kHz and a format name. The speed decoder's
     // fixed node above is the only other `pcmInfo` a Load can carry, and never together with this.
     let p = with_pcm_info(&p, audio, app_pcm);
     with_immersive(&p, audio, crate::route::stream_immersive(ps))
@@ -1973,12 +1986,11 @@ fn start_bufferfeed_inner(
     // about the TV, so it is re-selected here for every session. Placed HERE rather than at the
     // top of this function on purpose: the `engine_is_live` no-op return above must NOT re-select,
     // or a stray PLAY landing mid-session would cancel a downgrade that is still needed.
-    let layout_known = inplace_layout_known(
-        plx_platform::tv::device::info().major,
-        sink().feed_abi_is_cow(),
-    );
-    let mode = session_seek_mode(layout_known, sink().window_mode(), dev_seek_mode());
-    log(&format!("seek mode: {mode:?} (layout_known={layout_known})"));
+    let major = plx_platform::tv::device::info().major;
+    let layout_known = inplace_layout_known(major, sink().feed_abi_is_cow());
+    let old_abi_seek = old_abi_seek_tested(major);
+    let mode = session_seek_mode(layout_known, old_abi_seek, sink().window_mode(), dev_seek_mode());
+    log(&format!("seek mode: {mode:?} (layout_known={layout_known} old_abi_seek={old_abi_seek})"));
     super::set_seek_mode(mode);
     pa.install(eng);
     native_start.commit();
@@ -2316,6 +2328,57 @@ pub fn suspend_bufferfeed(ps: &mut crate::route::PlaybackSession, pa: &mut super
     teardown(ps, pa, true);
 }
 
+/// Set where the pump ends an Engine for good under the failure read-out; spent by
+/// [`release_failed_engine`] or by any teardown.
+static FAILED_ENGINE_RELEASE_ARMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The pump just failed the Engine for good ([`crate::route::fail_current_engine`] and the Error
+/// state): release it next frame. Armed, not done here, because the pump still holds the Engine.
+pub(super) fn arm_failed_engine_release() {
+    FAILED_ENGINE_RELEASE_ARMED.store(true, Ordering::Release);
+}
+
+/// **A terminal playback error lets go of the pipeline.** The failure read-out stands on the
+/// session, but an Engine left loaded behind it keeps the native pipeline and the video plane,
+/// which the television reads as playback still going: its screensaver never starts.
+///
+/// Releases them the frame after the Engine failed, the same teardown an app switch uses
+/// ([`suspend_bufferfeed`]: the session, URL and transcode session stay, nothing is reported as
+/// stopped). What the read-out and its actions need survives it, in the session: the cause
+/// ([`crate::route::note_engine_failure`], so `state()` and `error_now` still answer) and the
+/// playhead a retry resumes from (the unpresented-resume slot `retry_failed_playback` reads).
+/// Try again, Play automatically and a quality pick start a new playback from scratch, and Back
+/// ends the session with a real stop, so none of them needs the loaded pipeline.
+/// Returns whether an Engine was released.
+pub fn release_failed_engine(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) -> bool {
+    if !FAILED_ENGINE_RELEASE_ARMED.load(Ordering::Acquire) {
+        return false;
+    }
+    // Armed by an Engine that has since been replaced (an automatic retry started a new playback
+    // in the same frame): not this Engine's end, and nothing left to release.
+    if !pa.is_live() {
+        FAILED_ENGINE_RELEASE_ARMED.store(false, Ordering::Release);
+        return false;
+    }
+    // Not this Engine's end: a preview, one a recovery is still flying for, or one that never put
+    // a picture up (a Load that failed, an open that never produced a frame) and so holds nothing
+    // the television mistakes for playback.
+    if crate::route::is_preview(ps)
+        || SHARED.pb_state.load(Ordering::Relaxed) != super::shared::PlaybackState::Error as u8
+        || SHARED.frames.load(Ordering::Relaxed) == 0
+        || crate::route::recovery_flight_outstanding()
+        || crate::route::engineless_flight_outstanding()
+    {
+        return false;
+    }
+    FAILED_ENGINE_RELEASE_ARMED.store(false, Ordering::Release);
+    let cause = super::live_runtime_failure(ps);
+    crate::route::note_engine_failure(ps, cause, super::intended_pos_ns(ps));
+    log("player: the failed Engine's pipeline is released under the failure read-out");
+    teardown(ps, pa, true);
+    true
+}
+
 /// Retire a failed foreground Engine only if it still owns the exact Load the foreground reducer
 /// observed. A later route action may have replaced it between `player::pump` and the app poll;
 /// tearing down unconditionally there would destroy the healthy replacement.
@@ -2337,6 +2400,7 @@ pub fn suspend_bufferfeed_if_attempt(
 /// stop: preserve the playback session so start_bufferfeed can restart the SAME item — skip
 /// the "stopped" timeline scrobble, the server transcode stop, and the URL clear.
 fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, for_reload: bool) {
+    FAILED_ENGINE_RELEASE_ARMED.store(false, Ordering::Release);
     // A prepared route whose native start failed has no Engine but still owns its exact PMS
     // resource and Session projection. A real stop must retire that ownership exactly once;
     // returning here used to leak the candidate forever while the reducer remained Failed.
@@ -2349,7 +2413,18 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
             crate::route::begin_engine_teardown(true);
         }
         if !for_reload {
-            crate::route::scrobble_stop(ps, None, None);
+            // A real stop under the failure read-out whose Engine was released
+            // ([`release_failed_engine`]) ends the playback the Engine would have ended: the
+            // position it stopped at is the one the server keeps.
+            let mut final_report = None;
+            if crate::route::engine_failure(ps).is_some() {
+                let dur = SHARED.duration_ns.load(Ordering::Relaxed);
+                let pos = crate::route::unpresented_resume_ns(ps);
+                crate::player::report::ended(ps, pos, dur);
+                let rk = crate::route::cur_rk(ps);
+                final_report = (!rk.is_empty() && dur > 0).then(|| (rk, pos / 1_000_000, dur / 1_000_000));
+            }
+            crate::route::scrobble_stop(ps, final_report, None);
             crate::route::begin_engine_teardown(false);
             crate::route::drop_original_recovery(ps);
             crate::route::clear_url(ps);
@@ -2540,7 +2615,7 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     // reload has no transcode session anyway, so the skip only matters for the URL).
     // The DURATION is a fact about the FILE, and a reload plays the same file: keep it across
     // the reset so the playbar has a denominator while the demuxer reopens. Without this every
-    // reload-based seek (old-ABI 3.x, a refused native Seek, a transcode seek) drew
+    // reload-based seek (a refused native Seek, a speed seek, a transcode seek) drew
     // the playhead at position ÷ 0, i.e. the far left, for the few hundred ms until `ff.rs`
     // re-published it, while the clock beside it (position alone, seeded by `arm_seek`) read
     // correctly. Reported on an LG C3 (webOS 23). A real stop still zeroes it: the next item is
@@ -3560,11 +3635,26 @@ fn inplace_layout_known(major: u32, feed_abi_is_cow: bool) -> bool {
     !feed_abi_is_cow && (major == 0 || major >= 4)
 }
 
+/// **Is LG's public `Seek` device-tested where the private layout is not known?** Only on a KNOWN
+/// webOS 3 release: 80 seeks on platform release 3.9.3 (`docs/webos5-port.md`, "The public
+/// `Seek`"). It reads the release alone, not the Feed ABI: every 3.x library seen has the old
+/// (COW) one, and a release-3 set with the cxx11 Feed would get `Seek` too. webOS 2, an old-ABI
+/// 4.x build and an unknown release (`major == 0`) keep reloading, because an accepted `Seek` that
+/// anchors wrong is caught by no net ([`select_seek_mode`]).
+fn old_abi_seek_tested(major: u32) -> bool {
+    major == 3
+}
+
 /// [`select_seek_mode`] for a session that is starting: a `NativeSeek` this playback already had
 /// REFUSED stays `Reload` (the latch `feed_stream` sets, which `reload_at` preserves and a fresh
 /// play clears), instead of paying reopen + keyframe + refused `Seek` + full `Load` on every seek.
-pub(super) fn session_seek_mode(layout_known: bool, window_mode: c_int, dev: Option<SeekMode>) -> SeekMode {
-    match select_seek_mode(layout_known, window_mode, dev) {
+pub(super) fn session_seek_mode(
+    layout_known: bool,
+    old_abi_seek: bool,
+    window_mode: c_int,
+    dev: Option<SeekMode>,
+) -> SeekMode {
+    match select_seek_mode(layout_known, old_abi_seek, window_mode, dev) {
         SeekMode::NativeSeek if super::native_seek_refused() => SeekMode::Reload,
         mode => mode,
     }
@@ -3581,16 +3671,31 @@ pub(super) fn session_seek_mode(layout_known: bool, window_mode: c_int, dev: Opt
 ///   seek dereferences whatever now lives there. `Seek` is an exported symbol, present on every
 ///   firmware 1.2 to 11.2, so it assumes no layout at all.
 /// - A known layout without `VP_EXPORTED` (webOS 4.x) -> [`SeekMode::Segment`], unchanged.
-/// - NOR when the library is the pre-C++11 build (`inplace_layout_known` false): its
+/// - NOT `Segment` when the library is the pre-C++11 build (`inplace_layout_known` false): its
 ///   StarfishMediaAPIs is a different object from the 4.5 one, and the first fast-forward on a
 ///   3.4.0 set crashed through those offsets. The old-ABI Feed (`sf_feed_abi_is_cow`) is the
-///   direct evidence, and it covers 3.9.x too. That COW Feed ABI is also unverified for `Seek`, so
-///   this is [`SeekMode::Reload`], as before. A KNOWN release below 4 is refused as well; an
+///   direct evidence, and it covers 3.9.x too. A KNOWN release below 4 is refused as well; an
 ///   UNKNOWN one (`major == 0`, os_info unreadable) with the C++11 Feed keeps in-place seek, as
 ///   before #578, because that Feed says the library is 4.x or later.
+/// - A layout-unknown library on the ACB plane in a KNOWN webOS 3 release
+///   ([`old_abi_seek_tested`]) -> [`SeekMode::NativeSeek`] too. `Seek` takes a `const char*`, so
+///   its symbol and calling convention are the same on both C++ ABIs; that it also behaves the
+///   same rests on the device test in `docs/webos5-port.md` ("The public `Seek`"), not on the
+///   decompile, which is of 4.5.
+///   The nets are the ones webOS 5+ has: a refused `Seek` drops the playback to `Reload`
+///   (`native_seek_refused`), and a seek that does not anchor within `SEEK_STUCK_MS` is retried,
+///   then reloaded. Neither catches a `Seek` that is accepted and then anchors wrong (the
+///   stale-segment stall, about 48 s later), which is why the release is gated to the one tested.
+/// - Any other layout-unknown library (webOS 2, an old-ABI 4.x build, an unknown release) and no
+///   video plane (`VP_NONE`) -> [`SeekMode::Reload`], as before.
 /// `dev` is the `plxnative-seekmode` dev trigger and wins when present, so a webOS 4.5 set can
 /// exercise `NativeSeek`.
-pub(super) fn select_seek_mode(layout_known: bool, window_mode: c_int, dev: Option<SeekMode>) -> SeekMode {
+pub(super) fn select_seek_mode(
+    layout_known: bool,
+    old_abi_seek: bool,
+    window_mode: c_int,
+    dev: Option<SeekMode>,
+) -> SeekMode {
     if let Some(forced) = dev {
         return forced;
     }
@@ -3598,6 +3703,8 @@ pub(super) fn select_seek_mode(layout_known: bool, window_mode: c_int, dev: Opti
         SeekMode::NativeSeek
     } else if layout_known {
         SeekMode::Segment
+    } else if old_abi_seek && window_mode == super::VP_ACB {
+        SeekMode::NativeSeek
     } else {
         SeekMode::Reload
     }
@@ -6490,11 +6597,26 @@ mod pcm_info_tests {
     fn a_pcm_load_states_the_shape_the_decoder_produces() {
         let f = PcmFormat { sample_rate: 48_000, bits: 16, channels: 2 };
         let p = with_pcm_info(BASE, "PCM", Some(f));
-        assert!(p.contains(r#""pcmInfo":{"format":"S16LE","channelMode":"stereo","layout":"interleaved","sampleRate":48000,"bitsPerSample":16}"#), "{p}");
+        assert!(p.contains(r#""pcmInfo":{"format":"S16LE","channelMode":"stereo","layout":"interleaved","sampleRate":48,"bitsPerSample":16}"#), "{p}");
         let wide = with_pcm_info(BASE, "PCM", Some(PcmFormat { sample_rate: 96_000, bits: 32, channels: 1 }));
         assert!(wide.contains(r#""format":"S32LE","channelMode":"mono""#) && wide.contains(r#""bitsPerSample":32"#), "{wide}");
         // the payload stays parseable JSON
         serde_json::from_str::<serde_json::Value>(&p).unwrap();
+    }
+
+    /// Every rate the PCM path admits is declared in kilohertz, the unit libpf's table is in. In
+    /// hertz each of them played at the 44.1 kHz fallback on the B8, with no error anywhere.
+    #[test]
+    fn the_sample_rate_is_declared_in_kilohertz() {
+        let want = ["8", "12", "16", "22.05", "24", "32", "44.1", "48"];
+        for (hz, khz) in plx_platform::devcaps::PCM_SAMPLE_RATES.into_iter().zip(want) {
+            assert_eq!(pcm_rate_khz(hz), khz);
+            let p = with_pcm_info(BASE, "PCM", Some(PcmFormat { sample_rate: hz, bits: 16, channels: 2 }));
+            let v: serde_json::Value = serde_json::from_str(&p).unwrap();
+            let declared = v["contents"]["pcmInfo"]["sampleRate"].as_f64().unwrap();
+            assert!((declared * 1000.0 - f64::from(hz)).abs() < 1e-6, "{hz}: {p}");
+        }
+        assert_eq!(pcm_rate_khz(11_025), "11.025");
     }
 
     #[test]
@@ -6791,7 +6913,7 @@ mod sink_envelope_tests {
         let p = build_av_payload_at(&flac_session(), "H264", "PCM", ENVELOPE_FHD60, crate::player::RATE_NORMAL);
         assert_eq!(p.matches("pcmInfo").count(), 1, "{p}");
         assert!(
-            p.contains(r#""pcmInfo":{"format":"S16LE","channelMode":"stereo","layout":"interleaved","sampleRate":44100,"bitsPerSample":16}"#),
+            p.contains(r#""pcmInfo":{"format":"S16LE","channelMode":"stereo","layout":"interleaved","sampleRate":44.1,"bitsPerSample":16}"#),
             "{p}"
         );
         assert!(!p.contains(r#""sampleRate":48,"#), "the speed decoder's node must be absent: {p}");
@@ -7215,13 +7337,19 @@ mod native_seek_tests {
         feed_both_lanes(&mt, eng);
     }
 
+    /// The mode a set on release `major` (old-ABI Feed when `cow`) gets from a window of kind
+    /// `window_mode`, composed from the same facts `start_bufferfeed_inner` composes.
+    fn mode_for(major: u32, cow: bool, window_mode: c_int) -> SeekMode {
+        select_seek_mode(inplace_layout_known(major, cow), old_abi_seek_tested(major), window_mode, None)
+    }
+
     #[test]
     fn a_webos5_session_seeks_natively_and_never_reloads() {
         let _serial = plx_base::testlock::serial();
         let _restore = arm(None);
         let sink_mode = sink().window_mode();
         assert_eq!(sink_mode, crate::player::VP_EXPORTED, "PRECONDITION: the armed host sink is the webOS 5+ one");
-        let mode = select_seek_mode(inplace_layout_known(5, false), sink_mode, None);
+        let mode = mode_for(5, false, sink_mode);
         assert_eq!(mode, SeekMode::NativeSeek, "VP_EXPORTED selects LG's public Seek");
         assert!(
             !crate::player::pump::seek_reloads(mode),
@@ -7230,14 +7358,31 @@ mod native_seek_tests {
     }
 
     #[test]
-    fn the_other_firmwares_keep_their_modes() {
-        assert_eq!(select_seek_mode(true, crate::player::VP_ACB, None), SeekMode::Segment, "webOS 4.x is unchanged");
-        assert_eq!(select_seek_mode(false, crate::player::VP_ACB, None), SeekMode::Reload, "the old ABI reloads, as before");
-        assert_eq!(select_seek_mode(false, crate::player::VP_NONE, None), SeekMode::Reload);
-        assert_eq!(select_seek_mode(true, crate::player::VP_ACB, Some(SeekMode::NativeSeek)), SeekMode::NativeSeek, "the dev trigger wins");
+    fn each_firmware_gets_its_seek_mode() {
+        use crate::player::{VP_ACB, VP_EXPORTED, VP_NONE};
+        assert_eq!(mode_for(4, false, VP_ACB), SeekMode::Segment, "webOS 4.x is unchanged");
+        assert_eq!(mode_for(5, false, VP_EXPORTED), SeekMode::NativeSeek, "webOS 5+ is unchanged");
+        assert_eq!(mode_for(3, true, VP_ACB), SeekMode::NativeSeek, "webOS 3 (a 3.9.3 set: COW Feed) uses LG's public Seek");
+        assert_eq!(mode_for(2, true, VP_ACB), SeekMode::Reload, "webOS 2 is untested and reloads, as before");
+        assert_eq!(mode_for(4, true, VP_ACB), SeekMode::Reload, "an old-ABI 4.x build is untested and reloads");
+        assert_eq!(mode_for(0, true, VP_ACB), SeekMode::Reload, "an unknown release with the old ABI reloads");
+        assert_eq!(mode_for(3, true, VP_NONE), SeekMode::Reload, "no video plane, nothing to seek in place");
+        assert_eq!(select_seek_mode(true, false, VP_ACB, Some(SeekMode::NativeSeek)), SeekMode::NativeSeek, "the dev trigger wins");
         assert!(crate::player::pump::seek_reloads(SeekMode::Reload));
         assert!(!crate::player::pump::seek_reloads(SeekMode::Segment));
         assert!(!crate::player::pump::seek_reloads(SeekMode::NativeSeek));
+    }
+
+    /// A webOS 3 playback whose `Seek` was refused stays on the reload path across the reload's
+    /// fresh session, as a webOS 5+ one does (`pump`'s refused-Seek test); a fresh play clears it.
+    #[test]
+    fn a_refused_seek_on_webos3_keeps_the_playback_on_reload() {
+        let _serial = plx_base::testlock::serial();
+        let webos3 = || session_seek_mode(inplace_layout_known(3, true), old_abi_seek_tested(3), crate::player::VP_ACB, None);
+        crate::player::set_native_seek_refused(true);
+        assert_eq!(webos3(), SeekMode::Reload, "the downgrade survives reload_at");
+        crate::player::set_native_seek_refused(false);
+        assert_eq!(webos3(), SeekMode::NativeSeek, "a fresh play offers Seek again");
     }
 
     /// A speed is applied only to a freshly loaded pipeline, so a seek that carries a speed

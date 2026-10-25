@@ -985,7 +985,7 @@ fn auto_and_forced_agree_on_the_dca_spelling() {
 }
 
 /// FLAC is decoded by the app and fed to LG's PCM input, whose limits are its own: two channels,
-/// and only the rates it plays at their own speed. Forced trusts a hardware decoder past its table,
+/// and only the rates its table names. Forced trusts a hardware decoder past its table,
 /// but not these, so on the B8 a 5.1 FLAC (the Load was refused after PMS had direct-played it)
 /// and a 96 kHz FLAC (played audibly slow) are refused before anything starts, in both modes.
 #[test]
