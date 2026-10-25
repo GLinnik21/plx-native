@@ -10,7 +10,7 @@
     "sha": "13b6d88dc"
    },
    "last_seen": "2026-10-24T12:52:27Z",
-   "new": true,
+   "new": false,
    "status": "Active",
    "test": "plx_media::ff::body_heal_tests::an_unsized_body_is_not_given_the_silence_deadline"
   },
@@ -29,7 +29,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-25T12:51:08Z",
+ "generated": "2026-10-25T12:53:23Z",
  "metrics": [
   {
    "change30_pct": null,
