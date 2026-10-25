@@ -66,10 +66,10 @@ impl Fixture {
         fixture
     }
     fn rebuild(&mut self) {
-        self.stores.browse_run(BrowseCmd::Reset);
+        self.stores.browse_run_for_test(BrowseCmd::Reset);
         self.stores.browse.borrow_mut().seed_registered_table_for_test(self.sids);
         self.stores.capture_browse(&mut self.directory);
-        self.stores.browse_run(BrowseCmd::SetCur(0));
+        self.stores.browse_run_for_test(BrowseCmd::SetCur(0));
         self.stores.browse.borrow_mut().seed_items_for_test(12);
         self.capture();
         assert_eq!(self.directory.view().current(), Some(0));
@@ -153,7 +153,7 @@ fn apply(
     out.into_iter()
         .filter_map(|effect| match effect.fx {
             Fx::App(AppFx::Store(_, StoreCmd::Browse(command))) => {
-                Some(stores.browse_run(command))
+                Some(stores.browse_run_for_test(command))
             }
             Fx::App(AppFx::Store(_, StoreCmd::Hubs(command))) => {
                 Some(stores.hubs.run_with_directory(command, directory, &plx_data::pms::registry_keys_for_test()).changed)
@@ -168,7 +168,7 @@ fn apply(
                 Some(stores.search_run(command, directory))
             }
             Fx::App(AppFx::Store(_, StoreCmd::ViewState(command))) => {
-                Some(stores.viewstate_run(command, directory, &plx_data::pms::registry_keys_for_test()).changed)
+                Some(stores.viewstate_run(command, directory, &plx_data::pms::registry_keys_for_test(), 0).changed)
             }
             _ => None,
         })
@@ -270,7 +270,7 @@ fn a_target_that_moves_after_the_press_is_refused_at_the_store_drain() {
             edit: QueryEdit::Unwatched(true),
         }),
     );
-    fixture.stores.browse_run(BrowseCmd::SetCur(2));
+    fixture.stores.browse_run_for_test(BrowseCmd::SetCur(2));
     fixture.stores.browse.borrow_mut().seed_items_for_test(12);
     fixture.capture();
     assert_eq!(fixture.directory.view().current(), Some(2));

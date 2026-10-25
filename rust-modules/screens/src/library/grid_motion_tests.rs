@@ -117,7 +117,7 @@ fn a_section_switch_settles(items: usize, restore: Option<f32>) -> LibraryScreen
     settle(&mut page, &mut engine, &fixture, 0);
 
     let stores = fixture.stores.take().unwrap();
-    stores.browse_run(BrowseCmd::SetCur(1));
+    stores.browse_run_for_test(BrowseCmd::SetCur(1));
     let publish = |fixture: &mut Fixture, grid: bool| {
         if grid { stores.browse.borrow_mut().seed_items_for_test(items); }
         let publication = stores.capture_browse(&mut fixture.directory);

@@ -693,7 +693,8 @@ tried first. None of it is reconstructable from the code without repeating the m
   whole-screen wash, and deliberately NOT the per-rect `fs_src`/`fs_shadow`, which carried it for
   two days and cost the hero paging scene 57→50 fps for a branch that answered "no" on every draw.
   `gfx::dither_for_field` is an AREA test only: a field dithers whenever it is drawn, moving or
-  not, and every page wash dithers on every frame.
+  not, and every page wash with a gradient dithers on every frame (a wash of one colour has
+  nothing to band and is drawn as a clear of its box).
 
 ## Card marks — three marks, three meanings, and no card may blur them
 

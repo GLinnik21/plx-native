@@ -278,8 +278,8 @@ pub(crate) unsafe fn run(app: &mut App) {
         // term, which decides whether the frozen snapshot under a FADING panel is taken again,
         // and which could not see an owned page move. (It fed `gfx::page_wash_dither` too until
         // 2026-09-19; a page-wide verdict turned out to be the wrong question for a wash, since
-        // the wash's own dissolve is in it, and the function itself is gone now — every wash
-        // dithers on every frame.)
+        // the wash's own dissolve is in it, and the function itself is gone now — every gradient
+        // wash dithers on every frame.)
         fr.underlay_moving |= tree_report.underlay_moving;
         if was_player && super::bridge::player(&app.pages).is_none() { restore_played_entry(app); }
         content_requests(app, fr);
@@ -2730,7 +2730,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // `Bridge::clear_opaque_region` performs it, keyed on the plane's bit
                         // rather than on this route test. Calling it in both places would send the
                         // same wayland request twice per frame for the whole of a playback.
-                        glClearColor(0.0, 0.0, 0.0, 0.0);
+                        plx_gfx::gfx::set_clear_color(0.0, 0.0, 0.0, 0.0);
                         // The frame's first framebuffer-0 command, where this driver parks the
                         // wait for a free back buffer: spanned like every other route's `clear`.
                         // dev (`/tmp/plxnative-framecb`): the frame thread's cost over the wait
@@ -7170,7 +7170,7 @@ mod lifecycle_regression_tests {
         // registered, so there is a copy to reach); only once ViewState has run it is "no second
         // scrobble" a statement about it and not about the moment before it started.
         poll_until("ViewState never went idle", || {
-            step(&mut rig.app, &mut t, vec![]);
+            step_and_run_jobs(&mut rig, &mut t); // the fan-out leaves as a job the held runner parks
             !rig.app.bridge.viewstate_busy_for_test()
         });
         assert_eq!(requests_matching(&rig, "/:/scrobble", 0), 0, "no second scrobble on the origin");
@@ -7179,7 +7179,9 @@ mod lifecycle_regression_tests {
     /// The Recommended page's rows ARE the server's hubs, and nothing else fetches them: a page
     /// mounted on `LibraryRecommended` (no shelf seeded by the test) must reach the server's
     /// `/hubs/sections/{id}`. The publish request it sends was once dropped because only the
-    /// full grid's route was let through.
+    /// full grid's route was let through. A test build parks the section hubs' read until the test
+    /// runs it off the frame (`StoreRunner::Held`), so each pass of the wait runs what the page's
+    /// step left parked, and the request it sends is the one the server counts.
     #[test]
     fn the_recommended_page_fetches_the_sections_hubs() {
         let _serial = plx_base::testlock::serial();
@@ -7194,6 +7196,7 @@ mod lifecycle_regression_tests {
         assert!(matches!(rig.app.route(), AppArg::LibraryRecommended { .. }), "premise: the Recommended page is on top");
         poll_until("the Recommended page never fetched the section's hubs", || {
             step(&mut rig.app, &mut t, vec![]);
+            rig.app.bridge.run_held_store_jobs_of_for_test(plx_data::stores::StoreId::Browse);
             requests_matching(&rig, "/hubs/sections/", 0) > 0
         });
     }

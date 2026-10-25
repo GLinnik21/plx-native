@@ -57,7 +57,7 @@ mod tests {
             &adapter, target, crate::stores::browse::LibraryWork::Commit {
                 select: false, choice: false,
                 query: Some(crate::stores::browse::QueryEdit::LibraryType(to)),
-            }));
+            }, &ClientKeys::default(), &mut Vec::new()));
         let current = &mut state.states[1];
         current.sorts = Arc::new(vec![
             SortEntry { desc_key: String::new(), key: "titleSort".into(), title: "Title".into(), default_desc: false },
@@ -113,7 +113,7 @@ mod tests {
         assert!(state.addressed_with_adapter(&adapter, target, crate::stores::browse::LibraryWork::Commit {
             select: false, choice: false,
             query: Some(crate::stores::browse::QueryEdit::LibraryType(LibraryType::Episodes)),
-        }));
+        }, &ClientKeys::default(), &mut Vec::new()));
         let listing = state.listing_snapshot();
         assert_eq!(listing.view().library_type(), LibraryType::Episodes);
         assert_eq!(old.view().library_type(), LibraryType::Primary, "retained publication stays immutable");
@@ -197,16 +197,17 @@ mod tests {
         browse.state.sections[0].kind = SecKind::Show;
         let captured_type = browse.state.states[0].library_type;
         assert!(browse.state.set_library_type(LibraryType::Episodes));
-        let mail = Mutex::new(Some(DirectoryResult {
+        let fetch = crate::stores::Fetch::default();
+        fetch.post(DirectoryResult {
             epoch: browse.state.table_epoch(), sec: 0, client, token_gen: client.token_gen(),
             library_type: captured_type, list: vec![("S".into(), 99)],
-        }));
-        let fetching = AtomicBool::new(true);
-        assert!(!browse.state.land_directory_owned(&fetching, &mail, |state, list| {
+        }, |_| true);
+        fetch.claim(0);
+        assert!(!browse.state.land_directory_owned(&fetch, |state, list| {
             state.letters = Arc::new(list);
             state.letters_done = true;
         }));
-        assert!(!fetching.load(Ordering::SeqCst));
+        assert!(!fetch.busy());
         assert!(browse.state.states[0].letters.is_empty());
         assert!(!browse.state.states[0].letters_done);
     }

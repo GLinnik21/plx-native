@@ -3,7 +3,7 @@
 //! main-thread state, worker adapter and notice while `crate::browse` retains the core
 //! implementation.
 
-use plx_plex::plex::ServerId;
+use plx_plex::plex::{ClientKeys, ServerId};
 use plx_machine::machine::{Cx, Effects, Handled, Machine};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -106,6 +106,10 @@ pub struct BrowseStore {
     notice_dirty: AtomicBool,
     /// Endpoint refreshes a pump had no room to emit in its step; the next pump sends them first.
     endpoint_carry: super::EndpointRefreshSet,
+    /// The reads this store's steps have asked for and nobody has started yet: a section's hubs
+    /// ([`super::StoreJob::BrowseHubs`]), a value list ([`super::StoreJob::BrowseDirectory`]) and a
+    /// listing page ([`super::StoreJob::BrowsePage`]); taken by [`BrowseStore::take_jobs`].
+    jobs: Vec<super::StoreJob>,
 }
 
 impl Default for BrowseStore {
@@ -116,6 +120,7 @@ impl Default for BrowseStore {
             notice_gen: AtomicU32::new(0),
             notice_dirty: AtomicBool::new(false),
             endpoint_carry: Default::default(),
+            jobs: Vec::new(),
         }
     }
 }
@@ -139,7 +144,24 @@ impl BrowseStore {
         self.notice_dirty.swap(false, Ordering::Relaxed).then(|| self.gen())
     }
 
-    pub fn run(&mut self, cmd: BrowseCmd) -> bool {
+    /// Take the reads this owner's steps have asked for since the last take, in the order they were
+    /// asked ([`super::StoreJob::BrowseHubs`], [`super::StoreJob::BrowseDirectory`],
+    /// [`super::StoreJob::BrowsePage`]). The application's runner starts each, in the call that ran
+    /// the step (`Bridge::start_store_jobs_of`).
+    #[must_use]
+    pub fn take_jobs(&mut self) -> Vec<super::StoreJob> {
+        std::mem::take(&mut self.jobs)
+    }
+
+    /// Does the outbox hold a job nobody has taken yet?
+    pub fn has_jobs(&self) -> bool {
+        !self.jobs.is_empty()
+    }
+
+    /// Run one command; `keys` is the registry's answer as of this call (the Bridge fills it
+    /// immediately before, `refill_client_keys`), which the section-hubs or directory reads it may emit
+    /// are decided from.
+    pub fn run(&mut self, cmd: BrowseCmd, keys: &ClientKeys) -> bool {
         use crate::viewstate::ViewEdit;
         let change_sensitive = matches!(&cmd, BrowseCmd::Discovery(_) | BrowseCmd::Addressed {
             work: LibraryWork::SaveCursor { .. } | LibraryWork::Hubs { .. } | LibraryWork::HubHold { .. }
@@ -156,29 +178,38 @@ impl BrowseStore {
         if matches!(&cmd, BrowseCmd::Reset) {
             self.adapter = Arc::new(Default::default());
         }
-        let changed = self.state.run_owned(&self.adapter, cmd) || roster_changed;
+        let changed = self.state.run_owned(&self.adapter, cmd, keys, &mut self.jobs) || roster_changed;
         if !quiet && (!change_sensitive || changed) {
             self.bump();
         }
         changed
     }
 
-    pub fn pump_with_gate(&mut self, gate: &plx_machine::landgate::Gate) -> super::StoreOutcome {
+    /// Run one command on a registry that holds no client (no section-hubs or directory read leaves): the
+    /// command of a test about something else.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn run_for_test(&mut self, cmd: BrowseCmd) -> bool {
+        self.run(cmd, &ClientKeys::default())
+    }
+
+    pub fn pump_with_gate(&mut self, gate: &plx_machine::landgate::Gate, keys: &ClientKeys) -> super::StoreOutcome {
         if !self.state.pump_needs_work(&self.adapter) {
             return Default::default();
         }
         let roster_changed = self.sync_roster();
         let source_gen = self.state.source_list_gen();
-        let mut outcome = self.state.pump_owned_with_gate(&self.adapter, gate);
+        let mut outcome = self.state.pump_owned_with_gate(&self.adapter, gate, keys, &mut self.jobs);
         outcome.changed |= roster_changed || source_gen != self.state.source_list_gen();
         if outcome.changed {
             self.bump();
         }
         outcome
     }
+    /// [`BrowseStore::pump_with_gate`] on the fixture gate and a registry that holds no client (no
+    /// section-hubs or page read leaves): the pump of a test about something else.
     #[cfg(any(test, feature = "test-support"))]
     pub fn pump(&mut self) -> super::StoreOutcome {
-        self.pump_with_gate(plx_machine::landgate::fixture_gate())
+        self.pump_with_gate(plx_machine::landgate::fixture_gate(), &ClientKeys::default())
     }
 
     pub fn discover_pump_with_gate(&mut self, gate: &plx_machine::landgate::Gate) -> super::StoreOutcome {
@@ -223,6 +254,44 @@ impl BrowseStore {
 
     pub fn hubs_snapshot(&mut self) -> HubsSnapshot {
         self.state.hubs_snapshot(self.state.cur())
+    }
+
+    /// TEST ONLY: is the section hubs' one shared claim up: a read is out (running, parked, or
+    /// answered and not yet taken by the pump)?
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn hubs_read_out_for_test(&self) -> bool {
+        crate::browse::hubs_claim_up_for_test(&self.adapter)
+    }
+
+    /// TEST ONLY: has a section-hubs worker answered, with the answer still waiting for the pump?
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn hubs_answer_waiting_for_test(&self) -> bool {
+        crate::browse::hubs_answer_waiting_for_test(&self.adapter)
+    }
+
+    /// TEST ONLY: is the listing page's claim up: a page read is out (running, parked, or answered
+    /// and not yet taken by the pump)?
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn page_read_out_for_test(&self) -> bool {
+        crate::browse::adapter_fetching_for_test(&self.adapter)
+    }
+
+    /// TEST ONLY: has a page worker answered, the answer still waiting for the pump?
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn page_answer_waiting_for_test(&self) -> bool {
+        crate::browse::adapter_has_page_for_test(&self.adapter)
+    }
+
+    /// TEST ONLY: is a directory (genres or letters) claim up?
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn directory_read_out_for_test(&self) -> bool {
+        crate::browse::directory_claim_up_for_test(&self.adapter)
+    }
+
+    /// TEST ONLY: has a directory worker answered, the answer still waiting for the pump?
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn directory_answer_waiting_for_test(&self) -> bool {
+        crate::browse::directory_answered_for_test(&self.adapter)
     }
 
     pub fn take_discovery(&mut self) -> Option<crate::browse::record::Result> {
@@ -356,6 +425,11 @@ impl BrowseStore {
     #[cfg(any(test, feature = "test-support"))]
     pub fn seed_letter_counts_for_test(&mut self, letters: &[(&str, i64)]) {
         crate::browse::seed_letter_counts_for_owner_test(&mut self.state, letters);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn owe_letters_for_test(&mut self) {
+        crate::browse::owe_letters_for_owner_test(&mut self.state);
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -604,12 +678,18 @@ impl<H: super::StoreEffectHost> Machine<H> for BrowseStore {
     type Ev = StoreEv<BrowseCmd>;
     fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         match ev {
+            // The registry is read by the host, never in a step (`plx_plex::plex::ClientKeys`), and
+            // a machine step is handed no keys: this arm cannot decide a section-hubs or directory read. It is
+            // not how the application drives Browse, which calls `Stores::browse_run` and
+            // `BrowseStore::pump_with_gate` with the keys it filled and starts the jobs they leave
+            // (`Bridge::browse_run`); no sender of `StoreEv::Pump` exists either.
             StoreEv::Cmd(c) => {
-                self.run(c.clone());
+                self.run(c.clone(), &ClientKeys::default());
             }
             StoreEv::Pump { .. } => {
                 let mut due = std::mem::take(&mut self.endpoint_carry);
-                due.merge(self.pump_with_gate(&plx_machine::landgate::Gate::default()).endpoints);
+                due.merge(self.pump_with_gate(&plx_machine::landgate::Gate::default(), &ClientKeys::default())
+                    .endpoints);
                 self.endpoint_carry = due.emit(fx);
             }
         }
@@ -643,7 +723,7 @@ mod contract_tests {
         assert_eq!(publication.section_hubs.view().id().unwrap().section,
             view.sections()[view.current().unwrap()].key);
 
-        assert!(stores.browse_run(BrowseCmd::SetCur(2)),
+        assert!(stores.browse_run_for_test(BrowseCmd::SetCur(2)),
             "the direct command returns the store's answer synchronously");
         let publication = stores.capture_browse(&mut directory);
         let view = publication.directory.view();
@@ -677,7 +757,7 @@ mod contract_tests {
         // idiom the other contract tests in this module already use before their own
         // exact-equality check.
         let _ = first.take_notices();
-        first.browse_run(BrowseCmd::Reset);
+        first.browse_run_for_test(BrowseCmd::Reset);
         assert_eq!(first.take_notices(), [(StoreId::Browse, 1)]);
         assert!(second.take_notices().is_empty());
     }
@@ -718,7 +798,7 @@ mod contract_tests {
         // No grid window yet: only the shelves (both rows sit inside the default hold).
         let shelf_only = browse.held_keys(target);
         assert_eq!(shelf_only.len(), 4, "two shelves of two cards: {:?}", rks(&shelf_only));
-        browse.run(BrowseCmd::Addressed { target, work: LibraryWork::Want { lo: 3, hi: 6, focus: None } });
+        browse.run_for_test(BrowseCmd::Addressed { target, work: LibraryWork::Want { lo: 3, hi: 6, focus: None } });
         let held = browse.held_keys(target);
         let grid: Vec<_> = rks(&held).into_iter().filter(|k| k.parse::<usize>().is_ok_and(|n| (4..=6).contains(&n))).collect();
         assert_eq!(grid, ["4", "5", "6"], "the grid window is items 3..6: {:?}", rks(&held));
@@ -741,7 +821,7 @@ mod contract_tests {
         assert!(!browse.hubs_committed(target), "nothing has been published");
         crate::browse::section_hubs::stage_shelves_for_owner_test(&mut browse.state, 0);
         assert!(!browse.hubs_committed(target), "a staged set is not drawn");
-        assert!(browse.run(BrowseCmd::Addressed { target, work: LibraryWork::Hubs { may_publish: true } }));
+        assert!(browse.run_for_test(BrowseCmd::Addressed { target, work: LibraryWork::Hubs { may_publish: true } }));
         assert!(browse.hubs_committed(target), "the committed set is drawn");
         assert!(!browse.hubs_committed(SectionAddress { epoch: target.epoch + 1, ..target }), "a stale address names no section");
     }
@@ -761,19 +841,19 @@ mod contract_tests {
             target, work: LibraryWork::Hubs { may_publish },
         };
         for may_publish in [false, true] {
-            assert!(!browse.run(request(target, may_publish)));
-            assert!(!browse.run(request(SectionAddress { epoch: target.epoch + 1, ..target }, may_publish)));
+            assert!(!browse.run_for_test(request(target, may_publish)));
+            assert!(!browse.run_for_test(request(SectionAddress { epoch: target.epoch + 1, ..target }, may_publish)));
         }
         assert_eq!(browse.gen(), before, "unchanged and stale Hubs work must stay quiet");
         assert_eq!(browse.take_notice(), None);
 
         crate::browse::section_hubs::stage_shelves_for_owner_test(&mut browse.state, 0);
-        assert!(!browse.run(request(target, false)));
+        assert!(!browse.run_for_test(request(target, false)));
         assert_eq!(browse.gen(), before, "a held staged publication is still unchanged");
-        assert!(browse.run(request(target, true)));
+        assert!(browse.run_for_test(request(target, true)));
         assert_eq!(browse.gen(), before + 1);
         assert_eq!(browse.take_notice(), Some(before + 1), "a committed shelf set still owes its notice");
-        assert!(!browse.run(request(target, true)));
+        assert!(!browse.run_for_test(request(target, true)));
         assert_eq!(browse.take_notice(), None, "the same publication is noticed once");
         assert_eq!(browse.gen(), before + 1);
     }
@@ -848,7 +928,7 @@ mod contract_tests {
         let (release, landed) = stores.browse.borrow_mut()
             .spawn_page_for_test(client, "retired-result");
 
-        stores.browse.borrow_mut().run(BrowseCmd::Reset);
+        stores.browse.borrow_mut().run_for_test(BrowseCmd::Reset);
         let new = Arc::clone(&stores.browse.borrow().adapter);
         assert!(!Arc::ptr_eq(&old, &new), "reset must rotate worker transport identity");
         crate::browse::set_adapter_fetching_for_test(&new, true);
@@ -904,7 +984,7 @@ mod contract_tests {
             client, client.token_gen(), true);
         let result = stores.browse.borrow_mut().take_discovery().unwrap();
 
-        stores.browse.borrow_mut().run(BrowseCmd::Reset);
+        stores.browse.borrow_mut().run_for_test(BrowseCmd::Reset);
         let replacement = Arc::clone(&stores.browse.borrow().adapter);
         crate::browse::set_adapter_src_fetching_for_test(&replacement, true);
         let _ = stores.take_notices();
@@ -1044,7 +1124,7 @@ mod contract_tests {
         );
         let stores = crate::stores::Stores::default();
         stores.browse.borrow_mut().seed_registered_table_for_test([own, shared]);
-        stores.browse_run(BrowseCmd::SetCur(0));
+        stores.browse_run_for_test(BrowseCmd::SetCur(0));
         let a = SectionAddress {
             epoch: stores.browse.borrow().table_epoch_for_test(),
             sid: own,
@@ -1056,7 +1136,7 @@ mod contract_tests {
             Some(2)
         );
         let commit = |target, select, choice| {
-            stores.browse_run(BrowseCmd::Addressed {
+            stores.browse_run_for_test(BrowseCmd::Addressed {
                 target,
                 work: LibraryWork::Commit {
                     select,
@@ -1119,7 +1199,7 @@ mod contract_tests {
             "a later real switch counts once"
         );
         let (accepted, events) = plx_telemetry::diag::test_events::capture(|| {
-            stores.browse_run(BrowseCmd::Addressed {
+            stores.browse_run_for_test(BrowseCmd::Addressed {
                 target: b,
                 work: LibraryWork::Commit {
                     select: false,

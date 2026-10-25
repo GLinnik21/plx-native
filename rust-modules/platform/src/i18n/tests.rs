@@ -146,6 +146,90 @@ fn plural_rules_follow_the_message_language() {
 }
 
 #[test]
+fn russian_locale_resolves_cyrillic_tags_and_keeps_regional_formatting_independent() {
+    for tag in ["ru", "ru-RU", "ru_RU.UTF-8", "ru-Cyrl-RU", "ru-KZ"] {
+        let cx = LocaleContext::resolve(Preference::System, Some(tag), None, None, None);
+        assert_eq!(cx.language(), Language::Ru, "{tag}");
+    }
+    let from_env = LocaleContext::resolve(Preference::System, None, None, None, Some("ru_RU.UTF-8"));
+    assert_eq!(from_env.language(), Language::Ru);
+    let ru = LocaleContext::resolve(Preference::Ru, None, None, None, None);
+    assert_eq!(ru.format_locale(), "ru-RU");
+    assert_eq!(ru.number(12345), "12\u{a0}345");
+    assert_eq!(ru.decimal(45, 1), "4,5");
+    assert_eq!(ru.date(2026, 10, 24).as_deref(), Some("24.10.2026"));
+    let mixed = LocaleContext::resolve(Preference::Ru, Some("en-US"), Some("en-US"), None, None);
+    assert_eq!(mixed.language(), Language::Ru);
+    assert_eq!(mixed.number(12345), "12,345");
+    for tag in ["ru-Latn", "ru-Latn-RU"] {
+        assert_eq!(
+            LocaleContext::resolve(Preference::System, Some(tag), None, None, None).language(),
+            Language::En,
+        );
+    }
+}
+
+#[test]
+fn russian_catalog_counts_follow_russian_plurals_even_with_english_formatting() {
+    let ru = LocaleContext::resolve(Preference::Ru, None, Some("en-US"), None, None);
+    for (count, expected, category) in [
+        (0, "0 серий", PluralCategory::Many),
+        (1, "1 серия", PluralCategory::One),
+        (2, "2 серии", PluralCategory::Few),
+        (5, "5 серий", PluralCategory::Many),
+        (11, "11 серий", PluralCategory::Many),
+        (12, "12 серий", PluralCategory::Many),
+        (14, "14 серий", PluralCategory::Many),
+        (21, "21 серия", PluralCategory::One),
+        (22, "22 серии", PluralCategory::Few),
+        (25, "25 серий", PluralCategory::Many),
+        (101, "101 серия", PluralCategory::One),
+        (111, "111 серий", PluralCategory::Many),
+    ] {
+        assert_eq!(ru.plural(count), category);
+        assert_eq!(msg::browse_detail_episodes_in(&ru, count), expected);
+    }
+    let mut fraction = Decimal::from(15);
+    fraction.multiply_pow10(-1);
+    assert_eq!(ru.plural.category_for(&fraction), PluralCategory::Other);
+}
+
+#[test]
+fn russian_episode_labels_keep_the_reviewed_latin_markers() {
+    let ru = LocaleContext::resolve(Preference::Ru, None, None, None, None);
+    assert_eq!(msg::core_season_in(&ru, 2), "S2");
+    assert_eq!(msg::core_episode_in(&ru, 4), "E4");
+    assert_eq!(msg::core_episode_ordinal_in(&ru, 4, 2), "S2, E4");
+}
+
+#[test]
+fn russian_stats_menu_uses_the_native_reviewers_wording() {
+    let ru = LocaleContext::resolve(Preference::Ru, None, None, None, None);
+    assert_eq!(msg::widgets_menu_stats_in(&ru), "Статистика для гиков");
+}
+
+#[test]
+fn russian_month_day_captions_use_format_months_at_both_widths() {
+    let cx = LocaleContext::resolve(Preference::Ru, None, Some("en-US"), None, None);
+    let medium = [
+        "янв.", "февр.", "мар.", "апр.", "мая", "июн.", "июл.", "авг.", "сент.", "окт.", "нояб.", "дек.",
+    ];
+    let long = [
+        "января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября",
+        "ноября", "декабря",
+    ];
+    for month in 1..=12 {
+        let i = usize::from(month - 1);
+        assert_eq!(cx.month_day(month, 12, MonthWidth::Medium), Some(format!("12 {}", medium[i])));
+        assert_eq!(cx.month_day(month, 12, MonthWidth::Long), Some(format!("12 {}", long[i])));
+    }
+    assert_eq!(cx.month_day(2, 29, MonthWidth::Long).as_deref(), Some("29 февраля"));
+    assert!(cx.month_day(2, 30, MonthWidth::Long).is_none());
+    assert!(cx.month_day(0, 1, MonthWidth::Medium).is_none());
+    assert!(cx.month_day(13, 1, MonthWidth::Medium).is_none());
+}
+
+#[test]
 fn belarusian_library_count_messages_render_the_reviewed_forms() {
     let locale = LocaleContext::resolve(Preference::Be, None, Some("en-GB"), None, None);
     for (count, expected) in [

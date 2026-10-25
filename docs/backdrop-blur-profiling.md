@@ -432,7 +432,10 @@ answer that without guessing.
 screen-VISIBLE area of every quad the app submits, clipped to the panel and to `Painter::clip`'s
 live box. It is not `glFinish`-serialised and it cannot be billed for another process's work. It
 runs in the desktop simulator too, and gives the same authored-pixel answer there, because it works
-in authored coordinates.
+in authored coordinates. (One exception, added after these measurements: `draw_ambient` books its
+quad before it decides to draw a flat ground, four equal corners and no ink, as a clear, so on
+those frames the ledger counts `ambient` fragments that were never shaded. It over-reports that
+class there; HWCNT is unaffected, and `drawmask=ambient` refuses the clear with the quad.)
 
 **`/tmp/plxnative-drawmask=<classes>`** — refuse every draw of the named classes, so a whole-frame
 `frame.ui` HWCNT A/B against the unmasked control prices that class **as the frame sees it**,

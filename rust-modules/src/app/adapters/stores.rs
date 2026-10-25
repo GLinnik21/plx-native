@@ -4,13 +4,15 @@
 //! no clock. The `Bridge` takes the jobs right after the step that emitted them
 //! (`Bridge::metadata_run`, `Bridge::person_pump`, `Bridge::collection_pump`,
 //! `Bridge::catalog_open`, `Bridge::catalog_pump`, `Bridge::subsearch_pump`, `Bridge::search_pump`,
-//! `Bridge::reconcile_pump`, or `Bridge::start_store_jobs` after a command run on the bare store)
+//! `Bridge::reconcile_pump`, `Bridge::viewstate_run`, `Bridge::viewstate_pump`, or
+//! `Bridge::start_store_jobs` after a command run on the bare store)
 //! and hands each to [`StoreRunner::start`], which owns everything the data layer must not: the
 //! tape's admission record, the worker thread and the process-global client the request reads. A
 //! kind that is not on the tape (the catalog read, a plex.tv call that names no client; subtitle
-//! search; the Search screen's fetches and its recents writes; view reconcile) is started with no
-//! admission record, as its inline spawn was. The detail pump keeps a counted backstop for a
-//! sender that did neither (`Bridge::start_late_store_jobs`).
+//! search; the Search screen's fetches and its recents writes; view reconcile; the Library's
+//! section-hubs, directory and page reads; the view-state writes; the Metadata season switch and
+//! episode-page window) is started with no admission record, as its inline spawn was. The detail pump keeps a counted
+//! backstop for a sender that did neither (`Bridge::start_late_store_jobs`).
 //!
 //! **Three admission families** (`plx_data::stores::Admission`, stated by the job kind and matched
 //! exhaustively): `Tape` kinds record their launch on the tape; `Direct` kinds are started with no
@@ -27,20 +29,36 @@
 //! choose the moment a request is "in flight" and the moment it "settles", where a worker thread
 //! made both depend on the scheduler: a fetch for an unknown server returns in microseconds, so a
 //! fast run settled a request before an "in flight" assertion while a loaded CI runner had not
-//! settled it after a hundred `yield_now`s. `Held` parks per kind: [`StoreRunner::held`] leaves the
-//! Hubs read live (the rigs that poll for a landing, the dump and return-hold tests, need a real
-//! answer on a worker), and [`StoreRunner::held_all`] parks it as well.
+//! settled it after a hundred `yield_now`s. `Held` parks per kind (`LiveKind`): [`StoreRunner::held`]
+//! leaves the Home Hubs read, the Metadata season switch and the Library listing's page read live
+//! (the rigs that poll for a landing, the dump and return-hold tests, `menu_play_season_tests` and the
+//! library route rigs that wait for a grid to settle, need a real answer on a worker),
+//! [`StoreRunner::park_page_reads`] parks the page read as well, and [`StoreRunner::held_all`] parks
+//! every kind. Every held runner parks episode-page jobs.
 //!
 //! **The registry is read here, not in a step.** A step that decides from "which client does this
 //! server slot hold" is handed the answer as an input (`plx_plex::plex::ClientKeys`), which the
 //! Bridge fills with [`refill_client_keys`] immediately before the step, in the same call. A job
 //! carries the key its step decided on, and the runner starts it only if the registry still holds
-//! that client at the moment of the launch. (The Detail job carries no key: `start_detail` resolves
-//! its server once, at the admission, and the chain runs through that client, bar the opening
-//! season's episodes; `docs/sans-io.md`, "The store job lane".)
+//! that client at the moment of the launch. (A view-state write also carries the whole snapshot its
+//! step decided under: its worker reaches the title's OTHER copies only through
+//! `plx_plex::plex::KeyedClients` built from it, with the registry read passed in from here. The
+//! Detail job carries no key: `start_detail` resolves its server once, at the admission, and the
+//! whole chain runs through that client. The season and episode-page jobs carry none either:
+//! `start_meta_season` and `start_meta_episodes` resolve the server's client once, at the launch,
+//! and hand it to the worker body; a server with none answers the failure without a GET;
+//! `docs/sans-io.md`, "The store job lane".)
 
+use plx_data::browse::listing_jobs::{
+    finish_browse_directory_job, finish_browse_page_job, BrowseDirectoryPort, BrowseDirectoryReq,
+    BrowsePagePort, BrowsePageReq,
+};
+use plx_data::browse::section_hubs::{finish_browse_hubs_job, BrowseHubsPort, BrowseHubsReq};
 use plx_data::collection::{finish_collection_job, CollectionPort, CollectionReq};
-use plx_data::metadata::{fetch_full, finish_detail_fetch, DetailPort, DetailReq};
+use plx_data::metadata::{
+    fetch_full, finish_detail_fetch, finish_episodes_job, finish_season_job, DetailPort, DetailReq, MetaEpisodesPort,
+    MetaEpisodesReq, MetaSeasonPort, MetaSeasonReq,
+};
 use plx_data::person::{finish_person_job, PersonPort, PersonReq};
 use plx_data::stores::catalog::{finish_catalog_job, CatalogPort, CatalogReq};
 use plx_data::stores::viewreconcile::{finish_reconcile_job, ReconcilePort, ReconcileReq};
@@ -49,6 +67,7 @@ use plx_data::stores::{Admission, StoreJob};
 use plx_data::search::recents::{finish_save_recents_job, SaveRecentsPort, SaveRecentsReq};
 use plx_data::search::{finish_search_job, SearchPort, SearchReq};
 use plx_data::subsearch::{finish_subsearch_job, SubSearchPort, SubSearchReq};
+use plx_data::viewstate::{finish_view_write_job, ViewWritePort, ViewWriteReq};
 use plx_machine::job::{Job, Port};
 use plx_plex::plex::{Client, ClientKey, ClientKeys};
 
@@ -126,7 +145,9 @@ fn with_hubs_launch_for_test<R>(mode: HubsLaunch, f: impl FnOnce() -> R) -> R {
 }
 
 /// TEST ONLY: every Hubs launch this test thread makes inside `f` is refused by the system (no
-/// worker starts), including a launch made from a nested call into the Bridge.
+/// worker starts), including a launch made from a nested call into the Bridge. The section hubs'
+/// reads (`StoreJob::BrowseHubs`) and the Library's listing reads (`StoreJob::BrowseDirectory`,
+/// `StoreJob::BrowsePage`) are launches of this seam too: the system refuses their thread alike.
 #[cfg(test)]
 pub(crate) fn with_refused_hubs_launches_for_test<R>(f: impl FnOnce() -> R) -> R {
     with_hubs_launch_for_test(HubsLaunch::Refused, f)
@@ -148,9 +169,26 @@ pub(crate) enum StoreRunner {
     /// TEST ONLY: park the jobs of every kind not in `live` until [`StoreRunner::run_held`]: after
     /// its tape admission for a kind that is on the tape, after the registry's key check for one
     /// that is not but reads a server, and with neither for a Catalog job (a plex.tv read that
-    /// names no client). A kind in `live` starts as `Live` starts it.
+    /// names no client) or a season or episode-page job, which carries no key (`run_held` resolves
+    /// its client when it runs the job). A kind in `live` starts as `Live` starts it.
     #[cfg(test)]
-    Held { parked: Vec<StoreJob>, live: &'static [plx_data::stores::StoreId] },
+    Held { parked: Vec<StoreJob>, live: &'static [LiveKind] },
+}
+
+/// TEST ONLY: a kind of job a [`StoreRunner::Held`] starts on a worker instead of parking. It names
+/// a kind and not a store: Browse emits several kinds (`BrowseHubs`, `BrowseDirectory`,
+/// `BrowsePage`), and a rig that waits for the Library grid's page landing must not also get the
+/// section hubs' read live; Metadata's season switch runs live while
+/// its detail fetch stays parked.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LiveKind {
+    /// The Home Hubs read (`StoreJob::Hubs`).
+    Hubs,
+    /// The Metadata season switch (`StoreJob::MetaSeason`).
+    MetaSeason,
+    /// A Library listing page read (`StoreJob::BrowsePage`).
+    BrowsePage,
 }
 
 impl StoreRunner {
@@ -158,15 +196,29 @@ impl StoreRunner {
         Self::Live
     }
 
-    /// TEST ONLY: [`StoreRunner::Held`] for every kind but Hubs, which starts on a worker as it
-    /// does in production: a rig that waits for a Home landing needs a real one.
+    /// TEST ONLY: [`StoreRunner::Held`] for every kind but the Home Hubs read, the Metadata season
+    /// switch and the Library listing's page read, which start on a worker as they do in production:
+    /// a rig that waits for a Home or a grid landing, and the menu-play season wait
+    /// (`menu_play_season_tests`, which polls `metadata_pump_season` for a landing and never runs held
+    /// jobs), need a real one. No rig waits for an episode-page landing, so those are parked.
     #[cfg(test)]
     pub(crate) fn held() -> Self {
-        Self::Held { parked: Vec::new(), live: &[plx_data::stores::StoreId::Hubs] }
+        Self::Held { parked: Vec::new(), live: &[LiveKind::Hubs, LiveKind::MetaSeason, LiveKind::BrowsePage] }
     }
 
-    /// TEST ONLY: [`StoreRunner::Held`] for every kind, Hubs included. The test runs the parked
-    /// Hubs jobs (`Bridge::run_held_store_jobs_of_for_test`) when it chooses to settle them.
+    /// TEST ONLY: park the Library listing's page reads of a held runner too (the Home Hubs read
+    /// and the season switch stay live): the rig that grades which reads an entry started takes them
+    /// from the runner.
+    #[cfg(test)]
+    pub(crate) fn park_page_reads(&mut self) {
+        if let Self::Held { live, .. } = self {
+            *live = &[LiveKind::Hubs, LiveKind::MetaSeason];
+        }
+    }
+
+    /// TEST ONLY: [`StoreRunner::Held`] for every kind, Hubs, the season switch and the page read
+    /// included. The test runs the parked jobs (`Bridge::run_held_store_jobs_of_for_test`) when it
+    /// chooses to settle them.
     #[cfg(test)]
     pub(crate) fn held_all() -> Self {
         Self::Held { parked: Vec::new(), live: &[] }
@@ -184,8 +236,14 @@ impl StoreRunner {
             StoreJob::Catalog(job, port) => self.start_catalog(job, port),
             StoreJob::SubtitleSearch(job, port) => self.start_subsearch(job, port),
             StoreJob::ViewReconcile(job, port) => self.start_reconcile(job, port),
+            StoreJob::BrowseHubs(job, port) => self.start_browse_hubs(job, port),
+            StoreJob::BrowseDirectory(job, port) => self.start_browse_directory(job, port),
+            StoreJob::BrowsePage(job, port) => self.start_browse_page(job, port),
             StoreJob::Search(job, port) => self.start_search(job, port),
             StoreJob::SaveRecents(job, port) => self.start_save_recents(job, port),
+            StoreJob::ViewWrite(job, port) => self.start_view_write(job, port),
+            StoreJob::MetaSeason(job, port) => self.start_meta_season(job, port),
+            StoreJob::MetaEpisodes(job, port) => self.start_meta_episodes(job, port),
         }
     }
 
@@ -221,8 +279,14 @@ impl StoreRunner {
                 | StoreJob::Catalog(..)
                 | StoreJob::SubtitleSearch(..)
                 | StoreJob::ViewReconcile(..)
+                | StoreJob::BrowseHubs(..)
+                | StoreJob::BrowseDirectory(..)
+                | StoreJob::BrowsePage(..)
                 | StoreJob::Search(..)
-                | StoreJob::SaveRecents(..)) => self.start(other),
+                | StoreJob::SaveRecents(..)
+                | StoreJob::ViewWrite(..)
+                | StoreJob::MetaSeason(..)
+                | StoreJob::MetaEpisodes(..)) => self.start(other),
         }
     }
 
@@ -251,7 +315,7 @@ impl StoreRunner {
             (_, HubsLaunch::Refused) => return launch_hubs_job(job, port, client, |_work| false),
             (_, HubsLaunch::Late { extra, items }) => return plx_data::pms::launch_late_hubs_job_for_test(
                 job, port, client, |work| plx_base::task::spawn_small("hubs", work), extra, items),
-            (Self::Held { parked, live }, HubsLaunch::Real) if !live.contains(&plx_data::stores::StoreId::Hubs) => {
+            (Self::Held { parked, live }, HubsLaunch::Real) if !live.contains(&LiveKind::Hubs) => {
                 port.claim();
                 parked.push(StoreJob::Hubs(job, port));
                 return true;
@@ -275,7 +339,7 @@ impl StoreRunner {
         // client it names, and the launch runs the chain through that very client. A job
         // carries no `ClientKey` (the step that emitted it reads no registry), so what the
         // registry holds NOW is the client the page is opened on; the capture is made here, at the
-        // admission, and the chain asks again only for the opening season's episodes.
+        // admission, and the whole chain, the opening season's episodes included, runs through it.
         let client = plx_plex::plex::client_for(sid);
         let request = serde_json::json!({"store":"metadata",
             "sid":sid.raw(),"rk":job.req.rk,"gen":gen,
@@ -291,7 +355,9 @@ impl StoreRunner {
     /// TEST ONLY: answer the detail fetches still parked as superseded (see [`Self::start_detail`]),
     /// and keep every other store's parked job: a newer detail request retires only the requests it
     /// supersedes. A `match` over every job kind, so a store that joins the lane must say what a
-    /// newer detail request does to its parked jobs.
+    /// newer detail request does to its parked jobs. A parked season or page job is kept: the request
+    /// already superseded the season (`begin_detail_request`), so a parked season lands a generation
+    /// the pump discards, and a parked page lands keys the pump's item check rejects.
     #[cfg(test)]
     fn retire_parked_details(held: &mut Vec<StoreJob>) {
         for parked in std::mem::take(held) {
@@ -306,8 +372,14 @@ impl StoreRunner {
                     | StoreJob::Catalog(..)
                     | StoreJob::SubtitleSearch(..)
                     | StoreJob::ViewReconcile(..)
+                    | StoreJob::BrowseHubs(..)
+                    | StoreJob::BrowseDirectory(..)
+                    | StoreJob::BrowsePage(..)
                     | StoreJob::Search(..)
                     | StoreJob::SaveRecents(..)
+                    | StoreJob::ViewWrite(..)
+                    | StoreJob::MetaSeason(..)
+                    | StoreJob::MetaEpisodes(..)
                 ) => held.push(kept),
             }
         }
@@ -520,6 +592,67 @@ impl StoreRunner {
         }
     }
 
+    /// A season switch is not on the tape: the launch is the whole decision. A launch that did not
+    /// happen (the thread ceiling) is refused, which catches the season's DONE up, so the episode
+    /// row does not keep its spinner.
+    fn start_meta_season(&mut self, job: Job<MetaSeasonReq>, port: MetaSeasonPort) {
+        let addr = job.addr;
+        let refusal = port.clone();
+        if !self.launch_meta_season(job, port) {
+            refusal.refused(addr);
+        }
+    }
+
+    /// Start the fetch on a worker. The registry is read ONCE, here, for the show's own server: the
+    /// worker is handed that `&'static Client` and asks no registry. A server it holds none for
+    /// still launches, and its worker answers the failure without a GET, as the inline fetch did
+    /// when its read found no client.
+    fn launch_meta_season(&mut self, job: Job<MetaSeasonReq>, port: MetaSeasonPort) -> bool {
+        match self {
+            Self::Live => Self::spawn_meta_season(job, port),
+            #[cfg(test)]
+            Self::Held { parked, live } => {
+                if live.contains(&LiveKind::MetaSeason) {
+                    return Self::spawn_meta_season(job, port);
+                }
+                parked.push(StoreJob::MetaSeason(job, port));
+                true
+            }
+        }
+    }
+
+    fn spawn_meta_season(job: Job<MetaSeasonReq>, port: MetaSeasonPort) -> bool {
+        let client = plx_plex::plex::client_for(job.req.sid);
+        let Job { addr, req } = job;
+        plx_base::task::spawn_small("season", move || finish_season_job(&port, addr, client, req))
+    }
+
+    /// An episode-page window is not on the tape either. A launch that did not happen is refused,
+    /// which drops the job's inflight keys, so the next `WantEpisodes` asks for the pages again.
+    fn start_meta_episodes(&mut self, job: Job<MetaEpisodesReq>, port: MetaEpisodesPort) {
+        let addr = job.addr;
+        let refusal = port.clone();
+        if !self.launch_meta_episodes(job, port) {
+            refusal.refused(addr);
+        }
+    }
+
+    /// Start the reads on a worker through the client resolved here, once, for the show's server.
+    fn launch_meta_episodes(&mut self, job: Job<MetaEpisodesReq>, port: MetaEpisodesPort) -> bool {
+        match self {
+            Self::Live => {
+                let client = plx_plex::plex::client_for(job.req.sid);
+                let Job { addr, req } = job;
+                plx_base::task::spawn_small("episode-pages", move || finish_episodes_job(&port, addr, client, req))
+            }
+            #[cfg(test)]
+            Self::Held { parked, .. } => {
+                parked.push(StoreJob::MetaEpisodes(job, port));
+                true
+            }
+        }
+    }
+
     /// A read-back batch is not on the tape either: the launch is the whole decision. A launch that
     /// did not happen is refused, and the refusal is the flight's answer: the pump that takes it
     /// puts the batch back in the queue and waits before it asks again.
@@ -550,10 +683,159 @@ impl StoreRunner {
         }
     }
 
+    /// A view-state write is not on the tape either: the launch is the whole decision (a controlled
+    /// run refuses every write before it reaches the store, `viewstate_controlled_tests`). A launch
+    /// that did not happen is refused, and the refusal is the write's answer: nothing left the
+    /// device, so the pump that takes it judges the write again from its own inputs (a moved profile,
+    /// a vanished server or a re-tokened client drops it) and puts it back at the head of the queue.
+    fn start_view_write(&mut self, job: Job<ViewWriteReq>, port: ViewWritePort) {
+        let addr = job.addr;
+        let refusal = port.clone();
+        if !self.launch_view_write(job, port) {
+            refusal.refused(addr);
+        }
+    }
+
+    /// Start the write on a worker, if the registry still holds the client the step decided on for
+    /// the origin. The origin is resolved ONCE, here, and the worker is handed that `&'static
+    /// Client`; the other copies of the title are reached only through the job's own snapshot, and
+    /// only while each client still carries the key in it (`finish_view_write_job`). The registry
+    /// read the worker needs for that is passed in here, so no data-layer step names it.
+    fn launch_view_write(&mut self, job: Job<ViewWriteReq>, port: ViewWritePort) -> bool {
+        let (sid, key) = job.req.server();
+        let Some(origin) = resolve(sid, key) else { return false };
+        match self {
+            Self::Live => {
+                let Job { addr, req } = job;
+                plx_base::task::spawn_small("viewstate", move || {
+                    finish_view_write_job(&port, addr, origin, plx_plex::plex::client_for, req);
+                })
+            }
+            #[cfg(test)]
+            Self::Held { parked: held, .. } => {
+                held.push(StoreJob::ViewWrite(job, port));
+                true
+            }
+        }
+    }
+
+    /// A section-hubs read is not on the tape either (and a controlled run never emits it, so the
+    /// Home ledger holds no record of it): the launch is the whole decision. A launch that did not
+    /// happen (the registry no longer holds the client the step decided on, or the thread ceiling) is
+    /// refused, which hands the section hubs' one claim back; the store's next step settles the section to
+    /// the state a read that never started leaves, and the pump after asks again.
+    fn start_browse_hubs(&mut self, job: Job<BrowseHubsReq>, port: BrowseHubsPort) {
+        let addr = job.addr;
+        let refusal = port.clone();
+        if !self.launch_browse_hubs(job, port) {
+            refusal.refused(addr);
+        }
+    }
+
+    /// Start the read on a worker, if the registry still holds the client the step decided on. The
+    /// claim was raised by the step, so a parked job (`Held`) holds it from the park: it is dropped
+    /// back by the take of its landing, or by the refusal when the client is gone by the time the
+    /// job runs.
+    fn launch_browse_hubs(&mut self, job: Job<BrowseHubsReq>, port: BrowseHubsPort) -> bool {
+        let (sid, key) = job.req.server();
+        let Some(client) = resolve(sid, key) else { return false };
+        #[cfg(test)]
+        if matches!(hubs_launch_for_test(), HubsLaunch::Refused) {
+            return false; // the OS refusing the thread
+        }
+        match self {
+            Self::Live => {
+                let Job { addr, req } = job;
+                plx_base::task::spawn_small("libhubs", move || {
+                    finish_browse_hubs_job(&port, addr, client, req);
+                })
+            }
+            #[cfg(test)]
+            Self::Held { parked: held, .. } => {
+                held.push(StoreJob::BrowseHubs(job, port));
+                true
+            }
+        }
+    }
+
+    /// A Library directory read (genres, first letters) is not on the tape either, and a controlled
+    /// run never emits it: the launch is the whole decision. A launch that did not happen (the
+    /// registry no longer holds the client the step decided on, or the thread ceiling) is refused,
+    /// which hands that directory's claim back; the store's next step settles the refusal, and the
+    /// menu's next tick asks again.
+    fn start_browse_directory(&mut self, job: Job<BrowseDirectoryReq>, port: BrowseDirectoryPort) {
+        let addr = job.addr;
+        let refusal = port.clone();
+        if !self.launch_browse_directory(job, port) {
+            refusal.refused(addr);
+        }
+    }
+
+    /// Start the read on a worker, if the registry still holds the client the step decided on. The
+    /// claim was raised by the step, so a parked job (`Held`) holds it from the park: it is dropped
+    /// back by the take of its landing, or by the refusal when the client is gone by the time the
+    /// job runs.
+    fn launch_browse_directory(&mut self, job: Job<BrowseDirectoryReq>, port: BrowseDirectoryPort) -> bool {
+        let (sid, key) = job.req.server();
+        let Some(client) = resolve(sid, key) else { return false };
+        #[cfg(test)]
+        if matches!(hubs_launch_for_test(), HubsLaunch::Refused) {
+            return false; // the OS refusing the thread
+        }
+        match self {
+            Self::Live => {
+                let Job { addr, req } = job;
+                plx_base::task::spawn_small("directory", move || {
+                    finish_browse_directory_job(&port, addr, client, req);
+                })
+            }
+            #[cfg(test)]
+            Self::Held { parked: held, .. } => {
+                held.push(StoreJob::BrowseDirectory(job, port));
+                true
+            }
+        }
+    }
+
+    /// A Library listing page read is not on the tape (a controlled run never emits it): the launch
+    /// is the whole decision, as for a directory read ([`Self::start_browse_directory`]). A refused
+    /// page hands the page claim back; the next pump asks again for the then-first missing page.
+    fn start_browse_page(&mut self, job: Job<BrowsePageReq>, port: BrowsePagePort) {
+        let addr = job.addr;
+        let refusal = port.clone();
+        if !self.launch_browse_page(job, port) {
+            refusal.refused(addr);
+        }
+    }
+
+    /// Start the read on a worker, if the registry still holds the client the step decided on (see
+    /// [`Self::launch_browse_directory`] for the claim of a parked job).
+    fn launch_browse_page(&mut self, job: Job<BrowsePageReq>, port: BrowsePagePort) -> bool {
+        let (sid, key) = job.req.server();
+        let Some(client) = resolve(sid, key) else { return false };
+        #[cfg(test)]
+        if matches!(hubs_launch_for_test(), HubsLaunch::Refused) {
+            return false; // the OS refusing the thread
+        }
+        #[cfg(test)]
+        if let Self::Held { parked, live } = self {
+            if !live.contains(&LiveKind::BrowsePage) {
+                parked.push(StoreJob::BrowsePage(job, port));
+                return true;
+            }
+        }
+        let Job { addr, req } = job;
+        plx_base::task::spawn_small("page", move || {
+            finish_browse_page_job(&port, addr, client, req);
+        })
+    }
+
     /// TEST ONLY: run every parked job on THIS thread through the production completion path
     /// (`finish_detail_fetch` over `fetch_full`, `finish_collection_job`, `finish_person_job`,
     /// `finish_hubs_job`, `finish_catalog_job`, `finish_subsearch_job`, `finish_search_job`,
-    /// `finish_save_recents_job`, `finish_reconcile_job`) and return how many ran.
+    /// `finish_save_recents_job`, `finish_season_job`, `finish_episodes_job`, `finish_reconcile_job`,
+    /// `finish_browse_hubs_job`, `finish_view_write_job`, `finish_browse_directory_job`,
+    /// `finish_browse_page_job`) and return how many ran.
     /// Their landings are queued for the next pump. Under `Live` there is nothing parked.
     #[cfg(test)]
     pub(crate) fn run_held(&mut self) -> usize {
@@ -641,6 +923,32 @@ impl StoreRunner {
                         None => port.refused(job.addr),
                     }
                 }
+                StoreJob::BrowseHubs(job, port) => {
+                    // The claim was raised by the step. The registry may have moved on since the
+                    // job was parked: a request whose client is gone is refused, which gives the
+                    // claim back, as the launch would have refused it.
+                    let (sid, key) = job.req.server();
+                    match resolve(sid, key) {
+                        Some(client) => finish_browse_hubs_job(&port, job.addr, client, job.req),
+                        None => port.refused(job.addr),
+                    }
+                }
+                StoreJob::BrowseDirectory(job, port) => {
+                    // As for the section hubs' read: the claim was raised by the step, and a request
+                    // whose client is gone is refused, which gives it back.
+                    let (sid, key) = job.req.server();
+                    match resolve(sid, key) {
+                        Some(client) => finish_browse_directory_job(&port, job.addr, client, job.req),
+                        None => port.refused(job.addr),
+                    }
+                }
+                StoreJob::BrowsePage(job, port) => {
+                    let (sid, key) = job.req.server();
+                    match resolve(sid, key) {
+                        Some(client) => finish_browse_page_job(&port, job.addr, client, job.req),
+                        None => port.refused(job.addr),
+                    }
+                }
                 StoreJob::Search(job, port) => {
                     // The registry may have moved on since the job was parked: a fetch whose client
                     // is gone is refused, as the launch would have refused it.
@@ -651,6 +959,25 @@ impl StoreRunner {
                     }
                 }
                 StoreJob::SaveRecents(job, port) => finish_save_recents_job(&port, job.addr, job.req),
+                StoreJob::ViewWrite(job, port) => {
+                    // The registry may have moved on since the job was parked: a write whose
+                    // origin client is gone, or carries a moved credential, is refused, as the
+                    // launch would have refused it. Nothing was sent.
+                    let (sid, key) = job.req.server();
+                    match resolve(sid, key) {
+                        Some(origin) => finish_view_write_job(
+                            &port, job.addr, origin, plx_plex::plex::client_for, job.req),
+                        None => port.refused(job.addr),
+                    }
+                }
+                // The client is resolved when the job runs, as a live launch resolves it at the
+                // launch; a server with none answers the failure.
+                StoreJob::MetaSeason(job, port) => {
+                    finish_season_job(&port, job.addr, plx_plex::plex::client_for(job.req.sid), job.req);
+                }
+                StoreJob::MetaEpisodes(job, port) => {
+                    finish_episodes_job(&port, job.addr, plx_plex::plex::client_for(job.req.sid), job.req);
+                }
             }
         }
         n
@@ -672,6 +999,7 @@ mod tests {
     use plx_data::subsearch::{SearchStatus, SubSearchCmd};
     use plx_plex::plex::ServerId;
 
+    use crate::app::bridge::test_support::Pms;
     use crate::app::bridge::Bridge;
 
     /// Puts the tape back to its inactive state when a test ends, however it ends.
@@ -1657,6 +1985,212 @@ mod tests {
         assert!(bridge.read_back_pending_for_test().is_empty(), "the answer settled the flight; nothing is owed");
     }
 
+    // ---- the view-write lane: a household write starts only through the client the step chose ----
+
+    /// A loopback listener that counts the connections made to it and answers none: a write sent
+    /// here fails at once, so what the count shows is whether the write was sent at all.
+    struct Sink {
+        port: i32,
+        hits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Sink {
+        fn new() -> Self {
+            use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+            use std::sync::Arc;
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+            listener.set_nonblocking(true).expect("nonblocking");
+            let port = listener.local_addr().expect("bound").port() as i32;
+            let (hits, stop) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicBool::new(false)));
+            let (count, halt) = (Arc::clone(&hits), Arc::clone(&stop));
+            let thread = std::thread::spawn(move || {
+                while !halt.load(Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok(_) => { count.fetch_add(1, Ordering::SeqCst); }
+                        Err(_) => std::thread::sleep(std::time::Duration::from_millis(1)),
+                    }
+                }
+            });
+            Self { port, hits, stop, thread: Some(thread) }
+        }
+
+        /// The connections made, after giving the listener time to accept what was sent.
+        fn settled_hits(&self) -> usize {
+            std::thread::sleep(std::time::Duration::from_millis(60));
+            self.hits.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        /// Wait (bounded) for the first connection.
+        fn wait_for_a_hit(&self) -> usize {
+            for _ in 0..400 {
+                if self.hits.load(std::sync::atomic::Ordering::SeqCst) > 0 { break; }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            self.settled_hits()
+        }
+    }
+
+    impl Drop for Sink {
+        fn drop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(thread) = self.thread.take() { let _ = thread.join(); }
+        }
+    }
+
+    /// The profile identity the presses of this lane are made under.
+    const VIEW_PROFILE: u32 = 7;
+
+    /// A server registered at `sink` and a ViewState owner whose first write, `Watched` on item
+    /// `1`, is out: the job its step sent, keyed to the client the registry held when it did.
+    fn view_write_request(sink: &Sink) -> (ServerId, plx_data::stores::Stores, StoreJob) {
+        use plx_data::stores::viewstate::ViewStateCmd;
+        use plx_data::viewstate::{Scope, Write};
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test("runner", "127.0.0.1", sink.port, "t", "cid");
+        plx_plex::plex::client_for(sid).expect("registered").set_link(plx_plex::plex::probe::Location::Local);
+        let mut stores = plx_data::stores::Stores::default();
+        let directory = DirectorySnapshot::default();
+        assert!(stores.viewstate_run(
+            ViewStateCmd::Request { sid, rk: "1".into(), write: Write::Watched, scope: Scope::Leaf, guid: String::new() },
+            directory.view(), &registry_keys(), VIEW_PROFILE).changed);
+        let mut jobs = stores.take_jobs_of(plx_data::stores::StoreId::ViewState);
+        assert_eq!(jobs.len(), 1, "one press, one write");
+        (sid, stores, jobs.remove(0))
+    }
+
+    /// One pump of the ViewState owner with the registry's answer as of now.
+    fn view_pump(stores: &mut plx_data::stores::Stores, profile: u32) {
+        let directory = DirectorySnapshot::default();
+        let _ = stores.viewstate_pump(directory.view(), &registry_keys(), profile);
+    }
+
+    /// The write is not out any more and nothing is queued behind it.
+    fn view_idle(stores: &plx_data::stores::Stores) -> bool {
+        !stores.viewstate.borrow().is_busy_for_test()
+    }
+
+    /// The step judged the refused write again from its own inputs and dropped it: no job goes
+    /// out under the credential the registry holds now, nothing is queued or in flight, and the
+    /// press is retired from the ledger.
+    fn assert_dropped_not_sent_again(stores: &mut plx_data::stores::Stores) {
+        assert!(
+            stores.take_jobs_of(plx_data::stores::StoreId::ViewState).is_empty(),
+            "a key that moved is never sent again under the new one"
+        );
+        assert!(view_idle(stores), "nothing is queued or in flight");
+        assert!(stores.view_ledger.since(0).is_empty(), "the press is retired");
+    }
+
+    /// Recording, the registry still holding the client the step chose: the worker starts, sends
+    /// the write, and posts its ONE answer; taking it settles the write. The kind is not on the
+    /// tape: nothing is recorded.
+    #[test]
+    fn a_view_write_whose_client_is_still_held_is_started_answered_once_and_not_taped() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let sink = Sink::new();
+        let (_, mut stores, job) = view_write_request(&sink);
+        tape::init(None, false);
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert_eq!(tape::finish(), (vec![], None), "the kind is untaped: the runner records no admission");
+        tape::reset_for_test();
+        assert_eq!(sink.wait_for_a_hit(), 1, "the write left the device once");
+        assert!(!view_idle(&stores), "the answer is the next pump's to take");
+        view_pump(&mut stores, VIEW_PROFILE);
+        assert!(view_idle(&stores), "the one answer settled the write");
+        assert!(stores.view_ledger.since(0).is_empty(), "the sink took none, so the press is retired");
+        assert!(stores.take_jobs_of(plx_data::stores::StoreId::ViewState).is_empty(), "and no write is sent again");
+    }
+
+    /// The registry moved on between the step and the launch (a retoken here): the runner does not
+    /// start a write through a credential the step never decided on, and nothing leaves the device.
+    /// The refusal is the write's answer, and the next pump drops the write rather than sending it
+    /// under the credential the registry holds now (it cannot tell a switch from a refresh).
+    #[test]
+    fn a_view_write_whose_origin_key_moved_is_not_started() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let sink = Sink::new();
+        let (sid, mut stores, job) = view_write_request(&sink);
+        plx_plex::plex::client_for(sid).expect("registered").set_token("rotated");
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert_eq!(sink.settled_hits(), 0, "nothing was sent through the credential the step never asked with");
+        assert!(!view_idle(&stores), "the refusal is the next pump's to take");
+        view_pump(&mut stores, VIEW_PROFILE);
+        assert_dropped_not_sent_again(&mut stores);
+    }
+
+    /// `Held` parks the write without running it, and a newer DETAIL request retires only the
+    /// detail fetches parked before it: a household write is not a request it supersedes, and the
+    /// write that was parked still runs and answers.
+    #[test]
+    fn a_parked_view_write_is_kept_by_retire_parked_details() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let sink = Sink::new();
+        let (_, mut stores, job) = view_write_request(&sink);
+        let mut runner = StoreRunner::held();
+        let mut metadata = MetadataStore::default();
+
+        runner.start(job);
+        runner.start(request(&mut metadata, ServerId::UNSET, "d1"));
+        assert_eq!(runner.run_held(), 2, "the write was kept, and the detail job parked after it");
+
+        assert_eq!(sink.wait_for_a_hit(), 1, "the kept write ran");
+        view_pump(&mut stores, VIEW_PROFILE);
+        assert!(view_idle(&stores));
+    }
+
+    /// A parked write runs later and answers through the production completion path, once.
+    #[test]
+    fn a_held_view_write_runs_and_answers_once() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let sink = Sink::new();
+        let (_, mut stores, job) = view_write_request(&sink);
+        let mut runner = StoreRunner::held();
+
+        runner.start(job);
+        assert!(!view_idle(&stores), "parked, still out");
+        assert_eq!(sink.settled_hits(), 0, "and not sent");
+        assert_eq!(runner.run_held(), 1);
+        assert_eq!(runner.run_held(), 0, "the job ran, so nothing is left to run");
+
+        assert_eq!(sink.wait_for_a_hit(), 1, "the write left the device once");
+        view_pump(&mut stores, VIEW_PROFILE);
+        assert!(view_idle(&stores), "the one answer settled the write");
+        view_pump(&mut stores, VIEW_PROFILE);
+        assert!(view_idle(&stores), "a second pump finds nothing more");
+        assert!(stores.take_jobs_of(plx_data::stores::StoreId::ViewState).is_empty(), "and sends no write again");
+    }
+
+    /// A parked write runs later, and the registry may have moved on by then: the held runner
+    /// refuses it as the launch would have, so nothing is sent and the next pump drops the write.
+    #[test]
+    fn a_parked_view_write_whose_origin_key_moved_before_it_runs_is_refused() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let sink = Sink::new();
+        let (sid, mut stores, job) = view_write_request(&sink);
+        let mut runner = StoreRunner::held();
+
+        runner.start(job);
+        plx_plex::plex::client_for(sid).expect("registered").set_token("rotated");
+        assert_eq!(runner.run_held(), 1);
+
+        assert_eq!(sink.settled_hits(), 0, "the parked write was not sent through the moved credential");
+        view_pump(&mut stores, VIEW_PROFILE);
+        assert_dropped_not_sent_again(&mut stores);
+    }
+
     // ---- the Bridge's drain, which feeds the runner ----
 
     /// What `playback::describe_movie` does: a command run on the bare store, which emits a job.
@@ -1890,6 +2424,12 @@ mod tests {
         assert!(plx_plex::plex::set_current(sid));
     }
 
+    /// The client `sid` names signs in again under a new token: its key moves on, and the table the
+    /// Browse store holds is still the one it was (a re-registration would resync the roster).
+    fn move_the_key(sid: ServerId) {
+        plx_plex::plex::client_for(sid).expect("registered").set_token("new");
+    }
+
     /// Recording, the registry still holding the client the step decided on: the claim is raised on
     /// this thread before the worker exists, the worker posts its ONE answer, and taking it lowers
     /// the claim.
@@ -2000,6 +2540,537 @@ mod tests {
 
         assert_eq!(hubs.take_results().len(), 1, "the worker answered");
         assert!(!hubs.owed());
+    }
+
+    // ---- the section hubs' lane: a read the Browse store's step claimed, started or refused here ----
+
+    use plx_data::stores::browse::{BrowseCmd, BrowseStore, LibraryWork, SectionAddress};
+    use plx_plex::plex::ClientKey;
+
+    /// The command that asks the current section for its hubs.
+    fn browse_hubs_cmd(browse: &mut BrowseStore) -> BrowseCmd {
+        let id = browse.hubs_snapshot().view().id().expect("a section is current");
+        let target = SectionAddress { epoch: id.epoch, sid: id.sid, section: id.section };
+        BrowseCmd::Addressed { target, work: LibraryWork::Hubs { may_publish: true } }
+    }
+
+    /// A server registered at a port nothing listens on and a Browse store whose current section's
+    /// hubs read is out: the job its step emitted, keyed to the client the registry held when it did,
+    /// with the section hubs' one claim up from that step.
+    fn browse_hubs_request() -> (ServerId, BrowseStore, StoreJob) {
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test("runner", "127.0.0.1", 9, "t", "cid");
+        let other = plx_plex::plex::register_for_test("runner-shared", "127.0.0.1", 10, "t", "cid");
+        assert!(plx_plex::plex::set_current(sid));
+        let mut browse = BrowseStore::default();
+        browse.seed_registered_table_for_test([sid, other]);
+        browse.run(BrowseCmd::SetCur(0), &registry_keys());
+        let cmd = browse_hubs_cmd(&mut browse);
+        browse.run(cmd, &registry_keys());
+        let mut jobs = browse.take_jobs();
+        assert_eq!(jobs.len(), 1, "one section, one read");
+        let job = jobs.remove(0);
+        assert!(matches!(job, StoreJob::BrowseHubs(..)), "a section-hubs job");
+        assert!(browse.hubs_read_out_for_test(), "the step raised the one claim");
+        (sid, browse, job)
+    }
+
+    /// The request id the job's one answer is filed under.
+    fn browse_hubs_id(job: &StoreJob) -> u32 {
+        let StoreJob::BrowseHubs(job, _) = job else { panic!("not a section-hubs job") };
+        job.addr.req.0
+    }
+
+    /// The key the job's step decided on.
+    fn browse_hubs_key(job: &StoreJob) -> ClientKey {
+        let StoreJob::BrowseHubs(job, _) = job else { panic!("not a section-hubs job") };
+        job.req.server().1
+    }
+
+    /// After the runner refused the read, the store's next step settles the section to the state of
+    /// a read that never started and asks again with the registry's CURRENT key: the one new job,
+    /// returned.
+    fn the_next_step_asks_again(browse: &mut BrowseStore) -> StoreJob {
+        assert!(!browse.hubs_read_out_for_test(), "the refusal gave the claim back in the call that refused");
+        let cmd = browse_hubs_cmd(browse);
+        browse.run(cmd, &registry_keys());
+        let mut jobs = browse.take_jobs();
+        assert_eq!(jobs.len(), 1, "the settled section asked again");
+        jobs.remove(0)
+    }
+
+    /// The registry still holds the client the step decided on: the worker posts its ONE answer and
+    /// the store's pump takes it, which lowers the claim the step raised. The launch raises nothing.
+    #[test]
+    fn a_browse_hubs_job_whose_client_is_still_held_runs_on_a_worker_and_answers_once() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, mut browse, job) = browse_hubs_request();
+        assert!(!browse.hubs_answer_waiting_for_test(), "nothing has answered before the launch");
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert!(browse.hubs_answer_waiting_for_test(), "the worker answered");
+        assert!(browse.hubs_read_out_for_test(), "the claim holds until the pump takes the answer");
+        let _outcome = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &registry_keys());
+        assert!(!browse.hubs_answer_waiting_for_test(), "the pump took the one answer");
+        assert!(!browse.hubs_read_out_for_test(), "…which lowered the claim");
+        // The same pump asks for the grid's first page (the Library section it landed shelves for),
+        // which is the page job's: what a landed shelf read must not do is ask for shelves again.
+        let asked = browse.take_jobs();
+        assert!(asked.iter().all(|job| matches!(job, StoreJob::BrowsePage(..))),
+            "and a read that landed asks for no more shelves: {asked:?}");
+    }
+
+    /// The registry moved on between the step and the launch: nothing starts and the one answer is
+    /// the refusal, which lowers the claim. The next step asks again with the new key.
+    #[test]
+    fn a_browse_hubs_job_whose_client_is_gone_is_refused_once_and_the_next_step_asks_again() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, mut browse, job) = browse_hubs_request();
+        let first = browse_hubs_key(&job);
+        replace_the_client();
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert!(!browse.hubs_answer_waiting_for_test(), "no worker started, so no landing");
+        let again = the_next_step_asks_again(&mut browse);
+        assert_ne!(browse_hubs_key(&again), first, "the new read asks with the registry's current key");
+    }
+
+    /// The system refuses the thread: the same single refusal, the same settle.
+    #[test]
+    fn a_browse_hubs_job_the_system_refuses_to_start_is_refused_once_and_the_next_step_asks_again() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, mut browse, job) = browse_hubs_request();
+        let first = browse_hubs_key(&job);
+
+        with_refused_hubs_launches_for_test(|| StoreRunner::live().start(job));
+        plx_base::task::drain_workers_for_test();
+
+        assert!(!browse.hubs_answer_waiting_for_test());
+        let again = the_next_step_asks_again(&mut browse);
+        assert_eq!(browse_hubs_key(&again), first, "nothing moved: the same client is asked again");
+    }
+
+    /// `held_all` parks the job with the claim the step raised still up, and `run_held` runs it on
+    /// the test thread through the production completion: one answer, nothing left parked.
+    #[test]
+    fn a_held_browse_hubs_job_holds_its_claim_and_runs_once_when_the_test_runs_it() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, mut browse, job) = browse_hubs_request();
+        let mut runner = StoreRunner::held_all();
+
+        runner.start(job);
+        assert!(browse.hubs_read_out_for_test(), "a parked job is a read that has not answered");
+        assert!(!browse.hubs_answer_waiting_for_test());
+
+        assert_eq!(runner.run_held_of(plx_data::stores::StoreId::Browse), 1);
+        assert!(browse.hubs_answer_waiting_for_test());
+        let _outcome = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &registry_keys());
+        assert!(!browse.hubs_read_out_for_test());
+        assert_eq!(runner.run_held(), 0, "nothing left parked");
+    }
+
+    /// A parked job whose client is gone by the time the test runs it is refused, as the launch
+    /// would have refused it; the next step asks again.
+    #[test]
+    fn a_held_browse_hubs_job_whose_client_is_gone_by_then_is_refused_and_the_next_step_asks_again() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, mut browse, job) = browse_hubs_request();
+        let first = browse_hubs_key(&job);
+        let mut runner = StoreRunner::held_all();
+
+        runner.start(job);
+        assert!(browse.hubs_read_out_for_test());
+        replace_the_client();
+        assert_eq!(runner.run_held(), 1);
+
+        assert!(!browse.hubs_answer_waiting_for_test());
+        let again = the_next_step_asks_again(&mut browse);
+        assert_ne!(browse_hubs_key(&again), first);
+    }
+
+    /// `held` parks the section hubs' read, unlike Hubs' (which stays live): no rig of the suite
+    /// waits for a section-hubs landing from a real worker, and a parked read is one the test
+    /// settles when it chooses to (the `hostsim` rig that needs the request to reach the server runs
+    /// it with `run_held_store_jobs_of_for_test`). The id on the parked job is the one the store
+    /// addressed.
+    #[test]
+    fn the_held_runner_parks_a_browse_hubs_job() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, browse, job) = browse_hubs_request();
+        let id = browse_hubs_id(&job);
+        let mut runner = StoreRunner::held();
+
+        runner.start(job);
+        plx_base::task::drain_workers_for_test();
+        assert!(!browse.hubs_answer_waiting_for_test(), "no worker answered: the job is parked");
+
+        assert_eq!(runner.run_held_of(plx_data::stores::StoreId::Browse), 1, "parked under {id}");
+        assert!(browse.hubs_answer_waiting_for_test());
+    }
+
+    /// A section-hubs read is `Admission::Direct`: handed a Home ledger it starts as `start` starts
+    /// it and records nothing, and a ledger that has no record of it is not a failed run.
+    #[test]
+    fn a_browse_hubs_job_is_started_directly_and_leaves_the_home_ledger_untouched() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, browse, job) = browse_hubs_request();
+        assert_eq!(job.admission(), Admission::Direct);
+        let mut runner = StoreRunner::held_all();
+        let mut io = home_io(true, Vec::new());
+
+        runner.start_admitted(job, Some(&mut io));
+
+        assert!(io.requests.is_empty() && io.admissions.is_empty() && io.failure.is_none(),
+            "the ledger records Home jobs only");
+        assert_eq!(runner.run_held(), 1, "the job was started as `start` starts it");
+        assert!(browse.hubs_answer_waiting_for_test());
+    }
+
+    // ---- the Library's listing reads: a page or a directory list the Browse store's step claimed ----
+
+    /// A server registered at a port nothing listens on and a Browse store whose current section is
+    /// a Library section of it: its first step asks for the grid's first page.
+    fn registered_browse() -> (ServerId, BrowseStore) {
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test("runner", "127.0.0.1", 9, "t", "cid");
+        let other = plx_plex::plex::register_for_test("runner-shared", "127.0.0.1", 10, "t", "cid");
+        assert!(plx_plex::plex::set_current(sid));
+        let mut browse = BrowseStore::default();
+        browse.seed_registered_table_for_test([sid, other]);
+        browse.run(BrowseCmd::SetCur(0), &registry_keys());
+        (sid, browse)
+    }
+
+    /// The one job the store has left on its outbox, of the kind `wanted` names.
+    #[track_caller]
+    fn the_one_job(browse: &mut BrowseStore, wanted: fn(&StoreJob) -> bool, what: &str) -> StoreJob {
+        let mut jobs = browse.take_jobs();
+        assert_eq!(jobs.len(), 1, "one {what} read: {jobs:?}");
+        let job = jobs.remove(0);
+        assert!(wanted(&job), "a {what} job: {job:?}");
+        job
+    }
+
+    fn is_page(job: &StoreJob) -> bool { matches!(job, StoreJob::BrowsePage(..)) }
+    fn is_directory(job: &StoreJob) -> bool { matches!(job, StoreJob::BrowseDirectory(..)) }
+
+    /// The store's step that asks for the grid's page (the pump).
+    fn page_step(browse: &mut BrowseStore) {
+        let _ = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &registry_keys());
+    }
+
+    /// The command that asks the current section for its genre list.
+    fn browse_directory_cmd(browse: &mut BrowseStore) -> BrowseCmd {
+        let id = browse.hubs_snapshot().view().id().expect("a section is current");
+        let target = SectionAddress { epoch: id.epoch, sid: id.sid, section: id.section };
+        BrowseCmd::Addressed { target, work: LibraryWork::Genres }
+    }
+
+    /// The store's step that asks for the genre list (the filter menu's tick).
+    fn directory_step(browse: &mut BrowseStore) {
+        let cmd = browse_directory_cmd(browse);
+        browse.run(cmd, &registry_keys());
+    }
+
+    /// The page job the store's first pump left, keyed to the client the registry held when it did,
+    /// with the page claim up from that step.
+    fn browse_page_request() -> (ServerId, BrowseStore, StoreJob) {
+        let (sid, mut browse) = registered_browse();
+        page_step(&mut browse);
+        let job = the_one_job(&mut browse, is_page, "page");
+        assert!(browse.page_read_out_for_test(), "the step raised the page claim");
+        (sid, browse, job)
+    }
+
+    /// The genre list's job, with its claim up.
+    fn browse_directory_request() -> (ServerId, BrowseStore, StoreJob) {
+        let (sid, mut browse) = registered_browse();
+        directory_step(&mut browse);
+        let job = the_one_job(&mut browse, is_directory, "directory");
+        assert!(browse.directory_read_out_for_test(), "the step raised the directory claim");
+        (sid, browse, job)
+    }
+
+    /// The key the job's step decided on.
+    fn listing_key(job: &StoreJob) -> ClientKey {
+        match job {
+            StoreJob::BrowsePage(job, _) => job.req.server().1,
+            StoreJob::BrowseDirectory(job, _) => job.req.server().1,
+            other => panic!("not a listing job: {other:?}"),
+        }
+    }
+
+    /// After the runner refused the page, the store's next step settles it and asks again with the
+    /// registry's CURRENT key: the one new job, returned.
+    fn the_next_page_step_asks_again(browse: &mut BrowseStore) -> StoreJob {
+        assert!(!browse.page_read_out_for_test(), "the refusal gave the claim back in the call that refused");
+        page_step(browse);
+        the_one_job(browse, is_page, "page")
+    }
+
+    /// The same for the genre list: the menu's next tick asks again.
+    fn the_next_directory_step_asks_again(browse: &mut BrowseStore) -> StoreJob {
+        assert!(!browse.directory_read_out_for_test(), "the refusal gave the claim back in the call that refused");
+        directory_step(browse);
+        the_one_job(browse, is_directory, "directory")
+    }
+
+    /// The registry still holds the client the step decided on: the worker posts its ONE answer and
+    /// the store's pump takes it, which lowers the claim the step raised. The launch raises nothing.
+    #[test]
+    fn a_browse_page_job_whose_client_is_still_held_runs_on_a_worker_and_answers_once() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, mut browse, job) = browse_page_request();
+        assert!(!browse.page_answer_waiting_for_test(), "nothing has answered before the launch");
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert!(browse.page_answer_waiting_for_test(), "the worker answered");
+        assert!(browse.page_read_out_for_test(), "the claim holds until the pump takes the answer");
+        page_step(&mut browse);
+        assert!(!browse.page_answer_waiting_for_test(), "the pump took the one answer");
+        assert!(!browse.page_read_out_for_test(), "…which lowered the claim");
+        assert!(!browse.has_jobs(), "and a page that landed (failed, here) asks for nothing at once");
+    }
+
+    /// The registry moved on between the step and the launch: nothing starts and the one answer is
+    /// the refusal, which lowers the claim. The next step asks again with the new key.
+    #[test]
+    fn a_browse_page_job_whose_client_is_gone_is_refused_once_and_the_next_step_asks_again() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (sid, mut browse, job) = browse_page_request();
+        let first = listing_key(&job);
+        move_the_key(sid);
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert!(!browse.page_answer_waiting_for_test(), "no worker started, so no landing");
+        let again = the_next_page_step_asks_again(&mut browse);
+        assert_ne!(listing_key(&again), first, "the new read asks with the registry's current key");
+    }
+
+    /// The system refuses the thread: the same single refusal, the same settle.
+    #[test]
+    fn a_browse_page_job_the_system_refuses_to_start_is_refused_once_and_the_next_step_asks_again() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, mut browse, job) = browse_page_request();
+        let first = listing_key(&job);
+
+        with_refused_hubs_launches_for_test(|| StoreRunner::live().start(job));
+        plx_base::task::drain_workers_for_test();
+
+        assert!(!browse.page_answer_waiting_for_test());
+        let again = the_next_page_step_asks_again(&mut browse);
+        assert_eq!(listing_key(&again), first, "nothing moved: the same client is asked again");
+    }
+
+    /// `held_all` parks the job with the claim the step raised still up, and `run_held` runs it on
+    /// the test thread through the production completion: one answer, nothing left parked.
+    #[test]
+    fn a_held_browse_page_job_holds_its_claim_and_runs_once_when_the_test_runs_it() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, mut browse, job) = browse_page_request();
+        let mut runner = StoreRunner::held_all();
+
+        runner.start(job);
+        assert!(browse.page_read_out_for_test(), "a parked job is a read that has not answered");
+        assert!(!browse.page_answer_waiting_for_test());
+
+        assert_eq!(runner.run_held_of(plx_data::stores::StoreId::Browse), 1);
+        assert!(browse.page_answer_waiting_for_test());
+        page_step(&mut browse);
+        assert!(!browse.page_read_out_for_test());
+        assert_eq!(runner.run_held(), 0, "nothing left parked");
+    }
+
+    /// A parked job whose client is gone by the time the test runs it is refused, as the launch
+    /// would have refused it; the next step asks again.
+    #[test]
+    fn a_held_browse_page_job_whose_client_is_gone_by_then_is_refused_and_the_next_step_asks_again() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (sid, mut browse, job) = browse_page_request();
+        let first = listing_key(&job);
+        let mut runner = StoreRunner::held_all();
+
+        runner.start(job);
+        assert!(browse.page_read_out_for_test());
+        move_the_key(sid);
+        assert_eq!(runner.run_held(), 1);
+
+        assert!(!browse.page_answer_waiting_for_test());
+        let again = the_next_page_step_asks_again(&mut browse);
+        assert_ne!(listing_key(&again), first);
+    }
+
+    /// `held` starts the grid's page read on a worker, as production does: the library rigs wait
+    /// for a grid to settle (the route rigs for a failed page, `session_dispatch_tests` for a request
+    /// that reaches the loopback server) and nothing is parked for them. `park_page_reads` parks it
+    /// for the rig that grades which reads an entry started.
+    #[test]
+    fn the_held_runner_starts_a_browse_page_job_on_a_worker_unless_told_to_park_it() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, browse, job) = browse_page_request();
+        let mut runner = StoreRunner::held();
+
+        runner.start(job);
+        plx_base::task::drain_workers_for_test();
+        assert!(browse.page_answer_waiting_for_test(), "a worker answered: nothing is parked");
+        assert_eq!(runner.run_held(), 0);
+
+        let (_sid, browse, job) = browse_page_request();
+        runner.park_page_reads();
+        runner.start(job);
+        plx_base::task::drain_workers_for_test();
+        assert!(!browse.page_answer_waiting_for_test(), "no worker answered: the job is parked");
+        assert_eq!(runner.run_held_of(plx_data::stores::StoreId::Browse), 1);
+        assert!(browse.page_answer_waiting_for_test());
+    }
+
+    /// The directory's lane, same five branches: a worker that answers once, a client gone, a thread
+    /// refused, a parked job and a parked job whose client is gone by the time it runs.
+    #[test]
+    fn a_browse_directory_job_whose_client_is_still_held_runs_on_a_worker_and_answers_once() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, mut browse, job) = browse_directory_request();
+        assert!(!browse.directory_answer_waiting_for_test(), "nothing has answered before the launch");
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert!(browse.directory_answer_waiting_for_test(), "the worker answered");
+        assert!(browse.directory_read_out_for_test(), "the claim holds until the pump takes the answer");
+        page_step(&mut browse);
+        assert!(!browse.directory_answer_waiting_for_test(), "the pump took the one answer");
+        assert!(!browse.directory_read_out_for_test(), "…which lowered the claim");
+    }
+
+    #[test]
+    fn a_browse_directory_job_whose_client_is_gone_is_refused_once_and_the_next_step_asks_again() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (sid, mut browse, job) = browse_directory_request();
+        let first = listing_key(&job);
+        move_the_key(sid);
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert!(!browse.directory_answer_waiting_for_test(), "no worker started, so no landing");
+        let again = the_next_directory_step_asks_again(&mut browse);
+        assert_ne!(listing_key(&again), first, "the new read asks with the registry's current key");
+    }
+
+    #[test]
+    fn a_browse_directory_job_the_system_refuses_to_start_is_refused_once_and_the_next_step_asks_again() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, mut browse, job) = browse_directory_request();
+        let first = listing_key(&job);
+
+        with_refused_hubs_launches_for_test(|| StoreRunner::live().start(job));
+        plx_base::task::drain_workers_for_test();
+
+        assert!(!browse.directory_answer_waiting_for_test());
+        let again = the_next_directory_step_asks_again(&mut browse);
+        assert_eq!(listing_key(&again), first, "nothing moved: the same client is asked again");
+    }
+
+    #[test]
+    fn a_held_browse_directory_job_holds_its_claim_and_runs_once_when_the_test_runs_it() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, mut browse, job) = browse_directory_request();
+        let mut runner = StoreRunner::held_all();
+
+        runner.start(job);
+        assert!(browse.directory_read_out_for_test(), "a parked job is a read that has not answered");
+        assert!(!browse.directory_answer_waiting_for_test());
+
+        assert_eq!(runner.run_held_of(plx_data::stores::StoreId::Browse), 1);
+        assert!(browse.directory_answer_waiting_for_test());
+        page_step(&mut browse);
+        assert!(!browse.directory_read_out_for_test());
+        assert_eq!(runner.run_held(), 0, "nothing left parked");
+    }
+
+    #[test]
+    fn a_held_browse_directory_job_whose_client_is_gone_by_then_is_refused_and_the_next_step_asks_again() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (sid, mut browse, job) = browse_directory_request();
+        let first = listing_key(&job);
+        let mut runner = StoreRunner::held_all();
+
+        runner.start(job);
+        assert!(browse.directory_read_out_for_test());
+        move_the_key(sid);
+        assert_eq!(runner.run_held(), 1);
+
+        assert!(!browse.directory_answer_waiting_for_test());
+        let again = the_next_directory_step_asks_again(&mut browse);
+        assert_ne!(listing_key(&again), first);
+    }
+
+    /// `held` parks the filter menus' value lists: no rig of the suite waits for a landing of one
+    /// from a real worker (the suites ran green with it parked; the rigs that want one run it with
+    /// `run_held_store_jobs_of_for_test`).
+    #[test]
+    fn the_held_runner_parks_a_browse_directory_job() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_sid, browse, job) = browse_directory_request();
+        let mut runner = StoreRunner::held();
+
+        runner.start(job);
+        plx_base::task::drain_workers_for_test();
+        assert!(!browse.directory_answer_waiting_for_test(), "no worker answered: the job is parked");
+
+        assert_eq!(runner.run_held_of(plx_data::stores::StoreId::Browse), 1);
+        assert!(browse.directory_answer_waiting_for_test());
+    }
+
+    /// Both listing reads are `Admission::Direct`: handed a Home ledger they start as `start` starts
+    /// them and record nothing, and a ledger that has no record of them is not a failed run.
+    #[test]
+    fn the_listing_jobs_are_started_directly_and_leave_the_home_ledger_untouched() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        // Each request builds its own registry, so one is built per turn: both up front would leave
+        // the first job's client gone by the time the runner resolves it.
+        let requests: [fn() -> (ServerId, BrowseStore, StoreJob); 2] = [browse_page_request, browse_directory_request];
+        for request in requests {
+            let (_sid, browse, job) = request();
+            assert_eq!(job.admission(), Admission::Direct);
+            let mut runner = StoreRunner::held_all();
+            let mut io = home_io(true, Vec::new());
+
+            runner.start_admitted(job, Some(&mut io));
+
+            assert!(io.requests.is_empty() && io.admissions.is_empty() && io.failure.is_none(),
+                "the ledger records Home jobs only");
+            assert_eq!(runner.run_held(), 1, "the job was started as `start` starts it");
+            assert!(browse.page_answer_waiting_for_test() || browse.directory_answer_waiting_for_test());
+        }
     }
 
     /// A controlled run recording: the launch is the recorded boolean. The ledger holds the job's
@@ -2147,5 +3218,342 @@ mod tests {
 
         assert!(io.requests.is_empty(), "a Tape job records on the tape, not in the Home ledger");
         assert_eq!(runner.run_held(), 1, "and it was started as `start` starts it");
+    }
+
+    // ---- the metadata read lane: a season switch and an episode-page window ----
+
+    /// A server registered at a port nothing listens on (a read that starts fails at once) and a
+    /// metadata store holding a two-season show of it: season 1 listed, 200 episodes of which page 0
+    /// is loaded, so the window below page 0 is a hole.
+    fn show_store() -> (ServerId, MetadataStore) {
+        show_store_at(9)
+    }
+
+    /// [`show_store`] with the server registered at `port`. A test that claims the worker was
+    /// handed the client the runner resolved dials a loopback that answers (`episodes_server`): a
+    /// read that reaches it lands, and a worker handed no client answers the same failure a dead
+    /// port does, so only a landing tells the two apart.
+    fn show_store_at(port: i32) -> (ServerId, MetadataStore) {
+        assert!(plx_net::net::global_init() && plx_net::net::available() && plx_net::net::threaded_tls_ready());
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test("runner", "127.0.0.1", port, "t", "cid");
+        plx_plex::plex::client_for(sid).unwrap().set_link(plx_plex::plex::probe::Location::Local);
+        let mut store = MetadataStore::default();
+        show_on(&mut store, sid);
+        (sid, store)
+    }
+
+    /// A loopback PMS that answers every read with a two-episode `/children` list.
+    fn episodes_server() -> Pms {
+        Pms::serve(|_| {
+            ("200 OK", r#"{"MediaContainer":{"size":2,"Metadata":[
+                {"ratingKey":"ep-first","type":"episode","title":"First"},
+                {"ratingKey":"ep-second","type":"episode","title":"Second"}]}}"#.into())
+        })
+    }
+
+    /// The episode keys the show page lists, from the first page the list holds.
+    fn listed(store: &MetadataStore) -> Vec<String> {
+        store.view().current().map(|d| d.episodes.iter_loaded().map(|(_, e)| e.rk.clone()).collect()).unwrap_or_default()
+    }
+
+    /// The keys of the episodes the list holds from `EPISODE_PAGE` on: the page the window asked for.
+    fn second_page(store: &MetadataStore) -> Vec<String> {
+        use plx_data::metadata::EPISODE_PAGE;
+        store.view().current().map(|d| {
+            d.episodes.iter_loaded().filter(|(i, _)| *i >= EPISODE_PAGE).map(|(_, e)| e.rk.clone()).collect()
+        }).unwrap_or_default()
+    }
+
+    fn show_on(store: &mut MetadataStore, sid: ServerId) {
+        use plx_data::metadata::{Detail, Episode, EpisodeList, Season, EPISODE_PAGE};
+        let season = |index: i64| Season {
+            rk: format!("sk{index}"), index, title: format!("Season {index}"), leaf_count: 0, viewed_leaf_count: 0,
+        };
+        let mut episodes = EpisodeList::with_total(200);
+        episodes.set_page(0, (0..EPISODE_PAGE).map(|i| Episode { rk: format!("e{i}"), ..Default::default() }).collect());
+        plx_data::metadata::set_current_for_test(store.state_mut(), Some(Detail {
+            sid, rk: "show".into(), is_show: true, seasons: vec![season(1), season(2)], cur_season: 0,
+            episodes, ..Default::default()
+        }));
+    }
+
+    /// The switch to season 2, as the season tabs ask for it: the job its step emitted.
+    fn season_request() -> (ServerId, MetadataStore, StoreJob) {
+        season_request_at(9)
+    }
+
+    fn season_request_at(port: i32) -> (ServerId, MetadataStore, StoreJob) {
+        let (sid, mut store) = show_store_at(port);
+        assert!(store.run(MetadataCmd::LoadSeason(1)));
+        let mut jobs = store.take_jobs();
+        assert_eq!(jobs.len(), 1, "one switch, one request");
+        (sid, store, jobs.remove(0))
+    }
+
+    /// A page past the loaded one: the window the Detail screen asks for as the list scrolls.
+    fn pages_want(store: &mut MetadataStore) -> bool {
+        use plx_data::metadata::EPISODE_PAGE;
+        store.run(MetadataCmd::WantEpisodes { lo: EPISODE_PAGE, hi: EPISODE_PAGE + 10, focus: None, restore: None })
+    }
+
+    fn pages_request() -> (ServerId, MetadataStore, StoreJob) {
+        pages_request_at(9)
+    }
+
+    fn pages_request_at(port: i32) -> (ServerId, MetadataStore, StoreJob) {
+        let (sid, mut store) = show_store_at(port);
+        assert!(pages_want(&mut store));
+        let mut jobs = store.take_jobs();
+        assert_eq!(jobs.len(), 1, "one window, one request");
+        (sid, store, jobs.remove(0))
+    }
+
+    fn season_pump(store: &mut MetadataStore) -> bool {
+        store.pump_season_with_gate(plx_machine::landgate::fixture_gate())
+    }
+
+    /// The season tab and the loading flag, as the Detail screen reads them.
+    fn season_state(store: &MetadataStore) -> (usize, bool) {
+        let view = store.view();
+        (view.current().map(|d| d.cur_season).expect("a show is loaded"), view.season_loading())
+    }
+
+    /// The page job still holds its page when the same window is asked again (so no second job),
+    /// and has given it back once the window yields a new job.
+    fn pages_held(store: &mut MetadataStore) -> bool {
+        let asked = pages_want(store);
+        let _ = store.take_jobs();
+        !asked
+    }
+
+    /// The registry still holds the client: the worker starts, reads from the server the launch
+    /// resolved a client for, and posts its ONE answer. The server answers, so a landing (the tab
+    /// stays on the new season, its episodes listed) is what a worker handed the client does; one
+    /// handed none puts the tab back. The kind is not on the tape, so nothing is recorded.
+    #[test]
+    fn a_season_job_whose_client_is_held_is_started_answered_once_and_not_taped() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let pms = episodes_server();
+        let (_, mut store, job) = season_request_at(pms.port);
+        assert_eq!(job.admission(), Admission::Direct);
+        assert_eq!(season_state(&store), (1, true), "the tab flipped and the request is out");
+        tape::init(None, false);
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert_eq!(tape::finish(), (vec![], None), "the kind is untaped: the runner records no admission");
+        tape::reset_for_test();
+        assert!(season_pump(&mut store), "the read reached the server and its answer landed");
+        assert_eq!(season_state(&store), (1, false), "the request settled with the tab on the new season");
+        assert_eq!(listed(&store), ["ep-first", "ep-second"]);
+    }
+
+    /// Replay launches the same worker the recording did: there is no admission record to consult.
+    #[test]
+    fn a_season_job_launches_live_under_replay_as_the_inline_spawn_did() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_, mut store, job) = season_request();
+        tape::init(None, true);
+        tape::begin(Default::default(), Default::default());
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert_eq!(tape::finish(), (vec![], None));
+        tape::reset_for_test();
+        season_pump(&mut store);
+        assert_eq!(season_state(&store), (0, false), "a worker started and answered");
+    }
+
+    /// The registry holds no client for the show's server by the launch: the worker still starts
+    /// and answers the failure without a GET, as the inline fetch did when its read found no client.
+    #[test]
+    fn a_season_job_whose_server_has_no_client_answers_the_failure() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_, mut store, job) = season_request();
+        plx_plex::plex::reset_servers_for_test();
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        season_pump(&mut store);
+        assert_eq!(season_state(&store), (0, false), "answered once, as a failure");
+    }
+
+    /// `held()` runs the season switch on a worker as production does (the menu-play wait polls for
+    /// its landing and never runs held jobs), with the client it resolved; `held_all()` parks it
+    /// until the test runs it.
+    #[test]
+    fn the_held_runner_starts_a_season_job_on_a_worker_as_production_does() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let pms = episodes_server();
+        let (_, mut store, job) = season_request_at(pms.port);
+        let mut runner = StoreRunner::held();
+
+        runner.start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert_eq!(runner.run_held(), 0, "nothing was parked: the job started");
+        assert!(season_pump(&mut store), "the worker read from the server and its answer landed");
+        assert_eq!(season_state(&store), (1, false), "the request settled with the tab on the new season");
+    }
+
+    /// The parked job resolves its client when the test runs it, and reads through it.
+    #[test]
+    fn a_held_season_job_runs_once_when_the_test_runs_it() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let pms = episodes_server();
+        let (_, mut store, job) = season_request_at(pms.port);
+        let mut runner = StoreRunner::held_all();
+
+        runner.start(job);
+        plx_base::task::drain_workers_for_test();
+        assert_eq!(season_state(&store), (1, true), "parked: still out");
+        assert_eq!(runner.run_held(), 1);
+
+        assert!(season_pump(&mut store), "the run read from the server and its answer landed");
+        assert_eq!(season_state(&store), (1, false), "the run answered once");
+        assert_eq!(listed(&store), ["ep-first", "ep-second"]);
+        assert_eq!(runner.run_held(), 0, "and nothing is left to run twice");
+    }
+
+    /// The registry holds the client: the window's worker reads the page from the server the launch
+    /// resolved a client for and posts its ONE answer. The server answers, so the page is seated
+    /// when the pump takes it; a worker handed no client lands the page as a failure instead. Not
+    /// taped.
+    #[test]
+    fn a_page_job_whose_client_is_held_is_started_answered_once_and_not_taped() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let pms = episodes_server();
+        let (_, mut store, job) = pages_request_at(pms.port);
+        assert_eq!(job.admission(), Admission::Direct);
+        assert!(pages_held(&mut store), "the page is out: asking again starts nothing");
+        tape::init(None, false);
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert_eq!(tape::finish(), (vec![], None), "the kind is untaped: the runner records no admission");
+        tape::reset_for_test();
+        store.pump(plx_machine::landgate::fixture_gate());
+        assert_eq!(second_page(&store), ["ep-first", "ep-second"], "the read reached the server and its page is seated");
+    }
+
+    #[test]
+    fn a_page_job_launches_live_under_replay_as_the_inline_spawn_did() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_, mut store, job) = pages_request();
+        tape::init(None, true);
+        tape::begin(Default::default(), Default::default());
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert_eq!(tape::finish(), (vec![], None));
+        tape::reset_for_test();
+        store.pump(plx_machine::landgate::fixture_gate());
+        assert!(!pages_held(&mut store), "a worker started and answered");
+    }
+
+    /// No client by the launch: the job still answers, each page as a failure, so no page stays
+    /// owed.
+    #[test]
+    fn a_page_job_whose_server_has_no_client_answers_the_failure() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_, mut store, job) = pages_request();
+        plx_plex::plex::reset_servers_for_test();
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        store.pump(plx_machine::landgate::fixture_gate());
+        assert!(!pages_held(&mut store), "answered: the page came back");
+    }
+
+    /// `held()` parks the page jobs (no rig waits for a page landing); the test runs them, and a
+    /// parked job resolves its client when it runs and reads through it.
+    #[test]
+    fn a_held_page_job_runs_once_when_the_test_runs_it() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let pms = episodes_server();
+        let (_, mut store, job) = pages_request_at(pms.port);
+        let mut runner = StoreRunner::held();
+
+        runner.start(job);
+        plx_base::task::drain_workers_for_test();
+        assert!(pages_held(&mut store), "parked, still out");
+        assert_eq!(runner.run_held(), 1);
+
+        store.pump(plx_machine::landgate::fixture_gate());
+        assert_eq!(second_page(&store), ["ep-first", "ep-second"], "the run read from the server and its page is seated");
+        assert_eq!(runner.run_held(), 0);
+    }
+
+    /// A newer DETAIL request retires only the detail fetches parked before it: a parked season
+    /// switch and a parked page job are another read's, and still run.
+    #[test]
+    fn a_newer_detail_request_leaves_parked_season_and_page_jobs_to_run() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_, mut seasons, season_job) = season_request();
+        let (_, mut pages, pages_job) = pages_request();
+        let mut runner = StoreRunner::held_all();
+        let mut metadata = MetadataStore::default();
+
+        runner.start(season_job);
+        runner.start(pages_job);
+        runner.start(request(&mut metadata, ServerId::UNSET, "d1"));
+        assert_eq!(runner.run_held(), 3, "both kept, and the detail job parked after them");
+
+        season_pump(&mut seasons);
+        assert_eq!(season_state(&seasons), (0, false), "the season job ran and answered");
+        pages.pump(plx_machine::landgate::fixture_gate());
+        assert!(!pages_held(&mut pages), "and the page job did");
+    }
+
+    /// A season job a sender left on the bare store is started by the pump that finds it, in that
+    /// call: the pump is a guard (no step emits a job from a landing today), and what it finds it
+    /// starts.
+    #[test]
+    fn the_bridge_season_pump_starts_a_metadata_job_it_finds_in_the_same_call() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (sid, _) = show_store();
+        let mut bridge = Bridge::for_test(|| 0);
+        show_on(bridge.metadata_mut(), sid);
+        assert!(bridge.metadata_mut().run(MetadataCmd::LoadSeason(1)));
+        assert!(bridge.metadata_mut().has_jobs());
+
+        bridge.metadata_pump_season();
+
+        bridge.assert_no_store_jobs_left_for_test();
+    }
+
+    /// The dispatcher's entry: `metadata_run` starts the job its command emitted in that call.
+    #[test]
+    fn the_bridge_metadata_run_starts_the_season_switch_and_the_page_window_it_emitted() {
+        use plx_data::metadata::EPISODE_PAGE;
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (sid, _) = show_store();
+        let mut bridge = Bridge::for_test(|| 0);
+        show_on(bridge.metadata_mut(), sid);
+
+        assert!(bridge.metadata_run(MetadataCmd::WantEpisodes { lo: EPISODE_PAGE, hi: EPISODE_PAGE + 10, focus: None, restore: None }));
+        bridge.assert_no_store_jobs_left_for_test();
+        assert_eq!(bridge.run_held_store_jobs_for_test(), 1, "the held runner parked the page window");
+        assert!(bridge.metadata_run(MetadataCmd::LoadSeason(1)));
+        bridge.assert_no_store_jobs_left_for_test();
     }
 }

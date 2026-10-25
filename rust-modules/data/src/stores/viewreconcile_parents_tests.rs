@@ -115,13 +115,13 @@ fn press(stores: &mut Stores, sid: ServerId, rk: &str, write: Write) {
     let directory = DirectorySnapshot::default();
     assert!(stores.viewstate_run(ViewStateCmd::Request {
         sid, rk: rk.into(), write, scope: Scope::Leaf, guid: String::new(),
-    }, directory.view(), &crate::pms::registry_keys_for_test()).changed);
+    }, directory.view(), &crate::pms::registry_keys_for_test(), 0).changed);
 }
 
 fn drive(stores: &mut Stores, done: impl Fn(&Stores) -> bool) {
     let directory = DirectorySnapshot::default();
     for _ in 0..1000 {
-        let _ = stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test());
+        let _ = stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test(), 0);
         super::rig::frame(stores, &directory);
         if done(stores) { return; }
         std::thread::sleep(std::time::Duration::from_millis(5));
