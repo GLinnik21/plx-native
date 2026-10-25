@@ -484,6 +484,16 @@ fn head_of(extent: Rect) -> Placed {
     }
 }
 
+/// Adjacent enabled item in a linear group, without wrapping. Disabled/absent items own no
+/// focus stop. Shared by indexed widget geometry and sparse control rows.
+pub fn next_enabled_index(index: usize, len: usize, forward: bool, enabled: impl Fn(usize) -> bool) -> Option<usize> {
+    if forward {
+        (index.saturating_add(1)..len).find(|&i| enabled(i))
+    } else {
+        (0..index.min(len)).rev().find(|&i| enabled(i))
+    }
+}
+
 /// The §7.3 step-3 search: the destination group nearest by axis distance weighted 3:1 against
 /// orthogonal offset, from the current element's placed rect over every other group's extent,
 /// excluding groups whose `reachable` mask omits the axis. A group must lie IN the direction

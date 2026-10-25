@@ -46,6 +46,7 @@ pub mod hub_title;
 /// Whole-file text subtitles are bounded before transport allocation and parsing.
 pub const SIDECAR_MAX_BYTES: usize = 4 * 1024 * 1024;
 mod timeline;
+mod queue_window;
 mod transcoder;
 
 // The server's self-description (version + Plex Pass tristate), refreshed by `install` on every
