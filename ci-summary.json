@@ -29,8 +29,50 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-25T09:07:17Z",
+ "generated": "2026-10-25T09:28:00Z",
  "metrics": [
+  {
+   "change30_pct": null,
+   "change7_pct": 42.1,
+   "d30": null,
+   "delta30": null,
+   "delta7": 18.5,
+   "group": "local",
+   "id": "bench.ui",
+   "kind": "local",
+   "label": "Rebuild after editing plx_ui",
+   "n_now": 7,
+   "n_prev": 8,
+   "now": 62.5,
+   "prev7": 44.0,
+   "shown": true,
+   "state": "worse",
+   "state30": "new",
+   "threshold_abs": 5.0,
+   "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": 38.1,
+   "d30": null,
+   "delta30": null,
+   "delta7": 40.2,
+   "group": "local",
+   "id": "bench.leaf",
+   "kind": "local",
+   "label": "Rebuild after editing plx_base",
+   "n_now": 7,
+   "n_prev": 8,
+   "now": 145.8,
+   "prev7": 105.5,
+   "shown": true,
+   "state": "worse",
+   "state30": "new",
+   "threshold_abs": 5.0,
+   "threshold_pct": 25.0,
+   "unit": "s"
+  },
   {
    "change30_pct": null,
    "change7_pct": 37.7,
@@ -50,48 +92,6 @@
    "state30": "new",
    "threshold_abs": 20.0,
    "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
-   "change7_pct": 35.8,
-   "d30": null,
-   "delta30": null,
-   "delta7": 16.5,
-   "group": "local",
-   "id": "bench.ui",
-   "kind": "local",
-   "label": "Rebuild after editing plx_ui",
-   "n_now": 7,
-   "n_prev": 7,
-   "now": 62.5,
-   "prev7": 46.0,
-   "shown": true,
-   "state": "worse",
-   "state30": "new",
-   "threshold_abs": 5.0,
-   "threshold_pct": 25.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
-   "change7_pct": 27.1,
-   "d30": null,
-   "delta30": null,
-   "delta7": 31.1,
-   "group": "local",
-   "id": "bench.leaf",
-   "kind": "local",
-   "label": "Rebuild after editing plx_base",
-   "n_now": 7,
-   "n_prev": 7,
-   "now": 145.8,
-   "prev7": 114.7,
-   "shown": true,
-   "state": "worse",
-   "state30": "new",
-   "threshold_abs": 5.0,
-   "threshold_pct": 25.0,
    "unit": "s"
   },
   {
@@ -138,18 +138,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 15.9,
+   "change7_pct": 16.4,
    "d30": null,
    "delta30": null,
-   "delta7": 3.4,
+   "delta7": 3.5,
    "group": "local",
    "id": "bench.app",
    "kind": "local",
    "label": "Rebuild after editing the app crate",
    "n_now": 7,
-   "n_prev": 7,
+   "n_prev": 8,
    "now": 25.1,
-   "prev7": 21.7,
+   "prev7": 21.6,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -159,18 +159,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 6.8,
+   "change7_pct": 18.3,
    "d30": null,
    "delta30": null,
-   "delta7": 3.0,
+   "delta7": 7.9,
    "group": "local",
    "id": "bench.screens",
    "kind": "local",
    "label": "Rebuild after editing plx_screens",
    "n_now": 7,
-   "n_prev": 7,
-   "now": 47.0,
-   "prev7": 44.0,
+   "n_prev": 8,
+   "now": 51.2,
+   "prev7": 43.2,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -180,20 +180,20 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -25.4,
+   "change7_pct": -21.2,
    "d30": null,
    "delta30": null,
-   "delta7": -43.9,
+   "delta7": -35.2,
    "group": "local",
    "id": "bench.tests",
    "kind": "local",
    "label": "Unit suite",
    "n_now": 6,
-   "n_prev": 6,
-   "now": 128.7,
-   "prev7": 172.5,
+   "n_prev": 7,
+   "now": 130.5,
+   "prev7": 165.7,
    "shown": true,
-   "state": "better",
+   "state": "flat",
    "state30": "new",
    "threshold_abs": 5.0,
    "threshold_pct": 25.0,
@@ -201,30 +201,30 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -5.7,
+   "change7_pct": 7.1,
    "d30": null,
    "delta30": null,
-   "delta7": -81.2,
+   "delta7": 95.2,
    "group": "local",
    "id": "bench.check",
    "kind": "local",
    "label": "make check, the whole gate",
-   "n_now": 5,
-   "n_prev": 5,
-   "now": 1337.6,
+   "n_now": 4,
+   "n_prev": 6,
+   "now": 1438.9,
    "parts": [
     {
      "id": "bench.check.cargo",
      "label": "make check: cargo branch",
-     "now": 1336.0
+     "now": 1437.5
     },
     {
      "id": "bench.check.python",
      "label": "make check: python branch",
-     "now": 1084.0
+     "now": 1179.0
     }
    ],
-   "prev7": 1418.8,
+   "prev7": 1343.6,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -444,19 +444,19 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -5.7,
+   "change7_pct": 7.1,
    "d30": null,
    "delta30": null,
-   "delta7": -81.0,
+   "delta7": 95.5,
    "group": "local",
    "id": "bench.check.cargo",
    "kind": "local",
    "label": "make check: cargo branch",
-   "n_now": 5,
-   "n_prev": 5,
-   "now": 1336.0,
+   "n_now": 4,
+   "n_prev": 6,
+   "now": 1437.5,
    "parent": "bench.check",
-   "prev7": 1417.0,
+   "prev7": 1342.0,
    "shown": false,
    "state": "flat",
    "state30": "new",
@@ -466,19 +466,19 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 8.3,
+   "change7_pct": 20.0,
    "d30": null,
    "delta30": null,
-   "delta7": 83.0,
+   "delta7": 196.5,
    "group": "local",
    "id": "bench.check.python",
    "kind": "local",
    "label": "make check: python branch",
-   "n_now": 5,
-   "n_prev": 5,
-   "now": 1084.0,
+   "n_now": 4,
+   "n_prev": 6,
+   "now": 1179.0,
    "parent": "bench.check",
-   "prev7": 1001.0,
+   "prev7": 982.5,
    "shown": false,
    "state": "flat",
    "state30": "new",
@@ -614,7 +614,7 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -17.1,
+   "change7_pct": -16.6,
    "d30": null,
    "delta30": null,
    "delta7": -0.1,
@@ -623,7 +623,7 @@
    "kind": "local",
    "label": "No-op build",
    "n_now": 7,
-   "n_prev": 7,
+   "n_prev": 8,
    "now": 0.6,
    "prev7": 0.8,
    "shown": false,
@@ -635,6 +635,128 @@
   }
  ],
  "regressions": [
+  {
+   "change_pct": 42.1,
+   "commits": [
+    {
+     "pr": 1013,
+     "sha": "ef3e55a4c",
+     "title": "Metadata detail chain runs its GETs through the client the runner resolved"
+    },
+    {
+     "pr": 1015,
+     "sha": "fba7a8113",
+     "title": "Search store emits store jobs for its fetch and recents save; the scope takes the household as an input"
+    },
+    {
+     "pr": 950,
+     "sha": "e87ca6583",
+     "title": "Audio: FLAC decoded in the app and fed as PCM (stereo, up to 48 kHz)"
+    },
+    {
+     "pr": 1021,
+     "sha": "15e843ee8",
+     "title": "Browse section hubs emit store jobs for the list and row reads; the step decides the client from ClientKeys"
+    },
+    {
+     "pr": 1017,
+     "sha": "19048eae9",
+     "title": "gfx: Home's ground under the shelves is one flat colour, drawn as a clear"
+    },
+    {
+     "pr": 1023,
+     "sha": "84a780d38",
+     "title": "Metadata season switch and episode pages emit store jobs; the runner resolves the client and the detail chain is one-cli"
+    },
+    {
+     "pr": 1026,
+     "sha": "d51aff4b2",
+     "title": "ViewState writes emit store jobs keyed by ClientKey; a write whose profile or client moved is dropped, never sent as ano"
+    },
+    {
+     "pr": 1000,
+     "sha": "d18aedde5",
+     "title": "Simulator: the desktop drawable is 1:1 with the canvas on any pixel density (Retina debug crash)"
+    },
+    {
+     "pr": 1006,
+     "sha": "b835afb86",
+     "title": "Add Russian (ru) localization"
+    },
+    {
+     "pr": 1029,
+     "sha": "db75bbbfd",
+     "title": "ru: the five keys the catalogue is missing (Play Version, playback speed)"
+    }
+   ],
+   "from": 44.0,
+   "id": "bench.ui",
+   "label": "Rebuild after editing plx_ui",
+   "since": "2026-10-25",
+   "threshold_pct": 25.0,
+   "to": 62.5
+  },
+  {
+   "change_pct": 38.1,
+   "commits": [
+    {
+     "pr": 1013,
+     "sha": "ef3e55a4c",
+     "title": "Metadata detail chain runs its GETs through the client the runner resolved"
+    },
+    {
+     "pr": 1015,
+     "sha": "fba7a8113",
+     "title": "Search store emits store jobs for its fetch and recents save; the scope takes the household as an input"
+    },
+    {
+     "pr": 950,
+     "sha": "e87ca6583",
+     "title": "Audio: FLAC decoded in the app and fed as PCM (stereo, up to 48 kHz)"
+    },
+    {
+     "pr": 1021,
+     "sha": "15e843ee8",
+     "title": "Browse section hubs emit store jobs for the list and row reads; the step decides the client from ClientKeys"
+    },
+    {
+     "pr": 1017,
+     "sha": "19048eae9",
+     "title": "gfx: Home's ground under the shelves is one flat colour, drawn as a clear"
+    },
+    {
+     "pr": 1023,
+     "sha": "84a780d38",
+     "title": "Metadata season switch and episode pages emit store jobs; the runner resolves the client and the detail chain is one-cli"
+    },
+    {
+     "pr": 1026,
+     "sha": "d51aff4b2",
+     "title": "ViewState writes emit store jobs keyed by ClientKey; a write whose profile or client moved is dropped, never sent as ano"
+    },
+    {
+     "pr": 1000,
+     "sha": "d18aedde5",
+     "title": "Simulator: the desktop drawable is 1:1 with the canvas on any pixel density (Retina debug crash)"
+    },
+    {
+     "pr": 1006,
+     "sha": "b835afb86",
+     "title": "Add Russian (ru) localization"
+    },
+    {
+     "pr": 1029,
+     "sha": "db75bbbfd",
+     "title": "ru: the five keys the catalogue is missing (Play Version, playback speed)"
+    }
+   ],
+   "from": 105.5,
+   "id": "bench.leaf",
+   "label": "Rebuild after editing plx_base",
+   "since": "2026-10-25",
+   "threshold_pct": 25.0,
+   "to": 145.8
+  },
   {
    "change_pct": 37.7,
    "commits": [
@@ -695,128 +817,6 @@
    "since": "2026-10-25",
    "threshold_pct": 20.0,
    "to": 212.0
-  },
-  {
-   "change_pct": 35.8,
-   "commits": [
-    {
-     "pr": 1013,
-     "sha": "ef3e55a4c",
-     "title": "Metadata detail chain runs its GETs through the client the runner resolved"
-    },
-    {
-     "pr": 1015,
-     "sha": "fba7a8113",
-     "title": "Search store emits store jobs for its fetch and recents save; the scope takes the household as an input"
-    },
-    {
-     "pr": 950,
-     "sha": "e87ca6583",
-     "title": "Audio: FLAC decoded in the app and fed as PCM (stereo, up to 48 kHz)"
-    },
-    {
-     "pr": 1021,
-     "sha": "15e843ee8",
-     "title": "Browse section hubs emit store jobs for the list and row reads; the step decides the client from ClientKeys"
-    },
-    {
-     "pr": 1017,
-     "sha": "19048eae9",
-     "title": "gfx: Home's ground under the shelves is one flat colour, drawn as a clear"
-    },
-    {
-     "pr": 1023,
-     "sha": "84a780d38",
-     "title": "Metadata season switch and episode pages emit store jobs; the runner resolves the client and the detail chain is one-cli"
-    },
-    {
-     "pr": 1026,
-     "sha": "d51aff4b2",
-     "title": "ViewState writes emit store jobs keyed by ClientKey; a write whose profile or client moved is dropped, never sent as ano"
-    },
-    {
-     "pr": 1000,
-     "sha": "d18aedde5",
-     "title": "Simulator: the desktop drawable is 1:1 with the canvas on any pixel density (Retina debug crash)"
-    },
-    {
-     "pr": 1006,
-     "sha": "b835afb86",
-     "title": "Add Russian (ru) localization"
-    },
-    {
-     "pr": 1029,
-     "sha": "db75bbbfd",
-     "title": "ru: the five keys the catalogue is missing (Play Version, playback speed)"
-    }
-   ],
-   "from": 46.0,
-   "id": "bench.ui",
-   "label": "Rebuild after editing plx_ui",
-   "since": "2026-10-24",
-   "threshold_pct": 25.0,
-   "to": 62.5
-  },
-  {
-   "change_pct": 27.1,
-   "commits": [
-    {
-     "pr": 1013,
-     "sha": "ef3e55a4c",
-     "title": "Metadata detail chain runs its GETs through the client the runner resolved"
-    },
-    {
-     "pr": 1015,
-     "sha": "fba7a8113",
-     "title": "Search store emits store jobs for its fetch and recents save; the scope takes the household as an input"
-    },
-    {
-     "pr": 950,
-     "sha": "e87ca6583",
-     "title": "Audio: FLAC decoded in the app and fed as PCM (stereo, up to 48 kHz)"
-    },
-    {
-     "pr": 1021,
-     "sha": "15e843ee8",
-     "title": "Browse section hubs emit store jobs for the list and row reads; the step decides the client from ClientKeys"
-    },
-    {
-     "pr": 1017,
-     "sha": "19048eae9",
-     "title": "gfx: Home's ground under the shelves is one flat colour, drawn as a clear"
-    },
-    {
-     "pr": 1023,
-     "sha": "84a780d38",
-     "title": "Metadata season switch and episode pages emit store jobs; the runner resolves the client and the detail chain is one-cli"
-    },
-    {
-     "pr": 1026,
-     "sha": "d51aff4b2",
-     "title": "ViewState writes emit store jobs keyed by ClientKey; a write whose profile or client moved is dropped, never sent as ano"
-    },
-    {
-     "pr": 1000,
-     "sha": "d18aedde5",
-     "title": "Simulator: the desktop drawable is 1:1 with the canvas on any pixel density (Retina debug crash)"
-    },
-    {
-     "pr": 1006,
-     "sha": "b835afb86",
-     "title": "Add Russian (ru) localization"
-    },
-    {
-     "pr": 1029,
-     "sha": "db75bbbfd",
-     "title": "ru: the five keys the catalogue is missing (Play Version, playback speed)"
-    }
-   ],
-   "from": 114.7,
-   "id": "bench.leaf",
-   "label": "Rebuild after editing plx_base",
-   "since": "2026-10-24",
-   "threshold_pct": 25.0,
-   "to": 145.8
   }
  ],
  "schema": 2,
@@ -857,7 +857,7 @@
    "group": "local",
    "id": "bench.check",
    "label": "make check, the whole gate",
-   "now": 1337.6
+   "now": 1438.9
   },
   {
    "group": "local",
@@ -869,7 +869,7 @@
    "group": "local",
    "id": "bench.tests",
    "label": "Unit suite",
-   "now": 128.7
+   "now": 130.5
   },
   {
    "group": "local",
@@ -881,7 +881,7 @@
    "group": "local",
    "id": "bench.screens",
    "label": "Rebuild after editing plx_screens",
-   "now": 47.0
+   "now": 51.2
   }
  ],
  "thresholds": {
