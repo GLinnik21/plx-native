@@ -1073,8 +1073,10 @@ fn build_av_payload_at(
         // with getFloat and matches it against a KILOHERTZ table (48, 44.1, 32, …): `48000`
         // matches nothing and silently falls back to 44.1, which plays 48 kHz audio 9% slow and
         // resyncs every few seconds (measured 2026-10-15). `channelMode` is one of
-        // mono/dual/stereo/joint stereo. So the rate is in kHz, here and in the FLAC node
-        // `with_pcm_info` splices below (4.4.3 played that one at 44.1 when it said 48000).
+        // mono/dual/stereo/joint stereo. So this node's rate is in kHz, and so is the FLAC node
+        // `with_pcm_info` splices below (it declared hertz first: on a C1, webOS 6.5.3, every PCM
+        // Load then ran at 44.1 kHz — GStreamer caps `rate=44100` — so a 48 kHz FLAC was 9% slow
+        // and 32/22.05 kHz stuttered; an OLED55B8, webOS 4.4.3, did the same).
         .replace(r#""esInfo":"#, if audio == "PCM" && app_pcm.is_none() {
             r#""pcmInfo":{"bitsPerSample":16,"sampleRate":48,"channelMode":"stereo"},"esInfo":"#
         } else {

@@ -31,7 +31,8 @@ pub fn is_dp_audio(codec: &str) -> bool {
 
 /// Codec, channel and (for app-decoded PCM) rate check for an actual selected track. Codec-only
 /// membership is insufficient on devices whose DTS decoder stops at 5.1 or whose AAC decoder
-/// stops at stereo, and on the PCM path, which plays only some rates at their own speed.
+/// stops at stereo, and on the PCM path, which can name only some rates
+/// (`devcaps::PCM_SAMPLE_RATES`).
 pub fn is_dp_audio_track(codec: &str, channels: i64, sample_rate: i64) -> bool {
     plx_platform::devcaps::caps().audio_supports(codec, channels)
         && plx_platform::devcaps::pcm_track_fits(codec, channels, sample_rate)
@@ -288,9 +289,9 @@ fn profile_for_delivery(caps: &plx_platform::devcaps::Caps, delivery: TranscodeD
             "+add-limitation(scope=videoAudioCodec&scopeName={codec}&type=upperBound&name=audio.channels&value={channels}&replace=true)"
         ))
         .collect::<String>();
-    // The PCM path plays only some rates at their own speed (`devcaps::PCM_SAMPLE_RATES`, 48 kHz
-    // at most): above that PMS converts, as it does for a FLAC wider than stereo. A rate under
-    // 48 kHz that is not in the table is refused by the planner instead.
+    // `pcmInfo` can name only some rates (`devcaps::PCM_SAMPLE_RATES`, 48 kHz at most): above that
+    // PMS converts, as it does for a FLAC wider than stereo. A rate under 48 kHz that is not in the
+    // table is refused by the planner instead.
     let pcm_ceiling = plx_platform::devcaps::PCM_SAMPLE_RATES.iter().max().copied().unwrap_or(0);
     let audio_limits = audio_limits
         + &plx_platform::devcaps::PCM_AUDIO_CODECS
