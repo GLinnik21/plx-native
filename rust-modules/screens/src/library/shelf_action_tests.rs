@@ -43,7 +43,7 @@ fn shelf_activate_and_hold_keep_the_deck_promise_and_engine_item_identity() {
     stores.browse.borrow_mut().seed_two_source_table_for_test();
     let mut directory = plx_data::stores::browse::DirectorySnapshot::default();
     stores.capture_browse(&mut directory);
-    stores.browse_run(BrowseCmd::SetCur(0));
+    stores.browse_run_for_test(BrowseCmd::SetCur(0));
     {
         let mut browse = stores.browse.borrow_mut();
         browse.seed_items_for_test(12);
@@ -176,7 +176,7 @@ fn a_collection_shelf_heading_is_a_linked_focus_stop_that_opens_the_collection()
     stores.browse.borrow_mut().seed_two_source_table_for_test();
     let mut directory = plx_data::stores::browse::DirectorySnapshot::default();
     stores.capture_browse(&mut directory);
-    stores.browse_run(BrowseCmd::SetCur(0));
+    stores.browse_run_for_test(BrowseCmd::SetCur(0));
     {
         let mut browse = stores.browse.borrow_mut();
         browse.seed_items_for_test(12);

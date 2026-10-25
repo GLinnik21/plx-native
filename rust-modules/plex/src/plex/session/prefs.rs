@@ -36,7 +36,7 @@
 //! assignment. `subtitle_offsets` is the other tenant of the door and is declared the same way
 //! ([`SubtitleOffsetsPref`]).
 use super::{
-    DeckPress, DirectPlayMode, HdrOverlayBrightness, LastLibrary, LibraryViews, NextEpisodeMode, OpaqueExtensions, PlaintextConsent,
+    InstantDpadSeeking, DeckPress, DirectPlayMode, HdrOverlayBrightness, LastLibrary, LibraryViews, NextEpisodeMode, OpaqueExtensions, PlaintextConsent,
     HoldHintTaught, PlaybackQuality, ServerKeyPin, Session, SkipInterval, SubtitleOffsetEntry, SubtitleOffsets, SubtitlePosition,
     SubtitleSize, SubtitleTone, UiResolution, UnderPosters,
 };
@@ -122,6 +122,9 @@ pub struct Preferences {
     /// field — committed replay fixtures included — serializes exactly as it did before.
     #[serde(default, deserialize_with = "de_soft_skip_interval", skip_serializing_if = "is_default_skip_interval")]
     pub skip_interval: SkipInterval,
+    /// Hidden-HUD D-pad jumps; off by default.
+    #[serde(default, deserialize_with = "de_soft_instant_dpad_seeking", skip_serializing_if = "InstantDpadSeeking::is_default")]
+    pub instant_dpad_seeking: InstantDpadSeeking,
     /// **What OK does on a Continue Watching card** — see [`DeckPress`]. A frozen fallback like
     /// [`Preferences::playback_quality`]: each profile keeps its own pick in `profile_prefs`, and a
     /// profile that has not picked reads this top-level key. Absence is Details, so a session written
@@ -335,7 +338,7 @@ pub struct Preferences {
     #[serde(default, deserialize_with = "super::de_soft_vec", skip_serializing_if = "Vec::is_empty")]
     pub subtitle_offsets: Vec<SubtitleOffsets>,
     // ---- per-profile player settings ----
-    /// **Each profile's own value of the ten player settings and of hero trailer autoplay** — see [`ProfilePrefsRecord`] and the
+    /// **Each profile's own playback and display settings** — see [`ProfilePrefsRecord`] and the
     /// module doc of `profile_prefs`. A record per (profile, account stamp), soft-parsed per element so one junk
     /// record costs only itself, skipped while empty so a session that never picked anything per
     /// profile serializes exactly as it did before the field existed. Account-bound: a record whose
@@ -492,6 +495,8 @@ setting!(DirectPlayModePref: DirectPlayMode = direct_play_mode, "direct_play_mod
     account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
 setting!(NextEpisodeModePref: NextEpisodeMode = next_episode_mode, "next_episode_mode", Profile fallback LegacyInstallKey,
     account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
+setting!(InstantDpadSeekingPref: InstantDpadSeeking = instant_dpad_seeking, "instant_dpad_seeking", Profile fallback LegacyInstallKey,
+    account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
 setting!(SkipIntervalPref: SkipInterval = skip_interval, "skip_interval", Profile fallback LegacyInstallKey,
     account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
 setting!(DeckPressPref: DeckPress = deck_press, "deck_press", Profile fallback LegacyInstallKey,
@@ -605,6 +610,7 @@ pub const DESCRIPTORS: &[Descriptor] = &[
     Descriptor::of::<HdrOverlayBrightnessPref>(),
     Descriptor::of::<NextEpisodeModePref>(),
     Descriptor::of::<SkipIntervalPref>(),
+    Descriptor::of::<InstantDpadSeekingPref>(),
     Descriptor::of::<DeckPressPref>(),
     Descriptor::of::<UnderPostersPref>(),
     Descriptor::of::<AudioEnhancementsPref>(),
@@ -628,7 +634,7 @@ pub const DESCRIPTORS: &[Descriptor] = &[
 impl Session {
     /// This session with `S` set to `value`, every other field intact.
     ///
-    /// It writes the setting's TOP-LEVEL key. For the ten player settings and hero trailer autoplay that key is the frozen
+    /// It writes the setting's TOP-LEVEL key. For per-profile settings that key is the frozen
     /// legacy fallback every profile reads until it picks its own, which no pick ever writes (the
     /// door writes `profile_prefs`: [`persist_profile_pref`]); so this is a test and fixture
     /// builder ("the install says X"), and `auto_sign_in` (TV-wide) is its only production-shaped row.
@@ -678,7 +684,7 @@ impl<E> Default for ProfileList<E> {
 
 /// **A record of a per-profile list**: one profile's data under one account stamp, held in a
 /// `Vec` of them in a [`Session`] field. [`ProfileList`] (the memory door's entries) and
-/// [`ProfilePrefsRecord`] (the ten player settings' and hero trailer autoplay's own values) are the two shapes, and the
+/// [`ProfilePrefsRecord`] (the profiles' own playback and display values) are the two shapes, and the
 /// identity rules every such list shares are written once, over this: how a profile's record is
 /// found, what a foreign stamp does to the list, and when an emptied record goes.
 pub trait ProfileKeyed: Sized {
@@ -1306,6 +1312,17 @@ where
 /// `skip_serializing_if` needs a function, not just `PartialEq` with `Default::default()`.
 fn is_default_skip_interval(interval: &SkipInterval) -> bool {
     *interval == SkipInterval::default()
+}
+
+/// Instant D-pad seeking is a preference too: a spelling this build does not know degrades to Off.
+fn de_soft_instant_dpad_seeking<'de, D>(d: D) -> Result<InstantDpadSeeking, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Ok(v) = serde_json::Value::deserialize(d) else {
+        return Ok(InstantDpadSeeking::default());
+    };
+    Ok(serde_json::from_value::<InstantDpadSeeking>(v).unwrap_or_default())
 }
 
 /// The deck-press mode is a preference too: a spelling this build does not know degrades to Details.

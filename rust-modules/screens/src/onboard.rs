@@ -1058,7 +1058,7 @@ mod tests {
         s.toggle_row(SrcTarget::Library(0), browse.capture());
         assert!(s.has_band(), "Done appears after an edit");
 
-        browse.stores.browse_run(BrowseCmd::Reset);
+        browse.stores.browse_run_for_test(BrowseCmd::Reset);
         assert!(
             OnboardScreen::settings(EntryId(0), browse.capture()).has_band(),
             "Retry is a real action even on a pristine editor"

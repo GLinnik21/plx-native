@@ -7387,12 +7387,24 @@ impl PersonOwnerGateFixture {
     # the move. A migration PR lowers the number with the lines it deletes. Seeded 2026-10-24 from
     # the tool's own output on the tree this table was written for.
     PINNED_LEDGER_TOTALS = {
-        "workers": 16,  # production worker starts inside machines (`ci/allow/workers/`)
+        # Browse B-A (the section hubs' list and row reads leave as `StoreJob::BrowseHubs`): -2 here (`hubs_spawn`,
+        # `hubs_spawn_row` `spawn_small`), -3 on globals (their `client_for` reads and `hubs_land`'s).
+        # Browse B-B+C (the directory and listing-page reads leave as `StoreJob::BrowseDirectory` and
+        # `StoreJob::BrowsePage`): -2 here (`kick_directory`, `maybe_spawn_owned` `spawn_small`), -2 on globals
+        # (their `client_for` reads).
+        # ViewState C3 (the household writes leave as `StoreJob::ViewWrite`): -1 here (`kick`'s `spawn_small`).
+        # Metadata M2 (the season switch and the episode-page window leave as `StoreJob::MetaSeason` /
+        # `StoreJob::MetaEpisodes`): -2 here (`load_season`, `want_episodes` `spawn_small`), -2 on globals
+        # (`fetch_episodes`, `fetch_episode_page` `client_for`).
+        "workers": 9,  # production worker starts inside machines (`ci/allow/workers/`)
         # Sans-IO lifecycle PR B moved the pin by nothing: -3 (the three `lifecycle.rs` `player::TX` lines left with the
         # transport contract, `player/transport.rs`, the IO layer) and +3 (a relocation lowers no pin by itself, so the same
         # diff widened the spellings to the transport readers `transport::paused`, `transport::viewer_paused` and
         # `preview::paused`, and seeded the 3 `preview::paused` reads in screens/detail it found).
-        "globals": 78,  # production process-global reads inside machines (`ci/allow/globals/`)
+        # ViewState C2 (the step decides from the borrowed `ClientKeys`): -2 on globals (`request` and
+        # `fan_out_origin_watched` no longer read the registry). C3 (the job lane) took the other 3: `kick`, and the
+        # fan-out's `fan_out` and `ask_sources`, which now reach the other servers through the key-checked `KeyedClients`.
+        "globals": 66,  # production process-global reads inside machines (`ci/allow/globals/`)
         "forks": 58,  # production test/production forks in data/, plex/, media/, session/ (`ci/allow/forks/`)
         "fxlanes": 11,  # Bridge::app_effect arms that do not push Fx::Deliver (`ci/allow/fxlanes/`)
     }

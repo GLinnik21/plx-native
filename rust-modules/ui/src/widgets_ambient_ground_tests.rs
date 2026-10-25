@@ -290,8 +290,9 @@ fn an_item_with_no_envelope_holds_the_ground_instead_of_clearing_it() {
 }
 
 /// A ground that has resolved to the app's own clear colour must report itself flat, because
-/// `draw` skips it there and that skip IS this component's fill-rate story: a full-screen
-/// ambient pass is ~2M fragments for a gradient identical to the `frame_clear` under it.
+/// `draw` skips it there and that skip IS this component's fill-rate story: drawn, it would be a
+/// full-screen clear at rest and a ~2M-fragment ambient pass while the corners settle onto it,
+/// either way identical to the `frame_clear` under it.
 #[test]
 fn a_ground_keyed_to_nothing_is_a_pass_the_screen_can_skip() {
     let mut g = PageGround::new();

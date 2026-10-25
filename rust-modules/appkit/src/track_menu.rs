@@ -2378,7 +2378,7 @@ use plx_data::metadata::track_label::Kind;
 /// (`route::audio_converted_by_server`). Always ONE line: the longest label is graded against the
 /// panel by `converted_audio_sub_lines_fit_the_panel_in_every_language`.
 fn audio_sub_line(sub: String, s: &metadata::Stream) -> String {
-    audio_sub_line_for(sub, plx_media::route::audio_converted_by_server(&s.codec, s.channels))
+    audio_sub_line_for(sub, plx_media::route::audio_converted_by_server(&s.codec, s.channels, s.sampling_rate))
 }
 
 /// [`audio_sub_line`] with the conversion fact given — the pure choice, host-testable.
@@ -3203,6 +3203,8 @@ mod tests {
                         channels: 8,
                         can_normalize_loudness: true,
                         immersive: true,
+                        sample_rate: 0,
+                        bit_depth: 0,
                     },
                     memo: Some(plx_plex::plex::session::prefs::AudioMemo {
                         codec: "eac3".into(),
@@ -4336,8 +4338,8 @@ mod enhancement_menu_tests {
         // the capability answer it is fed: TrueHD is outside the profile's audio list, AC-3 is not
         let truehd = metadata::Stream { codec: "truehd".into(), channels: 8, ..Default::default() };
         let ac3 = metadata::Stream { codec: "ac3".into(), channels: 6, ..Default::default() };
-        assert!(plx_media::route::audio_converted_by_server(&truehd.codec, truehd.channels));
-        assert!(!plx_media::route::audio_converted_by_server(&ac3.codec, ac3.channels));
+        assert!(plx_media::route::audio_converted_by_server(&truehd.codec, truehd.channels, truehd.sampling_rate));
+        assert!(!plx_media::route::audio_converted_by_server(&ac3.codec, ac3.channels, ac3.sampling_rate));
     }
 
     /// **The longest converted sub-line fits the Audio panel in every shipped language** — graded
@@ -5550,6 +5552,7 @@ mod localized_offset_tests {
             (Preference::Fr, "fr-FR", "-0,1 s", "+1,3 s"),
             (Preference::De, "de-DE", "-0,1 s", "+1,3 s"),
             (Preference::Hu, "hu-HU", "-0,1 mp", "+1,3 mp"),
+            (Preference::Ru, "ru-RU", "-0,1 с", "+1,3 с"),
         ] {
             let locale = LocaleContext::resolve(preference, None, Some(region), None, None);
             assert_eq!(crate::timing_capsule::offset_seconds_in(-100, true, &locale), negative);

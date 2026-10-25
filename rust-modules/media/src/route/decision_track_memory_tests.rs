@@ -1042,7 +1042,7 @@ fn commit_audio_selection_is_false_only_for_the_forced_refusal() {
     forced.direct_play_mode = DirectPlayMode::Forced;
     restore_direct_play_mode(DirectPlayMode::Disabled);
     assert!(forced_direct_play(&forced));
-    let truehd = CarriedAudio { sid: 9, ordinal: 0, codec: "truehd".into(), channels: 8, can_normalize_loudness: false, immersive: false };
+    let truehd = CarriedAudio { sid: 9, ordinal: 0, codec: "truehd".into(), channels: 8, can_normalize_loudness: false, immersive: false, sample_rate: 0, bit_depth: 0 };
     assert!(!commit_audio_selection(&mut forced, truehd), "Force Direct Play refuses a track it cannot feed");
     assert_eq!(cur_audio_sid(&forced), 0, "and the selection is untouched");
     restore_direct_play_mode(DirectPlayMode::Auto);
@@ -1235,11 +1235,11 @@ fn a_pick_the_route_refuses_writes_nothing() {
     restore_direct_play_mode(DirectPlayMode::Disabled);
     assert!(forced_direct_play(&ps), "setup: Force Direct Play is on");
 
-    let truehd = CarriedAudio { sid: 9, ordinal: 0, codec: "truehd".into(), channels: 8, can_normalize_loudness: false, immersive: false };
+    let truehd = CarriedAudio { sid: 9, ordinal: 0, codec: "truehd".into(), channels: 8, can_normalize_loudness: false, immersive: false, sample_rate: 0, bit_depth: 0 };
     assert!(!commit_audio_pick(&mut ps, truehd, Some(japanese_eac3())), "the route refuses TrueHD it cannot feed");
     assert_eq!(remembered_anything(""), Vec::<TrackMemoryEntry>::new(), "and the refused pick wrote nothing");
 
-    let eac3 = CarriedAudio { sid: 10, ordinal: 1, codec: "eac3".into(), channels: 6, can_normalize_loudness: false, immersive: false };
+    let eac3 = CarriedAudio { sid: 10, ordinal: 1, codec: "eac3".into(), channels: 6, can_normalize_loudness: false, immersive: false, sample_rate: 0, bit_depth: 0 };
     assert!(commit_audio_pick(&mut ps, eac3, Some(japanese_eac3())), "control: a track the route can feed stands");
     assert_eq!(remembered(""), Some(TrackMemoryEntry::new(MACHINE, SHOW, Some(japanese_eac3()), None)));
     restore_direct_play_mode(DirectPlayMode::Auto);

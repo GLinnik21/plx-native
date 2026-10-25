@@ -2040,14 +2040,14 @@ resume, the `/:/timeline` reporter — which is also why it needs somebody's lib
 It needs a TV address and nothing else — no token, no ratingKey, no `manifest.local.json`, no
 sharing — so it is the only tier a stranger can run, and it is what separates "the player is
 broken" from "the library layer is broken" when a server case fails. **What it covers, precisely:**
-the player feeds `{h264,hevc}` (plus `av1` / `vp9` on a set whose codec table lists that decoder's row) × `{aac,ac3,eac3,dts}` in mkv/mp4/m4v. Auto intersects this
+the player feeds `{h264,hevc}` (plus `av1` / `vp9` on a set whose codec table lists that decoder's row) × `{aac,ac3,eac3,dts}` (plus `flac`, decoded in the app and fed as PCM) in mkv/mp4/m4v. Auto intersects this
 software set with the device table and per-codec channel ceilings; DTS requires a measured
 DTS row and feeds only the DTS core when an HD extension is present. PMS names DTS `dca`:
 `devcaps::audio_codec_id` folds it (and `ec-3`) onto the pipeline's `dts` at membership and at
 the Load payload, and the profile sends `dca` (`transcoder.rs::profile_codec_name`). Force
 Direct Play admits DTS only when the table has a DTS row with channels (`Caps::forced_admits_dts`)
 but skips the channel ceiling. The implemented Load
-strings are `H264`/`H265`/`AV1`/`VP9` (AV1 and VP9 only on a set whose table lists that decoder; elsewhere the Load is refused) and `AC3`/`AC3 PLUS`/`AAC`/`DTS`; these are not the firmware's whole
+strings are `H264`/`H265`/`AV1`/`VP9` (AV1 and VP9 only on a set whose table lists that decoder; elsewhere the Load is refused) and `AC3`/`AC3 PLUS`/`AAC`/`DTS`, plus `PCM` for FLAC decoded in the app; these are not the firmware's whole
 vocabulary. The six AC3/EAC3/AAC combinations and H264/DTS are covered
 here, plus DV 8.1, both containers, in-place seek in each, and the FRAME-RATE axis added the same
 day (`pipe_h264_1080p5994` is the only fixture that reaches `fps_rational`'s 1001-denominator

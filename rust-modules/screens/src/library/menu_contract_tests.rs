@@ -45,7 +45,7 @@ fn menu_anchor_is_frozen_and_a_new_open_uses_the_new_anchor() {
     session.watching("u-menu-anchor-contract");
     let stores = plx_data::stores::Stores::default();
     stores.browse.borrow_mut().seed_two_source_table_for_test();
-    stores.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(0));
+    stores.browse_run_for_test(plx_data::stores::browse::BrowseCmd::SetCur(0));
     let measure = FixtureMeasure;
     let mut first = plx_data::stores::browse::DirectorySnapshot::default();
     let publication = stores.capture_browse(&mut first);
@@ -224,7 +224,7 @@ fn open_sources_refreshes_metadata_once_then_settles() {
     session.watching("u-menu-refresh-contract");
     let stores = plx_data::stores::Stores::default();
     stores.browse.borrow_mut().seed_two_source_table_for_test();
-    stores.browse_run(plx_data::stores::browse::BrowseCmd::SetCur(0));
+    stores.browse_run_for_test(plx_data::stores::browse::BrowseCmd::SetCur(0));
     let measure = FixtureMeasure;
     let mut first = plx_data::stores::browse::DirectorySnapshot::default();
     let publication = stores.capture_browse(&mut first);
