@@ -254,5 +254,7 @@
   "widgets.region.nl": "Нидерланды",
   "widgets.region.latin_america": "Латинская Америка",
   "widgets.failure.play_auto": "Включить «Авто» и смотреть",
-  "widgets.failure.change_quality": "Изменить качество"
+  "widgets.failure.change_quality": "Изменить качество",
+  "widgets.menu.speed": "Скорость воспроизведения",
+  "widgets.speed.normal": "Обычная"
 }

@@ -35,13 +35,17 @@ def verify(binary, media, output, instant_dpad=False):
         return stamp
 
     def control_row():
+        # A metadata descriptor can arrive before the resolve installs the item's queue/kind.
+        # Wait for that item's actual Playing heartbeat before exercising its queue controls.
+        playing_at = sim.latest(lambda _, line: line.startswith("playing item: "))[0]
+        wait(r"loop=.*route=player .*pos=\d+s", playing_at)
         # A hidden-HUD reveal can produce the same fingerprint as the previous visible frame.
         # A reveal may therefore need a second UP. Await each actual focus transition rather
         # than assuming a fixed render delay, especially while the host is also building.
         for _ in range(3):
             stamp = sim.key("up")
             wait(r"key type=0x301", stamp)
-            if sim.wait_for(r"^focus route=player .*hud=1 f=1 .*slot=discs items=5", 1, after=stamp):
+            if sim.wait_for(r"^focus route=player .*hud=1 f=1 (?:btn=1 .*pair=1 .*next=1|btn=0 .*pair=1 previous=1 next=0)", 1, after=stamp):
                 return
         latest = sim.latest(lambda _, line: line.startswith("focus "))[1]
         raise AssertionError(f"control row not reached: {latest}")
@@ -81,6 +85,14 @@ def verify(binary, media, output, instant_dpad=False):
         # input time, so its timer-only sample cannot establish an automatic timeout by itself.
         stamp = sim.key("up")
         wait(r"^focus route=player .*hud=0 ", stamp)
+        if not instant_dpad:
+            stamp = sim.key("right")
+            wait(r"^focus route=player .*hud=1 f=0", stamp)
+            time.sleep(0.15)
+            assert not any("seek(in-place): av_seek t=" in line for at, line in sim.snapshot() if at >= stamp)
+            stamp = sim.key("back")
+            wait(r"^focus route=player .*hud=0 ", stamp)
+            print("PASS default hidden-HUD D-pad press reveals without seeking", flush=True)
         stamp = sim.key("right" if instant_dpad else "ff")
         wait(r"seek\(in-place\): av_seek t=[1-9][0-9]* ", stamp)
         wait(r"loop=.*route=player .*pos=1[1-9]s", stamp)
@@ -101,6 +113,20 @@ def verify(binary, media, output, instant_dpad=False):
         stamp = sim.key("ok")
         wait(r"seek\(in-place\): av_seek t=", stamp)
         print("PASS a visible-HUD seek waits for OK", flush=True)
+
+        # Use the shared split-edge remote protocol: a held transport key must not send the
+        # tap's jump first, or commit on release. Only OK takes the continuous preview.
+        stamp = sim.key("holddown:ff")
+        time.sleep(0.5)
+        for _ in range(4):
+            sim.key("holdrep:ff")
+            time.sleep(0.08)
+        sim.key("holdup:ff")
+        wait(r"scrub: hold over .*pending", stamp)
+        assert not any("seek(in-place): av_seek t=" in line for at, line in sim.snapshot() if at >= stamp)
+        stamp = sim.key("ok")
+        wait(r"seek\(in-place\): av_seek t=", stamp)
+        print("PASS held FF previews without an initial jump and waits for OK", flush=True)
     finally:
         sim.close()
         server.shutdown()

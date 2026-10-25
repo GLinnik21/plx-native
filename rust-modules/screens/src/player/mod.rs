@@ -1314,14 +1314,10 @@ impl PlayerScreen {
     }
 }
 
-/// **The four registered regions, as real `Focusable` groups** (restructure phase 12, D2): the
-/// scrubber, the control row, the bottom tabs and — only while it is drawn — the failure read-out's
-/// own escape. `neighbour` still declines the engine's own geometric stepping (`Step::Edge`
-/// unconditionally): every direction this screen cares about is intercepted first by its own
-/// `Machine::step` (`ui/dispatch.rs`'s `handled == Handled::No && engine` guard never sees one this
-/// screen answers `Handled::Yes` for), so `HudNav` stays the single source of truth for WHICH of
-/// these is highlighted — these groups exist so the engine's hit map and stop bookkeeping have real
-/// geometry to test a click or a simulator mouse against, not so the engine drives the ring itself.
+/// **The four registered regions**: scrubber, control row, bottom tabs and failure actions.
+/// The established player key policy chooses vertical HUD transitions and dismissal. Horizontal
+/// control-row travel belongs to FocusEngine: neighbour uses the shared enabled-index helper,
+/// absent/disabled discs have no placement, and seat chooses the row's enabled primary.
 ///
 /// **The order `groups` pushes in is the pointer's z-order**, lowest first: `record_stops`
 /// registers in it, and the hit map resolves the last stop under the pointer. The scrubber's tall

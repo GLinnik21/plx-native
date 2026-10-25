@@ -4030,11 +4030,12 @@ pub(crate) fn every_surface_word() -> Vec<&'static str> {
 /// fork's packed state read as an edge.
 pub(crate) fn key_input(sym: u32, wcode: u32, state: u32, now: Tick, source: Source) -> InputEvent<u32> {
     use plx_ui::consts::{classify, Key as K};
+    // Transport keys retain their raw identity under Other; only D-pad arrows navigate.
     let key = match classify(sym, wcode) {
         K::Up => Key::Up,
         K::Down => Key::Down,
-        K::Left { .. } => Key::Left,
-        K::Right { .. } => Key::Right,
+        K::Left { alt: false } => Key::Left,
+        K::Right { alt: false } => Key::Right,
         K::Ok => Key::Ok,
         K::Back => Key::Back,
         _ => Key::Other,
@@ -4465,4 +4466,21 @@ mod preference_effect_tests {
         assert_eq!(plx_media::route::direct_play_mode(), mode);
         assert_eq!(std::fs::read(temp.path()).unwrap(), before);
     }
+}
+
+#[cfg(test)]
+#[test]
+fn transport_keys_keep_their_identity_through_dispatcher_input() {
+    use plx_ui::consts::{self, Key as Physical};
+    for (sym, wcode, expected) in [(0, consts::WCODE_FASTFORWARD, Physical::Right { alt: true }),
+        (consts::WCODE_REWIND, 0, Physical::Left { alt: true })] {
+        for state in [1, 0x101, 0] {
+            let input = key_input(sym, wcode, state, Tick::default(), Source::Sdl);
+            let InputKind::Key { key, sym, wcode, .. } = input.kind else { panic!("a key") };
+            assert_eq!(key, Key::Other, "transport keys are not navigation arrows");
+            assert_eq!(consts::classify_input(key, sym, wcode), expected);
+        }
+    }
+    let input = key_input(consts::SDLK_LEFT, consts::WCODE_REWIND, 1, Tick::default(), Source::Sdl);
+    assert!(matches!(input.kind, InputKind::Key { key: Key::Left, .. }), "plain D-pad precedence is unchanged");
 }

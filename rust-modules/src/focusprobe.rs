@@ -311,6 +311,10 @@ fn push_player(ps: &plx_media::route::PlaybackSession, s: &mut String, overlay: 
         ctrl.items(),
         b(plx_appkit::player_hud::transport_hidden(ps))
     );
+    if let ControlSlot::Discs(controls) = ctrl {
+        let _ = write!(s, " pair={} previous={} next={} restart={}",
+            b(controls.pair), b(controls.previous), b(controls.next), b(controls.restart));
+    }
     // Whether this item HAS chapters at all — a fact about the item, not about a panel, which is
     // why it stays here while each overlay's own open flag and cursor arrive on `content` from the
     // surface (`app::bridge::content_probe`).

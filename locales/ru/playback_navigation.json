@@ -4,10 +4,5 @@
   "settings.playback.episode_navigation_buttons": "Кнопки Назад/Далее",
   "settings.playback.episode_navigation_buttons.copy": "Кнопки для очереди эпизодов. С пяти секунд Назад начинает эпизод заново, раньше — включает предыдущий.",
   "settings.playback.instant_dpad_seeking.off": "Выкл.",
-  "settings.playback.instant_dpad_seeking.on": "Вкл.",
-  "browse.detail.play_version": "Воспроизвести версию",
-  "browse.menu.play_version": "Воспроизвести версию",
-  "browse.menu.play_version_title": "Выберите версию",
-  "widgets.menu.speed": "Скорость воспроизведения",
-  "widgets.speed.normal": "Обычная"
+  "settings.playback.instant_dpad_seeking.on": "Вкл."
 }

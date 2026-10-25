@@ -791,8 +791,8 @@ pub enum ControlSlot {
 }
 
 impl ControlSlot {
-    /// How many focusable items the row holds — what the LEFT/RIGHT clamp needs, as DATA instead of
-    /// a hand-written `btn = 0` pin beside a `clamp(0, 1)`.
+    /// Stable slots in this occupant. An absent or disabled disc has no focus stop; `enabled`
+    /// and `item_rect` define those independently of the stable indices.
     pub fn items(self) -> c_int {
         match self {
             ControlSlot::Discs(_) => BTN_N,
@@ -834,7 +834,7 @@ impl ControlSlot {
     /// **Item `idx` of whatever occupies the row, at the rect it is DRAWN at** — the one
     /// geometry `PlayerScreen`'s `Focusable::place` answers with, and therefore the rect its stop
     /// is registered at, for all three occupants and every item of each (`0..items()`). `None`
-    /// past the occupant's last item.
+    /// past the occupant's last item or at an absent disc. Disabled visible discs still have rects.
     ///
     /// Read-only over `row`'s label-width memo ([`ctrl_slot_w`]): `place` is `&self`, and a width
     /// the draw has not cached yet is measured the same way the draw measures it.
@@ -1497,7 +1497,7 @@ fn btn_x(idx: i32) -> f32 {
     disc_row().span(idx as usize).map_or(CTRL_RIGHT, |(x, _)| x)
 }
 
-/// which control button a pointer at (cx,cy) is over: 0 = Subtitles, 1 = Audio, 2 = More, or None.
+/// Which enabled control disc a pointer at (cx,cy) is over, by its stable row index.
 /// Returns stable row indices, skipping disabled controls; geometry is shared with draw_hud.
 ///
 /// `slot` is passed in rather than re-derived: while a stand-in owns the row the discs are not on

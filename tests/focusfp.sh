@@ -266,7 +266,7 @@ record_flow 5 detail-person-detail "detail=$RK_MOVIE detailsec=1 detailok" "slee
 # The synthetic token boot has no signed-in account: Favourites is absent, so the root is Playback,
 # Language, Privacy, Legal, About and Privacy is row 2. Step down twice, visit it and toggle its
 # first choice, then return to row 2 and step down once to Legal.
-record_flow 6 settings-family "settings=root" "sleep:1 down down ok sleep:1 ok sleep:1 back sleep:1 down ok sleep:1 ok sleep:1 back back back" 'overlay=settings'
+record_flow 6 settings-family "settings=root" "sleep:1 down down ok sleep:1 ok sleep:0.3 back sleep:1 down ok sleep:1 ok sleep:0.3 back back sleep:1 back" 'overlay=settings'
 # 7 first-run consent -> onboard -> Home
 record_flow 7 firstrun-consent-onboard "firstrun" "sleep:1 ok sleep:1 ok sleep:1 down ok sleep:2" 'route='
 # 8 Detail -> hold on Related -> ItemMenu -> BACK. detailsec is a DOWN count, not a section id:
