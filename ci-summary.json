@@ -29,7 +29,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-25T22:33:13Z",
+ "generated": "2026-10-25T22:36:51Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -120,14 +120,14 @@
    "change7_pct": -21.7,
    "d30": 716.0,
    "delta30": -381.0,
-   "delta7": -93.0,
+   "delta7": -93,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 92,
+   "n_now": 93,
    "n_prev": 119,
-   "now": 335.0,
+   "now": 335,
    "prev7": 428,
    "shown": true,
    "state": "better",
@@ -341,15 +341,15 @@
    "change30_pct": 103.8,
    "change7_pct": 11.8,
    "d30": 130,
-   "delta30": 135,
+   "delta30": 135.0,
    "delta7": 28.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 79,
+   "n_now": 80,
    "n_prev": 112,
-   "now": 265,
+   "now": 265.0,
    "prev7": 237.0,
    "shown": true,
    "state": "flat",
@@ -359,18 +359,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 175.7,
-   "change7_pct": 6.1,
+   "change30_pct": 173.6,
+   "change7_pct": 5.3,
    "d30": 72,
-   "delta30": 126.5,
-   "delta7": 11.5,
+   "delta30": 125,
+   "delta7": 10.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 78,
+   "n_now": 79,
    "n_prev": 112,
-   "now": 198.5,
+   "now": 197,
    "prev7": 187.0,
    "shown": true,
    "state": "flat",
@@ -423,17 +423,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -3.3,
+   "change7_pct": -2.9,
    "d30": null,
    "delta30": null,
-   "delta7": -5.0,
+   "delta7": -4.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 79,
+   "n_now": 80,
    "n_prev": 112,
-   "now": 148,
+   "now": 148.5,
    "prev7": 153.0,
    "shown": true,
    "state": "flat",
@@ -490,15 +490,15 @@
    "change30_pct": 18.8,
    "change7_pct": 11.8,
    "d30": 16,
-   "delta30": 3,
+   "delta30": 3.0,
    "delta7": 2.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 79,
+   "n_now": 80,
    "n_prev": 112,
-   "now": 19,
+   "now": 19.0,
    "prev7": 17.0,
    "shown": false,
    "state": "flat",
@@ -639,11 +639,6 @@
    "change_pct": 37.8,
    "commits": [
     {
-     "pr": 1013,
-     "sha": "ef3e55a4c",
-     "title": "Metadata detail chain runs its GETs through the client the runner resolved"
-    },
-    {
      "pr": 1015,
      "sha": "fba7a8113",
      "title": "Search store emits store jobs for its fetch and recents save; the scope takes the household as an input"
@@ -687,6 +682,11 @@
      "pr": 1029,
      "sha": "db75bbbfd",
      "title": "ru: the five keys the catalogue is missing (Play Version, playback speed)"
+    },
+    {
+     "pr": 921,
+     "sha": "2d238e7b0",
+     "title": "player: FF/REW tap seeking, opt-in instant D-pad seeking, Previous/Next episode buttons"
     }
    ],
    "from": 156,
@@ -700,11 +700,6 @@
    "change_pct": 35.8,
    "commits": [
     {
-     "pr": 1013,
-     "sha": "ef3e55a4c",
-     "title": "Metadata detail chain runs its GETs through the client the runner resolved"
-    },
-    {
      "pr": 1015,
      "sha": "fba7a8113",
      "title": "Search store emits store jobs for its fetch and recents save; the scope takes the household as an input"
@@ -748,6 +743,11 @@
      "pr": 1029,
      "sha": "db75bbbfd",
      "title": "ru: the five keys the catalogue is missing (Play Version, playback speed)"
+    },
+    {
+     "pr": 921,
+     "sha": "2d238e7b0",
+     "title": "player: FF/REW tap seeking, opt-in instant D-pad seeking, Previous/Next episode buttons"
     }
    ],
    "from": 46.0,
@@ -761,11 +761,6 @@
    "change_pct": 27.1,
    "commits": [
     {
-     "pr": 1013,
-     "sha": "ef3e55a4c",
-     "title": "Metadata detail chain runs its GETs through the client the runner resolved"
-    },
-    {
      "pr": 1015,
      "sha": "fba7a8113",
      "title": "Search store emits store jobs for its fetch and recents save; the scope takes the household as an input"
@@ -809,6 +804,11 @@
      "pr": 1029,
      "sha": "db75bbbfd",
      "title": "ru: the five keys the catalogue is missing (Play Version, playback speed)"
+    },
+    {
+     "pr": 921,
+     "sha": "2d238e7b0",
+     "title": "player: FF/REW tap seeking, opt-in instant D-pad seeking, Previous/Next episode buttons"
     }
    ],
    "from": 114.7,
@@ -849,7 +849,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 265
+   "now": 265.0
   }
  ],
  "slowest_local": [
