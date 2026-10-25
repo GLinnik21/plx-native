@@ -125,7 +125,7 @@ something.
   the screensaver, and whether that press reaches the app is unmeasured. A toggle over a save that
   was Playing is spent as a wake (the machine has no claim that restores a Playing save Paused).
   A Playing restore of a Paused save also clears the pause the park left standing BEFORE the Load
-  (`PlayerForegroundActuator::before_load` → `lifecycle::commit_viewer_resume_for_load`):
+  (`PlayerForegroundActuator::before_load` → `transport::commit_viewer_resume_for_load`):
   `ClockStartGuard` arms the Load's initial hold from `TX.paused` (only with no live Engine: over one, `before_load` leaves the pause for `PlayClock`), and under the stale pause that
   hold was the viewer's, which fenced the first Play behind a prime (`SMP Play fenced; priming
   before retry`) and left the actual Play to the late `PlayClock`. That cleared pause, not the
@@ -187,10 +187,10 @@ something.
   transport spinner draws; a seek flight engages the same hold from
   `start_transcode_seek_flight`) and `take` + `release` AFTER `run_claim_tail`, so an accepted
   claim's Play lands on the new stream and a rejected one's on the kept Engine. A viewer press
-  (`player::lifecycle::set_transport_paused` -> `note_user_transport`) forgets the restore: the
+  (`player::transport::set_transport_paused` -> `note_user_transport`) forgets the restore: the
   viewer's last transport press always stands. A stream already paused at claim time stays paused.
   While the hold's pause stands the viewer's transport reads see PLAYING
-  (`player::lifecycle::viewer_paused`, `claim_hold::owns_pause`): the OK toggle means Pause and a
+  (`player::transport::viewer_paused`, `claim_hold::owns_pause`): the OK toggle means Pause and a
   seek's `resume_if_paused` leaves the hold alone (its seek is carried past the reload by
   `pump::commit_or_carry_seek`, including a seek pressed mid-flight when none was pending at
   claim time). A reload (or a Pause pressed before the first frame) under a VIEWER Pause leaves a
@@ -229,7 +229,11 @@ something.
     dispatches `Pending` for a replacement remux (PUT + `/decision`, landing at the offset the Auto
     worker published) and `PendingNoHold` for a direct Original the worker already sampled, which
     needs no round trip and keeps playing. A refused one reopens the retained HLS
-    (`pump::land_automatic_original`) because the Auto worker exited to hand the action over. The
+    (`pump::land_automatic_original`) because the Auto worker exited to hand the action over; the
+    reducer remembers the refusal against that HLS encoder (`PlayerControl::original_refused_on`;
+    an admitted trial whose Load fails is recorded the same way, on the encoder its rollback's
+    rebase installs), so the reopened worker's source gate starts held (`ProbeBlock::RouteRefused`) until an HLS
+    commit, a seek's rebuild or a new playback changes the route — no timer, no re-ask loop. The
     Original-to-HLS fallback (`route::execute_auto_hls_claim`) never holds, though its worker reaches
     PMS: the Original plays until the landing replaces it, and a refusal (`pump::land_automatic_hls`)
     raises `demux_io_failed`. A user pick made during an automatic flight WAITS in `pending_user` and
@@ -342,6 +346,15 @@ something.
   survived a long time because the test suite's cases inherited a server-side `viewOffset`, so the
   seek under test usually had nowhere to go (fixed 2026-07-28; see the
   `docs/agent-reference.md` testing note).
+- **Playback speed is done in the app, fixed per Load.** LG's `SetPlayRate` cannot work here (its rate
+  seek is reset to 1x by the buffer-feed source's next SEGMENT, a mid-play call freezes the pipeline,
+  and libpf mutes audio off 1x), so a speed session declares PCM audio, `ff::SpeedDecoder` decodes and
+  `speed_audio` time-stretches the sound, and every timestamp to the pipeline is divided by the speed
+  (`player::to_sink_ns`, inverted on the presented-frame callback by `from_sink_ns`).
+  A speed change is a seek to the viewer's own position marked `rate_reload`, and while the speed is not
+  1x every direct-play seek reloads in every mode (`pump::seek_must_reload`). `play_rate_permille` is the
+  viewer's choice and persists across reloads; `applied_rate_permille` is the current pipeline's and is
+  reset by `reset_session`. The feed throttle's run-on reads the applied one (`FeedPace::reference_at`).
 - **Seeks are in-place**, in one of three per-session modes (`player::SeekMode`, chosen by
   `engine::select_seek_mode` in `start_bufferfeed`, the `/tmp/plxnative-seekmode` dev trigger
   `native|segment|reload` wins): the demuxer is `av_seek_frame`d to the target, then on the first
@@ -372,7 +385,7 @@ something.
   `play_pending()` is already false by then), and the app loop's drain starts the Load when it lands
   (`finish_landed_play`). So is the FOREGROUND restore's resume of a parked transcode: the
   foreground machine (`player/lifecycle.rs`) parks in `PreparePending` / `RecoveryPending` (both
-  `awaiting_load`, so playback and the cold drain stay off), and `poll_foreground_flight` — once a
+  `awaiting_load`, so playback and the cold drain stay off), and `poll_foreground_flight` (`player/foreground.rs`) — once a
   frame from `playback_tick`, outside `playback_may_run` — drains the landing with the same
   `land_resume` and carries on into the Load; a refused rebuild re-arms the suspended snapshot, a
   flight that ended without landing releases the machine, and a SECOND OS background while it flies
@@ -420,9 +433,10 @@ something.
   its own PUT as before. It holds itself to the
   subtitle the landing put on screen (`owed.landed_sub`, settled from the session by
   `settle_landing_selection`), so it never replaces a remembered sidecar the restore drew.
-- **App-switch lifecycle** (handled in `app/run.rs`, the frame loop; the machine and the
-  transport-pause contract are `player/lifecycle.rs`, which `app::lifecycle` re-exports; details in
-  the `docs/agent-reference.md` gotchas): OS
+- **App-switch lifecycle** (handled in `app/run.rs`, the frame loop; the machine is
+  `player/lifecycle.rs`, its drivers (`drive_foreground` and the `poll_`/`park_` fns) are
+  `player/foreground.rs`, and the transport-pause contract is `player/transport.rs`; `app::lifecycle`
+  re-exports all three; details in the `docs/agent-reference.md` gotchas): OS
   background suspends the buffer-feed preserving the session. Foreground tracks one exact Load
   attempt at a time, follows reducer-approved superseding or rollback attempts, retries an exact
   failure without repeating route preparation, and issues the clock's native Play only after
@@ -435,8 +449,8 @@ something.
   Load to its own settlement. `DidForegroundSuperseded` is the DID edge that arrives together
   with a launch link that is ending playback (`app/run.rs`, `did_foreground_with_link`): it claims
   nothing, so a parked session stays parked (`Suppressed`) and the link's `Exit` retires it
-  instead of racing a restore. The per-state table is on `ForegroundLifecycle::claim`; add no
-  mutator beside it.
+  instead of racing a restore. The per-state table is on `ForegroundLifecycle::step`; add no
+  event outside `ForegroundEvent`.
   Preserve the suspend/reload pairing if you touch playback.
 
 ## Verifying playback changes

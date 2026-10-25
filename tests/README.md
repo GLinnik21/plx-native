@@ -220,6 +220,10 @@ account stays clean. It works without storing any new secret:
   access token** from `GET https://plex.tv/api/servers/<machineId>/shared_servers` (keyed by
   `userID` — which is what `test_user.id` is). The managed user must already have the libraries
   shared with it.
+- An installation without an owner token in `config.local.h` can instead set
+  `test_user.token_file`: the path of a private file, outside the tree, holding that managed
+  user's per-server token on one line (`~` is expanded). `run.py` reads it at run time, skips the
+  plex.tv lookup, and never prints it; `--print-test-token` honours the same key.
 - That token is used for the `/:/progress` resume seed **and** written to `plxnative-token` in the
   TV's runtime root. The binary carries **no** token, so this file is the only way an automated run
   gets PMS access at all (see `plex_run`); the **app itself** then plays and scrobbles as the
@@ -454,8 +458,11 @@ that address. It boots the synthetic guest `tools/tv-session.sh up --guest --moc
 is then checked against the app's own log: no `pms: server N version=1.41.0.0000-synthetic` line,
 or any other server version, fails the scene before it is graded. Debug flavor only; `tests/run.py` does not deploy the binary, so deploy the build you mean to measure first (`make deploy` under the TV lock, or `tools/tv-session.sh up`, which deploys when stale; for FPS or frame pacing build with `ARM_PROFILE=release`, e.g. `make ARM_PROFILE=release deploy`, because a bare `make deploy` ships the no-LTO `tvdev` build, which `--fps*` and `tools/profile-graphics` refuse to grade; see `docs/agent-reference.md` "ARM_PROFILE") — a stress run once measured an older binary this way. `--server`,
 `--owner`, `--shared-server`, `--suite` and `--graphics-profile` are refused with it. The panel is
-turned off (`tv-session.sh screen off`, before every scene) and the sound muted (`sound off`) —
-the run stops if either cannot be done — and neither is ever turned back on.
+kept OFF (`tv-session.sh screen off`, asserted before every scene: it is only the backlight, and the
+app keeps presenting at full rate, measured 2026-10-24 on Home `grid-pong`: 73 frames/cycle at 59.9 fps
+off, 59.6-59.9 on) and the sound muted (`sound off`, once per run); the run stops if either cannot be
+done, and the sound is never un-muted. `--panel on` lights the panel instead (`screen on` before every
+scene), for a run someone wants to watch.
 **A person page on a `--mock` or `--guest` boot has no biography and no filmography credits.** Both
 write `plxnative-token`, and a dev-token boot with no Discover stand-in armed has the app refuse the
 page's two provider reads itself (`discover: GET … refused` in the log, `discover: base=real
@@ -648,7 +655,10 @@ marks pacing invalid if a render-profiler trigger is armed.
   `unsupported`), the observed slow scenes are exactly the two with the most full-screen passes,
   and 50 fps is also precisely the European panel refresh on this SKU. Discriminate with a soak
   (same scene cold vs hot vs recovered), never from one sample. See
-  `docs/perf-view-buffers-and-thermal.md`.
+  `docs/perf-view-buffers-and-thermal.md`. (2026-10-24: a temperature can be read after all. LG's
+  power manager reports the SoC temperature in `/proc/lg/pm/temperature` (39-61 °C on 2026-10-24)
+  and the CPU frequency in `/proc/lg/pm/frequency`, although there is still no `thermal_zone` or
+  `cpufreq`; see `.agents/skills/profile-tv/SKILL.md`, "Mali T820 facts".)
 - **False-negative guard:** a scene with <5 post-warmup samples for its route FAILs (it never reached
   that screen — app crash, or a `detail`/`play` rk that isn't in the home catalog), never a vacuous
   pass. `detail-transition`'s item (`movie_in_home_catalog`) must be an **in-home-catalog
@@ -767,6 +777,12 @@ pieces make that reproducible:
 4. `make run TV=<tv> RUN_SECS=<n> FLAVOR=<f>` — relaunch, wait, and cat that install's
    `plxnative-events.log` back.
 5. Filter the `smp_cb type=43 num=0 str=` flood and evaluate the assertions.
+6. `crash_gate` (`run.py`): if the case's log holds a `*** SIGNAL` line, or `plxnative-crash.log`
+   gained a record since step 3 counted it, the case FAILS (`app_alive`) unless it sets
+   `expect_crash: true`, and the set's `plxnative-stderr.log` (the abort message; the next launch
+   truncates it) is copied to `<name>.stderr.log` / `<name>.crash.log` in the `--save-logs`
+   directory, else `$TMPDIR/plxnative-crash-evidence/`, with the path printed. `--save-logs`
+   keeps `<name>.stderr.log` for every case. The FPS tier does not run this gate.
 
 ## The `plxnative-play=<rk>` trigger (added for this harness)
 

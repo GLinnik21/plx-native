@@ -17,8 +17,10 @@
 pub mod abr; // client-managed fixed-session HLS controller: estimate, propose, prime, then commit
 pub mod aq;
 pub mod curlio; // the HTTPS media plane: a remote file pulled by byte range over libcurl-multi (stream.rs is the plaintext-socket twin)
+pub mod ff_pcm; // FLAC decoded in the app and fed as PCM (libpf has no FLAC input)
 #[macro_use]
 pub mod ff; // THE demuxer -- the FFmpeg 9.0 this app BUNDLES and pins (majors 63/63/61), dlopen'd by absolute path beside the binary, never the television's
 pub mod hls; // strict parser/auth/timeline for the measured one-variant PMS HLS shape
 pub mod player; // buffer-feed video engine (was playback.c) -- step 5
+pub mod speed_audio; // playback speed: decoded audio -> pitch-corrected 48 kHz stereo PCM (WSOLA)
 pub mod route; // play_movie route selection (direct-play vs transcode) -- step 3

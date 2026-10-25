@@ -19,6 +19,8 @@ struct Truth {
     release: AtomicBool,
     reads: AtomicUsize,
     scrobbles: AtomicUsize,
+    /// Every request that reached the server, whatever it asked.
+    requests: AtomicUsize,
     /// The `viewOffset` a read answers with (0: none), whatever the watched state.
     view_offset: AtomicI64,
 }
@@ -39,6 +41,7 @@ fn serve_connection(mut conn: std::net::TcpStream, truth: Arc<Truth>) {
     let n = conn.read(&mut buf).unwrap_or(0);
     let request = String::from_utf8_lossy(&buf[..n]).into_owned();
     let path = request.split_whitespace().nth(1).unwrap_or("/").to_string();
+    truth.requests.fetch_add(1, Ordering::SeqCst);
     if path.starts_with("/:/scrobble") || path.starts_with("/:/unscrobble") {
         truth.scrobbles.fetch_add(1, Ordering::SeqCst);
         if path.starts_with("/:/scrobble") && truth.refuse_scrobble.load(Ordering::SeqCst) {
@@ -120,18 +123,24 @@ fn tile(stores: &Stores) -> (bool, bool) {
 }
 
 fn press(stores: &mut Stores, sid: ServerId, write: Write) {
+    press_as(stores, sid, write, 0);
+}
+
+/// A press made under the profile whose identity (`session::current_gen`) is `profile`.
+fn press_as(stores: &mut Stores, sid: ServerId, write: Write, profile: u32) {
     let directory = DirectorySnapshot::default();
     assert!(stores.viewstate_run(ViewStateCmd::Request {
         sid, rk: "1".into(), write, scope: Scope::Leaf, guid: String::new(),
-    }, directory.view()));
+    }, directory.view(), &crate::pms::registry_keys_for_test(), profile).changed);
+    super::rig::start_jobs(stores); // the Bridge's drain, in the same call as the step
 }
 
 /// Pump both owners as the frame loop does until `done`, failing after ~5 s.
 fn drive(stores: &mut Stores, done: impl Fn(&Stores) -> bool) {
     let directory = DirectorySnapshot::default();
     for _ in 0..1000 {
-        let _ = stores.viewstate_pump(directory.view());
-        stores.reconcile_pump(directory.view());
+        let _ = stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test(), 0);
+        super::rig::frame(stores, &directory);
         if done(stores) { return; }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
@@ -190,7 +199,7 @@ fn a_read_back_overtaken_by_a_press_is_dropped_and_the_item_asked_again() {
     pms.truth.release.store(true, Ordering::SeqCst); // the held read answers: WATCHED, the old truth
     let directory = DirectorySnapshot::default();
     for _ in 0..1000 {
-        stores.reconcile_pump(directory.view()); // the reconcile owner alone: the second write has not landed
+        super::rig::frame(&mut stores, &directory); // the reconcile owner alone: the second write has not landed
         if stores.reconcile.flights_for_test() == 0 { break; }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
@@ -226,11 +235,11 @@ fn reset_forgets_the_queue_and_the_flights() {
     assert!(!store.is_busy() && store.dirty_for_test().is_empty());
 }
 
-/// A read is stamped when it is SPAWNED, so a press whose write has not landed yet would sit before
-/// that stamp and be undone by the read's older body. The read is therefore not spawned while the
+/// A read is stamped when it is SENT, so a press whose write has not landed yet would sit before
+/// that stamp and be undone by the read's older body. The read is therefore not sent while the
 /// owner has a write queued or out; it waits in the queue and goes when the burst is idle.
 #[test]
-fn a_read_is_not_spawned_while_a_write_is_queued_so_the_press_survives_it() {
+fn a_read_is_not_sent_while_a_write_is_queued_so_the_press_survives_it() {
     let _g = plx_base::testlock::serial();
     let pms = serve();
     let (mut stores, sid) = library_holding_item(&pms);
@@ -240,7 +249,7 @@ fn a_read_is_not_spawned_while_a_write_is_queued_so_the_press_survives_it() {
     stores.reconcile.enqueue([(sid, "1".to_string())]); // an earlier burst's read-back, still waiting
     let directory = DirectorySnapshot::default();
     for _ in 0..200 { // the reconcile owner alone, as when a press lands between two frames
-        stores.reconcile_pump(directory.view());
+        super::rig::frame(&mut stores, &directory);
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
     assert_eq!(pms.truth.reads.load(Ordering::SeqCst), 0, "no read goes out over a queued write");
@@ -290,7 +299,7 @@ fn a_stop_patches_the_resume_point_before_the_read_back_is_asked() {
     pms.truth.hold_next_read.store(true, Ordering::SeqCst);
     let (mut stores, sid) = library_holding_item(&pms);
     let directory = DirectorySnapshot::default();
-    stores.stops_landed(vec![stop(sid, 30_000, true, true)], directory.view());
+    let _ = stores.stops_landed(vec![stop(sid, 30_000, true, true)], directory.view(), &crate::pms::registry_keys_for_test());
     assert_eq!(pms.truth.reads.load(Ordering::SeqCst), 0, "nothing has been read yet");
     assert_eq!(tile_resume(&stores), 30_000, "the tile already shows where the viewer stopped");
     drive(&mut stores, |_| pms.truth.holding.load(Ordering::SeqCst));
@@ -306,7 +315,7 @@ fn a_stop_the_server_refused_patches_the_tile_and_reads_nothing_back() {
     let pms = serve();
     let (mut stores, sid) = library_holding_item(&pms);
     let directory = DirectorySnapshot::default();
-    stores.stops_landed(vec![stop(sid, 30_000, true, false)], directory.view());
+    let _ = stores.stops_landed(vec![stop(sid, 30_000, true, false)], directory.view(), &crate::pms::registry_keys_for_test());
     drive(&mut stores, |s| settled(s));
     std::thread::sleep(std::time::Duration::from_millis(50));
     assert_eq!(pms.truth.reads.load(Ordering::SeqCst), 0);
@@ -324,7 +333,7 @@ fn a_stop_the_server_refused_still_owes_the_detail_pages_a_re_read() {
     let pms = serve();
     let (mut stores, sid) = library_holding_item(&pms);
     let directory = DirectorySnapshot::default();
-    stores.stops_landed(vec![stop(sid, 30_000, true, false)], directory.view());
+    let _ = stores.stops_landed(vec![stop(sid, 30_000, true, false)], directory.view(), &crate::pms::registry_keys_for_test());
     let owed = stores.take_landed_views();
     assert_eq!(owed.len(), 1, "one page re-read for the one refused stop");
     assert!(plx_plex::plex::same_item((owed[0].0, &owed[0].1), (sid, "1")));
@@ -362,10 +371,10 @@ fn the_read_back_of_a_stop_waits_while_the_network_is_held() {
     let (mut stores, sid) = library_holding_item(&pms);
     let directory = DirectorySnapshot::default();
     stores.hold_network(true);
-    stores.stops_landed(vec![stop(sid, 30_000, true, true)], directory.view());
+    let _ = stores.stops_landed(vec![stop(sid, 30_000, true, true)], directory.view(), &crate::pms::registry_keys_for_test());
     for _ in 0..40 {
-        let _ = stores.viewstate_pump(directory.view());
-        stores.reconcile_pump(directory.view());
+        let _ = stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test(), 0);
+        super::rig::frame(&mut stores, &directory);
         std::thread::sleep(std::time::Duration::from_millis(3));
     }
     assert_eq!(pms.truth.reads.load(Ordering::SeqCst), 0, "no read under the player");
@@ -384,7 +393,7 @@ fn an_end_of_stream_scrobbles_the_other_servers_copy_but_not_the_origin_again() 
     a.truth.watched.lock().unwrap().insert("1".into()); // what A holds once the stream has ended
     let (mut stores, sid_a, _sid_b) = two_servers(&a, &b);
     let directory = DirectorySnapshot::default();
-    stores.stops_landed(vec![stop(sid_a, 60_000, false, true)], directory.view());
+    let _ = stores.stops_landed(vec![stop(sid_a, 60_000, false, true)], directory.view(), &crate::pms::registry_keys_for_test());
     drive(&mut stores, |s| settled(s) && b.truth.scrobbles.load(Ordering::SeqCst) == 1);
     assert_eq!(a.truth.scrobbles.load(Ordering::SeqCst), 0, "the origin already counted the view");
     assert_eq!(tile(&stores), (true, false), "A's tile reads watched");
@@ -412,7 +421,7 @@ fn after_an_end_of_stream_the_other_servers_search_tile_reads_watched() {
     }]);
     let search_tile = |stores: &Stores| {
         let directory = DirectorySnapshot::default();
-        let snap = stores.search_snapshot(directory.view());
+        let snap = stores.search_snapshot(directory.view(), &[]);
         snap.view().shelves().iter().flat_map(|s| &s.items).find_map(|it| match it {
             Item::Media(m) if m.sid == sid_b => Some((m.watched, m.unwatched, m.resume_ms)),
             _ => None,
@@ -423,7 +432,7 @@ fn after_an_end_of_stream_the_other_servers_search_tile_reads_watched() {
         "premise: B's tile already reads watched but still carries a stale resume point"
     );
     let directory = DirectorySnapshot::default();
-    stores.stops_landed(vec![stop(sid_a, 60_000, false, true)], directory.view());
+    let _ = stores.stops_landed(vec![stop(sid_a, 60_000, false, true)], directory.view(), &crate::pms::registry_keys_for_test());
     drive(&mut stores, |s| settled(s) && b.truth.scrobbles.load(Ordering::SeqCst) == 1);
     assert_eq!(
         search_tile(&stores), Some((true, false, 7_000)),
@@ -440,10 +449,10 @@ fn a_rewatch_does_not_fan_out() {
     a.truth.watched.lock().unwrap().insert("1".into());
     let (mut stores, sid_a, _sid_b) = two_servers(&a, &b);
     let directory = DirectorySnapshot::default();
-    stores.stops_landed(vec![stop(sid_a, 60_000, true, true)], directory.view());
+    let _ = stores.stops_landed(vec![stop(sid_a, 60_000, true, true)], directory.view(), &crate::pms::registry_keys_for_test());
     drive(&mut stores, |s| settled(s) && a.truth.reads.load(Ordering::SeqCst) == 1);
     std::thread::sleep(std::time::Duration::from_millis(50));
-    let _ = stores.viewstate_pump(directory.view());
+    let _ = stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test(), 0);
     assert_eq!(b.truth.scrobbles.load(Ordering::SeqCst), 0);
     assert_eq!(a.truth.scrobbles.load(Ordering::SeqCst), 0);
     drop(stores);
@@ -456,20 +465,20 @@ fn a_stop_in_the_middle_does_not_fan_out() {
     let (a, b) = (serve(), serve());
     let (mut stores, sid_a, _sid_b) = two_servers(&a, &b);
     let directory = DirectorySnapshot::default();
-    stores.stops_landed(vec![stop(sid_a, 30_000, false, true)], directory.view());
+    let _ = stores.stops_landed(vec![stop(sid_a, 30_000, false, true)], directory.view(), &crate::pms::registry_keys_for_test());
     drive(&mut stores, |s| settled(s) && a.truth.reads.load(Ordering::SeqCst) == 1);
     std::thread::sleep(std::time::Duration::from_millis(50));
-    let _ = stores.viewstate_pump(directory.view());
+    let _ = stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test(), 0);
     assert_eq!(b.truth.scrobbles.load(Ordering::SeqCst), 0);
     drop(stores);
 }
 
-/// **A landing settles only a candidate its own flight could have seen.** A read spawned BEFORE the
+/// **A landing settles only a candidate its own flight could have seen.** A read sent BEFORE the
 /// stop was enqueued describes the server from before the stop; it must neither drop the candidate
-/// (our own fan-out would be lost) nor decide it. The dirty re-read spawned after the stop does, and
+/// (our own fan-out would be lost) nor decide it. The dirty re-read sent after the stop does, and
 /// the other server's copy is then scrobbled.
 #[test]
-fn a_flight_spawned_before_the_candidate_does_not_settle_it() {
+fn a_flight_sent_before_the_candidate_does_not_settle_it() {
     let _g = plx_base::testlock::serial();
     let (a, b) = (serve(), serve());
     a.truth.hold_next_read.store(true, Ordering::SeqCst);
@@ -478,12 +487,12 @@ fn a_flight_spawned_before_the_candidate_does_not_settle_it() {
     let key = (sid, "1".to_string());
     stores.reconcile.enqueue([key.clone()]);
     drive(&mut stores, |_| a.truth.holding.load(Ordering::SeqCst)); // the early read is out, held
-    stores.reconcile.enqueue_stop(key.clone(), false); // the stop arrives after it was spawned
+    stores.reconcile.enqueue_stop(key.clone(), false); // the stop arrives after it was sent
     a.truth.watched.lock().unwrap().insert("1".into()); // the stream ended: later reads see it
     stores.hold_network(true); // landings are taken, the re-read waits: the stale landing is observed alone
     a.truth.release.store(true, Ordering::SeqCst); // the early read answers with its OLD body
     for _ in 0..1000 {
-        stores.reconcile_pump(directory.view());
+        super::rig::frame(&mut stores, &directory);
         if stores.reconcile.flights_for_test() == 0 { break; }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
@@ -492,5 +501,94 @@ fn a_flight_spawned_before_the_candidate_does_not_settle_it() {
     drive(&mut stores, |s| settled(s) && b.truth.scrobbles.load(Ordering::SeqCst) == 1);
     assert!(stores.reconcile.candidates_for_test().is_empty(), "the later flight settled it");
     assert_eq!(a.truth.scrobbles.load(Ordering::SeqCst), 0, "the origin already counted the view");
+    drop(stores);
+}
+
+/// **A write pressed under one profile is never sent as the next profile's.** A switch re-tokens the
+/// registry's clients IN PLACE, so a queued write's server still resolves, now to the new profile's
+/// credential. The press recorded the profile; the kick finds it moved, drops the write, retires its
+/// ledger entry and sends nothing: a scrobble is a statement about one household member's viewing
+/// record.
+#[test]
+fn a_write_pressed_under_another_profile_is_dropped_and_retired_not_sent_as_the_new_one() {
+    let _g = plx_base::testlock::serial();
+    let pms = serve();
+    let (mut stores, sid) = library_holding_item(&pms);
+    stores.viewstate.borrow_mut().hold_inflight_for_test(sid, "held"); // the press must queue behind it
+    press_as(&mut stores, sid, Write::Watched, 5);
+    assert_eq!(stores.view_ledger.since(0).len(), 1, "the press is in the ledger until its fate is known");
+    // the switch: the SAME slot and client object, the new profile's token, a new profile identity
+    plx_plex::plex::client_for(sid).unwrap().set_token("the-next-profiles-token");
+    let land_held = stores.viewstate.borrow().late_completion_for_test();
+    land_held();
+    let directory = DirectorySnapshot::default();
+    for _ in 0..200 {
+        let _ = stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test(), 6);
+        super::rig::frame(&mut stores, &directory);
+        if settled(&stores) { break; }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(settled(&stores), "the queue emptied");
+    assert_eq!(pms.truth.scrobbles.load(Ordering::SeqCst), 0, "nothing was sent under the new profile's token");
+    assert!(stores.view_ledger.since(0).is_empty(), "the dropped press was retired");
+    drop(stores);
+}
+
+/// **The worker reaches the other servers only through the snapshot the step decided under.** A
+/// profile switch re-tokens the registry's clients in place; a fan-out that read the registry
+/// again would look the title up on, and scrobble it to, the other server under the NEXT profile's
+/// credential. The origin's client still carries the key the step named, so the write itself goes
+/// out; the other server's no longer does, so it hears nothing at all: no lookup, no scrobble.
+#[test]
+fn a_fanout_target_whose_key_moved_after_the_step_gets_no_request() {
+    let _g = plx_base::testlock::serial();
+    let (a, b) = (serve(), serve());
+    let (mut stores, sid_a, sid_b) = two_servers(&a, &b);
+    let directory = DirectorySnapshot::default();
+    assert!(stores.viewstate_run(ViewStateCmd::Request {
+        sid: sid_a, rk: "1".into(), write: Write::Watched, scope: Scope::Leaf, guid: String::new(),
+    }, directory.view(), &crate::pms::registry_keys_for_test(), 0).changed);
+    // the switch lands between the step and the worker
+    plx_plex::plex::client_for(sid_b).unwrap().set_token("the-next-profiles-token");
+    super::rig::start_jobs(&mut stores);
+
+    drive(&mut stores, |s| {
+        settled(s) && a.truth.scrobbles.load(Ordering::SeqCst) == 1 && a.truth.reads.load(Ordering::SeqCst) >= 1
+    });
+    assert_eq!(a.truth.scrobbles.load(Ordering::SeqCst), 1, "the origin's own write went out");
+    assert_eq!(b.truth.requests.load(Ordering::SeqCst), 0,
+        "the other server heard nothing: no guid lookup, no scrobble, no read");
+    assert_eq!(b.truth.scrobbles.load(Ordering::SeqCst), 0);
+    drop(stores);
+}
+
+/// **A token swap under a profile that still reads as the old one is dropped too.** A profile
+/// switch swaps the registry's tokens in the frame the session adopts them, but the new profile's
+/// identity (`Bridge::profile_scope`) is published by a LATER commit, so for a few frames a real
+/// switch looks to the step like a same-profile refresh: the key moved, the profile did not. The
+/// step cannot tell the two apart, so a key that moved since the press drops the write and retires
+/// its ledger entry, and nothing is sent under the next profile's token.
+#[test]
+fn a_write_whose_client_was_re_tokened_while_the_profile_still_reads_the_old_one_is_dropped_and_retired() {
+    let _g = plx_base::testlock::serial();
+    let pms = serve();
+    let (mut stores, sid) = library_holding_item(&pms);
+    stores.viewstate.borrow_mut().hold_inflight_for_test(sid, "held");
+    press_as(&mut stores, sid, Write::Watched, 5);
+    assert_eq!(stores.view_ledger.since(0).len(), 1, "the press is in the ledger until its fate is known");
+    // the swap has landed, the new profile's identity has not: same slot, new token, same profile
+    plx_plex::plex::client_for(sid).unwrap().set_token("the-next-profiles-token");
+    let land_held = stores.viewstate.borrow().late_completion_for_test();
+    land_held();
+    let directory = DirectorySnapshot::default();
+    for _ in 0..200 {
+        let _ = stores.viewstate_pump(directory.view(), &crate::pms::registry_keys_for_test(), 5);
+        super::rig::frame(&mut stores, &directory);
+        if settled(&stores) { break; }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(settled(&stores), "the queue emptied");
+    assert_eq!(pms.truth.scrobbles.load(Ordering::SeqCst), 0, "nothing was sent under the moved token");
+    assert!(stores.view_ledger.since(0).is_empty(), "the dropped press was retired");
     drop(stores);
 }

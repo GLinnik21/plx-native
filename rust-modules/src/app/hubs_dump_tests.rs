@@ -55,7 +55,7 @@ fn home_hubs_land_on_the_next_frame_whatever_the_worker_timing() {
         let mut rig = hubs_rig(1);
         rig.stores.landgate.arm_dump_paced(0);
         let mut d = Dispatcher::<AppHost>::new();
-        plx_data::pms::with_late_fetches_for_test(extra, 3, || {
+        crate::app::adapters::stores::with_late_hubs_launches_for_test(extra, 3, || {
             let spawned = spawn_frame(&mut d, &mut rig, 1);
             assert_eq!(rig.stores.hubs.hub_len_for_test(0), 0, "extra={extra}: nothing has landed yet");
             hold_frame(&mut d, &mut rig, tick(spawned + 1));
@@ -79,7 +79,7 @@ fn every_hub_request_spawned_in_one_frame_lands_in_the_next() {
     let mut rig = hubs_rig(2);
     rig.stores.landgate.arm_dump_paced(0);
     let mut d = Dispatcher::<AppHost>::new();
-    plx_data::pms::with_late_fetches_for_test(5_000, 2, || {
+    crate::app::adapters::stores::with_late_hubs_launches_for_test(5_000, 2, || {
         let spawned = spawn_frame(&mut d, &mut rig, 2);
         hold_frame(&mut d, &mut rig, tick(spawned + 1));
     });
@@ -103,7 +103,7 @@ fn a_paced_hub_landing_is_due_a_lag_after_its_request_and_not_when_the_worker_an
         let mut rig = hubs_rig(1);
         rig.stores.landgate.arm_dump_paced(LAG);
         let mut d = Dispatcher::<AppHost>::new();
-        plx_data::pms::with_late_fetches_for_test(extra, 3, || {
+        crate::app::adapters::stores::with_late_hubs_launches_for_test(extra, 3, || {
             let spawned = spawn_frame(&mut d, &mut rig, 1);
             let first = spawned as u64 + 1;
             for v in first..first + LAG {
@@ -135,7 +135,7 @@ fn without_dump_mode_the_hub_landing_still_follows_the_worker() {
     let _guard = plx_base::testlock::serial();
     let mut rig = hubs_rig(1);
     let mut d = Dispatcher::<AppHost>::new();
-    plx_data::pms::with_late_fetches_for_test(0, 3, || {
+    crate::app::adapters::stores::with_late_hubs_launches_for_test(0, 3, || {
         let spawned = spawn_frame(&mut d, &mut rig, 1);
         frame(&mut d, &mut rig, AppArg::Home, tick(spawned + 1), vec![]);
         assert_eq!(rig.stores.hubs.hub_len_for_test(0), 0,

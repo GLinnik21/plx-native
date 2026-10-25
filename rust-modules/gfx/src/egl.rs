@@ -48,10 +48,14 @@
 //! - `GL_EXTENSIONS`, which nothing in the app logged either.
 //!
 //! The probe is diagnostic only: it runs exactly once at boot, and no other module reads it — it
-//! exists to put a fact in the event log. The one exception to "boot only" is [`fence`], which
-//! the draw path DOES call — `gfx::field_kick` fences the underlay-field reduction so its
-//! read-back is taken only once the GPU has finished it — and which resolves its entry points the
-//! same way, for the same `DT_NEEDED` reason.
+//! exists to put a fact in the event log. There are three exceptions to "boot only". [`late_probe`]
+//! is a second `EGL_BUFFER_AGE` reading after 120 presents, OFF unless the `eglage` trigger is
+//! armed (2026-10-24: it blocks a swap 13-16 ms on the T820). [`frame_damage`] runs on every
+//! presented frame, but only while the `egldamage` experiment is armed: it queries the buffer age
+//! and declares that frame's damage region. And [`fence`] is something the draw path DOES call —
+//! `gfx::field_kick` fences the underlay-field reduction so its read-back is taken only once the
+//! GPU has finished it — and it resolves its entry points the same way, for the same `DT_NEEDED`
+//! reason.
 use plx_base::dynlib::Handle;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_uint, c_void};
@@ -310,12 +314,11 @@ pub fn probe() {
             try_damage(dpy, surface, &mut lib);
         }
         damage_init(dpy, surface, &mut lib);
-        // Remember the handles so `late_probe` can ask again once frames have actually been
-        // presented — an age queried before the first swap is 0 by definition and says nothing.
-        unsafe {
-            LATE_DPY = dpy;
-            LATE_SURFACE = surface;
-        }
+        // Only with `/tmp/plxnative-eglage` (read here, once): remember the handles so `late_probe`
+        // can ask again once frames have actually been presented — an age queried before the first
+        // swap is 0 by definition and says nothing. Opt-in because that second query blocks a swap
+        // 13-16 ms on the T820 (2026-10-24).
+        remember_late_handles(dpy, surface);
     }
     log_gl_extensions();
 }
@@ -485,6 +488,11 @@ static mut DMG_SET: Option<
 static mut DMG_RECT: [c_int; 4] = [0, 0, 0, 0];
 static mut DMG_FULL: [c_int; 4] = [0, 0, 0, 0];
 static mut DMG_WARMUP: u32 = 0;
+// The experiment's OWN display and surface. They were once the late probe's `LATE_DPY`/
+// `LATE_SURFACE`, which armed that probe's blocking query whenever this experiment was armed;
+// each consumer now holds the handles it was armed with.
+static mut DMG_DPY: *mut c_void = std::ptr::null_mut();
+static mut DMG_SURFACE: *mut c_void = std::ptr::null_mut();
 /// Frames of FULL damage before the sub-rect starts. Not a nicety: declaring a sub-rect from the
 /// very first frame left the panel showing the boot splash forever — the app's own picture never
 /// appeared at all, because no frame ever declared the whole surface valid. That is the "default
@@ -524,8 +532,8 @@ fn damage_init(dpy: *mut c_void, surface: *mut c_void, lib: &mut Option<Handle>)
         DMG_RECT = [0, 0, w, h];
         DMG_FULL = [0, 0, fw, fh];
         DMG_WARMUP = 0;
-        LATE_DPY = dpy;
-        LATE_SURFACE = surface;
+        DMG_DPY = dpy;
+        DMG_SURFACE = surface;
     }
     plx_base::eventlog::log(&format!(
         "egldamage: ARMED — {DMG_WARMUP_FRAMES} frames of full damage, then {w}x{h} at (0,0)"
@@ -544,7 +552,7 @@ pub fn frame_damage() {
             return;
         };
         let mut age: c_int = 0;
-        query(LATE_DPY, LATE_SURFACE, EGL_BUFFER_AGE, &mut age);
+        query(DMG_DPY, DMG_SURFACE, EGL_BUFFER_AGE, &mut age);
         let rect = if DMG_WARMUP < DMG_WARMUP_FRAMES {
             DMG_WARMUP += 1;
             if DMG_WARMUP == DMG_WARMUP_FRAMES {
@@ -554,7 +562,7 @@ pub fn frame_damage() {
         } else {
             std::ptr::addr_of!(DMG_RECT)
         };
-        set(LATE_DPY, LATE_SURFACE, rect.cast::<c_int>(), 1);
+        set(DMG_DPY, DMG_SURFACE, rect.cast::<c_int>(), 1);
     }
 }
 
@@ -562,17 +570,42 @@ static mut LATE_DPY: *mut c_void = std::ptr::null_mut();
 static mut LATE_SURFACE: *mut c_void = std::ptr::null_mut();
 static mut LATE_FRAMES: u32 = 0;
 
-/// Re-ask for `EGL_BUFFER_AGE` once frames have really been presented.
+/// Arm [`late_probe`] — only with `/tmp/plxnative-eglage` — by handing it the display and draw
+/// surface to ask about. Called once, from [`probe`], so the trigger is read ONCE, at boot: an
+/// unarmed run leaves the handles null and `late_probe` stays on its first-branch return for the
+/// life of the process, with nothing read from disk and no state touched on any present.
+///
+/// Off by default since 2026-10-24: the query it arms blocks that present's swap 13-16 ms on the
+/// Mali-T820 dev set, about 2 s after every launch — one dropped frame, and the cycle-1 miss in the
+/// `hero-pong` / `grid-pong` fps benches (15 of 15 baseline runs; 0 of 3 with it compiled out).
+/// The damage experiment keeps its own handles ([`damage_init`]) and does not arm this.
+fn remember_late_handles(dpy: *mut c_void, surface: *mut c_void) {
+    if !plx_base::devtrig::flag("eglage") {
+        return;
+    }
+    unsafe {
+        LATE_DPY = dpy;
+        LATE_SURFACE = surface;
+    }
+}
+
+/// Re-ask for `EGL_BUFFER_AGE` once frames have really been presented — **a dev diagnostic, off
+/// unless `/tmp/plxnative-eglage` was present at boot** (`remember_late_handles` reads it).
 ///
 /// The boot reading is 0 by construction — before the first `eglSwapBuffers` the back buffer has
 /// no history — so it cannot distinguish "this driver does not track age" from "there is no age
 /// yet". After a hundred presents the two are distinguishable, and the answer decides whether a
 /// damage region could ever be legal here: `EGL_KHR_partial_update` makes it an error to set one
-/// smaller than the whole buffer without a queried age. Costs one increment per presented frame
-/// and then nothing at all.
+/// smaller than the whole buffer without a queried age. Armed, it logs
+/// `egl surface (after 120 presents): buffer_age=… ok=… err=…` once, at the 120th present.
+///
+/// **Not free, which is why it is opt-in (2026-10-24).** On the Mali-T820 dev set that one
+/// `eglQuerySurface(EGL_BUFFER_AGE)` blocks the swap 13-16 ms, a visibly dropped frame about 2 s
+/// after every launch. Unarmed this is one load and a branch per presented frame, in every build —
+/// and a release build can never arm it, because `devtrig::flag` is `false` there.
 pub fn late_probe() {
     unsafe {
-        if LATE_FRAMES > 120 || LATE_DPY.is_null() {
+        if LATE_DPY.is_null() || LATE_FRAMES > 120 {
             return;
         }
         LATE_FRAMES += 1;
@@ -832,6 +865,64 @@ mod tests {
             resolve_with("eglCreateSyncKHR", &mut global, &mut mapped),
             Some(exported)
         );
+    }
+
+    /// Put the late probe's statics back the way a process that never booted EGL has them.
+    fn reset_late_probe() {
+        unsafe {
+            LATE_DPY = std::ptr::null_mut();
+            LATE_SURFACE = std::ptr::null_mut();
+            LATE_FRAMES = 0;
+        }
+    }
+
+    /// The reported bug: the post-120-present `eglQuerySurface(EGL_BUFFER_AGE)` re-ask blocks that
+    /// swap 13-16 ms on the Mali-T820 (one dropped frame, ~2 s after EVERY launch), and it was armed
+    /// unconditionally. Without `/tmp/plxnative-eglage` the handles must not be remembered, so
+    /// `late_probe` stays on its null-handle early return and never even counts a present.
+    ///
+    /// `late_probe` is only called once the handles are known to be null, so no fake handle can
+    /// reach a real EGL entry point from here.
+    #[test]
+    fn the_late_probe_is_off_without_its_trigger() {
+        let _g = plx_base::testlock::serial();
+        plx_base::devtrig::with_private_triggers(|| {
+            reset_late_probe();
+            remember_late_handles(0x1000 as *mut c_void, 0x2000 as *mut c_void);
+            let armed = unsafe { !LATE_DPY.is_null() };
+            reset_late_probe();
+            assert!(
+                !armed,
+                "the late probe remembered EGL's handles with no trigger armed"
+            );
+            for _ in 0..300 {
+                late_probe();
+            }
+            assert_eq!(
+                unsafe { LATE_FRAMES },
+                0,
+                "an unarmed late probe counted presents"
+            );
+        });
+    }
+
+    /// The other half: the trigger arms it. Stored state only; the armed `late_probe` would call
+    /// the real EGL, which a fake handle must never reach.
+    #[test]
+    fn the_eglage_trigger_arms_the_late_probe() {
+        if !plx_base::devtrig::ENABLED {
+            return; // a release build reads no trigger, so the probe can never be armed
+        }
+        let _g = plx_base::testlock::serial();
+        plx_base::devtrig::with_private_triggers(|| {
+            std::fs::write(plx_base::devtrig::path("eglage"), "").unwrap();
+            reset_late_probe();
+            remember_late_handles(0x1000 as *mut c_void, 0x2000 as *mut c_void);
+            let (dpy, surface) = unsafe { (LATE_DPY, LATE_SURFACE) };
+            reset_late_probe();
+            assert_eq!(dpy, 0x1000 as *mut c_void);
+            assert_eq!(surface, 0x2000 as *mut c_void);
+        });
     }
 
     /// The television's case still binds: a current context on a real display.

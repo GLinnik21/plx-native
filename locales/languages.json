@@ -6,5 +6,6 @@
   {"tag": "it", "native_name": "Italiano",   "region": "it-IT", "script": "Latn", "plurals": ["one", "many", "other"],        "row": 6},
   {"tag": "pt", "native_name": "Português", "region": "pt-PT", "script": "Latn", "plurals": ["one", "many", "other"], "excluded_regions": ["BR"], "row": 7},
   {"tag": "de", "native_name": "Deutsch",    "region": "de-DE", "script": "Latn", "plurals": ["one", "other"],                "row": 8},
-  {"tag": "hu", "native_name": "Magyar",     "region": "hu-HU", "script": "Latn", "plurals": ["one", "other"],                "row": 9}
+  {"tag": "hu", "native_name": "Magyar",     "region": "hu-HU", "script": "Latn", "plurals": ["one", "other"],                "row": 9},
+  {"tag": "ru", "native_name": "Русский",    "region": "ru-RU", "script": "Cyrl", "plurals": ["one", "few", "many", "other"], "row": 10}
 ]

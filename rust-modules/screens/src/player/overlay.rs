@@ -870,8 +870,8 @@ impl<H: crate::registry::PlayerLike + crate::registry::MetadataLike> Machine<H> 
                                     ),
                                 )));
                             }
-                            // the store lands, polls an install and spawns only while it is pumped,
-                            // and this panel is what pumps it
+                            // the store lands, polls an install and emits its requests only while it
+                            // is pumped, and this panel is what pumps it
                             fx.push(Fx::App(AppFx::StoreWork(plx_data::stores::StoreWork::SubtitleSearch)));
                             p.set_search(view.snapshot_for(sid, &rk));
                             // the download landed: list it on the playing item, then select it by

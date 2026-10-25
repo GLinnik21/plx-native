@@ -1,6 +1,6 @@
 //! Dump mode at the Browse sites (discovery, genre and letters directories, listing page, section
-//! hubs): each takes through its OWN mailbox's claim (`src_fetching`, `genre_fetching`,
-//! `letters_fetching`, `fetching`, `hubs.fetching`), with a dump-armed local gate and a worker that
+//! hubs): each takes through its OWN mailbox's claim (`src_fetching`, `genres`, `letters`, `page`,
+//! `hubs.fetch`), with a dump-armed local gate and a worker that
 //! posts late. Each test fails if its site's take reverts to a plain one: the first poll finds an
 //! empty mailbox, the pump moves on, and the claim is still held. See `plx_machine::landgate`'s
 //! module doc for which sites dump mode covers.
@@ -51,37 +51,34 @@ fn dump_mode_a_directory_request_out_lands_on_the_pump_that_runs_whatever_the_wo
         let (epoch, token_gen) = (browse.state.table_epoch(), client.token_gen());
         let library_type = browse.state.states[0].library_type;
         let adapter = Arc::clone(&browse.adapter);
-        let (flag, mail_genre, mail_letters) =
-            (if letters { &adapter.letters_fetching } else { &adapter.genre_fetching },
-             &adapter.genre_result, &adapter.letter_result);
-        flag.store(true, Ordering::SeqCst);
+        if letters { adapter.letters.claim(0) } else { adapter.genres.claim(0) }
         let worker = Arc::clone(&adapter);
         let join = late(move || {
             if letters {
-                *worker.letter_result.lock().unwrap() = Some(DirectoryResult {
+                worker.letters.post(DirectoryResult {
                     library_type, epoch, sec: 0, client, token_gen, list: vec![("S".into(), 99)],
-                });
+                }, |_| true);
             } else {
-                *worker.genre_result.lock().unwrap() = Some(DirectoryResult {
+                worker.genres.post(DirectoryResult {
                     library_type, epoch, sec: 0, client, token_gen,
                     list: vec![GenreEntry { id: "late".into(), title: "Late".into() }],
-                });
+                }, |_| true);
             }
         });
         let gate = dump_gate();
         let changed = if letters {
-            browse.state.land_directory_owned_with_gate(&gate, flag, mail_letters, |st, list| {
+            browse.state.land_directory_owned_with_gate(&gate, &adapter.letters, |st, list| {
                 st.letters_done = true;
                 st.letters = Arc::new(list);
             })
         } else {
-            browse.state.land_directory_owned_with_gate(&gate, flag, mail_genre, |st, list| {
+            browse.state.land_directory_owned_with_gate(&gate, &adapter.genres, |st, list| {
                 st.genres_done = true;
                 st.genres = Arc::new(list);
             })
         };
         assert!(changed, "the answer the pump owed must be taken by the pump that asked (letters={letters})");
-        assert!(!flag.load(Ordering::SeqCst), "the take released the claim (letters={letters})");
+        assert!(!adapter.letters.busy() && !adapter.genres.busy(), "the take released the claim (letters={letters})");
         join.join().unwrap();
     }
 }
@@ -91,19 +88,19 @@ fn dump_mode_a_page_request_out_lands_on_the_pump_that_runs_whatever_the_worker(
     let _serial = plx_base::testlock::serial();
     let (_cleanup, mut browse, sid, client) = registered_page_source();
     let (gen, token_gen) = (browse.state.query_gen(), client.token_gen());
-    browse.adapter.fetching.store(true, Ordering::SeqCst); // the page request is out
+    browse.adapter.page.claim(0); // the page request is out
     let worker = Arc::clone(&browse.adapter);
     let join = late(move || {
-        *worker.page_result.lock().unwrap() = Some(PageResult {
+        worker.page.post(PageResult {
             client, token_gen, gen, sec: 0, start: 0,
             items: vec![PmsMovie { sid, ..Default::default() }], total: 1,
             sorts: None, restored: None, genres: None, genre: None, resolved: Default::default(),
-        });
+        }, |_| true);
     });
     let gate = dump_gate();
-    let outcome = browse.state.pump_owned_with_gate(&browse.adapter, &gate);
+    let outcome = browse.state.pump_owned_with_gate(&browse.adapter, &gate, &ClientKeys::default(), &mut Vec::new());
     assert!(outcome.changed, "the answer the pump owed must be taken by the pump that asked");
-    assert!(!browse.adapter.fetching.load(Ordering::SeqCst), "the take released the claim");
+    assert!(!browse.adapter.page.busy(), "the take released the claim");
     assert_eq!(browse.state.cur_state().map(|st| st.total), Some(1));
     join.join().unwrap();
 }
@@ -111,18 +108,17 @@ fn dump_mode_a_page_request_out_lands_on_the_pump_that_runs_whatever_the_worker(
 #[test]
 fn dump_mode_a_hubs_request_out_lands_on_the_pump_that_runs_whatever_the_worker() {
     let _serial = plx_base::testlock::serial();
-    let (_cleanup, mut browse, _sid, client) = registered_page_source();
-    let (epoch, token_gen) = (browse.state.table_epoch(), client.token_gen());
-    browse.adapter.hubs.fetching.store(true, Ordering::SeqCst); // the section-hubs request is out
-    let worker = Arc::clone(&browse.adapter);
+    let (_cleanup, mut browse, _sid, _client) = registered_page_source();
+    browse.hubs_kick(0); // the section-hubs request is out
+    assert!(browse.adapter.hubs.fetch.busy(), "premise: the request holds the claim");
+    let (job, port) = browse.take_hubs_job();
     let join = late(move || {
-        *worker.hubs.result.lock().unwrap() =
-            Some(section_hubs::HubResult::failed_for_test(epoch, 0, client, token_gen));
+        plx_machine::job::Port::done(&port, job.addr, section_hubs::BrowseHubsAnswer::failed_for_test(&job));
     });
     let gate = dump_gate();
-    browse.state.hubs_land(&browse.adapter, &gate);
-    assert!(browse.adapter.hubs.result.lock().unwrap().is_none(), "the pump that asked took the answer");
-    assert!(!browse.adapter.hubs.fetching.load(Ordering::SeqCst), "the take released the claim");
+    browse.hubs_land_on(&gate);
+    assert!(!browse.adapter.hubs.fetch.has_mail(), "the pump that asked took the answer");
+    assert!(!browse.adapter.hubs.fetch.busy(), "the take released the claim");
     join.join().unwrap();
 }
 
@@ -138,24 +134,23 @@ fn dump_mode_a_stale_epoch_answer_is_awaited_and_consumed_by_the_pump_that_was_o
     let stale_epoch = browse.state.table_epoch();
     let token_gen = client.token_gen();
     let library_type = browse.state.states[0].library_type;
-    browse.adapter.genre_fetching.store(true, Ordering::SeqCst);
+    browse.adapter.genres.claim(0);
     browse.state.epoch = browse.state.epoch.wrapping_add(1); // the table moved while the worker was out
     let worker = Arc::clone(&browse.adapter);
     let join = late(move || {
-        *worker.genre_result.lock().unwrap() = Some(DirectoryResult {
+        worker.genres.post(DirectoryResult {
             library_type, epoch: stale_epoch, sec: 0, client, token_gen,
             list: vec![GenreEntry { id: "stale".into(), title: "Stale".into() }],
-        });
+        }, |_| true);
     });
     let gate = dump_gate();
     let adapter = Arc::clone(&browse.adapter);
-    let changed = browse.state.land_directory_owned_with_gate(
-        &gate, &adapter.genre_fetching, &adapter.genre_result, |st, list| {
+    let changed = browse.state.land_directory_owned_with_gate(&gate, &adapter.genres, |st, list| {
         st.genres_done = true;
         st.genres = Arc::new(list);
     });
     assert!(!changed, "a stale answer changes nothing");
-    assert!(!adapter.genre_fetching.load(Ordering::SeqCst), "but it was awaited, and its take released the claim");
+    assert!(!adapter.genres.busy(), "but it was awaited, and its take released the claim");
     assert!(!browse.state.states[0].genres_done);
     join.join().unwrap();
 }
@@ -176,29 +171,29 @@ fn a_paced_lag_counts_the_genre_and_letters_mailboxes_from_their_own_first_sight
     let adapter = Arc::clone(&browse.adapter);
     let gate = plx_machine::landgate::Gate::default();
     gate.arm_dump_paced(3);
-    *adapter.genre_result.lock().unwrap() = Some(DirectoryResult {
+    adapter.genres.post(DirectoryResult {
         library_type, epoch, sec: 0, client, token_gen,
         list: vec![GenreEntry { id: "g".into(), title: "G".into() }],
-    });
-    adapter.genre_fetching.store(true, Ordering::SeqCst);
+    }, |_| true);
+    adapter.genres.claim(0);
     let (mut genre_at, mut letters_at) = (None, None);
     for v in 0..9u64 {
         gate.dump_frame(v);
         if v == 2 {
-            *adapter.letter_result.lock().unwrap() = Some(DirectoryResult {
+            adapter.letters.post(DirectoryResult {
                 library_type, epoch, sec: 0, client, token_gen, list: vec![("S".into(), 9)],
-            });
-            adapter.letters_fetching.store(true, Ordering::SeqCst);
+            }, |_| true);
+            adapter.letters.claim(0);
         }
         if genre_at.is_none() && browse.state.land_directory_owned_with_gate(
-            &gate, &adapter.genre_fetching, &adapter.genre_result, |st, list| {
+            &gate, &adapter.genres, |st, list| {
             st.genres_done = true;
             st.genres = Arc::new(list);
         }) {
             genre_at = Some(v);
         }
         if letters_at.is_none() && browse.state.land_directory_owned_with_gate(
-            &gate, &adapter.letters_fetching, &adapter.letter_result, |st, list| {
+            &gate, &adapter.letters, |st, list| {
             st.letters_done = true;
             st.letters = Arc::new(list);
         }) {

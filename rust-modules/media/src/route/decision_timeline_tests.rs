@@ -455,6 +455,7 @@ fn a_session_resolved_for_a_preview_never_reports_a_timeline() {
         title: "Trailer".into(),
         ctx: plx_data::metadata::TRAILER_CONTEXT.into(),
         preview: true,
+        version: None,
     });
     apply_plan(
         &mut ps,
@@ -493,7 +494,7 @@ fn a_film_request_retires_the_previous_trailers_preview_mark() {
     assert!(preview_request(&ps), "the trailer's session is marked");
 
     assert!(request_play(
-        &mut ps, &mut meta, ServerId::from_raw(0), "film", "/library/parts/2/file.mkv", "h264", "aac", "Film", "",
+        &mut ps, &mut meta, ServerId::from_raw(0), "film", "/library/parts/2/file.mkv", "h264", "aac", "Film", "", None,
     ));
     assert!(!preview_request(&ps), "a film request is not a preview, whatever the last landing was");
 

@@ -30,6 +30,14 @@
     "value": "Your Plex server is converting this video.",
     "description": "One-line sub-label under the checked entry of the player's Quality page when the Quality row reports a conversion the viewer did not pick by name ('Original \u00b7 Converted', 'Auto \u00b7 720p'). Always the same neutral sentence; it names no cause."
   },
+  "widgets.menu.speed": {
+    "value": "Playback speed",
+    "description": "Row in the player overflow menu that opens the playback speed choices (0.5x to 2x)."
+  },
+  "widgets.speed.normal": {
+    "value": "Normal",
+    "description": "Playback speed choice for regular 1x speed, beside 0.5×, 0.75×, 1.25×, 1.5×, 1.75× and 2×."
+  },
   "widgets.menu.stats": {
     "value": "Stats for nerds",
     "description": "Option or section label in the player overflow menu."

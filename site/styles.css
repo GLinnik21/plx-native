@@ -1702,7 +1702,8 @@ video::-webkit-media-controls-start-playback-button {
   color: var(--text-primary);
   opacity: 1;
 }
-/* The store review, set as large as a lede: news, not a footnote. */
+/* The store review: a line under the install cards, set at their body size so it
+   reads as a note on them rather than as a second lede. */
 .store-note {
   display: flex;
   flex-wrap: wrap;
@@ -1718,15 +1719,15 @@ video::-webkit-media-controls-start-playback-button {
   border-radius: 999px;
   background: var(--color-white-a10);
   box-shadow: inset 0 0 0 1px var(--color-white-a22);
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 700;
   white-space: nowrap;
 }
 .store-note p {
   flex: 1 1 320px;
-  font-size: clamp(18px, 1.8vw, 22px);
-  line-height: 1.4;
-  letter-spacing: -0.01em;
+  max-width: 68ch;
+  font-size: 16px;
+  line-height: 1.6;
   color: var(--text-reading);
   margin: 0;
   text-wrap: pretty;
@@ -3232,17 +3233,20 @@ video::-webkit-media-controls-start-playback-button {
 .look-panel figcaption {
   box-shadow: inset 0 1px 0 var(--hairline);
 }
-/* On phones the glass panel shows the middle of the wide render, cropped to
-   1440:400, so the whole bar (Home, Movies, TV Shows, search) stays in view. */
+/* On phones the glass panel shows the middle 76% of the wide render (its 12%
+   to 88%), cropped to 1672:400, so the whole bar (Home, Movies, TV Shows,
+   search) stays in view. The bar spans 14.8% to 85.5% of the render, so that
+   leaves it a few pixels of poster either side; show less and its rounded
+   ends are cut off. */
 @media (max-width: 759px) {
   .look-panel--glass picture {
-    aspect-ratio: 1440 / 400;
+    aspect-ratio: 1672 / 400;
     overflow: hidden;
   }
   .look-panel--glass img {
-    width: 152.78%;
+    width: 131.58%;
     max-width: none;
-    margin-left: -26.39%;
+    margin-left: -15.79%;
   }
 }
 /* The fast card is the numeral itself, as large as the card allows, with its

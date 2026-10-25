@@ -26,7 +26,7 @@ fn viewstate_optimistic_home_edit_keeps_the_frame_directory_policy() {
         write: plx_data::viewstate::Write::Watched,
         scope: plx_data::viewstate::Scope::Leaf,
         guid: String::new(),
-    }));
+    }).changed);
 
     let snapshot = rig.stores.hubs.snapshot();
     let hub = snapshot.view().hub(0).expect("the pinned library's shelf");
@@ -48,7 +48,7 @@ fn separate_bridges_do_not_share_any_viewstate_owner_state_or_notice() {
 
     first.stores.viewstate.borrow_mut().seed_ownership_fixture_for_test();
     let before_reset = first.stores.viewstate.borrow().ownership_fixture_for_test();
-    second.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Reset);
+    let _ = second.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Reset);
     let after_reset = first.stores.viewstate.borrow().ownership_fixture_for_test();
 
     first.stores.viewstate.borrow_mut().seed_ownership_fixture_for_test();
@@ -74,7 +74,7 @@ fn reset_fences_a_late_old_viewstate_worker_from_the_post_reset_request() {
     let old_adapter = bridge.stores.viewstate.borrow().adapter_for_test();
     let finish_old_worker = bridge.stores.viewstate.borrow().late_completion_for_test();
 
-    bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Reset);
+    let _ = bridge.viewstate_run(plx_data::stores::viewstate::ViewStateCmd::Reset);
     bridge.stores.viewstate.borrow_mut().seed_post_reset_flight_for_test();
     let new_adapter = bridge.stores.viewstate.borrow().adapter_for_test();
     assert!(!std::sync::Arc::ptr_eq(&old_adapter, &new_adapter),
@@ -264,7 +264,7 @@ fn viewstate_optimistic_edit_mutates_only_its_bridge_person_store() {
         write: plx_data::viewstate::Write::Watched,
         scope: plx_data::viewstate::Scope::Leaf,
         guid: String::new(),
-    }));
+    }).changed);
 
     assert!(first.person_view().current().unwrap().shelf(0)[0].watched);
     assert!(!second.person_view().current().unwrap().shelf(0)[0].watched,
@@ -370,9 +370,10 @@ fn hubs_land_and_tick_keep_the_frame_directory_policy() {
     rig.directory = directory_policy_fixture(own, hidden);
     let directory = rig.directory.clone();
 
-    plx_data::pms::with_refused_fetches_for_test(|| {
+    let keys = plx_data::pms::registry_keys_for_test();
+    crate::app::adapters::stores::with_refused_hubs_launches_for_test(|| {
         let _ = rig.stores.hubs.run_with_directory(
-            plx_data::stores::hubs::HubsCmd::Reset, directory.view());
+            plx_data::stores::hubs::HubsCmd::Reset, directory.view(), &keys);
         let parts = CxParts { tick: tick(0), press: Default::default(), focus: Default::default(),
             owner: InputOwner::Entry(EntryId(0)) };
         let mut present = Present::new();
@@ -381,6 +382,11 @@ fn hubs_land_and_tick_keep_the_frame_directory_policy() {
         assert_eq!(rig.deliver(MachineId::Store(StoreId::Hubs.ord()),
             &AppMsg::Store(StoreCmd::Hubs(plx_data::stores::hubs::HubsCmd::RefetchHubs)),
             &parts, &mut fx), Handled::Yes);
+        drop(fx);
+        assert!(effects.is_empty(), "a refused launch is settled by the next Hubs step");
+        let mut fx = Effects::new(&mut effects, MachineId::Store(StoreId::Hubs.ord()), &mut present);
+        assert_eq!(rig.deliver(MachineId::Store(StoreId::Hubs.ord()),
+            &AppMsg::StoreWork(plx_data::stores::StoreWork::Hubs), &parts, &mut fx), Handled::Yes);
         drop(fx);
         assert_eq!(effects.iter().map(|effect| match &effect.fx {
             Fx::App(AppFx::Session(plx_session::auth::SessionCmd::RequestEndpoint { sid })) => *sid,
@@ -402,15 +408,22 @@ fn hubs_land_and_tick_keep_the_frame_directory_policy() {
         assert_eq!(generation, generation_before_landing + 1);
         assert_eq!(rig.stores.take_notices(), [(StoreId::Hubs, generation)],
             "one changed landing owes exactly one Hubs notice");
-        let sources_after_land = rig.stores.hubs.run_with_directory(
-            plx_data::stores::hubs::HubsCmd::Retry, directory.view());
+        let retried = rig.stores.hubs.run_with_directory(
+            plx_data::stores::hubs::HubsCmd::Retry, directory.view(), &keys);
+        assert!(retried.endpoints.iter().next().is_none(), "its refusals are settled by the next step");
+        // The bare store starts nothing: the system's refusal of the retry's read is the answer.
+        rig.stores.hubs.refuse_jobs_for_test();
+        let sources_after_land = rig.stores.hubs.tick_with_directory(0.0, directory.view(), &keys);
         assert_eq!(sources_after_land.endpoints.iter().map(|request| request.sid).collect::<Vec<_>>(), [own],
             "landing must keep the retained frame directory");
 
         let _ = rig.stores.hubs.run_with_directory(
-            plx_data::stores::hubs::HubsCmd::Reset, directory.view());
+            plx_data::stores::hubs::HubsCmd::Reset, directory.view(), &keys);
         let _ = rig.stores.hubs.run_with_directory(
-            plx_data::stores::hubs::HubsCmd::RefetchHubs, directory.view());
+            plx_data::stores::hubs::HubsCmd::RefetchHubs, directory.view(), &keys);
+        rig.stores.hubs.refuse_jobs_for_test();
+        // the refusal that refetch left is settled here, so the tick below is graded on its own
+        let _ = rig.stores.hubs.tick_with_directory(0.0, directory.view(), &keys);
         let _ = rig.stores.take_notices();
         effects.clear();
         let mut fx = Effects::new(&mut effects, MachineId::Store(StoreId::Hubs.ord()), &mut present);

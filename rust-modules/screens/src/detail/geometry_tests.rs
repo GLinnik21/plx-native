@@ -118,7 +118,7 @@ fn bare(sid: ServerId, rk: &str) -> DetailScreen {
         tabs: TabStrip::new(),
         season_pop: CtlPop::new(),
         ctl_pop: CtlPop::new(),
-        disc_unfurl: [Spring::at(0.0); 3],
+        disc_unfurl: [Spring::at(0.0); hero::DISCS],
         watchlist: plx_appkit::watchlist_disc::Disc::new(plx_data::catalog::Membership::Unknown), watchlist_hex: None,
         season_metrics: season::Metrics::new(),
         about_rows: about::Rows::new(),

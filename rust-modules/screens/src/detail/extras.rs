@@ -51,6 +51,7 @@ pub fn play(d: &Detail, key: u32) -> Option<PlayIntent> {
         acodec: extra.acodec.clone(),
         title: extra.hud_title(d.title.as_str()).to_string(),
         context: extra_play_context(extra).into(),
+        version: None,
     })
 }
 
@@ -141,7 +142,7 @@ mod tests {
                 assert_eq!(part, "/p");
                 assert_eq!(context, plx_data::metadata::EXTRA_CONTEXT);
             }
-            PlayIntent::Movie(_) => panic!("an extra is not the parent movie"),
+            PlayIntent::Movie { .. } => panic!("an extra is not the parent movie"),
         }
         assert!(play(&d, elem(1).unwrap()).is_none());
     }

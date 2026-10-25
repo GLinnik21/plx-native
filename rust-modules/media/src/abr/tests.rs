@@ -1896,6 +1896,35 @@ fn a_source_request_refused_before_body_is_probe_failure_not_insufficient() {
     );
 }
 
+/// **A route the server refused Original from is not asked again; a new route is.** The refusal
+/// reaches a NEW worker (the old one exited to hand the recovery over and the pump reopened the
+/// retained HLS), so the held state has to be where its gate starts. Same inputs that fund a probe
+/// on a fresh gate; an HLS commit in either direction is a new encoder session and releases it.
+#[test]
+fn a_route_refusal_holds_the_source_gate_until_an_hls_commit_changes_the_route() {
+    let ask = |gate: &mut OriginalRecovery| {
+        gate.probe_due(
+            top_candidate(),
+            true,
+            &idle_server(),
+            sample(20_000, 500, 10_000),
+            Some(1_000),
+            healthy_buffer(),
+            &healthy_hls(),
+            HOUR_MS,
+            0,
+        )
+    };
+    assert!(ask(&mut recovery(28_000)).is_ok(), "sanity: these inputs fund a probe on a fresh gate");
+    for direction in [Direction::Up, Direction::Down] {
+        let mut gate = recovery(28_000).after_route_refusal();
+        assert_eq!(ask(&mut gate), Err(ProbeBlock::RouteRefused), "the refusing route is not asked again");
+        assert_eq!(ask(&mut gate), Err(ProbeBlock::RouteRefused), "however often it is asked");
+        gate.on_hls_commit(direction);
+        assert!(ask(&mut gate).is_ok(), "a committed {direction:?} candidate is a new admission question");
+    }
+}
+
 /// The benefit of Original accrues over the remaining playback; the reload is paid once, now.
 #[test]
 fn recovery_does_not_pay_for_a_reload_at_the_end_of_a_film() {

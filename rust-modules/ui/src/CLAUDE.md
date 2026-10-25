@@ -371,8 +371,11 @@ A guard's own `abort()` instead records the abort path; its log label identifies
 To investigate without termination, write `log` into `/tmp/plxnative-guard` before launch
 (`/tmp/plxnative-guard=log` notation; simulator: instance runtime directory). This DIAG trigger
 is latched at loop start and downgrades both fatal paths to log plus warning. It requires
-`devtriggers`; it never suppresses the profile picker. Release builds contain neither warning,
-fatal policy nor signal call, and keep the existing guard/watchdog logs.
+`devtriggers`; it never suppresses the profile picker. Release builds contain neither warning nor
+fatal policy and send no `SIGABRT`, and keep the existing guard/watchdog logs; they do send one
+signal, the freeze probe (`SIGUSR2` to the main thread after 5 s without loop progress in the
+foreground, at most four per process), which `src/crashtrace.c`'s `freeze_handler` answers with a
+`*** FREEZE` record. That probe can cause one `EINTR` in a blocking call in closed library code.
 
 **Damage is not an effect in the queue.** `fx.invalidate(provenance)` calls `Present::note` at
 once, because a draw-phase report has to survive into the frame it belongs to. `Provenance` is
@@ -442,12 +445,15 @@ presentation in a design pass.
    `text_view::more_mark()` rather than a screen-local literal — the drift that caused this rule was
    two screens each holding their own copy. A tab pill reading "More" is a pill, not a text mark.
 
-3. **The player HUD gets a state glyph, not a transport row.** No `<<` `||` `>>` `■` buttons. The
+3. **The default player HUD gets a state glyph, not a transport row.** No `<<` `||` `>>` `■` buttons. The
    HUD keeps the small transport *state indicator* past the elapsed clock: a pause glyph while
    paused, a seek spinner while the transport owns the busy signal, nothing at all while playing.
    Transport is driven by REMOTE KEYS, which must genuinely work. Any `<<` / `>>` added must be a
    small glyph in that same indicator slot at the clock's cap height — never a control, and never a
-   fourth entry in the HUD control row (`appkit/player_hud.rs`'s `BTN_N`, currently 3).
+   separate FF/REW entry in the default control row (`appkit/player_hud.rs`).
+   Previous/Next share the default disc row for an episode with a neighbour in its PlayQueue,
+   with no setting; the opt-in **Instant D-pad seeking** setting defaults to Off. Dedicated
+   FF/REW taps jump immediately; held keys use the shared scrub gesture.
 
 4. **Failure read-outs are never red — the app does not scold.** A read-out's verdict (DS3) is inked `theme::TEXT_PRIMARY`: bright, because it is the line the eye lands on — a `Failed` read-out's verdict, and an `Empty` read-out's caption, which is not bold. Its body, the reason under it, is `theme::TEXT_SECONDARY`. Emphasis is ink only: never a warning colour, a rule, a capsule or a tint. A `Failed` verdict is bold `size::TITLE` (per the design system's `StatusOverlay` contract). Home, Library, sign-in and the player's failure read-outs share ONE placement: the verdict hangs
    from `FULL_ANCHOR_TOP` with the reason and action row stacked directly under it, and a 112 px
@@ -690,7 +696,8 @@ tried first. None of it is reconstructable from the code without repeating the m
   whole-screen wash, and deliberately NOT the per-rect `fs_src`/`fs_shadow`, which carried it for
   two days and cost the hero paging scene 57→50 fps for a branch that answered "no" on every draw.
   `gfx::dither_for_field` is an AREA test only: a field dithers whenever it is drawn, moving or
-  not, and every page wash dithers on every frame.
+  not, and every page wash with a gradient dithers on every frame (a wash of one colour has
+  nothing to band and is drawn as a clear of its box).
 
 ## Card marks — three marks, three meanings, and no card may blur them
 

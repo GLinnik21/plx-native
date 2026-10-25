@@ -1134,7 +1134,7 @@ mod tests {
     }
     fn seeded() -> (plx_data::stores::collection::CollectionStore, CollectionScreen) {
         let mut store = plx_data::stores::collection::CollectionStore::default();
-        store.run(CollectionCmd::Open { target: CollectionTarget { id: set(), want: PAGE_SIZE } });
+        store.run(CollectionCmd::Open { target: CollectionTarget { id: set(), want: PAGE_SIZE } }, &plx_plex::plex::ClientKeys::default());
         store.install_for_test(vec![item("a"), item("b"), item("c")], CollectionStatus::Ready);
         let mut screen = CollectionScreen::new(EntryId(9), set());
         screen.page.sync(store.view().current().unwrap(), &FixtureMeasure);
@@ -1437,7 +1437,7 @@ mod tests {
         for ev in [ScreenEvent::Uncover, ScreenEvent::RestoreMemory(memory), ScreenEvent::Enter(plx_ui::screen::Enter::Restored)] {
             for out in step(&mut screen, ev, &cx(store.view(), Some(a))) {
                 if let plx_machine::machine::Fx::App(AppFx::Store(_, plx_data::stores::StoreCmd::Collection(cmd))) = out.fx {
-                    store.run(cmd);
+                    store.run(cmd, &plx_plex::plex::ClientKeys::default());
                 }
             }
         }

@@ -33,6 +33,7 @@
   "core.preview_domain_buffer": "puffer",
   "core.preview_domain_transport": "átviteli hiba",
   "core.preview_domain_transfer_age": "átvitel időtartama a hiba előtt",
+  "core.preview_domain_demux_exit": "a médiafolyam hibájának lépése",
   "core.preview_domain_elapsed": "eltelt idő",
   "core.preview_domain_hls_direction": "HLS-irány",
   "core.preview_domain_delivery_reason": "továbbítás oka",

@@ -39,6 +39,7 @@ impl playback::PlaybackResources for Resources {
         _: &mut plx_media::route::PlaybackSession,
         _: &mut plx_data::stores::metadata::MetadataStore,
         item: &plx_data::pms::PmsMovie,
+        _: Option<plx_plex::plex::MediaId>,
     ) -> bool {
         self.calls.push(ResourceCall::Movie {
             sid: item.sid,
@@ -48,7 +49,7 @@ impl playback::PlaybackResources for Resources {
         });
         self.accept_request
     }
-    fn request_episode(&mut self, _: &mut plx_media::route::PlaybackSession, _: &mut plx_data::stores::metadata::MetadataStore, rk: &str) -> bool {
+    fn request_episode(&mut self, _: &mut plx_media::route::PlaybackSession, _: &mut plx_data::stores::metadata::MetadataStore, rk: &str, _: Option<plx_plex::plex::MediaId>) -> bool {
         self.calls.push(ResourceCall::Episode(rk.into()));
         self.accept_request
     }
@@ -131,6 +132,7 @@ fn chain(host: AppArg, episode: bool, accept_request: bool, accept_start: bool) 
         // real ItemMenuScreen. The live metadata lookup itself is the resource under substitution.
         arg.kind = ItemMenuKind::Episode {
             mark: plx_ui::widgets::PosterMark::None,
+            versions: Vec::new(),
         };
         arg.loaded_episode = true;
     }

@@ -173,6 +173,11 @@ pub enum ProbeBlock {
     /// not yet been released by a confidence-separated stronger HLS regime, or retained completed
     /// source evidence is awaiting/already exhausted its comparison at this HLS operating point.
     NoNewLinkEvidence,
+    /// The server already refused an automatic Original recovery asked from this HLS route, or
+    /// admitted one whose Load then failed and was rolled back onto it
+    /// ([`OriginalRecovery::after_route_refusal`]). Asking again from the same route would put the
+    /// same admission question and buy the viewer another reload for the same answer.
+    RouteRefused,
 }
 
 impl ProbeBlock {
@@ -183,6 +188,7 @@ impl ProbeBlock {
             ProbeBlock::BelowHlsCeiling => "below_hls_ceiling",
             ProbeBlock::NotWorthIt => "not_worth_it",
             ProbeBlock::NoNewLinkEvidence => "no_new_link_evidence",
+            ProbeBlock::RouteRefused => "route_refused",
         }
     }
 }
@@ -211,6 +217,15 @@ enum SourceProbeState {
     /// request. The `Direction::Down` branch instead retires terminal evidence and returns the gate
     /// to `Fresh`.
     ReconsiderAfterHlsCommit,
+    /// An automatic Original recovery asked from this HLS route was refused (PMS admitted neither
+    /// the Part nor a remux, or the plan could not fly), or was admitted and failed to load, its
+    /// rollback rebasing this route. The refusal arrives in a NEW worker — the
+    /// old one exited to hand the action over and the pump reopened the retained HLS — so the
+    /// gate starts here instead of `Fresh`. Like `RejectCause::Structural` for an HLS ceiling PMS
+    /// refused, no reserve and no elapsed time changes the answer for this route; a committed HLS
+    /// candidate is a new encoder session, so [`OriginalRecovery::on_hls_commit`] returns the gate
+    /// to `Fresh` in either direction.
+    RouteRefused,
 }
 
 pub struct OriginalRecovery {
@@ -270,6 +285,13 @@ impl OriginalRecovery {
         })
     }
 
+    /// Start the gate held: an automatic Original recovery was already refused on the HLS route
+    /// this worker serves (see [`SourceProbeState::RouteRefused`]).
+    pub fn after_route_refusal(mut self) -> Self {
+        self.source_probe_state = SourceProbeState::RouteRefused;
+        self
+    }
+
     /// Advance the switch-penalty clock to `elapsed_ms` since construction. ABSOLUTE, not a
     /// delta, so calling it every segment and calling it once are the same thing — the caller
     /// owns the clock (this module is integer-only and deterministic by contract) and cannot
@@ -323,7 +345,17 @@ impl OriginalRecovery {
     /// source rate cannot be projected across that boundary, so it is retired and the ordinary
     /// fully-funded source gate may authorize a fresh bounded probe. Neither branch invents a
     /// timeout, margin or capacity estimate.
+    ///
+    /// A gate held by a route refusal ([`Self::after_route_refusal`]) is released to `Fresh` by
+    /// either direction: the committed candidate is a new encoder session, a new admission
+    /// question the refusal did not answer.
     pub fn on_hls_commit(&mut self, direction: Direction) {
+        // The committed candidate is a new encoder session, so the route the server refused
+        // Original from is gone: its successor is a new admission question.
+        if self.source_probe_state == SourceProbeState::RouteRefused {
+            self.source_probe_state = SourceProbeState::Fresh;
+            return;
+        }
         if self.source_probe_state != SourceProbeState::Terminal {
             return;
         }
@@ -561,6 +593,7 @@ impl OriginalRecovery {
             | SourceProbeState::ReconsiderAfterHlsCommit => {
                 return Err(ProbeBlock::NoNewLinkEvidence);
             }
+            SourceProbeState::RouteRefused => return Err(ProbeBlock::RouteRefused),
         }
         if !self.worth_probing(current, production, buffer, hls_delivery, remaining_ms) {
             return Err(ProbeBlock::NotWorthIt);

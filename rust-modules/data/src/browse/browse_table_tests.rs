@@ -49,6 +49,8 @@ fn addressed_instance_commit_validates_identity_and_selects_before_query() {
             choice: false,
             query: Some(QueryEdit::Unwatched(true)),
         },
+        &ClientKeys::default(),
+        &mut Vec::new(),
     ));
     assert_eq!(state.cur(), 0);
     assert_eq!(state.query_gen(), 0);
@@ -60,6 +62,8 @@ fn addressed_instance_commit_validates_identity_and_selects_before_query() {
             choice: false,
             query: Some(QueryEdit::Unwatched(true)),
         },
+        &ClientKeys::default(),
+        &mut Vec::new(),
     ));
     assert_eq!(state.cur(), 1);
     assert!(!state.states[0].unwatched);

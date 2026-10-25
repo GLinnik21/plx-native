@@ -66,7 +66,7 @@ pub(crate) mod framedump;
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 40] = [
+const DIAG: [&str; 42] = [
     "plxnative-diag.log",
     "plxnative-events.log",
     "plxnative-stderr.log",
@@ -121,6 +121,9 @@ const DIAG: [&str; 40] = [
     // one is moot — but leaving it out of this list would be a silent inconsistency for the next
     // reader, and the honest reading is that it changes no screen.
     "plxnative-crashtest",
+    // The deliberate FREEZE (`freeze_on_purpose`): it stalls the main loop and changes no screen,
+    // and its whole use is watching the freeze report come back from the screen it froze.
+    "plxnative-freeze",
     // The FRAME-DROP DETECTOR (`app.rs`, the `FRAMEDROP` line and `worstframe=`). It observes the
     // frame it is armed on and changes no screen; the harness's `worst_ceiling_ms` /
     // `stall_ceiling_ms` gates arm it under every fps scene, and a scene whose gate moved the boot
@@ -129,6 +132,13 @@ const DIAG: [&str; 40] = [
     // The compositor frame-callback probe (`system.rs`): extra fields on that same line, from one
     // `wl_surface.frame` request per present. An observer for the reason `framedrop` is.
     "plxnative-framecb",
+    // The post-120-present `EGL_BUFFER_AGE` re-ask (`plx_gfx::egl::late_probe`, off unless armed).
+    // It changes nothing on screen, which is what DIAG membership means: a boot that arms it stays
+    // on the screen it was going to, where a non-DIAG trigger would move it off the who's-watching
+    // picker. It is NOT free: that one query blocks a swap 13-16 ms on the T820 at present 120, so
+    // never arm it for a smoothness run. The two EGL triggers that DO change something (`eglprobe`,
+    // `egldamage`) are deliberately not here.
+    "plxnative-eglage",
     // The detector's context ring: which of the same lines are written, never which screen they
     // are written about.
     "plxnative-framering",
@@ -364,6 +374,52 @@ pub(crate) fn crash_on_purpose() {
 }
 #[cfg(not(feature = "devtriggers"))]
 pub(crate) fn crash_on_purpose() {}
+
+/// **Freeze the main loop on purpose** — `plxnative-freeze=<seconds>` (1 to 120).
+///
+/// The instrument for the freeze probe, as [`crash_on_purpose`] is for the fault tracer: nothing a
+/// person does reliably stalls the loop for five seconds on demand, and a freeze report nobody has
+/// seen arrive is not known to work. Called from the once-a-second heartbeat, so it runs ON the
+/// main thread and the stall is exactly what the watchdog watches; it waits [`FREEZE_AFTER_TICKS`]
+/// beats first, which is how it knows the first present has armed the watchdog.
+///
+/// It reads the trigger ONCE, on that beat (never per frame: a trigger read is a `stat`), and
+/// **removes the file when it fires**, so one arming is one freeze and a relaunch is not frozen
+/// again without being asked. `std::thread::sleep` restarts after `EINTR`, so the probe signal
+/// cannot cut the stall short.
+///
+/// **With the default `threadcheck` feature the developer watchdog is armed**, and it aborts the
+/// process once the main thread has made no progress for `HANG_FATAL_MS` (2 s), well before the 5 s
+/// freeze probe. To see a freeze report come back, write `log` into `/tmp/plxnative-guard` before
+/// launching (that file turns the abort into a log line), or build without `threadcheck`.
+///
+/// **Compiled out of a release build** with the rest of `devtriggers`.
+#[cfg(feature = "devtriggers")]
+pub(crate) fn freeze_on_purpose() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static BEATS: AtomicU32 = AtomicU32::new(0);
+    if BEATS.fetch_add(1, Ordering::Relaxed) != FREEZE_AFTER_TICKS {
+        return;
+    }
+    let Some(text) = plx_base::devtrig::read("freeze") else {
+        return;
+    };
+    let _ = std::fs::remove_file(plx_base::devtrig::path("freeze"));
+    let Ok(secs) = text.parse::<u64>() else {
+        plx_base::eventlog::log(&format!("freezetest: {text:?} is not a number of seconds — not freezing"));
+        return;
+    };
+    let secs = secs.clamp(1, 120);
+    plx_base::eventlog::log(&format!("freezetest: DELIBERATE freeze of the main thread, {secs}s"));
+    std::thread::sleep(std::time::Duration::from_secs(secs));
+    plx_base::eventlog::log("freezetest: the deliberate freeze is over");
+}
+#[cfg(not(feature = "devtriggers"))]
+pub(crate) fn freeze_on_purpose() {}
+
+/// Heartbeats to let pass before [`freeze_on_purpose`] looks at its trigger.
+#[cfg(feature = "devtriggers")]
+const FREEZE_AFTER_TICKS: u32 = 8;
 
 /// `plxnative-softfloat`: the ARM half of `plx_machine::motion`'s differential claim (spec §4.2). Runs the
 /// 4,096-operand table through this binary's own arithmetic, logs its hash beside the host's

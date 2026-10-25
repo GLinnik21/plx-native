@@ -598,6 +598,25 @@ pub struct Shared {
     // The synchronized route controller owns whether a reload is pending; keeping a second atomic
     // mailbox here used to let reset_session erase the request halfway through that reload.
     pub desired_audio_idx: AtomicI32,
+    // The viewer's playback speed in thousandths (1000 = 1x), from `player::set_play_rate`. Like
+    // desired_audio_idx it PERSISTS across seeks/reloads (each fresh Load re-applies it) and is
+    // reset only on a new item (`player::reset_play_rate`).
+    pub play_rate_permille: AtomicI32,
+    // The speed THIS session's Load plays at (`player::session_rate_for`, published by
+    // `start_bufferfeed` before the demuxer spawns): what the timeline conversion
+    // (`player::to_sink_ns`) and the demuxer's audio decode read. Per session: reset_session puts
+    // it back to 1x.
+    pub applied_rate_permille: AtomicI32,
+    // One-shot: the next direct-play seek must be a full reload even in an in-place seek mode,
+    // because it exists to carry a speed change (`player::set_play_rate`), and a speed is fixed
+    // per Load.
+    pub rate_reload: AtomicBool,
+    // This process's television did not take a speed session's PCM (`player::fall_back_from_speed`):
+    // speed stays off until the app restarts. Never reset by a session.
+    pub speed_unsupported: AtomicBool,
+    // What the pipeline reported setting up for THIS speed session's audio
+    // (`player::note_speed_audio_report`); per session.
+    pub speed_audio_verdict: AtomicU8,
     // the derived UI state (a `PlaybackState`), published by the pump once a frame and read by
     // the HUD. Written only on the main thread; atomic because it is read from the draw path.
     pub pb_state: AtomicU8,
@@ -825,6 +844,11 @@ pub struct Shared {
     pub dg_transport_rc: AtomicI32,
     pub dg_transport_age_ms: AtomicI64,
     pub dg_transport_reopen_failed: AtomicBool,
+    /// WHICH demuxer exit failed the session (`DemuxExitClass::latch`; 0 = none recorded). Written
+    /// by `note_demux_exit` / `fail_demux`, FIRST WINS: the first cause is the real one, and the
+    /// teardown cascade that follows it must not overwrite it. Read by the handled playback error
+    /// as a class. Cleared per session beside the other `dg_*` latches.
+    pub dg_demux_exit: AtomicU8,
     /// SDL ticks when `loadCompleted` landed, and when `frames` last CHANGED. A photograph has no
     /// time axis: "Load completed, 0 frames" is innocent at 2 s and damning at 4 minutes, and the
     /// panel cannot tell the difference without these. Stamped in the pump, never in `app::diagnostics` —
@@ -944,6 +968,22 @@ pub struct Shared {
 }
 
 impl Shared {
+    /// Record WHICH demuxer exit failed the session, without raising `demux_failed` (an exit that
+    /// reaches the shared "produced no access units" tail through a plain `break`). FIRST WINS: a
+    /// compare-exchange from 0, so the real cause is kept and any later cascade is ignored.
+    pub fn note_demux_exit(&self, exit: plx_telemetry::telemetry::classes::DemuxExitClass) {
+        let _ = self
+            .dg_demux_exit
+            .compare_exchange(0, exit.latch(), Ordering::AcqRel, Ordering::Relaxed);
+    }
+
+    /// Raise `demux_failed` AND name the exit that raised it (first wins, see `note_demux_exit`).
+    /// The one way the demuxer or the Load builder fails the session through that flag.
+    pub fn fail_demux(&self, exit: plx_telemetry::telemetry::classes::DemuxExitClass) {
+        self.note_demux_exit(exit);
+        self.demux_failed.store(true, Ordering::Release);
+    }
+
     /// The container's track names ([`Shared::track_names`]) for a READER on the main thread. A
     /// panicked writer cannot leave the names half-built (they are replaced whole), so a poisoned
     /// lock still holds a usable value and the reader takes it rather than panic.
@@ -964,6 +1004,7 @@ impl Shared {
             dg_transport_rc: AtomicI32::new(0),
             dg_transport_age_ms: AtomicI64::new(-1),
             dg_transport_reopen_failed: AtomicBool::new(false),
+            dg_demux_exit: AtomicU8::new(0),
             dg_net_rx: AtomicI64::new(0),
             side_anchor: Mutex::new(None),
             side_subs_owner: AtomicBool::new(false),
@@ -1021,6 +1062,11 @@ impl Shared {
             seeking: AtomicBool::new(false),
             seek_display_ns: AtomicI64::new(-1),
             desired_audio_idx: AtomicI32::new(-1),
+            play_rate_permille: AtomicI32::new(super::RATE_NORMAL),
+            applied_rate_permille: AtomicI32::new(super::RATE_NORMAL),
+            rate_reload: AtomicBool::new(false),
+            speed_unsupported: AtomicBool::new(false),
+            speed_audio_verdict: AtomicU8::new(0),
             pb_state: AtomicU8::new(PlaybackState::Idle as u8),
             demux_failed: AtomicBool::new(false),
             demux_io_failed: AtomicBool::new(false),
@@ -1621,6 +1667,7 @@ impl Shared {
         self.dg_transport_rc.store(0, Ordering::Relaxed);
         self.dg_transport_age_ms.store(-1, Ordering::Relaxed);
         self.dg_transport_reopen_failed.store(false, Ordering::Relaxed);
+        self.dg_demux_exit.store(0, Ordering::Relaxed);
         self.dg_net_rx.store(0, Ordering::Relaxed);
         self.dg_load_at.store(0, Ordering::Relaxed);
         self.dg_frame_at.store(0, Ordering::Relaxed);
@@ -1691,6 +1738,9 @@ impl Shared {
         self.seek_display_ns.store(-1, Ordering::Relaxed);
         // NB: desired_audio_idx is NOT reset here — it persists across seeks/reloads so a
         // native audio-track choice survives seeking. It is reset on a new item (route).
+        // play_rate_permille likewise; the APPLIED rate is the pipeline's, and a fresh one is 1x.
+        self.applied_rate_permille.store(super::RATE_NORMAL, Ordering::Relaxed);
+        self.speed_audio_verdict.store(super::SPEED_AUDIO_UNKNOWN, Ordering::Relaxed);
         self.pb_state
             .store(PlaybackState::Idle as u8, Ordering::Relaxed);
         self.demux_failed.store(false, Ordering::Relaxed);
@@ -3498,10 +3548,15 @@ mod tests {
             .iter()
             .map(|src| src.chars().filter(|c| !c.is_whitespace()).collect())
             .collect();
+        // A first-wins latch is written by a compare-exchange inside a `Shared` method (the
+        // demuxer calls the method), so that spelling counts, but only where it is declared: the
+        // reset's plain `.store(0)` in this file must not satisfy the plain-store rule.
+        let shared_src: String = SHARED_SRC.chars().filter(|c| !c.is_whitespace()).collect();
         for f in declared {
-            let written = writers.iter().any(|src| {
-                src.contains(&format!("dg_{f}.store(")) || src.contains(&format!("dg_{f}.fetch_"))
-            });
+            let written = shared_src.contains(&format!("dg_{f}.compare_exchange("))
+                || writers.iter().any(|src| {
+                    src.contains(&format!("dg_{f}.store(")) || src.contains(&format!("dg_{f}.fetch_"))
+                });
             assert!(written, "dg_{f} is declared and read but NOTHING writes it — the panel would print its sentinel as fact");
         }
     }

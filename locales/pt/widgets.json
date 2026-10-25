@@ -3,6 +3,8 @@
   "widgets.menu.quality": "Qualidade",
   "widgets.menu.quality_converted": "Convertido",
   "widgets.menu.quality_converted_note": "O seu servidor Plex está a converter o vídeo.",
+  "widgets.menu.speed": "Velocidade de reprodução",
+  "widgets.speed.normal": "Normal",
   "widgets.menu.stats": "Estatísticas avançadas",
   "widgets.menu.diagnostics": "Enviar diagnósticos",
   "widgets.badge.forced": "FORÇADAS",

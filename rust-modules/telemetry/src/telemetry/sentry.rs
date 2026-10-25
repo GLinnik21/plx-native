@@ -636,6 +636,22 @@ pub fn envelope(event_id: &str, item_type: &str, payload: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Frame one release-health session item. A session is not an event, so the envelope header has no
+/// `event_id` (<https://develop.sentry.dev/sdk/telemetry/sessions/>); it carries `sent_at`, the
+/// moment of sending by this clock, which lets Relay correct a television's clock drift. A clock
+/// that was never set (`sent_at_unix` is `None`) says nothing rather than a wrong time.
+pub fn session_envelope(payload: &[u8], sent_at_unix: Option<u64>) -> Vec<u8> {
+    let mut out = Vec::with_capacity(payload.len() + 80);
+    match sent_at_unix {
+        Some(t) => out.extend_from_slice(format!("{{\"sent_at\":\"{}\"}}\n", super::session::iso(t)).as_bytes()),
+        None => out.extend_from_slice(b"{}\n"),
+    }
+    out.extend_from_slice(format!("{{\"type\":\"session\",\"length\":{}}}\n", payload.len()).as_bytes());
+    out.extend_from_slice(payload);
+    out.push(b'\n');
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

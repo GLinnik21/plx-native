@@ -135,3 +135,129 @@ fn one_opaque_fragment_is_the_wash_the_art_and_the_ramp_stacked() {
         }
     }
 }
+
+// ── The flat ground (`AmbientWash::draw_flat_ground`) is its own call; `draw_ground` stays layered ──
+
+/// A ramp with both knees inside the panel, so the layered path cuts the wash into three bands.
+fn knee_ramp() -> WashRamp {
+    WashRamp { ink: [0.0, 0.0, 0.0, 1.0], stops: [(300.0, 0.0), (700.0, 0.4), (SCR_H, 0.7)] }
+}
+
+/// What a recording painter was handed while `f` ran: `(command tag, screen rect)` in draw order.
+fn handed(f: impl FnOnce(Painter)) -> Vec<(u64, Rect)> {
+    crate::draw_census::capture(|| f(Painter::recording()))
+}
+
+/// **`draw_ground` with no photograph is still the layered picture, and never takes the ramp the
+/// driver cannot carry.** A ground whose art is pending, held, sliding or scrolled to nothing is a
+/// gradient with a photograph about to go over it; folding it to one colour for those frames jumps
+/// the page in a frame. So the call is main's: the wash as the four sampled corners, the ramp riding
+/// the wash per band only where the ink program exists (`gfx::wash_ink_ok`) and otherwise left to
+/// the caller (`false`). Art whose texture is 0 is no art.
+#[test]
+fn a_ground_with_no_art_is_still_the_layered_picture() {
+    let w = wash_on([
+        [code8(200), code8(10), code8(90)],
+        [code8(20), code8(240), code8(90)],
+        [code8(60), code8(130), code8(5)],
+        [code8(250), code8(70), code8(180)],
+    ]);
+    let pending = WashArt {
+        tex: 0,
+        rect: Rect::FULL.cover(1280.0, 720.0),
+        uv: plx_gfx::gfx::UV_FULL,
+        tint: [1.0; 4],
+    };
+    let inked = plx_gfx::gfx::wash_ink_ok();
+    let ramp = knee_ramp();
+    for art in [None, Some(pending)] {
+        // No ramp: one plain wash pass over the rect, and nothing taken.
+        let mut took = true;
+        assert_eq!(handed(|p| took = w.draw_ground(p, Rect::FULL, art, None)), [(16, Rect::FULL)]);
+        assert!(!took, "no ramp to take");
+        // A ramp: carried per band (tag 23) only where the driver has the program, else the caller's.
+        let mut took = !inked;
+        let got = handed(|p| took = w.draw_ground(p, Rect::FULL, art, Some(ramp)));
+        let want: Vec<(u64, Rect)> = if inked {
+            cut_at(Rect::FULL, [Some(300.0), Some(700.0)]).map(|b| (23, b)).collect()
+        } else {
+            vec![(16, Rect::FULL)]
+        };
+        assert_eq!(got, want, "art {:?}", art.map(|a| a.tex));
+        assert_eq!(took, inked, "the ramp is taken exactly when the wash can carry it");
+    }
+}
+
+/// **`draw_flat_ground` is the flat colour, as ONE primitive over the rect** (the renderer clears
+/// it), never the per-band split of the layered ground, and it takes no ramp: it has nothing to
+/// hand back.
+#[test]
+fn the_flat_ground_is_one_primitive() {
+    let w = wash_on([[code8(31), code8(27), code8(40)]; 4]);
+    assert_eq!(handed(|p| w.draw_flat_ground(p, Rect::FULL)), [(16, Rect::FULL)]);
+    let part = Rect::new(100.0, 50.0, 1200.0, 700.0);
+    assert_eq!(handed(|p| w.draw_flat_ground(p, part)), [(16, part)]);
+}
+
+// ── A ground with no photograph is ONE flat colour (`AmbientWash::flat_ground`) ──────────────────
+
+/// A wash resting on `corners` (tl, tr, br, bl), the way `AmbientWash::jump` puts it there.
+fn wash_on(corners: [[f32; 3]; 4]) -> AmbientWash {
+    let mut w = AmbientWash::flat([0.0; 4]);
+    w.jump(corners.map(|c| [c[0], c[1], c[2], 1.0]));
+    w
+}
+
+/// An 8-bit code as the float the GPU is sent.
+fn code8(v: u8) -> f32 {
+    v as f32 / 255.0
+}
+
+/// A channel sits on an 8-bit code to float precision (the clear is exact only there).
+fn on_code(v: f32) -> bool {
+    ((v * 255.0) - (v * 255.0).round()).abs() < 1e-4
+}
+
+/// **A wash that is already one colour is that colour, to the code** - the page's resting ground
+/// and every artless poster's, so a flat clear of it is the shader's picture minus its dither.
+/// Off-code springs (a cascade mix, a settling tail) land on the nearest code, never between two.
+#[test]
+fn a_flat_wash_is_its_own_colour_on_exact_codes() {
+    for c in [[code8(31), code8(27), code8(40)], [0.0; 3], [1.0; 3], [0.2001, 0.5004, 0.9996]] {
+        let want = c.map(code);
+        let w = wash_on([c; 4]);
+        assert_eq!(w.flat_ground(), want, "{c:?}");
+        assert!(want.into_iter().all(on_code), "{want:?}");
+    }
+}
+
+/// **A gradient wash is the mean of the field the shader would have drawn**: the 8x8 grid of the
+/// bilinear (`sample`) over the panel, which for a bilinear is the mean of its four corners. Checked
+/// against the grid itself, on a field that leans a different way in every channel.
+#[test]
+fn a_gradient_wash_is_the_mean_of_its_eight_by_eight_field() {
+    let corners = [
+        [code8(200), code8(10), code8(90)],
+        [code8(20), code8(240), code8(90)],
+        [code8(60), code8(130), code8(5)],
+        [code8(250), code8(70), code8(180)],
+    ];
+    let w = wash_on(corners);
+    for r in [Rect::FULL, Rect::new(100.0, 50.0, 1200.0, 700.0)] {
+        let mut mean = [0.0f32; 3];
+        for j in 0..8 {
+            for i in 0..8 {
+                let c = w.sample(r, r.x + r.w * (i as f32 + 0.5) / 8.0, r.y + r.h * (j as f32 + 0.5) / 8.0);
+                for (m, v) in mean.iter_mut().zip(c) {
+                    *m += v / 64.0;
+                }
+            }
+        }
+        let got = w.flat_ground();
+        for ch in 0..3 {
+            assert!(on_code(got[ch]), "channel {ch}: {} is between codes", got[ch]);
+            // Rounding to the nearest code moves a channel by at most half of one.
+            assert!((got[ch] - mean[ch]).abs() <= 0.5 / 255.0 + 1e-5, "channel {ch}: {} vs mean {}", got[ch], mean[ch]);
+        }
+    }
+}

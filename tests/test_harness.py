@@ -878,6 +878,180 @@ class TeardownProcessTable(unittest.TestCase):
         fake.assert_called_once_with(["ps", "-Ao", "pid,command"], capture_output=True)
 
 
+class CrashGate(unittest.TestCase):
+    """`crash_gate`: a case whose app died keeps `plxnative-stderr.log` (the next launch truncates
+    it) and FAILS, unless the case declares `expect_crash`."""
+
+    SIGLINE = "*** SIGNAL 6 (SIGABRT) addr=0x0 pc=0x76a1b2c4 lr=0x76a1b2c8"
+
+    def _gate(self, case, lines, crash_log, baseline, save=None):
+        files = {run.CRASH_LOG: crash_log, run.STDERR_LOG: "abort: assertion failed\n"}
+        out = tempfile.mkdtemp()
+        cfg = {"tv": "192.0.2.20", "save_logs": save or None}
+        with mock.patch.object(run, "pull_runtime_file", side_effect=lambda tv, n: files[n]), \
+             mock.patch.object(run.tempfile, "gettempdir", return_value=out), \
+             mock.patch.object(run, "_CRASH_BASELINE", baseline), \
+             mock.patch("builtins.print") as shown:
+            res = run.crash_gate(cfg, case, "case_a", lines, True, [("x", True, "ok")])
+        return res, out, shown
+
+    def test_new_crash_record_fails_the_case_and_keeps_stderr(self):
+        (passed, results), out, shown = self._gate({}, ["loop=60"], f"old\n{self.SIGLINE}\n", 0)
+        self.assertFalse(passed)
+        self.assertEqual(results[-1][0], "app_alive")
+        kept = os.path.join(out, "plxnative-crash-evidence", "case_a.stderr.log")
+        with open(kept) as f:
+            self.assertEqual(f.read(), "abort: assertion failed\n")
+        self.assertIn(kept, " ".join(str(c) for c in shown.call_args_list))
+
+    def test_signal_line_in_the_case_log_alone_fails_it(self):
+        (passed, results), _out, _shown = self._gate({}, ["loop=60", self.SIGLINE], "", None)
+        self.assertFalse(passed)
+        self.assertFalse(results[-1][1])
+
+    def test_a_crash_before_the_case_is_not_this_cases(self):
+        (passed, results), out, _shown = self._gate({}, ["loop=60"], f"{self.SIGLINE}\n", 1)
+        self.assertTrue(passed)
+        self.assertEqual(len(results), 1)
+        self.assertFalse(os.path.exists(os.path.join(out, "plxnative-crash-evidence")))
+
+    def test_expect_crash_keeps_evidence_without_failing(self):
+        (passed, results), out, _shown = self._gate(
+            {"expect_crash": True}, ["loop=60"], f"{self.SIGLINE}\n", 0)
+        self.assertTrue(passed)
+        self.assertEqual(len(results), 1)
+        self.assertTrue(os.path.exists(
+            os.path.join(out, "plxnative-crash-evidence", "case_a.crash.log")))
+
+    def test_save_logs_keeps_stderr_even_for_a_clean_case(self):
+        save = tempfile.mkdtemp()
+        (passed, _results), _out, _shown = self._gate({}, ["loop=60"], "", 0, save=save)
+        self.assertTrue(passed)
+        self.assertTrue(os.path.exists(os.path.join(save, "case_a.stderr.log")))
+
+    def test_apply_triggers_records_the_crash_baseline(self):
+        saved = run.RUNDIR
+        run.RUNDIR = "/tmp/com.beb.plxnative.debug"
+        try:
+            done = subprocess.CompletedProcess([], 0, stdout="3\n", stderr="")
+            with mock.patch.object(run, "ssh", return_value=done) as ssh:
+                run.apply_triggers("192.0.2.20", [])
+            self.assertIn("plxnative-crash.log", ssh.call_args.args[1])
+            self.assertEqual(run._CRASH_BASELINE, 3)
+        finally:
+            run.RUNDIR = saved
+            run._CRASH_BASELINE = None
+
+    def test_parse_crash_count(self):
+        self.assertEqual(run.parse_crash_count("0\n"), 0)
+        self.assertEqual(run.parse_crash_count(""), None)
+        self.assertEqual(run.parse_crash_count("noise\n4\n"), 4)
+
+
+class TestUserTokenFile(unittest.TestCase):
+    """`test_user.token_file` supplies an already-resolved managed-user token: no plex.tv call."""
+
+    def _file(self, text):
+        fd, path = tempfile.mkstemp()
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        self.addCleanup(os.unlink, path)
+        return path
+
+    def test_token_file_is_read_and_skips_the_owner_lookup(self):
+        path = self._file("synthetic-token-value\n")
+        with mock.patch.object(run, "fetch_managed_user_token") as fetch, \
+                mock.patch.object(run, "read_token") as owner:
+            tok = run.resolve_test_user_token({"id": "1", "token_file": path}, "h", 32400)
+        self.assertEqual(tok, "synthetic-token-value")
+        fetch.assert_not_called()
+        owner.assert_not_called()
+
+    def test_without_token_file_the_shared_servers_lookup_is_unchanged(self):
+        with mock.patch.object(run, "fetch_managed_user_token", return_value="t") as fetch, \
+                mock.patch.object(run, "read_token", return_value="owner"):
+            self.assertEqual(run.resolve_test_user_token({"id": "7"}, "h", 1), "t")
+        fetch.assert_called_once_with("owner", "h", 1, "7")
+
+    def test_empty_multiline_or_missing_file_is_refused(self):
+        for path in (self._file(""), self._file("a\nb\n"), "/nonexistent/plx-token"):
+            with self.assertRaises(SystemExit):
+                run.resolve_test_user_token({"id": "1", "token_file": path}, "h", 1)
+
+
+class QuietTv(unittest.TestCase):
+    """`quiet_tv` is what `--fps --mock` uses to set the panel and sound. The panel is OFF by
+    default, fps runs included: it is only the backlight, and the app keeps presenting at full
+    rate (measured 2026-10-24); only `--panel on` lights it, for a run someone wants to watch."""
+
+    def _steps(self, **kw):
+        calls = []
+
+        def fake(cmd, **_):
+            calls.append(tuple(cmd[1:]))
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        with mock.patch.object(run.subprocess, "run", fake):
+            run.quiet_tv("tv.invalid", **kw)
+        return calls
+
+    def test_default_blanks_the_panel_and_mutes_once(self):
+        self.assertEqual(self._steps(), [("screen", "off")])
+        self.assertEqual(self._steps(sound=True), [("screen", "off"), ("sound", "off")])
+
+    def test_panel_on_is_the_opt_in_and_the_sound_is_muted_either_way(self):
+        self.assertEqual(self._steps(sound=True, panel="on"),
+                         [("screen", "on"), ("sound", "off")])
+
+    def test_a_bad_panel_value_is_refused_and_a_failed_step_stops_the_run(self):
+        with self.assertRaises(ValueError):
+            run.quiet_tv("tv.invalid", panel="dim")
+        fail = lambda cmd, **_: subprocess.CompletedProcess(cmd, 1, "", "no")
+        with mock.patch.object(run.subprocess, "run", fail), self.assertRaises(SystemExit):
+            run.quiet_tv("tv.invalid")
+
+    def test_the_cli_exposes_panel_with_off_as_default(self):
+        # One constant feeds the flag, `quiet_tv`'s default and both `cfg.get("panel", ...)`
+        # fallbacks, so the value is pinned once here and each user of it is pinned below.
+        self.assertEqual(run.PANEL_DEFAULT, "off")
+        src = inspect.getsource(run.main)
+        self.assertIn('"--panel", choices=("on", "off"), default=PANEL_DEFAULT', src)
+        self.assertIn('cfg["panel"] = args.panel', src)
+
+    def test_quiet_tv_defaults_to_the_shared_panel_default(self):
+        self.assertEqual(inspect.signature(run.quiet_tv).parameters["panel"].default,
+                         run.PANEL_DEFAULT)
+
+    def test_a_config_without_a_panel_key_falls_back_to_off(self):
+        # `run_mock_fps_scene` and `run_fps_suite` read `cfg.get("panel", ...)`: a cfg built
+        # without the CLI (a test, a caller) must get the same default the CLI has.
+        seen = []
+        with mock.patch.object(run, "quiet_tv", lambda tv, sound=False, panel="?": seen.append(panel)), \
+                mock.patch.object(run, "run_fps_scene", return_value=(True, "")), \
+                mock.patch.object(run.mock_fps, "MockPms"), \
+                mock.patch.object(run.mock_fps, "mock_server_args", return_value=[]), \
+                mock.patch.object(run.mock_fps, "resolve_mock_token", return_value="t"):
+            run.run_mock_fps_scene({"name": "x"}, {"tv": "tv.invalid", "mock": {"host": "h", "port": 1}})
+        self.assertEqual(seen, ["off"])
+
+    def test_the_fps_suite_without_a_panel_key_blanks_the_panel_too(self):
+        # `run_fps_suite` asserts the panel and mutes the sound once, up front, from its own
+        # `cfg.get("panel", ...)`; `run_mock_fps_scene` (stubbed here) re-asserts it per scene.
+        calls = []
+
+        def fake_quiet_tv(tv, sound=False, panel="?"):
+            calls.append((sound, panel))
+
+        cfg = {"tv": "tv.invalid", "mock": {"host": "h", "port": 1}}
+        out = io.StringIO()
+        with mock.patch.object(run, "quiet_tv", fake_quiet_tv), \
+                mock.patch.object(run, "run_mock_fps_scene", return_value=(True, "")), \
+                contextlib.redirect_stdout(out):
+            rc = run.run_fps_suite([{"name": "x"}], cfg, "tok", False)
+        self.assertEqual(rc, 0)
+        self.assertEqual(calls, [(True, "off")])
+        self.assertIn("panel rule: panel OFF", out.getvalue())
+
+
 class StoredSessionGate(unittest.TestCase):
     """A `session: stored` case with no stored sign-in on the install used to call
     `require_stored_session()` -> `sys.exit()` from inside `run_case`, and `SystemExit` is not an
@@ -3594,6 +3768,91 @@ class AbrTraceMetrics(unittest.TestCase):
         ok, why = run.op_audio_enhancement_burn(lines)
         self.assertTrue(ok, why)
 
+    # The side-reader shape (#474): on a local link with a moderate Part bitrate the app reads an
+    # embedded subtitle beside the enhanced remux and draws it itself, so nothing is burned. Lines
+    # are the v0.9.0 TV run's, reduced; ids and the host are placeholders.
+    _CLIENT_REMUX = ("stream: <addr> path=/video/:/transcode/universal/start.mkv?directPlay=0&"
+                     "directStream=1&directStreamAudio=1&audioStreamID=11&normalizeLoudness=1&"
+                     "subtitleStreamID=0&subtitles=none")
+
+    def _cold_client(self):
+        return ["enhancement: boost_dialog=false normalize_loudness=true — direct play becomes "
+                "an enhanced remux", "decision output: v=h264 a=aac",
+                "enhancement: applied boost=0 loudness=1",
+                "server-selected subtitle: sid=21 render_idx=0", self._CLIENT_REMUX,
+                "subside: open tracks=4 ordinal=0 kbps=10000",
+                "subside: anchor match=exact part_kf_ms=0 remux_kf_ms=44",
+                "sub cue [4296..7049ms] len=50"]
+
+    def _live_client(self):
+        remux = self._CLIENT_REMUX.replace("&subtitleStreamID=0&subtitles=none", "")
+        return ["enhancement: applied boost=0 loudness=1", remux,
+                "loop=60 route=player overlay=menu pos=5s play=1000pm",
+                "select streams: part=31 audio=11 sub=24 -> HTTP 200",
+                "subside: open tracks=6 ordinal=3 kbps=26000",
+                "sub cue [4296..7049ms] len=50"]
+
+    def test_enhancement_subtitle_client_presenter_passes_the_v090_shapes(self):
+        """The two v0.9.0 TV failures were this product behaviour graded as a missing burn."""
+        ok, why = run.op_audio_enhancement_subtitle(self._cold_client(), "client", live=False)
+        self.assertTrue(ok, why)
+        ok, why = run.op_audio_enhancement_subtitle(self._live_client(), "client", live=True)
+        self.assertTrue(ok, why)
+
+    def test_enhancement_subtitle_client_presenter_rejects_a_burn_or_a_lost_subtitle(self):
+        burned = [ln.replace("directStreamAudio=1&", "").replace("subtitles=none", "subtitles=burn")
+                  for ln in self._cold_client()]
+        ok, why = run.op_audio_enhancement_subtitle(burned, "client", live=False)
+        self.assertFalse(ok, why)
+        no_reader = [ln for ln in self._cold_client() if not ln.startswith("subside:")]
+        ok, why = run.op_audio_enhancement_subtitle(no_reader, "client", live=False)
+        self.assertFalse(ok, why)
+        self.assertIn("subside: open", why)
+        other_track = [ln.replace("ordinal=0", "ordinal=2") for ln in self._cold_client()]
+        ok, why = run.op_audio_enhancement_subtitle(other_track, "client", live=False)
+        self.assertFalse(ok, why)
+        no_cue = [ln for ln in self._cold_client() if not ln.startswith("sub cue")]
+        ok, why = run.op_audio_enhancement_subtitle(no_cue, "client", live=False)
+        self.assertFalse(ok, why)
+        failed = self._cold_client() + ["subside: failed"]
+        ok, why = run.op_audio_enhancement_subtitle(failed, "client", live=False)
+        self.assertFalse(ok, why)
+
+    def test_enhancement_subtitle_live_pick_must_not_rebuild_the_stream(self):
+        """`embedded_pick_on_a_live_remux_queues_no_retranscode`'s device half: the pick starts
+        the reader and leaves the enhanced remux alone."""
+        lines = self._live_client()
+        rebuilt = lines[:4] + ["enhancement: applied boost=0 loudness=1", lines[1]] + lines[4:]
+        ok, why = run.op_audio_enhancement_subtitle(rebuilt, "client", live=True)
+        self.assertFalse(ok, why)
+        no_pick = [ln for ln in lines if not ln.startswith("select streams:")]
+        ok, why = run.op_audio_enhancement_subtitle(no_pick, "client", live=True)
+        self.assertFalse(ok, why)
+
+    def test_enhancement_subtitle_burn_presenter_is_the_burn_grader(self):
+        applied = "enhancement: applied boost=0 loudness=1"
+        burn = ("stream: 1.2.3.4 path=/video/:/transcode/universal/start.mkv?directStream=1&"
+                "videoResolution=3840x2160&maxVideoBitrate=60000&normalizeLoudness=1&"
+                "subtitleStreamID=24&subtitles=burn")
+        self.assertTrue(run.op_audio_enhancement_subtitle([applied, burn], "burn", live=False)[0])
+        self.assertFalse(run.op_audio_enhancement_subtitle(self._cold_client(), "burn", live=False)[0])
+
+    def test_enhancement_subtitle_cases_name_their_presenter(self):
+        """Each case STATES which presenter its item gets (`side_reader_inputs_admit`: a local link
+        and a Part of at most 30000 kbps admit the app's reader), and evaluate() grades it."""
+        cases = {c["name"]: c for c in _manifest()["cases"]}
+        cold = cases["audio_enhancement_draws_server_selected_subtitle"]
+        live = cases["audio_enhancement_draws_embedded_subtitle"]
+        self.assertIn({"op": "audio_enhancement_subtitle", "presenter": "client"}, cold["operations"])
+        self.assertTrue(any(o.get("op") == "subtitle" and o.get("enhanced") == "client"
+                            for o in live["operations"]))
+        _, results = run.evaluate({"rk": "1", **cold}, self._cold_client())
+        self.assertIn(("audio_enhancement_subtitle", True),
+                      [(label, ok) for label, ok, _ in results])
+        _, results = run.evaluate({"rk": "1", **live}, self._live_client())
+        self.assertIn(("audio_enhancement_subtitle", True),
+                      [(label, ok) for label, ok, _ in results])
+
     def test_audio_enhancement_dispatch_picks_release_by_settle(self):
         """`evaluate()`'s per-operation dispatch: `settle: "released"` grades the cleanup leg, and
         its absence grades the ordinary apply leg."""
@@ -5312,7 +5571,7 @@ class PostSeekSurvival(unittest.TestCase):
     """
 
     def _log(self, positions, tail=(), retired=True):
-        out = ["reload_transcode: fresh Load at offset 300s"]
+        out = ["autoseek: step → 300s (0 left)", "reload_transcode: fresh Load at offset 300s"]
         if retired:
             out.append("seek: retired previous encoder ok=1")
         out += [f"loop=60 fps=60 pos={t}s play=1000pm" for t in positions]
@@ -5329,7 +5588,7 @@ class PostSeekSurvival(unittest.TestCase):
 
     def test_a_stop_that_the_server_rejected_is_not_a_successful_retirement(self):
         lines = self._log(range(300, 480), retired=False)
-        lines.insert(1, "seek: retired previous encoder ok=0")
+        lines.insert(2, "seek: retired previous encoder ok=0")
         ok, why = run.op_seek_transcode(lines, 300, min_climb_after_s=45)
         self.assertFalse(ok, why)
         self.assertIn("ok=0", why)
@@ -5355,6 +5614,68 @@ class PostSeekSurvival(unittest.TestCase):
         """A short seek case may omit post-climb, never physical-session retirement."""
         ok, _ = run.op_seek_transcode(self._log(range(300, 315)), 300)
         self.assertTrue(ok)
+
+    def _pin_then_original_then_inplace_seek(self):
+        """`auto_pin_then_original_and_seek` on the v0.9.0 TV run, reduced: the 720p PIN rebuilt
+        the stream (`reload_transcode: fresh Load at offset 12s`), Original then restored direct
+        play and retired the pin's encoder, and the scheduled seek ~45 s later was an in-place
+        `av_seek` on the source file."""
+        pos = lambda t: f"loop=60 route=player overlay=none pos={t}s play=1000pm fps=60"
+        return ([pos(t) for t in range(0, 12)]
+                + ["quality: switch → 720p_4_mbps (1 left)",
+                   "route transition: user retranscode at 12s",
+                   "reload_transcode: fresh Load at offset 12s"]
+                + [pos(t) for t in range(12, 50)]
+                + ["quality: switch → original (0 left)", "reload_at: fresh Load at 50s",
+                   "abr: retired superseded encoder after Original handoff ok=1"]
+                + [pos(t) for t in range(50, 95)]
+                + ["autoseek: step → 300s (0 left)",
+                   "seek(in-place): av_seek t=300000000000 coalesced=0",
+                   "in-place seek: setTimeToDecode(296917000000) rv=0 setContentInfo=1 sendSegment=1"]
+                + [pos(t) for t in range(300, 339)])
+
+    def test_a_quality_switch_reload_before_the_seek_is_not_the_seeks_signal(self):
+        """The v0.9.0 failure: the grader grepped the WHOLE log, took the pin's own reload for the
+        seek's, and then failed it for not retiring an encoder the pin never replaced. Only the
+        lines after the seek was requested (`autoseek: step`) can be the seek's evidence."""
+        ok, why = run.op_seek_transcode(self._pin_then_original_then_inplace_seek(), 300,
+                                        min_climb_after_s=25)
+        self.assertFalse(ok, why)
+        self.assertIn("no transcode-seek signal", why)
+
+    def test_a_look_alike_before_the_seek_cannot_pass_it(self):
+        """The same trap in the passing direction: a switch's rebuild that DID retire its
+        predecessor must not grade a seek that never rebuilt anything."""
+        lines = self._pin_then_original_then_inplace_seek()
+        lines.insert(lines.index("reload_transcode: fresh Load at offset 12s") + 1,
+                     "seek: retired previous encoder ok=1")
+        ok, why = run.op_seek_transcode(lines, 300, min_climb_after_s=25)
+        self.assertFalse(ok, why)
+
+    def test_a_seek_that_was_never_requested_is_not_graded_from_other_reloads(self):
+        lines = [ln for ln in self._log(range(300, 480)) if not ln.startswith("autoseek:")]
+        ok, why = run.op_seek_transcode(lines, 300, min_climb_after_s=45)
+        self.assertFalse(ok, why)
+        self.assertIn("never requested", why)
+
+    def test_the_inplace_arm_grades_the_restored_source_and_its_survival(self):
+        lines = self._pin_then_original_then_inplace_seek()
+        ok, why = run.op_seek_inplace(lines, 300, min_climb_after_s=25)
+        self.assertTrue(ok, why)
+        ok, why = run.op_seek_inplace(lines[:-30], 300, min_climb_after_s=25)
+        self.assertFalse(ok, why)
+        self.assertIn("did not survive", why)
+
+    def test_the_case_states_its_inplace_assumption(self):
+        """After Original restores direct play the seek is an `av_seek`; the case says so (as its
+        sibling `original_then_auto_and_seek` does) instead of leaving the transcode arm to find a
+        reload that a direct play cannot emit."""
+        with open(run.MANIFEST) as f:
+            cases = json.load(f)["cases"]
+        case = next(c for c in cases if c["name"] == "auto_pin_then_original_and_seek")
+        seek = next(o for o in case["operations"] if o["op"] == "seek")
+        self.assertEqual(seek.get("mode"), "inplace")
+        self.assertTrue(seek.get("min_climb_after_s"))
 
 
 class DemuxFailureAssertion(unittest.TestCase):
@@ -6148,6 +6469,452 @@ impl PersonOwnerGateFixture {
         self.assertIn("blocking:", out)
         self.assertIn("decision.rs::no_such_fn", out)
 
+    # ---- the Sans-IO ledgers (docs/sans-io.md) ----------------------------------------------------
+    # `blocking` keeps ONE file; workers, globals, forks and fxlanes keep one file per AREA under
+    # ci/allow/<rule>/<area>.txt (the crate, or for data/ the top-level module), so two migrations
+    # in different areas never edit the same `# count:` header.
+    LEDGER_RULES = ("workers", "globals", "forks", "fxlanes")
+
+    def _deps(self):
+        return subprocess.run([os.path.join(self.tree, "ci", "check-deps.sh")], capture_output=True, text=True)
+
+    def _ledger_files(self, rule):
+        root = os.path.join(self.tree, "ci", "allow", rule)
+        return sorted(os.path.join(root, fn) for fn in os.listdir(root) if fn.endswith(".txt"))
+
+    def test_blocking_ledger_keeps_its_multiset_shape_after_the_refactor(self):
+        """`blocking` now runs on the shared ledger scanner and must grade as it always did: every
+        call is its own ledger line (two calls in one fn are two lines), a call in a closure
+        belongs to the fn around the closure, and a call on the same line as its `fn` belongs to
+        that fn. The same test passes on the pre-refactor script."""
+        name = "_check_deps_selftest_blocking_shapes.rs"
+        body = ("pub fn two() {\n    let _a = plx_base::task::allow_blocking(L1);\n"
+                "    let _b = plx_base::task::allow_blocking(L2);\n}\n"
+                "pub fn closure() {\n    let f = || { let _c = plx_base::task::allow_blocking(L3); };\n    f();\n}\n"
+                "pub fn one_liner() { let _d = plx_base::task::allow_blocking(L4); }\n")
+        r = self._plant(name, body)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        new = sorted(line.rsplit("::", 1)[1] for line in out.splitlines()
+                     if "new frame-thread blocking exception:" in line and name in line)
+        self.assertEqual(new, ["closure", "one_liner", "two", "two"], out)
+        self.assertIn("new: 4, stale: 0, aliased: 0", out)
+
+    def test_workers_ledger_catches_a_new_worker_start_in_a_machine(self):
+        """RED: a production worker start in a machine (a data/ store, a screen, the session owner ...)
+        that no ci/allow/workers/<area>.txt names must fail `workers`, keyed by file, enclosing fn
+        and spelling, in every spelling the base layer offers -- qualified, bare after a `use`, the
+        typed command worker's `submit_ticket` -- and naming the ledger file its area owns."""
+        name = "_check_deps_selftest_workers.rs"
+        body = ("use plx_base::task::spawn_off_frame;\nuse plx_base::storage_worker::submit;\n\n"
+                "pub fn qualified() {\n    let _ = plx_base::task::spawn_small(\"x\", || {});\n}\n"
+                "pub fn bare() {\n    let _ = spawn_off_frame(\"y\", |_| {});\n    let _ = submit(|| ());\n}\n"
+                "pub fn typed(w: &Worker) {\n    let _ = w.submit_ticket(1);\n}\n"
+                "pub fn task_spawn() {\n    let _ = plx_base::task::spawn(\"z\", || {});\n}\n")
+        r = self._plant(name, body, crate_dir="data")
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("workers:", out)
+        key = f"rust-modules/data/src/{name}"
+        for site in ("qualified::spawn_small", "bare::spawn_off_frame", "bare::submit",
+                     "typed::submit_ticket", "task_spawn::task::spawn"):
+            with self.subTest(site=site):
+                self.assertIn(f"{key}::{site}", out)
+        self.assertIn("ci/allow/workers/data-_check_deps_selftest_workers.txt", out)
+
+    def test_globals_ledger_catches_a_new_registry_read_in_a_machine(self):
+        """RED: a production read of a process-global registry in a machine fails `globals`: the
+        getters, the qualified `session::peek`, and a bare `peek` only because this file imports it
+        from session -- `it.peek()` on any other value is not one."""
+        name = "_check_deps_selftest_globals.rs"
+        body = ("use plx_plex::plex::session::peek;\n\n"
+                "pub fn reads() {\n"
+                "    let _a = plx_plex::plex::client_for(plx_plex::plex::session::current_server());\n"
+                "    let _b = plx_plex::plex::session::peek();\n"
+                "    let _c = plx_net::net::keypin::revision();\n"
+                "    let _d = plx_plex::plex::grant::offers();\n"
+                "    let _e = peek();\n"
+                "    let _f = it.peek();\n"
+                "    let _g = plx_plex::plex::session::current_snapshot();\n"
+                "    let _h = plx_net::net::keypin::blocked_for(1);\n}\n")
+        r = self._plant(name, body, crate_dir="screens")
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("globals:", out)
+        key = f"rust-modules/screens/src/{name}::reads"
+        for spelling in ("client_for", "current_server", "session::peek", "keypin::revision",
+                         "grant::offers", "peek", "current_snapshot", "keypin::blocked_for"):
+            with self.subTest(spelling=spelling):
+                self.assertIn(f"{key}::{spelling}  (ledger: ", out)
+        self.assertEqual(out.count(f"{key}::peek  (ledger: "), 1, "`it.peek()` is not a registry read\n" + out)
+        self.assertIn("ci/allow/globals/screens.txt", out)
+
+    def test_forks_ledger_catches_a_new_production_test_fork(self):
+        """RED: a `#[cfg(not(test))]` / `cfg!(not(test))` / `not(feature = \"test-support\")` fork in
+        data/, plex/, media/ or session/ that no ci/allow/forks/<area>.txt names fails `forks`, keyed by
+        the item it sits on, or the fn around a statement or an inline `cfg!`."""
+        name = "_check_deps_selftest_forks.rs"
+        body = ("#[cfg(not(test))]\npub fn real_only() {}\n\n"
+                "pub fn inline() -> bool {\n    cfg!(not(test))\n}\n\n"
+                "#[cfg(not(any(test, feature = \"test-support\")))]\nconst LIVE: u8 = 1;\n\n"
+                "#[cfg(not(feature = \"test-support\"))]\npub fn gated() {}\n\n"
+                "pub fn stmt() {\n    #[cfg(not(test))]\n    let _x = 1;\n}\n\n"
+                "pub struct S;\nimpl S {\n    #[cfg(all(target_os = \"linux\", not(test)))]\n"
+                "    pub fn method(&self) {}\n}\n")
+        r = self._plant(name, body, crate_dir="session")
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("forks:", out)
+        key = f"rust-modules/session/src/{name}"
+        for item in ("real_only", "inline", "LIVE", "gated", "stmt", "method"):
+            with self.subTest(item=item):
+                self.assertIn(f"{key}::{item}  (ledger: ", out)
+        self.assertIn("ci/allow/forks/session.txt", out)
+
+    def test_fxlanes_ledger_fails_a_new_appfx_side_queue_but_not_a_deliver_arm(self):
+        """RED: in `Bridge::app_effect` an `AppFx` arm that pushes `Fx::Deliver(` rides the ordered
+        FIFO and costs nothing; an arm that parks its request on a side queue must be a ledger line,
+        so a NEW variant with a side queue fails `fxlanes` while a new Deliver arm does not."""
+        r = self._mutate(
+            "app/bridge.rs", "AppFx::Loop(req) => self.reqs.push(req),",
+            "AppFx::Loop(req) => self.reqs.push(req),\n"
+            "            AppFx::Sneaky(req) => self.sneaky_reqs.push(req),\n"
+            "            AppFx::Orderly(cmd) => out.push(Fx::Deliver(MachineId::Consent,\n"
+            "                Delivery::Machine(AppMsg::Consent(cmd)))),")
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("fxlanes:", out)
+        self.assertIn("rust-modules/src/app/bridge.rs::AppFx::Sneaky", out)
+        self.assertNotIn("AppFx::Orderly", out)
+        self.assertIn("ci/allow/fxlanes/app.txt", out)
+
+    def test_ledgers_ignore_tests_comments_strings_and_declarations(self):
+        """GREEN: the same shapes inside a `#[cfg(test)] mod`, under a test-only `cfg(any(test, ..))`
+        item, in a comment, a doc line or a string literal, are no site of any ledger -- so all
+        three call-site ledgers stay exact -- and a test-only item is not a production fork."""
+        name = "_check_deps_selftest_ledgers_ok.rs"
+        body = ("// spawn_small(\"c\", f) and client_for(x) are documented here\n"
+                "/// `session::peek()` and keypin::revision() in a doc line\n"
+                "pub fn fine() {\n    let _s = \"spawn_small( client_for( keypin::revision( cfg!(not(test))\";\n}\n"
+                "#[cfg(test)]\nmod tests {\n    fn t() {\n        plx_base::task::spawn_small(\"t\", || {});\n"
+                "        let _ = client_for(plx_plex::plex::session::current_server());\n    }\n}\n"
+                "#[cfg(any(test, feature = \"test-support\"))]\npub fn seam() { let _ = client_for(1); }\n"
+                "#[cfg(test)]\nfn only_test() { let _ = cfg!(not(test)); }\n")
+        r = self._plant(name, body, crate_dir="data")
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 0, out)
+        for rule in ("workers", "globals", "forks"):
+            with self.subTest(rule=rule):
+                self.assertRegex(r.stdout, rf"ok — {rule} \(\d+ sites\)")
+
+    def _plant_many(self, files, crate_dir):
+        """`_plant` for several orphan files of ONE crate, graded by a single gate run (a run is ~11 s):
+        each file isolates one import shape, because a `use` statement applies to its whole file."""
+        written = []
+        try:
+            for name, content in files.items():
+                target = os.path.join(self.tree, "rust-modules", crate_dir, "src", name)
+                self.assertFalse(os.path.exists(target), f"stale self-test artifact at {target} — remove it by hand")
+                with open(target, "w", encoding="utf-8") as f:
+                    f.write(content)
+                written.append(target)
+            return self._deps()
+        finally:
+            for target in written:
+                if os.path.exists(target):
+                    os.remove(target)
+
+    def _append_to(self, rel, text):
+        """Append `text` to a tracked file of THIS TEST'S private copy (the copy is nobody else's, so
+        nothing is restored) and return the gate's verdict. `_mutate` and `_prepend` know only the
+        data layer and the application crate; this one takes any repo-relative path."""
+        with open(os.path.join(self.tree, rel), "a", encoding="utf-8") as f:
+            f.write(text)
+        return self._deps()
+
+    def test_globals_ledger_sees_renamed_and_bare_keypin_and_grant_getters(self):
+        """RED: `keypin::revision`, `keypin::blocked_for` and `grant::offers` are registry reads like
+        `session::peek`, so the two ways to hide one from the call-site scan are shut the same way:
+        a rename (`use ... revision as rev;`) fails outright, and a bare name is a site in a file that
+        imports it -- singly, in a group that ends with it, or through a glob."""
+        crate = "screens"
+        r = self._plant_many({
+            "_check_deps_selftest_renamed.rs": (
+                "use plx_net::net::keypin::revision as rev;\n"
+                "use plx_net::net::keypin::blocked_for as blocked;\n"
+                "use plx_plex::plex::grant::offers as house_offers;\n\n"
+                "pub fn renamed() {\n    let _ = (rev(), blocked(1), house_offers());\n}\n"),
+            "_check_deps_selftest_bare.rs": (
+                "use plx_net::net::keypin::revision;\nuse plx_net::net::keypin::{self, blocked_for};\n"
+                "use plx_plex::plex::grant::offers;\n\n"
+                "pub fn bare() {\n    let _ = (revision(), blocked_for(1), offers());\n    let _ = it.revision();\n}\n"),
+            "_check_deps_selftest_globbed.rs": (
+                "use plx_net::net::keypin::*;\n\npub fn globbed() {\n    let _ = revision();\n}\n"),
+        }, crate)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("globals:", out)
+        base = f"rust-modules/{crate}/src/_check_deps_selftest_"
+        for line in (1, 2, 3):
+            with self.subTest(rename_line=line):
+                self.assertIn(f"{base}renamed.rs:{line}\n", out + "\n")
+        for fn, spelling in (("bare", "revision"), ("bare", "blocked_for"), ("bare", "offers"),
+                             ("globbed", "revision")):
+            with self.subTest(fn=fn, spelling=spelling):
+                self.assertIn(f"{base}{fn}.rs::{fn}::{spelling}  (ledger: ", out)
+        self.assertEqual(out.count(f"{base}bare.rs::bare::revision  (ledger: "), 1,
+                         "`it.revision()` is not a registry read\n" + out)
+
+    def test_globals_ledger_sees_the_player_transport_readers_in_a_machine(self):
+        """RED: `transport::paused`, `transport::viewer_paused` and `preview::paused` read `TX.paused` behind
+        a function (Sans-IO lifecycle PR B), so a machine that calls one reads the registry as surely as
+        `client_for` does. Qualified, bare-after-an-import (singly, in a group, through a glob) and the
+        rename that would hide the calls are all caught; the writers (`set_paused`, `set_transport_paused`)
+        and a file that merely has a local named `paused` are not registry reads. An import that only
+        ENDS in one of the module names (`plx_appkit::scrub_preview::*`, `plx_ui::hud_transport::{..}`) is not
+        an import of `preview` / `transport`, so a `paused` local beside it is no site either."""
+        crate = "screens"
+        r = self._plant_many({
+            "_check_deps_selftest_qualified.rs": (
+                "pub fn qualified() {\n"
+                "    let _ = plx_media::player::transport::paused();\n"
+                "    let _ = plx_media::player::transport::viewer_paused();\n"
+                "    let _ = plx_media::player::preview::paused();\n}\n"),
+            "_check_deps_selftest_renamed.rs": (
+                "use plx_media::player::transport::paused as is_paused;\n"
+                "use plx_media::player::transport::viewer_paused as vp;\n"
+                "use plx_media::player::preview::paused as pv;\n\n"
+                "pub fn renamed() {\n    let _ = (is_paused(), vp(), pv());\n}\n"),
+            "_check_deps_selftest_bare.rs": (
+                "use plx_media::player::transport::{self, viewer_paused};\n"
+                "use plx_media::player::preview::paused;\n\n"
+                "pub fn bare() {\n    let _ = (viewer_paused(), paused());\n    let _ = it.paused();\n}\n"),
+            "_check_deps_selftest_globbed.rs": (
+                "use plx_media::player::transport::*;\n\npub fn globbed() {\n    let _ = paused();\n}\n"),
+            "_check_deps_selftest_writers.rs": (
+                "use plx_media::player::transport::{self, set_paused, set_transport_paused};\n\n"
+                "pub fn writes(paused: bool) {\n    set_paused(paused);\n    set_transport_paused(None, paused);\n}\n"),
+            "_check_deps_selftest_scrub_glob.rs": (
+                "use plx_appkit::scrub_preview::*;\n\n"
+                "pub fn scrub_glob(x: u8) -> bool {\n    let paused = x > 0;\n    paused\n}\n"),
+            "_check_deps_selftest_suffix_group.rs": (
+                "use plx_ui::hud_transport::{self, paused_label};\nuse plx_ui::my_preview::{paused};\n\n"
+                "pub fn suffix_group(x: u8) -> bool {\n    let paused = x > 0;\n    paused\n}\n"),
+        }, crate)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("globals:", out)
+        base = f"rust-modules/{crate}/src/_check_deps_selftest_"
+        for spelling in ("transport::paused", "transport::viewer_paused", "preview::paused"):
+            with self.subTest(qualified=spelling):
+                self.assertIn(f"{base}qualified.rs::qualified::{spelling}  (ledger: ", out)
+        for line in (1, 2, 3):
+            with self.subTest(rename_line=line):
+                self.assertIn(f"{base}renamed.rs:{line}\n", out + "\n")
+        for fn, spelling in (("bare", "viewer_paused"), ("bare", "paused"), ("globbed", "paused")):
+            with self.subTest(fn=fn, spelling=spelling):
+                self.assertIn(f"{base}{fn}.rs::{fn}::{spelling}  (ledger: ", out)
+        self.assertEqual(out.count(f"{base}bare.rs::bare::paused  (ledger: "), 1,
+                         "`it.paused()` is not a registry read\n" + out)
+        self.assertNotIn(f"{base}writers.rs", out, "a writer is an IO call, not a registry read\n" + out)
+        for stem in ("scrub_glob", "suffix_group"):
+            with self.subTest(not_an_import_of_the_module=stem):
+                self.assertNotIn(f"{base}{stem}.rs", out,
+                                 "`..._preview::*` / `..._transport::{..}` is not `preview` / `transport`\n" + out)
+
+    def test_a_bare_name_that_ends_a_braced_import_is_still_imported(self):
+        """RED: `use plx_base::task::{self, spawn};` imports `spawn` as surely as `{spawn, self}` does, and
+        so for `submit` and `peek`; the import pattern used to eat the closing `}` of a group whose
+        LAST item was the name and then wanted another one, so every such call went unseen. A group
+        that merely contains a longer name (`{self, spawn_small}`) imports no bare `spawn`."""
+        crate = "data"
+        r = self._plant_many({
+            "_check_deps_selftest_last.rs": (
+                "use plx_base::task::{self, spawn};\n\npub fn last() {\n    let _ = spawn(\"x\", || {});\n}\n"),
+            "_check_deps_selftest_alone.rs": (
+                "use plx_base::task::{spawn};\n\npub fn alone() {\n    let _ = spawn(\"x\", || {});\n}\n"),
+            "_check_deps_selftest_submit.rs": (
+                "use plx_base::storage_worker::{self, submit};\n\npub fn queued() {\n    let _ = submit(|| ());\n}\n"),
+            "_check_deps_selftest_peek.rs": (
+                "use plx_plex::plex::session::{self, peek};\n\npub fn peeks() {\n    let _ = peek();\n}\n"),
+            "_check_deps_selftest_peek_alone.rs": (
+                "use plx_plex::plex::session::{peek};\n\npub fn peeks_alone() {\n    let _ = peek();\n}\n"),
+            "_check_deps_selftest_other.rs": (
+                "use plx_base::task::{self, spawn_small};\nuse plx_plex::plex::session::{self, peek_all};\n\n"
+                "pub fn other() {\n    let _ = spawn(\"x\", || {});\n    let _ = peek();\n}\n"),
+        }, crate)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        base = f"rust-modules/{crate}/src/_check_deps_selftest_"
+        for stem, fn, spelling in (("last", "last", "spawn"), ("alone", "alone", "spawn"),
+                                   ("submit", "queued", "submit"), ("peek", "peeks", "peek"),
+                                   ("peek_alone", "peeks_alone", "peek")):
+            with self.subTest(stem=stem):
+                self.assertIn(f"{base}{stem}.rs::{fn}::{spelling}  (ledger: ", out)
+        self.assertNotIn(f"{base}other.rs", out, "`{self, spawn_small}` imports no bare `spawn`\n" + out)
+
+    def test_fxlanes_ledger_sees_every_variant_of_an_arm_and_a_catch_all_arm(self):
+        """RED: an or-pattern arm (`AppFx::A(r) | AppFx::B(r) => ..`, on one line or wrapped) is a site
+        for EVERY variant on its head, and an arm with no `AppFx::` head (`other => ..`, `_ => ..`) is a
+        site of its own, keyed `AppFx::_`: both used to ride on the first variant's line, or on nothing.
+        An or-pattern arm that pushes `Fx::Deliver(` is on the ordered lane and costs nothing."""
+        r = self._mutate(
+            "app/bridge.rs", "AppFx::Loop(req) => self.reqs.push(req),",
+            "AppFx::Loop(req) | AppFx::PlantedOr(req) => self.reqs.push(req),\n"
+            "            AppFx::PlantedFirst(req)\n"
+            "                | AppFx::PlantedWrapped(req) => self.planted_reqs.push(req),\n"
+            "            AppFx::PlantedOk(cmd) | AppFx::PlantedOk2(cmd) => out.push(Fx::Deliver(MachineId::Consent,\n"
+            "                Delivery::Machine(AppMsg::Consent(cmd)))),\n"
+            "            other => self.misc_reqs.push(other),")
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        key = "rust-modules/src/app/bridge.rs::AppFx::"
+        for variant in ("PlantedOr", "PlantedFirst", "PlantedWrapped", "_"):
+            with self.subTest(variant=variant):
+                self.assertIn(f"{key}{variant}  (ledger: ci/allow/fxlanes/app.txt)", out)
+        self.assertNotIn("PlantedOk", out)
+        self.assertNotIn(f"{key}Loop", out, "the variant the ledger already holds is not new")
+
+    def test_globals_ledger_sees_every_spelling_of_the_player_transport_in_lifecycle(self):
+        """RED: lifecycle.rs, the machine, reads no `crate::player::TX` (the transport contract lives in
+        player/transport.rs), and the spellings stay pinned there as a zero-guard: planting `super::TX`,
+        a bare `TX` and a renamed import reaches the same atomic from that file. The first two are sites
+        of their own, the rename fails outright (the calls through it are invisible)."""
+        rel = "rust-modules/media/src/player/lifecycle.rs"
+        with open(os.path.join(self.tree, rel), encoding="utf-8") as f:
+            before = f.read().count("\n")
+        appended = ("\nfn planted_super_tx() -> bool {\n    super::TX.paused.load(Relaxed)\n}\n"
+                    "use super::TX;\nfn planted_bare_tx() {\n    TX.commit_paused(true);\n}\n"
+                    "use super::TX as Transport2;\n")
+        r = self._append_to(rel, appended)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("globals:", out)
+        self.assertIn(f"{rel}::planted_super_tx::super::TX  (ledger: ci/allow/globals/media.txt)", out)
+        self.assertIn(f"{rel}::planted_bare_tx::TX  (ledger: ci/allow/globals/media.txt)", out)
+        rename_line = before + appended.split("\n").index("use super::TX as Transport2;") + 1
+        self.assertIn(f"{rel}:{rename_line}\n", out + "\n")
+
+    def test_a_cfg_test_fn_with_a_where_clause_is_skipped_whole(self):
+        """RED: an item under `#[cfg(test)]` is skipped to the end of ITS body. A signature that spills
+        over several lines -- a long parameter list, a `where` clause whose bounds end in a comma -- used
+        to end the skip at the first such line, and the body was graded as production under the
+        unnamed fn `?`. The production fn after the test items is still graded."""
+        name = "_check_deps_selftest_where.rs"
+        body = ("#[cfg(test)]\nfn helper<T>(x: T)\nwhere\n    T: Clone,\n{\n"
+                "    plx_base::task::spawn_small(\"t\", || {});\n    let _ = cfg!(not(test));\n}\n\n"
+                "#[cfg(test)]\npub(crate) fn wrapped(\n    a: u8,\n) -> u8\nwhere\n    u8: Copy,\n{\n"
+                "    let _ = plx_plex::plex::client_for(1);\n    a\n}\n\n"
+                "#[cfg(test)]\nimpl<T> Marker for Vec<T>\nwhere\n    T: Clone,\n{\n"
+                "    fn method(&self) {\n        plx_base::task::spawn_small(\"i\", || {});\n    }\n}\n\n"
+                "pub fn production() {\n    plx_base::task::spawn_small(\"p\", || {});\n}\n")
+        r = self._plant(name, body, crate_dir="data")
+        out = r.stdout + r.stderr
+        key = f"rust-modules/data/src/{name}"
+        self.assertIn(f"{key}::production::spawn_small  (ledger: ", out)
+        self.assertNotIn(f"{key}::?", out, "a test fn's body was graded as production\n" + out)
+        self.assertEqual(out.count(key), 1, out)
+
+    def test_forks_ledger_names_a_path_qualified_macro_item_and_counts_an_inline_cfg_test(self):
+        """RED: `#[cfg(..)]` on `plx_base::devtrig::latched_flag!(..);` is an item named for its macro, like
+        an unqualified `cache!` is, not the unnamed `?`. And `cfg!(test)` still counts as a fork whatever it
+        evaluates to: `if cfg!(test) {..} else {..}` compiles an arm production runs and a test does not."""
+        name = "_check_deps_selftest_macro.rs"
+        body = ("#[cfg(not(test))]\nplx_base::devtrig::latched_flag!(\n    /// `/tmp/plxnative-planted`\n"
+                "    fn planted_armed = \"planted\";\n);\n\n"
+                "pub fn inline_test() -> bool {\n    if cfg!(test) { true } else { false }\n}\n")
+        r = self._plant(name, body, crate_dir="plex")
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        key = f"rust-modules/plex/src/{name}"
+        self.assertIn(f"{key}::latched_flag!  (ledger: ci/allow/forks/plex.txt)", out)
+        self.assertIn(f"{key}::inline_test  (ledger: ci/allow/forks/plex.txt)", out)
+        self.assertNotIn("::?", out)
+
+    def test_no_ledger_key_is_unnamed(self):
+        """A ledger line keyed `<path>::?` names no site: the scan could not say what it found. Every
+        site has a name (a macro item is named for its macro), so none may be ledgered."""
+        for rule in self.LEDGER_RULES:
+            for path in self._ledger_files(rule):
+                with open(path, encoding="utf-8") as f:
+                    for line in f.read().splitlines():
+                        key = line.split("\t")[0]
+                        if line.strip() and not line.startswith("#"):
+                            self.assertFalse(key.endswith("::?") or "::?::" in key,
+                                             f"{os.path.relpath(path, self.tree)}: {key}")
+
+    def test_worker_and_global_aliases_fail_because_the_scan_cannot_count_them(self):
+        """RED: `use ...::spawn_small as go;` renames a worker start or a registry getter, so every
+        `go(..)` after it is invisible to the call-site scan: the `use ... as` line fails its rule
+        outright, naming file and line. A getter or worker named WITHOUT a call (`let f =
+        client_for;`) is no alias -- the name is on the line -- so it is a site of its own."""
+        name = "_check_deps_selftest_ledger_alias.rs"
+        body = ("use plx_base::task::spawn_small as go;\nuse plx_plex::plex::client_for as cf;\n\n"
+                "pub fn f() {\n    let _a = go;\n    let _b = plx_base::task::spawn_off_frame;\n"
+                "    let _c = plx_plex::plex::current_server;\n}\n")
+        r = self._plant(name, body, crate_dir="data")
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        path = f"rust-modules/data/src/{name}"
+        for rule, line in (("workers", 1), ("globals", 2)):
+            with self.subTest(rule=rule, line=line):
+                self.assertIn(f"{rule}:", out)
+                self.assertIn(f"{path}:{line}\n", out + "\n")
+        for site in ("f::spawn_off_frame", "f::current_server"):
+            with self.subTest(site=site):
+                self.assertIn(f"{path}::{site}  (ledger: ", out)
+
+    def test_ledger_files_must_be_exact_stale_lines_and_misfiled_lines_fail(self):
+        """Every ledger only shrinks: a line whose site is gone fails its rule (so a migration has to
+        delete it), and a line filed under the wrong area fails too, so the layout cannot drift."""
+        stale = {
+            "workers": "rust-modules/data/src/_selftest_stale.rs::gone::spawn_small",
+            "globals": "rust-modules/data/src/_selftest_stale.rs::gone::client_for",
+            "forks": "rust-modules/data/src/_selftest_stale.rs::gone",
+            "fxlanes": "rust-modules/src/app/bridge.rs::AppFx::Gone",
+        }
+        for rule, entry in stale.items():
+            path = os.path.join(self.tree, "ci", "allow", rule, "data-_selftest_stale.txt")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(f"# count: 1\n# selftest\n{entry}\tgone\n")
+        # a forks line for a crate the rule does not cover, filed in an area that is not its own
+        first = self._ledger_files("forks")[0]
+        with open(first, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        declared = int(lines[0].split(":")[1])
+        lines[0] = f"# count: {declared + 1}"
+        lines.append("rust-modules/gfx/src/_selftest_misfiled.rs::f\tmisfiled")
+        with open(first, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        r = self._deps()
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        for rule, entry in stale.items():
+            with self.subTest(rule=rule):
+                self.assertIn(f"{rule}:", out)
+                self.assertIn(f"{entry}  (in ci/allow/{rule}/data-_selftest_stale.txt)", out)
+        self.assertIn("misfiled ledger line: rust-modules/gfx/src/_selftest_misfiled.rs::f", out)
+        self.assertIn("belongs in ci/allow/forks/gfx.txt", out)
+
+    def test_ledger_count_header_must_equal_its_entries_in_every_area_file(self):
+        """The `# count:` header of every ci/allow/<rule>/<area>.txt is held to its entries, exactly
+        like the flat allowlists: a line added or deleted without moving the header fails by name."""
+        bumped = {}
+        for rule in self.LEDGER_RULES:
+            first = self._ledger_files(rule)[0]
+            with open(first, encoding="utf-8") as f:
+                lines = f.read().splitlines()
+            lines[0] = f"# count: {int(lines[0].split(':')[1]) + 1}"
+            with open(first, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+            bumped[rule] = os.path.relpath(first, self.tree)
+        r = self._deps()
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        for rule, rel in bumped.items():
+            with self.subTest(rule=rule):
+                self.assertIn(f"{rel} declares count", out)
+
     def test_tmppath_gate_catches_a_path_built_on_one_line_and_opened_on_the_next(self):
         """The gate used to require the literal and a filesystem-open verb on the SAME line, so a
         value built on one line and opened on the next passed silently. RED: planting that split
@@ -6531,10 +7298,24 @@ impl PersonOwnerGateFixture {
             self.assertNotEqual(code, 0, out)
             self.assertIn("stale: rust-modules/gfx/src/a.rs cache!", out)
 
+    # The Sans-IO ledgers (docs/sans-io.md) live one directory per rule under ci/allow, one file per
+    # area: `ci/allow/<rule>/<area>.txt` (`LEDGER_RULES`, above). `allowed()` indexes the flat
+    # `ci/allow/*.txt` only, so a ledger directory cannot collide with a rule of that name.
+
+    def _allowlist_files(self):
+        """Every allowlist file under ci/allow, flat ones and the ledger areas, as repo-relative names."""
+        allow = os.path.join(self.ROOT, "ci", "allow")
+        found = [fn for fn in sorted(os.listdir(allow)) if os.path.isfile(os.path.join(allow, fn))]
+        for rule in self.LEDGER_RULES:
+            d = os.path.join(allow, rule)
+            if os.path.isdir(d):
+                found += [rule + "/" + fn for fn in sorted(os.listdir(d))]
+        return found
+
     def test_every_allowlist_declares_its_own_count(self):
         allow = os.path.join(self.ROOT, "ci", "allow")
         seen = 0
-        for fn in sorted(os.listdir(allow)):
+        for fn in self._allowlist_files():
             with open(os.path.join(allow, fn), encoding="utf-8") as f:
                 lines = f.read().splitlines()
             declared = int(lines[0].split(":")[1])
@@ -6601,9 +7382,58 @@ impl PersonOwnerGateFixture {
         "wall.txt": 3,
     }
 
+    # The Sans-IO ledgers' pins, one number per RULE (the sum over its area files): a ledger only
+    # shrinks, so growing one means raising its number here, in the same diff, where a reviewer sees
+    # the move. A migration PR lowers the number with the lines it deletes. Seeded 2026-10-24 from
+    # the tool's own output on the tree this table was written for.
+    PINNED_LEDGER_TOTALS = {
+        # Browse B-A (the section hubs' list and row reads leave as `StoreJob::BrowseHubs`): -2 here (`hubs_spawn`,
+        # `hubs_spawn_row` `spawn_small`), -3 on globals (their `client_for` reads and `hubs_land`'s).
+        # Browse B-B+C (the directory and listing-page reads leave as `StoreJob::BrowseDirectory` and
+        # `StoreJob::BrowsePage`): -2 here (`kick_directory`, `maybe_spawn_owned` `spawn_small`), -2 on globals
+        # (their `client_for` reads).
+        # ViewState C3 (the household writes leave as `StoreJob::ViewWrite`): -1 here (`kick`'s `spawn_small`).
+        # Metadata M2 (the season switch and the episode-page window leave as `StoreJob::MetaSeason` /
+        # `StoreJob::MetaEpisodes`): -2 here (`load_season`, `want_episodes` `spawn_small`), -2 on globals
+        # (`fetch_episodes`, `fetch_episode_page` `client_for`).
+        "workers": 9,  # production worker starts inside machines (`ci/allow/workers/`)
+        # Sans-IO lifecycle PR B moved the pin by nothing: -3 (the three `lifecycle.rs` `player::TX` lines left with the
+        # transport contract, `player/transport.rs`, the IO layer) and +3 (a relocation lowers no pin by itself, so the same
+        # diff widened the spellings to the transport readers `transport::paused`, `transport::viewer_paused` and
+        # `preview::paused`, and seeded the 3 `preview::paused` reads in screens/detail it found).
+        # ViewState C2 (the step decides from the borrowed `ClientKeys`): -2 on globals (`request` and
+        # `fan_out_origin_watched` no longer read the registry). C3 (the job lane) took the other 3: `kick`, and the
+        # fan-out's `fan_out` and `ask_sources`, which now reach the other servers through the key-checked `KeyedClients`.
+        "globals": 66,  # production process-global reads inside machines (`ci/allow/globals/`)
+        "forks": 58,  # production test/production forks in data/, plex/, media/, session/ (`ci/allow/forks/`)
+        "fxlanes": 11,  # Bridge::app_effect arms that do not push Fx::Deliver (`ci/allow/fxlanes/`)
+    }
+
+    def test_ledger_totals_match_the_pinned_table(self):
+        allow = os.path.join(self.ROOT, "ci", "allow")
+        on_disk = sorted(d for d in os.listdir(allow) if os.path.isdir(os.path.join(allow, d)))
+        self.assertEqual(
+            set(on_disk) - set(self.PINNED_LEDGER_TOTALS), set(),
+            "a new ci/allow/<rule>/ ledger directory must add its own line to PINNED_LEDGER_TOTALS "
+            "(and its rule to check-deps.sh) deliberately",
+        )
+        for rule, pinned in self.PINNED_LEDGER_TOTALS.items():
+            total = 0
+            d = os.path.join(allow, rule)
+            # a rule whose last area file is gone has no directory left in git: its total is 0
+            for fn in (sorted(os.listdir(d)) if os.path.isdir(d) else []):
+                self.assertTrue(fn.endswith(".txt"), f"{rule}/{fn}: a ledger area file is <area>.txt")
+                with open(os.path.join(d, fn), encoding="utf-8") as f:
+                    total += int(f.readline().split(":")[1])
+            self.assertLessEqual(
+                total, pinned,
+                f"the {rule} ledger grew from the pinned {pinned} to {total} — a ledger only shrinks: "
+                "move the new site out of the machine instead of listing it (docs/sans-io.md)",
+            )
+
     def test_allowlist_counts_match_the_pinned_table(self):
         allow = os.path.join(self.ROOT, "ci", "allow")
-        on_disk = sorted(os.listdir(allow))
+        on_disk = sorted(fn for fn in os.listdir(allow) if os.path.isfile(os.path.join(allow, fn)))
         self.assertEqual(
             set(on_disk), set(self.PINNED_ALLOWLIST_COUNTS),
             "a new ci/allow/*.txt file (or a deleted one) must add (or remove) its own line in "
@@ -6780,18 +7610,18 @@ class StreamSelectionReset(unittest.TestCase):
         self.assertFalse(ok)
 
     def test_server_selected_subtitle_case_seeds_its_own_subtitle_after_the_reset(self):
-        """audio_enhancement_burns_server_selected_subtitle reads a SERVER-selected subtitle, and
+        """audio_enhancement_draws_server_selected_subtitle reads a SERVER-selected subtitle, and
         `subtitle_text_srt` plays the same part -- its reset/pick leaves an explicit selection,
         so relying on stream_reset: false made the case order-dependent. The case now declares
         `setup.seed_subtitle`; `apply_stream_setup` must reset, THEN PUT a non-zero
         subtitleStreamID resolved from live metadata (no id in the manifest)."""
         case = {c["name"]: c for c in _manifest()["cases"]}[
-            "audio_enhancement_burns_server_selected_subtitle"]
+            "audio_enhancement_draws_server_selected_subtitle"]
         case = {"rk": "72", **case}
         self.assertTrue(case.get("stream_reset", True))
         self.assertNotIn("stream_reset", case)
         self.assertIn("seed_subtitle", case["setup"])
-        self.assertNotRegex(json.dumps(case["setup"]), r"\d{4}")
+        self.assertNotRegex(json.dumps(case["setup"]["seed_subtitle"]), r"\d{4}")
         streams = [
             {"id": 2694, "streamType": 1},
             {"id": 2695, "streamType": 2, "selected": 1},

@@ -85,7 +85,7 @@ fn open_season(server: &Season) -> plx_plex::plex::ServerId {
     let sid = plx_plex::plex::register_for_test("episode-pages", "127.0.0.1", server.port, "token", "episode-pages-client");
     plx_plex::plex::client_for(sid).unwrap().set_link(plx_plex::plex::probe::Location::Local);
     install_show_on(sid, "show-1", 0, &[]);
-    let first = fetch_episodes(sid, "sk1").expect("page 0 answers");
+    let first = fetch_episodes(plx_plex::plex::client_for(sid).unwrap(), "sk1").expect("page 0 answers");
     test_state().current.as_mut().unwrap().episodes = first;
     sid
 }
@@ -97,6 +97,7 @@ fn list() -> &'static EpisodeList {
 fn want(lo: usize, hi: usize, focus: Option<usize>, restore: Option<usize>) {
     let keep = crate::stores::page_cache::Keep { wanted: lo..hi, focus, restore };
     want_episodes(test_state(), test_adapter(), keep);
+    start_season_jobs();
 }
 
 /// Pump until `done` holds (a bounded wait, so a page that never arrives fails rather than hangs).

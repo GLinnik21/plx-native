@@ -109,7 +109,7 @@ fn every_field_row_pushes_its_picker_and_nothing_else() {
     let mut playback = PreferencesPage::new(EntryId(0), Kind::Playback);
     let mut audio = loaded_audio_page(&account);
     for (page, fields) in [
-        (&mut playback, vec![PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval]),
+        (&mut playback, vec![PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition, PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking]),
         (&mut audio, vec![PickerKind::AudioLanguage, PickerKind::SubtitleMode, PickerKind::SubtitleLanguage, PickerKind::ForcedSubtitles]),
     ] {
         for field in fields {
@@ -263,7 +263,7 @@ fn playback_rows_are_read_only_while_no_profile_is_seated() {
     let mut page = PreferencesPage::new(EntryId(0), Kind::Playback);
     assert_eq!(page.copy, plx_platform::i18n::msg::settings_playback_unseated(), "the page says to choose a profile");
     for field in [PickerKind::Quality, PickerKind::DirectPlay, PickerKind::SubtitleSize, PickerKind::SubtitlePosition,
-        PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval] {
+        PickerKind::NextEpisode, PickerKind::DeckPress, PickerKind::SkipInterval, PickerKind::InstantDpadSeeking] {
         let key = RowId::Field(field).key().0;
         let row = page.form.index_of(&RowId::Field(field)).expect("the row is still listed");
         assert!(dims(&page)[row], "{field:?}: dimmed");

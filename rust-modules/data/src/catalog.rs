@@ -2,7 +2,8 @@
 //! (`GET discover /library/metadata/<hex>`), and the page's membership answer. This module holds
 //! the shared shapes, the I/O seam ([`CatalogIo`]: live in production, a script in tests) and the
 //! mapping from the service's item to a [`CatalogRecord`]; `stores::catalog::CatalogStore` owns
-//! the state and the fetch worker.
+//! the state, and its fetch is a job (`CatalogReq`, `finish_catalog_job`) that the application's
+//! runner starts.
 //!
 //! No title text appears in a `Debug` of these types' owners; the `Load` itself derives `Debug`
 //! because the log scrubber treats `{:?}` of a page record as the screen's concern, so callers

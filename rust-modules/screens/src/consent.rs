@@ -1220,6 +1220,13 @@ pub fn preview_usage() -> String {
     for e in [
         DiagEvent::AppLaunch,
         DiagEvent::RouteEntered { screen: "home" },
+        DiagEvent::RouteLeft {
+            screen: "home",
+            slow_frames: "<1%",
+            frozen_frames: "0",
+            hang: "0",
+            dead_presses: "0",
+        },
         DiagEvent::SignInCompleted,
         DiagEvent::SignInStarted,
         DiagEvent::SignInFailed {
