@@ -394,9 +394,9 @@ pub fn note_jump(changed: bool) {
 /// - a `Spring::jump` that actually teleported something (via [`note_jump`])
 /// - `Press::tick` (`plx_ui::press`), on each frame the release spring of a press that latched
 ///   long (a hold) visibly moves its card, by [`settled`], and on its phase changes: a card the
-///   item menu's lift owns (a card section left it out of the page pass) springs without any
-///   report, but an opener no card section draws (the Detail episode strip, season tabs, hero
-///   buttons, the Home hero) springs under the frozen host snapshot, which must be re-taken until
+///   item menu's lift owns (a page left it out through `DrawFrame::leaves_out`: a card section's
+///   tile, a Detail episode cell) springs without any report, but an opener no page leaves out
+///   (season tabs, hero buttons, the Home hero) springs under the frozen host snapshot, which must be re-taken until
 ///   it rests. A tap's press never reports
 /// - an `Xfade` ramp mid-flight, and a `Spinner` being drawn — the two time-driven animators
 ///   `note_spring` cannot see
@@ -644,8 +644,8 @@ impl Drop for MotionScope {
 /// picture that stays on the panel until the next key. It was added for an at-rest term in the
 /// renderer — `gfx::page_wash_dither`, which dropped the ±1 LSB dither from Home's and Detail's
 /// page wash while their artwork moved and restored it on the frame the artwork's springs came to
-/// rest, a frame that forced no present of its own. That gate is gone (2026-09-19: every wash
-/// dithers on every frame, `gfx::draw_ambient`), so no renderer term differs between the last
+/// rest, a frame that forced no present of its own. That gate is gone (2026-09-19: every gradient
+/// wash dithers on every frame, `gfx::draw_ambient`), so no renderer term differs between the last
 /// moving frame and the first still one any more; the settle present is kept as the one extra
 /// frame that guarantees the resting picture is the fully-settled one. One frame, once per
 /// settle, and the idle gate then closes as before. (This repairs the LIVE page only. A frozen-host snapshot is

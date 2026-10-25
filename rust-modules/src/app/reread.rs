@@ -364,7 +364,9 @@ mod tests {
         let (_pages, mut rig, _n) = mounted();
         let held = [ContentArg::Detail { sid: ServerId::UNSET, rk: "d".into() }];
         for _ in 0..5 {
-            assert!(!rig.notify_pump(&held, plx_data::stores::notify_map::Shown::ALL), "no owned server, no feed, no gap");
+            let (resynced, endpoints) = rig.notify_pump(&held, plx_data::stores::notify_map::Shown::ALL);
+            assert!(!resynced, "no owned server, no feed, no gap");
+            assert!(endpoints.is_empty());
         }
         assert!(rig.read_back_pending_for_test().is_empty());
     }

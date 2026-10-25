@@ -272,7 +272,7 @@ fn page_failure_and_recovery_republish_directory_reachability() {
     ] {
         let changed = browse.state.sources()[0].state != expected;
         let generation = browse.state.source_list_gen();
-        *browse.adapter.page_result.lock().unwrap() = Some(PageResult {
+        browse.adapter.page.post(PageResult {
             client,
             token_gen: client.token_gen(),
             gen: browse.state.query_gen(),
@@ -289,8 +289,8 @@ fn page_failure_and_recovery_republish_directory_reachability() {
             total,
             sorts: None, restored: None, genres: None, genre: None,
             resolved: Default::default(),
-        });
-        browse.adapter.fetching.store(true, Ordering::SeqCst);
+        }, |_| true);
+        browse.adapter.page.claim(0);
         let _outcome = browse.pump();
         assert_eq!(browse.state.sources()[0].state, expected);
         assert_eq!(
@@ -552,23 +552,22 @@ fn blocking_section_failure_preserves_an_auth_401_published_during_the_request()
 fn reset_clears_the_single_flight_flags_with_the_mailboxes() {
     let _g = plx_base::testlock::serial();
     let mut browse = TestBrowse::default();
-    browse.adapter.fetching.store(true, Ordering::SeqCst);
-    browse.adapter.genre_fetching.store(true, Ordering::SeqCst);
-    browse.adapter.letters_fetching.store(true, Ordering::SeqCst);
-    *browse.adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    browse.adapter.page.claim(0);
+    browse.adapter.genres.claim(0);
+    browse.adapter.letters.claim(0);
 
     browse.reset();
 
     assert!(
-        !browse.adapter.fetching.load(Ordering::SeqCst),
+        !browse.adapter.page.busy(),
         "page fetch stayed latched — Library wedges"
     );
     assert!(
-        !browse.adapter.genre_fetching.load(Ordering::SeqCst),
+        !browse.adapter.genres.busy(),
         "genre fetch stayed latched"
     );
     assert!(
-        !browse.adapter.letters_fetching.load(Ordering::SeqCst),
+        !browse.adapter.letters.busy(),
         "letters fetch stayed latched"
     );
 }

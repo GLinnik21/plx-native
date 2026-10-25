@@ -202,6 +202,9 @@ python3 tools/test_ci_history.py
 # tools/ci-summary.py (the page's "now" block with its order and selection, the two slowest lists and regressions) against synthetic series: step up and down,
 # noisy flat, missing days, the re-run wall rule, PR/push separation; no network.
 python3 tools/test_ci_summary.py
+# tools/ci-test-results.py (the per-test outcomes of a host unit job's log, for the flaky-test list on the CI page) on libtest output
+# as tools/cargo-test-parallel.py and plain cargo print it; no network.
+python3 tools/test_ci_test_results.py
 # `make test-crate` (the crate-only loop: it must carry the full suite's feature set) and the parallel
 # test runner every unit recipe goes through (a failing binary fails the gate, a missing binary is not
 # a pass, every `test result:` line is printed), both against a fake cargo; nothing is compiled.
@@ -316,3 +319,14 @@ python3 ci/test_disk_budget.py
 # taken, a live holder is waited on for a bounded time and no plan is made while it runs (a finished or stale holder is taken over); the inventory cache; a pretend emergency is never planned over real
 # trees. `make -n` and `make -s print-*` only, no cargo.
 python3 ci/test_disk_preflight.py
+# RUST_INPUTS (the Makefile's hand-kept list of directories whose edits rebuild the app library) must search every crate
+# the app reaches through `path` dependencies: a crate left out is one whose edits `make` never sees, so `make ipk` packages
+# the previous library and says nothing. Reads manifests only, no cargo; the self-test plants a missing crate in a temp tree.
+python3 ci/test_check_rust_inputs.py
+python3 ci/check-rust-inputs.py
+# The machine-shape gate (ci/machines.ini, docs/sans-io.md): a state machine listed there keeps its state private (a `pub`,
+# `pub(crate)` or `pub(super)` field of the listed struct fails, as does a stale entry), so its one writer stays `step` and a new
+# way to change it is a new event. It also REPORTS, and never fails on, each machine's `bool` and `Option<..>` field counts: a
+# report-only flag ratchet. Pure lexing, no cargo; the self-tests run on synthetic trees in a private temp dir.
+python3 ci/test_check_machine_shape.py
+python3 ci/check-machine-shape.py

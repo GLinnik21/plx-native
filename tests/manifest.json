@@ -2205,7 +2205,8 @@
           "target_s": 300,
           "delay_ms": 95000,
           "min_climb_after_s": 25,
-          "_mode_note": "No `mode`: after the switch this is a direct-played source, so the seek is an in-place `av_seek`, but the default arm grades either shape and will not assert a `seek(in-place)` line the transport cannot emit. `delay_ms` puts the seek ~20 s after the second switch lands (12 s observation + 40 s gap = ~52 s, plus the reload), which is the point of the step: a seek on a stream that was RELOADED by a quality change, not on the one the session opened with."
+          "mode": "inplace",
+          "_mode_note": "`inplace` STATES AN ASSUMPTION, the same one its sibling `original_then_auto_and_seek` states: after the second switch the playback is the SOURCE FILE direct-played (`quality: Original restored direct play`), so the seek is an in-place `av_seek` on it and no rebuild exists to grade. This case used to leave the mode off, and the transcode arm then matched the PIN's own `reload_transcode: fresh Load at offset` line from before the seek (the v0.9.0 TV run failed it for not retiring an encoder that rebuild never replaced); that arm now reads only lines after `autoseek: step`, and naming the mode makes the case fail loudly if Original ever stops being a direct play here. `min_climb_after_s` is graded by the in-place arm too. `delay_ms` puts the seek ~40 s after the second switch lands (12 s observation + 40 s gap = ~52 s, plus the reload), which is the point of the step: a seek on a stream that was RELOADED by a quality change, not on the one the session opened with."
         }
       ],
       "expect": {
@@ -2244,7 +2245,7 @@
           "delay_ms": 70000,
           "min_climb_after_s": 25,
           "mode": "inplace",
-          "_mode_note": "`inplace` STATES AN ASSUMPTION rather than discovering one, and the assumption is about this ITEM: a 1080p h264/ac3 file that direct-plays, so when Auto re-asks the routing question after the handover it answers Original again and the seek is an `av_seek`, not a rebuild. The first run of this case left the mode off and failed `seek_transcode` with 'no transcode-seek signal' -- correctly, because there was no reload to find. Naming the mode makes the case fail LOUDLY if Auto ever routes this item somewhere else on somebody's link, which is worth knowing; the sibling `auto_pin_then_original_and_seek` deliberately leaves the mode off because a pinned transcode rung is a rebuild and the default arm grades that."
+          "_mode_note": "`inplace` STATES AN ASSUMPTION rather than discovering one, and the assumption is about this ITEM: a 1080p h264/ac3 file that direct-plays, so when Auto re-asks the routing question after the handover it answers Original again and the seek is an `av_seek`, not a rebuild. The first run of this case left the mode off and failed `seek_transcode` with 'no transcode-seek signal' -- correctly, because there was no reload to find. Naming the mode makes the case fail LOUDLY if Auto ever routes this item somewhere else on somebody's link, which is worth knowing; the sibling `auto_pin_then_original_and_seek` names it for the same reason, since its seek lands on the restored Original direct play, not on the pinned rung."
         }
       ],
       "expect": {
@@ -2880,14 +2881,14 @@
       "known_gap": "device, TV, live PMS 1.43.4, Guest, 2026-09-29: releasing the enhancement after the enhanced start.mkv has actually played (timelines posted on this session id) meets a 503 on admit_original_part's own Part GET, so the release lands on the plain codec-copy Original remux instead of Direct Play; host probes as Guest could not reproduce the 503 on the same server/identity, and the leading untested hypothesis is that PMS refuses a raw Part on a session that has posted state=playing timelines, which a host cannot exercise because timelines are watch-history writes."
     },
     {
-      "name": "audio_enhancement_burns_server_selected_subtitle",
+      "name": "audio_enhancement_draws_server_selected_subtitle",
       "item": "movie_h264_ac3_1080p",
       "kind": "movie",
-      "title": "movie · h264/ac3 · 1080p · server-selected subtitle — the enhancement burns it in from the first frame instead of withholding the offer (issue #266 M7)",
-      "comment": "Formerly `audio_enhancement_withheld_under_subtitle`, retargeted by M7's 'do it the Plex way' decision: Guest's PMS pre-selects an EMBEDDED subtitle on movie_h264_ac3_1080p (`server-selected subtitle: sid=2698 render_idx=2` — render_idx is non-negative, i.e. an in-container demuxer ordinal per `route/plan.rs`'s `subtitle_effect_of`, not an external sidecar), so this is exactly the shape the old I6 gate used to withhold the enhancement over. `route::plan::enhancement_availability` no longer answers Hidden or Disabled for an embedded subtitle — it answers `Offered(EnhancementRoute::Burn)` — so `audio_enhancements_boot: \"loudness\"` forcing the preference ON at boot (`dev::scenarios::arm_audio_enhancements`, which under the harness's dev token sets the live preference and saves nothing, reset back to \"off\" by the same per-case `plxnative-audioenh` trigger run.py writes for every case, so this case needs no cleanup op of its own) now produces a Burn before the first frame rather than a refusal: one `enhancement: applied boost=0 loudness=1` line, and a stream carrying `subtitleStreamID=2698&subtitles=burn` instead of the ordinary `start.mkv` remux. There is still no menu row to pick — the route decides this at cold start, same as before — so the only operation is `play`, and `op_audio_enhancement_burn` grades the boot log and the resulting stream directly. **This is the one case in this file that actually exercises the M7 burn path against the public synthetic fixture** (`movie_h264_ac3_1080p` already ships 4 embedded SRT tracks in `tests/fixtures/make_fixtures.py`); the newer `audio_enhancement_burns_embedded_subtitle` case below covers the live-pick reconcile instead, but is not runnable yet for want of a subtitle track on its own item. `expect.codec` is `hevc`, not the source's own `h264`: a Burn is a real re-encode (`transcoder.rs`'s cap fields, never `directStreamAudio=1`), and PMS's transcode target list is `hevc,h264` — HEVC first — so the output the demuxer actually opens is HEVC on any server that can encode it. `a_codec` checks one literal string, not a list, so this names the common case rather than accepting either.",
+      "title": "movie · h264/ac3 · 1080p · server-selected embedded subtitle — the enhancement keeps it, drawn by the app beside the enhanced remux (issue #266, #474)",
+      "comment": "The enhancement keeps a SERVER-selected embedded subtitle on screen from the first frame. This was `audio_enhancement_burns_server_selected_subtitle` (issue #266 M7, #309), which expected a forced re-encode carrying `subtitleStreamID=<id>&subtitles=burn`. Since #474 the route only burns where the app cannot read the track itself: on a LOCAL link with a Part of known bitrate at most `SIDE_MAX_PART_KBPS` (30000 kbps; `route::decision::side_reader_inputs_admit`) the cold start sees the pick as one the app draws (`route/plan.rs`'s `side_draws` -> `SubtitleEffect::Sidecar`), `enhancement_availability` answers `Offered(Remux)`, the stream is the ordinary enhanced remux with `subtitleStreamID=0&subtitles=none`, and `player::subside` reads the track from the Part beside it and draws it, so Style and Timing reach it. Host-pinned by `cold_start_keeps_intended_audio_and_draws_the_subtitle`. The v0.9.0 TV run (live PMS, Guest, local link) produced exactly that and failed the old burn assertions on it. `presenter: \"client\"` STATES that assumption about the item and the link, as a seek's `mode` does: an item over the bound, or a remote link, takes the burn, which `presenter: \"burn\"` grades (`op_audio_enhancement_burn`). `movie_h264_ac3_1080p` ships 4 embedded SRT tracks in `tests/fixtures/make_fixtures.py` at a bitrate far under the bound. `expect.codec` is the source's own `h264`: the remux copies the video. `audio_enhancements_boot: \"loudness\"` forces the preference ON at boot (`dev::scenarios::arm_audio_enhancements`; reset by the per-case `plxnative-audioenh` trigger), so the only operation is `play`. The grader wants a cue the app drew, so the case starts where `subtitle_text_srt` (same shape) does, at 843 s: the first minute of a real film can hold no dialogue (the v0.9.0 run's reader opened and anchored but met no cue in 57 s), while the synthetic fixture cues every 10 s throughout.",
       "covers": [
         "audio-enhancement-subtitle-gate",
-        "audio-enhancement-burn"
+        "audio-enhancement-side-reader"
       ],
       "run_secs": 60,
       "operations": [
@@ -2895,19 +2896,21 @@
           "op": "play"
         },
         {
-          "op": "audio_enhancement_burn"
+          "op": "audio_enhancement_subtitle",
+          "presenter": "client"
         }
       ],
       "audio_enhancements_boot": "loudness",
       "setup": {
         "seed_subtitle": {
           "track": 0
-        }
+        },
+        "viewOffset_ms": 843000
       },
       "setup_comment": "The case reads a SERVER-selected subtitle, and subtitle_text_srt plays the same part, so the precondition is established here rather than inherited from run order: after the per-case reset, run.py PUTs the first subtitle stream (resolved from live metadata) as the harness identity.",
       "expect": {
         "decision": "transcode",
-        "codec": "hevc",
+        "codec": "h264",
         "min_timeline_climb_s": 8,
         "no_playing_error": true,
         "require_video_bound": true
@@ -2915,14 +2918,14 @@
       "known_gap": false
     },
     {
-      "name": "audio_enhancement_burns_embedded_subtitle",
+      "name": "audio_enhancement_draws_embedded_subtitle",
       "item": "episode_hevc_4k_hdr10_eac3",
       "kind": "episode",
-      "title": "episode · hevc 4K HDR10 / e-ac3 · embedded subtitle picked mid-play — the enhancement burns it in instead of dropping it (issue #266 M7)",
-      "comment": "The device-level proof of M7's whole point, the opposite of audio_enhancement_withheld_under_subtitle: boots with Normalize Loudness forced ON (`audio_enhancements_boot: \"loudness\"`) against a candidate with no subtitle yet, so the cold-start route is the ordinary enhanced remux and the FIRST `enhancement: applied boost=0 loudness=1` line is logged before the first frame — proving the preference alone is not blocked. The live `subtitle` op then picks an embedded (in-container) text track, which `route::plan::enhancement_availability` now answers `Offered(EnhancementRoute::Burn)` for (never Hidden, never a silent drop): `route::decision::reconcile_enhancement` asks the server for a forced re-encode carrying subtitleStreamID=<id>&subtitles=burn alongside the SAME DSP params, which op_audio_enhancement_burn grades as a SECOND `enhancement: applied .. loudness=1` line plus a post-pick stream that is the explicit burn shape (subtitleStreamID + subtitles=burn), not the enhancement's ordinary start.mkv remux, and no client-rendered sub cue afterward (the subtitle is baked into the picture, not drawn twice). **Not runnable against the public synthetic fixture alone**: `episode_hevc_4k_hdr10_eac3` in `tests/fixtures/make_fixtures.py` still carries no embedded subtitle track, so the picked track depends on a contributor's private `tests/manifest.local.json` mapping this shape to a real library item that has one; that mapping exists and this case has run against it.",
+      "title": "episode · hevc 4K HDR10 / e-ac3 · embedded subtitle picked mid-play — the enhancement stays, the app draws the track beside the remux (issue #266, #474)",
+      "comment": "An embedded subtitle picked MID-PLAY under the enhancement stays on screen, and the enhancement stays applied. This was `audio_enhancement_burns_embedded_subtitle` (issue #266 M7), which expected the pick to reroute the enhanced remux into a forced re-encode with `subtitles=burn` and a second `enhancement: applied` line. Since #474 the pick of a track the app can read (a local link, a Part of known bitrate at most 30000 kbps; `route::decision::side_subs_allowed`) is `SubtitleEffect::Sidecar` to `enhancement_step`, so nothing is rebuilt: the selection is PUT (`select streams: .. sub=<id>`), `player::subside` opens the track from the Part and draws it over the untouched enhanced remux. Host-pinned by `embedded_pick_on_a_live_remux_queues_no_retranscode`. The v0.9.0 TV run produced exactly that. Boots with Normalize Loudness forced ON (`audio_enhancements_boot: \"loudness\"`) against a candidate with no subtitle yet, so the cold start is the ordinary enhanced remux; the `subtitle` op then picks the first track on the Subtitles tab. `enhanced: \"client\"` STATES which presenter this item and link get; an item the reader cannot take (over the bound, a remote link) reroutes to the burn that `enhanced: \"burn\"` grades. **Not runnable against the public synthetic fixture alone**: `episode_hevc_4k_hdr10_eac3` in `tests/fixtures/make_fixtures.py` carries no embedded subtitle track, so the picked track depends on a contributor's private `tests/manifest.local.json` mapping this shape to a real library item that has one.",
       "covers": [
-        "audio-enhancement-burn",
-        "audio-enhancement-subtitle-reroute"
+        "audio-enhancement-side-reader",
+        "audio-enhancement-subtitle-pick"
       ],
       "run_secs": 70,
       "operations": [
@@ -2933,7 +2936,7 @@
           "op": "subtitle",
           "tab": 1,
           "track": 0,
-          "burn": true
+          "enhanced": "client"
         }
       ],
       "audio_enhancements_boot": "loudness",
@@ -3635,8 +3638,46 @@
         "server_opens_min": 1,
         "reaches_eos": true
       },
-      "_eof_note": "One of the TWO cases in either tier that are supposed to run out — the other is `pipe_replay_after_eos` — and between them the only two allowed to name `pipe_h264_ac3_short.mkv`. Every other clip in both packs is sized so it CANNOT hit EOF inside a case's window (make_fixtures.py trap 9's second half), because a finish tears the session down under assertions that were only ever about playing; the rule is not \"one case\" but \"a case graded through a teardown has to have declared `reaches_eos`\", which tests/test_harness.py pins. run_secs is 60 against a 20 s clip: _resolve_fixtures SKIPS a `reaches_eos` case when the fixture is longer than 0.6 * run_secs PER VIEWING, so a pack regenerated with --secs/--quick skips it instead of failing it as a player regression.",
+      "_eof_note": "One of the THREE cases in either tier that are supposed to run out — the others are `pipe_replay_after_eos` and `pipe_finish_audio_tail`, whose clip has an audio track that outlasts its picture — and with `pipe_replay_after_eos` the only two allowed to name `pipe_h264_ac3_short.mkv`. Every other clip in both packs is sized so it CANNOT hit EOF inside a case's window (make_fixtures.py trap 9's second half), because a finish tears the session down under assertions that were only ever about playing; the rule is not \"one case\" but \"a case graded through a teardown has to have declared `reaches_eos`\", which tests/test_harness.py pins. run_secs is 60 against a 20 s clip: _resolve_fixtures SKIPS a `reaches_eos` case when the fixture is longer than 0.6 * run_secs PER VIEWING, so a pack regenerated with --secs/--quick skips it instead of failing it as a player regression.",
       "_replay_note": "#46's REPLAY half is `pipe_replay_after_eos` below, which plays this same clip, lets it end, and starts it again. This case stays separate and grades the FINISH alone: the two failures are different — a stream that never ends, and a stream that ends and cannot be restarted — and collapsing them into one case would report either as the other."
+    },
+    {
+      "name": "pipe_finish_audio_tail",
+      "fixture": "pipe_h264_ac3_audio_tail.mkv",
+      "title": "a clip whose audio runs 3 s past its last frame played to its END — #865",
+      "covers": [
+        "end-of-stream",
+        "finish_playback",
+        "clean teardown",
+        "audio outlasting video",
+        "pipeline end-of-stream (type=28)"
+      ],
+      "declare": {
+        "vcodec": "h264",
+        "acodec": "ac3",
+        "fps": 24.0
+      },
+      "run_secs": 60,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "codec": "h264",
+        "video_size": "720x480",
+        "load_video": "H264",
+        "load_audio": "AC3",
+        "load_dovi": "none",
+        "min_pos_climb_s": 8,
+        "require_video_bound": true,
+        "no_playing_error": true,
+        "server_opens_min": 1,
+        "reaches_eos": true
+      },
+      "_note": "A film whose AUDIO runs past its last VIDEO frame has to end all the same (#865). The clip is 20 s of picture and 23 s of audio (`audio_tail_s: 3` in make_fixtures.py, which reads both streams' ends back out of the finished file). The engine pushes the EOS when the video lane drains; the pipeline then refuses the audio that is left, its clock stops at the last frame (`pos=19s` here), and the container's duration — the longest track's — is never within the pump's one second of the playhead. What ends the film is the pipeline's own word, `smp_cb type=28 num=1 str=true` after a picture, logged as `smp: the pipeline reached end-of-stream`, and `EOS reached: playpos=19s/23s → ended` then reads a playhead 4 s short of the duration, which is the point. On the dev TV (webOS 4.10.2) a hand-made clip of this shape under another fixture's name FAILED on the build before #865 (`EOS pushed at true EOF`, `feed a#800 … reply=e`, the clock stuck at `pos=19s`, `type=28`, then nothing: no `EOS reached` line, max stall 36 s) and PASSED on main (`type=28` → `smp: the pipeline reached end-of-stream` → `EOS reached` → `stop_bufferfeed: torn down`, 33 s).",
+      "_separate_note": "Separate from `pipe_finish_eos` on purpose: that case plays a clip whose picture and audio end together, which the playhead arithmetic (`pos >= dur - 1s`) alone can end, so it cannot see a stream that only the pipeline's own word ends. This one has no other way to end, and the two are different failures — a stream that ends on the playhead and a stream that ends on the pipeline's end-of-stream — that one case would report as each other. Same expectations otherwise, `finished` included: the EOS line followed by the engine's teardown.",
+      "_eof_note": "One of the THREE cases in either tier that are supposed to run out, and the only one allowed to name `pipe_h264_ac3_audio_tail.mkv` (the other two name `pipe_h264_ac3_short.mkv`). tests/test_harness.py pins that a case naming a clip that runs out has to have declared `reaches_eos`, and that every such clip fits the bound below. run_secs is 60 against a 23 s clip: _resolve_fixtures SKIPS a `reaches_eos` case when the fixture is longer than 0.6 * run_secs PER VIEWING, so a pack regenerated with --secs/--quick skips it instead of failing it as a player regression."
     },
     {
       "name": "pipe_replay_after_eos",

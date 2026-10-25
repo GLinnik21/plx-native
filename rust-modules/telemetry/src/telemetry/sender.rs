@@ -281,7 +281,17 @@ pub fn allowed(r: &Record, c: &consent::Consent) -> bool {
 /// 200 and the same echoed id. Measured against the live endpoint, which is how this was settled;
 /// no amount of reading the status code could have.
 fn wire_body(r: &Record) -> Vec<u8> {
+    wire_body_at(r, super::crashreport::now_secs())
+}
+
+/// [`wire_body`] at an injected "now". `sent_at` rides only a session item and only from a clock
+/// that has been set.
+fn wire_body_at(r: &Record, now_unix: u64) -> Vec<u8> {
     match r.dest {
+        Dest::Sentry if super::session::is_session_body(&r.body) => {
+            let plausible = now_unix >= super::crashreport::FIRST_PLAUSIBLE_NOW;
+            sentry::session_envelope(&r.body, plausible.then_some(now_unix))
+        }
         Dest::Sentry => sentry::envelope(&r.event_id, "event", &r.body),
         Dest::PostHog => {
             let Some(event) = crate::diag::schema::UsageEnvelope::decode(&r.body) else {
@@ -457,6 +467,26 @@ mod tests {
             wire_body(&r).is_empty(),
             "future internal storage escaped onto the wire"
         );
+    }
+
+    /// A spooled session goes on the wire as a `session` item under an empty envelope header —
+    /// the exact bytes, since a wrong frame is a silent 200 — and an event still goes as `event`.
+    #[test]
+    fn a_session_record_is_framed_as_a_session_item_and_an_event_is_not() {
+        let payload = br#"{"attrs":{"release":"plxnative@1"},"did":"d","init":true,"sid":"s","started":"2027-01-15T08:00:00Z","status":"exited"}"#;
+        let mut r = rec(Category::Errors, Dest::Sentry);
+        r.body = payload.to_vec();
+        let frame = |header: &str| {
+            let mut e = format!("{header}\n{{\"type\":\"session\",\"length\":{}}}\n", payload.len()).into_bytes();
+            e.extend_from_slice(payload);
+            e.push(b'\n');
+            e
+        };
+        assert_eq!(wire_body_at(&r, 1_800_000_000), frame(r#"{"sent_at":"2027-01-15T08:00:00Z"}"#));
+        assert_eq!(wire_body_at(&r, 12), frame("{}"), "an unset clock sends no sent_at");
+
+        r.body = br#"{"event_id":"aaa","level":"fatal"}"#.to_vec();
+        assert!(String::from_utf8(wire_body(&r)).unwrap().contains(r#""type":"event""#));
     }
 
     fn rec(cat: Category, dest: Dest) -> Record {

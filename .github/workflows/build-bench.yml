@@ -239,7 +239,11 @@ jobs:
         with:
           fetch-depth: 1
           # The recorder and the summary it feeds, with whatever they import: the tools directory.
-          sparse-checkout: tools
+          # Plus the flaky-test quarantine list, which the summary reads (ci-metrics.yml writes the same file).
+          sparse-checkout: |
+            tools
+            ci/flaky.txt
+          sparse-checkout-cone-mode: false
           persist-credentials: false
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -298,7 +302,7 @@ jobs:
             # Both files are derived from what is on the branch NOW, so a lost race redoes this step
             # from the new tip instead of rebasing a stale summary over it.
             python3 ../tools/build-history.py "${args[@]}" --in build-history.json --out build-history.json --run-id "$GITHUB_RUN_ID"
-            python3 ../tools/ci-summary.py --history ci-history.json --bench build-history.json --out ci-summary.json
+            python3 ../tools/ci-summary.py --history ci-history.json --bench build-history.json --quarantine ../ci/flaky.txt --out ci-summary.json
             git add build-history.json ci-summary.json
             if git diff --cached --quiet; then
               echo "nothing changed; nothing to commit"

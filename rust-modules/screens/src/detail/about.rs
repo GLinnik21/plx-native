@@ -125,13 +125,13 @@ impl Rows {
         if !released.is_empty() {
             self.info.push((plx_platform::i18n::msg::browse_detail_released(), released));
         }
-        let dur = if d.dur_ms > 0 {
-            d.dur_ms
-        } else {
-            d.episodes.first().map(|e| e.dur_ms).unwrap_or(0)
-        };
-        if dur > 0 {
-            self.info.push((plx_platform::i18n::msg::browse_detail_runtime(), plx_ui::fmt::duration(dur)));
+        // A show's or season's `duration` is the agent's nominal per-episode figure, no episode's
+        // (#814): only a leaf has a runtime to print.
+        if plx_data::metadata::has_runtime(&d.kind) && !d.is_show && d.dur_ms > 0 {
+            self.info.push((
+                plx_platform::i18n::msg::browse_detail_runtime(),
+                plx_ui::fmt::duration(d.dur_ms),
+            ));
         }
         self.info.push((
             plx_platform::i18n::msg::browse_detail_rated(),
@@ -664,6 +664,32 @@ mod tests {
                 lang.step(false, 1.0 / 60.0);
             }
             assert_eq!(census(&rows, &d, &card, &lang), at_rest);
+        }
+    }
+
+    /// #814: a show's `duration` is the metadata agent's nominal per-episode figure, so About
+    /// prints no Runtime for a show or a season, and still prints a movie's or episode's.
+    #[test]
+    fn a_show_or_season_has_no_runtime_row_and_a_leaf_keeps_its_own() {
+        let runtime = plx_platform::i18n::msg::browse_detail_runtime();
+        let has = |d: &Detail| {
+            let mut rows = Rows::new();
+            rows.update(d);
+            rows.info.iter().any(|(label, _)| *label == runtime)
+        };
+        let episode = plx_data::metadata::Episode { dur_ms: 45 * 60_000, ..Default::default() };
+        let show = Detail { kind: "show".into(), is_show: true, dur_ms: 6_000_000, ..Default::default() };
+        let season = Detail {
+            kind: "season".into(),
+            dur_ms: 6_000_000,
+            episodes: vec![episode].into(),
+            ..Default::default()
+        };
+        assert!(!has(&show), "a show's nominal duration is no episode's");
+        assert!(!has(&season));
+        for kind in ["movie", "episode"] {
+            let leaf = Detail { kind: kind.into(), dur_ms: 6_000_000, ..Default::default() };
+            assert!(has(&leaf), "{kind}");
         }
     }
 

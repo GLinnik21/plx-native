@@ -53,10 +53,12 @@ has always done).
 
 **Configuration.** Built with `--disable-everything` plus an explicit component list, **without**
 `--enable-gpl`, `--enable-version3` or `--enable-nonfree`, so no GPL-licensed or non-free FFmpeg
-component is present. Only demuxers, parsers, bitstream filters and *subtitle* decoders are
-enabled — video and audio are decoded by the television's hardware, not by FFmpeg. The one
-external library enabled is **zlib**, the television's own `libz.so.1` (not redistributed — see
-section 3), which the Matroska demuxer needs to inflate compressed subtitle tracks.
+component is present. Only demuxers, parsers, bitstream filters, *subtitle* decoders and the
+LGPL FLAC audio decoder are enabled — video and the other audio formats are decoded by the
+television's hardware, not by FFmpeg. FLAC is decoded by the app because the television's player
+has no FLAC input; the result is fed to it as PCM. The one external library enabled is **zlib**,
+the television's own `libz.so.1` (not redistributed — see section 3), which the Matroska demuxer
+needs to inflate compressed subtitle tracks.
 
 **You may modify and replace them.** They are ordinary shared libraries, loaded at run time by
 `dlopen` from the application's own directory; no FFmpeg code is linked into the `plxnative`
@@ -301,7 +303,7 @@ stated; election does not alter your rights under the other arms.
 | hashbrown | 0.17.1 | MIT OR Apache-2.0 | Amanieu d'Antras |
 | image | 0.25.10 | MIT OR Apache-2.0 | The image-rs Developers |
 | itoa | 1.0.18 | MIT OR Apache-2.0 | David Tolnay |
-| libc | 0.2.190 and 0.2.189 | MIT OR Apache-2.0 | The Rust Project Developers |
+| libc | 0.2.191 and 0.2.189 | MIT OR Apache-2.0 | The Rust Project Developers |
 | memchr | 2.8.3 and 2.8.2 | Unlicense OR MIT | 2015 Andrew Gallant |
 | miniz_oxide | 0.9.1 and 0.8.9 | MIT OR Zlib OR Apache-2.0 | 2013-2014 RAD Game Tools and Valve Software; 2010-2014 Rich Geldreich and Tenacious Software LLC; (c) 2017 Frommi; (c) 2017-2024 oyvindln |
 | no_std_io2 | 0.9.4 | Apache-2.0 OR MIT | 2020-2021 Brendan Molloy |

@@ -19,7 +19,7 @@ impl PlayerScreen {
         let step = input::scrub_step_ns() * if forward { 1 } else { -1 };
         let target = self.seek_burst.jump(now, plx_media::player::intended_pos_ns(ps), step, duration);
         self.scrub.cancel();
-        self.hud.dismissed = true;
+        self.hud.hide(false);
         Self::ask(fx, PlayerReq::CommitSeek(target));
         self.publish();
     }
@@ -51,7 +51,7 @@ impl PlayerScreen {
                     self.scrub.ns = seed;
                     self.scrub.reveal = true;
                     self.hud.nav.focus = 0;
-                    if !self.hud.visible_at_press { self.hud.dismissed = true; }
+                    if !self.hud.visible_at_press { self.hud.hide(false); }
                 }
                 Edge::Repeat => {
                     if self.transport_tap && self.hud.visible_at_press {

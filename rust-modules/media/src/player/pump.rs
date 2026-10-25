@@ -103,6 +103,21 @@ pub(super) fn seek_reloads(mode: SeekMode) -> bool {
     mode == SeekMode::Reload
 }
 
+/// How long a speed session may wait after loadCompleted for the pipeline's audio report before the
+/// safety net assumes the PCM was not taken. On the 3.9.3 set the report arrives before
+/// loadCompleted itself.
+const SPEED_AUDIO_DEADLINE_MS: u32 = 8_000;
+
+/// Whether THIS direct-play seek must be a full fresh `Load`: always in a reload mode, and in an
+/// in-place mode whenever playback speed is involved. A speed change rides a seek to the current
+/// position (`player::set_play_rate`, the one-shot `rate_reload`), and while the speed is not 1x
+/// every seek reloads too: a speed is fixed per Load (its PCM declaration, its time-stretch and its
+/// timeline all start with the session), and an in-place seek re-anchors the segment at content
+/// time.
+pub(super) fn seek_must_reload(mode: SeekMode, rate_permille: i32, rate_reload: bool) -> bool {
+    seek_reloads(mode) || rate_reload || rate_permille != super::RATE_NORMAL
+}
+
 fn take_coalesced() -> u32 {
     TX.seek_reqs.swap(0, Relaxed).saturating_sub(1)
 }
@@ -681,6 +696,17 @@ fn land_recovery_flight(
     }
 }
 
+/// How close to the container's duration the playhead must be, after the EOS, to count as the end.
+const EOS_TAIL_NS: i64 = 1_000_000_000;
+
+/// Whether a stream whose EOS has been pushed has ended: the pipeline said so
+/// (`Shared::pipeline_eos`), or the playhead is within [`EOS_TAIL_NS`] of the duration. The
+/// duration is the longest track's, so a film whose audio outlasts its video by more than the
+/// tail never gets there on the arithmetic alone.
+fn stream_ended(pos_ns: i64, duration_ns: i64, pipeline_eos: bool) -> bool {
+    pipeline_eos || (duration_ns > 0 && pos_ns >= duration_ns - EOS_TAIL_NS)
+}
+
 /// Settle a synchronous native reload effect.  A failed `start_bufferfeed` used to be only a log:
 /// callers had already advanced the route reducer and then returned, leaving no Engine to publish
 /// the failure and (for Original) an `OriginalTrial` which could never receive its first frame.
@@ -986,7 +1012,9 @@ fn original_tail(
 /// one is not an ordinary rejection: the Auto worker exited to hand the action over, so the stream
 /// has no producer, and a refused/lost Original decision leaves the HLS route fully intact —
 /// rebuild that exact HLS Engine at the action's position rather than turning a recoverable probe
-/// failure into the terminal playback screen. Returns whether the Engine was replaced.
+/// failure into the terminal playback screen. Settling the action `Rejected` is also what tells the
+/// reopened worker not to ask again on this encoder (`route::finish_route_action`). Returns whether
+/// the Engine was replaced.
 fn land_automatic_original(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
@@ -1659,6 +1687,8 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     {
         TX.seek_to_ns.store(-1, Relaxed);
         let coalesced = take_coalesced(); // read here so BOTH branches consume this seek's requests
+        // Consumed by whichever branch lands this seek: a transcode seek is a fresh Load anyway.
+        let rate_reload = SHARED.rate_reload.swap(false, Relaxed);
         let t = t.max(0);
         // TRANSCODE seek: restart the encode at the new &offset and do a FULL RELOAD (fresh Load).
         // A flush()+refeed of the new start.mkv left a STALE GStreamer segment → visual artifacts on
@@ -1683,7 +1713,7 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         // libraries, or set by feed_stream when sendSegmentEvent can't find the pipeline or a
         // native Seek is refused — is reload-per-seek. reload_at REPLACES the ENGINE, so `eng`
         // dangles after it: return immediately.
-        if seek_reloads(seek_mode()) {
+        if seek_must_reload(seek_mode(), super::play_rate_permille(), rate_reload) {
             crate::route::commit_user_seek();
             own_seek_under_pause(t);
             settle_reload(super::engine::reload_at(ps, pa, t), "direct seek reload");
@@ -1931,6 +1961,30 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         }
     }
 
+    // ---------- playback speed: the safety net ----------
+    // A speed session's Load declared PCM. The pipeline reports what it set up (audio-info
+    // callback, `player::note_speed_audio_report`); a report that is not the declared 48 kHz
+    // stereo, or none within SPEED_AUDIO_DEADLINE_MS of loadCompleted, means this television
+    // does not take app-fed PCM the way the 3.9.3 set does — fall back to 1x rather than play
+    // silence or a drifting sound. Video-only Loads (the `noaudio` trigger) have no audio to judge.
+    if super::applied_rate_permille() != super::RATE_NORMAL
+        && eng.stage >= Stage::Playing
+        && !super::no_audio_armed()
+        && TX.seek_to_ns.load(Relaxed) < 0
+    {
+        match SHARED.speed_audio_verdict.load(Relaxed) {
+            super::SPEED_AUDIO_BAD => {
+                super::fall_back_from_speed(ps, "the pipeline set up different audio than the PCM declared");
+            }
+            super::SPEED_AUDIO_UNKNOWN
+                if now.wrapping_sub(SHARED.dg_load_at.load(Relaxed)) > SPEED_AUDIO_DEADLINE_MS =>
+            {
+                super::fall_back_from_speed(ps, "the pipeline never reported its audio");
+            }
+            _ => {}
+        }
+    }
+
     // ---------- ACB bind, Kodi/ss4s order: setSinkType(MAIN)+setMediaId+setState(LOADED) ----------
     if eng.stage == Stage::Playing && ACB_OK.load(Relaxed) {
         let id = SHARED.media_id.lock().unwrap().clone();
@@ -2043,7 +2097,8 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     }
 
     // ---------- end-of-stream: the producer hit file EOF (eos_pushed → all AUs to the end were
-    // fed) and the pipeline has now played out to within EOS_TAIL of the duration. Mark ended so
+    // fed) and the pipeline has now played out to within EOS_TAIL of the duration, or the pipeline
+    // reported its own end-of-stream (`Shared::pipeline_eos`). Mark ended so
     // app.rs tears the player down at the credits instead of freezing on the last frame. Paused
     // at the end stays paused (playpos won't climb) — correct; it fires when resumed. Any seek
     // clears the flag (request_seek), so seeking back from the end doesn't re-trigger. ----------
@@ -2065,11 +2120,10 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         PlaybackState::Playing
     });
 
-    const EOS_TAIL_NS: i64 = 1_000_000_000;
     if eng.eos_pushed && !SHARED.ended.load(Relaxed) {
         let dur = SHARED.duration_ns.load(Relaxed);
         let pos = SHARED.playpos_ns.load(Relaxed);
-        if dur > 0 && pos >= dur - EOS_TAIL_NS {
+        if stream_ended(pos, dur, SHARED.pipeline_eos.load(Relaxed)) {
             SHARED.ended.store(true, Relaxed);
             super::log(&format!(
                 "EOS reached: playpos={}s/{}s → ended",
@@ -2087,7 +2141,21 @@ mod tests {
         hls_buffered_ms, native_clock_silence_ms, native_clock_stopped, open_failure_action,
         prime_before_play, rebuffer_request_is_current, should_begin_hls_rebuffer,
         OpenFailureAction, CLOCK_WATCH_SINCE_MS, NATIVE_CLOCK_STOPPED_MS, SHARED,
+        stream_ended,
     };
+
+    /// **The pipeline's own end-of-stream ends the film even short of the duration.** C1,
+    /// 2026-10-20: audio ran 3 s past the last video frame, the clock stopped at 5894 s of
+    /// 5897 s after the EOS, and the player sat on the last frame for good because the playhead
+    /// never came within a second of the duration.
+    #[test]
+    fn the_pipelines_end_of_stream_ends_a_film_whose_audio_outlasts_its_video() {
+        const S: i64 = 1_000_000_000;
+        assert!(!stream_ended(5894 * S, 5897 * S, false), "short of the duration, nothing said");
+        assert!(stream_ended(5894 * S, 5897 * S, true), "the pipeline said it reached the end");
+        assert!(stream_ended(5896_500_000_000, 5897 * S, false), "within the tail, as before");
+        assert!(!stream_ended(5894 * S, 0, false), "no duration, no arithmetic");
+    }
     use std::sync::atomic::Ordering::{Relaxed, Release};
 
     /// The device's measured position-callback period, so the replay below advances in the same
@@ -2477,7 +2545,7 @@ mod flight_tests {
     }
 
     /// A Home press while a seek flight is out saves the SEEK TARGET (what `app::intended_pos`
-    /// snapshots for `lifecycle.suspend`), not the playhead the viewer just left: the published
+    /// snapshots for the lifecycle's `Park`), not the playhead the viewer just left: the published
     /// `playpos_ns` still reads the pre-seek 60 s for the whole flight.
     #[test]
     fn a_suspend_snapshot_during_a_seek_flight_is_the_seek_target() {
@@ -2569,7 +2637,7 @@ mod flight_tests {
         rig.frame();
         assert!(!TX.seek_preroll_active(), "a claim hold's pause opened a preroll");
         SHARED.frames.store(1, Relaxed);
-        assert!(crate::player::lifecycle::set_transport_paused(&mut rig.pa, true), "the viewer's Pause press");
+        assert!(crate::player::transport::set_transport_paused(&mut rig.pa, true), "the viewer's Pause press");
         assert!(!super::super::claim_hold::owns_pause(), "the viewer's press outranks the hold");
         rig.flight.release_answers();
         rig.frames_until("the adaptive reload to settle", |r| {
@@ -2762,6 +2830,36 @@ mod flight_tests {
         assert_ne!(engine_epoch(&mut rig), epoch, "the producer had stopped, so the HLS Engine was reopened");
         assert!(!super::super::claim_hold::active() && !TX.paused.load(Acquire));
         assert!(!rig.flight.stopped().iter().any(|s| s == "rig-1"));
+    }
+
+    /// **A refused automatic recovery is not asked again on the route that refused it.** The
+    /// reopen above spawns a fresh HLS worker on the SAME encoder, and its capture
+    /// (`route::hls_abr_control`) used to hand it a fresh source gate: on a server that refuses
+    /// the Part and the remux every time, the worker probed, asked and was refused again ~10 s
+    /// later, a visible reload each round, for the rest of the film. The reopened worker's capture
+    /// now carries the refusal, which holds its source gate until the route changes
+    /// (`route::decision_audio_enhancement_tests`' encoder-scoped twin grades the release). The
+    /// ~10 s cadence itself is the pipeline tier's (the real worker's probe funding); this grades
+    /// its only input.
+    #[test]
+    fn a_refused_automatic_original_recovery_is_not_asked_again_on_the_reopened_hls() {
+        let mut rig = hls_rig(40);
+        FlightRig::offer_original(&mut rig.ps, false);
+        rig.flight.refuse_decisions(1);
+        rig.frame();
+        let (fresh, _) = crate::route::hls_abr_control(&rig.ps).expect("the live HLS worker's capture");
+        assert!(!fresh.original_refused_on_this_route(), "sanity: nothing has been refused yet");
+
+        FlightRig::publish_hls_to_original(60_000_000_000);
+        rig.frame();
+        rig.frames_until("the refusal's landing", |_| !crate::route::flight_outstanding());
+        assert_eq!(crate::route::transcode_session(&rig.ps), "rig-1", "the retained HLS is the route");
+        let (reopened, ticket) = crate::route::hls_abr_control(&rig.ps).expect("the reopened HLS worker's capture");
+        assert_eq!(ticket.encoder(), "rig-1");
+        assert!(
+            reopened.original_refused_on_this_route(),
+            "the worker reopened on the encoder that refused Original must not ask for it again",
+        );
     }
 
     /// A rig whose route is an Original the Auto watchdog watches (a progressive remux `rig-1`
@@ -4287,5 +4385,190 @@ mod native_seek_pump_tests {
         let (_, start, pause, _) = ffi_host::acb_calls_for_test();
         assert_eq!(start, 1, "the bind ran");
         assert_eq!(pause, 1, "ACB was left PLAYING under a paused pipeline");
+    }
+}
+
+/// **A film whose audio outlasts its video ends on the host sink too (#865).** The pipeline stops
+/// its clock at the last video frame, so the playhead never comes within [`EOS_TAIL_NS`] of the
+/// container's duration (the longest track's) and only the pipeline's own end-of-stream can end
+/// the film. These drive the REAL feed lanes and the REAL `pump` against the clock sink and grade
+/// `player::ended()`. Nothing here sets `Shared::pipeline_eos` or `ended`: what is graded is the
+/// whole chain, the sink, its callback, the flag and the pump.
+#[cfg(all(test, feature = "hostsim"))]
+mod end_of_film_tests {
+    use super::*;
+    use crate::player::ffi_host;
+    use std::os::raw::c_int;
+
+    const S: i64 = 1_000_000_000;
+    const V_STEP_NS: i64 = 41_666_666; // 24 fps
+    const A_STEP_NS: i64 = 21_333_333; // AAC: 1024 samples at 48 kHz
+    const VIDEO_END_NS: i64 = 20 * S;
+    const AUDIO_END_NS: i64 = 23 * S;
+    /// The pipeline's position-callback period (`TICK_MS` in the sink), milliseconds.
+    const TICK_MS: i64 = 200;
+    /// Steps a run may take: 23 s at one tick per step is 115.
+    const STEP_BUDGET: usize = 400;
+
+    struct Rig {
+        ps: crate::route::PlaybackSession,
+        pa: super::super::adapter::PlayerAdapter,
+        now: u32,
+    }
+
+    impl Rig {
+        /// A direct-play session on a REALLY loaded host object (so `ACTIVE_EPOCH` is set and the
+        /// callback gate is open: otherwise the sink reports nothing and a red run would be a dead
+        /// instrument, not the defect), holding 20 s of video and 23 s of audio, primed to play.
+        fn new() -> Rig {
+            SHARED.reset_session();
+            TX.reset();
+            super::super::claim_hold::clear();
+            ffi_host::reset_native_lifecycle_for_test();
+            ffi_host::force_clocksink_for_test(true);
+            let mut pa = super::super::adapter::PlayerAdapter::new(unsafe { MainThread::assume() });
+            let epoch = SHARED.begin_native_session().expect("native session");
+            assert_eq!(
+                unsafe { crate::player::sink().load(c"{}".as_ptr(), epoch) },
+                1,
+                "PRECONDITION FAILED, not the defect: the host Load did not take"
+            );
+            assert!(SHARED.mark_native_load_returned(epoch).is_some());
+            let mut eng = super::super::engine::streaming_engine_for_test(epoch);
+            eng.load_th = None;
+            assert!(eng.stage >= Stage::Playing, "PRECONDITION FAILED, not the defect: the engine is not past its Load");
+            let au = [0u8; 64];
+            let qv = &mut **eng.aq_video.as_mut().unwrap() as *mut crate::aq::AuQueue;
+            for i in 0..VIDEO_END_NS / V_STEP_NS {
+                crate::aq::aq_push(qv, au.as_ptr(), au.len() as c_int, i * V_STEP_NS, c_int::from(i == 0), 1);
+            }
+            let qa = &mut **eng.aq_audio.as_mut().unwrap() as *mut crate::aq::AuQueue;
+            for i in 0..AUDIO_END_NS / A_STEP_NS {
+                crate::aq::aq_push(qa, au.as_ptr(), au.len() as c_int, i * A_STEP_NS, 1, 2);
+            }
+            pa.install(eng);
+            SHARED.duration_ns.store(AUDIO_END_NS, Relaxed);
+            Rig { ps: crate::route::PlaybackSession::IDLE, pa, now: 1_000 }
+        }
+
+        fn eng(&mut self) -> &mut Engine {
+            self.pa.engine().expect("engine")
+        }
+
+        /// The demuxer reached the end of the file: both lanes are complete.
+        fn producer_done(&mut self) {
+            let eng = self.eng();
+            for q in [eng.aq_video.as_mut().unwrap(), eng.aq_audio.as_mut().unwrap()] {
+                crate::aq::aq_set_eof(&mut **q as *mut crate::aq::AuQueue);
+            }
+        }
+
+        /// One pipeline period: the clock runs 200 ms, the sink takes its tick, the frame runs.
+        fn step(&mut self) {
+            ffi_host::advance_clock_for_test(TICK_MS);
+            ffi_host::tick_for_test();
+            let _frame = plx_base::task::FrameScope::enter();
+            self.now += TICK_MS as u32;
+            pump(&mut self.ps, &mut self.pa, self.now);
+        }
+
+        /// Step until `done`, within [`STEP_BUDGET`].
+        fn run_until(&mut self, done: impl Fn(&mut Rig) -> bool) -> bool {
+            for _ in 0..STEP_BUDGET {
+                self.step();
+                if done(self) {
+                    return true;
+                }
+            }
+            false
+        }
+
+        /// What a failure message needs to explain itself.
+        fn facts(&mut self) -> String {
+            let (clock_ns, running) = ffi_host::clock_state_for_test();
+            let streaming = self.eng().stage >= Stage::Streaming;
+            let pending = self.eng().pending_video.is_some();
+            format!(
+                "playpos={}ms duration={}ms eos_pushed={} pipeline_eos={} ended={} \
+                 clock={}ms running={running} stage_streaming={streaming} pending_video={pending} \
+                 feed_allowed={} seek_pending={}",
+                SHARED.playpos_ns.load(Relaxed) / 1_000_000,
+                SHARED.duration_ns.load(Relaxed) / 1_000_000,
+                self.eng().eos_pushed,
+                SHARED.pipeline_eos.load(Relaxed),
+                crate::player::ended(),
+                clock_ns / 1_000_000,
+                TX.feed_allowed(),
+                TX.seek_to_ns.load(Relaxed),
+            )
+        }
+    }
+
+    impl Drop for Rig {
+        fn drop(&mut self) {
+            ffi_host::reset_native_lifecycle_for_test();
+            ffi_host::force_clocksink_for_test(false);
+            SHARED.test_force_native_idle();
+            SHARED.reset_session();
+            TX.reset();
+            crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
+        }
+    }
+
+    #[test]
+    fn a_film_whose_audio_outlasts_its_video_ends_on_the_host_sink() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new();
+
+        // The picture plays out to the last video frame with the demuxer still producing: the
+        // sink has presented everything it was fed and has no end-of-stream to report.
+        let at_the_tail = |_: &mut Rig| {
+            let (position, running) = ffi_host::clock_state_for_test();
+            running && position >= VIDEO_END_NS - 2 * V_STEP_NS
+        };
+        assert!(
+            rig.run_until(at_the_tail),
+            "PRECONDITION FAILED, not the defect: the clock never reached the last video frame \
+             (the prime, the feed or the sink did not run): {}",
+            rig.facts()
+        );
+        assert!(crate::player::seen_frame(), "PRECONDITION FAILED, not the defect: no picture was reported");
+        for _ in 0..10 {
+            rig.step();
+        }
+        assert!(
+            !rig.eng().eos_pushed && !SHARED.pipeline_eos.load(Relaxed) && !crate::player::ended(),
+            "the sink reported an end of stream nobody pushed: {}",
+            rig.facts()
+        );
+
+        // The file ends: the video lane drains and the engine pushes the EOS. The playhead is
+        // stopped at the last picture, short of the duration by more than the tail, so the
+        // arithmetic alone cannot end the film.
+        rig.producer_done();
+        assert!(
+            rig.run_until(|r| r.eng().eos_pushed),
+            "PRECONDITION FAILED, not the defect: the EOS was never pushed: {}",
+            rig.facts()
+        );
+        let stalled = SHARED.playpos_ns.load(Relaxed);
+        assert!(
+            stalled < AUDIO_END_NS - EOS_TAIL_NS - S,
+            "PRECONDITION FAILED, not the defect: the playhead ({stalled}ns) is within reach of the \
+             duration, so the arithmetic would end this film"
+        );
+        assert!(
+            rig.run_until(|_| crate::player::ended()),
+            "the film never ended: video ran to {}s, audio to {}s, and the pipeline's clock stopped \
+             at the last picture: {}",
+            VIDEO_END_NS / S,
+            AUDIO_END_NS / S,
+            rig.facts()
+        );
+        assert!(
+            SHARED.pipeline_eos.load(Relaxed),
+            "it ended on the pipeline's word, not on the arithmetic: {}",
+            rig.facts()
+        );
     }
 }

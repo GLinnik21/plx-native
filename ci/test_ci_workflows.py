@@ -25,6 +25,7 @@ Text-level on purpose, like ci/test_ci_timeouts.py (no YAML library on a stock r
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -216,6 +217,17 @@ class NightlyHomebrewRepository(unittest.TestCase):
         # the repository files must land AFTER the guide page, in the same directory
         self.assertLess(pages.index("docs/nightly-builds.md > _site/nightly/index.html"),
                         pages.index("ci/nightly.py repo-json"))
+
+    def test_the_site_stamps_the_hero_version_from_the_package(self):
+        pages = code("pages.yml")
+        self.assertIn('"pkg/appinfo.json"', pages)
+        self.assertIn('json.load(open("pkg/appinfo.json"))["version"]', pages)
+        # the stamp edits the staged copy, after it is copied, and fails unless it hit exactly one line
+        self.assertLess(pages.index("cp site/index.html _site/index.html"), pages.index('path = "_site/index.html"'))
+        self.assertIn("if n != 1:", pages)
+        # the pattern it rewrites is still the source's hero line
+        hero = re.findall(r"Version \d+\.\d+\.\d+(?=<span)", (ROOT / "site/index.html").read_text())
+        self.assertEqual(len(hero), 1, hero)
 
 
 class HostToolTests(unittest.TestCase):
@@ -589,7 +601,7 @@ class BuildBenchWorkflow(unittest.TestCase):
         # a leg that left no document records nothing, rather than a day without half its rows
         self.assertIn("left no document: nothing recorded", publish)
         self.assertRegex(publish, r"python3 \.\./tools/build-history\.py")
-        self.assertRegex(publish, r"python3 \.\./tools/ci-summary\.py --history ci-history\.json --bench build-history\.json --out ci-summary\.json")
+        self.assertRegex(publish, r"python3 \.\./tools/ci-summary\.py --history ci-history\.json --bench build-history\.json --quarantine \.\./ci/flaky\.txt --out ci-summary\.json")
 
     def test_measurements_do_not_overlap_and_a_lost_push_race_is_retried(self):
         body = code(self.NAME)
@@ -852,7 +864,12 @@ class SiteVideoRelease(unittest.TestCase):
         publish = job_body("site-video.yml", "publish")
         self.assertEqual(publish.count("persist-credentials: true"), 1)
         self.assertEqual(publish.count("persist-credentials: false"), 1)
-        self.assertNotIn("secrets.", body)
+        # the one secret is the deploy key main's ruleset lets push, and only a publish's checkout of main holds it
+        self.assertEqual(re.findall(r"secrets\.\w+", body), ["secrets.MAIN_PUSH_KEY"])
+        with_key = [c for c in self.checkouts("publish") if "secrets.MAIN_PUSH_KEY" in c]
+        self.assertEqual(len(with_key), 1)
+        self.assertRegex(with_key[0], r"(?m)^\s+ref: main\s*$")
+        self.assertIn("env.PUBLISH == 'true'", with_key[0])
 
     def checkouts(self, job):
         """[(step text)] for each `actions/checkout` step of a job."""
@@ -1016,6 +1033,61 @@ class SiteVideoRelease(unittest.TestCase):
         # `publish` is the job that creates the release; the hook must come after it, never gate it
         self.assertNotIn("site-video", job_body("release.yml", "publish"))
         self.assertNotIn("site-video", job_body("release.yml", "build"))
+
+
+class ReleaseMainPushKey(unittest.TestCase):
+    """main's required-checks ruleset rejects the workflow token, so the two jobs that push a line check out with the
+    MAIN_PUSH_KEY deploy key; the release TAG must still go over the token, or it fires `push: tags` a second time."""
+
+    def test_the_pushing_checkouts_carry_the_deploy_key(self):
+        for job in ("prepare", "publish"):
+            self.assertIn("ssh-key: ${{ secrets.MAIN_PUSH_KEY }}", job_body("release.yml", job))
+        self.assertEqual(code("release.yml").count("secrets.MAIN_PUSH_KEY"), 2)
+
+    def test_the_tag_is_pushed_with_the_token_not_the_key(self):
+        prepare = job_body("release.yml", "prepare")
+        pushes = re.findall(r"(?m)^\s+git push .*$", prepare)
+        self.assertEqual(len(pushes), 2, pushes)
+        tag_push = [p for p in pushes if "$tag" in p]
+        self.assertEqual(len(tag_push), 1, pushes)
+        self.assertIn("x-access-token:${GH_TOKEN}@", tag_push[0])
+        self.assertNotIn("origin", tag_push[0])
+        self.assertIn("GH_TOKEN: ${{ github.token }}", prepare)
+        self.assertIn("tags: ['v*']", code("release.yml"))
+
+
+class PerTestResults(unittest.TestCase):
+    """The flaky-test pipeline (tools/ci-test-results.py -> artifact -> tools/ci-history.py -> tools/ci-summary.py).
+    Every link of it is silent when it breaks: a job that stops uploading, an artifact name the collector no
+    longer matches, or a summary that stops reading the quarantine list just leaves the page empty."""
+
+    JOBS = {"host-unit-default": "host unit tests (default features)", "host-unit-hostsim": "host unit tests (hostsim)"}
+
+    def test_both_host_unit_jobs_record_and_upload_their_results_under_a_name_the_collector_reads(self):
+        history = importlib.util.spec_from_file_location("ci_history", ROOT / "tools/ci-history.py")
+        module = importlib.util.module_from_spec(history)
+        history.loader.exec_module(module)
+        for job, name in self.JOBS.items():
+            body = job_body("ci.yml", job)
+            self.assertIn(f"name: {name}", body, "the job renamed: the page's job label must follow")
+            self.assertIn(f'--job "{name}"', body)
+            self.assertIn('--log "$RUNNER_TEMP/make-check.log"', body)
+            m = re.search(r"name: (test-results-[a-z-]+-)\$\{\{ github\.run_attempt \}\}", body)
+            self.assertTrue(m, f"{job} must upload test-results-<slug>-<run_attempt>")
+            self.assertRegex(m.group(1) + "1", module.RESULTS_ARTIFACT.pattern)
+            # a red job is the one whose results matter, and a job that died before `make` has no log to read
+            step = body[body.index("Record the per-test results"):]
+            self.assertIn("if: always()", step)
+            self.assertIn("if-no-files-found: ignore", body)
+
+    def test_the_collector_reads_the_quarantine_list_from_main_in_both_writers_of_the_summary(self):
+        metrics = code("ci-metrics.yml")
+        self.assertIn("ci/flaky.txt", metrics)
+        self.assertIn("--quarantine ci/flaky.txt", metrics)
+        self.assertIn("ci/flaky.txt", code("build-bench.yml"))
+        # artifacts are listed through the same token that lists the jobs: no new permission
+        self.assertRegex(metrics, r"(?m)^      actions: read ")
+        self.assertNotIn("actions: write", metrics)
 
 
 if __name__ == "__main__":

@@ -1029,3 +1029,61 @@ fn painted_pill_frames_stand_one_gap_apart_in_the_top_bar_and_in_a_strip() {
         assert!((air - gap).abs() <= 0.5, "strip pill frames stand {air} apart, not {gap}");
     }
 }
+
+/// The focus cast rides the capsule's own fade (`control_cast_at`'s doc): on a plated strip the
+/// shadow used to be drawn at full strength while the fill faded out and then vanish in the one
+/// frame the fill dropped under the draw cutoff — and appear whole on the way back.
+#[test]
+fn a_plated_focus_capsules_cast_fades_with_it_both_ways() {
+    let _g = serial_for_motion();
+    let measure = crate::fixture::FixtureMeasure;
+    let lays = strip_layout_measured(
+        ["Alpha".into(), "Beta".into(), "Gamma".into()].into_iter(),
+        96.0, theme::size::BODY, 37.0, &measure,
+    );
+    let (top, h) = (10.0, 60.0);
+    let span = |i: usize| lays.iter().find(|l| l.i == i).map(|l| {
+        let r = strip_pill_rect(l, top, h);
+        (r.x, r.w)
+    });
+    let full: f32 = theme::CONTROL_CAST_FOCUS.iter().map(|(_, _, a)| a).sum();
+    let mut strip = TabStrip::new();
+    // (cast strength as a share of the full lift, the focus fill's effective alpha, plates drawn)
+    let frame = |strip: &mut TabStrip, focused: c_int| {
+        strip.update(0, focused, span, SelMark::Lands, DT);
+        let inks = crate::draw_census::capture_inks(|| {
+            draw_strip(Painter::recording(), strip, &lays, top, h, 0.0, TabGround::Plated { pop: 1.0 });
+        });
+        // The cast must be the OUTSIDE-only shadow (tag 5): the interior-painting one (tag 4) shows
+        // through a translucent capsule as it fades.
+        assert!(inks.iter().all(|(t, _, _)| *t != 4), "a capsule's cast is drawn outside its outline only");
+        let sum = |tag: u64| inks.iter().filter(|(t, _, _)| *t == tag).map(|(_, _, a)| *a).sum::<f32>();
+        let fill = inks.iter().filter(|(t, _, _)| *t == 8).map(|(_, _, a)| *a).fold(0.0, f32::max);
+        (sum(5) / full, fill, inks.iter().any(|(t, _, _)| *t == 2))
+    };
+    let mut trace = Vec::new();
+    for _ in 0..60 { trace.push(frame(&mut strip, 0)); }
+    let held = *trace.last().unwrap();
+    assert!((held.0 - 1.0).abs() < 1e-3, "a focused plated pill wears the full cast ({})", held.0);
+    for _ in 0..60 { trace.push(frame(&mut strip, -1)); }
+    let out = *trace.last().unwrap();
+    for _ in 0..60 { trace.push(frame(&mut strip, 0)); }
+    let back = *trace.last().unwrap();
+
+    assert_eq!(out.0, 0.0, "after focus leaves the strip there is no cast");
+    assert_eq!(out.1, 0.0, "…and no focus capsule");
+    assert!(out.2, "…only the selection plate remains");
+    assert!((back.0 - 1.0).abs() < 1e-3, "after focus returns the cast is whole again ({})", back.0);
+    assert!(back.1 > 0.99, "…and so is the fill ({})", back.1);
+    // the cast leads the fill out: <=10% of full once the capsule is at half alpha, whole at rest
+    for (n, t) in trace.iter().enumerate() {
+        if t.1 <= 0.5 { assert!(t.0 <= 0.1, "frame {n}: the cast ({}) outlives the fill ({})", t.0, t.1); }
+        if t.1 > 0.999 { assert!((t.0 - 1.0).abs() < 1e-3, "frame {n}: a settled capsule wears the whole cast ({})", t.0); }
+    }
+    // the cast is a smoothstep of the fill (slope up to 3x over [0.5, 1]): it may move 3x as fast per frame, never a step
+    for (n, pair) in trace.windows(2).enumerate() {
+        let (dc, df) = ((pair[1].0 - pair[0].0).abs(), (pair[1].1 - pair[0].1).abs());
+        assert!(dc <= 0.35, "frame {}: the cast jumped {dc} in one frame ({} -> {})", n + 1, pair[0].0, pair[1].0);
+        assert!(df <= 0.12, "frame {}: the fill jumped {df} in one frame ({} -> {})", n + 1, pair[0].1, pair[1].1);
+    }
+}

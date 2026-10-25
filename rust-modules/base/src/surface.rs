@@ -106,8 +106,9 @@ pub fn scale() -> f32 {
 /// Returns `(x, y, w, h)` in physical pixels. On a 1:1 surface this is `(0, 0, 1920, 1080)` and on
 /// a 16:9 surface of any size the offsets are zero — so on every television, letterboxing costs
 /// nothing and this is a plain scale. The shaders divide by `u_screen`, which stays logical, so
-/// this rect is the entire logical->physical mapping; nothing else in the renderer knows the
-/// drawable size at all.
+/// this rect is the entire logical->physical mapping; nothing else in the renderer's drawing knows
+/// the drawable size at all, but for the one question [`viewport_fills_drawable`] answers for
+/// `gfx::clear_flat_ground` (may a bare `glClear` stand for the viewport's box?).
 #[inline]
 pub fn viewport() -> (i32, i32, i32, i32) {
     (
@@ -116,6 +117,21 @@ pub fn viewport() -> (i32, i32, i32, i32) {
         VW.load(Ordering::Relaxed),
         VH.load(Ordering::Relaxed),
     )
+}
+
+/// **Does the viewport cover the whole drawable?** True only when its origin is `(0, 0)` AND its
+/// size is the drawable's: a letterbox that costs nothing on every 16:9 surface and is a bar on any
+/// other. An origin of zero alone proves nothing, because [`recompute`] floors the centring: a
+/// drawable one pixel wider than the canvas has `x == 0` and a column outside the viewport. A bare
+/// `glClear` (no scissor) reaches the whole drawable, so it is the viewport's only when this holds.
+#[inline]
+pub fn viewport_fills_drawable() -> bool {
+    viewport_is(drawable(), viewport())
+}
+
+/// [`viewport_fills_drawable`] on given values.
+fn viewport_is((dw, dh): (i32, i32), vp: (i32, i32, i32, i32)) -> bool {
+    vp == (0, 0, dw, dh)
 }
 
 /// Derive [`scale`] and [`viewport`] from the drawable. Called by [`probe`], and by the tests.
@@ -365,12 +381,14 @@ pub fn to_physical(lx: f32, ly: f32) -> (f32, f32) {
     (lx * s + vx as f32, ly * s + vy as f32)
 }
 
-/// Read back what we were actually given, once, after the GL context exists.
+/// The window's size in points and its drawable's size in pixels, as SDL reports them right now:
+/// `((window_w, window_h), (drawable_w, drawable_h))`.
 ///
-/// `SDL_GL_GetDrawableSize` is the authority — on a HiDPI-style surface it and `SDL_GetWindowSize`
-/// disagree, and it is the former that `glViewport` speaks. Both are logged because the pair is
-/// what tells you which situation you are in.
-pub fn probe(win: *mut c_void) {
+/// `SDL_GL_GetDrawableSize` is the authority for the second — on a HiDPI-style surface it and
+/// `SDL_GetWindowSize` disagree, and it is the former that `glViewport` speaks. The ratio of the
+/// two is the display's pixel density, which no call can give before a window exists (the
+/// desktop reads it here to size its window, `app::boot`); [`probe`] logs both.
+pub fn window_and_drawable_size(win: *mut c_void) -> ((i32, i32), (i32, i32)) {
     unsafe {
         let (mut ww, mut wh) = (0, 0);
         SDL_GetWindowSize(win, &mut ww, &mut wh);
@@ -382,72 +400,84 @@ pub fn probe(win: *mut c_void) {
             dw = ww;
             dh = wh;
         }
-        #[cfg(feature = "hostsim")]
-        if render_scale() > 1 && dw > 0 && dh > 0 {
-            let n = render_scale();
-            let (sw, sh) = (LOGICAL_W as i32 * n, LOGICAL_H as i32 * n);
-            match create_supersample_fb(sw, sh) {
-                Some(f) => {
-                    // The window's mapping first, computed exactly as the viewport would be.
-                    DRAWABLE_W.store(dw, Ordering::Relaxed);
-                    DRAWABLE_H.store(dh, Ordering::Relaxed);
-                    recompute();
-                    let (vx, vy, vw, vh) = viewport();
-                    for (a, v) in WIN_VIEW.iter().zip([vx, vy, vw, vh]) {
-                        a.store(v, Ordering::Relaxed);
-                    }
-                    WIN_SCALE_BITS.store(scale().to_bits(), Ordering::Relaxed);
-                    SS_FBO.store(f, Ordering::Relaxed);
-                    log(&format!(
-                        "surface: supersampling x{n} — drawing into an offscreen {sw}x{sh} \
-                         framebuffer, shown downscaled in the {dw}x{dh} window"
-                    ));
-                    dw = sw;
-                    dh = sh;
-                }
-                None => log(&format!(
-                    "surface: PLXNATIVE_RENDER_SCALE={n} refused — {sw}x{sh} framebuffer \
-                     incomplete; rendering to the window"
-                )),
-            }
-        }
-        if dw > 0 && dh > 0 {
-            DRAWABLE_W.store(dw, Ordering::Relaxed);
-            DRAWABLE_H.store(dh, Ordering::Relaxed);
-        }
-        recompute();
+        ((ww, wh), (dw, dh))
+    }
+}
 
-        // The panel, for the log only. See the module doc: this is the number it is tempting and
-        // wrong to build on. Resolved through dlsym because webOS releases below 4.4.2 lack it.
-        let panel = panel_resolution();
-        let p = panel.map_or("unknown".to_string(), |(w, h)| format!("{w}x{h}"));
+/// Read back what we were actually given, once, after the GL context exists.
+///
+/// See [`window_and_drawable_size`] for which number is the authority. Both are logged because the
+/// pair is what tells you which situation you are in.
+pub fn probe(win: *mut c_void) {
+    let ((ww, wh), (dw, dh)) = window_and_drawable_size(win);
+    // Only the supersampled simulator replaces the drawable it was given.
+    #[cfg(feature = "hostsim")]
+    let (mut dw, mut dh) = (dw, dh);
+    #[cfg(feature = "hostsim")]
+    if render_scale() > 1 && dw > 0 && dh > 0 {
+        let n = render_scale();
+        let (sw, sh) = (LOGICAL_W as i32 * n, LOGICAL_H as i32 * n);
+        match unsafe { create_supersample_fb(sw, sh) } {
+            Some(f) => {
+                // The window's mapping first, computed exactly as the viewport would be.
+                DRAWABLE_W.store(dw, Ordering::Relaxed);
+                DRAWABLE_H.store(dh, Ordering::Relaxed);
+                recompute();
+                let (vx, vy, vw, vh) = viewport();
+                for (a, v) in WIN_VIEW.iter().zip([vx, vy, vw, vh]) {
+                    a.store(v, Ordering::Relaxed);
+                }
+                WIN_SCALE_BITS.store(scale().to_bits(), Ordering::Relaxed);
+                SS_FBO.store(f, Ordering::Relaxed);
+                log(&format!(
+                    "surface: supersampling x{n} — drawing into an offscreen {sw}x{sh} \
+                     framebuffer, shown downscaled in the {dw}x{dh} window"
+                ));
+                dw = sw;
+                dh = sh;
+            }
+            None => log(&format!(
+                "surface: PLXNATIVE_RENDER_SCALE={n} refused — {sw}x{sh} framebuffer \
+                 incomplete; rendering to the window"
+            )),
+        }
+    }
+    if dw > 0 && dh > 0 {
+        DRAWABLE_W.store(dw, Ordering::Relaxed);
+        DRAWABLE_H.store(dh, Ordering::Relaxed);
+    }
+    recompute();
+
+    // The panel, for the log only. See the module doc: this is the number it is tempting and
+    // wrong to build on. Resolved through dlsym because webOS releases below 4.4.2 lack it.
+    let panel = panel_resolution();
+    let p = panel.map_or("unknown".to_string(), |(w, h)| format!("{w}x{h}"));
+    log(&format!(
+        "surface: window={ww}x{wh} drawable={dw}x{dh} panel={p} logical={}x{} scale={:.3}",
+        LOGICAL_W as i32,
+        LOGICAL_H as i32,
+        scale()
+    ));
+    if (dw, dh) != (LOGICAL_W as i32, LOGICAL_H as i32) {
+        // The plea for a bug report belongs to the TELEVISION alone: there, a drawable that is
+        // not the canvas is either a webOS 1-3 owner's smaller Interface resolution (or the debug drawable trigger) or a firmware doing
+        // something no set has been seen to do. On a desktop
+        // it is the ordinary case — the window is an exact divisor of the canvas by design
+        // (`app::boot::plan_desktop_window`) — and asking a Mac user for their webOS version
+        // reads as a malfunction. Same measurement either way; only the sentence differs.
+        let tail = if cfg!(feature = "hostsim") {
+            "This is expected on a desktop: the window is a whole fraction of the canvas."
+        } else {
+            "Expected when Settings > System > Interface resolution asked for a smaller window; \
+             otherwise please report this with your webOS version."
+        };
         log(&format!(
-            "surface: window={ww}x{wh} drawable={dw}x{dh} panel={p} logical={}x{} scale={:.3}",
+            "surface: drawable is NOT the {}x{} the UI is authored at — scaling the whole \
+             interface by {:.3}. Text will be softer than on a 1:1 surface. {tail}",
             LOGICAL_W as i32,
             LOGICAL_H as i32,
             scale()
         ));
-        if (dw, dh) != (LOGICAL_W as i32, LOGICAL_H as i32) {
-            // The plea for a bug report belongs to the TELEVISION alone: there, a drawable that is
-            // not the canvas is either a webOS 1-3 owner's smaller Interface resolution (or the debug drawable trigger) or a firmware doing
-            // something no set has been seen to do. On a desktop
-            // it is the ordinary case — the window is an exact divisor of the canvas by design
-            // (`app.rs`'s `desktop_window_size`) — and asking a Mac user for their webOS version
-            // reads as a malfunction. Same measurement either way; only the sentence differs.
-            let tail = if cfg!(feature = "hostsim") {
-                "This is expected on a desktop: the window is a whole fraction of the canvas."
-            } else {
-                "Expected when Settings > System > Interface resolution asked for a smaller window; \
-                 otherwise please report this with your webOS version."
-            };
-            log(&format!(
-                "surface: drawable is NOT the {}x{} the UI is authored at — scaling the whole \
-                 interface by {:.3}. Text will be softer than on a 1:1 surface. {tail}",
-                LOGICAL_W as i32,
-                LOGICAL_H as i32,
-                scale()
-            ));
-        }
     }
 }
 
@@ -519,6 +549,30 @@ mod tests {
             assert_eq!(scale(), 1.0);
             assert_eq!(viewport(), (0, 180, 1920, 1080));
         });
+    }
+
+    /// A viewport fills the drawable only when its origin is zero AND its size is the drawable's.
+    /// `recompute` floors the centring, so a drawable one pixel past the canvas has `x == 0` and a
+    /// column outside the viewport: an origin of zero is not proof (a bare clear would paint it).
+    #[test]
+    fn the_viewport_fills_the_drawable_only_when_it_is_all_of_it() {
+        for (w, h) in [(1920, 1080), (3840, 2160), (2560, 1440), (7680, 4320)] {
+            with_drawable(w, h, || assert!(viewport_fills_drawable(), "{w}x{h} is 16:9, no bars"));
+        }
+        // Bars on one axis, or a 1-px remainder the floor leaves outside: origin zero, not filled.
+        for (w, h, vp) in [
+            (1921, 1080, (0, 0, 1920, 1080)),
+            (1920, 1081, (0, 0, 1920, 1080)),
+            (2560, 1080, (320, 0, 1920, 1080)),
+            (1920, 1440, (0, 180, 1920, 1080)),
+        ] {
+            with_drawable(w, h, || {
+                assert_eq!(viewport(), vp, "the premise: the viewport at {w}x{h}");
+                assert!(!viewport_fills_drawable(), "{w}x{h} has a bar the viewport does not cover");
+            });
+        }
+        assert!(viewport_is((100, 50), (0, 0, 100, 50)));
+        assert!(!viewport_is((100, 50), (0, 0, 99, 50)) && !viewport_is((100, 50), (1, 0, 100, 50)));
     }
 
     /// The two pointer transforms must compose to the identity, letterbox offset included —

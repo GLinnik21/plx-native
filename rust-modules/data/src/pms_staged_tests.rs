@@ -105,7 +105,7 @@ impl Rig {
     fn stage(&mut self, i: usize, build: SourceBuild) {
         let mut asked = self.quiet(i);
         assert_eq!(asked.len(), 1, "premise: the quiet ask launched one read");
-        let landing = asked.remove(0).complete(Some(build));
+        let landing = asked.remove(0).complete_for_test(Some(build));
         let _ = self.apply(&landing);
         assert!(self.o.state.srcs[i].staged.is_some(), "premise: the answer is staged");
     }
@@ -133,7 +133,7 @@ fn quiet_refetch_stages_without_commit() {
     assert_eq!(asked.len(), 1, "a quiet ask is a read");
     assert!(r.o.state.srcs[0].fetching);
     assert_eq!(r.o.state.srcs[0].state, HubState::Ready, "and not a spinner: the source stays Ready");
-    let outcome = r.apply(&asked.remove(0).complete(Some(cw_moved(r.slots[0]))));
+    let outcome = r.apply(&asked.remove(0).complete_for_test(Some(cw_moved(r.slots[0]))));
     assert!(!outcome.changed, "staging publishes nothing");
     assert_eq!(r.o.state.catalog_gen, gen, "catalog_gen does not move");
     assert_eq!(r.rows(), published, "the published rows are as they were");
@@ -155,7 +155,7 @@ fn quiet_refetch_never_bumps_hub_gen() {
     assert_eq!(asked.len(), 1, "one read, for the one source");
     assert_eq!(asked[0].descriptor().2, r.slots[0]);
     assert_eq!(asked[0].descriptor().0, hub_gen, "stamped with the generation that stands");
-    let _ = r.apply(&asked.remove(0).complete(Some(cw_moved(r.slots[0]))));
+    let _ = r.apply(&asked.remove(0).complete_for_test(Some(cw_moved(r.slots[0]))));
     assert_eq!(r.o.state.hub_gen, hub_gen, "the landing");
     assert_eq!((r.o.state.srcs[1].seq, r.o.state.srcs[1].fetching, r.o.state.srcs[1].state), other,
         "no other source was touched");
@@ -170,7 +170,7 @@ fn quiet_refetch_moves_the_sequence_so_a_superseded_landing_is_dropped() {
     let mut asked = r.quiet(0);
     assert_ne!(r.o.state.srcs[0].seq, before, "`kick_gated` admits the read through `begin_request`, which mints a sequence");
     assert_eq!(r.o.state.srcs[0].seq, asked[0].descriptor().1);
-    let landing = asked.remove(0).complete(Some(cw_moved(r.slots[0])));
+    let landing = asked.remove(0).complete_for_test(Some(cw_moved(r.slots[0])));
     r.o.state.srcs[0].seq = r.o.state.srcs[0].seq.wrapping_add(1); // a newer attempt took the source over
     let _ = r.apply(&landing);
     assert!(r.o.state.srcs[0].staged.is_none(), "a superseded quiet landing is dropped whole");
@@ -210,7 +210,7 @@ fn a_quiet_ask_the_gate_deferred_is_still_quiet_when_a_tick_launches_it() {
     let (_, mut asked) = r.run(None, 0.0);
     assert_eq!(asked.len(), 1, "the tick launches it");
     let (gen, published) = (r.o.state.catalog_gen, r.rows());
-    let landing = asked.remove(0).complete(Some(cw_moved(r.slots[0])));
+    let landing = asked.remove(0).complete_for_test(Some(cw_moved(r.slots[0])));
     let _ = r.apply(&landing);
     assert_eq!(r.o.state.catalog_gen, gen, "and it is staged, not published");
     assert_eq!(r.rows(), published);
@@ -234,7 +234,7 @@ fn prompted_refetch_supersedes_and_clears_staged() {
     assert!(!r.o.state.srcs[0].quiet, "and the read it started is not a quiet one");
     // …and the quiet read that was out lands into a generation that has gone
     let (gen, published) = (r.o.state.catalog_gen, r.rows());
-    let _ = r.apply(&quiet.remove(0).complete(Some(cw_moved(r.slots[0]))));
+    let _ = r.apply(&quiet.remove(0).complete_for_test(Some(cw_moved(r.slots[0]))));
     assert!(r.o.state.srcs[0].staged.is_none(), "the stale quiet landing is dropped");
     assert_eq!((r.o.state.catalog_gen, r.rows()), (gen, published));
     assert!(r.o.state.srcs[0].fetching, "the prompted read is still the one in flight");
@@ -382,7 +382,7 @@ fn a_staged_commit_is_the_catalog_a_prompted_landing_would_have_made() {
     let _g = plx_base::testlock::serial();
     let mut prompted = rig(1);
     let mut asked = prompted.run(Some(HubsCmd::RefetchHubs), 0.0).1;
-    let landing = asked.remove(0).complete(Some(cw_moved(prompted.slots[0])));
+    let landing = asked.remove(0).complete_for_test(Some(cw_moved(prompted.slots[0])));
     let _ = prompted.apply(&landing);
     let want = (prompted.rows(), hero_pool_item(&prompted.o.state, 0).map(|m| m.rk.clone()));
     drop(prompted);
@@ -400,7 +400,7 @@ fn failed_quiet_fetch_leaves_published_and_generation() {
     let mut r = rig(1);
     let (gen, hub_gen, published) = (r.o.state.catalog_gen, r.o.state.hub_gen, r.rows());
     let mut asked = r.quiet(0);
-    let outcome = r.apply(&asked.remove(0).complete(None));
+    let outcome = r.apply(&asked.remove(0).complete_for_test(None));
     assert!(!outcome.changed);
     assert_eq!((r.o.state.catalog_gen, r.o.state.hub_gen, r.rows()), (gen, hub_gen, published));
     let s = &r.o.state.srcs[0];
@@ -420,6 +420,11 @@ fn a_quiet_launch_the_system_refused_leaves_the_source_alone() {
     let sid0 = r.sid(0);
     let outcome = controlled_work(&mut r.o.state, &r.o.adapter, Some(HubsCmd::RefetchSourceQuiet { sid: sid0 }), 0.0,
         &mut |_| false);
+    let s = &r.o.state.srcs[0];
+    assert_eq!((s.state, s.fetching, s.quiet, s.retry_n), (HubState::Ready, true, true, 0),
+        "the refused read is out until the next step settles it");
+    assert!(outcome.endpoints.iter().next().is_none());
+    let outcome = controlled_work(&mut r.o.state, &r.o.adapter, None, 0.0, &mut |_| false);
     let s = &r.o.state.srcs[0];
     assert_eq!((s.state, s.fetching, s.quiet, s.retry_n), (HubState::Ready, false, false, 0));
     assert!(outcome.endpoints.iter().next().is_none(), "and asks no rediscovery");
@@ -458,7 +463,7 @@ fn a_quiet_read_in_flight_does_not_unsettle_the_source() {
     // …and a prompted read for the same source is
     let _prompted = r.run(Some(HubsCmd::RefetchHubs), 0.0);
     assert!(!source_settled(&r.o.state, sid0));
-    let _ = r.apply(&quiet.remove(0).complete(None)); // (dropped: its generation has gone)
+    let _ = r.apply(&quiet.remove(0).complete_for_test(None)); // (dropped: its generation has gone)
 }
 
 fn many_cw(prefix: &'static str, newest: i64, n: usize) -> impl Fn(u16) -> SourceBuild {
@@ -514,7 +519,7 @@ fn a_page_ask_supersedes_a_deferred_quiet_read() {
     let (_, mut asked) = r.run(None, 0.0);
     assert_eq!(asked.len(), 1);
     assert!(asked[0].page_descriptor().is_some(), "the read that went out is the page read");
-    let landing = asked.remove(0).complete(Some(built(r.slots[0], &[], vec![
+    let landing = asked.remove(0).complete_for_test(Some(built(r.slots[0], &[], vec![
         shelf(r.slots[0], "Recently Added", "home.movies.recent", &["a4", "a5"])])));
     let _ = r.apply(&landing);
     let s = &r.o.state.srcs[0];
@@ -600,7 +605,7 @@ fn a_failed_quiet_read_backs_off_before_the_next() {
     let _g = plx_base::testlock::serial();
     let mut r = rig(1);
     let mut asked = r.quiet(0);
-    let _ = r.apply(&asked.remove(0).complete(None));
+    let _ = r.apply(&asked.remove(0).complete_for_test(None));
     assert!(r.quiet(0).is_empty(), "no new read straight after a failure");
     let (_, again) = r.run(None, 120.0);
     assert_eq!(again.len(), 1, "the ask that came in meanwhile is made once the back-off ran out");

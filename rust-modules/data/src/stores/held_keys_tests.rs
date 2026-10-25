@@ -56,9 +56,9 @@ fn collection_holds_its_wanted_window_for_that_collection_only() {
     let id = CollectionRef::by_rk(ServerId::UNSET, "col", 1, "C");
     let arg = ContentArg::Collection(id.clone());
     assert!(store.held_keys(&arg).is_empty());
-    store.run(CollectionCmd::Open { target: CollectionTarget { id, want: 4 } });
+    store.run(CollectionCmd::Open { target: CollectionTarget { id, want: 4 } }, &plx_plex::plex::ClientKeys::default());
     store.install_for_test((0..10).map(|i| movie(&format!("m{i}"))).collect(), CollectionStatus::Ready);
-    store.run(CollectionCmd::Window { wanted: 2..5, focus: None, restore: None });
+    store.run(CollectionCmd::Window { wanted: 2..5, focus: None, restore: None }, &plx_plex::plex::ClientKeys::default());
     assert_eq!(rks(&store.held_keys(&arg)), ["m2", "m3", "m4"]);
     let other = ContentArg::Collection(CollectionRef::by_rk(ServerId::UNSET, "other", 1, "O"));
     assert!(store.held_keys(&other).is_empty());

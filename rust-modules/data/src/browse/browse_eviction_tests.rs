@@ -198,12 +198,12 @@ fn the_grids_focus_index_reaches_the_landing_keep_rule() {
         }
         state.want(0, 12, sent);
         let adapter = Arc::new(BrowseAdapter::default());
-        adapter.fetching.store(true, Ordering::SeqCst);
-        *adapter.page_result.lock().unwrap() = Some(PageResult {
+        adapter.page.claim(0);
+        adapter.page.post(PageResult {
             client, token_gen: client.token_gen(), gen: state.query_gen(), sec, start: far * PAGE,
             items: page_rows(far), total: TOTAL as i64, sorts: None, restored: None, genres: None, genre: None,
             resolved: Default::default(),
-        });
+        }, |_| true);
         assert!(state.pump_owned(&adapter).changed, "the page landed");
         let held = loaded(&state.states[sec].items);
         assert!(!held.is_empty() && held.len() <= MAX_LOADED, "the landing ran and evicted: {held:?}");

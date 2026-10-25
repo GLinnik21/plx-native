@@ -88,8 +88,8 @@ them, the **frame-rate axis** — `pipe_h264_1080p5994` is the only fixture in t
 `engine::fps_rational`'s 1001-denominator branch (`esInfo: videoFps 60000/1001`), and
 `pipe_hevc_4k_60fps` is 4K60 HEVC, the most demanding thing the device table claims; every other
 fixture in both packs is 24p — the **resolution × codec matrix** (SD/HD/FHD/UHD × h264/hevc, eight
-cells, §*The resolution × codec matrix* below), and one clip played to its **end**
-(`pipe_finish_eos`).
+cells, §*The resolution × codec matrix* below), and clips played to their **end**
+(`pipe_finish_eos`, and `pipe_finish_audio_tail` for one whose audio outlasts its picture).
 
 Still uncovered, and worth knowing before quoting a green run: **HLG, HDR10+, DV P5/P7, Atmos**
 (the `atmos` declaration field exists and no case sets it), the **4096-wide edge** and any file
@@ -220,6 +220,10 @@ account stays clean. It works without storing any new secret:
   access token** from `GET https://plex.tv/api/servers/<machineId>/shared_servers` (keyed by
   `userID` — which is what `test_user.id` is). The managed user must already have the libraries
   shared with it.
+- An installation without an owner token in `config.local.h` can instead set
+  `test_user.token_file`: the path of a private file, outside the tree, holding that managed
+  user's per-server token on one line (`~` is expanded). `run.py` reads it at run time, skips the
+  plex.tv lookup, and never prints it; `--print-test-token` honours the same key.
 - That token is used for the `/:/progress` resume seed **and** written to `plxnative-token` in the
   TV's runtime root. The binary carries **no** token, so this file is the only way an automated run
   gets PMS access at all (see `plex_run`); the **app itself** then plays and scrobbles as the
@@ -454,8 +458,11 @@ that address. It boots the synthetic guest `tools/tv-session.sh up --guest --moc
 is then checked against the app's own log: no `pms: server N version=1.41.0.0000-synthetic` line,
 or any other server version, fails the scene before it is graded. Debug flavor only; `tests/run.py` does not deploy the binary, so deploy the build you mean to measure first (`make deploy` under the TV lock, or `tools/tv-session.sh up`, which deploys when stale; for FPS or frame pacing build with `ARM_PROFILE=release`, e.g. `make ARM_PROFILE=release deploy`, because a bare `make deploy` ships the no-LTO `tvdev` build, which `--fps*` and `tools/profile-graphics` refuse to grade; see `docs/agent-reference.md` "ARM_PROFILE") — a stress run once measured an older binary this way. `--server`,
 `--owner`, `--shared-server`, `--suite` and `--graphics-profile` are refused with it. The panel is
-turned off (`tv-session.sh screen off`, before every scene) and the sound muted (`sound off`) —
-the run stops if either cannot be done — and neither is ever turned back on.
+kept OFF (`tv-session.sh screen off`, asserted before every scene: it is only the backlight, and the
+app keeps presenting at full rate, measured 2026-10-24 on Home `grid-pong`: 73 frames/cycle at 59.9 fps
+off, 59.6-59.9 on) and the sound muted (`sound off`, once per run); the run stops if either cannot be
+done, and the sound is never un-muted. `--panel on` lights the panel instead (`screen on` before every
+scene), for a run someone wants to watch.
 **A person page on a `--mock` or `--guest` boot has no biography and no filmography credits.** Both
 write `plxnative-token`, and a dev-token boot with no Discover stand-in armed has the app refuse the
 page's two provider reads itself (`discover: GET … refused` in the log, `discover: base=real
@@ -648,7 +655,10 @@ marks pacing invalid if a render-profiler trigger is armed.
   `unsupported`), the observed slow scenes are exactly the two with the most full-screen passes,
   and 50 fps is also precisely the European panel refresh on this SKU. Discriminate with a soak
   (same scene cold vs hot vs recovered), never from one sample. See
-  `docs/perf-view-buffers-and-thermal.md`.
+  `docs/perf-view-buffers-and-thermal.md`. (2026-10-24: a temperature can be read after all. LG's
+  power manager reports the SoC temperature in `/proc/lg/pm/temperature` (39-61 °C on 2026-10-24)
+  and the CPU frequency in `/proc/lg/pm/frequency`, although there is still no `thermal_zone` or
+  `cpufreq`; see `.agents/skills/profile-tv/SKILL.md`, "Mali T820 facts".)
 - **False-negative guard:** a scene with <5 post-warmup samples for its route FAILs (it never reached
   that screen — app crash, or a `detail`/`play` rk that isn't in the home catalog), never a vacuous
   pass. `detail-transition`'s item (`movie_in_home_catalog`) must be an **in-home-catalog
@@ -767,6 +777,12 @@ pieces make that reproducible:
 4. `make run TV=<tv> RUN_SECS=<n> FLAVOR=<f>` — relaunch, wait, and cat that install's
    `plxnative-events.log` back.
 5. Filter the `smp_cb type=43 num=0 str=` flood and evaluate the assertions.
+6. `crash_gate` (`run.py`): if the case's log holds a `*** SIGNAL` line, or `plxnative-crash.log`
+   gained a record since step 3 counted it, the case FAILS (`app_alive`) unless it sets
+   `expect_crash: true`, and the set's `plxnative-stderr.log` (the abort message; the next launch
+   truncates it) is copied to `<name>.stderr.log` / `<name>.crash.log` in the `--save-logs`
+   directory, else `$TMPDIR/plxnative-crash-evidence/`, with the path printed. `--save-logs`
+   keeps `<name>.stderr.log` for every case. The FPS tier does not run this gate.
 
 ## The `plxnative-play=<rk>` trigger (added for this harness)
 
@@ -959,8 +975,9 @@ A **synthetic** case is a `pipeline_cases` entry instead, and its `expect` keys 
 under *Assertions* below. Two are worth naming here because they are recent and easy to miss:
 **`video_size`** (`"1920x1080"`) grades the demuxed raster EXACTLY and is what the resolution
 matrix is built on — prefer it to `min_video_width` in any case where the resolution is the point;
-and **`reaches_eos`** turns on the `finished` assertion, which only `pipe_finish_eos` may set,
-because it needs a fixture short enough to actually run out.
+and **`reaches_eos`** turns on the `finished` assertion, which only the cases that play a clip to
+its end may set (`pipe_finish_eos`, `pipe_replay_after_eos`, `pipe_finish_audio_tail`), because it
+needs a fixture short enough to actually run out.
 
 ## The synthetic tier (the default) — the player, with no Plex behind it
 
@@ -1125,14 +1142,19 @@ grades the whole-path symptom (`min_pos_climb_s`) and the second stall on its ow
 
 ### Playing to the END, and then again (LG #46)
 
-`pipe_finish_eos` and `pipe_replay_after_eos` are **the only cases in either tier that are supposed
-to run out**. Every other clip in both packs is sized so it *cannot* hit EOF inside a case's window
-(`make_fixtures.py` trap 9's second half), because a finish tears the session down under assertions
-that were only ever about playing — so those two share a 20 s fixture, `pipe_h264_ac3_short.mkv`,
-which only a case declaring `reaches_eos` may name. The `finished` assertion wants two lines **in order**: `EOS reached: … → ended` (the pump
-gates that on `eos_pushed && pos >= dur - 1s`, so a truncated transfer does not reach it) and then
-`stop_bufferfeed: torn down`. The order is the assertion — every stop tears the engine down, the
-harness's own close included.
+`pipe_finish_eos`, `pipe_replay_after_eos` and `pipe_finish_audio_tail` are **the only cases in
+either tier that are supposed to run out**. Every other clip in both packs is sized so it *cannot*
+hit EOF inside a case's window (`make_fixtures.py` trap 9's second half), because a finish tears the
+session down under assertions that were only ever about playing — so the first two share a 20 s
+fixture, `pipe_h264_ac3_short.mkv`, and the third has its own, `pipe_h264_ac3_audio_tail.mkv`
+(below). A clip that runs out may be named only by a case declaring `reaches_eos`, and
+`tests/test_harness.py` pins that for every clip such a case names, not for one in particular. The
+`finished` assertion wants two lines **in order**: `EOS reached: … → ended` (the pump logs it once
+the EOS has been pushed at true EOF AND either the pipeline has reported its own end-of-stream after
+a picture — `smp: the pipeline reached end-of-stream`, since #865 — or the playhead is within 1 s of
+the container's duration; so the line alone no longer proves the transfer ran to its end, and its
+`playpos=N/M` is what shows how far the playhead was) and then `stop_bufferfeed: torn down`. The
+order is the assertion — every stop tears the engine down, the harness's own close included.
 
 **And the second half — starting the same content *again* — is `pipe_replay_after_eos`**, which
 plays the same clip, lets it end, and restarts it. That needed an app change and got the smallest
@@ -1162,6 +1184,23 @@ is the wire-side half: the second viewing has to fetch the clip again, which no 
 Two things it still does not cover: **replay driven by a user** rather than by a trigger — that is
 a Play control on a detail page, so it belongs to the server tier — and replay of a **transcode**,
 which has a server session behind it that a synthetic clip has no equivalent for.
+
+**A film whose audio outlasts its picture is `pipe_finish_audio_tail`** (#865).
+`pipe_h264_ac3_audio_tail.mkv` is 20 s of 720x480 H.264 and 23 s of AC-3 5.1: `make_fixtures.py`'s
+`audio_tail_s: 3` is the one knob that lets the audio run past the picture, and its `verify()` reads
+both streams' last packet times back out of the finished file and fails the build unless the audio
+ends at least 2 s after the video, so a regenerated clip that lost the tail cannot pass quietly. The
+container's duration is the longest track's, so the playhead stops at the last frame (~19 s of 23)
+and never comes within the pump's second of it: before #865 such a film sat on its last frame for
+good (the C1's was 5894 s of 5897 s). What ends it is the pipeline's own end-of-stream (`smp_cb
+type=28 num=1 str=true`, logged `smp: the pipeline reached end-of-stream`). The case grades the same
+`finished` pair as `pipe_finish_eos` and stays separate for the same reason `pipe_replay_after_eos`
+does: the failures differ — a stream that ends on the playhead and one that only the pipeline's word
+ends — and one case would report either as the other. Its `EOS reached` line reads `playpos=19s/23s`,
+four seconds short of the duration by construction, which is why `a_finished` does not compare the
+two. It was built from a device run (webOS 4.10.2) of a hand-made clip of this shape under
+`pipe_finish_eos`'s fixture name: `main` ended it in 33 s, the build before #865 logged `EOS pushed
+at true EOF` and `type=28` and then nothing, with no `EOS reached` line and a 36 s max stall.
 
 **`serve_fixtures.py`, and why not `python3 -m http.server`.** The demuxer seeks by closing the
 socket and reopening with `Range: bytes=<n>-`, and `stream.rs` accepts any 2xx. A server that

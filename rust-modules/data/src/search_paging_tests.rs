@@ -8,28 +8,10 @@ use super::test_support::*;
 use super::*;
 use crate::stores::search::SearchCmd;
 
-/// Points every worker at `fake` (and runs it inline, so a pump is deterministic) until dropped.
-struct Hook;
-
-impl Hook {
-    fn set(fake: Fake) -> (Hook, Arc<Mutex<Fake>>) {
-        let fake = Arc::new(Mutex::new(fake));
-        *TEST_IO.lock().unwrap() = Some(fake.clone());
-        (Hook, fake)
-    }
-}
-
-impl Drop for Hook {
-    fn drop(&mut self) {
-        *TEST_IO.lock().unwrap() = None;
-    }
-}
-
 struct Rig {
     owner: Owner,
     fake: Arc<Mutex<Fake>>,
     peak: usize,
-    _hook: Hook,
     _fresh: Fresh,
 }
 
@@ -38,9 +20,9 @@ impl Rig {
         let fresh = fresh();
         let mut owner = Owner::default();
         register(&mut owner, servers);
-        let (hook, fake) = Hook::set(fake);
+        let fake = owner.serve(fake);
         owner.set_query("wallace");
-        let mut rig = Rig { owner, fake, peak: 0, _hook: hook, _fresh: fresh };
+        let mut rig = Rig { owner, fake, peak: 0, _fresh: fresh };
         rig.drain(6 * servers + 6);
         rig
     }
@@ -436,7 +418,7 @@ fn a_spawned_source_read_replays_only_the_presses_made_after_its_request() {
     let _fresh = fresh();
     let mut owner = Owner::default();
     register(&mut owner, 1);
-    let (_hook, _fake) = Hook::set(Fake::new().movies(2));
+    let _fake = owner.serve(Fake::new().movies(2));
     owner.set_query("wallace");
     let sid = ServerId::from_raw(0);
     // a press (write never landed) before the read goes out: the stamp is taken after it

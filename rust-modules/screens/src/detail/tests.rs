@@ -152,7 +152,7 @@ pub(super) fn bare_held(sid: ServerId, rk: &str) -> DetailScreen {
         tabs: TabStrip::new(),
         season_pop: CtlPop::new(),
         ctl_pop: CtlPop::new(),
-        disc_unfurl: [Spring::at(0.0); 3],
+        disc_unfurl: [Spring::at(0.0); hero::DISCS],
         watchlist: plx_appkit::watchlist_disc::Disc::new(plx_data::catalog::Membership::Unknown), watchlist_hex: None,
         season_metrics: season::Metrics::new(),
         about_rows: about::Rows::new(),
@@ -1235,6 +1235,7 @@ fn hero_focus_follows_its_control_when_the_set_grows_under_it() {
 fn hero_focus_survives_a_control_appearing_in_the_middle_of_the_row() {
     let before = hero::HeroSet {
         watchlist: true,
+        version: false,
         restart: true,
         trailer: false,
         alt: false,
@@ -1242,6 +1243,7 @@ fn hero_focus_survives_a_control_appearing_in_the_middle_of_the_row() {
     };
     let after = hero::HeroSet {
         watchlist: true,
+        version: false,
         alt: true,
         ..before
     };
@@ -1400,6 +1402,7 @@ fn a_pointer_lands_on_the_capsule_the_unfurl_drew() {
     let y = 812.0;
     let set = hero::HeroSet {
         watchlist: true,
+        version: false,
         restart: true,
         trailer: false,
         alt: false,
@@ -1408,7 +1411,7 @@ fn a_pointer_lands_on_the_capsule_the_unfurl_drew() {
     let index = hero::watch_index(set).unwrap();
     assert_eq!(hero::ctl_at(set, index - 1), Some(hero::HeroCtl::Restart));
     for unfurl in [0.2, 0.6, 1.0] {
-        let disc = hero::disc_caps_at(set, 230.0, 0.0, [0.0, 0.0, unfurl], [201.0, 0.0, 267.0]);
+        let disc = hero::disc_caps_at(set, 230.0, 0.0, [0.0, 0.0, unfurl, 0.0], [201.0, 0.0, 267.0, 0.0]);
         let widths = hero::HeroWidths {
             pill: 230.0,
             alt: 0.0,
@@ -1480,12 +1483,12 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
                     assert_eq!(n, 3 + usize::from(restart) + usize::from(alt));
                     sizes.insert(n);
                     for unfurl in [
-                        [0.0, 0.0, 0.0],
-                        [0.0, 0.0, 1.0],
-                        [0.0, 1.0, 0.0],
-                        [0.3, 0.0, 0.7],
-                        [1.0, 0.0, 0.0],
-                        [0.0, 1.0, 1.0],
+                        [0.0, 0.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0, 0.0],
+                        [0.0, 1.0, 0.0, 0.0],
+                        [0.3, 0.0, 0.7, 0.0],
+                        [1.0, 0.0, 0.0, 0.0],
+                        [0.0, 1.0, 1.0, 0.0],
                     ] {
                         screen.disc_unfurl = unfurl.map(Spring::at);
                         for scroll in [0.0, 48.0] {
@@ -2732,7 +2735,7 @@ fn a_show_trailer_disc_plays_the_extra_not_the_on_deck_episode() {
             assert_ne!(part.as_str(), "/library/parts/trailer");
             assert_ne!(context.as_str(), plx_data::metadata::TRAILER_CONTEXT);
         }
-        (PlayIntent::Movie(_), _) => {}
+        (PlayIntent::Movie { .. }, _) => {}
     }
     clear();
 }
@@ -4483,7 +4486,7 @@ fn a_hole_in_view_draws_a_skeleton_and_fills_on_landing_without_moving_the_focus
         let (_, frame) = plx_ui::placeholder::capture_declared(|| {
             let meta = test_store().view();
             let d = screen.detail(meta).unwrap();
-            episodes::draw(plx_ui::Painter::root(), d, 0.0, screen.episode_scroll.pos, None, |_| 1.0, |_| Default::default(), &measure, meta);
+            episodes::draw(plx_ui::Painter::root(), d, 0.0, screen.episode_scroll.pos, None, |_| 1.0, |_| 1.0, |_| false, |_| Default::default(), &measure, meta);
         });
         frame.of(plx_ui::placeholder::Reason::CardSkeleton)
     };
@@ -5192,4 +5195,175 @@ fn an_empty_identity_run_leaves_no_gap_before_the_first_chip() {
     let runs = plx_ui::draw_census::capture_runs(|| screen.draw_identity_line(plx_ui::Painter::recording(), &d, 300.0, m));
     let res = filled_left(painted_x(&runs, "1080p").expect("resolution chip"), "1080p", m);
     assert!((res.0 - plx_ui::consts::MARGIN_X).abs() < 0.5, "no run, no gap: chip at {}", res.0);
+}
+
+/// **The held episode still is drawn ONCE while its hold menu is up.** The page pass (a frame
+/// carrying `lifted`, like a card section's) leaves the whole cell out - still AND label-block
+/// platter - and says so (`popover::lift_owns`); the opener lift (`redraw_focused`, a frame with no
+/// `lifted`) is the cell's only copy, at the press's own dip. Before, the page drew it at the
+/// undipped pop under the lift's dipped copy (two sizes of one still), and drew its platter too
+/// (two stacked plates while the menu was up, one the moment the lift stood down: a colour snap).
+#[test]
+fn the_held_episode_still_is_left_out_of_the_page_pass_and_drawn_once_by_the_lift() {
+    let sid = ServerId::UNSET;
+    let mut show = detail(sid, "show");
+    show.episodes = (1..=3).map(|i| episode(&format!("e{i}"), i)).collect();
+    let _guard = install(show);
+    let mut screen = bare(&_guard, sid, "show");
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let key = FocusKey { entry: EntryId(7), elem: episode_key(&screen, 0, episodes::Row::Still).unwrap() };
+    for _ in 0..120 {
+        screen.episode_cells.step(Some(0), None, 1.0 / 60.0);
+    }
+    const DIP: f32 = 0.918;
+    let mut context = cx(&measure, Some(key.elem));
+    context.press = PressRead { scale: DIP, is_long: true, held_ms: Some(400), owner: Some(key) };
+
+    let mut census = |lifted: Option<FocusKey<u32>>, lift: bool| {
+        plx_ui::popover::set_lift_owns(false);
+        plx_ui::draw_census::capture(|| {
+            let mut f = DrawFrame::new(&context, plx_ui::Painter::recording());
+            f.lifted = lifted;
+            if lift {
+                screen.redraw_focused::<TestHost>(&mut f, Some(key));
+            } else {
+                plx_gfx::gfx::without_frame_clear(|| Screen::<TestHost>::draw(&mut screen, &mut f));
+            }
+        })
+    };
+    // The first cell, as a census reads it: its still is the one tag-21 art quad over the strip, its
+    // label plate the one tag-2 rounded rect as wide as a cell.
+    let stills = |v: &[(u64, plx_ui::Rect)]| -> Vec<plx_ui::Rect> {
+        v.iter().filter(|(t, r)| *t == 21 && r.x < 540.0 && r.y > 900.0).map(|(_, r)| *r).collect()
+    };
+    let plates = |v: &[(u64, plx_ui::Rect)]| -> Vec<plx_ui::Rect> {
+        v.iter().filter(|(t, r)| *t == 2 && (r.w - episodes::W).abs() < 8.0 && r.x < 540.0 && r.y > 900.0 && r.h < 200.0).map(|(_, r)| *r).collect()
+    };
+
+    // the menu is up: the page pass leaves the whole cell out and says so...
+    let page_lifted = census(Some(key), false);
+    assert!(plx_ui::popover::lift_owns(), "the page pass said the lift owns the cell");
+    assert_eq!((stills(&page_lifted).len(), plates(&page_lifted).len()), (0, 0), "the page pass drew {page_lifted:?}");
+    // ...and the lift (a frame with no `lifted`) is its only copy: one still, one plate.
+    let lift = census(None, true);
+    assert_eq!((stills(&lift).len(), plates(&lift).len()), (1, 1), "the lift drew {lift:?}");
+
+    // the press is in: the page's own copy dips exactly as the lift's does (one size of one still)
+    let page_pressed = census(None, false);
+    let (page_still, lift_still) = (stills(&page_pressed), stills(&lift));
+    assert_eq!(page_still.len(), 1);
+    let (a, b) = (page_still[0], lift_still[0]);
+    assert!(
+        (a.x - b.x).abs() < 0.01 && (a.y - b.y).abs() < 0.01 && (a.w - b.w).abs() < 0.01 && (a.h - b.h).abs() < 0.01,
+        "page still {a:?} vs lift still {b:?}"
+    );
+    assert!(a.w < episodes::W * theme::EP_CARD_FOCUS_SCALE - 1.0, "the still is dipped: {a:?}");
+
+    // across the frame the lift stands down (`lifted` clears) there is one plate before and after
+    let before = plates(&page_lifted).len() + plates(&lift).len();
+    let after = plates(&page_pressed).len();
+    assert_eq!((before, after), (1, 1), "plates before / after the lift stands down");
+    assert_eq!(plates(&lift), plates(&page_pressed), "...and it is the same plate");
+    clear();
+}
+
+/// A held OK on an episode's still opens its menu only through `focused_episode`, which answers
+/// `None` while a season fetch is in flight. The hold hint must use that same answer: no promise
+/// of a hold that opens nothing while a switched season reloads, and the hint is there again once
+/// the season lands.
+#[test]
+fn the_hold_hint_over_an_episode_still_waits_while_the_season_loads() {
+    let sid = ServerId::UNSET;
+    let mut show = detail(sid, "show");
+    show.episodes = (1..=3).map(|i| episode(&format!("e{i}"), i)).collect();
+    let _guard = install(show);
+    plx_ui::hold_hint::reset_learned_for_test();
+    plx_ui::hold_hint::reset_shown_for_test();
+    let mut screen = bare(&_guard, sid, "show");
+    screen.sync_keys(test_store().view());
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let elem = episode_key(&screen, 0, episodes::Row::Still).unwrap();
+    let mut context = cx(&measure, Some(elem));
+    context.press = PressRead { scale: 1.0, is_long: false, held_ms: Some(200), owner: None };
+    let located = Some(Located::Episode(0, episodes::Row::Still));
+    let hinted = |screen: &DetailScreen| screen.hint_input(&context, located).focus.is_some();
+
+    assert!(hinted(&screen), "a loaded season's still has a menu to hold for");
+    plx_data::metadata::set_season_loading_for_test(test_store().adapter_ref(), true);
+    assert!(!hinted(&screen), "no hint while the season loads: the hold would open nothing");
+    plx_data::metadata::set_season_loading_for_test(test_store().adapter_ref(), false);
+    assert!(hinted(&screen), "the hint is back once the season has landed");
+    clear();
+}
+
+fn versioned(kind: &str, versions: usize) -> Detail {
+    Detail {
+        sid: ServerId::UNSET,
+        rk: "leaf".into(),
+        kind: kind.into(),
+        title: "Leaf".into(),
+        part: "/library/parts/leaf".into(),
+        resume_ms: 600_000,
+        dur_ms: 6_000_000,
+        versions: plx_appkit::version_list::sample().into_iter().take(versions).collect(),
+        ..Default::default()
+    }
+}
+
+/// A version the panel reports plays THAT version of the page's item, resuming as Play does, on a
+/// movie page and an episode page alike.
+#[test]
+fn a_picked_version_plays_it_resuming_like_play() {
+    for kind in ["movie", "episode"] {
+        let _guard = install(versioned(kind, 2));
+        let mut screen = bare(&_guard, ServerId::UNSET, "leaf");
+        let pick = plx_appkit::version_list::sample()[1].id;
+        let (_, effects) = step(&mut screen, &ScreenEvent::App(AppMsg::PlayVersion(pick)), None);
+        let (play, resume_ns) = play_item(&effects).expect("a pick plays");
+        match play {
+            PlayIntent::Item { rk, version, .. } => {
+                assert_eq!(rk, "leaf", "{kind}");
+                assert_eq!(*version, Some(pick), "{kind}");
+            }
+            PlayIntent::Movie { .. } => panic!("{kind}: the loaded item, not a hub row"),
+        }
+        assert_eq!(resume_ns, plx_data::metadata::resume_ns(600_000, 6_000_000), "{kind} resumes");
+        let (_, effects) = step(&mut screen, &ScreenEvent::Activate(hero::ELEM_PLAY), Some(hero::ELEM_PLAY));
+        assert!(
+            matches!(play_item(&effects), Some((PlayIntent::Item { version: None, .. }, _))),
+            "{kind}: the Play pill still plays the default version"
+        );
+        clear();
+    }
+}
+
+/// On a show page the disc offers the versions of the episode the hero's Play plays (the on-deck
+/// one once the show is started), and a pick plays THAT episode in that version.
+#[test]
+fn a_show_page_offers_and_plays_its_hero_episodes_versions() {
+    let two = || plx_appkit::version_list::sample().into_iter().take(2).collect::<Vec<_>>();
+    let on_deck = plx_data::metadata::Episode { resume_ms: 30_000, versions: two(), ..episode("e2", 2) };
+    let mut d = detail(ServerId::UNSET, "show");
+    d.episodes = vec![episode("e1", 1), on_deck.clone()].into();
+    d.on_deck = Some(on_deck);
+    let _guard = install(d);
+    let mut screen = bare(&_guard, ServerId::UNSET, "show");
+    assert!(screen.hero_set(test_store().view()).version, "the on-deck episode has two versions");
+    let pick = plx_appkit::version_list::sample()[1].id;
+    let (_, effects) = step(&mut screen, &ScreenEvent::App(AppMsg::PlayVersion(pick)), None);
+    match play_item(&effects).map(|(play, _)| play) {
+        Some(PlayIntent::Item { rk, version, .. }) => {
+            assert_eq!(rk, "e2", "the hero's episode");
+            assert_eq!(*version, Some(pick));
+        }
+        _ => panic!("a pick plays the hero's episode"),
+    }
+    clear();
+    drop(_guard);
+
+    // The first episode has one version and no episode is on deck: nothing to choose.
+    let _guard = install(detail(ServerId::UNSET, "show"));
+    let screen = bare(&_guard, ServerId::UNSET, "show");
+    assert!(!screen.hero_set(test_store().view()).version);
+    clear();
 }

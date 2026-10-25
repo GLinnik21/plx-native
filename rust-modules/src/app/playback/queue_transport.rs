@@ -46,16 +46,11 @@ pub(super) fn play(
     };
     close_player_overlays(pages);
     plx_media::player::stop_bufferfeed(ps, pa);
-    if !plx_media::route::request_play_queue_item(ps, bridge.metadata_mut(), &row, title, &context)
-    {
-        return false;
-    }
-    bridge
-        .metadata_mut()
-        .run(plx_data::stores::metadata::MetadataCmd::RetirePlaying);
-    bridge
-        .metadata_mut()
-        .run(plx_data::stores::metadata::MetadataCmd::RequestDetail {
+    let requested = plx_media::route::request_play_queue_item(ps, bridge.metadata_mut(), &row, title, &context);
+    bridge.start_store_jobs();
+    if !requested { return false; }
+    bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::RetirePlaying);
+    bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::RequestDetail {
             sid: row.sid,
             rk: row.rk,
         });

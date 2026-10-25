@@ -330,6 +330,49 @@ pub mod draw_census {
     }
 
     thread_local! {
+        static INKS: RefCell<Option<Vec<(u64, Rect, f32)>>> = const { RefCell::new(None) };
+    }
+    /// A recording painter was handed a fill or shadow of command `tag` in `r` whose EFFECTIVE alpha
+    /// (the colour's own alpha times the painter's cascaded alpha) is `a`: [`note`] carries no
+    /// colour, and a test that asks whether a fade reaches every primitive of a control needs it.
+    pub fn note_ink(tag: u64, r: Rect, a: f32) {
+        INKS.with(|l| {
+            if let Some(v) = l.borrow_mut().as_mut() {
+                v.push((tag, r, a));
+            }
+        });
+    }
+    /// Every rounded-rect fill (tag 2), shadow (4), outside-only shadow (5) and rimmed fill (8) a recording painter is handed
+    /// while `f` runs, as `(tag, screen rect, effective alpha)`, in draw order.
+    pub fn capture_inks(f: impl FnOnce()) -> Vec<(u64, Rect, f32)> {
+        INKS.with(|l| *l.borrow_mut() = Some(Vec::new()));
+        f();
+        INKS.with(|l| l.borrow_mut().take()).unwrap_or_default()
+    }
+
+    thread_local! {
+        static GROUNDS: RefCell<Option<Vec<[[f32; 3]; 4]>>> = const { RefCell::new(None) };
+    }
+    /// A recording painter was handed an opaque wash ([`Painter::ambient`](super::Painter::ambient))
+    /// whose four corners, as the GPU would receive them (top-left, top-right, bottom-right,
+    /// bottom-left), are `k`: [`note`] carries a rect and no colour, and a test that asks whether a
+    /// frame's ground is ONE colour (a clear) or a gradient (a shaded pass) needs the corners.
+    pub fn note_ground(k: [[f32; 3]; 4]) {
+        GROUNDS.with(|l| {
+            if let Some(v) = l.borrow_mut().as_mut() {
+                v.push(k);
+            }
+        });
+    }
+    /// Every wash a recording painter is handed while `f` runs, as its four corner colours, in draw
+    /// order.
+    pub fn capture_grounds(f: impl FnOnce()) -> Vec<[[f32; 3]; 4]> {
+        GROUNDS.with(|l| *l.borrow_mut() = Some(Vec::new()));
+        f();
+        GROUNDS.with(|l| l.borrow_mut().take()).unwrap_or_default()
+    }
+
+    thread_local! {
         static TEXT: RefCell<Option<Vec<(String, Rect)>>> = const { RefCell::new(None) };
     }
     /// A recorded text run: WHAT it says and where (`rect` is the run's anchor and measured width).
@@ -876,6 +919,8 @@ impl Painter {
         );
     }
     pub fn rrect(self, r: Rect, rl: f32, rr: f32, col: [f32; 4]) {
+        #[cfg(any(test, feature = "test-support"))]
+        if self.records() { draw_census::note_ink(2, self.place(r), self.c(col)[3]); }
         if self.declare(r, 2, |data| {
             use frame::backdrop::Value;
             rl.record(data);
@@ -952,6 +997,8 @@ impl Painter {
     /// occluder's own rim, ending in a hard step. A tile hides that; anything you can see through
     /// wears it as a drawn frame — use [`shadow_outside`](Self::shadow_outside) there.
     pub fn shadow(self, r: Rect, radius: f32, blur: f32, off_y: f32, col: [f32; 4]) {
+        #[cfg(any(test, feature = "test-support"))]
+        if self.records() { draw_census::note_ink(4, self.place(r), self.c(col)[3]); }
         if self.declare(Rect::new(r.x-blur,r.y+off_y-blur,r.w+2.0*blur,r.h+2.0*blur), 4, |data| {
             use frame::backdrop::Value;
             radius.record(data);
@@ -982,6 +1029,8 @@ impl Painter {
     /// `shadow`'s under-the-rim band would show as a frame; a separate entry point rather than a flag
     /// on the tile path, because a tile pays a rounded-rect SDF for a region it covers anyway.
     pub fn shadow_outside(self, r: Rect, radius: f32, blur: f32, off_y: f32, col: [f32; 4]) {
+        #[cfg(any(test, feature = "test-support"))]
+        if self.records() { draw_census::note_ink(5, self.place(r), self.c(col)[3]); }
         if self.declare(Rect::new(r.x-blur,r.y+off_y-blur,r.w+2.0*blur,r.h+2.0*blur), 5, |data| {
             use frame::backdrop::Value;
             radius.record(data);
@@ -1068,6 +1117,8 @@ impl Painter {
         rim: [f32; 4],
         rim_top: f32,
     ) {
+        #[cfg(any(test, feature = "test-support"))]
+        if self.records() { draw_census::note_ink(8, self.place(r), self.c(top)[3]); }
         if self.declare(r, 8, |data| {
             use frame::backdrop::Value;
             rad.record(data);
@@ -1431,8 +1482,10 @@ impl Painter {
     /// a wash cross-fadeable BETWEEN two items — dissolving one item's colours into another's is
     /// still a spring per corner channel; see `AmbientWash`.
     ///
-    /// Always dithered (±1-LSB TPDF noise): an opaque, slow, full-screen gradient bands without it,
-    /// moving or not, and there is no flag to turn it off (`gfx::draw_ambient` says why).
+    /// A gradient is always dithered (±1-LSB TPDF noise): an opaque, slow, full-screen gradient
+    /// bands without it, moving or not, and there is no flag to turn it off (`gfx::draw_ambient`
+    /// says why). Four equal corners are not a gradient: nothing bands, and the renderer draws that
+    /// as a clear of the rect's box, on exact 8-bit codes, with no fragment shaded.
     ///
     /// `resting` is the wash's own at-rest signal ([`AmbientWash::at_rest`]): every spring that
     /// eases it has landed on its target, so `k` is final. A glass over the wash re-takes its
@@ -1446,6 +1499,10 @@ impl Painter {
         let resting = resting && dim == 1.0 && self.wash_rests();
         let k = self.wash_corners(k);
         let drawn = k.map(|c| c.map(|v| v * dim));
+        #[cfg(any(test, feature = "test-support"))]
+        if self.records() {
+            draw_census::note_ground(drawn);
+        }
         if self.declare_as(r, 16, Some(Deferrable::Ground { corners: drawn, ink: ([0.0; 3], [0.0; 2]), resting }), |data| {
             use frame::backdrop::Value;
             dim.record(data);

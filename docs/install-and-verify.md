@@ -219,7 +219,7 @@ There is deliberately nowhere on the television to type a server address — con
 
 The package contains three FFmpeg shared libraries — `libavformat-plx.so.63`, `libavcodec-plx.so.63`, and `libavutil-plx.so.61` — built from **FFmpeg 9.0**, unmodified, and licensed **LGPL-2.1-or-later**.
 
-They contain demuxers, parsers, bitstream filters, and subtitle decoders only: video and audio are decoded by the television's own hardware.
+They contain demuxers, parsers, bitstream filters, subtitle decoders, and audio decoders only: video is decoded by the television's own hardware, and so is audio except FLAC, which is decoded in the app and fed to the television as PCM, and any audio while a playback speed other than 1x is chosen, which the app decodes and time-stretches.
 
 The complete corresponding source accompanies every release, as LGPL-2.1 §6 requires and not as a courtesy: `ffmpeg-<version>.tar.xz` (the tarball `ci/dependencies.json` pins) is the pristine upstream tarball with no patches applied, and `build-ffmpeg.sh` is the complete configure invocation that produced the libraries.
 

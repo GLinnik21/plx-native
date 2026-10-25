@@ -333,6 +333,16 @@ impl<K: Copy> CxParts<K> {
     }
 }
 
+/// What a direction or OK pressed on an engine page came to ([`Dispatcher::after_step`]), for the
+/// repeated-key signal: nothing took it (`Dead`), something did (`Acted`), or the engine handed it
+/// back to the screen to try once more and the re-delivery decides (`Pending`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum KeyFate {
+    Dead,
+    Acted,
+    Pending,
+}
+
 /// What one frame reports back (the instruments' half, §8.4, minimal).
 #[derive(Debug, Default, Clone)]
 pub struct FrameReport {
@@ -410,6 +420,10 @@ pub struct Dispatcher<H: Host> {
     /// instruments because both of its events are the dispatcher's — a mount at nav commit and a
     /// draw in the page/surface pass — and neither is visible from outside one `FrameReport`.
     cold: plx_base::diag::heartbeat::ColdOpens,
+    /// The repeated-key signal (`heartbeat::health::DeadPresses`): bursts of one key pressed four
+    /// times in a second with nothing taking it, counted where every key a page can take lands
+    /// ([`Self::execute_deliver`]). Not part of the logical state: it observes, it decides nothing.
+    dead_presses: plx_base::diag::heartbeat::health::DeadPresses<Key>,
     render_breach_logged: bool,
     /// The input owner answered `Handled::No` to a BACK: resolve it over its stack at commit.
     pending_back: bool,
@@ -466,6 +480,7 @@ where
             last_carried: 0,
             dropped_deliveries: 0,
             cold: Default::default(),
+            dead_presses: Default::default(),
             render_breach_logged: false,
             pending_back: false,
             last_tick: Tick::default(),
@@ -741,8 +756,9 @@ where
 
     /// **What the opener lift reads of the press: the dispatcher's own, live.** The lift is the
     /// page's focused card drawn a second time above the dim. A card a card section left out of the
-    /// page pass ([`DrawFrame::lifted`]) is drawn by the lift ALONE, at this scale. An opener no
-    /// card section draws (the Detail episode strip, season tabs, hero buttons, the Home hero) is
+    /// page pass ([`DrawFrame::lifted`], asked through [`DrawFrame::leaves_out`]: a card section's
+    /// tile, the Detail episode strip's cell) is drawn by the lift ALONE, at this scale. An opener
+    /// no page leaves out (season tabs, hero buttons, the Home hero) is
     /// still drawn by the page at the press scale (`DrawFrame.press`, from [`Self::parts`]), so
     /// there the lift must be handed the SAME number or the two disagree on every frame the press is
     /// moving. They did, while this was a constant `1.0`: a taken hold's card was drawn at its pop
@@ -2161,6 +2177,18 @@ where
                         return;
                     }
                 }
+                // A direction or OK pressed (DOWN edge) on a page the focus engine owns: the key the
+                // repeated-key signal watches. The player page and a keyboard-owned screen are not
+                // the engine's, so a seek or a typed letter is never a dead press.
+                let watched = match &ev {
+                    ScreenEvent::Input(InputEvent { at, kind: InputKind::Key { key, edge: Edge::Down, .. }, .. })
+                        if (Dir::of_key(*key).is_some() || *key == Key::Ok)
+                            && self.owner_entry().is_some()
+                            && self.owner_entry() == self.nav.entry_of_instance(id)
+                            && self.engine_page()
+                            && !self.input.keyboard => Some((*key, at.ms)),
+                    _ => None,
+                };
                 let Dispatcher { nav, present, .. } = self;
                 // a surface's springs report under their own scope (§4.4 MotionScope)
                 let is_surface = nav
@@ -2201,7 +2229,14 @@ where
                     self.pending_back = true;
                 }
                 // the engine's half: after the owner's refusal, and after an Enter / a hold
-                plx_base::diag::spans::span("dafter", || self.after_step(rig, &addressed, id, &ev, handled, out, tap));
+                let fate = plx_base::diag::spans::span("dafter", || self.after_step(rig, &addressed, id, &ev, handled, out, tap));
+                match (watched, fate) {
+                    (Some((key, now)), KeyFate::Dead) => self.dead_presses.dead(key, now),
+                    (Some(_), KeyFate::Acted) => self.dead_presses.acted(),
+                    // `Pending`: a direction the engine handed back to the screen once more; the
+                    // re-delivery decides it, and counting the first pass too would double it.
+                    (Some(_), KeyFate::Pending) | (None, _) => {}
+                }
                 // WillLeave and Unmount are queued after structural commit. Keep the engine's
                 // read snapshot available until the retiring body's final step has consumed it.
                 if matches!(ev, ScreenEvent::Unmount) {
@@ -2249,13 +2284,16 @@ where
         handled: Handled,
         out: &mut Vec<Stamped<H>>,
         tap: &mut dyn Tap<H>,
-    ) {
+    ) -> KeyFate {
         let Some(entry) = self.nav.entry_of_instance(id) else {
-            return;
+            return KeyFate::Acted;
         };
         let is_owner = self.owner_entry() == Some(entry);
         let engine = is_owner && self.engine_page() && !self.input.keyboard;
         let owner = InputOwner::Entry(entry);
+        // What a key did, for the repeated-key signal; anything but a direction or OK the engine
+        // took on is `Acted` (the caller only reads it for a watched key).
+        let mut fate = KeyFate::Acted;
         match ev {
             ScreenEvent::PressHold(_) if handled == Handled::Yes => {
                 // The screen answered the hold: abandon the press onto its release spring. That is
@@ -2292,7 +2330,7 @@ where
             }) if handled == Handled::No && engine && *edge != Edge::Up => {
                 if let Some(dir) = Dir::of_key(*key) {
                     if *at_edge {
-                        return; // re-delivered under EdgeRule::Screen and still unhandled: dropped
+                        return KeyFate::Dead; // re-delivered under EdgeRule::Screen and still unhandled: dropped
                     }
                     let mut links = Vec::new();
                     let outcome = self.focus_resolution(rig, parts, entry, 1, tap, |engine, view, cx| {
@@ -2313,6 +2351,7 @@ where
                             });
                         }
                         Outcome::Edge(EdgeRule::Screen) => {
+                            fate = KeyFate::Pending;
                             if let ScreenEvent::Input(iev) = ev {
                                 let mut again = iev.clone();
                                 if let InputKind::Key { at_edge, .. } = &mut again.kind {
@@ -2384,13 +2423,25 @@ where
                                 fx: Fx::Nav(NavOp::Dismiss(entry)),
                             });
                         }
-                        Outcome::Edge(_) | Outcome::Nothing => {}
+                        // **A press into the END of a list is an overshoot, not frustration.**
+                        // `move_dir` answers a `Stop` edge (and a geometric search with nothing
+                        // beyond) with `Nothing`, the same word it uses for "no focus / no
+                        // groups". Told apart by the engine's state: with a seated focus the
+                        // direction reached a boundary and acted as the focus model says (stay
+                        // put), which tapping Down past a short list's last row does at
+                        // once; only a press with nothing seated to take it is dead.
+                        Outcome::Edge(_) => {}
+                        Outcome::Nothing => {
+                            if self.input.engine.current(owner).is_none() {
+                                fate = KeyFate::Dead;
+                            }
+                        }
                     }
                 } else if *key == Key::Ok && *edge == Edge::Down {
                     let kind = {
                         let Dispatcher { nav, input, .. } = self;
                         let Some(view) = Self::owner_view(nav, entry) else {
-                            return;
+                            return KeyFate::Acted;
                         };
                         let Split { views, measure, .. } = rig.split();
                         let cx = parts.cx::<H>(views, measure);
@@ -2409,12 +2460,13 @@ where
                                 holdable: ek == ElemKind::Card,
                             }),
                         }),
-                        None => {}
+                        None => fate = KeyFate::Dead,
                     }
                 }
             }
             _ => {}
         }
+        fate
     }
 
     fn valid_resolution_key(&self, rig: &mut dyn Rig<H>, parts: &CxParts<H::Elem>, key: FocusKey<H::Elem>,
@@ -2735,6 +2787,20 @@ where
     /// `carried` is a level and is not reset; `dropped` is a count and is.
     pub fn take_heartbeat_counters(&mut self) -> (usize, u32) {
         (self.last_carried, std::mem::take(&mut self.dropped_deliveries))
+    }
+
+    /// The repeated-key bursts counted since the last read (the usage event `route.left`'s
+    /// `dead_presses`, read when a screen visit ends).
+    pub fn take_dead_presses(&mut self) -> u32 {
+        self.dead_presses.take()
+    }
+
+    /// The visit ended (a route change, the background, quit): its bursts, and the run in
+    /// progress is dropped with it, so presses of the old screen never complete a burst on the next.
+    pub fn end_visit_dead_presses(&mut self) -> u32 {
+        let bursts = self.dead_presses.take();
+        self.dead_presses.acted();
+        bursts
     }
 
     /// The `coldopen` lines this frame closed (§8.4), for the loop's report block to log.
@@ -3407,6 +3473,77 @@ mod edge_back_tests {
         let p = probe(&d, id);
         assert!(p.contains("backs=1"), "one LEFT, one BACK, and no carried storm: {p}");
         assert_eq!(d.queued(), 0, "nothing was left circulating");
+    }
+
+    /// One OK with nothing seated: the key no element took, which is what a dead press is.
+    fn dead_ok(d: &mut Dispatcher<FixtureHost>, rig: &mut EdgeBackRig, ms: u32) {
+        d.set_focus(None);
+        d.frame(rig, tick(ms), vec![key(Key::Ok, tick(ms))], vec![], &mut NoTap);
+    }
+
+    /// **The repeated-key signal at its one door.** An OK that nothing took: three inside a second
+    /// are not a burst, the fourth is, and the burst is read (and cleared) once.
+    #[test]
+    fn four_dead_presses_of_one_key_inside_a_second_are_one_burst() {
+        let (mut d, mut rig) = booted();
+        let _id = open(&mut d, &mut rig, 3, 16);
+        for (i, ms) in [32, 232, 432].into_iter().enumerate() {
+            dead_ok(&mut d, &mut rig, ms);
+            assert_eq!(d.take_dead_presses(), 0, "press {} of 4", i + 1);
+        }
+        dead_ok(&mut d, &mut rig, 632);
+        assert_eq!(d.take_dead_presses(), 1);
+        assert_eq!(d.take_dead_presses(), 0, "a read clears it");
+    }
+
+    /// **Tapping a direction past the END of a list is an overshoot, not frustration.** The fixture
+    /// screen has one element, so RIGHT and DOWN run off its group at once and the focus stays;
+    /// however many of them land inside a second, none is dead.
+    #[test]
+    fn presses_into_the_end_of_a_list_are_not_dead() {
+        let (mut d, mut rig) = booted();
+        let id = open(&mut d, &mut rig, 3, 16);
+        seat(&mut d, id);
+        for (i, k) in [Key::Down, Key::Right, Key::Down, Key::Down, Key::Down, Key::Down, Key::Down, Key::Down]
+            .into_iter().enumerate()
+        {
+            let ms = 32 + 40 * i as u32;
+            d.frame(&mut rig, tick(ms), vec![key(k, tick(ms))], vec![], &mut NoTap);
+        }
+        assert_eq!(d.take_dead_presses(), 0);
+    }
+
+    /// The same four spread over more than a second are not.
+    #[test]
+    fn four_dead_presses_slower_than_a_second_are_not_a_burst() {
+        let (mut d, mut rig) = booted();
+        let _id = open(&mut d, &mut rig, 3, 16);
+        for ms in [32, 432, 832, 1_233] {
+            dead_ok(&mut d, &mut rig, ms);
+        }
+        assert_eq!(d.take_dead_presses(), 0);
+    }
+
+    /// A press something took (here LEFT, which the screen walks its own stack on) ends the run;
+    /// so does the end of the visit (`end_visit_dead_presses`): presses of the old screen never
+    /// complete a burst on the next.
+    #[test]
+    fn a_press_that_did_something_or_the_end_of_the_visit_resets_the_run() {
+        let (mut d, mut rig) = booted();
+        let id = open(&mut d, &mut rig, 3, 16);
+        for ms in [32, 82, 132] {
+            dead_ok(&mut d, &mut rig, ms);
+        }
+        seat(&mut d, id);
+        d.frame(&mut rig, tick(182), vec![key(Key::Left, tick(182))], vec![], &mut NoTap);
+        dead_ok(&mut d, &mut rig, 232);
+        assert_eq!(d.take_dead_presses(), 0, "LEFT was taken: the fourth OK is the first of a new run");
+        for ms in [282, 332] {
+            dead_ok(&mut d, &mut rig, ms);
+        }
+        assert_eq!(d.end_visit_dead_presses(), 0);
+        dead_ok(&mut d, &mut rig, 382);
+        assert_eq!(d.take_dead_presses(), 0, "the run died with the visit: this is the first press of a new one");
     }
 
     /// Every OTHER owner is unchanged. A page-stack owner that declines the synthetic BACK pops

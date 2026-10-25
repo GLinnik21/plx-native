@@ -57,7 +57,7 @@ use plx_telemetry::diag::schema::DiagEvent;
 // classifies a live playback INTO it. Re-exported here so the player and the route layer keep
 // naming the closed domains where they report from.
 pub use plx_telemetry::telemetry::classes::{
-    AttemptOrdinal, AttemptOrigin, AudioCodecClass, BufferClass, DecisionCodeClass, DeliveryClass, DeliveryReason, HttpClass,
+    AttemptOrdinal, AttemptOrigin, AudioCodecClass, BufferClass, DecisionCodeClass, DeliveryClass, DemuxExitClass, DeliveryReason, HttpClass,
     LoadElapsedClass, OriginalProbePhase, PipelineClass, PlaybackErrorContext, QualityClass,
     RasterClass, RateClass, RefusalContext, TraceAge, TraceDirection, TraceEvent, TraceOutcome,
     TraceStep, TransferAgeClass, TransportClass, VideoCodecClass,
@@ -580,6 +580,7 @@ fn error_context(ps: &crate::route::PlaybackSession) -> PlaybackErrorContext {
         buffer: BufferClass::from_ms(super::SHARED.dg_abr_buffer_ms.load(Relaxed)),
         transport,
         transfer_age,
+        demux_exit: DemuxExitClass::from_latch(super::SHARED.dg_demux_exit.load(Relaxed)),
         started: SAW_START.load(Relaxed),
         // A refusal names the route it asked the server for; else the route a noted switch is
         // opening; else the session's own, which is also the attempt's when nothing was switched.
@@ -1569,6 +1570,37 @@ mod tests {
         super::super::SHARED.retire_native_session(epoch);
         super::super::SHARED.reset_session();
         assert_eq!(error_context(&ps).pipeline_error, 0, "the latch does not outlive its session");
+    }
+
+    /// Which demuxer exit raised `media_source` rides on the report: the FIRST exit wins (a later
+    /// teardown cascade, or the shared "no access units" tail, must not overwrite the real cause),
+    /// `demux_failed` is still raised exactly as before, an exit that only `break`s to the tail is
+    /// recorded without raising it, and the next session starts with none.
+    #[test]
+    fn the_first_demux_exit_reaches_the_error_context_and_resets_per_session() {
+        let _g = plx_base::testlock::serial();
+        let ps = crate::route::PlaybackSession::default();
+        let shared = &super::super::SHARED;
+        shared.reset_session();
+        assert_eq!(error_context(&ps).demux_exit, DemuxExitClass::None, "nothing recorded");
+
+        shared.fail_demux(DemuxExitClass::HttpsOpenFailed);
+        assert!(shared.demux_failed.load(Relaxed), "the helper still raises the flag");
+        assert_eq!(error_context(&ps).demux_exit, DemuxExitClass::HttpsOpenFailed);
+        shared.fail_demux(DemuxExitClass::NoAccessUnits);
+        shared.note_demux_exit(DemuxExitClass::OpenInputFailed);
+        assert_eq!(
+            error_context(&ps).demux_exit,
+            DemuxExitClass::HttpsOpenFailed,
+            "the first cause is the real one"
+        );
+
+        shared.reset_session();
+        assert_eq!(error_context(&ps).demux_exit, DemuxExitClass::None, "cleared per session");
+        shared.note_demux_exit(DemuxExitClass::NoVideoStream);
+        assert!(!shared.demux_failed.load(Relaxed), "a note alone does not fail the session");
+        assert_eq!(error_context(&ps).demux_exit, DemuxExitClass::NoVideoStream);
+        shared.reset_session();
     }
 
     /// **Sentry PLX-NATIVE-V.** A playback that was running, then switched quality to Original, and

@@ -238,12 +238,14 @@ fn a_favourite_edit_with_no_query_resident_only_refreshes_the_snapshot() {
 /// **A search over forty servers asks all forty and never has more than four out at once.** The
 /// registry no longer stops at sixteen, so what bounded the fan-out was the old table; now it is the
 /// store's own gate (`stores::fanout`). A claim stays raised until the pump takes its answer, so the
-/// claims counted after a pump are exactly the requests out.
+/// claims counted after a pump are exactly the requests out. The fixture answers each request right
+/// after the pump that emitted it, so the next pump takes it and frees its place.
 #[test]
 fn a_search_over_forty_servers_asks_them_four_at_a_time() {
     let _g = fresh();
     let mut owner = Owner::default();
     register(&mut owner, 40);
+    let _fake = owner.serve(super::tail_tests::Fake::new());
     owner.state.query = Some(Arc::from("wallace"));
     owner.state.armed = false;
     let mut asked = std::collections::BTreeSet::new();
@@ -253,7 +255,6 @@ fn a_search_over_forty_servers_asks_them_four_at_a_time() {
         assert!(out.len() <= crate::stores::fanout::WIDTH, "{} requests out at once", out.len());
         asked.extend(out);
         if asked.len() == 40 { break; }
-        std::thread::sleep(std::time::Duration::from_millis(1));
     }
     assert_eq!(asked.len(), 40, "a wanted server was never asked");
 }
