@@ -21,7 +21,11 @@ What this pins:
 * the merge: the exact `gh pr merge` arguments, the `expected head oid` race (retried when the head
   is unchanged and then refused, exit 5 when it moved), and the verify against origin/main, whose every
   failure says that the merge went through and which never ends in a traceback on odd JSON;
-* a planted secret in the subject or the body is refused before any `gh` call, without being repeated.
+* a planted secret in the subject or the body is refused before any `gh` call, without being repeated;
+* `restack`, on a disposable bare origin and clone: the four merges leave the upper branch's diff
+  against origin/main equal to its own change, a conflict names its step and leaves the merge in
+  progress, `--dry-run` changes nothing, a lower PR that is not merged / a dirty worktree / another
+  branch is refused, and `--push` pushes the upper branch only and never forces.
 
 The JSON below is real output of read-only gh calls on this public repository.
 """
@@ -193,38 +197,115 @@ class Result:
         return [c["kind"] for c in self.calls]
 
 
+def git_try(cwd, *args):
+    """`git -C cwd ...` with the fixed identity, whatever it exits with."""
+    return subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True,
+                          env=dict(os.environ, **GIT_ENV))
+
+
+def git_in(cwd, *args):
+    """The same, but a failure raises and the answer is stdout, stripped."""
+    done = git_try(cwd, *args)
+    if done.returncode != 0:
+        raise subprocess.CalledProcessError(done.returncode, done.args, done.stdout, done.stderr)
+    return done.stdout.strip()
+
+
 def make_repo(base):
     """A bare origin with `main`, a clone one commit behind it, and a commit that only the clone has.
     Returns the clone's path, the commit that is on origin/main only, and the local-only commit."""
-    def git(cwd, *args):
-        done = subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True,
-                              env=dict(os.environ, **GIT_ENV))
-        return done.stdout.strip()
-
     origin, seed, clone = base / "origin.git", base / "seed", base / "clone"
     env = dict(os.environ, **GIT_ENV)
     subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True, env=env)
     subprocess.run(["git", "init", "-q", "-b", "main", str(seed)], check=True, env=env)
-    git(seed, "commit", "-q", "--allow-empty", "-m", "first")
-    git(seed, "remote", "add", "origin", str(origin))
-    git(seed, "push", "-q", "origin", "main")
+    git_in(seed, "commit", "-q", "--allow-empty", "-m", "first")
+    git_in(seed, "remote", "add", "origin", str(origin))
+    git_in(seed, "push", "-q", "origin", "main")
     subprocess.run(["git", "clone", "-q", str(origin), str(clone)], check=True, env=env)
-    git(seed, "commit", "-q", "--allow-empty", "-m", "the squash")
-    git(seed, "push", "-q", "origin", "main")
-    squash = git(seed, "rev-parse", "HEAD")
-    git(clone, "checkout", "-q", "-b", "local-only")
-    git(clone, "commit", "-q", "--allow-empty", "-m", "never pushed")
-    local_only = git(clone, "rev-parse", "HEAD")
-    git(clone, "checkout", "-q", "main")
+    git_in(seed, "commit", "-q", "--allow-empty", "-m", "the squash")
+    git_in(seed, "push", "-q", "origin", "main")
+    squash = git_in(seed, "rev-parse", "HEAD")
+    git_in(clone, "checkout", "-q", "-b", "local-only")
+    git_in(clone, "commit", "-q", "--allow-empty", "-m", "never pushed")
+    local_only = git_in(clone, "rev-parse", "HEAD")
+    git_in(clone, "checkout", "-q", "main")
     return clone, squash, local_only
+
+
+def refs(repo):
+    """Every ref of a repository and the commit it names."""
+    return dict(line.split() for line in
+                git_in(repo, "for-each-ref", "--format=%(refname) %(objectname)").splitlines())
+
+
+LOWER = 1040            # the pull request below the stacked one
+SHARED = "alpha\nbeta\ngamma\n"
+
+
+class Stack:
+    """What `make_stack` built: paths, and the commits the assertions compare against."""
+
+
+def make_stack(base, conflict=None):
+    """A bare origin with `main`, a lower branch `lower` (two commits) and a branch `upper` stacked on
+    its first commit, plus the clone `work` checked out on `upper`, made BEFORE the lower PR landed so
+    it has to fetch everything. Then, on origin: `lower` is squash-merged onto main by hand (one parent),
+    its final head stays reachable only as refs/pull/<LOWER>/head (the branch is deleted, as on a merge),
+    and main gains one more commit (it edits a file the lower PR added, which only merges cleanly
+    because step 3 made the squash the merge base). `conflict` makes the restack stop at that step (1, 2 or 4) by
+    having `upper` and the commit that step brings in edit the same line of shared.txt."""
+    env = dict(os.environ, **GIT_ENV)
+    st = Stack()
+    st.origin, seed, st.work = base / "stack-origin.git", base / "stack-seed", base / "stack-work"
+    subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(st.origin)], check=True, env=env)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(seed)], check=True, env=env)
+    git_in(seed, "remote", "add", "origin", str(st.origin))
+
+    def commit(message, files):
+        for name, text in files.items():
+            (seed / name).write_text(text)
+        git_in(seed, "add", "-A")
+        git_in(seed, "commit", "-q", "-m", message)
+        return git_in(seed, "rev-parse", "HEAD")
+
+    edit = lambda who: SHARED.replace("beta", "beta-" + who)       # noqa: E731
+    commit("base", {"base.txt": "one\ntwo\nthree\n", "shared.txt": SHARED})
+    git_in(seed, "push", "-q", "origin", "main")
+    git_in(seed, "checkout", "-q", "-b", "lower")
+    st.upper_parent = commit("lower: first", {"lower.txt": "lower\n"})
+    git_in(seed, "checkout", "-q", "-b", "upper")
+    own = {"upper.txt": "upper\n", "base.txt": "one\ntwo-upper\nthree\n"}
+    if conflict:
+        own["shared.txt"] = edit("upper")
+    st.upper = commit("upper: its own change", own)
+    st.own_change = git_in(seed, "diff", "--no-color", "--full-index", st.upper_parent, st.upper)
+    git_in(seed, "push", "-q", "origin", "lower", "upper")
+    subprocess.run(["git", "clone", "-q", str(st.origin), str(st.work)], check=True, env=env)
+    git_in(st.work, "checkout", "-q", "upper")
+
+    git_in(seed, "checkout", "-q", "lower")        # the lower PR goes on after `upper` was cut from it
+    st.lower_head = commit("lower: second", {"shared.txt": edit("lower")} if conflict == 1
+                           else {"lower2.txt": "lower two\n"})
+    git_in(seed, "push", "-q", "origin", "lower:refs/pull/%d/head" % LOWER)
+    git_in(seed, "checkout", "-q", "main")
+    st.before = commit("main: before the squash", {"shared.txt": edit("main")} if conflict == 2
+                       else {"before.txt": "before\n"})
+    git_in(seed, "merge", "-q", "--squash", "lower")
+    git_in(seed, "commit", "-q", "-m", "Lower (#%d)" % LOWER)
+    st.squash = git_in(seed, "rev-parse", "HEAD")
+    st.later = commit("main: after the squash", {"shared.txt": edit("main")} if conflict == 4
+                      else {"other.txt": "other\n", "lower.txt": "lower, then edited on main\n"})
+    git_in(seed, "push", "-q", "origin", "main", ":lower")
+    st.seed = seed
+    return st
 
 
 class Sandbox:
     """A fake `gh` first on PATH, a scenario for it, a temporary repo root holding a copy of the real
     outbound-guard, and (with git=True) a clone whose origin has the commit `gh` calls the merge commit."""
 
-    def __init__(self, git=False, **scenario):
-        self.git, self.over = git, scenario
+    def __init__(self, git=False, stack=False, conflict=None, **scenario):
+        self.git, self.stack, self.conflict, self.over = git, stack, conflict, scenario
 
     def __enter__(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -244,13 +325,16 @@ class Sandbox:
         self.squash = self.local_only = "c" * 40
         if self.git:
             self.cwd, self.squash, self.local_only = make_repo(self.base)
+        if self.stack:
+            self.st = make_stack(self.base, self.conflict)
+            self.squash = self.st.squash
         responses = {
             "view": [resp(VIEW_OPEN)],
             "checks": [resp(CHECKS_OPEN)],
             "rules": [resp(RULES_MAIN)],
             "merge": [resp()],
             "reread": [resp({"headRefOid": HEAD, "state": "OPEN"})],
-            "verify": [resp({"state": "MERGED", "baseRefName": "main", "mergeCommit": {"oid": self.squash}})],
+            "verify": [resp(self.lower_view())],
             "body": [resp({"body": "The PR body.\n"})],
             "runs": [resp(CHECK_RUNS)],
         }
@@ -293,6 +377,17 @@ class Sandbox:
             finally:
                 os.chdir(before)
         return Result(code, out.getvalue(), err.getvalue(), clock.sleeps, self.calls())
+
+    def lower_view(self, **over):
+        """`gh pr view <lower> --json state,headRefOid,mergeCommit,baseRefName` (and the verify's three)."""
+        doc = {"state": "MERGED", "baseRefName": "main", "mergeCommit": {"oid": self.squash}}
+        if self.stack:
+            doc["headRefOid"] = self.st.lower_head
+        return dict(doc, **over)
+
+    def restack(self, *extra, upper="upper"):
+        return self.run("restack", "--worktree", str(self.st.work), "--upper", upper,
+                        "--lower", str(LOWER), *extra)
 
     def merge(self, *extra, sha=HEAD):
         return self.run("merge", "1049", "--sha", sha, "--subject", SUBJECT, "--body-file", self.body(), *extra)
@@ -845,6 +940,271 @@ class SecretScanTests(Base):
             self.check(sb.merge(), 0)
 
 
+class RestackTests(Base):
+    """`restack`: AGENTS.md's four merges on a stacked branch after the PR below it squash-merged."""
+
+    def ancestor(self, sb, oid, of="HEAD"):
+        return git_try(sb.st.work, "merge-base", "--is-ancestor", oid, of).returncode == 0
+
+    def snapshot(self, sb):
+        work = sb.st.work
+        return (git_in(work, "rev-parse", "HEAD"), git_in(work, "status", "--porcelain"),
+                refs(work), refs(sb.st.origin))
+
+    def test_the_upper_branch_ends_up_holding_only_its_own_change(self):
+        with Sandbox(stack=True) as sb:
+            st, work = sb.st, sb.st.work
+            r = sb.restack()
+            self.check(r, 0)
+            for oid in (st.upper, st.lower_head, st.before, st.squash, st.later):
+                self.assertTrue(self.ancestor(sb, oid), "%s is not in the restacked branch\n%s" % (oid, r.text()))
+            self.assertEqual(git_in(work, "diff", "--no-color", "--full-index", "origin/main", "HEAD"),
+                             st.own_change)
+            self.assertEqual(git_in(work, "diff", "--name-status", "origin/main", "HEAD").split(),
+                             ["M", "base.txt", "A", "upper.txt"])
+            self.assertEqual(git_in(work, "status", "--porcelain"), "")
+            self.assertEqual(git_in(work, "branch", "--show-current"), "upper")
+            self.assertEqual(r.kinds(), ["verify"], "one read of the lower PR and no merge call\n" + r.text())
+            self.assertEqual([c["argv"][:3] for c in r.calls], [["pr", "view", str(LOWER)]])
+            steps = [line.split(":")[0] for line in r.out.splitlines() if line.startswith("restack step")]
+            self.assertEqual([x.split(",")[0] for x in steps],
+                             ["restack step %d of 4" % n for n in (1, 2, 3, 4)], r.text())
+
+    def test_the_lower_head_is_fetched_from_the_pull_ref_because_the_branch_is_deleted(self):
+        with Sandbox(stack=True) as sb:
+            self.assertEqual(git_try(sb.st.origin, "rev-parse", "--verify", "refs/heads/lower").returncode, 128)
+            self.assertNotEqual(git_try(sb.st.work, "cat-file", "-e", sb.st.lower_head).returncode, 0)
+            self.check(sb.restack(), 0)
+            self.assertEqual(git_in(sb.st.work, "cat-file", "-t", sb.st.lower_head), "commit")
+
+    def test_a_conflict_stops_at_its_step_and_leaves_the_merge_in_progress(self):
+        for step, theirs in ((1, "lower_head"), (2, "before"), (4, "later")):
+            with self.subTest(step=step), Sandbox(stack=True, conflict=step) as sb:
+                st, work = sb.st, sb.st.work
+                pushed = refs(st.origin)
+                r = sb.restack("--push")
+                self.check(r, 1)
+                self.assertIn("restack step %d of 4" % step, r.out)
+                self.assertNotIn("restack step %d of 4" % (step + 1), r.out, "stopped at the FIRST conflict")
+                target = {1: st.lower_head, 2: st.squash + "^", 4: "origin/main"}[step]
+                line = [x for x in r.out.splitlines() if x.startswith("CONFLICT at")]
+                self.assertEqual(len(line), 1, r.text())
+                self.assertIn("restack step %d of 4" % step, line[0])
+                command = [x for x in r.out.splitlines() if x.startswith("restack step %d of 4" % step)][0]
+                self.assertIn("git -C %s merge" % work, command)
+                self.assertIn(target, command)
+                self.assertEqual(git_in(work, "rev-parse", "-q", "--verify", "MERGE_HEAD"), getattr(st, theirs))
+                self.assertIn("UU shared.txt", git_in(work, "status", "--porcelain"))
+                self.assertEqual(refs(st.origin), pushed, "nothing is pushed after a conflict")
+
+    def test_the_command_can_be_run_again_after_the_conflict_is_resolved(self):
+        with Sandbox(stack=True, conflict=2) as sb:
+            st, work = sb.st, sb.st.work
+            self.check(sb.restack(), 1)
+            git_in(work, "checkout", "--ours", "shared.txt")
+            git_in(work, "add", "shared.txt")
+            git_in(work, "commit", "-q", "--no-edit")
+            r = sb.restack("--push")
+            self.check(r, 0)
+            for oid in (st.lower_head, st.squash, st.later):
+                self.assertTrue(self.ancestor(sb, oid))
+            self.assertEqual(refs(st.origin)["refs/heads/upper"], git_in(work, "rev-parse", "HEAD"))
+
+    def test_dry_run_prints_the_four_commands_and_changes_nothing(self):
+        with Sandbox(stack=True) as sb:
+            st, work = sb.st, sb.st.work
+            before = self.snapshot(sb)
+            r = sb.restack("--dry-run", "--push")
+            self.check(r, 0)
+            self.assertEqual(self.snapshot(sb), before)
+            self.assertFalse((work / ".git" / "FETCH_HEAD").exists(), "a dry run fetches nothing")
+            self.assertEqual(r.kinds(), ["verify"])
+            lines = {n: [x for x in r.out.splitlines() if x.startswith("restack step %d of 4" % n)]
+                     for n in (1, 2, 3, 4)}
+            self.assertEqual([len(v) for v in lines.values()], [1, 1, 1, 1], r.text())
+            self.assertTrue(all("git -C %s merge --no-edit" % work in v[0] for v in lines.values()))
+            self.assertIn(st.lower_head, lines[1][0])
+            self.assertIn(st.squash + "^", lines[2][0])
+            self.assertTrue("-s ours" in lines[3][0] and st.squash in lines[3][0])
+            self.assertIn("origin/main", lines[4][0])
+            self.assertIn("git -C %s push origin upper" % work, r.out)
+            self.assertNotIn("--force", r.out)
+
+    def test_a_lower_pr_that_is_not_merged_is_refused(self):
+        for why, over in (("open", dict(state="OPEN", mergeCommit=None)),
+                          ("closed", dict(state="CLOSED", mergeCommit=None)),
+                          ("no merge commit", dict(mergeCommit=None)),
+                          ("empty merge commit", dict(mergeCommit={}))):
+            with self.subTest(why), Sandbox(stack=True, verify=lambda sb, o=over: [resp(sb.lower_view(**o))]) as sb:
+                before = self.snapshot(sb)
+                r = sb.restack()
+                self.check(r, 3)
+                self.assertIn("REFUSED #%d" % LOWER, r.out)
+                self.assertIn("MERGED", r.out)
+                self.assertEqual(self.snapshot(sb), before)
+
+    def test_a_dirty_worktree_is_refused(self):
+        for why, touch in (("modified", lambda w: (w / "base.txt").write_text("changed\n")),
+                           ("untracked", lambda w: (w / "stray.txt").write_text("stray\n"))):
+            with self.subTest(why), Sandbox(stack=True) as sb:
+                touch(sb.st.work)
+                before = self.snapshot(sb)
+                r = sb.restack()
+                self.check(r, 3)
+                self.assertIn("not clean", r.out)
+                self.assertEqual(self.snapshot(sb), before, "nothing was fetched or merged")
+        with self.subTest("a merge in progress whose index equals HEAD"), Sandbox(stack=True, conflict=2) as sb:
+            work = sb.st.work
+            self.check(sb.restack(), 1)
+            git_in(work, "checkout", "--ours", "shared.txt")      # resolved and staged, not yet committed
+            git_in(work, "add", "shared.txt")
+            self.assertEqual(git_in(work, "status", "--porcelain"), "", "the premise: nothing looks dirty")
+            git_in(work, "rev-parse", "-q", "--verify", "MERGE_HEAD")
+            before = self.snapshot(sb)
+            r = sb.restack()
+            self.check(r, 3)
+            self.assertIn("merge", r.out)
+            self.assertIn("in progress", r.out)
+            self.assertIn("git commit", r.out)
+            self.assertNotIn("restack step", r.out, "no step ran, so none can be named")
+            self.assertEqual(self.snapshot(sb), before, "nothing was fetched or merged")
+
+    def test_a_worktree_on_another_branch_is_refused(self):
+        for why, args in (("another branch", ("checkout", "-q", "-b", "other")),
+                          ("detached", ("checkout", "-q", "--detach"))):
+            with self.subTest(why), Sandbox(stack=True) as sb:
+                git_in(sb.st.work, *args)
+                before = self.snapshot(sb)
+                r = sb.restack()
+                self.check(r, 3)
+                self.assertIn("upper", r.out)
+                self.assertIn("not on", r.out)
+                self.assertEqual(self.snapshot(sb), before)
+
+    def test_a_directory_that_is_not_a_checkout_is_refused(self):
+        with Sandbox(stack=True) as sb:
+            self.check(sb.run("restack", "--worktree", str(sb.base / "work"), "--upper", "upper",
+                              "--lower", str(LOWER)), 3)
+
+    def test_push_pushes_the_upper_branch_and_nothing_else(self):
+        with Sandbox(stack=True) as sb:
+            st, work = sb.st, sb.st.work
+            before = refs(st.origin)
+            self.check(sb.restack("--push"), 0)
+            after = refs(st.origin)
+            self.assertEqual({k for k in after if after[k] != before.get(k)}, {"refs/heads/upper"})
+            self.assertEqual(set(after), set(before))
+            self.assertEqual(after["refs/heads/upper"], git_in(work, "rev-parse", "HEAD"))
+            self.assertTrue(self.ancestor(sb, before["refs/heads/upper"], after["refs/heads/upper"]))
+
+    def test_without_push_nothing_is_pushed(self):
+        with Sandbox(stack=True) as sb:
+            before = refs(sb.st.origin)
+            r = sb.restack()
+            self.check(r, 0)
+            self.assertEqual(refs(sb.st.origin), before)
+            self.assertIn("not pushed", r.out)
+
+    def test_a_push_the_remote_rejects_is_never_forced(self):
+        with Sandbox(stack=True) as sb:
+            st = sb.st
+            git_in(st.seed, "checkout", "-q", "upper")       # somebody else pushed to upper meanwhile
+            git_in(st.seed, "commit", "-q", "--allow-empty", "-m", "theirs")
+            git_in(st.seed, "push", "-q", "origin", "upper")
+            theirs = git_in(st.seed, "rev-parse", "HEAD")
+            r = sb.restack("--push")
+            self.check(r, 1)
+            self.assertIn("PUSH FAILED", r.out)
+            self.assertRegex(r.out, r"\[rejected\].*\((fetch first|non-fast-forward)\)",
+                             "the reason is on the line after `To <url>`")
+            self.assertEqual(refs(st.origin)["refs/heads/upper"], theirs)
+
+    def test_push_goes_to_the_branch_upper_tracks_on_origin(self):
+        with Sandbox(stack=True) as sb:                  # CLAUDE.md's `git checkout -B tmp origin/<branch>`
+            st, work = sb.st, sb.st.work
+            git_in(work, "checkout", "-q", "-B", "tmp", "origin/upper")
+            before = refs(st.origin)
+            r = sb.restack("--push", upper="tmp")
+            self.check(r, 0)
+            after = refs(st.origin)
+            self.assertNotIn("refs/heads/tmp", after, "no stray branch named after the local checkout")
+            self.assertEqual({k for k in after if after[k] != before.get(k)}, {"refs/heads/upper"})
+            self.assertEqual(after["refs/heads/upper"], git_in(work, "rev-parse", "HEAD"))
+            self.assertIn("push origin tmp:refs/heads/upper", r.out)
+            self.assertNotIn("--force", r.out)
+
+    def test_the_dry_run_names_the_push_that_follows_the_upstream(self):
+        with Sandbox(stack=True) as sb:
+            git_in(sb.st.work, "checkout", "-q", "-B", "tmp", "origin/upper")
+            r = sb.restack("--dry-run", "--push", upper="tmp")
+            self.check(r, 0)
+            self.assertIn("git -C %s push origin tmp:refs/heads/upper" % sb.st.work, r.out)
+
+    def test_an_upstream_on_another_remote_refuses_push_before_any_merge(self):
+        with Sandbox(stack=True) as sb:
+            work = sb.st.work
+            fork = sb.base / "fork.git"
+            subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(fork)], check=True,
+                           env=dict(os.environ, **GIT_ENV))
+            git_in(work, "remote", "add", "fork", str(fork))
+            git_in(work, "config", "branch.upper.remote", "fork")
+            git_in(work, "config", "branch.upper.merge", "refs/heads/upper")
+            before = self.snapshot(sb)
+            for extra in (("--push",), ("--dry-run", "--push")):
+                r = sb.restack(*extra)
+                self.check(r, 3)
+                self.assertIn("fork", r.out)
+                self.assertIn("upstream", r.out)
+                self.assertNotIn("restack step", r.out, "refused before the first merge")
+                self.assertEqual(self.snapshot(sb), before, "nothing was fetched, merged or pushed")
+            self.check(sb.restack(), 0)                  # --push is what needs origin: the merges alone do not
+
+    def test_a_branch_without_an_origin_upstream_is_pushed_by_its_own_name(self):
+        for why, make in (("no upstream", ("checkout", "-q", "-b", "tmp")),
+                          ("a local branch as upstream", ("checkout", "-q", "-b", "tmp", "--track", "upper"))):
+            with self.subTest(why), Sandbox(stack=True) as sb:
+                st, work = sb.st, sb.st.work
+                git_in(work, "checkout", "-q", "upper")
+                git_in(work, *make)
+                before = refs(st.origin)
+                r = sb.restack("--push", upper="tmp")
+                self.check(r, 0)
+                after = refs(st.origin)
+                self.assertEqual({k for k in after if after[k] != before.get(k)}, {"refs/heads/tmp"})
+                self.assertEqual(after["refs/heads/tmp"], git_in(work, "rev-parse", "HEAD"))
+                self.assertEqual(after["refs/heads/upper"], st.upper)
+                self.assertIn("git -C %s push origin tmp" % work, r.out)
+                self.assertNotIn("tmp:", r.out)
+
+    def test_step_two_names_the_base_the_pull_request_was_made_against(self):
+        with Sandbox(stack=True, verify=lambda sb: [resp(sb.lower_view(baseRefName="release/v1"))]) as sb:
+            r = sb.restack("--dry-run")
+            self.check(r, 0)
+            step = [x for x in r.out.splitlines() if x.startswith("restack step 2 of 4")][0]
+            self.assertIn("Merge release/v1 as it was just before #%d squashed" % LOWER, step)
+            self.assertNotIn("Merge main", step)
+
+    def test_an_upper_branch_that_is_the_base_is_refused_first(self):
+        for extra in ((), ("--push",), ("--dry-run",)):
+            with self.subTest(extra), Sandbox(stack=True) as sb:
+                st, work = sb.st, sb.st.work
+                git_in(work, "checkout", "-q", "main")      # the main checkout: clean, and on the branch named
+                before = self.snapshot(sb)
+                r = sb.restack(*extra, upper="main")
+                self.check(r, 3)
+                self.assertIn("base", r.out)
+                self.assertNotIn("restack step", r.out)
+                self.assertEqual(self.snapshot(sb), before, "main was not touched, locally or on origin")
+
+    def test_usage_errors_exit_2(self):
+        with Sandbox(stack=True) as sb:
+            work = str(sb.st.work)
+            self.check(sb.run("restack", "--worktree", work, "--upper", "upper"), 2)
+            self.check(sb.run("restack", "--upper", "upper", "--lower", str(LOWER)), 2)
+            self.check(sb.run("restack", "--worktree", work, "--upper", "+upper", "--lower", str(LOWER)), 2)
+            self.check(sb.run("restack", "--worktree", work, "--upper", "upper", "--lower", "x"), 2)
+
+
 class CommandLineTests(unittest.TestCase):
     def cli(self, sb, *argv):
         env = dict(os.environ, **sb.env())
@@ -865,7 +1225,7 @@ class CommandLineTests(unittest.TestCase):
     def test_help_documents_the_exit_codes(self):
         done = subprocess.run([sys.executable, str(SCRIPT), "--help"], capture_output=True, text=True)
         self.assertEqual(done.returncode, 0)
-        for word in ("run_in_background", "head moved", "timeout", "refused"):
+        for word in ("run_in_background", "head moved", "timeout", "refused", "restack", "--dry-run"):
             self.assertIn(word, done.stdout)
 
 

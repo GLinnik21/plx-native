@@ -48,7 +48,8 @@ pub mod dv;
 /// two-sided test — what our demuxer/payload path can feed, before asking whether this
 /// particular SoC can decode it. The live set is [`Caps::audio`] (this list ∩ the device's own
 /// codec table), and the ONE-definition rule lives with it: the Normal routing uses
-/// `plex::is_dp_audio_track_with` for membership and channel bounds, shared with the device profile.
+/// `plex::is_dp_audio_track_with` for membership, channel bounds and sampling rate
+/// ([`audio_track_fits`]), shared with the device profile.
 /// Forced mode instead uses the implemented software feed formats and its separate profile,
 /// without conservative device bounds.
 ///
@@ -92,8 +93,27 @@ pub const PCM_MAX_CHANNELS: u32 = 2;
 /// (`player::engine`); any value that matches nothing (a rate in hertz, 96 kHz, 192 kHz) silently
 /// becomes 44.1 kHz and plays at the wrong speed with no error (a 96 kHz FLAC audibly slow on an
 /// OLED55B8, webOS 4.4.3; a 48 kHz one 9% slow, a 32 kHz one fast and stuttering on a C1, webOS
-/// 6.5.3, when the rate was declared in hertz). The table was read from libpf-1.0 on the B8.
+/// 6.5.3, when the rate was declared in hertz). The table was read from libpf-1.0 on the B8. It
+/// bounds the PCM input only; every other codec's Load carries no rate ([`AUDIO_RATE_CEILING`]).
 pub const PCM_SAMPLE_RATES: [u32; 8] = [8_000, 12_000, 16_000, 22_050, 24_000, 32_000, 44_100, 48_000];
+
+/// The highest sample rate, in hertz, any audio Load path here is known to accept: the
+/// `audio.samplingRate` upper bound the transcode profile asks PMS for and the one
+/// [`audio_track_fits`] holds a track to. An LG B8 (webOS 4.4.3) refused the Load of a 96 kHz AAC
+/// that PMS had made from a 96 kHz FLAC (#951, `smp_cb type=18 num=100`). WHERE that limit lives
+/// (the Load payload, libpf, the decoder) is not determined; 48 kHz is used because nothing above
+/// it is known to load (it is the top of [`PCM_SAMPLE_RATES`] too).
+pub const AUDIO_RATE_CEILING: u32 = 48_000;
+
+/// Whether `codec` is held to [`AUDIO_RATE_CEILING`], by [`audio_track_fits`] and by the profile's
+/// `audio.samplingRate` limitation alike: every codec but DTS. The app feeds only the DTS core
+/// (`ff.rs::dts_core_packet`), 48 kHz at most by format, so a DTS-HD 96/24 source plays today and
+/// bounding it would push that source into a lossy AC-3 conversion. Opus, AC-3 and E-AC-3 are
+/// 48 kHz at most by format, so their bound never fires; they stay in the set so that "every codec
+/// but DTS" is the one rule, with no per-codec list to keep in step.
+pub fn audio_rate_bounded(codec: &str) -> bool {
+    audio_codec_id(codec) != "dts"
+}
 
 /// Whether `codec` is one the app decodes itself and feeds as PCM ([`PCM_AUDIO_CODECS`]).
 pub fn is_pcm_codec(codec: &str) -> bool {
@@ -101,15 +121,21 @@ pub fn is_pcm_codec(codec: &str) -> bool {
     PCM_AUDIO_CODECS.split(',').any(|c| c == id)
 }
 
-/// The PCM path's own limits for one track: one or two channels, at a rate `pcmInfo` can name
-/// ([`PCM_SAMPLE_RATES`]). A codec that is not app-decoded passes; an unstated count or rate
-/// does not.
-/// These are limits of the PCM input, not of a hardware decoder, so Force Direct Play applies
-/// them as well.
-pub fn pcm_track_fits(codec: &str, channels: i64, sample_rate: i64) -> bool {
-    !is_pcm_codec(codec)
-        || ((1..=i64::from(PCM_MAX_CHANNELS)).contains(&channels)
-            && PCM_SAMPLE_RATES.iter().any(|&r| i64::from(r) == sample_rate))
+/// The sample-rate (and, for PCM, channel) limits of one audio track, on top of the codec rules in
+/// [`Caps::audio_supports`] / [`Caps::forced_feeds_audio`]: the ONE rate-fit predicate for every
+/// route that decides without PMS's `/decision`, mirrored by the transcode profile's
+/// `audio.samplingRate` limitation. A PCM codec ([`PCM_AUDIO_CODECS`]) needs one or two channels at
+/// a rate `pcmInfo` can name ([`PCM_SAMPLE_RATES`]); an unstated count or rate does not pass. Any
+/// other codec passes at an unstated rate (`<= 0`, the planner's `0`) or at most
+/// [`AUDIO_RATE_CEILING`], DTS excepted ([`audio_rate_bounded`]). These are limits of the Load,
+/// not of a hardware decoder, so Force Direct Play applies them as well.
+pub fn audio_track_fits(codec: &str, channels: i64, sample_rate: i64) -> bool {
+    if is_pcm_codec(codec) {
+        (1..=i64::from(PCM_MAX_CHANNELS)).contains(&channels)
+            && PCM_SAMPLE_RATES.iter().any(|&r| i64::from(r) == sample_rate)
+    } else {
+        sample_rate <= i64::from(AUDIO_RATE_CEILING) || !audio_rate_bounded(codec)
+    }
 }
 
 const CAPS_TABLE: &str = "/etc/umediaserver/device_codec_capability_config.json";
@@ -363,9 +389,10 @@ pub struct Caps {
     pub av1_row: (u32, u32, u32),
     /// The direct-playable AUDIO subset: [`DP_AUDIO_CODECS`] (what the pipeline decodes)
     /// intersected with the table's audio rows, in `DP_AUDIO_CODECS`'s own URL form/order.
-    /// Normal routing reads this and the channel ceilings through `plex::is_dp_audio_track_with`,
-    /// as does its PMS profile. Forced mode starts from the pipeline's feed set with no channel
-    /// ceiling and admits DTS only with a DTS row in `audio_channels` (`Caps::forced_feeds_audio`).
+    /// Normal routing reads this, the channel ceilings and the rate ceiling ([`audio_track_fits`])
+    /// through `plex::is_dp_audio_track_with`, as does its PMS profile. Forced mode starts from the
+    /// pipeline's feed set with no channel ceiling and admits DTS only with a DTS row in
+    /// `audio_channels` (`Caps::forced_feeds_audio`).
     pub audio: String,
     /// Nonzero, per-codec channel ceilings from the device table, duplicate rows MIN-merged.
     /// Missing legacy limits remain unknown; DTS is admitted only with a measured limit.
@@ -377,9 +404,10 @@ pub struct Caps {
 }
 
 impl Caps {
-    /// The 49SM9000PLA values — the only set ever measured before this module. Byte-for-byte,
-    /// these reproduce the profile the app has always sent (the transcoder test pins that), so
-    /// an unreadable table changes nothing for any device that was working yesterday.
+    /// The 49SM9000PLA values — the only set ever measured before this module. These reproduce the
+    /// profile the app has always sent (the transcoder test pins that), plus the
+    /// `audio.samplingRate` limits of #951, so an unreadable table changes nothing else for any
+    /// device that was working yesterday.
     pub fn assumed() -> Caps {
         Caps {
             hevc: true,
@@ -428,7 +456,7 @@ impl Caps {
             return self.forced_admits_dts();
         }
         // Pipeline-only Opus and app-decoded FLAC need only a table that was read. A FLAC
-        // track's own limits are [`pcm_track_fits`], which the planner applies in both modes.
+        // track's own limits are [`audio_track_fits`], which the planner applies in both modes.
         if PIPELINE_ONLY_AUDIO.contains(&id.as_ref()) || is_pcm_codec(&id) {
             return self.audio_has(&id);
         }
@@ -1425,16 +1453,35 @@ mod tests {
     #[test]
     fn the_pcm_path_admits_only_the_rates_and_channels_it_plays_correctly() {
         for rate in [8_000, 22_050, 44_100, 48_000] {
-            assert!(pcm_track_fits("flac", 2, rate), "{rate}");
+            assert!(audio_track_fits("flac", 2, rate), "{rate}");
         }
-        assert!(pcm_track_fits("FLAC", 1, 48_000));
+        assert!(audio_track_fits("FLAC", 1, 48_000));
         for rate in [0, 11_025, 88_200, 96_000, 176_400, 192_000] {
-            assert!(!pcm_track_fits("flac", 2, rate), "{rate} plays at the wrong speed or is unknown");
+            assert!(!audio_track_fits("flac", 2, rate), "{rate} plays at the wrong speed or is unknown");
         }
-        assert!(!pcm_track_fits("flac", 6, 48_000));
-        assert!(!pcm_track_fits("flac", 0, 48_000));
-        // not app-decoded: the hardware decoder's own rules apply, not these
-        assert!(pcm_track_fits("ac3", 6, 0) && pcm_track_fits("dca", 8, 96_000));
+        assert!(!audio_track_fits("flac", 6, 48_000));
+        assert!(!audio_track_fits("flac", 0, 48_000));
+        // not app-decoded: the hardware decoder's own channel rules apply, not these
+        assert!(audio_track_fits("ac3", 6, 0));
+    }
+
+    /// Issue #951: an LG B8 refused a 96 kHz AAC Load, so a codec the hardware decodes is admitted
+    /// only up to the ceiling the profile asks PMS for, by the same predicate. An unstated rate
+    /// passes (the planner asks with `0` when it has no track list), and DTS is exempt: the app
+    /// feeds only its core, which is 48 kHz at most by format, so a 96/24 DTS-HD source plays today.
+    #[test]
+    fn a_hardware_codec_above_the_load_ceiling_is_not_admitted_but_dts_is_exempt() {
+        for rate in [0, 8_000, 11_025, 44_100, 48_000] {
+            assert!(audio_track_fits("aac", 2, rate), "{rate}");
+        }
+        for rate in [48_001, 88_200, 96_000, 192_000] {
+            assert!(!audio_track_fits("aac", 2, rate), "{rate} is above the ceiling");
+            assert!(!audio_track_fits("eac3", 6, rate), "{rate}");
+        }
+        assert!(PCM_SAMPLE_RATES.iter().all(|&r| r <= AUDIO_RATE_CEILING), "the PCM table names nothing above the ceiling");
+        for dts in ["dca", "dts", "DTS"] {
+            assert!(audio_track_fits(dts, 8, 96_000), "{dts}: only the core is fed");
+        }
     }
 
     /// FLAC is decoded in the app and fed as PCM: it needs no table row, but it does need a

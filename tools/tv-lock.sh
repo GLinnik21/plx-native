@@ -8,7 +8,7 @@
 #   tv-lock.sh release                      hand it back
 #   tv-lock.sh require                      assert + renew; what every TV-facing tool calls
 #   tv-lock.sh with --why "<what>" -- CMD…  acquire, run CMD, release even on Ctrl-C
-#   tv-lock.sh break                        steal a live lease (names the holder first)
+#   tv-lock.sh break [--yes]                steal a lease (names the holder first; refuses a LIVE one without --yes)
 #   tv-lock.sh selftest                     exercise the whole protocol with NO television
 #
 # WHY THIS EXISTS. There is one dev set, one app instance on it, and nothing in webOS, ssh or
@@ -84,6 +84,15 @@ fmt_dur() {  # seconds -> "1h 04m" / "7m 12s" / "9s"
   else printf '%ds' "$s"; fi
 }
 
+# The ONE line a person needs when the set is about to be in use: printed (plain, at the start of its
+# line, on stdout) when a NEW lease is taken -- `acquire`, `break`, or your own EXPIRED lease re-taken -- and
+# never for a live renew. A shell cannot call PushNotification, so the PostToolUse hook
+# .claude/hooks/tv-lock-notify.py keys on the leading `HEADS-UP:` and tells the agent to send it. `sane`
+# keeps a --why to one line.
+heads_up() {  # $1 = why, $2 = lease minutes
+  printf 'HEADS-UP: %s, lease %s min\n' "$(sane "${1:-no reason given}")" "$2"
+}
+
 # ------------------------------------------------------------------- the TV ---
 # $TV, $TV_HOST, then tools/tv-config.sh: this checkout's `.tv-host`, the main checkout's, then the
 # per-user `tv-host`. The last two matter here more than anywhere: `.tv-host` is gitignored, so a
@@ -101,6 +110,9 @@ HOST="$(resolve_tv)"
 # the part that stays out of the repo) only when the set refuses the key, and a fast failure for a
 # set that is unreachable. Its stderr is dropped here: callers decide what an unreachable set means.
 ssh_tv() {
+  # PLX_TV_LOCK_LOCAL is the selftest's "there is no television" switch (remote_op runs the device
+  # half under a local sh for it too): nothing is asked of the set, and it always answers.
+  [ -z "${PLX_TV_LOCK_LOCAL:-}" ] || return 0
   PLX_TV_ADDR="$HOST" "$REPO/tools/tv-ssh" ssh tv "$@" 2>/dev/null
 }
 
@@ -340,7 +352,15 @@ cmd_acquire() {
     RESP="$(remote_op status 0 0)"; parse_resp
     if [ "$(fld token "$OWNER_BLK")" = "$TOKEN" ]; then
       ACQUIRED_AT="$(fld acquired "$OWNER_BLK")"
-      do_acquire "$ttl" 0 && { ok "lock renewed (already yours) — $(fmt_dur $((ttl*60))) from now"; exit 0; }
+      # An expired lease still names its owner until someone else takes it, so the token matches and
+      # do_acquire answers `renewed`; but the set may have sat idle past the expiry, so it is a new
+      # lease as far as the person is concerned. do_acquire overwrites $ACT, so read it first.
+      local was="$ACT"
+      if do_acquire "$ttl" 0; then
+        ok "lock renewed (already yours) — $(fmt_dur $((ttl*60))) from now"
+        [ "$was" = expired ] && heads_up "$WHY" "$ttl"   # last, as below; a live renew prints none
+        exit 0
+      fi
     fi
   fi
 
@@ -355,6 +375,8 @@ cmd_acquire() {
       ok "TV lock held by this lane for $(fmt_dur $((ttl*60)))${WHY:+ — $WHY}"
       info "release it: tools/tv-lock.sh release"
       preflight_note
+      heads_up "$WHY" "$ttl"        # last, so a `| tail` keeps it (a LIVE in-place renew above prints none;
+                                    # re-taking your own EXPIRED lease prints it from there)
       exit 0
     fi
     [ "$ACT" = held ] || exit 2
@@ -405,6 +427,7 @@ cmd_renew() {
 # anybody is on it anyway — an older job, a colleague, a human with the remote.
 preflight_note() {
   local sd dd out
+  [ -z "${PLX_TV_LOCK_LOCAL:-}" ] || return 0     # selftest: no television to look at
   sd="$(make -s -C "$REPO" FLAVOR=stable print-appdir 2>/dev/null)"
   dd="$(make -s -C "$REPO" FLAVOR=debug  print-appdir 2>/dev/null)"
   [ -n "$sd" ] && [ -n "$dd" ] || return 0
@@ -450,6 +473,10 @@ cmd_status() {
 cmd_break() {
   parse_opts "$@"
   need_host || exit 2
+  # remote_op writes $TOKEN into its owner record and `set -u` kills it when nothing bound it: with no
+  # lease_load here a lane that holds no lease (the one that breaks) got an empty reply, read it as
+  # "not held", and skipped the live-lease refusal below. cmd_status binds it the same way.
+  lease_load || true
   RESP="$(remote_op status 0 0)"; parse_resp
   if [ "$ACT" = free ]; then info "nothing to break — the lock is free"; exit 0; fi
   echo "breaking a lease held by:" >&2; describe "$OWNER_BLK" >&2
@@ -465,6 +492,7 @@ cmd_break() {
   new_token; WHY="${WHY:-broke a stale lease}"
   do_acquire "${TTL_OVERRIDE:-$TTL_MIN}" 1 || exit 1
   ok "lock broken and taken by this lane"
+  heads_up "break: $WHY" "${TTL_OVERRIDE:-$TTL_MIN}"
 }
 
 # What every TV-facing tool calls. Three jobs: refuse when somebody else holds the set, keep a
@@ -523,7 +551,9 @@ cmd_require() {
     echo "  make check / make sim (the ui-sim skill runs N simulators at once)." >&2
     exit 1
   fi
-  # free or expired: take the short implicit lease.
+  # free or expired: take the short implicit lease. No HEADS-UP here: tv-lock-guard.py refuses an unleased device
+  # command before it gets here, so this branch is normally a script or a human; the exceptions are a lease the TV
+  # lost (a reboot) while the local mirror still reads live, and a hand-typed `require`.
   new_token; WHY="${WHY:-implicit lease (an unattended TV command)}"; LABEL="${LABEL:-auto}"
   if do_acquire "$AUTO_TTL_MIN" 0; then
     # ALWAYS said out loud, `--quiet` or not: `--quiet` means "do not narrate the lease I already
@@ -612,6 +642,56 @@ cmd_selftest() {
   mkdir -p "$REMOTE_LOCK"
   TOKEN=ccc
   RESP="$(remote_op acquire 600 0)";  t "an owner-less lock dir is taken, not a wedge" stolen
+
+  # The HEADS-UP line (.claude/hooks/tv-lock-notify.py keys on it), through the real subcommands
+  # rather than remote_op: one on a NEW lease (acquire, break, your own expired one re-taken), none on a live renew or a refusal. Each
+  # call is a child with its own lane, lease directory and lock path under $d, so nothing here can
+  # reach the operator's real lease; PLX_TV_LOCK_LOCAL keeps ssh_tv, ensure_awake and
+  # preflight_note off the network, and TV is a placeholder so no tv-config lookup happens either.
+  local self="${BASH_SOURCE[0]}" out rc
+  hu() {  # hu <lane> <tv-lock.sh args…>  ->  $out (stdout+stderr), $rc
+    local lane="$1"; shift
+    out="$(env -u PLX_TV_LOCK_TOKEN -u PLX_TV_LOCK_INHERITED -u PLX_TV_LOCK_BYPASS \
+      TV=selftest.invalid PLX_TV_LOCK_LOCAL="$d" PLX_TV_LOCK_PATH="$d/headsup.lock" \
+      PLX_TV_LOCK_STATE="$d/headsup-state" PLX_TV_LOCK_LANE="$d/lane-$lane" "$self" "$@" 2>&1)"
+    rc=$?
+  }
+  want() {  # want <name> <exit> <HEADS-UP line count> [<the one line, whole>]
+    local n line; n=$(printf '%s\n' "$out" | grep -c '^HEADS-UP: ')
+    line=$(printf '%s\n' "$out" | grep '^HEADS-UP: ' | head -1)
+    if [ "$rc" = "$2" ] && [ "$n" = "$3" ] && { [ -z "${4:-}" ] || [ "$line" = "$4" ]; }; then
+      printf '  \033[32m✓\033[0m %s (exit %s, %s HEADS-UP)\n' "$1" "$rc" "$n"
+    else
+      printf '  \033[31m✗\033[0m %s: want exit %s with %s HEADS-UP%s; got exit %s with %s: %s\n' \
+        "$1" "$2" "$3" "${4:+ \"$4\"}" "$rc" "$n" "${line:-none}"
+      fails=$((fails+1))
+    fi
+  }
+  hu A acquire --why "heads-up case" --ttl 7
+  want "a new acquire prints one HEADS-UP" 0 1 "HEADS-UP: heads-up case, lease 7 min"
+  hu A acquire --why "again" --ttl 7
+  want "acquiring what you hold is a renew: none" 0 0
+  hu A renew --ttl 7
+  want "renew: none" 0 0
+  hu B acquire --why "intruder"
+  want "an acquire the set refuses: none" 1 0
+  hu B break --why "case"
+  want "a break without --yes is refused while the lease is live: none" 1 0
+  hu B break --yes --why "case" --ttl 7
+  want "break prints one HEADS-UP" 0 1 "HEADS-UP: break: case, lease 7 min"
+  hu B release
+  want "release: none" 0 0
+  hu A acquire --why "$(printf 'two\nlines "quoted"')" --ttl 7
+  want "a --why with a newline and quotes is still ONE line" 0 1 "HEADS-UP: two lines quoted, lease 7 min"
+  # An EXPIRED lease of your own is not a live one: the set may have sat idle past it, so taking it
+  # again is a new lease and prints the line; a live own lease re-taken stays a silent renew. A
+  # negative --ttl writes a lease that has already ended, and A still holds a live one from above.
+  hu A acquire --why "shorten" --ttl -1
+  want "renewing a live own lease, even to an expired one: none" 0 0
+  hu A acquire --why "back after expiry" --ttl 7
+  want "re-taking your own EXPIRED lease prints one HEADS-UP" 0 1 "HEADS-UP: back after expiry, lease 7 min"
+  hu A acquire --why "live again" --ttl 7
+  want "and the next acquire, now live, is a renew: none" 0 0
   echo ""
   [ "$fails" = 0 ] && { echo "selftest: all good"; return 0; }
   echo "selftest: $fails FAILED"; return 1
