@@ -180,11 +180,12 @@ def blocked(cmd):
 
 # --- lane identity: the hook and tools/tv-lock.sh must agree on ONE lane -------------------------
 #
-# A subagent's own worktree is not `payload["cwd"]` (the harness always reports the SESSION
-# checkout there), so it names its lane by prefixing `PLX_TV_LOCK_LANE=<its worktree>` on the
-# command itself. These cases run the SAME decision `main()` makes — classify, then resolve a
-# lane with `lane_from_command()`, then check `lease_for()` — against a throwaway mirror directory,
-# never the real `~/.plxnative/tv-lock` a live `tools/tv-lock.sh` writes to.
+# A plain subagent's own worktree is not `payload["cwd"]` (the harness reports the SESSION
+# checkout there; only an `isolation: worktree` subagent reports its own), so it names its lane by
+# prefixing `PLX_TV_LOCK_LANE=<its worktree>` on the command itself. These cases run the SAME
+# decision `main()` makes, `guard.decide()` (classify each segment, resolve its lane, check
+# `lease_for()`), against a throwaway mirror directory, never the real `~/.plxnative/tv-lock` a
+# live `tools/tv-lock.sh` writes to.
 import shutil
 import tempfile
 import time as _time
@@ -296,8 +297,9 @@ LANE_CASES += [
 # `tools/tv-lock.sh require` names its lane `${PLX_TV_LOCK_LANE:-$REPO}`, REPO being the parent of
 # the script's own directory. So a command that names a TV script by absolute path, or `make -C`
 # an absolute directory, or `cd`s to one, has a lane of its own whatever `cwd` says (and the
-# harness reports the SESSION's checkout there for a subagent). Per TV segment the first of these
-# applies: the prefix, the hook's env, the script/`make -C` path, an absolute `cd`, then cwd.
+# harness reports the SESSION's checkout there for a plain subagent, not one running with
+# `isolation: worktree`). Per TV segment the first of these applies: the prefix, the hook's env,
+# the script/`make -C` path, an absolute `cd`, then cwd.
 #
 # Reading the lane off the command would let session A, holding nothing, run `/B/tools/...`
 # against B's live lease, so the lease must also list the payload's session id in SESSIONS --
