@@ -833,6 +833,12 @@ pub(crate) const OFF_AFRAME_NB_SAMPLES: usize = 76;
 pub(crate) const OFF_AFRAME_SAMPLE_RATE: usize = 132;
 #[cfg(target_pointer_width = "32")]
 pub(crate) const OFF_AFRAME_NB_CHANNELS: usize = 256 + 4;
+// The layout's `order` (offset 0 of the AVChannelLayout) and its `u.mask` (8-aligned after
+// `nb_channels`); `mask` is only meaningful when `order` is native (`ff_pcm::CH_ORDER_NATIVE`).
+#[cfg(target_pointer_width = "32")]
+pub(crate) const OFF_AFRAME_CH_ORDER: usize = 256;
+#[cfg(target_pointer_width = "32")]
+pub(crate) const OFF_AFRAME_CH_MASK: usize = 264;
 #[cfg(target_pointer_width = "64")]
 const OFF_AFRAME_EXTENDED_DATA: usize = 96;
 #[cfg(target_pointer_width = "64")]
@@ -841,6 +847,10 @@ pub(crate) const OFF_AFRAME_NB_SAMPLES: usize = 112;
 pub(crate) const OFF_AFRAME_SAMPLE_RATE: usize = 180;
 #[cfg(target_pointer_width = "64")]
 pub(crate) const OFF_AFRAME_NB_CHANNELS: usize = 384 + 4;
+#[cfg(target_pointer_width = "64")]
+pub(crate) const OFF_AFRAME_CH_ORDER: usize = 384;
+#[cfg(target_pointer_width = "64")]
+pub(crate) const OFF_AFRAME_CH_MASK: usize = 392;
 
 /// **The audio decoder a playback-speed session runs** (`crate::speed_audio`): the selected audio
 /// stream decoded in software, downmixed to stereo and time-stretched to `permille`, then fed as

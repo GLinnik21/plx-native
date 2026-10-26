@@ -16,14 +16,18 @@
 use std::os::raw::c_int;
 
 use crate::ff::{
-    AVCodecContext, AVCodecParameters, AVPacket, OFF_AFRAME_NB_CHANNELS, OFF_AFRAME_NB_SAMPLES,
-    OFF_AFRAME_SAMPLE_RATE, OFF_FRAME_DATA, OFF_FRAME_FORMAT,
+    AVCodecContext, AVCodecParameters, AVPacket, OFF_AFRAME_CH_MASK, OFF_AFRAME_CH_ORDER,
+    OFF_AFRAME_NB_CHANNELS, OFF_AFRAME_NB_SAMPLES, OFF_AFRAME_SAMPLE_RATE, OFF_FRAME_DATA, OFF_FRAME_FORMAT,
 };
 use crate::speed_audio::{self, Resampler, SampleFormat};
 
 /// `av_opt_set`'s `search_flags`: look in the object's children (the decoder's private options,
 /// where `core_only` lives) too. A value FFmpeg has not changed since the flag was added.
 const AV_OPT_SEARCH_CHILDREN: c_int = 1;
+
+/// `AV_CHANNEL_ORDER_NATIVE`: the layout is a bit mask, channels in ascending bit order
+/// (`ci/ffabi-assert.c` proves the value).
+const CH_ORDER_NATIVE: c_int = 1;
 
 /// FFmpeg `AVSampleFormat` values the lossless decoders produce (FLAC, ALAC, `pcm_s*`). The enum has been stable since
 /// FFmpeg 1.x (`S16 = 1`, `S32 = 2`, `S16P = 6`, `S32P = 7`).
@@ -77,10 +81,11 @@ impl Stereo48 {
     }
 
     /// Append `frames` frames (`planes`: one slice per channel when `planar`, else one) to `out`.
+    /// `mask`: the layout's native channel mask (0 = not stated, mixed by count).
     /// A frame at a different `rate` than the last starts a new resampler.
     pub fn convert(
-        &mut self, rate: u32, fmt: SampleFormat, planar: bool, channels: usize, frames: usize,
-        planes: &[&[u8]], out: &mut Vec<u8>,
+        &mut self, rate: u32, fmt: SampleFormat, planar: bool, channels: usize, mask: u64,
+        frames: usize, planes: &[&[u8]], out: &mut Vec<u8>,
     ) {
         if rate == 0 || frames == 0 {
             return;
@@ -89,7 +94,7 @@ impl Stereo48 {
             self.rate = rate;
             self.resampler = Resampler::new(rate);
         }
-        let stereo = speed_audio::downmix(fmt, planar, channels, frames, planes);
+        let stereo = speed_audio::downmix_by_mask(fmt, planar, mask, channels, frames, planes);
         let mut at_48k = Vec::with_capacity(stereo.len() * 48_000 / rate as usize + 2);
         self.resampler.run(&stereo, &mut at_48k);
         out.reserve(at_48k.len() * 4);
@@ -257,7 +262,15 @@ impl PcmDecoder {
             } else {
                 vec![std::slice::from_raw_parts(*data, nb * width * channels)]
             };
-            conv.convert(rate as u32, fmt, planar, channels, nb, &planes, &mut self.buf);
+            // The layout's mask is valid only for a native-order layout (else the union holds a
+            // pointer or nothing); an unspecified one mixes by count.
+            let order = *(base.add(OFF_AFRAME_CH_ORDER) as *const c_int);
+            let mask = if order == CH_ORDER_NATIVE {
+                std::ptr::read_unaligned(base.add(OFF_AFRAME_CH_MASK) as *const u64)
+            } else {
+                0
+            };
+            conv.convert(rate as u32, fmt, planar, channels, mask, nb, &planes, &mut self.buf);
             return Ok(());
         }
         let ch = self.out.channels as usize;
@@ -406,12 +419,27 @@ mod tests {
         let zero = flt(&[0.0, 0.0]);
         let planes: Vec<&[u8]> = vec![&one, &zero, &zero, &zero, &zero, &zero];
         let mut out = Vec::new();
-        conv.convert(48_000, crate::speed_audio::SampleFormat::Flt, true, 6, 2, &planes, &mut out);
+        conv.convert(48_000, crate::speed_audio::SampleFormat::Flt, true, 6, 0, 2, &planes, &mut out);
         let v = s16_le(&out);
         assert_eq!(v.len(), 4, "two stereo frames");
         assert!(v[0] > 8_000 && v[0] < 32_767, "front-left scaled so a full-scale 5.1 cannot clip: {}", v[0]);
         assert_eq!((v[1], v[3]), (0, 0), "nothing on the right");
         assert_eq!(v[0], v[2]);
+    }
+
+    /// The layout reaches the mix: a quad (FL FR SL SR) with sound only on its left surround comes
+    /// out on the left, where mixing by count (a 4-channel layout has no surrounds) would drop it.
+    #[test]
+    fn the_frames_own_channel_layout_decides_where_a_surround_goes() {
+        let mut conv = Stereo48::new();
+        let sl_only = [flt(&[0.0]), flt(&[0.0]), flt(&[0.0]), flt(&[0.0])];
+        let (fl, fr, sl, sr) = (sl_only[0].clone(), sl_only[1].clone(), flt(&[0.5]), sl_only[3].clone());
+        let planes: Vec<&[u8]> = vec![&fl, &fr, &sl, &sr];
+        let quad = (1u64 << 0) | (1 << 1) | (1 << 9) | (1 << 10);
+        let mut out = Vec::new();
+        conv.convert(48_000, crate::speed_audio::SampleFormat::Flt, true, 4, quad, 1, &planes, &mut out);
+        let v = s16_le(&out);
+        assert!(v[0] > 1_000 && v[1] == 0, "the left surround is on the left only: {v:?}");
     }
 
     #[test]
@@ -420,7 +448,7 @@ mod tests {
         let block = flt(&vec![0.25; 4410]);
         let mut out = Vec::new();
         for _ in 0..10 {
-            conv.convert(44_100, crate::speed_audio::SampleFormat::Flt, false, 1, 4410, &[&block], &mut out);
+            conv.convert(44_100, crate::speed_audio::SampleFormat::Flt, false, 1, 0, 4410, &[&block], &mut out);
         }
         let frames = out.len() / 4;
         assert!((47_990..=48_010).contains(&frames), "1 s of 44.1 kHz is ~48000 frames, got {frames}");
@@ -431,11 +459,11 @@ mod tests {
         let mut conv = Stereo48::new();
         let mut out = Vec::new();
         let a = flt(&vec![0.1; 480]);
-        conv.convert(48_000, crate::speed_audio::SampleFormat::Flt, false, 1, 480, &[&a], &mut out);
+        conv.convert(48_000, crate::speed_audio::SampleFormat::Flt, false, 1, 0, 480, &[&a], &mut out);
         assert_eq!(out.len() / 4, 480);
         let b = flt(&vec![0.1; 441]);
         let before = out.len();
-        conv.convert(44_100, crate::speed_audio::SampleFormat::Flt, false, 1, 441, &[&b], &mut out);
+        conv.convert(44_100, crate::speed_audio::SampleFormat::Flt, false, 1, 0, 441, &[&b], &mut out);
         let got = (out.len() - before) / 4;
         assert!((470..=482).contains(&got), "10 ms of 44.1 kHz is ~480 frames, got {got}");
     }
@@ -445,7 +473,7 @@ mod tests {
         let mut conv = Stereo48::new();
         let src = flt(&[2.0, -2.0, 1.0, -1.0]);
         let mut out = Vec::new();
-        conv.convert(48_000, crate::speed_audio::SampleFormat::Flt, false, 1, 4, &[&src], &mut out);
+        conv.convert(48_000, crate::speed_audio::SampleFormat::Flt, false, 1, 0, 4, &[&src], &mut out);
         assert_eq!(s16_le(&out), vec![32_767, 32_767, -32_768, -32_768, 32_767, 32_767, -32_768, -32_768]);
     }
 
@@ -470,11 +498,11 @@ mod tests {
         let mut conv = Stereo48::new();
         let mut out = Vec::new();
         let a = flt(&vec![1.0; 441]);
-        conv.convert(44_100, crate::speed_audio::SampleFormat::Flt, false, 1, 441, &[&a], &mut out);
+        conv.convert(44_100, crate::speed_audio::SampleFormat::Flt, false, 1, 0, 441, &[&a], &mut out);
         conv.reset();
         out.clear();
         let b = flt(&vec![-1.0; 441]);
-        conv.convert(44_100, crate::speed_audio::SampleFormat::Flt, false, 1, 441, &[&b], &mut out);
+        conv.convert(44_100, crate::speed_audio::SampleFormat::Flt, false, 1, 0, 441, &[&b], &mut out);
         let first = i16::from_le_bytes([out[0], out[1]]);
         assert_eq!(first, -32_768, "the first frame after a seek is the new position's, not a blend with the old tail");
     }

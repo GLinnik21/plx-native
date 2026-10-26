@@ -122,6 +122,59 @@ pub fn downmix(fmt: SampleFormat, planar: bool, channels: usize, frames: usize, 
     out
 }
 
+/// **Mix by channel ROLE**, not by count: `mask` is the frame's `AVChannelLayout` native mask, whose
+/// channels come in ascending bit order (`AV_CH_*`). [`downmix`] guesses the roles from the count,
+/// which is right for mono, stereo, 3.0, 5.0 and 5.1 and wrong for the rest (a quad's surrounds, an
+/// LFE beside four channels, a 3/1 layout's centre-back, 7.1). A mask that does not name exactly
+/// `channels` channels (an unspecified or custom layout) falls back to the count.
+pub fn downmix_by_mask(
+    fmt: SampleFormat, planar: bool, mask: u64, channels: usize, frames: usize, planes: &[&[u8]],
+) -> Vec<[f32; 2]> {
+    if mask == 0 || mask.count_ones() as usize != channels {
+        return downmix(fmt, planar, channels, frames, planes);
+    }
+    // One (left, right) coefficient pair per channel, in the mask's ascending-bit order, scaled so
+    // the louder side's coefficients sum to 1: a full-scale signal on every channel cannot clip.
+    let mut gains: Vec<[f32; 2]> = (0..64).filter(|b| mask >> b & 1 == 1).map(role_gain).collect();
+    let peak = gains.iter().map(|g| g[0]).sum::<f32>().max(gains.iter().map(|g| g[1]).sum::<f32>());
+    if peak <= 0.0 {
+        return downmix(fmt, planar, channels, frames, planes);
+    }
+    for g in &mut gains {
+        *g = [g[0] / peak, g[1] / peak];
+    }
+    (0..frames)
+        .map(|i| {
+            let (mut l, mut r) = (0.0f32, 0.0f32);
+            for (ch, g) in gains.iter().enumerate() {
+                if g[0] == 0.0 && g[1] == 0.0 {
+                    continue;
+                }
+                let s = if planar { fmt.read(planes[ch], i) } else { fmt.read(planes[0], i * channels + ch) };
+                l += s * g[0];
+                r += s * g[1];
+            }
+            [l, r]
+        })
+        .collect()
+}
+
+/// The stereo coefficients of one `AV_CH_*` bit before scaling: the fronts at 1, the centre and
+/// the side/back/top channels at -3 dB toward their own side, a centre-back or top-centre split
+/// to both sides at -6 dB, the LFEs and anything unnamed dropped.
+fn role_gain(bit: u32) -> [f32; 2] {
+    const M3: f32 = std::f32::consts::FRAC_1_SQRT_2;
+    match bit {
+        0 | 29 => [1.0, 0.0],                       // FL, STEREO_LEFT
+        1 | 30 => [0.0, 1.0],                       // FR, STEREO_RIGHT
+        2 => [M3, M3],                              // FC
+        4 | 6 | 9 | 12 | 15 | 31 | 33 | 36 | 39 => [M3, 0.0], // BL FLC SL TFL TBL WL SDL TSL BFL
+        5 | 7 | 10 | 14 | 17 | 32 | 34 | 37 | 40 => [0.0, M3], // BR FRC SR TFR TBR WR SDR TSR BFR
+        8 | 11 | 13 | 16 | 38 => [0.5, 0.5],        // BC TC TFC TBC BFC
+        _ => [0.0, 0.0],                            // LFE (3), LFE2 (35), the rest
+    }
+}
+
 /// Linear-interpolating resampler to [`OUT_RATE`], stateful across calls so chunk edges are seamless.
 pub(crate) struct Resampler {
     from: u32,
@@ -327,6 +380,90 @@ mod tests {
 
     /// A `freq` Hz test tone. A triangle wave rather than a sine: it has the same zero crossings,
     /// which is all [`pitch`] counts, and needs no transcendental (`ci/allow/libm.txt`).
+    // AV_CH_* bit positions (FFmpeg's public layout masks; ci/ffabi-assert.c is the ABI half).
+    const FL: u64 = 1 << 0;
+    const FR: u64 = 1 << 1;
+    const FC: u64 = 1 << 2;
+    const LFE: u64 = 1 << 3;
+    const BL: u64 = 1 << 4;
+    const BR: u64 = 1 << 5;
+    const BC: u64 = 1 << 8;
+    const SL: u64 = 1 << 9;
+    const SR: u64 = 1 << 10;
+
+    /// One interleaved float frame of `mask`'s channels, `hot` set to 1.0 and the rest silent,
+    /// mixed by role.
+    fn mix(mask: u64, hot: u64) -> [f32; 2] {
+        let n = mask.count_ones() as usize;
+        let frame: Vec<u8> = (0..64)
+            .filter(|b| mask >> b & 1 == 1)
+            .flat_map(|b| (if hot >> b & 1 == 1 { 1.0f32 } else { 0.0 }).to_ne_bytes())
+            .collect();
+        downmix_by_mask(SampleFormat::Flt, false, mask, n, 1, &[&frame])[0]
+    }
+
+    fn near(a: [f32; 2], b: [f32; 2]) -> bool {
+        (a[0] - b[0]).abs() < 1e-4 && (a[1] - b[1]).abs() < 1e-4
+    }
+
+    /// DTS core layouts the count cannot tell apart from a 5.1: a quad (FL FR SL SR) sends each
+    /// surround to its own side, never the left one to the centre; the LFE is dropped whatever
+    /// channels it sits beside; a 3/1 layout's back-centre goes to both sides; mono+LFE keeps the
+    /// dialogue centred.
+    #[test]
+    fn layouts_the_count_cannot_name_are_mixed_by_role() {
+        let quad = FL | FR | SL | SR;
+        let g = 1.0 / (1.0 + std::f32::consts::FRAC_1_SQRT_2);
+        assert!(near(mix(quad, SL), [std::f32::consts::FRAC_1_SQRT_2 * g, 0.0]), "SL: left only: {:?}", mix(quad, SL));
+        assert!(near(mix(quad, SR), [0.0, std::f32::consts::FRAC_1_SQRT_2 * g]), "SR: right only");
+        assert!(near(mix(FL | FR | LFE | SL | SR, LFE), [0.0, 0.0]), "2/2+LFE: the LFE is dropped");
+        let c31 = FL | FR | FC | LFE | BC;
+        assert!(near(mix(c31, LFE), [0.0, 0.0]), "3/1+LFE: the LFE is dropped, not sent left");
+        let bc = mix(c31, BC);
+        assert!(bc[0] > 0.1 && (bc[0] - bc[1]).abs() < 1e-6, "3/1+LFE: back-centre on both sides: {bc:?}");
+        assert!(near(mix(FC | LFE, FC | LFE), [1.0, 1.0]), "mono+LFE: dialogue centred, LFE dropped");
+    }
+
+    /// 5.1 (back or side surrounds) and 7.1 mix every channel to its own side, the LFE out, and a
+    /// full-scale signal on every channel cannot clip.
+    #[test]
+    fn a_71_goes_to_the_right_sides_and_cannot_clip() {
+        let l71 = FL | FR | FC | LFE | BL | BR | SL | SR;
+        for left in [SL, BL, SL | BL] {
+            let a = mix(l71, left);
+            assert!(a[0] > 0.1 && a[1] == 0.0, "left surrounds are left ({left:#x}): {a:?}");
+        }
+        for right in [SR, BR, SR | BR] {
+            let b = mix(l71, right);
+            assert!(b[0] == 0.0 && b[1] > 0.1, "right surrounds are right ({right:#x}): {b:?}");
+        }
+        assert!(near(mix(l71, LFE), [0.0, 0.0]));
+        let all = mix(l71, l71 & !LFE);
+        assert!(all[0] <= 1.0 + 1e-6 && all[1] <= 1.0 + 1e-6 && all[0] > 0.99, "full scale is exactly full scale: {all:?}");
+        let l51 = FL | FR | FC | LFE | SL | SR;
+        let frame: Vec<u8> = [0.3f32, -0.2, 0.5, 0.9, 0.1, 0.4].iter().flat_map(|v| v.to_ne_bytes()).collect();
+        assert!(
+            near(
+                downmix_by_mask(SampleFormat::Flt, false, l51, 6, 1, &[&frame])[0],
+                downmix(SampleFormat::Flt, false, 6, 1, &[&frame])[0],
+            ),
+            "the 5.1 the count already got right is unchanged"
+        );
+    }
+
+    /// A mask that does not name `channels` channels (unspecified, custom, or wrong) is not trusted.
+    #[test]
+    fn a_mask_that_does_not_fit_the_channel_count_falls_back_to_the_count() {
+        let frame: Vec<u8> = [0.3f32, -0.2, 0.5, 0.9, 0.1, 0.4].iter().flat_map(|v| v.to_ne_bytes()).collect();
+        for mask in [0, FL | FR, 0xdead_beef_0000_0000] {
+            assert_eq!(
+                downmix_by_mask(SampleFormat::Flt, false, mask, 6, 1, &[&frame]),
+                downmix(SampleFormat::Flt, false, 6, 1, &[&frame]),
+                "mask {mask:#x}"
+            );
+        }
+    }
+
     fn sine(freq: f32, rate: u32, secs: f32) -> Vec<[f32; 2]> {
         (0..(rate as f32 * secs) as usize)
             .map(|i| {
