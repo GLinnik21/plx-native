@@ -107,9 +107,10 @@ pub struct StreamAudio {
     /// The codec in any spelling [`plx_platform::devcaps::audio_codec_id`] knows (`dca` for DTS).
     pub codec: String,
     pub channels: u32,
-    /// The app decoded this audio itself and fed the pipeline PCM (a lossy codec under
-    /// `Caps::app_decodes_lossy`, `route::stream_pcm_is_lossy`): a refusal of the Load is then no
-    /// evidence about the pipeline's own decoder for [`codec`](Self::codec).
+    /// The app decoded this audio itself and fed the pipeline PCM (a lossy codec the attempt's value
+    /// decodes in the app, `Caps::app_decodes_lossy_track`, `route::stream_pcm_is_lossy`): a refusal of
+    /// the Load is then no evidence about the pipeline's own decoder for [`codec`](Self::codec), and
+    /// the app-decode rung ([`RecoveryEffect::DecodeInApp`]) has nothing left to try.
     pub app_decoded_lossy: bool,
 }
 
@@ -208,6 +209,10 @@ pub struct OpenFacts {
     pub native_audio: Option<Facet>,
     /// Forced Direct Play (`route::forced_direct_play`): the viewer asked not to convert.
     pub forced: bool,
+    /// The route is a direct play: the file's own bytes, with no server session between
+    /// (`!route::is_transcoding`). Only such a route can be re-opened with the app decoding its audio
+    /// ([`RecoveryEffect::DecodeInApp`]).
+    pub direct: bool,
     /// What the pipeline was fed (`route::stream_audio`), for [`suspect`].
     pub audio: Option<StreamAudio>,
     /// The SOURCE's video, when the pipeline was fed it whole (`route::stream_video`: a direct play
@@ -257,6 +262,11 @@ pub enum RecoveryEffect {
     ConvertFacet { facet: Facet, flight: u32 },
     /// Fly the HLS contingency a cold Auto Original retained (`dispatch_unopened_auto_hls`).
     StartAutoHls,
+    /// Reload the SAME direct play with the app decoding `audio` itself (stereo 48 kHz PCM) instead
+    /// of the pipeline's decoder or the server: the last rung, no server is asked and no flight is
+    /// flown. The attempt ([`OpenRecovery::attempt`]) has already put the codec in force. `refusal`
+    /// is the failure that led here, for the driver's log line.
+    DecodeInApp { audio: Facet, refusal: LoadRefusal },
     /// Fail the Engine for good and show the failure read-out.
     ShowError { refusal: LoadRefusal },
 }
@@ -323,6 +333,11 @@ pub struct OpenRecovery {
     /// pictured has played what it was fed, so a later rescue by conversion proves nothing about
     /// the converted facet: the proof is only for a request whose FIRST open the conversion rescued.
     pictured: bool,
+    /// The codec the app-decode rung put in force ([`attempt_for`]); `Some` = the rung is spent, which
+    /// is once per request.
+    in_app: Option<String>,
+    /// A refused attempt was an app decode: a later clean landing proves nothing about any facet.
+    unprovable: bool,
     state: State,
 }
 
@@ -349,14 +364,25 @@ impl Excluded {
 
 /// `start` less `excluded`. Never takes a previous attempt as input, so the value is the same
 /// whichever rungs ran.
-fn attempt_for(start: &Caps, excluded: &Excluded) -> Caps {
-    excluded.iter().fold(start.clone(), |caps, facet| caps.without(facet))
+fn attempt_for(start: &Caps, excluded: &Excluded, in_app: Option<&str>) -> Caps {
+    let narrowed = excluded.iter().fold(start.clone(), |caps, facet| caps.without(facet));
+    // After the facets, so the codec the app decodes is announced again whatever a facet took out.
+    in_app.map_or(narrowed.clone(), |codec| narrowed.with_app_lossy_for(codec))
 }
 
 impl OpenRecovery {
     /// A fresh request on `start`.
     pub fn new(start: Arc<Caps>) -> Self {
-        Self { attempt: start.clone(), start, excluded: Excluded::default(), flights: 0, pictured: false, state: State::Opening }
+        Self {
+            attempt: start.clone(),
+            start,
+            excluded: Excluded::default(),
+            flights: 0,
+            pictured: false,
+            in_app: None,
+            unprovable: false,
+            state: State::Opening,
+        }
     }
 
     /// The capability value this request plans and profiles from: `start` less the facets the rungs
@@ -367,7 +393,41 @@ impl OpenRecovery {
 
     /// Re-derive the attempt from `start` and `excluded`; a rung's entry is the only caller.
     fn narrow(&mut self) {
-        self.attempt = Arc::new(attempt_for(&self.start, &self.excluded));
+        self.attempt = Arc::new(attempt_for(&self.start, &self.excluded, self.in_app.as_deref()));
+    }
+
+    /// The codec the app-decode rung would put in force for this failure, when the rung is available:
+    /// a pipeline refusal of a direct play that has shown no picture, whose audio the pipeline itself
+    /// decoded (not PCM the app fed), of a lossy codec the start value's policy admits, with the rung
+    /// not yet spent in this request.
+    fn app_decode_for(&self, refusal: LoadRefusal, facts: &OpenFacts) -> Option<Facet> {
+        let audio = facts.audio.as_ref().filter(|a| !a.app_decoded_lossy)?;
+        let id = plx_platform::devcaps::audio_codec_id(&audio.codec);
+        (self.in_app.is_none()
+            && refusal.names_pipeline()
+            && facts.no_frames
+            && facts.direct
+            && self.start.app_may_decode_lossy(&id))
+        .then(|| Facet::Audio { codec: id.into_owned(), channels: audio.channels })
+    }
+
+    /// Fire the app-decode rung when it is available, else the failure read-out. The one place the
+    /// rung's entry is written: `in_app` set, the video facet cleared (the reload feeds the same source
+    /// video, and a lowered raster ceiling would shrink the Load's video envelope for nothing),
+    /// the attempt re-narrowed, then the effect.
+    fn app_decode_or_error(&mut self, refusal: LoadRefusal, facts: &OpenFacts, fx: &mut Vec<RecoveryEffect>) {
+        let Some(audio) = self.app_decode_for(refusal, facts) else {
+            fx.push(RecoveryEffect::ShowError { refusal });
+            self.state = State::Failed;
+            return;
+        };
+        if let Facet::Audio { codec, .. } = &audio {
+            self.in_app = Some(codec.clone());
+        }
+        self.excluded.video = None;
+        self.narrow();
+        self.state = State::Opening;
+        fx.push(RecoveryEffect::DecodeInApp { audio, refusal });
     }
 
     /// The rung `facts` select. The order is the proof that no rung of main is reordered: pending
@@ -389,8 +449,8 @@ impl OpenRecovery {
             return;
         }
         if facts.forced {
-            fx.push(RecoveryEffect::ShowError { refusal });
-            self.state = State::Failed;
+            // A forced play is never converted, but the app can decode what the set refused.
+            self.app_decode_or_error(refusal, facts, fx);
             return;
         }
         if refusal.names_pipeline() && facts.no_frames && self.flights == 0 {
@@ -399,6 +459,8 @@ impl OpenRecovery {
             // that gave a number can name a decode (`Stalled` is native audio's).
             let video = facts.video.as_ref().filter(|_| !facts.auto_original && matches!(refusal, LoadRefusal::Refused { .. }));
             if let Some(facet) = suspect(facts.audio.as_ref(), video).filter(|f| self.start.without(f) != *self.start) {
+                // A flight after an app decode never proves a facet (`unprovable`).
+                self.unprovable |= facts.audio.as_ref().is_some_and(|a| a.app_decoded_lossy);
                 self.excluded.take(facet.clone());
                 self.narrow();
                 self.flights += 1;
@@ -422,8 +484,7 @@ impl OpenRecovery {
             self.state = flight(Rung::Both);
             return;
         }
-        fx.push(RecoveryEffect::ShowError { refusal });
-        self.state = State::Failed;
+        self.app_decode_or_error(refusal, facts, fx);
     }
 
     /// The one writer. The table (a pair not listed answers [`Handled::No`] and changes nothing):
@@ -474,7 +535,7 @@ impl OpenRecovery {
                 let State::Flight { rung, .. } = &self.state else {
                     return Handled::No;
                 };
-                let proven = (*rung == Rung::Facet && !self.pictured)
+                let proven = (*rung == Rung::Facet && !self.pictured && !self.unprovable)
                     .then(|| self.excluded.iter().find(|f| proves(f, lanes.as_ref())))
                     .flatten();
                 self.state = match proven {
@@ -488,11 +549,15 @@ impl OpenRecovery {
                     return Handled::No;
                 };
                 let (rung, cause, facts) = (*rung, *cause, facts.clone());
-                if rung == Rung::Facet {
-                    self.decide(cause, &facts, fx);
-                } else {
-                    fx.push(RecoveryEffect::ShowError { refusal: cause });
-                    self.state = State::Failed;
+                match rung {
+                    Rung::Facet => self.decide(cause, &facts, fx),
+                    // The HLS contingency came back refused: the app decode is the last rung.
+                    Rung::Both => self.app_decode_or_error(cause, &facts, fx),
+                    // A refused rollback stays terminal.
+                    Rung::Rollback => {
+                        fx.push(RecoveryEffect::ShowError { refusal: cause });
+                        self.state = State::Failed;
+                    }
                 }
                 Handled::Yes
             }

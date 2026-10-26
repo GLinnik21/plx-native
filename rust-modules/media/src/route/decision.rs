@@ -5705,7 +5705,8 @@ pub fn stream_immersive(ps: &PlaybackSession) -> bool {
 
 /// The PCM a Load must declare for audio the app decodes itself
 /// (`devcaps::PCM_AUDIO_CODECS` — FLAC, ALAC, LPCM — and the lossy entries when the attempt's
-/// [`Caps::app_decodes_lossy`](plx_platform::devcaps::Caps::app_decodes_lossy) is on).
+/// capability value decodes the track in the app,
+/// [`Caps::app_decodes_lossy_track`](plx_platform::devcaps::Caps::app_decodes_lossy_track)).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PcmFormat {
     pub sample_rate: u32,
@@ -5734,11 +5735,17 @@ pub fn stream_pcm(ps: &PlaybackSession) -> Option<Result<PcmFormat, String>> {
     stream_pcm_is_lossy(ps).then_some(Ok(PcmFormat::STEREO_48K))
 }
 
-/// Whether the stream now being fed is one the app decodes LOSSILY (DTS under the attempt's gate):
-/// what `ff` is told so a lossless PCM Load never makes it decode a DTS stream in the app.
+/// Whether the stream now being fed is one the app decodes LOSSILY (a codec the attempt's policy
+/// admits that is in force, or that Force Direct Play has no native path for): what `ff` is told so a
+/// lossless PCM Load never makes it decode a DTS stream in the app. The carried track's channels and
+/// rate are used when it is the declared codec, else unknown (`0`).
 pub fn stream_pcm_is_lossy(ps: &PlaybackSession) -> bool {
-    let id = plx_platform::devcaps::audio_codec_id(&ps.stream_acodec);
-    ps.attempt_caps().app_decodes_lossy_codec(&id)
+    let (channels, rate) = ps
+        .cur_audio
+        .as_ref()
+        .filter(|a| a.codec.eq_ignore_ascii_case(&ps.stream_acodec))
+        .map_or((0, 0), |a| (a.channels, a.sample_rate));
+    ps.attempt_caps().app_decodes_lossy_track(&ps.stream_acodec, channels, rate, forced_direct_play(ps))
 }
 
 /// PURE half of [`stream_pcm`]: the carried track must be the same codec, with a stated rate and
@@ -7164,6 +7171,14 @@ pub fn audio_track_direct_plays(ps: &PlaybackSession, codec: &str, channels: i64
 /// mark at the next request, not before.
 pub fn audio_converted_by_server(ps: &PlaybackSession, codec: &str, channels: i64, sample_rate: i64) -> bool {
     ps.direct_play_mode != DirectPlayMode::Forced && !audio_track_direct_plays(ps, codec, channels, sample_rate)
+}
+
+/// **Does the app decode this track itself, to stereo?** The track menu's "played in stereo" mark: a
+/// lossy track the attempt's capability value decodes in the app
+/// ([`Caps::app_decodes_lossy_track`](plx_platform::devcaps::Caps::app_decodes_lossy_track)) is fed as a
+/// stereo mix whatever its layout. Reads the ATTEMPT, as [`audio_converted_by_server`] does.
+pub fn audio_decoded_in_app(ps: &PlaybackSession, codec: &str, channels: i64, sample_rate: i64) -> bool {
+    ps.attempt_caps().app_decodes_lossy_track(codec, channels, sample_rate, forced_direct_play(ps))
 }
 
 /// Select a rung. MAIN THREAD (it writes the session).

@@ -1862,13 +1862,19 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     //      through a remux) may still direct-play a non-commentary stand-in, provisionally — it is
     //      kept only if a direct play results — or, with only a commentary to stand in, burn it
     //      once the route is known to be the remux (see `burn_for_audio` below).
+    //   Under Force Direct Play the pick is two passes: the set's OWN decoder first, and only when it
+    //   plays no track, the app's lossy decode of one (`devcaps::Caps::app_decodes_lossy_track`). A
+    //   native sibling therefore always wins, and the app decode only replaces what would be a refusal.
+    let natively = |codec: &str, channels: i64, rate: i64| {
+        audio_natively_plays_with(&env.caps, env.direct_play_mode, codec, channels, rate)
+    };
     let eligible = |codec: &str, channels: i64, rate: i64| {
         audio_direct_plays_with(&env.caps, env.direct_play_mode, codec, channels, rate)
     };
     let copy_blocked = forced || no_video_copy;
-    let pick_audio = |stand_in: StandIn| {
+    let pick_audio = |stand_in: StandIn, plays: &dyn Fn(&str, i64, i64) -> bool| {
         let exact = (env.audio_sid > 0).then(|| {
-            tracks.iter().enumerate().find(|(_, t)| t.id == env.audio_sid && eligible(&t.codec, t.channels, t.sampling_rate))
+            tracks.iter().enumerate().find(|(_, t)| t.id == env.audio_sid && plays(&t.codec, t.channels, t.sampling_rate))
                 .map(|(i, t)| (i as i32, t.codec.to_lowercase(), t.id))
         }).flatten();
         // A forced direct play has no server to convert an unplayable SESSION pick, and naming
@@ -1878,12 +1884,21 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
         exact.or_else(|| {
             (!rk.is_empty() && !session_pick_is_exact_only)
                 .then(|| pick_dp_audio_eligible(
-                    tracks, acodec, audio_prefs, if forced { 0 } else { env.audio_sid }, stand_in, eligible,
+                    tracks, acodec, audio_prefs, if forced { 0 } else { env.audio_sid }, stand_in, plays,
                 ))
                 .flatten()
         })
     };
-    let mut audio_sel = pick_audio(if copy_blocked { StandIn::Any } else { StandIn::SameKind });
+    let mut audio_sel = pick_audio(if copy_blocked { StandIn::Any } else { StandIn::SameKind }, &natively);
+    if forced && audio_sel.is_none() {
+        audio_sel = pick_audio(StandIn::Any, &eligible);
+        if let Some((_, raw, _)) = &audio_sel {
+            crate::player::log(&format!(
+                "playback_policy: Force Direct Play decodes audio codec {raw} ({}) in the app, stereo",
+                plx_data::metadata::friendly_codec(raw)
+            ));
+        }
+    }
     if let Some(lang) = show_prefs.audio.as_deref() {
         let hit = audio_sel
             .as_ref()
@@ -2016,7 +2031,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     let mut stand_in_provisional = false;
     let mut commentary_only_stand_in = false;
     if audio_sel.is_none() && stand_in_retry(copy_blocked, sub_pick.is_some(), side_draws, !tracks.is_empty(), !rk.is_empty()) {
-        match pick_audio(StandIn::Any) {
+        match pick_audio(StandIn::Any, &eligible) {
             Some(s) if usize::try_from(s.0).is_ok_and(|i| !audio_is_commentary(tracks, i)) => {
                 audio_sel = Some(s);
                 stand_in_provisional = true;
@@ -3046,24 +3061,30 @@ pub(super) fn pick_dp_audio_pref(
 }
 
 /// Can the TV take this audio track straight from the file, under `mode`, on the attempt's
-/// capability value `caps`? Auto and Forced both go through
-/// `devcaps`' canonicaliser (PMS's `dca` is the pipeline's `dts`), so they cannot drift apart.
+/// capability value `caps`: with its own decoder ([`audio_natively_plays_with`]) or with the app's
+/// lossy decode to stereo ([`plx_platform::devcaps::Caps::app_decodes_lossy_track`]: a codec in force,
+/// or, under Forced, one the set has no native path for and the policy admits)? Auto and Forced both go
+/// through `devcaps`' canonicaliser (PMS's `dca` is the pipeline's `dts`), so they cannot drift apart.
 /// Both also apply the Load's own limits ([`plx_platform::devcaps::audio_track_fits`]): the PCM
 /// path's channel count and rate table, and the sample-rate ceiling every other codec shares
-/// (DTS excepted). They belong to the app's decoder and the Load, not to a hardware decoder
+/// (DTS and TrueHD excepted). They belong to the app's decoder and the Load, not to a hardware decoder
 /// Forced may trust past its table, so a 5.1 or 96 kHz FLAC, or a 96 kHz AAC, is refused under
 /// Forced instead of failing at the Load.
 pub(super) fn audio_direct_plays_with(
     caps: &plx_platform::devcaps::Caps, mode: DirectPlayMode, codec: &str, channels: i64,
     sample_rate: i64,
 ) -> bool {
-    let feeds = if mode == DirectPlayMode::Forced {
-        // No table ceiling, but a ceiling measured on this firmware holds (`devcaps::EXCLUSIONS`).
-        caps.forced_feeds_audio_track(codec, channels)
-    } else {
-        caps.audio_supports(codec, channels)
-    };
-    feeds && plx_platform::devcaps::audio_track_fits(codec, channels, sample_rate)
+    audio_natively_plays_with(caps, mode, codec, channels, sample_rate)
+        || caps.app_decodes_lossy_track(codec, channels, sample_rate, mode == DirectPlayMode::Forced)
+}
+
+/// [`audio_direct_plays_with`] for the set's own decoder only: the Forced pick's first pass, so a
+/// native track is never passed over for one the app would decode.
+pub(super) fn audio_natively_plays_with(
+    caps: &plx_platform::devcaps::Caps, mode: DirectPlayMode, codec: &str, channels: i64,
+    sample_rate: i64,
+) -> bool {
+    caps.native_audio_track(codec, channels, sample_rate, mode == DirectPlayMode::Forced)
 }
 
 #[cfg(test)]

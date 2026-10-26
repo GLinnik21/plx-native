@@ -579,6 +579,9 @@ enum OpenRecoveryRun {
     /// A flight owns the replacement route; [`land_recovery_flight`] reloads onto it, or fails the
     /// Engine, when it lands. The frames in between wait ([`recovery_flight_outstanding`]).
     Flying,
+    /// The ladder's last rung: the same direct play, reloaded at `offset_ns` with the app decoding
+    /// its audio ([`decode_in_app`]). No flight: the caller reloads.
+    DecodeInApp { offset_ns: i64 },
     /// Nothing to recover with: the Engine failed for good and the viewer has the read-out.
     Failed,
     /// The ladder asked for nothing; the frame goes on.
@@ -595,6 +598,7 @@ fn open_facts(ps: &crate::route::PlaybackSession, native_audio: Option<plx_platf
         no_frames: SHARED.frames.load(Relaxed) == 0,
         native_audio,
         forced: crate::route::forced_direct_play(ps),
+        direct: !crate::route::is_transcoding(ps),
         audio: crate::route::stream_audio(ps),
         video: crate::route::stream_video(ps),
     }
@@ -712,6 +716,13 @@ fn drive_open_recovery(ps: &mut crate::route::PlaybackSession, first: super::rec
                     let secs = (SHARED.playpos_ns.load(Relaxed) / 1_000_000_000).max(0);
                     crate::route::dispatch_unopened_auto_hls(ps, secs)
                 }
+                RecoveryEffect::DecodeInApp { audio, refusal } => {
+                    if let plx_platform::devcaps::Facet::Audio { codec, .. } = &audio {
+                        super::log(&format!("open recovery: decoding {codec} in the app (stereo) after {refusal}"));
+                    }
+                    run = OpenRecoveryRun::DecodeInApp { offset_ns: SHARED.playpos_ns.load(Relaxed) };
+                    continue;
+                }
                 RecoveryEffect::ShowError { refusal } => {
                     super::log(&format!("open recovery: no rung left for {refusal}; failing the Engine"));
                     fail_engine_for_good();
@@ -740,19 +751,36 @@ fn drive_open_recovery(ps: &mut crate::route::PlaybackSession, first: super::rec
 /// up for every frame the Engine lives: a frame which asked for nothing would leave the viewer on
 /// the spinner for good. The Engine fails, as it did before the machine; in the state the read-out
 /// is already up this re-asserts it (idempotent and silent), once a frame until the Engine is released.
+///
+/// The one answer it hands back is [`OpenRecoveryRun::DecodeInApp`]: the reload needs the adapter,
+/// which the caller still holds the Engine's borrow of, so the caller runs [`decode_in_app`].
 fn recover_failed_open(
     ps: &mut crate::route::PlaybackSession,
     eng: &Engine,
     refusal: super::recovery::LoadRefusal,
     native_audio: Option<plx_platform::devcaps::Facet>,
     why: &str,
-) {
+) -> OpenRecoveryRun {
     let facts = open_facts(ps, native_audio);
-    match drive_open_recovery(ps, super::recovery::RecoveryEvent::Refused { refusal, facts }, why) {
+    let run = drive_open_recovery(ps, super::recovery::RecoveryEvent::Refused { refusal, facts }, why);
+    match run {
         OpenRecoveryRun::Flying => hold_connecting_state(eng),
-        OpenRecoveryRun::Failed => {}
+        OpenRecoveryRun::Failed | OpenRecoveryRun::DecodeInApp { .. } => {}
         OpenRecoveryRun::Quiet => fail_engine_for_good(),
     }
+    run
+}
+
+/// The ladder's last rung ([`super::recovery::RecoveryEffect::DecodeInApp`]): reload the SAME direct
+/// play at `offset_ns`. The machine has already put the refused codec in force in the attempt, so the
+/// fresh Load declares stereo 48 kHz PCM and the demuxer decodes the audio itself; no server is asked.
+/// A route that is a server session (the machine only picks a direct play) fails the Engine instead.
+fn decode_in_app(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, offset_ns: i64) {
+    if crate::route::is_transcoding(ps) {
+        return fail_engine_for_good();
+    }
+    super::report::note_refusal_recovery_delivery(ps);
+    let _ = settle_reload(super::engine::reload_at(ps, pa, offset_ns), "app decode after a refused open");
 }
 
 /// The native audio the demuxer is feeding, as the capability facet the pipeline's refusal of it
@@ -873,8 +901,10 @@ fn land_recovery_flight(
             );
         }
         crate::route::RecoveryVerdict::Refused => {
-            if drive_open_recovery(ps, super::recovery::RecoveryEvent::FlightRefused, "") == OpenRecoveryRun::Quiet {
-                fail_engine_for_good();
+            match drive_open_recovery(ps, super::recovery::RecoveryEvent::FlightRefused, "") {
+                OpenRecoveryRun::DecodeInApp { offset_ns } => decode_in_app(ps, pa, offset_ns),
+                OpenRecoveryRun::Quiet => fail_engine_for_good(),
+                OpenRecoveryRun::Flying | OpenRecoveryRun::Failed => {}
             }
         }
     }
@@ -1532,7 +1562,10 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         // lacks, a rebuild that cannot fly, or a request with no rung left ends on the read-out the
         // viewer would have had; a refusal the machine does not handle (it is in `Failed`, or a
         // flight is outstanding) fails the Engine again, never silence.
-        recover_failed_open(ps, eng, load_refusal(), native_audio_fact(), "Audio Codec Not Supported");
+        let run = recover_failed_open(ps, eng, load_refusal(), native_audio_fact(), "Audio Codec Not Supported");
+        if let OpenRecoveryRun::DecodeInApp { offset_ns } = run {
+            decode_in_app(ps, pa, offset_ns);
+        }
         return;
     }
     if !eng.preview_abandon && native_audio_stall_fired(eng, now) {
@@ -1549,7 +1582,10 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         // frame goes on.
         if let Some(audio) = native_audio_fact() {
             let why = "it swallowed the feed: no picture";
-            recover_failed_open(ps, eng, super::recovery::LoadRefusal::Stalled, Some(audio), why);
+            let run = recover_failed_open(ps, eng, super::recovery::LoadRefusal::Stalled, Some(audio), why);
+            if let OpenRecoveryRun::DecodeInApp { offset_ns } = run {
+                decode_in_app(ps, pa, offset_ns);
+            }
             return;
         }
     }
@@ -1610,7 +1646,10 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
             finish_preview_open_failure(ps, pa);
             return;
         }
-        recover_failed_open(ps, eng, super::recovery::LoadRefusal::SourceFailed, None, "");
+        let run = recover_failed_open(ps, eng, super::recovery::LoadRefusal::SourceFailed, None, "");
+        if let OpenRecoveryRun::DecodeInApp { offset_ns } = run {
+            decode_in_app(ps, pa, offset_ns);
+        }
         return;
     }
     if SHARED.demux_failed.load(Acquire) && SHARED.frames.load(Relaxed) == 0 {
@@ -1618,7 +1657,10 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
             finish_preview_open_failure(ps, pa);
             return;
         }
-        recover_failed_open(ps, eng, super::recovery::LoadRefusal::SourceFailed, None, "");
+        let run = recover_failed_open(ps, eng, super::recovery::LoadRefusal::SourceFailed, None, "");
+        if let OpenRecoveryRun::DecodeInApp { offset_ns } = run {
+            decode_in_app(ps, pa, offset_ns);
+        }
         return;
     }
     let stream = matches!(eng.source, Source::Stream);

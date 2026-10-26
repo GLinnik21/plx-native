@@ -357,12 +357,14 @@ fn forced_direct_profile_for(caps: &plx_platform::devcaps::Caps) -> String {
     }
     // The pipeline's feed formats, DTS only under the Forced rule (`Caps::forced_admits_dts`):
     // a profile that offered DTS to a set with no DTS row would have PMS direct-play a Load the
-    // pipeline cannot decode. The lossy app-decoded ids follow (those not already listed: DTS is).
+    // pipeline cannot decode. The lossy app-decoded ids the policy admits follow (those not already
+    // listed: DTS is, where the table has the row): the app decodes them, so a set with no decoder for
+    // one still gets a direct-play answer for it instead of a transcode (`Caps::app_may_decode_lossy`).
     let audio = DP_AUDIO_CODECS
         .split(',')
         .chain(plx_platform::devcaps::PCM_AUDIO_CODECS.split(','))
         .chain(plx_platform::devcaps::APP_DECODED.iter().filter(|c| c.lossy).map(|c| c.id))
-        .filter(|c| caps.forced_feeds_audio(c))
+        .filter(|c| caps.forced_feeds_audio(c) || caps.app_may_decode_lossy(c))
         .fold(Vec::<&str>::new(), |mut seen, c| {
             if !seen.contains(&c) {
                 seen.push(c);
@@ -1185,7 +1187,8 @@ mod tests {
             audio_channels: Default::default(),
             native_ceiling: Default::default(),
             video_ceiling: Default::default(),
-            app_decodes_lossy: false,
+            app_lossy: plx_platform::devcaps::AppLossy::Off,
+            app_lossy_in_force: Default::default(),
             },
             s.contract.delivery,
         );
@@ -1508,6 +1511,29 @@ mod tests {
         assert_eq!(forced, ["aac", "ac3", "eac3", "dca", "mp3", "vorbis", "truehd"]);
     }
 
+    /// **Force Direct Play offers the lossy codec the policy enabled even where the set has no decoder
+    /// for it**, because the app decodes it: a profile without `dca` would have MDE answer that Load with
+    /// a transcode, and the play would end as `ForcedFailure::Unauthorized`. A codec nothing enabled
+    /// (MP3, Vorbis, TrueHD: unmeasured) stays off, `dca` is listed once where the table has the row as
+    /// well, and Auto's profile does not move with the policy at all.
+    #[test]
+    fn the_forced_profile_offers_an_enabled_lossy_codec_the_set_cannot_decode() {
+        use plx_platform::devcaps::AppLossy;
+        let rowless = Caps { app_lossy: AppLossy::Measured, ..Caps::assumed() };
+        let forced = super::forced_direct_profile_for(&rowless);
+        assert_eq!(list_of(&forced, "audioCodec="), ["aac", "ac3", "eac3", "dca"], "{forced}");
+        let mut native = rowless.clone();
+        native.audio.push_str(",dts");
+        native.audio_channels.insert("dts".into(), 6);
+        assert_eq!(list_of(&super::forced_direct_profile_for(&native), "audioCodec="), ["aac", "ac3", "eac3", "dca"]);
+        assert_eq!(
+            list_of(&super::forced_direct_profile_for(&Caps::assumed()), "audioCodec="),
+            ["aac", "ac3", "eac3"],
+            "off: what shipped"
+        );
+        assert_eq!(super::profile_for(&rowless), super::profile_for(&Caps::assumed()), "Auto's profile is unchanged");
+    }
+
     /// Forced mode advertises the engine's formats with no device limits and no transcode target.
     /// `av1` joins the video list only when the table lists it (issue #593); on the host the boot
     /// value is the assumed caps, so it is absent here, and
@@ -1542,7 +1568,8 @@ mod tests {
             audio_channels: Default::default(),
             native_ceiling: Default::default(),
             video_ceiling: Default::default(),
-            app_decodes_lossy: false,
+            app_lossy: plx_platform::devcaps::AppLossy::Off,
+            app_lossy_in_force: Default::default(),
         };
         let p = super::profile_for(&caps);
         assert!(!p.contains("hevc"), "hevc must not appear anywhere in {p}");
@@ -1576,7 +1603,8 @@ mod tests {
                 audio_channels: Default::default(),
                 native_ceiling: Default::default(),
                 video_ceiling: Default::default(),
-                app_decodes_lossy: false,
+                app_lossy: plx_platform::devcaps::AppLossy::Off,
+                app_lossy_in_force: Default::default(),
             },
         ] {
             let p = super::profile_for(&caps);
@@ -1607,7 +1635,8 @@ mod tests {
             audio_channels: Default::default(),
             native_ceiling: Default::default(),
             video_ceiling: Default::default(),
-            app_decodes_lossy: false,
+            app_lossy: plx_platform::devcaps::AppLossy::Off,
+            app_lossy_in_force: Default::default(),
         };
         let p = super::profile_for(&caps);
         let dp = p.split("add-transcode-target").next().unwrap();

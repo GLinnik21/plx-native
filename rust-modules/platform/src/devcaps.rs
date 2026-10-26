@@ -92,17 +92,22 @@ pub struct AppDecoded {
     pub codecs: &'static [&'static str],
     pub decoders: &'static [&'static str],
     /// Lossy: the decode is NOT bit-exact and is fed as stereo 48 kHz S16 whatever the source
-    /// (see [`Caps::app_decodes`]). Only on a [`Caps::app_decodes_lossy`]
-    /// value; [`PCM_AUDIO_CODECS`] is the lossless entries.
+    /// (see [`Caps::app_decodes`]). Only on a value whose [`Caps::app_lossy`] policy admits the row
+    /// ([`lossy_row_enabled`]); [`PCM_AUDIO_CODECS`] is the lossless entries.
     pub lossy: bool,
+    /// The TV evidence that this row's decode is affordable (the CPU it costs, in the style of
+    /// [`Exclusion::evidence`]). A lossy row without it is not enabled on a table that was read
+    /// ([`AppLossy::Measured`]); turning a row on is `Some(..)` plus its evidence. Always `None` for a
+    /// lossless row, where the field means nothing.
+    pub measured: Option<&'static str>,
 }
 
 /// The app-decoded set, and the ONLY place a decoder name is tied to a codec: the demuxer asks
 /// [`app_decoded_by_ffmpeg_name`], and a test holds every decoder here to `ci/build-ffmpeg.sh`'s
 /// `--enable-decoder` list, so a codec cannot be offered that the bundled library cannot decode.
 pub const APP_DECODED: &[AppDecoded] = &[
-    AppDecoded { id: "flac", codecs: &["flac"], decoders: &["flac"], lossy: false },
-    AppDecoded { id: "alac", codecs: &["alac"], decoders: &["alac"], lossy: false },
+    AppDecoded { id: "flac", codecs: &["flac"], decoders: &["flac"], lossy: false, measured: None },
+    AppDecoded { id: "alac", codecs: &["alac"], decoders: &["alac"], lossy: false, measured: None },
     // LPCM in MKV (`A_PCM/INT/LIT`, `/BIG`) and MP4 (`sowt`, `twos`, `in24`, `in32`). The integer
     // widths only: a float or 8-bit track is not claimed ([`audio_codec_id`]), because the
     // path is bit-exact and the Load declares 16 or 32 bits.
@@ -111,20 +116,54 @@ pub const APP_DECODED: &[AppDecoded] = &[
         codecs: &["pcm_s16le", "pcm_s16be", "pcm_s24le", "pcm_s24be", "pcm_s32le", "pcm_s32be"],
         decoders: &["pcm_s16le", "pcm_s16be", "pcm_s24le", "pcm_s24be", "pcm_s32le", "pcm_s32be"],
         lossy: false,
+        measured: None,
     },
     // DTS core, downmixed to stereo and resampled to 48 kHz: for a set with no DTS decoder (webOS 10+)
-    // and for Force Direct Play there. GATED OFF until the TV has measured the CPU it costs
-    // ([`Caps::app_decodes_lossy`]).
-    AppDecoded { id: "dts", codecs: &["dts"], decoders: &["dca"], lossy: true },
-    // MP3 and Vorbis (S4-4): stereo 48 kHz PCM through the same decoder and the same gate as DTS. Unlike
-    // a DTS core they can be above 48 kHz, so they stay rate bound ([`audio_rate_bounded`]).
-    AppDecoded { id: "mp3", codecs: &["mp3"], decoders: &["mp3"], lossy: true },
-    AppDecoded { id: "vorbis", codecs: &["vorbis"], decoders: &["vorbis"], lossy: true },
+    // and for Force Direct Play there. Enabled on a read table: the TV has measured what it costs.
+    AppDecoded {
+        id: "dts",
+        codecs: &["dts"],
+        decoders: &["dca"],
+        lossy: true,
+        measured: Some(
+            "U5 2026-10: DTS core decode on the dev set (webOS 4.5), whole app 13.1% of one core of four, \
+             system 25% busy, 60 fps held",
+        ),
+    },
+    // MP3 and Vorbis (S4-4): stereo 48 kHz PCM through the same decoder and the same policy as DTS. Unlike
+    // a DTS core they can be above 48 kHz, so they stay rate bound ([`audio_rate_bounded`]). Unmeasured:
+    // off on a read table until their U5 evidence is recorded here.
+    AppDecoded { id: "mp3", codecs: &["mp3"], decoders: &["mp3"], lossy: true, measured: None },
+    AppDecoded { id: "vorbis", codecs: &["vorbis"], decoders: &["vorbis"], lossy: true, measured: None },
     // TrueHD (S4-5): up to eight channels (FFmpeg's `truehd` decodes the 7.1 bed; an Atmos object
     // substream is not rendered), mixed by layout to stereo 48 kHz. The only lossy entry without a rate
     // bound beside DTS, because the app's resampler low-passes high rates ([`audio_rate_bounded`]).
-    AppDecoded { id: "truehd", codecs: &["truehd"], decoders: &["truehd"], lossy: true },
+    // Unmeasured, like MP3 and Vorbis.
+    AppDecoded { id: "truehd", codecs: &["truehd"], decoders: &["truehd"], lossy: true, measured: None },
 ];
+
+/// Which lossy [`APP_DECODED`] rows a [`Caps`] value may decode in the app.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AppLossy {
+    /// None: an unread table is not a policy (the PCM precedent, [`PCM_AUDIO_CODECS`]), so the assumed
+    /// fallback stays byte-for-byte what shipped.
+    #[default]
+    Off,
+    /// The rows with recorded evidence ([`AppDecoded::measured`]): what a table that was read gets.
+    Measured,
+    /// Every lossy row: the `appdecodelossy` debug trigger, which is how an unmeasured row is measured.
+    All,
+}
+
+/// Whether `policy` admits `row`: the ONE answer to "may the app decode this lossy row".
+pub(crate) fn lossy_row_enabled(row: &AppDecoded, policy: AppLossy) -> bool {
+    row.lossy
+        && match policy {
+            AppLossy::Off => false,
+            AppLossy::Measured => row.measured.is_some(),
+            AppLossy::All => true,
+        }
+}
 
 /// The [`APP_DECODED`] entry covering the stream whose `avcodec_get_name` is `name`.
 pub fn app_decoded_by_ffmpeg_name(name: &str) -> Option<&'static AppDecoded> {
@@ -453,11 +492,15 @@ pub struct Caps {
     /// never stored on the install (a video facet never proves). Read through
     /// [`Caps::raster_bound`], never directly. A `BTreeMap` keeps `Eq` and deterministic profile bytes.
     pub video_ceiling: std::collections::BTreeMap<String, (u32, u32)>,
-    /// The app decodes the LOSSY entries of [`APP_DECODED`] (DTS) itself and feeds them as stereo
-    /// 48 kHz PCM, instead of the set's own decoder or the server. Off in [`Caps::assumed`], in a
-    /// table read and on every install until the TV has measured what the decode costs; the
-    /// `appdecodelossy` dev trigger turns it on at boot ([`Caps::with_app_lossy`]).
-    pub app_decodes_lossy: bool,
+    /// Which LOSSY entries of [`APP_DECODED`] this value may decode itself and feed as stereo 48 kHz
+    /// PCM, instead of the set's own decoder or the server. [`AppLossy::Off`] in [`Caps::assumed`],
+    /// [`AppLossy::Measured`] in a table read, [`AppLossy::All`] under the `appdecodelossy` dev
+    /// trigger ([`Caps::with_app_lossy`]).
+    pub app_lossy: AppLossy,
+    /// The lossy codecs ([`audio_codec_id`] spelling) this value decodes in the app WHATEVER its own
+    /// decoder says: set by the recovery rung for the one codec a Load refused
+    /// ([`Caps::with_app_lossy_for`]), or for every lossy row by the debug trigger. Empty at boot.
+    pub app_lossy_in_force: std::collections::BTreeSet<String>,
 }
 
 impl Caps {
@@ -480,35 +523,80 @@ impl Caps {
             audio_channels: Default::default(),
             native_ceiling: Default::default(),
             video_ceiling: Default::default(),
-            app_decodes_lossy: false,
+            app_lossy: AppLossy::Off,
+            app_lossy_in_force: Default::default(),
         }
     }
 
-    /// This value with the app's own lossy decode switched on ([`Caps::app_decodes_lossy`]): DTS is
-    /// announced whatever the set's table says (the app decodes it, so no decoder row is needed),
-    /// up to eight channels (the core is downmixed to stereo; DTS-HD's extensions are not read).
+    /// Whether `codec` is a lossy [`APP_DECODED`] row this value's policy admits ([`lossy_row_enabled`]).
+    /// Says nothing of whether it is in force.
+    pub fn app_may_decode_lossy(&self, codec: &str) -> bool {
+        let id = audio_codec_id(codec);
+        APP_DECODED.iter().any(|r| r.id == id && lossy_row_enabled(r, self.app_lossy))
+    }
+
+    /// This value with `codec` decoded in the app whatever the set's decoder says: put in
+    /// [`Caps::app_lossy_in_force`], announced whatever the table says (the app decodes it, so no
+    /// decoder row is needed), up to eight channels (the output is stereo; the extensions of DTS-HD are
+    /// not read). A codec the policy does not admit leaves the value unchanged.
+    pub fn with_app_lossy_for(mut self, codec: &str) -> Caps {
+        if !self.app_may_decode_lossy(codec) {
+            return self;
+        }
+        let id = audio_codec_id(codec).into_owned();
+        if !self.audio_has(&id) {
+            self.audio.push(',');
+            self.audio.push_str(&id);
+        }
+        self.audio_channels.insert(id.clone(), 8);
+        self.app_lossy_in_force.insert(id);
+        self
+    }
+
+    /// The debug form ([`AppLossy::All`], every lossy row in force): even a codec the set decodes
+    /// natively goes through the app, so each row's cost can be measured on a set that has its decoder.
     pub fn with_app_lossy(mut self) -> Caps {
-        self.app_decodes_lossy = true;
-        for c in APP_DECODED.iter().filter(|c| c.lossy) {
-            if !self.audio_has(c.id) {
-                self.audio.push(',');
-                self.audio.push_str(c.id);
-            }
-            self.audio_channels.insert(c.id.to_owned(), 8);
+        self.app_lossy = AppLossy::All;
+        for r in APP_DECODED.iter().filter(|r| r.lossy) {
+            self = self.with_app_lossy_for(r.id);
         }
         self
     }
 
     /// Whether the app decodes `codec` itself on this value: the lossless set always
-    /// ([`PCM_AUDIO_CODECS`]), the lossy one only under [`Caps::app_decodes_lossy`].
+    /// ([`PCM_AUDIO_CODECS`]), a lossy codec only once it is in force ([`Caps::app_lossy_in_force`]).
+    #[cfg(test)]
     pub fn app_decodes(&self, codec: &str) -> bool {
-        self.app_decodes_lossy_codec(codec) || is_pcm_codec(codec)
+        is_pcm_codec(codec) || self.app_lossy_in_force.contains(audio_codec_id(codec).as_ref())
     }
 
-    /// Whether `codec` is one of the lossy [`APP_DECODED`] entries AND the gate is on.
-    pub fn app_decodes_lossy_codec(&self, codec: &str) -> bool {
+    /// The SET'S OWN decoder plays this track from the file (rate and channel limits included): false
+    /// for a codec in force, which the app decodes instead. `channels` and `sample_rate` are 0 when not
+    /// known. `forced` is Force Direct Play, which applies no table ceiling
+    /// ([`Caps::forced_feeds_audio_track`]).
+    pub fn native_audio_track(&self, codec: &str, channels: i64, sample_rate: i64, forced: bool) -> bool {
+        if self.app_lossy_in_force.contains(audio_codec_id(codec).as_ref()) {
+            return false;
+        }
+        let feeds = if forced {
+            self.forced_feeds_audio_track(codec, channels)
+        } else {
+            self.audio_supports(codec, channels)
+        };
+        feeds && audio_track_fits(codec, channels, sample_rate)
+    }
+
+    /// The app decodes this lossy track to stereo 48 kHz PCM on this value: the policy admits the
+    /// row, and the codec is either in force or Force Direct Play has no native path for the track (so
+    /// the app replaces what would be a refusal; a set that plays it natively keeps doing so). The
+    /// track's own limit is the rate bound of a rate-bound row ([`audio_track_fits`]); the channel
+    /// count is not one, since the mix is by layout down to two.
+    pub fn app_decodes_lossy_track(&self, codec: &str, channels: i64, sample_rate: i64, forced: bool) -> bool {
         let id = audio_codec_id(codec);
-        self.app_decodes_lossy && APP_DECODED.iter().any(|c| c.lossy && c.id == id)
+        self.app_may_decode_lossy(&id)
+            && audio_track_fits(&id, channels, sample_rate)
+            && (self.app_lossy_in_force.contains(id.as_ref())
+                || (forced && !self.native_audio_track(&id, channels, sample_rate, true)))
     }
 
     /// The width/height upper bound for `vcodec` (PMS's lower-case spelling), per axis the lowest
@@ -566,11 +654,6 @@ impl Caps {
         if id == "dts" {
             return self.forced_admits_dts();
         }
-        // A lossy codec the app decodes itself needs no decoder on the set, only the gate: its
-        // announcement ([`Caps::with_app_lossy`]) is the evidence.
-        if self.app_decodes_lossy_codec(&id) {
-            return true;
-        }
         // Pipeline-only Opus and the app-decoded lossless set need only a table that was read. Such a
         // track's own limits are [`audio_track_fits`], which the planner applies in both modes.
         if PIPELINE_ONLY_AUDIO.contains(&id.as_ref()) || is_pcm_codec(&id) {
@@ -585,10 +668,6 @@ impl Caps {
     pub fn forced_feeds_audio_track(&self, codec: &str, channels: i64) -> bool {
         if !self.forced_feeds_audio(codec) {
             return false;
-        }
-        // A ceiling measured on the set's own decoder says nothing of the app's.
-        if self.app_decodes_lossy_codec(codec) {
-            return true;
         }
         match self.native_ceiling.get(audio_codec_id(codec).as_ref()) {
             Some(&max) => channels <= i64::from(max),
@@ -1022,7 +1101,8 @@ fn parse(s: &str) -> Option<Caps> {
         audio_channels,
         native_ceiling: Default::default(),
         video_ceiling: Default::default(),
-        app_decodes_lossy: false,
+        app_lossy: AppLossy::Measured,
+        app_lossy_in_force: Default::default(),
     })
 }
 
@@ -1119,8 +1199,18 @@ pub fn probe() {
     if plx_base::devtrig::flag("appdecodelossy") {
         boot = boot.with_app_lossy();
         #[cfg(feature = "devtriggers")]
-        plx_base::eventlog::log("devcaps: /tmp/plxnative-appdecodelossy: the app decodes DTS itself (stereo 48 kHz PCM)");
+        plx_base::eventlog::log(&format!(
+            "devcaps: appdecodelossy trigger: every lossy APP_DECODED row decoded in the app (All, in force: {:?})",
+            boot.app_lossy_in_force
+        ));
     }
+    let lossy_rows = || APP_DECODED.iter().filter(|r| r.lossy);
+    plx_base::eventlog::log(&format!(
+        "devcaps: app lossy decode {:?}: enabled [{}] unmeasured [{}]",
+        boot.app_lossy,
+        lossy_rows().filter(|r| lossy_row_enabled(r, boot.app_lossy)).map(|r| r.id).collect::<Vec<_>>().join(","),
+        lossy_rows().filter(|r| r.measured.is_none()).map(|r| r.id).collect::<Vec<_>>().join(","),
+    ));
     plx_base::eventlog::log(&format!(
         "devcaps: firmware={:?} build={:?} audio layers: table+gst={} | exclusions: {} | -> audio={}{}{}",
         info.codename,
@@ -1712,16 +1802,19 @@ mod tests {
         assert!(app_decoded_by_ffmpeg_name("ac3").is_none(), "a hardware codec is not app-decoded");
     }
 
-    /// **S4 PR 2's gate.** DTS is app-decoded only on a value that turned the lossy decode on; the
-    /// default and the table read leave it off, so nothing changes for anyone until the TV has
-    /// measured the CPU. On, DTS is announced without a table row, with no rate bound, in both
-    /// modes, and a native ceiling measured on the set's own decoder does not apply to it.
+    /// **The lossy policy.** DTS is app-decoded (in force) only on a value that put it there: the
+    /// assumed fallback and a table read have it ADMITTED at most ([`AppLossy`]), never in force, so the
+    /// set's own decoder keeps playing what it can. In force, DTS is announced without a table row, with
+    /// no rate bound, in both modes, and a native ceiling measured on the set's own decoder does not
+    /// apply to it (the app decodes it, and `native_audio_track` is false for it).
     #[test]
     fn dts_is_app_decoded_only_on_a_value_that_turned_the_gate_on() {
         for off in [Caps::assumed(), parse(REAL).unwrap()] {
-            assert!(!off.app_decodes_lossy && !off.app_decodes("dts") && !off.app_decodes("dca"));
+            assert!(off.app_lossy_in_force.is_empty() && !off.app_decodes("dts") && !off.app_decodes("dca"));
             assert!(off.app_decodes("flac"), "the lossless set is not gated");
         }
+        assert_eq!(Caps::assumed().app_lossy, AppLossy::Off);
+        assert_eq!(parse(REAL).unwrap().app_lossy, AppLossy::Measured);
         assert!(!Caps::assumed().audio_has("dts"), "off: the assumed fallback is what it was");
         let on = Caps::assumed().with_app_lossy();
         for spelling in ["dts", "dca", "DTS"] {
@@ -1732,7 +1825,8 @@ mod tests {
         assert!(!on.app_decodes("ac3") && !on.app_decodes("eac3") && !on.app_decodes("mlp"));
         assert!(audio_track_fits("dts", 6, 96_000), "no rate bound: the core is at most 48 kHz");
         let measured = Caps { native_ceiling: [("dts".into(), 2)].into(), ..Caps::assumed() }.with_app_lossy();
-        assert!(measured.forced_feeds_audio_track("dts", 6), "a ceiling of the native decoder is not the app's");
+        assert!(measured.app_decodes_lossy_track("dts", 6, 0, true), "a ceiling of the native decoder is not the app's");
+        assert!(!measured.native_audio_track("dts", 6, 0, true), "and the set's decoder is not asked");
         assert!(!Caps { native_ceiling: [("dts".into(), 2)].into(), ..parse(REAL).unwrap() }.forced_feeds_audio_track("dts", 6));
         assert_eq!(on.clone().with_app_lossy(), on, "idempotent");
         let dts_in_list = on.audio.split(',').filter(|c| *c == "dts").count();
@@ -1748,13 +1842,14 @@ mod tests {
         for off in [Caps::assumed(), parse(REAL).unwrap()] {
             for codec in ["mp3", "vorbis", "MP3"] {
                 assert!(!off.app_decodes(codec) && !off.audio_has(codec) && !off.forced_feeds_audio(codec), "{codec}");
+                assert!(!off.app_decodes_lossy_track(codec, 2, 44_100, true), "{codec}: unmeasured, so never enabled on a read table");
             }
         }
         let on = Caps::assumed().with_app_lossy();
         for codec in ["mp3", "vorbis", "MP3", "Vorbis"] {
-            assert!(on.app_decodes(codec) && on.app_decodes_lossy_codec(codec), "{codec}");
+            assert!(on.app_decodes(codec) && on.app_may_decode_lossy(codec), "{codec}");
             assert!(on.audio_has(codec) && on.audio_supports(codec, 2), "{codec}");
-            assert!(on.forced_feeds_audio(codec) && on.forced_feeds_audio_track(codec, 2), "{codec}");
+            assert!(on.app_decodes_lossy_track(codec, 2, 44_100, true) && !on.native_audio_track(codec, 2, 44_100, true), "{codec}");
         }
         assert!(audio_track_fits("mp3", 2, 44_100) && audio_track_fits("vorbis", 6, 48_000));
         assert!(audio_track_fits("vorbis", 2, 0), "an unstated rate passes, as for every codec");
@@ -1781,9 +1876,9 @@ mod tests {
         }
         let on = Caps::assumed().with_app_lossy();
         for codec in ["truehd", "TrueHD"] {
-            assert!(on.app_decodes(codec) && on.app_decodes_lossy_codec(codec), "{codec}");
+            assert!(on.app_decodes(codec) && on.app_may_decode_lossy(codec), "{codec}");
             assert!(on.audio_has(codec) && on.audio_supports(codec, 8), "{codec}");
-            assert!(on.forced_feeds_audio(codec) && on.forced_feeds_audio_track(codec, 8), "{codec}");
+            assert!(on.app_decodes_lossy_track(codec, 8, 96_000, true), "{codec}");
         }
         assert!(!audio_rate_bounded("truehd") && audio_rate_bounded("vorbis") && audio_rate_bounded("mp3"));
         for rate in [0, 44_100, 48_000, 88_200, 96_000, 176_400, 192_000] {
@@ -1793,6 +1888,100 @@ mod tests {
         assert_eq!(on.audio.split(',').filter(|c| *c == "truehd").count(), 1);
         assert_eq!(on.clone().with_app_lossy(), on, "idempotent");
         assert_eq!(app_decoded_by_ffmpeg_name("truehd").map(|c| (c.id, c.lossy)), Some(("truehd", true)));
+    }
+
+    /// The policy is one predicate over the table: a read table admits exactly the rows with recorded
+    /// evidence (DTS today), the assumed fallback none, the debug trigger every lossy row, and a lossless
+    /// row is never a lossy one whatever the policy.
+    #[test]
+    fn a_read_table_enables_only_measured_lossy_rows() {
+        for row in APP_DECODED {
+            for policy in [AppLossy::Off, AppLossy::Measured, AppLossy::All] {
+                let want = row.lossy
+                    && match policy {
+                        AppLossy::Off => false,
+                        AppLossy::Measured => row.measured.is_some(),
+                        AppLossy::All => true,
+                    };
+                assert_eq!(lossy_row_enabled(row, policy), want, "{} under {policy:?}", row.id);
+            }
+        }
+        let read = parse(REAL).unwrap();
+        for spelling in ["dts", "dca", "DTS"] {
+            assert!(read.app_may_decode_lossy(spelling), "{spelling}: measured");
+        }
+        for codec in ["mp3", "vorbis", "truehd", "flac", "ac3", "mlp"] {
+            assert!(!read.app_may_decode_lossy(codec), "{codec}: unmeasured, lossless or not ours");
+            assert_eq!(read.clone().with_app_lossy_for(codec), read, "{codec}: nothing to put in force");
+        }
+        assert!(!Caps::assumed().app_may_decode_lossy("dts"), "an unread table is not a policy");
+        assert_eq!(Caps::assumed().with_app_lossy_for("dts"), Caps::assumed());
+        let all = Caps::assumed().with_app_lossy();
+        assert_eq!(all.app_lossy, AppLossy::All);
+        let lossy: Vec<&str> = APP_DECODED.iter().filter(|r| r.lossy).map(|r| r.id).collect();
+        assert_eq!(all.app_lossy_in_force.iter().map(String::as_str).collect::<Vec<_>>().len(), lossy.len());
+        assert!(lossy.iter().all(|id| all.app_lossy_in_force.contains(*id)), "every lossy row in force");
+    }
+
+    /// A row is turned on by its evidence, so the evidence has to say something, and a lossless row
+    /// (where the field means nothing) carries none.
+    #[test]
+    fn every_enabled_lossy_row_carries_its_measurement() {
+        for row in APP_DECODED {
+            match (row.lossy, row.measured) {
+                (true, Some(evidence)) => assert!(evidence.len() > 20 && evidence.contains("U5"), "{}: {evidence}", row.id),
+                (false, measured) => assert!(measured.is_none(), "{}: lossless rows carry no measurement", row.id),
+                (true, None) => {}
+            }
+        }
+        assert!(APP_DECODED.iter().any(|r| r.id == "dts" && r.measured.is_some()), "DTS is the measured row");
+    }
+
+    /// Force Direct Play decodes in the app only where the set has no path of its own for the track: a
+    /// set whose table lists DTS keeps playing it natively, and one without a DTS row (webOS 10+) does
+    /// not. Auto never takes this path on its own, and a refusal the install learned
+    /// ([`Caps::minus`]) is "no native path" for that width.
+    #[test]
+    fn forced_app_decode_is_only_where_the_set_has_no_native_path() {
+        let native = parse(REAL).unwrap();
+        assert!(native.audio_has("dts"));
+        assert!(!native.app_decodes_lossy_track("dts", 6, 0, true), "the set decodes DTS itself");
+        assert!(native.native_audio_track("dts", 6, 0, true));
+        let rowless = parse(&REAL.replace("DTS", "WMA")).unwrap();
+        assert!(!rowless.audio_has("dts"));
+        for spelling in ["dts", "dca", "DTS"] {
+            assert!(rowless.app_decodes_lossy_track(spelling, 8, 96_000, true), "{spelling}");
+        }
+        assert!(!rowless.native_audio_track("dts", 8, 0, true));
+        assert!(!rowless.app_decodes_lossy_track("dts", 6, 0, false), "Auto converts on the server instead");
+        assert!(!Caps::assumed().app_decodes_lossy_track("dts", 6, 0, true), "off is off");
+        let learned = native.minus(&[refusal("dts", 6)], "");
+        assert!(learned.app_decodes_lossy_track("dts", 6, 0, true), "a surround refusal leaves stereo only");
+        assert!(!learned.app_decodes_lossy_track("dts", 2, 0, true));
+        let unmeasured = rowless.clone();
+        for codec in ["truehd", "mp3", "vorbis"] {
+            assert!(!unmeasured.app_decodes_lossy_track(codec, 2, 44_100, true), "{codec}: no evidence, no decode");
+        }
+        assert!(!rowless.app_decodes_lossy_track("ac3", 6, 0, true), "only the lossy rows");
+    }
+
+    /// The recovery rung's value puts ONE codec in force: the others, and the policy, stay as they were.
+    #[test]
+    fn the_rescue_value_decodes_one_codec_in_the_app_and_no_other() {
+        let base = parse(REAL).unwrap();
+        let rescue = base.clone().with_app_lossy_for("DCA");
+        assert_eq!(rescue.app_lossy_in_force.iter().map(String::as_str).collect::<Vec<_>>(), ["dts"]);
+        assert_eq!(rescue.app_lossy, AppLossy::Measured);
+        assert_eq!(rescue.audio_channels.get("dts"), Some(&8));
+        assert!(rescue.app_decodes("dts") && !rescue.app_decodes("truehd") && !rescue.app_decodes("mp3"));
+        assert!(!rescue.native_audio_track("dts", 6, 0, false), "the set's own decoder was refused");
+        assert!(rescue.app_decodes_lossy_track("dts", 6, 0, false), "so Auto plans the app decode too");
+        assert!(rescue.native_audio_track("ac3", 6, 0, false) && rescue.native_audio_track("eac3", 8, 0, false));
+        let rowless = parse(&REAL.replace("DTS", "WMA")).unwrap().with_app_lossy_for("dts");
+        assert!(rowless.audio_has("dts") && rowless.audio_supports("dts", 8), "announced without a table row");
+        assert_eq!(rowless.audio.split(',').filter(|c| *c == "dts").count(), 1);
+        assert_eq!(rescue.clone().with_app_lossy_for("dts"), rescue, "idempotent");
+        assert_ne!(rescue, base);
     }
 
     /// Lossless two-channel codecs share FLAC's path (S4, PR 1): ALAC, and LPCM under every spelling
