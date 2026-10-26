@@ -812,6 +812,25 @@ mod tests {
         assert_eq!(fx, [RecoveryEffect::ShowError { refusal: cause }]);
     }
 
+    /// The picture is per ENGINE (`no_frames`), not per request: a request that pictured and then
+    /// reloads (a resume after Home, a track pick) owes the new Engine's open the same rung, so its
+    /// pre-picture refusal earns the encode, and a refusal of an Engine that HAS a picture does not.
+    /// A resume refusal is the likelier transient one, but nothing in the design exempts it: a known
+    /// gap, pinned here as the behaviour.
+    #[test]
+    fn the_both_rung_follows_the_engines_picture_not_the_requests() {
+        let cause = LoadRefusal::Refused { num: 601 };
+        let mut m = manual_machine();
+        run(&mut m, RecoveryEvent::FirstPicture);
+        let (_, fx) = run(&mut m, refused(cause, manual_on("ac3", h264_1080p())));
+        assert_eq!(fx, [RecoveryEffect::ConvertBoth { flight: 1 }], "the reloaded Engine had no picture");
+        let mut m = manual_machine();
+        run(&mut m, RecoveryEvent::FirstPicture);
+        let with_picture = OpenFacts { no_frames: false, ..manual_on("ac3", h264_1080p()) };
+        let (_, fx) = run(&mut m, refused(cause, with_picture));
+        assert_eq!(fx, [RecoveryEffect::ShowError { refusal: cause }]);
+    }
+
     /// The both rung's own refused dispatch is terminal: the read-out.
     #[test]
     fn a_refused_both_facets_flight_reads_out() {
