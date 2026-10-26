@@ -40,7 +40,8 @@
 # each other; the television is not synced to anything that matters here.
 #
 # See .agents/skills/tv-lock/SKILL.md for the workflow, and docs/agent-reference.md's testing section for what
-# the lock does and does not protect (it cannot see a human watching a film with the remote).
+# the lock does and does not protect (it cannot see a human watching a film with the remote; the
+# pre-flight after an acquire reads what is in front and prints IDLE or `IN USE:`).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

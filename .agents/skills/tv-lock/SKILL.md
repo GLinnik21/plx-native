@@ -136,6 +136,16 @@ Four layers, so there is no "I forgot" path:
 - **Work started before the lock existed**, or from a checkout without these tools. Same warning,
   same rule.
 
+**Is anybody watching?** The pre-flight that `acquire` and `status` print also reads the foreground
+app and the panel state, in the same round trip, and ends with `· IDLE (...)` or a line that starts
+`IN USE: <app id>: stop and tell the owner`: on that line do not drive the set, tell the owner (a
+subagent puts the line first in its report) and release a lease you just took. Idle is one of this
+project's own apps, LG Home or live TV in front, or the panel dark / the set in standby; any other
+foreground app is IN USE, and a reply that cannot be read prints `UNKNOWN`, which is never idle.
+`tools/tv-session.sh fg` is the same foreground read on its own: the one `tv-session.sh` word the
+guard allows without a lease, because it changes nothing and never wakes a sleeping set (it says
+`TV unreachable or asleep (treated as idle)`).
+
 ## Fleets
 
 When farming device work out to several agents, **the television is the scheduling constraint, not
