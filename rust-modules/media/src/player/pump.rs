@@ -2408,9 +2408,10 @@ mod tests {
     /// **The learner is reached through its injected recorder and nowhere else.** A named write is
     /// the pipeline's own refusal: it records the facet the machine put on the effect once and
     /// consumes the flag that raised it. A proof is a facet-clean rescue: it records its facet and
-    /// touches no flag. Neither changes the process-wide capability answer (only the queued record's
-    /// projection does): the closing section runs the REAL recorder under a temporary session and
-    /// reads the answer before the queued write lands, and the record after it.
+    /// touches no flag. Neither changes the process-wide capability answer (`devcaps::caps()` is
+    /// write-once; only a play start, `devcaps::start_caps`, reads the record): the closing section
+    /// runs the REAL recorder under a temporary session and reads the answer before the queued write
+    /// lands, and the record after it.
     #[test]
     fn confirm_refusal_writes_only_through_the_injected_recorder() {
         use super::super::recovery::Evidence;
@@ -2462,11 +2463,13 @@ mod tests {
         assert!(std::sync::Arc::ptr_eq(&before, &plx_platform::devcaps::caps()), "queueing the write moved no global");
         plx_base::storage_worker::drain_for_test();
         assert_eq!(plx_plex::plex::session::peek().native_audio_refused().len(), 1, "the real recorder wrote the row");
-        assert!(std::sync::Arc::ptr_eq(&before, &plx_platform::devcaps::caps()), "the worker's projection does not reach this thread");
-        // The record's projection on THIS thread is what moves the answer, and a named row applies at once.
-        assert!(before.audio_supports("opus", 6), "sanity: announced before the record is projected");
+        // Installing the record moves nothing either; the play-start edge is what reads it, and a named row applies at once.
+        assert!(before.audio_supports("opus", 6), "sanity: announced before the record is read");
         plx_plex::plex::session::save(&plx_plex::plex::session::peek());
-        assert!(!plx_platform::devcaps::caps().audio_supports("opus", 6), "the projected named row took Opus 5.1 away");
+        assert!(std::sync::Arc::ptr_eq(&before, &plx_platform::devcaps::caps()), "installing the record moves no global");
+        let start = plx_platform::devcaps::start_caps(&plx_plex::plex::session::peek().applied_refusals());
+        assert!(!start.audio_supports("opus", 6), "the start value lacks the named row's Opus 5.1");
+        assert!(start.audio_supports("opus", 2), "a surround refusal keeps the codec to stereo");
         super::SHARED.reset_session();
     }
     use super::{
@@ -3823,7 +3826,7 @@ mod flight_tests {
         assert_eq!(
             opus_channels(),
             None,
-            "the named write is queued: the process-wide answer moves when the record lands, never synchronously"
+            "the named write is queued, and the process-wide answer is write-once: it never moves"
         );
         assert_ne!(
             crate::player::state(&rig.ps),
@@ -3861,11 +3864,14 @@ mod flight_tests {
             "the converted open is the app's own recovery, so a failure of it must not read as the first fresh open"
         );
         assert_eq!(context.attempt_ordinal, super::super::report::AttemptOrdinal::FIRST.next());
-        // The earlier `None` was not vacuous: the named row was written, and projecting the landed
-        // record on this thread is what moves the answer.
+        // The earlier `None` was not vacuous: the named row was written, and the NEXT play's start
+        // value (`devcaps::start_caps`) carries the ceiling the record taught. The boot answer
+        // stays as it was.
         plx_base::storage_worker::drain_for_test();
         plx_plex::plex::session::save(&plx_plex::plex::session::peek());
-        assert_eq!(opus_channels(), Some(2), "the landed record projects the ceiling the frame did not");
+        assert_eq!(opus_channels(), None, "the landed record moved the process-wide answer");
+        let start = plx_platform::devcaps::start_caps(&plx_plex::plex::session::peek().applied_refusals());
+        assert_eq!(start.audio_channels.get("opus").copied(), Some(2), "the landed record gives the next start the ceiling");
         rig.flight.wait_for("the replaced encoder's stop", |f| f.stopped().iter().any(|s| s == "rig-1"));
     }
 
@@ -3953,7 +3959,7 @@ mod flight_tests {
         let _set = firmware_announcing_opus();
         reset_watch();
         // The install learned this combination on an earlier play: the stored record holds it named,
-        // and the projection folds it into this thread's layers, so the attempt already lacks it.
+        // and the play start derives its value from the record, so the attempt already lacks it.
         let _session = plx_plex::plex::session::TempSession::new("known-stall");
         let known = plx_plex::plex::session::NativeAudioRefusal::of_facet(
             &plx_platform::devcaps::Facet::Audio { codec: "opus".into(), channels: 6 },
@@ -3963,7 +3969,8 @@ mod flight_tests {
         )
         .expect("a named row");
         plx_plex::plex::session::save(&plx_plex::plex::session::peek().with_native_audio_refusal(&known).expect("news"));
-        assert_eq!(plx_platform::devcaps::caps().audio_channels.get("opus").copied(), Some(2), "sanity: the record is projected");
+        FlightRig::plan_on(&mut rig.ps, plx_platform::devcaps::start_caps(&plx_plex::plex::session::peek().applied_refusals()));
+        assert!(!crate::route::audio_track_direct_plays(&rig.ps, "opus", 6, 48_000), "sanity: the attempt lacks the stored refusal");
         crate::ff::native_audio::publish_fed(crate::ff::native_audio::Kind::Opus, 6);
         let epoch = engine_epoch(&mut rig).expect("the rig's Engine");
         assert!(SHARED.mark_native_load_returned(epoch).is_some(), "the Load returned: the watchdog's precondition");
@@ -4206,17 +4213,23 @@ mod flight_tests {
         assert_eq!(rig.ps.open_recovery().phase(), super::super::recovery::Phase::Playing, "the picture ended the open");
         assert_eq!(recorded_refusals(), [dts_row(1)]);
         assert!(!recorded_refusals()[0].applies());
-        // The count-1 row goes through the real projection on this thread, so the answer below is
-        // one the record could have changed.
+        // The count-1 row is stored and counted, not applied: the record hands the play start nothing,
+        // so the next start is the boot value itself.
         plx_plex::plex::session::save(&plx_plex::plex::session::peek());
+        assert!(
+            std::sync::Arc::ptr_eq(
+                &plx_platform::devcaps::start_caps(&plx_plex::plex::session::peek().applied_refusals()),
+                &plx_platform::devcaps::caps()
+            ),
+            "a once-proved row leaves the next start alone"
+        );
         assert!(plx_platform::devcaps::caps().audio_supports("dts", 6), "one proof changes no capability answer");
     }
 
-    /// A second rescued play persists the refusal; once the record is installed on this thread
-    /// (the projection the storage worker ran saw the worker's layers, not this thread's), the next
-    /// start no longer announces DTS 5.1 and PMS is told to bound it.
+    /// A second rescued play persists the refusal; the next play's start value no longer announces
+    /// DTS 5.1 (and PMS is told to bound it), while the boot snapshot is untouched.
     #[test]
-    fn a_second_rescued_play_persists_and_the_next_start_lacks_dts_surround() {
+    fn the_next_play_starts_without_a_twice_proved_dts_surround() {
         let mut rig = dts_rig(Rig::new(60));
         let _session = plx_plex::plex::session::TempSession::new("s2a-proof-two");
         let _set = firmware_announcing_dts();
@@ -4239,12 +4252,10 @@ mod flight_tests {
 
         plx_plex::plex::session::save(&plx_plex::plex::session::peek());
         let dts6 = plx_platform::devcaps::Facet::Audio { codec: "dts".into(), channels: 6 };
-        assert!(
-            !plx_platform::devcaps::caps().audio_supports("dts", 6),
-            "the next start bounds DTS: {:?}",
-            plx_platform::devcaps::caps().audio_channels
-        );
-        assert_eq!(plx_platform::devcaps::caps().without(&dts6), *plx_platform::devcaps::caps(), "nothing left to take out");
+        let start = plx_platform::devcaps::start_caps(&plx_plex::plex::session::peek().applied_refusals());
+        assert!(!start.audio_supports("dts", 6), "the next start bounds DTS: {:?}", start.audio_channels);
+        assert_eq!(start.without(&dts6), *start, "nothing left to take out");
+        assert!(plx_platform::devcaps::caps().audio_supports("dts", 6), "the boot snapshot is untouched");
     }
 
     /// An HLS rescue (the both-facets rung) records nothing, however clean the verdicts.

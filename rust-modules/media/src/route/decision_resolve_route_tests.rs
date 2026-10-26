@@ -2791,3 +2791,31 @@ fn the_facts_row_reads_the_start_value() {
     );
     restore_direct_play_mode(DirectPlayMode::Auto);
 }
+
+/// The track menu's "converted by your server" mark reads the ATTEMPT, so a combination the install
+/// learned the pipeline refuses reads as converted on the very play that converts it, while the
+/// boot snapshot (`devcaps::caps`) still announces it. Forced Direct Play converts nothing.
+#[test]
+fn the_converted_mark_reads_the_attempt_not_the_boot() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let _set = plx_platform::devcaps::firmware_on_this_thread_for_test(
+        "fw",
+        "B",
+        plx_platform::devcaps::Caps {
+            audio: "aac,ac3,eac3,dts".into(),
+            audio_channels: [("dts".into(), 6)].into(),
+            ..plx_platform::devcaps::Caps::assumed()
+        },
+    );
+    let boot = plx_platform::devcaps::caps();
+    ps.begin_attempt(boot.clone());
+    assert!(!audio_converted_by_server(&ps, "dts", 6, 48_000), "sanity: the boot value decodes DTS 5.1");
+    let dts6 = plx_platform::devcaps::Facet::Audio { codec: "dts".into(), channels: 6 };
+    ps.begin_attempt(std::sync::Arc::new(boot.without(&dts6)));
+    assert!(audio_converted_by_server(&ps, "dts", 6, 48_000), "the attempt lost DTS 5.1: the server converts it");
+    assert!(!audio_converted_by_server(&ps, "ac3", 6, 48_000), "an untouched codec still plays");
+    assert!(plx_platform::devcaps::caps().audio_supports("dts", 6), "the boot value is untouched");
+    ps.direct_play_mode = DirectPlayMode::Forced;
+    assert!(!audio_converted_by_server(&ps, "dts", 6, 48_000), "Forced Direct Play refuses instead of converting");
+}

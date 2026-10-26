@@ -182,8 +182,9 @@ pub struct PlaybackSession {
     cur_contract: plx_plex::plex::EncodeContract,
     /// **This request's failed-open ladder, which also owns the one capability value the attempt
     /// plans and profiles from** ([`OpenRecovery`], [`attempt_caps`](Self::attempt_caps)). Created
-    /// by [`begin_attempt`](Self::begin_attempt) with the value the app's play start read from the
-    /// device ONCE and handed to the `request_play*` entry points; a retry keeps it, and a refusal
+    /// by [`begin_attempt`](Self::begin_attempt) with the value the app's play start derived ONCE
+    /// (`devcaps::start_caps`: the write-once boot snapshot less the install's stored refusals) and
+    /// handed to the `request_play*` entry points; a retry keeps it, and a refusal
     /// of natively fed audio that the install just learned narrows it inside the machine
     /// (`Caps::without`, for EVERY learned refusal, whichever recovery then wins: the Original
     /// trial's rollback shadows the conversion, and the rebase it flies, a later retry and a
@@ -192,7 +193,9 @@ pub struct PlaybackSession {
     /// Auto's catalog, the remux predictions) and the profile string PMS reads
     /// (`plex::TranscodeSpec::caps`) are all derived from this value, so the plan and the profile
     /// cannot disagree, and "excluded for this attempt" has somewhere to live that is not a global
-    /// written before anything is proved. A new request replaces the whole value.
+    /// written before anything is proved. A new request replaces the whole value: what this one
+    /// narrowed reaches the next only as a stored row, once the learner's write has landed, and the
+    /// next play's start edge derives its value from the record.
     ///
     /// `None` only before the first attempt (the const [`IDLE`](Self::IDLE) cannot hold an `Arc`):
     /// [`attempt_caps`](Self::attempt_caps) then answers [`plx_platform::devcaps::Caps::assumed`], the
@@ -768,9 +771,9 @@ impl PlaybackSession {
         self.recovery.as_ref().map_or_else(plx_platform::devcaps::assumed_shared, |r| r.attempt())
     }
 
-    /// Begin an attempt on `caps`: the value the app's play start read, handed to
-    /// [`request_play_with_queue`] (the one caller in production). The request's ladder starts from
-    /// it; the previous request's, and whatever it had narrowed, is dropped.
+    /// Begin an attempt on `caps`: the value the app's play start derived (`devcaps::start_caps`),
+    /// handed to [`request_play_with_queue`] (the one caller in production). The request's ladder
+    /// starts from it; the previous request's, and whatever it had narrowed, is dropped.
     pub(super) fn begin_attempt(&mut self, caps: std::sync::Arc<plx_platform::devcaps::Caps>) {
         self.recovery = Some(crate::player::recovery::OpenRecovery::new(caps));
     }
@@ -6998,16 +7001,12 @@ pub fn audio_track_direct_plays(ps: &PlaybackSession, codec: &str, channels: i64
 /// your server" mark: a track the TV cannot decode (`audio_direct_plays_with`, the same capability
 /// answer the planner and the profile use) plays through the server's remux or re-encode with its
 /// audio converted. Not under Forced Direct Play, where an unplayable track is refused instead of
-/// converted, so nothing is converted there. Reads the process-wide mode, like
-/// [`playback_preview`]: the menu's track form is built from the metadata view alone (it keeps no
-/// session), so it cannot read the `direct_play_mode` or the capability value the session
-/// captured and `commit_audio_selection` uses; it is a device read-out, and reads the process-wide
-/// answer for both, which agree with the attempt's unless the setting or a refusal changes
-/// mid-playback.
-pub fn audio_converted_by_server(codec: &str, channels: i64, sample_rate: i64) -> bool {
-    let mode = direct_play_mode();
-    mode != DirectPlayMode::Forced
-        && !audio_direct_plays_with(&plx_platform::devcaps::caps(), mode, codec, channels, sample_rate)
+/// converted, so nothing is converted there. Reads the ATTEMPT (`ps`): the mode and the capability
+/// value this playback was requested with, the ones `commit_audio_selection` uses, so a combination
+/// the install has learned the pipeline refuses reads as converted, as the attempt converts it. A
+/// setting changed mid-playback moves the mark at the next request, not before.
+pub fn audio_converted_by_server(ps: &PlaybackSession, codec: &str, channels: i64, sample_rate: i64) -> bool {
+    ps.direct_play_mode != DirectPlayMode::Forced && !audio_track_direct_plays(ps, codec, channels, sample_rate)
 }
 
 /// Select a rung. MAIN THREAD (it writes the session).
@@ -7835,8 +7834,10 @@ fn playback_preview_with_capability(
     };
     let mode = direct_play_mode();
     // The facts row is a read-out of what the device would do NOW, with no attempt behind it, so it
-    // is a start edge of its own: one read here, passed down to every gate it asks.
-    let caps = plx_platform::devcaps::caps();
+    // is a start edge of its own: the value a play started this moment would begin on (the boot
+    // snapshot less the install's stored refusals), read once here and passed down to every gate it
+    // asks. With no stored row in force it is the boot `Arc` itself: one `peek()`, no clone.
+    let caps = plx_platform::devcaps::start_caps(&plx_plex::plex::session::peek().applied_refusals());
     if mode == DirectPlayMode::Forced {
         return (!part.is_empty() && part_is_streamable(part)
             && video_feed_supported(vcodec, presentation, &caps)

@@ -1712,12 +1712,12 @@ fn dts_row_caps() -> plx_platform::devcaps::Caps {
 #[cfg(feature = "devtriggers")]
 fn a_dca_track_direct_plays_on_a_set_with_a_dts_row() {
     use std::time::Duration;
-    let _caps = plx_platform::devcaps::caps_on_this_thread_for_test(dts_row_caps());
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
-    // The start edge a play request runs (`request_play_with_queue`): the attempt reads the device's
-    // capability value once, and the resolve below plans and profiles from that value alone.
-    ps.begin_attempt(plx_platform::devcaps::caps());
+    // The start edge a play request runs (`request_play_with_queue`): the attempt carries the
+    // capability value the play start derived, and the resolve below plans and profiles from that
+    // value alone. This set's table lists a DTS row, so that value is handed in, not installed.
+    ps.begin_attempt(std::sync::Arc::new(dts_row_caps()));
     assert!(plx_net::net::global_init());
     let (port, rx, server) = plan_pms_within(3, MDE_DIRECTPLAY, Duration::from_secs(3), false);
     let sid = plx_plex::plex::register_for_test("dca-row", "127.0.0.1", port, "token", "dca-row-client");
