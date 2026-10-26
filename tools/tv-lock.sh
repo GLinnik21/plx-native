@@ -84,6 +84,14 @@ fmt_dur() {  # seconds -> "1h 04m" / "7m 12s" / "9s"
   else printf '%ds' "$s"; fi
 }
 
+# The ONE line a person needs when the set is about to be in use: printed (plain, at the start of its
+# line, on stdout) when a NEW lease is taken -- `acquire`, `break` -- and never for a renew. A shell
+# cannot call PushNotification, so the PostToolUse hook .claude/hooks/tv-lock-notify.py keys on the
+# leading `HEADS-UP:` and tells the agent to send it. `sane` keeps a --why to one line.
+heads_up() {  # $1 = why, $2 = lease minutes
+  printf 'HEADS-UP: %s, lease %s min\n' "$(sane "${1:-no reason given}")" "$2"
+}
+
 # ------------------------------------------------------------------- the TV ---
 # $TV, $TV_HOST, then tools/tv-config.sh: this checkout's `.tv-host`, the main checkout's, then the
 # per-user `tv-host`. The last two matter here more than anywhere: `.tv-host` is gitignored, so a
@@ -101,6 +109,9 @@ HOST="$(resolve_tv)"
 # the part that stays out of the repo) only when the set refuses the key, and a fast failure for a
 # set that is unreachable. Its stderr is dropped here: callers decide what an unreachable set means.
 ssh_tv() {
+  # PLX_TV_LOCK_LOCAL is the selftest's "there is no television" switch (remote_op runs the device
+  # half under a local sh for it too): nothing is asked of the set, and it always answers.
+  [ -z "${PLX_TV_LOCK_LOCAL:-}" ] || return 0
   PLX_TV_ADDR="$HOST" "$REPO/tools/tv-ssh" ssh tv "$@" 2>/dev/null
 }
 
@@ -355,6 +366,7 @@ cmd_acquire() {
       ok "TV lock held by this lane for $(fmt_dur $((ttl*60)))${WHY:+ — $WHY}"
       info "release it: tools/tv-lock.sh release"
       preflight_note
+      heads_up "$WHY" "$ttl"        # last, so a `| tail` keeps it (the in-place renew above prints none)
       exit 0
     fi
     [ "$ACT" = held ] || exit 2
@@ -405,6 +417,7 @@ cmd_renew() {
 # anybody is on it anyway — an older job, a colleague, a human with the remote.
 preflight_note() {
   local sd dd out
+  [ -z "${PLX_TV_LOCK_LOCAL:-}" ] || return 0     # selftest: no television to look at
   sd="$(make -s -C "$REPO" FLAVOR=stable print-appdir 2>/dev/null)"
   dd="$(make -s -C "$REPO" FLAVOR=debug  print-appdir 2>/dev/null)"
   [ -n "$sd" ] && [ -n "$dd" ] || return 0
@@ -465,6 +478,7 @@ cmd_break() {
   new_token; WHY="${WHY:-broke a stale lease}"
   do_acquire "${TTL_OVERRIDE:-$TTL_MIN}" 1 || exit 1
   ok "lock broken and taken by this lane"
+  heads_up "break: $WHY" "${TTL_OVERRIDE:-$TTL_MIN}"
 }
 
 # What every TV-facing tool calls. Three jobs: refuse when somebody else holds the set, keep a
@@ -523,7 +537,7 @@ cmd_require() {
     echo "  make check / make sim (the ui-sim skill runs N simulators at once)." >&2
     exit 1
   fi
-  # free or expired: take the short implicit lease.
+  # free or expired: take the short implicit lease. No HEADS-UP: a Claude session never gets here (tv-lock-guard.py refuses first).
   new_token; WHY="${WHY:-implicit lease (an unattended TV command)}"; LABEL="${LABEL:-auto}"
   if do_acquire "$AUTO_TTL_MIN" 0; then
     # ALWAYS said out loud, `--quiet` or not: `--quiet` means "do not narrate the lease I already
@@ -612,6 +626,45 @@ cmd_selftest() {
   mkdir -p "$REMOTE_LOCK"
   TOKEN=ccc
   RESP="$(remote_op acquire 600 0)";  t "an owner-less lock dir is taken, not a wedge" stolen
+
+  # The HEADS-UP line (.claude/hooks/tv-lock-notify.py keys on it), through the real subcommands
+  # rather than remote_op: one on a NEW lease (acquire, break), none on a renew or a refusal. Each
+  # call is a child with its own lane, lease directory and lock path under $d, so nothing here can
+  # reach the operator's real lease; PLX_TV_LOCK_LOCAL keeps ssh_tv, ensure_awake and
+  # preflight_note off the network, and TV is a placeholder so no tv-config lookup happens either.
+  local self="${BASH_SOURCE[0]}" out rc
+  hu() {  # hu <lane> <tv-lock.sh args…>  ->  $out (stdout+stderr), $rc
+    local lane="$1"; shift
+    out="$(env -u PLX_TV_LOCK_TOKEN -u PLX_TV_LOCK_INHERITED -u PLX_TV_LOCK_BYPASS \
+      TV=selftest.invalid PLX_TV_LOCK_LOCAL="$d" PLX_TV_LOCK_PATH="$d/headsup.lock" \
+      PLX_TV_LOCK_STATE="$d/headsup-state" PLX_TV_LOCK_LANE="$d/lane-$lane" "$self" "$@" 2>&1)"
+    rc=$?
+  }
+  want() {  # want <name> <exit> <HEADS-UP line count> [<the one line, whole>]
+    local n line; n=$(printf '%s\n' "$out" | grep -c '^HEADS-UP: ')
+    line=$(printf '%s\n' "$out" | grep '^HEADS-UP: ' | head -1)
+    if [ "$rc" = "$2" ] && [ "$n" = "$3" ] && { [ -z "${4:-}" ] || [ "$line" = "$4" ]; }; then
+      printf '  \033[32m✓\033[0m %s (exit %s, %s HEADS-UP)\n' "$1" "$rc" "$n"
+    else
+      printf '  \033[31m✗\033[0m %s: want exit %s with %s HEADS-UP%s; got exit %s with %s: %s\n' \
+        "$1" "$2" "$3" "${4:+ \"$4\"}" "$rc" "$n" "${line:-none}"
+      fails=$((fails+1))
+    fi
+  }
+  hu A acquire --why "heads-up case" --ttl 7
+  want "a new acquire prints one HEADS-UP" 0 1 "HEADS-UP: heads-up case, lease 7 min"
+  hu A acquire --why "again" --ttl 7
+  want "acquiring what you hold is a renew: none" 0 0
+  hu A renew --ttl 7
+  want "renew: none" 0 0
+  hu B acquire --why "intruder"
+  want "an acquire the set refuses: none" 1 0
+  hu B break --yes --why "case" --ttl 7
+  want "break prints one HEADS-UP" 0 1 "HEADS-UP: break: case, lease 7 min"
+  hu B release
+  want "release: none" 0 0
+  hu A acquire --why "$(printf 'two\nlines "quoted"')" --ttl 7
+  want "a --why with a newline and quotes is still ONE line" 0 1 "HEADS-UP: two lines quoted, lease 7 min"
   echo ""
   [ "$fails" = 0 ] && { echo "selftest: all good"; return 0; }
   echo "selftest: $fails FAILED"; return 1
