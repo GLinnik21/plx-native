@@ -45,7 +45,7 @@ use plx_platform::devcaps::Facet;
 /// The most flights one play request starts through the facet rung and the both-facets rung (and a
 /// failed source's HLS contingency): the facet's conversion, then the both-facets rung. The
 /// Original rollback is not counted.
-pub const MAX_RECOVERY_FLIGHTS: u8 = 2;
+pub const MAX_RECOVERY_FLIGHTS: u32 = 2;
 
 /// How the open failed, as the pump's failure branches see it. The event payload; no field of the
 /// session.
@@ -198,7 +198,7 @@ pub struct OpenRecovery {
     excluded: Option<Facet>,
     /// Flights started by the facet and both-facets rungs (and a failed source's HLS contingency).
     /// The rollback is not counted.
-    flights: u8,
+    flights: u32,
     state: State,
 }
 
@@ -515,7 +515,7 @@ mod tests {
                     assert_eq!(before, 0, "a facet conversion after another flight: {ev:?}");
                 }
                 assert!(
-                    flights + started <= usize::from(MAX_RECOVERY_FLIGHTS),
+                    flights + started <= usize::try_from(MAX_RECOVERY_FLIGHTS).unwrap(),
                     "{} flights started on one request",
                     flights + started
                 );
