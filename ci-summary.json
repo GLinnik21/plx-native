@@ -29,21 +29,21 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-26T10:33:57Z",
+ "generated": "2026-10-26T10:34:29Z",
  "metrics": [
   {
    "change30_pct": null,
-   "change7_pct": 38.1,
+   "change7_pct": 37.8,
    "d30": null,
    "delta30": null,
-   "delta7": 59.5,
+   "delta7": 59,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 94,
+   "n_now": 95,
    "n_prev": 97,
-   "now": 215.5,
+   "now": 215,
    "prev7": 156,
    "shown": true,
    "state": "worse",
@@ -117,18 +117,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -53.6,
-   "change7_pct": -20.9,
+   "change30_pct": -53.5,
+   "change7_pct": -20.7,
    "d30": 724.0,
-   "delta30": -388.0,
-   "delta7": -89,
+   "delta30": -387.0,
+   "delta7": -88.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 95,
+   "n_now": 96,
    "n_prev": 117,
-   "now": 336,
+   "now": 337.0,
    "prev7": 425,
    "shown": true,
    "state": "better",
@@ -298,17 +298,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -16.6,
+   "change7_pct": -16.5,
    "d30": null,
    "delta30": null,
-   "delta7": -66.5,
+   "delta7": -66,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 94,
+   "n_now": 95,
    "n_prev": 97,
-   "now": 333.5,
+   "now": 334,
    "prev7": 400,
    "shown": true,
    "state": "flat",
@@ -327,9 +327,9 @@
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 94,
+   "n_now": 95,
    "n_prev": 24,
-   "now": 319.0,
+   "now": 319,
    "prev7": 310.0,
    "shown": true,
    "state": "flat",
@@ -340,17 +340,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -29.1,
+   "change7_pct": -29.0,
    "d30": null,
    "delta30": null,
-   "delta7": -114,
+   "delta7": -113.5,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 93,
+   "n_now": 94,
    "n_prev": 97,
-   "now": 278,
+   "now": 278.5,
    "prev7": 392,
    "shown": true,
    "state": "better",
@@ -406,14 +406,14 @@
    "change7_pct": 20.0,
    "d30": null,
    "delta30": null,
-   "delta7": 32.0,
+   "delta7": 32,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 94,
+   "n_now": 95,
    "n_prev": 97,
-   "now": 192.0,
+   "now": 192,
    "prev7": 160,
    "shown": true,
    "state": "flat",
@@ -424,17 +424,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -13.6,
+   "change7_pct": -13.3,
    "d30": null,
    "delta30": null,
-   "delta7": -25.5,
+   "delta7": -25,
    "group": "ci",
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 94,
+   "n_now": 95,
    "n_prev": 97,
-   "now": 162.5,
+   "now": 163,
    "prev7": 188,
    "shown": true,
    "state": "flat",
@@ -559,9 +559,9 @@
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 94,
+   "n_now": 95,
    "n_prev": 24,
-   "now": 5.0,
+   "now": 5,
    "prev7": 5.0,
    "shown": false,
    "state": "flat",
@@ -575,14 +575,14 @@
    "change7_pct": -99.1,
    "d30": 240.0,
    "delta30": -237.0,
-   "delta7": -318,
+   "delta7": -318.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 93,
+   "n_now": 94,
    "n_prev": 97,
-   "now": 3,
+   "now": 3.0,
    "prev7": 321,
    "shown": false,
    "state": "better",
@@ -596,14 +596,14 @@
    "change7_pct": 0.0,
    "d30": 744.5,
    "delta30": -741.5,
-   "delta7": 0,
+   "delta7": 0.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 93,
+   "n_now": 94,
    "n_prev": 97,
-   "now": 3,
+   "now": 3.0,
    "prev7": 3,
    "shown": false,
    "state": "flat",
@@ -636,13 +636,8 @@
  ],
  "regressions": [
   {
-   "change_pct": 38.1,
+   "change_pct": 37.8,
    "commits": [
-    {
-     "pr": 1000,
-     "sha": "d18aedde5",
-     "title": "Simulator: the desktop drawable is 1:1 with the canvas on any pixel density (Retina debug crash)"
-    },
     {
      "pr": 1006,
      "sha": "b835afb86",
@@ -687,6 +682,11 @@
      "pr": 1061,
      "sha": "3b159ed26",
      "title": "Playback: a refused audio format is learned only from a retry that proved it"
+    },
+    {
+     "pr": 1050,
+     "sha": "cca63621f",
+     "title": "Add the pr-reviewer custom agent and a CI guard for the agents' files"
     }
    ],
    "from": 156,
@@ -694,16 +694,11 @@
    "label": "CI: host python/shell/C gates",
    "since": "2026-10-26",
    "threshold_pct": 20.0,
-   "to": 215.5
+   "to": 215
   },
   {
    "change_pct": 34.1,
    "commits": [
-    {
-     "pr": 1000,
-     "sha": "d18aedde5",
-     "title": "Simulator: the desktop drawable is 1:1 with the canvas on any pixel density (Retina debug crash)"
-    },
     {
      "pr": 1006,
      "sha": "b835afb86",
@@ -748,6 +743,11 @@
      "pr": 1061,
      "sha": "3b159ed26",
      "title": "Playback: a refused audio format is learned only from a retry that proved it"
+    },
+    {
+     "pr": 1050,
+     "sha": "cca63621f",
+     "title": "Add the pr-reviewer custom agent and a CI guard for the agents' files"
     }
    ],
    "from": 47.5,
@@ -761,11 +761,6 @@
    "change_pct": 30.9,
    "commits": [
     {
-     "pr": 1000,
-     "sha": "d18aedde5",
-     "title": "Simulator: the desktop drawable is 1:1 with the canvas on any pixel density (Retina debug crash)"
-    },
-    {
      "pr": 1006,
      "sha": "b835afb86",
      "title": "Add Russian (ru) localization"
@@ -809,6 +804,11 @@
      "pr": 1061,
      "sha": "3b159ed26",
      "title": "Playback: a refused audio format is learned only from a retry that proved it"
+    },
+    {
+     "pr": 1050,
+     "sha": "cca63621f",
+     "title": "Add the pr-reviewer custom agent and a CI guard for the agents' files"
     }
    ],
    "from": 973.0,
@@ -831,19 +831,19 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 333.5
+   "now": 334
   },
   {
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 319.0
+   "now": 319
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 278
+   "now": 278.5
   },
   {
    "group": "ci",
