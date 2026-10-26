@@ -431,3 +431,40 @@ fn value_mode_keeps_the_real_library_focus_and_restores_the_caption_geometry() {
     assert!(seated(&page).abs() < 1.0, "and it stays seated once settled: {}", seated(&page));
     crate::registry::captions::TEST_UNDER_POSTERS.with(|c| c.set(None));
 }
+
+/// A server's re-list plays its landing (the removed card fades out where it stood, the others
+/// slide over), and only its landing: the play is let go once it ends.
+#[test]
+fn a_server_re_list_plays_its_landing_with_a_ghost_and_then_lets_go() {
+    let _guard = plx_base::testlock::serial();
+    let mut fixture = Fixture::new();
+    let sid = plx_plex::plex::ServerId::from_raw(0);
+    let movie = |i: usize| Some(plx_data::pms::PmsMovie { sid, rk: format!("relist-{i}"), ..Default::default() });
+    let listing = |rks: &[usize]| plx_data::browse::view::ListingSnapshot::fixture(sid, rks.iter().map(|&i| movie(i)).collect(), Vec::new());
+    fixture.listing = listing(&[0, 1, 2, 3, 4, 5, 6, 7]);
+    let mut page = fixture.screen();
+    page.initial = false;
+    let mut engine = FocusEngine::new();
+    settle(&mut page, &mut engine, &fixture, 0);
+    assert_eq!(page.pair.detail.relist_probe(), (false, Vec::new()));
+
+    fixture.listing = listing(&[0, 1, 2, 3, 4, 5, 6, 7]).with_relist();
+    page.sync(&fixture.cx(engine.current(OWNER)));
+    settle(&mut page, &mut engine, &fixture, 2000);
+    fixture.listing = listing(&[0, 1, 3, 4, 5, 6, 7]);
+    page.sync(&fixture.cx(engine.current(OWNER)));
+    frame(&mut page, &mut engine, &fixture, 4000);
+    frame(&mut page, &mut engine, &fixture, 4016);
+    let (playing, ghosts) = page.pair.detail.relist_probe();
+    assert!(playing, "the re-list's landing plays");
+    assert_eq!(ghosts, [Some("relist-2".to_string())], "the removed card is its ghost");
+    settle(&mut page, &mut engine, &fixture, 4032);
+    assert_eq!(page.pair.detail.relist_probe(), (false, Vec::new()), "the landing ended and was let go");
+
+    // A later change that is not a re-list cuts, as before.
+    fixture.listing = listing(&[0, 3, 4, 5, 6, 7]);
+    page.sync(&fixture.cx(engine.current(OWNER)));
+    frame(&mut page, &mut engine, &fixture, 7000);
+    frame(&mut page, &mut engine, &fixture, 7016);
+    assert_eq!(page.pair.detail.relist_probe(), (false, Vec::new()));
+}
