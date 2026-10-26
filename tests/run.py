@@ -4411,12 +4411,23 @@ def acquire_tv_lock(tv, why):
         return
     # `--wait 0`: a harness that blocks for ten minutes inside somebody's tool call is worse than
     # one that says who has the set and exits. `--wait <s>` is the caller's choice, not ours.
-    r = subprocess.run([TVLOCK, "acquire", "--why", why, "--as", "tests/run.py"], env=env)
+    # acquire's stdout is kept as well as shown: its pre-flight prints an `IN USE:` line at column 0
+    # (and still exits 0) when somebody looks to be watching the set.
+    r = subprocess.run([TVLOCK, "acquire", "--why", why, "--as", "tests/run.py"], env=env,
+                       stdout=subprocess.PIPE, text=True)
+    print(r.stdout, end="", flush=True)
     if r.returncode != 0:
         sys.exit("refusing to run: the television is held by another lane (see above). "
                  "Wait for it (tools/tv-lock.sh acquire --wait 540), or run host-side work "
                  "meanwhile (make check, make sim).")
     _LOCK_TAKEN = True
+    if any(line.startswith("IN USE:") for line in r.stdout.splitlines()) \
+            and os.environ.get("PLX_TV_IN_USE_OK") != "1":
+        # Same rule as `tv-lock.sh with`: the lease just taken goes back and nothing is driven.
+        release_tv_lock(tv)
+        _LOCK_TAKEN = False
+        sys.exit("refusing to run: the pre-flight found the television IN USE (the IN USE: line "
+                 "above). Tell the owner now; once they say go, rerun with PLX_TV_IN_USE_OK=1.")
 
 
 def release_tv_lock(tv):

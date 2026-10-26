@@ -219,6 +219,9 @@ python3 ci/test_host_threads.py
 # ...and the other half of that rule: a timing run (tests/run.py --fps*, profile-graphics, tv-sched-trace)
 # refuses a deployed `tvdev` binary and builds with ARM_PROFILE=release; functional runs do not. No TV.
 python3 tests/test_arm_profile_guard.py
+# The harness half of the TV lock's pre-flight: tests/run.py stops (and gives the lease back) on an `IN USE:` line
+# unless PLX_TV_IN_USE_OK=1, as `tv-lock.sh with` does. A fake lock script in a temp dir; no TV.
+python3 tests/test_run_in_use.py
 # The production C dispatch gate (src/starfish.c `sf_ready_object`), compiled and run on the host. It
 # had a test file and no gate: nothing ran it until the step manifest was checked against the tree.
 python3 tests/test_native_load_gate.py
