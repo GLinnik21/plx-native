@@ -5,7 +5,7 @@
 //! [`super::lifecycle::ForegroundLifecycle`]: its state is private and its one writer is
 //! [`step`](OpenRecovery::step). It reads no global and performs no IO. The facts a decision needs
 //! (an HLS->Original trial holding a live encoder, a cold Auto Original, Forced Direct Play, no
-//! decoded frame yet, the audio the pipeline was fed, the natively fed audio a refusal names) arrive
+//! decoded frame yet, the audio and the video the pipeline was fed, the natively fed audio a refusal names) arrive
 //! as a value on the event ([`OpenFacts`]), and so do the verdicts PMS gave a landed flight
 //! ([`Lanes`]); the work a decision asks for (the learner's write, a recovery flight, the failure
 //! read-out) leaves as a [`RecoveryEffect`] which the pump (`super::pump`, the driver) executes
@@ -25,9 +25,10 @@
 //! **The ladder** is the order of [`decide`](OpenRecovery::decide): a pending HLS->Original
 //! rollback first (its HLS route is the one a failed open owes the viewer); under Forced Direct
 //! Play the read-out (a forced play is never converted); else, for a refusal that names the
-//! pipeline, the conversion of the audio the pipeline was fed when [`suspect`] names it (the facet
-//! rung, once per request, [`RecoveryEffect::ConvertFacet`]); else the HLS contingency of a cold
-//! Auto Original (the both-facets rung); else the failure read-out. The rungs which start a flight
+//! pipeline, the conversion of the stream the pipeline was fed when [`suspect`] names it (the facet
+//! rung, once per request, [`RecoveryEffect::ConvertFacet`]: the audio, else the source's video, which
+//! a cold Auto Original leaves to its HLS rung); else the HLS contingency of a cold Auto Original,
+//! whose attempt lacks the refused video raster (the both-facets rung); else the failure read-out. The rungs which start a flight
 //! (the facet and the both-facets rung) are bounded by [`MAX_RECOVERY_FLIGHTS`] per request.
 //!
 //! **What the ladder teaches.** A refusal of natively fed audio (`num=200` or the stall) names the
@@ -237,7 +238,8 @@ pub enum RecoveryEffect {
     /// Fly the HLS rollback of the failed Original trial (`dispatch_rollback_rebase`).
     Rollback,
     /// Fly today's route rebuilt from [`OpenRecovery::attempt`], the facet excluded: the server
-    /// converts the stream the attempt no longer feeds (`dispatch_refusal_conversion`). `facet` is
+    /// converts the stream the attempt no longer feeds (`dispatch_refusal_conversion`; a video facet
+    /// is an encode with no video copy, an audio facet keeps the route as planned). `facet` is
     /// the stream class taken out of the attempt and `flight` the ordinal of this flight among the
     /// request's ([`MAX_RECOVERY_FLIGHTS`]), for the driver's log line.
     ConvertFacet { facet: Facet, flight: u32 },
@@ -296,7 +298,8 @@ pub struct OpenRecovery {
     /// `start` narrowed by `excluded`: the value the route plans and profiles from. Assigned only
     /// on a rung's entry, always from `start` ([`attempt_for`]).
     attempt: Arc<Caps>,
-    /// The facets the rungs took out, one per stream class; carried into the both-facets rung.
+    /// The facets the rungs took out, one per stream class (an audio and a video at most); carried
+    /// into the both-facets rung.
     excluded: Excluded,
     /// Flights started by the facet and both-facets rungs (and a failed source's HLS contingency).
     /// The rollback is not counted.

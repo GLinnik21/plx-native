@@ -242,8 +242,9 @@ something.
     (`Preparing(serial)`): the rollback's rebase after a failed Original trial
     (`route::dispatch_rollback_rebase`), the HLS fallback of an Auto Original that never opened
     (`route::dispatch_unopened_auto_hls`) and the facet conversion: the rebuild that has the server
-    convert the audio facet of any pipeline refusal that names audio outside `aac`/`ac3`/`eac3`, not
-    only native audio (`route::dispatch_refusal_conversion`, below). They hold nothing (the Engine that failed is not
+    convert the facet of a pipeline refusal: the audio outside `aac`/`ac3`/`eac3` (not only native
+    audio), else the source's video at a raster above 1080p, which an ENCODE with no video copy
+    converts (`route::dispatch_refusal_conversion`, below). They hold nothing (the Engine that failed is not
     playing) and the viewer keeps the connecting spinner (`pump::hold_connecting_state`). The
     landing is drained AHEAD of the failure branches (`route::take_ready_recovery_flight`, then
     `pump::land_recovery_flight`), because the branches' failure flags stay up for the whole flight
@@ -356,16 +357,24 @@ something.
   pipeline (`type=18` of ANY number, or the stall; not a Load timeout or a source failure) of an
   Engine that has shown no picture (`OpenFacts::no_frames`: the machine lives per request but a
   picture is per Engine, so a reload after the request's first picture, a track pick, owes its own
-  open the same rung): `recovery::suspect` names the stream the pipeline was fed when its audio is outside
-  `aac`/`ac3`/`eac3` (Opus 200, and the DTS 601 of #695, alike), the machine sets the attempt to
-  `start` less that facet (`Caps::without`; an attempt plans and profiles from the one value the machine
+  open the same rung): `recovery::suspect` names, by elimination and not by the refusal's number, the
+  stream the pipeline was fed: its audio when that is outside `aac`/`ac3`/`eac3` (Opus 200, and the DTS
+  601 of #695, alike), else the SOURCE's video when it was fed whole at a known raster
+  (`route::stream_video`; a numbered refusal only, and not for a cold Auto Original, whose HLS rung
+  is already the ABR-managed video re-encode and takes the refused raster out of its attempt
+  instead). The machine sets the attempt to `start` less that facet (`Caps::without`; an attempt plans and profiles from the one value the machine
   carries, `PlaybackSession::attempt_caps`, derived from the request's `start` on each rung's entry,
   never narrowed in place and never from a later read of the process-wide answer), and `ConvertFacet`
   has `route::dispatch_refusal_conversion` fly a `ClaimWork::Encode` under a `FlightOwner::Recovery`
-  that rebuilds today's route (which now plans the audio as the server's to convert), and
+  that rebuilds today's route (which now plans the audio as the server's to convert), or, for a
+  video facet (`VideoLane::Encode`), an encode with `no_video_copy` under the lower of the route's
+  ceiling and the 1080p rung's (`Caps::video_ceiling` lowers that codec's `raster_bound` to 1920x1088
+  in the profile and the direct-play gate too). A video facet never proves and is never stored
+  (D6(c)), and
   `land_recovery_flight` reloads onto it (`DeliveryReason::RefusalRecovery`; the landing re-grades the
-  stored Original candidate's audio, so the ABR climb does not offer the refused audio's direct play
-  again). No track pick runs in S1a: the replacement converts the track the viewer was on, and the
+  stored Original candidate (`regrade_original`): its audio, so the ABR climb does not offer the
+  refused audio's direct play again, and its video, which a candidate the attempt no longer direct
+  plays leaves dropped). No track pick runs in S1a: the replacement converts the track the viewer was on, and the
   AC3 sibling is only chosen once a learned row is in `start` (S2); (4) the **both-facets rung**, a cold
   Auto Original's HLS contingency (`StartAutoHls`); (5) the read-out. The facet and both-facets rungs
   together are bounded by `MAX_RECOVERY_FLIGHTS` (2) per request, the facet rung runs once, and the
