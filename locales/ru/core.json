@@ -38,7 +38,7 @@
   "core.preview_domain_recovered_stream": "отклонённый поток",
   "core.preview_domain_recovered_codec": "кодек отклонённого потока",
   "core.preview_domain_recovered_channels": "каналы отклонённого звука",
-  "core.preview_domain_recovered_error": "номер ошибки прошивки телевизора, либо timeout / stall",
+  "core.preview_domain_recovered_error": "номер ошибки прошивки телевизора либо timeout / stall",
   "core.preview_domain_elapsed": "прошедшее время",
   "core.preview_domain_hls_direction": "направление изменения качества HLS",
   "core.preview_domain_delivery_reason": "причина выбора способа передачи",

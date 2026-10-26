@@ -38,7 +38,7 @@
   "core.preview_domain_recovered_stream": "адхілены паток",
   "core.preview_domain_recovered_codec": "кодэк адхіленага патоку",
   "core.preview_domain_recovered_channels": "каналы адхіленага гуку",
-  "core.preview_domain_recovered_error": "нумар памылкі прашыўкі тэлевізара, або timeout / stall",
+  "core.preview_domain_recovered_error": "нумар памылкі прашыўкі тэлевізара або timeout / stall",
   "core.preview_domain_elapsed": "прайшло часу",
   "core.preview_domain_hls_direction": "кірунак HLS",
   "core.preview_domain_delivery_reason": "прычына спосабу дастаўкі",
