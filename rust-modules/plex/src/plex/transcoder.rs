@@ -336,7 +336,7 @@ fn profile_for(caps: &plx_platform::devcaps::Caps) -> String {
 
 /// The profile for THIS device — [`profile_for`] over the boot-probed caps snapshot.
 fn profile_extra(delivery: TranscodeDelivery) -> String {
-    profile_for_delivery(plx_platform::devcaps::caps(), delivery)
+    profile_for_delivery(&plx_platform::devcaps::caps(), delivery)
 }
 
 /// The forced-direct-play profile: the engine's own formats, no device limits, no transcode
@@ -375,7 +375,7 @@ fn profile_codec_name(codec: &str) -> &str {
 }
 
 fn forced_direct_profile() -> String {
-    forced_direct_profile_for(plx_platform::devcaps::caps())
+    forced_direct_profile_for(&plx_platform::devcaps::caps())
 }
 
 impl Client {

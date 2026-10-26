@@ -188,17 +188,29 @@ pub fn apply_exclusions(caps: &mut Caps, codename: &str, ignore: bool, table: &[
 }
 
 /// A native audio combination this install **watched the pipeline refuse**, remembered so the next
-/// play goes straight to conversion (`plex::session`'s `native_audio_refused` preference stores
-/// the list; [`merge_learned`] receives it). `channels` is the refused track's channel count.
+/// play goes straight to conversion. The install preference `native_audio_refused`
+/// (`plex::session`) is the one list of them; this is the shape it hands over
+/// ([`project_stored_refusals`]) and receives back ([`learn_refusal`]). `channels` is the refused
+/// track's channel count.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Refusal {
     pub firmware: String,
     pub codec: String,
     pub channels: u32,
     /// The firmware BUILD the refusal was watched on (`tv::device::Info::build`; empty for an entry
-    /// stored before builds were recorded). A different build is a different decoder, so the
-    /// session drops entries whose build is not the running one.
+    /// stored before builds were recorded). A different build is a different decoder, so a refusal
+    /// is evidence only on the build it was watched on ([`Refusal::watched_on`]).
     pub build: String,
+}
+
+impl Refusal {
+    /// Whether this refusal says anything about a set running `build`. An LG update replaces the
+    /// decoder a refusal was watched on, so another build's entry (and an older record's, which
+    /// never named one) is not evidence and the new firmware gets a fresh native try. An unknown
+    /// running build (no nyx file) judges nothing, so everything counts.
+    pub fn watched_on(&self, build: &str) -> bool {
+        build.is_empty() || self.build == build
+    }
 }
 
 /// Take the learned refusals for `codename` off `caps`, as [`apply_exclusions`] does. A refusal of a
@@ -448,24 +460,59 @@ fn ignores_learned(wide: bool, learn: bool) -> bool {
     wide && !learn
 }
 
-/// What the layers below start from: the table, minus the codecs gstcool.conf shows nothing can
-/// decode. [`rebuild`] derives [`caps`]'s answer from it, so the answer can change at runtime when
-/// the install learns a refusal.
+/// This set's audio capability answer and what derives it. [`probe`] builds it once: the table,
+/// minus the codecs gstcool.conf shows nothing can decode, minus [`EXCLUSIONS`]. The one thing that
+/// moves afterwards is [`Layers::caps`], and only one way: it LOSES native audio as refusals arrive
+/// ([`Layers::fold`]). The list of refusals is not kept here. The install preference
+/// `native_audio_refused` (`plex::session`) owns it, and this holds the answer derived from it.
 struct Layers {
-    base: Caps,
+    /// What [`caps`] answers. Replaced, never edited, so a reader holding the `Arc` keeps one
+    /// consistent snapshot and nothing is leaked for it.
+    caps: std::sync::RwLock<std::sync::Arc<Caps>>,
     codename: String,
+    /// The running firmware build (`tv::device::Info::build`; empty when the set did not say).
+    build: String,
     wide: bool,
     /// `plxnative-nativeaudiolearn` beside `wide`: the learned refusals still apply and are still
-    /// learned, so the learn-and-retry path can be shown on a set the exclusions would keep off it.
+    /// learned, so the learn-and-convert path can be shown on a set the exclusions would keep off it.
     learn: bool,
+    /// `plxnative-nativeaudioforget`: the stored refusals are not applied this run, so a set can be
+    /// shown learning from nothing. A refusal learned during the run still applies at once.
+    forget: bool,
 }
-static LAYERS: OnceLock<Layers> = OnceLock::new();
-static ASSUMED: OnceLock<Caps> = OnceLock::new();
-/// The current answer. Each rebuild publishes a new leaked snapshot (a few hundred bytes, a refusal
-/// is learned at most a handful of times per install), so a `&'static Caps` handed out earlier stays
-/// valid and a reader never takes a lock for longer than the pointer read.
-static CURRENT: std::sync::RwLock<Option<&'static Caps>> = std::sync::RwLock::new(None);
-static LEARNED: std::sync::Mutex<Vec<Refusal>> = std::sync::Mutex::new(Vec::new());
+
+impl Layers {
+    fn new(caps: Caps, codename: String, build: String, wide: bool, learn: bool, forget: bool) -> Layers {
+        Layers { caps: std::sync::RwLock::new(std::sync::Arc::new(caps)), codename, build, wide, learn, forget }
+    }
+
+    /// Take away from the answer whatever `refusals` (this firmware's, this build's) say the pipeline
+    /// cannot take, and report whether that took anything. Monotone and idempotent: it only ever
+    /// removes, so a list that is behind (a record read before a refusal's write landed) cannot give
+    /// back what an earlier call took, and applying the same list twice is a no-op.
+    fn fold(&self, refusals: &[Refusal]) -> bool {
+        let current: Vec<Refusal> = refusals.iter().filter(|r| r.watched_on(&self.build)).cloned().collect();
+        // The write lock spans the read-modify-write so two folds cannot lose each other's removal.
+        let mut answer = self.caps.write().unwrap_or_else(|e| e.into_inner());
+        let mut next = Caps::clone(&answer);
+        let applied = apply_learned(&mut next, &self.codename, ignores_learned(self.wide, self.learn), &current);
+        if next == **answer {
+            return false;
+        }
+        plx_base::eventlog::log(&format!(
+            "devcaps: firmware={:?} learned refusals: {} -> audio={}",
+            self.codename,
+            applied.join(" "),
+            next.audio
+        ));
+        *answer = std::sync::Arc::new(next);
+        true
+    }
+}
+
+/// The boot answer, set once by [`probe`].
+static BOOT: OnceLock<Layers> = OnceLock::new();
+static ASSUMED: OnceLock<std::sync::Arc<Caps>> = OnceLock::new();
 /// Did [`probe`] READ the table, or is [`caps`] returning [`Caps::assumed`]?
 ///
 /// The two are indistinguishable from the values alone — on the 49SM9000PLA they are equal by
@@ -480,118 +527,87 @@ static LEARNED: std::sync::Mutex<Vec<Refusal>> = std::sync::Mutex::new(Vec::new(
 /// here: "not measured" is the honest reading of both.
 static MEASURED: OnceLock<bool> = OnceLock::new();
 
-/// What this device decodes. Falls back to [`Caps::assumed`] if [`probe`] has not run — the
-/// boot calls it first, so that path exists for host tests, not the TV.
-pub fn caps() -> &'static Caps {
+/// Run `f` on this set's layers: the test thread's own when a test installed one, else the boot's.
+/// `None` before [`probe`] has run (every host test that installed nothing).
+fn with_layers<R>(f: impl FnOnce(&Layers) -> R) -> Option<R> {
     #[cfg(any(test, feature = "test-support"))]
-    if let Some(caps) = THREAD_CAPS.with(std::cell::Cell::get) {
-        return caps;
+    if let Some(layers) = THREAD_LAYERS.with(|slot| slot.borrow().clone()) {
+        return Some(f(&layers));
     }
-    if let Some(caps) = *CURRENT.read().unwrap_or_else(|e| e.into_inner()) {
-        return caps;
-    }
-    ASSUMED.get_or_init(Caps::assumed)
+    BOOT.get().map(f)
 }
 
-/// Layer the learned refusals and the static exclusions over the base and publish the result.
-/// Order: the table, minus gstcool.conf's no-decoder codecs (the base), minus [`EXCLUSIONS`], minus
-/// the learned refusals. The debug flag skips the last two. Logs each layer's effect.
-fn rebuild() {
-    let Some(layers) = LAYERS.get() else { return };
-    let learned = LEARNED.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let mut caps = layers.base.clone();
-    let excluded = apply_exclusions(&mut caps, &layers.codename, layers.wide, EXCLUSIONS);
-    let refused = apply_learned(&mut caps, &layers.codename, ignores_learned(layers.wide, layers.learn), &learned);
-    plx_base::eventlog::log(&format!(
-        "devcaps: firmware={:?} audio layers: table+gst={} | exclusions: {} | learned: {} | -> audio={}{}",
-        layers.codename,
-        layers.base.audio,
-        if excluded.is_empty() { "none".to_string() } else { excluded.join(" ") },
-        if refused.is_empty() { "none".to_string() } else { refused.join(" ") },
-        caps.audio,
-        match (layers.wide, layers.learn) {
-            (true, true) => " (nativeaudiowide: exclusions ignored; nativeaudiolearn: refusals still learned)",
-            (true, false) => " (nativeaudiowide: exclusions and learned entries ignored)",
-            _ => "",
-        }
-    ));
-    *CURRENT.write().unwrap_or_else(|e| e.into_inner()) = Some(Box::leak(Box::new(caps)));
+/// What this device decodes. Falls back to [`Caps::assumed`] if [`probe`] has not run — the
+/// boot calls it first, so that path exists for host tests, not the TV. The answer can change
+/// afterwards, only by losing native audio the pipeline was watched refusing
+/// ([`learn_refusal`], [`project_stored_refusals`]), so a decision that must hold across a whole
+/// attempt reads it once.
+pub fn caps() -> std::sync::Arc<Caps> {
+    with_layers(|l| l.caps.read().unwrap_or_else(|e| e.into_inner()).clone())
+        .unwrap_or_else(|| ASSUMED.get_or_init(|| std::sync::Arc::new(Caps::assumed())).clone())
 }
 
-/// Add `list` to the refusals this install has learned (never removing one) and rebuild if that
-/// changed anything. The plex session calls it with the stored list whenever it is read or written.
-pub fn merge_learned(list: &[Refusal]) -> bool {
-    let changed = {
-        let mut learned = LEARNED.lock().unwrap_or_else(|e| e.into_inner());
-        let before = learned.len();
-        for r in list {
-            if !learned.contains(r) {
-                learned.push(r.clone());
-            }
-        }
-        learned.sort();
-        learned.len() != before
-    };
-    if changed {
-        rebuild();
-    }
-    changed
+/// Apply the refusals the install's stored record holds to the answer ([`Layers::fold`]). The plex
+/// session calls it with every record it installs, under its cache lock, so it does no IO and takes
+/// no lock the session could hold. `plxnative-nativeaudioforget` applies none. True when it took
+/// something away.
+pub fn project_stored_refusals(stored: &[Refusal]) -> bool {
+    with_layers(|l| !l.forget && l.fold(stored)).unwrap_or(false)
 }
 
-/// Forget every learned refusal (the debug trigger `plxnative-nativeaudioforget`, read once at
-/// start) and rebuild. Returns what was forgotten.
-pub fn forget_learned() -> Vec<Refusal> {
-    let gone = std::mem::take(&mut *LEARNED.lock().unwrap_or_else(|e| e.into_inner()));
-    if !gone.is_empty() {
-        rebuild();
-    }
-    gone
-}
-
-/// The refusals learned so far, for the preference write.
-pub fn learned() -> Vec<Refusal> {
-    LEARNED.lock().unwrap_or_else(|e| e.into_inner()).clone()
-}
-
-/// The pipeline refused `codec` with `channels` channels on this firmware, fed natively: remember it
-/// at once (the retry that follows plans against the new answer) and return the entry for the
-/// caller to persist. `None` when the set does not announce the codec any more, or it is known.
+/// The pipeline refused `codec` with `channels` channels on this firmware, fed natively: take it
+/// off the answer at once (the recovery that follows plans against the new answer) and return the
+/// entry for the caller to persist. `None` when this set cannot learn (no firmware name, the debug
+/// flag, no [`probe`]), or the combination changes nothing: the codec is not announced to that
+/// many channels any more, so the same play converting it would not be this refusal.
 pub fn learn_refusal(codec: &str, channels: u32) -> Option<Refusal> {
-    let layers = LAYERS.get()?;
-    if ignores_learned(layers.wide, layers.learn) || layers.codename.is_empty() || !caps().audio_has(&codec.to_ascii_lowercase()) {
-        return None;
-    }
-    // The pipeline's spelling (PMS says `dca` where the table and the pipeline say `dts`).
-    let codec = match codec.to_ascii_lowercase().as_str() {
-        "dca" => "dts".to_string(),
-        other => other.to_string(),
-    };
-    let refusal = Refusal { firmware: layers.codename.clone(), codec, channels, build: crate::tv::device::info().build.clone() };
-    merge_learned(std::slice::from_ref(&refusal)).then_some(refusal)
+    with_layers(|l| {
+        if ignores_learned(l.wide, l.learn) || l.codename.is_empty() {
+            return None;
+        }
+        // The pipeline's spelling (PMS says `dca` where the table and the pipeline say `dts`).
+        let refusal = Refusal {
+            firmware: l.codename.clone(),
+            codec: audio_codec_id(codec).into_owned(),
+            channels,
+            build: l.build.clone(),
+        };
+        l.fold(std::slice::from_ref(&refusal)).then_some(refusal)
+    })
+    .flatten()
 }
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
-    static THREAD_CAPS: std::cell::Cell<Option<&'static Caps>> = const { std::cell::Cell::new(None) };
+    static THREAD_LAYERS: std::cell::RefCell<Option<std::sync::Arc<Layers>>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Make [`caps`] answer `caps` on THIS test thread until the guard drops (the
 /// `i18n::language_on_this_thread_for_test` precedent). Tests run in parallel and the
-/// process-wide snapshot is write-once, so a thread-local door is how one test plays a set whose
-/// table lists a DTS decoder. The snapshot is leaked: a test-only cost.
+/// process-wide answer is write-once, so a thread-local door is how one test plays a set whose
+/// table lists a DTS decoder. The set has no firmware name, so it learns nothing
+/// ([`firmware_on_this_thread_for_test`] is the one that does).
 #[cfg(any(test, feature = "test-support"))]
 pub fn caps_on_this_thread_for_test(caps: Caps) -> CapsGuard {
-    let caps: &'static Caps = Box::leak(Box::new(caps));
-    CapsGuard(THREAD_CAPS.with(|slot| slot.replace(Some(caps))))
+    firmware_on_this_thread_for_test("", "", caps)
+}
+
+/// [`caps_on_this_thread_for_test`] for a set that names its firmware and build, so the thread
+/// can learn a refusal ([`learn_refusal`]) and be handed a stored record
+/// ([`project_stored_refusals`]) as a television would.
+#[cfg(any(test, feature = "test-support"))]
+pub fn firmware_on_this_thread_for_test(codename: &str, build: &str, caps: Caps) -> CapsGuard {
+    let layers = Layers::new(caps, codename.to_owned(), build.to_owned(), false, false, false);
+    CapsGuard(THREAD_LAYERS.with(|slot| slot.replace(Some(std::sync::Arc::new(layers)))))
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub struct CapsGuard(Option<&'static Caps>);
+pub struct CapsGuard(Option<std::sync::Arc<Layers>>);
 
 #[cfg(any(test, feature = "test-support"))]
 impl Drop for CapsGuard {
     fn drop(&mut self) {
-        THREAD_CAPS.with(|slot| slot.set(self.0));
+        THREAD_LAYERS.with(|slot| *slot.borrow_mut() = self.0.take());
     }
 }
 
@@ -875,13 +891,32 @@ pub fn probe() {
         }
     };
     let _ = MEASURED.set(measured);
-    let _ = LAYERS.set(Layers {
-        base: caps,
-        codename: crate::tv::device::info().codename.clone(),
-        wide: plx_base::devtrig::flag("nativeaudiowide"),
-        learn: plx_base::devtrig::flag("nativeaudiolearn"),
-    });
-    rebuild();
+    let info = crate::tv::device::info();
+    let (wide, learn, forget) = (
+        plx_base::devtrig::flag("nativeaudiowide"),
+        plx_base::devtrig::flag("nativeaudiolearn"),
+        plx_base::devtrig::flag("nativeaudioforget"),
+    );
+    // The layers in order: the table, minus gstcool.conf's no-decoder codecs (above), minus
+    // [`EXCLUSIONS`]. The refusals this install learned come after, from the stored record and from
+    // the pipeline itself ([`Layers::fold`]). The debug flags skip the last two.
+    let mut boot = caps.clone();
+    let excluded = apply_exclusions(&mut boot, &info.codename, wide, EXCLUSIONS);
+    plx_base::eventlog::log(&format!(
+        "devcaps: firmware={:?} build={:?} audio layers: table+gst={} | exclusions: {} | -> audio={}{}{}",
+        info.codename,
+        info.build,
+        caps.audio,
+        if excluded.is_empty() { "none".to_string() } else { excluded.join(" ") },
+        boot.audio,
+        match (wide, learn) {
+            (true, true) => " (nativeaudiowide: exclusions ignored; nativeaudiolearn: refusals still learned)",
+            (true, false) => " (nativeaudiowide: exclusions and learned entries ignored)",
+            _ => "",
+        },
+        if forget { " (nativeaudioforget: stored refusals ignored this run)" } else { "" },
+    ));
+    let _ = BOOT.set(Layers::new(boot, info.codename.clone(), info.build.clone(), wide, learn, forget));
 }
 
 /// Whether [`caps`] reflects THIS set's table or the assumed profile — see [`MEASURED`].
@@ -1128,18 +1163,78 @@ mod tests {
         assert_eq!(c.audio, "aac,ac3,eac3,flac");
     }
 
+    fn layers_on(build: &str) -> Layers {
+        Layers::new(native_set(), "kisscurl-koli".into(), build.into(), false, false, false)
+    }
+
+    fn announced(layers: &Layers, codec: &str, channels: i64) -> bool {
+        layers.caps.read().unwrap().audio_supports(codec, channels)
+    }
+
+    /// The answer only ever loses native audio: folding is idempotent, a list that is behind (an
+    /// older record, an empty one) gives nothing back, and a snapshot a reader already holds is not
+    /// touched by the next fold.
     #[test]
-    fn merging_learned_refusals_only_ever_adds() {
-        let a = Refusal { firmware: "test-only-firmware".into(), codec: "vorbis".into(), channels: 2, build: String::new() };
-        let b = Refusal { firmware: "test-only-firmware".into(), codec: "flac".into(), channels: 6, build: String::new() };
-        assert!(merge_learned(&[a.clone()]));
-        assert!(!merge_learned(&[a.clone()]), "the same lesson is not news");
-        assert!(merge_learned(&[a.clone(), b.clone()]), "a new one is");
-        assert!(!merge_learned(&[]), "an empty list removes nothing");
-        let all = learned();
-        assert!(all.contains(&a) && all.contains(&b));
-        // No layers were probed on a host test, so nothing can be learned about THIS set.
-        assert_eq!(learn_refusal("vorbis", 2), None);
+    fn folding_refusals_only_ever_takes_native_audio_away() {
+        let layers = layers_on("6.5.3-47");
+        let before = layers.caps.read().unwrap().clone();
+        let stereo_opus = Refusal { build: "6.5.3-47".into(), ..refusal("opus", 2) };
+        assert!(layers.fold(&[stereo_opus.clone()]));
+        assert!(!announced(&layers, "opus", 2));
+        assert!(!layers.fold(&[stereo_opus.clone()]), "the same lesson is not news");
+        assert!(!layers.fold(&[]), "an empty record removes nothing");
+        assert!(!announced(&layers, "opus", 2), "and gives nothing back");
+        assert!(before.audio_has("opus"), "the snapshot a reader held is unchanged");
+        // A surround refusal keeps the codec to stereo.
+        assert!(layers.fold(&[Refusal { build: "6.5.3-47".into(), ..refusal("eac3", 6) }]));
+        assert!(announced(&layers, "eac3", 2) && !announced(&layers, "eac3", 6));
+    }
+
+    /// An LG update replaces the decoder a refusal was watched on: another build's entry, and one an
+    /// older record never tagged, is no evidence on this build, while a set that did not name its
+    /// build judges nothing and takes every entry.
+    #[test]
+    fn a_refusal_is_evidence_only_on_the_build_it_was_watched_on() {
+        let layers = layers_on("6.5.3-47");
+        for stale in ["6.5.3-48", ""] {
+            assert!(!layers.fold(&[Refusal { build: stale.into(), ..refusal("opus", 2) }]), "{stale:?}");
+            assert!(announced(&layers, "opus", 2));
+        }
+        let blind = layers_on("");
+        assert!(blind.fold(&[Refusal { build: "6.5.3-48".into(), ..refusal("opus", 2) }]));
+        assert!(!announced(&blind, "opus", 2));
+        assert!(refusal("opus", 2).watched_on("") && !refusal("opus", 2).watched_on("6.5.3-47"));
+    }
+
+    /// The debug flags: `nativeaudiowide` ignores every refusal, `nativeaudiolearn` beside it keeps
+    /// them, and `nativeaudioforget` ignores the stored record but not a refusal learned this run.
+    #[test]
+    fn the_debug_flags_decide_which_refusals_apply() {
+        let fresh = |wide, learn, forget| Layers::new(native_set(), "kisscurl-koli".into(), String::new(), wide, learn, forget);
+        assert!(!fresh(true, false, false).fold(&[refusal("opus", 2)]));
+        assert!(fresh(true, true, false).fold(&[refusal("opus", 2)]));
+        assert!(fresh(false, false, true).fold(&[refusal("opus", 2)]), "learned this run, it applies");
+    }
+
+    /// Learning: the thread's set names its firmware, so a refusal changes its answer at once, is
+    /// handed back once for the caller to persist, and is not news the second time (a conversion
+    /// that still feeds it natively ends in the ordinary failure instead of looping). A set with no
+    /// firmware name, or no table read, learns nothing.
+    #[test]
+    fn a_learned_refusal_changes_the_answer_once() {
+        {
+            let _set = firmware_on_this_thread_for_test("kisscurl-koli", "6.5.3-47", native_set());
+            assert!(caps().audio_supports("opus", 2), "sanity: announced");
+            let learned = learn_refusal("Opus", 2).expect("news");
+            assert_eq!(learned, Refusal { firmware: "kisscurl-koli".into(), codec: "opus".into(), channels: 2, build: "6.5.3-47".into() });
+            assert!(!caps().audio_has("opus"));
+            assert_eq!(learn_refusal("opus", 2), None, "known");
+            assert_eq!(learn_refusal("wmapro", 6), None, "never announced, nothing to take away");
+            assert!(!project_stored_refusals(&[learned]), "the record catching up changes nothing");
+        }
+        let _nameless = caps_on_this_thread_for_test(native_set());
+        assert_eq!(learn_refusal("opus", 2), None, "no firmware name: nothing can be learned about this set");
+        assert!(caps().audio_supports("opus", 2));
     }
 
     /// The C1's real `/etc/gst/gstcool.conf` (webOS 6.5.3, `kisscurl-koli`), read over ssh 2026-10-21;

@@ -896,7 +896,7 @@ pub(crate) fn speed_fps_ceiling(
 pub(crate) fn speed_fps_ceiling_now(ps: &crate::route::PlaybackSession) -> f64 {
     speed_fps_ceiling(
         LoadVideo::of_stream(&crate::route::stream_vcodec(ps)),
-        plx_platform::devcaps::caps(),
+        &plx_platform::devcaps::caps(),
         plx_platform::devcaps::measured() && !crate::route::forced_direct_play(ps),
     )
 }
@@ -967,7 +967,7 @@ fn sink_envelope_now(ps: &crate::route::PlaybackSession, video: LoadVideo) -> Si
         video,
         crate::route::sink_max_raster(ps),
         fed_fps(crate::route::stream_fps(ps), super::applied_rate_permille()),
-        plx_platform::devcaps::caps(),
+        &plx_platform::devcaps::caps(),
         plx_platform::devcaps::measured() && !crate::route::forced_direct_play(ps),
     )
 }
@@ -1672,7 +1672,7 @@ fn start_bufferfeed_inner(
             SHARED.fail_demux(DemuxExitClass::LoadRefused);
             return Err(crate::route::RouteStartResult::StartFailed);
         };
-        if load_video_refused(lv, plx_platform::devcaps::caps()) {
+        if load_video_refused(lv, &plx_platform::devcaps::caps()) {
             log(&format!(
                 "start_bufferfeed: {} stream but the device table lists no such decoder; refusing the Load",
                 lv.payload_name()

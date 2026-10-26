@@ -7,7 +7,7 @@
 //! never produces a picture or an error. [`Watch`] tells that stall from a slow server by what OUR
 //! side holds: both AU queues have data (the demuxer is not the bottleneck) while the pipeline has
 //! accepted nothing new for [`NATIVE_AUDIO_STALL_MS`]. The pump turns a [`Step::Fire`] into the same
-//! learned refusal and retry as the loud failure.
+//! learned refusal and recovery flight as the loud failure.
 //!
 //! Pure state, no clock and no globals read here: the pump hands in a [`Probe`], so every rule is a
 //! unit test.

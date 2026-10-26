@@ -92,7 +92,8 @@ pub(super) enum FlightOwner {
     /// A seek on a transcode: the start transaction its plan reserved, `Preparing(serial)`.
     Start(RouteStartTransaction),
     /// A RECOVERY: the replacement route a failed start is owed (the rollback's rebase after a
-    /// failed Original trial, the HLS fallback of a source that never opened) — and the cold
+    /// failed Original trial, the HLS fallback of a source that never opened, the rebuild that has
+    /// the server convert audio the pipeline refused) — and the cold
     /// resume's rebuild at the saved position, which is the same debt before the first Load: the
     /// start transaction a landed plan left `Prepared`. A failed Engine is still the pump's and
     /// waits for the landing; a cold resume has none. The transaction is `Preparing(serial)` like a
@@ -694,6 +695,25 @@ fn install_recovery_landing(
             // Nothing is playing, so the Original it replaced has nothing left to feed: stop it
             // now, not after a reload that keeps it on screen.
             installed.retire_replaced();
+            if !prepare_route_start(ticket) {
+                crate::player::log("recovery: prepared PMS route lost its start transaction");
+                return RecoveryVerdict::Refused;
+            }
+            RecoveryVerdict::Install
+        }
+        RetranscodeClaimResult::Retranscode(applied) => {
+            // The refused audio's conversion ([`dispatch_native_audio_conversion`]). The same
+            // re-check an accepted claim makes: a route change between the worker's commit and
+            // this drain leaves nothing this install may point at.
+            if !is_worker_ticket_current(&applied.ticket) {
+                stop_discarded_landing(applied);
+                release_rebase_start(owner, ticket);
+                return RecoveryVerdict::Refused;
+            }
+            install_retranscode_outcome(ps, &applied);
+            // Nothing is playing, so the encoder it replaced has nothing left to feed: stop it
+            // now, not after a reload that keeps it on screen.
+            stop_encoder_session(applied.client, applied.superseded);
             if !prepare_route_start(ticket) {
                 crate::player::log("recovery: prepared PMS route lost its start transaction");
                 return RecoveryVerdict::Refused;

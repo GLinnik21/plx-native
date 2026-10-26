@@ -659,13 +659,9 @@ pub struct Shared {
     pub decoder_revoked: AtomicBool,
     /// The pipeline refused the Load with `type=18 num=200` (`Audio Codec Not Supported`) before any
     /// picture while the session fed its audio natively (`ff::native_audio::fed`). Set on the
-    /// callback thread; the pump turns it into a learned refusal and a retry
-    /// ([`super::pump`]'s `learn_native_audio_refusal`).
+    /// callback thread; the pump turns it into a learned refusal and a recovery flight that has the
+    /// server convert that audio ([`super::pump`]'s `learn_native_audio_refusal`).
     pub native_audio_refused: AtomicBool,
-    /// A native audio refusal was just learned: the app loop retries the play once, as the Retry
-    /// press would, and the plan now has the server convert that audio. Taken by
-    /// [`super::take_native_audio_retry`].
-    pub native_audio_retry: AtomicBool,
     /// issue #74 D.1: the epoch this session last logged "native: loadCompleted while Load in
     /// flight — deferring" for — 0 = never. `epoch` is monotonic and never 0 for a real session
     /// ([`NativeSessionState::next`] skips 0 on wraparound), so comparing against this is enough
@@ -1084,7 +1080,6 @@ impl Shared {
             load_timed_out: AtomicBool::new(false),
             decoder_revoked: AtomicBool::new(false),
             native_audio_refused: AtomicBool::new(false),
-            native_audio_retry: AtomicBool::new(false),
             native_load_deferred_logged_epoch: AtomicU32::new(0),
             native_load_elapsed_ms: AtomicU64::new(0),
             playback_trace: Mutex::new(super::report::PlaybackTrace::new()),
@@ -1761,7 +1756,6 @@ impl Shared {
         self.load_timed_out.store(false, Ordering::Relaxed);
         self.decoder_revoked.store(false, Ordering::Relaxed);
         self.native_audio_refused.store(false, Ordering::Relaxed);
-        self.native_audio_retry.store(false, Ordering::Relaxed);
         // NB: desired_sub_idx is NOT reset here — like desired_audio_idx it persists across
         // seeks/reloads so a reload-based seek keeps the chosen subtitle. It is reset on a new
         // item (player::reset_subtitle). ASS packets are immutable file facts, not

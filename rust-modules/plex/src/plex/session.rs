@@ -1902,7 +1902,7 @@ pub struct NativeAudioRefusal {
     pub codec: String,
     pub channels: u32,
     /// The exact firmware build it was watched on; absent from a record written before builds were
-    /// recorded, which reads as empty and counts as stale (see [`project_native_audio_refusals`]).
+    /// recorded, which reads as empty and counts as stale (see [`Session::with_native_audio_refusal`]).
     #[serde(default)]
     pub build: String,
     #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
@@ -2467,39 +2467,27 @@ impl Session {
         &self.prefs.native_audio_refused
     }
 
-    /// This session with `refusal` remembered, or `None` when it already is (so the caller skips the
-    /// write). Entries are never removed.
+    /// This session with `refusal` remembered, or `None` when nothing would change (so the caller
+    /// skips the write). **The one way the list changes**: it takes the new entry and drops what
+    /// another firmware build learned (and what an older record never tagged), because an LG update
+    /// replaces the decoder a refusal was watched on, so the new firmware gets a fresh native try.
+    /// An entry without a build (the set did not name one) judges nothing and drops nothing. The
+    /// stale entries are inert until then: `devcaps` ignores a refusal watched on another build.
     pub fn with_native_audio_refusal(&self, refusal: &NativeAudioRefusal) -> Option<Self> {
-        if refusal.firmware.is_empty() || refusal.codec.is_empty() || self.prefs.native_audio_refused.iter().any(|r| {
+        if refusal.firmware.is_empty() || refusal.codec.is_empty() {
+            return None;
+        }
+        let mut next = self.clone();
+        let list = &mut next.prefs.native_audio_refused;
+        if !refusal.build.is_empty() {
+            list.retain(|r| r.build == refusal.build);
+        }
+        if !list.iter().any(|r| {
             r.firmware == refusal.firmware && r.codec == refusal.codec && r.channels == refusal.channels && r.build == refusal.build
         }) {
-            return None;
+            list.push(refusal.clone());
         }
-        let mut next = self.clone();
-        next.prefs.native_audio_refused.push(refusal.clone());
-        Some(next)
-    }
-
-    /// This session with every native audio refusal forgotten, or `None` when there is none (the
-    /// debug trigger `plxnative-nativeaudioforget`).
-    pub fn without_native_audio_refusals(&self) -> Option<Self> {
-        if self.prefs.native_audio_refused.is_empty() {
-            return None;
-        }
-        let mut next = self.clone();
-        next.prefs.native_audio_refused.clear();
-        Some(next)
-    }
-
-    /// This session without the native audio refusals watched on another firmware build than
-    /// `build` (an unrecorded build counts as another), or `None` when none is stale.
-    pub fn without_stale_native_audio_refusals(&self, build: &str) -> Option<Self> {
-        if self.prefs.native_audio_refused.iter().all(|r| r.build == build) {
-            return None;
-        }
-        let mut next = self.clone();
-        next.prefs.native_audio_refused.retain(|r| r.build == build);
-        Some(next)
+        (*list != self.prefs.native_audio_refused).then_some(next)
     }
 
     pub fn subtitle_tone(&self) -> SubtitleTone {
@@ -3043,7 +3031,7 @@ pub fn learn_hold_hint_taught(taught: HoldHintTaught) -> bool {
 /// later play of the combination goes to conversion, and persist it for the next launch.
 ///
 /// Two effects, in this order: the in-memory answer changes at once (`devcaps::learn_refusal`, which
-/// is what the retry that follows plans against), then the entry is queued as an install preference
+/// is what the conversion that follows plans against), then the entry is queued as an install preference
 /// off the caller's thread, best effort like [`learn_hold_hint_taught`]. Returns whether anything was
 /// learned (a combination the set no longer announces, a known one and the debug flag learn nothing).
 pub fn learn_native_audio_refusal(codec: &str, channels: u32) -> bool {
@@ -3059,74 +3047,18 @@ pub fn learn_native_audio_refusal(codec: &str, channels: u32) -> bool {
     true
 }
 
-/// `refusals` split into the ones watched on `build` and the rest.
-fn split_stale_refusals(
-    refusals: Vec<plx_platform::devcaps::Refusal>,
-    build: &str,
-) -> (Vec<plx_platform::devcaps::Refusal>, Vec<plx_platform::devcaps::Refusal>) {
-    refusals.into_iter().partition(|r| r.build == build)
-}
-
-/// The builds the stale entries were watched on, for the log: distinct, `unrecorded` for none.
-fn stale_builds(stale: &[plx_platform::devcaps::Refusal]) -> String {
-    let mut builds: Vec<&str> = stale.iter().map(|r| if r.build.is_empty() { "unrecorded" } else { r.build.as_str() }).collect();
-    builds.sort_unstable();
-    builds.dedup();
-    builds.join(", ")
-}
-
-/// Hand the stored refusals to `devcaps`, which merges them into what it has learned (never
-/// removing one) and rebuilds the announced list if that changed anything. Called from
-/// [`replace_cache`] with every session it installs, so a boot that reads the record and a write that
-/// lands both reach the capability snapshot.
-pub fn project_native_audio_refusals(session: &Session) {
-    let mut stored: Vec<plx_platform::devcaps::Refusal> = session.prefs.native_audio_refused.iter().map(NativeAudioRefusal::to_devcaps).collect();
-    // The debug trigger `plxnative-nativeaudioforget`, read once: the first record read in this process
-    // is cleared (and what it held logged), and the entries it held never come back from a record
-    // that has not caught up with the clearing write.
-    static FORGOTTEN: std::sync::Mutex<Option<Vec<plx_platform::devcaps::Refusal>>> = std::sync::Mutex::new(None);
-    static FORGET: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if *FORGET.get_or_init(|| plx_base::devtrig::flag("nativeaudioforget")) {
-        let mut gone = FORGOTTEN.lock().unwrap_or_else(|e| e.into_inner());
-        if gone.is_none() {
-            let mut all = plx_platform::devcaps::forget_learned();
-            for r in &stored {
-                if !all.contains(r) {
-                    all.push(r.clone());
-                }
-            }
-            plx_base::eventlog::log(&format!(
-                "native audio: nativeaudioforget cleared {} learned refusal(s): {}",
-                all.len(),
-                all.iter().map(|r| format!("{}/{}/{}ch", r.firmware, r.codec, r.channels)).collect::<Vec<_>>().join(", ")
-            ));
-            if !session.prefs.native_audio_refused.is_empty() {
-                queue_update(|cur| cur.without_native_audio_refusals());
-            }
-            *gone = Some(all);
-        }
-        let cleared = gone.as_deref().unwrap_or(&[]);
-        stored.retain(|r| !cleared.contains(r));
+/// Hand the stored refusals to `devcaps`, which folds them into the capability answer (it only ever
+/// takes native audio away, so a record that is behind a write cannot give back what that write
+/// took). Called from [`replace_cache`] with every session it installs, so a boot that reads the
+/// record and a write that lands both reach the answer. It runs UNDER the cache lock: no IO, no
+/// queued write, nothing that reads the cache.
+fn project_native_audio_refusals(session: &Session) {
+    if session.prefs.native_audio_refused.is_empty() {
+        return;
     }
-    // An LG update replaces the decoder a refusal was watched on: forget what another build learned
-    // (and what an older record never tagged) so the new firmware gets a fresh native try; the
-    // watchdog relearns it if it still fails. Unknown running build (no nyx file): judge nothing.
-    let build = plx_platform::tv::device::info().build.clone();
-    if !build.is_empty() {
-        let (fresh, stale) = split_stale_refusals(std::mem::take(&mut stored), &build);
-        if !stale.is_empty() {
-            plx_base::eventlog::log(&format!(
-                "native audio: firmware changed ({} -> {build}), forgetting {} learned refusal(s)",
-                stale_builds(&stale),
-                stale.len()
-            ));
-            queue_update(move |cur| cur.without_stale_native_audio_refusals(&build));
-        }
-        stored = fresh;
-    }
-    if !stored.is_empty() {
-        plx_platform::devcaps::merge_learned(&stored);
-    }
+    let stored: Vec<plx_platform::devcaps::Refusal> =
+        session.prefs.native_audio_refused.iter().map(NativeAudioRefusal::to_devcaps).collect();
+    plx_platform::devcaps::project_stored_refusals(&stored);
 }
 
 /// The UI may retain the receipt while showing its pending preference locally.
@@ -6217,12 +6149,13 @@ mod server_key_pin_tests {
         assert!(peek().prefs.server_key_pins.is_empty(), "cleared with the credentials");
     }
 
-    /// The native audio refusals this install learned live in the PUBLIC install preferences: a
-    /// session that never learned one writes nothing, one that did round-trips it, a malformed entry
-    /// costs only itself, nothing is ever removed, and sign-out leaves them (a property of the
+    /// The native audio refusals this install learned live in the PUBLIC install preferences, and
+    /// that list is the ONE place they are kept: a session that never learned one writes nothing, one
+    /// that did round-trips it, a malformed entry costs only itself, only a refusal watched on a newer
+    /// firmware build retires the older build's, and sign-out leaves them (a property of the
     /// television's firmware, not of an account).
     #[test]
-    fn native_audio_refusals_persist_as_an_install_fact_and_never_come_off() {
+    fn native_audio_refusals_persist_as_an_install_fact_and_only_a_new_build_retires_them() {
         let _serial = plx_base::testlock::serial();
         let _session = test_support::TempSession::new("native-audio-refusals");
         let refusal = |codec: &str, channels: u32| NativeAudioRefusal {
@@ -6240,25 +6173,21 @@ mod server_key_pin_tests {
         assert!(session.with_native_audio_refusal(&NativeAudioRefusal { firmware: String::new(), ..refusal("x", 2) }).is_none());
         let round: Session = serde_json::from_str(&serde_json::to_string(&with).unwrap()).unwrap();
         assert_eq!(round.native_audio_refused(), with.native_audio_refused());
-        // A firmware update drops what another build learned, and what an older record never tagged.
-        let other = with.with_native_audio_refusal(&NativeAudioRefusal { build: "6.5.3-48".into(), ..refusal("flac", 6) }).unwrap();
+        // A firmware update drops what another build learned, and what an older record never tagged,
+        // with the next refusal it watches; a set that did not name its build judges nothing.
         let untagged: Session = serde_json::from_value(serde_json::json!({
             "native_audio_refused": [{"firmware": "kisscurl-koli", "codec": "opus", "channels": 6}]
         }))
         .unwrap();
         assert_eq!(untagged.native_audio_refused()[0].build, "", "an old record reads as unrecorded");
-        assert!(with.without_stale_native_audio_refusals("6.5.3-47").is_none(), "all current: nothing to drop");
-        let kept = other.without_stale_native_audio_refusals("6.5.3-47").expect("one is stale");
-        assert_eq!(kept.native_audio_refused().len(), 1, "only the 6.5.3-48 entry went");
-        assert!(kept.native_audio_refused().iter().all(|r| r.build == "6.5.3-47"));
-        assert!(untagged.without_stale_native_audio_refusals("6.5.3-47").expect("unrecorded is stale").native_audio_refused().is_empty());
-        let (fresh, stale) = split_stale_refusals(other.native_audio_refused().iter().map(NativeAudioRefusal::to_devcaps).collect(), "6.5.3-47");
-        assert_eq!((fresh.len(), stale.len()), (1, 1));
-        assert_eq!(stale_builds(&stale), "6.5.3-48");
-        let (_, stale) = split_stale_refusals(untagged.native_audio_refused().iter().map(NativeAudioRefusal::to_devcaps).collect(), "6.5.3-47");
-        assert_eq!(stale_builds(&stale), "unrecorded");
-        assert!(session.without_native_audio_refusals().is_none(), "nothing to clear");
-        assert!(with.without_native_audio_refusals().expect("cleared").native_audio_refused().is_empty());
+        let updated = with.with_native_audio_refusal(&NativeAudioRefusal { build: "6.5.3-48".into(), ..refusal("flac", 6) }).expect("news");
+        assert_eq!(updated.native_audio_refused().len(), 1, "the 6.5.3-47 lesson went with the old decoder");
+        assert_eq!(updated.native_audio_refused()[0].build, "6.5.3-48");
+        let relearned = untagged.with_native_audio_refusal(&refusal("vorbis", 2)).expect("news");
+        assert_eq!(relearned.native_audio_refused().len(), 1, "an unrecorded entry is stale");
+        assert_eq!(relearned.native_audio_refused()[0].codec, "vorbis");
+        let blind = with.with_native_audio_refusal(&NativeAudioRefusal { build: String::new(), ..refusal("flac", 6) }).expect("news");
+        assert_eq!(blind.native_audio_refused().len(), 2, "no build named: nothing is judged stale");
         let mixed: Session = serde_json::from_value(serde_json::json!({
             "native_audio_refused": [{"firmware": "f", "codec": "flac", "channels": 6}, "garbage", {"codec": 1}]
         }))

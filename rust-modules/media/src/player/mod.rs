@@ -359,12 +359,6 @@ pub fn take_decoder_revoked() -> bool {
     SHARED.decoder_revoked.swap(false, std::sync::atomic::Ordering::AcqRel)
 }
 
-/// Did a native audio refusal just get learned (`pump`'s `learn_native_audio_refusal`) — so the app
-/// loop should retry the play, which now has the server convert that audio? Consumes the answer.
-pub fn take_native_audio_retry() -> bool {
-    SHARED.native_audio_retry.swap(false, std::sync::atomic::Ordering::AcqRel)
-}
-
 /// The pipeline's decoder release as the app loop sees it, for a test with no native session.
 #[cfg(any(test, feature = "test-support"))]
 pub fn note_decoder_revoked_for_test() {

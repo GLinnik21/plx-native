@@ -245,7 +245,7 @@ pub struct Preferences {
     /// **Native audio the pipeline of this television was watched refusing** — firmware family,
     /// codec and channel count ([`NativeAudioRefusal`]). The player learns one when a native Load
     /// ends in `type=18 num=200 Audio Codec Not Supported`, and `devcaps` then stops announcing the
-    /// combination, so the next play (and the automatic retry of the one that failed) is converted.
+    /// combination, so the next play (and the recovery of the one that failed) is converted.
     /// An INSTALL fact: a property of this television's firmware, kept across sign-out and
     /// across profiles. Skipped while empty, soft-parsed per entry.
     #[serde(default, deserialize_with = "super::de_soft_vec", skip_serializing_if = "Vec::is_empty")]
