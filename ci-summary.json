@@ -29,7 +29,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-26T09:10:24Z",
+ "generated": "2026-10-26T09:42:34Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -95,10 +95,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -55.0,
+   "change30_pct": -55.2,
    "change7_pct": -28.4,
-   "d30": 773.0,
-   "delta30": -425.0,
+   "d30": 776,
+   "delta30": -428,
    "delta7": -138.0,
    "group": "ci",
    "id": "pr_wait",
@@ -116,18 +116,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -53.3,
-   "change7_pct": -20.5,
-   "d30": 723,
-   "delta30": -385,
-   "delta7": -87,
+   "change30_pct": -53.5,
+   "change7_pct": -20.7,
+   "d30": 724.0,
+   "delta30": -387.0,
+   "delta7": -88.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 91,
+   "n_now": 92,
    "n_prev": 117,
-   "now": 338,
+   "now": 337.0,
    "prev7": 425,
    "shown": true,
    "state": "better",
@@ -254,10 +254,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 53.4,
+   "change30_pct": 52.5,
    "change7_pct": 1.2,
-   "d30": 637,
-   "delta30": 340,
+   "d30": 640.5,
+   "delta30": 336.5,
    "delta7": 12.0,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
@@ -338,18 +338,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 102.3,
-   "change7_pct": 11.3,
+   "change30_pct": 102.7,
+   "change7_pct": 11.6,
    "d30": 131,
-   "delta30": 134,
-   "delta7": 27.0,
+   "delta30": 134.5,
+   "delta7": 27.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 79,
+   "n_now": 80,
    "n_prev": 108,
-   "now": 265,
+   "now": 265.5,
    "prev7": 238.0,
    "shown": true,
    "state": "flat",
@@ -359,18 +359,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 160.0,
-   "change7_pct": 2.4,
+   "change30_pct": 158.7,
+   "change7_pct": 1.8,
    "d30": 75,
-   "delta30": 120.0,
-   "delta7": 4.5,
+   "delta30": 119,
+   "delta7": 3.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 78,
+   "n_now": 79,
    "n_prev": 108,
-   "now": 195.0,
+   "now": 194,
    "prev7": 190.5,
    "shown": true,
    "state": "flat",
@@ -423,17 +423,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -1.6,
+   "change7_pct": -1.3,
    "d30": null,
    "delta30": null,
-   "delta7": -2.5,
+   "delta7": -2.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 79,
+   "n_now": 80,
    "n_prev": 108,
-   "now": 150,
+   "now": 150.5,
    "prev7": 152.5,
    "shown": true,
    "state": "flat",
@@ -487,18 +487,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 18.8,
-   "change7_pct": 5.6,
+   "change30_pct": 15.6,
+   "change7_pct": 2.8,
    "d30": 16,
-   "delta30": 3,
-   "delta7": 1.0,
+   "delta30": 2.5,
+   "delta7": 0.5,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 79,
+   "n_now": 80,
    "n_prev": 108,
-   "now": 19,
+   "now": 18.5,
    "prev7": 18.0,
    "shown": false,
    "state": "flat",
@@ -510,8 +510,8 @@
   {
    "change30_pct": 20.0,
    "change7_pct": -5.3,
-   "d30": 15,
-   "delta30": 3,
+   "d30": 15.0,
+   "delta30": 3.0,
    "delta7": -1.0,
    "group": "ci",
    "id": "nightly|publish nightly prerelease",
@@ -531,8 +531,8 @@
   {
    "change30_pct": 41.7,
    "change7_pct": 6.2,
-   "d30": 12,
-   "delta30": 5,
+   "d30": 12.0,
+   "delta30": 5.0,
    "delta7": 1.0,
    "group": "ci",
    "id": "nightly|plan today's nightly",
@@ -571,10 +571,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -98.7,
+   "change30_pct": -98.8,
    "change7_pct": -99.1,
-   "d30": 239,
-   "delta30": -236,
+   "d30": 240.0,
+   "delta30": -237.0,
    "delta7": -318,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
@@ -594,8 +594,8 @@
   {
    "change30_pct": -99.6,
    "change7_pct": 0.0,
-   "d30": 743,
-   "delta30": -740,
+   "d30": 744.5,
+   "delta30": -741.5,
    "delta7": 0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
@@ -667,6 +667,11 @@
      "pr": 1034,
      "sha": "48b3040e2",
      "title": "Audio: per-TV Opus limits, and formats the player learns to avoid"
+    },
+    {
+     "pr": 1054,
+     "sha": "7163318c4",
+     "title": "Route: one capability value per playback request; the planner reads no global"
     }
    ],
    "from": 156,
@@ -680,11 +685,6 @@
    "change_pct": 35.8,
    "commits": [
     {
-     "pr": 1021,
-     "sha": "15e843ee8",
-     "title": "Browse section hubs emit store jobs for the list and row reads; the step decides the client from ClientKeys"
-    },
-    {
      "pr": 1017,
      "sha": "19048eae9",
      "title": "gfx: Home's ground under the shelves is one flat colour, drawn as a clear"
@@ -728,6 +728,11 @@
      "pr": 1034,
      "sha": "48b3040e2",
      "title": "Audio: per-TV Opus limits, and formats the player learns to avoid"
+    },
+    {
+     "pr": 1054,
+     "sha": "7163318c4",
+     "title": "Route: one capability value per playback request; the planner reads no global"
     }
    ],
    "from": 46.0,
@@ -741,11 +746,6 @@
    "change_pct": 27.1,
    "commits": [
     {
-     "pr": 1021,
-     "sha": "15e843ee8",
-     "title": "Browse section hubs emit store jobs for the list and row reads; the step decides the client from ClientKeys"
-    },
-    {
      "pr": 1017,
      "sha": "19048eae9",
      "title": "gfx: Home's ground under the shelves is one flat colour, drawn as a clear"
@@ -789,6 +789,11 @@
      "pr": 1034,
      "sha": "48b3040e2",
      "title": "Audio: per-TV Opus limits, and formats the player learns to avoid"
+    },
+    {
+     "pr": 1054,
+     "sha": "7163318c4",
+     "title": "Route: one capability value per playback request; the planner reads no global"
     }
    ],
    "from": 114.7,
@@ -829,7 +834,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 265
+   "now": 265.5
   }
  ],
  "slowest_local": [
