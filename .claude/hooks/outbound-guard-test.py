@@ -376,8 +376,9 @@ def pr_land_text_case():
     """`pr-land.py merge` publishes its --subject and its body as the squash commit's message, so the
     guard scans them like any other outbound text, and a text flag's value is a STRING (not a path).
 
-    The script also scans them itself, before any `gh` call; this is the second look, and the only
-    one that sees the text before the tool starts.
+    The script also scans a --subject and a --body-file itself, before any `gh` call; this is the
+    second look, and the only one that sees the text before the tool starts. A --body-from-pr body
+    is not on the command line: the script alone scans it, once, after fetching it.
     """
     ok = True
     with open(os.path.join(ROOT, "land-msg.txt"), "w") as f:

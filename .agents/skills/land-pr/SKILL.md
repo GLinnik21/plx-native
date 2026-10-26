@@ -42,7 +42,7 @@ The PR must be open, not a draft, based on `main` or `release/v*`, with every re
 | 0 | green; `merge`: merged and verified, merge commit's check-runs printed | done |
 | 1 | red: a check failed, nothing merged. Or "gh pr merge succeeded;" and the verify failed | red: fix on the branch, push, take the NEW head. Succeeded: the PR IS merged, do not run `merge` again, inspect `origin/main` |
 | 2 | usage | fix the command |
-| 3 | refused: not open, a draft, BEHIND or DIRTY (merge `origin/main` into the branch), a base that does not land, a required check skipped, a private value in the message, or `gh pr merge` still saying the head differs after 3 retries with the head unmoved | read the reason it names; never route around it |
+| 3 | refused: not open, a draft, BEHIND or DIRTY (merge `origin/<base>` into the branch: `origin/main` unless the PR targets a `release/v*` line), a base that does not land, a required check skipped, a private value in the message, or `gh pr merge` still saying the head differs after 3 retries with the head unmoved | read the reason it names; never route around it |
 | 4 | not settled yet: checks pending, none reported, a required one missing, GitHub still computing | nothing merged. Run `wait` again with the same SHA. Checks that never appear mean the workflow did not trigger: look at the PR, do not merge by hand |
 | 5 | head moved: the PR is no longer at `S` | someone pushed. Run `gate N`, look at what changed, then start over with the new head |
 
@@ -59,9 +59,10 @@ evidence is the script's own exit code 0.
 The repository setting would paste every wip commit, so `merge` requires a body. Write the change's own
 account as a `--body-file` (the usual case: a hand-written body differs from the PR body, which carries
 Gates sections and bench tables), or pass `--body-from-pr` to send the PR's own body (opt-in).
-Subject and body are scanned for private values twice: by outbound-guard on the `pr-land.py merge`
-command line and file, and by the script itself before any `gh` call (exit 3). `main` is public and its
-history permanent: use the stand-ins in `docs/shared-servers.md`, never a value from a gitignored file.
+A `--subject` and a `--body-file` are scanned for private values twice: by outbound-guard on the command
+line and the file, and by the script before any `gh` call (exit 3). A `--body-from-pr` body is fetched,
+then scanned once, by the script alone, before the merge call; the hook never sees it. `main` is public
+and its history permanent: use the stand-ins in `docs/shared-servers.md`, never a gitignored value.
 
 ## Head-oid race
 
@@ -92,8 +93,8 @@ Then `gate` the upper PR on its new head.
 
 ## The refusal and its hatch
 
-outbound-guard refuses `gh pr merge` (any arguments), a non-GET `gh api` call to `.../pulls/N/merge` and a
-GraphQL `mergePullRequest`; a deny rule in `.claude/settings.json` blocks the GitHub MCP connector's
-`merge_pull_request`. All of it is cooperative: do not look for another route to a merge you were refused.
-The owner's own manual merge is spelled by prefixing the command with `PLX_MERGE_BYPASS=1`. An agent
-does not use it to get past a refusal, a red check or a missing authorization.
+outbound-guard refuses `gh pr merge` (any arguments), a non-GET `gh api` call to `.../pulls/N/merge` and a GraphQL
+`mergePullRequest` written on the command line or in a heredoc (a query read from a file is not seen); a deny rule in
+`.claude/settings.json` blocks the GitHub MCP connector's `merge_pull_request`. All of it is cooperative: do not look
+for another route to a merge you were refused. The owner's own manual merge is spelled by prefixing the command with
+`PLX_MERGE_BYPASS=1`. An agent does not use it to get past a refusal, a red check or a missing authorization.

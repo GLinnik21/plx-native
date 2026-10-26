@@ -68,8 +68,9 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   `tools/pr-land.py`** (gate, wait, merge, restack; the `land-pr` skill has the commands, exit codes,
   the four-merge restack and the head-oid race). It grants no merge authority: an owner's
   authorization is still needed. In Claude sessions outbound-guard refuses a raw `gh pr merge`, a
-  write to `.../pulls/N/merge` and a GraphQL `mergePullRequest`; the owner's own manual merge takes
-  the `PLX_MERGE_BYPASS=1` prefix.
+  write to `.../pulls/N/merge` and a GraphQL `mergePullRequest` written on the command line or in a
+  heredoc (not one read from a query file); the owner's own manual merge takes the
+  `PLX_MERGE_BYPASS=1` prefix.
 - Preserve unrelated user changes and generated artifacts. Never clean or reset a dirty tree to
   make a task easier.
 - This repository is public. Never publish values from gitignored private files such as `.tv-host`,

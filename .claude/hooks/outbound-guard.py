@@ -53,18 +53,21 @@ repository:
     Also found on 2026-08-23, and also previously allowed: the substitution's own segment is a
     `cat`, which is not outbound, and the outer token is quoted prose, which the path check skips.
   * `tools/pr-land.py merge`: its `--subject` and body become the squash commit's message on `main`,
-    so they are scanned like a `git commit -m`; the script scans them again itself before any `gh`.
+    so they are scanned like a `git commit -m`. A `--subject` and a `--body-file` the script scans
+    again itself before any `gh`; a `--body-from-pr` body only the script sees (once, after fetching it).
 
 A SECOND QUESTION, UNRELATED TO PRIVATE VALUES: `merge_verdict` refuses a pull request merged by
 hand. A PR lands through `tools/pr-land.py` (the `land-pr` skill), which merges only a head whose
 checks say it may land; `gh pr merge` typed after a watcher, or read off a `gh run list` that said
 "completed" mid-run, is how #387 merged red. Refused: `gh pr merge` (any arguments), a `gh api` call
-to `.../pulls/N/merge` that is not a GET, and a GraphQL `mergePullRequest`. It matches the COMMAND,
+to `.../pulls/N/merge` that is not a GET, and a GraphQL `mergePullRequest` written on the command line
+or in a heredoc (`merge_reason` tests only that text, so a query read from a file, `-F query=@f` or
+`--input f`, is not seen; the private-value scan reads those files, this does not). It matches the COMMAND,
 never the words (a grep, an echo, a commit message and a heredoc are prose) and is pure string work.
 Its hatch is its own prefix, `PLX_MERGE_BYPASS=1`, for the owner's manual merge; it does not open
 the private-value scan above and `PLX_PUBLISH_BYPASS=1` does not open it. The refusal never echoes
 the command: a raw merge can carry a `--body` the scan above has not read. Cooperative, like the rest:
-`bash -c`, a script, curl with a token and the GitHub MCP connector are not seen here (the connector's
+`bash -c`, a script, a query file, curl with a token and the GitHub MCP connector are not seen here (the connector's
 merge tool has a `permissions.deny` rule in `.claude/settings.json`). The tool itself calls `gh pr
 merge` from a subprocess this hook cannot see.
 
