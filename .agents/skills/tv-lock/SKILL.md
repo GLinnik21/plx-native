@@ -96,7 +96,8 @@ Four layers, so there is no "I forgot" path:
    does not happen while holding the set).
 3. **`tests/run.py`** — acquires where it commits to driving the TV and releases in the same
    `finally` as the teardown; it *inherits* a lease this lane already holds rather than re-taking
-   it, so `with -- ./tests/run.py` works unchanged. `tools/capture-screen.sh` requires it too.
+   it (and reads the pre-flight again, below), so `with -- ./tests/run.py` works unchanged.
+   `tools/capture-screen.sh` requires it too.
 4. **A `PreToolUse` hook** (`.claude/hooks/tv-lock-guard.py`) — refuses any Bash command that
    drives the set without a lease: a raw `ssh root@…`, an `scp` into the app directory, a
    `sshpass` one-liner, `tools/tv-ssh`, `make deploy`, `tests/run.py`. It reads one local file, never the network,
@@ -145,17 +146,21 @@ it. `Active Standby` is IDLE. Otherwise the foreground app decides: this project
 parking app (`org.webosbrew.hbchannel`, where `tv-session.sh background` leaves the set), LG Home and
 live TV (no antenna in this household) are IDLE; our STABLE app, the household's own client, is IDLE
 only when muted, IN USE with the sound on, `UNKNOWN` when mute is unreadable; any other app is IN USE.
-An unreadable, ambiguous, `returnValue:false` or multi-valued reply, or a read that overruns its 10 s
-(`PLX_TV_PREFLIGHT_SECS`), is `UNKNOWN`, never idle.
+An unreadable, ambiguous, `returnValue:false` or multi-valued FOREGROUND reply, or a read that overruns
+its 10 s (`PLX_TV_PREFLIGHT_SECS`), is `UNKNOWN`. An ambiguous panel reply only demotes an otherwise-IDLE
+app to `UNKNOWN` (an unread one does not even do that) and never hides an app that is IN USE, and a bad
+volume reply matters only when our stable app is in front: IDLE is therefore not proof that every read
+succeeded.
 
 IN USE is one stdout line starting `IN USE: <app id>: stop and tell the owner` at column 0. For
 `acquire` and `status` it is a warning (exit 0, lease kept): do not drive the set, tell the owner. A
 subagent releases the lease before its turn ends and puts the line first in its report; the main
 session keeps it only while waiting for the owner's answer. For `tv-lock.sh with` and `tests/run.py`
-it is a refusal: they release the lease and do not start (`with` exits 3), unless
-`PLX_TV_IN_USE_OK=1`, which only the owner's go allows. `tools/tv-session.sh fg` is the same
-foreground read alone: the guard allows it without a lease because it changes nothing and sends no
-Wake-on-LAN (an unreachable set says `TV unreachable or asleep (nothing read, no wake sent)`).
+it is a refusal, unless `PLX_TV_IN_USE_OK=1`, which only the owner's go allows: they do not start
+(`with` exits 3), on a lease they just took or one this lane already held (they read the pre-flight
+again either way), and they release a lease they took but leave an inherited one held.
+`tools/tv-session.sh fg` is the same foreground read alone: the guard allows it without a lease
+because it changes nothing and sends no Wake-on-LAN (an unreachable set says `TV unreachable or asleep (nothing read, no wake sent)`).
 
 ## Fleets
 

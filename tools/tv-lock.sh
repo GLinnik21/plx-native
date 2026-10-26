@@ -7,7 +7,7 @@
 #   tv-lock.sh renew                        extend the lease you already hold
 #   tv-lock.sh release                      hand it back
 #   tv-lock.sh require                      assert + renew; what every TV-facing tool calls
-#   tv-lock.sh with --why "<what>" -- CMD…  acquire, run CMD, release even on Ctrl-C (not started when the set is IN USE)
+#   tv-lock.sh with --why "<what>" -- CMD…  acquire (or inherit yours), run CMD, release what it took even on Ctrl-C (not started on IN USE)
 #   tv-lock.sh break [--yes]                steal a lease (names the holder first; refuses a LIVE one without --yes)
 #   tv-lock.sh selftest                     exercise the whole protocol with NO television
 #
@@ -44,14 +44,17 @@
 # after an acquire reads what is in front and prints IDLE, `IN USE:` or UNKNOWN, as of that read only).
 #
 # EXIT CODES. 0 done (an `acquire` on an IN USE set still exits 0 and prints the `IN USE:` line);
-# 1 refused (held by another lane, a lost race, no lease to renew, a live lease `break` will not take);
-# 2 the TV is unreachable, no TV is configured, or a usage error; 3 `with` did not start its command
-# because the pre-flight found the set IN USE (it released the lease it had just taken; the owner says
-# go, then PLX_TV_IN_USE_OK=1). `with` otherwise exits with its command's own status.
+# 1 refused (held by another lane, no lease to renew, a live lease `break` will not take, a `break` that
+# lost the race, or a `with` whose acquire failed for any reason); 2 `acquire`, `status` or `release` could
+# not reach the TV, no TV is configured, `acquire` lost a race, or a usage error (`require` exits 0 for the
+# first two on purpose: an unreachable set is not a collision); 3 `with` did not start its command because
+# the pre-flight found the set IN USE (a lease it just took is released, one this lane already held stays
+# held; the owner says go, then PLX_TV_IN_USE_OK=1). `with` otherwise exits with its command's own status.
 #
 # ENVIRONMENT. PLX_TV_LOCK_PATH / PLX_TV_LOCK_STATE / PLX_TV_LOCK_LANE / PLX_TV_LOCK_TTL move the lock, the
 # lease mirror, the lane and the lease length; PLX_TV_LOCK_BYPASS=1 skips the check (`require`);
-# PLX_TV_IN_USE_OK=1 lets `with` and tests/run.py go on an IN USE set (only after the owner said go);
+# PLX_TV_IN_USE_OK=1 lets `with` and tests/run.py go on an IN USE set, on a lease they take or one this
+# lane already holds (only after the owner said go);
 # PLX_TV_PREFLIGHT_SECS (default 10) bounds the whole pre-flight read, and PLX_TV_RENEW_SECS (default 240)
 # is how often `with` renews while its command runs: both are test seams; PLX_TV_LOCK_LOCAL / PLX_TV_LOCK_LOCAL_PROBE=FILE are the selftest's "there is no television" switch
 # and the file whose text stands in for the set's pre-flight reply.

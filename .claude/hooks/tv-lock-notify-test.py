@@ -222,10 +222,11 @@ def main():
     check("owner" in main_iu and "PushNotification" in main_iu and "subagent" not in main_iu and "caller" not in main_iu,
           "IN USE: main session: told to tell the owner", repr(in_use_main))
     # The main session keeps the lease only while it waits for the owner's answer, releases it when it will
-    # not drive the set now, and proceeds only on their say-so (a `with` then needs the override).
+    # not drive the set now, and proceeds only on their say-so (`with` and tests/run.py then need the override).
     check("Keep the lease only while you wait for their answer" in main_iu
           and "tools/tv-lock.sh release" in main_iu and "if you will not drive the television now" in main_iu
           and "Proceed only after the owner says so" in main_iu and "PLX_TV_IN_USE_OK=1" in main_iu
+          and "tools/tv-lock.sh with and tests/run.py need PLX_TV_IN_USE_OK=1" in main_iu
           and "wait for the owner's answer" not in main_iu,
           "IN USE: main session: keep the lease while waiting, release it otherwise, override only after a yes",
           repr(in_use_main))

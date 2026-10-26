@@ -955,8 +955,9 @@ class ForegroundIsReadOnly(unittest.TestCase):
     def test_fg_on_an_asleep_set_reads_nothing_and_sends_no_wake_packet(self):
         out, woke = self._run("fg", reachable=False)
         self.assertIn("RC:0", out)
-        # Not "idle": nothing was read, and tools/tv-lock.sh's idle_verdict never calls an unread
-        # foreground idle. The wording says what is true (nothing read, no wake sent).
+        # Not "idle": nothing was read. tools/tv-lock.sh's idle_verdict calls an unread foreground
+        # UNKNOWN unless the panel reads Active Standby, and `fg` never reads the panel, so it says
+        # "nothing read", not "idle". The wording says what is true (nothing read, no wake sent).
         self.assertIn("TV unreachable or asleep (nothing read, no wake sent)", out)
         self.assertNotIn("idle", out)
         self.assertNotIn("foreground app:", out)

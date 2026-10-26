@@ -1277,7 +1277,8 @@ cmd_lifecycle() {
       # lease for that reason: so it must stay one. `ensure_awake` would send Wake-on-LAN to a
       # sleeping set (a mutation, and the exact thing a person in the next room notices); a set
       # that does not answer is left alone and the line says so: nothing was read and no wake was
-      # sent (tv-lock.sh's idle_verdict never calls an unread foreground idle, so neither does this).
+      # sent (tv-lock.sh's idle_verdict calls an unread foreground UNKNOWN unless the panel reads Active
+      # Standby, and `fg` never reads the panel, so it says "nothing read", not "idle").
       # advise_lock is `tv-lock.sh require --advisory`: it only names a holder (and renews a lease
       # THIS lane already holds), takes nothing and wakes nothing.
       tvq true || { info "TV unreachable or asleep (nothing read, no wake sent)"; return 0; }

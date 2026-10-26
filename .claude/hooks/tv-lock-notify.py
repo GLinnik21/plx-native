@@ -73,7 +73,7 @@ SUBAGENT_INSTRUCTION = (
 # The pre-flight found somebody on the set (tools/tv-lock.sh preflight_report). Not a nudge to push: the
 # agent must stop, so neither text mentions the heads-up. `acquire` and `status` exit 0 on IN USE and the
 # acquire keeps its lease, so each text says what becomes of that lease: the main session may wait for the
-# owner (and `with` then needs PLX_TV_IN_USE_OK=1 after a yes), a subagent cannot, so it hands the lease back.
+# owner (and `with` and tests/run.py then need PLX_TV_IN_USE_OK=1 after a yes), a subagent cannot, so it hands the lease back.
 IN_USE_INSTRUCTION = (
     "tools/tv-lock.sh's pre-flight found the television IN USE. Its line:\n"
     "\n"
@@ -83,7 +83,7 @@ IN_USE_INSTRUCTION = (
     "PushNotification with that line as the message (if your toolset has none, say the line in your\n"
     "next message). Keep the lease only while you wait for their answer; if you will not drive the\n"
     "television now, release it (tools/tv-lock.sh release). Proceed only after the owner says so\n"
-    "(tools/tv-lock.sh with needs PLX_TV_IN_USE_OK=1 then)."
+    "(tools/tv-lock.sh with and tests/run.py need PLX_TV_IN_USE_OK=1 then)."
 )
 
 SUBAGENT_IN_USE_INSTRUCTION = (
