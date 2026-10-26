@@ -316,9 +316,11 @@ something.
   record every installed session carries (`devcaps::project_stored_refusals`, called by the session's
   `replace_cache` as a pure projection under the cache lock). The failed open then recovers on the
   pre-picture recovery path every failed open uses, in the same frame: `open_failure_action` picks
-  `ConvertNativeAudio`, `route::dispatch_native_audio_conversion` flies a `ClaimWork::Encode` under a
-  `FlightOwner::Recovery` that rebuilds today's route (which now plans the audio as the server's to
-  convert), and `land_recovery_flight` reloads onto it. The viewer keeps the connecting spinner: no
+  `ConvertNativeAudio`, `route::dispatch_native_audio_conversion` begins a new attempt on the
+  capability value the pump reads AFTER the lesson (an attempt plans and profiles from the one
+  `PlaybackSession::caps` it started on, never from a later read of the process-wide answer) and
+  flies a `ClaimWork::Encode` under a `FlightOwner::Recovery` that rebuilds today's route (which now
+  plans the audio as the server's to convert), and `land_recovery_flight` reloads onto it. The viewer keeps the connecting spinner: no
   read-out, no second play request. A refusal the install already knew skips that and fails as
   before, so a conversion that is still refused cannot loop. A
   silent stall is learned too, for surround only (`native_stall.rs`, checked in the pump): a native
