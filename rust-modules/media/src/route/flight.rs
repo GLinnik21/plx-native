@@ -703,6 +703,9 @@ fn install_recovery_landing(
             // Nothing is playing, so the Original it replaced has nothing left to feed: stop it
             // now, not after a reload that keeps it on screen.
             installed.retire_replaced();
+            // The HLS attempt lacks the video raster the refusal named: the Original candidate the
+            // climb would return to is graded against it again.
+            regrade_original(ps);
             if !prepare_route_start(ticket) {
                 crate::player::log("recovery: prepared PMS route lost its start transaction");
                 return RecoveryVerdict::Refused;
@@ -710,7 +713,7 @@ fn install_recovery_landing(
             RecoveryVerdict::Install
         }
         RetranscodeClaimResult::Retranscode(applied) => {
-            // The refused audio's conversion ([`dispatch_refusal_conversion`]). The same
+            // The refused stream's conversion ([`dispatch_refusal_conversion`]). The same
             // re-check an accepted claim makes: a route change between the worker's commit and
             // this drain leaves nothing this install may point at.
             if !is_worker_ticket_current(&applied.ticket) {
@@ -721,8 +724,8 @@ fn install_recovery_landing(
             install_retranscode_outcome(ps, &applied);
             // The attempt now lacks the facet the pipeline refused: the Original candidate the ABR
             // climb would return to is graded against it again, so the climb does not propose the
-            // refused audio's direct play.
-            regrade_original_audio(ps);
+            // refused audio's direct play or the refused video raster.
+            regrade_original(ps);
             // Nothing is playing, so the encoder it replaced has nothing left to feed: stop it
             // now, not after a reload that keeps it on screen.
             stop_encoder_session(applied.client, applied.superseded);

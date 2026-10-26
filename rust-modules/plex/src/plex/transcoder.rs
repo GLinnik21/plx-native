@@ -176,8 +176,9 @@ pub fn direct_play_video_codecs(caps: &plx_platform::devcaps::Caps) -> Vec<&'sta
 ///   (issue #593: these lanes are gated on the table alone, never on firmware or model).
 /// * **`video.width`/`video.height` upper bounds** — `caps.hevc_max`, the table's own merged
 ///   numbers (the dev set: 4096x2176; the pre-devcaps constants 3840x2176 remain the fallback).
-///   With a VP9 or AV1 row, a codec-scoped limitation tightens each axis the row measures, but
-///   only where the row is strictly tighter than `hevc_max` (see `row_limits` below). VP9 is also
+///   A codec-scoped limitation tightens each axis where that codec's `Caps::raster_bound` (its
+///   VP9 or AV1 row, and the ceiling a recovery put on a refused video) is strictly tighter than
+///   `hevc_max` (see `row_limits` below). VP9 is also
 ///   capped at `video.bitDepth` `Caps::vp9_bit_depth` (8, or 10 on the webOS 4 family where 10-bit
 ///   VP9 was measured), and with the cap at 10 no VP9 bit-depth scope is emitted at all.
 /// * **`bitDepth=10`** — a CONSTANT, not a derivation: the device table has no bit-depth axis
@@ -214,8 +215,7 @@ fn profile_for_delivery(caps: &plx_platform::devcaps::Caps, delivery: TranscodeD
     let dp_video = direct_play_video_codecs(caps).join(",");
     // The table-gated copy codecs, in list order. Each one is advertised only when the table
     // carries ITS row, and each brings the row's own bound (see `row_limits`).
-    let copy_codecs: [(&str, bool, (u32, u32, u32)); 2] =
-        [("vp9", caps.vp9, caps.vp9_row), ("av1", caps.av1, caps.av1_row)];
+    let copy_codecs: [(&str, bool); 2] = [("vp9", caps.vp9), ("av1", caps.av1)];
     // The chain's head is the ONE encode-target definition, `Caps::encode_vcodec` — the same
     // accessor route.rs's /decision-unreachable Load-payload guess and retranscode read, so the
     // payload can never name a codec this profile did not ask the server to produce — with h264
@@ -228,20 +228,20 @@ fn profile_for_delivery(caps: &plx_platform::devcaps::Caps, delivery: TranscodeD
     // The copy codecs sit LAST so PMS can COPY a VP9 / AV1 source into the ProgressiveMkv remux (a
     // direct stream needs the source codec in the target list) but never chooses one as the
     // encode target.
-    for (name, listed, _) in copy_codecs {
+    for (name, listed) in copy_codecs {
         if listed {
             target_video.push(',');
             target_video.push_str(name);
         }
     }
     let (w, h) = caps.hevc_max;
-    // The codec-scoped bounds: the row's own axis, never roomier than the shared bound, and only
-    // where it is strictly tighter. PMS's way of combining a codec scope with the `*` scope is
-    // unverified, so a codec scope must never claim more than the client gate enforces, and it is
-    // left out when it adds nothing.
-    let row_limits = |name: &str, row: (u32, u32, u32)| {
-        let bound = |row: u32, shared: u32| if row > 0 { row.min(shared) } else { shared };
-        let (bw, bh) = (bound(row.0, w), bound(row.1, h));
+    // The codec-scoped bounds: [`Caps::raster_bound`], the codec's own row and the attempt's
+    // ceiling for it (a recovery that took a refused video out of the attempt, [`Facet::Video`]),
+    // never roomier than the shared bound, and only where it is strictly tighter. PMS's way of
+    // combining a codec scope with the `*` scope is unverified, so a codec scope must never claim
+    // more than the client gate enforces, and it is left out when it adds nothing.
+    let row_limits = |name: &str| {
+        let (bw, bh) = caps.raster_bound(name);
         let mut limits = String::new();
         if bw < w {
             limits.push_str(&format!(
@@ -256,9 +256,9 @@ fn profile_for_delivery(caps: &plx_platform::devcaps::Caps, delivery: TranscodeD
         limits
     };
     let mut codec_limits = String::new();
-    for (name, listed, row) in copy_codecs {
+    for (name, listed) in [("h264", true), ("hevc", caps.hevc), ("vp9", caps.vp9), ("av1", caps.av1)] {
         if listed {
-            codec_limits.push_str(&row_limits(name, row));
+            codec_limits.push_str(&row_limits(name));
         }
     }
     // VP9 Profile 2 (10-bit) is claimed only where it was measured (`Caps::vp9_bit_depth`, 10 on the
@@ -1165,6 +1165,7 @@ mod tests {
                 audio: "aac,ac3,eac3".into(),
             audio_channels: Default::default(),
             native_ceiling: Default::default(),
+            video_ceiling: Default::default(),
             },
             s.contract.delivery,
         );
@@ -1398,6 +1399,7 @@ mod tests {
             audio: "aac,ac3,eac3".into(),
             audio_channels: Default::default(),
             native_ceiling: Default::default(),
+            video_ceiling: Default::default(),
         };
         let p = super::profile_for(&caps);
         assert!(!p.contains("hevc"), "hevc must not appear anywhere in {p}");
@@ -1430,6 +1432,7 @@ mod tests {
                 audio: "aac".into(),
                 audio_channels: Default::default(),
                 native_ceiling: Default::default(),
+                video_ceiling: Default::default(),
             },
         ] {
             let p = super::profile_for(&caps);
@@ -1459,6 +1462,7 @@ mod tests {
             audio: "aac".into(),
             audio_channels: Default::default(),
             native_ceiling: Default::default(),
+            video_ceiling: Default::default(),
         };
         let p = super::profile_for(&caps);
         let dp = p.split("add-transcode-target").next().unwrap();
@@ -1502,6 +1506,30 @@ mod tests {
              +add-transcode-target(type=videoProfile&context=streaming&protocol=http\
              &container=matroska&videoCodec=hevc,h264&audioCodec=ac3,eac3,aac)"
         );
+    }
+
+    /// A recovery that took a refused 4K H.264 out of the attempt bounds THAT codec in the profile
+    /// ([`plx_platform::devcaps::Facet::Video`]): PMS cannot copy the raster the pipeline refused
+    /// and must encode, while the other codecs and the shared bound stay. Both deliveries carry it
+    /// (the block is delivery-independent), and an attempt without a ceiling is byte-identical.
+    #[test]
+    fn a_video_ceiling_bounds_that_codec_in_the_profile() {
+        let assumed = Caps::assumed();
+        let narrowed = assumed.without(&plx_platform::devcaps::Facet::Video {
+            codec: "h264".into(),
+            width: 3840,
+            height: 2160,
+        });
+        for p in [
+            super::profile_for(&narrowed),
+            super::profile_for_delivery(&narrowed, TranscodeDelivery::FixedHls { seconds_per_segment: 2 }),
+        ] {
+            assert!(p.contains("scope=videoCodec&scopeName=h264&type=upperBound&name=video.width&value=1920&replace=true"), "{p}");
+            assert!(p.contains("scope=videoCodec&scopeName=h264&type=upperBound&name=video.height&value=1088&replace=true"), "{p}");
+            assert!(!p.contains("scopeName=hevc&type=upperBound&name=video.width"), "{p}");
+            assert!(p.contains("scopeName=*&type=upperBound&name=video.width&value=3840"), "the shared bound stays: {p}");
+        }
+        assert!(!super::profile_for(&assumed).contains("scopeName=h264"));
     }
 
     // ---- AV1 direct play and remux copy (issue #593) --------------------------------------

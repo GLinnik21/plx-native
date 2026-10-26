@@ -596,6 +596,7 @@ fn open_facts(ps: &crate::route::PlaybackSession, native_audio: Option<plx_platf
         native_audio,
         forced: crate::route::forced_direct_play(ps),
         audio: crate::route::stream_audio(ps),
+        video: crate::route::stream_video(ps),
     }
 }
 
@@ -686,7 +687,14 @@ fn drive_open_recovery(ps: &mut crate::route::PlaybackSession, first: super::rec
                         super::recovery::MAX_RECOVERY_FLIGHTS
                     ));
                     let secs = (SHARED.playpos_ns.load(Relaxed) / 1_000_000_000).max(0);
-                    crate::route::dispatch_refusal_conversion(ps, secs)
+                    // A refused video is converted by an encode that withdraws the video copy; a
+                    // refused audio keeps the route as planned (an Original remux still copies the
+                    // video).
+                    let lane = match facet {
+                        plx_platform::devcaps::Facet::Audio { .. } => crate::route::VideoLane::AsPlanned,
+                        plx_platform::devcaps::Facet::Video { .. } => crate::route::VideoLane::Encode,
+                    };
+                    crate::route::dispatch_refusal_conversion(ps, secs, lane)
                 }
                 RecoveryEffect::StartAutoHls => {
                     let status = SHARED.dg_http_status.load(Relaxed);

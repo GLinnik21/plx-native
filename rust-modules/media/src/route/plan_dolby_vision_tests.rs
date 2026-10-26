@@ -22,6 +22,7 @@ fn p8_without_confirmed_dv_support_uses_base_layer() {
         audio: "aac,ac3,eac3".into(),
         audio_channels: Default::default(),
         native_ceiling: Default::default(),
+        video_ceiling: Default::default(),
     };
     for bl_compat in [1, 2, 4] {
         let dovi = Dovi {
@@ -63,6 +64,7 @@ fn p5_without_confirmed_dv_support_requires_video_encode() {
         audio: "aac,ac3,eac3".into(),
         audio_channels: Default::default(),
         native_ceiling: Default::default(),
+        video_ceiling: Default::default(),
     };
     for capability in [
         plx_platform::devcaps::dv::DvCapability::Unknown,
@@ -181,6 +183,7 @@ fn a_profile_5_source_does_not_direct_play_undeclared() {
         audio: "aac,ac3,eac3".into(),
         audio_channels: Default::default(),
         native_ceiling: Default::default(),
+        video_ceiling: Default::default(),
     };
     // the live P5 item's own shape: 3840x1602 hevc, well inside the bound
     assert!(
@@ -225,6 +228,7 @@ fn declaring_dolby_vision_inverts_the_profile_5_refusal() {
         audio: "aac,ac3,eac3".into(),
         audio_channels: Default::default(),
         native_ceiling: Default::default(),
+        video_ceiling: Default::default(),
     };
     let dv = p5().presentation(DECLARED, plx_platform::devcaps::dv::DvCapability::Supported, true);
     assert!(
@@ -276,6 +280,7 @@ fn a_cross_compatible_profile_7_source_direct_plays_as_profile_8() {
         audio: "eac3".into(),
         audio_channels: Default::default(),
         native_ceiling: Default::default(),
+        video_ceiling: Default::default(),
     };
     for signal in [SILENT, DECLARED] {
         let dv = p7().presentation(signal, Supported, true);
@@ -347,6 +352,7 @@ fn profile_8_and_plain_files_are_unaffected() {
         audio: "aac,ac3,eac3".into(),
         audio_channels: Default::default(),
         native_ceiling: Default::default(),
+        video_ceiling: Default::default(),
     };
     for signal in [SILENT, DECLARED] {
         assert!(
@@ -499,6 +505,7 @@ fn the_direct_play_gate_and_the_payload_node_can_never_disagree() {
         audio: "aac,ac3,eac3".into(),
         audio_channels: Default::default(),
         native_ceiling: Default::default(),
+        video_ceiling: Default::default(),
     };
     for capability in [
         plx_platform::devcaps::dv::DvCapability::Unknown,
@@ -654,6 +661,7 @@ fn a_source_beyond_the_device_bound_does_not_direct_play() {
         audio: "aac,ac3,eac3".into(),
         audio_channels: Default::default(),
         native_ceiling: Default::default(),
+        video_ceiling: Default::default(),
     };
     // the codec agrees; the frame size must still refuse — on either codec
     assert!(!video_direct_plays(
@@ -705,6 +713,7 @@ fn unknown_dimensions_fail_open_and_the_codec_half_still_gates() {
         audio: "aac".into(),
         audio_channels: Default::default(),
         native_ceiling: Default::default(),
+        video_ceiling: Default::default(),
     };
     assert!(video_direct_plays(
         "h264",

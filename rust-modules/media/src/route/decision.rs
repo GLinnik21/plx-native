@@ -3591,8 +3591,8 @@ impl HlsAbrControl {
 fn auto_catalog(ps: &PlaybackSession) -> crate::abr::HlsActuatorCatalog {
     let caps = ps.attempt_caps();
     let device = (
-        u16::try_from(caps.hevc_max.0).unwrap_or(u16::MAX),
-        u16::try_from(caps.hevc_max.1).unwrap_or(u16::MAX),
+        u16::try_from(caps.raster_bound("h264").0).unwrap_or(u16::MAX),
+        u16::try_from(caps.raster_bound("h264").1).unwrap_or(u16::MAX),
     );
     let (_, width, height) = ps.cur_src;
     let source = (
@@ -4102,13 +4102,26 @@ pub fn dispatch_unopened_auto_hls(ps: &mut PlaybackSession, offset_secs: i64) ->
     }
 }
 
-/// The line a refused native-audio conversion settles with (never logged as another recovery's).
-pub(super) const REFUSAL_CONVERSION_REJECTED: &str = "native audio: the server could not convert the refused audio";
+/// The line a refused conversion settles with (never logged as another recovery's).
+pub(super) const REFUSAL_CONVERSION_REJECTED: &str = "the server could not convert the refused stream";
 
-/// Start the flight that replaces a route whose audio the pipeline refused before its Engine's first
-/// picture (`type=18` of any number, or the stall watchdog; a reload after the request's first
-/// picture starts such an Engine too): the viewer's track plays again with the server
-/// converting that audio. The open-recovery ladder's facet rung
+/// What the refusal-conversion flight asks the server to do with the VIDEO.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VideoLane {
+    /// Today's route as it is planned ([`retranscode_contract`]): an Original remux keeps copying
+    /// the video and converts only the audio the attempt no longer offers.
+    AsPlanned,
+    /// An encode with no video copy ([`video_encode_contract`]): the facet rung of a refused video,
+    /// whose raster the attempt no longer offers, so the server must produce a smaller one.
+    Encode,
+}
+
+/// Start the flight that replaces a route whose audio or video the pipeline refused before its
+/// Engine's first picture (`type=18` of any number, or the stall watchdog; a reload after the
+/// request's first picture starts such an Engine too): the viewer's track plays again with the
+/// server converting that stream ([`VideoLane`] says how the video is asked for: copied as planned
+/// for a refused audio, encoded under the 1080p ceiling for a refused video). The open-recovery
+/// ladder's facet rung
 /// ([`crate::player::recovery::OpenRecovery`], `ConvertFacet`) has **already narrowed the playing
 /// attempt** to `start` less the suspect stream ([`crate::player::recovery::suspect`], `Caps::without`)
 /// when it entered the rung, so the value the plan and the profile read no longer names the codec,
@@ -4119,10 +4132,14 @@ pub(super) const REFUSAL_CONVERSION_REJECTED: &str = "native audio: the server c
 /// ([`try_retranscode`]), install at the landing ([`install_recovery_landing`]).
 /// [`RecoveryDispatch::Refused`] / [`RecoveryVerdict::Refused`] leave the failure the pump held back
 /// (a forced direct play, which the viewer asked not to convert, is one).
-pub fn dispatch_refusal_conversion(ps: &mut PlaybackSession, offset_secs: i64) -> RecoveryDispatch {
+pub fn dispatch_refusal_conversion(ps: &mut PlaybackSession, offset_secs: i64, video: VideoLane) -> RecoveryDispatch {
     let expected = worker_ticket();
-    let Some(contract) = plain_rebuild_precheck(ps, &expected) else {
+    if !rebuild_precheck(ps, &expected) {
         return RecoveryDispatch::Refused;
+    }
+    let contract = match video {
+        VideoLane::AsPlanned => retranscode_contract(ps),
+        VideoLane::Encode => video_encode_contract(ps),
     };
     let Some(inputs) = prepare_retranscode_inputs(ps, &expected, offset_secs) else {
         return RecoveryDispatch::Refused;
@@ -5626,6 +5643,22 @@ pub fn stream_audio(ps: &PlaybackSession) -> Option<crate::player::recovery::Str
         channels: u32::try_from(stream_achannels(ps)).unwrap_or(0),
     })
 }
+/// The SOURCE's video, when the pipeline was fed it whole, for the failed-open ladder
+/// ([`crate::player::recovery::OpenFacts`]): a direct play, or a server remux that copies it
+/// (the rule [`video_copy_fps`] states). `None` for an encoded video (a re-encode flavour, even when
+/// PMS actually copied: the session cannot tell, and the ladder is then conservative), while no
+/// video codec is declared, and for a raster the server never measured (the width or height is 0,
+/// which names no facet). Beside [`stream_audio`] so the session keeps its fields private.
+pub fn stream_video(ps: &PlaybackSession) -> Option<crate::player::recovery::StreamVideo> {
+    let fed_whole = !is_transcoding(ps) || (ps.cur_contract.remux && !ps.cur_contract.no_video_copy);
+    let codec = stream_vcodec(ps);
+    let (_, width, height) = ps.cur_src;
+    (fed_whole && !codec.is_empty()).then(|| crate::player::recovery::StreamVideo {
+        codec: codec.to_ascii_lowercase(),
+        width: u32::try_from(width).unwrap_or(0),
+        height: u32::try_from(height).unwrap_or(0),
+    })
+}
 /// direct-play source video fps for the Load esInfo (0 = unknown/transcode → omit)
 pub fn stream_fps(ps: &PlaybackSession) -> f64 {
     ps.stream_fps
@@ -5787,13 +5820,18 @@ pub fn set_stream_codecs(ps: &mut PlaybackSession, vc: &str, ac: &str) {
 pub fn sink_max_raster(ps: &PlaybackSession) -> (u16, u16) {
     let s = &*ps;
     let clamp = |v: i64| u16::try_from(v).unwrap_or(u16::MAX);
-    let source = (clamp(s.cur_src.1), clamp(s.cur_src.2));
     // 0 on either side means "nobody said"; the other side's number wins.
     let axis = |src: u16, cap: i64| match (src, clamp(cap)) {
         (0, c) => c,
         (s, 0) => s,
         (s, c) => s.min(c),
     };
+    // The source, held to the ceiling a recovery put on this stream's codec when it took a refused
+    // video out of the attempt ([`plx_platform::devcaps::Facet::Video`]): a converted H.264 1080
+    // stream must not declare the 4K60 envelope of the file it came from. Only the ceiling entry,
+    // not `raster_bound`, so a play with no ceiling declares what it always did.
+    let (ceil_w, ceil_h) = ps.attempt_caps().video_ceiling.get(s.stream_vcodec.as_str()).copied().unwrap_or((0, 0));
+    let source = (axis(clamp(s.cur_src.1), i64::from(ceil_w)), axis(clamp(s.cur_src.2), i64::from(ceil_h)));
     let capped = || match s.cur_contract.ceiling {
         Some(c) => (axis(source.0, c.max_w), axis(source.1, c.max_h)),
         None => source,
@@ -9111,8 +9149,14 @@ fn retranscode_for(ps: &mut PlaybackSession, expected: &WorkerTicket, offset_sec
 /// it on the main thread once, up front, and hand the resulting [`plx_plex::plex::EncodeContract`]
 /// into whichever attempt (primary or Legacy fallback) actually needs it.
 fn plain_rebuild_precheck(ps: &mut PlaybackSession, expected: &WorkerTicket) -> Option<plx_plex::plex::EncodeContract> {
+    rebuild_precheck(ps, expected).then(|| retranscode_contract(ps))
+}
+
+/// The ticket and HLS-sync half of [`plain_rebuild_precheck`]: whether a rebuild of the current
+/// route may still be claimed (the contract itself is the caller's).
+fn rebuild_precheck(ps: &mut PlaybackSession, expected: &WorkerTicket) -> bool {
     if !is_worker_ticket_current(expected) {
-        return None;
+        return false;
     }
     if matches!(
         cur_delivery(ps),
@@ -9120,10 +9164,10 @@ fn plain_rebuild_precheck(ps: &mut PlaybackSession, expected: &WorkerTicket) -> 
     ) {
         let live = sync_active_hls_to_session(ps);
         if live.as_ref().is_some_and(|(ticket, _)| ticket != expected) {
-            return None;
+            return false;
         }
     }
-    Some(retranscode_contract(ps))
+    true
 }
 
 /// The contract a plain rebuild of the current route asks for: today's delivery, ceiling and
@@ -9158,6 +9202,25 @@ fn retranscode_contract(ps: &PlaybackSession) -> plx_plex::plex::EncodeContract 
         return enhanced_remux_contract(plx_plex::plex::AudioEnhancements::NONE, false);
     }
     re_encode_contract(ps, cur_delivery(ps), cur_ceiling(ps))
+}
+
+/// The contract of a refused video's conversion ([`VideoLane::Encode`]): a re-encode of today's
+/// delivery with the server forbidden to copy the video (`directStream=0`; the audio is still
+/// copied), under the lower of the route's ceiling and the 1080p rung's. The ceiling is what makes
+/// the encode independent of how PMS combines the profile's per-codec limitation with its `*`
+/// one (that limitation stays, for MDE): `videoResolution` itself asks for at most 1080p.
+fn video_encode_contract(ps: &PlaybackSession) -> plx_plex::plex::EncodeContract {
+    let cap = crate::abr::Rung::P1080High.ceiling();
+    let cur = cur_ceiling(ps).unwrap_or(plx_plex::plex::Ceiling::NATIVE_4K);
+    let ceiling = plx_plex::plex::Ceiling {
+        max_kbps: cur.max_kbps.min(cap.max_kbps),
+        max_w: cur.max_w.min(cap.max_w),
+        max_h: cur.max_h.min(cap.max_h),
+    };
+    plx_plex::plex::EncodeContract {
+        no_video_copy: true,
+        ..re_encode_contract(ps, cur_delivery(ps), Some(ceiling))
+    }
 }
 
 /// A re-encode of the current item at `delivery`/`ceiling`: never a remux, the video-copy rule
@@ -9629,29 +9692,41 @@ pub(super) fn install_retranscode_outcome(ps: &mut PlaybackSession, applied: &Ap
     );
 }
 
-/// **Re-check the stored Original candidate's audio against the attempt's caps**, after a recovery
-/// narrowed them. The refusal-recovery landing ([`install_recovery_landing`]'s `Retranscode` arm)
-/// leaves the request's attempt without the facet the pipeline refused; a cold Auto Original's stored
-/// candidate (the way back the ABR climb proposes) was graded against the caps BEFORE that, so a
-/// candidate that carried the refused DTS would still `feeds_part()`, and the climb would offer the
-/// Part's DTS direct play again.
+/// **Re-check the stored Original candidate against the attempt's caps**, after a recovery narrowed
+/// them. The refusal-recovery landings ([`install_recovery_landing`]'s `Retranscode` and `AutoHls`
+/// arms) leave the request's attempt without the stream the pipeline refused; a stored candidate (the
+/// way back the ABR climb and the manual Original re-pick propose) was graded against the caps
+/// BEFORE that, so one that carried the refused DTS would still `feeds_part()`, and one that is a
+/// 4K H.264 would still be offered at the raster that was refused.
 ///
-/// The same body as the audio-pick site ([`commit_audio_selection`]): `retarget_audio` with the
-/// answer of [`audio_track_direct_plays`], which reads the narrowed attempt. A candidate whose
-/// audio now needs conversion is kept, `audio_converted`, so returning to Original means the remux
-/// naming that track; one that no legal copy can serve is dropped (`TrackPickDropped`).
+/// The audio half is the body of the audio-pick site ([`commit_audio_selection`]):
+/// `retarget_audio` with the answer of [`audio_track_direct_plays`], which reads the narrowed
+/// attempt. A candidate whose audio now needs conversion is kept, `audio_converted`, so returning to
+/// Original means the remux naming that track; one that no legal copy can serve is dropped
+/// (`TrackPickDropped`).
 ///
-/// TODO(S1b): a refused VIDEO facet needs the same re-check of the candidate's video.
-pub(super) fn regrade_original_audio(ps: &mut PlaybackSession) {
-    let Some(carried) = ps.auto_original.as_ref().and_then(|candidate| candidate.audio.clone()) else {
-        return;
-    };
-    let direct_plays = audio_track_direct_plays(ps, &carried.codec, carried.channels, carried.sample_rate);
-    if let Some(candidate) = ps.auto_original.as_mut() {
-        if !candidate.retarget_audio(&carried, direct_plays) {
-            ps.auto_original = None;
-            ps.original_declined = Some(OriginalDeclined::TrackPickDropped);
+/// The video half: a candidate whose source video the attempt no longer direct plays
+/// ([`video_direct_plays`], the gate that built it) is dropped (`VideoNeedsConverting`). Dropping is
+/// the only shape that never re-offers the raster: a remux candidate COPIES the video too, and no
+/// candidate can avoid the source's raster.
+pub(super) fn regrade_original(ps: &mut PlaybackSession) {
+    if let Some(carried) = ps.auto_original.as_ref().and_then(|candidate| candidate.audio.clone()) {
+        let direct_plays = audio_track_direct_plays(ps, &carried.codec, carried.channels, carried.sample_rate);
+        if let Some(candidate) = ps.auto_original.as_mut() {
+            if !candidate.retarget_audio(&carried, direct_plays) {
+                ps.auto_original = None;
+                ps.original_declined = Some(OriginalDeclined::TrackPickDropped);
+            }
         }
+    }
+    let (_, width, height) = ps.cur_src;
+    let caps = ps.attempt_caps();
+    let video_converts = ps.auto_original.as_ref().is_some_and(|c| {
+        !video_direct_plays(&c.vcodec, width, height, c.dv_decision.presentation, &caps)
+    });
+    if video_converts {
+        ps.auto_original = None;
+        ps.original_declined = Some(OriginalDeclined::VideoNeedsConverting);
     }
 }
 

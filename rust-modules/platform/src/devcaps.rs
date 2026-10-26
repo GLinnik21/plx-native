@@ -288,13 +288,22 @@ pub fn apply_gst_decoders(caps: &mut Caps, conf: &str) -> (Vec<&'static str>, Ve
 }
 
 
-/// One stream class an attempt can be told to do without ([`Caps::without`]). Audio only for now:
-/// a refused video decode comes with the video flight that needs it.
+/// One stream class an attempt can be told to do without ([`Caps::without`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Facet {
     /// `channels` channels of `codec`, in any spelling [`audio_codec_id`] knows.
     Audio { codec: String, channels: u32 },
+    /// A `width`x`height` video of `codec` (PMS's lower-case spelling: `h264`, `hevc`, `vp9`,
+    /// `av1`, the names the profile's `videoCodec` lists use). Taking it out lowers that codec's
+    /// raster bound to [`VIDEO_REFUSAL_FLOOR`] ([`Caps::video_ceiling`]) when the stream is above
+    /// it, so the attempt neither direct plays nor copies a raster the pipeline refused.
+    Video { codec: String, width: u32, height: u32 },
 }
+
+/// The raster an attempt narrowed by a refused video [`Facet::Video`] is held to: the repo's 1080p
+/// bound (the profile's `1920x1088`, the macroblock-aligned height a 1080p-only SoC states; the
+/// Load maps 1088 back to 1080).
+pub const VIDEO_REFUSAL_FLOOR: (u32, u32) = (1920, 1088);
 
 /// The decode-capability snapshot the playback stack derives from. Probed once, at boot
 /// ([`probe`]), and never written again: [`caps`] answers the same value for the life of the process.
@@ -307,7 +316,8 @@ pub struct Caps {
     /// hevc entries in BOTH profile codec lists (h264 needs no flag — every webOS SoC has it).
     pub hevc: bool,
     /// The video width/height upper bound — the per-axis MIN across the merged H.264 and HEVC
-    /// rows, because both consumers apply one bound to EVERY codec at once: the profile's
+    /// rows, because the shared consumers apply one bound to EVERY codec at once (each codec's own
+    /// bound is [`Caps::raster_bound`], which only ever tightens this one): the profile's
     /// `*`-scoped limitation (a 1080p-only SoC must tell PMS 1920x1088 so 4K sources transcode
     /// down) and route.rs's local direct-play resolution gate. Taking the HEVC row alone
     /// whenever one existed — as this first shipped — assumed the dev set's shape ("HEVC is the
@@ -360,6 +370,11 @@ pub struct Caps {
     /// learned from a refusal, as opposed to the table's. Force Direct Play applies no table
     /// ceiling but does honour these ([`Caps::forced_feeds_audio_track`]).
     pub native_ceiling: std::collections::BTreeMap<String, u32>,
+    /// Per-codec raster ceilings an attempt was narrowed to by a refused video stream
+    /// ([`Caps::without`], [`Facet::Video`]); empty in [`Caps::assumed`] and in a table read, and
+    /// never stored on the install (a video facet never proves). Read through
+    /// [`Caps::raster_bound`], never directly. A `BTreeMap` keeps `Eq` and deterministic profile bytes.
+    pub video_ceiling: std::collections::BTreeMap<String, (u32, u32)>,
 }
 
 impl Caps {
@@ -380,7 +395,33 @@ impl Caps {
             audio: "aac,ac3,eac3".to_string(),
             audio_channels: Default::default(),
             native_ceiling: Default::default(),
+            video_ceiling: Default::default(),
         }
+    }
+
+    /// The width/height upper bound for `vcodec` (PMS's lower-case spelling), per axis the lowest
+    /// of: the shared [`Caps::hevc_max`], the codec's own table row on each axis it states
+    /// (`av1_row`, `vp9_row`; H.264 and HEVC are already folded into `hevc_max`), and the attempt's
+    /// [`Caps::video_ceiling`] entry for the codec. The ONE bound the direct-play gate, the
+    /// profile's codec limitations, the Auto HLS catalog and the Load envelope take.
+    pub fn raster_bound(&self, vcodec: &str) -> (u32, u32) {
+        let (mut w, mut h) = self.hevc_max;
+        let (rw, rh, _) = match vcodec {
+            "av1" => self.av1_row,
+            "vp9" => self.vp9_row,
+            _ => (0, 0, 0),
+        };
+        if rw > 0 {
+            w = w.min(rw);
+        }
+        if rh > 0 {
+            h = h.min(rh);
+        }
+        if let Some(&(cw, ch)) = self.video_ceiling.get(vcodec) {
+            w = w.min(cw);
+            h = h.min(ch);
+        }
+        (w, h)
     }
 
     /// Membership test on [`Caps::audio`]. `codec` is any spelling of the name
@@ -450,11 +491,28 @@ impl Caps {
     /// ([`Caps::minus`]): a stereo or mono one takes the codec off the announced set, a surround
     /// one keeps it to stereo. A codec this value does not announce is already without, so the copy
     /// is equal to `self`.
+    ///
+    /// A video facet above [`VIDEO_REFUSAL_FLOOR`] lowers that codec's [`Caps::raster_bound`] to the
+    /// floor ([`Caps::video_ceiling`]) and nothing else: the other codecs, the audio and the shared
+    /// bound stay. One at or under the floor, or a bound the floor does not tighten, leaves the copy
+    /// equal to `self` (nothing to lower is how the recovery ladder skips a rung that would
+    /// change nothing).
     pub fn without(&self, facet: &Facet) -> Caps {
         let mut next = self.clone();
         match facet {
             Facet::Audio { codec, channels } => {
                 limit_codec(&mut next, &audio_codec_id(codec), refusal_ceiling(*channels));
+            }
+            Facet::Video { codec, width, height } => {
+                let (floor_w, floor_h) = VIDEO_REFUSAL_FLOOR;
+                if *width > floor_w || *height > floor_h {
+                    let codec = codec.to_ascii_lowercase();
+                    let (bw, bh) = self.raster_bound(&codec);
+                    let tighter = (bw.min(floor_w), bh.min(floor_h));
+                    if tighter != (bw, bh) {
+                        next.video_ceiling.insert(codec, tighter);
+                    }
+                }
             }
         }
         next
@@ -837,6 +895,7 @@ fn parse(s: &str) -> Option<Caps> {
         audio,
         audio_channels,
         native_ceiling: Default::default(),
+        video_ceiling: Default::default(),
     })
 }
 
@@ -1714,5 +1773,35 @@ mod tests {
         }
         assert_eq!(Caps::assumed().vp9_bit_depth, 8);
         assert_eq!(parse(REAL).unwrap().vp9_bit_depth, 8, "parse() alone never claims it; probe() sets it");
+    }
+
+    /// A video facet above the 1080p floor lowers THAT codec's raster bound and nothing else; one at
+    /// or under the floor, or a bound already at it, changes nothing, so the recovery ladder's loop
+    /// guard (`start.without(f) != start`) skips a rung that would not change the request.
+    #[test]
+    fn without_a_video_facet_lowers_that_codecs_raster_to_the_1080p_floor() {
+        let assumed = Caps::assumed();
+        let video = |codec: &str, width, height| Facet::Video { codec: codec.into(), width, height };
+        let narrowed = assumed.without(&video("h264", 3840, 2160));
+        assert_eq!(narrowed.raster_bound("h264"), VIDEO_REFUSAL_FLOOR);
+        assert_eq!(narrowed.raster_bound("hevc"), (3840, 2176));
+        assert_eq!((&narrowed.audio, &narrowed.audio_channels), (&assumed.audio, &assumed.audio_channels));
+        assert_eq!(assumed.without(&video("h264", 1920, 1080)), assumed, "nothing to lower");
+        assert_eq!(narrowed.without(&video("h264", 3840, 2160)), narrowed, "idempotent");
+        let mut one_080p = parse(REAL).unwrap();
+        one_080p.hevc_max = (1920, 1088);
+        assert_eq!(one_080p.without(&video("h264", 3840, 2160)), one_080p, "a bound already at the floor");
+    }
+
+    /// `raster_bound` is the per-axis lowest of the shared bound, the codec's own row and the
+    /// attempt's ceiling; a row that states nothing bounds nothing.
+    #[test]
+    fn raster_bound_is_the_min_of_the_shared_bound_the_row_and_the_ceiling() {
+        let caps = Caps { av1: true, av1_row: (1920, 1080, 60), ..Caps::assumed() };
+        assert_eq!(caps.raster_bound("av1"), (1920, 1080));
+        assert_eq!(caps.raster_bound("vp9"), caps.hevc_max, "no VP9 row states nothing");
+        assert_eq!(caps.raster_bound("h264"), caps.hevc_max);
+        let capped = Caps { video_ceiling: [("av1".to_owned(), (1280, 720))].into(), ..caps };
+        assert_eq!(capped.raster_bound("av1"), (1280, 720));
     }
 }

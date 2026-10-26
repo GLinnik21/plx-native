@@ -138,16 +138,45 @@ fn proves(facet: &Facet, lanes: Option<&Lanes>) -> bool {
     let Some(l) = lanes else { return false };
     match facet {
         Facet::Audio { .. } => l.audio == Lane::Transcode && matches!(l.video, Lane::Copy | Lane::DirectPlay),
-    } // S1b adds the Video arm: video Transcode, audio Copy|DirectPlay
+        // A video facet never proves (D6(c)): a rescue by encoding says the raster was the problem
+        // only if the encode kept the frame rate, and nothing here can tell. It is the attempt's
+        // alone and is never stored.
+        Facet::Video { .. } => false,
+    }
 }
 
-/// The stream class a pipeline refusal puts under suspicion: audio outside the codecs every set
-/// decodes (`aac`, `ac3`, `eac3`). `channels == 0` (unknown) names the codec at no width, which
-/// [`Caps::without`] reads as "not at all", the conservative choice. Video is S1b's.
-pub fn suspect(audio: Option<&StreamAudio>) -> Option<Facet> {
+/// The video the pipeline was fed: the SOURCE's codec (`route::stream_vcodec`) and raster
+/// (`route::stream_video`, `None` when the video was re-encoded or its raster is unknown).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StreamVideo {
+    /// The codec in PMS's lower-case spelling (`h264`, `hevc`, `vp9`, `av1`).
+    pub codec: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// The audio a pipeline refusal puts under suspicion: outside the codecs every set decodes (`aac`,
+/// `ac3`, `eac3`). `channels == 0` (unknown) names the codec at no width, which [`Caps::without`]
+/// reads as "not at all", the conservative choice.
+fn suspect_audio(audio: Option<&StreamAudio>) -> Option<Facet> {
     let a = audio?;
     let id = plx_platform::devcaps::audio_codec_id(&a.codec);
     (!matches!(&*id, "aac" | "ac3" | "eac3")).then(|| Facet::Audio { codec: id.into_owned(), channels: a.channels })
+}
+
+/// The video a pipeline refusal puts under suspicion: the source's, at a raster the pipeline was fed
+/// whole. An unknown raster (either side 0) names no facet, as the planner's direct-play gate passes
+/// one it was never told.
+fn suspect_video(video: Option<&StreamVideo>) -> Option<Facet> {
+    let v = video.filter(|v| v.width > 0 && v.height > 0)?;
+    Some(Facet::Video { codec: v.codec.to_ascii_lowercase(), width: v.width, height: v.height })
+}
+
+/// The stream class a pipeline refusal puts under suspicion, chosen by elimination: the audio when
+/// it is outside the codecs every set decodes ([`suspect_audio`]; the video is then not
+/// considered), else the `video` the pipeline was fed ([`suspect_video`]).
+pub fn suspect(audio: Option<&StreamAudio>, video: Option<&StreamVideo>) -> Option<Facet> {
+    suspect_audio(audio).or_else(|| suspect_video(video))
 }
 
 /// What the driver read, at the moment of a failure, that the ladder decides on.
@@ -168,6 +197,9 @@ pub struct OpenFacts {
     pub forced: bool,
     /// What the pipeline was fed (`route::stream_audio`), for [`suspect`].
     pub audio: Option<StreamAudio>,
+    /// The SOURCE's video, when the pipeline was fed it whole (`route::stream_video`: a direct play
+    /// or a remux that copies it), for [`suspect`]. `None` for an encoded video.
+    pub video: Option<StreamVideo>,
 }
 
 /// What moves the ladder.
@@ -264,9 +296,8 @@ pub struct OpenRecovery {
     /// `start` narrowed by `excluded`: the value the route plans and profiles from. Assigned only
     /// on a rung's entry, always from `start` ([`attempt_for`]).
     attempt: Arc<Caps>,
-    /// The facet the facet rung took out. One facet rung per request, so at most one; carried into
-    /// the both-facets rung.
-    excluded: Option<Facet>,
+    /// The facets the rungs took out, one per stream class; carried into the both-facets rung.
+    excluded: Excluded,
     /// Flights started by the facet and both-facets rungs (and a failed source's HLS contingency).
     /// The rollback is not counted.
     flights: u32,
@@ -277,16 +308,37 @@ pub struct OpenRecovery {
     state: State,
 }
 
+/// The facets a request has taken out of its attempt: at most one per stream class, a later one
+/// replacing the earlier of its class.
+#[derive(Clone, Debug, Default)]
+struct Excluded {
+    audio: Option<Facet>,
+    video: Option<Facet>,
+}
+
+impl Excluded {
+    fn take(&mut self, facet: Facet) {
+        match facet {
+            Facet::Audio { .. } => self.audio = Some(facet),
+            Facet::Video { .. } => self.video = Some(facet),
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &Facet> {
+        self.audio.iter().chain(self.video.iter())
+    }
+}
+
 /// `start` less `excluded`. Never takes a previous attempt as input, so the value is the same
 /// whichever rungs ran.
-fn attempt_for(start: &Caps, excluded: Option<&Facet>) -> Caps {
-    excluded.map_or_else(|| start.clone(), |facet| start.without(facet))
+fn attempt_for(start: &Caps, excluded: &Excluded) -> Caps {
+    excluded.iter().fold(start.clone(), |caps, facet| caps.without(facet))
 }
 
 impl OpenRecovery {
     /// A fresh request on `start`.
     pub fn new(start: Arc<Caps>) -> Self {
-        Self { attempt: start.clone(), start, excluded: None, flights: 0, pictured: false, state: State::Opening }
+        Self { attempt: start.clone(), start, excluded: Excluded::default(), flights: 0, pictured: false, state: State::Opening }
     }
 
     /// The capability value this request plans and profiles from: `start` less the facet the facet
@@ -297,7 +349,7 @@ impl OpenRecovery {
 
     /// Re-derive the attempt from `start` and `excluded`; a rung's entry is the only caller.
     fn narrow(&mut self) {
-        self.attempt = Arc::new(attempt_for(&self.start, self.excluded.as_ref()));
+        self.attempt = Arc::new(attempt_for(&self.start, &self.excluded));
     }
 
     /// The rung `facts` select. The order is the proof that no rung of main is reordered: pending
@@ -311,7 +363,7 @@ impl OpenRecovery {
             // narrows the rollback's profile too: the restored HLS route must not offer it natively
             // again.
             if let Some(facet) = facts.native_audio.as_ref().filter(|f| self.start.without(f) != *self.start) {
-                self.excluded = Some(facet.clone());
+                self.excluded.audio = Some(facet.clone());
                 self.narrow();
             }
             fx.push(RecoveryEffect::Rollback);
@@ -324,8 +376,12 @@ impl OpenRecovery {
             return;
         }
         if refusal.names_pipeline() && facts.no_frames && self.flights == 0 {
-            if let Some(facet) = suspect(facts.audio.as_ref()).filter(|f| self.start.without(f) != *self.start) {
-                self.excluded = Some(facet.clone());
+            // The video facet rung runs only where no HLS contingency is retained: a cold Auto
+            // Original's HLS rung is already the video re-encode (ABR-managed), and only a refusal
+            // that gave a number can name a decode (`Stalled` is native audio's).
+            let video = facts.video.as_ref().filter(|_| !facts.auto_original && matches!(refusal, LoadRefusal::Refused { .. }));
+            if let Some(facet) = suspect(facts.audio.as_ref(), video).filter(|f| self.start.without(f) != *self.start) {
+                self.excluded.take(facet.clone());
                 self.narrow();
                 self.flights += 1;
                 fx.push(RecoveryEffect::ConvertFacet { facet, flight: self.flights });
@@ -334,6 +390,14 @@ impl OpenRecovery {
             }
         }
         if facts.auto_original && facts.no_frames && self.flights < MAX_RECOVERY_FLIGHTS {
+            // The HLS attempt lacks every stream the refusal named that narrows `start`: the refused
+            // video raster (a numbered refusal) and native audio (any pipeline refusal). A timeout or
+            // a source failure names none, so main's attempt flies.
+            let audio = refusal.names_pipeline().then(|| suspect_audio(facts.audio.as_ref())).flatten();
+            let video = matches!(refusal, LoadRefusal::Refused { .. }).then(|| suspect_video(facts.video.as_ref())).flatten();
+            for facet in audio.into_iter().chain(video).filter(|f| self.start.without(f) != *self.start) {
+                self.excluded.take(facet);
+            }
             self.narrow();
             self.flights += 1;
             fx.push(RecoveryEffect::StartAutoHls);
@@ -389,11 +453,12 @@ impl OpenRecovery {
                 let State::Flight { rung, .. } = &self.state else {
                     return Handled::No;
                 };
-                self.state = match (rung, &self.excluded) {
-                    (Rung::Facet, Some(facet)) if !self.pictured && proves(facet, lanes.as_ref()) => {
-                        State::Proving { facet: facet.clone(), loaded: false }
-                    }
-                    _ => State::Opening,
+                let proven = (*rung == Rung::Facet && !self.pictured)
+                    .then(|| self.excluded.iter().find(|f| proves(f, lanes.as_ref())))
+                    .flatten();
+                self.state = match proven {
+                    Some(facet) => State::Proving { facet: facet.clone(), loaded: false },
+                    None => State::Opening,
                 };
                 Handled::Yes
             }
@@ -561,15 +626,113 @@ mod tests {
         run(&mut machine(), refused(SHUT, if suspect { on_dts(f) } else { f })).1
     }
 
+    fn h264_4k() -> Option<StreamVideo> {
+        Some(StreamVideo { codec: "h264".into(), width: 3840, height: 2160 })
+    }
+
+    fn h264_4k_facet() -> Facet {
+        Facet::Video { codec: "h264".into(), width: 3840, height: 2160 }
+    }
+
+    /// The facts of a play whose pipeline was fed a 4K H.264 behind `fed` audio.
+    fn on_4k(fed: &str, auto: bool) -> OpenFacts {
+        OpenFacts { auto_original: auto, no_frames: true, audio: audio(fed, 6), video: h264_4k(), ..OpenFacts::default() }
+    }
+
+    fn manual_machine() -> OpenRecovery {
+        OpenRecovery::new(Arc::new(Caps::assumed()))
+    }
+
+    /// The video is the suspect only when the audio is not: elimination, not the refusal's number.
+    #[test]
+    fn suspect_names_video_only_when_the_audio_is_not_the_suspect() {
+        assert_eq!(suspect(audio("aac", 2).as_ref(), h264_4k().as_ref()), Some(h264_4k_facet()));
+        assert_eq!(suspect(audio("dca", 6).as_ref(), h264_4k().as_ref()), Some(dts6()), "the audio first");
+        let unknown = Some(StreamVideo { codec: "h264".into(), width: 0, height: 0 });
+        assert_eq!(suspect(audio("ac3", 6).as_ref(), unknown.as_ref()), None, "an unknown raster names nothing");
+        assert_eq!(suspect(audio("aac", 2).as_ref(), None), None);
+        let upper = Some(StreamVideo { codec: "HEVC".into(), width: 3840, height: 2160 });
+        assert_eq!(suspect(None, upper.as_ref()), Some(Facet::Video { codec: "hevc".into(), width: 3840, height: 2160 }));
+    }
+
+    /// A 4K H.264 the pipeline refuses (any number) in a manual pick is converted once: the video
+    /// is encoded under the 1080p floor and the rung asks the dispatch for the encode lane.
+    #[test]
+    fn a_4k_h264_refused_in_a_manual_pick_converts_the_video_once() {
+        let mut m = manual_machine();
+        let (handled, fx) = run(&mut m, refused(LoadRefusal::Refused { num: 100 }, on_4k("ac3", false)));
+        assert_eq!(handled, Handled::Yes);
+        assert_eq!(fx, [RecoveryEffect::ConvertFacet { facet: h264_4k_facet(), flight: 1 }]);
+        assert_eq!(m.phase(), Phase::Flight);
+        assert_eq!(m.attempt().raster_bound("h264"), (1920, 1088));
+        assert_eq!(m.attempt().raster_bound("hevc"), (3840, 2176), "another codec keeps its bound");
+    }
+
+    /// The audio rung comes first when the audio is the suspect, and S1b-1 has no second video rung:
+    /// the refusal after the audio flight ends on the read-out.
+    #[test]
+    fn a_video_refusal_whose_audio_is_the_suspect_takes_the_audio_rung_first() {
+        let mut m = machine();
+        let (_, fx) = run(&mut m, refused(LoadRefusal::Refused { num: 100 }, on_4k("dca", false)));
+        assert_eq!(fx, [RecoveryEffect::ConvertFacet { facet: dts6(), flight: 1 }]);
+        assert_eq!(m.attempt().raster_bound("h264"), (3840, 2176), "the video is untouched");
+        run(&mut m, landed());
+        let (_, fx) = run(&mut m, refused(LoadRefusal::Refused { num: 100 }, on_4k("ac3", false)));
+        assert_eq!(fx, [RecoveryEffect::ShowError { refusal: LoadRefusal::Refused { num: 100 } }]);
+    }
+
+    /// A cold Auto Original keeps its HLS contingency as the video re-encode: the refusal goes to
+    /// `StartAutoHls` with the refused raster out of the HLS attempt.
+    #[test]
+    fn a_cold_auto_original_takes_hls_for_a_video_refusal_with_the_raster_lowered() {
+        let mut m = manual_machine();
+        let (_, fx) = run(&mut m, refused(LoadRefusal::Refused { num: 100 }, on_4k("ac3", true)));
+        assert_eq!(fx, [RecoveryEffect::StartAutoHls]);
+        assert_eq!(m.attempt().raster_bound("h264"), (1920, 1088));
+        // A timeout names no stream: main's attempt flies.
+        let mut timed_out = manual_machine();
+        run(&mut timed_out, refused(LoadRefusal::TimedOut, on_4k("ac3", true)));
+        assert_eq!(timed_out.attempt().raster_bound("h264"), (3840, 2176));
+    }
+
+    /// A video facet flight never proves (D6(c)): its landing re-enters `Opening` even on the
+    /// verdicts that would prove an audio facet, and the first picture then credits nothing.
+    #[test]
+    fn a_video_facet_flight_never_proves() {
+        let mut m = manual_machine();
+        run(&mut m, refused(LoadRefusal::Refused { num: 100 }, on_4k("ac3", false)));
+        run(&mut m, landed_with(Lanes { video: Lane::Transcode, audio: Lane::Copy }));
+        assert_eq!(m.phase(), Phase::Opening);
+        let (_, fx) = run(&mut m, RecoveryEvent::FirstPicture);
+        assert!(fx.is_empty(), "{fx:?}");
+    }
+
+    /// A refused video flight ends on the read-out; a timeout or a source failure names no video.
+    #[test]
+    fn a_refused_video_facet_flight_is_not_flown_again() {
+        let mut m = manual_machine();
+        let cause = LoadRefusal::Refused { num: 100 };
+        run(&mut m, refused(cause, on_4k("ac3", false)));
+        let (_, fx) = run(&mut m, RecoveryEvent::FlightRefused);
+        assert_eq!(fx, [RecoveryEffect::ShowError { refusal: cause }]);
+        for other in [LoadRefusal::TimedOut, LoadRefusal::SourceFailed] {
+            let (_, fx) = run(&mut manual_machine(), refused(other, on_4k("ac3", false)));
+            assert_eq!(fx, [RecoveryEffect::ShowError { refusal: other }], "{other:?}");
+        }
+        // A stall names native audio alone, never the video.
+        let (_, fx) = run(&mut manual_machine(), refused(LoadRefusal::Stalled, on_4k("ac3", false)));
+        assert_eq!(fx, [RecoveryEffect::ShowError { refusal: LoadRefusal::Stalled }]);
+    }
+
     #[test]
     fn suspect_names_audio_outside_aac_ac3_eac3_only() {
-        let s = |codec: &str, channels| suspect(audio(codec, channels).as_ref());
+        let s = |codec: &str, channels| suspect(audio(codec, channels).as_ref(), None);
         assert_eq!(s("dca", 6), Some(dts6()));
         assert_eq!(s("opus", 6), Some(opus6()));
         for known in ["aac", "ac3", "eac3"] {
             assert_eq!(s(known, 6), None, "{known}");
         }
-        assert_eq!(suspect(None), None);
+        assert_eq!(suspect(None, None), None);
         assert_eq!(s("dca", 0), Some(Facet::Audio { codec: "dts".into(), channels: 0 }), "unknown width names the codec");
     }
 
@@ -625,8 +788,11 @@ mod tests {
     /// ever the request's first flight. `Playing` is inside the proof: the first picture is an event.
     #[test]
     fn at_most_two_flights_follow_one_request() {
-        for auto in [true, false] {
-            let base = OpenFacts { auto_original: auto, no_frames: true, audio: audio("dca", 6), ..OpenFacts::default() };
+        // (cold Auto Original, the audio fed, the video fed): the audio-suspect profiles of S1a and the
+        // video ones (a 4K H.264 behind an audio no set refuses, and behind one that is a suspect).
+        let profiles = [(true, "dca", None), (false, "dca", None), (true, "ac3", h264_4k()), (false, "ac3", h264_4k()), (true, "dca", h264_4k()), (false, "dca", h264_4k())];
+        for (auto, fed, video) in profiles {
+            let base = OpenFacts { auto_original: auto, no_frames: true, audio: audio(fed, 6), video, ..OpenFacts::default() };
             let stall = OpenFacts { native_audio: Some(opus6()), ..base.clone() };
             let with_picture = OpenFacts { no_frames: false, ..base.clone() };
             let events = [

@@ -1927,8 +1927,9 @@ impl NativeAudioRefusal {
     /// The row for `facet` on `firmware`'s `build`, or `None` when it cannot be stored. `proofs`
     /// `None` names the codec; `Some(n)` counts proofs. A PROOF of unknown width (`channels == 0`)
     /// is not stored: `refusal_ceiling(0)` would remove the whole codec, too broad for a counted
-    /// lesson; a named refusal keeps that behaviour. S1b's `Facet::Video` arm returns `None`: video
-    /// rows never persist (D6(c)), and this row has no video fields to hold one.
+    /// lesson; a named refusal keeps that behaviour. The `Facet::Video` arm returns `None`: video
+    /// rows never persist (D6(c): a video facet never proves), and this row has no video fields to
+    /// hold one.
     pub fn of_facet(facet: &plx_platform::devcaps::Facet, firmware: &str, build: &str, proofs: Option<u32>) -> Option<Self> {
         match facet {
             plx_platform::devcaps::Facet::Audio { codec, channels } => {
@@ -1944,6 +1945,7 @@ impl NativeAudioRefusal {
                     extensions: Default::default(),
                 })
             }
+            plx_platform::devcaps::Facet::Video { .. } => None,
         }
     }
 
@@ -6448,6 +6450,15 @@ mod server_key_pin_tests {
         let unknown = plx_platform::devcaps::Facet::Audio { codec: "dts".into(), channels: 0 };
         assert_eq!(NativeAudioRefusal::of_facet(&unknown, "fw", "B", Some(1)), None);
         assert!(NativeAudioRefusal::of_facet(&unknown, "fw", "B", None).is_some());
+    }
+
+    /// A video facet never proves (D6(c)) and has no field on this row to be stored in: it is the
+    /// attempt's alone, so the next play retries the raster once.
+    #[test]
+    fn a_video_facet_is_never_stored() {
+        let video = plx_platform::devcaps::Facet::Video { codec: "h264".into(), width: 3840, height: 2160 };
+        assert_eq!(NativeAudioRefusal::of_facet(&video, "fw", "b", Some(1)), None);
+        assert_eq!(NativeAudioRefusal::of_facet(&video, "fw", "b", None), None);
     }
 
     /// `plx_ui::hold_hint` hands the application what an install was taught: the learn door queues a
