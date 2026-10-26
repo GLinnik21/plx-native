@@ -1260,7 +1260,7 @@ cmd_screen() {
 # but with NO close-first, so the pid must be unchanged (a changed pid means the app died, which is
 # a finding, not a relaunch) -- and asserts the app is the foreground app again. No setting is
 # changed and nothing is injected; `fg` only reads the foreground app (read-only: advisory lock, no lease,
-# and an asleep set is reported as idle, never woken).
+# and an asleep set is never woken: it reports that nothing was read, which is not "idle").
 fg_app() {
   tvq "script -qc \"luna-send -n 1 -f luna://com.webos.applicationManager/getForegroundAppInfo '{}'\" /dev/null" \
     | tr -d '\r\n' | tr -s ' ' | sed -En 's/.*"appId": *"([^"]*)".*/\1/p'
@@ -1276,10 +1276,11 @@ cmd_lifecycle() {
       # The one lifecycle word that is a pure read, and tv-lock-guard.py lets it through with no
       # lease for that reason: so it must stay one. `ensure_awake` would send Wake-on-LAN to a
       # sleeping set (a mutation, and the exact thing a person in the next room notices); a set
-      # that does not answer is not in use, so it is reported as idle and left alone.
+      # that does not answer is left alone and the line says so: nothing was read and no wake was
+      # sent (tv-lock.sh's idle_verdict never calls an unread foreground idle, so neither does this).
       # advise_lock is `tv-lock.sh require --advisory`: it only names a holder (and renews a lease
       # THIS lane already holds), takes nothing and wakes nothing.
-      tvq true || { info "TV unreachable or asleep (treated as idle)"; return 0; }
+      tvq true || { info "TV unreachable or asleep (nothing read, no wake sent)"; return 0; }
       advise_lock "tv-session fg"
       ok "TV reachable"; info "foreground app: $(fg_app)"; return 0 ;;
     background) target="${2:-${PLX_BG_APP:-org.webosbrew.hbchannel}}" ;;
