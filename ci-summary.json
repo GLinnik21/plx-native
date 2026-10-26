@@ -29,7 +29,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-26T15:49:19Z",
+ "generated": "2026-10-26T15:52:20Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -96,19 +96,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -56.2,
-   "change7_pct": -27.2,
+   "change30_pct": -56.1,
+   "change7_pct": -27.0,
    "d30": 809.0,
-   "delta30": -455.0,
-   "delta7": -132.0,
+   "delta30": -454.0,
+   "delta7": -131.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 219,
-   "n_prev": 266,
-   "now": 354,
-   "prev7": 486.0,
+   "n_now": 218,
+   "n_prev": 267,
+   "now": 355.0,
+   "prev7": 486,
    "shown": true,
    "state": "better",
    "state30": "better",
@@ -118,17 +118,17 @@
   },
   {
    "change30_pct": -54.5,
-   "change7_pct": -20.4,
+   "change7_pct": -20.2,
    "d30": 744.5,
-   "delta30": -406.0,
-   "delta7": -86.5,
+   "delta30": -405.5,
+   "delta7": -86,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 98,
+   "n_now": 99,
    "n_prev": 115,
-   "now": 338.5,
+   "now": 339,
    "prev7": 425,
    "shown": true,
    "state": "better",
@@ -360,18 +360,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 103.1,
-   "change7_pct": 11.8,
+   "change30_pct": 102.7,
+   "change7_pct": 11.6,
    "d30": 131,
-   "delta30": 135,
-   "delta7": 28,
+   "delta30": 134.5,
+   "delta7": 27.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 85,
+   "n_now": 86,
    "n_prev": 107,
-   "now": 266,
+   "now": 265.5,
    "prev7": 238,
    "shown": true,
    "state": "flat",
@@ -381,18 +381,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 150.0,
-   "change7_pct": 3.7,
+   "change30_pct": 151.3,
+   "change7_pct": 4.3,
    "d30": 78,
-   "delta30": 117.0,
-   "delta7": 7.0,
+   "delta30": 118,
+   "delta7": 8,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 84,
+   "n_now": 85,
    "n_prev": 107,
-   "now": 195.0,
+   "now": 196,
    "prev7": 188,
    "shown": true,
    "state": "flat",
@@ -445,17 +445,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -0.7,
+   "change7_pct": -0.3,
    "d30": null,
    "delta30": null,
-   "delta7": -1,
+   "delta7": -0.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 85,
+   "n_now": 86,
    "n_prev": 107,
-   "now": 152,
+   "now": 152.5,
    "prev7": 153,
    "shown": true,
    "state": "flat",
@@ -511,15 +511,15 @@
    "change30_pct": 18.8,
    "change7_pct": 5.6,
    "d30": 16,
-   "delta30": 3,
-   "delta7": 1,
+   "delta30": 3.0,
+   "delta7": 1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 85,
+   "n_now": 86,
    "n_prev": 107,
-   "now": 19,
+   "now": 19.0,
    "prev7": 18,
    "shown": false,
    "state": "flat",
@@ -639,11 +639,6 @@
    "change_pct": 37.4,
    "commits": [
     {
-     "pr": 1018,
-     "sha": "c92352657",
-     "title": "Playback: a foreground Load refused while the plaintext grants return is claimed again"
-    },
-    {
      "pr": 1034,
      "sha": "48b3040e2",
      "title": "Audio: per-TV Opus limits, and formats the player learns to avoid"
@@ -687,6 +682,11 @@
      "pr": 1065,
      "sha": "5b78cb627",
      "title": "Playback: a video refused before its first picture is converted under a 1080p ceiling, and the way back never re-offers "
+    },
+    {
+     "pr": 1067,
+     "sha": "efbe044fa",
+     "title": "Playback: ALAC and integer LPCM are decoded in the app like FLAC"
     }
    ],
    "from": 156.5,
@@ -700,11 +700,6 @@
    "change_pct": 30.9,
    "commits": [
     {
-     "pr": 1018,
-     "sha": "c92352657",
-     "title": "Playback: a foreground Load refused while the plaintext grants return is claimed again"
-    },
-    {
      "pr": 1034,
      "sha": "48b3040e2",
      "title": "Audio: per-TV Opus limits, and formats the player learns to avoid"
@@ -748,6 +743,11 @@
      "pr": 1065,
      "sha": "5b78cb627",
      "title": "Playback: a video refused before its first picture is converted under a 1080p ceiling, and the way back never re-offers "
+    },
+    {
+     "pr": 1067,
+     "sha": "efbe044fa",
+     "title": "Playback: ALAC and integer LPCM are decoded in the app like FLAC"
     }
    ],
    "from": 973.0,
@@ -761,11 +761,6 @@
    "change_pct": 30.1,
    "commits": [
     {
-     "pr": 1018,
-     "sha": "c92352657",
-     "title": "Playback: a foreground Load refused while the plaintext grants return is claimed again"
-    },
-    {
      "pr": 1034,
      "sha": "48b3040e2",
      "title": "Audio: per-TV Opus limits, and formats the player learns to avoid"
@@ -809,6 +804,11 @@
      "pr": 1065,
      "sha": "5b78cb627",
      "title": "Playback: a video refused before its first picture is converted under a 1080p ceiling, and the way back never re-offers "
+    },
+    {
+     "pr": 1067,
+     "sha": "efbe044fa",
+     "title": "Playback: ALAC and integer LPCM are decoded in the app like FLAC"
     }
    ],
    "from": 49.0,
@@ -849,7 +849,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 266
+   "now": 265.5
   }
  ],
  "slowest_local": [
