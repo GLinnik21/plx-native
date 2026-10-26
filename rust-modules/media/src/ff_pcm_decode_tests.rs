@@ -234,3 +234,27 @@ fn a_file_that_contradicts_the_declared_load_is_refused_not_played_wrong() {
     let why = unsafe { decode_file(&ac3, PcmOut { rate: 48_000, bits: 16, channels: 2 }) }.expect_err("ac3");
     assert!(why.contains("not an app-decoded codec"), "{why}");
 }
+
+/// The LPCM flavours the app cannot decode (float, 8-bit) reach the demuxer under PMS's `pcm` and a
+/// PCM Load: the real FFmpeg names them `pcm_f32le` / `pcm_s8` / `pcm_u8`, none of which is in
+/// `APP_DECODED`, so `PcmDecoder::open` refuses them and the demuxer's `pcm_load_feeds_raw` guard
+/// stops them being fed raw (`ff::pcm_load_guard_tests` holds the decision).
+#[test]
+#[ignore = "requires the bundled host FFmpeg and the ffmpeg tool; run make check-ffmpeg"]
+fn float_and_8_bit_lpcm_are_not_app_decodable() {
+    let _g = plx_base::testlock::serial();
+    if skip() {
+        return;
+    }
+    let _ffmpeg = bind_host_ffmpeg();
+    let scratch = Scratch::new("unsupported");
+    let samples = signal(S16, 2, 2_000);
+    for (file, codec) in [("f32.mkv", "pcm_f32le"), ("f32.mov", "pcm_f32le"), ("s8.mov", "pcm_s8"), ("u8.mov", "pcm_u8"), ("u8.mkv", "pcm_u8")] {
+        let src = encode(&scratch.0, file, S16, 48_000, 2, &samples, codec, &[]);
+        for bits in [16, 32] {
+            let why = unsafe { decode_file(&src, PcmOut { rate: 48_000, bits, channels: 2 }) }
+                .expect_err(&format!("{file}: must not decode"));
+            assert!(why.contains("not an app-decoded codec"), "{file}: {why}");
+        }
+    }
+}

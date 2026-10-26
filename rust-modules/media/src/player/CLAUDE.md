@@ -311,7 +311,15 @@ something.
   minus the refusals this install learned. Auto's own stereo ceiling for Opus
   (`OPUS_AUTO_MAX_CHANNELS`) stays as it is; the rows add a ceiling Force Direct Play also holds
   (`Caps::forced_feeds_audio_track`). FLAC, ALAC and LPCM are not native: the app decodes them and feeds PCM
-  (`ff_pcm.rs`, `devcaps::APP_DECODED`), so it is outside these layers. A learned refusal comes from a native Load that ends
+  (`ff_pcm.rs`, `devcaps::APP_DECODED`), so a PCM Load never raises the NAMED refusal below
+  (`native_audio::Kind` is Opus only). They are NOT outside the learner, though: `recovery::suspect_audio` excludes only
+  aac/ac3/eac3, so a PCM Load refused before its first picture can take the facet rung (the server converts
+  the track), and a proven conversion is stored by codec like any audio facet (`NativeAudioRefusal::of_facet`).
+  After two such plays an ALAC or LPCM row can remove that codec from the set's value, as FLAC's already can.
+  That is existing behaviour, left as it is. A stream the Load declared PCM for but the app has no decoder for
+  (float or 8-bit LPCM under PMS's `pcm`) is refused in the demuxer (`ff::pcm_load_feeds_raw`) and ends as
+  `demux_failed` -> `LoadRefusal::SourceFailed`, which names no facet, so the audio-only conversion rung is not
+  reached: Auto Original falls to its HLS contingency, Force Direct Play shows the error. A named refusal comes from a native Load that ends
   in `type=18 num=200 Audio Codec Not Supported` before any picture (`mod.rs`'s callback sets
   `native_audio_refused` only while `native_audio::fed()` says the audio was fed natively; the
   machine turns it into `RecoveryEffect::ConfirmRefusal { Evidence::Named }`, which the pump runs as
