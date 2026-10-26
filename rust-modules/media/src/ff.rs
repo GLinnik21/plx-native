@@ -15,6 +15,7 @@ use crate::aq::AuQueue;
 use crate::player::threads::SendPtr;
 use crate::player::SHARED;
 use plx_net::stream::HttpStream;
+use plx_telemetry::telemetry::classes::DemuxExitClass;
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_long, c_uchar, c_uint, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -40,6 +41,23 @@ static PUSHED_ANY: AtomicBool = AtomicBool::new(false);
 static SWS_OK: AtomicBool = AtomicBool::new(false);
 pub fn set_feed_audio(on: bool) {
     FEED_AUDIO.store(on, Ordering::Relaxed);
+}
+
+/// The PCM the current Load declared for app-decoded audio (`route::stream_pcm`), packed
+/// `rate << 16 | bits << 8 | channels`; 0 = this Load declares no PCM.
+static PCM_OUT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Set by `start_bufferfeed` beside the Load, before the demuxer is spawned.
+pub fn set_pcm_out(f: Option<(u32, u32, u32)>) {
+    let v = f.map_or(0, |(rate, bits, ch)| u64::from(rate) << 16 | u64::from(bits) << 8 | u64::from(ch));
+    PCM_OUT.store(v, Ordering::Relaxed);
+}
+fn pcm_out() -> Option<crate::ff_pcm::PcmOut> {
+    let v = PCM_OUT.load(Ordering::Relaxed);
+    (v != 0).then(|| crate::ff_pcm::PcmOut {
+        rate: (v >> 16) as u32,
+        bits: ((v >> 8) & 0xff) as u32,
+        channels: (v & 0xff) as u32,
+    })
 }
 
 // ---- opaque handles (pointer-only, never dereferenced) ----
@@ -435,6 +453,10 @@ plx_base::dynlib! {
     fn avcodec_receive_packet(ctx: *mut AVCodecContext, pkt: *mut AVPacket) -> c_int;
     fn avcodec_parameters_from_context(par: *mut AVCodecParameters, ctx: *const AVCodecContext) -> c_int;
     fn av_packet_rescale_ts(pkt: *mut AVPacket, tb_src: AVRational, tb_dst: AVRational);
+    // Audio decode, send/receive API: playback speed (`SpeedDecoder`) and FLAC → PCM (`ff_pcm`).
+    fn avcodec_send_packet(ctx: *mut AVCodecContext, pkt: *const AVPacket) -> c_int;
+    fn avcodec_receive_frame(ctx: *mut AVCodecContext, frame: *mut c_void) -> c_int;
+    fn avcodec_find_decoder_by_name(name: *const c_char) -> *const AVCodec;
 }}
 plx_base::dynlib! {
     // avformat_version lives in libavformat, not libavutil — but it was declared here and the
@@ -457,6 +479,7 @@ plx_base::dynlib! {
     fn av_frame_free(frame: *mut *mut c_void);
     fn av_frame_get_buffer(frame: *mut c_void, align: c_int) -> c_int;
     fn av_frame_make_writable(frame: *mut c_void) -> c_int;
+    fn av_frame_unref(frame: *mut c_void);
     fn av_opt_set(obj: *mut c_void, name: *const c_char, val: *const c_char, search_flags: c_int) -> c_int;
     fn av_get_pix_fmt(name: *const c_char) -> c_int;
     // Container tags. Borrowed, never freed: the entry belongs to the dictionary, which belongs to
@@ -512,7 +535,9 @@ pub const AV_CODEC_ID_AV1: c_int = 222;
 pub const AV_PKT_FLAG_KEY: c_int = 1;
 pub const AVSEEK_FLAG_BACKWARD: c_int = 1;
 pub const AVERROR_EOF: c_int = -541478725;
-pub const AVERROR_EAGAIN: c_int = -11;
+/// `AVERROR(EAGAIN)`: FFmpeg negates the HOST libc's errno, which is 11 on Linux (the television)
+/// but 35 on macOS (the simulator), so it cannot be a literal.
+pub const AVERROR_EAGAIN: c_int = -(libc::EAGAIN as c_int);
 /// `AVERROR(EIO)`: unlike EOF, tells libavformat and our producer that the source was truncated by
 /// a transport failure.
 pub const AVERROR_IO: c_int = -5;
@@ -766,7 +791,7 @@ unsafe fn nth_audio_stream(fmt: *mut AVFormatContext, n: i32) -> Option<c_int> {
 // asserts them per major, so if anyone ever needs to poke them again the proven numbers are there.
 // AVFrame (avutil 55, 32-bit ARM). pts sits at +104: a 4-byte pad at +100
 // 8-aligns the int64 on ARM EABI (the classic AVFrame-on-ARM quirk).
-const OFF_FRAME_DATA: usize = 0; // u8*[8] — the only one that does not move
+pub(crate) const OFF_FRAME_DATA: usize = 0; // u8*[8] — the only one that does not move
 #[cfg(target_pointer_width = "32")]
 const OFF_FRAME_LINESIZE: usize = 32; // c_int[8]
 #[cfg(target_pointer_width = "32")]
@@ -774,7 +799,7 @@ const OFF_FRAME_WIDTH: usize = 68;
 #[cfg(target_pointer_width = "32")]
 const OFF_FRAME_HEIGHT: usize = 72;
 #[cfg(target_pointer_width = "32")]
-const OFF_FRAME_FORMAT: usize = 80;
+pub(crate) const OFF_FRAME_FORMAT: usize = 80;
 #[cfg(target_pointer_width = "32")]
 const OFF_FRAME_PTS: usize = 96;
 // 64-bit: `data` is eight POINTERS rather than eight 32-bit ones, so `linesize` doubles and
@@ -787,9 +812,124 @@ const OFF_FRAME_WIDTH: usize = 104;
 #[cfg(target_pointer_width = "64")]
 const OFF_FRAME_HEIGHT: usize = 108;
 #[cfg(target_pointer_width = "64")]
-const OFF_FRAME_FORMAT: usize = 116;
+pub(crate) const OFF_FRAME_FORMAT: usize = 116;
 #[cfg(target_pointer_width = "64")]
 const OFF_FRAME_PTS: usize = 136;
+// The AUDIO half of AVFrame, read by `SpeedDecoder` and by `ff_pcm::PcmDecoder` (FFmpeg 9, the bundled build). `ch_layout` is an
+// embedded AVChannelLayout whose `nb_channels` sits 4 bytes in (after the `order` enum) on both
+// widths. Every one is asserted in `ci/ffabi-assert.c` against the bundled headers.
+#[cfg(target_pointer_width = "32")]
+const OFF_AFRAME_EXTENDED_DATA: usize = 64; // u8**
+#[cfg(target_pointer_width = "32")]
+pub(crate) const OFF_AFRAME_NB_SAMPLES: usize = 76;
+#[cfg(target_pointer_width = "32")]
+const OFF_AFRAME_SAMPLE_RATE: usize = 132;
+#[cfg(target_pointer_width = "32")]
+const OFF_AFRAME_NB_CHANNELS: usize = 256 + 4;
+#[cfg(target_pointer_width = "64")]
+const OFF_AFRAME_EXTENDED_DATA: usize = 96;
+#[cfg(target_pointer_width = "64")]
+pub(crate) const OFF_AFRAME_NB_SAMPLES: usize = 112;
+#[cfg(target_pointer_width = "64")]
+const OFF_AFRAME_SAMPLE_RATE: usize = 180;
+#[cfg(target_pointer_width = "64")]
+const OFF_AFRAME_NB_CHANNELS: usize = 384 + 4;
+
+/// **The audio decoder a playback-speed session runs** (`crate::speed_audio`): the selected audio
+/// stream decoded in software, downmixed to stereo and time-stretched to `permille`, then fed as
+/// PCM AUs. Exists only while the speed is not 1x; at 1x the compressed audio goes to the TV as it
+/// always has, except FLAC, which `ff_pcm::PcmDecoder` decodes and feeds as PCM. At a speed this
+/// decoder takes FLAC too and `PcmDecoder` is not opened. Opened per demux run from the stream's
+/// own codec parameters.
+pub(crate) struct SpeedDecoder {
+    ctx: *mut AVCodecContext,
+    frame: *mut c_void,
+    audio: crate::speed_audio::SpeedAudio,
+    logged: bool,
+}
+
+impl SpeedDecoder {
+    /// `None` when the bundled FFmpeg has no decoder for the stream (`ci/build-ffmpeg.sh`'s list)
+    /// or it fails to open; the caller then cannot honour the speed.
+    pub(crate) unsafe fn open(cp: *const AVCodecParameters, permille: i32) -> Option<SpeedDecoder> {
+        let codec = avcodec_find_decoder((*cp).codec_id);
+        if codec.is_null() {
+            return None;
+        }
+        let ctx = avcodec_alloc_context3(codec);
+        if ctx.is_null() {
+            return None;
+        }
+        let frame = av_frame_alloc();
+        if frame.is_null()
+            || avcodec_parameters_to_context(ctx, cp) < 0
+            || avcodec_open2(ctx, codec, std::ptr::null_mut()) < 0
+        {
+            let mut c = ctx;
+            avcodec_free_context(&mut c);
+            if !frame.is_null() {
+                let mut f = frame;
+                av_frame_free(&mut f);
+            }
+            return None;
+        }
+        Some(SpeedDecoder { ctx, frame, audio: crate::speed_audio::SpeedAudio::new(permille), logged: false })
+    }
+
+    /// Decode one packet whose content time is `pts_ns`; returns the PCM AUs now complete, each
+    /// with its CONTENT pts. A packet the decoder rejects yields nothing (the stretch bridges it).
+    pub(crate) unsafe fn decode(&mut self, pkt: *const AVPacket, pts_ns: i64) -> Vec<(i64, Vec<u8>)> {
+        let mut aus = Vec::new();
+        if avcodec_send_packet(self.ctx, pkt) < 0 {
+            return aus;
+        }
+        let f = self.frame as *const u8;
+        loop {
+            // EAGAIN (wants the next packet), EOF and errors all end this packet's frames
+            if avcodec_receive_frame(self.ctx, self.frame) < 0 {
+                break;
+            }
+            let rd = |off: usize| std::ptr::read_unaligned(f.add(off) as *const c_int);
+            let nb = rd(OFF_AFRAME_NB_SAMPLES).max(0) as usize;
+            let rate = rd(OFF_AFRAME_SAMPLE_RATE).max(0) as u32;
+            let channels = rd(OFF_AFRAME_NB_CHANNELS).max(0) as usize;
+            let fmt = rd(OFF_FRAME_FORMAT); // video's field, read here as an `AVSampleFormat`
+            let ext = std::ptr::read_unaligned(f.add(OFF_AFRAME_EXTENDED_DATA) as *const *const *const u8);
+            if !self.logged {
+                self.logged = true;
+                crate::player::log(&format!(
+                    "speed: decoding audio fmt={fmt} ch={channels} rate={rate} nb={nb}"
+                ));
+            }
+            if let Some((sf, planar)) = crate::speed_audio::SampleFormat::from_av(fmt) {
+                if nb > 0 && channels > 0 && !ext.is_null() {
+                    let width = sf.bytes();
+                    let planes: Vec<&[u8]> = if planar {
+                        (0..channels).map(|c| std::slice::from_raw_parts(*ext.add(c), nb * width)).collect()
+                    } else {
+                        vec![std::slice::from_raw_parts(*ext, nb * width * channels)]
+                    };
+                    let stereo = crate::speed_audio::downmix(sf, planar, channels, nb, &planes);
+                    aus.extend(self.audio.push(pts_ns, rate, &stereo));
+                }
+            }
+            av_frame_unref(self.frame);
+        }
+        aus
+    }
+}
+
+impl Drop for SpeedDecoder {
+    fn drop(&mut self) {
+        unsafe {
+            let mut c = self.ctx;
+            avcodec_free_context(&mut c);
+            let mut f = self.frame;
+            av_frame_free(&mut f);
+        }
+    }
+}
+
 const SWS_BILINEAR: c_int = 2;
 const VENC_TB: AVRational = AVRational { num: 1, den: 30 };
 
@@ -1355,6 +1495,34 @@ fn load_libraries() -> bool {
     ok
 }
 
+/// Can the bundled FFmpeg decode the route's audio codec `codec` (`route::stream_acodec`'s
+/// lower-case name) for a playback-speed session? Asked at Load, because a speed session declares
+/// PCM and so must decode — a codec missing from `ci/build-ffmpeg.sh`'s list means 1x instead.
+pub fn speed_decoder_available(codec: &str) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    if FORCE_SPEED_DECODER.load(Ordering::Relaxed) {
+        return true;
+    }
+    if !abi_ok() {
+        return false;
+    }
+    let name = match codec {
+        "dts" | "dca" => "dca",
+        other => other,
+    };
+    let Ok(c) = std::ffi::CString::new(name) else { return false };
+    unsafe { !avcodec_find_decoder_by_name(c.as_ptr()).is_null() }
+}
+
+/// Test-only: answer [`speed_decoder_available`] as if the bundled FFmpeg had every decoder, so a
+/// host test (which loads no FFmpeg) can reach the speed paths.
+#[cfg(any(test, feature = "test-support"))]
+static FORCE_SPEED_DECODER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(any(test, feature = "test-support"))]
+pub fn force_speed_decoder_for_test(on: bool) {
+    FORCE_SPEED_DECODER.store(on, Ordering::Relaxed);
+}
+
 /// Did the bundled FFmpeg load and match the ABI table? The diagnostics read-out's first question
 /// about the demuxer: false means every playback will refuse before it opens a socket, which from
 /// the outside looks identical to a stall.
@@ -1731,6 +1899,8 @@ fn arm_active_stall_guard(
 mod acquisition;
 #[path = "ff_subs.rs"]
 mod subs;
+#[path = "ff_native_audio.rs"]
+pub(crate) mod native_audio;
 #[path = "ff_subside.rs"]
 pub(crate) mod subside;
 use subs::{SubKind, SubTracks};
@@ -8435,6 +8605,22 @@ mod audio_codec_name_tests {
 }
 
 #[cfg(test)]
+mod averror_errno_tests {
+    use super::*;
+
+    /// `AVERROR(e)` is `-e` of the host libc: `EAGAIN` is 11 on Linux and 35 on macOS, so the drain
+    /// loop's "no more output yet" return must follow the platform, not a Linux literal.
+    #[test]
+    fn averror_eagain_is_the_negated_host_errno() {
+        assert_eq!(AVERROR_EAGAIN, -libc::EAGAIN);
+        #[cfg(target_os = "macos")]
+        assert_eq!(AVERROR_EAGAIN, -35);
+        #[cfg(target_os = "linux")]
+        assert_eq!(AVERROR_EAGAIN, -11);
+    }
+}
+
+#[cfg(test)]
 mod pre_audio_headroom_tests {
     use super::*;
 
@@ -8689,7 +8875,7 @@ pub fn demux(
                 if PUSHED_ANY.load(Ordering::Relaxed) {
                     SHARED.demux_io_failed.store(true, Ordering::Release);
                 } else {
-                    SHARED.demux_failed.store(true, Ordering::Release);
+                    SHARED.fail_demux(DemuxExitClass::HlsFailed);
                 }
             }
             Ok(Err(HlsExit::NotReady)) => {
@@ -8697,7 +8883,7 @@ pub fn demux(
                 if PUSHED_ANY.load(Ordering::Relaxed) {
                     SHARED.demux_io_failed.store(true, Ordering::Release);
                 } else {
-                    SHARED.demux_failed.store(true, Ordering::Release);
+                    SHARED.fail_demux(DemuxExitClass::HlsNotReady);
                 }
             }
             Ok(Err(HlsExit::PrimeExpired)) => {
@@ -8712,13 +8898,13 @@ pub fn demux(
             }
             Err(_) => {
                 crate::player::log("hls: demux panicked");
-                SHARED.demux_failed.store(true, Ordering::Release);
+                SHARED.fail_demux(DemuxExitClass::DemuxPanicked);
             }
         }
         if unproductive_exit_failed(PUSHED_ANY.load(Ordering::Relaxed), unsafe {
             crate::aq::aq_is_aborted(aq_p)
         }) {
-            SHARED.demux_failed.store(true, Ordering::Release);
+            SHARED.fail_demux(DemuxExitClass::NoAccessUnits);
         }
         crate::aq::aq_set_eof(aq_p);
         crate::aq::aq_set_eof(aqa_p);
@@ -8808,7 +8994,7 @@ pub fn demux(
                         Ok(r) => Some(r),
                         Err(e) => {
                             crate::player::log(&format!("ff: https reservation FAILED: {e:?}"));
-                            SHARED.demux_failed.store(true, Ordering::Release);
+                            SHARED.fail_demux(DemuxExitClass::HttpsReserveFailed);
                             break;
                         }
                     }
@@ -8846,7 +9032,7 @@ pub fn demux(
                                 SHARED.dg_http_status.store(st, Ordering::Relaxed);
                             }
                             crate::player::log(&format!("ff: https open FAILED: {e:?}"));
-                            SHARED.demux_failed.store(true, Ordering::Release);
+                            SHARED.fail_demux(DemuxExitClass::HttpsOpenFailed);
                             break;
                         }
                     }
@@ -8859,7 +9045,7 @@ pub fn demux(
                             break;
                         }
                         Err(MediaOpenFail::Failed) => {
-                            SHARED.demux_failed.store(true, Ordering::Release);
+                            SHARED.fail_demux(DemuxExitClass::HttpOpenFailed);
                             break;
                         }
                     }
@@ -8889,6 +9075,7 @@ pub fn demux(
                 let buf = av_malloc(65536) as *mut u8;
                 if buf.is_null() {
                     crate::player::log("ff: av_malloc failed");
+                    SHARED.note_demux_exit(DemuxExitClass::Other);
                     break;
                 }
                 let avio = avio_alloc_context(
@@ -8902,12 +9089,14 @@ pub fn demux(
                 );
                 if avio.is_null() {
                     crate::player::log("ff: avio_alloc_context failed");
+                    SHARED.note_demux_exit(DemuxExitClass::Other);
                     free_ptr(buf as *mut c_void);
                     break;
                 }
                 let mut fmt = avformat_alloc_context();
                 if fmt.is_null() {
                     crate::player::log("ff: avformat_alloc_context failed");
+                    SHARED.note_demux_exit(DemuxExitClass::Other);
                     free_avio(avio);
                     break;
                 }
@@ -8919,12 +9108,20 @@ pub fn demux(
                     std::ptr::null_mut(),
                 );
                 if r < 0 || fmt.is_null() {
-                    crate::player::log(&open_input_failure_note(r, crate::aq::aq_is_aborted(aq_p)));
+                    let lane_aborted = crate::aq::aq_is_aborted(aq_p);
+                    crate::player::log(&open_input_failure_note(r, lane_aborted));
+                    // A stop teardown asked for is not the source failing to open.
+                    if !lane_aborted {
+                        SHARED.note_demux_exit(DemuxExitClass::OpenInputFailed);
+                    }
                     free_avio(avio);
                     break;
                 }
                 if avformat_find_stream_info(fmt, std::ptr::null_mut()) < 0 {
                     crate::player::log("ff: find_stream_info failed");
+                    if !crate::aq::aq_is_aborted(aq_p) {
+                        SHARED.note_demux_exit(DemuxExitClass::FindStreamInfoFailed);
+                    }
                     avformat_close_input(&mut fmt);
                     free_avio(avio);
                     break;
@@ -8992,6 +9189,7 @@ pub fn demux(
                     } else {
                         crate::player::log("ff: no video stream");
                     }
+                    SHARED.note_demux_exit(DemuxExitClass::NoVideoStream);
                     avformat_close_input(&mut fmt);
                     free_avio(avio);
                     break;
@@ -9018,10 +9216,72 @@ pub fn demux(
                 if dts_audio {
                     crate::player::log("ff: DTS core extraction on (DTS-HD extensions discarded)");
                 }
+                // Playback speed: this session's Load declared PCM, so the audio must be decoded,
+                // stretched and fed as PCM. A stream with no bundled decoder cannot honour it — the
+                // engine refused the speed at Load (`player::session_rate`), so this is a guard.
+                let speed_permille = SHARED.applied_rate_permille.load(Ordering::Relaxed);
+                // App-decoded audio (FLAC): decode to the PCM the Load declared, or refuse the
+                // stream — the Load and the file must agree, or the panel plays the wrong pitch.
+                // Not at a speed: that session's Load declares the speed decoder's own PCM
+                // (`engine::app_pcm_for_rate`), `SpeedDecoder` below decodes the FLAC too, and the
+                // two must never both decode one stream.
+                let flac_audio = ai >= 0 && std::ffi::CStr::from_ptr(avcodec_get_name(
+                    (*stream_codecpar(*streams.add(ai as usize))).codec_id
+                )).to_bytes() == b"flac";
+                let mut pcm_dec: Option<crate::ff_pcm::PcmDecoder> = None;
+                if flac_audio
+                    && FEED_AUDIO.load(Ordering::Relaxed)
+                    && speed_permille == crate::player::RATE_NORMAL
+                {
+                    let opened = match pcm_out() {
+                        Some(out) => crate::ff_pcm::PcmDecoder::open(
+                            stream_codecpar(*streams.add(ai as usize)), out,
+                        ),
+                        None => Err("the Load declared no PCM for a FLAC track".to_string()),
+                    };
+                    match opened {
+                        Ok(d) => {
+                            crate::player::log("ff: FLAC -> PCM decoding on");
+                            pcm_dec = Some(d);
+                        }
+                        Err(why) => {
+                            crate::player::log(&format!("ff: FLAC refused — {why}"));
+                            SHARED.demux_failed.store(true, Ordering::Release);
+                            avformat_close_input(&mut fmt);
+                            free_avio(avio);
+                            break;
+                        }
+                    }
+                }
                 if let Some((fi, ch)) = aac_adts {
                     crate::player::log(&format!(
                         "ff: AAC → ADTS reframing on (freq_idx={fi} ch={ch})"
                     ));
+                }
+                let mut speed_dec = if ai >= 0 && speed_permille != crate::player::RATE_NORMAL {
+                    let d = SpeedDecoder::open(stream_codecpar(*streams.add(ai as usize)), speed_permille);
+                    crate::player::log(&format!(
+                        "speed: audio decoder for {speed_permille} {}",
+                        if d.is_some() { "open" } else { "UNAVAILABLE" }
+                    ));
+                    d
+                } else {
+                    None
+                };
+                // Opus goes to the television's own decoder (`ff_native_audio.rs`; its header travels
+                // in the Load). What is fed natively is recorded for the player, which learns a
+                // refusal from it. FLAC is decoded in the app (`pcm_dec`) and is not native.
+                if ai >= 0 && FEED_AUDIO.load(Ordering::Relaxed) && speed_dec.is_none() {
+                    let acp = stream_codecpar(*streams.add(ai as usize));
+                    let aname = std::ffi::CStr::from_ptr(avcodec_get_name((*acp).codec_id)).to_string_lossy().into_owned();
+                    if let Some(kind) = native_audio::Kind::from_ffmpeg_name(&aname) {
+                        let channels = u32::try_from((*acp).ch_layout.nb_channels).unwrap_or(0);
+                        crate::player::log(&format!(
+                            "ff: {aname} fed to the TV's own decoder (channels={channels} rate={})",
+                            (*acp).sample_rate
+                        ));
+                        native_audio::publish_fed(kind, channels);
+                    }
                 }
                 let dur = fmt_duration(fmt);
                 if dur > 0 {
@@ -9049,7 +9309,7 @@ pub fn demux(
                         "ff: no framing for video codec {cname} (codec_id={}); refusing the stream",
                         (*vcp).codec_id
                     ));
-                    SHARED.demux_failed.store(true, Ordering::Release);
+                    SHARED.fail_demux(DemuxExitClass::NoFraming);
                     avformat_close_input(&mut fmt);
                     free_avio(avio);
                     break;
@@ -9063,7 +9323,7 @@ pub fn demux(
                         "ff: the Load declared {} but the file is {cname}; refusing the stream",
                         crate::player::load_v_name(declared)
                     ));
-                    SHARED.demux_failed.store(true, Ordering::Release);
+                    SHARED.fail_demux(DemuxExitClass::LoadMismatch);
                     avformat_close_input(&mut fmt);
                     free_avio(avio);
                     break;
@@ -9358,7 +9618,7 @@ pub fn demux(
                                     crate::aq::aq_cap(aq_p),
                                     PRE_AUDIO_VIDEO_HEADROOM
                                 ));
-                                SHARED.demux_failed.store(true, Ordering::Release);
+                                SHARED.fail_demux(DemuxExitClass::NoAudioAu);
                                 SHARED.demux_io_failed.store(true, Ordering::Release);
                                 av_packet_unref(pkt);
                                 break;
@@ -9391,7 +9651,19 @@ pub fn demux(
                         // The audio lane runs past its soft cap while the video lane is starved
                         // ([`AUDIO_AHEAD_HEADROOM`]); the gate is what makes that decision, here.
                         let gate = audio_push_gate(aq_p, headroom.video_reach_ns());
-                        let pushed = if let Some((freq_idx, chan_cfg)) = aac_adts {
+                        let pushed = if let Some(dec) = speed_dec.as_mut() {
+                            let mut rv = 0;
+                            for (au_pts, pcm) in dec.decode(pkt, pts) {
+                                rv = crate::aq::aq_push_gated(
+                                    aqa_p, pcm.as_ptr(), pcm.len() as c_int, au_pts, 1, 2, gate,
+                                    || state.drain_wire(),
+                                );
+                                if rv != 0 {
+                                    break;
+                                }
+                            }
+                            rv
+                        } else if let Some((freq_idx, chan_cfg)) = aac_adts {
                             // prepend a 7-byte ADTS header so LG's decoder can frame the raw AAC
                             let plen = (*pkt).size as usize;
                             let mut framed = Vec::with_capacity(7 + plen);
@@ -9407,11 +9679,30 @@ pub fn demux(
                                 gate,
                                 || state.drain_wire(),
                             )
+                        } else if let Some(dec) = pcm_dec.as_mut() {
+                            let pcm = match dec.decode(pkt) {
+                                Ok(pcm) => pcm,
+                                Err(why) => {
+                                    crate::player::log(&format!("ff: FLAC decode failed — {why}; refusing audio feed"));
+                                    SHARED.demux_failed.store(true, Ordering::Release);
+                                    SHARED.demux_io_failed.store(true, Ordering::Release);
+                                    av_packet_unref(pkt);
+                                    break;
+                                }
+                            };
+                            if pcm.is_empty() {
+                                0
+                            } else {
+                                crate::aq::aq_push_gated(
+                                    aqa_p, pcm.as_ptr(), pcm.len() as c_int, pts, 1, 2, gate,
+                                    || state.drain_wire(),
+                                )
+                            }
                         } else if dts_audio {
                             let raw = std::slice::from_raw_parts((*pkt).data, (*pkt).size.max(0) as usize);
                             let Some(core) = dts_core_packet(raw) else {
                                 crate::player::log("ff: DTS packet has no complete supported core; refusing audio feed");
-                                SHARED.demux_failed.store(true, Ordering::Release);
+                                SHARED.fail_demux(DemuxExitClass::DtsCoreMissing);
                                 SHARED.demux_io_failed.store(true, Ordering::Release);
                                 av_packet_unref(pkt);
                                 break;
@@ -9446,7 +9737,7 @@ pub fn demux(
                                 AUDIO_AHEAD_HEADROOM,
                                 headroom.video_reach_ns() / 1_000_000
                             ));
-                            SHARED.demux_failed.store(true, Ordering::Release);
+                            SHARED.fail_demux(DemuxExitClass::NoUsableVideo);
                             SHARED.demux_io_failed.store(true, Ordering::Release);
                             break;
                         }
@@ -9634,7 +9925,7 @@ pub fn demux(
         // the pump waiting on a stage it can never reach. This is the same flag the `http_open`
         // failure above raises, and `pump` turns it into `PlaybackState::Error` (gated on
         // `frames == 0`, so a panic MID-playback is left to the EOF/EOS path below instead).
-        SHARED.demux_failed.store(true, Ordering::Release);
+        SHARED.fail_demux(DemuxExitClass::DemuxPanicked);
     }
     // A demux that ends having produced NOTHING is a failure, whatever route it took out.
     // Only two exits used to say so — the http_open failure and the panic handler — while every
@@ -9650,7 +9941,7 @@ pub fn demux(
         crate::aq::aq_is_aborted(aq_p)
     }) {
         crate::player::log("ff: demux produced no access units — treating as a failure");
-        SHARED.demux_failed.store(true, Ordering::Release);
+        SHARED.fail_demux(DemuxExitClass::NoAccessUnits);
     }
     crate::aq::aq_set_eof(aq_p);
     crate::aq::aq_set_eof(aqa_p); // EOF on the audio lane too

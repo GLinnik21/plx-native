@@ -29,10 +29,13 @@ pub fn is_dp_audio(codec: &str) -> bool {
     plx_platform::devcaps::caps().audio_has(codec)
 }
 
-/// Codec and channel check for an actual selected track. Codec-only membership is insufficient
-/// on devices whose DTS decoder stops at 5.1 or whose AAC decoder stops at stereo.
-pub fn is_dp_audio_track(codec: &str, channels: i64) -> bool {
+/// Codec, channel and (for app-decoded PCM) rate check for an actual selected track. Codec-only
+/// membership is insufficient on devices whose DTS decoder stops at 5.1 or whose AAC decoder
+/// stops at stereo, and on the PCM path, which can name only some rates
+/// (`devcaps::PCM_SAMPLE_RATES`).
+pub fn is_dp_audio_track(codec: &str, channels: i64, sample_rate: i64) -> bool {
     plx_platform::devcaps::caps().audio_supports(codec, channels)
+        && plx_platform::devcaps::pcm_track_fits(codec, channels, sample_rate)
 }
 
 /// Subtitle codecs Original client-renders (`ff.rs` / the track menu). This is the
@@ -271,7 +274,8 @@ fn profile_for_delivery(caps: &plx_platform::devcaps::Caps, delivery: TranscodeD
     }
     let dp_audio = caps.audio.split(',').map(profile_codec_name).collect::<Vec<_>>().join(",");
     // ac3 first — the preferred ENCODE target — then the rest of the caps subset as copy lanes.
-    let target_audio = ["ac3", "eac3", "aac", "dts"]
+    // opus is only ever a copy lane: last, so it can never be the encode head.
+    let target_audio = ["ac3", "eac3", "aac", "dts", "opus"]
         .into_iter()
         .filter(|c| caps.audio_has(c))
         .map(profile_codec_name)
@@ -286,6 +290,18 @@ fn profile_for_delivery(caps: &plx_platform::devcaps::Caps, delivery: TranscodeD
             "+add-limitation(scope=videoAudioCodec&scopeName={codec}&type=upperBound&name=audio.channels&value={channels}&replace=true)"
         ))
         .collect::<String>();
+    // `pcmInfo` can name only some rates (`devcaps::PCM_SAMPLE_RATES`, 48 kHz at most): above that
+    // PMS converts, as it does for a FLAC wider than stereo. A rate under 48 kHz that is not in the
+    // table is refused by the planner instead.
+    let pcm_ceiling = plx_platform::devcaps::PCM_SAMPLE_RATES.iter().max().copied().unwrap_or(0);
+    let audio_limits = audio_limits
+        + &plx_platform::devcaps::PCM_AUDIO_CODECS
+            .split(',')
+            .filter(|c| caps.audio_has(c))
+            .map(|codec| format!(
+                "+add-limitation(scope=videoAudioCodec&scopeName={codec}&type=upperBound&name=audio.samplingRate&value={pcm_ceiling}&replace=true)"
+            ))
+            .collect::<String>();
     let target = match delivery {
         TranscodeDelivery::ProgressiveMkv => format!(
             "add-transcode-target(type=videoProfile&context=streaming&protocol=http\
@@ -320,7 +336,7 @@ fn profile_for(caps: &plx_platform::devcaps::Caps) -> String {
 
 /// The profile for THIS device — [`profile_for`] over the boot-probed caps snapshot.
 fn profile_extra(delivery: TranscodeDelivery) -> String {
-    profile_for_delivery(plx_platform::devcaps::caps(), delivery)
+    profile_for_delivery(&plx_platform::devcaps::caps(), delivery)
 }
 
 /// The forced-direct-play profile: the engine's own formats, no device limits, no transcode
@@ -339,6 +355,7 @@ fn forced_direct_profile_for(caps: &plx_platform::devcaps::Caps) -> String {
     // pipeline cannot decode.
     let audio = DP_AUDIO_CODECS
         .split(',')
+        .chain(plx_platform::devcaps::PCM_AUDIO_CODECS.split(','))
         .filter(|c| caps.forced_feeds_audio(c))
         .map(profile_codec_name)
         .collect::<Vec<_>>()
@@ -358,7 +375,7 @@ fn profile_codec_name(codec: &str) -> &str {
 }
 
 fn forced_direct_profile() -> String {
-    forced_direct_profile_for(plx_platform::devcaps::caps())
+    forced_direct_profile_for(&plx_platform::devcaps::caps())
 }
 
 impl Client {
@@ -402,7 +419,7 @@ impl Client {
         let protocol = if hls { "hls" } else { "http" };
         let mut q = QueryBuilder::new("")
             .str("path", &format!("/library/metadata/{}", s.rating_key))
-            .int("mediaIndex", 0)
+            .int("mediaIndex", s.media_index as i64)
             .int("partIndex", 0)
             .str("protocol", protocol)
             .int("directPlay", 0)
@@ -511,11 +528,12 @@ impl Client {
     pub fn mde_decision(
         &self,
         rating_key: &str,
+        media_index: usize,
         session: &str,
         audio_stream_id: i64,
         subtitle_stream_id: i64,
     ) -> Option<MediaContainer> {
-        self.mde_decision_with_profile(rating_key, session, audio_stream_id, subtitle_stream_id, false)
+        self.mde_decision_with_profile(rating_key, media_index, session, audio_stream_id, subtitle_stream_id, false)
     }
 
     /// Strict Original override: advertise the software feed formats without device limits.
@@ -524,16 +542,18 @@ impl Client {
     pub fn mde_decision_forced(
         &self,
         rating_key: &str,
+        media_index: usize,
         session: &str,
         audio_stream_id: i64,
         subtitle_stream_id: i64,
     ) -> Option<MediaContainer> {
-        self.mde_decision_with_profile(rating_key, session, audio_stream_id, subtitle_stream_id, true)
+        self.mde_decision_with_profile(rating_key, media_index, session, audio_stream_id, subtitle_stream_id, true)
     }
 
     fn mde_decision_with_profile(
         &self,
         rating_key: &str,
+        media_index: usize,
         session: &str,
         audio_stream_id: i64,
         subtitle_stream_id: i64,
@@ -541,7 +561,7 @@ impl Client {
     ) -> Option<MediaContainer> {
         let q = QueryBuilder::new("/video/:/transcode/universal/decision")
             .str("path", &format!("/library/metadata/{rating_key}"))
-            .int("mediaIndex", 0)
+            .int("mediaIndex", media_index as i64)
             .int("partIndex", 0)
             .str("protocol", "http")
             .int("hasMDE", 1)
@@ -731,6 +751,7 @@ mod tests {
     ) -> TranscodeSpec<'a> {
         TranscodeSpec {
             rating_key: "5",
+            media_index: 0,
             session: "s1",
             encoder_session: "s1",
             contract: EncodeContract {
@@ -1138,6 +1159,7 @@ mod tests {
                 av1_row: (0, 0, 0),
                 audio: "aac,ac3,eac3".into(),
             audio_channels: Default::default(),
+            native_ceiling: Default::default(),
             },
             s.contract.delivery,
         );
@@ -1301,6 +1323,27 @@ mod tests {
         assert!(!profile.contains("truehd"));
     }
 
+    /// FLAC is decoded in the app and fed as PCM: offered for direct play (and Force) on a set
+    /// whose table was read, capped at the PCM path's two channels so PMS still converts a 5.1
+    /// FLAC — and never named as a transcode TARGET, which is the server's encoder, not ours.
+    #[test]
+    fn flac_is_offered_for_direct_play_up_to_stereo_and_never_as_a_target() {
+        // what `devcaps` makes of a READ table (its own tests pin that half)
+        let mut caps = plx_platform::devcaps::Caps::assumed();
+        caps.audio.push_str(",flac");
+        caps.audio_channels.insert("flac".into(), plx_platform::devcaps::PCM_MAX_CHANNELS);
+        let profile = super::profile_for(&caps);
+        assert!(list_of(&profile, "audioCodec=").contains(&"flac".into()), "{profile}");
+        assert!(profile.contains("scope=videoAudioCodec&scopeName=flac&type=upperBound&name=audio.channels&value=2&replace=true"), "{profile}");
+        // and at the PCM input's highest rate: a 96 kHz FLAC is converted, not played slow
+        assert!(profile.contains("scope=videoAudioCodec&scopeName=flac&type=upperBound&name=audio.samplingRate&value=48000&replace=true"), "{profile}");
+        assert!(!list_of(target_of(&profile), "audioCodec=").contains(&"flac".into()));
+        assert!(list_of(&super::forced_direct_profile_for(&caps), "audioCodec=").contains(&"flac".into()));
+        let assumed = plx_platform::devcaps::Caps::assumed();
+        assert!(!super::profile_for(&assumed).contains("flac"));
+        assert!(!super::forced_direct_profile_for(&assumed).contains("flac"));
+    }
+
     /// Force Direct Play offers DTS only on the same table evidence the planner asks for
     /// (`Caps::forced_admits_dts`); without the row the profile cannot invite a Load the
     /// pipeline cannot decode.
@@ -1349,6 +1392,7 @@ mod tests {
             av1_row: (0, 0, 0),
             audio: "aac,ac3,eac3".into(),
             audio_channels: Default::default(),
+            native_ceiling: Default::default(),
         };
         let p = super::profile_for(&caps);
         assert!(!p.contains("hevc"), "hevc must not appear anywhere in {p}");
@@ -1380,6 +1424,7 @@ mod tests {
                 av1_row: (0, 0, 0),
                 audio: "aac".into(),
                 audio_channels: Default::default(),
+                native_ceiling: Default::default(),
             },
         ] {
             let p = super::profile_for(&caps);
@@ -1408,6 +1453,7 @@ mod tests {
             av1_row: (0, 0, 0),
             audio: "aac".into(),
             audio_channels: Default::default(),
+            native_ceiling: Default::default(),
         };
         let p = super::profile_for(&caps);
         let dp = p.split("add-transcode-target").next().unwrap();
@@ -1727,11 +1773,24 @@ mod tests {
             "tok",
             "cid",
         );
-        let _ = client.mde_decision("5", "s1", 0, 0);
+        let _ = client.mde_decision("5", 1, "s1", 0, 0);
         let line = rx.recv().expect("captured decision request");
+        assert!(line.contains("mediaIndex=1&"), "the MDE asks about the chosen version: {line}");
         assert!(!line.contains("boostDialog"), "{line}");
         assert!(!line.contains("normalizeLoudness"), "{line}");
         server.join().unwrap();
+    }
+
+    /// A picked version is addressed by its position on both the decision and the start URL, which
+    /// share this query; the default stays the `mediaIndex=0` it always sent.
+    #[test]
+    fn the_transcode_query_names_the_played_version() {
+        let picked = TranscodeSpec { media_index: 1, ..spec(false, false) };
+        let q = a_client().transcode_query(&picked);
+        assert!(q.contains("mediaIndex=1&partIndex=0"), "{q}");
+        let start = a_client().transcode_start_url(&picked);
+        assert!(start.to_url().contains("mediaIndex=1&"), "the start URL carries it too");
+        assert!(a_client().transcode_query(&spec(false, false)).contains("mediaIndex=0&"));
     }
 
     /// `AudioEnhancements::NONE` — every path this PR builds — must not change a single byte of

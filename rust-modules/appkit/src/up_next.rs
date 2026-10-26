@@ -169,7 +169,7 @@ pub fn expired(&self, now: u32) -> bool {
 }
 
 /// The descriptor to start, cloned off the `&'static` store. Cloning is mandatory, not tidiness:
-/// `route::request_play_up_next` clears `UP_NEXT` as its first act, so handing it a borrow of the
+/// `route::request_play_queue_item` clears `UP_NEXT` as its first act, so handing it a borrow of the
 /// static would be a use-after-free the borrow checker cannot see through a `'static` lifetime.
 pub fn take(&mut self, ps: &plx_media::route::PlaybackSession) -> Option<UpNext> {
     self.cancel();

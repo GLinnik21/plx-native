@@ -92,6 +92,9 @@ fn pump_until_landed(browse: &mut TestBrowse) {
     while browse.state.cur_state().is_some_and(|state| state.total < 0)
         && std::time::Instant::now() < deadline {
         let _ = browse.pump();
+        // The runner's part, on this thread: the page the pump asked for is read against the
+        // scripted PMS and its answer waits for the next pump.
+        browse.run_listing_jobs();
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
 }
@@ -125,7 +128,7 @@ fn a_chosen_sort_survives_a_restart() {
         crate::stores::browse::LibraryWork::Commit {
             select: false, choice: false,
             query: Some(crate::stores::browse::QueryEdit::Sort { key: "viewCount".into(), desc: true }),
-        }));
+        }, &ClientKeys::default(), &mut Vec::new()));
     pump_until_landed(&mut browse);
     let first_run: Vec<String> = (0..2).map(|_| pms.requests.recv().unwrap()).collect();
     assert!(first_run[1].contains("sort=viewCount%3Adesc"), "{}", first_run[1]);
@@ -239,7 +242,7 @@ fn choosing_the_default_order_forgets_the_entry() {
             crate::stores::browse::LibraryWork::Commit {
                 select: false, choice: false,
                 query: Some(crate::stores::browse::QueryEdit::Sort { key: key.into(), desc }),
-            }));
+            }, &ClientKeys::default(), &mut Vec::new()));
         plx_base::storage_worker::drain_for_test();
     };
     let held = |browse: &TestBrowse| {
@@ -395,7 +398,7 @@ fn switch_unwatched_on(browse: &mut TestBrowse, pms: &Pms) {
         crate::stores::browse::LibraryWork::Commit {
             select: false, choice: false,
             query: Some(crate::stores::browse::QueryEdit::Unwatched(true)),
-        }));
+        }, &ClientKeys::default(), &mut Vec::new()));
 }
 
 /// A saved sort whose restore FAILED transiently (the menu came back, the sorted re-ask did not)
@@ -565,7 +568,7 @@ fn unwatched_and_genre_survive_a_restart() {
         assert!(browse.state.addressed_with_adapter(&browse.adapter, target,
             crate::stores::browse::LibraryWork::Commit {
                 select: false, choice: false, query: Some(edit),
-            }));
+            }, &ClientKeys::default(), &mut Vec::new()));
     }
     plx_base::storage_worker::drain_for_test();
     drop(browse);

@@ -199,7 +199,7 @@ fn owner_with(id: &str, key: &str, len: usize) -> Owner {
 fn ask_row(owner: &mut Owner, id: &str, key: &str, before: bool) -> Option<HubRequest> {
     let mut held = None;
     let _ = request_page(&mut owner.state, &owner.adapter, sid(0), id, key, before, &BrowseScope::standalone(),
-        &mut |request| { held = Some(request); true });
+        &mut |request| { held = Some(request); });
     held
 }
 
@@ -209,7 +209,7 @@ fn answer(owner: &mut Owner, request: HubRequest, list: impl FnMut(usize, usize)
     many: impl FnMut(&[String]) -> Option<Container>) {
     let page = request.page.clone().unwrap();
     let build = fetch_row(request.sid, &page, request.window.as_ref(), 0, list, many);
-    let landing = request.complete(build);
+    let landing = request.complete_for_test(build);
     let landing = record::decode(record::encode(&landing), |_| plx_plex::plex::client_for(sid(0))).unwrap();
     let _ = super::land(&mut owner.state, &owner.adapter, &landing);
 }
@@ -495,8 +495,11 @@ fn a_launch_the_system_refused_is_not_a_failed_page() {
     let _guard = plx_base::testlock::serial();
     let mut owner = owner_with(RECENT_ID, RECENT, 100);
     let _ = request_page(&mut owner.state, &owner.adapter, sid(0), RECENT_ID, RECENT, false, &BrowseScope::standalone(),
-        &mut |_| false);
+        &mut |request| HubsPort::of(&owner.adapter).refused(hubs_addr(request.seq)));
     for round in 0..6 {
+        assert!(owner.state.srcs[0].fetching, "refusal {round}: the refused read is out until the next step settles it");
+        let settled = step_landings(&mut owner.state, &owner.adapter, None, Vec::new);
+        assert_eq!(settled.iter().map(|r| r.sid).collect::<Vec<_>>(), [sid(0)], "refusal {round}: the page ask backs off");
         let source = &mut owner.state.srcs[0];
         assert!(!source.fetching);
         assert_eq!(source.retry_n, 0, "refusal {round}: a refused spawn is not one of the three failures");
@@ -504,7 +507,8 @@ fn a_launch_the_system_refused_is_not_a_failed_page() {
         assert!(source.retry_s > 0.0, "but it backs off rather than spin");
         // The pump's retry: the same ask again, refused again.
         source.retry_s = 0.0;
-        let _ = kick_with(owner.state.hub_gen, &owner.adapter, source, &BrowseScope::standalone(), |_| false);
+        let _ = kick_with(owner.state.hub_gen, &owner.adapter, source, &BrowseScope::standalone(),
+            |request| HubsPort::of(&owner.adapter).refused(hubs_addr(request.seq)));
     }
     reset(&mut owner.state, &owner.adapter);
     plx_plex::plex::reset_servers_for_test();
@@ -805,7 +809,7 @@ fn a_refresh_reloads_a_head_row_where_it_stood_and_keeps_a_sample_row_as_it_is()
         let _ = walk_through_the_store(&mut owner, "movie.mixed", listing);
         let mut held = None;
         let _ = request_refetch_hubs_with_scope(&mut owner.state, &owner.adapter, &BrowseScope::standalone(),
-            &mut |request| { held = Some(request); true });
+            &mut |request| { held = Some(request); });
         let request = held.unwrap();
         assert_eq!(request.windows.len(), 1, "the row moved off its preview, so the refresh reloads it");
         let (query, _, old) = &request.windows[0];

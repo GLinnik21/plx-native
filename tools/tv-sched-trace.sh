@@ -2,7 +2,7 @@
 #
 # tv-sched-trace.sh -- capture a kernel scheduler/IRQ trace from the television, then put it back.
 #
-#   tools/tv-sched-trace.sh [--secs 6] [--tid N] [--read-timeout 90] [--out FILE.gz]
+#   tools/tv-sched-trace.sh [--secs 6] [--tid N | --app [FLAVOR]] [--read-timeout 90] [--out FILE.gz]
 #
 # Runs on the HOST and drives the set through tools/tv-ssh (root, busybox sh). It takes the
 # television's lock like every other device tool (tools/tv-lock.sh), so run it inside your own
@@ -24,11 +24,27 @@
 #      event category whose name matches mali|kbase|gpu; with --tid N also raw_syscalls
 #      sys_enter/sys_exit filtered to that thread, so the analyser can name the blocking syscall;
 #   4. tracing_on=1, sleeps --secs, tracing_on=0, reports the buffer's entries/overrun;
-#   5. drains `trace_pipe` (the consuming reader: `trace` re-walks the ring on every read and took
+#   5. writes the THREAD TABLE, then drains `trace_pipe` (the consuming reader: `trace` re-walks the ring on every read and took
 #      minutes for 3 s of data), gzipped on the set when it has gzip, else on the host. The drain
 #      ends when the buffer is empty, and the host stops it after --read-timeout seconds whatever
 #      happens (killing the reader on the set so its gzip still finishes cleanly): the file is then a VALID but PARTIAL gzip, stderr says how many seconds it covers,
 #      and the exit status is 3. ^C during the read-back does the same (exit 130).
+#
+# --app [FLAVOR] picks the thread for you: the pid of the running app of that install (debug,
+# stable or nightly; default $FLAVOR, else debug), found on the set by its /proc/<pid>/exe. A jailed
+# app's exe reads `/var/palm/jail/<app id>/<appdir>/plxnative`, so it matches by SUFFIX against
+# `make -s print-appdir`'s `<appdir>/plxnative` (a prefix match finds nothing). It refuses with one line,
+# before touching the set, when zero or more than one pid matches. `--tid` and `--app` are exclusive.
+#
+# The THREAD TABLE: a ftrace line names a thread by comm and pid only, never by the process it belongs
+# to, which is what tells the app's Mali completion thread (`mali-event-hnd`) from the compositor's.
+# So the first lines of the output file, ahead of the events, are one
+# `# plx-task tgid=<n> tid=<n> comm=<comm>` line per thread of the --tid/--app process and of every
+# `surface-manager` process, read from /proc after the window (so threads started inside it are in,
+# threads that ended inside it are not). They sit in the SAME gzip stream; every reader skips `#` lines
+# (this script's own counts included), and a trace without them still analyses
+# (tools/analyze-sched-trace.py --latch then needs --app-gpu-tid / --sm-gpu-tid).
+#
 # Whatever happens after step 1 begins (error, ^C), a trap restores it: events off, filters
 # cleared, any reader left on the set killed, the previous buffer size, clock and tracing_on, the
 # buffer cleared, and tracefs unmounted if THIS run mounted it. If somebody else already has events
@@ -41,19 +57,23 @@
 # Nothing identifying is printed: tools/tv-ssh keeps the address out of every line.
 #
 # Test seam (tools/test_tv_sched_trace.py only): with TV_SCHED_TRACE_TEST=1, TV_SCHED_TRACE_TVSSH is
-# the tv-ssh stand-in, TV_SCHED_TRACE_T the tracefs directory and TV_SCHED_TRACE_PIDF the reader
-# pid file, and the lock is not taken.
+# the tv-ssh stand-in, TV_SCHED_TRACE_T the tracefs directory, TV_SCHED_TRACE_PIDF the reader pid
+# file, TV_SCHED_TRACE_PROC the /proc directory and TV_SCHED_TRACE_APPDIR the install directory
+# `--app` matches, and the lock is not taken.
 set -uo pipefail
 
 T=/sys/kernel/tracing
 PIDF=/tmp/tv-sched-trace.pids
+PROC=/proc
 secs=6
 tid=""
+app=""
+flavor="${FLAVOR:-debug}"
 read_timeout=90
 out=""
 TEST="${TV_SCHED_TRACE_TEST:-0}"
 if [ "$TEST" = 1 ]; then
-  T="${TV_SCHED_TRACE_T:?}"; PIDF="${TV_SCHED_TRACE_PIDF:?}"
+  T="${TV_SCHED_TRACE_T:?}"; PIDF="${TV_SCHED_TRACE_PIDF:?}"; PROC="${TV_SCHED_TRACE_PROC:?}"
 fi
 
 usage() { sed -n '3p;5p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
@@ -63,6 +83,9 @@ while [ $# -gt 0 ]; do
     --secs=*) secs="${1#*=}"; shift ;;
     --tid) [ $# -ge 2 ] || usage; tid="$2"; shift 2 ;;
     --tid=*) tid="${1#*=}"; shift ;;
+    --app) app=1; shift
+           if [ $# -ge 1 ] && [ "${1#-}" = "$1" ]; then flavor="$1"; shift; fi ;;
+    --app=*) app=1; flavor="${1#*=}"; shift ;;
     --read-timeout) [ $# -ge 2 ] || usage; read_timeout="$2"; shift 2 ;;
     --read-timeout=*) read_timeout="${1#*=}"; shift ;;
     --out) [ $# -ge 2 ] || usage; out="$2"; shift 2 ;;
@@ -76,6 +99,8 @@ case "$secs" in ''|*[!0-9]*) echo "tv-sched-trace: --secs needs a whole number o
 case "$read_timeout" in ''|*[!0-9]*) echo "tv-sched-trace: --read-timeout needs a whole number of seconds" >&2; exit 2 ;; esac
 [ "$read_timeout" -ge 1 ] || { echo "tv-sched-trace: --read-timeout must be >= 1" >&2; exit 2; }
 case "$tid" in *[!0-9]*) echo "tv-sched-trace: --tid needs a thread id" >&2; exit 2 ;; esac
+[ -z "$app" ] || [ -z "$tid" ] || { echo "tv-sched-trace: --tid and --app are mutually exclusive" >&2; exit 2; }
+case "$flavor" in ''|*[!a-z]*) echo "tv-sched-trace: --app needs a flavour name (debug, stable, nightly)" >&2; exit 2 ;; esac
 [ -n "$out" ] || out="tv-sched-trace-$(date +%Y%m%d-%H%M%S).gz"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -92,7 +117,7 @@ if [ "$TEST" != 1 ]; then
   TV="$TV_HOST" "$HERE/tv-lock.sh" require --quiet --why "tv-sched-trace.sh" || exit 1
   # A trace of the fast-profile (tvdev, no LTO) binary does not show the shipped build's waits: stop
   # (one line naming the fix) rather than record it. Read-only; names the profile on stderr.
-  python3 "$HERE/arm_profile_guard.py" --flavor "${FLAVOR:-debug}" || exit 1
+  python3 "$HERE/arm_profile_guard.py" --flavor "$flavor" || exit 1
 fi
 
 # Ring sizing. ~60k events/s across all CPUs measured (about 66k with the arch timer, now filtered
@@ -106,7 +131,7 @@ cap_kb=32768
 cap_secs=$(( cap_kb * 1024 / (ev_per_s * ev_bytes) ))
 
 # The on-set half, one busybox-sh script run as `sh -s -- MODE ARGS...` over ssh, preceded by the
-# host's `T=` and `PIDF=` lines. The event list lives here once so that enabling and disabling
+# host's `T=`, `PIDF=` and `PROC=` lines. The event list lives here once so that enabling and disabling
 # cannot drift apart.
 IFS= read -r -d '' REMOTE <<'SH'
 events() {   # events 0|1 : switch every event this tool uses on or off (and clear filters on off)
@@ -137,8 +162,35 @@ killreaders() {   # the drain shell and its `cat trace_pipe`, recorded by `drain
     rm -f "$PIDF"
   fi
 }
+threads() {   # threads PID... : a `# plx-task` line per thread of each process (the file's thread table)
+  for p in "$@"; do
+    [ -d $PROC/$p/task ] || continue
+    g=$(sed -n 's/^Tgid:[^0-9]*\([0-9][0-9]*\).*/\1/p' $PROC/$p/status 2>/dev/null | head -1)
+    for d in $PROC/$p/task/[0-9]*; do
+      [ -r $d/comm ] || continue
+      read -r c < $d/comm || continue
+      echo "# plx-task tgid=${g:-$p} tid=${d##*/} comm=$c"
+    done
+  done
+}
+smpids() {    # the pids of every process whose main thread is called surface-manager (the compositor)
+  for f in $PROC/[0-9]*/comm; do
+    [ -r $f ] || continue
+    read -r c < $f || continue
+    case "$c" in surface-manager*) p=${f%/comm}; echo ${p##*/} ;; esac
+  done
+}
 mode=$1; shift
 case "$mode" in
+  findapp)  # findapp EXESUFFIX : pid=N for each process running it, stale=N for one whose binary was replaced
+    for f in $PROC/[0-9]*/exe; do
+      l=$(readlink "$f" 2>/dev/null) || continue
+      p=${f%/exe}; p=${p##*/}
+      case "$l" in
+        *"$1") echo "pid=$p" ;;
+        *"$1 (deleted)") echo "stale=$p" ;;
+      esac
+    done ;;
   mount)   # mount [only if absent]; print whether this call did
     if [ -e $T/trace_clock ]; then echo mounted=0
     elif mount -t tracefs nodev $T 2>/dev/null; then echo mounted=1
@@ -196,7 +248,8 @@ case "$mode" in
       echo "cpu=$c $(sed -n 's/^overrun: */overrun=/p' $f | head -1) $(sed -n 's/^entries: */entries=/p' $f | head -1)"
     done ;;
   hasgzip) command -v gzip >/dev/null 2>&1 && echo yes || echo no ;;
-  drain)   # drain BOUND : trace_pipe to stdout until the ring is empty (or BOUND seconds)
+  drain)   # drain BOUND [TID] : the thread table, then trace_pipe, to stdout until the ring is empty (or BOUND seconds)
+    threads $2 $(smpids)
     cat $T/trace_pipe & rp=$!
     echo "$$ $rp" > "$PIDF"
     idle=0; waited=0
@@ -221,7 +274,7 @@ case "$mode" in
     exit 0 ;;
 esac
 SH
-remote_script() { printf 'T=%s\nPIDF=%s\n%s\n' "$T" "$PIDF" "$REMOTE"; }
+remote_script() { printf 'T=%s\nPIDF=%s\nPROC=%s\n%s\n' "$T" "$PIDF" "$PROC" "$REMOTE"; }
 remote() { remote_script | tv sh -s -- "$@"; }
 val() { sed -n "s/^$1=//p" <<<"$2" | head -1; }
 
@@ -269,6 +322,26 @@ trap 'exit 130' INT TERM HUP
 
 fail() { echo "tv-sched-trace: $1" >&2; exit 1; }
 
+# --app: the pid of the one running app of $flavor. Read-only, and before anything on the set is
+# changed, so a refusal leaves tracefs exactly as it was.
+resolve_app() {
+  local dir r pids n stale
+  if [ "$TEST" = 1 ]; then dir="${TV_SCHED_TRACE_APPDIR:?}"
+  else dir="$(make -s -C "$HERE/.." FLAVOR="$flavor" print-appdir 2>/dev/null)"; fi
+  case "$dir" in /*) ;; *) fail "cannot resolve the $flavor install directory from the Makefile" ;; esac
+  r="$(remote findapp "$dir/plxnative")" || fail "the television is unreachable"
+  pids="$(sed -n 's/^pid=\([0-9][0-9]*\)$/\1/p' <<<"$r" | tr '\n' ' ')"
+  stale="$(sed -n 's/^stale=\([0-9][0-9]*\)$/\1/p' <<<"$r" | head -1)"
+  n="$(wc -w <<<"$pids" | tr -d ' ')"
+  case "$n" in
+    1) tid="${pids% }" ;;
+    0) fail "no $flavor app is running on the set (no process runs $dir/plxnative)${stale:+; pid $stale still runs a replaced binary, close it and relaunch}" ;;
+    *) fail "more than one process runs $dir/plxnative (pids ${pids% }); pass --tid with the one to trace" ;;
+  esac
+  echo "tv-sched-trace: --app $flavor: pid $tid" >&2
+}
+[ -z "$app" ] || resolve_app
+
 touched=1
 r="$(remote mount)" || fail "the television is unreachable"
 [ -z "$(val err "$r")" ] || fail "$(val err "$r")"
@@ -303,7 +376,7 @@ fi
 
 [ "$(remote hasgzip)" = yes ] && rz=yes
 bound=$(( read_timeout + 10 ))   # the set's own stop, never the one that normally ends the read
-cmd="sh -s -- drain $bound"; [ "$rz" = yes ] && cmd="$cmd | gzip -1"
+cmd="sh -s -- drain $bound $tid"; [ "$rz" = yes ] && cmd="$cmd | gzip -1"
 echo "tv-sched-trace: reading the trace back (up to ${read_timeout} s)..." >&2
 reading=1
 "$TVSSH" ssh tv "$cmd" < <(remote_script) > "$tmp" &

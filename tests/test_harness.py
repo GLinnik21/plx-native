@@ -980,8 +980,9 @@ class TestUserTokenFile(unittest.TestCase):
 
 
 class QuietTv(unittest.TestCase):
-    """`quiet_tv` is what `--fps --mock` uses to set the panel and sound. The panel stays ON for
-    smoothness runs (a dark one makes the frame times meaningless); only `--panel off` blanks it."""
+    """`quiet_tv` is what `--fps --mock` uses to set the panel and sound. The panel is OFF by
+    default, fps runs included: it is only the backlight, and the app keeps presenting at full
+    rate (measured 2026-10-24); only `--panel on` lights it, for a run someone wants to watch."""
 
     def _steps(self, **kw):
         calls = []
@@ -993,13 +994,13 @@ class QuietTv(unittest.TestCase):
             run.quiet_tv("tv.invalid", **kw)
         return calls
 
-    def test_default_keeps_the_panel_on_and_mutes_once(self):
-        self.assertEqual(self._steps(), [("screen", "on")])
-        self.assertEqual(self._steps(sound=True), [("screen", "on"), ("sound", "off")])
+    def test_default_blanks_the_panel_and_mutes_once(self):
+        self.assertEqual(self._steps(), [("screen", "off")])
+        self.assertEqual(self._steps(sound=True), [("screen", "off"), ("sound", "off")])
 
-    def test_panel_off_is_the_opt_in(self):
-        self.assertEqual(self._steps(sound=True, panel="off"),
-                         [("screen", "off"), ("sound", "off")])
+    def test_panel_on_is_the_opt_in_and_the_sound_is_muted_either_way(self):
+        self.assertEqual(self._steps(sound=True, panel="on"),
+                         [("screen", "on"), ("sound", "off")])
 
     def test_a_bad_panel_value_is_refused_and_a_failed_step_stops_the_run(self):
         with self.assertRaises(ValueError):
@@ -1008,10 +1009,47 @@ class QuietTv(unittest.TestCase):
         with mock.patch.object(run.subprocess, "run", fail), self.assertRaises(SystemExit):
             run.quiet_tv("tv.invalid")
 
-    def test_the_cli_exposes_panel_with_on_as_default(self):
+    def test_the_cli_exposes_panel_with_off_as_default(self):
+        # One constant feeds the flag, `quiet_tv`'s default and both `cfg.get("panel", ...)`
+        # fallbacks, so the value is pinned once here and each user of it is pinned below.
+        self.assertEqual(run.PANEL_DEFAULT, "off")
         src = inspect.getsource(run.main)
-        self.assertIn('"--panel", choices=("on", "off"), default="on"', src)
+        self.assertIn('"--panel", choices=("on", "off"), default=PANEL_DEFAULT', src)
         self.assertIn('cfg["panel"] = args.panel', src)
+
+    def test_quiet_tv_defaults_to_the_shared_panel_default(self):
+        self.assertEqual(inspect.signature(run.quiet_tv).parameters["panel"].default,
+                         run.PANEL_DEFAULT)
+
+    def test_a_config_without_a_panel_key_falls_back_to_off(self):
+        # `run_mock_fps_scene` and `run_fps_suite` read `cfg.get("panel", ...)`: a cfg built
+        # without the CLI (a test, a caller) must get the same default the CLI has.
+        seen = []
+        with mock.patch.object(run, "quiet_tv", lambda tv, sound=False, panel="?": seen.append(panel)), \
+                mock.patch.object(run, "run_fps_scene", return_value=(True, "")), \
+                mock.patch.object(run.mock_fps, "MockPms"), \
+                mock.patch.object(run.mock_fps, "mock_server_args", return_value=[]), \
+                mock.patch.object(run.mock_fps, "resolve_mock_token", return_value="t"):
+            run.run_mock_fps_scene({"name": "x"}, {"tv": "tv.invalid", "mock": {"host": "h", "port": 1}})
+        self.assertEqual(seen, ["off"])
+
+    def test_the_fps_suite_without_a_panel_key_blanks_the_panel_too(self):
+        # `run_fps_suite` asserts the panel and mutes the sound once, up front, from its own
+        # `cfg.get("panel", ...)`; `run_mock_fps_scene` (stubbed here) re-asserts it per scene.
+        calls = []
+
+        def fake_quiet_tv(tv, sound=False, panel="?"):
+            calls.append((sound, panel))
+
+        cfg = {"tv": "tv.invalid", "mock": {"host": "h", "port": 1}}
+        out = io.StringIO()
+        with mock.patch.object(run, "quiet_tv", fake_quiet_tv), \
+                mock.patch.object(run, "run_mock_fps_scene", return_value=(True, "")), \
+                contextlib.redirect_stdout(out):
+            rc = run.run_fps_suite([{"name": "x"}], cfg, "tok", False)
+        self.assertEqual(rc, 0)
+        self.assertEqual(calls, [(True, "off")])
+        self.assertIn("panel rule: panel OFF", out.getvalue())
 
 
 class StoredSessionGate(unittest.TestCase):
@@ -6627,6 +6665,63 @@ impl PersonOwnerGateFixture {
         self.assertEqual(out.count(f"{base}bare.rs::bare::revision  (ledger: "), 1,
                          "`it.revision()` is not a registry read\n" + out)
 
+    def test_globals_ledger_sees_the_player_transport_readers_in_a_machine(self):
+        """RED: `transport::paused`, `transport::viewer_paused` and `preview::paused` read `TX.paused` behind
+        a function (Sans-IO lifecycle PR B), so a machine that calls one reads the registry as surely as
+        `client_for` does. Qualified, bare-after-an-import (singly, in a group, through a glob) and the
+        rename that would hide the calls are all caught; the writers (`set_paused`, `set_transport_paused`)
+        and a file that merely has a local named `paused` are not registry reads. An import that only
+        ENDS in one of the module names (`plx_appkit::scrub_preview::*`, `plx_ui::hud_transport::{..}`) is not
+        an import of `preview` / `transport`, so a `paused` local beside it is no site either."""
+        crate = "screens"
+        r = self._plant_many({
+            "_check_deps_selftest_qualified.rs": (
+                "pub fn qualified() {\n"
+                "    let _ = plx_media::player::transport::paused();\n"
+                "    let _ = plx_media::player::transport::viewer_paused();\n"
+                "    let _ = plx_media::player::preview::paused();\n}\n"),
+            "_check_deps_selftest_renamed.rs": (
+                "use plx_media::player::transport::paused as is_paused;\n"
+                "use plx_media::player::transport::viewer_paused as vp;\n"
+                "use plx_media::player::preview::paused as pv;\n\n"
+                "pub fn renamed() {\n    let _ = (is_paused(), vp(), pv());\n}\n"),
+            "_check_deps_selftest_bare.rs": (
+                "use plx_media::player::transport::{self, viewer_paused};\n"
+                "use plx_media::player::preview::paused;\n\n"
+                "pub fn bare() {\n    let _ = (viewer_paused(), paused());\n    let _ = it.paused();\n}\n"),
+            "_check_deps_selftest_globbed.rs": (
+                "use plx_media::player::transport::*;\n\npub fn globbed() {\n    let _ = paused();\n}\n"),
+            "_check_deps_selftest_writers.rs": (
+                "use plx_media::player::transport::{self, set_paused, set_transport_paused};\n\n"
+                "pub fn writes(paused: bool) {\n    set_paused(paused);\n    set_transport_paused(None, paused);\n}\n"),
+            "_check_deps_selftest_scrub_glob.rs": (
+                "use plx_appkit::scrub_preview::*;\n\n"
+                "pub fn scrub_glob(x: u8) -> bool {\n    let paused = x > 0;\n    paused\n}\n"),
+            "_check_deps_selftest_suffix_group.rs": (
+                "use plx_ui::hud_transport::{self, paused_label};\nuse plx_ui::my_preview::{paused};\n\n"
+                "pub fn suffix_group(x: u8) -> bool {\n    let paused = x > 0;\n    paused\n}\n"),
+        }, crate)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("globals:", out)
+        base = f"rust-modules/{crate}/src/_check_deps_selftest_"
+        for spelling in ("transport::paused", "transport::viewer_paused", "preview::paused"):
+            with self.subTest(qualified=spelling):
+                self.assertIn(f"{base}qualified.rs::qualified::{spelling}  (ledger: ", out)
+        for line in (1, 2, 3):
+            with self.subTest(rename_line=line):
+                self.assertIn(f"{base}renamed.rs:{line}\n", out + "\n")
+        for fn, spelling in (("bare", "viewer_paused"), ("bare", "paused"), ("globbed", "paused")):
+            with self.subTest(fn=fn, spelling=spelling):
+                self.assertIn(f"{base}{fn}.rs::{fn}::{spelling}  (ledger: ", out)
+        self.assertEqual(out.count(f"{base}bare.rs::bare::paused  (ledger: "), 1,
+                         "`it.paused()` is not a registry read\n" + out)
+        self.assertNotIn(f"{base}writers.rs", out, "a writer is an IO call, not a registry read\n" + out)
+        for stem in ("scrub_glob", "suffix_group"):
+            with self.subTest(not_an_import_of_the_module=stem):
+                self.assertNotIn(f"{base}{stem}.rs", out,
+                                 "`..._preview::*` / `..._transport::{..}` is not `preview` / `transport`\n" + out)
+
     def test_a_bare_name_that_ends_a_braced_import_is_still_imported(self):
         """RED: `use plx_base::task::{self, spawn};` imports `spawn` as surely as `{spawn, self}` does, and
         so for `submit` and `peek`; the import pattern used to eat the closing `}` of a group whose
@@ -6681,9 +6776,10 @@ impl PersonOwnerGateFixture {
         self.assertNotIn(f"{key}Loop", out, "the variant the ledger already holds is not new")
 
     def test_globals_ledger_sees_every_spelling_of_the_player_transport_in_lifecycle(self):
-        """RED: lifecycle.rs reads `crate::player::TX` as logic, and `super::TX`, a bare `TX` and a
-        renamed import reach the same atomic from that file: the first two are sites of their own, the
-        rename fails outright (the calls through it are invisible)."""
+        """RED: lifecycle.rs, the machine, reads no `crate::player::TX` (the transport contract lives in
+        player/transport.rs), and the spellings stay pinned there as a zero-guard: planting `super::TX`,
+        a bare `TX` and a renamed import reaches the same atomic from that file. The first two are sites
+        of their own, the rename fails outright (the calls through it are invisible)."""
         rel = "rust-modules/media/src/player/lifecycle.rs"
         with open(os.path.join(self.tree, rel), encoding="utf-8") as f:
             before = f.read().count("\n")
@@ -7291,9 +7387,25 @@ impl PersonOwnerGateFixture {
     # the move. A migration PR lowers the number with the lines it deletes. Seeded 2026-10-24 from
     # the tool's own output on the tree this table was written for.
     PINNED_LEDGER_TOTALS = {
-        "workers": 25,  # production worker starts inside machines (`ci/allow/workers/`)
-        "globals": 101,  # production process-global reads inside machines (`ci/allow/globals/`)
-        "forks": 60,  # production test/production forks in data/, plex/, media/, session/ (`ci/allow/forks/`)
+        # Browse B-A (the section hubs' list and row reads leave as `StoreJob::BrowseHubs`): -2 here (`hubs_spawn`,
+        # `hubs_spawn_row` `spawn_small`), -3 on globals (their `client_for` reads and `hubs_land`'s).
+        # Browse B-B+C (the directory and listing-page reads leave as `StoreJob::BrowseDirectory` and
+        # `StoreJob::BrowsePage`): -2 here (`kick_directory`, `maybe_spawn_owned` `spawn_small`), -2 on globals
+        # (their `client_for` reads).
+        # ViewState C3 (the household writes leave as `StoreJob::ViewWrite`): -1 here (`kick`'s `spawn_small`).
+        # Metadata M2 (the season switch and the episode-page window leave as `StoreJob::MetaSeason` /
+        # `StoreJob::MetaEpisodes`): -2 here (`load_season`, `want_episodes` `spawn_small`), -2 on globals
+        # (`fetch_episodes`, `fetch_episode_page` `client_for`).
+        "workers": 9,  # production worker starts inside machines (`ci/allow/workers/`)
+        # Sans-IO lifecycle PR B moved the pin by nothing: -3 (the three `lifecycle.rs` `player::TX` lines left with the
+        # transport contract, `player/transport.rs`, the IO layer) and +3 (a relocation lowers no pin by itself, so the same
+        # diff widened the spellings to the transport readers `transport::paused`, `transport::viewer_paused` and
+        # `preview::paused`, and seeded the 3 `preview::paused` reads in screens/detail it found).
+        # ViewState C2 (the step decides from the borrowed `ClientKeys`): -2 on globals (`request` and
+        # `fan_out_origin_watched` no longer read the registry). C3 (the job lane) took the other 3: `kick`, and the
+        # fan-out's `fan_out` and `ask_sources`, which now reach the other servers through the key-checked `KeyedClients`.
+        "globals": 66,  # production process-global reads inside machines (`ci/allow/globals/`)
+        "forks": 58,  # production test/production forks in data/, plex/, media/, session/ (`ci/allow/forks/`)
         "fxlanes": 11,  # Bridge::app_effect arms that do not push Fx::Deliver (`ci/allow/fxlanes/`)
     }
 

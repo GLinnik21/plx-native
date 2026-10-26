@@ -78,8 +78,9 @@
 // corner springs the wash undithered itself for the whole of its own colour dissolve. Nor may the
 // ARTWORK's motion: Home's and Detail's washes dropped the noise while a photograph slid over them
 // until 2026-09-19 (`gfx::page_wash_dither`, now deleted), and the band of wash below Home's diving
-// hero — wash-only, nothing over it — banded for the length of the dive. Every page wash dithers
-// on every frame (`gfx::draw_ambient` takes no flag); rules 1 and 4 are what made that affordable.
+// hero — wash-only, nothing over it — banded for the length of the dive. Every page wash with a
+// gradient dithers on every frame (`gfx::draw_ambient` takes no flag; one of a single colour is a
+// clear and never reaches this program); rules 1 and 4 are what made that affordable.
 precision mediump float;
 uniform float u_dither;
 uniform sampler2D u_dither_tex; // gfx::noise_tex — 256², TPDF, GL_REPEAT + GL_NEAREST, unit 2

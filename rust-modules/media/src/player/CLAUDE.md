@@ -125,7 +125,7 @@ something.
   the screensaver, and whether that press reaches the app is unmeasured. A toggle over a save that
   was Playing is spent as a wake (the machine has no claim that restores a Playing save Paused).
   A Playing restore of a Paused save also clears the pause the park left standing BEFORE the Load
-  (`PlayerForegroundActuator::before_load` → `lifecycle::commit_viewer_resume_for_load`):
+  (`PlayerForegroundActuator::before_load` → `transport::commit_viewer_resume_for_load`):
   `ClockStartGuard` arms the Load's initial hold from `TX.paused` (only with no live Engine: over one, `before_load` leaves the pause for `PlayClock`), and under the stale pause that
   hold was the viewer's, which fenced the first Play behind a prime (`SMP Play fenced; priming
   before retry`) and left the actual Play to the late `PlayClock`. That cleared pause, not the
@@ -187,10 +187,10 @@ something.
   transport spinner draws; a seek flight engages the same hold from
   `start_transcode_seek_flight`) and `take` + `release` AFTER `run_claim_tail`, so an accepted
   claim's Play lands on the new stream and a rejected one's on the kept Engine. A viewer press
-  (`player::lifecycle::set_transport_paused` -> `note_user_transport`) forgets the restore: the
+  (`player::transport::set_transport_paused` -> `note_user_transport`) forgets the restore: the
   viewer's last transport press always stands. A stream already paused at claim time stays paused.
   While the hold's pause stands the viewer's transport reads see PLAYING
-  (`player::lifecycle::viewer_paused`, `claim_hold::owns_pause`): the OK toggle means Pause and a
+  (`player::transport::viewer_paused`, `claim_hold::owns_pause`): the OK toggle means Pause and a
   seek's `resume_if_paused` leaves the hold alone (its seek is carried past the reload by
   `pump::commit_or_carry_seek`, including a seek pressed mid-flight when none was pending at
   claim time). A reload (or a Pause pressed before the first frame) under a VIEWER Pause leaves a
@@ -240,8 +240,9 @@ something.
     is claimed after the landing.
   - **FAILURE-path recoveries are `FlightOwner::Recovery` flights** owned by the failed start
     (`Preparing(serial)`): the rollback's rebase after a failed Original trial
-    (`route::dispatch_rollback_rebase`) and the HLS fallback of an Auto Original that never opened
-    (`route::dispatch_unopened_auto_hls`). They hold nothing (the Engine that failed is not
+    (`route::dispatch_rollback_rebase`), the HLS fallback of an Auto Original that never opened
+    (`route::dispatch_unopened_auto_hls`) and the rebuild that has the server convert native audio
+    the pipeline refused (`route::dispatch_native_audio_conversion`, below). They hold nothing (the Engine that failed is not
     playing) and the viewer keeps the connecting spinner (`pump::hold_connecting_state`). The
     landing is drained AHEAD of the failure branches (`route::take_ready_recovery_flight`, then
     `pump::land_recovery_flight`: reload onto the route, or fail the Engine), because the
@@ -297,6 +298,49 @@ something.
   `acb_send_atmos` in `src/starfish.c`. `AcbAPI_setMediaVideoData`/`setState`/
   `setDisplayWindow` take a `long *taskId` out-param as their last arg — the 3-arg ABI is required
   (2-arg calls corrupt memory / segfault).
+- **Opus goes to LG's own decoder only as far as the set is known to take it** (`ff_native_audio.rs`,
+  `devcaps.rs`). What a set announces is layered, in this order and logged at boot as `devcaps: ...
+  audio layers:`: the codec table, minus the codecs `/etc/gst/gstcool.conf` shows nothing can decode
+  (`apply_gst_decoders`), minus `devcaps::EXCLUSIONS` (rows per firmware codename, each carrying its
+  evidence: the C1's `kisscurl-koli` limits Opus to stereo, and records that Vorbis is refused),
+  minus the refusals this install learned. Auto's own stereo ceiling for Opus
+  (`OPUS_AUTO_MAX_CHANNELS`) stays as it is; the rows add a ceiling Force Direct Play also holds
+  (`Caps::forced_feeds_audio_track`). FLAC is not native: the app decodes it and feeds PCM
+  (`ff_pcm.rs`), so it is outside these layers. A learned refusal comes from a native Load that ends
+  in `type=18 num=200 Audio Codec Not Supported` before any picture (`mod.rs`'s callback sets
+  `native_audio_refused` only while `native_audio::fed()` says the audio was fed natively; the pump
+  turns it into `session::learn_native_audio_refusal`, which takes it off the answer at once
+  (`devcaps::learn_refusal`) and persists it in the install-scope `native_audio_refused` preference).
+  That preference is the ONE list of refusals: `devcaps` keeps no list, only the answer derived from
+  it, which it folds monotonically (it only ever removes) from each fresh refusal and from the stored
+  record every installed session carries (`devcaps::project_stored_refusals`, called by the session's
+  `replace_cache` as a pure projection under the cache lock). The failed open then recovers on the
+  pre-picture recovery path every failed open uses, in the same frame: `open_failure_action` picks
+  `ConvertNativeAudio`, `route::dispatch_native_audio_conversion` flies a `ClaimWork::Encode` under a
+  `FlightOwner::Recovery` that rebuilds today's route (which now plans the audio as the server's to
+  convert), and `land_recovery_flight` reloads onto it. The viewer keeps the connecting spinner: no
+  read-out, no second play request. A refusal the install already knew skips that and fails as
+  before, so a conversion that is still refused cannot loop. A
+  silent stall is learned too, for surround only (`native_stall.rs`, checked in the pump): a native
+  Opus track with more than two channels, Load returned, no picture, both AU queues holding data and no
+  AU accepted for `NATIVE_AUDIO_STALL_MS` (4 s; a slow server has empty queues) is learned and
+  recovered the same way, and never after the first picture. Garbled playback (no stall, no event)
+  still needs a static row. The event log has `native audio: watching`, `STALL, no picture`, the
+  `remembered` line, `devcaps: ... learned refusals:`, and once per play the fed packets' `max` and
+  `p95` size (the C1's 6-channel Opus decoder stalls at packets of 1536 B and above).
+  A learned row records the firmware BUILD it was watched on (`tv::device::Info::build`, nyx's
+  `core_os_release`, e.g. `6.5.3-47`). A refusal is evidence only on its own build, so an LG update
+  gets a fresh native try: the answer ignores another build's rows (and rows an older record never
+  tagged), and the first refusal learned on the new build writes the list back without them
+  (`Session::with_native_audio_refusal`). The static rows are keyed on the codename and are not
+  forgotten.
+  Debug switches (debug builds, files under `/tmp/<app id>/`, read at app start):
+  `plxnative-nativeaudiowide` ignores the last two layers; with `plxnative-nativeaudiolearn` beside it
+  the exclusions stay ignored but refusals are learned and applied (the demo: a stall, a learned row,
+  an automatic server-converted replay); `plxnative-nativeaudioforget` does not apply the stored list
+  this run (a refusal learned during the run still applies at once). Vorbis is not fed natively: LG's Vorbis element
+  needs a caps `streamheader` and libpf's payload has no key for it (`setVORBISinfo` reads only
+  channels and sampleRate; Opus has `opusInfo.streamHeader`), and a C1 refuses every Vorbis Load.
 - **The Load payload's codecs must come from the `/decision` OUTPUT, not the source file.** A
   transcode changes the codec/rate; building the Starfish Load config from the *source* metadata gives
   the decoder the wrong description → **silent audio / glitches**. Read the output codecs from the
@@ -346,12 +390,22 @@ something.
   survived a long time because the test suite's cases inherited a server-side `viewOffset`, so the
   seek under test usually had nowhere to go (fixed 2026-07-28; see the
   `docs/agent-reference.md` testing note).
+- **Playback speed is done in the app, fixed per Load.** LG's `SetPlayRate` cannot work here (its rate
+  seek is reset to 1x by the buffer-feed source's next SEGMENT, a mid-play call freezes the pipeline,
+  and libpf mutes audio off 1x), so a speed session declares PCM audio, `ff::SpeedDecoder` decodes and
+  `speed_audio` time-stretches the sound, and every timestamp to the pipeline is divided by the speed
+  (`player::to_sink_ns`, inverted on the presented-frame callback by `from_sink_ns`).
+  A speed change is a seek to the viewer's own position marked `rate_reload`, and while the speed is not
+  1x every direct-play seek reloads in every mode (`pump::seek_must_reload`). `play_rate_permille` is the
+  viewer's choice and persists across reloads; `applied_rate_permille` is the current pipeline's and is
+  reset by `reset_session`. The feed throttle's run-on reads the applied one (`FeedPace::reference_at`).
 - **Seeks are in-place**, in one of three per-session modes (`player::SeekMode`, chosen by
   `engine::select_seek_mode` in `start_bufferfeed`, the `/tmp/plxnative-seekmode` dev trigger
   `native|segment|reload` wins): the demuxer is `av_seek_frame`d to the target, then on the first
   post-seek keyframe `feed_stream` re-anchors the pipeline — no reload/decoder re-init.
   `Segment` (webOS 4.x) is Kodi-style: pump `flush()`, then `setTimeToDecode` + `sendSegmentEvent`
-  through decompile-derived private offsets. `NativeSeek` (`VP_EXPORTED`, webOS 5+; issue #568) is
+  through decompile-derived private offsets. `NativeSeek` (`VP_EXPORTED`, webOS 5+, issue #568; and a
+  known webOS 3 release on the ACB plane, `engine::old_abi_seek_tested`) is
   LG's PUBLIC `StarfishMediaAPIs::Seek(millis)` (`sink().seek`, `sf_seek_ms`): it flushes itself, so
   the pump does NOT `flush()` and nothing may flush after it (a `flush()` is a seek to 0 and re-creates
   the stale-segment stall); it re-anchors the segment AT the millis passed, so `feed_stream` feeds
@@ -362,7 +416,8 @@ something.
   mode anchors nothing: the private Segment offsets never run on webOS 5+), and latches
   `native_seek_refused` so the reload's fresh session stays `Reload` for the rest of THAT playback;
   a fresh play (`start_bufferfeed_tracked` with no live Engine) clears the latch. `Reload`
-  (old-ABI 3.x, and the fallback of both) is a fresh `Load` per seek. Otherwise the mode is
+  (the fallback of both, every other layout-unknown library, and a set with no video plane) is a
+  fresh `Load` per seek. Otherwise the mode is
   re-selected per session. The evidence is in `docs/webos5-port.md` ("The public `Seek`"). A transcode seek instead
   restarts the encode at `&offset` with a full fresh `Load`, and the PMS half of that restart is a
   FLIGHT, never frame-thread I/O: `route::dispatch_transcode_seek` plans on the frame, a worker
@@ -376,7 +431,7 @@ something.
   `play_pending()` is already false by then), and the app loop's drain starts the Load when it lands
   (`finish_landed_play`). So is the FOREGROUND restore's resume of a parked transcode: the
   foreground machine (`player/lifecycle.rs`) parks in `PreparePending` / `RecoveryPending` (both
-  `awaiting_load`, so playback and the cold drain stay off), and `poll_foreground_flight` — once a
+  `awaiting_load`, so playback and the cold drain stay off), and `poll_foreground_flight` (`player/foreground.rs`) — once a
   frame from `playback_tick`, outside `playback_may_run` — drains the landing with the same
   `land_resume` and carries on into the Load; a refused rebuild re-arms the suspended snapshot, a
   flight that ended without landing releases the machine, and a SECOND OS background while it flies
@@ -424,9 +479,10 @@ something.
   its own PUT as before. It holds itself to the
   subtitle the landing put on screen (`owed.landed_sub`, settled from the session by
   `settle_landing_selection`), so it never replaces a remembered sidecar the restore drew.
-- **App-switch lifecycle** (handled in `app/run.rs`, the frame loop; the machine and the
-  transport-pause contract are `player/lifecycle.rs`, which `app::lifecycle` re-exports; details in
-  the `docs/agent-reference.md` gotchas): OS
+- **App-switch lifecycle** (handled in `app/run.rs`, the frame loop; the machine is
+  `player/lifecycle.rs`, its drivers (`drive_foreground` and the `poll_`/`park_` fns) are
+  `player/foreground.rs`, and the transport-pause contract is `player/transport.rs`; `app::lifecycle`
+  re-exports all three; details in the `docs/agent-reference.md` gotchas): OS
   background suspends the buffer-feed preserving the session. Foreground tracks one exact Load
   attempt at a time, follows reducer-approved superseding or rollback attempts, retries an exact
   failure without repeating route preparation, and issues the clock's native Play only after
@@ -439,8 +495,8 @@ something.
   Load to its own settlement. `DidForegroundSuperseded` is the DID edge that arrives together
   with a launch link that is ending playback (`app/run.rs`, `did_foreground_with_link`): it claims
   nothing, so a parked session stays parked (`Suppressed`) and the link's `Exit` retires it
-  instead of racing a restore. The per-state table is on `ForegroundLifecycle::claim`; add no
-  mutator beside it.
+  instead of racing a restore. The per-state table is on `ForegroundLifecycle::step`; add no
+  event outside `ForegroundEvent`.
   Preserve the suspend/reload pairing if you touch playback.
 
 ## Verifying playback changes

@@ -300,7 +300,8 @@ class Stability(unittest.TestCase):
 
 
 class CaptureSize(unittest.TestCase):
-    """The simulator writes its drawable, which a HiDPI window makes 2x the canvas; the crops assume the canvas."""
+    """The simulator writes its drawable, which a binary that predates the density-aware window (a HiDPI display
+    made it 2x the canvas) still gets wrong; the crops assume the canvas."""
 
     def test_a_retina_capture_is_brought_back_to_the_canvas_not_cropped_to_its_quadrant(self):
         if not shutil.which("ffmpeg"):

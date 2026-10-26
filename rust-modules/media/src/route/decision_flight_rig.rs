@@ -50,6 +50,8 @@ pub(crate) struct FlightRig {
     held: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// How many answers (to anything but an encoder stop) the server has written.
     answered: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// [`FlightRig::begin_attempt`] ran, so the drop gives the report its idle state back.
+    attempt_begun: bool,
 }
 
 /// The longest the server keeps a held answer if nobody releases it, so a test that fails
@@ -186,7 +188,22 @@ impl FlightRig {
             ps.cur_auto_original_watched = true;
             ps.cur_src = (28_000, 1_920, 1_080);
         }
-        FlightRig { _serial: Some(serial), done, server: Some(server), log, refusals, held, answered }
+        FlightRig { _serial: Some(serial), done, server: Some(server), log, refusals, held, answered, attempt_begun: false }
+    }
+
+    /// Begin the report attempt a Play begins ([`crate::player::report::requested`]) and make it the
+    /// playback in force, as the Play's landing does. A rig route installed by `apply_plan` alone
+    /// belongs to no attempt (trace generation 0), and the ledger ignores a note from generation 0
+    /// that the engine was reopened: a test that reads `attempt_origin` / `attempt_ordinal` back
+    /// calls this first. The drop puts the generation and the report's latches back.
+    pub(crate) fn begin_attempt(&mut self, ps: &PlaybackSession) {
+        let generation = crate::player::report::requested(
+            ps,
+            plx_plex::plex::ServerId::UNSET,
+            crate::player::report::AttemptOrigin::Fresh,
+        );
+        ACTIVE_TRACE_GENERATION.store(generation, Ordering::SeqCst);
+        self.attempt_begun = true;
     }
 
     /// The rung the Auto bootstrap chose for a source that never opens (what the unopened-source
@@ -339,6 +356,10 @@ impl FlightRig {
         // A landing a failed test left in the mailbox belongs to no later test.
         drop(take_claim_landing());
         crate::player::claim_hold::clear();
+        if std::mem::take(&mut self.attempt_begun) {
+            ACTIVE_TRACE_GENERATION.store(0, Ordering::SeqCst);
+            crate::player::report::reset_latches_for_test();
+        }
         // The HLS and Auto-Original shapes set the quality preference; the lock is still held (fields drop after this).
         restore_quality(Quality::Original);
     }

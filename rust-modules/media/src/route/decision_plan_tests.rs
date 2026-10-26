@@ -122,6 +122,32 @@ fn a_plan_that_never_resolved_makes_no_claim_about_the_source() {
     );
 }
 
+/// **The failure read-out's actions after the Engine is released.** Try again, Play automatically
+/// and a quality pick all begin with a new playback request of the same item; Back ends the session.
+/// The released Engine's standing error (its cause, with the playhead it left in the unpresented
+/// resume slot) is what they find: a retry resumes from that position, and the new request ends the
+/// standing error, so the read-out does not outlive the attempt it described.
+#[test]
+fn a_new_request_ends_the_standing_error_of_a_released_engine() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let mut meta = plx_data::stores::metadata::MetadataStore::default();
+    note_engine_failure(&mut ps, crate::player::RuntimeFailure::PlaybackInterrupted, 60_000_000_000);
+    assert_eq!(crate::player::state(&ps), crate::player::PlaybackState::Error, "the read-out stands with no Engine");
+    assert_eq!(unpresented_resume_ns(&ps), 60_000_000_000, "and a retry resumes from the playhead");
+
+    assert!(request_play(
+        &mut ps, &mut meta, ServerId::from_raw(0), "film", "/library/parts/2/file.mkv", "h264", "aac", "Film", "", None,
+    ));
+    assert!(engine_failure(&ps).is_none(), "the new attempt ends the standing error");
+    assert_ne!(crate::player::state(&ps), crate::player::PlaybackState::Error);
+
+    cancel_play(&mut ps);
+    let _ = wait_resolve_workers_for_test(std::time::Duration::from_secs(10));
+    reset_player_control_for_test(&ps);
+    reset_session(&mut ps);
+}
+
 /// Issue #266: `apply_plan` is the ONE place a resolve's audio facts enter the session. The
 /// contract's `audio` (what the URL asked for), the outcome (what the decision did with it) and
 /// the carried track (what the pipeline feeds) are installed exactly as the plan built them —
@@ -138,6 +164,8 @@ fn apply_plan_installs_contract_outcome_audio() {
         channels: 8,
         can_normalize_loudness: true,
         immersive: false,
+        sample_rate: 0,
+        bit_depth: 0,
     };
     let audio = plx_plex::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false };
     apply_plan(
@@ -224,7 +252,7 @@ fn remux_review_http_200_refusal_never_gets_media() {
     assert!(plx_net::net::global_init() && crate::curlio::available());
     let (port, done, server) = selection_probe_pms(true, 0);
     let sid = plx_plex::plex::register_for_test("refused-probe", "127.0.0.1", port, "token", "refused-probe-client");
-    let sample = measure_remote_remux(&plx_base::task::OffFrame::for_test(), plx_plex::plex::client_for(sid).unwrap(), "rk", "refused-session", 2, 0, false, 320, plx_plex::plex::AudioEnhancements::NONE).sample;
+    let sample = measure_remote_remux(&plx_base::task::OffFrame::for_test(), plx_plex::plex::client_for(sid).unwrap(), "rk", 0, "refused-session", 2, 0, false, 320, plx_plex::plex::AudioEnhancements::NONE).sample;
     done.send(()).unwrap();
     let requests = server.join().unwrap();
     assert!(sample.is_none());

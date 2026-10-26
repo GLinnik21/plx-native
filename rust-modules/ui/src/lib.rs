@@ -351,6 +351,28 @@ pub mod draw_census {
     }
 
     thread_local! {
+        static GROUNDS: RefCell<Option<Vec<[[f32; 3]; 4]>>> = const { RefCell::new(None) };
+    }
+    /// A recording painter was handed an opaque wash ([`Painter::ambient`](super::Painter::ambient))
+    /// whose four corners, as the GPU would receive them (top-left, top-right, bottom-right,
+    /// bottom-left), are `k`: [`note`] carries a rect and no colour, and a test that asks whether a
+    /// frame's ground is ONE colour (a clear) or a gradient (a shaded pass) needs the corners.
+    pub fn note_ground(k: [[f32; 3]; 4]) {
+        GROUNDS.with(|l| {
+            if let Some(v) = l.borrow_mut().as_mut() {
+                v.push(k);
+            }
+        });
+    }
+    /// Every wash a recording painter is handed while `f` runs, as its four corner colours, in draw
+    /// order.
+    pub fn capture_grounds(f: impl FnOnce()) -> Vec<[[f32; 3]; 4]> {
+        GROUNDS.with(|l| *l.borrow_mut() = Some(Vec::new()));
+        f();
+        GROUNDS.with(|l| l.borrow_mut().take()).unwrap_or_default()
+    }
+
+    thread_local! {
         static TEXT: RefCell<Option<Vec<(String, Rect)>>> = const { RefCell::new(None) };
     }
     /// A recorded text run: WHAT it says and where (`rect` is the run's anchor and measured width).
@@ -1460,8 +1482,10 @@ impl Painter {
     /// a wash cross-fadeable BETWEEN two items — dissolving one item's colours into another's is
     /// still a spring per corner channel; see `AmbientWash`.
     ///
-    /// Always dithered (±1-LSB TPDF noise): an opaque, slow, full-screen gradient bands without it,
-    /// moving or not, and there is no flag to turn it off (`gfx::draw_ambient` says why).
+    /// A gradient is always dithered (±1-LSB TPDF noise): an opaque, slow, full-screen gradient
+    /// bands without it, moving or not, and there is no flag to turn it off (`gfx::draw_ambient`
+    /// says why). Four equal corners are not a gradient: nothing bands, and the renderer draws that
+    /// as a clear of the rect's box, on exact 8-bit codes, with no fragment shaded.
     ///
     /// `resting` is the wash's own at-rest signal ([`AmbientWash::at_rest`]): every spring that
     /// eases it has landed on its target, so `k` is final. A glass over the wash re-takes its
@@ -1475,6 +1499,10 @@ impl Painter {
         let resting = resting && dim == 1.0 && self.wash_rests();
         let k = self.wash_corners(k);
         let drawn = k.map(|c| c.map(|v| v * dim));
+        #[cfg(any(test, feature = "test-support"))]
+        if self.records() {
+            draw_census::note_ground(drawn);
+        }
         if self.declare_as(r, 16, Some(Deferrable::Ground { corners: drawn, ink: ([0.0; 3], [0.0; 2]), resting }), |data| {
             use frame::backdrop::Value;
             dim.record(data);

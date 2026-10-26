@@ -26,9 +26,10 @@
 //!    the HUD reads `Resolving` through [`engineless_flight_outstanding`], and the same drain reaps a
 //!    landing a stale flight left ([`discard_stale_flight_landing`]) because no pump will. So is
 //!    the FOREGROUND restore's resume (the foreground machine, `player::lifecycle`, waits on it the
-//!    way it waits on a pending Load and drains it with the same `land_resume`) and the rollback of
-//!    an Original trial whose Load failed before an Engine existed
-//!    ([`dispatch_engineless_rollback_rebase`], drained by `player::land_engineless_rollback`).
+//!    way it waits on a pending Load, and its driver `player::foreground::poll_foreground_flight`
+//!    drains it with the same `land_resume`) and the rollback of an Original trial whose Load failed
+//!    before an Engine existed ([`dispatch_engineless_rollback_rebase`], drained by
+//!    `player::land_engineless_rollback`).
 //!    The foreground restore's resume may also find an Original TRIAL's transaction (the OS suspended
 //!    mid-trial); see the invariant below on what the flight leaves of the trial.
 //!
@@ -91,7 +92,8 @@ pub(super) enum FlightOwner {
     /// A seek on a transcode: the start transaction its plan reserved, `Preparing(serial)`.
     Start(RouteStartTransaction),
     /// A RECOVERY: the replacement route a failed start is owed (the rollback's rebase after a
-    /// failed Original trial, the HLS fallback of a source that never opened) — and the cold
+    /// failed Original trial, the HLS fallback of a source that never opened, the rebuild that has
+    /// the server convert audio the pipeline refused) — and the cold
     /// resume's rebuild at the saved position, which is the same debt before the first Load: the
     /// start transaction a landed plan left `Prepared`. A failed Engine is still the pump's and
     /// waits for the landing; a cold resume has none. The transaction is `Preparing(serial)` like a
@@ -697,6 +699,32 @@ fn install_recovery_landing(
                 crate::player::log("recovery: prepared PMS route lost its start transaction");
                 return RecoveryVerdict::Refused;
             }
+            RecoveryVerdict::Install
+        }
+        RetranscodeClaimResult::Retranscode(applied) => {
+            // The refused audio's conversion ([`dispatch_native_audio_conversion`]). The same
+            // re-check an accepted claim makes: a route change between the worker's commit and
+            // this drain leaves nothing this install may point at.
+            if !is_worker_ticket_current(&applied.ticket) {
+                stop_discarded_landing(applied);
+                release_rebase_start(owner, ticket);
+                return RecoveryVerdict::Refused;
+            }
+            install_retranscode_outcome(ps, &applied);
+            // Nothing is playing, so the encoder it replaced has nothing left to feed: stop it
+            // now, not after a reload that keeps it on screen.
+            stop_encoder_session(applied.client, applied.superseded);
+            if !prepare_route_start(ticket) {
+                crate::player::log("recovery: prepared PMS route lost its start transaction");
+                return RecoveryVerdict::Refused;
+            }
+            // The reload that follows is the app's own reopen after a failed open, like the other
+            // recovery flights': the ledger must say so, or a failure of the converted route
+            // reads as the first fresh open.
+            crate::player::report::note_attempt_for(
+                playback_trace_generation(),
+                crate::player::report::AttemptOrigin::Recovery,
+            );
             RecoveryVerdict::Install
         }
         // A refused rebuild (the worker answered `Rejected`), a panicked worker, or a kind a

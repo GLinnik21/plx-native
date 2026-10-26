@@ -1,6 +1,11 @@
 //! Profile-scoped recent Search terms, independent of text measurement and rendering.
-//! Session reads are cached by profile and visible-session generation; writes use the session's atomic worker door.
+//! Session reads are cached by profile and visible-session generation. A write is a store job
+//! ([`SaveRecentsReq`], `StoreJob::SaveRecents`): an edit queues the new history in memory and the
+//! Search step that made it emits the job, which the application's runner runs on a worker
+//! ([`finish_save_recents_job`]) through the session's atomic update door.
 //! Query/server resets do not erase history. Snapshots retain their original profile's terms.
+use plx_machine::job::Port;
+use plx_machine::machine::Addr;
 use std::sync::{Arc, Mutex};
 
 /// Current Search layout admits four terms above the raised keyboard; the UI derives its cap.
@@ -61,7 +66,9 @@ pub fn snapshot() -> RecentsSnapshot {
 }
 
 /// Update data and capture the persistence payload under the same profile-cache lock.
-/// Unchanged edits keep the same Arc and neither spawn a worker nor invalidate the frame.
+/// Unchanged edits keep the same Arc and neither owe a write nor invalidate the frame. `submit`
+/// is called once when a write is owed: the edit changed the history, or its queue was full and a
+/// drain must be retried.
 fn edit(profile_generation: u32, change: impl FnOnce(&[String]) -> Option<Vec<String>>, submit: impl FnOnce()) -> bool {
     let mut retry_drain = false;
     let changed = with_store(|s| {
@@ -85,11 +92,21 @@ fn edit(profile_generation: u32, change: impl FnOnce(&[String]) -> Option<Vec<St
     changed
 }
 
-pub fn remember(profile_generation: u32, term: &str) -> bool {
-    remember_with(profile_generation, term, submit)
+/// What an edit did to the history and whether it owes a write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Edit {
+    /// The history the next snapshot shows is different.
+    pub changed: bool,
+    /// The queued history is waiting for a write: the edit changed it, or the queue was full and a
+    /// drain has to be asked for again. The caller emits the [`SaveRecentsReq`] job for it.
+    pub save: bool,
 }
 
-fn submit() { let _ = plx_base::task::spawn_small("recents-save", flush); }
+pub fn remember(profile_generation: u32, term: &str) -> Edit {
+    let mut save = false;
+    let changed = remember_with(profile_generation, term, || save = true);
+    Edit { changed, save }
+}
 
 fn remember_with(profile_generation: u32, term: &str, submit: impl FnOnce()) -> bool {
     let term = term.trim();
@@ -102,8 +119,10 @@ fn remember_with(profile_generation: u32, term: &str, submit: impl FnOnce()) -> 
     }, submit)
 }
 
-pub fn clear(profile_generation: u32) -> bool {
-    clear_with(profile_generation, submit)
+pub fn clear(profile_generation: u32) -> Edit {
+    let mut save = false;
+    let changed = clear_with(profile_generation, || save = true);
+    Edit { changed, save }
 }
 
 fn clear_with(profile_generation: u32, submit: impl FnOnce()) -> bool {
@@ -215,6 +234,54 @@ fn merged(
     Some(next)
 }
 
+
+/// The one request a recents write is: drain [`PENDING`] into the session file. It carries nothing
+/// because the queue is what is written, and a profile's newest queued history replaces its older
+/// one, so a request that finds the queue already drained by an earlier one writes nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SaveRecentsReq;
+
+/// Where a recents write's answer goes: the adapter it was made from. The write answers with
+/// nothing (the history it writes was published when the edit was made); a REFUSED write is
+/// remembered on the adapter, so the next edit asks for a drain again instead of leaving the queue
+/// to wait for a change that may never come ([`SearchAdapter::take_recents_refused`]). An adapter a
+/// `SearchCmd::Reset` replaced forgets it; the queue is a process static, so the next edit that
+/// changes the history still drains it.
+#[derive(Clone)]
+pub struct SaveRecentsPort {
+    adapter: Arc<crate::search::SearchAdapter>,
+}
+
+impl SaveRecentsPort {
+    pub(crate) fn to(adapter: &Arc<crate::search::SearchAdapter>) -> Self {
+        Self { adapter: Arc::clone(adapter) }
+    }
+}
+
+impl PartialEq for SaveRecentsPort {
+    fn eq(&self, other: &Self) -> bool { Arc::ptr_eq(&self.adapter, &other.adapter) }
+}
+
+impl std::fmt::Debug for SaveRecentsPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SaveRecentsPort({:p})", Arc::as_ptr(&self.adapter))
+    }
+}
+
+impl Port<()> for SaveRecentsPort {
+    fn done(&self, _addr: Addr, (): ()) {}
+
+    fn refused(&self, _addr: Addr) {
+        self.adapter.recents_refused.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Run a recents write: the body of the worker the runner starts for a
+/// [`StoreJob::SaveRecents`](crate::stores::StoreJob::SaveRecents). IO only, and it answers once.
+pub fn finish_save_recents_job(port: &SaveRecentsPort, addr: Addr, _req: SaveRecentsReq) {
+    flush();
+    port.done(addr, ());
+}
 
 fn flush() {
     plx_plex::plex::session::update(|s| {
@@ -583,6 +650,103 @@ mod tests {
             "a blank is not a term"
         );
         assert_eq!(sanitize(Vec::new()), Vec::<String>::new());
+    }
+
+
+    // ---- the write is a store job: the Search step that edited the history emits it ----
+
+    use crate::search::test_support::Owner;
+    use crate::stores::search::SearchCmd;
+    use crate::stores::{StoreId, StoreJob};
+    use plx_machine::job::Job;
+    use plx_machine::machine::{MachineId, RequestId};
+
+    fn save_addr(seq: u32) -> Addr {
+        Addr { to: MachineId::Store(StoreId::Search.ord()), req: RequestId(seq) }
+    }
+
+    fn remember_cmd(generation: u32, term: &str) -> SearchCmd {
+        SearchCmd::RememberRecent { profile_generation: generation, term: term.into() }
+    }
+
+    /// The write each edit that changed the history owes is ONE job on the outbox, addressed by a
+    /// sequence of its own; an edit that changed nothing owes none, and neither does one aimed at a
+    /// profile that is no longer the active one.
+    #[test]
+    fn an_edit_owes_one_save_job_and_a_noop_owes_none() {
+        let _guard = plx_base::testlock::serial();
+        let session = plx_plex::plex::session::TempSession::new("recents-save-job");
+        let _caches = ClearCaches;
+        session.watching("job-a");
+        let mut owner = Owner::default();
+        let generation = snapshot().generation();
+        let save = |n: u32, owner: &Owner| StoreJob::SaveRecents(
+            Job { addr: save_addr(n), req: SaveRecentsReq }, SaveRecentsPort::to(&owner.adapter));
+
+        assert!(owner.state.run(&owner.adapter, remember_cmd(generation, "alpha")));
+        plx_machine::assert_fx!(std::mem::take(&mut owner.state.jobs), [save(1, &owner)]);
+
+        assert!(!owner.state.run(&owner.adapter, remember_cmd(generation, " alpha ")), "the term is already first");
+        assert!(!owner.state.run(&owner.adapter, remember_cmd(generation, "bad\0term")));
+        assert!(!owner.state.run(&owner.adapter, remember_cmd(generation.wrapping_add(1), "stale")));
+        assert!(owner.state.jobs.is_empty(), "a no-op edit owes no write");
+
+        assert!(owner.state.run(&owner.adapter, SearchCmd::ClearRecents { profile_generation: generation }));
+        plx_machine::assert_fx!(std::mem::take(&mut owner.state.jobs), [save(2, &owner)]);
+        assert!(!owner.state.run(&owner.adapter, SearchCmd::ClearRecents { profile_generation: generation }));
+        assert!(owner.state.jobs.is_empty(), "clearing an empty history owes no write");
+    }
+
+    /// The job's worker writes what the edits queued, and answers once: the history is in the
+    /// session file and the queue is empty.
+    #[test]
+    fn the_save_job_drains_the_queued_history_into_the_session() {
+        let _guard = plx_base::testlock::serial();
+        let session = plx_plex::plex::session::TempSession::new("recents-save-run");
+        let _caches = ClearCaches;
+        session.watching("job-b");
+        let mut owner = Owner::default();
+        let generation = snapshot().generation();
+        assert!(owner.state.run(&owner.adapter, remember_cmd(generation, "alpha")));
+        assert!(owner.state.run(&owner.adapter, remember_cmd(generation, "beta")));
+        let mut jobs = std::mem::take(&mut owner.state.jobs);
+        assert_eq!(jobs.len(), 2, "one write per edit");
+        assert!(plx_plex::plex::session::peek().recents_for("job-b").is_empty(), "nothing is written until the job runs");
+
+        let StoreJob::SaveRecents(job, port) = jobs.remove(0) else { panic!("not a save job") };
+        finish_save_recents_job(&port, job.addr, job.req);
+        assert_eq!(plx_plex::plex::session::peek().recents_for("job-b"), &["beta", "alpha"]);
+        assert!(PENDING.lock().unwrap().is_empty(), "the queue was drained");
+
+        // the second write finds nothing queued and writes nothing
+        let StoreJob::SaveRecents(job, port) = jobs.remove(0) else { panic!("not a save job") };
+        finish_save_recents_job(&port, job.addr, job.req);
+        assert_eq!(plx_plex::plex::session::peek().recents_for("job-b"), &["beta", "alpha"]);
+    }
+
+    /// A refused write leaves its queue waiting, and the store asks again at the next edit, even one
+    /// that changes nothing; that retry is asked ONCE, not at every edit after it.
+    #[test]
+    fn a_refused_save_is_asked_again_at_the_next_edit_once() {
+        let _guard = plx_base::testlock::serial();
+        let session = plx_plex::plex::session::TempSession::new("recents-save-refused");
+        let _caches = ClearCaches;
+        session.watching("job-c");
+        let mut owner = Owner::default();
+        let generation = snapshot().generation();
+        assert!(owner.state.run(&owner.adapter, remember_cmd(generation, "alpha")));
+        let mut jobs = std::mem::take(&mut owner.state.jobs);
+        let StoreJob::SaveRecents(job, port) = jobs.remove(0) else { panic!("not a save job") };
+
+        port.refused(job.addr);
+        assert!(owner.state.jobs.is_empty(), "a refusal emits nothing by itself: the store is not stepped");
+        assert!(!owner.state.run(&owner.adapter, remember_cmd(generation, "alpha")), "the edit changed nothing");
+        let StoreJob::SaveRecents(retry, _) = owner.state.jobs.remove(0) else { panic!("not a save job") };
+        assert_eq!(retry.addr, save_addr(2), "the retry is a new write");
+        assert!(owner.state.jobs.is_empty());
+
+        assert!(!owner.state.run(&owner.adapter, remember_cmd(generation, "alpha")));
+        assert!(owner.state.jobs.is_empty(), "and it is asked once, not at every edit after it");
     }
 
 }

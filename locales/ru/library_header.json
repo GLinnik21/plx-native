@@ -1,0 +1,7 @@
+{
+  "library_header.collections": "Коллекции",
+  "library_header.recommended": "Рекомендации",
+  "library_header.sort_filter": "Порядок и фильтры",
+  "library_header.filtered_of": "{shown} из {total}",
+  "library_header.show": "Показать"
+}

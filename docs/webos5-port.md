@@ -360,6 +360,16 @@ SEEKDONE: ASYNC_DONE with the pending-seek flag set -> app callback type 25
 - **Not determined.** Whether LG's decoder or sink re-emits HDR info on the first post-flush frame;
   the meaning of one more `Pipeline::seek` precondition field; everything on webOS 5+.
 
+**On webOS 3 (device, not decompiled).** The old-ABI library exports the same `Seek` symbol, and the
+app uses it there too (`engine::old_abi_seek_tested`, a known release 3 only). Checked on an LG
+OLED55B7V-Z, platform release 3.9.3, `feed abi: cow`, in Developer Mode: 80 direct-play seeks (53 forced
+with `plxnative-seekmode`, 27 chosen by `old_abi_seek_tested`) over an
+MP4 (H.264 1080p, AAC 5.1), an MKV (4K HDR10 HEVC Main 10, E-AC-3 Atmos) and an MKV (1080p HEVC, E-AC-3,
+SRT subtitles on). Every `Seek` returned 1 and anchored; no downgrade, stuck-seek retry, BufferFull or
+`Playing error`, and playback ran on for up to 197 s after a seek. The 3.9.3 `seekSpi` chain itself was
+not decompiled. Other 3.x releases (3.4 included) report release 3 and so use `Seek` too, untested; the
+refusal and stuck-seek nets apply there.
+
 ## 5. Things a webOS 5 port must NOT forget
 
 - **The event-type numbering shifts by 2** between webOS 4 and 5 for every `StarfishMediaAPIs`

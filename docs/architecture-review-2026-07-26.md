@@ -326,6 +326,8 @@ Do this first: every later wave's on-device verification is worthless until the 
     highest-leverage item in the whole review.
 18. `Media[]` version picker: add the spec's decision fields and replace `first_part()` with
     `pick_version() -> (mediaIndex, partIndex, &MediaPart)` threaded through `TranscodeSpec`.
+    *Done (Play Version):* `Metadata::media_version(Option<MediaId>) -> Option<(usize, &Media)>`
+    replaced `first_part()`/`primary_media()`, and `TranscodeSpec::media_index` carries the index.
 19. Extract `HudState`+`ScrubMachine` into `ui/player_hud.rs`; extract `triggers.rs` with one table
     so `DIAG` derives from the catalog; add the `Route::Detail` pointer arms.
 20. Doc truth-up pass: the four drifts in §2.7, plus delete the dead `focus` parameter.

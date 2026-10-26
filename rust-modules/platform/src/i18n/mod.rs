@@ -142,8 +142,8 @@ impl LocaleContext {
     }
     /// Day and month with no year, for release captions: "12 Mar" / "12 March" in English,
     /// "12 de marzo" in Spanish, "12 mars" / "12 janv." in French, "12 marzo" in Italian,
-    /// "12 de março" in European Portuguese, "12. März" in German, "március 12." in Hungarian, and in Belarusian the genitive
-    /// after the day ("12 сакавіка") with the abbreviated form for medium. Hand-written tables, not
+    /// "12 de março" in European Portuguese, "12. März" in German, "március 12." in Hungarian, and in Belarusian and Russian the genitive
+    /// after the day ("12 сакавіка", "12 марта") with the abbreviated form for medium. Hand-written tables, not
     /// ICU month data, so no name data is compiled in for the shipped languages. The year is
     /// unknown, so 29 February is a valid day; a day the calendar lacks returns `None`.
     pub fn month_day(&self, month: u8, day: u8, width: MonthWidth) -> Option<String> {
@@ -165,6 +165,8 @@ impl LocaleContext {
             (Language::Es, MonthWidth::Long) => (&ES_LONG, " de "),
             (Language::Be, MonthWidth::Medium) => (&BE_MEDIUM, " "),
             (Language::Be, MonthWidth::Long) => (&BE_GENITIVE, " "),
+            (Language::Ru, MonthWidth::Medium) => (&RU_MEDIUM, " "),
+            (Language::Ru, MonthWidth::Long) => (&RU_GENITIVE, " "),
             (Language::Fr, MonthWidth::Medium) => (&FR_MEDIUM, " "),
             (Language::Fr, MonthWidth::Long) => (&FR_LONG, " "),
             (Language::It, MonthWidth::Medium) => (&IT_MEDIUM, " "),
@@ -185,6 +187,15 @@ pub enum MonthWidth {
     Medium,
     Long,
 }
+
+/// CLDR `ru` format months: genitive after a day, including abbreviated "мая".
+const RU_MEDIUM: [&str; 12] = [
+    "янв.", "февр.", "мар.", "апр.", "мая", "июн.", "июл.", "авг.", "сент.", "окт.", "нояб.", "дек.",
+];
+const RU_GENITIVE: [&str; 12] = [
+    "января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября",
+    "ноября", "декабря",
+];
 
 /// CLDR `hu` abbreviated format months, with their dots.
 const HU_MEDIUM: [&str; 12] =

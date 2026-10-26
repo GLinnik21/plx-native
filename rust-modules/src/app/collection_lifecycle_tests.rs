@@ -9,7 +9,7 @@ use plx_data::stores::collection::CollectionCmd;
 fn open(store: &mut plx_data::stores::collection::CollectionStore, rk: &str, tag: i64) {
     store.run(CollectionCmd::Open { target: CollectionTarget { id: plx_plex::plex::collections::CollectionRef {
         sid: ServerId::UNSET, rk: rk.into(), sec: 8, tag, name: "Fixture Collection".into() },
-        want: plx_data::collection::PAGE_SIZE } });
+        want: plx_data::collection::PAGE_SIZE } }, &plx_plex::plex::ClientKeys::default());
 }
 
 #[test]
@@ -60,7 +60,7 @@ fn a_profile_or_server_reset_drops_the_page_and_its_in_flight_answer() {
     open(&mut store, "50001", 77);
     let old = store.generation_for_test();
     let old_adapter = store.adapter_for_test();
-    assert!(store.run(CollectionCmd::Reset), "a reset with a page open is a change");
+    assert!(store.run(CollectionCmd::Reset, &plx_plex::plex::ClientKeys::default()), "a reset with a page open is a change");
     assert!(store.view().current().is_none(), "the previous identity's collection is gone");
     open(&mut store, "50001", 77);
     assert!(store.generation_for_test() > old, "the reopened page is a new generation");

@@ -110,6 +110,10 @@ The nearest thing to a payoff today is a *whole-screen* snapshot for `ui::nav`'s
 > genuinely COLD leg was never obtained — the set was warm and busy throughout, and it exposes no
 > temperature sensor and no GPU clock anywhere in sysfs. What can be said is that a set this warm
 > shows no decay and holds a clean 60. See `glass-hardware-budget.md` §7.
+> (2026-10-24: the set does have a temperature sensor, only not in sysfs and with no `thermal_zone`:
+> LG's power manager reports the SoC temperature in `/proc/lg/pm/temperature` (39-61 °C on
+> 2026-10-24). The GPU clock is known too, fixed at 672 MHz. See
+> `.agents/skills/profile-tv/SKILL.md`, "Mali T820 facts".)
 
 ### You may be right. The evidence does not currently say either way, for three separate reasons.
 
@@ -182,7 +186,7 @@ That last row is worth checking first and costs one log line: read `pres=` besid
 
 **A box fan across the vents during a repeat of leg A is a legitimate instrument.** If the knee disappears, it is thermal and the discussion is over.
 
-If you want a real thermometer afterwards, the device exposes no `thermal_zone`, no `cpufreq`, and a Mali runtime-PM node reporting `unsupported` — but frequency is measurable by its effect. A fixed-iteration CPU kernel timed against `SDL_GetPerformanceCounter` (`CLOCK_MONOTONIC`, frequency-independent, so rising ms **is** a falling clock) plus a fixed GPU pass bracketed by `gfx::gl_finish()` — the bracket already exists verbatim at `ui/profile.rs:32-44` — sampled at 1 Hz, is ~40 lines behind a new DIAG trigger. Build it as a standalone probe in the shape of `tools/sockprobe.c` / `tools/threadprobe.c` (`Makefile:253-263`) if you'd rather not touch the app.
+If you want a real thermometer afterwards, the device exposes no `thermal_zone`, no `cpufreq`, and a Mali runtime-PM node reporting `unsupported` — but frequency is measurable by its effect. A fixed-iteration CPU kernel timed against `SDL_GetPerformanceCounter` (`CLOCK_MONOTONIC`, frequency-independent, so rising ms **is** a falling clock) plus a fixed GPU pass bracketed by `gfx::gl_finish()` — the bracket already exists verbatim at `ui/profile.rs:32-44` — sampled at 1 Hz, is ~40 lines behind a new DIAG trigger. Build it as a standalone probe in the shape of `tools/sockprobe.c` / `tools/threadprobe.c` (`Makefile:253-263`) if you'd rather not touch the app. (2026-10-24: a real thermometer already exists, `/proc/lg/pm/temperature` (39-61 °C on 2026-10-24), and `/proc/lg/pm/frequency` reports the current CPU frequency (LG's power manager bounds it to 600-1008 MHz in `/proc/lg/pm/tune/`), so the CPU half of that probe can read it directly. The GPU half cannot see a clock change, because the GPU clock is in fact fixed at 672 MHz — see `.agents/skills/profile-tv/SKILL.md`, "Mali T820 facts".)
 
 ### The harness cannot answer this today, and the fix is ~30 lines of Python
 

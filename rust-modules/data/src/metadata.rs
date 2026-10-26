@@ -158,9 +158,11 @@ pub struct MetadataState {
     alt: AltStore,
     /// The IO this owner has asked the application to start and the application has not yet taken
     /// (`MetadataStore::take_jobs`): one [`crate::stores::StoreJob::Detail`] per accepted detail
-    /// request. The owner never starts the work itself, so no thread, clock or network read happens
-    /// in the step that asks. A job taken is a job owed to its runner: the application's `Bridge`
-    /// starts each one in the same call that stepped the store (`app::adapters::stores`).
+    /// request, one [`crate::stores::StoreJob::MetaSeason`] per season switch and one
+    /// [`crate::stores::StoreJob::MetaEpisodes`] per episode-page window. The owner never starts
+    /// the work itself, so no thread, clock or network read happens in the step that asks. A job
+    /// taken is a job owed to its runner: the application's `Bridge` starts each one in the same
+    /// call that stepped the store (`app::adapters::stores`).
     pub(crate) jobs: Vec<crate::stores::StoreJob>,
 }
 
@@ -827,8 +829,13 @@ pub struct Stream {
     /// is** — `"dolby digital plus + dolby atmos"` (probed live 2026-08-21); on the video track it
     /// is `"main 10"`. See [`Stream::has_atmos`].
     pub profile: String,
-    /// Video track only: bits per component (10 for Main 10); 0 = not said.
+    /// Bits per component on a video track (10 for Main 10), bits per sample on an audio track
+    /// (PMS sends `bitDepth` on both, e.g. 24 on a FLAC); 0 = not said.
     pub bit_depth: i64,
+    /// Audio track only: PMS `samplingRate` in Hz; 0 = not said. What the PCM Load declares for
+    /// an app-decoded FLAC. Same round-trip rule as `language_tag`: absent stays absent.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub sampling_rate: i64,
     /// Video track only: chroma subsampling as PMS spells it, e.g. `"4:2:0"`.
     pub chroma: String,
     pub title: String,
@@ -864,6 +871,10 @@ pub struct Stream {
 
 fn is_false(b: &bool) -> bool {
     !*b
+}
+
+fn is_zero(n: &i64) -> bool {
+    *n == 0
 }
 
 impl Stream {
@@ -946,6 +957,9 @@ pub struct Episode {
     pub rating: String,
     pub vcodec: String, // Media[0].videoCodec (for the direct-play/transcode decision)
     pub acodec: String, // Media[0].audioCodec
+    /// Every version, when the episode has more than one (`pms::versions_of`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub versions: Vec<crate::pms::MediaVersion>,
 }
 
 /// One slot per [`Spot`] section id. Section 6 is extras, 7 the collection shelf. Do not shrink
@@ -1610,9 +1624,9 @@ pub struct Detail {
     pub acodec: String, // Media[0].audioCodec
     #[serde(with = "record::float_bits")]
     pub video_fps: f64, // video Stream frameRate (0 = unknown); feeds the Load esInfo
-    // ---- the PRIMARY version's technical fields (plex::Metadata::primary_media = Media[0], NOT a
-    // best-of pick — a multi-version item has more, and choosing among them needs a version picker
-    // that does not exist yet). For a SHOW these are borrowed from its first episode, like the
+    // ---- the PRIMARY version's technical fields (plex::Metadata::media_version(None) = Media[0], NOT a
+    // best-of pick — a multi-version item has more, and the user chooses among them in the Play Version
+    // picker, by `MediaId`). For a SHOW these are borrowed from its first episode, like the
     // About footer's audio/subtitle lists. `bitrate`/`width`/`height` are unused by the UI today
     // and carried for the video-quality ladder ("26.1 Mbps 4K (Original)").
     pub video_resolution: String, // "4k" | "1080" | "720" | "sd" — the hero's media badge
@@ -1709,6 +1723,10 @@ pub struct Detail {
     /// Rating key of the picker winner inside [`Self::extras`]. Empty when there is none.
     #[serde(default)]
     pub trailer_rk: String,
+    /// Every version of a movie or episode that has more than one (`pms::versions_of`), for the
+    /// hero's Play Version disc; empty for a single-version item and for a show or season.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub versions: Vec<crate::pms::MediaVersion>,
 }
 
 impl Detail {
@@ -2202,10 +2220,13 @@ pub fn trailer_now_playing(
 
 // ---- fetches (all via the typed plx_plex::plex client; serde DTOs, no Value scraping) ----
 //
-// Every one of them takes the `ServerId` rather than reaching for `plex::client()`: they run on the
-// detail/season workers, and the house rule is that a worker reads no statics (`pms::parse_item`
-// carries the same note). It is also what stamps the row — an item fetched from slot 1 must be
-// recorded as slot 1's whatever `client()` answers with by the time the fetch returns.
+// None of them reaches for `plex::client()`: they run on the detail/season workers, and the house
+// rule is that a worker reads no statics (`pms::parse_item` carries the same note). The detail
+// chain's fetches are handed the `&'static Client` the runner resolved when it admitted the job,
+// plus the `ServerId` where they stamp the row (`fetch_detail`, `fetch_related`); the season
+// worker's (`fetch_episodes`, `fetch_episode_page`) are handed the one the runner resolved when it
+// started that job. Either way the row is stamped with its slot — an item fetched from slot 1
+// must be recorded as slot 1's whatever `client()` answers with by the time the fetch returns.
 /// The stand-in handle, read ONCE. The trigger surface is boot state, and [`Detail::source`] is
 /// reached from a draw — a `stat` per frame inside one is exactly what `crate::dev`'s doc forbids.
 /// Compiled out with the `devtriggers` feature, like every other trigger, so a release build folds
@@ -2228,9 +2249,9 @@ fn dev_source() -> Option<&'static str> {
     None
 }
 
-fn fetch_detail(sid: plx_plex::plex::ServerId, rk: &str) -> Option<(Detail, String)> {
-    let it = plx_plex::plex::client_for(sid)?.metadata(rk)?;
-    let media0 = it.primary_media();
+fn fetch_detail(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::ServerId, rk: &str) -> Option<(Detail, String)> {
+    let it = client.metadata(rk)?;
+    let media0 = it.media_version(None).map(|(_, m)| m);
     // one read, both fields (see `Detail::blur`)
     let blur = it.ultra_blur_colors.and_then(|u| u.corners());
     let mut d = Detail {
@@ -2259,7 +2280,7 @@ fn fetch_detail(sid: plx_plex::plex::ServerId, rk: &str) -> Option<(Detail, Stri
             it.view_count > 0
         },
         // empty for a show (no Media on the show container)
-        part: it.first_part().map(|p| p.key.clone()).unwrap_or_default(),
+        part: it.default_part().map(|p| p.key.clone()).unwrap_or_default(),
         vcodec: media0.map(|m| m.video_codec.clone()).unwrap_or_default(),
         acodec: media0.map(|m| m.audio_codec.clone()).unwrap_or_default(),
         video_fps: 0.0, // set from the video Stream by parse_streams below
@@ -2317,6 +2338,7 @@ fn fetch_detail(sid: plx_plex::plex::ServerId, rk: &str) -> Option<(Detail, Stri
         ratings: convert_ratings(&it),
         extras: Vec::new(),
         trailer_rk: String::new(),
+        versions: if it.kind == "movie" || it.kind == "episode" { crate::pms::versions_of(&it) } else { Vec::new() },
     };
     // audio/subtitle streams (movies carry Media/Part/Stream; a show does not — its
     // episodes do, so load_detail backfills a show's streams from its first episode).
@@ -2416,6 +2438,7 @@ fn convert_streams(streams: &[plx_plex::plex::Stream]) -> Streams {
             bitrate: s.bitrate,
             profile: s.profile.clone(),
             bit_depth: s.bit_depth,
+            sampling_rate: s.sampling_rate,
             chroma: s.chroma_subsampling.clone(),
             sdh: s.hearing_impaired != 0,
             ad: s.audio_description != 0 || s.title.to_lowercase().contains("descri"),
@@ -2524,10 +2547,10 @@ mod convert_streams_tests {
 
 /// parse an item's Media[0].Part[0].Stream[] into d.audio / d.subs (the About footer), plus that
 /// same version's technical fields (resolution/size/bitrate — the hero's media badge). Both ride
-/// the ONE version (see `plex::Metadata::primary_media`), and both are borrowed from a show's
+/// the ONE version (see `plex::Metadata::media_version`), and both are borrowed from a show's
 /// first episode by the same call in `fetch_item_streams`, so they can't describe different files.
 fn parse_streams(it: &plx_plex::plex::Metadata, d: &mut Detail) {
-    if let Some(m) = it.primary_media() {
+    if let Some(m) = it.media_version(None).map(|(_, m)| m) {
         d.video_resolution = m.video_resolution.clone();
         d.width = m.width;
         d.height = m.height;
@@ -2535,7 +2558,7 @@ fn parse_streams(it: &plx_plex::plex::Metadata, d: &mut Detail) {
         d.container = m.container.clone();
         d.aspect_ratio = m.aspect_ratio;
     }
-    if let Some(p) = it.first_part() {
+    if let Some(p) = it.default_part() {
         d.file = p.file.clone();
         d.size = p.size;
         // The PART's container wins where it has one — a version can hold parts in different
@@ -2681,20 +2704,74 @@ fn cached_playing(state: &MetadataState, sid: plx_plex::plex::ServerId, rk: &str
         })
 }
 
-/// `sid` names the server `rk` is a key on. It runs on the resolve worker, so the server must
-/// arrive by value: `client_opt()` here would fetch whichever server is CURRENT, and a ratingKey
-/// that also exists there would come back with a different film's stream list.
-pub fn fetch_playing_item(sid: plx_plex::plex::ServerId, rk: &str) -> Option<PlayingItem> {
+/// `client` is the caller's own client for `sid`, the server `rk` is a key on. It runs on the
+/// resolve worker, so the server must arrive by value: `client_opt()` here would fetch whichever
+/// server is CURRENT, and a ratingKey that also exists there would come back with a different
+/// film's stream list. `sid` rides along for the identity the parsed rows carry.
+///
+/// `want` is the version the viewer picked (`None`: the default). The store is built from THAT
+/// version's part, and the [`PlayedVersion`] beside it names the part key, codecs and
+/// `mediaIndex` the route must use with it, so no reader mixes version 0's part with version N's
+/// streams. A picked version the answer no longer lists falls back to the default with no
+/// `PlayedVersion`, and the caller logs it.
+pub fn fetch_playing_item(
+    client: &'static plx_plex::plex::Client,
+    sid: plx_plex::plex::ServerId,
+    rk: &str,
+    want: Option<plx_plex::plex::MediaId>,
+) -> Option<(PlayingItem, Option<PlayedVersion>)> {
     if rk.is_empty() {
         return None;
     }
-    let it = plx_plex::plex::client_for(sid).and_then(|c| c.metadata(rk));
-    Some(playing_item_from(sid, rk, it.as_ref()))
+    let it = client.metadata(rk);
+    Some(playing_version_from(sid, rk, it.as_ref(), want))
 }
 
-/// The conversion half of [`fetch_playing_item`], pure so the parse is testable without a server:
-/// the played item's streams, markers, chapters, frame size and type, given the server's item.
+/// The version a play resolved to: its position in `Media[]` (the transcoder's `mediaIndex`), its
+/// identity and the part and codecs a play of it is built from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlayedVersion {
+    pub index: usize,
+    pub id: plx_plex::plex::MediaId,
+    pub part: String,
+    pub vcodec: String,
+    pub acodec: String,
+}
+
+/// [`fetch_playing_item`]'s pure half.
+pub fn playing_version_from(
+    sid: plx_plex::plex::ServerId,
+    rk: &str,
+    it: Option<&plx_plex::plex::Metadata>,
+    want: Option<plx_plex::plex::MediaId>,
+) -> (PlayingItem, Option<PlayedVersion>) {
+    let picked = want.and_then(|id| it.and_then(|it| it.media_version(Some(id))));
+    let media = picked.map(|(_, m)| m).or_else(|| it.and_then(|it| it.media_version(None)).map(|(_, m)| m));
+    let played = picked.map(|(index, m)| PlayedVersion {
+        index,
+        id: m.id,
+        part: m.part.first().map(|p| p.key.clone()).unwrap_or_default(),
+        vcodec: m.video_codec.clone(),
+        acodec: m.audio_codec.clone(),
+    });
+    (playing_item_of(sid, rk, it, media), played)
+}
+
+/// The conversion half of [`fetch_playing_item`] for the default version, pure so the parse is
+/// testable without a server.
+#[cfg(test)]
 fn playing_item_from(sid: plx_plex::plex::ServerId, rk: &str, it: Option<&plx_plex::plex::Metadata>) -> PlayingItem {
+    playing_version_from(sid, rk, it, None).0
+}
+
+/// The played item's streams, markers, chapters, frame size and type, given the server's item
+/// and the version being played.
+fn playing_item_of(
+    sid: plx_plex::plex::ServerId,
+    rk: &str,
+    it: Option<&plx_plex::plex::Metadata>,
+    media: Option<&plx_plex::plex::Media>,
+) -> PlayingItem {
     // Markers and chapters hang off the ITEM, streams off its first Part — so a part-less response
     // still yields both of those instead of discarding all three. `Client::metadata` already sends
     // `includeChapters=1` (plex/library.rs), so the Chapter[] is on the wire either way: taking it
@@ -2707,21 +2784,17 @@ fn playing_item_from(sid: plx_plex::plex::ServerId, rk: &str, it: Option<&plx_pl
         .as_ref()
         .map(|it| convert_chapters(&it.chapter))
         .unwrap_or_default();
-    let st = it
-        .as_ref()
-        .and_then(|it| it.first_part().map(|p| convert_streams(&p.stream)))
+    let st = media
+        .and_then(|m| m.part.first().map(|p| convert_streams(&p.stream)))
         .unwrap_or_default();
     let (audio, subs, video_fps, dovi, hdr) = (st.audio, st.subs, st.fps, st.dovi, st.hdr);
     let show_rk = it
         .as_ref()
         .map(|it| it.grandparent_rating_key.clone())
         .unwrap_or_default();
-    // the frame size rides the same PRIMARY version the streams come from (route.rs's
+    // the frame size rides the same version the streams come from (route.rs's
     // direct-play gate tests it against the device bound — see the field doc)
-    let (width, height, bitrate) = it
-        .as_ref()
-        .and_then(|it| it.primary_media().map(|m| (m.width, m.height, m.bitrate)))
-        .unwrap_or((0, 0, 0));
+    let (width, height, bitrate) = media.map_or((0, 0, 0), |m| (m.width, m.height, m.bitrate));
     let kind = it.map(|it| it.kind.clone()).unwrap_or_default();
     PlayingItem {
         sid,
@@ -3186,21 +3259,21 @@ mod lang_matches_tests {
 
 /// fetch one item's full metadata and parse its streams into `d` — used to borrow a
 /// show's first-episode audio/subtitle tracks (the show container carries none).
-fn fetch_item_streams(sid: plx_plex::plex::ServerId, rk: &str, d: &mut Detail) {
-    if let Some(it) = plx_plex::plex::client_for(sid).and_then(|c| c.metadata(rk)) {
+fn fetch_item_streams(client: &'static plx_plex::plex::Client, rk: &str, d: &mut Detail) {
+    if let Some(it) = client.metadata(rk) {
         parse_streams(&it, d);
     }
 }
 
-fn fetch_seasons(sid: plx_plex::plex::ServerId, rk: &str) -> Vec<Season> {
-    let mc = match plx_plex::plex::client_for(sid).and_then(|c| c.children(rk)) {
+fn fetch_seasons(client: &'static plx_plex::plex::Client, rk: &str) -> Vec<Season> {
+    let mc = match client.children(rk) {
         Some(m) => m,
         None => {
             // The empty Vec is the deliberate degrade (see `fetch_episodes`'s note), but by the
             // time `fetch_full` prints `seasons=` the refusal and a show that genuinely has no
             // seasons are the same zero — so the refusal has to say so HERE, or the log records a
             // failed GET as a fact about the library.
-            plx_base::eventlog::log(&format!("detail: rk={rk} — no season list (server unresolved, or it refused); the seasons= below is that, not a count"));
+            plx_base::eventlog::log(&format!("detail: rk={rk} — no season list (the server refused or did not answer); the seasons= below is that, not a count"));
             return Vec::new();
         }
     };
@@ -3230,8 +3303,11 @@ fn fetch_seasons(sid: plx_plex::plex::ServerId, rk: &str) -> Vec<Season> {
 /// Page 0 of a season only: a short season is that one request and a complete list (which encodes
 /// as the plain array it always did); a long one lands with its other pages as holes, and
 /// [`MetadataCmd::WantEpisodes`] fetches them as the screen reaches them.
-fn fetch_episodes(sid: plx_plex::plex::ServerId, season_rk: &str) -> Option<EpisodeList> {
-    let mc = plx_plex::plex::client_for(sid)?.children_paged(season_rk, 0, EPISODE_PAGE as i64)?;
+///
+/// `client` is the one the runner resolved for the job (`StoreRunner`), or the one the detail chain
+/// was handed: this read asks no registry.
+fn fetch_episodes(client: &'static plx_plex::plex::Client, season_rk: &str) -> Option<EpisodeList> {
+    let mc = client.children_paged(season_rk, 0, EPISODE_PAGE as i64)?;
     let rows = episode_window(&mc, 0);
     let mut list = EpisodeList::with_total((mc.total_size.max(0) as usize).max(rows.len()));
     list.set_page(0, rows);
@@ -3239,9 +3315,9 @@ fn fetch_episodes(sid: plx_plex::plex::ServerId, season_rk: &str) -> Option<Epis
 }
 
 /// One window of a season, or **None when the GET failed**.
-fn fetch_episode_page(sid: plx_plex::plex::ServerId, season_rk: &str, page: usize) -> Option<Vec<Episode>> {
+fn fetch_episode_page(client: &'static plx_plex::plex::Client, season_rk: &str, page: usize) -> Option<Vec<Episode>> {
     let start = page * EPISODE_PAGE;
-    let mc = plx_plex::plex::client_for(sid)?.children_paged(season_rk, start as i64, EPISODE_PAGE as i64)?;
+    let mc = client.children_paged(season_rk, start as i64, EPISODE_PAGE as i64)?;
     Some(episode_window(&mc, start))
 }
 
@@ -3261,7 +3337,7 @@ fn episode_window(mc: &plx_plex::plex::MediaContainer, start: usize) -> Vec<Epis
 /// derivation nothing can exercise is how `viewCount` came to be parsed at
 /// `plex/models.rs` and then dropped on the floor here for the whole life of the episode row.
 fn convert_episode(x: &plx_plex::plex::Metadata) -> Episode {
-    let media0 = x.media.first();
+    let media0 = x.media_version(None).map(|(_, m)| m);
     Episode {
         rk: x.rating_key.clone(),
         index: x.index,
@@ -3276,10 +3352,11 @@ fn convert_episode(x: &plx_plex::plex::Metadata) -> Episode {
         // the same rule `fetch_detail` applies to a movie. (A show/season instead compares
         // `viewedLeafCount` to `leafCount`; an episode is a leaf and has neither.)
         watched: x.view_count > 0,
-        part: x.first_part().map(|p| p.key.clone()).unwrap_or_default(),
+        part: x.default_part().map(|p| p.key.clone()).unwrap_or_default(),
         rating: x.content_rating.clone(),
         vcodec: media0.map(|m| m.video_codec.clone()).unwrap_or_default(),
         acodec: media0.map(|m| m.audio_codec.clone()).unwrap_or_default(),
+        versions: crate::pms::versions_of(x),
     }
 }
 
@@ -3289,11 +3366,11 @@ fn convert_extra(x: &plx_plex::plex::Metadata) -> Extra {
         title: x.title.clone(),
         subtype: x.subtype.clone(),
         extra_type: x.extra_type,
-        part: x.first_part().map(|p| p.key.clone()).unwrap_or_default(),
-        vcodec: x.primary_media().map(|m| m.video_codec.clone()).unwrap_or_default(),
-        acodec: x.primary_media().map(|m| m.audio_codec.clone()).unwrap_or_default(),
+        part: x.default_part().map(|p| p.key.clone()).unwrap_or_default(),
+        vcodec: x.media_version(None).map(|(_, m)| m.video_codec.clone()).unwrap_or_default(),
+        acodec: x.media_version(None).map(|(_, m)| m.audio_codec.clone()).unwrap_or_default(),
         dur_ms: x.duration,
-        bitrate: x.primary_media().map(|m| m.bitrate).unwrap_or(0),
+        bitrate: x.media_version(None).map(|(_, m)| m.bitrate).unwrap_or(0),
         thumb: x.thumb.clone(),
     }
 }
@@ -3313,7 +3390,7 @@ fn is_trailer_meta(x: &plx_plex::plex::Metadata) -> bool {
 }
 
 fn playable_trailer_meta(x: &plx_plex::plex::Metadata) -> bool {
-    is_trailer_meta(x) && x.first_part().is_some_and(|p| !p.key.is_empty())
+    is_trailer_meta(x) && x.default_part().is_some_and(|p| !p.key.is_empty())
 }
 
 /// Picker winner: a playable trailer, preferring `primaryExtraKey`, else first in server order.
@@ -3350,17 +3427,17 @@ fn trailer_from_item(it: &plx_plex::plex::Metadata) -> Option<Extra> {
     playable_trailer_meta(it).then(|| convert_extra(it))
 }
 
-fn fetch_primary_trailer(sid: plx_plex::plex::ServerId, primary: &str) -> Option<Extra> {
+fn fetch_primary_trailer(client: &'static plx_plex::plex::Client, primary: &str) -> Option<Extra> {
     let rk = extra_key_tail(primary);
     if rk.is_empty() {
         return None;
     }
-    let it = plx_plex::plex::client_for(sid).and_then(|c| c.metadata(rk))?;
+    let it = client.metadata(rk)?;
     trailer_from_item(&it)
 }
 
-fn fetch_extras_rows(sid: plx_plex::plex::ServerId, rk: &str) -> Option<Vec<plx_plex::plex::Metadata>> {
-    match plx_plex::plex::client_for(sid).and_then(|c| c.extras(rk)) {
+fn fetch_extras_rows(client: &'static plx_plex::plex::Client, rk: &str) -> Option<Vec<plx_plex::plex::Metadata>> {
+    match client.extras(rk) {
         Some(mc) => Some(mc.metadata),
         None => {
             plx_base::eventlog::log(&format!(
@@ -3374,7 +3451,7 @@ fn fetch_extras_rows(sid: plx_plex::plex::ServerId, rk: &str) -> Option<Vec<plx_
 /// Resolve the Trailer control's extra. At most one follow-up `metadata()` when every trailer
 /// row arrived without a Part; never N+1 over the rest of the list.
 fn resolve_trailer(
-    sid: plx_plex::plex::ServerId,
+    client: &'static plx_plex::plex::Client,
     rows: &[plx_plex::plex::Metadata],
     primary: &str,
 ) -> Option<Extra> {
@@ -3382,7 +3459,7 @@ fn resolve_trailer(
         return Some(e);
     }
     let candidate = trailer_fill_candidate(rows, primary)?;
-    let it = plx_plex::plex::client_for(sid).and_then(|c| c.metadata(&candidate.rating_key))?;
+    let it = client.metadata(&candidate.rating_key)?;
     let e = convert_extra(&it);
     e.playable().then_some(e)
 }
@@ -3400,12 +3477,12 @@ fn extras_from_rows(rows: &[plx_plex::plex::Metadata]) -> Vec<Extra> {
 /// fills a missing Part replaces that row so the shelf tile and the Trailer disc agree.
 fn project_extras(
     d: &mut Detail,
-    sid: plx_plex::plex::ServerId,
+    client: &'static plx_plex::plex::Client,
     rows: &[plx_plex::plex::Metadata],
     primary: &str,
 ) {
     d.extras = extras_from_rows(rows);
-    let Some(winner) = resolve_trailer(sid, rows, primary) else {
+    let Some(winner) = resolve_trailer(client, rows, primary) else {
         d.trailer_rk.clear();
         return;
     };
@@ -3422,8 +3499,8 @@ fn project_extras(
     d.trailer_rk = winner.rk;
 }
 
-fn fetch_related(sid: plx_plex::plex::ServerId, rk: &str) -> RelatedRows {
-    let mc = match plx_plex::plex::client_for(sid).and_then(|c| c.related(rk)) {
+fn fetch_related(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::ServerId, rk: &str) -> RelatedRows {
+    let mc = match client.related(rk) {
         Some(m) => m,
         None => {
             // Same shape as `fetch_seasons` above: the degrade is deliberate, the silence is not —
@@ -3547,14 +3624,14 @@ fn collection_shelf(
 /// The season is chosen HERE, in the fetch, and its episodes are loaded in the same pass: picking
 /// it later (a `LoadSeason` once the page landed) would flash season 1's row first and spend a
 /// round trip fetching episodes nobody looks at.
-fn load_show_seasons(sid: plx_plex::plex::ServerId, rk: &str, d: &mut Detail, prefer: Option<i64>) {
-    d.seasons = fetch_seasons(sid, rk);
+fn load_show_seasons(client: &'static plx_plex::plex::Client, rk: &str, d: &mut Detail, prefer: Option<i64>) {
+    d.seasons = fetch_seasons(client, rk);
     d.cur_season = initial_season(&d.seasons, d.on_deck.as_ref(), prefer);
     if let Some(season) = d.seasons.get(d.cur_season) {
         // a season failure is not worth failing the whole page over — the hero, cast
         // and Related still load, and there is no previous list here to protect. It is still
         // named, because the `eps=` in the summary line cannot tell it from a season with no episodes.
-        d.episodes = fetch_episodes(sid, &season.rk).unwrap_or_else(|| {
+        d.episodes = fetch_episodes(client, &season.rk).unwrap_or_else(|| {
             plx_base::eventlog::log(&format!(
                 "detail: rk={rk} season rk={} /children did not answer — the eps= below is that refusal",
                 season.rk));
@@ -3596,13 +3673,16 @@ fn selected_season_number(state: &MetadataState, sid: plx_plex::plex::ServerId, 
 /// the related hub.
 /// 2 PMS round-trips for a movie, 5 for a show.
 ///
+/// Every GET goes through `client`, the one the runner resolved for the job
+/// ([`finish_detail_fetch`]), the opening season's episodes included.
+///
 /// PURE NETWORK + PARSING — it touches no `static mut`, which is what let it run either on the
 /// main thread or on a worker (the app's `StoreRunner`, from the job [`request_detail`] emits)
 /// while a synchronous caller still existed (phase 12/D7 deleted the last one, `load_detail_now`;
 /// see that deletion's note below). Keep it
 /// that way: installing the result is the caller's job, and on the async path that must happen on
 /// the main thread (see the `DETAIL_LANDING`/`land_detail` note).
-pub fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) -> Option<Detail> {
+pub fn fetch_full(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) -> Option<Detail> {
     // `ms=` is the whole chain's wall clock. It is the exact cost `request_detail` moves off the
     // SDL loop, so it is the number to read when judging whether a call site can afford to block
     // — note the framedrop breakdown CANNOT show it (fd_pc0 starts after event handling).
@@ -3616,18 +3696,15 @@ pub fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) 
     // but all four are equally silent in the log without this, and byte-identical to the user
     // never having pressed OK.
     //
-    // Worded as "no metadata" rather than "the GET failed": `fetch_detail` is
-    // `client_for(sid)?.metadata(rk)?`, so this arm is also taken when the server id resolves to no
-    // client at all and no request was ever issued. One line for both is right — the page is equally
-    // empty either way — but it must not assert a round trip that may not have happened.
-    let Some((mut d, primary_extra_key)) = fetch_detail(sid, rk) else {
-        plx_base::eventlog::log(&format!(
-            "detail: rk={rk} sid={sid:?} — no metadata (server unresolved, or it refused)"
-        ));
+    // Worded as "no metadata" rather than "the GET failed": `fetch_detail` is `client.metadata(rk)?`,
+    // and `metadata` answers `None` for a transport failure, a non-2xx and an unparseable body alike.
+    // One line for all of them is right — the page is equally empty — but it must not assert which.
+    let Some((mut d, primary_extra_key)) = fetch_detail(client, sid, rk) else {
+        plx_base::eventlog::log(&format!("detail: rk={rk} sid={sid:?} — no metadata (the server refused or did not answer)"));
         return None;
     };
     if d.is_show {
-        load_show_seasons(sid, rk, &mut d, prefer);
+        load_show_seasons(client, rk, &mut d, prefer);
         // A show carries no streams itself — backfill from ONE episode: the one the hero is
         // about, which is the one Play starts (`on_deck` when the show has been started, else
         // its first). Everything downstream reads this as "the show's" media, so borrowing from
@@ -3636,7 +3713,7 @@ pub fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) 
         let hero_ep = d.on_deck.as_ref().map(|e| e.rk.clone());
         let ep = hero_ep.or_else(|| d.episodes.first().map(|e| e.rk.clone()));
         if let Some(ep_rk) = ep {
-            fetch_item_streams(sid, &ep_rk, &mut d);
+            fetch_item_streams(client, &ep_rk, &mut d);
             // NB `part`/`vcodec`/`acodec` are deliberately NOT backfilled. They are the item's OWN
             // playable file, and "a show has an empty part" is load-bearing elsewhere — `app.rs`'s
             // play trigger reads it as "this is a show, take the episode's resume point instead",
@@ -3654,8 +3731,8 @@ pub fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) 
         let (related, extras) = std::thread::scope(|s| {
             let extras_h = std::thread::Builder::new()
                 .name("detail-extras".into())
-                .spawn_scoped(s, || fetch_extras_rows(sid, rk));
-            let related = fetch_related(sid, rk);
+                .spawn_scoped(s, || fetch_extras_rows(client, rk));
+            let related = fetch_related(client, sid, rk);
             let extras = match extras_h {
                 Ok(h) => h.join().ok().flatten(),
                 Err(_) => None,
@@ -3668,14 +3745,14 @@ pub fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) 
         match extras {
             Some(rows) => {
                 extras_src = "extras";
-                project_extras(&mut d, sid, &rows, &primary_extra_key);
+                project_extras(&mut d, client, &rows, &primary_extra_key);
             }
             None => {
                 // Refused extras GET: still try the parent's `primaryExtraKey` (one metadata GET)
                 // so a blip on `/extras` does not hide a trailer the parent already named.
                 // An empty extras *list* is a real answer and must not do this. The filled
                 // trailer is also the shelf's one tile.
-                if let Some(e) = fetch_primary_trailer(sid, &primary_extra_key) {
+                if let Some(e) = fetch_primary_trailer(client, &primary_extra_key) {
                     d.trailer_rk = e.rk.clone();
                     d.extras = vec![e];
                     extras_src = "primary";
@@ -3686,7 +3763,7 @@ pub fn fetch_full(sid: plx_plex::plex::ServerId, rk: &str, prefer: Option<i64>) 
         }
     } else {
         extras_src = "skip";
-        let related = fetch_related(sid, rk);
+        let related = fetch_related(client, sid, rk);
         d.related = related.related;
         d.related_tail = related.tail;
         d.collection = related.collection;
@@ -3848,7 +3925,9 @@ fn begin_detail_request(adapter: &MetadataAdapter, sid: plx_plex::plex::ServerId
 /// main thread. `sid` names the server to ask and `prefer` is the season the page opens on (read
 /// from the store at request time, [`selected_season_number`]); the worker must not read either
 /// from the current server or the store (see the fetch block's note), and the page being opened
-/// may belong to a machine that is not the current one at all.
+/// may belong to a machine that is not the current one at all. The runner resolves `sid` to its
+/// client once, at the admission, and the whole chain runs through that client
+/// ([`finish_detail_fetch`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct DetailReq {
     pub sid: plx_plex::plex::ServerId,
@@ -3929,15 +4008,47 @@ fn request_detail_with_spawn(adapter: &MetadataAdapter, sid: plx_plex::plex::Ser
     }
 }
 
-/// The fetch's IO body's completion: run `fetch` and post its answer, or its failure, to `port`.
-/// A fetch that unwinds still answers (with `None`), so its reservation is always handed back.
+/// The fetch's IO body's completion: run `fetch` through `client` and post its answer, or its
+/// failure, to `port`. A fetch that unwinds still answers (with `None`), so its reservation is
+/// always handed back.
+///
+/// `client` is the one the runner resolved for the job, once, when it admitted it
+/// (`StoreRunner::start_detail`), and `fetch` is handed it for the GETs of the chain
+/// ([`fetch_full`]): the chain asks no registry, the opening season's episodes included. The capture
+/// changes what a sign-out or a re-point halfway through does to a page. The old chain
+/// re-resolved its client before each sub-fetch, so after a sign-out its later GETs found no
+/// client (`None`) and after a re-point they went to the slot's new client. This one keeps the
+/// client it was handed (the registry leaks its clients, so the reference stays valid), which is
+/// `pms::kick_with`'s capture-at-the-step rule. (`ask_related` also keeps one client for its whole
+/// window, but it resolves that client inside its worker, which is why it is still on the globals
+/// ledger.) The registry blanks that client's token on both events (`revoke_all`, and the
+/// re-point arm of `register_lazy`), so the rest of the chain asks tokenless and lands `None`. For
+/// a sign-out that is the old outcome, with the requests now sent and refused where they used to
+/// be skipped. For a re-point it is a page with its hero but empty seasons, streams, extras,
+/// trailer and related, where the old chain went on to the slot's new client and finished.
+///
+/// `None` is a server the registry held no client for when the job was admitted: there is nothing
+/// to ask, so `fetch` is not called and the answer is the failure, as it was when the first
+/// sub-fetch found no client.
 pub fn finish_detail_fetch(
     port: &DetailPort, addr: plx_machine::machine::Addr, key: DetailKey,
-    fetch: impl FnOnce() -> Option<Detail> + std::panic::UnwindSafe,
+    client: Option<&'static plx_plex::plex::Client>,
+    fetch: impl FnOnce(&'static plx_plex::plex::Client) -> Option<Detail> + std::panic::UnwindSafe,
 ) {
     use plx_machine::job::Port;
-    // Publish outside the catch so fetch failure/unwind still acknowledges this reservation.
-    let d = catch_unwind(fetch).unwrap_or(None);
+    let d = match client {
+        // The ONE line that says a detail page was asked for and got nothing when no request was
+        // made (`fetch_full` speaks for the ones that were).
+        None => {
+            plx_base::eventlog::log(&format!(
+                "detail: rk={} sid={:?} — no metadata (the registry held no client for the server; nothing was asked)",
+                key.1, key.0
+            ));
+            None
+        }
+        // Publish outside the catch so fetch failure/unwind still acknowledges this reservation.
+        Some(client) => catch_unwind(move || fetch(client)).unwrap_or(None),
+    };
     port.done(addr, (key, d));
 }
 
@@ -4536,7 +4647,7 @@ fn alt_copies_from(
     mc.metadata
         .iter()
         .map(|m| {
-            let media0 = m.media.first();
+            let media0 = m.media_version(None).map(|(_, m)| m);
             AltCopy {
                 sid: id,
                 library: m.library_section_title.clone(),
@@ -4823,9 +4934,10 @@ pub fn detail_loading(adapter: &MetadataAdapter) -> bool {
 
 // ---- season switching ----------------------------------------------------------------------
 // The tab UI's season switch is ASYNC: `load_season` flips `cur_season` optimistically (the tab
-// highlight moves at once), fetches the episodes on a worker thread, and `pump_season` (called by
-// the detail page once a frame) applies the landed list on the main thread. The blocking
-// `/children` GET used to run on the main loop, freezing the UI for every rapid season hop.
+// highlight moves at once), emits the episodes' fetch as a job the application starts on a worker
+// thread (`MetaSeasonReq`), and `pump_season` (called by the detail page once a frame) applies the
+// landed list on the main thread. The blocking `/children` GET used to run on the main loop,
+// freezing the UI for every rapid season hop.
 // Generations guard against out-of-order landings; results for a different item are discarded.
 struct SeasonResult {
     gen: u32,
@@ -4910,20 +5022,17 @@ fn load_season(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapt
     // Stamped at THIS request, not at the page's install: the season may be asked for long after.
     let stamp = state.ledger.stamp();
     let gen = adapter.season_gen.fetch_add(1, Ordering::SeqCst) + 1;
-    let adapter_worker = std::sync::Arc::clone(adapter);
-    let spawned = plx_base::task::spawn_small("season", move || {
-        // the mailbox is filled OUTSIDE the guard so a panicking fetch still lands — as a
-        // FAILURE (None), not as an empty season: a panic is not "this season has no episodes",
-        // and otherwise season_loading() would report an in-flight fetch forever
-        let eps = catch_unwind(|| fetch_episodes(sid, &season_rk)).unwrap_or(None);
-        land_season(&adapter_worker, gen, sid, rk, idx, prev, eps, stamp);
-    });
-    if !spawned {
-        // no worker means nothing will ever land: catch DONE up or the episode row keeps its
-        // loading dim + spinner for the rest of the session. `cur_season` already moved, so the
-        // tab highlight stays where the user put it and the old episodes stay listed.
-        adapter.season_done.store(gen, Ordering::SeqCst);
-    }
+    // The fetch is the application's to start: the request leaves as a job and the answer lands
+    // through `MetaSeasonPort` (a failed fetch, or a panicking one, lands as `eps: None`, not as an
+    // empty season: a panic is not "this season has no episodes", and otherwise `season_loading()`
+    // would report an in-flight fetch forever). A launch that starts nothing is
+    // `MetaSeasonPort::refused`, which catches DONE up so the episode row does not keep its loading
+    // dim + spinner; `cur_season` already moved, so the tab highlight stays where the user put it
+    // and the old episodes stay listed.
+    state.jobs.push(crate::stores::StoreJob::MetaSeason(
+        plx_machine::job::Job { addr: season_addr(gen), req: MetaSeasonReq { sid, show: rk, season: season_rk, idx, prev, stamp } },
+        MetaSeasonPort::of(adapter),
+    ));
 }
 
 // ---- long-season episode pages ---------------------------------------------------------------
@@ -4944,6 +5053,8 @@ struct EpPages {
     landed: Vec<EpLanded>,
     /// What the screen wants right now; eviction after a landing keeps exactly this.
     keep: Option<crate::stores::page_cache::Keep>,
+    /// Page jobs emitted so far: the next job's address.
+    sent: u32,
 }
 
 struct EpLanded {
@@ -4979,39 +5090,36 @@ fn want_episodes(
     let mut order: Vec<usize> = keep.restore.into_iter().chain(keep.focus).map(page_of).collect();
     order.extend(d.episodes.missing(keep.wanted.start, keep.wanted.end));
     let mut want = Vec::new();
-    {
+    let mut keys = Vec::new();
+    let seq = {
         let mut ep = adapter.ep_pages.lock().unwrap_or_else(|e| e.into_inner());
         for p in order {
             let hole = d.episodes.missing(p * EPISODE_PAGE, p * EPISODE_PAGE + 1).next() == Some(p);
             let key = (sid, season.clone(), p);
             if hole && !want.contains(&p) && !ep.inflight.contains(&key) && want.len() < EP_JOB_PAGES {
                 want.push(p);
+                keys.push(key);
             }
         }
-        for &p in &want {
-            ep.inflight.push((sid, season.clone(), p));
-        }
+        ep.inflight.extend(keys.iter().cloned());
         ep.keep = Some(keep);
-    }
+        // The job's own sequence, minted only for a job that is sent.
+        if !want.is_empty() {
+            ep.sent += 1;
+        }
+        ep.sent
+    };
     if want.is_empty() {
         return false;
     }
-    let worker = std::sync::Arc::clone(adapter);
-    let job = want.clone();
-    let season_job = season.clone();
     let stamp = state.ledger.stamp(); // at the request, before any page of the job is read
-    let spawned = plx_base::task::spawn_small("episode-pages", move || {
-        for page in job {
-            let rows = catch_unwind(|| fetch_episode_page(sid, &season_job, page)).unwrap_or(None);
-            let mut ep = worker.ep_pages.lock().unwrap_or_else(|e| e.into_inner());
-            ep.inflight.retain(|k| *k != (sid, season_job.clone(), page));
-            ep.landed.push(EpLanded { sid, show: show.clone(), season: season_job.clone(), page, rows, stamp });
-        }
-    });
-    if !spawned {
-        let mut ep = adapter.ep_pages.lock().unwrap_or_else(|e| e.into_inner());
-        ep.inflight.retain(|(s, k, p)| !(*s == sid && *k == season && want.contains(p)));
-    }
+    // The reads are the application's to start. A launch that starts nothing is
+    // `MetaEpisodesPort::refused`, which drops the keys held above, so the next `WantEpisodes`
+    // asks for the pages again.
+    state.jobs.push(crate::stores::StoreJob::MetaEpisodes(
+        plx_machine::job::Job { addr: pages_addr(seq), req: MetaEpisodesReq { sid, show, season, pages: want, stamp } },
+        MetaEpisodesPort::new(adapter, keys),
+    ));
     true
 }
 
@@ -5045,6 +5153,224 @@ pub fn pump_episode_pages(state: &mut MetadataState, adapter: &MetadataAdapter) 
         replay_views(state, since);
     }
     changed
+}
+
+// ---- the season and episode-page jobs --------------------------------------------------------
+// Neither read starts a worker here. `load_season` and `want_episodes` leave a typed job on the
+// outbox (`StoreJob::MetaSeason`, `StoreJob::MetaEpisodes`, both `Direct`: none is on the tape) and
+// the application's runner starts it with the client it resolved for the server at the launch
+// (`finish_season_job`, `finish_episodes_job`). The answer comes back through the job's port into
+// the mailboxes the pumps already read (`season_result`, `ep_pages`). The season landing is gated,
+// as before (`pump_season_with_gate` takes it through the landing gate, and a replay takes it on
+// its recorded frame); only the page landing (`pump_episode_pages`) is an ungated take.
+
+fn season_addr(gen: u32) -> plx_machine::machine::Addr {
+    plx_machine::machine::Addr {
+        to: plx_machine::machine::MachineId::Store(crate::stores::StoreId::Metadata.ord()),
+        req: plx_machine::machine::RequestId(gen),
+    }
+}
+
+/// A page job's address: the sequence of its own (`EpPages.sent`). It shares the id space of
+/// [`season_addr`] and of the Detail job's address (`Addr { to: Store(Metadata), req }`), so a page
+/// job, a season job and a detail job can carry an identical `Addr`. Nothing routes by `Addr`
+/// alone (each typed port keeps its answers apart); anything that later keys by it has to add the
+/// kind, or give the kinds disjoint ranges.
+fn pages_addr(seq: u32) -> plx_machine::machine::Addr {
+    season_addr(seq)
+}
+
+/// The season switch one `LoadSeason` asks for, everything the worker needs captured on the main
+/// thread. The generation is the job's address. `sid` is the loaded show's own server (never
+/// `current_server()`), `prev` the season `cur_season` held before the optimistic flip (restored
+/// on a failed fetch by [`pump_season_with_gate`]), `stamp` the view-state publish order at the
+/// request. The runner resolves `sid` to its client at the launch; a server it holds none for
+/// answers the failure without a GET.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MetaSeasonReq {
+    pub sid: plx_plex::plex::ServerId,
+    pub show: String,
+    pub season: String,
+    pub idx: usize,
+    pub prev: usize,
+    pub stamp: crate::viewledger::Stamp,
+}
+
+/// Where a season fetch's ONE answer goes: the mailbox of the adapter the request was made from
+/// (an owner that has since been `Reset` holds a new one; this port still lands into the retired
+/// one nobody pumps). Two ports are equal when they reach the same adapter.
+#[derive(Clone)]
+pub struct MetaSeasonPort(std::sync::Arc<MetadataAdapter>);
+
+impl MetaSeasonPort {
+    pub(crate) fn of(adapter: &std::sync::Arc<MetadataAdapter>) -> Self {
+        Self(std::sync::Arc::clone(adapter))
+    }
+}
+
+impl PartialEq for MetaSeasonPort {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl std::fmt::Debug for MetaSeasonPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "MetaSeasonPort({:p})", std::sync::Arc::as_ptr(&self.0))
+    }
+}
+
+/// A season fetch's answer, opaque to the runner: `eps` is `None` for a FAILED fetch.
+pub struct SeasonAnswer {
+    sid: plx_plex::plex::ServerId,
+    rk: String,
+    idx: usize,
+    prev: usize,
+    eps: Option<EpisodeList>,
+    stamp: crate::viewledger::Stamp,
+}
+
+impl plx_machine::job::Port<SeasonAnswer> for MetaSeasonPort {
+    /// The answer, posted to the monotone mailbox ([`land_season`]); the pump discards one for a
+    /// generation it has since superseded.
+    fn done(&self, addr: plx_machine::machine::Addr, a: SeasonAnswer) {
+        land_season(&self.0, addr.req.0, a.sid, a.rk, a.idx, a.prev, a.eps, a.stamp);
+    }
+
+    /// The fetch was never started: catch DONE up to the job's generation, or the episode row keeps
+    /// its loading dim + spinner for the rest of the session. Settled here, in the call that
+    /// refused it, because that is where the inline spawn's `!spawned` arm settled it. Never down
+    /// (`fetch_max`): a refusal that arrives after a newer request landed must not make
+    /// `season_loading()` true again.
+    fn refused(&self, addr: plx_machine::machine::Addr) {
+        self.0.season_done.fetch_max(addr.req.0, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// One read of a season or page job through the client the runner resolved: `None` when it held none for the
+/// server (no GET is made), and `None` when the read failed or panicked. The panic is caught HERE,
+/// so a caller posts its answer outside the guard and a panicking read still lands, as a failure.
+fn read_through<T>(
+    client: Option<&'static plx_plex::plex::Client>,
+    read: impl FnOnce(&'static plx_plex::plex::Client) -> Option<T>,
+) -> Option<T> {
+    client.and_then(|client| catch_unwind(std::panic::AssertUnwindSafe(|| read(client))).unwrap_or(None))
+}
+
+/// The season fetch's IO body and its completion: read the episodes through `client` and post the
+/// answer to `port`. `client` is the one the runner resolved at the launch; `None` is a server it
+/// held none for, which answers the failure without a GET. The answer is posted OUTSIDE the guard,
+/// so a fetch that panics still lands, as a FAILURE.
+///
+/// WORKER THREAD.
+pub fn finish_season_job(
+    port: &MetaSeasonPort, addr: plx_machine::machine::Addr,
+    client: Option<&'static plx_plex::plex::Client>, req: MetaSeasonReq,
+) {
+    finish_season_with(port, addr, client, req, fetch_episodes);
+}
+
+fn finish_season_with(
+    port: &MetaSeasonPort, addr: plx_machine::machine::Addr,
+    client: Option<&'static plx_plex::plex::Client>, req: MetaSeasonReq,
+    fetch: impl FnOnce(&'static plx_plex::plex::Client, &str) -> Option<EpisodeList>,
+) {
+    use plx_machine::job::Port;
+    let MetaSeasonReq { sid, show, season, idx, prev, stamp } = req;
+    let eps = read_through(client, |client| fetch(client, &season));
+    port.done(addr, SeasonAnswer { sid, rk: show, idx, prev, eps, stamp });
+}
+
+/// The pages one `WantEpisodes` window asks for (at most [`EP_JOB_PAGES`]) of one season of one
+/// show, with the publish order at the request. Pages are keyed by `(server, season, page)`, not by
+/// a generation: the job's address is a sequence of its own.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MetaEpisodesReq {
+    pub sid: plx_plex::plex::ServerId,
+    pub show: String,
+    pub season: String,
+    pub pages: Vec<usize>,
+    pub stamp: crate::viewledger::Stamp,
+}
+
+/// Where a page job's answer goes, and the inflight keys the job holds (a refusal is told only the
+/// address). Two ports are equal when they reach the same adapter and hold the same keys.
+#[derive(Clone)]
+pub struct MetaEpisodesPort {
+    adapter: std::sync::Arc<MetadataAdapter>,
+    keys: Vec<(plx_plex::plex::ServerId, String, usize)>,
+}
+
+impl MetaEpisodesPort {
+    fn new(adapter: &std::sync::Arc<MetadataAdapter>, keys: Vec<(plx_plex::plex::ServerId, String, usize)>) -> Self {
+        Self { adapter: std::sync::Arc::clone(adapter), keys }
+    }
+
+    /// One page of the job was read: land it and give its inflight key back now, ahead of the
+    /// job's later pages. The pages are posted as they arrive, the way the inline worker pushed
+    /// them (the window asks for the restore page first, and the strip waits on it), and the job's
+    /// one `done` is only the end.
+    fn page(&self, page: EpLanded) {
+        let mut ep = self.adapter.ep_pages.lock().unwrap_or_else(|e| e.into_inner());
+        ep.inflight.retain(|(sid, season, p)| !(*sid == page.sid && *season == page.season && *p == page.page));
+        ep.landed.push(page);
+    }
+}
+
+impl PartialEq for MetaEpisodesPort {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.adapter, &other.adapter) && self.keys == other.keys
+    }
+}
+
+impl std::fmt::Debug for MetaEpisodesPort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "MetaEpisodesPort({:p}, {} page(s))", std::sync::Arc::as_ptr(&self.adapter), self.keys.len())
+    }
+}
+
+/// A page job's end, opaque to the runner. It carries nothing: each page, `rows: None` for a FAILED
+/// read, was posted through [`MetaEpisodesPort::page`] as it was read.
+pub struct EpisodePagesDone;
+
+impl plx_machine::job::Port<EpisodePagesDone> for MetaEpisodesPort {
+    /// The terminal of the job's posts: every page has landed and released its own key, so there is
+    /// nothing left to give back. A key is not released here by the job's list, because a later
+    /// window may have asked for the same page again since it landed.
+    fn done(&self, _addr: plx_machine::machine::Addr, _end: EpisodePagesDone) {}
+
+    /// The job was never started: drop the keys it holds, so the next `WantEpisodes` asks again.
+    fn refused(&self, _addr: plx_machine::machine::Addr) {
+        let mut ep = self.adapter.ep_pages.lock().unwrap_or_else(|e| e.into_inner());
+        ep.inflight.retain(|k| !self.keys.contains(k));
+    }
+}
+
+/// The page job's IO body and its completion: read each page through `client` in order and post
+/// each to `port` as it is read, then end the job. `None` is a server the runner held no client
+/// for: every page answers the failure without a GET. A read that panics lands as a failure,
+/// outside the guard.
+///
+/// WORKER THREAD.
+pub fn finish_episodes_job(
+    port: &MetaEpisodesPort, addr: plx_machine::machine::Addr,
+    client: Option<&'static plx_plex::plex::Client>, req: MetaEpisodesReq,
+) {
+    finish_episodes_with(port, addr, client, req, fetch_episode_page);
+}
+
+fn finish_episodes_with(
+    port: &MetaEpisodesPort, addr: plx_machine::machine::Addr,
+    client: Option<&'static plx_plex::plex::Client>, req: MetaEpisodesReq,
+    fetch: impl Fn(&'static plx_plex::plex::Client, &str, usize) -> Option<Vec<Episode>>,
+) {
+    use plx_machine::job::Port;
+    let MetaEpisodesReq { sid, show, season, pages, stamp } = req;
+    for page in pages {
+        let rows = read_through(client, |client| fetch(client, &season, page));
+        port.page(EpLanded { sid, show: show.clone(), season: season.clone(), page, rows, stamp });
+    }
+    port.done(addr, EpisodePagesDone);
 }
 
 // ---- Related tail window ----------------------------------------------------------------------
@@ -5302,7 +5628,7 @@ pub fn pump_season_with_gate(state: &mut MetadataState, adapter: &MetadataAdapte
     // the landing GATE (§3.3 step 3): a replay takes this on its recorded frame
     // DUMP MODE: owed while `season_loading` (a request is out, and `season_done` has not caught
     // up). A superseded request's late answer is dropped INSIDE the take, so it neither ends the
-    // wait nor settles the new request (`supersede_season` and a refused spawn catch `season_done`
+    // wait nor settles the new request (`supersede_season` and a refused job catch `season_done`
     // up themselves, so an abandoned request is not owed).
     let res = crate::stores::take_landing_owed(gate, crate::stores::StoreId::Metadata,
         || season_loading(adapter), || {
@@ -5923,12 +6249,14 @@ mod trailer_tests {
         };
         assert!(d.trailer().is_none());
         assert_eq!(d.rk, "movie");
+        let _serial = plx_base::testlock::serial();
+        let client = super::test_support::offline_client();
         assert!(
-            resolve_trailer(plx_plex::plex::ServerId::UNSET, &[], "").is_none(),
+            resolve_trailer(client.0, &[], "").is_none(),
             "empty extras never fails the page"
         );
         assert!(
-            fetch_primary_trailer(plx_plex::plex::ServerId::UNSET, "").is_none(),
+            fetch_primary_trailer(client.0, "").is_none(),
             "no primaryExtraKey → no follow-up GET"
         );
     }
@@ -5950,8 +6278,10 @@ mod trailer_tests {
         assert_eq!(shelf[0].rk, "1");
         assert_eq!(shelf[0].thumb, "/t");
         assert_eq!(shelf[0].caption(), "Behind the Scenes");
+        let _serial = plx_base::testlock::serial();
+        let client = super::test_support::offline_client();
         let mut d = Detail::default();
-        project_extras(&mut d, plx_plex::plex::ServerId::UNSET, &rows, "");
+        project_extras(&mut d, client.0, &rows, "");
         assert_eq!(d.trailer().unwrap().rk, "9");
         assert_eq!(d.extras.len(), 2, "the shelf keeps the featurette");
         // every row reaches the shelf, however many there are, and the picker still names the
@@ -5959,7 +6289,7 @@ mod trailer_tests {
         let mut many: Vec<_> = (0..100).map(|i| bts(&format!("{}", 1000 + i))).collect();
         many.push(trailer("9000", "/library/parts/9000"));
         let mut d = Detail::default();
-        project_extras(&mut d, plx_plex::plex::ServerId::UNSET, &many, "");
+        project_extras(&mut d, client.0, &many, "");
         assert_eq!(d.extras.len(), 101, "every extras row is on the shelf");
         assert_eq!(d.trailer().expect("a trailer").rk, "9000");
         let bare = Extra {
@@ -6113,6 +6443,14 @@ mod initial_season_tests;
 #[cfg(test)]
 #[path = "metadata_detail_job_tests.rs"]
 mod detail_job_tests;
+
+#[cfg(test)]
+#[path = "metadata_detail_client_tests.rs"]
+mod detail_client_tests;
+
+#[cfg(test)]
+#[path = "metadata_season_job_tests.rs"]
+mod season_job_tests;
 
 /// #814: the runtime an *Also available* row carries is a fact about one FILE, so only a leaf has
 /// one. A show container's `duration` is the metadata agent's nominal per-episode figure.

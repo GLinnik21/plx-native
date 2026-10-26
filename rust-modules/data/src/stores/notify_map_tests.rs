@@ -50,7 +50,7 @@ fn map(stores: &mut Stores, out: &NotifyOut, pages: &[ContentArg]) -> super::not
 
 fn map_shown(stores: &mut Stores, out: &NotifyOut, pages: &[ContentArg], shown: Shown) -> super::notify_map::Spent {
     let dir = DirectorySnapshot::default();
-    stores.notify_map(out, pages, shown, dir.view())
+    stores.notify_map(out, pages, shown, dir.view(), &crate::pms::registry_keys_for_test())
 }
 
 fn pending(stores: &Stores) -> Vec<String> {
@@ -716,6 +716,26 @@ fn a_library_change_moves_the_servers_lists_and_reads_no_item() {
     assert_eq!(spent.invalidated, [sid], "one section-shelf invalidate");
     assert_eq!(spent.relisted, [sid], "one re-list of its grids");
     assert!(pending(&stores).is_empty(), "no per-item read-back");
+}
+
+/// The quiet refetch is a Hubs step, and a Hubs step settles the launches the runner refused since the
+/// last one: its refreshes are part of what the pass spent, not dropped.
+#[test]
+fn a_refusal_the_quiet_refetch_step_settles_is_carried_out_of_the_pass() {
+    let _g = plx_base::testlock::serial();
+    let _session = plx_plex::plex::session::TempSession::new("notify-refusal");
+    plx_plex::plex::reset_servers_for_test();
+    let sid = plx_plex::plex::register_for_test("notify-refusal", "127.0.0.1", 9, "synthetic", "cid");
+    let mut stores = Stores::default();
+    let keys = crate::pms::registry_keys_for_test();
+    let dir = DirectorySnapshot::default();
+    let first = stores.hubs.run_with_directory(crate::stores::hubs::HubsCmd::RefetchHubs, dir.view(), &keys);
+    assert!(first.endpoints.is_empty(), "the refusal is the runner's answer, not the kick's");
+    stores.hubs.refuse_jobs_for_test();
+    let spent = map(&mut stores, &library(sid, vec![created("20")]), &[]);
+    assert_eq!(spent.refetched, [sid]);
+    assert_eq!(spent.endpoints.iter().map(|r| r.sid).collect::<Vec<_>>(), [sid]);
+    plx_plex::plex::reset_servers_for_test();
 }
 
 fn owes_lines() -> usize {

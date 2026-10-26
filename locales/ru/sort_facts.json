@@ -1,0 +1,15 @@
+{
+  "sort_facts.title": "Название",
+  "sort_facts.date_added": "Дата добавления",
+  "sort_facts.release_date": "Дата выхода",
+  "sort_facts.rating": "Оценка",
+  "sort_facts.audience_rating": "Оценка зрителей",
+  "sort_facts.last_viewed": "Дата просмотра",
+  "sort_facts.random": "Случайно",
+  "sort_facts.a_to_z": "А–Я",
+  "sort_facts.z_to_a": "Я–А",
+  "sort_facts.oldest_first": "Сначала старые",
+  "sort_facts.newest_first": "Сначала новые",
+  "sort_facts.lowest_first": "По возрастанию",
+  "sort_facts.highest_first": "По убыванию"
+}

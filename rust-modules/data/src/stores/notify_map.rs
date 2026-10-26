@@ -110,6 +110,9 @@ pub struct Spent {
     pub invalidated: Vec<ServerId>,
     /// Servers whose library listings were told of a change (`BrowseCmd::ListingsChanged`).
     pub relisted: Vec<ServerId>,
+    /// The endpoint refreshes the quiet refetches' Hubs steps owe (a launch the runner refused is
+    /// settled by the next Hubs step, this one included): the caller carries them.
+    pub endpoints: super::EndpointRefreshSet,
 }
 
 /// Read-backs and refetches a notification owes, not yet spent.
@@ -358,6 +361,7 @@ impl Stores {
         pages: &[ContentArg],
         shown: Shown,
         directory: browse::DirectoryView<'_>,
+        clients: &plx_plex::plex::ClientKeys,
     ) -> Spent {
         self.notify_map.frame += 1;
         for (sid, _epoch) in &out.resynced {
@@ -409,7 +413,7 @@ impl Stores {
             }
             changed.emit();
         }
-        self.spend_notify_owed(shown, directory)
+        self.spend_notify_owed(shown, directory, clients)
     }
 
     /// Note what a server's finished creates and deletes owe the Watchlist. Counts only are logged:
@@ -488,7 +492,8 @@ impl Stores {
         self.notify_map.library = kept;
     }
 
-    fn spend_notify_owed(&mut self, shown: Shown, directory: browse::DirectoryView<'_>) -> Spent {
+    fn spend_notify_owed(&mut self, shown: Shown, directory: browse::DirectoryView<'_>,
+        clients: &plx_plex::plex::ClientKeys) -> Spent {
         let mut spent = Spent::default();
         if self.notify_map.owed_is_empty() || !self.reread_allowed() {
             return spent;
@@ -515,17 +520,19 @@ impl Stores {
             }
         }
         for sid in owed.refetch {
-            let _ = self.hubs.run_with_directory(super::hubs::HubsCmd::RefetchSourceQuiet { sid }, directory);
+            // a Hubs step settles the launches the runner refused since the last one: the refreshes
+            // it owes leave with the pass
+            spent.endpoints.merge(self.hubs.run_with_directory(super::hubs::HubsCmd::RefetchSourceQuiet { sid }, directory, clients).endpoints);
             spent.refetched.push(sid);
         }
         for sid in owed.listings {
             let cmd = browse::BrowseCmd::ListingsChanged { sid, library_on_stack: shown.library };
-            let _ = self.browse.borrow_mut().run(cmd);
+            let _ = self.browse.borrow_mut().run(cmd, clients);
             self.notify_map.listings_spent(sid);
             spent.relisted.push(sid);
         }
         for sid in owed.invalidate {
-            let _ = self.browse.borrow_mut().run(browse::BrowseCmd::HubsInvalidateServer { sid });
+            let _ = self.browse.borrow_mut().run(browse::BrowseCmd::HubsInvalidateServer { sid }, clients);
             spent.invalidated.push(sid);
         }
         spent

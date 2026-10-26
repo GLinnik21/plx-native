@@ -3,6 +3,8 @@
   "widgets.menu.quality": "Якасць",
   "widgets.menu.quality_converted": "Канвертавана",
   "widgets.menu.quality_converted_note": "Ваш сервер Plex канвертуе гэта відэа.",
+  "widgets.menu.speed": "Хуткасць прайгравання",
+  "widgets.speed.normal": "Звычайная",
   "widgets.menu.stats": "Статыстыка",
   "widgets.menu.diagnostics": "Даслаць дыягностыку",
   "widgets.badge.forced": "ПРЫМУСОВЫЯ",
