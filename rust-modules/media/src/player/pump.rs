@@ -3639,6 +3639,7 @@ mod flight_tests {
     fn a_native_audio_refusal_before_the_first_frame_ends_in_a_recovery_flight_not_error() {
         let mut rig = Rig::new(150);
         let _set = firmware_announcing_opus();
+        rig.flight.begin_attempt(&rig.ps);
         rig.frame();
         let answered = rig.flight.answered();
         let epoch = engine_epoch(&mut rig);
@@ -3674,6 +3675,13 @@ mod flight_tests {
         assert_eq!(rig.flight.decisions(), 1, "exactly one replacement /decision");
         assert_ne!(engine_epoch(&mut rig), epoch, "the landing reloaded onto the converted route");
         assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
+        let context = super::super::report::error_context_for_test(&rig.ps);
+        assert_eq!(
+            context.attempt_origin,
+            super::super::report::AttemptOrigin::Recovery,
+            "the converted open is the app's own recovery, so a failure of it must not read as the first fresh open"
+        );
+        assert_eq!(context.attempt_ordinal, super::super::report::AttemptOrdinal::FIRST.next());
         rig.flight.wait_for("the replaced encoder's stop", |f| f.stopped().iter().any(|s| s == "rig-1"));
     }
 
