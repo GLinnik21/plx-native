@@ -205,11 +205,15 @@ impl PcmDecoder {
         }
     }
 
-    /// The demuxer sought: what a lossy decode carried from the old position (the resampler's
-    /// tail) is dropped, so the first sound at the new one is not blended with the last of the old.
-    /// The decoder's own history is not flushed (`avcodec_flush_buffers` is not bound; DTS frames
-    /// are self-contained and the effect is at most one frame, a U5 item to listen for).
+    /// The demuxer sought: what the decode carried from the old position is dropped, so the first
+    /// sound at the new one is not blended with the last of the old. The decoder is flushed
+    /// (`avcodec_flush_buffers`: a DTS synthesis filter bank carries state from frame to frame, which
+    /// is a click at every seek), the frame buffer emptied, the error count started again and a lossy
+    /// decode's resampler tail forgotten.
     pub fn reset_stream(&mut self) {
+        unsafe { crate::ff::avcodec_flush_buffers(self.ctx) };
+        self.buf.clear();
+        self.errors = ErrorBudget::default();
         if let Some(conv) = self.lossy.as_mut() {
             conv.reset();
         }

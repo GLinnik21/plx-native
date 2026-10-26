@@ -463,6 +463,11 @@ plx_base::dynlib! {
     // Audio decode, send/receive API: playback speed (`SpeedDecoder`) and lossless → PCM (`ff_pcm`).
     fn avcodec_send_packet(ctx: *mut AVCodecContext, pkt: *const AVPacket) -> c_int;
     fn avcodec_receive_frame(ctx: *mut AVCodecContext, frame: *mut c_void) -> c_int;
+    // A seek: drop what the decoder carries from before it. Public libavcodec API since the
+    // 1.x series and in the bundled `libavcodec-plx` (the library `dynlib!` opens is OUR build,
+    // not the television's): an export of both the ARM and the host build, `ci/check-elf.sh` reads
+    // the dynamic table of the former.
+    fn avcodec_flush_buffers(ctx: *mut AVCodecContext);
     fn avcodec_find_decoder_by_name(name: *const c_char) -> *const AVCodec;
 }}
 plx_base::dynlib! {
