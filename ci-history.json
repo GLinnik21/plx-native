@@ -1,4 +1,4 @@
-{"updated":"2026-10-26T16:32:48Z",
+{"updated":"2026-10-26T16:34:19Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -3732,7 +3732,8 @@
 {"id":40349386960,"at":"2026-10-26T15:26:50Z","sha":"a741685fd","title":"Playback: a PCM Load never feeds a stream the app cannot decode raw (float and 8-bit LPCM are refused); CLAUDE.md says w","pr":1067,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":22,"Linux simulator build + launch":288,"macOS simulator build + launch":273,"macOS tests against bundled FFmpeg and ASS":170}},
 {"id":40350002252,"at":"2026-10-26T15:30:32Z","sha":"e6e21dffa","title":"Merge series/inapp-decode into series/inapp-decode-dts","pr":1068,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":183,"Windows launcher syntax":22,"Linux simulator build + launch":275,"macOS simulator build + launch":189}},
 {"id":40352499689,"at":"2026-10-26T15:45:45Z","sha":"efbe044fa","title":"Playback: ALAC and integer LPCM are decoded in the app like FLAC","pr":1067,"conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":231,"Linux simulator build + launch":264,"Windows launcher syntax":20,"macOS tests against bundled FFmpeg and ASS":357}},
-{"id":40352601190,"at":"2026-10-26T15:46:21Z","sha":"ea2e03060","title":"Record #1067 (efbe044fa) as merged, keeping this tree","pr":1068,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"Linux simulator build + launch":242,"macOS tests against bundled FFmpeg and ASS":185,"Windows launcher syntax":20}}
+{"id":40352601190,"at":"2026-10-26T15:46:21Z","sha":"ea2e03060","title":"Record #1067 (efbe044fa) as merged, keeping this tree","pr":1068,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"Linux simulator build + launch":242,"macOS tests against bundled FFmpeg and ASS":185,"Windows launcher syntax":20}},
+{"id":40359123635,"at":"2026-10-26T16:26:22Z","sha":"9f1824c4f","title":"CI: classify ff_pcm's MAX_CONSECUTIVE_DECODE_ERRORS in the list-cap registry","pr":1068,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":184,"Windows launcher syntax":21,"Linux simulator build + launch":281,"macOS simulator build + launch":163}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
