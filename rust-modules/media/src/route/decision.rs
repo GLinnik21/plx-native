@@ -5643,6 +5643,7 @@ pub fn stream_audio(ps: &PlaybackSession) -> Option<crate::player::recovery::Str
     (!codec.is_empty()).then(|| crate::player::recovery::StreamAudio {
         codec,
         channels: u32::try_from(stream_achannels(ps)).unwrap_or(0),
+        app_decoded_lossy: stream_pcm_is_lossy(ps),
     })
 }
 /// The SOURCE's video, when the pipeline was fed it whole, for the failed-open ladder
@@ -5815,11 +5816,13 @@ mod pcm_format_tests {
         ps.begin_attempt(std::sync::Arc::new(plx_platform::devcaps::Caps::assumed()));
         assert_eq!(stream_pcm(&ps), None, "gate off");
         assert!(!stream_pcm_is_lossy(&ps));
+        assert!(!stream_audio(&ps).unwrap().app_decoded_lossy, "the ladder's fact: native DTS is the pipeline's");
         ps.begin_attempt(std::sync::Arc::new(plx_platform::devcaps::Caps::assumed().with_app_lossy()));
         for spelling in ["dts", "dca", "DTS"] {
             set_stream_codecs(&mut ps, "h264", spelling);
             assert_eq!(stream_pcm(&ps), Some(Ok(PcmFormat::STEREO_48K)), "{spelling}");
             assert!(stream_pcm_is_lossy(&ps), "{spelling}");
+            assert!(stream_audio(&ps).unwrap().app_decoded_lossy, "{spelling}: the ladder must not name a native facet");
         }
         set_stream_codecs(&mut ps, "h264", "flac");
         assert!(!stream_pcm_is_lossy(&ps), "a lossless PCM Load is never the lossy one");

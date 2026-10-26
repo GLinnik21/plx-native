@@ -107,6 +107,10 @@ pub struct StreamAudio {
     /// The codec in any spelling [`plx_platform::devcaps::audio_codec_id`] knows (`dca` for DTS).
     pub codec: String,
     pub channels: u32,
+    /// The app decoded this audio itself and fed the pipeline PCM (a lossy codec under
+    /// `Caps::app_decodes_lossy`, `route::stream_pcm_is_lossy`): a refusal of the Load is then no
+    /// evidence about the pipeline's own decoder for [`codec`](Self::codec).
+    pub app_decoded_lossy: bool,
 }
 
 /// One lane of a `/decision` answer, as PMS's own `Stream.decision` says it (`copy`, `directplay`,
@@ -164,9 +168,11 @@ pub struct StreamVideo {
 
 /// The audio a pipeline refusal puts under suspicion: outside the codecs every set decodes (`aac`,
 /// `ac3`, `eac3`). `channels == 0` (unknown) names the codec at no width, which [`Caps::without`]
-/// reads as "not at all", the conservative choice.
+/// reads as "not at all", the conservative choice. Audio the app decoded itself
+/// ([`StreamAudio::app_decoded_lossy`]) names nothing: the pipeline was fed PCM, and a facet of
+/// that codec would narrow, and could store as a refusal, the set's NATIVE decoder.
 fn suspect_audio(audio: Option<&StreamAudio>) -> Option<Facet> {
-    let a = audio?;
+    let a = audio.filter(|a| !a.app_decoded_lossy)?;
     let id = plx_platform::devcaps::audio_codec_id(&a.codec);
     (!matches!(&*id, "aac" | "ac3" | "eac3")).then(|| Facet::Audio { codec: id.into_owned(), channels: a.channels })
 }
@@ -564,7 +570,12 @@ mod tests {
     }
 
     fn audio(codec: &str, channels: u32) -> Option<StreamAudio> {
-        Some(StreamAudio { codec: codec.into(), channels })
+        Some(StreamAudio { codec: codec.into(), channels, app_decoded_lossy: false })
+    }
+
+    /// The same track when the app decoded it (the lossy gate is on): the pipeline was fed PCM.
+    fn app_decoded(codec: &str, channels: u32) -> Option<StreamAudio> {
+        Some(StreamAudio { codec: codec.into(), channels, app_decoded_lossy: true })
     }
 
     /// A set whose table lists DTS at six channels (the shape of `plan_track_selection_tests.rs`'
@@ -737,6 +748,27 @@ mod tests {
         // A stall names native audio alone, never the video.
         let (_, fx) = run(&mut manual_machine(), refused(LoadRefusal::Stalled, on_4k("ac3", false)));
         assert_eq!(fx, [RecoveryEffect::ShowError { refusal: LoadRefusal::Stalled }]);
+    }
+
+    /// **A Load whose audio the app decoded names no native audio facet.** Under the lossy gate the
+    /// pipeline was fed PCM, so a refusal says nothing about its own DTS decoder; naming `dts` would
+    /// convert it, and a proven conversion would be STORED as a refusal of the set's native DTS
+    /// (`limit_codec` caps it at two channels), which outlives the gate.
+    #[test]
+    fn an_app_decoded_lossy_load_names_no_audio_facet() {
+        assert_eq!(suspect(audio("dca", 6).as_ref(), None), Some(dts6()), "the native Load still does");
+        assert_eq!(suspect(app_decoded("dca", 6).as_ref(), None), None);
+        assert_eq!(suspect(app_decoded("dca", 6).as_ref(), h264_4k().as_ref()), Some(h264_4k_facet()),
+            "elimination: the video is then the suspect");
+        let fed = |auto, no_frames| OpenFacts { audio: app_decoded("dca", 6), ..facts(false, auto, no_frames) };
+        let mut m = machine();
+        let (_, fx) = run(&mut m, refused(SHUT, fed(false, true)));
+        assert_eq!(fx, ERROR, "a manual pick: nothing to convert, the error shows");
+        assert_eq!(m.attempt().audio_supports("dts", 6), true, "native DTS is not narrowed");
+        let mut m = machine();
+        let (_, fx) = run(&mut m, refused(NATIVE, fed(true, true)));
+        assert_eq!(fx, [RecoveryEffect::StartAutoHls], "Auto Original falls to its HLS contingency");
+        assert_eq!(m.attempt().audio_supports("dts", 6), true, "and the HLS attempt keeps native DTS");
     }
 
     #[test]
