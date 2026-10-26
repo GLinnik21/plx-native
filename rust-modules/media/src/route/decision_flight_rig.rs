@@ -57,8 +57,10 @@ pub(crate) struct FlightRig {
     decision_body: std::sync::Arc<std::sync::Mutex<&'static [u8]>>,
 }
 
-/// A `/decision` body with BOTH lanes `transcode` ([`FlightRig::answer_decisions_with`]).
-pub(crate) const DECISION_TRANSCODES_BOTH_LANES: &[u8] = MDE_TRANSCODE_BOTH;
+/// A `/decision` body with BOTH lanes `transcode` ([`FlightRig::answer_decisions_with`]): the server
+/// re-encoded the video as well as the audio, so a conversion built from it changed more than the
+/// refused facet.
+pub(crate) const DECISION_TRANSCODES_BOTH_LANES: &[u8] = br#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"transcode","Stream":[{"streamType":1,"decision":"transcode"},{"streamType":2,"decision":"transcode"}]}]}]}]}}"#;
 
 /// The longest the server keeps a held answer if nobody releases it, so a test that fails
 /// while holding cannot park a worker for ever. Far longer than any frame, far shorter than a hang.
