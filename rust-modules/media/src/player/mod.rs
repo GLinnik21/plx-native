@@ -40,6 +40,7 @@ pub mod preview;
 pub mod ffi;
 #[cfg(feature = "hostsim")]
 pub mod ffi_host;
+mod native_stall; // the surround native-audio stall watchdog (pure state) and the AU size evidence line
 mod pump;
 pub mod report;
 #[cfg(all(test, feature = "hostsim"))]
@@ -342,6 +343,11 @@ static PTYPE: AtomicI32 = AtomicI32::new(10); // g_ptype (PLAYER_TYPE_MSE)
 /// `type=18`'s `num` when the pipeline releases the video decoder from an established session
 /// (`"VDEC resource is released by policy action"`). See `Shared::decoder_revoked`.
 const DECODER_REVOKED_BY_POLICY: i64 = 600;
+
+/// `type=18`'s `num` for `"Audio Codec Not Supported"`: libpf's `handleBusWarningMessage` raises it
+/// when a gst stream warning (`GST_STREAM_ERROR_CODEC_NOT_FOUND`) names audio. Every native Vorbis
+/// Load on a C1 ended in it (2026-10-21).
+const AUDIO_CODEC_NOT_SUPPORTED: i64 = 200;
 
 /// `PF_EVENT_TYPE_STR_STATE_UPDATE__ENDOFSTREAM` (0x1c): the last numbered type before the
 /// renumbering between webOS 4 and 5+, so the same on both. See `Shared::pipeline_eos`.
@@ -2508,6 +2514,9 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::Event
                 "smp: Load refused by the pipeline before any picture (type=18 num={num}) — failing the source"
             ));
             SHARED.load_failed.store(true, std::sync::atomic::Ordering::Release);
+            if num == AUDIO_CODEC_NOT_SUPPORTED && crate::ff::native_audio::fed().is_some() {
+                SHARED.native_audio_refused.store(true, std::sync::atomic::Ordering::Release);
+            }
         } else if ty == 18 && num == DECODER_REVOKED_BY_POLICY {
             // **After a picture, ONE number is measured: the decoder taken back.** A paused direct
             // play left until the screensaver came on (dev set, 2026-10-13) got exactly this, with
@@ -3042,6 +3051,55 @@ mod tests {
         );
         SHARED.retire_native_session(epoch);
         SHARED.reset_session();
+    }
+
+    /// **`type=18 num=200` is a native AUDIO refusal only when the session fed audio natively.**
+    /// A C1 refuses every Vorbis Load with it (2026-10-21); the same number on an AC3 file, or any
+    /// other `num` (601 is a resource allocation error), is not evidence about the audio, and
+    /// after a picture it is a statistic.
+    #[test]
+    fn a_native_audio_refusal_is_flagged_only_for_audio_fed_natively_before_a_picture() {
+        use std::sync::atomic::Ordering::Acquire;
+        let _guard = plx_base::testlock::serial();
+        let native = || {
+            crate::ff::native_audio::reset();
+            crate::ff::native_audio::publish_fed(crate::ff::native_audio::Kind::Opus, 2);
+        };
+        let flagged = || SHARED.native_audio_refused.load(Acquire);
+        let refuse = |epoch: u32, num: i64| sf_on_event(epoch, 18, num, c"Audio Codec Not Supported".as_ptr());
+
+        // Native audio fed, num 200, no picture: flagged (and the Load is failed as ever).
+        SHARED.reset_session();
+        native();
+        let epoch = SHARED.begin_native_session().expect("session");
+        refuse(epoch, 200);
+        assert!(flagged() && SHARED.load_failed.load(Acquire));
+        SHARED.retire_native_session(epoch);
+
+        // Another number, or no native audio: not flagged.
+        SHARED.reset_session();
+        native();
+        let epoch = SHARED.begin_native_session().expect("session");
+        refuse(epoch, 601);
+        assert!(!flagged() && SHARED.load_failed.load(Acquire));
+        SHARED.retire_native_session(epoch);
+        SHARED.reset_session();
+        crate::ff::native_audio::reset();
+        let epoch = SHARED.begin_native_session().expect("session");
+        refuse(epoch, 200);
+        assert!(!flagged(), "the audio was not fed natively");
+        SHARED.retire_native_session(epoch);
+
+        // After a picture: a statistic, not a verdict.
+        SHARED.reset_session();
+        native();
+        let epoch = SHARED.begin_native_session().expect("session");
+        sf_on_event(epoch, 0, 7_000_000_000, std::ptr::null());
+        refuse(epoch, 200);
+        assert!(!flagged());
+        SHARED.retire_native_session(epoch);
+        SHARED.reset_session();
+        crate::ff::native_audio::reset();
     }
 
     /// **The pipeline's end-of-stream is reported once there is a picture.** C1 event log,

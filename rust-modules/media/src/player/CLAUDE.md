@@ -240,8 +240,9 @@ something.
     is claimed after the landing.
   - **FAILURE-path recoveries are `FlightOwner::Recovery` flights** owned by the failed start
     (`Preparing(serial)`): the rollback's rebase after a failed Original trial
-    (`route::dispatch_rollback_rebase`) and the HLS fallback of an Auto Original that never opened
-    (`route::dispatch_unopened_auto_hls`). They hold nothing (the Engine that failed is not
+    (`route::dispatch_rollback_rebase`), the HLS fallback of an Auto Original that never opened
+    (`route::dispatch_unopened_auto_hls`) and the rebuild that has the server convert native audio
+    the pipeline refused (`route::dispatch_native_audio_conversion`, below). They hold nothing (the Engine that failed is not
     playing) and the viewer keeps the connecting spinner (`pump::hold_connecting_state`). The
     landing is drained AHEAD of the failure branches (`route::take_ready_recovery_flight`, then
     `pump::land_recovery_flight`: reload onto the route, or fail the Engine), because the
@@ -297,6 +298,49 @@ something.
   `acb_send_atmos` in `src/starfish.c`. `AcbAPI_setMediaVideoData`/`setState`/
   `setDisplayWindow` take a `long *taskId` out-param as their last arg — the 3-arg ABI is required
   (2-arg calls corrupt memory / segfault).
+- **Opus goes to LG's own decoder only as far as the set is known to take it** (`ff_native_audio.rs`,
+  `devcaps.rs`). What a set announces is layered, in this order and logged at boot as `devcaps: ...
+  audio layers:`: the codec table, minus the codecs `/etc/gst/gstcool.conf` shows nothing can decode
+  (`apply_gst_decoders`), minus `devcaps::EXCLUSIONS` (rows per firmware codename, each carrying its
+  evidence: the C1's `kisscurl-koli` limits Opus to stereo, and records that Vorbis is refused),
+  minus the refusals this install learned. Auto's own stereo ceiling for Opus
+  (`OPUS_AUTO_MAX_CHANNELS`) stays as it is; the rows add a ceiling Force Direct Play also holds
+  (`Caps::forced_feeds_audio_track`). FLAC is not native: the app decodes it and feeds PCM
+  (`ff_pcm.rs`), so it is outside these layers. A learned refusal comes from a native Load that ends
+  in `type=18 num=200 Audio Codec Not Supported` before any picture (`mod.rs`'s callback sets
+  `native_audio_refused` only while `native_audio::fed()` says the audio was fed natively; the pump
+  turns it into `session::learn_native_audio_refusal`, which takes it off the answer at once
+  (`devcaps::learn_refusal`) and persists it in the install-scope `native_audio_refused` preference).
+  That preference is the ONE list of refusals: `devcaps` keeps no list, only the answer derived from
+  it, which it folds monotonically (it only ever removes) from each fresh refusal and from the stored
+  record every installed session carries (`devcaps::project_stored_refusals`, called by the session's
+  `replace_cache` as a pure projection under the cache lock). The failed open then recovers on the
+  pre-picture recovery path every failed open uses, in the same frame: `open_failure_action` picks
+  `ConvertNativeAudio`, `route::dispatch_native_audio_conversion` flies a `ClaimWork::Encode` under a
+  `FlightOwner::Recovery` that rebuilds today's route (which now plans the audio as the server's to
+  convert), and `land_recovery_flight` reloads onto it. The viewer keeps the connecting spinner: no
+  read-out, no second play request. A refusal the install already knew skips that and fails as
+  before, so a conversion that is still refused cannot loop. A
+  silent stall is learned too, for surround only (`native_stall.rs`, checked in the pump): a native
+  Opus track with more than two channels, Load returned, no picture, both AU queues holding data and no
+  AU accepted for `NATIVE_AUDIO_STALL_MS` (4 s; a slow server has empty queues) is learned and
+  recovered the same way, and never after the first picture. Garbled playback (no stall, no event)
+  still needs a static row. The event log has `native audio: watching`, `STALL, no picture`, the
+  `remembered` line, `devcaps: ... learned refusals:`, and once per play the fed packets' `max` and
+  `p95` size (the C1's 6-channel Opus decoder stalls at packets of 1536 B and above).
+  A learned row records the firmware BUILD it was watched on (`tv::device::Info::build`, nyx's
+  `core_os_release`, e.g. `6.5.3-47`). A refusal is evidence only on its own build, so an LG update
+  gets a fresh native try: the answer ignores another build's rows (and rows an older record never
+  tagged), and the first refusal learned on the new build writes the list back without them
+  (`Session::with_native_audio_refusal`). The static rows are keyed on the codename and are not
+  forgotten.
+  Debug switches (debug builds, files under `/tmp/<app id>/`, read at app start):
+  `plxnative-nativeaudiowide` ignores the last two layers; with `plxnative-nativeaudiolearn` beside it
+  the exclusions stay ignored but refusals are learned and applied (the demo: a stall, a learned row,
+  an automatic server-converted replay); `plxnative-nativeaudioforget` does not apply the stored list
+  this run (a refusal learned during the run still applies at once). Vorbis is not fed natively: LG's Vorbis element
+  needs a caps `streamheader` and libpf's payload has no key for it (`setVORBISinfo` reads only
+  channels and sampleRate; Opus has `opusInfo.streamHeader`), and a C1 refuses every Vorbis Load.
 - **The Load payload's codecs must come from the `/decision` OUTPUT, not the source file.** A
   transcode changes the codec/rate; building the Starfish Load config from the *source* metadata gives
   the decoder the wrong description → **silent audio / glitches**. Read the output codecs from the

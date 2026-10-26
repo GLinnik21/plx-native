@@ -4050,6 +4050,46 @@ pub fn dispatch_unopened_auto_hls(ps: &mut PlaybackSession, offset_secs: i64) ->
     }
 }
 
+/// The line a refused native-audio conversion settles with (never logged as another recovery's).
+pub(super) const NATIVE_AUDIO_REJECTED: &str = "native audio: the server could not convert the refused audio";
+
+/// Start the flight that replaces a route whose natively fed audio the pipeline refused before the
+/// first picture (`type=18 num=200`, or the stall watchdog): the viewer's track plays again with the
+/// server converting that audio. The caller has already recorded the refusal (the install pref,
+/// through `session::learn_native_audio_refusal`), so the capability answer the profile reads no
+/// longer names the codec and today's rebuild ([`plain_rebuild_precheck`], the contract a track pick
+/// that the TV cannot decode asks for) comes back converted. Plan on the frame thread, PMS on a
+/// worker ([`try_retranscode`]), install at the landing ([`install_recovery_landing`]).
+/// [`RecoveryDispatch::Refused`] / [`RecoveryVerdict::Refused`] leave the failure the pump held back
+/// (a forced direct play, which the viewer asked not to convert, is one).
+pub fn dispatch_native_audio_conversion(ps: &mut PlaybackSession, offset_secs: i64) -> RecoveryDispatch {
+    let expected = worker_ticket();
+    let Some(contract) = plain_rebuild_precheck(ps, &expected) else {
+        return RecoveryDispatch::Refused;
+    };
+    let Some(inputs) = prepare_retranscode_inputs(ps, &expected, offset_secs) else {
+        return RecoveryDispatch::Refused;
+    };
+    let Some(ticket) = begin_recovery_flight_start() else {
+        return RecoveryDispatch::Refused;
+    };
+    let offset_ns = offset_secs * 1_000_000_000;
+    begin_recovery_flight(ticket.serial, offset_ns);
+    if spawn_flight(
+        FlightOwner::Recovery(ticket),
+        offset_ns,
+        offset_ns,
+        Some(inputs),
+        ClaimWork::Encode(contract),
+        RetranscodeFallback::RejectWith(NATIVE_AUDIO_REJECTED),
+    ) {
+        RecoveryDispatch::Flying { serial: ticket.serial }
+    } else {
+        let _ = reject_route_start_preparation(ticket);
+        RecoveryDispatch::Refused
+    }
+}
+
 /// [`plan_unopened_auto_hls`], [`run_auto_hls`] and [`install_auto_hls_outcome`] run in a row on
 /// the calling thread, for the host tests that grade the steps' joint outcome (the pump's own
 /// fallback is a flight: [`dispatch_unopened_auto_hls`]). No shipping caller is left, so it is not
@@ -7715,7 +7755,7 @@ fn playback_preview_with_capability(
     let mode = direct_play_mode();
     if mode == DirectPlayMode::Forced {
         return (!part.is_empty() && part_is_streamable(part)
-            && video_feed_supported(vcodec, presentation, plx_platform::devcaps::caps())
+            && video_feed_supported(vcodec, presentation, &plx_platform::devcaps::caps())
             && d.audio.iter().any(|a| audio_direct_plays(mode, &a.codec, a.channels, a.sampling_rate)))
             .then_some(Preview::DirectPlay);
     }

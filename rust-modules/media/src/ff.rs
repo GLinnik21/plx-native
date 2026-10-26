@@ -1899,6 +1899,8 @@ fn arm_active_stall_guard(
 mod acquisition;
 #[path = "ff_subs.rs"]
 mod subs;
+#[path = "ff_native_audio.rs"]
+pub(crate) mod native_audio;
 #[path = "ff_subside.rs"]
 pub(crate) mod subside;
 use subs::{SubKind, SubTracks};
@@ -9266,6 +9268,21 @@ pub fn demux(
                 } else {
                     None
                 };
+                // Opus goes to the television's own decoder (`ff_native_audio.rs`; its header travels
+                // in the Load). What is fed natively is recorded for the player, which learns a
+                // refusal from it. FLAC is decoded in the app (`pcm_dec`) and is not native.
+                if ai >= 0 && FEED_AUDIO.load(Ordering::Relaxed) && speed_dec.is_none() {
+                    let acp = stream_codecpar(*streams.add(ai as usize));
+                    let aname = std::ffi::CStr::from_ptr(avcodec_get_name((*acp).codec_id)).to_string_lossy().into_owned();
+                    if let Some(kind) = native_audio::Kind::from_ffmpeg_name(&aname) {
+                        let channels = u32::try_from((*acp).ch_layout.nb_channels).unwrap_or(0);
+                        crate::player::log(&format!(
+                            "ff: {aname} fed to the TV's own decoder (channels={channels} rate={})",
+                            (*acp).sample_rate
+                        ));
+                        native_audio::publish_fed(kind, channels);
+                    }
+                }
                 let dur = fmt_duration(fmt);
                 if dur > 0 {
                     SHARED

@@ -74,7 +74,8 @@ The player can feed `{h264, hevc}` (plus `av1` / `vp9` on a set whose codec tabl
 Automatic direct play intersects those formats with the TV's codec table and channel limits;
 DTS requires an explicit capability row with a channel ceiling. The implemented Load strings
 are `H264`/`H265` (and `AV1` / `VP9` only on a set whose codec table lists that decoder) and
-`AAC`/`AC3`/`AC3 PLUS`/`DTS`. DTS-HD packets feed only their core;
+`AAC`/`AC3`/`AC3 PLUS`/`DTS`, plus `OPUS` and `FLAC` on a set whose per-firmware exclusions and learned
+refusals have not removed them (`devcaps.rs`). DTS-HD packets feed only their core;
 TrueHD and other unsupported feed formats still require server conversion. This is the
 implemented format set, not the complete vocabulary accepted by LG's firmware.
 
