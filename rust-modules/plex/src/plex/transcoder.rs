@@ -22,20 +22,19 @@ use super::probe::Location;
 // `DP_AUDIO_CODECS` — the AUDIO codec set the buffer-feed pipeline decodes — is defined in
 // `devcaps` (the platform layer intersects it with the device's own codec table) and re-exported
 // here, so the profile string below and `plex::DP_AUDIO_CODECS` keep naming it. The live set is
-// `devcaps::Caps::audio`; normal routing uses [`is_dp_audio_track`] for membership and channel
+// `devcaps::Caps::audio`; normal routing uses [`is_dp_audio_track_with`] for membership and channel
 // bounds, shared with the device profile.
 pub use plx_platform::devcaps::DP_AUDIO_CODECS;
-pub fn is_dp_audio(codec: &str) -> bool {
-    plx_platform::devcaps::caps().audio_has(codec)
-}
 
-/// Codec, channel and (for app-decoded PCM) rate check for an actual selected track. Codec-only
-/// membership is insufficient on devices whose DTS decoder stops at 5.1 or whose AAC decoder
-/// stops at stereo, and on the PCM path, which can name only some rates
-/// (`devcaps::PCM_SAMPLE_RATES`).
-pub fn is_dp_audio_track(codec: &str, channels: i64, sample_rate: i64) -> bool {
-    plx_platform::devcaps::caps().audio_supports(codec, channels)
-        && plx_platform::devcaps::pcm_track_fits(codec, channels, sample_rate)
+/// Codec, channel and (for app-decoded PCM) rate check for an actual selected track, against the
+/// capability value `caps` of the attempt asking. Codec-only membership is insufficient on devices
+/// whose DTS decoder stops at 5.1 or whose AAC decoder stops at stereo, and on the PCM path, which
+/// can name only some rates (`devcaps::PCM_SAMPLE_RATES`).
+///
+/// The value is an argument, never a read of the process-wide `devcaps::caps()`: the profile the
+/// server is sent ([`TranscodeSpec::caps`]) and the plan that chose the track come from the same one.
+pub fn is_dp_audio_track_with(caps: &plx_platform::devcaps::Caps, codec: &str, channels: i64, sample_rate: i64) -> bool {
+    caps.audio_supports(codec, channels) && plx_platform::devcaps::pcm_track_fits(codec, channels, sample_rate)
 }
 
 /// Subtitle codecs Original client-renders (`ff.rs` / the track menu). This is the
@@ -334,11 +333,6 @@ fn profile_for(caps: &plx_platform::devcaps::Caps) -> String {
     profile_for_delivery(caps, TranscodeDelivery::ProgressiveMkv)
 }
 
-/// The profile for THIS device — [`profile_for`] over the boot-probed caps snapshot.
-fn profile_extra(delivery: TranscodeDelivery) -> String {
-    profile_for_delivery(&plx_platform::devcaps::caps(), delivery)
-}
-
 /// The forced-direct-play profile: the engine's own formats, no device limits, no transcode
 /// target. `vp9` and `av1` join the video list only when the device table lists their rows (issue
 /// #593); a forced start never widens the codec set past what the table says the panel decodes.
@@ -372,10 +366,6 @@ fn profile_codec_name(codec: &str) -> &str {
         "dts" => "dca",
         _ => codec,
     }
-}
-
-fn forced_direct_profile() -> String {
-    forced_direct_profile_for(&plx_platform::devcaps::caps())
 }
 
 impl Client {
@@ -498,7 +488,7 @@ impl Client {
         q = self
             .playback_identity(q)
             .str("X-Plex-Client-Profile-Name", "Generic")
-            .str("X-Plex-Client-Profile-Extra", &profile_extra(s.contract.delivery));
+            .str("X-Plex-Client-Profile-Extra", &profile_for_delivery(s.caps, s.contract.delivery));
         if let Some(offset) = s.offset.wire_seconds() {
             q = q.str("offset", &offset);
         }
@@ -525,6 +515,9 @@ impl Client {
     /// (`invalid subtitle setting 'auto'`). That `None` fail-closes Original into remux and a
     /// PUT `subtitleStreamID=0` (unless the selected subtitle is a sidecar the app draws, whose
     /// id the start keeps). `burn` would force a transcode.
+    ///
+    /// `caps` is the attempt's capability value: the profile the server reads is built from it, so
+    /// it is the value the plan that asks this question chose its track from.
     pub fn mde_decision(
         &self,
         rating_key: &str,
@@ -532,8 +525,9 @@ impl Client {
         session: &str,
         audio_stream_id: i64,
         subtitle_stream_id: i64,
+        caps: &plx_platform::devcaps::Caps,
     ) -> Option<MediaContainer> {
-        self.mde_decision_with_profile(rating_key, media_index, session, audio_stream_id, subtitle_stream_id, false)
+        self.mde_decision_with_profile(rating_key, media_index, session, audio_stream_id, subtitle_stream_id, caps, false)
     }
 
     /// Strict Original override: advertise the software feed formats without device limits.
@@ -546,10 +540,12 @@ impl Client {
         session: &str,
         audio_stream_id: i64,
         subtitle_stream_id: i64,
+        caps: &plx_platform::devcaps::Caps,
     ) -> Option<MediaContainer> {
-        self.mde_decision_with_profile(rating_key, media_index, session, audio_stream_id, subtitle_stream_id, true)
+        self.mde_decision_with_profile(rating_key, media_index, session, audio_stream_id, subtitle_stream_id, caps, true)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn mde_decision_with_profile(
         &self,
         rating_key: &str,
@@ -557,6 +553,7 @@ impl Client {
         session: &str,
         audio_stream_id: i64,
         subtitle_stream_id: i64,
+        caps: &plx_platform::devcaps::Caps,
         forced: bool,
     ) -> Option<MediaContainer> {
         let q = QueryBuilder::new("/video/:/transcode/universal/decision")
@@ -579,7 +576,7 @@ impl Client {
             .str("X-Plex-Client-Profile-Name", "Generic")
             .str(
                 "X-Plex-Client-Profile-Extra",
-                &if forced { forced_direct_profile() } else { profile_extra(TranscodeDelivery::ProgressiveMkv) },
+                &if forced { forced_direct_profile_for(caps) } else { profile_for(caps) },
             );
         self.get_json(&q.build())
     }
@@ -740,6 +737,13 @@ mod tests {
         )
     }
 
+    /// The caps every fixture spec carries: the assumed panel, which is what the process-wide
+    /// answer was on a host before the attempt carried its own.
+    fn assumed_caps() -> &'static Caps {
+        static ASSUMED: std::sync::OnceLock<Caps> = std::sync::OnceLock::new();
+        ASSUMED.get_or_init(Caps::assumed)
+    }
+
     fn spec<'a>(remux: bool, no_video_copy: bool) -> TranscodeSpec<'a> {
         spec_with_audio(remux, no_video_copy, AudioEnhancements::NONE)
     }
@@ -761,6 +765,7 @@ mod tests {
                 ceiling: None,
                 audio,
             },
+            caps: assumed_caps(),
             audio_stream_id: 0,
             subtitle_stream_id: 0,
             client_subtitles: false,
@@ -1290,11 +1295,11 @@ mod tests {
     /// play" on every firmware. The target lists are fallback CHAINS and each must end in
     /// something a free server can produce: h264 (encode) for video, and for audio every codec
     /// we direct-play, so a source track we could decode is copied rather than re-encoded.
-    /// Grades `profile_extra` (the composed path), which on the host resolves to the assumed
-    /// caps — the same hevc-capable panel this rule was written on.
+    /// Grades `profile_for` over the assumed caps — the same hevc-capable panel this rule was
+    /// written on.
     #[test]
     fn the_transcode_target_never_strands_a_server_without_plex_pass() {
-        let p = super::profile_extra(super::TranscodeDelivery::ProgressiveMkv);
+        let p = super::profile_for(&Caps::assumed());
         let target = target_of(&p);
         let video = list_of(target, "videoCodec=");
         assert!(video.contains(&"h264".to_string()),
@@ -1362,11 +1367,11 @@ mod tests {
 
     /// Forced mode advertises the engine's formats with no device limits and no transcode target.
     /// `av1` joins the video list only when the table lists it (issue #593); on the host the boot
-    /// snapshot is the assumed caps, so it is absent here, and
+    /// value is the assumed caps, so it is absent here, and
     /// `forced_profile_names_av1_only_with_the_row` pins the present case.
     #[test]
     fn force_profile_advertises_engine_formats_without_device_limits_or_transcode() {
-        let p = super::forced_direct_profile();
+        let p = super::forced_direct_profile_for(&Caps::assumed());
         assert_eq!(list_of(&p, "audioCodec="), ["aac", "ac3", "eac3"], "no DTS row on the assumed caps");
         assert_eq!(list_of(&p, "videoCodec="), ["h264", "hevc"]);
         assert!(!p.contains("add-limitation"));
@@ -1773,7 +1778,7 @@ mod tests {
             "tok",
             "cid",
         );
-        let _ = client.mde_decision("5", 1, "s1", 0, 0);
+        let _ = client.mde_decision("5", 1, "s1", 0, 0, &Caps::assumed());
         let line = rx.recv().expect("captured decision request");
         assert!(line.contains("mediaIndex=1&"), "the MDE asks about the chosen version: {line}");
         assert!(!line.contains("boostDialog"), "{line}");

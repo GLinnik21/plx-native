@@ -322,14 +322,18 @@ pub enum DeliveryReason {
     /// re-encoded: a fixed rung re-encodes at that rung (a transcode), and Auto, when it cannot
     /// keep the bytes on screen, rebuilds the adaptive HLS ladder at its re-entry rung.
     QualityPick,
+    /// A refusal before the first picture was retried with the suspect stream converted: the
+    /// open-recovery ladder's facet rung.
+    RefusalRecovery,
 }
 
 impl DeliveryReason {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::LinkFallback,
         Self::OriginalRecovery,
         Self::OriginalOpenRollback,
         Self::QualityPick,
+        Self::RefusalRecovery,
     ];
 
     pub const fn code(self) -> &'static str {
@@ -338,6 +342,7 @@ impl DeliveryReason {
             Self::OriginalRecovery => "original_recovery",
             Self::OriginalOpenRollback => "original_open_rollback",
             Self::QualityPick => "quality_pick",
+            Self::RefusalRecovery => "refusal_recovery",
         }
     }
 }

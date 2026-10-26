@@ -165,6 +165,12 @@ impl FlightRig {
                 )
             }
         };
+        // The play request that planned this route would have begun the attempt on the device's
+        // capability value; `apply_plan` alone begins none, and the session would plan from
+        // `devcaps::assumed_shared()` rather than the table the thread installed. The rig begins
+        // it on this thread's answer, so a rig test plans from the same table it installs
+        // ([`FlightRig::plan_on`] re-begins on another value, for a set installed after the rig).
+        ps.begin_attempt(plx_platform::devcaps::caps());
         apply_plan(
             ps,
             Plan {
@@ -212,11 +218,48 @@ impl FlightRig {
         ps.auto_bootstrap_rung = Some(rung);
     }
 
+    /// Begin the playing route's attempt on `caps`, as the play request that planned the rig's route
+    /// would have ([`PlaybackSession::begin_attempt`]). The rig already began it on the thread's
+    /// `devcaps::caps()` when it started; a test that installs its set AFTER the rig (a
+    /// `firmware_on_this_thread_for_test` guard taken once the route is up) re-begins on that set.
+    pub(crate) fn plan_on(ps: &mut PlaybackSession, caps: std::sync::Arc<plx_platform::devcaps::Caps>) {
+        ps.begin_attempt(caps);
+    }
+
+    /// Declare the audio the playing route feeds the pipeline, as the plan of a direct play of
+    /// `codec` with `channels` channels would have: `stream_acodec` and the carried track, which the
+    /// failed-open ladder's facts read ([`stream_audio`]). The rig's own route declares AC3.
+    pub(crate) fn declare_audio(ps: &mut PlaybackSession, codec: &str, channels: i64) {
+        ps.stream_acodec = codec.into();
+        ps.cur_audio = Some(CarriedAudio { codec: codec.into(), channels, ..CarriedAudio::named(960_002, 1) });
+    }
+
     /// Offer the Original the playing route can be restored to. A REMUX candidate (`direct ==
     /// false`) makes the recovery's PMS half a real `/decision`, which is what a frame must not
     /// wait on.
     pub(crate) fn offer_original(ps: &mut PlaybackSession, direct: bool) {
         ps.auto_original = Some(AutoOriginalCandidate { direct, ..test_original_candidate(None) });
+    }
+
+    /// [`FlightRig::offer_original`] whose candidate carries `codec` with `channels` channels (the
+    /// audio of the stream the Original would feed), where the offer's own default is E-AC-3 5.1.
+    pub(crate) fn offer_original_carrying(ps: &mut PlaybackSession, direct: bool, codec: &str, channels: i64) {
+        let audio = CarriedAudio { codec: codec.into(), channels, ..CarriedAudio::named(960_002, 1) };
+        ps.auto_original = Some(AutoOriginalCandidate { direct, audio: Some(audio), ..test_original_candidate(None) });
+    }
+
+    /// Whether the stored Original candidate would feed the Part itself on a recovery (`None` when
+    /// none is stored): the climb's DIRECT question, which a refused audio must answer no.
+    pub(crate) fn original_feeds_part(ps: &PlaybackSession) -> Option<bool> {
+        ps.auto_original.as_ref().map(AutoOriginalCandidate::feeds_part)
+    }
+
+    /// Whether an Original recovery from the stored candidate plans the codec-preserving remux
+    /// ([`RecoveryFlavour::Remux`]) rather than the Part (`None` when no candidate is stored).
+    pub(crate) fn original_recovery_is_remux(ps: &PlaybackSession) -> Option<bool> {
+        ps.auto_original.as_ref().map(|candidate| {
+            matches!(recovery_flavour(candidate, plx_plex::plex::AudioEnhancements::NONE), RecoveryFlavour::Remux(_))
+        })
     }
 
     /// Arm the Original REMUX trial the viewer's Original pick leaves on the playing route: the
@@ -305,9 +348,14 @@ impl FlightRig {
         self.log.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// The live `/decision` request lines (not the `hasMDE=1` probe) the server has been asked, in order.
+    pub(crate) fn decision_requests(&self) -> Vec<String> {
+        self.requests().into_iter().filter(|r| r.contains("/decision?") && !r.contains("hasMDE=1")).collect()
+    }
+
     /// How many live `/decision` calls (not the `hasMDE=1` probe) the server has been asked.
     pub(crate) fn decisions(&self) -> usize {
-        self.requests().iter().filter(|r| r.contains("/decision?") && !r.contains("hasMDE=1")).count()
+        self.decision_requests().len()
     }
 
     /// The transcode session ids the server has been asked to stop.
