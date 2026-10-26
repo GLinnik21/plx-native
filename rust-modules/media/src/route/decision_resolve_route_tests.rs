@@ -1658,6 +1658,7 @@ fn source_probe_reuses_live_hls_resource_instead_of_entering_adhoc_mde() {
     let active_route = worker_ticket();
     let control = HlsAbrControl {
         trace_generation: 0,
+        caps: plx_platform::devcaps::caps(),
         sid,
         rating_key: "1".into(),
         media_index: 0,
@@ -1761,6 +1762,7 @@ fn a_rejected_original_probe_keeps_hls_and_produces_no_capacity_observation() {
     let active_route = worker_ticket();
     let control = HlsAbrControl {
         trace_generation: 0,
+        caps: plx_platform::devcaps::caps(),
         sid,
         rating_key: "1".into(),
         media_index: 0,
@@ -1854,6 +1856,7 @@ fn a_source_sample_from_a_superseded_hls_resource_is_discarded() {
     let active_route = worker_ticket();
     let control = HlsAbrControl {
         trace_generation: 0,
+        caps: plx_platform::devcaps::caps(),
         sid,
         rating_key: "1".into(),
         media_index: 0,

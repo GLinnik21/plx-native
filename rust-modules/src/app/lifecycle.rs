@@ -49,6 +49,21 @@ fn foreground_load_start(
     }
 }
 
+impl PlayerForegroundActuator<'_> {
+    /// The lifecycle is about to follow `start`'s exact attempt: mark that Load as the foreground
+    /// machine's own, so the pump's failed-open ladder leaves its synchronous refusal to the
+    /// lifecycle's `Failed` settlement ([`plx_media::player::foreground_follows_load`]).
+    fn following(
+        &mut self,
+        start: ForegroundLoadStart<plx_media::route::RouteStartAttempt>,
+    ) -> ForegroundLoadStart<plx_media::route::RouteStartAttempt> {
+        if let ForegroundLoadStart::Launched(attempt) = start {
+            plx_media::player::foreground_follows_load(self.pa, attempt);
+        }
+        start
+    }
+}
+
 impl ForegroundActuator for PlayerForegroundActuator<'_> {
     type Attempt = plx_media::route::RouteStartAttempt;
 
@@ -71,7 +86,7 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
         match plx_media::player::land_engineless_rollback(ps, self.pa) {
             RollbackLanding::Waiting => FlightLanding::Waiting,
             RollbackLanding::Stale => FlightLanding::Stale,
-            RollbackLanding::Landed(recovery) => FlightLanding::Landed(foreground_load_start(recovery)),
+            RollbackLanding::Landed(recovery) => FlightLanding::Landed(self.following(foreground_load_start(recovery))),
         }
     }
 
@@ -100,14 +115,14 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
         if matches!(first, plx_media::player::BufferfeedStartOutcome::Failed) {
             // A synchronous failure inside an Original trial has no Engine for player::pump to
             // recover. Take the same explicit rollback edge here and follow its exact HLS Load.
-            return foreground_load_start(plx_media::player::recover_failed_foreground_original(ps));
+            return self.following(foreground_load_start(plx_media::player::recover_failed_foreground_original(ps)));
         }
         match first {
             plx_media::player::BufferfeedStartOutcome::AlreadyRunning => {
                 ForegroundLoadStart::AlreadyRunning
             }
             plx_media::player::BufferfeedStartOutcome::Launched(attempt) => {
-                ForegroundLoadStart::Launched(attempt)
+                self.following(ForegroundLoadStart::Launched(attempt))
             }
             plx_media::player::BufferfeedStartOutcome::Failed => unreachable!("handled above"),
         }
@@ -119,6 +134,9 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
             plx_media::route::RouteStartStatus::Started => ForegroundLoadStatus::Started,
             plx_media::route::RouteStartStatus::Failed => ForegroundLoadStatus::Failed,
             plx_media::route::RouteStartStatus::Superseded(replacement) => {
+                // The lifecycle now follows the replacement's Load, so its synchronous refusal is
+                // the lifecycle's too.
+                plx_media::player::foreground_follows_load(self.pa, replacement);
                 ForegroundLoadStatus::Superseded(replacement)
             }
             plx_media::route::RouteStartStatus::Stale => ForegroundLoadStatus::Stale,
