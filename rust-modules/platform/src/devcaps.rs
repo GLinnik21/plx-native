@@ -310,8 +310,11 @@ pub enum Facet {
     Audio { codec: String, channels: u32 },
 }
 
-/// The decode-capability snapshot the playback stack derives from. `OnceLock` for the same
-/// reason as `tv::device::Info`: written exactly once, at boot, then read on every play decision.
+/// The decode-capability snapshot the playback stack derives from. Probed once, at boot
+/// ([`probe`]); the app reads [`caps`] ONCE per attempt, at the play's start, and the attempt carries
+/// that value (`route::PlaybackSession`'s `caps`). The process-wide answer is not frozen after
+/// boot: [`learn_refusal`] can still move it, and an attempt already in flight keeps (and narrows,
+/// [`Caps::without`]) its own value instead of re-reading it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Caps {
     /// The SoC decodes HEVC. Gates the `hevc` arm of route.rs's direct-play test and the
@@ -596,7 +599,9 @@ pub fn project_stored_refusals(stored: &[Refusal]) -> bool {
 }
 
 /// The pipeline refused `codec` with `channels` channels on this firmware, fed natively: take it
-/// off the answer at once (the recovery that follows plans against the new answer) and return the
+/// off the process-wide answer at once (the NEXT play's start reads it without the audio; the
+/// recovery in flight does not read this answer, it narrows its own attempt's value by the same
+/// rule, [`Caps::without`], which shares `refusal_ceiling` with [`apply_learned`]) and return the
 /// entry for the caller to persist. `None` when this set cannot learn (no firmware name, the debug
 /// flag, no [`probe`]), or the combination changes nothing: the codec is not announced to that
 /// many channels any more, so the same play converting it would not be this refusal.

@@ -12,7 +12,7 @@
 //! through `client()` (history: `docs/plex-api-migration.md`). The module-wide allow covers
 //! the few items the library build does not reach: transport helpers on `Client` (`get_bytes`,
 //! `get_void`, `get_status_until`, `post_status_until`) and a handful of functions
-//! (`servers::register_with_client_id`, `transcoder::profile_for`, `session::peek_locked`,
+//! (`servers::register_with_client_id`, `session::peek_locked`,
 //! `session::install_or_drop_after_write`).
 #![allow(dead_code)]
 

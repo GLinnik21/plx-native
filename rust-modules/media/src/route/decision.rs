@@ -182,8 +182,11 @@ pub struct PlaybackSession {
     cur_contract: plx_plex::plex::EncodeContract,
     /// **The one capability value this attempt plans and profiles from.** Read from the device
     /// ONCE, by the app's play start, which hands it to the `request_play*` entry points; a
-    /// retry keeps it, and a refusal the pipeline just made narrows it
-    /// ([`narrow_attempt`](Self::narrow_attempt)). Never read again from the
+    /// retry keeps it, and a refusal of natively fed audio that the install just learned narrows it
+    /// ([`narrow_attempt`](Self::narrow_attempt), called by the pump's failed-open recovery for
+    /// EVERY learned refusal, whichever recovery then wins: the Original trial's rollback shadows
+    /// the conversion, and the rebase it flies, a later retry and a quality change must still plan
+    /// from the narrowed value). Never read again from the
     /// process-wide `devcaps::caps()`: the route's decisions (the direct-play gates, the audio pick,
     /// Auto's catalog, the remux predictions) and the profile string PMS reads
     /// (`plex::TranscodeSpec::caps`) are all derived from this value, so the plan and the profile
@@ -770,11 +773,13 @@ impl PlaybackSession {
     }
 
     /// Narrow the playing attempt by what the pipeline just refused ([`Caps::without`]): the
-    /// conversion that follows ([`dispatch_native_audio_conversion`]) plans and profiles from the
-    /// narrowed value, and so does every later seek and track pick. No process-wide answer is read:
+    /// recovery that follows (the conversion, [`dispatch_native_audio_conversion`], or the Original
+    /// trial's rollback rebase, [`dispatch_rollback_rebase`]) plans and profiles from the narrowed
+    /// value, and so does every later retry, seek and track pick. No process-wide answer is read:
     /// the refusal names itself (codec and channels), and the narrowing is the one the install's
-    /// learned record applies to the device answer (`devcaps::apply_learned`).
-    fn narrow_attempt(&mut self, refused: &plx_platform::devcaps::Facet) {
+    /// learned record applies to the device answer (`devcaps::apply_learned`). The pump calls this
+    /// once per learned refusal, before it picks the recovery; the dispatches below do not repeat it.
+    pub(crate) fn narrow_attempt(&mut self, refused: &plx_platform::devcaps::Facet) {
         self.caps = Some(std::sync::Arc::new(self.attempt_caps().without(refused)));
     }
 
@@ -4100,20 +4105,16 @@ pub(super) const NATIVE_AUDIO_REJECTED: &str = "native audio: the server could n
 /// Start the flight that replaces a route whose natively fed audio the pipeline refused before the
 /// first picture (`type=18 num=200`, or the stall watchdog): the viewer's track plays again with the
 /// server converting that audio. The caller has already recorded the refusal (the install pref,
-/// through `session::learn_native_audio_refusal`) and names it as `refused`: this dispatch
-/// **narrows the playing attempt by it** ([`PlaybackSession::narrow_attempt`], `Caps::without`), so
-/// the value the plan and the profile read no longer names the codec, today's rebuild
-/// ([`plain_rebuild_precheck`], the contract a track pick that the TV cannot decode asks for) comes
-/// back converted, and every seek and track pick after the landing plans from the same narrowed
-/// value. Without this the attempt would still hold the value it started on, and the refusal just
-/// learned would never reach the flight. Plan on the frame thread, PMS on a worker
+/// through `session::learn_native_audio_refusal`) **and narrowed the playing attempt by it**
+/// ([`PlaybackSession::narrow_attempt`], `Caps::without`, which the pump does for every learned
+/// refusal before it picks a recovery), so the value the plan and the profile read no longer names
+/// the codec, today's rebuild ([`plain_rebuild_precheck`], the contract a track pick that the TV
+/// cannot decode asks for) comes back converted, and every seek and track pick after the landing
+/// plans from the same narrowed value. Plan on the frame thread, PMS on a worker
 /// ([`try_retranscode`]), install at the landing ([`install_recovery_landing`]).
 /// [`RecoveryDispatch::Refused`] / [`RecoveryVerdict::Refused`] leave the failure the pump held back
 /// (a forced direct play, which the viewer asked not to convert, is one).
-pub fn dispatch_native_audio_conversion(
-    ps: &mut PlaybackSession, refused: &plx_platform::devcaps::Facet, offset_secs: i64,
-) -> RecoveryDispatch {
-    ps.narrow_attempt(refused);
+pub fn dispatch_native_audio_conversion(ps: &mut PlaybackSession, offset_secs: i64) -> RecoveryDispatch {
     let expected = worker_ticket();
     let Some(contract) = plain_rebuild_precheck(ps, &expected) else {
         return RecoveryDispatch::Refused;

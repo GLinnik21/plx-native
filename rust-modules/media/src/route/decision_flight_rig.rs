@@ -165,6 +165,12 @@ impl FlightRig {
                 )
             }
         };
+        // The play request that planned this route would have begun the attempt on the device's
+        // capability value; `apply_plan` alone begins none, and the session would plan from
+        // `devcaps::assumed_shared()` rather than the table the thread installed. The rig begins
+        // it on this thread's answer, so a rig test plans from the same table it installs
+        // ([`FlightRig::plan_on`] re-begins on another value, for a set installed after the rig).
+        ps.begin_attempt(plx_platform::devcaps::caps());
         apply_plan(
             ps,
             Plan {
@@ -213,8 +219,9 @@ impl FlightRig {
     }
 
     /// Begin the playing route's attempt on `caps`, as the play request that planned the rig's route
-    /// would have ([`PlaybackSession::begin_attempt`]): a rig route installed by `apply_plan` alone
-    /// has no attempt, and plans from the assumed caps.
+    /// would have ([`PlaybackSession::begin_attempt`]). The rig already began it on the thread's
+    /// `devcaps::caps()` when it started; a test that installs its set AFTER the rig (a
+    /// `firmware_on_this_thread_for_test` guard taken once the route is up) re-begins on that set.
     pub(crate) fn plan_on(ps: &mut PlaybackSession, caps: std::sync::Arc<plx_platform::devcaps::Caps>) {
         ps.begin_attempt(caps);
     }
