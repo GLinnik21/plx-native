@@ -2462,7 +2462,11 @@ mod tests {
         assert!(std::sync::Arc::ptr_eq(&before, &plx_platform::devcaps::caps()), "queueing the write moved no global");
         plx_base::storage_worker::drain_for_test();
         assert_eq!(plx_plex::plex::session::peek().native_audio_refused().len(), 1, "the real recorder wrote the row");
-        assert!(std::sync::Arc::ptr_eq(&before, &plx_platform::devcaps::caps()), "and the answer moves only when the record is projected");
+        assert!(std::sync::Arc::ptr_eq(&before, &plx_platform::devcaps::caps()), "the worker's projection does not reach this thread");
+        // The record's projection on THIS thread is what moves the answer, and a named row applies at once.
+        assert!(before.audio_supports("opus", 6), "sanity: announced before the record is projected");
+        plx_plex::plex::session::save(&plx_plex::plex::session::peek());
+        assert!(!plx_platform::devcaps::caps().audio_supports("opus", 6), "the projected named row took Opus 5.1 away");
         super::SHARED.reset_session();
     }
     use super::{
