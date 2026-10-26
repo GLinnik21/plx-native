@@ -340,6 +340,6 @@ python3 ci/check-machine-shape.py
 # `with` for real: it refuses to start on IN USE, PLX_TV_IN_USE_OK overrides, and its renewer's whole process tree dies
 # with it. That spawns and kills background processes, so it takes about 20 s, not milliseconds. Then the PostToolUse hook
 # that turns the HEADS-UP and IN USE lines into reminders: payload shapes, the failure and unrelated cases, malformed
-# stdin (a second or two). Both host-only.
+# stdin. Both host-only.
 tools/tv-lock.sh selftest
 python3 .claude/hooks/tv-lock-notify-test.py
