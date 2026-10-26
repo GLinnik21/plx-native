@@ -325,7 +325,10 @@ something.
   below never waits for it: it rebuilds from the attempt's own narrowed `start`. A write that does not
   land (unwritable storage) leaves the record as it was, as it does for every preference: the next
   play loads the combination, is refused once more, and the ladder converts it, one refused Load
-  slower. **A row is applied only on facet-clean proof** (S2a, #1046): a NAMED refusal
+  slower. Under Force Direct Play a row in force refuses before any Load: the Forced audio gate
+  (`route/plan.rs`, `ForcedFailure::Audio`) reads the attempt's start value, so the read-out names
+  the codec and offers Switch to Auto. **A row is applied only on facet-clean proof** (S2a, #1046):
+  a NAMED refusal
   (`num=200`, the stall) applies at once (its row has no `proofs`), but the DTS 601 of #695 names no
   codec, so it is learned the other way. The machine's facet flight lands (`FlightLanded` carries the
   `/decision` lanes, `route::plan::decision_lanes`), and only a flight whose AUDIO lane is `Transcode`
