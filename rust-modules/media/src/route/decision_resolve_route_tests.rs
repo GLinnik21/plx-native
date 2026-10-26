@@ -2750,3 +2750,44 @@ fn forced_direct_play_refuses_dca_without_a_dts_row() {
     assert_eq!(codec, "DTS");
     assert!(!plan.url.contains("/library/parts/"), "no part URL may reach the Load: {}", plan.url);
 }
+
+/// The detail page's facts row is a read-out of what the device would do NOW, so it reads the same
+/// start value a play would (`devcaps::start_caps`: the boot snapshot less the install's stored
+/// refusals), not the boot snapshot. A set that announces DTS 5.1 and has watched its pipeline refuse
+/// it must not promise "Direct Play" under Force Direct Play.
+#[test]
+fn the_facts_row_reads_the_start_value() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let _session = plx_plex::plex::session::TempSession::new("facts-row-start-value");
+    let _set = plx_platform::devcaps::firmware_on_this_thread_for_test(
+        "fw",
+        "B",
+        plx_platform::devcaps::Caps {
+            audio: "aac,ac3,eac3,dts".into(),
+            audio_channels: [("dts".into(), 6)].into(),
+            ..plx_platform::devcaps::Caps::assumed()
+        },
+    );
+    restore_direct_play_mode(DirectPlayMode::Forced);
+    let detail = plx_data::metadata::Detail {
+        vcodec: "h264".into(),
+        part: "/library/parts/1/2/file.mkv".into(),
+        width: 1920,
+        height: 1080,
+        audio: vec![plx_data::metadata::Stream { codec: "dca".into(), channels: 6, ..Default::default() }],
+        ..Default::default()
+    };
+    assert_eq!(playback_preview(&detail), Some(Preview::DirectPlay), "sanity: the set decodes DTS 5.1 and no row says otherwise");
+
+    let dts6 = plx_platform::devcaps::Facet::Audio { codec: "dca".into(), channels: 6 };
+    assert!(plx_plex::plex::session::record_named_refusal(&dts6), "the write is queued");
+    plx_base::storage_worker::drain_for_test();
+    assert_eq!(plx_plex::plex::session::peek().native_audio_refused().len(), 1, "the row is stored");
+    assert_ne!(
+        playback_preview(&detail),
+        Some(Preview::DirectPlay),
+        "the facts row promised Direct Play for a combination this install watched the pipeline refuse"
+    );
+    restore_direct_play_mode(DirectPlayMode::Auto);
+}

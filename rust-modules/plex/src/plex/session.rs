@@ -6367,6 +6367,30 @@ mod server_key_pin_tests {
         assert!(upgraded.applies());
     }
 
+    /// A set that announces Opus 5.1, so a recorded Opus refusal WOULD move `caps()` if anything wrote it.
+    fn opus_announcing_caps() -> plx_platform::devcaps::Caps {
+        plx_platform::devcaps::Caps { audio: "aac,ac3,eac3,opus".into(), ..plx_platform::devcaps::Caps::assumed() }
+    }
+
+    /// `devcaps` is write-once (#1047): a recorded refusal lands in the install's record and moves
+    /// nothing under a running play, however the record is installed. `caps()` answers the same `Arc`
+    /// before the write, after it, and after the record is installed again on this thread.
+    #[test]
+    fn caps_is_one_arc_across_a_recorded_refusal() {
+        let _serial = plx_base::testlock::serial();
+        let _session = test_support::TempSession::new("refusal-one-arc");
+        let _fw = plx_platform::devcaps::firmware_on_this_thread_for_test("fw", "B", opus_announcing_caps());
+        save(&test_support::signed_in());
+        let before = plx_platform::devcaps::caps();
+        assert!(before.audio_supports("opus", 6), "sanity: the set announces Opus 5.1");
+        assert!(record_named_refusal(&opus6()));
+        plx_base::storage_worker::drain_for_test();
+        save(&peek());
+        assert_eq!(peek().native_audio_refused().len(), 1, "the row is stored");
+        let after = plx_platform::devcaps::caps();
+        assert!(std::sync::Arc::ptr_eq(&before, &after), "the stored row moved caps(): opus ceiling {:?} -> {:?}", before.audio_channels.get("opus"), after.audio_channels.get("opus"));
+    }
+
     /// A firmware update retires counted rows as it retires named ones: only the new build's remains.
     #[test]
     fn a_build_change_clears_counted_and_named_rows() {
