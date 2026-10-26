@@ -5,11 +5,11 @@ description: >
   ANY device work — "deploy to the TV", "run the test suite", "screenshot the TV", "reproduce it
   on device", "measure the frame rate", "capture the video plane" — and whenever a command is
   refused with "the television is held by another lane", "BLOCKED: this lane does not hold the
-  television's lock", or a tool says somebody else is on the set. Also covers running SEVERAL
-  agents at once against one TV ("fan this out", "run these in parallel", "another agent is using
-  the TV"), what to do while you wait, and when it is safe to break a lease. There is one set, one
-  app instance, and no OS-level mutex: two jobs on it do not fail cleanly, they produce plausible
-  WRONG data that reads exactly like a real regression.
+  television's lock", a pre-flight prints a line starting "IN USE:", or a tool says somebody else is
+  on the set. Also covers running SEVERAL agents at once against one TV ("fan this out", "run these
+  in parallel", "another agent is using the TV"), what to do while you wait, and when it is safe to
+  break a lease. There is one set, one app instance, and no OS-level mutex: two jobs on it do not
+  fail cleanly, they produce plausible WRONG data that reads exactly like a real regression.
 ---
 
 # The television is a mutex — this is how you hold it
@@ -88,9 +88,9 @@ released. Pass `--ttl 30` (or less) for an ordinary run.
 
 Four layers, so there is no "I forgot" path:
 
-1. **`tools/tv-session.sh`** — `up`, `key`, `click`, `shot` and `down` require the lock. `log` and
-   `status` are read-only: they take nothing and refuse nothing, but they name the holder, because
-   reading a log another lane's app is writing is how a session gets graded as your own.
+1. **`tools/tv-session.sh`** — `up`, `key`, `click`, `shot` and `down` require the lock. `log`,
+   `status` and `fg` are read-only: they take nothing and refuse nothing, but they name the holder,
+   because reading a log another lane's app is writing is how a session gets graded as your own.
 2. **The Makefile** — `deploy`, `run`, `run-stream`, `kill`, `install` and `uninstall` take
    `tv-lock-require` as a prerequisite (last in the list for `deploy`, so a two-minute FFmpeg build
    does not happen while holding the set).
@@ -126,25 +126,36 @@ Four layers, so there is no "I forgot" path:
    you how long it has left; `break --yes` takes it anyway. An expired lease needs no break at all
    — the next `acquire` takes it and says whose it was.
 
-## Two things the lock cannot see
+## What the lock cannot see
 
-- **A human watching television.** The lock knows about jobs, not about the household. `status`
-  therefore also runs the old pre-flight — `fuser` on **both** installs' own binaries (inode-scoped;
-  `pidof plxnative` matches both, since both binaries carry that name) and a count of ssh sessions
-  on the set. `N ssh sessions (one is mine)` is the check that actually fires, and it sees machines
-  whose processes you cannot: read the warning, do not dismiss it as your own connection.
+- **A human watching television.** The lock knows about jobs, not about the household, so the
+  pre-flight reads the set too: `fuser` on **both** installs' own binaries (inode-scoped; `pidof
+  plxnative` matches both), a count of ssh sessions on the set, and what is in front.
+  `N ssh sessions (one is mine)` is the check that actually fires, and it sees machines whose
+  processes you cannot: read the warning, do not dismiss it as your own connection. Still unseen: a
+  person who picks up the remote after the read, anything the set will not tell it (`UNKNOWN`), and
+  what a `Screen Off` panel means. That is only the backlight, left blanked over somebody's unmuted
+  YouTube once, so the verdict ignores it and judges the app.
 - **Work started before the lock existed**, or from a checkout without these tools. Same warning,
   same rule.
 
-**Is anybody watching?** The pre-flight that `acquire` and `status` print also reads the foreground
-app and the panel state, in the same round trip, and ends with `· IDLE (...)` or a line that starts
-`IN USE: <app id>: stop and tell the owner`: on that line do not drive the set and tell the owner (a
-subagent puts the line first in its report). Idle is one of this
-project's own apps, LG Home or live TV in front, or the panel dark / the set in standby; any other
-foreground app is IN USE, and a reply that cannot be read prints `UNKNOWN`, which is never idle.
-`tools/tv-session.sh fg` is the same foreground read on its own: with `log` and `status`, a
-`tv-session.sh` word the guard allows without a lease, because it changes nothing and never wakes a
-sleeping set (it says `TV unreachable or asleep (treated as idle)`).
+**Is anybody watching?** A new `acquire` (your own expired lease re-taken included) and every
+`status` print a verdict; a live renew prints none, and on a new acquire the `HEADS-UP:` line follows
+it. `Active Standby` is IDLE. Otherwise the foreground app decides: this project's debug app, the
+parking app (`org.webosbrew.hbchannel`, where `tv-session.sh background` leaves the set), LG Home and
+live TV (no antenna in this household) are IDLE; our STABLE app, the household's own client, is IDLE
+only when muted, IN USE with the sound on, `UNKNOWN` when mute is unreadable; any other app is IN USE.
+An unreadable, ambiguous, `returnValue:false` or multi-valued reply, or a read that overruns its 10 s
+(`PLX_TV_PREFLIGHT_SECS`), is `UNKNOWN`, never idle.
+
+IN USE is one stdout line starting `IN USE: <app id>: stop and tell the owner` at column 0. For
+`acquire` and `status` it is a warning (exit 0, lease kept): do not drive the set, tell the owner. A
+subagent releases the lease before its turn ends and puts the line first in its report; the main
+session keeps it only while waiting for the owner's answer. For `tv-lock.sh with` and `tests/run.py`
+it is a refusal: they release the lease and do not start (`with` exits 3), unless
+`PLX_TV_IN_USE_OK=1`, which only the owner's go allows. `tools/tv-session.sh fg` is the same
+foreground read alone: the guard allows it without a lease because it changes nothing and sends no
+Wake-on-LAN (an unreachable set says `TV unreachable or asleep (nothing read, no wake sent)`).
 
 ## Fleets
 

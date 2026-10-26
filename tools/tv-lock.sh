@@ -40,8 +40,8 @@
 # each other; the television is not synced to anything that matters here.
 #
 # See .agents/skills/tv-lock/SKILL.md for the workflow, and docs/agent-reference.md's testing section for what
-# the lock does and does not protect (it cannot see a human watching a film with the remote; the
-# pre-flight after an acquire reads what is in front and prints IDLE or `IN USE:`).
+# the lock does and does not protect (a lease cannot see a human watching a film; the pre-flight
+# after an acquire reads what is in front and prints IDLE, `IN USE:` or UNKNOWN, as of that read only).
 #
 # EXIT CODES. 0 done (an `acquire` on an IN USE set still exits 0 and prints the `IN USE:` line);
 # 1 refused (held by another lane, a lost race, no lease to renew, a live lease `break` will not take);
@@ -51,7 +51,7 @@
 #
 # ENVIRONMENT. PLX_TV_LOCK_PATH / PLX_TV_LOCK_STATE / PLX_TV_LOCK_LANE / PLX_TV_LOCK_TTL move the lock, the
 # lease mirror, the lane and the lease length; PLX_TV_LOCK_BYPASS=1 skips the check (`require`);
-# PLX_TV_IN_USE_OK=1 lets `with` run its command on an IN USE set (only after the owner said go);
+# PLX_TV_IN_USE_OK=1 lets `with` and tests/run.py go on an IN USE set (only after the owner said go);
 # PLX_TV_PREFLIGHT_SECS (default 10) bounds the whole pre-flight read, and PLX_TV_RENEW_SECS (default 240)
 # is how often `with` renews while its command runs: both are test seams; PLX_TV_LOCK_LOCAL / PLX_TV_LOCK_LOCAL_PROBE=FILE are the selftest's "there is no television" switch
 # and the file whose text stands in for the set's pre-flight reply.
@@ -566,7 +566,7 @@ park_app_id() {
 # leading `IN USE:` and tells the agent to stop and tell the owner. THE CONTRACT, for every reader of
 # a pre-flight: an IN USE verdict is exactly one stdout line starting `IN USE:` at column 0 and nothing
 # else ever starts a line that way; `acquire` and `status` still exit 0 with it (the lease is kept);
-# `with` keys on it to refuse to start its command (exit 3), and tests/run.py is to do the same.
+# `with` keys on it to refuse to start its command (exit 3), and tests/run.py does the same.
 in_use_line() {  # $1 = the app id
   printf 'IN USE: %s: stop and tell the owner\n' "$1"
 }

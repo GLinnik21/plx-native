@@ -157,7 +157,7 @@ tools/plxnative-sample selftest
 # that `up` requires after launch. No SSH or television access occurs in this self-test.
 python3 tools/mock-guest.py --selftest
 tools/tv-session.sh selftest
-# The PreToolUse/PostToolUse hooks' own suites (~0.8s together). They were not in this
+# The PreToolUse/PostToolUse hooks' own suites. They were not in this
 # target until 2026-08-26, which meant the guard that decides whether a private value may
 # leave this machine was covered by a test nobody ran on a normal check -- the same shape as
 # the bug that produced the leak it exists to prevent, where the check computed its answer and
@@ -335,8 +335,11 @@ python3 ci/test_check_machine_shape.py
 python3 ci/check-machine-shape.py
 # The TV lock's own protocol suite, with NO television: the device half runs under a local sh in a temp dir, and the
 # HEADS-UP cases run the real `acquire`/`break` as children with their own lane, lease directory and lock path (one
-# line on a new lease, including your own expired one, none on a live renew or a refusal). Then the PostToolUse hook
-# that turns that line into a reminder to push it: payload shapes, the failure and unrelated cases, malformed
-# stdin. Both host-only and a few seconds.
+# line on a new lease, including your own expired one, none on a live renew or a refusal). It also runs the pre-flight's
+# verdict table (IDLE / IN USE / UNKNOWN) on fixture replies, cuts a hung probe off at PLX_TV_PREFLIGHT_SECS, and runs
+# `with` for real: it refuses to start on IN USE, PLX_TV_IN_USE_OK overrides, and its renewer's whole process tree dies
+# with it. That spawns and kills background processes, so it takes about 20 s, not milliseconds. Then the PostToolUse hook
+# that turns the HEADS-UP and IN USE lines into reminders: payload shapes, the failure and unrelated cases, malformed
+# stdin (a second or two). Both host-only.
 tools/tv-lock.sh selftest
 python3 .claude/hooks/tv-lock-notify-test.py

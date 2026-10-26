@@ -119,8 +119,8 @@
 # would fight a human who muted the set on purpose before handing it to a lane.
 #
 # THE TV LOCK: every subcommand that DRIVES the set (up, key, click, shot, down) requires the
-# television's lock and refuses when another lane holds it; `status` and `log` are read-only and
-# only name the holder. Take one for a whole session rather than letting each command take its own
+# television's lock and refuses when another lane holds it; `status`, `log` and `fg` are read-only
+# and only name the holder. Take one for a whole session rather than letting each command take its own
 # 10-minute implicit lease — the gap between two of your own commands is exactly where another
 # job lands:  tools/tv-lock.sh acquire --why "…"  …  tools/tv-lock.sh release.
 #
@@ -259,7 +259,7 @@ app_pids() {
 # One television, no OS-level mutex: two jobs on it do not fail cleanly, they produce plausible
 # WRONG data (an fps number measured while somebody else's binary was deployed underneath, a
 # capture of a screen the other job navigated away from). Every subcommand here that DRIVES the
-# set goes through the lock; the two read-only ones only say who is on it. tools/tv-lock.sh is the
+# set goes through the lock; the three read-only ones (log, status, fg) only name the holder. tools/tv-lock.sh is the
 # mechanism and .agents/skills/tv-lock/SKILL.md is the workflow.
 LOCKTOOL="$REPO/tools/tv-lock.sh"
 require_lock() {  # $1 = what this session is for, for the holder read-out
