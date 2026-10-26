@@ -139,6 +139,12 @@ pub enum RecoveryEvent {
     FlightRefused,
     /// The first decoded picture of the open.
     FirstPicture,
+    /// A Load started on this request's route (`engine::start_bufferfeed_for`, which every Engine
+    /// start passes: a fresh play, a reload, the foreground restore's Load). A start the machine
+    /// asked for has already moved it (`FlightLanded` -> `Opening`), so this changes nothing there;
+    /// a start it did not ask for (a park and restore, or any reload, that crossed an outstanding
+    /// flight or the read-out) leaves `Flight` or `Failed` with a new open to rule on.
+    LoadStarted,
 }
 
 /// What the driver executes.
@@ -176,13 +182,13 @@ enum Rung {
 enum State {
     /// The open is under way (the initial state, and the state a landed flight's reload re-enters).
     Opening,
-    /// A native-audio refusal waits on the learner's answer. `opening` is false when the refusal
-    /// arrived from `Playing`, which keeps the facet rung closed.
-    Confirming { refusal: LoadRefusal, facts: OpenFacts, opening: bool },
+    /// A native-audio refusal waits on the learner's answer.
+    Confirming { refusal: LoadRefusal, facts: OpenFacts },
     /// A recovery flight is outstanding; `cause` is the refusal that started it and `facts` are what
     /// the next rung decides on if the flight comes back refused.
     Flight { rung: Rung, cause: LoadRefusal, facts: OpenFacts },
-    /// A picture decoded: the ladder is over.
+    /// A picture decoded in this request. The ladder is not over: a reload starts a new Engine
+    /// whose own open has no picture, and the facts (`no_frames`) say which Engine a refusal is of.
     Playing,
     /// The ladder is exhausted and the read-out was asked for.
     Failed,
@@ -229,9 +235,10 @@ impl OpenRecovery {
     }
 
     /// The rung `facts` select. The order is the proof that no rung of main is reordered: pending
-    /// rollback, Forced's read-out, the facet rung, the both-facets rung, the read-out.
-    /// `opening` is false for a refusal after a picture, which opens no facet rung.
-    fn decide(&mut self, refusal: LoadRefusal, facts: &OpenFacts, opening: bool, fx: &mut Vec<RecoveryEffect>) {
+    /// rollback, Forced's read-out, the facet rung, the both-facets rung, the read-out. The facet
+    /// rung is for an Engine that has shown no picture (`facts.no_frames`: the picture is per
+    /// Engine, so a reload after the request's first picture owes its own open the same rung).
+    fn decide(&mut self, refusal: LoadRefusal, facts: &OpenFacts, fx: &mut Vec<RecoveryEffect>) {
         let flight = |rung| State::Flight { rung, cause: refusal, facts: facts.clone() };
         if facts.pending_original {
             // A refusal of native audio the learner just recorded narrows the rollback's profile
@@ -249,7 +256,7 @@ impl OpenRecovery {
             self.state = State::Failed;
             return;
         }
-        if opening && refusal.names_pipeline() && self.flights == 0 {
+        if refusal.names_pipeline() && facts.no_frames && self.flights == 0 {
             if let Some(facet) = suspect(facts.audio.as_ref()).filter(|f| self.start.without(f) != *self.start) {
                 self.excluded = Some(facet.clone());
                 self.narrow();
@@ -276,40 +283,45 @@ impl OpenRecovery {
     /// |---|---|---|
     /// | `Opening` | `Refused`, facts name native audio | `ConfirmRefusal`; `Confirming` |
     /// | `Opening` | `Refused`, otherwise | the ladder below |
-    /// | `Playing` | `Refused`, facts name native audio | `ConfirmRefusal`; `Confirming` (it remembers the refusal came after a picture) |
-    /// | `Playing` | `Refused`, otherwise | the ladder below, with the facet rung closed |
+    /// | `Playing` | `Refused`, facts name native audio | `ConfirmRefusal`; `Confirming` |
+    /// | `Playing` | `Refused`, otherwise | the ladder below (`Playing` and `Opening` rule alike: the facts say which Engine failed) |
     /// | `Confirming` | `RefusalConfirmed{newly}` | the ladder below; `newly` selects nothing |
     /// | `Flight` | `FlightLanded` | none; `Opening` (the reload re-enters the open) |
     /// | `Flight{Facet}` | `FlightRefused` | the ladder below (one flight spent, so the facet rung is closed): `StartAutoHls` or `ShowError` |
     /// | `Flight{Rollback, Both}` | `FlightRefused` | `ShowError`; `Failed` (a refused rollback stays terminal) |
     /// | `Opening` | `FirstPicture` | none; `Playing` |
+    /// | `Flight`, `Failed` | `LoadStarted` | none; `Opening`, `flights` and the excluded facet kept |
     ///
     /// The ladder: `pending_original` -> `Rollback`; else `forced` -> `ShowError`; else a pipeline
-    /// refusal of a [`suspect`] stream which narrows the attempt, with no flight spent ->
-    /// `ConvertFacet`; else `auto_original && no_frames` with a flight left -> `StartAutoHls` (each:
-    /// `Flight`); else `ShowError`; `Failed`.
+    /// refusal, of an Engine with no picture (`no_frames`), of a [`suspect`] stream which narrows the
+    /// attempt, with no flight spent -> `ConvertFacet`; else `auto_original && no_frames` with a
+    /// flight left -> `StartAutoHls` (each: `Flight`); else `ShowError`; `Failed`.
+    ///
+    /// `Refused` is not handled in `Confirming`, `Flight` or `Failed`: a confirmation or a flight is
+    /// outstanding (the pump runs no failure arm while a flight is), or the read-out is already up
+    /// (the pump meets the same Engine's failed flags every frame until the Engine is released, and
+    /// re-asserts the read-out itself). The driver treats an unhandled `Refused` as the Engine failing
+    /// for good, never as silence.
     pub fn step(&mut self, ev: &RecoveryEvent, fx: &mut Vec<RecoveryEffect>) -> Handled {
         match ev {
             RecoveryEvent::Refused { refusal, facts } => {
-                let opening = match self.state {
-                    State::Opening => true,
-                    State::Playing => false,
-                    _ => return Handled::No,
-                };
+                if !matches!(self.state, State::Opening | State::Playing) {
+                    return Handled::No;
+                }
                 if facts.native_audio.is_some() {
                     fx.push(RecoveryEffect::ConfirmRefusal);
-                    self.state = State::Confirming { refusal: *refusal, facts: facts.clone(), opening };
+                    self.state = State::Confirming { refusal: *refusal, facts: facts.clone() };
                 } else {
-                    self.decide(*refusal, facts, opening, fx);
+                    self.decide(*refusal, facts, fx);
                 }
                 Handled::Yes
             }
             RecoveryEvent::RefusalConfirmed { .. } => {
-                let State::Confirming { refusal, facts, opening } = &self.state else {
+                let State::Confirming { refusal, facts } = &self.state else {
                     return Handled::No;
                 };
-                let (refusal, facts, opening) = (*refusal, facts.clone(), *opening);
-                self.decide(refusal, &facts, opening, fx);
+                let (refusal, facts) = (*refusal, facts.clone());
+                self.decide(refusal, &facts, fx);
                 Handled::Yes
             }
             RecoveryEvent::FlightLanded => {
@@ -325,7 +337,7 @@ impl OpenRecovery {
                 };
                 let (rung, cause, facts) = (*rung, *cause, facts.clone());
                 if rung == Rung::Facet {
-                    self.decide(cause, &facts, true, fx);
+                    self.decide(cause, &facts, fx);
                 } else {
                     fx.push(RecoveryEffect::ShowError { refusal: cause });
                     self.state = State::Failed;
@@ -337,6 +349,16 @@ impl OpenRecovery {
                     return Handled::No;
                 }
                 self.state = State::Playing;
+                Handled::Yes
+            }
+            RecoveryEvent::LoadStarted => {
+                if !matches!(self.state, State::Flight { .. } | State::Failed) {
+                    return Handled::No;
+                }
+                // The flight (if any) is gone with the Engine that waited on it, and the read-out
+                // belongs to the Engine that failed: the new Load is a new open, ruled on by the
+                // same ladder with what this request has already spent (`flights`, `excluded`).
+                self.state = State::Opening;
                 Handled::Yes
             }
         }
@@ -702,14 +724,41 @@ mod tests {
         assert_eq!(run(&mut m, RecoveryEvent::FirstPicture), (Handled::Yes, vec![]));
         assert_eq!(m.phase(), Phase::Playing);
         assert_eq!(run(&mut m, RecoveryEvent::FirstPicture), (Handled::No, vec![]), "idempotent");
-        // A failure after a picture runs the same ladder, whose facts stop it at the read-out; and
-        // it opens no facet rung (the suspect is not the reason a playing stream failed).
+        // A failure of an Engine that HAS a picture (`no_frames` false) runs the same ladder, whose
+        // facts stop it at the read-out: neither the facet rung nor the HLS contingency applies to a
+        // stream that was playing (the suspect is not the reason a playing stream failed).
         let (handled, fx) = run(&mut m, refused(LoadRefusal::SourceFailed, facts(false, true, false)));
         assert_eq!((handled, m.phase()), (Handled::Yes, Phase::Failed));
         assert_eq!(fx, [RecoveryEffect::ShowError { refusal: LoadRefusal::SourceFailed }]);
         let mut m = machine();
         run(&mut m, RecoveryEvent::FirstPicture);
         assert_eq!(run(&mut m, refused(SHUT, on_dts(facts(false, false, false)))).1, ERROR);
+    }
+
+    /// The machine lives per REQUEST but a picture is per ENGINE (`frames` and `seen_frame` are
+    /// cleared by every reload): a request that showed a picture and then reloads (a track pick, a
+    /// seek that escalates) owes the new Engine the same open ladder, so a refusal of THAT Engine,
+    /// before ITS picture (`no_frames`), converts the suspect facet. The facet rung is gated on the
+    /// refusal's own Engine having no picture, not on the request's history.
+    #[test]
+    fn a_reload_with_no_picture_is_pre_picture_for_its_own_engine() {
+        let start = opus_start();
+        assert_ne!(start.without(&opus6()), *start);
+        let mut m = OpenRecovery::new(start.clone());
+        run(&mut m, RecoveryEvent::FirstPicture);
+        assert_eq!(m.phase(), Phase::Playing);
+        let reloaded = names_opus(facts(false, false, true));
+        let (handled, fx) = run(&mut m, refused(NATIVE, reloaded.clone()));
+        assert_eq!((handled, fx, m.phase()), (Handled::Yes, vec![RecoveryEffect::ConfirmRefusal], Phase::Confirming));
+        let (_, fx) = run(&mut m, RecoveryEvent::RefusalConfirmed { newly: false });
+        assert_eq!((fx, m.phase()), (vec![RecoveryEffect::ConvertFacet { facet: opus6(), flight: 1 }], Phase::Flight));
+        assert_eq!(*m.attempt(), start.without(&opus6()));
+        // The same refusal of an Engine that HAS a picture converts nothing.
+        let mut m = OpenRecovery::new(start);
+        run(&mut m, RecoveryEvent::FirstPicture);
+        run(&mut m, refused(NATIVE, names_opus(facts(false, false, false))));
+        let (_, fx) = run(&mut m, RecoveryEvent::RefusalConfirmed { newly: false });
+        assert_eq!((fx, m.phase()), (vec![RecoveryEffect::ShowError { refusal: NATIVE }], Phase::Failed));
     }
 
     #[test]
@@ -726,6 +775,84 @@ mod tests {
         assert_eq!(stalled(false, false), [RecoveryEffect::ShowError { refusal: LoadRefusal::Stalled }]);
         assert_eq!(stalled(true, false), [RecoveryEffect::Rollback]);
         assert_eq!(stalled(false, true), [RecoveryEffect::StartAutoHls]);
+    }
+
+    /// A machine in each state, built through its own events: `Opening`, `Confirming`, `Flight`
+    /// (the facet rung; a DTS 5.1 refused), `Playing` and `Failed` (the facet flight refused on a
+    /// manual Original).
+    fn in_phase(phase: Phase) -> OpenRecovery {
+        let mut m = machine();
+        match phase {
+            Phase::Opening => {}
+            Phase::Confirming => {
+                run(&mut m, refused(NATIVE, OpenFacts { native_audio: Some(opus6()), ..facts(false, false, true) }));
+            }
+            Phase::Flight => {
+                run(&mut m, refused(SHUT, on_dts(facts(false, false, true))));
+            }
+            Phase::Playing => {
+                run(&mut m, RecoveryEvent::FirstPicture);
+            }
+            Phase::Failed => {
+                run(&mut m, refused(SHUT, on_dts(facts(false, false, true))));
+                run(&mut m, RecoveryEvent::FlightRefused);
+            }
+        }
+        assert_eq!(m.phase(), phase, "the fixture");
+        m
+    }
+
+    /// **A Load the machine did not ask for re-opens the ladder.** Home during a facet flight
+    /// clears the flight (`begin_engine_teardown`), and the foreground restore Loads the same
+    /// refused route: the machine was left in `Flight` (its `Refused` is `Handled::No`, the Engine
+    /// spun on Connecting for good). The same restore after the read-out was up left `Failed`.
+    /// `LoadStarted` moves both back to `Opening`, keeping what the request spent: its flights and
+    /// the facet it took out.
+    #[test]
+    fn a_load_the_machine_did_not_ask_for_reopens_the_ladder_keeping_the_spent_rungs() {
+        let start = dts_start();
+        for phase in [Phase::Flight, Phase::Failed] {
+            let mut m = in_phase(phase);
+            assert_eq!(*m.attempt(), start.without(&dts6()), "{phase:?}: the facet rung narrowed the attempt");
+            assert_eq!(run(&mut m, RecoveryEvent::LoadStarted), (Handled::Yes, vec![]), "{phase:?}");
+            assert_eq!(m.phase(), Phase::Opening, "{phase:?}");
+            assert_eq!(*m.attempt(), start.without(&dts6()), "{phase:?}: the excluded facet is kept");
+            // The restored Load is refused again: the facet rung is spent (one flight), so a manual
+            // Original ends on the read-out and a cold Auto Original takes its HLS contingency.
+            let refused_again = |auto| refused(SHUT, on_dts(facts(false, auto, true)));
+            let (handled, fx) = run(&mut m.clone(), refused_again(false));
+            assert_eq!((handled, fx), (Handled::Yes, ERROR.to_vec()), "{phase:?}: no second conversion");
+            let (handled, fx) = run(&mut m, refused_again(true));
+            assert_eq!((handled, fx, m.phase()), (Handled::Yes, vec![RecoveryEffect::StartAutoHls], Phase::Flight), "{phase:?}");
+        }
+    }
+
+    /// `LoadStarted` is a pinned outcome in every state, and only `Flight` and `Failed` move.
+    #[test]
+    fn load_started_changes_only_a_flight_and_the_read_out() {
+        for (phase, handled, next) in [
+            (Phase::Opening, Handled::No, Phase::Opening),
+            (Phase::Confirming, Handled::No, Phase::Confirming),
+            (Phase::Flight, Handled::Yes, Phase::Opening),
+            (Phase::Playing, Handled::No, Phase::Playing),
+            (Phase::Failed, Handled::Yes, Phase::Opening),
+        ] {
+            let mut m = in_phase(phase);
+            assert_eq!(run(&mut m, RecoveryEvent::LoadStarted), (handled, vec![]), "{phase:?}");
+            assert_eq!(m.phase(), next, "{phase:?}");
+        }
+    }
+
+    /// The landing's own reload passes the same funnel: `FlightLanded` has moved the machine to
+    /// `Opening` first, so the `LoadStarted` it raises changes nothing and the flight stays spent.
+    #[test]
+    fn the_flights_own_reload_changes_nothing() {
+        let mut m = in_phase(Phase::Flight);
+        run(&mut m, RecoveryEvent::FlightLanded);
+        assert_eq!(run(&mut m, RecoveryEvent::LoadStarted), (Handled::No, vec![]));
+        assert_eq!(m.phase(), Phase::Opening);
+        let (_, fx) = run(&mut m, refused(SHUT, on_dts(facts(false, false, true))));
+        assert_eq!(fx, ERROR, "one conversion per request, whichever way the second open began");
     }
 
     #[test]

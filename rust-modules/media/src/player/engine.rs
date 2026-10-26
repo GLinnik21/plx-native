@@ -1502,6 +1502,11 @@ fn start_bufferfeed_for(
             // in `start_bufferfeed_tracked` left a reload landing after a refused fresh start
             // (the foreground restore's rollback) with an Error over the video it began.
             ps.native_start_refused = false;
+            // The request's failed-open ladder rules on this Engine's open too: a Load it did not
+            // ask for (the foreground restore after a Home during a recovery flight or over the
+            // read-out) takes it out of `Flight` or `Failed`. The recovery landing's own reload has
+            // already moved it (`FlightLanded`), so this is a no-op there.
+            let _ = ps.open_recovery().step(&super::recovery::RecoveryEvent::LoadStarted, &mut Vec::new());
             BufferfeedStartOutcome::Launched(attempt)
         }
         Err(result) => {

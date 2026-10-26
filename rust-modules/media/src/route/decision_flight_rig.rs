@@ -241,12 +241,6 @@ impl FlightRig {
         ps.auto_original = Some(AutoOriginalCandidate { direct, ..test_original_candidate(None) });
     }
 
-    /// Declare the codec of the source Part's audio, which the rig's route declares as AC3. A Part
-    /// whose only audio is the DTS the pipeline refuses declares `dca` here as well.
-    pub(crate) fn declare_source_audio(ps: &mut PlaybackSession, codec: &str) {
-        ps.src_acodec = codec.into();
-    }
-
     /// [`FlightRig::offer_original`] whose candidate carries `codec` with `channels` channels (the
     /// audio of the stream the Original would feed), where the offer's own default is E-AC-3 5.1.
     pub(crate) fn offer_original_carrying(ps: &mut PlaybackSession, direct: bool, codec: &str, channels: i64) {
