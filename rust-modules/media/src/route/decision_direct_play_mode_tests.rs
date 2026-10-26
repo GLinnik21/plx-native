@@ -148,3 +148,44 @@ fn the_play_automatically_retry_resolves_under_auto_not_the_failed_force() {
     assert_eq!(retry_context_with(&ps, 123, Some(DirectPlayMode::Auto)).direct_play_mode, DirectPlayMode::Auto);
     assert_eq!(retry_context_with(&ps, 123, Some(DirectPlayMode::Auto)).resume_ns, 123);
 }
+
+/// Issue #951: an LG B8 refused a 96 kHz AAC Load, and a 96 kHz AAC also reaches the player
+/// without the server's `/decision` having seen it: the track menu's mark, a mid-play pick, the
+/// displaced pick's legacy reload. They all ask `audio_track_direct_plays`, so each must send
+/// that track to the server (converted at the profile's 48 kHz ceiling) instead of reloading it
+/// natively; a 48 kHz sibling still reloads natively.
+#[test]
+fn a_96_khz_aac_is_converted_not_reloaded_natively_by_the_paths_that_skip_the_decision() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let aac = |rate| CarriedAudio {
+        sid: 31, ordinal: 2, codec: "aac".into(), channels: 2,
+        can_normalize_loudness: false, immersive: false, sample_rate: rate, bit_depth: 0,
+    };
+
+    assert!(audio_track_direct_plays(&ps, "aac", 2, 48_000));
+    assert!(!audio_track_direct_plays(&ps, "aac", 2, 96_000));
+    // the track menu's "converted by your server" mark
+    assert!(!audio_converted_by_server(&ps, "aac", 2, 48_000));
+    assert!(!audio_converted_by_server(&ps, "aac", 2, 0), "an unstated rate is not a reason to convert");
+    assert!(audio_converted_by_server(&ps, "aac", 2, 96_000));
+    // the displaced pick's legacy reload
+    ps.cur_audio = Some(aac(48_000));
+    assert_eq!(legacy_action(&ps), LegacyAction::Native { ordinal: 2, codec: "aac".into() });
+    ps.cur_audio = Some(aac(96_000));
+    assert_eq!(legacy_action(&ps), LegacyAction::Retranscode);
+    // a mid-play pick: the 48 kHz track is a native reload of its ordinal, the 96 kHz one is not
+    crate::player::reset_audio_track();
+    assert!(commit_audio_selection(&mut ps, aac(96_000)));
+    assert_eq!(desired_audio_idx(), -1, "a 96 kHz AAC must not be staged for a native reload");
+    assert!(commit_audio_selection(&mut ps, aac(48_000)));
+    assert_eq!(desired_audio_idx(), 2, "a 48 kHz AAC reloads natively");
+    // Force Direct Play refuses it, as it refuses a 96 kHz FLAC, rather than failing at the Load
+    ps.direct_play_mode = DirectPlayMode::Forced;
+    restore_direct_play_mode(DirectPlayMode::Forced);
+    assert!(!commit_audio_selection(&mut ps, aac(96_000)));
+    assert!(play_verdict(&ps).unwrap().contains("Force Direct Play is on"));
+    restore_direct_play_mode(DirectPlayMode::Auto);
+    crate::player::reset_route_requests_for_test(&mut ps);
+    crate::player::reset_audio_track();
+}
