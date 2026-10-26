@@ -317,31 +317,45 @@ something.
   `replace_cache` as a pure projection under the cache lock). The failed open then recovers on the
   pre-picture recovery path every failed open uses, in the same frame: the request's `OpenRecovery`
   machine (`recovery.rs`, owned by `PlaybackSession::recovery`, driven by `pump.rs`'s
-  `drive_open_recovery`) asks the pump to confirm the refusal (`ConfirmRefusal`, the learner above) and,
-  once the learner says the combination is NEW, narrows the playing attempt by what the demuxer fed
-  (`Caps::without`; an attempt plans and profiles from the one value the machine carries,
-  `PlaybackSession::attempt_caps`, never from a later read of the process-wide answer) for EVERY learned
-  refusal, because a pending Original trial's rollback is picked over the conversion and its rebase, the
-  next retry and a quality change must still plan from the narrowed value. Then the ladder picks
-  `StartFlight` (the conversion), and `route::dispatch_refusal_conversion`
-  flies a `ClaimWork::Encode` under a `FlightOwner::Recovery` that rebuilds today's route (which now
-  plans the audio as the server's to convert), and `land_recovery_flight` reloads onto it. The viewer keeps the connecting spinner: no
-  read-out, no second play request. **Who owns a refusal is who observes it:** the machine owns a
+  `drive_open_recovery`) first asks the pump to confirm a refusal that names natively fed audio
+  (`ConfirmRefusal`, the learner above). The confirmation is persistence only: its answer picks no
+  rung. **The ladder** (S1a, the order of `OpenRecovery::decide`): (1) a pending Original trial's
+  rollback, which narrows the attempt first by the facet the refusal named, because its rebase, the next
+  retry and a quality change must plan from the narrowed value; (2) under Forced Direct Play, the
+  read-out (a forced play is never converted); (3) the **facet rung**, for a refusal that names the
+  pipeline (`type=18` of ANY number, or the stall; not a Load timeout or a source failure) before the
+  first picture: `recovery::suspect` names the stream the pipeline was fed when its audio is outside
+  `aac`/`ac3`/`eac3` (Opus 200, and the DTS 601 of #695, alike), the machine sets the attempt to
+  `start` less that facet (`Caps::without`; an attempt plans and profiles from the one value the machine
+  carries, `PlaybackSession::attempt_caps`, derived from the request's `start` on each rung's entry,
+  never narrowed in place and never from a later read of the process-wide answer), and `ConvertFacet`
+  has `route::dispatch_refusal_conversion` fly a `ClaimWork::Encode` under a `FlightOwner::Recovery`
+  that rebuilds today's route (which now plans the audio as the server's to convert), and
+  `land_recovery_flight` reloads onto it (`DeliveryReason::RefusalRecovery`; the landing re-grades the
+  stored Original candidate's audio, so the ABR climb does not offer the refused audio's direct play
+  again). No track pick runs in S1a: the replacement converts the track the viewer was on, and the
+  AC3 sibling is only chosen once a learned row is in `start` (S2); (4) the **both-facets rung**, a cold
+  Auto Original's HLS contingency (`StartAutoHls`); (5) the read-out. The facet and both-facets rungs
+  together are bounded by `MAX_RECOVERY_FLIGHTS` (2) per request, the facet rung runs once, and the
+  rollback is not counted. A facet `start` already lacks (`start.without(facet) == start`: a stored
+  refusal that `project_stored_refusals` put in `start`) narrows nothing and gets no flight, so a
+  conversion that is still refused cannot loop; a refused conversion dispatch goes on to the next rung
+  too (HLS for a cold Auto Original, else the read-out), and a refused rollback is terminal. The viewer
+  keeps the connecting spinner: no read-out, no second play request. **Who owns a refusal is who
+  observes it:** the machine owns a
   refusal the pump sees AFTER a Load call returned (`type=18` once `route_start_status` read `Started`,
   a Load budget, a stall, a source failure). The Load CALL's own synchronous refusal (`StartFailed`
   with `load_failed`) of a Load the foreground lifecycle follows (`Engine::foreground_follows_load`,
   marked by `app/lifecycle.rs` wherever it starts following an attempt) is the lifecycle's alone:
   `pump` returns before the ladder (`settled_by_foreground`) and `ForegroundLifecycle` settles it as
   #1018's retry (`Prepared`, the Engine retired). A fresh play's synchronous refusal has no
-  lifecycle behind it and stays the ladder's. A refusal the install already knew skips the conversion and takes
-  the next rung of the same ladder (a pending Original trial's rollback, a cold Auto Original's HLS
-  contingency, else the read-out), so a conversion that is still refused cannot loop. A
+  lifecycle behind it and stays the ladder's. A
   silent stall is learned too, for surround only (`native_stall.rs`, checked in the pump): a native
   Opus track with more than two channels, Load returned, no picture, both AU queues holding data and no
   AU accepted for `NATIVE_AUDIO_STALL_MS` (4 s; a slow server has empty queues) is learned and
   recovered the same way, and never after the first picture. The stall is a refusal of the same class
-  as `type=18` (`LoadRefusal::Stalled`), so a stall of a combination the install already knew takes
-  the same next rung, the read-out for a manual Original; it used to return from the watchdog with
+  as `type=18` (`LoadRefusal::Stalled`), so a stall of a combination the attempt already lacks takes
+  the next rung, the read-out for a manual Original; it used to return from the watchdog with
   nothing done and leave the viewer on "Buffering..." for good (TV run G, 2026-10-26). Garbled playback (no stall, no event)
   still needs a static row. The event log has `native audio: watching`, `STALL, no picture`, the
   `remembered` line, `devcaps: ... learned refusals:`, and once per play the fed packets' `max` and
@@ -356,7 +370,11 @@ something.
   `plxnative-nativeaudiowide` ignores the last two layers; with `plxnative-nativeaudiolearn` beside it
   the exclusions stay ignored but refusals are learned and applied (the demo: a stall, a learned row,
   an automatic server-converted replay); `plxnative-nativeaudioforget` does not apply the stored list
-  this run (a refusal learned during the run still applies at once). Vorbis is not fed natively: LG's Vorbis element
+  this run (a refusal learned during the run still applies at once). `plxnative-refuse601` publishes the
+  firmware's `type=18 num=601` through `sf_on_event` once per play request, after the Load returned and
+  before a picture (`pump.rs`'s `inject_refuse601`; the file is read only inside that open window, once
+  the request is not yet refused), so a DTS item on the mock server reproduces #695 on the TV: the
+  ladder converts the DTS in one flight and the converted reload is not refused again. Vorbis is not fed natively: LG's Vorbis element
   needs a caps `streamheader` and libpf's payload has no key for it (`setVORBISinfo` reads only
   channels and sampleRate; Opus has `opusInfo.streamHeader`), and a C1 refuses every Vorbis Load.
 - **The Load payload's codecs must come from the `/decision` OUTPUT, not the source file.** A

@@ -675,8 +675,13 @@ fn drive_open_recovery(ps: &mut crate::route::PlaybackSession, first: super::rec
                         }
                     }
                 }
-                RecoveryEffect::ConvertFacet => {
-                    // The attempt was narrowed by the machine; the dispatch plans from it.
+                RecoveryEffect::ConvertFacet { facet, flight } => {
+                    // The machine narrowed the attempt to `start` less this facet when it entered the
+                    // rung; the dispatch plans from `attempt()`, not from anything read here.
+                    super::log(&format!(
+                        "open recovery: converting {facet:?} (flight {flight}/{})",
+                        super::recovery::MAX_RECOVERY_FLIGHTS
+                    ));
                     let secs = (SHARED.playpos_ns.load(Relaxed) / 1_000_000_000).max(0);
                     crate::route::dispatch_refusal_conversion(ps, secs)
                 }
@@ -737,10 +742,11 @@ fn refused_native_audio() -> Option<plx_platform::devcaps::Facet> {
 /// The Load was refused with `type=18 num=200` while the audio was fed natively: remember the
 /// codec and channel count as refused on this firmware (`learn`, which is
 /// `session::learn_native_audio_refusal` in the player and a recorder in the tests). True when the
-/// refusal is new to the install, which is the caller's one conversion
-/// ([`super::recovery::RecoveryEffect::ConvertFacet`]); false when nothing was refused that way, or the
-/// combination was already known (a conversion that still fed it natively must end in the ordinary
-/// failure, not loop).
+/// refusal is new to the install; false when nothing was refused that way, or the combination was
+/// already known. The answer is persistence only: it selects no rung (the machine's facet rung is
+/// chosen by [`super::recovery::suspect`] and its loop guard, so a combination already stored, and so
+/// already absent from the attempt, gets no second conversion), and the driver words its log line
+/// with it.
 fn learn_native_audio_refusal(why: &str, learn: impl FnOnce(&str, u32) -> bool) -> bool {
     if !SHARED.native_audio_refused.swap(false, Release) {
         return false;
@@ -1485,17 +1491,19 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         if settled_by_foreground(eng.foreground_follows_load, crate::route::route_start_status(eng.route_start)) {
             return;
         }
-        // The pipeline refused AUDIO it was fed natively: the ladder learns the combination, and the
-        // failed open's recovery rebuilds the route with the server converting it. A refusal the
-        // install already knew, or a rebuild that cannot fly, leaves the read-out the viewer would
+        // The pipeline refused the open: the failed-open ladder decides. A refusal of natively fed
+        // audio is learned first (persistence only). A stream the attempt can do without
+        // (`recovery::suspect`: audio outside aac/ac3/eac3, whatever the refusal's number) is rebuilt
+        // with the server converting it, once per request. A stream `start` already lacks, a rebuild
+        // that cannot fly, or a request with no rung left ends on the read-out the viewer would
         // have had.
         let _ = recover_failed_open(ps, eng, load_refusal(), native_audio_fact(), "Audio Codec Not Supported");
         return;
     }
     if !eng.preview_abandon && native_audio_stall_fired(eng, now) {
-        // The stall is a refusal like `type=18`, and so is its ending: a combination the install
-        // already knew fails the Engine like any refusal the ladder has no rung for, never a spinner
-        // for good. Nothing fed natively (the watchdog needs more than two channels of it, so only a
+        // The stall is a refusal like `type=18`, and so is its ending: a combination the attempt
+        // already lacks (a stored refusal is in `start`) fails the Engine like any refusal the ladder
+        // has no rung for, never a spinner for good. Nothing fed natively (the watchdog needs more than two channels of it, so only a
         // race gets here) names no audio to confirm, and the frame goes on.
         if let Some(audio) = native_audio_fact() {
             let why = "it swallowed the feed: no picture";
@@ -2406,8 +2414,8 @@ mod tests {
         assert_eq!(*learned.borrow(), [("opus".to_string(), 2)]);
         assert!(!super::learn_native_audio_refusal("test", learner), "the refusal flag was consumed");
 
-        // A combination the install already knew (the learner says no) asks for no conversion, so
-        // a play that is still refused ends in the ordinary failure instead of looping.
+        // A combination the install already knew: the learner says no (the machine's facet rung is
+        // not chosen by this answer; its loop guard is the attempt already lacking the facet).
         super::SHARED.native_audio_refused.store(true, Release);
         assert!(!super::learn_native_audio_refusal("test", |_, _| false));
         crate::ff::native_audio::reset();
@@ -3811,9 +3819,9 @@ mod flight_tests {
     /// wins.** The trial's failed open takes the rollback (`OpenRecovery`'s ladder puts it before the
     /// conversion), and the refusal was learned all the same: the restored HLS route's rebase, and
     /// every retry and quality change after it, must plan and profile from the attempt's narrowed
-    /// value, not the one the play started on. Else they offer native Opus again, the pipeline
-    /// refuses it again, and the combination is already known, so `learn` returns false and a manual
-    /// Original ends on the read-out where the conversion would have played.
+    /// value, not the one the play started on. Else they offer native Opus again and the pipeline
+    /// refuses it again: the request has spent a flight on a refusal its own rollback should
+    /// already have converted.
     #[test]
     fn a_native_audio_refusal_learned_during_the_original_trial_reaches_the_rollbacks_profile() {
         let mut rig = Rig::new(150);

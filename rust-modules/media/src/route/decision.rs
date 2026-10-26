@@ -4102,15 +4102,16 @@ pub fn dispatch_unopened_auto_hls(ps: &mut PlaybackSession, offset_secs: i64) ->
 /// The line a refused native-audio conversion settles with (never logged as another recovery's).
 pub(super) const REFUSAL_CONVERSION_REJECTED: &str = "native audio: the server could not convert the refused audio";
 
-/// Start the flight that replaces a route whose natively fed audio the pipeline refused before the
-/// first picture (`type=18 num=200`, or the stall watchdog): the viewer's track plays again with the
-/// server converting that audio. The caller has already recorded the refusal (the install pref,
-/// through `session::learn_native_audio_refusal`) **and narrowed the playing attempt by it**
-/// ([`crate::player::recovery::OpenRecovery`], whose `Caps::without` narrowing happens for every learned
-/// refusal before it picks a recovery), so the value the plan and the profile read no longer names
-/// the codec, today's rebuild ([`plain_rebuild_precheck`], the contract a track pick that the TV
-/// cannot decode asks for) comes back converted, and every seek and track pick after the landing
-/// plans from the same narrowed value. Plan on the frame thread, PMS on a worker
+/// Start the flight that replaces a route whose audio the pipeline refused before the first picture
+/// (`type=18` of any number, or the stall watchdog): the viewer's track plays again with the server
+/// converting that audio. The open-recovery ladder's facet rung
+/// ([`crate::player::recovery::OpenRecovery`], `ConvertFacet`) has **already narrowed the playing
+/// attempt** to `start` less the suspect stream ([`crate::player::recovery::suspect`], `Caps::without`)
+/// when it entered the rung, so the value the plan and the profile read no longer names the codec,
+/// today's rebuild ([`plain_rebuild_precheck`], the contract a track pick that the TV cannot decode
+/// asks for) comes back converted, and every seek and track pick after the landing plans from the
+/// same narrowed value. The learner's write of a refused native Opus (the install pref) is the
+/// machine's separate `ConfirmRefusal`, persistence only. Plan on the frame thread, PMS on a worker
 /// ([`try_retranscode`]), install at the landing ([`install_recovery_landing`]).
 /// [`RecoveryDispatch::Refused`] / [`RecoveryVerdict::Refused`] leave the failure the pump held back
 /// (a forced direct play, which the viewer asked not to convert, is one).

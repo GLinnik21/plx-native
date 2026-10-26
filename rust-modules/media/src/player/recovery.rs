@@ -14,8 +14,9 @@
 //! **The owner is the request.** [`PlaybackSession`](crate::route::PlaybackSession) holds one
 //! `Option<OpenRecovery>`, created by `begin_attempt` with the capability value the app's play start
 //! read, and replaced by the next request's. The machine also owns that value: the attempt's
-//! capabilities are `start` narrowed by the one facet the facet rung took out of this request
-//! ([`Caps::without`]); [`attempt`](OpenRecovery::attempt) is the only reader the route plans from,
+//! capabilities are `start` narrowed by the one facet the facet rung took out of this request (or
+//! the native audio a refusal named while a pending rollback was chosen over the facet rung, so the
+//! restored route does not offer it again) ([`Caps::without`]); [`attempt`](OpenRecovery::attempt) is the only reader the route plans from,
 //! and `attempt` is derived from `start` on each rung's entry, never narrowed in place.
 //!
 //! **The ladder** is the order of [`decide`](OpenRecovery::decide): a pending HLS->Original
@@ -150,8 +151,10 @@ pub enum RecoveryEffect {
     /// Fly the HLS rollback of the failed Original trial (`dispatch_rollback_rebase`).
     Rollback,
     /// Fly today's route rebuilt from [`OpenRecovery::attempt`], the facet excluded: the server
-    /// converts the stream the attempt no longer feeds (`dispatch_refusal_conversion`).
-    ConvertFacet,
+    /// converts the stream the attempt no longer feeds (`dispatch_refusal_conversion`). `facet` is
+    /// the stream class taken out of the attempt and `flight` the ordinal of this flight among the
+    /// request's ([`MAX_RECOVERY_FLIGHTS`]), for the driver's log line.
+    ConvertFacet { facet: Facet, flight: u32 },
     /// Fly the HLS contingency a cold Auto Original retained (`dispatch_unopened_auto_hls`).
     StartAutoHls,
     /// Fail the Engine for good and show the failure read-out.
@@ -248,10 +251,10 @@ impl OpenRecovery {
         }
         if opening && refusal.names_pipeline() && self.flights == 0 {
             if let Some(facet) = suspect(facts.audio.as_ref()).filter(|f| self.start.without(f) != *self.start) {
-                self.excluded = Some(facet);
+                self.excluded = Some(facet.clone());
                 self.narrow();
                 self.flights += 1;
-                fx.push(RecoveryEffect::ConvertFacet);
+                fx.push(RecoveryEffect::ConvertFacet { facet, flight: self.flights });
                 self.state = flight(Rung::Facet);
                 return;
             }
@@ -426,8 +429,8 @@ mod tests {
         RecoveryEvent::Refused { refusal, facts }
     }
 
-    /// The ladder `open_failure_action` fixed, by facts, through the machine: the rung a `601` lands
-    /// on, with (`suspect`) or without a DTS 5.1 track fed.
+    /// The ladder by facts, through the machine: the rung a `601` lands on, with (`suspect`) or
+    /// without a DTS 5.1 track fed.
     fn rung(pending: bool, suspect: bool, auto: bool, no_frames: bool) -> Vec<RecoveryEffect> {
         let f = facts(pending, auto, no_frames);
         run(&mut machine(), refused(SHUT, if suspect { on_dts(f) } else { f })).1
@@ -451,7 +454,7 @@ mod tests {
         assert_ne!(start.without(&dts6()), *start, "the fixture must exercise a real narrowing");
         let mut m = OpenRecovery::new(start.clone());
         let (handled, fx) = run(&mut m, refused(SHUT, on_dts(facts(false, false, true))));
-        assert_eq!((handled, fx, m.phase()), (Handled::Yes, vec![RecoveryEffect::ConvertFacet], Phase::Flight));
+        assert_eq!((handled, fx, m.phase()), (Handled::Yes, vec![RecoveryEffect::ConvertFacet { facet: dts6(), flight: 1 }], Phase::Flight));
         assert_eq!(*m.attempt(), start.without(&dts6()));
     }
 
@@ -461,7 +464,7 @@ mod tests {
         assert_ne!(start.without(&dts6()), *start);
         let mut m = OpenRecovery::new(start.clone());
         let (_, fx) = run(&mut m, refused(SHUT, on_dts(facts(false, true, true))));
-        assert_eq!(fx, [RecoveryEffect::ConvertFacet], "the conversion keeps the Original route; HLS would throw it away");
+        assert_eq!(fx, [RecoveryEffect::ConvertFacet { facet: dts6(), flight: 1 }], "the conversion keeps the Original route; HLS would throw it away");
         assert_eq!(*m.attempt(), start.without(&dts6()));
     }
 
@@ -510,8 +513,8 @@ mod tests {
                     }
                     at += 1;
                 }
-                let started = fx.iter().filter(|e| matches!(e, RecoveryEffect::ConvertFacet | RecoveryEffect::StartAutoHls)).count();
-                if fx.contains(&RecoveryEffect::ConvertFacet) {
+                let started = fx.iter().filter(|e| matches!(e, RecoveryEffect::ConvertFacet { .. } | RecoveryEffect::StartAutoHls)).count();
+                if fx.iter().any(|e| matches!(e, RecoveryEffect::ConvertFacet { .. })) {
                     assert_eq!(before, 0, "a facet conversion after another flight: {ev:?}");
                 }
                 assert!(
@@ -578,7 +581,7 @@ mod tests {
         assert_eq!(fx, [RecoveryEffect::Rollback]);
         run(&mut m, RecoveryEvent::FlightLanded);
         let (_, fx) = run(&mut m, refused(SHUT, on_dts(facts(false, false, true))));
-        assert_eq!(fx, [RecoveryEffect::ConvertFacet], "the rollback spent no flight");
+        assert_eq!(fx, [RecoveryEffect::ConvertFacet { facet: dts6(), flight: 1 }], "the rollback spent no flight");
     }
 
     #[test]
@@ -617,7 +620,7 @@ mod tests {
             run(&mut m, refused(NATIVE, names_opus(facts(false, false, true))));
             assert_eq!(*m.attempt(), *start, "nothing is narrowed before the rung is entered");
             let (_, fx) = run(&mut m, RecoveryEvent::RefusalConfirmed { newly });
-            assert_eq!(fx, [RecoveryEffect::ConvertFacet], "newly={newly}");
+            assert_eq!(fx, [RecoveryEffect::ConvertFacet { facet: opus6(), flight: 1 }], "newly={newly}");
             assert_eq!(*m.attempt(), start.without(&opus6()), "newly={newly}");
         }
     }
@@ -630,8 +633,8 @@ mod tests {
         assert_eq!(rung(false, false, false, true), ERROR, "manual Original stays the user's fixed choice");
         // A suspect audio track converts first, on a cold Auto Original too (the full HLS fallback
         // would also convert it, but throws the route away), and on a manual Original.
-        assert_eq!(rung(false, true, true, true), [RecoveryEffect::ConvertFacet]);
-        assert_eq!(rung(false, true, false, true), [RecoveryEffect::ConvertFacet]);
+        assert_eq!(rung(false, true, true, true), [RecoveryEffect::ConvertFacet { facet: dts6(), flight: 1 }]);
+        assert_eq!(rung(false, true, false, true), [RecoveryEffect::ConvertFacet { facet: dts6(), flight: 1 }]);
         // The rollback of a pending HLS to Original still comes first: its HLS route is the one a
         // failed open owes the viewer, and its audio is the server's.
         assert_eq!(rung(true, true, true, true), [RecoveryEffect::Rollback]);
