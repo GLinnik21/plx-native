@@ -436,22 +436,66 @@ cmd_renew() {
   esac
 }
 
-# The pre-flight the agent-reference block used to spell by hand. It answers the OTHER half of the
-# question the lock cannot: a lease says no other LOCKED job is on the set, and this says whether
-# anybody is on it anyway — an older job, a colleague, a human with the remote.
-preflight_note() {
-  local sd dd out
-  [ -z "${PLX_TV_LOCK_LOCAL:-}" ] || return 0     # selftest: no television to look at
-  sd="$(make -s -C "$REPO" FLAVOR=stable print-appdir 2>/dev/null)"
-  dd="$(make -s -C "$REPO" FLAVOR=debug  print-appdir 2>/dev/null)"
-  [ -n "$sd" ] && [ -n "$dd" ] || return 0
-  # ONE round trip for both installs and the ssh count. `fuser` on each install's own binary,
-  # never `pidof plxnative`: both binaries carry that name, so a name-scoped test matches BOTH and
-  # answers in an order busybox does not promise.
-  out="$(ssh_tv "for d in '$sd' '$dd'; do printf '%s ' \"\$(fuser \$d/plxnative 2>/dev/null || echo NONE)\"; done; echo; netstat -an 2>/dev/null | grep -c 'ESTABLISHED.*:22 \|:22 .*ESTABLISHED'")"
-  local apps ssh_n
-  apps="$(printf '%s\n' "$out" | head -1)"
-  ssh_n="$(printf '%s\n' "$out" | sed -n '2p')"
+# ------------------------------------------------------------ is anybody watching ---
+# The verdict. A lease says no other LOCKED job is on the set; this says whether a PERSON is, from
+# the three facts one round trip can read: the foreground app, the panel state, and (reported only)
+# the sound. Pure, so the selftest runs it on fixtures.
+#   idle:   one of this project's own apps in front (the stable or debug id, from the Makefile), the
+#           LG Home launcher, or live TV (the owner counts live TV as idle, 2026-10-14), or the
+#           panel dark / the set in standby (nobody is looking, whatever is playing);
+#   in use: any other app id in front (a streaming app, an HDMI input);
+#   unknown: no foreground app could be read. NEVER idle: not knowing is not vouching.
+# Mute and volume do not enter the verdict, so they are not arguments.
+idle_verdict() {  # idle_verdict <foreground appId, "" = unread> <panel state, "" = unread> [<our app id>…]
+  local app o power="$2"
+  app="$(printf '%s' "$1" | tr -cd 'A-Za-z0-9._-' | cut -c1-80)"   # one safe word: it is printed to an agent
+  shift 2
+  case "$power" in
+    "Screen Off"|"Active Standby") echo "IDLE (panel off: $power)"; return 0 ;;
+  esac
+  if [ -z "$app" ]; then echo "UNKNOWN (the foreground app could not be read)"; return 0; fi
+  for o in "$@"; do
+    [ "$app" = "$o" ] && { echo "IDLE (this project's own app: $app)"; return 0; }
+  done
+  case "$app" in
+    com.webos.app.home)   echo "IDLE (LG Home launcher)" ;;
+    com.webos.app.livetv) echo "IDLE (live TV counts as idle)" ;;
+    *)                    echo "IN USE ($app)" ;;
+  esac
+}
+
+# The ONE line that stops an agent: plain, at the start of its line, on stdout, like heads_up (a
+# `warn` would put `  ! ` in front of the marker). .claude/hooks/tv-lock-notify.py keys on the
+# leading `IN USE:` and tells the agent to stop and tell the owner.
+in_use_line() {  # $1 = the app id
+  printf 'IN USE: %s: stop and tell the owner\n' "$1"
+}
+
+# One luna reply out of the probe's output, collapsed to a single line (the set's pty adds CRs, and a
+# reply may be pretty-printed), the way tv-session.sh collapses one before it matches.
+luna_section() {  # luna_section <tag> <probe output>
+  printf '%s\n' "$2" | tr -d '\r' \
+    | awk -v t="@@LUNA $1" '$0 == t { on = 1; next } /^@@LUNA / { on = 0 } on' \
+    | tr '\n' ' ' | tr -s ' '
+}
+luna_str() {  # luna_str <key> <collapsed reply>: that key's string value, "" if the reply has none
+  printf '%s' "$2" | sed -En 's/.*"'"$1"'": *"([^"]*)".*/\1/p'
+}
+
+# The remote text that prints one tagged luna reply. `luna-send` silently no-ops without a
+# controlling TTY, hence the `script -qc` wrapper every other luna call in this repo uses
+# (tools/tv-session.sh: fg_app, cmd_screen, cmd_sound).
+luna_probe() {  # luna_probe <tag> <service/method>
+  printf 'echo "@@LUNA %s"; script -qc "luna-send -n 1 -f luna://%s {}" /dev/null; echo; ' "$1" "$2"
+}
+
+# What a probe's reply says, as lines: the app note, the ssh count, then the verdict and the sound.
+# Pure (a selftest feeds it fixtures). Line 1 is the fuser answer per install, line 2 the ssh count,
+# then one tagged section per luna read.
+preflight_report() {  # preflight_report <probe output> <stable app id> <debug app id>
+  local raw="$1" apps ssh_n fgr volr powr fg power muted vol verdict inuse
+  apps="$(printf '%s\n' "$raw" | head -1)"
+  ssh_n="$(printf '%s\n' "$raw" | sed -n '2p')"
   case "$apps" in
     *[0-9]*) info "note: an app is already running on the set (stable/debug: $apps)" ;;
   esac
@@ -460,6 +504,43 @@ preflight_note() {
   if [ -n "$ssh_n" ] && [ "$ssh_n" -gt 1 ] 2>/dev/null; then
     warn "$ssh_n ssh sessions on the TV (one is mine) — somebody may be driving it unlocked"
   fi
+  fgr="$(luna_section fg "$raw")"; volr="$(luna_section vol "$raw")"; powr="$(luna_section power "$raw")"
+  fg="$(luna_str appId "$fgr")"
+  power=""; muted=""; vol=""
+  case "$powr" in *'"returnValue": true'*) power="$(luna_str state "$powr")" ;; esac
+  case "$volr" in
+    *'"returnValue": true'*)
+      muted="$(printf '%s' "$volr" | sed -En 's/.*"muted": *(true|false).*/\1/p')"
+      vol="$(printf '%s' "$volr" | sed -n 's/.*"volume": *\([0-9]*\).*/\1/p')" ;;
+  esac
+  [ -z "$muted$vol" ] || info "sound: muted=${muted:-unknown} volume=${vol:-?}"
+  verdict="$(idle_verdict "$fg" "$power" "$2" "$3")"
+  case "$verdict" in
+    IDLE*)    info "$verdict" ;;
+    "IN USE"*) inuse="${verdict#IN USE (}"; in_use_line "${inuse%)}" ;;
+    *)        warn "$verdict — nobody vouches that the television is idle; treat it as possibly in use" ;;
+  esac
+}
+
+# The pre-flight the agent-reference block used to spell by hand. It answers the OTHER half of the
+# question the lock cannot: a lease says no other LOCKED job is on the set, and this says whether
+# anybody is on it anyway — an older job, a colleague, a human with the remote.
+#
+# ONE round trip: which of the two installs has a process, the ssh count, and the three luna reads
+# the verdict needs (foreground app, volume, power). `getPowerState` and `getVolume` are read-only
+# calls; tools/tv-session.sh runs the same two services' other methods, but THIS read of the power
+# state has not been run against a set yet, and its `state` strings (`Screen Off`, `Active
+# Standby`) are the ones cmd_screen's replies carry. A reply that does not parse is UNKNOWN.
+preflight_note() {
+  local sd dd sid did out
+  [ -z "${PLX_TV_LOCK_LOCAL:-}" ] || return 0     # selftest: no television to look at
+  { read -r sid; read -r sd; } < <(make -s -C "$REPO" FLAVOR=stable print-appid print-appdir 2>/dev/null)
+  { read -r did; read -r dd; } < <(make -s -C "$REPO" FLAVOR=debug  print-appid print-appdir 2>/dev/null)
+  [ -n "$sd" ] && [ -n "$dd" ] || return 0
+  # `fuser` on each install's own binary, never `pidof plxnative`: both binaries carry that name, so
+  # a name-scoped test matches BOTH and answers in an order busybox does not promise.
+  out="$(ssh_tv "for d in '$sd' '$dd'; do printf '%s ' \"\$(fuser \$d/plxnative 2>/dev/null || echo NONE)\"; done; echo; netstat -an 2>/dev/null | grep -c 'ESTABLISHED.*:22 \|:22 .*ESTABLISHED'; $(luna_probe fg com.webos.applicationManager/getForegroundAppInfo)$(luna_probe vol com.webos.service.audio/getVolume)$(luna_probe power com.webos.service.tvpower/power/getPowerState)")"
+  preflight_report "$out" "$sid" "$did"
 }
 
 cmd_status() {
@@ -755,6 +836,85 @@ cmd_selftest() {
   sess "an acquire with no id clears it" A ""
   HU_SID="s1;'x\$y" hu A acquire --ttl 7
   sess "an id with quotes and shell metacharacters is cut to its safe characters" A "s1xy"
+
+  # IS ANYBODY WATCHING: the verdict preflight_note prints, and the note around it, on fixture replies
+  # (shaped like the luna replies tools/tv-session.sh already parses; never observed from a set).
+  # The app ids are the Makefile's own (print-appid), not literals of ours.
+  local sid did
+  sid="$(make -s -C "$REPO" FLAVOR=stable print-appid 2>/dev/null)"
+  did="$(make -s -C "$REPO" FLAVOR=debug print-appid 2>/dev/null)"
+  if [ -n "$sid" ] && [ -n "$did" ] && [ "$sid" != "$did" ]; then
+    printf '  \033[32m✓\033[0m the two install ids come from the Makefile (print-appid)\n'
+  else
+    printf '  \033[31m✗\033[0m print-appid gave "%s" / "%s"\n' "$sid" "$did"; fails=$((fails+1))
+  fi
+  verdict() {  # verdict <name> <want, the whole line> <foreground appId> <panel state>
+    local got; got="$(idle_verdict "$3" "$4" "$sid" "$did")"
+    if [ "$got" = "$2" ]; then printf '  \033[32m✓\033[0m %s -> %s\n' "$1" "$got"
+    else printf '  \033[31m✗\033[0m %s: want "%s", got "%s"\n' "$1" "$2" "$got"; fails=$((fails+1)); fi
+  }
+  verdict "our stable app in front is idle" "IDLE (this project's own app: $sid)" "$sid" Active
+  verdict "our debug app in front is idle" "IDLE (this project's own app: $did)" "$did" Active
+  verdict "LG Home is idle" "IDLE (LG Home launcher)" com.webos.app.home Active
+  verdict "live TV is idle (the owner counts it)" "IDLE (live TV counts as idle)" com.webos.app.livetv Active
+  verdict "a streaming app is IN USE" "IN USE (youtube.leanback.v4)" youtube.leanback.v4 Active
+  verdict "an HDMI input is IN USE" "IN USE (com.webos.app.hdmi1)" com.webos.app.hdmi1 Active
+  verdict "a streaming app with the power state unread is IN USE" "IN USE (youtube.leanback.v4)" youtube.leanback.v4 ""
+  verdict "no foreground app is UNKNOWN, never idle" "UNKNOWN (the foreground app could not be read)" "" Active
+  verdict "neither read is UNKNOWN" "UNKNOWN (the foreground app could not be read)" "" ""
+  verdict "an app id that is only junk is UNKNOWN" "UNKNOWN (the foreground app could not be read)" '!!' Active
+  verdict "panel off is idle whatever is in front" "IDLE (panel off: Screen Off)" youtube.leanback.v4 "Screen Off"
+  verdict "standby is idle" "IDLE (panel off: Active Standby)" youtube.leanback.v4 "Active Standby"
+  verdict "panel off with the app unread is idle" "IDLE (panel off: Screen Off)" "" "Screen Off"
+  verdict "a lit panel does not rescue a streaming app" "IN USE (youtube.leanback.v4)" youtube.leanback.v4 "Active"
+  verdict "an app id is cut to its safe characters, one line" "IN USE (app31mxx)" "$(printf 'app\033[31m\nxx')" Active
+
+  pf() {  # pf <fg reply> <volume reply> <power reply> [<apps line>] -> $out: preflight_report on a fixture probe
+    out="$(preflight_report "$(printf '%s\n3\n@@LUNA fg\r\n%s\r\n@@LUNA vol\r\n%s\r\n@@LUNA power\r\n%s\r\n' \
+      "${4:-NONE NONE }" "$1" "$2" "$3")" "$sid" "$did" 2>&1)"
+  }
+  pfcheck() {  # pfcheck <name> <ok?>
+    if [ "$2" = 1 ]; then printf '  \033[32m✓\033[0m %s\n' "$1"
+    else printf '  \033[31m✗\033[0m %s: got\n%s\n' "$1" "$out"; fails=$((fails+1)); fi
+  }
+  local vol_ok='{"returnValue": true, "muted": true, "volume": 12}'
+  local pow_ok='{"returnValue": true, "state": "Active"}'
+  pf "{\"returnValue\": true, \"appId\": \"youtube.leanback.v4\"}" "$vol_ok" "$pow_ok"
+  pfcheck "IN USE: one marker line, at column 0, naming the app, saying to stop" \
+    "$([ "$(printf '%s\n' "$out" | grep -c '^IN USE: ')" = 1 ] \
+       && printf '%s\n' "$out" | grep -q '^IN USE: youtube.leanback.v4: stop and tell the owner' && echo 1)"
+  pfcheck "IN USE: is not also called IDLE or UNKNOWN" \
+    "$(printf '%s\n' "$out" | grep -qE 'IDLE|UNKNOWN' || echo 1)"
+  pfcheck "the sound state is reported, and does not change the verdict" \
+    "$(printf '%s\n' "$out" | grep -q 'sound: muted=true volume=12' && echo 1)"
+  pf "{\"returnValue\": true, \"appId\": \"com.webos.app.home\"}" "$vol_ok" "$pow_ok"
+  pfcheck "Home: an info line IDLE (...), no IN USE: marker" \
+    "$(printf '%s\n' "$out" | grep -q '^  · IDLE (LG Home launcher)' && ! printf '%s\n' "$out" | grep -q '^IN USE:' && echo 1)"
+  pf "{
+    \"returnValue\": true,
+    \"appId\": \"$sid\"
+}" "" ""
+  pfcheck "a pretty-printed multi-line reply parses, and an unread volume/power prints no sound line" \
+    "$(printf '%s\n' "$out" | grep -q 'IDLE (this project.s own app' && ! printf '%s\n' "$out" | grep -q 'sound:' && echo 1)"
+  pf "{\"returnValue\": true, \"appId\": \"youtube.leanback.v4\"}" "$vol_ok" '{"returnValue": true, "state": "Screen Off"}'
+  pfcheck "panel off: IDLE even with a streaming app in front" \
+    "$(printf '%s\n' "$out" | grep -q 'IDLE (panel off: Screen Off)' && ! printf '%s\n' "$out" | grep -q '^IN USE:' && echo 1)"
+  pf "luna-send: not found" "" "garbage"
+  pfcheck "an unparseable reply is UNKNOWN and says so, never IDLE, never the marker" \
+    "$(printf '%s\n' "$out" | grep -q 'UNKNOWN (the foreground app could not be read)' \
+       && ! printf '%s\n' "$out" | grep -qE 'IDLE|^IN USE:' && echo 1)"
+  pf "" "" "" "" 
+  pfcheck "an empty reply is UNKNOWN too" \
+    "$(printf '%s\n' "$out" | grep -q 'UNKNOWN' && ! printf '%s\n' "$out" | grep -qE 'IDLE|^IN USE:' && echo 1)"
+  out="$(preflight_report "" "$sid" "$did" 2>&1)"
+  pfcheck "no probe output at all (ssh failed) is UNKNOWN" \
+    "$(printf '%s\n' "$out" | grep -q 'UNKNOWN' && ! printf '%s\n' "$out" | grep -qE 'IDLE|^IN USE:' && echo 1)"
+  pf "{\"returnValue\": true, \"appId\": \"com.webos.app.home\"}" "$vol_ok" "$pow_ok" "4242 NONE "
+  pfcheck "a running app is still noted, as before" \
+    "$(printf '%s\n' "$out" | grep -q 'note: an app is already running on the set (stable/debug: 4242 NONE )' && echo 1)"
+  out="$(preflight_note 2>&1)"
+  pfcheck "preflight_note stays off the network under PLX_TV_LOCK_LOCAL (the selftest has no television)" \
+    "$([ -z "$out" ] && echo 1)"
   echo ""
   [ "$fails" = 0 ] && { echo "selftest: all good"; return 0; }
   echo "selftest: $fails FAILED"; return 1
