@@ -52,8 +52,8 @@
 # ENVIRONMENT. PLX_TV_LOCK_PATH / PLX_TV_LOCK_STATE / PLX_TV_LOCK_LANE / PLX_TV_LOCK_TTL move the lock, the
 # lease mirror, the lane and the lease length; PLX_TV_LOCK_BYPASS=1 skips the check (`require`);
 # PLX_TV_IN_USE_OK=1 lets `with` run its command on an IN USE set (only after the owner said go);
-# PLX_TV_PREFLIGHT_SECS (default 10) bounds the whole pre-flight read, a test seam for the hung-service
-# case; PLX_TV_LOCK_LOCAL / PLX_TV_LOCK_LOCAL_PROBE=FILE are the selftest's "there is no television" switch
+# PLX_TV_PREFLIGHT_SECS (default 10) bounds the whole pre-flight read, and PLX_TV_RENEW_SECS (default 240)
+# is how often `with` renews while its command runs: both are test seams; PLX_TV_LOCK_LOCAL / PLX_TV_LOCK_LOCAL_PROBE=FILE are the selftest's "there is no television" switch
 # and the file whose text stands in for the set's pre-flight reply.
 set -uo pipefail
 
@@ -597,6 +597,7 @@ luna_probe() {  # luna_probe <tag> <service/method>
   printf 'echo "@@LUNA %s"; script -qc "luna-send -n 1 -f luna://%s {}" /dev/null; echo; ' "$1" "$2"
 }
 
+# The `IN USE:` line this prints is a contract with its readers: see in_use_line.
 # What a probe's reply says, as lines: the app note, the ssh count, then the verdict and the sound.
 # Pure (a selftest feeds it fixtures). Line 1 is the fuser answer per install, line 2 the ssh count,
 # then one tagged section per luna read. Each luna read is believed only when it says `returnValue`
@@ -829,7 +830,7 @@ cmd_with() {
   # or a `| tail` open for four minutes after the command finished.
   local renewer=0
   if [ "$inherited" = 0 ]; then
-    ( while sleep 240; do "$0" renew >/dev/null 2>&1 || exit 0; done ) >/dev/null 2>&1 & renewer=$!
+    ( while sleep "${PLX_TV_RENEW_SECS:-240}"; do "$0" renew >/dev/null 2>&1 || exit 0; done ) >/dev/null 2>&1 & renewer=$!
   fi
   trap 'rc=$?; [ '"$renewer"' -gt 0 ] && _signal_all TERM $(_tree_pids '"$renewer"'); [ '"$inherited"' = 0 ] && "$0" release >/dev/null; exit $rc' EXIT INT TERM HUP
 
@@ -1077,6 +1078,8 @@ cmd_selftest() {
   # The adversarial replies the review crafted (probe1.sh letters B D F G I J M N O P ... in its table).
   rcase "an empty foreground reply" UNKNOWN "" "$vol_on" "$pow_ok"
   rcase "B: returnValue false with an appId (Home)" UNKNOWN '{"returnValue": false, "appId": "com.webos.app.home", "errorText": "x"}' "$vol_on" "$pow_ok"
+  rcase "B2: returnValue false at the top and true in a nested object (Home)" UNKNOWN '{"returnValue": false, "x": {"returnValue": true}, "appId": "com.webos.app.home"}' "$vol_on" "$pow_ok"
+  rcase "a power reply that says returnValue both ways does not vouch for standby" "IN USE" "$(fgj youtube.leanback.v4)" "$vol_on" '{"returnValue": true, "state": "Active Standby", "sub": {"returnValue": false}}'
   rcase "C: an error object only" UNKNOWN '{"returnValue": false, "errorCode": -1, "errorText": "Denied"}' "$vol_on" "$pow_ok"
   rcase "D: two DISTINCT appIds, the real one first, Home last" UNKNOWN '{"returnValue": true, "appId": "youtube.leanback.v4", "previous": {"appId": "com.webos.app.home"}}' "$vol_on" "$pow_ok"
   rcase "E: two DISTINCT appIds, Home first" UNKNOWN '{"returnValue": true, "appId": "com.webos.app.home", "x": {"appId": "youtube.leanback.v4"}}' "$vol_on" "$pow_ok"
@@ -1154,8 +1157,9 @@ cmd_selftest() {
   # `status` and tests/run.py behind a 45-minute lease. ssh_tv is replaced here by something that never
   # answers; "nothing left behind" is read from the process list by a marker only these cases put in
   # an argv (never a global count: other lanes run their own sleeps).
-  local mk wsecs t0 el sp hung
+  local mk mkpat wsecs rsecs t0 el sp hung
   mk=$((200000 + RANDOM)); wsecs=$((900000 + RANDOM))
+  mkpat="sleep $mk|plxmark-$mk|plxmark-outer-$mk"        # the argv strings these cases plant, not a bare number
   left() { pgrep -f "$1" 2>/dev/null | tr '\n' ' '; }          # the pids whose argv holds $1
   waitfor() {  # waitfor <tries> <command…>: poll, 0.2 s apart, until the command succeeds
     local k=0 n="$1"; shift
@@ -1169,7 +1173,7 @@ cmd_selftest() {
     local n="$1" f="$2" gp; shift 2
     ( "$@" ) > "$f" 2>&1 & gp=$!
     if waitfor "$n" dead "$gp"; then wait "$gp" 2>/dev/null; return $?; fi
-    kill -9 "$gp" 2>/dev/null; pkill -f "$mk" 2>/dev/null; wait "$gp" 2>/dev/null; return 99
+    kill -9 "$gp" 2>/dev/null; pkill -f "$mkpat" 2>/dev/null; wait "$gp" 2>/dev/null; return 99
   }
   got="$(run_bounded "$wsecs" printf 'hello')"; rc=$?
   chk "run_bounded: a command that finishes passes its stdout and status through" \
@@ -1182,14 +1186,14 @@ cmd_selftest() {
   el=$((SECONDS - t0))
   chk "run_bounded: a command that never answers is cut at the deadline, status 124, in a few seconds" \
     "$([ "$rc" = 124 ] && [ "$el" -le 5 ] && echo 1)" "rc=$rc (99 = still running after 8 s) after ${el}s"
-  chk "run_bounded: ... with the command AND its children and grandchildren gone" "$(gone "$mk" && echo 1)" "$(left "$mk")"
+  chk "run_bounded: ... with the command AND its children and grandchildren gone" "$(gone "$mkpat" && echo 1)" "$(left "$mkpat")"
   for sig in TERM HUP; do
     ( run_bounded "$wsecs" sh -c "sh -c 'sleep $mk; :' plxmark-$mk; :" plxmark-outer-$mk ) >/dev/null 2>&1 &
     sp=$!
-    chk "run_bounded: (setup, $sig) the bounded command is running" "$(waitfor 25 present "$mk" && echo 1)"
+    chk "run_bounded: (setup, $sig) the bounded command is running" "$(waitfor 25 present "$mkpat" && echo 1)"
     kill "-$sig" "$sp" 2>/dev/null; wait "$sp" 2>/dev/null
     chk "run_bounded: $sig to the caller leaves no command, child or watchdog sleep" \
-      "$(gone "$mk" && gone "sleep $wsecs" && echo 1)" "$(left "$mk") $(left "sleep $wsecs")"
+      "$(gone "$mkpat" && gone "sleep $wsecs" && echo 1)" "$(left "$mkpat") $(left "sleep $wsecs")"
   done
   hang_pf() {   # runs in guarded's subshell: ssh_tv is replaced there, and only there
     unset PLX_TV_LOCK_LOCAL
@@ -1205,7 +1209,7 @@ cmd_selftest() {
        && ! printf '%s\n' "$out" | grep -qE 'IDLE|^IN USE:' && echo 1)"
   pfcheck "... and preflight_note itself still returns 0 (acquire and status keep their exit codes)" \
     "$(printf '%s\n' "$out" | grep -qx 'rc=0' && echo 1)"
-  chk "... leaving none of its processes behind" "$(gone "$mk" && echo 1)" "$(left "$mk")"
+  chk "... leaving none of its processes behind" "$(gone "$mkpat" && echo 1)" "$(left "$mkpat")"
   pfcheck "... and asked ssh for keep-alives (ServerAliveInterval=3, ServerAliveCountMax=2)" \
     "$(grep -q 'ServerAliveInterval=3' "$d/ssh-opts" 2>/dev/null && grep -q 'ServerAliveCountMax=2' "$d/ssh-opts" && echo 1)"
   mkdir -p "$d/fakerepo/tools"; printf '#!/bin/sh\necho "$*"\n' > "$d/fakerepo/tools/tv-ssh"; chmod +x "$d/fakerepo/tools/tv-ssh"
@@ -1245,6 +1249,12 @@ cmd_selftest() {
   hu W with --why "idle set" -- sh -c ": > '$marker'; exit 6"
   chk "with on an idle set: the command runs and its status is returned" \
     "$([ -e "$marker" ] && [ "$rc" = 6 ] && [ "$(inuse_n)" = 0 ] && echo 1)" "rc=$rc: $out"
+  rsecs=$((800000 + RANDOM))
+  export PLX_TV_RENEW_SECS="$rsecs"
+  hu W with --why "renewer" -- sh -c "sleep 1"
+  unset PLX_TV_RENEW_SECS
+  chk "with: the renewer's sleep does not outlive the command (its whole tree is killed)" \
+    "$(gone "sleep $rsecs" && echo 1)" "rc=$rc left: $(left "sleep $rsecs")"
   probe_file "$(fgj youtube.leanback.v4)" "$vol_on" "$pow_ok"
   hu D acquire --why "own lease" --ttl 7
   hu D acquire --why "shorten" --ttl -1
