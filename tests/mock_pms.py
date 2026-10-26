@@ -192,6 +192,13 @@ also be flipped live, mid-run, with `POST /_mock/config` — JSON body
 `{"refuse_enhancements": true, "ignore_enhancements": false, "plex_pass": false}` — so one test
 case can resolve once, then refuse only from the next decision on.
 
+`--refuse-conversions` makes the server decline every request that asks it to CONVERT: a
+`/decision` with `directPlay=0` (the remux and transcode shapes: a refused audio conversion, the HLS
+rung) answers `generalDecisionCode=2000`, the shape `route/plan.rs::refusal` reads, while the
+direct-play probe (`directPlay=1`) is answered as ever. It is how the app's last rung (the in-app
+audio decode after every conversion was refused, S4) is reached on a television; flippable live
+through `POST /_mock/config` (`{"refuse_conversions": true}`).
+
 Five fixed fixture movies (own section id 3, so ordinary section/rail counts and hashes over
 sections 1/2 are untouched, but each is reachable directly at its ratingKey) exercise the offering
 and fallback rules:
@@ -2431,6 +2438,9 @@ class MockPms:
         # only then start refusing/ignoring.
         self.refuse_enhancements = False
         self.ignore_enhancements = False
+        # `--refuse-conversions`: every /decision asking the server to convert (`directPlay=0`) is
+        # refused with generalDecisionCode=2000; a direct-play probe is unaffected.
+        self.refuse_conversions = False
         # `--transcode-fixture PATH`: serve this file (Range/206 supported) for every
         # /video/:/transcode/universal/start* request instead of the plain 404.
         self.transcode_fixture = None
@@ -2687,7 +2697,7 @@ class MockPms:
                 return j({"error": "invalid JSON body"}, 400)
             if not isinstance(patch, dict):
                 return j({"error": "body must be a JSON object"}, 400)
-            allowed = {"refuse_enhancements", "ignore_enhancements", "plex_pass"}
+            allowed = {"refuse_enhancements", "ignore_enhancements", "refuse_conversions", "plex_pass"}
             unknown = set(patch) - allowed
             if unknown:
                 return j({"error": f"unknown config key(s): {sorted(unknown)}"}, 400)
@@ -3141,6 +3151,15 @@ class MockPms:
             item = lib.items.get(rk)
             part_id = (item.get("Media", [{}])[0].get("Part", [{}])[0].get("id")
                        if item else None)
+            # `--refuse-conversions`: the server will not convert anything (same refusal shape as
+            # `--refuse-enhancements`; `route/plan.rs::refusal` reads generalDecisionCode 2000).
+            if self.refuse_conversions and q.get("directPlay") == "0":
+                return j(self.container(
+                    generalDecisionCode=2000,
+                    generalDecisionText="Neither direct play nor conversion is available.",
+                    transcodeDecisionCode=4020,
+                    transcodeDecisionText="Server declined the conversion.",
+                    mdeDecisionCode=2000, Metadata=[]))
             # #266: a LIVE boostDialog=1 or normalizeLoudness=1 — a `0` or absent param is
             # byte-identical to the branches below, untouched. Measured against PMS 1.43.4 with
             # Plex Pass (design plan M1/M2): whether the request shape was the remux one
@@ -3530,7 +3549,7 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
           plaintext_only_lan=False, advertise_ip=None, advertise_port=None, insecure_fail_mode="handshake",
           authorize_after=None, plex_pass=True, loudness_analysis=True,
           refuse_enhancements=False, ignore_enhancements=False, transcode_fixture=None,
-          cut_part_after=None, part_range_answers_200=False,
+          refuse_conversions=False, cut_part_after=None, part_range_answers_200=False,
           home_hubs=0, home_seasons=False, section_hubs=0, section_hubs_linked=0, decision_delay_ms=0,
           home_users=1, second_account=False, link=(), link_faults=(), shows=6, seasons=2, episodes=6,
           resume_fixture=False, media_next_episode=False, next_episode_remux=False,
@@ -3597,6 +3616,7 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
     pms.section_hubs_linked = section_hubs_linked
     pms.refuse_enhancements = refuse_enhancements
     pms.ignore_enhancements = ignore_enhancements
+    pms.refuse_conversions = refuse_conversions
     pms.transcode_fixture = pathlib.Path(transcode_fixture) if transcode_fixture else None
     pms.cut_part_after = cut_part_after
     pms.part_range_answers_200 = part_range_answers_200
@@ -4474,6 +4494,10 @@ def main():
                     help="#266: a live boostDialog=1/normalizeLoudness=1 on /decision gets the "
                          "server-refusal shape (generalDecisionCode=2000) instead of a transcode "
                          "decision; also flippable live via POST /_mock/config")
+    ap.add_argument("--refuse-conversions", action="store_true",
+                    help="S4: every /decision that asks the server to convert (directPlay=0) gets the "
+                         "server-refusal shape (generalDecisionCode=2000); the direct-play probe is "
+                         "answered as ever; also flippable live via POST /_mock/config")
     ap.add_argument("--ignore-enhancements", action="store_true",
                     help="#266: a live boostDialog=1/normalizeLoudness=1 is accepted but the "
                          "audio decision stays \"copy\" — an old server that does not act on the "
@@ -4584,6 +4608,7 @@ def main():
                          loudness_analysis=not a.no_loudness_analysis,
                          refuse_enhancements=a.refuse_enhancements,
                          ignore_enhancements=a.ignore_enhancements,
+                         refuse_conversions=a.refuse_conversions,
                          transcode_fixture=a.transcode_fixture,
                          cut_part_after=a.cut_part_after,
                          part_range_answers_200=a.part_range_answers_200, home_hubs=a.home_hubs,
