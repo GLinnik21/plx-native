@@ -6882,10 +6882,10 @@ pub fn audio_track_direct_plays(ps: &PlaybackSession, codec: &str, channels: i64
 }
 
 /// **Would the server convert this track's audio if it played?** The track menu's "converted by
-/// your server" mark: a track the TV cannot decode (`audio_direct_plays`, the same capability
-/// answer the planner and the profile use) plays through the server's remux or re-encode with its
-/// audio converted. Not under Forced Direct Play, where an unplayable track is refused instead of
-/// converted, so nothing is converted there. Reads the process-wide mode, like
+/// your server" mark: a track the TV cannot decode or load (`audio_direct_plays`: codec, channel
+/// and sample-rate limits, the same capability answer the planner and the profile use) plays
+/// through the server's remux or re-encode with its audio converted. Not under Forced Direct Play,
+/// where an unplayable track is refused instead of converted, so nothing is converted there. Reads the process-wide mode, like
 /// [`playback_preview`]: the menu's track form is built from the metadata view alone (it keeps no
 /// session), so it cannot read the `direct_play_mode` the session captured and
 /// `commit_audio_selection` uses; the two agree unless the setting changes mid-playback.
