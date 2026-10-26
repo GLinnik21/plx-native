@@ -1194,6 +1194,15 @@ pub fn preview_crash() -> String {
         .and_then(|v| serde_json::to_string_pretty(&v).ok())
         .unwrap_or_else(|| String::from_utf8_lossy(&handled).into_owned());
     out.push_str(&handled_text);
+    out.push_str(plx_platform::i18n::msg::settings_consent_preview_recovered());
+    let recovered = plx_telemetry::telemetry::playback::preview_refusal_recovered();
+    let recovered_text = serde_json::from_slice::<serde_json::Value>(&recovered)
+        .ok()
+        .and_then(|v| serde_json::to_string_pretty(&v).ok())
+        .unwrap_or_else(|| String::from_utf8_lossy(&recovered).into_owned());
+    out.push_str(&recovered_text);
+    out.push('\n');
+    out.push_str(&plx_telemetry::telemetry::playback::preview_recovered_domains());
     out.push_str(plx_platform::i18n::msg::settings_consent_preview_incident());
     let incident = plx_telemetry::telemetry::incident::preview_event();
     let incident_text = serde_json::from_slice::<serde_json::Value>(&incident)
@@ -1368,6 +1377,7 @@ fn placeholder(token: &str) -> Option<&'static str> {
         "internal thread label" => msg::settings_consent_placeholder_thread_label(),
         "library file name" => msg::settings_consent_placeholder_library(),
         "webOS release" => msg::settings_consent_placeholder_webos_release(),
+        "webOS firmware build" => msg::settings_consent_placeholder_webos_build(),
         "webOS release codename" => msg::settings_consent_placeholder_webos_codename(),
         "webOS API version" => msg::settings_consent_placeholder_webos_api(),
         "SoC/platform class" => msg::settings_consent_placeholder_soc_class(),

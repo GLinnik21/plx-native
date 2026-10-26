@@ -157,7 +157,11 @@ something.
   `tests/run.py::presented_fps` turns them into the `presented:` characterisation line every
   synthetic case prints. Codec-agnostic — it is the instrument `dualsequencer:6` was only for
   Dolby Vision. Type 46 is emitted only when non-zero, and a stream shown at 13 fps reported 0
-  drops: the sink does not count a frame it never presented as dropped.
+  drops: the sink does not count a frame it never presented as dropped. A session that took 25
+  position ticks and never one displayed-frame callback logs `era callbacks: no displayed-frame
+  counter ...` once (`era_callbacks.rs`): the numbering is chosen from the firmware major, and that is
+  the symptom of choosing it wrongly. `docs/webos5-port.md` §5a is the table of every such private,
+  era-dependent choice with its self-check and fallback.
 - **A constructed Starfish object is not dispatchable until synchronous `Load` returns.**
   `sf_ready()` still answers whether the object exists; `sf_ready_object()` also requires the
   C `LOAD_RETURNED` gate. Rust records the return on the exact native epoch before publishing
@@ -403,7 +407,15 @@ something.
   refusal that `devcaps::start_caps` took out of `start`) narrows nothing and gets no flight, so a
   conversion that is still refused cannot loop; a refused conversion dispatch goes on to the next rung
   too (HLS for a cold Auto Original, else the manual encode when earned, else the read-out), and a refused rollback is terminal. The viewer
-  keeps the connecting spinner: no read-out, no second play request. **A Load the machine did not
+  keeps the connecting spinner: no read-out, no second play request. **The project hears about a
+  rescue** (issue #1075): the machine keeps the request's first refusal that `LoadRefusal::reports`
+  (a pipeline number, the stall or a Load timeout, never a source failure) with the stream it named,
+  and the rung of the flight the open rests on; the first picture of such an open leaves it as ONE
+  `RecoveryEffect::ReportRecovered` per request, which the pump hands to `report::refusal_recovered`
+  and which becomes the handled `refusal_recovered` event (closed fields only: codec class, channel
+  bucket, the number or `timeout`/`stall`, and the rung `facet`/`hls`/`rollback`/`encode`, the last being the manual both-facets encode) under the
+  error-report consent and no other. A play that was never refused, a ladder that read out, a
+  source failure and a flight Home abandoned send nothing. **A Load the machine did not
   ask for re-opens the ladder:** `RecoveryEvent::LoadStarted`, raised by
   `engine::start_bufferfeed_for` (which every Engine start passes: a fresh play, a reload, the
   foreground restore), takes a machine left in `Flight` (Home cleared the flight with the Engine)
