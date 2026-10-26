@@ -157,7 +157,11 @@ something.
   `tests/run.py::presented_fps` turns them into the `presented:` characterisation line every
   synthetic case prints. Codec-agnostic — it is the instrument `dualsequencer:6` was only for
   Dolby Vision. Type 46 is emitted only when non-zero, and a stream shown at 13 fps reported 0
-  drops: the sink does not count a frame it never presented as dropped.
+  drops: the sink does not count a frame it never presented as dropped. A session that took 25
+  position ticks and never one displayed-frame callback logs `era callbacks: no displayed-frame
+  counter ...` once (`era_callbacks.rs`): the numbering is chosen from the firmware major, and that is
+  the symptom of choosing it wrongly. `docs/webos5-port.md` §5a is the table of every such private,
+  era-dependent choice with its self-check and fallback.
 - **A constructed Starfish object is not dispatchable until synchronous `Load` returns.**
   `sf_ready()` still answers whether the object exists; `sf_ready_object()` also requires the
   C `LOAD_RETURNED` gate. Rust records the return on the exact native epoch before publishing
