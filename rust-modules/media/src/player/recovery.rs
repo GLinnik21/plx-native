@@ -249,6 +249,12 @@ pub enum RecoveryEffect {
     /// the stream class taken out of the attempt and `flight` the ordinal of this flight among the
     /// request's ([`MAX_RECOVERY_FLIGHTS`]), for the driver's log line.
     ConvertFacet { facet: Facet, flight: u32 },
+    /// Fly today's route as an ENCODE with no video copy, planned from [`OpenRecovery::attempt`]: the
+    /// manual both-facets rung (`dispatch_refusal_conversion` with `VideoLane::Both`). The attempt
+    /// lacks every stream this refusal named that narrows `start` (the suspect audio, and the refused
+    /// video raster); with nothing to lower (a frame-rate refusal of a 1080p source) the encode alone is
+    /// the rung. `flight` is the ordinal of this flight among the request's.
+    ConvertBoth { flight: u32 },
     /// Fly the HLS contingency a cold Auto Original retained (`dispatch_unopened_auto_hls`).
     StartAutoHls,
     /// Fail the Engine for good and show the failure read-out.
@@ -415,6 +421,29 @@ impl OpenRecovery {
             fx.push(RecoveryEffect::StartAutoHls);
             self.state = flight(Rung::Both);
             return;
+        }
+        if !facts.auto_original && facts.no_frames && refusal.names_pipeline() && self.flights < MAX_RECOVERY_FLIGHTS {
+            // The manual both-facets rung: one encode with no video copy, the audio the attempt lacks
+            // converted with it. It fires from the facts alone, at most once: every both flight leaves
+            // an encoded video (`facts.video == None`) and its audio suspects taken, and the video
+            // facet's identical encode set `excluded.video`. It still fires for a refusal with no raster
+            // to lower (a 1080p frame rate): `facts.video` is `Some` and nothing was excluded.
+            let audio = suspect_audio(facts.audio.as_ref()).filter(|f| self.attempt.without(f) != *self.attempt);
+            let video = matches!(refusal, LoadRefusal::Refused { .. })
+                .then(|| suspect_video(facts.video.as_ref()))
+                .flatten()
+                .filter(|f| self.attempt.without(f) != *self.attempt);
+            let new_video = facts.video.is_some() && self.excluded.video.is_none();
+            if new_video || audio.is_some() {
+                for facet in audio.into_iter().chain(video) {
+                    self.excluded.take(facet);
+                }
+                self.narrow();
+                self.flights += 1;
+                fx.push(RecoveryEffect::ConvertBoth { flight: self.flights });
+                self.state = flight(Rung::Both);
+                return;
+            }
         }
         fx.push(RecoveryEffect::ShowError { refusal });
         self.state = State::Failed;
@@ -658,6 +687,15 @@ mod tests {
         OpenRecovery::new(Arc::new(Caps::assumed()))
     }
 
+    fn h264_1080p() -> Option<StreamVideo> {
+        Some(StreamVideo { codec: "h264".into(), width: 1920, height: 1080 })
+    }
+
+    /// The facts of a manual play whose pipeline was fed `video` behind `fed` audio.
+    fn manual_on(fed: &str, video: Option<StreamVideo>) -> OpenFacts {
+        OpenFacts { no_frames: true, audio: audio(fed, 6), video, ..OpenFacts::default() }
+    }
+
     /// The video is the suspect only when the audio is not: elimination, not the refusal's number.
     #[test]
     fn suspect_names_video_only_when_the_audio_is_not_the_suspect() {
@@ -683,17 +721,106 @@ mod tests {
         assert_eq!(m.attempt().raster_bound("hevc"), (3840, 2176), "another codec keeps its bound");
     }
 
-    /// The audio rung comes first when the audio is the suspect, and a manual pick has no second rung:
-    /// the refusal after the audio flight ends on the read-out.
+    /// The audio rung comes first when the audio is the suspect. The remux that converted it still
+    /// copies the 4K video, so its refusal takes the both-facets rung, which lowers the video as well.
     #[test]
     fn a_video_refusal_whose_audio_is_the_suspect_takes_the_audio_rung_first() {
         let mut m = machine();
-        let (_, fx) = run(&mut m, refused(LoadRefusal::Refused { num: 100 }, on_4k("dca", false)));
+        let cause = LoadRefusal::Refused { num: 100 };
+        let (_, fx) = run(&mut m, refused(cause, on_4k("dca", false)));
         assert_eq!(fx, [RecoveryEffect::ConvertFacet { facet: dts6(), flight: 1 }]);
         assert_eq!(m.attempt().raster_bound("h264"), (3840, 2176), "the video is untouched");
         run(&mut m, landed());
-        let (_, fx) = run(&mut m, refused(LoadRefusal::Refused { num: 100 }, on_4k("ac3", false)));
-        assert_eq!(fx, [RecoveryEffect::ShowError { refusal: LoadRefusal::Refused { num: 100 } }]);
+        let (_, fx) = run(&mut m, refused(cause, on_4k("ac3", false)));
+        assert_eq!(fx, [RecoveryEffect::ConvertBoth { flight: 2 }]);
+        assert_eq!(m.phase(), Phase::Flight);
+        assert_eq!(*m.attempt(), dts_start().without(&dts6()).without(&h264_4k_facet()));
+    }
+
+    /// **The manual both-facets rung.** A refusal with nothing to lower (a 1080p source: the frame-rate
+    /// case) still gets one encode of the video, the attempt unchanged; the encode's own refusal reads
+    /// out, because the route it flew feeds an encoded video (`video: None`) and no audio suspect.
+    #[test]
+    fn the_manual_both_facets_rung_converts_both_then_reads_out() {
+        let start = Arc::new(Caps::assumed());
+        let mut m = OpenRecovery::new(start.clone());
+        let cause = LoadRefusal::Refused { num: 601 };
+        let (handled, fx) = run(&mut m, refused(cause, manual_on("ac3", h264_1080p())));
+        assert_eq!((handled, fx), (Handled::Yes, vec![RecoveryEffect::ConvertBoth { flight: 1 }]));
+        assert_eq!(m.phase(), Phase::Flight);
+        assert_eq!(*m.attempt(), *start, "nothing to lower");
+        run(&mut m, landed());
+        assert_eq!(m.phase(), Phase::Opening);
+        let (_, fx) = run(&mut m, refused(cause, manual_on("ac3", None)));
+        assert_eq!((fx, m.phase()), (vec![RecoveryEffect::ShowError { refusal: cause }], Phase::Failed));
+    }
+
+    /// A stall names native audio alone, so it never lowers the video, but it is a pipeline refusal
+    /// like any other and the encode is still worth one flight.
+    #[test]
+    fn a_stall_takes_the_both_facets_rung_without_lowering_the_video() {
+        let start = Arc::new(Caps::assumed());
+        let mut m = OpenRecovery::new(start.clone());
+        let (_, fx) = run(&mut m, refused(LoadRefusal::Stalled, manual_on("ac3", h264_4k())));
+        assert_eq!(fx, [RecoveryEffect::ConvertBoth { flight: 1 }]);
+        assert_eq!(*m.attempt(), *start, "a stall names no video raster");
+    }
+
+    /// A refused audio flight with the source video still fed takes the both rung: the audio the
+    /// attempt lacks AND the video are converted together.
+    #[test]
+    fn a_refused_audio_flight_dispatch_takes_the_both_facets_rung() {
+        let mut m = machine();
+        run(&mut m, refused(SHUT, OpenFacts { video: h264_4k(), ..on_dts(facts(false, false, true)) }));
+        let (_, fx) = run(&mut m, RecoveryEvent::FlightRefused);
+        assert_eq!(fx, [RecoveryEffect::ConvertBoth { flight: 2 }]);
+        assert_eq!(*m.attempt(), dts_start().without(&dts6()).without(&h264_4k_facet()));
+    }
+
+    /// The video facet flight and the both rung share the cap: video facet, both rung, then the read-out.
+    #[test]
+    fn the_both_rung_after_the_video_facet_needs_an_audio_suspect_then_the_cap_holds() {
+        let mut m = manual_machine();
+        let cause = LoadRefusal::Refused { num: 100 };
+        run(&mut m, refused(cause, on_4k("ac3", false)));
+        run(&mut m, landed());
+        // The encode feeds an encoded video: no video fact, no audio suspect: the read-out.
+        let (_, fx) = run(&mut m.clone(), refused(cause, manual_on("ac3", None)));
+        assert_eq!(fx, [RecoveryEffect::ShowError { refusal: cause }]);
+        // An audio suspect in the encode's feed narrows the attempt: the both rung (flight 2) ...
+        let start = Arc::new(Caps { audio: "aac,ac3,eac3,opus".into(), ..Caps::assumed() });
+        let mut m = OpenRecovery::new(start);
+        run(&mut m, refused(cause, on_4k("ac3", false)));
+        run(&mut m, landed());
+        let (_, fx) = run(&mut m, refused(cause, manual_on("opus", None)));
+        assert_eq!(fx, [RecoveryEffect::ConvertBoth { flight: 2 }]);
+        run(&mut m, landed());
+        // ... and a third refusal finds the cap spent.
+        let (_, fx) = run(&mut m, refused(cause, manual_on("opus", h264_4k())));
+        assert_eq!(fx, [RecoveryEffect::ShowError { refusal: cause }]);
+    }
+
+    /// A timeout or a source failure names no pipeline stream: the manual read-out, as on main.
+    #[test]
+    fn a_timeout_or_source_failure_never_takes_the_manual_both_rung() {
+        for other in [LoadRefusal::TimedOut, LoadRefusal::SourceFailed] {
+            let (_, fx) = run(&mut manual_machine(), refused(other, on_4k("ac3", false)));
+            assert_eq!(fx, [RecoveryEffect::ShowError { refusal: other }], "{other:?}");
+        }
+    }
+
+    /// A cold Auto Original's refused HLS rescue is not converted again: the HLS route feeds AAC and
+    /// an encoded video, and a landed HLS reload reads `auto_original == false` (progressive MKV is
+    /// required of the watch), so the manual rung's own clause is what stops it.
+    #[test]
+    fn a_refused_hls_rescue_is_not_converted_again() {
+        let mut m = manual_machine();
+        let cause = LoadRefusal::Refused { num: 100 };
+        let (_, fx) = run(&mut m, refused(cause, on_4k("ac3", true)));
+        assert_eq!(fx, [RecoveryEffect::StartAutoHls]);
+        run(&mut m, landed());
+        let (_, fx) = run(&mut m, refused(LoadRefusal::Refused { num: 601 }, manual_on("aac", None)));
+        assert_eq!((fx, m.phase()), (vec![RecoveryEffect::ShowError { refusal: LoadRefusal::Refused { num: 601 } }], Phase::Failed));
     }
 
     /// A cold Auto Original keeps its HLS contingency as the video re-encode: the refusal goes to
@@ -722,7 +849,7 @@ mod tests {
         assert!(fx.is_empty(), "{fx:?}");
     }
 
-    /// A refused video flight ends on the read-out; a timeout or a source failure names no video.
+    /// A refused video flight ends on the read-out: the both rung would fly the identical encode.
     #[test]
     fn a_refused_video_facet_flight_is_not_flown_again() {
         let mut m = manual_machine();
@@ -734,9 +861,6 @@ mod tests {
             let (_, fx) = run(&mut manual_machine(), refused(other, on_4k("ac3", false)));
             assert_eq!(fx, [RecoveryEffect::ShowError { refusal: other }], "{other:?}");
         }
-        // A stall names native audio alone, never the video.
-        let (_, fx) = run(&mut manual_machine(), refused(LoadRefusal::Stalled, on_4k("ac3", false)));
-        assert_eq!(fx, [RecoveryEffect::ShowError { refusal: LoadRefusal::Stalled }]);
     }
 
     #[test]
@@ -787,7 +911,21 @@ mod tests {
         run(&mut m, landed());
         let (_, fx) = run(&mut m, refused(SHUT, converted));
         assert_eq!((fx, m.phase()), (ERROR.to_vec(), Phase::Failed));
-        // Manual Original: the facet, then the read-out (a manual pick has no both-facets rung).
+        // Manual Original: the facet, then the both-facets rung (an encode with no video copy), then
+        // the read-out. The converted remux still feeds the source's video, so the video is a
+        // candidate for the encode; the encode's own refusal feeds an encoded video: nothing is left.
+        let mut m = OpenRecovery::new(start.clone());
+        run(&mut m, refused(SHUT, on_dts(facts(false, false, true))));
+        run(&mut m, landed());
+        let remux = OpenFacts { audio: audio("aac", 2), video: h264_1080p(), ..facts(false, false, true) };
+        let (_, fx) = run(&mut m, refused(SHUT, remux));
+        assert_eq!((fx, m.phase()), (vec![RecoveryEffect::ConvertBoth { flight: 2 }], Phase::Flight));
+        assert_eq!(*m.attempt(), start.without(&dts6()), "nothing of the 1080p video to lower");
+        run(&mut m, landed());
+        let encoded = OpenFacts { audio: audio("aac", 2), ..facts(false, false, true) };
+        let (_, fx) = run(&mut m, refused(SHUT, encoded));
+        assert_eq!((fx, m.phase()), (ERROR.to_vec(), Phase::Failed));
+        // A converted route whose video is unknown or encoded has no both rung: the read-out.
         let mut m = OpenRecovery::new(start);
         run(&mut m, refused(SHUT, on_dts(facts(false, false, true))));
         run(&mut m, landed());
@@ -805,7 +943,7 @@ mod tests {
     fn at_most_two_flights_follow_one_request() {
         // (cold Auto Original, the audio fed, the video fed): the audio-suspect profiles of S1a and the
         // video ones (a 4K H.264 behind an audio no set refuses, and behind one that is a suspect).
-        let profiles = [(true, "dca", None), (false, "dca", None), (true, "ac3", h264_4k()), (false, "ac3", h264_4k()), (true, "dca", h264_4k()), (false, "dca", h264_4k())];
+        let profiles = [(true, "dca", None), (false, "dca", None), (true, "ac3", h264_4k()), (false, "ac3", h264_4k()), (true, "dca", h264_4k()), (false, "dca", h264_4k()), (false, "ac3", h264_1080p()), (true, "ac3", h264_1080p())];
         for (auto, fed, video) in profiles {
             let base = OpenFacts { auto_original: auto, no_frames: true, audio: audio(fed, 6), video, ..OpenFacts::default() };
             let stall = OpenFacts { native_audio: Some(opus6()), ..base.clone() };
@@ -830,7 +968,7 @@ mod tests {
                     let mut next = m.clone();
                     let mut fx = Vec::new();
                     next.step(ev, &mut fx);
-                    let started = fx.iter().filter(|e| matches!(e, RecoveryEffect::ConvertFacet { .. } | RecoveryEffect::StartAutoHls)).count();
+                    let started = fx.iter().filter(|e| matches!(e, RecoveryEffect::ConvertFacet { .. } | RecoveryEffect::ConvertBoth { .. } | RecoveryEffect::StartAutoHls)).count();
                     if fx.iter().any(|e| matches!(e, RecoveryEffect::ConvertFacet { .. })) {
                         assert_eq!(m.flights, 0, "a facet conversion after another flight: {ev:?} in {:?}", m.state);
                     }

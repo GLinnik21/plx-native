@@ -4115,6 +4115,11 @@ pub enum VideoLane {
     /// An encode with no video copy ([`video_encode_contract`]): the facet rung of a refused video,
     /// whose raster the attempt no longer offers, so the server must produce a smaller one.
     Encode,
+    /// An encode with no video copy for the manual both-facets rung ([`video_encode_contract`]): the
+    /// audio the attempt no longer offers is converted and the video is encoded. The 1080p clamp
+    /// applies only when the attempt lowered a video raster; a refusal with no raster to lower (a
+    /// frame rate) keeps the route's own ceiling.
+    Both,
 }
 
 /// Start the flight that replaces a route whose audio or video the pipeline refused before its
@@ -4141,7 +4146,10 @@ pub fn dispatch_refusal_conversion(ps: &mut PlaybackSession, offset_secs: i64, v
     }
     let contract = match video {
         VideoLane::AsPlanned => retranscode_contract(ps),
-        VideoLane::Encode => video_encode_contract(ps),
+        VideoLane::Encode => video_encode_contract(ps, true),
+        // Only `Caps::without(Video)` writes a ceiling, so one in the attempt means a video raster
+        // was lowered for this request (the facet rung's, or this rung's own).
+        VideoLane::Both => video_encode_contract(ps, !ps.attempt_caps().video_ceiling.is_empty()),
     };
     let Some(inputs) = prepare_retranscode_inputs(ps, &expected, offset_secs) else {
         return RecoveryDispatch::Refused;
@@ -9225,22 +9233,27 @@ fn retranscode_contract(ps: &PlaybackSession) -> plx_plex::plex::EncodeContract 
     re_encode_contract(ps, cur_delivery(ps), cur_ceiling(ps))
 }
 
-/// The contract of a refused video's conversion ([`VideoLane::Encode`]): a re-encode of today's
-/// delivery with the server forbidden to copy the video (`directStream=0`; the audio is still
-/// copied), under the lower of the route's ceiling and the 1080p rung's. The ceiling is what makes
-/// the encode independent of how PMS combines the profile's per-codec limitation with its `*`
-/// one (that limitation stays, for MDE): `videoResolution` itself asks for at most 1080p.
-fn video_encode_contract(ps: &PlaybackSession) -> plx_plex::plex::EncodeContract {
-    let cap = crate::abr::Rung::P1080High.ceiling();
-    let cur = cur_ceiling(ps).unwrap_or(plx_plex::plex::Ceiling::NATIVE_4K);
-    let ceiling = plx_plex::plex::Ceiling {
-        max_kbps: cur.max_kbps.min(cap.max_kbps),
-        max_w: cur.max_w.min(cap.max_w),
-        max_h: cur.max_h.min(cap.max_h),
+/// The contract of a video conversion ([`VideoLane::Encode`], [`VideoLane::Both`]): a re-encode of
+/// today's delivery with the server forbidden to copy the video (`directStream=0`; the audio is
+/// still copied), and, when `lower` (a video raster was taken out of the attempt), under the lower of
+/// the route's ceiling and the 1080p rung's. The ceiling is what makes the encode independent of how
+/// PMS combines the profile's per-codec limitation with its `*` one (that limitation stays, for MDE):
+/// `videoResolution` itself asks for at most 1080p. Without `lower` the route keeps its own ceiling.
+fn video_encode_contract(ps: &PlaybackSession, lower: bool) -> plx_plex::plex::EncodeContract {
+    let ceiling = if lower {
+        let cap = crate::abr::Rung::P1080High.ceiling();
+        let cur = cur_ceiling(ps).unwrap_or(plx_plex::plex::Ceiling::NATIVE_4K);
+        Some(plx_plex::plex::Ceiling {
+            max_kbps: cur.max_kbps.min(cap.max_kbps),
+            max_w: cur.max_w.min(cap.max_w),
+            max_h: cur.max_h.min(cap.max_h),
+        })
+    } else {
+        cur_ceiling(ps)
     };
     plx_plex::plex::EncodeContract {
         no_video_copy: true,
-        ..re_encode_contract(ps, cur_delivery(ps), Some(ceiling))
+        ..re_encode_contract(ps, cur_delivery(ps), ceiling)
     }
 }
 

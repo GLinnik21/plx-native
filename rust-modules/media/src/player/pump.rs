@@ -702,6 +702,16 @@ fn drive_open_recovery(ps: &mut crate::route::PlaybackSession, first: super::rec
                     };
                     crate::route::dispatch_refusal_conversion(ps, secs, lane)
                 }
+                RecoveryEffect::ConvertBoth { flight } => {
+                    // The manual both-facets rung: the audio converted AND the video encoded. The
+                    // attempt (narrowed by the machine) already lacks what this refusal named.
+                    super::log(&format!(
+                        "open recovery: converting both facets (flight {flight}/{})",
+                        super::recovery::MAX_RECOVERY_FLIGHTS
+                    ));
+                    let secs = (SHARED.playpos_ns.load(Relaxed) / 1_000_000_000).max(0);
+                    crate::route::dispatch_refusal_conversion(ps, secs, crate::route::VideoLane::Both)
+                }
                 RecoveryEffect::StartAutoHls => {
                     let status = SHARED.dg_http_status.load(Relaxed);
                     if status >= 400 {
