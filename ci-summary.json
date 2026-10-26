@@ -29,7 +29,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-26T11:08:14Z",
+ "generated": "2026-10-26T11:18:45Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -117,18 +117,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -53.6,
-   "change7_pct": -20.7,
-   "d30": 726,
-   "delta30": -389.0,
-   "delta7": -88.0,
+   "change30_pct": -54.1,
+   "change7_pct": -20.9,
+   "d30": 731.5,
+   "delta30": -395.5,
+   "delta7": -89,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 98,
+   "n_now": 99,
    "n_prev": 117,
-   "now": 337.0,
+   "now": 336,
    "prev7": 425,
    "shown": true,
    "state": "better",
@@ -257,8 +257,8 @@
   {
    "change30_pct": 80.4,
    "change7_pct": -1.8,
-   "d30": 1186,
-   "delta30": 954.0,
+   "d30": 1186.5,
+   "delta30": 953.5,
    "delta7": -40.0,
    "group": "ci",
    "id": "minutes",
@@ -360,18 +360,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 102.3,
-   "change7_pct": 11.3,
-   "d30": 131.0,
-   "delta30": 134.0,
-   "delta7": 27.0,
+   "change30_pct": 102.7,
+   "change7_pct": 11.6,
+   "d30": 131,
+   "delta30": 134.5,
+   "delta7": 27.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 85,
+   "n_now": 86,
    "n_prev": 108,
-   "now": 265,
+   "now": 265.5,
    "prev7": 238.0,
    "shown": true,
    "state": "flat",
@@ -381,18 +381,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 157.0,
+   "change30_pct": 155.3,
    "change7_pct": 1.8,
-   "d30": 75.5,
-   "delta30": 118.5,
+   "d30": 76,
+   "delta30": 118,
    "delta7": 3.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 84,
+   "n_now": 85,
    "n_prev": 108,
-   "now": 194.0,
+   "now": 194,
    "prev7": 190.5,
    "shown": true,
    "state": "flat",
@@ -445,17 +445,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -1.0,
+   "change7_pct": -0.7,
    "d30": null,
    "delta30": null,
-   "delta7": -1.5,
+   "delta7": -1.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 85,
+   "n_now": 86,
    "n_prev": 108,
-   "now": 151,
+   "now": 151.5,
    "prev7": 152.5,
    "shown": true,
    "state": "flat",
@@ -489,16 +489,16 @@
   {
    "change30_pct": 18.8,
    "change7_pct": 5.6,
-   "d30": 16.0,
+   "d30": 16,
    "delta30": 3.0,
    "delta7": 1.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 85,
+   "n_now": 86,
    "n_prev": 108,
-   "now": 19,
+   "now": 19.0,
    "prev7": 18.0,
    "shown": false,
    "state": "flat",
@@ -571,10 +571,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -98.7,
+   "change30_pct": -98.8,
    "change7_pct": -99.1,
-   "d30": 239,
-   "delta30": -236.0,
+   "d30": 240.0,
+   "delta30": -237.0,
    "delta7": -318.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
@@ -594,8 +594,8 @@
   {
    "change30_pct": -99.6,
    "change7_pct": 0.0,
-   "d30": 748,
-   "delta30": -745.0,
+   "d30": 749.5,
+   "delta30": -746.5,
    "delta7": 0.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
@@ -639,11 +639,6 @@
    "change_pct": 37.8,
    "commits": [
     {
-     "pr": 921,
-     "sha": "2d238e7b0",
-     "title": "player: FF/REW tap seeking, opt-in instant D-pad seeking, Previous/Next episode buttons"
-    },
-    {
      "pr": 1018,
      "sha": "c92352657",
      "title": "Playback: a foreground Load refused while the plaintext grants return is claimed again"
@@ -687,6 +682,11 @@
      "pr": 1063,
      "sha": "03534e394",
      "title": "Tests: Force Direct Play refuses a learned refusal before the Load"
+    },
+    {
+     "pr": 1065,
+     "sha": "5b78cb627",
+     "title": "Playback: a video refused before its first picture is converted under a 1080p ceiling, and the way back never re-offers "
     }
    ],
    "from": 156,
@@ -700,11 +700,6 @@
    "change_pct": 34.1,
    "commits": [
     {
-     "pr": 921,
-     "sha": "2d238e7b0",
-     "title": "player: FF/REW tap seeking, opt-in instant D-pad seeking, Previous/Next episode buttons"
-    },
-    {
      "pr": 1018,
      "sha": "c92352657",
      "title": "Playback: a foreground Load refused while the plaintext grants return is claimed again"
@@ -748,6 +743,11 @@
      "pr": 1063,
      "sha": "03534e394",
      "title": "Tests: Force Direct Play refuses a learned refusal before the Load"
+    },
+    {
+     "pr": 1065,
+     "sha": "5b78cb627",
+     "title": "Playback: a video refused before its first picture is converted under a 1080p ceiling, and the way back never re-offers "
     }
    ],
    "from": 47.5,
@@ -761,11 +761,6 @@
    "change_pct": 30.9,
    "commits": [
     {
-     "pr": 921,
-     "sha": "2d238e7b0",
-     "title": "player: FF/REW tap seeking, opt-in instant D-pad seeking, Previous/Next episode buttons"
-    },
-    {
      "pr": 1018,
      "sha": "c92352657",
      "title": "Playback: a foreground Load refused while the plaintext grants return is claimed again"
@@ -809,6 +804,11 @@
      "pr": 1063,
      "sha": "03534e394",
      "title": "Tests: Force Direct Play refuses a learned refusal before the Load"
+    },
+    {
+     "pr": 1065,
+     "sha": "5b78cb627",
+     "title": "Playback: a video refused before its first picture is converted under a 1080p ceiling, and the way back never re-offers "
     }
    ],
    "from": 973.0,
@@ -849,7 +849,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 265
+   "now": 265.5
   }
  ],
  "slowest_local": [
