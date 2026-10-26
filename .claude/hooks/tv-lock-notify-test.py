@@ -147,6 +147,26 @@ def main():
             check(isinstance(got, str) and line in got.split("\n") and "PushNotification" in got,
                   label, f"expected an instruction carrying {line!r} on a line of its own, got {got!r}")
 
+    # --- who is told what: a main session may message the owner, a subagent only its caller -------
+    # (fleet lanes are subagents, and a subagent's messages never reach the owner, so its wording
+    # sends the line up through the caller instead of "in your next message").
+    main_text = notify.context_for(bash(fields(ACQUIRE)))
+    sub_text = notify.context_for(dict(bash(fields(ACQUIRE)), agent_id="a1b2c3", agent_type="general-purpose"))
+    flat = lambda text: " ".join(text.split()) if isinstance(text, str) else ""   # wrapping is not wording
+    main_flat, sub_flat = flat(main_text), flat(sub_text)
+    check("say the line to the owner in your next message" in main_flat
+          and "subagent" not in main_flat and "caller" not in main_flat,
+          "main session: the owner-facing wording, unchanged", repr(main_text))
+    check("You are a subagent" in sub_flat and "FIRST in your final report" in sub_flat
+          and "so the caller sends the push" in sub_flat and "If you have a PushNotification tool" in sub_flat
+          and "to the owner in your next message" not in sub_flat,
+          "subagent: told to hand the line to its caller, FIRST in the final report", repr(sub_text))
+    check(isinstance(sub_text, str) and LINE in sub_text.split("\n"),
+          "subagent: the line is still on a line of its own", repr(sub_text))
+    for empty in ("", None, 0):
+        text = notify.context_for(dict(bash(fields(ACQUIRE)), agent_id=empty))
+        check(text == main_text, f"an empty agent_id ({empty!r}) is the main session", repr(text))
+
     # --- the contract, through a real process ---------------------------------------------------
     rc, out, err = run_hook(json.dumps(bash(fields(ACQUIRE))))
     check(rc == 0 and err == "", "process: acquire exits 0 quietly", f"rc={rc} err={err!r}")
