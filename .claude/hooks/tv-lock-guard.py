@@ -356,16 +356,17 @@ def _leading_env_assignments(text):
 def explicit_lane(command, env):
     """`(lane, how)` when the command or the hook's environment NAMES the lane, else None: steps 1
     and 2 of `decide()`'s order, the two a person or wrapper chooses. `cwd` cannot play that role by
-    itself: the harness reports the SESSION's own checkout as `payload["cwd"]` for every subagent's
-    Bash call regardless of which worktree that agent is actually acting in, so a hook that only
-    ever reads `cwd` refuses a subagent's own, correctly-taken lease (wrong lane) — and exporting
-    `PLX_TV_LOCK_LANE` once for the whole session collapses every agent onto ONE lane, which is the
-    failure the lane exists to prevent (`docs/agent-reference.md`, the 2026-09-03 collision).
+    itself: the harness reports the SESSION's own checkout as `payload["cwd"]` for a plain
+    subagent's Bash call regardless of which worktree that agent is actually acting in (only an
+    `isolation: worktree` subagent reports its own), so a hook that only ever reads `cwd` refuses
+    a subagent's own, correctly-taken lease (wrong lane) — and exporting `PLX_TV_LOCK_LANE` once
+    for the whole session collapses every agent onto ONE lane, which is the failure the lane
+    exists to prevent (`docs/agent-reference.md`, the 2026-09-03 collision).
 
       1. an explicit `PLX_TV_LOCK_LANE=<path>` assignment PREFIXING the command text — directly,
          after a leading `env `, or after a leading `cd <dir> &&`. It names the lane of the WHOLE
-         command, as it always has. This is the only spelling that can vary per Bash call, which
-         is what a subagent naming its OWN worktree needs.
+         command, as it always has. Of the two it is the only one that can vary per Bash call,
+         which is what a subagent naming its OWN worktree needs.
       2. `PLX_TV_LOCK_LANE` in the hook's own environment (a human or wrapper that exported it for
          the whole process rather than per command).
 

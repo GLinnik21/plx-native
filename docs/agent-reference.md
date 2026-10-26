@@ -1806,13 +1806,18 @@ behaviour; real GL copies, glyphs and presentation still need a device capture w
 > access to at most one and send every other lane to `make sim-macos` or `tools/sim.ps1`. Telling two prompts "you own the
 > television exclusively" is *not* a mutex — each is true when written and false the moment the
 > second one starts, which is the 2026-08-21 collision that was caught by luck rather than by
-> anything failing loudly. **A subagent proves which lane it is by prefixing
-> `PLX_TV_LOCK_LANE=<its worktree path>` on every device command it runs**, not by exporting the
-> variable once — the harness reports the SESSION's own checkout as that command's `cwd`
-> regardless of which worktree the agent is actually in, so `tools/tv-lock.sh` (which already
-> reads `PLX_TV_LOCK_LANE`) and the `PreToolUse` guard's `lane_from_command()` (which resolves the
-> prefix, then the hook's own environment, then `cwd`, in that order) have to agree on the same
-> per-command spelling for several subagents to multiplex the one set through the lock, one
+> anything failing loudly. **A subagent names which lane it is by prefixing
+> `PLX_TV_LOCK_LANE=<its worktree path>` on the device commands it runs**, not by exporting the
+> variable once — the harness reports the SESSION's own checkout as a plain subagent's `cwd`
+> regardless of which worktree the agent is actually in (only an `isolation: worktree` subagent
+> reports its own), so `tools/tv-lock.sh` (which already reads `PLX_TV_LOCK_LANE`) and the
+> `PreToolUse` guard have to agree on the lane. The guard's `decide()` gives each device segment the
+> first of: that prefix, the variable in the hook's own environment, the segment's absolute
+> `tools/` or `tests/` script path (or `make -C <dir>`), an absolute `cd <dir>` the shell certainly
+> kept, then `cwd`'s checkout; a lane read from a path or a `cd` that is not the `cwd`'s own also
+> needs the caller's session in the lease's `SESSIONS`. The prefix is always correct and the one
+> source for a relative script path or a `cd "$W"`; a lane of its own per subagent is what lets
+> several of them multiplex the one set through the lock, one
 > `tools/tv-lock.sh with --ttl N --wait S -- <one test>` lease per test run.
 >
 > The skill carries the rest: the shared stash stack that hands one lane
