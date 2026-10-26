@@ -175,7 +175,7 @@ impl PcmDecoder {
 
     /// Decode one packet into interleaved little-endian PCM of the declared width. The lossless
     /// codecs have no decoder delay: one packet is one frame, so the packet's pts is the PCM's. (A DTS,
-    /// MP3 or TrueHD frame is the same; the resampler holds back one input frame (the decimator, under half a
+    /// MP3 or TrueHD frame is the same; the resampler holds back one input frame (the decimator, about half a
     /// millisecond of them). Vorbis overlaps
     /// its blocks, so its first packet yields nothing and the rest come out about half a block, tens
     /// of milliseconds, after their packet's pts: not corrected, a lip-sync item for the TV.)
@@ -352,8 +352,9 @@ pub fn interleave_into(
 /// The shortest AU the audio lane is fed, in milliseconds: blocks decoded shorter than this are gathered
 /// into one AU ([`AuBatcher`]). TrueHD's access units are 1/1200 s (40 frames at 48 kHz), 1200 queue
 /// entries a second where the lane is used to tens (the speed path's AUs are `speed_audio::CHUNK` frames,
-/// 21 ms); a DTS (10.7 ms), MP3 (26 ms), Vorbis or lossless block is already longer and passes through
-/// whole, unchanged.
+/// 21 ms). A DTS (10.7 ms), MP3 (26 ms) or lossless block is already longer, and while the stream is
+/// contiguous passes through whole, unchanged; a short block (a Vorbis one of a few milliseconds, a
+/// small LPCM packet) is gathered like TrueHD's, and so is the block after a gap.
 const MIN_AU_MS: u32 = 10;
 
 /// How far a block's stamp may sit from where the length of what is gathered puts it before the content

@@ -330,7 +330,7 @@ something.
   a track above 48 kHz is the server's; DTS (a core is 48 kHz at most) and TrueHD (decimated by the app) are exempt. TrueHD is
   decoded as FFmpeg's `truehd` decodes it, up to the 7.1 bed; an Atmos object substream is not rendered. Its access units are
   1/1200 s, so the demuxer gathers decoded blocks shorter than 10 ms into AUs of about that length (`ff_pcm::AuBatcher`; a DTS,
-  MP3, Vorbis or lossless block is longer and passes whole). The speed decoder (`SpeedDecoder`) mixes by the same layout mask
+  MP3 or lossless block is longer and, while the stream is contiguous, passes whole; a gap in the content time ends the AU). The speed decoder (`SpeedDecoder`) mixes by the same layout mask
   (`ff::frame_channel_mask`), so 2.1, 3.1, 4.1 and 7.1 are right at a speed too. It stays
   off until the TV has measured the CPU (S4 U5); with it off DTS is native exactly as above and MP3, Vorbis and TrueHD are not offered. A Load whose DTS the app
   decoded names no audio facet in the failed-open ladder (`StreamAudio::app_decoded_lossy`): the pipeline was fed PCM, and a

@@ -839,7 +839,7 @@ pub(crate) const OFF_AFRAME_SAMPLE_RATE: usize = 132;
 #[cfg(target_pointer_width = "32")]
 pub(crate) const OFF_AFRAME_NB_CHANNELS: usize = 256 + 4;
 // The layout's `order` (offset 0 of the AVChannelLayout) and its `u.mask` (8-aligned after
-// `nb_channels`); `mask` is only meaningful when `order` is native (`ff_pcm::CH_ORDER_NATIVE`).
+// `nb_channels`); `mask` is only meaningful when `order` is native (`CH_ORDER_NATIVE`).
 #[cfg(target_pointer_width = "32")]
 const OFF_AFRAME_CH_ORDER: usize = 256;
 #[cfg(target_pointer_width = "32")]

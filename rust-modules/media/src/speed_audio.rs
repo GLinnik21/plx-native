@@ -9,7 +9,7 @@
 //! `contents.pcmInfo` in the Load payload, proven on a 3.9.3 set 2026-10-15).
 //!
 //! Pure DSP and nothing else: no FFmpeg, no TV, no clock. The demuxer converts each decoded frame
-//! to stereo with [`downmix`], hands it to [`SpeedAudio::push`] with the frame's content PTS, and
+//! to stereo with [`downmix_by_mask`], hands it to [`SpeedAudio::push`] with the frame's content PTS, and
 //! pushes what comes back onto the audio lane as ordinary AUs.
 //!
 //! **Time-stretch is WSOLA** (waveform-similarity overlap-add): the output is built from 20 ms

@@ -125,7 +125,7 @@ SAME32(offsetof(AVFrame, ch_layout) + offsetof(AVChannelLayout, order), 256, "OF
 SAME64(offsetof(AVFrame, ch_layout) + offsetof(AVChannelLayout, order), 384, "OFF_AFRAME_CH_ORDER != 384 [host]");
 SAME32(offsetof(AVFrame, ch_layout) + offsetof(AVChannelLayout, u), 264, "OFF_AFRAME_CH_MASK != 264");
 SAME64(offsetof(AVFrame, ch_layout) + offsetof(AVChannelLayout, u), 392, "OFF_AFRAME_CH_MASK != 392 [host]");
-SAME(AV_CHANNEL_ORDER_NATIVE, 1, "ff_pcm::CH_ORDER_NATIVE");
+SAME(AV_CHANNEL_ORDER_NATIVE, 1, "ff::CH_ORDER_NATIVE");
 SAME(sizeof(((AVChannelLayout *)0)->u.mask), 8, "the channel mask is 64 bits");
 SAME(AV_SAMPLE_FMT_U8, 0, "speed_audio::SampleFormat::from_av U8");
 SAME(AV_SAMPLE_FMT_S16, 1, "speed_audio::SampleFormat::from_av S16");
