@@ -6699,6 +6699,30 @@ mod pcm_info_tests {
         serde_json::from_str::<serde_json::Value>(&on).unwrap();
     }
 
+    /// **Force Direct Play on a set with no DTS row declares DTS as stereo 48 kHz PCM**: the app decodes
+    /// it (the table's lossy policy admits DTS, and the set has no native path), so the Load carries one
+    /// `pcmInfo` and `PCM` instead of a `DTS` the pipeline would hang on. Under Auto the same value
+    /// still declares `DTS`.
+    #[test]
+    fn a_forced_dts_with_no_row_is_declared_as_stereo_48k_pcm() {
+        let caps = std::sync::Arc::new(plx_platform::devcaps::Caps {
+            app_lossy: plx_platform::devcaps::AppLossy::Measured,
+            ..plx_platform::devcaps::Caps::assumed()
+        });
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        crate::route::begin_attempt_for_test(&mut ps, caps);
+        crate::route::set_stream_codecs(&mut ps, "h264", "dts");
+        assert_eq!(crate::route::stream_pcm(&ps).and_then(Result::ok), None, "Auto: the native decoder's");
+        crate::route::set_direct_play_mode_for_test(&mut ps, crate::route::DirectPlayMode::Forced);
+        let shape = crate::route::stream_pcm(&ps).and_then(Result::ok);
+        assert_eq!(shape, Some(crate::route::PcmFormat::STEREO_48K));
+        assert_eq!(audio_declaration("dts", shape.as_ref()), Some(("PCM", 5)));
+        let on = build_av_payload_at(&ps, "H264", "PCM", ENVELOPE_FHD60, crate::player::RATE_NORMAL);
+        assert!(on.contains(r#""audio":"PCM""#) && !on.contains(r#""audio":"DTS""#), "{on}");
+        assert_eq!(on.matches("pcmInfo").count(), 1, "{on}");
+        serde_json::from_str::<serde_json::Value>(&on).unwrap();
+    }
+
     /// MP3 and Vorbis under the gate (S4-4) are declared exactly as DTS is: `PCM`, stereo 48 kHz S16.
     #[test]
     fn app_decoded_mp3_and_vorbis_are_declared_as_pcm_and_native_ones_are_refused() {

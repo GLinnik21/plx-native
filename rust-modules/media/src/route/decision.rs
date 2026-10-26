@@ -5846,6 +5846,48 @@ mod pcm_format_tests {
         }
     }
 
+    /// **The Load declares PCM where the attempt decodes the track in the app, not where the policy
+    /// merely admits it.** On a table that was read and admits DTS (`Measured`), Auto feeds DTS natively
+    /// and Force Direct Play does too where the set has a DTS row; only Force Direct Play on a set with
+    /// no native path, or a codec the recovery rung put in force, is PCM. The ladder's fact
+    /// (`stream_audio`) and the track menu's mark (`audio_decoded_in_app`) read the same answer.
+    #[test]
+    fn dts_declares_stereo_48k_only_where_the_attempt_decodes_it_in_the_app() {
+        use plx_platform::devcaps::{AppLossy, Caps};
+        let measured = Caps { app_lossy: AppLossy::Measured, ..Caps::assumed() };
+        let native_row = Caps { audio: "aac,ac3,eac3,dts".into(), audio_channels: [("dts".into(), 6)].into(), ..measured.clone() };
+        let shape = |caps: &Caps, forced: bool| {
+            let mut ps = PlaybackSession::IDLE;
+            ps.direct_play_mode = if forced { DirectPlayMode::Forced } else { DirectPlayMode::Auto };
+            ps.begin_attempt(std::sync::Arc::new(caps.clone()));
+            set_stream_codecs(&mut ps, "h264", "dca");
+            let fact = stream_audio(&ps).unwrap().app_decoded_lossy;
+            assert_eq!(fact, stream_pcm_is_lossy(&ps));
+            assert_eq!(fact, audio_decoded_in_app(&ps, "dca", 6, 48_000));
+            stream_pcm(&ps)
+        };
+        assert_eq!(shape(&measured, false), None, "Auto: admitted is not in force");
+        assert_eq!(shape(&measured, true), Some(Ok(PcmFormat::STEREO_48K)), "Forced, no native path: the app decodes it");
+        assert_eq!(shape(&Caps::assumed(), true), None, "Forced, no policy: native (and the planner refuses it first)");
+        assert_eq!(shape(&native_row, true), None, "Forced on a set that decodes DTS keeps doing so");
+        assert_eq!(shape(&native_row, false), None);
+        assert_eq!(shape(&native_row.clone().with_app_lossy_for("dts"), false), Some(Ok(PcmFormat::STEREO_48K)),
+            "the rung's value: the set's decoder was refused, so Auto's attempt declares PCM too");
+        assert_eq!(shape(&Caps::assumed().with_app_lossy(), false), Some(Ok(PcmFormat::STEREO_48K)), "the debug force-on");
+        // The carried track's own facts decide the rate-bound rows: a 96 kHz Vorbis is not decoded here.
+        let mut ps = PlaybackSession::IDLE;
+        ps.begin_attempt(std::sync::Arc::new(Caps::assumed().with_app_lossy()));
+        set_stream_codecs(&mut ps, "h264", "vorbis");
+        let vorbis = |rate| CarriedAudio {
+            sid: 5, ordinal: 1, codec: "vorbis".into(), channels: 2,
+            can_normalize_loudness: false, immersive: false, sample_rate: rate, bit_depth: 0,
+        };
+        set_carried_audio_for_test(&mut ps, vorbis(44_100));
+        assert!(stream_pcm_is_lossy(&ps));
+        set_carried_audio_for_test(&mut ps, vorbis(96_000));
+        assert!(!stream_pcm_is_lossy(&ps), "above the rate bound the server converts it");
+    }
+
     /// **MP3 and Vorbis under the gate** (S4-4) declare the same one shape as DTS, only on an attempt
     /// that turned the lossy decode on, and are the ladder's "app decoded" fact then.
     #[test]
@@ -6065,6 +6107,12 @@ pub fn set_stream_declaration_for_test(
 #[cfg(any(test, feature = "test-support"))]
 pub fn begin_attempt_for_test(ps: &mut PlaybackSession, caps: std::sync::Arc<plx_platform::devcaps::Caps>) {
     ps.begin_attempt(caps);
+}
+
+/// Make `ps` a play requested under `mode`, so [`stream_pcm`] and the planner read that mode (tests).
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_direct_play_mode_for_test(ps: &mut PlaybackSession, mode: DirectPlayMode) {
+    ps.direct_play_mode = mode;
 }
 
 /// Carry `audio` as the playing track, so [`stream_pcm`] reads its facts (rate, depth, channels).
