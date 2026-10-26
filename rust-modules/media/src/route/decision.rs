@@ -4124,9 +4124,10 @@ pub enum VideoLane {
 /// ladder's facet rung
 /// ([`crate::player::recovery::OpenRecovery`], `ConvertFacet`) has **already narrowed the playing
 /// attempt** to `start` less the suspect stream ([`crate::player::recovery::suspect`], `Caps::without`)
-/// when it entered the rung, so the value the plan and the profile read no longer names the codec,
-/// today's rebuild ([`plain_rebuild_precheck`], the contract a track pick that the TV cannot decode
-/// asks for) comes back converted, and every seek and track pick after the landing plans from the
+/// when it entered the rung, so the value the plan and the profile read no longer names that stream:
+/// [`VideoLane::AsPlanned`] rebuilds today's route ([`retranscode_contract`], the contract a track
+/// pick that the TV cannot decode asks for) and the audio comes back converted, [`VideoLane::Encode`]
+/// asks for [`video_encode_contract`], and every seek and track pick after the landing plans from the
 /// same narrowed value. The install pref's write of a refused native audio (or of a counted proof) is
 /// the machine's separate `ConfirmRefusal`, persistence only. Plan on the frame thread, PMS on a worker
 /// ([`try_retranscode`]), install at the landing ([`install_recovery_landing`]).

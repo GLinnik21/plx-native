@@ -642,9 +642,15 @@ fn native_audio_fact() -> Option<plx_platform::devcaps::Facet> {
 ///
 /// Pending HLS rollback has priority; a failed rollback is terminal rather than silently starting a
 /// third transaction on route state whose encoder restore already failed. A pipeline refusal of a
-/// stream the attempt can still do without (`recovery::suspect`) rebuilds the same route converted,
-/// once per request; a cold Auto Original then falls back to HLS. Each recovery is a flight: the replacement route's PMS half runs on a worker while the
-/// viewer keeps the connecting spinner they had.
+/// stream the attempt can still do without (`recovery::suspect`: the audio outside the codecs every
+/// set decodes, else a numbered refusal's source video) rebuilds the same route converted, once per
+/// request: a refused audio keeps the route as planned (an Original remux still copies the video),
+/// a refused video is an encode under the 1080p ceiling (`VideoLane`). A cold Auto Original falls
+/// back to HLS after an audio conversion, and takes the HLS contingency at once for a refused video
+/// (the HLS rung is already its video re-encode), the refused raster out of the HLS attempt; a
+/// manual pick has no rung after its facet flight, so the refusal that follows reads out. Each
+/// recovery is a flight: the replacement route's PMS half runs on a worker while the viewer keeps
+/// the connecting spinner they had.
 fn drive_open_recovery(ps: &mut crate::route::PlaybackSession, first: super::recovery::RecoveryEvent, why: &str) -> OpenRecoveryRun {
     use super::recovery::{Evidence, RecoveryEffect, RecoveryEvent};
     let mut run = OpenRecoveryRun::Quiet;
@@ -4197,7 +4203,7 @@ mod flight_tests {
     /// DTS 5.1 track that the pipeline refuses with `num=100`: the audio is outside the codecs every
     /// set decodes, so it is the suspect and the video is not considered. The one flight keeps the
     /// route as planned (`directStream=1`, the video still copied) under a profile that bounds DTS to
-    /// stereo and names no H.264 bound. S1b-1 has no both-facets rung for a manual pick, so the
+    /// stereo and names no H.264 bound. A manual pick has no both-facets rung, so the
     /// refusal of the converted route ends on the read-out with no second flight.
     #[test]
     fn a_video_refusal_whose_audio_is_the_suspect_converts_the_audio_first() {
@@ -4256,12 +4262,13 @@ mod flight_tests {
     }
 
     /// **A cold Auto Original keeps its HLS contingency as the video re-encode, with the refused
-    /// raster out of it** (the plan's Decision C). The source never opened and its bootstrap rung is
-    /// the 4K one; the unopened-source fallback re-checks that rung against the catalog of the
-    /// NARROWED attempt (`original_open_fallback_rung`), where a 4K H.264 is infeasible, so the
-    /// replacement flies the catalog's startup rung instead of asking for `3840x2160` again. The
-    /// route's sink envelope is no wider than 1080p, and the stored Original candidate (a 4K H.264)
-    /// is dropped rather than climbed back to.
+    /// raster out of it.** The HLS rung is already an Auto Original's ABR-managed video re-encode, so a
+    /// refused video does not fly a progressive encode first. Here the source never opened and its
+    /// bootstrap rung is the 4K one: the unopened-source fallback re-checks that rung against the
+    /// catalog of the NARROWED attempt (`original_open_fallback_rung`), where a 4K H.264 is
+    /// infeasible, so the replacement flies the catalog's startup rung instead of asking for
+    /// `3840x2160` again. The route's sink envelope is no wider than 1080p, and the stored Original
+    /// candidate (a 4K H.264) is dropped rather than climbed back to.
     #[test]
     fn the_hls_rescue_of_a_4k_h264_original_leaves_the_refused_raster_and_never_climbs_back() {
         let mut rig = auto_original_rig(60);

@@ -17,19 +17,25 @@
 //! derived (`devcaps::start_caps`: the write-once boot snapshot less the install's stored refusals in
 //! force), and replaced by the next request's: a refusal this request learned reaches the next one
 //! only as a stored row, once the learner's write has landed. The machine also owns that value: the attempt's
-//! capabilities are `start` narrowed by the one facet the facet rung took out of this request (or
-//! the native audio a refusal named while a pending rollback was chosen over the facet rung, so the
-//! restored route does not offer it again) ([`Caps::without`]); [`attempt`](OpenRecovery::attempt) is the only reader the route plans from,
+//! capabilities are `start` narrowed by the facets the rungs took out of this request, at most one
+//! audio and one video: the stream the facet rung converted, the refused video raster and native
+//! audio the HLS contingency's attempt lacks, or the native audio a refusal named while a pending
+//! rollback was chosen over the facet rung, so the restored route does not offer it again
+//! ([`Caps::without`]); [`attempt`](OpenRecovery::attempt) is the only reader the route plans from,
 //! and `attempt` is derived from `start` on each rung's entry, never narrowed in place.
 //!
 //! **The ladder** is the order of [`decide`](OpenRecovery::decide): a pending HLS->Original
 //! rollback first (its HLS route is the one a failed open owes the viewer); under Forced Direct
 //! Play the read-out (a forced play is never converted); else, for a refusal that names the
 //! pipeline, the conversion of the stream the pipeline was fed when [`suspect`] names it (the facet
-//! rung, once per request, [`RecoveryEffect::ConvertFacet`]: the audio, else the source's video, which
-//! a cold Auto Original leaves to its HLS rung); else the HLS contingency of a cold Auto Original,
-//! whose attempt lacks the refused video raster (the both-facets rung); else the failure read-out. The rungs which start a flight
-//! (the facet and the both-facets rung) are bounded by [`MAX_RECOVERY_FLIGHTS`] per request.
+//! rung, once per request, [`RecoveryEffect::ConvertFacet`]: the audio when it is outside the codecs
+//! every set decodes, else the source's video for a numbered refusal, which a cold Auto Original
+//! leaves to its HLS rung); else the HLS contingency of a cold Auto Original (the both-facets rung,
+//! [`RecoveryEffect::StartAutoHls`]), whose attempt lacks every facet the request took out and
+//! every stream this refusal named, the refused video raster and the native audio; else the failure
+//! read-out. The rungs which start a flight (the facet rung and the both-facets rung) are bounded
+//! by [`MAX_RECOVERY_FLIGHTS`] per request. A manual pick has no both-facets rung: its refusal after
+//! the facet flight, whether the flight landed or came back refused, reads out.
 //!
 //! **What the ladder teaches.** A refusal of natively fed audio (`num=200` or the stall) names the
 //! codec, so the same step asks the driver to record it ([`RecoveryEffect::ConfirmRefusal`] with
@@ -37,11 +43,11 @@
 //! fire-and-forget, so no answer ever selects a rung (the facet rung is selected by [`suspect`] and
 //! by the loop guard alone: a facet `start` already lacks narrows nothing and gets no flight, so a
 //! stored refusal is never converted twice). A refusal that names nothing (`601`) teaches only
-//! through a **proof**: the facet flight landed with PMS answering the converted lane `transcode`
-//! and the other lane `copy`/`directplay` ([`proves`]), and the reload then showed its first
-//! picture ([`State::Proving`], [`Evidence::Proof`]) of a request that had shown none and with no
-//! second Load in between. The both-facets rung, the rollback, a timeout and a source failure never
-//! prove.
+//! through a **proof**: the facet flight of an audio facet landed with PMS answering the converted
+//! lane `transcode` and the other lane `copy`/`directplay` ([`proves`]), and the reload then showed
+//! its first picture ([`State::Proving`], [`Evidence::Proof`]) of a request that had shown none and
+//! with no second Load in between. A video facet flight, the both-facets rung, the rollback, a
+//! timeout and a source failure never prove.
 //!
 //! The state the machine does not own: the flight bookkeeping stays in `route::decision`
 //! (`original_recovery_pending`, the recovery flight slot), and it reaches the machine as a fact
@@ -54,8 +60,8 @@ use plx_platform::devcaps::Caps;
 use plx_platform::devcaps::Facet;
 
 /// The most flights one play request starts through the facet rung and the both-facets rung (and a
-/// failed source's HLS contingency): the facet's conversion, then the both-facets rung. The
-/// Original rollback is not counted.
+/// failed source's HLS contingency): the facet's conversion, then the HLS contingency of a cold Auto
+/// Original. The Original rollback is not counted.
 pub const MAX_RECOVERY_FLIGHTS: u32 = 2;
 
 /// How the open failed, as the pump's failure branches see it. The event payload; no field of the
@@ -265,7 +271,10 @@ enum Rung {
     Rollback,
     /// The facet rung: the suspect stream converted.
     Facet,
-    /// The both-facets rung: the HLS contingency, from the attempt the facet rung left.
+    /// The both-facets rung: the HLS contingency of a cold Auto Original, planned from `start` less
+    /// every facet the request took out (the facet rung's, when it flew first) and every stream
+    /// this refusal named (the refused video raster, native audio). Only a cold Auto Original has
+    /// one: a manual pick reads out after its facet flight.
     Both,
 }
 
@@ -344,8 +353,8 @@ impl OpenRecovery {
         Self { attempt: start.clone(), start, excluded: Excluded::default(), flights: 0, pictured: false, state: State::Opening }
     }
 
-    /// The capability value this request plans and profiles from: `start` less the facet the facet
-    /// rung took out. A cheap `Arc` clone, so a worker or a flight can own it.
+    /// The capability value this request plans and profiles from: `start` less the facets the rungs
+    /// took out. A cheap `Arc` clone, so a worker or a flight can own it.
     pub fn attempt(&self) -> Arc<Caps> {
         self.attempt.clone()
     }
@@ -417,21 +426,24 @@ impl OpenRecovery {
     /// |---|---|---|
     /// | `Opening`, `Proving`, `Playing` | `Refused`, facts name native audio `f` | `ConfirmRefusal{f, Named}`, then the ladder's effect; the ladder's state |
     /// | `Opening`, `Proving`, `Playing` | `Refused`, otherwise | the ladder below (`Playing` and `Opening` rule alike: the facts say which Engine failed; a pending proof is dropped) |
-    /// | `Flight{Facet}` | `FlightLanded{lanes}`, [`proves`], no picture yet in the request | none; `Proving{excluded}` |
+    /// | `Flight{Facet}` | `FlightLanded{lanes}`, an excluded facet [`proves`] (an audio facet only), no picture yet in the request | none; `Proving{that facet}` |
     /// | `Flight{Facet}` | `FlightLanded{..}`, otherwise | none; `Opening` (the reload re-enters the open) |
     /// | `Flight{Rollback, Both}` | `FlightLanded{..}` | none; `Opening` (lanes ignored: only the facet rung proves) |
-    /// | `Flight{Facet}` | `FlightRefused` | the ladder below (one flight spent, so the facet rung is closed): `StartAutoHls` or `ShowError` |
+    /// | `Flight{Facet}` | `FlightRefused` | the ladder below (one flight spent, so the facet rung is closed): `StartAutoHls` for a cold Auto Original, else `ShowError` |
     /// | `Flight{Rollback, Both}` | `FlightRefused` | `ShowError`; `Failed` (a refused rollback stays terminal) |
     /// | `Opening` | `FirstPicture` | none; `Playing` |
     /// | `Proving{f}` | `FirstPicture` | `ConfirmRefusal{f, Proof}`; `Playing` |
     /// | `Proving`, first | `LoadStarted` | none; `Proving` (the landing's own reload) |
     /// | `Proving`, after its reload | `LoadStarted` | none; `Opening` (a foreign Load: the proof is dropped) |
-    /// | `Flight`, `Failed` | `LoadStarted` | none; `Opening`, `flights` and the excluded facet kept |
+    /// | `Flight`, `Failed` | `LoadStarted` | none; `Opening`, `flights` and the excluded facets kept |
     ///
     /// The ladder: `pending_original` -> `Rollback`; else `forced` -> `ShowError`; else a pipeline
     /// refusal, of an Engine with no picture (`no_frames`), of a [`suspect`] stream which narrows the
-    /// attempt, with no flight spent -> `ConvertFacet`; else `auto_original && no_frames` with a
-    /// flight left -> `StartAutoHls` (each: `Flight`); else `ShowError`; `Failed`.
+    /// attempt (the audio outside `aac`/`ac3`/`eac3`; else, for a numbered refusal of a play that is
+    /// not a cold Auto Original, the source's video), with no flight spent -> `ConvertFacet`; else
+    /// `auto_original && no_frames` with a flight left -> `StartAutoHls`, its attempt lacking the
+    /// audio and the video raster the refusal named (each: `Flight`); else `ShowError`; `Failed`. A
+    /// manual pick has no rung after the facet flight, so its next refusal is the read-out.
     ///
     /// `Refused` is not handled in `Flight` or `Failed`: a flight is outstanding (the pump runs no
     /// failure arm while one is), or the read-out is already up (the pump meets the same Engine's
@@ -671,7 +683,7 @@ mod tests {
         assert_eq!(m.attempt().raster_bound("hevc"), (3840, 2176), "another codec keeps its bound");
     }
 
-    /// The audio rung comes first when the audio is the suspect, and S1b-1 has no second video rung:
+    /// The audio rung comes first when the audio is the suspect, and a manual pick has no second rung:
     /// the refusal after the audio flight ends on the read-out.
     #[test]
     fn a_video_refusal_whose_audio_is_the_suspect_takes_the_audio_rung_first() {
@@ -775,7 +787,7 @@ mod tests {
         run(&mut m, landed());
         let (_, fx) = run(&mut m, refused(SHUT, converted));
         assert_eq!((fx, m.phase()), (ERROR.to_vec(), Phase::Failed));
-        // Manual Original: the facet, then the read-out (the manual both-facets rung is S1b's).
+        // Manual Original: the facet, then the read-out (a manual pick has no both-facets rung).
         let mut m = OpenRecovery::new(start);
         run(&mut m, refused(SHUT, on_dts(facts(false, false, true))));
         run(&mut m, landed());
@@ -784,7 +796,7 @@ mod tests {
     }
 
     /// **Every reachable state of one request**, not a depth of paths: the walk runs to a fixpoint
-    /// over (state, flights, excluded facet), which is everything the machine's future depends on,
+    /// over (state, flights, excluded facets), which is everything the machine's future depends on,
     /// from every event the driver can raise (a refusal of an Engine with and without a picture, a
     /// landing with and without a clean verdict, the first picture, a Load nobody asked for). On
     /// every path the flights a request starts never exceed the cap, and a facet conversion is only

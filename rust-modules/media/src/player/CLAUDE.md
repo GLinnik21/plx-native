@@ -332,7 +332,7 @@ something.
   a NAMED refusal
   (`num=200`, the stall) applies at once (its row has no `proofs`), but the DTS 601 of #695 names no
   codec, so it is learned the other way. The machine's facet flight lands (`FlightLanded` carries the
-  `/decision` lanes, `route::plan::decision_lanes`), and only a flight whose AUDIO lane is `Transcode`
+  `/decision` lanes, `route::plan::decision_lanes`), and only a flight of an AUDIO facet whose AUDIO lane is `Transcode`
   and whose VIDEO lane is `Copy`/`DirectPlay` (`recovery::proves`) is `Proving`, unless the request
   already showed a picture (a request that played the facet natively proves nothing about it: the
   machine's `pictured`); the first picture of that converted reload emits
@@ -340,7 +340,7 @@ something.
   Home, a seek reload) drops the pending proof. `session::record_refusal_proof` stores the proof
   as ONE counted proof for `(build, codec, raw channels)`. A row applies once it holds
   `LEARNED_REFUSAL_PROOFS` (2) proofs, so one rescued play teaches nothing and a second one changes the
-  next start's `start`. A both-facets (HLS) rescue, a rollback, a Load timeout, a source failure and a
+  next start's `start`. A video facet flight, a both-facets (HLS) rescue, a rollback, a Load timeout, a source failure and a
   conversion whose video was transcoded too prove nothing and write nothing; an unknown channel count
   (`0`) is never stored as a proof. A named refusal REPLACES a counted row (`proofs` becomes `None`,
   applied at once) and a proof never downgrades a named row (`Session::with_native_audio_refusal`
@@ -350,7 +350,7 @@ something.
   machine (`recovery.rs`, owned by `PlaybackSession::recovery`, driven by `pump.rs`'s
   `drive_open_recovery`) records a refusal that names natively fed audio and picks its rung in the SAME
   step (`ConfirmRefusal` then the ladder's effect; there is no confirmation state to wait in).
-  **The ladder** (S1a, the order of `OpenRecovery::decide`): (1) a pending Original trial's
+  **The ladder** (the order of `OpenRecovery::decide`): (1) a pending Original trial's
   rollback, which narrows the attempt first by the facet the refusal named, because its rebase, the next
   retry and a quality change must plan from the narrowed value; (2) under Forced Direct Play, the
   read-out (a forced play is never converted); (3) the **facet rung**, for a refusal that names the
@@ -376,8 +376,10 @@ something.
   refused audio's direct play again, and its video, which a candidate the attempt no longer direct
   plays leaves dropped). No track pick runs in S1a: the replacement converts the track the viewer was on, and the
   AC3 sibling is only chosen once a learned row is in `start` (S2); (4) the **both-facets rung**, a cold
-  Auto Original's HLS contingency (`StartAutoHls`); (5) the read-out. The facet and both-facets rungs
-  together are bounded by `MAX_RECOVERY_FLIGHTS` (2) per request, the facet rung runs once, and the
+  Auto Original's HLS contingency (`StartAutoHls`), whose attempt lacks every facet the request took
+  out and every stream this refusal named (the refused video raster, native audio); a manual pick has
+  no such rung, so its refusal after the facet flight, landed or refused, goes to (5) the read-out.
+  The facet and both-facets rungs together are bounded by `MAX_RECOVERY_FLIGHTS` (2) per request, the facet rung runs once, and the
   rollback is not counted. A facet `start` already lacks (`start.without(facet) == start`: a stored
   refusal that `devcaps::start_caps` took out of `start`) narrows nothing and gets no flight, so a
   conversion that is still refused cannot loop; a refused conversion dispatch goes on to the next rung
