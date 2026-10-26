@@ -325,14 +325,18 @@ something.
   (`num=200`, the stall) applies at once (its row has no `proofs`), but the DTS 601 of #695 names no
   codec, so it is learned the other way. The machine's facet flight lands (`FlightLanded` carries the
   `/decision` lanes, `route::plan::decision_lanes`), and only a flight whose AUDIO lane is `Transcode`
-  and whose VIDEO lane is `Copy`/`DirectPlay` (`recovery::proves`) is `Proving`; the first picture of
-  that converted reload emits `ConfirmRefusal { Evidence::Proof }`, which `session::record_refusal_proof`
-  stores as ONE counted proof for `(build, codec, raw channels)`. A row applies once it holds
+  and whose VIDEO lane is `Copy`/`DirectPlay` (`recovery::proves`) is `Proving`, unless the request
+  already showed a picture (a request that played the facet natively proves nothing about it: the
+  machine's `pictured`); the first picture of that converted reload emits
+  `ConfirmRefusal { Evidence::Proof }`, and a second Load before it (a track switch, a restore after
+  Home, a seek reload) drops the pending proof. `session::record_refusal_proof` stores the proof
+  as ONE counted proof for `(build, codec, raw channels)`. A row applies once it holds
   `LEARNED_REFUSAL_PROOFS` (2) proofs, so one rescued play teaches nothing and a second one changes the
   next start's `start`. A both-facets (HLS) rescue, a rollback, a Load timeout, a source failure and a
   conversion whose video was transcoded too prove nothing and write nothing; an unknown channel count
-  (`0`) is never stored as a proof. A named refusal never downgrades a counted row
-  (`Session::with_native_audio_refusal` merges, named wins, proofs add capped). The failed open then
+  (`0`) is never stored as a proof. A named refusal REPLACES a counted row (`proofs` becomes `None`,
+  applied at once) and a proof never downgrades a named row (`Session::with_native_audio_refusal`
+  merges; proofs add, capped). The failed open then
   recovers on the
   pre-picture recovery path every failed open uses, in the same frame: the request's `OpenRecovery`
   machine (`recovery.rs`, owned by `PlaybackSession::recovery`, driven by `pump.rs`'s
@@ -367,8 +371,11 @@ something.
   `engine::start_bufferfeed_for` (which every Engine start passes: a fresh play, a reload, the
   foreground restore), takes a machine left in `Flight` (Home cleared the flight with the Engine)
   or `Failed` (the read-out was up) back to `Opening` with its spent flights and excluded facet
-  kept; the recovery landing's own reload finds the machine already in `Opening` (`FlightLanded`
-  moved it first) and changes nothing. A refusal the machine does not handle fails the Engine
+  kept; the recovery landing's own reload finds the machine already moved by `FlightLanded` (a
+  clean facet landing goes to `Proving`, any other landing to `Opening`): in `Opening` it changes
+  nothing, and in `Proving` the FIRST `LoadStarted` is that reload and only marks it (the pending
+  proof stays), while a second one is a foreign Load and drops the machine to `Opening`, the proof
+  lost. A refusal the machine does not handle fails the Engine
   (`recover_failed_open`), never silence; in `Failed` that re-asserts the read-out once a frame
   until the Engine is released, which a pre-picture Engine (`frames == 0`) never is
   (`release_failed_engine`). **Who owns a refusal is who

@@ -632,7 +632,20 @@ pub fn caps_on_this_thread_for_test(caps: Caps) -> CapsGuard {
 /// ([`project_stored_refusals`]) as a television would.
 #[cfg(any(test, feature = "test-support"))]
 pub fn firmware_on_this_thread_for_test(codename: &str, build: &str, caps: Caps) -> CapsGuard {
-    let layers = Layers::new(caps, codename.to_owned(), build.to_owned(), false, false, false);
+    firmware_with_flags_on_this_thread_for_test(codename, build, caps, (false, false, false))
+}
+
+/// [`firmware_on_this_thread_for_test`] with the debug flags a launch read, `(nativeaudiowide,
+/// nativeaudiolearn, nativeaudioforget)`, so a test reaches them the way the product does: through
+/// [`project_stored_refusals`] and [`learning_firmware`].
+#[cfg(any(test, feature = "test-support"))]
+pub fn firmware_with_flags_on_this_thread_for_test(
+    codename: &str,
+    build: &str,
+    caps: Caps,
+    (wide, learn, forget): (bool, bool, bool),
+) -> CapsGuard {
+    let layers = Layers::new(caps, codename.to_owned(), build.to_owned(), wide, learn, forget);
     CapsGuard(THREAD_LAYERS.with(|slot| slot.replace(Some(std::sync::Arc::new(layers)))))
 }
 
@@ -933,8 +946,10 @@ pub fn probe() {
         plx_base::devtrig::flag("nativeaudioforget"),
     );
     // The layers in order: the table, minus gstcool.conf's no-decoder codecs (above), minus
-    // [`EXCLUSIONS`]. The refusals this install learned come after, from the stored record and from
-    // the pipeline itself ([`Layers::fold`]). The debug flags skip the last two.
+    // [`EXCLUSIONS`]. The refusals this install learned come after, from the stored record alone:
+    // named or proved, a refusal reaches the answer only when its queued write lands and the session
+    // projects it ([`project_stored_refusals`]). `nativeaudiowide` skips the exclusions and the
+    // learned layer (`nativeaudiolearn` beside it keeps the layer), `nativeaudioforget` the record.
     let mut boot = caps.clone();
     let excluded = apply_exclusions(&mut boot, &info.codename, wide, EXCLUSIONS);
     plx_base::eventlog::log(&format!(
@@ -1270,14 +1285,26 @@ mod tests {
         assert!(refusal("opus", 2).watched_on("") && !refusal("opus", 2).watched_on("6.5.3-47"));
     }
 
-    /// The debug flags: `nativeaudiowide` ignores every refusal, `nativeaudiolearn` beside it keeps
-    /// them, and `nativeaudioforget` ignores the stored record but not a refusal learned this run.
+    /// The debug flags decide which stored rows the record's projection applies
+    /// ([`project_stored_refusals`], the only road a row takes to [`caps`]): `nativeaudiowide`
+    /// ignores every row, `nativeaudiolearn` beside it keeps them, and `nativeaudioforget` applies
+    /// NONE, so a row recorded during a forgetful run is stored but does not reach `caps()` until a
+    /// launch without the flag.
     #[test]
-    fn the_debug_flags_decide_which_refusals_apply() {
-        let fresh = |wide, learn, forget| Layers::new(native_set(), "kisscurl-koli".into(), String::new(), wide, learn, forget);
-        assert!(!fresh(true, false, false).fold(&[refusal("opus", 2)]));
-        assert!(fresh(true, true, false).fold(&[refusal("opus", 2)]));
-        assert!(fresh(false, false, true).fold(&[refusal("opus", 2)]), "learned this run, it applies");
+    fn the_debug_flags_decide_which_stored_rows_the_projection_applies() {
+        let projected = |flags| {
+            let _set = firmware_with_flags_on_this_thread_for_test("kisscurl-koli", "", native_set(), flags);
+            assert!(caps().audio_supports("opus", 2), "sanity: announced before the record arrives");
+            (project_stored_refusals(&[refusal("opus", 2)]), caps().audio_supports("opus", 2))
+        };
+        assert_eq!(projected((false, false, false)), (true, false), "the baseline: the row takes Opus away");
+        assert_eq!(projected((true, false, false)), (false, true), "wide ignores the row");
+        assert_eq!(projected((true, true, false)), (true, false), "learn beside wide keeps it");
+        assert_eq!(
+            projected((false, false, true)),
+            (false, true),
+            "forget applies none: a row recorded this run is stored and reaches caps() on the next launch"
+        );
     }
 
     /// Learning is a READ of the firmware the row is stamped with: the thread's set names it, the
