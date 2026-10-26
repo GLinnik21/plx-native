@@ -211,6 +211,9 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
 - After behavior changes, use the `doc-claim-auditor` custom agent (`doc_claim_auditor` in
   Codex), or perform the same audit, to find prose that the change made false. It reports
   contradictions, not missing documentation.
+- Before opening or merging a PR, review its combined `base...head` diff once with the
+  `pr-reviewer` custom agent (`pr_reviewer` in Codex): it returns findings only and never edits,
+  comments or merges.
 
 ## Television and release safety
 
