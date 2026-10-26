@@ -247,7 +247,9 @@ const DECIMATOR_MAX_PHASES: usize = 1024;
 /// (cutoff [`DECIMATOR_CUTOFF`] of the output's Nyquist) centred on `x` dotted with the input around it,
 /// the weights for every fractional position the ratio visits tabulated once. No group delay (the
 /// kernel is symmetric about the output instant); it needs `half` frames of lookahead, so what it
-/// holds back is `half` input frames (under half a millisecond) rather than a time shift.
+/// holds back is `half` input frames (about a millisecond at most: 51 at 96 kHz, 102 at 192 kHz) rather
+/// than a time shift. Nothing flushes them: the last of those frames at the end of a stream is not
+/// emitted, which is the length of one filter half-width of audio, not heard.
 struct Decimator {
     /// Input frames per output frame (> 1).
     step: f64,

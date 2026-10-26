@@ -356,30 +356,63 @@ pub fn interleave_into(
 /// whole, unchanged.
 const MIN_AU_MS: u32 = 10;
 
+/// How far a block's stamp may sit from where the length of what is gathered puts it before the content
+/// time counts as having a gap. Matroska stamps in milliseconds, so the blocks of a stream shorter than
+/// a millisecond jitter by about one around their true time.
+const AU_GAP_TOLERANCE_NS: i64 = 20_000_000;
+
 /// PURE: gathers decoded PCM blocks into AUs of at least [`MIN_AU_MS`], stamped with the content time
-/// of the first block in them. A block that is long enough is its own AU.
+/// of the first block in them. A block that is long enough is its own AU, and a gap in the content time
+/// (a skipped packet) ends the AU being gathered, so one stamp never spans it.
 pub struct AuBatcher {
+    rate: u32,
+    frame_bytes: usize,
     min_bytes: usize,
-    pts: i64,
+    /// What is being gathered and the content time of its first block.
     buf: Vec<u8>,
-    /// `buf` was handed out; the next push starts it afresh.
-    emitted: bool,
+    pts: i64,
+    /// The AU last handed out (the borrow `push` and `take` return).
+    ready: Vec<u8>,
+    ready_pts: i64,
 }
 
 impl AuBatcher {
     pub fn new(out: PcmOut) -> AuBatcher {
-        let min_frames = (out.rate * MIN_AU_MS / 1000) as usize;
-        AuBatcher { min_bytes: min_frames * (out.bits / 8) as usize * out.channels as usize, pts: 0, buf: Vec::new(), emitted: false }
+        let frame_bytes = (out.bits / 8) as usize * out.channels as usize;
+        AuBatcher {
+            rate: out.rate,
+            frame_bytes,
+            min_bytes: (out.rate * MIN_AU_MS / 1000) as usize * frame_bytes,
+            buf: Vec::new(),
+            pts: 0,
+            ready: Vec::new(),
+            ready_pts: 0,
+        }
     }
 
-    /// Add one decoded block (content time `pts`); `Some` when an AU is complete.
+    /// Hand `buf` out as the AU.
+    fn release(&mut self) -> Option<(i64, &[u8])> {
+        std::mem::swap(&mut self.buf, &mut self.ready);
+        self.ready_pts = self.pts;
+        self.buf.clear();
+        Some((self.ready_pts, &self.ready))
+    }
+
+    /// Add one decoded block (content time `pts`); `Some` when an AU is complete. At a gap the part
+    /// gathered so far is the AU (short) and the new block starts the next one.
     pub fn push(&mut self, pts: i64, pcm: &[u8]) -> Option<(i64, &[u8])> {
-        if self.emitted {
-            self.buf.clear();
-            self.emitted = false;
-        }
         if pcm.is_empty() {
             return None;
+        }
+        let gathered_ns = (self.buf.len() / self.frame_bytes.max(1)) as i64 * 1_000_000_000 / self.rate.max(1) as i64;
+        let gap = !self.buf.is_empty() && (pts - (self.pts + gathered_ns)).abs() > AU_GAP_TOLERANCE_NS;
+        if gap {
+            std::mem::swap(&mut self.buf, &mut self.ready);
+            self.ready_pts = self.pts;
+            self.buf.clear();
+            self.pts = pts;
+            self.buf.extend_from_slice(pcm);
+            return Some((self.ready_pts, &self.ready));
         }
         if self.buf.is_empty() {
             self.pts = pts;
@@ -388,27 +421,20 @@ impl AuBatcher {
         if self.buf.len() < self.min_bytes {
             return None;
         }
-        self.emitted = true;
-        Some((self.pts, &self.buf))
+        self.release()
     }
 
     /// What is gathered but not yet an AU: the end of the stream.
     pub fn take(&mut self) -> Option<(i64, &[u8])> {
-        if self.emitted {
-            self.buf.clear();
-            self.emitted = false;
-        }
         if self.buf.is_empty() {
             return None;
         }
-        self.emitted = true;
-        Some((self.pts, &self.buf))
+        self.release()
     }
 
     /// Drop what is gathered: the demuxer sought.
     pub fn clear(&mut self) {
         self.buf.clear();
-        self.emitted = false;
     }
 }
 
@@ -496,6 +522,30 @@ mod tests {
         let mut lossless = AuBatcher::new(PcmOut { rate: 96_000, bits: 32, channels: 2 });
         assert!(lossless.push(0, &vec![0u8; 960 * 8]).is_some(), "10 ms of 96 kHz 32-bit stereo is its own AU");
         assert!(lossless.push(1, &vec![0u8; 100 * 8]).is_none());
+    }
+
+    /// **A gap in the content time splits the AU.** Matroska stamps in milliseconds, so the 0.83 ms
+    /// blocks of a TrueHD stream jitter by up to a millisecond around where their length puts them and
+    /// are still one run; a skipped packet or a jump of tens of milliseconds is not, and one stamp must
+    /// not span it (the audio after it would play early). The gathered part goes out first, short, and
+    /// the block that revealed the gap starts the next AU.
+    #[test]
+    fn a_gap_in_the_content_time_ends_the_au_but_millisecond_jitter_does_not() {
+        let block = vec![3u8; 40 * 4]; // 40 frames = 833_333 ns
+        let mut b = AuBatcher::new(STEREO_48K);
+        let jitter = [0i64, 1_000_000, -900_000, 700_000, -600_000, 900_000];
+        for (i, j) in jitter.iter().enumerate() {
+            assert!(b.push(i as i64 * 833_333 + j, &block).is_none(), "block {i}: jitter is not a gap");
+        }
+        // a 30 ms hole after six blocks
+        let after = 6 * 833_333 + 30_000_000;
+        let (pts, len) = b.push(after, &block).map(|(p, a)| (p, a.len())).expect("the gap ends the AU");
+        assert_eq!((pts, len), (jitter[0], 6 * 40 * 4), "the six blocks before it, stamped by the first");
+        let (pts, len) = b.take().map(|(p, a)| (p, a.len())).expect("the block after the gap is pending");
+        assert_eq!((pts, len), (after, 40 * 4), "and stamped by its own time");
+        // running time moves backwards (a duplicate packet): also a gap
+        b.push(1_000_000_000, &block);
+        assert!(b.push(500_000_000, &block).is_some());
     }
 
     fn flt(v: &[f32]) -> Vec<u8> {
