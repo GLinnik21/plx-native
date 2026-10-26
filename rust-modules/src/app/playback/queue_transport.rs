@@ -41,7 +41,7 @@ pub(super) fn play(
     };
     close_player_overlays(pages);
     plx_media::player::stop_bufferfeed(ps, pa);
-    let requested = plx_media::route::request_play_queue_item(ps, bridge.metadata_mut(), plx_platform::devcaps::caps(), &row, &context);
+    let requested = plx_media::route::request_play_queue_item(ps, bridge.metadata_mut(), start_caps(), &row, &context);
     bridge.start_store_jobs();
     if !requested { return false; }
     bridge.metadata_run(plx_data::stores::metadata::MetadataCmd::RetirePlaying);
