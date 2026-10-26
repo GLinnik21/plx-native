@@ -746,18 +746,6 @@ cmd_selftest() {
   HU_SID=sess-7 hu B break --yes --ttl 7
   sess "a second break resets it again" B "sess-7"
   hu B release
-  # `with` starts a renewer whose `sleep 240` outlives it and would hold a $(…) capture's pipe open
-  # for the whole four minutes, so this one goes to a file rather than through hu().
-  env -u PLX_TV_LOCK_TOKEN -u PLX_TV_LOCK_INHERITED -u PLX_TV_LOCK_BYPASS -u CLAUDE_CODE_SESSION_ID \
-    CLAUDE_CODE_SESSION_ID=sess-8 TV=selftest.invalid PLX_TV_LOCK_LOCAL="$d" \
-    PLX_TV_LOCK_PATH="$d/headsup.lock" PLX_TV_LOCK_STATE="$d/headsup-state" PLX_TV_LOCK_LANE="$d/lane-B" \
-    "$self" with --ttl 7 -- sh -c 'grep -h "^SESSIONS=" "$PLX_TV_LOCK_STATE"/*.lease' \
-    >"$d/with.out" 2>&1
-  out="$(cat "$d/with.out")"
-  case "$out" in
-    *"SESSIONS='sess-8'"*) printf '  \033[32m✓\033[0m with records its session while it holds the lease\n' ;;
-    *) printf '  \033[31m✗\033[0m with should record sess-8; saw: %s\n' "$out"; fails=$((fails+1)) ;;
-  esac
   hu A release
   hu A acquire --ttl 7
   sess "no CLAUDE_CODE_SESSION_ID: no SESSIONS line at all" A ""

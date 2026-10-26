@@ -15,10 +15,11 @@ command line, and the lease check is a single small file read, with no ssh and n
 television is never contacted from here.
 
 LANE IDENTITY has to agree with `tools/tv-lock.sh`'s, and `payload["cwd"]` cannot supply it by
-itself: the harness reports the SESSION's own checkout as `cwd` for every subagent's Bash call,
-whatever worktree that agent actually runs in. So each television-driving segment of a command gets
-the lane the tool it runs will compute (`LANE=${PLX_TV_LOCK_LANE:-$REPO}`, REPO being the parent of
-the script's directory), and `decide()` below lists the order it is read in: a `PLX_TV_LOCK_LANE=`
+itself: the harness reports the SESSION's own cwd for a plain subagent's Bash call, whatever
+worktree that agent was told to work in (only an `isolation: worktree` subagent reports its own
+worktree). So each television-driving segment of a command gets the lane the tool it runs will
+compute (`LANE=${PLX_TV_LOCK_LANE:-$REPO}`, REPO being the parent of the script's directory), and
+`decide()` below lists the order it is read in: a `PLX_TV_LOCK_LANE=`
 prefix on the command, that variable in the hook's environment, the segment's own absolute script
 path or `make -C <dir>`, an absolute `cd <dir>`, and last the cwd's checkout. Every segment's lane
 needs a live lease. A lane read off the command (the script path or the cd) that is not the cwd's own
@@ -414,12 +415,40 @@ def lease_for(lane):
 
 _CD_LIKE = re.compile(r"(?<![\w./-])(?:cd|pushd|popd)(?![\w./-])")
 _CD_STAYS = ("", ";", "\n", "&&")      # what may sit on either side of a cd the shell certainly kept
+_CD_HOW = "an absolute cd"
+# What may follow `cd <abs> ||` for the cd to count as kept: after it the shell is in the directory
+# or the command has ended. (A bash that is not inside a function only complains about a `return`
+# and carries on, but only when the cd itself failed, which a directory holding a live lease does
+# not.)
+_LEAVES = re.compile(r"^\s*(?:exit|return)(?:\s+\d+)?\s*$")
+
+
+def _paren_depth(text):
+    """The unquoted `(` minus `)` in one segment's text, quote- and escape-aware like
+    `split_segments()`: how many subshells (`(`, `$(`) the segment opens, negative when it closes."""
+    depth, quote, i = 0, None, 0
+    while i < len(text):
+        c = text[i]
+        if quote:
+            if c == quote and text[i - 1:i] != "\\":
+                quote = None
+        elif c in "'\"":
+            quote = c
+        elif c == "\\":
+            i += 1
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+        i += 1
+    return depth
 
 
 def _cd_target(seg, before, after):
     """The absolute directory of a plain `cd <abs>` segment, else None. `before`/`after` are the
     separators around it: a cd in a pipeline, a background job, an `||` branch (or any other
-    context this function is not sure the shell kept) is not trusted."""
+    context this function is not sure the shell kept) is not trusted. `cd X || exit` is looked
+    past by the caller, which hands over the separator that follows the `exit`."""
     if before not in _CD_STAYS or after not in _CD_STAYS:
         return None
     try:
@@ -442,10 +471,15 @@ def decide(cmd, env, cwd, session_id=None):
       2. `PLX_TV_LOCK_LANE` in the hook's environment (`explicit_lane()`);
       3. the segment's own TV script by absolute path, as command word or interpreter argument, or
          an absolute `make -C <dir>` (`classify_lane()`);
-      4. an absolute `cd <dir>`, kept until the next cd: `cd "$W"`, a relative cd, `cd ~`, `cd -` and
-         anything this function is not sure the shell kept (a subshell, a pipeline, an `||` branch)
-         fall through to the cwd. Only `&&`, `;` and newlines carry it, and a cd that sits behind an
-         `&&` lasts to the end of its own `&&` chain; a command substitution never picks one up;
+      4. an absolute `cd <dir>`, kept until the next cd, naming the git checkout <dir> is in (as
+         the tools' REPO is; a directory in no checkout names itself): `cd "$W"`, a relative cd,
+         `cd ~`, `cd -` and anything this function is not sure the shell kept fall through to the
+         cwd. Only `&&`, `;`, newlines and a defensive `|| exit [n]` / `|| return [n]` carry it, and
+         a cd that sits behind an `&&` lasts to the end of its own `&&` chain. Not kept: a cd in a
+         pipeline, an `||` branch, or inside an unclosed `(` or `$(` (a subshell's, however far
+         past its `)` the command goes); one in a list that ends in `&` (a background job) outside
+         that list; and `cur` is not carried into an `||` branch, which ran because the left side
+         failed. A command substitution never picks one up;
       5. the git checkout of `payload["cwd"]`.
 
     Steps 3 and 4 read the lane OFF THE COMMAND, which would let a session holding nothing run
@@ -460,23 +494,37 @@ def decide(cmd, env, cwd, session_id=None):
     explicit = explicit_lane(cmd, env)
 
     def lane_of(own, cd):               # (lane or None for the cwd, where it came from)
-        return explicit or own or ((cd, "an absolute cd") if cd else (None, "the cwd"))
+        return explicit or own or ((cd, _CD_HOW) if cd else (None, "the cwd"))
 
     checks = []                         # (segment, why, lane, how)
     parts = split_segments(strip_heredocs(cmd))
-    persistent = cur = None             # the lane an absolute cd set: for the rest, and for this chain
+
+    def sep_at(k):                      # the separator before parts[k], "" past the end
+        return parts[k][1] if k < len(parts) and parts[k][1] != "$(" else ""
+
+    persistent = cur = listed = None    # the lane an absolute cd set: for the rest, for this chain,
+    depth = 0                           # and as this list began; the `(`s still open
     for n, (seg, before) in enumerate(parts):
         why, own = classify_lane(seg)
         if before == "$(":              # graded where it is written, never at the final cd
             if why:
                 checks.append((seg.strip()[:120], why, *lane_of(own, None)))
             continue
-        if before in ("", ";", "\n"):
-            cur = persistent            # a new chain: only a cd that certainly ran carries over
+        if before in ("", ";", "\n", "&"):
+            if before == "&":
+                persistent = listed     # the list before it was a background job: a subshell's cd
+            cur = listed = persistent   # a new chain: only a cd that certainly ran carries over
+        elif before == "||" and not _LEAVES.match(seg):
+            cur = None                  # it runs because the left side failed, which may be the cd
         if why:
             checks.append((seg.strip()[:120], why, *lane_of(own, cur)))
-        after = parts[n + 1][1] if n + 1 < len(parts) and parts[n + 1][1] != "$(" else ""
-        target = _cd_target(seg, before, after)
+        target = None
+        if depth == 0:                  # inside an unclosed `(` or `$(` it is a subshell's cd
+            after = sep_at(n + 1)
+            if after == "||" and _LEAVES.match(parts[n + 1][0]):
+                after = sep_at(n + 2)   # `cd X || exit`: in X, or the command has ended
+            target = _cd_target(seg, before, after)
+        depth = max(0, depth + _paren_depth(seg))
         if target:
             if before == "&&":
                 cur, persistent = target, None
@@ -489,6 +537,7 @@ def decide(cmd, env, cwd, session_id=None):
 
     cwd_lane = None
     problems = []
+    checkouts = {}                      # an absolute cd's directory -> the checkout it is in
     for seg, why, lane, how in checks:
         derived = lane is not None and explicit is None
         if lane is None:
@@ -497,6 +546,10 @@ def decide(cmd, env, cwd, session_id=None):
             lane = cwd_lane
         elif derived and cwd_lane is None:
             cwd_lane = repo_root(cwd)
+        if derived and how == _CD_HOW:  # only a segment that uses the cd pays for the lookup
+            if lane not in checkouts:
+                checkouts[lane] = repo_root(lane)
+            lane = checkouts[lane]
         lease = lease_for(lane)
         if not lease:
             problems.append((seg, why, lane, how, "nolease"))
@@ -535,8 +588,9 @@ def main():
                 "\n"
                 "The lane is a different checkout from this session's own, and its lease is live but\n"
                 "does not list this session, so the command could be driving somebody else's job on the\n"
-                "set. If the lease is yours, take it again from this session so it is recorded\n"
-                "(`tools/tv-lock.sh acquire` or `renew` in that lane); otherwise it is not yours to use.\n"
+                "set. A lane belongs to whoever holds its lease. Take it again from this session, so it is\n"
+                "recorded, only if this checkout's job is yours (`tools/tv-lock.sh acquire` or `renew` in\n"
+                "that lane); otherwise it is not yours to use.\n"
                 "\n")
     else:
         head = ("BLOCKED: this lane does not hold the television's lock.\n"

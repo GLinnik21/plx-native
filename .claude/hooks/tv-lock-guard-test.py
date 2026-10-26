@@ -269,12 +269,19 @@ DERIVE_CASES = [
     # An interpreter's argument, a quoted path, and every script the classifier knows.
     (False, f"bash {LANE_B}/tools/tv-session.sh up", SESSION_CWD, {}, ((LANE_B, SID),), SID),
     (True, f"bash {LANE_B}/tools/tv-session.sh up", SESSION_CWD, {}, ((LANE_B, OTHER),), SID),
-    (False, f'"{LANE_B}/tools/tv-session.sh" up', SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    # (a QUOTED script path is not classified at all -- the base has that gap too -- so an ALLOW
+    # for one proves nothing; this pair is unquoted, and the second half shows it IS classified.)
+    (False, f"{LANE_B}/tools/remote-dpad.py ok", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (True, f"{LANE_B}/tools/remote-dpad.py ok", SESSION_CWD, {}, ((LANE_B, OTHER),), SID),
     (False, f"python3 {LANE_B}/tests/run.py --fps", SESSION_CWD, {}, ((LANE_B, SID),), SID),
     (False, f"{LANE_B}/tools/capture-screen.sh out.png", SESSION_CWD, {}, ((LANE_B, SID),), SID),
     (True, f"{LANE_B}/tools/capture-screen.sh out.png", SESSION_CWD, {}, ((LANE_B, OTHER),), SID),
     # `..` is folded lexically, no filesystem involved.
     (False, f"{LANE_A}/../lane-b/tools/tv-session.sh up", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    # A `..` that follows a directory the lane does not contain: only folding it (normpath) leaves
+    # `tools` as the script's directory. (`lease_for` folds `..` itself, so the case above cannot
+    # tell.) Only B is leased, so a path read as "no lane" falls to the cwd's and is refused.
+    (False, f"{LANE_B}/tools/x/../tv-session.sh up", LANE_A, {}, ((LANE_B, SID),), SID),
     # `make -C <abs>`, in all its spellings; a relative -C is not a lane (cwd decides).
     (False, f"make -C {LANE_B} deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
     (True, f"make -C {LANE_B} deploy", SESSION_CWD, {}, ((LANE_B, OTHER),), SID),
@@ -321,11 +328,49 @@ DERIVE_CASES = [
     (True, f"(cd {LANE_B} && tools/tv-session.sh up)", SESSION_CWD, {}, ((LANE_B, SID),), SID),
     (True, f"cd {LANE_B} | cat; make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
     (True, f"cd {LANE_B} & make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
-    (True, f"cd {LANE_B} || exit 1; make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
     (True, f"false && cd {LANE_B}; make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
     (True, f"if cd {LANE_B}; then make deploy; fi", SESSION_CWD, {}, ((LANE_B, SID),), SID),
     (True, f"builtin cd {LANE_B} && make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
     (True, f"pushd {LANE_B} && make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    # `cd <abs> || exit [n]` / `|| return [n]`, the defensive form: afterwards the shell is in the
+    # directory or the command has ended, so it is a KEPT cd like `&&` and `;` -- with the lane's
+    # lease and this session on it, as for any other.
+    (False, f"cd {LANE_B} || exit 1; make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (True, f"cd {LANE_B} || exit 1; make deploy", SESSION_CWD, {}, ((LANE_A, SID),), SID),
+    (True, f"cd {LANE_B} || exit 1; make deploy", SESSION_CWD, {}, ((LANE_B, OTHER),), SID),
+    (False, f"cd {LANE_B} || exit; make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (False, f"cd {LANE_B} || return; make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (False, f"cd {LANE_B} || return 2; make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (False, f"cd {LANE_B} || exit 1\nmake deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (False, f"cd {LANE_B} || exit 1 && make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (False, f"cd {LANE_B} && true || exit 1 && make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (True, f"cd {LANE_B} || exit 1 && make deploy", SESSION_CWD, {}, ((LANE_B, OTHER),), SID),
+    # Anything else behind the `||` leaves the shell where it was: the cwd decides.
+    (True, f"cd {LANE_B} || true; make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (True, f"cd {LANE_B} || echo x; make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (True, f"cd {LANE_B} || exit now; make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    # An `exit` that only ends a pipeline stage or a background job, or sits in a subshell, does not
+    # end the command.
+    (True, f"cd {LANE_B} || exit 1 | cat; make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (True, f"cd {LANE_B} || exit 1 &\nmake deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (True, f"(cd {LANE_B} || exit 1); make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    # A cd inside an unclosed `(` or `$(` is a subshell's: never trusted after it closes.
+    (True, f"(true; cd {LANE_B}; true); make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (True, f"x=$(true; cd {LANE_B}; true); make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (False, f"(true); cd {LANE_B}; make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (False, f"x=$(true); cd {LANE_B}; make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (False, f'x=")"; cd {LANE_B}; make deploy', SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    # An and-or list that ENDS in `&` is a background job: its cd is not the shell's.
+    (True, f"cd {LANE_B} && true &\nmake deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (True, f"cd {LANE_B} && true & make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (False, f"cd {LANE_B} && make deploy &", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (False, f"cd {LANE_B}; true &\nmake deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    # `cur` is not carried into an `||` branch: it ran because the left side failed, which may be
+    # the cd itself.
+    (True, f"cd {LANE_B} && true || tools/tv-session.sh up", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (True, f"cd {LANE_B} && true || false && make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (False, f"cd {LANE_B} && true || tools/tv-session.sh up", LANE_A, {}, (LANE_A,), SID),
+    (False, f"cd {LANE_B} && true || true; make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
     # A command substitution is graded where it is written, not at the final cd state: it gets the
     # prefix, the env, its own path, or the cwd -- never a cd.
     (True, f"cd {LANE_B} && x=$({SSH})", SESSION_CWD, {}, ((LANE_B, SID),), SID),
@@ -360,6 +405,57 @@ DERIVE_CASES = [
 ]
 
 
+# --- real directories: the lane a path RESOLVES to ------------------------------------------------
+#
+# `repo_root()` falls back to the literal path for a directory that does not exist, so the cases
+# above (made-up paths) cannot tell "cd into a checkout" from "cd to a stranger", nor a symlink from
+# the checkout it points at. These run on two real git checkouts, A (the cwd) and B, and a symlink to
+# each, all under one realpath'd temp root so the symlinks are the only indirection.
+def real_fixture():
+    import subprocess
+    root = os.path.realpath(tempfile.mkdtemp(prefix="tv-lock-guard-real-"))
+    a, b = os.path.join(root, "lane-a"), os.path.join(root, "lane-b")
+    for d in (a, b):
+        for sub in ("tests", "tools", "rust-modules", "sub"):
+            os.makedirs(os.path.join(d, sub))
+        subprocess.run(["git", "init", "-q", d], check=True)
+    link_a, link_b = os.path.join(root, "link-a"), os.path.join(root, "link-b")
+    os.symlink(a, link_a)
+    os.symlink(b, link_b)
+    return root, a, b, link_a, link_b
+
+
+def real_cases(a, b, link_a, link_b):
+    """(expect_blocked, cmd, cwd, env, live_lanes, payload session_id), as DERIVE_CASES."""
+    both = ((a, SID), (b, SID))
+    return [
+        # A cd into a SUBDIRECTORY of the cwd's own checkout is that checkout's lane (the tools
+        # compute REPO there), so it needs the cwd's lease and no SESSIONS, as the base allowed.
+        (False, f"cd {a}/tests && python3 run.py --fps", a, {}, (a,), SID),
+        (False, f"cd {a}/tools && ./tv-session.sh up", a, {}, (a,), SID),
+        (False, f"cd {a}/rust-modules && cargo build && {SSH}", a, {}, (a,), SID),
+        (False, f"cd {a}/tests && python3 run.py --fps", a, {}, (a,), None),
+        (False, f"cd {a}/tests && python3 run.py --fps", f"{a}/sub", {}, (a,), SID),
+        (False, f"cd {link_a}/tests && python3 run.py --fps", a, {}, (a,), None),
+        # …still refused when the cwd's checkout holds nothing.
+        (True, f"cd {a}/tests && python3 run.py --fps", a, {}, (b,), SID),
+        # A cd into ANOTHER checkout's subdirectory is that checkout's lane: its lease, and this
+        # session on it.
+        (True, f"cd {b}/sub && tools/tv-session.sh up", a, {}, (a,), SID),
+        (True, f"cd {b}/sub && tools/tv-session.sh up", a, {}, ((a, SID), (b, OTHER)), SID),
+        (False, f"cd {b}/sub && tools/tv-session.sh up", a, {}, both, SID),
+        (False, f"cd {link_b}/sub && tools/tv-session.sh up", a, {}, both, SID),
+        (False, f"cd {b}/sub && tools/tv-session.sh up", SESSION_CWD, {}, ((b, SID),), SID),
+        # A symlink to the cwd's own checkout IS the cwd's checkout: no SESSIONS needed...
+        (False, f"{link_a}/tools/tv-session.sh up", a, {}, (a,), None),
+        (False, f"{link_a}/tools/tv-session.sh up", a, {}, ((a, OTHER),), SID),
+        # …and one to another checkout is that checkout, leased or not.
+        (True, f"{link_b}/tools/tv-session.sh up", a, {}, (a,), SID),
+        (True, f"{link_b}/tools/tv-session.sh up", a, {}, ((a, SID), (b, OTHER)), SID),
+        (False, f"{link_b}/tools/tv-session.sh up", a, {}, both, SID),
+    ]
+
+
 def main_exit(payload, state_dir):
     """Run the guard as the harness does: JSON on stdin, the exit code back."""
     import json
@@ -372,9 +468,10 @@ def main_exit(payload, state_dir):
     return out.returncode, out.stderr
 
 
-def main_cases():
+def main_cases(real_b):
     """`main()` itself: the payload's session_id and cwd reach the decision, a refusal says which
-    lane it checked, and an unreadable payload fails OPEN, as the module docstring promises."""
+    lane it checked, and an unreadable payload fails OPEN, as the module docstring promises.
+    `real_b` is a real checkout holding no lease."""
     fails = 0
     d = _fake_state_dir(((LANE_B, SID),))
     try:
@@ -385,6 +482,9 @@ def main_cases():
             ("session listed", payload(B_TOOL, session_id=SID), 0, ()),
             ("session not listed", payload(B_TOOL, session_id=OTHER), 2,
              ("not taken by this session", LANE_B, "the script's own path")),
+            # The hint says whose the lane is, and is not an invitation to take anybody's.
+            ("the session hint names the owner", payload(B_TOOL, session_id=OTHER), 2,
+             ("belongs to whoever holds its lease", "only if this checkout's job is yours")),
             ("no session_id", payload(B_TOOL), 2, ("not taken by this session", LANE_B)),
             ("subagent carries its parent's id", payload(B_TOOL, session_id=SID, agent_id="a1",
                                                          agent_type="general-purpose"), 0, ()),
@@ -392,6 +492,10 @@ def main_cases():
              ("does not hold the television's lock", SESSION_CWD, "the cwd")),
             ("a cd lane says so", payload(f"cd {LANE_A} && make deploy", session_id=SID), 2,
              (LANE_A, "an absolute cd")),
+            # …and a cd into a SUBDIRECTORY of a checkout names the checkout, not the subdirectory.
+            ("a cd into a checkout names the checkout",
+             payload(f"cd {real_b}/sub && make deploy", session_id=SID), 2,
+             (f"the lane:    {real_b} (from an absolute cd)",)),
             ("not Bash", {"tool_name": "Read", "tool_input": {}}, 0, ()),
             ("malformed stdin fails open", "{not json", 0, ()),
             # A bug in the guard must not wedge every Bash call: an exception inside decide() (a cwd
@@ -412,6 +516,20 @@ def main_cases():
 
 def main():
     fails = 0
+    root, a, b, link_a, link_b = real_fixture()
+    try:
+        real = real_cases(a, b, link_a, link_b)
+        for want, cmd, cwd, env, live_lanes, sid in real:
+            got = blocked_full(cmd, cwd, env, live_lanes, sid)
+            if got != want:
+                fails += 1
+                print(f"  FAIL  expected {'BLOCK' if want else 'ALLOW'}, got "
+                      f"{'BLOCK' if got else 'ALLOW'}: {cmd!r} cwd={cwd!r} "
+                      f"live={live_lanes!r} session={sid!r}")
+        main_fails, main_total = main_cases(b)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+    fails += main_fails
     for want, cmd in CASES:
         got = blocked(cmd)
         if got != want:
@@ -431,9 +549,7 @@ def main():
             print(f"  FAIL  expected {'BLOCK' if want else 'ALLOW'}, got "
                   f"{'BLOCK' if got else 'ALLOW'}: {cmd!r} cwd={cwd!r} env={env!r} "
                   f"live={live_lanes!r} session={sid!r}")
-    main_fails, main_total = main_cases()
-    fails += main_fails
-    total = len(CASES) + len(LANE_CASES) + len(DERIVE_CASES) + main_total
+    total = len(CASES) + len(LANE_CASES) + len(DERIVE_CASES) + len(real) + main_total
     print(f"tv-lock-guard: {total - fails}/{total} cases correct")
     return 1 if fails else 0
 
