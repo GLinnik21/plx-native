@@ -5792,11 +5792,12 @@ mod lifecycle_regression_tests {
 
         // The fixture's server cannot convert: the flight comes back refused, which is terminal for
         // the both-facets rung, and the pump (not the lifecycle) ends on the read-out.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let mut now = 64;
-        while plx_media::player::state(&rig.app.player.session) != plx_media::player::PlaybackState::Error
-            && std::time::Instant::now() < deadline
-        {
+        // A bounded count of 5 ms naps (the `wall` gate keeps clock reads out of `app/`): 10 s.
+        for _ in 0..2000 {
+            if plx_media::player::state(&rig.app.player.session) == plx_media::player::PlaybackState::Error {
+                break;
+            }
             now += 16;
             plx_media::player::pump(&mut rig.app.player.session, &mut rig.app.adapters.player, now);
             std::thread::sleep(std::time::Duration::from_millis(5));
