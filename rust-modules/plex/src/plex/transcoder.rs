@@ -185,6 +185,10 @@ pub fn direct_play_video_codecs(caps: &plx_platform::devcaps::Caps) -> Vec<&'sta
 ///   anywhere, so it can neither confirm nor deny 10-bit. The claim stays because it is what
 ///   keeps HDR10 through a transcode (HEVC Main10, BT.2020+PQ in-bitstream — the same in-band
 ///   static HDR10 SEI the direct-play path relies on; ff.rs keeps it).
+/// * **`audio.samplingRate` upper bound** — the top of `devcaps::PCM_SAMPLE_RATES` (48 kHz), on
+///   every audio codec the profile names for a Load: the app-decoded PCM codecs and each codec of
+///   the transcode target's `audioCodec` list. libpf's rate vocabulary stops there, so PMS
+///   converts a 96 kHz track instead of handing the pipeline a rate it refuses (#951).
 ///
 /// The target's codec lists are FALLBACK CHAINS, not single choices, and the order encodes the
 /// whole free-vs-Plex-Pass story (issue #22, found on a reviewer's server):
@@ -275,12 +279,12 @@ fn profile_for_delivery(caps: &plx_platform::devcaps::Caps, delivery: TranscodeD
     let dp_audio = caps.audio.split(',').map(profile_codec_name).collect::<Vec<_>>().join(",");
     // ac3 first — the preferred ENCODE target — then the rest of the caps subset as copy lanes.
     // opus is only ever a copy lane: last, so it can never be the encode head.
-    let target_audio = ["ac3", "eac3", "aac", "dts", "opus"]
+    let target_audio_codecs = ["ac3", "eac3", "aac", "dts", "opus"]
         .into_iter()
         .filter(|c| caps.audio_has(c))
         .map(profile_codec_name)
-        .collect::<Vec<_>>()
-        .join(",");
+        .collect::<Vec<_>>();
+    let target_audio = target_audio_codecs.join(",");
     // PMS scopes audio carried by a video profile as videoAudioCodec (Plex-for-Kodi's
     // plexplayer.py uses this scope for audio.channels too); audioCodec is not a valid scope.
     let audio_limits = caps.audio_channels.iter()
@@ -290,16 +294,19 @@ fn profile_for_delivery(caps: &plx_platform::devcaps::Caps, delivery: TranscodeD
             "+add-limitation(scope=videoAudioCodec&scopeName={codec}&type=upperBound&name=audio.channels&value={channels}&replace=true)"
         ))
         .collect::<String>();
-    // `pcmInfo` can name only some rates (`devcaps::PCM_SAMPLE_RATES`, 48 kHz at most): above that
-    // PMS converts, as it does for a FLAC wider than stereo. A rate under 48 kHz that is not in the
-    // table is refused by the planner instead.
-    let pcm_ceiling = plx_platform::devcaps::PCM_SAMPLE_RATES.iter().max().copied().unwrap_or(0);
+    // libpf's rate vocabulary stops at 48 kHz (`devcaps::PCM_SAMPLE_RATES`): a Load above it is
+    // refused (a 96 kHz AAC PMS made from a 96 kHz FLAC, LG B8, #951) or, on the PCM input, played
+    // at the wrong speed. So the PCM codecs and every codec of the transcode target list get that
+    // ceiling and PMS converts above it, as it does for a FLAC wider than stereo. A PCM rate under
+    // the ceiling that is not in the table is refused by the planner instead.
+    let rate_ceiling = plx_platform::devcaps::PCM_SAMPLE_RATES.iter().max().copied().unwrap_or(0);
     let audio_limits = audio_limits
         + &plx_platform::devcaps::PCM_AUDIO_CODECS
             .split(',')
             .filter(|c| caps.audio_has(c))
+            .chain(target_audio_codecs.iter().copied())
             .map(|codec| format!(
-                "+add-limitation(scope=videoAudioCodec&scopeName={codec}&type=upperBound&name=audio.samplingRate&value={pcm_ceiling}&replace=true)"
+                "+add-limitation(scope=videoAudioCodec&scopeName={codec}&type=upperBound&name=audio.samplingRate&value={rate_ceiling}&replace=true)"
             ))
             .collect::<String>();
     let target = match delivery {
@@ -1343,6 +1350,32 @@ mod tests {
         assert!(!super::forced_direct_profile_for(&assumed).contains("flac"));
     }
 
+    /// Issue #951: PMS converts a 96 kHz FLAC to AAC and keeps 96 kHz, and an LG B8 refuses that
+    /// Load (`smp_cb type=18`). libpf's rate vocabulary stops at 48 kHz, so EVERY codec the
+    /// server may encode or copy to (the whole transcode target audio list, in both deliveries)
+    /// is asked for at that ceiling, not only the app-decoded PCM codecs.
+    #[test]
+    fn every_transcode_target_audio_codec_is_asked_for_at_48_khz_at_most() {
+        let mut caps = Caps::assumed();
+        caps.audio.push_str(",dts,opus");
+        caps.audio_channels.insert("dts".into(), 6);
+        let rate_bound = |codec: &str| format!(
+            "scope=videoAudioCodec&scopeName={codec}&type=upperBound&name=audio.samplingRate&value=48000&replace=true"
+        );
+        let profile = super::profile_for(&caps);
+        let targets = list_of(target_of(&profile), "audioCodec=");
+        assert_eq!(targets, ["ac3", "eac3", "aac", "dca", "opus"], "the list under test: {profile}");
+        for codec in &targets {
+            assert!(profile.contains(&rate_bound(codec)), "{codec} has no samplingRate bound: {profile}");
+        }
+        // the narrow HLS target (aac only) carries the same bound
+        let hls = super::profile_for_delivery(&caps, super::TranscodeDelivery::FixedHls { seconds_per_segment: 2 });
+        assert!(hls.contains(&rate_bound("aac")), "{hls}");
+        // a codec the set does not list is not named at all
+        let assumed = super::profile_for(&Caps::assumed());
+        assert!(!assumed.contains(&rate_bound("opus")) && !assumed.contains(&rate_bound("dca")), "{assumed}");
+    }
+
     /// Force Direct Play offers DTS only on the same table evidence the planner asks for
     /// (`Caps::forced_admits_dts`); without the row the profile cannot invite a Load the
     /// pipeline cannot decode.
@@ -1490,6 +1523,9 @@ mod tests {
              +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.width&value=3840&replace=true)\
              +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.height&value=2176&replace=true)\
              +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.bitDepth&value=10&replace=true)\
+             +add-limitation(scope=videoAudioCodec&scopeName=ac3&type=upperBound&name=audio.samplingRate&value=48000&replace=true)\
+             +add-limitation(scope=videoAudioCodec&scopeName=eac3&type=upperBound&name=audio.samplingRate&value=48000&replace=true)\
+             +add-limitation(scope=videoAudioCodec&scopeName=aac&type=upperBound&name=audio.samplingRate&value=48000&replace=true)\
              +add-transcode-target(type=videoProfile&context=streaming&protocol=http\
              &container=matroska&videoCodec=hevc,h264&audioCodec=ac3,eac3,aac)"
         );

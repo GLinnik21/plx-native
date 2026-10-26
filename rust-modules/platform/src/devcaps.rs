@@ -90,6 +90,9 @@ pub const PCM_MAX_CHANNELS: u32 = 2;
 /// becomes 44.1 kHz and plays at the wrong speed with no error (a 96 kHz FLAC audibly slow on an
 /// OLED55B8, webOS 4.4.3; a 48 kHz one 9% slow, a 32 kHz one fast and stuttering on a C1, webOS
 /// 6.5.3, when the rate was declared in hertz). The table was read from libpf-1.0 on the B8.
+///
+/// Its top is also the ceiling the transcode profile asks PMS for on every audio codec, not only
+/// the PCM ones: a 96 kHz AAC that PMS made from a 96 kHz FLAC was refused on the B8 (#951).
 pub const PCM_SAMPLE_RATES: [u32; 8] = [8_000, 12_000, 16_000, 22_050, 24_000, 32_000, 44_100, 48_000];
 
 /// Whether `codec` is one the app decodes itself and feeds as PCM ([`PCM_AUDIO_CODECS`]).
