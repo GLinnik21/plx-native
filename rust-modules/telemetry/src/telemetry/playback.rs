@@ -8,10 +8,11 @@
 //! `["playback-error", kind]`, except for origin `preview` (a failed detail-page trailer), which
 //! groups apart as `["playback-error", "preview", kind]`. There is no
 //! title, URL, rating key, playhead, duration, measured bitrate or free-text error slot. Sparse transitions are retained in memory only while error reporting is
-//! enabled, and nothing is queued unless the viewer actually reaches `PlaybackState::Error`.
+//! enabled, and no error event is queued unless the viewer actually reaches `PlaybackState::Error`.
 //!
-//! The one other handled event is `refusal_recovered` ([`refusal_recovered_body`]): a refusal the
-//! app recovered from, with four closed fields and no trace, under the same consent.
+//! The one other handled event, and the one that is NOT a failure, is `refusal_recovered`
+//! ([`refusal_recovered_body`]): a play the television refused and the app then recovered, with four
+//! closed fields and no trace, under the same consent.
 
 use super::classes::{
     AttemptOrigin, FailureClass, PlaybackErrorContext, RefusalRecoveredContext, TraceEvent,

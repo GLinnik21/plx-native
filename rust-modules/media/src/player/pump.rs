@@ -1598,8 +1598,9 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         // session), and the send only queues, so this frame never waits.
         crate::route::on_decoded_frame(ps);
         // The open produced a picture: the failed-open ladder is over (idempotent, so each frame may
-        // say it). It is also where a facet-clean rescue is credited (`Proving`), through the
-        // driver; in `Playing` the event is unhandled and asks for nothing.
+        // say it). It is also where a facet-clean rescue is credited (`Proving`) and where a rescued
+        // refusal is reported (`ReportRecovered`, once per request), through the driver; in
+        // `Playing` the event is unhandled and asks for nothing.
         let _ = drive_open_recovery(ps, super::recovery::RecoveryEvent::FirstPicture, "");
     }
 
