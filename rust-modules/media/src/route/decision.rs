@@ -9620,6 +9620,32 @@ pub(super) fn install_retranscode_outcome(ps: &mut PlaybackSession, applied: &Ap
     );
 }
 
+/// **Re-check the stored Original candidate's audio against the attempt's caps**, after a recovery
+/// narrowed them. The refusal-recovery landing ([`install_recovery_landing`]'s `Retranscode` arm)
+/// leaves the request's attempt without the facet the pipeline refused; a cold Auto Original's stored
+/// candidate (the way back the ABR climb proposes) was graded against the caps BEFORE that, so a
+/// candidate that carried the refused DTS would still `feeds_part()`, and the climb would offer the
+/// Part's DTS direct play again.
+///
+/// The same body as the audio-pick site ([`commit_audio_selection`]): `retarget_audio` with the
+/// answer of [`audio_track_direct_plays`], which reads the narrowed attempt. A candidate whose
+/// audio now needs conversion is kept, `audio_converted`, so returning to Original means the remux
+/// naming that track; one that no legal copy can serve is dropped (`TrackPickDropped`).
+///
+/// TODO(S1b): a refused VIDEO facet needs the same re-check of the candidate's video.
+pub(super) fn regrade_original_audio(ps: &mut PlaybackSession) {
+    let Some(carried) = ps.auto_original.as_ref().and_then(|candidate| candidate.audio.clone()) else {
+        return;
+    };
+    let direct_plays = audio_track_direct_plays(ps, &carried.codec, carried.channels, carried.sample_rate);
+    if let Some(candidate) = ps.auto_original.as_mut() {
+        if !candidate.retarget_audio(&carried, direct_plays) {
+            ps.auto_original = None;
+            ps.original_declined = Some(OriginalDeclined::TrackPickDropped);
+        }
+    }
+}
+
 // ---- issue #266: the live audio-enhancement state machine ------------------------------------
 //
 // The enhancement decorates the Original route: turning it on makes a Direct/Remux playback an

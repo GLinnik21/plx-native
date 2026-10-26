@@ -241,6 +241,33 @@ impl FlightRig {
         ps.auto_original = Some(AutoOriginalCandidate { direct, ..test_original_candidate(None) });
     }
 
+    /// Declare the codec of the source Part's audio, which the rig's route declares as AC3. A Part
+    /// whose only audio is the DTS the pipeline refuses declares `dca` here as well.
+    pub(crate) fn declare_source_audio(ps: &mut PlaybackSession, codec: &str) {
+        ps.src_acodec = codec.into();
+    }
+
+    /// [`FlightRig::offer_original`] whose candidate carries `codec` with `channels` channels (the
+    /// audio of the stream the Original would feed), where the offer's own default is E-AC-3 5.1.
+    pub(crate) fn offer_original_carrying(ps: &mut PlaybackSession, direct: bool, codec: &str, channels: i64) {
+        let audio = CarriedAudio { codec: codec.into(), channels, ..CarriedAudio::named(960_002, 1) };
+        ps.auto_original = Some(AutoOriginalCandidate { direct, audio: Some(audio), ..test_original_candidate(None) });
+    }
+
+    /// Whether the stored Original candidate would feed the Part itself on a recovery (`None` when
+    /// none is stored): the climb's DIRECT question, which a refused audio must answer no.
+    pub(crate) fn original_feeds_part(ps: &PlaybackSession) -> Option<bool> {
+        ps.auto_original.as_ref().map(AutoOriginalCandidate::feeds_part)
+    }
+
+    /// Whether an Original recovery from the stored candidate plans the codec-preserving remux
+    /// ([`RecoveryFlavour::Remux`]) rather than the Part (`None` when no candidate is stored).
+    pub(crate) fn original_recovery_is_remux(ps: &PlaybackSession) -> Option<bool> {
+        ps.auto_original.as_ref().map(|candidate| {
+            matches!(recovery_flavour(candidate, plx_plex::plex::AudioEnhancements::NONE), RecoveryFlavour::Remux(_))
+        })
+    }
+
     /// Arm the Original REMUX trial the viewer's Original pick leaves on the playing route: the
     /// recovery's three steps run in a row (the PMS half is a real `/decision` on the rig's server),
     /// so `PendingOriginal` holds the route as it stood (`rig-1`, the way back) and the reducer is

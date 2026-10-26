@@ -711,6 +711,10 @@ fn install_recovery_landing(
                 return RecoveryVerdict::Refused;
             }
             install_retranscode_outcome(ps, &applied);
+            // The attempt now lacks the facet the pipeline refused: the Original candidate the ABR
+            // climb would return to is graded against it again, so the climb does not propose the
+            // refused audio's direct play.
+            regrade_original_audio(ps);
             // Nothing is playing, so the encoder it replaced has nothing left to feed: stop it
             // now, not after a reload that keeps it on screen.
             stop_encoder_session(applied.client, applied.superseded);

@@ -1381,6 +1381,43 @@ fn paused_and_idle() -> bool {
         && TX.seek_to_ns.load(Relaxed) < 0
 }
 
+/// The playback trace generation `refuse601` already refused (0: none yet). One request is refused
+/// once: its converted reload carries the same generation, so it plays.
+static REFUSED_FOR: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// **`plxnative-refuse601` (dev builds): the pipeline's `type=18 num=601` after the Load returned,
+/// once per request.** The refusal webOS 10.3.1 gives a stream it cannot allocate a decoder for
+/// (#695, DTS), reproduced on a set that would take the stream: once the Load has returned and
+/// before any picture, it publishes through [`super::sf_on_event`], the entry the firmware calls, so
+/// the callback's own latches (`dg_cb_err_num`, `load_failed`) and the failed-open ladder see exactly
+/// what a real refusal gives them.
+///
+/// The read is a `devtrig::flag` (a `stat`), and a latched flag could not be armed per test: a
+/// process-wide latch hands whichever test ran first its answer for all of them. So the cheap
+/// atomic guards come first and the file is read only inside the open window (after the Load
+/// returned, before a picture, and for a request not yet refused), never on a playing frame. The
+/// latch is written only after the flag holds, so an unarmed request is never marked refused.
+fn inject_refuse601(ps: &crate::route::PlaybackSession, eng: &Engine) {
+    let generation = crate::route::playback_trace_generation();
+    if generation == 0
+        || crate::route::is_preview(ps)
+        || !SHARED.native_load_returned(eng.native_epoch)
+        || SHARED.seen_frame.load(Relaxed)
+        || REFUSED_FOR.load(Acquire) == generation
+    {
+        return;
+    }
+    if !plx_base::devtrig::flag("refuse601") {
+        return;
+    }
+    if REFUSED_FOR.swap(generation, std::sync::atomic::Ordering::AcqRel) == generation {
+        return;
+    }
+    #[cfg(feature = "devtriggers")]
+    super::log("devtrig refuse601: publishing type=18 num=601 after the Load");
+    super::sf_on_event(eng.native_epoch, 18, 601, std::ptr::null());
+}
+
 pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, now: u32) {
     use super::shared::PlaybackState;
     // A preroll closed by a path with no adapter in hand (`abandon_seek`) leaves its mute behind;
@@ -1423,6 +1460,7 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     // the route Stable before this Engine exists in the main-thread slot. Drain its exact-token
     // result here, after installation and before any worker publication can be accepted.
     crate::route::drain_route_start_results(ps);
+    inject_refuse601(ps, eng);
     // A failed open's recovery flight (the Original rollback's rebase, the unopened source's HLS
     // fallback, the refused native audio's conversion): land it, or wait for it. Ahead of every
     // failure branch below, whose flags stay up
@@ -3890,6 +3928,253 @@ mod flight_tests {
             crate::player::PlaybackState::Error,
             "a stall of a combination the install already knew left the viewer on {state:?}"
         );
+    }
+
+    // ---- S1a: a pipeline refusal of a stream the attempt can do without --------------------------
+
+    /// The set the attempt started on: its pipeline announces DTS at six channels (the shape of
+    /// `plan_track_selection_tests`' DTS row), so taking `dts:6` out of the attempt is a real
+    /// narrowing and the facet rung has something to convert.
+    fn dts_announcing_start() -> std::sync::Arc<plx_platform::devcaps::Caps> {
+        std::sync::Arc::new(plx_platform::devcaps::Caps {
+            audio: "aac,ac3,eac3,dts".into(),
+            audio_channels: [("dts".into(), 6)].into(),
+            ..plx_platform::devcaps::Caps::assumed()
+        })
+    }
+
+    /// `rig` plays a DTS 5.1 track which the attempt (begun on [`dts_announcing_start`]) feeds to
+    /// the pipeline, as the plan of a direct play of that track would have declared it.
+    fn declare_dts(rig: &mut Rig) {
+        FlightRig::plan_on(&mut rig.ps, dts_announcing_start());
+        FlightRig::declare_audio(&mut rig.ps, "dca", 6);
+    }
+
+    /// [`declare_dts`] on a rig whose playback has a report attempt (a Play's generation).
+    fn dts_rig(rig: Rig) -> Rig {
+        let mut rig = rig;
+        rig.flight.begin_attempt(&rig.ps);
+        declare_dts(&mut rig);
+        rig
+    }
+
+    /// The pipeline's `type=18 num=601` (Resource Allocation Error) after the Load returned, through
+    /// the callback the firmware calls: the same entry `inject_refuse601` publishes on.
+    fn pipeline_refuses_601(rig: &mut Rig) {
+        let epoch = engine_epoch(rig).expect("the rig's Engine");
+        super::super::sf_on_event(epoch, 18, 601, std::ptr::null());
+    }
+
+    /// What a refusal-recovery landing for a DTS 5.1 track leaves, after the flight landed on an
+    /// Engine that was at `epoch`: one replacement `/decision` converting the DTS track (the
+    /// profile carries the stereo bound, the request names the track the viewer was on, so no
+    /// sibling is chosen in S1a), the Engine reloaded onto it, the open counted once as the app's
+    /// own recovery, and the replaced encoder stopped.
+    fn assert_dts_converted_in_one_flight(rig: &mut Rig, epoch: Option<u32>) {
+        assert_eq!(rig.flight.decisions(), 1, "exactly one replacement /decision");
+        let decisions = rig.flight.decision_requests();
+        let replacement = decisions.first().expect("the replacement /decision");
+        assert!(
+            replacement.contains("scopeName%3Ddca%26type%3DupperBound%26name%3Daudio.channels%26value%3D2"),
+            "the replacement profile must bound DTS to two channels: {replacement}"
+        );
+        assert!(
+            replacement.contains("audioStreamID=960002"),
+            "the replacement converts the DTS track the viewer was on: {replacement}"
+        );
+        assert_ne!(engine_epoch(rig), epoch, "the landing reloaded onto the converted route");
+        assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
+        let context = super::super::report::error_context_for_test(&rig.ps);
+        assert_eq!(context.attempt_origin, super::super::report::AttemptOrigin::Recovery);
+        assert_eq!(context.attempt_ordinal, super::super::report::AttemptOrdinal::FIRST.next(), "counted once");
+        rig.flight.wait_for("the replaced encoder's stop", |f| f.stopped().iter().any(|s| s == "rig-1"));
+    }
+
+    /// Drive a DTS 601 on `rig` to the converted route's landing and grade it
+    /// ([`assert_dts_converted_in_one_flight`]).
+    fn dts_601_converts_in_one_flight(mut rig: Rig) {
+        rig.frame();
+        let answered = rig.flight.answered();
+        let epoch = engine_epoch(&mut rig);
+        rig.flight.hold_answers();
+        pipeline_refuses_601(&mut rig);
+        rig.frame();
+        assert_ne!(
+            crate::player::state(&rig.ps),
+            crate::player::PlaybackState::Error,
+            "a refused DTS track must not end on the failure read-out"
+        );
+        assert!(crate::route::flight_outstanding(), "the conversion's PMS half must be a recovery flight");
+        assert_eq!(
+            rig.flight.answered(),
+            answered,
+            "the failure frame waited for a PMS answer on the frame thread: {:?}",
+            rig.flight.requests()
+        );
+        assert_eq!(engine_epoch(&mut rig), epoch, "nothing reloads before the landing");
+        rig.flight.release_answers();
+        rig.frames_until("the conversion's landing", |_| !crate::route::flight_outstanding());
+        assert_dts_converted_in_one_flight(&mut rig, epoch);
+    }
+
+    /// **#695.** A DTS 5.1 direct play that the pipeline refuses with `type=18 num=601` before the
+    /// first picture used to end on the failure read-out (`Error`): the refusal named no native
+    /// audio, so the ladder had no rung. It now converts the suspect stream: the frame asks the
+    /// server nothing, the viewer keeps the connecting spinner, ONE recovery flight asks for the
+    /// DTS track converted under a profile that bounds DTS to stereo, and the Engine reloads onto it.
+    #[test]
+    fn a_dts_601_before_the_first_picture_converts_dts_in_one_flight() {
+        dts_601_converts_in_one_flight(dts_rig(Rig::new(150)));
+    }
+
+    /// The same refusal on a Part whose only audio is the DTS track: no sibling to choose in either
+    /// case in S1a (the replacement names the track the viewer was on, and no track pick runs), so
+    /// the two Parts take one path. The AC3 sibling falls out of the planner on the NEXT request,
+    /// once a learned row is in `start` (S2).
+    #[test]
+    fn a_dts_601_with_no_sibling_lands_a_server_conversion() {
+        let mut rig = Rig::new(150);
+        FlightRig::declare_source_audio(&mut rig.ps, "dca");
+        dts_601_converts_in_one_flight(dts_rig(rig));
+    }
+
+    /// A cold Auto Original refused on its DTS flies the conversion, not the HLS contingency: the
+    /// facet rung comes before the both-facets rung, so the Original's remux is kept (the stream
+    /// keeps its video bytes), no Original failure is noted, and the route is not segmented HLS.
+    #[test]
+    fn an_auto_original_refused_on_dts_flies_the_conversion_not_hls() {
+        let mut rig = dts_rig(unopened_auto_original_rig(60));
+        rig.frame();
+        let epoch = engine_epoch(&mut rig);
+        pipeline_refuses_601(&mut rig);
+        rig.frame();
+        assert!(crate::route::flight_outstanding(), "the conversion's PMS half must be a recovery flight");
+        rig.frames_until("the conversion's landing", |_| !crate::route::flight_outstanding());
+        assert_eq!(rig.flight.decisions(), 1, "exactly one replacement /decision");
+        let decisions = rig.flight.decision_requests();
+        let replacement = decisions.first().expect("the replacement /decision");
+        assert!(!replacement.contains("protocol=hls"), "the replacement is not the HLS fallback: {replacement}");
+        assert!(!crate::route::is_segmented_hls(&rig.ps), "the Original's remux is kept");
+        assert_eq!(SHARED.abr_failure_kind.load(Relaxed), 0, "the Original did not fail, so no failure is noted");
+        assert_ne!(engine_epoch(&mut rig), epoch, "the landing reloaded onto the converted route");
+        assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
+    }
+
+    /// A conversion the server refuses ends on the read-out, once: the recovery flight flew (the
+    /// frames between its dispatch and its landing kept the Engine and its spinner), the refusal
+    /// asked for no further rung (a manual Original has no HLS contingency), and the route is still
+    /// the one the pipeline refused. A failure before any picture holds nothing the television
+    /// mistakes for playback, so [`release_failed_engine`](super::super::engine::release_failed_engine)
+    /// leaves the Engine to the viewer's Back.
+    #[test]
+    fn a_refused_conversion_ends_on_the_read_out_and_is_released_once() {
+        let mut rig = dts_rig(Rig::new(40));
+        rig.flight.refuse_decisions(1);
+        rig.frame();
+        let epoch = engine_epoch(&mut rig);
+        pipeline_refuses_601(&mut rig);
+        rig.frame();
+        assert!(crate::route::flight_outstanding(), "the conversion must be a flight, not an immediate failure");
+        assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error, "the spinner while it flies");
+        assert_eq!(engine_epoch(&mut rig), epoch, "frames between the dispatch and the landing keep the Engine");
+
+        rig.frames_until("the refusal's landing", |r| crate::player::state(&r.ps) == crate::player::PlaybackState::Error);
+        assert!(!crate::route::flight_outstanding());
+        assert_eq!(rig.flight.decisions(), 1, "one conversion request, never a loop");
+        assert_eq!(crate::route::transcode_session(&rig.ps), "rig-1", "the refused route is still the route");
+        assert_eq!(engine_epoch(&mut rig), epoch, "a refusal reloads nothing");
+        for _ in 0..3 {
+            rig.frame();
+        }
+        assert_eq!(rig.flight.decisions(), 1, "the frames that follow dispatch no second flight");
+        assert_eq!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
+        rig.flight.wait_for("the refused replacement's stop", |f| replacement_stops(f) == 1);
+        assert!(!rig.flight.stopped().iter().any(|s| s == "rig-1"), "{:?}", rig.flight.stopped());
+    }
+
+    /// **The ABR climb after a DTS rescue does not propose DTS direct play again.** The cold Auto
+    /// Original's stored candidate carries the DTS track and `feeds_part()`; the facet landing
+    /// narrowed the attempt, and the candidate is re-graded against it, so a later Original
+    /// recovery plans the remux (the server converting that audio), not the Part.
+    #[test]
+    fn the_climb_after_a_dts_rescue_plans_no_dts_direct_play() {
+        let mut rig = auto_original_rig(60);
+        rig.flight.begin_attempt(&rig.ps);
+        declare_dts(&mut rig);
+        FlightRig::offer_original_carrying(&mut rig.ps, true, "dca", 6);
+        assert_eq!(FlightRig::original_feeds_part(&rig.ps), Some(true), "sanity: the candidate would feed the DTS Part");
+        assert_eq!(FlightRig::original_recovery_is_remux(&rig.ps), Some(false));
+        rig.frame();
+        pipeline_refuses_601(&mut rig);
+        rig.frame();
+        assert!(crate::route::flight_outstanding(), "the conversion's PMS half must be a recovery flight");
+        rig.frames_until("the conversion's landing", |_| !crate::route::flight_outstanding());
+        assert_eq!(rig.flight.decisions(), 1);
+        assert_eq!(FlightRig::original_feeds_part(&rig.ps), Some(false), "the Part's DTS is not offered again");
+        assert_eq!(FlightRig::original_recovery_is_remux(&rig.ps), Some(true), "the climb plans the remux");
+    }
+
+    /// A refusal-recovery landing notes its delivery reason and the app's own recovery as the open's
+    /// origin, and counts the attempt exactly once (the ordinal advances by one, not two).
+    #[test]
+    fn a_refusal_recovery_landing_notes_its_delivery_reason() {
+        use plx_telemetry::telemetry::consent::{self, Consent};
+        struct Restore(Option<Consent>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                super::super::report::reset_latches_for_test();
+                consent::install(self.0.take().unwrap_or_default());
+            }
+        }
+        let rig = Rig::new(60);
+        let _restore = Restore(consent::current());
+        let mut enabled = Consent::default();
+        enabled.errors = true;
+        enabled.asked_version = consent::POLICY_VERSION;
+        consent::install(enabled);
+        let mut rig = dts_rig(rig);
+        rig.frame();
+        pipeline_refuses_601(&mut rig);
+        rig.frame();
+        rig.frames_until("the conversion's landing", |_| !crate::route::flight_outstanding());
+        let (reason, _) = super::super::report::last_delivery_requested_for_test().expect("the landing noted a delivery");
+        assert_eq!(reason.code(), "refusal_recovery");
+        let context = super::super::report::error_context_for_test(&rig.ps);
+        assert_eq!(context.attempt_origin.code(), "recovery");
+        assert_eq!(context.attempt_ordinal.code(), "2", "the open is counted once, as the second of the playback");
+    }
+
+    /// **`refuse601` publishes the firmware's refusal once per request, after the Load.** Armed
+    /// (here in a private trigger root), the pump raises `type=18 num=601` through `sf_on_event`
+    /// once the Load has returned and before any picture. The converted reload of the same request
+    /// is not refused again, so the play reaches its picture.
+    #[test]
+    fn refuse601_publishes_once_per_request_after_the_load() {
+        plx_base::devtrig::with_private_triggers(|| {
+            std::fs::write(plx_base::devtrig::path("refuse601"), "").expect("arm the trigger");
+            let mut rig = dts_rig(Rig::new(60));
+            let refusals = |log: &str| log.matches("Load refused by the pipeline before any picture (type=18 num=601)").count();
+            let log = plx_base::eventlog::with_private_log(|| {
+                let epoch = engine_epoch(&mut rig).expect("the rig's Engine");
+                rig.frame();
+                assert!(!SHARED.load_failed.load(Acquire), "nothing is published before the Load returned");
+                assert!(SHARED.mark_native_load_returned(epoch).is_some(), "the Load returned");
+                rig.frame();
+                assert_eq!(SHARED.dg_cb_err_num.load(Relaxed), 601, "the refusal went through the callback");
+                assert!(crate::route::flight_outstanding(), "the injected refusal ran the ladder: a conversion flies");
+                rig.frames_until("the conversion's landing", |_| !crate::route::flight_outstanding());
+                let reloaded = engine_epoch(&mut rig).expect("the reloaded Engine");
+                assert_ne!(reloaded, epoch, "the landing reloaded the Engine");
+                assert!(SHARED.mark_native_load_returned(reloaded).is_some(), "the reload's Load returned");
+                for _ in 0..4 {
+                    rig.frame();
+                }
+                std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default()
+            });
+            assert_eq!(refusals(&log), 1, "one refusal for the request, none for its converted reload:\n{log}");
+            assert_eq!(rig.flight.decisions(), 1, "one conversion flight, never a second");
+            assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
+        });
     }
 }
 

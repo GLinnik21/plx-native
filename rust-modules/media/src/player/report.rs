@@ -663,6 +663,18 @@ pub fn note_presented_for_test(ps: &crate::route::PlaybackSession) {
     push_trace(presented_event(ps));
 }
 
+/// The reason and the route class of the newest `DeliveryRequested` step of the playback trace (the
+/// breadcrumb a noted route change leaves), `None` when there is none. The trace records only while
+/// error reporting is consented, so a test installs that consent first.
+#[cfg(any(test, feature = "test-support"))]
+pub fn last_delivery_requested_for_test() -> Option<(DeliveryReason, DeliveryClass)> {
+    let trace = super::SHARED.playback_trace.lock().unwrap_or_else(|e| e.into_inner());
+    trace.snapshot().iter().rev().find_map(|step| match step.event {
+        TraceEvent::DeliveryRequested { reason, delivery, .. } => Some((reason, delivery)),
+        _ => None,
+    })
+}
+
 /// Put the per-attempt latches back the way an idle player has them, after a route test that
 /// asked for a trace.
 #[cfg(any(test, feature = "test-support"))]
