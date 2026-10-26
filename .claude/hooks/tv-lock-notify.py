@@ -13,15 +13,17 @@ WHAT IT COSTS. It runs after EVERY Bash call, so the common case must be free: t
 searched for the marker before anything is parsed, and no marker means exit at once with no output.
 
 WHAT IT READS. Only `tool_response`, never `tool_input`: a command that merely mentions the marker (a
-commit message, this file) is not a lease. The documented `Bash` response is an object with `stdout`,
-`stderr`, `interrupted` and `isImage`, but the payload shape has moved before, so `flatten()` takes the
-text from any shape (a string, those fields, `output`/`content`, a list of text blocks). The marker has
-to START a line, which keeps `cat tools/tv-lock.sh` and `grep -n` from matching.
+commit message, this file) is not a lease. Measured on Claude Code 2.1.310, a Bash `tool_response` is
+`{stdout, stderr, interrupted, isImage, noOutputExpected}` with no exit code in it, so the line can be in
+either stream. `flatten()` also takes the text from any other shape (a string, `output`/`content`, a list
+of text blocks) in case that moves. The marker has to START a line, which keeps `cat tools/tv-lock.sh` and
+`grep -n` from matching.
 
-WHAT IT DOES NOT SEE. A call that exits non-zero reaches PostToolUseFailure (an `error` string, no
-`tool_response`), which this hook is not registered for. That is right for a refused acquire (it prints
-no HEADS-UP), and it also means `tv-lock.sh with -- <command that fails>` is not nudged. Registering the
-hook there and reading `error` is the whole fix, if the owner wants it.
+WHAT IT DOES NOT SEE. PostToolUse does not fire when the command exits non-zero (measured): that is a
+PostToolUseFailure (`error="Exit code 1"`, no `tool_response`), and this hook is not registered for it.
+Right for a refused acquire, which prints no HEADS-UP; it also means `tv-lock.sh with -- <command that
+fails>` is not nudged. And a `with -- <long command>` is nudged only when the command ends, because the
+hook runs after the Bash call returns, not when the line is printed.
 
 FAIL-OPEN, always: any problem (bad stdin, a shape nobody expected) exits 0 with no output, so a bug
 here can never wedge a Bash call. Contract: exit 0 with one JSON object on stdout adds context.

@@ -7,10 +7,13 @@ the contract cases. The line itself, and the claim that `acquire` prints it once
 does, are `tools/tv-lock.sh selftest`'s job; this file owns the other half: given a Bash result, does
 the agent get told to push it.
 
-The payload shape is documented only for `Write`; for `Bash` the docs say `tool_response` is an object
-with `stdout`, `stderr`, `interrupted` and `isImage`. The hook is written to find the text in any
-shape (a string, those fields, `output`/`content`, a list of text blocks), so `flatten()` has its own
-cases here, and so does every shape the line can arrive in.
+The payload shape was MEASURED (a headless run on Claude Code 2.1.310): for `Bash`, `tool_response` is
+`{stdout, stderr, interrupted, isImage, noOutputExpected}` (no exit code in it), the payload's keys are
+`session_id, cwd, transcript_path, tool_name, tool_input, tool_response`, a subagent's also carries
+`agent_id` and `agent_type`, and PostToolUse does not fire at all when the command exits non-zero (only
+PostToolUseFailure does: `error="Exit code 1"`, no `tool_response`). `bash()` and `fields()` below build
+exactly that and every positive case uses it. The hook still finds the text in any other shape (a
+string, `output`/`content`, a list of text blocks) as a fallback, so `flatten()` has its own cases.
 """
 import importlib.util
 import json
@@ -37,12 +40,14 @@ UNRELATED = "Compiling plx_ui v0.1.0\n    Finished `test` profile in 12.4s\ntest
 
 
 def bash(response, command="tools/tv-lock.sh acquire --why 'fps suite'"):
-    return {"hook_event_name": "PostToolUse", "tool_name": "Bash",
+    return {"session_id": "00000000-0000-0000-0000-000000000000", "cwd": "/repo",
+            "transcript_path": "/tmp/transcript.jsonl", "tool_name": "Bash",
             "tool_input": {"command": command}, "tool_response": response}
 
 
 def fields(stdout="", stderr=""):
-    return {"stdout": stdout, "stderr": stderr, "interrupted": False, "isImage": False}
+    return {"stdout": stdout, "stderr": stderr, "interrupted": False, "isImage": False,
+            "noOutputExpected": False}
 
 
 # --- flatten(): every string in a tool_response, one per line, whatever its shape ------------------
@@ -69,6 +74,8 @@ CASES = [
     # --- told: a NEW lease, in every shape the line can arrive in --------------------------------
     (LINE, "acquire, stdout field", bash(fields(ACQUIRE))),
     (LINE, "acquire, stderr field", bash(fields("", ACQUIRE))),
+    (LINE, "a subagent's payload (agent_id, agent_type)",
+     dict(bash(fields(ACQUIRE)), agent_id="a1b2c3", agent_type="general-purpose")),
     (BREAK_LINE, "break", bash(fields(BREAK), "tools/tv-lock.sh break --yes")),
     (LINE, "tool_response is one string", bash(ACQUIRE)),
     (LINE, "output field", bash({"output": ACQUIRE})),
@@ -87,7 +94,7 @@ CASES = [
     (None, "unrelated output", bash(fields(UNRELATED), "make check")),
     (None, "empty output", bash(fields())),
     (None, "empty string response", bash("")),
-    (None, "no response at all", {"hook_event_name": "PostToolUse", "tool_name": "Bash"}),
+    (None, "no response at all", {"tool_name": "Bash", "tool_input": {"command": "x"}}),
     (None, "response is null", bash(None)),
     # The marker has to START a line. `cat tools/tv-lock.sh` and `grep -n HEADS-UP` print it mid-line.
     (None, "quoted source line", bash(fields("  printf 'HEADS-UP: %s, lease %s min\\n' \"$x\" \"$y\"\n"))),
@@ -98,8 +105,9 @@ CASES = [
     # Only the RESULT counts: a command that merely mentions the marker (a commit message, this file).
     (None, "marker only in the command", bash(fields(UNRELATED),
                                                "git commit -m 'prints\nHEADS-UP: x, lease 1 min'")),
-    # A failed call arrives as PostToolUseFailure -- `error`, no `tool_response` -- and is not ours to
-    # nudge (and the settings entry is PostToolUse only). Pinned so a widening is a decision.
+    # A command that exits non-zero never reaches PostToolUse (measured): it is a PostToolUseFailure with
+    # `error` and no `tool_response`, which the settings entry does not register for. Were one delivered
+    # anyway it is not ours to nudge. Pinned so a widening is a decision, not an accident.
     (None, "failure-shaped payload", {"hook_event_name": "PostToolUseFailure", "tool_name": "Bash",
                                        "tool_input": {"command": "x"},
                                        "error": "Exit code 1\n" + LINE}),
