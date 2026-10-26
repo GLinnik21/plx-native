@@ -42,7 +42,7 @@ The PR must be open, not a draft, based on `main` or `release/v*`, with every re
 | 0 | green; `merge`: merged and verified, merge commit's check-runs printed | done |
 | 1 | red: a check failed, nothing merged. Or "gh pr merge succeeded;" and the verify failed | red: fix on the branch, push, take the NEW head. Succeeded: the PR IS merged, do not run `merge` again, inspect `origin/main` |
 | 2 | usage | fix the command |
-| 3 | refused: not open, a draft, BEHIND or DIRTY (merge `origin/main` into the branch), a base that does not land, a required check skipped, or a private value in the message | read the reason it names; never route around it |
+| 3 | refused: not open, a draft, BEHIND or DIRTY (merge `origin/main` into the branch), a base that does not land, a required check skipped, a private value in the message, or `gh pr merge` still saying the head differs after 3 retries with the head unmoved | read the reason it names; never route around it |
 | 4 | not settled yet: checks pending, none reported, a required one missing, GitHub still computing | nothing merged. Run `wait` again with the same SHA. Checks that never appear mean the workflow did not trigger: look at the PR, do not merge by hand |
 | 5 | head moved: the PR is no longer at `S` | someone pushed. Run `gate N`, look at what changed, then start over with the new head |
 
@@ -67,7 +67,8 @@ history permanent: use the stand-ins in `docs/shared-servers.md`, never a value 
 
 `gh pr merge --match-head-commit` can fail just after a push with "expected head oid does not match".
 It is a race, not a real mismatch. The script waits 15 s, re-reads the head, retries up to 3 times if it
-did not move, and exits 5 if it did. By hand it would be: wait about 15 s and retry.
+did not move, and exits 5 if it did; three unchanged retries end in exit 3. By hand it would be: wait about
+15 s and retry.
 
 ## Stacked PRs: `restack`
 
@@ -78,13 +79,15 @@ and stops at the first that fails, naming it:
 1. `git merge <the lower PR's final head>` (read from `refs/pull/L/head`; the branch is deleted on merge)
 2. `git merge <squash>^`
 3. `git merge --no-ff -s ours <squash>`
-4. `git merge origin/main`
+4. `git merge origin/<base>`
 
-Step 3 alone would drop whatever `main` gained before the squash; step 4 brings it in. It refuses (3)
-unless the lower PR is MERGED, W is a clean checkout on `--upper`, and the squash is a one-parent
-commit on `origin/<base>`. On a conflict (exit 1) resolve it, commit, and run the same command again:
-finished steps are "Already up to date". `--dry-run` prints the four commands and changes nothing.
-`--push` pushes the upper branch only, as a plain `git push` (a branch that moved on origin is rejected).
+Step 3 without step 2 would drop whatever `main` gained before the squash; step 4 brings in what it
+gained after. It refuses (3) unless the lower PR is MERGED, W is a clean checkout on `--upper` with no
+merge, cherry-pick or revert in progress, and the squash is a one-parent commit on `origin/<base>`; an
+`--upper` equal to the base is refused too. On a conflict (exit 1) resolve it, commit, and run the same
+command again: finished steps are "Already up to date". `--dry-run` prints the four commands and changes nothing.
+`--push` pushes the upper branch only, as a plain `git push` (a branch that moved on origin is rejected,
+with git's reason printed); an upstream that is not on `origin` is refused (3) before the first merge.
 Then `gate` the upper PR on its new head.
 
 ## The refusal and its hatch

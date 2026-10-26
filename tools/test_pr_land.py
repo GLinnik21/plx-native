@@ -941,7 +941,8 @@ class SecretScanTests(Base):
 
 
 class RestackTests(Base):
-    """`restack`: AGENTS.md's four merges on a stacked branch after the PR below it squash-merged."""
+    """`restack`: the four merges of .agents/skills/land-pr/SKILL.md ("Stacked PRs: restack") on a stacked
+    branch after the PR below it squash-merged."""
 
     def ancestor(self, sb, oid, of="HEAD"):
         return git_try(sb.st.work, "merge-base", "--is-ancestor", oid, of).returncode == 0

@@ -329,6 +329,32 @@ MERGE_CASES = [
     (ALLOW, 'python3 tools/pr-land.py restack --worktree w --upper b --lower 3 --push'),
 ]
 
+# The idiom a commit message and a PR body are written in: a heredoc opened INSIDE `$(...)`. Its body
+# is prose, so a body line that starts `gh pr merge` (a wrapped sentence, an indented example, an api
+# call named in a sentence) is not a command. It used to be graded as one, but only when the body had
+# no parenthesis pair in it, because that decided whether the substitution was looked into at all.
+SUBST_HEREDOC_LEADS = [
+    'git commit -m "$(cat <<\'EOF\'\n%s\nEOF\n)"',
+    'gh pr create --title t --body "$(cat <<\'EOF\'\n%s\nEOF\n)"',
+    'gh pr comment 5 --body "$(cat <<\'EOF\'\n%s\nEOF\n)"',
+]
+SUBST_HEREDOC_LINES = [
+    'gh pr merge 5 --squash',
+    '    gh pr merge 5 --squash',
+    'gh api -X PUT repos/o/r/pulls/5/merge is refused now.',
+]
+for _lead in SUBST_HEREDOC_LEADS:
+    for _line in SUBST_HEREDOC_LINES:
+        for _extra in ("", "It closes the gap (see #5).\n"):
+            MERGE_CASES.append((ALLOW, _lead % ("Subject\n\n%s%s\nmore prose" % (_extra, _line))))
+MERGE_CASES += [
+    # ... and a merge that is really run is still refused, inside a substitution or after one
+    (BLOCK, 'echo $(gh pr merge 5)'),
+    (BLOCK, 'x=$(cd /x && gh pr merge 5)'),
+    (BLOCK, 'echo $(echo $(gh pr merge 5))'),
+    (BLOCK, 'git commit -m "$(cat <<\'EOF\'\nsubject\nEOF\n)" && gh pr merge 5'),
+]
+
 
 def merge_blocked(cmd):
     return guard.merge_verdict(cmd) is not None

@@ -1138,6 +1138,33 @@ def merge_reason(seg, bodies=""):
     return None
 
 
+SUBSTITUTION = re.compile(r"\$\(([^()]*)\)")     # the pattern `segments()` recurses on
+
+
+def merge_candidates(text, bodies=""):
+    """[(segment, heredoc bodies)] that `text` would run, for `merge_verdict`.
+
+    `segments()` recurses into `$(...)` for the private-value scan and splits the inside on newlines
+    without `units()`, so the body of a heredoc opened inside a substitution -- how a commit message
+    or a PR body is written, `-m "$(cat <<'EOF' ... EOF)"` -- came back as commands, and a body line
+    that began `gh pr merge` refused the whole command. Here each substitution is cut out of `text`
+    and its inside goes through `units()` like a command of its own, so a heredoc stays a body
+    wherever it was opened. The scan keeps `segments()` as it was: more text scanned, never less.
+    """
+    inners = []
+    while True:                     # innermost first; what is left of an outer one is cut next round
+        found = SUBSTITUTION.findall(text)
+        if not found:
+            break
+        inners += found
+        text = SUBSTITUTION.sub(" ", text)
+    out = [(seg, bodies) for seg in segments(text)]
+    for inner in inners:
+        for inner_text, inner_bodies in units(inner):
+            out.extend((seg, inner_bodies) for seg in segments(inner_text))
+    return out
+
+
 def merge_verdict(cmd):
     """The reason `cmd` merges a pull request outside tools/pr-land.py, or None.
 
@@ -1147,8 +1174,8 @@ def merge_verdict(cmd):
     if "merge" not in cmd.lower() or MERGE_BYPASS.search(cmd):
         return None
     for text, bodies in units(cmd):
-        for seg in segments(text):
-            reason = merge_reason(seg, bodies)
+        for seg, seg_bodies in merge_candidates(text, bodies):
+            reason = merge_reason(seg, seg_bodies)
             if reason:
                 return reason
     return None
