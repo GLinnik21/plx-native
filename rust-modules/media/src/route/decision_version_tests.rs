@@ -139,7 +139,7 @@ fn the_picked_version_rides_the_request_and_the_landing() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     let mut meta = plx_data::stores::metadata::MetadataStore::default();
-    assert!(request_play(&mut ps, &mut meta, ServerId::from_raw(0), "rk-v", "/library/parts/3134/1/file.mkv",
+    assert!(request_play(&mut ps, &mut meta, plx_platform::devcaps::caps(), ServerId::from_raw(0), "rk-v", "/library/parts/3134/1/file.mkv",
         "h264", "aac", "Episode", "", Some(plx_plex::plex::MediaId(3082))));
     assert_eq!(ps.request.as_ref().and_then(|r| r.version), Some(plx_plex::plex::MediaId(3082)));
     let env = request_env(&ps, meta.view(), ps.request.as_ref().unwrap(), None);

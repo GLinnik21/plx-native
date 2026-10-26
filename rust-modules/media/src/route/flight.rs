@@ -702,7 +702,7 @@ fn install_recovery_landing(
             RecoveryVerdict::Install
         }
         RetranscodeClaimResult::Retranscode(applied) => {
-            // The refused audio's conversion ([`dispatch_native_audio_conversion`]). The same
+            // The refused audio's conversion ([`dispatch_refusal_conversion`]). The same
             // re-check an accepted claim makes: a route change between the worker's commit and
             // this drain leaves nothing this install may point at.
             if !is_worker_ticket_current(&applied.ticket) {
@@ -711,6 +711,10 @@ fn install_recovery_landing(
                 return RecoveryVerdict::Refused;
             }
             install_retranscode_outcome(ps, &applied);
+            // The attempt now lacks the facet the pipeline refused: the Original candidate the ABR
+            // climb would return to is graded against it again, so the climb does not propose the
+            // refused audio's direct play.
+            regrade_original_audio(ps);
             // Nothing is playing, so the encoder it replaced has nothing left to feed: stop it
             // now, not after a reload that keeps it on screen.
             stop_encoder_session(applied.client, applied.superseded);
@@ -721,10 +725,8 @@ fn install_recovery_landing(
             // The reload that follows is the app's own reopen after a failed open, like the other
             // recovery flights': the ledger must say so, or a failure of the converted route
             // reads as the first fresh open.
-            crate::player::report::note_attempt_for(
-                playback_trace_generation(),
-                crate::player::report::AttemptOrigin::Recovery,
-            );
+            // The delivery note carries the origin and notes the attempt itself.
+            crate::player::report::note_refusal_recovery_delivery(ps);
             RecoveryVerdict::Install
         }
         // A refused rebuild (the worker answered `Rejected`), a panicked worker, or a kind a

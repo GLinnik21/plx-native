@@ -581,6 +581,7 @@ fn the_preview_calls_a_profile_5_item_a_conversion() {
     let part = "/library/parts/1/2/movie.mp4";
     assert_eq!(
         playback_preview_of(
+            &plx_platform::devcaps::caps(),
             part,
             "hevc",
             1920,
@@ -595,6 +596,7 @@ fn the_preview_calls_a_profile_5_item_a_conversion() {
     // reading the new field and not something else that happens to differ
     assert_eq!(
         playback_preview_of(
+            &plx_platform::devcaps::caps(),
             part,
             "hevc",
             1920,
@@ -606,6 +608,7 @@ fn the_preview_calls_a_profile_5_item_a_conversion() {
     );
     assert_eq!(
         playback_preview_of(
+            &plx_platform::devcaps::caps(),
             part,
             "hevc",
             1920,
@@ -619,6 +622,7 @@ fn the_preview_calls_a_profile_5_item_a_conversion() {
     // route no longer performs — the preview reads the same predicate the gate does
     assert_eq!(
         playback_preview_of(
+            &plx_platform::devcaps::caps(),
             part,
             "hevc",
             1920,
