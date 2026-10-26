@@ -14,8 +14,13 @@ What this pins:
 * the polling: pending turns green, an empty list after a push turns green, UNKNOWN turns CLEAN, a
   required check that never appears is exit 4, the backoff is 30 to 60 s, a base requiring nothing
   (release/v1.2) needs the same check list on two polls, `gh` errors are retried and then given up on;
+* UNSTABLE (the required checks pass, a non-required one is not done): a running row is exit 4 and
+  turns green on CLEAN, a failed row is exit 1 naming it, all rows passing is lag and never green;
+* the order when several things are wrong at once: refusals, head moved, red, a skipping required
+  check, not yet (the order of `judge`, which the script's docstring states);
 * the merge: the exact `gh pr merge` arguments, the `expected head oid` race (retried when the head
-  is unchanged, exit 5 when it moved), and the verify against origin/main;
+  is unchanged and then refused, exit 5 when it moved), and the verify against origin/main, whose every
+  failure says that the merge went through and which never ends in a traceback on odd JSON;
 * a planted secret in the subject or the body is refused before any `gh` call, without being repeated.
 
 The JSON below is real output of read-only gh calls on this public repository.
@@ -72,6 +77,9 @@ BODY = "What changed and why.\n\nGates: make check green.\n"
 PLANTED = "PLANTED-SECRET-00000000"
 HOST_CHECKS = "host checks (NOT a device gate)"
 HOSTSIM = "host unit tests (hostsim)"
+CODEQL_RUST = "Analyze (rust)"          # not a required context of main; it finishes long after the others
+UNSTABLE = dict(VIEW_OPEN, mergeStateStatus="UNSTABLE")
+MERGE_WENT_THROUGH = "gh pr merge succeeded; "
 RACE = "GraphQL: expected head oid does not match the current head (mergePullRequest)\n"
 
 GIT_ENV = {
@@ -380,11 +388,55 @@ class GateTests(Base):
                 self.assertIn(status, r.out)
 
     def test_a_merge_state_nobody_listed_is_refused_by_name(self):
-        for status in ("HAS_HOOKS", "UNSTABLE", "DRAFT", "SOMETHING_NEW"):
+        for status in ("HAS_HOOKS", "DRAFT", "SOMETHING_NEW"):
             with Sandbox(view=[resp(view(mergeStateStatus=status))]) as sb:
                 r = sb.run("gate", "1049", "--sha", HEAD)
                 self.check(r, 3)
                 self.assertIn(status, r.out)
+
+    # UNSTABLE is GitHub's "mergeable with a non-passing commit status": every REQUIRED check passes
+    # while a non-required one (CodeQL's "Analyze (rust)") is still running or failed. On #1051 the
+    # required checks passed ten minutes before CodeQL finished. The rows decide, as for BLOCKED.
+    def test_unstable_with_a_non_required_check_still_running_is_exit_4_at_once(self):
+        with Sandbox(view=[resp(UNSTABLE)], checks=[resp(mark(CODEQL_RUST, "pending", "IN_PROGRESS"))]) as sb:
+            r = sb.run("gate", "1049", "--sha", HEAD)
+            self.check(r, 4)
+            self.assertIn(CODEQL_RUST, r.out)
+            self.assertEqual(r.sleeps, [])
+
+    def test_unstable_with_a_non_required_check_failed_is_red_and_names_it(self):
+        with Sandbox(view=[resp(UNSTABLE)], checks=[resp(mark(CODEQL_RUST, "fail", "FAILURE"))]) as sb:
+            r = sb.run("gate", "1049", "--sha", HEAD)
+            self.check(r, 1)
+            self.assertIn("RED", r.out)
+            self.assertIn(CODEQL_RUST, r.out)
+
+    def test_unstable_with_every_row_passing_is_lag_and_never_green(self):
+        with Sandbox(view=[resp(UNSTABLE)]) as sb:
+            r = sb.run("gate", "1049", "--sha", HEAD)
+            self.check(r, 4)
+            self.assertEqual(r.sleeps, [30, 30])
+            self.assertIn("UNSTABLE", r.out)
+
+    def test_several_things_wrong_at_once_follow_the_documented_order(self):
+        skipping = mark(HOST_CHECKS, "skipping", "SKIPPED")
+        # refusals, then head moved, then red, then a skipping required check, then not yet
+        with Sandbox(view=[resp(view(isDraft=True))], checks=[resp(FAILED_ROWS)]) as sb:
+            self.check(sb.run("gate", "1049", "--sha", OTHER_HEAD), 3)
+        with Sandbox(checks=[resp(skipping)]) as sb:
+            self.check(sb.run("gate", "1049", "--sha", OTHER_HEAD), 5)
+        with Sandbox(checks=[resp(mark(HOSTSIM, "fail", "FAILURE", skipping))]) as sb:
+            self.check(sb.run("gate", "1049", "--sha", HEAD), 1)
+        with Sandbox(checks=[resp(mark(CODEQL_RUST, "pending", "IN_PROGRESS", skipping))]) as sb:
+            self.check(sb.run("gate", "1049", "--sha", HEAD), 3)
+
+    def test_a_required_context_that_lost_its_name_is_refused_not_a_traceback(self):
+        nameless = [{"type": "required_status_checks",
+                     "parameters": {"required_status_checks": [{"integration_id": 15368}]}}]
+        with Sandbox(rules=[resp(nameless)]) as sb:
+            r = sb.run("gate", "1049", "--sha", HEAD)
+            self.check(r, 3)
+            self.assertIn("context", r.out)
 
     def test_a_required_check_that_is_skipping_is_not_green(self):
         with Sandbox(checks=[resp(mark(HOST_CHECKS, "skipping", "SKIPPED"))]) as sb:
@@ -587,6 +639,31 @@ class MergeTests(Base):
             self.check(r, 4)
             self.assertEqual(r.of("merge"), [])
 
+    def test_unstable_waits_for_the_non_required_check_and_merges_only_on_clean(self):
+        views = [resp(UNSTABLE), resp(UNSTABLE), resp(VIEW_OPEN)]
+        checks = [resp(mark(CODEQL_RUST, "pending", "IN_PROGRESS")), resp(CHECKS_OPEN)]
+        with Sandbox(git=True, view=views, checks=checks) as sb:
+            r = sb.merge()
+            self.check(r, 0)
+            self.assertEqual(r.sleeps, [30, 45])        # a running row, then GitHub lag, then CLEAN
+            kinds = r.kinds()
+            self.assertEqual(kinds[:kinds.index("merge")].count("view"), 3)
+            self.assertEqual(len(r.of("merge")), 1)
+
+    def test_unstable_with_a_non_required_check_failed_never_reaches_gh_pr_merge(self):
+        with Sandbox(view=[resp(UNSTABLE)], checks=[resp(mark(CODEQL_RUST, "fail", "FAILURE"))]) as sb:
+            r = sb.merge()
+            self.check(r, 1)
+            self.assertEqual(r.of("merge"), [], r.text())
+            self.assertIn(CODEQL_RUST, r.out)
+
+    def test_unstable_that_never_turns_clean_times_out_without_merging(self):
+        with Sandbox(view=[resp(UNSTABLE)]) as sb:
+            r = sb.merge("--timeout", "1m")
+            self.check(r, 4)
+            self.assertEqual(r.of("merge"), [], r.text())
+            self.assertIn("UNSTABLE", r.out)
+
     def test_the_head_race_succeeds_on_retry(self):
         with Sandbox(git=True, merge=[resp("", RACE, rc=1), resp()]) as sb:
             r = sb.merge()
@@ -605,11 +682,15 @@ class MergeTests(Base):
             self.assertIn("HEAD MOVED", r.out)
 
     def test_a_head_race_that_never_clears_gives_up_after_three_retries(self):
+        # every re-read shows the head still at the gated sha, so the PR is not "not at S" (exit 5)
         with Sandbox(merge=[resp("", RACE, rc=1)]) as sb:
             r = sb.merge()
-            self.check(r, 5)
+            self.check(r, 3)
             self.assertEqual(len(r.of("merge")), 4)
             self.assertEqual(r.sleeps, [15, 15, 15])
+            self.assertIn("REFUSED", r.out)
+            self.assertIn("still says the head differs", r.out)
+            self.assertNotIn("HEAD MOVED", r.out)
 
     def test_a_race_that_was_really_a_lost_answer_goes_on_to_verify(self):
         with Sandbox(git=True, merge=[resp("", RACE, rc=1)],
@@ -641,6 +722,7 @@ class MergeTests(Base):
             r = sb.merge()
             self.check(r, 1)
             self.assertIn("origin/main", r.out + r.err)
+            self.assertIn(MERGE_WENT_THROUGH, r.out)
             self.assertEqual(len(r.of("merge")), 1)
 
     def test_verify_fails_when_the_pr_is_not_merged_after_all(self):
@@ -649,7 +731,44 @@ class MergeTests(Base):
             r = sb.merge()
             self.check(r, 1)
             self.assertEqual(r.sleeps, [5, 5])
-            self.assertIn("not MERGED", r.out + r.err)
+            self.assertIn("OPEN, not MERGED", r.out)
+            self.assertIn(MERGE_WENT_THROUGH, r.out)
+
+    def test_verify_with_a_merged_state_but_no_merge_commit_does_not_say_not_merged(self):
+        for commit in (None, {"oid": None}, {"oid": 5}, "0a367de75"):
+            merged = resp({"state": "MERGED", "baseRefName": "main", "mergeCommit": commit})
+            with Sandbox(git=True, verify=[merged]) as sb:
+                r = sb.merge()
+                self.check(r, 1)
+                self.assertEqual(r.sleeps, [5, 5])
+                self.assertIn(MERGE_WENT_THROUGH + "the pull request is MERGED but", r.out)
+                self.assertNotIn("not MERGED", r.out)
+
+    def test_every_verify_failure_says_the_merge_went_through(self):
+        # a checkout that cannot fetch (no repository at all), and a merged PR that cannot be re-read
+        with Sandbox() as sb:
+            r = sb.merge()
+            self.check(r, 1)
+            self.assertIn("VERIFY FAILED #1049: " + MERGE_WENT_THROUGH + "git fetch origin main failed", r.out)
+        with Sandbox(verify=[resp("", "HTTP 502\n", rc=1)]) as sb:
+            r = sb.merge()
+            self.check(r, 1)
+            self.assertIn("VERIFY FAILED #1049: " + MERGE_WENT_THROUGH + "could not read the merged", r.out)
+            self.assertEqual(len(r.of("merge")), 1)
+
+    def test_odd_check_run_json_after_a_merge_is_noted_not_a_traceback(self):
+        for runs in ({"check_runs": [{"status": "completed"}, "junk", None,
+                                     {"name": "kept", "status": "completed", "conclusion": "success"}]},
+                     {"check_runs": None}, {"total_count": 0}):
+            with Sandbox(git=True, runs=[resp(runs)]) as sb:
+                r = sb.merge()
+                self.check(r, 0)
+                self.assertIn("MERGED #1049", r.out)
+                if isinstance(runs.get("check_runs"), list):
+                    self.assertIn("  kept: success", r.out)
+                    self.assertIn("check-run", r.err)
+                else:
+                    self.assertIn("unavailable", r.out)
 
     def test_body_from_pr_sends_the_pr_body(self):
         with Sandbox(git=True) as sb:

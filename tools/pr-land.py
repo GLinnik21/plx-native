@@ -17,25 +17,38 @@ fetches origin). Anything that can wait longer than a minute belongs in a Bash c
     that requires none: the same list on two polls in a row);
   * nothing is pending, no check failed or was cancelled, every check is pass or skipping, and every
     required check is pass;
-  * mergeStateStatus is CLEAN. UNKNOWN, or BLOCKED with every check green, is GitHub still computing
-    and is re-polled; BEHIND and DIRTY are refused (merge origin/<base> into the branch); any other
-    value is refused by name.
+  * mergeStateStatus is CLEAN. UNKNOWN, or BLOCKED or UNSTABLE with every check green, is GitHub still
+    computing and is re-polled; BEHIND and DIRTY are refused (merge origin/<base> into the branch);
+    any other value is refused by name. UNSTABLE ("mergeable with a non-passing commit status") is
+    the required checks passing while a non-required one (CodeQL) still runs or failed: the rows
+    decide, so a running one is exit 4, a failed one is exit 1 naming it, and it is never green.
+
+When several things are wrong at once the first of these wins, so one PR yields one code: a refusal
+(3: not OPEN, a draft, a base that does not land, BEHIND, DIRTY or an unknown mergeStateStatus, an
+unrecognised check bucket); the head is not S (5); a check failed or was cancelled (1); a REQUIRED
+check is skipping (3); not yet (4: no checks, one pending, a required one not reported); GitHub-side
+lag (4: UNKNOWN, BLOCKED or UNSTABLE with every row passing, or no required checks and a check list
+that changed since the last poll); and only then green. A head that moved is judged before the
+checks because those checks are about another commit.
 
 `gate` re-polls only that GitHub-side lag, for about 60 s; a check still running is exit 4 at once.
 `wait` is the same judgment polled with a 30 s to 60 s backoff until --timeout. `merge` is wait, then
 `gh pr merge --squash --match-head-commit S` (never --auto: it waits for the required checks only), then
 the verify: the PR is MERGED and its merge commit is an ancestor of origin/<base>. The merge commit's
 check-runs are printed. On "expected head oid does not match" it waits 15 s and re-reads the head;
-unchanged, it retries (3 times at most); moved, exit 5.
+unchanged, it retries (3 times at most, then exit 3); moved, exit 5. Every line of a failed verify
+starts "gh pr merge succeeded;", since the merge went through and only the check afterwards failed.
 
 `merge` needs a body, since the repository setting would paste every wip commit: --body-file, or
 --body-from-pr to send the PR's own body. The subject and the body are run through
 .claude/hooks/outbound-guard.py in this process, and a private value refuses the merge before any
 `gh` call (a PR body is fetched first, then scanned before the merge call).
 
-Exit codes: 0 green (merge: merged and verified), 1 red (a check failed; or merged but the verify
-failed), 2 usage, 3 refused (a rule says no, `gh` kept failing, or a private value was found),
-4 timeout (not settled yet), 5 head moved (the PR is not at S). This tool grants no merge authority:
+Exit codes: 0 green (merge: merged and verified), 1 red (a check failed, nothing merged; or merged but
+the verify failed, which says "gh pr merge succeeded"), 2 usage, 3 refused (a rule says no, `gh` kept
+failing or answered in a shape this script does not know, `gh pr merge` kept saying the head differs
+while the head had not moved, or a private value was found), 4 timeout (not settled yet), 5 head moved
+(the PR is not at S). This tool grants no merge authority:
 an owner's authorization to merge is still needed.
 """
 import argparse
@@ -148,7 +161,10 @@ def read_required(base):
     for rule in rules:
         if isinstance(rule, dict) and rule.get('type') == 'required_status_checks':
             for entry in (rule.get('parameters') or {}).get('required_status_checks') or []:
-                names.add(entry['context'])
+                context = entry.get('context') if isinstance(entry, dict) else None
+                if not isinstance(context, str):   # fail closed: a dropped name would shrink the required set
+                    raise Refuse('a required_status_checks entry of the %s rules has no context' % base)
+                names.add(context)
     return frozenset(names)
 
 
@@ -162,7 +178,8 @@ def names_of(rows):
 
 def judge(view, checks, required, sha, previous):
     """The Verdict for one snapshot. Pure. `previous` is the identities of the poll before it (None
-    on the first). Refusals first, then the head, then red, then not-yet, so one PR yields one code."""
+    on the first). One PR yields one code, by this order: refusals, the head, red, a skipping required
+    check (also a refusal), not-yet, GitHub-side lag, green. The module docstring says why."""
     base, head, status = view['baseRefName'], view['headRefOid'], view['mergeStateStatus']
     refusals = []
     if view['state'] != 'OPEN':
@@ -173,7 +190,7 @@ def judge(view, checks, required, sha, previous):
         refusals.append('base is %s; only main and release/v* land' % base)
     if status in ('BEHIND', 'DIRTY'):
         refusals.append('mergeStateStatus is %s: merge origin/%s into the branch' % (status, base))
-    elif status not in ('CLEAN', 'UNKNOWN', 'BLOCKED'):
+    elif status not in ('CLEAN', 'UNKNOWN', 'BLOCKED', 'UNSTABLE'):
         refusals.append('mergeStateStatus is %s, which this gate does not know; it needs CLEAN' % status)
     odd = [c for c in checks if c['bucket'] not in KNOWN_BUCKETS]
     if odd:
@@ -206,8 +223,8 @@ def judge(view, checks, required, sha, previous):
         return Verdict(EXIT_TIMEOUT, ['no required checks: waiting for the same check list on two polls'], lag=True)
     if status == 'UNKNOWN':
         return Verdict(EXIT_TIMEOUT, ['mergeStateStatus is UNKNOWN: GitHub is still computing it'], lag=True)
-    if status == 'BLOCKED':
-        return Verdict(EXIT_TIMEOUT, ['mergeStateStatus is BLOCKED although every check passed'], lag=True)
+    if status != 'CLEAN':       # BLOCKED or UNSTABLE: the rows say green, GitHub has not caught up; never green
+        return Verdict(EXIT_TIMEOUT, ['mergeStateStatus is %s although every check passed' % status], lag=True)
     skipping = sum(1 for c in checks if c['bucket'] == 'skipping')
     summary = '%d checks, %d pass, %d skipping' % (len(checks), len(checks) - skipping, skipping)
     if required:
@@ -304,12 +321,18 @@ def refuse_secrets(number, hits):
 def print_check_runs(oid):
     try:
         runs = gh_json('api', 'repos/{owner}/{repo}/commits/%s/check-runs?per_page=100' % oid)['check_runs']
+        if not isinstance(runs, list):
+            raise TypeError('check_runs is not a list')
     except (GhError, KeyError, TypeError) as exc:
         say('check-runs of %s unavailable: %s' % (oid[:12], exc))
         return
     say('check-runs on %s so far (%d):' % (oid[:12], len(runs)))
-    for run in runs:
-        say('  %s: %s' % (run['name'], run.get('conclusion') or run['status']))
+    for run in runs:        # the merge is done: a malformed entry is noted, never a traceback
+        name = run.get('name') if isinstance(run, dict) else None
+        if not name:
+            say('  (skipped a check-run entry without a name)', sys.stderr)
+            continue
+        say('  %s: %s' % (name, run.get('conclusion') or run.get('status') or 'unknown'))
 
 
 def git(*args):
@@ -317,21 +340,25 @@ def git(*args):
 
 
 def verify(number, env):
-    """After a merge: the PR is MERGED and its merge commit is on origin/<base>. Exit 1 if not."""
+    """After a merge: the PR is MERGED and its merge commit is on origin/<base>. Exit 1 if not, and
+    every line of that says the merge itself went through, since exit 1 also means "a check is red"."""
     def failed(why):
-        say('VERIFY FAILED #%d: %s' % (number, why))
+        say('VERIFY FAILED #%d: gh pr merge succeeded; %s' % (number, why))
         return EXIT_RED
 
     try:
         for attempt in range(VERIFY_TRIES):
             doc = read_pr(number, 'state,mergeCommit,baseRefName')
-            oid = (doc['mergeCommit'] or {}).get('oid')
-            if doc['state'] == 'MERGED' and oid:
+            commit = doc['mergeCommit']
+            oid = commit.get('oid') if isinstance(commit, dict) else None
+            if doc['state'] == 'MERGED' and isinstance(oid, str) and oid:
                 break
             if attempt < VERIFY_TRIES - 1:
                 env.sleep(VERIFY_GAP)
         else:
-            return failed('the pull request is not MERGED (state %s) although gh pr merge succeeded' % doc['state'])
+            if doc['state'] == 'MERGED':
+                return failed('the pull request is MERGED but gh reports no merge commit for it')
+            return failed('the pull request is %s, not MERGED' % doc['state'])
     except (GhError, Refuse) as exc:
         return failed('could not read the merged pull request: %s' % exc)
     base = doc['baseRefName']
@@ -364,10 +391,10 @@ def land(number, sha, subject, body, env):
         if not HEAD_RACE.search(said):
             say('REFUSED #%d: gh pr merge failed: %s' % (number, first_line(said)))
             return EXIT_REFUSED
-        if retries == RACE_RETRIES:
-            say('HEAD MOVED #%d: gh still says the head differs after %d retries: %s'
+        if retries == RACE_RETRIES:     # every re-read showed the head at S, so the PR is not "not at S"
+            say('REFUSED #%d: gh still says the head differs after %d retries: %s'
                 % (number, RACE_RETRIES, first_line(said)))
-            return EXIT_MOVED
+            return EXIT_REFUSED
         retries += 1
         env.sleep(RACE_WAIT)
         now = read_pr(number, 'headRefOid,state')
