@@ -9,8 +9,11 @@ otherwise surface only as a spawn that quietly runs on the wrong model or not at
 
 Per agent in `.agents/agents/*.md`: the frontmatter `name` equals the filename stem, an explicit
 `model:` line, a non-empty `description`, `.claude/agents/<name>.md` is a RELATIVE symlink that resolves
-to the canonical file, and `.codex/agents/<name>.toml` exists. The cases on synthetic trees in a private
-temp dir show each check firing; the last class runs the checks over the real repository.
+to the canonical file, and `.codex/agents/<name>.toml` exists, sets `name = "<stem with underscores>"` and
+names `.agents/agents/<stem>.md` (a wrapper copied from a sibling still names the sibling). In the other
+direction, a `.claude/agents/*.md` or `.codex/agents/*.toml` whose stem has no canonical file is an orphan
+(a renamed or deleted agent). The cases on synthetic trees in a private temp dir show each check firing;
+the last class runs the checks over the real repository.
 """
 from pathlib import Path
 import os
@@ -75,11 +78,27 @@ def problems(root, no_explicit_model=NO_EXPLICIT_MODEL):
                 found.append(f"{stem}: .claude/agents/{stem}.md links by absolute path, which breaks every other clone")
             if link.resolve() != path.resolve():
                 found.append(f"{stem}: .claude/agents/{stem}.md resolves to {link.resolve()}, not {path}")
-        if not (root / ".codex" / "agents" / f"{stem}.toml").is_file():
+        wrapper = root / ".codex" / "agents" / f"{stem}.toml"
+        if not wrapper.is_file():
             found.append(f"{stem}: .codex/agents/{stem}.toml is missing")
+        else:
+            text = wrapper.read_text()
+            ident = stem.replace("-", "_")
+            if f'name = "{ident}"' not in text:
+                found.append(f"{stem}: .codex/agents/{stem}.toml does not set `name = \"{ident}\"` (copied from another wrapper?)")
+            if f".agents/agents/{stem}.md" not in text:
+                found.append(f"{stem}: .codex/agents/{stem}.toml never names .agents/agents/{stem}.md (copied from another wrapper?)")
+    stems = {path.stem for path in canonical}
+    for pattern in (".claude/agents/*.md", ".codex/agents/*.toml"):
+        for extra in sorted(root.glob(pattern)):
+            if extra.stem not in stems:
+                found.append(f"{extra.stem}: {extra.relative_to(root)} has no canonical "
+                             f".agents/agents/{extra.stem}.md (a renamed or deleted agent?)")
     return found
 
 
+WRAPPER = ('name = "{ident}"\ndescription = "A wrapper."\ndeveloper_instructions = """\n'
+           'Read `.agents/agents/{name}.md` completely before starting.\n"""\n')
 GOOD = "---\nname: {name}\ndescription: >\n  Review a thing.\n  Use it twice.\ntools: Read\nmodel: opus\n---\n\n# body\n"
 
 
@@ -91,7 +110,7 @@ def agent(root, name, text=None, link=True, wrapper=True):
     if link:
         os.symlink(f"../../.agents/agents/{name}.md", root / ".claude/agents" / f"{name}.md")
     if wrapper:
-        (root / ".codex/agents" / f"{name}.toml").write_text(f'name = "{name}"\n')
+        (root / ".codex/agents" / f"{name}.toml").write_text(WRAPPER.format(name=name, ident=name.replace("-", "_")))
 
 
 class Checks(unittest.TestCase):
@@ -166,6 +185,24 @@ class Checks(unittest.TestCase):
     def test_a_missing_codex_wrapper(self):
         agent(self.root, "x-agent", wrapper=False)
         self.only(".codex/agents/x-agent.toml is missing")
+
+    def test_a_renamed_or_deleted_canonical_file_leaves_orphans(self):
+        agent(self.root, "x-agent")
+        (self.root / ".agents/agents/x-agent.md").unlink()
+        found = problems(self.root)
+        self.assertEqual(len(found), 2, found)
+        self.assertTrue([f for f in found if ".claude/agents/x-agent.md has no canonical" in f], found)
+        self.assertTrue([f for f in found if ".codex/agents/x-agent.toml has no canonical" in f], found)
+
+    def test_a_wrapper_copied_from_a_sibling_still_names_the_sibling(self):
+        agent(self.root, "x-agent")
+        agent(self.root, "y-agent")
+        sibling = WRAPPER.format(name="x-agent", ident="x_agent")
+        (self.root / ".codex/agents/y-agent.toml").write_text(sibling)
+        found = problems(self.root)
+        self.assertEqual(len(found), 2, found)
+        self.assertTrue([f for f in found if 'name = "y_agent"' in f], found)
+        self.assertTrue([f for f in found if ".agents/agents/y-agent.md" in f], found)
 
     def test_an_exemption_covers_only_the_model_check(self):
         agent(self.root, "x-agent", GOOD.format(name="y-agent").replace("model: opus\n", ""), wrapper=False)
