@@ -3827,6 +3827,31 @@ fn install_truehd_remux(ps: &mut PlaybackSession, live: &Live) {
     install(ps, live, Delivery::Remux(NONE), a4(), Some(candidate(false, a4(), None)), 0);
 }
 
+/// A native-audio conversion rebuilds a DIRECT play as the plain Original remux, the same contract
+/// an undecodable audio-track pick asks for: the server copies the video and converts only the
+/// audio the TV's pipeline refused, instead of re-encoding the picture. With an embedded subtitle
+/// on screen (no one to draw it) the server must burn it, which is a re-encode by nature.
+#[test]
+fn a_direct_play_with_native_surround_audio_rebuilds_as_the_plain_remux() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start(EnhMode::Honor("ac3"));
+    restore_quality(Quality::Auto);
+    reset_player_control_for_test(&mut ps);
+    crate::player::restore_audio_enhancements(NONE);
+    let opus = track(21, 1, "opus", 6, false, false);
+    install(&mut ps, &live, Delivery::Direct, opus.clone(), Some(candidate(true, opus.clone(), None)), 0);
+    assert!(plain_rebuild_is_remux(&ps), "a direct play with no subtitle is the Original shape");
+    assert_eq!(retranscode_contract(&ps), enhanced_remux_contract(NONE, false), "a remux, not a re-encode");
+
+    // A subtitle the server has to burn is a re-encode whichever way the audio is carried.
+    install(&mut ps, &live, Delivery::Direct, opus.clone(), Some(candidate(true, opus, Some(2))), 77);
+    assert!(!plain_rebuild_is_remux(&ps));
+    assert!(!retranscode_contract(&ps).remux, "the burn re-encodes the picture");
+    live.finish();
+    cleanup(&mut ps);
+}
+
 /// Settle a claim and let the engine confirm it, so the next edit may be claimed.
 fn land(ps: &mut PlaybackSession, action: &ClaimedRouteAction, tail: ClaimTail) {
     settle(ps, action, tail);
