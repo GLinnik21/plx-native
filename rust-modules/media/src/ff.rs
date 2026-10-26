@@ -9997,6 +9997,10 @@ mod subtitle_charset_tests;
 mod redirect_tests;
 
 #[cfg(test)]
+#[path = "ff_pcm_decode_tests.rs"]
+mod pcm_decode_tests;
+
+#[cfg(test)]
 #[path = "ff_late_audio_tests.rs"]
 mod late_audio_tests;
 
