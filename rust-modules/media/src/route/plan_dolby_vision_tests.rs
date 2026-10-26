@@ -763,6 +763,52 @@ fn decision_copies_video_follows_the_lane_then_the_contract() {
     }
 }
 
+/// **`decision_lanes` is each lane's own word and never the contract.** The recovery ladder's proof
+/// rule reads it, so a body that states nothing is `Unstated` on both lanes (where
+/// [`decision_copies_video`] would follow the contract), and `copy`, `transcode` and `directplay`
+/// map to their lanes; the FIRST stream of each type speaks for its lane.
+#[test]
+fn decision_lanes_reads_each_lane_and_never_the_contract() {
+    use crate::player::recovery::{Lane, Lanes};
+    let body = |streams: &str| -> plx_plex::plex::MediaContainer {
+        serde_json::from_str(&format!(
+            r#"{{"Metadata":[{{"Media":[{{"Part":[{{"decision":"transcode","Stream":{streams}}}]}}]}}]}}"#
+        ))
+        .expect("a decision body")
+    };
+    let lanes = |video, audio| Lanes { video, audio };
+    let silent = lanes(Lane::Unstated, Lane::Unstated);
+    let nothing: plx_plex::plex::MediaContainer = serde_json::from_str("{}").expect("an empty body");
+    assert_eq!(decision_lanes(&nothing), silent, "no Metadata");
+    assert_eq!(decision_lanes(&body("[]")), silent, "no streams");
+    assert_eq!(decision_lanes(&body(r#"[{"streamType":1},{"streamType":2}]"#)), silent, "lanes without a decision");
+    assert_eq!(
+        decision_lanes(&body(r#"[{"streamType":1,"decision":""},{"streamType":2,"decision":"ignore"}]"#)),
+        silent,
+        "an empty or unknown word states nothing"
+    );
+    for (video, audio, want) in [
+        ("copy", "transcode", lanes(Lane::Copy, Lane::Transcode)),
+        ("directplay", "copy", lanes(Lane::DirectPlay, Lane::Copy)),
+        ("transcode", "directplay", lanes(Lane::Transcode, Lane::DirectPlay)),
+    ] {
+        let streams = format!(r#"[{{"streamType":1,"decision":"{video}"}},{{"streamType":2,"decision":"{audio}"}}]"#);
+        assert_eq!(decision_lanes(&body(&streams)), want, "{video} / {audio}");
+    }
+    assert_eq!(
+        decision_lanes(&body(r#"[{"streamType":2,"decision":"copy"}]"#)),
+        lanes(Lane::Unstated, Lane::Copy),
+        "a lane with no stream is unstated beside one that speaks"
+    );
+    assert_eq!(
+        decision_lanes(&body(
+            r#"[{"streamType":1,"decision":"copy"},{"streamType":1,"decision":"transcode"},{"streamType":2,"decision":"transcode"},{"streamType":2,"decision":"copy"}]"#
+        )),
+        lanes(Lane::Copy, Lane::Transcode),
+        "the first stream of each type speaks for its lane"
+    );
+}
+
 /// The one rule every server-built route asks: the file's declaration rides a COPY of a usable
 /// base layer, and nothing else. A missing `/decision` follows the contract, so a burn re-encode
 /// whose decision failed never declares Dolby Vision over a stream the server re-encoded.

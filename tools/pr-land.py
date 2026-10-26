@@ -41,7 +41,7 @@ unchanged, it retries (3 times at most, then exit 3); moved, exit 5. Every line 
 starts "gh pr merge succeeded;", since the merge went through and only the check afterwards failed.
 
 `restack` re-bases a stacked branch by MERGES (never a rebase) after the pull request below it, --lower,
-has squash-merged: AGENTS.md's "Re-basing a stacked PR after the one below it squashes". It reads the
+has squash-merged, as .agents/skills/land-pr/SKILL.md ("Stacked PRs: restack") has it. It reads the
 lower PR (`gh pr view`) and refuses (3) unless it is MERGED with a merge commit, or when BRANCH is
 that PR's base branch (it would merge the lower PR into main); refuses (3) unless W is a clean
 checkout on BRANCH (an untracked file is not clean) with no merge, cherry-pick or revert in progress,
@@ -472,7 +472,8 @@ def cmd_merge(args, env):
 
 
 def restack_steps(number, head, squash, base):
-    """AGENTS.md's four merges as (name, git arguments after `-C W`), in the order they run."""
+    """The four merges of .agents/skills/land-pr/SKILL.md ("Stacked PRs: restack") as (name, git
+    arguments after `-C W`), in the order they run."""
     return [
         ("merge the lower PR's final head",
          ['merge', '--no-edit', '-m', "Merge the final head of #%d (%s)" % (number, head[:9]), head]),

@@ -80,6 +80,9 @@
       "Bash(tools/tv-lock.sh status)",
       "Bash(tools/tv-session.sh log)",
       "Bash(tools/tv-session.sh status)"
+    ],
+    "deny": [
+      "mcp__claude_ai_GitHub_MCP__merge_pull_request"
     ]
   }
 }

@@ -52,7 +52,15 @@ pub(crate) struct FlightRig {
     answered: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// [`FlightRig::begin_attempt`] ran, so the drop gives the report its idle state back.
     attempt_begun: bool,
+    /// The body a live `/decision` is answered with: video copied, audio transcoded, until
+    /// [`FlightRig::answer_decisions_with`] says otherwise.
+    decision_body: std::sync::Arc<std::sync::Mutex<&'static [u8]>>,
 }
+
+/// A `/decision` body with BOTH lanes `transcode` ([`FlightRig::answer_decisions_with`]): the server
+/// re-encoded the video as well as the audio, so a conversion built from it changed more than the
+/// refused facet.
+pub(crate) const DECISION_TRANSCODES_BOTH_LANES: &[u8] = br#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"transcode","Stream":[{"streamType":1,"decision":"transcode"},{"streamType":2,"decision":"transcode"}]}]}]}]}}"#;
 
 /// The longest the server keeps a held answer if nobody releases it, so a test that fails
 /// while holding cannot park a worker for ever. Far longer than any frame, far shorter than a hang.
@@ -93,6 +101,8 @@ impl FlightRig {
         let hold = held.clone();
         let answered: std::sync::Arc<std::sync::atomic::AtomicUsize> = Default::default();
         let count_answers = answered.clone();
+        let decision_body: std::sync::Arc<std::sync::Mutex<&'static [u8]>> = std::sync::Arc::new(std::sync::Mutex::new(MDE_TRANSCODE_COPY));
+        let serve_body = decision_body.clone();
         let server = std::thread::spawn(move || loop {
             match plx_base::testnet::accept(&listener) {
                 Ok((mut socket, _)) => {
@@ -116,7 +126,8 @@ impl FlightRig {
                         let refuse = owed
                             .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
                             .is_ok();
-                        write_json(&mut socket, if refuse { DECISION_REFUSED } else { MDE_TRANSCODE_COPY });
+                        let body = *serve_body.lock().unwrap_or_else(|e| e.into_inner());
+                        write_json(&mut socket, if refuse { DECISION_REFUSED } else { body });
                     } else {
                         // The selection PUT and any other worker request take `delay` too, as the
                         // `/decision` does, so the flight they belong to stays in the air.
@@ -194,7 +205,7 @@ impl FlightRig {
             ps.cur_auto_original_watched = true;
             ps.cur_src = (28_000, 1_920, 1_080);
         }
-        FlightRig { _serial: Some(serial), done, server: Some(server), log, refusals, held, answered, attempt_begun: false }
+        FlightRig { _serial: Some(serial), done, server: Some(server), log, refusals, held, answered, attempt_begun: false, decision_body }
     }
 
     /// Begin the report attempt a Play begins ([`crate::player::report::requested`]) and make it the
@@ -331,6 +342,12 @@ impl FlightRig {
     /// machine's load. Pair it with [`FlightRig::answered`] taken before the frame.
     pub(crate) fn hold_answers(&self) {
         self.held.store(true, Ordering::SeqCst);
+    }
+
+    /// Answer every later live `/decision` with `body` (one of `decision_test_support`'s `MDE_*`
+    /// fixtures) instead of the default (video copied, audio transcoded).
+    pub(crate) fn answer_decisions_with(&self, body: &'static [u8]) {
+        *self.decision_body.lock().unwrap_or_else(|e| e.into_inner()) = body;
     }
 
     /// Let the held answers go (each is written after `delay`, as usual).

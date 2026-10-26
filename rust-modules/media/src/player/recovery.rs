@@ -6,10 +6,11 @@
 //! [`step`](OpenRecovery::step). It reads no global and performs no IO. The facts a decision needs
 //! (an HLS->Original trial holding a live encoder, a cold Auto Original, Forced Direct Play, no
 //! decoded frame yet, the audio the pipeline was fed, the natively fed audio a refusal names) arrive
-//! as a value on the event ([`OpenFacts`]); the work a decision asks for (the learner's write, a
-//! recovery flight, the failure read-out) leaves as a [`RecoveryEffect`] which the pump
-//! (`super::pump`, the driver) executes through the route's own dispatches, and every answer
-//! returns as the next event in the same drain.
+//! as a value on the event ([`OpenFacts`]), and so do the verdicts PMS gave a landed flight
+//! ([`Lanes`]); the work a decision asks for (the learner's write, a recovery flight, the failure
+//! read-out) leaves as a [`RecoveryEffect`] which the pump (`super::pump`, the driver) executes
+//! through the route's own dispatches, and every answer a flight gives returns as the next event in
+//! the same drain.
 //!
 //! **The owner is the request.** [`PlaybackSession`](crate::route::PlaybackSession) holds one
 //! `Option<OpenRecovery>`, created by `begin_attempt` with the capability value the app's play start
@@ -27,11 +28,17 @@
 //! Auto Original (the both-facets rung); else the failure read-out. The rungs which start a flight
 //! (the facet and the both-facets rung) are bounded by [`MAX_RECOVERY_FLIGHTS`] per request.
 //!
-//! **A refusal of natively fed audio** first asks the driver to confirm it
-//! ([`RecoveryEffect::ConfirmRefusal`]: the install's learner is IO and persists the combination).
-//! The confirmation is persistence only: the answer never selects a rung, the facet rung is
-//! selected by [`suspect`] and by the loop guard alone (a facet `start` already lacks narrows
-//! nothing and gets no flight, so a stored refusal is never converted twice).
+//! **What the ladder teaches.** A refusal of natively fed audio (`num=200` or the stall) names the
+//! codec, so the same step asks the driver to record it ([`RecoveryEffect::ConfirmRefusal`] with
+//! [`Evidence::Named`]: the install's learner is IO) and then picks its rung; the write is
+//! fire-and-forget, so no answer ever selects a rung (the facet rung is selected by [`suspect`] and
+//! by the loop guard alone: a facet `start` already lacks narrows nothing and gets no flight, so a
+//! stored refusal is never converted twice). A refusal that names nothing (`601`) teaches only
+//! through a **proof**: the facet flight landed with PMS answering the converted lane `transcode`
+//! and the other lane `copy`/`directplay` ([`proves`]), and the reload then showed its first
+//! picture ([`State::Proving`], [`Evidence::Proof`]) of a request that had shown none and with no
+//! second Load in between. The both-facets rung, the rollback, a timeout and a source failure never
+//! prove.
 //!
 //! The state the machine does not own: the flight bookkeeping stays in `route::decision`
 //! (`original_recovery_pending`, the recovery flight slot), and it reaches the machine as a fact
@@ -93,6 +100,45 @@ pub struct StreamAudio {
     pub channels: u32,
 }
 
+/// One lane of a `/decision` answer, as PMS's own `Stream.decision` says it (`copy`, `directplay`,
+/// `transcode`); a body that is silent, or says anything else, is `Unstated`. The route builds it
+/// (`route::plan::decision_lanes`); like [`StreamAudio`], it is machine vocabulary the route fills.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lane {
+    DirectPlay,
+    Copy,
+    Transcode,
+    Unstated,
+}
+
+impl Lane {
+    /// The lane a wire `decision` string names.
+    pub fn of(wire: &str) -> Lane {
+        match wire {
+            "directplay" => Lane::DirectPlay,
+            "copy" => Lane::Copy,
+            "transcode" => Lane::Transcode,
+            _ => Lane::Unstated,
+        }
+    }
+}
+
+/// The verdicts of a landed flight's `/decision`, per lane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Lanes {
+    pub video: Lane,
+    pub audio: Lane,
+}
+
+/// Whether a landed flight that converted `facet` changed it ALONE, by PMS's own verdicts: the
+/// facet's own lane is `transcode` AND the other lane is `copy`/`directplay`. Silence proves nothing.
+fn proves(facet: &Facet, lanes: Option<&Lanes>) -> bool {
+    let Some(l) = lanes else { return false };
+    match facet {
+        Facet::Audio { .. } => l.audio == Lane::Transcode && matches!(l.video, Lane::Copy | Lane::DirectPlay),
+    } // S1b adds the Video arm: video Transcode, audio Copy|DirectPlay
+}
+
 /// The stream class a pipeline refusal puts under suspicion: audio outside the codecs every set
 /// decodes (`aac`, `ac3`, `eac3`). `channels == 0` (unknown) names the codec at no width, which
 /// [`Caps::without`] reads as "not at all", the conservative choice. Video is S1b's.
@@ -114,7 +160,7 @@ pub struct OpenFacts {
     pub no_frames: bool,
     /// The natively fed audio this failure names: the pipeline refused it (`type=18 num=200`) or
     /// swallowed it (the stall). `None` when the failure does not name audio. It asks for the
-    /// learner's confirmation ([`RecoveryEffect::ConfirmRefusal`]) and selects no rung.
+    /// learner's write ([`RecoveryEffect::ConfirmRefusal`], [`Evidence::Named`]) and selects no rung.
     pub native_audio: Option<Facet>,
     /// Forced Direct Play (`route::forced_direct_play`): the viewer asked not to convert.
     pub forced: bool,
@@ -125,35 +171,35 @@ pub struct OpenFacts {
 /// What moves the ladder.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecoveryEvent {
-    /// The open failed. Consumed in `Opening` and `Playing` (a failure after a picture runs the same
-    /// ladder, whose `no_frames` fact then stops it at the failure read-out); a failure while a
-    /// flight, a confirmation or the read-out is already outstanding is not.
+    /// The open failed. Consumed in `Opening`, `Proving` and `Playing` (a failure after a picture
+    /// runs the same ladder, whose `no_frames` fact then stops it at the failure read-out); a failure
+    /// while a flight or the read-out is already outstanding is not.
     Refused { refusal: LoadRefusal, facts: OpenFacts },
-    /// The answer to [`RecoveryEffect::ConfirmRefusal`]: `newly` is true when the combination was new
-    /// to the install (the learner recorded it). It selects no rung; the driver words its log line
-    /// with it.
-    RefusalConfirmed { newly: bool },
-    /// The recovery flight installed its replacement route; the driver reloads onto it.
-    FlightLanded,
+    /// The recovery flight installed its replacement route; the driver reloads onto it. `lanes` are
+    /// the verdicts of the `/decision` that built it (`None` for a landing which carries none: a
+    /// rollback, the HLS contingency, a resume), the facet rung's proof ([`proves`]).
+    FlightLanded { lanes: Option<Lanes> },
     /// The recovery flight could not start, or came back refused.
     FlightRefused,
     /// The first decoded picture of the open.
     FirstPicture,
     /// A Load started on this request's route (`engine::start_bufferfeed_for`, which every Engine
     /// start passes: a fresh play, a reload, the foreground restore's Load). A start the machine
-    /// asked for has already moved it (`FlightLanded` -> `Opening`), so this changes nothing there;
-    /// a start it did not ask for (a park and restore, or any reload, that crossed an outstanding
-    /// flight or the read-out) leaves `Flight` or `Failed` with a new open to rule on.
+    /// asked for has already moved it (`FlightLanded` -> `Opening`, or `Proving` for a clean facet
+    /// landing), so this changes nothing in `Opening`, and the first one in `Proving` is the
+    /// landing's own reload; a start it did not ask for (a park and restore, or any reload, that
+    /// crossed an outstanding flight or the read-out) leaves `Flight` or `Failed` with a new open
+    /// to rule on, and a second one in `Proving` drops the pending proof.
     LoadStarted,
 }
 
 /// What the driver executes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecoveryEffect {
-    /// Learn the natively fed audio the facts named as refused on this firmware (the install's
-    /// learner, which the driver runs against the audio it fed) and answer
-    /// [`RecoveryEvent::RefusalConfirmed`].
-    ConfirmRefusal,
+    /// Record `facet` as refused on this firmware (the install's learner, which is IO and so the
+    /// driver's): a refusal that named it ([`Evidence::Named`], applied at once) or a facet-clean
+    /// rescue ([`Evidence::Proof`], counted). Fire-and-forget: nothing answers.
+    ConfirmRefusal { facet: Facet, evidence: Evidence },
     /// Fly the HLS rollback of the failed Original trial (`dispatch_rollback_rebase`).
     Rollback,
     /// Fly today's route rebuilt from [`OpenRecovery::attempt`], the facet excluded: the server
@@ -165,6 +211,15 @@ pub enum RecoveryEffect {
     StartAutoHls,
     /// Fail the Engine for good and show the failure read-out.
     ShowError { refusal: LoadRefusal },
+}
+
+/// What a [`RecoveryEffect::ConfirmRefusal`] rests on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Evidence {
+    /// The refusal names the codec (`num=200` or the stall; `OpenFacts::native_audio`).
+    Named,
+    /// A facet-clean rescue: the facet flight changed only that facet and its reload showed a picture.
+    Proof,
 }
 
 /// Which rung a flight is on.
@@ -180,10 +235,15 @@ enum Rung {
 
 #[derive(Clone, Debug)]
 enum State {
-    /// The open is under way (the initial state, and the state a landed flight's reload re-enters).
+    /// The open is under way (the initial state, and the state a landed flight's reload re-enters,
+    /// or `Proving` for a clean facet landing).
     Opening,
-    /// A native-audio refusal waits on the learner's answer.
-    Confirming { refusal: LoadRefusal, facts: OpenFacts },
+    /// The facet flight landed with a clean verdict ([`proves`]) and its reload is opening: `Opening`
+    /// plus a pending proof of `facet`, credited at the first picture. `loaded` is whether the
+    /// landing's own reload has started (`FlightLanded` moves the machine BEFORE the driver
+    /// reloads, so the first `LoadStarted` here is that reload); a second Load before the picture is
+    /// a route whose lanes were never read, and drops the proof.
+    Proving { facet: Facet, loaded: bool },
     /// A recovery flight is outstanding; `cause` is the refusal that started it and `facts` are what
     /// the next rung decides on if the flight comes back refused.
     Flight { rung: Rung, cause: LoadRefusal, facts: OpenFacts },
@@ -208,6 +268,10 @@ pub struct OpenRecovery {
     /// Flights started by the facet and both-facets rungs (and a failed source's HLS contingency).
     /// The rollback is not counted.
     flights: u32,
+    /// Whether a picture has shown in this request (any handled `FirstPicture`). A request that
+    /// pictured has played what it was fed, so a later rescue by conversion proves nothing about
+    /// the converted facet: the proof is only for a request whose FIRST open the conversion rescued.
+    pictured: bool,
     state: State,
 }
 
@@ -220,7 +284,7 @@ fn attempt_for(start: &Caps, excluded: Option<&Facet>) -> Caps {
 impl OpenRecovery {
     /// A fresh request on `start`.
     pub fn new(start: Arc<Caps>) -> Self {
-        Self { attempt: start.clone(), start, excluded: None, flights: 0, state: State::Opening }
+        Self { attempt: start.clone(), start, excluded: None, flights: 0, pictured: false, state: State::Opening }
     }
 
     /// The capability value this request plans and profiles from: `start` less the facet the facet
@@ -241,8 +305,9 @@ impl OpenRecovery {
     fn decide(&mut self, refusal: LoadRefusal, facts: &OpenFacts, fx: &mut Vec<RecoveryEffect>) {
         let flight = |rung| State::Flight { rung, cause: refusal, facts: facts.clone() };
         if facts.pending_original {
-            // A refusal of native audio the learner just recorded narrows the rollback's profile
-            // too: the restored HLS route must not offer it natively again.
+            // A refusal of native audio (the learner's write was queued earlier in this step)
+            // narrows the rollback's profile too: the restored HLS route must not offer it natively
+            // again.
             if let Some(facet) = facts.native_audio.as_ref().filter(|f| self.start.without(f) != *self.start) {
                 self.excluded = Some(facet.clone());
                 self.narrow();
@@ -277,19 +342,21 @@ impl OpenRecovery {
         self.state = State::Failed;
     }
 
-    /// The one writer. The table (a state not listed answers [`Handled::No`] and changes nothing):
+    /// The one writer. The table (a pair not listed answers [`Handled::No`] and changes nothing):
     ///
     /// | state | event | effects, next state |
     /// |---|---|---|
-    /// | `Opening` | `Refused`, facts name native audio | `ConfirmRefusal`; `Confirming` |
-    /// | `Opening` | `Refused`, otherwise | the ladder below |
-    /// | `Playing` | `Refused`, facts name native audio | `ConfirmRefusal`; `Confirming` |
-    /// | `Playing` | `Refused`, otherwise | the ladder below (`Playing` and `Opening` rule alike: the facts say which Engine failed) |
-    /// | `Confirming` | `RefusalConfirmed{newly}` | the ladder below; `newly` selects nothing |
-    /// | `Flight` | `FlightLanded` | none; `Opening` (the reload re-enters the open) |
+    /// | `Opening`, `Proving`, `Playing` | `Refused`, facts name native audio `f` | `ConfirmRefusal{f, Named}`, then the ladder's effect; the ladder's state |
+    /// | `Opening`, `Proving`, `Playing` | `Refused`, otherwise | the ladder below (`Playing` and `Opening` rule alike: the facts say which Engine failed; a pending proof is dropped) |
+    /// | `Flight{Facet}` | `FlightLanded{lanes}`, [`proves`], no picture yet in the request | none; `Proving{excluded}` |
+    /// | `Flight{Facet}` | `FlightLanded{..}`, otherwise | none; `Opening` (the reload re-enters the open) |
+    /// | `Flight{Rollback, Both}` | `FlightLanded{..}` | none; `Opening` (lanes ignored: only the facet rung proves) |
     /// | `Flight{Facet}` | `FlightRefused` | the ladder below (one flight spent, so the facet rung is closed): `StartAutoHls` or `ShowError` |
     /// | `Flight{Rollback, Both}` | `FlightRefused` | `ShowError`; `Failed` (a refused rollback stays terminal) |
     /// | `Opening` | `FirstPicture` | none; `Playing` |
+    /// | `Proving{f}` | `FirstPicture` | `ConfirmRefusal{f, Proof}`; `Playing` |
+    /// | `Proving`, first | `LoadStarted` | none; `Proving` (the landing's own reload) |
+    /// | `Proving`, after its reload | `LoadStarted` | none; `Opening` (a foreign Load: the proof is dropped) |
     /// | `Flight`, `Failed` | `LoadStarted` | none; `Opening`, `flights` and the excluded facet kept |
     ///
     /// The ladder: `pending_original` -> `Rollback`; else `forced` -> `ShowError`; else a pipeline
@@ -297,38 +364,35 @@ impl OpenRecovery {
     /// attempt, with no flight spent -> `ConvertFacet`; else `auto_original && no_frames` with a
     /// flight left -> `StartAutoHls` (each: `Flight`); else `ShowError`; `Failed`.
     ///
-    /// `Refused` is not handled in `Confirming`, `Flight` or `Failed`: a confirmation or a flight is
-    /// outstanding (the pump runs no failure arm while a flight is), or the read-out is already up
-    /// (the pump meets the same Engine's failed flags every frame until the Engine is released, and
-    /// re-asserts the read-out itself). The driver treats an unhandled `Refused` as the Engine failing
-    /// for good, never as silence.
+    /// `Refused` is not handled in `Flight` or `Failed`: a flight is outstanding (the pump runs no
+    /// failure arm while one is), or the read-out is already up (the pump meets the same Engine's
+    /// failed flags every frame until the Engine is released, and re-asserts the read-out itself).
+    /// `LoadStarted` is not handled in `Opening` or `Playing`: the landing's own reload fires it after
+    /// `FlightLanded` has moved the machine, which is `Opening` there, and it is the first one in
+    /// `Proving` (kept, with the pending proof). The driver treats an unhandled `Refused` as the
+    /// Engine failing for good, never as silence.
     pub fn step(&mut self, ev: &RecoveryEvent, fx: &mut Vec<RecoveryEffect>) -> Handled {
         match ev {
             RecoveryEvent::Refused { refusal, facts } => {
-                if !matches!(self.state, State::Opening | State::Playing) {
+                if !matches!(self.state, State::Opening | State::Proving { .. } | State::Playing) {
                     return Handled::No;
                 }
-                if facts.native_audio.is_some() {
-                    fx.push(RecoveryEffect::ConfirmRefusal);
-                    self.state = State::Confirming { refusal: *refusal, facts: facts.clone() };
-                } else {
-                    self.decide(*refusal, facts, fx);
+                if let Some(facet) = &facts.native_audio {
+                    fx.push(RecoveryEffect::ConfirmRefusal { facet: facet.clone(), evidence: Evidence::Named });
                 }
+                self.decide(*refusal, facts, fx);
                 Handled::Yes
             }
-            RecoveryEvent::RefusalConfirmed { .. } => {
-                let State::Confirming { refusal, facts } = &self.state else {
+            RecoveryEvent::FlightLanded { lanes } => {
+                let State::Flight { rung, .. } = &self.state else {
                     return Handled::No;
                 };
-                let (refusal, facts) = (*refusal, facts.clone());
-                self.decide(refusal, &facts, fx);
-                Handled::Yes
-            }
-            RecoveryEvent::FlightLanded => {
-                if !matches!(self.state, State::Flight { .. }) {
-                    return Handled::No;
-                }
-                self.state = State::Opening;
+                self.state = match (rung, &self.excluded) {
+                    (Rung::Facet, Some(facet)) if !self.pictured && proves(facet, lanes.as_ref()) => {
+                        State::Proving { facet: facet.clone(), loaded: false }
+                    }
+                    _ => State::Opening,
+                };
                 Handled::Yes
             }
             RecoveryEvent::FlightRefused => {
@@ -344,23 +408,40 @@ impl OpenRecovery {
                 }
                 Handled::Yes
             }
-            RecoveryEvent::FirstPicture => {
-                if !matches!(self.state, State::Opening) {
-                    return Handled::No;
+            RecoveryEvent::FirstPicture => match &self.state {
+                State::Opening => {
+                    self.pictured = true;
+                    self.state = State::Playing;
+                    Handled::Yes
                 }
-                self.state = State::Playing;
-                Handled::Yes
-            }
-            RecoveryEvent::LoadStarted => {
-                if !matches!(self.state, State::Flight { .. } | State::Failed) {
-                    return Handled::No;
+                State::Proving { facet, .. } => {
+                    fx.push(RecoveryEffect::ConfirmRefusal { facet: facet.clone(), evidence: Evidence::Proof });
+                    self.pictured = true;
+                    self.state = State::Playing;
+                    Handled::Yes
                 }
-                // The flight (if any) is gone with the Engine that waited on it, and the read-out
-                // belongs to the Engine that failed: the new Load is a new open, ruled on by the
-                // same ladder with what this request has already spent (`flights`, `excluded`).
-                self.state = State::Opening;
-                Handled::Yes
-            }
+                _ => Handled::No,
+            },
+            RecoveryEvent::LoadStarted => match &mut self.state {
+                // The landing's own reload: `FlightLanded` moved the machine before the driver
+                // reloaded, so the first Load here is the one the landing asked for.
+                State::Proving { loaded: loaded @ false, .. } => {
+                    *loaded = true;
+                    Handled::Yes
+                }
+                // A second Load before the picture (a track switch, a restore after Home, a seek
+                // reload) is a route whose lanes were never read: the proof is dropped, and the new
+                // open is ruled on by the same ladder as below.
+                State::Proving { .. } | State::Flight { .. } | State::Failed => {
+                    // The flight (if any) is gone with the Engine that waited on it, and the
+                    // read-out belongs to the Engine that failed: the new Load is a new open, ruled
+                    // on by the same ladder with what this request has already spent (`flights`,
+                    // `excluded`).
+                    self.state = State::Opening;
+                    Handled::Yes
+                }
+                State::Opening | State::Playing => Handled::No,
+            },
         }
     }
 
@@ -369,7 +450,7 @@ impl OpenRecovery {
     pub fn phase(&self) -> Phase {
         match self.state {
             State::Opening => Phase::Opening,
-            State::Confirming { .. } => Phase::Confirming,
+            State::Proving { .. } => Phase::Proving,
             State::Flight { .. } => Phase::Flight,
             State::Playing => Phase::Playing,
             State::Failed => Phase::Failed,
@@ -382,7 +463,7 @@ impl OpenRecovery {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
     Opening,
-    Confirming,
+    Proving,
     Flight,
     Playing,
     Failed,
@@ -451,6 +532,26 @@ mod tests {
         RecoveryEvent::Refused { refusal, facts }
     }
 
+    /// A landing which carries no verdicts (a rollback's, the HLS contingency's).
+    fn landed() -> RecoveryEvent {
+        RecoveryEvent::FlightLanded { lanes: None }
+    }
+
+    /// PMS answered the converted audio lane `transcode` and left the video lane alone.
+    const CLEAN: Lanes = Lanes { video: Lane::Copy, audio: Lane::Transcode };
+
+    fn landed_with(lanes: Lanes) -> RecoveryEvent {
+        RecoveryEvent::FlightLanded { lanes: Some(lanes) }
+    }
+
+    fn proof(facet: Facet) -> RecoveryEffect {
+        RecoveryEffect::ConfirmRefusal { facet, evidence: Evidence::Proof }
+    }
+
+    fn named(facet: Facet) -> RecoveryEffect {
+        RecoveryEffect::ConfirmRefusal { facet, evidence: Evidence::Named }
+    }
+
     /// The ladder by facts, through the machine: the rung a `601` lands on, with (`suspect`) or
     /// without a DTS 5.1 track fed.
     fn rung(pending: bool, suspect: bool, auto: bool, no_frames: bool) -> Vec<RecoveryEffect> {
@@ -497,19 +598,19 @@ mod tests {
         // Cold Auto Original: the facet, then the both-facets rung (HLS), then the read-out.
         let mut m = OpenRecovery::new(start.clone());
         run(&mut m, refused(SHUT, on_dts(facts(false, true, true))));
-        run(&mut m, RecoveryEvent::FlightLanded);
+        run(&mut m, landed());
         // The converted route feeds AAC now: no suspect, so only the HLS rung is left.
         let converted = OpenFacts { audio: audio("aac", 2), ..facts(false, true, true) };
         let (_, fx) = run(&mut m, refused(SHUT, converted.clone()));
         assert_eq!((fx, m.phase()), (vec![RecoveryEffect::StartAutoHls], Phase::Flight));
         assert_eq!(*m.attempt(), start.without(&dts6()), "derived from start, the facet carried");
-        run(&mut m, RecoveryEvent::FlightLanded);
+        run(&mut m, landed());
         let (_, fx) = run(&mut m, refused(SHUT, converted));
         assert_eq!((fx, m.phase()), (ERROR.to_vec(), Phase::Failed));
         // Manual Original: the facet, then the read-out (the manual both-facets rung is S1b's).
         let mut m = OpenRecovery::new(start);
         run(&mut m, refused(SHUT, on_dts(facts(false, false, true))));
-        run(&mut m, RecoveryEvent::FlightLanded);
+        run(&mut m, landed());
         let (_, fx) = run(&mut m, refused(SHUT, OpenFacts { audio: audio("aac", 2), ..facts(false, false, true) }));
         assert_eq!((fx, m.phase()), (ERROR.to_vec(), Phase::Failed));
     }
@@ -517,7 +618,7 @@ mod tests {
     /// **Every reachable state of one request**, not a depth of paths: the walk runs to a fixpoint
     /// over (state, flights, excluded facet), which is everything the machine's future depends on,
     /// from every event the driver can raise (a refusal of an Engine with and without a picture, a
-    /// confirmation or an answer nobody asked for, the first picture, a Load nobody asked for). On
+    /// landing with and without a clean verdict, the first picture, a Load nobody asked for). On
     /// every path the flights a request starts never exceed the cap, and a facet conversion is only
     /// ever the request's first flight. `Playing` is inside the proof: the first picture is an event.
     #[test]
@@ -532,13 +633,13 @@ mod tests {
                 refused(LoadRefusal::TimedOut, base.clone()),
                 refused(LoadRefusal::Stalled, stall),
                 refused(LoadRefusal::SourceFailed, base),
-                RecoveryEvent::RefusalConfirmed { newly: true },
-                RecoveryEvent::FlightLanded,
+                landed(),
+                landed_with(CLEAN),
                 RecoveryEvent::FlightRefused,
                 RecoveryEvent::FirstPicture,
                 RecoveryEvent::LoadStarted,
             ];
-            let key = |m: &OpenRecovery| format!("{:?}|{}|{:?}", m.state, m.flights, m.excluded);
+            let key = |m: &OpenRecovery| format!("{:?}|{}|{:?}|{}", m.state, m.flights, m.excluded, m.pictured);
             let mut seen = std::collections::HashSet::from([key(&machine())]);
             let mut frontier = vec![machine()];
             while let Some(m) = frontier.pop() {
@@ -546,14 +647,6 @@ mod tests {
                     let mut next = m.clone();
                     let mut fx = Vec::new();
                     next.step(ev, &mut fx);
-                    // The driver answers a confirmation with the learner's verdict, in the same drain.
-                    let mut at = 0;
-                    while at < fx.len() {
-                        if fx[at] == RecoveryEffect::ConfirmRefusal {
-                            next.step(&RecoveryEvent::RefusalConfirmed { newly: true }, &mut fx);
-                        }
-                        at += 1;
-                    }
                     let started = fx.iter().filter(|e| matches!(e, RecoveryEffect::ConvertFacet { .. } | RecoveryEffect::StartAutoHls)).count();
                     if fx.iter().any(|e| matches!(e, RecoveryEffect::ConvertFacet { .. })) {
                         assert_eq!(m.flights, 0, "a facet conversion after another flight: {ev:?} in {:?}", m.state);
@@ -569,58 +662,166 @@ mod tests {
         }
     }
 
-    /// **Every state x event pair has a pinned outcome**: whether it is handled, and where it goes.
-    /// An unhandled pair changes nothing and asks for nothing. (`Refused` is a DTS 5.1 refusal of an
-    /// Engine with no picture on a manual Original; `RefusalConfirmed` is the learner's answer.)
+    /// **Every state x event pair has a pinned outcome**: whether it is handled, where it goes, and
+    /// what it asks for. An unhandled pair changes nothing and asks for nothing. (`Refused` is a DTS
+    /// 5.1 refusal of an Engine with no picture on a manual Original; `Proving` is entered by a
+    /// clean facet landing.)
     #[test]
     fn every_state_and_event_pair_has_a_pinned_outcome() {
         use Handled::{No, Yes};
-        use Phase::{Confirming, Failed, Flight, Opening, Playing};
+        use Phase::{Failed, Flight, Opening, Playing, Proving};
         let refusal = || refused(SHUT, on_dts(facts(false, false, true)));
-        let confirmed = || RecoveryEvent::RefusalConfirmed { newly: false };
-        // (state, event name, event, handled, next state)
+        let named_refusal = || refused(NATIVE, OpenFacts { native_audio: Some(dts6()), ..on_dts(facts(false, false, true)) });
+        let convert = || vec![RecoveryEffect::ConvertFacet { facet: dts6(), flight: 1 }];
+        // (state, event name, event, handled, next state, effects)
         #[allow(clippy::type_complexity)]
-        let table: Vec<(Phase, &str, RecoveryEvent, Handled, Phase)> = vec![
-            (Opening, "Refused", refusal(), Yes, Flight),
-            (Opening, "RefusalConfirmed", confirmed(), No, Opening),
-            (Opening, "FlightLanded", RecoveryEvent::FlightLanded, No, Opening),
-            (Opening, "FlightRefused", RecoveryEvent::FlightRefused, No, Opening),
-            (Opening, "FirstPicture", RecoveryEvent::FirstPicture, Yes, Playing),
-            (Opening, "LoadStarted", RecoveryEvent::LoadStarted, No, Opening),
-            (Confirming, "Refused", refusal(), No, Confirming),
-            (Confirming, "RefusalConfirmed", confirmed(), Yes, Failed),
-            (Confirming, "FlightLanded", RecoveryEvent::FlightLanded, No, Confirming),
-            (Confirming, "FlightRefused", RecoveryEvent::FlightRefused, No, Confirming),
-            (Confirming, "FirstPicture", RecoveryEvent::FirstPicture, No, Confirming),
-            (Confirming, "LoadStarted", RecoveryEvent::LoadStarted, No, Confirming),
-            (Flight, "Refused", refusal(), No, Flight),
-            (Flight, "RefusalConfirmed", confirmed(), No, Flight),
-            (Flight, "FlightLanded", RecoveryEvent::FlightLanded, Yes, Opening),
-            (Flight, "FlightRefused", RecoveryEvent::FlightRefused, Yes, Failed),
-            (Flight, "FirstPicture", RecoveryEvent::FirstPicture, No, Flight),
-            (Flight, "LoadStarted", RecoveryEvent::LoadStarted, Yes, Opening),
-            (Playing, "Refused", refusal(), Yes, Flight),
-            (Playing, "RefusalConfirmed", confirmed(), No, Playing),
-            (Playing, "FlightLanded", RecoveryEvent::FlightLanded, No, Playing),
-            (Playing, "FlightRefused", RecoveryEvent::FlightRefused, No, Playing),
-            (Playing, "FirstPicture", RecoveryEvent::FirstPicture, No, Playing),
-            (Playing, "LoadStarted", RecoveryEvent::LoadStarted, No, Playing),
-            (Failed, "Refused", refusal(), No, Failed),
-            (Failed, "RefusalConfirmed", confirmed(), No, Failed),
-            (Failed, "FlightLanded", RecoveryEvent::FlightLanded, No, Failed),
-            (Failed, "FlightRefused", RecoveryEvent::FlightRefused, No, Failed),
-            (Failed, "FirstPicture", RecoveryEvent::FirstPicture, No, Failed),
-            (Failed, "LoadStarted", RecoveryEvent::LoadStarted, Yes, Opening),
+        let table: Vec<(Phase, &str, RecoveryEvent, Handled, Phase, Vec<RecoveryEffect>)> = vec![
+            (Opening, "Refused", refusal(), Yes, Flight, convert()),
+            (Opening, "FlightLanded", landed(), No, Opening, vec![]),
+            (Opening, "FlightRefused", RecoveryEvent::FlightRefused, No, Opening, vec![]),
+            (Opening, "FirstPicture", RecoveryEvent::FirstPicture, Yes, Playing, vec![]),
+            (Opening, "LoadStarted", RecoveryEvent::LoadStarted, No, Opening, vec![]),
+            (Proving, "Refused", refusal(), Yes, Failed, ERROR.to_vec()),
+            (Proving, "FlightLanded", landed_with(CLEAN), No, Proving, vec![]),
+            (Proving, "FlightRefused", RecoveryEvent::FlightRefused, No, Proving, vec![]),
+            (Proving, "FirstPicture", RecoveryEvent::FirstPicture, Yes, Playing, vec![proof(dts6())]),
+            (Proving, "LoadStarted", RecoveryEvent::LoadStarted, Yes, Proving, vec![]),
+            (Flight, "Refused", refusal(), No, Flight, vec![]),
+            (Flight, "FlightLanded", landed(), Yes, Opening, vec![]),
+            (Flight, "FlightRefused", RecoveryEvent::FlightRefused, Yes, Failed, ERROR.to_vec()),
+            (Flight, "FirstPicture", RecoveryEvent::FirstPicture, No, Flight, vec![]),
+            (Flight, "LoadStarted", RecoveryEvent::LoadStarted, Yes, Opening, vec![]),
+            (Playing, "Refused", refusal(), Yes, Flight, convert()),
+            (Playing, "FlightLanded", landed(), No, Playing, vec![]),
+            (Playing, "FlightRefused", RecoveryEvent::FlightRefused, No, Playing, vec![]),
+            (Playing, "FirstPicture", RecoveryEvent::FirstPicture, No, Playing, vec![]),
+            (Playing, "LoadStarted", RecoveryEvent::LoadStarted, No, Playing, vec![]),
+            (Failed, "Refused", refusal(), No, Failed, vec![]),
+            (Failed, "FlightLanded", landed(), No, Failed, vec![]),
+            (Failed, "FlightRefused", RecoveryEvent::FlightRefused, No, Failed, vec![]),
+            (Failed, "FirstPicture", RecoveryEvent::FirstPicture, No, Failed, vec![]),
+            (Failed, "LoadStarted", RecoveryEvent::LoadStarted, Yes, Opening, vec![]),
+            // A refusal that NAMES the codec, while a proof is pending: the Named write, never the Proof.
+            (Proving, "Refused", named_refusal(), Yes, Failed, vec![named(dts6()), RecoveryEffect::ShowError { refusal: NATIVE }]),
         ];
-        assert_eq!(table.len(), 5 * 6, "every pair of five states and six events");
-        for (state, name, ev, handled, next) in table {
+        let pairs: std::collections::HashSet<String> = table.iter().map(|row| format!("{:?} x {}", row.0, row.1)).collect();
+        assert_eq!(pairs.len(), 5 * 5, "every pair of five states and five events is pinned (an extra row pins a variant)");
+        for (state, name, ev, handled, next, effects) in table {
             let mut m = in_phase(state);
             let (got, fx) = run(&mut m, ev);
-            assert_eq!((got, m.phase()), (handled, next), "{state:?} x {name}");
-            if handled == No {
-                assert!(fx.is_empty(), "{state:?} x {name}: an unhandled event asks for {fx:?}");
-            }
+            assert_eq!((got, m.phase(), fx), (handled, next, effects), "{state:?} x {name}");
         }
+    }
+
+    /// **A clean audio facet flight proves, once, at the first picture.** The 601 converts DTS 5.1,
+    /// PMS answers the audio lane `transcode` and the video lane `copy`, and the reload's first
+    /// picture reports exactly one proof; a second picture says nothing.
+    #[test]
+    fn a_clean_audio_facet_flight_reports_one_proof_at_the_first_picture() {
+        let mut m = machine();
+        let (_, fx) = run(&mut m, refused(SHUT, on_dts(facts(false, false, true))));
+        assert_eq!(fx, [RecoveryEffect::ConvertFacet { facet: dts6(), flight: 1 }]);
+        assert_eq!(run(&mut m, landed_with(CLEAN)), (Handled::Yes, vec![]));
+        assert_eq!(m.phase(), Phase::Proving);
+        assert_eq!(run(&mut m, RecoveryEvent::FirstPicture), (Handled::Yes, vec![proof(dts6())]));
+        assert_eq!(m.phase(), Phase::Playing);
+        assert_eq!(run(&mut m, RecoveryEvent::FirstPicture), (Handled::No, vec![]), "once");
+        // `directplay` on the video lane is as clean as `copy`.
+        let mut m = machine();
+        run(&mut m, refused(SHUT, on_dts(facts(false, false, true))));
+        run(&mut m, landed_with(Lanes { video: Lane::DirectPlay, audio: Lane::Transcode }));
+        assert_eq!(m.phase(), Phase::Proving);
+    }
+
+    /// **Only the facet rung proves.** The both-facets rung (HLS), the contingency after a refused
+    /// facet flight and the rollback land to `Opening` however clean their verdicts, so their first
+    /// picture reports nothing.
+    #[test]
+    fn the_both_facets_and_rollback_rungs_report_no_proof() {
+        let picture_after = |m: &mut OpenRecovery| {
+            let fx = run(m, RecoveryEvent::FirstPicture).1;
+            (fx, m.phase())
+        };
+        // (a) an AAC cold Auto Original: nothing suspect, the HLS contingency flies.
+        let mut m = machine();
+        let (_, fx) = run(&mut m, refused(SHUT, OpenFacts { audio: audio("aac", 2), ..facts(false, true, true) }));
+        assert_eq!(fx, [RecoveryEffect::StartAutoHls]);
+        run(&mut m, landed_with(CLEAN));
+        assert_eq!(picture_after(&mut m), (vec![], Phase::Playing), "(a) the both-facets rung");
+        // (b) the facet flight refused: the HLS contingency flies and lands.
+        let mut m = machine();
+        run(&mut m, refused(SHUT, on_dts(facts(false, true, true))));
+        let (_, fx) = run(&mut m, RecoveryEvent::FlightRefused);
+        assert_eq!(fx, [RecoveryEffect::StartAutoHls]);
+        run(&mut m, landed_with(CLEAN));
+        assert_eq!(picture_after(&mut m), (vec![], Phase::Playing), "(b) the contingency after a refused facet flight");
+        // (c) a pending Original trial: the rollback.
+        let mut m = machine();
+        let (_, fx) = run(&mut m, refused(SHUT, on_dts(facts(true, true, true))));
+        assert_eq!(fx, [RecoveryEffect::Rollback]);
+        run(&mut m, landed_with(CLEAN));
+        assert_eq!(picture_after(&mut m), (vec![], Phase::Playing), "(c) the rollback");
+    }
+
+    /// A timeout or a source failure names no facet, so neither enters the facet rung nor proves.
+    #[test]
+    fn a_timeout_or_source_failure_reports_no_proof() {
+        for refusal in [LoadRefusal::TimedOut, LoadRefusal::SourceFailed] {
+            let mut m = machine();
+            let (_, fx) = run(&mut m, refused(refusal, on_dts(facts(false, true, true))));
+            assert_eq!(fx, [RecoveryEffect::StartAutoHls], "{refusal}");
+            run(&mut m, landed_with(CLEAN));
+            let (_, fx) = run(&mut m, RecoveryEvent::FirstPicture);
+            assert_eq!((fx, m.phase()), (vec![], Phase::Playing), "{refusal}");
+        }
+    }
+
+    /// A landing that did not change the converted facet ALONE, by PMS's own verdicts, proves
+    /// nothing: the video was transcoded too, a lane is unstated, the audio was not converted, or
+    /// the landing carries no verdicts.
+    #[test]
+    fn a_facet_flight_not_changed_alone_reports_no_proof() {
+        let lanes = |video, audio| Some(Lanes { video, audio });
+        for (what, landing) in [
+            ("both lanes transcoded", lanes(Lane::Transcode, Lane::Transcode)),
+            ("video unstated", lanes(Lane::Unstated, Lane::Transcode)),
+            ("audio copied: the flip was not the facet's", lanes(Lane::Copy, Lane::Copy)),
+            ("audio unstated", lanes(Lane::Copy, Lane::Unstated)),
+            ("no verdicts", None),
+        ] {
+            let mut m = machine();
+            run(&mut m, refused(SHUT, on_dts(facts(false, false, true))));
+            run(&mut m, RecoveryEvent::FlightLanded { lanes: landing });
+            assert_eq!(m.phase(), Phase::Opening, "{what}");
+            assert_eq!(run(&mut m, RecoveryEvent::FirstPicture).1, vec![], "{what}");
+        }
+    }
+
+    /// The proving reload is refused again: the proof is dropped, and the ladder rules as for any
+    /// `Opening` (the facet rung is spent: the read-out on a manual Original, the HLS contingency
+    /// on a cold Auto Original, whose later picture proves nothing).
+    #[test]
+    fn a_refused_proving_reload_reports_no_proof() {
+        let mut m = in_phase(Phase::Proving);
+        let (handled, fx) = run(&mut m, refused(SHUT, on_dts(facts(false, false, true))));
+        assert_eq!((handled, fx, m.phase()), (Handled::Yes, ERROR.to_vec(), Phase::Failed));
+        let mut m = in_phase(Phase::Proving);
+        let (_, fx) = run(&mut m, refused(SHUT, on_dts(facts(false, true, true))));
+        assert_eq!((fx, m.phase()), (vec![RecoveryEffect::StartAutoHls], Phase::Flight));
+        run(&mut m, landed_with(CLEAN));
+        assert_eq!(run(&mut m, RecoveryEvent::FirstPicture).1, vec![], "the dropped proof is not credited later");
+    }
+
+    /// **A refusal that names the codec is recorded and picks its rung in ONE step**, learner first:
+    /// there is no confirmation state to wait in.
+    #[test]
+    fn a_named_refusal_confirms_and_picks_its_rung_in_one_step() {
+        let mut m = OpenRecovery::new(opus_start());
+        let (handled, fx) = run(&mut m, refused(NATIVE, names_opus(facts(false, false, true))));
+        assert_eq!(handled, Handled::Yes);
+        assert_eq!(fx, [named(opus6()), RecoveryEffect::ConvertFacet { facet: opus6(), flight: 1 }]);
+        assert_eq!(m.phase(), Phase::Flight);
+        assert_eq!(*m.attempt(), opus_start().without(&opus6()));
     }
 
     #[test]
@@ -662,7 +863,7 @@ mod tests {
         let mut m = machine();
         let (_, fx) = run(&mut m, refused(SHUT, on_dts(facts(true, false, true))));
         assert_eq!(fx, [RecoveryEffect::Rollback]);
-        run(&mut m, RecoveryEvent::FlightLanded);
+        run(&mut m, landed());
         let (_, fx) = run(&mut m, refused(SHUT, on_dts(facts(false, false, true))));
         assert_eq!(fx, [RecoveryEffect::ConvertFacet { facet: dts6(), flight: 1 }], "the rollback spent no flight");
     }
@@ -676,7 +877,7 @@ mod tests {
         assert_eq!(failed(&mut machine(), false), [RecoveryEffect::ShowError { refusal: LoadRefusal::SourceFailed }]);
         let mut m = machine();
         run(&mut m, refused(SHUT, on_dts(facts(false, true, true))));
-        run(&mut m, RecoveryEvent::FlightLanded);
+        run(&mut m, landed());
         assert_eq!(failed(&mut m, true), [RecoveryEffect::StartAutoHls]);
     }
 
@@ -686,26 +887,11 @@ mod tests {
         assert_eq!(start.without(&opus6()), *start, "the fixture: the attempt already lacks the facet");
         let stalled = |auto| {
             let mut m = OpenRecovery::new(start.clone());
-            let (_, fx) = run(&mut m, refused(LoadRefusal::Stalled, names_opus(facts(false, auto, true))));
-            assert_eq!(fx, [RecoveryEffect::ConfirmRefusal]);
-            run(&mut m, RecoveryEvent::RefusalConfirmed { newly: false }).1
+            run(&mut m, refused(LoadRefusal::Stalled, names_opus(facts(false, auto, true)))).1
         };
-        assert_eq!(stalled(false), [RecoveryEffect::ShowError { refusal: LoadRefusal::Stalled }]);
-        assert_eq!(stalled(true), [RecoveryEffect::StartAutoHls]);
-    }
-
-    #[test]
-    fn newly_does_not_pick_the_rung() {
-        let start = opus_start();
-        assert_ne!(start.without(&opus6()), *start);
-        for newly in [true, false] {
-            let mut m = OpenRecovery::new(start.clone());
-            run(&mut m, refused(NATIVE, names_opus(facts(false, false, true))));
-            assert_eq!(*m.attempt(), *start, "nothing is narrowed before the rung is entered");
-            let (_, fx) = run(&mut m, RecoveryEvent::RefusalConfirmed { newly });
-            assert_eq!(fx, [RecoveryEffect::ConvertFacet { facet: opus6(), flight: 1 }], "newly={newly}");
-            assert_eq!(*m.attempt(), start.without(&opus6()), "newly={newly}");
-        }
+        let read_out = RecoveryEffect::ShowError { refusal: LoadRefusal::Stalled };
+        assert_eq!(stalled(false), [named(opus6()), read_out], "the write is asked for, the rung is the read-out");
+        assert_eq!(stalled(true), [named(opus6()), RecoveryEffect::StartAutoHls]);
     }
 
     #[test]
@@ -725,23 +911,19 @@ mod tests {
 
     #[test]
     fn a_refusal_that_names_native_audio_is_confirmed_before_the_rung_is_picked() {
+        // Nothing suspect was fed (the facts name no stream audio): the ladder for a manual
+        // Original with nothing pending is the read-out, after the write.
         let mut m = machine();
         let (handled, fx) = run(&mut m, refused(NATIVE, OpenFacts { native_audio: Some(opus6()), ..facts(false, false, true) }));
-        assert_eq!((handled, m.phase()), (Handled::Yes, Phase::Confirming));
-        assert_eq!(fx, [RecoveryEffect::ConfirmRefusal]);
-        // Nothing suspect was fed (the facts name no stream audio): the ladder for a manual
-        // Original with nothing pending is the read-out.
-        let (handled, fx) = run(&mut m, RecoveryEvent::RefusalConfirmed { newly: false });
         assert_eq!((handled, m.phase()), (Handled::Yes, Phase::Failed));
-        assert_eq!(fx, [RecoveryEffect::ShowError { refusal: NATIVE }]);
+        assert_eq!(fx, [named(opus6()), RecoveryEffect::ShowError { refusal: NATIVE }]);
     }
 
     #[test]
     fn a_known_combination_still_takes_the_auto_originals_hls_contingency() {
         let mut m = machine();
-        run(&mut m, refused(NATIVE, OpenFacts { native_audio: Some(opus6()), ..facts(false, true, true) }));
-        let (_, fx) = run(&mut m, RecoveryEvent::RefusalConfirmed { newly: false });
-        assert_eq!((fx, m.phase()), (vec![RecoveryEffect::StartAutoHls], Phase::Flight));
+        let (_, fx) = run(&mut m, refused(NATIVE, OpenFacts { native_audio: Some(opus6()), ..facts(false, true, true) }));
+        assert_eq!((fx, m.phase()), (vec![named(opus6()), RecoveryEffect::StartAutoHls], Phase::Flight));
     }
 
     #[test]
@@ -749,7 +931,7 @@ mod tests {
         let mut m = machine();
         run(&mut m, refused(SHUT, facts(true, false, true)));
         assert_eq!(m.phase(), Phase::Flight);
-        let (handled, fx) = run(&mut m, RecoveryEvent::FlightLanded);
+        let (handled, fx) = run(&mut m, landed());
         assert_eq!((handled, fx, m.phase()), (Handled::Yes, vec![], Phase::Opening));
 
         let mut m = machine();
@@ -773,7 +955,7 @@ mod tests {
     #[test]
     fn answers_with_no_question_outstanding_are_not_handled() {
         let mut m = machine();
-        for ev in [RecoveryEvent::RefusalConfirmed { newly: true }, RecoveryEvent::FlightLanded, RecoveryEvent::FlightRefused] {
+        for ev in [landed(), RecoveryEvent::FlightRefused] {
             assert_eq!(run(&mut m, ev), (Handled::No, vec![]));
         }
         assert_eq!(m.phase(), Phase::Opening);
@@ -810,16 +992,16 @@ mod tests {
         assert_eq!(m.phase(), Phase::Playing);
         let reloaded = names_opus(facts(false, false, true));
         let (handled, fx) = run(&mut m, refused(NATIVE, reloaded.clone()));
-        assert_eq!((handled, fx, m.phase()), (Handled::Yes, vec![RecoveryEffect::ConfirmRefusal], Phase::Confirming));
-        let (_, fx) = run(&mut m, RecoveryEvent::RefusalConfirmed { newly: false });
-        assert_eq!((fx, m.phase()), (vec![RecoveryEffect::ConvertFacet { facet: opus6(), flight: 1 }], Phase::Flight));
+        assert_eq!(
+            (handled, fx, m.phase()),
+            (Handled::Yes, vec![named(opus6()), RecoveryEffect::ConvertFacet { facet: opus6(), flight: 1 }], Phase::Flight)
+        );
         assert_eq!(*m.attempt(), start.without(&opus6()));
         // The same refusal of an Engine that HAS a picture converts nothing.
         let mut m = OpenRecovery::new(start);
         run(&mut m, RecoveryEvent::FirstPicture);
-        run(&mut m, refused(NATIVE, names_opus(facts(false, false, false))));
-        let (_, fx) = run(&mut m, RecoveryEvent::RefusalConfirmed { newly: false });
-        assert_eq!((fx, m.phase()), (vec![RecoveryEffect::ShowError { refusal: NATIVE }], Phase::Failed));
+        let (_, fx) = run(&mut m, refused(NATIVE, names_opus(facts(false, false, false))));
+        assert_eq!((fx, m.phase()), (vec![named(opus6()), RecoveryEffect::ShowError { refusal: NATIVE }], Phase::Failed));
     }
 
     #[test]
@@ -830,23 +1012,23 @@ mod tests {
         // Original's HLS contingency.
         let stalled = |pending, auto| {
             let mut m = OpenRecovery::new(Arc::new(opus_start().without(&opus6())));
-            run(&mut m, refused(LoadRefusal::Stalled, names_opus(facts(pending, auto, true))));
-            run(&mut m, RecoveryEvent::RefusalConfirmed { newly: false }).1
+            run(&mut m, refused(LoadRefusal::Stalled, names_opus(facts(pending, auto, true)))).1
         };
-        assert_eq!(stalled(false, false), [RecoveryEffect::ShowError { refusal: LoadRefusal::Stalled }]);
-        assert_eq!(stalled(true, false), [RecoveryEffect::Rollback]);
-        assert_eq!(stalled(false, true), [RecoveryEffect::StartAutoHls]);
+        assert_eq!(stalled(false, false), [named(opus6()), RecoveryEffect::ShowError { refusal: LoadRefusal::Stalled }]);
+        assert_eq!(stalled(true, false), [named(opus6()), RecoveryEffect::Rollback]);
+        assert_eq!(stalled(false, true), [named(opus6()), RecoveryEffect::StartAutoHls]);
     }
 
-    /// A machine in each state, built through its own events: `Opening`, `Confirming`, `Flight`
-    /// (the facet rung; a DTS 5.1 refused), `Playing` and `Failed` (the facet flight refused on a
-    /// manual Original).
+    /// A machine in each state, built through its own events: `Opening`, `Proving` (the facet flight
+    /// landed clean), `Flight` (the facet rung; a DTS 5.1 refused), `Playing` and `Failed` (the facet
+    /// flight refused on a manual Original).
     fn in_phase(phase: Phase) -> OpenRecovery {
         let mut m = machine();
         match phase {
             Phase::Opening => {}
-            Phase::Confirming => {
-                run(&mut m, refused(NATIVE, OpenFacts { native_audio: Some(opus6()), ..facts(false, false, true) }));
+            Phase::Proving => {
+                run(&mut m, refused(SHUT, on_dts(facts(false, false, true))));
+                run(&mut m, landed_with(CLEAN));
             }
             Phase::Flight => {
                 run(&mut m, refused(SHUT, on_dts(facts(false, false, true))));
@@ -888,12 +1070,13 @@ mod tests {
         }
     }
 
-    /// `LoadStarted` is a pinned outcome in every state, and only `Flight` and `Failed` move.
+    /// `LoadStarted` is a pinned outcome in every state: `Flight` and `Failed` re-open, `Proving`
+    /// takes the landing's own reload (the phase stays), and `Opening` and `Playing` ignore it.
     #[test]
-    fn load_started_changes_only_a_flight_and_the_read_out() {
+    fn load_started_is_pinned_in_every_state() {
         for (phase, handled, next) in [
             (Phase::Opening, Handled::No, Phase::Opening),
-            (Phase::Confirming, Handled::No, Phase::Confirming),
+            (Phase::Proving, Handled::Yes, Phase::Proving),
             (Phase::Flight, Handled::Yes, Phase::Opening),
             (Phase::Playing, Handled::No, Phase::Playing),
             (Phase::Failed, Handled::Yes, Phase::Opening),
@@ -909,11 +1092,54 @@ mod tests {
     #[test]
     fn the_flights_own_reload_changes_nothing() {
         let mut m = in_phase(Phase::Flight);
-        run(&mut m, RecoveryEvent::FlightLanded);
+        run(&mut m, landed());
         assert_eq!(run(&mut m, RecoveryEvent::LoadStarted), (Handled::No, vec![]));
         assert_eq!(m.phase(), Phase::Opening);
         let (_, fx) = run(&mut m, refused(SHUT, on_dts(facts(false, false, true))));
         assert_eq!(fx, ERROR, "one conversion per request, whichever way the second open began");
+    }
+
+    /// **A request that already showed a picture proves nothing by a later facet flight.** The
+    /// picture is per Engine (`frames` and `seen_frame` are cleared by every reload), so a facet
+    /// rung is reachable from `Playing`: a DTS 5.1 direct play that pictured, a Home and a return,
+    /// and the restore Load refused (`601`) before its picture. This request already played DTS 5.1
+    /// natively, so the conversion's rescue proves nothing about the format.
+    #[test]
+    fn a_request_that_already_pictured_never_proves_a_facet_flight() {
+        let mut m = in_phase(Phase::Playing);
+        let (handled, fx) = run(&mut m, refused(SHUT, on_dts(facts(false, false, true))));
+        assert_eq!((handled, fx), (Handled::Yes, vec![RecoveryEffect::ConvertFacet { facet: dts6(), flight: 1 }]));
+        assert_eq!(run(&mut m, landed_with(CLEAN)), (Handled::Yes, vec![]));
+        assert_eq!(m.phase(), Phase::Opening, "a clean landing after a picture is not a proof");
+        assert_eq!(run(&mut m, RecoveryEvent::FirstPicture).1, vec![], "no proof at the converted route's picture");
+        assert_eq!(m.phase(), Phase::Playing);
+    }
+
+    /// **Only the landing's own reload keeps a pending proof.** The machine moves to `Proving` at
+    /// `FlightLanded`, and the landing then reloads onto the converted route (its `LoadStarted`
+    /// arrives AFTER the move: `land_recovery_flight`). A second Load before the picture (a track
+    /// switch, a restore after Home, a seek reload) is a route whose lanes were never read.
+    #[test]
+    fn only_the_landings_own_reload_keeps_the_pending_proof() {
+        let mut m = in_phase(Phase::Proving);
+        assert_eq!(run(&mut m, RecoveryEvent::LoadStarted), (Handled::Yes, vec![]), "the landing's own reload");
+        assert_eq!(m.phase(), Phase::Proving);
+        assert_eq!(run(&mut m, RecoveryEvent::FirstPicture), (Handled::Yes, vec![proof(dts6())]));
+    }
+
+    #[test]
+    fn a_reload_the_landing_did_not_ask_for_drops_the_pending_proof() {
+        let mut m = in_phase(Phase::Proving);
+        run(&mut m, RecoveryEvent::LoadStarted);
+        assert_eq!(run(&mut m, RecoveryEvent::LoadStarted), (Handled::Yes, vec![]), "a foreign Load");
+        assert_eq!(m.phase(), Phase::Opening);
+        assert_eq!(run(&mut m, RecoveryEvent::FirstPicture).1, vec![], "the dropped proof is not credited");
+        // The spent rungs are kept: a refusal of the foreign Load is ruled on as any `Opening` is.
+        let mut m = in_phase(Phase::Proving);
+        run(&mut m, RecoveryEvent::LoadStarted);
+        run(&mut m, RecoveryEvent::LoadStarted);
+        let (_, fx) = run(&mut m, refused(SHUT, on_dts(facts(false, false, true))));
+        assert_eq!(fx, ERROR, "one conversion per request");
     }
 
     #[test]

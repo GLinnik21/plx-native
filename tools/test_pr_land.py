@@ -2,7 +2,8 @@
 """tools/pr-land.py against a fake `gh`: the gate's refusals, the wait loop, the merge and its verify.
 
 Hermetic. `gh` is a script first on PATH that answers from a scenario file and logs every call; the
-sleeper and the clock are injected, so no test waits. The merge's verify step runs real `git` against
+sleeper and the clock are injected, so no test sleeps on the poll or race timers (one lets a hung `gh`
+hit a 1 s timeout). The merge's verify step runs real `git` against
 a bare origin and a clone made in a temporary directory. The secret scan imports a COPY of
 .claude/hooks/outbound-guard.py from a temporary repo root holding a fake `.tv-host`, with the per-user
 TV config pointed at an empty directory, so no real private file is read.
@@ -941,7 +942,8 @@ class SecretScanTests(Base):
 
 
 class RestackTests(Base):
-    """`restack`: AGENTS.md's four merges on a stacked branch after the PR below it squash-merged."""
+    """`restack`: the four merges of .agents/skills/land-pr/SKILL.md ("Stacked PRs: restack") on a stacked
+    branch after the PR below it squash-merged."""
 
     def ancestor(self, sb, oid, of="HEAD"):
         return git_try(sb.st.work, "merge-base", "--is-ancestor", oid, of).returncode == 0

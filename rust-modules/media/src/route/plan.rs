@@ -961,6 +961,22 @@ pub(super) fn decision_codecs(mc: &plx_plex::plex::MediaContainer) -> Option<(St
 }
 
 
+/// The lane verdicts a `/decision` answer states for the first video and the first audio stream of
+/// its decided Part, as the failed-open ladder's proof rule reads them
+/// ([`crate::player::recovery::Lanes`]). Beside [`decision_codecs`] and [`decision_copies_video`], with
+/// the same traversal; unlike [`decision_copies_video`], a lane the body is silent about is
+/// `Unstated`, never read through the contract: silence proves nothing.
+pub(super) fn decision_lanes(mc: &plx_plex::plex::MediaContainer) -> crate::player::recovery::Lanes {
+    use crate::player::recovery::{Lane, Lanes};
+    let streams = mc.metadata.first().and_then(|m| m.decided_media()).and_then(|md| md.part.first()).map(|p| &p.stream);
+    let lane = |stream_type| {
+        streams
+            .and_then(|ss| ss.iter().find(|s| s.stream_type == stream_type))
+            .map_or(Lane::Unstated, |s| Lane::of(&s.decision))
+    };
+    Lanes { video: lane(1), audio: lane(2) }
+}
+
 /// Does the server's `/decision` copy the video lane — hand on the source's own elementary stream,
 /// re-encoding only the audio (or nothing)? A lane that says `copy` does; one that says
 /// `transcode` does not; a body silent about the lane follows the contract (`remux` copies by

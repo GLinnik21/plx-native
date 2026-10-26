@@ -620,8 +620,8 @@ fn load_refusal() -> super::recovery::LoadRefusal {
 
 /// The native audio a refusal just named: the flag `sf_on_event` (`type=18 num=200` while audio was
 /// fed natively) or the stall watchdog raised, and the audio the demuxer is feeding. Peeks the flag,
-/// which [`learn_native_audio_refusal`] consumes when the ladder asks for the confirmation; a flag
-/// raised with nothing fed natively is dropped here, as it always was.
+/// which [`confirm_refusal`] consumes when the ladder asks for the write (the facet itself travels
+/// on the effect); a flag raised with nothing fed natively is dropped here, as it always was.
 fn native_audio_fact() -> Option<plx_platform::devcaps::Facet> {
     if !SHARED.native_audio_refused.load(Acquire) {
         return None;
@@ -635,8 +635,9 @@ fn native_audio_fact() -> Option<plx_platform::devcaps::Facet> {
 
 /// Run `first` through the request's failed-open ladder ([`super::recovery::OpenRecovery`]) and
 /// execute what it asks for. **One event in a single slot**: a step's effects run in order, and the
-/// one answer an effect gives (the learner's verdict, a flight that could not start) is the next
-/// event, until a step asks for nothing more. `why` words the learner's log line.
+/// one answer an effect gives (a flight that could not start) is the next event, until a step asks
+/// for nothing more. The learner's write ([`confirm_refusal`]) is fire-and-forget: nothing answers it.
+/// `why` words its log line.
 ///
 /// Pending HLS rollback has priority; a failed rollback is terminal rather than silently starting a
 /// third transaction on route state whose encoder restore already failed. A pipeline refusal of a
@@ -644,7 +645,7 @@ fn native_audio_fact() -> Option<plx_platform::devcaps::Facet> {
 /// once per request; a cold Auto Original then falls back to HLS. Each recovery is a flight: the replacement route's PMS half runs on a worker while the
 /// viewer keeps the connecting spinner they had.
 fn drive_open_recovery(ps: &mut crate::route::PlaybackSession, first: super::recovery::RecoveryEvent, why: &str) -> OpenRecoveryRun {
-    use super::recovery::{RecoveryEffect, RecoveryEvent};
+    use super::recovery::{Evidence, RecoveryEffect, RecoveryEvent};
     let mut run = OpenRecoveryRun::Quiet;
     let mut ev = first;
     loop {
@@ -653,10 +654,12 @@ fn drive_open_recovery(ps: &mut crate::route::PlaybackSession, first: super::rec
         let mut answer = None;
         for effect in fx {
             let dispatched = match effect {
-                RecoveryEffect::ConfirmRefusal => {
-                    answer = Some(RecoveryEvent::RefusalConfirmed {
-                        newly: learn_native_audio_refusal(why, plx_plex::plex::session::learn_native_audio_refusal),
-                    });
+                RecoveryEffect::ConfirmRefusal { facet, evidence } => {
+                    let record: fn(&plx_platform::devcaps::Facet) -> bool = match evidence {
+                        Evidence::Named => plx_plex::plex::session::record_named_refusal,
+                        Evidence::Proof => plx_plex::plex::session::record_refusal_proof,
+                    };
+                    confirm_refusal(&facet, evidence, why, record);
                     continue;
                 }
                 RecoveryEffect::Rollback => {
@@ -745,33 +748,39 @@ fn refused_native_audio() -> Option<plx_platform::devcaps::Facet> {
     Some(plx_platform::devcaps::Facet::Audio { codec: kind.ffmpeg_name().into(), channels })
 }
 
-/// The Load was refused with `type=18 num=200` while the audio was fed natively: remember the
-/// codec and channel count as refused on this firmware (`learn`, which is
-/// `session::learn_native_audio_refusal` in the player and a recorder in the tests). True when the
-/// refusal is new to the install; false when nothing was refused that way, or the combination was
-/// already known. The answer is persistence only: it selects no rung (the machine's facet rung is
-/// chosen by [`super::recovery::suspect`] and its loop guard, so a combination already stored, and so
-/// already absent from the attempt, gets no second conversion), and the driver words its log line
-/// with it.
-fn learn_native_audio_refusal(why: &str, learn: impl FnOnce(&str, u32) -> bool) -> bool {
-    if !SHARED.native_audio_refused.swap(false, Release) {
-        return false;
+/// The machine asked for `facet` to be recorded as refused on this firmware (`record`, which is
+/// `session::record_named_refusal` or `record_refusal_proof` in the player and a recorder in the
+/// tests). A [`Named`](super::recovery::Evidence::Named) write is the pipeline's own refusal
+/// (`type=18 num=200` with the audio fed natively, or the stall): it consumes the flag that raised it,
+/// so one raise writes once. A [`Proof`](super::recovery::Evidence::Proof) write is a facet-clean
+/// rescue at the first picture and touches no flag. True when `record` queued a write. The answer selects nothing: the machine's facet rung is chosen by
+/// [`super::recovery::suspect`] and its loop guard, so a combination already stored, and so already
+/// absent from the attempt, gets no second conversion; the answer only words nothing today.
+fn confirm_refusal(
+    facet: &plx_platform::devcaps::Facet,
+    evidence: super::recovery::Evidence,
+    why: &str,
+    record: impl FnOnce(&plx_platform::devcaps::Facet) -> bool,
+) -> bool {
+    match evidence {
+        super::recovery::Evidence::Named => {
+            if !SHARED.native_audio_refused.swap(false, Release) {
+                return false;
+            }
+            super::log(&format!("native audio: the pipeline refused {facet:?} ({why})"));
+        }
+        super::recovery::Evidence::Proof => {
+            super::log(&format!("open recovery: {facet:?} proved refused (flight landed, video copied)"));
+        }
     }
-    let Some((kind, channels)) = crate::ff::native_audio::fed() else {
-        return false;
-    };
-    super::log(&format!(
-        "native audio: the pipeline refused {} with {channels} channels ({why})",
-        kind.ffmpeg_name()
-    ));
-    learn(kind.ffmpeg_name(), channels)
+    record(facet)
 }
 
 /// The native surround audio watchdog ([`super::native_stall`]): the pipeline took the Load and a few
 /// access units of a native Opus track with more than two channels, then stopped
 /// accepting with both our queues full and no picture. True when it fired, with the refusal flag
-/// raised: the caller hands the audio to the failed-open ladder, whose confirmation is the learner
-/// ([`learn_native_audio_refusal`]).
+/// raised: the caller hands the audio to the failed-open ladder, whose named write is the learner
+/// ([`confirm_refusal`]).
 fn native_audio_stall_fired(eng: &Engine, now: u32) -> bool {
     use super::native_stall::{Probe, Step, NATIVE_AUDIO_STALL_MS, SIZES, WATCH};
     let fed = crate::ff::native_audio::fed();
@@ -843,7 +852,7 @@ fn land_recovery_flight(
 ) {
     match landing.verdict {
         crate::route::RecoveryVerdict::Install => {
-            let _ = drive_open_recovery(ps, super::recovery::RecoveryEvent::FlightLanded, "");
+            let _ = drive_open_recovery(ps, super::recovery::RecoveryEvent::FlightLanded { lanes: landing.lanes }, "");
             let _ = settle_reload(
                 super::engine::reload_transcode(ps, pa, landing.offset_ns),
                 "recovery after failed source open",
@@ -1502,7 +1511,7 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
             return;
         }
         // The pipeline refused the open: the failed-open ladder decides. A refusal of natively fed
-        // audio is learned first (persistence only). A stream the attempt can do without
+        // audio is recorded first (a queued write, selecting nothing). A stream the attempt can do without
         // (`recovery::suspect`: audio outside aac/ac3/eac3, whatever the refusal's number) is rebuilt
         // with the server converting it, once per request, when this Engine has shown no picture (a
         // reload after the request's first picture is such an Engine too). A stream `start` already
@@ -1565,8 +1574,9 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         // session), and the send only queues, so this frame never waits.
         crate::route::on_decoded_frame(ps);
         // The open produced a picture: the failed-open ladder is over (idempotent, so each frame may
-        // say it).
-        let _ = ps.open_recovery().step(&super::recovery::RecoveryEvent::FirstPicture, &mut Vec::new());
+        // say it). It is also where a facet-clean rescue is credited (`Proving`), through the
+        // driver; in `Playing` the event is unhandled and asks for nothing.
+        let _ = drive_open_recovery(ps, super::recovery::RecoveryEvent::FirstPicture, "");
     }
 
     // The producer died before publishing a duration: the EOS path is gated on `duration_ns > 0`
@@ -2395,49 +2405,68 @@ mod tests {
         assert!(!settled_by_foreground(false, S::Failed), "a Load no foreground machine follows is the ladder's");
     }
 
-    /// **A native audio refusal is learned once, and only a new lesson asks for a conversion.** The
-    /// `type=18 num=200` callback sets the flag only for a session that fed its audio natively; the
-    /// pump turns it into a learned combination (the fake learner stands for
-    /// `session::learn_native_audio_refusal`), whose `true` is persistence only (the machine's
-    /// `RefusalConfirmed{newly}` selects no rung): the failed open's ladder converts the audio from
-    /// the refusal, the Engine's missing picture and the attempt, learned or not.
+    /// **The learner is reached through its injected recorder and nowhere else.** A named write is
+    /// the pipeline's own refusal: it records the facet the machine put on the effect once and
+    /// consumes the flag that raised it. A proof is a facet-clean rescue: it records its facet and
+    /// touches no flag. Neither changes the process-wide capability answer (only the queued record's
+    /// projection does): the closing section runs the REAL recorder under a temporary session and
+    /// reads the answer before the queued write lands, and the record after it.
     #[test]
-    fn a_refused_native_audio_load_is_learned_once() {
-        use std::sync::atomic::Ordering::Release;
+    fn confirm_refusal_writes_only_through_the_injected_recorder() {
+        use super::super::recovery::Evidence;
+        use plx_platform::devcaps::Facet;
+        use std::sync::atomic::Ordering::{Acquire, Release};
         let _guard = plx_base::testlock::serial();
-        let learned = std::cell::RefCell::new(Vec::new());
-        let learner = |codec: &str, channels: u32| {
-            learned.borrow_mut().push((codec.to_string(), channels));
+        let _set = plx_platform::devcaps::firmware_on_this_thread_for_test(
+            "fw",
+            "B",
+            plx_platform::devcaps::Caps { audio: "aac,ac3,eac3,opus".into(), ..plx_platform::devcaps::Caps::assumed() },
+        );
+        let _session = plx_plex::plex::session::TempSession::new("confirm-refusal-recorder");
+        let before = plx_platform::devcaps::caps();
+        let recorded = std::cell::RefCell::new(Vec::new());
+        let recorder = |facet: &Facet| {
+            recorded.borrow_mut().push(facet.clone());
             true
         };
-        let publish = |kind, channels: u32| {
-            crate::ff::native_audio::reset();
-            crate::ff::native_audio::publish_fed(kind, channels);
-        };
+        let opus6 = Facet::Audio { codec: "opus".into(), channels: 6 };
+        let dts6 = Facet::Audio { codec: "dts".into(), channels: 6 };
 
-        // Nothing refused: nothing learned.
+        // Named, with no flag raised: nothing to write.
         super::SHARED.reset_session();
-        assert!(!super::learn_native_audio_refusal("test", learner));
-        assert!(learned.borrow().is_empty());
+        assert!(!super::confirm_refusal(&opus6, Evidence::Named, "test", recorder));
+        assert!(recorded.borrow().is_empty());
 
-        // Refused, but the audio was not fed natively (converted, or an AC3 file): nothing learned.
-        crate::ff::native_audio::reset();
+        // Named, flag raised: the effect's facet is recorded once, and the flag is consumed.
         super::SHARED.native_audio_refused.store(true, Release);
-        assert!(!super::learn_native_audio_refusal("test", learner));
-        assert!(learned.borrow().is_empty());
+        assert!(super::confirm_refusal(&opus6, Evidence::Named, "test", recorder));
+        assert_eq!(*recorded.borrow(), [opus6.clone()]);
+        assert!(!super::confirm_refusal(&opus6, Evidence::Named, "test", recorder), "the refusal flag was consumed");
+        assert_eq!(recorded.borrow().len(), 1);
 
-        // Refused with native Opus stereo fed: learned, flag consumed.
-        publish(crate::ff::native_audio::Kind::Opus, 2);
+        // A proof: its own facet, and a raised flag is not its to consume.
         super::SHARED.native_audio_refused.store(true, Release);
-        assert!(super::learn_native_audio_refusal("test", learner));
-        assert_eq!(*learned.borrow(), [("opus".to_string(), 2)]);
-        assert!(!super::learn_native_audio_refusal("test", learner), "the refusal flag was consumed");
+        assert!(super::confirm_refusal(&dts6, Evidence::Proof, "test", recorder));
+        assert_eq!(*recorded.borrow(), [opus6.clone(), dts6]);
+        assert!(super::SHARED.native_audio_refused.load(Acquire), "a proof touches no flag");
+        super::SHARED.reset_session();
 
-        // A combination the install already knew: the learner says no (the machine's facet rung is
-        // not chosen by this answer; its loop guard is the attempt already lacking the facet).
+        // The injected recorder was the only writer: the install's record holds nothing yet.
+        plx_base::storage_worker::drain_for_test();
+        assert!(plx_plex::plex::session::peek().native_audio_refused().is_empty(), "the fake recorder wrote nothing");
+
+        // The real recorder, same call: the write is queued and the answer has not moved by the time
+        // `confirm_refusal` returns; the record holds the row once the queue has drained.
         super::SHARED.native_audio_refused.store(true, Release);
-        assert!(!super::learn_native_audio_refusal("test", |_, _| false));
-        crate::ff::native_audio::reset();
+        assert!(super::confirm_refusal(&opus6, Evidence::Named, "test", plx_plex::plex::session::record_named_refusal));
+        assert!(std::sync::Arc::ptr_eq(&before, &plx_platform::devcaps::caps()), "queueing the write moved no global");
+        plx_base::storage_worker::drain_for_test();
+        assert_eq!(plx_plex::plex::session::peek().native_audio_refused().len(), 1, "the real recorder wrote the row");
+        assert!(std::sync::Arc::ptr_eq(&before, &plx_platform::devcaps::caps()), "the worker's projection does not reach this thread");
+        // The record's projection on THIS thread is what moves the answer, and a named row applies at once.
+        assert!(before.audio_supports("opus", 6), "sanity: announced before the record is projected");
+        plx_plex::plex::session::save(&plx_plex::plex::session::peek());
+        assert!(!plx_platform::devcaps::caps().audio_supports("opus", 6), "the projected named row took Opus 5.1 away");
         super::SHARED.reset_session();
     }
     use super::{
@@ -3774,6 +3803,7 @@ mod flight_tests {
     fn a_native_audio_refusal_before_the_first_frame_ends_in_a_recovery_flight_not_error() {
         let mut rig = Rig::new(150);
         let _set = firmware_announcing_opus();
+        let _session = plx_plex::plex::session::TempSession::new("named-opus-flight");
         rig.flight.begin_attempt(&rig.ps);
         // The route was planned before the refusal, from the capability value read then: Opus at
         // any channel count. The attempt holds that value, not the process-wide answer.
@@ -3792,8 +3822,8 @@ mod flight_tests {
         rig.frame();
         assert_eq!(
             opus_channels(),
-            Some(2),
-            "the refusal is learned before the replacement route is planned, so the server converts surround Opus"
+            None,
+            "the named write is queued: the process-wide answer moves when the record lands, never synchronously"
         );
         assert_ne!(
             crate::player::state(&rig.ps),
@@ -3831,6 +3861,11 @@ mod flight_tests {
             "the converted open is the app's own recovery, so a failure of it must not read as the first fresh open"
         );
         assert_eq!(context.attempt_ordinal, super::super::report::AttemptOrdinal::FIRST.next());
+        // The earlier `None` was not vacuous: the named row was written, and projecting the landed
+        // record on this thread is what moves the answer.
+        plx_base::storage_worker::drain_for_test();
+        plx_plex::plex::session::save(&plx_plex::plex::session::peek());
+        assert_eq!(opus_channels(), Some(2), "the landed record projects the ceiling the frame did not");
         rig.flight.wait_for("the replaced encoder's stop", |f| f.stopped().iter().any(|s| s == "rig-1"));
     }
 
@@ -3857,11 +3892,6 @@ mod flight_tests {
         SHARED.native_audio_refused.store(true, Release);
         SHARED.load_failed.store(true, Release);
         rig.frame();
-        assert_eq!(
-            plx_platform::devcaps::caps().audio_channels.get("opus").copied(),
-            Some(2),
-            "sanity: the refusal was learned on this failure"
-        );
         assert!(crate::route::flight_outstanding(), "the rollback's rebase must be a flight");
         assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
         rig.flight.release_answers();
@@ -3905,11 +3935,6 @@ mod flight_tests {
         assert_eq!(rig.flight.decisions(), 1, "one conversion request, never a loop");
         assert_eq!(crate::route::transcode_session(&rig.ps), "rig-1", "the refused route is still the route");
         assert_eq!(engine_epoch(&mut rig), epoch, "a refusal reloads nothing");
-        assert_eq!(
-            plx_platform::devcaps::caps().audio_channels.get("opus").copied(),
-            Some(2),
-            "the lesson outlives the refused conversion"
-        );
         rig.flight.wait_for("the refused replacement's stop", |f| replacement_stops(f) == 1);
         assert!(!rig.flight.stopped().iter().any(|s| s == "rig-1"), "{:?}", rig.flight.stopped());
     }
@@ -3927,8 +3952,18 @@ mod flight_tests {
         let mut rig = Rig::new(40);
         let _set = firmware_announcing_opus();
         reset_watch();
-        // The install learned this combination on an earlier play: the pump's learner says "known".
-        assert!(plx_plex::plex::session::learn_native_audio_refusal("opus", 6));
+        // The install learned this combination on an earlier play: the stored record holds it named,
+        // and the projection folds it into this thread's layers, so the attempt already lacks it.
+        let _session = plx_plex::plex::session::TempSession::new("known-stall");
+        let known = plx_plex::plex::session::NativeAudioRefusal::of_facet(
+            &plx_platform::devcaps::Facet::Audio { codec: "opus".into(), channels: 6 },
+            "kisscurl-koli",
+            "6.5.3-47",
+            None,
+        )
+        .expect("a named row");
+        plx_plex::plex::session::save(&plx_plex::plex::session::peek().with_native_audio_refusal(&known).expect("news"));
+        assert_eq!(plx_platform::devcaps::caps().audio_channels.get("opus").copied(), Some(2), "sanity: the record is projected");
         crate::ff::native_audio::publish_fed(crate::ff::native_audio::Kind::Opus, 6);
         let epoch = engine_epoch(&mut rig).expect("the rig's Engine");
         assert!(SHARED.mark_native_load_returned(epoch).is_some(), "the Load returned: the watchdog's precondition");
@@ -4038,12 +4073,12 @@ mod flight_tests {
 
     /// Drive a DTS 601 on `rig` to the converted route's landing and grade it
     /// ([`assert_dts_converted_in_one_flight`]).
-    fn dts_601_converts_in_one_flight(mut rig: Rig) {
+    fn dts_601_converts_in_one_flight(rig: &mut Rig) {
         rig.frame();
         let answered = rig.flight.answered();
-        let epoch = engine_epoch(&mut rig);
+        let epoch = engine_epoch(rig);
         rig.flight.hold_answers();
-        pipeline_refuses_601(&mut rig);
+        pipeline_refuses_601(rig);
         rig.frame();
         assert_ne!(
             crate::player::state(&rig.ps),
@@ -4057,10 +4092,10 @@ mod flight_tests {
             "the failure frame waited for a PMS answer on the frame thread: {:?}",
             rig.flight.requests()
         );
-        assert_eq!(engine_epoch(&mut rig), epoch, "nothing reloads before the landing");
+        assert_eq!(engine_epoch(rig), epoch, "nothing reloads before the landing");
         rig.flight.release_answers();
         rig.frames_until("the conversion's landing", |_| !crate::route::flight_outstanding());
-        assert_dts_converted_in_one_flight(&mut rig, epoch);
+        assert_dts_converted_in_one_flight(rig, epoch);
     }
 
     /// **#695.** A DTS 5.1 direct play that the pipeline refuses with `type=18 num=601` before the
@@ -4072,11 +4107,11 @@ mod flight_tests {
     /// **Recorded deviation from the plan (s1a-design section 1):** the conversion landing keeps the
     /// current track (`audioStreamID=960002` is the DTS track the viewer was on), and no AC3 sibling
     /// is picked in S1a, whether or not the Part has one. The sibling falls out of the planner on the
-    /// NEXT request, once S2's learned row is in `start`. So a Part whose only audio is the DTS track
-    /// takes this one path too.
+    /// first request after the SECOND rescued play, once the counted row applies and sits in `start`.
+    /// So a Part whose only audio is the DTS track takes this one path too.
     #[test]
     fn a_dts_601_before_the_first_picture_converts_dts_in_one_flight() {
-        dts_601_converts_in_one_flight(dts_rig(Rig::new(150)));
+        dts_601_converts_in_one_flight(&mut dts_rig(Rig::new(150)));
     }
 
     /// A cold Auto Original refused on its DTS flies the conversion, not the HLS contingency: the
@@ -4138,6 +4173,179 @@ mod flight_tests {
         assert_eq!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
         rig.flight.wait_for("the refused replacement's stop", |f| replacement_stops(f) == 1);
         assert!(!rig.flight.stopped().iter().any(|s| s == "rig-1"), "{:?}", rig.flight.stopped());
+    }
+
+    // ---- S2a: a refusal is learned only from a facet-clean proof ---------------------------------
+
+    /// This thread plays the DTS set of [`dts_announcing_start`] on firmware `fw`, build `B`.
+    fn firmware_announcing_dts() -> plx_platform::devcaps::CapsGuard {
+        plx_platform::devcaps::firmware_on_this_thread_for_test("fw", "B", (*dts_announcing_start()).clone())
+    }
+
+    /// The rows the install's record holds, after the queued writes landed.
+    fn recorded_refusals() -> Vec<plx_plex::plex::session::NativeAudioRefusal> {
+        plx_base::storage_worker::drain_for_test();
+        plx_plex::plex::session::peek().native_audio_refused().to_vec()
+    }
+
+    fn dts_row(proofs: u32) -> plx_plex::plex::session::NativeAudioRefusal {
+        let dts6 = plx_platform::devcaps::Facet::Audio { codec: "dts".into(), channels: 6 };
+        plx_plex::plex::session::NativeAudioRefusal::of_facet(&dts6, "fw", "B", Some(proofs)).expect("a counted row")
+    }
+
+    /// The reload the landing started decodes its first picture: the frame that says so. The hostsim
+    /// sink refuses the reload's Load (nothing decodes in a host test); the pipeline this stands for
+    /// took it ([`pipeline_takes_the_load`]).
+    fn first_picture(rig: &mut Rig) {
+        pipeline_takes_the_load();
+        super::super::ffi_host::force_clocksink_for_test(true);
+        super::super::ffi_host::force_object_ready_for_test(true);
+        SHARED.frames.store(1, Relaxed);
+        rig.frame();
+    }
+
+    /// A DTS 601 whose conversion PMS answers video `copy`, audio `transcode`, and whose reload then
+    /// shows a picture records ONE proof: stored and counted, not applied, so the next start still
+    /// announces DTS 5.1.
+    #[test]
+    fn a_dts_601_rescued_by_its_conversion_records_one_proof_not_applied() {
+        let mut rig = dts_rig(Rig::new(60));
+        let _session = plx_plex::plex::session::TempSession::new("s2a-proof-one");
+        let _set = firmware_announcing_dts();
+        dts_601_converts_in_one_flight(&mut rig);
+        assert!(recorded_refusals().is_empty(), "the landing alone proves nothing: the picture does");
+        assert_eq!(rig.ps.open_recovery().phase(), super::super::recovery::Phase::Proving, "the clean landing is awaiting its picture");
+        first_picture(&mut rig);
+        assert_eq!(rig.ps.open_recovery().phase(), super::super::recovery::Phase::Playing, "the picture ended the open");
+        assert_eq!(recorded_refusals(), [dts_row(1)]);
+        assert!(!recorded_refusals()[0].applies());
+        // The count-1 row goes through the real projection on this thread, so the answer below is
+        // one the record could have changed.
+        plx_plex::plex::session::save(&plx_plex::plex::session::peek());
+        assert!(plx_platform::devcaps::caps().audio_supports("dts", 6), "one proof changes no capability answer");
+    }
+
+    /// A second rescued play persists the refusal; once the record is installed on this thread
+    /// (the projection the storage worker ran saw the worker's layers, not this thread's), the next
+    /// start no longer announces DTS 5.1 and PMS is told to bound it.
+    #[test]
+    fn a_second_rescued_play_persists_and_the_next_start_lacks_dts_surround() {
+        let mut rig = dts_rig(Rig::new(60));
+        let _session = plx_plex::plex::session::TempSession::new("s2a-proof-two");
+        let _set = firmware_announcing_dts();
+        dts_601_converts_in_one_flight(&mut rig);
+        first_picture(&mut rig);
+        assert_eq!(recorded_refusals(), [dts_row(1)]);
+
+        // The viewer plays it again: a new request, a fresh Engine with no picture, refused again.
+        rig.flight.begin_attempt(&rig.ps);
+        declare_dts(&mut rig);
+        SHARED.frames.store(0, Relaxed);
+        let epoch = engine_epoch(&mut rig).expect("the rig's Engine");
+        super::super::sf_on_event(epoch, 18, 601, std::ptr::null());
+        rig.frame();
+        rig.frames_until("the second conversion's landing", |_| !crate::route::flight_outstanding());
+        first_picture(&mut rig);
+        let rows = recorded_refusals();
+        assert_eq!(rows, [dts_row(plx_plex::plex::session::LEARNED_REFUSAL_PROOFS)]);
+        assert!(rows[0].applies());
+
+        plx_plex::plex::session::save(&plx_plex::plex::session::peek());
+        let dts6 = plx_platform::devcaps::Facet::Audio { codec: "dts".into(), channels: 6 };
+        assert!(
+            !plx_platform::devcaps::caps().audio_supports("dts", 6),
+            "the next start bounds DTS: {:?}",
+            plx_platform::devcaps::caps().audio_channels
+        );
+        assert_eq!(plx_platform::devcaps::caps().without(&dts6), *plx_platform::devcaps::caps(), "nothing left to take out");
+    }
+
+    /// An HLS rescue (the both-facets rung) records nothing, however clean the verdicts.
+    #[test]
+    fn an_hls_rescued_play_records_nothing() {
+        let mut rig = unopened_auto_original_rig(60);
+        let _session = plx_plex::plex::session::TempSession::new("s2a-hls");
+        let _set = firmware_announcing_dts();
+        rig.flight.begin_attempt(&rig.ps);
+        FlightRig::plan_on(&mut rig.ps, dts_announcing_start());
+        FlightRig::declare_audio(&mut rig.ps, "aac", 2);
+        rig.frame();
+        pipeline_refuses_601(&mut rig);
+        rig.frame();
+        assert!(crate::route::flight_outstanding(), "the HLS contingency flies");
+        rig.frames_until("the HLS landing", |_| !crate::route::flight_outstanding());
+        assert!(crate::route::is_segmented_hls(&rig.ps), "the route is HLS now");
+        first_picture(&mut rig);
+        for _ in 0..20 {
+            rig.frame();
+        }
+        assert_eq!(rig.ps.open_recovery().phase(), super::super::recovery::Phase::Playing, "the open ended in a picture");
+        assert!(recorded_refusals().is_empty());
+    }
+
+    /// A Load timeout names no facet: the HLS contingency's rescue records nothing, DTS fed or not.
+    #[test]
+    fn a_timeout_rescued_play_records_nothing() {
+        let mut rig = unopened_auto_original_rig(60);
+        let _session = plx_plex::plex::session::TempSession::new("s2a-timeout");
+        let _set = firmware_announcing_dts();
+        rig.flight.begin_attempt(&rig.ps);
+        declare_dts(&mut rig);
+        rig.frame();
+        SHARED.load_timed_out.store(true, Release);
+        SHARED.load_failed.store(true, Release);
+        rig.frame();
+        assert!(crate::route::flight_outstanding(), "the HLS contingency flies");
+        rig.frames_until("the HLS landing", |_| !crate::route::flight_outstanding());
+        first_picture(&mut rig);
+        for _ in 0..20 {
+            rig.frame();
+        }
+        assert_eq!(rig.ps.open_recovery().phase(), super::super::recovery::Phase::Playing, "the open ended in a picture");
+        assert!(recorded_refusals().is_empty());
+    }
+
+    /// PMS answered the conversion with the video transcoded too: the facet flight changed more
+    /// than the refused facet, so the rescue records nothing.
+    #[test]
+    fn a_conversion_whose_video_was_transcoded_records_nothing() {
+        let mut rig = dts_rig(Rig::new(60));
+        let _session = plx_plex::plex::session::TempSession::new("s2a-video");
+        let _set = firmware_announcing_dts();
+        rig.flight.answer_decisions_with(crate::route::flight_rig::DECISION_TRANSCODES_BOTH_LANES);
+        dts_601_converts_in_one_flight(&mut rig);
+        assert_eq!(rig.ps.open_recovery().phase(), super::super::recovery::Phase::Opening, "the video was transcoded too: no proof is pending");
+        first_picture(&mut rig);
+        for _ in 0..5 {
+            rig.frame();
+        }
+        assert_eq!(rig.ps.open_recovery().phase(), super::super::recovery::Phase::Playing, "the conversion landed and played");
+        assert!(recorded_refusals().is_empty());
+    }
+
+    /// A refusal that names the codec is recorded in the step that asked, before any landing, and
+    /// applies at once (`proofs` absent).
+    #[test]
+    fn a_named_opus_refusal_is_recorded_before_any_landing() {
+        let mut rig = Rig::new(150);
+        let _session = plx_plex::plex::session::TempSession::new("s2a-named");
+        let _set = firmware_announcing_opus();
+        rig.flight.begin_attempt(&rig.ps);
+        FlightRig::plan_on(&mut rig.ps, plx_platform::devcaps::caps());
+        FlightRig::declare_audio(&mut rig.ps, "opus", 6);
+        rig.frame();
+        let epoch = engine_epoch(&mut rig).expect("the rig's Engine");
+        crate::ff::native_audio::publish_fed(crate::ff::native_audio::Kind::Opus, 6);
+        rig.flight.hold_answers();
+        super::super::sf_on_event(epoch, 18, 200, std::ptr::null());
+        rig.frame();
+        assert!(crate::route::flight_outstanding(), "the conversion flight is outstanding");
+        let rows = recorded_refusals();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!((rows[0].codec.as_str(), rows[0].channels, rows[0].proofs), ("opus", 6, None));
+        assert!(rows[0].applies());
+        rig.flight.release_answers();
+        rig.frames_until("the conversion's landing", |_| !crate::route::flight_outstanding());
     }
 
     // ---- the machine across an Engine's reload, a park and a restore ----------------------------

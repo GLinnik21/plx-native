@@ -4111,8 +4111,8 @@ pub(super) const REFUSAL_CONVERSION_REJECTED: &str = "native audio: the server c
 /// when it entered the rung, so the value the plan and the profile read no longer names the codec,
 /// today's rebuild ([`plain_rebuild_precheck`], the contract a track pick that the TV cannot decode
 /// asks for) comes back converted, and every seek and track pick after the landing plans from the
-/// same narrowed value. The learner's write of a refused native Opus (the install pref) is the
-/// machine's separate `ConfirmRefusal`, persistence only. Plan on the frame thread, PMS on a worker
+/// same narrowed value. The install pref's write of a refused native audio (or of a counted proof) is
+/// the machine's separate `ConfirmRefusal`, persistence only. Plan on the frame thread, PMS on a worker
 /// ([`try_retranscode`]), install at the landing ([`install_recovery_landing`]).
 /// [`RecoveryDispatch::Refused`] / [`RecoveryVerdict::Refused`] leave the failure the pump held back
 /// (a forced direct play, which the viewer asked not to convert, is one).
@@ -9315,6 +9315,9 @@ pub(super) struct AppliedRetranscode {
     dv_decision: plx_data::metadata::DvDecision,
     contract: plx_plex::plex::EncodeContract,
     enhancement: EnhancementOutcome,
+    /// The lane verdicts PMS's `/decision` stated for this build (`plan::decision_lanes`): what the
+    /// failed-open ladder's proof rule reads when this is a facet flight's landing.
+    pub(super) lanes: crate::player::recovery::Lanes,
     /// Returned by `replace_active_encoder_for`/`replace_active_hls_for` at the moment this
     /// worker actually committed the route. `take_ready_flight` re-checks it against
     /// the CURRENT route before applying: the worker's own ticket check ran before this commit,
@@ -9400,6 +9403,7 @@ pub(super) struct PreparedEncode {
     dv_decision: plx_data::metadata::DvDecision,
     contract: plx_plex::plex::EncodeContract,
     enhancement: EnhancementOutcome,
+    lanes: crate::player::recovery::Lanes,
 }
 
 /// One `/decision` attempt, gated on `inputs.expected` throughout — the network body of a
@@ -9469,6 +9473,7 @@ pub(super) fn request_retranscode(
         dv_decision,
         contract,
         enhancement: classify_outcome(&inputs.caps, Some(&decision), inputs.carried_audio.as_ref(), audio),
+        lanes: decision_lanes(&decision),
         qsess,
     })
 }
@@ -9511,7 +9516,7 @@ pub(super) fn commit_retranscode(
         "retranscode rk={} audio={} sub={} offset={} -> transcode start",
         inputs.rk, inputs.audio_sid, inputs.subtitle_sid, inputs.offset_secs,
     ));
-    let PreparedEncode { qsess, url, vcodec, acodec, dovi, dv_decision, contract, enhancement } = prepared;
+    let PreparedEncode { qsess, url, vcodec, acodec, dovi, dv_decision, contract, enhancement, lanes } = prepared;
     Ok(AppliedRetranscode {
         qsess,
         url,
@@ -9521,6 +9526,7 @@ pub(super) fn commit_retranscode(
         dv_decision,
         contract,
         enhancement,
+        lanes,
         ticket,
         client: inputs.client,
         superseded,

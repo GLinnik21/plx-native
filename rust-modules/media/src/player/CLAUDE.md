@@ -312,18 +312,37 @@ something.
   (`Caps::forced_feeds_audio_track`). FLAC is not native: the app decodes it and feeds PCM
   (`ff_pcm.rs`), so it is outside these layers. A learned refusal comes from a native Load that ends
   in `type=18 num=200 Audio Codec Not Supported` before any picture (`mod.rs`'s callback sets
-  `native_audio_refused` only while `native_audio::fed()` says the audio was fed natively; the pump
-  turns it into `session::learn_native_audio_refusal`, which takes it off the answer at once
-  (`devcaps::learn_refusal`) and persists it in the install-scope `native_audio_refused` preference).
-  That preference is the ONE list of refusals: `devcaps` keeps no list, only the answer derived from
-  it, which it folds monotonically (it only ever removes) from each fresh refusal and from the stored
+  `native_audio_refused` only while `native_audio::fed()` says the audio was fed natively; the
+  machine turns it into `RecoveryEffect::ConfirmRefusal { Evidence::Named }`, which the pump runs as
+  `session::record_named_refusal`: one write to the install-scope `native_audio_refused` preference,
+  stamped with the firmware `devcaps::learning_firmware()` reads). That preference is the ONE list of
+  refusals: `devcaps` keeps no list and takes none directly, only the answer derived from the stored
   record every installed session carries (`devcaps::project_stored_refusals`, called by the session's
-  `replace_cache` as a pure projection under the cache lock). The failed open then recovers on the
+  `replace_cache` as a pure projection under the cache lock, which folds monotonically: it only ever
+  removes). A write is queued on the storage worker, so the answer moves when it lands, not in the
+  frame that queued it, and the recovery below never waits for it: it rebuilds from the attempt's own
+  narrowed `start`. **A row is applied only on facet-clean proof** (S2a, #1046): a NAMED refusal
+  (`num=200`, the stall) applies at once (its row has no `proofs`), but the DTS 601 of #695 names no
+  codec, so it is learned the other way. The machine's facet flight lands (`FlightLanded` carries the
+  `/decision` lanes, `route::plan::decision_lanes`), and only a flight whose AUDIO lane is `Transcode`
+  and whose VIDEO lane is `Copy`/`DirectPlay` (`recovery::proves`) is `Proving`, unless the request
+  already showed a picture (a request that played the facet natively proves nothing about it: the
+  machine's `pictured`); the first picture of that converted reload emits
+  `ConfirmRefusal { Evidence::Proof }`, and a second Load before it (a track switch, a restore after
+  Home, a seek reload) drops the pending proof. `session::record_refusal_proof` stores the proof
+  as ONE counted proof for `(build, codec, raw channels)`. A row applies once it holds
+  `LEARNED_REFUSAL_PROOFS` (2) proofs, so one rescued play teaches nothing and a second one changes the
+  next start's `start`. A both-facets (HLS) rescue, a rollback, a Load timeout, a source failure and a
+  conversion whose video was transcoded too prove nothing and write nothing; an unknown channel count
+  (`0`) is never stored as a proof. A named refusal REPLACES a counted row (`proofs` becomes `None`,
+  applied at once) and a proof never downgrades a named row (`Session::with_native_audio_refusal`
+  merges; proofs add, capped). The failed open then
+  recovers on the
   pre-picture recovery path every failed open uses, in the same frame: the request's `OpenRecovery`
   machine (`recovery.rs`, owned by `PlaybackSession::recovery`, driven by `pump.rs`'s
-  `drive_open_recovery`) first asks the pump to confirm a refusal that names natively fed audio
-  (`ConfirmRefusal`, the learner above). The confirmation is persistence only: its answer picks no
-  rung. **The ladder** (S1a, the order of `OpenRecovery::decide`): (1) a pending Original trial's
+  `drive_open_recovery`) records a refusal that names natively fed audio and picks its rung in the SAME
+  step (`ConfirmRefusal` then the ladder's effect; there is no confirmation state to wait in).
+  **The ladder** (S1a, the order of `OpenRecovery::decide`): (1) a pending Original trial's
   rollback, which narrows the attempt first by the facet the refusal named, because its rebase, the next
   retry and a quality change must plan from the narrowed value; (2) under Forced Direct Play, the
   read-out (a forced play is never converted); (3) the **facet rung**, for a refusal that names the
@@ -352,8 +371,11 @@ something.
   `engine::start_bufferfeed_for` (which every Engine start passes: a fresh play, a reload, the
   foreground restore), takes a machine left in `Flight` (Home cleared the flight with the Engine)
   or `Failed` (the read-out was up) back to `Opening` with its spent flights and excluded facet
-  kept; the recovery landing's own reload finds the machine already in `Opening` (`FlightLanded`
-  moved it first) and changes nothing. A refusal the machine does not handle fails the Engine
+  kept; the recovery landing's own reload finds the machine already moved by `FlightLanded` (a
+  clean facet landing goes to `Proving`, any other landing to `Opening`): in `Opening` it changes
+  nothing, and in `Proving` the FIRST `LoadStarted` is that reload and only marks it (the pending
+  proof stays), while a second one is a foreign Load and drops the machine to `Opening`, the proof
+  lost. A refusal the machine does not handle fails the Engine
   (`recover_failed_open`), never silence; in `Failed` that re-asserts the read-out once a frame
   until the Engine is released, which a pre-picture Engine (`frames == 0`) never is
   (`release_failed_engine`). **Who owns a refusal is who
@@ -378,14 +400,14 @@ something.
   A learned row records the firmware BUILD it was watched on (`tv::device::Info::build`, nyx's
   `core_os_release`, e.g. `6.5.3-47`). A refusal is evidence only on its own build, so an LG update
   gets a fresh native try: the answer ignores another build's rows (and rows an older record never
-  tagged), and the first refusal learned on the new build writes the list back without them
+  tagged), and the first refusal or proof learned on the new build writes the list back without them
   (`Session::with_native_audio_refusal`). The static rows are keyed on the codename and are not
   forgotten.
   Debug switches (debug builds, files under `/tmp/<app id>/`, read at app start):
   `plxnative-nativeaudiowide` ignores the last two layers; with `plxnative-nativeaudiolearn` beside it
   the exclusions stay ignored but refusals are learned and applied (the demo: a stall, a learned row,
   an automatic server-converted replay); `plxnative-nativeaudioforget` does not apply the stored list
-  this run (a refusal learned during the run still applies at once). `plxnative-refuse601` publishes the
+  this run (a row recorded during the run is stored but does not apply either, until the next launch). `plxnative-refuse601` publishes the
   firmware's `type=18 num=601` through `sf_on_event` once per play request, after the Load returned and
   before a picture (`pump.rs`'s `inject_refuse601`; the file is read only inside that open window, once
   the request is not yet refused), so a DTS item on the mock server reproduces #695 on the TV: the
