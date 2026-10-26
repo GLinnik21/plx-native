@@ -10,6 +10,11 @@
 //! `Error`; ordinary low quality, buffering and rejected ABR candidates remain breadcrumbs at most,
 //! never errors of their own.
 //!
+//! A second, separate handled event is [`refusal_recovered`]: a refusal the television gave a Load
+//! that the open-recovery ladder then recovered from, raised by the recovery machine as an effect
+//! at the rescue's first picture, once per request, under the same error-report consent. It carries
+//! no trace; see `telemetry::playback::refusal_recovered_body`.
+//!
 //! # A failure says WHY the attempt it ended was made
 //!
 //! A report names the attempt that failed beside the playback it failed in: the route being opened
