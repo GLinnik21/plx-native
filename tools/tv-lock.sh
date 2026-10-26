@@ -570,6 +570,10 @@ park_app_id() {
 in_use_line() {  # $1 = the app id
   printf 'IN USE: %s: stop and tell the owner\n' "$1"
 }
+# The ONE test `with` applies to a pre-flight, whether the lease is one it just took or one this lane
+# already held: it reads the pre-flight's stdout on stdin and succeeds when it carries the `IN USE:`
+# line and the owner has not said go (PLX_TV_IN_USE_OK=1).
+in_use_blocks() { grep -q '^IN USE:' && [ "${PLX_TV_IN_USE_OK:-0}" != 1 ]; }
 
 # One luna reply out of the probe's output, collapsed to a single line (the set's pty adds CRs, and a
 # reply may be pretty-printed), the way tv-session.sh collapses one before it matches.
@@ -823,13 +827,23 @@ cmd_with() {
       rm -f "$acq"; exit 1
     fi
     lease_load || { rm -f "$acq"; exit 1; }
-    if grep -q '^IN USE:' "$acq" && [ "${PLX_TV_IN_USE_OK:-0}" != 1 ]; then
+    if in_use_blocks < "$acq"; then
       rm -f "$acq"
       "$0" release >/dev/null
       echo "tv-lock: with: the pre-flight found the television IN USE (the IN USE: line above), so your command was NOT started and the lease is released. Tell the owner now; once they say go, rerun with PLX_TV_IN_USE_OK=1." >&2
       exit 3
     fi
     rm -f "$acq"
+  else
+    # A lease this lane already holds was pre-flighted when it was taken, perhaps hours ago, so read the
+    # set again before a command with no model in the loop starts. `with` did not take this lease, so on
+    # IN USE it leaves it held (the lane that took it had its own reasons) and only refuses to start.
+    local pf; pf="$(preflight_note)"
+    [ -z "$pf" ] || printf '%s\n' "$pf"
+    if in_use_blocks <<< "$pf"; then
+      echo "tv-lock: with: the pre-flight found the television IN USE (the IN USE: line above), so your command was NOT started. The lease this lane already held is still held (with did not take it, so it did not release it). Tell the owner now; once they say go, rerun with PLX_TV_IN_USE_OK=1." >&2
+      exit 3
+    fi
   fi
 
   # Keep the lease warm for as long as the child runs. Without this a legitimately long job — the
@@ -1271,6 +1285,28 @@ cmd_selftest() {
   hu W with --why "idle set" -- sh -c ": > '$marker'; exit 6"
   chk "with on an idle set: the command runs and its status is returned" \
     "$([ -e "$marker" ] && [ "$rc" = 6 ] && [ "$(inuse_n)" = 0 ] && echo 1)" "rc=$rc: $out"
+  # A lease this lane ALREADY holds is re-read too: it was pre-flighted when it was taken, maybe hours
+  # ago, and the screen may have changed since. `with` did not take it, so on IN USE it refuses (exit 3)
+  # and leaves it held; with the override, or on an idle set, it runs the command and still leaves it held.
+  held_by_w() { hu W status; printf '%s\n' "$out" | grep -q 'HELD BY THIS LANE' && [ -e "$d/headsup.lock" ]; }
+  hu W acquire --why "held for hours" --ttl 7
+  probe_file "$(fgj youtube.leanback.v4)" "$vol_on" "$pow_ok"; rm -f "$marker"
+  hu W with --why "inherited, in use" -- sh -c ": > '$marker'"
+  chk "with under a lease this lane holds: the set is IN USE now, so the command is NOT started" \
+    "$([ ! -e "$marker" ] && echo 1)" "rc=$rc"
+  chk "with (inherited): ... it exits 3, prints the IN USE: line once, says the lease is still held and how to proceed" \
+    "$([ "$rc" = 3 ] && [ "$(inuse_n)" = 1 ] && printf '%s\n' "$out" | grep -q 'still held' \
+       && printf '%s\n' "$out" | grep -q 'PLX_TV_IN_USE_OK=1' && echo 1)" "rc=$rc: $out"
+  chk "with (inherited): ... and the lease it did not take is still held by this lane" "$(held_by_w && echo 1)" "$out"
+  rm -f "$marker"
+  PLX_TV_IN_USE_OK=1 hu W with --why "owner said go" -- sh -c ": > '$marker'; exit 5"
+  chk "with (inherited) under PLX_TV_IN_USE_OK=1: the command runs, its status comes back, the lease stays held" \
+    "$([ -e "$marker" ] && [ "$rc" = 5 ] && [ -e "$d/headsup.lock" ] && echo 1)" "rc=$rc: $out"
+  probe_file "$(fgj com.webos.app.home)" "$vol_on" "$pow_ok"; rm -f "$marker"
+  hu W with --why "inherited, idle" -- sh -c ": > '$marker'; exit 6"
+  chk "with (inherited) on an idle set: the command runs, its status comes back, no IN USE: line, the lease stays held" \
+    "$([ -e "$marker" ] && [ "$rc" = 6 ] && [ "$(inuse_n)" = 0 ] && held_by_w && echo 1)" "rc=$rc: $out"
+  hu W release
   rsecs=$((800000 + RANDOM))
   export PLX_TV_RENEW_SECS="$rsecs"
   hu W with --why "renewer" -- sh -c "sleep 1"
