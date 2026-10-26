@@ -702,7 +702,7 @@ fn install_recovery_landing(
             RecoveryVerdict::Install
         }
         RetranscodeClaimResult::Retranscode(applied) => {
-            // The refused audio's conversion ([`dispatch_native_audio_conversion`]). The same
+            // The refused audio's conversion ([`dispatch_refusal_conversion`]). The same
             // re-check an accepted claim makes: a route change between the worker's commit and
             // this drain leaves nothing this install may point at.
             if !is_worker_ticket_current(&applied.ticket) {

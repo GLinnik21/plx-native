@@ -242,7 +242,7 @@ something.
     (`Preparing(serial)`): the rollback's rebase after a failed Original trial
     (`route::dispatch_rollback_rebase`), the HLS fallback of an Auto Original that never opened
     (`route::dispatch_unopened_auto_hls`) and the rebuild that has the server convert native audio
-    the pipeline refused (`route::dispatch_native_audio_conversion`, below). They hold nothing (the Engine that failed is not
+    the pipeline refused (`route::dispatch_refusal_conversion`, below). They hold nothing (the Engine that failed is not
     playing) and the viewer keeps the connecting spinner (`pump::hold_connecting_state`). The
     landing is drained AHEAD of the failure branches (`route::take_ready_recovery_flight`, then
     `pump::land_recovery_flight`: reload onto the route, or fail the Engine), because the
@@ -323,7 +323,7 @@ something.
   `PlaybackSession::attempt_caps`, never from a later read of the process-wide answer) for EVERY learned
   refusal, because a pending Original trial's rollback is picked over the conversion and its rebase, the
   next retry and a quality change must still plan from the narrowed value. Then the ladder picks
-  `StartFlight` (the conversion), and `route::dispatch_native_audio_conversion`
+  `StartFlight` (the conversion), and `route::dispatch_refusal_conversion`
   flies a `ClaimWork::Encode` under a `FlightOwner::Recovery` that rebuilds today's route (which now
   plans the audio as the server's to convert), and `land_recovery_flight` reloads onto it. The viewer keeps the connecting spinner: no
   read-out, no second play request. **Who owns a refusal is who observes it:** the machine owns a

@@ -4,27 +4,33 @@
 //! `OpenRecovery` is a tested `State + RecoveryEvent -> Effects` machine in the shape of
 //! [`super::lifecycle::ForegroundLifecycle`]: its state is private and its one writer is
 //! [`step`](OpenRecovery::step). It reads no global and performs no IO. The facts a decision needs
-//! (an HLS->Original trial holding a live encoder, a cold Auto Original, no decoded frame yet, the
-//! natively fed audio a refusal names) arrive as a value on the event ([`OpenFacts`]); the work a
-//! decision asks for (the learner's write, a recovery flight, the failure read-out) leaves as an
-//! [`RecoveryEffect`] which the pump (`super::pump`, the driver) executes through the route's own dispatches,
-//! and every answer returns as the next event in the same drain.
+//! (an HLS->Original trial holding a live encoder, a cold Auto Original, Forced Direct Play, no
+//! decoded frame yet, the audio the pipeline was fed, the natively fed audio a refusal names) arrive
+//! as a value on the event ([`OpenFacts`]); the work a decision asks for (the learner's write, a
+//! recovery flight, the failure read-out) leaves as a [`RecoveryEffect`] which the pump
+//! (`super::pump`, the driver) executes through the route's own dispatches, and every answer
+//! returns as the next event in the same drain.
 //!
 //! **The owner is the request.** [`PlaybackSession`](crate::route::PlaybackSession) holds one
 //! `Option<OpenRecovery>`, created by `begin_attempt` with the capability value the app's play start
 //! read, and replaced by the next request's. The machine also owns that value: the attempt's
-//! capabilities are `start` narrowed by every audio facet the install just learned the pipeline
-//! refuses ([`Caps::without`]); [`attempt`](OpenRecovery::attempt) is the only reader the route
-//! plans from, and `attempt` is derived from `start` each time a facet is added, never narrowed in
-//! place.
+//! capabilities are `start` narrowed by the one facet the facet rung took out of this request
+//! ([`Caps::without`]); [`attempt`](OpenRecovery::attempt) is the only reader the route plans from,
+//! and `attempt` is derived from `start` on each rung's entry, never narrowed in place.
 //!
-//! **The ladder** is the order main's `open_failure_action` fixed, unchanged (the table is on
-//! [`OpenRecovery::step`]): a pending HLS->Original rollback first (its HLS route is the one a
-//! failed open owes the viewer), else the conversion of native audio the install just learned the
-//! pipeline refuses, else the HLS contingency of a cold Auto Original, else the failure read-out.
-//! A refusal of natively fed audio first asks the driver to confirm it ([`RecoveryEffect::ConfirmRefusal`]:
-//! the install's learner is IO and answers whether the combination was NEW); the answer picks the
-//! rung. The conversion is therefore rung-selected exactly as it was when the pump learned first.
+//! **The ladder** is the order of [`decide`](OpenRecovery::decide): a pending HLS->Original
+//! rollback first (its HLS route is the one a failed open owes the viewer); under Forced Direct
+//! Play the read-out (a forced play is never converted); else, for a refusal that names the
+//! pipeline, the conversion of the audio the pipeline was fed when [`suspect`] names it (the facet
+//! rung, once per request, [`RecoveryEffect::ConvertFacet`]); else the HLS contingency of a cold
+//! Auto Original (the both-facets rung); else the failure read-out. The rungs which start a flight
+//! (the facet and the both-facets rung) are bounded by [`MAX_RECOVERY_FLIGHTS`] per request.
+//!
+//! **A refusal of natively fed audio** first asks the driver to confirm it
+//! ([`RecoveryEffect::ConfirmRefusal`]: the install's learner is IO and persists the combination).
+//! The confirmation is persistence only: the answer never selects a rung, the facet rung is
+//! selected by [`suspect`] and by the loop guard alone (a facet `start` already lacks narrows
+//! nothing and gets no flight, so a stored refusal is never converted twice).
 //!
 //! The state the machine does not own: the flight bookkeeping stays in `route::decision`
 //! (`original_recovery_pending`, the recovery flight slot), and it reaches the machine as a fact
@@ -35,6 +41,11 @@ use std::sync::Arc;
 use plx_machine::machine::Handled;
 use plx_platform::devcaps::Caps;
 use plx_platform::devcaps::Facet;
+
+/// The most flights one play request starts through the facet rung and the both-facets rung (and a
+/// failed source's HLS contingency): the facet's conversion, then the both-facets rung. The
+/// Original rollback is not counted.
+pub const MAX_RECOVERY_FLIGHTS: u8 = 2;
 
 /// How the open failed, as the pump's failure branches see it. The event payload; no field of the
 /// session.
@@ -53,6 +64,14 @@ pub enum LoadRefusal {
     SourceFailed,
 }
 
+impl LoadRefusal {
+    /// Whether the refusal is the pipeline's, so the stream it was fed is a suspect. A timeout
+    /// names no facet (the pipeline said nothing) and a source failure is not the pipeline's.
+    pub fn names_pipeline(self) -> bool {
+        matches!(self, Self::Refused { .. } | Self::Stalled)
+    }
+}
+
 impl std::fmt::Display for LoadRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -64,8 +83,26 @@ impl std::fmt::Display for LoadRefusal {
     }
 }
 
-/// What the driver read, at the moment of a failure, that the ladder decides on.
+/// The audio the pipeline was fed: the stream's declared codec (`route::stream_acodec`) and the
+/// carried track's channel count (`route::stream_achannels`, 0 when unknown).
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StreamAudio {
+    /// The codec in any spelling [`plx_platform::devcaps::audio_codec_id`] knows (`dca` for DTS).
+    pub codec: String,
+    pub channels: u32,
+}
+
+/// The stream class a pipeline refusal puts under suspicion: audio outside the codecs every set
+/// decodes (`aac`, `ac3`, `eac3`). `channels == 0` (unknown) names the codec at no width, which
+/// [`Caps::without`] reads as "not at all", the conservative choice. Video is S1b's.
+pub fn suspect(audio: Option<&StreamAudio>) -> Option<Facet> {
+    let a = audio?;
+    let id = plx_platform::devcaps::audio_codec_id(&a.codec);
+    (!matches!(&*id, "aac" | "ac3" | "eac3")).then(|| Facet::Audio { codec: id.into_owned(), channels: a.channels })
+}
+
+/// What the driver read, at the moment of a failure, that the ladder decides on.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OpenFacts {
     /// An HLS->Original trial holds a live encoder for exactly this outcome
     /// (`route::original_recovery_pending`).
@@ -75,8 +112,13 @@ pub struct OpenFacts {
     /// No picture has decoded yet in this Engine (`frames == 0`).
     pub no_frames: bool,
     /// The natively fed audio this failure names: the pipeline refused it (`type=18 num=200`) or
-    /// swallowed it (the stall). `None` when the failure does not name audio.
+    /// swallowed it (the stall). `None` when the failure does not name audio. It asks for the
+    /// learner's confirmation ([`RecoveryEffect::ConfirmRefusal`]) and selects no rung.
     pub native_audio: Option<Facet>,
+    /// Forced Direct Play (`route::forced_direct_play`): the viewer asked not to convert.
+    pub forced: bool,
+    /// What the pipeline was fed (`route::stream_audio`), for [`suspect`].
+    pub audio: Option<StreamAudio>,
 }
 
 /// What moves the ladder.
@@ -86,8 +128,9 @@ pub enum RecoveryEvent {
     /// ladder, whose `no_frames` fact then stops it at the failure read-out); a failure while a
     /// flight, a confirmation or the read-out is already outstanding is not.
     Refused { refusal: LoadRefusal, facts: OpenFacts },
-    /// The answer to [`RecoveryEffect::ConfirmRefusal`]: `newly` is true when the combination was new to
-    /// the install (the learner recorded it).
+    /// The answer to [`RecoveryEffect::ConfirmRefusal`]: `newly` is true when the combination was new
+    /// to the install (the learner recorded it). It selects no rung; the driver words its log line
+    /// with it.
     RefusalConfirmed { newly: bool },
     /// The recovery flight installed its replacement route; the driver reloads onto it.
     FlightLanded,
@@ -106,23 +149,36 @@ pub enum RecoveryEffect {
     ConfirmRefusal,
     /// Fly the HLS rollback of the failed Original trial (`dispatch_rollback_rebase`).
     Rollback,
-    /// Fly the same route rebuilt with the server converting the audio the attempt no longer feeds
-    /// natively (`dispatch_native_audio_conversion`; it plans from [`OpenRecovery::attempt`]).
-    StartFlight,
+    /// Fly today's route rebuilt from [`OpenRecovery::attempt`], the facet excluded: the server
+    /// converts the stream the attempt no longer feeds (`dispatch_refusal_conversion`).
+    ConvertFacet,
     /// Fly the HLS contingency a cold Auto Original retained (`dispatch_unopened_auto_hls`).
     StartAutoHls,
     /// Fail the Engine for good and show the failure read-out.
     ShowError { refusal: LoadRefusal },
 }
 
+/// Which rung a flight is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Rung {
+    /// The Original trial's HLS rollback.
+    Rollback,
+    /// The facet rung: the suspect stream converted.
+    Facet,
+    /// The both-facets rung: the HLS contingency, from the attempt the facet rung left.
+    Both,
+}
+
 #[derive(Clone, Debug)]
 enum State {
     /// The open is under way (the initial state, and the state a landed flight's reload re-enters).
     Opening,
-    /// A native-audio refusal waits on the learner's answer.
-    Confirming { refusal: LoadRefusal, facts: OpenFacts },
-    /// A recovery flight is outstanding; `cause` is the refusal that started it.
-    Flight { cause: LoadRefusal },
+    /// A native-audio refusal waits on the learner's answer. `opening` is false when the refusal
+    /// arrived from `Playing`, which keeps the facet rung closed.
+    Confirming { refusal: LoadRefusal, facts: OpenFacts, opening: bool },
+    /// A recovery flight is outstanding; `cause` is the refusal that started it and `facts` are what
+    /// the next rung decides on if the flight comes back refused.
+    Flight { rung: Rung, cause: LoadRefusal, facts: OpenFacts },
     /// A picture decoded: the ladder is over.
     Playing,
     /// The ladder is exhausted and the read-out was asked for.
@@ -134,92 +190,123 @@ enum State {
 pub struct OpenRecovery {
     /// What the app's play start read; never changed.
     start: Arc<Caps>,
-    /// `start` narrowed by `excluded`: the value the route plans and profiles from. Assigned only by
-    /// [`exclude`](Self::exclude), always from `start`.
+    /// `start` narrowed by `excluded`: the value the route plans and profiles from. Assigned only
+    /// on a rung's entry, always from `start` ([`attempt_for`]).
     attempt: Arc<Caps>,
-    /// The audio facets the install just learned the pipeline refuses, in the order learned.
-    excluded: Vec<Facet>,
+    /// The facet the facet rung took out. One facet rung per request, so at most one; carried into
+    /// the both-facets rung.
+    excluded: Option<Facet>,
+    /// Flights started by the facet and both-facets rungs (and a failed source's HLS contingency).
+    /// The rollback is not counted.
+    flights: u8,
     state: State,
+}
+
+/// `start` less `excluded`. Never takes a previous attempt as input, so the value is the same
+/// whichever rungs ran.
+fn attempt_for(start: &Caps, excluded: Option<&Facet>) -> Caps {
+    excluded.map_or_else(|| start.clone(), |facet| start.without(facet))
 }
 
 impl OpenRecovery {
     /// A fresh request on `start`.
     pub fn new(start: Arc<Caps>) -> Self {
-        Self { attempt: start.clone(), start, excluded: Vec::new(), state: State::Opening }
+        Self { attempt: start.clone(), start, excluded: None, flights: 0, state: State::Opening }
     }
 
-    /// The capability value this request plans and profiles from: `start` less every learned
-    /// refusal. A cheap `Arc` clone, so a worker or a flight can own it.
+    /// The capability value this request plans and profiles from: `start` less the facet the facet
+    /// rung took out. A cheap `Arc` clone, so a worker or a flight can own it.
     pub fn attempt(&self) -> Arc<Caps> {
         self.attempt.clone()
     }
 
-    /// Take `facet` out of the attempt. Derived from `start`, so the value is the same whatever the
-    /// order the facets were learned in.
-    fn exclude(&mut self, facet: Facet) {
-        self.excluded.push(facet);
-        let narrowed = self.excluded.iter().fold((*self.start).clone(), |caps, facet| caps.without(facet));
-        self.attempt = Arc::new(narrowed);
+    /// Re-derive the attempt from `start` and `excluded`; a rung's entry is the only caller.
+    fn narrow(&mut self) {
+        self.attempt = Arc::new(attempt_for(&self.start, self.excluded.as_ref()));
     }
 
-    /// The rung `facts` select, once the learner's answer (`learned`: a native-audio refusal NEW to
-    /// the install, which the attempt was just narrowed by) is known. The order is main's
-    /// `open_failure_action`.
-    fn decide(&mut self, refusal: LoadRefusal, facts: &OpenFacts, learned: bool, fx: &mut Vec<RecoveryEffect>) {
+    /// The rung `facts` select. The order is the proof that no rung of main is reordered: pending
+    /// rollback, Forced's read-out, the facet rung, the both-facets rung, the read-out.
+    /// `opening` is false for a refusal after a picture, which opens no facet rung.
+    fn decide(&mut self, refusal: LoadRefusal, facts: &OpenFacts, opening: bool, fx: &mut Vec<RecoveryEffect>) {
+        let flight = |rung| State::Flight { rung, cause: refusal, facts: facts.clone() };
         if facts.pending_original {
+            // A refusal of native audio the learner just recorded narrows the rollback's profile
+            // too: the restored HLS route must not offer it natively again.
+            if let Some(facet) = facts.native_audio.as_ref().filter(|f| self.start.without(f) != *self.start) {
+                self.excluded = Some(facet.clone());
+                self.narrow();
+            }
             fx.push(RecoveryEffect::Rollback);
-            self.state = State::Flight { cause: refusal };
-        } else if learned {
-            fx.push(RecoveryEffect::StartFlight);
-            self.state = State::Flight { cause: refusal };
-        } else if facts.auto_original && facts.no_frames {
-            fx.push(RecoveryEffect::StartAutoHls);
-            self.state = State::Flight { cause: refusal };
-        } else {
+            self.state = flight(Rung::Rollback);
+            return;
+        }
+        if facts.forced {
             fx.push(RecoveryEffect::ShowError { refusal });
             self.state = State::Failed;
+            return;
         }
+        if opening && refusal.names_pipeline() && self.flights == 0 {
+            if let Some(facet) = suspect(facts.audio.as_ref()).filter(|f| self.start.without(f) != *self.start) {
+                self.excluded = Some(facet);
+                self.narrow();
+                self.flights += 1;
+                fx.push(RecoveryEffect::ConvertFacet);
+                self.state = flight(Rung::Facet);
+                return;
+            }
+        }
+        if facts.auto_original && facts.no_frames && self.flights < MAX_RECOVERY_FLIGHTS {
+            self.narrow();
+            self.flights += 1;
+            fx.push(RecoveryEffect::StartAutoHls);
+            self.state = flight(Rung::Both);
+            return;
+        }
+        fx.push(RecoveryEffect::ShowError { refusal });
+        self.state = State::Failed;
     }
 
     /// The one writer. The table (a state not listed answers [`Handled::No`] and changes nothing):
     ///
     /// | state | event | effects, next state |
     /// |---|---|---|
-    /// | `Opening`, `Playing` | `Refused`, facts name native audio | `ConfirmRefusal`; `Confirming` |
-    /// | `Opening`, `Playing` | `Refused`, otherwise | the ladder below, `learned = false` |
-    /// | `Confirming` | `RefusalConfirmed{newly}` | `newly`: the audio is excluded from the attempt; then the ladder with `learned = newly`, whatever the refusal (a stall of a combination the install already knew is a refusal like any other: it never ends in silence) |
+    /// | `Opening` | `Refused`, facts name native audio | `ConfirmRefusal`; `Confirming` |
+    /// | `Opening` | `Refused`, otherwise | the ladder below |
+    /// | `Playing` | `Refused`, facts name native audio | `ConfirmRefusal`; `Confirming` (it remembers the refusal came after a picture) |
+    /// | `Playing` | `Refused`, otherwise | the ladder below, with the facet rung closed |
+    /// | `Confirming` | `RefusalConfirmed{newly}` | the ladder below; `newly` selects nothing |
     /// | `Flight` | `FlightLanded` | none; `Opening` (the reload re-enters the open) |
-    /// | `Flight` | `FlightRefused` | `ShowError`; `Failed` |
+    /// | `Flight{Facet}` | `FlightRefused` | the ladder below (one flight spent, so the facet rung is closed): `StartAutoHls` or `ShowError` |
+    /// | `Flight{Rollback, Both}` | `FlightRefused` | `ShowError`; `Failed` (a refused rollback stays terminal) |
     /// | `Opening` | `FirstPicture` | none; `Playing` |
     ///
-    /// The ladder: `pending_original` -> `Rollback`; else `learned` -> `StartFlight`; else
-    /// `auto_original && no_frames` -> `StartAutoHls` (each: `Flight`); else `ShowError`; `Failed`.
+    /// The ladder: `pending_original` -> `Rollback`; else `forced` -> `ShowError`; else a pipeline
+    /// refusal of a [`suspect`] stream which narrows the attempt, with no flight spent ->
+    /// `ConvertFacet`; else `auto_original && no_frames` with a flight left -> `StartAutoHls` (each:
+    /// `Flight`); else `ShowError`; `Failed`.
     pub fn step(&mut self, ev: &RecoveryEvent, fx: &mut Vec<RecoveryEffect>) -> Handled {
         match ev {
             RecoveryEvent::Refused { refusal, facts } => {
-                if !matches!(self.state, State::Opening | State::Playing) {
-                    return Handled::No;
-                }
-                match &facts.native_audio {
-                    Some(_) => {
-                        fx.push(RecoveryEffect::ConfirmRefusal);
-                        self.state = State::Confirming { refusal: *refusal, facts: facts.clone() };
-                    }
-                    None => self.decide(*refusal, facts, false, fx),
+                let opening = match self.state {
+                    State::Opening => true,
+                    State::Playing => false,
+                    _ => return Handled::No,
+                };
+                if facts.native_audio.is_some() {
+                    fx.push(RecoveryEffect::ConfirmRefusal);
+                    self.state = State::Confirming { refusal: *refusal, facts: facts.clone(), opening };
+                } else {
+                    self.decide(*refusal, facts, opening, fx);
                 }
                 Handled::Yes
             }
-            RecoveryEvent::RefusalConfirmed { newly } => {
-                let State::Confirming { refusal, facts } = &self.state else {
+            RecoveryEvent::RefusalConfirmed { .. } => {
+                let State::Confirming { refusal, facts, opening } = &self.state else {
                     return Handled::No;
                 };
-                let (refusal, facts) = (*refusal, facts.clone());
-                if *newly {
-                    if let Some(facet) = &facts.native_audio {
-                        self.exclude(facet.clone());
-                    }
-                }
-                self.decide(refusal, &facts, *newly, fx);
+                let (refusal, facts, opening) = (*refusal, facts.clone(), *opening);
+                self.decide(refusal, &facts, opening, fx);
                 Handled::Yes
             }
             RecoveryEvent::FlightLanded => {
@@ -230,11 +317,16 @@ impl OpenRecovery {
                 Handled::Yes
             }
             RecoveryEvent::FlightRefused => {
-                let State::Flight { cause } = self.state else {
+                let State::Flight { rung, cause, facts } = &self.state else {
                     return Handled::No;
                 };
-                fx.push(RecoveryEffect::ShowError { refusal: cause });
-                self.state = State::Failed;
+                let (rung, cause, facts) = (*rung, *cause, facts.clone());
+                if rung == Rung::Facet {
+                    self.decide(cause, &facts, true, fx);
+                } else {
+                    fx.push(RecoveryEffect::ShowError { refusal: cause });
+                    self.state = State::Failed;
+                }
                 Handled::Yes
             }
             RecoveryEvent::FirstPicture => {
@@ -275,17 +367,49 @@ pub enum Phase {
 mod tests {
     use super::*;
 
-    /// A facet the assumed device caps announce, so excluding it is a real narrowing.
-    fn ac3_6() -> Facet {
-        Facet::Audio { codec: "ac3".into(), channels: 6 }
+    fn dts6() -> Facet {
+        Facet::Audio { codec: "dts".into(), channels: 6 }
+    }
+
+    fn opus6() -> Facet {
+        Facet::Audio { codec: "opus".into(), channels: 6 }
+    }
+
+    fn audio(codec: &str, channels: u32) -> Option<StreamAudio> {
+        Some(StreamAudio { codec: codec.into(), channels })
+    }
+
+    /// A set whose table lists DTS at six channels (the shape of `plan_track_selection_tests.rs`'
+    /// `dts_row_caps`): taking `dts6()` out of it is a real narrowing.
+    fn dts_start() -> Arc<Caps> {
+        Arc::new(Caps {
+            audio: "aac,ac3,eac3,dts".into(),
+            audio_channels: [("dts".into(), 6)].into(),
+            ..Caps::assumed()
+        })
+    }
+
+    /// A set whose pipeline announces Opus at any channel count.
+    fn opus_start() -> Arc<Caps> {
+        Arc::new(Caps { audio: "aac,ac3,eac3,opus".into(), ..Caps::assumed() })
     }
 
     fn machine() -> OpenRecovery {
-        OpenRecovery::new(Arc::new(Caps::assumed()))
+        OpenRecovery::new(dts_start())
     }
 
-    fn facts(pending_original: bool, auto_original: bool, no_frames: bool, native_audio: bool) -> OpenFacts {
-        OpenFacts { pending_original, auto_original, no_frames, native_audio: native_audio.then(ac3_6) }
+    fn facts(pending_original: bool, auto_original: bool, no_frames: bool) -> OpenFacts {
+        OpenFacts { pending_original, auto_original, no_frames, ..OpenFacts::default() }
+    }
+
+    /// `f` with the DTS 5.1 track the pipeline was fed.
+    fn on_dts(f: OpenFacts) -> OpenFacts {
+        OpenFacts { audio: audio("dca", 6), ..f }
+    }
+
+    /// `f` with the Opus 5.1 track the pipeline was fed natively, which the refusal names.
+    fn names_opus(f: OpenFacts) -> OpenFacts {
+        OpenFacts { native_audio: Some(opus6()), audio: audio("opus", 6), ..f }
     }
 
     fn run(m: &mut OpenRecovery, ev: RecoveryEvent) -> (Handled, Vec<RecoveryEffect>) {
@@ -295,36 +419,219 @@ mod tests {
     }
 
     const SHUT: LoadRefusal = LoadRefusal::Refused { num: 601 };
+    const NATIVE: LoadRefusal = LoadRefusal::Refused { num: 200 };
+    const ERROR: [RecoveryEffect; 1] = [RecoveryEffect::ShowError { refusal: SHUT }];
 
     fn refused(refusal: LoadRefusal, facts: OpenFacts) -> RecoveryEvent {
         RecoveryEvent::Refused { refusal, facts }
     }
 
-    /// The ladder `open_failure_action` fixed, by facts and the learner's answer (`learned`), through
-    /// the machine: the rung a refusal lands on.
-    fn rung(pending: bool, learned: bool, auto: bool, no_frames: bool) -> Vec<RecoveryEffect> {
+    /// The ladder `open_failure_action` fixed, by facts, through the machine: the rung a `601` lands
+    /// on, with (`suspect`) or without a DTS 5.1 track fed.
+    fn rung(pending: bool, suspect: bool, auto: bool, no_frames: bool) -> Vec<RecoveryEffect> {
+        let f = facts(pending, auto, no_frames);
+        run(&mut machine(), refused(SHUT, if suspect { on_dts(f) } else { f })).1
+    }
+
+    #[test]
+    fn suspect_names_audio_outside_aac_ac3_eac3_only() {
+        let s = |codec: &str, channels| suspect(audio(codec, channels).as_ref());
+        assert_eq!(s("dca", 6), Some(dts6()));
+        assert_eq!(s("opus", 6), Some(opus6()));
+        for known in ["aac", "ac3", "eac3"] {
+            assert_eq!(s(known, 6), None, "{known}");
+        }
+        assert_eq!(suspect(None), None);
+        assert_eq!(s("dca", 0), Some(Facet::Audio { codec: "dts".into(), channels: 0 }), "unknown width names the codec");
+    }
+
+    #[test]
+    fn a_pipeline_refusal_with_an_audio_suspect_converts_that_facet_once() {
+        let start = dts_start();
+        assert_ne!(start.without(&dts6()), *start, "the fixture must exercise a real narrowing");
+        let mut m = OpenRecovery::new(start.clone());
+        let (handled, fx) = run(&mut m, refused(SHUT, on_dts(facts(false, false, true))));
+        assert_eq!((handled, fx, m.phase()), (Handled::Yes, vec![RecoveryEffect::ConvertFacet], Phase::Flight));
+        assert_eq!(*m.attempt(), start.without(&dts6()));
+    }
+
+    #[test]
+    fn an_auto_original_with_an_audio_suspect_converts_before_hls() {
+        let start = dts_start();
+        assert_ne!(start.without(&dts6()), *start);
+        let mut m = OpenRecovery::new(start.clone());
+        let (_, fx) = run(&mut m, refused(SHUT, on_dts(facts(false, true, true))));
+        assert_eq!(fx, [RecoveryEffect::ConvertFacet], "the conversion keeps the Original route; HLS would throw it away");
+        assert_eq!(*m.attempt(), start.without(&dts6()));
+    }
+
+    #[test]
+    fn a_refusal_after_the_facet_flight_takes_the_both_facets_rung_then_the_read_out() {
+        let start = dts_start();
+        assert_ne!(start.without(&dts6()), *start);
+        // Cold Auto Original: the facet, then the both-facets rung (HLS), then the read-out.
+        let mut m = OpenRecovery::new(start.clone());
+        run(&mut m, refused(SHUT, on_dts(facts(false, true, true))));
+        run(&mut m, RecoveryEvent::FlightLanded);
+        // The converted route feeds AAC now: no suspect, so only the HLS rung is left.
+        let converted = OpenFacts { audio: audio("aac", 2), ..facts(false, true, true) };
+        let (_, fx) = run(&mut m, refused(SHUT, converted.clone()));
+        assert_eq!((fx, m.phase()), (vec![RecoveryEffect::StartAutoHls], Phase::Flight));
+        assert_eq!(*m.attempt(), start.without(&dts6()), "derived from start, the facet carried");
+        run(&mut m, RecoveryEvent::FlightLanded);
+        let (_, fx) = run(&mut m, refused(SHUT, converted));
+        assert_eq!((fx, m.phase()), (ERROR.to_vec(), Phase::Failed));
+        // Manual Original: the facet, then the read-out (the manual both-facets rung is S1b's).
+        let mut m = OpenRecovery::new(start);
+        run(&mut m, refused(SHUT, on_dts(facts(false, false, true))));
+        run(&mut m, RecoveryEvent::FlightLanded);
+        let (_, fx) = run(&mut m, refused(SHUT, OpenFacts { audio: audio("aac", 2), ..facts(false, false, true) }));
+        assert_eq!((fx, m.phase()), (ERROR.to_vec(), Phase::Failed));
+    }
+
+    /// Every path of six events from `Opening`: the flights a request starts never exceed the cap,
+    /// and a facet conversion is only ever the request's first flight.
+    #[test]
+    fn at_most_two_flights_follow_one_request() {
+        fn walk(m: &OpenRecovery, events: &[RecoveryEvent], depth: usize, flights: usize) {
+            if depth == 0 {
+                return;
+            }
+            for ev in events {
+                let mut next = m.clone();
+                let before = next.flights;
+                let mut fx = Vec::new();
+                next.step(ev, &mut fx);
+                // The driver answers a confirmation with the learner's verdict, in the same drain.
+                let mut at = 0;
+                while at < fx.len() {
+                    if fx[at] == RecoveryEffect::ConfirmRefusal {
+                        next.step(&RecoveryEvent::RefusalConfirmed { newly: true }, &mut fx);
+                    }
+                    at += 1;
+                }
+                let started = fx.iter().filter(|e| matches!(e, RecoveryEffect::ConvertFacet | RecoveryEffect::StartAutoHls)).count();
+                if fx.contains(&RecoveryEffect::ConvertFacet) {
+                    assert_eq!(before, 0, "a facet conversion after another flight: {ev:?}");
+                }
+                assert!(
+                    flights + started <= usize::from(MAX_RECOVERY_FLIGHTS),
+                    "{} flights started on one request",
+                    flights + started
+                );
+                walk(&next, events, depth - 1, flights + started);
+            }
+        }
+        for auto in [true, false] {
+            let base = OpenFacts { auto_original: auto, no_frames: true, audio: audio("dca", 6), ..OpenFacts::default() };
+            let stall = OpenFacts { native_audio: Some(opus6()), ..base.clone() };
+            let events = [
+                refused(SHUT, base.clone()),
+                refused(LoadRefusal::TimedOut, base.clone()),
+                refused(LoadRefusal::Stalled, stall),
+                refused(LoadRefusal::SourceFailed, base),
+                RecoveryEvent::FlightLanded,
+                RecoveryEvent::FlightRefused,
+            ];
+            walk(&machine(), &events, 6, 0);
+        }
+    }
+
+    #[test]
+    fn a_refused_facet_flight_takes_the_next_rung_but_a_refused_rollback_ends() {
+        let facet = |auto: bool| {
+            let mut m = machine();
+            run(&mut m, refused(SHUT, on_dts(facts(false, auto, true))));
+            assert_eq!(m.phase(), Phase::Flight);
+            run(&mut m, RecoveryEvent::FlightRefused)
+        };
+        assert_eq!(facet(true).1, [RecoveryEffect::StartAutoHls], "a refused conversion dispatch still has the HLS contingency");
+        assert_eq!(facet(false).1, ERROR);
         let mut m = machine();
-        if learned {
-            let (_, fx) = run(&mut m, refused(LoadRefusal::Refused { num: 200 }, facts(pending, auto, no_frames, true)));
+        run(&mut m, refused(SHUT, on_dts(facts(true, true, true))));
+        let (_, fx) = run(&mut m, RecoveryEvent::FlightRefused);
+        assert_eq!((fx, m.phase()), (ERROR.to_vec(), Phase::Failed), "a refused rollback stays terminal");
+    }
+
+    #[test]
+    fn a_timeout_names_no_facet() {
+        let timed_out = |auto| run(&mut machine(), refused(LoadRefusal::TimedOut, on_dts(facts(false, auto, true)))).1;
+        assert_eq!(timed_out(true), [RecoveryEffect::StartAutoHls]);
+        assert_eq!(timed_out(false), [RecoveryEffect::ShowError { refusal: LoadRefusal::TimedOut }]);
+    }
+
+    #[test]
+    fn forced_ends_on_the_read_out_after_rollback_only() {
+        let forced = |pending, refusal| {
+            run(&mut machine(), refused(refusal, OpenFacts { forced: true, ..on_dts(facts(pending, false, true)) })).1
+        };
+        for refusal in [SHUT, LoadRefusal::TimedOut, LoadRefusal::Stalled, LoadRefusal::SourceFailed] {
+            assert_eq!(forced(true, refusal), [RecoveryEffect::Rollback], "{refusal}");
+            assert_eq!(forced(false, refusal), [RecoveryEffect::ShowError { refusal }], "{refusal}");
+        }
+    }
+
+    #[test]
+    fn rollback_comes_first_and_is_not_counted() {
+        let mut m = machine();
+        let (_, fx) = run(&mut m, refused(SHUT, on_dts(facts(true, false, true))));
+        assert_eq!(fx, [RecoveryEffect::Rollback]);
+        run(&mut m, RecoveryEvent::FlightLanded);
+        let (_, fx) = run(&mut m, refused(SHUT, on_dts(facts(false, false, true))));
+        assert_eq!(fx, [RecoveryEffect::ConvertFacet], "the rollback spent no flight");
+    }
+
+    #[test]
+    fn a_source_failure_keeps_mains_two_arms() {
+        let failed = |m: &mut OpenRecovery, auto| {
+            run(m, refused(LoadRefusal::SourceFailed, on_dts(facts(false, auto, true)))).1
+        };
+        assert_eq!(failed(&mut machine(), true), [RecoveryEffect::StartAutoHls]);
+        assert_eq!(failed(&mut machine(), false), [RecoveryEffect::ShowError { refusal: LoadRefusal::SourceFailed }]);
+        let mut m = machine();
+        run(&mut m, refused(SHUT, on_dts(facts(false, true, true))));
+        run(&mut m, RecoveryEvent::FlightLanded);
+        assert_eq!(failed(&mut m, true), [RecoveryEffect::StartAutoHls]);
+    }
+
+    #[test]
+    fn a_facet_the_attempt_already_lacks_is_no_rung() {
+        let start = Arc::new(opus_start().without(&opus6()));
+        assert_eq!(start.without(&opus6()), *start, "the fixture: the attempt already lacks the facet");
+        let stalled = |auto| {
+            let mut m = OpenRecovery::new(start.clone());
+            let (_, fx) = run(&mut m, refused(LoadRefusal::Stalled, names_opus(facts(false, auto, true))));
             assert_eq!(fx, [RecoveryEffect::ConfirmRefusal]);
-            run(&mut m, RecoveryEvent::RefusalConfirmed { newly: true }).1
-        } else {
-            run(&mut m, refused(SHUT, facts(pending, auto, no_frames, false))).1
+            run(&mut m, RecoveryEvent::RefusalConfirmed { newly: false }).1
+        };
+        assert_eq!(stalled(false), [RecoveryEffect::ShowError { refusal: LoadRefusal::Stalled }]);
+        assert_eq!(stalled(true), [RecoveryEffect::StartAutoHls]);
+    }
+
+    #[test]
+    fn newly_does_not_pick_the_rung() {
+        let start = opus_start();
+        assert_ne!(start.without(&opus6()), *start);
+        for newly in [true, false] {
+            let mut m = OpenRecovery::new(start.clone());
+            run(&mut m, refused(NATIVE, names_opus(facts(false, false, true))));
+            assert_eq!(*m.attempt(), *start, "nothing is narrowed before the rung is entered");
+            let (_, fx) = run(&mut m, RecoveryEvent::RefusalConfirmed { newly });
+            assert_eq!(fx, [RecoveryEffect::ConvertFacet], "newly={newly}");
+            assert_eq!(*m.attempt(), start.without(&opus6()), "newly={newly}");
         }
     }
 
     #[test]
     fn a_failed_original_open_prefers_rollback_then_cold_auto_before_error() {
-        let error = [RecoveryEffect::ShowError { refusal: SHUT }];
         assert_eq!(rung(true, false, true, true), [RecoveryEffect::Rollback]);
         assert_eq!(rung(false, false, true, true), [RecoveryEffect::StartAutoHls]);
-        assert_eq!(rung(false, false, true, false), error, "a post-frame failure is not a cold open");
-        assert_eq!(rung(false, false, false, true), error, "manual Original stays the user's fixed choice");
-        // A native audio refusal the install just learned rebuilds the same route converted, on a
-        // cold Auto Original too (the full HLS fallback would also convert it, but throws the
-        // route away), and on a manual Original (no other recovery owns it).
-        assert_eq!(rung(false, true, true, true), [RecoveryEffect::StartFlight]);
-        assert_eq!(rung(false, true, false, true), [RecoveryEffect::StartFlight]);
+        assert_eq!(rung(false, false, true, false), ERROR, "a post-frame failure is not a cold open");
+        assert_eq!(rung(false, false, false, true), ERROR, "manual Original stays the user's fixed choice");
+        // A suspect audio track converts first, on a cold Auto Original too (the full HLS fallback
+        // would also convert it, but throws the route away), and on a manual Original.
+        assert_eq!(rung(false, true, true, true), [RecoveryEffect::ConvertFacet]);
+        assert_eq!(rung(false, true, false, true), [RecoveryEffect::ConvertFacet]);
         // The rollback of a pending HLS to Original still comes first: its HLS route is the one a
         // failed open owes the viewer, and its audio is the server's.
         assert_eq!(rung(true, true, true, true), [RecoveryEffect::Rollback]);
@@ -333,87 +640,47 @@ mod tests {
     #[test]
     fn a_refusal_that_names_native_audio_is_confirmed_before_the_rung_is_picked() {
         let mut m = machine();
-        let (handled, fx) = run(&mut m, refused(LoadRefusal::Refused { num: 200 }, facts(false, false, true, true)));
+        let (handled, fx) = run(&mut m, refused(NATIVE, OpenFacts { native_audio: Some(opus6()), ..facts(false, false, true) }));
         assert_eq!((handled, m.phase()), (Handled::Yes, Phase::Confirming));
         assert_eq!(fx, [RecoveryEffect::ConfirmRefusal]);
-        // A combination the install already knew: the ladder with `learned = false`, which for a
-        // manual Original with nothing pending is the read-out.
+        // Nothing suspect was fed (the facts name no stream audio): the ladder for a manual
+        // Original with nothing pending is the read-out.
         let (handled, fx) = run(&mut m, RecoveryEvent::RefusalConfirmed { newly: false });
         assert_eq!((handled, m.phase()), (Handled::Yes, Phase::Failed));
-        assert_eq!(fx, [RecoveryEffect::ShowError { refusal: LoadRefusal::Refused { num: 200 } }]);
+        assert_eq!(fx, [RecoveryEffect::ShowError { refusal: NATIVE }]);
     }
 
     #[test]
     fn a_known_combination_still_takes_the_auto_originals_hls_contingency() {
         let mut m = machine();
-        run(&mut m, refused(LoadRefusal::Refused { num: 200 }, facts(false, true, true, true)));
+        run(&mut m, refused(NATIVE, OpenFacts { native_audio: Some(opus6()), ..facts(false, true, true) }));
         let (_, fx) = run(&mut m, RecoveryEvent::RefusalConfirmed { newly: false });
         assert_eq!((fx, m.phase()), (vec![RecoveryEffect::StartAutoHls], Phase::Flight));
     }
 
     #[test]
-    fn a_newly_learned_refusal_narrows_the_attempt_on_every_rung_and_only_then() {
-        let start = Arc::new(Caps::assumed());
-        let narrowed = Arc::new(start.without(&ac3_6()));
-        assert_ne!(*start, *narrowed, "the fixture must exercise a real narrowing");
-        for (pending, auto) in [(true, true), (false, true), (false, false)] {
-            let mut m = OpenRecovery::new(start.clone());
-            run(&mut m, refused(LoadRefusal::Refused { num: 200 }, facts(pending, auto, true, true)));
-            assert_eq!(*m.attempt(), *start, "nothing is excluded before the learner has answered");
-            run(&mut m, RecoveryEvent::RefusalConfirmed { newly: true });
-            assert_eq!(*m.attempt(), *narrowed, "pending={pending} auto={auto}: the rollback is narrowed too");
-        }
-        let mut m = OpenRecovery::new(start.clone());
-        run(&mut m, refused(LoadRefusal::Refused { num: 200 }, facts(false, false, true, true)));
-        run(&mut m, RecoveryEvent::RefusalConfirmed { newly: false });
-        assert_eq!(*m.attempt(), *start, "a combination the install already knew is in `start` already");
-    }
-
-    #[test]
-    fn the_attempt_is_derived_from_start_whatever_order_facets_are_learned_in() {
-        let start = Arc::new(Caps::assumed());
-        let stereo = Facet::Audio { codec: "eac3".into(), channels: 2 };
-        let ac3 = ac3_6();
-        let learn = |order: [&Facet; 2]| {
-            let mut m = OpenRecovery::new(start.clone());
-            for facet in order {
-                let native_audio = Some(facet.clone());
-                run(&mut m, refused(LoadRefusal::Refused { num: 200 }, OpenFacts { native_audio, ..facts(false, false, true, false) }));
-                run(&mut m, RecoveryEvent::RefusalConfirmed { newly: true });
-                // The flight lands and the reload is refused again: the next learned facet narrows
-                // the same `start`.
-                run(&mut m, RecoveryEvent::FlightLanded);
-            }
-            m.attempt()
-        };
-        assert_eq!(*learn([&stereo, &ac3]), *learn([&ac3, &stereo]));
-        assert_eq!(*learn([&stereo, &ac3]), start.without(&stereo).without(&ac3));
-        assert_ne!(*learn([&stereo, &ac3]), *start, "the fixture must exercise a real narrowing");
-    }
-
-    #[test]
     fn a_flight_ends_in_a_reload_or_in_the_read_out() {
         let mut m = machine();
-        run(&mut m, refused(SHUT, facts(true, false, true, false)));
+        run(&mut m, refused(SHUT, facts(true, false, true)));
         assert_eq!(m.phase(), Phase::Flight);
         let (handled, fx) = run(&mut m, RecoveryEvent::FlightLanded);
         assert_eq!((handled, fx, m.phase()), (Handled::Yes, vec![], Phase::Opening));
 
         let mut m = machine();
-        run(&mut m, refused(SHUT, facts(false, true, true, false)));
+        run(&mut m, refused(SHUT, facts(false, true, true)));
         let (handled, fx) = run(&mut m, RecoveryEvent::FlightRefused);
         assert_eq!((handled, m.phase()), (Handled::Yes, Phase::Failed));
-        assert_eq!(fx, [RecoveryEffect::ShowError { refusal: SHUT }], "the read-out names the refusal that started the flight");
+        assert_eq!(fx, ERROR, "the read-out names the refusal that started the flight");
     }
 
     #[test]
     fn a_failure_while_a_flight_or_the_read_out_is_outstanding_is_not_handled() {
         let mut m = machine();
-        run(&mut m, refused(SHUT, facts(true, false, true, false)));
-        assert_eq!(run(&mut m, refused(SHUT, facts(false, false, true, false))), (Handled::No, vec![]));
+        run(&mut m, refused(SHUT, facts(true, false, true)));
+        assert_eq!(run(&mut m, refused(SHUT, facts(false, false, true))), (Handled::No, vec![]));
         assert_eq!(m.phase(), Phase::Flight);
         run(&mut m, RecoveryEvent::FlightRefused);
-        assert_eq!(run(&mut m, refused(SHUT, facts(true, false, true, false))), (Handled::No, vec![]));
+        assert_eq!(run(&mut m, refused(SHUT, facts(true, false, true))), (Handled::No, vec![]));
         assert_eq!(m.phase(), Phase::Failed);
     }
 
@@ -432,35 +699,30 @@ mod tests {
         assert_eq!(run(&mut m, RecoveryEvent::FirstPicture), (Handled::Yes, vec![]));
         assert_eq!(m.phase(), Phase::Playing);
         assert_eq!(run(&mut m, RecoveryEvent::FirstPicture), (Handled::No, vec![]), "idempotent");
-        // A failure after a picture runs the same ladder, whose facts stop it at the read-out.
-        let (handled, fx) = run(&mut m, refused(LoadRefusal::SourceFailed, facts(false, true, false, false)));
+        // A failure after a picture runs the same ladder, whose facts stop it at the read-out; and
+        // it opens no facet rung (the suspect is not the reason a playing stream failed).
+        let (handled, fx) = run(&mut m, refused(LoadRefusal::SourceFailed, facts(false, true, false)));
         assert_eq!((handled, m.phase()), (Handled::Yes, Phase::Failed));
         assert_eq!(fx, [RecoveryEffect::ShowError { refusal: LoadRefusal::SourceFailed }]);
+        let mut m = machine();
+        run(&mut m, RecoveryEvent::FirstPicture);
+        assert_eq!(run(&mut m, refused(SHUT, on_dts(facts(false, false, false)))).1, ERROR);
     }
 
     #[test]
     fn a_stall_is_a_refusal_like_any_other_even_when_the_install_already_knew_the_combination() {
-        // A known combination is not "nothing to do": the conversion is spent (it is in `start`
-        // already), so the ladder runs with `learned = false` and, for a manual Original with
-        // nothing pending, ends in the read-out. The viewer never waits on a spinner for ever.
-        let mut m = machine();
-        run(&mut m, refused(LoadRefusal::Stalled, facts(false, false, true, true)));
-        let (handled, fx) = run(&mut m, RecoveryEvent::RefusalConfirmed { newly: false });
-        assert_eq!((handled, m.phase()), (Handled::Yes, Phase::Failed));
-        assert_eq!(fx, [RecoveryEffect::ShowError { refusal: LoadRefusal::Stalled }]);
-        // The rungs above the read-out still apply to it: a pending Original trial's rollback, a cold
-        // Auto Original's HLS contingency.
-        let mut m = machine();
-        run(&mut m, refused(LoadRefusal::Stalled, facts(true, false, true, true)));
-        assert_eq!(run(&mut m, RecoveryEvent::RefusalConfirmed { newly: false }).1, [RecoveryEffect::Rollback]);
-        let mut m = machine();
-        run(&mut m, refused(LoadRefusal::Stalled, facts(false, true, true, true)));
-        assert_eq!(run(&mut m, RecoveryEvent::RefusalConfirmed { newly: false }).1, [RecoveryEffect::StartAutoHls]);
-        // A new one takes the conversion.
-        let mut m = machine();
-        run(&mut m, refused(LoadRefusal::Stalled, facts(false, false, true, true)));
-        let (_, fx) = run(&mut m, RecoveryEvent::RefusalConfirmed { newly: true });
-        assert_eq!((fx, m.phase()), (vec![RecoveryEffect::StartFlight], Phase::Flight));
+        // A known combination converts nothing (it is in `start` already, test above), so a manual
+        // Original ends in the read-out and the viewer never waits on a spinner for ever. The rungs
+        // above the read-out still apply: a pending Original trial's rollback, a cold Auto
+        // Original's HLS contingency.
+        let stalled = |pending, auto| {
+            let mut m = OpenRecovery::new(Arc::new(opus_start().without(&opus6())));
+            run(&mut m, refused(LoadRefusal::Stalled, names_opus(facts(pending, auto, true))));
+            run(&mut m, RecoveryEvent::RefusalConfirmed { newly: false }).1
+        };
+        assert_eq!(stalled(false, false), [RecoveryEffect::ShowError { refusal: LoadRefusal::Stalled }]);
+        assert_eq!(stalled(true, false), [RecoveryEffect::Rollback]);
+        assert_eq!(stalled(false, true), [RecoveryEffect::StartAutoHls]);
     }
 
     #[test]

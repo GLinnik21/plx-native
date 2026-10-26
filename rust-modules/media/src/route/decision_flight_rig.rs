@@ -226,6 +226,14 @@ impl FlightRig {
         ps.begin_attempt(caps);
     }
 
+    /// Declare the audio the playing route feeds the pipeline, as the plan of a direct play of
+    /// `codec` with `channels` channels would have: `stream_acodec` and the carried track, which the
+    /// failed-open ladder's facts read ([`stream_audio`]). The rig's own route declares AC3.
+    pub(crate) fn declare_audio(ps: &mut PlaybackSession, codec: &str, channels: i64) {
+        ps.stream_acodec = codec.into();
+        ps.cur_audio = Some(CarriedAudio { codec: codec.into(), channels, ..CarriedAudio::named(960_002, 1) });
+    }
+
     /// Offer the Original the playing route can be restored to. A REMUX candidate (`direct ==
     /// false`) makes the recovery's PMS half a real `/decision`, which is what a frame must not
     /// wait on.

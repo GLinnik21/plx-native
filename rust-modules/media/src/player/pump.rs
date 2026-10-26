@@ -594,6 +594,8 @@ fn open_facts(ps: &crate::route::PlaybackSession, native_audio: Option<plx_platf
         auto_original: crate::route::auto_original_watch(ps).is_some(),
         no_frames: SHARED.frames.load(Relaxed) == 0,
         native_audio,
+        forced: crate::route::forced_direct_play(ps),
+        audio: crate::route::stream_audio(ps),
     }
 }
 
@@ -673,10 +675,10 @@ fn drive_open_recovery(ps: &mut crate::route::PlaybackSession, first: super::rec
                         }
                     }
                 }
-                RecoveryEffect::StartFlight => {
+                RecoveryEffect::ConvertFacet => {
                     // The attempt was narrowed by the machine; the dispatch plans from it.
                     let secs = (SHARED.playpos_ns.load(Relaxed) / 1_000_000_000).max(0);
-                    crate::route::dispatch_native_audio_conversion(ps, secs)
+                    crate::route::dispatch_refusal_conversion(ps, secs)
                 }
                 RecoveryEffect::StartAutoHls => {
                     let status = SHARED.dg_http_status.load(Relaxed);
@@ -736,7 +738,7 @@ fn refused_native_audio() -> Option<plx_platform::devcaps::Facet> {
 /// codec and channel count as refused on this firmware (`learn`, which is
 /// `session::learn_native_audio_refusal` in the player and a recorder in the tests). True when the
 /// refusal is new to the install, which is the caller's one conversion
-/// ([`super::recovery::RecoveryEffect::StartFlight`]); false when nothing was refused that way, or the
+/// ([`super::recovery::RecoveryEffect::ConvertFacet`]); false when nothing was refused that way, or the
 /// combination was already known (a conversion that still fed it natively must end in the ordinary
 /// failure, not loop).
 fn learn_native_audio_refusal(why: &str, learn: impl FnOnce(&str, u32) -> bool) -> bool {
@@ -3711,6 +3713,7 @@ mod flight_tests {
         // The route was planned before the refusal, from the capability value read then: Opus at
         // any channel count. The attempt holds that value, not the process-wide answer.
         FlightRig::plan_on(&mut rig.ps, plx_platform::devcaps::caps());
+        FlightRig::declare_audio(&mut rig.ps, "opus", 6);
         rig.frame();
         let answered = rig.flight.answered();
         let epoch = engine_epoch(&mut rig);
@@ -3746,7 +3749,7 @@ mod flight_tests {
         assert_eq!(rig.flight.decisions(), 1, "exactly one replacement /decision");
         // **The refusal learned mid-attempt reaches the recovery flight.** The attempt started on a
         // value that lists Opus without a ceiling; the dispatch narrowed that value by the refusal
-        // (`dispatch_native_audio_conversion`), so the replacement request's profile carries the
+        // (`dispatch_refusal_conversion`), so the replacement request's profile carries the
         // 2-channel ceiling the install just learned.
         let decisions = rig.flight.decision_requests();
         let replacement = decisions.first().expect("the replacement /decision");
@@ -3779,6 +3782,7 @@ mod flight_tests {
         let _set = firmware_announcing_opus();
         // The play began on the value the set announced: Opus at any channel count.
         FlightRig::plan_on(&mut rig.ps, plx_platform::devcaps::caps());
+        FlightRig::declare_audio(&mut rig.ps, "opus", 6);
         land_original_trial(&mut rig);
         let decisions = rig.flight.decisions();
         let epoch = engine_epoch(&mut rig);
@@ -3817,6 +3821,10 @@ mod flight_tests {
     fn a_refused_native_audio_conversion_ends_in_the_error_state_and_leaves_the_route_alone() {
         let mut rig = Rig::new(40);
         let _set = firmware_announcing_opus();
+        // The play began on the value the set announced (Opus at any width), as in the tests above:
+        // an attempt which never announced Opus has nothing to narrow, so it gets no conversion.
+        FlightRig::plan_on(&mut rig.ps, plx_platform::devcaps::caps());
+        FlightRig::declare_audio(&mut rig.ps, "opus", 6);
         rig.flight.refuse_decisions(1);
         rig.frame();
         let epoch = engine_epoch(&mut rig);

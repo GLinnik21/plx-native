@@ -4100,7 +4100,7 @@ pub fn dispatch_unopened_auto_hls(ps: &mut PlaybackSession, offset_secs: i64) ->
 }
 
 /// The line a refused native-audio conversion settles with (never logged as another recovery's).
-pub(super) const NATIVE_AUDIO_REJECTED: &str = "native audio: the server could not convert the refused audio";
+pub(super) const REFUSAL_CONVERSION_REJECTED: &str = "native audio: the server could not convert the refused audio";
 
 /// Start the flight that replaces a route whose natively fed audio the pipeline refused before the
 /// first picture (`type=18 num=200`, or the stall watchdog): the viewer's track plays again with the
@@ -4114,7 +4114,7 @@ pub(super) const NATIVE_AUDIO_REJECTED: &str = "native audio: the server could n
 /// ([`try_retranscode`]), install at the landing ([`install_recovery_landing`]).
 /// [`RecoveryDispatch::Refused`] / [`RecoveryVerdict::Refused`] leave the failure the pump held back
 /// (a forced direct play, which the viewer asked not to convert, is one).
-pub fn dispatch_native_audio_conversion(ps: &mut PlaybackSession, offset_secs: i64) -> RecoveryDispatch {
+pub fn dispatch_refusal_conversion(ps: &mut PlaybackSession, offset_secs: i64) -> RecoveryDispatch {
     let expected = worker_ticket();
     let Some(contract) = plain_rebuild_precheck(ps, &expected) else {
         return RecoveryDispatch::Refused;
@@ -4133,7 +4133,7 @@ pub fn dispatch_native_audio_conversion(ps: &mut PlaybackSession, offset_secs: i
         offset_ns,
         Some(inputs),
         ClaimWork::Encode(contract),
-        RetranscodeFallback::RejectWith(NATIVE_AUDIO_REJECTED),
+        RetranscodeFallback::RejectWith(REFUSAL_CONVERSION_REJECTED),
     ) {
         RecoveryDispatch::Flying { serial: ticket.serial }
     } else {
@@ -5610,6 +5610,17 @@ pub fn stream_achannels(ps: &PlaybackSession) -> i64 {
         .as_ref()
         .filter(|a| a.codec.eq_ignore_ascii_case(&ps.stream_acodec))
         .map_or(0, |a| a.channels)
+}
+/// What the pipeline was fed, for the failed-open ladder ([`crate::player::recovery::OpenFacts`]):
+/// the stream's audio codec and the carried track's channel count ([`stream_achannels`]: 0 when
+/// that track is not the declared codec). `None` while no audio codec is declared. Beside
+/// [`stream_achannels`] so the session keeps its fields private.
+pub fn stream_audio(ps: &PlaybackSession) -> Option<crate::player::recovery::StreamAudio> {
+    let codec = stream_acodec(ps);
+    (!codec.is_empty()).then(|| crate::player::recovery::StreamAudio {
+        codec,
+        channels: u32::try_from(stream_achannels(ps)).unwrap_or(0),
+    })
 }
 /// direct-play source video fps for the Load esInfo (0 = unknown/transcode → omit)
 pub fn stream_fps(ps: &PlaybackSession) -> f64 {
@@ -9273,7 +9284,7 @@ pub(super) struct RetranscodeClaimInputs {
     client: &'static plx_plex::plex::Client,
     /// The attempt's capability value ([`PlaybackSession::attempt_caps`]), carried beside the contract the
     /// claim builds: the profile PMS reads is derived from it, so a recovery flight that began a new
-    /// attempt (`dispatch_native_audio_conversion`) asks for exactly the conversion it narrowed to.
+    /// attempt (`dispatch_refusal_conversion`) asks for exactly the conversion it narrowed to.
     caps: std::sync::Arc<plx_platform::devcaps::Caps>,
     sid: ServerId,
     rk: String,
