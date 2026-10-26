@@ -312,7 +312,7 @@ pub enum Facet {
 
 /// The decode-capability snapshot the playback stack derives from. Probed once, at boot
 /// ([`probe`]); the app reads [`caps`] ONCE per attempt, at the play's start, and the attempt carries
-/// that value (`route::PlaybackSession`'s `caps`). The process-wide answer is not frozen after
+/// that value (`route::PlaybackSession::attempt_caps`, which the request's `OpenRecovery` owns). The process-wide answer is not frozen after
 /// boot: [`learn_refusal`] can still move it, and an attempt already in flight keeps (and narrows,
 /// [`Caps::without`]) its own value instead of re-reading it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -585,7 +585,7 @@ pub fn caps() -> std::sync::Arc<Caps> {
 }
 
 /// The one shared [`Caps::assumed`] value: [`caps`]' answer before [`probe`] has run, and the
-/// stand-in a session that has not begun an attempt plans from (`route::PlaybackSession::caps`).
+/// stand-in a session that has not begun an attempt plans from (`route::PlaybackSession::attempt_caps`).
 pub fn assumed_shared() -> std::sync::Arc<Caps> {
     ASSUMED.get_or_init(|| std::sync::Arc::new(Caps::assumed())).clone()
 }
