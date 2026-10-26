@@ -43,8 +43,8 @@ dropped.
 
 **Scope.** `workers` and `globals` read the machines: everything under `rust-modules/data/src`,
 `session/src`, `screens/src`, `ui/src`, `appkit/src` and `machine/src`, plus
-`plex/src/plex/session.rs` (the session owner's state), the player's `lifecycle.rs` and the route
-planners `route/plan.rs` and `route/plan_memory.rs`. The IO layers (the rest of `plex/`, `media/`,
+`plex/src/plex/session.rs` (the session owner's state), the player's `lifecycle.rs` and `recovery.rs`
+(the failed-open ladder machine) and the route planners `route/plan.rs` and `route/plan_memory.rs`. The IO layers (the rest of `plex/`, `media/`,
 `net/`, `platform/`) are where those calls belong, so they are not scanned. `forks` reads the whole
 of `data/`, `plex/`, `media/` and `session/`, because a fork anywhere in them is a test that does not
 run the product's code. `fxlanes` reads the one fn, `Bridge::app_effect` in `rust-modules/src/app/bridge.rs`.
@@ -77,7 +77,7 @@ run the product's code. `fxlanes` reads the one fn, `Bridge::app_effect` in `rus
   pin on its own).
 - The device's capability answer (`devcaps::caps()`) is the same kind of read: a process-wide value
   that `learn_refusal` moves under a running play. The route's planner takes the attempt's `&Caps`
-  as an argument (`PlaybackSession::caps`, read once by the app's play start), so `devcaps::caps`
+  as an argument (`PlaybackSession::attempt_caps`, read once by the app's play start), so `devcaps::caps`
   and the zero-argument `is_dp_audio(` / `is_dp_audio_track(` (the `_with` forms take the value and
   are not sites) are spellings of this rule, qualified or bare after an import; a `use ... as`
   rename of any of them fails outright. Widening the rule to them is a coverage expansion, not a

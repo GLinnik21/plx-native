@@ -3033,8 +3033,8 @@ pub fn learn_hold_hint_taught(taught: HoldHintTaught) -> bool {
 /// Two effects, in this order: the process-wide answer loses the audio at once (`devcaps::learn_refusal`),
 /// which is what the NEXT play's start reads, then the entry is queued as an install preference
 /// off the caller's thread, best effort like [`learn_hold_hint_taught`]. The recovery that follows
-/// does NOT read that answer: the route narrows the playing attempt's own capability value
-/// (`Caps::without`) by what was fed. Returns whether anything was
+/// does NOT read that answer: the request's `OpenRecovery` narrows the playing attempt's own capability
+/// value (`Caps::without`) by what was fed. Returns whether anything was
 /// learned (a combination the set no longer announces, a known one and the debug flag learn nothing).
 pub fn learn_native_audio_refusal(codec: &str, channels: u32) -> bool {
     let Some(refusal) = plx_platform::devcaps::learn_refusal(codec, channels) else {

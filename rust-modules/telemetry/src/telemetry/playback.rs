@@ -1007,6 +1007,19 @@ mod tests {
     }
 
     #[test]
+    fn delivery_reason_codes_are_closed_and_listed() {
+        use crate::telemetry::classes::DeliveryReason;
+        let legend = preview_domains();
+        let privacy = include_str!("../../../../PRIVACY.md");
+        assert_eq!(DeliveryReason::ALL.len(), 5);
+        assert_eq!(DeliveryReason::RefusalRecovery.code(), "refusal_recovery");
+        for reason in DeliveryReason::ALL {
+            assert!(legend.contains(reason.code()), "the legend omitted {}", reason.code());
+        }
+        assert!(privacy.contains("`refusal_recovery`"), "PRIVACY.md omitted the facet rung's reason");
+    }
+
+    #[test]
     fn consent_preview_and_privacy_name_the_closed_failure_domains() {
         let legend = preview_domains();
         let privacy = include_str!("../../../../PRIVACY.md");
@@ -1361,6 +1374,7 @@ mod tests {
         );
         assert!(legend.contains("1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 / 9 / 9+"), "the attempt_ordinal domain");
         assert!(legend.contains("quality_pick"), "the delivery reason the fixed-rung pick notes");
+        assert!(legend.contains("refusal_recovery"), "the delivery reason the facet rung's conversion notes");
         // The attempted route rides EVERY report now, so its row lists the whole delivery domain
         // (including `unknown`), not only the three a refusal can name.
         let all = "unknown / original_direct / original_remux / hls / progressive_transcode";
@@ -1382,6 +1396,7 @@ mod tests {
             assert!(privacy.contains(&quoted), "PRIVACY.md omitted the origin {}", origin.code());
         }
         assert!(privacy.contains("9+") && privacy.contains("quality_pick"));
+        assert!(privacy.contains("refusal_recovery"));
     }
 
     /// **The firmware's error number.** A `tv_pipeline` report used to say only that the pipeline

@@ -226,11 +226,40 @@ impl FlightRig {
         ps.begin_attempt(caps);
     }
 
+    /// Declare the audio the playing route feeds the pipeline, as the plan of a direct play of
+    /// `codec` with `channels` channels would have: `stream_acodec` and the carried track, which the
+    /// failed-open ladder's facts read ([`stream_audio`]). The rig's own route declares AC3.
+    pub(crate) fn declare_audio(ps: &mut PlaybackSession, codec: &str, channels: i64) {
+        ps.stream_acodec = codec.into();
+        ps.cur_audio = Some(CarriedAudio { codec: codec.into(), channels, ..CarriedAudio::named(960_002, 1) });
+    }
+
     /// Offer the Original the playing route can be restored to. A REMUX candidate (`direct ==
     /// false`) makes the recovery's PMS half a real `/decision`, which is what a frame must not
     /// wait on.
     pub(crate) fn offer_original(ps: &mut PlaybackSession, direct: bool) {
         ps.auto_original = Some(AutoOriginalCandidate { direct, ..test_original_candidate(None) });
+    }
+
+    /// [`FlightRig::offer_original`] whose candidate carries `codec` with `channels` channels (the
+    /// audio of the stream the Original would feed), where the offer's own default is E-AC-3 5.1.
+    pub(crate) fn offer_original_carrying(ps: &mut PlaybackSession, direct: bool, codec: &str, channels: i64) {
+        let audio = CarriedAudio { codec: codec.into(), channels, ..CarriedAudio::named(960_002, 1) };
+        ps.auto_original = Some(AutoOriginalCandidate { direct, audio: Some(audio), ..test_original_candidate(None) });
+    }
+
+    /// Whether the stored Original candidate would feed the Part itself on a recovery (`None` when
+    /// none is stored): the climb's DIRECT question, which a refused audio must answer no.
+    pub(crate) fn original_feeds_part(ps: &PlaybackSession) -> Option<bool> {
+        ps.auto_original.as_ref().map(AutoOriginalCandidate::feeds_part)
+    }
+
+    /// Whether an Original recovery from the stored candidate plans the codec-preserving remux
+    /// ([`RecoveryFlavour::Remux`]) rather than the Part (`None` when no candidate is stored).
+    pub(crate) fn original_recovery_is_remux(ps: &PlaybackSession) -> Option<bool> {
+        ps.auto_original.as_ref().map(|candidate| {
+            matches!(recovery_flavour(candidate, plx_plex::plex::AudioEnhancements::NONE), RecoveryFlavour::Remux(_))
+        })
     }
 
     /// Arm the Original REMUX trial the viewer's Original pick leaves on the playing route: the

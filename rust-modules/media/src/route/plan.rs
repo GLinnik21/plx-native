@@ -389,7 +389,7 @@ pub(super) fn classify_prime_decision(
 /// what keeps every caller stating the whole shape at once rather than four/five positional bools
 /// and options a reader has to keep straight by position.
 ///
-/// `caps` is the attempt's capability value ([`PlaybackSession::caps`], through [`ResolveEnv`] or
+/// `caps` is the attempt's capability value ([`PlaybackSession::attempt_caps`], through [`ResolveEnv`] or
 /// the claim's inputs), for the same reason: the profile PMS reads is built from it, so it is the
 /// value the plan chose its tracks from and no function here consults the process-wide answer.
 pub(super) fn transcode_spec<'a>(
@@ -1252,7 +1252,7 @@ pub struct ResolveEnv {
     /// Captured with the quality preference; never re-read by a worker.
     pub direct_play_mode: DirectPlayMode,
     /// **The capability value this attempt plans from**, copied off the session
-    /// ([`PlaybackSession::caps`]) beside the quality and the mode, so the worker never reads the
+    /// ([`PlaybackSession::attempt_caps`]) beside the quality and the mode, so the worker never reads the
     /// process-wide capability answer: every direct-play gate, the audio pick and the transcode
     /// profile of this resolve are derived from this one value.
     pub caps: std::sync::Arc<plx_platform::devcaps::Caps>,
