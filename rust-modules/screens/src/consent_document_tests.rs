@@ -89,6 +89,20 @@ fn the_crash_preview_carries_nothing_from_the_usage_channel() {
     }
 }
 
+/// **The crash preview shows the recovered-refusal event and every field's domain**, from the real
+/// serialiser: an event the consent screen does not show is an event nobody agreed to.
+#[test]
+fn the_crash_preview_shows_the_recovered_refusal_event_and_its_domains() {
+    let text = preview_crash();
+    assert!(text.contains("\"playback.class\": \"refusal_recovered\""), "the sample is in the preview");
+    for field in ["playback.refused_codec", "playback.refused_channels", "playback.pipeline_error", "playback.recovery_rung"] {
+        assert!(text.contains(field), "the sample lacks {field}");
+    }
+    for domain in ["facet / hls / rollback", "1-2 / 3-6 / 7+", "timeout / stall"] {
+        assert!(text.contains(domain), "the legend lacks `{domain}`");
+    }
+}
+
 /// The mirror image: no Sentry envelope shape belongs in the usage document.
 #[test]
 fn the_usage_preview_carries_nothing_from_the_crash_channel() {

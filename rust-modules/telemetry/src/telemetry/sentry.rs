@@ -546,6 +546,9 @@ pub fn attach_hardware_context(body: &mut serde_json::Value) {
         "type": "webos",
         "name": webos.name,
         "release": webos.release,
+        // The exact firmware build (nyx's `core_os_release`, e.g. `6.5.3-47`), which a patch within
+        // one release changes and `release` does not: what a refusal is learned against.
+        "build": webos.build,
         "codename": webos.codename,
         "api": webos.api,
     });
@@ -685,7 +688,7 @@ mod tests {
             .expect("webos context present");
         let mut webos_keys: Vec<&str> = webos.keys().map(String::as_str).collect();
         webos_keys.sort_unstable();
-        assert_eq!(webos_keys, ["api", "codename", "name", "release", "type"]);
+        assert_eq!(webos_keys, ["api", "build", "codename", "name", "release", "type"]);
         assert_eq!(webos["type"], "webos");
         let hardware = body["contexts"]["hardware"]
             .as_object()

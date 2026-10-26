@@ -210,6 +210,17 @@ because the refused plan never installed a route); and the source file's video c
 (`unknown` / `h264` / `hevc` / `av1` / `vp9` / `mpeg2` / `other`) and audio codec (`unknown` /
 `aac` / `ac3` / `eac3` / `truehd` / `dts` / `flac` / `mp3` / `opus` / `other`).
 
+When the app recovers from the television refusing a video before its first picture (by having
+the server convert the refused stream, by falling back to adaptive streaming, or by restoring the
+route it replaced), the same choice also covers one small `refusal_recovered` report per play,
+which contains only the codec class of the refused stream (the video's or audio's closed codec
+list above, or `unknown`), a channel bucket for refused audio (`unknown` / `1-2` / `3-6` / `7+`),
+the whole error number the television's video pipeline gave or the word `timeout` or `stall`, and
+which rung played (`facet` / `hls` / `rollback`), beside the Crash report ID and the television
+facts above, which now include the exact firmware build (`build`, for example `6.5.3-47`, beside the
+webOS release) on this report, on playback-error reports and on the crash-report fallbacks, and
+nothing else of the playback: no title, ratingKey, URL, path, server, picture size, trace or timing.
+
 The same choice also covers a **sign-in problem report** when signing in fails. It contains the
 `kind` of sign-in step that failed — or, when the failure was inside the app rather than on the
 network (the app's own sign-in work refused, stopped or left unfinished), which of those fixed

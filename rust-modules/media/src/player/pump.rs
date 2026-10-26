@@ -718,7 +718,16 @@ fn drive_open_recovery(ps: &mut crate::route::PlaybackSession, first: super::rec
                     run = OpenRecoveryRun::Failed;
                     continue;
                 }
-                RecoveryEffect::ReportRecovered(_) => continue,
+                RecoveryEffect::ReportRecovered(recovered) => {
+                    // One event per rescued request, under the error-report consent (the report
+                    // path checks it); nothing answers.
+                    super::log(&format!(
+                        "open recovery: the refusal was recovered on the {:?} rung ({})",
+                        recovered.rung, recovered.refusal
+                    ));
+                    super::report::refusal_recovered(&recovered);
+                    continue;
+                }
             };
             match dispatched {
                 crate::route::RecoveryDispatch::Flying { .. } => run = OpenRecoveryRun::Flying,
