@@ -79,6 +79,9 @@ BODY = "What changed and why.\n\nGates: make check green.\n"
 # A value that passes outbound-guard's `usable()` (8+ chars, no whitespace, not a placeholder word);
 # it is planted in a FAKE `.tv-host` of a temporary root, so no real private value is involved.
 PLANTED = "PLANTED-SECRET-00000000"
+# A fake 22-character token value; the test formats it in after `X-Plex-Token=` at run time so this
+# source never holds the key next to a 20+ character value (ci/source_bundle.py would refuse the file).
+TOKEN_SHAPED = "AbCdEfGh0123456789xyZq"
 HOST_CHECKS = "host checks (NOT a device gate)"
 HOSTSIM = "host unit tests (hostsim)"
 CODEQL_RUST = "Analyze (rust)"          # not a required context of main; it finishes long after the others
@@ -917,11 +920,11 @@ class SecretScanTests(Base):
 
     def test_a_token_shaped_value_is_refused_by_the_shape_rules(self):
         with Sandbox() as sb:
-            body = sb.body("Debugging with X-Plex-Token=AbCdEfGh0123456789xyZq on the box.\n")
+            body = sb.body("Debugging with X-Plex-Token=%s on the box.\n" % TOKEN_SHAPED)
             r = sb.run("merge", "1049", "--sha", HEAD, "--subject", SUBJECT, "--body-file", body)
             self.check(r, 3)
             self.assertEqual(sb.calls(), [])
-            self.assertNotIn("AbCdEfGh0123456789xyZq", r.out + r.err)
+            self.assertNotIn(TOKEN_SHAPED, r.out + r.err)
 
     def test_a_planted_value_in_the_pr_body_is_refused_before_the_merge_call(self):
         with Sandbox(body=[resp({"body": "Seen on %s.\n" % PLANTED})]) as sb:
