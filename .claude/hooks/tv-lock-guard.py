@@ -15,15 +15,20 @@ command line, and the lease check is a single small file read, with no ssh and n
 television is never contacted from here.
 
 LANE IDENTITY has to agree with `tools/tv-lock.sh`'s, and `payload["cwd"]` cannot supply it by
-itself: the harness reports the SESSION's own checkout as `cwd` for every subagent's Bash call,
-whatever worktree that agent actually runs in. `lane_from_command()` below is what a subagent
-uses instead — an explicit `PLX_TV_LOCK_LANE=<its worktree>` prefixed on the command, so several
-subagents can each hold their own lease and the lock still arbitrates between them rather than
-collapsing onto one lane. See that function's docstring for the full resolution order.
+itself: the harness reports the SESSION's own cwd for a plain subagent's Bash call, whatever
+worktree that agent was told to work in (only an `isolation: worktree` subagent reports its own
+worktree). So each television-driving segment of a command gets the lane the tool it runs will
+compute (`LANE=${PLX_TV_LOCK_LANE:-$REPO}`, REPO being the parent of the script's directory), and
+`decide()` below lists the order it is read in: a `PLX_TV_LOCK_LANE=`
+prefix on the command, that variable in the hook's environment, the segment's own absolute script
+path or `make -C <dir>`, an absolute `cd <dir>`, and last the cwd's checkout. Every segment's lane
+needs a live lease. A lane read off the command (the script path or the cd) that is not the cwd's own
+also needs the payload's `session_id` among the lease's SESSIONS, which only `tools/tv-lock.sh`
+writes, so a session holding nothing cannot use a lane on the strength of somebody else's lease.
 
 WHAT IT DELIBERATELY DOES NOT BLOCK.
   * read-only diagnostics that cannot disturb a running session: `tools/crash-report.sh`,
-    `tv-session.sh log|status`, `make -s print-*`;
+    `tv-session.sh log|status|fg`, `make -s print-*`;
   * the lock tool itself and `wake-tv.sh` — waking a set is harmless and is how you get to a
     television you are about to lock;
   * every host-only path, which is most of this repo: `make check`, `make sim`, cargo, the
@@ -40,7 +45,9 @@ feeds stderr back to the model.
 """
 import json
 import os
+import posixpath
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -58,17 +65,32 @@ RAW_SSH = re.compile(r"\b(sshpass|ssh|scp|rsync)\b")
 ROOT_AT = re.compile(r"root@")
 
 
-def segments(cmd):
-    """Split a shell command into segments on ; && || | & and newlines — QUOTE-AWARE.
+def split_segments(cmd):
+    """The segments of `segments()`, each with the separator that came BEFORE it: `""` for the
+    first, else one of `;` `\\n` `&&` `||` `|` `&`, and `"$("` for a command substitution's contents
+    (which lane derivation must not treat as sitting at any one place in the chain). A blank
+    segment between two separators hands the earlier `&&`/`||`/`|` on, so `a &&\\n b` is still `&&`.
 
-    A plain regex split gets this wrong in a way that reads as the guard being broken:
-    `pgrep -fl "tests/run.py|capture-screen"` splits inside the quoted PATTERN and hands the tail
-    to the classifier as if it were a command, so the pre-flight that ASKS whether anybody is on
-    the television is itself refused. (Both of those fired in the first two minutes this hook was
-    live, on this file's own author.) A false positive here is worse than a miss: it blocks work
-    that never touches the set, and it teaches the reader to reach for the bypass.
+    The splitting is QUOTE-AWARE. A plain regex split gets this wrong in a way that reads as the
+    guard being broken: `pgrep -fl "tests/run.py|capture-screen"` splits inside the quoted PATTERN
+    and hands the tail to the classifier as if it were a command, so the pre-flight that ASKS
+    whether anybody is on the television is itself refused. (Both of those fired in the first two
+    minutes this hook was live, on this file's own author.) A false positive here is worse than a
+    miss: it blocks work that never touches the set, and it teaches the reader to reach for the
+    bypass.
     """
-    out, cur, quote, i = [], [], None, 0
+    out, cur, quote, i, pending = [], [], None, 0, ""
+
+    def flush(sep):
+        nonlocal cur, pending
+        text = "".join(cur)
+        cur = []
+        if text.strip():
+            out.append((text, pending))
+            pending = sep
+        elif pending in ("", ";", "\n"):
+            pending = sep
+
     while i < len(cmd):
         c = cmd[i]
         if quote:
@@ -90,13 +112,13 @@ def segments(cmd):
         if c in ";\n|&":
             # `&&` and `||` end a segment, as do a bare `|`, `;`, `&` and a newline. Consume the
             # pair so the second character cannot start an empty one.
-            i += 2 if cmd[i:i + 2] in ("&&", "||") else 1
-            out.append("".join(cur))
-            cur = []
+            sep = cmd[i:i + 2] if cmd[i:i + 2] in ("&&", "||") else c
+            i += len(sep)
+            flush(sep)
             continue
         cur.append(c)
         i += 1
-    out.append("".join(cur))
+    flush("")
     # Command substitution runs whatever is inside it, and `"$(ssh root@…)"` is inside double
     # quotes as far as the scanner above is concerned — so its contents are pulled out and graded
     # as segments of their own, wherever they appeared.
@@ -108,8 +130,14 @@ def segments(cmd):
     # The `$( )` form carries no such ambiguity.
     for inner in re.findall(r"\$\(([^()]*)\)", cmd):
         if inner.strip():
-            out.extend(segments(inner))
-    return [seg for seg in out if seg.strip()]
+            out.extend((text, "$(") for text, _ in split_segments(inner))
+    return out
+
+
+def segments(cmd):
+    """Split a shell command into segments on ; && || | & and newlines — QUOTE-AWARE
+    (`split_segments()` says why that matters) — with the contents of `$( )` appended."""
+    return [text for text, _ in split_segments(cmd)]
 
 
 HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
@@ -159,29 +187,50 @@ def command_word(w):
 
 def classify(seg):
     """Return a reason string if this segment drives the TV, else None."""
+    return classify_lane(seg)[0]
+
+
+def classify_lane(seg):
+    """`(why, own)`: the reason this segment drives the TV (None if it does not) and, for one that
+    names its own checkout, `own` = `(lane, how)`: the lane `tools/tv-lock.sh require` will compute,
+    step 3 of `decide()`'s order. That is the parent of the directory of the TV script the SAME
+    token classification matched (never any other `/…` string in the segment: `ssh root@tv 'cat
+    /B/tools/x'` is not a use of /B), or the one absolute directory of a `make -C`. Both are string
+    work; the filesystem is not consulted.
+    """
     w = words(seg)
     if not w:
-        return None
+        return None, None
     cw = command_word(w)
     base = os.path.basename(cw)
     if base in ALWAYS_OK:
-        return None
+        return None, None
     # `python3 tools/foo.py` / `bash tools/foo.sh`: the interpreter is not the command.
     if base in ("python3", "python", "bash", "sh", "zsh") and len(w) > 1:
         for tok in w[1:]:
             b = os.path.basename(tok)
             if b in ALWAYS_OK:
-                return None
+                return None, None
             if b in TV_SCRIPTS:
                 base, cw = b, tok
                 break
 
     if base in TV_SCRIPTS:
-        # Two subcommands of tv-session are read-only and stay allowed; everything else drives.
+        # Three words of tv-session are read-only and stay allowed, all judged the same way: on the
+        # first non-flag word AFTER the script (never the script path itself, so `bash
+        # tools/tv-session.sh fg` reads like `tools/tv-session.sh fg`). What follows the word is
+        # ignored, so `2>&1`, a redirect or a pipe change nothing; a chain was already split into
+        # segments by now. Everything else drives.
+        #
+        # `fg` (the foreground-app read) is exempt on purpose, and the same file blocks `sound
+        # status`: a pre-flight that asks "is anybody watching?" must not need a lease, and `fg` is
+        # the one such read that never wakes the set or changes anything (tv-session.sh
+        # `cmd_lifecycle` reads only `$1` and returns before it uses any other word, so extra words
+        # cannot change what it does), whereas `sound status` is still a getVolume round trip.
         if base == "tv-session.sh":
-            subs = [t for t in w[1:] if not t.startswith("-")]
-            if subs and subs[0] in ("log", "status"):
-                return None
+            subs = [t for t in w[w.index(cw) + 1:] if not t.startswith("-")]
+            if subs and subs[0] in ("log", "status", "fg"):
+                return None, None
         # `tests/run.py --list` never commits to driving the television: `main()` returns 0 from
         # every `args.list` branch (the pipeline-tier listing and the server-tier one right after
         # it) before the TV lock is acquired, before any trigger is armed and before `make deploy`/
@@ -191,22 +240,69 @@ def classify(seg):
         # --fps` are all list-only. Match the flag as its own TOKEN, never a substring — `--list-
         # foo` is a different, unrecognised flag and must still block.
         if base == "run.py" and "--list" in w[1:]:
-            return None
-        return f"{base} drives the television"
+            return None, None
+        return f"{base} drives the television", _script_lane(cw)
 
     if base == "make":
         goals = [t for t in w[1:] if not t.startswith("-") and "=" not in t]
         hit = TV_MAKE_GOALS.intersection(goals)
         if hit:
-            return "make " + " ".join(sorted(hit)) + " talks to the television"
-        return None
+            return ("make " + " ".join(sorted(hit)) + " talks to the television",
+                    _make_lane(w[1:]))
+        return None, None
 
     if RAW_SSH.search(cw) and (ROOT_AT.search(seg) or "luna-send" in seg):
-        return "a raw ssh/scp to the television, around every tool that takes the lock"
+        return "a raw ssh/scp to the television, around every tool that takes the lock", None
 
     if "luna-send" in seg and ROOT_AT.search(seg):
-        return "a luna-send on the television"
-    return None
+        return "a luna-send on the television", None
+    return None, None
+
+
+# What no literal absolute path contains: the shell has to expand it first (`$W`, a glob, a brace,
+# a backslash escape), so the hook does not guess.
+_UNKNOWABLE = re.compile(r"[$`*?\[\]{}\\\"']")
+
+
+def _abs_path(tok):
+    """`tok` as a normalised absolute path (lexically: `..` and `//` folded, no filesystem), or None
+    when it is not ONE literal absolute path."""
+    tok = _strip_quotes(tok)
+    if not tok.startswith("/") or _UNKNOWABLE.search(tok):
+        return None
+    return posixpath.normpath("/" + tok.lstrip("/"))
+
+
+def _script_lane(tok):
+    """The checkout an absolute TV-script path belongs to: the parent of its directory, which is
+    `REPO` in `tv-lock.sh` and `tv-session.sh`. Only a script in `tools/` or `tests/` — where every
+    entry of TV_SCRIPTS lives — says that; any other directory is not one of ours, so it names no
+    lane and the later steps decide, as they did before this one existed."""
+    path = _abs_path(tok)
+    if path is None:
+        return None
+    here = posixpath.dirname(path)
+    if posixpath.basename(here) not in ("tools", "tests"):
+        return None
+    return posixpath.dirname(here), "the script's own path"
+
+
+def _make_lane(args):
+    """The absolute directory of the ONE `-C <dir>` / `-C<dir>` / `--directory[=]<dir>` on a `make`
+    command line, else None (none, several, or one `make` has to expand or join to the cwd)."""
+    dirs, i = [], 0
+    while i < len(args):
+        a = args[i]
+        if a in ("-C", "--directory"):
+            dirs.append(args[i + 1] if i + 1 < len(args) else "")
+            i += 1
+        elif a.startswith("--directory="):
+            dirs.append(a[len("--directory="):])
+        elif a.startswith("-C") and not a.startswith("-C="):
+            dirs.append(a[2:])
+        i += 1
+    path = _abs_path(dirs[0]) if len(dirs) == 1 else None
+    return (path, "make -C") if path else None
 
 
 def repo_root(cwd):
@@ -267,24 +363,22 @@ def _leading_env_assignments(text):
     return assigns
 
 
-def lane_from_command(command, env, cwd):
-    """The lane identity the hook must agree with `tools/tv-lock.sh` about.
-
-    `tv-lock.sh` names a lane `LANE="${PLX_TV_LOCK_LANE:-$REPO}"` — the env var if set, else the
-    checkout the script itself is running from. `cwd` cannot play that role here: the harness
-    reports the SESSION's own checkout as `payload["cwd"]` for every subagent's Bash call
-    regardless of which worktree that agent is actually acting in, so a hook that only ever reads
-    `cwd` refuses a subagent's own, correctly-taken lease (wrong lane) — and the workaround of
-    exporting `PLX_TV_LOCK_LANE` once for the whole session collapses every agent onto ONE lane,
-    which is the failure this exists to prevent (`docs/agent-reference.md`, the 2026-09-03
-    collision). So the resolution order is, in this order:
+def explicit_lane(command, env):
+    """`(lane, how)` when the command or the hook's environment NAMES the lane, else None: steps 1
+    and 2 of `decide()`'s order, the two a person or wrapper chooses. `cwd` cannot play that role by
+    itself: the harness reports the SESSION's own checkout as `payload["cwd"]` for a plain
+    subagent's Bash call regardless of which worktree that agent is actually acting in (only an
+    `isolation: worktree` subagent reports its own), so a hook that only ever reads `cwd` refuses
+    a subagent's own, correctly-taken lease (wrong lane) — and exporting `PLX_TV_LOCK_LANE` once
+    for the whole session collapses every agent onto ONE lane, which is the failure the lane
+    exists to prevent (`docs/agent-reference.md`, the 2026-09-03 collision).
 
       1. an explicit `PLX_TV_LOCK_LANE=<path>` assignment PREFIXING the command text — directly,
-         after a leading `env `, or after a leading `cd <dir> &&`. This is the only spelling that
-         can vary per Bash call, which is what a subagent naming its OWN worktree needs.
+         after a leading `env `, or after a leading `cd <dir> &&`. It names the lane of the WHOLE
+         command, as it always has. Of the two it is the only one that can vary per Bash call,
+         which is what a subagent naming its OWN worktree needs.
       2. `PLX_TV_LOCK_LANE` in the hook's own environment (a human or wrapper that exported it for
          the whole process rather than per command).
-      3. the git toplevel of `cwd`, exactly as before this change.
 
     A `#`-comment or a heredoc BODY never counts — only the start of the command text, after
     heredoc bodies are stripped, is ever inspected.
@@ -295,10 +389,10 @@ def lane_from_command(command, env, cwd):
         text = text[m.end():].lstrip()
     for name, value in _leading_env_assignments(text):
         if name == "PLX_TV_LOCK_LANE" and value:
-            return value
+            return value, "the PLX_TV_LOCK_LANE prefix"
     if env.get("PLX_TV_LOCK_LANE"):
-        return env["PLX_TV_LOCK_LANE"]
-    return repo_root(cwd)
+        return env["PLX_TV_LOCK_LANE"], "PLX_TV_LOCK_LANE in the hook's environment"
+    return None
 
 
 def lease_for(lane):
@@ -330,6 +424,153 @@ def lease_for(lane):
     return None
 
 
+_CD_LIKE = re.compile(r"(?<![\w./-])(?:cd|pushd|popd)(?![\w./-])")
+_CD_STAYS = ("", ";", "\n", "&&")      # what may sit on either side of a cd the shell certainly kept
+_CD_HOW = "an absolute cd"
+# What may follow `cd <abs> ||` for the cd to count as kept: after it the shell is in the directory
+# or the command has ended. (A bash that is not inside a function only complains about a `return`
+# and carries on, but only when the cd itself failed, which a directory holding a live lease does
+# not.)
+_LEAVES = re.compile(r"^\s*(?:exit|return)(?:\s+\d+)?\s*$")
+
+
+def _paren_depth(text):
+    """The unquoted `(` minus `)` in one segment's text, quote- and escape-aware like
+    `split_segments()`: how many subshells (`(`, `$(`) the segment opens, negative when it closes."""
+    depth, quote, i = 0, None, 0
+    while i < len(text):
+        c = text[i]
+        if quote:
+            if c == quote and text[i - 1:i] != "\\":
+                quote = None
+        elif c in "'\"":
+            quote = c
+        elif c == "\\":
+            i += 1
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+        i += 1
+    return depth
+
+
+def _cd_target(seg, before, after):
+    """The absolute directory of a plain `cd <abs>` segment, else None. `before`/`after` are the
+    separators around it: a cd in a pipeline, a background job, an `||` branch (or any other
+    context this function is not sure the shell kept) is not trusted. `cd X || exit` is looked
+    past by the caller, which hands over the separator that follows the `exit`."""
+    if before not in _CD_STAYS or after not in _CD_STAYS:
+        return None
+    try:
+        toks = shlex.split(seg)
+    except ValueError:
+        return None
+    if len(toks) != 2 or toks[0] != "cd":
+        return None
+    return _abs_path(toks[1])
+
+
+def decide(cmd, env, cwd, session_id=None):
+    """The hook's whole decision for one Bash command: every refusal, or [] to let it run.
+
+    Each television-driving segment has its OWN lane, the invoked tool's `LANE=${PLX_TV_LOCK_LANE:-
+    $REPO}` (`tools/tv-lock.sh require`; REPO is the parent of the script's directory), and needs a
+    live lease on it. The first of these that applies names it:
+
+      1. a `PLX_TV_LOCK_LANE=` prefix on the command;
+      2. `PLX_TV_LOCK_LANE` in the hook's environment (`explicit_lane()`);
+      3. the segment's own TV script by absolute path, as command word or interpreter argument, or
+         an absolute `make -C <dir>` (`classify_lane()`);
+      4. an absolute `cd <dir>`, kept until the next cd, naming the git checkout <dir> is in (as
+         the tools' REPO is; a directory in no checkout names itself): `cd "$W"`, a relative cd,
+         `cd ~`, `cd -` and anything this function is not sure the shell kept fall through to the
+         cwd. Only `&&`, `;`, newlines and a defensive `|| exit [n]` / `|| return [n]` carry it, and
+         a cd that sits behind an `&&` lasts to the end of its own `&&` chain. Not kept: a cd in a
+         pipeline, an `||` branch, or inside an unclosed `(` or `$(` (a subshell's, however far
+         past its `)` the command goes); one in a list that ends in `&` (a background job) outside
+         that list; and `cur` is not carried into an `||` branch, which ran because the left side
+         failed. A command substitution never picks one up;
+      5. the git checkout of `payload["cwd"]`.
+
+    Steps 3 and 4 read the lane OFF THE COMMAND, which would let a session holding nothing run
+    `/B/tools/...` against B's live lease, so when such a lane is not the cwd's own, the lease must
+    also list the payload's `session_id` in its SESSIONS (written only by `tools/tv-lock.sh`).
+    The cwd's own checkout, by path or not, and steps 1, 2 and 5 behave exactly as they always did.
+
+    One entry per segment that fails, as `(segment, why, lane, how, kind)`: the text, why it counts
+    as driving the set, the lane that was checked, where that came from, and `"nolease"` (nothing
+    live for the lane) or `"session"` (live, but not taken by this session).
+    """
+    explicit = explicit_lane(cmd, env)
+
+    def lane_of(own, cd):               # (lane or None for the cwd, where it came from)
+        return explicit or own or ((cd, _CD_HOW) if cd else (None, "the cwd"))
+
+    checks = []                         # (segment, why, lane, how)
+    parts = split_segments(strip_heredocs(cmd))
+
+    def sep_at(k):                      # the separator before parts[k], "" past the end
+        return parts[k][1] if k < len(parts) and parts[k][1] != "$(" else ""
+
+    persistent = cur = listed = None    # the lane an absolute cd set: for the rest, for this chain,
+    depth = 0                           # and as this list began; the `(`s still open
+    for n, (seg, before) in enumerate(parts):
+        why, own = classify_lane(seg)
+        if before == "$(":              # graded where it is written, never at the final cd
+            if why:
+                checks.append((seg.strip()[:120], why, *lane_of(own, None)))
+            continue
+        if before in ("", ";", "\n", "&"):
+            if before == "&":
+                persistent = listed     # the list before it was a background job: a subshell's cd
+            cur = listed = persistent   # a new chain: only a cd that certainly ran carries over
+        elif before == "||" and not _LEAVES.match(seg):
+            cur = None                  # it runs because the left side failed, which may be the cd
+        if why:
+            checks.append((seg.strip()[:120], why, *lane_of(own, cur)))
+        target = None
+        if depth == 0:                  # inside an unclosed `(` or `$(` it is a subshell's cd
+            after = sep_at(n + 1)
+            if after == "||" and _LEAVES.match(parts[n + 1][0]):
+                after = sep_at(n + 2)   # `cd X || exit`: in X, or the command has ended
+            target = _cd_target(seg, before, after)
+        depth = max(0, depth + _paren_depth(seg))
+        if target:
+            if before == "&&":
+                cur, persistent = target, None
+            else:
+                cur = persistent = target
+        elif _CD_LIKE.search(seg):
+            cur = persistent = None
+    if not checks:
+        return []
+
+    cwd_lane = None
+    problems = []
+    checkouts = {}                      # an absolute cd's directory -> the checkout it is in
+    for seg, why, lane, how in checks:
+        derived = lane is not None and explicit is None
+        if lane is None:
+            if cwd_lane is None:
+                cwd_lane = repo_root(cwd)
+            lane = cwd_lane
+        elif derived and cwd_lane is None:
+            cwd_lane = repo_root(cwd)
+        if derived and how == _CD_HOW:  # only a segment that uses the cd pays for the lookup
+            if lane not in checkouts:
+                checkouts[lane] = repo_root(lane)
+            lane = checkouts[lane]
+        lease = lease_for(lane)
+        if not lease:
+            problems.append((seg, why, lane, how, "nolease"))
+        elif derived and os.path.realpath(lane) != os.path.realpath(cwd_lane):
+            sessions = lease.get("SESSIONS", "").split()
+            if not (isinstance(session_id, str) and session_id in sessions):
+                problems.append((seg, why, lane, how, "session"))
+    return problems
+
+
 def main():
     raw = sys.stdin.read()
     try:
@@ -344,24 +585,32 @@ def main():
     if re.search(r"\bPLX_TV_LOCK_BYPASS=1\b", cmd):
         return 0
 
-    reasons = []
-    for seg in segments(strip_heredocs(cmd)):
-        why = classify(seg)
-        if why:
-            reasons.append((seg.strip()[:120], why))
-    if not reasons:
+    problems = decide(cmd, os.environ, payload.get("cwd") or os.getcwd(),
+                      payload.get("session_id"))
+    if not problems:
         return 0
 
-    lane = lane_from_command(cmd, os.environ, payload.get("cwd") or os.getcwd())
-    if lease_for(lane):
-        return 0
-
-    seg, why = reasons[0]
+    seg, why, lane, how, kind = problems[0]
+    if kind == "session":
+        head = ("BLOCKED: that lane's lease was not taken by this session.\n"
+                f"  the command: {seg}\n"
+                f"  why blocked: {why}\n"
+                f"  the lane:    {lane} (from {how})\n"
+                "\n"
+                "The lane is a different checkout from this session's own, and its lease is live but\n"
+                "does not list this session, so the command could be driving somebody else's job on the\n"
+                "set. A lane belongs to whoever holds its lease. Take it again from this session, so it is\n"
+                "recorded, only if this checkout's job is yours (`tools/tv-lock.sh acquire` or `renew` in\n"
+                "that lane); otherwise it is not yours to use.\n"
+                "\n")
+    else:
+        head = ("BLOCKED: this lane does not hold the television's lock.\n"
+                f"  the command: {seg}\n"
+                f"  why blocked: {why}\n"
+                f"  the lane:    {lane} (from {how})\n"
+                "\n")
     sys.stderr.write(
-        "BLOCKED: this lane does not hold the television's lock.\n"
-        f"  the command: {seg}\n"
-        f"  why blocked: {why}\n"
-        "\n"
+        head +
         "There is ONE dev set and no OS-level mutex. Two jobs on it do not fail cleanly — they\n"
         "produce plausible WRONG data (an fps number measured while another lane's deploy landed,\n"
         "a capture of a screen the other job navigated away from), which reads exactly like a real\n"

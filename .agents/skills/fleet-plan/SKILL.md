@@ -60,7 +60,7 @@ rather than by anything failing loudly. `tools/tv-lock.sh` came out of a second 
 lock schedules; it does not plan.** Two lanes that both want the set still run in series, and that
 queue is invisible in the plan you wrote.
 
-- **A LANE IS A CHECKOUT** — `tools/tv-lock.sh:62`, `LANE="${PLX_TV_LOCK_LANE:-$REPO}"`. What that
+- **A LANE IS A CHECKOUT** — `tools/tv-lock.sh`, `LANE="${PLX_TV_LOCK_LANE:-$REPO}"`. What that
   means for planning: **a second worktree on the same Mac is a second lane**, however the prompt
   describes it. Do not set `PLX_TV_LOCK_LANE` to make two worktrees share one lease — that is
   spelling "we are one lane" at the mechanism whose entire job is to disagree.

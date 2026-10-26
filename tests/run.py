@@ -4389,6 +4389,15 @@ _LOCK_TAKEN = False
 TVLOCK = os.path.join(REPO_ROOT, "tools", "tv-lock.sh")
 
 
+def _in_use_lines(lock_stdout):
+    """The `IN USE:` lines (column 0) in a tv-lock.sh `acquire` or `status` stdout, which is how its
+    pre-flight says somebody looks to be watching the set; none once the owner said go
+    (PLX_TV_IN_USE_OK=1). The one reading both paths of acquire_tv_lock use."""
+    if os.environ.get("PLX_TV_IN_USE_OK") == "1":
+        return []
+    return [line for line in lock_stdout.splitlines() if line.startswith("IN USE:")]
+
+
 def acquire_tv_lock(tv, why):
     """Take the television's lock, or refuse to run.
 
@@ -4399,7 +4408,8 @@ def acquire_tv_lock(tv, why):
     which is indistinguishable from a real regression when you read the summary.
 
     A lease this lane already holds is inherited rather than re-taken, so
-    `tools/tv-lock.sh with -- ./tests/run.py` and a hand-held session both work unchanged.
+    `tools/tv-lock.sh with -- ./tests/run.py` and a hand-held session both work unchanged. It is
+    pre-flighted again all the same: a lease held for hours does not vouch for the screen.
     """
     global _LOCK_TAKEN
     if not os.access(TVLOCK, os.X_OK):
@@ -4407,16 +4417,35 @@ def acquire_tv_lock(tv, why):
     env = dict(os.environ, TV=tv)
     held = subprocess.run([TVLOCK, "status"], env=env, capture_output=True, text=True)
     if "HELD BY THIS LANE" in held.stdout:
+        # `status` ends with the same pre-flight verdict `acquire` prints, read afresh now. Nothing was
+        # taken here, so a refusal releases nothing (_LOCK_TAKEN stays False): the lane that holds the
+        # lease had its own reasons.
+        in_use = _in_use_lines(held.stdout)
+        if in_use:
+            print("\n".join(in_use), flush=True)
+            sys.exit("refusing to run: the pre-flight found the television IN USE (the IN USE: line "
+                     "above); the lease this lane already holds is still held. Tell the owner now; "
+                     "once they say go, rerun with PLX_TV_IN_USE_OK=1.")
         print("TV lock: already held by this lane — inheriting it")
         return
     # `--wait 0`: a harness that blocks for ten minutes inside somebody's tool call is worse than
     # one that says who has the set and exits. `--wait <s>` is the caller's choice, not ours.
-    r = subprocess.run([TVLOCK, "acquire", "--why", why, "--as", "tests/run.py"], env=env)
+    # acquire's stdout is kept as well as shown: its pre-flight prints an `IN USE:` line at column 0
+    # (and still exits 0) when somebody looks to be watching the set.
+    r = subprocess.run([TVLOCK, "acquire", "--why", why, "--as", "tests/run.py"], env=env,
+                       stdout=subprocess.PIPE, text=True)
+    print(r.stdout, end="", flush=True)
     if r.returncode != 0:
         sys.exit("refusing to run: the television is held by another lane (see above). "
                  "Wait for it (tools/tv-lock.sh acquire --wait 540), or run host-side work "
                  "meanwhile (make check, make sim).")
     _LOCK_TAKEN = True
+    if _in_use_lines(r.stdout):
+        # Same rule as `tv-lock.sh with`: the lease just taken goes back and nothing is driven.
+        release_tv_lock(tv)
+        _LOCK_TAKEN = False
+        sys.exit("refusing to run: the pre-flight found the television IN USE (the IN USE: line "
+                 "above). Tell the owner now; once they say go, rerun with PLX_TV_IN_USE_OK=1.")
 
 
 def release_tv_lock(tv):
