@@ -1037,6 +1037,44 @@ fn flac_is_gated_by_the_pcm_paths_own_limits_in_both_modes() {
     assert_eq!(pick.map(|(_, _, id)| id), Some(2));
 }
 
+/// ALAC and LPCM ride FLAC's path (S4), so they have FLAC's limits and no others: two channels, the
+/// PCM table's rates, in both modes. PMS spells LPCM per width (`pcm_s24le`) on the stream and `pcm`
+/// on the media; both resolve to the one codec the table lists.
+#[test]
+fn alac_and_lpcm_are_gated_by_the_pcm_paths_limits_in_both_modes() {
+    let caps = plx_platform::devcaps::Caps {
+        audio: "aac,ac3,eac3,dts,flac,alac,pcm".into(),
+        audio_channels: [
+            ("dts".into(), 6),
+            ("flac".into(), plx_platform::devcaps::PCM_MAX_CHANNELS),
+            ("alac".into(), plx_platform::devcaps::PCM_MAX_CHANNELS),
+            ("pcm".into(), plx_platform::devcaps::PCM_MAX_CHANNELS),
+        ].into(),
+        ..plx_platform::devcaps::Caps::assumed()
+    };
+    for mode in [DirectPlayMode::Auto, DirectPlayMode::Forced] {
+        for codec in ["alac", "pcm", "pcm_s16le", "pcm_s24le", "lpcm"] {
+            assert!(audio_direct_plays_with(&caps, mode, codec, 2, 44_100), "{codec} {mode:?}");
+            assert!(audio_direct_plays_with(&caps, mode, codec, 1, 48_000), "{codec} {mode:?}");
+            assert!(!audio_direct_plays_with(&caps, mode, codec, 6, 48_000), "{codec} {mode:?}: 5.1");
+            assert!(!audio_direct_plays_with(&caps, mode, codec, 2, 96_000), "{codec} {mode:?}: 96 kHz");
+            assert!(!audio_direct_plays_with(&caps, mode, codec, 2, 0), "{codec} {mode:?}: unstated rate");
+        }
+        for not_ours in ["pcm_f32le", "pcm_bluray", "pcm_u8"] {
+            assert!(!audio_direct_plays_with(&caps, mode, not_ours, 2, 48_000), "{not_ours} {mode:?}: the server converts it");
+        }
+    }
+    // a 24-bit/96 kHz ALAC never beats a stereo AC3 sibling it would play slow
+    let mut hi = trk(1, "alac", "eng", true);
+    hi.channels = 2;
+    hi.sampling_rate = 96_000;
+    let mut ac3 = trk(2, "ac3", "eng", false);
+    ac3.channels = 2;
+    let pick = pick_dp_audio_eligible(&[hi, ac3], "alac", AudioLangPrefs::default(), 0, StandIn::Any,
+        |c, n, r| audio_direct_plays_with(&caps, DirectPlayMode::Forced, c, n, r));
+    assert_eq!(pick.map(|(_, _, id)| id), Some(2));
+}
+
 
 /// **An attempt's own capability value decides its audio pick; no process-wide answer is read.**
 /// A DTS 5.1 default beside an AC3 5.1 of the same language: on a set whose table lists a 6-channel

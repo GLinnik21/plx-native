@@ -1363,6 +1363,30 @@ mod tests {
         assert!(!super::forced_direct_profile_for(&assumed).contains("flac"));
     }
 
+    /// ALAC and LPCM are app-decoded like FLAC (S4): the same stereo and 48 kHz limits, direct play
+    /// and Force only, never a transcode target. LPCM is named `pcm` in the profile.
+    #[test]
+    fn alac_and_pcm_are_offered_like_flac_and_never_as_a_target() {
+        let mut caps = plx_platform::devcaps::Caps::assumed();
+        caps.audio.push_str(",flac,alac,pcm");
+        for c in ["flac", "alac", "pcm"] {
+            caps.audio_channels.insert(c.into(), plx_platform::devcaps::PCM_MAX_CHANNELS);
+        }
+        let profile = super::profile_for(&caps);
+        let forced = super::forced_direct_profile_for(&caps);
+        for c in ["alac", "pcm"] {
+            assert!(list_of(&profile, "audioCodec=").contains(&c.into()), "{c}: {profile}");
+            assert!(profile.contains(&format!("scope=videoAudioCodec&scopeName={c}&type=upperBound&name=audio.channels&value=2&replace=true")), "{c}: {profile}");
+            assert!(profile.contains(&format!("scope=videoAudioCodec&scopeName={c}&type=upperBound&name=audio.samplingRate&value=48000&replace=true")), "{c}: {profile}");
+            assert!(!list_of(target_of(&profile), "audioCodec=").contains(&c.into()), "{c} is not a transcode target");
+            assert!(list_of(&forced, "audioCodec=").contains(&c.into()), "{c}: {forced}");
+        }
+        let assumed = plx_platform::devcaps::Caps::assumed();
+        for c in ["alac", "pcm"] {
+            assert!(!list_of(&super::profile_for(&assumed), "audioCodec=").contains(&c.into()), "{c}");
+        }
+    }
+
     /// Issue #951: PMS converts a 96 kHz FLAC to AAC and keeps 96 kHz, which an LG B8 refuses to
     /// Load. So every audio codec the pipeline can be handed, not only the app-decoded PCM ones, is
     /// asked for at 48 kHz at most, DTS excepted (`devcaps::audio_rate_bounded`). The profile and the

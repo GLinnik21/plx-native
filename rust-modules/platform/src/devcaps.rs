@@ -77,12 +77,39 @@ const OPUS_AUTO_MAX_CHANNELS: u32 = 2;
 
 /// Audio the app DECODES ITSELF and feeds as PCM, so no row of the device table is needed: the
 /// pipeline's PCM input (`libpf`'s `audio/x-raw` caps and the `contents.pcmInfo` node) is what
-/// carries it. FLAC is the case — libpf has no FLAC input of its own (its Load vocabulary is
+/// carries it. FLAC is the case, and ALAC and LPCM ride the same path ([`APP_DECODED`]) — libpf has no FLAC input of its own (its Load vocabulary is
 /// AAC/AC3/AC3 PLUS/DTS/MP3/MPEG/OPUS/VORBIS/WMA/PCM), but PCM decoded from it is bit-exact. Both
 /// the vocabulary and the PCM input were verified on webOS 4.4.3 (libpf-1.0 on an OLED55B8); other
 /// webOS versions are unconfirmed. Joins [`Caps::audio`] only on a table that was READ: the assumed
 /// fallback stays byte-for-byte what it was.
-pub const PCM_AUDIO_CODECS: &str = "flac";
+pub const PCM_AUDIO_CODECS: &str = "flac,alac,pcm";
+
+/// One codec the app decodes itself ([`PCM_AUDIO_CODECS`]): its [`audio_codec_id`] and the bundled
+/// FFmpeg decoders that produce its PCM (`avcodec_get_name`'s spelling, one codec id each).
+pub struct AppDecoded {
+    pub id: &'static str,
+    pub ffmpeg: &'static [&'static str],
+}
+
+/// The app-decoded set, and the ONLY place a decoder name is tied to a codec: the demuxer asks
+/// [`app_decoded_by_ffmpeg_name`], and a test holds every name here to `ci/build-ffmpeg.sh`'s
+/// `--enable-decoder` list, so a codec cannot be offered that the bundled library cannot decode.
+pub const APP_DECODED: &[AppDecoded] = &[
+    AppDecoded { id: "flac", ffmpeg: &["flac"] },
+    AppDecoded { id: "alac", ffmpeg: &["alac"] },
+    // LPCM in MKV (`A_PCM/INT/LIT`, `/BIG`) and MP4 (`sowt`, `twos`, `in24`, `in32`). The integer
+    // widths only: a float or 8-bit track is not claimed ([`audio_codec_id`]), because the
+    // path is bit-exact and the Load declares 16 or 32 bits.
+    AppDecoded {
+        id: "pcm",
+        ffmpeg: &["pcm_s16le", "pcm_s16be", "pcm_s24le", "pcm_s24be", "pcm_s32le", "pcm_s32be"],
+    },
+];
+
+/// The [`APP_DECODED`] entry whose decoder is the FFmpeg one named `name`.
+pub fn app_decoded_by_ffmpeg_name(name: &str) -> Option<&'static AppDecoded> {
+    APP_DECODED.iter().find(|c| c.ffmpeg.contains(&name))
+}
 
 /// The channel ceiling of the PCM path: `pcmInfo.channelMode` has `mono` and `stereo` (and
 /// `dual`), nothing wider, so a multichannel FLAC stays a server conversion.
@@ -482,7 +509,7 @@ impl Caps {
         if id == "dts" {
             return self.forced_admits_dts();
         }
-        // Pipeline-only Opus and app-decoded FLAC need only a table that was read. A FLAC
+        // Pipeline-only Opus and the app-decoded lossless set need only a table that was read. Such a
         // track's own limits are [`audio_track_fits`], which the planner applies in both modes.
         if PIPELINE_ONLY_AUDIO.contains(&id.as_ref()) || is_pcm_codec(&id) {
             return self.audio_has(&id);
@@ -723,7 +750,7 @@ impl Drop for CapsGuard {
 }
 
 /// The one canonical spelling of an AUDIO codec name, for every comparison between vocabularies:
-/// lowercase, PMS's `dca` is the pipeline's `dts`, and `ec-3` is `eac3`. Applied at membership
+/// lowercase, PMS's `dca` is the pipeline's `dts`, `ec-3` is `eac3`, and every decodable LPCM flavour is `pcm`. Applied at membership
 /// ([`Caps::audio_has`]) and at the Load payload; inbound data stays raw (track memory compares
 /// the raw string).
 pub fn audio_codec_id(codec: &str) -> Cow<'_, str> {
@@ -733,6 +760,11 @@ pub fn audio_codec_id(codec: &str) -> Cow<'_, str> {
     match codec {
         "dca" => Cow::Borrowed("dts"),
         "ec-3" => Cow::Borrowed("eac3"),
+        // Every LPCM flavour the bundled FFmpeg decodes is one codec to the planner: PMS names the
+        // media's `pcm` and the stream's `pcm_s16le`, `pcm_s24le`, … The flavour is the demuxer's
+        // business (`ff_pcm`); a flavour not listed here stays itself and is not app-decoded.
+        "lpcm" => Cow::Borrowed("pcm"),
+        c if APP_DECODED.iter().any(|d| d.id == "pcm" && d.ffmpeg.contains(&c)) => Cow::Borrowed("pcm"),
         _ => Cow::Borrowed(codec),
     }
 }
@@ -1159,7 +1191,7 @@ mod tests {
         // MPEG is in the table but not in the pipeline's decode set; the subset keeps
         // DP_AUDIO_CODECS's own order, not the table's. Opus has no row and is admitted anyway,
         // and the app-decoded PCM formats follow.
-        assert_eq!(c.audio, "aac,ac3,eac3,dts,opus,flac");
+        assert_eq!(c.audio, "aac,ac3,eac3,dts,opus,flac,alac,pcm");
     }
 
     /// Opus is a pipeline capability: admitted on a table without its row, but never on the assumed
@@ -1208,7 +1240,7 @@ mod tests {
         let applied = apply_exclusions(&mut c, "kisscurl-koli", false, EXCLUSIONS);
         // The Vorbis row has nothing to take away: the pipeline's list does not feed Vorbis at all.
         assert_eq!(applied, ["opus<=2"]);
-        assert_eq!(c.audio, "aac,ac3,eac3,dts,opus,flac");
+        assert_eq!(c.audio, "aac,ac3,eac3,dts,opus,flac,alac,pcm");
         assert!(c.audio_supports("opus", 2) && !c.audio_supports("opus", 6));
         // Force Direct Play applies no table ceiling, but it holds a measured one.
         assert!(c.forced_feeds_audio_track("opus", 2) && !c.forced_feeds_audio_track("opus", 6));
@@ -1305,7 +1337,7 @@ mod tests {
         assert_eq!(apply_gst_decoders(&mut c, &GST_C1.replace("dts_audiodec=290\n", "")).0, ["dts"]);
         assert_eq!(apply_exclusions(&mut c, "kisscurl-koli", false, EXCLUSIONS), ["opus<=2"]);
         let c = c.minus(&[refusal("opus", 2)], "");
-        assert_eq!(c.audio, "aac,ac3,eac3,flac");
+        assert_eq!(c.audio, "aac,ac3,eac3,flac,alac,pcm");
     }
 
     /// A start value for a set on `build`, with `rows` stored in its record.
@@ -1435,7 +1467,7 @@ mod tests {
         assert!(!c.audio_has("dts") && !c.audio_supports("dts", 6));
         // The table row goes with it, so a rule that asks for a DTS row (Force Direct Play) agrees.
         assert!(!c.audio_channels.contains_key("dts"));
-        assert_eq!(c.audio, "aac,ac3,eac3,opus,flac");
+        assert_eq!(c.audio, "aac,ac3,eac3,opus,flac,alac,pcm");
         // A hardware element listed at rank 0 is the same evidence.
         let mut d = native_set();
         let off = GST_C1.replace("dts_audiodec=290", "dts_audiodec=0");
@@ -1574,6 +1606,66 @@ mod tests {
         assert!(!Caps::assumed().forced_feeds_audio("flac"));
     }
 
+    /// The set of codecs the app decodes is one table, and the list the rest of the code splits is
+    /// that table's ids, in order.
+    #[test]
+    fn the_pcm_codec_list_is_the_app_decoded_table() {
+        let ids: Vec<&str> = APP_DECODED.iter().map(|c| c.id).collect();
+        assert_eq!(PCM_AUDIO_CODECS.split(',').collect::<Vec<_>>(), ids);
+        assert!(ids.iter().all(|id| audio_codec_id(id) == *id), "an id is its own canonical spelling");
+    }
+
+    /// "Derived from the bundled decoder list": every decoder the table names is enabled in
+    /// `ci/build-ffmpeg.sh`, the one list the shipped FFmpeg is built from.
+    #[test]
+    fn every_app_decoded_codec_has_its_decoders_in_the_bundled_ffmpeg_build() {
+        let script = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../ci/build-ffmpeg.sh"))
+            .expect("ci/build-ffmpeg.sh");
+        let enabled: Vec<&str> = script
+            .split_whitespace()
+            .filter_map(|w| w.strip_prefix("--enable-decoder="))
+            .flat_map(|l| l.trim_end_matches('\\').split(','))
+            .collect();
+        assert!(enabled.contains(&"flac"), "the parse found the decoder list: {enabled:?}");
+        for c in APP_DECODED {
+            assert!(!c.ffmpeg.is_empty(), "{}", c.id);
+            for d in c.ffmpeg {
+                assert!(enabled.contains(d), "{}: decoder {d} is not in ci/build-ffmpeg.sh's --enable-decoder list", c.id);
+                assert_eq!(app_decoded_by_ffmpeg_name(d).map(|c| c.id), Some(c.id));
+            }
+        }
+        assert!(app_decoded_by_ffmpeg_name("ac3").is_none(), "a hardware codec is not app-decoded");
+    }
+
+    /// Lossless two-channel codecs share FLAC's path (S4, PR 1): ALAC, and LPCM under every spelling
+    /// PMS or the container uses for the byte orders and widths the bundled FFmpeg decodes. A PCM
+    /// flavour it cannot decode (float, 8-bit, an exotic layout) is NOT claimed: the server converts it.
+    #[test]
+    fn alac_and_lpcm_are_pcm_decoded_like_flac() {
+        for spelling in ["pcm", "PCM", "lpcm", "pcm_s16le", "pcm_s16be", "PCM_S24LE", "pcm_s24be", "pcm_s32le", "pcm_s32be"] {
+            assert_eq!(audio_codec_id(spelling), "pcm", "{spelling}");
+            assert!(is_pcm_codec(spelling), "{spelling}");
+        }
+        for not_ours in ["pcm_f32le", "pcm_u8", "pcm_s8", "pcm_bluray", "pcm_dvd", "pcm_mulaw", "adpcm_ima_wav"] {
+            assert_eq!(audio_codec_id(not_ours), not_ours, "{not_ours} stays unclaimed");
+            assert!(!is_pcm_codec(not_ours), "{not_ours}");
+        }
+        assert!(is_pcm_codec("alac") && is_pcm_codec("ALAC"));
+        let caps = parse(REAL).unwrap();
+        for codec in ["alac", "pcm", "pcm_s24le", "flac"] {
+            assert!(caps.audio_has(codec), "{codec}");
+            assert!(caps.audio_supports(codec, 2), "{codec}");
+            assert!(!caps.audio_supports(codec, 6), "{codec}: wider than stereo is the server's");
+            assert!(!caps.audio_supports(codec, 0), "{codec}: an unknown count is not admitted");
+            assert!(caps.forced_feeds_audio(codec), "{codec}");
+            assert!(!Caps::assumed().forced_feeds_audio(codec), "{codec}: the assumed fallback stays what shipped");
+            assert!(audio_track_fits(codec, 2, 44_100), "{codec}");
+            assert!(!audio_track_fits(codec, 2, 96_000), "{codec}: 96 kHz plays slow in libpf");
+            assert!(!audio_track_fits(codec, 6, 48_000), "{codec}");
+        }
+        assert_eq!(Caps::assumed().audio, "aac,ac3,eac3");
+    }
+
     #[test]
     fn dts_requires_an_explicit_device_row() {
         assert!(parse(REAL).unwrap().audio_has("dts"));
@@ -1658,7 +1750,7 @@ mod tests {
         .unwrap();
         assert!(!c.hevc);
         assert_eq!(c.hevc_max, (1920, 1088));
-        assert_eq!(c.audio, "aac,opus,flac");
+        assert_eq!(c.audio, "aac,opus,flac,alac,pcm");
     }
 
     /// Codec-name matching survives the spelling variants firmwares use: case, dots, dashes
@@ -1672,7 +1764,7 @@ mod tests {
         )
         .unwrap();
         assert!(c.hevc);
-        assert_eq!(c.audio, "aac,ac3,eac3,opus,flac");
+        assert_eq!(c.audio, "aac,ac3,eac3,opus,flac,alac,pcm");
     }
 
     /// Garbage in must not panic AND must not half-parse: every unusable input lands on None so

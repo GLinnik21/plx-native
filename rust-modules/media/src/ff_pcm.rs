@@ -1,10 +1,11 @@
-//! FLAC decoded in the app and fed as PCM.
+//! Lossless audio decoded in the app and fed as PCM: FLAC, ALAC and integer LPCM
+//! (`devcaps::APP_DECODED` is the set).
 //!
-//! libpf has no FLAC input — its Load vocabulary is AAC / AC3 / AC3 PLUS / DTS / MP3 / MPEG / OPUS
-//! / VORBIS / WMA / PCM (read from `libpf-1.0` on a webOS 4.4.3 OLED55B8) — but it does take raw
-//! PCM through `contents.pcmInfo` (`player::engine::with_pcm_info`). The PCM decoded from FLAC is
-//! bit-exact: at 16 bits as S16, and at 24 bits too, carried left-justified in S32 exactly as
-//! FFmpeg's decoder produces it.
+//! libpf has no FLAC or ALAC input — its Load vocabulary is AAC / AC3 / AC3 PLUS / DTS / MP3 / MPEG
+//! / OPUS / VORBIS / WMA / PCM (read from `libpf-1.0` on a webOS 4.4.3 OLED55B8) — but it does take
+//! raw PCM through `contents.pcmInfo` (`player::engine::with_pcm_info`). The PCM decoded from these
+//! is bit-exact: at 16 bits as S16, and at 24 bits too, carried left-justified in S32 exactly as
+//! FFmpeg's decoders produce it. A decode that would need narrowing is refused, never truncated.
 //!
 //! The Load is built before the demuxer opens the file, so it declares the shape from the PMS
 //! track facts (`route::stream_pcm`), and [`PcmDecoder::open`] refuses a stream whose own rate or
@@ -18,7 +19,7 @@ use crate::ff::{
     OFF_FRAME_FORMAT,
 };
 
-/// FFmpeg `AVSampleFormat` values the FLAC decoder can produce. The enum has been stable since
+/// FFmpeg `AVSampleFormat` values the lossless decoders produce (FLAC, ALAC, `pcm_s*`). The enum has been stable since
 /// FFmpeg 1.x (`S16 = 1`, `S32 = 2`, `S16P = 6`, `S32P = 7`).
 const AV_SAMPLE_FMT_S16: c_int = 1;
 const AV_SAMPLE_FMT_S32: c_int = 2;
@@ -44,7 +45,8 @@ pub struct PcmDecoder {
 unsafe impl Send for PcmDecoder {}
 
 impl PcmDecoder {
-    /// Open FFmpeg's FLAC decoder for `par`, refusing a stream that is not the declared shape.
+    /// Open the FFmpeg decoder for `par`'s codec, refusing a stream that is not the declared shape
+    /// or whose codec is not one of the app-decoded set.
     pub unsafe fn open(par: *const AVCodecParameters, out: PcmOut) -> Result<PcmDecoder, String> {
         let rate = (*par).sample_rate;
         let channels = (*par).ch_layout.nb_channels;
@@ -54,9 +56,13 @@ impl PcmDecoder {
                 out.rate, out.channels
             ));
         }
+        let name = std::ffi::CStr::from_ptr(crate::ff::avcodec_get_name((*par).codec_id)).to_string_lossy();
+        if plx_platform::devcaps::app_decoded_by_ffmpeg_name(&name).is_none() {
+            return Err(format!("{name} is not an app-decoded codec"));
+        }
         let codec = crate::ff::avcodec_find_decoder((*par).codec_id);
         if codec.is_null() {
-            return Err("this FFmpeg has no FLAC decoder (ci/build-ffmpeg.sh)".into());
+            return Err(format!("this FFmpeg has no {name} decoder (ci/build-ffmpeg.sh)"));
         }
         let mut ctx = crate::ff::avcodec_alloc_context3(codec);
         if ctx.is_null() {
@@ -66,7 +72,7 @@ impl PcmDecoder {
         let r = if r < 0 { r } else { crate::ff::avcodec_open2(ctx, codec, std::ptr::null_mut()) };
         if r < 0 {
             crate::ff::avcodec_free_context(&mut ctx);
-            return Err(format!("could not open the FLAC decoder ({r})"));
+            return Err(format!("could not open the {name} decoder ({r})"));
         }
         let frame = crate::ff::av_frame_alloc();
         if frame.is_null() {
@@ -76,8 +82,8 @@ impl PcmDecoder {
         Ok(PcmDecoder { ctx, frame, out, buf: Vec::new() })
     }
 
-    /// Decode one packet into interleaved little-endian PCM of the declared width. FLAC has no
-    /// decoder delay: one packet is one frame, so the packet's pts is the PCM's.
+    /// Decode one packet into interleaved little-endian PCM of the declared width. These codecs
+    /// have no decoder delay: one packet is one frame, so the packet's pts is the PCM's.
     pub unsafe fn decode(&mut self, pkt: *const AVPacket) -> Result<&[u8], String> {
         self.buf.clear();
         let r = crate::ff::avcodec_send_packet(self.ctx, pkt);
@@ -92,23 +98,39 @@ impl PcmDecoder {
             if r < 0 {
                 return Err(format!("avcodec_receive_frame failed ({r})"));
             }
-            let base = self.frame as *const u8;
-            let nb = *(base.add(OFF_AFRAME_NB_SAMPLES) as *const c_int) as usize;
-            let format = *(base.add(OFF_FRAME_FORMAT) as *const c_int);
-            let data = base.add(OFF_FRAME_DATA) as *const *const u8;
-            let ch = self.out.channels as usize;
-            let Some(width) = sample_width(format) else {
-                return Err(format!("unexpected decoder sample format {format}"));
-            };
-            let planar = matches!(format, AV_SAMPLE_FMT_S16P | AV_SAMPLE_FMT_S32P);
-            let planes: Vec<&[u8]> = if planar {
-                (0..ch).map(|c| std::slice::from_raw_parts(*data.add(c), nb * width)).collect()
-            } else {
-                vec![std::slice::from_raw_parts(*data, nb * width * ch)]
-            };
-            interleave_into(&mut self.buf, &planes, planar, width, nb, ch, self.out.bits as usize / 8);
+            self.append_frame()?;
         }
         Ok(&self.buf)
+    }
+}
+
+impl PcmDecoder {
+    /// The ONE place a decoded frame becomes the declared PCM, appended to `buf`. (Anything that
+    /// ever converts the decoder's output — downmix, resample — belongs here and nowhere else.)
+    unsafe fn append_frame(&mut self) -> Result<(), String> {
+        let base = self.frame as *const u8;
+        let nb = *(base.add(OFF_AFRAME_NB_SAMPLES) as *const c_int) as usize;
+        let format = *(base.add(OFF_FRAME_FORMAT) as *const c_int);
+        let data = base.add(OFF_FRAME_DATA) as *const *const u8;
+        let ch = self.out.channels as usize;
+        let Some(width) = sample_width(format) else {
+            return Err(format!("unexpected decoder sample format {format}"));
+        };
+        let out_width = self.out.bits as usize / 8;
+        if !width_is_exact(width, out_width) {
+            return Err(format!(
+                "the file decodes to {}-bit samples but the Load declared {} bits",
+                width * 8, self.out.bits
+            ));
+        }
+        let planar = matches!(format, AV_SAMPLE_FMT_S16P | AV_SAMPLE_FMT_S32P);
+        let planes: Vec<&[u8]> = if planar {
+            (0..ch).map(|c| std::slice::from_raw_parts(*data.add(c), nb * width)).collect()
+        } else {
+            vec![std::slice::from_raw_parts(*data, nb * width * ch)]
+        };
+        interleave_into(&mut self.buf, &planes, planar, width, nb, ch, out_width);
+        Ok(())
     }
 }
 
@@ -119,6 +141,11 @@ impl Drop for PcmDecoder {
             crate::ff::avcodec_free_context(&mut self.ctx);
         }
     }
+}
+
+/// PURE: feeding `in_width`-byte samples as `out_width`-byte ones loses nothing (equal, or widening).
+fn width_is_exact(in_width: usize, out_width: usize) -> bool {
+    out_width >= in_width
 }
 
 fn sample_width(format: c_int) -> Option<usize> {
@@ -204,6 +231,14 @@ mod tests {
         interleave_into(&mut out, &[&src], false, 2, 1, 2, 4);
         let want: Vec<u8> = [-1i32 << 16, 1 << 16].iter().flat_map(|x| x.to_le_bytes()).collect();
         assert_eq!(out, want);
+    }
+
+    /// The Load declared the width from the PMS facts; a file that decodes wider than that would be
+    /// truncated by [`interleave_into`], which is not bit-exact. It is refused instead.
+    #[test]
+    fn a_decode_wider_than_the_declared_width_is_refused_not_truncated() {
+        assert!(width_is_exact(2, 2) && width_is_exact(2, 4) && width_is_exact(4, 4));
+        assert!(!width_is_exact(4, 2), "24-bit audio declared as 16");
     }
 
     #[test]

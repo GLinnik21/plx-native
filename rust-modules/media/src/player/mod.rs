@@ -1559,7 +1559,7 @@ impl Diag {
             2 => "AC3 PLUS",
             3 => "AAC",
             4 => "DTS",
-            5 => "PCM (decoded FLAC)",
+            5 => "PCM (decoded in the app)",
             6 => "OPUS",
             _ => "NONE (needAudio:false)",
         }

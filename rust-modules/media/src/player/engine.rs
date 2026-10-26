@@ -697,7 +697,7 @@ fn bf_split(data: &[u8], aud5: u8) -> Vec<usize> {
 }
 
 /// Build the streamed BUFFERSTREAM Load payload from PAYLOAD_AV, substituting the item's real
-/// video/audio codecs + a sink envelope. video = "H264"|"H265", audio = "AC3"|"AC3 PLUS"|"AAC"|"DTS"|"OPUS"|"FLAC".
+/// video/audio codecs + a sink envelope. video = "H264"|"H265", audio = "AC3"|"AC3 PLUS"|"AAC"|"DTS"|"OPUS"|"PCM".
 /// What the Load's `adaptiveStreaming` block declares: the sink the pipeline ALLOCATES for, on the
 /// firmwares that allocate against the declaration rather than the bitstream (webOS 10.3.1,
 /// measured — `docs/webos10-resource-allocation.md`).
@@ -1001,8 +1001,9 @@ fn audio_payload_codec(codec: &str) -> Option<(&'static str, u8)> {
         "dts" => Some(("DTS", 4)),
         // SMP's Opus: raw packets plus `contents.opusInfo` ([`with_opus_info`]), as ss4s feeds it.
         "opus" => Some(("OPUS", 6)),
-        // decoded in the app (`ff::PcmDecoder`) and fed as PCM: libpf has no FLAC input
-        "flac" => Some(("PCM", 5)),
+        // decoded in the app (`ff::PcmDecoder`) and fed as PCM: libpf has no FLAC or ALAC input,
+        // and LPCM arrives in containers it does not take. `PCM_AUDIO_CODECS` is the set.
+        c if plx_platform::devcaps::PCM_AUDIO_CODECS.split(',').any(|p| p == c) => Some(("PCM", 5)),
         _ => None,
     }
 }
@@ -1056,10 +1057,10 @@ fn with_opus_info(p: &str, channels: i64) -> Option<String> {
     })
 }
 
-/// **Who owns the PCM a Load declares.** Audio the app decodes at 1x (FLAC, `ff_pcm`) declares its
-/// own shape; at any other speed the speed decoder (`ff::SpeedDecoder`) decodes every codec, FLAC
-/// included, and feeds stereo PCM that [`build_av_payload`] declares with its own fixed
-/// `pcmInfo` (kilohertz). The FLAC shape is then dropped and, at 1x, that fixed node is dropped
+/// **Who owns the PCM a Load declares.** Audio the app decodes at 1x (FLAC, ALAC, LPCM: `ff_pcm`)
+/// declares its own shape; at any other speed the speed decoder (`ff::SpeedDecoder`) decodes every
+/// codec, those included, and feeds stereo PCM that [`build_av_payload`] declares with its own
+/// fixed `pcmInfo` (kilohertz). The app-decoded shape is then dropped and, at 1x, that fixed node is dropped
 /// instead, so the Load carries ONE `pcmInfo` and the demuxer opens ONE decoder.
 /// PURE.
 fn app_pcm_for_rate(
@@ -6785,7 +6786,11 @@ mod sink_envelope_tests {
         assert_eq!(audio_payload_codec("ec-3"), Some(("AC3 PLUS", 2)));
         assert_eq!(audio_payload_codec("flac"), Some(("PCM", 5)));
         assert_eq!(audio_payload_codec("FLAC"), Some(("PCM", 5)));
-        for codec in ["truehd", "", "unknown"] {
+        // ALAC and every LPCM flavour the bundled FFmpeg decodes are fed as the same PCM
+        for codec in ["alac", "ALAC", "pcm", "lpcm", "pcm_s16le", "pcm_s24le", "pcm_s32be"] {
+            assert_eq!(audio_payload_codec(codec), Some(("PCM", 5)), "{codec}");
+        }
+        for codec in ["truehd", "", "unknown", "pcm_f32le", "pcm_bluray", "pcm_u8"] {
             assert_eq!(audio_payload_codec(codec), None);
         }
         let ps = crate::route::PlaybackSession::IDLE;

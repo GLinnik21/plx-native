@@ -164,7 +164,7 @@ pub struct CarriedAudio {
     /// Dolby Atmos (`metadata::Stream::has_atmos`) — the Load payload's `contents.immersive`.
     pub immersive: bool,
     /// PMS `samplingRate` (Hz) and `bitDepth` — what a PCM Load declares for a track the app
-    /// decodes itself (FLAC, `devcaps::PCM_AUDIO_CODECS`). 0 = not said, and the Load refuses.
+    /// decodes itself (FLAC, ALAC, LPCM: `devcaps::PCM_AUDIO_CODECS`). 0 = not said, and the Load refuses.
     pub sample_rate: i64,
     pub bit_depth: i64,
 }

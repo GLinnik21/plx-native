@@ -5703,7 +5703,7 @@ pub fn stream_immersive(ps: &PlaybackSession) -> bool {
 }
 
 /// The PCM a Load must declare for audio the app decodes itself
-/// (`devcaps::PCM_AUDIO_CODECS` — FLAC).
+/// (`devcaps::PCM_AUDIO_CODECS` — FLAC, ALAC, LPCM).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PcmFormat {
     pub sample_rate: u32,
@@ -5768,6 +5768,24 @@ mod pcm_format_tests {
             Ok(PcmFormat { sample_rate: 44_100, bits: 32, channels: 1 }));
         // an unstated depth is fed wide: never truncate a sample nobody measured
         assert_eq!(pcm_format_of(Some(&flac(2, 48_000, 0)), "flac").unwrap().bits, 32);
+    }
+
+    /// ALAC and LPCM declare the same PCM shape, from their own track facts; the carried track's
+    /// spelling (`pcm_s24le`) need not equal the codec id (`pcm`), only canonicalise to it.
+    #[test]
+    fn alac_and_lpcm_declare_the_same_shape_as_flac() {
+        let track = |codec: &str, channels, rate, bits| CarriedAudio { codec: codec.into(), ..flac(channels, rate, bits) };
+        assert_eq!(pcm_format_of(Some(&track("alac", 2, 44_100, 16)), "alac"),
+            Ok(PcmFormat { sample_rate: 44_100, bits: 16, channels: 2 }));
+        assert_eq!(pcm_format_of(Some(&track("alac", 2, 48_000, 24)), "alac"),
+            Ok(PcmFormat { sample_rate: 48_000, bits: 32, channels: 2 }));
+        assert_eq!(pcm_format_of(Some(&track("pcm_s24le", 2, 48_000, 24)), "pcm"),
+            Ok(PcmFormat { sample_rate: 48_000, bits: 32, channels: 2 }));
+        assert_eq!(pcm_format_of(Some(&track("pcm_s16be", 2, 44_100, 16)), "pcm"),
+            Ok(PcmFormat { sample_rate: 44_100, bits: 16, channels: 2 }));
+        assert!(pcm_format_of(Some(&track("alac", 6, 48_000, 16)), "alac").is_err());
+        assert!(pcm_format_of(Some(&track("pcm_s24le", 2, 96_000, 24)), "pcm").is_err());
+        assert!(pcm_format_of(Some(&track("flac", 2, 48_000, 16)), "pcm").is_err(), "a track of another codec");
     }
 
     #[test]
