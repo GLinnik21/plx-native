@@ -2809,6 +2809,26 @@ mod flight_tests {
         fn new(delay_ms: u64) -> Rig {
             let mut ps = crate::route::PlaybackSession::IDLE;
             let flight = FlightRig::start(&mut ps, Duration::from_millis(delay_ms));
+            Rig::on(ps, flight)
+        }
+
+        /// [`Rig::new`] on a direct play of the Part, no transcode session (`FlightRig::start_direct`).
+        fn direct(delay_ms: u64) -> Rig {
+            let mut ps = crate::route::PlaybackSession::IDLE;
+            let flight = FlightRig::start_direct(&mut ps, Duration::from_millis(delay_ms));
+            Rig::on(ps, flight)
+        }
+
+        /// [`Rig::direct`] a cold Auto Original: the watched source that never opened.
+        fn direct_auto_original(delay_ms: u64) -> Rig {
+            let mut ps = crate::route::PlaybackSession::IDLE;
+            let flight = FlightRig::start_direct_auto_original(&mut ps, Duration::from_millis(delay_ms));
+            FlightRig::set_bootstrap_rung(&mut ps, crate::abr::Rung::P720Low);
+            Rig::on(ps, flight)
+        }
+
+        /// The Engine streaming the route `flight` installed in `ps`.
+        fn on(ps: crate::route::PlaybackSession, flight: FlightRig) -> Rig {
             SHARED.reset_session();
             TX.reset();
             super::super::claim_hold::clear();
@@ -4830,6 +4850,193 @@ mod flight_tests {
             assert_eq!(rig.flight.decisions(), 1, "one conversion flight, never a second");
             assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
         });
+    }
+
+    // ---- S4 enable: the app decodes what the pipeline refused --------------------------------------
+
+    /// [`dts_announcing_start`] on a table that was read: the lossy policy admits DTS (it is measured).
+    fn measured_dts_start() -> std::sync::Arc<plx_platform::devcaps::Caps> {
+        std::sync::Arc::new(plx_platform::devcaps::Caps {
+            app_lossy: plx_platform::devcaps::AppLossy::Measured,
+            ..(*dts_announcing_start()).clone()
+        })
+    }
+
+    /// `rig` plays a DTS 5.1 track natively, on a start value the lossy policy admits DTS on.
+    fn measured_dts_rig(rig: Rig) -> Rig {
+        let mut rig = rig;
+        rig.flight.begin_attempt(&rig.ps);
+        FlightRig::plan_on(&mut rig.ps, measured_dts_start());
+        FlightRig::declare_audio(&mut rig.ps, "dca", 6);
+        rig
+    }
+
+    const DECODING: &str = "open recovery: decoding dts in the app (stereo) after type=18 num=601";
+
+    /// Drive a 601 on `rig` through the ladder until its flight (if any) has landed, returning the
+    /// event log of the whole stretch. The Engine the rig started is `epoch`.
+    fn refused_601_until_settled(rig: &mut Rig) -> String {
+        plx_base::eventlog::with_private_log(|| {
+            rig.frame();
+            pipeline_refuses_601(rig);
+            rig.frame();
+            rig.frames_until("the ladder to settle", |_| !crate::route::flight_outstanding());
+            std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default()
+        })
+    }
+
+    /// What the reload the app-decode rung asked for left: a new Engine, no failure read-out, and an
+    /// attempt that declares the stream as the stereo PCM the app decodes.
+    fn assert_decoding_in_the_app(rig: &mut Rig, epoch: Option<u32>, log: &str) {
+        assert!(log.contains(DECODING), "{log}");
+        assert!(log.contains("reload_at: fresh Load at"), "the same direct play reloads: {log}");
+        assert_ne!(engine_epoch(rig), epoch, "the rung reloaded the Engine");
+        assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error, "{log}");
+        assert!(rig.ps.open_recovery().attempt().app_lossy_in_force.contains("dts"), "the attempt decodes DTS in the app");
+        assert_eq!(
+            crate::route::stream_pcm(&rig.ps).and_then(Result::ok),
+            Some(crate::route::PcmFormat::STEREO_48K),
+            "the reload's Load declares the PCM the app decodes"
+        );
+    }
+
+    /// **P1. A DTS direct play whose conversion the server refuses is decoded in the app.** The pipeline
+    /// refuses the native DTS (`601`), the facet rung asks the server to convert it, the server
+    /// declines, and the last rung reloads the SAME direct play with the app decoding the audio, once,
+    /// with no second conversion request. Before the rung existed the viewer got the read-out here.
+    #[test]
+    fn a_refused_dts_conversion_on_a_direct_play_decodes_in_the_app() {
+        let mut rig = measured_dts_rig(Rig::direct(40));
+        rig.flight.refuse_decisions(1);
+        rig.frame();
+        let epoch = engine_epoch(&mut rig);
+        let log = refused_601_until_settled(&mut rig);
+        assert_eq!(rig.flight.decisions(), 1, "the one conversion the server declined, and no other: {:?}", rig.flight.requests());
+        assert_decoding_in_the_app(&mut rig, epoch, &log);
+        assert_eq!(log.matches(DECODING).count(), 1, "{log}");
+        assert!(!log.contains("no rung left"), "{log}");
+        assert!(
+            rig.ps.open_recovery().attempt().audio_supports("dts", 6),
+            "the attempt announces what the app decodes, whatever the refused facet took out"
+        );
+    }
+
+    /// **P2. A cold Auto Original that is a direct play reaches the app only after the HLS contingency
+    /// is refused too**: two refused conversions (the facet rung's, then the HLS rung's), then the app.
+    #[test]
+    fn a_cold_auto_original_decodes_in_the_app_only_after_hls_is_refused_too() {
+        let mut rig = measured_dts_rig(Rig::direct_auto_original(40));
+        rig.flight.refuse_decisions(2);
+        rig.frame();
+        let epoch = engine_epoch(&mut rig);
+        let log = refused_601_until_settled(&mut rig);
+        assert_eq!(rig.flight.decisions(), 2, "the facet rung's and the HLS rung's: {:?}", rig.flight.requests());
+        assert!(rig.flight.decision_requests()[1].contains("hls"), "{:?}", rig.flight.decision_requests());
+        assert_decoding_in_the_app(&mut rig, epoch, &log);
+        assert!(!crate::route::is_segmented_hls(&rig.ps), "the route is still the direct play");
+        assert!(!crate::route::is_transcoding(&rig.ps));
+    }
+
+    /// **P3. Force Direct Play decodes a refused native DTS in the app and asks the server NOTHING**: no
+    /// `/decision` of any kind (not the conversion, not the probe), the same reload as above.
+    #[test]
+    fn a_forced_refusal_of_native_dts_decodes_in_the_app_with_no_server() {
+        let mut rig = Rig::direct(40);
+        rig.flight.begin_attempt(&rig.ps);
+        crate::route::set_direct_play_mode_for_test(&mut rig.ps, crate::route::DirectPlayMode::Forced);
+        FlightRig::plan_on(&mut rig.ps, measured_dts_start());
+        FlightRig::declare_audio(&mut rig.ps, "dca", 6);
+        assert_eq!(crate::route::stream_pcm(&rig.ps).and_then(Result::ok), None, "native until the pipeline refuses it");
+        rig.frame();
+        let epoch = engine_epoch(&mut rig);
+        let log = refused_601_until_settled(&mut rig);
+        assert_decoding_in_the_app(&mut rig, epoch, &log);
+        assert!(
+            !rig.flight.requests().iter().any(|r| r.contains("/decision")),
+            "Force Direct Play converts nothing and asks nothing: {:?}",
+            rig.flight.requests()
+        );
+        assert!(!crate::route::flight_outstanding());
+    }
+
+    /// **P4. A refused app decode ends on the read-out, once.** The reload's Load is refused too: the rung
+    /// is spent and no facet is left, so the Engine fails, the read-out shows, and nothing reloads again.
+    #[test]
+    fn a_refused_app_decode_ends_on_the_read_out_once() {
+        let mut rig = Rig::direct(40);
+        rig.flight.begin_attempt(&rig.ps);
+        crate::route::set_direct_play_mode_for_test(&mut rig.ps, crate::route::DirectPlayMode::Forced);
+        FlightRig::plan_on(&mut rig.ps, measured_dts_start());
+        FlightRig::declare_audio(&mut rig.ps, "dca", 6);
+        rig.frame();
+        let epoch = engine_epoch(&mut rig);
+        let first = refused_601_until_settled(&mut rig);
+        assert_decoding_in_the_app(&mut rig, epoch, &first);
+        let reloaded = engine_epoch(&mut rig).expect("the reloaded Engine");
+        pipeline_takes_the_load();
+        assert!(SHARED.mark_native_load_returned(reloaded).is_some(), "the reload's Load returned");
+        let second = plx_base::eventlog::with_private_log(|| {
+            super::super::sf_on_event(reloaded, 18, 601, std::ptr::null());
+            for _ in 0..4 {
+                rig.frame();
+            }
+            std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default()
+        });
+        let log = format!("{first}{second}");
+        assert_eq!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error, "{log}");
+        assert_eq!(log.matches(DECODING).count(), 1, "the rung runs once: {log}");
+        assert_eq!(log.matches("open recovery: no rung left").count(), 1, "the read-out is asked for once: {log}");
+        assert_eq!(log.matches("reload_at: fresh Load at").count(), 1, "no second reload: {log}");
+        assert!(rig.flight.requests().iter().all(|r| !r.contains("/decision")), "{:?}", rig.flight.requests());
+    }
+
+    /// **P5. A refused conversion of a remux still ends on the read-out**: the app decode is for a
+    /// direct play only (the pin of the scope cut: a remux's audio is the server's copy, and a rebuild
+    /// flight for it is a separate design).
+    #[test]
+    fn a_refused_conversion_of_a_remux_still_ends_on_the_read_out() {
+        let mut rig = measured_dts_rig(Rig::new(40));
+        rig.flight.refuse_decisions(1);
+        rig.frame();
+        let epoch = engine_epoch(&mut rig);
+        let log = plx_base::eventlog::with_private_log(|| {
+            rig.frame();
+            pipeline_refuses_601(&mut rig);
+            rig.frame();
+            rig.frames_until("the refusal's landing", |r| crate::player::state(&r.ps) == crate::player::PlaybackState::Error);
+            std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default()
+        });
+        assert!(!log.contains("decoding dts in the app"), "{log}");
+        assert!(log.contains("open recovery: no rung left"), "{log}");
+        assert_eq!(engine_epoch(&mut rig), epoch, "a refusal reloads nothing");
+        assert_eq!(rig.flight.decisions(), 1);
+        assert!(!rig.ps.open_recovery().attempt().app_lossy_in_force.contains("dts"));
+    }
+
+    /// **P6. A refused APP-DECODED Load that the server then converts proves nothing.** The in-app decode
+    /// is on (the debug policy puts DTS in force), the Load of its PCM is refused, no audio is the
+    /// suspect (the pipeline decoded none of it) so the 4K H.264 is, and the server's conversion lands
+    /// clean: the reload's first picture must not write a refusal of the set's own DTS decoder, which
+    /// this Load never exercised.
+    #[test]
+    fn a_refused_app_decoded_load_converted_by_the_server_proves_nothing() {
+        let mut rig = Rig::direct(40);
+        let _session = plx_plex::plex::session::TempSession::new("s4-app-decoded-no-proof");
+        let _set = firmware_announcing_dts();
+        rig.flight.begin_attempt(&rig.ps);
+        FlightRig::plan_on(&mut rig.ps, std::sync::Arc::new((*dts_announcing_start()).clone().with_app_lossy()));
+        FlightRig::declare_audio(&mut rig.ps, "dca", 6);
+        FlightRig::declare_video(&mut rig.ps, "h264", 3840, 2160);
+        assert!(crate::route::stream_audio(&rig.ps).is_some_and(|a| a.app_decoded_lossy), "sanity: the app decodes it");
+        rig.frame();
+        let epoch = engine_epoch(&mut rig);
+        let log = refused_601_until_settled(&mut rig);
+        assert_eq!(rig.flight.decisions(), 1, "the video's conversion flew: {:?}", rig.flight.requests());
+        assert!(!log.contains("decoding dts in the app"), "{log}");
+        assert_ne!(engine_epoch(&mut rig), epoch, "the landing reloaded onto the conversion");
+        first_picture(&mut rig);
+        assert_eq!(rig.ps.open_recovery().phase(), super::super::recovery::Phase::Playing);
+        assert!(recorded_refusals().is_empty(), "nothing about the set's DTS decoder was proved: {:?}", recorded_refusals());
     }
 }
 
