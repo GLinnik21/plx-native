@@ -1862,9 +1862,11 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     //      through a remux) may still direct-play a non-commentary stand-in, provisionally — it is
     //      kept only if a direct play results — or, with only a commentary to stand in, burn it
     //      once the route is known to be the remux (see `burn_for_audio` below).
-    //   Under Force Direct Play the pick is two passes: the set's OWN decoder first, and only when it
-    //   plays no track, the app's lossy decode of one (`devcaps::Caps::app_decodes_lossy_track`). A
-    //   native sibling therefore always wins, and the app decode only replaces what would be a refusal.
+    //   Under Force Direct Play the pick is three passes, each `StandIn::SameKind` until the last: (1) a
+    //   native track that honours the intent (the selected track, or a same-language non-commentary
+    //   sibling of it), (2) the app's lossy decode of the intended track
+    //   (`devcaps::Caps::app_decodes_lossy_track`), (3) only then today's native stand-in, any track at
+    //   all. A native sibling therefore wins over the app decode, and a commentary or a dub never does.
     let natively = |codec: &str, channels: i64, rate: i64| {
         audio_natively_plays_with(&env.caps, env.direct_play_mode, codec, channels, rate)
     };
@@ -1891,17 +1893,21 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     };
     // Auto has one pass over everything it can play (the set's decoder or a codec in force); only
     // Forced separates the set's own decoder.
-    let first: &dyn Fn(&str, i64, i64) -> bool = if forced { &natively } else { &eligible };
-    let mut audio_sel = pick_audio(if copy_blocked { StandIn::Any } else { StandIn::SameKind }, first);
-    if forced && audio_sel.is_none() {
-        audio_sel = pick_audio(StandIn::Any, &eligible);
-        if let Some((_, raw, _)) = &audio_sel {
-            crate::player::log(&format!(
-                "playback_policy: Force Direct Play decodes audio codec {raw} ({}) in the app, stereo",
-                plx_data::metadata::friendly_codec(raw)
-            ));
+    let mut audio_sel = if forced {
+        let mut sel = pick_audio(StandIn::SameKind, &natively);
+        if sel.is_none() {
+            sel = pick_audio(StandIn::SameKind, &eligible);
+            if let Some((_, raw, _)) = &sel {
+                crate::player::log(&format!(
+                    "playback_policy: Force Direct Play decodes audio codec {raw} ({}) in the app, stereo",
+                    plx_data::metadata::friendly_codec(raw)
+                ));
+            }
         }
-    }
+        sel.or_else(|| pick_audio(StandIn::Any, &natively))
+    } else {
+        pick_audio(if copy_blocked { StandIn::Any } else { StandIn::SameKind }, &eligible)
+    };
     if let Some(lang) = show_prefs.audio.as_deref() {
         let hit = audio_sel
             .as_ref()

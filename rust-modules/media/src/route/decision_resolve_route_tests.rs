@@ -2945,6 +2945,63 @@ fn forced_resolve_keeps_a_native_sibling_over_an_app_decoded_track() {
     );
 }
 
+/// The intended track of a Force Direct Play on a set with no DTS row (policy `Measured`) is the one
+/// the app decodes: the audio probes of `audio` name stream `want`, the verdict is none.
+#[cfg(feature = "devtriggers")]
+fn forced_measured_probes_stream(name: &'static str, audio: Vec<plx_data::metadata::Stream>, acodec: &str, want: &str, why: &str) {
+    let (plan, requests) = forced_resolve_with_policy(name, audio, acodec, plx_platform::devcaps::AppLossy::Measured);
+    assert!(plan.verdict.is_none(), "{why}: {:?}", plan.verdict);
+    let probes = request_with(&requests, "hasMDE=1");
+    assert!(
+        !probes.is_empty() && probes.iter().all(|l| query_param(l, "audioStreamID") == Some(want)),
+        "{why}: stream {want} plays: {requests:?}"
+    );
+}
+
+/// **A native COMMENTARY is not the intent's sibling.** An English DTS 5.1 main (the default) beside an
+/// English AC3 commentary, on a set with no DTS row: the main is decoded in the app; the commentary,
+/// which the old first pass reached through its language arm, must not stand in for it.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn forced_resolve_decodes_the_dts_main_not_a_native_commentary() {
+    forced_measured_probes_stream(
+        "cold-forced-dca-commentary",
+        vec![cold_track(1, "dca", "eng", true, ""), cold_track(2, "ac3", "eng", false, "Director's Commentary")],
+        "dca",
+        "1",
+        "the DTS main, not the AC3 commentary",
+    );
+}
+
+/// **A native dub in another language is not the intent's sibling either.** A Japanese DTS original (the
+/// default) beside an English AC3 dub: the original is decoded in the app, not replaced by the dub.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn forced_resolve_decodes_the_dts_original_not_a_native_dub() {
+    forced_measured_probes_stream(
+        "cold-forced-dca-dub",
+        vec![cold_track(1, "dca", "jpn", true, ""), cold_track(2, "ac3", "eng", false, "")],
+        "dca",
+        "1",
+        "the Japanese DTS, not the English dub",
+    );
+}
+
+/// **Nothing that played before is refused**: where the intended track's codec is not enabled (TrueHD
+/// under `Measured`), the app decodes nothing and the last resort, the native stand-in of another
+/// language, plays as it did before the app decode existed.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn forced_resolve_keeps_the_native_stand_in_when_the_intended_codec_is_not_enabled() {
+    forced_measured_probes_stream(
+        "cold-forced-truehd-stand-in",
+        vec![cold_track(1, "truehd", "jpn", true, ""), cold_track(2, "ac3", "eng", false, "")],
+        "truehd",
+        "2",
+        "the English AC3 stand-in",
+    );
+}
+
 /// **A lossy codec nothing has enabled is still refused**: TrueHD has no recorded measurement, so a
 /// read table does not enable it and Force Direct Play ends on the audio read-out, as before. The debug
 /// policy (`All`, the `appdecodelossy` trigger) is the contrast: the same track plays there.
