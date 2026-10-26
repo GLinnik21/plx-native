@@ -59,15 +59,15 @@ fn account_audio_language_selects_french_for_every_cold_play_path() {
 fn account_audio_language_diagnostic_covers_every_outcome() {
     let no_tracks = [];
     assert_eq!(
-        account_audio_language_log(&AccountAudioLanguage::NoCredential, &no_tracks, None),
+        account_audio_language_log(&plx_platform::devcaps::caps(), &AccountAudioLanguage::NoCredential, &no_tracks, None),
         "route: account audio language — no plex.tv credential for this profile",
     );
     assert_eq!(
-        account_audio_language_log(&AccountAudioLanguage::Unavailable, &no_tracks, None),
+        account_audio_language_log(&plx_platform::devcaps::caps(), &AccountAudioLanguage::Unavailable, &no_tracks, None),
         "route: account audio language — unavailable (request failed)",
     );
     assert_eq!(
-        account_audio_language_log(&AccountAudioLanguage::TimedOut, &no_tracks, None),
+        account_audio_language_log(&plx_platform::devcaps::caps(), &AccountAudioLanguage::TimedOut, &no_tracks, None),
         "route: account audio language — unavailable (timed out)",
     );
     let not_set = |auto_select_audio, stated_language: Option<&str>| {
@@ -76,37 +76,37 @@ fn account_audio_language_diagnostic_covers_every_outcome() {
         }
     };
     assert_eq!(
-        account_audio_language_log(&not_set(Some(true), None), &no_tracks, None),
+        account_audio_language_log(&plx_platform::devcaps::caps(), &not_set(Some(true), None), &no_tracks, None),
         "route: account audio language — not set",
     );
     assert_eq!(
-        account_audio_language_log(&not_set(Some(false), Some("ru")), &no_tracks, None),
+        account_audio_language_log(&plx_platform::devcaps::caps(), &not_set(Some(false), Some("ru")), &no_tracks, None),
         "route: account audio language — automatic audio selection off (language ru)",
     );
     assert_eq!(
-        account_audio_language_log(&not_set(None, None), &no_tracks, None),
+        account_audio_language_log(&plx_platform::devcaps::caps(), &not_set(None, None), &no_tracks, None),
         "route: account audio language — automatic audio selection not reported (language not set)",
     );
 
     let account = AccountAudioLanguage::Set("fr".into());
     let tracks = [trk(1, "ac3", "eng", true), trk(2, "ac3", "fre", false)];
     assert_eq!(
-        account_audio_language_log(&account, &tracks, Some(&(1, "ac3".into(), 2))),
+        account_audio_language_log(&plx_platform::devcaps::caps(), &account, &tracks, Some(&(1, "ac3".into(), 2))),
         "route: account prefers audio fr — playing that track",
     );
     assert_eq!(
-        account_audio_language_log(&account, &tracks, Some(&(0, "ac3".into(), 1))),
+        account_audio_language_log(&plx_platform::devcaps::caps(), &account, &tracks, Some(&(0, "ac3".into(), 1))),
         "route: account prefers audio fr — outranked by the remembered pick, the PMS selection or show preference",
     );
 
     let tracks = [trk(1, "ac3", "eng", true), trk(2, "dca", "fra", false)];
     assert_eq!(
-        account_audio_language_log(&account, &tracks, Some(&(0, "ac3".into(), 1))),
+        account_audio_language_log(&plx_platform::devcaps::caps(), &account, &tracks, Some(&(0, "ac3".into(), 1))),
         "route: account prefers audio fr — a track in it exists but is not direct-playable; asking the server to convert it",
     );
     let tracks = [trk(1, "ac3", "eng", true)];
     assert_eq!(
-        account_audio_language_log(&account, &tracks, Some(&(0, "ac3".into(), 1))),
+        account_audio_language_log(&plx_platform::devcaps::caps(), &account, &tracks, Some(&(0, "ac3".into(), 1))),
         "route: account prefers audio fr — no track in it; using the usual order",
     );
 }

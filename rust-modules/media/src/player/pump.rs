@@ -644,7 +644,11 @@ fn recover_failed_source_route(ps: &mut crate::route::PlaybackSession, native_au
         }
         OpenFailureAction::ConvertNativeAudio => {
             let secs = (SHARED.playpos_ns.load(Relaxed) / 1_000_000_000).max(0);
-            crate::route::dispatch_native_audio_conversion(ps, secs)
+            // The refusal was learned just before this (`learn_native_audio_refusal`), into the
+            // device's capability answer. The conversion is a new attempt on that answer, so it is
+            // read HERE, fresh, and handed to the dispatch: the attempt's own value is the one the
+            // refused route was planned from and still lists the codec.
+            crate::route::dispatch_native_audio_conversion(ps, plx_platform::devcaps::caps(), secs)
         }
         OpenFailureAction::StartAutoHls => {
             let status = SHARED.dg_http_status.load(Relaxed);

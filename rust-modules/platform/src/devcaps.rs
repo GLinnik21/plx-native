@@ -48,7 +48,7 @@ pub mod dv;
 /// two-sided test — what our demuxer/payload path can feed, before asking whether this
 /// particular SoC can decode it. The live set is [`Caps::audio`] (this list ∩ the device's own
 /// codec table), and the ONE-definition rule lives with it: the Normal routing uses
-/// `plex::is_dp_audio_track` for membership and channel bounds, shared with the device profile.
+/// `plex::is_dp_audio_track_with` for membership and channel bounds, shared with the device profile.
 /// Forced mode instead uses the implemented software feed formats and its separate profile,
 /// without conservative device bounds.
 ///
@@ -360,7 +360,7 @@ pub struct Caps {
     pub av1_row: (u32, u32, u32),
     /// The direct-playable AUDIO subset: [`DP_AUDIO_CODECS`] (what the pipeline decodes)
     /// intersected with the table's audio rows, in `DP_AUDIO_CODECS`'s own URL form/order.
-    /// Normal routing reads this and the channel ceilings through `plex::is_dp_audio_track`,
+    /// Normal routing reads this and the channel ceilings through `plex::is_dp_audio_track_with`,
     /// as does its PMS profile. Forced mode starts from the pipeline's feed set with no channel
     /// ceiling and admits DTS only with a DTS row in `audio_channels` (`Caps::forced_feeds_audio`).
     pub audio: String,
