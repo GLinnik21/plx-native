@@ -4129,6 +4129,54 @@ mod flight_tests {
         dts_601_converts_in_one_flight(&mut dts_rig(Rig::new(150)));
     }
 
+    /// **A 4K H.264 the pipeline refuses (`type=18 num=100`) before the first picture**, in a manual
+    /// pick, used to end on the failure read-out. The video facet rung now flies ONE recovery flight
+    /// for it: the replacement is an ENCODE (`directStream=0`, the audio still copied) under a profile
+    /// that bounds H.264 to the 1080p floor and a `videoResolution` of 1080p, the carried audio track
+    /// is the one the viewer was on, and the Engine reloads onto it. The converted route declares a
+    /// sink envelope no larger than 1080p, not the 4K60 of the file it came from.
+    #[test]
+    fn a_4k_h264_refused_with_100_in_a_manual_pick_lands_a_1080p_conversion_with_the_audio_copied() {
+        let mut rig = Rig::new(150);
+        rig.flight.begin_attempt(&rig.ps);
+        FlightRig::declare_video(&mut rig.ps, "h264", 3840, 2160);
+        FlightRig::declare_audio(&mut rig.ps, "ac3", 6);
+        rig.frame();
+        let answered = rig.flight.answered();
+        let epoch = engine_epoch(&mut rig);
+        rig.flight.hold_answers();
+        super::super::sf_on_event(epoch.expect("the rig's Engine"), 18, 100, std::ptr::null());
+        rig.frame();
+        assert_ne!(
+            crate::player::state(&rig.ps),
+            crate::player::PlaybackState::Error,
+            "a refused 4K H.264 must not end on the failure read-out"
+        );
+        assert!(crate::route::flight_outstanding(), "the conversion's PMS half must be a recovery flight");
+        assert_eq!(rig.flight.answered(), answered, "the failure frame waited for a PMS answer: {:?}", rig.flight.requests());
+        rig.flight.release_answers();
+        rig.frames_until("the conversion's landing", |_| !crate::route::flight_outstanding());
+        assert_eq!(rig.flight.decisions(), 1, "exactly one replacement /decision");
+        let decisions = rig.flight.decision_requests();
+        let replacement = decisions.first().expect("the replacement /decision");
+        for needle in [
+            "scopeName%3Dh264%26type%3DupperBound%26name%3Dvideo.height%26value%3D1088",
+            "directStream=0",
+            "directStreamAudio=1",
+            "audioStreamID=960002",
+            "videoResolution=1920x1080",
+        ] {
+            assert!(replacement.contains(needle), "the replacement lacks {needle}: {replacement}");
+        }
+        assert_ne!(engine_epoch(&mut rig), epoch, "the landing reloaded onto the converted route");
+        assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
+        let context = super::super::report::error_context_for_test(&rig.ps);
+        assert_eq!(context.attempt_origin, super::super::report::AttemptOrigin::Recovery);
+        // The ceiling the encode flew under bounds the sink envelope: the 1080p rung's raster, below
+        // the profile floor's 1088.
+        assert_eq!(crate::route::sink_max_raster(&rig.ps), (1920, 1080));
+    }
+
     /// A cold Auto Original refused on its DTS flies the conversion, not the HLS contingency: the
     /// facet rung comes before the both-facets rung, so the Original's remux is kept (the stream
     /// keeps its video bytes), no Original failure is noted, and the route is not segmented HLS.
