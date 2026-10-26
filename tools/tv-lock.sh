@@ -511,17 +511,26 @@ cmd_renew() {
 #           so the owner counts live TV as idle, 2026-10-14: not a general rule); or our STABLE app, the
 #           household's own client, but only when the mute flag is positively read as true;
 #   in use: any other app id in front (a streaming app, an HDMI input), or our stable app with the sound on;
-#   unknown: nothing readable or unambiguous, or our stable app with the mute flag unreadable. NEVER idle:
-#           not knowing is not vouching.
+#   unknown: nothing readable or unambiguous (an ambiguous panel reply under an app that would be idle
+#           included), or our stable app with the mute flag unreadable. NEVER idle: not knowing is not
+#           vouching.
 # The panel is NOT evidence of idleness except in standby: `Screen Off` is only the backlight (the owner
 # blanks it for tests, and on 2026-10-02 a lane blanked it over somebody's unmuted YouTube). And a normal
 # idle set is often UNMUTED (lanes restore volume 12), so sound alone never makes the set IN USE; it only
 # decides our own stable app. The app id is compared RAW: an id that is not shaped like one
 # (letters, digits, . _ : -) is unknown rather than cleaned into something that might match.
+# An ambiguous panel reply (`?`) cannot vouch for idleness, but it must not hide an app in front either: a
+# streaming app is IN USE whatever the panel said. So the app verdict is computed first and only an IDLE one
+# is demoted to UNKNOWN; IN USE and UNKNOWN stand as they are. Standby is the one panel state that decides.
 idle_verdict() {  # idle_verdict <foreground appId> <panel state> <muted: true|false|other> <stable id> <debug id> <parking id>
-  local LC_ALL=C app="$1" power="$2" muted="$3" stable="${4:-}" debug="${5:-}" park="${6:-}"
-  if [ "$power" = "Active Standby" ]; then echo "IDLE (panel off: Active Standby)"; return 0; fi
-  if [ "$power" = "?" ]; then echo "UNKNOWN (the panel state was ambiguous)"; return 0; fi
+  local verdict
+  if [ "$2" = "Active Standby" ]; then echo "IDLE (panel off: Active Standby)"; return 0; fi
+  verdict="$(idle_app_verdict "$@")"
+  case "$2:$verdict" in "?:IDLE"*) verdict="UNKNOWN (the panel state was ambiguous)" ;; esac
+  echo "$verdict"
+}
+idle_app_verdict() {  # the same arguments; the panel state is read by idle_verdict, not here
+  local LC_ALL=C app="$1" muted="$3" stable="${4:-}" debug="${5:-}" park="${6:-}"
   case "$app" in
     ''|*[!A-Za-z0-9._:-]*) echo "UNKNOWN (the foreground app could not be read)"; return 0 ;;
   esac
@@ -1043,7 +1052,19 @@ cmd_selftest() {
   verdict "Screen Off with the app unread is UNKNOWN" "$unk_app" "" "Screen Off"
   verdict "standby is idle whatever is in front" "IDLE (panel off: Active Standby)" youtube.leanback.v4 "Active Standby" false
   verdict "standby with the app unread is idle" "IDLE (panel off: Active Standby)" "" "Active Standby"
-  verdict "an ambiguous panel read is UNKNOWN, never idle" "UNKNOWN (the panel state was ambiguous)" youtube.leanback.v4 "?" false
+  # An ambiguous panel read ("?") cannot vouch for idleness, but it must not hide an app in front either:
+  # the app verdict is computed first, an IDLE becomes UNKNOWN, and IN USE or UNKNOWN stay as they are.
+  verdict "an ambiguous panel read does not hide a streaming app: IN USE" "IN USE (youtube.leanback.v4)" youtube.leanback.v4 "?" false
+  verdict "an ambiguous panel read does not hide our stable app with the sound on: IN USE" "IN USE ($sid, sound is on)" "$sid" "?" false
+  verdict "an ambiguous panel read does not hide an HDMI input: IN USE" "IN USE (com.webos.app.hdmi1)" com.webos.app.hdmi1 "?" true
+  verdict "an ambiguous panel read on Home is UNKNOWN, never idle" "UNKNOWN (the panel state was ambiguous)" com.webos.app.home "?" false
+  verdict "an ambiguous panel read on live TV is UNKNOWN, never idle" "UNKNOWN (the panel state was ambiguous)" com.webos.app.livetv "?" false
+  verdict "an ambiguous panel read on our debug app is UNKNOWN, never idle" "UNKNOWN (the panel state was ambiguous)" "$did" "?" false
+  verdict "an ambiguous panel read on the parking app is UNKNOWN, never idle" "UNKNOWN (the panel state was ambiguous)" "$park" "?" true
+  verdict "an ambiguous panel read with our stable app muted is UNKNOWN, never idle" "UNKNOWN (the panel state was ambiguous)" "$sid" "?" true
+  verdict "an ambiguous panel read with our stable app's mute unread stays the app's UNKNOWN" "UNKNOWN (our stable app is in front and the mute state could not be read)" "$sid" "?" ""
+  verdict "an ambiguous panel read with the app unread stays the app's UNKNOWN" "$unk_app" "" "?"
+  verdict "standby still wins over an unreadable app" "IDLE (panel off: Active Standby)" "" "Active Standby"
   verdict "a lit panel does not rescue a streaming app" "IN USE (youtube.leanback.v4)" youtube.leanback.v4 "Active" true
 
   pf() {  # pf <fg reply> <volume reply> <power reply> [<apps line>] -> $out: preflight_report on a fixture probe
@@ -1095,8 +1116,9 @@ cmd_selftest() {
   rcase "L: a space before the colon is not read" UNKNOWN '{"returnValue": true, "appId" : "youtube.leanback.v4"}' "$vol_on" "$pow_ok"
   rcase "M: the power reply failed and its errorText mentions Screen Off" "IN USE" "$(fgj youtube.leanback.v4)" "$vol_on" '{"returnValue": false, "errorText": "state Screen Off", "state": "Screen Off"}'
   rcase "N: an unrelated power field holds Screen Off" "IN USE" "$(fgj youtube.leanback.v4)" "$vol_on" '{"returnValue": true, "state": "Active", "processing": "Screen Off"}'
-  rcase "O: two DISTINCT power states (a nested one last)" UNKNOWN "$(fgj youtube.leanback.v4)" "$vol_on" '{"returnValue": true, "state": "Active", "sub": {"state": "Screen Off"}}'
-  rcase "O2: a nested Active Standby does not vouch" UNKNOWN "$(fgj youtube.leanback.v4)" "$vol_on" '{"returnValue": true, "state": "Active", "sub": {"state": "Active Standby"}}'
+  rcase "O: two DISTINCT power states (a nested one last): the streaming app still reads IN USE" "IN USE" "$(fgj youtube.leanback.v4)" "$vol_on" '{"returnValue": true, "state": "Active", "sub": {"state": "Screen Off"}}'
+  rcase "O2: a nested Active Standby does not vouch: the streaming app still reads IN USE" "IN USE" "$(fgj youtube.leanback.v4)" "$vol_on" '{"returnValue": true, "state": "Active", "sub": {"state": "Active Standby"}}'
+  rcase "O4: two DISTINCT power states with Home in front is UNKNOWN, never idle" UNKNOWN "$(fgj com.webos.app.home)" "$vol_on" '{"returnValue": true, "state": "Active", "sub": {"state": "Active Standby"}}'
   rcase "O3: the same power state repeated is accepted (standby is idle)" IDLE "$(fgj youtube.leanback.v4)" "$vol_on" '{"returnValue": true, "state": "Active Standby", "sub": {"state": "Active Standby"}}'
   rcase "P: returnValue true only inside an errorText" "IN USE" "$(fgj youtube.leanback.v4)" "$vol_on" '{"returnValue": false, "errorText": "\"returnValue\": true", "state": "Screen Off"}'
   rcase "Q: lower-case screen off" "IN USE" "$(fgj youtube.leanback.v4)" "$vol_on" "$(powj 'screen off')"
