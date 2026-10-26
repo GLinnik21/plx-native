@@ -120,6 +120,35 @@ CASES += [
     (BLOCK, HEREDOC_SSH),
 ]
 
+# `tv-session.sh fg` is the advisory foreground read, and the one lifecycle word the guard lets through
+# with no lease: an explicit decision (the same file blocks `sound status`, a read of the volume, on
+# purpose). It is exempt only as EXACTLY `fg` after the script: anything else on that segment is judged
+# as it always was. `;` `&&` `|` split the line into segments first, so each is judged on its own.
+CASES += [
+    (ALLOW, "tools/tv-session.sh fg"),
+    (ALLOW, "./tools/tv-session.sh fg"),
+    (ALLOW, "/repo/worktrees/lane-a/tools/tv-session.sh fg"),
+    (ALLOW, "bash tools/tv-session.sh fg"),
+    (ALLOW, "FLAVOR=stable tools/tv-session.sh fg"),
+    (ALLOW, "PLX_TV_LOCK_LANE=/repo/worktrees/lane-a tools/tv-session.sh fg"),
+    (ALLOW, "cd /repo/worktrees/lane-a && tools/tv-session.sh fg"),
+    (ALLOW, "tools/tv-session.sh fg | tail -n 1"),
+    (BLOCK, "tools/tv-session.sh fg extra"),
+    (BLOCK, "tools/tv-session.sh fg --flavor debug"),
+    (BLOCK, "bash tools/tv-session.sh fg extra"),
+    (BLOCK, "tools/tv-session.sh fg > /tmp/fg.txt"),
+    (BLOCK, "tools/tv-session.sh fgx"),
+    (BLOCK, "tools/tv-session.sh fg && tools/tv-session.sh up"),
+    (BLOCK, "tools/tv-session.sh fg; tools/tv-session.sh sound status"),
+    (BLOCK, "tools/tv-session.sh fg && make deploy"),
+    (BLOCK, "tools/tv-session.sh up && tools/tv-session.sh fg"),
+    # The siblings and the nested words stay exactly as they were.
+    (BLOCK, "tools/tv-session.sh up"),
+    (BLOCK, "tools/tv-session.sh foreground"),
+    (BLOCK, "tools/tv-session.sh background"),
+    (BLOCK, "bash tools/tv-session.sh sound status"),
+]
+
 
 def blocked(cmd):
     if "PLX_TV_LOCK_BYPASS=1" in cmd:
@@ -227,6 +256,15 @@ LANE_CASES = [
     (False,
      "make deploy",
      LANE_A, {}, (LANE_A,)),
+]
+
+# `fg` needs no lease; a chain that also drives the set needs one for the segment that does.
+LANE_CASES += [
+    (False, "tools/tv-session.sh fg", LANE_A, {}, ()),
+    (False, "tools/tv-session.sh fg", LANE_A, {}, (LANE_B,)),
+    (True, "tools/tv-session.sh fg && tools/tv-session.sh up", LANE_A, {}, ()),
+    (False, "tools/tv-session.sh fg && tools/tv-session.sh up", LANE_A, {}, (LANE_A,)),
+    (True, "tools/tv-session.sh fg extra", LANE_A, {}, ()),
 ]
 
 

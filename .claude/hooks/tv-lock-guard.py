@@ -221,6 +221,13 @@ def classify_lane(seg):
             subs = [t for t in w[1:] if not t.startswith("-")]
             if subs and subs[0] in ("log", "status"):
                 return None, None
+            # `fg` (the foreground-app read) is exempt too, on purpose, and the same file blocks
+            # `sound status`: a pre-flight that asks "is anybody watching?" must not need a lease, and
+            # `fg` is the one such read that never wakes the set or changes anything (tv-session.sh
+            # `cmd_lifecycle`). Exactly `fg` and nothing after the script, so `fg extra`, a flag or a
+            # redirect is judged as before; a chain was already split into segments by now.
+            if w[w.index(cw) + 1:] == ["fg"]:
+                return None, None
         # `tests/run.py --list` never commits to driving the television: `main()` returns 0 from
         # every `args.list` branch (the pipeline-tier listing and the server-tier one right after
         # it) before the TV lock is acquired, before any trigger is armed and before `make deploy`/
