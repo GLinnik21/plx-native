@@ -5833,7 +5833,7 @@ mod pcm_format_tests {
             (out.rate, out.bits, out.channels),
             "the shape the Load declares is the one the decoder outputs"
         );
-        for other in ["ac3", "eac3", "aac", "truehd"] {
+        for other in ["ac3", "eac3", "aac", "mlp"] {
             set_stream_codecs(&mut ps, "h264", other);
             assert_eq!(stream_pcm(&ps), None, "{other}");
         }
@@ -5856,10 +5856,28 @@ mod pcm_format_tests {
             assert_eq!(stream_pcm(&ps), Some(Ok(PcmFormat::STEREO_48K)), "{codec}");
             assert!(stream_pcm_is_lossy(&ps) && stream_audio(&ps).unwrap().app_decoded_lossy, "{codec}");
         }
-        for other in ["mp2", "wma", "opus", "truehd"] {
+        for other in ["mp2", "wma", "opus", "mlp"] {
             set_stream_codecs(&mut ps, "h264", other);
             assert_eq!(stream_pcm(&ps), None, "{other}");
         }
+    }
+
+    /// TrueHD under the gate (S4-5) declares the same one shape as DTS, MP3 and Vorbis.
+    #[test]
+    fn truehd_declares_stereo_48k_only_when_the_attempt_has_the_gate_on() {
+        let mut ps = PlaybackSession::IDLE;
+        ps.begin_attempt(std::sync::Arc::new(plx_platform::devcaps::Caps::assumed()));
+        set_stream_codecs(&mut ps, "h264", "truehd");
+        assert_eq!(stream_pcm(&ps), None, "gate off");
+        assert!(!stream_audio(&ps).unwrap().app_decoded_lossy);
+        ps.begin_attempt(std::sync::Arc::new(plx_platform::devcaps::Caps::assumed().with_app_lossy()));
+        for spelling in ["truehd", "TrueHD"] {
+            set_stream_codecs(&mut ps, "h264", spelling);
+            assert_eq!(stream_pcm(&ps), Some(Ok(PcmFormat::STEREO_48K)), "{spelling}");
+            assert!(stream_pcm_is_lossy(&ps) && stream_audio(&ps).unwrap().app_decoded_lossy, "{spelling}");
+        }
+        set_stream_codecs(&mut ps, "h264", "mlp");
+        assert_eq!(stream_pcm(&ps), None, "MLP is not claimed");
     }
 
     #[test]

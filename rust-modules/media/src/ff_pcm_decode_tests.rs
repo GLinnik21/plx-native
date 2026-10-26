@@ -97,11 +97,25 @@ fn tool_present() -> bool {
 
 /// Encode `samples` as `codec` into `file`. `extra` carries per-case flags.
 fn encode(dir: &Path, file: &str, raw: Raw, rate: u32, channels: usize, samples: &[i32], codec: &str, extra: &[&str]) -> PathBuf {
+    encode_layout(dir, file, raw, rate, channels, None, samples, codec, extra)
+}
+
+/// [`encode`] with the input's channel layout named (`5.1(side)`, `2.1`...): the channels of `samples`
+/// are then those of FFmpeg's layout of that name, in its order.
+fn encode_layout(
+    dir: &Path, file: &str, raw: Raw, rate: u32, channels: usize, layout: Option<&str>, samples: &[i32], codec: &str,
+    extra: &[&str],
+) -> PathBuf {
     let src = dir.join(format!("{file}.raw"));
     std::fs::write(&src, to_raw(raw, samples)).expect("write the source");
     let out = dir.join(file);
+    let input_channels = match layout {
+        Some(l) => ["-ch_layout".to_string(), l.to_string()],
+        None => ["-ac".to_string(), channels.to_string()],
+    };
     let status = Command::new("ffmpeg")
-        .args(["-nostdin", "-v", "error", "-y", "-f", raw.fmt, "-ar", &rate.to_string(), "-ac", &channels.to_string()])
+        .args(["-nostdin", "-v", "error", "-y", "-f", raw.fmt, "-ar", &rate.to_string()])
+        .args(input_channels)
         .arg("-i")
         .arg(&src)
         .args(["-c:a", codec])
@@ -474,5 +488,167 @@ fn a_reset_leaves_no_history_in_mp3_and_vorbis() {
         let after_seek = unsafe { packet_output(&src, stereo, 20, 8, 20) };
         assert!(short.iter().any(|&b| b != 0), "{}: the packet decodes to sound", c.file);
         assert!(short == after_seek, "{}: the first frame after a reset must not depend on what was decoded before", c.file);
+    }
+}
+
+/// One TrueHD layout the encoder can write and the decoder reports as a native mask. The count alone
+/// cannot name these (2.1 and 3.1 look like 3.0 and 4.0, 4.1 like 5.0): only the layout can say where
+/// the LFE is, so the downmix must use it. `roles` is `(channel index, expected on L, expected on R)`.
+struct TrueHdLayout {
+    name: &'static str,
+    channels: usize,
+    /// (channel, expected left, expected right): `Some(true)` = the sound is there, `Some(false)` = silent.
+    hot: &'static [(usize, bool, bool)],
+}
+
+const TRUEHD_LAYOUTS: &[TrueHdLayout] = &[
+    // 2.1: FL FR LFE
+    TrueHdLayout { name: "2.1", channels: 3, hot: &[(0, true, false), (1, false, true), (2, false, false)] },
+    // 3.1: FL FR FC LFE
+    TrueHdLayout { name: "3.1", channels: 4, hot: &[(0, true, false), (1, false, true), (2, true, true), (3, false, false)] },
+    // 5.1(side): FL FR FC LFE SL SR
+    TrueHdLayout {
+        name: "5.1(side)",
+        channels: 6,
+        hot: &[(0, true, false), (1, false, true), (2, true, true), (3, false, false), (4, true, false), (5, false, true)],
+    },
+];
+
+/// **TrueHD decodes to the one lossy shape, mixed by the layout it reports** (S4-5): for each layout the
+/// bundled `truehd` decoder outputs, the sound of one channel lands where its role says (a front on its
+/// own side, the centre on both, a side surround on its side, the LFE nowhere), at 48, 96 and 192 kHz,
+/// stereo 48 kHz S16 of the right duration.
+#[test]
+#[ignore = "requires the bundled host FFmpeg and the ffmpeg tool; run make check-ffmpeg"]
+fn truehd_decodes_to_stereo_48k_mixed_by_its_layout_through_the_bundled_ffmpeg() {
+    let _g = plx_base::testlock::serial();
+    if skip() {
+        return;
+    }
+    let _ffmpeg = bind_host_ffmpeg();
+    let scratch = Scratch::new("truehd");
+    let stereo = PcmOut { rate: 48_000, bits: 16, channels: 2 };
+    for rate in [48_000u32, 96_000, 192_000] {
+        for layout in TRUEHD_LAYOUTS {
+            for &(hot, want_left, want_right) in layout.hot {
+                let frames = rate as usize;
+                let mut samples = vec![0i32; frames * layout.channels];
+                for i in 0..frames {
+                    let t = i as f64 / rate as f64;
+                    samples[i * layout.channels + hot] = ((t * std::f64::consts::TAU * 440.0).sin() * 12_000.0) as i32;
+                }
+                let file = format!("th-{}-{rate}-{hot}.mkv", layout.name.replace(['(', ')'], ""));
+                let src = encode_layout(
+                    &scratch.0, &file, S16, rate, layout.channels, Some(layout.name), &samples, "truehd", &["-strict", "-2"],
+                );
+                let got = unsafe { decode_file(&src, stereo) }
+                    .unwrap_or_else(|why| panic!("{} @ {rate}: {why}", layout.name));
+                let pcm: Vec<i16> = got.chunks(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
+                let frames_out = pcm.len() / 2;
+                assert!((47_000..=48_200).contains(&frames_out), "{} @ {rate}: 1 s is ~48000 frames, got {frames_out}", layout.name);
+                let energy = |ch: usize| pcm.iter().skip(ch).step_by(2).map(|&v| (v as f64).powi(2)).sum::<f64>();
+                let (l, r) = (energy(0), energy(1));
+                let on = |e: f64| e > 1.0e8;
+                let off = |e: f64| e < 1.0e5;
+                assert!(
+                    (if want_left { on(l) } else { off(l) }) && (if want_right { on(r) } else { off(r) }),
+                    "{} @ {rate}: channel {hot} should be on (L {want_left}, R {want_right}), energy L {l:.3e} R {r:.3e}",
+                    layout.name
+                );
+            }
+        }
+    }
+}
+
+/// A 96 kHz or 192 kHz TrueHD with ultrasonic content comes out without it folded into the band: a
+/// 30.123 kHz tone (60.123 kHz at 192 kHz), through the real decoder and the real resampler, leaves
+/// its alias (17.877 kHz, 12.123 kHz) more than 85 dB below the tone's own level, and a 1 kHz tone in a
+/// second file passes at its level. Two files, not a sum: the 16-bit rounding of a two-tone SOURCE has
+/// intermodulation lines of its own in the band, about 80 dB down, which is the test signal and not the
+/// resampler (the same tone alone measures about 105 dB down). The frequencies are not round on
+/// purpose, for the same reason (60 kHz at 192 kHz is 5/16 of the rate, a periodic rounding error).
+#[test]
+#[ignore = "requires the bundled host FFmpeg and the ffmpeg tool; run make check-ffmpeg"]
+fn high_rate_truehd_does_not_alias_ultrasound_into_the_band() {
+    let _g = plx_base::testlock::serial();
+    if skip() {
+        return;
+    }
+    let _ffmpeg = bind_host_ffmpeg();
+    let scratch = Scratch::new("truehd-alias");
+    let stereo = PcmOut { rate: 48_000, bits: 16, channels: 2 };
+    let amplitude = |left: &[f64], hz: f64| {
+        let (from, to) = (2_000, left.len() - 2_000);
+        let (mut re, mut im) = (0.0, 0.0);
+        for (i, v) in left.iter().enumerate().take(to).skip(from) {
+            let ph = i as f64 * hz / 48_000.0 * std::f64::consts::TAU;
+            re += v * ph.cos();
+            im += v * ph.sin();
+        }
+        2.0 * (re * re + im * im).sqrt() / (to - from) as f64
+    };
+    let decode_tone = |rate: u32, hz: f64, file: &str| -> Vec<f64> {
+        let frames = rate as usize / 2;
+        let mut samples = Vec::with_capacity(frames * 2);
+        for i in 0..frames {
+            let v = ((i as f64 / rate as f64 * std::f64::consts::TAU * hz).sin() * 8_000.0) as i32;
+            samples.extend_from_slice(&[v, v]);
+        }
+        let src = encode(&scratch.0, file, S16, rate, 2, &samples, "truehd", &["-strict", "-2"]);
+        let got = unsafe { decode_file(&src, stereo) }.unwrap_or_else(|why| panic!("{file}: {why}"));
+        got.chunks(4).map(|b| i16::from_le_bytes([b[0], b[1]]) as f64).collect()
+    };
+    for (rate, ultrasound_hz, alias_hz) in [(96_000u32, 30_123.0f64, 17_877.0f64), (192_000, 60_123.0, 12_123.0)] {
+        let audible = decode_tone(rate, 1_000.0, &format!("audible-{rate}.mkv"));
+        let tone = amplitude(&audible, 1_000.0);
+        assert!((tone - 8_000.0).abs() < 100.0, "{rate}: the 1 kHz tone passes at 8000, got {tone}");
+        let ultra = decode_tone(rate, ultrasound_hz, &format!("ultra-{rate}.mkv"));
+        let rejection = 20.0 * (amplitude(&ultra, alias_hz) / 8_000.0).log10();
+        assert!(rejection < -85.0, "{rate}: a {ultrasound_hz} Hz tone folds to {alias_hz} Hz at {rejection:.1} dB");
+    }
+}
+
+/// **The speed decoder mixes by layout too.** A TrueHD 2.1 whose only sound is on the LFE, decoded for a
+/// 1.25x session, comes out silent: mixing by the count (three channels read as FL FR FC) would put it in
+/// the centre, on both sides.
+#[test]
+#[ignore = "requires the bundled host FFmpeg and the ffmpeg tool; run make check-ffmpeg"]
+fn the_speed_decoder_drops_the_lfe_of_a_layout_the_count_cannot_name() {
+    let _g = plx_base::testlock::serial();
+    if skip() {
+        return;
+    }
+    let _ffmpeg = bind_host_ffmpeg();
+    let scratch = Scratch::new("speed-lfe");
+    let rate = 48_000u32;
+    let mut samples = vec![0i32; rate as usize * 2 * 3];
+    for i in 0..rate as usize * 2 {
+        samples[i * 3 + 2] = ((i as f64 / rate as f64 * std::f64::consts::TAU * 60.0).sin() * 12_000.0) as i32;
+    }
+    let src = encode_layout(&scratch.0, "lfe.mkv", S16, rate, 3, Some("2.1"), &samples, "truehd", &["-strict", "-2"]);
+    let c_path = CString::new(src.to_str().unwrap()).unwrap();
+    unsafe {
+        let mut fmt = avformat_alloc_context();
+        assert!(avformat_open_input(&mut fmt, c_path.as_ptr(), std::ptr::null_mut(), std::ptr::null_mut()) >= 0);
+        assert!(avformat_find_stream_info(fmt, std::ptr::null_mut()) >= 0);
+        let par = stream_codecpar(*(*fmt).streams);
+        let mut dec = crate::ff::SpeedDecoder::open(par, 1250).expect("the speed decoder opens truehd");
+        let mut pkt = av_packet_alloc();
+        let (mut loud, mut total) = (0usize, 0usize);
+        let mut t = 0i64;
+        while av_read_frame(fmt, pkt) >= 0 {
+            for (_, au) in dec.decode(pkt, t) {
+                for v in au.chunks(2).map(|b| i16::from_le_bytes([b[0], b[1]])) {
+                    total += 1;
+                    loud += (v.unsigned_abs() > 50) as usize;
+                }
+            }
+            t += 1_000_000;
+            av_packet_unref(pkt);
+        }
+        av_packet_free(&mut pkt);
+        avformat_close_input(&mut fmt);
+        assert!(total > 10_000, "the stream decoded ({total} samples)");
+        assert!(loud == 0, "the LFE must not reach either side ({loud} of {total} samples are audible)");
     }
 }

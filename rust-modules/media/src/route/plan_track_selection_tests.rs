@@ -998,7 +998,7 @@ fn the_lossy_gate_lets_the_app_direct_play_dts_in_both_modes_and_off_changes_not
             assert!(audio_direct_plays_with(&on, mode, "dca", ch, 0), "{mode:?} {ch}ch: gate on");
         }
         assert!(audio_direct_plays_with(&on, mode, "dca", 6, 96_000), "{mode:?}: a core has no rate bound");
-        assert!(!audio_direct_plays_with(&on, mode, "truehd", 8, 0), "{mode:?}: only DTS joined");
+        assert!(!audio_direct_plays_with(&on, mode, "mlp", 8, 0), "{mode:?}: only the app-decoded set joined");
         assert!(!audio_direct_plays_with(&on, mode, "aac", 2, 96_000), "{mode:?}: hardware limits stand");
     }
     let measured = plx_platform::devcaps::Caps { native_ceiling: [("dts".into(), 2)].into(), ..dts_row_caps() };
@@ -1021,6 +1021,23 @@ fn the_lossy_gate_lets_the_app_direct_play_mp3_and_vorbis_in_both_modes() {
         }
         assert!(audio_direct_plays_with(&on, mode, "vorbis", 6, 48_000), "{mode:?}: 5.1 Vorbis");
         assert!(!audio_direct_plays_with(&on, mode, "mp2", 2, 44_100), "{mode:?}: only MP3 and Vorbis joined");
+    }
+}
+
+/// **TrueHD under the lossy gate** (S4-5) direct-plays in both modes at any rate it has, 8 channels,
+/// on a set with no row for it, and not with the gate off.
+#[test]
+fn the_lossy_gate_lets_the_app_direct_play_truehd_at_any_rate_in_both_modes() {
+    let off = plx_platform::devcaps::Caps::assumed();
+    let on = plx_platform::devcaps::Caps::assumed().with_app_lossy();
+    for mode in [DirectPlayMode::Auto, DirectPlayMode::Forced] {
+        assert!(!audio_direct_plays_with(&off, mode, "truehd", 8, 48_000), "{mode:?}: gate off");
+        for rate in [0, 48_000, 96_000, 192_000] {
+            for channels in [2, 6, 8] {
+                assert!(audio_direct_plays_with(&on, mode, "truehd", channels, rate), "{mode:?}: {channels}ch {rate} Hz");
+            }
+        }
+        assert!(!audio_direct_plays_with(&on, mode, "mlp", 6, 48_000), "{mode:?}: only truehd");
     }
 }
 

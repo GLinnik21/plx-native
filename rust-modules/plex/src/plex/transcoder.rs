@@ -1461,7 +1461,7 @@ mod tests {
         assert!(!auto.contains("scopeName=dca&type=upperBound&name=audio.samplingRate"), "no rate bound on the core: {auto}");
         assert!(!auto.contains("dts"), "{auto}");
         let forced = super::forced_direct_profile_for(&on);
-        assert_eq!(list_of(&forced, "audioCodec="), ["aac", "ac3", "eac3", "dca", "mp3", "vorbis"], "{forced}");
+        assert_eq!(list_of(&forced, "audioCodec="), ["aac", "ac3", "eac3", "dca", "mp3", "vorbis", "truehd"], "{forced}");
         assert_eq!(super::profile_for(&off), super::profile_for(&Caps::assumed()));
     }
 
@@ -1486,7 +1486,26 @@ mod tests {
         }
         assert!(!auto.contains("scopeName=dca&type=upperBound&name=audio.samplingRate"), "a DTS core still is not: {auto}");
         let forced = list_of(&super::forced_direct_profile_for(&on), "audioCodec=");
-        assert_eq!(forced, ["aac", "ac3", "eac3", "dca", "mp3", "vorbis"]);
+        assert_eq!(forced, ["aac", "ac3", "eac3", "dca", "mp3", "vorbis", "truehd"]);
+    }
+
+    /// **TrueHD in both profiles under the gate** (S4-5): announced up to eight channels, in the
+    /// direct-play list and Force Direct Play's, never a transcode target, and with NO sampling-rate
+    /// bound (the app's resampler handles 96 and 192 kHz). Off, the profiles are what they were.
+    #[test]
+    fn the_lossy_gate_adds_truehd_to_both_profiles_with_no_rate_bound() {
+        let off = Caps::assumed();
+        for profile in [super::profile_for(&off), super::forced_direct_profile_for(&off)] {
+            assert!(!profile.contains("truehd"), "{profile}");
+        }
+        let on = Caps::assumed().with_app_lossy();
+        let auto = super::profile_for(&on);
+        assert!(list_of(&auto, "audioCodec=").contains(&"truehd".into()), "{auto}");
+        assert!(auto.contains("scope=videoAudioCodec&scopeName=truehd&type=upperBound&name=audio.channels&value=8&replace=true"), "{auto}");
+        assert!(!auto.contains("scopeName=truehd&type=upperBound&name=audio.samplingRate"), "no rate bound: {auto}");
+        assert!(!list_of(target_of(&auto), "audioCodec=").contains(&"truehd".into()), "never a transcode target");
+        let forced = list_of(&super::forced_direct_profile_for(&on), "audioCodec=");
+        assert_eq!(forced, ["aac", "ac3", "eac3", "dca", "mp3", "vorbis", "truehd"]);
     }
 
     /// Forced mode advertises the engine's formats with no device limits and no transcode target.

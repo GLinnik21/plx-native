@@ -841,9 +841,9 @@ pub(crate) const OFF_AFRAME_NB_CHANNELS: usize = 256 + 4;
 // The layout's `order` (offset 0 of the AVChannelLayout) and its `u.mask` (8-aligned after
 // `nb_channels`); `mask` is only meaningful when `order` is native (`ff_pcm::CH_ORDER_NATIVE`).
 #[cfg(target_pointer_width = "32")]
-pub(crate) const OFF_AFRAME_CH_ORDER: usize = 256;
+const OFF_AFRAME_CH_ORDER: usize = 256;
 #[cfg(target_pointer_width = "32")]
-pub(crate) const OFF_AFRAME_CH_MASK: usize = 264;
+const OFF_AFRAME_CH_MASK: usize = 264;
 #[cfg(target_pointer_width = "64")]
 const OFF_AFRAME_EXTENDED_DATA: usize = 96;
 #[cfg(target_pointer_width = "64")]
@@ -853,9 +853,25 @@ pub(crate) const OFF_AFRAME_SAMPLE_RATE: usize = 180;
 #[cfg(target_pointer_width = "64")]
 pub(crate) const OFF_AFRAME_NB_CHANNELS: usize = 384 + 4;
 #[cfg(target_pointer_width = "64")]
-pub(crate) const OFF_AFRAME_CH_ORDER: usize = 384;
+const OFF_AFRAME_CH_ORDER: usize = 384;
 #[cfg(target_pointer_width = "64")]
-pub(crate) const OFF_AFRAME_CH_MASK: usize = 392;
+const OFF_AFRAME_CH_MASK: usize = 392;
+
+/// `AV_CHANNEL_ORDER_NATIVE`: the layout is a bit mask, channels in ascending bit order
+/// (`ci/ffabi-assert.c` proves the value).
+const CH_ORDER_NATIVE: c_int = 1;
+
+/// The native channel mask of a decoded audio frame (`frame` points at the `AVFrame`), or 0 when the
+/// layout is not a mask (the union then holds a pointer, or nothing): the caller mixes by count.
+/// The ONE reader of `OFF_AFRAME_CH_ORDER` / `OFF_AFRAME_CH_MASK`, for the lossy app decode
+/// (`ff_pcm`) and the speed decoder alike.
+pub(crate) unsafe fn frame_channel_mask(frame: *const u8) -> u64 {
+    if *(frame.add(OFF_AFRAME_CH_ORDER) as *const c_int) == CH_ORDER_NATIVE {
+        std::ptr::read_unaligned(frame.add(OFF_AFRAME_CH_MASK) as *const u64)
+    } else {
+        0
+    }
+}
 
 /// **The audio decoder a playback-speed session runs** (`crate::speed_audio`): the selected audio
 /// stream decoded in software, downmixed to stereo and time-stretched to `permille`, then fed as
@@ -931,7 +947,8 @@ impl SpeedDecoder {
                     } else {
                         vec![std::slice::from_raw_parts(*ext, nb * width * channels)]
                     };
-                    let stereo = crate::speed_audio::downmix(sf, planar, channels, nb, &planes);
+                    let mask = frame_channel_mask(f);
+                    let stereo = crate::speed_audio::downmix_by_mask(sf, planar, mask, channels, nb, &planes);
                     aus.extend(self.audio.push(pts_ns, rate, &stereo));
                 }
             }
@@ -8667,7 +8684,7 @@ mod pcm_load_guard_tests {
             ("pcm_f32le", false), ("pcm_f64le", false), ("pcm_s8", false), ("pcm_u8", false),
             ("pcm_bluray", false), ("pcm_dvd", false), ("ac3", false), ("eac3", false), ("aac", false),
             ("dts", false), // lossy: the app's only when the Load itself claimed the lossy decode
-            ("mp3", false), ("vorbis", false), // likewise
+            ("mp3", false), ("vorbis", false), ("truehd", false), // likewise
         ] {
             let app_decoded = plx_platform::devcaps::app_decoded_by_ffmpeg_name(name).is_some_and(|c| !c.lossy);
             assert_eq!(app_decoded, decodable, "{name}: the table the guard reads");
@@ -9362,6 +9379,9 @@ pub fn demux(
                         }
                     }
                 }
+                // Decoded blocks shorter than 10 ms (TrueHD's 1/1200 s access units) go to the lane
+                // gathered into AUs of about that length (`ff_pcm::AuBatcher`).
+                let mut pcm_batch = pcm_dec.as_ref().map(|d| d.au_batcher());
                 if let Some((fi, ch)) = aac_adts {
                     crate::player::log(&format!(
                         "ff: AAC → ADTS reframing on (freq_idx={fi} ch={ch})"
@@ -9635,6 +9655,9 @@ pub fn demux(
                         if let Some(dec) = pcm_dec.as_mut() {
                             dec.reset_stream();
                         }
+                        if let Some(batch) = pcm_batch.as_mut() {
+                            batch.clear();
+                        }
                         SHARED.first_audio_pts.store(i64::MIN, Ordering::Release);
                     }
                     let r = av_read_frame(fmt, pkt);
@@ -9642,6 +9665,12 @@ pub fn demux(
                         // Genuine end of stream, teardown, or an unrecovered I/O error published by
                         // `frame_read_failed`. NOT an app seek — that is serviced at the top of this
                         // loop and never surfaces as a read error.
+                        if let Some((au_pts, au)) = pcm_batch.as_mut().and_then(|b| b.take()) {
+                            crate::aq::aq_push_gated(
+                                aqa_p, au.as_ptr(), au.len() as c_int, au_pts, 1, 2, audio_push_gate(aq_p, headroom.video_reach_ns()),
+                                || state.drain_wire(),
+                            );
+                        }
                         break;
                     }
                     let si = (*pkt).stream_index;
@@ -9805,13 +9834,12 @@ pub fn demux(
                                     break;
                                 }
                             };
-                            if pcm.is_empty() {
-                                0
-                            } else {
-                                crate::aq::aq_push_gated(
-                                    aqa_p, pcm.as_ptr(), pcm.len() as c_int, pts, 1, 2, gate,
+                            match pcm_batch.as_mut().and_then(|b| b.push(pts, pcm)) {
+                                None => 0,
+                                Some((au_pts, au)) => crate::aq::aq_push_gated(
+                                    aqa_p, au.as_ptr(), au.len() as c_int, au_pts, 1, 2, gate,
                                     || state.drain_wire(),
-                                )
+                                ),
                             }
                         } else if dts_audio {
                             let raw = std::slice::from_raw_parts((*pkt).data, (*pkt).size.max(0) as usize);

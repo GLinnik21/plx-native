@@ -175,22 +175,33 @@ fn role_gain(bit: u32) -> [f32; 2] {
     }
 }
 
-/// Linear-interpolating resampler to [`OUT_RATE`], stateful across calls so chunk edges are seamless.
+/// Resampler to [`OUT_RATE`], stateful across calls so chunk edges are seamless.
+///
+/// A source BELOW the output rate (44.1, 32, 22.05 kHz...) is linearly interpolated: nothing folds back
+/// when raising the rate, only a faint image remains. A source ABOVE it (88.2, 96, 176.4, 192 kHz:
+/// high-resolution FLAC, ALAC and TrueHD) first goes through a windowed-sinc low-pass ([`Decimator`]),
+/// because plain interpolation folds everything above 24 kHz back into the audible band at full strength.
 pub(crate) struct Resampler {
     from: u32,
     /// Position of the next output frame, in input frames from the start of `last` + the new block.
     pos: f64,
     last: Option<[f32; 2]>,
+    /// Some for a source above [`OUT_RATE`]; the linear path above is then unused.
+    decimator: Option<Decimator>,
 }
 
 impl Resampler {
     pub(crate) fn new(from: u32) -> Self {
-        Resampler { from, pos: 0.0, last: None }
+        Resampler { from, pos: 0.0, last: None, decimator: (from > OUT_RATE).then(|| Decimator::new(from)) }
     }
 
     pub(crate) fn run(&mut self, input: &[[f32; 2]], out: &mut Vec<[f32; 2]>) {
         if self.from == OUT_RATE {
             out.extend_from_slice(input);
+            return;
+        }
+        if let Some(d) = self.decimator.as_mut() {
+            d.run(input, out);
             return;
         }
         let step = self.from as f64 / OUT_RATE as f64;
@@ -217,6 +228,137 @@ impl Resampler {
             self.last = Some(tail);
         }
     }
+}
+
+/// Zero crossings of the sinc kept on each side of its centre, in units of the cutoff's own period.
+const DECIMATOR_ZEROS: f64 = 24.0;
+/// Where the low-pass turns over, as a fraction of the output's Nyquist frequency (24 kHz): 22.8 kHz.
+/// With [`DECIMATOR_ZEROS`] and a Kaiser window of [`DECIMATOR_BETA`] the response is flat to 20 kHz
+/// and more than 90 dB down from 28 kHz (what folds back below 20 kHz): 0.00 dB at 20 kHz, -0.2 at 21,
+/// -1.8 at 22, -7.7 at 23; the worst alias into 0-20 kHz measured -97 dB (this file's tests hold 85 dB).
+const DECIMATOR_CUTOFF: f64 = 0.95;
+const DECIMATOR_BETA: f64 = 9.0;
+/// The finest fractional input position the weights are tabulated for. A rational ratio with a smaller
+/// denominator (96 and 192 kHz: 1; 88.2 kHz: 80; 176.4 kHz: 40) is exact; any other is rounded to the
+/// nearest 1/1024 of an input frame.
+const DECIMATOR_MAX_PHASES: usize = 1024;
+
+/// A windowed-sinc low-pass and decimator: the output at input position `x` is the Kaiser-windowed sinc
+/// (cutoff [`DECIMATOR_CUTOFF`] of the output's Nyquist) centred on `x` dotted with the input around it,
+/// the weights for every fractional position the ratio visits tabulated once. No group delay (the
+/// kernel is symmetric about the output instant); it needs `half` frames of lookahead, so what it
+/// holds back is `half` input frames (under half a millisecond) rather than a time shift.
+struct Decimator {
+    /// Input frames per output frame (> 1).
+    step: f64,
+    /// Input frames on each side of the centre the kernel reaches.
+    half: usize,
+    phases: usize,
+    /// `phases` rows of `2 * half` weights, each normalised to sum to 1 (DC gain exactly 1).
+    weights: Vec<f32>,
+    /// `half` frames of silence ahead of the stream, then what has not been consumed yet.
+    buf: Vec<[f32; 2]>,
+    /// Position of the next output in `buf`.
+    pos: f64,
+}
+
+impl Decimator {
+    fn new(from: u32) -> Self {
+        let step = from as f64 / OUT_RATE as f64;
+        // The kernel's cutoff in cycles per input frame, doubled: sinc(u) with u counted in
+        // 1/(2*cutoff) input frames.
+        let scale = DECIMATOR_CUTOFF / step;
+        let half = (DECIMATOR_ZEROS / scale).ceil() as usize;
+        let g = gcd(from, OUT_RATE) as usize;
+        let phases = (OUT_RATE as usize / g).min(DECIMATOR_MAX_PHASES);
+        let mut weights = Vec::with_capacity(phases * 2 * half);
+        let i0_beta = bessel_i0(DECIMATOR_BETA);
+        for p in 0..phases {
+            let frac = p as f64 / phases as f64;
+            let row_start = weights.len();
+            let mut sum = 0.0f64;
+            for t in 0..2 * half {
+                // tap t reads input frame i + 1 - half + t, at distance (that - (i + frac)) from the centre
+                let u = ((t as f64 + 1.0 - half as f64) - frac) * scale;
+                let r = u / DECIMATOR_ZEROS;
+                let w = if r.abs() >= 1.0 {
+                    0.0
+                } else {
+                    sinc(u) * bessel_i0(DECIMATOR_BETA * (1.0 - r * r).sqrt()) / i0_beta
+                };
+                sum += w;
+                weights.push(w as f32);
+            }
+            for w in &mut weights[row_start..] {
+                *w = (*w as f64 / sum) as f32;
+            }
+        }
+        Decimator { step, half, phases, weights, buf: vec![[0.0; 2]; half], pos: half as f64 }
+    }
+
+    fn run(&mut self, input: &[[f32; 2]], out: &mut Vec<[f32; 2]>) {
+        self.buf.extend_from_slice(input);
+        let taps = 2 * self.half;
+        loop {
+            let mut i = self.pos.floor() as usize;
+            let mut p = ((self.pos - i as f64) * self.phases as f64).round() as usize;
+            if p == self.phases {
+                i += 1;
+                p = 0;
+            }
+            // the last frame the kernel reads is i + half
+            if i + self.half >= self.buf.len() {
+                break;
+            }
+            let row = &self.weights[p * taps..(p + 1) * taps];
+            let window = &self.buf[i + 1 - self.half..i + 1 + self.half];
+            let (mut l, mut r) = (0.0f32, 0.0f32);
+            for (w, f) in row.iter().zip(window) {
+                l += w * f[0];
+                r += w * f[1];
+            }
+            out.push([l, r]);
+            self.pos += self.step;
+        }
+        // drop what no later output reads, keeping the kernel's reach behind the next centre
+        let consumed = (self.pos.floor() as usize).saturating_sub(self.half);
+        self.buf.drain(..consumed.min(self.buf.len()));
+        self.pos -= consumed as f64;
+    }
+}
+
+fn gcd(a: u32, b: u32) -> u32 {
+    if b == 0 { a } else { gcd(b, a % b) }
+}
+
+/// `sin(pi x) / (pi x)`, in plain arithmetic (`ci/allow/libm.txt` keeps transcendentals to render code):
+/// the argument is folded to `[-1/2, 1/2]` of a half turn and the sine is its Taylor series there.
+fn sinc(x: f64) -> f64 {
+    if x.abs() < 1e-12 {
+        return 1.0;
+    }
+    let n = x.round();
+    let y = (x - n) * std::f64::consts::PI;
+    let (y2, mut term, mut sum) = (y * y, y, y);
+    for k in 1..12 {
+        term *= -y2 / ((2 * k) as f64 * (2 * k + 1) as f64);
+        sum += term;
+    }
+    let sign = if (n as i64) % 2 == 0 { 1.0 } else { -1.0 };
+    sign * sum / (x * std::f64::consts::PI)
+}
+
+/// The modified Bessel function of the first kind, order 0 (the Kaiser window's), by its power series.
+fn bessel_i0(x: f64) -> f64 {
+    let (q, mut term, mut sum) = (x * x / 4.0, 1.0, 1.0);
+    for k in 1..60 {
+        term *= q / (k * k) as f64;
+        sum += term;
+        if term < sum * 1e-16 {
+            break;
+        }
+    }
+    sum
 }
 
 /// WSOLA time-stretch at `speed` (input frames consumed per output frame).
@@ -461,6 +603,92 @@ mod tests {
                 downmix(SampleFormat::Flt, false, 6, 1, &[&frame]),
                 "mask {mask:#x}"
             );
+        }
+    }
+
+    /// A pure `freq` Hz sine of amplitude 0.5 on both channels, in f64 phase so a 190 kHz source is exact.
+    fn tone(freq: f64, rate: u32, secs: f64) -> Vec<[f32; 2]> {
+        (0..(rate as f64 * secs) as usize)
+            .map(|i| {
+                let v = (i as f64 * freq / rate as f64 * std::f64::consts::TAU).sin() as f32 * 0.5;
+                [v, v]
+            })
+            .collect()
+    }
+
+    /// Resample `input` in `block`-sized pieces.
+    fn resample(input: &[[f32; 2]], rate: u32, block: usize) -> Vec<[f32; 2]> {
+        let mut r = Resampler::new(rate);
+        let mut out = Vec::new();
+        for b in input.chunks(block) {
+            r.run(b, &mut out);
+        }
+        out
+    }
+
+    /// The amplitude of `freq` in the left channel of `out` (48 kHz), by quadrature correlation over the
+    /// settled middle of the signal (the first and last 20 ms are skipped).
+    fn amplitude_at(out: &[[f32; 2]], freq: f64) -> f64 {
+        let (from, to) = (960, out.len() - 960);
+        let (mut re, mut im) = (0.0f64, 0.0f64);
+        for (i, f) in out.iter().enumerate().take(to).skip(from) {
+            let ph = i as f64 * freq / OUT_RATE as f64 * std::f64::consts::TAU;
+            re += f[0] as f64 * ph.cos();
+            im += f[0] as f64 * ph.sin();
+        }
+        2.0 * (re * re + im * im).sqrt() / (to - from) as f64
+    }
+
+    fn db(ratio: f64) -> f64 {
+        20.0 * ratio.log10()
+    }
+
+    /// **Downsampling needs a low-pass first.** A tone above the output's Nyquist folds back into the band
+    /// at full strength through plain interpolation (a 30 kHz tone at 96 kHz lands on 18 kHz, a 60 kHz one
+    /// at 192 kHz on 12 kHz). From 88.2, 96, 176.4 and 192 kHz the alias must be at least 85 dB down (it measures
+    /// about 97 dB).
+    #[test]
+    fn a_tone_above_the_output_nyquist_is_rejected_not_folded_back() {
+        for (rate, source_hz, alias_hz) in
+            [(96_000, 30_000.0, 18_000.0), (192_000, 60_000.0, 12_000.0), (88_200, 30_000.0, 18_000.0), (176_400, 62_000.0, 14_000.0)]
+        {
+            let out = resample(&tone(source_hz, rate, 0.5), rate, 4096);
+            let leaked = db(amplitude_at(&out, alias_hz) / 0.5);
+            assert!(leaked < -85.0, "{rate} Hz: a {source_hz} Hz tone folds to {alias_hz} Hz at {leaked:.1} dB");
+        }
+    }
+
+    /// The pass band is flat to 20 kHz (within 0.1 dB; it measures 0.00) from the same rates, and a tone inside it is not
+    /// shifted: the output is at 48 kHz, so its frequency is the same.
+    #[test]
+    fn the_pass_band_from_a_high_rate_source_is_flat_to_20_khz() {
+        for rate in [96_000, 192_000, 88_200, 176_400] {
+            for hz in [100.0, 1_000.0, 8_000.0, 16_000.0, 20_000.0] {
+                let out = resample(&tone(hz, rate, 0.5), rate, 1000);
+                let gain = db(amplitude_at(&out, hz) / 0.5);
+                assert!(gain.abs() < 0.1, "{rate} Hz source: {hz} Hz comes out at {gain:.2} dB");
+            }
+        }
+    }
+
+    /// The same output whatever the block size (chunk edges are seamless), the right duration, and
+    /// silence stays silence while a constant stays the constant.
+    #[test]
+    fn a_decimated_stream_is_the_same_in_any_block_size_and_the_right_length() {
+        for rate in [96_000u32, 192_000, 88_200, 176_400] {
+            let input = tone(1_234.0, rate, 0.25);
+            let whole = resample(&input, rate, input.len());
+            for block in [1, 7, 480, 1152, 4096] {
+                let got = resample(&input, rate, block);
+                assert_eq!(got.len(), whole.len(), "{rate} Hz, block {block}: length");
+                let worst = got.iter().zip(&whole).map(|(a, b)| (a[0] - b[0]).abs()).fold(0.0f32, f32::max);
+                assert!(worst < 1e-5, "{rate} Hz, block {block}: differs by {worst}");
+            }
+            let expect = (input.len() as f64 * OUT_RATE as f64 / rate as f64) as i64;
+            assert!((whole.len() as i64 - expect).abs() <= 120, "{rate} Hz: {} frames, expected ~{expect}", whole.len());
+            let dc = resample(&vec![[0.25f32, -0.25]; rate as usize / 5], rate, 1152);
+            let mid = dc[dc.len() / 2];
+            assert!((mid[0] - 0.25).abs() < 1e-4 && (mid[1] + 0.25).abs() < 1e-4, "{rate} Hz: DC gain: {mid:?}");
         }
     }
 

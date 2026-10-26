@@ -120,6 +120,10 @@ pub const APP_DECODED: &[AppDecoded] = &[
     // a DTS core they can be above 48 kHz, so they stay rate bound ([`audio_rate_bounded`]).
     AppDecoded { id: "mp3", codecs: &["mp3"], decoders: &["mp3"], lossy: true },
     AppDecoded { id: "vorbis", codecs: &["vorbis"], decoders: &["vorbis"], lossy: true },
+    // TrueHD (S4-5): up to eight channels (FFmpeg's `truehd` decodes the 7.1 bed; an Atmos object
+    // substream is not rendered), mixed by layout to stereo 48 kHz. The only lossy entry without a rate
+    // bound beside DTS, because the app's resampler low-passes high rates ([`audio_rate_bounded`]).
+    AppDecoded { id: "truehd", codecs: &["truehd"], decoders: &["truehd"], lossy: true },
 ];
 
 /// The [`APP_DECODED`] entry covering the stream whose `avcodec_get_name` is `name`.
@@ -149,13 +153,17 @@ pub const PCM_SAMPLE_RATES: [u32; 8] = [8_000, 12_000, 16_000, 22_050, 24_000, 3
 pub const AUDIO_RATE_CEILING: u32 = 48_000;
 
 /// Whether `codec` is held to [`AUDIO_RATE_CEILING`], by [`audio_track_fits`] and by the profile's
-/// `audio.samplingRate` limitation alike: every codec but DTS. The app feeds only the DTS core
+/// `audio.samplingRate` limitation alike: every codec but DTS and TrueHD. The app feeds only the DTS core
 /// (`ff.rs::dts_core_packet`), 48 kHz at most by format, so a DTS-HD 96/24 source plays today and
-/// bounding it would push that source into a lossy AC-3 conversion. Opus, AC-3 and E-AC-3 are
-/// 48 kHz at most by format, so their bound never fires; they stay in the set so that "every codec
-/// but DTS" is the one rule, with no per-codec list to keep in step.
+/// bounding it would push that source into a lossy AC-3 conversion. TrueHD, when the app decodes it,
+/// is resampled to 48 kHz by the app itself (`speed_audio::Decimator` low-passes before it decimates
+/// from 88.2, 96, 176.4 and 192 kHz), so its Load never carries the source rate; bounding it would send
+/// every high-resolution TrueHD track to a server conversion for nothing. MP3 and Vorbis stay bound:
+/// the decimator exists, but a 96 kHz Vorbis has not been through the TV. Opus, AC-3 and E-AC-3 are
+/// 48 kHz at most by format, so their bound never fires; they stay in the set so that "every other
+/// codec" is the one rule, with no per-codec list to keep in step.
 pub fn audio_rate_bounded(codec: &str) -> bool {
-    audio_codec_id(codec) != "dts"
+    !matches!(audio_codec_id(codec).as_ref(), "dts" | "truehd")
 }
 
 /// Whether `codec` is one the app decodes itself and feeds as PCM ([`PCM_AUDIO_CODECS`]).
@@ -1721,7 +1729,7 @@ mod tests {
             assert!(on.audio_has(spelling) && on.audio_supports(spelling, 8), "{spelling}");
             assert!(on.forced_feeds_audio(spelling), "{spelling}");
         }
-        assert!(!on.app_decodes("ac3") && !on.app_decodes("eac3") && !on.app_decodes("truehd"));
+        assert!(!on.app_decodes("ac3") && !on.app_decodes("eac3") && !on.app_decodes("mlp"));
         assert!(audio_track_fits("dts", 6, 96_000), "no rate bound: the core is at most 48 kHz");
         let measured = Caps { native_ceiling: [("dts".into(), 2)].into(), ..Caps::assumed() }.with_app_lossy();
         assert!(measured.forced_feeds_audio_track("dts", 6), "a ceiling of the native decoder is not the app's");
@@ -1751,7 +1759,7 @@ mod tests {
         assert!(audio_track_fits("mp3", 2, 44_100) && audio_track_fits("vorbis", 6, 48_000));
         assert!(audio_track_fits("vorbis", 2, 0), "an unstated rate passes, as for every codec");
         assert!(!audio_track_fits("vorbis", 2, 96_000), "above 48 kHz the server converts it");
-        assert!(!on.app_decodes("mp2") && !on.app_decodes("wma") && !on.app_decodes("truehd"));
+        assert!(!on.app_decodes("mp2") && !on.app_decodes("wma") && !on.app_decodes("mlp"));
         for codec in ["mp3", "vorbis"] {
             assert_eq!(on.audio.split(',').filter(|c| *c == codec).count(), 1, "{codec} once");
         }
@@ -1759,6 +1767,32 @@ mod tests {
         assert_eq!(audio_codec_id("MP3"), "mp3");
         assert_eq!(app_decoded_by_ffmpeg_name("mp3").map(|c| (c.id, c.lossy)), Some(("mp3", true)));
         assert_eq!(app_decoded_by_ffmpeg_name("vorbis").map(|c| (c.id, c.lossy)), Some(("vorbis", true)));
+    }
+
+    /// **S4-5: TrueHD rides the same gate**, up to eight channels in and any rate the codec has (192 kHz
+    /// at most), mixed to the one stereo 48 kHz shape. Unlike MP3 and Vorbis it is NOT rate bound: the
+    /// app's resampler low-passes before it decimates, so a 96 or 192 kHz track is decoded here instead
+    /// of being converted by the server. Gate off, nothing changes; the planner and the profile see no
+    /// TrueHD.
+    #[test]
+    fn truehd_is_app_decoded_under_the_gate_with_no_rate_bound() {
+        for off in [Caps::assumed(), parse(REAL).unwrap()] {
+            assert!(!off.app_decodes("truehd") && !off.audio_has("truehd") && !off.forced_feeds_audio("truehd"));
+        }
+        let on = Caps::assumed().with_app_lossy();
+        for codec in ["truehd", "TrueHD"] {
+            assert!(on.app_decodes(codec) && on.app_decodes_lossy_codec(codec), "{codec}");
+            assert!(on.audio_has(codec) && on.audio_supports(codec, 8), "{codec}");
+            assert!(on.forced_feeds_audio(codec) && on.forced_feeds_audio_track(codec, 8), "{codec}");
+        }
+        assert!(!audio_rate_bounded("truehd") && audio_rate_bounded("vorbis") && audio_rate_bounded("mp3"));
+        for rate in [0, 44_100, 48_000, 88_200, 96_000, 176_400, 192_000] {
+            assert!(audio_track_fits("truehd", 8, rate), "{rate}");
+        }
+        assert!(!on.app_decodes("mlp"), "only the codec PMS spells truehd");
+        assert_eq!(on.audio.split(',').filter(|c| *c == "truehd").count(), 1);
+        assert_eq!(on.clone().with_app_lossy(), on, "idempotent");
+        assert_eq!(app_decoded_by_ffmpeg_name("truehd").map(|c| (c.id, c.lossy)), Some(("truehd", true)));
     }
 
     /// Lossless two-channel codecs share FLAC's path (S4, PR 1): ALAC, and LPCM under every spelling

@@ -6722,6 +6722,23 @@ mod pcm_info_tests {
         }
     }
 
+    /// TrueHD under the gate (S4-5) is declared as `PCM`, stereo 48 kHz S16, like the other lossy ones.
+    #[test]
+    fn app_decoded_truehd_is_declared_as_pcm() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        crate::route::set_stream_codecs(&mut ps, "h264", "truehd");
+        assert_eq!(crate::route::stream_pcm(&ps).and_then(Result::ok), None, "gate off");
+        crate::route::begin_attempt_for_test(
+            &mut ps, std::sync::Arc::new(plx_platform::devcaps::Caps::assumed().with_app_lossy()),
+        );
+        crate::route::set_stream_codecs(&mut ps, "h264", "truehd");
+        let shape = crate::route::stream_pcm(&ps).and_then(Result::ok);
+        assert_eq!(shape, Some(crate::route::PcmFormat::STEREO_48K));
+        assert_eq!(audio_declaration("truehd", shape.as_ref()), Some(("PCM", 5)));
+        let on = build_av_payload_at(&ps, "H264", "PCM", ENVELOPE_FHD60, crate::player::RATE_NORMAL);
+        assert_eq!(on.matches("pcmInfo").count(), 1, "{on}");
+    }
+
     #[test]
     fn only_a_pcm_load_carries_pcm_info() {
         let f = PcmFormat { sample_rate: 48_000, bits: 16, channels: 2 };

@@ -1,5 +1,5 @@
 //! Audio decoded in the app and fed as PCM: the lossless FLAC, ALAC and integer LPCM, bit-exact,
-//! and DTS, MP3 and Vorbis, the lossy entries, converted to stereo 48 kHz S16 ([`Stereo48`]) and
+//! and DTS, MP3, Vorbis and TrueHD, the lossy entries, converted to stereo 48 kHz S16 ([`Stereo48`]) and
 //! only on a `Caps::app_decodes_lossy` value (`devcaps::APP_DECODED` is the set).
 //!
 //! libpf has no FLAC or ALAC input — its Load vocabulary is AAC / AC3 / AC3 PLUS / DTS / MP3 / MPEG
@@ -16,8 +16,8 @@
 use std::os::raw::c_int;
 
 use crate::ff::{
-    AVCodecContext, AVCodecParameters, AVPacket, OFF_AFRAME_CH_MASK, OFF_AFRAME_CH_ORDER,
-    OFF_AFRAME_NB_CHANNELS, OFF_AFRAME_NB_SAMPLES, OFF_AFRAME_SAMPLE_RATE, OFF_FRAME_DATA, OFF_FRAME_FORMAT,
+    AVCodecContext, AVCodecParameters, AVPacket, OFF_AFRAME_NB_CHANNELS, OFF_AFRAME_NB_SAMPLES,
+    OFF_AFRAME_SAMPLE_RATE, OFF_FRAME_DATA, OFF_FRAME_FORMAT,
 };
 use crate::speed_audio::{self, Resampler, SampleFormat};
 
@@ -25,9 +25,6 @@ use crate::speed_audio::{self, Resampler, SampleFormat};
 /// where `core_only` lives) too. A value FFmpeg has not changed since the flag was added.
 const AV_OPT_SEARCH_CHILDREN: c_int = 1;
 
-/// `AV_CHANNEL_ORDER_NATIVE`: the layout is a bit mask, channels in ascending bit order
-/// (`ci/ffabi-assert.c` proves the value).
-const CH_ORDER_NATIVE: c_int = 1;
 
 /// FFmpeg `AVSampleFormat` values the lossless decoders produce (FLAC, ALAC, `pcm_s*`). The enum has been stable since
 /// FFmpeg 1.x (`S16 = 1`, `S32 = 2`, `S16P = 6`, `S32P = 7`).
@@ -53,7 +50,7 @@ pub struct PcmDecoder {
     frame: *mut std::ffi::c_void,
     out: PcmOut,
     buf: Vec<u8>,
-    /// Some for a lossy codec (DTS, MP3, Vorbis): the frame is converted to [`STEREO_48K`] instead of passed
+    /// Some for a lossy codec (DTS, MP3, Vorbis, TrueHD): the frame is converted to [`STEREO_48K`] instead of passed
     /// through bit-exact.
     lossy: Option<Stereo48>,
     /// `core_only` took on a lossy decoder (FFmpeg accepted the option). Reported in the log line
@@ -63,8 +60,9 @@ pub struct PcmDecoder {
 }
 
 /// PURE (no FFmpeg): any channel layout and rate to interleaved stereo S16 LE at 48 kHz. The
-/// downmix is [`speed_audio::downmix`], the resample its linear [`Resampler`] (the bundled FFmpeg
-/// is built without swresample), kept across frames so their edges are seamless.
+/// downmix is [`speed_audio::downmix_by_mask`], the resample its [`Resampler`] (linear up to 48 kHz,
+/// a windowed-sinc low-pass decimator from above it; the bundled FFmpeg is built without swresample),
+/// kept across frames so their edges are seamless.
 pub struct Stereo48 {
     rate: u32,
     resampler: Resampler,
@@ -147,7 +145,7 @@ impl PcmDecoder {
         if r >= 0 && entry.lossy {
             // DTS: the 5.1 core only. The extensions (XLL, XBR, X96) are costly and the output is
             // stereo anyway; best-effort, so an FFmpeg without the option still decodes the core.
-            // MP3 and Vorbis have no such option: `av_opt_set` fails, `core_only` stays false.
+            // MP3, Vorbis and TrueHD have no such option: `av_opt_set` fails, `core_only` stays false.
             core_only = crate::ff::av_opt_set(
                 ctx as *mut std::ffi::c_void, c"core_only".as_ptr(), c"1".as_ptr(), AV_OPT_SEARCH_CHILDREN,
             ) >= 0;
@@ -165,18 +163,24 @@ impl PcmDecoder {
         Ok(PcmDecoder { ctx, frame, out, buf: Vec::new(), lossy: entry.lossy.then(Stereo48::new), core_only, errors: ErrorBudget::default() })
     }
 
+    /// The batcher for this decoder's output: blocks shorter than [`MIN_AU_MS`] are gathered into one AU.
+    pub fn au_batcher(&self) -> AuBatcher {
+        AuBatcher::new(self.out)
+    }
+
     /// Whether the decoder is a lossy one running its core only (see the field).
     pub fn core_only(&self) -> bool {
         self.core_only
     }
 
     /// Decode one packet into interleaved little-endian PCM of the declared width. The lossless
-    /// codecs have no decoder delay: one packet is one frame, so the packet's pts is the PCM's. (A DTS
-    /// or MP3 frame is the same; the resampler holds back at most one input frame. Vorbis overlaps
+    /// codecs have no decoder delay: one packet is one frame, so the packet's pts is the PCM's. (A DTS,
+    /// MP3 or TrueHD frame is the same; the resampler holds back one input frame (the decimator, under half a
+    /// millisecond of them). Vorbis overlaps
     /// its blocks, so its first packet yields nothing and the rest come out about half a block, tens
     /// of milliseconds, after their packet's pts: not corrected, a lip-sync item for the TV.)
     ///
-    /// A LOSSY stream (DTS, MP3, Vorbis) skips a packet or frame that fails, as the speed decoder does, and
+    /// A LOSSY stream (DTS, MP3, Vorbis, TrueHD) skips a packet or frame that fails, as the speed decoder does, and
     /// ends only after [`MAX_CONSECUTIVE_DECODE_ERRORS`] in a row; a lossless one is bit-exact or
     /// nothing, so its first failure ends it.
     pub unsafe fn decode(&mut self, pkt: *const AVPacket) -> Result<&[u8], String> {
@@ -259,7 +263,7 @@ impl PcmDecoder {
             let Some((fmt, planar)) = SampleFormat::from_av(format) else {
                 return Err(format!("unexpected decoder sample format {format}"));
             };
-            // `data[]` holds eight planes; a core has at most six channels.
+            // `data[]` holds eight planes: a DTS core has at most six channels, TrueHD's 7.1 bed eight.
             if channels == 0 || channels > 8 {
                 return Err(format!("unexpected decoder channel count {channels}"));
             }
@@ -269,14 +273,7 @@ impl PcmDecoder {
             } else {
                 vec![std::slice::from_raw_parts(*data, nb * width * channels)]
             };
-            // The layout's mask is valid only for a native-order layout (else the union holds a
-            // pointer or nothing); an unspecified one mixes by count.
-            let order = *(base.add(OFF_AFRAME_CH_ORDER) as *const c_int);
-            let mask = if order == CH_ORDER_NATIVE {
-                std::ptr::read_unaligned(base.add(OFF_AFRAME_CH_MASK) as *const u64)
-            } else {
-                0
-            };
+            let mask = crate::ff::frame_channel_mask(base);
             conv.convert(rate as u32, fmt, planar, channels, mask, nb, &planes, &mut self.buf);
             return Ok(());
         }
@@ -352,6 +349,69 @@ pub fn interleave_into(
     }
 }
 
+/// The shortest AU the audio lane is fed, in milliseconds: blocks decoded shorter than this are gathered
+/// into one AU ([`AuBatcher`]). TrueHD's access units are 1/1200 s (40 frames at 48 kHz), 1200 queue
+/// entries a second where the lane is used to tens (the speed path's AUs are `speed_audio::CHUNK` frames,
+/// 21 ms); a DTS (10.7 ms), MP3 (26 ms), Vorbis or lossless block is already longer and passes through
+/// whole, unchanged.
+const MIN_AU_MS: u32 = 10;
+
+/// PURE: gathers decoded PCM blocks into AUs of at least [`MIN_AU_MS`], stamped with the content time
+/// of the first block in them. A block that is long enough is its own AU.
+pub struct AuBatcher {
+    min_bytes: usize,
+    pts: i64,
+    buf: Vec<u8>,
+    /// `buf` was handed out; the next push starts it afresh.
+    emitted: bool,
+}
+
+impl AuBatcher {
+    pub fn new(out: PcmOut) -> AuBatcher {
+        let min_frames = (out.rate * MIN_AU_MS / 1000) as usize;
+        AuBatcher { min_bytes: min_frames * (out.bits / 8) as usize * out.channels as usize, pts: 0, buf: Vec::new(), emitted: false }
+    }
+
+    /// Add one decoded block (content time `pts`); `Some` when an AU is complete.
+    pub fn push(&mut self, pts: i64, pcm: &[u8]) -> Option<(i64, &[u8])> {
+        if self.emitted {
+            self.buf.clear();
+            self.emitted = false;
+        }
+        if pcm.is_empty() {
+            return None;
+        }
+        if self.buf.is_empty() {
+            self.pts = pts;
+        }
+        self.buf.extend_from_slice(pcm);
+        if self.buf.len() < self.min_bytes {
+            return None;
+        }
+        self.emitted = true;
+        Some((self.pts, &self.buf))
+    }
+
+    /// What is gathered but not yet an AU: the end of the stream.
+    pub fn take(&mut self) -> Option<(i64, &[u8])> {
+        if self.emitted {
+            self.buf.clear();
+            self.emitted = false;
+        }
+        if self.buf.is_empty() {
+            return None;
+        }
+        self.emitted = true;
+        Some((self.pts, &self.buf))
+    }
+
+    /// Drop what is gathered: the demuxer sought.
+    pub fn clear(&mut self) {
+        self.buf.clear();
+        self.emitted = false;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -407,6 +467,35 @@ mod tests {
     fn a_decode_wider_than_the_declared_width_is_refused_not_truncated() {
         assert!(width_is_exact(2, 2) && width_is_exact(2, 4) && width_is_exact(4, 4));
         assert!(!width_is_exact(4, 2), "24-bit audio declared as 16");
+    }
+
+    /// **Tiny blocks become AUs of about 10 ms**: TrueHD's 40-frame access units are gathered, each AU
+    /// carries the pts of its first block, a block already long enough passes through whole under its
+    /// own pts, the tail comes out at the end of the stream and a seek drops it.
+    #[test]
+    fn small_blocks_are_gathered_into_ten_millisecond_aus_and_big_ones_pass_whole() {
+        let mut b = AuBatcher::new(STEREO_48K);
+        let block = vec![7u8; 40 * 4]; // 40 frames: 0.83 ms
+        let mut aus: Vec<(i64, usize)> = Vec::new();
+        for i in 0..30 {
+            if let Some((pts, au)) = b.push(i * 833_333, &block) {
+                assert!(au.iter().all(|&v| v == 7));
+                aus.push((pts, au.len()));
+            }
+        }
+        assert_eq!(aus, [(0, 480 * 4), (12 * 833_333, 480 * 4)], "480 frames each, stamped by their first block");
+        assert_eq!(b.take().map(|(p, a)| (p, a.len())), Some((24 * 833_333, 6 * 40 * 4)), "the tail at the end of the stream");
+        assert!(b.take().is_none(), "and only once");
+        let big = vec![1u8; 512 * 4]; // a DTS frame: 10.7 ms
+        assert_eq!(b.push(5_000, &big).map(|(p, a)| (p, a.len())), Some((5_000, 512 * 4)), "passes whole");
+        assert!(b.push(9_000, &[]).is_none(), "an empty block is nothing");
+        b.push(10_000, &block);
+        b.clear();
+        assert!(b.take().is_none(), "a seek drops what was gathered");
+        assert_eq!(b.push(20_000, &block).map(|a| a.0), None);
+        let mut lossless = AuBatcher::new(PcmOut { rate: 96_000, bits: 32, channels: 2 });
+        assert!(lossless.push(0, &vec![0u8; 960 * 8]).is_some(), "10 ms of 96 kHz 32-bit stereo is its own AU");
+        assert!(lossless.push(1, &vec![0u8; 100 * 8]).is_none());
     }
 
     fn flt(v: &[f32]) -> Vec<u8> {
