@@ -216,7 +216,8 @@ def classify_lane(seg):
                 break
 
     if base in TV_SCRIPTS:
-        # Two subcommands of tv-session are read-only and stay allowed; everything else drives.
+        # Three words of tv-session are read-only and stay allowed (`log`, `status`, and the exact `fg`
+        # below); everything else drives.
         if base == "tv-session.sh":
             subs = [t for t in w[1:] if not t.startswith("-")]
             if subs and subs[0] in ("log", "status"):
