@@ -23,7 +23,7 @@ fetches origin). Anything that can wait longer than a minute belongs in a Bash c
 
 `gate` re-polls only that GitHub-side lag, for about 60 s; a check still running is exit 4 at once.
 `wait` is the same judgment polled with a 30 s to 60 s backoff until --timeout. `merge` is wait, then
-`gh pr merge --squash --match-head-commit S` (never --auto: that waits for 2 of the 14 checks), then
+`gh pr merge --squash --match-head-commit S` (never --auto: it waits for the required checks only), then
 the verify: the PR is MERGED and its merge commit is an ancestor of origin/<base>. The merge commit's
 check-runs are printed. On "expected head oid does not match" it waits 15 s and re-reads the head;
 unchanged, it retries (3 times at most); moved, exit 5.
