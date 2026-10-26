@@ -29,7 +29,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-26T17:51:52Z",
+ "generated": "2026-10-26T17:54:24Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -98,16 +98,16 @@
   {
    "change30_pct": -56.1,
    "change7_pct": -26.7,
-   "d30": 811.0,
+   "d30": 811,
    "delta30": -455.0,
    "delta7": -129.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 217,
+   "n_now": 218,
    "n_prev": 270,
-   "now": 356,
+   "now": 356.0,
    "prev7": 485.5,
    "shown": true,
    "state": "better",
@@ -276,10 +276,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 49.7,
+   "change30_pct": 49.5,
    "change7_pct": 1.8,
-   "d30": 654.5,
-   "delta30": 325.0,
+   "d30": 655,
+   "delta30": 324.5,
    "delta7": 17.5,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
@@ -489,7 +489,7 @@
   {
    "change30_pct": 36.7,
    "change7_pct": 7.9,
-   "d30": 15.0,
+   "d30": 15,
    "delta30": 5.5,
    "delta7": 1.5,
    "group": "ci",
@@ -531,7 +531,7 @@
   {
    "change30_pct": 59.1,
    "change7_pct": 9.4,
-   "d30": 11.0,
+   "d30": 11,
    "delta30": 6.5,
    "delta7": 1.5,
    "group": "ci",
