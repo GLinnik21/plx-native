@@ -648,8 +648,10 @@ fn native_audio_fact() -> Option<plx_platform::devcaps::Facet> {
 /// a refused video is an encode under the 1080p ceiling (`VideoLane`). A cold Auto Original falls
 /// back to HLS after an audio conversion, and takes the HLS contingency at once for a refused video
 /// (the HLS rung is already its video re-encode), the refused raster out of the HLS attempt; a
-/// manual pick has no rung after its facet flight, so the refusal that follows reads out. Each
-/// recovery is a flight: the replacement route's PMS half runs on a worker while the viewer keeps
+/// manual pick whose refusal follows its facet flight (or whose pipeline refusal named no suspect
+/// stream) takes the both-facets rung once, an encode with no video copy under the attempt that lacks
+/// the audio and the video raster the refusal named (`VideoLane::Both`), and the refusal after that
+/// reads out. Each recovery is a flight: the replacement route's PMS half runs on a worker while the viewer keeps
 /// the connecting spinner they had.
 fn drive_open_recovery(ps: &mut crate::route::PlaybackSession, first: super::recovery::RecoveryEvent, why: &str) -> OpenRecoveryRun {
     use super::recovery::{Evidence, RecoveryEffect, RecoveryEvent};

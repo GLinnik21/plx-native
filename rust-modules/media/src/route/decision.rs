@@ -4126,14 +4126,14 @@ pub enum VideoLane {
 /// Engine's first picture (`type=18` of any number, or the stall watchdog; a reload after the
 /// request's first picture starts such an Engine too): the viewer's track plays again with the
 /// server converting that stream ([`VideoLane`] says how the video is asked for: copied as planned
-/// for a refused audio, encoded under the 1080p ceiling for a refused video). The open-recovery
-/// ladder's facet rung
-/// ([`crate::player::recovery::OpenRecovery`], `ConvertFacet`) has **already narrowed the playing
-/// attempt** to `start` less the suspect stream ([`crate::player::recovery::suspect`], `Caps::without`)
+/// for a refused audio, encoded under the 1080p ceiling for a refused video, encoded for the
+/// both-facets rung). The open-recovery ladder's facet rung and manual both-facets rung
+/// ([`crate::player::recovery::OpenRecovery`], `ConvertFacet`, `ConvertBoth`) have **already narrowed
+/// the playing attempt** to `start` less the suspect stream ([`crate::player::recovery::suspect`], `Caps::without`)
 /// when it entered the rung, so the value the plan and the profile read no longer names that stream:
 /// [`VideoLane::AsPlanned`] rebuilds today's route ([`retranscode_contract`], the contract a track
 /// pick that the TV cannot decode asks for) and the audio comes back converted, [`VideoLane::Encode`]
-/// asks for [`video_encode_contract`], and every seek and track pick after the landing plans from the
+/// and [`VideoLane::Both`] ask for [`video_encode_contract`], and every seek and track pick after the landing plans from the
 /// same narrowed value. The install pref's write of a refused native audio (or of a counted proof) is
 /// the machine's separate `ConfirmRefusal`, persistence only. Plan on the frame thread, PMS on a worker
 /// ([`try_retranscode`]), install at the landing ([`install_recovery_landing`]).

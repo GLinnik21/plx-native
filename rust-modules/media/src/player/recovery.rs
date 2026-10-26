@@ -32,10 +32,16 @@
 //! every set decodes, else the source's video for a numbered refusal, which a cold Auto Original
 //! leaves to its HLS rung); else the HLS contingency of a cold Auto Original (the both-facets rung,
 //! [`RecoveryEffect::StartAutoHls`]), whose attempt lacks every facet the request took out and
-//! every stream this refusal named, the refused video raster and the suspect audio; else the failure
-//! read-out. The rungs which start a flight (the facet rung and the both-facets rung) are bounded
-//! by [`MAX_RECOVERY_FLIGHTS`] per request. A manual pick has no both-facets rung: its refusal after
-//! the facet flight, whether the flight landed or came back refused, reads out.
+//! every stream this refusal named, the refused video raster and the suspect audio; else, for a
+//! manual pick (no HLS contingency retained), the manual both-facets rung
+//! ([`RecoveryEffect::ConvertBoth`]): one encode with no video copy, planned from `start` less the
+//! audio suspect and the refused video raster, which a refusal of the pipeline earns while the source's
+//! video is still fed and not yet encoded, or an audio suspect still narrows the attempt (a frame-rate
+//! refusal of a 1080p source has nothing to lower and still gets the encode); else the failure
+//! read-out. The rungs which start a flight (the facet rung and the both-facets rungs) are bounded
+//! by [`MAX_RECOVERY_FLIGHTS`] per request. A timeout and a source failure name no stream, so a
+//! manual pick keeps main's read-out for them, and an encode's own refusal reads out: it feeds an
+//! encoded video and no audio suspect.
 //!
 //! **What the ladder teaches.** A refusal of natively fed audio (`num=200` or the stall) names the
 //! codec, so the same step asks the driver to record it ([`RecoveryEffect::ConfirmRefusal`] with
@@ -59,9 +65,9 @@ use plx_machine::machine::Handled;
 use plx_platform::devcaps::Caps;
 use plx_platform::devcaps::Facet;
 
-/// The most flights one play request starts through the facet rung and the both-facets rung (and a
+/// The most flights one play request starts through the facet rung and the both-facets rungs (and a
 /// failed source's HLS contingency): the facet's conversion, then the HLS contingency of a cold Auto
-/// Original. The Original rollback is not counted.
+/// Original or a manual pick's encode. The Original rollback is not counted.
 pub const MAX_RECOVERY_FLIGHTS: u32 = 2;
 
 /// How the open failed, as the pump's failure branches see it. The event payload; no field of the
@@ -250,10 +256,11 @@ pub enum RecoveryEffect {
     /// request's ([`MAX_RECOVERY_FLIGHTS`]), for the driver's log line.
     ConvertFacet { facet: Facet, flight: u32 },
     /// Fly today's route as an ENCODE with no video copy, planned from [`OpenRecovery::attempt`]: the
-    /// manual both-facets rung (`dispatch_refusal_conversion` with `VideoLane::Both`). The attempt
-    /// lacks every stream this refusal named that narrows `start` (the suspect audio, and the refused
-    /// video raster); with nothing to lower (a frame-rate refusal of a 1080p source) the encode alone is
-    /// the rung. `flight` is the ordinal of this flight among the request's.
+    /// manual both-facets rung (`dispatch_refusal_conversion` with `VideoLane::Both`; the audio stays
+    /// copied or converted as the attempt plans it). The attempt lacks every stream this refusal named
+    /// that narrows it (the suspect audio, and the refused video raster of a numbered refusal); with
+    /// nothing to lower (a frame-rate refusal of a 1080p source) the encode alone is the rung.
+    /// `flight` is the ordinal of this flight among the request's.
     ConvertBoth { flight: u32 },
     /// Fly the HLS contingency a cold Auto Original retained (`dispatch_unopened_auto_hls`).
     StartAutoHls,
@@ -277,10 +284,10 @@ enum Rung {
     Rollback,
     /// The facet rung: the suspect stream converted.
     Facet,
-    /// The both-facets rung: the HLS contingency of a cold Auto Original, planned from `start` less
-    /// every facet the request took out (the facet rung's, when it flew first) and every stream
-    /// this refusal named (the refused video raster, the suspect audio). Only a cold Auto Original has
-    /// one: a manual pick reads out after its facet flight.
+    /// The both-facets rung, planned from `start` less every facet the request took out (the facet
+    /// rung's, when it flew first) and every stream this refusal named (the refused video raster, the
+    /// suspect audio): the HLS contingency of a cold Auto Original, or a manual pick's encode with
+    /// no video copy.
     Both,
 }
 
@@ -314,7 +321,7 @@ pub struct OpenRecovery {
     /// on a rung's entry, always from `start` ([`attempt_for`]).
     attempt: Arc<Caps>,
     /// The facets the rungs took out, one per stream class (an audio and a video at most); carried
-    /// into the both-facets rung.
+    /// into the both-facets rungs.
     excluded: Excluded,
     /// Flights started by the facet and both-facets rungs (and a failed source's HLS contingency).
     /// The rollback is not counted.
@@ -371,7 +378,8 @@ impl OpenRecovery {
     }
 
     /// The rung `facts` select. The order is the proof that no rung of main is reordered: pending
-    /// rollback, Forced's read-out, the facet rung, the both-facets rung, the read-out. The facet
+    /// rollback, Forced's read-out, the facet rung, the both-facets rungs (a cold Auto Original's HLS, a
+    /// manual pick's encode), the read-out. The facet
     /// rung is for an Engine that has shown no picture (`facts.no_frames`: the picture is per
     /// Engine, so a reload after the request's first picture owes its own open the same rung).
     fn decide(&mut self, refusal: LoadRefusal, facts: &OpenFacts, fx: &mut Vec<RecoveryEffect>) {
@@ -458,7 +466,7 @@ impl OpenRecovery {
     /// | `Flight{Facet}` | `FlightLanded{lanes}`, an excluded facet [`proves`] (an audio facet only), no picture yet in the request | none; `Proving{that facet}` |
     /// | `Flight{Facet}` | `FlightLanded{..}`, otherwise | none; `Opening` (the reload re-enters the open) |
     /// | `Flight{Rollback, Both}` | `FlightLanded{..}` | none; `Opening` (lanes ignored: only the facet rung proves) |
-    /// | `Flight{Facet}` | `FlightRefused` | the ladder below (one flight spent, so the facet rung is closed): `StartAutoHls` for a cold Auto Original, else `ShowError` |
+    /// | `Flight{Facet}` | `FlightRefused` | the ladder below (one flight spent, so the facet rung is closed): `StartAutoHls` for a cold Auto Original, else `ConvertBoth` when the manual rung is earned (an audio facet's flight, the video still fed), else `ShowError` |
     /// | `Flight{Rollback, Both}` | `FlightRefused` | `ShowError`; `Failed` (a refused rollback stays terminal) |
     /// | `Opening` | `FirstPicture` | none; `Playing` |
     /// | `Proving{f}` | `FirstPicture` | `ConfirmRefusal{f, Proof}`; `Playing` |
@@ -471,8 +479,12 @@ impl OpenRecovery {
     /// attempt (the audio outside `aac`/`ac3`/`eac3`; else, for a numbered refusal of a play that is
     /// not a cold Auto Original, the source's video), with no flight spent -> `ConvertFacet`; else
     /// `auto_original && no_frames` with a flight left -> `StartAutoHls`, its attempt lacking the
-    /// audio and the video raster the refusal named (each: `Flight`); else `ShowError`; `Failed`. A
-    /// manual pick has no rung after the facet flight, so its next refusal is the read-out.
+    /// audio and the video raster the refusal named (each: `Flight`); else, not a cold Auto Original,
+    /// a pipeline refusal of an Engine with no picture and a flight left, when the source's video
+    /// is fed and not yet excluded or an audio suspect still narrows the attempt -> `ConvertBoth`
+    /// (the audio suspect and, for a numbered refusal, the video raster taken out of the attempt:
+    /// `Flight{Both}`); else `ShowError`; `Failed`. The encode fed an encoded video and no audio
+    /// suspect, so its own refusal reads out.
     ///
     /// `Refused` is not handled in `Flight` or `Failed`: a flight is outstanding (the pump runs no
     /// failure arm while one is), or the read-out is already up (the pump meets the same Engine's
