@@ -330,3 +330,7 @@ python3 ci/check-rust-inputs.py
 # report-only flag ratchet. Pure lexing, no cargo; the self-tests run on synthetic trees in a private temp dir.
 python3 ci/test_check_machine_shape.py
 python3 ci/check-machine-shape.py
+# tools/pr-land.py (gate / wait / merge) against a fake `gh` on PATH and an injected sleeper: a failed, pending, missing, draft, behind
+# or head-moved PR never reaches `gh pr merge` (#387), the polling and backoff, the head-oid race, the verify against a temporary
+# origin, and a planted secret refused before any `gh` call. Real gh JSON as fixtures; temp dirs only, no network, nothing slept.
+python3 tools/test_pr_land.py
