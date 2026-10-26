@@ -76,7 +76,7 @@ run the product's code. `fxlanes` reads the one fn, `Bridge::app_effect` in `rus
   coverage expansion, so this change's net effect on the pinned total is zero (a relocation lowers no
   pin on its own).
 - The device's capability answer (`devcaps::caps()`) is the same kind of read: a process-wide value
-  that `learn_refusal` moves under a running play. The route's planner takes the attempt's `&Caps`
+  that the install's stored refusals move under a running play (`project_stored_refusals`). The route's planner takes the attempt's `&Caps`
   as an argument (`PlaybackSession::attempt_caps`, read once by the app's play start), so `devcaps::caps`
   and the zero-argument `is_dp_audio(` / `is_dp_audio_track(` (the `_with` forms take the value and
   are not sites) are spellings of this rule, qualified or bare after an import; a `use ... as`

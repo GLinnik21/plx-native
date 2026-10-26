@@ -6723,7 +6723,7 @@ impl PersonOwnerGateFixture {
                                  "`..._preview::*` / `..._transport::{..}` is not `preview` / `transport`\n" + out)
 
     def test_globals_ledger_sees_the_capability_answer_readers_in_a_machine(self):
-        """RED: `devcaps::caps()` is the device's capability answer, a process-wide value `learn_refusal` moves
+        """RED: `devcaps::caps()` is the device's capability answer, a process-wide value the stored refusals move
         under a running play, and the zero-argument `is_dp_audio(` / `is_dp_audio_track(` read it behind a
         function (the attempt-caps PR). A machine that calls one reads the registry as surely as `client_for`
         does: qualified, bare-after-an-import (singly, in a group, through a glob) and the rename that would hide
