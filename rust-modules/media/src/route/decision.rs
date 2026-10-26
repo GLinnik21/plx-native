@@ -5813,6 +5813,12 @@ mod pcm_format_tests {
             assert_eq!(stream_pcm(&ps), Some(Ok(PcmFormat::STEREO_48K)), "{spelling}");
         }
         assert_eq!(PcmFormat::STEREO_48K, PcmFormat { sample_rate: 48_000, bits: 16, channels: 2 });
+        let out = crate::ff_pcm::STEREO_48K;
+        assert_eq!(
+            (PcmFormat::STEREO_48K.sample_rate, PcmFormat::STEREO_48K.bits, PcmFormat::STEREO_48K.channels),
+            (out.rate, out.bits, out.channels),
+            "the shape the Load declares is the one the decoder outputs"
+        );
         for other in ["ac3", "eac3", "aac", "truehd"] {
             set_stream_codecs(&mut ps, "h264", other);
             assert_eq!(stream_pcm(&ps), None, "{other}");

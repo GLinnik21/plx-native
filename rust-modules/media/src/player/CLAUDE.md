@@ -311,7 +311,13 @@ something.
   minus the refusals this install learned. Auto's own stereo ceiling for Opus
   (`OPUS_AUTO_MAX_CHANNELS`) stays as it is; the rows add a ceiling Force Direct Play also holds
   (`Caps::forced_feeds_audio_track`). FLAC, ALAC and LPCM are not native: the app decodes them and feeds PCM
-  (`ff_pcm.rs`, `devcaps::APP_DECODED`), so it is outside these layers. A learned refusal comes from a native Load that ends
+  (`ff_pcm.rs`, `devcaps::APP_DECODED`), so it is outside these layers. DTS is the lossy entry of that
+  table, **gated off**: on a DEBUG build, `/tmp/plxnative-appdecodelossy` (read once at boot by
+  `devcaps::probe`) sets `Caps::app_decodes_lossy`, and then DTS is announced without a table row, is
+  never the set's own decoder's (the Load declares `PCM`, stereo 48 kHz S16: `route::stream_pcm`), and
+  `ff_pcm::PcmDecoder` decodes the core (`core_only`), downmixes and resamples it (`Stereo48`). It stays
+  off until the TV has measured the CPU (S4 U5); with it off DTS is native exactly as above. A learned
+  refusal comes from a native Load that ends
   in `type=18 num=200 Audio Codec Not Supported` before any picture (`mod.rs`'s callback sets
   `native_audio_refused` only while `native_audio::fed()` says the audio was fed natively; the
   machine turns it into `RecoveryEffect::ConfirmRefusal { Evidence::Named }`, which the pump runs as

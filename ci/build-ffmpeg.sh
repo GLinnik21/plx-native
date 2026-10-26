@@ -170,7 +170,8 @@ fi
 #              Starfish; FFmpeg here never touches a video frame. The audio decoders run in two
 #              cases. (1) FLAC, ALAC and LPCM at 1x: libpf has no input for them, so the app decodes
 #              them and feeds the TV PCM (`devcaps::APP_DECODED` names the decoders, and a test
-#              holds that list to this one). (2) Every audio format, those included, while the viewer has picked a speed
+#              holds that list to this one); DTS (`dca`) joins them only behind the debug-only
+#              `appdecodelossy` gate, until the TV has measured what it costs. (2) Every audio format, those included, while the viewer has picked a speed
 #              other than 1x: LG's pipeline cannot change rate itself (see
 #              docs/parity-gaps.md, Playback Speed), so the app decodes the sound, time-stretches
 #              it (rust-modules/media/src/speed_audio.rs) and feeds it as PCM. All are LGPL; the

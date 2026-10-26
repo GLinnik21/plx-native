@@ -984,6 +984,28 @@ fn auto_and_forced_agree_on_the_dca_spelling() {
     assert!(!audio_direct_plays_with(&assumed, DirectPlayMode::Forced, "truehd", 8, 0));
 }
 
+/// **DTS under the lossy-decode gate** (S4 PR 2): a set with no DTS row direct-plays a DTS track in
+/// BOTH modes, up to 8 channels (the app decodes the core and downmixes), whatever a native
+/// ceiling says; with the gate off nothing changes — no row, no DTS — and the lossless codecs do
+/// not depend on it.
+#[test]
+fn the_lossy_gate_lets_the_app_direct_play_dts_in_both_modes_and_off_changes_nothing() {
+    let off = plx_platform::devcaps::Caps::assumed();
+    let on = plx_platform::devcaps::Caps::assumed().with_app_lossy();
+    for mode in [DirectPlayMode::Auto, DirectPlayMode::Forced] {
+        for ch in [2, 6, 8] {
+            assert!(!audio_direct_plays_with(&off, mode, "dca", ch, 0), "{mode:?} {ch}ch: gate off");
+            assert!(audio_direct_plays_with(&on, mode, "dca", ch, 0), "{mode:?} {ch}ch: gate on");
+        }
+        assert!(audio_direct_plays_with(&on, mode, "dca", 6, 96_000), "{mode:?}: a core has no rate bound");
+        assert!(!audio_direct_plays_with(&on, mode, "truehd", 8, 0), "{mode:?}: only DTS joined");
+        assert!(!audio_direct_plays_with(&on, mode, "aac", 2, 96_000), "{mode:?}: hardware limits stand");
+    }
+    let measured = plx_platform::devcaps::Caps { native_ceiling: [("dts".into(), 2)].into(), ..dts_row_caps() };
+    assert!(!audio_direct_plays_with(&measured, DirectPlayMode::Forced, "dca", 6, 0), "native ceiling applies natively");
+    assert!(audio_direct_plays_with(&measured.with_app_lossy(), DirectPlayMode::Forced, "dca", 6, 0));
+}
+
 /// Issue #951: an LG B8 refused a 96 kHz AAC Load. The server is asked for 48 kHz at most on every
 /// audio codec, and the local gate agrees on that axis: a 96 kHz AAC (or AC-3) track does not
 /// direct-play in either mode and never wins the pick over a sibling that does, while an unstated

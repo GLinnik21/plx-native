@@ -1176,6 +1176,7 @@ mod tests {
             audio_channels: Default::default(),
             native_ceiling: Default::default(),
             video_ceiling: Default::default(),
+            app_decodes_lossy: false,
             },
             s.contract.delivery,
         );
@@ -1433,6 +1434,28 @@ mod tests {
         assert!(!with.contains("dts"), "{with}");
     }
 
+    /// **The lossy-decode gate in both profiles** (S4 PR 2). Off (every install), the profiles are
+    /// what they were: a set with no DTS row announces no `dca`. On, the app decodes the core
+    /// itself, so `dca` is announced with no table row — up to 8 channels, no rate bound — in the
+    /// Auto direct-play list and its copy lane and in Force Direct Play's; and the lossless set is
+    /// untouched either way.
+    #[test]
+    fn the_lossy_gate_adds_dca_to_both_profiles_and_off_changes_nothing() {
+        let off = Caps::assumed();
+        let on = Caps::assumed().with_app_lossy();
+        for (profile, forced) in [(super::profile_for(&off), false), (super::forced_direct_profile_for(&off), true)] {
+            assert!(!profile.contains("dca") && !profile.contains("dts"), "gate off, forced={forced}: {profile}");
+        }
+        let auto = super::profile_for(&on);
+        assert!(list_of(&auto, "audioCodec=").contains(&"dca".into()), "{auto}");
+        assert!(auto.contains("scope=videoAudioCodec&scopeName=dca&type=upperBound&name=audio.channels&value=8&replace=true"), "{auto}");
+        assert!(!auto.contains("scopeName=dca&type=upperBound&name=audio.samplingRate"), "no rate bound on the core: {auto}");
+        assert!(!auto.contains("dts"), "{auto}");
+        let forced = super::forced_direct_profile_for(&on);
+        assert_eq!(list_of(&forced, "audioCodec="), ["aac", "ac3", "eac3", "dca"], "{forced}");
+        assert_eq!(super::profile_for(&off), super::profile_for(&Caps::assumed()));
+    }
+
     /// Forced mode advertises the engine's formats with no device limits and no transcode target.
     /// `av1` joins the video list only when the table lists it (issue #593); on the host the boot
     /// value is the assumed caps, so it is absent here, and
@@ -1467,6 +1490,7 @@ mod tests {
             audio_channels: Default::default(),
             native_ceiling: Default::default(),
             video_ceiling: Default::default(),
+            app_decodes_lossy: false,
         };
         let p = super::profile_for(&caps);
         assert!(!p.contains("hevc"), "hevc must not appear anywhere in {p}");
@@ -1500,6 +1524,7 @@ mod tests {
                 audio_channels: Default::default(),
                 native_ceiling: Default::default(),
                 video_ceiling: Default::default(),
+                app_decodes_lossy: false,
             },
         ] {
             let p = super::profile_for(&caps);
@@ -1530,6 +1555,7 @@ mod tests {
             audio_channels: Default::default(),
             native_ceiling: Default::default(),
             video_ceiling: Default::default(),
+            app_decodes_lossy: false,
         };
         let p = super::profile_for(&caps);
         let dp = p.split("add-transcode-target").next().unwrap();

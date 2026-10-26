@@ -123,7 +123,7 @@ pub fn downmix(fmt: SampleFormat, planar: bool, channels: usize, frames: usize, 
 }
 
 /// Linear-interpolating resampler to [`OUT_RATE`], stateful across calls so chunk edges are seamless.
-struct Resampler {
+pub(crate) struct Resampler {
     from: u32,
     /// Position of the next output frame, in input frames from the start of `last` + the new block.
     pos: f64,
@@ -131,11 +131,11 @@ struct Resampler {
 }
 
 impl Resampler {
-    fn new(from: u32) -> Self {
+    pub(crate) fn new(from: u32) -> Self {
         Resampler { from, pos: 0.0, last: None }
     }
 
-    fn run(&mut self, input: &[[f32; 2]], out: &mut Vec<[f32; 2]>) {
+    pub(crate) fn run(&mut self, input: &[[f32; 2]], out: &mut Vec<[f32; 2]>) {
         if self.from == OUT_RATE {
             out.extend_from_slice(input);
             return;

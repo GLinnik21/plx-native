@@ -823,23 +823,23 @@ const OFF_AFRAME_EXTENDED_DATA: usize = 64; // u8**
 #[cfg(target_pointer_width = "32")]
 pub(crate) const OFF_AFRAME_NB_SAMPLES: usize = 76;
 #[cfg(target_pointer_width = "32")]
-const OFF_AFRAME_SAMPLE_RATE: usize = 132;
+pub(crate) const OFF_AFRAME_SAMPLE_RATE: usize = 132;
 #[cfg(target_pointer_width = "32")]
-const OFF_AFRAME_NB_CHANNELS: usize = 256 + 4;
+pub(crate) const OFF_AFRAME_NB_CHANNELS: usize = 256 + 4;
 #[cfg(target_pointer_width = "64")]
 const OFF_AFRAME_EXTENDED_DATA: usize = 96;
 #[cfg(target_pointer_width = "64")]
 pub(crate) const OFF_AFRAME_NB_SAMPLES: usize = 112;
 #[cfg(target_pointer_width = "64")]
-const OFF_AFRAME_SAMPLE_RATE: usize = 180;
+pub(crate) const OFF_AFRAME_SAMPLE_RATE: usize = 180;
 #[cfg(target_pointer_width = "64")]
-const OFF_AFRAME_NB_CHANNELS: usize = 384 + 4;
+pub(crate) const OFF_AFRAME_NB_CHANNELS: usize = 384 + 4;
 
 /// **The audio decoder a playback-speed session runs** (`crate::speed_audio`): the selected audio
 /// stream decoded in software, downmixed to stereo and time-stretched to `permille`, then fed as
 /// PCM AUs. Exists only while the speed is not 1x; at 1x the compressed audio goes to the TV as it
-/// always has, except the app-decoded lossless set (FLAC, ALAC, LPCM), which `ff_pcm::PcmDecoder`
-/// decodes and feeds as PCM. At a speed this decoder takes those too and `PcmDecoder` is not
+/// always has, except the app-decoded set (FLAC, ALAC, LPCM, and DTS when `Caps::app_decodes_lossy`
+/// is on), which `ff_pcm::PcmDecoder` decodes and feeds as PCM. At a speed this decoder takes those too and `PcmDecoder` is not
 /// opened. Opened per demux run from the stream's own codec parameters.
 pub(crate) struct SpeedDecoder {
     ctx: *mut AVCodecContext,
@@ -9210,7 +9210,9 @@ pub fn demux(
                 } else {
                     None
                 };
-                let dts_audio = ai >= 0 && std::ffi::CStr::from_ptr(avcodec_get_name(
+                // Native DTS: the set's own decoder takes the core. Not when the Load declared PCM,
+                // which is the app decoding DTS itself (`pcm_dec` below, `Caps::app_decodes_lossy`).
+                let dts_audio = ai >= 0 && pcm_out().is_none() && std::ffi::CStr::from_ptr(avcodec_get_name(
                     (*stream_codecpar(*streams.add(ai as usize))).codec_id
                 )).to_bytes() == b"dts";
                 if dts_audio {
@@ -9220,7 +9222,7 @@ pub fn demux(
                 // stretched and fed as PCM. A stream with no bundled decoder cannot honour it — the
                 // engine refused the speed at Load (`player::session_rate`), so this is a guard.
                 let speed_permille = SHARED.applied_rate_permille.load(Ordering::Relaxed);
-                // App-decoded audio (FLAC, ALAC, LPCM: `devcaps::APP_DECODED`): decode to the PCM the
+                // App-decoded audio (FLAC, ALAC, LPCM, and DTS under the gate: `devcaps::APP_DECODED`): decode to the PCM the
                 // Load declared, or refuse the stream — the Load and the file must agree, or the
                 // panel plays the wrong pitch. Not at a speed: that session's Load declares the
                 // speed decoder's own PCM (`engine::app_pcm_for_rate`), `SpeedDecoder` below decodes
@@ -9229,7 +9231,11 @@ pub fn demux(
                     let name = std::ffi::CStr::from_ptr(avcodec_get_name(
                         (*stream_codecpar(*streams.add(ai as usize))).codec_id
                     )).to_string_lossy();
-                    plx_platform::devcaps::app_decoded_by_ffmpeg_name(&name).map(|_| name.into_owned())
+                    // A lossy codec is the app's only when the Load declared PCM for it (the gate is
+                    // on); otherwise it is native audio and the set's decoder takes it.
+                    plx_platform::devcaps::app_decoded_by_ffmpeg_name(&name)
+                        .filter(|c| !c.lossy || pcm_out().is_some())
+                        .map(|_| name.into_owned())
                 } else {
                     None
                 };
@@ -9245,7 +9251,10 @@ pub fn demux(
                     };
                     match opened {
                         Ok(d) => {
-                            crate::player::log(&format!("ff: {name} -> PCM decoding on"));
+                            crate::player::log(&format!(
+                                "ff: {name} -> PCM decoding on{}",
+                                if d.core_only() { " (core only)" } else { "" }
+                            ));
                             pcm_dec = Some(d);
                         }
                         Err(why) => {

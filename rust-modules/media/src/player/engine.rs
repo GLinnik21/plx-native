@@ -1068,7 +1068,8 @@ fn with_opus_info(p: &str, channels: i64) -> Option<String> {
     })
 }
 
-/// **Who owns the PCM a Load declares.** Audio the app decodes at 1x (FLAC, ALAC, LPCM: `ff_pcm`)
+/// **Who owns the PCM a Load declares.** Audio the app decodes at 1x (FLAC, ALAC, LPCM, and DTS on a
+/// value with the lossy gate on: `ff_pcm`)
 /// declares its own shape; at any other speed the speed decoder (`ff::SpeedDecoder`) decodes every
 /// codec, those included, and feeds stereo PCM that [`build_av_payload`] declares with its own
 /// fixed `pcmInfo` (kilohertz). The app-decoded shape is then dropped and, at 1x, that fixed node is dropped
