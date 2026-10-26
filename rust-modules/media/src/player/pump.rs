@@ -4027,6 +4027,25 @@ mod flight_tests {
         super::super::sf_on_event(epoch, 18, 601, std::ptr::null());
     }
 
+    /// **The pipeline takes the Load a test just started.** The hostsim sink refuses every Load the
+    /// rig starts after its first Engine (the rig's Engine was never built by a real `sf_load`, so its
+    /// teardown cannot prove the release and quarantines the host object). The refusal is published
+    /// from the MEDIA thread (`ok=0`, no `type=18` callback: `num=0`), so it lands a moment after the
+    /// start, at a time no frame chooses. A test that stands for "the pipeline took that Load" awaits
+    /// the refusal and takes it down BEFORE its next frame: left to chance, a frame that runs after it
+    /// reads a second refusal of an open whose facet is spent and ends on the read-out (a runner whose
+    /// media thread is scheduled first did exactly that to the restore and reload tests below, one run
+    /// in sixty under load). Call it after every `start_bufferfeed_tracked` / reload the test goes on
+    /// to grade; the refusal that then ends the open is the test's own (`pipeline_refuses_601`).
+    fn pipeline_takes_the_load() {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !SHARED.load_failed.load(Acquire) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(SHARED.load_failed.load(Acquire), "the sink's refusal of the started Load never arrived");
+        SHARED.load_failed.store(false, Release);
+    }
+
     /// What a refusal-recovery landing for a DTS 5.1 track leaves, after the flight landed on an
     /// Engine that was at `epoch`: one replacement `/decision` converting the DTS track (the
     /// profile carries the stereo bound, the request names the track the viewer was on, so no
@@ -4175,16 +4194,10 @@ mod flight_tests {
     }
 
     /// The reload the landing started decodes its first picture: the frame that says so. The hostsim
-    /// sink refuses the reload's Load (from the media thread, so the refusal lands a moment later;
-    /// nothing decodes in a host test); the pipeline this stands for took it, so that flag is awaited
-    /// and taken down first.
+    /// sink refuses the reload's Load (nothing decodes in a host test); the pipeline this stands for
+    /// took it ([`pipeline_takes_the_load`]).
     fn first_picture(rig: &mut Rig) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while !SHARED.load_failed.load(Acquire) && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        assert!(SHARED.load_failed.load(Acquire), "the sink's refusal of the reload's Load never arrived");
-        SHARED.load_failed.store(false, Release);
+        pipeline_takes_the_load();
         super::super::ffi_host::force_clocksink_for_test(true);
         super::super::ffi_host::force_object_ready_for_test(true);
         SHARED.frames.store(1, Relaxed);
@@ -4347,6 +4360,7 @@ mod flight_tests {
             matches!(restored, super::super::engine::BufferfeedStartOutcome::Launched(_)),
             "the restore's Load did not start: {restored:?}"
         );
+        pipeline_takes_the_load();
     }
 
     /// Drain frames with no Engine until the late landing of a flight a park dropped is reaped (the
@@ -4420,6 +4434,7 @@ mod flight_tests {
         reap_the_dropped_flight(&mut rig);
         let restored = crate::player::start_bufferfeed_tracked(&mut rig.ps, &mut rig.pa);
         assert!(matches!(restored, super::super::engine::BufferfeedStartOutcome::Launched(_)), "{restored:?}");
+        pipeline_takes_the_load();
         rig.frame();
         assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error, "sanity: the restore re-opens");
         pipeline_refuses_601(&mut rig);
@@ -4575,6 +4590,7 @@ mod flight_tests {
                 rig.frames_until("the conversion's landing", |_| !crate::route::flight_outstanding());
                 let reloaded = engine_epoch(&mut rig).expect("the reloaded Engine");
                 assert_ne!(reloaded, epoch, "the landing reloaded the Engine");
+                pipeline_takes_the_load();
                 assert!(SHARED.mark_native_load_returned(reloaded).is_some(), "the reload's Load returned");
                 for _ in 0..4 {
                     rig.frame();
