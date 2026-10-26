@@ -11,6 +11,13 @@ subagent's messages go to its caller, not the owner, and some subagent toolsets 
 at all, so a payload with an `agent_id` gets its own text: put the line first in the final report so the
 caller sends the push.
 
+The second line it keys on is the pre-flight's verdict. `tools/tv-lock.sh` (an acquire, and `status`)
+looks at who is on the set, and when someone else is, prints `IN USE: <app>: stop and tell the owner` at
+the start of a line. That is a stop, not a nudge to push: the agent is told not to drive the television
+and to tell the owner (a subagent: first in its report). `IDLE` and `UNKNOWN` verdicts print no such line,
+so they get nothing. The acquire still succeeded (the lease is a warning, not a refusal), so the text also
+says to release it; and when a result holds both lines the stop wins and the heads-up push is not asked for.
+
 WHAT IT COSTS. It runs after EVERY Bash call, so the common case must be free: the raw stdin is
 searched for the marker before anything is parsed, and no marker means exit at once with no output.
 
@@ -34,6 +41,7 @@ import json
 import sys
 
 MARKER = "HEADS-UP:"
+IN_USE_MARKER = "IN USE:"
 
 INSTRUCTION = (
     "tools/tv-lock.sh just took (or broke) the television's lease. Its heads-up line:\n"
@@ -58,6 +66,30 @@ SUBAGENT_INSTRUCTION = (
     "that line as the message, before your next step."
 )
 
+# The pre-flight found somebody on the set (tools/tv-lock.sh preflight_report). Not a nudge to push: the
+# agent must stop, so neither text mentions the heads-up.
+IN_USE_INSTRUCTION = (
+    "tools/tv-lock.sh's pre-flight found the television IN USE. Its line:\n"
+    "\n"
+    "{line}\n"
+    "\n"
+    "STOP. Do not deploy, run, drive or test on the television. Tell the owner now: send a\n"
+    "PushNotification with that line as the message (if your toolset has none, say the line in your\n"
+    "next message) and wait for the owner's answer. If you just took the lease for this, release it\n"
+    "first (tools/tv-lock.sh release)."
+)
+
+SUBAGENT_IN_USE_INSTRUCTION = (
+    "tools/tv-lock.sh's pre-flight found the television IN USE. Its line:\n"
+    "\n"
+    "{line}\n"
+    "\n"
+    "STOP. Do not deploy, run, drive or test on the television. You are a subagent, so your messages\n"
+    "reach your caller, not the owner: put that line FIRST in your final report (or in a message to your\n"
+    "caller right away) so the caller tells the owner, and end your work on the set. If you just took\n"
+    "the lease for this, release it first (tools/tv-lock.sh release)."
+)
+
 
 def flatten(value):
     """Every string inside a tool_response, newline-joined, whatever shape it has.
@@ -74,10 +106,10 @@ def flatten(value):
     return "\n".join(flatten(v) for v in value)
 
 
-def heads_up_line(text):
-    """The first line of `text` that starts with the marker, or None."""
+def marked_line(text, marker):
+    """The first line of `text` that starts with `marker`, or None."""
     for line in text.split("\n"):
-        if line.startswith(MARKER):
+        if line.startswith(marker):
             return line.rstrip()
     return None
 
@@ -86,15 +118,20 @@ def context_for(payload):
     """The instruction to show the agent for this PostToolUse payload, or None."""
     if not isinstance(payload, dict):
         return None
-    line = heads_up_line(flatten(payload.get("tool_response")))
+    text = flatten(payload.get("tool_response"))
+    subagent = bool(payload.get("agent_id"))
+    line = marked_line(text, IN_USE_MARKER)       # a stop outranks the heads-up when a result has both
+    if line:
+        return (SUBAGENT_IN_USE_INSTRUCTION if subagent else IN_USE_INSTRUCTION).format(line=line)
+    line = marked_line(text, MARKER)
     if not line:
         return None
-    return (SUBAGENT_INSTRUCTION if payload.get("agent_id") else INSTRUCTION).format(line=line)
+    return (SUBAGENT_INSTRUCTION if subagent else INSTRUCTION).format(line=line)
 
 
 def main():
     raw = sys.stdin.buffer.read().decode("utf-8", "replace")
-    if MARKER not in raw:                 # the overwhelmingly common case: nothing to do
+    if MARKER not in raw and IN_USE_MARKER not in raw:   # the overwhelmingly common case: nothing to do
         return 0
     context = context_for(json.loads(raw))
     if context:
