@@ -326,7 +326,14 @@ something.
   `StartFlight` (the conversion), and `route::dispatch_native_audio_conversion`
   flies a `ClaimWork::Encode` under a `FlightOwner::Recovery` that rebuilds today's route (which now
   plans the audio as the server's to convert), and `land_recovery_flight` reloads onto it. The viewer keeps the connecting spinner: no
-  read-out, no second play request. A refusal the install already knew skips the conversion and takes
+  read-out, no second play request. **Who owns a refusal is who observes it:** the machine owns a
+  refusal the pump sees AFTER a Load call returned (`type=18` once `route_start_status` read `Started`,
+  a Load budget, a stall, a source failure). The Load CALL's own synchronous refusal (`StartFailed`
+  with `load_failed`) of a Load the foreground lifecycle follows (`Engine::foreground_follows_load`,
+  marked by `app/lifecycle.rs` wherever it starts following an attempt) is the lifecycle's alone:
+  `pump` returns before the ladder (`settled_by_foreground`) and `ForegroundLifecycle` settles it as
+  #1018's retry (`Prepared`, the Engine retired). A fresh play's synchronous refusal has no
+  lifecycle behind it and stays the ladder's. A refusal the install already knew skips the conversion and takes
   the next rung of the same ladder (a pending Original trial's rollback, a cold Auto Original's HLS
   contingency, else the read-out), so a conversion that is still refused cannot loop. A
   silent stall is learned too, for surround only (`native_stall.rs`, checked in the pump): a native

@@ -5787,16 +5787,17 @@ mod lifecycle_regression_tests {
         );
     }
 
-    /// **Resume-Load ownership, case 2 of 2 (main 0c9eec250): a SYNCHRONOUS refusal is acted on by
-    /// BOTH machines, in one frame.** The Load call itself failed (`threads.rs` publishes
-    /// `RouteStartResult::StartFailed` and `publish_native_load_failure` together). The pump runs
-    /// first and sees `load_failed`: the same failed-open ladder, so it ends the Engine in the
-    /// read-out. Then the foreground machine reads `Failed` and does what #1018 built it for:
-    /// `Prepared` (a retry waits for the grants), `AfterLoad{started:false}` retiring the Engine.
-    /// Two machines act on one refusal. The split to enforce is that the lifecycle keeps the Load
-    /// call's own result, so the pump must leave this one alone.
+    /// **Resume-Load ownership, case 2 of 2: a SYNCHRONOUS refusal of a foreground-resume Load is the
+    /// LIFECYCLE's alone.** The Load call itself failed (`threads.rs` publishes
+    /// `RouteStartResult::StartFailed` and `publish_native_load_failure` together). The foreground
+    /// machine launched that Load and reads its own result: `Failed` is #1018's retry, `Prepared`
+    /// (a retry waits for the grants) and `AfterLoad{started:false}` retiring the Engine. The pump
+    /// sees `load_failed` first, but the call's own result is not a refusal it observes after a Load
+    /// returned, so it leaves this one alone: no failed-open ladder, no read-out. (Main 0c9eec250
+    /// ran both: the pump failed the Engine into the read-out, then the lifecycle settled the same
+    /// refusal.)
     #[test]
-    fn today_a_sync_refusal_of_a_foreground_resume_load_is_acted_on_by_both_the_pump_and_the_lifecycle() {
+    fn a_sync_refusal_of_a_foreground_resume_load_is_settled_by_the_lifecycle_alone() {
         let _serial = plx_base::testlock::serial();
         let Some(mut rig) = Rig::new() else {
             eprintln!("SKIPPED: lifecycle fixture worker thread could not be spawned");
@@ -5811,18 +5812,23 @@ mod lifecycle_regression_tests {
         plx_media::player::SHARED.load_failed.store(true, std::sync::atomic::Ordering::Release);
 
         let (state_after_pump, life_after_pump) = pump_then_poll(&mut rig, 48);
-        assert_eq!(
+        assert_ne!(
             state_after_pump,
             plx_media::player::PlaybackState::Error,
-            "TODAY the pump also fails the Engine for a refusal the lifecycle owns"
+            "the pump leaves the Load call's own refusal to the lifecycle: no failed-open ladder, no read-out"
         );
         assert!(matches!(life_after_pump, ForegroundState::LoadPending { .. }), "{life_after_pump:?}");
         assert!(
             matches!(rig.app.player.lifecycle.state(), ForegroundState::Prepared { .. }),
-            "…and the lifecycle then settles the same refusal as #1018's retry: {:?}",
+            "the lifecycle settles the refusal as #1018's retry: {:?}",
             rig.app.player.lifecycle.state()
         );
         assert!(!rig.app.adapters.player.is_live(), "the lifecycle's AfterLoad retired the Engine");
+        assert_ne!(
+            plx_media::player::state(&rig.app.player.session),
+            plx_media::player::PlaybackState::Error,
+            "…and nothing raised the read-out after it either"
+        );
     }
 
     /// An exit over a parked restore whose Load was refused (`Prepared`) must retire it; main left

@@ -597,6 +597,16 @@ fn open_facts(ps: &crate::route::PlaybackSession, native_audio: Option<plx_platf
     }
 }
 
+/// Whether a failed Load is the foreground lifecycle's to settle rather than the ladder's. The rule
+/// is who observes the refusal: [`super::recovery::OpenRecovery`] owns a refusal the pump observes
+/// AFTER a Load call returned (`type=18` once the reducer read `Started`, a Load budget, a stall, a
+/// source failure); the lifecycle keeps the Load call's own synchronous result (`Failed`), which it
+/// reads through the same reducer and settles as #1018's retry. Both facts are the driver's, read
+/// before the machine is stepped, so the machine never sees this refusal.
+fn settled_by_foreground(foreground_follows: bool, start: crate::route::RouteStartStatus) -> bool {
+    foreground_follows && start == crate::route::RouteStartStatus::Failed
+}
+
 /// The pipeline's own account of the failed Load, from the flags its callbacks latched.
 fn load_refusal() -> super::recovery::LoadRefusal {
     if SHARED.load_timed_out.load(Acquire) {
@@ -1428,6 +1438,11 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
     if SHARED.load_failed.load(Acquire) {
         if crate::route::preview_request(ps) {
             finish_preview_open_failure(ps, pa);
+            return;
+        }
+        // The Load CALL's own refusal, on a Load the foreground lifecycle follows, is that
+        // lifecycle's (#1018's retry). Only a refusal observed after the call returned is the ladder's.
+        if settled_by_foreground(eng.foreground_follows_load, crate::route::route_start_status(eng.route_start)) {
             return;
         }
         // The pipeline refused AUDIO it was fed natively: the ladder learns the combination, and the
@@ -2297,6 +2312,23 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
 
 #[cfg(test)]
 mod tests {
+
+    /// **Who settles a failed Load: the Load call's own synchronous result is the foreground
+    /// lifecycle's, anything the pump sees after the call returned is the ladder's.** The pump
+    /// leaves a refusal alone only when BOTH hold: the lifecycle follows that Engine's Load, and
+    /// the reducer says the call itself failed. (`type=18` after `Started`, a stall, a timeout and
+    /// a Load nobody foreground follows all stay the ladder's.)
+    #[test]
+    fn only_a_followed_loads_own_failure_is_left_to_the_foreground() {
+        use super::settled_by_foreground;
+        use crate::route::RouteStartStatus as S;
+        let superseded = S::Superseded(crate::route::RouteStartAttempt::fixture());
+        for start in [S::Pending, S::Started, S::Stale, superseded] {
+            assert!(!settled_by_foreground(true, start), "{start:?}: not the call's own failure");
+        }
+        assert!(settled_by_foreground(true, S::Failed));
+        assert!(!settled_by_foreground(false, S::Failed), "a Load no foreground machine follows is the ladder's");
+    }
 
     /// **A native audio refusal is learned once, and only a new lesson asks for a conversion.** The
     /// `type=18 num=200` callback sets the flag only for a session that fed its audio natively; the
