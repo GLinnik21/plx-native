@@ -351,7 +351,15 @@ cmd_acquire() {
     RESP="$(remote_op status 0 0)"; parse_resp
     if [ "$(fld token "$OWNER_BLK")" = "$TOKEN" ]; then
       ACQUIRED_AT="$(fld acquired "$OWNER_BLK")"
-      do_acquire "$ttl" 0 && { ok "lock renewed (already yours) — $(fmt_dur $((ttl*60))) from now"; exit 0; }
+      # An expired lease still names its owner until someone else takes it, so the token matches and
+      # do_acquire answers `renewed`; but the set may have sat idle past the expiry, so it is a new
+      # lease as far as the person is concerned. do_acquire overwrites $ACT, so read it first.
+      local was="$ACT"
+      if do_acquire "$ttl" 0; then
+        ok "lock renewed (already yours) — $(fmt_dur $((ttl*60))) from now"
+        [ "$was" = expired ] && heads_up "$WHY" "$ttl"   # last, as below; a live renew prints none
+        exit 0
+      fi
     fi
   fi
 
@@ -671,6 +679,15 @@ cmd_selftest() {
   want "release: none" 0 0
   hu A acquire --why "$(printf 'two\nlines "quoted"')" --ttl 7
   want "a --why with a newline and quotes is still ONE line" 0 1 "HEADS-UP: two lines quoted, lease 7 min"
+  # An EXPIRED lease of your own is not a live one: the set may have sat idle past it, so taking it
+  # again is a new lease and prints the line; a live own lease re-taken stays a silent renew. A
+  # negative --ttl writes a lease that has already ended, and A still holds a live one from above.
+  hu A acquire --why "shorten" --ttl -1
+  want "renewing a live own lease, even to an expired one: none" 0 0
+  hu A acquire --why "back after expiry" --ttl 7
+  want "re-taking your own EXPIRED lease prints one HEADS-UP" 0 1 "HEADS-UP: back after expiry, lease 7 min"
+  hu A acquire --why "live again" --ttl 7
+  want "and the next acquire, now live, is a renew: none" 0 0
   echo ""
   [ "$fails" = 0 ] && { echo "selftest: all good"; return 0; }
   echo "selftest: $fails FAILED"; return 1
