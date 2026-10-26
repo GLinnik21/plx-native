@@ -435,13 +435,13 @@ impl OpenRecovery {
             // converted with it. It fires from the facts alone, at most once: every both flight leaves
             // an encoded video (`facts.video == None`) and its audio suspects taken, and the video
             // facet's identical encode set `excluded.video`. It still fires for a refusal with no raster
-            // to lower (a 1080p frame rate): `facts.video` is `Some` and nothing was excluded.
+            // to lower (a 1080p frame rate): the video is fed at a known raster and nothing was excluded.
             let audio = suspect_audio(facts.audio.as_ref()).filter(|f| self.attempt.without(f) != *self.attempt);
             let video = matches!(refusal, LoadRefusal::Refused { .. })
                 .then(|| suspect_video(facts.video.as_ref()))
                 .flatten()
                 .filter(|f| self.attempt.without(f) != *self.attempt);
-            let new_video = facts.video.is_some() && self.excluded.video.is_none();
+            let new_video = suspect_video(facts.video.as_ref()).is_some() && self.excluded.video.is_none();
             if new_video || audio.is_some() {
                 for facet in audio.into_iter().chain(video) {
                     self.excluded.take(facet);
@@ -819,6 +819,15 @@ mod tests {
             let (_, fx) = run(&mut manual_machine(), refused(other, on_4k("ac3", false)));
             assert_eq!(fx, [RecoveryEffect::ShowError { refusal: other }], "{other:?}");
         }
+    }
+
+    /// A video whose raster the server never measured (0x0) names nothing, as the direct-play gate
+    /// passes one it was never told: it does not earn the manual both-facets rung either.
+    #[test]
+    fn an_unmeasured_video_raster_never_earns_the_manual_both_rung() {
+        let unknown = Some(StreamVideo { codec: "hevc".into(), width: 0, height: 0 });
+        let (_, fx) = run(&mut manual_machine(), refused(SHUT, manual_on("ac3", unknown)));
+        assert_eq!(fx, ERROR);
     }
 
     /// A cold Auto Original's refused HLS rescue is not converted again: the HLS route feeds AAC and

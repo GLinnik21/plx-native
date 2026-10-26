@@ -4230,8 +4230,9 @@ mod flight_tests {
     /// set decodes, so it is the suspect and the video is not considered. The first flight keeps the
     /// route as planned (`directStream=1`, the video still copied) under a profile that bounds DTS to
     /// stereo and names no H.264 bound. The route is an Original remux (a stored remux candidate), so
-    /// it still copies the 4K video and the converted route's refusal takes the manual both-facets rung: a second flight with the H.264 bound too and
-    /// `directStream=0` (the audio still copied), under the 1080p rung's ceiling.
+    /// it still copies the 4K video and the converted route's refusal takes the manual both-facets
+    /// rung: a second flight with the H.264 bound too and `directStream=0` (the audio still copied),
+    /// under the 1080p rung's ceiling.
     #[test]
     fn a_video_refusal_whose_audio_is_the_suspect_converts_the_audio_first() {
         let mut rig = dts_rig(Rig::new(150));
