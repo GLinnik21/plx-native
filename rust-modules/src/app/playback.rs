@@ -330,7 +330,9 @@ impl PlaybackResources for LivePlaybackResources {
     fn request_movie(&mut self, ps: &mut plx_media::route::PlaybackSession,
         meta: &mut plx_data::stores::metadata::MetadataStore, item: &plx_data::pms::PmsMovie,
         version: Option<plx_plex::plex::MediaId>) -> bool {
-        plx_media::route::request_play_movie(ps, meta, item, &movie_ctx(item), version)
+        // The play start is where the attempt's capability value is read, once: route plans from
+        // the value it is handed and reads no process-wide answer itself.
+        plx_media::route::request_play_movie(ps, meta, plx_platform::devcaps::caps(), item, &movie_ctx(item), version)
     }
     fn request_episode(&mut self, ps: &mut plx_media::route::PlaybackSession,
         meta: &mut plx_data::stores::metadata::MetadataStore, rk: &str,
@@ -446,7 +448,7 @@ pub(crate) fn request_loaded_hero(ps: &mut plx_media::route::PlaybackSession, me
             .clone();
         request_episode(ps, meta, &d, &ep, None).then(|| plx_data::metadata::resume_ns(ep.resume_ms, ep.dur_ms))
     } else {
-        plx_media::route::request_play(ps, meta, plx_media::route::item_sid(d.sid), &d.rk, &d.part,
+        plx_media::route::request_play(ps, meta, plx_platform::devcaps::caps(), plx_media::route::item_sid(d.sid), &d.rk, &d.part,
             &d.vcodec, &d.acodec, &d.title, "", None)
             .then(|| plx_data::metadata::resume_ns(d.resume_ms, d.dur_ms))
     }
@@ -469,7 +471,7 @@ fn request_episode(ps: &mut plx_media::route::PlaybackSession, meta: &mut plx_da
     })));
     let title = if ep.title.is_empty() { &d.title } else { &ep.title };
     let context = plx_ui::fmt::episode_context(&d.title, ep.season, ep.index);
-    plx_media::route::request_play(ps, meta, plx_media::route::item_sid(d.sid), &ep.rk, &ep.part,
+    plx_media::route::request_play(ps, meta, plx_platform::devcaps::caps(), plx_media::route::item_sid(d.sid), &ep.rk, &ep.part,
         &ep.vcodec, &ep.acodec, title, &context, version)
 }
 

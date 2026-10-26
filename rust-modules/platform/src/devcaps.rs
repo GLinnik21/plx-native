@@ -48,7 +48,8 @@ pub mod dv;
 /// two-sided test — what our demuxer/payload path can feed, before asking whether this
 /// particular SoC can decode it. The live set is [`Caps::audio`] (this list ∩ the device's own
 /// codec table), and the ONE-definition rule lives with it: the Normal routing uses
-/// `plex::is_dp_audio_track` for membership and channel bounds, shared with the device profile.
+/// `plex::is_dp_audio_track_with` for membership, channel bounds and sampling rate
+/// ([`audio_track_fits`]), shared with the device profile.
 /// Forced mode instead uses the implemented software feed formats and its separate profile,
 /// without conservative device bounds.
 ///
@@ -92,8 +93,27 @@ pub const PCM_MAX_CHANNELS: u32 = 2;
 /// (`player::engine`); any value that matches nothing (a rate in hertz, 96 kHz, 192 kHz) silently
 /// becomes 44.1 kHz and plays at the wrong speed with no error (a 96 kHz FLAC audibly slow on an
 /// OLED55B8, webOS 4.4.3; a 48 kHz one 9% slow, a 32 kHz one fast and stuttering on a C1, webOS
-/// 6.5.3, when the rate was declared in hertz). The table was read from libpf-1.0 on the B8.
+/// 6.5.3, when the rate was declared in hertz). The table was read from libpf-1.0 on the B8. It
+/// bounds the PCM input only; every other codec's Load carries no rate ([`AUDIO_RATE_CEILING`]).
 pub const PCM_SAMPLE_RATES: [u32; 8] = [8_000, 12_000, 16_000, 22_050, 24_000, 32_000, 44_100, 48_000];
+
+/// The highest sample rate, in hertz, any audio Load path here is known to accept: the
+/// `audio.samplingRate` upper bound the transcode profile asks PMS for and the one
+/// [`audio_track_fits`] holds a track to. An LG B8 (webOS 4.4.3) refused the Load of a 96 kHz AAC
+/// that PMS had made from a 96 kHz FLAC (#951, `smp_cb type=18 num=100`). WHERE that limit lives
+/// (the Load payload, libpf, the decoder) is not determined; 48 kHz is used because nothing above
+/// it is known to load (it is the top of [`PCM_SAMPLE_RATES`] too).
+pub const AUDIO_RATE_CEILING: u32 = 48_000;
+
+/// Whether `codec` is held to [`AUDIO_RATE_CEILING`], by [`audio_track_fits`] and by the profile's
+/// `audio.samplingRate` limitation alike: every codec but DTS. The app feeds only the DTS core
+/// (`ff.rs::dts_core_packet`), 48 kHz at most by format, so a DTS-HD 96/24 source plays today and
+/// bounding it would push that source into a lossy AC-3 conversion. Opus, AC-3 and E-AC-3 are
+/// 48 kHz at most by format, so their bound never fires; they stay in the set so that "every codec
+/// but DTS" is the one rule, with no per-codec list to keep in step.
+pub fn audio_rate_bounded(codec: &str) -> bool {
+    audio_codec_id(codec) != "dts"
+}
 
 /// Whether `codec` is one the app decodes itself and feeds as PCM ([`PCM_AUDIO_CODECS`]).
 pub fn is_pcm_codec(codec: &str) -> bool {
@@ -101,15 +121,21 @@ pub fn is_pcm_codec(codec: &str) -> bool {
     PCM_AUDIO_CODECS.split(',').any(|c| c == id)
 }
 
-/// The PCM path's own limits for one track: one or two channels, at a rate `pcmInfo` can name
-/// ([`PCM_SAMPLE_RATES`]). A codec that is not app-decoded passes; an unstated count or rate
-/// does not.
-/// These are limits of the PCM input, not of a hardware decoder, so Force Direct Play applies
-/// them as well.
-pub fn pcm_track_fits(codec: &str, channels: i64, sample_rate: i64) -> bool {
-    !is_pcm_codec(codec)
-        || ((1..=i64::from(PCM_MAX_CHANNELS)).contains(&channels)
-            && PCM_SAMPLE_RATES.iter().any(|&r| i64::from(r) == sample_rate))
+/// The sample-rate (and, for PCM, channel) limits of one audio track, on top of the codec rules in
+/// [`Caps::audio_supports`] / [`Caps::forced_feeds_audio`]: the ONE rate-fit predicate for every
+/// route that decides without PMS's `/decision`, mirrored by the transcode profile's
+/// `audio.samplingRate` limitation. A PCM codec ([`PCM_AUDIO_CODECS`]) needs one or two channels at
+/// a rate `pcmInfo` can name ([`PCM_SAMPLE_RATES`]); an unstated count or rate does not pass. Any
+/// other codec passes at an unstated rate (`<= 0`, the planner's `0`) or at most
+/// [`AUDIO_RATE_CEILING`], DTS excepted ([`audio_rate_bounded`]). These are limits of the Load,
+/// not of a hardware decoder, so Force Direct Play applies them as well.
+pub fn audio_track_fits(codec: &str, channels: i64, sample_rate: i64) -> bool {
+    if is_pcm_codec(codec) {
+        (1..=i64::from(PCM_MAX_CHANNELS)).contains(&channels)
+            && PCM_SAMPLE_RATES.iter().any(|&r| i64::from(r) == sample_rate)
+    } else {
+        sample_rate <= i64::from(AUDIO_RATE_CEILING) || !audio_rate_bounded(codec)
+    }
 }
 
 const CAPS_TABLE: &str = "/etc/umediaserver/device_codec_capability_config.json";
@@ -224,8 +250,16 @@ pub fn apply_learned(caps: &mut Caps, codename: &str, ignore: bool, learned: &[R
     learned
         .iter()
         .filter(|r| r.firmware.eq_ignore_ascii_case(codename))
-        .filter_map(|r| limit_codec(caps, &r.codec, if r.channels <= 2 { 0 } else { 2 }))
+        .filter_map(|r| limit_codec(caps, &r.codec, refusal_ceiling(r.channels)))
         .collect()
+}
+
+/// What a refusal of a `channels`-channel track leaves of its codec ([`limit_codec`]'s `max`): a
+/// stereo (or mono) refusal takes the codec away (`0`), a surround one keeps it to stereo. The one
+/// rule for a refusal the install learned ([`apply_learned`]) and one an attempt only supposes
+/// ([`Caps::without`]).
+fn refusal_ceiling(channels: u32) -> u32 {
+    if channels <= 2 { 0 } else { 2 }
 }
 
 /// gst's rank file: which decoder elements the firmware leaves switched on.
@@ -294,8 +328,19 @@ pub fn apply_gst_decoders(caps: &mut Caps, conf: &str) -> (Vec<&'static str>, Ve
 }
 
 
-/// The decode-capability snapshot the playback stack derives from. `OnceLock` for the same
-/// reason as `tv::device::Info`: written exactly once, at boot, then read on every play decision.
+/// One stream class an attempt can be told to do without ([`Caps::without`]). Audio only for now:
+/// a refused video decode comes with the video flight that needs it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Facet {
+    /// `channels` channels of `codec`, in any spelling [`audio_codec_id`] knows.
+    Audio { codec: String, channels: u32 },
+}
+
+/// The decode-capability snapshot the playback stack derives from. Probed once, at boot
+/// ([`probe`]); the app reads [`caps`] ONCE per attempt, at the play's start, and the attempt carries
+/// that value (`route::PlaybackSession::attempt_caps`, which the request's `OpenRecovery` owns). The process-wide answer is not frozen after
+/// boot: [`learn_refusal`] can still move it, and an attempt already in flight keeps (and narrows,
+/// [`Caps::without`]) its own value instead of re-reading it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Caps {
     /// The SoC decodes HEVC. Gates the `hevc` arm of route.rs's direct-play test and the
@@ -344,9 +389,10 @@ pub struct Caps {
     pub av1_row: (u32, u32, u32),
     /// The direct-playable AUDIO subset: [`DP_AUDIO_CODECS`] (what the pipeline decodes)
     /// intersected with the table's audio rows, in `DP_AUDIO_CODECS`'s own URL form/order.
-    /// Normal routing reads this and the channel ceilings through `plex::is_dp_audio_track`,
-    /// as does its PMS profile. Forced mode starts from the pipeline's feed set with no channel
-    /// ceiling and admits DTS only with a DTS row in `audio_channels` (`Caps::forced_feeds_audio`).
+    /// Normal routing reads this, the channel ceilings and the rate ceiling ([`audio_track_fits`])
+    /// through `plex::is_dp_audio_track_with`, as does its PMS profile. Forced mode starts from the
+    /// pipeline's feed set with no channel ceiling and admits DTS only with a DTS row in
+    /// `audio_channels` (`Caps::forced_feeds_audio`).
     pub audio: String,
     /// Nonzero, per-codec channel ceilings from the device table, duplicate rows MIN-merged.
     /// Missing legacy limits remain unknown; DTS is admitted only with a measured limit.
@@ -358,9 +404,10 @@ pub struct Caps {
 }
 
 impl Caps {
-    /// The 49SM9000PLA values — the only set ever measured before this module. Byte-for-byte,
-    /// these reproduce the profile the app has always sent (the transcoder test pins that), so
-    /// an unreadable table changes nothing for any device that was working yesterday.
+    /// The 49SM9000PLA values — the only set ever measured before this module. These reproduce the
+    /// profile the app has always sent (the transcoder test pins that), plus the
+    /// `audio.samplingRate` limits of #951, so an unreadable table changes nothing else for any
+    /// device that was working yesterday.
     pub fn assumed() -> Caps {
         Caps {
             hevc: true,
@@ -409,7 +456,7 @@ impl Caps {
             return self.forced_admits_dts();
         }
         // Pipeline-only Opus and app-decoded FLAC need only a table that was read. A FLAC
-        // track's own limits are [`pcm_track_fits`], which the planner applies in both modes.
+        // track's own limits are [`audio_track_fits`], which the planner applies in both modes.
         if PIPELINE_ONLY_AUDIO.contains(&id.as_ref()) || is_pcm_codec(&id) {
             return self.audio_has(&id);
         }
@@ -434,6 +481,25 @@ impl Caps {
     /// of refusing). The channel ceiling itself is not applied.
     pub fn forced_admits_dts(&self) -> bool {
         self.audio_channels.contains_key("dts")
+    }
+
+    /// A narrower copy of this value, with `facet` taken out of it: the capability an attempt plans
+    /// and profiles from when it must not offer that stream class again. PURE: it reads and writes
+    /// no registry, so the value can be derived for a recovery flight without recording anything
+    /// before the flight has proved anything.
+    ///
+    /// An audio facet takes native audio away the way a refusal the install learned does
+    /// ([`apply_learned`]): a stereo or mono one takes the codec off the announced set, a surround
+    /// one keeps it to stereo. A codec this value does not announce is already without, so the copy
+    /// is equal to `self`.
+    pub fn without(&self, facet: &Facet) -> Caps {
+        let mut next = self.clone();
+        match facet {
+            Facet::Audio { codec, channels } => {
+                limit_codec(&mut next, &audio_codec_id(codec), refusal_ceiling(*channels));
+            }
+        }
+        next
     }
 
     /// The transcode-target chain's HEAD — the codec the profile asks PMS to ENCODE when a
@@ -543,8 +609,13 @@ fn with_layers<R>(f: impl FnOnce(&Layers) -> R) -> Option<R> {
 /// ([`learn_refusal`], [`project_stored_refusals`]), so a decision that must hold across a whole
 /// attempt reads it once.
 pub fn caps() -> std::sync::Arc<Caps> {
-    with_layers(|l| l.caps.read().unwrap_or_else(|e| e.into_inner()).clone())
-        .unwrap_or_else(|| ASSUMED.get_or_init(|| std::sync::Arc::new(Caps::assumed())).clone())
+    with_layers(|l| l.caps.read().unwrap_or_else(|e| e.into_inner()).clone()).unwrap_or_else(assumed_shared)
+}
+
+/// The one shared [`Caps::assumed`] value: [`caps`]' answer before [`probe`] has run, and the
+/// stand-in a session that has not begun an attempt plans from (`route::PlaybackSession::attempt_caps`).
+pub fn assumed_shared() -> std::sync::Arc<Caps> {
+    ASSUMED.get_or_init(|| std::sync::Arc::new(Caps::assumed())).clone()
 }
 
 /// Apply the refusals the install's stored record holds to the answer ([`Layers::fold`]). The plex
@@ -556,7 +627,9 @@ pub fn project_stored_refusals(stored: &[Refusal]) -> bool {
 }
 
 /// The pipeline refused `codec` with `channels` channels on this firmware, fed natively: take it
-/// off the answer at once (the recovery that follows plans against the new answer) and return the
+/// off the process-wide answer at once (the NEXT play's start reads it without the audio; the
+/// recovery in flight does not read this answer, it narrows its own attempt's value by the same
+/// rule, [`Caps::without`], which shares `refusal_ceiling` with [`apply_learned`]) and return the
 /// entry for the caller to persist. `None` when this set cannot learn (no firmware name, the debug
 /// flag, no [`probe`]), or the combination changes nothing: the codec is not announced to that
 /// many channels any more, so the same play converting it would not be this refusal.
@@ -1105,6 +1178,35 @@ mod tests {
         assert_eq!(apply_exclusions(&mut d, "Kisscurl-Koli", false, EXCLUSIONS).len(), 1);
     }
 
+    /// `without` is the learned-refusal rule, applied to a copy and nothing else: no global is read
+    /// or written, so the value a recovery flight plans from can be derived before anything is proved.
+    #[test]
+    fn without_an_audio_facet_narrows_a_copy_by_the_learned_refusal_rule() {
+        let base = native_set();
+        let facet = |codec: &str, channels: u32| Facet::Audio { codec: codec.into(), channels };
+
+        // A surround facet keeps the codec to stereo (what `apply_learned` does for a 6-channel refusal).
+        let surround = base.without(&facet("dts", 6));
+        assert!(!surround.audio_supports("dts", 6) && surround.audio_has("dts"));
+        assert_eq!(surround.audio_channels.get("dts"), Some(&2));
+        // A stereo facet takes the codec away, whatever spelling named it.
+        let stereo = base.without(&facet("DCA", 2));
+        assert!(!stereo.audio_has("dts") && !stereo.audio_supports("dts", 2));
+        assert!(!stereo.forced_feeds_audio("dts"), "Force Direct Play offers nothing it cannot take either");
+        // The same rule as a refusal the install learned.
+        let mut learned = native_set();
+        apply_learned(&mut learned, "kisscurl-koli", false, &[refusal("dts", 2)]);
+        assert_eq!(stereo, learned);
+
+        // Only the facet moved: the source value is a different, untouched object, and the rest of it holds.
+        assert_eq!(base, native_set());
+        assert!(stereo.audio_supports("eac3", 8) && stereo.audio_supports("ac3", 6));
+        // A codec this value never announced is already without: the copy equals the source.
+        assert_eq!(base.without(&facet("truehd", 8)), base);
+        // Monotone and idempotent, like the fold.
+        assert_eq!(stereo.without(&facet("dts", 2)), stereo);
+    }
+
     #[test]
     fn the_debug_flag_ignores_the_exclusions() {
         let mut c = native_set();
@@ -1351,16 +1453,35 @@ mod tests {
     #[test]
     fn the_pcm_path_admits_only_the_rates_and_channels_it_plays_correctly() {
         for rate in [8_000, 22_050, 44_100, 48_000] {
-            assert!(pcm_track_fits("flac", 2, rate), "{rate}");
+            assert!(audio_track_fits("flac", 2, rate), "{rate}");
         }
-        assert!(pcm_track_fits("FLAC", 1, 48_000));
+        assert!(audio_track_fits("FLAC", 1, 48_000));
         for rate in [0, 11_025, 88_200, 96_000, 176_400, 192_000] {
-            assert!(!pcm_track_fits("flac", 2, rate), "{rate} plays at the wrong speed or is unknown");
+            assert!(!audio_track_fits("flac", 2, rate), "{rate} plays at the wrong speed or is unknown");
         }
-        assert!(!pcm_track_fits("flac", 6, 48_000));
-        assert!(!pcm_track_fits("flac", 0, 48_000));
-        // not app-decoded: the hardware decoder's own rules apply, not these
-        assert!(pcm_track_fits("ac3", 6, 0) && pcm_track_fits("dca", 8, 96_000));
+        assert!(!audio_track_fits("flac", 6, 48_000));
+        assert!(!audio_track_fits("flac", 0, 48_000));
+        // not app-decoded: the hardware decoder's own channel rules apply, not these
+        assert!(audio_track_fits("ac3", 6, 0));
+    }
+
+    /// Issue #951: an LG B8 refused a 96 kHz AAC Load, so a codec the hardware decodes is admitted
+    /// only up to the ceiling the profile asks PMS for, by the same predicate. An unstated rate
+    /// passes (the planner asks with `0` when it has no track list), and DTS is exempt: the app
+    /// feeds only its core, which is 48 kHz at most by format, so a 96/24 DTS-HD source plays today.
+    #[test]
+    fn a_hardware_codec_above_the_load_ceiling_is_not_admitted_but_dts_is_exempt() {
+        for rate in [0, 8_000, 11_025, 44_100, 48_000] {
+            assert!(audio_track_fits("aac", 2, rate), "{rate}");
+        }
+        for rate in [48_001, 88_200, 96_000, 192_000] {
+            assert!(!audio_track_fits("aac", 2, rate), "{rate} is above the ceiling");
+            assert!(!audio_track_fits("eac3", 6, rate), "{rate}");
+        }
+        assert!(PCM_SAMPLE_RATES.iter().all(|&r| r <= AUDIO_RATE_CEILING), "the PCM table names nothing above the ceiling");
+        for dts in ["dca", "dts", "DTS"] {
+            assert!(audio_track_fits(dts, 8, 96_000), "{dts}: only the core is fed");
+        }
     }
 
     /// FLAC is decoded in the app and fed as PCM: it needs no table row, but it does need a
