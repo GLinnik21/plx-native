@@ -463,6 +463,10 @@ cmd_status() {
 cmd_break() {
   parse_opts "$@"
   need_host || exit 2
+  # remote_op writes $TOKEN into its owner record and `set -u` kills it when nothing bound it: with no
+  # lease_load here a lane that holds no lease (the one that breaks) got an empty reply, read it as
+  # "not held", and skipped the live-lease refusal below. cmd_status binds it the same way.
+  lease_load || true
   RESP="$(remote_op status 0 0)"; parse_resp
   if [ "$ACT" = free ]; then info "nothing to break — the lock is free"; exit 0; fi
   echo "breaking a lease held by:" >&2; describe "$OWNER_BLK" >&2
@@ -659,6 +663,8 @@ cmd_selftest() {
   want "renew: none" 0 0
   hu B acquire --why "intruder"
   want "an acquire the set refuses: none" 1 0
+  hu B break --why "case"
+  want "a break without --yes is refused while the lease is live: none" 1 0
   hu B break --yes --why "case" --ttl 7
   want "break prints one HEADS-UP" 0 1 "HEADS-UP: break: case, lease 7 min"
   hu B release
