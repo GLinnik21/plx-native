@@ -15,8 +15,8 @@ The second line it keys on is the pre-flight's verdict. `tools/tv-lock.sh` (an a
 looks at who is on the set, and when someone else is, prints `IN USE: <app>: stop and tell the owner` at
 the start of a line. That is a stop, not a nudge to push: the agent is told not to drive the television
 and to tell the owner (a subagent: first in its report). `IDLE` and `UNKNOWN` verdicts print no such line,
-so they get nothing. The acquire still succeeded (the lease is a warning, not a refusal), so the text also
-says to release it; and when a result holds both lines the stop wins and the heads-up push is not asked for.
+so they get nothing. The acquire still succeeded (IN USE is a warning, not a refusal: the lease is kept),
+and when a result holds both lines the stop wins and the heads-up push is not asked for.
 
 WHAT IT COSTS. It runs after EVERY Bash call, so the common case must be free: the raw stdin is
 searched for the marker before anything is parsed, and no marker means exit at once with no output.
@@ -75,8 +75,7 @@ IN_USE_INSTRUCTION = (
     "\n"
     "STOP. Do not deploy, run, drive or test on the television. Tell the owner now: send a\n"
     "PushNotification with that line as the message (if your toolset has none, say the line in your\n"
-    "next message) and wait for the owner's answer. If you just took the lease for this, release it\n"
-    "first (tools/tv-lock.sh release)."
+    "next message) and wait for the owner's answer."
 )
 
 SUBAGENT_IN_USE_INSTRUCTION = (
@@ -86,8 +85,7 @@ SUBAGENT_IN_USE_INSTRUCTION = (
     "\n"
     "STOP. Do not deploy, run, drive or test on the television. You are a subagent, so your messages\n"
     "reach your caller, not the owner: put that line FIRST in your final report (or in a message to your\n"
-    "caller right away) so the caller tells the owner, and end your work on the set. If you just took\n"
-    "the lease for this, release it first (tools/tv-lock.sh release)."
+    "caller right away) so the caller tells the owner, and end your work on the set."
 )
 
 

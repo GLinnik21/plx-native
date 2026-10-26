@@ -137,6 +137,7 @@ CASES += [
     (BLOCK, "tools/tv-session.sh fg --flavor debug"),
     (BLOCK, "bash tools/tv-session.sh fg extra"),
     (BLOCK, "tools/tv-session.sh fg > /tmp/fg.txt"),
+    (BLOCK, "tools/tv-session.sh fg 2>&1"),
     (BLOCK, "tools/tv-session.sh fgx"),
     (BLOCK, "tools/tv-session.sh fg && tools/tv-session.sh up"),
     (BLOCK, "tools/tv-session.sh fg; tools/tv-session.sh sound status"),

@@ -508,12 +508,11 @@ preflight_report() {  # preflight_report <probe output> <stable app id> <debug a
   fgr="$(luna_section fg "$raw")"; volr="$(luna_section vol "$raw")"; powr="$(luna_section power "$raw")"
   fg="$(luna_str appId "$fgr")"
   power=""; muted=""; vol=""
-  case "$powr" in *'"returnValue": true'*) power="$(luna_str state "$powr")" ;; esac
-  case "$volr" in
-    *'"returnValue": true'*)
-      muted="$(printf '%s' "$volr" | sed -En 's/.*"muted": *(true|false).*/\1/p')"
-      vol="$(printf '%s' "$volr" | sed -n 's/.*"volume": *\([0-9]*\).*/\1/p')" ;;
-  esac
+  if printf '%s' "$powr" | grep -q '"returnValue": *true'; then power="$(luna_str state "$powr")"; fi
+  if printf '%s' "$volr" | grep -q '"returnValue": *true'; then
+    muted="$(printf '%s' "$volr" | sed -En 's/.*"muted": *(true|false).*/\1/p')"
+    vol="$(printf '%s' "$volr" | sed -n 's/.*"volume": *\([0-9]*\).*/\1/p')"
+  fi
   [ -z "$muted$vol" ] || info "sound: muted=${muted:-unknown} volume=${vol:-?}"
   verdict="$(idle_verdict "$fg" "$power" "$2" "$3")"
   case "$verdict" in
