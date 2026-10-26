@@ -29,7 +29,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-26T00:56:37Z",
+ "generated": "2026-10-26T00:59:31Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -95,19 +95,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -52.7,
-   "change7_pct": -29.1,
+   "change30_pct": -52.3,
+   "change7_pct": -28.5,
    "d30": 728,
-   "delta30": -384.0,
-   "delta7": -141.0,
+   "delta30": -381,
+   "delta7": -138,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 200,
-   "n_prev": 258,
-   "now": 344.0,
-   "prev7": 485.0,
+   "n_now": 197,
+   "n_prev": 261,
+   "now": 347,
+   "prev7": 485,
    "shown": true,
    "state": "better",
    "state30": "better",
@@ -125,9 +125,9 @@
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 93,
+   "n_now": 94,
    "n_prev": 116,
-   "now": 335,
+   "now": 335.0,
    "prev7": 426.5,
    "shown": true,
    "state": "better",
@@ -347,9 +347,9 @@
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 80,
+   "n_now": 81,
    "n_prev": 110,
-   "now": 265.0,
+   "now": 265,
    "prev7": 237.0,
    "shown": true,
    "state": "flat",
@@ -359,18 +359,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 170.3,
-   "change7_pct": 3.7,
+   "change30_pct": 169.0,
+   "change7_pct": 3.2,
    "d30": 72.5,
-   "delta30": 123.5,
-   "delta7": 7.0,
+   "delta30": 122.5,
+   "delta7": 6.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 79,
+   "n_now": 80,
    "n_prev": 110,
-   "now": 196,
+   "now": 195.0,
    "prev7": 189.0,
    "shown": true,
    "state": "flat",
@@ -423,17 +423,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -2.3,
+   "change7_pct": -2.0,
    "d30": null,
    "delta30": null,
-   "delta7": -3.5,
+   "delta7": -3.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 80,
+   "n_now": 81,
    "n_prev": 110,
-   "now": 149.5,
+   "now": 150,
    "prev7": 153.0,
    "shown": true,
    "state": "flat",
@@ -496,9 +496,9 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 80,
+   "n_now": 81,
    "n_prev": 110,
-   "now": 19.0,
+   "now": 19,
    "prev7": 17.5,
    "shown": false,
    "state": "flat",
@@ -639,11 +639,6 @@
    "change_pct": 37.5,
    "commits": [
     {
-     "pr": 950,
-     "sha": "e87ca6583",
-     "title": "Audio: FLAC decoded in the app and fed as PCM (stereo, up to 48 kHz)"
-    },
-    {
      "pr": 1021,
      "sha": "15e843ee8",
      "title": "Browse section hubs emit store jobs for the list and row reads; the step decides the client from ClientKeys"
@@ -687,6 +682,11 @@
      "pr": 1018,
      "sha": "c92352657",
      "title": "Playback: a foreground Load refused while the plaintext grants return is claimed again"
+    },
+    {
+     "pr": 1034,
+     "sha": "48b3040e2",
+     "title": "Audio: per-TV Opus limits, and formats the player learns to avoid"
     }
    ],
    "from": 156,
@@ -700,11 +700,6 @@
    "change_pct": 35.8,
    "commits": [
     {
-     "pr": 950,
-     "sha": "e87ca6583",
-     "title": "Audio: FLAC decoded in the app and fed as PCM (stereo, up to 48 kHz)"
-    },
-    {
      "pr": 1021,
      "sha": "15e843ee8",
      "title": "Browse section hubs emit store jobs for the list and row reads; the step decides the client from ClientKeys"
@@ -748,6 +743,11 @@
      "pr": 1018,
      "sha": "c92352657",
      "title": "Playback: a foreground Load refused while the plaintext grants return is claimed again"
+    },
+    {
+     "pr": 1034,
+     "sha": "48b3040e2",
+     "title": "Audio: per-TV Opus limits, and formats the player learns to avoid"
     }
    ],
    "from": 46.0,
@@ -761,11 +761,6 @@
    "change_pct": 27.1,
    "commits": [
     {
-     "pr": 950,
-     "sha": "e87ca6583",
-     "title": "Audio: FLAC decoded in the app and fed as PCM (stereo, up to 48 kHz)"
-    },
-    {
      "pr": 1021,
      "sha": "15e843ee8",
      "title": "Browse section hubs emit store jobs for the list and row reads; the step decides the client from ClientKeys"
@@ -809,6 +804,11 @@
      "pr": 1018,
      "sha": "c92352657",
      "title": "Playback: a foreground Load refused while the plaintext grants return is claimed again"
+    },
+    {
+     "pr": 1034,
+     "sha": "48b3040e2",
+     "title": "Audio: per-TV Opus limits, and formats the player learns to avoid"
     }
    ],
    "from": 114.7,
@@ -849,7 +849,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 265.0
+   "now": 265
   }
  ],
  "slowest_local": [
