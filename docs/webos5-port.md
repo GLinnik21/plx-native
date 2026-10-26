@@ -397,10 +397,10 @@ refusal and stuck-seek nets apply there.
   derived from the set's own codec table: `devcaps::Caps` parses
   `/etc/umediaserver/device_codec_capability_config.json`, and `transcoder::profile_for` takes the
   HEVC / VP9 / AV1 lanes, the width/height bounds and the audio list from it, so a set whose table
-  lists no HEVC decoder is offered H.264 alone, in the direct-play list and in the transcode
-  target. Still asserted: `bitDepth=10` (the table has no bit-depth axis, so it can neither
-  confirm nor deny it), and the assumed-caps fallback (`Caps::assumed`, the author's panel) when
-  the table is unreadable or unparseable.
+  lists no HEVC decoder is not offered HEVC: the direct-play list drops it and the transcode
+  target's encode head is H.264 (`Caps::encode_vcodec`). Still asserted: `bitDepth=10` (the table
+  has no bit-depth axis, so it can neither confirm nor deny it), and the assumed-caps fallback
+  (`Caps::assumed`, the author's panel) when the table is unreadable or unparseable.
 - **Resolution: do NOT use `SDL_webOSGetPanelResolution`.** It exists on both eras, which makes it
   an inviting answer and the wrong one — it reports the **panel**, not your drawable. Measured on
   the dev TV (a 4K set): `window=1920x1080 drawable=1920x1080 panel=3840x2160`. Sizing the UI from
