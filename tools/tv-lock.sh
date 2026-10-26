@@ -66,6 +66,7 @@ lane_slug() {
   printf '%s-%s' "$(basename "$LANE" | tr -c 'A-Za-z0-9._-' '_')" "$h"
 }
 LEASE="$STATE_DIR/$(lane_slug).lease"
+SESSIONS=""     # the Claude Code sessions that have used this lane's lease (see lease_write)
 
 now()  { date +%s; }
 warn() { printf '  \033[33m!\033[0m %s\n' "$*" >&2; }
@@ -252,6 +253,14 @@ describe() {
 # The token proves the lease is MINE, and it lives in two places: here (so any later shell in this
 # lane can prove it) and in the lock on the TV. A hook reads only this file, which is why it costs
 # nothing on every Bash call; the television stays the authority, and `require` reconciles them.
+#
+# SESSIONS is the one field only this script writes: the Claude Code session ids (from
+# $CLAUDE_CODE_SESSION_ID, the id the hook payload carries too, a subagent's being its parent's) that
+# took this TOKEN's lease. tv-lock-guard.py reads it when a command names a lane by a script path or
+# a cd rather than by the cwd, so session A cannot run /B/tools/... on the strength of B's lease.
+# `acquire` and `break` (and so `with`) reset it to the current session, `renew` appends it, and a
+# new TOKEN starts it afresh. Unset id, no line; a lease with no line is the owner's terminal's.
+cur_session() { printf '%s' "${CLAUDE_CODE_SESSION_ID:-}" | tr -cd 'A-Za-z0-9_-'; }
 lease_write() {
   mkdir -p "$STATE_DIR" 2>/dev/null; chmod 700 "$STATE_DIR" 2>/dev/null
   umask 077
@@ -263,21 +272,24 @@ VERIFIED=$(now)
 TV='$HOST'
 LANE='$LANE'
 EOF
+  [ -z "$SESSIONS" ] || printf "SESSIONS='%s'\n" "$SESSIONS" >> "$LEASE"
 }
 lease_clear() { rm -f "$LEASE"; }
 lease_load() {
-  TOKEN=""; EXPIRES=0; ACQUIRED=0; VERIFIED=0
+  TOKEN=""; EXPIRES=0; ACQUIRED=0; VERIFIED=0; SESSIONS=""
   [ -f "$LEASE" ] && . "$LEASE" 2>/dev/null
   FILE_TOKEN="$TOKEN"
   # An inherited token beats the file: inside `with`, or inside anything it spawned, the lease is
   # the parent's and may not have been written for this lane at all.
   [ -n "${PLX_TV_LOCK_TOKEN:-}" ] && TOKEN="$PLX_TV_LOCK_TOKEN"
+  [ "$TOKEN" = "$FILE_TOKEN" ] || SESSIONS=""     # the sessions belong to the file's TOKEN
   [ -n "$TOKEN" ]
 }
 new_token() {
   TOKEN="$( (head -c 12 /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n') )"
   [ -n "$TOKEN" ] || TOKEN="$$-$(now)"
   ACQUIRED_AT="$(now)"
+  SESSIONS="$(cur_session)"
 }
 
 need_host() {
@@ -356,6 +368,7 @@ cmd_acquire() {
       # do_acquire answers `renewed`; but the set may have sat idle past the expiry, so it is a new
       # lease as far as the person is concerned. do_acquire overwrites $ACT, so read it first.
       local was="$ACT"
+      SESSIONS="$(cur_session)"     # acquiring is claiming: this session, no longer the last one's
       if do_acquire "$ttl" 0; then
         ok "lock renewed (already yours) — $(fmt_dur $((ttl*60))) from now"
         [ "$was" = expired ] && heads_up "$WHY" "$ttl"   # last, as below; a live renew prints none
@@ -414,7 +427,8 @@ cmd_renew() {
   parse_opts "$@"
   need_host || exit 2
   lease_load || { bad "no lease in this lane to renew"; exit 1; }
-  local ttl="${TTL_OVERRIDE:-$TTL_MIN}"
+  local ttl="${TTL_OVERRIDE:-$TTL_MIN}" me; me="$(cur_session)"
+  case " $SESSIONS " in *" $me "*) ;; *) [ -z "$me" ] || SESSIONS="${SESSIONS:+$SESSIONS }$me" ;; esac
   RESP="$(remote_op renew $(( ttl * 60 )) 0)"; parse_resp
   case "$ACT" in
     renewed) lease_write "$(fld expires "$OWNER_BLK")"; ok "lease renewed — $(fmt_dur $((ttl*60))) from now" ;;
@@ -649,9 +663,12 @@ cmd_selftest() {
   # reach the operator's real lease; PLX_TV_LOCK_LOCAL keeps ssh_tv, ensure_awake and
   # preflight_note off the network, and TV is a placeholder so no tv-config lookup happens either.
   local self="${BASH_SOURCE[0]}" out rc
-  hu() {  # hu <lane> <tv-lock.sh args…>  ->  $out (stdout+stderr), $rc
+  hu() {  # hu <lane> <tv-lock.sh args…>  ->  $out (stdout+stderr), $rc. HU_SID is the session id
+          # the child sees as CLAUDE_CODE_SESSION_ID; unset, it sees none (a run inside a Claude session
+          # exports one, and the cases must not depend on it).
     local lane="$1"; shift
     out="$(env -u PLX_TV_LOCK_TOKEN -u PLX_TV_LOCK_INHERITED -u PLX_TV_LOCK_BYPASS \
+      -u CLAUDE_CODE_SESSION_ID ${HU_SID:+CLAUDE_CODE_SESSION_ID=$HU_SID} \
       TV=selftest.invalid PLX_TV_LOCK_LOCAL="$d" PLX_TV_LOCK_PATH="$d/headsup.lock" \
       PLX_TV_LOCK_STATE="$d/headsup-state" PLX_TV_LOCK_LANE="$d/lane-$lane" "$self" "$@" 2>&1)"
     rc=$?
@@ -692,6 +709,64 @@ cmd_selftest() {
   want "re-taking your own EXPIRED lease prints one HEADS-UP" 0 1 "HEADS-UP: back after expiry, lease 7 min"
   hu A acquire --why "live again" --ttl 7
   want "and the next acquire, now live, is a renew: none" 0 0
+
+  # SESSIONS: the one field tv-lock-guard.py reads to decide whether a lane named by a script path or
+  # a cd (not the cwd's own) is THIS session's. tools/tv-lock.sh is its only writer, from
+  # $CLAUDE_CODE_SESSION_ID: acquire, break and with reset it, renew appends, and a new TOKEN starts
+  # it afresh. sess <name> <lane> <expected, "" = no line> reads the lane's mirror file by its LANE.
+  sess() {
+    local f got n
+    f="$(grep -l "^LANE='$d/lane-$2'\$" "$d"/headsup-state/*.lease 2>/dev/null | head -1)"
+    got="$(sed -n "s/^SESSIONS='\(.*\)'\$/\1/p" "$f" 2>/dev/null)"
+    n=$(grep -c -E "^(TOKEN|EXPIRES|ACQUIRED|VERIFIED|TV|LANE)=" "$f" 2>/dev/null)
+    if [ -n "$f" ] && [ "$got" = "$3" ] && [ "${n:-0}" = 6 ]; then
+      printf '  \033[32m✓\033[0m %s (SESSIONS=%s)\n' "$1" "${got:-none}"
+    else
+      printf '  \033[31m✗\033[0m %s: want SESSIONS=%s with the 6 other fields; got %s (%s fields)\n' \
+        "$1" "${3:-none}" "${got:-none}" "${n:-0}"
+      fails=$((fails+1))
+    fi
+  }
+  HU_SID=sess-1 hu A acquire --ttl 7
+  sess "acquiring what you hold records this session" A "sess-1"
+  HU_SID=sess-2 hu A renew --ttl 7
+  sess "another session's renew appends it" A "sess-1 sess-2"
+  HU_SID=sess-2 hu A renew --ttl 7
+  sess "a renew by a session already listed adds nothing" A "sess-1 sess-2"
+  hu A renew --ttl 7
+  sess "a renew with no session id changes nothing" A "sess-1 sess-2"
+  HU_SID=sess-3 hu A acquire --ttl 7
+  sess "an acquire resets it to the acquiring session" A "sess-3"
+  hu A release
+  HU_SID=sess-4 hu A acquire --ttl 7
+  sess "a new TOKEN starts afresh, nothing carried from the last" A "sess-4"
+  HU_SID=sess-5 hu B break --yes --ttl 7
+  sess "break resets it to the breaking session" B "sess-5"
+  HU_SID=sess-6 hu B renew --ttl 7
+  HU_SID=sess-7 hu B break --yes --ttl 7
+  sess "a second break resets it again" B "sess-7"
+  hu B release
+  # `with` starts a renewer whose `sleep 240` outlives it and would hold a $(…) capture's pipe open
+  # for the whole four minutes, so this one goes to a file rather than through hu().
+  env -u PLX_TV_LOCK_TOKEN -u PLX_TV_LOCK_INHERITED -u PLX_TV_LOCK_BYPASS -u CLAUDE_CODE_SESSION_ID \
+    CLAUDE_CODE_SESSION_ID=sess-8 TV=selftest.invalid PLX_TV_LOCK_LOCAL="$d" \
+    PLX_TV_LOCK_PATH="$d/headsup.lock" PLX_TV_LOCK_STATE="$d/headsup-state" PLX_TV_LOCK_LANE="$d/lane-B" \
+    "$self" with --ttl 7 -- sh -c 'grep -h "^SESSIONS=" "$PLX_TV_LOCK_STATE"/*.lease' \
+    >"$d/with.out" 2>&1
+  out="$(cat "$d/with.out")"
+  case "$out" in
+    *"SESSIONS='sess-8'"*) printf '  \033[32m✓\033[0m with records its session while it holds the lease\n' ;;
+    *) printf '  \033[31m✗\033[0m with should record sess-8; saw: %s\n' "$out"; fails=$((fails+1)) ;;
+  esac
+  hu A release
+  hu A acquire --ttl 7
+  sess "no CLAUDE_CODE_SESSION_ID: no SESSIONS line at all" A ""
+  HU_SID=sess-9 hu A renew --ttl 7
+  sess "a renew with an id adds it to a lease that had none" A "sess-9"
+  hu A acquire --ttl 7
+  sess "an acquire with no id clears it" A ""
+  HU_SID="s1;'x\$y" hu A acquire --ttl 7
+  sess "an id with quotes and shell metacharacters is cut to its safe characters" A "s1xy"
   echo ""
   [ "$fails" = 0 ] && { echo "selftest: all good"; return 0; }
   echo "selftest: $fails FAILED"; return 1
