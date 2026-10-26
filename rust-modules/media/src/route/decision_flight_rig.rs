@@ -165,6 +165,12 @@ impl FlightRig {
                 )
             }
         };
+        // The play request that planned this route would have begun the attempt on the device's
+        // capability value; `apply_plan` alone begins none, and the session would plan from
+        // `devcaps::assumed_shared()` rather than the table the thread installed. The rig begins
+        // it on this thread's answer, so a rig test plans from the same table it installs
+        // ([`FlightRig::plan_on`] re-begins on another value, for a set installed after the rig).
+        ps.begin_attempt(plx_platform::devcaps::caps());
         apply_plan(
             ps,
             Plan {
@@ -210,6 +216,14 @@ impl FlightRig {
     /// fallback rebuilds as HLS).
     pub(crate) fn set_bootstrap_rung(ps: &mut PlaybackSession, rung: crate::abr::Rung) {
         ps.auto_bootstrap_rung = Some(rung);
+    }
+
+    /// Begin the playing route's attempt on `caps`, as the play request that planned the rig's route
+    /// would have ([`PlaybackSession::begin_attempt`]). The rig already began it on the thread's
+    /// `devcaps::caps()` when it started; a test that installs its set AFTER the rig (a
+    /// `firmware_on_this_thread_for_test` guard taken once the route is up) re-begins on that set.
+    pub(crate) fn plan_on(ps: &mut PlaybackSession, caps: std::sync::Arc<plx_platform::devcaps::Caps>) {
+        ps.begin_attempt(caps);
     }
 
     /// Offer the Original the playing route can be restored to. A REMUX candidate (`direct ==
@@ -305,9 +319,14 @@ impl FlightRig {
         self.log.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// The live `/decision` request lines (not the `hasMDE=1` probe) the server has been asked, in order.
+    pub(crate) fn decision_requests(&self) -> Vec<String> {
+        self.requests().into_iter().filter(|r| r.contains("/decision?") && !r.contains("hasMDE=1")).collect()
+    }
+
     /// How many live `/decision` calls (not the `hasMDE=1` probe) the server has been asked.
     pub(crate) fn decisions(&self) -> usize {
-        self.requests().iter().filter(|r| r.contains("/decision?") && !r.contains("hasMDE=1")).count()
+        self.decision_requests().len()
     }
 
     /// The transcode session ids the server has been asked to stop.

@@ -48,7 +48,7 @@ pub mod dv;
 /// two-sided test — what our demuxer/payload path can feed, before asking whether this
 /// particular SoC can decode it. The live set is [`Caps::audio`] (this list ∩ the device's own
 /// codec table), and the ONE-definition rule lives with it: the Normal routing uses
-/// `plex::is_dp_audio_track` for membership and channel bounds, shared with the device profile.
+/// `plex::is_dp_audio_track_with` for membership and channel bounds, shared with the device profile.
 /// Forced mode instead uses the implemented software feed formats and its separate profile,
 /// without conservative device bounds.
 ///
@@ -224,8 +224,16 @@ pub fn apply_learned(caps: &mut Caps, codename: &str, ignore: bool, learned: &[R
     learned
         .iter()
         .filter(|r| r.firmware.eq_ignore_ascii_case(codename))
-        .filter_map(|r| limit_codec(caps, &r.codec, if r.channels <= 2 { 0 } else { 2 }))
+        .filter_map(|r| limit_codec(caps, &r.codec, refusal_ceiling(r.channels)))
         .collect()
+}
+
+/// What a refusal of a `channels`-channel track leaves of its codec ([`limit_codec`]'s `max`): a
+/// stereo (or mono) refusal takes the codec away (`0`), a surround one keeps it to stereo. The one
+/// rule for a refusal the install learned ([`apply_learned`]) and one an attempt only supposes
+/// ([`Caps::without`]).
+fn refusal_ceiling(channels: u32) -> u32 {
+    if channels <= 2 { 0 } else { 2 }
 }
 
 /// gst's rank file: which decoder elements the firmware leaves switched on.
@@ -294,8 +302,19 @@ pub fn apply_gst_decoders(caps: &mut Caps, conf: &str) -> (Vec<&'static str>, Ve
 }
 
 
-/// The decode-capability snapshot the playback stack derives from. `OnceLock` for the same
-/// reason as `tv::device::Info`: written exactly once, at boot, then read on every play decision.
+/// One stream class an attempt can be told to do without ([`Caps::without`]). Audio only for now:
+/// a refused video decode comes with the video flight that needs it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Facet {
+    /// `channels` channels of `codec`, in any spelling [`audio_codec_id`] knows.
+    Audio { codec: String, channels: u32 },
+}
+
+/// The decode-capability snapshot the playback stack derives from. Probed once, at boot
+/// ([`probe`]); the app reads [`caps`] ONCE per attempt, at the play's start, and the attempt carries
+/// that value (`route::PlaybackSession`'s `caps`). The process-wide answer is not frozen after
+/// boot: [`learn_refusal`] can still move it, and an attempt already in flight keeps (and narrows,
+/// [`Caps::without`]) its own value instead of re-reading it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Caps {
     /// The SoC decodes HEVC. Gates the `hevc` arm of route.rs's direct-play test and the
@@ -344,7 +363,7 @@ pub struct Caps {
     pub av1_row: (u32, u32, u32),
     /// The direct-playable AUDIO subset: [`DP_AUDIO_CODECS`] (what the pipeline decodes)
     /// intersected with the table's audio rows, in `DP_AUDIO_CODECS`'s own URL form/order.
-    /// Normal routing reads this and the channel ceilings through `plex::is_dp_audio_track`,
+    /// Normal routing reads this and the channel ceilings through `plex::is_dp_audio_track_with`,
     /// as does its PMS profile. Forced mode starts from the pipeline's feed set with no channel
     /// ceiling and admits DTS only with a DTS row in `audio_channels` (`Caps::forced_feeds_audio`).
     pub audio: String,
@@ -434,6 +453,25 @@ impl Caps {
     /// of refusing). The channel ceiling itself is not applied.
     pub fn forced_admits_dts(&self) -> bool {
         self.audio_channels.contains_key("dts")
+    }
+
+    /// A narrower copy of this value, with `facet` taken out of it: the capability an attempt plans
+    /// and profiles from when it must not offer that stream class again. PURE: it reads and writes
+    /// no registry, so the value can be derived for a recovery flight without recording anything
+    /// before the flight has proved anything.
+    ///
+    /// An audio facet takes native audio away the way a refusal the install learned does
+    /// ([`apply_learned`]): a stereo or mono one takes the codec off the announced set, a surround
+    /// one keeps it to stereo. A codec this value does not announce is already without, so the copy
+    /// is equal to `self`.
+    pub fn without(&self, facet: &Facet) -> Caps {
+        let mut next = self.clone();
+        match facet {
+            Facet::Audio { codec, channels } => {
+                limit_codec(&mut next, &audio_codec_id(codec), refusal_ceiling(*channels));
+            }
+        }
+        next
     }
 
     /// The transcode-target chain's HEAD — the codec the profile asks PMS to ENCODE when a
@@ -543,8 +581,13 @@ fn with_layers<R>(f: impl FnOnce(&Layers) -> R) -> Option<R> {
 /// ([`learn_refusal`], [`project_stored_refusals`]), so a decision that must hold across a whole
 /// attempt reads it once.
 pub fn caps() -> std::sync::Arc<Caps> {
-    with_layers(|l| l.caps.read().unwrap_or_else(|e| e.into_inner()).clone())
-        .unwrap_or_else(|| ASSUMED.get_or_init(|| std::sync::Arc::new(Caps::assumed())).clone())
+    with_layers(|l| l.caps.read().unwrap_or_else(|e| e.into_inner()).clone()).unwrap_or_else(assumed_shared)
+}
+
+/// The one shared [`Caps::assumed`] value: [`caps`]' answer before [`probe`] has run, and the
+/// stand-in a session that has not begun an attempt plans from (`route::PlaybackSession::caps`).
+pub fn assumed_shared() -> std::sync::Arc<Caps> {
+    ASSUMED.get_or_init(|| std::sync::Arc::new(Caps::assumed())).clone()
 }
 
 /// Apply the refusals the install's stored record holds to the answer ([`Layers::fold`]). The plex
@@ -556,7 +599,9 @@ pub fn project_stored_refusals(stored: &[Refusal]) -> bool {
 }
 
 /// The pipeline refused `codec` with `channels` channels on this firmware, fed natively: take it
-/// off the answer at once (the recovery that follows plans against the new answer) and return the
+/// off the process-wide answer at once (the NEXT play's start reads it without the audio; the
+/// recovery in flight does not read this answer, it narrows its own attempt's value by the same
+/// rule, [`Caps::without`], which shares `refusal_ceiling` with [`apply_learned`]) and return the
 /// entry for the caller to persist. `None` when this set cannot learn (no firmware name, the debug
 /// flag, no [`probe`]), or the combination changes nothing: the codec is not announced to that
 /// many channels any more, so the same play converting it would not be this refusal.
@@ -1103,6 +1148,35 @@ mod tests {
         // The codename compares without regard to case.
         let mut d = native_set();
         assert_eq!(apply_exclusions(&mut d, "Kisscurl-Koli", false, EXCLUSIONS).len(), 1);
+    }
+
+    /// `without` is the learned-refusal rule, applied to a copy and nothing else: no global is read
+    /// or written, so the value a recovery flight plans from can be derived before anything is proved.
+    #[test]
+    fn without_an_audio_facet_narrows_a_copy_by_the_learned_refusal_rule() {
+        let base = native_set();
+        let facet = |codec: &str, channels: u32| Facet::Audio { codec: codec.into(), channels };
+
+        // A surround facet keeps the codec to stereo (what `apply_learned` does for a 6-channel refusal).
+        let surround = base.without(&facet("dts", 6));
+        assert!(!surround.audio_supports("dts", 6) && surround.audio_has("dts"));
+        assert_eq!(surround.audio_channels.get("dts"), Some(&2));
+        // A stereo facet takes the codec away, whatever spelling named it.
+        let stereo = base.without(&facet("DCA", 2));
+        assert!(!stereo.audio_has("dts") && !stereo.audio_supports("dts", 2));
+        assert!(!stereo.forced_feeds_audio("dts"), "Force Direct Play offers nothing it cannot take either");
+        // The same rule as a refusal the install learned.
+        let mut learned = native_set();
+        apply_learned(&mut learned, "kisscurl-koli", false, &[refusal("dts", 2)]);
+        assert_eq!(stereo, learned);
+
+        // Only the facet moved: the source value is a different, untouched object, and the rest of it holds.
+        assert_eq!(base, native_set());
+        assert!(stereo.audio_supports("eac3", 8) && stereo.audio_supports("ac3", 6));
+        // A codec this value never announced is already without: the copy equals the source.
+        assert_eq!(base.without(&facet("truehd", 8)), base);
+        // Monotone and idempotent, like the fold.
+        assert_eq!(stereo.without(&facet("dts", 2)), stereo);
     }
 
     #[test]
