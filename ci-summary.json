@@ -29,7 +29,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-26T10:48:52Z",
+ "generated": "2026-10-26T10:52:45Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -117,18 +117,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -53.7,
-   "change7_pct": -20.9,
+   "change30_pct": -53.8,
+   "change7_pct": -21.1,
    "d30": 725.5,
-   "delta30": -389.5,
-   "delta7": -89,
+   "delta30": -390.0,
+   "delta7": -89.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 97,
+   "n_now": 98,
    "n_prev": 117,
-   "now": 336,
+   "now": 335.5,
    "prev7": 425,
    "shown": true,
    "state": "better",
@@ -360,18 +360,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 102.7,
-   "change7_pct": 11.6,
+   "change30_pct": 102.3,
+   "change7_pct": 11.3,
    "d30": 131.0,
-   "delta30": 134.5,
-   "delta7": 27.5,
+   "delta30": 134.0,
+   "delta7": 27.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 84,
+   "n_now": 85,
    "n_prev": 108,
-   "now": 265.5,
+   "now": 265,
    "prev7": 238.0,
    "shown": true,
    "state": "flat",
@@ -390,9 +390,9 @@
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 83,
+   "n_now": 84,
    "n_prev": 108,
-   "now": 194,
+   "now": 194.0,
    "prev7": 190.5,
    "shown": true,
    "state": "flat",
@@ -453,9 +453,9 @@
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 84,
+   "n_now": 85,
    "n_prev": 108,
-   "now": 151.0,
+   "now": 151,
    "prev7": 152.5,
    "shown": true,
    "state": "flat",
@@ -496,9 +496,9 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 84,
+   "n_now": 85,
    "n_prev": 108,
-   "now": 19.0,
+   "now": 19,
    "prev7": 18.0,
    "shown": false,
    "state": "flat",
@@ -639,11 +639,6 @@
    "change_pct": 37.8,
    "commits": [
     {
-     "pr": 1029,
-     "sha": "db75bbbfd",
-     "title": "ru: the five keys the catalogue is missing (Play Version, playback speed)"
-    },
-    {
      "pr": 921,
      "sha": "2d238e7b0",
      "title": "player: FF/REW tap seeking, opt-in instant D-pad seeking, Previous/Next episode buttons"
@@ -687,6 +682,11 @@
      "pr": 1062,
      "sha": "e2a4365a3",
      "title": "Playback: the capability answer is fixed at boot; each play start applies the stored refusals itself"
+    },
+    {
+     "pr": 1063,
+     "sha": "03534e394",
+     "title": "Tests: Force Direct Play refuses a learned refusal before the Load"
     }
    ],
    "from": 156,
@@ -700,11 +700,6 @@
    "change_pct": 34.1,
    "commits": [
     {
-     "pr": 1029,
-     "sha": "db75bbbfd",
-     "title": "ru: the five keys the catalogue is missing (Play Version, playback speed)"
-    },
-    {
      "pr": 921,
      "sha": "2d238e7b0",
      "title": "player: FF/REW tap seeking, opt-in instant D-pad seeking, Previous/Next episode buttons"
@@ -748,6 +743,11 @@
      "pr": 1062,
      "sha": "e2a4365a3",
      "title": "Playback: the capability answer is fixed at boot; each play start applies the stored refusals itself"
+    },
+    {
+     "pr": 1063,
+     "sha": "03534e394",
+     "title": "Tests: Force Direct Play refuses a learned refusal before the Load"
     }
    ],
    "from": 47.5,
@@ -761,11 +761,6 @@
    "change_pct": 30.9,
    "commits": [
     {
-     "pr": 1029,
-     "sha": "db75bbbfd",
-     "title": "ru: the five keys the catalogue is missing (Play Version, playback speed)"
-    },
-    {
      "pr": 921,
      "sha": "2d238e7b0",
      "title": "player: FF/REW tap seeking, opt-in instant D-pad seeking, Previous/Next episode buttons"
@@ -809,6 +804,11 @@
      "pr": 1062,
      "sha": "e2a4365a3",
      "title": "Playback: the capability answer is fixed at boot; each play start applies the stored refusals itself"
+    },
+    {
+     "pr": 1063,
+     "sha": "03534e394",
+     "title": "Tests: Force Direct Play refuses a learned refusal before the Load"
     }
    ],
    "from": 973.0,
@@ -849,7 +849,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 265.5
+   "now": 265
   }
  ],
  "slowest_local": [

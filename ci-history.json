@@ -1,4 +1,4 @@
-{"updated":"2026-10-26T10:48:30Z",
+{"updated":"2026-10-26T10:52:22Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -3711,7 +3711,8 @@
 {"id":40306244800,"at":"2026-10-26T10:17:28Z","sha":"db4d5e0c6","title":"Rewrap audio_converted_by_server's doc after the merge","pr":1062,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"macOS simulator build + launch":153,"Windows launcher syntax":19,"Linux simulator build + launch":255},"failed":["macOS tests against bundled FFmpeg and ASS"]},
 {"id":40307713776,"at":"2026-10-26T10:28:41Z","sha":"9977169bb","title":"Tests: #1049's track-menu mark assertions pass the play's session","pr":1062,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":261,"macOS tests against bundled FFmpeg and ASS":102,"Windows launcher syntax":21,"macOS simulator build + launch":114}},
 {"id":40309185536,"at":"2026-10-26T10:40:03Z","sha":"e2a4365a3","title":"Playback: the capability answer is fixed at boot; each play start applies the stored refusals itself","pr":1062,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":15,"macOS simulator build + launch":227,"Linux simulator build + launch":276,"macOS tests against bundled FFmpeg and ASS":190}},
-{"id":40309288533,"at":"2026-10-26T10:40:50Z","sha":"3e08ab6c1","title":"Record #1062 (e2a4365a3) as merged, keeping this tree","pr":1063,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":282,"macOS tests against bundled FFmpeg and ASS":185,"Windows launcher syntax":15,"macOS simulator build + launch":182}}
+{"id":40309288533,"at":"2026-10-26T10:40:50Z","sha":"3e08ab6c1","title":"Record #1062 (e2a4365a3) as merged, keeping this tree","pr":1063,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":282,"macOS tests against bundled FFmpeg and ASS":185,"Windows launcher syntax":15,"macOS simulator build + launch":182}},
+{"id":40310288100,"at":"2026-10-26T10:48:37Z","sha":"03534e394","title":"Tests: Force Direct Play refuses a learned refusal before the Load","pr":1063,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":24,"macOS tests against bundled FFmpeg and ASS":174,"macOS simulator build + launch":207,"Linux simulator build + launch":212}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
