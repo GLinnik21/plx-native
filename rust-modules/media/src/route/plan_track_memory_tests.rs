@@ -332,14 +332,14 @@ fn a_remembered_audio_track_outranks_pms_and_the_language_rules() {
         [AudioIntent::Selection(1), AudioIntent::Selection(2)],
         "the remembered track first, PMS's selected non-default second",
     );
-    assert_eq!(pick_dp_audio_pref(&tracks, "eac3", prefs), Some((1, "eac3".into(), 2)));
+    assert_eq!(pick_dp_audio_pref(&plx_platform::devcaps::caps(), &tracks, "eac3", prefs), Some((1, "eac3".into(), 2)));
     assert_eq!(
         audio_intents(&tracks, prefs, 3)[0],
         AudioIntent::Selection(2),
         "this playback's own pick is still first",
     );
     let unremembered = AudioLangPrefs::new(Some("fr"), Some("fr"));
-    assert_eq!(pick_dp_audio_pref(&tracks, "eac3", unremembered), Some((2, "eac3".into(), 3)), "control: PMS's selection plays");
+    assert_eq!(pick_dp_audio_pref(&plx_platform::devcaps::caps(), &tracks, "eac3", unremembered), Some((2, "eac3".into(), 3)), "control: PMS's selection plays");
 }
 
 /// An index that is not in the track list (a stale resolve) is ignored, not trusted.

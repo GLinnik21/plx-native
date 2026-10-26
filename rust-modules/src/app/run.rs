@@ -4396,6 +4396,7 @@ mod lifecycle_regression_tests {
             assert!(plx_media::route::request_play(
                 &mut self.app.player.session,
                 self.app.bridge.metadata_mut(),
+                plx_platform::devcaps::caps(),
                 self.sid,
                 "1",
                 "/library/parts/1/file.mkv",
@@ -4629,6 +4630,7 @@ mod lifecycle_regression_tests {
             assert!(plx_media::route::request_play(
                 &mut self.app.player.session,
                 self.app.bridge.metadata_mut(),
+                plx_platform::devcaps::caps(),
                 self.sid,
                 "1",
                 "/library/parts/1/file.mkv",
@@ -5858,6 +5860,7 @@ mod lifecycle_regression_tests {
         assert!(plx_media::route::request_play(
             &mut rig.app.player.session,
             rig.app.bridge.metadata_mut(),
+            plx_platform::devcaps::caps(),
             rig.sid,
             "replacement",
             "/library/parts/2/file.mkv",

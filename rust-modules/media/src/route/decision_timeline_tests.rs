@@ -494,7 +494,7 @@ fn a_film_request_retires_the_previous_trailers_preview_mark() {
     assert!(preview_request(&ps), "the trailer's session is marked");
 
     assert!(request_play(
-        &mut ps, &mut meta, ServerId::from_raw(0), "film", "/library/parts/2/file.mkv", "h264", "aac", "Film", "", None,
+        &mut ps, &mut meta, plx_platform::devcaps::caps(), ServerId::from_raw(0), "film", "/library/parts/2/file.mkv", "h264", "aac", "Film", "", None,
     ));
     assert!(!preview_request(&ps), "a film request is not a preview, whatever the last landing was");
 

@@ -393,9 +393,14 @@ refusal and stuck-seek nets apply there.
 - **The exported window has a SUBTITLE type** (value 1) that webOS 4's ACB had no equivalent for.
   Whether it opens a route to the TV's hardware subtitle engine in buffer-feed mode — currently
   documented here as URI-mode only — is unexplored.
-- **Codec capability is still asserted, not probed.** `profile_extra()` tells PMS "HEVC + 4K +
-  10-bit" unconditionally because that is what the author's panel does. On a lower-end webOS 5 set
-  that is wrong, and so is the transcode fallback, which also targets HEVC.
+- **Codec capability is probed, with two claims still asserted.** The profile PMS reads is
+  derived from the set's own codec table: `devcaps::Caps` parses
+  `/etc/umediaserver/device_codec_capability_config.json`, and `transcoder::profile_for` takes the
+  HEVC / VP9 / AV1 lanes, the width/height bounds and the audio list from it, so a set whose table
+  lists no HEVC decoder is not offered HEVC: the direct-play list drops it and the transcode
+  target's encode head is H.264 (`Caps::encode_vcodec`). Still asserted: `bitDepth=10` (the table
+  has no bit-depth axis, so it can neither confirm nor deny it), and the assumed-caps fallback
+  (`Caps::assumed`, the author's panel) when the table is unreadable or unparseable.
 - **Resolution: do NOT use `SDL_webOSGetPanelResolution`.** It exists on both eras, which makes it
   an inviting answer and the wrong one — it reports the **panel**, not your drawable. Measured on
   the dev TV (a 4K set): `window=1920x1080 drawable=1920x1080 panel=3840x2160`. Sizing the UI from

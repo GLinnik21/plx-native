@@ -621,6 +621,18 @@ enum SourceRecovery {
 /// replacement route's PMS half runs on a worker while the viewer keeps the connecting spinner
 /// they had.
 fn recover_failed_source_route(ps: &mut crate::route::PlaybackSession, native_audio_learned: bool) -> SourceRecovery {
+    // **A learned refusal narrows the attempt's own capability value, whichever recovery wins.**
+    // What the pipeline refused is what the demuxer fed natively (`learn_native_audio_refusal`
+    // learned exactly this). The Original trial's rollback is chosen over the conversion, and the
+    // rebase it flies, a later retry and a quality change plan from the attempt's value: left at
+    // the one the play started on, they offer the refused audio natively again, the pipeline
+    // refuses it again, `learn` finds the combination known and returns false, and the viewer who
+    // picked Original is left on the read-out where the conversion would have played. This is the
+    // one place the narrowing happens; no process-wide answer is read again.
+    let refused = if native_audio_learned { refused_native_audio() } else { None };
+    if let Some(refused) = &refused {
+        ps.narrow_attempt(refused);
+    }
     let action = open_failure_action(
         crate::route::original_recovery_pending(),
         native_audio_learned,
@@ -643,6 +655,10 @@ fn recover_failed_source_route(ps: &mut crate::route::PlaybackSession, native_au
             dispatched
         }
         OpenFailureAction::ConvertNativeAudio => {
+            // The attempt was narrowed above; with no audio fed there is nothing to convert.
+            if refused.is_none() {
+                return SourceRecovery::Failed;
+            }
             let secs = (SHARED.playpos_ns.load(Relaxed) / 1_000_000_000).max(0);
             crate::route::dispatch_native_audio_conversion(ps, secs)
         }
@@ -662,6 +678,13 @@ fn recover_failed_source_route(ps: &mut crate::route::PlaybackSession, native_au
         crate::route::RecoveryDispatch::Flying { .. } => SourceRecovery::Flying,
         crate::route::RecoveryDispatch::Refused => SourceRecovery::Failed,
     }
+}
+
+/// The native audio the demuxer is feeding, as the capability facet the pipeline's refusal of it
+/// removes from an attempt (`Caps::without`). `None` when nothing is fed natively.
+fn refused_native_audio() -> Option<plx_platform::devcaps::Facet> {
+    let (kind, channels) = crate::ff::native_audio::fed()?;
+    Some(plx_platform::devcaps::Facet::Audio { codec: kind.ffmpeg_name().into(), channels })
 }
 
 /// The Load was refused with `type=18 num=200` while the audio was fed natively: remember the
@@ -3310,13 +3333,19 @@ mod flight_tests {
     /// the caller is about to let the source refuse to open.
     fn failed_original_trial_rig(delay_ms: u64) -> Rig {
         let mut rig = Rig::new(delay_ms);
+        land_original_trial(&mut rig);
+        rig
+    }
+
+    /// The viewer picks Original on `rig`'s transcode and the recovery lands: the Engine reloads
+    /// onto the trial, and the HLS `rig-1` is held as its way back.
+    fn land_original_trial(rig: &mut Rig) {
         FlightRig::offer_original(&mut rig.ps, false);
         rig.frame();
         FlightRig::queue_manual_original(&rig.ps, false);
         rig.frame();
         rig.frames_until("the Original trial's landing", |_| !crate::route::flight_outstanding());
         assert!(crate::route::original_recovery_pending(), "sanity: the trial is armed");
-        rig
     }
 
     /// The stops the server has been asked for the encoders this rig's rebuilds register.
@@ -3640,6 +3669,9 @@ mod flight_tests {
         let mut rig = Rig::new(150);
         let _set = firmware_announcing_opus();
         rig.flight.begin_attempt(&rig.ps);
+        // The route was planned before the refusal, from the capability value read then: Opus at
+        // any channel count. The attempt holds that value, not the process-wide answer.
+        FlightRig::plan_on(&mut rig.ps, plx_platform::devcaps::caps());
         rig.frame();
         let answered = rig.flight.answered();
         let epoch = engine_epoch(&mut rig);
@@ -3673,6 +3705,16 @@ mod flight_tests {
 
         rig.frames_until("the conversion's landing", |_| !crate::route::flight_outstanding());
         assert_eq!(rig.flight.decisions(), 1, "exactly one replacement /decision");
+        // **The refusal learned mid-attempt reaches the recovery flight.** The attempt started on a
+        // value that lists Opus without a ceiling; the dispatch narrowed that value by the refusal
+        // (`dispatch_native_audio_conversion`), so the replacement request's profile carries the
+        // 2-channel ceiling the install just learned.
+        let decisions = rig.flight.decision_requests();
+        let replacement = decisions.first().expect("the replacement /decision");
+        assert!(
+            replacement.contains("scopeName%3Dopus%26type%3DupperBound%26name%3Daudio.channels%26value%3D2"),
+            "the replacement profile must carry the learned Opus ceiling: {replacement}"
+        );
         assert_ne!(engine_epoch(&mut rig), epoch, "the landing reloaded onto the converted route");
         assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
         let context = super::super::report::error_context_for_test(&rig.ps);
@@ -3683,6 +3725,50 @@ mod flight_tests {
         );
         assert_eq!(context.attempt_ordinal, super::super::report::AttemptOrdinal::FIRST.next());
         rig.flight.wait_for("the replaced encoder's stop", |f| f.stopped().iter().any(|s| s == "rig-1"));
+    }
+
+    /// **A refusal learned during the Original trial narrows the attempt too, though the rollback
+    /// wins.** The trial's failed open takes the rollback (`open_failure_action` puts it before the
+    /// conversion), and the refusal was learned all the same: the restored HLS route's rebase, and
+    /// every retry and quality change after it, must plan and profile from the attempt's narrowed
+    /// value, not the one the play started on. Else they offer native Opus again, the pipeline
+    /// refuses it again, and the combination is already known, so `learn` returns false and a manual
+    /// Original ends on the read-out where the conversion would have played.
+    #[test]
+    fn a_native_audio_refusal_learned_during_the_original_trial_reaches_the_rollbacks_profile() {
+        let mut rig = Rig::new(150);
+        let _set = firmware_announcing_opus();
+        // The play began on the value the set announced: Opus at any channel count.
+        FlightRig::plan_on(&mut rig.ps, plx_platform::devcaps::caps());
+        land_original_trial(&mut rig);
+        let decisions = rig.flight.decisions();
+        let epoch = engine_epoch(&mut rig);
+
+        crate::ff::native_audio::publish_fed(crate::ff::native_audio::Kind::Opus, 6);
+        rig.flight.hold_answers();
+        SHARED.native_audio_refused.store(true, Release);
+        SHARED.load_failed.store(true, Release);
+        rig.frame();
+        assert_eq!(
+            plx_platform::devcaps::caps().audio_channels.get("opus").copied(),
+            Some(2),
+            "sanity: the refusal was learned on this failure"
+        );
+        assert!(crate::route::flight_outstanding(), "the rollback's rebase must be a flight");
+        assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
+        rig.flight.release_answers();
+
+        rig.frames_until("the rollback's landing", |_| !crate::route::flight_outstanding());
+        assert_eq!(rig.flight.decisions(), decisions + 1, "exactly one rebuild /decision for the rollback");
+        assert!(!crate::route::original_recovery_pending(), "the rollback won, as it does");
+        assert_ne!(engine_epoch(&mut rig), epoch, "the landing reloaded onto the restored HLS");
+        let decisions = rig.flight.decision_requests();
+        let rebase = decisions.last().expect("the rollback's /decision");
+        assert!(
+            rebase.contains("scopeName%3Dopus%26type%3DupperBound%26name%3Daudio.channels%26value%3D2"),
+            "the rollback's profile must carry the Opus ceiling the pipeline just refused at: {rebase}"
+        );
+        rig.flight.wait_for("the restored HLS's retirement", |f| f.stopped().iter().any(|s| s == "rig-1"));
     }
 
     /// A conversion the server refuses leaves the failure the pump held back: the read-out, the

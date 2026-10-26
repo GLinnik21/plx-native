@@ -30,7 +30,7 @@ and the lines are compared to the tree as an exact multiset.
 | Rule | A site is | Key |
 |---|---|---|
 | `workers` | a production call that starts a worker in a machine: `task::spawn(`, `spawn_small(`, `spawn_small_keeping(`, `spawn_small_or_inline(`, `spawn_off_frame(`, `spawn_off_frame_keeping(`, `storage_worker::submit(`, `submit_retained(`, the command worker's `.submit_ticket(` | `<path>::<enclosing fn>::<spelling>` |
-| `globals` | a production read of a process-global registry in a machine: `client_for`, `current_server`, `current_snapshot`, `keypin::revision`, `keypin::blocked_for`, `session::peek`, `grant::offers`, the player's transport-pause readers (`transport::paused`, `transport::viewer_paused`, `preview::paused`), and `player::TX` in the player's lifecycle (at zero) | `<path>::<enclosing fn>::<spelling>` |
+| `globals` | a production read of a process-global registry in a machine: `client_for`, `current_server`, `current_snapshot`, `keypin::revision`, `keypin::blocked_for`, `session::peek`, `grant::offers`, the player's transport-pause readers (`transport::paused`, `transport::viewer_paused`, `preview::paused`), the device's capability answer (`devcaps::caps`, and the zero-argument `is_dp_audio` / `is_dp_audio_track` that used to read it), and `player::TX` in the player's lifecycle (at zero) | `<path>::<enclosing fn>::<spelling>` |
 | `forks` | a production test/production fork whose predicate reads `test` or `feature = "test-support"`: a `#[cfg(..)]` attribute that a production build can satisfy (`not(test)`, `not(any(test, feature = "test-support"))`, `all(target_os = .., not(test))`, ...), or an inline `cfg!(..)` of any value | `<path>::<item name>`, or `<path>::<enclosing fn>` for a statement, a field or an inline `cfg!` |
 | `fxlanes` | an `AppFx::<Variant>` arm of `Bridge::app_effect` that does not push `Fx::Deliver(`: one site for each variant on its head, and one for an arm that names no variant (`other => ..`, `_ => ..`) | `<path>::AppFx::<Variant>`, or `<path>::AppFx::_` |
 
@@ -75,6 +75,15 @@ run the product's code. `fxlanes` reads the one fn, `Bridge::app_effect` in `rus
   seeded the three `preview::paused` reads the screens already had (`screens/src/detail/mod.rs`) as a
   coverage expansion, so this change's net effect on the pinned total is zero (a relocation lowers no
   pin on its own).
+- The device's capability answer (`devcaps::caps()`) is the same kind of read: a process-wide value
+  that `learn_refusal` moves under a running play. The route's planner takes the attempt's `&Caps`
+  as an argument (`PlaybackSession::caps`, read once by the app's play start), so `devcaps::caps`
+  and the zero-argument `is_dp_audio(` / `is_dp_audio_track(` (the `_with` forms take the value and
+  are not sites) are spellings of this rule, qualified or bare after an import; a `use ... as`
+  rename of any of them fails outright. Widening the rule to them is a coverage expansion, not a
+  shrink: no machine reads them, so it seeded no ledger line and moved no pin. The boot-snapshot
+  readers (the engine's sink guards, the Forced preview, the diagnostics and lab read-outs) are in
+  crates and files this rule does not scan.
 - `forks` counts an attribute the product can satisfy. `#[cfg(test)]` and `any(test, feature =
   "test-support")` items are skipped whole, to the end of their own body (only a test can see them);
   `all(test, ..)` too. `any(feature = "devtriggers", test)` is counted, because a dev build can
