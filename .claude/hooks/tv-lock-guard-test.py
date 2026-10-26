@@ -140,35 +140,41 @@ import time as _time
 
 
 def _fake_state_dir(live_lanes):
-    """A temp STATE_DIR holding one live `.lease` file per lane in `live_lanes`."""
+    """A temp STATE_DIR holding one `.lease` file per entry of `live_lanes`: a bare lane (a live
+    lease with no SESSIONS field, as an owner's terminal or an older `tv-lock.sh` writes it), or
+    `(lane, sessions)` with the space-separated SESSIONS line, or `(lane, sessions, "expired")`.
+    """
     d = tempfile.mkdtemp(prefix="tv-lock-guard-test-")
-    for i, lane in enumerate(live_lanes):
+    for i, entry in enumerate(live_lanes):
+        if isinstance(entry, str):
+            entry = (entry, None)
+        lane, sessions, *rest = entry
+        state = rest[0] if rest else "live"
+        expires = _time.time() + (3600 if state == "live" else -3600)
         with open(os.path.join(d, f"lane{i}.lease"), "w") as fh:
             fh.write(
                 f"TOKEN='tok{i}'\n"
-                f"EXPIRES={_time.time() + 3600}\n"
+                f"EXPIRES={expires}\n"
                 f"ACQUIRED={_time.time()}\n"
                 f"VERIFIED={_time.time()}\n"
                 f"TV='192.0.2.10'\n"
                 f"LANE='{lane}'\n"
+                + (f"SESSIONS='{sessions}'\n" if sessions is not None else "")
             )
     return d
 
 
-def blocked_full(cmd, cwd, env=None, live_lanes=()):
-    """The hook's whole decision — classify, resolve the lane, check for a mirror lease — the way
-    `main()` does it, against a disposable STATE_DIR rather than the real mirror.
+def blocked_full(cmd, cwd, env=None, live_lanes=(), session_id=None):
+    """The hook's whole decision, `guard.decide()` (what `main()` calls), against a disposable
+    STATE_DIR rather than the real mirror.
     """
     if "PLX_TV_LOCK_BYPASS=1" in cmd:
         return False
-    if not any(guard.classify(seg) for seg in guard.segments(guard.strip_heredocs(cmd))):
-        return False
-    lane = guard.lane_from_command(cmd, env or {}, cwd)
     d = _fake_state_dir(live_lanes)
     old_state_dir = guard.STATE_DIR
     try:
         guard.STATE_DIR = d
-        return not bool(guard.lease_for(lane))
+        return bool(guard.decide(cmd, env or {}, cwd, session_id))
     finally:
         guard.STATE_DIR = old_state_dir
         shutil.rmtree(d, ignore_errors=True)

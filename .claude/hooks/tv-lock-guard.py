@@ -330,6 +330,26 @@ def lease_for(lane):
     return None
 
 
+def decide(cmd, env, cwd, session_id=None):
+    """The hook's whole decision for one Bash command: every refusal, or [] to let it run.
+
+    One entry per television-driving segment that fails its lane check, as `(segment, why, lane,
+    how, kind)`: the segment text, why it counts as driving the set, the lane that was checked,
+    where that lane came from, and `"nolease"` (nothing live for that lane).
+    """
+    reasons = []
+    for seg in segments(strip_heredocs(cmd)):
+        why = classify(seg)
+        if why:
+            reasons.append((seg.strip()[:120], why))
+    if not reasons:
+        return []
+    lane = lane_from_command(cmd, env, cwd)
+    if lease_for(lane):
+        return []
+    return [(seg, why, lane, "cwd", "nolease") for seg, why in reasons]
+
+
 def main():
     raw = sys.stdin.read()
     try:
@@ -344,19 +364,12 @@ def main():
     if re.search(r"\bPLX_TV_LOCK_BYPASS=1\b", cmd):
         return 0
 
-    reasons = []
-    for seg in segments(strip_heredocs(cmd)):
-        why = classify(seg)
-        if why:
-            reasons.append((seg.strip()[:120], why))
-    if not reasons:
+    problems = decide(cmd, os.environ, payload.get("cwd") or os.getcwd(),
+                      payload.get("session_id"))
+    if not problems:
         return 0
 
-    lane = lane_from_command(cmd, os.environ, payload.get("cwd") or os.getcwd())
-    if lease_for(lane):
-        return 0
-
-    seg, why = reasons[0]
+    seg, why, lane, how, kind = problems[0]
     sys.stderr.write(
         "BLOCKED: this lane does not hold the television's lock.\n"
         f"  the command: {seg}\n"
