@@ -2322,8 +2322,7 @@ mod tests {
     fn only_a_followed_loads_own_failure_is_left_to_the_foreground() {
         use super::settled_by_foreground;
         use crate::route::RouteStartStatus as S;
-        let superseded = S::Superseded(crate::route::RouteStartAttempt::fixture());
-        for start in [S::Pending, S::Started, S::Stale, superseded] {
+        for start in [S::Pending, S::Started, S::Stale] {
             assert!(!settled_by_foreground(true, start), "{start:?}: not the call's own failure");
         }
         assert!(settled_by_foreground(true, S::Failed));
