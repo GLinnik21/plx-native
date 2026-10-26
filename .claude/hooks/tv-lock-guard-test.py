@@ -230,6 +230,186 @@ LANE_CASES = [
 ]
 
 
+# --- lane derivation: the lane the INVOKED TOOL computes ----------------------------------------
+#
+# `tools/tv-lock.sh require` names its lane `${PLX_TV_LOCK_LANE:-$REPO}`, REPO being the parent of
+# the script's own directory. So a command that names a TV script by absolute path, or `make -C`
+# an absolute directory, or `cd`s to one, has a lane of its own whatever `cwd` says (and the
+# harness reports the SESSION's checkout there for a subagent). Per TV segment the first of these
+# applies: the prefix, the hook's env, the script/`make -C` path, an absolute `cd`, then cwd.
+#
+# Reading the lane off the command would let session A, holding nothing, run `/B/tools/...`
+# against B's live lease, so the lease must also list the payload's session id in SESSIONS --
+# but only when that lane is not the cwd's own, which behaves exactly as it always did.
+SID, OTHER = "sess-1", "sess-2"
+SSH = "ssh root@192.0.2.10 true"
+B_TOOL = f"{LANE_B}/tools/tv-session.sh up"
+
+# (expect_blocked, cmd, cwd, env, live_lanes, payload session_id)
+DERIVE_CASES = [
+    # B by absolute path, B's lease lists this session: allowed from a cwd that holds nothing.
+    (False, B_TOOL, SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    # The same lease also listing others, in any position.
+    (False, B_TOOL, SESSION_CWD, {}, ((LANE_B, f"{OTHER} {SID}"),), SID),
+    # B's lease is another session's: refused.
+    (True, B_TOOL, SESSION_CWD, {}, ((LANE_B, OTHER),), SID),
+    # B's lease carries no SESSIONS at all (the owner's terminal, an older tv-lock.sh): refused.
+    (True, B_TOOL, SESSION_CWD, {}, (LANE_B,), SID),
+    # The payload has no session id: refused, never an exception.
+    (True, B_TOOL, SESSION_CWD, {}, ((LANE_B, SID),), None),
+    # Only A leased (A is the cwd): B by path is refused.
+    (True, B_TOOL, LANE_A, {}, ((LANE_A, SID),), SID),
+    # The cwd's own checkout by absolute path: as before, no SESSIONS needed, after /clear too.
+    (False, f"{LANE_A}/tools/tv-session.sh up", LANE_A, {}, (LANE_A,), SID),
+    (False, f"{LANE_A}/tools/tv-session.sh up", LANE_A, {}, (LANE_A,), None),
+    (False, f"{LANE_A}/tools/tv-session.sh up", LANE_A, {}, ((LANE_A, OTHER),), SID),
+    # B's lease ran out, or another session re-acquired it (a new TOKEN carries its own SESSIONS).
+    (True, B_TOOL, SESSION_CWD, {}, ((LANE_B, SID, "expired"),), SID),
+    (True, B_TOOL, SESSION_CWD, {}, ((LANE_B, OTHER),), SID),
+    # An interpreter's argument, a quoted path, and every script the classifier knows.
+    (False, f"bash {LANE_B}/tools/tv-session.sh up", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (True, f"bash {LANE_B}/tools/tv-session.sh up", SESSION_CWD, {}, ((LANE_B, OTHER),), SID),
+    (False, f'"{LANE_B}/tools/tv-session.sh" up', SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (False, f"python3 {LANE_B}/tests/run.py --fps", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (False, f"{LANE_B}/tools/capture-screen.sh out.png", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (True, f"{LANE_B}/tools/capture-screen.sh out.png", SESSION_CWD, {}, ((LANE_B, OTHER),), SID),
+    # `..` is folded lexically, no filesystem involved.
+    (False, f"{LANE_A}/../lane-b/tools/tv-session.sh up", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    # `make -C <abs>`, in all its spellings; a relative -C is not a lane (cwd decides).
+    (False, f"make -C {LANE_B} deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (True, f"make -C {LANE_B} deploy", SESSION_CWD, {}, ((LANE_B, OTHER),), SID),
+    (False, f"make -C{LANE_B} deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (False, f"make --directory={LANE_B} deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (False, f"make --directory {LANE_B} deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (False, f'make -C "{LANE_B}" deploy', SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (True, "make -C lane-b deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (False, "make -C lane-b deploy", LANE_A, {}, (LANE_A,), SID),
+    # `make -C $VAR` is unknowable: the cwd decides, as it always did.
+    (True, 'make -C "$W" deploy', SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    # A path that is not a TV script's own is not a lane: only the matched token counts.
+    (True, f"ssh root@192.0.2.10 'cat {LANE_B}/tools/tv-session.sh'", SESSION_CWD, {},
+     ((LANE_B, SID),), SID),
+    (False, f"ssh root@192.0.2.10 'cat {LANE_B}/tools/tv-session.sh'", LANE_A, {}, (LANE_A,), SID),
+    # A script outside tools/ and tests/ is not one of ours: the cwd decides.
+    (True, f"python3 {LANE_B}/scripts/run.py", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (False, f"python3 {LANE_B}/scripts/run.py", LANE_A, {}, (LANE_A,), SID),
+    # The lock tool itself stays outside the guard whatever its path.
+    (False, f"{LANE_B}/tools/tv-lock.sh acquire --why x", SESSION_CWD, {}, (), SID),
+    # `cd <abs>` persists across `&&`, `;` and newlines until the next cd.
+    (False, f"cd {LANE_B} && make deploy && tools/tv-session.sh up",
+     SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (True, f"cd {LANE_B} && make deploy && tools/tv-session.sh up",
+     SESSION_CWD, {}, ((LANE_B, OTHER),), SID),
+    (False, f"cd {LANE_B}; make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (False, f"cd {LANE_B}\nmake deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (False, f'cd "{LANE_B}" && {SSH}', SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (False, f"cd {LANE_B} && true; make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    # The next cd ends it: `"$W"`, a relative cd and `~` fall back to the cwd, as does `cd -`.
+    (True, f'cd {LANE_B} && cd "$W" && make deploy', SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (False, f'cd {LANE_B} && cd "$W" && make deploy', LANE_A, {}, (LANE_A,), SID),
+    (False, f"cd {LANE_B} && cd .. && make deploy", LANE_A, {}, (LANE_A,), SID),
+    (False, f"cd {LANE_B} && cd ~ && make deploy", LANE_A, {}, (LANE_A,), SID),
+    (False, f"cd {LANE_B} && cd - && make deploy", LANE_A, {}, (LANE_A,), SID),
+    (True, f"cd {LANE_B} && cd sub && make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    # `cd "$W"` alone is the cwd's lane.
+    (False, 'cd "$W" && make deploy', LANE_A, {}, (LANE_A,), SID),
+    (True, 'cd "$W" && make deploy', SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    # An absolute cd to the cwd's own checkout needs no SESSIONS.
+    (False, f"cd {LANE_A} && make deploy", LANE_A, {}, (LANE_A,), None),
+    # A cd the shell may not keep (subshell, pipeline, background, an `||` branch, a cd that only
+    # runs if something else succeeded and is followed by `;`) is never trusted: cwd decides.
+    (True, f"(cd {LANE_B} && tools/tv-session.sh up)", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (True, f"cd {LANE_B} | cat; make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (True, f"cd {LANE_B} & make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (True, f"cd {LANE_B} || exit 1; make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (True, f"false && cd {LANE_B}; make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (True, f"if cd {LANE_B}; then make deploy; fi", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (True, f"builtin cd {LANE_B} && make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (True, f"pushd {LANE_B} && make deploy", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    # A command substitution is graded where it is written, not at the final cd state: it gets the
+    # prefix, the env, its own path, or the cwd -- never a cd.
+    (True, f"cd {LANE_B} && x=$({SSH})", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (False, f"cd {LANE_B} && x=$({B_TOOL})", SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    # Step 3 beats step 4: the script's own checkout, not the directory it was started from.
+    (False, f"cd {LANE_A} && {LANE_B}/tools/tv-session.sh up",
+     SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    (True, f"cd {LANE_B} && {LANE_A}/tools/tv-session.sh up",
+     SESSION_CWD, {}, ((LANE_B, SID),), SID),
+    # Every segment is graded on its own lane.
+    (True, f"make deploy && make -C {LANE_B} run", LANE_A, {}, ((LANE_A, SID),), SID),
+    (True, f"make deploy && make -C {LANE_B} run", LANE_A, {}, ((LANE_B, SID),), SID),
+    (False, f"make deploy && make -C {LANE_B} run", LANE_A, {}, (LANE_A, (LANE_B, SID)), SID),
+    (True, f"make deploy && make -C {LANE_B} run", LANE_A, {}, (LANE_A, (LANE_B, OTHER)), SID),
+    (True, f"cd {LANE_B} && make deploy && {LANE_A}/tools/tv-session.sh up", SESSION_CWD, {},
+     ((LANE_B, SID),), SID),
+    # The prefix still comes first, over every derived lane, and needs no SESSIONS.
+    (True, f"PLX_TV_LOCK_LANE={LANE_B} {LANE_A}/tools/tv-session.sh up", LANE_A, {},
+     (LANE_A,), SID),
+    (False, f"PLX_TV_LOCK_LANE={LANE_B} {LANE_A}/tools/tv-session.sh up", LANE_A, {},
+     (LANE_B,), None),
+    (False, f"PLX_TV_LOCK_LANE={LANE_B} make -C {LANE_A} deploy", SESSION_CWD, {},
+     (LANE_B,), None),
+    # (it names the lane of the WHOLE command, a second segment's own path included, as ever)
+    (False, f"PLX_TV_LOCK_LANE={LANE_B} make deploy; make -C {LANE_A} run", SESSION_CWD, {},
+     (LANE_B,), SID),
+    # So does the hook's environment, over the script path and the cd.
+    (False, B_TOOL, SESSION_CWD, {"PLX_TV_LOCK_LANE": LANE_A}, (LANE_A,), None),
+    (True, B_TOOL, SESSION_CWD, {"PLX_TV_LOCK_LANE": LANE_A}, ((LANE_B, SID),), SID),
+    (False, f"cd {LANE_B} && make deploy", SESSION_CWD, {"PLX_TV_LOCK_LANE": LANE_A},
+     (LANE_A,), None),
+]
+
+
+def main_exit(payload, state_dir):
+    """Run the guard as the harness does: JSON on stdin, the exit code back."""
+    import json
+    import subprocess
+    env = dict(os.environ, PLX_TV_LOCK_STATE=state_dir)
+    env.pop("PLX_TV_LOCK_LANE", None)
+    raw = payload if isinstance(payload, str) else json.dumps(payload)
+    out = subprocess.run([sys.executable, os.path.join(HERE, "tv-lock-guard.py")], input=raw,
+                         capture_output=True, text=True, env=env)
+    return out.returncode, out.stderr
+
+
+def main_cases():
+    """`main()` itself: the payload's session_id and cwd reach the decision, a refusal says which
+    lane it checked, and an unreadable payload fails OPEN, as the module docstring promises."""
+    fails = 0
+    d = _fake_state_dir(((LANE_B, SID),))
+    try:
+        def payload(cmd, **extra):
+            return dict({"tool_name": "Bash", "tool_input": {"command": cmd},
+                         "cwd": SESSION_CWD}, **extra)
+        cases = [
+            ("session listed", payload(B_TOOL, session_id=SID), 0, ()),
+            ("session not listed", payload(B_TOOL, session_id=OTHER), 2,
+             ("not taken by this session", LANE_B, "the script's own path")),
+            ("no session_id", payload(B_TOOL), 2, ("not taken by this session", LANE_B)),
+            ("subagent carries its parent's id", payload(B_TOOL, session_id=SID, agent_id="a1",
+                                                         agent_type="general-purpose"), 0, ()),
+            ("no lease at all", payload("make deploy", session_id=SID), 2,
+             ("does not hold the television's lock", SESSION_CWD, "the cwd")),
+            ("a cd lane says so", payload(f"cd {LANE_A} && make deploy", session_id=SID), 2,
+             (LANE_A, "an absolute cd")),
+            ("not Bash", {"tool_name": "Read", "tool_input": {}}, 0, ()),
+            ("malformed stdin fails open", "{not json", 0, ()),
+            # A bug in the guard must not wedge every Bash call: an exception inside decide() (a cwd
+            # that is not a string cannot be resolved to a checkout) allows, and says so.
+            ("an internal error fails open", payload("make deploy", cwd=123), 0,
+             ("internal error, allowing",)),
+        ]
+        for name, pl, want_rc, want_in_err in cases:
+            rc, err = main_exit(pl, d)
+            ok = rc == want_rc and all(w in err for w in want_in_err)
+            if not ok:
+                fails += 1
+                print(f"  FAIL  main(): {name}: exit {rc} (want {want_rc}), stderr: {err[:200]!r}")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    return fails, len(cases)
+
+
 def main():
     fails = 0
     for want, cmd in CASES:
@@ -244,7 +424,16 @@ def main():
             fails += 1
             print(f"  FAIL  expected {'BLOCK' if want else 'ALLOW'}, got "
                   f"{'BLOCK' if got else 'ALLOW'}: {cmd!r} cwd={cwd!r} env={env!r}")
-    total = len(CASES) + len(LANE_CASES)
+    for want, cmd, cwd, env, live_lanes, sid in DERIVE_CASES:
+        got = blocked_full(cmd, cwd, env, live_lanes, sid)
+        if got != want:
+            fails += 1
+            print(f"  FAIL  expected {'BLOCK' if want else 'ALLOW'}, got "
+                  f"{'BLOCK' if got else 'ALLOW'}: {cmd!r} cwd={cwd!r} env={env!r} "
+                  f"live={live_lanes!r} session={sid!r}")
+    main_fails, main_total = main_cases()
+    fails += main_fails
+    total = len(CASES) + len(LANE_CASES) + len(DERIVE_CASES) + main_total
     print(f"tv-lock-guard: {total - fails}/{total} cases correct")
     return 1 if fails else 0
 
