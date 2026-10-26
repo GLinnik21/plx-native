@@ -718,6 +718,7 @@ fn drive_open_recovery(ps: &mut crate::route::PlaybackSession, first: super::rec
                     run = OpenRecoveryRun::Failed;
                     continue;
                 }
+                RecoveryEffect::ReportRecovered(_) => continue,
             };
             match dispatched {
                 crate::route::RecoveryDispatch::Flying { .. } => run = OpenRecoveryRun::Flying,

@@ -49,6 +49,11 @@
 //! with no second Load in between. A video facet flight, the both-facets rung, the rollback, a
 //! timeout and a source failure never prove.
 //!
+//! **What the project hears.** A refused play that a rung then put a picture up for is one
+//! [`RecoveryEffect::ReportRecovered`] per request ([`Recovered`]): the refusal the pipeline gave
+//! and the stream it named, and the rung that played. The machine only says so; the driver hands it
+//! to `player::report`, which sends nothing without the error-report consent.
+//!
 //! The state the machine does not own: the flight bookkeeping stays in `route::decision`
 //! (`original_recovery_pending`, the recovery flight slot), and it reaches the machine as a fact
 //! on the event, not as a field.
@@ -86,6 +91,13 @@ impl LoadRefusal {
     /// names no facet (the pipeline said nothing) and a source failure is not the pipeline's.
     pub fn names_pipeline(self) -> bool {
         matches!(self, Self::Refused { .. } | Self::Stalled)
+    }
+
+    /// Whether a rescue of this refusal is reported: the television's pipeline refused the Load
+    /// (a number, or the surround stall) or answered nothing within the Load budget. A source
+    /// failure is the demuxer's or the transport's, not the television's refusal.
+    pub fn reports(self) -> bool {
+        !matches!(self, Self::SourceFailed)
     }
 }
 
@@ -253,6 +265,26 @@ pub enum RecoveryEffect {
     StartAutoHls,
     /// Fail the Engine for good and show the failure read-out.
     ShowError { refusal: LoadRefusal },
+    /// A refused play showed its first picture on a rung of the ladder: tell the project, once per
+    /// request ([`Recovered`]). Not an answer to anything: the driver hands it to the report path
+    /// (`player::report::refusal_recovered`), which itself sends nothing without the error-report
+    /// consent.
+    ReportRecovered(Recovered),
+}
+
+/// What a rescued refusal is reported as ([`RecoveryEffect::ReportRecovered`]): the request's first
+/// pipeline refusal and the stream it put under suspicion, and the rung whose route put the
+/// picture up. Machine vocabulary: the driver's report maps it onto the wire's closed classes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Recovered {
+    /// The rung of the flight the picture came from (a later rung replaces an earlier one).
+    pub rung: Rung,
+    /// The first refusal of the request that came from the television's pipeline
+    /// ([`LoadRefusal::reports`]); a later refusal on the way to the rescue does not replace it.
+    pub refusal: LoadRefusal,
+    /// The stream that refusal put under suspicion: the natively fed audio it named, else
+    /// [`suspect`]'s answer (the video only for a numbered refusal). `None` when it named none.
+    pub facet: Option<Facet>,
 }
 
 /// What a [`RecoveryEffect::ConfirmRefusal`] rests on.
@@ -266,7 +298,7 @@ pub enum Evidence {
 
 /// Which rung a flight is on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Rung {
+pub enum Rung {
     /// The Original trial's HLS rollback.
     Rollback,
     /// The facet rung: the suspect stream converted.
@@ -317,6 +349,16 @@ pub struct OpenRecovery {
     /// pictured has played what it was fed, so a later rescue by conversion proves nothing about
     /// the converted facet: the proof is only for a request whose FIRST open the conversion rescued.
     pictured: bool,
+    /// The request's first refusal that [`LoadRefusal::reports`], with the stream it named; kept for
+    /// the request so the rescue's report names the refusal and not the failure of a rescue
+    /// attempt.
+    refused: Option<(LoadRefusal, Option<Facet>)>,
+    /// The rung whose route the open now rests on: set when a flight starts, cleared when the
+    /// ladder reads out or a Load the machine did not ask for abandons the flight. The first
+    /// picture while this is set is a rescue.
+    rescue: Option<Rung>,
+    /// A rescue was reported for this request; at most one report per request.
+    reported: bool,
     state: State,
 }
 
@@ -350,7 +392,17 @@ fn attempt_for(start: &Caps, excluded: &Excluded) -> Caps {
 impl OpenRecovery {
     /// A fresh request on `start`.
     pub fn new(start: Arc<Caps>) -> Self {
-        Self { attempt: start.clone(), start, excluded: Excluded::default(), flights: 0, pictured: false, state: State::Opening }
+        Self {
+            attempt: start.clone(),
+            start,
+            excluded: Excluded::default(),
+            flights: 0,
+            pictured: false,
+            refused: None,
+            rescue: None,
+            reported: false,
+            state: State::Opening,
+        }
     }
 
     /// The capability value this request plans and profiles from: `start` less the facets the rungs
@@ -370,6 +422,7 @@ impl OpenRecovery {
     /// Engine, so a reload after the request's first picture owes its own open the same rung).
     fn decide(&mut self, refusal: LoadRefusal, facts: &OpenFacts, fx: &mut Vec<RecoveryEffect>) {
         let flight = |rung| State::Flight { rung, cause: refusal, facts: facts.clone() };
+        self.note_refusal(refusal, facts);
         if facts.pending_original {
             // A refusal of native audio (the learner's write was queued earlier in this step)
             // narrows the rollback's profile too: the restored HLS route must not offer it natively
@@ -380,11 +433,13 @@ impl OpenRecovery {
             }
             fx.push(RecoveryEffect::Rollback);
             self.state = flight(Rung::Rollback);
+            self.rescue = Some(Rung::Rollback);
             return;
         }
         if facts.forced {
             fx.push(RecoveryEffect::ShowError { refusal });
             self.state = State::Failed;
+            self.rescue = None;
             return;
         }
         if refusal.names_pipeline() && facts.no_frames && self.flights == 0 {
@@ -398,6 +453,7 @@ impl OpenRecovery {
                 self.flights += 1;
                 fx.push(RecoveryEffect::ConvertFacet { facet, flight: self.flights });
                 self.state = flight(Rung::Facet);
+                self.rescue = Some(Rung::Facet);
                 return;
             }
         }
@@ -414,10 +470,38 @@ impl OpenRecovery {
             self.flights += 1;
             fx.push(RecoveryEffect::StartAutoHls);
             self.state = flight(Rung::Both);
+            self.rescue = Some(Rung::Both);
             return;
         }
         fx.push(RecoveryEffect::ShowError { refusal });
         self.state = State::Failed;
+        self.rescue = None;
+    }
+
+    /// Keep the request's first refusal the report can name ([`LoadRefusal::reports`]) and the
+    /// stream it put under suspicion: the natively fed audio it named, else [`suspect`] (the video
+    /// only for a numbered refusal, which is what can name a decode). Later refusals, which are
+    /// the failures of rescue attempts, never replace it.
+    fn note_refusal(&mut self, refusal: LoadRefusal, facts: &OpenFacts) {
+        if self.refused.is_some() || !refusal.reports() {
+            return;
+        }
+        let video = facts.video.as_ref().filter(|_| matches!(refusal, LoadRefusal::Refused { .. }));
+        let facet = facts.native_audio.clone().or_else(|| suspect(facts.audio.as_ref(), video));
+        self.refused = Some((refusal, facet));
+    }
+
+    /// The first picture of an open that rests on a rung's route: a rescued refusal, reported once
+    /// per request.
+    fn report_rescue(&mut self, fx: &mut Vec<RecoveryEffect>) {
+        let rung = self.rescue.take();
+        if self.reported {
+            return;
+        }
+        if let (Some(rung), Some((refusal, facet))) = (rung, &self.refused) {
+            self.reported = true;
+            fx.push(RecoveryEffect::ReportRecovered(Recovered { rung, refusal: *refusal, facet: facet.clone() }));
+        }
     }
 
     /// The one writer. The table (a pair not listed answers [`Handled::No`] and changes nothing):
@@ -431,11 +515,11 @@ impl OpenRecovery {
     /// | `Flight{Rollback, Both}` | `FlightLanded{..}` | none; `Opening` (lanes ignored: only the facet rung proves) |
     /// | `Flight{Facet}` | `FlightRefused` | the ladder below (one flight spent, so the facet rung is closed): `StartAutoHls` for a cold Auto Original, else `ShowError` |
     /// | `Flight{Rollback, Both}` | `FlightRefused` | `ShowError`; `Failed` (a refused rollback stays terminal) |
-    /// | `Opening` | `FirstPicture` | none; `Playing` |
-    /// | `Proving{f}` | `FirstPicture` | `ConfirmRefusal{f, Proof}`; `Playing` |
+    /// | `Opening` | `FirstPicture` | `ReportRecovered` when a rung's route is what opened (below), else none; `Playing` |
+    /// | `Proving{f}` | `FirstPicture` | `ConfirmRefusal{f, Proof}`, then `ReportRecovered` (below); `Playing` |
     /// | `Proving`, first | `LoadStarted` | none; `Proving` (the landing's own reload) |
     /// | `Proving`, after its reload | `LoadStarted` | none; `Opening` (a foreign Load: the proof is dropped) |
-    /// | `Flight`, `Failed` | `LoadStarted` | none; `Opening`, `flights` and the excluded facets kept |
+    /// | `Flight`, `Failed` | `LoadStarted` | none; `Opening`, `flights` and the excluded facets kept, the rung forgotten |
     ///
     /// The ladder: `pending_original` -> `Rollback`; else `forced` -> `ShowError`; else a pipeline
     /// refusal, of an Engine with no picture (`no_frames`), of a [`suspect`] stream which narrows the
@@ -444,6 +528,13 @@ impl OpenRecovery {
     /// `auto_original && no_frames` with a flight left -> `StartAutoHls`, its attempt lacking the
     /// audio and the video raster the refusal named (each: `Flight`); else `ShowError`; `Failed`. A
     /// manual pick has no rung after the facet flight, so its next refusal is the read-out.
+    ///
+    /// **The report** ([`Recovered`]): the machine remembers the request's FIRST refusal that
+    /// [`LoadRefusal::reports`] with the stream it named, and the rung of the flight the open now
+    /// rests on (the latest rung, set when a flight starts and cleared by the read-out and by a
+    /// Load the machine did not ask for). The first picture of such an open pushes one
+    /// `ReportRecovered`, once per request. A play with no refusal, a source failure, a ladder
+    /// that read out and a flight Home abandoned report nothing.
     ///
     /// `Refused` is not handled in `Flight` or `Failed`: a flight is outstanding (the pump runs no
     /// failure arm while one is), or the read-out is already up (the pump meets the same Engine's
@@ -487,6 +578,7 @@ impl OpenRecovery {
                 } else {
                     fx.push(RecoveryEffect::ShowError { refusal: cause });
                     self.state = State::Failed;
+                    self.rescue = None;
                 }
                 Handled::Yes
             }
@@ -494,12 +586,14 @@ impl OpenRecovery {
                 State::Opening => {
                     self.pictured = true;
                     self.state = State::Playing;
+                    self.report_rescue(fx);
                     Handled::Yes
                 }
                 State::Proving { facet, .. } => {
                     fx.push(RecoveryEffect::ConfirmRefusal { facet: facet.clone(), evidence: Evidence::Proof });
                     self.pictured = true;
                     self.state = State::Playing;
+                    self.report_rescue(fx);
                     Handled::Yes
                 }
                 _ => Handled::No,
@@ -518,7 +612,11 @@ impl OpenRecovery {
                     // The flight (if any) is gone with the Engine that waited on it, and the
                     // read-out belongs to the Engine that failed: the new Load is a new open, ruled
                     // on by the same ladder with what this request has already spent (`flights`,
-                    // `excluded`).
+                    // `excluded`). It rests on no rung's route, so a picture from it is no rescue
+                    // (a landed `Proving` reload keeps its rung: its route is the rescue's).
+                    if !matches!(self.state, State::Proving { .. }) {
+                        self.rescue = None;
+                    }
                     self.state = State::Opening;
                     Handled::Yes
                 }
@@ -603,6 +701,14 @@ mod tests {
     fn run(m: &mut OpenRecovery, ev: RecoveryEvent) -> (Handled, Vec<RecoveryEffect>) {
         let mut fx = Vec::new();
         let handled = m.step(&ev, &mut fx);
+        (handled, fx)
+    }
+
+    /// `run`, less the rescue report: the tests of the PROOF read the learner's effects only (the
+    /// report has its own tests below).
+    fn run_proof(m: &mut OpenRecovery, ev: RecoveryEvent) -> (Handled, Vec<RecoveryEffect>) {
+        let (handled, mut fx) = run(m, ev);
+        fx.retain(|e| !matches!(e, RecoveryEffect::ReportRecovered(_)));
         (handled, fx)
     }
 
@@ -718,7 +824,7 @@ mod tests {
         run(&mut m, refused(LoadRefusal::Refused { num: 100 }, on_4k("ac3", false)));
         run(&mut m, landed_with(Lanes { video: Lane::Transcode, audio: Lane::Copy }));
         assert_eq!(m.phase(), Phase::Opening);
-        let (_, fx) = run(&mut m, RecoveryEvent::FirstPicture);
+        let (_, fx) = run_proof(&mut m, RecoveryEvent::FirstPicture);
         assert!(fx.is_empty(), "{fx:?}");
     }
 
@@ -867,7 +973,7 @@ mod tests {
             (Proving, "Refused", refusal(), Yes, Failed, ERROR.to_vec()),
             (Proving, "FlightLanded", landed_with(CLEAN), No, Proving, vec![]),
             (Proving, "FlightRefused", RecoveryEvent::FlightRefused, No, Proving, vec![]),
-            (Proving, "FirstPicture", RecoveryEvent::FirstPicture, Yes, Playing, vec![proof(dts6())]),
+            (Proving, "FirstPicture", RecoveryEvent::FirstPicture, Yes, Playing, vec![proof(dts6()), recovered(Rung::Facet, SHUT, Some(dts6()))]),
             (Proving, "LoadStarted", RecoveryEvent::LoadStarted, Yes, Proving, vec![]),
             (Flight, "Refused", refusal(), No, Flight, vec![]),
             (Flight, "FlightLanded", landed(), Yes, Opening, vec![]),
@@ -906,7 +1012,7 @@ mod tests {
         assert_eq!(fx, [RecoveryEffect::ConvertFacet { facet: dts6(), flight: 1 }]);
         assert_eq!(run(&mut m, landed_with(CLEAN)), (Handled::Yes, vec![]));
         assert_eq!(m.phase(), Phase::Proving);
-        assert_eq!(run(&mut m, RecoveryEvent::FirstPicture), (Handled::Yes, vec![proof(dts6())]));
+        assert_eq!(run_proof(&mut m, RecoveryEvent::FirstPicture), (Handled::Yes, vec![proof(dts6())]));
         assert_eq!(m.phase(), Phase::Playing);
         assert_eq!(run(&mut m, RecoveryEvent::FirstPicture), (Handled::No, vec![]), "once");
         // `directplay` on the video lane is as clean as `copy`.
@@ -922,7 +1028,7 @@ mod tests {
     #[test]
     fn the_both_facets_and_rollback_rungs_report_no_proof() {
         let picture_after = |m: &mut OpenRecovery| {
-            let fx = run(m, RecoveryEvent::FirstPicture).1;
+            let fx = run_proof(m, RecoveryEvent::FirstPicture).1;
             (fx, m.phase())
         };
         // (a) an AAC cold Auto Original: nothing suspect, the HLS contingency flies.
@@ -954,7 +1060,7 @@ mod tests {
             let (_, fx) = run(&mut m, refused(refusal, on_dts(facts(false, true, true))));
             assert_eq!(fx, [RecoveryEffect::StartAutoHls], "{refusal}");
             run(&mut m, landed_with(CLEAN));
-            let (_, fx) = run(&mut m, RecoveryEvent::FirstPicture);
+            let (_, fx) = run_proof(&mut m, RecoveryEvent::FirstPicture);
             assert_eq!((fx, m.phase()), (vec![], Phase::Playing), "{refusal}");
         }
     }
@@ -976,7 +1082,7 @@ mod tests {
             run(&mut m, refused(SHUT, on_dts(facts(false, false, true))));
             run(&mut m, RecoveryEvent::FlightLanded { lanes: landing });
             assert_eq!(m.phase(), Phase::Opening, "{what}");
-            assert_eq!(run(&mut m, RecoveryEvent::FirstPicture).1, vec![], "{what}");
+            assert_eq!(run_proof(&mut m, RecoveryEvent::FirstPicture).1, vec![], "{what}");
         }
     }
 
@@ -992,7 +1098,7 @@ mod tests {
         let (_, fx) = run(&mut m, refused(SHUT, on_dts(facts(false, true, true))));
         assert_eq!((fx, m.phase()), (vec![RecoveryEffect::StartAutoHls], Phase::Flight));
         run(&mut m, landed_with(CLEAN));
-        assert_eq!(run(&mut m, RecoveryEvent::FirstPicture).1, vec![], "the dropped proof is not credited later");
+        assert_eq!(run_proof(&mut m, RecoveryEvent::FirstPicture).1, vec![], "the dropped proof is not credited later");
     }
 
     /// **A refusal that names the codec is recorded and picks its rung in ONE step**, learner first:
@@ -1294,7 +1400,7 @@ mod tests {
         assert_eq!((handled, fx), (Handled::Yes, vec![RecoveryEffect::ConvertFacet { facet: dts6(), flight: 1 }]));
         assert_eq!(run(&mut m, landed_with(CLEAN)), (Handled::Yes, vec![]));
         assert_eq!(m.phase(), Phase::Opening, "a clean landing after a picture is not a proof");
-        assert_eq!(run(&mut m, RecoveryEvent::FirstPicture).1, vec![], "no proof at the converted route's picture");
+        assert_eq!(run_proof(&mut m, RecoveryEvent::FirstPicture).1, vec![], "no proof at the converted route's picture");
         assert_eq!(m.phase(), Phase::Playing);
     }
 
@@ -1307,7 +1413,7 @@ mod tests {
         let mut m = in_phase(Phase::Proving);
         assert_eq!(run(&mut m, RecoveryEvent::LoadStarted), (Handled::Yes, vec![]), "the landing's own reload");
         assert_eq!(m.phase(), Phase::Proving);
-        assert_eq!(run(&mut m, RecoveryEvent::FirstPicture), (Handled::Yes, vec![proof(dts6())]));
+        assert_eq!(run_proof(&mut m, RecoveryEvent::FirstPicture), (Handled::Yes, vec![proof(dts6())]));
     }
 
     #[test]
@@ -1316,7 +1422,7 @@ mod tests {
         run(&mut m, RecoveryEvent::LoadStarted);
         assert_eq!(run(&mut m, RecoveryEvent::LoadStarted), (Handled::Yes, vec![]), "a foreign Load");
         assert_eq!(m.phase(), Phase::Opening);
-        assert_eq!(run(&mut m, RecoveryEvent::FirstPicture).1, vec![], "the dropped proof is not credited");
+        assert_eq!(run_proof(&mut m, RecoveryEvent::FirstPicture).1, vec![], "the dropped proof is not credited");
         // The spent rungs are kept: a refusal of the foreign Load is ruled on as any `Opening` is.
         let mut m = in_phase(Phase::Proving);
         run(&mut m, RecoveryEvent::LoadStarted);
@@ -1336,5 +1442,177 @@ mod tests {
     #[test]
     fn a_refusal_prints_its_number() {
         assert_eq!(LoadRefusal::Refused { num: 601 }.to_string(), "type=18 num=601");
+    }
+
+    // ---- the report of a rescued refusal (S6, #1075) ----------------------------------------
+
+    fn recovered(rung: Rung, refusal: LoadRefusal, facet: Option<Facet>) -> RecoveryEffect {
+        RecoveryEffect::ReportRecovered(Recovered { rung, refusal, facet })
+    }
+
+    /// Every `ReportRecovered` in `fx`.
+    fn reports(fx: &[RecoveryEffect]) -> Vec<RecoveryEffect> {
+        fx.iter().filter(|e| matches!(e, RecoveryEffect::ReportRecovered(_))).cloned().collect()
+    }
+
+    /// **A play the facet rung rescued is reported once, at its first picture, with the refusal the
+    /// pipeline gave and the stream it named.** Opening (no proof) and Proving (a clean audio facet
+    /// landing) rescue alike; the proof's own write still comes first.
+    #[test]
+    fn a_facet_rescue_reports_at_the_first_picture() {
+        let mut m = machine();
+        run(&mut m, refused(SHUT, on_dts(facts(false, false, true))));
+        run(&mut m, landed());
+        assert_eq!(m.phase(), Phase::Opening);
+        let (_, fx) = run(&mut m, RecoveryEvent::FirstPicture);
+        assert_eq!(fx, [recovered(Rung::Facet, SHUT, Some(dts6()))]);
+
+        let mut m = machine();
+        run(&mut m, refused(SHUT, on_dts(facts(false, false, true))));
+        run(&mut m, landed_with(CLEAN));
+        run(&mut m, RecoveryEvent::LoadStarted);
+        let (_, fx) = run(&mut m, RecoveryEvent::FirstPicture);
+        assert_eq!(fx, [proof(dts6()), recovered(Rung::Facet, SHUT, Some(dts6()))], "the proof's write, then the report");
+    }
+
+    /// Nothing is reported before a picture shows: a landing is not a rescue.
+    #[test]
+    fn nothing_is_reported_before_the_rescue_shows_a_picture() {
+        let mut m = machine();
+        let (_, fx) = run(&mut m, refused(SHUT, on_dts(facts(false, false, true))));
+        assert_eq!(reports(&fx), []);
+        assert_eq!(reports(&run(&mut m, landed()).1), []);
+        assert_eq!(reports(&run(&mut m, RecoveryEvent::LoadStarted).1), []);
+    }
+
+    /// **A play with no refusal reports nothing.**
+    #[test]
+    fn a_play_that_was_never_refused_reports_nothing() {
+        let mut m = machine();
+        assert_eq!(run(&mut m, RecoveryEvent::FirstPicture), (Handled::Yes, vec![]));
+        assert_eq!(run(&mut m, RecoveryEvent::FirstPicture), (Handled::No, vec![]));
+    }
+
+    /// **One report per request**, however many Engines or rescues the request goes through: a
+    /// reload after the first picture that is refused and rescued again is the same play.
+    #[test]
+    fn a_request_reports_one_rescue_even_when_a_later_reload_is_rescued_too() {
+        let mut m = machine();
+        run(&mut m, refused(SHUT, on_dts(facts(false, false, true))));
+        run(&mut m, landed());
+        assert_eq!(reports(&run(&mut m, RecoveryEvent::FirstPicture).1).len(), 1);
+        // A track pick reloads; the reload's Engine is refused and a cold Auto Original's HLS
+        // contingency rescues it.
+        let (_, fx) = run(&mut m, refused(SHUT, on_dts(facts(false, true, true))));
+        assert_eq!(fx, [RecoveryEffect::StartAutoHls]);
+        run(&mut m, landed());
+        let (_, fx) = run(&mut m, RecoveryEvent::FirstPicture);
+        assert_eq!(fx, [], "the request already reported its rescue");
+    }
+
+    /// A refusal that ends on the read-out is no rescue, and a Load the machine did not ask for
+    /// (the foreground restore of the refused route) that then plays is not credited to a rung.
+    #[test]
+    fn a_ladder_that_read_out_reports_nothing_even_if_a_restored_load_plays() {
+        let mut m = machine();
+        run(&mut m, refused(SHUT, on_dts(facts(false, false, true))));
+        run(&mut m, landed());
+        let (_, fx) = run(&mut m, refused(SHUT, on_dts(facts(false, false, true))));
+        assert_eq!(fx, ERROR);
+        assert_eq!(m.phase(), Phase::Failed);
+        run(&mut m, RecoveryEvent::LoadStarted);
+        assert_eq!(reports(&run(&mut m, RecoveryEvent::FirstPicture).1), []);
+
+        // The same for a flight Home abandoned.
+        let mut m = machine();
+        run(&mut m, refused(SHUT, on_dts(facts(false, false, true))));
+        assert_eq!(m.phase(), Phase::Flight);
+        run(&mut m, RecoveryEvent::LoadStarted);
+        assert_eq!(reports(&run(&mut m, RecoveryEvent::FirstPicture).1), []);
+    }
+
+    /// The rung that played is the LAST one, the refusal is the FIRST: a facet flight the server
+    /// refused and the HLS contingency after it report "this stream was refused, HLS played".
+    #[test]
+    fn a_later_rung_replaces_the_rung_and_never_the_refusal() {
+        let mut m = machine();
+        run(&mut m, refused(SHUT, on_dts(facts(false, true, true))));
+        // A cold Auto Original's refusal of DTS took the facet rung first; its flight is refused.
+        let (_, fx) = run(&mut m, RecoveryEvent::FlightRefused);
+        assert_eq!(fx, [RecoveryEffect::StartAutoHls]);
+        run(&mut m, landed());
+        let (_, fx) = run(&mut m, RecoveryEvent::FirstPicture);
+        assert_eq!(fx, [recovered(Rung::Both, SHUT, Some(dts6()))]);
+    }
+
+    /// A video facet: only a numbered refusal names the video, and the stream class is the codec's.
+    #[test]
+    fn a_video_facet_rescue_names_the_source_video() {
+        let mut m = manual_machine();
+        run(&mut m, refused(SHUT, on_4k("aac", false)));
+        run(&mut m, landed());
+        let (_, fx) = run(&mut m, RecoveryEvent::FirstPicture);
+        assert_eq!(fx, [recovered(Rung::Facet, SHUT, Some(h264_4k_facet()))]);
+    }
+
+    /// A Load that timed out names no stream and is reported as the timeout it was.
+    #[test]
+    fn a_timeout_rescued_by_the_hls_contingency_reports_the_timeout_and_no_stream() {
+        let mut m = machine();
+        let (_, fx) = run(&mut m, refused(LoadRefusal::TimedOut, on_4k("aac", true)));
+        assert_eq!(fx, [RecoveryEffect::StartAutoHls]);
+        run(&mut m, landed());
+        let (_, fx) = run(&mut m, RecoveryEvent::FirstPicture);
+        assert_eq!(fx, [recovered(Rung::Both, LoadRefusal::TimedOut, None)]);
+    }
+
+    /// The native audio a refusal named is the stream, with its channel count (the stall too).
+    #[test]
+    fn a_named_native_audio_refusal_reports_that_audio() {
+        let mut m = OpenRecovery::new(opus_start());
+        let (_, fx) = run(&mut m, refused(LoadRefusal::Stalled, names_opus(facts(false, false, true))));
+        assert_eq!(fx, [named(opus6()), RecoveryEffect::ConvertFacet { facet: opus6(), flight: 1 }]);
+        run(&mut m, landed());
+        let (_, fx) = run(&mut m, RecoveryEvent::FirstPicture);
+        assert_eq!(fx, [recovered(Rung::Facet, LoadRefusal::Stalled, Some(opus6()))]);
+    }
+
+    /// The Original trial's HLS rollback is a rescue when the TELEVISION refused the trial, and
+    /// nothing when the trial failed for the source's own reasons.
+    #[test]
+    fn a_rollback_is_reported_only_when_the_pipeline_refused_the_trial() {
+        let mut m = machine();
+        let (_, fx) = run(&mut m, refused(SHUT, facts(true, true, true)));
+        assert_eq!(fx, [RecoveryEffect::Rollback]);
+        run(&mut m, landed());
+        let (_, fx) = run(&mut m, RecoveryEvent::FirstPicture);
+        assert_eq!(fx, [recovered(Rung::Rollback, SHUT, None)]);
+
+        let mut m = machine();
+        let (_, fx) = run(&mut m, refused(LoadRefusal::SourceFailed, facts(true, true, true)));
+        assert_eq!(fx, [RecoveryEffect::Rollback]);
+        run(&mut m, landed());
+        assert_eq!(reports(&run(&mut m, RecoveryEvent::FirstPicture).1), [], "the demuxer failed, not the television");
+    }
+
+    /// A source failure that the HLS contingency rescued is not a refusal; but a pipeline refusal
+    /// that follows it on the way to the rescue is the request's refusal.
+    #[test]
+    fn a_source_failure_is_not_a_refusal_unless_the_pipeline_refuses_later() {
+        let mut m = machine();
+        run(&mut m, refused(LoadRefusal::SourceFailed, facts(false, true, true)));
+        run(&mut m, landed());
+        assert_eq!(reports(&run(&mut m, RecoveryEvent::FirstPicture).1), []);
+
+        let mut m = machine();
+        run(&mut m, refused(LoadRefusal::SourceFailed, facts(false, true, true)));
+        run(&mut m, RecoveryEvent::LoadStarted);
+        run(&mut m, landed());
+        run(&mut m, refused(SHUT, on_dts(facts(false, true, true))));
+        run(&mut m, landed());
+        assert_eq!(
+            run(&mut m, RecoveryEvent::FirstPicture).1,
+            [recovered(Rung::Both, SHUT, Some(dts6()))]
+        );
     }
 }
