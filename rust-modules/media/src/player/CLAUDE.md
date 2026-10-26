@@ -329,8 +329,10 @@ something.
   (`Caps::app_decodes_lossy_track`, the one answer): the trigger puts every lossy row in force (even where the set has the
   decoder); otherwise Force Direct Play has no native path for the track on a set without a DTS row (webOS 10+, or a refusal
   the install learned), or the recovery rung below put the codec in force (`Caps::with_app_lossy_for`). Auto never decodes in
-  the app on its own, and Force Direct Play's pick is two passes: the set's own decoder over every track first, the app's
-  only when it plays none, so a native sibling always wins. An app-decoded track is never the set's own decoder's (the Load
+  the app on its own, and Force Direct Play's pick is three passes (`route/plan.rs`): (1) a native track that honours the intent
+  (the selected track, or a same-language non-commentary sibling: `StandIn::SameKind`), (2) the app's decode of the
+  intended track, (3) only then the native stand-in of any track. A native sibling wins over the app decode, and a
+  native commentary or dub never does. An app-decoded track is never the set's own decoder's (the Load
   declares `PCM`, stereo 48 kHz S16: `route::stream_pcm`), is announced without a table row, the track menu says it plays in
   stereo (`route::audio_decoded_in_app`), and
   `ff_pcm::PcmDecoder` decodes it (DTS: the core only, `core_only`), downmixes by the frame's channel layout and resamples it

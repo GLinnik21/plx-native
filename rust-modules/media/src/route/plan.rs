@@ -3087,8 +3087,9 @@ pub(super) fn audio_direct_plays_with(
         || caps.app_decodes_lossy_track(codec, channels, sample_rate, mode == DirectPlayMode::Forced)
 }
 
-/// [`audio_direct_plays_with`] for the set's own decoder only: the Forced pick's first pass (Auto has one pass, over `audio_direct_plays_with`), so a
-/// native track is never passed over for one the app would decode.
+/// [`audio_direct_plays_with`] for the set's own decoder only: the Forced pick's first pass and last
+/// resort (Auto has one pass, over `audio_direct_plays_with`), so a native track that honours the
+/// intent is never passed over for one the app would decode.
 pub(super) fn audio_natively_plays_with(
     caps: &plx_platform::devcaps::Caps, mode: DirectPlayMode, codec: &str, channels: i64,
     sample_rate: i64,
