@@ -8667,6 +8667,7 @@ mod pcm_load_guard_tests {
             ("pcm_f32le", false), ("pcm_f64le", false), ("pcm_s8", false), ("pcm_u8", false),
             ("pcm_bluray", false), ("pcm_dvd", false), ("ac3", false), ("eac3", false), ("aac", false),
             ("dts", false), // lossy: the app's only when the Load itself claimed the lossy decode
+            ("mp3", false), ("vorbis", false), // likewise
         ] {
             let app_decoded = plx_platform::devcaps::app_decoded_by_ffmpeg_name(name).is_some_and(|c| !c.lossy);
             assert_eq!(app_decoded, decodable, "{name}: the table the guard reads");

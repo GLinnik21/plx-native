@@ -5839,6 +5839,29 @@ mod pcm_format_tests {
         }
     }
 
+    /// **MP3 and Vorbis under the gate** (S4-4) declare the same one shape as DTS, only on an attempt
+    /// that turned the lossy decode on, and are the ladder's "app decoded" fact then.
+    #[test]
+    fn mp3_and_vorbis_declare_stereo_48k_only_when_the_attempt_has_the_gate_on() {
+        let mut ps = PlaybackSession::IDLE;
+        ps.begin_attempt(std::sync::Arc::new(plx_platform::devcaps::Caps::assumed()));
+        for codec in ["mp3", "vorbis"] {
+            set_stream_codecs(&mut ps, "h264", codec);
+            assert_eq!(stream_pcm(&ps), None, "{codec}: gate off");
+            assert!(!stream_pcm_is_lossy(&ps) && !stream_audio(&ps).unwrap().app_decoded_lossy, "{codec}");
+        }
+        ps.begin_attempt(std::sync::Arc::new(plx_platform::devcaps::Caps::assumed().with_app_lossy()));
+        for codec in ["mp3", "vorbis", "MP3"] {
+            set_stream_codecs(&mut ps, "h264", codec);
+            assert_eq!(stream_pcm(&ps), Some(Ok(PcmFormat::STEREO_48K)), "{codec}");
+            assert!(stream_pcm_is_lossy(&ps) && stream_audio(&ps).unwrap().app_decoded_lossy, "{codec}");
+        }
+        for other in ["mp2", "wma", "opus", "truehd"] {
+            set_stream_codecs(&mut ps, "h264", other);
+            assert_eq!(stream_pcm(&ps), None, "{other}");
+        }
+    }
+
     #[test]
     fn missing_or_out_of_path_facts_refuse_the_load() {
         assert!(pcm_format_of(None, "flac").is_err());

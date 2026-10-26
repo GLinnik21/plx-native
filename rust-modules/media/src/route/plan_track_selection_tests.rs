@@ -1006,6 +1006,24 @@ fn the_lossy_gate_lets_the_app_direct_play_dts_in_both_modes_and_off_changes_not
     assert!(audio_direct_plays_with(&measured.with_app_lossy(), DirectPlayMode::Forced, "dca", 6, 0));
 }
 
+/// **MP3 and Vorbis under the lossy gate** (S4-4) direct-play in both modes on a set with no row for
+/// them, and not with it off; a Vorbis above 48 kHz is the server's.
+#[test]
+fn the_lossy_gate_lets_the_app_direct_play_mp3_and_vorbis_in_both_modes() {
+    let off = plx_platform::devcaps::Caps::assumed();
+    let on = plx_platform::devcaps::Caps::assumed().with_app_lossy();
+    for mode in [DirectPlayMode::Auto, DirectPlayMode::Forced] {
+        for codec in ["mp3", "vorbis"] {
+            assert!(!audio_direct_plays_with(&off, mode, codec, 2, 44_100), "{mode:?} {codec}: gate off");
+            assert!(audio_direct_plays_with(&on, mode, codec, 2, 44_100), "{mode:?} {codec}: gate on");
+            assert!(audio_direct_plays_with(&on, mode, codec, 2, 0), "{mode:?} {codec}: unstated rate");
+            assert!(!audio_direct_plays_with(&on, mode, codec, 2, 96_000), "{mode:?} {codec}: above 48 kHz");
+        }
+        assert!(audio_direct_plays_with(&on, mode, "vorbis", 6, 48_000), "{mode:?}: 5.1 Vorbis");
+        assert!(!audio_direct_plays_with(&on, mode, "mp2", 2, 44_100), "{mode:?}: only MP3 and Vorbis joined");
+    }
+}
+
 /// Issue #951: an LG B8 refused a 96 kHz AAC Load. The server is asked for 48 kHz at most on every
 /// audio codec, and the local gate agrees on that axis: a 96 kHz AAC (or AC-3) track does not
 /// direct-play in either mode and never wins the pick over a sibling that does, while an unstated

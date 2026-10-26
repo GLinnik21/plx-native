@@ -6699,6 +6699,29 @@ mod pcm_info_tests {
         serde_json::from_str::<serde_json::Value>(&on).unwrap();
     }
 
+    /// MP3 and Vorbis under the gate (S4-4) are declared exactly as DTS is: `PCM`, stereo 48 kHz S16.
+    #[test]
+    fn app_decoded_mp3_and_vorbis_are_declared_as_pcm_and_native_ones_are_refused() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        for codec in ["mp3", "vorbis"] {
+            crate::route::set_stream_codecs(&mut ps, "h264", codec);
+            let off = crate::route::stream_pcm(&ps).and_then(Result::ok);
+            assert_eq!(off, None, "{codec}: gate off");
+            assert_eq!(audio_declaration(codec, off.as_ref()).map(|d| d.0).filter(|n| *n == "PCM"), None, "{codec}");
+        }
+        crate::route::begin_attempt_for_test(
+            &mut ps, std::sync::Arc::new(plx_platform::devcaps::Caps::assumed().with_app_lossy()),
+        );
+        for codec in ["mp3", "vorbis"] {
+            crate::route::set_stream_codecs(&mut ps, "h264", codec);
+            let shape = crate::route::stream_pcm(&ps).and_then(Result::ok);
+            assert_eq!(shape, Some(crate::route::PcmFormat::STEREO_48K), "{codec}");
+            assert_eq!(audio_declaration(codec, shape.as_ref()), Some(("PCM", 5)), "{codec}");
+            let on = build_av_payload_at(&ps, "H264", "PCM", ENVELOPE_FHD60, crate::player::RATE_NORMAL);
+            assert_eq!(on.matches("pcmInfo").count(), 1, "{codec}: {on}");
+        }
+    }
+
     #[test]
     fn only_a_pcm_load_carries_pcm_info() {
         let f = PcmFormat { sample_rate: 48_000, bits: 16, channels: 2 };

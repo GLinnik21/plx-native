@@ -2056,7 +2056,7 @@ DTS row and feeds only the DTS core when an HD extension is present. PMS names D
 the Load payload, and the profile sends `dca` (`transcoder.rs::profile_codec_name`). Force
 Direct Play admits DTS only when the table has a DTS row with channels (`Caps::forced_admits_dts`)
 but skips the channel ceiling. The implemented Load
-strings are `H264`/`H265`/`AV1`/`VP9` (AV1 and VP9 only on a set whose table lists that decoder; elsewhere the Load is refused) and `AC3`/`AC3 PLUS`/`AAC`/`DTS`, plus `PCM` for FLAC, ALAC and LPCM decoded in the app (and for DTS on a debug build with `/tmp/plxnative-appdecodelossy`, which gates the app's own lossy decode off by default); these are not the firmware's whole
+strings are `H264`/`H265`/`AV1`/`VP9` (AV1 and VP9 only on a set whose table lists that decoder; elsewhere the Load is refused) and `AC3`/`AC3 PLUS`/`AAC`/`DTS`, plus `PCM` for FLAC, ALAC and LPCM decoded in the app (and for DTS, MP3 and Vorbis on a debug build with `/tmp/plxnative-appdecodelossy`, which gates the app's own lossy decode off by default); these are not the firmware's whole
 vocabulary. The six AC3/EAC3/AAC combinations and H264/DTS are covered
 here, plus DV 8.1, both containers, in-place seek in each, and the FRAME-RATE axis added the same
 day (`pipe_h264_1080p5994` is the only fixture that reaches `fps_rational`'s 1001-denominator

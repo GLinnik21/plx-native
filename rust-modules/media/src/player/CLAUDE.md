@@ -320,11 +320,13 @@ something.
   (float or 8-bit LPCM under PMS's `pcm`) is refused in the demuxer (`ff::pcm_load_feeds_raw`) and ends as
   `demux_failed` -> `LoadRefusal::SourceFailed`, which names no facet, so the audio-only conversion rung is not
   reached: Auto Original falls to its HLS contingency, Force Direct Play shows the error.
-  DTS is the lossy entry of `devcaps::APP_DECODED`, **gated off**: on a DEBUG build, `/tmp/plxnative-appdecodelossy` (read once
-  at boot by `devcaps::probe`) sets `Caps::app_decodes_lossy`, and then DTS is announced without a table row, is
+  DTS, MP3 and Vorbis are the lossy entries of `devcaps::APP_DECODED`, **gated off**: on a DEBUG build, `/tmp/plxnative-appdecodelossy` (read once
+  at boot by `devcaps::probe`) sets `Caps::app_decodes_lossy`, and then each is announced without a table row, is
   never the set's own decoder's (the Load declares `PCM`, stereo 48 kHz S16: `route::stream_pcm`), and
-  `ff_pcm::PcmDecoder` decodes the core (`core_only`), downmixes and resamples it (`Stereo48`). It stays
-  off until the TV has measured the CPU (S4 U5); with it off DTS is native exactly as above. A Load whose DTS the app
+  `ff_pcm::PcmDecoder` decodes it (DTS: the core only, `core_only`), downmixes by the frame's channel layout and resamples it
+  (`Stereo48`). MP3 and Vorbis stay `audio_rate_bounded` (the app's linear resampler is for the rates a DTS core has, not a 96 kHz
+  Vorbis), so a track above 48 kHz is the server's; DTS is exempt. It stays
+  off until the TV has measured the CPU (S4 U5); with it off DTS is native exactly as above and MP3 and Vorbis are not offered. A Load whose DTS the app
   decoded names no audio facet in the failed-open ladder (`StreamAudio::app_decoded_lossy`): the pipeline was fed PCM, and a
   facet keyed `dts` would be stored as a refusal of the set's NATIVE decoder.
   A named refusal comes from a native Load that ends

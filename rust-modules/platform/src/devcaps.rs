@@ -116,6 +116,10 @@ pub const APP_DECODED: &[AppDecoded] = &[
     // and for Force Direct Play there. GATED OFF until the TV has measured the CPU it costs
     // ([`Caps::app_decodes_lossy`]).
     AppDecoded { id: "dts", codecs: &["dts"], decoders: &["dca"], lossy: true },
+    // MP3 and Vorbis (S4-4): stereo 48 kHz PCM through the same decoder and the same gate as DTS. Unlike
+    // a DTS core they can be above 48 kHz, so they stay rate bound ([`audio_rate_bounded`]).
+    AppDecoded { id: "mp3", codecs: &["mp3"], decoders: &["mp3"], lossy: true },
+    AppDecoded { id: "vorbis", codecs: &["vorbis"], decoders: &["vorbis"], lossy: true },
 ];
 
 /// The [`APP_DECODED`] entry covering the stream whose `avcodec_get_name` is `name`.
@@ -553,6 +557,11 @@ impl Caps {
         let id = audio_codec_id(codec);
         if id == "dts" {
             return self.forced_admits_dts();
+        }
+        // A lossy codec the app decodes itself needs no decoder on the set, only the gate: its
+        // announcement ([`Caps::with_app_lossy`]) is the evidence.
+        if self.app_decodes_lossy_codec(&id) {
+            return true;
         }
         // Pipeline-only Opus and the app-decoded lossless set need only a table that was read. Such a
         // track's own limits are [`audio_track_fits`], which the planner applies in both modes.
@@ -1720,6 +1729,36 @@ mod tests {
         assert_eq!(on.clone().with_app_lossy(), on, "idempotent");
         let dts_in_list = on.audio.split(',').filter(|c| *c == "dts").count();
         assert_eq!(dts_in_list, 1);
+    }
+
+    /// **S4-4: MP3 and Vorbis ride the same gate as DTS**, and nothing else changes with it off.
+    /// On, each is announced without a table row and fed in both modes; unlike a DTS core, either can
+    /// be above 48 kHz (a 96 kHz Vorbis), which the app's linear resampler is not for, so the rate
+    /// bound stays and such a track is converted by the server.
+    #[test]
+    fn mp3_and_vorbis_are_app_decoded_only_under_the_gate() {
+        for off in [Caps::assumed(), parse(REAL).unwrap()] {
+            for codec in ["mp3", "vorbis", "MP3"] {
+                assert!(!off.app_decodes(codec) && !off.audio_has(codec) && !off.forced_feeds_audio(codec), "{codec}");
+            }
+        }
+        let on = Caps::assumed().with_app_lossy();
+        for codec in ["mp3", "vorbis", "MP3", "Vorbis"] {
+            assert!(on.app_decodes(codec) && on.app_decodes_lossy_codec(codec), "{codec}");
+            assert!(on.audio_has(codec) && on.audio_supports(codec, 2), "{codec}");
+            assert!(on.forced_feeds_audio(codec) && on.forced_feeds_audio_track(codec, 2), "{codec}");
+        }
+        assert!(audio_track_fits("mp3", 2, 44_100) && audio_track_fits("vorbis", 6, 48_000));
+        assert!(audio_track_fits("vorbis", 2, 0), "an unstated rate passes, as for every codec");
+        assert!(!audio_track_fits("vorbis", 2, 96_000), "above 48 kHz the server converts it");
+        assert!(!on.app_decodes("mp2") && !on.app_decodes("wma") && !on.app_decodes("truehd"));
+        for codec in ["mp3", "vorbis"] {
+            assert_eq!(on.audio.split(',').filter(|c| *c == codec).count(), 1, "{codec} once");
+        }
+        assert_eq!(on.clone().with_app_lossy(), on, "idempotent");
+        assert_eq!(audio_codec_id("MP3"), "mp3");
+        assert_eq!(app_decoded_by_ffmpeg_name("mp3").map(|c| (c.id, c.lossy)), Some(("mp3", true)));
+        assert_eq!(app_decoded_by_ffmpeg_name("vorbis").map(|c| (c.id, c.lossy)), Some(("vorbis", true)));
     }
 
     /// Lossless two-channel codecs share FLAC's path (S4, PR 1): ALAC, and LPCM under every spelling

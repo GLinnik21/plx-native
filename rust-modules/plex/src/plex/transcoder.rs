@@ -308,6 +308,7 @@ fn profile_for_delivery(caps: &plx_platform::devcaps::Caps, delivery: TranscodeD
         + &plx_platform::devcaps::PCM_AUDIO_CODECS
             .split(',')
             .filter(|c| caps.audio_has(c))
+            .chain(plx_platform::devcaps::APP_DECODED.iter().filter(|c| c.lossy && caps.audio_has(c.id)).map(|c| c.id))
             .chain(target_audio_codecs.iter().copied())
             .filter(|c| plx_platform::devcaps::audio_rate_bounded(c))
             .map(|codec| audio_limit(codec, "audio.samplingRate", plx_platform::devcaps::AUDIO_RATE_CEILING))
@@ -356,11 +357,19 @@ fn forced_direct_profile_for(caps: &plx_platform::devcaps::Caps) -> String {
     }
     // The pipeline's feed formats, DTS only under the Forced rule (`Caps::forced_admits_dts`):
     // a profile that offered DTS to a set with no DTS row would have PMS direct-play a Load the
-    // pipeline cannot decode.
+    // pipeline cannot decode. The lossy app-decoded ids follow (those not already listed: DTS is).
     let audio = DP_AUDIO_CODECS
         .split(',')
         .chain(plx_platform::devcaps::PCM_AUDIO_CODECS.split(','))
+        .chain(plx_platform::devcaps::APP_DECODED.iter().filter(|c| c.lossy).map(|c| c.id))
         .filter(|c| caps.forced_feeds_audio(c))
+        .fold(Vec::<&str>::new(), |mut seen, c| {
+            if !seen.contains(&c) {
+                seen.push(c);
+            }
+            seen
+        })
+        .into_iter()
         .map(profile_codec_name)
         .collect::<Vec<_>>()
         .join(",");
@@ -1452,8 +1461,32 @@ mod tests {
         assert!(!auto.contains("scopeName=dca&type=upperBound&name=audio.samplingRate"), "no rate bound on the core: {auto}");
         assert!(!auto.contains("dts"), "{auto}");
         let forced = super::forced_direct_profile_for(&on);
-        assert_eq!(list_of(&forced, "audioCodec="), ["aac", "ac3", "eac3", "dca"], "{forced}");
+        assert_eq!(list_of(&forced, "audioCodec="), ["aac", "ac3", "eac3", "dca", "mp3", "vorbis"], "{forced}");
         assert_eq!(super::profile_for(&off), super::profile_for(&Caps::assumed()));
+    }
+
+    /// **MP3 and Vorbis in both profiles under the gate** (S4-4): announced like `dca` (direct-play
+    /// list, channel limit, no transcode target), and, unlike a DTS core, held to the 48 kHz
+    /// sampling-rate bound, because the app's resampler is not for a 96 kHz Vorbis. Off, the profiles
+    /// are what they were.
+    #[test]
+    fn the_lossy_gate_adds_mp3_and_vorbis_to_both_profiles_with_a_rate_bound() {
+        let off = Caps::assumed();
+        for profile in [super::profile_for(&off), super::forced_direct_profile_for(&off)] {
+            assert!(!profile.contains("mp3") && !profile.contains("vorbis"), "{profile}");
+        }
+        let on = Caps::assumed().with_app_lossy();
+        let auto = super::profile_for(&on);
+        let dp = list_of(&auto, "audioCodec=");
+        for codec in ["mp3", "vorbis"] {
+            assert!(dp.contains(&codec.into()), "{codec}: {auto}");
+            assert!(auto.contains(&format!("scope=videoAudioCodec&scopeName={codec}&type=upperBound&name=audio.channels&value=8&replace=true")), "{codec}: {auto}");
+            assert!(auto.contains(&format!("scopeName={codec}&type=upperBound&name=audio.samplingRate&value=48000")), "{codec} is rate bound: {auto}");
+            assert!(!list_of(target_of(&auto), "audioCodec=").contains(&codec.into()), "{codec} is never a transcode target");
+        }
+        assert!(!auto.contains("scopeName=dca&type=upperBound&name=audio.samplingRate"), "a DTS core still is not: {auto}");
+        let forced = list_of(&super::forced_direct_profile_for(&on), "audioCodec=");
+        assert_eq!(forced, ["aac", "ac3", "eac3", "dca", "mp3", "vorbis"]);
     }
 
     /// Forced mode advertises the engine's formats with no device limits and no transcode target.

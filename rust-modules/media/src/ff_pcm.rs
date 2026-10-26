@@ -1,6 +1,6 @@
 //! Audio decoded in the app and fed as PCM: the lossless FLAC, ALAC and integer LPCM, bit-exact,
-//! and DTS, the lossy entry, converted to stereo 48 kHz S16 ([`Stereo48`]) and only on a
-//! `Caps::app_decodes_lossy` value (`devcaps::APP_DECODED` is the set).
+//! and DTS, MP3 and Vorbis, the lossy entries, converted to stereo 48 kHz S16 ([`Stereo48`]) and
+//! only on a `Caps::app_decodes_lossy` value (`devcaps::APP_DECODED` is the set).
 //!
 //! libpf has no FLAC or ALAC input — its Load vocabulary is AAC / AC3 / AC3 PLUS / DTS / MP3 / MPEG
 //! / OPUS / VORBIS / WMA / PCM (read from `libpf-1.0` on a webOS 4.4.3 OLED55B8) — but it does take
@@ -53,7 +53,7 @@ pub struct PcmDecoder {
     frame: *mut std::ffi::c_void,
     out: PcmOut,
     buf: Vec<u8>,
-    /// Some for a lossy codec (DTS): the frame is converted to [`STEREO_48K`] instead of passed
+    /// Some for a lossy codec (DTS, MP3, Vorbis): the frame is converted to [`STEREO_48K`] instead of passed
     /// through bit-exact.
     lossy: Option<Stereo48>,
     /// `core_only` took on a lossy decoder (FFmpeg accepted the option). Reported in the log line
@@ -147,6 +147,7 @@ impl PcmDecoder {
         if r >= 0 && entry.lossy {
             // DTS: the 5.1 core only. The extensions (XLL, XBR, X96) are costly and the output is
             // stereo anyway; best-effort, so an FFmpeg without the option still decodes the core.
+            // MP3 and Vorbis have no such option: `av_opt_set` fails, `core_only` stays false.
             core_only = crate::ff::av_opt_set(
                 ctx as *mut std::ffi::c_void, c"core_only".as_ptr(), c"1".as_ptr(), AV_OPT_SEARCH_CHILDREN,
             ) >= 0;
@@ -169,11 +170,13 @@ impl PcmDecoder {
         self.core_only
     }
 
-    /// Decode one packet into interleaved little-endian PCM of the declared width. These codecs
-    /// have no decoder delay: one packet is one frame, so the packet's pts is the PCM's. (DTS's
-    /// core decoder delays nothing either; the resampler holds back at most one input frame.)
+    /// Decode one packet into interleaved little-endian PCM of the declared width. The lossless
+    /// codecs have no decoder delay: one packet is one frame, so the packet's pts is the PCM's. (A DTS
+    /// or MP3 frame is the same; the resampler holds back at most one input frame. Vorbis overlaps
+    /// its blocks, so its first packet yields nothing and the rest come out about half a block, tens
+    /// of milliseconds, after their packet's pts: not corrected, a lip-sync item for the TV.)
     ///
-    /// A LOSSY stream (DTS) skips a packet or frame that fails, as the speed decoder does, and
+    /// A LOSSY stream (DTS, MP3, Vorbis) skips a packet or frame that fails, as the speed decoder does, and
     /// ends only after [`MAX_CONSECUTIVE_DECODE_ERRORS`] in a row; a lossless one is bit-exact or
     /// nothing, so its first failure ends it.
     pub unsafe fn decode(&mut self, pkt: *const AVPacket) -> Result<&[u8], String> {
@@ -207,8 +210,8 @@ impl PcmDecoder {
 
     /// The demuxer sought: what the decode carried from the old position is dropped, so the first
     /// sound at the new one is not blended with the last of the old. The decoder is flushed
-    /// (`avcodec_flush_buffers`: a DTS synthesis filter bank carries state from frame to frame, which
-    /// is a click at every seek), the frame buffer emptied, the error count started again and a lossy
+    /// (`avcodec_flush_buffers`: a DTS synthesis filter bank or an MP3 bit reservoir carries state from frame
+    /// to frame, which is a click at every seek), the frame buffer emptied, the error count started again and a lossy
     /// decode's resampler tail forgotten.
     pub fn reset_stream(&mut self) {
         unsafe { crate::ff::avcodec_flush_buffers(self.ctx) };

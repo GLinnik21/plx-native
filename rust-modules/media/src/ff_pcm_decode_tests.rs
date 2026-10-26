@@ -303,11 +303,12 @@ fn float_and_8_bit_lpcm_are_not_app_decodable() {
     }
 }
 
-/// Output of the audio packet numbered `k` of `path`, decoded by a [`PcmDecoder`] declared as `out`.
-/// With `history`, the packets before `k` are decoded first (the decoder has played that far) and the
-/// decoder is then [reset](PcmDecoder::reset_stream) as a seek does; without, `k` is the first packet
-/// a fresh decoder sees. A flush must make the two the same.
-unsafe fn packet_output(path: &Path, out: PcmOut, k: usize, history: bool) -> Vec<u8> {
+/// Output of the `span` audio packets from number `k` of `path`, decoded by a [`PcmDecoder`] declared
+/// as `out`. The decoder is [reset](PcmDecoder::reset_stream) before packet `k`, as a seek does, after
+/// it had decoded the `history` packets before `k` (0: none). A reset must make the output the same
+/// whatever the history was. (Not compared with a decoder that never played: FFmpeg applies a
+/// stream's start padding only at the start, so an MP3 decoder's first frame legitimately differs.)
+unsafe fn packet_output(path: &Path, out: PcmOut, k: usize, span: usize, history: usize) -> Vec<u8> {
     let c_path = CString::new(path.to_str().unwrap()).unwrap();
     let mut fmt = avformat_alloc_context();
     assert!(avformat_open_input(&mut fmt, c_path.as_ptr(), std::ptr::null_mut(), std::ptr::null_mut()) >= 0);
@@ -319,27 +320,29 @@ unsafe fn packet_output(path: &Path, out: PcmOut, k: usize, history: bool) -> Ve
     let mut dec = PcmDecoder::open(stream_codecpar(*streams.add(ai)), out).expect("open");
     let mut pkt = av_packet_alloc();
     let mut n = 0;
-    let mut result = None;
+    let mut result = Vec::new();
     while av_read_frame(fmt, pkt) >= 0 {
         if (*pkt).stream_index as usize == ai {
             if n == k {
-                if history {
-                    dec.reset_stream();
-                }
-                result = Some(dec.decode(pkt).expect("decode").to_vec());
-                av_packet_unref(pkt);
-                break;
+                dec.reset_stream();
             }
-            if history {
+            if n >= k {
+                result.extend_from_slice(dec.decode(pkt).expect("decode"));
+            } else if n + history >= k {
                 dec.decode(pkt).expect("decode");
             }
             n += 1;
+            if n >= k + span {
+                av_packet_unref(pkt);
+                break;
+            }
         }
         av_packet_unref(pkt);
     }
     av_packet_free(&mut pkt);
     avformat_close_input(&mut fmt);
-    result.expect("the file has packet k")
+    assert!(n >= k + span, "the file has packets {k}..{}", k + span);
+    result
 }
 
 /// **A seek leaves no history in the lossy decoder.** The first frame decoded after
@@ -367,9 +370,109 @@ fn a_reset_leaves_no_history_of_the_stream_before_it() {
             samples.extend_from_slice(&[v, -v / 2, v / 3, 0, v / 4, -v / 5]);
         }
         let src = encode(&scratch.0, file, S16, rate, 6, &samples, "dca", &["-strict", "-2", "-b:a", "768k"]);
-        let fresh = unsafe { packet_output(&src, stereo, 20, false) };
-        let after_seek = unsafe { packet_output(&src, stereo, 20, true) };
+        let fresh = unsafe { packet_output(&src, stereo, 20, 1, 0) };
+        let after_seek = unsafe { packet_output(&src, stereo, 20, 1, 20) };
         assert!(!fresh.is_empty() && fresh.iter().any(|&b| b != 0), "{rate} Hz: the packet decodes to sound");
         assert!(fresh == after_seek, "{rate} Hz: the first frame after a reset must not depend on what was decoded before");
+    }
+}
+
+/// One lossy stereo or mono fixture: `codec` is the host encoder (`libmp3lame`, `vorbis`), `left_only`
+/// puts the sine on the left channel alone (so a downmix that crossed the channels shows).
+struct LossyCase {
+    file: &'static str,
+    codec: &'static str,
+    extra: &'static [&'static str],
+    rate: u32,
+    channels: usize,
+    left_only: bool,
+}
+
+const LOSSY_CASES: &[LossyCase] = &[
+    LossyCase { file: "mp3-48k.mkv", codec: "libmp3lame", extra: &["-joint_stereo", "0", "-b:a", "192k"], rate: 48_000, channels: 2, left_only: true },
+    LossyCase { file: "mp3-44k.mkv", codec: "libmp3lame", extra: &["-joint_stereo", "0", "-b:a", "192k"], rate: 44_100, channels: 2, left_only: true },
+    LossyCase { file: "mp3-32k.mkv", codec: "libmp3lame", extra: &["-joint_stereo", "0", "-b:a", "128k"], rate: 32_000, channels: 2, left_only: true },
+    LossyCase { file: "mp3-mono.mkv", codec: "libmp3lame", extra: &["-b:a", "96k"], rate: 44_100, channels: 1, left_only: false },
+    LossyCase { file: "vorbis-48k.mkv", codec: "vorbis", extra: &["-strict", "-2", "-b:a", "192k"], rate: 48_000, channels: 2, left_only: true },
+    LossyCase { file: "vorbis-44k.mkv", codec: "vorbis", extra: &["-strict", "-2", "-b:a", "192k"], rate: 44_100, channels: 2, left_only: true },
+];
+
+fn lossy_source(scratch: &Path, c: &LossyCase) -> PathBuf {
+    let frames = c.rate as usize * 2;
+    let mut samples = Vec::with_capacity(frames * c.channels);
+    for i in 0..frames {
+        let t = i as f64 / c.rate as f64;
+        let v = ((t * 2.0 * std::f64::consts::PI * 440.0).sin() * 9_000.0
+            + (t * 2.0 * std::f64::consts::PI * 3_100.0).sin() * 6_000.0) as i32;
+        match (c.channels, c.left_only) {
+            (1, _) => samples.push(v),
+            (_, true) => samples.extend_from_slice(&[v, 0]),
+            _ => samples.extend_from_slice(&[v, v]),
+        }
+    }
+    encode(scratch, c.file, S16, c.rate, c.channels, &samples, c.codec, c.extra)
+}
+
+/// **MP3 and Vorbis decode to the one lossy shape** (S4-4) through the real `mp3` and `vorbis`
+/// decoders of the bundled component list, at the rates they ship in: stereo 48 kHz S16, about as
+/// long as the source, a left-only sine still on the left, a mono source on both sides equally, and a
+/// file declared as anything else refused. Neither accepts `core_only` (a DTS option), which is
+/// recorded and harmless.
+#[test]
+#[ignore = "requires the bundled host FFmpeg and the ffmpeg tool; run make check-ffmpeg"]
+fn mp3_and_vorbis_decode_to_stereo_48k_through_the_bundled_ffmpeg() {
+    let _g = plx_base::testlock::serial();
+    if skip() {
+        return;
+    }
+    let _ffmpeg = bind_host_ffmpeg();
+    let scratch = Scratch::new("lossy-mp3-vorbis");
+    let stereo = PcmOut { rate: 48_000, bits: 16, channels: 2 };
+    for c in LOSSY_CASES {
+        let src = lossy_source(&scratch.0, c);
+        let got = unsafe { decode_file_with(&src, stereo, |d| assert!(!d.core_only(), "{}: core_only is a DTS option", c.file)) }
+            .unwrap_or_else(|why| panic!("{}: {why}", c.file));
+        let pcm: Vec<i16> = got.chunks(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
+        let frames_out = pcm.len() / 2;
+        assert!((92_000..=97_500).contains(&frames_out), "{}: 2 s is ~96000 frames at 48 kHz, got {frames_out}", c.file);
+        let energy = |ch: usize| pcm.iter().skip(ch).step_by(2).map(|&v| (v as f64).powi(2)).sum::<f64>();
+        assert!(energy(0) > 1_000.0, "{}: the sine is audible", c.file);
+        if c.left_only {
+            assert!(energy(0) > 30.0 * energy(1).max(1.0), "{}: the left sine must stay on the left ({} vs {})", c.file, energy(0), energy(1));
+        } else {
+            let ratio = energy(0) / energy(1).max(1.0);
+            assert!((0.9..1.1).contains(&ratio), "{}: a mono source is centred, got {ratio}", c.file);
+        }
+        let peak = pcm.iter().map(|&v| (v as i32).abs()).max().unwrap();
+        assert!(peak < 32_000, "{}: the downmix did not clip ({peak})", c.file);
+    }
+    for c in [&LOSSY_CASES[0], &LOSSY_CASES[4]] {
+        let src = scratch.0.join(c.file);
+        for wrong in [PcmOut { rate: 44_100, bits: 16, channels: 2 }, PcmOut { rate: 48_000, bits: 32, channels: 2 }, PcmOut { rate: 48_000, bits: 16, channels: 1 }] {
+            let why = unsafe { decode_file(&src, wrong) }.expect_err("converted to stereo 48 kHz S16 only");
+            assert!(why.contains("stereo 48 kHz"), "{}: {why}", c.file);
+        }
+    }
+}
+
+/// A seek leaves no history in the MP3 (bit reservoir, overlap) or Vorbis (overlap window) decoder:
+/// the first eight packets after `reset_stream` are the same whether the decoder had played 7 or 20
+/// packets before it.
+#[test]
+#[ignore = "requires the bundled host FFmpeg and the ffmpeg tool; run make check-ffmpeg"]
+fn a_reset_leaves_no_history_in_mp3_and_vorbis() {
+    let _g = plx_base::testlock::serial();
+    if skip() {
+        return;
+    }
+    let _ffmpeg = bind_host_ffmpeg();
+    let scratch = Scratch::new("lossy-mp3-vorbis-reset");
+    let stereo = PcmOut { rate: 48_000, bits: 16, channels: 2 };
+    for c in [&LOSSY_CASES[1], &LOSSY_CASES[5]] {
+        let src = lossy_source(&scratch.0, c);
+        let short = unsafe { packet_output(&src, stereo, 20, 8, 7) };
+        let after_seek = unsafe { packet_output(&src, stereo, 20, 8, 20) };
+        assert!(short.iter().any(|&b| b != 0), "{}: the packet decodes to sound", c.file);
+        assert!(short == after_seek, "{}: the first frame after a reset must not depend on what was decoded before", c.file);
     }
 }
