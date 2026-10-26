@@ -377,7 +377,7 @@ something.
   plays leaves dropped). No track pick runs in S1a: the replacement converts the track the viewer was on, and the
   AC3 sibling is only chosen once a learned row is in `start` (S2); (4) the **both-facets rung**, a cold
   Auto Original's HLS contingency (`StartAutoHls`), whose attempt lacks every facet the request took
-  out and every stream this refusal named (the refused video raster, native audio); a manual pick has
+  out and every stream this refusal named (the refused video raster, the suspect audio); a manual pick has
   no such rung, so its refusal after the facet flight, landed or refused, goes to (5) the read-out.
   The facet and both-facets rungs together are bounded by `MAX_RECOVERY_FLIGHTS` (2) per request, the facet rung runs once, and the
   rollback is not counted. A facet `start` already lacks (`start.without(facet) == start`: a stored

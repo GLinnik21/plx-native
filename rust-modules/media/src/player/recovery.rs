@@ -32,7 +32,7 @@
 //! every set decodes, else the source's video for a numbered refusal, which a cold Auto Original
 //! leaves to its HLS rung); else the HLS contingency of a cold Auto Original (the both-facets rung,
 //! [`RecoveryEffect::StartAutoHls`]), whose attempt lacks every facet the request took out and
-//! every stream this refusal named, the refused video raster and the native audio; else the failure
+//! every stream this refusal named, the refused video raster and the suspect audio; else the failure
 //! read-out. The rungs which start a flight (the facet rung and the both-facets rung) are bounded
 //! by [`MAX_RECOVERY_FLIGHTS`] per request. A manual pick has no both-facets rung: its refusal after
 //! the facet flight, whether the flight landed or came back refused, reads out.
@@ -273,7 +273,7 @@ enum Rung {
     Facet,
     /// The both-facets rung: the HLS contingency of a cold Auto Original, planned from `start` less
     /// every facet the request took out (the facet rung's, when it flew first) and every stream
-    /// this refusal named (the refused video raster, native audio). Only a cold Auto Original has
+    /// this refusal named (the refused video raster, the suspect audio). Only a cold Auto Original has
     /// one: a manual pick reads out after its facet flight.
     Both,
 }
