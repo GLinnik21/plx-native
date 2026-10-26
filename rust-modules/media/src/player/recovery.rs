@@ -479,16 +479,21 @@ impl OpenRecovery {
     }
 
     /// Keep the request's first refusal the report can name ([`LoadRefusal::reports`]) and the
-    /// stream it put under suspicion: the natively fed audio it named, else [`suspect`] (the video
-    /// only for a numbered refusal, which is what can name a decode). Later refusals, which are
-    /// the failures of rescue attempts, never replace it.
+    /// stream it put under suspicion: for a refusal that names the pipeline, the natively fed audio
+    /// it named, else [`suspect`] (the video only for a numbered refusal, which is what can name a
+    /// decode); none for a Load timeout. Later refusals, which are the failures of rescue
+    /// attempts, never replace it.
     fn note_refusal(&mut self, refusal: LoadRefusal, facts: &OpenFacts) {
         if self.refused.is_some() || !refusal.reports() {
             return;
         }
-        let video = facts.video.as_ref().filter(|_| matches!(refusal, LoadRefusal::Refused { .. }));
-        let facet = facts.native_audio.clone().or_else(|| suspect(facts.audio.as_ref(), video));
-        self.refused = Some((refusal, facet));
+        // Only a refusal that names the pipeline puts a stream under suspicion: a Load timeout says
+        // nothing about the audio fed, and the ladder itself ignores it for one.
+        let facet = refusal.names_pipeline().then(|| {
+            let video = facts.video.as_ref().filter(|_| matches!(refusal, LoadRefusal::Refused { .. }));
+            facts.native_audio.clone().or_else(|| suspect(facts.audio.as_ref(), video))
+        });
+        self.refused = Some((refusal, facet.flatten()));
     }
 
     /// The first picture of an open that rests on a rung's route: a rescued refusal, reported once
@@ -532,7 +537,7 @@ impl OpenRecovery {
     /// **The report** ([`Recovered`]): the machine remembers the request's FIRST refusal that
     /// [`LoadRefusal::reports`] with the stream it named, and the rung of the flight the open now
     /// rests on (the latest rung, set when a flight starts and cleared by the read-out and by a
-    /// Load the machine did not ask for). The first picture of such an open pushes one
+    /// Load the machine did not ask for that abandons a flight which never landed). The first picture of such an open pushes one
     /// `ReportRecovered`, once per request. A play with no refusal, a source failure, a ladder
     /// that read out and a flight Home abandoned report nothing.
     ///
@@ -612,8 +617,10 @@ impl OpenRecovery {
                     // The flight (if any) is gone with the Engine that waited on it, and the
                     // read-out belongs to the Engine that failed: the new Load is a new open, ruled
                     // on by the same ladder with what this request has already spent (`flights`,
-                    // `excluded`). It rests on no rung's route, so a picture from it is no rescue
-                    // (a landed `Proving` reload keeps its rung: its route is the rescue's).
+                    // `excluded`). A flight that never landed or a read-out leaves the new open on
+                    // no rung's route, so a picture from it is no rescue; a `Proving` state's route
+                    // HAS landed (a track pick or a restore reloads that same installed route), so
+                    // it keeps its rung, and only its proof is dropped.
                     if !matches!(self.state, State::Proving { .. }) {
                         self.rescue = None;
                     }
@@ -1553,6 +1560,33 @@ mod tests {
         run(&mut m, landed());
         let (_, fx) = run(&mut m, RecoveryEvent::FirstPicture);
         assert_eq!(fx, [recovered(Rung::Facet, SHUT, Some(h264_4k_facet()))]);
+    }
+
+    /// A Load that timed out names NO stream even when the audio fed is one a refusal would suspect:
+    /// a slow server is not a DTS problem, and the ladder itself ignores the audio for a timeout.
+    #[test]
+    fn a_timeout_names_no_stream_even_behind_suspect_audio() {
+        let mut m = machine();
+        let (_, fx) = run(&mut m, refused(LoadRefusal::TimedOut, OpenFacts { auto_original: true, ..on_dts(facts(false, true, true)) }));
+        assert_eq!(fx, [RecoveryEffect::StartAutoHls], "a timeout converts nothing");
+        run(&mut m, landed());
+        let (_, fx) = run(&mut m, RecoveryEvent::FirstPicture);
+        assert_eq!(fx, [recovered(Rung::Both, LoadRefusal::TimedOut, None)]);
+    }
+
+    /// A Load the landing did not ask for, before the picture, keeps the rescue: the route is still
+    /// the flight's (a track pick or a restore reloads the SAME installed route), and only the
+    /// proof, which needs the landing's own reload, is dropped.
+    #[test]
+    fn a_foreign_load_after_the_landing_keeps_the_rescue_but_drops_the_proof() {
+        let mut m = machine();
+        run(&mut m, refused(SHUT, on_dts(facts(false, false, true))));
+        run(&mut m, landed_with(CLEAN));
+        run(&mut m, RecoveryEvent::LoadStarted);
+        run(&mut m, RecoveryEvent::LoadStarted);
+        assert_eq!(m.phase(), Phase::Opening);
+        let (_, fx) = run(&mut m, RecoveryEvent::FirstPicture);
+        assert_eq!(fx, [recovered(Rung::Facet, SHUT, Some(dts6()))], "reported, with no proof");
     }
 
     /// A Load that timed out names no stream and is reported as the timeout it was.
