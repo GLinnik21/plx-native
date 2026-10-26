@@ -190,11 +190,12 @@ pub fn apply_exclusions(caps: &mut Caps, codename: &str, ignore: bool, table: &[
 /// A native audio combination this install **watched the pipeline refuse**, remembered so the next
 /// play goes straight to conversion. The install preference `native_audio_refused`
 /// (`plex::session`) is the one list of them; this is the shape it hands over
-/// ([`project_stored_refusals`]); the row is stamped with [`learning_firmware`]. `channels` is the
-/// refused track's channel count.
+/// (`Session::applied_refusals`, which the play start passes to [`start_caps`]); the row is stamped
+/// with [`learning_firmware`]. `channels` is the refused track's channel count. The row's firmware
+/// codename stays in the stored record; a BUILD implies its codename, so the build is the only
+/// identity applying a row asks ([`Refusal::watched_on`]).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Refusal {
-    pub firmware: String,
     pub codec: String,
     pub channels: u32,
     /// The firmware BUILD the refusal was watched on (`tv::device::Info::build`; empty for an entry
@@ -213,25 +214,10 @@ impl Refusal {
     }
 }
 
-/// Take the learned refusals for `codename` off `caps`, as [`apply_exclusions`] does. A refusal of a
-/// stereo (or mono) track takes the codec away altogether; a refusal of a surround track keeps the
-/// codec to stereo, which is what the static rows do for the same measurements. `ignore` is the debug
-/// flag again.
-pub fn apply_learned(caps: &mut Caps, codename: &str, ignore: bool, learned: &[Refusal]) -> Vec<String> {
-    if ignore || codename.is_empty() {
-        return Vec::new();
-    }
-    learned
-        .iter()
-        .filter(|r| r.firmware.eq_ignore_ascii_case(codename))
-        .filter_map(|r| limit_codec(caps, &r.codec, refusal_ceiling(r.channels)))
-        .collect()
-}
-
 /// What a refusal of a `channels`-channel track leaves of its codec ([`limit_codec`]'s `max`): a
-/// stereo (or mono) refusal takes the codec away (`0`), a surround one keeps it to stereo. The one
-/// rule for a refusal the install learned ([`apply_learned`]) and one an attempt only supposes
-/// ([`Caps::without`]).
+/// stereo (or mono) refusal takes the codec away (`0`), a surround one keeps it to stereo, which is
+/// what the static rows do for the same measurements. The one rule for a refusal the install learned
+/// ([`Caps::minus`]) and one an attempt only supposes ([`Caps::without`]).
 fn refusal_ceiling(channels: u32) -> u32 {
     if channels <= 2 { 0 } else { 2 }
 }
@@ -311,10 +297,10 @@ pub enum Facet {
 }
 
 /// The decode-capability snapshot the playback stack derives from. Probed once, at boot
-/// ([`probe`]); the app reads [`caps`] ONCE per attempt, at the play's start, and the attempt carries
-/// that value (`route::PlaybackSession::attempt_caps`, which the request's `OpenRecovery` owns). The process-wide answer is not frozen after
-/// boot: [`project_stored_refusals`] can still move it, and an attempt already in flight keeps (and narrows,
-/// [`Caps::without`]) its own value instead of re-reading it.
+/// ([`probe`]), and never written again: [`caps`] answers the same value for the life of the process.
+/// A play's start value is that snapshot less the install's stored refusals ([`start_caps`]); the
+/// attempt carries it (`route::PlaybackSession::attempt_caps`, which the request's `OpenRecovery`
+/// owns) and narrows its own copy ([`Caps::without`]) instead of re-reading anything.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Caps {
     /// The SoC decodes HEVC. Gates the `hevc` arm of route.rs's direct-play test and the
@@ -461,7 +447,7 @@ impl Caps {
     /// before the flight has proved anything.
     ///
     /// An audio facet takes native audio away the way a refusal the install learned does
-    /// ([`apply_learned`]): a stereo or mono one takes the codec off the announced set, a surround
+    /// ([`Caps::minus`]): a stereo or mono one takes the codec off the announced set, a surround
     /// one keeps it to stereo. A codec this value does not announce is already without, so the copy
     /// is equal to `self`.
     pub fn without(&self, facet: &Facet) -> Caps {
@@ -470,6 +456,18 @@ impl Caps {
             Facet::Audio { codec, channels } => {
                 limit_codec(&mut next, &audio_codec_id(codec), refusal_ceiling(*channels));
             }
+        }
+        next
+    }
+
+    /// This value less the install's `rows` watched on `build` ([`Refusal::watched_on`]): each row by
+    /// [`refusal_ceiling`], the one rule [`Caps::without`] uses. PURE: no registry, no flag, no log.
+    /// A build-blind caller (`build` empty) applies every row, as `watched_on` says. Monotone and
+    /// idempotent: it only ever removes.
+    pub fn minus(&self, rows: &[Refusal], build: &str) -> Caps {
+        let mut next = self.clone();
+        for r in rows.iter().filter(|r| r.watched_on(build)) {
+            limit_codec(&mut next, &audio_codec_id(&r.codec), refusal_ceiling(r.channels));
         }
         next
     }
@@ -499,59 +497,37 @@ fn ignores_learned(wide: bool, learn: bool) -> bool {
 }
 
 /// This set's audio capability answer and what derives it. [`probe`] builds it once: the table,
-/// minus the codecs gstcool.conf shows nothing can decode, minus [`EXCLUSIONS`]. The one thing that
-/// moves afterwards is [`Layers::caps`], and only one way: it LOSES native audio as refusals arrive
-/// ([`Layers::fold`]). The list of refusals is not kept here. The install preference
-/// `native_audio_refused` (`plex::session`) owns it, and this holds the answer derived from it.
-struct Layers {
-    /// What [`caps`] answers. Replaced, never edited, so a reader holding the `Arc` keeps one
-    /// consistent snapshot and nothing is leaked for it.
-    caps: std::sync::RwLock<std::sync::Arc<Caps>>,
+/// minus the codecs gstcool.conf shows nothing can decode, minus [`EXCLUSIONS`]. **Write-once**: no
+/// lock, no later writer. What the install later learns is NOT folded into it. The install preference
+/// `native_audio_refused` (`plex::session`) owns the list of refusals, and a play start derives its
+/// own value from this snapshot and that list ([`start_caps`]).
+struct Boot {
+    /// What [`caps`] answers, the same `Arc` for the life of the process.
+    caps: std::sync::Arc<Caps>,
     codename: String,
     /// The running firmware build (`tv::device::Info::build`; empty when the set did not say).
     build: String,
-    wide: bool,
-    /// `plxnative-nativeaudiolearn` beside `wide`: the learned refusals still apply and are still
-    /// learned, so the learn-and-convert path can be shown on a set the exclusions would keep off it.
-    learn: bool,
-    /// `plxnative-nativeaudioforget`: the stored refusals are not applied this run, so a set can be
-    /// shown learning from nothing. Rows recorded during the run do not reach [`caps`] either:
-    /// the projection applies none ([`project_stored_refusals`]), so they apply from the next launch
-    /// (the request in flight still converts: its machine narrowed its own attempt).
+    /// Whether this set learns refusals and applies the ones it learned: it names its firmware, and
+    /// `plxnative-nativeaudiowide` has not switched the learned layer off (`plxnative-nativeaudiolearn`
+    /// beside it keeps the layer, so the learn-and-convert path can be shown on a set the exclusions
+    /// would keep off it). Read once in [`probe`] (the flags are a `stat` per read) and never changes.
+    learns: bool,
+    /// `plxnative-nativeaudioforget`: the stored refusals are not applied, so a set can be shown
+    /// learning from nothing. Recording is unchanged, and so is the record: a row recorded during a
+    /// forgetful run is stored and applies from the next launch without the flag. The request in
+    /// flight still converts, because its machine narrowed its own attempt.
     forget: bool,
 }
 
-impl Layers {
-    fn new(caps: Caps, codename: String, build: String, wide: bool, learn: bool, forget: bool) -> Layers {
-        Layers { caps: std::sync::RwLock::new(std::sync::Arc::new(caps)), codename, build, wide, learn, forget }
-    }
-
-    /// Take away from the answer whatever `refusals` (this firmware's, this build's) say the pipeline
-    /// cannot take, and report whether that took anything. Monotone and idempotent: it only ever
-    /// removes, so a list that is behind (a record read before a refusal's write landed) cannot give
-    /// back what an earlier call took, and applying the same list twice is a no-op.
-    fn fold(&self, refusals: &[Refusal]) -> bool {
-        let current: Vec<Refusal> = refusals.iter().filter(|r| r.watched_on(&self.build)).cloned().collect();
-        // The write lock spans the read-modify-write so two folds cannot lose each other's removal.
-        let mut answer = self.caps.write().unwrap_or_else(|e| e.into_inner());
-        let mut next = Caps::clone(&answer);
-        let applied = apply_learned(&mut next, &self.codename, ignores_learned(self.wide, self.learn), &current);
-        if next == **answer {
-            return false;
-        }
-        plx_base::eventlog::log(&format!(
-            "devcaps: firmware={:?} learned refusals: {} -> audio={}",
-            self.codename,
-            applied.join(" "),
-            next.audio
-        ));
-        *answer = std::sync::Arc::new(next);
-        true
+impl Boot {
+    fn new(caps: Caps, codename: String, build: String, (wide, learn, forget): (bool, bool, bool)) -> Boot {
+        let learns = !ignores_learned(wide, learn) && !codename.is_empty();
+        Boot { caps: std::sync::Arc::new(caps), codename, build, learns, forget }
     }
 }
 
 /// The boot answer, set once by [`probe`].
-static BOOT: OnceLock<Layers> = OnceLock::new();
+static BOOT: OnceLock<Boot> = OnceLock::new();
 static ASSUMED: OnceLock<std::sync::Arc<Caps>> = OnceLock::new();
 /// Did [`probe`] READ the table, or is [`caps`] returning [`Caps::assumed`]?
 ///
@@ -567,23 +543,22 @@ static ASSUMED: OnceLock<std::sync::Arc<Caps>> = OnceLock::new();
 /// here: "not measured" is the honest reading of both.
 static MEASURED: OnceLock<bool> = OnceLock::new();
 
-/// Run `f` on this set's layers: the test thread's own when a test installed one, else the boot's.
-/// `None` before [`probe`] has run (every host test that installed nothing).
-fn with_layers<R>(f: impl FnOnce(&Layers) -> R) -> Option<R> {
+/// Run `f` on this set's boot value: the test thread's own when a test installed one, else the
+/// boot's. `None` before [`probe`] has run (every host test that installed nothing).
+fn with_boot<R>(f: impl FnOnce(&Boot) -> R) -> Option<R> {
     #[cfg(any(test, feature = "test-support"))]
-    if let Some(layers) = THREAD_LAYERS.with(|slot| slot.borrow().clone()) {
-        return Some(f(&layers));
+    if let Some(boot) = THREAD_BOOT.with(|slot| slot.borrow().clone()) {
+        return Some(f(&boot));
     }
     BOOT.get().map(f)
 }
 
-/// What this device decodes. Falls back to [`Caps::assumed`] if [`probe`] has not run — the
-/// boot calls it first, so that path exists for host tests, not the TV. The answer can change
-/// afterwards, only by losing native audio the pipeline was watched refusing
-/// ([`project_stored_refusals`]), so a decision that must hold across a whole
-/// attempt reads it once.
+/// What this device decodes: the boot snapshot, the SAME `Arc` on every call. Falls back to
+/// [`Caps::assumed`] if [`probe`] has not run (the boot calls it first, so that path exists for host
+/// tests, not the TV). It is write-once: a refusal the install learns never moves it, so a reader
+/// that wants "what would a play start offer" reads [`start_caps`].
 pub fn caps() -> std::sync::Arc<Caps> {
-    with_layers(|l| l.caps.read().unwrap_or_else(|e| e.into_inner()).clone()).unwrap_or_else(assumed_shared)
+    with_boot(|b| b.caps.clone()).unwrap_or_else(assumed_shared)
 }
 
 /// The one shared [`Caps::assumed`] value: [`caps`]' answer before [`probe`] has run, and the
@@ -592,44 +567,46 @@ pub fn assumed_shared() -> std::sync::Arc<Caps> {
     ASSUMED.get_or_init(|| std::sync::Arc::new(Caps::assumed())).clone()
 }
 
-/// Apply the refusals the install's stored record holds to the answer ([`Layers::fold`]). The plex
-/// session calls it with every record it installs, under its cache lock, so it does no IO and takes
-/// no lock the session could hold. `plxnative-nativeaudioforget` applies none. True when it took
-/// something away.
-pub fn project_stored_refusals(stored: &[Refusal]) -> bool {
-    with_layers(|l| !l.forget && l.fold(stored)).unwrap_or(false)
+/// The play start's capability value: the boot snapshot less the install's `stored` refusals in force
+/// (`Session::applied_refusals`, read by the caller at the play-start edge). The one reader that turns
+/// the write-once boot and the install's record into a start value; PURE, so the same inputs answer
+/// the same value. A set that does not learn applies no row (no firmware name, or
+/// `plxnative-nativeaudiowide` without `nativeaudiolearn`), and `plxnative-nativeaudioforget` applies
+/// none either. Rows watched on another build say nothing ([`Refusal::watched_on`]). Returns the boot
+/// `Arc` itself when nothing applies (the common path, with no clone), and a new value only when a
+/// row took something away.
+pub fn start_caps(stored: &[Refusal]) -> std::sync::Arc<Caps> {
+    let boot = caps();
+    let Some((build, applies)) = with_boot(|b| (b.build.clone(), b.learns && !b.forget)) else {
+        return boot;
+    };
+    if stored.is_empty() || !applies {
+        return boot;
+    }
+    let next = boot.minus(stored, &build);
+    if next == *boot { boot } else { std::sync::Arc::new(next) }
 }
 
 /// The firmware codename and build a refusal is recorded under, or `None` when this set cannot
 /// learn: no firmware name, the debug flag (`nativeaudiowide` without `nativeaudiolearn`), or no
 /// [`probe`]. A read, never a write: the install's learner (`plex::session::record_named_refusal`,
-/// `record_refusal_proof`) calls it to stamp the row it queues, and the row reaches [`caps`] only
-/// through the record's projection ([`project_stored_refusals`]).
+/// `record_refusal_proof`) calls it to stamp the row it queues, and the row reaches a play only
+/// through the start edge ([`start_caps`]).
 pub fn learning_firmware() -> Option<(String, String)> {
-    with_layers(|l| {
-        (!ignores_learned(l.wide, l.learn) && !l.codename.is_empty()).then(|| (l.codename.clone(), l.build.clone()))
-    })
-    .flatten()
+    with_boot(|b| b.learns.then(|| (b.codename.clone(), b.build.clone()))).flatten()
 }
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
-    static THREAD_LAYERS: std::cell::RefCell<Option<std::sync::Arc<Layers>>> = const { std::cell::RefCell::new(None) };
+    static THREAD_BOOT: std::cell::RefCell<Option<std::sync::Arc<Boot>>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Make [`caps`] answer `caps` on THIS test thread until the guard drops (the
-/// `i18n::language_on_this_thread_for_test` precedent). Tests run in parallel and the
-/// process-wide answer is write-once, so a thread-local door is how one test plays a set whose
-/// table lists a DTS decoder. The set has no firmware name, so it learns nothing
-/// ([`firmware_on_this_thread_for_test`] is the one that does).
-#[cfg(any(test, feature = "test-support"))]
-pub fn caps_on_this_thread_for_test(caps: Caps) -> CapsGuard {
-    firmware_on_this_thread_for_test("", "", caps)
-}
-
-/// [`caps_on_this_thread_for_test`] for a set that names its firmware and build, so the thread
-/// can name its learning firmware ([`learning_firmware`]) and be handed a stored record
-/// ([`project_stored_refusals`]) as a television would.
+/// `i18n::language_on_this_thread_for_test` precedent), for a set that names its firmware and
+/// build, so the thread can name its learning firmware ([`learning_firmware`]) and derive a start
+/// value from a stored record ([`start_caps`]) as a television would. Tests run in parallel and the
+/// process-wide answer is write-once, so a thread-local door is how one test plays a set whose table
+/// lists a DTS decoder.
 #[cfg(any(test, feature = "test-support"))]
 pub fn firmware_on_this_thread_for_test(codename: &str, build: &str, caps: Caps) -> CapsGuard {
     firmware_with_flags_on_this_thread_for_test(codename, build, caps, (false, false, false))
@@ -637,25 +614,25 @@ pub fn firmware_on_this_thread_for_test(codename: &str, build: &str, caps: Caps)
 
 /// [`firmware_on_this_thread_for_test`] with the debug flags a launch read, `(nativeaudiowide,
 /// nativeaudiolearn, nativeaudioforget)`, so a test reaches them the way the product does: through
-/// [`project_stored_refusals`] and [`learning_firmware`].
+/// [`start_caps`] and [`learning_firmware`].
 #[cfg(any(test, feature = "test-support"))]
 pub fn firmware_with_flags_on_this_thread_for_test(
     codename: &str,
     build: &str,
     caps: Caps,
-    (wide, learn, forget): (bool, bool, bool),
+    flags: (bool, bool, bool),
 ) -> CapsGuard {
-    let layers = Layers::new(caps, codename.to_owned(), build.to_owned(), wide, learn, forget);
-    CapsGuard(THREAD_LAYERS.with(|slot| slot.replace(Some(std::sync::Arc::new(layers)))))
+    let boot = Boot::new(caps, codename.to_owned(), build.to_owned(), flags);
+    CapsGuard(THREAD_BOOT.with(|slot| slot.replace(Some(std::sync::Arc::new(boot)))))
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub struct CapsGuard(Option<std::sync::Arc<Layers>>);
+pub struct CapsGuard(Option<std::sync::Arc<Boot>>);
 
 #[cfg(any(test, feature = "test-support"))]
 impl Drop for CapsGuard {
     fn drop(&mut self) {
-        THREAD_LAYERS.with(|slot| *slot.borrow_mut() = self.0.take());
+        THREAD_BOOT.with(|slot| *slot.borrow_mut() = self.0.take());
     }
 }
 
@@ -946,10 +923,11 @@ pub fn probe() {
         plx_base::devtrig::flag("nativeaudioforget"),
     );
     // The layers in order: the table, minus gstcool.conf's no-decoder codecs (above), minus
-    // [`EXCLUSIONS`]. The refusals this install learned come after, from the stored record alone:
-    // named or proved, a refusal reaches the answer only when its queued write lands and the session
-    // projects it ([`project_stored_refusals`]). `nativeaudiowide` skips the exclusions and the
-    // learned layer (`nativeaudiolearn` beside it keeps the layer), `nativeaudioforget` the record.
+    // [`EXCLUSIONS`]. That is the boot snapshot, and it is final. The refusals this install learned
+    // come after, from the stored record alone, at each play's start ([`start_caps`]): named or
+    // proved, a refusal reaches a play only once its queued write has landed. `nativeaudiowide` skips
+    // the exclusions and the learned layer (`nativeaudiolearn` beside it keeps the layer),
+    // `nativeaudioforget` the record.
     let mut boot = caps.clone();
     let excluded = apply_exclusions(&mut boot, &info.codename, wide, EXCLUSIONS);
     plx_base::eventlog::log(&format!(
@@ -966,7 +944,7 @@ pub fn probe() {
         },
         if forget { " (nativeaudioforget: stored refusals ignored this run)" } else { "" },
     ));
-    let _ = BOOT.set(Layers::new(boot, info.codename.clone(), info.build.clone(), wide, learn, forget));
+    let _ = BOOT.set(Boot::new(boot, info.codename.clone(), info.build.clone(), (wide, learn, forget)));
 }
 
 /// Whether [`caps`] reflects THIS set's table or the assumed profile — see [`MEASURED`].
@@ -1162,7 +1140,7 @@ mod tests {
         let base = native_set();
         let facet = |codec: &str, channels: u32| Facet::Audio { codec: codec.into(), channels };
 
-        // A surround facet keeps the codec to stereo (what `apply_learned` does for a 6-channel refusal).
+        // A surround facet keeps the codec to stereo (what `minus` does for a 6-channel refusal).
         let surround = base.without(&facet("dts", 6));
         assert!(!surround.audio_supports("dts", 6) && surround.audio_has("dts"));
         assert_eq!(surround.audio_channels.get("dts"), Some(&2));
@@ -1171,16 +1149,14 @@ mod tests {
         assert!(!stereo.audio_has("dts") && !stereo.audio_supports("dts", 2));
         assert!(!stereo.forced_feeds_audio("dts"), "Force Direct Play offers nothing it cannot take either");
         // The same rule as a refusal the install learned.
-        let mut learned = native_set();
-        apply_learned(&mut learned, "kisscurl-koli", false, &[refusal("dts", 2)]);
-        assert_eq!(stereo, learned);
+        assert_eq!(stereo, native_set().minus(&[refusal("dts", 2)], ""));
 
         // Only the facet moved: the source value is a different, untouched object, and the rest of it holds.
         assert_eq!(base, native_set());
         assert!(stereo.audio_supports("eac3", 8) && stereo.audio_supports("ac3", 6));
         // A codec this value never announced is already without: the copy equals the source.
         assert_eq!(base.without(&facet("truehd", 8)), base);
-        // Monotone and idempotent, like the fold.
+        // Monotone and idempotent, like `minus`.
         assert_eq!(stereo.without(&facet("dts", 2)), stereo);
     }
 
@@ -1210,25 +1186,28 @@ mod tests {
     }
 
     fn refusal(codec: &str, channels: u32) -> Refusal {
-        Refusal { firmware: "kisscurl-koli".into(), codec: codec.into(), channels, build: String::new() }
+        Refusal { codec: codec.into(), channels, build: String::new() }
+    }
+
+    fn refusal_on(build: &str, codec: &str, channels: u32) -> Refusal {
+        Refusal { build: build.into(), ..refusal(codec, channels) }
     }
 
     #[test]
     fn a_learned_refusal_of_a_stereo_track_takes_the_codec_away_and_a_surround_one_keeps_stereo() {
-        let mut c = native_set();
-        let applied = apply_learned(&mut c, "kisscurl-koli", false, &[refusal("opus", 2), refusal("eac3", 8)]);
-        assert_eq!(applied, ["opus=none", "eac3<=2"]);
+        let c = native_set().minus(&[refusal("opus", 2), refusal("eac3", 8)], "");
         assert!(!c.audio_has("opus") && !c.forced_feeds_audio("opus"));
         assert!(c.audio_supports("eac3", 2) && !c.audio_supports("eac3", 6));
         assert!(!c.forced_feeds_audio_track("eac3", 6), "Force holds a learned ceiling too");
-        // Another firmware's lessons, an unannounced codec and the debug flag do nothing.
-        for (name, ignore) in [("goldilocks2-grampians", false), ("", false), ("kisscurl-koli", true)] {
-            let mut d = native_set();
-            assert!(apply_learned(&mut d, name, ignore, &[refusal("opus", 2)]).is_empty(), "{name:?} {ignore}");
-            assert_eq!(d, native_set());
-        }
-        let mut e = Caps::assumed();
-        assert!(apply_learned(&mut e, "kisscurl-koli", false, &[refusal("opus", 6)]).is_empty(), "the fallback never announced Opus");
+        // The rest of the table is untouched.
+        assert!(c.audio_supports("dts", 6) && c.audio_supports("aac", 6) && c.audio_supports("ac3", 6));
+        // No rows is the same value, and the source is a different, untouched object.
+        assert_eq!(native_set().minus(&[], ""), native_set());
+        // A codec the set never announced is already without.
+        let e = Caps::assumed();
+        assert_eq!(e.minus(&[refusal("opus", 6)], ""), e, "the fallback never announced Opus");
+        // Any spelling of the codec names the same row.
+        assert!(!native_set().minus(&[refusal("DCA", 2)], "").audio_has("dts"));
     }
 
     #[test]
@@ -1238,93 +1217,108 @@ mod tests {
         let mut c = native_set();
         assert_eq!(apply_gst_decoders(&mut c, &GST_C1.replace("dts_audiodec=290\n", "")).0, ["dts"]);
         assert_eq!(apply_exclusions(&mut c, "kisscurl-koli", false, EXCLUSIONS), ["opus<=2"]);
-        assert_eq!(apply_learned(&mut c, "kisscurl-koli", false, &[refusal("opus", 2)]), ["opus=none"]);
+        let c = c.minus(&[refusal("opus", 2)], "");
         assert_eq!(c.audio, "aac,ac3,eac3,flac");
     }
 
-    fn layers_on(build: &str) -> Layers {
-        Layers::new(native_set(), "kisscurl-koli".into(), build.into(), false, false, false)
+    /// A start value for a set on `build`, with `rows` stored in its record.
+    fn start_on(build: &str, rows: &[Refusal]) -> std::sync::Arc<Caps> {
+        let _set = firmware_on_this_thread_for_test("kisscurl-koli", build, native_set());
+        start_caps(rows)
     }
 
-    fn announced(layers: &Layers, codec: &str, channels: i64) -> bool {
-        layers.caps.read().unwrap().audio_supports(codec, channels)
-    }
-
-    /// The answer only ever loses native audio: folding is idempotent, a list that is behind (an
-    /// older record, an empty one) gives nothing back, and a snapshot a reader already holds is not
-    /// touched by the next fold.
+    /// The start lacks what an applied row says the pipeline refuses, and is the boot `Arc` itself
+    /// when nothing applies. A stereo row takes the codec away, a surround one keeps it to stereo.
     #[test]
-    fn folding_refusals_only_ever_takes_native_audio_away() {
-        let layers = layers_on("6.5.3-47");
-        let before = layers.caps.read().unwrap().clone();
-        let stereo_opus = Refusal { build: "6.5.3-47".into(), ..refusal("opus", 2) };
-        assert!(layers.fold(&[stereo_opus.clone()]));
-        assert!(!announced(&layers, "opus", 2));
-        assert!(!layers.fold(&[stereo_opus.clone()]), "the same lesson is not news");
-        assert!(!layers.fold(&[]), "an empty record removes nothing");
-        assert!(!announced(&layers, "opus", 2), "and gives nothing back");
-        assert!(before.audio_has("opus"), "the snapshot a reader held is unchanged");
-        // A surround refusal keeps the codec to stereo.
-        assert!(layers.fold(&[Refusal { build: "6.5.3-47".into(), ..refusal("eac3", 6) }]));
-        assert!(announced(&layers, "eac3", 2) && !announced(&layers, "eac3", 6));
+    fn the_start_lacks_an_applied_row_and_keeps_the_boot() {
+        let _set = firmware_on_this_thread_for_test("kisscurl-koli", "B", native_set());
+        let boot = caps();
+        assert_eq!(*boot, native_set());
+        let surround = start_caps(&[refusal_on("B", "opus", 6)]);
+        assert!(!surround.audio_supports("opus", 6) && surround.audio_supports("opus", 2));
+        let stereo = start_caps(&[refusal_on("B", "dts", 2)]);
+        assert!(!stereo.audio_has("dts"));
+        assert!(std::sync::Arc::ptr_eq(&start_caps(&[]), &boot), "no rows: the boot value itself, not a copy");
+        assert!(
+            std::sync::Arc::ptr_eq(&start_caps(&[refusal_on("B", "truehd", 8)]), &boot),
+            "a row for a codec the set never announced takes nothing: the boot value itself"
+        );
+        assert_eq!(*caps(), native_set(), "deriving a start value wrote nothing");
     }
 
     /// An LG update replaces the decoder a refusal was watched on: another build's entry, and one an
     /// older record never tagged, is no evidence on this build, while a set that did not name its
     /// build judges nothing and takes every entry.
     #[test]
-    fn a_refusal_is_evidence_only_on_the_build_it_was_watched_on() {
-        let layers = layers_on("6.5.3-47");
-        for stale in ["6.5.3-48", ""] {
-            assert!(!layers.fold(&[Refusal { build: stale.into(), ..refusal("opus", 2) }]), "{stale:?}");
-            assert!(announced(&layers, "opus", 2));
+    fn a_build_change_clears_the_rows_from_the_start() {
+        for stale in ["C", ""] {
+            let _set = firmware_on_this_thread_for_test("kisscurl-koli", "B", native_set());
+            assert!(
+                std::sync::Arc::ptr_eq(&start_caps(&[refusal_on(stale, "opus", 2)]), &caps()),
+                "a row watched on build {stale:?} says nothing on build B"
+            );
         }
-        let blind = layers_on("");
-        assert!(blind.fold(&[Refusal { build: "6.5.3-48".into(), ..refusal("opus", 2) }]));
-        assert!(!announced(&blind, "opus", 2));
+        assert_eq!(native_set().minus(&[refusal_on("B", "opus", 2)], "C"), native_set());
+        assert!(!native_set().minus(&[refusal_on("B", "opus", 2)], "").audio_has("opus"), "a blind build takes every row");
         assert!(refusal("opus", 2).watched_on("") && !refusal("opus", 2).watched_on("6.5.3-47"));
+        // A set that did not name its build judges nothing: every row counts.
+        let blind = start_on("", &[refusal_on("B", "opus", 2)]);
+        assert!(!blind.audio_has("opus"));
+        // The matching build applies.
+        assert!(!start_on("B", &[refusal_on("B", "opus", 2)]).audio_has("opus"));
     }
 
-    /// The debug flags decide which stored rows the record's projection applies
-    /// ([`project_stored_refusals`], the only road a row takes to [`caps`]): `nativeaudiowide`
-    /// ignores every row, `nativeaudiolearn` beside it keeps them, and `nativeaudioforget` applies
-    /// NONE, so a row recorded during a forgetful run is stored but does not reach `caps()` until a
-    /// launch without the flag.
+    /// The boot readers (the engine's sink envelope, the diagnostics, the lab snapshot) see ONE
+    /// value: deriving a start value from the record is a read, and `caps()` is the same `Arc`
+    /// before and after.
     #[test]
-    fn the_debug_flags_decide_which_stored_rows_the_projection_applies() {
-        let projected = |flags| {
-            let _set = firmware_with_flags_on_this_thread_for_test("kisscurl-koli", "", native_set(), flags);
-            assert!(caps().audio_supports("opus", 2), "sanity: announced before the record arrives");
-            (project_stored_refusals(&[refusal("opus", 2)]), caps().audio_supports("opus", 2))
+    fn the_boot_readers_see_one_unchanged_value() {
+        let _set = firmware_on_this_thread_for_test("kisscurl-koli", "B", native_set());
+        let boot = caps();
+        let narrower = start_caps(&[refusal_on("B", "opus", 2)]);
+        assert!(!narrower.audio_has("opus"), "sanity: the start value is narrower");
+        assert!(std::sync::Arc::ptr_eq(&boot, &caps()), "the boot value is the same Arc");
+        assert_eq!(*boot, native_set());
+        assert!(boot.audio_has("opus"));
+    }
+
+    /// The debug flags decide which stored rows the start applies: `nativeaudiowide` ignores every
+    /// row, `nativeaudiolearn` beside it keeps them, `nativeaudioforget` ignores every stored row
+    /// (a row recorded during a forgetful run is stored and applies from the next launch without
+    /// the flag), and a set with no firmware name learns, and so applies, nothing.
+    #[test]
+    fn the_debug_flags_decide_which_stored_rows_the_start_applies() {
+        let applied = |codename: &str, flags| {
+            let _set = firmware_with_flags_on_this_thread_for_test(codename, "B", native_set(), flags);
+            let start = start_caps(&[refusal_on("B", "opus", 2)]);
+            assert_eq!(std::sync::Arc::ptr_eq(&start, &caps()), start.audio_has("opus"), "ptr_eq iff nothing was taken");
+            !start.audio_has("opus")
         };
-        assert_eq!(projected((false, false, false)), (true, false), "the baseline: the row takes Opus away");
-        assert_eq!(projected((true, false, false)), (false, true), "wide ignores the row");
-        assert_eq!(projected((true, true, false)), (true, false), "learn beside wide keeps it");
-        assert_eq!(
-            projected((false, false, true)),
-            (false, true),
-            "forget applies none: a row recorded this run is stored and reaches caps() on the next launch"
-        );
+        let fw = "kisscurl-koli";
+        assert!(applied(fw, (false, false, false)), "the baseline: the row takes Opus away");
+        assert!(!applied(fw, (false, false, true)), "forget ignores the stored row");
+        assert!(!applied(fw, (true, false, false)), "wide ignores the row");
+        assert!(applied(fw, (true, true, false)), "learn beside wide keeps it");
+        assert!(!applied("", (false, false, false)), "a set with no firmware name applies nothing");
     }
 
     /// Learning is a READ of the firmware the row is stamped with: the thread's set names it, the
-    /// read takes nothing from the answer, and the record's projection is the only way a row moves
-    /// the answer. A set with no firmware name learns nothing.
+    /// read takes nothing from the answer, and `caps()` never moves. A set with no firmware name
+    /// learns nothing.
     #[test]
-    fn the_learning_firmware_is_a_read_and_the_projection_moves_the_answer() {
+    fn the_learning_firmware_is_a_read() {
         {
             let _set = firmware_on_this_thread_for_test("kisscurl-koli", "6.5.3-47", native_set());
-            assert!(caps().audio_supports("opus", 2), "sanity: announced");
+            let before = caps();
+            assert!(before.audio_supports("opus", 2), "sanity: announced");
             assert_eq!(learning_firmware(), Some(("kisscurl-koli".to_owned(), "6.5.3-47".to_owned())));
-            assert!(caps().audio_supports("opus", 2), "reading the firmware takes nothing away");
-            let stored = Refusal { firmware: "kisscurl-koli".into(), codec: "opus".into(), channels: 2, build: "6.5.3-47".into() };
-            assert!(project_stored_refusals(std::slice::from_ref(&stored)), "the projected row takes it");
-            assert!(!caps().audio_has("opus"));
-            assert!(!project_stored_refusals(&[stored]), "the same record again changes nothing");
+            assert!(std::sync::Arc::ptr_eq(&before, &caps()), "reading the firmware takes nothing away");
         }
-        let _nameless = caps_on_this_thread_for_test(native_set());
+        let _nameless = firmware_on_this_thread_for_test("", "", native_set());
         assert_eq!(learning_firmware(), None, "no firmware name: nothing can be learned about this set");
         assert!(caps().audio_supports("opus", 2));
+        let _wide = firmware_with_flags_on_this_thread_for_test("kisscurl-koli", "B", native_set(), (true, false, false));
+        assert_eq!(learning_firmware(), None, "nativeaudiowide without nativeaudiolearn learns nothing");
     }
 
     /// The C1's real `/etc/gst/gstcool.conf` (webOS 6.5.3, `kisscurl-koli`), read over ssh 2026-10-21;
