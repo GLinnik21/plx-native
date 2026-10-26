@@ -1455,14 +1455,14 @@ fn a_direct_played_dv_profile_5_never_rebuilds_as_a_plain_remux() {
 #[test]
 fn a_remux_that_cannot_be_asked_for_codecs_guesses_what_the_server_would_send() {
     let a = |c: &str, ch| CarriedAudio { codec: c.into(), channels: ch, ..a1() };
-    assert_eq!(remux_output_acodec(false, Some(&a("ac3", 2)), "truehd"), "ac3");
-    assert_eq!(remux_output_acodec(false, Some(&a("eac3", 6)), "truehd"), "eac3");
+    assert_eq!(remux_output_acodec(&plx_platform::devcaps::caps(), false, Some(&a("ac3", 2)), "truehd"), "ac3");
+    assert_eq!(remux_output_acodec(&plx_platform::devcaps::caps(), false, Some(&a("eac3", 6)), "truehd"), "eac3");
     // a carried track the profile cannot admit is converted to its first target
-    assert_eq!(remux_output_acodec(false, Some(&a("truehd", 8)), "truehd"), "ac3");
+    assert_eq!(remux_output_acodec(&plx_platform::devcaps::caps(), false, Some(&a("truehd", 8)), "truehd"), "ac3");
     // an enhanced remux re-encodes whatever it carries
-    assert_eq!(remux_output_acodec(true, Some(&a("eac3", 6)), "truehd"), "ac3");
+    assert_eq!(remux_output_acodec(&plx_platform::devcaps::caps(), true, Some(&a("eac3", 6)), "truehd"), "ac3");
     // no carried track: the file's own default
-    assert_eq!(remux_output_acodec(false, None, "eac3"), "eac3");
+    assert_eq!(remux_output_acodec(&plx_platform::devcaps::caps(), false, None, "eac3"), "eac3");
 }
 
 #[test]
@@ -4060,19 +4060,20 @@ fn plain_rebuild_stays_remux_with_a_drawable_sidecar() {
 
 #[test]
 fn transcode_spec_never_names_a_subtitle_on_a_remux() {
+    let caps = plx_platform::devcaps::caps();
     let remux = enhanced_remux_contract(NONE, false);
     let spec = crate::route::plan::transcode_spec(
-        "5", 0, "s", "s", plx_plex::plex::TranscodeOffset::Fresh, 14, 78, remux,
+        &caps, "5", 0, "s", "s", plx_plex::plex::TranscodeOffset::Fresh, 14, 78, remux,
     );
     assert_eq!(spec.subtitle_stream_id, 0, "no subtitle id rides a remux");
     assert!(spec.client_subtitles, "the app draws it, and the query says so");
     let none = crate::route::plan::transcode_spec(
-        "5", 0, "s", "s", plx_plex::plex::TranscodeOffset::Fresh, 14, 0, remux,
+        &caps, "5", 0, "s", "s", plx_plex::plex::TranscodeOffset::Fresh, 14, 0, remux,
     );
     assert!(!none.client_subtitles, "no subtitle, nothing to say");
     // Every burn is a `remux: false` contract and keeps its id.
     let burn = crate::route::plan::transcode_spec(
-        "5", 0, "s", "s", plx_plex::plex::TranscodeOffset::Fresh, 14, 77, enhanced_remux_contract(NONE, true),
+        &caps, "5", 0, "s", "s", plx_plex::plex::TranscodeOffset::Fresh, 14, 77, enhanced_remux_contract(NONE, true),
     );
     assert_eq!((burn.subtitle_stream_id, burn.client_subtitles), (77, false));
 }

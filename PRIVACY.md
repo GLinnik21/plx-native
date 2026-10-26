@@ -144,7 +144,7 @@ files the television model and webOS release are read from (`probe` is `ok/ok` w
 answered), saying why that model, SoC or release is empty when it is. Buffering, seeking, holding
 a low quality, or rejecting an adaptive-bitrate candidate does not by itself send a report.
 The closed diagnostic vocabulary includes terminal kinds such as `playback_interrupted` and
-`original_rollback`; HLS direction `refresh`; delivery reasons `original_open_rollback` and `quality_pick`; and
+`original_rollback`; HLS direction `refresh`; delivery reasons `original_open_rollback`, `quality_pick` and `refusal_recovery`; and
 Original-check outcomes `started`, `succeeded`, `no_body`, `deadline`, `transport`,
 `inconclusive`, `server_state` and `refused`.
 
