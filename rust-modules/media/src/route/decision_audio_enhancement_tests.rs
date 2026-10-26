@@ -208,10 +208,6 @@ fn settle(ps: &mut PlaybackSession, action: &ClaimedRouteAction, tail: ClaimTail
     }
 }
 
-fn desired_audio_idx() -> i32 {
-    crate::player::SHARED.desired_audio_idx.load(std::sync::atomic::Ordering::Relaxed)
-}
-
 fn decisions(requests: &[String]) -> Vec<&String> {
     requests.iter().filter(|r| r.contains("/decision?") && !r.contains("hasMDE=1")).collect()
 }

@@ -2041,7 +2041,8 @@ It needs a TV address and nothing else — no token, no ratingKey, no `manifest.
 sharing — so it is the only tier a stranger can run, and it is what separates "the player is
 broken" from "the library layer is broken" when a server case fails. **What it covers, precisely:**
 the player feeds `{h264,hevc}` (plus `av1` / `vp9` on a set whose codec table lists that decoder's row) × `{aac,ac3,eac3,dts}` (plus `flac`, decoded in the app and fed as PCM) in mkv/mp4/m4v. Auto intersects this
-software set with the device table and per-codec channel ceilings; DTS requires a measured
+software set with the device table, per-codec channel ceilings and a 48 kHz sample-rate ceiling
+(`devcaps::AUDIO_RATE_CEILING`, #951; DTS excepted); DTS requires a measured
 DTS row and feeds only the DTS core when an HD extension is present. PMS names DTS `dca`:
 `devcaps::audio_codec_id` folds it (and `ec-3`) onto the pipeline's `dts` at membership and at
 the Load payload, and the profile sends `dca` (`transcoder.rs::profile_codec_name`). Force
