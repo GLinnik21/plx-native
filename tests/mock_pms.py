@@ -315,9 +315,36 @@ PLEX_DIRECT_HASH = "0123456789abcdef0123456789abcdef"
 
 def pms_audio_codec(name):
     """PMS's spelling of an audio codec: FFmpeg and the fixtures say `dts`, PMS says `dca` (every
-    DTS entry in its shipped profiles does). The mock speaks PMS's vocabulary so the synthetic
-    tier cannot hide a spelling gap the way an echoed `dts` once did."""
+    DTS entry in its shipped profiles does). LPCM is `pcm` whatever the flavour: every LPCM entry in
+    PMS's shipped client profiles is `pcm` (79 of them), never FFmpeg's `pcm_s24le`; the width
+    travels as `bitDepth`. The mock speaks PMS's vocabulary so the synthetic tier cannot hide a
+    spelling gap the way an echoed `dts` once did."""
+    if name.startswith("pcm_"):
+        return "pcm"
     return {"dts": "dca"}.get(name, name)
+
+
+# Width in bits of an ffprobe `sample_fmt` (planar variants carry a trailing `p`).
+_SAMPLE_FMT_BITS = {"u8": 8, "s16": 16, "s32": 32, "flt": 32, "dbl": 64}
+
+
+def audio_bit_depth(stream):
+    """The `bitDepth` PMS reports for a lossless or PCM audio stream, from ffprobe's JSON: the raw
+    sample width when it states one (a 24-bit FLAC or `pcm_s24le` is `bits_per_raw_sample` 24 over
+    a 32-bit sample format), else a `pcm_s24*` name's own width, else the sample format's. `None`
+    for lossy audio, which PMS gives no bit depth."""
+    name = stream.get("codec_name", "")
+    if not (name in ("flac", "alac") or name.startswith("pcm_")):
+        return None
+    try:
+        raw = int(stream.get("bits_per_raw_sample") or 0)
+    except (TypeError, ValueError):
+        raw = 0
+    if raw > 0:
+        return raw
+    if name.startswith("pcm_s24"):
+        return 24
+    return _SAMPLE_FMT_BITS.get(str(stream.get("sample_fmt", "")).removesuffix("p"))
 
 
 def sname(rng):
@@ -710,6 +737,13 @@ class Library:
             out.update(channels=int(stream.get("channels", 0)),
                        audioChannelLayout=stream.get("channel_layout", ""),
                        displayTitle=f"{lang or 'und'} ({codec.upper()})")
+            # PMS also states the rate, and the bit depth of lossless audio; the app declares the
+            # PCM it feeds from them (`route::stream_pcm`).
+            if int(stream.get("sample_rate") or 0) > 0:
+                out["samplingRate"] = int(stream["sample_rate"])
+            depth = audio_bit_depth(stream)
+            if depth:
+                out["bitDepth"] = depth
             self._maybe_loudness(out)
         else:
             out["displayTitle"] = f"{lang or 'und'} ({codec.upper()})"
@@ -3941,6 +3975,7 @@ def selftest():
         s_.server_close()
     tmp.cleanup()
 
+    _selftest_audio_stream_wire()
     _selftest_plaintext_only_lan()
     _selftest_section_hubs()
     _selftest_notifications()
@@ -3955,6 +3990,44 @@ def _teardown(srv):
     srv.server_close()
     if srv.insecure_fail_listener is not None:
         srv.insecure_fail_listener.close()
+
+
+def _selftest_audio_stream_wire():
+    """An audio stream is described the way PMS does: `samplingRate` always, `bitDepth` for lossless
+    and PCM audio, and every LPCM flavour spelled `pcm` (PMS's profiles never name a flavour). The app's
+    PCM declaration (`route::stream_pcm`) reads the first two; a mock that omitted them made every
+    ALAC/LPCM file take the server route."""
+    lib = Library(movies=1)
+
+    def wire(**kw):
+        return lib._stream_wire({"codec_type": "audio", "index": 1, **kw}, 11)
+
+    s = wire(codec_name="alac", sample_rate="44100", sample_fmt="s16p", bits_per_raw_sample="16", channels=2)
+    assert (s["codec"], s["samplingRate"], s["bitDepth"]) == ("alac", 44100, 16), s
+    s = wire(codec_name="flac", sample_rate="48000", sample_fmt="s32", bits_per_raw_sample="24", channels=2)
+    assert (s["samplingRate"], s["bitDepth"]) == (48000, 24), s
+    # ffprobe's width for pcm_s24le: raw bits 24 (the sample format says 32)
+    s = wire(codec_name="pcm_s24le", sample_rate="48000", sample_fmt="s32", bits_per_raw_sample="24", channels=2)
+    assert (s["codec"], s["bitDepth"]) == ("pcm", 24), s
+    # no raw-bits field: a pcm_s24* name still reads 24, an s16/s32 sample format its own width
+    s = wire(codec_name="pcm_s24be", sample_rate="48000", sample_fmt="s32", channels=2)
+    assert (s["codec"], s["bitDepth"]) == ("pcm", 24), s
+    s = wire(codec_name="pcm_s16le", sample_rate="44100", sample_fmt="s16", bits_per_raw_sample="0", channels=2)
+    assert (s["codec"], s["bitDepth"], s["samplingRate"]) == ("pcm", 16, 44100), s
+    s = wire(codec_name="pcm_s32le", sample_rate="48000", sample_fmt="s32", channels=2)
+    assert (s["codec"], s["bitDepth"]) == ("pcm", 32), s
+    # float and 8-bit LPCM are `pcm` on the wire too (that is what PMS does); the width survives
+    s = wire(codec_name="pcm_f32le", sample_rate="48000", sample_fmt="flt", channels=2)
+    assert (s["codec"], s["bitDepth"]) == ("pcm", 32), s
+    s = wire(codec_name="pcm_u8", sample_rate="48000", sample_fmt="u8", channels=2)
+    assert (s["codec"], s["bitDepth"]) == ("pcm", 8), s
+    # lossy audio: a rate, no bit depth; no rate in ffprobe's output: none on the wire
+    s = wire(codec_name="ac3", sample_rate="48000", sample_fmt="fltp", channels=6)
+    assert s["samplingRate"] == 48000 and "bitDepth" not in s, s
+    s = wire(codec_name="aac", channels=2)
+    assert "samplingRate" not in s and "bitDepth" not in s, s
+    assert pms_audio_codec("dts") == "dca" and pms_audio_codec("pcm") == "pcm"
+    assert all(pms_audio_codec(n) == "pcm" for n in ("pcm_s16le", "pcm_s24be", "pcm_s32le", "pcm_f32le", "pcm_u8", "pcm_bluray"))
 
 
 def _selftest_notifications():
