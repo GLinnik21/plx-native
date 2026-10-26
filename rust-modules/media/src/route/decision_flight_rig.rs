@@ -212,6 +212,13 @@ impl FlightRig {
         ps.auto_bootstrap_rung = Some(rung);
     }
 
+    /// Begin the playing route's attempt on `caps`, as the play request that planned the rig's route
+    /// would have ([`PlaybackSession::begin_attempt`]): a rig route installed by `apply_plan` alone
+    /// has no attempt, and plans from the assumed caps.
+    pub(crate) fn plan_on(ps: &mut PlaybackSession, caps: std::sync::Arc<plx_platform::devcaps::Caps>) {
+        ps.begin_attempt(caps);
+    }
+
     /// Offer the Original the playing route can be restored to. A REMUX candidate (`direct ==
     /// false`) makes the recovery's PMS half a real `/decision`, which is what a frame must not
     /// wait on.

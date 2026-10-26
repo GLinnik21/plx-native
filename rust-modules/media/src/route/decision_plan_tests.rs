@@ -1709,6 +1709,9 @@ fn a_dca_track_direct_plays_on_a_set_with_a_dts_row() {
     });
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
+    // The start edge a play request runs (`request_play_with_queue`): the attempt reads the device's
+    // capability value once, and the resolve below plans and profiles from that value alone.
+    ps.begin_attempt(plx_platform::devcaps::caps());
     assert!(plx_net::net::global_init());
     let (port, rx, server) = plan_pms_within(3, MDE_DIRECTPLAY, Duration::from_secs(3), false);
     let sid = plx_plex::plex::register_for_test("dca-row", "127.0.0.1", port, "token", "dca-row-client");
@@ -1731,5 +1734,38 @@ fn a_dca_track_direct_plays_on_a_set_with_a_dts_row() {
     assert!(plan.url.contains("/library/parts/"), "dca on a DTS-row set must direct-play: {} / {requests:?}", plan.url);
     let decision = requests.iter().find(|l| l.contains("/decision?")).expect("MDE was asked");
     assert!(decision.contains("dca") && !decision.contains("dts"), "the profile names DTS as PMS does: {decision}");
+    plx_plex::plex::reset_servers_for_test();
+}
+
+
+/// **The profile PMS reads is built from the attempt's own capability value.** Two attempts in one
+/// process, one with a DTS row (`a`) and one narrowed by [`plx_platform::devcaps::Caps::without`]
+/// (`b`): the ProgressiveMkv transcode URL of `a` carries the `dca` copy lane and the one of `b`
+/// does not, from the `caps` each [`TranscodeSpec`] holds. No global is installed or read; before
+/// the attempt carried its value, both URLs came from the one process-wide answer.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn a_transcode_profile_names_the_codecs_of_the_attempts_own_caps() {
+    use plx_platform::devcaps::{Caps, Facet};
+    let a = Caps {
+        audio: "aac,ac3,eac3,dts".into(),
+        audio_channels: [("dts".into(), 6)].into(),
+        ..Caps::assumed()
+    };
+    let b = a.without(&Facet::Audio { codec: "dts".into(), channels: 2 });
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let sid = plx_plex::plex::register_for_test("attempt-caps", "127.0.0.1", 1, "token", "attempt-caps-client");
+    let client = plx_plex::plex::client_for(sid).expect("the registered server");
+    let url = |caps: &Caps| {
+        let contract = plx_plex::plex::EncodeContract::original(false, plx_plex::plex::AudioEnhancements::NONE);
+        assert_eq!(contract.delivery, plx_plex::plex::TranscodeDelivery::ProgressiveMkv);
+        let spec = crate::route::plan::transcode_spec(caps, "5", 0, "s", "s", plx_plex::plex::TranscodeOffset::Fresh, 0, 0, contract);
+        client.transcode_start_url(&spec).to_url()
+    };
+    let (with_dts, without_dts) = (url(&a), url(&b));
+    assert!(with_dts.contains("dca"), "the DTS row lists the copy lane: {with_dts}");
+    assert!(!without_dts.contains("dca"), "the narrowed attempt must not ask PMS to copy DTS: {without_dts}");
+    assert!(without_dts.contains("ac3"), "the rest of the profile is unchanged: {without_dts}");
     plx_plex::plex::reset_servers_for_test();
 }

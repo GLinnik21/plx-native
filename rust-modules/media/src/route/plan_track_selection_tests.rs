@@ -1015,3 +1015,29 @@ fn flac_is_gated_by_the_pcm_paths_own_limits_in_both_modes() {
         |c, n, r| audio_direct_plays_with(&caps, DirectPlayMode::Forced, c, n, r));
     assert_eq!(pick.map(|(_, _, id)| id), Some(2));
 }
+
+
+/// **An attempt's own capability value decides its audio pick; no process-wide answer is read.**
+/// A DTS 5.1 default beside an AC3 5.1 of the same language: on a set whose table lists a 6-channel
+/// DTS decoder (`a`) the DTS plays; the attempt narrowed by [`Caps::without`] (`b`: the DTS row
+/// gone, as a refusal learned for the attempt would leave it) takes the AC3 sibling. Both picks run
+/// side by side in one thread, from the value alone: nothing is installed on the capability door.
+#[test]
+fn an_attempt_without_dts_picks_the_ac3_sibling_while_the_wider_attempt_keeps_the_dts() {
+    use plx_platform::devcaps::{Caps, Facet};
+    let a = Caps {
+        audio: "aac,ac3,eac3,dts".into(),
+        audio_channels: [("dts".into(), 6)].into(),
+        ..Caps::assumed()
+    };
+    let b = a.without(&Facet::Audio { codec: "dts".into(), channels: 2 });
+    let surround = |id, codec: &str, default| plx_data::metadata::Stream { channels: 6, ..trk(id, codec, "eng", default) };
+    let tracks = [surround(11, "dca", true), surround(12, "ac3", false)];
+    let pick = |caps: &Caps| {
+        pick_dp_audio_eligible(&tracks, "dca", AudioLangPrefs::default(), 0, StandIn::Any, |codec, channels, rate| {
+            audio_direct_plays_with(caps, DirectPlayMode::Auto, codec, channels, rate)
+        })
+    };
+    assert_eq!(pick(&a), Some((0, "dca".into(), 11)), "the set with a DTS row direct-plays its default");
+    assert_eq!(pick(&b), Some((1, "ac3".into(), 12)), "without the row the same-language AC3 plays instead");
+}

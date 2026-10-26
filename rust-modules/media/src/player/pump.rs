@@ -3644,6 +3644,9 @@ mod flight_tests {
         let mut rig = Rig::new(150);
         let _set = firmware_announcing_opus();
         rig.flight.begin_attempt(&rig.ps);
+        // The route was planned before the refusal, from the capability value read then: Opus at
+        // any channel count. The attempt holds that value, not the process-wide answer.
+        FlightRig::plan_on(&mut rig.ps, plx_platform::devcaps::caps());
         rig.frame();
         let answered = rig.flight.answered();
         let epoch = engine_epoch(&mut rig);
@@ -3677,6 +3680,19 @@ mod flight_tests {
 
         rig.frames_until("the conversion's landing", |_| !crate::route::flight_outstanding());
         assert_eq!(rig.flight.decisions(), 1, "exactly one replacement /decision");
+        // **The refusal learned mid-attempt reaches the recovery flight.** The attempt started on a
+        // value that lists Opus without a ceiling; the replacement request's profile is built from
+        // the value the dispatch read AFTER the lesson (`dispatch_native_audio_conversion`), so it
+        // carries the 2-channel ceiling the install just learned.
+        let requests = rig.flight.requests();
+        let replacement = requests
+            .iter()
+            .find(|l| l.contains("/decision?") && !l.contains("hasMDE=1"))
+            .unwrap_or_else(|| panic!("no replacement /decision in {requests:?}"));
+        assert!(
+            replacement.contains("scopeName%3Dopus%26type%3DupperBound%26name%3Daudio.channels%26value%3D2"),
+            "the replacement profile must carry the learned Opus ceiling: {replacement}"
+        );
         assert_ne!(engine_epoch(&mut rig), epoch, "the landing reloaded onto the converted route");
         assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
         let context = super::super::report::error_context_for_test(&rig.ps);
