@@ -1,4 +1,4 @@
-{"updated":"2026-10-26T09:06:53Z",
+{"updated":"2026-10-26T09:10:04Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -3678,7 +3678,7 @@
 {"id":40295710895,"at":"2026-10-26T08:55:49Z","sha":"7a78d368a","title":"Merge branch 'series/learn-refusals' into series/caps-write-once","pr":1062,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":158,"Windows launcher syntax":20,"Linux simulator build + launch":206,"macOS tests against bundled FFmpeg and ASS":194}},
 {"id":40295711465,"at":"2026-10-26T08:55:49Z","sha":"d9f4e09cb","title":"Merge branch 'series/caps-write-once' into series/forced-refuses-learned","pr":1063,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":16,"Linux simulator build + launch":260,"macOS tests against bundled FFmpeg and ASS":200,"macOS simulator build + launch":192}},
 {"id":40295711517,"at":"2026-10-26T08:55:49Z","sha":"4f44f8415","title":"Tests: the restore and reload flight tests take the hostsim sink's refusal of their Load before the next frame","pr":1060,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":244,"Windows launcher syntax":18,"macOS simulator build + launch":253,"macOS tests against bundled FFmpeg and ASS":150}},
-{"id":40295711790,"at":"2026-10-26T08:55:49Z","sha":"bed8804e7","title":"Merge branch 'series/open-recovery' into series/learn-refusals","pr":1061,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"Linux simulator build + launch":236,"macOS simulator build + launch":267,"Windows launcher syntax":14},"failed":["macOS tests against bundled FFmpeg and ASS"]}
+{"id":40295711790,"at":"2026-10-26T09:07:42Z","sha":"bed8804e7","title":"Merge branch 'series/open-recovery' into series/learn-refusals","pr":1061,"event":"pull_request","conclusion":"success","attempt":2,"jobs":{"macOS tests against bundled FFmpeg and ASS":129,"macOS simulator build + launch":267,"Windows launcher syntax":14,"Linux simulator build + launch":236},"wall":846}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
