@@ -4102,8 +4102,9 @@ pub fn dispatch_unopened_auto_hls(ps: &mut PlaybackSession, offset_secs: i64) ->
 /// The line a refused native-audio conversion settles with (never logged as another recovery's).
 pub(super) const REFUSAL_CONVERSION_REJECTED: &str = "native audio: the server could not convert the refused audio";
 
-/// Start the flight that replaces a route whose audio the pipeline refused before the first picture
-/// (`type=18` of any number, or the stall watchdog): the viewer's track plays again with the server
+/// Start the flight that replaces a route whose audio the pipeline refused before its Engine's first
+/// picture (`type=18` of any number, or the stall watchdog; a reload after the request's first
+/// picture starts such an Engine too): the viewer's track plays again with the server
 /// converting that audio. The open-recovery ladder's facet rung
 /// ([`crate::player::recovery::OpenRecovery`], `ConvertFacet`) has **already narrowed the playing
 /// attempt** to `start` less the suspect stream ([`crate::player::recovery::suspect`], `Caps::without`)

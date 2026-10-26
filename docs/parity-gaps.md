@@ -111,8 +111,11 @@ still take focus, and LEFT/RIGHT still walks between them, so the control looks 
    read-out even after frames, and OK opens the shared quality ladder: selecting the current rung
    retries the same item/position/tracks, while another rung retries under that policy; BACK exits.
    The Engine is still terminal and a generic manual/fixed failure is not automatically converted.
-   Cold Auto Original is the deliberate exception: if its first open fails before a frame, the pump
-   immediately starts the retained bootstrap HLS rung. A runtime HLS→Original experiment instead
+   There are two deliberate exceptions. An open the pipeline refuses before a frame, over audio
+   outside aac/ac3/eac3, is rebuilt once with the server converting that audio (any quality
+   setting, and a reload after a track pick owes its own Engine the same rung). Cold Auto Original
+   is the other: if its first open fails before a frame and no conversion applies (or the
+   conversion is refused), the pump starts the retained bootstrap HLS rung. A runtime HLS→Original experiment instead
    rolls back to the exact live HLS encoder it held until source frames.
 
 ---

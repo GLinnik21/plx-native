@@ -1504,9 +1504,11 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         // The pipeline refused the open: the failed-open ladder decides. A refusal of natively fed
         // audio is learned first (persistence only). A stream the attempt can do without
         // (`recovery::suspect`: audio outside aac/ac3/eac3, whatever the refusal's number) is rebuilt
-        // with the server converting it, once per request. A stream `start` already lacks, a rebuild
-        // that cannot fly, or a request with no rung left ends on the read-out the viewer would
-        // have had.
+        // with the server converting it, once per request, when this Engine has shown no picture (a
+        // reload after the request's first picture is such an Engine too). A stream `start` already
+        // lacks, a rebuild that cannot fly, or a request with no rung left ends on the read-out the
+        // viewer would have had; a refusal the machine does not handle (it is in `Failed`, or a
+        // flight is outstanding) fails the Engine again, never silence.
         recover_failed_open(ps, eng, load_refusal(), native_audio_fact(), "Audio Codec Not Supported");
         return;
     }
@@ -2396,8 +2398,9 @@ mod tests {
     /// **A native audio refusal is learned once, and only a new lesson asks for a conversion.** The
     /// `type=18 num=200` callback sets the flag only for a session that fed its audio natively; the
     /// pump turns it into a learned combination (the fake learner stands for
-    /// `session::learn_native_audio_refusal`), whose `true` is what makes the failed open's
-    /// recovery ladder convert the audio.
+    /// `session::learn_native_audio_refusal`), whose `true` is persistence only (the machine's
+    /// `RefusalConfirmed{newly}` selects no rung): the failed open's ladder converts the audio from
+    /// the refusal, the Engine's missing picture and the attempt, learned or not.
     #[test]
     fn a_refused_native_audio_load_is_learned_once() {
         use std::sync::atomic::Ordering::Release;

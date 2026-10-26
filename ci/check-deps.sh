@@ -56,7 +56,8 @@
 # one file per area under ci/allow/<rule>/ (exact multisets that only shrink: a new site, a stale
 # line, a wrong `# count:`, or a line filed in the wrong area fails; a migration lands by deleting
 # lines). A MACHINE is the scope of the first two: rust-modules/data, session, screens, ui, appkit
-# and machine, plex's session.rs, and the player's lifecycle.rs and route planners.
+# and machine, plex's session.rs, and the player's lifecycle.rs, recovery.rs (the failed-open ladder
+# machine) and route planners.
 #   workers  — a production worker start in a machine: `task::spawn`, `spawn_small*`,
 #              `spawn_off_frame*`, `storage_worker::submit`, `submit_retained`, the command worker's
 #              `.submit_ticket`. A machine's work leaves as a typed effect the app runs.

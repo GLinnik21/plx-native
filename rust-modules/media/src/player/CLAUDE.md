@@ -241,12 +241,16 @@ something.
   - **FAILURE-path recoveries are `FlightOwner::Recovery` flights** owned by the failed start
     (`Preparing(serial)`): the rollback's rebase after a failed Original trial
     (`route::dispatch_rollback_rebase`), the HLS fallback of an Auto Original that never opened
-    (`route::dispatch_unopened_auto_hls`) and the rebuild that has the server convert native audio
-    the pipeline refused (`route::dispatch_refusal_conversion`, below). They hold nothing (the Engine that failed is not
+    (`route::dispatch_unopened_auto_hls`) and the facet conversion: the rebuild that has the server
+    convert the audio facet of any pipeline refusal that names audio outside `aac`/`ac3`/`eac3`, not
+    only native audio (`route::dispatch_refusal_conversion`, below). They hold nothing (the Engine that failed is not
     playing) and the viewer keeps the connecting spinner (`pump::hold_connecting_state`). The
     landing is drained AHEAD of the failure branches (`route::take_ready_recovery_flight`, then
-    `pump::land_recovery_flight`: reload onto the route, or fail the Engine), because the
-    branches' failure flags stay up for the whole flight and `fail_current_engine` would end it;
+    `pump::land_recovery_flight`), because the branches' failure flags stay up for the whole flight
+    and `fail_current_engine` would end it. `land_recovery_flight` fails nothing itself: it reloads
+    onto the route, or hands `FlightRefused` to the machine. A refused facet conversion goes to the
+    HLS rung for a cold Auto Original and to the read-out otherwise; a refused rollback or
+    both-facets flight is always the read-out.
     `route::recovery_flight_outstanding` is how the pump waits.
   - **Two rollbacks have no Engine for a pump to drive** (`route::dispatch_engineless_rollback_rebase`,
     marked `flight_engineless` beside the recovery marker): the foreground restore's
@@ -323,8 +327,10 @@ something.
   rollback, which narrows the attempt first by the facet the refusal named, because its rebase, the next
   retry and a quality change must plan from the narrowed value; (2) under Forced Direct Play, the
   read-out (a forced play is never converted); (3) the **facet rung**, for a refusal that names the
-  pipeline (`type=18` of ANY number, or the stall; not a Load timeout or a source failure) before the
-  first picture: `recovery::suspect` names the stream the pipeline was fed when its audio is outside
+  pipeline (`type=18` of ANY number, or the stall; not a Load timeout or a source failure) of an
+  Engine that has shown no picture (`OpenFacts::no_frames`: the machine lives per request but a
+  picture is per Engine, so a reload after the request's first picture, a track pick, owes its own
+  open the same rung): `recovery::suspect` names the stream the pipeline was fed when its audio is outside
   `aac`/`ac3`/`eac3` (Opus 200, and the DTS 601 of #695, alike), the machine sets the attempt to
   `start` less that facet (`Caps::without`; an attempt plans and profiles from the one value the machine
   carries, `PlaybackSession::attempt_caps`, derived from the request's `start` on each rung's entry,
@@ -341,7 +347,16 @@ something.
   refusal that `project_stored_refusals` put in `start`) narrows nothing and gets no flight, so a
   conversion that is still refused cannot loop; a refused conversion dispatch goes on to the next rung
   too (HLS for a cold Auto Original, else the read-out), and a refused rollback is terminal. The viewer
-  keeps the connecting spinner: no read-out, no second play request. **Who owns a refusal is who
+  keeps the connecting spinner: no read-out, no second play request. **A Load the machine did not
+  ask for re-opens the ladder:** `RecoveryEvent::LoadStarted`, raised by
+  `engine::start_bufferfeed_for` (which every Engine start passes: a fresh play, a reload, the
+  foreground restore), takes a machine left in `Flight` (Home cleared the flight with the Engine)
+  or `Failed` (the read-out was up) back to `Opening` with its spent flights and excluded facet
+  kept; the recovery landing's own reload finds the machine already in `Opening` (`FlightLanded`
+  moved it first) and changes nothing. A refusal the machine does not handle fails the Engine
+  (`recover_failed_open`), never silence; in `Failed` that re-asserts the read-out once a frame
+  until the Engine is released, which a pre-picture Engine (`frames == 0`) never is
+  (`release_failed_engine`). **Who owns a refusal is who
   observes it:** the machine owns a
   refusal the pump sees AFTER a Load call returned (`type=18` once `route_start_status` read `Started`,
   a Load budget, a stall, a source failure). The Load CALL's own synchronous refusal (`StartFailed`

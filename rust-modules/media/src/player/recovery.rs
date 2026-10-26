@@ -514,51 +514,112 @@ mod tests {
         assert_eq!((fx, m.phase()), (ERROR.to_vec(), Phase::Failed));
     }
 
-    /// Every path of six events from `Opening`: the flights a request starts never exceed the cap,
-    /// and a facet conversion is only ever the request's first flight.
+    /// **Every reachable state of one request**, not a depth of paths: the walk runs to a fixpoint
+    /// over (state, flights, excluded facet), which is everything the machine's future depends on,
+    /// from every event the driver can raise (a refusal of an Engine with and without a picture, a
+    /// confirmation or an answer nobody asked for, the first picture, a Load nobody asked for). On
+    /// every path the flights a request starts never exceed the cap, and a facet conversion is only
+    /// ever the request's first flight. `Playing` is inside the proof: the first picture is an event.
     #[test]
     fn at_most_two_flights_follow_one_request() {
-        fn walk(m: &OpenRecovery, events: &[RecoveryEvent], depth: usize, flights: usize) {
-            if depth == 0 {
-                return;
-            }
-            for ev in events {
-                let mut next = m.clone();
-                let before = next.flights;
-                let mut fx = Vec::new();
-                next.step(ev, &mut fx);
-                // The driver answers a confirmation with the learner's verdict, in the same drain.
-                let mut at = 0;
-                while at < fx.len() {
-                    if fx[at] == RecoveryEffect::ConfirmRefusal {
-                        next.step(&RecoveryEvent::RefusalConfirmed { newly: true }, &mut fx);
-                    }
-                    at += 1;
-                }
-                let started = fx.iter().filter(|e| matches!(e, RecoveryEffect::ConvertFacet { .. } | RecoveryEffect::StartAutoHls)).count();
-                if fx.iter().any(|e| matches!(e, RecoveryEffect::ConvertFacet { .. })) {
-                    assert_eq!(before, 0, "a facet conversion after another flight: {ev:?}");
-                }
-                assert!(
-                    flights + started <= usize::try_from(MAX_RECOVERY_FLIGHTS).unwrap(),
-                    "{} flights started on one request",
-                    flights + started
-                );
-                walk(&next, events, depth - 1, flights + started);
-            }
-        }
         for auto in [true, false] {
             let base = OpenFacts { auto_original: auto, no_frames: true, audio: audio("dca", 6), ..OpenFacts::default() };
             let stall = OpenFacts { native_audio: Some(opus6()), ..base.clone() };
+            let with_picture = OpenFacts { no_frames: false, ..base.clone() };
             let events = [
                 refused(SHUT, base.clone()),
+                refused(SHUT, with_picture),
                 refused(LoadRefusal::TimedOut, base.clone()),
                 refused(LoadRefusal::Stalled, stall),
                 refused(LoadRefusal::SourceFailed, base),
+                RecoveryEvent::RefusalConfirmed { newly: true },
                 RecoveryEvent::FlightLanded,
                 RecoveryEvent::FlightRefused,
+                RecoveryEvent::FirstPicture,
+                RecoveryEvent::LoadStarted,
             ];
-            walk(&machine(), &events, 6, 0);
+            let key = |m: &OpenRecovery| format!("{:?}|{}|{:?}", m.state, m.flights, m.excluded);
+            let mut seen = std::collections::HashSet::from([key(&machine())]);
+            let mut frontier = vec![machine()];
+            while let Some(m) = frontier.pop() {
+                for ev in &events {
+                    let mut next = m.clone();
+                    let mut fx = Vec::new();
+                    next.step(ev, &mut fx);
+                    // The driver answers a confirmation with the learner's verdict, in the same drain.
+                    let mut at = 0;
+                    while at < fx.len() {
+                        if fx[at] == RecoveryEffect::ConfirmRefusal {
+                            next.step(&RecoveryEvent::RefusalConfirmed { newly: true }, &mut fx);
+                        }
+                        at += 1;
+                    }
+                    let started = fx.iter().filter(|e| matches!(e, RecoveryEffect::ConvertFacet { .. } | RecoveryEffect::StartAutoHls)).count();
+                    if fx.iter().any(|e| matches!(e, RecoveryEffect::ConvertFacet { .. })) {
+                        assert_eq!(m.flights, 0, "a facet conversion after another flight: {ev:?} in {:?}", m.state);
+                    }
+                    assert_eq!(next.flights as usize, m.flights as usize + started, "flights count what started: {ev:?}");
+                    assert!(next.flights <= MAX_RECOVERY_FLIGHTS, "{} flights started on one request", next.flights);
+                    if seen.insert(key(&next)) {
+                        frontier.push(next);
+                    }
+                }
+            }
+            assert!(seen.len() > 5, "the walk reached {} states", seen.len());
+        }
+    }
+
+    /// **Every state x event pair has a pinned outcome**: whether it is handled, and where it goes.
+    /// An unhandled pair changes nothing and asks for nothing. (`Refused` is a DTS 5.1 refusal of an
+    /// Engine with no picture on a manual Original; `RefusalConfirmed` is the learner's answer.)
+    #[test]
+    fn every_state_and_event_pair_has_a_pinned_outcome() {
+        use Handled::{No, Yes};
+        use Phase::{Confirming, Failed, Flight, Opening, Playing};
+        let refusal = || refused(SHUT, on_dts(facts(false, false, true)));
+        let confirmed = || RecoveryEvent::RefusalConfirmed { newly: false };
+        // (state, event name, event, handled, next state)
+        #[allow(clippy::type_complexity)]
+        let table: Vec<(Phase, &str, RecoveryEvent, Handled, Phase)> = vec![
+            (Opening, "Refused", refusal(), Yes, Flight),
+            (Opening, "RefusalConfirmed", confirmed(), No, Opening),
+            (Opening, "FlightLanded", RecoveryEvent::FlightLanded, No, Opening),
+            (Opening, "FlightRefused", RecoveryEvent::FlightRefused, No, Opening),
+            (Opening, "FirstPicture", RecoveryEvent::FirstPicture, Yes, Playing),
+            (Opening, "LoadStarted", RecoveryEvent::LoadStarted, No, Opening),
+            (Confirming, "Refused", refusal(), No, Confirming),
+            (Confirming, "RefusalConfirmed", confirmed(), Yes, Failed),
+            (Confirming, "FlightLanded", RecoveryEvent::FlightLanded, No, Confirming),
+            (Confirming, "FlightRefused", RecoveryEvent::FlightRefused, No, Confirming),
+            (Confirming, "FirstPicture", RecoveryEvent::FirstPicture, No, Confirming),
+            (Confirming, "LoadStarted", RecoveryEvent::LoadStarted, No, Confirming),
+            (Flight, "Refused", refusal(), No, Flight),
+            (Flight, "RefusalConfirmed", confirmed(), No, Flight),
+            (Flight, "FlightLanded", RecoveryEvent::FlightLanded, Yes, Opening),
+            (Flight, "FlightRefused", RecoveryEvent::FlightRefused, Yes, Failed),
+            (Flight, "FirstPicture", RecoveryEvent::FirstPicture, No, Flight),
+            (Flight, "LoadStarted", RecoveryEvent::LoadStarted, Yes, Opening),
+            (Playing, "Refused", refusal(), Yes, Flight),
+            (Playing, "RefusalConfirmed", confirmed(), No, Playing),
+            (Playing, "FlightLanded", RecoveryEvent::FlightLanded, No, Playing),
+            (Playing, "FlightRefused", RecoveryEvent::FlightRefused, No, Playing),
+            (Playing, "FirstPicture", RecoveryEvent::FirstPicture, No, Playing),
+            (Playing, "LoadStarted", RecoveryEvent::LoadStarted, No, Playing),
+            (Failed, "Refused", refusal(), No, Failed),
+            (Failed, "RefusalConfirmed", confirmed(), No, Failed),
+            (Failed, "FlightLanded", RecoveryEvent::FlightLanded, No, Failed),
+            (Failed, "FlightRefused", RecoveryEvent::FlightRefused, No, Failed),
+            (Failed, "FirstPicture", RecoveryEvent::FirstPicture, No, Failed),
+            (Failed, "LoadStarted", RecoveryEvent::LoadStarted, Yes, Opening),
+        ];
+        assert_eq!(table.len(), 5 * 6, "every pair of five states and six events");
+        for (state, name, ev, handled, next) in table {
+            let mut m = in_phase(state);
+            let (got, fx) = run(&mut m, ev);
+            assert_eq!((got, m.phase()), (handled, next), "{state:?} x {name}");
+            if handled == No {
+                assert!(fx.is_empty(), "{state:?} x {name}: an unhandled event asks for {fx:?}");
+            }
         }
     }
 
