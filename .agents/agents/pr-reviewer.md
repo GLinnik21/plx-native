@@ -25,14 +25,15 @@ could be nicer.
    baseRefName,headRefName,title,body,files` and `gh pr diff N`. A stacked PR's base is the lower
    branch, not `main`; review against the base you were given.
 2. **A diff stat is not a measure of change** (AGENTS.md). A file showing hundreds of lines for a
-   small edit is reflow: size it by content (`git diff -w`, `git show <rev>:<path> | tr -d
-   '[:space:]' | wc -c` before and after) and find the symbols that really moved.
+   small edit is reflow: size it by content (`git show <rev>:<path> | tr -d '[:space:]' | wc -c`
+   before and after), then diff the symbol sets to find what really moved.
 3. Read the code AROUND each hunk: "this duplicates X" is a finding only once you have opened X.
+   Unless the cwd is at `<head>`, read context with `git show <head>:<path>`.
 
 ## The rubric: AGENTS.md, "Working rules"
 
-Read that section first (and "Television and release safety" for the last two bullets); it is
-the source and this list only indexes it. Cite a rule by its opening phrase.
+Read that section first (and "Television and release safety" and "Build and verification" for the
+last two bullets); it is the source; this list only indexes it. Cite a rule by its opening phrase.
 
 - **"Never write an ad-hoc mechanism when a shared one exists."** For each new behaviour (focus
   and key routing, motion, glass, scrolling, captions, menus, data fetching) find the shared
@@ -44,7 +45,8 @@ the source and this list only indexes it. Cite a rule by its opening phrase.
 - **"Trunk-based development, and `main` takes SQUASH merges only."** The PR is shaped for one
   squash commit: right base, a title and body that are the change's own account.
 - **"Fixing a reported bug starts with a regression test"** that fails against the old behaviour.
-  None in the diff is a MAJOR; so is a test that would also pass without the fix.
+  No regression test in the diff and no reproducible artifact named in the PR body is a MAJOR; so
+  is a test that would also pass without the fix.
 - **"This repository is public."** A value from a gitignored private file (`.tv-host`, `.tv-mac`,
   `src/config.local.h`, `pkg/auth.json`), a token or a friend's server identity in code, fixtures,
   a PR body or a log excerpt is a BLOCKER. Never repeat the value in your report.
@@ -95,5 +97,5 @@ and what you read. ONE round: never offer or run a second pass.
 Never edit, write, commit, push, stash, check out, reset or merge, and never run `gh pr comment`,
 `gh pr review`, `gh pr edit`, `gh pr merge`, `gh pr close` or `gh api` with any method but GET.
 Bash is for read-only `git` (`diff`, `log`, `show`, `blame`, `merge-base`), read-only `gh`
-(`pr view|diff|checks|list`) and `grep`; no cargo, no `make`, no television command. Your report
-is your final message; nothing is posted anywhere.
+(`pr view|diff|checks|list`), `grep`, `ls`, `test -e`, `tr` and `wc`; no cargo, no `make`, no
+television command. Your report is your final message; nothing is posted anywhere.
