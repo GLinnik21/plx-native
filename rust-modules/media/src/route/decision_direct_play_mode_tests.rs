@@ -166,9 +166,9 @@ fn a_96_khz_aac_is_converted_not_reloaded_natively_by_the_paths_that_skip_the_de
     assert!(audio_track_direct_plays(&ps, "aac", 2, 48_000));
     assert!(!audio_track_direct_plays(&ps, "aac", 2, 96_000));
     // the track menu's "converted by your server" mark
-    assert!(!audio_converted_by_server("aac", 2, 48_000));
-    assert!(!audio_converted_by_server("aac", 2, 0), "an unstated rate is not a reason to convert");
-    assert!(audio_converted_by_server("aac", 2, 96_000));
+    assert!(!audio_converted_by_server(&ps, "aac", 2, 48_000));
+    assert!(!audio_converted_by_server(&ps, "aac", 2, 0), "an unstated rate is not a reason to convert");
+    assert!(audio_converted_by_server(&ps, "aac", 2, 96_000));
     // the displaced pick's legacy reload
     ps.cur_audio = Some(aac(48_000));
     assert_eq!(legacy_action(&ps), LegacyAction::Native { ordinal: 2, codec: "aac".into() });
