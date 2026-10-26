@@ -4408,9 +4408,8 @@ pub(super) fn install_auto_hls_outcome(
         reason,
         match reason {
             // The source that never opened is replaced by HLS: the app's own recovery.
-            crate::player::report::DeliveryReason::OriginalOpenRollback => {
-                crate::player::report::AttemptOrigin::Recovery
-            }
+            crate::player::report::DeliveryReason::OriginalOpenRollback
+            | crate::player::report::DeliveryReason::RefusalRecovery => crate::player::report::AttemptOrigin::Recovery,
             _ => crate::player::report::AttemptOrigin::AutoHandoff,
         },
     );

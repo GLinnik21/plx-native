@@ -721,10 +721,8 @@ fn install_recovery_landing(
             // The reload that follows is the app's own reopen after a failed open, like the other
             // recovery flights': the ledger must say so, or a failure of the converted route
             // reads as the first fresh open.
-            crate::player::report::note_attempt_for(
-                playback_trace_generation(),
-                crate::player::report::AttemptOrigin::Recovery,
-            );
+            // The delivery note carries the origin and notes the attempt itself.
+            crate::player::report::note_refusal_recovery_delivery(ps);
             RecoveryVerdict::Install
         }
         // A refused rebuild (the worker answered `Rejected`), a panicked worker, or a kind a

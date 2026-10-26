@@ -443,6 +443,19 @@ pub fn note_quality_selected_for(generation: u32, q: crate::route::Quality) {
     );
 }
 
+/// The facet rung's replacement route is the playback's delivery now: its class, the reason
+/// [`DeliveryReason::RefusalRecovery`], and the app's own recovery as the open's origin (which also
+/// notes the attempt, so a failure of the converted open does not read as the first fresh one).
+pub fn note_refusal_recovery_delivery(ps: &crate::route::PlaybackSession) {
+    note_delivery_requested_for(
+        crate::route::playback_trace_generation(),
+        delivery_class(ps),
+        QualityClass::Unknown,
+        DeliveryReason::RefusalRecovery,
+        AttemptOrigin::Recovery,
+    );
+}
+
 pub fn note_delivery_requested_for(
     generation: u32,
     delivery: DeliveryClass,

@@ -639,9 +639,9 @@ fn native_audio_fact() -> Option<plx_platform::devcaps::Facet> {
 /// event, until a step asks for nothing more. `why` words the learner's log line.
 ///
 /// Pending HLS rollback has priority; a failed rollback is terminal rather than silently starting a
-/// third transaction on route state whose encoder restore already failed. A refusal of natively fed
-/// audio that was just learned rebuilds the same route converted; a cold Auto Original falls back to
-/// HLS. Each recovery is a flight: the replacement route's PMS half runs on a worker while the
+/// third transaction on route state whose encoder restore already failed. A pipeline refusal of a
+/// stream the attempt can still do without (`recovery::suspect`) rebuilds the same route converted,
+/// once per request; a cold Auto Original then falls back to HLS. Each recovery is a flight: the replacement route's PMS half runs on a worker while the
 /// viewer keeps the connecting spinner they had.
 fn drive_open_recovery(ps: &mut crate::route::PlaybackSession, first: super::recovery::RecoveryEvent, why: &str) -> OpenRecoveryRun {
     use super::recovery::{RecoveryEffect, RecoveryEvent};
