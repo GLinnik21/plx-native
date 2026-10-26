@@ -606,11 +606,20 @@ mod tests {
         }
     }
 
+    /// sin(2 pi t) for `t` turns, from [`sinc`] (no transcendental call: `ci/allow/libm.txt`).
+    fn sin_turns(t: f64) -> f64 {
+        sinc(2.0 * t) * std::f64::consts::PI * 2.0 * t
+    }
+
+    fn cos_turns(t: f64) -> f64 {
+        sin_turns(t + 0.25)
+    }
+
     /// A pure `freq` Hz sine of amplitude 0.5 on both channels, in f64 phase so a 190 kHz source is exact.
     fn tone(freq: f64, rate: u32, secs: f64) -> Vec<[f32; 2]> {
         (0..(rate as f64 * secs) as usize)
             .map(|i| {
-                let v = (i as f64 * freq / rate as f64 * std::f64::consts::TAU).sin() as f32 * 0.5;
+                let v = sin_turns(i as f64 * freq / rate as f64) as f32 * 0.5;
                 [v, v]
             })
             .collect()
@@ -632,9 +641,9 @@ mod tests {
         let (from, to) = (960, out.len() - 960);
         let (mut re, mut im) = (0.0f64, 0.0f64);
         for (i, f) in out.iter().enumerate().take(to).skip(from) {
-            let ph = i as f64 * freq / OUT_RATE as f64 * std::f64::consts::TAU;
-            re += f[0] as f64 * ph.cos();
-            im += f[0] as f64 * ph.sin();
+            let turns = i as f64 * freq / OUT_RATE as f64;
+            re += f[0] as f64 * cos_turns(turns);
+            im += f[0] as f64 * sin_turns(turns);
         }
         2.0 * (re * re + im * im).sqrt() / (to - from) as f64
     }
