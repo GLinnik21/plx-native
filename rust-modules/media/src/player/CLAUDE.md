@@ -326,12 +326,16 @@ something.
   `StartFlight` (the conversion), and `route::dispatch_native_audio_conversion`
   flies a `ClaimWork::Encode` under a `FlightOwner::Recovery` that rebuilds today's route (which now
   plans the audio as the server's to convert), and `land_recovery_flight` reloads onto it. The viewer keeps the connecting spinner: no
-  read-out, no second play request. A refusal the install already knew skips that and fails as
-  before, so a conversion that is still refused cannot loop. A
+  read-out, no second play request. A refusal the install already knew skips the conversion and takes
+  the next rung of the same ladder (a pending Original trial's rollback, a cold Auto Original's HLS
+  contingency, else the read-out), so a conversion that is still refused cannot loop. A
   silent stall is learned too, for surround only (`native_stall.rs`, checked in the pump): a native
   Opus track with more than two channels, Load returned, no picture, both AU queues holding data and no
   AU accepted for `NATIVE_AUDIO_STALL_MS` (4 s; a slow server has empty queues) is learned and
-  recovered the same way, and never after the first picture. Garbled playback (no stall, no event)
+  recovered the same way, and never after the first picture. The stall is a refusal of the same class
+  as `type=18` (`LoadRefusal::Stalled`), so a stall of a combination the install already knew takes
+  the same next rung, the read-out for a manual Original; it used to return from the watchdog with
+  nothing done and leave the viewer on "Buffering..." for good (TV run G, 2026-10-26). Garbled playback (no stall, no event)
   still needs a static row. The event log has `native audio: watching`, `STALL, no picture`, the
   `remembered` line, `devcaps: ... learned refusals:`, and once per play the fed packets' `max` and
   `p95` size (the C1's 6-channel Opus decoder stalls at packets of 1536 B and above).

@@ -187,7 +187,7 @@ impl OpenRecovery {
     /// |---|---|---|
     /// | `Opening`, `Playing` | `Refused`, facts name native audio | `ConfirmRefusal`; `Confirming` |
     /// | `Opening`, `Playing` | `Refused`, otherwise | the ladder below, `learned = false` |
-    /// | `Confirming` | `RefusalConfirmed{newly}` | `newly`: the audio is excluded from the attempt; then the ladder with `learned = newly`. A `Stalled` refusal of a combination the install already knew only logs (main's behavior, unchanged here): no effect, `Opening` |
+    /// | `Confirming` | `RefusalConfirmed{newly}` | `newly`: the audio is excluded from the attempt; then the ladder with `learned = newly`, whatever the refusal (a stall of a combination the install already knew is a refusal like any other: it never ends in silence) |
     /// | `Flight` | `FlightLanded` | none; `Opening` (the reload re-enters the open) |
     /// | `Flight` | `FlightRefused` | `ShowError`; `Failed` |
     /// | `Opening` | `FirstPicture` | none; `Playing` |
@@ -219,11 +219,7 @@ impl OpenRecovery {
                         self.exclude(facet.clone());
                     }
                 }
-                if refusal == LoadRefusal::Stalled && !*newly {
-                    self.state = State::Opening;
-                } else {
-                    self.decide(refusal, &facts, *newly, fx);
-                }
+                self.decide(refusal, &facts, *newly, fx);
                 Handled::Yes
             }
             RecoveryEvent::FlightLanded => {
@@ -443,13 +439,23 @@ mod tests {
     }
 
     #[test]
-    fn a_stall_of_a_combination_the_install_already_knew_only_logs() {
-        // Main's behavior, characterized: the watchdog's `native_audio_stall_fired` returned false for
-        // a known combination, so the pump went on and the viewer stayed on the buffering spinner.
+    fn a_stall_is_a_refusal_like_any_other_even_when_the_install_already_knew_the_combination() {
+        // A known combination is not "nothing to do": the conversion is spent (it is in `start`
+        // already), so the ladder runs with `learned = false` and, for a manual Original with
+        // nothing pending, ends in the read-out. The viewer never waits on a spinner for ever.
         let mut m = machine();
         run(&mut m, refused(LoadRefusal::Stalled, facts(false, false, true, true)));
         let (handled, fx) = run(&mut m, RecoveryEvent::RefusalConfirmed { newly: false });
-        assert_eq!((handled, fx, m.phase()), (Handled::Yes, vec![], Phase::Opening));
+        assert_eq!((handled, m.phase()), (Handled::Yes, Phase::Failed));
+        assert_eq!(fx, [RecoveryEffect::ShowError { refusal: LoadRefusal::Stalled }]);
+        // The rungs above the read-out still apply to it: a pending Original trial's rollback, a cold
+        // Auto Original's HLS contingency.
+        let mut m = machine();
+        run(&mut m, refused(LoadRefusal::Stalled, facts(true, false, true, true)));
+        assert_eq!(run(&mut m, RecoveryEvent::RefusalConfirmed { newly: false }).1, [RecoveryEffect::Rollback]);
+        let mut m = machine();
+        run(&mut m, refused(LoadRefusal::Stalled, facts(false, true, true, true)));
+        assert_eq!(run(&mut m, RecoveryEvent::RefusalConfirmed { newly: false }).1, [RecoveryEffect::StartAutoHls]);
         // A new one takes the conversion.
         let mut m = machine();
         run(&mut m, refused(LoadRefusal::Stalled, facts(false, false, true, true)));

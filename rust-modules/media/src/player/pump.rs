@@ -1438,8 +1438,10 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         return;
     }
     if !eng.preview_abandon && native_audio_stall_fired(eng, now) {
-        // Nothing fed natively (the watchdog needs more than two channels of it, so only a race
-        // gets here): nothing to confirm. A combination the install already knew only logs.
+        // The stall is a refusal like `type=18`, and so is its ending: a combination the install
+        // already knew fails the Engine like any refusal the ladder has no rung for, never a spinner
+        // for good. Nothing fed natively (the watchdog needs more than two channels of it, so only a
+        // race gets here) names no audio to confirm, and the frame goes on.
         if let Some(audio) = native_audio_fact() {
             let why = "it swallowed the feed: no picture";
             if recover_failed_open(ps, eng, super::recovery::LoadRefusal::Stalled, Some(audio), why) != OpenRecoveryRun::Quiet {
@@ -3806,6 +3808,49 @@ mod flight_tests {
         );
         rig.flight.wait_for("the refused replacement's stop", |f| replacement_stops(f) == 1);
         assert!(!rig.flight.stopped().iter().any(|s| s == "rig-1"), "{:?}", rig.flight.stopped());
+    }
+
+    /// **A native audio STALL of a combination the install already knew ends on the read-out, never
+    /// on the buffering spinner.** TV run G (2026-10-26): a stored `{opus, 6ch}` refusal, and a
+    /// transcode fixture serving 1600 B 6-channel Opus again. The watchdog fired and the learner
+    /// said "known", which the pump took for "nothing to do": no Engine failure, no read-out, the
+    /// watchdog spent, and the viewer on "Buffering..." for good. A known combination fails like any
+    /// refusal the ladder has no rung for: the Engine fails and the read-out shows.
+    #[test]
+    fn a_native_audio_stall_of_a_known_combination_ends_on_the_read_out_not_the_spinner() {
+        use super::super::native_stall::{Watch, NATIVE_AUDIO_STALL_MS, WATCH};
+        let reset_watch = || *WATCH.lock().unwrap_or_else(|e| e.into_inner()) = Watch::new();
+        let mut rig = Rig::new(40);
+        let _set = firmware_announcing_opus();
+        reset_watch();
+        // The install learned this combination on an earlier play: the pump's learner says "known".
+        assert!(plx_plex::plex::session::learn_native_audio_refusal("opus", 6));
+        crate::ff::native_audio::publish_fed(crate::ff::native_audio::Kind::Opus, 6);
+        let epoch = engine_epoch(&mut rig).expect("the rig's Engine");
+        assert!(SHARED.mark_native_load_returned(epoch).is_some(), "the Load returned: the watchdog's precondition");
+        // Both AU queues hold data and the pipeline accepts nothing: what the demuxer sees of a
+        // decoder that swallowed the feed. The Engine is still `Loading`, so no frame feeds them.
+        let eng = rig.pa.engine().expect("the rig's Engine");
+        eng.stage = Stage::Loading;
+        for (queue, es) in [(eng.aq_video.as_mut(), 0), (eng.aq_audio.as_mut(), 1)] {
+            let q = &mut **queue.expect("the Engine's AU queues") as *mut crate::aq::AuQueue;
+            assert_eq!(crate::aq::aq_push(q, [0u8; 64].as_ptr(), 64, 0, 1, es), 0);
+        }
+        let log = plx_base::eventlog::with_private_log(|| {
+            rig.frame();
+            assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error, "the watchdog only armed");
+            rig.now += NATIVE_AUDIO_STALL_MS + 100;
+            rig.frame();
+            std::fs::read_to_string(plx_base::eventlog::events_log()).unwrap_or_default()
+        });
+        let state = crate::player::state(&rig.ps);
+        reset_watch();
+        assert!(log.contains("native audio: STALL, no picture"), "PRECONDITION FAILED, not the defect: the watchdog did not fire:\n{log}");
+        assert_eq!(
+            state,
+            crate::player::PlaybackState::Error,
+            "a stall of a combination the install already knew left the viewer on {state:?}"
+        );
     }
 }
 
