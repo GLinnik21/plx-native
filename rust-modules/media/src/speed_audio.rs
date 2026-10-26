@@ -593,6 +593,45 @@ mod tests {
         );
     }
 
+    /// **Every channel a TrueHD stream can carry** (FFmpeg's `thd_channel_order`) has a role: the lefts on
+    /// the left only, the rights on the right only, the centres on both, the two LFEs nowhere. The 7.1
+    /// bed the decoder reports (FL FR FC LFE BL BR SL SR) is mixed at full scale without clipping.
+    #[test]
+    fn every_channel_a_truehd_stream_can_carry_has_a_role() {
+        // AV_CH_* bits not named above: FLC 6, FRC 7, TC 11, TFL 12, TFC 13, TFR 14, WL 31, WR 32, SDL 33,
+        // SDR 34, LFE2 35.
+        let roles: &[(u32, bool, bool)] = &[
+            (0, true, false),  // FL
+            (1, false, true),  // FR
+            (2, true, true),   // FC
+            (3, false, false), // LFE
+            (9, true, false),  // SL
+            (10, false, true), // SR
+            (12, true, false), // TFL
+            (14, false, true), // TFR
+            (6, true, false),  // FLC
+            (7, false, true),  // FRC
+            (4, true, false),  // BL
+            (5, false, true),  // BR
+            (8, true, true),   // BC
+            (11, true, true),  // TC
+            (33, true, false), // SDL
+            (34, false, true), // SDR
+            (31, true, false), // WL
+            (32, false, true), // WR
+            (13, true, true),  // TFC
+            (35, false, false), // LFE2
+        ];
+        let all = roles.iter().fold(0u64, |m, (bit, _, _)| m | 1 << bit);
+        for &(bit, left, right) in roles {
+            let got = mix(all, 1 << bit);
+            assert_eq!((got[0] > 0.0, got[1] > 0.0), (left, right), "AV_CH bit {bit}: {got:?}");
+        }
+        let bed = FL | FR | FC | LFE | BL | BR | SL | SR;
+        let a = mix(bed, bed & !LFE);
+        assert!(a[0] > 0.99 && a[0] <= 1.0 + 1e-6 && a[1] > 0.99 && a[1] <= 1.0 + 1e-6, "the 7.1 bed at full scale: {a:?}");
+    }
+
     /// A mask that does not name `channels` channels (unspecified, custom, or wrong) is not trusted.
     #[test]
     fn a_mask_that_does_not_fit_the_channel_count_falls_back_to_the_count() {
