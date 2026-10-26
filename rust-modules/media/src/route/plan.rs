@@ -1894,20 +1894,22 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     // Auto has one pass over everything it can play (the set's decoder or a codec in force); only
     // Forced separates the set's own decoder.
     let mut audio_sel = if forced {
-        let mut sel = pick_audio(StandIn::SameKind, &natively);
-        if sel.is_none() {
-            sel = pick_audio(StandIn::SameKind, &eligible);
-            if let Some((_, raw, _)) = &sel {
-                crate::player::log(&format!(
-                    "playback_policy: Force Direct Play decodes audio codec {raw} ({}) in the app, stereo",
-                    plx_data::metadata::friendly_codec(raw)
-                ));
-            }
-        }
-        sel.or_else(|| pick_audio(StandIn::Any, &natively))
+        pick_audio(StandIn::SameKind, &natively)
     } else {
         pick_audio(if copy_blocked { StandIn::Any } else { StandIn::SameKind }, &eligible)
     };
+    if forced && audio_sel.is_none() {
+        audio_sel = pick_audio(StandIn::SameKind, &eligible);
+        if let Some((_, raw, _)) = &audio_sel {
+            crate::player::log(&format!(
+                "playback_policy: Force Direct Play decodes audio codec {raw} ({}) in the app, stereo",
+                plx_data::metadata::friendly_codec(raw)
+            ));
+        }
+    }
+    if forced && audio_sel.is_none() {
+        audio_sel = pick_audio(StandIn::Any, &natively);
+    }
     if let Some(lang) = show_prefs.audio.as_deref() {
         let hit = audio_sel
             .as_ref()
