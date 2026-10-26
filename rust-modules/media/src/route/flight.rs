@@ -592,6 +592,10 @@ pub struct RecoveryLanding {
     /// The recovery position the flight was dispatched for, in nanoseconds.
     pub offset_ns: i64,
     pub verdict: RecoveryVerdict,
+    /// The lane verdicts of the `/decision` that built the replacement route, for a landing that
+    /// came from a retranscode (the facet rung's proof); `None` for any other (a refusal, a rollback,
+    /// the HLS contingency's rebuild, a resume), which can therefore never prove.
+    pub lanes: Option<crate::player::recovery::Lanes>,
 }
 
 /// Whether a recovery flight is outstanding — landed or not — so the pump's failure branches wait
@@ -642,7 +646,11 @@ pub fn take_ready_recovery_flight(ps: &mut PlaybackSession) -> Option<RecoveryLa
     let FlightOwner::Recovery(ticket) = owner else {
         unreachable!("take_claim_landing_for(true) only takes a recovery's landing");
     };
-    Some(RecoveryLanding { offset_ns: user_target, verdict: install_recovery_landing(ps, ticket, resume, result) })
+    let lanes = match &result {
+        RetranscodeClaimResult::Retranscode(applied) => Some(applied.lanes),
+        _ => None,
+    };
+    Some(RecoveryLanding { offset_ns: user_target, verdict: install_recovery_landing(ps, ticket, resume, result), lanes })
 }
 
 /// A recovery's landing, applied. Every way out leaves the reducer out of `Preparing(serial)`:

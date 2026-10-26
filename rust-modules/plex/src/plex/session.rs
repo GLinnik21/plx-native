@@ -1893,9 +1893,16 @@ pub struct ServerKeyPin {
     pub extensions: OpaqueExtensions,
 }
 
+/// How many facet-clean proofs persist a refusal on its build (D6(c) of the playback-refusal plan):
+/// the first rescue of a play whose conversion changed only the refused facet is counted, the second
+/// applies. A transient `601` coinciding with one Load cannot teach alone.
+pub const LEARNED_REFUSAL_PROOFS: u32 = 2;
+
 /// One native audio combination the TV's pipeline was watched refusing on this install: the
 /// firmware family, the codec and the refused track's channel count. See
-/// [`Preferences::native_audio_refused`] and `devcaps::Refusal`.
+/// [`Preferences::native_audio_refused`] and `devcaps::Refusal`. **Identity** is `(build, codec,
+/// channels)` with the raw channel count (`refusal_ceiling` is applied only at projection); the
+/// firmware codename is a stamped field the projection's codename filter reads.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct NativeAudioRefusal {
     pub firmware: String,
@@ -1905,14 +1912,50 @@ pub struct NativeAudioRefusal {
     /// recorded, which reads as empty and counts as stale (see [`Session::with_native_audio_refusal`]).
     #[serde(default)]
     pub build: String,
+    /// Facet-clean proofs seen on `build` (D6(c)). ABSENT = a refusal that named the codec
+    /// (`type=18 num=200` or the stall, and every row written before S2a): applied at once. Capped
+    /// at [`LEARNED_REFUSAL_PROOFS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proofs: Option<u32>,
     #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
     pub extensions: OpaqueExtensions,
 }
 
 impl NativeAudioRefusal {
-    fn of(r: &plx_platform::devcaps::Refusal) -> Self {
-        NativeAudioRefusal { firmware: r.firmware.clone(), codec: r.codec.clone(), channels: r.channels, build: r.build.clone(), extensions: Default::default() }
+    /// The row for `facet` on `firmware`'s `build`, or `None` when it cannot be stored. `proofs`
+    /// `None` names the codec; `Some(n)` counts proofs. A PROOF of unknown width (`channels == 0`)
+    /// is not stored: `refusal_ceiling(0)` would remove the whole codec, too broad for a counted
+    /// lesson; a named refusal keeps that behaviour. S1b's `Facet::Video` arm returns `None`: video
+    /// rows never persist (D6(c)), and this row has no video fields to hold one.
+    pub fn of_facet(facet: &plx_platform::devcaps::Facet, firmware: &str, build: &str, proofs: Option<u32>) -> Option<Self> {
+        match facet {
+            plx_platform::devcaps::Facet::Audio { codec, channels } => {
+                if *channels == 0 && proofs.is_some() {
+                    return None;
+                }
+                Some(NativeAudioRefusal {
+                    firmware: firmware.to_owned(),
+                    codec: plx_platform::devcaps::audio_codec_id(codec).into_owned(),
+                    channels: *channels,
+                    build: build.to_owned(),
+                    proofs,
+                    extensions: Default::default(),
+                })
+            }
+        }
     }
+
+    /// Whether the row is in force: a named row (and every row written before S2a) at once, a
+    /// counted one from [`LEARNED_REFUSAL_PROOFS`] proofs.
+    pub fn applies(&self) -> bool {
+        self.proofs.is_none_or(|n| n >= LEARNED_REFUSAL_PROOFS)
+    }
+
+    /// Whether `other` is the same combination on the same build (the row's identity).
+    fn same_as(&self, other: &Self) -> bool {
+        self.build == other.build && self.codec == other.codec && self.channels == other.channels
+    }
+
     fn to_devcaps(&self) -> plx_platform::devcaps::Refusal {
         plx_platform::devcaps::Refusal { firmware: self.firmware.clone(), codec: self.codec.clone(), channels: self.channels, build: self.build.clone() }
     }
@@ -2473,6 +2516,8 @@ impl Session {
     /// replaces the decoder a refusal was watched on, so the new firmware gets a fresh native try.
     /// An entry without a build (the set did not name one) judges nothing and drops nothing. The
     /// stale entries are inert until then: `devcaps` ignores a refusal watched on another build.
+    /// For the same identity the counts merge: a named row always wins (`proofs` `None`) and a
+    /// proof never downgrades it, two proofs add up to [`LEARNED_REFUSAL_PROOFS`] and no further.
     pub fn with_native_audio_refusal(&self, refusal: &NativeAudioRefusal) -> Option<Self> {
         if refusal.firmware.is_empty() || refusal.codec.is_empty() {
             return None;
@@ -2482,10 +2527,14 @@ impl Session {
         if !refusal.build.is_empty() {
             list.retain(|r| r.build == refusal.build);
         }
-        if !list.iter().any(|r| {
-            r.firmware == refusal.firmware && r.codec == refusal.codec && r.channels == refusal.channels && r.build == refusal.build
-        }) {
-            list.push(refusal.clone());
+        match list.iter_mut().find(|r| r.same_as(refusal)) {
+            Some(old) => {
+                old.proofs = match (old.proofs, refusal.proofs) {
+                    (None, _) | (_, None) => None,
+                    (Some(a), Some(b)) => Some(a.saturating_add(b).min(LEARNED_REFUSAL_PROOFS)),
+                };
+            }
+            None => list.push(refusal.clone()),
         }
         (*list != self.prefs.native_audio_refused).then_some(next)
     }
@@ -3027,39 +3076,67 @@ pub fn learn_hold_hint_taught(taught: HoldHintTaught) -> bool {
     })
 }
 
-/// **The pipeline refused a native audio track**: remember `(this firmware, codec, channels)` so every
-/// later play of the combination goes to conversion, and persist it for the next launch.
-///
-/// Two effects, in this order: the process-wide answer loses the audio at once (`devcaps::learn_refusal`),
-/// which is what the NEXT play's start reads, then the entry is queued as an install preference
-/// off the caller's thread, best effort like [`learn_hold_hint_taught`]. The recovery that follows
-/// does NOT read that answer: the request's `OpenRecovery` narrows the playing attempt's own capability
-/// value (`Caps::without`) by what was fed. Returns whether anything was
-/// learned (a combination the set no longer announces, a known one and the debug flag learn nothing).
-pub fn learn_native_audio_refusal(codec: &str, channels: u32) -> bool {
-    let Some(refusal) = plx_platform::devcaps::learn_refusal(codec, channels) else {
+/// **The pipeline refused a native audio track and named it** (`type=18 num=200` with the audio fed
+/// natively, or the stall watchdog): record `(this build, codec, channels)` as refused, applied at
+/// once. See [`record_refusal_proof`] for the counted kind. Returns whether a write was queued (a set
+/// that cannot learn and an unstorable facet return false); what the write changes is decided when it
+/// lands, against the record then current.
+pub fn record_named_refusal(facet: &plx_platform::devcaps::Facet) -> bool {
+    record(facet, None)
+}
+
+/// **A conversion rescued a play and changed only the refused facet** (S2a's facet-clean proof):
+/// count one proof for `(this build, codec, channels)`; the row applies from
+/// [`LEARNED_REFUSAL_PROOFS`]. Returns whether a write was queued, as [`record_named_refusal`] does.
+pub fn record_refusal_proof(facet: &plx_platform::devcaps::Facet) -> bool {
+    record(facet, Some(1))
+}
+
+/// The one body of both writers: stamp the row with the learning firmware
+/// (`devcaps::learning_firmware`, a read) and queue the merge as an install preference off the
+/// caller's thread, best effort like [`learn_hold_hint_taught`]. The merge runs on the storage worker
+/// against the record it finds there (no read of the cached record here), and logs only when it
+/// changes something. Nothing here changes the process-wide capability answer: a row reaches it when
+/// the queued write lands (`replace_cache` -> [`applied_refusals`]), and the request in flight already
+/// narrowed its own attempt.
+fn record(facet: &plx_platform::devcaps::Facet, proofs: Option<u32>) -> bool {
+    let Some((firmware, build)) = plx_platform::devcaps::learning_firmware() else {
         return false;
     };
-    let entry = NativeAudioRefusal::of(&refusal);
-    plx_base::eventlog::log(&format!(
-        "native audio: the pipeline refused {} with {} channels on firmware {:?}; remembered, later plays convert it",
-        entry.codec, entry.channels, entry.firmware
-    ));
-    queue_update(move |cur| cur.with_native_audio_refusal(&entry));
+    let Some(row) = NativeAudioRefusal::of_facet(facet, &firmware, &build, proofs) else {
+        return false;
+    };
+    queue_update(move |cur| {
+        let merged = cur.with_native_audio_refusal(&row)?;
+        let applies = merged.native_audio_refused().iter().any(|r| r.same_as(&row) && r.applies());
+        plx_base::eventlog::log(&format!(
+            "native audio: the pipeline refused {} with {} channels on firmware {firmware:?} ({}); remembered{}",
+            row.codec,
+            row.channels,
+            if proofs.is_some() { "proved by its conversion" } else { "named by the pipeline" },
+            if applies { ", later plays convert it" } else { ", not yet applied" }
+        ));
+        Some(merged)
+    });
     true
 }
 
-/// Hand the stored refusals to `devcaps`, which folds them into the capability answer (it only ever
-/// takes native audio away, so a record that is behind a write cannot give back what that write
-/// took). Called from [`replace_cache`] with every session it installs, so a boot that reads the
-/// record and a write that lands both reach the answer. It runs UNDER the cache lock: no IO, no
+/// The rows of `session` in force, as `devcaps` takes them (a counted row below the threshold is
+/// stored and not applied).
+fn applied_refusals(session: &Session) -> Vec<plx_platform::devcaps::Refusal> {
+    session.prefs.native_audio_refused.iter().filter(|r| r.applies()).map(NativeAudioRefusal::to_devcaps).collect()
+}
+
+/// Hand the stored refusals in force to `devcaps`, which folds them into the capability answer (it
+/// only ever takes native audio away, so a record that is behind a write cannot give back what that
+/// write took). Called from [`replace_cache`] with every session it installs, so a boot that reads
+/// the record and a write that lands both reach the answer. It runs UNDER the cache lock: no IO, no
 /// queued write, nothing that reads the cache.
 fn project_native_audio_refusals(session: &Session) {
-    if session.prefs.native_audio_refused.is_empty() {
+    let stored = applied_refusals(session);
+    if stored.is_empty() {
         return;
     }
-    let stored: Vec<plx_platform::devcaps::Refusal> =
-        session.prefs.native_audio_refused.iter().map(NativeAudioRefusal::to_devcaps).collect();
     plx_platform::devcaps::project_stored_refusals(&stored);
 }
 
@@ -6165,6 +6242,7 @@ mod server_key_pin_tests {
             codec: codec.into(),
             channels,
             build: "6.5.3-47".into(),
+            proofs: None,
             extensions: Default::default(),
         };
         let session = test_support::signed_in();
@@ -6201,6 +6279,142 @@ mod server_key_pin_tests {
         clear();
         // The sign-out keeps install facts in the stored preferences, but the cleared session itself is empty.
         assert!(peek().native_audio_refused().is_empty());
+    }
+
+    // ---- S2a: a refusal is learned from a facet-clean proof, counted, and applied at the threshold ----
+
+    fn dts6() -> plx_platform::devcaps::Facet {
+        plx_platform::devcaps::Facet::Audio { codec: "dca".into(), channels: 6 }
+    }
+
+    fn opus6() -> plx_platform::devcaps::Facet {
+        plx_platform::devcaps::Facet::Audio { codec: "opus".into(), channels: 6 }
+    }
+
+    /// This thread's set: names its firmware and build, so it can record a refusal.
+    fn firmware_build(build: &str) -> plx_platform::devcaps::CapsGuard {
+        plx_platform::devcaps::firmware_on_this_thread_for_test("fw", build, plx_platform::devcaps::Caps::assumed())
+    }
+
+    fn row(codec: &str, channels: u32, build: &str, proofs: Option<u32>) -> NativeAudioRefusal {
+        NativeAudioRefusal { firmware: "fw".into(), codec: codec.into(), channels, build: build.into(), proofs, extensions: Default::default() }
+    }
+
+    /// One proof is stored and counted, not applied: the record says so and the projection (what
+    /// reaches `devcaps::caps()`) holds nothing.
+    #[test]
+    fn a_first_proof_is_stored_counted_once_and_not_applied() {
+        let _serial = plx_base::testlock::serial();
+        let _session = test_support::TempSession::new("refusal-proof-one");
+        let _fw = firmware_build("B");
+        save(&test_support::signed_in());
+        assert!(record_refusal_proof(&dts6()), "the write is queued");
+        plx_base::storage_worker::drain_for_test();
+        let rows = peek().native_audio_refused().to_vec();
+        assert_eq!(rows, [row("dts", 6, "B", Some(1))], "dca is stored in the pipeline's spelling");
+        assert!(!rows[0].applies());
+        assert!(applied_refusals(&peek()).is_empty(), "a counted row never reaches the projection");
+    }
+
+    /// The second proof persists the refusal (it applies and projects); a third has nothing to add
+    /// and writes nothing.
+    #[test]
+    fn a_second_proof_persists_and_a_third_writes_nothing() {
+        let _serial = plx_base::testlock::serial();
+        let _session = test_support::TempSession::new("refusal-proof-two");
+        let _fw = firmware_build("B");
+        save(&test_support::signed_in());
+        assert!(record_refusal_proof(&dts6()));
+        plx_base::storage_worker::drain_for_test();
+        assert!(!applied_refusals(&peek()).iter().any(|r| r.codec == "dts"), "one proof applies nothing");
+        assert!(record_refusal_proof(&dts6()));
+        plx_base::storage_worker::drain_for_test();
+        let rows = peek().native_audio_refused().to_vec();
+        assert_eq!(rows, [row("dts", 6, "B", Some(LEARNED_REFUSAL_PROOFS))]);
+        assert!(rows[0].applies());
+        assert_eq!(applied_refusals(&peek()).len(), 1);
+        assert!(record_refusal_proof(&dts6()), "queued again");
+        plx_base::storage_worker::drain_for_test();
+        assert_eq!(peek().native_audio_refused(), rows, "a third proof writes nothing");
+        assert!(peek().with_native_audio_refusal(&row("dts", 6, "B", Some(1))).is_none(), "a third proof changes nothing");
+    }
+
+    /// A refusal that names the codec applies at once; no proof downgrades it; a counted row that is
+    /// then named upgrades to a named one.
+    #[test]
+    fn a_named_refusal_applies_at_once_and_no_proof_downgrades_it() {
+        let _serial = plx_base::testlock::serial();
+        let _session = test_support::TempSession::new("refusal-named");
+        let _fw = firmware_build("B");
+        save(&test_support::signed_in());
+        assert!(record_named_refusal(&opus6()));
+        plx_base::storage_worker::drain_for_test();
+        let rows = peek().native_audio_refused().to_vec();
+        assert_eq!(rows, [row("opus", 6, "B", None)]);
+        assert!(rows[0].applies());
+        assert!(record_refusal_proof(&opus6()));
+        plx_base::storage_worker::drain_for_test();
+        assert_eq!(peek().native_audio_refused(), rows, "a proof on a named row writes nothing");
+        assert!(peek().with_native_audio_refusal(&row("opus", 6, "B", Some(1))).is_none(), "a proof never downgrades");
+        // Separately: a counted row followed by the same combination named.
+        assert!(record_refusal_proof(&dts6()));
+        plx_base::storage_worker::drain_for_test();
+        assert_eq!(peek().native_audio_refused()[1].proofs, Some(1));
+        assert!(record_named_refusal(&dts6()));
+        plx_base::storage_worker::drain_for_test();
+        let upgraded = peek().native_audio_refused().iter().find(|r| r.codec == "dts").cloned().expect("the dts row");
+        assert_eq!(upgraded.proofs, None, "the count-1 row upgrades to a named row");
+        assert!(upgraded.applies());
+    }
+
+    /// A firmware update retires counted rows as it retires named ones: only the new build's remains.
+    #[test]
+    fn a_build_change_clears_counted_and_named_rows() {
+        let _serial = plx_base::testlock::serial();
+        let _session = test_support::TempSession::new("refusal-build-change");
+        save(&test_support::signed_in());
+        {
+            let _b = firmware_build("B");
+            assert!(record_named_refusal(&opus6()));
+            assert!(record_refusal_proof(&dts6()));
+            plx_base::storage_worker::drain_for_test();
+            assert_eq!(peek().native_audio_refused().len(), 2);
+        }
+        let _c = firmware_build("C");
+        assert!(record_refusal_proof(&dts6()));
+        plx_base::storage_worker::drain_for_test();
+        assert_eq!(peek().native_audio_refused(), [row("dts", 6, "C", Some(1))], "B's named and counted rows went with the old decoder");
+    }
+
+    /// A record written before S2a (no `proofs` key) is a persisted refusal; a counted one is not
+    /// applied; a malformed count costs only its own entry.
+    #[test]
+    fn a_pre_s2a_row_reads_as_persisted() {
+        let session: Session = serde_json::from_value(serde_json::json!({
+            "native_audio_refused": [
+                {"firmware": "f", "codec": "opus", "channels": 6, "build": "b"},
+                {"firmware": "f", "codec": "dts", "channels": 6, "build": "b", "proofs": 1},
+                {"firmware": "f", "codec": "flac", "channels": 6, "build": "b", "proofs": "x"}
+            ]
+        }))
+        .unwrap();
+        let rows = session.native_audio_refused();
+        assert_eq!(rows.len(), 2, "the malformed count dropped only itself");
+        assert!(rows[0].applies(), "an old row is applied, not one proof");
+        assert_eq!(rows[0].proofs, None);
+        assert!(!rows[1].applies(), "a counted row below the threshold is not");
+        assert_eq!(applied_refusals(&session).len(), 1);
+        let json = serde_json::to_string(&session.native_audio_refused()[0]).unwrap();
+        assert!(!json.contains("proofs"), "a named row round-trips with no proofs key: {json}");
+    }
+
+    /// A proof of unknown width (the pipeline was fed no channel count) is not stored: it would
+    /// remove the whole codec. A named refusal keeps the unguarded behaviour.
+    #[test]
+    fn a_proof_of_unknown_width_is_not_stored() {
+        let unknown = plx_platform::devcaps::Facet::Audio { codec: "dts".into(), channels: 0 };
+        assert_eq!(NativeAudioRefusal::of_facet(&unknown, "fw", "B", Some(1)), None);
+        assert!(NativeAudioRefusal::of_facet(&unknown, "fw", "B", None).is_some());
     }
 
     /// `plx_ui::hold_hint` hands the application what an install was taught: the learn door queues a

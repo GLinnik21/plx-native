@@ -190,8 +190,8 @@ pub fn apply_exclusions(caps: &mut Caps, codename: &str, ignore: bool, table: &[
 /// A native audio combination this install **watched the pipeline refuse**, remembered so the next
 /// play goes straight to conversion. The install preference `native_audio_refused`
 /// (`plex::session`) is the one list of them; this is the shape it hands over
-/// ([`project_stored_refusals`]) and receives back ([`learn_refusal`]). `channels` is the refused
-/// track's channel count.
+/// ([`project_stored_refusals`]); the row is stamped with [`learning_firmware`]. `channels` is the
+/// refused track's channel count.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Refusal {
     pub firmware: String,
@@ -313,7 +313,7 @@ pub enum Facet {
 /// The decode-capability snapshot the playback stack derives from. Probed once, at boot
 /// ([`probe`]); the app reads [`caps`] ONCE per attempt, at the play's start, and the attempt carries
 /// that value (`route::PlaybackSession::attempt_caps`, which the request's `OpenRecovery` owns). The process-wide answer is not frozen after
-/// boot: [`learn_refusal`] can still move it, and an attempt already in flight keeps (and narrows,
+/// boot: [`project_stored_refusals`] can still move it, and an attempt already in flight keeps (and narrows,
 /// [`Caps::without`]) its own value instead of re-reading it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Caps {
@@ -515,7 +515,9 @@ struct Layers {
     /// learned, so the learn-and-convert path can be shown on a set the exclusions would keep off it.
     learn: bool,
     /// `plxnative-nativeaudioforget`: the stored refusals are not applied this run, so a set can be
-    /// shown learning from nothing. A refusal learned during the run still applies at once.
+    /// shown learning from nothing. Rows recorded during the run do not reach [`caps`] either:
+    /// the projection applies none ([`project_stored_refusals`]), so they apply from the next launch
+    /// (the request in flight still converts: its machine narrowed its own attempt).
     forget: bool,
 }
 
@@ -578,7 +580,7 @@ fn with_layers<R>(f: impl FnOnce(&Layers) -> R) -> Option<R> {
 /// What this device decodes. Falls back to [`Caps::assumed`] if [`probe`] has not run — the
 /// boot calls it first, so that path exists for host tests, not the TV. The answer can change
 /// afterwards, only by losing native audio the pipeline was watched refusing
-/// ([`learn_refusal`], [`project_stored_refusals`]), so a decision that must hold across a whole
+/// ([`project_stored_refusals`]), so a decision that must hold across a whole
 /// attempt reads it once.
 pub fn caps() -> std::sync::Arc<Caps> {
     with_layers(|l| l.caps.read().unwrap_or_else(|e| e.into_inner()).clone()).unwrap_or_else(assumed_shared)
@@ -598,26 +600,14 @@ pub fn project_stored_refusals(stored: &[Refusal]) -> bool {
     with_layers(|l| !l.forget && l.fold(stored)).unwrap_or(false)
 }
 
-/// The pipeline refused `codec` with `channels` channels on this firmware, fed natively: take it
-/// off the process-wide answer at once (the NEXT play's start reads it without the audio; the
-/// recovery in flight does not read this answer, it narrows its own attempt's value by the same
-/// rule, [`Caps::without`], which shares `refusal_ceiling` with [`apply_learned`]) and return the
-/// entry for the caller to persist. `None` when this set cannot learn (no firmware name, the debug
-/// flag, no [`probe`]), or the combination changes nothing: the codec is not announced to that
-/// many channels any more, so the same play converting it would not be this refusal.
-pub fn learn_refusal(codec: &str, channels: u32) -> Option<Refusal> {
+/// The firmware codename and build a refusal is recorded under, or `None` when this set cannot
+/// learn: no firmware name, the debug flag (`nativeaudiowide` without `nativeaudiolearn`), or no
+/// [`probe`]. A read, never a write: the install's learner (`plex::session::record_named_refusal`,
+/// `record_refusal_proof`) calls it to stamp the row it queues, and the row reaches [`caps`] only
+/// through the record's projection ([`project_stored_refusals`]).
+pub fn learning_firmware() -> Option<(String, String)> {
     with_layers(|l| {
-        if ignores_learned(l.wide, l.learn) || l.codename.is_empty() {
-            return None;
-        }
-        // The pipeline's spelling (PMS says `dca` where the table and the pipeline say `dts`).
-        let refusal = Refusal {
-            firmware: l.codename.clone(),
-            codec: audio_codec_id(codec).into_owned(),
-            channels,
-            build: l.build.clone(),
-        };
-        l.fold(std::slice::from_ref(&refusal)).then_some(refusal)
+        (!ignores_learned(l.wide, l.learn) && !l.codename.is_empty()).then(|| (l.codename.clone(), l.build.clone()))
     })
     .flatten()
 }
@@ -638,7 +628,7 @@ pub fn caps_on_this_thread_for_test(caps: Caps) -> CapsGuard {
 }
 
 /// [`caps_on_this_thread_for_test`] for a set that names its firmware and build, so the thread
-/// can learn a refusal ([`learn_refusal`]) and be handed a stored record
+/// can name its learning firmware ([`learning_firmware`]) and be handed a stored record
 /// ([`project_stored_refusals`]) as a television would.
 #[cfg(any(test, feature = "test-support"))]
 pub fn firmware_on_this_thread_for_test(codename: &str, build: &str, caps: Caps) -> CapsGuard {
@@ -1290,24 +1280,23 @@ mod tests {
         assert!(fresh(false, false, true).fold(&[refusal("opus", 2)]), "learned this run, it applies");
     }
 
-    /// Learning: the thread's set names its firmware, so a refusal changes its answer at once, is
-    /// handed back once for the caller to persist, and is not news the second time (a conversion
-    /// that still feeds it natively ends in the ordinary failure instead of looping). A set with no
-    /// firmware name, or no table read, learns nothing.
+    /// Learning is a READ of the firmware the row is stamped with: the thread's set names it, the
+    /// read takes nothing from the answer, and the record's projection is the only way a row moves
+    /// the answer. A set with no firmware name learns nothing.
     #[test]
-    fn a_learned_refusal_changes_the_answer_once() {
+    fn the_learning_firmware_is_a_read_and_the_projection_moves_the_answer() {
         {
             let _set = firmware_on_this_thread_for_test("kisscurl-koli", "6.5.3-47", native_set());
             assert!(caps().audio_supports("opus", 2), "sanity: announced");
-            let learned = learn_refusal("Opus", 2).expect("news");
-            assert_eq!(learned, Refusal { firmware: "kisscurl-koli".into(), codec: "opus".into(), channels: 2, build: "6.5.3-47".into() });
+            assert_eq!(learning_firmware(), Some(("kisscurl-koli".to_owned(), "6.5.3-47".to_owned())));
+            assert!(caps().audio_supports("opus", 2), "reading the firmware takes nothing away");
+            let stored = Refusal { firmware: "kisscurl-koli".into(), codec: "opus".into(), channels: 2, build: "6.5.3-47".into() };
+            assert!(project_stored_refusals(std::slice::from_ref(&stored)), "the projected row takes it");
             assert!(!caps().audio_has("opus"));
-            assert_eq!(learn_refusal("opus", 2), None, "known");
-            assert_eq!(learn_refusal("wmapro", 6), None, "never announced, nothing to take away");
-            assert!(!project_stored_refusals(&[learned]), "the record catching up changes nothing");
+            assert!(!project_stored_refusals(&[stored]), "the same record again changes nothing");
         }
         let _nameless = caps_on_this_thread_for_test(native_set());
-        assert_eq!(learn_refusal("opus", 2), None, "no firmware name: nothing can be learned about this set");
+        assert_eq!(learning_firmware(), None, "no firmware name: nothing can be learned about this set");
         assert!(caps().audio_supports("opus", 2));
     }
 

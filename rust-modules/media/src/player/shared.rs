@@ -660,7 +660,7 @@ pub struct Shared {
     /// The pipeline refused the Load with `type=18 num=200` (`Audio Codec Not Supported`) before any
     /// picture while the session fed its audio natively (`ff::native_audio::fed`). Set on the
     /// callback thread; the pump turns it into a learned refusal and a recovery flight that has the
-    /// server convert that audio ([`super::pump`]'s `learn_native_audio_refusal`).
+    /// server convert that audio (the machine's `ConfirmRefusal`, run by [`super::pump`]'s `confirm_refusal`).
     pub native_audio_refused: AtomicBool,
     /// issue #74 D.1: the epoch this session last logged "native: loadCompleted while Load in
     /// flight — deferring" for — 0 = never. `epoch` is monotonic and never 0 for a real session

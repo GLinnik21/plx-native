@@ -130,6 +130,10 @@ pub(super) const MDE_TRANSCODE: &[u8] =
 /// Part.decision=transcode, video copied, audio transcoded — the measured TrueHD-only shape.
 pub(super) const MDE_TRANSCODE_COPY: &[u8] = br#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"transcode","Stream":[{"streamType":1,"decision":"copy"},{"streamType":2,"decision":"transcode"}]}]}]}]}}"#;
 
+/// Part.decision=transcode with BOTH lanes transcoded: the server re-encoded the video as well as
+/// the audio, so a conversion built from it changed more than the refused facet.
+pub(super) const MDE_TRANSCODE_BOTH: &[u8] = br#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"transcode","Stream":[{"streamType":1,"decision":"transcode"},{"streamType":2,"decision":"transcode"}]}]}]}]}}"#;
+
 /// Part.decision=transcode AND the video lane itself is transcode (bit depth, …).
 pub(super) const MDE_TRANSCODE_VIDEO: &[u8] = br#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"transcode","Stream":[{"streamType":1,"decision":"transcode"}]}]}]}]}}"#;
 
