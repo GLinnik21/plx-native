@@ -44,6 +44,12 @@ ACQUIRE_IN_USE = ("  \x1b[32m✓\x1b[0m TV lock held by this lane for 45m 00s �
                   "  · release it: tools/tv-lock.sh release\n"
                   "  · sound: muted=false volume=30\n" + IN_USE + "\n" + LINE + "\n")
 STATUS_IN_USE = "== TV lock: the TV\n  \x1b[32m✓\x1b[0m FREE — nobody holds the television\n" + IN_USE + "\n"
+# Our own app in front with the sound on (tools/tv-lock.sh idle_verdict): the app id and the reason share
+# the one line, `IN USE: <id>, sound is on: stop and tell the owner`.
+IN_USE_SOUND = "IN USE: com.example.plx, sound is on: stop and tell the owner"
+STATUS_IN_USE_SOUND = ("== TV lock: the TV\n  \x1b[32m✓\x1b[0m FREE — nobody holds the television\n"
+                       + IN_USE_SOUND + "\n")
+ACQUIRE_IN_USE_SOUND = ACQUIRE.replace("  · release it", "  · sound: muted=false volume=30\n" + IN_USE_SOUND + "\n  · release it")
 ACQUIRE_IDLE = ACQUIRE.replace("  · release it", "  · IDLE (LG Home launcher)\n  · release it")
 ACQUIRE_UNKNOWN = ACQUIRE.replace(
     "  · release it", "  \x1b[33m!\x1b[0m UNKNOWN (the foreground app could not be read) — treat it as possibly in use\n  · release it")
@@ -143,6 +149,10 @@ IN_USE_CASES = [
     (IN_USE, "the line is the whole output", bash(fields(IN_USE))),
     (IN_USE, "CRLF line ending", bash(fields(IN_USE + "\r\n"))),
     (IN_USE, "second field starts with it", bash(fields("done", IN_USE))),
+    (IN_USE_SOUND, "sound-on shape (<id>, sound is on), status", bash(fields(STATUS_IN_USE_SOUND), "tools/tv-lock.sh status")),
+    (IN_USE_SOUND, "sound-on shape, acquire", bash(fields(ACQUIRE_IN_USE_SOUND))),
+    (IN_USE_SOUND, "sound-on shape, a subagent",
+     dict(bash(fields(STATUS_IN_USE_SOUND)), agent_id="a1b2c3", agent_type="general-purpose")),
 ]
 IN_USE_SILENT = [
     ("a printed source line", bash(fields("  printf 'IN USE: %s: stop and tell the owner\\n' \"$1\"\n"))),
@@ -211,10 +221,26 @@ def main():
     main_iu, sub_iu = flat(in_use_main), flat(in_use_sub)
     check("owner" in main_iu and "PushNotification" in main_iu and "subagent" not in main_iu and "caller" not in main_iu,
           "IN USE: main session: told to tell the owner", repr(in_use_main))
+    # The main session keeps the lease only while it waits for the owner's answer, releases it when it will
+    # not drive the set now, and proceeds only on their say-so (a `with` then needs the override).
+    check("Keep the lease only while you wait for their answer" in main_iu
+          and "tools/tv-lock.sh release" in main_iu and "if you will not drive the television now" in main_iu
+          and "Proceed only after the owner says so" in main_iu and "PLX_TV_IN_USE_OK=1" in main_iu
+          and "wait for the owner's answer" not in main_iu,
+          "IN USE: main session: keep the lease while waiting, release it otherwise, override only after a yes",
+          repr(in_use_main))
     check("You are a subagent" in sub_iu and "FIRST in your final report" in sub_iu and "your caller" in sub_iu
           and "STOP" in sub_iu,
           "IN USE: subagent: stop, and the line FIRST in the final report for the caller", repr(in_use_sub))
+    # A subagent cannot wait for the owner, so it must not keep the lease: release it before the turn ends.
+    check("tools/tv-lock.sh release" in sub_iu and "before you end your turn" in sub_iu
+          and "cannot wait for the owner" in sub_iu and "Keep the lease" not in sub_iu
+          and "PLX_TV_IN_USE_OK" not in sub_iu,
+          "IN USE: subagent: release the lease before the turn ends, no override, no waiting", repr(in_use_sub))
     check(in_use_main != in_use_sub, "IN USE: the two audiences get different text")
+    for text, who in ((in_use_main, "main"), (in_use_sub, "subagent")):
+        check(isinstance(text, str) and IN_USE in text.split("\n"),
+              f"IN USE: {who}: the marker line is quoted verbatim on a line of its own", repr(text))
 
     # --- who is told what: a main session may message the owner, a subagent only its caller -------
     # (fleet lanes are subagents, and a subagent's messages never reach the owner, so its wording

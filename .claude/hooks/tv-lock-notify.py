@@ -15,8 +15,12 @@ The second line it keys on is the pre-flight's verdict. `tools/tv-lock.sh` (an a
 looks at who is on the set, and when someone else is, prints `IN USE: <app>: stop and tell the owner` at
 the start of a line. That is a stop, not a nudge to push: the agent is told not to drive the television
 and to tell the owner (a subagent: first in its report). `IDLE` and `UNKNOWN` verdicts print no such line,
-so they get nothing. The acquire still succeeded (IN USE is a warning, not a refusal: the lease is kept),
-and when a result holds both lines the stop wins and the heads-up push is not asked for.
+so they get nothing. `acquire` and `status` still exit 0 on IN USE (the acquire keeps its lease), so the
+text says what to do with that lease: a main session keeps it only while it waits for the owner's answer
+and releases it if it will not drive the set now; a subagent cannot wait, so it releases it before its
+turn ends. `with` is different: it refuses to start its command (exit 3) and has already released the
+lease, and a non-zero exit is not nudged at all (see below), so its own stderr line is the instruction
+there. When a result holds both lines the stop wins and the heads-up push is not asked for.
 
 WHAT IT COSTS. It runs after EVERY Bash call, so the common case must be free: the raw stdin is
 searched for the marker before anything is parsed, and no marker means exit at once with no output.
@@ -31,7 +35,7 @@ of text blocks) in case that moves. The marker has to START a line, which keeps 
 WHAT IT DOES NOT SEE. PostToolUse does not fire when the command exits non-zero (measured): that is a
 PostToolUseFailure (`error="Exit code 1"`, no `tool_response`), and this hook is not registered for it.
 Right for a refused acquire, which prints no HEADS-UP; it also means `tv-lock.sh with -- <command that
-fails>` is not nudged. And a `with -- <long command>` is nudged only when the command ends, because the
+fails>` is not nudged, nor is a `with` that refused an IN USE set (exit 3). And a `with -- <long command>` is nudged only when the command ends, because the
 hook runs after the Bash call returns, not when the line is printed.
 
 FAIL-OPEN, always: any problem (bad stdin, a shape nobody expected) exits 0 with no output, so a bug
@@ -67,15 +71,19 @@ SUBAGENT_INSTRUCTION = (
 )
 
 # The pre-flight found somebody on the set (tools/tv-lock.sh preflight_report). Not a nudge to push: the
-# agent must stop, so neither text mentions the heads-up.
+# agent must stop, so neither text mentions the heads-up. `acquire` and `status` exit 0 on IN USE and the
+# acquire keeps its lease, so each text says what becomes of that lease: the main session may wait for the
+# owner (and `with` then needs PLX_TV_IN_USE_OK=1 after a yes), a subagent cannot, so it hands the lease back.
 IN_USE_INSTRUCTION = (
     "tools/tv-lock.sh's pre-flight found the television IN USE. Its line:\n"
     "\n"
     "{line}\n"
     "\n"
-    "STOP. Do not deploy, run, drive or test on the television. Tell the owner now: send a\n"
+    "STOP. Do not deploy, run, drive or test on the television. Tell the owner what was seen: send a\n"
     "PushNotification with that line as the message (if your toolset has none, say the line in your\n"
-    "next message) and wait for the owner's answer."
+    "next message). Keep the lease only while you wait for their answer; if you will not drive the\n"
+    "television now, release it (tools/tv-lock.sh release). Proceed only after the owner says so\n"
+    "(tools/tv-lock.sh with needs PLX_TV_IN_USE_OK=1 then)."
 )
 
 SUBAGENT_IN_USE_INSTRUCTION = (
@@ -84,8 +92,9 @@ SUBAGENT_IN_USE_INSTRUCTION = (
     "{line}\n"
     "\n"
     "STOP. Do not deploy, run, drive or test on the television. You are a subagent, so your messages\n"
-    "reach your caller, not the owner: put that line FIRST in your final report (or in a message to your\n"
-    "caller right away) so the caller tells the owner, and end your work on the set."
+    "reach your caller, not the owner, and you cannot wait for the owner: release the lease\n"
+    "(tools/tv-lock.sh release) before you end your turn, and put that line FIRST in your final report\n"
+    "so your caller can tell the owner."
 )
 
 
