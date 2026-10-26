@@ -270,6 +270,20 @@ impl FlightRig {
         ps.auto_original = Some(AutoOriginalCandidate { direct, audio: Some(audio), ..test_original_candidate(None) });
     }
 
+    /// [`FlightRig::offer_original`] whose candidate carries the source video `vcodec` (the offer's
+    /// own default is HEVC): the video the Original would feed, which the climb re-checks against
+    /// the attempt after a recovery took a refused video raster out of it.
+    pub(crate) fn offer_original_of_video(ps: &mut PlaybackSession, direct: bool, vcodec: &str) {
+        ps.auto_original = Some(AutoOriginalCandidate { direct, vcodec: vcodec.into(), ..test_original_candidate(None) });
+    }
+
+    /// Why the Original candidate is not stored, when a recovery or a pick recorded a reason (the
+    /// menu's decline line): a candidate dropped because its video needs converting reads
+    /// [`OriginalDeclined::VideoNeedsConverting`].
+    pub(crate) fn original_declined(ps: &PlaybackSession) -> Option<OriginalDeclined> {
+        ps.original_declined
+    }
+
     /// Whether the stored Original candidate would feed the Part itself on a recovery (`None` when
     /// none is stored): the climb's DIRECT question, which a refused audio must answer no.
     pub(crate) fn original_feeds_part(ps: &PlaybackSession) -> Option<bool> {

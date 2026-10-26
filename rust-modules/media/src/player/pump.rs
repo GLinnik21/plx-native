@@ -4129,21 +4129,23 @@ mod flight_tests {
         dts_601_converts_in_one_flight(&mut dts_rig(Rig::new(150)));
     }
 
-    /// **A 4K H.264 the pipeline refuses (`type=18 num=100`) before the first picture**, in a manual
-    /// pick, used to end on the failure read-out. The video facet rung now flies ONE recovery flight
-    /// for it: the replacement is an ENCODE (`directStream=0`, the audio still copied) under a profile
-    /// that bounds H.264 to the 1080p floor and a `videoResolution` of 1080p, the carried audio track
-    /// is the one the viewer was on, and the Engine reloads onto it. The converted route declares a
-    /// sink envelope no larger than 1080p, not the 4K60 of the file it came from.
-    #[test]
-    fn a_4k_h264_refused_with_100_in_a_manual_pick_lands_a_1080p_conversion_with_the_audio_copied() {
-        let mut rig = Rig::new(150);
+    /// `rig` plays a 4K H.264 with AC-3 5.1 audio (a codec every set decodes, so the audio is never
+    /// the suspect), as the plan of a direct play of it would have declared it.
+    fn declare_4k_h264(rig: &mut Rig) {
         rig.flight.begin_attempt(&rig.ps);
         FlightRig::declare_video(&mut rig.ps, "h264", 3840, 2160);
         FlightRig::declare_audio(&mut rig.ps, "ac3", 6);
+    }
+
+    /// Drive a `type=18 num=100` on `rig` to its recovery flight's landing and grade what any such
+    /// flight owes: the failure frame is not the read-out and waits on no PMS answer, ONE flight
+    /// carries the replacement `/decision`, nothing reloads before it lands, and the landing reloads
+    /// the Engine onto it. Returns the Engine epoch the refusal came from and the replacement's
+    /// request line.
+    fn refuse_100_and_land_one_flight(rig: &mut Rig) -> (Option<u32>, String) {
         rig.frame();
         let answered = rig.flight.answered();
-        let epoch = engine_epoch(&mut rig);
+        let epoch = engine_epoch(rig);
         rig.flight.hold_answers();
         super::super::sf_on_event(epoch.expect("the rig's Engine"), 18, 100, std::ptr::null());
         rig.frame();
@@ -4154,11 +4156,27 @@ mod flight_tests {
         );
         assert!(crate::route::flight_outstanding(), "the conversion's PMS half must be a recovery flight");
         assert_eq!(rig.flight.answered(), answered, "the failure frame waited for a PMS answer: {:?}", rig.flight.requests());
+        assert_eq!(engine_epoch(rig), epoch, "nothing reloads before the landing");
         rig.flight.release_answers();
         rig.frames_until("the conversion's landing", |_| !crate::route::flight_outstanding());
         assert_eq!(rig.flight.decisions(), 1, "exactly one replacement /decision");
-        let decisions = rig.flight.decision_requests();
-        let replacement = decisions.first().expect("the replacement /decision");
+        let replacement = rig.flight.decision_requests().first().cloned().expect("the replacement /decision");
+        assert_ne!(engine_epoch(rig), epoch, "the landing reloaded onto the converted route");
+        assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
+        (epoch, replacement)
+    }
+
+    /// **A 4K H.264 the pipeline refuses (`type=18 num=100`) before the first picture**, in a manual
+    /// pick, used to end on the failure read-out. The video facet rung now flies ONE recovery flight
+    /// for it: the replacement is an ENCODE (`directStream=0`, the audio still copied) under a profile
+    /// that bounds H.264 to the 1080p floor and a `videoResolution` of 1080p, the carried audio track
+    /// is the one the viewer was on, and the Engine reloads onto it. The converted route declares a
+    /// sink envelope no larger than 1080p, not the 4K60 of the file it came from.
+    #[test]
+    fn a_4k_h264_refused_with_100_in_a_manual_pick_lands_a_1080p_conversion_with_the_audio_copied() {
+        let mut rig = Rig::new(150);
+        declare_4k_h264(&mut rig);
+        let (_, replacement) = refuse_100_and_land_one_flight(&mut rig);
         for needle in [
             "scopeName%3Dh264%26type%3DupperBound%26name%3Dvideo.height%26value%3D1088",
             "directStream=0",
@@ -4168,13 +4186,108 @@ mod flight_tests {
         ] {
             assert!(replacement.contains(needle), "the replacement lacks {needle}: {replacement}");
         }
-        assert_ne!(engine_epoch(&mut rig), epoch, "the landing reloaded onto the converted route");
-        assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
         let context = super::super::report::error_context_for_test(&rig.ps);
         assert_eq!(context.attempt_origin, super::super::report::AttemptOrigin::Recovery);
         // The ceiling the encode flew under bounds the sink envelope: the 1080p rung's raster, below
         // the profile floor's 1088.
         assert_eq!(crate::route::sink_max_raster(&rig.ps), (1920, 1080));
+    }
+
+    /// **A video refusal whose audio is the suspect converts the audio first.** A 4K H.264 behind a
+    /// DTS 5.1 track that the pipeline refuses with `num=100`: the audio is outside the codecs every
+    /// set decodes, so it is the suspect and the video is not considered. The one flight keeps the
+    /// route as planned (`directStream=1`, the video still copied) under a profile that bounds DTS to
+    /// stereo and names no H.264 bound. S1b-1 has no both-facets rung for a manual pick, so the
+    /// refusal of the converted route ends on the read-out with no second flight.
+    #[test]
+    fn a_video_refusal_whose_audio_is_the_suspect_converts_the_audio_first() {
+        let mut rig = dts_rig(Rig::new(150));
+        FlightRig::declare_video(&mut rig.ps, "h264", 3840, 2160);
+        let (_, replacement) = refuse_100_and_land_one_flight(&mut rig);
+        for needle in [
+            "scopeName%3Ddca%26type%3DupperBound%26name%3Daudio.channels%26value%3D2",
+            "directStream=1",
+            "audioStreamID=960002",
+        ] {
+            assert!(replacement.contains(needle), "the replacement lacks {needle}: {replacement}");
+        }
+        assert!(!replacement.contains("scopeName%3Dh264"), "the video is not the suspect, so it is not bounded: {replacement}");
+
+        // The converted route's Engine is refused again, with the video still the one the pipeline was
+        // fed: the request's flight is spent and a manual pick holds no HLS contingency.
+        pipeline_takes_the_load();
+        let reloaded = engine_epoch(&mut rig).expect("the converted route's Engine");
+        rig.frame();
+        super::super::sf_on_event(reloaded, 18, 100, std::ptr::null());
+        rig.frame();
+        assert_eq!(
+            crate::player::state(&rig.ps),
+            crate::player::PlaybackState::Error,
+            "the refusal after the audio flight left the viewer on {:?}",
+            crate::player::state(&rig.ps)
+        );
+        assert!(!crate::route::flight_outstanding(), "no second flight");
+        assert_eq!(rig.ps.open_recovery().phase(), super::super::recovery::Phase::Failed);
+        for _ in 0..3 {
+            rig.frame();
+        }
+        assert_eq!(rig.flight.decisions(), 1, "the audio conversion is the request's only /decision");
+    }
+
+    /// **The climb after a video rescue never re-offers the refused raster.** A manual Original
+    /// pick keeps its stored candidate (the way back from an enhanced remux) and the candidate here
+    /// carries the 4K H.264 the pipeline refused. A remux candidate COPIES the video too, so no
+    /// candidate can avoid the source's raster: the landing drops it, and the menu's reason reads
+    /// "video needs converting".
+    #[test]
+    fn the_climb_after_a_video_rescue_never_reoffers_the_refused_raster() {
+        let mut rig = Rig::new(150);
+        declare_4k_h264(&mut rig);
+        FlightRig::offer_original_of_video(&mut rig.ps, true, "h264");
+        assert_eq!(FlightRig::original_feeds_part(&rig.ps), Some(true), "sanity: the candidate would feed the 4K Part");
+        assert_eq!(FlightRig::original_declined(&rig.ps), None, "sanity: nothing declined the Original yet");
+        refuse_100_and_land_one_flight(&mut rig);
+        assert_eq!(FlightRig::original_feeds_part(&rig.ps), None, "the refused raster is not offered again");
+        assert_eq!(
+            FlightRig::original_declined(&rig.ps),
+            Some(crate::route::OriginalDeclined::VideoNeedsConverting),
+            "the candidate was dropped for its video"
+        );
+    }
+
+    /// **A cold Auto Original keeps its HLS contingency as the video re-encode, with the refused
+    /// raster out of it** (the plan's Decision C). The source never opened and its bootstrap rung is
+    /// the 4K one; the unopened-source fallback re-checks that rung against the catalog of the
+    /// NARROWED attempt (`original_open_fallback_rung`), where a 4K H.264 is infeasible, so the
+    /// replacement flies the catalog's startup rung instead of asking for `3840x2160` again. The
+    /// route's sink envelope is no wider than 1080p, and the stored Original candidate (a 4K H.264)
+    /// is dropped rather than climbed back to.
+    #[test]
+    fn the_hls_rescue_of_a_4k_h264_original_leaves_the_refused_raster_and_never_climbs_back() {
+        let mut rig = auto_original_rig(60);
+        declare_4k_h264(&mut rig);
+        FlightRig::set_bootstrap_rung(&mut rig.ps, crate::abr::Rung::Uhd);
+        FlightRig::offer_original_of_video(&mut rig.ps, true, "h264");
+        assert_eq!(crate::route::sink_max_raster(&rig.ps), (3840, 2160), "sanity: the Original declares the 4K source");
+        assert_eq!(FlightRig::original_feeds_part(&rig.ps), Some(true), "sanity: the candidate would feed the 4K Part");
+        let (_, replacement) = refuse_100_and_land_one_flight(&mut rig);
+        assert!(crate::route::is_segmented_hls(&rig.ps), "a cold Auto Original takes the HLS contingency");
+        let asked = replacement
+            .split("videoResolution=")
+            .nth(1)
+            .and_then(|rest| rest.split('&').next())
+            .and_then(|raster| raster.split_once('x'))
+            .and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)))
+            .unwrap_or_else(|| panic!("the replacement names no videoResolution: {replacement}"));
+        assert!(asked.0 <= 1920 && asked.1 <= 1080, "the replacement still asks for {asked:?}: {replacement}");
+        let (width, height) = crate::route::sink_max_raster(&rig.ps);
+        assert!(width <= 1920 && height <= 1080, "the HLS route declares {width}x{height}");
+        assert_eq!(FlightRig::original_feeds_part(&rig.ps), None, "the refused raster is not offered again");
+        assert_eq!(
+            FlightRig::original_declined(&rig.ps),
+            Some(crate::route::OriginalDeclined::VideoNeedsConverting),
+            "the candidate was dropped for its video"
+        );
     }
 
     /// A cold Auto Original refused on its DTS flies the conversion, not the HLS contingency: the
