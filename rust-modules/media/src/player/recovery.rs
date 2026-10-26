@@ -734,6 +734,26 @@ mod tests {
         OpenRecovery::new(Arc::new(Caps::assumed()))
     }
 
+    /// [`dts_start`] on a table that was read: the lossy policy admits the measured rows (DTS).
+    fn measured_start() -> Arc<Caps> {
+        Arc::new(Caps { app_lossy: plx_platform::devcaps::AppLossy::Measured, ..(*dts_start()).clone() })
+    }
+
+    /// A machine on [`measured_start`].
+    fn measured_machine() -> OpenRecovery {
+        OpenRecovery::new(measured_start())
+    }
+
+    /// `f` for a direct play: the file's own bytes with no server session.
+    fn direct(f: OpenFacts) -> OpenFacts {
+        OpenFacts { direct: true, ..f }
+    }
+
+    /// The effect the rung asks for on a refused DTS 5.1 direct play.
+    fn decode_dts(refusal: LoadRefusal) -> RecoveryEffect {
+        RecoveryEffect::DecodeInApp { audio: dts6(), refusal }
+    }
+
     /// The video is the suspect only when the audio is not: elimination, not the refusal's number.
     #[test]
     fn suspect_names_video_only_when_the_audio_is_not_the_suspect() {
@@ -892,6 +912,196 @@ mod tests {
         assert_eq!((fx, m.phase()), (ERROR.to_vec(), Phase::Failed));
     }
 
+    /// **M1. The app decode is the LAST rung** of a direct play on a set the policy admits DTS on: the
+    /// facet rung (the server converts the audio) is refused, the HLS contingency of a cold Auto Original
+    /// is refused, and only then does the app decode, once, with the attempt announcing the codec.
+    #[test]
+    fn the_app_decode_rung_is_last_after_a_refused_conversion_on_a_direct_play() {
+        let mut m = measured_machine();
+        let first = direct(on_dts(facts(false, true, true)));
+        assert_eq!(run(&mut m, refused(SHUT, first)).1, [RecoveryEffect::ConvertFacet { facet: dts6(), flight: 1 }]);
+        let (_, fx) = run(&mut m, RecoveryEvent::FlightRefused);
+        assert_eq!((fx, m.phase()), (vec![RecoveryEffect::StartAutoHls], Phase::Flight), "HLS before the app");
+        let (handled, fx) = run(&mut m, RecoveryEvent::FlightRefused);
+        assert_eq!((handled, fx, m.phase()), (Handled::Yes, vec![decode_dts(SHUT)], Phase::Opening));
+        let attempt = m.attempt();
+        assert!(attempt.app_lossy_in_force.contains("dts"), "in force: the app decodes it");
+        assert_eq!(attempt.audio_channels.get("dts"), Some(&8), "and announces it whatever the facet took out");
+        assert!(!attempt.native_audio_track("dts", 6, 0, false));
+        assert!(attempt.app_decodes_lossy_track("dts", 6, 0, false));
+        assert_eq!(m.flights, 2, "the rung is not a flight");
+        // A manual pick has no HLS rung: its refused facet flight goes straight to the app.
+        let mut m = measured_machine();
+        run(&mut m, refused(SHUT, direct(on_dts(facts(false, false, true)))));
+        let (_, fx) = run(&mut m, RecoveryEvent::FlightRefused);
+        assert_eq!((fx, m.phase()), (vec![decode_dts(SHUT)], Phase::Opening));
+        assert_eq!(m.flights, 1);
+    }
+
+    /// **M2. A cold Auto Original reaches the rung after its HLS contingency is refused too**, the refused
+    /// video raster the HLS attempt took out is given back (the reload feeds the same source video, so a
+    /// lowered raster ceiling would shrink the Load's video envelope for nothing), and the codec is in force.
+    #[test]
+    fn a_cold_auto_original_decodes_in_the_app_after_hls_is_refused() {
+        let mut m = measured_machine();
+        let facts_4k = direct(OpenFacts { video: h264_4k(), ..on_dts(facts(false, true, true)) });
+        run(&mut m, refused(SHUT, facts_4k));
+        run(&mut m, RecoveryEvent::FlightRefused);
+        assert_eq!(m.phase(), Phase::Flight, "the HLS rung is flying");
+        assert!(m.excluded.video.is_some(), "its attempt lacks the refused raster");
+        assert!(!m.attempt().video_ceiling.is_empty());
+        let (_, fx) = run(&mut m, RecoveryEvent::FlightRefused);
+        assert_eq!(fx, [decode_dts(SHUT)]);
+        assert!(m.excluded.video.is_none(), "the raster comes back");
+        assert!(m.attempt().video_ceiling.is_empty(), "the Load's video envelope is the source's again");
+        assert!(m.attempt().app_lossy_in_force.contains("dts"));
+        assert_eq!(m.attempt().audio_channels.get("dts"), Some(&8));
+    }
+
+    /// **M3. Forced decodes a refused lossy track in the app and does nothing else**: no conversion, no
+    /// flight. Everything the rung needs, and nothing it does not: a codec the policy has not enabled, a
+    /// failure that is not the pipeline's, a route with a server in it, an `Off` start, a stream the
+    /// app already decodes, a Load that showed a picture.
+    #[test]
+    fn forced_decodes_a_refused_lossy_track_in_the_app_and_nothing_else() {
+        let forced = |f: OpenFacts| OpenFacts { forced: true, ..f };
+        let base = || forced(direct(on_dts(facts(false, false, true))));
+        for refusal in [SHUT, NATIVE, LoadRefusal::Stalled] {
+            let mut m = measured_machine();
+            let (handled, fx) = run(&mut m, refused(refusal, base()));
+            assert_eq!((handled, fx, m.phase()), (Handled::Yes, vec![decode_dts(refusal)], Phase::Opening), "{refusal}");
+            assert_eq!(m.flights, 0, "no flight: Forced asks no server");
+            assert!(m.attempt().app_lossy_in_force.contains("dts"));
+        }
+        let ends = |m: &mut OpenRecovery, refusal: LoadRefusal, f: OpenFacts, what: &str| {
+            let (_, fx) = run(m, refused(refusal, f));
+            assert_eq!((fx, m.phase()), (vec![RecoveryEffect::ShowError { refusal }], Phase::Failed), "{what}");
+        };
+        ends(&mut measured_machine(), SHUT, OpenFacts { audio: audio("ac3", 6), ..base() }, "ac3: no row to enable");
+        ends(&mut measured_machine(), SHUT, OpenFacts { audio: audio("truehd", 8), ..base() }, "truehd: unmeasured");
+        ends(&mut measured_machine(), LoadRefusal::TimedOut, base(), "a timeout names no pipeline refusal");
+        ends(&mut measured_machine(), LoadRefusal::SourceFailed, base(), "a source failure is not the pipeline's");
+        ends(&mut measured_machine(), SHUT, OpenFacts { direct: false, ..base() }, "a server session in the way");
+        ends(&mut machine(), SHUT, base(), "an Off start");
+        ends(&mut measured_machine(), SHUT, OpenFacts { audio: app_decoded("dca", 6), ..base() }, "already decoded in the app");
+        ends(&mut measured_machine(), SHUT, OpenFacts { no_frames: false, ..base() }, "a picture was already shown");
+        ends(&mut measured_machine(), SHUT, OpenFacts { audio: None, ..base() }, "no audio fed");
+        // Not Forced, with a picture: the facet rung and the app are both for an Engine with none.
+        let mut m = measured_machine();
+        let (_, fx) = run(&mut m, refused(SHUT, direct(on_dts(facts(false, false, false)))));
+        assert_eq!(fx, ERROR);
+    }
+
+    /// **M4. The rung runs once per request.** A second pipeline refusal after it (the app-decoded Load
+    /// refused, or a reload that fed the codec natively again) is the read-out, whatever the facts say.
+    #[test]
+    fn the_app_decode_rung_runs_once_per_request() {
+        let forced = |f: OpenFacts| OpenFacts { forced: true, ..f };
+        for second in [on_dts(facts(false, false, true)), OpenFacts { audio: app_decoded("dca", 6), ..facts(false, false, true) }] {
+            let mut m = measured_machine();
+            run(&mut m, refused(SHUT, forced(direct(on_dts(facts(false, false, true))))));
+            assert_eq!(m.phase(), Phase::Opening);
+            let (handled, fx) = run(&mut m, refused(SHUT, forced(direct(second))));
+            assert_eq!((handled, fx, m.phase()), (Handled::Yes, ERROR.to_vec(), Phase::Failed));
+        }
+        // Not Forced: after the rung, no HLS flight is left to take and the read-out follows.
+        let mut m = measured_machine();
+        run(&mut m, refused(SHUT, direct(on_dts(facts(false, false, true)))));
+        run(&mut m, RecoveryEvent::FlightRefused);
+        assert_eq!(m.phase(), Phase::Opening);
+        let (_, fx) = run(&mut m, refused(SHUT, direct(OpenFacts { audio: app_decoded("dca", 6), ..facts(false, false, true) })));
+        assert_eq!(fx, ERROR);
+        // And a Load nobody asked for after the read-out reopens the ladder without the rung.
+        run(&mut m, RecoveryEvent::LoadStarted);
+        let (_, fx) = run(&mut m, refused(SHUT, direct(on_dts(facts(false, false, true)))));
+        assert_eq!(fx, ERROR, "the rung stays spent");
+    }
+
+    /// **M5. An app decode never proves, and neither does a flight after one.** The reload the rung asked
+    /// for is an `Opening` with no flight to land, so its first picture credits nothing. And a facet
+    /// flight flown on the strength of a refused APP-DECODED Load (no audio suspect, so the video is)
+    /// must not credit the audio facet an earlier rung left in the request: the proof would store a
+    /// refusal of the set's own decoder that the Load never exercised.
+    #[test]
+    fn an_app_decode_never_proves_and_an_app_decoded_refusal_never_proves() {
+        let mut m = measured_machine();
+        run(&mut m, refused(SHUT, OpenFacts { forced: true, ..direct(on_dts(facts(false, false, true))) }));
+        assert_eq!(run(&mut m, landed_with(CLEAN)), (Handled::No, vec![]), "no flight is outstanding");
+        assert_eq!(run(&mut m, RecoveryEvent::FirstPicture), (Handled::Yes, vec![]), "and its picture proves nothing");
+        assert_eq!(m.phase(), Phase::Playing);
+
+        // A rollback that named native DTS left the audio facet in the request; then the app-decoded Load
+        // is refused, the video is the suspect, and the video flight lands "clean".
+        let mut m = measured_machine();
+        let pending = OpenFacts { pending_original: true, native_audio: Some(dts6()), ..on_dts(facts(true, false, true)) };
+        let (_, fx) = run(&mut m, refused(NATIVE, pending));
+        assert_eq!(fx, [named(dts6()), RecoveryEffect::Rollback]);
+        run(&mut m, landed());
+        let app_load = direct(OpenFacts { video: h264_4k(), audio: app_decoded("dca", 6), ..facts(false, false, true) });
+        let (_, fx) = run(&mut m, refused(SHUT, app_load));
+        assert_eq!(fx, [RecoveryEffect::ConvertFacet { facet: h264_4k_facet(), flight: 1 }]);
+        run(&mut m, landed_with(CLEAN));
+        assert_eq!(m.phase(), Phase::Opening, "no pending proof");
+        assert_eq!(run(&mut m, RecoveryEvent::FirstPicture), (Handled::Yes, vec![]), "so no write at the picture");
+    }
+
+    /// **M7. The rung's pairs**: where the app decode is asked for, from which state and event, and what
+    /// is left of the request afterwards. (`every_state_and_event_pair_has_a_pinned_outcome` pins the
+    /// start with no policy.)
+    #[test]
+    fn the_app_decode_rung_has_a_pinned_outcome_in_every_state_and_event() {
+        use Handled::{No, Yes};
+        let manual = || direct(on_dts(facts(false, false, true)));
+        let cold = || direct(on_dts(facts(false, true, true)));
+        let at = |phase: Phase| {
+            let mut m = measured_machine();
+            match phase {
+                Phase::Opening => {}
+                Phase::Playing => {
+                    run(&mut m, RecoveryEvent::FirstPicture);
+                }
+                Phase::Flight => {
+                    run(&mut m, refused(SHUT, manual()));
+                }
+                Phase::Failed => {
+                    run(&mut m, refused(SHUT, OpenFacts { audio: audio("ac3", 6), ..manual() }));
+                }
+                Phase::Proving => unreachable!(),
+            }
+            assert_eq!(m.phase(), phase, "the fixture");
+            m
+        };
+        // Opening and Playing rule a refusal alike, and a manual pick's facet rung comes first.
+        for phase in [Phase::Opening, Phase::Playing] {
+            let (handled, fx) = run(&mut at(phase), refused(SHUT, manual()));
+            assert_eq!((handled, fx), (Yes, vec![RecoveryEffect::ConvertFacet { facet: dts6(), flight: 1 }]), "{phase:?}");
+        }
+        // A facet flight refused: the rung; a landing: the reload re-enters the open, nothing asked.
+        let (handled, fx) = run(&mut at(Phase::Flight), RecoveryEvent::FlightRefused);
+        assert_eq!((handled, fx), (Yes, vec![decode_dts(SHUT)]));
+        assert_eq!(run(&mut at(Phase::Flight), landed()), (Yes, vec![]));
+        // The HLS contingency refused: the rung. A rollback refused stays terminal.
+        let mut m = measured_machine();
+        run(&mut m, refused(SHUT, cold()));
+        run(&mut m, RecoveryEvent::FlightRefused);
+        assert_eq!(run(&mut m, RecoveryEvent::FlightRefused), (Yes, vec![decode_dts(SHUT)]));
+        let mut m = measured_machine();
+        let pending = OpenFacts { pending_original: true, ..cold() };
+        assert_eq!(run(&mut m, refused(SHUT, pending)).1, [RecoveryEffect::Rollback]);
+        assert_eq!(run(&mut m, RecoveryEvent::FlightRefused), (Yes, ERROR.to_vec()), "a refused rollback is terminal");
+        assert_eq!(m.phase(), Phase::Failed);
+        // After the rung the machine is an ordinary `Opening`: its picture and a foreign Load are as ever.
+        let mut m = measured_machine();
+        run(&mut m, refused(SHUT, OpenFacts { forced: true, ..manual() }));
+        assert_eq!(run(&mut m, RecoveryEvent::LoadStarted), (No, vec![]), "the rung's own reload changes nothing");
+        assert_eq!(run(&mut m, RecoveryEvent::FlightRefused), (No, vec![]));
+        assert_eq!(run(&mut m, RecoveryEvent::FirstPicture), (Yes, vec![]));
+        assert_eq!(m.phase(), Phase::Playing);
+        // The read-out is not left by the rung.
+        let mut m = at(Phase::Failed);
+        assert_eq!(run(&mut m, refused(SHUT, manual())), (No, vec![]));
+    }
+
     /// **Every reachable state of one request**, not a depth of paths: the walk runs to a fixpoint
     /// over (state, flights, excluded facets), which is everything the machine's future depends on,
     /// from every event the driver can raise (a refusal of an Engine with and without a picture, a
@@ -903,8 +1113,12 @@ mod tests {
         // (cold Auto Original, the audio fed, the video fed): the audio-suspect profiles of S1a and the
         // video ones (a 4K H.264 behind an audio no set refuses, and behind one that is a suspect).
         let profiles = [(true, "dca", None), (false, "dca", None), (true, "ac3", h264_4k()), (false, "ac3", h264_4k()), (true, "dca", h264_4k()), (false, "dca", h264_4k())];
-        for (auto, fed, video) in profiles {
-            let base = OpenFacts { auto_original: auto, no_frames: true, audio: audio(fed, 6), video, ..OpenFacts::default() };
+        // Every profile on a start with no policy and on one the policy admits DTS on, for a direct play
+        // and Forced alike: the app-decode rung (`in_app`) and `unprovable` are two more dimensions.
+        let shapes = [(false, false), (true, false), (true, true)];
+        for ((auto, fed, video), (measured, forced)) in profiles.into_iter().flat_map(|p| shapes.into_iter().map(move |s| (p.clone(), s))) {
+            let base = OpenFacts { auto_original: auto, no_frames: true, forced, direct: measured, audio: audio(fed, 6), video, ..OpenFacts::default() };
+            let new_machine = || if measured { measured_machine() } else { machine() };
             let stall = OpenFacts { native_audio: Some(opus6()), ..base.clone() };
             let with_picture = OpenFacts { no_frames: false, ..base.clone() };
             let events = [
@@ -919,9 +1133,9 @@ mod tests {
                 RecoveryEvent::FirstPicture,
                 RecoveryEvent::LoadStarted,
             ];
-            let key = |m: &OpenRecovery| format!("{:?}|{}|{:?}|{}", m.state, m.flights, m.excluded, m.pictured);
-            let mut seen = std::collections::HashSet::from([key(&machine())]);
-            let mut frontier = vec![machine()];
+            let key = |m: &OpenRecovery| format!("{:?}|{}|{:?}|{}|{:?}|{}", m.state, m.flights, m.excluded, m.pictured, m.in_app, m.unprovable);
+            let mut seen = std::collections::HashSet::from([key(&new_machine())]);
+            let mut frontier = vec![new_machine()];
             while let Some(m) = frontier.pop() {
                 for ev in &events {
                     let mut next = m.clone();
@@ -933,12 +1147,22 @@ mod tests {
                     }
                     assert_eq!(next.flights as usize, m.flights as usize + started, "flights count what started: {ev:?}");
                     assert!(next.flights <= MAX_RECOVERY_FLIGHTS, "{} flights started on one request", next.flights);
+                    // The rung is no flight, runs once per request, and only on a start the policy admits.
+                    let rung = fx.iter().filter(|e| matches!(e, RecoveryEffect::DecodeInApp { .. })).count();
+                    assert!(rung <= 1, "{fx:?}");
+                    if rung == 1 {
+                        assert!(measured && m.in_app.is_none() && next.in_app.is_some(), "{ev:?} in {:?}", m.state);
+                        assert!(next.excluded.video.is_none(), "the video raster comes back");
+                    }
+                    assert!(m.in_app.is_none() || next.in_app == m.in_app, "the rung is spent for good");
+                    assert!(measured || next.in_app.is_none(), "no policy, no rung");
                     if seen.insert(key(&next)) {
                         frontier.push(next);
                     }
                 }
             }
-            assert!(seen.len() > 5, "the walk reached {} states", seen.len());
+            // Forced converts nothing, so it has few states: the rung's, and the read-out.
+            assert!(seen.len() > if forced { 3 } else { 5 }, "the walk reached {} states", seen.len());
         }
     }
 
