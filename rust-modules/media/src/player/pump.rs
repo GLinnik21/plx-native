@@ -4158,24 +4158,39 @@ mod flight_tests {
     /// carries the replacement `/decision`, nothing reloads before it lands, and the landing reloads
     /// the Engine onto it. Returns the replacement's request line.
     fn refuse_100_and_land_one_flight(rig: &mut Rig) -> String {
+        refuse_and_land_flight(rig, 100, 1)
+    }
+
+    /// [`refuse_100_and_land_one_flight`] for the request's `n`th flight: `n` replacement
+    /// `/decision`s have been asked once it lands.
+    fn refuse_100_and_land_next_flight(rig: &mut Rig, n: usize) -> String {
+        refuse_and_land_flight(rig, 100, n)
+    }
+
+    /// The same with the DTS refusal's number.
+    fn refuse_601_and_land_flight(rig: &mut Rig, n: usize) -> String {
+        refuse_and_land_flight(rig, 601, n)
+    }
+
+    fn refuse_and_land_flight(rig: &mut Rig, num: i64, n: usize) -> String {
         rig.frame();
         let answered = rig.flight.answered();
         let epoch = engine_epoch(rig);
         rig.flight.hold_answers();
-        super::super::sf_on_event(epoch.expect("the rig's Engine"), 18, 100, std::ptr::null());
+        super::super::sf_on_event(epoch.expect("the rig's Engine"), 18, num, std::ptr::null());
         rig.frame();
         assert_ne!(
             crate::player::state(&rig.ps),
             crate::player::PlaybackState::Error,
-            "a refused 4K H.264 must not end on the failure read-out"
+            "a refused stream must not end on the failure read-out (flight {n})"
         );
         assert!(crate::route::flight_outstanding(), "the conversion's PMS half must be a recovery flight");
         assert_eq!(rig.flight.answered(), answered, "the failure frame waited for a PMS answer: {:?}", rig.flight.requests());
         assert_eq!(engine_epoch(rig), epoch, "nothing reloads before the landing");
         rig.flight.release_answers();
         rig.frames_until("the conversion's landing", |_| !crate::route::flight_outstanding());
-        assert_eq!(rig.flight.decisions(), 1, "exactly one replacement /decision");
-        let replacement = rig.flight.decision_requests().first().cloned().expect("the replacement /decision");
+        assert_eq!(rig.flight.decisions(), n, "exactly {n} replacement /decisions");
+        let replacement = rig.flight.decision_requests().last().cloned().expect("the replacement /decision");
         assert_ne!(engine_epoch(rig), epoch, "the landing reloaded onto the converted route");
         assert_ne!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error);
         replacement
@@ -4210,14 +4225,16 @@ mod flight_tests {
 
     /// **A video refusal whose audio is the suspect converts the audio first.** A 4K H.264 behind a
     /// DTS 5.1 track that the pipeline refuses with `num=100`: the audio is outside the codecs every
-    /// set decodes, so it is the suspect and the video is not considered. The one flight keeps the
+    /// set decodes, so it is the suspect and the video is not considered. The first flight keeps the
     /// route as planned (`directStream=1`, the video still copied) under a profile that bounds DTS to
-    /// stereo and names no H.264 bound. A manual pick has no both-facets rung, so the refusal of the
-    /// converted route ends on the read-out with no second flight.
+    /// stereo and names no H.264 bound. The route is an Original remux (a stored remux candidate), so
+    /// it still copies the 4K video and the converted route's refusal takes the manual both-facets rung: a second flight with the H.264 bound too and
+    /// `directStream=0` (the audio still copied), under the 1080p rung's ceiling.
     #[test]
     fn a_video_refusal_whose_audio_is_the_suspect_converts_the_audio_first() {
         let mut rig = dts_rig(Rig::new(150));
         FlightRig::declare_video(&mut rig.ps, "h264", 3840, 2160);
+        FlightRig::offer_original_of_video(&mut rig.ps, false, "h264");
         let replacement = refuse_100_and_land_one_flight(&mut rig);
         for needle in [
             "scopeName%3Ddca%26type%3DupperBound%26name%3Daudio.channels%26value%3D2",
@@ -4228,26 +4245,57 @@ mod flight_tests {
         }
         assert!(!replacement.contains("scopeName%3Dh264"), "the video is not the suspect, so it is not bounded: {replacement}");
 
-        // The converted route's Engine is refused again. The request's flight is spent and a manual pick
-        // holds no HLS contingency, so the refusal reads out (the converted route is not a remux, so
-        // the ladder reads no source video from it either).
         pipeline_takes_the_load();
-        let reloaded = engine_epoch(&mut rig).expect("the converted route's Engine");
+        let second = refuse_100_and_land_next_flight(&mut rig, 2);
+        for needle in [
+            "scopeName%3Ddca%26type%3DupperBound%26name%3Daudio.channels%26value%3D2",
+            "scopeName%3Dh264%26type%3DupperBound%26name%3Dvideo.height%26value%3D1088",
+            "directStream=0",
+            "directStreamAudio=1",
+            "videoResolution=1920x1080",
+        ] {
+            assert!(second.contains(needle), "the both-facets replacement lacks {needle}: {second}");
+        }
+        assert_eq!(super::super::recovery::MAX_RECOVERY_FLIGHTS, 2, "the both rung spends the request's last flight");
+    }
+
+    /// **The manual both-facets rung.** DTS 5.1 behind a 1080p H.264: the DTS refusal (`601`) converts
+    /// the audio, the converted remux is refused again (the frame rate, say: nothing of the raster
+    /// can be lowered), and the second flight is an ENCODE of the video (`directStream=0`, the
+    /// audio still copied) planned from the attempt, which keeps the route's own ceiling and names no
+    /// H.264 bound. A third refusal reads out: the request's flights are spent and no third
+    /// `/decision` is asked.
+    #[test]
+    fn the_manual_both_facets_rung_converts_both() {
+        let mut rig = dts_rig(Rig::new(150));
+        FlightRig::declare_video(&mut rig.ps, "h264", 1920, 1080);
+        FlightRig::offer_original_of_video(&mut rig.ps, false, "h264");
+        refuse_601_and_land_flight(&mut rig, 1);
+        pipeline_takes_the_load();
+        let second = refuse_601_and_land_flight(&mut rig, 2);
+        for needle in [
+            "scopeName%3Ddca%26type%3DupperBound%26name%3Daudio.channels%26value%3D2",
+            "directStream=0",
+            "directStreamAudio=1",
+            "audioStreamID=960002",
+        ] {
+            assert!(second.contains(needle), "the both-facets replacement lacks {needle}: {second}");
+        }
+        assert!(!second.contains("scopeName%3Dh264"), "a 1080p raster is not lowered: {second}");
+        assert!(second.contains("videoResolution=3840x2160"), "nothing was lowered, so the route keeps its own ceiling: {second}");
+
+        pipeline_takes_the_load();
+        let reloaded = engine_epoch(&mut rig).expect("the encoded route's Engine");
         rig.frame();
-        super::super::sf_on_event(reloaded, 18, 100, std::ptr::null());
+        super::super::sf_on_event(reloaded, 18, 601, std::ptr::null());
         rig.frame();
-        assert_eq!(
-            crate::player::state(&rig.ps),
-            crate::player::PlaybackState::Error,
-            "the refusal after the audio flight left the viewer on {:?}",
-            crate::player::state(&rig.ps)
-        );
-        assert!(!crate::route::flight_outstanding(), "no second flight");
+        assert_eq!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error, "the third refusal reads out");
+        assert!(!crate::route::flight_outstanding(), "no third flight");
         assert_eq!(rig.ps.open_recovery().phase(), super::super::recovery::Phase::Failed);
         for _ in 0..3 {
             rig.frame();
         }
-        assert_eq!(rig.flight.decisions(), 1, "the audio conversion is the request's only /decision");
+        assert_eq!(rig.flight.decisions(), 2, "the request's two flights are its only /decisions");
     }
 
     /// **The climb after a video rescue never re-offers the refused raster.** A manual Original
