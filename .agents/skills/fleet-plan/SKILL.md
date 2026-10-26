@@ -314,9 +314,12 @@ cannot be reached once they are running — a hazard you meant to mention is a h
    ssh/scp/sshpass, no `make deploy|run|test|kill|install`, no `tests/run.py`, no
    `tools/tv-session.sh`, no `tools/capture-screen.sh` (a PreToolUse hook refuses them). Verify on
    the simulator — the `ui-sim` skill — with your own root: `make sim-shot SIM_DIR=/tmp/sim-<lane>`.
-3. DISK. `make check` ONLY. Never bare `make`, `make all`, `make deploy`, `make ipk` — each
-   cross-builds FFmpeg into this worktree (a built lane here measures 1.2–4.8 GB). First:
-   `export CARGO_TARGET_DIR=$HOME/plx-fleet/<lane>/target SIM_TDIR=$HOME/plx-fleet/<lane>/target-sim`
+3. GATES. Iterate with `make test-crate C=<crate> [T=filter]` (and `make test-hostsim [C=<crate>]
+   T=<filter>` for `hostsim` tests) on the crates you touch, and nothing wider: no local
+   `make check`, `make check-nodef` or `make check-replay`. Commit and push; the PR's CI is the gate,
+   and it merges only on a fully green CI. Never bare `make`, `make all`, `make deploy`, `make ipk`
+   — each cross-builds FFmpeg into this worktree (a built lane here measures 1.2–4.8 GB). Still
+   local, because CI cannot do them: `make build-bench` tables, live simulator proofs and TV work.
 4. NEVER `git stash` — the stack is SHARED across worktrees and another lane's pop takes your work.
    Use `git add -A && git commit -m wip`. If you already stashed, pin it and drop it:
    `git update-ref refs/rescue/<lane> "$(git rev-parse stash@{0})" && git stash drop`
