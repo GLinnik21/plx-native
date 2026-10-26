@@ -5730,7 +5730,14 @@ pub fn stream_pcm(ps: &PlaybackSession) -> Option<Result<PcmFormat, String>> {
     }
     // A lossy codec the attempt's value lets the app decode: its output has one shape, whatever
     // the source is, so no track fact is needed (and none can contradict it).
-    ps.attempt_caps().app_decodes_lossy_codec(&id).then_some(Ok(PcmFormat::STEREO_48K))
+    stream_pcm_is_lossy(ps).then_some(Ok(PcmFormat::STEREO_48K))
+}
+
+/// Whether the stream now being fed is one the app decodes LOSSILY (DTS under the attempt's gate):
+/// what `ff` is told so a lossless PCM Load never makes it decode a DTS stream in the app.
+pub fn stream_pcm_is_lossy(ps: &PlaybackSession) -> bool {
+    let id = plx_platform::devcaps::audio_codec_id(&ps.stream_acodec);
+    ps.attempt_caps().app_decodes_lossy_codec(&id)
 }
 
 /// PURE half of [`stream_pcm`]: the carried track must be the same codec, with a stated rate and
@@ -5807,11 +5814,15 @@ mod pcm_format_tests {
         assert_eq!(stream_pcm(&ps), None, "no attempt begun: the assumed value, gate off");
         ps.begin_attempt(std::sync::Arc::new(plx_platform::devcaps::Caps::assumed()));
         assert_eq!(stream_pcm(&ps), None, "gate off");
+        assert!(!stream_pcm_is_lossy(&ps));
         ps.begin_attempt(std::sync::Arc::new(plx_platform::devcaps::Caps::assumed().with_app_lossy()));
         for spelling in ["dts", "dca", "DTS"] {
             set_stream_codecs(&mut ps, "h264", spelling);
             assert_eq!(stream_pcm(&ps), Some(Ok(PcmFormat::STEREO_48K)), "{spelling}");
+            assert!(stream_pcm_is_lossy(&ps), "{spelling}");
         }
+        set_stream_codecs(&mut ps, "h264", "flac");
+        assert!(!stream_pcm_is_lossy(&ps), "a lossless PCM Load is never the lossy one");
         assert_eq!(PcmFormat::STEREO_48K, PcmFormat { sample_rate: 48_000, bits: 16, channels: 2 });
         let out = crate::ff_pcm::STEREO_48K;
         assert_eq!(

@@ -46,13 +46,20 @@ pub fn set_feed_audio(on: bool) {
 /// The PCM the current Load declared for app-decoded audio (`route::stream_pcm`), packed
 /// `rate << 16 | bits << 8 | channels`; 0 = this Load declares no PCM.
 static PCM_OUT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-/// Set by `start_bufferfeed` beside the Load, before the demuxer is spawned.
-pub fn set_pcm_out(f: Option<(u32, u32, u32)>) {
+/// Bit set in [`PCM_OUT`] when the Load's PCM is the LOSSY app decode's (DTS under the gate).
+const PCM_LOSSY_BIT: u64 = 1 << 40;
+/// Set by `start_bufferfeed` beside the Load, before the demuxer is spawned. `lossy`: the Load
+/// declared the lossy decode's shape (`route::stream_pcm_is_lossy`), so a lossy stream is the app's
+/// to decode only then, never because some lossless PCM Load happens to be 48 kHz stereo.
+pub fn set_pcm_out(f: Option<(u32, u32, u32)>, lossy: bool) {
     let v = f.map_or(0, |(rate, bits, ch)| u64::from(rate) << 16 | u64::from(bits) << 8 | u64::from(ch));
-    PCM_OUT.store(v, Ordering::Relaxed);
+    PCM_OUT.store(if v != 0 && lossy { v | PCM_LOSSY_BIT } else { v }, Ordering::Relaxed);
+}
+fn pcm_lossy() -> bool {
+    PCM_OUT.load(Ordering::Relaxed) & PCM_LOSSY_BIT != 0
 }
 fn pcm_out() -> Option<crate::ff_pcm::PcmOut> {
-    let v = PCM_OUT.load(Ordering::Relaxed);
+    let v = PCM_OUT.load(Ordering::Relaxed) & !PCM_LOSSY_BIT;
     (v != 0).then(|| crate::ff_pcm::PcmOut {
         rate: (v >> 16) as u32,
         bits: ((v >> 8) & 0xff) as u32,
@@ -3813,6 +3820,22 @@ mod dts_core_tests {
         let mut frame = vec![0x55; 128];
         frame[..10].copy_from_slice(&[0x7f, 0xfe, 0x80, 0x01, 0xfc, 0x00, 0x07, 0xf0, 0, 0]);
         frame
+    }
+
+    /// The lossy bit travels with the declared PCM and never leaks into its shape: a lossless PCM
+    /// Load of the same 48 kHz stereo S16 does not make a DTS stream the app's.
+    #[test]
+    fn the_lossy_bit_is_the_loads_own_and_does_not_change_the_shape() {
+        let _g = plx_base::testlock::serial();
+        let shape = Some((48_000, 16, 2));
+        super::set_pcm_out(shape, true);
+        assert!(super::pcm_lossy());
+        let lossy = super::pcm_out().unwrap();
+        super::set_pcm_out(shape, false);
+        assert!(!super::pcm_lossy(), "a lossless PCM Load of the same shape");
+        assert_eq!(super::pcm_out().unwrap(), lossy);
+        super::set_pcm_out(None, true);
+        assert!(!super::pcm_lossy() && super::pcm_out().is_none(), "no PCM declared, nothing lossy");
     }
 
     #[test]
@@ -9210,9 +9233,9 @@ pub fn demux(
                 } else {
                     None
                 };
-                // Native DTS: the set's own decoder takes the core. Not when the Load declared PCM,
+                // Native DTS: the set's own decoder takes the core. Not when the Load declared the lossy PCM,
                 // which is the app decoding DTS itself (`pcm_dec` below, `Caps::app_decodes_lossy`).
-                let dts_audio = ai >= 0 && pcm_out().is_none() && std::ffi::CStr::from_ptr(avcodec_get_name(
+                let dts_audio = ai >= 0 && !pcm_lossy() && std::ffi::CStr::from_ptr(avcodec_get_name(
                     (*stream_codecpar(*streams.add(ai as usize))).codec_id
                 )).to_bytes() == b"dts";
                 if dts_audio {
@@ -9234,7 +9257,7 @@ pub fn demux(
                     // A lossy codec is the app's only when the Load declared PCM for it (the gate is
                     // on); otherwise it is native audio and the set's decoder takes it.
                     plx_platform::devcaps::app_decoded_by_ffmpeg_name(&name)
-                        .filter(|c| !c.lossy || pcm_out().is_some())
+                        .filter(|c| !c.lossy || pcm_lossy())
                         .map(|_| name.into_owned())
                 } else {
                     None
@@ -9536,6 +9559,9 @@ pub fn demux(
                             seek_began.elapsed().as_millis()
                         ));
                         headroom.restart(aq_p);
+                        if let Some(dec) = pcm_dec.as_mut() {
+                            dec.reset_stream();
+                        }
                         SHARED.first_audio_pts.store(i64::MIN, Ordering::Release);
                     }
                     let r = av_read_frame(fmt, pkt);

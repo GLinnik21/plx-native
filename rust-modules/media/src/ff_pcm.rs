@@ -55,6 +55,7 @@ pub struct PcmDecoder {
     /// `core_only` took on a lossy decoder (FFmpeg accepted the option). Reported in the log line
     /// and held by a host test; the decode works without it, only costlier.
     core_only: bool,
+    errors: ErrorBudget,
 }
 
 /// PURE (no FFmpeg): any channel layout and rate to interleaved stereo S16 LE at 48 kHz. The
@@ -68,6 +69,11 @@ pub struct Stereo48 {
 impl Stereo48 {
     pub fn new() -> Self {
         Stereo48 { rate: speed_audio::OUT_RATE, resampler: Resampler::new(speed_audio::OUT_RATE) }
+    }
+
+    /// Forget the resampler's carried tail (a seek).
+    pub fn reset(&mut self) {
+        self.resampler = Resampler::new(self.rate);
     }
 
     /// Append `frames` frames (`planes`: one slice per channel when `planar`, else one) to `out`.
@@ -150,7 +156,7 @@ impl PcmDecoder {
             crate::ff::avcodec_free_context(&mut ctx);
             return Err("av_frame_alloc failed".into());
         }
-        Ok(PcmDecoder { ctx, frame, out, buf: Vec::new(), lossy: entry.lossy.then(Stereo48::new), core_only })
+        Ok(PcmDecoder { ctx, frame, out, buf: Vec::new(), lossy: entry.lossy.then(Stereo48::new), core_only, errors: ErrorBudget::default() })
     }
 
     /// Whether the decoder is a lossy one running its core only (see the field).
@@ -161,8 +167,23 @@ impl PcmDecoder {
     /// Decode one packet into interleaved little-endian PCM of the declared width. These codecs
     /// have no decoder delay: one packet is one frame, so the packet's pts is the PCM's. (DTS's
     /// core decoder delays nothing either; the resampler holds back at most one input frame.)
+    ///
+    /// A LOSSY stream (DTS) skips a packet or frame that fails, as the speed decoder does, and
+    /// ends only after [`MAX_CONSECUTIVE_DECODE_ERRORS`] in a row; a lossless one is bit-exact or
+    /// nothing, so its first failure ends it.
     pub unsafe fn decode(&mut self, pkt: *const AVPacket) -> Result<&[u8], String> {
         self.buf.clear();
+        match self.decode_packet(pkt) {
+            Ok(()) => self.errors.ok(),
+            Err(why) if self.lossy.is_some() && self.errors.skip() => {
+                crate::player::log(&format!("ff: a packet was skipped — {why}"));
+            }
+            Err(why) => return Err(why),
+        }
+        Ok(&self.buf)
+    }
+
+    unsafe fn decode_packet(&mut self, pkt: *const AVPacket) -> Result<(), String> {
         let r = crate::ff::avcodec_send_packet(self.ctx, pkt);
         if r < 0 {
             return Err(format!("avcodec_send_packet failed ({r})"));
@@ -170,14 +191,42 @@ impl PcmDecoder {
         loop {
             let r = crate::ff::avcodec_receive_frame(self.ctx, self.frame);
             if r == crate::ff::AVERROR_EAGAIN || r == crate::ff::AVERROR_EOF {
-                break;
+                return Ok(());
             }
             if r < 0 {
                 return Err(format!("avcodec_receive_frame failed ({r})"));
             }
             self.append_frame()?;
         }
-        Ok(&self.buf)
+    }
+
+    /// The demuxer sought: what a lossy decode carried from the old position (the resampler's
+    /// tail) is dropped, so the first sound at the new one is not blended with the last of the old.
+    /// The decoder's own history is not flushed (`avcodec_flush_buffers` is not bound; DTS frames
+    /// are self-contained and the effect is at most one frame, a U5 item to listen for).
+    pub fn reset_stream(&mut self) {
+        if let Some(conv) = self.lossy.as_mut() {
+            conv.reset();
+        }
+    }
+}
+
+/// How many bad packets in a row a lossy stream is allowed before it is declared dead.
+const MAX_CONSECUTIVE_DECODE_ERRORS: u32 = 50;
+
+/// PURE: the count of consecutive failures a lossy stream has had.
+#[derive(Default)]
+struct ErrorBudget(u32);
+
+impl ErrorBudget {
+    /// A failure: whether it may be skipped (the budget is not spent).
+    fn skip(&mut self) -> bool {
+        self.0 += 1;
+        self.0 <= MAX_CONSECUTIVE_DECODE_ERRORS
+    }
+
+    fn ok(&mut self) {
+        self.0 = 0;
     }
 }
 
@@ -191,6 +240,9 @@ impl PcmDecoder {
         let data = base.add(OFF_FRAME_DATA) as *const *const u8;
         if let Some(conv) = self.lossy.as_mut() {
             let rate = *(base.add(OFF_AFRAME_SAMPLE_RATE) as *const c_int);
+            if rate <= 0 {
+                return Err(format!("decoder reported sample rate {rate}"));
+            }
             let channels = (*(base.add(OFF_AFRAME_NB_CHANNELS) as *const c_int)).max(0) as usize;
             let Some((fmt, planar)) = SampleFormat::from_av(format) else {
                 return Err(format!("unexpected decoder sample format {format}"));
@@ -205,7 +257,7 @@ impl PcmDecoder {
             } else {
                 vec![std::slice::from_raw_parts(*data, nb * width * channels)]
             };
-            conv.convert(rate.max(0) as u32, fmt, planar, channels, nb, &planes, &mut self.buf);
+            conv.convert(rate as u32, fmt, planar, channels, nb, &planes, &mut self.buf);
             return Ok(());
         }
         let ch = self.out.channels as usize;
@@ -395,6 +447,36 @@ mod tests {
         let mut out = Vec::new();
         conv.convert(48_000, crate::speed_audio::SampleFormat::Flt, false, 1, 4, &[&src], &mut out);
         assert_eq!(s16_le(&out), vec![32_767, 32_767, -32_768, -32_768, 32_767, 32_767, -32_768, -32_768]);
+    }
+
+    /// A lossy stream survives the odd bad packet (the speed decoder skips them too) but not a
+    /// dead one: a run of consecutive failures ends it, and any success starts the count again.
+    #[test]
+    fn a_lossy_stream_skips_isolated_bad_packets_and_gives_up_on_a_run() {
+        let mut b = ErrorBudget::default();
+        for _ in 0..MAX_CONSECUTIVE_DECODE_ERRORS {
+            assert!(b.skip(), "within the budget");
+        }
+        assert!(!b.skip(), "one past it: the stream is dead");
+        let mut b = ErrorBudget::default();
+        for _ in 0..10 * MAX_CONSECUTIVE_DECODE_ERRORS {
+            assert!(b.skip());
+            b.ok();
+        }
+    }
+
+    #[test]
+    fn a_reset_forgets_the_resampler_tail_so_a_seek_does_not_blend_positions() {
+        let mut conv = Stereo48::new();
+        let mut out = Vec::new();
+        let a = flt(&vec![1.0; 441]);
+        conv.convert(44_100, crate::speed_audio::SampleFormat::Flt, false, 1, 441, &[&a], &mut out);
+        conv.reset();
+        out.clear();
+        let b = flt(&vec![-1.0; 441]);
+        conv.convert(44_100, crate::speed_audio::SampleFormat::Flt, false, 1, 441, &[&b], &mut out);
+        let first = i16::from_le_bytes([out[0], out[1]]);
+        assert_eq!(first, -32_768, "the first frame after a seek is the new position's, not a blend with the old tail");
     }
 
     #[test]

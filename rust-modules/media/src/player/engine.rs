@@ -1740,7 +1740,10 @@ fn start_bufferfeed_inner(
                 SHARED.fail_demux(DemuxExitClass::LoadRefused);
                 return Err(crate::route::RouteStartResult::StartFailed);
             };
-            crate::ff::set_pcm_out(pcm.map(|f| (f.sample_rate, f.bits, f.channels)));
+            crate::ff::set_pcm_out(
+                pcm.map(|f| (f.sample_rate, f.bits, f.channels)),
+                pcm.is_some() && crate::route::stream_pcm_is_lossy(ps),
+            );
             if let Some(f) = pcm {
                 log(&format!(
                     "pcm: {codec} decoded in-app -> {}Hz {}-bit {}ch",
