@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Land a pull request only when its checks say it may land: gate, wait, merge.
+"""Land a pull request only when its checks say it may land (gate, wait, merge), and restack its dependants.
 
     tools/pr-land.py gate  N [--sha S]
     tools/pr-land.py wait  N --sha S [--timeout 45m]
     tools/pr-land.py merge N --sha S --subject T (--body-file F | --body-from-pr) [--timeout 45m]
+    tools/pr-land.py restack --worktree W --upper BRANCH --lower PR [--dry-run] [--push]
 
 Run it from a checkout of the repository (`gh api` fills in {owner}/{repo} from it and the verify step
 fetches origin). Anything that can wait longer than a minute belongs in a Bash call with
@@ -39,22 +40,54 @@ check-runs are printed. On "expected head oid does not match" it waits 15 s and 
 unchanged, it retries (3 times at most, then exit 3); moved, exit 5. Every line of a failed verify
 starts "gh pr merge succeeded;", since the merge went through and only the check afterwards failed.
 
+`restack` re-bases a stacked branch by MERGES (never a rebase) after the pull request below it, --lower,
+has squash-merged: AGENTS.md's "Re-basing a stacked PR after the one below it squashes". It reads the
+lower PR (`gh pr view`) and refuses (3) unless it is MERGED with a merge commit, or when BRANCH is
+that PR's base branch (it would merge the lower PR into main); refuses (3) unless W is a clean
+checkout on BRANCH (an untracked file is not clean) with no merge, cherry-pick or revert in progress,
+not even a resolved and staged one that is not yet committed; fetches the
+lower PR's final head from `refs/pull/PR/head` (the branch is deleted on merge) and the PR's base
+branch (main) from origin; refuses (3) unless the merge commit is a one-parent commit on origin/<base>;
+then runs, with `git -C W`, in this order, stopping at the FIRST step that fails:
+
+  1. `git merge <the lower PR's final head>`
+  2. `git merge <squash>^`
+  3. `git merge --no-ff -s ours <squash>`
+  4. `git merge origin/<base>`
+
+Each takes --no-edit and a message naming the pull request. A step that stops (a conflict, usually) leaves the
+tree as git left it, names the step and its command, and exits 1; resolve it, commit, and run the
+same command again, since the steps already done are then "Already up to date" no-ops. --dry-run
+prints the four commands (SHAs filled in) after the read-only checks and changes nothing, not even by
+a fetch. --push then pushes BRANCH only, as a plain `git push origin BRANCH` (never --force, so a
+branch that moved on origin is rejected: exit 1; the reason git gave is printed) and only once all
+four merges succeeded; without it nothing leaves the machine. It follows BRANCH's upstream: one on
+origin (a checkout made by `git checkout -B tmp origin/x`) is pushed as `BRANCH:refs/heads/x`, none
+as `BRANCH`, and one on any other remote is refused (3) before the first merge. Run it from the
+checkout `gh` should read the lower PR in; W may be any worktree of the repository. No `gh pr merge`
+is ever called.
+
 `merge` needs a body, since the repository setting would paste every wip commit: --body-file, or
 --body-from-pr to send the PR's own body. The subject and the body are run through
 .claude/hooks/outbound-guard.py in this process, and a private value refuses the merge before any
 `gh` call (a PR body is fetched first, then scanned before the merge call).
 
-Exit codes: 0 green (merge: merged and verified), 1 red (a check failed, nothing merged; or merged but
-the verify failed, which says "gh pr merge succeeded"), 2 usage, 3 refused (a rule says no, `gh` kept
-failing or answered in a shape this script does not know, `gh pr merge` kept saying the head differs
-while the head had not moved, or a private value was found), 4 timeout (not settled yet), 5 head moved
-(the PR is not at S). This tool grants no merge authority:
-an owner's authorization to merge is still needed.
+Exit codes: 0 green (merge: merged and verified; restack: restacked, and pushed if --push), 1 red (a
+check failed, nothing merged; or merged but the verify failed, which says "gh pr merge succeeded"; for
+restack, a merge step stopped or the push was rejected, which says where), 2 usage, 3 refused (a rule
+says no, `gh` kept failing or answered in a shape this script does not know, `gh pr merge` kept saying
+the head differs while the head had not moved, or a private value was found; for restack, the lower
+PR is not merged, W is not clean and on BRANCH or has a merge, cherry-pick or revert in progress,
+BRANCH is the lower PR's base branch, a fetch failed, a commit is missing after it, the squash is not
+on origin/<base> or has other than one parent, or --push meets an upstream that is not on origin),
+4 timeout (not settled yet), 5 head moved (the PR is not at S). This tool grants no merge authority: an
+owner's authorization to merge is still needed.
 """
 import argparse
 import importlib.util
 import json
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -69,6 +102,7 @@ NAMES = {EXIT_OK: 'GREEN', EXIT_RED: 'RED', EXIT_REFUSED: 'REFUSED', EXIT_TIMEOU
 
 BASE_OK = re.compile(r'^(?:main|release/v.+)$')
 SHA = re.compile(r'^[0-9a-f]{40}$')
+BRANCH = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._/-]*$')   # no leading + (a forced refspec) or -
 HEAD_RACE = re.compile(r'head oid|head branch was modified', re.I)
 GOOD_BUCKETS = ('pass', 'skipping')
 BAD_BUCKETS = ('fail', 'cancel')
@@ -437,7 +471,152 @@ def cmd_merge(args, env):
     return land(args.number, args.sha, args.subject, body, env)
 
 
-COMMANDS = {'gate': cmd_gate, 'wait': cmd_wait, 'merge': cmd_merge}
+def restack_steps(number, head, squash, base):
+    """AGENTS.md's four merges as (name, git arguments after `-C W`), in the order they run."""
+    return [
+        ("merge the lower PR's final head",
+         ['merge', '--no-edit', '-m', "Merge the final head of #%d (%s)" % (number, head[:9]), head]),
+        ('merge the first parent of the squash',
+         ['merge', '--no-edit', '-m', 'Merge %s as it was just before #%d squashed' % (base, number), squash + '^']),
+        ('record the squash as merged, keeping this tree',    # --no-ff: `-s ours` must never fast-forward
+         ['merge', '--no-edit', '--no-ff', '-s', 'ours', '-m',
+          'Record #%d (%s) as merged, keeping this tree' % (number, squash[:9]), squash]),
+        ('merge origin/' + base,
+         ['merge', '--no-edit', '-m', 'Merge origin/%s after #%d' % (base, number), 'origin/' + base]),
+    ]
+
+
+def describe(worktree, n, total, name, argv):
+    return 'restack step %d of %d, %s: %s' % (n, total, name, shlex.join(['git', '-C', worktree, *argv]))
+
+
+UNFINISHED = (('MERGE_HEAD', 'merge'), ('CHERRY_PICK_HEAD', 'cherry-pick'), ('REVERT_HEAD', 'revert'))
+
+
+def checked_out(worktree, upper):
+    """Refuse unless `worktree` is a clean checkout on `upper` with no merge, cherry-pick or revert
+    in progress, looking without taking any lock."""
+    status = git('--no-optional-locks', '-C', worktree, 'status', '--porcelain')
+    if status.returncode != 0:
+        raise Refuse('%s is not a git checkout (%s)' % (worktree, first_line(status.stderr)))
+    for pseudo, what in UNFINISHED:           # a resolved, staged merge has nothing left for `status` to show
+        if git('-C', worktree, 'rev-parse', '-q', '--verify', pseudo).returncode == 0:
+            raise Refuse('a %s is in progress in %s; finish it with `git commit` first (or abort it)'
+                         % (what, worktree))
+    if status.stdout.strip():
+        raise Refuse('%s is not clean (an untracked file counts); commit it or move it first' % worktree)
+    on = git('-C', worktree, 'branch', '--show-current').stdout.strip()
+    if on != upper:
+        raise Refuse('%s is not on %s (it is on %s)' % (worktree, upper, on or 'a detached HEAD'))
+
+
+def push_refspec(worktree, upper):
+    """What `git push origin` takes to update `upper`'s pull request: the branch it tracks on origin (a
+    checkout made as `git checkout -B tmp origin/x` is named tmp, and its pull request is x), else its
+    own name. An upstream on any other remote is refused: a plain push would put the branch into origin."""
+    listed = git('-C', worktree, 'for-each-ref', '--format=%(upstream:remotename) %(upstream:remoteref)',
+                 'refs/heads/' + upper)
+    if listed.returncode != 0:
+        raise Refuse('cannot read the upstream of %s (%s)' % (upper, first_line(listed.stderr)))
+    parts = listed.stdout.split()
+    if not parts or parts[0] == '.':          # no upstream, or another local branch: origin has no say
+        return upper
+    remote, ref = (parts + [''])[:2]
+    if remote != 'origin' or not ref.startswith('refs/heads/'):
+        raise Refuse('--push goes to origin, but the upstream of %s is %s on %s; push it there yourself'
+                     % (upper, ref or 'unknown', remote))
+    return upper if ref == 'refs/heads/' + upper else '%s:%s' % (upper, ref)
+
+
+def fetch_lower(worktree, number, head, squash, base):
+    """Bring in what the four merges need, then refuse unless it is what `gh` described."""
+    for refspec in ('refs/pull/%d/head' % number, '+refs/heads/%s:refs/remotes/origin/%s' % (base, base)):
+        fetched = git('-C', worktree, 'fetch', 'origin', refspec)
+        if fetched.returncode != 0:
+            raise Refuse('git fetch origin %s failed (%s)' % (refspec, first_line(fetched.stderr)))
+    for oid in (head, squash):
+        if git('-C', worktree, 'cat-file', '-e', oid + '^{commit}').returncode != 0:
+            raise Refuse('commit %s is not in %s after the fetch' % (oid, worktree))
+    if git('-C', worktree, 'merge-base', '--is-ancestor', squash, 'origin/' + base).returncode != 0:
+        raise Refuse('merge commit %s is not an ancestor of origin/%s' % (squash, base))
+    parents = git('-C', worktree, 'rev-list', '--parents', '-n', '1', squash).stdout.split()[1:]
+    if len(parents) != 1:
+        raise Refuse('merge commit %s has %d parents; only a squash commit has one' % (squash, len(parents)))
+
+
+def stopped(worktree, n, total, name, done):
+    """A merge step failed: say where, and what state git left the tree in."""
+    midway = git('-C', worktree, 'rev-parse', '-q', '--verify', 'MERGE_HEAD').returncode == 0
+    for line in (done.stdout + done.stderr).strip().splitlines()[:10]:
+        say('  ' + line)
+    where = 'restack step %d of %d (%s)' % (n, total, name)
+    if midway:
+        say('CONFLICT at %s: the merge is in progress in %s, as git left it. Resolve it and commit, then '
+            'run this command again; the steps already done are no-ops. Nothing was pushed.'
+            % (where, worktree))
+    else:
+        say('FAILED at %s: git exited %d and the tree is as git left it. Nothing was pushed.'
+            % (where, done.returncode))
+    return EXIT_RED
+
+
+def rejection(stderr):
+    """The lines of a failed `git push` that give the reason: `To <url>` comes first and says nothing."""
+    keep = [x.strip() for x in stderr.splitlines() if x.strip().startswith(('!', 'error:', 'remote:', 'fatal:'))]
+    return keep[:10] or [first_line(stderr) or 'git push printed nothing']
+
+
+def cmd_restack(args, env):
+    number, worktree, upper = args.number, str(args.worktree), args.upper
+    doc = read_pr(number, 'state,headRefOid,mergeCommit,baseRefName')
+    commit = doc['mergeCommit']
+    squash = commit.get('oid') if isinstance(commit, dict) else None
+    if doc['state'] != 'MERGED':
+        raise Refuse('the pull request is %s, not MERGED; restack runs after the one below has squash-merged'
+                     % doc['state'])
+    if not (isinstance(squash, str) and SHA.match(squash)):
+        raise Refuse('the pull request is MERGED but gh reports no merge commit for it')
+    head, base = doc['headRefOid'], doc['baseRefName']
+    if not (isinstance(head, str) and SHA.match(head)) or not isinstance(base, str) or not base:
+        raise Refuse('gh pr view answered with a final head or base this script does not know')
+    if upper == base:
+        raise Refuse('--upper %s is the base branch of #%d; restack re-bases a branch stacked on it, and '
+                     'this would merge the lower PR into %s' % (upper, number, base))
+    checked_out(worktree, upper)
+    refspec = push_refspec(worktree, upper) if args.push else upper
+    steps = restack_steps(number, head, squash, base)
+    push = shlex.join(['git', '-C', worktree, 'push', 'origin', refspec])
+    if args.dry_run:
+        say('DRY RUN #%d: #%d is MERGED as %s with final head %s; %s is clean and on %s. Nothing is '
+            'fetched, merged or pushed. It would run:' % (number, number, squash, head, worktree, upper))
+        for n, (name, argv) in enumerate(steps, 1):
+            say(describe(worktree, n, len(steps), name, argv))
+        say('and then, with --push: ' + push if args.push else 'and stop there, without --push')
+        return EXIT_OK
+    fetch_lower(worktree, number, head, squash, base)
+    for n, (name, argv) in enumerate(steps, 1):
+        say(describe(worktree, n, len(steps), name, argv))
+        done = git('-C', worktree, *argv)
+        if done.returncode != 0:
+            return stopped(worktree, n, len(steps), name, done)
+        say('  ' + (first_line(done.stdout) or 'done'))
+    tip = git('-C', worktree, 'rev-parse', 'HEAD').stdout.strip()
+    say('RESTACKED %s on #%d: %s is %s' % (upper, number, upper, tip))
+    if not args.push:
+        say('not pushed: run it again with --push')
+        return EXIT_OK
+    say(push)
+    pushed = git('-C', worktree, 'push', 'origin', refspec)
+    if pushed.returncode != 0:
+        for line in rejection(pushed.stderr):
+            say('  ' + line)
+        say('PUSH FAILED: the merges are done locally and nothing was forced')
+        return EXIT_RED
+    say('PUSHED %s' % upper)
+    return EXIT_OK
+
+
+COMMANDS = {'gate': cmd_gate, 'wait': cmd_wait, 'merge': cmd_merge, 'restack': cmd_restack}
 
 
 def duration(text):
@@ -453,10 +632,16 @@ def full_sha(text):
     return text
 
 
+def branch_name(text):
+    if not BRANCH.match(text):
+        raise argparse.ArgumentTypeError('%r is not a plain branch name' % text)
+    return text
+
+
 def build_parser():
     parser = argparse.ArgumentParser(prog='pr-land.py', description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    sub = parser.add_subparsers(dest='cmd', required=True, metavar='{gate,wait,merge}')
+    sub = parser.add_subparsers(dest='cmd', required=True, metavar='{gate,wait,merge,restack}')
     subs = {}
     for name, summary in (('gate', 'read-only verdict'), ('wait', 'poll until the gate is green'),
                           ('merge', 'wait, squash-merge at --sha, verify')):
@@ -468,6 +653,14 @@ def build_parser():
             one.add_argument('--timeout', type=duration, default=duration('45m'),
                              help='how long to poll before exit 4 (90s, 45m, 2h; default 45m)')
         subs[name] = one
+    restack = sub.add_parser('restack', help='re-base a stacked branch by merges after the PR below squashed',
+                             description='re-base a stacked branch by merges after the PR below it squashed')
+    restack.add_argument('--worktree', required=True, type=Path, help='the checkout of the stacked branch')
+    restack.add_argument('--upper', required=True, type=branch_name, help='the stacked branch, checked out in --worktree')
+    restack.add_argument('--lower', dest='number', required=True, type=int, metavar='PR',
+                         help='the pull request below it, already squash-merged')   # `number`: what main() names on a refusal
+    restack.add_argument('--dry-run', action='store_true', help='print the four merges, change nothing')
+    restack.add_argument('--push', action='store_true', help='then push the stacked branch (never forced)')
     merge = subs['merge']
     merge.add_argument('--subject', required=True, help='the squash commit subject, e.g. "Title (#N)"')
     body = merge.add_mutually_exclusive_group(required=True)

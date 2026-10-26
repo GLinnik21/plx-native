@@ -908,8 +908,9 @@ fn decision_audio(mc: &plx_plex::plex::MediaContainer) -> Option<&str> {
 /// server transcoded audio this profile would otherwise have COPIED — the one case where the
 /// transcode is provably the DSP's doing (M2's AC3 2.0). A carried track outside the copy list
 /// (`plex::is_dp_audio_track_with` over the attempt's `caps`, the same value the profile's
-/// `audioCodec`/`audio.channels` lanes are built from) is transcoded at baseline too, so the ask was delivered but cannot be told apart
-/// from what would have happened anyway: `Unverified` (M2's AAC 5.1 under the measured profile).
+/// `audioCodec`, `audio.channels` and `audio.samplingRate` lanes are built from) is transcoded at
+/// baseline too, so the ask was delivered but cannot be told apart from what would have happened
+/// anyway: `Unverified` (M2's AAC 5.1 under the measured profile).
 /// No answer at all is `Unverified` for the same reason.
 pub(super) fn classify_outcome(
     caps: &plx_platform::devcaps::Caps,
@@ -3031,9 +3032,11 @@ pub(super) fn pick_dp_audio_pref(
 /// Can the TV take this audio track straight from the file, under `mode`, on the attempt's
 /// capability value `caps`? Auto and Forced both go through
 /// `devcaps`' canonicaliser (PMS's `dca` is the pipeline's `dts`), so they cannot drift apart.
-/// Both also apply the PCM path's own limits ([`plx_platform::devcaps::pcm_track_fits`]): they
-/// belong to the app's decoder and LG's PCM input, not to a hardware decoder Forced may trust past
-/// its table, so a 5.1 or 96 kHz FLAC is refused under Forced instead of failing at the Load.
+/// Both also apply the Load's own limits ([`plx_platform::devcaps::audio_track_fits`]): the PCM
+/// path's channel count and rate table, and the sample-rate ceiling every other codec shares
+/// (DTS excepted). They belong to the app's decoder and the Load, not to a hardware decoder
+/// Forced may trust past its table, so a 5.1 or 96 kHz FLAC, or a 96 kHz AAC, is refused under
+/// Forced instead of failing at the Load.
 pub(super) fn audio_direct_plays_with(
     caps: &plx_platform::devcaps::Caps, mode: DirectPlayMode, codec: &str, channels: i64,
     sample_rate: i64,
@@ -3044,7 +3047,7 @@ pub(super) fn audio_direct_plays_with(
     } else {
         caps.audio_supports(codec, channels)
     };
-    feeds && plx_platform::devcaps::pcm_track_fits(codec, channels, sample_rate)
+    feeds && plx_platform::devcaps::audio_track_fits(codec, channels, sample_rate)
 }
 
 #[cfg(test)]
