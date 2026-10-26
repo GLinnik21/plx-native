@@ -246,8 +246,9 @@ pub struct Preferences {
     /// codec and channel count ([`NativeAudioRefusal`]). The player learns one when a native Load
     /// ends in `type=18 num=200 Audio Codec Not Supported` (applied at once), or counts one proof each
     /// time a refused-format open was rescued by a facet-clean conversion (applied once it holds
-    /// `LEARNED_REFUSAL_PROOFS`); `devcaps` then stops announcing the combination (the row's
-    /// projection, [`NativeAudioRefusal::applies`]), so the next play is converted.
+    /// `LEARNED_REFUSAL_PROOFS`); the next play's start value (`devcaps::start_caps`,
+    /// from the rows in force, [`NativeAudioRefusal::applies`]) no longer announces the combination, so
+    /// that play is converted. The boot snapshot (`devcaps::caps`) is never rewritten.
     /// An INSTALL fact: a property of this television's firmware, kept across sign-out and
     /// across profiles. Skipped while empty, soft-parsed per entry.
     #[serde(default, deserialize_with = "super::de_soft_vec", skip_serializing_if = "Vec::is_empty")]
