@@ -120,10 +120,12 @@ CASES += [
     (BLOCK, HEREDOC_SSH),
 ]
 
-# `tv-session.sh fg` is the advisory foreground read, and the one lifecycle word the guard lets through
-# with no lease: an explicit decision (the same file blocks `sound status`, a read of the volume, on
-# purpose). It is exempt only as EXACTLY `fg` after the script: anything else on that segment is judged
-# as it always was. `;` `&&` `|` split the line into segments first, so each is judged on its own.
+# `tv-session.sh fg` is the advisory foreground read, and the third read-only word the guard lets
+# through with no lease, judged EXACTLY like `log` and `status`: on the first non-flag word after the
+# script, so `2>&1`, a redirect or a pipe after it change nothing (the script's `fg` branch reads only
+# `$1` and returns). The same file blocks `sound status`, a read of the volume, on purpose. `;` `&&`
+# `||` `|` `&` and a newline split the line into segments first, so each is judged on its own, and
+# the script path itself is never mistaken for the word (`bash tools/tv-session.sh fg`).
 CASES += [
     (ALLOW, "tools/tv-session.sh fg"),
     (ALLOW, "./tools/tv-session.sh fg"),
@@ -133,20 +135,39 @@ CASES += [
     (ALLOW, "PLX_TV_LOCK_LANE=/repo/worktrees/lane-a tools/tv-session.sh fg"),
     (ALLOW, "cd /repo/worktrees/lane-a && tools/tv-session.sh fg"),
     (ALLOW, "tools/tv-session.sh fg | tail -n 1"),
-    (BLOCK, "tools/tv-session.sh fg extra"),
-    (BLOCK, "tools/tv-session.sh fg --flavor debug"),
-    (BLOCK, "bash tools/tv-session.sh fg extra"),
-    (BLOCK, "tools/tv-session.sh fg > /tmp/fg.txt"),
-    (BLOCK, "tools/tv-session.sh fg 2>&1"),
-    (BLOCK, "tools/tv-session.sh fgx"),
+    # Agents append `2>&1` to nearly everything; `log 2>&1` and `status 2>&1` were always allowed.
+    (ALLOW, "tools/tv-session.sh fg 2>&1"),
+    (ALLOW, "tools/tv-session.sh fg 2>&1 | tail -3"),
+    (ALLOW, "bash tools/tv-session.sh fg 2>&1"),
+    (ALLOW, "env X=1 tools/tv-session.sh fg"),
+    (ALLOW, "tools/tv-session.sh fg > /tmp/fg.txt"),
+    # Extra words after `fg` are ignored by the script, so they cannot change what it does.
+    (ALLOW, "tools/tv-session.sh fg extra"),
+    (ALLOW, "tools/tv-session.sh fg up"),
+    (ALLOW, "tools/tv-session.sh fg --flavor debug"),
+    (ALLOW, "bash tools/tv-session.sh fg extra"),
+    # All three words are judged on the words AFTER the script, whatever launched it.
+    (ALLOW, "bash tools/tv-session.sh log 2>&1"),
+    (ALLOW, "bash tools/tv-session.sh status 2>&1"),
+    (ALLOW, "env X=1 tools/tv-session.sh status"),
+    # A chain that also drives the set is blocked at the segment that does, whatever the separator.
+    (BLOCK, "tools/tv-session.sh fg; tools/tv-session.sh up"),
     (BLOCK, "tools/tv-session.sh fg && tools/tv-session.sh up"),
+    (BLOCK, "tools/tv-session.sh fg || tools/tv-session.sh up"),
+    (BLOCK, "tools/tv-session.sh fg & tools/tv-session.sh up"),
+    (BLOCK, "tools/tv-session.sh fg\ntools/tv-session.sh up"),
     (BLOCK, "tools/tv-session.sh fg; tools/tv-session.sh sound status"),
     (BLOCK, "tools/tv-session.sh fg && make deploy"),
     (BLOCK, "tools/tv-session.sh up && tools/tv-session.sh fg"),
+    # Not `fg`: a longer word, the other lifecycle words, and a flag VALUE in front (the space form of
+    # `--flavor` is not skipped, so it stays blocked, which is the conservative side).
+    (BLOCK, "tools/tv-session.sh fgx"),
+    (BLOCK, "tools/tv-session.sh --flavor stable fg"),
     # The siblings and the nested words stay exactly as they were.
     (BLOCK, "tools/tv-session.sh up"),
     (BLOCK, "tools/tv-session.sh foreground"),
     (BLOCK, "tools/tv-session.sh background"),
+    (BLOCK, "tools/tv-session.sh sound status"),
     (BLOCK, "bash tools/tv-session.sh sound status"),
 ]
 
@@ -265,7 +286,8 @@ LANE_CASES += [
     (False, "tools/tv-session.sh fg", LANE_A, {}, (LANE_B,)),
     (True, "tools/tv-session.sh fg && tools/tv-session.sh up", LANE_A, {}, ()),
     (False, "tools/tv-session.sh fg && tools/tv-session.sh up", LANE_A, {}, (LANE_A,)),
-    (True, "tools/tv-session.sh fg extra", LANE_A, {}, ()),
+    (False, "tools/tv-session.sh fg extra", LANE_A, {}, ()),
+    (False, "tools/tv-session.sh fg 2>&1", LANE_A, {}, ()),
 ]
 
 

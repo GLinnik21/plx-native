@@ -28,7 +28,7 @@ writes, so a session holding nothing cannot use a lane on the strength of somebo
 
 WHAT IT DELIBERATELY DOES NOT BLOCK.
   * read-only diagnostics that cannot disturb a running session: `tools/crash-report.sh`,
-    `tv-session.sh log|status`, `make -s print-*`;
+    `tv-session.sh log|status|fg`, `make -s print-*`;
   * the lock tool itself and `wake-tv.sh` — waking a set is harmless and is how you get to a
     television you are about to lock;
   * every host-only path, which is most of this repo: `make check`, `make sim`, cargo, the
@@ -216,18 +216,20 @@ def classify_lane(seg):
                 break
 
     if base in TV_SCRIPTS:
-        # Three words of tv-session are read-only and stay allowed (`log`, `status`, and the exact `fg`
-        # below); everything else drives.
+        # Three words of tv-session are read-only and stay allowed, all judged the same way: on the
+        # first non-flag word AFTER the script (never the script path itself, so `bash
+        # tools/tv-session.sh fg` reads like `tools/tv-session.sh fg`). What follows the word is
+        # ignored, so `2>&1`, a redirect or a pipe change nothing; a chain was already split into
+        # segments by now. Everything else drives.
+        #
+        # `fg` (the foreground-app read) is exempt on purpose, and the same file blocks `sound
+        # status`: a pre-flight that asks "is anybody watching?" must not need a lease, and `fg` is
+        # the one such read that never wakes the set or changes anything (tv-session.sh
+        # `cmd_lifecycle` reads only `$1` and returns before it uses any other word, so extra words
+        # cannot change what it does), whereas `sound status` is still a getVolume round trip.
         if base == "tv-session.sh":
-            subs = [t for t in w[1:] if not t.startswith("-")]
-            if subs and subs[0] in ("log", "status"):
-                return None, None
-            # `fg` (the foreground-app read) is exempt too, on purpose, and the same file blocks
-            # `sound status`: a pre-flight that asks "is anybody watching?" must not need a lease, and
-            # `fg` is the one such read that never wakes the set or changes anything (tv-session.sh
-            # `cmd_lifecycle`). Exactly `fg` and nothing after the script, so `fg extra`, a flag or a
-            # redirect is judged as before; a chain was already split into segments by now.
-            if w[w.index(cw) + 1:] == ["fg"]:
+            subs = [t for t in w[w.index(cw) + 1:] if not t.startswith("-")]
+            if subs and subs[0] in ("log", "status", "fg"):
                 return None, None
         # `tests/run.py --list` never commits to driving the television: `main()` returns 0 from
         # every `args.list` branch (the pipeline-tier listing and the server-tier one right after
