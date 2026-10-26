@@ -4266,9 +4266,9 @@ mod flight_tests {
     /// refused video does not fly a progressive encode first. Here the source never opened and its
     /// bootstrap rung is the 4K one: the unopened-source fallback re-checks that rung against the
     /// catalog of the NARROWED attempt (`original_open_fallback_rung`), where a 4K H.264 is
-    /// infeasible, so the replacement flies the catalog's startup rung instead of asking for
-    /// `3840x2160` again. The route's sink envelope is no wider than 1080p, and the stored Original
-    /// candidate (a 4K H.264) is dropped rather than climbed back to.
+    /// infeasible, so the replacement flies the best rung under it, a 1080p one, instead of asking
+    /// for `3840x2160` again. The route's sink envelope is no wider than 1080p, and the stored
+    /// Original candidate (a 4K H.264) is dropped rather than climbed back to.
     #[test]
     fn the_hls_rescue_of_a_4k_h264_original_leaves_the_refused_raster_and_never_climbs_back() {
         let mut rig = auto_original_rig(60);
@@ -4286,7 +4286,7 @@ mod flight_tests {
             .and_then(|raster| raster.split_once('x'))
             .and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)))
             .unwrap_or_else(|| panic!("the replacement names no videoResolution: {replacement}"));
-        assert!(asked.0 <= 1920 && asked.1 <= 1080, "the replacement still asks for {asked:?}: {replacement}");
+        assert_eq!(asked, (1920, 1080), "the best rung under the refused 4K one: {replacement}");
         let (width, height) = crate::route::sink_max_raster(&rig.ps);
         assert!(width <= 1920 && height <= 1080, "the HLS route declares {width}x{height}");
         assert_eq!(FlightRig::original_feeds_part(&rig.ps), None, "the refused raster is not offered again");

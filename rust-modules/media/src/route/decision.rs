@@ -4036,8 +4036,9 @@ fn dispatch_rebase_recovery(
     }
 }
 
-/// The frame-thread half of the unopened-source fallback: reuse the exact contingency
-/// [`crate::abr::bootstrap`] chose while it still owned the evidence.
+/// The frame-thread half of the unopened-source fallback: reuse the contingency
+/// [`crate::abr::bootstrap`] chose while it still owned the evidence, held to the attempt's live
+/// catalog ([`crate::abr::original_open_fallback_rung`]).
 ///
 /// An HTTP 4xx/5xx, connect refusal or demux open error before the first body byte is not a
 /// zero-throughput observation. For Remote the rung came from the completed source probe; for
