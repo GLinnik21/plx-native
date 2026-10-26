@@ -181,8 +181,9 @@ pub struct PlaybackSession {
     /// or moves a rung on its own — the adaptive switch is not here.
     cur_contract: plx_plex::plex::EncodeContract,
     /// **The one capability value this attempt plans and profiles from.** Read from the device
-    /// ONCE, at the edge that starts an attempt ([`request_play_with_queue`], and a recovery
-    /// flight's dispatch, which begins a new attempt on the same playback), and never again from the
+    /// ONCE, by the app's play start, which hands it to the `request_play*` entry points; a
+    /// retry keeps it, and a refusal the pipeline just made narrows it
+    /// ([`narrow_attempt`](Self::narrow_attempt)). Never read again from the
     /// process-wide `devcaps::caps()`: the route's decisions (the direct-play gates, the audio pick,
     /// Auto's catalog, the remux predictions) and the profile string PMS reads
     /// (`plex::TranscodeSpec::caps`) are all derived from this value, so the plan and the profile
@@ -759,15 +760,22 @@ impl PlaybackSession {
     /// The capability value the current attempt plans and profiles from ([`caps`](Self::caps)
     /// field). A cheap `Arc` clone, so a worker or a flight can own it.
     fn attempt_caps(&self) -> std::sync::Arc<plx_platform::devcaps::Caps> {
-        self.caps.clone().unwrap_or_else(|| std::sync::Arc::new(plx_platform::devcaps::Caps::assumed()))
+        self.caps.clone().unwrap_or_else(plx_platform::devcaps::assumed_shared)
     }
 
-    /// Begin an attempt on `caps`: the ONLY writer of the field. Its callers are the edges that
-    /// start one — a play request ([`request_play_with_queue`]) and a recovery flight's dispatch
-    /// ([`dispatch_native_audio_conversion`] and its siblings) — each of which reads
-    /// `devcaps::caps()` there and nowhere inside a plan.
+    /// Begin an attempt on `caps`: the value the app's play start read, handed to
+    /// [`request_play_with_queue`] (the one caller in production).
     pub(super) fn begin_attempt(&mut self, caps: std::sync::Arc<plx_platform::devcaps::Caps>) {
         self.caps = Some(caps);
+    }
+
+    /// Narrow the playing attempt by what the pipeline just refused ([`Caps::without`]): the
+    /// conversion that follows ([`dispatch_native_audio_conversion`]) plans and profiles from the
+    /// narrowed value, and so does every later seek and track pick. No process-wide answer is read:
+    /// the refusal names itself (codec and channels), and the narrowing is the one the install's
+    /// learned record applies to the device answer (`devcaps::apply_learned`).
+    fn narrow_attempt(&mut self, refused: &plx_platform::devcaps::Facet) {
+        self.caps = Some(std::sync::Arc::new(self.attempt_caps().without(refused)));
     }
 
     /// **The frame tick, written once per iteration by [`crate::player::machine::Player::set_now`]
@@ -4092,9 +4100,9 @@ pub(super) const NATIVE_AUDIO_REJECTED: &str = "native audio: the server could n
 /// Start the flight that replaces a route whose natively fed audio the pipeline refused before the
 /// first picture (`type=18 num=200`, or the stall watchdog): the viewer's track plays again with the
 /// server converting that audio. The caller has already recorded the refusal (the install pref,
-/// through `session::learn_native_audio_refusal`) and passes the capability value read AFTER it as
-/// `caps`: this dispatch **begins a new attempt on that value** ([`PlaybackSession::begin_attempt`]),
-/// so the answer the plan and the profile read no longer names the codec, today's rebuild
+/// through `session::learn_native_audio_refusal`) and names it as `refused`: this dispatch
+/// **narrows the playing attempt by it** ([`PlaybackSession::narrow_attempt`], `Caps::without`), so
+/// the value the plan and the profile read no longer names the codec, today's rebuild
 /// ([`plain_rebuild_precheck`], the contract a track pick that the TV cannot decode asks for) comes
 /// back converted, and every seek and track pick after the landing plans from the same narrowed
 /// value. Without this the attempt would still hold the value it started on, and the refusal just
@@ -4103,9 +4111,9 @@ pub(super) const NATIVE_AUDIO_REJECTED: &str = "native audio: the server could n
 /// [`RecoveryDispatch::Refused`] / [`RecoveryVerdict::Refused`] leave the failure the pump held back
 /// (a forced direct play, which the viewer asked not to convert, is one).
 pub fn dispatch_native_audio_conversion(
-    ps: &mut PlaybackSession, caps: std::sync::Arc<plx_platform::devcaps::Caps>, offset_secs: i64,
+    ps: &mut PlaybackSession, refused: &plx_platform::devcaps::Facet, offset_secs: i64,
 ) -> RecoveryDispatch {
-    ps.begin_attempt(caps);
+    ps.narrow_attempt(refused);
     let expected = worker_ticket();
     let Some(contract) = plain_rebuild_precheck(ps, &expected) else {
         return RecoveryDispatch::Refused;
@@ -8035,6 +8043,7 @@ pub fn surface_sid() -> ServerId {
 pub fn request_play(
     ps: &mut PlaybackSession,
     meta: &mut plx_data::stores::metadata::MetadataStore,
+    caps: std::sync::Arc<plx_platform::devcaps::Caps>,
     sid: ServerId,
     rk: &str,
     part: &str,
@@ -8047,6 +8056,7 @@ pub fn request_play(
     request_play_inner(
         ps,
         meta,
+        caps,
         PlaybackRequest {
             sid,
             rk: rk.to_owned(),
@@ -8071,6 +8081,7 @@ pub fn request_play(
 pub fn request_play_queue_item(
     ps: &mut PlaybackSession,
     meta: &mut plx_data::stores::metadata::MetadataStore,
+    caps: std::sync::Arc<plx_platform::devcaps::Caps>,
     row: &plx_plex::plex::QueueRow,
     ctx: &str,
 ) -> bool {
@@ -8080,7 +8091,7 @@ pub fn request_play_queue_item(
         &row.show_title
     };
     let queue = super::queue_navigation::QueueContinuation::capture(ps, row);
-    request_play_with_queue(ps, meta, PlaybackRequest {
+    request_play_with_queue(ps, meta, caps, PlaybackRequest {
         sid: row.sid, rk: row.rk.clone(), part: row.part.clone(), vcodec: row.vcodec.clone(),
         acodec: row.acodec.clone(), title: title.clone(), ctx: ctx.into(), preview: false, version: None,
     }, None, None, false, crate::player::report::AttemptOrigin::Fresh, queue)
@@ -8091,6 +8102,7 @@ pub fn request_play_queue_item(
 pub fn request_preview(
     ps: &mut PlaybackSession,
     meta: &mut plx_data::stores::metadata::MetadataStore,
+    caps: std::sync::Arc<plx_platform::devcaps::Caps>,
     sid: ServerId,
     rk: &str,
     part: &str,
@@ -8101,6 +8113,7 @@ pub fn request_preview(
     request_play_inner(
         ps,
         meta,
+        caps,
         PlaybackRequest {
             sid,
             rk: rk.to_owned(),
@@ -8155,19 +8168,21 @@ fn request_env(
 fn request_play_inner(
     ps: &mut PlaybackSession,
     meta: &mut plx_data::stores::metadata::MetadataStore,
+    caps: std::sync::Arc<plx_platform::devcaps::Caps>,
     request: PlaybackRequest,
     retry: Option<RetryContext>,
     trace_generation: Option<u32>,
     drain_previous: bool,
     origin: crate::player::report::AttemptOrigin,
 ) -> bool {
-    request_play_with_queue(ps, meta, request, retry, trace_generation, drain_previous, origin, None)
+    request_play_with_queue(ps, meta, caps, request, retry, trace_generation, drain_previous, origin, None)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn request_play_with_queue(
     ps: &mut PlaybackSession,
     meta: &mut plx_data::stores::metadata::MetadataStore,
+    caps: std::sync::Arc<plx_platform::devcaps::Caps>,
     request: PlaybackRequest,
     retry: Option<RetryContext>,
     trace_generation: Option<u32>,
@@ -8208,12 +8223,11 @@ fn request_play_with_queue(
     // until `apply_plan` replaces it, which is what lets a still-running playback keep answering
     // for itself while the next one resolves.
     { let s = &mut *ps; {
-        // **The attempt's capability value is read HERE, once**, at the edge that starts the
-        // attempt, and carried by the session from now on: the resolve below, every seek and track
-        // pick during the film, and the transcode profile all plan from this one value
-        // ([`PlaybackSession::caps`]), never from the process-wide answer a worker would otherwise
-        // have to read again.
-        s.begin_attempt(plx_platform::devcaps::caps());
+        // **The attempt's capability value arrives as an argument**: the app's play start read it
+        // ONCE ([`request_play`]'s `caps`), and the session carries it from here on. The resolve
+        // below, every seek and track pick during the film, and the transcode profile all plan from
+        // this one value ([`PlaybackSession::caps`]); route reads no process-wide answer to plan.
+        s.begin_attempt(caps);
         s.request = Some(request.clone());
         s.requested_resume_ns = if request.preview {
             0
@@ -8470,7 +8484,9 @@ pub fn retry_current_play(
         quality(),
     ));
     let retry = retry_context_with(ps, resume_ns, direct_play);
-    request_play_inner(ps, meta, request, Some(retry), None, true, origin)
+    // A retry repeats the attempt: it plans from the value that attempt began on.
+    let caps = ps.attempt_caps();
+    request_play_inner(ps, meta, caps, request, Some(retry), None, true, origin)
 }
 
 /// [`rescue_retry_context`] with the failed attempt's Direct Play mode optionally replaced — the
@@ -8494,6 +8510,7 @@ fn retry_context_with(ps: &PlaybackSession, resume_ns: i64, direct_play: Option<
 pub fn request_play_movie(
     ps: &mut PlaybackSession,
     meta: &mut plx_data::stores::metadata::MetadataStore,
+    caps: std::sync::Arc<plx_platform::devcaps::Caps>,
     m: &PmsMovie,
     ctx: &str,
     version: Option<plx_plex::plex::MediaId>,
@@ -8514,6 +8531,7 @@ pub fn request_play_movie(
     request_play(
         ps,
         meta,
+        caps,
         item_sid(m.sid),
         &m.rk,
         &m.part,
@@ -8603,9 +8621,11 @@ pub fn pump_play(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata
             crate::player::log(
                 "playback resolve: desired contract changed in flight; discarding and resolving the latest contract",
             );
+            let caps = ps.attempt_caps();
             let _ = request_play_inner(
                 ps,
                 meta,
+                caps,
                 request,
                 Some(retry),
                 Some(trace_generation),
@@ -8767,7 +8787,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             cur_contract: plan.contract,
             // The landing keeps the value the request began the attempt on (`begin_attempt`, in
             // `request_play_with_queue`): the resolve that produced `plan` planned from exactly it.
-            caps: s.caps.clone(),
+            caps: s.caps.take(),
             cur_enhancement: plan.enhancement,
             cur_src: plan.src_measure,
             cur_transport_kbps: plan.transport_kbps,

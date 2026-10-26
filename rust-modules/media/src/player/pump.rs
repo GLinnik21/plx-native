@@ -643,12 +643,15 @@ fn recover_failed_source_route(ps: &mut crate::route::PlaybackSession, native_au
             dispatched
         }
         OpenFailureAction::ConvertNativeAudio => {
+            // What the pipeline refused is what the demuxer fed natively
+            // (`learn_native_audio_refusal` learned exactly this): the dispatch narrows the
+            // attempt's own capability value by it, so no process-wide answer is read again.
+            let Some((kind, channels)) = crate::ff::native_audio::fed() else {
+                return SourceRecovery::Failed;
+            };
+            let refused = plx_platform::devcaps::Facet::Audio { codec: kind.ffmpeg_name().into(), channels };
             let secs = (SHARED.playpos_ns.load(Relaxed) / 1_000_000_000).max(0);
-            // The refusal was learned just before this (`learn_native_audio_refusal`), into the
-            // device's capability answer. The conversion is a new attempt on that answer, so it is
-            // read HERE, fresh, and handed to the dispatch: the attempt's own value is the one the
-            // refused route was planned from and still lists the codec.
-            crate::route::dispatch_native_audio_conversion(ps, plx_platform::devcaps::caps(), secs)
+            crate::route::dispatch_native_audio_conversion(ps, &refused, secs)
         }
         OpenFailureAction::StartAutoHls => {
             let status = SHARED.dg_http_status.load(Relaxed);
@@ -3681,14 +3684,11 @@ mod flight_tests {
         rig.frames_until("the conversion's landing", |_| !crate::route::flight_outstanding());
         assert_eq!(rig.flight.decisions(), 1, "exactly one replacement /decision");
         // **The refusal learned mid-attempt reaches the recovery flight.** The attempt started on a
-        // value that lists Opus without a ceiling; the replacement request's profile is built from
-        // the value the dispatch read AFTER the lesson (`dispatch_native_audio_conversion`), so it
-        // carries the 2-channel ceiling the install just learned.
-        let requests = rig.flight.requests();
-        let replacement = requests
-            .iter()
-            .find(|l| l.contains("/decision?") && !l.contains("hasMDE=1"))
-            .unwrap_or_else(|| panic!("no replacement /decision in {requests:?}"));
+        // value that lists Opus without a ceiling; the dispatch narrowed that value by the refusal
+        // (`dispatch_native_audio_conversion`), so the replacement request's profile carries the
+        // 2-channel ceiling the install just learned.
+        let decisions = rig.flight.decision_requests();
+        let replacement = decisions.first().expect("the replacement /decision");
         assert!(
             replacement.contains("scopeName%3Dopus%26type%3DupperBound%26name%3Daudio.channels%26value%3D2"),
             "the replacement profile must carry the learned Opus ceiling: {replacement}"

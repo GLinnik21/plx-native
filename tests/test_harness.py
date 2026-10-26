@@ -6722,6 +6722,69 @@ impl PersonOwnerGateFixture {
                 self.assertNotIn(f"{base}{stem}.rs", out,
                                  "`..._preview::*` / `..._transport::{..}` is not `preview` / `transport`\n" + out)
 
+    def test_globals_ledger_sees_the_capability_answer_readers_in_a_machine(self):
+        """RED: `devcaps::caps()` is the device's capability answer, a process-wide value `learn_refusal` moves
+        under a running play, and the zero-argument `is_dp_audio(` / `is_dp_audio_track(` read it behind a
+        function (the attempt-caps PR). A machine that calls one reads the registry as surely as `client_for`
+        does: qualified, bare-after-an-import (singly, in a group, through a glob) and the rename that would hide
+        the calls are all caught. The `_with` forms take the value as an argument, so they are no read; neither
+        is a method named `caps` (`it.caps()`), a local named `caps`, or a `caps(` in a file that imports no
+        `devcaps::caps`. This is a coverage expansion: the repository itself seeds no line for it."""
+        crate = "screens"
+        r = self._plant_many({
+            "_check_deps_selftest_qualified.rs": (
+                "pub fn qualified() {\n"
+                "    let _ = plx_platform::devcaps::caps();\n"
+                "    let _ = plx_plex::plex::is_dp_audio(\"dca\", 6);\n"
+                "    let _ = plx_plex::plex::transcoder::is_dp_audio_track(\"dca\", 6, 48_000);\n"
+                "    let _ = plx_plex::plex::is_dp_audio_with(&c, \"dca\", 6);\n"
+                "    let _ = plx_plex::plex::is_dp_audio_track_with(&c, \"dca\", 6, 48_000);\n}\n"),
+            "_check_deps_selftest_renamed.rs": (
+                "use plx_platform::devcaps as dc;\n"
+                "use plx_platform::devcaps::caps as device_caps;\n"
+                "use plx_plex::plex::is_dp_audio as dp;\n\n"
+                "pub fn renamed() {\n    let _ = (dc::caps(), device_caps(), dp(\"dca\", 6));\n}\n"),
+            "_check_deps_selftest_bare.rs": (
+                "use plx_platform::devcaps::{self, caps};\n"
+                "use plx_plex::plex::{is_dp_audio_track, is_dp_audio_with};\n\n"
+                "pub fn bare() {\n    let _ = caps();\n    let _ = it.caps();\n"
+                "    let _ = is_dp_audio_track(\"dca\", 6, 0);\n    let _ = is_dp_audio_with(&c, \"dca\", 6);\n}\n"),
+            "_check_deps_selftest_globbed.rs": (
+                "use plx_platform::devcaps::*;\nuse plx_plex::plex::*;\n\n"
+                "pub fn globbed() {\n    let _ = (caps(), is_dp_audio(\"dca\", 6));\n}\n"),
+            "_check_deps_selftest_no_import.rs": (
+                "pub fn no_import(caps: &Caps) -> usize {\n    let n = caps.audio.len();\n    helper::caps(n)\n}\n"),
+            "_check_deps_selftest_taken.rs": (
+                "use plx_platform::devcaps::Caps;\n\n"
+                "pub fn taken(caps: &Caps) -> bool {\n    caps.hevc\n}\n"),
+        }, crate)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("globals:", out)
+        base = f"rust-modules/{crate}/src/_check_deps_selftest_"
+        for spelling in ("devcaps::caps", "is_dp_audio", "is_dp_audio_track"):
+            with self.subTest(qualified=spelling):
+                self.assertIn(f"{base}qualified.rs::qualified::{spelling}  (ledger: ", out)
+        for line in (1, 2, 3):
+            with self.subTest(rename_line=line):
+                self.assertIn(f"{base}renamed.rs:{line}\n", out + "\n")
+        for fn, spelling in (("bare", "caps"), ("bare", "is_dp_audio_track"), ("globbed", "caps"),
+                             ("globbed", "is_dp_audio")):
+            with self.subTest(fn=fn, spelling=spelling):
+                self.assertIn(f"{base}{fn}.rs::{fn}::{spelling}  (ledger: ", out)
+        self.assertEqual(out.count(f"{base}bare.rs::bare::caps  (ledger: "), 1,
+                         "`it.caps()` is not a read of the capability answer\n" + out)
+        self.assertEqual(out.count(f"{base}qualified.rs::qualified::is_dp_audio  (ledger: "), 1,
+                         "`is_dp_audio_with(` takes the value; it is no read\n" + out)
+        self.assertEqual(out.count(f"{base}qualified.rs::qualified::is_dp_audio_track  (ledger: "), 1,
+                         "`is_dp_audio_track_with(` takes the value; it is no read\n" + out)
+        self.assertNotIn(f"{base}bare.rs::bare::is_dp_audio  (ledger: ", out,
+                         "`is_dp_audio_with(` takes the value; it is no read\n" + out)
+        for stem in ("no_import", "taken"):
+            with self.subTest(not_a_read=stem):
+                self.assertNotIn(f"{base}{stem}.rs", out,
+                                 "a `caps` parameter or an unimported `caps(` is not the capability answer\n" + out)
+
     def test_a_bare_name_that_ends_a_braced_import_is_still_imported(self):
         """RED: `use plx_base::task::{self, spawn};` imports `spawn` as surely as `{spawn, self}` does, and
         so for `submit` and `peek`; the import pattern used to eat the closing `}` of a group whose
@@ -7404,6 +7467,8 @@ impl PersonOwnerGateFixture {
         # ViewState C2 (the step decides from the borrowed `ClientKeys`): -2 on globals (`request` and
         # `fan_out_origin_watched` no longer read the registry). C3 (the job lane) took the other 3: `kick`, and the
         # fan-out's `fan_out` and `ask_sources`, which now reach the other servers through the key-checked `KeyedClients`.
+        # Attempt-caps (#1044) moved the pin by nothing: the spellings widened to `devcaps::caps` and the zero-argument
+        # `is_dp_audio` / `is_dp_audio_track` (a coverage expansion, not a shrink), and the planner reads none of them.
         "globals": 66,  # production process-global reads inside machines (`ci/allow/globals/`)
         "forks": 58,  # production test/production forks in data/, plex/, media/, session/ (`ci/allow/forks/`)
         "fxlanes": 11,  # Bridge::app_effect arms that do not push Fx::Deliver (`ci/allow/fxlanes/`)

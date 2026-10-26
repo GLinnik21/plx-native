@@ -578,8 +578,13 @@ fn with_layers<R>(f: impl FnOnce(&Layers) -> R) -> Option<R> {
 /// ([`learn_refusal`], [`project_stored_refusals`]), so a decision that must hold across a whole
 /// attempt reads it once.
 pub fn caps() -> std::sync::Arc<Caps> {
-    with_layers(|l| l.caps.read().unwrap_or_else(|e| e.into_inner()).clone())
-        .unwrap_or_else(|| ASSUMED.get_or_init(|| std::sync::Arc::new(Caps::assumed())).clone())
+    with_layers(|l| l.caps.read().unwrap_or_else(|e| e.into_inner()).clone()).unwrap_or_else(assumed_shared)
+}
+
+/// The one shared [`Caps::assumed`] value: [`caps`]' answer before [`probe`] has run, and the
+/// stand-in a session that has not begun an attempt plans from (`route::PlaybackSession::caps`).
+pub fn assumed_shared() -> std::sync::Arc<Caps> {
+    ASSUMED.get_or_init(|| std::sync::Arc::new(Caps::assumed())).clone()
 }
 
 /// Apply the refusals the install's stored record holds to the answer ([`Layers::fold`]). The plex

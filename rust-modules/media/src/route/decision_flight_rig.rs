@@ -312,9 +312,14 @@ impl FlightRig {
         self.log.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
+    /// The live `/decision` request lines (not the `hasMDE=1` probe) the server has been asked, in order.
+    pub(crate) fn decision_requests(&self) -> Vec<String> {
+        self.requests().into_iter().filter(|r| r.contains("/decision?") && !r.contains("hasMDE=1")).collect()
+    }
+
     /// How many live `/decision` calls (not the `hasMDE=1` probe) the server has been asked.
     pub(crate) fn decisions(&self) -> usize {
-        self.requests().iter().filter(|r| r.contains("/decision?") && !r.contains("hasMDE=1")).count()
+        self.decision_requests().len()
     }
 
     /// The transcode session ids the server has been asked to stop.

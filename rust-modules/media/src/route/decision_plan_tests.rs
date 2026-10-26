@@ -137,7 +137,7 @@ fn a_new_request_ends_the_standing_error_of_a_released_engine() {
     assert_eq!(unpresented_resume_ns(&ps), 60_000_000_000, "and a retry resumes from the playhead");
 
     assert!(request_play(
-        &mut ps, &mut meta, ServerId::from_raw(0), "film", "/library/parts/2/file.mkv", "h264", "aac", "Film", "", None,
+        &mut ps, &mut meta, plx_platform::devcaps::caps(), ServerId::from_raw(0), "film", "/library/parts/2/file.mkv", "h264", "aac", "Film", "", None,
     ));
     assert!(engine_failure(&ps).is_none(), "the new attempt ends the standing error");
     assert_ne!(crate::player::state(&ps), crate::player::PlaybackState::Error);
@@ -1694,6 +1694,16 @@ fn an_undecodable_dts_only_file_does_not_direct_play_when_mde_says_it_may() {
     }
 }
 
+/// The dev set's table shape for DTS: the decoder is listed with a 6-channel ceiling.
+#[cfg(feature = "devtriggers")]
+fn dts_row_caps() -> plx_platform::devcaps::Caps {
+    plx_platform::devcaps::Caps {
+        audio: "aac,ac3,eac3,dts".into(),
+        audio_channels: [("dts".into(), 6)].into(),
+        ..plx_platform::devcaps::Caps::assumed()
+    }
+}
+
 /// The other side of #584: on a set whose table DOES list a DTS decoder (here the dev set's 6ch
 /// row), PMS's `dca` 5.1 track direct-plays when MDE allows, and the profile the request carries
 /// names DTS in PMS's spelling. Before the canonicaliser the `dca` track never matched the `dts`
@@ -1702,11 +1712,7 @@ fn an_undecodable_dts_only_file_does_not_direct_play_when_mde_says_it_may() {
 #[cfg(feature = "devtriggers")]
 fn a_dca_track_direct_plays_on_a_set_with_a_dts_row() {
     use std::time::Duration;
-    let _caps = plx_platform::devcaps::caps_on_this_thread_for_test(plx_platform::devcaps::Caps {
-        audio: "aac,ac3,eac3,dts".into(),
-        audio_channels: [("dts".into(), 6)].into(),
-        ..plx_platform::devcaps::Caps::assumed()
-    });
+    let _caps = plx_platform::devcaps::caps_on_this_thread_for_test(dts_row_caps());
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     // The start edge a play request runs (`request_play_with_queue`): the attempt reads the device's
@@ -1747,11 +1753,7 @@ fn a_dca_track_direct_plays_on_a_set_with_a_dts_row() {
 #[cfg(feature = "devtriggers")]
 fn a_transcode_profile_names_the_codecs_of_the_attempts_own_caps() {
     use plx_platform::devcaps::{Caps, Facet};
-    let a = Caps {
-        audio: "aac,ac3,eac3,dts".into(),
-        audio_channels: [("dts".into(), 6)].into(),
-        ..Caps::assumed()
-    };
+    let a = dts_row_caps();
     let b = a.without(&Facet::Audio { codec: "dts".into(), channels: 2 });
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);

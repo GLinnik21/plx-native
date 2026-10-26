@@ -1253,7 +1253,7 @@ pub struct ResolveEnv {
     pub direct_play_mode: DirectPlayMode,
     /// **The capability value this attempt plans from**, copied off the session
     /// ([`PlaybackSession::caps`]) beside the quality and the mode, so the worker never reads the
-    /// process-wide `devcaps::caps()`: every direct-play gate, the audio pick and the transcode
+    /// process-wide capability answer: every direct-play gate, the audio pick and the transcode
     /// profile of this resolve are derived from this one value.
     pub caps: std::sync::Arc<plx_platform::devcaps::Caps>,
     /// The SOURCE's whole-stream bitrate in **kbps**, or `0` when nobody has measured it — the
@@ -3007,10 +3007,11 @@ fn audio_intents<'a>(
 /// which it has never been; see the tests at the foot of this file.
 #[cfg(test)]
 pub(super) fn pick_dp_audio(
+    caps: &plx_platform::devcaps::Caps,
     tracks: &[plx_data::metadata::Stream],
     default_acodec: &str,
 ) -> Option<(i32, String, i64)> {
-    pick_dp_audio_pref(tracks, default_acodec, AudioLangPrefs::default())
+    pick_dp_audio_pref(caps, tracks, default_acodec, AudioLangPrefs::default())
 }
 
 /// [`pick_dp_audio`] with the item's Plex language preferences. The SHOW's setting mattered
@@ -3019,11 +3020,12 @@ pub(super) fn pick_dp_audio(
 /// series set to Hungarian opened in English (#160).
 #[cfg(test)]
 pub(super) fn pick_dp_audio_pref(
+    caps: &plx_platform::devcaps::Caps,
     tracks: &[plx_data::metadata::Stream],
     default_acodec: &str,
     prefs: AudioLangPrefs<'_>,
 ) -> Option<(i32, String, i64)> {
-    pick_dp_audio_mode(tracks, default_acodec, prefs, DirectPlayMode::Auto)
+    pick_dp_audio_mode(caps, tracks, default_acodec, prefs, DirectPlayMode::Auto)
 }
 
 /// Can the TV take this audio track straight from the file, under `mode`, on the attempt's
@@ -3047,11 +3049,11 @@ pub(super) fn audio_direct_plays_with(
 
 #[cfg(test)]
 fn pick_dp_audio_mode(
-    tracks: &[plx_data::metadata::Stream], default_acodec: &str,
+    caps: &plx_platform::devcaps::Caps, tracks: &[plx_data::metadata::Stream], default_acodec: &str,
     prefs: AudioLangPrefs<'_>, mode: DirectPlayMode,
 ) -> Option<(i32, String, i64)> {
     pick_dp_audio_eligible(tracks, default_acodec, prefs, 0, StandIn::Any,
-        |codec, channels, rate| audio_direct_plays_with(&plx_platform::devcaps::caps(), mode, codec, channels, rate))
+        |codec, channels, rate| audio_direct_plays_with(caps, mode, codec, channels, rate))
 }
 
 /// The codec of the audio track a refused Force Direct Play was going to play: the first intent
