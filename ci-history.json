@@ -1,4 +1,4 @@
-{"updated":"2026-10-26T15:41:37Z",
+{"updated":"2026-10-26T15:44:25Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -3912,7 +3912,8 @@
 {"id":40094220032,"at":"2026-10-24T12:30:35Z","sha":"a267feb80","title":"Merge branch 'main' into tools/kill-keeps-release-binary","pr":991,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"plan today's nightly":16,"ARM build + gates / build + verify":980,"publish nightly prerelease":19}},
 {"id":40096417370,"at":"2026-10-24T13:02:10Z","sha":"f3b1d4076","title":"Makefile: host-only goals keep a release-built pkg/plxnative","pr":991,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"plan today's nightly":17,"ARM build + gates / build + verify":979,"publish nightly prerelease":24}},
 {"id":40104785941,"at":"2026-10-24T14:57:25Z","sha":"e1db69ad9","title":"Makefile: SIM_W/SIM_H are the simulator's drawable in pixels on any density","pr":1000,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"plan today's nightly":16,"ARM build + gates / build + verify":1045,"publish nightly prerelease":18}},
-{"id":40343134555,"at":"2026-10-26T14:48:41Z","sha":"44c3dcd67","title":"Docs: prose that said FLAC-only now names the app-decoded set","pr":1067,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"plan today's nightly":20,"ARM build + gates / build + verify":995,"publish nightly prerelease":41}}
+{"id":40343134555,"at":"2026-10-26T14:48:41Z","sha":"44c3dcd67","title":"Docs: prose that said FLAC-only now names the app-decoded set","pr":1067,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"plan today's nightly":20,"ARM build + gates / build + verify":995,"publish nightly prerelease":41}},
+{"id":40349387210,"at":"2026-10-26T15:26:50Z","sha":"a741685fd","title":"Playback: a PCM Load never feeds a stream the app cannot decode raw (float and 8-bit LPCM are refused); CLAUDE.md says w","pr":1067,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"plan today's nightly":23,"ARM build + gates / build + verify":991,"publish nightly prerelease":22}}
 ],
 "cancelled":{"2026-10-16":{"push":9,"pull_request":1},"2026-10-18":{"push":4,"pull_request":0},"2026-10-19":{"push":0,"pull_request":1},"2026-10-20":{"push":0,"pull_request":2},"2026-10-22":{"push":4,"pull_request":1},"2026-10-23":{"push":5,"pull_request":2},"2026-10-24":{"push":9,"pull_request":3},"2026-10-25":{"push":10,"pull_request":0},"2026-10-26":{"push":8,"pull_request":9}},
 "daily":[],
