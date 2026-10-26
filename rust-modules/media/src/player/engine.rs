@@ -242,6 +242,11 @@ pub struct Engine {
     pub report_stop: Option<std::sync::Arc<threads::ReportStop>>, // ITS stop signal, not SHARED's
     /// Preview Load that must land unbound. The media join waits until the thread has returned.
     pub preview_abandon: bool,
+    /// The foreground lifecycle follows this Engine's Load attempt ([`foreground_follows_load`]).
+    /// It then owns the Load call's own synchronous result (`route_start_status` `Failed`, the
+    /// refusal #1018 retries), so the pump's failed-open ladder leaves that one alone
+    /// ([`super::pump`]'s `settled_by_foreground`).
+    pub foreground_follows_load: bool,
 }
 
 impl Engine {
@@ -1497,6 +1502,11 @@ fn start_bufferfeed_for(
             // in `start_bufferfeed_tracked` left a reload landing after a refused fresh start
             // (the foreground restore's rollback) with an Error over the video it began.
             ps.native_start_refused = false;
+            // The request's failed-open ladder rules on this Engine's open too: a Load it did not
+            // ask for (the foreground restore after a Home during a recovery flight or over the
+            // read-out) takes it out of `Flight` or `Failed`. The recovery landing's own reload has
+            // already moved it (`FlightLanded`), so this is a no-op there.
+            let _ = ps.open_recovery().step(&super::recovery::RecoveryEvent::LoadStarted, &mut Vec::new());
             BufferfeedStartOutcome::Launched(attempt)
         }
         Err(result) => {
@@ -1978,6 +1988,7 @@ fn start_bufferfeed_inner(
         report_th,
         report_stop: Some(report_stop),
         preview_abandon: false,
+        foreground_follows_load: false,
     };
     // Select this session's direct-play seek mode (`SeekMode`, mod.rs, whose SCOPE note argues why
     // it is per session). `feed_stream` can downgrade it to `Reload` mid-session (the pipeline was
@@ -2394,6 +2405,20 @@ pub fn suspend_bufferfeed_if_attempt(
         teardown(ps, pa, true);
     }
     owns_attempt
+}
+
+/// The foreground lifecycle follows `attempt` (it launched that Load, or took over following it):
+/// from now on the Load call's own synchronous refusal is the lifecycle's to settle
+/// ([`Engine::foreground_follows_load`]). True when the live Engine owns that exact attempt; a
+/// replaced Engine (a different attempt) is not marked.
+pub fn foreground_follows_load(pa: &mut super::adapter::PlayerAdapter, attempt: crate::route::RouteStartAttempt) -> bool {
+    match pa.engine() {
+        Some(engine) if engine.route_start == attempt => {
+            engine.foreground_follows_load = true;
+            true
+        }
+        _ => false,
+    }
 }
 
 /// The teardown body. `for_reload` = this is a direct-play seek reload (reload_at), NOT a real
@@ -4670,6 +4695,7 @@ mod prime_livelock_tests {
             report_th: None,
             report_stop: None,
             preview_abandon: false,
+            foreground_follows_load: false,
         }
     }
 
