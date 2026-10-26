@@ -8,7 +8,7 @@
 #   tv-lock.sh release                      hand it back
 #   tv-lock.sh require                      assert + renew; what every TV-facing tool calls
 #   tv-lock.sh with --why "<what>" -- CMD…  acquire, run CMD, release even on Ctrl-C
-#   tv-lock.sh break                        steal a live lease (names the holder first)
+#   tv-lock.sh break [--yes]                steal a lease (names the holder first; refuses a LIVE one without --yes)
 #   tv-lock.sh selftest                     exercise the whole protocol with NO television
 #
 # WHY THIS EXISTS. There is one dev set, one app instance on it, and nothing in webOS, ssh or
@@ -85,9 +85,10 @@ fmt_dur() {  # seconds -> "1h 04m" / "7m 12s" / "9s"
 }
 
 # The ONE line a person needs when the set is about to be in use: printed (plain, at the start of its
-# line, on stdout) when a NEW lease is taken -- `acquire`, `break` -- and never for a renew. A shell
-# cannot call PushNotification, so the PostToolUse hook .claude/hooks/tv-lock-notify.py keys on the
-# leading `HEADS-UP:` and tells the agent to send it. `sane` keeps a --why to one line.
+# line, on stdout) when a NEW lease is taken -- `acquire`, `break`, or your own EXPIRED lease re-taken -- and
+# never for a live renew. A shell cannot call PushNotification, so the PostToolUse hook
+# .claude/hooks/tv-lock-notify.py keys on the leading `HEADS-UP:` and tells the agent to send it. `sane`
+# keeps a --why to one line.
 heads_up() {  # $1 = why, $2 = lease minutes
   printf 'HEADS-UP: %s, lease %s min\n' "$(sane "${1:-no reason given}")" "$2"
 }
@@ -374,7 +375,8 @@ cmd_acquire() {
       ok "TV lock held by this lane for $(fmt_dur $((ttl*60)))${WHY:+ — $WHY}"
       info "release it: tools/tv-lock.sh release"
       preflight_note
-      heads_up "$WHY" "$ttl"        # last, so a `| tail` keeps it (the in-place renew above prints none)
+      heads_up "$WHY" "$ttl"        # last, so a `| tail` keeps it (a LIVE in-place renew above prints none;
+                                    # re-taking your own EXPIRED lease prints it from there)
       exit 0
     fi
     [ "$ACT" = held ] || exit 2
@@ -549,7 +551,9 @@ cmd_require() {
     echo "  make check / make sim (the ui-sim skill runs N simulators at once)." >&2
     exit 1
   fi
-  # free or expired: take the short implicit lease. No HEADS-UP: a Claude session never gets here (tv-lock-guard.py refuses first).
+  # free or expired: take the short implicit lease. No HEADS-UP here: tv-lock-guard.py refuses an unleased device
+  # command before it gets here, so this branch is normally a script or a human; the exceptions are a lease the TV
+  # lost (a reboot) while the local mirror still reads live, and a hand-typed `require`.
   new_token; WHY="${WHY:-implicit lease (an unattended TV command)}"; LABEL="${LABEL:-auto}"
   if do_acquire "$AUTO_TTL_MIN" 0; then
     # ALWAYS said out loud, `--quiet` or not: `--quiet` means "do not narrate the lease I already
@@ -640,7 +644,7 @@ cmd_selftest() {
   RESP="$(remote_op acquire 600 0)";  t "an owner-less lock dir is taken, not a wedge" stolen
 
   # The HEADS-UP line (.claude/hooks/tv-lock-notify.py keys on it), through the real subcommands
-  # rather than remote_op: one on a NEW lease (acquire, break), none on a renew or a refusal. Each
+  # rather than remote_op: one on a NEW lease (acquire, break, your own expired one re-taken), none on a live renew or a refusal. Each
   # call is a child with its own lane, lease directory and lock path under $d, so nothing here can
   # reach the operator's real lease; PLX_TV_LOCK_LOCAL keeps ssh_tv, ensure_awake and
   # preflight_note off the network, and TV is a placeholder so no tv-config lookup happens either.

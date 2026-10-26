@@ -3,12 +3,13 @@
 
 WHY A HOOK. When a lane takes (or breaks) the one dev set, the owner should hear about it before the
 set starts moving under them, and a shell cannot call PushNotification: only the agent can. So
-`tools/tv-lock.sh acquire` and `break` print one line, `HEADS-UP: <why>, lease <ttl> min`, on a NEW
-lease (never on a renew), and this hook turns that line in a Bash result into an instruction, as
-`additionalContext`, to send it NOW. It is a nudge, not a gate: nothing here blocks, and nothing checks
-that the push was sent (whether to enforce it is the owner's call). A subagent's messages go to its
-caller, not the owner, and some subagent toolsets have no PushNotification at all, so a payload with an
-`agent_id` gets its own text: put the line first in the final report so the caller sends the push.
+`tools/tv-lock.sh acquire` and `break` print one line, `HEADS-UP: <why>, lease <ttl> min`, on a new
+lease, including your own expired one (never on a live renew), and this hook turns that line in a Bash
+result into an instruction, as `additionalContext`, to send it NOW. It is a nudge, not a gate: nothing
+here blocks, and nothing checks that the push was sent (whether to enforce it is the owner's call). A
+subagent's messages go to its caller, not the owner, and some subagent toolsets have no PushNotification
+at all, so a payload with an `agent_id` gets its own text: put the line first in the final report so the
+caller sends the push.
 
 WHAT IT COSTS. It runs after EVERY Bash call, so the common case must be free: the raw stdin is
 searched for the marker before anything is parsed, and no marker means exit at once with no output.
