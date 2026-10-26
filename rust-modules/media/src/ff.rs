@@ -8627,6 +8627,46 @@ mod audio_codec_name_tests {
     }
 }
 
+/// PURE: whether the demuxer would hand the TV this stream's packets RAW although the Load declared
+/// PCM. `pcm_declared`: `pcm_out()` is set (1x, an app-decoded codec was planned); `audio_fed`:
+/// audio goes to the TV at all; `app_decoded`: the stream's own FFmpeg codec has an app decoder
+/// (`devcaps::app_decoded_by_ffmpeg_name`, and for a lossy one the Load's lossy claim).
+///
+/// The planner's `pcm` is PMS's spelling and covers LPCM flavours the app cannot decode (float,
+/// 8-bit); the TV reads raw bytes under a PCM Load as the declared S16/S32, which is full-scale
+/// noise or the wrong speed with no error. Such a stream must be refused, never fed.
+fn pcm_load_feeds_raw(pcm_declared: bool, audio_fed: bool, app_decoded: bool) -> bool {
+    pcm_declared && audio_fed && !app_decoded
+}
+
+#[cfg(test)]
+mod pcm_load_guard_tests {
+    use super::pcm_load_feeds_raw;
+
+    /// Every FFmpeg codec name a track PMS calls `pcm` (or any other planned-as-PCM track) can
+    /// open as, under a PCM Load: only the ones with an app decoder may go on.
+    #[test]
+    fn a_pcm_load_never_feeds_a_stream_the_app_cannot_decode() {
+        for (name, decodable) in [
+            ("flac", true), ("alac", true), ("pcm_s16le", true), ("pcm_s24be", true), ("pcm_s32le", true),
+            ("pcm_f32le", false), ("pcm_f64le", false), ("pcm_s8", false), ("pcm_u8", false),
+            ("pcm_bluray", false), ("pcm_dvd", false), ("ac3", false), ("eac3", false), ("aac", false),
+            ("dts", false), // lossy: the app's only when the Load itself claimed the lossy decode
+        ] {
+            let app_decoded = plx_platform::devcaps::app_decoded_by_ffmpeg_name(name).is_some_and(|c| !c.lossy);
+            assert_eq!(app_decoded, decodable, "{name}: the table the guard reads");
+            assert_eq!(pcm_load_feeds_raw(true, true, app_decoded), !decodable, "{name}");
+        }
+    }
+
+    #[test]
+    fn only_a_pcm_load_that_feeds_audio_is_guarded() {
+        assert!(!pcm_load_feeds_raw(false, true, false), "a native Load feeds compressed audio as it always did");
+        assert!(!pcm_load_feeds_raw(true, false, false), "no audio fed (the dev video-only switch)");
+        assert!(!pcm_load_feeds_raw(true, true, true), "decoded in the app");
+    }
+}
+
 #[cfg(test)]
 mod averror_errno_tests {
     use super::*;
@@ -9262,6 +9302,23 @@ pub fn demux(
                 } else {
                     None
                 };
+                // The Load said PCM but this stream has no app decoder (float or 8-bit LPCM under
+                // PMS's `pcm`): refuse it the way an open refusal ends. Fed raw, the TV would play
+                // it as the declared S16/S32 — noise, with no error to recover from.
+                if ai >= 0 && pcm_load_feeds_raw(
+                    pcm_out().is_some(), FEED_AUDIO.load(Ordering::Relaxed), app_decoded.is_some(),
+                ) {
+                    let name = std::ffi::CStr::from_ptr(avcodec_get_name(
+                        (*stream_codecpar(*streams.add(ai as usize))).codec_id
+                    )).to_string_lossy();
+                    crate::player::log(&format!(
+                        "ff: {name} refused — the Load declared PCM but the app has no {name} decoder"
+                    ));
+                    SHARED.demux_failed.store(true, Ordering::Release);
+                    avformat_close_input(&mut fmt);
+                    free_avio(avio);
+                    break;
+                }
                 let mut pcm_dec: Option<crate::ff_pcm::PcmDecoder> = None;
                 if let Some(name) = app_decoded.as_deref().filter(|_| {
                     FEED_AUDIO.load(Ordering::Relaxed) && speed_permille == crate::player::RATE_NORMAL
