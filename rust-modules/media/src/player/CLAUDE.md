@@ -250,8 +250,9 @@ something.
     `pump::land_recovery_flight`), because the branches' failure flags stay up for the whole flight
     and `fail_current_engine` would end it. `land_recovery_flight` fails nothing itself: it reloads
     onto the route, or hands `FlightRefused` to the machine. A refused facet conversion goes to the
-    HLS rung for a cold Auto Original and to the read-out otherwise; a refused rollback or
-    both-facets flight is always the read-out.
+    HLS rung for a cold Auto Original and otherwise to the app-decode rung (below) or the read-out;
+    a refused both-facets flight goes to the app-decode rung or the read-out, a refused rollback is
+    always the read-out.
     `route::recovery_flight_outstanding` is how the pump waits.
   - **Two rollbacks have no Engine for a pump to drive** (`route::dispatch_engineless_rollback_rebase`,
     marked `flight_engineless` beside the recovery marker): the foreground restore's
@@ -320,9 +321,18 @@ something.
   (float or 8-bit LPCM under PMS's `pcm`) is refused in the demuxer (`ff::pcm_load_feeds_raw`) and ends as
   `demux_failed` -> `LoadRefusal::SourceFailed`, which names no facet, so the audio-only conversion rung is not
   reached: Auto Original falls to its HLS contingency, Force Direct Play shows the error.
-  DTS, MP3, Vorbis and TrueHD are the lossy entries of `devcaps::APP_DECODED`, **gated off**: on a DEBUG build, `/tmp/plxnative-appdecodelossy` (read once
-  at boot by `devcaps::probe`) sets `Caps::app_decodes_lossy`, and then each is announced without a table row, is
-  never the set's own decoder's (the Load declares `PCM`, stereo 48 kHz S16: `route::stream_pcm`), and
+  DTS, MP3, Vorbis and TrueHD are the lossy entries of `devcaps::APP_DECODED`, enabled **per row**: `Caps::app_lossy` (`AppLossy`) is `Off` in the assumed
+  fallback, `Measured` in a table that was read (the rows whose `AppDecoded::measured` carries TV evidence: DTS only, the
+  U5 core decode at 13.1% of one of four cores with 60 fps held; MP3, Vorbis and TrueHD are unmeasured, so not offered) and
+  `All` under the DEBUG trigger `/tmp/plxnative-appdecodelossy` (read once at boot by `devcaps::probe`), which is also how an
+  unmeasured row is measured. A row is DECODED IN THE APP only where it is in force
+  (`Caps::app_decodes_lossy_track`, the one answer): the trigger puts every lossy row in force (even where the set has the
+  decoder); otherwise Force Direct Play has no native path for the track on a set without a DTS row (webOS 10+, or a refusal
+  the install learned), or the recovery rung below put the codec in force (`Caps::with_app_lossy_for`). Auto never decodes in
+  the app on its own, and Force Direct Play's pick is two passes: the set's own decoder over every track first, the app's
+  only when it plays none, so a native sibling always wins. An app-decoded track is never the set's own decoder's (the Load
+  declares `PCM`, stereo 48 kHz S16: `route::stream_pcm`), is announced without a table row, the track menu says it plays in
+  stereo (`route::audio_decoded_in_app`), and
   `ff_pcm::PcmDecoder` decodes it (DTS: the core only, `core_only`), downmixes by the frame's channel layout and resamples it
   (`Stereo48`). The resample is linear from a source below 48 kHz and a windowed-sinc low-pass decimator from one above it
   (`speed_audio::Decimator`: 88.2, 96, 176.4, 192 kHz; flat to 20 kHz, the alias of a tone above 28 kHz about 100 dB down), the
@@ -331,8 +341,8 @@ something.
   decoded as FFmpeg's `truehd` decodes it, up to the 7.1 bed; an Atmos object substream is not rendered. Its access units are
   1/1200 s, so the demuxer gathers decoded blocks shorter than 10 ms into AUs of about that length (`ff_pcm::AuBatcher`; a DTS,
   MP3 or lossless block is longer and, while the stream is contiguous, passes whole; a gap in the content time ends the AU). The speed decoder (`SpeedDecoder`) mixes by the same layout mask
-  (`ff::frame_channel_mask`), so 2.1, 3.1, 4.1 and 7.1 are right at a speed too. It stays
-  off until the TV has measured the CPU (S4 U5); with it off DTS is native exactly as above and MP3, Vorbis and TrueHD are not offered. A Load whose DTS the app
+  (`ff::frame_channel_mask`), so 2.1, 3.1, 4.1 and 7.1 are right at a speed too. Where DTS is not
+  in force it is native exactly as above. A Load whose DTS the app
   decoded names no audio facet in the failed-open ladder (`StreamAudio::app_decoded_lossy`): the pipeline was fed PCM, and a
   facet keyed `dts` would be stored as a refusal of the set's NATIVE decoder.
   A named refusal comes from a native Load that ends
@@ -377,7 +387,7 @@ something.
   **The ladder** (the order of `OpenRecovery::decide`): (1) a pending Original trial's
   rollback, which narrows the attempt first by the facet the refusal named, because its rebase, the next
   retry and a quality change must plan from the narrowed value; (2) under Forced Direct Play, the
-  read-out (a forced play is never converted); (3) the **facet rung**, for a refusal that names the
+  app-decode rung (5) or the read-out (a forced play is never converted); (3) the **facet rung**, for a refusal that names the
   pipeline (`type=18` of ANY number, or the stall; not a Load timeout or a source failure) of an
   Engine that has shown no picture (`OpenFacts::no_frames`: the machine lives per request but a
   picture is per Engine, so a reload after the request's first picture, a track pick, owes its own
@@ -402,12 +412,22 @@ something.
   AC3 sibling is only chosen once a learned row is in `start` (S2); (4) the **both-facets rung**, a cold
   Auto Original's HLS contingency (`StartAutoHls`), whose attempt lacks every facet the request took
   out and every stream this refusal named (the refused video raster, the suspect audio); a manual pick has
-  no such rung, so its refusal after the facet flight, landed or refused, goes to (5) the read-out.
+  no such rung, so its refusal after the facet flight, landed or refused, goes to (5); (5) the **app-decode rung** (`RecoveryEffect::DecodeInApp`),
+  the LAST: a pipeline refusal of a direct play (`OpenFacts::direct`: no server session) that has shown no picture, whose audio
+  the pipeline itself decoded (`StreamAudio::app_decoded_lossy` is false), of a lossy codec the START value's policy admits
+  (`Caps::app_may_decode_lossy`), once per request (`in_app`), after a refused HLS contingency or a refused facet flight, or at
+  once under Forced. It flies nothing and asks no server: the attempt gets that codec in force (`Caps::with_app_lossy_for`,
+  applied after the facets, with the refused video raster given back since the reload feeds the same source video), and
+  `pump::decode_in_app` reloads the same direct play (`reload_at`, logged `open recovery: decoding dts in the app (stereo)
+  after type=18 num=601`), whose Load declares the PCM. It never proves a facet, and a flight after an app-decoded refusal
+  never does either (`unprovable`); a remux or transcode route, a refused app decode, and the other cases below end on (6) the
+  read-out. A rebuild rung for a refused remux or transcode, and a resolve-time `PlayVerdict::Server` refusal, are not
+  covered.
   The facet and both-facets rungs together are bounded by `MAX_RECOVERY_FLIGHTS` (2) per request, the facet rung runs once, and the
   rollback is not counted. A facet `start` already lacks (`start.without(facet) == start`: a stored
   refusal that `devcaps::start_caps` took out of `start`) narrows nothing and gets no flight, so a
   conversion that is still refused cannot loop; a refused conversion dispatch goes on to the next rung
-  too (HLS for a cold Auto Original, else the read-out), and a refused rollback is terminal. The viewer
+  too (HLS for a cold Auto Original, else the app decode, else the read-out), and a refused rollback is terminal. The viewer
   keeps the connecting spinner: no read-out, no second play request. **A Load the machine did not
   ask for re-opens the ladder:** `RecoveryEvent::LoadStarted`, raised by
   `engine::start_bufferfeed_for` (which every Engine start passes: a fresh play, a reload, the

@@ -21,21 +21,28 @@
 //! audio and one video: the stream the facet rung converted, the refused video raster and native
 //! audio the HLS contingency's attempt lacks, or the native audio a refusal named while a pending
 //! rollback was chosen over the facet rung, so the restored route does not offer it again
-//! ([`Caps::without`]); [`attempt`](OpenRecovery::attempt) is the only reader the route plans from,
+//! ([`Caps::without`]), then the one lossy codec the app-decode rung put in force
+//! ([`Caps::with_app_lossy_for`], applied last so a facet cannot take it out again);
+//! [`attempt`](OpenRecovery::attempt) is the only reader the route plans from,
 //! and `attempt` is derived from `start` on each rung's entry, never narrowed in place.
 //!
 //! **The ladder** is the order of [`decide`](OpenRecovery::decide): a pending HLS->Original
 //! rollback first (its HLS route is the one a failed open owes the viewer); under Forced Direct
-//! Play the read-out (a forced play is never converted); else, for a refusal that names the
+//! Play the app-decode rung or the read-out (a forced play is never converted); else, for a refusal that names the
 //! pipeline, the conversion of the stream the pipeline was fed when [`suspect`] names it (the facet
 //! rung, once per request, [`RecoveryEffect::ConvertFacet`]: the audio when it is outside the codecs
 //! every set decodes, else the source's video for a numbered refusal, which a cold Auto Original
 //! leaves to its HLS rung); else the HLS contingency of a cold Auto Original (the both-facets rung,
 //! [`RecoveryEffect::StartAutoHls`]), whose attempt lacks every facet the request took out and
-//! every stream this refusal named, the refused video raster and the suspect audio; else the failure
-//! read-out. The rungs which start a flight (the facet rung and the both-facets rung) are bounded
-//! by [`MAX_RECOVERY_FLIGHTS`] per request. A manual pick has no both-facets rung: its refusal after
-//! the facet flight, whether the flight landed or came back refused, reads out.
+//! every stream this refusal named, the refused video raster and the suspect audio; else the LAST
+//! rung, the app decode ([`RecoveryEffect::DecodeInApp`]): a refused pipeline decode of a lossy
+//! codec the start value's policy admits ([`Caps::app_may_decode_lossy`]) on a direct play with no
+//! picture yet reloads the same play with the app decoding that audio to stereo PCM, no server asked
+//! and no flight flown, once per request; else the failure read-out. The rungs which start a flight
+//! (the facet rung and the both-facets rung) are bounded by [`MAX_RECOVERY_FLIGHTS`] per request. A
+//! manual pick has no both-facets rung: its refusal after the facet flight, whether the flight
+//! landed or came back refused, goes to the app-decode rung, then the read-out. A Load the app
+//! decoded for never proves a facet, nor does a flight after one (`unprovable`).
 //!
 //! **What the ladder teaches.** A refusal of natively fed audio (`num=200` or the stall) names the
 //! codec, so the same step asks the driver to record it ([`RecoveryEffect::ConfirmRefusal`] with
@@ -496,21 +503,25 @@ impl OpenRecovery {
     /// | `Flight{Facet}` | `FlightLanded{lanes}`, an excluded facet [`proves`] (an audio facet only), no picture yet in the request | none; `Proving{that facet}` |
     /// | `Flight{Facet}` | `FlightLanded{..}`, otherwise | none; `Opening` (the reload re-enters the open) |
     /// | `Flight{Rollback, Both}` | `FlightLanded{..}` | none; `Opening` (lanes ignored: only the facet rung proves) |
-    /// | `Flight{Facet}` | `FlightRefused` | the ladder below (one flight spent, so the facet rung is closed): `StartAutoHls` for a cold Auto Original, else `ShowError` |
-    /// | `Flight{Rollback, Both}` | `FlightRefused` | `ShowError`; `Failed` (a refused rollback stays terminal) |
+    /// | `Flight{Facet}` | `FlightRefused` | the ladder below (one flight spent, so the facet rung is closed): `StartAutoHls` for a cold Auto Original, else `DecodeInApp` or `ShowError` |
+    /// | `Flight{Both}` | `FlightRefused` | `DecodeInApp` where the rung is open, else `ShowError`; `Failed` |
+    /// | `Flight{Rollback}` | `FlightRefused` | `ShowError`; `Failed` (a refused rollback stays terminal) |
     /// | `Opening` | `FirstPicture` | none; `Playing` |
     /// | `Proving{f}` | `FirstPicture` | `ConfirmRefusal{f, Proof}`; `Playing` |
     /// | `Proving`, first | `LoadStarted` | none; `Proving` (the landing's own reload) |
     /// | `Proving`, after its reload | `LoadStarted` | none; `Opening` (a foreign Load: the proof is dropped) |
     /// | `Flight`, `Failed` | `LoadStarted` | none; `Opening`, `flights` and the excluded facets kept |
     ///
-    /// The ladder: `pending_original` -> `Rollback`; else `forced` -> `ShowError`; else a pipeline
+    /// The ladder: `pending_original` -> `Rollback`; else `forced` -> `DecodeInApp` or `ShowError`; else a pipeline
     /// refusal, of an Engine with no picture (`no_frames`), of a [`suspect`] stream which narrows the
     /// attempt (the audio outside `aac`/`ac3`/`eac3`; else, for a numbered refusal of a play that is
     /// not a cold Auto Original, the source's video), with no flight spent -> `ConvertFacet`; else
     /// `auto_original && no_frames` with a flight left -> `StartAutoHls`, its attempt lacking the
-    /// audio and the video raster the refusal named (each: `Flight`); else `ShowError`; `Failed`. A
-    /// manual pick has no rung after the facet flight, so its next refusal is the read-out.
+    /// audio and the video raster the refusal named (each: `Flight`); else `DecodeInApp` (a pipeline
+    /// refusal of a direct play with no picture, whose audio the pipeline itself decoded, of a lossy
+    /// codec the start value admits, once per request: `Opening`, the attempt decoding that codec in
+    /// the app and the refused video raster given back); else `ShowError`; `Failed`. A manual pick has
+    /// no both-facets rung, so after its facet flight the next refusal goes to the app decode.
     ///
     /// `Refused` is not handled in `Flight` or `Failed`: a flight is outstanding (the pump runs no
     /// failure arm while one is), or the read-out is already up (the pump meets the same Engine's
@@ -638,7 +649,7 @@ mod tests {
         Some(StreamAudio { codec: codec.into(), channels, app_decoded_lossy: false })
     }
 
-    /// The same track when the app decoded it (the lossy gate is on): the pipeline was fed PCM.
+    /// The same track when the app decoded it (the attempt decodes it in the app): the pipeline was fed PCM.
     fn app_decoded(codec: &str, channels: u32) -> Option<StreamAudio> {
         Some(StreamAudio { codec: codec.into(), channels, app_decoded_lossy: true })
     }
@@ -835,10 +846,10 @@ mod tests {
         assert_eq!(fx, [RecoveryEffect::ShowError { refusal: LoadRefusal::Stalled }]);
     }
 
-    /// **A Load whose audio the app decoded names no native audio facet.** Under the lossy gate the
+    /// **A Load whose audio the app decoded names no native audio facet.** Where the attempt decodes it in the app the
     /// pipeline was fed PCM, so a refusal says nothing about its own DTS decoder; naming `dts` would
     /// convert it, and a proven conversion would be STORED as a refusal of the set's native DTS
-    /// (`limit_codec` caps it at two channels), which outlives the gate.
+    /// (`limit_codec` caps it at two channels), which outlives the app decode.
     #[test]
     fn an_app_decoded_lossy_load_names_no_audio_facet() {
         assert_eq!(suspect(audio("dca", 6).as_ref(), None), Some(dts6()), "the native Load still does");

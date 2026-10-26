@@ -5812,7 +5812,7 @@ mod pcm_format_tests {
         assert!(pcm_format_of(Some(&track("flac", 2, 48_000, 16)), "pcm").is_err(), "a track of another codec");
     }
 
-    /// **DTS under the gate** (S4 PR 2): the Load declares the SHAPE THE DECODER OUTPUTS, stereo
+    /// **DTS in force** (S4 PR 2): the Load declares the SHAPE THE DECODER OUTPUTS, stereo
     /// 48 kHz S16, whatever the source's channels and rate; and only on an attempt whose capability
     /// value turned the lossy decode on. Off, DTS declares nothing here and stays native.
     #[test]
@@ -5888,7 +5888,7 @@ mod pcm_format_tests {
         assert!(!stream_pcm_is_lossy(&ps), "above the rate bound the server converts it");
     }
 
-    /// **MP3 and Vorbis under the gate** (S4-4) declare the same one shape as DTS, only on an attempt
+    /// **MP3 and Vorbis in force** (S4-4) declare the same one shape as DTS, only on an attempt
     /// that turned the lossy decode on, and are the ladder's "app decoded" fact then.
     #[test]
     fn mp3_and_vorbis_declare_stereo_48k_only_when_the_attempt_has_the_gate_on() {
@@ -5911,7 +5911,7 @@ mod pcm_format_tests {
         }
     }
 
-    /// TrueHD under the gate (S4-5) declares the same one shape as DTS, MP3 and Vorbis.
+    /// TrueHD in force (S4-5) declares the same one shape as DTS, MP3 and Vorbis.
     #[test]
     fn truehd_declares_stereo_48k_only_when_the_attempt_has_the_gate_on() {
         let mut ps = PlaybackSession::IDLE;

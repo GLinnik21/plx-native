@@ -1,6 +1,6 @@
 //! Audio decoded in the app and fed as PCM: the lossless FLAC, ALAC and integer LPCM, bit-exact,
 //! and DTS, MP3, Vorbis and TrueHD, the lossy entries, converted to stereo 48 kHz S16 ([`Stereo48`]) and
-//! only on a `Caps::app_decodes_lossy` value (`devcaps::APP_DECODED` is the set).
+//! only where the attempt decodes the track in the app (`Caps::app_decodes_lossy_track`; `devcaps::APP_DECODED` is the set).
 //!
 //! libpf has no FLAC or ALAC input — its Load vocabulary is AAC / AC3 / AC3 PLUS / DTS / MP3 / MPEG
 //! / OPUS / VORBIS / WMA / PCM (read from `libpf-1.0` on a webOS 4.4.3 OLED55B8) — but it does take

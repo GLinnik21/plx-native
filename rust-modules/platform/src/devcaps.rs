@@ -1811,7 +1811,7 @@ mod tests {
     fn dts_is_app_decoded_only_on_a_value_that_turned_the_gate_on() {
         for off in [Caps::assumed(), parse(REAL).unwrap()] {
             assert!(off.app_lossy_in_force.is_empty() && !off.app_decodes("dts") && !off.app_decodes("dca"));
-            assert!(off.app_decodes("flac"), "the lossless set is not gated");
+            assert!(off.app_decodes("flac"), "the lossless set is never lossy-policy bound");
         }
         assert_eq!(Caps::assumed().app_lossy, AppLossy::Off);
         assert_eq!(parse(REAL).unwrap().app_lossy, AppLossy::Measured);
@@ -1833,12 +1833,13 @@ mod tests {
         assert_eq!(dts_in_list, 1);
     }
 
-    /// **S4-4: MP3 and Vorbis ride the same gate as DTS**, and nothing else changes with it off.
+    /// **S4-4: MP3 and Vorbis ride the same policy as DTS**: in force only when the debug trigger or the
+    /// rescue rung puts them there, and, being unmeasured, never enabled on a read table.
     /// On, each is announced without a table row and fed in both modes; unlike a DTS core, either can
     /// be above 48 kHz (a 96 kHz Vorbis), which has not been through the TV, so the rate bound stays
     /// and such a track is converted by the server.
     #[test]
-    fn mp3_and_vorbis_are_app_decoded_only_under_the_gate() {
+    fn mp3_and_vorbis_are_app_decoded_only_where_in_force() {
         for off in [Caps::assumed(), parse(REAL).unwrap()] {
             for codec in ["mp3", "vorbis", "MP3"] {
                 assert!(!off.app_decodes(codec) && !off.audio_has(codec) && !off.forced_feeds_audio(codec), "{codec}");

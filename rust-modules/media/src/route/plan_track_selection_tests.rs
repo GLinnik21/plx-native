@@ -984,9 +984,9 @@ fn auto_and_forced_agree_on_the_dca_spelling() {
     assert!(!audio_direct_plays_with(&assumed, DirectPlayMode::Forced, "truehd", 8, 0));
 }
 
-/// **DTS under the lossy-decode gate** (S4 PR 2): a set with no DTS row direct-plays a DTS track in
+/// **DTS the app decodes** (S4 PR 2): a set with no DTS row direct-plays a DTS track in
 /// BOTH modes, up to 8 channels (the app decodes the core and downmixes), whatever a native
-/// ceiling says; with the gate off nothing changes — no row, no DTS — and the lossless codecs do
+/// ceiling says; with the policy off nothing changes — no row, no DTS — and the lossless codecs do
 /// not depend on it.
 #[test]
 fn the_lossy_gate_lets_the_app_direct_play_dts_in_both_modes_and_off_changes_nothing() {
@@ -1006,7 +1006,7 @@ fn the_lossy_gate_lets_the_app_direct_play_dts_in_both_modes_and_off_changes_not
     assert!(audio_direct_plays_with(&measured.with_app_lossy(), DirectPlayMode::Forced, "dca", 6, 0));
 }
 
-/// **MP3 and Vorbis under the lossy gate** (S4-4) direct-play in both modes on a set with no row for
+/// **MP3 and Vorbis in force** (S4-4) direct-play in both modes on a set with no row for
 /// them, and not with it off; a Vorbis above 48 kHz is the server's.
 #[test]
 fn the_lossy_gate_lets_the_app_direct_play_mp3_and_vorbis_in_both_modes() {
@@ -1024,7 +1024,7 @@ fn the_lossy_gate_lets_the_app_direct_play_mp3_and_vorbis_in_both_modes() {
     }
 }
 
-/// **TrueHD under the lossy gate** (S4-5) direct-plays in both modes at any rate it has, 8 channels,
+/// **TrueHD in force** (S4-5) direct-plays in both modes at any rate it has, 8 channels,
 /// on a set with no row for it, and not with the gate off.
 #[test]
 fn the_lossy_gate_lets_the_app_direct_play_truehd_at_any_rate_in_both_modes() {

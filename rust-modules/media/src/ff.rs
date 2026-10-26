@@ -46,7 +46,7 @@ pub fn set_feed_audio(on: bool) {
 /// The PCM the current Load declared for app-decoded audio (`route::stream_pcm`), packed
 /// `rate << 16 | bits << 8 | channels`; 0 = this Load declares no PCM.
 static PCM_OUT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-/// Bit set in [`PCM_OUT`] when the Load's PCM is the LOSSY app decode's (DTS under the gate).
+/// Bit set in [`PCM_OUT`] when the Load's PCM is the LOSSY app decode's (a lossy codec the attempt decodes in the app).
 const PCM_LOSSY_BIT: u64 = 1 << 40;
 /// Set by `start_bufferfeed` beside the Load, before the demuxer is spawned. `lossy`: the Load
 /// declared the lossy decode's shape (`route::stream_pcm_is_lossy`), so a lossy stream is the app's
@@ -876,8 +876,8 @@ pub(crate) unsafe fn frame_channel_mask(frame: *const u8) -> u64 {
 /// **The audio decoder a playback-speed session runs** (`crate::speed_audio`): the selected audio
 /// stream decoded in software, downmixed to stereo and time-stretched to `permille`, then fed as
 /// PCM AUs. Exists only while the speed is not 1x; at 1x the compressed audio goes to the TV as it
-/// always has, except the app-decoded set (FLAC, ALAC, LPCM, and DTS when `Caps::app_decodes_lossy`
-/// is on), which `ff_pcm::PcmDecoder` decodes and feeds as PCM. At a speed this decoder takes those too and `PcmDecoder` is not
+/// always has, except the app-decoded set (FLAC, ALAC, LPCM, and the lossy codecs an attempt decodes in
+/// the app, `Caps::app_decodes_lossy_track`), which `ff_pcm::PcmDecoder` decodes and feeds as PCM. At a speed this decoder takes those too and `PcmDecoder` is not
 /// opened. Opened per demux run from the stream's own codec parameters.
 pub(crate) struct SpeedDecoder {
     ctx: *mut AVCodecContext,
@@ -9307,7 +9307,7 @@ pub fn demux(
                     None
                 };
                 // Native DTS: the set's own decoder takes the core. Not when the Load declared the lossy PCM,
-                // which is the app decoding DTS itself (`pcm_dec` below, `Caps::app_decodes_lossy`).
+                // which is the app decoding DTS itself (`pcm_dec` below, `Caps::app_decodes_lossy_track`).
                 let dts_audio = ai >= 0 && !pcm_lossy() && std::ffi::CStr::from_ptr(avcodec_get_name(
                     (*stream_codecpar(*streams.add(ai as usize))).codec_id
                 )).to_bytes() == b"dts";
@@ -9318,7 +9318,7 @@ pub fn demux(
                 // stretched and fed as PCM. A stream with no bundled decoder cannot honour it — the
                 // engine refused the speed at Load (`player::session_rate`), so this is a guard.
                 let speed_permille = SHARED.applied_rate_permille.load(Ordering::Relaxed);
-                // App-decoded audio (FLAC, ALAC, LPCM, and DTS under the gate: `devcaps::APP_DECODED`): decode to the PCM the
+                // App-decoded audio (FLAC, ALAC, LPCM, and the lossy rows of `devcaps::APP_DECODED` the attempt decodes in the app): decode to the PCM the
                 // Load declared, or refuse the stream — the Load and the file must agree, or the
                 // panel plays the wrong pitch. Not at a speed: that session's Load declares the
                 // speed decoder's own PCM (`engine::app_pcm_for_rate`), `SpeedDecoder` below decodes
@@ -9327,8 +9327,8 @@ pub fn demux(
                     let name = std::ffi::CStr::from_ptr(avcodec_get_name(
                         (*stream_codecpar(*streams.add(ai as usize))).codec_id
                     )).to_string_lossy();
-                    // A lossy codec is the app's only when the Load declared PCM for it (the gate is
-                    // on); otherwise it is native audio and the set's decoder takes it.
+                    // A lossy codec is the app's only when the Load declared PCM for it (the attempt
+                    // decodes it in the app); otherwise it is native audio and the set's decoder takes it.
                     plx_platform::devcaps::app_decoded_by_ffmpeg_name(&name)
                         .filter(|c| !c.lossy || pcm_lossy())
                         .map(|_| name.into_owned())
