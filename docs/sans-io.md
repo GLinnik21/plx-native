@@ -75,15 +75,17 @@ run the product's code. `fxlanes` reads the one fn, `Bridge::app_effect` in `rus
   seeded the three `preview::paused` reads the screens already had (`screens/src/detail/mod.rs`) as a
   coverage expansion, so this change's net effect on the pinned total is zero (a relocation lowers no
   pin on its own).
-- The device's capability answer (`devcaps::caps()`) is the same kind of read: a process-wide value
-  that the install's stored refusals move under a running play (`project_stored_refusals`). The route's planner takes the attempt's `&Caps`
-  as an argument (`PlaybackSession::attempt_caps`, read once by the app's play start), so `devcaps::caps`
+- The device's capability answer (`devcaps::caps()`) is the same kind of read: a process-wide value,
+  now write-once (the boot snapshot; a refusal the install learns never moves it). The route's planner
+  takes the attempt's `&Caps` as an argument (`PlaybackSession::attempt_caps`, derived once by the
+  app's play start, `devcaps::start_caps` over the stored refusals), so `devcaps::caps`
   and the zero-argument `is_dp_audio(` / `is_dp_audio_track(` (the `_with` forms take the value and
   are not sites) are spellings of this rule, qualified or bare after an import; a `use ... as`
   rename of any of them fails outright. Widening the rule to them is a coverage expansion, not a
   shrink: no machine reads them, so it seeded no ledger line and moved no pin. The boot-snapshot
-  readers (the engine's sink guards, the Forced preview, the diagnostics and lab read-outs) are in
-  crates and files this rule does not scan.
+  readers (the engine's sink guards, the diagnostics and lab read-outs) are in crates and files this
+  rule does not scan; the Forced preview reads the start value (`devcaps::start_caps`) and the track
+  menu's "converted by your server" mark reads the attempt (`route::audio_converted_by_server(ps, ..)`).
 - `forks` counts an attribute the product can satisfy. `#[cfg(test)]` and `any(test, feature =
   "test-support")` items are skipped whole, to the end of their own body (only a test can see them);
   `all(test, ..)` too. `any(feature = "devtriggers", test)` is counted, because a dev build can

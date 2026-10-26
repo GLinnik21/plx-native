@@ -316,12 +316,16 @@ something.
   machine turns it into `RecoveryEffect::ConfirmRefusal { Evidence::Named }`, which the pump runs as
   `session::record_named_refusal`: one write to the install-scope `native_audio_refused` preference,
   stamped with the firmware `devcaps::learning_firmware()` reads). That preference is the ONE list of
-  refusals: `devcaps` keeps no list and takes none directly, only the answer derived from the stored
-  record every installed session carries (`devcaps::project_stored_refusals`, called by the session's
-  `replace_cache` as a pure projection under the cache lock, which folds monotonically: it only ever
-  removes). A write is queued on the storage worker, so the answer moves when it lands, not in the
-  frame that queued it, and the recovery below never waits for it: it rebuilds from the attempt's own
-  narrowed `start`. **A row is applied only on facet-clean proof** (S2a, #1046): a NAMED refusal
+  refusals: `devcaps` keeps no list and takes none directly, and `devcaps::caps()` is **write-once**
+  (the boot snapshot, one `Arc` for the life of the process; nothing folds a refusal into it). A
+  play's START value is derived at the app's play-start edge, once: `devcaps::start_caps` over the
+  rows in force of the stored record (`session::peek().applied_refusals()`, which only ever removes
+  native audio, `Caps::minus`), and the attempt carries it. A write is queued on the storage worker,
+  so a row reaches the NEXT play's start once it has landed, not the play in flight, and the recovery
+  below never waits for it: it rebuilds from the attempt's own narrowed `start`. A write that does not
+  land (unwritable storage) leaves the record as it was, as it does for every preference: the next
+  play loads the combination, is refused once more, and the ladder converts it, one refused Load
+  slower. **A row is applied only on facet-clean proof** (S2a, #1046): a NAMED refusal
   (`num=200`, the stall) applies at once (its row has no `proofs`), but the DTS 601 of #695 names no
   codec, so it is learned the other way. The machine's facet flight lands (`FlightLanded` carries the
   `/decision` lanes, `route::plan::decision_lanes`), and only a flight whose AUDIO lane is `Transcode`
@@ -363,7 +367,7 @@ something.
   Auto Original's HLS contingency (`StartAutoHls`); (5) the read-out. The facet and both-facets rungs
   together are bounded by `MAX_RECOVERY_FLIGHTS` (2) per request, the facet rung runs once, and the
   rollback is not counted. A facet `start` already lacks (`start.without(facet) == start`: a stored
-  refusal that `project_stored_refusals` put in `start`) narrows nothing and gets no flight, so a
+  refusal that `devcaps::start_caps` took out of `start`) narrows nothing and gets no flight, so a
   conversion that is still refused cannot loop; a refused conversion dispatch goes on to the next rung
   too (HLS for a cold Auto Original, else the read-out), and a refused rollback is terminal. The viewer
   keeps the connecting spinner: no read-out, no second play request. **A Load the machine did not
@@ -395,7 +399,8 @@ something.
   the next rung, the read-out for a manual Original; it used to return from the watchdog with
   nothing done and leave the viewer on "Buffering..." for good (TV run G, 2026-10-26). Garbled playback (no stall, no event)
   still needs a static row. The event log has `native audio: watching`, `STALL, no picture`, the
-  `remembered` line, `devcaps: ... learned refusals:`, and once per play the fed packets' `max` and
+  `remembered` line, `devcaps: play start less learned refusals` (once per play whose start value
+  a stored row narrowed), and once per play the fed packets' `max` and
   `p95` size (the C1's 6-channel Opus decoder stalls at packets of 1536 B and above).
   A learned row records the firmware BUILD it was watched on (`tv::device::Info::build`, nyx's
   `core_os_release`, e.g. `6.5.3-47`). A refusal is evidence only on its own build, so an LG update
@@ -406,8 +411,9 @@ something.
   Debug switches (debug builds, files under `/tmp/<app id>/`, read at app start):
   `plxnative-nativeaudiowide` ignores the last two layers; with `plxnative-nativeaudiolearn` beside it
   the exclusions stay ignored but refusals are learned and applied (the demo: a stall, a learned row,
-  an automatic server-converted replay); `plxnative-nativeaudioforget` does not apply the stored list
-  this run (a row recorded during the run is stored but does not apply either, until the next launch). `plxnative-refuse601` publishes the
+  an automatic server-converted replay); `plxnative-nativeaudioforget` applies no stored row this run
+  (a row recorded during the run is stored but does not apply either, until the next launch; the
+  request in flight still converts). `plxnative-refuse601` publishes the
   firmware's `type=18 num=601` through `sf_on_event` once per play request, after the Load returned and
   before a picture (`pump.rs`'s `inject_refuse601`; the file is read only inside that open window, once
   the request is not yet refused), so a DTS item on the mock server reproduces #695 on the TV: the

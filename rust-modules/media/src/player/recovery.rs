@@ -14,7 +14,9 @@
 //!
 //! **The owner is the request.** [`PlaybackSession`](crate::route::PlaybackSession) holds one
 //! `Option<OpenRecovery>`, created by `begin_attempt` with the capability value the app's play start
-//! read, and replaced by the next request's. The machine also owns that value: the attempt's
+//! derived (`devcaps::start_caps`: the write-once boot snapshot less the install's stored refusals in
+//! force), and replaced by the next request's: a refusal this request learned reaches the next one
+//! only as a stored row, once the learner's write has landed. The machine also owns that value: the attempt's
 //! capabilities are `start` narrowed by the one facet the facet rung took out of this request (or
 //! the native audio a refusal named while a pending rollback was chosen over the facet rung, so the
 //! restored route does not offer it again) ([`Caps::without`]); [`attempt`](OpenRecovery::attempt) is the only reader the route plans from,
@@ -257,7 +259,7 @@ enum State {
 /// The ladder for one play request. See the module doc.
 #[derive(Clone, Debug)]
 pub struct OpenRecovery {
-    /// What the app's play start read; never changed.
+    /// What the app's play start derived (`devcaps::start_caps`); never changed.
     start: Arc<Caps>,
     /// `start` narrowed by `excluded`: the value the route plans and profiles from. Assigned only
     /// on a rung's entry, always from `start` ([`attempt_for`]).
