@@ -19,6 +19,7 @@
   "widgets.tracks.stereo": "Стерео",
   "widgets.tracks.original": "Оригинал: {language}",
   "widgets.tracks.converted_by_server": "{track} · преобразовано сервером",
+  "widgets.tracks.decoded_in_app_stereo": "{track} · воспроизводится в стерео",
   "widgets.action.mark_watched": "Отметить просмотренным",
   "widgets.action.mark_unwatched": "Отметить непросмотренным",
   "widgets.action.play_start": "Смотреть с начала",
