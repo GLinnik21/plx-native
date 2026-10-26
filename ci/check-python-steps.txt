@@ -157,7 +157,7 @@ tools/plxnative-sample selftest
 # that `up` requires after launch. No SSH or television access occurs in this self-test.
 python3 tools/mock-guest.py --selftest
 tools/tv-session.sh selftest
-# The PreToolUse/PostToolUse hooks' own suites (~0.8s together). They were not in this
+# The PreToolUse/PostToolUse hooks' own suites. They were not in this
 # target until 2026-08-26, which meant the guard that decides whether a private value may
 # leave this machine was covered by a test nobody ran on a normal check -- the same shape as
 # the bug that produced the leak it exists to prevent, where the check computed its answer and
@@ -219,6 +219,9 @@ python3 ci/test_host_threads.py
 # ...and the other half of that rule: a timing run (tests/run.py --fps*, profile-graphics, tv-sched-trace)
 # refuses a deployed `tvdev` binary and builds with ARM_PROFILE=release; functional runs do not. No TV.
 python3 tests/test_arm_profile_guard.py
+# The harness half of the TV lock's pre-flight: tests/run.py stops on an `IN USE:` line (giving back a lease it
+# took, keeping one it inherited) unless PLX_TV_IN_USE_OK=1, as `tv-lock.sh with` does. A fake lock script in a temp dir; no TV.
+python3 tests/test_run_in_use.py
 # The production C dispatch gate (src/starfish.c `sf_ready_object`), compiled and run on the host. It
 # had a test file and no gate: nothing ran it until the step manifest was checked against the tree.
 python3 tests/test_native_load_gate.py
@@ -330,3 +333,22 @@ python3 ci/check-rust-inputs.py
 # report-only flag ratchet. Pure lexing, no cargo; the self-tests run on synthetic trees in a private temp dir.
 python3 ci/test_check_machine_shape.py
 python3 ci/check-machine-shape.py
+# tools/pr-land.py (gate / wait / merge / restack) against a fake `gh` on PATH and an injected sleeper: a failed, pending, missing, draft, behind
+# or head-moved PR never reaches `gh pr merge` (#387), the polling and backoff, the head-oid race, the verify against a temporary
+# origin, and a planted secret refused before any `gh` call. Real gh JSON as fixtures; temp dirs only, no network, no sleeping on the poll or race timers (one test lets a hung gh hit a 1 s timeout).
+python3 tools/test_pr_land.py
+# The TV lock's own protocol suite, with NO television: the device half runs under a local sh in a temp dir, and the
+# HEADS-UP cases run the real `acquire`/`break` as children with their own lane, lease directory and lock path (one
+# line on a new lease, including your own expired one, none on a live renew or a refusal). It also runs the pre-flight's
+# verdict table (IDLE / IN USE / UNKNOWN) on fixture replies, cuts a hung probe off at PLX_TV_PREFLIGHT_SECS, and runs
+# `with` for real: it refuses to start on IN USE, PLX_TV_IN_USE_OK overrides, and its renewer's whole process tree dies
+# with it. That spawns and kills background processes, so it takes about 20 s, not milliseconds. Then the PostToolUse hook
+# that turns the HEADS-UP and IN USE lines into reminders: payload shapes, the failure and unrelated cases, malformed
+# stdin. Both host-only.
+tools/tv-lock.sh selftest
+python3 .claude/hooks/tv-lock-notify-test.py
+# The custom agents' files (AGENTS.md, "Harness-specific files"): every `.agents/agents/<name>.md` carries a matching frontmatter
+# `name`, an explicit `model:` (one documented exemption), a description, a RELATIVE `.claude/agents/<name>.md` symlink that resolves
+# to it and a `.codex/agents/<name>.toml` wrapper. CI's path filter ignores those files, so this is the only reader. Reads the real
+# tree once; the cases run on synthetic trees in a private temp dir.
+python3 ci/test_agent_files.py
