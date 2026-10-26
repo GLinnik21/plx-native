@@ -6723,9 +6723,11 @@ impl PersonOwnerGateFixture {
                                  "`..._preview::*` / `..._transport::{..}` is not `preview` / `transport`\n" + out)
 
     def test_globals_ledger_sees_the_capability_answer_readers_in_a_machine(self):
-        """RED: `devcaps::caps()` is the device's capability answer, a process-wide value the stored refusals move
-        under a running play, and the zero-argument `is_dp_audio(` / `is_dp_audio_track(` read it behind a
-        function (the attempt-caps PR). A machine that calls one reads the registry as surely as `client_for`
+        """RED: `devcaps::caps()` is the device's capability answer, a process-wide registry read. It has been
+        write-once since #1047: it is the boot snapshot, a stored refusal never moves it, and the stored rows reach
+        a play only through `devcaps::start_caps` at the app's start edge. The zero-argument `is_dp_audio(` /
+        `is_dp_audio_track(` read it behind a function (the attempt-caps PR). A machine that calls one reads the
+        registry as surely as `client_for`
         does: qualified, bare-after-an-import (singly, in a group, through a glob) and the rename that would hide
         the calls are all caught. The `_with` forms take the value as an argument, so they are no read; neither
         is a method named `caps` (`it.caps()`), a local named `caps`, or a `caps(` in a file that imports no
