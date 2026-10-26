@@ -442,7 +442,7 @@ fn publish_diag(eng: &Engine, now: u32) {
 ///
 /// The first half of the way back from a failed Original open: take the rollback and say why the
 /// Original was refused. `None` means no recovery was pending. What is left is the rebase of the
-/// restored route — a flight either way: on the pump's frames ([`recover_failed_source_route`]), or
+/// restored route — a flight either way: on the pump's frames ([`drive_open_recovery`]), or
 /// Engine-less for the two callers that have no Engine for a pump to drive
 /// ([`begin_engineless_rollback`]).
 fn take_failed_original_rollback(ps: &mut crate::route::PlaybackSession, status: i32) -> Option<crate::route::OriginalRollback> {
@@ -551,38 +551,6 @@ pub fn drain_engineless_rollback(ps: &mut crate::route::PlaybackSession, pa: &mu
     }
 }
 
-/// Which recovery owns a source/pipeline open failure. Pure so the ordering cannot regress while
-/// the device-only reload calls remain outside host tests.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum OpenFailureAction {
-    /// HLS→Original had a live encoder held specifically for this outcome.
-    RollbackPendingOriginal,
-    /// The pipeline refused the audio the app fed it natively, and the install just learned that:
-    /// the same route is rebuilt with the server converting that audio.
-    ConvertNativeAudio,
-    /// Cold Auto Original never produced a frame; build the HLS contingency bootstrap retained.
-    StartAutoHls,
-    /// Manual Original, a post-frame interruption, or no viable route.
-    Error,
-}
-
-fn open_failure_action(
-    pending_original: bool,
-    native_audio_learned: bool,
-    auto_original: bool,
-    no_frames: bool,
-) -> OpenFailureAction {
-    if pending_original {
-        OpenFailureAction::RollbackPendingOriginal
-    } else if native_audio_learned {
-        OpenFailureAction::ConvertNativeAudio
-    } else if auto_original && no_frames {
-        OpenFailureAction::StartAutoHls
-    } else {
-        OpenFailureAction::Error
-    }
-}
-
 /// A preview is direct-play only. A failed original open must not become an HLS transcode, and
 /// it must not land on the player error read-out. On the host seam with no clock sink, `sf_load`
 /// returns 0 because there is no video path. That is not an admitted Starfish failure, so it
@@ -605,79 +573,146 @@ fn finish_preview_open_failure(
     crate::player::preview::retire(ps, pa, "open failed");
 }
 
-/// What the pump's failure branches got from [`recover_failed_source_route`].
-enum SourceRecovery {
+/// What the pump's failure branches got from [`recover_failed_open`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OpenRecoveryRun {
     /// A flight owns the replacement route; [`land_recovery_flight`] reloads onto it, or fails the
     /// Engine, when it lands. The frames in between wait ([`recovery_flight_outstanding`]).
     Flying,
-    /// Nothing to recover with: the failure means what it always did.
+    /// Nothing to recover with: the Engine failed for good and the viewer has the read-out.
     Failed,
+    /// The ladder asked for nothing; the frame goes on.
+    Quiet,
 }
 
-/// Recover a failed open. Pending HLS rollback has priority; a failed rollback is terminal rather
-/// than silently starting a third transaction on route state whose encoder restore already failed.
-/// A refusal of natively fed audio that was just learned (`native_audio_learned`) rebuilds the same
-/// route converted; a cold Auto Original falls back to HLS. Each recovery is a flight: the
-/// replacement route's PMS half runs on a worker while the viewer keeps the connecting spinner
-/// they had.
-fn recover_failed_source_route(ps: &mut crate::route::PlaybackSession, native_audio_learned: bool) -> SourceRecovery {
-    // **A learned refusal narrows the attempt's own capability value, whichever recovery wins.**
-    // What the pipeline refused is what the demuxer fed natively (`learn_native_audio_refusal`
-    // learned exactly this). The Original trial's rollback is chosen over the conversion, and the
-    // rebase it flies, a later retry and a quality change plan from the attempt's value: left at
-    // the one the play started on, they offer the refused audio natively again, the pipeline
-    // refuses it again, `learn` finds the combination known and returns false, and the viewer who
-    // picked Original is left on the read-out where the conversion would have played. This is the
-    // one place the narrowing happens; no process-wide answer is read again.
-    let refused = if native_audio_learned { refused_native_audio() } else { None };
-    if let Some(refused) = &refused {
-        ps.narrow_attempt(refused);
+/// What the ladder decides on, read at the moment of a failure ([`super::recovery::OpenFacts`]).
+/// `native_audio` is what the caller's failure names ([`native_audio_fact`]); the branches which
+/// are not a pipeline refusal pass `None`.
+fn open_facts(ps: &crate::route::PlaybackSession, native_audio: Option<plx_platform::devcaps::Facet>) -> super::recovery::OpenFacts {
+    super::recovery::OpenFacts {
+        pending_original: crate::route::original_recovery_pending(),
+        auto_original: crate::route::auto_original_watch(ps).is_some(),
+        no_frames: SHARED.frames.load(Relaxed) == 0,
+        native_audio,
     }
-    let action = open_failure_action(
-        crate::route::original_recovery_pending(),
-        native_audio_learned,
-        crate::route::auto_original_watch(ps).is_some(),
-        SHARED.frames.load(Relaxed) == 0,
-    );
-    let dispatch = match action {
-        OpenFailureAction::RollbackPendingOriginal => {
-            // Capture before the reload clears the engine-scoped HTTP mirror. This sticky pair is
-            // the reason a successful HLS rollback can still explain on screen why Original was
-            // refused.
-            let status = SHARED.dg_http_status.load(Relaxed);
-            let Some(rollback) = take_failed_original_rollback(ps, status) else {
-                return SourceRecovery::Failed;
+}
+
+/// The pipeline's own account of the failed Load, from the flags its callbacks latched.
+fn load_refusal() -> super::recovery::LoadRefusal {
+    if SHARED.load_timed_out.load(Acquire) {
+        super::recovery::LoadRefusal::TimedOut
+    } else {
+        super::recovery::LoadRefusal::Refused { num: SHARED.dg_cb_err_num.load(Relaxed) }
+    }
+}
+
+/// The native audio a refusal just named: the flag `sf_on_event` (`type=18 num=200` while audio was
+/// fed natively) or the stall watchdog raised, and the audio the demuxer is feeding. Peeks the flag,
+/// which [`learn_native_audio_refusal`] consumes when the ladder asks for the confirmation; a flag
+/// raised with nothing fed natively is dropped here, as it always was.
+fn native_audio_fact() -> Option<plx_platform::devcaps::Facet> {
+    if !SHARED.native_audio_refused.load(Acquire) {
+        return None;
+    }
+    let fed = refused_native_audio();
+    if fed.is_none() {
+        SHARED.native_audio_refused.store(false, Release);
+    }
+    fed
+}
+
+/// Run `first` through the request's failed-open ladder ([`super::recovery::OpenRecovery`]) and
+/// execute what it asks for. **One event in a single slot**: a step's effects run in order, and the
+/// one answer an effect gives (the learner's verdict, a flight that could not start) is the next
+/// event, until a step asks for nothing more. `why` words the learner's log line.
+///
+/// Pending HLS rollback has priority; a failed rollback is terminal rather than silently starting a
+/// third transaction on route state whose encoder restore already failed. A refusal of natively fed
+/// audio that was just learned rebuilds the same route converted; a cold Auto Original falls back to
+/// HLS. Each recovery is a flight: the replacement route's PMS half runs on a worker while the
+/// viewer keeps the connecting spinner they had.
+fn drive_open_recovery(ps: &mut crate::route::PlaybackSession, first: super::recovery::RecoveryEvent, why: &str) -> OpenRecoveryRun {
+    use super::recovery::{RecoveryEffect, RecoveryEvent};
+    let mut run = OpenRecoveryRun::Quiet;
+    let mut ev = first;
+    loop {
+        let mut fx = Vec::new();
+        ps.open_recovery().step(&ev, &mut fx);
+        let mut answer = None;
+        for effect in fx {
+            let dispatched = match effect {
+                RecoveryEffect::ConfirmRefusal => {
+                    answer = Some(RecoveryEvent::RefusalConfirmed {
+                        newly: learn_native_audio_refusal(why, plx_plex::plex::session::learn_native_audio_refusal),
+                    });
+                    continue;
+                }
+                RecoveryEffect::Rollback => {
+                    // Capture before the reload clears the engine-scoped HTTP mirror. This sticky
+                    // pair is the reason a successful HLS rollback can still explain on screen why
+                    // Original was refused.
+                    let status = SHARED.dg_http_status.load(Relaxed);
+                    match take_failed_original_rollback(ps, status) {
+                        None => crate::route::RecoveryDispatch::Refused,
+                        Some(rollback) => {
+                            let dispatched = crate::route::dispatch_rollback_rebase(ps, rollback.offset_ns);
+                            if dispatched == crate::route::RecoveryDispatch::Refused {
+                                super::log(crate::route::ROLLBACK_REBASE_REFUSED);
+                            }
+                            dispatched
+                        }
+                    }
+                }
+                RecoveryEffect::StartFlight => {
+                    // The attempt was narrowed by the machine; the dispatch plans from it.
+                    let secs = (SHARED.playpos_ns.load(Relaxed) / 1_000_000_000).max(0);
+                    crate::route::dispatch_native_audio_conversion(ps, secs)
+                }
+                RecoveryEffect::StartAutoHls => {
+                    let status = SHARED.dg_http_status.load(Relaxed);
+                    if status >= 400 {
+                        super::note_original_failure(super::ABR_FAILURE_ORIGINAL_HTTP, status);
+                    } else {
+                        super::note_original_failure(super::ABR_FAILURE_ORIGINAL_OPEN, status);
+                    }
+                    let secs = (SHARED.playpos_ns.load(Relaxed) / 1_000_000_000).max(0);
+                    crate::route::dispatch_unopened_auto_hls(ps, secs)
+                }
+                RecoveryEffect::ShowError { refusal } => {
+                    super::log(&format!("open recovery: no rung left for {refusal}; failing the Engine"));
+                    fail_engine_for_good();
+                    run = OpenRecoveryRun::Failed;
+                    continue;
+                }
             };
-            let dispatched = crate::route::dispatch_rollback_rebase(ps, rollback.offset_ns);
-            if dispatched == crate::route::RecoveryDispatch::Refused {
-                super::log(crate::route::ROLLBACK_REBASE_REFUSED);
+            match dispatched {
+                crate::route::RecoveryDispatch::Flying { .. } => run = OpenRecoveryRun::Flying,
+                crate::route::RecoveryDispatch::Refused => answer = Some(RecoveryEvent::FlightRefused),
             }
-            dispatched
         }
-        OpenFailureAction::ConvertNativeAudio => {
-            // The attempt was narrowed above; with no audio fed there is nothing to convert.
-            if refused.is_none() {
-                return SourceRecovery::Failed;
-            }
-            let secs = (SHARED.playpos_ns.load(Relaxed) / 1_000_000_000).max(0);
-            crate::route::dispatch_native_audio_conversion(ps, secs)
+        match answer {
+            Some(next) => ev = next,
+            None => return run,
         }
-        OpenFailureAction::StartAutoHls => {
-            let status = SHARED.dg_http_status.load(Relaxed);
-            if status >= 400 {
-                super::note_original_failure(super::ABR_FAILURE_ORIGINAL_HTTP, status);
-            } else {
-                super::note_original_failure(super::ABR_FAILURE_ORIGINAL_OPEN, status);
-            }
-            let secs = (SHARED.playpos_ns.load(Relaxed) / 1_000_000_000).max(0);
-            crate::route::dispatch_unopened_auto_hls(ps, secs)
-        }
-        OpenFailureAction::Error => return SourceRecovery::Failed,
-    };
-    match dispatch {
-        crate::route::RecoveryDispatch::Flying { .. } => SourceRecovery::Flying,
-        crate::route::RecoveryDispatch::Refused => SourceRecovery::Failed,
     }
+}
+
+/// A failed open: run the ladder, and for a recovery that flies keep the connecting spinner the
+/// failed open left. The source-failure branches' shared answer, always the frame's last act when
+/// it is not [`OpenRecoveryRun::Quiet`].
+fn recover_failed_open(
+    ps: &mut crate::route::PlaybackSession,
+    eng: &Engine,
+    refusal: super::recovery::LoadRefusal,
+    native_audio: Option<plx_platform::devcaps::Facet>,
+    why: &str,
+) -> OpenRecoveryRun {
+    let facts = open_facts(ps, native_audio);
+    let run = drive_open_recovery(ps, super::recovery::RecoveryEvent::Refused { refusal, facts }, why);
+    if run == OpenRecoveryRun::Flying {
+        hold_connecting_state(eng);
+    }
+    run
 }
 
 /// The native audio the demuxer is feeding, as the capability facet the pipeline's refusal of it
@@ -691,7 +726,7 @@ fn refused_native_audio() -> Option<plx_platform::devcaps::Facet> {
 /// codec and channel count as refused on this firmware (`learn`, which is
 /// `session::learn_native_audio_refusal` in the player and a recorder in the tests). True when the
 /// refusal is new to the install, which is the caller's one conversion
-/// ([`OpenFailureAction::ConvertNativeAudio`]); false when nothing was refused that way, or the
+/// ([`super::recovery::RecoveryEffect::StartFlight`]); false when nothing was refused that way, or the
 /// combination was already known (a conversion that still fed it natively must end in the ordinary
 /// failure, not loop).
 fn learn_native_audio_refusal(why: &str, learn: impl FnOnce(&str, u32) -> bool) -> bool {
@@ -710,9 +745,9 @@ fn learn_native_audio_refusal(why: &str, learn: impl FnOnce(&str, u32) -> bool) 
 
 /// The native surround audio watchdog ([`super::native_stall`]): the pipeline took the Load and a few
 /// access units of a native Opus track with more than two channels, then stopped
-/// accepting with both our queues full and no picture. True when it fired and the combination was
-/// learned (the caller recovers through the failed-open ladder); a combination the install already
-/// knew only logs, so the conversion cannot loop.
+/// accepting with both our queues full and no picture. True when it fired, with the refusal flag
+/// raised: the caller hands the audio to the failed-open ladder, whose confirmation is the learner
+/// ([`learn_native_audio_refusal`]).
 fn native_audio_stall_fired(eng: &Engine, now: u32) -> bool {
     use super::native_stall::{Probe, Step, NATIVE_AUDIO_STALL_MS, SIZES, WATCH};
     let fed = crate::ff::native_audio::fed();
@@ -749,19 +784,8 @@ fn native_audio_stall_fired(eng: &Engine, now: u32) -> bool {
                  audio queue {qa} B, video queue {qv} B, fed packet sizes {sizes}"
             ));
             SHARED.native_audio_refused.store(true, Release);
-            learn_native_audio_refusal("it swallowed the feed: no picture", plx_plex::plex::session::learn_native_audio_refusal)
+            true
         }
-    }
-}
-
-/// The source-failure branches' shared answer: either a recovery is flying (the frame is
-/// done, the spinner stays up) or the Engine fails and the viewer gets the read-out. Always the
-/// frame's last act. `native_audio_learned`: the failure is a native audio refusal the install just
-/// learned ([`learn_native_audio_refusal`]).
-fn fail_or_wait_for_recovery(ps: &mut crate::route::PlaybackSession, eng: &Engine, native_audio_learned: bool) {
-    match recover_failed_source_route(ps, native_audio_learned) {
-        SourceRecovery::Flying => hold_connecting_state(eng),
-        SourceRecovery::Failed => fail_engine_for_good(),
     }
 }
 
@@ -785,7 +809,7 @@ fn hold_connecting_state(eng: &Engine) {
 }
 
 /// A recovery flight landed: reload onto the replacement route at the recovery position, or — it
-/// was refused — fail the Engine.
+/// was refused — the ladder ends in the failure read-out.
 fn land_recovery_flight(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
@@ -793,12 +817,15 @@ fn land_recovery_flight(
 ) {
     match landing.verdict {
         crate::route::RecoveryVerdict::Install => {
+            let _ = drive_open_recovery(ps, super::recovery::RecoveryEvent::FlightLanded, "");
             let _ = settle_reload(
                 super::engine::reload_transcode(ps, pa, landing.offset_ns),
                 "recovery after failed source open",
             );
         }
-        crate::route::RecoveryVerdict::Refused => fail_engine_for_good(),
+        crate::route::RecoveryVerdict::Refused => {
+            let _ = drive_open_recovery(ps, super::recovery::RecoveryEvent::FlightRefused, "");
+        }
     }
 }
 
@@ -1403,17 +1430,22 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
             finish_preview_open_failure(ps, pa);
             return;
         }
-        // The pipeline refused AUDIO it was fed natively: learn the combination, and the failed
-        // open's recovery rebuilds the route with the server converting it. A refusal the install
-        // already knew, or a rebuild that cannot fly, leaves the read-out the viewer would have had.
-        let learned =
-            learn_native_audio_refusal("Audio Codec Not Supported", plx_plex::plex::session::learn_native_audio_refusal);
-        fail_or_wait_for_recovery(ps, eng, learned);
+        // The pipeline refused AUDIO it was fed natively: the ladder learns the combination, and the
+        // failed open's recovery rebuilds the route with the server converting it. A refusal the
+        // install already knew, or a rebuild that cannot fly, leaves the read-out the viewer would
+        // have had.
+        let _ = recover_failed_open(ps, eng, load_refusal(), native_audio_fact(), "Audio Codec Not Supported");
         return;
     }
     if !eng.preview_abandon && native_audio_stall_fired(eng, now) {
-        fail_or_wait_for_recovery(ps, eng, true);
-        return;
+        // Nothing fed natively (the watchdog needs more than two channels of it, so only a race
+        // gets here): nothing to confirm. A combination the install already knew only logs.
+        if let Some(audio) = native_audio_fact() {
+            let why = "it swallowed the feed: no picture";
+            if recover_failed_open(ps, eng, super::recovery::LoadRefusal::Stalled, Some(audio), why) != OpenRecoveryRun::Quiet {
+                return;
+            }
+        }
     }
     // wait for the media-thread ctor
     if unsafe { super::sink().ready(mt) } == 0 {
@@ -1449,6 +1481,9 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         // tracks. A refused direct play never gets here with it parked (its rescue installs a fresh
         // session), and the send only queues, so this frame never waits.
         crate::route::on_decoded_frame(ps);
+        // The open produced a picture: the failed-open ladder is over (idempotent, so each frame may
+        // say it).
+        let _ = ps.open_recovery().step(&super::recovery::RecoveryEvent::FirstPicture, &mut Vec::new());
     }
 
     // The producer died before publishing a duration: the EOS path is gated on `duration_ns > 0`
@@ -1468,7 +1503,7 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
             finish_preview_open_failure(ps, pa);
             return;
         }
-        fail_or_wait_for_recovery(ps, eng, false);
+        let _ = recover_failed_open(ps, eng, super::recovery::LoadRefusal::SourceFailed, None, "");
         return;
     }
     if SHARED.demux_failed.load(Acquire) && SHARED.frames.load(Relaxed) == 0 {
@@ -1476,7 +1511,7 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
             finish_preview_open_failure(ps, pa);
             return;
         }
-        fail_or_wait_for_recovery(ps, eng, false);
+        let _ = recover_failed_open(ps, eng, super::recovery::LoadRefusal::SourceFailed, None, "");
         return;
     }
     let stream = matches!(eng.source, Source::Stream);
@@ -2307,9 +2342,9 @@ mod tests {
     }
     use super::{
         commit_or_carry_seek, rearm_carried_seek, TX,
-        hls_buffered_ms, native_clock_silence_ms, native_clock_stopped, open_failure_action,
+        hls_buffered_ms, native_clock_silence_ms, native_clock_stopped,
         prime_before_play, rebuffer_request_is_current, should_begin_hls_rebuffer,
-        OpenFailureAction, CLOCK_WATCH_SINCE_MS, NATIVE_CLOCK_STOPPED_MS, SHARED,
+        CLOCK_WATCH_SINCE_MS, NATIVE_CLOCK_STOPPED_MS, SHARED,
         stream_ended,
     };
 
@@ -2400,35 +2435,6 @@ mod tests {
             held_at_ms.is_some_and(|ms| ms <= 1_500),
             "a presentation clock that has physically stopped is the terminal reserve boundary:              expected the hold within 1500 ms of the last position callback, got {held_at_ms:?}              (the device waited 82682 ms for the fetch to complete instead)"
         );
-    }
-
-    #[test]
-    fn a_failed_original_open_prefers_rollback_then_cold_auto_before_error() {
-        use OpenFailureAction::{ConvertNativeAudio, Error, RollbackPendingOriginal, StartAutoHls};
-
-        assert_eq!(
-            open_failure_action(true, false, true, true),
-            RollbackPendingOriginal
-        );
-        assert_eq!(open_failure_action(false, false, true, true), StartAutoHls);
-        assert_eq!(
-            open_failure_action(false, false, true, false),
-            Error,
-            "a post-frame failure is not a cold open"
-        );
-        assert_eq!(
-            open_failure_action(false, false, false, true),
-            Error,
-            "manual Original stays the user's fixed choice"
-        );
-        // A native audio refusal the install just learned rebuilds the same route converted, on a
-        // cold Auto Original too (the full HLS fallback would also convert it, but throws the
-        // route away), and on a manual Original (no other recovery owns it).
-        assert_eq!(open_failure_action(false, true, true, true), ConvertNativeAudio);
-        assert_eq!(open_failure_action(false, true, false, true), ConvertNativeAudio);
-        // The rollback of a pending HLS to Original still comes first: its HLS route is the one a
-        // failed open owes the viewer, and its audio is the server's.
-        assert_eq!(open_failure_action(true, true, true, true), RollbackPendingOriginal);
     }
 
     #[test]
@@ -3728,7 +3734,7 @@ mod flight_tests {
     }
 
     /// **A refusal learned during the Original trial narrows the attempt too, though the rollback
-    /// wins.** The trial's failed open takes the rollback (`open_failure_action` puts it before the
+    /// wins.** The trial's failed open takes the rollback (`OpenRecovery`'s ladder puts it before the
     /// conversion), and the refusal was learned all the same: the restored HLS route's rebase, and
     /// every retry and quality change after it, must plan and profile from the attempt's narrowed
     /// value, not the one the play started on. Else they offer native Opus again, the pipeline

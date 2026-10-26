@@ -180,24 +180,25 @@ pub struct PlaybackSession {
     /// the pump for a fresh transcode when the answer actually changed). Nothing measures a link
     /// or moves a rung on its own — the adaptive switch is not here.
     cur_contract: plx_plex::plex::EncodeContract,
-    /// **The one capability value this attempt plans and profiles from.** Read from the device
-    /// ONCE, by the app's play start, which hands it to the `request_play*` entry points; a
-    /// retry keeps it, and a refusal of natively fed audio that the install just learned narrows it
-    /// ([`narrow_attempt`](Self::narrow_attempt), called by the pump's failed-open recovery for
-    /// EVERY learned refusal, whichever recovery then wins: the Original trial's rollback shadows
-    /// the conversion, and the rebase it flies, a later retry and a quality change must still plan
-    /// from the narrowed value). Never read again from the
+    /// **This request's failed-open ladder, which also owns the one capability value the attempt
+    /// plans and profiles from** ([`OpenRecovery`], [`attempt_caps`](Self::attempt_caps)). Created
+    /// by [`begin_attempt`](Self::begin_attempt) with the value the app's play start read from the
+    /// device ONCE and handed to the `request_play*` entry points; a retry keeps it, and a refusal
+    /// of natively fed audio that the install just learned narrows it inside the machine
+    /// (`Caps::without`, for EVERY learned refusal, whichever recovery then wins: the Original
+    /// trial's rollback shadows the conversion, and the rebase it flies, a later retry and a
+    /// quality change must still plan from the narrowed value). Never read again from the
     /// process-wide `devcaps::caps()`: the route's decisions (the direct-play gates, the audio pick,
     /// Auto's catalog, the remux predictions) and the profile string PMS reads
     /// (`plex::TranscodeSpec::caps`) are all derived from this value, so the plan and the profile
-    /// cannot disagree, and "excluded for this attempt" (`Caps::without`) has somewhere to live that
-    /// is not a global written before anything is proved.
+    /// cannot disagree, and "excluded for this attempt" has somewhere to live that is not a global
+    /// written before anything is proved. A new request replaces the whole value.
     ///
     /// `None` only before the first attempt (the const [`IDLE`](Self::IDLE) cannot hold an `Arc`):
     /// [`attempt_caps`](Self::attempt_caps) then answers [`plx_platform::devcaps::Caps::assumed`], the
     /// answer `devcaps::caps()` itself gives before the probe. Nothing plans from a session that has
     /// not begun an attempt, so that answer is a placeholder, not a policy.
-    caps: Option<std::sync::Arc<plx_platform::devcaps::Caps>>,
+    recovery: Option<crate::player::recovery::OpenRecovery>,
     /// What the last successful transcode decision actually did with the Plex Pass audio DSP
     /// (issue #266) — distinct from `cur_contract.audio`, which is what the accepted decision
     /// carried. Installed by `apply_plan` from `Plan::enhancement`; reset to `Off` by a new
@@ -535,7 +536,7 @@ impl PlaybackSession {
         play_verdict: None,
         resolve_failed: false,
         cur_contract: plx_plex::plex::EncodeContract::original(false, plx_plex::plex::AudioEnhancements::NONE),
-        caps: None,
+        recovery: None,
         cur_enhancement: EnhancementOutcome::Off,
         cur_src: (0, 0, 0),
         cur_transport_kbps: 0,
@@ -623,7 +624,7 @@ impl PlaybackSession {
             play_verdict,
             resolve_failed,
             cur_contract,
-            caps,
+            recovery,
             cur_enhancement,
             cur_src,
             cur_transport_kbps,
@@ -693,7 +694,7 @@ impl PlaybackSession {
             play_verdict: play_verdict.clone(),
             resolve_failed: *resolve_failed,
             cur_contract: *cur_contract,
-            caps: caps.clone(),
+            recovery: recovery.clone(),
             cur_enhancement: *cur_enhancement,
             cur_src: *cur_src,
             cur_transport_kbps: *cur_transport_kbps,
@@ -760,27 +761,26 @@ impl Default for PlaybackSession {
 }
 
 impl PlaybackSession {
-    /// The capability value the current attempt plans and profiles from ([`caps`](Self::caps)
-    /// field). A cheap `Arc` clone, so a worker or a flight can own it.
+    /// The capability value the current attempt plans and profiles from (the
+    /// [`recovery`](Self::recovery) machine's [`attempt`](crate::player::recovery::OpenRecovery::attempt)).
+    /// A cheap `Arc` clone, so a worker or a flight can own it.
     fn attempt_caps(&self) -> std::sync::Arc<plx_platform::devcaps::Caps> {
-        self.caps.clone().unwrap_or_else(plx_platform::devcaps::assumed_shared)
+        self.recovery.as_ref().map_or_else(plx_platform::devcaps::assumed_shared, |r| r.attempt())
     }
 
     /// Begin an attempt on `caps`: the value the app's play start read, handed to
-    /// [`request_play_with_queue`] (the one caller in production).
+    /// [`request_play_with_queue`] (the one caller in production). The request's ladder starts from
+    /// it; the previous request's, and whatever it had narrowed, is dropped.
     pub(super) fn begin_attempt(&mut self, caps: std::sync::Arc<plx_platform::devcaps::Caps>) {
-        self.caps = Some(caps);
+        self.recovery = Some(crate::player::recovery::OpenRecovery::new(caps));
     }
 
-    /// Narrow the playing attempt by what the pipeline just refused ([`Caps::without`]): the
-    /// recovery that follows (the conversion, [`dispatch_native_audio_conversion`], or the Original
-    /// trial's rollback rebase, [`dispatch_rollback_rebase`]) plans and profiles from the narrowed
-    /// value, and so does every later retry, seek and track pick. No process-wide answer is read:
-    /// the refusal names itself (codec and channels), and the narrowing is the one the install's
-    /// learned record applies to the device answer (`devcaps::apply_learned`). The pump calls this
-    /// once per learned refusal, before it picks the recovery; the dispatches below do not repeat it.
-    pub(crate) fn narrow_attempt(&mut self, refused: &plx_platform::devcaps::Facet) {
-        self.caps = Some(std::sync::Arc::new(self.attempt_caps().without(refused)));
+    /// The request's failed-open ladder, for the pump to step. A session that has not begun an
+    /// attempt gets the same placeholder value [`attempt_caps`](Self::attempt_caps) answers, so a
+    /// refusal narrows what it would have planned from.
+    pub(crate) fn open_recovery(&mut self) -> &mut crate::player::recovery::OpenRecovery {
+        self.recovery
+            .get_or_insert_with(|| crate::player::recovery::OpenRecovery::new(plx_platform::devcaps::assumed_shared()))
     }
 
     /// **The frame tick, written once per iteration by [`crate::player::machine::Player::set_now`]
@@ -3138,7 +3138,7 @@ pub struct HlsAbrControl {
     audio_stream_id: i64,
     subtitle_stream_id: i64,
     seconds_per_segment: u8,
-    /// The attempt's capability value ([`PlaybackSession::caps`]), captured with the rest: every
+    /// The attempt's capability value ([`PlaybackSession::attempt_caps`]), captured with the rest: every
     /// replacement encoder this worker primes carries the profile built from it.
     caps: std::sync::Arc<plx_platform::devcaps::Caps>,
     pub initial_rung: crate::abr::Rung,
@@ -4106,7 +4106,7 @@ pub(super) const NATIVE_AUDIO_REJECTED: &str = "native audio: the server could n
 /// first picture (`type=18 num=200`, or the stall watchdog): the viewer's track plays again with the
 /// server converting that audio. The caller has already recorded the refusal (the install pref,
 /// through `session::learn_native_audio_refusal`) **and narrowed the playing attempt by it**
-/// ([`PlaybackSession::narrow_attempt`], `Caps::without`, which the pump does for every learned
+/// ([`crate::player::recovery::OpenRecovery`], whose `Caps::without` narrowing happens for every learned
 /// refusal before it picks a recovery), so the value the plan and the profile read no longer names
 /// the codec, today's rebuild ([`plain_rebuild_precheck`], the contract a track pick that the TV
 /// cannot decode asks for) comes back converted, and every seek and track pick after the landing
@@ -4532,7 +4532,7 @@ pub(super) struct OriginalRecoveryPlan {
     /// with no enhancement params and survives a refused enhancement.
     subtitle_burn: bool,
     pub(super) client: Option<&'static plx_plex::plex::Client>,
-    /// The attempt's capability value ([`PlaybackSession::caps`]) the replacement remux's profile
+    /// The attempt's capability value ([`PlaybackSession::attempt_caps`]) the replacement remux's profile
     /// and grading are derived from.
     caps: std::sync::Arc<plx_platform::devcaps::Caps>,
     sid: ServerId,
@@ -6543,7 +6543,7 @@ pub enum RebaseRefusal {
 pub(super) struct RebasePlan {
     pub(super) owner: RebaseFor,
     client: &'static plx_plex::plex::Client,
-    /// The attempt's capability value ([`PlaybackSession::caps`]): the rebuilt transcode query
+    /// The attempt's capability value ([`PlaybackSession::attempt_caps`]): the rebuilt transcode query
     /// carries the profile built from the same value the route was planned on.
     caps: std::sync::Arc<plx_platform::devcaps::Caps>,
     rk: String,
@@ -8227,7 +8227,7 @@ fn request_play_with_queue(
         // **The attempt's capability value arrives as an argument**: the app's play start read it
         // ONCE ([`request_play`]'s `caps`), and the session carries it from here on. The resolve
         // below, every seek and track pick during the film, and the transcode profile all plan from
-        // this one value ([`PlaybackSession::caps`]); route reads no process-wide answer to plan.
+        // this one value ([`PlaybackSession::attempt_caps`]); route reads no process-wide answer to plan.
         s.begin_attempt(caps);
         s.request = Some(request.clone());
         s.requested_resume_ns = if request.preview {
@@ -8788,7 +8788,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             cur_contract: plan.contract,
             // The landing keeps the value the request began the attempt on (`begin_attempt`, in
             // `request_play_with_queue`): the resolve that produced `plan` planned from exactly it.
-            caps: s.caps.take(),
+            recovery: s.recovery.take(),
             cur_enhancement: plan.enhancement,
             cur_src: plan.src_measure,
             cur_transport_kbps: plan.transport_kbps,
@@ -9271,7 +9271,7 @@ pub(super) fn log_enhancement_outcome(
 #[derive(Clone)]
 pub(super) struct RetranscodeClaimInputs {
     client: &'static plx_plex::plex::Client,
-    /// The attempt's capability value ([`PlaybackSession::caps`]), carried beside the contract the
+    /// The attempt's capability value ([`PlaybackSession::attempt_caps`]), carried beside the contract the
     /// claim builds: the profile PMS reads is derived from it, so a recovery flight that began a new
     /// attempt (`dispatch_native_audio_conversion`) asks for exactly the conversion it narrowed to.
     caps: std::sync::Arc<plx_platform::devcaps::Caps>,

@@ -77,7 +77,7 @@ run the product's code. `fxlanes` reads the one fn, `Bridge::app_effect` in `rus
   pin on its own).
 - The device's capability answer (`devcaps::caps()`) is the same kind of read: a process-wide value
   that `learn_refusal` moves under a running play. The route's planner takes the attempt's `&Caps`
-  as an argument (`PlaybackSession::caps`, read once by the app's play start), so `devcaps::caps`
+  as an argument (`PlaybackSession::attempt_caps`, read once by the app's play start), so `devcaps::caps`
   and the zero-argument `is_dp_audio(` / `is_dp_audio_track(` (the `_with` forms take the value and
   are not sites) are spellings of this rule, qualified or bare after an import; a `use ... as`
   rename of any of them fails outright. Widening the rule to them is a coverage expansion, not a

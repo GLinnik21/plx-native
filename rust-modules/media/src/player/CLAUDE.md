@@ -315,13 +315,15 @@ something.
   it, which it folds monotonically (it only ever removes) from each fresh refusal and from the stored
   record every installed session carries (`devcaps::project_stored_refusals`, called by the session's
   `replace_cache` as a pure projection under the cache lock). The failed open then recovers on the
-  pre-picture recovery path every failed open uses, in the same frame: `recover_failed_source_route`
-  first narrows the playing attempt by what the demuxer fed (`PlaybackSession::narrow_attempt`,
-  `Caps::without`; an attempt plans and profiles from the one `PlaybackSession::caps` it carries,
-  never from a later read of the process-wide answer) for EVERY learned refusal, because a pending
-  Original trial's rollback is picked over the conversion and its rebase, the next retry and a
-  quality change must still plan from the narrowed value. Then `open_failure_action` picks
-  `ConvertNativeAudio`, and `route::dispatch_native_audio_conversion`
+  pre-picture recovery path every failed open uses, in the same frame: the request's `OpenRecovery`
+  machine (`recovery.rs`, owned by `PlaybackSession::recovery`, driven by `pump.rs`'s
+  `drive_open_recovery`) asks the pump to confirm the refusal (`ConfirmRefusal`, the learner above) and,
+  once the learner says the combination is NEW, narrows the playing attempt by what the demuxer fed
+  (`Caps::without`; an attempt plans and profiles from the one value the machine carries,
+  `PlaybackSession::attempt_caps`, never from a later read of the process-wide answer) for EVERY learned
+  refusal, because a pending Original trial's rollback is picked over the conversion and its rebase, the
+  next retry and a quality change must still plan from the narrowed value. Then the ladder picks
+  `StartFlight` (the conversion), and `route::dispatch_native_audio_conversion`
   flies a `ClaimWork::Encode` under a `FlightOwner::Recovery` that rebuilds today's route (which now
   plans the audio as the server's to convert), and `land_recovery_flight` reloads onto it. The viewer keeps the connecting spinner: no
   read-out, no second play request. A refusal the install already knew skips that and fails as
