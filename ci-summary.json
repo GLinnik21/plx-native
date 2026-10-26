@@ -29,7 +29,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-26T20:19:21Z",
+ "generated": "2026-10-26T21:16:33Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -117,19 +117,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -57.3,
+   "change30_pct": -57.6,
    "change7_pct": -26.5,
-   "d30": 837,
-   "delta30": -480.0,
+   "d30": 841,
+   "delta30": -484,
    "delta7": -129.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 224,
-   "n_prev": 271,
-   "now": 357.0,
-   "prev7": 486,
+   "n_now": 225,
+   "n_prev": 270,
+   "now": 357,
+   "prev7": 486.0,
    "shown": true,
    "state": "better",
    "state30": "better",
@@ -138,10 +138,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -55.0,
+   "change30_pct": -55.3,
    "change7_pct": -18.2,
-   "d30": 753,
-   "delta30": -414,
+   "d30": 759,
+   "delta30": -420,
    "delta7": -75.5,
    "group": "ci",
    "id": "push_wait",
@@ -276,10 +276,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 71.5,
+   "change30_pct": 67.1,
    "change7_pct": -0.4,
-   "d30": 1259.5,
-   "delta30": 900.0,
+   "d30": 1292.0,
+   "delta30": 867.5,
    "delta7": -9.5,
    "group": "ci",
    "id": "minutes",
@@ -381,10 +381,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 99.2,
+   "change30_pct": 97.8,
    "change7_pct": 10.9,
-   "d30": 133,
-   "delta30": 132.0,
+   "d30": 134,
+   "delta30": 131.0,
    "delta7": 26.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
@@ -402,10 +402,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 143.9,
+   "change30_pct": 138.1,
    "change7_pct": 6.4,
-   "d30": 82,
-   "delta30": 118,
+   "d30": 84,
+   "delta30": 116,
    "delta7": 12,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
@@ -594,8 +594,8 @@
   {
    "change30_pct": -99.6,
    "change7_pct": 0.0,
-   "d30": 786,
-   "delta30": -783,
+   "d30": 791,
+   "delta30": -788,
    "delta7": 0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
