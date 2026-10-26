@@ -29,7 +29,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-26T18:54:46Z",
+ "generated": "2026-10-26T18:56:33Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -120,15 +120,15 @@
    "change30_pct": -54.9,
    "change7_pct": -19.0,
    "d30": 751,
-   "delta30": -412.0,
+   "delta30": -412,
    "delta7": -79.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 96,
+   "n_now": 97,
    "n_prev": 118,
-   "now": 339.0,
+   "now": 339,
    "prev7": 418.5,
    "shown": true,
    "state": "better",
@@ -363,15 +363,15 @@
    "change30_pct": 100.8,
    "change7_pct": 10.9,
    "d30": 132,
-   "delta30": 133.0,
+   "delta30": 133,
    "delta7": 26.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 84,
+   "n_now": 85,
    "n_prev": 110,
-   "now": 265.0,
+   "now": 265,
    "prev7": 239.0,
    "shown": true,
    "state": "flat",
@@ -381,18 +381,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 146.2,
-   "change7_pct": 4.8,
+   "change30_pct": 145.6,
+   "change7_pct": 4.5,
    "d30": 80,
-   "delta30": 117,
-   "delta7": 9.0,
+   "delta30": 116.5,
+   "delta7": 8.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 83,
+   "n_now": 84,
    "n_prev": 110,
-   "now": 197,
+   "now": 196.5,
    "prev7": 188.0,
    "shown": true,
    "state": "flat",
@@ -445,17 +445,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -0.3,
+   "change7_pct": 0.0,
    "d30": null,
    "delta30": null,
-   "delta7": -0.5,
+   "delta7": 0.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 84,
+   "n_now": 85,
    "n_prev": 110,
-   "now": 152.5,
+   "now": 153,
    "prev7": 153.0,
    "shown": true,
    "state": "flat",
@@ -508,27 +508,6 @@
    "unit": "s"
   },
   {
-   "change30_pct": 15.6,
-   "change7_pct": 2.8,
-   "d30": 16,
-   "delta30": 2.5,
-   "delta7": 0.5,
-   "group": "ci",
-   "id": "sim|Windows launcher syntax",
-   "kind": "job",
-   "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 84,
-   "n_prev": 110,
-   "now": 18.5,
-   "prev7": 18.0,
-   "shown": false,
-   "state": "flat",
-   "state30": "flat",
-   "threshold_abs": 30.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
    "change30_pct": 63.6,
    "change7_pct": 12.5,
    "d30": 11.0,
@@ -547,6 +526,27 @@
    "state30": "flat",
    "threshold_abs": 120.0,
    "threshold_pct": 25.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": 12.5,
+   "change7_pct": 0.0,
+   "d30": 16,
+   "delta30": 2,
+   "delta7": 0.0,
+   "group": "ci",
+   "id": "sim|Windows launcher syntax",
+   "kind": "job",
+   "label": "Simulator CI: Windows launcher syntax",
+   "n_now": 85,
+   "n_prev": 110,
+   "now": 18,
+   "prev7": 18.0,
+   "shown": false,
+   "state": "flat",
+   "state30": "flat",
+   "threshold_abs": 30.0,
+   "threshold_pct": 20.0,
    "unit": "s"
   },
   {
@@ -639,11 +639,6 @@
    "change_pct": 36.9,
    "commits": [
     {
-     "pr": 1054,
-     "sha": "7163318c4",
-     "title": "Route: one capability value per playback request; the planner reads no global"
-    },
-    {
      "pr": 1060,
      "sha": "f7323960b",
      "title": "Player: one state machine rescues a play refused before its first picture"
@@ -687,6 +682,11 @@
      "pr": 1066,
      "sha": "c82be20f8",
      "title": "Dependencies: harfbuzz -> 15.0.0"
+    },
+    {
+     "pr": 1081,
+     "sha": "747062063",
+     "title": "Playback: one event-log line when an era-chosen sink counter never arrives, and one table of the private firmware depend"
     }
    ],
    "from": 157,
@@ -700,11 +700,6 @@
    "change_pct": 30.9,
    "commits": [
     {
-     "pr": 1054,
-     "sha": "7163318c4",
-     "title": "Route: one capability value per playback request; the planner reads no global"
-    },
-    {
      "pr": 1060,
      "sha": "f7323960b",
      "title": "Player: one state machine rescues a play refused before its first picture"
@@ -748,6 +743,11 @@
      "pr": 1066,
      "sha": "c82be20f8",
      "title": "Dependencies: harfbuzz -> 15.0.0"
+    },
+    {
+     "pr": 1081,
+     "sha": "747062063",
+     "title": "Playback: one event-log line when an era-chosen sink counter never arrives, and one table of the private firmware depend"
     }
    ],
    "from": 973.0,
@@ -761,11 +761,6 @@
    "change_pct": 30.1,
    "commits": [
     {
-     "pr": 1054,
-     "sha": "7163318c4",
-     "title": "Route: one capability value per playback request; the planner reads no global"
-    },
-    {
      "pr": 1060,
      "sha": "f7323960b",
      "title": "Player: one state machine rescues a play refused before its first picture"
@@ -809,6 +804,11 @@
      "pr": 1066,
      "sha": "c82be20f8",
      "title": "Dependencies: harfbuzz -> 15.0.0"
+    },
+    {
+     "pr": 1081,
+     "sha": "747062063",
+     "title": "Playback: one event-log line when an era-chosen sink counter never arrives, and one table of the private firmware depend"
     }
    ],
    "from": 49.0,
@@ -849,7 +849,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 265.0
+   "now": 265
   }
  ],
  "slowest_local": [
