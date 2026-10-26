@@ -1001,6 +1001,12 @@ fn the_lossy_gate_lets_the_app_direct_play_dts_in_both_modes_and_off_changes_not
         assert!(!audio_direct_plays_with(&on, mode, "mlp", 8, 0), "{mode:?}: only the app-decoded set joined");
         assert!(!audio_direct_plays_with(&on, mode, "aac", 2, 96_000), "{mode:?}: hardware limits stand");
     }
+    // A policy that merely ADMITS DTS (a read table's `Measured`) is not "in force": Auto never decodes
+    // in the app on its own, Force Direct Play does only where the set has no native path.
+    let admitted = plx_platform::devcaps::Caps { app_lossy: plx_platform::devcaps::AppLossy::Measured, ..off.clone() };
+    assert!(!audio_direct_plays_with(&admitted, DirectPlayMode::Auto, "dca", 6, 0), "Auto: the server converts it");
+    assert!(audio_direct_plays_with(&admitted, DirectPlayMode::Forced, "dca", 6, 0), "Forced: no native path");
+    assert!(!audio_natively_plays_with(&admitted, DirectPlayMode::Forced, "dca", 6, 0));
     let measured = plx_platform::devcaps::Caps { native_ceiling: [("dts".into(), 2)].into(), ..dts_row_caps() };
     assert!(!audio_direct_plays_with(&measured, DirectPlayMode::Forced, "dca", 6, 0), "native ceiling applies natively");
     assert!(audio_direct_plays_with(&measured.with_app_lossy(), DirectPlayMode::Forced, "dca", 6, 0));
