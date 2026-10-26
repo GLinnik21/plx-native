@@ -812,6 +812,12 @@ pub struct Shared {
     /// displayed type would be a confident lie on the firmware we cannot test. `dg_cb_err` latches
     /// the one type that means the same on both.
     pub dg_cb_count: AtomicU32,
+    /// What [`crate::player::era_callbacks`] reads, all per session: position ticks (`type=0`),
+    /// callbacks `sink_counter_kind` named as the displayed-frame counter, and callbacks numbered
+    /// 46 to 49 that it did not name (the other era's numbers). Unlike `frames`, a seek leaves them.
+    pub dg_pos_ticks: AtomicU32,
+    pub dg_sink_displayed_cb: AtomicU32,
+    pub dg_sink_other_cb: AtomicU32,
     /// Why the VIDEO feeder is where it is, taken at each of `feed_stream`'s exit points.
     /// 0 none yet · 1 accepting · 2 BufferFull · 3 refused · 4 waiting for a frame (feed-ahead
     /// throttle) · 5 queue empty.
@@ -1001,6 +1007,9 @@ impl Shared {
             native_session: Mutex::new(NativeSessionState::new()),
             dg_stage: AtomicU8::new(0),
             dg_cb_count: AtomicU32::new(0),
+            dg_pos_ticks: AtomicU32::new(0),
+            dg_sink_displayed_cb: AtomicU32::new(0),
+            dg_sink_other_cb: AtomicU32::new(0),
             dg_feed_state: AtomicU8::new(0),
             dg_cb_err: AtomicI32::new(0),
             dg_cb_err_at: AtomicU32::new(0),
@@ -1663,6 +1672,9 @@ impl Shared {
         // exactly the misleading answer the read-out exists to avoid
         self.dg_stage.store(0, Ordering::Relaxed);
         self.dg_cb_count.store(0, Ordering::Relaxed);
+        self.dg_pos_ticks.store(0, Ordering::Relaxed);
+        self.dg_sink_displayed_cb.store(0, Ordering::Relaxed);
+        self.dg_sink_other_cb.store(0, Ordering::Relaxed);
         self.dg_feed_state.store(0, Ordering::Relaxed);
         // A latched error MUST be cleared here, or one bad session paints every later healthy
         // playback red for the life of the process.

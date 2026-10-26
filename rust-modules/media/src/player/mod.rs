@@ -41,6 +41,7 @@ pub mod recovery; // the failed-open ladder (pure machine); `pump` drives it
 pub mod ffi;
 #[cfg(feature = "hostsim")]
 pub mod ffi_host;
+mod era_callbacks; // the one diagnostic line for an era-chosen sink counter that never arrives (pure state)
 mod native_stall; // the surround native-audio stall watchdog (pure state) and the AU size evidence line
 mod pump;
 pub mod report;
@@ -2436,6 +2437,14 @@ fn sink_counter_kind(ty: c_int, major: u32) -> Option<SinkCounter> {
     }
 }
 
+/// The raw callback type [`sink_counter_kind`] reads as the displayed-frame counter on this major,
+/// found through it so the two cannot drift apart.
+fn displayed_counter_type(major: u32) -> c_int {
+    (46..=49)
+        .find(|&ty| sink_counter_kind(ty, major) == Some(SinkCounter::Displayed))
+        .unwrap_or(0)
+}
+
 fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::EventScope) {
     if scope == shared::EventScope::Release {
         // The lifecycle evidence of an object being released after the main thread reset the
@@ -2486,8 +2495,14 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::Event
         // 46/47 on this set are 48/49 on a webOS 5+ set. The harness reads THIS line, never
         // the raw type.
         match sink_counter_kind(ty, plx_platform::tv::device::info().major) {
-            Some(SinkCounter::Displayed) => log(&format!("sink: displayed={num} (type={ty})")),
+            Some(SinkCounter::Displayed) => {
+                SHARED.dg_sink_displayed_cb.fetch_add(1, Relaxed);
+                log(&format!("sink: displayed={num} (type={ty})"));
+            }
             Some(SinkCounter::Dropped) => log(&format!("sink: dropped={num} (type={ty})")),
+            None if (46..=49).contains(&ty) => {
+                SHARED.dg_sink_other_cb.fetch_add(1, Relaxed);
+            }
             None => {}
         }
         // **A refusal before the first picture is a VERDICT, not a statistic.** Until 2026-09-03
@@ -2566,6 +2581,7 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::Event
             SHARED.dg_vpres_gap.fetch_max(gap, Relaxed);
         }
         SHARED.frames.fetch_add(1, Relaxed);
+        SHARED.dg_pos_ticks.fetch_add(1, Relaxed);
         SHARED.seen_frame.store(true, Relaxed); // session-scoped: unlike `frames`, a seek won't clear it
         // the rebuild an audio pick asked for has put its picture up: the switch is over
         let _ = SHARED.audio_switch.compare_exchange(

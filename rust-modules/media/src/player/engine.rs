@@ -247,6 +247,8 @@ pub struct Engine {
     /// refusal #1018 retries), so the pump's failed-open ladder leaves that one alone
     /// ([`super::pump`]'s `settled_by_foreground`).
     pub foreground_follows_load: bool,
+    /// Whether this session's era-chosen sink counter has shown up ([`super::era_callbacks`]).
+    pub(super) era_watch: super::era_callbacks::Watch,
 }
 
 impl Engine {
@@ -1990,6 +1992,7 @@ fn start_bufferfeed_inner(
         report_stop: Some(report_stop),
         preview_abandon: false,
         foreground_follows_load: false,
+        era_watch: super::era_callbacks::Watch::new(),
     };
     // Select this session's direct-play seek mode (`SeekMode`, mod.rs, whose SCOPE note argues why
     // it is per session). `feed_stream` can downgrade it to `Reload` mid-session (the pipeline was
@@ -4697,6 +4700,7 @@ mod prime_livelock_tests {
             report_stop: None,
             preview_abandon: false,
             foreground_follows_load: false,
+            era_watch: crate::player::era_callbacks::Watch::new(),
         }
     }
 

@@ -836,6 +836,23 @@ fn native_audio_stall_fired(eng: &Engine, now: u32) -> bool {
     }
 }
 
+/// The one event-log line for an era-chosen sink counter that never arrived in a played session
+/// ([`super::era_callbacks`]). It only reads counters and logs; nothing branches on it.
+fn note_missing_era_callback(eng: &mut Engine) {
+    use super::era_callbacks::{line, Probe, Step};
+    let major = plx_platform::tv::device::info().major;
+    let probe = Probe {
+        ticks: SHARED.dg_pos_ticks.load(Relaxed),
+        displayed: SHARED.dg_sink_displayed_cb.load(Relaxed),
+        other_numbering: SHARED.dg_sink_other_cb.load(Relaxed),
+        major,
+        expected_type: super::displayed_counter_type(major),
+    };
+    if let Step::Missing(m) = eng.era_watch.step(&probe) {
+        super::log(&line(&m));
+    }
+}
+
 /// The Engine fails for good: any flight ends, the viewer gets the read-out, and the Engine's
 /// pipeline is released next frame ([`super::engine::release_failed_engine`]).
 fn fail_engine_for_good() {
@@ -1591,6 +1608,9 @@ pub fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
         // say it). It is also where a facet-clean rescue is credited (`Proving`), through the
         // driver; in `Playing` the event is unhandled and asks for nothing.
         let _ = drive_open_recovery(ps, super::recovery::RecoveryEvent::FirstPicture, "");
+    }
+    if !eng.preview_abandon {
+        note_missing_era_callback(eng);
     }
 
     // The producer died before publishing a duration: the EOS path is gated on `duration_ns > 0`
@@ -5945,5 +5965,67 @@ mod end_of_film_tests {
             "it ended on the pipeline's word, not on the arithmetic: {}",
             rig.facts()
         );
+    }
+
+    /// The event-log lines the era-callback watch wrote while `run` drove the rig.
+    fn era_lines(run: impl FnOnce()) -> usize {
+        plx_base::eventlog::with_private_log(|| {
+            run();
+            std::fs::read_to_string(plx_base::eventlog::events_log())
+                .unwrap_or_default()
+                .lines()
+                .filter(|l| l.contains("era callbacks:"))
+                .count()
+        })
+    }
+
+    /// A played session that never receives the displayed-frame counter says so, once. The host
+    /// sink sends position ticks and no counter, which is exactly the shape of a firmware whose
+    /// numbering the app chose wrongly.
+    #[test]
+    fn a_played_session_without_the_displayed_counter_logs_one_line() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new();
+        let lines = era_lines(|| {
+            assert!(
+                rig.run_until(|_| SHARED.dg_pos_ticks.load(Relaxed) >= 80),
+                "PRECONDITION FAILED, not the defect: the sink never took 80 position ticks: {}",
+                rig.facts()
+            );
+        });
+        assert_eq!(SHARED.dg_sink_displayed_cb.load(Relaxed), 0, "PRECONDITION FAILED, not the defect");
+        assert_eq!(lines, 1, "a played session with no displayed counter logs exactly one line");
+    }
+
+    #[test]
+    fn a_session_that_receives_the_displayed_counter_logs_nothing() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new();
+        let lines = era_lines(|| {
+            for _ in 0..80 {
+                rig.step();
+                let epoch = rig.eng().native_epoch;
+                let ty = crate::player::displayed_counter_type(plx_platform::tv::device::info().major);
+                crate::player::sf_on_event(epoch, ty, 5, std::ptr::null());
+            }
+        });
+        assert!(SHARED.dg_sink_displayed_cb.load(Relaxed) > 0, "PRECONDITION FAILED, not the defect: the counter was not counted");
+        assert!(SHARED.dg_pos_ticks.load(Relaxed) >= 40, "PRECONDITION FAILED, not the defect: the session did not play");
+        assert_eq!(lines, 0);
+    }
+
+    #[test]
+    fn a_session_that_has_not_played_logs_nothing() {
+        let _serial = plx_base::testlock::serial();
+        let mut rig = Rig::new();
+        let lines = era_lines(|| {
+            for _ in 0..200 {
+                let _frame = plx_base::task::FrameScope::enter();
+                rig.now += 16;
+                pump(&mut rig.ps, &mut rig.pa, rig.now);
+            }
+        });
+        assert!(SHARED.dg_pos_ticks.load(Relaxed) < 25, "PRECONDITION FAILED, not the defect: the sink ticked on its own");
+        assert_eq!(lines, 0);
     }
 }
