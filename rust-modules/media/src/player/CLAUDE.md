@@ -324,7 +324,9 @@ something.
   at boot by `devcaps::probe`) sets `Caps::app_decodes_lossy`, and then DTS is announced without a table row, is
   never the set's own decoder's (the Load declares `PCM`, stereo 48 kHz S16: `route::stream_pcm`), and
   `ff_pcm::PcmDecoder` decodes the core (`core_only`), downmixes and resamples it (`Stereo48`). It stays
-  off until the TV has measured the CPU (S4 U5); with it off DTS is native exactly as above.
+  off until the TV has measured the CPU (S4 U5); with it off DTS is native exactly as above. A Load whose DTS the app
+  decoded names no audio facet in the failed-open ladder (`StreamAudio::app_decoded_lossy`): the pipeline was fed PCM, and a
+  facet keyed `dts` would be stored as a refusal of the set's NATIVE decoder.
   A named refusal comes from a native Load that ends
   in `type=18 num=200 Audio Codec Not Supported` before any picture (`mod.rs`'s callback sets
   `native_audio_refused` only while `native_audio::fed()` says the audio was fed natively; the
