@@ -19,7 +19,7 @@
 //! only as a stored row, once the learner's write has landed. The machine also owns that value: the attempt's
 //! capabilities are `start` narrowed by the facets the rungs took out of this request, at most one
 //! audio and one video: the stream the facet rung converted, the refused video raster and native
-//! audio the HLS contingency's attempt lacks, or the native audio a refusal named while a pending
+//! audio a both-facets rung's attempt lacks (the HLS contingency or the manual encode), or the native audio a refusal named while a pending
 //! rollback was chosen over the facet rung, so the restored route does not offer it again
 //! ([`Caps::without`]); [`attempt`](OpenRecovery::attempt) is the only reader the route plans from,
 //! and `attempt` is derived from `start` on each rung's entry, never narrowed in place.
@@ -812,6 +812,17 @@ mod tests {
         assert_eq!(fx, [RecoveryEffect::ShowError { refusal: cause }]);
     }
 
+    /// The both rung's own refused dispatch is terminal: the read-out.
+    #[test]
+    fn a_refused_both_facets_flight_reads_out() {
+        let mut m = manual_machine();
+        let cause = LoadRefusal::Refused { num: 601 };
+        run(&mut m, refused(cause, manual_on("ac3", h264_1080p())));
+        assert_eq!(m.phase(), Phase::Flight);
+        let (_, fx) = run(&mut m, RecoveryEvent::FlightRefused);
+        assert_eq!((fx, m.phase()), (vec![RecoveryEffect::ShowError { refusal: cause }], Phase::Failed));
+    }
+
     /// A timeout or a source failure names no pipeline stream: the manual read-out, as on main.
     #[test]
     fn a_timeout_or_source_failure_never_takes_the_manual_both_rung() {
@@ -1075,7 +1086,7 @@ mod tests {
         assert_eq!(m.phase(), Phase::Proving);
     }
 
-    /// **Only the facet rung proves.** The both-facets rung (HLS), the contingency after a refused
+    /// **Only the facet rung proves.** The both-facets rungs (HLS or the manual encode), the contingency after a refused
     /// facet flight and the rollback land to `Opening` however clean their verdicts, so their first
     /// picture reports nothing.
     #[test]

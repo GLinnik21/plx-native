@@ -244,7 +244,7 @@ something.
     (`route::dispatch_unopened_auto_hls`) and the facet conversion: the rebuild that has the server
     convert the facet of a pipeline refusal: the audio outside `aac`/`ac3`/`eac3` (not only native
     audio), else the source's video at a raster above 1080p, which an ENCODE with no video copy
-    converts (`route::dispatch_refusal_conversion`, below). They hold nothing (the Engine that failed is not
+    converts, or the manual both-facets encode (`route::dispatch_refusal_conversion`, below). They hold nothing (the Engine that failed is not
     playing) and the viewer keeps the connecting spinner (`pump::hold_connecting_state`). The
     landing is drained AHEAD of the failure branches (`route::take_ready_recovery_flight`, then
     `pump::land_recovery_flight`), because the branches' failure flags stay up for the whole flight
@@ -429,7 +429,8 @@ something.
   AU accepted for `NATIVE_AUDIO_STALL_MS` (4 s; a slow server has empty queues) is learned and
   recovered the same way, and never after the first picture. The stall is a refusal of the same class
   as `type=18` (`LoadRefusal::Stalled`), so a stall of a combination the attempt already lacks takes
-  the next rung, the read-out for a manual Original; it used to return from the watchdog with
+  the next rung (for a manual Original the both-facets encode while the source's video is still fed
+  and not yet excluded, else the read-out); it used to return from the watchdog with
   nothing done and leave the viewer on "Buffering..." for good (TV run G, 2026-10-26). Garbled playback (no stall, no event)
   still needs a static row. The event log has `native audio: watching`, `STALL, no picture`, the
   `remembered` line, `devcaps: play start less learned refusals` (once per play whose start value
