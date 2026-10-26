@@ -1889,7 +1889,10 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
                 .flatten()
         })
     };
-    let mut audio_sel = pick_audio(if copy_blocked { StandIn::Any } else { StandIn::SameKind }, &natively);
+    // Auto has one pass over everything it can play (the set's decoder or a codec in force); only
+    // Forced separates the set's own decoder.
+    let first: &dyn Fn(&str, i64, i64) -> bool = if forced { &natively } else { &eligible };
+    let mut audio_sel = pick_audio(if copy_blocked { StandIn::Any } else { StandIn::SameKind }, first);
     if forced && audio_sel.is_none() {
         audio_sel = pick_audio(StandIn::Any, &eligible);
         if let Some((_, raw, _)) = &audio_sel {
@@ -3078,7 +3081,7 @@ pub(super) fn audio_direct_plays_with(
         || caps.app_decodes_lossy_track(codec, channels, sample_rate, mode == DirectPlayMode::Forced)
 }
 
-/// [`audio_direct_plays_with`] for the set's own decoder only: the Forced pick's first pass, so a
+/// [`audio_direct_plays_with`] for the set's own decoder only: the Forced pick's first pass (Auto has one pass, over `audio_direct_plays_with`), so a
 /// native track is never passed over for one the app would decode.
 pub(super) fn audio_natively_plays_with(
     caps: &plx_platform::devcaps::Caps, mode: DirectPlayMode, codec: &str, channels: i64,

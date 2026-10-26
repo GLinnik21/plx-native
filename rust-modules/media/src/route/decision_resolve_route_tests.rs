@@ -2903,6 +2903,29 @@ fn forced_resolve_decodes_dts_in_the_app_when_the_set_has_no_dts_row() {
     assert!(!probes.is_empty() && probes.iter().all(|l| query_param(l, "audioStreamID") == Some("1")), "{requests:?}");
 }
 
+/// **Auto direct-plays a codec in force**: a DTS-only file on a value with every lossy row in force (the
+/// `appdecodelossy` trigger, the value the recovery rung hands a re-plan) is picked in ONE pass over the
+/// set's own decoder AND the app's, so the Part is direct and the Load will declare PCM. Only Force
+/// Direct Play separates the set's decoder into a first pass; a first pass of the set's decoder alone
+/// would plan a server conversion here, and nothing would measure the app's decode.
+#[test]
+#[cfg(feature = "devtriggers")]
+fn auto_resolve_picks_a_codec_in_force_in_one_pass() {
+    let (plan, requests) = cold_audio_resolve(
+        "cold-auto-dca-in-force",
+        2,
+        MDE_DIRECTPLAY,
+        vec![cold_track(1, "dca", "eng", true, "")],
+        Vec::new(),
+        "dca",
+        |env, _| env.caps = std::sync::Arc::new(plx_platform::devcaps::Caps::assumed().with_app_lossy()),
+    );
+    assert!(plan.verdict.is_none(), "{:?}", plan.verdict);
+    assert!(plan.url.contains("/library/parts/36013/"), "a direct Part reaches the Load: {}", plan.url);
+    let probes = request_with(&requests, "hasMDE=1");
+    assert!(!probes.is_empty() && probes.iter().all(|l| query_param(l, "audioStreamID") == Some("1")), "{requests:?}");
+}
+
 /// **A native sibling always beats an app decode**: the Forced pick tries the set's own decoder over
 /// every track first, so the AC3 track plays and the DTS default is not decoded in the app.
 #[test]
