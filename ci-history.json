@@ -1,4 +1,4 @@
-{"updated":"2026-10-26T15:38:58Z",
+{"updated":"2026-10-26T15:41:37Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -3726,6 +3726,7 @@
 {"id":40343134590,"at":"2026-10-26T14:48:41Z","sha":"44c3dcd67","title":"Docs: prose that said FLAC-only now names the app-decoded set","pr":1067,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":325,"macOS tests against bundled FFmpeg and ASS":143,"Windows launcher syntax":19,"Linux simulator build + launch":271}},
 {"id":40345533433,"at":"2026-10-26T15:03:25Z","sha":"6bdb4edd4","title":"S4 PR 2: DTS core decode, downmix and resample in the app behind the lossy gate","pr":1068,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":329,"Windows launcher syntax":19,"macOS simulator build + launch":334,"Linux simulator build + launch":258}},
 {"id":40346991631,"at":"2026-10-26T15:12:12Z","sha":"3273e185d","title":"S4 PR 2: review fixes \u2014 the lossy decode is the Load's own claim, a seek drops the resampler tail, a lossy stream skips ","pr":1068,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":236,"Linux simulator build + launch":296,"Windows launcher syntax":19,"macOS tests against bundled FFmpeg and ASS":244}},
+{"id":40349386960,"at":"2026-10-26T15:26:50Z","sha":"a741685fd","title":"Playback: a PCM Load never feeds a stream the app cannot decode raw (float and 8-bit LPCM are refused); CLAUDE.md says w","pr":1067,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":22,"Linux simulator build + launch":288,"macOS simulator build + launch":273,"macOS tests against bundled FFmpeg and ASS":170}},
 {"id":40350002252,"at":"2026-10-26T15:30:32Z","sha":"e6e21dffa","title":"Merge series/inapp-decode into series/inapp-decode-dts","pr":1068,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":183,"Windows launcher syntax":22,"Linux simulator build + launch":275,"macOS simulator build + launch":189}}
 ],
 "nightly":[
