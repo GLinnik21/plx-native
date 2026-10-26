@@ -5703,7 +5703,8 @@ pub fn stream_immersive(ps: &PlaybackSession) -> bool {
 }
 
 /// The PCM a Load must declare for audio the app decodes itself
-/// (`devcaps::PCM_AUDIO_CODECS` — FLAC, ALAC, LPCM).
+/// (`devcaps::PCM_AUDIO_CODECS` — FLAC, ALAC, LPCM — and the lossy entries when the attempt's
+/// [`Caps::app_decodes_lossy`](plx_platform::devcaps::Caps::app_decodes_lossy) is on).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PcmFormat {
     pub sample_rate: u32,
@@ -5713,15 +5714,23 @@ pub struct PcmFormat {
     pub channels: u32,
 }
 
+impl PcmFormat {
+    /// What the lossy decode outputs (`ff_pcm::PcmDecoder`): the source downmixed to stereo and
+    /// resampled to 48 kHz, as 16-bit samples — the same shape the speed decoder feeds.
+    pub const STEREO_48K: PcmFormat = PcmFormat { sample_rate: 48_000, bits: 16, channels: 2 };
+}
+
 /// [`PcmFormat`] for the stream now being fed, `None` when it is not app-decoded audio.
 /// `Some(Err(why))` when it IS, but the facts the Load needs are missing or outside the PCM path:
 /// the caller refuses the Load rather than declare a rate the decoder would contradict.
 pub fn stream_pcm(ps: &PlaybackSession) -> Option<Result<PcmFormat, String>> {
     let id = plx_platform::devcaps::audio_codec_id(&ps.stream_acodec);
-    if !plx_platform::devcaps::PCM_AUDIO_CODECS.split(',').any(|c| c == id) {
-        return None;
+    if plx_platform::devcaps::PCM_AUDIO_CODECS.split(',').any(|c| c == id) {
+        return Some(pcm_format_of(ps.cur_audio.as_ref(), &id));
     }
-    Some(pcm_format_of(ps.cur_audio.as_ref(), &id))
+    // A lossy codec the attempt's value lets the app decode: its output has one shape, whatever
+    // the source is, so no track fact is needed (and none can contradict it).
+    ps.attempt_caps().app_decodes_lossy_codec(&id).then_some(Ok(PcmFormat::STEREO_48K))
 }
 
 /// PURE half of [`stream_pcm`]: the carried track must be the same codec, with a stated rate and
@@ -5786,6 +5795,28 @@ mod pcm_format_tests {
         assert!(pcm_format_of(Some(&track("alac", 6, 48_000, 16)), "alac").is_err());
         assert!(pcm_format_of(Some(&track("pcm_s24le", 2, 96_000, 24)), "pcm").is_err());
         assert!(pcm_format_of(Some(&track("flac", 2, 48_000, 16)), "pcm").is_err(), "a track of another codec");
+    }
+
+    /// **DTS under the gate** (S4 PR 2): the Load declares the SHAPE THE DECODER OUTPUTS, stereo
+    /// 48 kHz S16, whatever the source's channels and rate; and only on an attempt whose capability
+    /// value turned the lossy decode on. Off, DTS declares nothing here and stays native.
+    #[test]
+    fn dts_declares_stereo_48k_only_when_the_attempt_has_the_gate_on() {
+        let mut ps = PlaybackSession::IDLE;
+        set_stream_codecs(&mut ps, "h264", "dts");
+        assert_eq!(stream_pcm(&ps), None, "no attempt begun: the assumed value, gate off");
+        ps.begin_attempt(std::sync::Arc::new(plx_platform::devcaps::Caps::assumed()));
+        assert_eq!(stream_pcm(&ps), None, "gate off");
+        ps.begin_attempt(std::sync::Arc::new(plx_platform::devcaps::Caps::assumed().with_app_lossy()));
+        for spelling in ["dts", "dca", "DTS"] {
+            set_stream_codecs(&mut ps, "h264", spelling);
+            assert_eq!(stream_pcm(&ps), Some(Ok(PcmFormat::STEREO_48K)), "{spelling}");
+        }
+        assert_eq!(PcmFormat::STEREO_48K, PcmFormat { sample_rate: 48_000, bits: 16, channels: 2 });
+        for other in ["ac3", "eac3", "aac", "truehd"] {
+            set_stream_codecs(&mut ps, "h264", other);
+            assert_eq!(stream_pcm(&ps), None, "{other}");
+        }
     }
 
     #[test]
@@ -5960,6 +5991,12 @@ pub fn set_stream_declaration_for_test(
     capability: plx_platform::devcaps::dv::DvCapability,
 ) -> bool {
     set_stream_declaration_with_capability(ps, vc, ac, fps, dovi, immersive, capability)
+}
+
+/// Begin an attempt on `caps`, so [`stream_pcm`] and the planner read that value (tests).
+#[cfg(any(test, feature = "test-support"))]
+pub fn begin_attempt_for_test(ps: &mut PlaybackSession, caps: std::sync::Arc<plx_platform::devcaps::Caps>) {
+    ps.begin_attempt(caps);
 }
 
 /// Carry `audio` as the playing track, so [`stream_pcm`] reads its facts (rate, depth, channels).

@@ -84,31 +84,43 @@ const OPUS_AUTO_MAX_CHANNELS: u32 = 2;
 /// fallback stays byte-for-byte what it was.
 pub const PCM_AUDIO_CODECS: &str = "flac,alac,pcm";
 
-/// One codec the app decodes itself ([`PCM_AUDIO_CODECS`]): its [`audio_codec_id`] and the bundled
-/// FFmpeg decoders that produce its PCM (`avcodec_get_name`'s spelling, one codec id each).
+/// One codec the app decodes itself: its [`audio_codec_id`], the names `avcodec_get_name` gives the
+/// streams it covers (what the demuxer sees), and the decoders `ci/build-ffmpeg.sh` must enable to
+/// decode them. The two differ for DTS, whose codec is `dts` and whose decoder is `dca`.
 pub struct AppDecoded {
     pub id: &'static str,
-    pub ffmpeg: &'static [&'static str],
+    pub codecs: &'static [&'static str],
+    pub decoders: &'static [&'static str],
+    /// Lossy: the decode is NOT bit-exact and is fed as stereo 48 kHz S16 whatever the source
+    /// (see [`Caps::app_decodes`]). Only on a [`Caps::app_decodes_lossy`]
+    /// value; [`PCM_AUDIO_CODECS`] is the lossless entries.
+    pub lossy: bool,
 }
 
 /// The app-decoded set, and the ONLY place a decoder name is tied to a codec: the demuxer asks
-/// [`app_decoded_by_ffmpeg_name`], and a test holds every name here to `ci/build-ffmpeg.sh`'s
+/// [`app_decoded_by_ffmpeg_name`], and a test holds every decoder here to `ci/build-ffmpeg.sh`'s
 /// `--enable-decoder` list, so a codec cannot be offered that the bundled library cannot decode.
 pub const APP_DECODED: &[AppDecoded] = &[
-    AppDecoded { id: "flac", ffmpeg: &["flac"] },
-    AppDecoded { id: "alac", ffmpeg: &["alac"] },
+    AppDecoded { id: "flac", codecs: &["flac"], decoders: &["flac"], lossy: false },
+    AppDecoded { id: "alac", codecs: &["alac"], decoders: &["alac"], lossy: false },
     // LPCM in MKV (`A_PCM/INT/LIT`, `/BIG`) and MP4 (`sowt`, `twos`, `in24`, `in32`). The integer
     // widths only: a float or 8-bit track is not claimed ([`audio_codec_id`]), because the
     // path is bit-exact and the Load declares 16 or 32 bits.
     AppDecoded {
         id: "pcm",
-        ffmpeg: &["pcm_s16le", "pcm_s16be", "pcm_s24le", "pcm_s24be", "pcm_s32le", "pcm_s32be"],
+        codecs: &["pcm_s16le", "pcm_s16be", "pcm_s24le", "pcm_s24be", "pcm_s32le", "pcm_s32be"],
+        decoders: &["pcm_s16le", "pcm_s16be", "pcm_s24le", "pcm_s24be", "pcm_s32le", "pcm_s32be"],
+        lossy: false,
     },
+    // DTS core, downmixed to stereo and resampled to 48 kHz: for a set with no DTS decoder (webOS 10+)
+    // and for Force Direct Play there. GATED OFF until the TV has measured the CPU it costs
+    // ([`Caps::app_decodes_lossy`]).
+    AppDecoded { id: "dts", codecs: &["dts"], decoders: &["dca"], lossy: true },
 ];
 
-/// The [`APP_DECODED`] entry whose decoder is the FFmpeg one named `name`.
+/// The [`APP_DECODED`] entry covering the stream whose `avcodec_get_name` is `name`.
 pub fn app_decoded_by_ffmpeg_name(name: &str) -> Option<&'static AppDecoded> {
-    APP_DECODED.iter().find(|c| c.ffmpeg.contains(&name))
+    APP_DECODED.iter().find(|c| c.codecs.contains(&name))
 }
 
 /// The channel ceiling of the PCM path: `pcmInfo.channelMode` has `mono` and `stereo` (and
@@ -429,6 +441,11 @@ pub struct Caps {
     /// never stored on the install (a video facet never proves). Read through
     /// [`Caps::raster_bound`], never directly. A `BTreeMap` keeps `Eq` and deterministic profile bytes.
     pub video_ceiling: std::collections::BTreeMap<String, (u32, u32)>,
+    /// The app decodes the LOSSY entries of [`APP_DECODED`] (DTS) itself and feeds them as stereo
+    /// 48 kHz PCM, instead of the set's own decoder or the server. Off in [`Caps::assumed`], in a
+    /// table read and on every install until the TV has measured what the decode costs; the
+    /// `appdecodelossy` dev trigger turns it on at boot ([`Caps::with_app_lossy`]).
+    pub app_decodes_lossy: bool,
 }
 
 impl Caps {
@@ -451,7 +468,35 @@ impl Caps {
             audio_channels: Default::default(),
             native_ceiling: Default::default(),
             video_ceiling: Default::default(),
+            app_decodes_lossy: false,
         }
+    }
+
+    /// This value with the app's own lossy decode switched on ([`Caps::app_decodes_lossy`]): DTS is
+    /// announced whatever the set's table says (the app decodes it, so no decoder row is needed),
+    /// up to eight channels (the core is downmixed to stereo; DTS-HD's extensions are not read).
+    pub fn with_app_lossy(mut self) -> Caps {
+        self.app_decodes_lossy = true;
+        for c in APP_DECODED.iter().filter(|c| c.lossy) {
+            if !self.audio_has(c.id) {
+                self.audio.push(',');
+                self.audio.push_str(c.id);
+            }
+            self.audio_channels.insert(c.id.to_owned(), 8);
+        }
+        self
+    }
+
+    /// Whether the app decodes `codec` itself on this value: the lossless set always
+    /// ([`PCM_AUDIO_CODECS`]), the lossy one only under [`Caps::app_decodes_lossy`].
+    pub fn app_decodes(&self, codec: &str) -> bool {
+        self.app_decodes_lossy_codec(codec) || is_pcm_codec(codec)
+    }
+
+    /// Whether `codec` is one of the lossy [`APP_DECODED`] entries AND the gate is on.
+    pub fn app_decodes_lossy_codec(&self, codec: &str) -> bool {
+        let id = audio_codec_id(codec);
+        self.app_decodes_lossy && APP_DECODED.iter().any(|c| c.lossy && c.id == id)
     }
 
     /// The width/height upper bound for `vcodec` (PMS's lower-case spelling), per axis the lowest
@@ -523,6 +568,10 @@ impl Caps {
     pub fn forced_feeds_audio_track(&self, codec: &str, channels: i64) -> bool {
         if !self.forced_feeds_audio(codec) {
             return false;
+        }
+        // A ceiling measured on the set's own decoder says nothing of the app's.
+        if self.app_decodes_lossy_codec(codec) {
+            return true;
         }
         match self.native_ceiling.get(audio_codec_id(codec).as_ref()) {
             Some(&max) => channels <= i64::from(max),
@@ -764,7 +813,7 @@ pub fn audio_codec_id(codec: &str) -> Cow<'_, str> {
         // media's `pcm` and the stream's `pcm_s16le`, `pcm_s24le`, … The flavour is the demuxer's
         // business (`ff_pcm`); a flavour not listed here stays itself and is not app-decoded.
         "lpcm" => Cow::Borrowed("pcm"),
-        c if APP_DECODED.iter().any(|d| d.id == "pcm" && d.ffmpeg.contains(&c)) => Cow::Borrowed("pcm"),
+        c if APP_DECODED.iter().any(|d| d.id == "pcm" && d.codecs.contains(&c)) => Cow::Borrowed("pcm"),
         _ => Cow::Borrowed(codec),
     }
 }
@@ -956,6 +1005,7 @@ fn parse(s: &str) -> Option<Caps> {
         audio_channels,
         native_ceiling: Default::default(),
         video_ceiling: Default::default(),
+        app_decodes_lossy: false,
     })
 }
 
@@ -1049,6 +1099,11 @@ pub fn probe() {
     // `nativeaudioforget` the record.
     let mut boot = caps.clone();
     let excluded = apply_exclusions(&mut boot, &info.codename, wide, EXCLUSIONS);
+    if plx_base::devtrig::flag("appdecodelossy") {
+        boot = boot.with_app_lossy();
+        #[cfg(feature = "devtriggers")]
+        plx_base::eventlog::log("devcaps: /tmp/plxnative-appdecodelossy: the app decodes DTS itself (stereo 48 kHz PCM)");
+    }
     plx_base::eventlog::log(&format!(
         "devcaps: firmware={:?} build={:?} audio layers: table+gst={} | exclusions: {} | -> audio={}{}{}",
         info.codename,
@@ -1610,9 +1665,10 @@ mod tests {
     /// that table's ids, in order.
     #[test]
     fn the_pcm_codec_list_is_the_app_decoded_table() {
-        let ids: Vec<&str> = APP_DECODED.iter().map(|c| c.id).collect();
+        let ids: Vec<&str> = APP_DECODED.iter().filter(|c| !c.lossy).map(|c| c.id).collect();
         assert_eq!(PCM_AUDIO_CODECS.split(',').collect::<Vec<_>>(), ids);
-        assert!(ids.iter().all(|id| audio_codec_id(id) == *id), "an id is its own canonical spelling");
+        let all: Vec<&str> = APP_DECODED.iter().map(|c| c.id).collect();
+        assert!(all.iter().all(|id| audio_codec_id(id) == *id), "an id is its own canonical spelling");
     }
 
     /// "Derived from the bundled decoder list": every decoder the table names is enabled in
@@ -1628,13 +1684,42 @@ mod tests {
             .collect();
         assert!(enabled.contains(&"flac"), "the parse found the decoder list: {enabled:?}");
         for c in APP_DECODED {
-            assert!(!c.ffmpeg.is_empty(), "{}", c.id);
-            for d in c.ffmpeg {
+            assert!(!c.decoders.is_empty() && !c.codecs.is_empty(), "{}", c.id);
+            for d in c.decoders {
                 assert!(enabled.contains(d), "{}: decoder {d} is not in ci/build-ffmpeg.sh's --enable-decoder list", c.id);
-                assert_eq!(app_decoded_by_ffmpeg_name(d).map(|c| c.id), Some(c.id));
+            }
+            for n in c.codecs {
+                assert_eq!(app_decoded_by_ffmpeg_name(n).map(|c| c.id), Some(c.id));
             }
         }
         assert!(app_decoded_by_ffmpeg_name("ac3").is_none(), "a hardware codec is not app-decoded");
+    }
+
+    /// **S4 PR 2's gate.** DTS is app-decoded only on a value that turned the lossy decode on; the
+    /// default and the table read leave it off, so nothing changes for anyone until the TV has
+    /// measured the CPU. On, DTS is announced without a table row, with no rate bound, in both
+    /// modes, and a native ceiling measured on the set's own decoder does not apply to it.
+    #[test]
+    fn dts_is_app_decoded_only_on_a_value_that_turned_the_gate_on() {
+        for off in [Caps::assumed(), parse(REAL).unwrap()] {
+            assert!(!off.app_decodes_lossy && !off.app_decodes("dts") && !off.app_decodes("dca"));
+            assert!(off.app_decodes("flac"), "the lossless set is not gated");
+        }
+        assert!(!Caps::assumed().audio_has("dts"), "off: the assumed fallback is what it was");
+        let on = Caps::assumed().with_app_lossy();
+        for spelling in ["dts", "dca", "DTS"] {
+            assert!(on.app_decodes(spelling), "{spelling}");
+            assert!(on.audio_has(spelling) && on.audio_supports(spelling, 8), "{spelling}");
+            assert!(on.forced_feeds_audio(spelling), "{spelling}");
+        }
+        assert!(!on.app_decodes("ac3") && !on.app_decodes("eac3") && !on.app_decodes("truehd"));
+        assert!(audio_track_fits("dts", 6, 96_000), "no rate bound: the core is at most 48 kHz");
+        let measured = Caps { native_ceiling: [("dts".into(), 2)].into(), ..Caps::assumed() }.with_app_lossy();
+        assert!(measured.forced_feeds_audio_track("dts", 6), "a ceiling of the native decoder is not the app's");
+        assert!(!Caps { native_ceiling: [("dts".into(), 2)].into(), ..parse(REAL).unwrap() }.forced_feeds_audio_track("dts", 6));
+        assert_eq!(on.clone().with_app_lossy(), on, "idempotent");
+        let dts_in_list = on.audio.split(',').filter(|c| *c == "dts").count();
+        assert_eq!(dts_in_list, 1);
     }
 
     /// Lossless two-channel codecs share FLAC's path (S4, PR 1): ALAC, and LPCM under every spelling

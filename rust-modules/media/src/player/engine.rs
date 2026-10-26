@@ -1008,6 +1008,17 @@ fn audio_payload_codec(codec: &str) -> Option<(&'static str, u8)> {
     }
 }
 
+/// The audio name and diagnostic code a Load declares for `codec`: PCM whenever the app decodes the
+/// stream itself (`pcm` is the shape [`crate::route::stream_pcm`] declared), whatever the codec
+/// is — DTS is `DTS` only when the set's own decoder takes it — else [`audio_payload_codec`]'s.
+/// PURE.
+fn audio_declaration(codec: &str, pcm: Option<&crate::route::PcmFormat>) -> Option<(&'static str, u8)> {
+    if pcm.is_some() {
+        return Some(("PCM", 5));
+    }
+    audio_payload_codec(codec)
+}
+
 /// RFC 7845 §5.1 `OpusHead` as libopus's surround encoder writes it: mapping family 0 for mono and
 /// stereo, family 1 (Vorbis channel order) for 3-8 channels, pre-skip 312, 48 kHz, 0 dB gain.
 /// The Load is built before the demuxer opens the file, so the file's own CodecPrivate is not
@@ -1712,11 +1723,6 @@ fn start_bufferfeed_inner(
             // wrong string leaves the audio ES unconfigured, and with audioSync the video
             // sink slaves to the dead audio clock and stalls (verified: video-only plays).
             let codec = crate::route::stream_acodec(ps);
-            let Some((ac, diagnostic)) = audio_payload_codec(&codec) else {
-                log(&format!("start_bufferfeed: unsupported audio codec {codec:?}; refusing incorrect Load declaration"));
-                SHARED.fail_demux(DemuxExitClass::LoadRefused);
-                return Err(crate::route::RouteStartResult::StartFailed);
-            };
             // App-decoded audio: the Load must state the PCM shape, and the demuxer must produce
             // exactly that. Missing facts refuse the Load — a guessed rate plays at the wrong pitch.
             let pcm = match app_pcm_for_rate(session_rate, crate::route::stream_pcm(ps)) {
@@ -1727,6 +1733,11 @@ fn start_bufferfeed_inner(
                     return Err(crate::route::RouteStartResult::StartFailed);
                 }
                 None => None,
+            };
+            let Some((ac, diagnostic)) = audio_declaration(&codec, pcm.as_ref()) else {
+                log(&format!("start_bufferfeed: unsupported audio codec {codec:?}; refusing incorrect Load declaration"));
+                SHARED.fail_demux(DemuxExitClass::LoadRefused);
+                return Err(crate::route::RouteStartResult::StartFailed);
             };
             crate::ff::set_pcm_out(pcm.map(|f| (f.sample_rate, f.bits, f.channels)));
             if let Some(f) = pcm {
@@ -6655,6 +6666,33 @@ mod pcm_info_tests {
         let missing = || Some(Err("unknown".to_string()));
         assert!(app_pcm_for_rate(crate::player::RATE_NORMAL, missing()).is_some_and(|r| r.is_err()));
         assert!(app_pcm_for_rate(750, missing()).is_none());
+    }
+
+    /// **DTS under the gate** (S4 PR 2) is declared as PCM — stereo 48 kHz S16, one `pcmInfo` — and
+    /// with the gate off is `DTS` exactly as before. The shape is the session's own
+    /// (`route::stream_pcm`), so a native DTS Load can never carry a PCM node nor the reverse.
+    #[test]
+    fn app_decoded_dts_is_declared_as_pcm_and_native_dts_as_dts() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        crate::route::set_stream_codecs(&mut ps, "h264", "dts");
+        assert_eq!(audio_declaration("dts", crate::route::stream_pcm(&ps).and_then(Result::ok).as_ref()), Some(("DTS", 4)));
+        let off = build_av_payload_at(&ps, "H264", "DTS", ENVELOPE_FHD60, crate::player::RATE_NORMAL);
+        assert!(off.contains(r#""audio":"DTS""#) && !off.contains("pcmInfo"), "{off}");
+
+        crate::route::begin_attempt_for_test(
+            &mut ps, std::sync::Arc::new(plx_platform::devcaps::Caps::assumed().with_app_lossy()),
+        );
+        let shape = crate::route::stream_pcm(&ps).and_then(Result::ok);
+        assert_eq!(shape, Some(crate::route::PcmFormat::STEREO_48K));
+        assert_eq!(audio_declaration("dts", shape.as_ref()), Some(("PCM", 5)));
+        let on = build_av_payload_at(&ps, "H264", "PCM", ENVELOPE_FHD60, crate::player::RATE_NORMAL);
+        assert!(on.contains(r#""audio":"PCM""#), "{on}");
+        assert_eq!(on.matches("pcmInfo").count(), 1, "{on}");
+        assert!(on.contains(r#""format":"S16LE","channelMode":"stereo","layout":"interleaved","sampleRate":48,"bitsPerSample":16"#), "{on}");
+        // at a speed the speed decoder declares PCM itself, from the same codec: still one node
+        let fast = build_av_payload_at(&ps, "H264", "PCM", ENVELOPE_FHD60, 1500);
+        assert_eq!(fast.matches("pcmInfo").count(), 1, "{fast}");
+        serde_json::from_str::<serde_json::Value>(&on).unwrap();
     }
 
     #[test]
