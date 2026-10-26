@@ -29,7 +29,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-26T10:55:03Z",
+ "generated": "2026-10-26T11:06:54Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -96,19 +96,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -54.9,
+   "change30_pct": -55.0,
    "change7_pct": -27.6,
-   "d30": 780.0,
-   "delta30": -428.0,
-   "delta7": -134.0,
+   "d30": 783,
+   "delta30": -431,
+   "delta7": -134,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 219,
-   "n_prev": 268,
+   "n_prev": 269,
    "now": 352,
-   "prev7": 486.0,
+   "prev7": 486,
    "shown": true,
    "state": "better",
    "state30": "better",
@@ -117,10 +117,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -53.5,
+   "change30_pct": -53.6,
    "change7_pct": -20.7,
-   "d30": 725.5,
-   "delta30": -388.5,
+   "d30": 726,
+   "delta30": -389.0,
    "delta7": -88.0,
    "group": "ci",
    "id": "push_wait",
@@ -573,7 +573,7 @@
   {
    "change30_pct": -98.7,
    "change7_pct": -99.1,
-   "d30": 239.0,
+   "d30": 239,
    "delta30": -236.0,
    "delta7": -318.0,
    "group": "ci",
@@ -594,8 +594,8 @@
   {
    "change30_pct": -99.6,
    "change7_pct": 0.0,
-   "d30": 747.0,
-   "delta30": -744.0,
+   "d30": 748,
+   "delta30": -745.0,
    "delta7": 0.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
