@@ -7975,6 +7975,82 @@ mod pcm_sink_lead_pure_tests {
     }
 }
 
+/// The line from the set's audio stack to the Engine's lead, through the production start itself:
+/// `start_bufferfeed_inner` reads `devcaps::audio_stack()` and hands it to `load_audio`. A start that
+/// stopped passing it on (or passed a fixed one) leaves every other test green, because they all
+/// build the plan or the Engine by hand.
+#[cfg(all(test, feature = "hostsim"))]
+mod pcm_stack_wiring_tests {
+    use super::*;
+    use plx_platform::devcaps::{audio_stack_on_this_thread_for_test, AudioStack};
+
+    struct Cleanup;
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            crate::player::ffi_host::reset_native_lifecycle_for_test();
+            crate::player::ffi_host::force_clocksink_for_test(false);
+            SHARED.test_force_native_idle();
+            SHARED.reset_session();
+            crate::route::reset_player_control_for_test(crate::route::idle_session_for_test());
+        }
+    }
+
+    /// Start a FLAC Load (declares `"audio":"PCM"`) on a set whose stack is `stack`, let its Load
+    /// thread return, take what the Engine took from it, and give back `(pending before the take,
+    /// lead after it)`.
+    fn lead_of_a_flac_start_on(stack: AudioStack) -> (bool, i64) {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        SHARED.reset_session();
+        crate::route::reset_player_control_for_test(&ps);
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
+        let _cleanup = Cleanup;
+        let _stack = audio_stack_on_this_thread_for_test(stack);
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe { plx_base::task::MainThread::assume() });
+        crate::route::set_url(&mut ps, "http://127.0.0.1:1/track.flac");
+        crate::route::set_stream_acodec(&mut ps, "flac");
+        crate::route::set_carried_audio_for_test(
+            &mut ps,
+            crate::route::CarriedAudio {
+                sid: 7, ordinal: 1, codec: "flac".into(), channels: 2,
+                can_normalize_loudness: false, immersive: false, sample_rate: 48_000, bit_depth: 16,
+            },
+        );
+
+        let started = start_bufferfeed_tracked(&mut ps, &mut pa);
+        assert!(
+            matches!(started, BufferfeedStartOutcome::Launched(_)),
+            "PRECONDITION FAILED: the FLAC start must launch ({started:?})"
+        );
+        let eng = pa.engine().expect("a launched start installs its Engine");
+        assert!(
+            eng.payload.to_string_lossy().contains("PCM"),
+            "PRECONDITION FAILED: a FLAC Load must declare PCM: {:?}",
+            eng.payload
+        );
+        let pending = eng.pcm_lead_pending;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !SHARED.native_load_returned(eng.native_epoch) {
+            assert!(std::time::Instant::now() < deadline, "the Load never returned");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(settle_pcm_lead(eng), "a returned Load has settled its lead");
+        let lead = eng.pcm_sink_lead_ns;
+        stop_bufferfeed(&mut ps, &mut pa);
+        (pending, lead)
+    }
+
+    /// `liblxa` yields a lead for a PCM Load (the hostsim bus has no answer, so the 400 ms default);
+    /// any other stack, and one nobody probed, yields none and has nothing to wait for.
+    #[test]
+    fn a_pcm_start_gets_a_lead_on_liblxa_and_none_on_any_other_stack() {
+        assert_eq!(lead_of_a_flac_start_on(AudioStack::Liblxa), (true, PCM_SINK_LEAD_NS));
+        assert_eq!(lead_of_a_flac_start_on(AudioStack::Other), (false, 0));
+        assert_eq!(lead_of_a_flac_start_on(AudioStack::Unknown), (false, 0));
+    }
+}
+
 #[cfg(all(test, feature = "hostsim"))]
 mod pcm_sink_lead_tests {
     use super::*;

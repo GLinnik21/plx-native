@@ -431,7 +431,8 @@ pub fn activate_storage_helper(_service: &str) -> crate::storage::wire::failure:
 }
 
 /// One `getSystemSettings` round trip on a fresh anonymous registration (any thread: the
-/// registration owns its glib context). `None` when the bus refused or timed out.
+/// registration owns its glib context). `None` when the bus refused or timed out. `budget` bounds
+/// the call only: registration and unregistration are not bounded by it (`ls2`'s own doc says so).
 #[cfg(all(not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
 fn settings_reply(payload: &str, budget: std::time::Duration) -> Option<String> {
     ls2::register()
@@ -458,11 +459,17 @@ pub fn system_locale() -> crate::tv::LocaleReply {
 
 /// What the settings service says about the active sound output; `tv::sound` owns the parse and the
 /// log line. The caller is the player's Load thread (never the frame thread), once per Load that
-/// declares app-decoded audio, and the Load waits for it, so the budget is time added to that
-/// Load's start: 300 ms, which is the healthy round trip (tens of milliseconds, not yet measured
-/// on the set; `tv::sound::output` logs it per read) with room to spare, and still shorter than
-/// the 400 ms the answer moves the audio by. A bus that never answers costs the budget on every
-/// such Load and then keeps the 400 ms default.
+/// declares app-decoded audio, and the Load waits for it.
+///
+/// **What 300 ms bounds, and what it does not.** It bounds the call: a healthy round trip is tens of
+/// milliseconds (not yet measured on the set; `tv::sound::output` logs it per read), so 300 ms has
+/// room to spare, and the answer moves the lead by at most 150 ms (400 to 250), so a longer wait is
+/// not worth a later start. It does NOT bound the registration in front of the call or the unregistration
+/// behind it (`ls2`'s own doc: they sit outside the budget), and no bounded registration exists in
+/// `ls2` to use instead. On a wedged luna hub the Load thread therefore blocks in `ls2::register()`
+/// before `Load` is ever called, for as long as the hub takes: this Load is delayed by that, and is
+/// failed by the pump's `NATIVE_LOAD_BUDGET` if the wait outlasts it. A hub that answers the
+/// registration and then stays silent costs the call's 300 ms and keeps the 400 ms default.
 #[cfg(all(not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
 pub fn sound_output() -> crate::tv::sound::Reply {
     use crate::tv::sound::Reply;

@@ -5,6 +5,10 @@
 //! **Blocking.** One platform round trip, so [`output`] must run on a worker, never on the frame
 //! thread; it asserts that itself (`plx_base::task::assert_may_block`). The playback engine reads
 //! it from the Load thread, once per Load that declares app-decoded audio.
+//!
+//! **Not a bounded wait.** The call has a 300 ms budget; the bus registration before it and the
+//! unregistration after it do not (`webos::ls2`), so a wedged luna hub delays the caller by as long
+//! as the hub takes, not by 300 ms.
 
 /// What the platform's settings service said. [`parse_output`] owns the reading of it.
 #[cfg_attr(any(feature = "hostsim", test, feature = "test-support"), allow(dead_code))] // Reply/Unavailable: TV arm only

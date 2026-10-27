@@ -19,6 +19,9 @@ use std::time::Duration;
 /// timeout is to catch a genuine hang — the k5lp `DirectVoInit` block investigation.md §B
 /// describes — not to interrupt an ordinary slow one. It exists so a Load that never returns
 /// becomes a failure read-out instead of a permanent Connecting spinner.
+///
+/// Its clock is the wall clock from `begin_native_session`, so it counts the Load thread's
+/// sound-output read in front of `Load`; the Load-timing log and telemetry do not (`threads::load_alone`).
 pub const NATIVE_LOAD_BUDGET: Duration = Duration::from_secs(20);
 
 /// The issued→return gate shared by the constructor wait and the loadCompleted arm.

@@ -586,8 +586,17 @@ something.
   `settle_pcm_lead` takes the lead into the Engine, once, before the first audio unit; until then the audio
   lane waits rather than stamp with a guess it would later move. A compressed Load, an override and a stack
   that is not `liblxa` never read the output (the last pays nothing on the bus). A cost to know: on a PCM Load the read sits directly in front of `Load`, so it adds its
-  round trip to time-to-first-frame (its length is in the `sound: output ... read in Nms` line); a bus
-  that never answers adds the whole budget to every such Load and keeps 400.
+  round trip to time-to-first-frame (its length is in the `sound: output ... read in Nms` line). *Worst
+  case:* the 300 ms bounds the CALL only. `ls2::register()` before it and the unregistration after it are
+  not bounded (`webos.rs`'s `ls2` doc), and `ls2` has no bounded registration to use instead, so a wedged
+  luna hub blocks the Load thread in the registration, before `Load`, for as long as the hub takes: that
+  Load is delayed by it, and the pump's `NATIVE_LOAD_BUDGET` fails it if the wait outlasts 20 s. A hub
+  that registers and then stays silent costs the 300 ms and keeps 400. The answer moves the lead by at
+  most 150 ms (400 to 250), which is why the call's budget is short. *Timing figures:* `native: Load
+  returned after Nms`, `LoadElapsedClass` telemetry and `native_load_elapsed_ms` measure Starfish `Load`
+  alone (`threads::load_alone` takes the Load thread's read out of them); `NATIVE_LOAD_BUDGET` still runs
+  on the wall clock from `begin_native_session`, so it counts the read, on purpose (a wedged registration
+  must fail, not park Connecting).
   *Seek (firmware, not filmed):* LG's audio sink hands each buffer's pts to the driver unchanged and
   re-derives its render base at every SEGMENT from the segment and the pipeline clock, never from a
   buffer's pts; no late-drop or gap rule exists. So the relative lead survives an in-place seek and a
