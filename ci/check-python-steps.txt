@@ -352,3 +352,8 @@ python3 .claude/hooks/tv-lock-notify-test.py
 # to it and a `.codex/agents/<name>.toml` wrapper. CI's path filter ignores those files, so this is the only reader. Reads the real
 # tree once; the cases run on synthetic trees in a private temp dir.
 python3 ci/test_agent_files.py
+# `decomp.sh`'s (.agents/skills/decompile-tv-lib) output filter, which `fn` and `xref` pipe Ghidra headless's log through: it kept only
+# the FIRST line of each multi-line println (a decompiled body, an `xref` string ending in a newline), so `fn` printed headers and
+# no code. Fixtures of real headless output with Ghidra's own multi-line records mixed in, through `decomp.sh filter` and through
+# `fn` / `xref` against a fake `analyzeHeadless`. No Ghidra, no Java, no firmware; POSIX awk, so BSD awk and mawk both pass.
+python3 ci/test_decomp_filter.py

@@ -11,6 +11,7 @@
 #   decomp.sh str  <lib> <pattern>       .rodata strings — the cheap first pass
 #   decomp.sh fn   <lib> <pattern> [n]   DECOMPILE matching functions (default 6)
 #   decomp.sh xref <lib> <string>        which functions reference a string literal
+#   decomp.sh filter                     stdin: a raw Ghidra headless log -> only the scripts' own output
 #
 # <lib> is a substring of a harvested file name (e.g. "playerAPIs", "libpf", "cbe").
 #
@@ -129,6 +130,39 @@ imported() {  # is <name> already analysed in the cached project?
   return 1
 }
 
+# Ghidra headless logs each println of a script as ONE log record, "INFO  <Script>.java> <message>
+# (GhidraScript)  ": the prefix is on the record's first line and the " (GhidraScript)  " column
+# on its last. A message with newlines in it (a decompiled C body, an `xref` string literal that
+# ends in "\n") is several lines and only the first carries the prefix, so a filter that keeps
+# the prefixed lines (the `sed -n 's/^INFO  ...> //p'` this replaced) loses the rest: `fn` printed
+# its "======== addr name" header and nothing under it. A script's record therefore stays open
+# until its own terminator, the line that ends in " (GhidraScript)  ", and every line up to it
+# is the message, whatever it starts with: a firmware string may have a line that begins "INFO "
+# or "WARN ", which is no log record. Outside a script's record every line is dropped: Ghidra's
+# own records (they may be multi-line too, the script path list, a stack trace) and the JVM's
+# banner. The one line a message leaves behind is the logger column alone, where its final
+# newline ended the text; that is not a line of the message.
+# POSIX awk, with LC_ALL=C so a firmware string with a non-UTF-8 byte passes through as bytes.
+script_output() {  # stdin: Ghidra headless's whole log; stdout: only what the scripts printed
+  LC_ALL=C awk '
+    {
+      if (!open) {
+        if ($0 !~ /^INFO  [A-Za-z0-9_]+\.java> /) next        # not a script record: Ghidra, or the JVM
+        sub(/^INFO  [A-Za-z0-9_]+\.java> /, "")               # a script record begins
+        open = 1; first = 1
+      } else {
+        first = 0                                             # the record goes on
+      }
+      if ($0 ~ / \(GhidraScript\)  $/) {                      # its terminator: the record ends here
+        open = 0
+        if (!first && $0 ~ /^ \(GhidraScript\)  $/) next
+        sub(/ \(GhidraScript\)  $/, "")
+      }
+      print
+    }
+  '
+}
+
 run_script() {  # <libpath> <script.java> <args...>
   need_ghidra; ensure_script
   local lib="$1" script="$2"; shift 2
@@ -141,7 +175,7 @@ run_script() {  # <libpath> <script.java> <args...>
   fi
   "$AH" "$PROJ" tvlab -process "$name" -noanalysis -scriptPath "$SCRIPTS" \
         -postScript "$script" "$@" 2>&1 \
-    | sed -n 's/^INFO  [A-Za-z]*\.java> //p'
+    | script_output
 }
 
 cmd="${1:-help}"; shift || true
@@ -169,6 +203,7 @@ case "$cmd" in
   str)    l=$(pick "${1:?lib}"); "$STRINGS" -a "$l" | grep -i -- "${2:?pattern}" | sort -u ;;
   fn)     l=$(pick "${1:?lib}"); run_script "$l" DecompMatch.java "${2:?pattern}" "${3:-6}" ;;
   xref)   l=$(pick "${1:?lib}"); run_script "$l" XrefString.java "${2:?string}" ;;
-  clean)  rm -rf "$PROJ" "$SCRIPTS"; echo "decomp: analysis cache dropped (harvested binaries kept)" ;;
-  *)      sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' ;;
+  filter) script_output ;;
+  clean) rm -rf "$PROJ" "$SCRIPTS"; echo "decomp: analysis cache dropped (harvested binaries kept)" ;;
+  *)      awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0" ;;
 esac

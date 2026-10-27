@@ -581,6 +581,10 @@
     "value": "\n\nHandled playback error (only when error reporting is on):\n",
     "description": "Settings, account, onboarding or privacy UI: settings.consent.preview.handled"
   },
+  "settings.consent.preview.recovered": {
+    "value": "\n\nRecovered playback refusal (only when error reporting is on):\n",
+    "description": "Heading in the crash-report preview above the sample of a recovered-refusal report. Privacy disclosure: keep the condition exact."
+  },
   "settings.consent.analytics.absent": {
     "value": "NO ANALYTICS ID\n\nProduct analytics is off, so this installation has no analytics identifier and is sending no analytics events.\n\nAn identifier is created only when you turn product analytics on, and deleting it is what turning it off does. If you had analytics on before and want events from that period deleted, write to {contact} — but note that the identifier they carry was destroyed when analytics was turned off, so it can no longer be looked up from this television.\n\nCrash reports do not use this identifier. They carry a separate Crash report ID, shown on its own row while crash reports are on.",
     "description": "Settings, account, onboarding or privacy UI: settings.consent.analytics.absent",
@@ -1189,6 +1193,10 @@
   },
   "settings.consent.placeholder.webos_release": {
     "value": "webOS release",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.webos_build": {
+    "value": "webOS firmware build",
     "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
   },
   "settings.consent.placeholder.webos_codename": {
