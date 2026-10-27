@@ -29,7 +29,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-27T22:41:42Z",
+ "generated": "2026-10-27T22:44:48Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -99,15 +99,15 @@
    "change30_pct": -58.6,
    "change7_pct": -15.5,
    "d30": 821,
-   "delta30": -481,
+   "delta30": -481.0,
    "delta7": -62.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 85,
+   "n_now": 86,
    "n_prev": 124,
-   "now": 340,
+   "now": 340.0,
    "prev7": 402.5,
    "shown": true,
    "state": "better",
@@ -364,14 +364,14 @@
    "change7_pct": 9.5,
    "d30": 136.0,
    "delta30": 129.0,
-   "delta7": 23,
+   "delta7": 23.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 73,
+   "n_now": 74,
    "n_prev": 119,
-   "now": 265,
+   "now": 265.0,
    "prev7": 242,
    "shown": true,
    "state": "flat",
@@ -381,18 +381,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 106.7,
-   "change7_pct": 5.0,
+   "change30_pct": 106.2,
+   "change7_pct": 4.7,
    "d30": 97.0,
-   "delta30": 103.5,
-   "delta7": 9.5,
+   "delta30": 103.0,
+   "delta7": 9,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 72,
+   "n_now": 73,
    "n_prev": 119,
-   "now": 200.5,
+   "now": 200,
    "prev7": 191,
    "shown": true,
    "state": "flat",
@@ -448,14 +448,14 @@
    "change7_pct": 8.7,
    "d30": null,
    "delta30": null,
-   "delta7": 13,
+   "delta7": 13.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 73,
+   "n_now": 74,
    "n_prev": 119,
-   "now": 163,
+   "now": 163.0,
    "prev7": 150,
    "shown": true,
    "state": "flat",
@@ -533,14 +533,14 @@
    "change7_pct": 0.0,
    "d30": 16.0,
    "delta30": 2.0,
-   "delta7": 0,
+   "delta7": 0.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 73,
+   "n_now": 74,
    "n_prev": 119,
-   "now": 18,
+   "now": 18.0,
    "prev7": 18,
    "shown": false,
    "state": "flat",
@@ -639,11 +639,6 @@
    "change_pct": 30.5,
    "commits": [
     {
-     "pr": 1062,
-     "sha": "e2a4365a3",
-     "title": "Playback: the capability answer is fixed at boot; each play start applies the stored refusals itself"
-    },
-    {
      "pr": 1063,
      "sha": "03534e394",
      "title": "Tests: Force Direct Play refuses a learned refusal before the Load"
@@ -687,6 +682,11 @@
      "pr": 1089,
      "sha": "e75d0af8a",
      "title": "Playback: app-decoded audio's lead follows the sound output, and only on LG's liblxa audio stack"
+    },
+    {
+     "pr": 1093,
+     "sha": "8280eab36",
+     "title": "Playback: every LG audio stack gets its PCM lead (webOS 11/2024/2025 lgaudiosink, 2018); stacks are fingerprinted by the"
     }
    ],
    "from": 164.0,
@@ -700,11 +700,6 @@
    "change_pct": 29.1,
    "commits": [
     {
-     "pr": 1062,
-     "sha": "e2a4365a3",
-     "title": "Playback: the capability answer is fixed at boot; each play start applies the stored refusals itself"
-    },
-    {
      "pr": 1063,
      "sha": "03534e394",
      "title": "Tests: Force Direct Play refuses a learned refusal before the Load"
@@ -748,6 +743,11 @@
      "pr": 1089,
      "sha": "e75d0af8a",
      "title": "Playback: app-decoded audio's lead follows the sound output, and only on LG's liblxa audio stack"
+    },
+    {
+     "pr": 1093,
+     "sha": "8280eab36",
+     "title": "Playback: every LG audio stack gets its PCM lead (webOS 11/2024/2025 lgaudiosink, 2018); stacks are fingerprinted by the"
     }
    ],
    "from": 987.0,
@@ -788,7 +788,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 265
+   "now": 265.0
   }
  ],
  "slowest_local": [
