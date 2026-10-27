@@ -1763,8 +1763,9 @@ fn start_bufferfeed_inner(
             audio_declared = ac;
             audio_lead = audio.lead;
             // A lead that follows the sound output is read and logged by the Load thread, which may
-            // block on the bus (`resolve` asks nothing for the other plans); the dev override and a
-            // stack the lead was not measured on are settled here and say so now.
+            // block on the bus (`resolve` asks nothing for the other plans); the dev override, a
+            // stack whose lead is the same on every output (`Fixed`) and a stack with no lead
+            // (`NoLead`) are settled here and say so now.
             if let Some(line) = audio_lead.start_log_line() {
                 log(&line);
             }
@@ -3090,10 +3091,10 @@ fn pts_nudge_ns() -> i64 {
 /// renamed `lgao_*`, in `libgstlgaudiosink.so`. A stack that gets no lead is one where that rule was not
 /// found or its constants cannot be separated: Realtek (`rtkalsasink`) and MStar (`omxaudiosink`) have
 /// no mixer-off rule (their lip sync is not decoder-only), Realtek Bluetooth is not determined, and
-/// MStar may be up to about 128 ms early (its SoC delay floor), which is not "stays right". A set on no
-/// LG stack, or whose stack is unknown, gets NO lead (the behaviour before #1087, 0 ms), because if its
-/// PCM path was already in step, 400 ms makes it 0.4 s late. `pcmavoffset` is how such a chip gets
-/// measured, and it wins on any stack.
+/// MStar may be up to about 128 ms early (its SoC delay floor), which is not "stays right". A set with
+/// no lead (`adecsink` on 2016/2017, not determined; Realtek; MStar; an unknown stack) gets NO lead
+/// (the behaviour before #1087, 0 ms), because if its PCM path was already in step, 400 ms makes it
+/// 0.4 s late. `pcmavoffset` is how such a chip gets measured, and it wins on any stack.
 ///
 /// **`lgaudiosink`: 400 ms on every output, Bluetooth included, no output read.** The offset is the
 /// template's 400 raw (webOS 4.5 had 505 with +105; webOS 11 dropped both), and the sink's own 475 ms

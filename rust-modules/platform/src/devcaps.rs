@@ -975,11 +975,12 @@ pub fn vp9_bit_depth_for(major: u32) -> u32 {
 
 /// Which audio stack the set's sound output runs on, the fact the app-decoded audio's lead hangs on.
 ///
-/// LG ships a different GStreamer sink plugin family per generation, and a set carries exactly one
-/// (read from 19 firmware images, 2016 to 2025, LG chips, Realtek and MStar; no Realtek or MStar
-/// image has any of them). The plugin is what [`probe`] fingerprints, because `liblxa.so.2` is not
-/// under the image's `/usr/lib` on any image (it is in the BSP partition, `/mnt/bsppart/bsp/usr/lib`,
-/// found through `ld.so.conf`), the dev set's own firmware included, although a runtime stat of
+/// LG ships a different GStreamer sink plugin family per generation (a 2018 image also ships the
+/// 2016/2017 one, so the probe order decides; Realtek and MStar images have none of the four; read
+/// from the 19 unpacked firmware images, 2016 to 2025). The plugin is what [`probe`] fingerprints,
+/// because in the firmware images read directly `liblxa.so.2` is not under the image's `/usr/lib` on
+/// any (it is in the BSP partition, `/mnt/bsppart/bsp/usr/lib`, found through `ld.so.conf`), the dev
+/// set's own firmware included, although a runtime stat of
 /// `/usr/lib/liblxa.so.2` did answer yes there: the runtime layout is not the image's. Checked in
 /// this order, the first present file decides:
 ///
@@ -992,8 +993,9 @@ pub fn vp9_bit_depth_for(major: u32) -> u32 {
 /// | [`Other`](AudioStack::Other) | none | Realtek, MStar |
 ///
 /// (The plugins live in `/usr/lib/gstreamer-1.0/`.) One webOS version therefore spans several stacks,
-/// and the firmware version cannot stand in for it. The `tools/fwcompat.py` inventories list
-/// `/usr/lib` only, so they cannot show a plugin.
+/// and the firmware version cannot stand in for it. The `tools/fwcompat.py` inventories are
+/// per-library symbol tables: they carry `liblxa.so.2.0.0` on 7.4, 8.3 and 9.2 and hold no GStreamer
+/// plugin (`/usr/lib/gstreamer-1.0/*.so`), which is why the stack is fingerprinted from the plugin files.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AudioStack {
     /// LG's `liblxa` renderer behind the `lxaudiosink` plugin: the stack the lead was filmed on (the

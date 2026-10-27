@@ -4,7 +4,8 @@
 //!
 //! **Blocking.** One platform round trip, so [`output`] must run on a worker, never on the frame
 //! thread; it asserts that itself (`plx_base::task::assert_may_block`). The playback engine reads
-//! it from the Load thread, once per Load that declares app-decoded audio.
+//! it from the Load thread, once per PCM Load, only on a stack whose lead follows the output
+//! (`liblxa`, `audiosink_new`; see `player::engine::pcm_lead_plan`); other stacks never ask.
 //!
 //! **Not a bounded wait.** The call has a 300 ms budget; the bus registration before it and the
 //! unregistration after it do not (`webos::ls2`), so a wedged luna hub delays the caller by as long

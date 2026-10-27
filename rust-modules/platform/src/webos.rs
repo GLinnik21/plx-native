@@ -458,8 +458,9 @@ pub fn system_locale() -> crate::tv::LocaleReply {
 }
 
 /// What the settings service says about the active sound output; `tv::sound` owns the parse and the
-/// log line. The caller is the player's Load thread (never the frame thread), once per Load that
-/// declares app-decoded audio, and the Load waits for it.
+/// log line. The caller is the player's Load thread (never the frame thread), once per PCM Load, only on
+/// a stack whose lead follows the output (`liblxa`, `audiosink_new`; see `player::engine::pcm_lead_plan`);
+/// other stacks never ask. The Load waits for it.
 ///
 /// **What 300 ms bounds, and what it does not.** It bounds the call: a healthy round trip is tens of
 /// milliseconds (not yet measured on the set; `tv::sound::output` logs it per read), so 300 ms has

@@ -526,13 +526,14 @@ something.
   viewer's choice and persists across reloads; `applied_rate_permille` is the current pipeline's and is
   reset by `reset_session`. The feed throttle's run-on reads the applied one (`FeedPace::reference_at`).
 - **A Load that declares `"audio":"PCM"` on one of LG's audio stacks has its audio fed later than the
-  picture it belongs with, by an amount the stack decides; a set on no LG stack, or an unknown one, gets
-  no lead at all** (#1086, #1088, #1092, #1093; FLAC and every other app-decoded codec, and a speed
+  picture it belongs with, by an amount the stack decides; a set with no lead (`adecsink` on 2016/2017, not
+  determined; Realtek; MStar; an unknown stack) gets none at all** (#1086, #1088, #1092, #1093; FLAC and every other app-decoded codec, and a speed
   session at any speed other than 1x; a compressed Load, DTS included, gets none).
   *Which stack:* `devcaps::audio_stack()` fingerprints it at boot (`devcaps::probe`, the `devcaps:` line's
-  `audio stack=`) by the GStreamer sink PLUGIN, because every one of 19 firmware images (2016 to 2025; LG
-  chips, Realtek, MStar) has exactly one LG sink family in `/usr/lib/gstreamer-1.0/`, no Realtek or MStar
-  image has any of them, and `liblxa.so.2` itself is under the image's `/usr/lib` on none (it is in the BSP
+  `audio stack=`) by the GStreamer sink PLUGIN, because each LG generation has its own sink plugin family in `/usr/lib/gstreamer-1.0/`
+  (a 2018 image also ships the 2016/2017 one, so the probe order decides), no Realtek or MStar image has
+  any of the four, and in the firmware images read directly (the 19 unpacked images, 2016 to 2025; LG
+  chips, Realtek, MStar) `liblxa.so.2` itself is under the image's `/usr/lib` on none (it is in the BSP
   partition, `/mnt/bsppart/bsp/usr/lib`, found through `ld.so.conf`; the dev set's own firmware too,
   although its runtime stat of `/usr/lib/liblxa.so.2` answered yes: the runtime layout is not the
   image's). Each probe step is a stat, never a symbol lookup (our build links LG's libraries through stub
@@ -549,9 +550,10 @@ something.
   | `Other` (`other`) | none of them | Realtek, MStar | none | see below |
 
   The label `adecsink` exists so a tester's log names the stack and `pcmavoffset` can measure it.
-  `Unknown` is before `probe` (hosts, hostsim, tests). The `tools/fwcompat.py` inventories list `/usr/lib`
-  only (14 of them, `~/.cache/plxnative/fwsym/data`), so they cannot show a plugin; the firmware images
-  are the evidence. One webOS version spans several stacks (the 2022/23 OLEDs are `liblxa` up to webOS 9
+  `Unknown` is before `probe` (hosts, hostsim, tests). The `tools/fwcompat.py` inventories
+  (`~/.cache/plxnative/fwsym/data`) are per-library symbol tables: they carry `liblxa.so.2.0.0` on 7.4, 8.3
+  and 9.2 and hold no GStreamer plugin (`/usr/lib/gstreamer-1.0/*.so`), which is why the stack is
+  fingerprinted from the plugin files and the firmware images are the evidence. One webOS version spans several stacks (the 2022/23 OLEDs are `liblxa` up to webOS 9
   and `lgaudiosink` on 11), so the firmware version cannot decide it.
   *Why Realtek and MStar get none:* their lip sync is NOT decoder-only (no mixer-off rule), so there is no
   decoder-only compensation for the lead to match; it is not that they use one sink for both paths (the
