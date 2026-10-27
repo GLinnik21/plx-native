@@ -430,29 +430,51 @@ pub fn activate_storage_helper(_service: &str) -> crate::storage::wire::failure:
     Detail::new(Stage::Unsupported, None)
 }
 
+/// One `getSystemSettings` round trip on a fresh anonymous registration (any thread: the
+/// registration owns its glib context). `None` when the bus refused or timed out.
+#[cfg(all(not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
+fn settings_reply(payload: &str, budget: std::time::Duration) -> Option<String> {
+    ls2::register()
+        .map_err(ls2::Fail::from)
+        .and_then(|client| client.call("luna://com.webos.settingsservice/getSystemSettings", payload, budget))
+        .ok()
+}
+
 /// What the platform's settings service says about the locale; `i18n` owns the parse and the log
 /// lines. The same 600 ms bus budget as a root press, and for the same reason: the caller is the
 /// main thread at boot.
 #[cfg(all(not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
 pub fn system_locale() -> crate::tv::LocaleReply {
-    let result = ls2::register()
-        .map_err(ls2::Fail::from)
-        .and_then(|client| {
-            client.call(
-                "luna://com.webos.settingsservice/getSystemSettings",
-                r#"{"keys":["localeInfo"]}"#,
-                std::time::Duration::from_millis(600),
-            )
-        });
-    match result {
-        Ok(raw) => crate::tv::LocaleReply::Reply(raw),
-        Err(_) => crate::tv::LocaleReply::Unavailable,
+    match settings_reply(r#"{"keys":["localeInfo"]}"#, std::time::Duration::from_millis(600)) {
+        Some(raw) => crate::tv::LocaleReply::Reply(raw),
+        None => crate::tv::LocaleReply::Unavailable,
     }
 }
 
 #[cfg(any(feature = "hostsim", test, feature = "test-support"))]
 pub fn system_locale() -> crate::tv::LocaleReply {
     crate::tv::LocaleReply::NoPlatform
+}
+
+/// What the settings service says about the active sound output; `tv::sound` owns the parse and the
+/// log line. The caller is the player's Load thread (never the frame thread), once per Load that
+/// declares app-decoded audio, and the Load waits for it, so the budget is time added to that
+/// Load's start: 300 ms, which is the healthy round trip (tens of milliseconds, not yet measured
+/// on the set; `tv::sound::output` logs it per read) with room to spare, and still shorter than
+/// the 400 ms the answer moves the audio by. A bus that never answers costs the budget on every
+/// such Load and then keeps the 400 ms default.
+#[cfg(all(not(feature = "hostsim"), not(any(test, feature = "test-support"))))]
+pub fn sound_output() -> crate::tv::sound::Reply {
+    use crate::tv::sound::Reply;
+    match settings_reply(r#"{"category":"sound","keys":["soundOutput"]}"#, std::time::Duration::from_millis(300)) {
+        Some(raw) => Reply::Reply(raw),
+        None => Reply::Unavailable,
+    }
+}
+
+#[cfg(any(feature = "hostsim", test, feature = "test-support"))]
+pub fn sound_output() -> crate::tv::sound::Reply {
+    crate::tv::sound::Reply::NoPlatform
 }
 
 #[cfg(all(not(feature = "hostsim"), not(any(test, feature = "test-support"))))]

@@ -5,6 +5,7 @@ pub mod launch;
 pub mod sandbox;
 pub mod secure;
 pub mod sink;
+pub mod sound;
 pub mod toast;
 pub mod window;
 
@@ -23,6 +24,7 @@ pub struct Port {
     pub open: fn(&secure::Sealed) -> Option<Vec<u8>>,
     pub remove: fn(&secure::Backend, &str),
     pub system_locale: fn() -> LocaleReply,
+    pub sound_output: fn() -> sound::Reply,
     pub go_home: fn(),
     pub poll_home: fn(),
     pub deliver_toast: fn(&str, toast::Identity) -> toast::Sent,
@@ -58,6 +60,7 @@ static ABSENT: Port = Port {
     open: |_| None,
     remove: |_, _| {},
     system_locale: || LocaleReply::NoPlatform,
+    sound_output: || sound::Reply::NoPlatform,
     go_home: nothing,
     poll_home: nothing,
     deliver_toast: toast::deliver_without_port,
