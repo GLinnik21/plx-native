@@ -1008,6 +1008,45 @@ fn a_vanished_credit_falls_to_the_same_place_in_the_shelf() {
     );
 }
 
+/// A focused episode that vanishes from the landed list (a re-read, another season's page) lands on
+/// the same place in the strip, not on the hero: the hero fallback scrolls the page to the top
+/// (the jump seen on the television after RIGHT on the season strip, then DOWN).
+#[test]
+fn a_vanished_episode_falls_to_the_same_place_in_the_strip() {
+    let sid = ServerId::UNSET;
+    let names = ["a", "b", "c", "d", "e"];
+    let season = |names: &[&str]| {
+        let mut d = detail(sid, "show");
+        d.episodes = names.iter().enumerate().map(|(i, rk)| episode(rk, i as i64 + 1)).collect::<Vec<_>>().into();
+        d
+    };
+    let _guard = install(season(&names));
+    let mut screen = bare(&_guard, sid, "show");
+    let measure = plx_ui::fixture::FixtureMeasure;
+    let at = |screen: &DetailScreen, i: usize, row| episode_key(screen, i, row).unwrap();
+    for row in [episodes::Row::Still, episodes::Row::Text] {
+        let want = FocusKey { entry: EntryId(7), elem: at(&screen, 3, row) };
+        let publish = |screen: &mut DetailScreen, d: Detail| {
+            plx_data::metadata::set_current_for_test(test_store().state_mut(), Some(d));
+            screen.sync_keys(test_store().view());
+        };
+        let recovered = |screen: &DetailScreen| Focusable::<TestHost>::reconcile(screen, want, &cx(&measure, None)).elem;
+        publish(&mut screen, season(&["d", "a"]));
+        assert_eq!(recovered(&screen), want.elem, "an episode still in the list keeps focus when its index moves");
+        publish(&mut screen, season(&names));
+        publish(&mut screen, season(&["a", "b", "c"]));
+        assert_eq!(recovered(&screen), at(&screen, 2, row), "the same row of the last episode");
+        publish(&mut screen, season(&names));
+        publish(&mut screen, season(&["a", "b", "c", "x", "e"]));
+        assert_eq!(recovered(&screen), at(&screen, 3, row), "the same index, whoever now stands there");
+        publish(&mut screen, season(&names));
+        publish(&mut screen, season(&[]));
+        assert_eq!(recovered(&screen), hero::ELEM_PLAY, "an emptied season falls to the hero");
+        publish(&mut screen, season(&names));
+    }
+    clear();
+}
+
 /// Every section's element block is its own, wide, and below the engine keys: no two overlap, and
 /// no section's list can run into its neighbour's ids. A block is 2^24 ids; episodes take two ids
 /// each out of their 2^30 block.
