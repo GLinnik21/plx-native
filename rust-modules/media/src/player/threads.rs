@@ -238,7 +238,7 @@ mod load_timing_tests {
             SendPtr(payload.as_ptr() as *mut c_char),
             epoch,
             None,
-            super::super::engine::PcmLead::FromOutput,
+            super::super::engine::PcmLead::FromOutput(plx_platform::devcaps::AudioStack::Liblxa),
             |_| {
                 std::thread::sleep(READ);
                 Some(400_000_000)
