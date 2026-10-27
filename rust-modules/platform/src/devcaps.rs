@@ -981,10 +981,10 @@ pub fn vp9_bit_depth_for(major: u32) -> u32 {
 /// `tools/fwcompat.py` for webOS 7.4, 8.3 and 9.2 carry `liblxa.so.2.0.0` and its GStreamer sink
 /// `libgstlxaudiosink`, while 4.10.0, 5.3.1, 6.4.0 and 10.2.0 carry Realtek's `libgstrtkaudio-1.0`
 /// instead, and 1.2.0 to 4.4.2 neither. The inventories list `/usr/lib` only, not
-/// `/usr/lib/gstreamer-1.0`, so they cannot show a GStreamer plugin: on webOS 11.2.0 with LG's own chip (read from the 2022 and
-/// 2023 OLED firmware images, not filmed) `liblxa.so.2` is gone and the same renderer code is
-/// compiled into the sink `libgstlgaudiosink.so` instead. So one webOS version spans several stacks,
-/// and the firmware version cannot stand in for it.
+/// `/usr/lib/gstreamer-1.0`, so they cannot show a GStreamer plugin: on webOS 11.2.0 with LG's own
+/// chip (read from the 2022 and 2023 OLED firmware images, not filmed) `liblxa.so.2` is gone and the
+/// same renderer code is compiled into the sink `libgstlgaudiosink.so` instead. So one webOS version
+/// spans several stacks, and the firmware version cannot stand in for it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AudioStack {
     /// `/usr/lib/liblxa.so.2` is on the set.
