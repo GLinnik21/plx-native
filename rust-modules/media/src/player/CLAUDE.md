@@ -519,7 +519,8 @@ something.
   seek is reset to 1x by the buffer-feed source's next SEGMENT, a mid-play call freezes the pipeline,
   and libpf mutes audio off 1x), so a speed session declares PCM audio, `ff::SpeedDecoder` decodes and
   `speed_audio` time-stretches the sound, and every timestamp to the pipeline is divided by the speed
-  (`player::to_sink_ns`, inverted on the presented-frame callback by `from_sink_ns`).
+  (`player::to_sink_ns`, inverted on the presented-frame callback by `from_sink_ns`; an audio AU's
+  sink pts also carries the PCM lead of the next bullet, added after the division).
   A speed change is a seek to the viewer's own position marked `rate_reload`, and while the speed is not
   1x every direct-play seek reloads in every mode (`pump::seek_must_reload`). `play_rate_permille` is the
   viewer's choice and persists across reloads; `applied_rate_permille` is the current pipeline's and is
