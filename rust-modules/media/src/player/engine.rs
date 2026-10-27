@@ -213,7 +213,7 @@ pub struct Engine {
     pub audio_start_fp: Option<i64>,
     /// Added to the sink pts of every audio AU of THIS Load ([`audio_sink_pts`]): [`PCM_SINK_LEAD_NS`]
     /// (or the dev override) when the Load declared `"audio":"PCM"`, 0 for a compressed Load.
-    /// Chosen once per Load by [`pcm_sink_lead_for_load`].
+    /// Chosen once per Load, with the declared audio, by [`load_audio`].
     pub pcm_sink_lead_ns: i64,
     /// The feed-ahead throttle's reference position, run on between the pipeline's 5 Hz
     /// position reports (see [`FeedPace`]).
@@ -1117,15 +1117,6 @@ fn build_av_payload(ps: &crate::route::PlaybackSession, video: &str, audio: &str
 fn build_av_payload_at(
     ps: &crate::route::PlaybackSession, video: &str, audio: &str, env: SinkEnvelope, rate: i32,
 ) -> String {
-    build_av_payload_with(ps, video, audio, env, rate, lipsync_offset_trigger())
-}
-
-/// [`build_av_payload_at`] with the firmware lip-sync experiment value explicit (`None` is the
-/// shipped payload), so the host tests pin it without a `/tmp` trigger file.
-fn build_av_payload_with(
-    ps: &crate::route::PlaybackSession, video: &str, audio: &str, env: SinkEnvelope, rate: i32,
-    lipsync: Option<i64>,
-) -> String {
     // WHO declares the PCM, decided once: FLAC at 1x (the app decodes it, `ff_pcm`) declares its
     // own shape below via `with_pcm_info`; every other PCM Load (the speed decoder, any codec,
     // `rate != 1x`) gets the fixed stereo node here. `audio == "PCM"` is true for BOTH, so the
@@ -1188,56 +1179,7 @@ fn build_av_payload_with(
     // The app-decoded (FLAC, 1x) node: sampleRate in kHz and a format name. The speed decoder's
     // fixed node above is the only other `pcmInfo` a Load can carry, and never together with this.
     let p = with_pcm_info(&p, audio, app_pcm);
-    let p = with_immersive(&p, audio, crate::route::stream_immersive(ps));
-    with_lipsync_offset(&p, lipsync)
-}
-
-/// The `option.lipsyncOffset` experiment key (dev only, see [`lipsync_offset_trigger`]). libpf's
-/// `CustomPipeline::setAdecSinkInfo_ES` and `setVdecSinkInfo_ES` both read it (as the `lipsync-offset`
-/// property they set on the audio and on the video sink) and use it only when it is `>= 0`; its
-/// default is -1, which leaves the sinks' own value. PURE, spliced at the `option` object's opening
-/// like [`with_pcm_info`] is at `provider`; `None` returns the payload untouched, byte for byte.
-fn with_lipsync_offset(p: &str, value: Option<i64>) -> String {
-    let Some(v) = value else {
-        return p.to_string();
-    };
-    let anchor = r#""option":{"#;
-    p.replacen(anchor, &format!(r#"{anchor}"lipsyncOffset":{v},"#), 1)
-}
-
-/// What `/tmp/plxnative-lipsyncoffset` holds, as a value to send: a non-negative integer. The
-/// firmware ignores a negative one, so it is refused here with a line rather than sent as a
-/// no-op that reads like a working experiment. PURE.
-fn lipsync_offset_value(raw: &str) -> Result<i64, String> {
-    match raw.trim().parse::<i64>() {
-        Ok(v) if v >= 0 => Ok(v),
-        Ok(v) => Err(format!("{v} is negative and the firmware ignores it")),
-        Err(_) => Err(format!("{:?} is not an integer", raw.trim())),
-    }
-}
-
-/// The dev experiment `/tmp/plxnative-lipsyncoffset=<int>`: ask the firmware for `option.lipsyncOffset`
-/// on the Load (its unit is not established: nothing in libpf's strings says ms or samples). Read per Load, so one TV session can compare values. Always `None` in a release
-/// build (`devtrig::read` is `None` at compile time).
-///
-/// An INSTRUMENT kept for one filmed run beside [`pts_nudge_ns`], not a fix: libpf applies this one
-/// value to BOTH the audio and the video sink, so it can only move them together, and the question
-/// is whether the set's own latency compensation then reaches a PCM Load. What that run showed:
-/// not yet run (the 390 ms correction ([`PCM_SINK_LEAD_NS`]) was measured with the pts moves alone).
-/// Fill this in with the beep-against-flash reading per value, with `pcmavoffset=0` armed so the
-/// two corrections are not stacked, and delete the trigger once the run has been read.
-fn lipsync_offset_trigger() -> Option<i64> {
-    let raw = plx_base::devtrig::read("lipsyncoffset")?;
-    match lipsync_offset_value(&raw) {
-        Ok(v) => {
-            log(&format!("lipsyncOffset: Load option carries lipsyncOffset={v} (dev experiment)"));
-            Some(v)
-        }
-        Err(why) => {
-            log(&format!("lipsyncOffset: not sent, {why}"));
-            None
-        }
-    }
+    with_immersive(&p, audio, crate::route::stream_immersive(ps))
 }
 
 /// The `contents.immersive` node — **the Dolby Atmos half of the same envelope**, and the reason
@@ -1725,6 +1667,8 @@ fn start_bufferfeed_inner(
     // The LG-side audio name the payload ended up carrying, hoisted so the `load:` line below can
     // report it. "-" is the video-only case, where there is no audio ES to name.
     let mut audio_declared: &str = "-";
+    // ...and the sink lead that declaration carries (`load_audio`), 0 for a compressed or absent track.
+    let mut audio_lead_ns: i64 = 0;
     // ...and the video name beside it, for the same reason and to keep the codec->name mapping
     // written ONCE (`LoadVideo`): the `load:` line below would otherwise re-read the route and
     // re-derive it.
@@ -1776,7 +1720,10 @@ fn start_bufferfeed_inner(
             // wrong string leaves the audio ES unconfigured, and with audioSync the video
             // sink slaves to the dead audio clock and stalls (verified: video-only plays).
             let codec = crate::route::stream_acodec(ps);
-            let Some((ac, diagnostic)) = audio_payload_codec(&codec) else {
+            // Dev trigger `pcmavoffset=<ms>` (debug builds, read per Load): how the lead is measured
+            // on an output the default was not filmed on.
+            let lead_override = plx_base::devtrig::read("pcmavoffset");
+            let Some(audio) = load_audio(&codec, session_rate, lead_override.as_deref()) else {
                 log(&format!("start_bufferfeed: unsupported audio codec {codec:?}; refusing incorrect Load declaration"));
                 SHARED.fail_demux(DemuxExitClass::LoadRefused);
                 return Err(crate::route::RouteStartResult::StartFailed);
@@ -1799,10 +1746,19 @@ fn start_bufferfeed_inner(
                     f.sample_rate, f.bits, f.channels
                 ));
             }
-            SHARED.dg_load_a.store(diagnostic, Ordering::Relaxed);
-            // At a speed the sound is decoded and stretched in the app (`ff::SpeedDecoder`).
-            let ac = if session_rate != super::RATE_NORMAL { "PCM" } else { ac };
+            SHARED.dg_load_a.store(audio.diagnostic, Ordering::Relaxed);
+            // At a speed the sound is decoded and stretched in the app (`ff::SpeedDecoder`), which
+            // `load_audio` has already put into the declared name.
+            let ac = audio.name;
             audio_declared = ac;
+            audio_lead_ns = audio.sink_lead_ns;
+            if ac == "PCM" {
+                log(&format!(
+                    "pcm: audio sink pts +{}ms (default {}ms)",
+                    audio_lead_ns / 1_000_000,
+                    PCM_SINK_LEAD_NS / 1_000_000
+                ));
+            }
             // The sink envelope — `adaptiveStreaming`'s maxWidth/maxHeight/maxFrameRate — used
             // to be the panel max (4K60) for every codec and every source, on the reasoning that
             // the pipeline reads the true dims from the SPS and the block is "just a ceiling".
@@ -2038,7 +1994,7 @@ fn start_bufferfeed_inner(
         max_fed_video_pts: 0,
         max_fed_audio_pts: 0,
         audio_start_fp: None,
-        pcm_sink_lead_ns: pcm_sink_lead_for_load(audio_declared),
+        pcm_sink_lead_ns: audio_lead_ns,
         feed_pace: FeedPace::default(),
         seek_base_pts: 0,
         prime_play: false,
@@ -3073,11 +3029,10 @@ impl FeedSlice {
 /// and the next candidate value is one run away. Anything from 1 to ~11110 is in range; beyond
 /// that an already-correct frame is pushed a tick the other way.
 ///
-/// It is also what measured the PCM lead (#1086): `ptsnudge=-390000000` fed the VIDEO 390 ms earlier
-/// and brought a PCM Load from the sound 0.39 s early to -0.03 s, in step like the set's own decoder.
-/// That correction ships on the audio side instead ([`PCM_SINK_LEAD_NS`]; the audio-later direction has
-/// not been filmed, only the video-earlier one), so the two nudges are not
-/// to be combined in a run: the video's would be taken twice.
+/// It is also how the PCM lead (#1086) was first measured: `ptsnudge=-390000000` (the VIDEO 390 ms
+/// earlier) read -0.017 to -0.041 s on a PCM Load, against -0.377 s with no correction. The correction
+/// ships on the audio side instead ([`PCM_SINK_LEAD_NS`]), so the two are not to be combined in a
+/// run: the video's would be taken twice.
 fn pts_nudge_ns() -> i64 {
     const DEFAULT: i64 = -1;
     static NUDGE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(i64::MIN);
@@ -3099,29 +3054,30 @@ fn pts_nudge_ns() -> i64 {
     v
 }
 
-/// How much later than the picture the set must be told an app-decoded audio unit is, in
-/// nanoseconds. Measured on the dev set (LG webOS 4.5, 2026-10-27, filmed with a phone, a 40 ms
-/// beep against a one-frame flash): a Load that declares `"audio":"PCM"` plays its sound 0.39 s ahead
-/// of the picture, on FLAC (S32) and on DTS decoded to S16 alike, in Game and in normal picture mode,
-/// while the set's own decoder is in step (-0.03 s). Feeding the video 390 ms earlier
-/// (`ptsnudge=-390000000`) brought a PCM Load to -0.03 s, so the PCM sink honours pts and the lead is
-/// a fixed time, not a buffer.
+/// How much later than the picture an app-decoded audio unit is stamped for the sink, in
+/// nanoseconds: 400 ms. The set plays a Load that declares `"audio":"PCM"` through a `PCMMC` mixer
+/// channel instead of its `ADEC` decoder (libplayerAPIs `allocateResource`, libpf's resource manager),
+/// and liblxa's `lxao_play` enables the DSP lip-sync stage for the hardware decoder and disables it
+/// for a mixer channel. That stage's compiled-in offset is 505 ms with a +105 bias, so the decoder
+/// path is held back 400 ms that a PCM Load never is; this lead gives it the same 400 ms.
 ///
-/// The firmware reason is a reading of the binaries, not a measurement: `StarfishMediaAPIs::allocateResource`
-/// (libplayerAPIs) marks an all-`audio/x-raw` Load raw, and `smp::ResourceManager::acquireResources`
-/// then renames every `ADEC` resource `PCMMC` ("convert ADEC to PCMMC"): the sound is moved from the
-/// decoder to a mixer channel. No key in libpf's `CustomPipeline` gives the raw path the compensation
-/// the compressed path gets, and nothing exported reports the delay, so the app cannot read it. The
-/// value is therefore a measured constant for the dev set's speakers; ARC, optical, Bluetooth,
-/// headphones and another chip are not measured.
+/// Filmed on this build (TV speakers, FLAC clip, flash and beep every 2.5 s, offset = beep minus
+/// flash, negative = audio early): no correction -0.377 s; 330 ms -0.089; 390 ms +0.047 (24 fps
+/// camera); 400 ms -0.026 to -0.028 (30 fps). The set's own decoder on a DTS clip: -0.02. NOT
+/// measured: any sound output but the TV speakers (for the hardware decoder the set adds a render
+/// delay per output, Bluetooth 150 ms up to Atmos 170 ms, that a mixer channel never gets, and the
+/// app cannot read the active output, so on those outputs this may sit that far from the set's own
+/// decoder; `pcmavoffset` is how they get measured), another chip or firmware, and a seek (read
+/// from the sink's code, not filmed: it re-derives its render base at every SEGMENT and never from
+/// a buffer's pts, so the relative 400 ms survives).
 ///
 /// Applied to the SINK pts of the audio lane's one Feed ([`audio_sink_pts`]), after the speed
 /// division, and nowhere else: content-time bookkeeping stays in content time.
-const PCM_SINK_LEAD_NS: i64 = 390_000_000;
+const PCM_SINK_LEAD_NS: i64 = 400_000_000;
 
 /// The audio lane's sink pts: content time `fp` moved onto the pipeline's timeline
 /// ([`super::to_sink_ns`]) plus the Load's `pcm_lead_ns`. The lead is real time the set takes, so it
-/// is added AFTER the speed division: at 1.5x it is still 390 ms, not 260. PURE.
+/// is added AFTER the speed division: at 1.5x it is still 400 ms, not 267. PURE.
 fn audio_sink_pts(fp: i64, pcm_lead_ns: i64) -> i64 {
     super::to_sink_ns(fp).saturating_add(pcm_lead_ns).max(0)
 }
@@ -3138,20 +3094,25 @@ fn pcm_sink_lead(audio: &str, override_ms: Option<&str>) -> i64 {
         .map_or(PCM_SINK_LEAD_NS, |ms| ms.saturating_mul(1_000_000))
 }
 
-/// [`pcm_sink_lead`] for a Load, once, with its line in the log. The override
-/// `/tmp/plxnative-pcmavoffset=<ms>` is read per Load rather than latched for the process, so one TV
-/// session can compare values across plays; a release build has no trigger (`devtrig::read` is
-/// `None` at compile time) and the constant applies.
-fn pcm_sink_lead_for_load(audio: &str) -> i64 {
-    let v = pcm_sink_lead(audio, plx_base::devtrig::read("pcmavoffset").as_deref());
-    if audio == "PCM" {
-        log(&format!(
-            "pcm: audio sink pts +{}ms (default {}ms)",
-            v / 1_000_000,
-            PCM_SINK_LEAD_NS / 1_000_000
-        ));
-    }
-    v
+/// What a Load declares for its audio, and the sink lead that follows from it: ONE value, so the
+/// payload's `"audio"` name and the Engine's `pcm_sink_lead_ns` cannot disagree. PURE.
+struct LoadAudio {
+    /// The LG-side name the payload carries; `"PCM"` for app-decoded audio.
+    name: &'static str,
+    /// The `dg_load_a` diagnostics code for the codec (`audio_payload_codec`).
+    diagnostic: u8,
+    /// [`pcm_sink_lead`] of `name`.
+    sink_lead_ns: i64,
+}
+
+/// [`LoadAudio`] for a track of `codec` at `session_rate` (permille); `None` when the pipeline has no
+/// name for the codec. A speed session decodes and stretches the sound in the app
+/// (`ff::SpeedDecoder`), so at any speed but 1x every codec declares `"PCM"`. `lead_override_ms` is
+/// the dev trigger's text.
+fn load_audio(codec: &str, session_rate: i32, lead_override_ms: Option<&str>) -> Option<LoadAudio> {
+    let (name, diagnostic) = audio_payload_codec(codec)?;
+    let name = if session_rate != super::RATE_NORMAL { "PCM" } else { name };
+    Some(LoadAudio { name, diagnostic, sink_lead_ns: pcm_sink_lead(name, lead_override_ms) })
 }
 
 fn hls_candidate_snapshot_stable(start: u64, end: u64) -> bool {
@@ -7613,9 +7574,9 @@ mod native_seek_tests {
     }
 }
 
-/// **App-decoded (PCM) audio must reach the sink 390 ms later than the picture it belongs with**
-/// (#1086): the set renders a PCM Load through a mixer channel that plays 390 ms earlier than its own
-/// decoder does ([`PCM_SINK_LEAD_NS`]). The correction is the audio lane's sink pts and nothing
+/// **App-decoded (PCM) audio must reach the sink 400 ms later than the picture it belongs with**
+/// (#1086): the set renders a PCM Load through a mixer channel that lacks the 400 ms of lip sync its
+/// own decoder gets ([`PCM_SINK_LEAD_NS`]). The correction is the audio lane's sink pts and nothing
 /// else.
 #[cfg(test)]
 mod pcm_sink_lead_pure_tests {

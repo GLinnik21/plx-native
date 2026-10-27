@@ -525,32 +525,40 @@ something.
   1x every direct-play seek reloads in every mode (`pump::seek_must_reload`). `play_rate_permille` is the
   viewer's choice and persists across reloads; `applied_rate_permille` is the current pipeline's and is
   reset by `reset_session`. The feed throttle's run-on reads the applied one (`FeedPace::reference_at`).
-- **A Load that declares `"audio":"PCM"` has its audio fed 390 ms later than the picture it belongs with**
+- **A Load that declares `"audio":"PCM"` has its audio fed 400 ms later than the picture it belongs with**
   (#1086; FLAC and every other app-decoded codec, and a speed session at any speed other than 1x; a
   compressed Load, DTS included, gets none).
-  Measured on the dev set (webOS 4.5, 2026-10-27, a phone filming a one-frame flash against a 40 ms
-  beep): app-decoded audio played 0.39 s ahead of the picture on FLAC (S32) and on DTS decoded in the
-  app to S16 (the open S4 PRs' recovery path),
-  in Game and in normal picture mode, while the set's own decoder was in step (-0.03 s); feeding the
-  video 390 ms earlier (`ptsnudge`) brought PCM to the same -0.03 s. So the sink honours pts and the
-  lead is a fixed time. The reason is read from the binaries, not measured: a Load whose every audio
-  track is `audio/x-raw` is allocated its audio as a `PCMMC` mixer channel instead of an `ADEC` decoder
-  (libplayerAPIs `allocateResource`, libpf's resource manager renames the resource), no key in libpf's
-  `CustomPipeline` gives that path the compensation the compressed path gets, and the app cannot read
-  the delay. The ONE correction is `engine::audio_sink_pts`, at the audio lane's single Feed: the
-  Load's `Engine::pcm_sink_lead_ns` (`PCM_SINK_LEAD_NS`, 0 for a compressed Load, chosen once per Load
-  by `pcm_sink_lead_for_load` and logged as `pcm: audio sink pts +<N>ms`) is added to the SINK pts
-  AFTER `to_sink_ns`, because it is the set's real time and must not be divided by the speed. Content
-  time (`fp`, `max_fed_audio_pts`, `audio_start_fp`, stale-drop, throttle, prime) is untouched, so no
-  producer of PCM stamps its own offset. Dev instruments (debug builds only): `pcmavoffset=<ms>` sets the
-  lead per Load, and `lipsyncoffset=<int>` adds `option.lipsyncOffset` to the Load (libpf applies it to
-  the audio AND the video sink; the firmware ignores a negative one; its unit is not established). NOT measured: a sound output
-  other than the TV speakers (ARC, optical, Bluetooth, headphones), another chip or firmware, THE SHIPPED
-  DIRECTION ITSELF (the measurement moved the video earlier; this feeds the audio later, which the sink
-  may treat differently at a segment start, so the first filmed run of a build with this change is the
-  proof), whether
-  the lead varies with the Load or its sample rate, the speed path (it takes the same
-  constant by the same code), and what `lipsyncoffset` does.
+  *Cause (read from the firmware, not measured):* a Load whose every audio track is `audio/x-raw` is
+  allocated its audio as a `PCMMC` mixer channel instead of an `ADEC` decoder (libplayerAPIs
+  `allocateResource`, libpf's resource manager renames the resource), and liblxa's `lxao_play`, in its
+  automatic lip-sync mode, enables the DSP lip-sync stage for the hardware decoder and disables it for a
+  mixer channel. That stage's template offset is 505 ms and every value an app gives it is biased by
+  +105, so the decoder path is delayed 400 ms and a PCM Load is not. libpf's `option.lipsyncOffset` cannot
+  stand in for the lead: it moves the audio and the video sink alike below 400 and only feeds the DSP
+  stage that is off on a mixer channel from 400 up.
+  *Filmed* on the build that carries this change (TV speakers, a FLAC clip with a flash and a beep every
+  2.5 s; offset = beep minus flash, negative = audio early): no correction -0.377 s; `pcmavoffset=330`
+  -0.089; `=390` +0.047 (24 fps camera); `=400` -0.026 to -0.028 (30 fps). The set's own decoder on a DTS
+  clip: -0.02. So 400 ms puts app-decoded audio where the set puts its own, on that output.
+  *The ONE correction* is `engine::audio_sink_pts`, at the audio lane's single Feed: the Load's
+  `Engine::pcm_sink_lead_ns` (`PCM_SINK_LEAD_NS`) is added to the SINK pts AFTER `to_sink_ns`, because it
+  is real time and must not be divided by the speed. `engine::load_audio` yields the declared audio name
+  and that lead as one value (0 for a compressed Load; a speed override makes any codec declare PCM, so
+  it takes the lead), logged once per Load as `pcm: audio sink pts +<N>ms (default 400ms)`. Content time
+  (`fp`, `max_fed_audio_pts`, `audio_start_fp`, stale-drop, throttle, prime) is untouched, so no producer
+  of PCM stamps its own offset. Dev instrument (debug builds, read per Load): `pcmavoffset=<ms>` sets the
+  lead, which is how another output gets measured.
+  *Seek (firmware, not filmed):* LG's audio sink hands each buffer's pts to the driver unchanged and
+  re-derives its render base at every SEGMENT from the segment and the pipeline clock, never from a
+  buffer's pts; no late-drop or gap rule exists. So the relative 400 ms survives an in-place seek and a
+  reload.
+  *Not determined:* any sound output but the TV speakers. For the hardware decoder the set adds a render
+  delay per output (Bluetooth 150 ms, Dolby bitstream 160, Atmos 170, WISA 100, ES 30) that a mixer
+  channel never gets (it skips the query and always reads 0); whether that moves the audio later or
+  earlier against the picture is not known, so on those outputs app-decoded audio may sit up to that far
+  from the set's own decoder. The app cannot read the active output through the media libraries (only
+  Chromium's media stack reads `soundOutput`, through the settings service). Also unfilmed: a seek, the
+  speed path (it takes the same lead from the same code), another sample rate, another chip or firmware.
 - **Seeks are in-place**, in one of three per-session modes (`player::SeekMode`, chosen by
   `engine::select_seek_mode` in `start_bufferfeed`, the `/tmp/plxnative-seekmode` dev trigger
   `native|segment|reload` wins): the demuxer is `av_seek_frame`d to the target, then on the first
