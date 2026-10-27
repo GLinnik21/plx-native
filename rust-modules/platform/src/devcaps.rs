@@ -973,6 +973,88 @@ pub fn vp9_bit_depth_for(major: u32) -> u32 {
     }
 }
 
+/// Which audio library the set's sound output runs on, the fact the app-decoded audio's lead hangs on
+/// ([`AudioStack::Liblxa`] is the only stack the lead was measured on).
+///
+/// LG ships more than one: the dev set (webOS 4.10.2) and the firmware inventories behind
+/// `tools/fwcompat.py` for webOS 7.4, 8.3 and 9.2 carry `liblxa.so.2.0.0` and its GStreamer sink
+/// `libgstlxaudiosink`, while 4.10.0, 5.3.1, 6.4.0 and 10.2.0 carry Realtek's `libgstrtkaudio-1.0`
+/// instead, and 1.2.0 to 4.4.2 and 11.2.0 carry neither. So one webOS version spans both stacks, and
+/// the firmware version cannot stand in for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AudioStack {
+    /// `/usr/lib/liblxa.so.2` is on the set.
+    Liblxa,
+    /// [`probe`] ran on a device that does not have it.
+    Other,
+    /// [`probe`] has not run: a host, the simulator, a test, or a boot that never got here.
+    Unknown,
+}
+
+impl AudioStack {
+    /// The word the event log uses for it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Liblxa => "liblxa",
+            Self::Other => "other",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// The file whose presence says the set's audio stack is `liblxa`: the soname link
+/// `libgstlxaudiosink` and the rest of LG's audio code load it by. A stat, deliberately, and not a
+/// symbol lookup: the build links LG's libraries through stub `.so` files that define every symbol
+/// the app names, so a lookup in our own process proves nothing about the set, and `dlopen` would run
+/// LG's library initialisation inside the app to learn a fact a directory entry already states.
+pub const LIBLXA_SONAME_LINK: &str = "/usr/lib/liblxa.so.2";
+
+/// The stack for a set on which `present(path)` says whether a file exists. The seam [`probe`] uses
+/// with the real filesystem; PURE apart from `present`.
+pub fn audio_stack_from(present: impl FnOnce(&str) -> bool) -> AudioStack {
+    if present(LIBLXA_SONAME_LINK) {
+        AudioStack::Liblxa
+    } else {
+        AudioStack::Other
+    }
+}
+
+/// The boot answer for [`audio_stack`], set once by [`probe`].
+static AUDIO_STACK: OnceLock<AudioStack> = OnceLock::new();
+
+/// This set's audio stack: what [`probe`] found, or [`AudioStack::Unknown`] before it ran (hosts,
+/// hostsim and tests, unless a test installed one with [`audio_stack_on_this_thread_for_test`]).
+pub fn audio_stack() -> AudioStack {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(stack) = THREAD_AUDIO_STACK.with(|slot| slot.get()) {
+        return stack;
+    }
+    AUDIO_STACK.get().copied().unwrap_or(AudioStack::Unknown)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static THREAD_AUDIO_STACK: std::cell::Cell<Option<AudioStack>> = const { std::cell::Cell::new(None) };
+}
+
+/// Make [`audio_stack`] answer `stack` on THIS test thread until the guard drops (the
+/// [`firmware_on_this_thread_for_test`] precedent: the process-wide answer is write-once and tests
+/// run in parallel).
+#[cfg(any(test, feature = "test-support"))]
+pub fn audio_stack_on_this_thread_for_test(stack: AudioStack) -> AudioStackGuard {
+    AudioStackGuard(THREAD_AUDIO_STACK.with(|slot| slot.replace(Some(stack))))
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub struct AudioStackGuard(Option<AudioStack>);
+
+#[cfg(any(test, feature = "test-support"))]
+impl Drop for AudioStackGuard {
+    fn drop(&mut self) {
+        THREAD_AUDIO_STACK.with(|slot| slot.set(self.0.take()));
+    }
+}
+
 /// Read the table once and log what was derived. Called at boot right after `webos::probe`,
 /// before anything can fail; safe when the file does not exist (older/odd firmware → assumed).
 pub fn probe() {
@@ -1047,12 +1129,15 @@ pub fn probe() {
     // proved, a refusal reaches a play only once its queued write has landed. `nativeaudiowide` skips
     // the exclusions and the learned layer (`nativeaudiolearn` beside it keeps the layer),
     // `nativeaudioforget` the record.
+    let stack = audio_stack_from(|path| std::path::Path::new(path).exists());
+    let _ = AUDIO_STACK.set(stack);
     let mut boot = caps.clone();
     let excluded = apply_exclusions(&mut boot, &info.codename, wide, EXCLUSIONS);
     plx_base::eventlog::log(&format!(
-        "devcaps: firmware={:?} build={:?} audio layers: table+gst={} | exclusions: {} | -> audio={}{}{}",
+        "devcaps: firmware={:?} build={:?} audio stack={} audio layers: table+gst={} | exclusions: {} | -> audio={}{}{}",
         info.codename,
         info.build,
+        stack.label(),
         caps.audio,
         if excluded.is_empty() { "none".to_string() } else { excluded.join(" ") },
         boot.audio,
@@ -1074,6 +1159,38 @@ pub fn measured() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_audio_stack_is_liblxa_only_where_its_soname_link_is() {
+        let asked = std::cell::RefCell::new(Vec::new());
+        let stack = audio_stack_from(|path| {
+            asked.borrow_mut().push(path.to_string());
+            true
+        });
+        assert_eq!(stack, AudioStack::Liblxa);
+        assert_eq!(*asked.borrow(), ["/usr/lib/liblxa.so.2"], "the one file, and nothing else is read");
+        assert_eq!(audio_stack_from(|_| false), AudioStack::Other, "a device without it runs another stack");
+        assert_eq!(audio_stack_from(|path| path.contains("rtkaudio")), AudioStack::Other, "another stack's files do not make it liblxa");
+    }
+
+    #[test]
+    fn a_host_answers_unknown_and_a_test_can_install_either_answer() {
+        assert_eq!(audio_stack(), AudioStack::Unknown, "nothing in the host suite calls probe");
+        {
+            let _liblxa = audio_stack_on_this_thread_for_test(AudioStack::Liblxa);
+            assert_eq!(audio_stack(), AudioStack::Liblxa);
+            {
+                let _other = audio_stack_on_this_thread_for_test(AudioStack::Other);
+                assert_eq!(audio_stack(), AudioStack::Other);
+            }
+            assert_eq!(audio_stack(), AudioStack::Liblxa, "a guard restores what it replaced");
+        }
+        assert_eq!(audio_stack(), AudioStack::Unknown);
+        assert_eq!(
+            [AudioStack::Liblxa, AudioStack::Other, AudioStack::Unknown].map(AudioStack::label),
+            ["liblxa", "other", "unknown"]
+        );
+    }
 
     #[test]
     fn the_learn_switch_keeps_the_learned_layer_under_the_wide_flag() {
