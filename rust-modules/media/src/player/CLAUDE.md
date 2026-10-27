@@ -539,14 +539,20 @@ something.
   image's). Each probe step is a stat, never a symbol lookup (our build links LG's libraries through stub
   `.so` files that define every symbol) and never a `dlopen` (it would run LG's initialisation in the
   app). The first present file decides, in this order (OTA IDs and releases are firmware read by hand and
-  by decompile passes, cited as reasoning, never pasted):
+  by decompile passes, cited as reasoning, never pasted): `libgstlxaudiosink.so` (`Liblxa`),
+  `libgstlgaudiosink.so` (`LgAudioSink`), `/usr/lib/liblxa.so.2` (`Liblxa`), `libgstaudiosink_new-1.0.so`
+  (`AudioSinkNew`), `libgstaudiosink-1.0.so` (`AdecSink`), none (`Other`). The bare `liblxa.so.2` stat is a
+  fallback checked AFTER the webOS 11 plugin because its runtime meaning is not understood (no image has it
+  under `/usr/lib`, yet the dev set answers yes): a 2022/23 OLED updated to webOS 11 that kept a
+  `liblxa.so.2` plays through `lgaudiosink`, and reading it as `Liblxa` would give Bluetooth 250 instead of
+  400, a needless bus read and a log naming the wrong stack.
 
   | Stack (label) | Present | Sets | The lead (`engine::pcm_output_lead`) | Evidence |
   |---|---|---|---|---|
-  | `Liblxa` (`liblxa`) | `libgstlxaudiosink.so` or `/usr/lib/liblxa.so.2` | 2019-2021 LG chips (dev set W19H 4.10.2), 2022/23 OLEDs before webOS 11 | `tv_speaker` 400 and `bt_soundbar` 250 (both MEASURED), any other output or none 400 (not measured) | dev set 505 with +105 = 400; W21O 6.5.3: template 400 raw, no +105, effective 400 by the same convention, its per-output walk still there |
+  | `Liblxa` (`liblxa`) | `libgstlxaudiosink.so` (first), or `/usr/lib/liblxa.so.2` (third, after `libgstlgaudiosink.so`) | 2019-2021 LG chips (dev set W19H 4.10.2), 2022/23 OLEDs before webOS 11 (INFERRED from the `tools/fwcompat.py` inventories, which carry `liblxa.so.2.0.0` for W22O 7.4.0 and W23O 8.3.0 / 9.2.0 and hold no plugin; no such image was unpacked) | `tv_speaker` 400 and `bt_soundbar` 250 (both MEASURED), any other output or none 400 (not measured) | dev set 505 with +105 = 400; W21O 6.5.3: template 400 raw, no +105, effective 400 by the same convention, its per-output walk still there |
   | `LgAudioSink` (`lgaudiosink`) | `libgstlgaudiosink.so` | 2022/23 OLEDs on webOS 11 (W22O 11.2.0-74, W23O 11.2.0-3711), 2024 OLED (W24G 9.2.4), 2025 OLED (W25G 10.3.1) | 400 on every output, no read (not measured) | template `{150,150,400,5000,5000}`, 400 raw, no bias |
   | `AudioSinkNew` (`audiosink_new`) | `libgstaudiosink_new-1.0.so` | 2018 LG chips, webOS 4.4.3 (OLED C8 W18O, LCD SK8500 W18H) | follows the output like `Liblxa` (400 / `bt_soundbar` 250 / else 400), ALL cells not measured | `libkadaptor`: default DSP offset 475 with a +75 app bias = 400 (hand-verified; 4.5: 505 with +105, also 400); AUTO plus a mixer channel turns lip sync off (hand); a decoder-only -150 ms for a wireless output (decompile only) => Bluetooth 250 |
-  | `AdecSink` (`adecsink`) | `libgstaudiosink-1.0.so`, checked AFTER `_new` (2018 ships both) | 2016 OLED 3.4.3 (W16M), 2017 OLED 3.9.2 (W17H) | NO lead (0, no read), logged `not measured on this chip` | 2017's 442/472 ms has no bias constant, so differential and DSP bias cannot be split; on 2016 the AUTO/mixer rule is not in the plugin (decided above it, not determined) |
+  | `AdecSink` (`adecsink`) | `libgstaudiosink-1.0.so`, checked AFTER `_new` (2018 ships both) | 2016 OLED 3.4.3 (W16M: element `audio_sink`, rank 256), 2017 OLED 3.9.2 (W17H: element `adecsink`) | NO lead (0, no read), logged `not measured on this chip` | 2016: default DSP offset 550, no per-output part found, the AUTO/mixer rule is not in the plugin (not determined). 2017: default 442/472 ms, app-offset bias unknown (so differential and DSP bias cannot be split), and a decoder-only per-output part (-100 DD, -150 WIRELESS). A 2017 measurement with `pcmavoffset` must therefore be taken per output: Bluetooth should differ by about 150 ms |
   | `Other` (`other`) | none of them | Realtek, MStar | none | see below |
 
   The label `adecsink` exists so a tester's log names the stack and `pcmavoffset` can measure it.
@@ -651,8 +657,9 @@ something.
   (webOS 11, 2024, 2025: its 400 ms is read from the template and the 4.5 measurement, never measured there,
   and its per-output table is only partly checked as unreferenced); the whole `audiosink_new` stack (2018:
   every cell not measured, its Bluetooth 250 from a decompile only); 2016/2017's `adecsink` (no lead: the
-  2017 offset cannot be split into differential and DSP bias, and 2016's AUTO/mixer rule is not in the
-  plugin; `pcmavoffset` measures it); Realtek (Bluetooth not determined) and MStar (possibly up to about
+  2017 offset cannot be split into differential and DSP bias and 2017 has a decoder-only per-output part
+  (-100 DD, -150 wireless), so a `pcmavoffset` measurement there must be per output, Bluetooth about
+  150 ms different; 2016's AUTO/mixer rule is not in the plugin); Realtek (Bluetooth not determined) and MStar (possibly up to about
   128 ms early, the RTC path unverified): no lead; on `liblxa`, any output but the two filmed (optical,
   ARC, wired headphones, LG Sound Sync, a soundbar with its own latency: they keep 400 ms and the log says
   "not measured"), and the newer firmware's mixer channel forced to type PCM (hand-verified on 4.5
