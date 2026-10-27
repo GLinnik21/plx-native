@@ -1257,13 +1257,15 @@ pub fn preview_events() -> Vec<(&'static str, Vec<u8>)> {
     // this host's kernel and model are not shown to a person deciding what to share.
     let native: serde_json::Value =
         serde_json::from_slice(&super::native::preview_event()).unwrap_or_default();
-    // A native crash event has no `probe` (the SDK's scope cannot set it), but both fallbacks are
-    // built through `attach_hardware_context`, which adds it, so each sample must show it.
+    // A native crash event has no `probe` and no webOS `build` (the SDK's scope cannot set them),
+    // but both fallbacks are built through `attach_hardware_context`, which adds them, so each
+    // sample must show them.
     let placeholder_contexts = |json: &mut serde_json::Value| {
         for key in ["os", "webos", "hardware"] {
             json["contexts"][key] = native["contexts"][key].clone();
         }
         json["contexts"]["hardware"]["probe"] = serde_json::json!(FALLBACK_PROBE_PLACEHOLDER);
+        json["contexts"]["webos"]["build"] = serde_json::json!("<webOS firmware build>");
     };
     placeholder_contexts(&mut fault_json);
 
