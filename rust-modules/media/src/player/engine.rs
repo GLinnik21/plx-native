@@ -7997,8 +7997,10 @@ mod pcm_stack_wiring_tests {
 
     /// Start a FLAC Load (declares `"audio":"PCM"`) on a set whose stack is `stack`, let its Load
     /// thread return, take what the Engine took from it, and give back `(pending before the take,
-    /// lead after it)`.
-    fn lead_of_a_flac_start_on(stack: AudioStack) -> (bool, i64) {
+    /// lead after it)`. `unload_ms` is how long the host `Unload` of this start's stop takes, and
+    /// `linger_ms` how long the Load is left returned before the stop (a late thread of an earlier
+    /// start has that long to reach it).
+    fn lead_of_a_flac_start_on(stack: AudioStack, unload_ms: u64, linger_ms: u64) -> (bool, i64) {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = plx_base::testlock::serial();
         SHARED.reset_session();
@@ -8037,7 +8039,14 @@ mod pcm_stack_wiring_tests {
         }
         assert!(settle_pcm_lead(eng), "a returned Load has settled its lead");
         let lead = eng.pcm_sink_lead_ns;
+        std::thread::sleep(std::time::Duration::from_millis(linger_ms));
+        assert!(
+            SHARED.native_load_returned(eng.native_epoch),
+            "a Load that returned stays returned until its stop: another session's Unload reached this one"
+        );
+        crate::player::ffi_host::delay_unload_for_test(unload_ms);
         stop_bufferfeed(&mut ps, &mut pa);
+        pa.finish_release();
         (pending, lead)
     }
 
@@ -8045,9 +8054,22 @@ mod pcm_stack_wiring_tests {
     /// any other stack, and one nobody probed, yields none and has nothing to wait for.
     #[test]
     fn a_pcm_start_gets_a_lead_on_liblxa_and_none_on_any_other_stack() {
-        assert_eq!(lead_of_a_flac_start_on(AudioStack::Liblxa), (true, PCM_SINK_LEAD_NS));
-        assert_eq!(lead_of_a_flac_start_on(AudioStack::Other), (false, 0));
-        assert_eq!(lead_of_a_flac_start_on(AudioStack::Unknown), (false, 0));
+        assert_eq!(lead_of_a_flac_start_on(AudioStack::Liblxa, 0, 0), (true, PCM_SINK_LEAD_NS));
+        assert_eq!(lead_of_a_flac_start_on(AudioStack::Other, 0, 0), (false, 0));
+        assert_eq!(lead_of_a_flac_start_on(AudioStack::Unknown, 0, 0), (false, 0));
+    }
+
+    /// A stop hands its object to an `sf-unload` worker, and the host `Unload` names the object by
+    /// the process-global active epoch. The worker of one start that runs late (a loaded CI runner)
+    /// therefore unloads whichever session is active when it gets there: the next start's. This
+    /// makes the worker late on purpose: the next start's Load returns, and must still be returned
+    /// after the earlier worker's `Unload` has had its time. (The start helper used to drop its
+    /// adapter, and with it the handle of the parked release, without `finish_release`.)
+    #[test]
+    fn an_earlier_starts_late_unload_never_reaches_the_next_start() {
+        const UNLOAD_MS: u64 = 150;
+        assert_eq!(lead_of_a_flac_start_on(AudioStack::Liblxa, UNLOAD_MS, 0), (true, PCM_SINK_LEAD_NS));
+        assert_eq!(lead_of_a_flac_start_on(AudioStack::Other, 0, 2 * UNLOAD_MS), (false, 0));
     }
 }
 
