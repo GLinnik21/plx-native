@@ -7077,6 +7077,8 @@ mod pcm_info_tests {
         assert_eq!(audio_declaration("truehd", shape.as_ref()), Some(("PCM", 5)));
         let on = build_av_payload_at(&ps, "H264", "PCM", ENVELOPE_FHD60, crate::player::RATE_NORMAL);
         assert_eq!(on.matches("pcmInfo").count(), 1, "{on}");
+        let planned = load_audio("truehd", crate::player::RATE_NORMAL, shape.as_ref(), None, AudioStack::Liblxa).unwrap();
+        assert_eq!((planned.name, planned.lead), ("PCM", PcmLead::FromOutput(AudioStack::Liblxa)), "planned the stack's lead");
     }
 
     #[test]
