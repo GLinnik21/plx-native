@@ -1761,7 +1761,7 @@ fn start_bufferfeed_inner(
             // A lead that follows the sound output is read and logged by the Load thread, which may
             // block on the bus (`resolve` asks nothing for the other two plans); the dev override is
             // settled here and says so now.
-            if let Some(line) = audio_lead.resolve(|| None).log_line() {
+            if let Some(line) = audio_lead.start_log_line() {
                 log(&line);
             }
             // The sink envelope — `adaptiveStreaming`'s maxWidth/maxHeight/maxFrameRate — used
@@ -1978,6 +1978,7 @@ fn start_bufferfeed_inner(
         None
     };
 
+    let (lead_at_start, lead_pending) = audio_lead.at_engine_start();
     let eng = Engine {
         route_start: route_attempt,
         native_epoch,
@@ -1999,8 +2000,8 @@ fn start_bufferfeed_inner(
         max_fed_video_pts: 0,
         max_fed_audio_pts: 0,
         audio_start_fp: None,
-        pcm_sink_lead_ns: audio_lead.known().unwrap_or(0),
-        pcm_lead_pending: audio_lead.known().is_none(),
+        pcm_sink_lead_ns: lead_at_start,
+        pcm_lead_pending: lead_pending,
         feed_pace: FeedPace::default(),
         seek_base_pts: 0,
         prime_play: false,
@@ -3106,7 +3107,7 @@ fn pcm_output_lead(output: Option<&str>) -> (i64, bool) {
 
 /// The audio lane's sink pts: content time `fp` moved onto the pipeline's timeline
 /// ([`super::to_sink_ns`]) plus the Load's `pcm_lead_ns`. The lead is real time the set takes, so it
-/// is added AFTER the speed division: at 1.5x it is still 400 ms, not 267. PURE.
+/// is added AFTER the speed division: at 1.5x a 400 ms lead is still 400 ms, not 267. PURE.
 fn audio_sink_pts(fp: i64, pcm_lead_ns: i64) -> i64 {
     super::to_sink_ns(fp).saturating_add(pcm_lead_ns).max(0)
 }
@@ -3132,12 +3133,24 @@ struct ResolvedLead {
 }
 
 impl PcmLead {
-    /// The lead, when the frame thread can settle it without reading the output. PURE.
-    pub(super) fn known(self) -> Option<i64> {
+    /// What the Engine starts with: the lead the frame thread can settle without reading the output,
+    /// and whether the Load thread's read is still owed (then the lead is final only once
+    /// [`settle_pcm_lead`] has taken it). PURE.
+    fn at_engine_start(self) -> (i64, bool) {
         match self {
-            Self::Off => Some(0),
-            Self::Override(ns) => Some(ns),
-            Self::FromOutput => None,
+            Self::Off => (0, false),
+            Self::Override(ns) => (ns, false),
+            Self::FromOutput => (0, true),
+        }
+    }
+
+    /// What the frame thread logs when it starts the Load: only the dev override, which it settles
+    /// itself. A lead that follows the output is logged by the Load thread with the output it read, so
+    /// a Load never writes a second, guessed line first. PURE.
+    fn start_log_line(self) -> Option<String> {
+        match self {
+            Self::Override(_) => self.resolve(|| None).log_line(),
+            Self::Off | Self::FromOutput => None,
         }
     }
 
@@ -7698,10 +7711,10 @@ mod native_seek_tests {
     }
 }
 
-/// **App-decoded (PCM) audio must reach the sink 400 ms later than the picture it belongs with**
-/// (#1086): the set renders a PCM Load through a mixer channel that lacks the 400 ms of lip sync its
-/// own decoder gets ([`PCM_SINK_LEAD_NS`]). The correction is the audio lane's sink pts and nothing
-/// else.
+/// **App-decoded (PCM) audio must reach the sink later than the picture it belongs with** (#1086,
+/// #1088): the set renders a PCM Load through a mixer channel that lacks the lip sync its own
+/// decoder gets (400 ms, less the active output's own delay: [`PCM_SINK_LEAD_NS`]). The correction
+/// is the audio lane's sink pts and nothing else.
 #[cfg(test)]
 mod pcm_sink_lead_pure_tests {
     use super::*;
@@ -7814,6 +7827,12 @@ mod pcm_sink_lead_pure_tests {
         assert_eq!(line(PcmLead::FromOutput, None), Some("pcm: audio sink pts +400ms (output unknown, default 400ms, not measured)".to_string()));
         assert_eq!(line(PcmLead::Override(330_000_000), None), Some("pcm: audio sink pts +330ms (pcmavoffset override, default 400ms)".to_string()));
         assert_eq!(line(PcmLead::Off, None), None, "a compressed Load says nothing");
+        assert_eq!(
+            PcmLead::Override(330_000_000).start_log_line(),
+            Some("pcm: audio sink pts +330ms (pcmavoffset override, default 400ms)".to_string())
+        );
+        assert_eq!(PcmLead::FromOutput.start_log_line(), None, "the Load thread logs it, with the output it read");
+        assert_eq!(PcmLead::Off.start_log_line(), None);
     }
 
     /// The Load's declared audio and the plan for its lead come out of ONE value ([`load_audio`], the
@@ -7849,9 +7868,9 @@ mod pcm_sink_lead_pure_tests {
     /// What the frame thread can settle itself and what has to wait for the Load thread's read.
     #[test]
     fn only_a_lead_that_follows_the_output_waits_for_the_load_thread() {
-        assert_eq!(PcmLead::Off.known(), Some(0));
-        assert_eq!(PcmLead::Override(330_000_000).known(), Some(330_000_000));
-        assert_eq!(PcmLead::FromOutput.known(), None);
+        assert_eq!(PcmLead::Off.at_engine_start(), (0, false));
+        assert_eq!(PcmLead::Override(330_000_000).at_engine_start(), (330_000_000, false));
+        assert_eq!(PcmLead::FromOutput.at_engine_start(), (0, true), "the audio waits for the Load thread's read");
     }
 }
 
@@ -8055,7 +8074,7 @@ mod pcm_sink_lead_tests {
     }
 
     /// At 1.5x the picture's pts and the audio's both run on the divided timeline, and the lead on
-    /// top of it is still the set's 400 ms.
+    /// top of it is still the output's, not scaled.
     #[test]
     fn the_lead_is_not_scaled_at_a_speed() {
         let _serial = plx_base::testlock::serial();
