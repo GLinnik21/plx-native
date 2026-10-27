@@ -7080,39 +7080,6 @@ mod sink_envelope_tests {
         serde_json::from_str::<serde_json::Value>(&p).unwrap();
     }
 
-    /// The firmware lip-sync experiment: `lipsyncOffset` lands INSIDE the Load's `option` object,
-    /// where libpf reads `option.lipsyncOffset`, and the payload stays JSON. Without the value the
-    /// payload is the shipped one, byte for byte.
-    #[test]
-    fn the_lipsync_experiment_adds_one_key_inside_option_and_nothing_without_it() {
-        let rate = crate::player::RATE_NORMAL;
-        let shipped = build_av_payload_with(&flac_session(), "H264", "PCM", ENVELOPE_FHD60, rate, None);
-        assert!(!shipped.contains("lipsyncOffset"), "{shipped}");
-        assert_eq!(with_lipsync_offset(PAYLOAD_AV, None), PAYLOAD_AV);
-
-        let armed = build_av_payload_with(&flac_session(), "H264", "PCM", ENVELOPE_FHD60, rate, Some(120));
-        let json: serde_json::Value = serde_json::from_str(&armed).unwrap();
-        assert_eq!(json["args"][0]["option"]["lipsyncOffset"], 120, "{armed}");
-        assert_eq!(armed.matches("lipsyncOffset").count(), 1, "{armed}");
-        assert_eq!(armed.replace(r#""lipsyncOffset":120,"#, ""), shipped, "it adds that key and changes nothing else");
-        assert_eq!(
-            build_av_payload_with(&flac_session(), "H264", "PCM", ENVELOPE_FHD60, rate, Some(0)).matches(r#""lipsyncOffset":0,"#).count(),
-            1,
-            "zero is a value the firmware honours, not an absent one"
-        );
-    }
-
-    /// The firmware ignores a negative `lipsyncOffset`, so the trigger refuses it rather than send
-    /// a no-op that would read as a working experiment.
-    #[test]
-    fn the_lipsync_trigger_refuses_what_the_firmware_would_ignore() {
-        assert_eq!(lipsync_offset_value("120"), Ok(120));
-        assert_eq!(lipsync_offset_value(" 0\n"), Ok(0));
-        assert!(lipsync_offset_value("-1").is_err());
-        assert!(lipsync_offset_value("a lot").is_err());
-        assert!(lipsync_offset_value("").is_err());
-    }
-
     /// At a speed the speed decoder owns the PCM, FLAC included: main's fixed node, and only it.
     #[test]
     fn a_flac_load_at_a_speed_carries_the_speed_decoders_pcm_info() {
@@ -7672,12 +7639,12 @@ mod pcm_sink_lead_pure_tests {
         SHARED.applied_rate_permille.store(1500, Ordering::Relaxed);
         assert_eq!(audio_sink_pts(3_000_000_000, 0), crate::player::to_sink_ns(3_000_000_000));
         assert_eq!(
-            audio_sink_pts(3_000_000_000, 390_000_000),
-            2_000_000_000 + 390_000_000,
-            "film time is divided by the speed, the set's 390 ms is not"
+            audio_sink_pts(3_000_000_000, 400_000_000),
+            2_000_000_000 + 400_000_000,
+            "film time is divided by the speed, the set's 400 ms is not"
         );
         SHARED.applied_rate_permille.store(500, Ordering::Relaxed);
-        assert_eq!(audio_sink_pts(3_000_000_000, 390_000_000), 6_000_000_000 + 390_000_000);
+        assert_eq!(audio_sink_pts(3_000_000_000, 400_000_000), 6_000_000_000 + 400_000_000);
     }
 
     #[test]
@@ -7686,14 +7653,14 @@ mod pcm_sink_lead_pure_tests {
         let _restore = Restore;
         SHARED.applied_rate_permille.store(crate::player::RATE_NORMAL, Ordering::Relaxed);
         assert_eq!(audio_sink_pts(0, 0), 0);
-        assert_eq!(audio_sink_pts(-500_000_000, 390_000_000), 0, "a unit before the origin is not sent negative");
-        assert_eq!(audio_sink_pts(100_000_000, -390_000_000), 0, "a negative dev override clamps too");
+        assert_eq!(audio_sink_pts(-500_000_000, 400_000_000), 0, "a unit before the origin is not sent negative");
+        assert_eq!(audio_sink_pts(100_000_000, -400_000_000), 0, "a negative dev override clamps too");
         assert_eq!(audio_sink_pts(i64::MAX - 1, PCM_SINK_LEAD_NS), i64::MAX);
     }
 
     #[test]
     fn only_a_pcm_load_gets_the_lead_and_the_dev_override_moves_only_that() {
-        assert_eq!(PCM_SINK_LEAD_NS, 390_000_000);
+        assert_eq!(PCM_SINK_LEAD_NS, 400_000_000);
         assert_eq!(pcm_sink_lead("PCM", None), PCM_SINK_LEAD_NS);
         assert_eq!(pcm_sink_lead("PCM", Some("0")), 0);
         assert_eq!(pcm_sink_lead("PCM", Some(" 200\n")), 200_000_000);
@@ -7702,8 +7669,38 @@ mod pcm_sink_lead_pure_tests {
         assert_eq!(pcm_sink_lead("PCM", Some("")), PCM_SINK_LEAD_NS);
         for compressed in ["DTS", "AC3", "AC3 PLUS", "AAC", "OPUS", "-"] {
             assert_eq!(pcm_sink_lead(compressed, None), 0, "{compressed}");
-            assert_eq!(pcm_sink_lead(compressed, Some("390")), 0, "{compressed}: the override is PCM-only");
+            assert_eq!(pcm_sink_lead(compressed, Some("400")), 0, "{compressed}: the override is PCM-only");
         }
+    }
+
+    /// The Load's declared audio and its sink lead come out of ONE value ([`load_audio`], the pair
+    /// `start_bufferfeed_inner` puts in the payload and on the Engine), speed override included: a
+    /// 1.5x session on an AC3 track declares PCM and gets the lead, a 1x AC3 session does not, a 1x
+    /// FLAC session does.
+    #[test]
+    fn the_engines_lead_follows_the_declared_audio_and_the_speed_override() {
+        use crate::player::RATE_NORMAL;
+        let lead = |codec: &str, rate: i32| load_audio(codec, rate, None).map(|a| (a.name, a.sink_lead_ns));
+        assert_eq!(lead("flac", RATE_NORMAL), Some(("PCM", PCM_SINK_LEAD_NS)));
+        assert_eq!(lead("alac", RATE_NORMAL), Some(("PCM", PCM_SINK_LEAD_NS)));
+        assert_eq!(lead("ac3", RATE_NORMAL), Some(("AC3", 0)));
+        assert_eq!(lead("dca", RATE_NORMAL), Some(("DTS", 0)), "the set's own DTS decoder keeps its own compensation");
+        assert_eq!(lead("eac3", RATE_NORMAL), Some(("AC3 PLUS", 0)));
+        assert_eq!(lead("ac3", 1500), Some(("PCM", PCM_SINK_LEAD_NS)), "a speed session declares PCM, so it takes the lead");
+        assert_eq!(lead("dca", 500), Some(("PCM", PCM_SINK_LEAD_NS)));
+        assert_eq!(lead("flac", 1500), Some(("PCM", PCM_SINK_LEAD_NS)));
+        assert_eq!(lead("not-a-codec", RATE_NORMAL), None, "an undeclarable codec still refuses the Load");
+    }
+
+    /// The per-Load override reaches the Engine's lead through the same value, for a PCM Load only.
+    #[test]
+    fn the_dev_override_reaches_the_engines_lead_through_the_declaration() {
+        use crate::player::RATE_NORMAL;
+        assert_eq!(load_audio("flac", RATE_NORMAL, Some("330")).unwrap().sink_lead_ns, 330_000_000);
+        assert_eq!(load_audio("ac3", 1500, Some("0")).unwrap().sink_lead_ns, 0);
+        assert_eq!(load_audio("ac3", RATE_NORMAL, Some("330")).unwrap().sink_lead_ns, 0);
+        let flac = load_audio("flac", RATE_NORMAL, None).unwrap();
+        assert_eq!(flac.diagnostic, 5, "the diagnostics code is the same pair's");
     }
 }
 
@@ -7859,7 +7856,7 @@ mod pcm_sink_lead_tests {
     }
 
     /// At 1.5x the picture's pts and the audio's both run on the divided timeline, and the lead on
-    /// top of it is still the set's 390 ms.
+    /// top of it is still the set's 400 ms.
     #[test]
     fn the_lead_is_not_scaled_at_a_speed() {
         let _serial = plx_base::testlock::serial();
