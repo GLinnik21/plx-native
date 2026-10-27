@@ -11,6 +11,7 @@
 #   decomp.sh str  <lib> <pattern>       .rodata strings — the cheap first pass
 #   decomp.sh fn   <lib> <pattern> [n]   DECOMPILE matching functions (default 6)
 #   decomp.sh xref <lib> <string>        which functions reference a string literal
+#   decomp.sh filter                     stdin: a raw Ghidra headless log -> only the scripts' own output
 #
 # <lib> is a substring of a harvested file name (e.g. "playerAPIs", "libpf", "cbe").
 #
@@ -129,6 +130,10 @@ imported() {  # is <name> already analysed in the cached project?
   return 1
 }
 
+script_output() {  # stdin: Ghidra headless's whole log; stdout: only what the scripts printed
+  sed -n 's/^INFO  [A-Za-z]*\.java> //p'
+}
+
 run_script() {  # <libpath> <script.java> <args...>
   need_ghidra; ensure_script
   local lib="$1" script="$2"; shift 2
@@ -141,7 +146,7 @@ run_script() {  # <libpath> <script.java> <args...>
   fi
   "$AH" "$PROJ" tvlab -process "$name" -noanalysis -scriptPath "$SCRIPTS" \
         -postScript "$script" "$@" 2>&1 \
-    | sed -n 's/^INFO  [A-Za-z]*\.java> //p'
+    | script_output
 }
 
 cmd="${1:-help}"; shift || true
@@ -169,6 +174,7 @@ case "$cmd" in
   str)    l=$(pick "${1:?lib}"); "$STRINGS" -a "$l" | grep -i -- "${2:?pattern}" | sort -u ;;
   fn)     l=$(pick "${1:?lib}"); run_script "$l" DecompMatch.java "${2:?pattern}" "${3:-6}" ;;
   xref)   l=$(pick "${1:?lib}"); run_script "$l" XrefString.java "${2:?string}" ;;
-  clean)  rm -rf "$PROJ" "$SCRIPTS"; echo "decomp: analysis cache dropped (harvested binaries kept)" ;;
-  *)      sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' ;;
+  filter) script_output ;;
+  clean) rm -rf "$PROJ" "$SCRIPTS"; echo "decomp: analysis cache dropped (harvested binaries kept)" ;;
+  *)      sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//' ;;
 esac
