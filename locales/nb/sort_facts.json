@@ -1,0 +1,15 @@
+{
+  "sort_facts.title": "Tittel",
+  "sort_facts.date_added": "Dato lagt til",
+  "sort_facts.release_date": "Utgivelsesdato",
+  "sort_facts.rating": "Vurdering",
+  "sort_facts.audience_rating": "Publikumsvurdering",
+  "sort_facts.last_viewed": "Dato sett",
+  "sort_facts.random": "Tilfeldig",
+  "sort_facts.a_to_z": "A–Z",
+  "sort_facts.z_to_a": "Z–A",
+  "sort_facts.oldest_first": "Eldste først",
+  "sort_facts.newest_first": "Nyeste først",
+  "sort_facts.lowest_first": "Laveste først",
+  "sort_facts.highest_first": "Høyeste først"
+}

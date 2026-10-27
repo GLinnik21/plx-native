@@ -142,7 +142,7 @@ impl LocaleContext {
     }
     /// Day and month with no year, for release captions: "12 Mar" / "12 March" in English,
     /// "12 de marzo" in Spanish, "12 mars" / "12 janv." in French, "12 marzo" in Italian,
-    /// "12 de março" in European Portuguese, "12. März" in German, "március 12." in Hungarian, and in Belarusian and Russian the genitive
+    /// "12 de março" in European Portuguese, "12. März" in German, "12. mars" / "12. jan." in Norwegian, "március 12." in Hungarian, and in Belarusian and Russian the genitive
     /// after the day ("12 сакавіка", "12 марта") with the abbreviated form for medium. Hand-written tables, not
     /// ICU month data, so no name data is compiled in for the shipped languages. The year is
     /// unknown, so 29 February is a valid day; a day the calendar lacks returns `None`.
@@ -175,6 +175,8 @@ impl LocaleContext {
             (Language::Pt, MonthWidth::Long) => (&PT_LONG, " de "),
             (Language::De, MonthWidth::Medium) => (&DE_MEDIUM, ". "),
             (Language::De, MonthWidth::Long) => (&DE_LONG, ". "),
+            (Language::Nb, MonthWidth::Medium) => (&NB_MEDIUM, ". "),
+            (Language::Nb, MonthWidth::Long) => (&NB_LONG, ". "),
             (Language::Hu, _) => unreachable!("Hungarian returned above"),
         };
         Some(format!("{day}{joiner}{}", names[i]))
@@ -195,6 +197,14 @@ const RU_MEDIUM: [&str; 12] = [
 const RU_GENITIVE: [&str; 12] = [
     "января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября",
     "ноября", "декабря",
+];
+
+/// CLDR `nb` abbreviated format months: dotted, except the short "mai".
+const NB_MEDIUM: [&str; 12] =
+    ["jan.", "feb.", "mar.", "apr.", "mai", "jun.", "jul.", "aug.", "sep.", "okt.", "nov.", "des."];
+const NB_LONG: [&str; 12] = [
+    "januar", "februar", "mars", "april", "mai", "juni", "juli", "august", "september", "oktober",
+    "november", "desember",
 ];
 
 /// CLDR `hu` abbreviated format months, with their dots.

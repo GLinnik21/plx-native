@@ -230,6 +230,46 @@ fn russian_month_day_captions_use_format_months_at_both_widths() {
 }
 
 #[test]
+fn norwegian_locale_resolves_bokmal_tags_and_keeps_regional_formatting_independent() {
+    for tag in ["nb", "nb-NO", "nb_NO.UTF-8", "nb-Latn-NO", "nb-SJ"] {
+        let cx = LocaleContext::resolve(Preference::System, Some(tag), None, None, None);
+        assert_eq!(cx.language(), Language::Nb, "{tag}");
+    }
+    let from_env = LocaleContext::resolve(Preference::System, None, None, None, Some("nb_NO.UTF-8"));
+    assert_eq!(from_env.language(), Language::Nb);
+    let nb = LocaleContext::resolve(Preference::Nb, None, None, None, None);
+    assert_eq!(nb.format_locale(), "nb-NO");
+    assert_eq!(nb.number(12345), "12\u{a0}345");
+    assert_eq!(nb.decimal(45, 1), "4,5");
+    assert_eq!(nb.date(2026, 10, 24).as_deref(), Some("24.10.2026"));
+    let mixed = LocaleContext::resolve(Preference::Nb, Some("en-US"), Some("en-US"), None, None);
+    assert_eq!(mixed.language(), Language::Nb);
+    assert_eq!(mixed.number(12345), "12,345");
+    // Nynorsk has no catalog; it keeps the English fallback rather than borrowing bokmål.
+    assert_eq!(LocaleContext::resolve(Preference::System, Some("nn-NO"), None, None, None).language(), Language::En);
+}
+
+#[test]
+fn norwegian_catalog_counts_use_one_and_other() {
+    let nb = LocaleContext::resolve(Preference::Nb, None, Some("en-US"), None, None);
+    for (count, category) in [(0, PluralCategory::Other), (1, PluralCategory::One), (2, PluralCategory::Other), (21, PluralCategory::Other)] {
+        assert_eq!(nb.plural(count), category, "{count}");
+    }
+    assert_eq!(msg::captions_new_episodes_in(&nb, 1), "1 ny episode");
+    assert_eq!(msg::captions_new_episodes_in(&nb, 4), "4 nye episoder");
+}
+
+#[test]
+fn norwegian_month_day_captions_write_the_day_as_an_ordinal() {
+    let captions = month_captions(Preference::Nb);
+    assert_eq!(captions[2], ("12. mar.".to_string(), "12. mars".to_string()));
+    assert_eq!(captions[4], ("12. mai".to_string(), "12. mai".to_string()));
+    assert_eq!(captions[11], ("12. des.".to_string(), "12. desember".to_string()));
+    let cx = LocaleContext::resolve(Preference::Nb, None, None, None, None);
+    assert_eq!(cx.month_day(2, 29, MonthWidth::Long).as_deref(), Some("29. februar"));
+}
+
+#[test]
 fn belarusian_library_count_messages_render_the_reviewed_forms() {
     let locale = LocaleContext::resolve(Preference::Be, None, Some("en-GB"), None, None);
     for (count, expected) in [
@@ -547,9 +587,15 @@ fn every_shipped_language_has_its_own_icu_data_not_root() {
                 ("plurals", answered_by::<icu_plurals::provider::PluralsCardinalV1>(&icu_plurals::provider::Baked, &locale)),
             ] {
                 if let Some(got) = got {
+                    // CLDR keeps bokmål's data under its macrolanguage `no` (parentLocales: nb -> no),
+                    // so `no` answering for nb is the language's own data, not root.
+                    let own = match (lang.tag(), got.language.as_str()) {
+                        ("nb", "no") => "no",
+                        _ => lang.tag(),
+                    };
                     assert_eq!(
                         got.language.as_str(),
-                        lang.tag(),
+                        own,
                         "{tag}: {what} data was answered by {got}, not the language's own"
                     );
                 }
