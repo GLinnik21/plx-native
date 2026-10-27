@@ -85,7 +85,8 @@ impl PcmDecoder {
     /// Decode one packet into interleaved little-endian PCM of the declared width. These codecs
     /// have no decoder delay: one packet is one frame, so the packet's pts is the PCM's. That pts
     /// is content time and stays so: the set renders a PCM Load through a mixer channel that lacks
-    /// the lip sync its own decoder gets (400 ms, less the output's own delay on a wireless one), and
+    /// the lip sync its own decoder gets (on LG's `liblxa` audio stack: 400 ms, less the output's own delay on a
+    /// wireless one; no other stack was measured), and
     /// the correction is NOT made here but at the audio lane's one Feed (`player::engine`,
     /// `PCM_SINK_LEAD_NS`), so every producer of PCM gets it once and none stamps its own.
     pub unsafe fn decode(&mut self, pkt: *const AVPacket) -> Result<&[u8], String> {
