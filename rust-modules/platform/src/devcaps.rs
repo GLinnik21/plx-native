@@ -974,18 +974,25 @@ pub fn vp9_bit_depth_for(major: u32) -> u32 {
 }
 
 /// Which audio library the set's sound output runs on, the fact the app-decoded audio's lead hangs on
-/// ([`AudioStack::Liblxa`] is the only stack the lead was measured on).
+/// ([`AudioStack::Liblxa`] is the stack the lead was measured on, [`AudioStack::LgAudioSink`] the one
+/// that carries the same rule without being filmed).
 ///
 /// LG ships more than one: the dev set (webOS 4.10.2) and the firmware inventories behind
 /// `tools/fwcompat.py` for webOS 7.4, 8.3 and 9.2 carry `liblxa.so.2.0.0` and its GStreamer sink
 /// `libgstlxaudiosink`, while 4.10.0, 5.3.1, 6.4.0 and 10.2.0 carry Realtek's `libgstrtkaudio-1.0`
-/// instead, and 1.2.0 to 4.4.2 and 11.2.0 carry neither. So one webOS version spans both stacks, and
-/// the firmware version cannot stand in for it.
+/// instead, and 1.2.0 to 4.4.2 neither. The inventories list `/usr/lib` only, not
+/// `/usr/lib/gstreamer-1.0`, so they cannot show a GStreamer plugin: on webOS 11.2.0 with LG's own chip (read from the 2022 and
+/// 2023 OLED firmware images, not filmed) `liblxa.so.2` is gone and the same renderer code is
+/// compiled into the sink `libgstlgaudiosink.so` instead. So one webOS version spans several stacks,
+/// and the firmware version cannot stand in for it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AudioStack {
     /// `/usr/lib/liblxa.so.2` is on the set.
     Liblxa,
-    /// [`probe`] ran on a device that does not have it.
+    /// `/usr/lib/liblxa.so.2` is not, but LG's renderer is built into the GStreamer sink
+    /// `/usr/lib/gstreamer-1.0/libgstlgaudiosink.so` (webOS 11 on LG's chip).
+    LgAudioSink,
+    /// [`probe`] ran on a device that has neither.
     Other,
     /// [`probe`] has not run: a host, the simulator, a test, or a boot that never got here.
     Unknown,
@@ -996,6 +1003,7 @@ impl AudioStack {
     pub fn label(self) -> &'static str {
         match self {
             Self::Liblxa => "liblxa",
+            Self::LgAudioSink => "lgaudiosink",
             Self::Other => "other",
             Self::Unknown => "unknown",
         }
@@ -1009,11 +1017,18 @@ impl AudioStack {
 /// LG's library initialisation inside the app to learn a fact a directory entry already states.
 pub const LIBLXA_SONAME_LINK: &str = "/usr/lib/liblxa.so.2";
 
-/// The stack for a set on which `present(path)` says whether a file exists. The seam [`probe`] uses
-/// with the real filesystem; PURE apart from `present`.
-pub fn audio_stack_from(present: impl FnOnce(&str) -> bool) -> AudioStack {
+/// The file whose presence says the set's audio stack is [`AudioStack::LgAudioSink`]: the GStreamer
+/// plugin that carries LG's renderer itself. A stat, for the reason [`LIBLXA_SONAME_LINK`] is one.
+pub const LGAUDIOSINK_PLUGIN: &str = "/usr/lib/gstreamer-1.0/libgstlgaudiosink.so";
+
+/// The stack for a set on which `present(path)` says whether a file exists: `liblxa` first, then the
+/// sink plugin, so a set that has both is `liblxa`. The seam [`probe`] uses with the real filesystem
+/// (so `present` runs up to twice); PURE apart from `present`.
+pub fn audio_stack_from(mut present: impl FnMut(&str) -> bool) -> AudioStack {
     if present(LIBLXA_SONAME_LINK) {
         AudioStack::Liblxa
+    } else if present(LGAUDIOSINK_PLUGIN) {
+        AudioStack::LgAudioSink
     } else {
         AudioStack::Other
     }
@@ -1161,16 +1176,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_audio_stack_is_liblxa_only_where_its_soname_link_is() {
+    fn the_audio_stack_is_liblxa_where_its_soname_link_is() {
         let asked = std::cell::RefCell::new(Vec::new());
         let stack = audio_stack_from(|path| {
             asked.borrow_mut().push(path.to_string());
             true
         });
         assert_eq!(stack, AudioStack::Liblxa);
-        assert_eq!(*asked.borrow(), ["/usr/lib/liblxa.so.2"], "the one file, and nothing else is read");
-        assert_eq!(audio_stack_from(|_| false), AudioStack::Other, "a device without it runs another stack");
+        assert_eq!(*asked.borrow(), ["/usr/lib/liblxa.so.2"], "liblxa answers first, and nothing else is read");
+        assert_eq!(audio_stack_from(|_| false), AudioStack::Other, "a device without either runs another stack");
         assert_eq!(audio_stack_from(|path| path.contains("rtkaudio")), AudioStack::Other, "another stack's files do not make it liblxa");
+    }
+
+    #[test]
+    fn a_set_with_only_the_lg_sink_plugin_is_on_the_lg_audio_sink_stack() {
+        let on = |files: &'static [&'static str]| audio_stack_from(move |path| files.contains(&path));
+        assert_eq!(on(&[LGAUDIOSINK_PLUGIN]), AudioStack::LgAudioSink, "webOS 11 on LG's chip: no liblxa, the plugin");
+        assert_eq!(on(&[LIBLXA_SONAME_LINK]), AudioStack::Liblxa);
+        assert_eq!(on(&[LIBLXA_SONAME_LINK, LGAUDIOSINK_PLUGIN]), AudioStack::Liblxa, "liblxa wins when both are there");
+        assert_eq!(on(&[]), AudioStack::Other);
+        assert_eq!(on(&["/usr/lib/gstreamer-1.0/libgstrtkaudio-1.0.so"]), AudioStack::Other, "another sink's plugin is not this one");
+        assert_eq!(LGAUDIOSINK_PLUGIN, "/usr/lib/gstreamer-1.0/libgstlgaudiosink.so");
+        let asked = std::cell::RefCell::new(Vec::new());
+        audio_stack_from(|path| {
+            asked.borrow_mut().push(path.to_string());
+            false
+        });
+        assert_eq!(*asked.borrow(), [LIBLXA_SONAME_LINK, LGAUDIOSINK_PLUGIN], "two stats, liblxa first, nothing else");
     }
 
     #[test]
@@ -1187,8 +1219,8 @@ mod tests {
         }
         assert_eq!(audio_stack(), AudioStack::Unknown);
         assert_eq!(
-            [AudioStack::Liblxa, AudioStack::Other, AudioStack::Unknown].map(AudioStack::label),
-            ["liblxa", "other", "unknown"]
+            [AudioStack::Liblxa, AudioStack::LgAudioSink, AudioStack::Other, AudioStack::Unknown].map(AudioStack::label),
+            ["liblxa", "lgaudiosink", "other", "unknown"]
         );
     }
 
