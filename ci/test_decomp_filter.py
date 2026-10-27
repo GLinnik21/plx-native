@@ -210,6 +210,24 @@ class FilterSubcommand(unittest.TestCase):
         self.assertLess(out.index("return;"), out.index("======== 000133cc"))
         self.assertNotIn("stuck", out)
 
+    def test_only_ghidras_own_logger_column_is_taken_off(self):
+        # A body line that merely ends like a logger column, or a bare "INFO" type name that is not
+        # at a line start, is the function's and stays exactly as printed.
+        raw = lines(
+            "INFO  DecompMatch.java> ======== 00010000  FUN_00010000" + SUFFIX,
+            "INFO  DecompMatch.java> ",
+            "void FUN_00010000(void)",
+            "{",
+            "  call_again(retry)  ",
+            "  x = INFO + 1;",
+            "}",
+            "",
+            SUFFIX,
+        )
+        want = lines("======== 00010000  FUN_00010000", "", "void FUN_00010000(void)", "{",
+                     "  call_again(retry)  ", "  x = INFO + 1;", "}", "")
+        self.assertEqual(run(["filter"], raw).stdout, want)
+
     def test_nothing_in_nothing_out(self):
         r = run(["filter"], "")
         self.assertEqual((r.returncode, r.stdout), (0, ""))

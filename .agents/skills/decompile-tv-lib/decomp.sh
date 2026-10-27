@@ -130,8 +130,34 @@ imported() {  # is <name> already analysed in the cached project?
   return 1
 }
 
+# Ghidra headless logs each println of a script as ONE log record, "INFO  <Script>.java> <message>
+# (GhidraScript)  ": the prefix is on the record's first line and the " (GhidraScript)  " column
+# on its last. A message with newlines in it (a decompiled C body, an `xref` string literal that
+# ends in "\n") is several lines and only the first carries the prefix, so a filter that keeps
+# the prefixed lines (the `sed -n 's/^INFO  ...> //p'` this replaced) loses the rest: `fn` printed
+# its "======== addr name" header and nothing under it. Every other log record, Ghidra's own,
+# starts with a level name too and may be multi-line as well (the script path list, a stack
+# trace), so a line with no level name belongs to whichever record came before it: it is kept
+# only while that record is a script's. The one line a message leaves behind is the logger
+# column alone, where its final newline ended the text; that is not a line of the message.
+# POSIX awk, with LC_ALL=C so a firmware string with a non-UTF-8 byte passes through as bytes.
 script_output() {  # stdin: Ghidra headless's whole log; stdout: only what the scripts printed
-  sed -n 's/^INFO  [A-Za-z]*\.java> //p'
+  LC_ALL=C awk '
+    {
+      if ($0 ~ /^INFO  [A-Za-z0-9_]+\.java> /) {          # a script record begins
+        sub(/^INFO  [A-Za-z0-9_]+\.java> /, "")
+        mine = 1; first = 1
+      } else if ($0 ~ /^(TRACE|DEBUG|INFO|WARN|ERROR|FATAL) /) {   # any other log record begins
+        mine = 0
+      } else {                                                # the previous record goes on
+        first = 0
+      }
+      if (!mine) next
+      if (!first && $0 ~ /^ \(GhidraScript\)  $/) next
+      sub(/ \(GhidraScript\)  $/, "")
+      print
+    }
+  '
 }
 
 run_script() {  # <libpath> <script.java> <args...>
