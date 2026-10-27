@@ -525,8 +525,9 @@ something.
   1x every direct-play seek reloads in every mode (`pump::seek_must_reload`). `play_rate_permille` is the
   viewer's choice and persists across reloads; `applied_rate_permille` is the current pipeline's and is
   reset by `reset_session`. The feed throttle's run-on reads the applied one (`FeedPace::reference_at`).
-- **A Load that declares `"audio":"PCM"` has its audio fed 400 ms later than the picture it belongs with**
-  (#1086; FLAC and every other app-decoded codec, and a speed session at any speed other than 1x; a
+- **A Load that declares `"audio":"PCM"` has its audio fed later than the picture it belongs with, by an
+  amount that follows the sound output: 400 ms on the TV speakers, 250 ms on Bluetooth headphones**
+  (#1086, #1088; FLAC and every other app-decoded codec, and a speed session at any speed other than 1x; a
   compressed Load, DTS included, gets none).
   *Cause (read from the firmware, not measured):* a Load whose every audio track is `audio/x-raw` is
   allocated its audio as a `PCMMC` mixer channel instead of an `ADEC` decoder (libplayerAPIs
@@ -535,30 +536,48 @@ something.
   mixer channel. That stage's template offset is 505 ms and every value an app gives it is biased by
   +105, so the decoder path is delayed 400 ms and a PCM Load is not. libpf's `option.lipsyncOffset` cannot
   stand in for the lead: it moves the audio and the video sink alike below 400 and only feeds the DSP
-  stage that is off on a mixer channel from 400 up.
-  *Filmed* on the build that carries this change (TV speakers, a FLAC clip with a flash and a beep every
-  2.5 s; offset = beep minus flash, negative = audio early): no correction -0.377 s; `pcmavoffset=330`
-  -0.089; `=390` +0.047 (24 fps camera); `=400` -0.026 to -0.028 (30 fps). The set's own decoder on a DTS
-  clip: -0.02. So 400 ms puts app-decoded audio where the set puts its own, on that output.
+  stage that is off on a mixer channel from 400 up. *The per-output part (also firmware):* for its own
+  decoder the set additionally advances the audio by a delay chosen from the active output
+  (`_lxao_find_lipsync_output_type`: wireless 150 ms, Dolby bitstream 160, Atmos 170, DTS 160, WISA 100,
+  ES 30) so that it covers that output's latency; a mixer channel skips that query and always reads 0. So
+  the right lead is 400 ms minus the output's delay, which on Bluetooth is 250.
+  *Filmed* (a FLAC clip with a flash and a beep every 2.5 s; offset = beep minus flash, negative = audio
+  early). TV speakers: no correction -0.377 s; `pcmavoffset=330` -0.089; `=390` +0.047 (24 fps camera);
+  `=400` -0.026 to -0.028 (30 fps), -0.03 to +0.08 in a later run; the set's own decoder on a DTS clip
+  -0.02. Bluetooth headphones (`soundOutput` read `bt_soundbar`, phone microphone against an earcup): 400 ms
+  +0.13 to +0.19 s, late; 250 ms (`pcmavoffset=250`) +0.017 s, three of three; the set's own DTS decoder
+  -0.028 s.
   *The ONE correction* is `engine::audio_sink_pts`, at the audio lane's single Feed: the Load's
-  `Engine::pcm_sink_lead_ns` (`PCM_SINK_LEAD_NS`) is added to the SINK pts AFTER `to_sink_ns`, because it
-  is real time and must not be divided by the speed. `engine::load_audio` yields the declared audio name
-  and that lead as one value (0 for a compressed Load; a speed override makes any codec declare PCM, so
-  it takes the lead), logged once per Load as `pcm: audio sink pts +<N>ms (default 400ms)`. Content time
-  (`fp`, `max_fed_audio_pts`, `audio_start_fp`, stale-drop, throttle, prime) is untouched, so no producer
-  of PCM stamps its own offset. Dev instrument (debug builds, read per Load): `pcmavoffset=<ms>` sets the
-  lead, which is how another output gets measured.
+  `Engine::pcm_sink_lead_ns` is added to the SINK pts AFTER `to_sink_ns`, because it is real time and must
+  not be divided by the speed. `engine::load_audio` yields the declared audio name and a `PcmLead` plan as
+  one value (`Off` for a compressed Load; a speed override makes any codec declare PCM, so it plans a lead);
+  `PcmLead::resolve` settles the plan against the output with the table `PCM_LEAD_BY_OUTPUT` (`tv_speaker`
+  400, `bt_soundbar` 250; any other output, or no answer, keeps `PCM_SINK_LEAD_NS` = 400). The
+  `pcmavoffset` dev override (debug builds, read per Load) wins over the table and is how another output
+  gets measured. Content time (`fp`, `max_fed_audio_pts`, `audio_start_fp`, stale-drop, throttle, prime) is
+  untouched, so no producer of PCM stamps its own offset.
+  *Where the output is read:* `start_bufferfeed_inner` runs on the FRAME thread (the Engine is
+  main-thread-confined and the frame may not wait on the bus), so it cannot ask. A plan that follows the
+  output goes to `threads::load_thread` (the `media` worker, which blocks in `Load` anyway), which reads
+  `tv::sound::output` BEFORE `Load` (a `getSystemSettings {"category":"sound","keys":["soundOutput"]}` call
+  through the `tv` port, 300 ms budget, `NoPlatform` on hosts), logs `pcm: audio sink pts +<N>ms (output
+  <name|unknown>, default 400ms[, not measured])` once per Load, and hands the lead back inside
+  `LoadCall::Returned` (`Shared::native_load_pcm_lead`). Nothing is fed before the Load returns, and
+  `settle_pcm_lead` takes the lead into the Engine, once, before the first audio unit; until then the audio
+  lane waits rather than stamp with a guess it would later move. A compressed Load and an override never
+  read the output. A cost to know: on a PCM Load the read sits directly in front of `Load`, so it adds its
+  round trip to time-to-first-frame (its length is in the `sound: output ... read in Nms` line); a bus
+  that never answers adds the whole budget to every such Load and keeps 400.
   *Seek (firmware, not filmed):* LG's audio sink hands each buffer's pts to the driver unchanged and
   re-derives its render base at every SEGMENT from the segment and the pipeline clock, never from a
-  buffer's pts; no late-drop or gap rule exists. So the relative 400 ms survives an in-place seek and a
-  reload.
-  *Not determined:* any sound output but the TV speakers. For the hardware decoder the set adds a render
-  delay per output (Bluetooth 150 ms, Dolby bitstream 160, Atmos 170, WISA 100, ES 30) that a mixer
-  channel never gets (it skips the query and always reads 0); whether that moves the audio later or
-  earlier against the picture is not known, so on those outputs app-decoded audio may sit up to that far
-  from the set's own decoder. The app cannot read the active output through the media libraries (only
-  Chromium's media stack reads `soundOutput`, through the settings service). Also unfilmed: a seek, the
-  speed path (it takes the same lead from the same code), another sample rate, another chip or firmware.
+  buffer's pts; no late-drop or gap rule exists. So the relative lead survives an in-place seek and a
+  reload. An in-place seek keeps the Engine and its lead; a reload (a Load) reads the output again.
+  *Not determined:* any output but the two filmed (optical, ARC, wired headphones, LG Sound Sync, a
+  soundbar with its own latency: they keep 400 ms and the log says "not measured"); an output change in the
+  middle of a playback, which takes effect at the next Load; the user's "AV Sync Adjust" menu, whose effect
+  on a mixer channel is not known; a Bluetooth device whose own latency differs from the filmed one;
+  another sample rate, chip or firmware. Also unfilmed: a seek, and the speed path (it takes the same
+  lead from the same code).
 - **Seeks are in-place**, in one of three per-session modes (`player::SeekMode`, chosen by
   `engine::select_seek_mode` in `start_bufferfeed`, the `/tmp/plxnative-seekmode` dev trigger
   `native|segment|reload` wins): the demuxer is `av_seek_frame`d to the target, then on the first

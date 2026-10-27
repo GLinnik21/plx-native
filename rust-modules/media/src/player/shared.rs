@@ -218,6 +218,10 @@ enum LoadCall {
     /// whatever was left of the first one.
     Returned {
         at: Instant,
+        /// The audio lead the Load thread resolved from the sound output before it called `Load`
+        /// (`engine::PcmLead::FromOutput`); `None` for a Load whose lead the frame thread settled.
+        /// Published WITH the return, so no reader can see the Load returned without it.
+        pcm_lead_ns: Option<i64>,
     },
 }
 
@@ -1151,7 +1155,7 @@ impl Shared {
     /// must never depend on the reducer's verdict). Returns the elapsed time since the session's
     /// Load was issued, for the "native: Load returned after Nms" log — `None` when `epoch` no
     /// longer owns the `Active` phase (a superseded/already-retired session; nothing to mark).
-    pub fn mark_native_load_returned(&self, epoch: u32) -> Option<Duration> {
+    pub fn mark_native_load_returned(&self, epoch: u32, pcm_lead_ns: Option<i64>) -> Option<Duration> {
         let mut state = self
             .native_session
             .lock()
@@ -1165,6 +1169,7 @@ impl Shared {
             } if epoch != 0 && *active == epoch => {
                 *load_call = LoadCall::Returned {
                     at: Instant::now(),
+                    pcm_lead_ns,
                 };
                 Some(load_issued_at.elapsed())
             }
@@ -1204,6 +1209,23 @@ impl Shared {
         )
     }
 
+    /// The audio lead `epoch`'s Load thread resolved from the sound output, once its Load has
+    /// returned: `None` while it is in flight, for another epoch, and for a Load that resolved none.
+    pub fn native_load_pcm_lead(&self, epoch: u32) -> Option<i64> {
+        let state = self
+            .native_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match state.phase {
+            NativeSessionPhase::Active {
+                epoch: active,
+                load_call: LoadCall::Returned { pcm_lead_ns, .. },
+                ..
+            } if epoch != 0 && active == epoch => pcm_lead_ns,
+            _ => None,
+        }
+    }
+
     /// How long ago `epoch`'s Starfish `Load` call returned — `None` when `epoch` no longer owns
     /// the `Active` phase, OR when its Load has not returned yet (still `LoadCall::InFlight`,
     /// which the OTHER budget window — [`native_load_elapsed`] — covers).
@@ -1222,7 +1244,7 @@ impl Shared {
         match state.phase {
             NativeSessionPhase::Active {
                 epoch: active,
-                load_call: LoadCall::Returned { at },
+                load_call: LoadCall::Returned { at, .. },
                 ..
             } if epoch != 0 && active == epoch => Some(at.elapsed()),
             _ => None,
@@ -1287,7 +1309,7 @@ impl Shared {
         match &mut state.phase {
             NativeSessionPhase::Active {
                 epoch: active,
-                load_call: LoadCall::Returned { at },
+                load_call: LoadCall::Returned { at, .. },
                 ..
             } if epoch != 0 && *active == epoch => {
                 *at = at.checked_sub(by).unwrap_or(*at);

@@ -15,11 +15,15 @@ unsafe impl<T> Send for SendPtr<T> {}
 /// blocks for a long time inside video-output init (issue #74, k5lp/k3lp), which is why the C seam
 /// refuses every other verb until it returns (`g_load_returned`) and the pump bounds the wait
 /// with `NATIVE_LOAD_BUDGET`.
-pub fn load_thread(
+pub(super) fn load_thread(
     payload: SendPtr<c_char>,
     native_epoch: u32,
     route_start: Option<crate::route::RouteStartAttempt>,
+    pcm_lead: super::engine::PcmLead,
 ) {
+    // The sound output's lead is read HERE, before `Load` and off the frame thread, and goes back
+    // with the Load's return: nothing is fed before that return (`engine::settle_pcm_lead`).
+    let pcm_lead_ns = super::engine::resolve_pcm_lead_on_load_thread(pcm_lead);
     super::log("SMP: calling Load (uid=NULL)");
     let ok = unsafe { super::sink().load(payload.0, native_epoch) };
     super::log(&format!("SMP: Load returned ok={ok}"));
@@ -38,7 +42,7 @@ pub fn load_thread(
     // verb) must never observe "Load has returned" any later than this. Route tickets are a
     // SEPARATE mechanism (a ticket can be rejected as stale independent of this gate) and are
     // published after, not before, on purpose.
-    if let Some(elapsed) = SHARED.mark_native_load_returned(native_epoch) {
+    if let Some(elapsed) = SHARED.mark_native_load_returned(native_epoch, pcm_lead_ns) {
         // Captured HERE, at the moment the flag actually flips, so the "native: Load returned
         // after Nms" log measures the real in-flight duration rather than however long it took
         // the main-thread pump to next run and notice. Logged unconditionally, right at the gate

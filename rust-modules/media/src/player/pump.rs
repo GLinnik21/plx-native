@@ -4030,7 +4030,7 @@ mod flight_tests {
         assert!(!crate::route::audio_track_direct_plays(&rig.ps, "opus", 6, 48_000), "sanity: the attempt lacks the stored refusal");
         crate::ff::native_audio::publish_fed(crate::ff::native_audio::Kind::Opus, 6);
         let epoch = engine_epoch(&mut rig).expect("the rig's Engine");
-        assert!(SHARED.mark_native_load_returned(epoch).is_some(), "the Load returned: the watchdog's precondition");
+        assert!(SHARED.mark_native_load_returned(epoch, None).is_some(), "the Load returned: the watchdog's precondition");
         // Both AU queues hold data and the pipeline accepts nothing: what the demuxer sees of a
         // decoder that swallowed the feed. The Engine is still `Loading`, so no frame feeds them.
         let eng = rig.pa.engine().expect("the rig's Engine");
@@ -4862,7 +4862,7 @@ mod flight_tests {
                 let epoch = engine_epoch(&mut rig).expect("the rig's Engine");
                 rig.frame();
                 assert!(!SHARED.load_failed.load(Acquire), "nothing is published before the Load returned");
-                assert!(SHARED.mark_native_load_returned(epoch).is_some(), "the Load returned");
+                assert!(SHARED.mark_native_load_returned(epoch, None).is_some(), "the Load returned");
                 rig.frame();
                 assert_eq!(SHARED.dg_cb_err_num.load(Relaxed), 601, "the refusal went through the callback");
                 assert!(crate::route::flight_outstanding(), "the injected refusal ran the ladder: a conversion flies");
@@ -4870,7 +4870,7 @@ mod flight_tests {
                 let reloaded = engine_epoch(&mut rig).expect("the reloaded Engine");
                 assert_ne!(reloaded, epoch, "the landing reloaded the Engine");
                 pipeline_takes_the_load();
-                assert!(SHARED.mark_native_load_returned(reloaded).is_some(), "the reload's Load returned");
+                assert!(SHARED.mark_native_load_returned(reloaded, None).is_some(), "the reload's Load returned");
                 for _ in 0..4 {
                     rig.frame();
                 }
@@ -5900,7 +5900,7 @@ mod end_of_film_tests {
                 1,
                 "PRECONDITION FAILED, not the defect: the host Load did not take"
             );
-            assert!(SHARED.mark_native_load_returned(epoch).is_some());
+            assert!(SHARED.mark_native_load_returned(epoch, None).is_some());
             let mut eng = super::super::engine::streaming_engine_for_test(epoch);
             eng.load_th = None;
             assert!(eng.stage >= Stage::Playing, "PRECONDITION FAILED, not the defect: the engine is not past its Load");
