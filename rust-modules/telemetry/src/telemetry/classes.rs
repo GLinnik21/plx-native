@@ -322,14 +322,18 @@ pub enum DeliveryReason {
     /// re-encoded: a fixed rung re-encodes at that rung (a transcode), and Auto, when it cannot
     /// keep the bytes on screen, rebuilds the adaptive HLS ladder at its re-entry rung.
     QualityPick,
+    /// A refusal before the first picture was retried with the suspect stream converted: the
+    /// open-recovery ladder's facet rung.
+    RefusalRecovery,
 }
 
 impl DeliveryReason {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::LinkFallback,
         Self::OriginalRecovery,
         Self::OriginalOpenRollback,
         Self::QualityPick,
+        Self::RefusalRecovery,
     ];
 
     pub const fn code(self) -> &'static str {
@@ -338,6 +342,7 @@ impl DeliveryReason {
             Self::OriginalRecovery => "original_recovery",
             Self::OriginalOpenRollback => "original_open_rollback",
             Self::QualityPick => "quality_pick",
+            Self::RefusalRecovery => "refusal_recovery",
         }
     }
 }
@@ -1146,4 +1151,132 @@ impl FailureClass {
             Self::Unspecified => "unspecified",
         }
     }
+}
+
+/// **A refusal the app recovered from, as the wire's closed vocabulary** (`refusal_recovered`).
+///
+/// The television refused a Load before its first picture and the open-recovery ladder
+/// (`player::recovery`) then put a picture on the panel by another route. Four closed fields say
+/// which stream was refused, how wide it was, what the pipeline said and which rung played; the
+/// event carries nothing else of the playback: no raster, no title, no path, no server, no id of
+/// the attempt. Every enum's `code` is the wire string.
+///
+/// **The rung that played.**
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveryRung {
+    /// The suspect stream was converted by the server (an audio track, or a video encode under the
+    /// 1080p ceiling) and the route otherwise kept.
+    Facet,
+    /// The HLS contingency of a cold Auto Original played.
+    Hls,
+    /// The HLS route an Original trial replaced was restored.
+    Rollback,
+    /// A manual pick's both-facets encode played: the video encoded by the server with no copy, the
+    /// audio converted as the narrowed attempt plans it.
+    Encode,
+}
+
+impl RecoveryRung {
+    pub const ALL: [Self; 4] = [Self::Facet, Self::Hls, Self::Rollback, Self::Encode];
+
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Facet => "facet",
+            Self::Hls => "hls",
+            Self::Rollback => "rollback",
+            Self::Encode => "encode",
+        }
+    }
+}
+
+/// The stream the refusal put under suspicion, by codec class only: the video's or the audio's
+/// closed codec domain, or none when the refusal named no stream (a Load timeout of a play whose
+/// streams were not narrowed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefusedStream {
+    None,
+    Video(VideoCodecClass),
+    Audio(AudioCodecClass),
+}
+
+impl RefusedStream {
+    /// `none` / `video` / `audio`.
+    pub const fn kind(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Video(_) => "video",
+            Self::Audio(_) => "audio",
+        }
+    }
+
+    /// The codec class's own wire code; `unknown` when no stream was named.
+    pub const fn codec(self) -> &'static str {
+        match self {
+            Self::None => "unknown",
+            Self::Video(c) => c.code(),
+            Self::Audio(c) => c.code(),
+        }
+    }
+}
+
+/// The refused audio's channel count as a bucket (an exact layout beside a codec is a fingerprint
+/// of a file; the bucket answers "stereo or surround").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelBucket {
+    /// A video stream, or an audio stream whose channel count was not known.
+    Unknown,
+    UpToStereo,
+    Surround,
+    Immersive,
+}
+
+impl ChannelBucket {
+    pub const ALL: [Self; 4] = [Self::Unknown, Self::UpToStereo, Self::Surround, Self::Immersive];
+
+    pub const fn from_channels(channels: u32) -> Self {
+        match channels {
+            0 => Self::Unknown,
+            1..=2 => Self::UpToStereo,
+            3..=6 => Self::Surround,
+            _ => Self::Immersive,
+        }
+    }
+
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::UpToStereo => "1-2",
+            Self::Surround => "3-6",
+            Self::Immersive => "7+",
+        }
+    }
+}
+
+/// What the pipeline said: the firmware's own `type=18` number, a Load budget that ran out in
+/// silence, or the surround native-audio stall (the pipeline took the Load and swallowed the feed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefusalError {
+    Number(i32),
+    Timeout,
+    Stall,
+}
+
+impl RefusalError {
+    /// The number as a decimal string, else `timeout` / `stall`.
+    pub fn code(self) -> String {
+        match self {
+            Self::Number(n) => n.to_string(),
+            Self::Timeout => "timeout".to_owned(),
+            Self::Stall => "stall".to_owned(),
+        }
+    }
+}
+
+/// The whole of a `refusal_recovered` event's own content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RefusalRecoveredContext {
+    pub stream: RefusedStream,
+    pub channels: ChannelBucket,
+    pub error: RefusalError,
+    pub rung: RecoveryRung,
 }

@@ -10,6 +10,11 @@
 //! `Error`; ordinary low quality, buffering and rejected ABR candidates remain breadcrumbs at most,
 //! never errors of their own.
 //!
+//! A second, separate handled event is [`refusal_recovered`]: a refusal the television gave a Load
+//! that the open-recovery ladder then recovered from, raised by the recovery machine as an effect
+//! at the rescue's first picture, once per request, under the same error-report consent. It carries
+//! no trace; see `telemetry::playback::refusal_recovered_body`.
+//!
 //! # A failure says WHY the attempt it ended was made
 //!
 //! A report names the attempt that failed beside the playback it failed in: the route being opened
@@ -58,8 +63,8 @@ use plx_telemetry::diag::schema::DiagEvent;
 // naming the closed domains where they report from.
 pub use plx_telemetry::telemetry::classes::{
     AttemptOrdinal, AttemptOrigin, AudioCodecClass, BufferClass, DecisionCodeClass, DeliveryClass, DemuxExitClass, DeliveryReason, HttpClass,
-    LoadElapsedClass, OriginalProbePhase, PipelineClass, PlaybackErrorContext, QualityClass,
-    RasterClass, RateClass, RefusalContext, TraceAge, TraceDirection, TraceEvent, TraceOutcome,
+    ChannelBucket, LoadElapsedClass, OriginalProbePhase, PipelineClass, PlaybackErrorContext, QualityClass,
+    RasterClass, RateClass, RecoveryRung, RefusalContext, RefusalError, RefusalRecoveredContext, RefusedStream, TraceAge, TraceDirection, TraceEvent, TraceOutcome,
     TraceStep, TransferAgeClass, TransportClass, VideoCodecClass,
 };
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU8, Ordering::Relaxed};
@@ -335,6 +340,48 @@ pub fn rung_quality_class(rung: crate::abr::Rung) -> QualityClass {
     QualityClass::from_kbps(i64::from(rung.kbps()))
 }
 
+/// **A refused play the ladder rescued, told as one `refusal_recovered` event** (issue #1075). The
+/// recovery machine (`recovery::OpenRecovery`) raises it once per request, at the first picture
+/// of a rescue, as `RecoveryEffect::ReportRecovered`; the pump hands it here and this is the whole
+/// of what leaves: the closed classes of [`RefusalRecoveredContext`]. The event goes through the
+/// same error-report switch as [`report_error`](plx_telemetry::telemetry::playback::report_error);
+/// with the consent off nothing is built, so this holds no consent check of its own.
+pub fn refusal_recovered(recovered: &super::recovery::Recovered) {
+    if let Some(context) = refusal_recovered_context(recovered) {
+        plx_telemetry::telemetry::playback::report_refusal_recovered(context);
+    }
+}
+
+/// The wire's closed classes of a rescue, or `None` for a refusal the report does not name (a
+/// source failure is the demuxer's, never the television's refusal).
+fn refusal_recovered_context(recovered: &super::recovery::Recovered) -> Option<RefusalRecoveredContext> {
+    use super::recovery::{LoadRefusal, Rung};
+    use plx_platform::devcaps::Facet;
+    let error = match recovered.refusal {
+        LoadRefusal::Refused { num } => RefusalError::Number(num),
+        LoadRefusal::TimedOut => RefusalError::Timeout,
+        LoadRefusal::Stalled => RefusalError::Stall,
+        LoadRefusal::SourceFailed => return None,
+    };
+    // The codec class and, for audio, the channel bucket: the facet's raster and exact layout stay
+    // in the machine.
+    let (stream, channels) = match &recovered.facet {
+        Some(Facet::Audio { codec, channels }) => (
+            RefusedStream::Audio(AudioCodecClass::from_name(codec)),
+            ChannelBucket::from_channels(*channels),
+        ),
+        Some(Facet::Video { codec, .. }) => (RefusedStream::Video(VideoCodecClass::from_name(codec)), ChannelBucket::Unknown),
+        None => (RefusedStream::None, ChannelBucket::Unknown),
+    };
+    let rung = match recovered.rung {
+        Rung::Facet => RecoveryRung::Facet,
+        Rung::Both => RecoveryRung::Hls,
+        Rung::Encode => RecoveryRung::Encode,
+        Rung::Rollback => RecoveryRung::Rollback,
+    };
+    Some(RefusalRecoveredContext { stream, channels, error, rung })
+}
+
 /// The delivery of the route this playback INSTALLED. A refused or unresolved plan installs none
 /// (`tsession` stays empty and `cur_contract` describes an attempt that never ran), so reading the
 /// route would label it `Direct` — the tag Sentry PLX-NATIVE-14 showed on every `decision_refused`
@@ -440,6 +487,19 @@ pub fn note_quality_selected_for(generation: u32, q: crate::route::Quality) {
         TraceEvent::QualitySelected {
             selected: selected_quality_class(q),
         },
+    );
+}
+
+/// The facet rung's replacement route is the playback's delivery now: its class, the reason
+/// [`DeliveryReason::RefusalRecovery`], and the app's own recovery as the open's origin (which also
+/// notes the attempt, so a failure of the converted open does not read as the first fresh one).
+pub fn note_refusal_recovery_delivery(ps: &crate::route::PlaybackSession) {
+    note_delivery_requested_for(
+        crate::route::playback_trace_generation(),
+        delivery_class(ps),
+        QualityClass::Unknown,
+        DeliveryReason::RefusalRecovery,
+        AttemptOrigin::Recovery,
     );
 }
 
@@ -648,6 +708,18 @@ pub fn error_context_for_test(ps: &crate::route::PlaybackSession) -> PlaybackErr
 #[cfg(any(test, feature = "test-support"))]
 pub fn note_presented_for_test(ps: &crate::route::PlaybackSession) {
     push_trace(presented_event(ps));
+}
+
+/// The reason and the route class of the newest `DeliveryRequested` step of the playback trace (the
+/// breadcrumb a noted route change leaves), `None` when there is none. The trace records only while
+/// error reporting is consented, so a test installs that consent first.
+#[cfg(any(test, feature = "test-support"))]
+pub fn last_delivery_requested_for_test() -> Option<(DeliveryReason, DeliveryClass)> {
+    let trace = super::SHARED.playback_trace.lock().unwrap_or_else(|e| e.into_inner());
+    trace.snapshot().iter().rev().find_map(|step| match step.event {
+        TraceEvent::DeliveryRequested { reason, delivery, .. } => Some((reason, delivery)),
+        _ => None,
+    })
 }
 
 /// Put the per-attempt latches back the way an idle player has them, after a route test that
@@ -1938,6 +2010,178 @@ mod tests {
         clear_error_trace();
         consent::install(previous.unwrap_or_default());
         out
+    }
+
+    // ---- the `refusal_recovered` event (S6, #1075) ------------------------------------------
+
+    use super::super::recovery::{
+        Lane, Lanes, LoadRefusal, OpenFacts, OpenRecovery, Recovered, RecoveryEffect, RecoveryEvent, Rung,
+        StreamAudio,
+    };
+    use plx_platform::devcaps::{Caps, Facet};
+
+    /// A set whose table lists DTS at six channels, so refusing it narrows the attempt.
+    fn dts_set() -> std::sync::Arc<Caps> {
+        std::sync::Arc::new(Caps {
+            audio: "aac,ac3,eac3,dts".into(),
+            audio_channels: [("dts".into(), 6)].into(),
+            ..Caps::assumed()
+        })
+    }
+
+    /// What the pump does with a machine's effects, reduced to the one that reports: every
+    /// `ReportRecovered` goes to [`refusal_recovered`], as `drive_open_recovery` does.
+    fn drive_machine(m: &mut OpenRecovery, events: impl IntoIterator<Item = RecoveryEvent>) {
+        for ev in events {
+            let mut fx = Vec::new();
+            m.step(&ev, &mut fx);
+            for effect in fx {
+                if let RecoveryEffect::ReportRecovered(r) = effect {
+                    refusal_recovered(&r);
+                }
+            }
+        }
+    }
+
+    fn dts_refusal() -> RecoveryEvent {
+        RecoveryEvent::Refused {
+            refusal: LoadRefusal::Refused { num: 601 },
+            facts: OpenFacts {
+                no_frames: true,
+                audio: Some(StreamAudio { codec: "dca".into(), channels: 6 }),
+                ..OpenFacts::default()
+            },
+        }
+    }
+
+    fn landed() -> RecoveryEvent {
+        RecoveryEvent::FlightLanded { lanes: Some(Lanes { video: Lane::Copy, audio: Lane::Transcode }) }
+    }
+
+    /// **Consent on: exactly one event per rescued play, with the closed fields and nothing else.**
+    #[test]
+    fn a_rescued_play_sends_one_event_with_the_closed_fields_when_consented() {
+        let _g = plx_base::testlock::serial();
+        consented(|| {
+            let _ = plx_telemetry::telemetry::playback::take_recovered_for_test();
+            let mut m = OpenRecovery::new(dts_set());
+            drive_machine(
+                &mut m,
+                [
+                    dts_refusal(),
+                    landed(),
+                    RecoveryEvent::LoadStarted,
+                    RecoveryEvent::FirstPicture,
+                    // Frames after the first picture say the same thing again, as the pump does.
+                    RecoveryEvent::FirstPicture,
+                    RecoveryEvent::FirstPicture,
+                ],
+            );
+            let sent = plx_telemetry::telemetry::playback::take_recovered_for_test();
+            assert_eq!(sent.len(), 1, "one event for the play: {sent:?}");
+            let v = &sent[0];
+            assert_eq!(v["fingerprint"], serde_json::json!(["refusal_recovered", "facet", "dts"]));
+            assert_eq!(
+                v["contexts"]["refusal_recovered"],
+                serde_json::json!({
+                    "type": "refusal_recovered",
+                    "refused_stream": "audio",
+                    "refused_codec": "dts",
+                    "refused_channels": "3-6",
+                    "pipeline_error": "601",
+                    "recovery_rung": "facet",
+                })
+            );
+            assert!(v.get("breadcrumbs").is_none(), "no trace rides it");
+        });
+    }
+
+    /// **Consent off: nothing is sent**, and nothing is built.
+    #[test]
+    fn a_rescued_play_sends_nothing_without_the_error_report_consent() {
+        use plx_telemetry::telemetry::consent::{self, Consent};
+        let _g = plx_base::testlock::serial();
+        let previous = consent::current();
+        let _ = plx_telemetry::telemetry::playback::take_recovered_for_test();
+        for consent_state in [Consent::default(), {
+            let mut c = Consent::default();
+            c.usage = true;
+            c.asked_version = consent::POLICY_VERSION;
+            c
+        }] {
+            consent::install(consent_state);
+            let mut m = OpenRecovery::new(dts_set());
+            drive_machine(&mut m, [dts_refusal(), landed(), RecoveryEvent::LoadStarted, RecoveryEvent::FirstPicture]);
+            assert!(plx_telemetry::telemetry::playback::take_recovered_for_test().is_empty());
+        }
+        consent::install(previous.unwrap_or_default());
+    }
+
+    /// **A play with no refusal sends nothing** (consent on), and neither does a refusal the
+    /// ladder ended on the read-out.
+    #[test]
+    fn a_play_with_no_refusal_or_no_rescue_sends_nothing() {
+        let _g = plx_base::testlock::serial();
+        consented(|| {
+            let _ = plx_telemetry::telemetry::playback::take_recovered_for_test();
+            let mut m = OpenRecovery::new(dts_set());
+            drive_machine(&mut m, [RecoveryEvent::FirstPicture, RecoveryEvent::FirstPicture]);
+            let mut m = OpenRecovery::new(dts_set());
+            // Refused, converted, refused again: the read-out, and no picture follows.
+            drive_machine(&mut m, [dts_refusal(), landed(), RecoveryEvent::LoadStarted, dts_refusal()]);
+            assert!(plx_telemetry::telemetry::playback::take_recovered_for_test().is_empty());
+        });
+    }
+
+    /// The machine's vocabulary onto the wire's closed classes, at every rung and refusal.
+    #[test]
+    fn a_recovery_maps_onto_the_closed_classes() {
+        let map = |rung, refusal, facet| refusal_recovered_context(&Recovered { rung, refusal, facet });
+        let dts6 = || Some(Facet::Audio { codec: "dts".into(), channels: 6 });
+        let h264 = || Some(Facet::Video { codec: "h264".into(), width: 3840, height: 2160 });
+        let r601 = LoadRefusal::Refused { num: 601 };
+        assert_eq!(
+            map(Rung::Facet, r601, dts6()),
+            Some(RefusalRecoveredContext {
+                stream: RefusedStream::Audio(AudioCodecClass::Dts),
+                channels: ChannelBucket::Surround,
+                error: RefusalError::Number(601),
+                rung: RecoveryRung::Facet,
+            })
+        );
+        // A video carries no channel count, and its raster never leaves the machine.
+        assert_eq!(
+            map(Rung::Both, r601, h264()),
+            Some(RefusalRecoveredContext {
+                stream: RefusedStream::Video(VideoCodecClass::H264),
+                channels: ChannelBucket::Unknown,
+                error: RefusalError::Number(601),
+                rung: RecoveryRung::Hls,
+            })
+        );
+        // The manual both-facets encode is its own class: it is not the HLS contingency.
+        assert_eq!(
+            map(Rung::Encode, r601, h264()),
+            Some(RefusalRecoveredContext {
+                stream: RefusedStream::Video(VideoCodecClass::H264),
+                channels: ChannelBucket::Unknown,
+                error: RefusalError::Number(601),
+                rung: RecoveryRung::Encode,
+            })
+        );
+        assert_eq!(
+            map(Rung::Rollback, LoadRefusal::TimedOut, None),
+            Some(RefusalRecoveredContext {
+                stream: RefusedStream::None,
+                channels: ChannelBucket::Unknown,
+                error: RefusalError::Timeout,
+                rung: RecoveryRung::Rollback,
+            })
+        );
+        assert_eq!(map(Rung::Facet, LoadRefusal::Stalled, dts6()).map(|c| c.error), Some(RefusalError::Stall));
+        assert_eq!(map(Rung::Facet, LoadRefusal::SourceFailed, None), None, "the demuxer's failure is not named");
+        let unknown = Some(Facet::Audio { codec: "dts".into(), channels: 0 });
+        assert_eq!(map(Rung::Facet, r601, unknown).map(|c| c.channels), Some(ChannelBucket::Unknown));
     }
 
     /// Present `state` to the per-frame observer, as the main loop does once a frame.

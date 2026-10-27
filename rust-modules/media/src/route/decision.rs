@@ -124,6 +124,12 @@ pub struct PlaybackSession {
     /// derives `Error` (cause `load_timeout`) from it. Cleared by the next start attempt and,
     /// like [`jail_load_blocked`](Self::jail_load_blocked), with the playback verdict.
     pub native_start_refused: bool,
+    /// The cause an Engine ended with when it failed for good and was released while the
+    /// read-out stands (`player::release_failed_engine`). The Engine, its pipeline and the video
+    /// plane are gone, so the worker signals the read-out used to be derived from are gone with
+    /// them; this keeps the cause. `player::state` derives `Error` from it, like the refusals
+    /// above. Cleared with them, and by the next playback request.
+    engine_failure: Option<crate::player::RuntimeFailure>,
     /// Read-only publication of Player.repair for the HUD. Never authorizes a resource effect.
     pub repair_status: plx_platform::tv::sandbox::State,
     /// The request which produced this attempt, retained for terminal Retry / Choose quality.
@@ -174,6 +180,28 @@ pub struct PlaybackSession {
     /// the pump for a fresh transcode when the answer actually changed). Nothing measures a link
     /// or moves a rung on its own — the adaptive switch is not here.
     cur_contract: plx_plex::plex::EncodeContract,
+    /// **This request's failed-open ladder, which also owns the one capability value the attempt
+    /// plans and profiles from** ([`OpenRecovery`], [`attempt_caps`](Self::attempt_caps)). Created
+    /// by [`begin_attempt`](Self::begin_attempt) with the value the app's play start derived ONCE
+    /// (`devcaps::start_caps`: the write-once boot snapshot less the install's stored refusals) and
+    /// handed to the `request_play*` entry points; a retry keeps it, and a refusal
+    /// of natively fed audio that the install just learned narrows it inside the machine
+    /// (`Caps::without`, for EVERY learned refusal, whichever recovery then wins: the Original
+    /// trial's rollback shadows the conversion, and the rebase it flies, a later retry and a
+    /// quality change must still plan from the narrowed value). Never read again from the
+    /// process-wide `devcaps::caps()`: the route's decisions (the direct-play gates, the audio pick,
+    /// Auto's catalog, the remux predictions) and the profile string PMS reads
+    /// (`plex::TranscodeSpec::caps`) are all derived from this value, so the plan and the profile
+    /// cannot disagree, and "excluded for this attempt" has somewhere to live that is not a global
+    /// written before anything is proved. A new request replaces the whole value: what this one
+    /// narrowed reaches the next only as a stored row, once the learner's write has landed, and the
+    /// next play's start edge derives its value from the record.
+    ///
+    /// `None` only before the first attempt (the const [`IDLE`](Self::IDLE) cannot hold an `Arc`):
+    /// [`attempt_caps`](Self::attempt_caps) then answers [`plx_platform::devcaps::Caps::assumed`], the
+    /// answer `devcaps::caps()` itself gives before the probe. Nothing plans from a session that has
+    /// not begun an attempt, so that answer is a placeholder, not a policy.
+    recovery: Option<crate::player::recovery::OpenRecovery>,
     /// What the last successful transcode decision actually did with the Plex Pass audio DSP
     /// (issue #266) — distinct from `cur_contract.audio`, which is what the accepted decision
     /// carried. Installed by `apply_plan` from `Plan::enhancement`; reset to `Off` by a new
@@ -502,6 +530,7 @@ impl PlaybackSession {
         direct_play_mode: DirectPlayMode::Auto,
         jail_load_blocked: false,
         native_start_refused: false,
+        engine_failure: None,
         repair_status: plx_platform::tv::sandbox::State::Idle,
         request: None,
         requested_resume_ns: 0,
@@ -510,6 +539,7 @@ impl PlaybackSession {
         play_verdict: None,
         resolve_failed: false,
         cur_contract: plx_plex::plex::EncodeContract::original(false, plx_plex::plex::AudioEnhancements::NONE),
+        recovery: None,
         cur_enhancement: EnhancementOutcome::Off,
         cur_src: (0, 0, 0),
         cur_transport_kbps: 0,
@@ -588,6 +618,7 @@ impl PlaybackSession {
             direct_play_mode,
             jail_load_blocked,
             native_start_refused,
+            engine_failure,
             repair_status,
             request,
             requested_resume_ns,
@@ -596,6 +627,7 @@ impl PlaybackSession {
             play_verdict,
             resolve_failed,
             cur_contract,
+            recovery,
             cur_enhancement,
             cur_src,
             cur_transport_kbps,
@@ -656,6 +688,7 @@ impl PlaybackSession {
             direct_play_mode: *direct_play_mode,
             jail_load_blocked: *jail_load_blocked,
             native_start_refused: *native_start_refused,
+            engine_failure: *engine_failure,
             repair_status: *repair_status,
             request: request.clone(),
             requested_resume_ns: *requested_resume_ns,
@@ -664,6 +697,7 @@ impl PlaybackSession {
             play_verdict: play_verdict.clone(),
             resolve_failed: *resolve_failed,
             cur_contract: *cur_contract,
+            recovery: recovery.clone(),
             cur_enhancement: *cur_enhancement,
             cur_src: *cur_src,
             cur_transport_kbps: *cur_transport_kbps,
@@ -730,6 +764,28 @@ impl Default for PlaybackSession {
 }
 
 impl PlaybackSession {
+    /// The capability value the current attempt plans and profiles from (the
+    /// [`recovery`](Self::recovery) machine's [`attempt`](crate::player::recovery::OpenRecovery::attempt)).
+    /// A cheap `Arc` clone, so a worker or a flight can own it.
+    fn attempt_caps(&self) -> std::sync::Arc<plx_platform::devcaps::Caps> {
+        self.recovery.as_ref().map_or_else(plx_platform::devcaps::assumed_shared, |r| r.attempt())
+    }
+
+    /// Begin an attempt on `caps`: the value the app's play start derived (`devcaps::start_caps`),
+    /// handed to [`request_play_with_queue`] (the one caller in production). The request's ladder
+    /// starts from it; the previous request's, and whatever it had narrowed, is dropped.
+    pub(super) fn begin_attempt(&mut self, caps: std::sync::Arc<plx_platform::devcaps::Caps>) {
+        self.recovery = Some(crate::player::recovery::OpenRecovery::new(caps));
+    }
+
+    /// The request's failed-open ladder, for the pump to step. A session that has not begun an
+    /// attempt gets the same placeholder value [`attempt_caps`](Self::attempt_caps) answers, so a
+    /// refusal narrows what it would have planned from.
+    pub(crate) fn open_recovery(&mut self) -> &mut crate::player::recovery::OpenRecovery {
+        self.recovery
+            .get_or_insert_with(|| crate::player::recovery::OpenRecovery::new(plx_platform::devcaps::assumed_shared()))
+    }
+
     /// **The frame tick, written once per iteration by [`crate::player::machine::Player::set_now`]
     /// and by nothing else** (spec §4.1). See the [`now_ms`](Self::now_ms) field.
     pub fn set_now(&mut self, now_ms: u32) {
@@ -3085,6 +3141,9 @@ pub struct HlsAbrControl {
     audio_stream_id: i64,
     subtitle_stream_id: i64,
     seconds_per_segment: u8,
+    /// The attempt's capability value ([`PlaybackSession::attempt_caps`]), captured with the rest: every
+    /// replacement encoder this worker primes carries the profile built from it.
+    caps: std::sync::Arc<plx_platform::devcaps::Caps>,
     pub initial_rung: crate::abr::Rung,
     /// Response facts carried with the active physical route across seek/reload. They seed the
     /// worker's response state but never alter the request actuator above.
@@ -3403,6 +3462,7 @@ impl HlsAbrControl {
         // cannot prime a replacement while it shares the old X-Plex id: the first encoder dies
         // before the candidate produces segment zero. Couple both wire fields per encoder.
         let spec = transcode_spec(
+            &self.caps,
             &self.rating_key,
             self.media_index,
             &encoder_session,
@@ -3529,10 +3589,10 @@ impl HlsAbrControl {
 /// what raster the source actually has. Neither is a preference and neither belongs in a utility
 /// weight — a candidate outside these bounds is removed before anything is scored.
 fn auto_catalog(ps: &PlaybackSession) -> crate::abr::HlsActuatorCatalog {
-    let caps = plx_platform::devcaps::caps();
+    let caps = ps.attempt_caps();
     let device = (
-        u16::try_from(caps.hevc_max.0).unwrap_or(u16::MAX),
-        u16::try_from(caps.hevc_max.1).unwrap_or(u16::MAX),
+        u16::try_from(caps.raster_bound("h264").0).unwrap_or(u16::MAX),
+        u16::try_from(caps.raster_bound("h264").1).unwrap_or(u16::MAX),
     );
     let (_, width, height) = ps.cur_src;
     let source = (
@@ -3645,6 +3705,7 @@ pub fn hls_abr_control(ps: &PlaybackSession) -> Option<(HlsAbrControl, WorkerTic
             audio_stream_id: cur_audio_sid(ps),
             subtitle_stream_id: cur_sub_sid(ps),
             seconds_per_segment,
+            caps: ps.attempt_caps(),
             initial_rung: live
                 .as_ref()
                 .map(|(_, hls)| hls.rung)
@@ -3975,8 +4036,9 @@ fn dispatch_rebase_recovery(
     }
 }
 
-/// The frame-thread half of the unopened-source fallback: reuse the exact contingency
-/// [`crate::abr::bootstrap`] chose while it still owned the evidence.
+/// The frame-thread half of the unopened-source fallback: reuse the contingency
+/// [`crate::abr::bootstrap`] chose while it still owned the evidence, held to the attempt's live
+/// catalog ([`crate::abr::original_open_fallback_rung`]).
 ///
 /// An HTTP 4xx/5xx, connect refusal or demux open error before the first body byte is not a
 /// zero-throughput observation. For Remote the rung came from the completed source probe; for
@@ -4033,6 +4095,77 @@ pub fn dispatch_unopened_auto_hls(ps: &mut PlaybackSession, offset_secs: i64) ->
         None,
         ClaimWork::AutoHls(Box::new(plan)),
         RetranscodeFallback::RejectWith(AUTO_HLS_REJECTED),
+    ) {
+        RecoveryDispatch::Flying { serial: ticket.serial }
+    } else {
+        let _ = reject_route_start_preparation(ticket);
+        RecoveryDispatch::Refused
+    }
+}
+
+/// The line a refused conversion settles with (never logged as another recovery's).
+pub(super) const REFUSAL_CONVERSION_REJECTED: &str = "the server could not convert the refused stream";
+
+/// What the refusal-conversion flight asks the server to do with the VIDEO.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VideoLane {
+    /// Today's route as it is planned ([`retranscode_contract`]): an Original remux keeps copying
+    /// the video and converts only the audio the attempt no longer offers.
+    AsPlanned,
+    /// An encode with no video copy ([`video_encode_contract`]): the facet rung of a refused video,
+    /// whose raster the attempt no longer offers, so the server must produce a smaller one.
+    Encode,
+    /// An encode with no video copy for the manual both-facets rung ([`video_encode_contract`]): the
+    /// audio the attempt no longer offers is converted and the video is encoded. The 1080p clamp
+    /// applies only when the attempt lowered a video raster; a refusal with no raster to lower (a
+    /// frame rate) keeps the route's own ceiling.
+    Both,
+}
+
+/// Start the flight that replaces a route whose audio or video the pipeline refused before its
+/// Engine's first picture (`type=18` of any number, or the stall watchdog; a reload after the
+/// request's first picture starts such an Engine too): the viewer's track plays again with the
+/// server converting that stream ([`VideoLane`] says how the video is asked for: copied as planned
+/// for a refused audio, encoded under the 1080p ceiling for a refused video, encoded for the
+/// both-facets rung). The open-recovery ladder's facet rung and manual both-facets rung
+/// ([`crate::player::recovery::OpenRecovery`], `ConvertFacet`, `ConvertBoth`) have **already narrowed
+/// the playing attempt** to `start` less the suspect stream ([`crate::player::recovery::suspect`], `Caps::without`)
+/// when it entered the rung, so the value the plan and the profile read no longer names that stream:
+/// [`VideoLane::AsPlanned`] rebuilds today's route ([`retranscode_contract`], the contract a track
+/// pick that the TV cannot decode asks for) and the audio comes back converted, [`VideoLane::Encode`]
+/// and [`VideoLane::Both`] ask for [`video_encode_contract`], and every seek and track pick after the landing plans from the
+/// same narrowed value. The install pref's write of a refused native audio (or of a counted proof) is
+/// the machine's separate `ConfirmRefusal`, persistence only. Plan on the frame thread, PMS on a worker
+/// ([`try_retranscode`]), install at the landing ([`install_recovery_landing`]).
+/// [`RecoveryDispatch::Refused`] / [`RecoveryVerdict::Refused`] leave the failure the pump held back
+/// (a forced direct play, which the viewer asked not to convert, is one).
+pub fn dispatch_refusal_conversion(ps: &mut PlaybackSession, offset_secs: i64, video: VideoLane) -> RecoveryDispatch {
+    let expected = worker_ticket();
+    if !rebuild_precheck(ps, &expected) {
+        return RecoveryDispatch::Refused;
+    }
+    let contract = match video {
+        VideoLane::AsPlanned => retranscode_contract(ps),
+        VideoLane::Encode => video_encode_contract(ps, true),
+        // Only `Caps::without(Video)` writes a ceiling, so one in the attempt means a video raster
+        // was lowered for this request (the facet rung's, or this rung's own).
+        VideoLane::Both => video_encode_contract(ps, !ps.attempt_caps().video_ceiling.is_empty()),
+    };
+    let Some(inputs) = prepare_retranscode_inputs(ps, &expected, offset_secs) else {
+        return RecoveryDispatch::Refused;
+    };
+    let Some(ticket) = begin_recovery_flight_start() else {
+        return RecoveryDispatch::Refused;
+    };
+    let offset_ns = offset_secs * 1_000_000_000;
+    begin_recovery_flight(ticket.serial, offset_ns);
+    if spawn_flight(
+        FlightOwner::Recovery(ticket),
+        offset_ns,
+        offset_ns,
+        Some(inputs),
+        ClaimWork::Encode(contract),
+        RetranscodeFallback::RejectWith(REFUSAL_CONVERSION_REJECTED),
     ) {
         RecoveryDispatch::Flying { serial: ticket.serial }
     } else {
@@ -4307,9 +4440,8 @@ pub(super) fn install_auto_hls_outcome(
         reason,
         match reason {
             // The source that never opened is replaced by HLS: the app's own recovery.
-            crate::player::report::DeliveryReason::OriginalOpenRollback => {
-                crate::player::report::AttemptOrigin::Recovery
-            }
+            crate::player::report::DeliveryReason::OriginalOpenRollback
+            | crate::player::report::DeliveryReason::RefusalRecovery => crate::player::report::AttemptOrigin::Recovery,
             _ => crate::player::report::AttemptOrigin::AutoHandoff,
         },
     );
@@ -4431,6 +4563,9 @@ pub(super) struct OriginalRecoveryPlan {
     /// with no enhancement params and survives a refused enhancement.
     subtitle_burn: bool,
     pub(super) client: Option<&'static plx_plex::plex::Client>,
+    /// The attempt's capability value ([`PlaybackSession::attempt_caps`]) the replacement remux's profile
+    /// and grading are derived from.
+    caps: std::sync::Arc<plx_platform::devcaps::Caps>,
     sid: ServerId,
     rk: String,
     media_index: usize,
@@ -4549,6 +4684,7 @@ fn plan_original_recovery(
         burn: matches!(route, Some(EnhancementRoute::Burn)),
         subtitle_burn,
         client: cur_client(ps),
+        caps: ps.attempt_caps(),
         sid: cur_sid(ps),
         rk: cur_rk(ps),
         media_index: cur_media_index(ps),
@@ -5278,6 +5414,20 @@ pub fn play_refused(ps: &PlaybackSession) -> bool {
 pub fn play_resolution_failed(ps: &PlaybackSession) -> bool {
     ps.resolve_failed
 }
+/// The cause a failed Engine left behind when it was released under the standing read-out, if one
+/// was ([`PlaybackSession::engine_failure`]).
+pub(crate) fn engine_failure(ps: &PlaybackSession) -> Option<crate::player::RuntimeFailure> {
+    ps.engine_failure
+}
+/// Record that the Engine failed for good and is about to be released: its `cause`, and the
+/// position a retry resumes from (`resume_ns`, kept in the unpresented-resume slot a retry already
+/// reads, since the playhead goes with the Engine).
+pub(crate) fn note_engine_failure(ps: &mut PlaybackSession, cause: crate::player::RuntimeFailure, resume_ns: i64) {
+    { let s = &mut *ps; {
+        s.engine_failure = Some(cause);
+        s.requested_resume_ns = s.requested_resume_ns.max(resume_ns.max(0));
+    } }
+}
 /// The refusal's own sentence for the read-out to quote — `None` when the server did not refuse,
 /// `Some("")` when it refused without saying why. MAIN THREAD (see [`PlaybackSession::play_verdict`]).
 ///
@@ -5311,6 +5461,7 @@ fn clear_play_verdict(ps: &mut PlaybackSession) {
         s.play_verdict = None;
         s.jail_load_blocked = false;
         s.native_start_refused = false;
+        s.engine_failure = None;
         s.resolve_failed = false;
         s.requested_resume_ns = 0;
     } }
@@ -5482,6 +5633,42 @@ pub fn stream_vcodec(ps: &PlaybackSession) -> String {
 pub fn stream_acodec(ps: &PlaybackSession) -> String {
     ps.stream_acodec.clone()
 }
+/// The carried audio track's channel count when it is the codec the stream declares, else 0.
+/// An Opus Load needs it (`opusInfo`); a native track switch moves only `stream_acodec`, so a
+/// switch between two Opus tracks of different widths still reads the first one's count.
+pub fn stream_achannels(ps: &PlaybackSession) -> i64 {
+    ps.cur_audio
+        .as_ref()
+        .filter(|a| a.codec.eq_ignore_ascii_case(&ps.stream_acodec))
+        .map_or(0, |a| a.channels)
+}
+/// What the pipeline was fed, for the failed-open ladder ([`crate::player::recovery::OpenFacts`]):
+/// the stream's audio codec and the carried track's channel count ([`stream_achannels`]: 0 when
+/// that track is not the declared codec). `None` while no audio codec is declared. Beside
+/// [`stream_achannels`] so the session keeps its fields private.
+pub fn stream_audio(ps: &PlaybackSession) -> Option<crate::player::recovery::StreamAudio> {
+    let codec = stream_acodec(ps);
+    (!codec.is_empty()).then(|| crate::player::recovery::StreamAudio {
+        codec,
+        channels: u32::try_from(stream_achannels(ps)).unwrap_or(0),
+    })
+}
+/// The SOURCE's video, when the pipeline was fed it whole, for the failed-open ladder
+/// ([`crate::player::recovery::OpenFacts`]): a direct play, or a server remux that copies it
+/// (the rule [`video_copy_fps`] states). `None` for an encoded video (a re-encode flavour, even when
+/// PMS actually copied: the session cannot tell, and the ladder is then conservative), while no
+/// video codec is declared, and for a raster the server never measured (the width or height is 0,
+/// which names no facet). Beside [`stream_audio`] so the session keeps its fields private.
+pub fn stream_video(ps: &PlaybackSession) -> Option<crate::player::recovery::StreamVideo> {
+    let fed_whole = !is_transcoding(ps) || (ps.cur_contract.remux && !ps.cur_contract.no_video_copy);
+    let codec = stream_vcodec(ps);
+    let (_, width, height) = ps.cur_src;
+    (fed_whole && !codec.is_empty()).then(|| crate::player::recovery::StreamVideo {
+        codec: codec.to_ascii_lowercase(),
+        width: u32::try_from(width).unwrap_or(0),
+        height: u32::try_from(height).unwrap_or(0),
+    })
+}
 /// direct-play source video fps for the Load esInfo (0 = unknown/transcode → omit)
 pub fn stream_fps(ps: &PlaybackSession) -> f64 {
     ps.stream_fps
@@ -5524,7 +5711,7 @@ pub fn stream_immersive(ps: &PlaybackSession) -> bool {
 }
 
 /// The PCM a Load must declare for audio the app decodes itself
-/// (`devcaps::PCM_AUDIO_CODECS` — FLAC).
+/// (`devcaps::PCM_AUDIO_CODECS` — FLAC, ALAC, LPCM).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PcmFormat {
     pub sample_rate: u32,
@@ -5562,7 +5749,7 @@ pub(crate) fn pcm_format_of(audio: Option<&CarriedAudio>, codec: &str) -> Result
     let sample_rate = u32::try_from(a.sample_rate).ok().filter(|r| rates.contains(r));
     let Some(sample_rate) = sample_rate else {
         return Err(format!(
-            "{codec}: sampling rate {} is not one the PCM input plays at its own speed",
+            "{codec}: sampling rate {} is not one the PCM input's table names",
             a.sample_rate
         ));
     };
@@ -5589,6 +5776,24 @@ mod pcm_format_tests {
             Ok(PcmFormat { sample_rate: 44_100, bits: 32, channels: 1 }));
         // an unstated depth is fed wide: never truncate a sample nobody measured
         assert_eq!(pcm_format_of(Some(&flac(2, 48_000, 0)), "flac").unwrap().bits, 32);
+    }
+
+    /// ALAC and LPCM declare the same PCM shape, from their own track facts; the carried track's
+    /// spelling (`pcm_s24le`) need not equal the codec id (`pcm`), only canonicalise to it.
+    #[test]
+    fn alac_and_lpcm_declare_the_same_shape_as_flac() {
+        let track = |codec: &str, channels, rate, bits| CarriedAudio { codec: codec.into(), ..flac(channels, rate, bits) };
+        assert_eq!(pcm_format_of(Some(&track("alac", 2, 44_100, 16)), "alac"),
+            Ok(PcmFormat { sample_rate: 44_100, bits: 16, channels: 2 }));
+        assert_eq!(pcm_format_of(Some(&track("alac", 2, 48_000, 24)), "alac"),
+            Ok(PcmFormat { sample_rate: 48_000, bits: 32, channels: 2 }));
+        assert_eq!(pcm_format_of(Some(&track("pcm_s24le", 2, 48_000, 24)), "pcm"),
+            Ok(PcmFormat { sample_rate: 48_000, bits: 32, channels: 2 }));
+        assert_eq!(pcm_format_of(Some(&track("pcm_s16be", 2, 44_100, 16)), "pcm"),
+            Ok(PcmFormat { sample_rate: 44_100, bits: 16, channels: 2 }));
+        assert!(pcm_format_of(Some(&track("alac", 6, 48_000, 16)), "alac").is_err());
+        assert!(pcm_format_of(Some(&track("pcm_s24le", 2, 96_000, 24)), "pcm").is_err());
+        assert!(pcm_format_of(Some(&track("flac", 2, 48_000, 16)), "pcm").is_err(), "a track of another codec");
     }
 
     #[test]
@@ -5643,13 +5848,18 @@ pub fn set_stream_codecs(ps: &mut PlaybackSession, vc: &str, ac: &str) {
 pub fn sink_max_raster(ps: &PlaybackSession) -> (u16, u16) {
     let s = &*ps;
     let clamp = |v: i64| u16::try_from(v).unwrap_or(u16::MAX);
-    let source = (clamp(s.cur_src.1), clamp(s.cur_src.2));
     // 0 on either side means "nobody said"; the other side's number wins.
     let axis = |src: u16, cap: i64| match (src, clamp(cap)) {
         (0, c) => c,
         (s, 0) => s,
         (s, c) => s.min(c),
     };
+    // The source, held to the ceiling a recovery put on this stream's codec when it took a refused
+    // video out of the attempt ([`plx_platform::devcaps::Facet::Video`]): a converted H.264 1080
+    // stream must not declare the 4K60 envelope of the file it came from. Only the ceiling entry,
+    // not `raster_bound`, so a play with no ceiling declares what it always did.
+    let (ceil_w, ceil_h) = ps.attempt_caps().video_ceiling.get(s.stream_vcodec.as_str()).copied().unwrap_or((0, 0));
+    let source = (axis(clamp(s.cur_src.1), i64::from(ceil_w)), axis(clamp(s.cur_src.2), i64::from(ceil_h)));
     let capped = || match s.cur_contract.ceiling {
         Some(c) => (axis(source.0, c.max_w), axis(source.1, c.max_h)),
         None => source,
@@ -6414,6 +6624,9 @@ pub enum RebaseRefusal {
 pub(super) struct RebasePlan {
     pub(super) owner: RebaseFor,
     client: &'static plx_plex::plex::Client,
+    /// The attempt's capability value ([`PlaybackSession::attempt_caps`]): the rebuilt transcode query
+    /// carries the profile built from the same value the route was planned on.
+    caps: std::sync::Arc<plx_platform::devcaps::Caps>,
     rk: String,
     media_index: usize,
     /// The route generation the rebuild was planned against. The commit is gated on it.
@@ -6592,6 +6805,7 @@ pub(super) fn plan_rebase(
     Ok(RebasePlan {
         owner,
         client,
+        caps: ps.attempt_caps(),
         rk,
         media_index: cur_media_index(ps),
         expected,
@@ -6614,6 +6828,7 @@ pub(super) fn plan_rebase(
 /// published, so only the uncommitted replacement is cleaned up.
 pub(super) fn run_rebase(off: &plx_base::task::OffFrame, plan: &RebasePlan) -> RebaseOutcome {
     let sp = transcode_spec(
+        &plan.caps,
         &plan.rk,
         plan.media_index,
         &plan.replacement,
@@ -6845,20 +7060,20 @@ pub fn forced_direct_play(ps: &PlaybackSession) -> bool {
 }
 
 pub fn audio_track_direct_plays(ps: &PlaybackSession, codec: &str, channels: i64, sample_rate: i64) -> bool {
-    audio_direct_plays(ps.direct_play_mode, codec, channels, sample_rate)
+    audio_direct_plays_with(&ps.attempt_caps(), ps.direct_play_mode, codec, channels, sample_rate)
 }
 
 /// **Would the server convert this track's audio if it played?** The track menu's "converted by
-/// your server" mark: a track the TV cannot decode (`audio_direct_plays`, the same capability
-/// answer the planner and the profile use) plays through the server's remux or re-encode with its
-/// audio converted. Not under Forced Direct Play, where an unplayable track is refused instead of
-/// converted, so nothing is converted there. Reads the process-wide mode, like
-/// [`playback_preview`]: the menu's track form is built from the metadata view alone (it keeps no
-/// session), so it cannot read the `direct_play_mode` the session captured and
-/// `commit_audio_selection` uses; the two agree unless the setting changes mid-playback.
-pub fn audio_converted_by_server(codec: &str, channels: i64, sample_rate: i64) -> bool {
-    let mode = direct_play_mode();
-    mode != DirectPlayMode::Forced && !audio_direct_plays(mode, codec, channels, sample_rate)
+/// your server" mark: a track the TV cannot decode or load (`audio_direct_plays_with`: codec,
+/// channel and sample-rate limits, the same capability answer the planner and the profile use)
+/// plays through the server's remux or re-encode with its audio converted. Not under Forced Direct
+/// Play, where an unplayable track is refused instead of converted, so nothing is converted there.
+/// Reads the ATTEMPT (`ps`): the mode and the capability value this playback was requested with,
+/// the ones `commit_audio_selection` uses, so a combination the install has learned the pipeline
+/// refuses reads as converted, as the attempt converts it. A setting changed mid-playback moves the
+/// mark at the next request, not before.
+pub fn audio_converted_by_server(ps: &PlaybackSession, codec: &str, channels: i64, sample_rate: i64) -> bool {
+    ps.direct_play_mode != DirectPlayMode::Forced && !audio_track_direct_plays(ps, codec, channels, sample_rate)
 }
 
 /// Select a rung. MAIN THREAD (it writes the session).
@@ -7155,6 +7370,7 @@ pub(super) fn measure_remote_original(url: &str, source_kbps: i64) -> Option<cra
 pub(super) fn measure_remote_remux(
     off: &plx_base::task::OffFrame,
     client: &plx_plex::plex::Client,
+    caps: &plx_platform::devcaps::Caps,
     rk: &str,
     media_index: usize,
     session: &str,
@@ -7172,6 +7388,7 @@ pub(super) fn measure_remote_remux(
     // actually forces a re-encode when a subtitle is being burned — see its doc for why.
     let spec_for = |audio| {
         transcode_spec_carrying_burn(
+            caps,
             rk,
             media_index,
             session,
@@ -7236,13 +7453,14 @@ pub(super) struct MdeVerdict {
 /// an item on the server the caller resolved from this playback's captured `ServerId`.
 pub(super) fn server_decision(
     c: &plx_plex::plex::Client,
+    caps: &plx_platform::devcaps::Caps,
     rk: &str,
     media_index: usize,
     session: &str,
     audio_stream_id: i64,
     subtitle_stream_id: i64,
 ) -> Option<MdeVerdict> {
-    let mc = match c.mde_decision(rk, media_index, session, audio_stream_id, subtitle_stream_id) {
+    let mc = match c.mde_decision(rk, media_index, session, audio_stream_id, subtitle_stream_id, caps) {
         Some(mc) => mc,
         None => {
             // failed fetch OR unparseable (XML/truncated) body — no Original Part
@@ -7300,9 +7518,10 @@ fn mde_verdict(mc: &plx_plex::plex::MediaContainer) -> Option<MdeVerdict> {
 }
 
 pub(super) fn forced_server_decision(
-    c: &plx_plex::plex::Client, rk: &str, media_index: usize, session: &str, audio: i64, sub: i64,
+    c: &plx_plex::plex::Client, caps: &plx_platform::devcaps::Caps, rk: &str, media_index: usize, session: &str,
+    audio: i64, sub: i64,
 ) -> Option<MdeVerdict> {
-    mde_verdict(&c.mde_decision_forced(rk, media_index, session, audio, sub)?)
+    mde_verdict(&c.mde_decision_forced(rk, media_index, session, audio, sub, caps)?)
 }
 
 /// Select the audio + subtitle streams server-side for the current part before a
@@ -7508,11 +7727,10 @@ pub fn up_next(ps: &PlaybackSession) -> Option<&UpNext> {
 ///
 /// MAIN THREAD ONLY. Unlike [`up_next`] this lends the rows to a closure instead of handing out a
 /// `&'static`, and that is deliberate: `request_play` FREES this Vec as its first act, so a
-/// borrowed row used to start playback would be read after free — exactly the aliasing bug
-/// `request_play_up_next`'s by-value signature exists to make unrepresentable. A caller that wants
+/// borrowed row used to start playback would be read after free — the aliasing bug a
+/// [`request_play_queue_item`] caller avoids by owning the row it passes. A caller that wants
 /// to keep a row past the call clones it out (`with_queue(|q| q.get(i).cloned())`); the borrow
 /// checker cannot police a `&'static`, but it does police this.
-#[allow(dead_code)] // nothing reads the rows yet — the queue overlay that draws them is its own batch
 pub fn with_queue<R>(ps: &PlaybackSession, f: impl FnOnce(&[plx_plex::plex::QueueRow]) -> R) -> R {
     f(&ps.queue)
 }
@@ -7640,8 +7858,10 @@ impl ResolveEnv {
             version: None,
             quality: quality(),
             direct_play_mode: direct_play_mode(),
+            caps: ps.attempt_caps(),
             src_kbps: resolve_src_kbps(meta.current(), sid, rk),
             omit_queue_continuous: false,
+            queue_continuation: None,
             preview: false,
             audio_enhancements: crate::player::audio_enhancements(),
             pass: plx_plex::plex::serverinfo::subscription_of(sid),
@@ -7680,13 +7900,19 @@ fn playback_preview_with_capability(
         None => d.dovi.presentation_now(plx_data::metadata::dv_video_codec(vcodec)),
     };
     let mode = direct_play_mode();
+    // The facts row is a read-out of what the device would do NOW, with no attempt behind it, so it
+    // is a start edge of its own: the value a play started this moment would begin on (the boot
+    // snapshot less the install's stored refusals), read once here and passed down to every gate it
+    // asks. With no stored row in force it is the boot `Arc` itself: one `peek()`, no clone.
+    let caps = plx_platform::devcaps::start_caps(&plx_plex::plex::session::peek().applied_refusals());
     if mode == DirectPlayMode::Forced {
         return (!part.is_empty() && part_is_streamable(part)
-            && video_feed_supported(vcodec, presentation, plx_platform::devcaps::caps())
-            && d.audio.iter().any(|a| audio_direct_plays(mode, &a.codec, a.channels, a.sampling_rate)))
+            && video_feed_supported(vcodec, presentation, &caps)
+            && d.audio.iter().any(|a| audio_direct_plays_with(&caps, mode, &a.codec, a.channels, a.sampling_rate)))
             .then_some(Preview::DirectPlay);
     }
     let p = playback_preview_with_audio(
+        &caps,
         part,
         vcodec,
         d.width,
@@ -7898,6 +8124,7 @@ pub fn surface_sid() -> ServerId {
 pub fn request_play(
     ps: &mut PlaybackSession,
     meta: &mut plx_data::stores::metadata::MetadataStore,
+    caps: std::sync::Arc<plx_platform::devcaps::Caps>,
     sid: ServerId,
     rk: &str,
     part: &str,
@@ -7910,6 +8137,7 @@ pub fn request_play(
     request_play_inner(
         ps,
         meta,
+        caps,
         PlaybackRequest {
             sid,
             rk: rk.to_owned(),
@@ -7928,11 +8156,34 @@ pub fn request_play(
     )
 }
 
+/// Start an existing queue item without replacing the queue and losing its preceding rows.
+/// The continuation is captured before the common request transaction retires the outgoing queue.
+/// The HUD title is the row's show title, its own title when it has none (a movie, a clip).
+pub fn request_play_queue_item(
+    ps: &mut PlaybackSession,
+    meta: &mut plx_data::stores::metadata::MetadataStore,
+    caps: std::sync::Arc<plx_platform::devcaps::Caps>,
+    row: &plx_plex::plex::QueueRow,
+    ctx: &str,
+) -> bool {
+    let title = if row.show_title.is_empty() {
+        &row.title
+    } else {
+        &row.show_title
+    };
+    let queue = super::queue_navigation::QueueContinuation::capture(ps, row);
+    request_play_with_queue(ps, meta, caps, PlaybackRequest {
+        sid: row.sid, rk: row.rk.clone(), part: row.part.clone(), vcodec: row.vcodec.clone(),
+        acodec: row.acodec.clone(), title: title.clone(), ctx: ctx.into(), preview: false, version: None,
+    }, None, None, false, crate::player::report::AttemptOrigin::Fresh, queue)
+}
+
 /// Same resolve door as [`request_play`], flagged as a preview. Does not push a route. Resume is
 /// zero. The caller keeps the detail page mounted.
 pub fn request_preview(
     ps: &mut PlaybackSession,
     meta: &mut plx_data::stores::metadata::MetadataStore,
+    caps: std::sync::Arc<plx_platform::devcaps::Caps>,
     sid: ServerId,
     rk: &str,
     part: &str,
@@ -7943,6 +8194,7 @@ pub fn request_preview(
     request_play_inner(
         ps,
         meta,
+        caps,
         PlaybackRequest {
             sid,
             rk: rk.to_owned(),
@@ -7997,11 +8249,27 @@ fn request_env(
 fn request_play_inner(
     ps: &mut PlaybackSession,
     meta: &mut plx_data::stores::metadata::MetadataStore,
+    caps: std::sync::Arc<plx_platform::devcaps::Caps>,
     request: PlaybackRequest,
     retry: Option<RetryContext>,
     trace_generation: Option<u32>,
     drain_previous: bool,
     origin: crate::player::report::AttemptOrigin,
+) -> bool {
+    request_play_with_queue(ps, meta, caps, request, retry, trace_generation, drain_previous, origin, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn request_play_with_queue(
+    ps: &mut PlaybackSession,
+    meta: &mut plx_data::stores::metadata::MetadataStore,
+    caps: std::sync::Arc<plx_platform::devcaps::Caps>,
+    request: PlaybackRequest,
+    retry: Option<RetryContext>,
+    trace_generation: Option<u32>,
+    drain_previous: bool,
+    origin: crate::player::report::AttemptOrigin,
+    queue: Option<super::queue_navigation::QueueContinuation>,
 ) -> bool {
     let sid = request.sid;
     let rk = &request.rk;
@@ -8036,6 +8304,11 @@ fn request_play_inner(
     // until `apply_plan` replaces it, which is what lets a still-running playback keep answering
     // for itself while the next one resolves.
     { let s = &mut *ps; {
+        // **The attempt's capability value arrives as an argument**: the app's play start read it
+        // ONCE ([`request_play`]'s `caps`), and the session carries it from here on. The resolve
+        // below, every seek and track pick during the film, and the transcode profile all plan from
+        // this one value ([`PlaybackSession::attempt_caps`]); route reads no process-wide answer to plan.
+        s.begin_attempt(caps);
         s.request = Some(request.clone());
         s.requested_resume_ns = if request.preview {
             0
@@ -8065,6 +8338,7 @@ fn request_play_inner(
         s.play_verdict = None;
         s.jail_load_blocked = false;
         s.native_start_refused = false;
+        s.engine_failure = None;
         s.resolve_failed = false;
         // A film request retires the previous trailer's mark: `resolved_as_preview` is otherwise
         // replaced only by a LANDING, so a film whose resolve never lands (a refused worker spawn)
@@ -8087,7 +8361,8 @@ fn request_play_inner(
     // and makes the landing stale instead of installing an old plan beneath a new checkmark.
     let contract_revision = desired_contract_revision();
     // captured HERE, on the main thread, and moved into the worker — see ResolveEnv
-    let env = request_env(ps, meta.view(), &request, retry);
+    let mut env = request_env(ps, meta.view(), &request, retry);
+    env.queue_continuation = queue;
     let gen = PLAY_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     if let Some(resume_ns) = retry.map(|r| r.resume_ns).filter(|ns| *ns > 0) {
         *PLAY_RESUME.lock().unwrap_or_else(|e| e.into_inner()) = Some((gen, resume_ns));
@@ -8290,7 +8565,9 @@ pub fn retry_current_play(
         quality(),
     ));
     let retry = retry_context_with(ps, resume_ns, direct_play);
-    request_play_inner(ps, meta, request, Some(retry), None, true, origin)
+    // A retry repeats the attempt: it plans from the value that attempt began on.
+    let caps = ps.attempt_caps();
+    request_play_inner(ps, meta, caps, request, Some(retry), None, true, origin)
 }
 
 /// [`rescue_retry_context`] with the failed attempt's Direct Play mode optionally replaced — the
@@ -8314,6 +8591,7 @@ fn retry_context_with(ps: &PlaybackSession, resume_ns: i64, direct_play: Option<
 pub fn request_play_movie(
     ps: &mut PlaybackSession,
     meta: &mut plx_data::stores::metadata::MetadataStore,
+    caps: std::sync::Arc<plx_platform::devcaps::Caps>,
     m: &PmsMovie,
     ctx: &str,
     version: Option<plx_plex::plex::MediaId>,
@@ -8334,6 +8612,7 @@ pub fn request_play_movie(
     request_play(
         ps,
         meta,
+        caps,
         item_sid(m.sid),
         &m.rk,
         &m.part,
@@ -8356,33 +8635,6 @@ pub fn item_sid(sid: ServerId) -> ServerId {
     } else {
         surface_sid()
     }
-}
-
-/// Start the queued next episode. Takes the descriptor BY VALUE, and that is load-bearing rather
-/// than stylistic: [`up_next`] hands out a `&'static`, `request_play` clears `up_next` as its
-/// first act, and a `&UpNext` argument would therefore be pointing at a dropped `String` by the
-/// time this reads it — an aliasing bug the borrow checker cannot see through a `'static`. Callers
-/// clone (`route::up_next().cloned()`); the signature is what forces them to.
-///
-/// The HUD strings mirror the episode layout `draw_hud` uses once `now_playing` lands, so the
-/// pre-roll doesn't change shape underneath the user when it does. `ctx` is the context line, the
-/// episode kicker (`ui::fmt::episode_kicker(u.season, u.index, &u.ep_title)`): the caller formats it
-/// before handing `u` over, because `route` sits below `ui`.
-pub fn request_play_up_next(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::MetadataStore, u: UpNext, ctx: &str) -> bool {
-    let title = if u.show_title.is_empty() {
-        &u.ep_title
-    } else {
-        &u.show_title
-    };
-    // The successor comes out of the PlayQueue of the item now playing, so its server is that
-    // item's — [`cur_sid`], not whatever surface is behind the player. Falls back to the browsing
-    // surface only if nothing is playing, which the Up Next control cannot actually reach.
-    let sid = if cur_sid(ps).is_set() {
-        cur_sid(ps)
-    } else {
-        surface_sid()
-    };
-    request_play(ps, meta, sid, &u.rk, &u.part, &u.vcodec, &u.acodec, title, ctx, None)
 }
 
 /// Supersede an in-flight resolve (BACK during a load). The landing is dropped by generation.
@@ -8450,9 +8702,11 @@ pub fn pump_play(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata
             crate::player::log(
                 "playback resolve: desired contract changed in flight; discarding and resolving the latest contract",
             );
+            let caps = ps.attempt_caps();
             let _ = request_play_inner(
                 ps,
                 meta,
+                caps,
                 request,
                 Some(retry),
                 Some(trace_generation),
@@ -8598,6 +8852,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             direct_play_mode: plan.direct_play_mode,
             jail_load_blocked: false,
             native_start_refused: false,
+            engine_failure: None,
             repair_status: plx_platform::tv::sandbox::State::Idle,
             request,
             requested_resume_ns,
@@ -8611,6 +8866,9 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             // The APPLIED enhancement (I9): `contract.audio` is what the server's decision accepted
             // (a refused ask was rebuilt with `NONE`), and `enhancement` grades it.
             cur_contract: plan.contract,
+            // The landing keeps the value the request began the attempt on (`begin_attempt`, in
+            // `request_play_with_queue`): the resolve that produced `plan` planned from exactly it.
+            recovery: s.recovery.take(),
             cur_enhancement: plan.enhancement,
             cur_src: plan.src_measure,
             cur_transport_kbps: plan.transport_kbps,
@@ -8782,6 +9040,7 @@ fn prepare_original_remux(
     put_selection(off, plan.sid, plan.part_id, candidate_audio_sid, subtitle);
     let spec_for = |audio, force_burn| {
         transcode_spec(
+            &plan.caps,
             rk,
             plan.media_index,
             &replacement,
@@ -8836,13 +9095,13 @@ fn prepare_original_remux(
     let (vcodec, acodec) = decision.as_ref().and_then(decision_codecs).unwrap_or_else(|| {
         (
             candidate.vcodec.clone(),
-            remux_output_acodec(audio.any(), candidate.audio.as_ref(), &plan.src_acodec),
+            remux_output_acodec(&plan.caps, audio.any(), candidate.audio.as_ref(), &plan.src_acodec),
         )
     });
     let enhancement = if enhancement_refused || known_refused {
         EnhancementOutcome::Refused
     } else {
-        classify_outcome(decision.as_ref(), candidate.audio.as_ref(), audio)
+        classify_outcome(&plan.caps, decision.as_ref(), candidate.audio.as_ref(), audio)
     };
     let url = c.transcode_start_url(&spec).to_url();
     let Some(ticket) = replace_active_encoder_for(expected, &replacement) else {
@@ -8919,8 +9178,14 @@ fn retranscode_for(ps: &mut PlaybackSession, expected: &WorkerTicket, offset_sec
 /// it on the main thread once, up front, and hand the resulting [`plx_plex::plex::EncodeContract`]
 /// into whichever attempt (primary or Legacy fallback) actually needs it.
 fn plain_rebuild_precheck(ps: &mut PlaybackSession, expected: &WorkerTicket) -> Option<plx_plex::plex::EncodeContract> {
+    rebuild_precheck(ps, expected).then(|| retranscode_contract(ps))
+}
+
+/// The ticket and HLS-sync half of [`plain_rebuild_precheck`]: whether a rebuild of the current
+/// route may still be claimed (the contract itself is the caller's).
+fn rebuild_precheck(ps: &mut PlaybackSession, expected: &WorkerTicket) -> bool {
     if !is_worker_ticket_current(expected) {
-        return None;
+        return false;
     }
     if matches!(
         cur_delivery(ps),
@@ -8928,10 +9193,10 @@ fn plain_rebuild_precheck(ps: &mut PlaybackSession, expected: &WorkerTicket) -> 
     ) {
         let live = sync_active_hls_to_session(ps);
         if live.as_ref().is_some_and(|(ticket, _)| ticket != expected) {
-            return None;
+            return false;
         }
     }
-    Some(retranscode_contract(ps))
+    true
 }
 
 /// The contract a plain rebuild of the current route asks for: today's delivery, ceiling and
@@ -8966,6 +9231,30 @@ fn retranscode_contract(ps: &PlaybackSession) -> plx_plex::plex::EncodeContract 
         return enhanced_remux_contract(plx_plex::plex::AudioEnhancements::NONE, false);
     }
     re_encode_contract(ps, cur_delivery(ps), cur_ceiling(ps))
+}
+
+/// The contract of a video conversion ([`VideoLane::Encode`], [`VideoLane::Both`]): a re-encode of
+/// today's delivery with the server forbidden to copy the video (`directStream=0`; the audio is
+/// still copied), and, when `lower` (a video raster was taken out of the attempt), under the lower of
+/// the route's ceiling and the 1080p rung's. The ceiling is what makes the encode independent of how
+/// PMS combines the profile's per-codec limitation with its `*` one (that limitation stays, for MDE):
+/// `videoResolution` itself asks for at most 1080p. Without `lower` the route keeps its own ceiling.
+fn video_encode_contract(ps: &PlaybackSession, lower: bool) -> plx_plex::plex::EncodeContract {
+    let ceiling = if lower {
+        let cap = crate::abr::Rung::P1080High.ceiling();
+        let cur = cur_ceiling(ps).unwrap_or(plx_plex::plex::Ceiling::NATIVE_4K);
+        Some(plx_plex::plex::Ceiling {
+            max_kbps: cur.max_kbps.min(cap.max_kbps),
+            max_w: cur.max_w.min(cap.max_w),
+            max_h: cur.max_h.min(cap.max_h),
+        })
+    } else {
+        cur_ceiling(ps)
+    };
+    plx_plex::plex::EncodeContract {
+        no_video_copy: true,
+        ..re_encode_contract(ps, cur_delivery(ps), ceiling)
+    }
 }
 
 /// A re-encode of the current item at `delivery`/`ceiling`: never a remux, the video-copy rule
@@ -9092,6 +9381,10 @@ pub(super) fn log_enhancement_outcome(
 #[derive(Clone)]
 pub(super) struct RetranscodeClaimInputs {
     client: &'static plx_plex::plex::Client,
+    /// The attempt's capability value ([`PlaybackSession::attempt_caps`]), carried beside the contract the
+    /// claim builds: the profile PMS reads is derived from it, so a recovery flight that began a new
+    /// attempt (`dispatch_refusal_conversion`) asks for exactly the conversion it narrowed to.
+    caps: std::sync::Arc<plx_platform::devcaps::Caps>,
     sid: ServerId,
     rk: String,
     media_index: usize,
@@ -9119,6 +9412,9 @@ pub(super) struct AppliedRetranscode {
     dv_decision: plx_data::metadata::DvDecision,
     contract: plx_plex::plex::EncodeContract,
     enhancement: EnhancementOutcome,
+    /// The lane verdicts PMS's `/decision` stated for this build (`plan::decision_lanes`): what the
+    /// failed-open ladder's proof rule reads when this is a facet flight's landing.
+    pub(super) lanes: crate::player::recovery::Lanes,
     /// Returned by `replace_active_encoder_for`/`replace_active_hls_for` at the moment this
     /// worker actually committed the route. `take_ready_flight` re-checks it against
     /// the CURRENT route before applying: the worker's own ticket check ran before this commit,
@@ -9148,10 +9444,10 @@ pub(super) enum RetranscodeWorkerOutcome {
 /// (silent audio). A plain remux of an admissible track copies it; with no carried track (the
 /// server default) it falls back to the file's own default codec.
 fn remux_output_acodec(
-    enhanced: bool, carried: Option<&CarriedAudio>, src_acodec: &str,
+    caps: &plx_platform::devcaps::Caps, enhanced: bool, carried: Option<&CarriedAudio>, src_acodec: &str,
 ) -> String {
     let carried = carried.filter(|a| !a.codec.is_empty());
-    if enhanced || carried.is_some_and(|a| !plx_plex::plex::is_dp_audio_track(&a.codec, a.channels, a.sample_rate)) {
+    if enhanced || carried.is_some_and(|a| !plx_plex::plex::is_dp_audio_track_with(caps, &a.codec, a.channels, a.sample_rate)) {
         "ac3".to_owned()
     } else {
         carried.map_or_else(|| src_acodec.to_owned(), |a| a.codec.clone())
@@ -9169,13 +9465,13 @@ fn retranscode_fallback_codecs(
     if contract.remux {
         (
             inputs.src_vcodec.clone(),
-            remux_output_acodec(contract.audio.any(), inputs.carried_audio.as_ref(), &inputs.src_acodec),
+            remux_output_acodec(&inputs.caps, contract.audio.any(), inputs.carried_audio.as_ref(), &inputs.src_acodec),
         )
     } else if matches!(contract.delivery, plx_plex::plex::TranscodeDelivery::FixedHls { .. }) {
         ("h264".to_owned(), "aac".to_owned())
     } else {
         (
-            plx_platform::devcaps::caps().encode_vcodec().to_owned(),
+            inputs.caps.encode_vcodec().to_owned(),
             "ac3".to_owned(),
         )
     }
@@ -9204,6 +9500,7 @@ pub(super) struct PreparedEncode {
     dv_decision: plx_data::metadata::DvDecision,
     contract: plx_plex::plex::EncodeContract,
     enhancement: EnhancementOutcome,
+    lanes: crate::player::recovery::Lanes,
 }
 
 /// One `/decision` attempt, gated on `inputs.expected` throughout — the network body of a
@@ -9225,6 +9522,7 @@ pub(super) fn request_retranscode(
     let (fallback_vcodec, fallback_acodec) = retranscode_fallback_codecs(inputs, &contract);
     let qsess = next_encoder_session(&inputs.namespace);
     let sp = transcode_spec(
+        &inputs.caps,
         &inputs.rk,
         inputs.media_index,
         &qsess,
@@ -9271,7 +9569,8 @@ pub(super) fn request_retranscode(
         dovi,
         dv_decision,
         contract,
-        enhancement: classify_outcome(Some(&decision), inputs.carried_audio.as_ref(), audio),
+        enhancement: classify_outcome(&inputs.caps, Some(&decision), inputs.carried_audio.as_ref(), audio),
+        lanes: decision_lanes(&decision),
         qsess,
     })
 }
@@ -9314,7 +9613,7 @@ pub(super) fn commit_retranscode(
         "retranscode rk={} audio={} sub={} offset={} -> transcode start",
         inputs.rk, inputs.audio_sid, inputs.subtitle_sid, inputs.offset_secs,
     ));
-    let PreparedEncode { qsess, url, vcodec, acodec, dovi, dv_decision, contract, enhancement } = prepared;
+    let PreparedEncode { qsess, url, vcodec, acodec, dovi, dv_decision, contract, enhancement, lanes } = prepared;
     Ok(AppliedRetranscode {
         qsess,
         url,
@@ -9324,6 +9623,7 @@ pub(super) fn commit_retranscode(
         dv_decision,
         contract,
         enhancement,
+        lanes,
         ticket,
         client: inputs.client,
         superseded,
@@ -9372,6 +9672,7 @@ fn prepare_retranscode_inputs(
     };
     Some(RetranscodeClaimInputs {
         client,
+        caps: ps.attempt_caps(),
         sid: cur_sid(ps),
         part_id: cur_part_id(ps),
         audio_sid: cur_audio_sid(ps),
@@ -9423,6 +9724,44 @@ pub(super) fn install_retranscode_outcome(ps: &mut PlaybackSession, applied: &Ap
         applied.enhancement,
         applied.contract.audio,
     );
+}
+
+/// **Re-check the stored Original candidate against the attempt's caps**, after a recovery narrowed
+/// them. The refusal-recovery landings ([`install_recovery_landing`]'s `Retranscode` and `AutoHls`
+/// arms) leave the request's attempt without the stream the pipeline refused; a stored candidate (the
+/// way back the ABR climb and the manual Original re-pick propose) was graded against the caps
+/// BEFORE that, so one that carried the refused DTS would still `feeds_part()`, and one that is a
+/// 4K H.264 would still be offered at the raster that was refused.
+///
+/// The audio half is the body of the audio-pick site ([`commit_audio_selection`]):
+/// `retarget_audio` with the answer of [`audio_track_direct_plays`], which reads the narrowed
+/// attempt. A candidate whose audio now needs conversion is kept, `audio_converted`, so returning to
+/// Original means the remux naming that track; one that no legal copy can serve is dropped
+/// (`TrackPickDropped`).
+///
+/// The video half: a candidate whose source video the attempt no longer direct plays
+/// ([`video_direct_plays`], the gate that built it) is dropped (`VideoNeedsConverting`). Dropping is
+/// the only shape that never re-offers the raster: a remux candidate COPIES the video too, and no
+/// candidate can avoid the source's raster.
+pub(super) fn regrade_original(ps: &mut PlaybackSession) {
+    if let Some(carried) = ps.auto_original.as_ref().and_then(|candidate| candidate.audio.clone()) {
+        let direct_plays = audio_track_direct_plays(ps, &carried.codec, carried.channels, carried.sample_rate);
+        if let Some(candidate) = ps.auto_original.as_mut() {
+            if !candidate.retarget_audio(&carried, direct_plays) {
+                ps.auto_original = None;
+                ps.original_declined = Some(OriginalDeclined::TrackPickDropped);
+            }
+        }
+    }
+    let (_, width, height) = ps.cur_src;
+    let caps = ps.attempt_caps();
+    let video_converts = ps.auto_original.as_ref().is_some_and(|c| {
+        !video_direct_plays(&c.vcodec, width, height, c.dv_decision.presentation, &caps)
+    });
+    if video_converts {
+        ps.auto_original = None;
+        ps.original_declined = Some(OriginalDeclined::VideoNeedsConverting);
+    }
 }
 
 // ---- issue #266: the live audio-enhancement state machine ------------------------------------

@@ -2364,6 +2364,7 @@ class MockPms:
         self.section_hubs_linked = 0
         self.lock = threading.Lock()
         self.link = link_conditioner.Conditioner()  # `--link`; a no-op until a profile is set
+        self.play_queues = {}  # retained snapshots for GET /playQueues/<id>?center=<item id>
         self.wire_log = []  # `GET /_mock/wire`: per-request arrival/finish times under the link
         self.requests = []  # (path, status) in arrival order, for the harness
         # `/:/eventsource/notifications` (the PMS SSE feed): one queue per open stream, fed by
@@ -3041,11 +3042,21 @@ class MockPms:
             else:
                 queue = [it]
             rows = [dict(x, playQueueItemID=n) for n, x in enumerate(queue, start=1)]
+            with self.lock:
+                self.play_queues[1] = rows
             return j(self.container(Metadata=rows, playQueueID=1, playQueueSelectedItemID=1,
                                     playQueueSelectedItemOffset=0, playQueueTotalCount=len(rows),
                                     playQueueVersion=1))
         if segs[:1] == ["playQueues"] and len(segs) == 2:
-            return j(self.container(Metadata=[], playQueueID=int(segs[1]) if segs[1].isdigit() else 1))
+            queue_id = int(segs[1]) if segs[1].isdigit() else 1
+            with self.lock:
+                rows = list(self.play_queues.get(queue_id, []))
+            center = int(q.get("center", "1")) if q.get("center", "1").isdigit() else 1
+            window = int(q.get("window", "50")) if q.get("window", "50").isdigit() else 50
+            at = next((n for n, row in enumerate(rows) if row["playQueueItemID"] == center), 0)
+            page = rows[max(0, at - window):at + window + 1]
+            return j(self.container(Metadata=page, playQueueID=queue_id, playQueueTotalCount=len(rows),
+                                    playQueueSelectedItemID=1, playQueueSelectedItemOffset=0))
         if p.startswith("/library/parts/"):
             part_id = int(segs[2]) if len(segs) > 2 and segs[2].isdigit() else -1
             if method == "PUT":
@@ -3226,7 +3237,7 @@ class Handler(BaseHTTPRequestHandler):
                     block = src.read(min(left, 256 * 1024))
                     if not block:
                         break
-                    self.wfile.write(block)
+                    link_conditioner.write_throttled(self.wfile.write, block, self.server.media_kbit)
                     left -= len(block)
                 if self.close_connection:
                     self.wfile.flush()
@@ -3447,6 +3458,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class Server(ThreadingHTTPServer):
+    # Opt-in media pacing uses the same writer as conditioned catalog responses. Test drivers
+    # can keep a tiny local fixture from reaching EOF before a repeated-seek scenario finishes.
+    media_kbit = 0
     daemon_threads = True
     allow_reuse_address = True
 
@@ -3838,6 +3852,9 @@ def selftest():
     assert next_pms.lib.items[VERIFY_SEASON_RK]["leafCount"] == 2
     assert next_pms.lib.items[VERIFY_SHOW_RK]["leafCount"] == 2
     assert queue_keys(next_base, V1_RATING_KEY) == [V1_RATING_KEY, V3_RATING_KEY]
+    window = json.load(urllib.request.urlopen(next_base + "/playQueues/1?center=2&window=0&own=0"))["MediaContainer"]
+    assert [row["playQueueItemID"] for row in window["Metadata"]] == [2]
+    assert window["playQueueSelectedItemID"] == 1, "centering a window must not select it"
     assert queue_keys(next_base, V3_RATING_KEY) == [V3_RATING_KEY]
     assert queue_keys(next_base, V1_RATING_KEY, continuous=False) == [V1_RATING_KEY]
     assert queue_keys(next_base, V2_RATING_KEY) == [V2_RATING_KEY], "a movie never follows a show"

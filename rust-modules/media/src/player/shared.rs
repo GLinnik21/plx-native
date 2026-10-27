@@ -218,6 +218,10 @@ enum LoadCall {
     /// whatever was left of the first one.
     Returned {
         at: Instant,
+        /// The audio lead the Load thread resolved from the sound output before it called `Load`
+        /// (`engine::PcmLead::FromOutput`, on a stack whose lead follows the output); `None` for a Load whose lead the frame thread settled.
+        /// Published WITH the return, so no reader can see the Load returned without it.
+        pcm_lead_ns: Option<i64>,
     },
 }
 
@@ -657,6 +661,11 @@ pub struct Shared {
     /// callback thread, taken once by the app loop ([`super::take_decoder_revoked`]), which parks
     /// the session exactly as an app switch does and rebuilds it on the viewer's next press.
     pub decoder_revoked: AtomicBool,
+    /// The pipeline refused the Load with `type=18 num=200` (`Audio Codec Not Supported`) before any
+    /// picture while the session fed its audio natively (`ff::native_audio::fed`). Set on the
+    /// callback thread; the pump turns it into a learned refusal and a recovery flight that has the
+    /// server convert that audio (the machine's `ConfirmRefusal`, run by [`super::pump`]'s `confirm_refusal`).
+    pub native_audio_refused: AtomicBool,
     /// issue #74 D.1: the epoch this session last logged "native: loadCompleted while Load in
     /// flight — deferring" for — 0 = never. `epoch` is monotonic and never 0 for a real session
     /// ([`NativeSessionState::next`] skips 0 on wraparound), so comparing against this is enough
@@ -807,6 +816,12 @@ pub struct Shared {
     /// displayed type would be a confident lie on the firmware we cannot test. `dg_cb_err` latches
     /// the one type that means the same on both.
     pub dg_cb_count: AtomicU32,
+    /// What [`crate::player::era_callbacks`] reads, all per session: position ticks (`type=0`),
+    /// callbacks `sink_counter_kind` named as the displayed-frame counter, and callbacks numbered
+    /// 46 to 49 that it did not name (the other era's numbers). Unlike `frames`, a seek leaves them.
+    pub dg_pos_ticks: AtomicU32,
+    pub dg_sink_displayed_cb: AtomicU32,
+    pub dg_sink_other_cb: AtomicU32,
     /// Why the VIDEO feeder is where it is, taken at each of `feed_stream`'s exit points.
     /// 0 none yet · 1 accepting · 2 BufferFull · 3 refused · 4 waiting for a frame (feed-ahead
     /// throttle) · 5 queue empty.
@@ -996,6 +1011,9 @@ impl Shared {
             native_session: Mutex::new(NativeSessionState::new()),
             dg_stage: AtomicU8::new(0),
             dg_cb_count: AtomicU32::new(0),
+            dg_pos_ticks: AtomicU32::new(0),
+            dg_sink_displayed_cb: AtomicU32::new(0),
+            dg_sink_other_cb: AtomicU32::new(0),
             dg_feed_state: AtomicU8::new(0),
             dg_cb_err: AtomicI32::new(0),
             dg_cb_err_at: AtomicU32::new(0),
@@ -1074,6 +1092,7 @@ impl Shared {
             load_failed: AtomicBool::new(false),
             load_timed_out: AtomicBool::new(false),
             decoder_revoked: AtomicBool::new(false),
+            native_audio_refused: AtomicBool::new(false),
             native_load_deferred_logged_epoch: AtomicU32::new(0),
             native_load_elapsed_ms: AtomicU64::new(0),
             playback_trace: Mutex::new(super::report::PlaybackTrace::new()),
@@ -1136,7 +1155,7 @@ impl Shared {
     /// must never depend on the reducer's verdict). Returns the elapsed time since the session's
     /// Load was issued, for the "native: Load returned after Nms" log — `None` when `epoch` no
     /// longer owns the `Active` phase (a superseded/already-retired session; nothing to mark).
-    pub fn mark_native_load_returned(&self, epoch: u32) -> Option<Duration> {
+    pub fn mark_native_load_returned(&self, epoch: u32, pcm_lead_ns: Option<i64>) -> Option<Duration> {
         let mut state = self
             .native_session
             .lock()
@@ -1150,6 +1169,7 @@ impl Shared {
             } if epoch != 0 && *active == epoch => {
                 *load_call = LoadCall::Returned {
                     at: Instant::now(),
+                    pcm_lead_ns,
                 };
                 Some(load_issued_at.elapsed())
             }
@@ -1189,6 +1209,23 @@ impl Shared {
         )
     }
 
+    /// The audio lead `epoch`'s Load thread resolved from the sound output, once its Load has
+    /// returned: `None` while it is in flight, for another epoch, and for a Load that resolved none.
+    pub fn native_load_pcm_lead(&self, epoch: u32) -> Option<i64> {
+        let state = self
+            .native_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match state.phase {
+            NativeSessionPhase::Active {
+                epoch: active,
+                load_call: LoadCall::Returned { pcm_lead_ns, .. },
+                ..
+            } if epoch != 0 && active == epoch => pcm_lead_ns,
+            _ => None,
+        }
+    }
+
     /// How long ago `epoch`'s Starfish `Load` call returned — `None` when `epoch` no longer owns
     /// the `Active` phase, OR when its Load has not returned yet (still `LoadCall::InFlight`,
     /// which the OTHER budget window — [`native_load_elapsed`] — covers).
@@ -1207,7 +1244,7 @@ impl Shared {
         match state.phase {
             NativeSessionPhase::Active {
                 epoch: active,
-                load_call: LoadCall::Returned { at },
+                load_call: LoadCall::Returned { at, .. },
                 ..
             } if epoch != 0 && active == epoch => Some(at.elapsed()),
             _ => None,
@@ -1272,7 +1309,7 @@ impl Shared {
         match &mut state.phase {
             NativeSessionPhase::Active {
                 epoch: active,
-                load_call: LoadCall::Returned { at },
+                load_call: LoadCall::Returned { at, .. },
                 ..
             } if epoch != 0 && *active == epoch => {
                 *at = at.checked_sub(by).unwrap_or(*at);
@@ -1657,6 +1694,9 @@ impl Shared {
         // exactly the misleading answer the read-out exists to avoid
         self.dg_stage.store(0, Ordering::Relaxed);
         self.dg_cb_count.store(0, Ordering::Relaxed);
+        self.dg_pos_ticks.store(0, Ordering::Relaxed);
+        self.dg_sink_displayed_cb.store(0, Ordering::Relaxed);
+        self.dg_sink_other_cb.store(0, Ordering::Relaxed);
         self.dg_feed_state.store(0, Ordering::Relaxed);
         // A latched error MUST be cleared here, or one bad session paints every later healthy
         // playback red for the life of the process.
@@ -1749,6 +1789,7 @@ impl Shared {
         self.load_failed.store(false, Ordering::Relaxed);
         self.load_timed_out.store(false, Ordering::Relaxed);
         self.decoder_revoked.store(false, Ordering::Relaxed);
+        self.native_audio_refused.store(false, Ordering::Relaxed);
         // NB: desired_sub_idx is NOT reset here — like desired_audio_idx it persists across
         // seeks/reloads so a reload-based seek keeps the chosen subtitle. It is reset on a new
         // item (player::reset_subtitle). ASS packets are immutable file facts, not

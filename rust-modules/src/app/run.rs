@@ -984,6 +984,10 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
             let activation = did_foreground_with_link(app);
             if matches!(activation, ForegroundActivation::Launched) {
                 finish_foreground_launch(app);
+            } else if app.player.lifecycle.claimable_clock().is_some() {
+                // The Load was refused: on a plaintext-granted server the grant `network_changed`
+                // just withdrew is re-proven a moment later, after this claim. Claim again then.
+                app.foreground_retry = Some((plx_plex::plex::grant::revision(), FOREGROUND_RETRIES));
             }
             window_step(plx_telemetry::telemetry::window::Stage::ForegroundDone, Some(playing));
         }
@@ -1670,6 +1674,13 @@ fn claim_press_after_decoder_release(app: &mut App, press: WakePress) -> bool {
     }
     app.decoder_parked = false;
     let input = wake_input(press, app.player.lifecycle.claimable_clock());
+    claim_parked_foreground(app, input);
+    true
+}
+
+/// Claim the parked session's foreground Load with `input` and, when it launches, mount the
+/// player ([`finish_foreground_launch`]). `true` when the Load launched.
+fn claim_parked_foreground(app: &mut App, input: ForegroundInput) -> bool {
     let activation = drive_foreground(
         &mut app.player.lifecycle,
         &mut app.player.session,
@@ -1679,11 +1690,41 @@ fn claim_press_after_decoder_release(app: &mut App, press: WakePress) -> bool {
             repause_at: &mut app.repause_at,
         },
     );
-    if matches!(activation, ForegroundActivation::Launched) {
+    let launched = matches!(activation, ForegroundActivation::Launched);
+    if launched {
         finish_foreground_launch(app);
     }
     plx_machine::idle::invalidate();
-    true
+    launched
+}
+
+/// How many times a refused foreground Load is claimed again as the plaintext grants return.
+const FOREGROUND_RETRIES: u8 = 3;
+
+/// **A foreground Load refused for want of a credential is claimed again when the grants move.**
+/// The DID edge withdraws every plaintext grant (`grant::network_changed`) and claims the Load in
+/// the same breath, so a server on a plaintext grant (a LAN server without TLS) refused it
+/// (`stream: refused insecure credential transport`); the re-discovery minted the grant back
+/// ~250 ms later and nothing claimed the Load again, leaving the film on a still frame. Retries
+/// stop when a claim launches, when the session is no longer waiting, or after
+/// [`FOREGROUND_RETRIES`] claims.
+fn retry_refused_foreground(app: &mut App) {
+    let Some((seen, left)) = app.foreground_retry else {
+        return;
+    };
+    // Nothing parked for a claim to restore any more: it launched, ended or was superseded.
+    if app.player.lifecycle.claimable_clock().is_none() {
+        app.foreground_retry = None;
+        return;
+    }
+    let now = plx_plex::plex::grant::revision();
+    if now == seen || app.pages.surface_up() {
+        return;
+    }
+    app.foreground_retry = (left > 1).then_some((now, left - 1));
+    if claim_parked_foreground(app, ForegroundInput::DidForeground) {
+        app.foreground_retry = None;
+    }
 }
 
 /// The warm-launch DID composes its two children in order: the launch link sees the arrival
@@ -2610,6 +2651,9 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         }
         // …and the covered pages' own re-read, once each cover episode (`app/reread.rs`).
         super::reread::run(&mut app.reread, &mut app.pages, &mut app.bridge);
+        // A foreground Load the DID edge's withdrawn grants refused is claimed again once they
+        // return (`retry_refused_foreground`).
+        retry_refused_foreground(app);
         // A server on a plaintext grant keeps trying HTTPS (`plex::grant::UpgradeRetry`): its
         // endpoint re-discovery races every HTTPS route first and retires the grant when one
         // verifies. Route-unconditional — the upgrade is owed whatever is on screen.
@@ -3505,6 +3549,7 @@ mod lifecycle_regression_tests {
             },
             repause_at: -1,
             decoder_parked: false,
+            foreground_retry: None,
             ok_armed: Default::default(),
             last_route_reported: Default::default(),
             ptr: Pointer::IDLE,
@@ -4351,6 +4396,7 @@ mod lifecycle_regression_tests {
             assert!(plx_media::route::request_play(
                 &mut self.app.player.session,
                 self.app.bridge.metadata_mut(),
+                plx_platform::devcaps::caps(),
                 self.sid,
                 "1",
                 "/library/parts/1/file.mkv",
@@ -4584,6 +4630,7 @@ mod lifecycle_regression_tests {
             assert!(plx_media::route::request_play(
                 &mut self.app.player.session,
                 self.app.bridge.metadata_mut(),
+                plx_platform::devcaps::caps(),
                 self.sid,
                 "1",
                 "/library/parts/1/file.mkv",
@@ -5617,10 +5664,10 @@ mod lifecycle_regression_tests {
         assert!(plx_media::route::up_next(&rig.app.player.session).is_none());
     }
 
-    /// The first half of a foreground restore the engine refuses: playback, an OS background, DID
-    /// foreground, and a Load the route answers with `StartFailed`, leaving the machine `Prepared`
-    /// with no live engine. Returns the frame the rest of the test keeps driving.
-    fn refuse_restore(rig: &mut Rig) -> Frame {
+    /// The first half of every foreground restore below: playback, an OS background and a DID
+    /// foreground whose Load is launched and tracked (`LoadPending`) with its Engine standing.
+    /// Returns the frame the rest of the test keeps driving and the exact Load attempt.
+    fn launch_restore(rig: &mut Rig) -> (Frame, plx_media::route::RouteStartAttempt) {
         rig.request();
         rig.resolve();
         rig.accept_start();
@@ -5647,12 +5694,20 @@ mod lifecycle_regression_tests {
             ),
             ForegroundActivation::Launched
         );
-        let failed_attempt = rig
+        let attempt = rig
             .app
             .player
             .lifecycle
             .pending_load_attempt()
             .expect("DID foreground must launch the tracked Load");
+        (fr, attempt)
+    }
+
+    /// The first half of a foreground restore the engine refuses: playback, an OS background, DID
+    /// foreground, and a Load the route answers with `StartFailed`, leaving the machine `Prepared`
+    /// with no live engine. Returns the frame the rest of the test keeps driving.
+    fn refuse_restore(rig: &mut Rig) -> Frame {
+        let (mut fr, failed_attempt) = launch_restore(rig);
         assert!(plx_media::route::settle_route_start(
             &mut rig.app.player.session,
             failed_attempt,
@@ -5665,6 +5720,147 @@ mod lifecycle_regression_tests {
         ));
         assert!(!rig.app.adapters.player.is_live());
         fr
+    }
+
+    /// The two halves of `playback_tick` that decide a pending foreground Load's fate, run apart so
+    /// a test can read the state between them: the engine pump (which reads `load_failed`), then the
+    /// foreground machine's poll of the Load's own result. This is `playback_tick`'s order.
+    fn pump_then_poll(rig: &mut Rig, now: u32) -> (plx_media::player::PlaybackState, ForegroundState) {
+        plx_media::player::pump(&mut rig.app.player.session, &mut rig.app.adapters.player, now);
+        let between = (
+            plx_media::player::state(&rig.app.player.session),
+            rig.app.player.lifecycle.state(),
+        );
+        let _ = poll_foreground_load(
+            &mut rig.app.player.lifecycle,
+            &mut rig.app.player.session,
+            &mut PlayerForegroundActuator {
+                pa: &mut rig.app.adapters.player,
+                repause_at: &mut rig.app.repause_at,
+            },
+        );
+        between
+    }
+
+    /// **Resume-Load ownership, case 1 of 2 (main 0c9eec250, the S1 lane's step 0): an ASYNCHRONOUS
+    /// pre-picture refusal of a foreground-resume Load is the PUMP's.** The Load call returned
+    /// `Started` (the foreground machine read that through `route_start_status` and let go: `Idle`),
+    /// and `type=18` arrived afterwards. `SHARED.load_failed` does not say whose Load it was, so the
+    /// pump reads it on the live Engine and runs the failed-open ladder. This is the split
+    /// `OpenRecovery` keeps: it owns a refusal the pump observes after a Load call returned.
+    ///
+    /// The ladder's outcome changed with #1059 (S1b-2, s1b-design section 3): this plain direct play
+    /// has no suspect stream for the facet rung, but its source video is fed at a known raster, so
+    /// the manual both-facets rung flies ONE encode before the read-out (a refusal of a manual pick
+    /// before its picture, `Refused` or `Stalled`; nothing exempts a resume Load, and the machine's
+    /// `LoadStarted` reopens the ladder for exactly this Load). The viewer keeps the connecting
+    /// spinner while it flies. This fixture's server cannot convert, so the flight is refused, and the
+    /// refused both-facets flight is terminal: the read-out, with no second flight. Until #1059 this
+    /// test read "today ... is failed by the pump" and expected the read-out at once.
+    #[test]
+    fn an_async_refusal_of_a_foreground_resume_load_is_the_pumps_which_flies_the_both_facets_encode_then_reads_out() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::new() else {
+            eprintln!("SKIPPED: lifecycle fixture worker thread could not be spawned");
+            return;
+        };
+        let (_fr, attempt) = launch_restore(&mut rig);
+        assert!(plx_media::route::settle_route_start(
+            &mut rig.app.player.session,
+            attempt,
+            plx_media::route::RouteStartResult::Started,
+        ));
+        // `type=18` after the Load call returned, before any picture.
+        plx_media::player::SHARED.load_failed.store(true, std::sync::atomic::Ordering::Release);
+
+        let (state_after_pump, life_after_pump) = pump_then_poll(&mut rig, 48);
+        assert_eq!(
+            state_after_pump,
+            plx_media::player::PlaybackState::Connecting,
+            "the pump's failed-open ladder flew the both-facets encode: the viewer keeps the spinner"
+        );
+        assert!(plx_media::route::flight_outstanding(), "the encode is a recovery flight");
+        assert!(
+            matches!(life_after_pump, ForegroundState::LoadPending { .. }),
+            "the lifecycle had not yet read the Load's result when the pump acted: {life_after_pump:?}"
+        );
+        assert_eq!(
+            rig.app.player.lifecycle.state(),
+            ForegroundState::Idle,
+            "…and then read `Started` and let go: it owns nothing of this refusal"
+        );
+
+        // The fixture's server cannot convert: the flight comes back refused, which is terminal for
+        // the both-facets rung, and the pump (not the lifecycle) ends on the read-out.
+        let mut now = 64;
+        // A bounded count of 5 ms naps (the `wall` gate keeps clock reads out of `app/`): 10 s.
+        for _ in 0..2000 {
+            if plx_media::player::state(&rig.app.player.session) == plx_media::player::PlaybackState::Error {
+                break;
+            }
+            now += 16;
+            plx_media::player::pump(&mut rig.app.player.session, &mut rig.app.adapters.player, now);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(
+            plx_media::player::state(&rig.app.player.session),
+            plx_media::player::PlaybackState::Error,
+            "a refused both-facets flight ends in the read-out"
+        );
+        for _ in 0..3 {
+            now += 16;
+            plx_media::player::pump(&mut rig.app.player.session, &mut rig.app.adapters.player, now);
+        }
+        assert!(!plx_media::route::flight_outstanding(), "no second flight");
+        assert_eq!(rig.app.player.lifecycle.state(), ForegroundState::Idle, "the lifecycle never re-engaged");
+        assert!(
+            rig.app.adapters.player.is_live(),
+            "the failed Engine stays up for `release_failed_engine`, not torn down by the lifecycle"
+        );
+    }
+
+    /// **Resume-Load ownership, case 2 of 2: a SYNCHRONOUS refusal of a foreground-resume Load is the
+    /// LIFECYCLE's alone.** The Load call itself failed (`threads.rs` publishes
+    /// `RouteStartResult::StartFailed` and `publish_native_load_failure` together). The foreground
+    /// machine launched that Load and reads its own result: `Failed` is #1018's retry, `Prepared`
+    /// (a retry waits for the grants) and `AfterLoad{started:false}` retiring the Engine. The pump
+    /// sees `load_failed` first, but the call's own result is not a refusal it observes after a Load
+    /// returned, so it leaves this one alone: no failed-open ladder, no read-out. (Main 0c9eec250
+    /// ran both: the pump failed the Engine into the read-out, then the lifecycle settled the same
+    /// refusal.)
+    #[test]
+    fn a_sync_refusal_of_a_foreground_resume_load_is_settled_by_the_lifecycle_alone() {
+        let _serial = plx_base::testlock::serial();
+        let Some(mut rig) = Rig::new() else {
+            eprintln!("SKIPPED: lifecycle fixture worker thread could not be spawned");
+            return;
+        };
+        let (_fr, attempt) = launch_restore(&mut rig);
+        assert!(plx_media::route::settle_route_start(
+            &mut rig.app.player.session,
+            attempt,
+            plx_media::route::RouteStartResult::StartFailed,
+        ));
+        plx_media::player::SHARED.load_failed.store(true, std::sync::atomic::Ordering::Release);
+
+        let (state_after_pump, life_after_pump) = pump_then_poll(&mut rig, 48);
+        assert_ne!(
+            state_after_pump,
+            plx_media::player::PlaybackState::Error,
+            "the pump leaves the Load call's own refusal to the lifecycle: no failed-open ladder, no read-out"
+        );
+        assert!(matches!(life_after_pump, ForegroundState::LoadPending { .. }), "{life_after_pump:?}");
+        assert!(
+            matches!(rig.app.player.lifecycle.state(), ForegroundState::Prepared { .. }),
+            "the lifecycle settles the refusal as #1018's retry: {:?}",
+            rig.app.player.lifecycle.state()
+        );
+        assert!(!rig.app.adapters.player.is_live(), "the lifecycle's AfterLoad retired the Engine");
+        assert_ne!(
+            plx_media::player::state(&rig.app.player.session),
+            plx_media::player::PlaybackState::Error,
+            "…and nothing raised the read-out after it either"
+        );
     }
 
     /// An exit over a parked restore whose Load was refused (`Prepared`) must retire it; main left
@@ -5813,6 +6009,7 @@ mod lifecycle_regression_tests {
         assert!(plx_media::route::request_play(
             &mut rig.app.player.session,
             rig.app.bridge.metadata_mut(),
+            plx_platform::devcaps::caps(),
             rig.sid,
             "replacement",
             "/library/parts/2/file.mkv",

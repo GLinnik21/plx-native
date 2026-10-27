@@ -168,8 +168,9 @@ fi
 #   bsf        AVCC -> Annex-B for mp4-family video, which the Starfish pipeline requires.
 #   decoders   SUBTITLES, and AUDIO decoded in the app. Video is decoded by the TV's hardware via
 #              Starfish; FFmpeg here never touches a video frame. The audio decoders run in two
-#              cases. (1) FLAC at 1x: libpf has no FLAC input, so the app decodes it and feeds the
-#              TV PCM. (2) Every audio format, FLAC included, while the viewer has picked a speed
+#              cases. (1) FLAC, ALAC and LPCM at 1x: libpf has no input for them, so the app decodes
+#              them and feeds the TV PCM (`devcaps::APP_DECODED` names the decoders, and a test
+#              holds that list to this one). (2) Every audio format, those included, while the viewer has picked a speed
 #              other than 1x: LG's pipeline cannot change rate itself (see
 #              docs/parity-gaps.md, Playback Speed), so the app decodes the sound, time-stretches
 #              it (rust-modules/media/src/speed_audio.rs) and feeds it as PCM. All are LGPL; the
@@ -226,7 +227,7 @@ set -- "$@" \
   --enable-parser=h264,hevc,aac,ac3,flac,dvdsub,dvbsub \
   --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb,extract_extradata \
   --enable-decoder=pgssub,dvdsub,dvbsub,ass,srt,subrip,text,mov_text,webvtt \
-  --enable-decoder=aac,ac3,eac3,dca,mp3,mp2,flac,opus,vorbis,truehd,mlp,alac,pcm_s16le,pcm_s24le \
+  --enable-decoder=aac,ac3,eac3,dca,mp3,mp2,flac,opus,vorbis,truehd,mlp,alac,pcm_s16le,pcm_s24le,pcm_s16be,pcm_s24be,pcm_s32le,pcm_s32be \
   --enable-protocol=file
 
 if [ "${RELEASE:-}" = "1" ]; then

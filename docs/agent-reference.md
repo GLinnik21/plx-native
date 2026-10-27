@@ -1782,17 +1782,20 @@ behaviour; real GL copies, glyphs and presentation still need a device capture w
 > **Since 2026-08-22 there IS a lock, and it is enforced.** `tools/tv-lock.sh` holds a lease in a
 > directory ON THE TELEVISION (`/tmp/plx-tv.lock`, so it spans worktrees and machines, and outside
 > the `plxnative-*` prefix so it neither trips `dev::any_trigger_present` nor gets swept by a
-> teardown). **The `tv-lock` skill is the workflow** — acquiring and queueing, the two things the
-> lock CANNOT see (a human watching television, and a job started from a checkout without these
-> tools) together with the `fuser`-per-install and ssh-count pre-flight that is the only thing that
-> catches them, and when a lease is safe to break.
+> teardown). **The `tv-lock` skill is the workflow** — acquiring and queueing, what the lock
+> CANNOT see (a job started from a checkout without these tools, and a human watching television)
+> and the pre-flight that partly makes up for it: `fuser` per install, an ssh count, and an
+> IDLE / IN USE / UNKNOWN verdict from the foreground app, and when a lease is safe to break.
+> An `IN USE:` line from `acquire` or `status` is a warning to stop and tell the owner; `tv-lock.sh
+> with` and `tests/run.py` refuse to start on it unless `PLX_TV_IN_USE_OK=1` (only after the owner
+> said go).
 >
 > **You cannot skip it.** `tv-session.sh` (`up`/`key`/`click`/`shot`/`down`), `make deploy`/`run`/
 > `run-stream`/`kill`/`install`/`uninstall`, `tests/run.py` and `tools/capture-screen.sh` all take
 > it, and a **`PreToolUse` hook** (`.claude/hooks/tv-lock-guard.py`) refuses any Bash command that
 > reaches the set without a lease — including a raw `ssh root@…`, an `scp` into the app directory
 > and a `sshpass` one-liner. Read-only diagnostics are deliberately not blocked:
-> `tv-session.sh log|status`, `tools/crash-report.sh`, `make -s print-*`, and `tests/run.py --list`
+> `tv-session.sh log|status|fg`, `tools/crash-report.sh`, `make -s print-*`, and `tests/run.py --list`
 > (it returns before the lock, before any trigger is armed and before anything is deployed, so
 > the guard treats it as a status read — since UI-restructure phase 11). With nobody holding the
 > set a single command takes a short implicit lease rather than failing; **a SESSION should take a
@@ -1806,13 +1809,18 @@ behaviour; real GL copies, glyphs and presentation still need a device capture w
 > access to at most one and send every other lane to `make sim-macos` or `tools/sim.ps1`. Telling two prompts "you own the
 > television exclusively" is *not* a mutex — each is true when written and false the moment the
 > second one starts, which is the 2026-08-21 collision that was caught by luck rather than by
-> anything failing loudly. **A subagent proves which lane it is by prefixing
-> `PLX_TV_LOCK_LANE=<its worktree path>` on every device command it runs**, not by exporting the
-> variable once — the harness reports the SESSION's own checkout as that command's `cwd`
-> regardless of which worktree the agent is actually in, so `tools/tv-lock.sh` (which already
-> reads `PLX_TV_LOCK_LANE`) and the `PreToolUse` guard's `lane_from_command()` (which resolves the
-> prefix, then the hook's own environment, then `cwd`, in that order) have to agree on the same
-> per-command spelling for several subagents to multiplex the one set through the lock, one
+> anything failing loudly. **A subagent names which lane it is by prefixing
+> `PLX_TV_LOCK_LANE=<its worktree path>` on the device commands it runs**, not by exporting the
+> variable once — the harness reports the SESSION's own checkout as a plain subagent's `cwd`
+> regardless of which worktree the agent is actually in (only an `isolation: worktree` subagent
+> reports its own), so `tools/tv-lock.sh` (which already reads `PLX_TV_LOCK_LANE`) and the
+> `PreToolUse` guard have to agree on the lane. The guard's `decide()` gives each device segment the
+> first of: that prefix, the variable in the hook's own environment, the segment's absolute
+> `tools/` or `tests/` script path (or `make -C <dir>`), an absolute `cd <dir>` the shell certainly
+> kept, then `cwd`'s checkout; a lane read from a path or a `cd` that is not the `cwd`'s own also
+> needs the caller's session in the lease's `SESSIONS`. The prefix is always correct and the one
+> source for a relative script path or a `cd "$W"`; a lane of its own per subagent is what lets
+> several of them multiplex the one set through the lock, one
 > `tools/tv-lock.sh with --ttl N --wait S -- <one test>` lease per test run.
 >
 > The skill carries the rest: the shared stash stack that hands one lane
@@ -2040,14 +2048,15 @@ resume, the `/:/timeline` reporter — which is also why it needs somebody's lib
 It needs a TV address and nothing else — no token, no ratingKey, no `manifest.local.json`, no
 sharing — so it is the only tier a stranger can run, and it is what separates "the player is
 broken" from "the library layer is broken" when a server case fails. **What it covers, precisely:**
-the player feeds `{h264,hevc}` (plus `av1` / `vp9` on a set whose codec table lists that decoder's row) × `{aac,ac3,eac3,dts}` (plus `flac`, decoded in the app and fed as PCM) in mkv/mp4/m4v. Auto intersects this
-software set with the device table and per-codec channel ceilings; DTS requires a measured
+the player feeds `{h264,hevc}` (plus `av1` / `vp9` on a set whose codec table lists that decoder's row) × `{aac,ac3,eac3,dts}` (plus `flac`, `alac` and `pcm`, decoded in the app and fed as PCM) in mkv/mp4/m4v. Auto intersects this
+software set with the device table, per-codec channel ceilings and a 48 kHz sample-rate ceiling
+(`devcaps::AUDIO_RATE_CEILING`, #951; DTS excepted); DTS requires a measured
 DTS row and feeds only the DTS core when an HD extension is present. PMS names DTS `dca`:
 `devcaps::audio_codec_id` folds it (and `ec-3`) onto the pipeline's `dts` at membership and at
 the Load payload, and the profile sends `dca` (`transcoder.rs::profile_codec_name`). Force
 Direct Play admits DTS only when the table has a DTS row with channels (`Caps::forced_admits_dts`)
 but skips the channel ceiling. The implemented Load
-strings are `H264`/`H265`/`AV1`/`VP9` (AV1 and VP9 only on a set whose table lists that decoder; elsewhere the Load is refused) and `AC3`/`AC3 PLUS`/`AAC`/`DTS`, plus `PCM` for FLAC decoded in the app; these are not the firmware's whole
+strings are `H264`/`H265`/`AV1`/`VP9` (AV1 and VP9 only on a set whose table lists that decoder; elsewhere the Load is refused) and `AC3`/`AC3 PLUS`/`AAC`/`DTS`, plus `PCM` for FLAC, ALAC and LPCM decoded in the app; these are not the firmware's whole
 vocabulary. The six AC3/EAC3/AAC combinations and H264/DTS are covered
 here, plus DV 8.1, both containers, in-place seek in each, and the FRAME-RATE axis added the same
 day (`pipe_h264_1080p5994` is the only fixture that reaches `fps_rational`'s 1001-denominator

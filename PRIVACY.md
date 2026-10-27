@@ -90,8 +90,8 @@ sent as usage events. Disabling crash reports removes the local trace.
 When the television's own crash reporter leaves nothing for a crash that was a native fault (a
 signal such as a segmentation fault), PlxNative sends a simpler report built from its own crash
 log instead. It carries the same kernel name and release, webOS and hardware compatibility
-details as a native report (plus the same `probe` fact described for playback-error reports
-below), and the file name (never the folder) and build identifier of each
+details as a native report (plus the same `probe` fact and the exact firmware `build` described
+for playback-error reports below), and the file name (never the folder) and build identifier of each
 library (a library of the television's firmware or one bundled with PlxNative) the faulting
 address and the return address were in, with the library's load address and size. A library that
 has no build identifier (the television's own C library has none) is still named, with its load
@@ -107,7 +107,7 @@ When the crash was a Rust panic rather than a fault, the fallback report is smal
 source file and line of the panic, a hash of the panic message (the message itself is never sent),
 the app version and build identifier of PlxNative, the `environment` label of the build (`production`
 or `development`), the time of the panic (read and bounded as above), the same kernel name and release,
-webOS and hardware compatibility details (including the `probe` fact) that the fault fallback report carries, and
+webOS and hardware compatibility details (including the `probe` fact and the firmware `build`) that the fault fallback report carries, and
 the Crash report ID below. It carries none of the library details above.
 
 A main-thread freeze (the app not responding for five seconds or more while it is open on screen) is reported like a crash, under the same choice: code addresses and register values, one of three duration ranges (5 to 10 s, 10 to 30 s, 30 s or more) or "unrecovered", and the details above, without stopping the app.
@@ -138,13 +138,14 @@ most 32 typed playback transitions with bucketed elapsed times. It contains no t
 URL, path, playhead, duration, exact bitrate, server identity, address, token, account or profile,
 and is not joined to the product analytics identifier or `playback_id`. It carries the same Crash
 report ID as a crash report, and the same television model, SoC, hardware revision, webOS release
-and the `rtkmem`/`install` sandbox facts a crash report carries. It also carries a `probe` fact:
+and the `rtkmem`/`install` sandbox facts a crash report carries, plus the exact firmware `build`
+beside the webOS release. It also carries a `probe` fact:
 two fixed words, each `ok`, `no_keys`, `unreadable` or `unprobed` (the boot probe had not run yet), one for each of the two firmware information
 files the television model and webOS release are read from (`probe` is `ok/ok` when both
 answered), saying why that model, SoC or release is empty when it is. Buffering, seeking, holding
 a low quality, or rejecting an adaptive-bitrate candidate does not by itself send a report.
 The closed diagnostic vocabulary includes terminal kinds such as `playback_interrupted` and
-`original_rollback`; HLS direction `refresh`; delivery reasons `original_open_rollback` and `quality_pick`; and
+`original_rollback`; HLS direction `refresh`; delivery reasons `original_open_rollback`, `quality_pick` and `refusal_recovery`; and
 Original-check outcomes `started`, `succeeded`, `no_body`, `deadline`, `transport`,
 `inconclusive`, `server_state` and `refused`.
 
@@ -209,6 +210,16 @@ reported by its documented class, never as itself); the delivery the app had ask
 because the refused plan never installed a route); and the source file's video codec
 (`unknown` / `h264` / `hevc` / `av1` / `vp9` / `mpeg2` / `other`) and audio codec (`unknown` /
 `aac` / `ac3` / `eac3` / `truehd` / `dts` / `flac` / `mp3` / `opus` / `other`).
+
+When the app recovers from the television refusing a video before its first picture (by having
+the server convert the refused stream, by having the server encode the video and convert the audio,
+by falling back to adaptive streaming, or by restoring the route it replaced), the same choice
+also covers one small `refusal_recovered` report per play, which contains only the codec class of the refused stream (the video's or audio's closed codec
+list above, or `unknown`), a channel bucket for refused audio (`unknown` / `1-2` / `3-6` / `7+`),
+the whole error number the television's video pipeline gave or the word `timeout` or `stall`, and
+which rung played (`facet` / `hls` / `rollback` / `encode`), beside the Crash report ID and the
+television facts above (including the exact firmware `build`, for example `6.5.3-47`), and nothing else of the
+playback: no title, ratingKey, URL, path, server, picture size, trace or timing.
 
 The same choice also covers a **sign-in problem report** when signing in fails. It contains the
 `kind` of sign-in step that failed — or, when the failure was inside the app rather than on the

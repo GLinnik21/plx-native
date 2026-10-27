@@ -453,7 +453,7 @@ plx_base::dynlib! {
     fn avcodec_receive_packet(ctx: *mut AVCodecContext, pkt: *mut AVPacket) -> c_int;
     fn avcodec_parameters_from_context(par: *mut AVCodecParameters, ctx: *const AVCodecContext) -> c_int;
     fn av_packet_rescale_ts(pkt: *mut AVPacket, tb_src: AVRational, tb_dst: AVRational);
-    // Audio decode, send/receive API: playback speed (`SpeedDecoder`) and FLAC → PCM (`ff_pcm`).
+    // Audio decode, send/receive API: playback speed (`SpeedDecoder`) and lossless → PCM (`ff_pcm`).
     fn avcodec_send_packet(ctx: *mut AVCodecContext, pkt: *const AVPacket) -> c_int;
     fn avcodec_receive_frame(ctx: *mut AVCodecContext, frame: *mut c_void) -> c_int;
     fn avcodec_find_decoder_by_name(name: *const c_char) -> *const AVCodec;
@@ -838,9 +838,9 @@ const OFF_AFRAME_NB_CHANNELS: usize = 384 + 4;
 /// **The audio decoder a playback-speed session runs** (`crate::speed_audio`): the selected audio
 /// stream decoded in software, downmixed to stereo and time-stretched to `permille`, then fed as
 /// PCM AUs. Exists only while the speed is not 1x; at 1x the compressed audio goes to the TV as it
-/// always has, except FLAC, which `ff_pcm::PcmDecoder` decodes and feeds as PCM. At a speed this
-/// decoder takes FLAC too and `PcmDecoder` is not opened. Opened per demux run from the stream's
-/// own codec parameters.
+/// always has, except the app-decoded lossless set (FLAC, ALAC, LPCM), which `ff_pcm::PcmDecoder`
+/// decodes and feeds as PCM. At a speed this decoder takes those too and `PcmDecoder` is not
+/// opened. Opened per demux run from the stream's own codec parameters.
 pub(crate) struct SpeedDecoder {
     ctx: *mut AVCodecContext,
     frame: *mut c_void,
@@ -1899,6 +1899,8 @@ fn arm_active_stall_guard(
 mod acquisition;
 #[path = "ff_subs.rs"]
 mod subs;
+#[path = "ff_native_audio.rs"]
+pub(crate) mod native_audio;
 #[path = "ff_subside.rs"]
 pub(crate) mod subside;
 use subs::{SubKind, SubTracks};
@@ -8602,6 +8604,46 @@ mod audio_codec_name_tests {
     }
 }
 
+/// PURE: whether the demuxer would hand the TV this stream's packets RAW although the Load declared
+/// PCM. `pcm_declared`: `pcm_out()` is set (1x, an app-decoded codec was planned); `audio_fed`:
+/// audio goes to the TV at all; `app_decoded`: the stream's own FFmpeg codec has an app decoder
+/// (`devcaps::app_decoded_by_ffmpeg_name`, and for a lossy one the Load's lossy claim).
+///
+/// The planner's `pcm` is PMS's spelling and covers LPCM flavours the app cannot decode (float,
+/// 8-bit); the TV reads raw bytes under a PCM Load as the declared S16/S32, which is full-scale
+/// noise or the wrong speed with no error. Such a stream must be refused, never fed.
+fn pcm_load_feeds_raw(pcm_declared: bool, audio_fed: bool, app_decoded: bool) -> bool {
+    pcm_declared && audio_fed && !app_decoded
+}
+
+#[cfg(test)]
+mod pcm_load_guard_tests {
+    use super::pcm_load_feeds_raw;
+
+    /// Every FFmpeg codec name a track PMS calls `pcm` (or any other planned-as-PCM track) can
+    /// open as, under a PCM Load: only the ones with an app decoder may go on.
+    #[test]
+    fn a_pcm_load_never_feeds_a_stream_the_app_cannot_decode() {
+        for (name, decodable) in [
+            ("flac", true), ("alac", true), ("pcm_s16le", true), ("pcm_s24be", true), ("pcm_s32le", true),
+            ("pcm_f32le", false), ("pcm_f64le", false), ("pcm_s8", false), ("pcm_u8", false),
+            ("pcm_bluray", false), ("pcm_dvd", false), ("ac3", false), ("eac3", false), ("aac", false),
+            ("dts", false),
+        ] {
+            let app_decoded = plx_platform::devcaps::app_decoded_by_ffmpeg_name(name).is_some();
+            assert_eq!(app_decoded, decodable, "{name}: the table the guard reads");
+            assert_eq!(pcm_load_feeds_raw(true, true, app_decoded), !decodable, "{name}");
+        }
+    }
+
+    #[test]
+    fn only_a_pcm_load_that_feeds_audio_is_guarded() {
+        assert!(!pcm_load_feeds_raw(false, true, false), "a native Load feeds compressed audio as it always did");
+        assert!(!pcm_load_feeds_raw(true, false, false), "no audio fed (the dev video-only switch)");
+        assert!(!pcm_load_feeds_raw(true, true, true), "decoded in the app");
+    }
+}
+
 #[cfg(test)]
 mod averror_errno_tests {
     use super::*;
@@ -9218,32 +9260,53 @@ pub fn demux(
                 // stretched and fed as PCM. A stream with no bundled decoder cannot honour it — the
                 // engine refused the speed at Load (`player::session_rate`), so this is a guard.
                 let speed_permille = SHARED.applied_rate_permille.load(Ordering::Relaxed);
-                // App-decoded audio (FLAC): decode to the PCM the Load declared, or refuse the
-                // stream — the Load and the file must agree, or the panel plays the wrong pitch.
-                // Not at a speed: that session's Load declares the speed decoder's own PCM
-                // (`engine::app_pcm_for_rate`), `SpeedDecoder` below decodes the FLAC too, and the
-                // two must never both decode one stream.
-                let flac_audio = ai >= 0 && std::ffi::CStr::from_ptr(avcodec_get_name(
-                    (*stream_codecpar(*streams.add(ai as usize))).codec_id
-                )).to_bytes() == b"flac";
+                // App-decoded audio (FLAC, ALAC, LPCM: `devcaps::APP_DECODED`): decode to the PCM the
+                // Load declared, or refuse the stream — the Load and the file must agree, or the
+                // panel plays the wrong pitch. Not at a speed: that session's Load declares the
+                // speed decoder's own PCM (`engine::app_pcm_for_rate`), `SpeedDecoder` below decodes
+                // it too, and the two must never both decode one stream.
+                let app_decoded = if ai >= 0 {
+                    let name = std::ffi::CStr::from_ptr(avcodec_get_name(
+                        (*stream_codecpar(*streams.add(ai as usize))).codec_id
+                    )).to_string_lossy();
+                    plx_platform::devcaps::app_decoded_by_ffmpeg_name(&name).map(|_| name.into_owned())
+                } else {
+                    None
+                };
+                // The Load said PCM but this stream has no app decoder (float or 8-bit LPCM under
+                // PMS's `pcm`): refuse it the way an open refusal ends. Fed raw, the TV would play
+                // it as the declared S16/S32 — noise, with no error to recover from.
+                if ai >= 0 && pcm_load_feeds_raw(
+                    pcm_out().is_some(), FEED_AUDIO.load(Ordering::Relaxed), app_decoded.is_some(),
+                ) {
+                    let name = std::ffi::CStr::from_ptr(avcodec_get_name(
+                        (*stream_codecpar(*streams.add(ai as usize))).codec_id
+                    )).to_string_lossy();
+                    crate::player::log(&format!(
+                        "ff: {name} refused — the Load declared PCM but the app has no {name} decoder"
+                    ));
+                    SHARED.demux_failed.store(true, Ordering::Release);
+                    avformat_close_input(&mut fmt);
+                    free_avio(avio);
+                    break;
+                }
                 let mut pcm_dec: Option<crate::ff_pcm::PcmDecoder> = None;
-                if flac_audio
-                    && FEED_AUDIO.load(Ordering::Relaxed)
-                    && speed_permille == crate::player::RATE_NORMAL
-                {
+                if let Some(name) = app_decoded.as_deref().filter(|_| {
+                    FEED_AUDIO.load(Ordering::Relaxed) && speed_permille == crate::player::RATE_NORMAL
+                }) {
                     let opened = match pcm_out() {
                         Some(out) => crate::ff_pcm::PcmDecoder::open(
                             stream_codecpar(*streams.add(ai as usize)), out,
                         ),
-                        None => Err("the Load declared no PCM for a FLAC track".to_string()),
+                        None => Err(format!("the Load declared no PCM for a {name} track")),
                     };
                     match opened {
                         Ok(d) => {
-                            crate::player::log("ff: FLAC -> PCM decoding on");
+                            crate::player::log(&format!("ff: {name} -> PCM decoding on"));
                             pcm_dec = Some(d);
                         }
                         Err(why) => {
-                            crate::player::log(&format!("ff: FLAC refused — {why}"));
+                            crate::player::log(&format!("ff: {name} refused — {why}"));
                             SHARED.demux_failed.store(true, Ordering::Release);
                             avformat_close_input(&mut fmt);
                             free_avio(avio);
@@ -9266,6 +9329,21 @@ pub fn demux(
                 } else {
                     None
                 };
+                // Opus goes to the television's own decoder (`ff_native_audio.rs`; its header travels
+                // in the Load). What is fed natively is recorded for the player, which learns a
+                // refusal from it. FLAC, ALAC and LPCM are decoded in the app (`pcm_dec`) and are not native.
+                if ai >= 0 && FEED_AUDIO.load(Ordering::Relaxed) && speed_dec.is_none() {
+                    let acp = stream_codecpar(*streams.add(ai as usize));
+                    let aname = std::ffi::CStr::from_ptr(avcodec_get_name((*acp).codec_id)).to_string_lossy().into_owned();
+                    if let Some(kind) = native_audio::Kind::from_ffmpeg_name(&aname) {
+                        let channels = u32::try_from((*acp).ch_layout.nb_channels).unwrap_or(0);
+                        crate::player::log(&format!(
+                            "ff: {aname} fed to the TV's own decoder (channels={channels} rate={})",
+                            (*acp).sample_rate
+                        ));
+                        native_audio::publish_fed(kind, channels);
+                    }
+                }
                 let dur = fmt_duration(fmt);
                 if dur > 0 {
                     SHARED
@@ -9666,7 +9744,10 @@ pub fn demux(
                             let pcm = match dec.decode(pkt) {
                                 Ok(pcm) => pcm,
                                 Err(why) => {
-                                    crate::player::log(&format!("ff: FLAC decode failed — {why}; refusing audio feed"));
+                                    crate::player::log(&format!(
+                                        "ff: {} decode failed — {why}; refusing audio feed",
+                                        app_decoded.as_deref().unwrap_or("audio")
+                                    ));
                                     SHARED.demux_failed.store(true, Ordering::Release);
                                     SHARED.demux_io_failed.store(true, Ordering::Release);
                                     av_packet_unref(pkt);
@@ -9971,6 +10052,10 @@ mod subtitle_charset_tests;
 #[cfg(test)]
 #[path = "ff_redirect_tests.rs"]
 mod redirect_tests;
+
+#[cfg(test)]
+#[path = "ff_pcm_decode_tests.rs"]
+mod pcm_decode_tests;
 
 #[cfg(test)]
 #[path = "ff_late_audio_tests.rs"]

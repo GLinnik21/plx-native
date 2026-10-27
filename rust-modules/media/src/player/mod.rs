@@ -31,6 +31,7 @@ pub mod lifecycle;
 pub mod machine;
 pub mod playurl; // the `plxnative-playurl` dev trigger: a stream and its Load declaration, parsed beside the engine that acts on it
 pub mod preview;
+pub mod recovery; // the failed-open ladder (pure machine); `pump` drives it
 // `test` here is THIS crate's own test build only, not `any(test, feature = "test-support")`: the
 // application crate's `port.rs` names `StarfishSink` in every build of its library that is not its
 // own test build, and `cargo check --lib --tests` builds that library with this crate's
@@ -40,6 +41,8 @@ pub mod preview;
 pub mod ffi;
 #[cfg(feature = "hostsim")]
 pub mod ffi_host;
+mod era_callbacks; // the one diagnostic line for an era-chosen sink counter that never arrives (pure state)
+mod native_stall; // the surround native-audio stall watchdog (pure state) and the AU size evidence line
 mod pump;
 pub mod report;
 #[cfg(all(test, feature = "hostsim"))]
@@ -253,10 +256,13 @@ pub const ABR_WHY_SWITCH_COST: u8 = 14;
 ///   (`_ZN17StarfishMediaAPIs4SeekEPKc`, present on every firmware 1.2 to 11.2): a flushing
 ///   `gst_element_seek` whose segment starts at the millis passed. No private offset, no
 ///   `flush()` (Seek flushes itself, and a `flush()` after it re-anchors the segment at 0 — the
-///   stale-segment stall), no decoder re-init. This is what `VP_EXPORTED` (webOS 5+) uses.
+///   stale-segment stall), no decoder re-init. This is what `VP_EXPORTED` (webOS 5+) uses, and
+///   a known webOS 3 release on the ACB plane, whose old-ABI library `Segment` cannot assume
+///   (`engine::old_abi_seek_tested`).
 /// - [`Reload`](SeekMode::Reload) — a full fresh Starfish `Load` per seek (`engine::reload_at`),
-///   built out of Load/Play alone and assuming no layout at all: the old-ABI (3.x) libraries, and
-///   the fallback both of the others drop to.
+///   built out of Load/Play alone and assuming no layout at all: the fallback both of the others
+///   drop to, and every layout-unknown library `NativeSeek` is not tested on (webOS 2, an old-ABI
+///   4.x build, an unknown release) or a set with no video plane.
 ///
 /// SCOPE: this is a **per-session mode, not a device-capability latch**, and
 /// `engine::start_bufferfeed` re-selects it for every new session. The one exception is a refused
@@ -340,6 +346,11 @@ static PTYPE: AtomicI32 = AtomicI32::new(10); // g_ptype (PLAYER_TYPE_MSE)
 /// (`"VDEC resource is released by policy action"`). See `Shared::decoder_revoked`.
 const DECODER_REVOKED_BY_POLICY: i64 = 600;
 
+/// `type=18`'s `num` for `"Audio Codec Not Supported"`: libpf's `handleBusWarningMessage` raises it
+/// when a gst stream warning (`GST_STREAM_ERROR_CODEC_NOT_FOUND`) names audio. Every native Vorbis
+/// Load on a C1 ended in it (2026-10-21).
+const AUDIO_CODEC_NOT_SUPPORTED: i64 = 200;
+
 /// `PF_EVENT_TYPE_STR_STATE_UPDATE__ENDOFSTREAM` (0x1c): the last numbered type before the
 /// renumbering between webOS 4 and 5+, so the same on both. See `Shared::pipeline_eos`.
 const PIPELINE_END_OF_STREAM: c_int = 28;
@@ -364,7 +375,7 @@ pub fn clock_user_held_for_test() -> bool {
 }
 
 pub use engine::{
-    acb_init, begin_resume, land_resume, start_bufferfeed, start_bufferfeed_tracked, stop_bufferfeed,
+    acb_init, begin_resume, foreground_follows_load, land_resume, start_bufferfeed, start_bufferfeed_tracked, stop_bufferfeed,
     suspend_bufferfeed, suspend_bufferfeed_if_attempt, BufferfeedStartOutcome, ResumeOutcome, ResumeStart,
 };
 
@@ -717,6 +728,10 @@ pub fn abandon_seek() {
 pub fn loading(ps: &crate::route::PlaybackSession) -> bool {
     state(ps).is_busy()
 }
+/// Runtime rebuffering, distinct from the brief Buffering state after seek priming.
+pub fn rebuffering() -> bool {
+    SHARED.hls_rebuffering.load(Relaxed)
+}
 /// true only while the pipeline is actually presenting frames — not resolving, connecting,
 /// buffering or seeking. app.rs gates the heartbeat's `pos=` field on this: on a **direct-play**
 /// resume `begin_resume` only arms the seek (it does not seed `playpos_ns`, unlike the transcode
@@ -752,6 +767,7 @@ pub fn state(ps: &crate::route::PlaybackSession) -> shared::PlaybackState {
         || ps.native_start_refused
         || crate::route::play_refused(ps)
         || crate::route::play_resolution_failed(ps)
+        || crate::route::engine_failure(ps).is_some()
     {
         return shared::PlaybackState::Error;
     }
@@ -1039,7 +1055,7 @@ pub struct ErrorShape {
 /// variant is backed by a distinct signal the worker already publishes, so the HUD never parses
 /// log strings or guesses from elapsed time.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum RuntimeFailure {
+pub(crate) enum RuntimeFailure {
     /// No worker supplied a cause. Say that honestly rather than leaving the reason slot blank.
     Unknown,
     /// The producer never opened a usable media stream or produced a video access unit.
@@ -1077,6 +1093,18 @@ fn runtime_failure(
     } else {
         RuntimeFailure::Unknown
     }
+}
+
+/// The cause the worker signals publish right now: what [`error_now`] reads while an Engine is up,
+/// and what a failed Engine freezes into the session as it is released.
+fn live_runtime_failure(ps: &crate::route::PlaybackSession) -> RuntimeFailure {
+    runtime_failure(
+        SHARED.demux_failed.load(std::sync::atomic::Ordering::Acquire),
+        SHARED.demux_io_failed.load(std::sync::atomic::Ordering::Acquire),
+        SHARED.load_failed.load(Relaxed),
+        // The refused start's cause: an abandoned Load exists only after the budget fired.
+        SHARED.load_timed_out.load(Relaxed) || ps.native_start_refused,
+    )
 }
 
 /// The read-out for [`FailureKind::JailMissingRtkmem`] — the one `ErrorShape` not produced by
@@ -1258,24 +1286,13 @@ pub fn error_now(ps: &crate::route::PlaybackSession) -> ErrorShape {
     if ps.jail_load_blocked {
         return jail_error_shape();
     }
-    let demux_failed = SHARED
-        .demux_failed
-        .load(std::sync::atomic::Ordering::Acquire);
-    let demux_io_failed = SHARED
-        .demux_io_failed
-        .load(std::sync::atomic::Ordering::Acquire);
     with_forced_playback_context(error_shape(
         SHARED.demux_no_video.load(Relaxed),
         crate::route::is_transcoding(ps),
         playing_subscription(&ps),
         crate::route::play_verdict(ps).as_deref(),
-        runtime_failure(
-            demux_failed,
-            demux_io_failed,
-            SHARED.load_failed.load(Relaxed),
-            // The refused start's cause: an abandoned Load exists only after the budget fired.
-            SHARED.load_timed_out.load(Relaxed) || ps.native_start_refused,
-        ),
+        // The cause a released Engine left behind, else the live worker signals.
+        crate::route::engine_failure(ps).unwrap_or_else(|| live_runtime_failure(ps)),
     ), crate::route::forced_direct_play(ps))
 }
 
@@ -1543,7 +1560,8 @@ impl Diag {
             2 => "AC3 PLUS",
             3 => "AAC",
             4 => "DTS",
-            5 => "PCM (decoded FLAC)",
+            5 => "PCM (decoded in the app)",
+            6 => "OPUS",
             _ => "NONE (needAudio:false)",
         }
     }
@@ -2419,6 +2437,14 @@ fn sink_counter_kind(ty: c_int, major: u32) -> Option<SinkCounter> {
     }
 }
 
+/// The raw callback type [`sink_counter_kind`] reads as the displayed-frame counter on this major,
+/// found through it so the two cannot drift apart.
+fn displayed_counter_type(major: u32) -> c_int {
+    (46..=49)
+        .find(|&ty| sink_counter_kind(ty, major) == Some(SinkCounter::Displayed))
+        .unwrap_or(0)
+}
+
 fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::EventScope) {
     if scope == shared::EventScope::Release {
         // The lifecycle evidence of an object being released after the main thread reset the
@@ -2469,8 +2495,14 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::Event
         // 46/47 on this set are 48/49 on a webOS 5+ set. The harness reads THIS line, never
         // the raw type.
         match sink_counter_kind(ty, plx_platform::tv::device::info().major) {
-            Some(SinkCounter::Displayed) => log(&format!("sink: displayed={num} (type={ty})")),
+            Some(SinkCounter::Displayed) => {
+                SHARED.dg_sink_displayed_cb.fetch_add(1, Relaxed);
+                log(&format!("sink: displayed={num} (type={ty})"));
+            }
             Some(SinkCounter::Dropped) => log(&format!("sink: dropped={num} (type={ty})")),
+            None if (46..=49).contains(&ty) => {
+                SHARED.dg_sink_other_cb.fetch_add(1, Relaxed);
+            }
             None => {}
         }
         // **A refusal before the first picture is a VERDICT, not a statistic.** Until 2026-09-03
@@ -2482,8 +2514,10 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::Event
         // and the failure read-out — the one screen built to survive a phone photograph — never
         // ran, for ~70 s, on the failure it most exists for. Publishing the same flag the
         // synchronous refusal publishes (`threads::load_thread` on `sf_load == 0`) hands it to the
-        // pump's existing `load_failed` arm: HLS rollback if one is pending, else `Error` with
-        // `FailureKind::TvPipeline`.
+        // pump's existing `load_failed` arm, whose failed-open ladder (`recovery::OpenRecovery`)
+        // picks: the HLS rollback if one is pending, else the conversion of a stream the attempt can
+        // do without (the DTS of #695), else the cold Auto Original's HLS contingency, else `Error`
+        // with `FailureKind::TvPipeline`.
         //
         // Scoped to `!seen_frame` — SESSION-scoped, never `frames == 0`, which a seek zeroes (see
         // player/CLAUDE.md, "`frames` is SEEK-scoped"). A `loadCompleted` already received is NOT
@@ -2498,6 +2532,9 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::Event
                 "smp: Load refused by the pipeline before any picture (type=18 num={num}) — failing the source"
             ));
             SHARED.load_failed.store(true, std::sync::atomic::Ordering::Release);
+            if num == AUDIO_CODEC_NOT_SUPPORTED && crate::ff::native_audio::fed().is_some() {
+                SHARED.native_audio_refused.store(true, std::sync::atomic::Ordering::Release);
+            }
         } else if ty == 18 && num == DECODER_REVOKED_BY_POLICY {
             // **After a picture, ONE number is measured: the decoder taken back.** A paused direct
             // play left until the screensaver came on (dev set, 2026-10-13) got exactly this, with
@@ -2544,6 +2581,7 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::Event
             SHARED.dg_vpres_gap.fetch_max(gap, Relaxed);
         }
         SHARED.frames.fetch_add(1, Relaxed);
+        SHARED.dg_pos_ticks.fetch_add(1, Relaxed);
         SHARED.seen_frame.store(true, Relaxed); // session-scoped: unlike `frames`, a seek won't clear it
         // the rebuild an audio pick asked for has put its picture up: the switch is over
         let _ = SHARED.audio_switch.compare_exchange(
@@ -3032,6 +3070,55 @@ mod tests {
         );
         SHARED.retire_native_session(epoch);
         SHARED.reset_session();
+    }
+
+    /// **`type=18 num=200` is a native AUDIO refusal only when the session fed audio natively.**
+    /// A C1 refuses every Vorbis Load with it (2026-10-21); the same number on an AC3 file, or any
+    /// other `num` (601 is a resource allocation error), is not evidence about the audio, and
+    /// after a picture it is a statistic.
+    #[test]
+    fn a_native_audio_refusal_is_flagged_only_for_audio_fed_natively_before_a_picture() {
+        use std::sync::atomic::Ordering::Acquire;
+        let _guard = plx_base::testlock::serial();
+        let native = || {
+            crate::ff::native_audio::reset();
+            crate::ff::native_audio::publish_fed(crate::ff::native_audio::Kind::Opus, 2);
+        };
+        let flagged = || SHARED.native_audio_refused.load(Acquire);
+        let refuse = |epoch: u32, num: i64| sf_on_event(epoch, 18, num, c"Audio Codec Not Supported".as_ptr());
+
+        // Native audio fed, num 200, no picture: flagged (and the Load is failed as ever).
+        SHARED.reset_session();
+        native();
+        let epoch = SHARED.begin_native_session().expect("session");
+        refuse(epoch, 200);
+        assert!(flagged() && SHARED.load_failed.load(Acquire));
+        SHARED.retire_native_session(epoch);
+
+        // Another number, or no native audio: not flagged.
+        SHARED.reset_session();
+        native();
+        let epoch = SHARED.begin_native_session().expect("session");
+        refuse(epoch, 601);
+        assert!(!flagged() && SHARED.load_failed.load(Acquire));
+        SHARED.retire_native_session(epoch);
+        SHARED.reset_session();
+        crate::ff::native_audio::reset();
+        let epoch = SHARED.begin_native_session().expect("session");
+        refuse(epoch, 200);
+        assert!(!flagged(), "the audio was not fed natively");
+        SHARED.retire_native_session(epoch);
+
+        // After a picture: a statistic, not a verdict.
+        SHARED.reset_session();
+        native();
+        let epoch = SHARED.begin_native_session().expect("session");
+        sf_on_event(epoch, 0, 7_000_000_000, std::ptr::null());
+        refuse(epoch, 200);
+        assert!(!flagged());
+        SHARED.retire_native_session(epoch);
+        SHARED.reset_session();
+        crate::ff::native_audio::reset();
     }
 
     /// **The pipeline's end-of-stream is reported once there is a picture.** C1 event log,
@@ -4264,8 +4351,9 @@ mod native_failure_regressions {
 }
 
 /// The two halves of "the playbar jumps on a seek", reported on an LG C3 (webOS 23), where
-/// before #568 every seek was a reload. The guard still applies to `Reload` mode (old-ABI 3.x, a
-/// refused native `Seek`).
+/// before #568 every seek was a reload. The guard still applies to every reload-based seek: `Reload`
+/// mode (a refused native `Seek`, `sendSegment=0`, an untested old-ABI release), a stuck in-place
+/// seek's reload, and every seek at a speed other than 1x.
 #[cfg(test)]
 mod seek_hud_regressions {
     use super::*;
