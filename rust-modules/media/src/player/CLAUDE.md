@@ -525,43 +525,62 @@ something.
   1x every direct-play seek reloads in every mode (`pump::seek_must_reload`). `play_rate_permille` is the
   viewer's choice and persists across reloads; `applied_rate_permille` is the current pipeline's and is
   reset by `reset_session`. The feed throttle's run-on reads the applied one (`FeedPace::reference_at`).
-- **A Load that declares `"audio":"PCM"` on one of LG's two audio stacks has its audio fed later than the
-  picture it belongs with: on `liblxa` by an amount that follows the sound output (400 ms on the TV
-  speakers, 250 ms on Bluetooth headphones), on `lgaudiosink` (webOS 11 on LG's chip, #1092) 400 ms on every
-  output; a set on any other or an unknown stack gets no lead at all** (#1086, #1088, #1092; FLAC and
-  every other app-decoded codec, and a speed session at any speed other than 1x; a compressed Load, DTS
-  included, gets none).
-  *Where it applies, and why only there:* the 400 ms and the wireless 150 ms are compiled into LG's
-  renderer, which ships in two forms: the library `liblxa` (with its GStreamer sink `libgstlxaudiosink`) and,
-  on webOS 11, the same code renamed `lgao_*` inside the sink `libgstlgaudiosink.so`. So the lead corrects a
-  cause that is known to exist only where that renderer is. The 14 firmware inventories behind
-  `tools/fwcompat.py` (`~/.cache/plxnative/fwsym/data`): `liblxa.so.2.0.0` on webOS 7.4, 8.3 and 9.2 with the
-  same lip-sync exports as the dev set (the newer ones add an eARC variant of the output-type lookup), the
-  dev set (4.10.2) has it on the device, and Realtek's `libgstrtkaudio-1.0` instead on 4.10.0, 5.3.1, 6.4.0
-  and 10.2.0 (neither on 1.2.0 to 4.4.2; on 11.2.0 `liblxa.so.2` is absent, see below). The inventories list
-  `/usr/lib` only, so they cannot show a GStreamer plugin: the `libgstlgaudiosink.so` finding is from the
-  2022 and 2023 OLED 11.2.0 firmware images themselves. One webOS version spans several stacks, so the
-  firmware version cannot decide it. `devcaps::audio_stack()` is the one device fact, probed at boot
-  (`devcaps::probe`, on the `devcaps:` line as `audio stack=`): `Liblxa` when `/usr/lib/liblxa.so.2` exists,
-  else `LgAudioSink` (label `lgaudiosink`) when `/usr/lib/gstreamer-1.0/libgstlgaudiosink.so` exists (both
-  stats, not symbol lookups: our build links LG's libraries through stub `.so` files that define every
-  symbol, so a lookup in our own process proves nothing, and a `dlopen` would run LG's initialisation in
-  the app), `Other` on a device with neither, `Unknown` before `probe` (hosts, hostsim, tests). The values
-  inside `liblxa` are not in the inventories, and another stack's PCM path may already be in step, in which
-  case 400 ms would make it 0.4 s late: so it gets 0 ms (the behaviour before #1087) and the log says `not
-  measured on this chip`. Realtek (`rtkalsasink`) and MStar (`omxaudiosink`) use one sink for both paths, so
-  no lead stays right on them.
-  *The `lgaudiosink` stack (#1092; firmware, NOT filmed, no webOS 11 set exists here):* the same rule as
-  liblxa (lip-sync mode AUTO is ON for the decoder and OFF for a mixer channel; libpf's CustomPipeline never
-  sets the sink's `lipsync` property), and the DSP template is `{150, 150, 400, 5000, 5000}`: an offset
-  field of 400 ms raw. On 4.5 the template was 505 with a +105 bias on the app's value, a 400 ms correction;
-  webOS 11 dropped the +105 in both places, so it is still 400 ms, and the sink's own 475 ms render delay is
-  applied on both paths and cancels. The per-output table (`LIPSYNC_OFFSET_VALUES`) is still exported but
-  nothing reads it; per-output adjustment moved to the VIDEO plane (avSync keys by `soundOutput`), which
-  moves both paths equally. So the lead is 400 ms on EVERY output, Bluetooth included, and the output is
-  not read. Owner decision: no
-  re-encoding to a codec the set decodes itself; playback stays straight and lossless, which is why the lead
-  is the mechanism.
+- **A Load that declares `"audio":"PCM"` on one of LG's audio stacks has its audio fed later than the
+  picture it belongs with, by an amount the stack decides; a set on no LG stack, or an unknown one, gets
+  no lead at all** (#1086, #1088, #1092, #1093; FLAC and every other app-decoded codec, and a speed
+  session at any speed other than 1x; a compressed Load, DTS included, gets none).
+  *Which stack:* `devcaps::audio_stack()` fingerprints it at boot (`devcaps::probe`, the `devcaps:` line's
+  `audio stack=`) by the GStreamer sink PLUGIN, because every one of 19 firmware images (2016 to 2025; LG
+  chips, Realtek, MStar) has exactly one LG sink family in `/usr/lib/gstreamer-1.0/`, no Realtek or MStar
+  image has any of them, and `liblxa.so.2` itself is under the image's `/usr/lib` on none (it is in the BSP
+  partition, `/mnt/bsppart/bsp/usr/lib`, found through `ld.so.conf`; the dev set's own firmware too,
+  although its runtime stat of `/usr/lib/liblxa.so.2` answered yes: the runtime layout is not the
+  image's). Each probe step is a stat, never a symbol lookup (our build links LG's libraries through stub
+  `.so` files that define every symbol) and never a `dlopen` (it would run LG's initialisation in the
+  app). The first present file decides, in this order (OTA IDs and releases are firmware read by hand and
+  by decompile passes, cited as reasoning, never pasted):
+
+  | Stack (label) | Present | Sets | The lead (`engine::pcm_output_lead`) | Evidence |
+  |---|---|---|---|---|
+  | `Liblxa` (`liblxa`) | `libgstlxaudiosink.so` or `/usr/lib/liblxa.so.2` | 2019-2021 LG chips (dev set W19H 4.10.2), 2022/23 OLEDs before webOS 11 | `tv_speaker` 400 and `bt_soundbar` 250 (both MEASURED), any other output or none 400 (not measured) | dev set 505 with +105 = 400; W21O 6.5.3: template 400 raw, no +105, effective 400 by the same convention, its per-output walk still there |
+  | `LgAudioSink` (`lgaudiosink`) | `libgstlgaudiosink.so` | 2022/23 OLEDs on webOS 11 (W22O 11.2.0-74, W23O 11.2.0-3711), 2024 OLED (W24G 9.2.4), 2025 OLED (W25G 10.3.1) | 400 on every output, no read (not measured) | template `{150,150,400,5000,5000}`, 400 raw, no bias |
+  | `AudioSinkNew` (`audiosink_new`) | `libgstaudiosink_new-1.0.so` | 2018 LG chips, webOS 4.4.3 (OLED C8 W18O, LCD SK8500 W18H) | follows the output like `Liblxa` (400 / `bt_soundbar` 250 / else 400), ALL cells not measured | `libkadaptor`: default DSP offset 475 with a +75 app bias = 400 (hand-verified; 4.5: 505 with +105, also 400); AUTO plus a mixer channel turns lip sync off (hand); a decoder-only -150 ms for a wireless output (decompile only) => Bluetooth 250 |
+  | `AdecSink` (`adecsink`) | `libgstaudiosink-1.0.so`, checked AFTER `_new` (2018 ships both) | 2016 OLED 3.4.3 (W16M), 2017 OLED 3.9.2 (W17H) | NO lead (0, no read), logged `not measured on this chip` | 2017's 442/472 ms has no bias constant, so differential and DSP bias cannot be split; on 2016 the AUTO/mixer rule is not in the plugin (decided above it, not determined) |
+  | `Other` (`other`) | none of them | Realtek, MStar | none | see below |
+
+  The label `adecsink` exists so a tester's log names the stack and `pcmavoffset` can measure it.
+  `Unknown` is before `probe` (hosts, hostsim, tests). The `tools/fwcompat.py` inventories list `/usr/lib`
+  only (14 of them, `~/.cache/plxnative/fwsym/data`), so they cannot show a plugin; the firmware images
+  are the evidence. One webOS version spans several stacks (the 2022/23 OLEDs are `liblxa` up to webOS 9
+  and `lgaudiosink` on 11), so the firmware version cannot decide it.
+  *Why Realtek and MStar get none:* their lip sync is NOT decoder-only (no mixer-off rule), so there is no
+  decoder-only compensation for the lead to match; it is not that they use one sink for both paths (the
+  `lgaudiosink` stack uses one sink for both too). What was read: Realtek's PCM path is in step on the
+  speakers and its Bluetooth is not determined; MStar may be up to about 128 ms early (its SoC delay
+  floor, the RTC path not verified by hand). A stack whose PCM path was already in step would be made 0.4 s
+  late by 400 ms, so these get 0 ms (the behaviour before #1087) and the log says `not measured on this
+  chip`.
+  *The `lgaudiosink` stack (firmware, NOT filmed, no webOS 11 set exists here):* the same rule as `liblxa`
+  (lip-sync mode AUTO is ON for the decoder and OFF for a mixer channel), and libpf's `CustomPipeline` never
+  sets the sink's `lipsync` property (CONFIRMED on webOS 11: in W22O libpf every cross-reference of the
+  string is inside `GenericPipeline::deepElementAddedCallback`). The template's 400 ms is raw (4.5 was 505
+  with a +105 bias; webOS 11 dropped both), and the sink's own 475 ms render delay is applied on both
+  paths and cancels. That the per-output table (`LIPSYNC_OFFSET_VALUES`) is unreferenced is checked in
+  part only: on W22O it has no relocation and no `movw`/`movt` pair for its address and its getter
+  `lgao_get_delay` has no direct call site (W24G the same); a pc-relative reference was not ruled out.
+  Per-output adjustment moved to the VIDEO plane (avSync keys by `soundOutput`), which moves both paths
+  equally. So the lead is 400 ms on every output, Bluetooth included, and the output is not read. If the
+  table were read after all, Bluetooth would need 250 and this gives it about 150 ms too late.
+  *The one link not proven on webOS 11: the `audio-port` value the `PCMMC` resource reaches the sink with.*
+  The sink's rule is `audio-port == -1` and `mixer-port >= 0` => mixer. In W22O libplayerAPIs
+  `acquireResources` retypes the ADEC entry to `"PCMMC"` in place and libpf `CustomPipeline::setResource`
+  forwards ports verbatim, so the decision and the rule are the same as on 4.5, where the measurement
+  shows the mixer path; the literal value was not read. If it were 0 or 1 the sink would stay off the
+  mixer path, AUTO would resolve to ON, app PCM would get the decoder's own 400 ms and already be in
+  step, and this lead would make every such set 0.4 s late. Check on a set: the sink logs `mixer mode
+  changing %s -> %s` and `mixer-port is %d`.
+  Owner decision: no re-encoding to a codec the set decodes itself; playback stays straight and lossless,
+  which is why the lead is the mechanism.
   *Cause (read from the firmware, not measured):* a Load whose every audio track is `audio/x-raw` is
   allocated its audio as a `PCMMC` mixer channel instead of an `ADEC` decoder (libplayerAPIs
   `allocateResource`, libpf's resource manager renames the resource), and liblxa's `lxao_play`, in its
@@ -585,11 +604,13 @@ something.
   not be divided by the speed. `engine::load_audio` yields the declared audio name and a `PcmLead` plan as
   one value (`Off` for a compressed Load; a speed override makes any codec declare PCM, so it plans a lead);
   `PcmLead::resolve` settles the plan against the output with the table `PCM_LEAD_BY_OUTPUT`, and
-  `engine::pcm_output_lead(stack, output)` is the whole table: `liblxa` + `tv_speaker` 400, `liblxa` +
-  `bt_soundbar` 250, `liblxa` + any other output or no answer `PCM_SINK_LEAD_NS` = 400 (not measured),
+  `engine::pcm_output_lead(stack, output)` is the whole table (the stack table above): `liblxa` +
+  `tv_speaker` 400, `liblxa` + `bt_soundbar` 250, `liblxa` + any other output or no answer
+  `PCM_SINK_LEAD_NS` = 400 (not measured); `audiosink_new` the same three answers, none measured (its plan
+  is `PcmLead::FromOutput(stack)`, as `liblxa`'s, so the stack the log names is the one that was read for);
   `lgaudiosink` + any output or none 400 (not measured; `PcmLead::Fixed`, settled on the frame thread with
-  the lead in the Engine from the start, no read), any other or unknown stack 0 whatever the output
-  (`PcmLead::NoLead`, settled on the frame thread, no read).
+  the lead in the Engine from the start, no read); `adecsink`, other and unknown stacks 0 whatever the
+  output (`PcmLead::NoLead`, settled on the frame thread, no read).
   The `pcmavoffset` dev override (debug builds, read per Load) wins over the table AND the stack, and is how
   another output or another chip gets measured. Content time (`fp`, `max_fed_audio_pts`, `audio_start_fp`, stale-drop, throttle, prime) is
   untouched, so no producer of PCM stamps its own offset.
@@ -598,13 +619,15 @@ something.
   output goes to `threads::load_thread` (the `media` worker, which blocks in `Load` anyway), which reads
   `tv::sound::output` BEFORE `Load` (a `getSystemSettings {"category":"sound","keys":["soundOutput"]}` call
   through the `tv` port, 300 ms budget, `NoPlatform` on hosts), logs `pcm: audio sink pts +<N>ms (stack
-  liblxa, output <name|unknown>, default 400ms[, not measured])` once per Load (the LG audio sink logs `pcm:
-  audio sink pts +400ms (stack lgaudiosink, every output, not measured)` and a stack with no lead logs
-  `pcm: audio sink pts +0ms (stack <other|unknown>, not measured on this chip)`, both from the frame thread), and hands the lead back inside
+  <liblxa|audiosink_new>, output <name|unknown>, default 400ms[, not measured])` once per Load (the
+  `lgaudiosink` stack logs `pcm: audio sink pts +400ms (stack lgaudiosink, every output, not measured)` and
+  a stack with no lead logs `pcm: audio sink pts +0ms (stack <adecsink|other|unknown>, not measured on this
+  chip)`, both from the frame thread), and hands the lead back inside
   `LoadCall::Returned` (`Shared::native_load_pcm_lead`). Nothing is fed before the Load returns, and
   `settle_pcm_lead` takes the lead into the Engine, once, before the first audio unit; until then the audio
   lane waits rather than stamp with a guess it would later move. A compressed Load, an override and a stack
-  that is not `liblxa` (the LG audio sink included) never read the output (the last pays nothing on the bus). A cost to know: on a PCM Load the read sits directly in front of `Load`, so it adds its
+  whose lead does not follow the output (`lgaudiosink` and the stacks with no lead) never read the output
+  (the last pay nothing on the bus). A cost to know: on a PCM Load the read sits directly in front of `Load`, so it adds its
   round trip to time-to-first-frame (its length is in the `sound: output ... read in Nms` line). *Worst
   case:* the 300 ms bounds the CALL only. `ls2::register()` before it and the unregistration after it are
   not bounded (`webos.rs`'s `ls2` doc), and `ls2` has no bounded registration to use instead, so a wedged
@@ -620,17 +643,21 @@ something.
   re-derives its render base at every SEGMENT from the segment and the pipeline clock, never from a
   buffer's pts; no late-drop or gap rule exists. So the relative lead survives an in-place seek and a
   reload. An in-place seek keeps the Engine and its lead; a reload (a Load) reads the output again.
-  *Filmed only on the dev set* (webOS 4.10.2, a `liblxa` set). *Not determined:* every other chip and audio
-  stack (Realtek's `libgstrtkaudio`, whatever the others run: no lead, unmeasured; `pcmavoffset` measures
-  one); the whole `lgaudiosink` stack (webOS 11 on LG's chip: its 400 ms is read from the template and the
-  4.5 measurement, never measured there); LG-chip sets on webOS 3.x (2017, `adecsink`, predicted early too)
-  and on the LG-chip years whose firmware was not read (2016, 2018 to 2021, 2024, 2025): they get no lead;
-  on `liblxa`, any output but the two filmed (optical, ARC, wired headphones, LG Sound Sync, a
-  soundbar with its own latency: they keep 400 ms and the log says "not measured"); an output change in the
-  middle of a playback, which takes effect at the next Load; the user's "AV Sync Adjust" menu, whose effect
-  on a mixer channel is not known; a Bluetooth device whose own latency differs from the filmed one;
-  another sample rate, chip or firmware. Also unfilmed: a seek, and the speed path (it takes the same
-  lead from the same code).
+  *Filmed only on the dev set* (webOS 4.10.2, a `liblxa` set); nothing else was filmed. *Not determined:*
+  the `audio-port` value the `PCMMC` resource reaches the `lgaudiosink` sink with (above: the sink's
+  `mixer mode changing %s -> %s` / `mixer-port is %d` log lines settle it); the whole `lgaudiosink` stack
+  (webOS 11, 2024, 2025: its 400 ms is read from the template and the 4.5 measurement, never measured there,
+  and its per-output table is only partly checked as unreferenced); the whole `audiosink_new` stack (2018:
+  every cell not measured, its Bluetooth 250 from a decompile only); 2016/2017's `adecsink` (no lead: the
+  2017 offset cannot be split into differential and DSP bias, and 2016's AUTO/mixer rule is not in the
+  plugin; `pcmavoffset` measures it); Realtek (Bluetooth not determined) and MStar (possibly up to about
+  128 ms early, the RTC path unverified): no lead; on `liblxa`, any output but the two filmed (optical,
+  ARC, wired headphones, LG Sound Sync, a soundbar with its own latency: they keep 400 ms and the log says
+  "not measured"), and the newer firmware's mixer channel forced to type PCM (hand-verified on 4.5
+  only); an output change in the middle of a playback, which takes effect at the next Load; the user's
+  "AV Sync Adjust" menu, whose effect on a mixer channel is not known; a Bluetooth device whose own latency
+  differs from the filmed one; another sample rate, chip or firmware. Also unfilmed: a seek, and the speed
+  path (it takes the same lead from the same code).
 - **Seeks are in-place**, in one of three per-session modes (`player::SeekMode`, chosen by
   `engine::select_seek_mode` in `start_bufferfeed`, the `/tmp/plxnative-seekmode` dev trigger
   `native|segment|reload` wins): the demuxer is `av_seek_frame`d to the target, then on the first

@@ -219,7 +219,7 @@ enum LoadCall {
     Returned {
         at: Instant,
         /// The audio lead the Load thread resolved from the sound output before it called `Load`
-        /// (`engine::PcmLead::FromOutput`); `None` for a Load whose lead the frame thread settled.
+        /// (`engine::PcmLead::FromOutput`, on a stack whose lead follows the output); `None` for a Load whose lead the frame thread settled.
         /// Published WITH the return, so no reader can see the Load returned without it.
         pcm_lead_ns: Option<i64>,
     },
