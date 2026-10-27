@@ -526,9 +526,11 @@ something.
   viewer's choice and persists across reloads; `applied_rate_permille` is the current pipeline's and is
   reset by `reset_session`. The feed throttle's run-on reads the applied one (`FeedPace::reference_at`).
 - **A Load that declares `"audio":"PCM"` has its audio fed 390 ms later than the picture it belongs with**
-  (#1086; FLAC and every other app-decoded codec, and a speed session at any speed other than 1x).
+  (#1086; FLAC and every other app-decoded codec, and a speed session at any speed other than 1x; a
+  compressed Load, DTS included, gets none).
   Measured on the dev set (webOS 4.5, 2026-10-27, a phone filming a one-frame flash against a 40 ms
-  beep): app-decoded audio played 0.39 s ahead of the picture on FLAC (S32) and on DTS decoded to S16,
+  beep): app-decoded audio played 0.39 s ahead of the picture on FLAC (S32) and on DTS decoded in the
+  app to S16 (the open S4 PRs' recovery path),
   in Game and in normal picture mode, while the set's own decoder was in step (-0.03 s); feeding the
   video 390 ms earlier (`ptsnudge`) brought PCM to the same -0.03 s. So the sink honours pts and the
   lead is a fixed time. The reason is read from the binaries, not measured: a Load whose every audio
@@ -542,8 +544,11 @@ something.
   time (`fp`, `max_fed_audio_pts`, `audio_start_fp`, stale-drop, throttle, prime) is untouched, so no
   producer of PCM stamps its own offset. Dev instruments (debug builds only): `pcmavoffset=<ms>` sets the
   lead per Load, and `lipsyncoffset=<int>` adds `option.lipsyncOffset` to the Load (libpf applies it to
-  the audio AND the video sink; the firmware ignores a negative one). NOT measured: a sound output
-  other than the TV speakers (ARC, optical, Bluetooth, headphones), another chip or firmware, whether
+  the audio AND the video sink; the firmware ignores a negative one; its unit is not established). NOT measured: a sound output
+  other than the TV speakers (ARC, optical, Bluetooth, headphones), another chip or firmware, THE SHIPPED
+  DIRECTION ITSELF (the measurement moved the video earlier; this feeds the audio later, which the sink
+  may treat differently at a segment start, so the first filmed run of a build with this change is the
+  proof), whether
   the lead varies with the Load or its sample rate, the speed path (it takes the same
   constant by the same code), and what `lipsyncoffset` does.
 - **Seeks are in-place**, in one of three per-session modes (`player::SeekMode`, chosen by

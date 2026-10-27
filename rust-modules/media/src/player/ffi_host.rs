@@ -158,7 +158,7 @@ pub(super) fn reset_acb_for_test(accept_video_data: bool) {
 /// direct-play seek went through LG's public `Seek` and landed where the keyframe did.
 #[cfg(any(test, feature = "test-support"))]
 pub(super) static SEEK_LOG: Mutex<Vec<i64>> = Mutex::new(Vec::new());
-/// The sink pts of every accepted Feed, as `(es_data, pts)` in call order: what a test reads to
+/// The sink pts of every Feed the armed host sink took, as `(es_data, pts)` in call order: what a test reads to
 /// prove WHAT timeline an audio unit and a picture reached the sink on (#1086).
 #[cfg(any(test, feature = "test-support"))]
 pub(super) static FEED_LOG: Mutex<Vec<(c_int, i64)>> = Mutex::new(Vec::new());

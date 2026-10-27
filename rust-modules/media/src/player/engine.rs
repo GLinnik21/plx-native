@@ -1217,7 +1217,7 @@ fn lipsync_offset_value(raw: &str) -> Result<i64, String> {
 }
 
 /// The dev experiment `/tmp/plxnative-lipsyncoffset=<int>`: ask the firmware for `option.lipsyncOffset`
-/// on the Load. Read per Load, so one TV session can compare values. Always `None` in a release
+/// on the Load (its unit is not established: nothing in libpf's strings says ms or samples). Read per Load, so one TV session can compare values. Always `None` in a release
 /// build (`devtrig::read` is `None` at compile time).
 ///
 /// An INSTRUMENT kept for one filmed run beside [`pts_nudge_ns`], not a fix: libpf applies this one
@@ -3075,7 +3075,8 @@ impl FeedSlice {
 ///
 /// It is also what measured the PCM lead (#1086): `ptsnudge=-390000000` fed the VIDEO 390 ms earlier
 /// and brought a PCM Load from the sound 0.39 s early to -0.03 s, in step like the set's own decoder.
-/// That correction ships on the audio side instead ([`PCM_SINK_LEAD_NS`]), so the two nudges are not
+/// That correction ships on the audio side instead ([`PCM_SINK_LEAD_NS`]; the audio-later direction has
+/// not been filmed, only the video-earlier one), so the two nudges are not
 /// to be combined in a run: the video's would be taken twice.
 fn pts_nudge_ns() -> i64 {
     const DEFAULT: i64 = -1;
@@ -7869,7 +7870,14 @@ mod pcm_sink_lead_tests {
         eng.rebase_pending = true;
         SHARED.seek_target_ns.store(T_NS, Ordering::Relaxed);
         tick(&mut eng);
-        let (_, a0, _) = first_feeds();
+        let (v0, a0, audio) = first_feeds();
         assert_eq!(a0, crate::player::to_sink_ns(T_NS) + PCM_SINK_LEAD_NS);
+        assert!((a0 - v0 - PCM_SINK_LEAD_NS).abs() <= 1, "audio is {} ns after the picture", a0 - v0);
+        let last_content = crate::player::from_sink_ns(audio.last().unwrap() - PCM_SINK_LEAD_NS);
+        assert!(
+            (eng.max_fed_audio_pts - last_content).abs() <= 2,
+            "max_fed_audio_pts {} is content time, the sink's last audio gives {last_content}",
+            eng.max_fed_audio_pts
+        );
     }
 }
