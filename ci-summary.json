@@ -29,7 +29,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-27T23:36:00Z",
+ "generated": "2026-10-27T23:37:02Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -96,10 +96,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -57.9,
+   "change30_pct": -58.0,
    "change7_pct": -24.7,
-   "d30": 868,
-   "delta30": -503,
+   "d30": 868.5,
+   "delta30": -503.5,
    "delta7": -120,
    "group": "ci",
    "id": "pr_wait",
@@ -121,14 +121,14 @@
    "change7_pct": -15.2,
    "d30": 827.0,
    "delta30": -487.0,
-   "delta7": -61,
+   "delta7": -61.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 85,
+   "n_now": 86,
    "n_prev": 125,
-   "now": 340,
+   "now": 340.0,
    "prev7": 401,
    "shown": true,
    "state": "better",
@@ -384,15 +384,15 @@
    "change30_pct": 97.8,
    "change7_pct": 9.5,
    "d30": 134,
-   "delta30": 131.0,
-   "delta7": 23.0,
+   "delta30": 131,
+   "delta7": 23,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 74,
+   "n_now": 75,
    "n_prev": 119,
-   "now": 265.0,
+   "now": 265,
    "prev7": 242,
    "shown": true,
    "state": "flat",
@@ -402,18 +402,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 104.1,
-   "change7_pct": 4.7,
+   "change30_pct": 104.6,
+   "change7_pct": 5.0,
    "d30": 98,
-   "delta30": 102,
-   "delta7": 9,
+   "delta30": 102.5,
+   "delta7": 9.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 73,
+   "n_now": 74,
    "n_prev": 119,
-   "now": 200,
+   "now": 200.5,
    "prev7": 191,
    "shown": true,
    "state": "flat",
@@ -448,14 +448,14 @@
    "change7_pct": 8.7,
    "d30": null,
    "delta30": null,
-   "delta7": 13.0,
+   "delta7": 13,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 74,
+   "n_now": 75,
    "n_prev": 119,
-   "now": 163.0,
+   "now": 163,
    "prev7": 150,
    "shown": true,
    "state": "flat",
@@ -532,15 +532,15 @@
    "change30_pct": 12.5,
    "change7_pct": 0.0,
    "d30": 16,
-   "delta30": 2.0,
-   "delta7": 0.0,
+   "delta30": 2,
+   "delta7": 0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 74,
+   "n_now": 75,
    "n_prev": 119,
-   "now": 18.0,
+   "now": 18,
    "prev7": 18,
    "shown": false,
    "state": "flat",
@@ -639,11 +639,6 @@
    "change_pct": 31.1,
    "commits": [
     {
-     "pr": 1063,
-     "sha": "03534e394",
-     "title": "Tests: Force Direct Play refuses a learned refusal before the Load"
-    },
-    {
      "pr": 1065,
      "sha": "5b78cb627",
      "title": "Playback: a video refused before its first picture is converted under a 1080p ceiling, and the way back never re-offers "
@@ -687,6 +682,11 @@
      "pr": 1093,
      "sha": "8280eab36",
      "title": "Playback: every LG audio stack gets its PCM lead (webOS 11/2024/2025 lgaudiosink, 2018); stacks are fingerprinted by the"
+    },
+    {
+     "pr": 1043,
+     "sha": "6289733a7",
+     "title": "media: the pump flight rig stops its Engine before dropping it"
     }
    ],
    "from": 164,
@@ -700,11 +700,6 @@
    "change_pct": 29.1,
    "commits": [
     {
-     "pr": 1063,
-     "sha": "03534e394",
-     "title": "Tests: Force Direct Play refuses a learned refusal before the Load"
-    },
-    {
      "pr": 1065,
      "sha": "5b78cb627",
      "title": "Playback: a video refused before its first picture is converted under a 1080p ceiling, and the way back never re-offers "
@@ -748,6 +743,11 @@
      "pr": 1093,
      "sha": "8280eab36",
      "title": "Playback: every LG audio stack gets its PCM lead (webOS 11/2024/2025 lgaudiosink, 2018); stacks are fingerprinted by the"
+    },
+    {
+     "pr": 1043,
+     "sha": "6289733a7",
+     "title": "media: the pump flight rig stops its Engine before dropping it"
     }
    ],
    "from": 987.0,
@@ -761,11 +761,6 @@
    "change_pct": 20.2,
    "commits": [
     {
-     "pr": 1063,
-     "sha": "03534e394",
-     "title": "Tests: Force Direct Play refuses a learned refusal before the Load"
-    },
-    {
      "pr": 1065,
      "sha": "5b78cb627",
      "title": "Playback: a video refused before its first picture is converted under a 1080p ceiling, and the way back never re-offers "
@@ -809,6 +804,11 @@
      "pr": 1093,
      "sha": "8280eab36",
      "title": "Playback: every LG audio stack gets its PCM lead (webOS 11/2024/2025 lgaudiosink, 2018); stacks are fingerprinted by the"
+    },
+    {
+     "pr": 1043,
+     "sha": "6289733a7",
+     "title": "media: the pump flight rig stops its Engine before dropping it"
     }
    ],
    "from": 163,
@@ -849,7 +849,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 265.0
+   "now": 265
   }
  ],
  "slowest_local": [
