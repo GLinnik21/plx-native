@@ -1219,6 +1219,13 @@ fn lipsync_offset_value(raw: &str) -> Result<i64, String> {
 /// The dev experiment `/tmp/plxnative-lipsyncoffset=<int>`: ask the firmware for `option.lipsyncOffset`
 /// on the Load. Read per Load, so one TV session can compare values. Always `None` in a release
 /// build (`devtrig::read` is `None` at compile time).
+///
+/// An INSTRUMENT kept for one filmed run beside [`pts_nudge_ns`], not a fix: libpf applies this one
+/// value to BOTH the audio and the video sink, so it can only move them together, and the question
+/// is whether the set's own latency compensation then reaches a PCM Load. What that run showed:
+/// not yet run (the 390 ms correction ([`PCM_SINK_LEAD_NS`]) was measured with the pts moves alone).
+/// Fill this in with the beep-against-flash reading per value, with `pcmavoffset=0` armed so the
+/// two corrections are not stacked, and delete the trigger once the run has been read.
 fn lipsync_offset_trigger() -> Option<i64> {
     let raw = plx_base::devtrig::read("lipsyncoffset")?;
     match lipsync_offset_value(&raw) {
@@ -3065,6 +3072,11 @@ impl FeedSlice {
 /// `/tmp/plxnative-ptsnudge=<ns>` is kept because it is the instrument that produced that result
 /// and the next candidate value is one run away. Anything from 1 to ~11110 is in range; beyond
 /// that an already-correct frame is pushed a tick the other way.
+///
+/// It is also what measured the PCM lead (#1086): `ptsnudge=-390000000` fed the VIDEO 390 ms earlier
+/// and brought a PCM Load from the sound 0.39 s early to -0.03 s, in step like the set's own decoder.
+/// That correction ships on the audio side instead ([`PCM_SINK_LEAD_NS`]), so the two nudges are not
+/// to be combined in a run: the video's would be taken twice.
 fn pts_nudge_ns() -> i64 {
     const DEFAULT: i64 = -1;
     static NUDGE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(i64::MIN);
@@ -3110,8 +3122,7 @@ const PCM_SINK_LEAD_NS: i64 = 390_000_000;
 /// ([`super::to_sink_ns`]) plus the Load's `pcm_lead_ns`. The lead is real time the set takes, so it
 /// is added AFTER the speed division: at 1.5x it is still 390 ms, not 260. PURE.
 fn audio_sink_pts(fp: i64, pcm_lead_ns: i64) -> i64 {
-    let _ = pcm_lead_ns; // RED STUB
-    super::to_sink_ns(fp).max(0)
+    super::to_sink_ns(fp).saturating_add(pcm_lead_ns).max(0)
 }
 
 /// The lead for a Load that declared `audio`, given the dev override's text (milliseconds):
