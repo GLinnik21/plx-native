@@ -135,26 +135,29 @@ imported() {  # is <name> already analysed in the cached project?
 # on its last. A message with newlines in it (a decompiled C body, an `xref` string literal that
 # ends in "\n") is several lines and only the first carries the prefix, so a filter that keeps
 # the prefixed lines (the `sed -n 's/^INFO  ...> //p'` this replaced) loses the rest: `fn` printed
-# its "======== addr name" header and nothing under it. Every other log record, Ghidra's own,
-# starts with a level name too and may be multi-line as well (the script path list, a stack
-# trace), so a line with no level name belongs to whichever record came before it: it is kept
-# only while that record is a script's. The one line a message leaves behind is the logger
-# column alone, where its final newline ended the text; that is not a line of the message.
+# its "======== addr name" header and nothing under it. A script's record therefore stays open
+# until its own terminator, the line that ends in " (GhidraScript)  ", and every line up to it
+# is the message, whatever it starts with: a firmware string may have a line that begins "INFO "
+# or "WARN ", which is no log record. Outside a script's record every line is dropped: Ghidra's
+# own records (they may be multi-line too, the script path list, a stack trace) and the JVM's
+# banner. The one line a message leaves behind is the logger column alone, where its final
+# newline ended the text; that is not a line of the message.
 # POSIX awk, with LC_ALL=C so a firmware string with a non-UTF-8 byte passes through as bytes.
 script_output() {  # stdin: Ghidra headless's whole log; stdout: only what the scripts printed
   LC_ALL=C awk '
     {
-      if ($0 ~ /^INFO  [A-Za-z0-9_]+\.java> /) {          # a script record begins
-        sub(/^INFO  [A-Za-z0-9_]+\.java> /, "")
-        mine = 1; first = 1
-      } else if ($0 ~ /^(TRACE|DEBUG|INFO|WARN|ERROR|FATAL) /) {   # any other log record begins
-        mine = 0
-      } else {                                                # the previous record goes on
-        first = 0
+      if (!open) {
+        if ($0 !~ /^INFO  [A-Za-z0-9_]+\.java> /) next        # not a script record: Ghidra, or the JVM
+        sub(/^INFO  [A-Za-z0-9_]+\.java> /, "")               # a script record begins
+        open = 1; first = 1
+      } else {
+        first = 0                                             # the record goes on
       }
-      if (!mine) next
-      if (!first && $0 ~ /^ \(GhidraScript\)  $/) next
-      sub(/ \(GhidraScript\)  $/, "")
+      if ($0 ~ / \(GhidraScript\)  $/) {                      # its terminator: the record ends here
+        open = 0
+        if (!first && $0 ~ /^ \(GhidraScript\)  $/) next
+        sub(/ \(GhidraScript\)  $/, "")
+      }
       print
     }
   '
@@ -202,5 +205,5 @@ case "$cmd" in
   xref)   l=$(pick "${1:?lib}"); run_script "$l" XrefString.java "${2:?string}" ;;
   filter) script_output ;;
   clean) rm -rf "$PROJ" "$SCRIPTS"; echo "decomp: analysis cache dropped (harvested binaries kept)" ;;
-  *)      sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *)      awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0" ;;
 esac

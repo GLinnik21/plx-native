@@ -228,6 +228,56 @@ class FilterSubcommand(unittest.TestCase):
                      "  call_again(retry)  ", "  x = INFO + 1;", "}", "")
         self.assertEqual(run(["filter"], raw).stdout, want)
 
+    def test_a_continuation_line_that_starts_with_a_level_word_stays_in_the_record(self):
+        # A firmware string is not indented the way a decompiled body is: a line of it may start
+        # with "INFO  ", "WARN " or "ERROR ", and the record's last line (the address) comes after it.
+        raw = lines(
+            'INFO  XrefString.java> ---- "usage: tool [-v]',
+            "INFO  dumps state",
+            "WARN again",
+            "ERROR  and ERROR",
+            '" @ 0001abb0' + SUFFIX,
+            "INFO  XrefString.java>         from 000126d4  in FUN_000126d0" + SUFFIX,
+            "INFO  XrefString.java> STRINGS_MATCHED=1 for 'usage'" + SUFFIX,
+            "INFO  REPORT: Save succeeded for processed file: /libfake.so (HeadlessAnalyzer)  ",
+        )
+        want = lines(
+            '---- "usage: tool [-v]',
+            "INFO  dumps state",
+            "WARN again",
+            "ERROR  and ERROR",
+            '" @ 0001abb0',
+            "        from 000126d4  in FUN_000126d0",
+            "STRINGS_MATCHED=1 for 'usage'",
+        )
+        r = run(["filter"], raw)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, want)
+
+    def test_a_ghidra_record_after_a_terminated_record_is_still_dropped(self):
+        # Once a record has ended on its own " (GhidraScript)  " column, a level word starts a
+        # Ghidra record again, and so does any unprefixed line, whatever follows it.
+        raw = lines(
+            "INFO  XrefString.java> first" + SUFFIX,
+            "INFO  something of Ghidra's own (Analyzer)  ",
+            "INFO  continuation of that one",
+            "INFO  XrefString.java> second",
+            "INFO  inside second",
+            "tail" + SUFFIX,
+            "WARN  and a warning (Analyzer)  ",
+            "and its second line",
+            "INFO  XrefString.java> third" + SUFFIX,
+        )
+        want = lines("first", "second", "INFO  inside second", "tail", "third")
+        self.assertEqual(run(["filter"], raw).stdout, want)
+
+    def test_an_empty_println_is_an_empty_line_and_digits_in_a_script_name_match(self):
+        raw = lines(
+            "INFO  Script_2.java> " + SUFFIX,
+            "INFO  Script_2.java> after" + SUFFIX,
+        )
+        self.assertEqual(run(["filter"], raw).stdout, lines("", "after"))
+
     def test_nothing_in_nothing_out(self):
         r = run(["filter"], "")
         self.assertEqual((r.returncode, r.stdout), (0, ""))
@@ -239,6 +289,15 @@ class FilterSubcommand(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("decomp.sh filter", r.stdout)
         self.assertIn("decomp.sh xref", r.stdout)
+
+    def test_the_usage_is_the_header_comment_and_nothing_after_it(self):
+        for args in (["help"], []):
+            r = run(args)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertNotIn("set -euo", r.stdout)
+            self.assertTrue(r.stdout.startswith("decomp.sh \u2014 decompile"), r.stdout)
+            self.assertTrue(r.stdout.rstrip("\n").endswith("`decomp.sh clean` drops the cache."), r.stdout)
+            self.assertFalse(r.stdout.endswith("\n\n"), repr(r.stdout[-40:]))
 
 
 class FnAndXrefThroughAFakeGhidra(unittest.TestCase):
