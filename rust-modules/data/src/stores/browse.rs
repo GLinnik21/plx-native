@@ -107,8 +107,9 @@ pub struct BrowseStore {
     /// Endpoint refreshes a pump had no room to emit in its step; the next pump sends them first.
     endpoint_carry: super::EndpointRefreshSet,
     /// The reads this store's steps have asked for and nobody has started yet: a section's hubs
-    /// ([`super::StoreJob::BrowseHubs`]), a value list ([`super::StoreJob::BrowseDirectory`]) and a
-    /// listing page ([`super::StoreJob::BrowsePage`]); taken by [`BrowseStore::take_jobs`].
+    /// ([`super::StoreJob::BrowseHubs`]), a value list ([`super::StoreJob::BrowseDirectory`]), a
+    /// listing page ([`super::StoreJob::BrowsePage`]) and a source's discovery
+    /// ([`super::StoreJob::BrowseDiscovery`]); taken by [`BrowseStore::take_jobs`].
     jobs: Vec<super::StoreJob>,
 }
 
@@ -146,8 +147,9 @@ impl BrowseStore {
 
     /// Take the reads this owner's steps have asked for since the last take, in the order they were
     /// asked ([`super::StoreJob::BrowseHubs`], [`super::StoreJob::BrowseDirectory`],
-    /// [`super::StoreJob::BrowsePage`]). The application's runner starts each, in the call that ran
-    /// the step (`Bridge::start_store_jobs_of`).
+    /// [`super::StoreJob::BrowsePage`], [`super::StoreJob::BrowseDiscovery`]). The application's
+    /// runner starts each, in the call that ran the step (`Bridge::start_store_jobs_of`; the
+    /// controlled Home arm admits the discovery through the run's ledger).
     #[must_use]
     pub fn take_jobs(&mut self) -> Vec<super::StoreJob> {
         std::mem::take(&mut self.jobs)
@@ -212,20 +214,25 @@ impl BrowseStore {
         self.pump_with_gate(plx_machine::landgate::fixture_gate(), &ClientKeys::default())
     }
 
-    pub fn discover_pump_with_gate(&mut self, gate: &plx_machine::landgate::Gate) -> super::StoreOutcome {
+    /// One discovery pass: land the answer waiting, and ask for the next source's discovery if none
+    /// is out. The read leaves as a [`super::StoreJob::BrowseDiscovery`] on the outbox
+    /// ([`BrowseStore::take_jobs`]), decided from `keys`; the caller starts it in the same call
+    /// (`Bridge::browse_discover_pump`).
+    pub fn discover_pump_with_gate(&mut self, gate: &plx_machine::landgate::Gate, keys: &ClientKeys)
+        -> super::StoreOutcome {
         if !self.state.discovery_needs_pump(&self.adapter) {
             return Default::default();
         }
         let roster_changed = self.sync_roster();
         let source_gen = self.state.source_list_gen();
-        let mut outcome = self.state.discover_pump_owned_with_gate(&self.adapter, gate);
+        let mut outcome = self.state.discover_pump_owned_with_gate(&self.adapter, gate, keys, &mut self.jobs);
         outcome.changed |= roster_changed || source_gen != self.state.source_list_gen();
         if outcome.changed { self.bump(); }
         outcome
     }
     #[cfg(any(test, feature = "test-support"))]
     pub fn discover_pump(&mut self) -> super::StoreOutcome {
-        self.discover_pump_with_gate(plx_machine::landgate::fixture_gate())
+        self.discover_pump_with_gate(plx_machine::landgate::fixture_gate(), &ClientKeys::default())
     }
 
     /// The items the addressed Library page holds (see [`BrowseState::held_keys`]).
@@ -294,11 +301,17 @@ impl BrowseStore {
         crate::browse::directory_answered_for_test(&self.adapter)
     }
 
+    /// TEST ONLY: has a discovery worker answered, the answer still waiting for the pump?
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn discovery_answer_waiting_for_test(&self) -> bool {
+        crate::browse::discovery_answer_waiting_for_test(&self.adapter)
+    }
+
     pub fn take_discovery(&mut self) -> Option<crate::browse::record::Result> {
         crate::browse::record::take_from(&self.adapter)
     }
 
-    /// Does a discovery request this owner launched still owe its answer? The claim the landing
+    /// Does a discovery request this owner emitted still owe its answer? The claim the landing
     /// gate's dump mode waits on at the Bridge's controlled-Home discovery take.
     pub fn discovery_owed(&self) -> bool {
         crate::browse::discovery_owed(&self.adapter)
@@ -312,12 +325,12 @@ impl BrowseStore {
         sync.changed
     }
 
-    pub fn controlled_discover(
-        &mut self,
-        launch: &mut dyn FnMut(crate::browse::DiscoveryRequest) -> bool,
-    ) {
+    /// The controlled Home run's discovery step: the read leaves as a
+    /// [`super::StoreJob::BrowseDiscovery`] on the outbox, which the Bridge's controlled arm admits
+    /// through the run's ledger in the same call (`Bridge::admit_home_jobs`).
+    pub fn controlled_discover(&mut self, keys: &ClientKeys) {
         let changed = self.sync_roster();
-        self.state.controlled_discover_owned(&self.adapter, launch);
+        self.state.controlled_discover_owned(&self.adapter, keys, &mut self.jobs);
         if changed {
             self.bump();
         }
@@ -681,8 +694,10 @@ impl<H: super::StoreEffectHost> Machine<H> for BrowseStore {
             // The registry is read by the host, never in a step (`plx_plex::plex::ClientKeys`), and
             // a machine step is handed no keys: this arm cannot decide a section-hubs or directory read. It is
             // not how the application drives Browse, which calls `Stores::browse_run` and
-            // `BrowseStore::pump_with_gate` with the keys it filled and starts the jobs they leave
-            // (`Bridge::browse_run`); no sender of `StoreEv::Pump` exists either.
+            // `BrowseStore::pump_with_gate` and `discover_pump_with_gate` with the keys it filled
+            // and starts the jobs they leave (`Bridge::browse_run`, `Bridge::browse_discover_pump`);
+            // no sender of `StoreEv::Pump` exists either, and its pump hands the step no keys, so it
+            // emits no discovery job.
             StoreEv::Cmd(c) => {
                 self.run(c.clone(), &ClientKeys::default());
             }
@@ -1000,6 +1015,21 @@ mod contract_tests {
         plx_plex::plex::reset_servers_for_test();
     }
 
+    /// One controlled discovery step on `stores`, then the runner's work for what it left: every
+    /// discovery job refused through its own port, as the system refusing the thread does. Returns
+    /// how many jobs the step asked for.
+    fn refused_discovery_step(stores: &crate::stores::Stores) -> usize {
+        stores.browse_controlled_discover(&crate::pms::registry_keys_for_test());
+        let mut asked = 0;
+        for job in stores.browse.borrow_mut().take_jobs() {
+            if let crate::stores::StoreJob::BrowseDiscovery(job, port) = job {
+                asked += 1;
+                plx_machine::job::Port::refused(&port, job.addr);
+            }
+        }
+        asked
+    }
+
     #[test]
     fn controlled_roster_addition_is_one_published_change_even_when_spawn_is_refused() {
         let _guard = plx_base::testlock::serial();
@@ -1013,11 +1043,7 @@ mod contract_tests {
         let before_sources = stores.browse.borrow().source_list_gen_for_test();
         plx_plex::plex::register_for_test(
             "", "127.0.0.1", 9, "synthetic", "fixture");
-        let mut launches = 0;
-        stores.browse_controlled_discover(&mut |_| {
-            launches += 1;
-            false
-        });
+        let launches = refused_discovery_step(&stores);
         assert_eq!(launches, 1);
         let owned_sources = stores.browse.borrow().source_list_gen_for_test();
         assert_ne!(owned_sources, before_sources);
@@ -1028,11 +1054,7 @@ mod contract_tests {
 
         let settled_notice = stores.browse.borrow().gen();
         let settled_sources = stores.browse.borrow().source_list_gen_for_test();
-        let mut second_launches = 0;
-        stores.browse_controlled_discover(&mut |_| {
-            second_launches += 1;
-            false
-        });
+        let second_launches = refused_discovery_step(&stores);
         assert_eq!(second_launches, 0, "the refused source is still in retry backoff");
         assert_eq!(stores.browse.borrow().gen(), settled_notice);
         assert_eq!(stores.browse.borrow().source_list_gen_for_test(), settled_sources);
@@ -1054,11 +1076,7 @@ mod contract_tests {
         plx_plex::plex::register_for_test(
             "", "127.0.0.1", 9, "synthetic", "fixture");
 
-        let mut launches = 0;
-        selected.browse_controlled_discover(&mut |_| {
-            launches += 1;
-            false
-        });
+        let launches = refused_discovery_step(&selected);
 
         assert_eq!(launches, 1);
         assert_ne!(selected.browse.borrow().source_list_gen_for_test(), selected_before,

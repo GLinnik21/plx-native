@@ -1249,8 +1249,18 @@ impl Bridge {
         self.stores.browse_hubs_committed(target)
     }
 
+    /// One discovery pass of the Library's source discovery: refill the keys, step, and start the
+    /// read the step asked for ([`plx_data::stores::StoreJob::BrowseDiscovery`]), all in this call.
+    /// The discovery claim is raised by the step, so a job left on the outbox would read as a read
+    /// in flight with nothing running. Every sender outside the controlled Home arm comes through
+    /// here (`frame_ingest`, `activate_server_owned`, the live `StoreWork::BrowseDiscovery` arm), and
+    /// the job is started as a direct one: only the controlled arm records it
+    /// ([`Bridge::admit_home_jobs`]).
     pub(crate) fn browse_discover_pump(&mut self) -> plx_data::stores::StoreOutcome {
-        self.stores.browse_discover_pump()
+        super::adapters::stores::refill_client_keys(&mut self.client_keys);
+        let outcome = self.stores.browse_discover_pump(&self.client_keys);
+        self.start_store_jobs_of(StoreId::Browse);
+        outcome
     }
 
     pub(crate) fn person_run(&mut self, cmd: plx_data::stores::person::PersonCmd) -> bool {
@@ -1405,7 +1415,7 @@ impl Bridge {
         }
         self.late_store_jobs += late;
         plx_base::eventlog::log(&format!(
-            "stores: WARN {late} store job(s) reached a pump unstarted ({} so far): a sender bypassed its Bridge drain (metadata_run / metadata_pump_season / person_pump / collection_pump / catalog_open / catalog_pump / subsearch_pump / search_run / search_pump / reconcile_pump / browse_run / hubs_run / viewstate_run / viewstate_pump / notify_pump / start_store_jobs_in / start_store_jobs_of / start_store_jobs)",
+            "stores: WARN {late} store job(s) reached a pump unstarted ({} so far): a sender bypassed its Bridge drain (metadata_run / metadata_pump_season / person_pump / collection_pump / catalog_open / catalog_pump / subsearch_pump / search_run / search_pump / reconcile_pump / browse_run / browse_discover_pump / hubs_run / viewstate_run / viewstate_pump / notify_pump / start_store_jobs_in / start_store_jobs_of / start_store_jobs)",
             self.late_store_jobs
         ));
     }
@@ -1450,7 +1460,7 @@ impl Bridge {
 
     /// TEST ONLY: no sender bypassed the drain. A frame's end is the moment to ask, and both halves
     /// matter: a job still on an outbox is a sender that neither went through its store's Bridge
-    /// method ([`Bridge::metadata_run`], [`Bridge::person_pump`], [`Bridge::collection_pump`], [`Bridge::catalog_open`], [`Bridge::catalog_pump`], [`Bridge::subsearch_pump`], [`Bridge::search_run`], [`Bridge::search_pump`], [`Bridge::reconcile_pump`], [`Bridge::browse_run`], [`Bridge::hubs_run`], [`Bridge::viewstate_run`], [`Bridge::viewstate_pump`], [`Bridge::notify_pump`]) nor drained with
+    /// method ([`Bridge::metadata_run`], [`Bridge::person_pump`], [`Bridge::collection_pump`], [`Bridge::catalog_open`], [`Bridge::catalog_pump`], [`Bridge::subsearch_pump`], [`Bridge::search_run`], [`Bridge::search_pump`], [`Bridge::reconcile_pump`], [`Bridge::browse_run`], [`Bridge::browse_discover_pump`], [`Bridge::hubs_run`], [`Bridge::viewstate_run`], [`Bridge::viewstate_pump`], [`Bridge::notify_pump`]) nor drained with
     /// [`Bridge::start_store_jobs`] (the detail pump's
     /// backstop would start it a frame late), and a nonzero `late_store_jobs` is a sender the
     /// backstop has ALREADY rescued, which the job check alone cannot see once `update()` has run
@@ -1458,9 +1468,9 @@ impl Bridge {
     #[cfg(test)]
     pub(crate) fn assert_no_store_jobs_left_for_test(&self) {
         assert!(!self.stores.has_jobs(),
-            "a store job sits on an outbox: its sender neither ran through its store's Bridge drain (metadata_run / metadata_pump_season / person_pump / collection_pump / catalog_open / catalog_pump / subsearch_pump / search_run / search_pump / reconcile_pump / browse_run / hubs_run / viewstate_run / viewstate_pump / notify_pump / start_store_jobs_in / start_store_jobs_of) nor drained with Bridge::start_store_jobs");
+            "a store job sits on an outbox: its sender neither ran through its store's Bridge drain (metadata_run / metadata_pump_season / person_pump / collection_pump / catalog_open / catalog_pump / subsearch_pump / search_run / search_pump / reconcile_pump / browse_run / browse_discover_pump / hubs_run / viewstate_run / viewstate_pump / notify_pump / start_store_jobs_in / start_store_jobs_of) nor drained with Bridge::start_store_jobs");
         assert_eq!(self.late_store_jobs, 0,
-            "a pump's backstop had to start store jobs their sender left unstarted: that sender bypassed its Bridge drain (metadata_run / metadata_pump_season / person_pump / collection_pump / catalog_open / catalog_pump / subsearch_pump / search_run / search_pump / reconcile_pump / browse_run / hubs_run / viewstate_run / viewstate_pump / notify_pump / start_store_jobs_in / start_store_jobs_of / start_store_jobs)");
+            "a pump's backstop had to start store jobs their sender left unstarted: that sender bypassed its Bridge drain (metadata_run / metadata_pump_season / person_pump / collection_pump / catalog_open / catalog_pump / subsearch_pump / search_run / search_pump / reconcile_pump / browse_run / browse_discover_pump / hubs_run / viewstate_run / viewstate_pump / notify_pump / start_store_jobs_in / start_store_jobs_of / start_store_jobs)");
     }
 
     pub(crate) fn metadata_view(&self) -> plx_data::metadata::MetadataView<'_> {
@@ -1948,14 +1958,15 @@ impl Bridge {
         Handled::Yes
     }
 
-    /// Start the Hubs jobs a controlled Home arm's step just emitted, each admitted through the
-    /// run's ledger ([`super::adapters::stores::StoreRunner::start_admitted`]). Inside the arm, so the
-    /// hubs line is written before a later arm of the same turn (`StoreWork::BrowseDiscovery`)
-    /// writes the discovery line: the ledger is one ordered queue. An associated function over the
-    /// fields (not `&mut self`) so an arm holding `home_io` can call it.
-    fn admit_hubs_jobs(stores: &mut plx_data::stores::Stores,
-        runner: &mut super::adapters::stores::StoreRunner, io: &mut super::bootstrap::HomeIo) {
-        for job in stores.take_jobs_of(StoreId::Hubs) {
+    /// Start the `id` store's jobs a controlled Home arm's step just emitted, each admitted through
+    /// the run's ledger ([`super::adapters::stores::StoreRunner::start_admitted`]): the Hubs read, or
+    /// the Library's source discovery. Inside the arm, so the hubs line is written before a later arm
+    /// of the same turn (`StoreWork::BrowseDiscovery`) writes the discovery line: the ledger is one
+    /// ordered queue. An associated function over the fields (not `&mut self`) so an arm holding
+    /// `home_io` can call it.
+    fn admit_home_jobs(stores: &mut plx_data::stores::Stores,
+        runner: &mut super::adapters::stores::StoreRunner, io: &mut super::bootstrap::HomeIo, id: StoreId) {
+        for job in stores.take_jobs_of(id) {
             runner.start_admitted(job, Some(io));
         }
     }
@@ -2019,7 +2030,7 @@ impl Bridge {
                     super::adapters::stores::refill_client_keys(&mut self.client_keys);
                     let directory = self.directory.view();
                     let due = self.stores.hubs.run_with_directory(cmd.clone(), directory, &self.client_keys).endpoints;
-                    Self::admit_hubs_jobs(&mut self.stores, &mut self.store_runner, io);
+                    Self::admit_home_jobs(&mut self.stores, &mut self.store_runner, io, StoreId::Hubs);
                     return Self::carry(&mut self.endpoint_carry, due);
                 }
                 AppMsg::Store(StoreCmd::Browse(plx_data::stores::browse::BrowseCmd::Discovery(result))) => {
@@ -2039,11 +2050,13 @@ impl Bridge {
                     super::adapters::stores::refill_client_keys(&mut self.client_keys);
                     let directory = self.directory.view();
                     let due = self.stores.hubs.tick_with_directory(parts.tick.dt(), directory, &self.client_keys).endpoints;
-                    Self::admit_hubs_jobs(&mut self.stores, &mut self.store_runner, io);
+                    Self::admit_home_jobs(&mut self.stores, &mut self.store_runner, io, StoreId::Hubs);
                     return Self::carry(&mut self.endpoint_carry, due);
                 }
                 AppMsg::StoreWork(plx_data::stores::StoreWork::BrowseDiscovery) => {
-                    io.discovery_owned(&self.stores);
+                    super::adapters::stores::refill_client_keys(&mut self.client_keys);
+                    self.stores.browse_controlled_discover(&self.client_keys);
+                    Self::admit_home_jobs(&mut self.stores, &mut self.store_runner, io, StoreId::Browse);
                     return Handled::Yes;
                 }
                 _ => {}
@@ -2105,7 +2118,7 @@ impl Bridge {
                 Self::carry(&mut self.endpoint_carry, due)
             }
             AppMsg::StoreWork(plx_data::stores::StoreWork::BrowseDiscovery) => {
-                let due = self.stores.browse.borrow_mut().discover_pump_with_gate(&self.stores.landgate).endpoints;
+                let due = self.browse_discover_pump().endpoints;
                 Self::carry(&mut self.endpoint_carry, due)
             }
             AppMsg::StoreWork(plx_data::stores::StoreWork::Browse) => {
@@ -2597,7 +2610,7 @@ fn frame_ingest(
     if rig.home_io.is_none() {
         plx_base::storage_worker::pump_retained();
         rig.land_session_cache(d);
-        let outcome = rig.stores.browse_discover_pump();
+        let outcome = rig.browse_discover_pump();
         execute_endpoint_outcomes(d, outcome.endpoints);
     }
     // A Related window that landed is installed here, ahead of the notices below, so the Detail

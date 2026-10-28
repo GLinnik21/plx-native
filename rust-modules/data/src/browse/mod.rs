@@ -65,10 +65,8 @@ use plx_plex::plex::{ClientKeys, SectionQuery, ServerId};
 use saved_view::ViewField;
 use crate::pms::{parse_item, PmsMovie};
 use crate::stores::page_cache::{kept_when_over_budget, Keep, PAGE};
-use std::panic::catch_unwind;
 #[cfg(test)]
-use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 
 /// The sections left most recently that keep the pages of the window they last showed. Every
@@ -532,6 +530,7 @@ pub enum SecFetch {
     Failed,
 }
 
+pub mod discovery_job;
 pub mod listing_jobs;
 pub mod record;
 mod saved_view;
@@ -870,6 +869,12 @@ pub struct BrowseState {
     page_req: u32,
     genres_req: u32,
     letters_req: u32,
+    /// The request id of the last source discovery the step emitted: each takes the next one and
+    /// raises the discovery claim for it, and a refusal of that id is what the next step settles
+    /// ([`BrowseState::discovery_settle`]).
+    src_req: u32,
+    /// The discovery read the step has out, until it lands or a later step settles its refusal.
+    src_flight: Option<SrcFlight>,
     /// The same for the section-hubs read in flight (`BrowseAdapter::hubs.fetch` holds its claim).
     hubs_stamp: crate::viewledger::Stamp,
     /// The last section-hubs read's request id: each read the step emits takes the next one, and its
@@ -944,7 +949,14 @@ pub struct BrowseAdapter {
     /// The genre and first-letter lists, each with a claim and mailbox of its own.
     genres: crate::stores::Fetch<DirectoryResult<GenreEntry>>,
     letters: crate::stores::Fetch<DirectoryResult<(String, i64)>>,
-    src_fetching: AtomicBool,
+    /// The source discovery's claim, raised by the step that emits the read ([`discovery_job`]).
+    /// Its mailbox slot is unused: the answer lands in `src_result`, which `record::take_from`
+    /// takes and a controlled run records, and whose claim is lowered at APPLY
+    /// (`apply_discovery`, after its epoch check), not at the take. Moving the answer into the
+    /// slot would change when the claim drops (the dump mode's owed and the take) and what is
+    /// recorded; the shared claim gives the refusal and the generation guard
+    /// ([`crate::stores::Fetch`]) without that.
+    src_fetching: crate::stores::Fetch<()>,
     src_result: Mutex<Option<(u32, usize, SrcLanding)>>,
     hubs: section_hubs::HubAdapter,
 }
@@ -960,7 +972,7 @@ impl Default for BrowseAdapter {
             page: Default::default(),
             genres: Default::default(),
             letters: Default::default(),
-            src_fetching: AtomicBool::new(false),
+            src_fetching: Default::default(),
             src_result: Mutex::new(None),
             hubs: Default::default(),
         }
@@ -974,7 +986,7 @@ impl BrowseAdapter {
         self.letters.clear();
         *self.src_result.lock().unwrap_or_else(|e| e.into_inner()) = None;
         self.hubs.fetch.clear();
-        self.src_fetching.store(false, Ordering::SeqCst);
+        self.src_fetching.clear();
     }
 }
 
@@ -986,6 +998,8 @@ impl Default for BrowseState {
             page_req: 0,
             genres_req: 0,
             letters_req: 0,
+            src_req: 0,
+            src_flight: None,
             hubs_stamp: 0,
             hubs_gen: 0,
             hubs_flight: None,
@@ -1059,7 +1073,7 @@ impl BrowseState {
                 return true;
             }
         }
-        !adapter.src_fetching.load(Ordering::SeqCst)
+        !adapter.src_fetching.busy()
             && self.sources.iter().any(|source| !source.sections_done || !source.counts_done)
     }
 
@@ -1890,13 +1904,13 @@ impl BrowseState {
         source.sections_done = false;
         source.counts_done = true;
         self.epoch = epoch;
-        adapter.src_fetching.store(false, Ordering::SeqCst);
+        adapter.src_fetching.release();
     }
     #[cfg(any(test, feature = "test-support"))]
     pub fn discovery_policy_for_test(&self, adapter: &BrowseAdapter) -> (bool, u32, bool) {
         let source = self.sources.first().expect("a replay source");
         (
-            adapter.src_fetching.load(Ordering::SeqCst),
+            adapter.src_fetching.busy(),
             source.retry_cd,
             source.sections_done,
         )
@@ -2308,7 +2322,7 @@ impl BrowseState {
         if epoch != self.table_epoch() {
             return Default::default();
         }
-        adapter.src_fetching.store(false, Ordering::SeqCst);
+        adapter.src_fetching.release();
         let SrcLanding { client, token_gen, name, what } = landing;
         let ok = match &what {
             SrcWhat::Sections(list) => list.is_some(),
@@ -2413,6 +2427,7 @@ impl BrowseState {
         // The read out belonged to the tables just dropped (its answer is epoch-gated and its
         // claim was cleared with the adapter's mailbox), so its record goes with them.
         self.hubs_flight = None;
+        self.src_flight = None;
         self.refresh_tab_shape();
     }
     fn reset_owned(&mut self, adapter: &BrowseAdapter) {
@@ -2618,15 +2633,24 @@ impl BrowseState {
             },
         }
     }
+    /// Ask for the next source discovery, if none is out. Nothing is started here: the read leaves
+    /// as a [`crate::stores::StoreJob::BrowseDiscovery`] on `jobs` and the application's runner
+    /// starts it, so the registry is read by the host (`keys`), never by this step. The claim is
+    /// raised HERE, at the step (a second step before the drain cannot emit a duplicate); the
+    /// runner's refusal gives it back, and the step after settles it ([`Self::discovery_settle`]).
+    ///
+    /// A server whose slot holds no client in `keys` is not asked and no claim is raised.
     fn maybe_discover_owned(
         &mut self,
         adapter: &Arc<BrowseAdapter>,
-        launch: &mut dyn FnMut(DiscoveryRequest) -> bool,
+        keys: &ClientKeys,
+        jobs: &mut Vec<crate::stores::StoreJob>,
     ) {
+        self.discovery_settle(adapter);
         for source in &mut self.sources {
             source.retry_cd = source.retry_cd.saturating_sub(1);
         }
-        if adapter.src_fetching.load(Ordering::SeqCst) {
+        if adapter.src_fetching.busy() {
             return;
         }
         let ready = |source: &BrowseSource| source.retry_cd == 0;
@@ -2652,20 +2676,38 @@ impl BrowseState {
             }
         }
         let Some((source, sid, job, want_name)) = pick else { return };
-        let Some(client) = plx_plex::plex::client_for(sid) else { return };
-        let request = DiscoveryRequest {
-            epoch: self.table_epoch(), si: source, client, token_gen: client.token_gen(),
-            job, want_name, adapter: Arc::clone(adapter),
-        };
-        adapter.src_fetching.store(true, Ordering::SeqCst);
-        if !launch(request) {
-            self.discovery_spawn_refused_owned(adapter, source);
-        }
+        let Some(key) = keys.key(sid) else { return };
+        let epoch = self.table_epoch();
+        self.src_req = self.src_req.wrapping_add(1);
+        let id = self.src_req;
+        adapter.src_fetching.claim(id);
+        self.src_flight = Some(SrcFlight { id, epoch, source });
+        jobs.push(crate::stores::StoreJob::BrowseDiscovery(
+            plx_machine::job::Job {
+                addr: listing_jobs::listing_addr(id),
+                req: discovery_job::BrowseDiscoveryReq::new(epoch, source, sid, key, job, want_name),
+            },
+            discovery_job::BrowseDiscoveryPort::of(adapter),
+        ));
     }
-    fn discovery_spawn_refused_owned(&mut self, adapter: &BrowseAdapter, source: usize) {
-        adapter.src_fetching.store(false, Ordering::SeqCst);
-        if let Some(source) = self.source_mut(source) {
-            source.retry_cd = SRC_RETRY_CD;
+    /// Settle the discovery the runner refused since the last step, if one was: its source backs off
+    /// for [`SRC_RETRY_CD`] steps, as a launch that did not happen always did (the pump must not
+    /// ask again at 60 Hz, and `task::spawn` logs every refusal). Nothing was asked of the server,
+    /// so nothing else about the source moves, and nothing is invalidated: the countdown is not
+    /// published. It runs at the head of the step, only when no claim is up, and BEFORE the
+    /// countdown's decrement, so the step after a refusal finds the countdown one short of the full
+    /// backoff, as the step after a refusing launcher always did. A flight with neither a claim nor
+    /// a refusal landed (or belonged to an adapter that has since been cleared) and is dropped.
+    /// Never recorded anywhere.
+    fn discovery_settle(&mut self, adapter: &BrowseAdapter) {
+        if adapter.src_fetching.busy() {
+            return;
+        }
+        let Some(out) = self.src_flight.take() else { return };
+        if adapter.src_fetching.take_refused(out.id) && out.epoch == self.table_epoch() {
+            if let Some(source) = self.source_mut(out.source) {
+                source.retry_cd = SRC_RETRY_CD;
+            }
         }
     }
     fn land_discovery_owned_with_gate(
@@ -2676,7 +2718,7 @@ impl BrowseState {
         // DUMP MODE: owed while the discovery claim (`src_fetching`, set at the spawn and cleared
         // in `apply_discovery`, after its epoch check) is held. Per MAILBOX: the claim of the one mailbox taken here.
         let taken = crate::stores::take_landing_owed(gate, crate::stores::StoreId::Browse,
-            || adapter.src_fetching.load(Ordering::SeqCst), || {
+            || adapter.src_fetching.busy(), || {
             adapter.src_result.lock().unwrap_or_else(|e| e.into_inner()).take()
         });
         let Some((epoch, source, landing)) = taken else { return Default::default() };
@@ -2786,23 +2828,26 @@ impl BrowseState {
     pub fn controlled_discover_owned(
         &mut self,
         adapter: &Arc<BrowseAdapter>,
-        launch: &mut dyn FnMut(DiscoveryRequest) -> bool,
+        keys: &ClientKeys,
+        jobs: &mut Vec<crate::stores::StoreJob>,
     ) {
-        self.maybe_discover_owned(adapter, launch);
+        self.maybe_discover_owned(adapter, keys, jobs);
     }
     pub fn discover_pump_owned_with_gate(
         &mut self,
         adapter: &Arc<BrowseAdapter>,
         gate: &plx_machine::landgate::Gate,
+        keys: &ClientKeys,
+        jobs: &mut Vec<crate::stores::StoreJob>,
     ) -> crate::stores::StoreOutcome {
         let outcome = self.land_discovery_owned_with_gate(adapter, gate);
-        self.maybe_discover_owned(adapter, &mut execute_discovery);
+        self.maybe_discover_owned(adapter, keys, jobs);
         outcome
     }
     #[cfg(any(test, feature = "test-support"))]
-    pub fn discover_pump_owned(&mut self, adapter: &Arc<BrowseAdapter>)
-        -> crate::stores::StoreOutcome {
-        self.discover_pump_owned_with_gate(adapter, plx_machine::landgate::fixture_gate())
+    pub fn discover_pump_owned(&mut self, adapter: &Arc<BrowseAdapter>, keys: &ClientKeys,
+        jobs: &mut Vec<crate::stores::StoreJob>) -> crate::stores::StoreOutcome {
+        self.discover_pump_owned_with_gate(adapter, plx_machine::landgate::fixture_gate(), keys, jobs)
     }
     pub fn pump_owned_with_gate(
         &mut self,
@@ -2816,7 +2861,7 @@ impl BrowseState {
         let discovery = self.land_discovery_owned_with_gate(adapter, gate);
         changed |= discovery.changed;
         let endpoints = discovery.endpoints;
-        self.maybe_discover_owned(adapter, &mut execute_discovery);
+        self.maybe_discover_owned(adapter, keys, jobs);
         changed |= self.hubs_land(adapter, gate, keys);
         changed |= self.hubs_tick_all(adapter, keys, jobs);
         changed |= self.land_directory_owned_with_gate(
@@ -3527,138 +3572,26 @@ fn count_line(count: i64, kind: SecKind) -> String {
 /// instead of after the ten-second backoff.
 // ---- source discovery, off the main thread ---------------------------------------------------
 
-/// What a discovery worker is being asked for. Two phases per source, one worker at a time within
+/// What a discovery read is being asked for. Two phases per source, one read at a time within
 /// the owning BrowseStore: the roster is a handful of servers and none of it is on a user's
 /// critical path.
-enum SrcJob {
+#[derive(Debug, PartialEq)]
+pub(super) enum SrcJob {
     /// its section list
     Sections,
     /// the unfiltered item count of each of its libraries, by section key
     Counts(Vec<i64>),
 }
 
-pub struct DiscoveryRequest {
+/// The discovery read the step has out: recorded by the step that emitted it and read by the next
+/// step, which settles it if the runner refused it ([`BrowseState::discovery_settle`]) and drops it
+/// when it landed. The record is the store's own memory of what it asked and is never recorded or
+/// replayed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SrcFlight {
+    id: u32,
     epoch: u32,
-    si: usize,
-    client: &'static plx_plex::plex::Client,
-    token_gen: u32,
-    job: SrcJob,
-    want_name: bool,
-    adapter: Arc<BrowseAdapter>,
-}
-
-impl DiscoveryRequest {
-    pub fn descriptor(&self) -> serde_json::Value {
-        serde_json::json!({
-            "epoch": self.epoch,
-            "source": self.si,
-            "sid": self.client.id().raw(),
-            "client": self.client.instance_gen(),
-            "token_gen": self.token_gen,
-            "name": self.want_name,
-            "sections": matches!(self.job, SrcJob::Sections),
-            "counts": match &self.job {
-                SrcJob::Sections => Vec::new(),
-                SrcJob::Counts(keys) => keys.clone(),
-            },
-        })
-    }
-}
-
-pub fn execute_discovery(request: DiscoveryRequest) -> bool {
-    let DiscoveryRequest {
-        epoch,
-        si,
-        client,
-        token_gen,
-        job,
-        want_name,
-        adapter,
-    } = request;
-    let is_sections = matches!(job, SrcJob::Sections);
-    spawn_discovery(move || {
-        let landing = catch_unwind(|| {
-            // the server naming ITSELF, so a roster that never reached plex.tv still heads its
-            // group with a machine name. One request, once, per source.
-            let name = if want_name {
-                client.friendly_name().unwrap_or_default()
-            } else {
-                String::new()
-            };
-            let what = match job {
-                SrcJob::Sections => {
-                    SrcWhat::Sections(client.sections().map(|mc| project_sections(&mc)))
-                }
-                SrcJob::Counts(keys) => {
-                    let mut out = Vec::new();
-                    for k in keys {
-                        // size=0: PMS answers with `totalSize` and no items at all, so a
-                        // library's count costs a header rather than a page.
-                        let q = SectionQuery {
-                            section_key: k,
-                            sort: "",
-                            filters: &[],
-                            start: 0,
-                            size: 0,
-                            include_meta: false,
-                        };
-                        if let Some(mc) = client.section_items_query(&q) {
-                            out.push((k, mc.total_size));
-                        }
-                    }
-                    SrcWhat::Counts(out)
-                }
-            };
-            SrcLanding {
-                client,
-                token_gen,
-                name,
-                what,
-            }
-        })
-        .unwrap_or_else(|_| {
-            // a panicking fetch is a FAILURE of the job it was doing, never a success of another:
-            // reporting a panicked count probe as a failed section list would drop the source's
-            // whole library list on the floor.
-            let what = if is_sections {
-                SrcWhat::Sections(None)
-            } else {
-                SrcWhat::Counts(Vec::new())
-            };
-            SrcLanding {
-                client,
-                token_gen,
-                name: String::new(),
-                what,
-            }
-        });
-        *adapter.src_result.lock().unwrap_or_else(|e| e.into_inner()) = Some((epoch, si, landing));
-    })
-}
-
-fn spawn_discovery(job: impl FnOnce() + Send + 'static) -> bool {
-    #[cfg(any(test, feature = "test-support"))]
-    if REFUSE_DISCOVERY_FOR_TEST.with(|flag| flag.get()) {
-        return false;
-    }
-    plx_base::task::spawn_small("sources", job)
-}
-
-#[cfg(any(test, feature = "test-support"))]
-thread_local! {
-    static REFUSE_DISCOVERY_FOR_TEST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub fn with_refused_discovery_for_test<R>(f: impl FnOnce() -> R) -> R {
-    struct Restore(bool);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            REFUSE_DISCOVERY_FOR_TEST.with(|flag| flag.set(self.0));
-        }
-    }
-    let _restore = Restore(REFUSE_DISCOVERY_FOR_TEST.with(|flag| flag.replace(true)));
-    f()
+    source: usize,
 }
 
 /// Supply a transport observation, retaining the actual source epoch and captured lifecycle.
@@ -4081,11 +4014,12 @@ pub fn adapter_fetching_for_test(adapter: &BrowseAdapter) -> bool {
     adapter.page.busy()
 }
 
-/// Is a discovery request this adapter spawned still unanswered or unapplied? `src_fetching` is
-/// raised when the request is handed to its launcher and cleared when the answer is APPLIED, so a
-/// take that finds the mailbox empty while it reads true is waiting for a worker that is out.
+/// Is a discovery request this adapter emitted still unanswered or unapplied? `src_fetching` is
+/// raised by the step that emits the job and cleared when the answer is APPLIED (or the runner
+/// refuses the job), so a take that finds the mailbox empty while it reads true is waiting for a
+/// read that is out.
 pub fn discovery_owed(adapter: &BrowseAdapter) -> bool {
-    adapter.src_fetching.load(Ordering::SeqCst)
+    adapter.src_fetching.busy()
 }
 
 /// TEST ONLY: is the section hubs' one shared claim up on this adapter (a read is out, parked, or
@@ -4104,12 +4038,24 @@ pub fn hubs_answer_waiting_for_test(adapter: &BrowseAdapter) -> bool {
 
 #[cfg(any(test, feature = "test-support"))]
 pub fn set_adapter_src_fetching_for_test(adapter: &BrowseAdapter, fetching: bool) {
-    adapter.src_fetching.store(fetching, Ordering::SeqCst);
+    if fetching {
+        adapter.src_fetching.claim(0);
+    } else {
+        adapter.src_fetching.release();
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
 pub fn adapter_src_fetching_for_test(adapter: &BrowseAdapter) -> bool {
-    adapter.src_fetching.load(Ordering::SeqCst)
+    adapter.src_fetching.busy()
+}
+
+/// TEST ONLY: has a discovery answer landed on this adapter, still waiting for the pump? The
+/// `"sources"` worker is not counted by `drain_workers_for_test`, so a test that runs one waits on
+/// this instead.
+#[cfg(any(test, feature = "test-support"))]
+pub fn discovery_answer_waiting_for_test(adapter: &BrowseAdapter) -> bool {
+    adapter.src_result.lock().unwrap_or_else(|e| e.into_inner()).is_some()
 }
 
 #[cfg(any(test, feature = "test-support"))]

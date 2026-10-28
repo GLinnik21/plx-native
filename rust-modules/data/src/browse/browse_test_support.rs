@@ -115,8 +115,46 @@ impl TestBrowse {
         outcome
     }
 
+    /// `discover_pump_owned` on the registry as of now: the discovery that is due leaves on `jobs`.
     pub(super) fn discover_pump(&mut self) -> crate::stores::StoreOutcome {
-        self.state.discover_pump_owned(&self.adapter)
+        self.refill();
+        self.state.discover_pump_owned(&self.adapter, &self.keys, &mut self.jobs)
+    }
+
+    /// `maybe_discover_owned` on the registry as of now, with no landing pass.
+    pub(super) fn maybe_discover(&mut self) {
+        self.refill();
+        self.state.maybe_discover_owned(&self.adapter, &self.keys, &mut self.jobs);
+    }
+
+    /// The runner's refusal of every discovery job the steps left, through the job's own port: what
+    /// the system refusing the thread (or a registry that moved on) does. Returns how many were
+    /// refused; any other job stays on the outbox.
+    pub(super) fn refuse_discovery_jobs(&mut self) -> usize {
+        let mut refused = 0;
+        for job in std::mem::take(&mut self.jobs) {
+            match job {
+                crate::stores::StoreJob::BrowseDiscovery(job, port) => {
+                    refused += 1;
+                    plx_machine::job::Port::refused(&port, job.addr);
+                }
+                other => self.jobs.push(other),
+            }
+        }
+        refused
+    }
+
+    /// The discovery jobs the steps left, taken off the outbox.
+    pub(super) fn take_discovery_jobs(&mut self) -> Vec<(plx_machine::job::Job<discovery_job::BrowseDiscoveryReq>,
+        discovery_job::BrowseDiscoveryPort)> {
+        let mut taken = Vec::new();
+        for job in std::mem::take(&mut self.jobs) {
+            match job {
+                crate::stores::StoreJob::BrowseDiscovery(job, port) => taken.push((job, port)),
+                other => self.jobs.push(other),
+            }
+        }
+        taken
     }
 
     pub(super) fn sync_roster(&mut self) {

@@ -49,6 +49,9 @@
 //! and hand it to the worker body; a server with none answers the failure without a GET;
 //! `docs/sans-io.md`, "The store job lane".)
 
+use plx_data::browse::discovery_job::{
+    finish_browse_discovery_job, BrowseDiscoveryPort, BrowseDiscoveryReq,
+};
 use plx_data::browse::listing_jobs::{
     finish_browse_directory_job, finish_browse_page_job, BrowseDirectoryPort, BrowseDirectoryReq,
     BrowsePagePort, BrowsePageReq,
@@ -189,6 +192,13 @@ pub(crate) enum LiveKind {
     MetaSeason,
     /// A Library listing page read (`StoreJob::BrowsePage`).
     BrowsePage,
+    /// A Library source discovery (`StoreJob::BrowseDiscovery`). Live because a parked one would
+    /// run its blocking GETs on the test thread wherever a rig runs every parked job
+    /// (`Bridge::run_held_store_jobs_for_test`, which the hostsim rigs of `app/run.rs` call): against
+    /// a fixture that parks its first request until the test releases it (`Rig::serving_with`) or a
+    /// server that accepts and never answers, where today's worker blocks harmlessly off-thread.
+    /// No rig waits for a discovery landing from a real worker: every one fabricates it.
+    BrowseDiscovery,
 }
 
 impl StoreRunner {
@@ -203,7 +213,7 @@ impl StoreRunner {
     /// jobs), need a real one. No rig waits for an episode-page landing, so those are parked.
     #[cfg(test)]
     pub(crate) fn held() -> Self {
-        Self::Held { parked: Vec::new(), live: &[LiveKind::Hubs, LiveKind::MetaSeason, LiveKind::BrowsePage] }
+        Self::Held { parked: Vec::new(), live: &[LiveKind::Hubs, LiveKind::MetaSeason, LiveKind::BrowsePage, LiveKind::BrowseDiscovery] }
     }
 
     /// TEST ONLY: park the Library listing's page reads of a held runner too (the Home Hubs read
@@ -212,7 +222,7 @@ impl StoreRunner {
     #[cfg(test)]
     pub(crate) fn park_page_reads(&mut self) {
         if let Self::Held { live, .. } = self {
-            *live = &[LiveKind::Hubs, LiveKind::MetaSeason];
+            *live = &[LiveKind::Hubs, LiveKind::MetaSeason, LiveKind::BrowseDiscovery];
         }
     }
 
@@ -239,6 +249,7 @@ impl StoreRunner {
             StoreJob::BrowseHubs(job, port) => self.start_browse_hubs(job, port),
             StoreJob::BrowseDirectory(job, port) => self.start_browse_directory(job, port),
             StoreJob::BrowsePage(job, port) => self.start_browse_page(job, port),
+            StoreJob::BrowseDiscovery(job, port) => self.start_browse_discovery(job, port),
             StoreJob::Search(job, port) => self.start_search(job, port),
             StoreJob::SaveRecents(job, port) => self.start_save_recents(job, port),
             StoreJob::ViewWrite(job, port) => self.start_view_write(job, port),
@@ -269,6 +280,14 @@ impl StoreRunner {
                 let request = job.req.admission();
                 let refusal = port.clone();
                 if !io.admit(request, || self.launch_hubs(job, port)) {
+                    refusal.refused(addr);
+                }
+            }
+            StoreJob::BrowseDiscovery(job, port) => {
+                let addr = job.addr;
+                let request = job.req.admission();
+                let refusal = port.clone();
+                if !io.admit(request, || self.launch_browse_discovery(job, port)) {
                     refusal.refused(addr);
                 }
             }
@@ -375,6 +394,7 @@ impl StoreRunner {
                     | StoreJob::BrowseHubs(..)
                     | StoreJob::BrowseDirectory(..)
                     | StoreJob::BrowsePage(..)
+                    | StoreJob::BrowseDiscovery(..)
                     | StoreJob::Search(..)
                     | StoreJob::SaveRecents(..)
                     | StoreJob::ViewWrite(..)
@@ -830,12 +850,53 @@ impl StoreRunner {
         })
     }
 
+    /// A source discovery is a `Home` kind: a controlled run's arm admits it through the run's
+    /// ledger ([`StoreRunner::start_admitted`], [`Self::admit_home`]) and every other sender starts
+    /// it here, with no record, as its unrecorded spawn was. A launch that did not happen (the
+    /// registry no longer holds the client the step decided on, or the thread ceiling) is refused,
+    /// which hands the discovery claim back; the store's next step settles the refusal, and the
+    /// source backs off before it is asked again.
+    fn start_browse_discovery(&mut self, job: Job<BrowseDiscoveryReq>, port: BrowseDiscoveryPort) {
+        let addr = job.addr;
+        let refusal = port.clone();
+        if !self.launch_browse_discovery(job, port) {
+            refusal.refused(addr);
+        }
+    }
+
+    /// Start the read on a worker, if the registry still holds the client the step decided on. The
+    /// claim was raised by the step, so a parked job (`Held`) holds it from the park: it is dropped
+    /// back by the apply of its landing, or by the refusal when the client is gone by the time the
+    /// job runs. The check is made HERE, at the launch a controlled run records, so a replay (which
+    /// never launches) and a recording agree on the one boolean they both hold.
+    fn launch_browse_discovery(&mut self, job: Job<BrowseDiscoveryReq>, port: BrowseDiscoveryPort) -> bool {
+        let (sid, key) = job.req.server();
+        let Some(client) = resolve(sid, key) else { return false };
+        #[cfg(test)]
+        if matches!(hubs_launch_for_test(), HubsLaunch::Refused) {
+            return false; // the OS refusing the thread
+        }
+        #[cfg(test)]
+        if let Self::Held { parked, live } = self {
+            if !live.contains(&LiveKind::BrowseDiscovery) {
+                parked.push(StoreJob::BrowseDiscovery(job, port));
+                return true;
+            }
+        }
+        let Job { addr, req } = job;
+        // Not counted by `drain_workers_for_test` (`task.rs`): it dials whatever a roster names, so
+        // a test that runs one waits on its answer instead.
+        plx_base::task::spawn_small("sources", move || {
+            finish_browse_discovery_job(&port, addr, client, req);
+        })
+    }
+
     /// TEST ONLY: run every parked job on THIS thread through the production completion path
     /// (`finish_detail_fetch` over `fetch_full`, `finish_collection_job`, `finish_person_job`,
     /// `finish_hubs_job`, `finish_catalog_job`, `finish_subsearch_job`, `finish_search_job`,
     /// `finish_save_recents_job`, `finish_season_job`, `finish_episodes_job`, `finish_reconcile_job`,
     /// `finish_browse_hubs_job`, `finish_view_write_job`, `finish_browse_directory_job`,
-    /// `finish_browse_page_job`) and return how many ran.
+    /// `finish_browse_page_job`, `finish_browse_discovery_job`) and return how many ran.
     /// Their landings are queued for the next pump. Under `Live` there is nothing parked.
     #[cfg(test)]
     pub(crate) fn run_held(&mut self) -> usize {
@@ -946,6 +1007,15 @@ impl StoreRunner {
                     let (sid, key) = job.req.server();
                     match resolve(sid, key) {
                         Some(client) => finish_browse_page_job(&port, job.addr, client, job.req),
+                        None => port.refused(job.addr),
+                    }
+                }
+                StoreJob::BrowseDiscovery(job, port) => {
+                    // As for the section hubs' read: the claim was raised by the step, and a request
+                    // whose client is gone is refused, which gives it back.
+                    let (sid, key) = job.req.server();
+                    match resolve(sid, key) {
+                        Some(client) => finish_browse_discovery_job(&port, job.addr, client, job.req),
                         None => port.refused(job.addr),
                     }
                 }
@@ -2755,11 +2825,15 @@ mod tests {
     /// The one job the store has left on its outbox, of the kind `wanted` names.
     #[track_caller]
     fn the_one_job(browse: &mut BrowseStore, wanted: fn(&StoreJob) -> bool, what: &str) -> StoreJob {
-        let mut jobs = browse.take_jobs();
-        assert_eq!(jobs.len(), 1, "one {what} read: {jobs:?}");
-        let job = jobs.remove(0);
-        assert!(wanted(&job), "a {what} job: {job:?}");
-        job
+        let (mut jobs, rest): (Vec<_>, Vec<_>) = browse.take_jobs().into_iter().partition(|job| wanted(job));
+        assert_eq!(jobs.len(), 1, "one {what} read: {jobs:?} (and {rest:?})");
+        // a pump after the registry moved also steps the source discovery, which asks for its own
+        // read: not this test's subject, so the runner refuses it
+        for other in rest {
+            let StoreJob::BrowseDiscovery(job, port) = other else { panic!("an unexpected job: {other:?}") };
+            port.refused(job.addr);
+        }
+        jobs.remove(0)
     }
 
     fn is_page(job: &StoreJob) -> bool { matches!(job, StoreJob::BrowsePage(..)) }

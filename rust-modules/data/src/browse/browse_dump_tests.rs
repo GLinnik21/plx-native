@@ -28,7 +28,7 @@ fn dump_mode_a_discovery_request_out_lands_on_the_pump_that_runs_whatever_the_wo
     let _serial = plx_base::testlock::serial();
     let (_cleanup, mut browse, _sid, client) = registered_page_source();
     let (epoch, token_gen) = (browse.state.table_epoch(), client.token_gen());
-    browse.adapter.src_fetching.store(true, Ordering::SeqCst); // the discovery request is out
+    browse.adapter.src_fetching.claim(0); // the discovery request is out
     let worker = Arc::clone(&browse.adapter);
     let join = late(move || {
         *worker.src_result.lock().unwrap() = Some((epoch, 0, SrcLanding {
@@ -39,7 +39,7 @@ fn dump_mode_a_discovery_request_out_lands_on_the_pump_that_runs_whatever_the_wo
     let gate = dump_gate();
     let outcome = browse.state.land_discovery_owned_with_gate(&browse.adapter, &gate);
     assert!(outcome.changed, "the answer the pump owed must be taken by the pump that asked");
-    assert!(!browse.adapter.src_fetching.load(Ordering::SeqCst), "the take released the claim");
+    assert!(!browse.adapter.src_fetching.busy(), "the apply released the claim");
     join.join().unwrap();
 }
 

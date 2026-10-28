@@ -13,6 +13,8 @@ use plx_plex::plex::{ClientKey, ClientKeys};
 /// The page job the steps have left, taken off the outbox.
 #[track_caller]
 fn the_page_job(browse: &mut TestBrowse) -> (plx_machine::job::Job<BrowsePageReq>, BrowsePagePort) {
+    // the pump's discovery step may have asked for its own read too: it is not this test's subject
+    browse.refuse_discovery_jobs();
     let mut jobs = std::mem::take(&mut browse.jobs);
     assert_eq!(jobs.len(), 1, "exactly one job is on the outbox: {jobs:?}");
     match jobs.remove(0) {

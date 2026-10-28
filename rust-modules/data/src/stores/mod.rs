@@ -180,8 +180,17 @@ impl Stores {
         self.browse.borrow().hubs_committed(target)
     }
 
-    pub fn browse_discover_pump(&self) -> StoreOutcome {
-        self.browse.borrow_mut().discover_pump_with_gate(&self.landgate)
+    /// The Library's discovery pass: land the answer waiting and step the discovery. A read the
+    /// step asks for is left on Browse's outbox for the caller to start (`Bridge::browse_discover_pump`).
+    pub fn browse_discover_pump(&self, keys: &plx_plex::plex::ClientKeys) -> StoreOutcome {
+        self.browse.borrow_mut().discover_pump_with_gate(&self.landgate, keys)
+    }
+
+    /// [`Stores::browse_discover_pump`] on a registry that holds no client (no discovery read
+    /// leaves): the pass of a test about something else.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn browse_discover_pump_for_test(&self) -> StoreOutcome {
+        self.browse_discover_pump(&plx_plex::plex::ClientKeys::default())
     }
 
     pub fn person_run(&mut self, cmd: person::PersonCmd) -> bool {
@@ -335,12 +344,10 @@ impl Stores {
         self.search.snapshot_with_directory(directory, household)
     }
 
-    /// Controlled discovery against this aggregate's Browse owner.
-    pub fn browse_controlled_discover(
-        &self,
-        launch: &mut dyn FnMut(crate::browse::DiscoveryRequest) -> bool,
-    ) {
-        self.browse.borrow_mut().controlled_discover(launch);
+    /// Controlled discovery against this aggregate's Browse owner: the read it asks for is left on
+    /// Browse's outbox, for the controlled Home arm to admit through the run's ledger.
+    pub fn browse_controlled_discover(&self, keys: &plx_plex::plex::ClientKeys) {
+        self.browse.borrow_mut().controlled_discover(keys);
     }
 
     /// The outboxes [`Stores::viewstate_run`] and [`Stores::viewstate_pump`] can fill, in drain
@@ -733,6 +740,12 @@ pub enum StoreJob {
     /// page claim). Not on the tape.
     BrowsePage(plx_machine::job::Job<crate::browse::listing_jobs::BrowsePageReq>,
         crate::browse::listing_jobs::BrowsePagePort),
+    /// One source's discovery: its section list, or the item count of each of its sections, emitted
+    /// by the Browse discovery step and addressed by the request id the step minted. One is out at a
+    /// time (the discovery claim, `BrowseAdapter::src_fetching`). On the tape only through a
+    /// controlled run ([`Admission::Home`]).
+    BrowseDiscovery(plx_machine::job::Job<crate::browse::discovery_job::BrowseDiscoveryReq>,
+        crate::browse::discovery_job::BrowseDiscoveryPort),
     /// One search fetch of one source: its first `/hubs/search` answer, or a read of depths of one
     /// result lane, emitted by the Search pump and addressed by the query's generation. Several are
     /// out at once, one per source, each answering into its own mailbox slot (the port names it).
@@ -792,6 +805,12 @@ impl StoreJob {
             // `work_value()` refuses, so no controlled run or replay emits one and the launch is
             // the whole decision. Pinned beside the directory read, in the same file.
             Self::BrowsePage(..) => Admission::Direct,
+            // Recorded only when drained from the controlled `StoreWork::BrowseDiscovery` arm
+            // (`Bridge::admit_home_jobs`), which is where a controlled run asks for it and writes
+            // its descriptor in the order it asked. Every other sender (`Bridge::browse_discover_pump`,
+            // `frame_ingest`, the Browse pump's own discovery step) starts it through
+            // `StoreRunner::start` as `Direct`, byte for byte as its unrecorded spawn was.
+            Self::BrowseDiscovery(..) => Admission::Home,
             Self::Catalog(..)
             | Self::SubtitleSearch(..)
             | Self::ViewReconcile(..)
@@ -812,7 +831,7 @@ impl StoreJob {
             Self::SubtitleSearch(..) => StoreId::SubtitleSearch,
             Self::ViewReconcile(..) => StoreId::ViewReconcile,
             Self::Hubs(..) => StoreId::Hubs,
-            Self::BrowseHubs(..) | Self::BrowseDirectory(..) | Self::BrowsePage(..) => StoreId::Browse,
+            Self::BrowseHubs(..) | Self::BrowseDirectory(..) | Self::BrowsePage(..) | Self::BrowseDiscovery(..) => StoreId::Browse,
             Self::Search(..) | Self::SaveRecents(..) => StoreId::Search,
             Self::ViewWrite(..) => StoreId::ViewState,
         }

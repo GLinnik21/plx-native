@@ -2,6 +2,7 @@
 //! staleness guards, blocking discovery, and single-flight reset.
 
 use super::*;
+use std::sync::atomic::{AtomicBool, Ordering};
 #[allow(unused_imports)]
 use super::test_support::*;
 
@@ -33,7 +34,7 @@ fn a_settled_query_change_with_unknown_total_is_still_page_work() {
         source.sections_done = true;
         source.counts_done = true;
     }
-    adapter.src_fetching.store(true, Ordering::SeqCst);
+    adapter.src_fetching.claim(0);
     assert!(!state.pump_needs_work(&adapter), "the resident query starts settled");
 
     state.set_unwatched(true);
@@ -160,27 +161,30 @@ fn a_discovery_landing_from_before_a_same_slot_repoint_is_inert() {
 fn endpoint_outcomes_follow_only_current_failed_discovery_through_both_pumps() {
     let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, sid, client) = registered_source();
-    with_refused_discovery_for_test(|| {
-        queue_discovery_for_owner_test(
-            &mut browse.state, &browse.adapter, client, client.token_gen(), false);
-        let requests = browse.discover_pump();
-        assert_eq!(requests.endpoints.iter().map(|r| r.sid).collect::<Vec<_>>(), [sid]);
-        assert!(
-            !plx_plex::plex::write_held_for_test(),
-            "intent returned after lifecycle lock release"
-        );
-        queue_discovery_for_owner_test(
-            &mut browse.state, &browse.adapter, client, client.token_gen(), false);
-        assert_eq!(browse.pump().endpoints.iter().count(), 1);
-        queue_discovery_for_owner_test(
-            &mut browse.state, &browse.adapter, client, client.token_gen(), true);
-        assert_eq!(browse.discover_pump().endpoints.iter().count(), 0);
-        let old_gen = client.token_gen();
-        client.set_token("new-synthetic");
-        queue_discovery_for_owner_test(
-            &mut browse.state, &browse.adapter, client, old_gen, false);
-        assert_eq!(browse.pump().endpoints.iter().count(), 0);
-    });
+    // the runner refuses every discovery the steps below ask for (no worker starts)
+    queue_discovery_for_owner_test(
+        &mut browse.state, &browse.adapter, client, client.token_gen(), false);
+    let requests = browse.discover_pump();
+    browse.refuse_discovery_jobs();
+    assert_eq!(requests.endpoints.iter().map(|r| r.sid).collect::<Vec<_>>(), [sid]);
+    assert!(
+        !plx_plex::plex::write_held_for_test(),
+        "intent returned after lifecycle lock release"
+    );
+    queue_discovery_for_owner_test(
+        &mut browse.state, &browse.adapter, client, client.token_gen(), false);
+    assert_eq!(browse.pump().endpoints.iter().count(), 1);
+    browse.refuse_discovery_jobs();
+    queue_discovery_for_owner_test(
+        &mut browse.state, &browse.adapter, client, client.token_gen(), true);
+    assert_eq!(browse.discover_pump().endpoints.iter().count(), 0);
+    browse.refuse_discovery_jobs();
+    let old_gen = client.token_gen();
+    client.set_token("new-synthetic");
+    queue_discovery_for_owner_test(
+        &mut browse.state, &browse.adapter, client, old_gen, false);
+    assert_eq!(browse.pump().endpoints.iter().count(), 0);
+    browse.refuse_discovery_jobs();
 }
 #[test]
 fn a_same_slot_repoint_rearms_section_discovery_without_erasing_known_rows() {
@@ -652,21 +656,24 @@ fn a_refused_discovery_backs_off_for_the_full_countdown_and_the_source_is_asked_
     other.counts_done = true;
     browse.state.sources.push(other);
     browse.state.source_mut(0).unwrap().counts_done = true;
-    with_refused_discovery_for_test(|| {
-        browse.state.maybe_discover_owned(&browse.adapter, &mut execute_discovery);
-        assert!(!discovery_owed(&browse.adapter), "the refused launch gave the claim back");
-        assert_eq!(browse.state.sources()[0].retry_cd, SRC_RETRY_CD, "the refusing step arms the backoff");
-        for step in 1..SRC_RETRY_CD {
-            browse.state.maybe_discover_owned(&browse.adapter, &mut execute_discovery);
-            assert!(!discovery_owed(&browse.adapter), "step {step}: nothing was asked");
-            assert_eq!(browse.state.sources()[0].retry_cd, SRC_RETRY_CD - step,
-                "step {step}: the countdown runs one per step");
-        }
-        // the SRC_RETRY_CD-th step after the refusal finds the source ready and asks again; the
-        // seam refuses that launch too, so the backoff is armed afresh
-        browse.state.maybe_discover_owned(&browse.adapter, &mut execute_discovery);
-        assert!(!discovery_owed(&browse.adapter));
-        assert_eq!(browse.state.sources()[0].retry_cd, SRC_RETRY_CD, "asked again, and refused again");
-    });
+
+    browse.maybe_discover();
+    assert!(discovery_owed(&browse.adapter), "the step raised the claim");
+    assert_eq!(browse.refuse_discovery_jobs(), 1, "…and left one job");
+    assert!(!discovery_owed(&browse.adapter), "the refusal gave the claim back in the same call");
+    for step in 1..SRC_RETRY_CD {
+        browse.maybe_discover();
+        assert!(browse.jobs.is_empty(), "step {step}: nothing was asked: {:?}", browse.jobs);
+        assert!(!discovery_owed(&browse.adapter), "step {step}: no claim");
+        assert_eq!(browse.state.sources()[0].retry_cd, SRC_RETRY_CD - step,
+            "step {step}: the countdown runs one per step, from the full backoff");
+    }
+    // the SRC_RETRY_CD-th step after the refusal finds the source ready and asks again
+    browse.maybe_discover();
+    assert_eq!(browse.jobs.len(), 1, "asked again");
+    assert!(discovery_owed(&browse.adapter));
+    assert_eq!(browse.refuse_discovery_jobs(), 1);
+    browse.maybe_discover();
+    assert_eq!(browse.state.sources()[0].retry_cd, SRC_RETRY_CD - 1, "refused again, backed off again");
     assert_eq!(browse.state.sources()[1].retry_cd, 0, "the other source is untouched");
 }
