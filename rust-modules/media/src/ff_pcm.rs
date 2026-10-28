@@ -70,12 +70,12 @@ pub struct Stereo48 {
 
 impl Stereo48 {
     pub fn new() -> Self {
-        Stereo48 { rate: speed_audio::OUT_RATE, resampler: Resampler::new(speed_audio::OUT_RATE) }
+        Stereo48 { rate: speed_audio::OUT_RATE, resampler: Resampler::new(speed_audio::OUT_RATE, speed_audio::OUT_RATE) }
     }
 
     /// Forget the resampler's carried tail (a seek).
     pub fn reset(&mut self) {
-        self.resampler = Resampler::new(self.rate);
+        self.resampler = Resampler::new(self.rate, speed_audio::OUT_RATE);
     }
 
     /// Append `frames` frames (`planes`: one slice per channel when `planar`, else one) to `out`.
@@ -90,9 +90,10 @@ impl Stereo48 {
         }
         if rate != self.rate {
             self.rate = rate;
-            self.resampler = Resampler::new(rate);
+            self.resampler = Resampler::new(rate, speed_audio::OUT_RATE);
         }
-        let stereo = speed_audio::downmix_by_mask(fmt, planar, mask, channels, frames, planes);
+        let stereo: Vec<[f64; 2]> =
+            speed_audio::downmix_by_mask(fmt, planar, mask, channels, frames, planes).iter().map(|f| [f[0] as f64, f[1] as f64]).collect();
         let mut at_48k = Vec::with_capacity(stereo.len() * 48_000 / rate as usize + 2);
         self.resampler.run(&stereo, &mut at_48k);
         out.reserve(at_48k.len() * 4);

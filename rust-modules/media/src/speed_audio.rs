@@ -175,38 +175,101 @@ fn role_gain(bit: u32) -> [f32; 2] {
     }
 }
 
-/// Resampler to [`OUT_RATE`], stateful across calls so chunk edges are seamless.
+/// **The one resampler: `from` Hz in, `to` Hz out, f64 frames, stateful across calls so chunk edges are
+/// seamless.** The speed path (`SpeedAudio`) and the lossy app-decoded path
+/// ([`Stereo48`](crate::ff_pcm::Stereo48)) run it to [`OUT_RATE`]; `to` is any rate the caller needs.
 ///
-/// A source BELOW the output rate (44.1, 32, 22.05 kHz...) is linearly interpolated: nothing folds back
-/// when raising the rate, only a faint image remains. A source ABOVE it (88.2, 96, 176.4, 192 kHz:
-/// high-resolution FLAC, ALAC and TrueHD) first goes through a windowed-sinc low-pass ([`Decimator`]),
-/// because plain interpolation folds everything above 24 kHz back into the audible band at full strength.
+/// * `from == to`: the frames are copied.
+/// * `from < to` (44.1, 32, 22.05 kHz to 48): linear interpolation. Nothing folds back when the rate is
+///   raised, only a faint image remains.
+/// * `from > to`: a cascade of [`Decimator`]s, the one Kaiser-windowed-sinc low-pass of this file, every
+///   stage with its cutoff at its own output's Nyquist. Plain interpolation would fold everything above the
+///   output's Nyquist back into the band at full strength.
+///
+/// **The cascade bounds the converter, whatever the rate.** `k` is the smallest integer >= 0 with
+/// `from <= 8 * (to << k)`. Stage 0 takes `from` to `to << k`, a ratio of at most 8 (so at most 328
+/// frames of lookahead and 656 taps), then `k` stages of exactly 2:1 (one phase, 83 weights) take it
+/// down to `to` by halving UP FROM THE OUTPUT: the boundaries are `to * 2^j`, not `from / 2^j` (halving
+/// from the top would hand an odd rate such as 1 000 003 Hz a fresh 1024-phase table at every stage).
+/// Zero group delay composes, so output frame 0 is still centred on input frame 0.
+///
+/// Worst-case filter-table memory for ANY `i32` source rate (`TABLE_BYTES_BOUND`, held by a test through `Resampler::table_bytes`):
+/// one final-ratio-<= 8 stage (656 taps * 1024 phases * (8 B weight + 2 B index) + 4 KB of offsets, about 6.7 MB,
+/// reached only by an inexact ratio of that size; every real rate is far below it, and 96, 192, 384, 88.2,
+/// 176.4, 352.8 and 705.6 kHz are one phase) plus `k` 2:1 stages of under 1 KB each, `k` being at most 14 for
+/// any `i32` rate and an output of 16 kHz or more. The work per input frame is constant: about 82 multiply-adds a
+/// channel for the first stage (2 * 41 taps per step of the ratio), and the 2:1 tail adds at most the same again.
+/// This departs from "halve from the top" on purpose, and there is no rate above which it refuses.
 pub(crate) struct Resampler {
     from: u32,
-    /// Position of the next output frame, in input frames from the start of `last` + the new block.
+    to: u32,
+    /// Position of the next output frame (linear path), in input frames from the start of `last` + the new block.
     pos: f64,
-    last: Option<[f32; 2]>,
-    /// Some for a source above [`OUT_RATE`]; the linear path above is then unused.
-    decimator: Option<Decimator>,
+    last: Option<[f64; 2]>,
+    /// Non-empty for a source above the output rate: stage 0 first, then the 2:1 stages. The linear path is then unused.
+    stages: Vec<Decimator>,
+    /// The two buffers a block ping-pongs between as it crosses the stages.
+    ping: Vec<[f64; 2]>,
+    pong: Vec<[f64; 2]>,
 }
 
+/// The widest stage's filter bytes: ratio 8 is `2 * 328` taps, each of `DECIMATOR_MAX_PHASES` phases a weight (f64) and a tap
+/// index (u16), plus a row offset (u32) per phase and one more.
+#[cfg(test)]
+const WIDEST_STAGE_TABLE_BYTES: usize = 2 * 328 * DECIMATOR_MAX_PHASES * (8 + 2) + (DECIMATOR_MAX_PHASES + 1) * 4;
+/// A 2:1 stage keeps 83 of its 164 taps (and two row offsets); the dense bound is used here.
+#[cfg(test)]
+const HALVING_STAGE_TABLE_BYTES: usize = 164 * (8 + 2) + 2 * 4;
+/// The 2:1 stages an `i32` source rate needs at most (`to >= 16 384`).
+#[cfg(test)]
+const HALVING_STAGES: usize = 14;
+/// What [`Resampler::table_bytes`] cannot exceed for any source rate (about 6.7 MB): see [`Resampler`].
+#[cfg(test)]
+pub(crate) const TABLE_BYTES_BOUND: usize = WIDEST_STAGE_TABLE_BYTES + HALVING_STAGES * HALVING_STAGE_TABLE_BYTES;
+
 impl Resampler {
-    pub(crate) fn new(from: u32) -> Self {
-        Resampler { from, pos: 0.0, last: None, decimator: (from > OUT_RATE).then(|| Decimator::new(from)) }
+    pub(crate) fn new(from: u32, to: u32) -> Self {
+        let mut stages = Vec::new();
+        if from > to && to > 0 {
+            let (from64, to64) = (from as u64, to as u64);
+            let mut k = 0u32;
+            while from64 > 8 * (to64 << k) {
+                k += 1;
+            }
+            stages.push(Decimator::new(from64, to64 << k));
+            stages.extend((0..k).map(|_| Decimator::new(2, 1)));
+        }
+        Resampler { from, to, pos: 0.0, last: None, stages, ping: Vec::new(), pong: Vec::new() }
     }
 
-    pub(crate) fn run(&mut self, input: &[[f32; 2]], out: &mut Vec<[f32; 2]>) {
-        if self.from == OUT_RATE {
+    /// Bytes the filter tables of every stage hold (what `TABLE_BYTES_BOUND` bounds).
+    #[cfg(test)]
+    pub(crate) fn table_bytes(&self) -> usize {
+        self.stages.iter().map(Decimator::table_bytes).sum()
+    }
+
+    pub(crate) fn run(&mut self, input: &[[f64; 2]], out: &mut Vec<[f64; 2]>) {
+        if self.from == self.to {
             out.extend_from_slice(input);
             return;
         }
-        if let Some(d) = self.decimator.as_mut() {
-            d.run(input, out);
+        if let Some((first, rest)) = self.stages.split_first_mut() {
+            self.ping.clear();
+            first.run(input, &mut self.ping);
+            for stage in rest {
+                self.pong.clear();
+                stage.run(&self.ping, &mut self.pong);
+                std::mem::swap(&mut self.ping, &mut self.pong);
+            }
+            out.extend_from_slice(&self.ping);
             return;
         }
-        let step = self.from as f64 / OUT_RATE as f64;
+        if self.from == 0 || self.to == 0 {
+            return;
+        }
+        let step = self.from as f64 / self.to as f64;
         // index -1 is `last`, so position p reads between frame floor(p) and floor(p)+1 of that view
-        let at = |i: isize| -> Option<[f32; 2]> {
+        let at = |i: isize| -> Option<[f64; 2]> {
             if i < 0 {
                 self.last
             } else {
@@ -218,7 +281,7 @@ impl Resampler {
             let p = self.pos + offset;
             let i = p.floor() as isize;
             let (Some(a), Some(b)) = (at(i), at(i + 1)) else { break };
-            let f = (p - i as f64) as f32;
+            let f = p - i as f64;
             out.push([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f]);
             self.pos += step;
         }
@@ -231,105 +294,160 @@ impl Resampler {
 }
 
 /// Zero crossings of the sinc kept on each side of its centre, in units of the cutoff's own period.
-const DECIMATOR_ZEROS: f64 = 24.0;
-/// Where the low-pass turns over, as a fraction of the output's Nyquist frequency (24 kHz): 22.8 kHz.
-/// With [`DECIMATOR_ZEROS`] and a Kaiser window of [`DECIMATOR_BETA`] the response is flat to 20 kHz
-/// and more than 90 dB down from 28 kHz (what folds back below 20 kHz): 0.00 dB at 20 kHz, -0.2 at 21,
-/// -1.8 at 22, -7.7 at 23; the worst alias into 0-20 kHz measured -97 dB (this file's tests hold 85 dB).
-const DECIMATOR_CUTOFF: f64 = 0.95;
-const DECIMATOR_BETA: f64 = 9.0;
+const DECIMATOR_ZEROS: f64 = 41.0;
+/// Where the low-pass turns over, as a fraction of the output's Nyquist frequency: AT it, so the response is
+/// half (-6 dB) there, flat (within 0.01 dB, measured 4e-6) to 90% of it (21.6 kHz at 48 kHz, 19.845 kHz at 44.1 kHz)
+/// and at least 120 dB down from `fout - 0.9 Nyquist` (26.4 kHz at 48 kHz) up: what can fold into the pass band is
+/// gone. The 90..100% of Nyquist is the transition band, neither flat nor alias-free (content from 24 to 26.4 kHz
+/// folds into it), the SoX `-a` convention.
+const DECIMATOR_CUTOFF: f64 = 1.0;
+/// The Kaiser window's beta: with [`DECIMATOR_ZEROS`] it gives the 120 dB of the stop band above (this file's tests
+/// hold 120 dB over tones from 96, 192, 64, 384, 88.2 and 176.4 kHz sources; they measure -124 to -139 dB).
+const DECIMATOR_BETA: f64 = 12.8;
 /// The finest fractional input position the weights are tabulated for. A rational ratio with a smaller
-/// denominator (96 and 192 kHz: 1; 88.2 kHz: 80; 176.4 kHz: 40) is exact; any other is rounded to the
+/// denominator (96 and 192 kHz: 1; 88.2 kHz to 48 kHz: 80; 50 kHz: 24) is exact; any other is rounded to the
 /// nearest 1/1024 of an input frame.
 const DECIMATOR_MAX_PHASES: usize = 1024;
 
-/// A windowed-sinc low-pass and decimator: the output at input position `x` is the Kaiser-windowed sinc
-/// (cutoff [`DECIMATOR_CUTOFF`] of the output's Nyquist) centred on `x` dotted with the input around it,
-/// the weights for every fractional position the ratio visits tabulated once. No group delay (the
-/// kernel is symmetric about the output instant); it needs `half` frames of lookahead, so what it
-/// holds back is `half` input frames (about a millisecond at most: 51 at 96 kHz, 102 at 192 kHz) rather
-/// than a time shift. Nothing flushes them: the last of those frames at the end of a stream is not
+/// A windowed-sinc low-pass and decimator for one stage of the [`Resampler`]: the output at input position `x` is
+/// the Kaiser-windowed sinc (cutoff [`DECIMATOR_CUTOFF`] of the output's Nyquist) centred on `x` dotted with the input
+/// around it, the weights for every fractional position the ratio visits tabulated once, in f64, and only the
+/// nonzero ones (the sinc is exactly zero at every integer multiple of its period: half of the 164 taps of a 2:1
+/// stage). No group delay (the kernel is symmetric about the output instant); it needs `half` frames of
+/// lookahead, so what it holds back is `half` input frames (82 at a ratio of 2: 0.85 ms at 96 kHz, 0.93 ms at 88.2 kHz)
+/// rather than a time shift. Nothing flushes them: the last of those frames at the end of a stream is not
 /// emitted, which is the length of one filter half-width of audio, not heard.
+///
+/// The ratio is the reduced rational `num / den` input frames per output frame, and the position of the next
+/// output is the integer `pos_i` plus the exact fraction `pos_f / den`: no float accumulates, so the output is the
+/// same for any way the input is cut into blocks.
 struct Decimator {
-    /// Input frames per output frame (> 1).
-    step: f64,
+    num: u64,
+    den: u64,
     /// Input frames on each side of the centre the kernel reaches.
     half: usize,
     phases: usize,
-    /// `phases` rows of `2 * half` weights, each normalised to sum to 1 (DC gain exactly 1).
-    weights: Vec<f32>,
+    /// `phases + 1` offsets: row `p` of `idx` and `w` is `starts[p]..starts[p + 1]`.
+    starts: Vec<u32>,
+    /// The tap (0..2 * half) each nonzero weight belongs to.
+    idx: Vec<u16>,
+    /// The nonzero weights of every row, each row normalised to sum to 1 (DC gain exactly 1).
+    w: Vec<f64>,
     /// `half` frames of silence ahead of the stream, then what has not been consumed yet.
-    buf: Vec<[f32; 2]>,
-    /// Position of the next output in `buf`.
-    pos: f64,
+    buf: Vec<[f64; 2]>,
+    /// The next output's centre: frame `pos_i` of `buf` plus `pos_f / den` of a frame.
+    pos_i: usize,
+    pos_f: u64,
 }
 
 impl Decimator {
-    fn new(from: u32) -> Self {
-        let step = from as f64 / OUT_RATE as f64;
+    fn new(num: u64, den: u64) -> Self {
+        let g = gcd(num, den);
+        let (num, den) = (num / g, den / g);
+        let step = num as f64 / den as f64;
         // The kernel's cutoff in cycles per input frame, doubled: sinc(u) with u counted in
         // 1/(2*cutoff) input frames.
         let scale = DECIMATOR_CUTOFF / step;
         let half = (DECIMATOR_ZEROS / scale).ceil() as usize;
-        let g = gcd(from, OUT_RATE) as usize;
-        let phases = (OUT_RATE as usize / g).min(DECIMATOR_MAX_PHASES);
-        let mut weights = Vec::with_capacity(phases * 2 * half);
+        let phases = (den as usize).min(DECIMATOR_MAX_PHASES);
+        let mut starts = Vec::with_capacity(phases + 1);
+        let (mut idx, mut w) = (Vec::new(), Vec::new());
         let i0_beta = bessel_i0(DECIMATOR_BETA);
         for p in 0..phases {
             let frac = p as f64 / phases as f64;
-            let row_start = weights.len();
+            starts.push(w.len() as u32);
+            let row_start = w.len();
             let mut sum = 0.0f64;
             for t in 0..2 * half {
                 // tap t reads input frame i + 1 - half + t, at distance (that - (i + frac)) from the centre
                 let u = ((t as f64 + 1.0 - half as f64) - frac) * scale;
                 let r = u / DECIMATOR_ZEROS;
-                let w = if r.abs() >= 1.0 {
+                let weight = if r.abs() >= 1.0 {
                     0.0
                 } else {
                     sinc(u) * bessel_i0(DECIMATOR_BETA * (1.0 - r * r).sqrt()) / i0_beta
                 };
-                sum += w;
-                weights.push(w as f32);
+                if weight != 0.0 {
+                    sum += weight;
+                    idx.push(t as u16);
+                    w.push(weight);
+                }
             }
-            for w in &mut weights[row_start..] {
-                *w = (*w as f64 / sum) as f32;
+            for weight in &mut w[row_start..] {
+                *weight /= sum;
             }
         }
-        Decimator { step, half, phases, weights, buf: vec![[0.0; 2]; half], pos: half as f64 }
+        starts.push(w.len() as u32);
+        idx.shrink_to_fit();
+        w.shrink_to_fit();
+        Decimator { num, den, half, phases, starts, idx, w, buf: vec![[0.0; 2]; half], pos_i: half, pos_f: 0 }
     }
 
-    fn run(&mut self, input: &[[f32; 2]], out: &mut Vec<[f32; 2]>) {
+    #[cfg(test)]
+    fn table_bytes(&self) -> usize {
+        self.starts.capacity() * 4 + self.idx.capacity() * 2 + self.w.capacity() * 8
+    }
+
+    /// The table row for a fractional position of `pos_f / den`; a position that rounds up to the next whole frame
+    /// is row 0 of the next one (`carry`).
+    fn phase(&self) -> (usize, bool) {
+        let p = if self.den as usize <= self.phases {
+            self.pos_f as usize
+        } else {
+            ((self.pos_f * self.phases as u64 * 2 + self.den) / (2 * self.den)) as usize
+        };
+        if p == self.phases { (0, true) } else { (p, false) }
+    }
+
+    fn run(&mut self, input: &[[f64; 2]], out: &mut Vec<[f64; 2]>) {
         self.buf.extend_from_slice(input);
-        let taps = 2 * self.half;
         loop {
-            let mut i = self.pos.floor() as usize;
-            let mut p = ((self.pos - i as f64) * self.phases as f64).round() as usize;
-            if p == self.phases {
-                i += 1;
-                p = 0;
-            }
+            let (phase, carry) = self.phase();
+            let i = self.pos_i + carry as usize;
             // the last frame the kernel reads is i + half
             if i + self.half >= self.buf.len() {
                 break;
             }
-            let row = &self.weights[p * taps..(p + 1) * taps];
+            let (from, to) = (self.starts[phase] as usize, self.starts[phase + 1] as usize);
             let window = &self.buf[i + 1 - self.half..i + 1 + self.half];
-            let (mut l, mut r) = (0.0f32, 0.0f32);
-            for (w, f) in row.iter().zip(window) {
-                l += w * f[0];
-                r += w * f[1];
+            let (idx, w) = (&self.idx[from..to], &self.w[from..to]);
+            let (idx4, w4) = (idx.chunks_exact(4), w.chunks_exact(4));
+            let (idx_rest, w_rest) = (idx4.remainder(), w4.remainder());
+            // four independent accumulator pairs: one dependent chain would run at the FPU's latency
+            let (mut l0, mut r0, mut l1, mut r1, mut l2, mut r2, mut l3, mut r3) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
+            for (k, c) in idx4.zip(w4) {
+                let (a, b, d, e) = (window[k[0] as usize], window[k[1] as usize], window[k[2] as usize], window[k[3] as usize]);
+                l0 += c[0] * a[0];
+                r0 += c[0] * a[1];
+                l1 += c[1] * b[0];
+                r1 += c[1] * b[1];
+                l2 += c[2] * d[0];
+                r2 += c[2] * d[1];
+                l3 += c[3] * e[0];
+                r3 += c[3] * e[1];
             }
-            out.push([l, r]);
-            self.pos += self.step;
+            for (&k, &c) in idx_rest.iter().zip(w_rest) {
+                let a = window[k as usize];
+                l0 += c * a[0];
+                r0 += c * a[1];
+            }
+            out.push([(l0 + l1) + (l2 + l3), (r0 + r1) + (r2 + r3)]);
+            // advance by num/den exactly
+            self.pos_f += self.num % self.den;
+            self.pos_i += (self.num / self.den) as usize;
+            if self.pos_f >= self.den {
+                self.pos_f -= self.den;
+                self.pos_i += 1;
+            }
         }
         // drop what no later output reads, keeping the kernel's reach behind the next centre
-        let consumed = (self.pos.floor() as usize).saturating_sub(self.half);
-        self.buf.drain(..consumed.min(self.buf.len()));
-        self.pos -= consumed as f64;
+        let consumed = self.pos_i.saturating_sub(self.half).min(self.buf.len());
+        self.buf.drain(..consumed);
+        self.pos_i -= consumed;
     }
 }
 
-fn gcd(a: u32, b: u32) -> u32 {
+fn gcd(a: u64, b: u64) -> u64 {
     if b == 0 { a } else { gcd(b, a % b) }
 }
 
@@ -464,6 +582,9 @@ pub struct SpeedAudio {
     /// Output frames already handed out as AUs.
     emitted: u64,
     pending: Vec<[f32; 2]>,
+    /// The block widened to f64 for the resampler, and what it returned.
+    wide: Vec<[f64; 2]>,
+    resampled: Vec<[f64; 2]>,
     scratch: Vec<[f32; 2]>,
 }
 
@@ -476,6 +597,8 @@ impl SpeedAudio {
             first_pts: None,
             emitted: 0,
             pending: Vec::new(),
+            wide: Vec::new(),
+            resampled: Vec::new(),
             scratch: Vec::new(),
         }
     }
@@ -487,9 +610,14 @@ impl SpeedAudio {
             return Vec::new();
         }
         self.first_pts.get_or_insert(pts_ns);
-        let resample = self.resample.get_or_insert_with(|| Resampler::new(rate));
+        let resample = self.resample.get_or_insert_with(|| Resampler::new(rate, OUT_RATE));
+        // the resampler works in f64; the stretch (and the S16 AUs it feeds) stay f32
+        self.wide.clear();
+        self.wide.extend(frames.iter().map(|f| [f[0] as f64, f[1] as f64]));
+        self.resampled.clear();
+        resample.run(&self.wide, &mut self.resampled);
         self.scratch.clear();
-        resample.run(frames, &mut self.scratch);
+        self.scratch.extend(self.resampled.iter().map(|f| [f[0] as f32, f[1] as f32]));
         self.stretch.run(&self.scratch, &mut self.pending);
         let mut aus = Vec::new();
         while self.pending.len() >= CHUNK {
@@ -656,19 +784,21 @@ mod tests {
         sin_turns(t + 0.25)
     }
 
-    /// A pure `freq` Hz sine of amplitude 0.5 on both channels, in f64 phase so a 190 kHz source is exact.
-    fn tone(freq: f64, rate: u32, secs: f64) -> Vec<[f32; 2]> {
-        (0..(rate as f64 * secs) as usize)
+    /// A pure `freq` Hz sine of amplitude `amp` on both channels, in f64 and with the phase taken exactly
+    /// (`i * freq` is an exact integer in f64, so the fraction of a turn is correctly rounded): an f32 tone
+    /// cannot show a -120 dB alias, and a 190 kHz source needs the phase to stay exact.
+    fn tone64(freq: f64, rate: u32, secs: f64, amp: f64) -> Vec<[f64; 2]> {
+        (0..(rate as f64 * secs).round() as usize)
             .map(|i| {
-                let v = sin_turns(i as f64 * freq / rate as f64) as f32 * 0.5;
+                let v = sin_turns((i as f64 * freq).rem_euclid(rate as f64) / rate as f64) * amp;
                 [v, v]
             })
             .collect()
     }
 
-    /// Resample `input` in `block`-sized pieces.
-    fn resample(input: &[[f32; 2]], rate: u32, block: usize) -> Vec<[f32; 2]> {
-        let mut r = Resampler::new(rate);
+    /// Resample `input` from `from` to `to` Hz in `block`-sized pieces.
+    fn resample(input: &[[f64; 2]], from: u32, to: u32, block: usize) -> Vec<[f64; 2]> {
+        let mut r = Resampler::new(from, to);
         let mut out = Vec::new();
         for b in input.chunks(block) {
             r.run(b, &mut out);
@@ -676,70 +806,222 @@ mod tests {
         out
     }
 
-    /// The amplitude of `freq` in the left channel of `out` (48 kHz), by quadrature correlation over the
-    /// settled middle of the signal (the first and last 20 ms are skipped).
-    fn amplitude_at(out: &[[f32; 2]], freq: f64) -> f64 {
-        let (from, to) = (960, out.len() - 960);
-        let (mut re, mut im) = (0.0f64, 0.0f64);
-        for (i, f) in out.iter().enumerate().take(to).skip(from) {
-            let turns = i as f64 * freq / OUT_RATE as f64;
-            re += f[0] as f64 * cos_turns(turns);
-            im += f[0] as f64 * sin_turns(turns);
+    /// Frames skipped at each end of an output before it is measured: the filter's start-up and its
+    /// lookahead are well inside it (a stage reaches 41 of its own output frames each side).
+    const SETTLE: usize = 400;
+
+    /// The result of fitting `a cos + b sin` (at `freq` Hz) to the left channel of `out`.
+    struct Fit {
+        /// `sqrt(a^2 + b^2)`.
+        amplitude: f64,
+        /// RMS of what is left after subtracting the fit, relative to the fit's own RMS.
+        residual: f64,
+    }
+
+    /// Least-squares fit of one tone to the settled middle of `out` (sampled at `rate`): [`SETTLE`] frames
+    /// are dropped from each end and the span is trimmed to a WHOLE number of periods of `freq`, so the
+    /// fit neither leaks nor depends on the phase. `freq` is an integral number of Hz.
+    fn fit_tone(out: &[[f64; 2]], rate: u32, freq: f64) -> Fit {
+        assert_eq!(freq.fract(), 0.0, "a whole number of Hz");
+        let period = (rate as u64 / gcd(freq as u64, rate as u64)) as usize;
+        let avail = out.len().checked_sub(2 * SETTLE).expect("the output is longer than its settling");
+        let n = avail / period * period;
+        assert!(n >= 2 * period, "{freq} Hz at {rate} Hz needs two periods ({period} frames) of settled output, has {avail}");
+        let from = SETTLE + (avail - n) / 2;
+        let at = |i: usize| {
+            let t = (i as f64 * freq).rem_euclid(rate as f64) / rate as f64;
+            (cos_turns(t), sin_turns(t))
+        };
+        let (mut cc, mut ss, mut cs, mut xc, mut xs) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        for (i, f) in out.iter().enumerate().skip(from).take(n) {
+            let (c, s) = at(i);
+            cc += c * c;
+            ss += s * s;
+            cs += c * s;
+            xc += f[0] * c;
+            xs += f[0] * s;
         }
-        2.0 * (re * re + im * im).sqrt() / (to - from) as f64
+        let det = cc * ss - cs * cs;
+        let (a, b) = ((xc * ss - xs * cs) / det, (xs * cc - xc * cs) / det);
+        let (mut res, mut sig) = (0.0f64, 0.0f64);
+        for (i, f) in out.iter().enumerate().skip(from).take(n) {
+            let (c, s) = at(i);
+            let fit = a * c + b * s;
+            res += (f[0] - fit) * (f[0] - fit);
+            sig += fit * fit;
+        }
+        Fit { amplitude: (a * a + b * b).sqrt(), residual: (res / sig).sqrt() }
     }
 
     fn db(ratio: f64) -> f64 {
         20.0 * ratio.log10()
     }
 
-    /// **Downsampling needs a low-pass first.** A tone above the output's Nyquist folds back into the band
-    /// at full strength through plain interpolation (a 30 kHz tone at 96 kHz lands on 18 kHz, a 60 kHz one
-    /// at 192 kHz on 12 kHz). From 88.2, 96, 176.4 and 192 kHz the alias must be at least 85 dB down (it measures
-    /// about 97 dB).
-    #[test]
-    fn a_tone_above_the_output_nyquist_is_rejected_not_folded_back() {
-        for (rate, source_hz, alias_hz) in
-            [(96_000, 30_000.0, 18_000.0), (192_000, 60_000.0, 12_000.0), (88_200, 30_000.0, 18_000.0), (176_400, 62_000.0, 14_000.0)]
-        {
-            let out = resample(&tone(source_hz, rate, 0.5), rate, 4096);
-            let leaked = db(amplitude_at(&out, alias_hz) / 0.5);
-            assert!(leaked < -85.0, "{rate} Hz: a {source_hz} Hz tone folds to {alias_hz} Hz at {leaked:.1} dB");
-        }
+    /// Where a tone at `hz` lands in the output of `fout` Hz: folded into `0..=fout/2`.
+    fn folded(hz: u64, fout: u64) -> u64 {
+        let r = hz % fout;
+        r.min(fout - r)
     }
 
-    /// The pass band is flat to 20 kHz (within 0.1 dB; it measures 0.00) from the same rates, and a tone inside it is not
-    /// shifted: the output is at 48 kHz, so its frequency is the same.
+    /// **The pass band is flat to 90% of the output's Nyquist: within 0.01 dB** (it measures about 4e-6) from
+    /// 96, 192, 64 and 384 kHz to 48 kHz and from 88.2 and 176.4 kHz to 44.1 kHz, and a tone inside it is
+    /// not shifted. The old filter was 0.82 dB down at 21.6 kHz.
     #[test]
-    fn the_pass_band_from_a_high_rate_source_is_flat_to_20_khz() {
-        for rate in [96_000, 192_000, 88_200, 176_400] {
-            for hz in [100.0, 1_000.0, 8_000.0, 16_000.0, 20_000.0] {
-                let out = resample(&tone(hz, rate, 0.5), rate, 1000);
-                let gain = db(amplitude_at(&out, hz) / 0.5);
-                assert!(gain.abs() < 0.1, "{rate} Hz source: {hz} Hz comes out at {gain:.2} dB");
+    fn the_pass_band_from_a_high_rate_source_is_flat_to_90_percent_of_nyquist() {
+        let cases: [(u32, u32, &[f64]); 6] = [
+            (96_000, 48_000, &[100.0, 1_000.0, 8_000.0, 16_000.0, 20_000.0, 21_600.0]),
+            (192_000, 48_000, &[100.0, 1_000.0, 8_000.0, 16_000.0, 20_000.0, 21_600.0]),
+            (64_000, 48_000, &[100.0, 1_000.0, 8_000.0, 16_000.0, 20_000.0, 21_600.0]),
+            (384_000, 48_000, &[100.0, 1_000.0, 8_000.0, 16_000.0, 20_000.0, 21_600.0]),
+            (88_200, 44_100, &[100.0, 1_000.0, 8_000.0, 16_000.0, 19_800.0]),
+            (176_400, 44_100, &[100.0, 1_000.0, 8_000.0, 16_000.0, 19_800.0]),
+        ];
+        for (from, to, freqs) in cases {
+            for &hz in freqs {
+                let out = resample(&tone64(hz, from, 0.05, 0.5), from, to, 1000);
+                let gain = db(fit_tone(&out, to, hz).amplitude / 0.5);
+                assert!(gain.abs() <= 0.01, "{from} -> {to} Hz: {hz} Hz comes out at {gain:.5} dB");
             }
         }
     }
 
-    /// The same output whatever the block size (chunk edges are seamless), the right duration, and
-    /// silence stays silence while a constant stays the constant.
+    /// **Everything that can fold into 0..90% of the output's Nyquist is at least 120 dB down.** The named
+    /// cases first (27 and 30 kHz from 96 kHz fold to 21 and 18 kHz; 62 kHz from 176.4 kHz to 17.9 kHz;
+    /// 60 kHz from 192 kHz to 12 kHz), then a sweep of the whole region from `fout - 0.9 Nyquist` up to the
+    /// source's own Nyquist, for the rates that decimate by an integer and one that does not (64 kHz). The old filter
+    /// let 26.7 kHz through at -92 dB.
+    #[test]
+    fn a_tone_that_folds_into_the_pass_band_is_rejected_by_120_db() {
+        for (from, to, hz) in [
+            (96_000, 48_000, 27_000.0),
+            (96_000, 48_000, 30_000.0),
+            (176_400, 44_100, 62_000.0),
+            (192_000, 48_000, 60_000.0),
+        ] {
+            let alias = folded(hz as u64, to as u64) as f64;
+            let out = resample(&tone64(hz, from, 0.06, 0.5), from, to, 4096);
+            let leaked = db(fit_tone(&out, to, alias).amplitude / 0.5);
+            assert!(leaked <= -120.0, "{from} -> {to} Hz: a {hz} Hz tone folds to {alias} Hz at {leaked:.1} dB");
+        }
+        // (from, to, step in Hz, first source frequency): the first is the edge of the stop band and every
+        // step keeps the alias a multiple of a few hundred Hz, so its period fits in the settled output.
+        for (from, to, step, first) in [
+            (96_000u32, 48_000u32, 300u64, 26_400u64),
+            (192_000, 48_000, 1_800, 26_400),
+            (64_000, 48_000, 300, 26_400),
+            (88_200, 44_100, 450, 24_300),
+            (176_400, 44_100, 4_500, 24_300),
+            (384_000, 48_000, 9_000, 26_400),
+        ] {
+            let mut worst = (f64::NEG_INFINITY, 0u64);
+            let mut hz = first;
+            while hz * 2 < from as u64 {
+                let alias = folded(hz, to as u64);
+                // between 90% of Nyquist and Nyquist is the transition band, which has no stopband claim
+                if alias > 0 && alias * 20 <= to as u64 * 9 {
+                    let out = resample(&tone64(hz as f64, from, 0.03, 0.5), from, to, 4096);
+                    let leaked = db(fit_tone(&out, to, alias as f64).amplitude / 0.5);
+                    if leaked > worst.0 {
+                        worst = (leaked, hz);
+                    }
+                }
+                hz += step;
+            }
+            assert!(worst.0 <= -120.0, "{from} -> {to} Hz: {} Hz folds in at {:.1} dB", worst.1, worst.0);
+        }
+    }
+
+    /// **Between 90% of the Nyquist and the Nyquist the filter is neither flat nor alias-free** (the SoX `-a`
+    /// convention): a tone there is attenuated, by more than the pass band allows and by less than the
+    /// stop band, and the further up the more. No 120 dB claim is made, or checked, here. (23.9 kHz stands for
+    /// the Nyquist itself: a tone at exactly fs/2 is sampled at its zero crossings, whatever its level.)
+    #[test]
+    fn the_transition_band_attenuates_more_the_further_up_and_claims_nothing_else() {
+        let mut prev = 0.0f64;
+        for hz in [22_000.0, 23_000.0, 23_500.0, 23_900.0] {
+            let out = resample(&tone64(hz, 96_000, 0.06, 0.5), 96_000, 48_000, 4096);
+            let gain = db(fit_tone(&out, 48_000, hz).amplitude / 0.5);
+            assert!(gain <= prev + 1e-6, "{hz} Hz comes out at {gain:.4} dB, louder than the tone below it ({prev:.4} dB)");
+            if hz >= 23_000.0 {
+                assert!(gain < -0.01 && gain > -120.0, "{hz} Hz is in the transition band: {gain:.4} dB");
+            }
+            prev = gain;
+        }
+    }
+
+    /// **24-bit quality**: a 1 kHz sine at -1 dBFS comes out with everything that is not that sine at least 135 dB
+    /// below it (f64 frames, weights and accumulators: it measures -277 dB, so 200 is asserted too). The fit is over a whole number of
+    /// periods of the settled middle.
+    #[test]
+    fn a_decimated_sine_carries_no_noise_above_minus_135_db() {
+        for (from, to) in [(96_000, 48_000), (192_000, 48_000), (88_200, 44_100)] {
+            let out = resample(&tone64(1_000.0, from, 0.25, 0.8913), from, to, 4096);
+            let fit = fit_tone(&out, to, 1_000.0);
+            assert!((fit.amplitude - 0.8913).abs() < 1e-4, "{from} -> {to} Hz: amplitude {}", fit.amplitude);
+            let thdn = db(fit.residual);
+            assert!(thdn <= -135.0, "{from} -> {to} Hz: THD+N {thdn:.1} dB");
+            // the f32 accumulation of the old filter measured -137.9 dB, which the target above would let through; f64 is at -277
+            assert!(thdn <= -200.0, "{from} -> {to} Hz: THD+N {thdn:.1} dB is not f64 arithmetic");
+        }
+    }
+
+    /// **The same output whatever the block size**, bit for bit (the position is an exact rational, the sums
+    /// run in one order), the right length, and a constant stays the constant: at the integer ratios, the
+    /// ones with a phase table (88.2 kHz: 80 phases; 50 kHz: 24), one cascaded with a tail (64 kHz is
+    /// 4:3) and one whose denominator is past the table (96001/48000).
     #[test]
     fn a_decimated_stream_is_the_same_in_any_block_size_and_the_right_length() {
-        for rate in [96_000u32, 192_000, 88_200, 176_400] {
-            let input = tone(1_234.0, rate, 0.25);
-            let whole = resample(&input, rate, input.len());
+        for rate in [88_200u32, 96_000, 176_400, 192_000, 64_000, 50_000, 96_001] {
+            let input = tone64(1_234.0, rate, 0.1, 0.5);
+            let whole = resample(&input, rate, OUT_RATE, input.len());
             for block in [1, 7, 480, 1152, 4096] {
-                let got = resample(&input, rate, block);
+                let got = resample(&input, rate, OUT_RATE, block);
                 assert_eq!(got.len(), whole.len(), "{rate} Hz, block {block}: length");
-                let worst = got.iter().zip(&whole).map(|(a, b)| (a[0] - b[0]).abs()).fold(0.0f32, f32::max);
-                assert!(worst < 1e-5, "{rate} Hz, block {block}: differs by {worst}");
+                let worst = got.iter().zip(&whole).map(|(a, b)| (a[0] - b[0]).abs().max((a[1] - b[1]).abs())).fold(0.0f64, f64::max);
+                assert!(worst <= 1e-12, "{rate} Hz, block {block}: differs by {worst}");
             }
-            let expect = (input.len() as f64 * OUT_RATE as f64 / rate as f64) as i64;
-            assert!((whole.len() as i64 - expect).abs() <= 120, "{rate} Hz: {} frames, expected ~{expect}", whole.len());
-            let dc = resample(&vec![[0.25f32, -0.25]; rate as usize / 5], rate, 1152);
+            // the filter holds back its lookahead (41 output frames at the first stage); it never makes frames up
+            let expect = (input.len() as u64 * OUT_RATE as u64 / rate as u64) as i64;
+            let len = whole.len() as i64;
+            assert!(len <= expect + 1 && len + 100 >= expect, "{rate} Hz: {len} frames, expected ~{expect}");
+            let dc = resample(&vec![[0.25f64, -0.25]; rate as usize / 5], rate, OUT_RATE, 1152);
             let mid = dc[dc.len() / 2];
-            assert!((mid[0] - 0.25).abs() < 1e-4 && (mid[1] + 0.25).abs() < 1e-4, "{rate} Hz: DC gain: {mid:?}");
+            assert!((mid[0] - 0.25).abs() <= 1e-12 && (mid[1] + 0.25).abs() <= 1e-12, "{rate} Hz: DC gain: {mid:?}");
         }
+    }
+
+    /// **There is no rate ceiling and the converter is bounded**: the filter tables of any source rate fit
+    /// [`TABLE_BYTES_BOUND`] (705.6 kHz, 2.8224 MHz and 5.6448 MHz are the DSD-derived multiples of 44.1 kHz, 1 000 003 Hz is
+    /// an odd one, `i32::MAX` is the largest FFmpeg can state), and where audio is pushed through the unit gain holds.
+    #[test]
+    fn any_source_rate_is_converted_within_the_table_bound() {
+        for (from, to) in [(705_600u32, 44_100u32), (2_822_400, 44_100), (1_000_003, 48_000), (5_644_800, 44_100), (i32::MAX as u32, 48_000)] {
+            let r = Resampler::new(from, to);
+            assert!(r.table_bytes() <= TABLE_BYTES_BOUND, "{from} -> {to} Hz: {} bytes of tables", r.table_bytes());
+        }
+        for (from, to) in [(705_600u32, 44_100u32), (2_822_400, 44_100), (1_000_003, 48_000)] {
+            let out = resample(&tone64(1_000.0, from, 0.05, 0.5), from, to, 100_000);
+            let gain = fit_tone(&out, to, 1_000.0).amplitude / 0.5;
+            assert!((gain - 1.0).abs() <= 1e-4, "{from} -> {to} Hz: gain {gain}");
+        }
+        // 2e9 frames a second is not pushed through it; a short block shows the chain of 14 stages runs and cannot overflow
+        let mut out = Vec::new();
+        Resampler::new(i32::MAX as u32, 48_000).run(&vec![[0.5, 0.5]; 4096], &mut out);
+        assert!(out.len() <= 1, "{} frames out of 4096 at 2^31 Hz", out.len());
+    }
+
+    /// The documented figures are the real ones: the widest stage is 656 taps by 1024 phases (6.7 MB, only
+    /// reached by an inexact ratio just under 8), a 2:1 stage keeps 83 of its 164 taps (the others are exact
+    /// zeros of the sinc), and 96 kHz and 192 kHz are one phase.
+    #[test]
+    fn the_filter_tables_are_the_size_the_doc_says() {
+        assert_eq!(Resampler::new(96_000, 48_000).table_bytes(), 83 * (8 + 2) + 2 * 4);
+        let widest = Resampler::new(383_999, 48_000).table_bytes();
+        let dense = 656 * DECIMATOR_MAX_PHASES * (8 + 2);
+        assert!(widest <= TABLE_BYTES_BOUND && widest * 100 >= dense * 99, "{widest} bytes against {dense} dense");
+        assert!(Resampler::new(192_000, 48_000).table_bytes() < 10_000);
+        assert_eq!(Resampler::new(48_000, 48_000).table_bytes(), 0);
+        assert_eq!(Resampler::new(44_100, 48_000).table_bytes(), 0, "raising the rate is the linear path");
     }
 
     fn sine(freq: f32, rate: u32, secs: f32) -> Vec<[f32; 2]> {
