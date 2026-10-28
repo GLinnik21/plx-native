@@ -15,8 +15,8 @@
 //!   (`Screen::lets_host_reflow`): its value reaches the page on the frame after the click and the
 //!   grid reflows under the open menu. The feed runs at the head of the frame, ahead of the page's
 //!   tick (`bridge::frame_ingest`), so a landing begins from the slots the old cards stood in.
-//! * **Open.** A page that mounts opens the store (`WatchlistCmd::Open`): the credential is
-//!   captured, the list read starts, a populated list is never blanked.
+//! * **Open.** A page that mounts opens the store (`WatchlistCmd::Open`): the Bridge reads the
+//!   account's identity (`Bridge::watchlist_input`) and the store takes it, the list read starts, a populated list is never blanked.
 //! * **Window.** The titles near the focus are the store's hold window: the matched copies whose
 //!   watch state the application owes a read-back (`Bridge::held_keys`). A window, not a cap: the
 //!   focus moves it over every row.
@@ -162,7 +162,7 @@ impl Bridge {
         };
         if feed.instance != Some(instance) {
             *feed = Feed { instance: Some(instance), reread_at: feed.reread_at, ..Feed::default() };
-            store.run(WatchlistCmd::Open);
+            store.run_with_input(WatchlistCmd::Open, &Self::watchlist_input());
         }
         // The window follows the focus (the page's own cursor, a reserved cell past the loaded
         // tail included), over the whole list.
@@ -421,7 +421,7 @@ impl Bridge {
     /// `Idle` only, so a failed or empty read is never retried per frame.
     pub(crate) fn watchlist_open_if_idle(&mut self) {
         if self.stores.watchlist.view().status() == Status::Idle {
-            self.stores.watchlist.run(WatchlistCmd::Open);
+            self.stores.watchlist.run_with_input(WatchlistCmd::Open, &Self::watchlist_input());
             plx_machine::idle::invalidate();
         }
     }
@@ -476,7 +476,7 @@ impl Bridge {
     /// bookmark disc of every Detail page on the stack.
     pub(crate) fn catalog_feed(&mut self, d: &mut Dispatcher<AppHost>) {
         use plx_screens::registry::ContentArg;
-        if self.stores.catalog.pump() {
+        if self.catalog_pump() {
             plx_machine::idle::invalidate();
         }
         let mut catalog: Option<(EntryId, [u8; 12])> = None;
@@ -511,7 +511,7 @@ impl Bridge {
         }
         let Some((id, hex)) = catalog else {
             if self.catalog_seat.take().is_some() {
-                self.stores.catalog.reset();
+                self.catalog_reset();
             }
             return;
         };
@@ -521,9 +521,9 @@ impl Bridge {
             else { return };
         if self.catalog_seat != Some(instance) {
             self.catalog_seat = Some(instance);
-            self.stores.catalog.open(hex);
+            self.catalog_open(hex);
             // The page's membership needs the list: read it again on every mount, like the tab does.
-            self.stores.watchlist.run(WatchlistCmd::Open);
+            self.stores.watchlist.run_with_input(WatchlistCmd::Open, &Self::watchlist_input());
         }
         // The status line follows the title's tile on the Watchlist (a match landing or a server
         // going offline moves it), the record's date rule only for a title not on the list read.
@@ -547,7 +547,7 @@ impl Bridge {
         if self.stores.catalog.hex == Some(hex)
             && !matches!(self.stores.catalog.load, plx_data::catalog::Load::Loaded(_))
         {
-            self.stores.catalog.open(hex);
+            self.catalog_open(hex);
         }
     }
 
@@ -560,6 +560,11 @@ impl Bridge {
     #[cfg(test)]
     pub(crate) fn watchlist_for_test(&mut self) -> &mut plx_data::stores::watchlist::WatchlistStore {
         &mut self.stores.watchlist
+    }
+
+    #[cfg(test)]
+    pub(crate) fn catalog_for_test(&mut self) -> &mut plx_data::stores::catalog::CatalogStore {
+        &mut self.stores.catalog
     }
 
     /// The removal landing the Watchlist page is owed, by guid.

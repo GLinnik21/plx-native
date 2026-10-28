@@ -218,6 +218,17 @@ class NightlyHomebrewRepository(unittest.TestCase):
         self.assertLess(pages.index("docs/nightly-builds.md > _site/nightly/index.html"),
                         pages.index("ci/nightly.py repo-json"))
 
+    def test_the_site_stamps_the_hero_version_from_the_package(self):
+        pages = code("pages.yml")
+        self.assertIn('"pkg/appinfo.json"', pages)
+        self.assertIn('json.load(open("pkg/appinfo.json"))["version"]', pages)
+        # the stamp edits the staged copy, after it is copied, and fails unless it hit exactly one line
+        self.assertLess(pages.index("cp site/index.html _site/index.html"), pages.index('path = "_site/index.html"'))
+        self.assertIn("if n != 1:", pages)
+        # the pattern it rewrites is still the source's hero line
+        hero = re.findall(r"Version \d+\.\d+\.\d+(?=<span)", (ROOT / "site/index.html").read_text())
+        self.assertEqual(len(hero), 1, hero)
+
 
 class HostToolTests(unittest.TestCase):
     def test_ffmpeg_and_ass_tests_run_in_their_own_job_not_behind_the_replay(self):
@@ -853,7 +864,12 @@ class SiteVideoRelease(unittest.TestCase):
         publish = job_body("site-video.yml", "publish")
         self.assertEqual(publish.count("persist-credentials: true"), 1)
         self.assertEqual(publish.count("persist-credentials: false"), 1)
-        self.assertNotIn("secrets.", body)
+        # the one secret is the deploy key main's ruleset lets push, and only a publish's checkout of main holds it
+        self.assertEqual(re.findall(r"secrets\.\w+", body), ["secrets.MAIN_PUSH_KEY"])
+        with_key = [c for c in self.checkouts("publish") if "secrets.MAIN_PUSH_KEY" in c]
+        self.assertEqual(len(with_key), 1)
+        self.assertRegex(with_key[0], r"(?m)^\s+ref: main\s*$")
+        self.assertIn("env.PUBLISH == 'true'", with_key[0])
 
     def checkouts(self, job):
         """[(step text)] for each `actions/checkout` step of a job."""
@@ -1017,6 +1033,27 @@ class SiteVideoRelease(unittest.TestCase):
         # `publish` is the job that creates the release; the hook must come after it, never gate it
         self.assertNotIn("site-video", job_body("release.yml", "publish"))
         self.assertNotIn("site-video", job_body("release.yml", "build"))
+
+
+class ReleaseMainPushKey(unittest.TestCase):
+    """main's required-checks ruleset rejects the workflow token, so the two jobs that push a line check out with the
+    MAIN_PUSH_KEY deploy key; the release TAG must still go over the token, or it fires `push: tags` a second time."""
+
+    def test_the_pushing_checkouts_carry_the_deploy_key(self):
+        for job in ("prepare", "publish"):
+            self.assertIn("ssh-key: ${{ secrets.MAIN_PUSH_KEY }}", job_body("release.yml", job))
+        self.assertEqual(code("release.yml").count("secrets.MAIN_PUSH_KEY"), 2)
+
+    def test_the_tag_is_pushed_with_the_token_not_the_key(self):
+        prepare = job_body("release.yml", "prepare")
+        pushes = re.findall(r"(?m)^\s+git push .*$", prepare)
+        self.assertEqual(len(pushes), 2, pushes)
+        tag_push = [p for p in pushes if "$tag" in p]
+        self.assertEqual(len(tag_push), 1, pushes)
+        self.assertIn("x-access-token:${GH_TOKEN}@", tag_push[0])
+        self.assertNotIn("origin", tag_push[0])
+        self.assertIn("GH_TOKEN: ${{ github.token }}", prepare)
+        self.assertIn("tags: ['v*']", code("release.yml"))
 
 
 class PerTestResults(unittest.TestCase):

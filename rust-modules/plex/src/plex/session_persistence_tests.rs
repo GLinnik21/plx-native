@@ -1183,7 +1183,7 @@ fn unavailable_helper_fallback_survives_cache_drop_and_restart() {
     for _ in 0..2 {
         // No cache/Session survives: read the on-disk candidates as a new process would.
         invalidate_for_test();
-        let actual = peek_at(std::time::Instant::now());
+        let actual = refresh_blocking_for_test();
         assert_eq!(actual.account_token, expected.account_token);
         assert_eq!(actual.client_id, expected.client_id);
     }
@@ -1275,15 +1275,15 @@ fn fallback_cache_retries_and_observes_recovery_without_reviving_revocation() {
     let _helper = CanonicalReadOverride::unavailable();
     assert!(save_legacy_fallback_locked(&signed_in(), false, false).is_some());
     reset_reads_for_test();
-    let now = std::time::Instant::now();
-    assert_eq!(peek_at(now).account_token, "acct");
+    assert_eq!(refresh_blocking_for_test().account_token, "acct");
     assert!(peek_settled().is_none());
     let mut watch = VisibleSessionWatch::default();
     assert!(watch.changed());
     let generation = visible_generation();
-    assert_eq!(peek_at(now + LOCKED_RETRY / 2).account_token, "acct");
-    assert_eq!(reads_for_test(), 1);
-    assert_eq!(peek_at(now + LOCKED_RETRY).account_token, "acct");
+    assert!(refresh_need().is_some_and(|need| need.transient), "the fallback stays a standing request to retry");
+    assert_eq!(peek().account_token, "acct");
+    assert_eq!(reads_for_test(), 1, "peek never re-reads");
+    assert_eq!(refresh_blocking_for_test().account_token, "acct");
     assert_eq!(reads_for_test(), 2);
     assert_eq!(visible_generation(), generation);
     assert!(!watch.changed());
@@ -1293,7 +1293,7 @@ fn fallback_cache_retries_and_observes_recovery_without_reviving_revocation() {
             session: signed_in(),
         }))
     });
-    assert_eq!(peek_at(now + LOCKED_RETRY * 2).account_token, "acct");
+    assert_eq!(refresh_blocking_for_test().account_token, "acct");
     assert!(peek_settled().is_some());
     assert!(
         watch.changed(),
@@ -1303,7 +1303,7 @@ fn fallback_cache_retries_and_observes_recovery_without_reviving_revocation() {
     revoke_cached_session();
     {
         let _io = io();
-        refresh_locked(now + LOCKED_RETRY * 3);
+        refresh_locked();
     }
     assert!(cache_revoked());
     assert!(!update(|s| Some(s.with_auto_sign_in(true))));
@@ -1336,7 +1336,7 @@ fn signout_with_unavailable_helper_removes_all_fallback_candidates() {
     assert!(files.iter().all(|p| !p.exists()));
     redirect_for_test(None); // new process: no local Revoked barrier
     assert!(matches!(read_live_locked(), ReadState::Blocked));
-    assert!(peek_at(std::time::Instant::now()).account_token.is_empty());
+    assert!(refresh_blocking_for_test().account_token.is_empty());
     std::fs::remove_file(&root.dir).unwrap();
 }
 
@@ -1973,9 +1973,8 @@ fn marked_missing_migration_failure_stays_transient_and_retries() {
         assert_eq!(load().account_token, "acct");
         assert!(peek_settled().is_none(), "a failed marked migration must remain retryable");
         assert!(matches!(*CACHE.lock().unwrap(), Cached::Transient { .. }));
-        let now = std::time::Instant::now();
         assert!(candidates[2].exists());
-        assert_eq!(peek_at(now + LOCKED_RETRY).account_token, "acct");
+        assert_eq!(refresh_blocking_for_test().account_token, "acct");
         assert!(peek_settled().is_some());
         assert!(matches!(persistence::load(), persistence::CanonicalRead::Data { .. }));
         assert!(!candidates[2].exists());

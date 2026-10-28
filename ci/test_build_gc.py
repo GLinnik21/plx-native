@@ -47,17 +47,29 @@ def run_guarded(argv, cwd, env, timeout=HANG_GUARD_SECS):
     the script's stages run in `$(...)` and python children that inherit those pipes: a hung grandchild
     keeps them open and the "timeout" blocks forever in `communicate()`. The child is therefore started
     as its own session and process-group leader, and on timeout the whole group - which this call
-    created, so the pgid is the pid it started - is killed before `TimeoutExpired` is raised."""
+    created, so the pgid is the pid it started - is killed before `TimeoutExpired` is raised.
+    A shell can fork during the first group kill; retry with a bounded pipe drain instead of
+    replacing the original timeout with an unbounded `communicate()`."""
     proc = subprocess.Popen(argv, cwd=cwd, env=env, text=True, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, start_new_session=True)
     try:
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except OSError:
-            pass
-        proc.communicate()
+        for _ in range(10):
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            try:
+                proc.communicate(timeout=1)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+        else:
+            # A pipe held outside the owned group must still not hang the entire test runner.
+            proc.stdout.close()
+            proc.stderr.close()
+            proc.wait(timeout=1)
         raise
     return subprocess.CompletedProcess(argv, proc.returncode, out, err)
 
@@ -198,7 +210,7 @@ class BuildGcTests(unittest.TestCase):
         started = time.monotonic()
         with self.assertRaises(subprocess.TimeoutExpired):
             run_guarded(["sh", "-c", "sleep 3600 & echo $! > " + shlex.quote(str(pidfile)) + "; wait"],
-                        self.root, os.environ.copy(), timeout=2)
+                        self.root, os.environ.copy(), timeout=5)
         self.assertLess(time.monotonic() - started, 60)
         pid = int(pidfile.read_text())
         deadline = time.monotonic() + 10

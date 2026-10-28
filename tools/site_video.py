@@ -136,8 +136,10 @@ THRESHOLDS = {
 # ------------------------------------------------------------------ the pinned tool ffmpeg -------
 Pin = collections.namedtuple("Pin", "key urls sha256 kind member version licence source")
 
-# Each build was DOWNLOADED and hashed by the author of this table on 2026-10-08, and the hash
-# agrees with the publisher's own (GitHub's asset digest; the build server's .sha256 file).
+# Each build was DOWNLOADED and hashed by the author of this table, and the hash agrees with the
+# publisher's own (GitHub's asset digest; the build server's .sha256 file): darwin-arm64 on
+# 2026-10-08, linux-x86_64 on 2026-10-23 (the 2026-10-07 autobuild first pinned had been pruned,
+# and no copy of it survived to mirror).
 #  * linux-x86_64 is the canonical build (CI). BtbN/FFmpeg-Builds, GPLv3 (`--enable-gpl
 #    --enable-version3`), static libs, with libsvtav1, libx264, libaom and libvmaf; the build
 #    scripts are public at github.com/BtbN/FFmpeg-Builds. Its URL is a dated `autobuild-*` release,
@@ -150,11 +152,11 @@ Pin = collections.namedtuple("Pin", "key urls sha256 kind member version licence
 PINS = {
     "linux-x86_64": Pin(
         "linux-x86_64",
-        ("https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-07-13-07/"
-         "ffmpeg-n9.0.2-22-g46d8f462ee-linux64-gpl-9.0.tar.xz",),
-        "c03023a986dec781a5ab6bb8821d6544b40eb86e96f34283880a0fae8105da67",
-        "tar.xz", "/bin/ffmpeg", "n9.0.2-22-g46d8f462ee", "GPL-3.0-or-later (--enable-gpl --enable-version3)",
-        "BtbN/FFmpeg-Builds autobuild-2026-10-07-13-07"),
+        ("https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-23-13-04/"
+         "ffmpeg-n9.0.2-35-g9a9b70bb8c-linux64-gpl-9.0.tar.xz",),
+        "143e31ca53d65d95bde12cc861e331fd2275e48a6ca988e62c46e8f5b77b9811",
+        "tar.xz", "/bin/ffmpeg", "n9.0.2-35-g9a9b70bb8c", "GPL-3.0-or-later (--enable-gpl --enable-version3)",
+        "BtbN/FFmpeg-Builds autobuild-2026-10-23-13-04"),
     "darwin-arm64": Pin(
         "darwin-arm64",
         ("https://ffmpeg.martin-riedl.de/download/macos/arm64/1789931890_9.0.2/ffmpeg.zip",),

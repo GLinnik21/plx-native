@@ -129,6 +129,7 @@
           "index": 1,
           "language": "eng",
           "languageCode": "eng",
+          "samplingRate": 48000,
           "selected": true,
           "streamType": 2
          }

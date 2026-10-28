@@ -435,13 +435,13 @@ impl LibraryScreen {
     }
 
     /// Re-fetch the listing when a read-back made its membership stale (the Unwatched switch,
-    /// ordering by last viewed): ONLY called while a page is pushed over this one (`buried`), so
-    /// the reader's ground never moves under the cursor and the listing is fresh when the page is
-    /// shown again. It is the same query refreshed, not a query edit (`ListingId::query` stands),
-    /// so the page keeps its scroll and its focus. The Browse pump that lands the new first page
-    /// is the application's (`Bridge::reconcile_pump`), because a buried page is not ticked to
-    /// pump its own store. A modal over the page (a compact menu) never triggers it: the page is
-    /// still visible and ticking.
+    /// ordering by last viewed) or the server created or removed items: ONLY called while a page
+    /// is pushed over this one (`buried`), so the reader's ground never moves under the cursor and
+    /// the listing is fresh when the page is shown again. It is the same query refreshed, not a
+    /// query edit (`ListingId::query` stands), so the page keeps its scroll and its focus. The
+    /// Browse pump that lands the new first page is the application's (`Bridge::reconcile_pump`),
+    /// because a buried page is not ticked to pump its own store. A modal over the page (a compact
+    /// menu) never triggers it: the page is still visible and ticking.
     fn requery_stale<H: LibraryLike>(&self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         if !H::listing(cx).membership_stale() { return; }
         let Some(target) = self.address(cx) else { return };
@@ -1196,7 +1196,11 @@ impl LibraryScreen {
                 self.sync(cx);
                 self.follow_listing_type(cx, fx);
                 // A read-back that lands while a page is pushed over this one is acted on at once.
-                if self.buried { self.requery_stale(cx, fx); }
+                // A page being mounted finds a listing the server changed while no Library page
+                // was there to act on it (the notice came while the section was on screen, and the
+                // reader then left by a tab, which buries nothing): nobody is looking at its
+                // cached rows yet, so it is listed again now.
+                if self.buried || matches!(ev, ScreenEvent::Mount) { self.requery_stale(cx, fx); }
             }
             ScreenEvent::RestoreMemory(PageMemory::Library(memory)) => { self.restore(memory); self.sync(cx); }
             ScreenEvent::Enter(enter) => {

@@ -578,6 +578,7 @@ impl plx_ui::dispatch::Tap<super::bridge::AppHost> for Recplay {
         }
     }
     fn result(&mut self, _frame: u64, addr: &plx_machine::machine::Addr, msg: &plx_screens::registry::AppMsg) {
+        if off_tape(msg) { return; }
         if let Self::Replaying(replay) = self {
             let payload = match msg {
                 plx_screens::registry::AppMsg::HubsResult(result) => Some(plx_data::pms::record::encode(result)),
@@ -618,6 +619,7 @@ impl plx_ui::dispatch::Tap<super::bridge::AppHost> for Recplay {
         if matches!(self,Self::Off) { return; }
         use plx_machine::machine::{Delivery, Fx, MachineId};
         use plx_ui::screen::ScreenEvent;
+        if matches!(&stamped.fx, Fx::Deliver(_, Delivery::Machine(msg)) if off_tape(msg)) { return; }
         let name = match &stamped.fx {
             Fx::Nav(_) => "Nav", Fx::Mount(_) => "Mount", Fx::Unmount(_) => "Unmount",
             Fx::Deliver(_, _) => "Deliver", Fx::Timer { .. } => "Timer",
@@ -641,6 +643,20 @@ impl plx_ui::dispatch::Tap<super::bridge::AppHost> for Recplay {
         rec.events = true;
         rec.spent_ns += start.elapsed().as_nanos() as u64;
     }
+}
+
+/// The two events of the session owner's cache refresh (`SessionEvent::CacheObserved` and
+/// `CacheRefreshed`) are skipped by `effect`: they refill the live process's session cache and
+/// change no recorded state. This filter covers exactly those two events. The
+/// `SessionFx::RefreshCache` effect that sits between them is NOT filtered; it cannot arise under
+/// `home_io` (Record and Replay both run through `controlled_home`, where
+/// `Bridge::land_session_cache` is skipped and `session_effect` refuses the effect loudly), so a
+/// tape never holds one. Only a test rig that records a live `Bridge::for_test` over an unloaded
+/// cache would emit it, and that tape would carry its process-global `generation`.
+fn off_tape(msg: &plx_screens::registry::AppMsg) -> bool {
+    use plx_session::auth::owner::SessionEvent;
+    matches!(msg, plx_screens::registry::AppMsg::Session(
+        SessionEvent::CacheObserved(_) | SessionEvent::CacheRefreshed { .. }))
 }
 
 pub(crate) fn machine_name(id: plx_machine::machine::MachineId) -> String {

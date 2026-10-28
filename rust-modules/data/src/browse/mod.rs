@@ -8,10 +8,12 @@
 //! `pms`'s worker-driven hub catalog); this store pages arbitrarily large sections without blocking the
 //! main loop. Data model: one [`SecItems`] per section — a PAGE-CHUNKED table sized to the
 //! listing's `totalSize`, a page (`PAGE` items) allocated only when it lands (restructure phase
-//! 4's O(result) rule) — filled page-by-page by ONE background fetch at a
-//! time using the season-switch idiom from `metadata.rs` — [`plx_base::task::spawn_small`] + a
-//! `Mutex` mailbox + generation atomics (a re-query supersedes in-flight landings), applied
-//! on the main thread by [`pump`] once a frame while the Library screen is up.
+//! 4's O(result) rule) — filled page-by-page by ONE read at a time: the pump emits it as a
+//! `StoreJob::BrowsePage` ([`listing_jobs`]) that the app's runner starts on a worker, and its
+//! answer waits in a claim-guarded mailbox (`Fetch`) stamped with the request's generation (a
+//! re-query supersedes in-flight landings), applied on the main thread by [`pump`] once a frame
+//! while the Library screen is up. The filter menus' value lists (genres, first letters) leave the
+//! same way, as `StoreJob::BrowseDirectory`.
 //!
 //! The sort/filter MENUS are server-driven: the first page of a section is requested with
 //! `includeMeta=1` and the response's `Meta.Type[]` supplies the Sort entries; the genre
@@ -47,8 +49,11 @@
 //! own server's section `1` and the friend's section `1` are different libraries, and each server
 //! answers 401 to the other's token. So the table is a flat `Vec<BrowseSection>` whose every entry
 //! names its [`BrowseSource`], and every fetch is issued through `client_for(source.sid)` captured
-//! AT THE SPAWN SITE — never `client()` read inside a worker, which would dial whichever server
-//! happened to be current when the thread got scheduled.
+//! BEFORE the worker starts — never `client()` read inside a worker, which would dial whichever
+//! server happened to be current when the thread got scheduled. The pins capture it at their spawn
+//! site; the source discovery and the page and directory reads capture the `ClientKey` of the
+//! source or section at the step (from the `ClientKeys` the caller filled) and the runner resolves
+//! it to the client at the launch, refusing a job whose client has moved on.
 //!
 //! **It grows by APPEND and never by rebuild**, which is what keeps the page mailbox sound. A page
 //! landing is blamed on a section INDEX (`PageResult.sec`), so an index that moved under an
@@ -56,14 +61,12 @@
 //! the old synchronous discovery's early-return was the only thing preventing that; appending is the property
 //! that replaces it, and it holds for every source that lands later rather than only for the
 //! second call.
-use plx_plex::plex::{SectionQuery, ServerId};
+use plx_plex::plex::{ClientKeys, SectionQuery, ServerId};
 use saved_view::ViewField;
 use crate::pms::{parse_item, PmsMovie};
 use crate::stores::page_cache::{kept_when_over_budget, Keep, PAGE};
-use std::panic::catch_unwind;
 #[cfg(test)]
-use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
 
 /// The sections left most recently that keep the pages of the window they last showed. Every
@@ -527,6 +530,8 @@ pub enum SecFetch {
     Failed,
 }
 
+pub mod discovery_job;
+pub mod listing_jobs;
 pub mod record;
 mod saved_view;
 pub mod section_hubs;
@@ -573,7 +578,7 @@ struct SecState {
     // menus (kept across re-queries)
     sorts: Arc<Vec<SortEntry>>,
     genres: Arc<Vec<GenreEntry>>,
-    genres_done: bool, // a genre fetch LANDED (even empty) — kick_genres won't re-spawn
+    genres_done: bool, // a genre fetch LANDED (even empty) — kick_genres won't ask again
     /// Is the live sort the viewer's CHOICE rather than merely what a failed restore left? False
     /// only after a first page that was asked to restore the saved sort and could not tell
     /// whether it had (the re-ask failed, or no menu came back): the library then shows the
@@ -602,8 +607,9 @@ struct SecState {
     items: SecItems,
     cursor: Option<Arc<Cursor>>,
     /// A read-back changed a row this section's QUERY depends on (see
-    /// [`BrowseState::apply_view_local`]): what it lists is out of date though every row on screen
-    /// is right. Cleared by any re-query.
+    /// [`BrowseState::apply_view_local`]), or the server created or removed items
+    /// ([`BrowseState::listings_changed`]): what it lists is out of date though every row on
+    /// screen is right. Cleared by any re-query.
     membership_stale: bool,
 }
 
@@ -854,11 +860,28 @@ pub struct BrowseState {
     /// The publish order of view-state edits, shared with every other store
     /// (`stores::Stores::default`); a standalone state owns a private one.
     pub(crate) ledger: crate::viewledger::ViewLedger,
-    /// The ledger stamp of the listing page read in flight (single flight: `BrowseAdapter::fetching`),
+    /// The ledger stamp of the listing page read in flight (single flight: `BrowseAdapter::page`),
     /// taken when it was requested. Its landing is patched with every edit published since.
     page_stamp: crate::viewledger::Stamp,
-    /// The same for the section-hubs read in flight (`BrowseAdapter::hubs.fetching` is its claim).
+    /// The request ids of the last listing page read and of the last genre and letters reads: each
+    /// read the step emits takes the next one of its kind, raises its claim for it, and a refusal
+    /// of that id is what the next step settles ([`listing_jobs`]).
+    page_req: u32,
+    genres_req: u32,
+    letters_req: u32,
+    /// The request id of the last source discovery the step emitted: each takes the next one and
+    /// raises the discovery claim for it, and a refusal of that id is what the next step settles
+    /// ([`BrowseState::discovery_settle`]).
+    src_req: u32,
+    /// The discovery read the step has out, until it lands or a later step settles its refusal.
+    src_flight: Option<SrcFlight>,
+    /// The same for the section-hubs read in flight (`BrowseAdapter::hubs.fetch` holds its claim).
     hubs_stamp: crate::viewledger::Stamp,
+    /// The last section-hubs read's request id: each read the step emits takes the next one, and its
+    /// answer is told from a superseded read's by it ([`section_hubs::browse_hubs_addr`]).
+    hubs_gen: u32,
+    /// The section-hubs read the step has out, until it lands or a later step settles its refusal.
+    hubs_flight: Option<section_hubs::HubsFlight>,
     session_generation: u64,
     sources: Vec<BrowseSource>,
     sections: Vec<BrowseSection>,
@@ -900,12 +923,18 @@ pub struct BrowseState {
 
 /// Shared by a cloned Browse snapshot, so consuming a receipt never makes another clone
 /// mistake a successful write for a disconnected worker. Failed writes keep the local choice.
+///
+/// The poll and its use are split. [`observe`](Self::observe) polls the receipt once and latches
+/// it; `Bridge::browse_session` is the only production caller, and it calls it BEFORE it reads the
+/// session it hands the step. [`saved`](Self::saved) only reads the latch, so a step never pairs a
+/// receipt it polled itself with a session read before it (the receipt is sent after the worker
+/// installed the written session, so a read taken after seeing it contains the write).
 struct PinWrite {
     ticket: plx_base::storage_worker::TypedTicket<bool>,
     saved: Option<bool>,
 }
 impl PinWrite {
-    fn saved(&mut self) -> bool {
+    fn observe(&mut self) {
         if self.saved.is_none() {
             self.saved = match self.ticket.try_recv() {
                 Ok(saved) => Some(saved),
@@ -913,20 +942,29 @@ impl PinWrite {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(false),
             };
         }
+    }
+    fn saved(&self) -> bool {
         self.saved == Some(true)
     }
 }
 
-/// Worker-facing half of one Browse store. Every spawned job captures this adapter, so a result
-/// can only land in the store that admitted the job even when another Bridge is alive.
+/// Worker-facing half of one Browse store. Every read's port holds this adapter, so a result
+/// can only land in the store that emitted the job even when another Bridge is alive.
 pub struct BrowseAdapter {
-    fetching: AtomicBool,
-    genre_fetching: AtomicBool,
-    letters_fetching: AtomicBool,
-    src_fetching: AtomicBool,
-    page_result: Mutex<Option<PageResult>>,
-    genre_result: Mutex<Option<DirectoryResult<GenreEntry>>>,
-    letter_result: Mutex<Option<DirectoryResult<(String, i64)>>>,
+    /// The listing page read: its claim and mailbox, and the refusal of a read that never started
+    /// ([`listing_jobs`]). The claim is raised by the step that emits the read.
+    page: crate::stores::Fetch<PageResult>,
+    /// The genre and first-letter lists, each with a claim and mailbox of its own.
+    genres: crate::stores::Fetch<DirectoryResult<GenreEntry>>,
+    letters: crate::stores::Fetch<DirectoryResult<(String, i64)>>,
+    /// The source discovery's claim, raised by the step that emits the read ([`discovery_job`]).
+    /// Its mailbox slot is unused: the answer lands in `src_result`, which `record::take_from`
+    /// takes and a controlled run records, and whose claim is lowered at APPLY
+    /// (`apply_discovery`, after its epoch check), not at the take. Moving the answer into the
+    /// slot would change when the claim drops (the dump mode's owed and the take) and what is
+    /// recorded; the shared claim gives the refusal and the generation guard
+    /// ([`crate::stores::Fetch`]) without that.
+    src_fetching: crate::stores::Fetch<()>,
     src_result: Mutex<Option<(u32, usize, SrcLanding)>>,
     hubs: section_hubs::HubAdapter,
 }
@@ -939,13 +977,10 @@ pub struct RosterSync {
 impl Default for BrowseAdapter {
     fn default() -> Self {
         Self {
-            fetching: AtomicBool::new(false),
-            genre_fetching: AtomicBool::new(false),
-            letters_fetching: AtomicBool::new(false),
-            src_fetching: AtomicBool::new(false),
-            page_result: Mutex::new(None),
-            genre_result: Mutex::new(None),
-            letter_result: Mutex::new(None),
+            page: Default::default(),
+            genres: Default::default(),
+            letters: Default::default(),
+            src_fetching: Default::default(),
             src_result: Mutex::new(None),
             hubs: Default::default(),
         }
@@ -954,15 +989,12 @@ impl Default for BrowseAdapter {
 
 impl BrowseAdapter {
     fn clear(&self) {
-        *self.page_result.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        *self.genre_result.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        *self.letter_result.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.page.clear();
+        self.genres.clear();
+        self.letters.clear();
         *self.src_result.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        *self.hubs.result.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        for flag in [&self.fetching, &self.genre_fetching, &self.letters_fetching,
-            &self.src_fetching, &self.hubs.fetching] {
-            flag.store(false, Ordering::SeqCst);
-        }
+        self.hubs.fetch.clear();
+        self.src_fetching.clear();
     }
 }
 
@@ -971,7 +1003,14 @@ impl Default for BrowseState {
         Self {
             ledger: Default::default(),
             page_stamp: 0,
+            page_req: 0,
+            genres_req: 0,
+            letters_req: 0,
+            src_req: 0,
+            src_flight: None,
             hubs_stamp: 0,
+            hubs_gen: 0,
+            hubs_flight: None,
             sources: Vec::new(),
             sections: Vec::new(),
             states: Vec::new(),
@@ -1042,21 +1081,25 @@ impl BrowseState {
                 return true;
             }
         }
-        !adapter.src_fetching.load(Ordering::SeqCst)
+        !adapter.src_fetching.busy()
             && self.sources.iter().any(|source| !source.sections_done || !source.counts_done)
     }
 
     pub fn pump_needs_work(&self, adapter: &BrowseAdapter) -> bool {
         if self.discovery_needs_pump(adapter)
             || self.retry_cd > 0
-            || adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()).is_some()
-            || adapter.genre_result.lock().unwrap_or_else(|e| e.into_inner()).is_some()
-            || adapter.letter_result.lock().unwrap_or_else(|e| e.into_inner()).is_some()
-            || adapter.hubs.result.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+            || adapter.page.has_mail()
+            || adapter.genres.has_mail()
+            || adapter.letters.has_mail()
+            || adapter.hubs.fetch.has_mail()
+            // A read the runner refused (or an adapter retired under) leaves its record with the claim
+            // down: the next step settles it ([`BrowseState::hubs_settle`]), and nothing else would
+            // wake it if the section's own timers are not running.
+            || (self.hubs_flight.is_some() && !adapter.hubs.fetch.busy())
             || self.states.iter().any(|state| state.hubs.needs_tick()) {
             return true;
         }
-        if adapter.fetching.load(Ordering::SeqCst) {
+        if adapter.page.busy() {
             return false;
         }
         let current = self.cur();
@@ -1161,10 +1204,16 @@ impl BrowseState {
         activate_source_of(i);
     }
     /// The grid's memory of the sections it is not showing: the recent few keep their last
-    /// window, the rest keep no pages. Runs on a switch, never per frame.
+    /// window, the rest keep no pages, and a section left while stale
+    /// ([`SecState::membership_stale`]) keeps none either, so that coming back fetches it afresh
+    /// rather than showing the list it had before the change. Runs on a switch, never per frame.
     fn apply_section_rule(&mut self) {
         for (section, state) in self.states.iter_mut().enumerate() {
             if section == self.cur {
+                continue;
+            }
+            if state.membership_stale {
+                state.reset_listing();
                 continue;
             }
             match self.left.iter().find(|&&(left, _)| left == section) {
@@ -1404,6 +1453,39 @@ impl BrowseState {
         self.requery_gen = Some(self.gen);
         true
     }
+    /// Items were created or removed on `sid` (a notification, never a press).
+    ///
+    /// Every other section of the server forgets its pages AND its cursor (`reset_listing`): its
+    /// next visit fetches afresh. The current section, when it is one of the server's and lists
+    /// something, is only marked stale, as a read-back that moved a row's membership marks it: the
+    /// grid on screen is never listed again under the reader, and the Library page re-queries it
+    /// (keeping the reader's place, [`Self::requery_stale`]) when a page is pushed over it. With no
+    /// Library page on the stack nobody is looking (`library_on_stack` is false), so the re-query
+    /// starts at once and `requery_owed` has the store pumped to land its first page.
+    /// True when a section was marked or reset, or a re-query was started.
+    fn listings_changed(&mut self, sid: ServerId, library_on_stack: bool) -> bool {
+        let current = self.cur();
+        let mut hit = false;
+        let mut marked = false;
+        for i in 0..self.states.len() {
+            if self.section_sid(i) != Some(sid) {
+                continue;
+            }
+            let Some(state) = self.states.get_mut(i) else { continue };
+            if i != current {
+                state.reset_listing();
+                hit = true;
+            } else if state.total >= 0 || state.fetch == SecFetch::Loading {
+                hit |= !state.membership_stale;
+                state.membership_stale = true;
+                marked = true;
+            }
+        }
+        if marked && !library_on_stack {
+            hit |= self.requery_stale();
+        }
+        hit
+    }
     /// Is a membership re-query's first page still owed, so that the store must be pumped even
     /// though no Library page is on top to do it?
     pub fn requery_owed(&self) -> bool {
@@ -1621,85 +1703,80 @@ impl BrowseState {
         plx_machine::idle::invalidate();
         true
     }
-    fn kick_directory<T: Send + 'static>(
-        &self,
-        adapter: &Arc<BrowseAdapter>,
-        done: bool,
-        flag: fn(&BrowseAdapter) -> &AtomicBool,
-        mail: fn(&BrowseAdapter) -> &Mutex<Option<DirectoryResult<T>>>,
-        dir: &'static str,
-        project: fn(&plx_plex::plex::LibrarySection) -> Option<T>,
-    ) {
+    /// Ask for one of the current section's value lists, if it is owed and not already out. Nothing
+    /// is started here: the read leaves as a [`crate::stores::StoreJob::BrowseDirectory`] on `jobs`
+    /// and the application's runner starts it, so the registry is read by the host (`keys`), never
+    /// by this step. The directory's claim is raised HERE, at the step, because the screens re-send
+    /// the request every tick and several run before one drain; the runner's refusal gives it back.
+    fn kick_directory(&mut self, adapter: &Arc<BrowseAdapter>, keys: &ClientKeys,
+        jobs: &mut Vec<crate::stores::StoreJob>, which: listing_jobs::Directory) {
+        self.settle_refused_reads(adapter);
         let current = self.cur();
-        if self.states.get(current).is_none() || done {
+        let done = self.cur_state().map(|state| match which {
+            listing_jobs::Directory::Genres => state.genres_done,
+            listing_jobs::Directory::Letters => state.letters_done,
+        });
+        if self.states.get(current).is_none() || done.unwrap_or(true) {
             return;
         }
         let Some(sid) = self.section_sid(current) else {
             return;
         };
-        let Some(client) = plx_plex::plex::client_for(sid) else {
+        let Some(key) = keys.key(sid) else {
             return;
         };
-        let token_gen = client.token_gen();
-        if flag(&adapter).swap(true, Ordering::SeqCst) {
+        if which.busy(adapter) {
             return;
         }
-        let key = self.sections[current].key;
+        let section = self.sections[current].key;
         let library_type = self.states[current].library_type;
         let metadata_type = library_type.plex_type(self.sections[current].kind);
-        let epoch = self.table_epoch();
-        let worker_adapter = Arc::clone(&adapter);
-        let spawned = plx_base::task::spawn_small("directory", move || {
-            let list = catch_unwind(|| {
-                let mut values = Vec::new();
-                if let Some(container) = client.section_directory(key, dir, metadata_type) {
-                    values.extend(container.directory.iter().filter_map(project));
-                }
-                values
-            })
-            .unwrap_or_default();
-            *mail(&worker_adapter).lock().unwrap_or_else(|e| e.into_inner()) = Some(DirectoryResult {
-                epoch,
-                sec: current,
-                client,
-                token_gen,
-                library_type,
-                list,
-            });
-        });
-        if !spawned {
-            flag(&adapter).store(false, Ordering::SeqCst);
+        let id = match which {
+            listing_jobs::Directory::Genres => &mut self.genres_req,
+            listing_jobs::Directory::Letters => &mut self.letters_req,
+        };
+        *id = id.wrapping_add(1);
+        let id = *id;
+        which.claim(adapter, id);
+        jobs.push(crate::stores::StoreJob::BrowseDirectory(
+            plx_machine::job::Job {
+                addr: listing_jobs::listing_addr(id),
+                req: listing_jobs::BrowseDirectoryReq::new(
+                    sid, key, self.table_epoch(), current, section, library_type, metadata_type, which),
+            },
+            listing_jobs::BrowseDirectoryPort::of(adapter, which),
+        ));
+    }
+    /// Settle the reads the runner refused since the last step: the claim went back in the call that
+    /// refused (`Port::refused`), so what is left is the refusal's record, which is consumed here
+    /// and never recorded anywhere. A directory read that never started leaves its list owed
+    /// (`genres_done` / `letters_done` are only set by a landing), a page read that never started
+    /// leaves the first missing page missing, so the state is already the one such a read leaves and
+    /// the next ask is the same step's own. The loop is woken because nothing else would: the
+    /// claim that held the pump quiet is down.
+    fn settle_refused_reads(&mut self, adapter: &BrowseAdapter) {
+        let refused = adapter.page.take_refused(self.page_req)
+            | adapter.genres.take_refused(self.genres_req)
+            | adapter.letters.take_refused(self.letters_req);
+        if refused {
+            plx_machine::idle::invalidate();
         }
     }
-    fn kick_genres(&self, adapter: &Arc<BrowseAdapter>) {
-        let done = self
-            .cur_state()
-            .map(|state| state.genres_done)
-            .unwrap_or(true);
-        self.kick_directory(adapter, done, |a| &a.genre_fetching, |a| &a.genre_result, "genre", genre_entry);
+    fn kick_genres(&mut self, adapter: &Arc<BrowseAdapter>, keys: &ClientKeys,
+        jobs: &mut Vec<crate::stores::StoreJob>) {
+        self.kick_directory(adapter, keys, jobs, listing_jobs::Directory::Genres);
     }
-    fn kick_letters(&self, adapter: &Arc<BrowseAdapter>) {
-        let done = self
-            .cur_state()
-            .map(|state| state.letters_done)
-            .unwrap_or(true);
-        self.kick_directory(
-            adapter,
-            done,
-            |a| &a.letters_fetching,
-            |a| &a.letter_result,
-            "firstCharacter",
-            |directory| {
-                (!directory.key.is_empty() && directory.size > 0)
-                    .then(|| (directory.title.clone(), directory.size))
-            },
-        );
+    fn kick_letters(&mut self, adapter: &Arc<BrowseAdapter>, keys: &ClientKeys,
+        jobs: &mut Vec<crate::stores::StoreJob>) {
+        self.kick_directory(adapter, keys, jobs, listing_jobs::Directory::Letters);
     }
     pub fn addressed_with_adapter(
         &mut self,
         adapter: &Arc<BrowseAdapter>,
         target: crate::stores::browse::SectionAddress,
         work: crate::stores::browse::LibraryWork,
+        keys: &ClientKeys,
+        jobs: &mut Vec<crate::stores::StoreJob>,
     ) -> bool {
         use crate::stores::browse::{LibraryWork, QueryEdit};
         let Some(index) = self.resolve_section(target.epoch, target.sid, target.section) else {
@@ -1763,20 +1840,22 @@ impl BrowseState {
                 }
             }
             LibraryWork::Hubs { may_publish } => {
-                self.hubs_kick(index, adapter);
+                self.hubs_kick(index, adapter, keys, jobs);
                 self.hubs_commit_staged(index, may_publish)
             }
-            LibraryWork::HubPage { id, key, before, seen } => self.hubs_page(index, seen, &id, &key, before, adapter),
-            LibraryWork::HubPageCancel { id, key } => self.hubs_cancel_page(index, &id, &key, adapter),
-            LibraryWork::HubHold { lo, hi } => self.hubs_hold(index, lo, hi, adapter),
+            LibraryWork::HubPage { id, key, before, seen } => {
+                self.hubs_page(index, seen, &id, &key, before, adapter, keys, jobs)
+            }
+            LibraryWork::HubPageCancel { id, key } => self.hubs_cancel_page(index, &id, &key, adapter, keys, jobs),
+            LibraryWork::HubHold { lo, hi } => self.hubs_hold(index, lo, hi, adapter, keys, jobs),
             work => {
                 if self.cur() != index {
                     return false;
                 }
                 match work {
                     LibraryWork::Want { lo, hi, focus } => self.want(lo, hi, focus),
-                    LibraryWork::Letters => self.kick_letters(adapter),
-                    LibraryWork::Genres => self.kick_genres(adapter),
+                    LibraryWork::Letters => self.kick_letters(adapter, keys, jobs),
+                    LibraryWork::Genres => self.kick_genres(adapter, keys, jobs),
                     LibraryWork::Retry => self.retry_cur_source(),
                     LibraryWork::Requery => {
                         self.requery_stale();
@@ -1833,16 +1912,20 @@ impl BrowseState {
         source.sections_done = false;
         source.counts_done = true;
         self.epoch = epoch;
-        adapter.src_fetching.store(false, Ordering::SeqCst);
+        adapter.src_fetching.release();
     }
     #[cfg(any(test, feature = "test-support"))]
     pub fn discovery_policy_for_test(&self, adapter: &BrowseAdapter) -> (bool, u32, bool) {
         let source = self.sources.first().expect("a replay source");
         (
-            adapter.src_fetching.load(Ordering::SeqCst),
+            adapter.src_fetching.busy(),
             source.retry_cd,
             source.sections_done,
         )
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn section_count_for_test(&self) -> usize {
+        self.sections.len()
     }
     fn library_pins(&self) -> Vec<(usize, i64, bool)> {
         let mut out: Vec<(usize, i64, bool)> = self.sections
@@ -2031,8 +2114,18 @@ impl BrowseState {
             self.set_cur(index);
         }
     }
+    /// Poll the pending pin write's receipt, once (`PinWrite::observe`). The Bridge calls this
+    /// before it reads the session it hands the step (`Bridge::browse_session`), so a write seen as
+    /// saved is never paired with a session read from before it.
+    pub fn observe_pin_write(&self) {
+        if let Some((_, write)) = &self.pending_pins {
+            write.lock().unwrap_or_else(|e| e.into_inner()).observe();
+        }
+    }
     /// A directory refresh must not replace the pending (or failed) local choice with the
-    /// older persisted snapshot. Successful receipts recapture the cache after the worker fill.
+    /// older persisted snapshot. A receipt observed before the caller read `session` takes the
+    /// record from `session`, which contains the write; a receipt not yet observed answers with the
+    /// local record, never with a snapshot older than the write.
     fn pin_record_for(&mut self, session: &plx_plex::plex::session::Session, user: &str)
         -> Option<plx_plex::plex::session::HomePins> {
         if let Some((pending_user, write)) = &self.pending_pins {
@@ -2040,7 +2133,6 @@ impl BrowseState {
                 return self.recorded.clone();
             }
             self.pending_pins = None;
-            return plx_plex::plex::session::peek().pins_for(user).cloned();
         }
         session.pins_for(user).cloned()
     }
@@ -2076,7 +2168,7 @@ impl BrowseState {
     ///
     /// Two callers reach it, and they are the two ways that can happen: a Plex Home roster landing
     /// or session-cache recovery refreshes a SOURCE/record (`sync_roster_owned`), and the Home editor's commit replaces this
-    /// profile's RECORD (`apply_pins`). Both end in the same question — what does
+    /// profile's RECORD (`apply_pins_from`). Both end in the same question — what does
     /// `pins::resolve` say about every row now — so they ask it the same way rather than each
     /// keeping a version of the answer. A row that moves without `bump_sections_gen` +
     /// `plx_machine::idle::invalidate` is a table nothing republishes, which is a pill strip and a set of
@@ -2099,13 +2191,25 @@ impl BrowseState {
         let record = self.pin_record_for(session, user);
         self.reconcile_pins(record)
     }
+    /// The registry as of now, after the pin write was observed: what the Bridge hands a step.
+    #[cfg(test)]
     fn resolve_pins(&mut self) {
+        self.observe_pin_write();
         let session = plx_plex::plex::session::peek();
         let user = plx_plex::plex::session::current_profile_key();
         self.resolve_pins_from(&session, &user);
     }
+    #[cfg(any(test, feature = "test-support"))]
+    fn append_sections_for_test(&mut self, source: usize, list: Vec<(i64, String, SecKind)>) {
+        self.observe_pin_write();
+        let session = plx_plex::plex::session::peek();
+        self.append_sections_with(source, list, &session, &plx_plex::plex::session::current_profile_key());
+    }
+    /// Append the sections a discovery found, then re-resolve the pins from `session` for `user`: the
+    /// live landing hands the profile key and the session the Bridge read, the controlled one hands its
+    /// `preferences` under the `""` key.
     fn append_sections_with(&mut self, source: usize, list: Vec<(i64, String, SecKind)>,
-        preferences: Option<&plx_plex::plex::session::Session>) {
+        session: &plx_plex::plex::session::Session, user: &str) {
         let fresh: Vec<_> = list.into_iter().filter(|(key, _, _)| {
             !self.sections.iter().any(|section| section.src == source && section.key == *key)
         }).collect();
@@ -2119,17 +2223,20 @@ impl BrowseState {
             });
             self.states.push(SecState::default());
         }
-        if let Some(session) = preferences {
-            self.resolve_pins_from(session, "");
-        } else {
-            self.resolve_pins();
-        }
+        self.resolve_pins_from(session, user);
         // After the resolve above, which is what (re)loads the profile's saved views.
         for index in first_fresh..self.sections.len() {
             self.seed_saved_view(index);
         }
         self.bump_sections_gen();
         plx_machine::idle::invalidate();
+    }
+    #[cfg(test)]
+    fn record_pins(&mut self, asked: bool, touched: &[bool])
+        -> Option<plx_plex::plex::session::HomePins> {
+        self.observe_pin_write();
+        let snapshot = plx_plex::plex::session::peek();
+        self.record_pins_from(asked, touched, &snapshot)
     }
     /// Write this profile's answer down. `touched` is indexed like the section table and marks
     /// the rows the VIEWER answered — as the editor reported them, never as a comparison against
@@ -2140,12 +2247,15 @@ impl BrowseState {
     /// against the current authority under IO, so unrelated edits made while it was queued
     /// survive. A missing session or a refused queue returns `None`; the visible selection
     /// still stands for this run, without claiming it was saved.
-    fn record_pins(&mut self, asked: bool, touched: &[bool])
+    ///
+    /// `snapshot` is the session the Bridge read (`Bridge::browse_session`): its `client_id` gates the
+    /// write and its record is the fallback for the previous answer. The test shim `record_pins` hands
+    /// the registry as of now.
+    fn record_pins_from(&mut self, asked: bool, touched: &[bool], snapshot: &plx_plex::plex::session::Session)
         -> Option<plx_plex::plex::session::HomePins> {
         let libraries = self.lib_refs();
         let on: Vec<bool> = self.sections.iter().map(|section| section.pinned).collect();
         let user = plx_plex::plex::session::current_profile_key();
-        let snapshot = plx_plex::plex::session::peek();
         if snapshot.client_id.is_empty() { return None; }
         let previous = self.recorded.as_ref().or_else(|| snapshot.pins_for(&user));
         let answers = plx_plex::plex::pins::answers(&libraries, &on, touched, previous);
@@ -2169,6 +2279,12 @@ impl BrowseState {
         self.pending_pins = Some((pending_user, std::sync::Arc::new(std::sync::Mutex::new(PinWrite { ticket, saved: None }))));
         self.recorded = Some(record.clone());
         Some(record)
+    }
+    #[cfg(test)]
+    fn apply_pins(&mut self, answers: &[(usize, bool)]) {
+        self.observe_pin_write();
+        let session = plx_plex::plex::session::peek();
+        self.apply_pins_from(answers, &session);
     }
     /// The editor's one commit: apply the rows it ANSWERED, and record exactly those.
     ///
@@ -2195,9 +2311,10 @@ impl BrowseState {
     /// says otherwise, and go back down at the next resolve with no user action behind it.
     ///
     /// **A commit that produced no record is not reconciled**, and the difference is the whole of
-    /// it: [`record_pins`](Self::record_pins) answers `None` when `session::update` refused the
-    /// cycle, and the record still standing then is the one this commit meant to replace.
-    fn apply_pins(&mut self, answers: &[(usize, bool)]) {
+    /// it: [`record_pins_from`](Self::record_pins_from) answers `None` when the session it was handed
+    /// has no `client_id` (or the queue refused the cycle), and the record still standing then is the
+    /// one this commit meant to replace.
+    fn apply_pins_from(&mut self, answers: &[(usize, bool)], session: &plx_plex::plex::session::Session) {
         let mut touched = vec![false; self.sections.len()];
         let mut changed = false;
         for &(index, on) in answers {
@@ -2212,7 +2329,7 @@ impl BrowseState {
                 *slot = true;
             }
         }
-        let produced = self.record_pins(true, &touched);
+        let produced = self.record_pins_from(true, &touched, session);
         if changed {
             self.repoint_cur();
             self.bump_sections_gen();
@@ -2244,14 +2361,15 @@ impl BrowseState {
         epoch: u32,
         source_index: usize,
         landing: SrcLanding,
-        preferences: Option<&plx_plex::plex::session::Session>,
+        session: &plx_plex::plex::session::Session,
+        user: &str,
         adapter: &BrowseAdapter,
     ) -> crate::stores::StoreOutcome {
         plx_machine::idle::invalidate();
         if epoch != self.table_epoch() {
             return Default::default();
         }
-        adapter.src_fetching.store(false, Ordering::SeqCst);
+        adapter.src_fetching.release();
         let SrcLanding { client, token_gen, name, what } = landing;
         let ok = match &what {
             SrcWhat::Sections(list) => list.is_some(),
@@ -2273,7 +2391,7 @@ impl BrowseState {
                     SrcWhat::Sections(list) => {
                         let answered = list.is_some();
                         self.append_sections_with(
-                            source_index, list.unwrap_or_default(), preferences);
+                            source_index, list.unwrap_or_default(), session, user);
                         if let Some(source) = self.source_mut(source_index) {
                             source.sections_done = answered;
                             source.retry_cd = if answered { 0 } else { SRC_RETRY_CD };
@@ -2353,6 +2471,10 @@ impl BrowseState {
         self.cur = 0;
         self.left = Vec::new();
         self.retry_cd = 0;
+        // The read out belonged to the tables just dropped (its answer is epoch-gated and its
+        // claim was cleared with the adapter's mailbox), so its record goes with them.
+        self.hubs_flight = None;
+        self.src_flight = None;
         self.refresh_tab_shape();
     }
     fn reset_owned(&mut self, adapter: &BrowseAdapter) {
@@ -2502,14 +2624,18 @@ impl BrowseState {
         &mut self,
         adapter: &Arc<BrowseAdapter>,
         cmd: crate::stores::browse::BrowseCmd,
+        keys: &ClientKeys,
+        session: &plx_plex::plex::session::Session,
+        jobs: &mut Vec<crate::stores::StoreJob>,
     ) -> bool {
         use crate::stores::browse::BrowseCmd;
         match cmd {
             BrowseCmd::Discovery(result) => {
-                record::apply_to(self, adapter, &result, None).changed
+                record::apply_to(self, adapter, &result, session,
+                    &plx_plex::plex::session::current_profile_key()).changed
             }
             BrowseCmd::Addressed { target, work } => {
-                self.addressed_with_adapter(adapter, target, work)
+                self.addressed_with_adapter(adapter, target, work, keys, jobs)
             }
             BrowseCmd::RetrySource { epoch, sid } => self.retry_source(epoch, sid),
             #[cfg(any(test, feature = "test-support"))]
@@ -2522,7 +2648,7 @@ impl BrowseState {
                 true
             }
             BrowseCmd::ApplyPins(edits) => {
-                self.apply_pins(&edits);
+                self.apply_pins_from(&edits, session);
                 true
             }
             BrowseCmd::RetryDiscovery => {
@@ -2534,13 +2660,14 @@ impl BrowseState {
                 true
             }
             BrowseCmd::HubsInvalidateAll => {
-                self.hubs_invalidate_all(adapter);
+                self.hubs_invalidate_all(adapter, keys, jobs);
                 true
             }
             BrowseCmd::HubsInvalidateServer { sid } => {
-                self.hubs_invalidate_server(sid, adapter);
+                self.hubs_invalidate_server(sid, adapter, keys, jobs);
                 true
             }
+            BrowseCmd::ListingsChanged { sid, library_on_stack } => self.listings_changed(sid, library_on_stack),
             BrowseCmd::ApplyView { at, edit } => match edit {
                 crate::viewstate::ViewEdit::Watched(on) => {
                     let listing = self.apply_view_local(&at, edit);
@@ -2555,15 +2682,24 @@ impl BrowseState {
             },
         }
     }
+    /// Ask for the next source discovery, if none is out. Nothing is started here: the read leaves
+    /// as a [`crate::stores::StoreJob::BrowseDiscovery`] on `jobs` and the application's runner
+    /// starts it, so the registry is read by the host (`keys`), never by this step. The claim is
+    /// raised HERE, at the step (a second step before the drain cannot emit a duplicate); the
+    /// runner's refusal gives it back, and the step after settles it ([`Self::discovery_settle`]).
+    ///
+    /// A server whose slot holds no client in `keys` is not asked and no claim is raised.
     fn maybe_discover_owned(
         &mut self,
         adapter: &Arc<BrowseAdapter>,
-        launch: &mut dyn FnMut(DiscoveryRequest) -> bool,
+        keys: &ClientKeys,
+        jobs: &mut Vec<crate::stores::StoreJob>,
     ) {
+        self.discovery_settle(adapter);
         for source in &mut self.sources {
             source.retry_cd = source.retry_cd.saturating_sub(1);
         }
-        if adapter.src_fetching.load(Ordering::SeqCst) {
+        if adapter.src_fetching.busy() {
             return;
         }
         let ready = |source: &BrowseSource| source.retry_cd == 0;
@@ -2589,35 +2725,57 @@ impl BrowseState {
             }
         }
         let Some((source, sid, job, want_name)) = pick else { return };
-        let Some(client) = plx_plex::plex::client_for(sid) else { return };
-        let request = DiscoveryRequest {
-            epoch: self.table_epoch(), si: source, client, token_gen: client.token_gen(),
-            job, want_name, adapter: Arc::clone(adapter),
-        };
-        adapter.src_fetching.store(true, Ordering::SeqCst);
-        if !launch(request) {
-            self.discovery_spawn_refused_owned(adapter, source);
-        }
+        let Some(key) = keys.key(sid) else { return };
+        let epoch = self.table_epoch();
+        self.src_req = self.src_req.wrapping_add(1);
+        let id = self.src_req;
+        adapter.src_fetching.claim(id);
+        self.src_flight = Some(SrcFlight { id, epoch, source });
+        jobs.push(crate::stores::StoreJob::BrowseDiscovery(
+            plx_machine::job::Job {
+                addr: listing_jobs::listing_addr(id),
+                req: discovery_job::BrowseDiscoveryReq::new(epoch, source, sid, key, job, want_name),
+            },
+            discovery_job::BrowseDiscoveryPort::of(adapter),
+        ));
     }
-    fn discovery_spawn_refused_owned(&mut self, adapter: &BrowseAdapter, source: usize) {
-        adapter.src_fetching.store(false, Ordering::SeqCst);
-        if let Some(source) = self.source_mut(source) {
-            source.retry_cd = SRC_RETRY_CD;
+    /// Settle the discovery the runner refused since the last step, if one was: its source backs off
+    /// for [`SRC_RETRY_CD`] steps, as a launch that did not happen always did (the pump must not
+    /// ask again at 60 Hz, and `task::spawn` logs every refusal). Nothing was asked of the server,
+    /// so nothing else about the source moves, and nothing is invalidated: the countdown is not
+    /// published. It runs at the head of the step, only when no claim is up, and BEFORE the
+    /// countdown's decrement, so the step after a refusal finds the countdown one short of the full
+    /// backoff, as the step after a refusing launcher always did. A flight with neither a claim nor
+    /// a refusal landed (or belonged to an adapter that has since been cleared) and is dropped.
+    /// `BrowseStore::sync_roster` settles BEFORE it syncs the roster, so a source the sync re-arms
+    /// in the same step (a re-pointed or retokened client) is asked again at once, as it was.
+    /// Never recorded anywhere.
+    pub fn discovery_settle(&mut self, adapter: &BrowseAdapter) {
+        if adapter.src_fetching.busy() {
+            return;
+        }
+        let Some(out) = self.src_flight.take() else { return };
+        if adapter.src_fetching.take_refused(out.id) && out.epoch == self.table_epoch() {
+            if let Some(source) = self.source_mut(out.source) {
+                source.retry_cd = SRC_RETRY_CD;
+            }
         }
     }
     fn land_discovery_owned_with_gate(
         &mut self,
         adapter: &Arc<BrowseAdapter>,
         gate: &plx_machine::landgate::Gate,
+        session: &plx_plex::plex::session::Session,
     ) -> crate::stores::StoreOutcome {
-        // DUMP MODE: owed while the discovery claim (`src_fetching`, set at the spawn and cleared
+        // DUMP MODE: owed while the discovery claim (`src_fetching`, raised by the step that emits the job and cleared
         // in `apply_discovery`, after its epoch check) is held. Per MAILBOX: the claim of the one mailbox taken here.
         let taken = crate::stores::take_landing_owed(gate, crate::stores::StoreId::Browse,
-            || adapter.src_fetching.load(Ordering::SeqCst), || {
+            || adapter.src_fetching.busy(), || {
             adapter.src_result.lock().unwrap_or_else(|e| e.into_inner()).take()
         });
         let Some((epoch, source, landing)) = taken else { return Default::default() };
-        self.apply_discovery(epoch, source, landing, None, adapter)
+        self.apply_discovery(epoch, source, landing, session,
+            &plx_plex::plex::session::current_profile_key(), adapter)
     }
     /// `#[track_caller]`: the paced dump keys a landing's claim by CALL SITE, and the genre and
     /// letters mailboxes both come through here, so the wrapper must hand its caller's site on
@@ -2626,19 +2784,15 @@ impl BrowseState {
     fn land_directory_owned_with_gate<T>(
         &mut self,
         gate: &plx_machine::landgate::Gate,
-        flag: &AtomicBool,
-        mail: &Mutex<Option<DirectoryResult<T>>>,
+        fetch: &crate::stores::Fetch<DirectoryResult<T>>,
         apply: impl FnOnce(&mut SecState, Vec<T>),
     ) -> bool {
-        // DUMP MODE: owed while this directory's own claim `flag` is held (genre and letters each
-        // have one), per mailbox.
+        // DUMP MODE: owed while this directory's own claim is held (genre and letters each have
+        // one), per mailbox. The take lowers the claim with it.
         let taken = crate::stores::take_landing_owed(gate, crate::stores::StoreId::Browse,
-            || flag.load(Ordering::SeqCst), || {
-            mail.lock().unwrap_or_else(|e| e.into_inner()).take()
-        });
+            || fetch.busy(), || fetch.take());
         let Some(result) = taken else { return false };
         plx_machine::idle::invalidate();
-        flag.store(false, Ordering::SeqCst);
         if result.epoch != self.table_epoch() {
             return false;
         }
@@ -2659,16 +2813,25 @@ impl BrowseState {
     #[cfg(test)]
     fn land_discovery_owned(&mut self, adapter: &Arc<BrowseAdapter>)
         -> crate::stores::StoreOutcome {
-        self.land_discovery_owned_with_gate(adapter, plx_machine::landgate::fixture_gate())
+        self.observe_pin_write();
+        let session = plx_plex::plex::session::peek();
+        self.land_discovery_owned_with_gate(adapter, plx_machine::landgate::fixture_gate(), &session)
     }
     #[cfg(test)]
     #[track_caller]
-    fn land_directory_owned<T>(&mut self, flag: &AtomicBool,
-        mail: &Mutex<Option<DirectoryResult<T>>>, apply: impl FnOnce(&mut SecState, Vec<T>)) -> bool {
-        self.land_directory_owned_with_gate(plx_machine::landgate::fixture_gate(), flag, mail, apply)
+    fn land_directory_owned<T>(&mut self, fetch: &crate::stores::Fetch<DirectoryResult<T>>,
+        apply: impl FnOnce(&mut SecState, Vec<T>)) -> bool {
+        self.land_directory_owned_with_gate(plx_machine::landgate::fixture_gate(), fetch, apply)
     }
-    fn maybe_spawn_owned(&mut self, adapter: &Arc<BrowseAdapter>) {
-        if adapter.fetching.load(Ordering::SeqCst) || self.retry_cd > 0 {
+    /// Ask for the first page the wanted window is missing, if no page read is out. Nothing is
+    /// started here: the read leaves as a [`crate::stores::StoreJob::BrowsePage`] on `jobs` and the
+    /// application's runner starts it, so the registry is read by the host (`keys`), never by this
+    /// step. The page claim is raised HERE, at the step (several run before one drain); the
+    /// runner's refusal gives it back, and the pump after asks again for the then-first missing page.
+    fn maybe_spawn_owned(&mut self, adapter: &Arc<BrowseAdapter>, keys: &ClientKeys,
+        jobs: &mut Vec<crate::stores::StoreJob>) {
+        self.settle_refused_reads(adapter);
+        if adapter.page.busy() || self.retry_cd > 0 {
             return;
         }
         let current = self.cur();
@@ -2701,69 +2864,68 @@ impl BrowseState {
         let confirm_sort = state.library_type != LibraryType::Primary;
         let restore = self.restore_for(current);
         let gen = self.query_gen();
-        let key = section.key;
+        let section_key = section.key;
         let Some(sid) = self.section_sid(current) else { return };
-        let Some(client) = plx_plex::plex::client_for(sid) else { return };
-        let token_gen = client.token_gen();
-        adapter.fetching.store(true, Ordering::SeqCst);
+        let Some(key) = keys.key(sid) else { return };
+        self.page_req = self.page_req.wrapping_add(1);
+        let id = self.page_req;
+        adapter.page.claim(id);
         self.page_stamp = self.ledger.stamp();
-        let worker_adapter = Arc::clone(adapter);
-        let spawned = plx_base::task::spawn_small("page", move || {
-            let page = catch_unwind(|| {
-                let query = SectionQuery {
-                    section_key: key, sort: &sort, filters: &filters,
-                    start: start as i64, size: PAGE as i64, include_meta,
-                };
-                fetch_listing_page(client, sid, &query, confirm_sort, restore.as_ref())
-            }).unwrap_or_else(|_| ListingPage::failed());
-            *worker_adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) =
-                Some(PageResult {
-                    client, token_gen, gen, sec: current, start, items: page.items,
-                    total: page.total, sorts: page.sorts, restored: page.restored,
-                    genres: page.genres, genre: page.genre, resolved: page.resolved,
-                });
-        });
-        if !spawned {
-            adapter.fetching.store(false, Ordering::SeqCst);
-        }
+        jobs.push(crate::stores::StoreJob::BrowsePage(
+            plx_machine::job::Job {
+                addr: listing_jobs::listing_addr(id),
+                req: listing_jobs::BrowsePageReq::new(
+                    sid, key, gen, current, start, section_key, sort, filters, include_meta, confirm_sort, restore),
+            },
+            listing_jobs::BrowsePagePort::of(adapter),
+        ));
     }
     pub fn controlled_discover_owned(
         &mut self,
         adapter: &Arc<BrowseAdapter>,
-        launch: &mut dyn FnMut(DiscoveryRequest) -> bool,
+        keys: &ClientKeys,
+        jobs: &mut Vec<crate::stores::StoreJob>,
     ) {
-        self.maybe_discover_owned(adapter, launch);
+        self.maybe_discover_owned(adapter, keys, jobs);
     }
     pub fn discover_pump_owned_with_gate(
         &mut self,
         adapter: &Arc<BrowseAdapter>,
         gate: &plx_machine::landgate::Gate,
+        keys: &ClientKeys,
+        session: &plx_plex::plex::session::Session,
+        jobs: &mut Vec<crate::stores::StoreJob>,
     ) -> crate::stores::StoreOutcome {
-        let outcome = self.land_discovery_owned_with_gate(adapter, gate);
-        self.maybe_discover_owned(adapter, &mut execute_discovery);
+        let outcome = self.land_discovery_owned_with_gate(adapter, gate, session);
+        self.maybe_discover_owned(adapter, keys, jobs);
         outcome
     }
     #[cfg(any(test, feature = "test-support"))]
-    pub fn discover_pump_owned(&mut self, adapter: &Arc<BrowseAdapter>)
-        -> crate::stores::StoreOutcome {
-        self.discover_pump_owned_with_gate(adapter, plx_machine::landgate::fixture_gate())
+    pub fn discover_pump_owned(&mut self, adapter: &Arc<BrowseAdapter>, keys: &ClientKeys,
+        jobs: &mut Vec<crate::stores::StoreJob>) -> crate::stores::StoreOutcome {
+        self.observe_pin_write();
+        let session = plx_plex::plex::session::peek();
+        self.discover_pump_owned_with_gate(adapter, plx_machine::landgate::fixture_gate(), keys, &session, jobs)
     }
     pub fn pump_owned_with_gate(
         &mut self,
         adapter: &Arc<BrowseAdapter>,
         gate: &plx_machine::landgate::Gate,
+        keys: &ClientKeys,
+        session: &plx_plex::plex::session::Session,
+        jobs: &mut Vec<crate::stores::StoreJob>,
     ) -> crate::stores::StoreOutcome {
         let mut changed = false;
         self.retry_cd = self.retry_cd.saturating_sub(1);
-        let discovery = self.land_discovery_owned_with_gate(adapter, gate);
+        let discovery = self.land_discovery_owned_with_gate(adapter, gate, session);
         changed |= discovery.changed;
         let endpoints = discovery.endpoints;
-        self.maybe_discover_owned(adapter, &mut execute_discovery);
-        changed |= self.hubs_land(adapter, gate);
-        changed |= self.hubs_tick_all(adapter);
+        self.maybe_discover_owned(adapter, keys, jobs);
+        changed |= self.hubs_land(adapter, gate, keys);
+        changed |= self.hubs_tick_all(adapter, keys, jobs);
         changed |= self.land_directory_owned_with_gate(
             gate,
-            &adapter.genre_fetching, &adapter.genre_result, |state, list| {
+            &adapter.genres, |state, list| {
             state.genres_done = true;
             if state.genres.is_empty() {
                 state.genres = Arc::new(list);
@@ -2771,25 +2933,22 @@ impl BrowseState {
         });
         changed |= self.land_directory_owned_with_gate(
             gate,
-            &adapter.letters_fetching, &adapter.letter_result, |state, list| {
+            &adapter.letters, |state, list| {
                 state.letters_done = true;
                 if state.letters.is_empty() {
                     state.letters = Arc::new(list);
                 }
             });
-        // DUMP MODE: owed while the listing page's claim (`fetching`) is held.
+        // DUMP MODE: owed while the listing page's claim is held. The take lowers it with it.
         // The wanted window, read before the landing borrows the section table: the grid's
         // visible rows, the focused slot's page and the page a restore lands on.
         let wanted = self.want;
         let focus = self.focus;
         let (ledger, stamp) = (self.ledger.clone(), self.page_stamp);
         let page = crate::stores::take_landing_owed(gate, crate::stores::StoreId::Browse,
-            || adapter.fetching.load(Ordering::SeqCst), || {
-            adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()).take()
-        });
+            || adapter.page.busy(), || adapter.page.take());
         if let Some(result) = page {
             plx_machine::idle::invalidate();
-            adapter.fetching.store(false, Ordering::SeqCst);
             if let Some(source) = self.sections.get(result.sec).map(|section| section.src) {
                 let client = result.client;
                 let token_gen = result.token_gen;
@@ -2871,13 +3030,18 @@ impl BrowseState {
                     });
             }
         }
-        self.maybe_spawn_owned(adapter);
+        self.maybe_spawn_owned(adapter, keys, jobs);
         crate::stores::StoreOutcome { changed, endpoints }
     }
+    /// [`BrowseState::pump_owned_with_gate`] on the fixture gate and a registry that holds no client
+    /// (so no section-hubs read leaves): the pump of a test about something else.
     #[cfg(any(test, feature = "test-support"))]
     pub fn pump_owned(&mut self, adapter: &Arc<BrowseAdapter>)
         -> crate::stores::StoreOutcome {
-        self.pump_owned_with_gate(adapter, plx_machine::landgate::fixture_gate())
+        self.observe_pin_write();
+        let session = plx_plex::plex::session::peek();
+        self.pump_owned_with_gate(adapter, plx_machine::landgate::fixture_gate(), &ClientKeys::default(),
+            &session, &mut Vec::new())
     }
 }
 
@@ -2886,6 +3050,7 @@ impl BrowseState {
 /// A remembered sort and genre to put the first page in, once the server proves it still offers
 /// them — see [`fetch_listing_page`]. Built by [`BrowseState::restore_for`] from
 /// [`plx_plex::plex::session::Preferences::library_views`].
+#[derive(Clone, Debug, PartialEq)]
 struct Restore {
     kind: SecKind,
     /// The listing the first page is for, which scopes the genre list the check reads.
@@ -3073,8 +3238,8 @@ fn fetch_listing_page(
 /// Landings blamed on a section INDEX gate on this rather than on the section-shape generation: an APPEND from
 /// one source must not discard a landing in flight for another, and it cannot invalidate one
 /// either, because appending never moves an existing index.
-/// Frames left before another page fetch may spawn after a FAILED one (main-thread; pump
-/// decrements). Stops a fast-failing network from spawning a worker per frame.
+/// Frames left before another page fetch may be asked for after a FAILED one (main-thread; pump
+/// decrements). Stops a fast-failing network from starting a worker per frame.
 
 struct PageResult {
     /// Exact registry lifecycle the worker dialled. Section/query generations do not move when a
@@ -3134,7 +3299,7 @@ enum SrcWhat {
 }
 
 /// Legacy synchronous harness retained only for lifecycle regression fixtures. Production section
-/// discovery is uniformly `kick → worker → mailbox → commit` via [`discover_pump`].
+/// discovery is uniformly `step → job → worker → mailbox → commit` via [`discover_pump`].
 #[cfg(test)]
 fn ensure_sections_with(
     state: &mut BrowseState,
@@ -3164,7 +3329,7 @@ fn ensure_sections_with(
             if state.sources().get(si).map(|s| s.sid) != Some(client.id()) {
                 return false;
             }
-            state.append_sections_with(si, found.unwrap_or_default(), None);
+            state.append_sections_for_test(si, found.unwrap_or_default());
             if let Some(s) = state.source_mut(si) {
                 s.sections_done = ok;
                 s.set_probe_outcome(outcome);
@@ -3375,7 +3540,7 @@ pub const TAB_KINDS: [SecKind; 2] = [SecKind::Movie, SecKind::Show];
 // **Per profile is the whole shape.** The persisted selection used to hang off the `Session`,
 // which is one per INSTALL, so a household could hold exactly one opinion about a friend's films.
 // Owner's ruling, 2026-08-21: "it is separate for each profile." A switch needs no code of its own
-// to honour it — `install_pms` calls [`reset`], discovery re-runs, and [`resolve_pins`] reads the
+// to honour it — `install_pms` calls [`reset`], discovery re-runs, and [`resolve_pins_from`] reads the
 // NEW profile's record — which is exactly why the resolve is a whole-table function rather than a
 // per-row default applied once at append.
 
@@ -3388,8 +3553,8 @@ pub const TAB_KINDS: [SecKind; 2] = [SecKind::Movie, SecKind::Show];
 /// Their answer is on disk keyed by machine, which is exactly the join that settles it.
 ///
 /// `None` means "nothing has been read yet", never "nothing was recorded" — the same distinction
-/// [`library_pins`] and `Session::home_pins` both turn on. Written by [`resolve_pins`] and
-/// [`record_pins`], cleared by [`reset`]; never read from the file per frame.
+/// [`library_pins`] and `Session::home_pins` both turn on. Written by [`resolve_pins_from`] and
+/// [`record_pins_from`], cleared by [`reset`]; never read from the file per frame.
 
 /// One source's `machineIdentifier` as the registry knows it, `""` while nobody has learned it.
 fn machine_of(sid: ServerId) -> String {
@@ -3468,138 +3633,26 @@ fn count_line(count: i64, kind: SecKind) -> String {
 /// instead of after the ten-second backoff.
 // ---- source discovery, off the main thread ---------------------------------------------------
 
-/// What a discovery worker is being asked for. Two phases per source, one worker at a time within
+/// What a discovery read is being asked for. Two phases per source, one read at a time within
 /// the owning BrowseStore: the roster is a handful of servers and none of it is on a user's
 /// critical path.
-enum SrcJob {
+#[derive(Debug, PartialEq)]
+pub(super) enum SrcJob {
     /// its section list
     Sections,
     /// the unfiltered item count of each of its libraries, by section key
     Counts(Vec<i64>),
 }
 
-pub struct DiscoveryRequest {
+/// The discovery read the step has out: recorded by the step that emitted it and read by the next
+/// step, which settles it if the runner refused it ([`BrowseState::discovery_settle`]) and drops it
+/// when it landed. The record is the store's own memory of what it asked and is never recorded or
+/// replayed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SrcFlight {
+    id: u32,
     epoch: u32,
-    si: usize,
-    client: &'static plx_plex::plex::Client,
-    token_gen: u32,
-    job: SrcJob,
-    want_name: bool,
-    adapter: Arc<BrowseAdapter>,
-}
-
-impl DiscoveryRequest {
-    pub fn descriptor(&self) -> serde_json::Value {
-        serde_json::json!({
-            "epoch": self.epoch,
-            "source": self.si,
-            "sid": self.client.id().raw(),
-            "client": self.client.instance_gen(),
-            "token_gen": self.token_gen,
-            "name": self.want_name,
-            "sections": matches!(self.job, SrcJob::Sections),
-            "counts": match &self.job {
-                SrcJob::Sections => Vec::new(),
-                SrcJob::Counts(keys) => keys.clone(),
-            },
-        })
-    }
-}
-
-pub fn execute_discovery(request: DiscoveryRequest) -> bool {
-    let DiscoveryRequest {
-        epoch,
-        si,
-        client,
-        token_gen,
-        job,
-        want_name,
-        adapter,
-    } = request;
-    let is_sections = matches!(job, SrcJob::Sections);
-    spawn_discovery(move || {
-        let landing = catch_unwind(|| {
-            // the server naming ITSELF, so a roster that never reached plex.tv still heads its
-            // group with a machine name. One request, once, per source.
-            let name = if want_name {
-                client.friendly_name().unwrap_or_default()
-            } else {
-                String::new()
-            };
-            let what = match job {
-                SrcJob::Sections => {
-                    SrcWhat::Sections(client.sections().map(|mc| project_sections(&mc)))
-                }
-                SrcJob::Counts(keys) => {
-                    let mut out = Vec::new();
-                    for k in keys {
-                        // size=0: PMS answers with `totalSize` and no items at all, so a
-                        // library's count costs a header rather than a page.
-                        let q = SectionQuery {
-                            section_key: k,
-                            sort: "",
-                            filters: &[],
-                            start: 0,
-                            size: 0,
-                            include_meta: false,
-                        };
-                        if let Some(mc) = client.section_items_query(&q) {
-                            out.push((k, mc.total_size));
-                        }
-                    }
-                    SrcWhat::Counts(out)
-                }
-            };
-            SrcLanding {
-                client,
-                token_gen,
-                name,
-                what,
-            }
-        })
-        .unwrap_or_else(|_| {
-            // a panicking fetch is a FAILURE of the job it was doing, never a success of another:
-            // reporting a panicked count probe as a failed section list would drop the source's
-            // whole library list on the floor.
-            let what = if is_sections {
-                SrcWhat::Sections(None)
-            } else {
-                SrcWhat::Counts(Vec::new())
-            };
-            SrcLanding {
-                client,
-                token_gen,
-                name: String::new(),
-                what,
-            }
-        });
-        *adapter.src_result.lock().unwrap_or_else(|e| e.into_inner()) = Some((epoch, si, landing));
-    })
-}
-
-fn spawn_discovery(job: impl FnOnce() + Send + 'static) -> bool {
-    #[cfg(any(test, feature = "test-support"))]
-    if REFUSE_DISCOVERY_FOR_TEST.with(|flag| flag.get()) {
-        return false;
-    }
-    plx_base::task::spawn_small("sources", job)
-}
-
-#[cfg(any(test, feature = "test-support"))]
-thread_local! {
-    static REFUSE_DISCOVERY_FOR_TEST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub fn with_refused_discovery_for_test<R>(f: impl FnOnce() -> R) -> R {
-    struct Restore(bool);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            REFUSE_DISCOVERY_FOR_TEST.with(|flag| flag.set(self.0));
-        }
-    }
-    let _restore = Restore(REFUSE_DISCOVERY_FOR_TEST.with(|flag| flag.replace(true)));
-    f()
+    source: usize,
 }
 
 /// Supply a transport observation, retaining the actual source epoch and captured lifecycle.
@@ -3631,7 +3684,7 @@ pub fn queue_discovery_for_owner_test(
 /// asked for, so the listing stays `Loading` (`BrowseStore::hold_listing_for_test`).
 #[cfg(any(test, feature = "test-support"))]
 pub fn hold_listing_for_owner_test(adapter: &BrowseAdapter) {
-    adapter.fetching.store(true, Ordering::SeqCst);
+    adapter.page.claim(0);
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -3867,21 +3920,19 @@ pub fn seed_two_source_table_for_owner_test(state: &mut BrowseState) {
         a_source("mac-mini", "", true),
         a_source("nas-home", "friend", true),
     ];
-    state.append_sections_with(
+    state.append_sections_for_test(
         0,
         vec![
             (1, "Movies".into(), SecKind::Movie),
             (2, "TV Shows".into(), SecKind::Show),
         ],
-        None,
     );
-    state.append_sections_with(
+    state.append_sections_for_test(
         1,
         vec![
             (1, "Film Club".into(), SecKind::Movie),
             (2, "Film Club".into(), SecKind::Show),
         ],
-        None,
     );
 }
 
@@ -3918,7 +3969,7 @@ pub fn append_section_for_owner_test(
     kind: SecKind,
 ) {
     plx_base::testlock::assert_held("an owned browse section table (append_section_for_test)");
-    state.append_sections_with(source, vec![(key, title.into(), kind)], None);
+    state.append_sections_for_test(source, vec![(key, title.into(), kind)]);
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -3936,6 +3987,17 @@ pub fn seed_letter_counts_for_owner_test(
                 .collect(),
         );
         section.letters_done = true;
+    }
+}
+
+/// The current section's A-Z counts are owed again (the registered fixture table lands them done).
+#[cfg(any(test, feature = "test-support"))]
+pub fn owe_letters_for_owner_test(state: &mut BrowseState) {
+    plx_base::testlock::assert_held("an owned browse section table (owe_letters_for_test)");
+    let current = state.cur();
+    if let Some(section) = state.state_mut(current) {
+        section.letters = Arc::default();
+        section.letters_done = false;
     }
 }
 
@@ -3980,40 +4042,79 @@ pub fn queue_genre_for_owner_test(
     prepare_page_for_owner_test(state, client.id());
     let sec = state.cur();
     state.state_mut(sec).unwrap().total = 0;
-    adapter.genre_fetching.store(true, Ordering::SeqCst);
-    *adapter.genre_result.lock().unwrap_or_else(|e| e.into_inner()) =
-        Some(DirectoryResult {
-            epoch: state.table_epoch(), sec, client, token_gen: client.token_gen(),
-            library_type: state.states[sec].library_type,
-            list: vec![GenreEntry { id: "new".into(), title: "New Genre".into() }],
-        });
+    adapter.genres.claim(0);
+    adapter.genres.post(DirectoryResult {
+        epoch: state.table_epoch(), sec, client, token_gen: client.token_gen(),
+        library_type: state.states[sec].library_type,
+        list: vec![GenreEntry { id: "new".into(), title: "New Genre".into() }],
+    }, |_| true);
 }
 
 #[cfg(any(test, feature = "test-support"))]
 pub fn adapter_has_page_for_test(adapter: &BrowseAdapter) -> bool {
-    adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+    adapter.page.has_mail()
+}
+
+/// TEST ONLY: has a directory worker (genres or letters) answered on this adapter, the answer
+/// still waiting for the pump?
+#[cfg(any(test, feature = "test-support"))]
+pub fn directory_answered_for_test(adapter: &BrowseAdapter) -> bool {
+    adapter.genres.has_mail() || adapter.letters.has_mail()
+}
+
+/// TEST ONLY: is a directory claim (genres or letters) up on this adapter?
+#[cfg(any(test, feature = "test-support"))]
+pub fn directory_claim_up_for_test(adapter: &BrowseAdapter) -> bool {
+    adapter.genres.busy() || adapter.letters.busy()
 }
 
 #[cfg(any(test, feature = "test-support"))]
 pub fn adapter_fetching_for_test(adapter: &BrowseAdapter) -> bool {
-    adapter.fetching.load(Ordering::SeqCst)
+    adapter.page.busy()
 }
 
-/// Is a discovery request this adapter spawned still unanswered or unapplied? `src_fetching` is
-/// raised when the request is handed to its launcher and cleared when the answer is APPLIED, so a
-/// take that finds the mailbox empty while it reads true is waiting for a worker that is out.
+/// Is a discovery request this adapter emitted still unanswered or unapplied? `src_fetching` is
+/// raised by the step that emits the job and cleared when the answer is APPLIED (or the runner
+/// refuses the job), so a take that finds the mailbox empty while it reads true is waiting for a
+/// read that is out.
 pub fn discovery_owed(adapter: &BrowseAdapter) -> bool {
-    adapter.src_fetching.load(Ordering::SeqCst)
+    adapter.src_fetching.busy()
+}
+
+/// TEST ONLY: is the section hubs' one shared claim up on this adapter (a read is out, parked, or
+/// answered and not yet taken by the pump)?
+#[cfg(any(test, feature = "test-support"))]
+pub fn hubs_claim_up_for_test(adapter: &BrowseAdapter) -> bool {
+    adapter.hubs.fetch.busy()
+}
+
+/// TEST ONLY: has a section-hubs worker answered on this adapter, the answer still waiting for the
+/// pump?
+#[cfg(any(test, feature = "test-support"))]
+pub fn hubs_answer_waiting_for_test(adapter: &BrowseAdapter) -> bool {
+    adapter.hubs.fetch.has_mail()
 }
 
 #[cfg(any(test, feature = "test-support"))]
 pub fn set_adapter_src_fetching_for_test(adapter: &BrowseAdapter, fetching: bool) {
-    adapter.src_fetching.store(fetching, Ordering::SeqCst);
+    if fetching {
+        adapter.src_fetching.claim(0);
+    } else {
+        adapter.src_fetching.release();
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
 pub fn adapter_src_fetching_for_test(adapter: &BrowseAdapter) -> bool {
-    adapter.src_fetching.load(Ordering::SeqCst)
+    adapter.src_fetching.busy()
+}
+
+/// TEST ONLY: has a discovery answer landed on this adapter, still waiting for the pump? The
+/// `"sources"` worker is not counted by `drain_workers_for_test`, so a test that runs one waits on
+/// this instead.
+#[cfg(any(test, feature = "test-support"))]
+pub fn discovery_answer_waiting_for_test(adapter: &BrowseAdapter) -> bool {
+    adapter.src_result.lock().unwrap_or_else(|e| e.into_inner()).is_some()
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -4024,17 +4125,21 @@ pub fn queue_page_failure_for_owner_test(
 ) {
     prepare_page_for_owner_test(state, client.id());
     let sec = state.cur();
-    adapter.fetching.store(true, Ordering::SeqCst);
-    *adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(PageResult {
+    adapter.page.claim(0);
+    adapter.page.post(PageResult {
         client, token_gen: client.token_gen(), gen: state.query_gen(), sec, start: 0,
         items: Vec::new(), total: -1, sorts: None, restored: None, genres: None, genre: None,
         resolved: Default::default(),
-    });
+    }, |_| true);
 }
 
 #[cfg(any(test, feature = "test-support"))]
 pub fn set_adapter_fetching_for_test(adapter: &BrowseAdapter, fetching: bool) {
-    adapter.fetching.store(fetching, Ordering::SeqCst);
+    if fetching {
+        adapter.page.claim(0);
+    } else {
+        adapter.page.release();
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -4053,16 +4158,15 @@ pub fn spawn_owned_page_for_test(
     let worker_adapter = Arc::clone(adapter);
     let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
     let (done_tx, done_rx) = std::sync::mpsc::sync_channel(0);
-    adapter.fetching.store(true, Ordering::SeqCst);
+    adapter.page.claim(0);
     assert!(plx_base::task::spawn_small("browse-owner-test", move || {
         release_rx.recv().expect("test releases worker");
-        *worker_adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some(PageResult {
-                client, token_gen, gen, sec, start: 0,
-                items: vec![PmsMovie { sid, title, ..Default::default() }],
-                total: 1, sorts: None, restored: None, genres: None, genre: None,
-                resolved: Default::default(),
-            });
+        worker_adapter.page.post(PageResult {
+            client, token_gen, gen, sec, start: 0,
+            items: vec![PmsMovie { sid, title, ..Default::default() }],
+            total: 1, sorts: None, restored: None, genres: None, genre: None,
+            resolved: Default::default(),
+        }, |_| true);
         done_tx.send(()).expect("test receives worker completion");
     }));
     (release_tx, done_rx)
@@ -4093,6 +4197,10 @@ mod fetch_state_tests;
 mod home_and_tabs_tests;
 
 #[cfg(test)]
+#[path = "browse_pins_input_tests.rs"]
+mod pins_input_tests;
+
+#[cfg(test)]
 #[path = "browse_eviction_tests.rs"]
 mod eviction_tests;
 
@@ -4102,6 +4210,9 @@ mod reachability_tests;
 
 #[cfg(test)]
 mod library_type_tests;
+
+#[cfg(test)]
+mod listing_job_tests;
 
 #[cfg(test)]
 #[path = "browse_view_memory_tests.rs"]

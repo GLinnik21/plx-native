@@ -170,6 +170,30 @@
     "value": "transfer time before the failure",
     "description": "Field name in the consent preview's list of possible playback-error values: how long the media transfer had been running when it failed, as a time class."
   },
+  "core.preview_domain_demux_exit": {
+    "value": "media stream step that failed",
+    "description": "Field name in the consent preview's list of possible playback-error values: which step of reading the media stream raised the failure, as a fixed code."
+  },
+  "core.preview_domain_recovered_rung": {
+    "value": "recovery step that played",
+    "description": "Field name in the consent preview's list of possible refusal_recovered values: which step of the app's recovery ladder put the picture up (the refused stream converted by the server, the video encoded by the server, the adaptive-streaming fallback, or the restored earlier route)."
+  },
+  "core.preview_domain_recovered_stream": {
+    "value": "refused stream",
+    "description": "Field name in the consent preview's list of possible refusal_recovered values: whether the refused stream was a video, an audio track, or none could be named."
+  },
+  "core.preview_domain_recovered_codec": {
+    "value": "refused stream's codec",
+    "description": "Field name in the consent preview's list of possible refusal_recovered values: the codec class of the refused stream, as a fixed code."
+  },
+  "core.preview_domain_recovered_channels": {
+    "value": "refused audio channels",
+    "description": "Field name in the consent preview's list of possible refusal_recovered values: the channel-count bucket of the refused audio, as a fixed code."
+  },
+  "core.preview_domain_recovered_error": {
+    "value": "TV firmware error number, or timeout / stall",
+    "description": "Field name in the consent preview's list of possible refusal_recovered values: the whole number the television's own video pipeline gave when it refused the video (an integer range), or the word timeout (no answer in time) or stall (the pipeline swallowed the audio)."
+  },
   "core.preview_domain_elapsed": {
     "value": "elapsed",
     "description": "Field name in the consent preview's list of possible playback-error values: time since an event."

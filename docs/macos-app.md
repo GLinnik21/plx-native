@@ -69,11 +69,14 @@ Four things, and three of them were bugs that had been sitting in the tree unrea
    recipe are untouched.
 
 The window changed too, though that is taste rather than a bug: it opens at an exact integer
-divisor of the 1920x1080 canvas (`app.rs`'s `desktop_window_size`) with ALLOW_HIGHDPI, and is not
-resizable. On a Retina display that means a 960x540-point window with a **1920x1080 drawable** —
-`surface::scale() == 1.0`, the same 1:1 texel contract the television renders under, which is what
-keeps the text as crisp as it is on the panel. A non-Retina 1080p display gets 960x540 at scale
-0.5 instead; a 1:1 surface there would need real fullscreen, which no key currently toggles.
+divisor of the 1920x1080 canvas (`app::boot::plan_desktop_window`) with ALLOW_HIGHDPI, and is not
+resizable. The window's pixel density is measured from the window itself (`SDL_GetDisplayDPI` is
+unreliable on macOS), and the window is then sized in points for the drawable it should give, so a
+display of any size lands on the same result. On a Retina display that means a 960x540-point window
+with a **1920x1080 drawable** — `surface::scale() == 1.0`, the same 1:1 texel contract the
+television renders under, which is what keeps the text as crisp as it is on the panel. A
+non-Retina 1080p display gets 960x540 at scale 0.5 instead; a 1:1 surface there would need real
+fullscreen, which no key currently toggles.
 
 ## Bundling: the three traps
 

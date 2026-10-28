@@ -1,0 +1,15 @@
+{
+  "sort_facts.title": "Tytuł",
+  "sort_facts.date_added": "Data dodania",
+  "sort_facts.release_date": "Data premiery",
+  "sort_facts.rating": "Ocena",
+  "sort_facts.audience_rating": "Ocena widzów",
+  "sort_facts.last_viewed": "Data obejrzenia",
+  "sort_facts.random": "Losowo",
+  "sort_facts.a_to_z": "A–Z",
+  "sort_facts.z_to_a": "Z–A",
+  "sort_facts.oldest_first": "Od najstarszych",
+  "sort_facts.newest_first": "Od najnowszych",
+  "sort_facts.lowest_first": "Od najniższych",
+  "sort_facts.highest_first": "Od najwyższych"
+}

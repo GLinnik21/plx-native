@@ -4,18 +4,24 @@
 //! The machine itself (`ForegroundLifecycle`, already a tested `State + Event -> Effects`
 //! machine), the foreground driver and the transport-pause contract (`paused`,
 //! `viewer_paused`, `set_transport_paused`, ...) describe the PLAYER's transport, so they live in
-//! [`plx_media::player::lifecycle`] (module-layer step L12: `player` may not name `app`) and are
-//! re-exported here, which keeps every `app` caller spelling the names it always did. Moved out of
-//! `app.rs` verbatim in phase 1a (a pure move; `pub(crate)` widening only).
+//! [`plx_media::player::lifecycle`] (the machine), [`plx_media::player::foreground`] (the driver
+//! and the actuator trait) and [`plx_media::player::transport`] (the pause contract; module-layer
+//! step L12: `player` may not name `app`) and are re-exported here, which keeps every `app` caller
+//! spelling the names it always did. Moved out of `app.rs` verbatim in phase 1a (a pure move;
+//! `pub(crate)` widening only).
 
 use super::*;
 
+pub(crate) use plx_media::player::foreground::{
+    drive_foreground, park_pending_foreground_flight, poll_foreground_flight,
+    poll_foreground_load, FlightLanding, ForegroundActivation, ForegroundActuator,
+};
 pub(crate) use plx_media::player::lifecycle::{
-    clock_for_suspend_now, drive_foreground, park_pending_foreground_flight, paused,
-    poll_foreground_flight, poll_foreground_load, resume_if_paused, set_paused,
-    set_transport_paused, transport_target, viewer_paused, FlightLanding, ForegroundActivation,
-    ForegroundActuator, ForegroundClock, ForegroundInput, ForegroundLifecycle, ForegroundLoadStart,
+    ForegroundClock, ForegroundEvent, ForegroundInput, ForegroundLifecycle, ForegroundLoadStart,
     ForegroundLoadStatus, Successor,
+};
+pub(crate) use plx_media::player::transport::{
+    paused, resume_if_paused, set_paused, set_transport_paused, transport_target, viewer_paused,
 };
 // Only `app::run`'s hostsim lifecycle tests name the machine's state, so a re-export outside
 // them would be an unused import.
@@ -43,6 +49,21 @@ fn foreground_load_start(
     }
 }
 
+impl PlayerForegroundActuator<'_> {
+    /// The lifecycle is about to follow `start`'s exact attempt: mark that Load as the foreground
+    /// machine's own, so the pump's failed-open ladder leaves its synchronous refusal to the
+    /// lifecycle's `Failed` settlement ([`plx_media::player::foreground_follows_load`]).
+    fn following(
+        &mut self,
+        start: ForegroundLoadStart<plx_media::route::RouteStartAttempt>,
+    ) -> ForegroundLoadStart<plx_media::route::RouteStartAttempt> {
+        if let ForegroundLoadStart::Launched(attempt) = start {
+            plx_media::player::foreground_follows_load(self.pa, attempt);
+        }
+        start
+    }
+}
+
 impl ForegroundActuator for PlayerForegroundActuator<'_> {
     type Attempt = plx_media::route::RouteStartAttempt;
 
@@ -65,7 +86,7 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
         match plx_media::player::land_engineless_rollback(ps, self.pa) {
             RollbackLanding::Waiting => FlightLanding::Waiting,
             RollbackLanding::Stale => FlightLanding::Stale,
-            RollbackLanding::Landed(recovery) => FlightLanding::Landed(foreground_load_start(recovery)),
+            RollbackLanding::Landed(recovery) => FlightLanding::Landed(self.following(foreground_load_start(recovery))),
         }
     }
 
@@ -83,7 +104,7 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
             // restore) owns its clock, and `PlayClock` resumes it after `Started`, which it does
             // only while `TX.paused` still reads Paused.
             ForegroundClock::Playing if paused() && !self.pa.is_live() => {
-                plx_media::player::lifecycle::commit_viewer_resume_for_load();
+                plx_media::player::transport::commit_viewer_resume_for_load();
             }
             ForegroundClock::Playing => {}
         }
@@ -94,14 +115,14 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
         if matches!(first, plx_media::player::BufferfeedStartOutcome::Failed) {
             // A synchronous failure inside an Original trial has no Engine for player::pump to
             // recover. Take the same explicit rollback edge here and follow its exact HLS Load.
-            return foreground_load_start(plx_media::player::recover_failed_foreground_original(ps));
+            return self.following(foreground_load_start(plx_media::player::recover_failed_foreground_original(ps)));
         }
         match first {
             plx_media::player::BufferfeedStartOutcome::AlreadyRunning => {
                 ForegroundLoadStart::AlreadyRunning
             }
             plx_media::player::BufferfeedStartOutcome::Launched(attempt) => {
-                ForegroundLoadStart::Launched(attempt)
+                self.following(ForegroundLoadStart::Launched(attempt))
             }
             plx_media::player::BufferfeedStartOutcome::Failed => unreachable!("handled above"),
         }
@@ -113,6 +134,9 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
             plx_media::route::RouteStartStatus::Started => ForegroundLoadStatus::Started,
             plx_media::route::RouteStartStatus::Failed => ForegroundLoadStatus::Failed,
             plx_media::route::RouteStartStatus::Superseded(replacement) => {
+                // The lifecycle now follows the replacement's Load, so its synchronous refusal is
+                // the lifecycle's too.
+                plx_media::player::foreground_follows_load(self.pa, replacement);
                 ForegroundLoadStatus::Superseded(replacement)
             }
             plx_media::route::RouteStartStatus::Stale => ForegroundLoadStatus::Stale,

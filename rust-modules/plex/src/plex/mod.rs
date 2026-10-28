@@ -12,11 +12,13 @@
 //! through `client()` (history: `docs/plex-api-migration.md`). The module-wide allow covers
 //! the few items the library build does not reach: transport helpers on `Client` (`get_bytes`,
 //! `get_void`, `get_status_until`, `post_status_until`) and a handful of functions
-//! (`servers::register_with_client_id`, `transcoder::profile_for`, `session::peek_locked`,
+//! (`servers::register_with_client_id`, `session::peek_locked`,
 //! `session::install_or_drop_after_write`).
 #![allow(dead_code)]
 
 mod client;
+// WHICH client a slot holds, as a value a step is handed instead of reading the registry itself.
+mod client_keys;
 pub mod identity; // ONE X-Plex-* identity for both transports (plex.tv headers + PMS query)
 mod models;
 mod params;
@@ -44,6 +46,7 @@ pub mod hub_title;
 /// Whole-file text subtitles are bounded before transport allocation and parsing.
 pub const SIDECAR_MAX_BYTES: usize = 4 * 1024 * 1024;
 mod timeline;
+mod queue_window;
 mod transcoder;
 
 // The server's self-description (version + Plex Pass tristate), refreshed by `install` on every
@@ -107,6 +110,7 @@ pub use client::urlenc_str;
 pub use client::{decode_ip, decode_link, encode_ip, encode_link};
 #[allow(unused_imports)]
 pub use client::{Client, IpVersion, StreamUrl};
+pub use client_keys::{ClientKey, ClientKeys, KeyedClients};
 // `Client::find_by_guids`' vocabulary (library.rs stays private).
 pub use library::{GuidKind, GuidLookupError, GuidMatch, GUIDS_PER_REQUEST};
 // WHERE a server is, as one value. `Origin` is what `register_origin`/`install` take and what a
@@ -242,10 +246,10 @@ pub use timeline::{queue_index_of, QueueRow};
 // `DP_SUBTITLE_CODECS` / `is_dp_subtitle` are the subtitle twin: the profile's `subtitleCodec=`
 // list and route's MDE `subtitleStreamID` gate, so a selected PGS cannot be advertised in one
 // and omitted from the other.
-// `is_dp_audio_track` checks normal codec/channel eligibility, while `link_policy` constrains
+// `is_dp_audio_track_with` checks normal codec/channel eligibility, while `link_policy` constrains
 // the connection. Forced mode retains software feed limits and uses a separate PMS profile.
 #[allow(unused_imports)]
 pub use transcoder::{
-    DP_AUDIO_CODECS, DP_SUBTITLE_CODECS, LinkPolicy, direct_play_video_codecs, is_dp_audio, is_dp_audio_track,
+    DP_AUDIO_CODECS, DP_SUBTITLE_CODECS, LinkPolicy, direct_play_video_codecs, is_dp_audio_track_with,
     is_dp_subtitle, link_policy,
 };

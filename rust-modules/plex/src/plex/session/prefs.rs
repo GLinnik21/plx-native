@@ -36,8 +36,8 @@
 //! assignment. `subtitle_offsets` is the other tenant of the door and is declared the same way
 //! ([`SubtitleOffsetsPref`]).
 use super::{
-    DeckPress, DirectPlayMode, HdrOverlayBrightness, LastLibrary, LibraryViews, NextEpisodeMode, OpaqueExtensions, PlaintextConsent,
-    HoldHintTaught, PlaybackQuality, ServerKeyPin, Session, SkipInterval, SubtitleOffsetEntry, SubtitleOffsets, SubtitlePosition,
+    InstantDpadSeeking, DeckPress, DirectPlayMode, HdrOverlayBrightness, LastLibrary, LibraryViews, NativeAudioRefusal, NextEpisodeMode, OpaqueExtensions,
+    PlaintextConsent, HoldHintTaught, PlaybackQuality, ServerKeyPin, Session, SkipInterval, SubtitleOffsetEntry, SubtitleOffsets, SubtitlePosition,
     SubtitleSize, SubtitleTone, UiResolution, UnderPosters,
 };
 use serde::de::DeserializeOwned;
@@ -122,6 +122,9 @@ pub struct Preferences {
     /// field — committed replay fixtures included — serializes exactly as it did before.
     #[serde(default, deserialize_with = "de_soft_skip_interval", skip_serializing_if = "is_default_skip_interval")]
     pub skip_interval: SkipInterval,
+    /// Hidden-HUD D-pad jumps; off by default.
+    #[serde(default, deserialize_with = "de_soft_instant_dpad_seeking", skip_serializing_if = "InstantDpadSeeking::is_default")]
+    pub instant_dpad_seeking: InstantDpadSeeking,
     /// **What OK does on a Continue Watching card** — see [`DeckPress`]. A frozen fallback like
     /// [`Preferences::playback_quality`]: each profile keeps its own pick in `profile_prefs`, and a
     /// profile that has not picked reads this top-level key. Absence is Details, so a session written
@@ -239,6 +242,17 @@ pub struct Preferences {
     /// unreadable entry costs that entry.
     #[serde(default, deserialize_with = "super::de_soft_vec", skip_serializing_if = "Vec::is_empty")]
     pub server_key_pins: Vec<ServerKeyPin>,
+    /// **Native audio the pipeline of this television was watched refusing** — firmware family,
+    /// codec and channel count ([`NativeAudioRefusal`]). The player learns one when a native Load
+    /// ends in `type=18 num=200 Audio Codec Not Supported` (applied at once), or counts one proof each
+    /// time a refused-format open was rescued by a facet-clean conversion (applied once it holds
+    /// `LEARNED_REFUSAL_PROOFS`); the next play's start value (`devcaps::start_caps`,
+    /// from the rows in force, [`NativeAudioRefusal::applies`]) no longer announces the combination, so
+    /// that play is converted. The boot snapshot (`devcaps::caps`) is never rewritten.
+    /// An INSTALL fact: a property of this television's firmware, kept across sign-out and
+    /// across profiles. Skipped while empty, soft-parsed per entry.
+    #[serde(default, deserialize_with = "super::de_soft_vec", skip_serializing_if = "Vec::is_empty")]
+    pub native_audio_refused: Vec<NativeAudioRefusal>,
     /// **The library each top tab was last browsed in**, per profile — so a household with two TV
     /// libraries opens the one it actually watches instead of whichever the server happens to list
     /// first.
@@ -335,7 +349,7 @@ pub struct Preferences {
     #[serde(default, deserialize_with = "super::de_soft_vec", skip_serializing_if = "Vec::is_empty")]
     pub subtitle_offsets: Vec<SubtitleOffsets>,
     // ---- per-profile player settings ----
-    /// **Each profile's own value of the ten player settings and of hero trailer autoplay** — see [`ProfilePrefsRecord`] and the
+    /// **Each profile's own playback and display settings** — see [`ProfilePrefsRecord`] and the
     /// module doc of `profile_prefs`. A record per (profile, account stamp), soft-parsed per element so one junk
     /// record costs only itself, skipped while empty so a session that never picked anything per
     /// profile serializes exactly as it did before the field existed. Account-bound: a record whose
@@ -492,6 +506,8 @@ setting!(DirectPlayModePref: DirectPlayMode = direct_play_mode, "direct_play_mod
     account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
 setting!(NextEpisodeModePref: NextEpisodeMode = next_episode_mode, "next_episode_mode", Profile fallback LegacyInstallKey,
     account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
+setting!(InstantDpadSeekingPref: InstantDpadSeeking = instant_dpad_seeking, "instant_dpad_seeking", Profile fallback LegacyInstallKey,
+    account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
 setting!(SkipIntervalPref: SkipInterval = skip_interval, "skip_interval", Profile fallback LegacyInstallKey,
     account false, live true, settings Some(SettingsWrite::Confirm), parse Soft);
 setting!(DeckPressPref: DeckPress = deck_press, "deck_press", Profile fallback LegacyInstallKey,
@@ -562,6 +578,8 @@ macro_rules! list_row {
 // The two lists of the account itself (`ACCOUNT_BOUND_PREFERENCES`).
 list_row!(PlaintextConsentRow: PlaintextConsent = plaintext_consent, "plaintext_consent", Account, account true);
 list_row!(ServerKeyPinsRow: ServerKeyPin = server_key_pins, "server_key_pins", Account, account true);
+// What this television's firmware refused: an install fact, so it survives sign-out.
+list_row!(NativeAudioRefusedRow: NativeAudioRefusal = native_audio_refused, "native_audio_refused", Install, account false);
 // The per-profile library lists. Sign-out clears them (`ACCOUNT_BOUND_PREFERENCES`), but their
 // records are not stamped: the one login that is not a sign-out (boot.rs, a stored session that
 // could not be activated) leaves them to the next account, as it always has.
@@ -605,6 +623,7 @@ pub const DESCRIPTORS: &[Descriptor] = &[
     Descriptor::of::<HdrOverlayBrightnessPref>(),
     Descriptor::of::<NextEpisodeModePref>(),
     Descriptor::of::<SkipIntervalPref>(),
+    Descriptor::of::<InstantDpadSeekingPref>(),
     Descriptor::of::<DeckPressPref>(),
     Descriptor::of::<UnderPostersPref>(),
     Descriptor::of::<AudioEnhancementsPref>(),
@@ -616,6 +635,7 @@ pub const DESCRIPTORS: &[Descriptor] = &[
     Descriptor::of::<HoldHintTaughtPref>(),
     Descriptor::of::<PlaintextConsentRow>(),
     Descriptor::of::<ServerKeyPinsRow>(),
+    Descriptor::of::<NativeAudioRefusedRow>(),
     Descriptor::of::<LastLibraryRow>(),
     Descriptor::of::<LibraryViewsRow>(),
     // The per-profile player settings' own values.
@@ -628,7 +648,7 @@ pub const DESCRIPTORS: &[Descriptor] = &[
 impl Session {
     /// This session with `S` set to `value`, every other field intact.
     ///
-    /// It writes the setting's TOP-LEVEL key. For the ten player settings and hero trailer autoplay that key is the frozen
+    /// It writes the setting's TOP-LEVEL key. For per-profile settings that key is the frozen
     /// legacy fallback every profile reads until it picks its own, which no pick ever writes (the
     /// door writes `profile_prefs`: [`persist_profile_pref`]); so this is a test and fixture
     /// builder ("the install says X"), and `auto_sign_in` (TV-wide) is its only production-shaped row.
@@ -678,7 +698,7 @@ impl<E> Default for ProfileList<E> {
 
 /// **A record of a per-profile list**: one profile's data under one account stamp, held in a
 /// `Vec` of them in a [`Session`] field. [`ProfileList`] (the memory door's entries) and
-/// [`ProfilePrefsRecord`] (the ten player settings' and hero trailer autoplay's own values) are the two shapes, and the
+/// [`ProfilePrefsRecord`] (the profiles' own playback and display values) are the two shapes, and the
 /// identity rules every such list shares are written once, over this: how a profile's record is
 /// found, what a foreign stamp does to the list, and when an emptied record goes.
 pub trait ProfileKeyed: Sized {
@@ -1306,6 +1326,17 @@ where
 /// `skip_serializing_if` needs a function, not just `PartialEq` with `Default::default()`.
 fn is_default_skip_interval(interval: &SkipInterval) -> bool {
     *interval == SkipInterval::default()
+}
+
+/// Instant D-pad seeking is a preference too: a spelling this build does not know degrades to Off.
+fn de_soft_instant_dpad_seeking<'de, D>(d: D) -> Result<InstantDpadSeeking, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Ok(v) = serde_json::Value::deserialize(d) else {
+        return Ok(InstantDpadSeeking::default());
+    };
+    Ok(serde_json::from_value::<InstantDpadSeeking>(v).unwrap_or_default())
 }
 
 /// The deck-press mode is a preference too: a spelling this build does not know degrades to Details.

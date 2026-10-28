@@ -12,6 +12,36 @@ use std::sync::atomic::{
     AtomicBool, AtomicI32, AtomicI64, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, Ordering,
 };
 use std::sync::{Condvar, Mutex};
+
+/// How the pipeline refused a Load, for the `playback.failed` event: the Load call itself returned
+/// 0 (`Sync`, `threads::load_thread` via `publish_native_load_failure`), or the call returned and
+/// a `type=18` error callback arrived before any picture (`Async`, `sf_on_event`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum RefusalPath {
+    None = 0,
+    Sync = 1,
+    Async = 2,
+}
+
+impl RefusalPath {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::Sync,
+            2 => Self::Async,
+            _ => Self::None,
+        }
+    }
+
+    /// The stable wire code.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Sync => "sync",
+            Self::Async => "async",
+        }
+    }
+}
 use std::time::{Duration, Instant};
 
 /// Exact conservation certificate accumulated while the native media clock is held.
@@ -218,6 +248,10 @@ enum LoadCall {
     /// whatever was left of the first one.
     Returned {
         at: Instant,
+        /// The audio lead the Load thread resolved from the sound output before it called `Load`
+        /// (`engine::PcmLead::FromOutput`, on a stack whose lead follows the output); `None` for a Load whose lead the frame thread settled.
+        /// Published WITH the return, so no reader can see the Load returned without it.
+        pcm_lead_ns: Option<i64>,
     },
 }
 
@@ -598,6 +632,25 @@ pub struct Shared {
     // The synchronized route controller owns whether a reload is pending; keeping a second atomic
     // mailbox here used to let reset_session erase the request halfway through that reload.
     pub desired_audio_idx: AtomicI32,
+    // The viewer's playback speed in thousandths (1000 = 1x), from `player::set_play_rate`. Like
+    // desired_audio_idx it PERSISTS across seeks/reloads (each fresh Load re-applies it) and is
+    // reset only on a new item (`player::reset_play_rate`).
+    pub play_rate_permille: AtomicI32,
+    // The speed THIS session's Load plays at (`player::session_rate_for`, published by
+    // `start_bufferfeed` before the demuxer spawns): what the timeline conversion
+    // (`player::to_sink_ns`) and the demuxer's audio decode read. Per session: reset_session puts
+    // it back to 1x.
+    pub applied_rate_permille: AtomicI32,
+    // One-shot: the next direct-play seek must be a full reload even in an in-place seek mode,
+    // because it exists to carry a speed change (`player::set_play_rate`), and a speed is fixed
+    // per Load.
+    pub rate_reload: AtomicBool,
+    // This process's television did not take a speed session's PCM (`player::fall_back_from_speed`):
+    // speed stays off until the app restarts. Never reset by a session.
+    pub speed_unsupported: AtomicBool,
+    // What the pipeline reported setting up for THIS speed session's audio
+    // (`player::note_speed_audio_report`); per session.
+    pub speed_audio_verdict: AtomicU8,
     // the derived UI state (a `PlaybackState`), published by the pump once a frame and read by
     // the HUD. Written only on the main thread; atomic because it is read from the draw path.
     pub pb_state: AtomicU8,
@@ -638,6 +691,11 @@ pub struct Shared {
     /// callback thread, taken once by the app loop ([`super::take_decoder_revoked`]), which parks
     /// the session exactly as an app switch does and rebuilds it on the viewer's next press.
     pub decoder_revoked: AtomicBool,
+    /// The pipeline refused the Load with `type=18 num=200` (`Audio Codec Not Supported`) before any
+    /// picture while the session fed its audio natively (`ff::native_audio::fed`). Set on the
+    /// callback thread; the pump turns it into a learned refusal and a recovery flight that has the
+    /// server convert that audio (the machine's `ConfirmRefusal`, run by [`super::pump`]'s `confirm_refusal`).
+    pub native_audio_refused: AtomicBool,
     /// issue #74 D.1: the epoch this session last logged "native: loadCompleted while Load in
     /// flight — deferring" for — 0 = never. `epoch` is monotonic and never 0 for a real session
     /// ([`NativeSessionState::next`] skips 0 on wraparound), so comparing against this is enough
@@ -788,6 +846,12 @@ pub struct Shared {
     /// displayed type would be a confident lie on the firmware we cannot test. `dg_cb_err` latches
     /// the one type that means the same on both.
     pub dg_cb_count: AtomicU32,
+    /// What [`crate::player::era_callbacks`] reads, all per session: position ticks (`type=0`),
+    /// callbacks `sink_counter_kind` named as the displayed-frame counter, and callbacks numbered
+    /// 46 to 49 that it did not name (the other era's numbers). Unlike `frames`, a seek leaves them.
+    pub dg_pos_ticks: AtomicU32,
+    pub dg_sink_displayed_cb: AtomicU32,
+    pub dg_sink_other_cb: AtomicU32,
     /// Why the VIDEO feeder is where it is, taken at each of `feed_stream`'s exit points.
     /// 0 none yet · 1 accepting · 2 BufferFull · 3 refused · 4 waiting for a frame (feed-ahead
     /// throttle) · 5 queue empty.
@@ -812,6 +876,12 @@ pub struct Shared {
     /// success flag, and the other refusals inside `sf_load` are the seam's own lifecycle gates —
     /// so a session that failed that way leaves this at 0 ("none recorded").
     pub dg_cb_err_num: AtomicI32,
+    /// HOW the Load was refused, as a [`RefusalPath`] code: written by [`Self::publish_native_load_failure`]
+    /// (`Sync`) and by `sf_on_event`'s refusal-before-any-picture arm (`Async`), first writer wins,
+    /// cleared by [`Self::reset_session`] with the other per-play failure state. Read by the
+    /// `playback.failed` event, which `dg_cb_err_num` alone cannot serve: a synchronous refusal
+    /// leaves that at 0 and so does a session that never failed.
+    pub refusal_path: AtomicU8,
     /// The media GET's HTTP status and the bytes actually delivered to the demuxer. Written by the
     /// DEMUX thread — the third writer of this block. 0/0 = no connection was ever made, which is
     /// a different failure from a connection that answered 401.
@@ -825,6 +895,11 @@ pub struct Shared {
     pub dg_transport_rc: AtomicI32,
     pub dg_transport_age_ms: AtomicI64,
     pub dg_transport_reopen_failed: AtomicBool,
+    /// WHICH demuxer exit failed the session (`DemuxExitClass::latch`; 0 = none recorded). Written
+    /// by `note_demux_exit` / `fail_demux`, FIRST WINS: the first cause is the real one, and the
+    /// teardown cascade that follows it must not overwrite it. Read by the handled playback error
+    /// as a class. Cleared per session beside the other `dg_*` latches.
+    pub dg_demux_exit: AtomicU8,
     /// SDL ticks when `loadCompleted` landed, and when `frames` last CHANGED. A photograph has no
     /// time axis: "Load completed, 0 frames" is innocent at 2 s and damning at 4 minutes, and the
     /// panel cannot tell the difference without these. Stamped in the pump, never in `app::diagnostics` —
@@ -944,6 +1019,22 @@ pub struct Shared {
 }
 
 impl Shared {
+    /// Record WHICH demuxer exit failed the session, without raising `demux_failed` (an exit that
+    /// reaches the shared "produced no access units" tail through a plain `break`). FIRST WINS: a
+    /// compare-exchange from 0, so the real cause is kept and any later cascade is ignored.
+    pub fn note_demux_exit(&self, exit: plx_telemetry::telemetry::classes::DemuxExitClass) {
+        let _ = self
+            .dg_demux_exit
+            .compare_exchange(0, exit.latch(), Ordering::AcqRel, Ordering::Relaxed);
+    }
+
+    /// Raise `demux_failed` AND name the exit that raised it (first wins, see `note_demux_exit`).
+    /// The one way the demuxer or the Load builder fails the session through that flag.
+    pub fn fail_demux(&self, exit: plx_telemetry::telemetry::classes::DemuxExitClass) {
+        self.note_demux_exit(exit);
+        self.demux_failed.store(true, Ordering::Release);
+    }
+
     /// The container's track names ([`Shared::track_names`]) for a READER on the main thread. A
     /// panicked writer cannot leave the names half-built (they are replaced whole), so a poisoned
     /// lock still holds a usable value and the reader takes it rather than panic.
@@ -956,14 +1047,19 @@ impl Shared {
             native_session: Mutex::new(NativeSessionState::new()),
             dg_stage: AtomicU8::new(0),
             dg_cb_count: AtomicU32::new(0),
+            dg_pos_ticks: AtomicU32::new(0),
+            dg_sink_displayed_cb: AtomicU32::new(0),
+            dg_sink_other_cb: AtomicU32::new(0),
             dg_feed_state: AtomicU8::new(0),
             dg_cb_err: AtomicI32::new(0),
             dg_cb_err_at: AtomicU32::new(0),
             dg_cb_err_num: AtomicI32::new(0),
+            refusal_path: AtomicU8::new(RefusalPath::None as u8),
             dg_http_status: AtomicI32::new(0),
             dg_transport_rc: AtomicI32::new(0),
             dg_transport_age_ms: AtomicI64::new(-1),
             dg_transport_reopen_failed: AtomicBool::new(false),
+            dg_demux_exit: AtomicU8::new(0),
             dg_net_rx: AtomicI64::new(0),
             side_anchor: Mutex::new(None),
             side_subs_owner: AtomicBool::new(false),
@@ -1021,6 +1117,11 @@ impl Shared {
             seeking: AtomicBool::new(false),
             seek_display_ns: AtomicI64::new(-1),
             desired_audio_idx: AtomicI32::new(-1),
+            play_rate_permille: AtomicI32::new(super::RATE_NORMAL),
+            applied_rate_permille: AtomicI32::new(super::RATE_NORMAL),
+            rate_reload: AtomicBool::new(false),
+            speed_unsupported: AtomicBool::new(false),
+            speed_audio_verdict: AtomicU8::new(0),
             pb_state: AtomicU8::new(PlaybackState::Idle as u8),
             demux_failed: AtomicBool::new(false),
             demux_io_failed: AtomicBool::new(false),
@@ -1028,6 +1129,7 @@ impl Shared {
             load_failed: AtomicBool::new(false),
             load_timed_out: AtomicBool::new(false),
             decoder_revoked: AtomicBool::new(false),
+            native_audio_refused: AtomicBool::new(false),
             native_load_deferred_logged_epoch: AtomicU32::new(0),
             native_load_elapsed_ms: AtomicU64::new(0),
             playback_trace: Mutex::new(super::report::PlaybackTrace::new()),
@@ -1090,7 +1192,7 @@ impl Shared {
     /// must never depend on the reducer's verdict). Returns the elapsed time since the session's
     /// Load was issued, for the "native: Load returned after Nms" log — `None` when `epoch` no
     /// longer owns the `Active` phase (a superseded/already-retired session; nothing to mark).
-    pub fn mark_native_load_returned(&self, epoch: u32) -> Option<Duration> {
+    pub fn mark_native_load_returned(&self, epoch: u32, pcm_lead_ns: Option<i64>) -> Option<Duration> {
         let mut state = self
             .native_session
             .lock()
@@ -1104,6 +1206,7 @@ impl Shared {
             } if epoch != 0 && *active == epoch => {
                 *load_call = LoadCall::Returned {
                     at: Instant::now(),
+                    pcm_lead_ns,
                 };
                 Some(load_issued_at.elapsed())
             }
@@ -1118,8 +1221,25 @@ impl Shared {
         if !matches!(state.phase, NativeSessionPhase::Active { epoch: active, .. } if epoch != 0 && active == epoch) {
             return false;
         }
+        self.note_refusal_path(RefusalPath::Sync);
         self.load_failed.store(true, Ordering::Release);
         true
+    }
+
+    /// Record how this session's Load was refused. The first path wins: a later callback must not
+    /// rewrite the account of the refusal that ended the open.
+    pub fn note_refusal_path(&self, path: RefusalPath) {
+        let _ = self.refusal_path.compare_exchange(
+            RefusalPath::None as u8,
+            path as u8,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
+    }
+
+    /// The refusal path recorded for this session, [`RefusalPath::None`] when there is none.
+    pub fn refusal_path(&self) -> RefusalPath {
+        RefusalPath::from_u8(self.refusal_path.load(Ordering::Relaxed))
     }
 
     /// Whether `epoch`'s Starfish `Load` call has returned yet. Required by `pump.rs`'s
@@ -1143,6 +1263,23 @@ impl Shared {
         )
     }
 
+    /// The audio lead `epoch`'s Load thread resolved from the sound output, once its Load has
+    /// returned: `None` while it is in flight, for another epoch, and for a Load that resolved none.
+    pub fn native_load_pcm_lead(&self, epoch: u32) -> Option<i64> {
+        let state = self
+            .native_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match state.phase {
+            NativeSessionPhase::Active {
+                epoch: active,
+                load_call: LoadCall::Returned { pcm_lead_ns, .. },
+                ..
+            } if epoch != 0 && active == epoch => pcm_lead_ns,
+            _ => None,
+        }
+    }
+
     /// How long ago `epoch`'s Starfish `Load` call returned — `None` when `epoch` no longer owns
     /// the `Active` phase, OR when its Load has not returned yet (still `LoadCall::InFlight`,
     /// which the OTHER budget window — [`native_load_elapsed`] — covers).
@@ -1161,7 +1298,7 @@ impl Shared {
         match state.phase {
             NativeSessionPhase::Active {
                 epoch: active,
-                load_call: LoadCall::Returned { at },
+                load_call: LoadCall::Returned { at, .. },
                 ..
             } if epoch != 0 && active == epoch => Some(at.elapsed()),
             _ => None,
@@ -1226,7 +1363,7 @@ impl Shared {
         match &mut state.phase {
             NativeSessionPhase::Active {
                 epoch: active,
-                load_call: LoadCall::Returned { at },
+                load_call: LoadCall::Returned { at, .. },
                 ..
             } if epoch != 0 && *active == epoch => {
                 *at = at.checked_sub(by).unwrap_or(*at);
@@ -1611,16 +1748,21 @@ impl Shared {
         // exactly the misleading answer the read-out exists to avoid
         self.dg_stage.store(0, Ordering::Relaxed);
         self.dg_cb_count.store(0, Ordering::Relaxed);
+        self.dg_pos_ticks.store(0, Ordering::Relaxed);
+        self.dg_sink_displayed_cb.store(0, Ordering::Relaxed);
+        self.dg_sink_other_cb.store(0, Ordering::Relaxed);
         self.dg_feed_state.store(0, Ordering::Relaxed);
         // A latched error MUST be cleared here, or one bad session paints every later healthy
         // playback red for the life of the process.
         self.dg_cb_err.store(0, Ordering::Relaxed);
         self.dg_cb_err_at.store(0, Ordering::Relaxed);
         self.dg_cb_err_num.store(0, Ordering::Relaxed);
+        self.refusal_path.store(RefusalPath::None as u8, Ordering::Relaxed);
         self.dg_http_status.store(0, Ordering::Relaxed);
         self.dg_transport_rc.store(0, Ordering::Relaxed);
         self.dg_transport_age_ms.store(-1, Ordering::Relaxed);
         self.dg_transport_reopen_failed.store(false, Ordering::Relaxed);
+        self.dg_demux_exit.store(0, Ordering::Relaxed);
         self.dg_net_rx.store(0, Ordering::Relaxed);
         self.dg_load_at.store(0, Ordering::Relaxed);
         self.dg_frame_at.store(0, Ordering::Relaxed);
@@ -1691,6 +1833,9 @@ impl Shared {
         self.seek_display_ns.store(-1, Ordering::Relaxed);
         // NB: desired_audio_idx is NOT reset here — it persists across seeks/reloads so a
         // native audio-track choice survives seeking. It is reset on a new item (route).
+        // play_rate_permille likewise; the APPLIED rate is the pipeline's, and a fresh one is 1x.
+        self.applied_rate_permille.store(super::RATE_NORMAL, Ordering::Relaxed);
+        self.speed_audio_verdict.store(super::SPEED_AUDIO_UNKNOWN, Ordering::Relaxed);
         self.pb_state
             .store(PlaybackState::Idle as u8, Ordering::Relaxed);
         self.demux_failed.store(false, Ordering::Relaxed);
@@ -1699,6 +1844,7 @@ impl Shared {
         self.load_failed.store(false, Ordering::Relaxed);
         self.load_timed_out.store(false, Ordering::Relaxed);
         self.decoder_revoked.store(false, Ordering::Relaxed);
+        self.native_audio_refused.store(false, Ordering::Relaxed);
         // NB: desired_sub_idx is NOT reset here — like desired_audio_idx it persists across
         // seeks/reloads so a reload-based seek keeps the chosen subtitle. It is reset on a new
         // item (player::reset_subtitle). ASS packets are immutable file facts, not
@@ -3498,10 +3644,15 @@ mod tests {
             .iter()
             .map(|src| src.chars().filter(|c| !c.is_whitespace()).collect())
             .collect();
+        // A first-wins latch is written by a compare-exchange inside a `Shared` method (the
+        // demuxer calls the method), so that spelling counts, but only where it is declared: the
+        // reset's plain `.store(0)` in this file must not satisfy the plain-store rule.
+        let shared_src: String = SHARED_SRC.chars().filter(|c| !c.is_whitespace()).collect();
         for f in declared {
-            let written = writers.iter().any(|src| {
-                src.contains(&format!("dg_{f}.store(")) || src.contains(&format!("dg_{f}.fetch_"))
-            });
+            let written = shared_src.contains(&format!("dg_{f}.compare_exchange("))
+                || writers.iter().any(|src| {
+                    src.contains(&format!("dg_{f}.store(")) || src.contains(&format!("dg_{f}.fetch_"))
+                });
             assert!(written, "dg_{f} is declared and read but NOTHING writes it — the panel would print its sentinel as fact");
         }
     }

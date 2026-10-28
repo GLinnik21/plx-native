@@ -630,9 +630,10 @@ a dead source is **absent** from Home and states itself in its own library secti
   has no cap and no guard. A stored document already AT the cap leaves no room for the strict tier's
   second copy (old and new halves side by side), which the guard cannot create. A record created on
   webOS 4.x is ACL-only; a record that already holds a keymanager envelope still stages.
-- **`session::peek()` is a write-through cache over the persisted session, not a fresh read.** A
-  hit is one uncontended `Mutex` lock and an `Arc<Session>` clone — no `IO`, no helper round trip —
-  which is what makes it safe to call every frame. The invariants
+- **`session::peek()` is a write-through cache over the persisted session, not a fresh read.** It
+  is a pure read of that cache: one uncontended `Mutex` lock and an `Arc<Session>` clone — no `IO`,
+  no helper round trip, no submit, no clock, on a hit or a miss — which is what makes it safe to
+  call every frame. The invariants
   that keep it correct, all in `session.rs`'s module doc and worth knowing before touching either
   the cache or a write path:
   - Cached records come from completed reads or durable writes under `IO`. `Revoked` separately
@@ -641,10 +642,15 @@ a dead source is **absent** from Home and states itself in its own library secti
   - Only `session.rs` writes the session domain of the record; every `persistence::commit_*`/
     `write_session`/`commit_cleared` caller updates the cache through a read install, proven-write
     install, cache drop, or local revocation. Read installs cannot undo revocation.
-  - `peek` never takes `IO`, including on a miss. It returns the previous snapshot and schedules
-    one refresh on `storage_worker`'s bounded FIFO. The worker reads and installs under `IO`,
-    then advances a visible-session generation only if the served content changed. The bridge
-    observes it and invalidates on the frame thread. Cached views also observe it through
+  - `peek` never takes `IO` and never refills the cache, including on a miss: it returns the
+    previous snapshot (or the empty session). The refill belongs to the session owner
+    (`SessionMachine`): the application's frame step asks `refresh_need()` what the cache lacks
+    and delivers `SessionEvent::CacheObserved`, the owner answers with its `SessionFx::RefreshCache`
+    effect, the application's session adapter runs `refresh_cache_job` on `storage_worker`'s
+    bounded FIFO, and the outcome returns as `SessionEvent::CacheRefreshed` (one refresh in
+    flight, owned by the machine rather than a `peek` side channel). The job reads and installs
+    under `IO`, then advances a visible-session generation only if the served content changed. The
+    bridge observes it and invalidates on the frame thread. Cached views also observe it through
     `VisibleSessionWatch` (or include `visible_generation()` in their cache key) and rebuild;
     invalidating drawing alone cannot refresh a retained value. `peek_settled()` keeps transient
     reads distinct from an authoritative empty session. Unchanged retries remain quiet. A queued
@@ -653,8 +659,11 @@ a dead source is **absent** from Home and states itself in its own library secti
     `IO` first (the fence/OCC check), then install their own proven outcome. A miss can therefore
     never overwrite a newer concurrent write.
   - A `Locked`/`Blocked` read (keymanager unavailable, a helper hiccup) is cached only
-    transiently, for `LOCKED_RETRY` (about a second) after completion — never latched forever the way a naive
-    per-field cache once was (the bug PR #120's stopgap shipped and this cache replaced).
+    transiently: `peek` serves the last known state and the owner re-reads it no sooner than
+    `LOCKED_RETRY_MS` (1000) of frame time later, per cache generation (a backoff counted on the
+    frame tick the owner receives, not a wall-clock deadline in `session.rs`) — never latched
+    forever the way a naive per-field cache once was (the bug PR #120's stopgap shipped and this
+    cache replaced).
   - Sign-out (`clear()`) drops the cached `Arc` immediately; the tokens it held must not remain
     reachable in memory after a sign-out just because nothing had overwritten the cache yet.
   - `plex::session::async_persistence`'s Stage B coordinator is unwired and keeps its own,

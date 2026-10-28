@@ -759,6 +759,10 @@ fn a_stale_listing_is_requeried_when_a_page_buries_it_never_while_visible() {
     let mut returned = buried();
     returned.extend([ScreenEvent::Uncover, ScreenEvent::Enter(Enter::Restored), notice()]);
     assert_eq!(requeries(true, returned), 1, "back on top, a notice no longer re-queries");
+    assert_eq!(requeries(true, vec![ScreenEvent::Mount]), 1,
+        "a page mounted over a listing the server changed meanwhile lists it again");
+    assert_eq!(requeries(false, vec![ScreenEvent::Mount]), 0, "a current listing is not listed again on mount");
+    assert_eq!(requeries(true, vec![ScreenEvent::Mount, notice()]), 1, "once mounted, a notice no longer re-queries");
 }
 
 /// A compact menu (Sort, Filter, the item menu) covers the page without burying it: the page stays
@@ -1064,7 +1068,7 @@ impl Fixture {
         let stores = plx_data::stores::Stores::default();
         stores.browse.borrow_mut().seed_two_source_table_for_test();
         stores.capture_browse(&mut fixture.directory);
-        stores.browse_run(BrowseCmd::SetCur(0));
+        stores.browse_run_for_test(BrowseCmd::SetCur(0));
         {
             let mut browse = stores.browse.borrow_mut();
             browse.seed_items_for_test(120);
