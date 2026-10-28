@@ -3270,6 +3270,23 @@ mod tests {
         assert!(!sections_done, "nothing was learned of the server");
     }
 
+    /// The key a discovery job decided on.
+    fn discovery_key(job: &StoreJob) -> plx_plex::plex::ClientKey {
+        let StoreJob::BrowseDiscovery(inner, _) = job else { panic!("not a discovery job: {job:?}") };
+        inner.req.server().1
+    }
+
+    /// The pass after a refusal whose client was ALSO re-pointed (its token moved, which is what
+    /// "gone" means to the registry): the claim is down, and the step's roster sync re-arms the
+    /// source, so it is asked again at once, with the new key, not after the backoff.
+    #[track_caller]
+    fn assert_refused_and_asked_again_with_the_new_key(browse: &mut BrowseStore, first: plx_plex::plex::ClientKey) {
+        assert!(!browse.discovery_owed(), "the refusal gave the claim back in the call that refused");
+        discovery_step(browse);
+        let again = the_one_job(browse, is_discovery, "discovery");
+        assert_ne!(discovery_key(&again), first, "asked again with the client the registry holds now");
+    }
+
     /// The registry still holds the client the step decided on: the worker reads from the server
     /// through it and posts its ONE answer, and the pump that applies it lands the section and lowers
     /// the claim. The step raised the claim; the launch raises nothing.
@@ -3290,20 +3307,23 @@ mod tests {
     }
 
     /// The registry moved on between the step and the launch: nothing starts, the one answer is the
-    /// refusal (the claim is down in that call), and the next step settles it into the backoff.
+    /// refusal (the claim is down in that call), and the next step's roster sync, which sees the
+    /// re-pointed client, asks again at once (the backoff of a refusal the sync did not re-arm is
+    /// pinned by the refused-thread test below).
     #[test]
-    fn a_browse_discovery_job_whose_client_is_gone_is_refused_once_and_backs_off_before_it_asks_again() {
+    fn a_browse_discovery_job_whose_client_is_gone_is_refused_once_and_asked_again_with_the_new_key() {
         let _serial = plx_base::testlock::serial();
         let _rig = CollectionRig;
         let pms = discovery_server();
         let (sid, mut browse, job) = discovery_request_at(pms.port);
+        let first = discovery_key(&job);
         move_the_key(sid);
 
         StoreRunner::live().start(job);
         plx_base::task::drain_workers_for_test();
 
         assert!(!browse.discovery_answer_waiting_for_test(), "no worker started, so no landing");
-        assert_settled_into_the_backoff(&mut browse);
+        assert_refused_and_asked_again_with_the_new_key(&mut browse, first);
     }
 
     /// The system refuses the thread: the same single refusal, the same settle.
@@ -3343,13 +3363,14 @@ mod tests {
     }
 
     /// A parked job whose client is gone by the time the test runs it is refused, as the launch would
-    /// have refused it; the next step settles it into the backoff.
+    /// have refused it; the next step, which sees the re-pointed client, asks again at once.
     #[test]
-    fn a_held_browse_discovery_job_whose_client_is_gone_by_then_is_refused_and_backs_off() {
+    fn a_held_browse_discovery_job_whose_client_is_gone_by_then_is_refused_and_asked_again() {
         let _serial = plx_base::testlock::serial();
         let _rig = CollectionRig;
         let pms = discovery_server();
         let (sid, mut browse, job) = discovery_request_at(pms.port);
+        let first = discovery_key(&job);
         let mut runner = StoreRunner::held_all();
 
         runner.start(job);
@@ -3358,7 +3379,7 @@ mod tests {
         assert_eq!(runner.run_held(), 1);
 
         assert!(!browse.discovery_answer_waiting_for_test());
-        assert_settled_into_the_backoff(&mut browse);
+        assert_refused_and_asked_again_with_the_new_key(&mut browse, first);
     }
 
     /// `held` starts a source discovery on a worker, as production does (nothing is parked: no rig
