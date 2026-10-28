@@ -1077,6 +1077,9 @@ pub enum PlayVerdict {
     DirectPlayDisabled,
     /// Force Direct Play is on, and this is why the original cannot play.
     Forced(ForcedFailure),
+    /// A hero/trailer preview resolved to a route that is not a direct play. A muted preview takes
+    /// only the original, so the plan is refused here, with no URL.
+    PreviewNeedsDirectPlay,
 }
 
 /// The limitation a Force Direct Play verdict names. Each one carries the same recovery step.
@@ -1107,6 +1110,7 @@ impl PlayVerdict {
         match self {
             Self::Server(sentence, _) => Borrowed(sentence),
             Self::DirectPlayDisabled => Borrowed(msg::widgets_verdict_direct_play_disabled()),
+            Self::PreviewNeedsDirectPlay => Borrowed(msg::widgets_reason_open()),
             Self::Forced(why) => match why {
                 ForcedFailure::NoOriginal => Borrowed(msg::widgets_verdict_forced_no_original()),
                 ForcedFailure::Container => Borrowed(msg::widgets_verdict_forced_container()),
@@ -2510,6 +2514,7 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     if env.preview && !crate::player::preview::accepts_direct_play(directplay, !part.is_empty(), adaptive) {
         crate::player::log("preview: refused — not a direct play");
         plan.url.clear();
+        plan.verdict = Some(PlayVerdict::PreviewNeedsDirectPlay);
         return plan;
     }
     if (directplay || rk.is_empty()) && !part.is_empty() {

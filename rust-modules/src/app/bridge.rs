@@ -454,6 +454,9 @@ pub(crate) struct Bridge {
     watchlist: watchlist::Feed,
     /// The catalog page instance the store was last opened for (`watchlist::catalog_feed`).
     catalog_seat: Option<InstanceId>,
+    /// The scratch session a Watchlist rig seated for the account it scripts ([`Bridge::seat_watchlist_account_for_test`]).
+    #[cfg(test)]
+    watchlist_session: Option<plx_plex::plex::session::TempSession>,
     #[cfg(test)]
     keyboard_calls: Vec<bool>,
     #[cfg(test)]
@@ -679,6 +682,8 @@ impl Bridge {
             watchlist_reqs: Vec::new(),
             watchlist: watchlist::Feed::default(),
             catalog_seat: None,
+            #[cfg(test)]
+            watchlist_session: None,
             #[cfg(test)]
             keyboard_calls: Vec::new(),
             #[cfg(test)]
@@ -1302,18 +1307,25 @@ impl Bridge {
     }
 
     /// The catalog page's frame pass: the store's landing pass (a refused read asked again, a
-    /// landing for a switched profile read again under the new one), then every job that pass
-    /// emitted started, in this call. No keys: the read is plex.tv's, as the captured identity.
+    /// landing for a switched profile dropped), then the title it owes a read under the new profile
+    /// opened again ([`Bridge::catalog_open`], which reads the identity now), then every job those
+    /// emitted started, in this call. The pass is handed `seated_profile()` and nothing else: it
+    /// captures no identity.
     pub(crate) fn catalog_pump(&mut self) -> bool {
-        let changed = self.stores.catalog.pump();
+        let profile = Self::seated_profile();
+        let mut changed = self.stores.catalog.pump(&profile);
+        if let Some(hex) = self.stores.catalog.take_reopen() {
+            self.catalog_open(hex);
+            changed = true;
+        }
         self.start_store_jobs_of(StoreId::Catalog);
         changed
     }
 
-    /// The catalog page mounted (or read again) for `hex`: the store's `open`, then its read
-    /// started in this call.
+    /// The catalog page mounted (or read again) for `hex`: the store's `open` handed
+    /// `watchlist_input()`, then its read started in this call.
     pub(crate) fn catalog_open(&mut self, hex: [u8; 12]) {
-        self.stores.catalog.open(hex);
+        self.stores.catalog.open(hex, &Self::watchlist_input());
         self.start_store_jobs_of(StoreId::Catalog);
     }
 
@@ -1530,7 +1542,7 @@ impl Bridge {
     /// The Watchlist store's landing pass, once a frame and route-unconditional: a write burst
     /// lands, a profile switch resets it, and the page reads its notice through `take_notices`.
     pub(crate) fn watchlist_pump(&mut self) {
-        if self.stores.watchlist.pump_with_gate(&self.stores.landgate) {
+        if self.stores.watchlist.pump_with_gate(&self.stores.landgate, &Self::seated_profile()) {
             plx_machine::idle::invalidate();
         }
     }
@@ -1662,6 +1674,24 @@ impl Bridge {
     /// the store; the data layer reads no session global for it.
     fn household_ids() -> Vec<i64> {
         plx_plex::plex::session::peek().household_ids()
+    }
+
+    /// The profile the Watchlist and catalog frame passes are handed: the seated one, as the Session
+    /// owner published it. An `Arc` clone, so the two per-frame passes cost nothing to read it; a pass
+    /// that cannot capture needs no more.
+    fn seated_profile() -> std::sync::Arc<plx_plex::plex::session::CurrentProfile> {
+        plx_plex::plex::session::current_snapshot()
+    }
+
+    /// What a Watchlist or catalog step that can CAPTURE is handed: the seated profile and the identity
+    /// to act as, read from ONE snapshot, now. It is built on every call that can capture and never
+    /// kept, so a capture reads the plex.tv credential at the moment it is made. `plex_tv_credential`
+    /// reads the registry (the legacy-owner fallback), so it is called here and nowhere in `data/`.
+    pub(crate) fn watchlist_input() -> plx_data::watchlist::WatchlistInput {
+        let profile = Self::seated_profile();
+        let credential = profile.user.as_ref().and_then(plx_plex::plex::session::plex_tv_credential);
+        let client_id = plx_plex::plex::session::peek().client_id.clone();
+        plx_data::watchlist::WatchlistInput::new(profile, credential, &client_id)
     }
 
     /// The session Browse's step is handed. The store observes its pending pin write's receipt FIRST
