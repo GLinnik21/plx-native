@@ -982,6 +982,42 @@ fn paging_a_recent_row_does_not_remove_other_home_rows() {
     assert_eq!(hubs[0].len, 24);
 }
 
+#[test]
+fn live_tv_channels_form_one_row_after_continue_watching_and_stay_out_of_the_hero() {
+    use plx_plex::plex::livetv::LiveChannel;
+    let channel = |vcn: &str, name: &str, now: &str| LiveChannel {
+        dvr: "7".into(), channel: format!("C{vcn}.242.ersatztv.org"), vcn: vcn.into(), name: name.into(),
+        thumb: format!("http://192.0.2.10:8409/iptv/logos/gen?text={vcn}"), now: now.into(), ends_at: 0,
+    };
+    let mut owned = built(0, &[(10, "cw1")], vec![shelf(0, "Recent", "home.movies.recent", &["r1"])]);
+    owned.live = [channel("101", "Family Channel", "Family Show"), channel("102", "Cartoons", "")]
+        .iter().map(|ch| Arc::new(live_channel_tile(ch, sid(0)))).collect();
+    let shared = built(1, &[], vec![shelf(1, "Shared recent", "home.television.recent", &["s1"])]);
+    let (items, hubs, pool) = merge(&[
+        src(0, "", HubState::Ready, Some(owned)),
+        src(1, "Friend", HubState::Ready, Some(shared)),
+    ]);
+
+    let ids: Vec<_> = hubs.iter().map(|hub| hub.hub_id.as_str()).collect();
+    assert_eq!(ids, ["home.continue", LIVE_TV_HUB, "home.movies.recent", "home.television.recent"]);
+    let live = &hubs[1];
+    assert_eq!(live.title, plx_platform::i18n::msg::browse_home_live_tv());
+    let tiles = &items[live.start..live.start + live.len];
+    assert_eq!(tiles.iter().map(|m| (m.title.as_str(), m.show_title.as_str())).collect::<Vec<_>>(),
+        [("Family Channel", "Family Show"), ("Cartoons", "")]);
+    assert_eq!(live_channel_of(&tiles[0]), Some(("7", "C101.242.ersatztv.org")), "the tune's two ids");
+    assert_eq!(tiles[0].still, tiles[0].thumb, "a channel draws its logo on both tile faces");
+    assert!(pool.iter().all(|slot| items[slot.idx].kind != KIND_LIVE_CHANNEL), "no channel becomes a billboard");
+    assert_eq!(live_channel_of(&row(0, "101")), None, "a library row is never a channel");
+}
+
+#[test]
+fn a_build_recorded_before_live_tv_decodes_with_no_channels() {
+    let json = serde_json::to_string(&built(0, &[(10, "cw1")], Vec::new())).unwrap();
+    assert!(!json.contains("\"live\""), "an empty row is not recorded");
+    let back: SourceBuild = serde_json::from_str(&json).unwrap();
+    assert!(back.live.is_empty());
+}
 
 // ---- one tile per show across servers (#892) -------------------------------------------------------
 
@@ -1001,7 +1037,7 @@ fn card(s: ServerId, rk: &str, title: &str, show: Option<u8>, sec: i64, media: b
 }
 
 fn deck_of(cards: Vec<CwItem>) -> SourceBuild {
-    SourceBuild { lane: Default::default(), cw: cards, shelves: Vec::new() }
+    SourceBuild { lane: Default::default(), cw: cards, shelves: Vec::new(), live: Vec::new() }
 }
 
 /// `n` servers in the registry (the first is our own, the rest are credited), `(slot, handle)` each.

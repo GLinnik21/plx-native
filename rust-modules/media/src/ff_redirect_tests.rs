@@ -124,6 +124,7 @@ fn hls_open_plain(
     let mut net = HlsNet {
         hs: &mut *hs,
         curl: None,
+        carry: None,
     };
     let opened = hls_open_source(
         &hls_resource(port),
@@ -376,6 +377,7 @@ fn a_redirected_master_playlist_resolves_its_children_against_the_redirect_targe
     let mut net = HlsNet {
         hs: &mut *hs,
         curl: None,
+        carry: None,
     };
     let origin = plx_plex::plex::Origin::http("127.0.0.1", pms.port as i32);
     let cursor = hls_cursor_open(

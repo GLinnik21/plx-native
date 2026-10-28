@@ -7917,6 +7917,7 @@ mod sink_envelope_tests {
             "a faster row never raises the ceiling"
         );
     }
+
     #[test]
     fn audio_payload_names_dts_and_refuses_unsupported_formats() {
         assert_eq!(audio_payload_codec("dts"), Some(("DTS", 4)));
