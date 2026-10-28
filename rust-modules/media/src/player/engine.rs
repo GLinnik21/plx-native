@@ -475,10 +475,10 @@ fn release_off_frame(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans) -> Opt
     let th = if refused {
         None
     } else {
-        #[cfg(test)]
+        #[cfg(all(test, feature = "hostsim"))]
         let worker = super::ffi_host::UnloadWorker::enter();
         plx_base::task::spawn("sf-unload", move || {
-            #[cfg(test)]
+            #[cfg(all(test, feature = "hostsim"))]
             let _worker = worker;
             unsafe { super::raw_sink().unload(&ticket) }
         })
