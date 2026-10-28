@@ -475,7 +475,13 @@ fn release_off_frame(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans) -> Opt
     let th = if refused {
         None
     } else {
-        plx_base::task::spawn("sf-unload", move || unsafe { super::raw_sink().unload(&ticket) })
+        #[cfg(test)]
+        let worker = super::ffi_host::UnloadWorker::enter();
+        plx_base::task::spawn("sf-unload", move || {
+            #[cfg(test)]
+            let _worker = worker;
+            unsafe { super::raw_sink().unload(&ticket) }
+        })
     };
     sp.mark("unload_handoff");
     if th.is_none() {
@@ -6656,6 +6662,34 @@ mod off_frame_release_tests {
         drop(pa);
         assert_eq!(ENGINES_DROPPED.load(Ordering::SeqCst), dropped, "dropping the adapter freed the Engine");
         crate::player::ffi_host::release_unload_for_test();
+    }
+
+    /// The flake behind `exit_after_a_load_timeout_never_quits_the_display_under_a_hung_load`: a
+    /// test that ends with its `sf-unload` worker still held leaves a DETACHED thread whose
+    /// `sf_unload` later reads the process-global `ACTIVE_EPOCH` (by then the NEXT test's session)
+    /// and delivers UNLOADCOMPLETED into it. The reset every test opens and closes with must wait
+    /// the worker out, so none outlives its test.
+    #[test]
+    fn the_lifecycle_reset_waits_out_a_released_unload_worker() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        let mut pa = arm(&ps);
+        let _cleanup = Cleanup;
+        let _release = ReleaseUnloadOnDrop;
+        playing_engine(&mut pa);
+        crate::player::ffi_host::hold_unload_for_test();
+        stop_bufferfeed(&mut ps, &mut pa);
+        assert_eq!(
+            crate::player::ffi_host::unload_workers_for_test(),
+            1,
+            "PRECONDITION FAILED: the stop must have a worker inside the held Unload"
+        );
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        assert_eq!(
+            crate::player::ffi_host::unload_workers_for_test(),
+            0,
+            "the reset returned with an sf-unload worker still alive: it could fire into the next test"
+        );
     }
 
     #[test]
