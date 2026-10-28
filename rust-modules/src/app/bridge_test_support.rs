@@ -876,6 +876,16 @@ pub(crate) struct Pms {
 
 impl Pms {
     pub(crate) fn serve(respond: fn(&str) -> (&'static str, String)) -> Pms {
+        Self::spawn(move |path, _| respond(path))
+    }
+
+    /// [`Pms::serve`] for a read that pages: `respond` is also handed the request's query string
+    /// (`X-Plex-Container-Start=..&X-Plex-Container-Size=..`), empty when there is none.
+    pub(crate) fn serve_query(respond: fn(&str, &str) -> (&'static str, String)) -> Pms {
+        Self::spawn(respond)
+    }
+
+    fn spawn(respond: impl Fn(&str, &str) -> (&'static str, String) + Send + 'static) -> Pms {
         use std::io::{Read, Write};
         use std::sync::atomic::Ordering;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -892,8 +902,9 @@ impl Pms {
                 let mut buf = [0u8; 4096];
                 let n = conn.read(&mut buf).unwrap_or(0);
                 let head = String::from_utf8_lossy(&buf[..n]);
-                let path = head.split_whitespace().nth(1).unwrap_or("");
-                let (status, body) = respond(path.split('?').next().unwrap_or(""));
+                let target = head.split_whitespace().nth(1).unwrap_or("");
+                let (path, query) = target.split_once('?').unwrap_or((target, ""));
+                let (status, body) = respond(path, query);
                 let _ = write!(
                     conn,
                     "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",

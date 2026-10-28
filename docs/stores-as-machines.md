@@ -276,8 +276,8 @@ point of the vocabulary is that the mutation set is one `match` a reviewer can r
 
 The stores are machines in state but not yet in IO: their modules still start their own workers,
 read `client_for(current_server())` and the other process-global registries (the Metadata detail
-fetch chain, the season switch and the episode-page window no longer do: each runs through the one
-client the runner resolved for its job, `docs/sans-io.md`, "The store job lane"), and a few arms are
+fetch chain, the season switch, the episode-page window and the Related row's tail window no
+longer do: each runs through the one client the runner resolved for its job, `docs/sans-io.md`, "The store job lane"), and a few arms are
 `cfg(not(test))` forks. `docs/sans-io.md` states the rule that retires those (a machine performs no
 IO; its work leaves as a typed effect and every result returns as one addressed event) and the four
 ledgers, `ci/allow/{workers,globals,forks,fxlanes}/`, that freeze today's sites. A new worker start,

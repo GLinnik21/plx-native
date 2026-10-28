@@ -79,9 +79,10 @@
 //! - `WantEpisodes{lo, hi, focus, restore}` → `metadata::want_episodes` — emit the fetch of the pages
 //!   of a long season the screen needs as a `StoreJob::MetaEpisodes` and evict the ones it does
 //!   not (`pump_episode_pages` installs them).
-//! - `WantRelated{before, seen}` → `metadata::want_related` — slide the Related row's tail window
-//!   (`pump_related`, at the start of the frame, installs it).
-//! - `SeekRelated{at, seen}` → `metadata::ask_related` with `RelatedAsk::Seek` — the same read, opened at a tail position.
+//! - `WantRelated{before, seen}` → `metadata::want_related` — slide the Related row's tail window:
+//!   take the single-flight claim and emit the read as a `StoreJob::MetaRelated` the owner starts
+//!   (`pump_related`, at the start of the frame, installs the window it lands).
+//! - `SeekRelated{at, seen}` → `metadata::ask_related` with `RelatedAsk::Seek` — the same job, opened at a tail position.
 //! - `SetNowPlaying(Option<NowPlaying>)` → `metadata::set_now_playing`.
 //! - `ApplyView{at, edit}` → `metadata::set_watched_local` — the optimistic half of a view-state
 //!   change, answers whether it actually changed anything.
