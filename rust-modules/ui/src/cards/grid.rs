@@ -185,9 +185,10 @@ pub struct Grid {
     slept: bool,
     /// The page is RETURNING: it was restored (`Enter(Restored)`: BACK onto it, a modal's dismissal,
     /// its own pill pressed again), so its seat comes back as it was left and is never put to sleep
-    /// ([`dormant`](Grid::dormant)). It ends on the first tick the owner reports awake, or at the
-    /// first deliberate move: the reader has moved on, and the move is slept through like an
-    /// entry's.
+    /// ([`dormant`](Grid::dormant)). It ends on the first tick the owner reports awake, at the first
+    /// deliberate move and when focus lands anywhere but a card of this grid: the reader has moved
+    /// on, and the move is slept through like an entry's. Transient, like `dormant` and `slept`: not
+    /// part of the canon.
     returning: bool,
     /// The owner announced that the focus it just seated is an arrival ([`arrive`](Grid::arrive)),
     /// not a restore: the next `FocusMoved` onto this grid grows from rest. Cleared by the tick.
@@ -242,15 +243,16 @@ impl Grid {
     /// [`Shelf::dormant`](super::Shelf::dormant)): a lifted tile under a fade plays its selection
     /// where nobody can see it. The grid keeps no pop meanwhile; the first awake tick starts the
     /// focused card's pop from rest, as a deliberate move does (a restore or reconcile announced
-    /// since the last dormant tick is still adopted whole). Landings are adopted whole while
-    /// dormant. Set it before each [`on`](Self::on).
+    /// since the last dormant tick is still adopted whole). Set it before each [`on`](Self::on).
     ///
     /// **A page that returns is not put to sleep.** A grid fed `Enter(Restored)` keeps its seat
     /// lifted and its caption band open, as it was left, under the very fade or held image the
     /// owner reports (BACK from a Detail runs under its dip's image): a card put at rest and grown
     /// again there moves the row below it by the band's height, which reads as a bounce. The return
     /// is the grid's own state, so the owner says nothing more than this flag: it ends on the first
-    /// tick that reports awake, or at the first deliberate move (that move is slept through).
+    /// tick that reports awake, at the first deliberate move and when focus leaves the grid's cards
+    /// (that move is slept through, and no band is left closing under the image). Landings are
+    /// adopted whole while dormant, a returning grid included: nothing plays under the image.
     pub fn dormant(&mut self, held: bool) {
         self.dormant = held;
     }
@@ -301,8 +303,9 @@ impl Grid {
                 // or a reconcile is adopted whole by the next tick.
                 let arrival = arrived.is_some() && std::mem::take(&mut self.arriving);
                 let deliberate = arrival || matches!(by, By::Dir | By::Pointer);
-                // the reader has moved on from what the page returned with
-                if deliberate {
+                // the reader has moved on from what the page returned with: a deliberate move, or
+                // focus gone from the grid's cards (a header control, a BACK that walks to one)
+                if deliberate || arrived.is_none() {
                     self.returning = false;
                 }
                 if let Some(a) = arrived {
@@ -362,8 +365,9 @@ impl Grid {
             // A caption is its band's content (its lines are drawn only as the band opens), so the band of a seat
             // nobody has lifted is shut too: it opens with the lift below, not under the fade. Shut
             // outright and not through `focus_band`, which would keep the open layout for the
-            // landing to measure from, and a landing is not what wakes.
-            self.bands.focus(None, false);
+            // landing to measure from, and a landing is not what wakes. `shut` also drops a band a
+            // move off the grid left closing (a returning grid's, put to sleep by that move).
+            self.bands.shut();
         } else if std::mem::take(&mut self.slept) {
             // an arrival announced since the last dormant tick (a restore, a reconcile) keeps its
             // own rule; only a focus no event told the grid about wakes growing from rest, its
@@ -417,10 +421,12 @@ impl Grid {
         }
         self.seen = Seen::Nothing;
         self.anchor = anchor;
-        if awake {
-            self.play_landing(src, sy0, lifted, dt);
-        } else {
+        // a page the owner reports unseen adopts a landing whole, a returning one included: nothing
+        // plays under the fade or the image
+        if self.dormant {
             self.landing.snap(src);
+        } else {
+            self.play_landing(src, sy0, lifted, dt);
         }
         if focus.is_none() && !self.landing.has_takeover() {
             self.focus_band(None, false);
@@ -670,8 +676,8 @@ impl Grid {
     /// Open `row`'s caption band at once, settled (and close the rest), for an owner that sizes
     /// its document from the bands before the next tick would (a restored page's first layout).
     /// A no-op when `row` is already the focused row, so it never cuts short a band `on` is
-    /// animating, and while the grid is [`dormant`](Self::dormant): a seat nobody has lifted has no
-    /// band open under it, and its caption with it.
+    /// animating, and while the grid is asleep ([`dormant`](Self::dormant) and not returning): a seat
+    /// nobody has lifted has no band open under it, and its caption with it.
     pub fn settle_band(&mut self, row: Option<usize>) {
         if !self.asleep() {
             self.bands.focus(row, false);

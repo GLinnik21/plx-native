@@ -56,9 +56,9 @@
 //!   exception: a page that returns is not put to sleep.** Its seat is drawn lifted with its caption
 //!   band open from the first frame, through the fade or the held image the owner reports, because a
 //!   seat put at rest and grown again there moves the row under its band by the band's height and
-//!   back. The return ends on the first tick the owner reports awake, or at the first deliberate
-//!   move (that move is slept through, so it holds no image), and leaves no mark; a page ENTERED
-//!   under an image is still slept through. A grid asleep keeps
+//!   back. The return ends on the first tick the owner reports awake, at the first deliberate
+//!   move and when focus lands anywhere but a card of the grid (that move is slept through, so it
+//!   holds no image), and leaves no mark; a page ENTERED under an image is still slept through. A grid asleep keeps
 //!   its caption bands shut meanwhile and the waking tick opens the focused row's on the lift's own
 //!   frames: a caption is its band's content (a line is drawn only as the band opens and the room
 //!   holds it, `card_row::line_reveal_for`), so it never stands at full strength under a tile that

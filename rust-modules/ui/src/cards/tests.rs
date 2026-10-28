@@ -1857,6 +1857,65 @@ fn a_deliberate_move_ends_a_grids_return_and_is_slept_through() {
     assert!(first > 1.0 && first < full - 0.02, "the new seat grows from rest once the page is in: {first}");
 }
 
+/// A grid that returned lifted under a held image, then had focus leave its cards: Up from the
+/// first row onto a header control (a deliberate move that names no card of the grid), or the
+/// BACK that walks there (a seat the page makes for itself, announced as a restore). Elem 7 is on
+/// the page and not a card of the grid.
+fn returned_then_focus_leaves(by: By) -> Rig<Grid> {
+    let mut r = left_lifted();
+    r.focus = None;
+    r.sect.dormant(true);
+    r.feed(ScreenEvent::Enter(Enter::Restored));
+    r.land_focus(100, By::Restore);
+    r.run(3);
+    assert!((r.scale(100).unwrap() - RowStyle::HOME.focus_scale).abs() < 1e-4, "premise: it came back lifted");
+    assert!((caption_of_100(&r) - 1.0).abs() < 0.01, "premise: its caption is open");
+    r.land_focus(7, by);
+    r
+}
+
+/// **Leaving the grid under the image of the way back waits for nothing.** The seat the page kept
+/// lifted lets go and its caption band shuts at once, like an entry's: a band left closing on its
+/// spring (and a pop letting go on its own) is layout motion, and the image waits for it.
+#[test]
+fn a_grid_that_returned_sleeps_through_focus_leaving_it() {
+    for by in [By::Dir, By::Pointer, By::Restore] {
+        let mut r = returned_then_focus_leaves(by);
+        for frame in 0..8 {
+            assert!(!r.run(1), "{by:?}: something moves under the image, frame {frame}");
+            assert_eq!(r.scale(100), Some(1.0), "{by:?}: the seat it left is at rest, frame {frame}");
+            assert_eq!(caption_of_100(&r), 0.0, "{by:?}: a caption is left closing under the image, frame {frame}");
+        }
+        assert_eq!(lifted(&r), 0, "{by:?}");
+    }
+}
+
+/// **A landing is adopted whole under the image, a returning grid included.** A card that left or
+/// arrived while the page was covered (the item watched, a refetch) must not play its ghost and its
+/// slides under the image that hides them: the animation would hold the image to its bound and
+/// then be cut.
+#[test]
+fn a_grid_that_returned_adopts_a_landing_whole_under_the_image() {
+    let mut r = animated_grid(40, 100, GRID);
+    r.focus = None;
+    r.sect.dormant(true);
+    r.run(2);
+    r.src.elems.remove(11);
+    r.src.elems.insert(13, 900);
+    r.feed(ScreenEvent::Enter(Enter::Restored));
+    r.land_focus(100, By::Restore);
+    for frame in 0..4 {
+        r.run(1);
+        assert!(r.sect.ghost_probe().0.is_empty(), "a ghost plays under the image, frame {frame}");
+    }
+    r.sect.dormant(false);
+    r.run(2);
+    let n = r.src.elems.len();
+    assert_eq!(r.sect.landing_probe(n, 13), ((0.0, 0.0), 1.0));
+    assert_eq!(r.sect.landing_probe(n, 10), ((0.0, 0.0), 1.0));
+    assert!(r.sect.ghost_probe().0.is_empty());
+}
+
 /// A lifted grid card that goes dormant lets go and the grid keeps no lift while it sleeps.
 #[test]
 fn a_grid_that_goes_dormant_lets_its_lifted_card_go() {

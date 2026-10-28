@@ -180,10 +180,33 @@ fn a_key_pressed_under_the_back_dips_image_is_slept_through_and_grows_after_it()
         "the BACK dip's dissolve ended on frame {in_end} and the image stood until frame {release}");
     let held: Vec<Option<f32>> = rig.frames[pressed + 1..release].iter().map(|f| f.scale).collect();
     assert!(held.iter().all(|scale| scale.is_some_and(|s| (s - 1.0).abs() < 1e-5)),
-        "the new focus is lifted under the held image: {held:.4?}");
+        "the new focus is not at rest under the held image: {held:.4?}");
     let after: Vec<f32> = rig.frames[release..].iter().filter_map(|f| f.scale).collect();
     assert!(after[0] < 1.05, "the new focus is drawn at {:.3} the frame the image is released", after[0]);
     assert!(after.iter().copied().fold(0.0f32, f32::max) > 1.08, "the new focus grows to its lift: {after:.3?}");
+}
+
+/// **Leaving the grid under the image of the way back waits for nothing either.** Up onto the
+/// header, or the BACK that walks there: the caption band the grid kept open shuts at once and
+/// nothing is left closing on a spring, so the image is let go when the dissolve ends.
+#[test]
+fn focus_leaving_the_grid_under_the_back_dips_image_is_slept_through() {
+    for key in [Key::Up, Key::Back] {
+        let mut rig = Rig::new("library-back-leave");
+        rig.open_detail();
+        let from = rig.back(0);
+        rig.run(8);
+        assert!(matches!(rig.frames.last().unwrap().paint, PagePaint::Held(_)), "premise: the dip's image is up");
+        let pressed = rig.frames.len();
+        rig.key(key);
+        rig.run(120);
+        assert_eq!(rig.w.grid_cell(), None, "premise: {key:?} took focus off the grid");
+        let (in_end, release) = (rig.in_end(from), rig.release(from));
+        let moving: Vec<usize> = (pressed..release).filter(|&i| rig.frames[i].moving).collect();
+        assert!(moving.is_empty(), "{key:?}: the move played under the image, held on frames {moving:?} (released on {release})");
+        assert!(release - in_end <= 2,
+            "{key:?}: the BACK dip's dissolve ended on frame {in_end} and the image stood until frame {release}");
+    }
 }
 
 /// The page's fade alpha (1.0 once it is in) and the focused poster's scale on each frame of the

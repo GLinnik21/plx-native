@@ -19,11 +19,9 @@ enum Case { First, Revisit, OtherKind }
 fn push_trace(case: Case) -> Vec<Row> {
     let revisit = case == Case::Revisit;
     struct Cleanup;
-    impl Drop for Cleanup { fn drop(&mut self) {
-        plx_ui::containers::transition::set_page_image_held(false);
-        plx_plex::plex::reset_servers_for_test();
-    } }
+    impl Drop for Cleanup { fn drop(&mut self) { plx_plex::plex::reset_servers_for_test(); } }
     let _cleanup = Cleanup;
+    let _held = ImageHeld;
     let session = plx_plex::plex::session::TempSession::new("library-push-capture");
     session.watching("u-library-push-capture");
     plx_plex::plex::reset_servers_for_test();
