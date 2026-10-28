@@ -43,7 +43,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-28T10:34:11Z",
+ "generated": "2026-10-28T10:43:36Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -186,18 +186,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -60.0,
-   "change7_pct": -4.6,
-   "d30": 874.0,
-   "delta30": -524.0,
-   "delta7": -17,
+   "change30_pct": -60.1,
+   "change7_pct": -4.9,
+   "d30": 875,
+   "delta30": -526.0,
+   "delta7": -18.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 89,
+   "n_now": 90,
    "n_prev": 123,
-   "now": 350,
+   "now": 349.0,
    "prev7": 367,
    "shown": true,
    "state": "flat",
@@ -421,14 +421,14 @@
    "change7_pct": 8.2,
    "d30": 142.5,
    "delta30": 121.5,
-   "delta7": 20.0,
+   "delta7": 20,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 78,
+   "n_now": 79,
    "n_prev": 117,
-   "now": 264.0,
+   "now": 264,
    "prev7": 244,
    "shown": true,
    "state": "flat",
@@ -438,18 +438,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -39.7,
-   "change7_pct": 6.3,
+   "change30_pct": -39.5,
+   "change7_pct": 6.5,
    "d30": 336.5,
-   "delta30": -133.5,
-   "delta7": 12,
+   "delta30": -133.0,
+   "delta7": 12.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 77,
+   "n_now": 78,
    "n_prev": 117,
-   "now": 203,
+   "now": 203.5,
    "prev7": 191,
    "shown": true,
    "state": "flat",
@@ -460,17 +460,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 13.0,
+   "change7_pct": 14.0,
    "d30": null,
    "delta30": null,
-   "delta7": 19.5,
+   "delta7": 21,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 78,
+   "n_now": 79,
    "n_prev": 117,
-   "now": 169.5,
+   "now": 171,
    "prev7": 150,
    "shown": true,
    "state": "flat",
@@ -526,14 +526,14 @@
    "change7_pct": 0.0,
    "d30": 16.0,
    "delta30": 2.0,
-   "delta7": 0.0,
+   "delta7": 0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 78,
+   "n_now": 79,
    "n_prev": 117,
-   "now": 18.0,
+   "now": 18,
    "prev7": 18,
    "shown": false,
    "state": "flat",
@@ -587,8 +587,8 @@
   {
    "change30_pct": -98.8,
    "change7_pct": -99.0,
-   "d30": 256.5,
-   "delta30": -253.5,
+   "d30": 257,
+   "delta30": -254.0,
    "delta7": -302.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
@@ -608,8 +608,8 @@
   {
    "change30_pct": -99.7,
    "change7_pct": 0.0,
-   "d30": 872.5,
-   "delta30": -869.5,
+   "d30": 873,
+   "delta30": -870.0,
    "delta7": 0.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
@@ -653,11 +653,6 @@
    "change_pct": 37.9,
    "commits": [
     {
-     "pr": 1093,
-     "sha": "8280eab36",
-     "title": "Playback: every LG audio stack gets its PCM lead (webOS 11/2024/2025 lgaudiosink, 2018); stacks are fingerprinted by the"
-    },
-    {
      "pr": 1043,
      "sha": "6289733a7",
      "title": "media: the pump flight rig stops its Engine before dropping it"
@@ -701,6 +696,11 @@
      "pr": 1097,
      "sha": "944d9c290",
      "title": "Playback: 192 kHz and other 4x-or-more sources are resampled through a cheap half-band first stage, about half the multi"
+    },
+    {
+     "pr": 1102,
+     "sha": "9cab21e8c",
+     "title": "Metadata Related tail windows emit a store job; the runner resolves the client"
     }
    ],
    "from": 1116.6,
@@ -714,11 +714,6 @@
    "change_pct": 37.9,
    "commits": [
     {
-     "pr": 1093,
-     "sha": "8280eab36",
-     "title": "Playback: every LG audio stack gets its PCM lead (webOS 11/2024/2025 lgaudiosink, 2018); stacks are fingerprinted by the"
-    },
-    {
      "pr": 1043,
      "sha": "6289733a7",
      "title": "media: the pump flight rig stops its Engine before dropping it"
@@ -762,6 +757,11 @@
      "pr": 1097,
      "sha": "944d9c290",
      "title": "Playback: 192 kHz and other 4x-or-more sources are resampled through a cheap half-band first stage, about half the multi"
+    },
+    {
+     "pr": 1102,
+     "sha": "9cab21e8c",
+     "title": "Metadata Related tail windows emit a store job; the runner resolves the client"
     }
    ],
    "from": 1116.0,
@@ -775,11 +775,6 @@
    "change_pct": 30.9,
    "commits": [
     {
-     "pr": 1093,
-     "sha": "8280eab36",
-     "title": "Playback: every LG audio stack gets its PCM lead (webOS 11/2024/2025 lgaudiosink, 2018); stacks are fingerprinted by the"
-    },
-    {
      "pr": 1043,
      "sha": "6289733a7",
      "title": "media: the pump flight rig stops its Engine before dropping it"
@@ -823,6 +818,11 @@
      "pr": 1097,
      "sha": "944d9c290",
      "title": "Playback: 192 kHz and other 4x-or-more sources are resampled through a cheap half-band first stage, about half the multi"
+    },
+    {
+     "pr": 1102,
+     "sha": "9cab21e8c",
+     "title": "Metadata Related tail windows emit a store job; the runner resolves the client"
     }
    ],
    "from": 973.0,
@@ -836,11 +836,6 @@
    "change_pct": 30.1,
    "commits": [
     {
-     "pr": 1093,
-     "sha": "8280eab36",
-     "title": "Playback: every LG audio stack gets its PCM lead (webOS 11/2024/2025 lgaudiosink, 2018); stacks are fingerprinted by the"
-    },
-    {
      "pr": 1043,
      "sha": "6289733a7",
      "title": "media: the pump flight rig stops its Engine before dropping it"
@@ -884,6 +879,11 @@
      "pr": 1097,
      "sha": "944d9c290",
      "title": "Playback: 192 kHz and other 4x-or-more sources are resampled through a cheap half-band first stage, about half the multi"
+    },
+    {
+     "pr": 1102,
+     "sha": "9cab21e8c",
+     "title": "Metadata Related tail windows emit a store job; the runner resolves the client"
     }
    ],
    "from": 166,
@@ -897,11 +897,6 @@
    "change_pct": 25.0,
    "commits": [
     {
-     "pr": 1093,
-     "sha": "8280eab36",
-     "title": "Playback: every LG audio stack gets its PCM lead (webOS 11/2024/2025 lgaudiosink, 2018); stacks are fingerprinted by the"
-    },
-    {
      "pr": 1043,
      "sha": "6289733a7",
      "title": "media: the pump flight rig stops its Engine before dropping it"
@@ -945,6 +940,11 @@
      "pr": 1097,
      "sha": "944d9c290",
      "title": "Playback: 192 kHz and other 4x-or-more sources are resampled through a cheap half-band first stage, about half the multi"
+    },
+    {
+     "pr": 1102,
+     "sha": "9cab21e8c",
+     "title": "Metadata Related tail windows emit a store job; the runner resolves the client"
     }
    ],
    "from": 164,
@@ -985,7 +985,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 264.0
+   "now": 264
   }
  ],
  "slowest_local": [
