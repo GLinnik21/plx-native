@@ -344,6 +344,46 @@ fn a_landing_for_a_switched_profile_asks_again_under_the_new_one() {
     assert!(matches!(s.load, Load::Loaded(_)));
 }
 
+/// The owed read is idempotent: a second pass does not owe it twice, and taking it clears it.
+#[test]
+fn a_reopen_owed_by_a_pass_is_taken_once_and_cleared_by_an_open() {
+    let fake = Fake::new(Ok(item("Mine", None)));
+    let mut s = store(&fake);
+    s.open(hex(), &input());
+    run_emitted(&mut s);
+    let switched = crate::watchlist::WatchlistInput::profile_for_test(2);
+    assert!(pump_handed(&mut s, &switched));
+    assert!(!pump_handed(&mut s, &switched), "nothing is left to land; the pass owes nothing more");
+    assert_eq!(s.take_reopen(), Some(hex()));
+    assert_eq!(s.take_reopen(), None);
+    // An open (the page asked again) wins over an owed one.
+    run_emitted(&mut s);
+    s.open(hex(), &input());
+    run_emitted(&mut s);
+    assert!(pump_handed(&mut s, &switched));
+    s.open(other_hex(), &crate::watchlist::WatchlistInput::for_test(2));
+    assert_eq!(s.take_reopen(), None, "the navigation cleared the owed title");
+    s.reset();
+    assert_eq!(s.take_reopen(), None);
+}
+
+/// Owed a read under a profile that holds no plex.tv credential, the page says plex.tv cannot be
+/// reached and reads nothing: as an open does when there is no account.
+#[test]
+fn an_owed_reopen_with_no_credential_reads_unreachable() {
+    let fake = Fake::new(Ok(item("Mine", None)));
+    let mut s = store(&fake);
+    s.open(hex(), &input());
+    run_emitted(&mut s);
+    assert!(pump_handed(&mut s, &crate::watchlist::WatchlistInput::profile_for_test(2)));
+    let hex = s.take_reopen().expect("owed");
+    let fetched = fake.fetched.lock().unwrap().len();
+    s.open(hex, &crate::watchlist::WatchlistInput::signed_out_for_test(2));
+    assert_eq!(s.load, Load::Unreachable);
+    assert!(!s.has_jobs());
+    assert_eq!(fake.fetched.lock().unwrap().len(), fetched);
+}
+
 /// The runner could not start the job. Its refusal is the job's one answer: the next pump takes it
 /// as a landing that shows nothing, owes the request, and asks again only after the same 120 frames
 /// the failed spawn waited, without a job in between (no respawn spin).

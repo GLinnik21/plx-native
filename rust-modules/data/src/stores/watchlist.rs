@@ -1478,6 +1478,71 @@ pub(super) mod tests {
         assert_eq!(mock.pages.load(Ordering::SeqCst), 0, "no identity, no read");
     }
 
+    /// A sign-out is a pass handed a profile with nobody seated: the store resets in that pass, and the
+    /// next `Open` (handed no credential) says there is no account.
+    #[test]
+    fn a_sign_out_resets_the_pass_and_the_next_open_is_no_account() {
+        let mock = three();
+        let mut s = store(&mock);
+        load(&mut s);
+        assert_eq!(s.view().status(), Status::Ready);
+        let epoch = s.state.epoch;
+        let signed_out = plx_plex::plex::session::CurrentProfile { user: None, generation: 2, stamp: String::new() };
+        assert!(pump_handed(&mut s, &signed_out), "the pass that notices the sign-out reports a change");
+        assert_ne!(s.state.epoch, epoch);
+        assert!(s.view().is_empty());
+        assert_eq!(s.view().status(), Status::Idle);
+        let pages = mock.pages.load(Ordering::SeqCst);
+        open_handed(&mut s, &crate::watchlist::WatchlistInput::new(Arc::new(signed_out), None, "test-client"));
+        assert_eq!(s.view().status(), Status::NoAccount);
+        s.pump();
+        assert_eq!(mock.pages.load(Ordering::SeqCst), pages, "no account, no read");
+    }
+
+    /// A landing tagged with the generation a switch left behind never reaches the new epoch, whichever
+    /// mailbox it arrives in; one tagged with the new generation does.
+    #[test]
+    fn a_landing_tagged_with_the_old_generation_is_dropped_after_a_switch() {
+        let mock = three();
+        let mut s = store(&mock);
+        load(&mut s);
+        pump_handed(&mut s, &crate::watchlist::WatchlistInput::profile_for_test(2));
+        load_as(&mut s, 2);
+        assert_eq!(titles(&s), ["Alpha", "Bravo", "Charlie"]);
+        let epoch = s.state.epoch;
+        let old = Tag { profile_gen: 1, epoch, req: 99 };
+        s.adapter_for_test().post_for_test(Landed { tag: old, what: ghost_page() });
+        pump_handed(&mut s, &crate::watchlist::WatchlistInput::profile_for_test(2));
+        assert_eq!(titles(&s), ["Alpha", "Bravo", "Charlie"], "the old generation never lands");
+        let live = Tag { profile_gen: 2, epoch, req: 99 };
+        s.adapter_for_test().post_for_test(Landed { tag: live, what: ghost_page() });
+        pump_handed(&mut s, &crate::watchlist::WatchlistInput::profile_for_test(2));
+        assert!(titles(&s).contains(&"Ghost".to_string()), "the new generation's does");
+    }
+
+    /// The same seat is not a switch: a pass handed the profile the store opened under changes nothing,
+    /// and an `Open` under it keeps the identity (and the rows) it holds.
+    #[test]
+    fn the_same_profile_is_not_a_switch() {
+        let mock = three();
+        let mut s = store(&mock);
+        load(&mut s);
+        let epoch = s.state.epoch;
+        pump_handed(&mut s, &crate::watchlist::WatchlistInput::profile_for_test(1));
+        open_handed(&mut s, &crate::watchlist::WatchlistInput::for_test(1));
+        assert_eq!(s.state.epoch, epoch);
+        assert_eq!(titles(&s), ["Alpha", "Bravo", "Charlie"]);
+    }
+
+    /// `run` is the entry of a caller that holds no input, so an `Open` has no input to capture from.
+    #[test]
+    #[should_panic(expected = "an Open reached a step handed no input")]
+    fn an_open_sent_through_the_inputless_entry_is_refused() {
+        let mock = three();
+        let mut s = store(&mock);
+        s.run(WatchlistCmd::Open);
+    }
+
     #[test]
     fn a_landing_of_a_retired_epoch_is_dropped() {
         let mock = three();

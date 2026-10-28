@@ -361,6 +361,43 @@ fn leaving_the_page_and_coming_back_shows_the_list_again() {
     assert_eq!(guids(&d), vec![guid(1), guid(2), guid(3)], "the list is shown again, not blanked");
 }
 
+/// The Bridge hands the stores the profile it reads: another profile seated (a switch) is noticed in the
+/// frame's own pass, the rows are gone, and the next open reads the new profile's list once.
+#[test]
+fn a_profile_switch_is_noticed_in_the_frame_pass_and_the_new_profile_reads_once() {
+    let _serial = plx_base::testlock::serial();
+    let script = Script::new(&THREE, true);
+    let (mut d, mut rig) = mounted(&script);
+    settle(&mut d, &mut rig, 2);
+    assert_eq!(guids(&d), vec![guid(1), guid(2), guid(3)]);
+    let reads = script.reads.load(Ordering::SeqCst);
+    rig.seat_watchlist_account_for_test(true);
+    rig.watchlist_pump();
+    assert!(rig.watchlist_for_test().view().is_empty(), "the pass that sees the switch empties the store");
+    assert_eq!(rig.watchlist_for_test().view().status(), plx_data::stores::watchlist::Status::Idle);
+    assert_eq!(script.reads.load(Ordering::SeqCst), reads, "nothing is read for the profile that left");
+    rig.watchlist_open_if_idle();
+    settle(&mut d, &mut rig, 5);
+    assert_eq!(rig.watchlist_for_test().view().len(), 3, "the new profile's list");
+    assert_eq!(script.reads.load(Ordering::SeqCst), reads + 1, "read once");
+}
+
+/// The same, for a profile with no plex.tv credential: the page is unavailable and nothing is read.
+#[test]
+fn a_switch_to_a_profile_with_no_credential_reads_nothing() {
+    let _serial = plx_base::testlock::serial();
+    let script = Script::new(&THREE, true);
+    let (mut d, mut rig) = mounted(&script);
+    settle(&mut d, &mut rig, 2);
+    let reads = script.reads.load(Ordering::SeqCst);
+    rig.seat_watchlist_account_for_test(false);
+    rig.watchlist_pump();
+    rig.watchlist_open_if_idle();
+    settle(&mut d, &mut rig, 5);
+    assert_eq!(rig.watchlist_for_test().view().status(), plx_data::stores::watchlist::Status::NoAccount);
+    assert_eq!(script.reads.load(Ordering::SeqCst), reads);
+}
+
 #[test]
 fn a_hold_names_its_tile_by_guid_and_opens_the_catalog_menu() {
     use plx_data::watchlist::model::TileState;
