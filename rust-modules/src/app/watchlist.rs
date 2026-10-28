@@ -162,7 +162,7 @@ impl Bridge {
         };
         if feed.instance != Some(instance) {
             *feed = Feed { instance: Some(instance), reread_at: feed.reread_at, ..Feed::default() };
-            store.run(WatchlistCmd::Open);
+            store.run_with_input(WatchlistCmd::Open, &Self::watchlist_input());
         }
         // The window follows the focus (the page's own cursor, a reserved cell past the loaded
         // tail included), over the whole list.
@@ -421,7 +421,7 @@ impl Bridge {
     /// `Idle` only, so a failed or empty read is never retried per frame.
     pub(crate) fn watchlist_open_if_idle(&mut self) {
         if self.stores.watchlist.view().status() == Status::Idle {
-            self.stores.watchlist.run(WatchlistCmd::Open);
+            self.stores.watchlist.run_with_input(WatchlistCmd::Open, &Self::watchlist_input());
             plx_machine::idle::invalidate();
         }
     }
@@ -523,7 +523,7 @@ impl Bridge {
             self.catalog_seat = Some(instance);
             self.catalog_open(hex);
             // The page's membership needs the list: read it again on every mount, like the tab does.
-            self.stores.watchlist.run(WatchlistCmd::Open);
+            self.stores.watchlist.run_with_input(WatchlistCmd::Open, &Self::watchlist_input());
         }
         // The status line follows the title's tile on the Watchlist (a match landing or a server
         // going offline moves it), the record's date rule only for a title not on the list read.

@@ -23,8 +23,8 @@ use plx_plex::plex::{GuidKind, GuidLookupError, GuidMatch, ServerId, GUIDS_PER_R
 use std::collections::HashSet;
 use std::sync::Arc;
 
-/// Who a worker acts for, captured on the MAIN thread at spawn (`session::plex_tv_credential`) and
-/// owned by the worker: it never reads the session itself. `generation` is the profile generation
+/// Who a worker acts for, built from the [`WatchlistInput`] the app read on the MAIN thread
+/// (`session::plex_tv_credential`) and owned by the worker: it never reads the session itself. `generation` is the profile generation
 /// at capture; a landing tagged with an older one is dropped.
 #[derive(Clone)]
 pub struct WatchlistAuth {
@@ -41,22 +41,9 @@ impl std::fmt::Debug for WatchlistAuth {
 }
 
 impl WatchlistAuth {
-    /// MAIN THREAD. The active profile's account-service credential, or `None` when there is none
-    /// (signed out, or a managed profile with no plex.tv token): the page then has no list to read.
-    pub fn capture() -> Option<WatchlistAuth> {
-        let current = plx_plex::plex::session::current_snapshot();
-        let user = current.user.clone()?;
-        let credential = plx_plex::plex::session::plex_tv_credential(&user)?;
-        let client_id = plx_plex::plex::session::peek().client_id.clone();
-        if client_id.is_empty() {
-            return None;
-        }
-        Some(WatchlistAuth { client_id, credential, user, generation: current.generation })
-    }
-
-    /// Is this still the seated profile? Compared by id and uuid and the profile generation.
-    pub fn is_current(&self) -> bool {
-        let now = plx_plex::plex::session::current_snapshot();
+    /// Is this still the seated profile? Compared by id and uuid and the profile generation, against
+    /// the profile the app read for this pass ([`WatchlistInput`]).
+    pub fn is_current(&self, now: &CurrentProfile) -> bool {
         now.generation == self.generation
             && now.user.as_ref().is_some_and(|u| u.id == self.user.id && u.uuid == self.user.uuid)
     }
@@ -122,10 +109,6 @@ impl WatchlistInput {
 /// Everything a worker (and the store's frame pass) asks of the outside world. Production is
 /// [`LiveIo`]; tests script it. `Reach` carries the roster and the reachability facts.
 pub trait WatchlistIo: Reach + Send + Sync {
-    /// MAIN THREAD: capture the identity for a new epoch.
-    fn capture_auth(&self) -> Option<WatchlistAuth>;
-    /// MAIN THREAD: is `auth` still the seated profile?
-    fn is_current(&self, auth: &WatchlistAuth) -> bool;
     /// One page of the list. `if_none_match` is the `ETag` of the last COMPLETE read, handed over
     /// for page 0 only; an answer of `Err(WatchlistError::NotModified)` is the service saying the
     /// list is unchanged.
@@ -173,12 +156,6 @@ impl Reach for LiveIo {
 }
 
 impl WatchlistIo for LiveIo {
-    fn capture_auth(&self) -> Option<WatchlistAuth> {
-        WatchlistAuth::capture()
-    }
-    fn is_current(&self, auth: &WatchlistAuth) -> bool {
-        auth.is_current()
-    }
     fn page(&self, auth: &WatchlistAuth, start: u32, size: u32, if_none_match: Option<&str>)
         -> Result<WatchPage, WatchlistError>
     {

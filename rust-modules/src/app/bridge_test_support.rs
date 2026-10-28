@@ -464,7 +464,7 @@ impl World {
         if held { super::watchlist_press_tests::hold_reads(&mut bridge); }
         let mut w = World { d, bridge, frame: 1, pump: Pump::new(), performed: Vec::new(), own: plx_plex::plex::ServerId::UNSET,
             script: Some(script), _session: session, _serial: serial, feed: Some(|d, bridge| {
-                bridge.watchlist_for_test().pump();
+                bridge.watchlist_pump();
                 bridge.watchlist_feed(d);
             }) };
         super::nav_tab(&mut w.d, &mut w.bridge, HomeTab::Watchlist, None, None);
@@ -557,7 +557,7 @@ impl World {
         let (d, bridge) = super::watchlist_press_tests::rig_over(&script);
         World { d, bridge, frame: 1, pump: Pump::new(), performed: Vec::new(), own: plx_plex::plex::ServerId::UNSET,
             script: Some(script), _session: session, _serial: serial, feed: Some(|d, bridge| {
-                bridge.watchlist_for_test().pump();
+                bridge.watchlist_pump();
                 bridge.watchlist_feed(d);
                 super::watchlist_press_tests::feed_catalog(bridge, d);
             }) }
@@ -922,5 +922,23 @@ impl Drop for Pms {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
+    }
+}
+
+impl Bridge {
+    /// Seat the plex.tv account a Watchlist rig scripts: the Bridge reads the registry for the identity
+    /// it hands the stores (`Bridge::watchlist_input`), so the rig publishes a profile (with the
+    /// plex.tv credential when `credential`) and, where the test holds no scratch session of its own,
+    /// seats one for the client id. The session lives as long as the rig. The caller holds the test lock.
+    pub(crate) fn seat_watchlist_account_for_test(&mut self, credential: bool) {
+        use plx_plex::plex::session;
+        if session::peek().client_id.is_empty() {
+            self.watchlist_session = Some(session::TempSession::new("watchlist-account"));
+        }
+        let user = session::UserRef {
+            plex_tv_token: credential.then(|| "synthetic-credential".to_owned()),
+            ..Default::default()
+        };
+        session::publish_profile_for_test(Some(user), session::current_gen().wrapping_add(1));
     }
 }

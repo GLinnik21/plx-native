@@ -7461,6 +7461,8 @@ impl PersonOwnerGateFixture {
         # `spawn_small`), -1 on globals (`maybe_discover_owned` `client_for`).
         # Browse B-F (the pins take the session from the Bridge): -4 on globals (`pin_record_for`, `record_pins`,
         # `resolve_pins`, `asks_for_sources` `session::peek`).
+        # Watchlist W-1 (the stores take the seated profile and its identity from the Bridge): -3 on globals
+        # (`capture` `current_snapshot` and `session::peek`, `is_current` `current_snapshot`).
         # ViewState C3 (the household writes leave as `StoreJob::ViewWrite`): -1 here (`kick`'s `spawn_small`).
         # Metadata M2 (the season switch and the episode-page window leave as `StoreJob::MetaSeason` /
         # `StoreJob::MetaEpisodes`): -2 here (`load_season`, `want_episodes` `spawn_small`), -2 on globals
@@ -7477,7 +7479,7 @@ impl PersonOwnerGateFixture {
         # fan-out's `fan_out` and `ask_sources`, which now reach the other servers through the key-checked `KeyedClients`.
         # Attempt-caps (#1044) moved the pin by nothing: the spellings widened to `devcaps::caps` and the zero-argument
         # `is_dp_audio` / `is_dp_audio_track` (a coverage expansion, not a shrink), and the planner reads none of them.
-        "globals": 60,  # production process-global reads inside machines (`ci/allow/globals/`)
+        "globals": 57,  # production process-global reads inside machines (`ci/allow/globals/`)
         "forks": 58,  # production test/production forks in data/, plex/, media/, session/ (`ci/allow/forks/`)
         "fxlanes": 11,  # Bridge::app_effect arms that do not push Fx::Deliver (`ci/allow/fxlanes/`)
     }

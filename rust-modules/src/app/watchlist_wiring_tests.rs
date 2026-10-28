@@ -75,17 +75,6 @@ impl Reach for Script {
 }
 
 impl WatchlistIo for Script {
-    fn capture_auth(&self) -> Option<WatchlistAuth> {
-        self.token.then(|| WatchlistAuth {
-            client_id: "synthetic-client".into(),
-            credential: "synthetic-credential".into(),
-            user: Default::default(),
-            generation: 1,
-        })
-    }
-    fn is_current(&self, auth: &WatchlistAuth) -> bool {
-        auth.generation == 1
-    }
     fn page(&self, _: &WatchlistAuth, start: u32, size: u32, _: Option<&str>) -> Result<WatchPage, WatchlistError> {
         self.reads.fetch_add(1, Ordering::SeqCst);
         if self.fail_reads.load(Ordering::SeqCst) {
@@ -127,6 +116,7 @@ fn mounted(script: &Arc<Script>) -> (Dispatcher<AppHost>, Bridge) {
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
     *rig.watchlist_for_test() = WatchlistStore::with_io(script.clone()).with_spawn_for_test(inline);
+    rig.seat_watchlist_account_for_test(script.token);
     super::nav_root(&mut d, AppArg::Home);
     super::frame(&mut d, &mut rig, tick(0), vec![]);
     super::nav_tab(&mut d, &mut rig, HomeTab::Watchlist, None, None);
@@ -137,7 +127,7 @@ fn mounted(script: &Arc<Script>) -> (Dispatcher<AppHost>, Bridge) {
 /// A few loop iterations of Watchlist work: land what the workers brought, then feed the page.
 fn settle(d: &mut Dispatcher<AppHost>, rig: &mut Bridge, from: u32) {
     for i in 0..6 {
-        rig.watchlist_for_test().pump();
+        rig.watchlist_pump();
         rig.watchlist_feed(d);
         super::frame(d, rig, tick(from + i), vec![]);
     }
@@ -235,7 +225,7 @@ fn a_key_ahead_of_the_pages_deferred_seat_enter_keeps_the_readers_move() {
     // no-op deliveries queued AHEAD of its Tick, so that Tick is carried to the frame after.
     for _ in 0..3 {
         rig.watchlist_feed(&mut d);
-        rig.watchlist_for_test().pump();
+        rig.watchlist_pump();
     }
     rig.watchlist_feed(&mut d);
     assert!(!guids(&d).is_empty(), "control: the rows are in the page before its next Tick");
@@ -312,7 +302,7 @@ fn the_feed_hands_the_page_nothing_while_a_menu_holds_it() {
     assert!(rig.watchlist_remove(&guid(2), true));
     for veil in [1.0, 0.5, CLOSING_GONE * 1.5] {
         set_veil(veil);
-        rig.watchlist_for_test().pump();
+        rig.watchlist_pump();
         let _ = plx_machine::idle::take_local_damage();
         rig.watchlist_feed(&mut d);
         assert_eq!(guids(&d), vec![guid(1), guid(2), guid(3)], "veil {veil}: the page is as the menu found it");
@@ -320,7 +310,7 @@ fn the_feed_hands_the_page_nothing_while_a_menu_holds_it() {
         assert_eq!(plx_machine::idle::take_local_damage(), 0, "veil {veil}: nothing invalidated the host");
     }
     set_veil(CLOSING_GONE * 0.5);
-    rig.watchlist_for_test().pump();
+    rig.watchlist_pump();
     rig.watchlist_feed(&mut d);
     assert_eq!(guids(&d), vec![guid(1), guid(3)], "the first feed after the menu let go commits the Remove");
     set_veil(0.0);

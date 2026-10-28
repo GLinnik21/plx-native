@@ -17,7 +17,8 @@
 use super::watchlist::{Status, WatchlistStore};
 use super::{StoreId, StoreJob};
 use crate::catalog::{record_of, CatalogIo, LiveCatalogIo, Load, Membership};
-use crate::watchlist::{encode_hex, WatchlistAuth};
+use crate::watchlist::{encode_hex, WatchlistAuth, WatchlistInput};
+use plx_plex::plex::session::CurrentProfile;
 use plx_machine::job::{Job, Port};
 use plx_machine::machine::{Addr, MachineId, RequestId};
 use plx_plex::plex::watchlist::WatchlistError;
@@ -160,6 +161,9 @@ pub struct CatalogStore {
     pub load: Load,
     io: Arc<dyn CatalogIo>,
     auth: Option<WatchlistAuth>,
+    /// A landing for a profile that is gone was dropped: the title the page is about, owed a read
+    /// under the new one. The caller that stepped the pump takes it ([`Self::take_reopen`]).
+    reopen: Option<[u8; 12]>,
     req: u32,
     /// The request is made but no job is out for it: the runner refused the last one. The pump
     /// emits a new job after [`RETRY_FRAMES`].
@@ -186,6 +190,7 @@ impl CatalogStore {
             load: Load::Loading,
             io,
             auth: None,
+            reopen: None,
             req: 0,
             owed: false,
             retry: 0,
@@ -210,15 +215,17 @@ impl CatalogStore {
         self.notice_gen.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// The page mounted (or was read again: `Bridge::catalog_reread`) for the title `hex`: capture the identity if
-    /// the held one is not the seated profile's, and read the record. Every call starts a fresh
+    /// The page mounted (or was read again: `Bridge::catalog_reread`) for the title `hex`: take the
+    /// identity from `input` (what the Bridge read for this call) if the held one is not the seated
+    /// profile's, and read the record. Every call starts a fresh
     /// request, so an older one still in flight lands into nothing. It does NOT start the read it
     /// emitted: the caller takes the job with [`CatalogStore::take_jobs`] and hands it to a runner
     /// in the same turn (the production caller is `Bridge::catalog_open`).
-    pub fn open(&mut self, hex: [u8; 12]) {
-        if self.auth.as_ref().is_none_or(|a| !self.io.is_current(a)) {
-            self.auth = self.io.capture_auth();
+    pub fn open(&mut self, hex: [u8; 12], input: &WatchlistInput) {
+        if self.auth.as_ref().is_none_or(|a| !a.is_current(input.profile())) {
+            self.auth = input.auth().cloned();
         }
+        self.reopen = None;
         self.hex = Some(hex);
         self.req = self.req.wrapping_add(1);
         self.retry = 0;
@@ -242,6 +249,7 @@ impl CatalogStore {
     pub fn reset(&mut self) {
         self.hex = None;
         self.auth = None;
+        self.reopen = None;
         self.req = self.req.wrapping_add(1);
         self.owed = false;
         self.load = Load::Loading;
@@ -270,6 +278,13 @@ impl CatalogStore {
         std::mem::take(&mut self.jobs)
     }
 
+    /// The title a pass found owed a read under a new profile, taken once. The caller opens it again
+    /// ([`CatalogStore::open`]) with the input it reads then; a title left owed would show `Loading` for ever.
+    #[must_use]
+    pub fn take_reopen(&mut self) -> Option<[u8; 12]> {
+        self.reopen.take()
+    }
+
     /// Does the outbox hold a job nobody has taken yet?
     pub fn has_jobs(&self) -> bool {
         !self.jobs.is_empty()
@@ -282,11 +297,13 @@ impl CatalogStore {
     }
 
     /// Frame pass: ask again for a request the runner refused, then take the job's landing.
-    /// Returns whether `load` changed. A landing for a profile that is no longer seated is dropped
-    /// and the page asks again under the new identity. Like [`CatalogStore::open`], it does NOT
-    /// start the job it emitted (a retry, or the new identity's read): the production caller is
+    /// Returns whether `load` changed. `profile` is the one the Bridge read for this frame
+    /// (`Bridge::seated_profile`). A landing for a profile that is no longer seated is dropped and
+    /// the page is owed a read under the new identity ([`Self::take_reopen`]): the pass captures
+    /// nothing, so the caller that stepped it opens the title again in the same call. Like
+    /// [`CatalogStore::open`], it does NOT start the job it emitted (a retry): the production caller is
     /// `Bridge::catalog_pump`, which drains in the same call.
-    pub fn pump(&mut self) -> bool {
+    pub fn pump(&mut self, profile: &CurrentProfile) -> bool {
         if self.owed {
             self.retry += 1;
             if self.retry >= RETRY_FRAMES {
@@ -308,11 +325,9 @@ impl CatalogStore {
                     continue;
                 }
             };
-            if self.auth.as_ref().is_some_and(|a| !self.io.is_current(a)) {
+            if self.auth.as_ref().is_some_and(|a| !a.is_current(profile)) {
                 self.auth = None;
-                if let Some(hex) = self.hex {
-                    self.open(hex);
-                }
+                self.reopen = self.hex;
                 return true;
             }
             self.load = load;
