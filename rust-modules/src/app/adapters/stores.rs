@@ -3599,6 +3599,28 @@ mod tests {
     const RELATED_PREVIEW: usize = 3;
     const RELATED_TAIL: usize = 100;
 
+    /// The value of a query parameter that is a number, e.g. `X-Plex-Container-Start`.
+    fn container_param(query: &str, name: &str) -> Option<usize> {
+        query.split('&').find_map(|pair| pair.strip_prefix(name)?.strip_prefix('=')?.parse().ok())
+    }
+
+    /// A loopback PMS holding the one hub listing the Related row pages: the preview `h0..h3`, then
+    /// the tail `t0..t100`, answered for the `X-Plex-Container-Start/Size` window asked, with the
+    /// `offset` and `totalSize` the pager checks.
+    fn related_listing(_path: &str, query: &str) -> (&'static str, String) {
+        let total = RELATED_PREVIEW + RELATED_TAIL;
+        let start = container_param(query, "X-Plex-Container-Start").unwrap_or(0);
+        let size = container_param(query, "X-Plex-Container-Size").unwrap_or(usize::MAX);
+        let cards: Vec<String> = (start.min(total)..start.saturating_add(size).min(total)).map(|at| {
+            let rk = if at < RELATED_PREVIEW { format!("h{at}") } else { format!("t{}", at - RELATED_PREVIEW) };
+            format!(r#"{{"ratingKey":"{rk}","type":"movie","title":"{rk}"}}"#)
+        }).collect();
+        ("200 OK", format!(
+            r#"{{"MediaContainer":{{"size":{},"totalSize":{total},"offset":{start},"Metadata":[{}]}}}}"#,
+            cards.len(), cards.join(","),
+        ))
+    }
+
     /// A movie page whose Related row is a 3-card head and the tail window `0..24` of the hub behind
     /// it, on a server registered at `port`.
     fn related_store_at(port: i32) -> (ServerId, MetadataStore) {
@@ -3627,6 +3649,153 @@ mod tests {
             },
             ..Default::default()
         }));
+    }
+
+    /// The edge ask the Related shelf makes at the end of the window `0..24`.
+    fn related_ask(store: &mut MetadataStore) -> bool {
+        store.run(MetadataCmd::WantRelated { before: false, seen: (0, 24) })
+    }
+
+    /// The edge ask, and the one job it emitted.
+    fn related_request_at(port: i32) -> (ServerId, MetadataStore, StoreJob) {
+        let (sid, mut store) = related_store_at(port);
+        assert!(related_ask(&mut store));
+        let mut jobs = store.take_jobs();
+        assert_eq!(jobs.len(), 1, "one ask, one request");
+        (sid, store, jobs.remove(0))
+    }
+
+    /// The window the page holds, as `(offset, end)`.
+    fn related_window(store: &MetadataStore) -> (usize, usize) {
+        let tail = &store.view().current().expect("a movie is loaded").related_tail;
+        (tail.offset, tail.end)
+    }
+
+    /// `(a read is out, the reader withdrew it)`.
+    fn related_claim(store: &MetadataStore) -> (bool, bool) {
+        plx_data::metadata::related_claim_for_test(store.adapter_ref())
+    }
+
+    /// The registry holds the client: the worker starts, reads the next window from the server the
+    /// launch resolved a client for, and posts its ONE answer. The server answers, so a window past
+    /// the first is what a worker handed the client lands; one handed none lands a failure and the
+    /// window stays. The kind is not on the tape, so nothing is recorded.
+    #[test]
+    fn a_related_job_whose_client_is_held_is_started_answered_once_and_not_taped() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let pms = Pms::serve_query(related_listing);
+        let (_, mut store, job) = related_request_at(pms.port);
+        assert_eq!(job.admission(), Admission::Direct);
+        assert_eq!(related_claim(&store), (true, false), "the read is out");
+        tape::init(None, false);
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert_eq!(tape::finish(), (vec![], None), "the kind is untaped: the runner records no admission");
+        tape::reset_for_test();
+        assert_eq!(related_claim(&store), (false, false), "answered once: the claim came back");
+        assert!(store.pump_related(), "the read reached the server and its window landed");
+        assert!(related_window(&store).1 > 24, "the window slid on past where it stood");
+    }
+
+    /// Replay launches the same worker the recording did: there is no admission record to consult.
+    #[test]
+    fn a_related_job_launches_live_under_replay_as_the_inline_spawn_did() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_, store, job) = related_request_at(9);
+        tape::init(None, true);
+        tape::begin(Default::default(), Default::default());
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert_eq!(tape::finish(), (vec![], None));
+        tape::reset_for_test();
+        assert_eq!(related_claim(&store), (false, false), "a worker started and answered");
+    }
+
+    /// The registry holds no client for the page's server by the launch: the worker still starts and
+    /// answers the failure without a GET, as the inline worker did when its read found no client.
+    #[test]
+    fn a_related_job_whose_server_has_no_client_answers_the_failure() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (_, mut store, job) = related_request_at(9);
+        plx_plex::plex::reset_servers_for_test();
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert_eq!(related_claim(&store), (false, false), "answered once, as a failure");
+        assert!(!store.pump_related(), "a failure installs nothing");
+        assert_eq!(related_window(&store), (0, 24));
+    }
+
+    /// `held()` parks the Related job (no rig waits for a window landing): the claim stays up as a
+    /// worker that has not answered holds it, and the test runs it. A parked job resolves its client
+    /// when it runs and reads through it.
+    #[test]
+    fn a_held_related_job_is_parked_and_runs_once_when_the_test_runs_it() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let pms = Pms::serve_query(related_listing);
+        let (_, mut store, job) = related_request_at(pms.port);
+        let mut runner = StoreRunner::held();
+
+        runner.start(job);
+        plx_base::task::drain_workers_for_test();
+        assert_eq!(related_claim(&store), (true, false), "parked: still out");
+        assert!(!related_ask(&mut store), "and a second ask starts nothing beside it");
+        assert!(!store.has_jobs());
+        assert_eq!(runner.run_held(), 1);
+
+        assert_eq!(related_claim(&store), (false, false), "the run answered once");
+        assert!(store.pump_related(), "the run read from the server and its window landed");
+        assert!(related_window(&store).1 > 24);
+        assert_eq!(runner.run_held(), 0, "and nothing is left to run twice");
+    }
+
+    /// A parked job whose server has no client by the time it runs answers the failure.
+    #[test]
+    fn a_held_related_job_whose_client_is_gone_answers_the_failure() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let pms = Pms::serve_query(related_listing);
+        let (_, mut store, job) = related_request_at(pms.port);
+        let mut runner = StoreRunner::held_all();
+        runner.start(job);
+        plx_plex::plex::reset_servers_for_test();
+
+        assert_eq!(runner.run_held(), 1);
+
+        assert_eq!(related_claim(&store), (false, false), "the run answered");
+        assert!(!store.pump_related(), "as a failure: nothing installs");
+        assert_eq!(related_window(&store), (0, 24));
+        assert!(related_ask(&mut store), "and the next edge asks again");
+    }
+
+    /// The reader moved away while the job was parked: the answer is discarded when the job runs, the
+    /// claim comes back with it, and the next edge asks again.
+    #[test]
+    fn a_cancel_while_the_related_job_is_parked_discards_the_answer_when_it_runs() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let pms = Pms::serve_query(related_listing);
+        let (_, mut store, job) = related_request_at(pms.port);
+        let mut runner = StoreRunner::held_all();
+        runner.start(job);
+
+        store.run(MetadataCmd::CancelRelated);
+        assert_eq!(related_claim(&store), (true, true), "withdrawn while parked");
+        assert_eq!(runner.run_held(), 1);
+
+        assert_eq!(related_claim(&store), (false, false), "the run gave the claim back and spent the flag");
+        assert!(!store.pump_related(), "the withdrawn answer installs nothing");
+        assert_eq!(related_window(&store), (0, 24));
+        assert!(related_ask(&mut store), "the next edge asks again");
     }
 
     /// The dispatcher's entry: `metadata_run` starts the job its command emitted in that call, for an
