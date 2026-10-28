@@ -186,27 +186,41 @@ fn role_gain(bit: u32) -> [f32; 2] {
 ///   stage with its cutoff at its own output's Nyquist. Plain interpolation would fold everything above the
 ///   output's Nyquist back into the band at full strength.
 ///
-/// **The cascade bounds the converter, whatever the rate.** `k` is the smallest integer >= 0 with
-/// `from <= 8 * (to << k)`. Stage 0 takes `from` to `to << k`, a ratio of at most 8 (so at most 328
-/// frames of lookahead and 656 taps), then `k` stages of exactly 2:1 (one phase, 83 weights) take it
-/// down to `to` by halving UP FROM THE OUTPUT: the boundaries are `to * 2^j`, not `from / 2^j` (halving
-/// from the top would hand an odd rate such as 1 000 003 Hz a fresh 1024-phase table at every stage).
+/// **The cascade is three parts, and bounds the converter whatever the rate.** All three read `from` as an integer
+/// (a `u64`), halving it as they go.
+/// 1. *Relaxed halvings from the top*: while `from >= 4 * to` and `from` is even, one exact 2:1 stage of
+///    [`Kernel::RELAXED`] takes `from` to `from / 2` (192 kHz to 48 kHz takes one, 384 kHz two, 2.8224 MHz to 44.1 kHz five). A
+///    relaxed stage is 25 taps instead of 83 and exists only where the rate is far above what the last stage keeps (see the
+///    kernel for why it may be that cheap there).
+/// 2. *Stage 0*: `k` is the smallest integer >= 0 with `from <= 8 * (to << k)`. A [`Kernel::FULL`] stage takes `from` to
+///    `to << k`, a ratio of at most 8 (so at most 328 frames of lookahead and 656 taps),
+/// 3. then `k` FULL stages of exactly 2:1 (one phase, 83 weights) take it down to `to` by halving UP FROM THE OUTPUT: the
+///    boundaries are `to * 2^j`, not `from / 2^j`.
+///
+/// Part 3 halves from the output because halving an odd rate from the top would hand 1 000 003 Hz a fresh 1024-phase
+/// table at every stage. Part 1 brings that back for no rate: it stops at the first odd `from` (192 001 and 1 000 003 Hz build
+/// none), and every stage it builds is an exact 2:1 of one phase, so the only stage with a phased table is still stage 0.
 /// Zero group delay composes, so output frame 0 is still centred on input frame 0.
 ///
 /// Worst-case filter-table memory for ANY `i32` source rate (`TABLE_BYTES_BOUND`, held by a test through `Resampler::table_bytes`):
 /// one final-ratio-<= 8 stage (656 taps * 1024 phases * (8 B weight + 2 B index) + 4 KB of offsets, about 6.7 MB,
 /// reached only by an inexact ratio of that size; every real rate is far below it, and 96, 192, 384, 88.2,
-/// 176.4, 352.8 and 705.6 kHz are one phase) plus `k` 2:1 stages of under 1 KB each, `k` being at most 14 for
-/// any `i32` rate and an output of 16 384 Hz or more. The work per input frame is constant: about 82 multiply-adds a
-/// channel for the first stage (2 * 41 taps per step of the ratio), and the 2:1 tail adds at most the same again.
-/// This departs from "halve from the top" on purpose, and there is no rate above which it refuses.
+/// 176.4, 352.8 and 705.6 kHz are one phase) plus FULL 2:1 stages of under 1 KB each (`k` of them, at most 14 for
+/// any `i32` rate and an output of 16 384 Hz or more) plus RELAXED ones of under 500 B (at most 31). The work per input
+/// frame is bounded: the relaxed front costs under 25 multiply-adds a channel per source frame (25 taps per output,
+/// the first stage's output being half the source rate, the next half of that), stage 0 about 82 (2 * 41 taps per step
+/// of the ratio) and the 2:1 tail at most the same again, those two seeing at most half the source's rate once there is a
+/// front. A 192 kHz source to 48 kHz is 25 * 96 000 + 83 * 48 000 = 6.4 M multiply-adds a second a channel, against the
+/// 247 * 48 000 = 11.9 M of the single stage of ratio 4 it used to be; 384 kHz is 11.2 M against 27.6 M.
+/// The cascade departs from "halve from the top" for the part that is not exact on purpose, and there is no rate above which it refuses.
 pub(crate) struct Resampler {
     from: u32,
     to: u32,
     /// Position of the next output frame (linear path), in input frames from the start of `last` + the new block.
     pos: f64,
     last: Option<[f64; 2]>,
-    /// Non-empty for a source above the output rate: stage 0 first, then the 2:1 stages. The linear path is then unused.
+    /// Non-empty for a source above the output rate: the relaxed 2:1 stages (none for an odd rate or one under 4x the
+    /// output), then stage 0, then the FULL 2:1 stages. The linear path is then unused.
     stages: Vec<Decimator>,
     /// The two buffers a block ping-pongs between as it crosses the stages.
     ping: Vec<[f64; 2]>,
@@ -217,27 +231,39 @@ pub(crate) struct Resampler {
 /// index (u16), plus a row offset (u32) per phase and one more.
 #[cfg(test)]
 const WIDEST_STAGE_TABLE_BYTES: usize = 2 * 328 * DECIMATOR_MAX_PHASES * (8 + 2) + (DECIMATOR_MAX_PHASES + 1) * 4;
-/// A 2:1 stage keeps 83 of its 164 taps (and two row offsets); the dense bound is used here.
+/// A FULL 2:1 stage keeps 83 of its 164 taps (and two row offsets); the dense bound is used here.
 #[cfg(test)]
 const HALVING_STAGE_TABLE_BYTES: usize = 164 * (8 + 2) + 2 * 4;
-/// The 2:1 stages an `i32` source rate needs at most (`to >= 16 384`).
+/// The FULL 2:1 stages after the first an `i32` source rate needs at most (`to >= 16 384`, and the relaxed front takes its share of the halvings).
 #[cfg(test)]
 const HALVING_STAGES: usize = 14;
+/// A RELAXED 2:1 stage keeps 25 of its 48 taps (and two row offsets); the dense bound is used here.
+#[cfg(test)]
+const RELAXED_STAGE_TABLE_BYTES: usize = 48 * (8 + 2) + 2 * 4;
+/// The relaxed halvings a source needs at most: each halves an even `from` that is at least `4 * to`, so a 32-bit rate
+/// and an output of 1 Hz take 30.
+#[cfg(test)]
+const RELAXED_STAGES: usize = 31;
 /// What [`Resampler::table_bytes`] cannot exceed for any source rate (about 6.7 MB): see [`Resampler`].
 #[cfg(test)]
-pub(crate) const TABLE_BYTES_BOUND: usize = WIDEST_STAGE_TABLE_BYTES + HALVING_STAGES * HALVING_STAGE_TABLE_BYTES;
+pub(crate) const TABLE_BYTES_BOUND: usize =
+    WIDEST_STAGE_TABLE_BYTES + HALVING_STAGES * HALVING_STAGE_TABLE_BYTES + RELAXED_STAGES * RELAXED_STAGE_TABLE_BYTES;
 
 impl Resampler {
     pub(crate) fn new(from: u32, to: u32) -> Self {
         let mut stages = Vec::new();
         if from > to && to > 0 {
-            let (from64, to64) = (from as u64, to as u64);
+            let (mut from64, to64) = (from as u64, to as u64);
+            while from64 >= 4 * to64 && from64 % 2 == 0 {
+                stages.push(Decimator::new(2, 1, Kernel::RELAXED));
+                from64 /= 2;
+            }
             let mut k = 0u32;
             while from64 > 8 * (to64 << k) {
                 k += 1;
             }
-            stages.push(Decimator::new(from64, to64 << k));
-            stages.extend((0..k).map(|_| Decimator::new(2, 1)));
+            stages.push(Decimator::new(from64, to64 << k, Kernel::FULL));
+            stages.extend((0..k).map(|_| Decimator::new(2, 1, Kernel::FULL)));
         }
         Resampler { from, to, pos: 0.0, last: None, stages, ping: Vec::new(), pong: Vec::new() }
     }
@@ -293,28 +319,71 @@ impl Resampler {
     }
 }
 
-/// Zero crossings of the sinc kept on each side of its centre, in units of the cutoff's own period.
-const DECIMATOR_ZEROS: f64 = 41.0;
-/// Where the low-pass turns over, as a fraction of the output's Nyquist frequency: AT it, so the response is
-/// half (-6 dB) there, flat (within 0.01 dB, measured 4e-6) to 90% of it (21.6 kHz at 48 kHz, 19.845 kHz at 44.1 kHz)
-/// and at least 120 dB down from `fout - 0.9 Nyquist` (26.4 kHz at 48 kHz) up: what can fold into the pass band is
-/// gone. The 90..100% of Nyquist is the transition band, neither flat nor alias-free (content from 24 to 26.4 kHz
-/// folds into it), the SoX `-a` convention.
-const DECIMATOR_CUTOFF: f64 = 1.0;
-/// The Kaiser window's beta: with [`DECIMATOR_ZEROS`] it gives the 120 dB of the stop band above (this file's tests
-/// hold 120 dB over tones from 96, 192, 64, 384, 88.2 and 176.4 kHz sources; they measure -124 to -139 dB).
-const DECIMATOR_BETA: f64 = 12.8;
+/// One Kaiser-windowed-sinc low-pass design for a [`Decimator`] stage: how many zero crossings of the sinc it keeps, where it
+/// turns over and how hard it is windowed. The two designs below are the only ones; a stage names which it is built with.
+#[derive(Clone, Copy)]
+struct Kernel {
+    /// Zero crossings of the sinc kept on each side of its centre, in units of the cutoff's own period.
+    zeros: f64,
+    /// Where the low-pass turns over, as a fraction of the stage's output Nyquist frequency: AT it, so the response is half
+    /// (-6 dB) there.
+    cutoff: f64,
+    /// The Kaiser window's beta: it sets the depth of the stop band (about `beta / 0.1102 + 8.7` dB, 125 dB at 12.8).
+    beta: f64,
+}
+
+impl Kernel {
+    /// **The design of every stage but the relaxed front, and always of the last: the one that sets the converter's pass
+    /// band and stop band.** Cutoff 1.0 of the output's Nyquist, so the response is half (-6 dB) AT it, flat (within 0.01 dB,
+    /// measured under 1e-5) to 90% of it (21.6 kHz at 48 kHz, 19.845 kHz at 44.1 kHz) and at least 120 dB down from
+    /// `fout - 0.9 Nyquist` (26.4 kHz at 48 kHz) up: what can fold into the pass band is gone. The 90..100% of Nyquist
+    /// is the transition band, neither flat nor alias-free (content from 24 to 26.4 kHz folds into it), the SoX `-a`
+    /// convention. 41 zero crossings and beta 12.8 (about 125 dB) give the 120 dB (this file's tests hold it over tones
+    /// from 96, 192, 64, 384, 88.2, 176.4 and 705.6 kHz sources; they measure -124.5 dB at worst, at the stop band's edge).
+    const FULL: Kernel = Kernel { zeros: 41.0, cutoff: 1.0, beta: 12.8 };
+
+    /// **The cheap design of the exact 2:1 stages in front of the rest, for a source of 4x the output or more.**
+    ///
+    /// *What it must do.* O is the final output rate. The last stage ([`Kernel::FULL`]) is flat to 0.45 * O and rejects
+    /// from 0.55 * O up (its transition band is 0.45..0.55 * O), so whatever a relaxed stage R -> R/2 lets fold below
+    /// 0.55 * O is never removed afterwards, while everything it leaves above that is. A relaxed stage therefore has to be
+    /// flat to 0.45 * O (within the limits of this file) and to reject `[R/2 - 0.55 * O, R/2]` by 120 dB: for 192 kHz to
+    /// 48 kHz, 69.6..96 kHz must not fold into 0..26.4 kHz. Nothing else is asked of it: 48..69.6 kHz folds to
+    /// 26.4..48 kHz, which the last stage removes.
+    ///
+    /// *The worst case is R = 4 * O*, the least a stage is built for (`Resampler::new`). Its output Nyquist is O, the
+    /// cutoff is that Nyquist (1.0: a half-band, -6 dB there) and the transition runs from 0.55 * O to 1.45 * O, a
+    /// symmetric half-width of 0.45 of the Nyquist about the cutoff: 0.9 * cutoff, which is 0.225 of the stage's input
+    /// rate. A higher R is easier: the cutoff, and with it the rejection edge 1.45 * R/4, grows with R while the band to
+    /// keep stays 0.45 * O.
+    ///
+    /// *Length.* Kaiser's estimate for A dB of rejection over a transition of 0.225 of the sample rate is
+    /// `(A - 7.95) / (14.36 * 0.225)` taps, and the sinc of a half-band has a zero crossing every 2 taps, so
+    /// `zeros >= (A - 7.95) / (14.36 * 0.9)`: 9.05 for the 125 dB of beta 12.8, 9.9 for the 136 dB of beta 14. Measured
+    /// on this stage alone at 192 kHz, 9 crossings with beta 12.8 leave 118.6 dB at 69.6 kHz (short of 120) and 10 give
+    /// 129.5 dB. 12 crossings with beta 14 keep two crossings of margin: 24 frames each side, 25 nonzero taps (the
+    /// centre and the odd offsets 1..23; the even ones are zeros of the sinc) against the 83 of a FULL 2:1 stage, and
+    /// 136.0 dB at worst above 69.6 kHz, 140.9 dB at 69.6 kHz itself, flat to 2.5e-6 dB at 21.6 kHz.
+    const RELAXED: Kernel = Kernel { zeros: 12.0, cutoff: 1.0, beta: 14.0 };
+
+    /// Input frames on each side of the centre a stage of `step` input frames per output frame reaches.
+    fn half(self, step: f64) -> usize {
+        (self.zeros / (self.cutoff / step)).ceil() as usize
+    }
+}
+
 /// The finest fractional input position the weights are tabulated for. A rational ratio with a smaller
 /// denominator (96 and 192 kHz: 1; 88.2 kHz to 48 kHz: 80; 50 kHz: 24) is exact; any other is rounded to the
 /// nearest 1/1024 of an input frame.
 const DECIMATOR_MAX_PHASES: usize = 1024;
 
 /// A windowed-sinc low-pass and decimator for one stage of the [`Resampler`]: the output at input position `x` is
-/// the Kaiser-windowed sinc (cutoff [`DECIMATOR_CUTOFF`] of the output's Nyquist) centred on `x` dotted with the input
+/// the Kaiser-windowed sinc ([`Kernel`]: its cutoff is a fraction of the output's Nyquist) centred on `x` dotted with the input
 /// around it, the weights for every fractional position the ratio visits tabulated once, in f64, and only the
 /// nonzero ones (the sinc is exactly zero at every integer multiple of its period: half of the 164 taps of a 2:1
 /// stage). No group delay (the kernel is symmetric about the output instant); it needs `half` frames of
-/// lookahead, so what it holds back is `half` input frames (82 at a ratio of 2: 0.85 ms at 96 kHz, 0.93 ms at 88.2 kHz)
+/// lookahead, so what it holds back is `half` input frames (82 at a ratio of 2: 0.85 ms at 96 kHz, 0.93 ms at 88.2 kHz;
+/// 24 for a relaxed one)
 /// rather than a time shift. Nothing flushes them: the last of those frames at the end of a stream is not
 /// emitted, which is the length of one filter half-width of audio, not heard.
 ///
@@ -341,18 +410,18 @@ struct Decimator {
 }
 
 impl Decimator {
-    fn new(num: u64, den: u64) -> Self {
+    fn new(num: u64, den: u64, kernel: Kernel) -> Self {
         let g = gcd(num, den);
         let (num, den) = (num / g, den / g);
         let step = num as f64 / den as f64;
         // The kernel's cutoff in cycles per input frame, doubled: sinc(u) with u counted in
         // 1/(2*cutoff) input frames.
-        let scale = DECIMATOR_CUTOFF / step;
-        let half = (DECIMATOR_ZEROS / scale).ceil() as usize;
+        let scale = kernel.cutoff / step;
+        let half = kernel.half(step);
         let phases = (den as usize).min(DECIMATOR_MAX_PHASES);
         let mut starts = Vec::with_capacity(phases + 1);
         let (mut idx, mut w) = (Vec::new(), Vec::new());
-        let i0_beta = bessel_i0(DECIMATOR_BETA);
+        let i0_beta = bessel_i0(kernel.beta);
         for p in 0..phases {
             let frac = p as f64 / phases as f64;
             starts.push(w.len() as u32);
@@ -361,11 +430,11 @@ impl Decimator {
             for t in 0..2 * half {
                 // tap t reads input frame i + 1 - half + t, at distance (that - (i + frac)) from the centre
                 let u = ((t as f64 + 1.0 - half as f64) - frac) * scale;
-                let r = u / DECIMATOR_ZEROS;
+                let r = u / kernel.zeros;
                 let weight = if r.abs() >= 1.0 {
                     0.0
                 } else {
-                    sinc(u) * bessel_i0(DECIMATOR_BETA * (1.0 - r * r).sqrt()) / i0_beta
+                    sinc(u) * bessel_i0(kernel.beta * (1.0 - r * r).sqrt()) / i0_beta
                 };
                 if weight != 0.0 {
                     sum += weight;
@@ -807,7 +876,7 @@ mod tests {
     }
 
     /// Frames skipped at each end of an output before it is measured: the filter's start-up and its
-    /// lookahead are well inside it (a stage reaches 41 of its own output frames each side).
+    /// lookahead are well inside it (a stage reaches at most 41 of its own output frames each side).
     const SETTLE: usize = 400;
 
     /// The result of fitting `a cos + b sin` (at `freq` Hz) to the left channel of `out`.
@@ -863,7 +932,8 @@ mod tests {
         r.min(fout - r)
     }
 
-    /// **The pass band is flat to 90% of the output's Nyquist: within 0.01 dB** (it measures about 4e-6) from
+    /// **The pass band is flat to 90% of the output's Nyquist: within 0.01 dB** (it measures under 1e-5: 4.7e-6 from
+    /// 96 kHz, 4.8e-6 from 192 kHz, 6.6e-6 from 384 kHz through the relaxed stages) from
     /// 96, 192, 64 and 384 kHz to 48 kHz and from 88.2 and 176.4 kHz to 44.1 kHz, and a tone inside it is
     /// not shifted. The old filter was 0.82 dB down at 21.6 kHz.
     #[test]
@@ -888,8 +958,11 @@ mod tests {
     /// **Everything that can fold into 0..90% of the output's Nyquist is at least 120 dB down.** The named
     /// cases first (27 and 30 kHz from 96 kHz fold to 21 and 18 kHz; 62 kHz from 176.4 kHz to 17.9 kHz;
     /// 60 kHz from 192 kHz to 12 kHz), then a sweep of the whole region from `fout - 0.9 Nyquist` up to the
-    /// source's own Nyquist, for the rates that decimate by an integer and one that does not (64 kHz). The old filter
-    /// let 26.7 kHz through at -92 dB.
+    /// source's own Nyquist, for the rates that decimate by an integer and one that does not (64 kHz). It measures
+    /// -124.5 to -126.8 dB at worst, at the full stage's own stop-band edge (the relaxed stages in front of it
+    /// are held to it in `the_relaxed_front_is_flat_and_alias_free_through_the_whole_cascade` and, on their own,
+    /// in `a_relaxed_stage_is_flat_to_045_o_and_rejects_everything_that_would_fold_below_055_o`).
+    /// The old filter let 26.7 kHz through at -92 dB.
     #[test]
     fn a_tone_that_folds_into_the_pass_band_is_rejected_by_120_db() {
         for (from, to, hz) in [
@@ -913,20 +986,7 @@ mod tests {
             (176_400, 44_100, 4_500, 24_300),
             (384_000, 48_000, 9_000, 26_400),
         ] {
-            let mut worst = (f64::NEG_INFINITY, 0u64);
-            let mut hz = first;
-            while hz * 2 < from as u64 {
-                let alias = folded(hz, to as u64);
-                // between 90% of Nyquist and Nyquist is the transition band, which has no stopband claim
-                if alias > 0 && alias * 20 <= to as u64 * 9 {
-                    let out = resample(&tone64(hz as f64, from, 0.03, 0.5), from, to, 4096);
-                    let leaked = db(fit_tone(&out, to, alias as f64).amplitude / 0.5);
-                    if leaked > worst.0 {
-                        worst = (leaked, hz);
-                    }
-                }
-                hz += step;
-            }
+            let worst = worst_alias(from, to, first, from as u64 / 2, step);
             assert!(worst.0 <= -120.0, "{from} -> {to} Hz: {} Hz folds in at {:.1} dB", worst.1, worst.0);
         }
     }
@@ -968,10 +1028,12 @@ mod tests {
     /// **The same output whatever the block size**, bit for bit (the position is an exact rational, the sums
     /// run in one order), the right length, and a constant stays the constant: at the integer ratios, the
     /// ones with a phase table (88.2 kHz: 80 phases; 50 kHz: 24), one cascaded with a tail (64 kHz is
-    /// 4:3) and one whose denominator is past the table (96001/48000).
+    /// 4:3), one whose denominator is past the table (96001/48000) and the ones with a relaxed front: one relaxed
+    /// stage and a FULL 2:1 (192 and 176.4 kHz), two (384 kHz), one before a phased stage 0 (200 kHz is 25:12 after
+    /// it; 705.6 kHz two before 147:40).
     #[test]
     fn a_decimated_stream_is_the_same_in_any_block_size_and_the_right_length() {
-        for rate in [88_200u32, 96_000, 176_400, 192_000, 64_000, 50_000, 96_001] {
+        for rate in [88_200u32, 96_000, 176_400, 192_000, 64_000, 50_000, 96_001, 384_000, 200_000, 705_600] {
             let input = tone64(1_234.0, rate, 0.1, 0.5);
             let whole = resample(&input, rate, OUT_RATE, input.len());
             for block in [1, 7, 480, 1152, 4096] {
@@ -980,7 +1042,7 @@ mod tests {
                 let worst = got.iter().zip(&whole).map(|(a, b)| (a[0] - b[0]).abs().max((a[1] - b[1]).abs())).fold(0.0f64, f64::max);
                 assert!(worst <= 1e-12, "{rate} Hz, block {block}: differs by {worst}");
             }
-            // the filter holds back its lookahead (41 output frames at the first stage); it never makes frames up
+            // the filter holds back its lookahead (at most 41 output frames at a stage); it never makes frames up
             let expect = (input.len() as u64 * OUT_RATE as u64 / rate as u64) as i64;
             let len = whole.len() as i64;
             assert!(len <= expect + 1 && len + 100 >= expect, "{rate} Hz: {len} frames, expected ~{expect}");
@@ -995,33 +1057,173 @@ mod tests {
     /// an odd one, `i32::MAX` is the largest FFmpeg can state), and where audio is pushed through the unit gain holds.
     #[test]
     fn any_source_rate_is_converted_within_the_table_bound() {
-        for (from, to) in [(705_600u32, 44_100u32), (2_822_400, 44_100), (1_000_003, 48_000), (5_644_800, 44_100), (i32::MAX as u32, 48_000)] {
+        for (from, to) in [(705_600u32, 44_100u32), (2_822_400, 44_100), (1_000_003, 48_000), (5_644_800, 44_100), (i32::MAX as u32, 48_000), (1 << 30, 48_000), (1 << 30, 1), (1 << 31, 1)] {
             let r = Resampler::new(from, to);
             assert!(r.table_bytes() <= TABLE_BYTES_BOUND, "{from} -> {to} Hz: {} bytes of tables", r.table_bytes());
+            assert!(r.stages.len() <= RELAXED_STAGES + HALVING_STAGES + 1, "{from} -> {to} Hz: {} stages", r.stages.len());
         }
+        // an even rate is halved by relaxed stages all the way down to the output's 4x, then the bounded cascade
+        assert_eq!(Resampler::new(1 << 30, 1).stages.len(), 29 + 1, "2^30 Hz to 1 Hz: 29 relaxed halvings (to 2) and a FULL 2:1");
         for (from, to) in [(705_600u32, 44_100u32), (2_822_400, 44_100), (1_000_003, 48_000)] {
             let out = resample(&tone64(1_000.0, from, 0.05, 0.5), from, to, 100_000);
             let gain = fit_tone(&out, to, 1_000.0).amplitude / 0.5;
             assert!((gain - 1.0).abs() <= 1e-4, "{from} -> {to} Hz: gain {gain}");
         }
         // 2e9 frames a second is not pushed through it; a short block shows the chain of 14 stages runs and cannot overflow
-        let mut out = Vec::new();
-        Resampler::new(i32::MAX as u32, 48_000).run(&vec![[0.5, 0.5]; 4096], &mut out);
-        assert!(out.len() <= 1, "{} frames out of 4096 at 2^31 Hz", out.len());
+        // (and a long relaxed front: 2^30 Hz is halved 13 times, to 2^17 Hz, before the 375-phase stage 0)
+        for from in [i32::MAX as u32, 1 << 30] {
+            let mut out = Vec::new();
+            Resampler::new(from, 48_000).run(&vec![[0.5, 0.5]; 4096], &mut out);
+            assert!(out.len() <= 1, "{} frames out of 4096 at {from} Hz", out.len());
+        }
     }
 
     /// The documented figures are the real ones: the widest stage is 656 taps by 1024 phases (6.7 MB, only
-    /// reached by an inexact ratio just under 8), a 2:1 stage keeps 83 of its 164 taps (the others are exact
-    /// zeros of the sinc), and 96 kHz and 192 kHz are one phase.
+    /// reached by an inexact ratio just under 8), a FULL 2:1 stage keeps 83 of its 164 taps and a RELAXED one 25 of
+    /// its 48 (the others are exact zeros of the sinc), and 96 kHz and 192 kHz are one phase.
     #[test]
     fn the_filter_tables_are_the_size_the_doc_says() {
         assert_eq!(Resampler::new(96_000, 48_000).table_bytes(), 83 * (8 + 2) + 2 * 4);
+        assert_eq!(Resampler::new(192_000, 48_000).table_bytes(), (25 + 83) * (8 + 2) + 2 * 2 * 4);
         let widest = Resampler::new(383_999, 48_000).table_bytes();
         let dense = 656 * DECIMATOR_MAX_PHASES * (8 + 2);
         assert!(widest <= TABLE_BYTES_BOUND && widest * 100 >= dense * 99, "{widest} bytes against {dense} dense");
         assert!(Resampler::new(192_000, 48_000).table_bytes() < 10_000);
         assert_eq!(Resampler::new(48_000, 48_000).table_bytes(), 0);
         assert_eq!(Resampler::new(44_100, 48_000).table_bytes(), 0, "raising the rate is the linear path");
+    }
+
+    /// A stage's design, by the span it reaches: the two 2:1 designs differ in `half`, and any ratio's FULL one is known.
+    const FULL_2_1: (u64, u64, usize) = (2, 1, 82);
+    const RELAXED_2_1: (u64, u64, usize) = (2, 1, 24);
+
+    /// The cascade `Resampler::new(from, to)` builds, stage by stage: (input frames, output frames, reach) per stage.
+    fn shape(from: u32, to: u32) -> Vec<(u64, u64, usize)> {
+        Resampler::new(from, to).stages.iter().map(|s| (s.num, s.den, s.half)).collect()
+    }
+
+    /// **Which stages a rate pair builds**: the relaxed halvings from the top (an even `from` of at least 4x the output),
+    /// then today's bounded cascade of FULL stages. 96 -> 48 and 88.2 -> 44.1 build no relaxed stage, so those paths are the
+    /// ones they always were; an odd rate builds none either, so it cannot be handed a table per halving.
+    #[test]
+    fn a_source_of_four_times_the_output_or_more_halves_through_relaxed_stages_first() {
+        assert_eq!(Kernel::FULL.half(2.0), FULL_2_1.2);
+        assert_eq!(Kernel::RELAXED.half(2.0), RELAXED_2_1.2);
+        let full_ratio = |num: u64, den: u64| (num, den, Kernel::FULL.half(num as f64 / den as f64));
+        let cases: [(u32, u32, Vec<(u64, u64, usize)>); 11] = [
+            (96_000, 48_000, vec![FULL_2_1]),
+            (88_200, 44_100, vec![FULL_2_1]),
+            (64_000, 48_000, vec![full_ratio(4, 3)]),
+            (192_000, 48_000, vec![RELAXED_2_1, FULL_2_1]),
+            (176_400, 44_100, vec![RELAXED_2_1, FULL_2_1]),
+            (384_000, 48_000, vec![RELAXED_2_1, RELAXED_2_1, FULL_2_1]),
+            (705_600, 44_100, vec![RELAXED_2_1, RELAXED_2_1, RELAXED_2_1, FULL_2_1]),
+            (200_000, 48_000, vec![RELAXED_2_1, full_ratio(25, 12)]),
+            (192_001, 48_000, vec![full_ratio(192_001, 48_000)]),
+            (1_000_003, 48_000, vec![full_ratio(1_000_003, 192_000), FULL_2_1, FULL_2_1]),
+            (2_822_400, 44_100, vec![RELAXED_2_1; 5].into_iter().chain([FULL_2_1]).collect()),
+        ];
+        for (from, to, want) in cases {
+            assert_eq!(shape(from, to), want, "{from} -> {to} Hz");
+        }
+    }
+
+    /// Multiply-adds a second a channel: every stage's nonzero weights per output (the mean over its phases) times the
+    /// stage's output rate, for a source of `from` Hz.
+    fn madds_per_second(stages: &[Decimator], from: u32) -> f64 {
+        let mut rate = from as f64;
+        stages
+            .iter()
+            .map(|s| {
+                rate *= s.den as f64 / s.num as f64;
+                s.w.len() as f64 / s.phases as f64 * rate
+            })
+            .sum()
+    }
+
+    /// **The relaxed front halves the cost** of a source four times the output or more. The yardstick is the one stage
+    /// that was built for these rates before it (a FULL stage of the whole ratio: 247 nonzero taps at ratio 4, 575 at 8).
+    #[test]
+    fn a_192_khz_source_costs_at_most_six_tenths_of_the_one_stage_it_replaced() {
+        assert_eq!(Resampler::new(192_000, 48_000).stages[0].w.len(), 25, "a relaxed 2:1 stage keeps 25 taps");
+        assert_eq!(RELAXED_STAGE_TABLE_BYTES, 2 * Kernel::RELAXED.half(2.0) * (8 + 2) + 2 * 4, "the table bound is for this reach");
+        for (from, to, ratio) in [(192_000u32, 48_000u32, 4u64), (176_400, 44_100, 4), (384_000, 48_000, 8)] {
+            let single = madds_per_second(&[Decimator::new(ratio, 1, Kernel::FULL)], from);
+            let cascade = madds_per_second(&Resampler::new(from, to).stages, from);
+            assert!(cascade <= 0.6 * single, "{from} -> {to} Hz: {cascade} multiply-adds a second a channel against {single}");
+        }
+    }
+
+    /// **A relaxed stage on its own meets the spec derived in [`Kernel::RELAXED`]**, at the worst case R = 4 * O (192 kHz
+    /// in, 96 kHz out, O = 48 kHz; the kernel is the same shape at any rate): flat within 0.01 dB to 0.45 * O (21.6 kHz) and
+    /// at least 120 dB down over `[R/2 - 0.55 * O, R/2]` (69.6..96 kHz, which would fold into 0..26.4 kHz). The cascade
+    /// test above cannot see the 69.6..74.4 kHz end of that: it folds into the full stage's transition band (21.6..26.4 kHz),
+    /// where no claim is made. Measured: -140.9 dB at 69.6 kHz, -136.0 dB at worst above it, 2.5e-6 dB off flat.
+    #[test]
+    fn a_relaxed_stage_is_flat_to_045_o_and_rejects_everything_that_would_fold_below_055_o() {
+        let through = |hz: u64| {
+            let mut stage = Decimator::new(2, 1, Kernel::RELAXED);
+            let mut out = Vec::new();
+            stage.run(&tone64(hz as f64, 192_000, 0.05, 0.5), &mut out);
+            (out, folded(hz, 96_000))
+        };
+        let mut hz = 600u64;
+        while hz <= 21_600 {
+            let (out, _) = through(hz);
+            let gain = db(fit_tone(&out, 96_000, hz as f64).amplitude / 0.5);
+            assert!(gain.abs() <= 0.01, "{hz} Hz comes out at {gain:.6} dB");
+            hz += 600;
+        }
+        let mut hz = 69_600u64;
+        while hz < 96_000 {
+            let (out, alias) = through(hz);
+            let leaked = db(fit_tone(&out, 96_000, alias as f64).amplitude / 0.5);
+            assert!(leaked <= -120.0, "{hz} Hz folds to {alias} Hz at {leaked:.1} dB");
+            hz += 300;
+        }
+    }
+
+    /// The loudest alias of the cascade `from` -> `to` among tones from `lo` up to (not including) `hi` Hz in `step`s that
+    /// fold into 0..90% of the output's Nyquist, in dB below the tone, and the tone's frequency. A tone whose alias is in
+    /// the last tenth of the Nyquist, or at 0 Hz, is the transition band's (no claim is made there).
+    fn worst_alias(from: u32, to: u32, lo: u64, hi: u64, step: u64) -> (f64, u64) {
+        let mut worst = (f64::NEG_INFINITY, 0u64);
+        let mut hz = lo;
+        while hz < hi {
+            let alias = folded(hz, to as u64);
+            if alias > 0 && alias * 20 <= to as u64 * 9 {
+                let out = resample(&tone64(hz as f64, from, 0.03, 0.5), from, to, 4096);
+                let leaked = db(fit_tone(&out, to, alias as f64).amplitude / 0.5);
+                if leaked > worst.0 {
+                    worst = (leaked, hz);
+                }
+            }
+            hz += step;
+        }
+        worst
+    }
+
+    /// **The relaxed stages lose nothing the pass band keeps and let nothing through that the full stage cannot remove**,
+    /// measured end to end through the whole cascade. For each source: the pass band flat to 90% of the output's Nyquist,
+    /// then every tone from the output's Nyquist to the source's, in steps fine enough to land on the band the relaxed
+    /// stage passes and the full one must remove (48..72 kHz of a 192 kHz source) and on the band nearest the relaxed stage's
+    /// fold (69.6..96 kHz: it folds into 0..26.4 kHz, below where the full stage rejects), at least 120 dB down.
+    #[test]
+    fn the_relaxed_front_is_flat_and_alias_free_through_the_whole_cascade() {
+        // (from, to, step in Hz: an alias of a few hundred Hz keeps its period inside the settled output)
+        for (from, to, step) in [(192_000u32, 48_000u32, 600u64), (176_400, 44_100, 450), (384_000, 48_000, 600), (705_600, 44_100, 450), (200_000, 48_000, 400)] {
+            let nyquist = to as u64 / 2;
+            let (db_worst, at) = worst_alias(from, to, nyquist + step, from as u64 / 2, step);
+            assert!(db_worst <= -120.0, "{from} -> {to} Hz: {at} Hz folds in at {db_worst:.1} dB");
+            let mut flat = 0.0f64;
+            let mut hz = step;
+            while hz * 10 <= nyquist * 9 {
+                let out = resample(&tone64(hz as f64, from, 0.05, 0.5), from, to, 1000);
+                flat = flat.max(db(fit_tone(&out, to, hz as f64).amplitude / 0.5).abs());
+                hz += step;
+            }
+            assert!(flat <= 0.01, "{from} -> {to} Hz: the pass band is {flat:.6} dB off");
+        }
     }
 
     fn sine(freq: f32, rate: u32, secs: f32) -> Vec<[f32; 2]> {

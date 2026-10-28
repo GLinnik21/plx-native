@@ -927,7 +927,8 @@ mod tests {
     /// stamps step by exactly the frames written over the output rate, in whole nanoseconds, however many blocks.
     #[test]
     fn a_seek_starts_the_filter_and_the_clock_again_and_stamps_step_by_the_frames_written() {
-        for (source_rate, rate) in [(96_000u32, 48_000u32), (88_200, 44_100)] {
+        // 192, 176.4 and 384 kHz run through the relaxed front and a FULL stage: a reset starts all of them again
+        for (source_rate, rate) in [(96_000u32, 48_000u32), (88_200, 44_100), (192_000, 48_000), (176_400, 44_100), (384_000, 48_000)] {
             let shape = PcmOut { rate, bits: 32, channels: 2, source_rate };
             let block = (source_rate / 100) as usize; // 10 ms, a whole number of nanoseconds
             let input = noise(block * 12, 7);
