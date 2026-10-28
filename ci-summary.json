@@ -43,7 +43,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-28T05:38:00Z",
+ "generated": "2026-10-28T05:45:20Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -132,17 +132,17 @@
   },
   {
    "change30_pct": -60.3,
-   "change7_pct": -13.6,
+   "change7_pct": -13.8,
    "d30": 870.0,
-   "delta30": -524.5,
-   "delta7": -54.5,
+   "delta30": -525.0,
+   "delta7": -55,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 92,
+   "n_now": 93,
    "n_prev": 123,
-   "now": 345.5,
+   "now": 345,
    "prev7": 400,
    "shown": true,
    "state": "flat",
@@ -395,18 +395,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 85.9,
-   "change7_pct": 9.1,
+   "change30_pct": 86.3,
+   "change7_pct": 9.3,
    "d30": 142,
-   "delta30": 122,
-   "delta7": 22,
+   "delta30": 122.5,
+   "delta7": 22.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 81,
+   "n_now": 82,
    "n_prev": 117,
-   "now": 264,
+   "now": 264.5,
    "prev7": 242,
    "shown": true,
    "state": "flat",
@@ -419,15 +419,15 @@
    "change30_pct": -34.4,
    "change7_pct": 5.8,
    "d30": 308,
-   "delta30": -106.0,
-   "delta7": 11.0,
+   "delta30": -106,
+   "delta7": 11,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 80,
+   "n_now": 81,
    "n_prev": 117,
-   "now": 202.0,
+   "now": 202,
    "prev7": 191,
    "shown": true,
    "state": "flat",
@@ -438,17 +438,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 10.7,
+   "change7_pct": 11.0,
    "d30": null,
    "delta30": null,
-   "delta7": 16,
+   "delta7": 16.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 81,
+   "n_now": 82,
    "n_prev": 117,
-   "now": 166,
+   "now": 166.5,
    "prev7": 150,
    "shown": true,
    "state": "flat",
@@ -546,15 +546,15 @@
    "change30_pct": 12.5,
    "change7_pct": 0.0,
    "d30": 16,
-   "delta30": 2,
-   "delta7": 0,
+   "delta30": 2.0,
+   "delta7": 0.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 81,
+   "n_now": 82,
    "n_prev": 117,
-   "now": 18,
+   "now": 18.0,
    "prev7": 18,
    "shown": false,
    "state": "flat",
@@ -653,11 +653,6 @@
    "change_pct": 31.1,
    "commits": [
     {
-     "pr": 1087,
-     "sha": "0f2979655",
-     "title": "Playback: app-decoded audio is fed 400 ms later so it plays in step with the picture"
-    },
-    {
      "pr": 1089,
      "sha": "e75d0af8a",
      "title": "Playback: app-decoded audio's lead follows the sound output, and only on LG's liblxa audio stack"
@@ -701,6 +696,11 @@
      "pr": 1082,
      "sha": "a66624719",
      "title": "Playback: Force Direct Play and a refused open decode lossy audio in the app, DTS enabled; surround is never mixed down "
+    },
+    {
+     "pr": 1095,
+     "sha": "ee737edf8",
+     "title": "Playback: hi-res stereo FLAC, ALAC and LPCM are resampled by the app to 48 or 44.1 kHz, 32-bit, instead of a lossy serve"
     }
    ],
    "from": 164,
@@ -714,11 +714,6 @@
    "change_pct": 29.1,
    "commits": [
     {
-     "pr": 1087,
-     "sha": "0f2979655",
-     "title": "Playback: app-decoded audio is fed 400 ms later so it plays in step with the picture"
-    },
-    {
      "pr": 1089,
      "sha": "e75d0af8a",
      "title": "Playback: app-decoded audio's lead follows the sound output, and only on LG's liblxa audio stack"
@@ -762,6 +757,11 @@
      "pr": 1082,
      "sha": "a66624719",
      "title": "Playback: Force Direct Play and a refused open decode lossy audio in the app, DTS enabled; surround is never mixed down "
+    },
+    {
+     "pr": 1095,
+     "sha": "ee737edf8",
+     "title": "Playback: hi-res stereo FLAC, ALAC and LPCM are resampled by the app to 48 or 44.1 kHz, 32-bit, instead of a lossy serve"
     }
    ],
    "from": 987.0,
@@ -775,11 +775,6 @@
    "change_pct": 20.9,
    "commits": [
     {
-     "pr": 1087,
-     "sha": "0f2979655",
-     "title": "Playback: app-decoded audio is fed 400 ms later so it plays in step with the picture"
-    },
-    {
      "pr": 1089,
      "sha": "e75d0af8a",
      "title": "Playback: app-decoded audio's lead follows the sound output, and only on LG's liblxa audio stack"
@@ -823,6 +818,11 @@
      "pr": 1082,
      "sha": "a66624719",
      "title": "Playback: Force Direct Play and a refused open decode lossy audio in the app, DTS enabled; surround is never mixed down "
+    },
+    {
+     "pr": 1095,
+     "sha": "ee737edf8",
+     "title": "Playback: hi-res stereo FLAC, ALAC and LPCM are resampled by the app to 48 or 44.1 kHz, 32-bit, instead of a lossy serve"
     }
    ],
    "from": 163,
@@ -863,7 +863,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 264
+   "now": 264.5
   }
  ],
  "slowest_local": [
