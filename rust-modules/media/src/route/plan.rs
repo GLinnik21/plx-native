@@ -3081,10 +3081,10 @@ pub(super) fn pick_dp_audio_pref(
 /// track of at most two channels, because the app never mixes a surround source down under Force)? Auto and Forced both go
 /// through `devcaps`' canonicaliser (PMS's `dca` is the pipeline's `dts`), so they cannot drift apart.
 /// Both also apply the Load's own limits ([`plx_platform::devcaps::audio_track_fits`]): the PCM
-/// path's channel count and rate table, and the sample-rate ceiling every other codec shares
-/// (DTS and TrueHD excepted). They belong to the app's decoder and the Load, not to a hardware decoder
-/// Forced may trust past its table, so a 5.1 or 96 kHz FLAC, or a 96 kHz AAC, is refused under
-/// Forced instead of failing at the Load.
+/// path's channel count and rate rule (`pcm_load_rate`: a table rate, or any faster one the app
+/// resamples), and the sample-rate ceiling every other codec shares (DTS and TrueHD excepted). They belong
+/// to the app's decoder and the Load, not to a hardware decoder Forced may trust past its table, so a 5.1
+/// FLAC, or a 96 kHz AAC, is refused under Forced instead of failing at the Load; a 96 kHz stereo FLAC is not.
 pub(super) fn audio_direct_plays_with(
     caps: &plx_platform::devcaps::Caps, mode: DirectPlayMode, codec: &str, channels: i64,
     sample_rate: i64,
