@@ -1,0 +1,19 @@
+{
+  "under_posters.title": "Pod plakatami",
+  "under_posters.detail": "Co widać pod wybranym plakatem.",
+  "under_posters.copy": "Na większości plakatów jest już tytuł. Wybierz, co widać pod zaznaczonym plakatem.",
+  "under_posters.title_row": "Tytuł",
+  "under_posters.title_detail": "Nazwa pogrubioną czcionką.",
+  "under_posters.details_row": "Szczegóły",
+  "under_posters.details_detail": "Jeden wiersz informacji.",
+  "under_posters.details_copy": "Dla rozpoczętych tytułów, nadchodzących premier i kolekcji widać zamiast tego: pozostały czas, datę premiery lub liczbę filmów.",
+  "under_posters.year_length": "Rok · Czas trwania",
+  "under_posters.genre": "Gatunek",
+  "under_posters.video": "Obraz",
+  "under_posters.age_rating_score": "Wiek · Ocena",
+  "under_posters.none": "Nic",
+  "under_posters.reset": "Przywróć domyślne",
+  "under_posters.reset_detail": "Rok i czas trwania, bez tytułu.",
+  "under_posters.sample_title": "Film",
+  "under_posters.sample_genre": "Dramat"
+}

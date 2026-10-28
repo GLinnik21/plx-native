@@ -2848,6 +2848,12 @@ mod flight_tests {
 
     impl Drop for Rig {
         fn drop(&mut self) {
+            // A landed reload left a real Engine whose demuxer holds raw pointers into its AU
+            // queues; dropping the adapter with it installed freed them under that thread. Join it
+            // the way an app switch does, which neither scrobbles nor stops a server transcode.
+            if self.pa.is_live() {
+                suspend_bufferfeed(&mut self.ps, &mut self.pa);
+            }
             super::super::claim_hold::clear();
             super::super::ffi_host::reset_native_lifecycle_for_test();
             super::super::ffi_host::force_clocksink_for_test(false);
