@@ -5746,12 +5746,19 @@ mod lifecycle_regression_tests {
     /// pre-picture refusal of a foreground-resume Load is the PUMP's.** The Load call returned
     /// `Started` (the foreground machine read that through `route_start_status` and let go: `Idle`),
     /// and `type=18` arrived afterwards. `SHARED.load_failed` does not say whose Load it was, so the
-    /// pump reads it on the live Engine and runs the failed-open ladder: nothing to recover with
-    /// here (a plain direct play), so it fails the Engine and the viewer gets the read-out. This is
-    /// the split `OpenRecovery` keeps: it owns a refusal the pump observes after a Load call
-    /// returned.
+    /// pump reads it on the live Engine and runs the failed-open ladder. This is the split
+    /// `OpenRecovery` keeps: it owns a refusal the pump observes after a Load call returned.
+    ///
+    /// The ladder's outcome changed with #1059 (S1b-2, s1b-design section 3): this plain direct play
+    /// has no suspect stream for the facet rung, but its source video is fed at a known raster, so
+    /// the manual both-facets rung flies ONE encode before the read-out (a refusal of a manual pick
+    /// before its picture, `Refused` or `Stalled`; nothing exempts a resume Load, and the machine's
+    /// `LoadStarted` reopens the ladder for exactly this Load). The viewer keeps the connecting
+    /// spinner while it flies. This fixture's server cannot convert, so the flight is refused, and the
+    /// refused both-facets flight is terminal: the read-out, with no second flight. Until #1059 this
+    /// test read "today ... is failed by the pump" and expected the read-out at once.
     #[test]
-    fn today_an_async_refusal_of_a_foreground_resume_load_is_failed_by_the_pump_after_the_lifecycle_let_go() {
+    fn an_async_refusal_of_a_foreground_resume_load_is_the_pumps_which_flies_the_both_facets_encode_then_reads_out() {
         let _serial = plx_base::testlock::serial();
         let Some(mut rig) = Rig::new() else {
             eprintln!("SKIPPED: lifecycle fixture worker thread could not be spawned");
@@ -5769,9 +5776,10 @@ mod lifecycle_regression_tests {
         let (state_after_pump, life_after_pump) = pump_then_poll(&mut rig, 48);
         assert_eq!(
             state_after_pump,
-            plx_media::player::PlaybackState::Error,
-            "the pump's failed-open ladder ended in the read-out"
+            plx_media::player::PlaybackState::Connecting,
+            "the pump's failed-open ladder flew the both-facets encode: the viewer keeps the spinner"
         );
+        assert!(plx_media::route::flight_outstanding(), "the encode is a recovery flight");
         assert!(
             matches!(life_after_pump, ForegroundState::LoadPending { .. }),
             "the lifecycle had not yet read the Load's result when the pump acted: {life_after_pump:?}"
@@ -5781,9 +5789,33 @@ mod lifecycle_regression_tests {
             ForegroundState::Idle,
             "…and then read `Started` and let go: it owns nothing of this refusal"
         );
+
+        // The fixture's server cannot convert: the flight comes back refused, which is terminal for
+        // the both-facets rung, and the pump (not the lifecycle) ends on the read-out.
+        let mut now = 64;
+        // A bounded count of 5 ms naps (the `wall` gate keeps clock reads out of `app/`): 10 s.
+        for _ in 0..2000 {
+            if plx_media::player::state(&rig.app.player.session) == plx_media::player::PlaybackState::Error {
+                break;
+            }
+            now += 16;
+            plx_media::player::pump(&mut rig.app.player.session, &mut rig.app.adapters.player, now);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(
+            plx_media::player::state(&rig.app.player.session),
+            plx_media::player::PlaybackState::Error,
+            "a refused both-facets flight ends in the read-out"
+        );
+        for _ in 0..3 {
+            now += 16;
+            plx_media::player::pump(&mut rig.app.player.session, &mut rig.app.adapters.player, now);
+        }
+        assert!(!plx_media::route::flight_outstanding(), "no second flight");
+        assert_eq!(rig.app.player.lifecycle.state(), ForegroundState::Idle, "the lifecycle never re-engaged");
         assert!(
             rig.app.adapters.player.is_live(),
-            "the failed Engine stays up one frame for `release_failed_engine`, not torn down by the lifecycle"
+            "the failed Engine stays up for `release_failed_engine`, not torn down by the lifecycle"
         );
     }
 

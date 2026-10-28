@@ -178,7 +178,15 @@ impl PcmDecoder {
     /// MP3 or TrueHD frame is the same; the resampler holds back one input frame (the decimator, about half a
     /// millisecond of them). Vorbis overlaps
     /// its blocks, so its first packet yields nothing and the rest come out about half a block, tens
-    /// of milliseconds, after their packet's pts: not corrected, a lip-sync item for the TV.)
+    /// of milliseconds, after their packet's pts: not corrected, and not determined whether that
+    /// matters.) The pts is content time and stays so: the set renders a PCM Load through a mixer
+    /// channel that lacks the lip sync its own decoder gets (`player::engine::pcm_output_lead` is the
+    /// table: on LG's `liblxa` stack 400 ms, less the output's own delay on a wireless one, the one
+    /// stack that was filmed; 2018's `audiosink_new` the same figures and `lgaudiosink` 400 ms on every
+    /// output, both read from the firmware; none on 2016/2017's `adecsink`, Realtek and MStar), and
+    /// the correction is NOT made here but at the audio lane's one Feed (`player::engine`,
+    /// `PCM_SINK_LEAD_NS`), so every producer of PCM gets it once and none stamps its own. The
+    /// app-decoded codecs here are not filmed.
     ///
     /// A LOSSY stream (DTS, MP3, Vorbis, TrueHD) skips a packet or frame that fails, as the speed decoder does, and
     /// ends only after [`MAX_CONSECUTIVE_DECODE_ERRORS`] in a row; a lossless one is bit-exact or

@@ -158,6 +158,14 @@ pub(super) fn reset_acb_for_test(accept_video_data: bool) {
 /// direct-play seek went through LG's public `Seek` and landed where the keyframe did.
 #[cfg(any(test, feature = "test-support"))]
 pub(super) static SEEK_LOG: Mutex<Vec<i64>> = Mutex::new(Vec::new());
+/// The sink pts of every Feed the armed host sink took, as `(es_data, pts)` in call order: what a test reads to
+/// prove WHAT timeline an audio unit and a picture reached the sink on (#1086).
+#[cfg(any(test, feature = "test-support"))]
+pub(super) static FEED_LOG: Mutex<Vec<(c_int, i64)>> = Mutex::new(Vec::new());
+/// How many Feeds [`FEED_LOG`] keeps: a test reads the first few, and a long simulator run must
+/// not grow it without end.
+#[cfg(any(test, feature = "test-support"))]
+const FEED_LOG_ROOM: usize = 4096;
 /// Forced `sf_seek_ms` answer; `i32::MIN` means "behave". `0` is LG refusing the seek.
 #[cfg(any(test, feature = "test-support"))]
 pub(super) static FORCE_SEEK_RESULT: AtomicI32 = AtomicI32::new(i32::MIN);
@@ -261,6 +269,7 @@ pub(super) fn force_clocksink_for_test(on: bool) {
 #[cfg(test)]
 pub(super) fn reset_seek_probe_for_test(force: Option<c_int>) {
     SEEK_LOG.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    FEED_LOG.lock().unwrap_or_else(|e| e.into_inner()).clear();
     FORCE_SEEK_RESULT.store(force.unwrap_or(i32::MIN), Relaxed);
     FLUSH_CALLS.store(0, Relaxed);
     SEGMENT_CALLS.store(0, Relaxed);
@@ -269,6 +278,18 @@ pub(super) fn reset_seek_probe_for_test(force: Option<c_int>) {
 #[cfg(test)]
 pub(super) fn seek_log_for_test() -> Vec<i64> {
     SEEK_LOG.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+/// The sink pts of the Feeds of one stream (`es_data` 1 video, 2 audio) since
+/// [`reset_seek_probe_for_test`], in call order.
+#[cfg(test)]
+pub(super) fn feed_log_for_test(es_data: c_int) -> Vec<i64> {
+    FEED_LOG
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .filter(|(es, _)| *es == es_data)
+        .map(|(_, pts)| *pts)
+        .collect()
 }
 /// How many private-offset Segment verbs ran since [`reset_seek_probe_for_test`].
 #[cfg(test)]
@@ -906,6 +927,13 @@ unsafe fn sf_feed(p: *const u8, size: c_uint, pts: i64, es_data: c_int) -> c_cha
     note_dispatch("sf_feed");
     if !enabled() {
         return FEED_ERROR;
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        let mut feeds = FEED_LOG.lock().unwrap_or_else(|e| e.into_inner());
+        if feeds.len() < FEED_LOG_ROOM {
+            feeds.push((es_data, pts));
+        }
     }
     if es_data == 1 {
         FED_MAX_NS.fetch_max(pts, Relaxed);
