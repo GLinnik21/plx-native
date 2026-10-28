@@ -197,7 +197,7 @@ fn role_gain(bit: u32) -> [f32; 2] {
 /// one final-ratio-<= 8 stage (656 taps * 1024 phases * (8 B weight + 2 B index) + 4 KB of offsets, about 6.7 MB,
 /// reached only by an inexact ratio of that size; every real rate is far below it, and 96, 192, 384, 88.2,
 /// 176.4, 352.8 and 705.6 kHz are one phase) plus `k` 2:1 stages of under 1 KB each, `k` being at most 14 for
-/// any `i32` rate and an output of 16 kHz or more. The work per input frame is constant: about 82 multiply-adds a
+/// any `i32` rate and an output of 16 384 Hz or more. The work per input frame is constant: about 82 multiply-adds a
 /// channel for the first stage (2 * 41 taps per step of the ratio), and the 2:1 tail adds at most the same again.
 /// This departs from "halve from the top" on purpose, and there is no rate above which it refuses.
 pub(crate) struct Resampler {
@@ -385,7 +385,7 @@ impl Decimator {
 
     #[cfg(test)]
     fn table_bytes(&self) -> usize {
-        self.starts.capacity() * 4 + self.idx.capacity() * 2 + self.w.capacity() * 8
+        self.starts.len() * 4 + self.idx.len() * 2 + self.w.len() * 8
     }
 
     /// The table row for a fractional position of `pos_f / den`; a position that rounds up to the next whole frame
