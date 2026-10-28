@@ -5588,6 +5588,14 @@ pub fn related_claim_for_test(adapter: &MetadataAdapter) -> (bool, bool) {
     (rel.inflight, rel.withdrawn)
 }
 
+/// Test seam: how many Related answers wait in the mailbox for [`pump_related_pages`]. A job that
+/// answered the failure left one (with no window); a refused job left none, and gave the claim back
+/// the same way, so the claim alone cannot tell the two apart.
+#[cfg(any(test, feature = "test-support"))]
+pub fn related_landed_for_test(adapter: &MetadataAdapter) -> usize {
+    adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner()).landed.len()
+}
+
 /// Main-thread pump: install a Related window that landed on the page and the window it was read
 /// from. True when the row changed.
 pub fn pump_related_pages(state: &mut MetadataState, adapter: &MetadataAdapter) -> bool {

@@ -244,6 +244,7 @@ fn a_related_job_whose_server_has_no_client_answers_the_failure() {
 
     assert_eq!(claim(&store), (false, false), "answered: the claim came back");
     let adapter = store.adapter_for_test();
+    assert_eq!(adapter.rel_pages.lock().unwrap().landed.len(), 1, "one answer landed: a refusal lands none");
     assert!(adapter.rel_pages.lock().unwrap().landed.iter().all(|l| l.window.is_none()), "a failure, not a window");
     assert!(!store.pump_related());
     assert!(ask_next(&mut store), "and the next edge asks again");

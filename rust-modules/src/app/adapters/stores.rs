@@ -360,7 +360,9 @@ impl StoreRunner {
     /// supersedes. A `match` over every job kind, so a store that joins the lane must say what a
     /// newer detail request does to its parked jobs. A parked season or page job is kept: the request
     /// already superseded the season (`begin_detail_request`), so a parked season lands a generation
-    /// the pump discards, and a parked page lands keys the pump's item check rejects.
+    /// the pump discards, and a parked page lands keys the pump's item check rejects. A parked
+    /// Related job is kept too: its landing is rejected by the pump's item check, and it holds the
+    /// single-flight claim until it runs, as a worker still reading would.
     #[cfg(test)]
     fn retire_parked_details(held: &mut Vec<StoreJob>) {
         for parked in std::mem::take(held) {
@@ -3677,6 +3679,12 @@ mod tests {
         plx_data::metadata::related_claim_for_test(store.adapter_ref())
     }
 
+    /// How many answers wait in the mailbox for the pump: a read that answered the failure left one,
+    /// a launch the runner refused left none.
+    fn related_landed(store: &MetadataStore) -> usize {
+        plx_data::metadata::related_landed_for_test(store.adapter_ref())
+    }
+
     /// The registry holds the client: the worker starts, reads the next window from the server the
     /// launch resolved a client for, and posts its ONE answer. The server answers, so a window past
     /// the first is what a worker handed the client lands; one handed none lands a failure and the
@@ -3702,11 +3710,14 @@ mod tests {
     }
 
     /// Replay launches the same worker the recording did: there is no admission record to consult.
+    /// The server answers, so the window a worker handed the client lands tells a launch from a
+    /// refusal (which gives the claim back too, and lands nothing) and from a dropped client.
     #[test]
     fn a_related_job_launches_live_under_replay_as_the_inline_spawn_did() {
         let _serial = plx_base::testlock::serial();
         let _rig = CollectionRig;
-        let (_, store, job) = related_request_at(9);
+        let pms = Pms::serve_query(related_listing);
+        let (_, mut store, job) = related_request_at(pms.port);
         tape::init(None, true);
         tape::begin(Default::default(), Default::default());
 
@@ -3716,6 +3727,8 @@ mod tests {
         assert_eq!(tape::finish(), (vec![], None));
         tape::reset_for_test();
         assert_eq!(related_claim(&store), (false, false), "a worker started and answered");
+        assert!(store.pump_related(), "the worker read from the server and its window landed");
+        assert!(related_window(&store).1 > 24, "the window slid on past where it stood");
     }
 
     /// The registry holds no client for the page's server by the launch: the worker still starts and
@@ -3731,6 +3744,7 @@ mod tests {
         plx_base::task::drain_workers_for_test();
 
         assert_eq!(related_claim(&store), (false, false), "answered once, as a failure");
+        assert_eq!(related_landed(&store), 1, "the failure landed: a refused launch answers nothing");
         assert!(!store.pump_related(), "a failure installs nothing");
         assert_eq!(related_window(&store), (0, 24));
     }
@@ -3773,6 +3787,7 @@ mod tests {
         assert_eq!(runner.run_held(), 1);
 
         assert_eq!(related_claim(&store), (false, false), "the run answered");
+        assert_eq!(related_landed(&store), 1, "as a failure that landed");
         assert!(!store.pump_related(), "as a failure: nothing installs");
         assert_eq!(related_window(&store), (0, 24));
         assert!(related_ask(&mut store), "and the next edge asks again");
