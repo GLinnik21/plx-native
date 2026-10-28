@@ -1052,7 +1052,7 @@ fn the_lossy_gate_lets_the_app_direct_play_truehd_at_any_rate_in_both_modes() {
 }
 
 /// Issue #951: an LG B8 refused a 96 kHz AAC Load. The server is asked for 48 kHz at most on every
-/// audio codec, and the local gate agrees on that axis: a 96 kHz AAC (or AC-3) track does not
+/// audio codec the app does not resample (not DTS, TrueHD, FLAC, ALAC or LPCM), and the local gate agrees on that axis: a 96 kHz AAC (or AC-3) track does not
 /// direct-play in either mode and never wins the pick over a sibling that does, while an unstated
 /// rate (the planner's `0`) and a DTS core (48 kHz by format, whatever the container says) pass.
 #[test]

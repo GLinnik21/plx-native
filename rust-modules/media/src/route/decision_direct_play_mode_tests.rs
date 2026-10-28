@@ -180,7 +180,7 @@ fn a_96_khz_aac_is_converted_not_reloaded_natively_by_the_paths_that_skip_the_de
     assert_eq!(desired_audio_idx(), -1, "a 96 kHz AAC must not be staged for a native reload");
     assert!(commit_audio_selection(&mut ps, aac(48_000)));
     assert_eq!(desired_audio_idx(), 2, "a 48 kHz AAC reloads natively");
-    // Force Direct Play refuses it, as it refuses a 96 kHz FLAC, rather than failing at the Load
+    // Force Direct Play refuses it, as it refuses a 5.1 FLAC (a 96 kHz stereo one is resampled by the app and plays), rather than failing at the Load
     ps.direct_play_mode = DirectPlayMode::Forced;
     restore_direct_play_mode(DirectPlayMode::Forced);
     assert!(!commit_audio_selection(&mut ps, aac(96_000)));

@@ -1404,8 +1404,9 @@ mod tests {
     }
 
     /// Issue #951: PMS converts a 96 kHz FLAC to AAC and keeps 96 kHz, which an LG B8 refuses to
-    /// Load. So every audio codec the pipeline can be handed, not only the app-decoded PCM ones, is
-    /// asked for at 48 kHz at most, DTS excepted (`devcaps::audio_rate_bounded`). The profile and the
+    /// Load. So every audio codec the pipeline can be handed except the app-decoded lossless ones
+    /// (FLAC, ALAC, PCM: the app resamples them, `devcaps::pcm_load_rate`), DTS and TrueHD is asked
+    /// for at 48 kHz at most (`devcaps::audio_rate_bounded`). The profile and the
     /// local gate (`devcaps::audio_track_fits`) must agree per codec, or a path that skips
     /// `/decision` direct-plays what the profile has the server convert.
     #[test]

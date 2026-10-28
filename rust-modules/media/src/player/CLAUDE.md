@@ -359,7 +359,7 @@ something.
   (`ff_pcm::PcmConverter`, lossy shape). The resample is linear from a source below 48 kHz and a windowed-sinc low-pass decimator from one above it
   (`speed_audio::Resampler`, the one the speed path uses: a Kaiser-windowed sinc, `ZEROS 41, CUTOFF 1.0, BETA 12.8`, f64; flat within 0.01 dB to
   90% of the output's Nyquist and at least 120 dB down from `fout - 0.9 * Nyquist` up, measured: pass band within 5e-6 dB, worst alias -124.3 dB at 176.4 kHz and
-  -126.7 dB at 96 kHz; a source more than 8 times the output is first halved by exact 2:1 stages, so the tables stay under 6.7 MB for any rate). MP3 and Vorbis stay
+  -126.7 dB at 96 kHz; a source more than 8 times the output goes through one stage of ratio at most 8 down to `out * 2^k`, then `k` exact 2:1 stages (halved from the output up, so an odd rate gets one table, not one per stage); the tables stay under 6.7 MB for any rate). MP3 and Vorbis stay
   `audio_rate_bounded` (a 96 kHz Vorbis has not been through the TV), so a track above 48 kHz is the server's; DTS (a core is 48 kHz at most), TrueHD
   (decimated by the app) and FLAC, ALAC and LPCM (below) are exempt. **Lossless hi-res**: a mono or stereo FLAC, ALAC or LPCM track above 48 kHz is
   resampled by the app (`ff_pcm::PcmConverter`, lossless shape) to 48 kHz, or to 44.1 kHz for a multiple of 44.1 kHz (`devcaps::pcm_load_rate`, the one rule
