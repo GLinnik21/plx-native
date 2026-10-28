@@ -43,7 +43,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-28T04:27:33Z",
+ "generated": "2026-10-28T04:32:47Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -114,15 +114,15 @@
    "change7_pct": -24.5,
    "d30": 879.0,
    "delta30": -513.0,
-   "delta7": -119,
+   "delta7": -119.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 223,
-   "n_prev": 275,
+   "n_prev": 274,
    "now": 366,
-   "prev7": 485,
+   "prev7": 485.0,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -131,18 +131,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -60.2,
-   "change7_pct": -14.0,
+   "change30_pct": -60.3,
+   "change7_pct": -14.1,
    "d30": 867.5,
-   "delta30": -522.5,
-   "delta7": -56,
+   "delta30": -523.0,
+   "delta7": -56.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 91,
+   "n_now": 92,
    "n_prev": 125,
-   "now": 345,
+   "now": 344.5,
    "prev7": 401,
    "shown": true,
    "state": "flat",
@@ -395,18 +395,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 90.3,
-   "change7_pct": 9.3,
+   "change30_pct": 89.9,
+   "change7_pct": 9.1,
    "d30": 139,
-   "delta30": 125.5,
-   "delta7": 22.5,
+   "delta30": 125,
+   "delta7": 22,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 80,
+   "n_now": 81,
    "n_prev": 119,
-   "now": 264.5,
+   "now": 264,
    "prev7": 242,
    "shown": true,
    "state": "flat",
@@ -416,18 +416,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -9.9,
-   "change7_pct": 5.2,
+   "change30_pct": -9.4,
+   "change7_pct": 5.8,
    "d30": 223,
-   "delta30": -22,
-   "delta7": 10,
+   "delta30": -21.0,
+   "delta7": 11.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 79,
+   "n_now": 80,
    "n_prev": 119,
-   "now": 201,
+   "now": 202.0,
    "prev7": 191,
    "shown": true,
    "state": "flat",
@@ -438,17 +438,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 10.3,
+   "change7_pct": 10.7,
    "d30": null,
    "delta30": null,
-   "delta7": 15.5,
+   "delta7": 16,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 80,
+   "n_now": 81,
    "n_prev": 119,
-   "now": 165.5,
+   "now": 166,
    "prev7": 150,
    "shown": true,
    "state": "flat",
@@ -546,15 +546,15 @@
    "change30_pct": 12.5,
    "change7_pct": 0.0,
    "d30": 16,
-   "delta30": 2.0,
-   "delta7": 0.0,
+   "delta30": 2,
+   "delta7": 0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 80,
+   "n_now": 81,
    "n_prev": 119,
-   "now": 18.0,
+   "now": 18,
    "prev7": 18,
    "shown": false,
    "state": "flat",
@@ -696,6 +696,11 @@
      "pr": 1079,
      "sha": "44d4eda8d",
      "title": "Playback: TrueHD is decoded in the app behind the debug gate; high rates are low-passed before decimation"
+    },
+    {
+     "pr": 1082,
+     "sha": "a66624719",
+     "title": "Playback: Force Direct Play and a refused open decode lossy audio in the app, DTS enabled; surround is never mixed down "
     }
    ],
    "from": 164,
@@ -708,11 +713,6 @@
   {
    "change_pct": 29.1,
    "commits": [
-    {
-     "pr": 1077,
-     "sha": "4b30a63b7",
-     "title": "Playback: a manual pick refused before its picture gets one both-facets encode before the read-out"
-    },
     {
      "pr": 1087,
      "sha": "0f2979655",
@@ -757,6 +757,11 @@
      "pr": 1079,
      "sha": "44d4eda8d",
      "title": "Playback: TrueHD is decoded in the app behind the debug gate; high rates are low-passed before decimation"
+    },
+    {
+     "pr": 1082,
+     "sha": "a66624719",
+     "title": "Playback: Force Direct Play and a refused open decode lossy audio in the app, DTS enabled; surround is never mixed down "
     }
    ],
    "from": 987.0,
@@ -813,6 +818,11 @@
      "pr": 1079,
      "sha": "44d4eda8d",
      "title": "Playback: TrueHD is decoded in the app behind the debug gate; high rates are low-passed before decimation"
+    },
+    {
+     "pr": 1082,
+     "sha": "a66624719",
+     "title": "Playback: Force Direct Play and a refused open decode lossy audio in the app, DTS enabled; surround is never mixed down "
     }
    ],
    "from": 163,
@@ -853,7 +863,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 264.5
+   "now": 264
   }
  ],
  "slowest_local": [
