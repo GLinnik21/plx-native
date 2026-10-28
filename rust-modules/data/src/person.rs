@@ -267,6 +267,11 @@ pub struct Person {
     /// Exact registry identity this source vector was built from. Background roster refresh can
     /// add/remove/re-point while a page remains open, without going through `install_pms::reset`.
     roster_gen: u32,
+    /// Which servers `roster_gen` held, and which client object each answered with, as the first
+    /// pump saw them. A generation that moved with this unchanged (a retoken, a restated fact) left
+    /// every fetched shelf true, so [`sync_roster`] keeps the page instead of drawing its skeleton
+    /// again. `None` until a pump has read the registry's answer.
+    roster_sig: Option<Vec<(ServerId, u32)>>,
 }
 
 impl Person {
@@ -999,6 +1004,7 @@ fn open(
         credits: Vec::new(),
         credited: false,
         roster_gen: plx_plex::plex::server_roster_gen(),
+        roster_sig: None,
     });
     // A page with NO source at all has already answered — see `resettle`'s fold. Deriving it
     // here rather than hardcoding `landed: false` is what keeps that rule in one place.
@@ -1205,7 +1211,7 @@ impl PersonState {
                 }
             }
         }
-        let mut changed = sync_roster(self, adapter) || session_changed;
+        let mut changed = sync_roster(self, adapter, keys) || session_changed;
         self.retry_cd.tick();
         // Ascending, which is the order replay supplies recorded landings in. The work follows the
         // open page's sources plus whatever is outstanding, never the highest server id.
@@ -1377,9 +1383,17 @@ fn seed_dev_credits(state: &mut PersonState) -> bool {
     true
 }
 
+/// The servers the roster offers and the client object each answers with (a re-point makes a new
+/// one; a token rotation keeps it): what a page's sources depend on.
+fn roster_sig(keys: &ClientKeys) -> Vec<(ServerId, u32)> {
+    plx_plex::plex::server_ids()
+        .map(|sid| (sid, keys.key(sid).map_or(0, |key| key.instance)))
+        .collect()
+}
+
 /// Rebuild an open page's per-source projection at an exact registry identity boundary. Header
 /// profile facts survive; server-derived shelves and every old worker/mailbox do not.
-fn sync_roster(state: &mut PersonState, adapter: &PersonAdapter) -> bool {
+fn sync_roster(state: &mut PersonState, adapter: &PersonAdapter, keys: &ClientKeys) -> bool {
     let gen = plx_plex::plex::server_roster_gen();
     let Some((old, sid, key, name)) =
         state.current().map(|p| (p.roster_gen, p.sid, p.key.clone(), p.name.clone()))
@@ -1387,6 +1401,16 @@ fn sync_roster(state: &mut PersonState, adapter: &PersonAdapter) -> bool {
         return false;
     };
     if old == gen {
+        if let Some(p) = state.current.as_mut().filter(|p| p.roster_sig.is_none()) {
+            p.roster_sig = Some(roster_sig(keys));
+        }
+        return false;
+    }
+    // The generation also moves for a token that rotated or a fact restated about a server already
+    // in the table. Nothing fetched is stale then, and rebuilding would blank a loaded page.
+    let sig = roster_sig(keys);
+    if let Some(p) = state.current.as_mut().filter(|p| p.roster_sig.as_ref() == Some(&sig)) {
+        p.roster_gen = gen;
         return false;
     }
     state.supersede(adapter);
@@ -1398,6 +1422,7 @@ fn sync_roster(state: &mut PersonState, adapter: &PersonAdapter) -> bool {
     p.shelves = Default::default();
     p.landed = false;
     p.roster_gen = gen;
+    p.roster_sig = Some(sig);
     resettle(p);
     plx_machine::idle::invalidate();
     true
@@ -2592,7 +2617,7 @@ mod tests {
             self.run_jobs();
             changed
         }
-        fn sync_roster(&mut self) -> bool { sync_roster(&mut self.state, &self.adapter) }
+        fn sync_roster(&mut self) -> bool { sync_roster(&mut self.state, &self.adapter, &registry_keys()) }
         fn loading(&self) -> bool { self.state.view().loading() }
         /// Park every spawn: a backoff on each index the original layout had and on all three
         /// kinds of every registered server.
@@ -2710,6 +2735,28 @@ mod tests {
             ["s00000003", "s00000002", "s00000001", "s00000000"]);
         assert!(rows.iter().all(|r| r.local.is_none()),
             "provider identity survives even when no PMS can supply a local ratingKey");
+        owner.reset();
+        plx_plex::plex::reset_servers_for_test();
+    }
+
+    #[test]
+    fn a_roster_generation_that_moves_with_the_same_servers_keeps_the_loaded_page() {
+        let mut owner = Owner::default();
+        let _g = plx_base::testlock::serial();
+        plx_plex::plex::reset_servers_for_test();
+        owner.reset();
+        let a = plx_plex::plex::register_for_test("person-a", "127.0.0.1", 1, "a", "cid");
+        owner.open(a, "7", "plex://person/7", "Actor", "");
+        assert!(owner.apply(fx(a, K_MEDIA).unwrap(), media(vec![movie_on(a, "4")], Vec::new())));
+        assert!(owner.current().unwrap().landed);
+        assert!(!owner.sync_roster(), "the first read records the roster");
+        let before = plx_plex::plex::server_roster_gen();
+        plx_plex::plex::register_for_test("person-a", "127.0.0.1", 1, "rotated", "cid");
+        assert_ne!(before, plx_plex::plex::server_roster_gen(), "the retoken moved the generation");
+        assert!(!owner.sync_roster(), "nothing the page fetched is stale");
+        let p = owner.current().unwrap();
+        assert!(p.landed, "the page does not fall back to its skeleton");
+        assert_eq!(p.shelf(0).len() + p.shelf(1).len(), 1);
         owner.reset();
         plx_plex::plex::reset_servers_for_test();
     }
