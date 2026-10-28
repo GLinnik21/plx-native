@@ -15,8 +15,8 @@
 //!   (`Screen::lets_host_reflow`): its value reaches the page on the frame after the click and the
 //!   grid reflows under the open menu. The feed runs at the head of the frame, ahead of the page's
 //!   tick (`bridge::frame_ingest`), so a landing begins from the slots the old cards stood in.
-//! * **Open.** A page that mounts opens the store (`WatchlistCmd::Open`): the credential is
-//!   captured, the list read starts, a populated list is never blanked.
+//! * **Open.** A page that mounts opens the store (`WatchlistCmd::Open`): the Bridge reads the
+//!   account's identity (`Bridge::watchlist_input`) and the store takes it, the list read starts, a populated list is never blanked.
 //! * **Window.** The titles near the focus are the store's hold window: the matched copies whose
 //!   watch state the application owes a read-back (`Bridge::held_keys`). A window, not a cap: the
 //!   focus moves it over every row.

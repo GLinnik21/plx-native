@@ -1,5 +1,5 @@
 //! The catalog store (plan §2.4 W6): owns `GET discover /library/metadata/<hex>` for the catalog
-//! page, captures [`WatchlistAuth`] when it opens, and reads membership from `WatchlistStore`
+//! page, takes its [`WatchlistAuth`] from the input the Bridge hands `open`, and reads membership from `WatchlistStore`
 //! (never from a copy of its own).
 //!
 //! Main-thread state plus an `Arc` mailbox. The store starts no worker: `open(hex)` puts one
@@ -61,8 +61,8 @@ impl Mailbox {
     }
 }
 
-/// The one read a [`StoreJob::Catalog`] carries: who to ask as and which title, captured by the
-/// step. The request id is the job's address. The seam it reads through rides on the job's port
+/// The one read a [`StoreJob::Catalog`] carries: who to ask as and which title, taken by the
+/// step from the input the Bridge read. The request id is the job's address. The seam it reads through rides on the job's port
 /// ([`CatalogPort`]), so the request itself is a plain value.
 #[derive(Clone, Debug)]
 pub struct CatalogReq {
@@ -258,7 +258,7 @@ impl CatalogStore {
         self.bump();
     }
 
-    /// Emit the job that reads the open title as the captured identity.
+    /// Emit the job that reads the open title as the identity `open` took from its input.
     fn start(&mut self) {
         let (Some(hex), Some(auth)) = (self.hex, self.auth.clone()) else {
             self.owed = false;

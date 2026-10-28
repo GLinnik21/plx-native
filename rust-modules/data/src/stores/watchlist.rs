@@ -42,8 +42,8 @@ const RETRY_FRAMES: u32 = 120;
 /// Every mutation of the watchlist store.
 #[derive(Clone, Debug)]
 pub enum WatchlistCmd {
-    /// The page mounted (or the tab was entered): capture the identity if the epoch has none and
-    /// read the list. A populated list is never blanked by it.
+    /// The page mounted (or the tab was entered): take the identity from the input if the epoch has none
+    /// and read the list. It is stepped through [`WatchlistStore::run_with_input`]. A populated list is never blanked by it.
     Open,
     /// Read the list again behind the rows now held (resume, a write burst, a watched mark).
     Reread,

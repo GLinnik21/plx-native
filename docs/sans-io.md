@@ -175,8 +175,8 @@ reads). Person has up to six requests out at once, so a pump emits several jobs,
 in ascending slot order. The catalog page's read is the fourth: its one worker start is gone from
 `data/src/stores/catalog.rs`. Unlike the other three it names no server and no client (it is a
 plex.tv read as the captured identity), so it takes no `ClientKeys` and no tape admission, and the
-Catalog step is not pure either (the bullet headed "What the Catalog step still reads" lists what it
-still reads). Subtitle search and the view-state read-back are the fifth and sixth (the bullet
+Catalog step reads no registry once it takes the seated profile from the Bridge (the bullet headed
+"The Watchlist and catalog session input"). Subtitle search and the view-state read-back are the fifth and sixth (the bullet
 headed "Subtitle search and the view-state read-back"). Home's Hubs read is the seventh (the bullet
 headed "The Hubs lane"): the worker start and the `client_for` read are gone from `data/src/pms.rs`
 and its three `data-pms` ledger files are deleted. The Search screen's per-source fetches and its
@@ -190,7 +190,7 @@ headed "The listing lanes"): their two worker starts and two registry reads are 
 `data/src/browse/mod.rs`. The Library's source discovery (the section list, the server's name and the
 item counts) is the twelfth (the bullet headed "The discovery lane"): its worker start and its one
 registry read are gone from `data/src/browse/mod.rs`, and its `data-browse` workers ledger file is
-deleted. The Home pins take the session from the Bridge (the bullet headed "The pins' session input"); the rest of `browse/` (the roster and the gate reads) is still on its ledger. The Metadata store's
+deleted. The Home pins take the session from the Bridge (the bullet headed "The pins' session input"), and so do the Watchlist and catalog stores, for the seated profile and its plex.tv identity (the bullet headed "The Watchlist and catalog session input"), which deletes three `data-watchlist` globals lines; the rest of `browse/` (the roster and the gate reads) is still on its ledger. The Metadata store's
 season switch and episode-page window are the tenth (the bullet headed "The Metadata reads"): their
 two worker starts and the `client_for` reads of `fetch_episodes` and `fetch_episode_page` are gone
 from `data/src/metadata.rs`; the Related row's tail window read joins them in the same bullet, and its
@@ -271,8 +271,8 @@ worker start and the `client_for` read inside that worker are gone too. The hous
   `Bridge::collection_pump` refill the keys, step, then run
   `Bridge::start_store_jobs_of(StoreId::Person)` and `(StoreId::Collection)`;
   `Bridge::catalog_open` and `Bridge::catalog_pump` step the Catalog store and run
-  `(StoreId::Catalog)` (no keys to refill; the pump drains because its retry and its profile-switch
-  re-open both emit). `Bridge::search_run` drains `(StoreId::Search)` after every command (a recents
+  `(StoreId::Catalog)` (no keys to refill; the pump drains because its retry emits and the profile-switch
+  re-open it takes (`CatalogStore::take_reopen`) goes through `Bridge::catalog_open`). `Bridge::search_run` drains `(StoreId::Search)` after every command (a recents
   edit emits its write there) and `Bridge::search_pump` refills the keys, steps and drains it.
   Browse's reads (the section hubs, the filter menus' directory reads and the grid's pages) are
   drained at five entries: `Bridge::browse_run` (which
@@ -359,13 +359,34 @@ worker start and the `client_for` read inside that worker are gone too. The hous
   and asks again after `RETRY_FRAMES` (120) pumps, with no job in between. That refusal is applied
   one pump later than the failed spawn it replaces was. A landing, a refusal or a panic: every job
   is answered once.
-- **What the Catalog step still reads.** `open` and `pump` call the store's `CatalogIo`, whose
-  production seam (`LiveCatalogIo`) calls `WatchlistAuth::capture()` and `WatchlistAuth::is_current()`
-  in `data/src/watchlist.rs`, whose `session::peek` and `current_snapshot` reads stay on the
-  `data-watchlist` globals ledger (`capture::current_snapshot`, `capture::session::peek`,
-  `is_current::current_snapshot`) and leave only with the Watchlist store's own migration. The
-  Catalog step is therefore not pure, and claims no purity. Its test seam, `with_spawn_for_test`, is
-  gone: a test runs the emitted job through `finish_catalog_job`.
+- **The Watchlist and catalog session input.** Neither store reads the registry to learn whose list it
+  reads. `WatchlistAuth::capture` is gone, `WatchlistAuth::is_current` is a pure comparison against a
+  `&CurrentProfile`, and `capture_auth` / `is_current` left the `WatchlistIo` and `CatalogIo` seams. This is
+  the third consumer of the Search scope's pattern (`Bridge::household_ids`) and the Browse pins'
+  (`Bridge::browse_session`): the Bridge reads, the store takes the value. No job kind and no runner arm is
+  added; the five worker starts, `find`, `guid_of`, `copy_rank` and the clock read are W-2's.
+  - **Two helpers, two shapes.** `Bridge::seated_profile` is `current_snapshot()`, an `Arc` clone handed to
+    both stores' frame passes (`WatchlistStore::pump_with_gate`, `CatalogStore::pump`): a pass notices a
+    switch or a sign-out in the same frame as before and captures nothing. `Bridge::watchlist_input` builds a
+    `WatchlistInput` (the profile and `Option<WatchlistAuth>`) from ONE snapshot, `plex_tv_credential` and the
+    client id, and is called only where a capture can happen: `WatchlistCmd::Open` (`watchlist_feed`,
+    `watchlist_open_if_idle`, `catalog_feed`) and `CatalogStore::open` (`Bridge::catalog_open`). It is built
+    per call and never kept, so a capture reads the credential at the moment it is made.
+    `plex_tv_credential` reads the registry (`peek()`, the legacy-owner fallback), so it is called there and
+    never from `data/`.
+  - **`run(cmd)` holds no input.** Every command but `Open` runs through it; an `Open` is refused (a
+    `debug_assert`, and a dropped command with a log line in a release build), and `run_with_input` is the
+    stepping entry. The watchlist's `Machine` arms hand the step neither input nor profile: a `Cmd` goes
+    through `run`, and a `Pump` is refused the same way, because a pump handed no profile would read as a
+    sign-out. Nothing sends either.
+  - **The catalog re-open.** A landing for a profile that is gone is dropped in `CatalogStore::pump`, which
+    can capture nothing: it clears the identity and records the title as owed a read (`take_reopen`).
+    `Bridge::catalog_pump` takes it and calls `catalog_open`, which reads the input then and starts the job,
+    all in the pump's own call. An `open` or a `reset` clears the owed title.
+  - **What stays.** The Watchlist's `copy_rank::current_server`, `find::client_for` and `guid_of::client_for`
+    (W-2), `server_ids` / `server_probe_result` / `server_roster_gen` / `server_facts_gen`, and the
+    `today()` clock read. The test entries (`WatchlistStore::pump`, `run_for_test`, `WatchlistInput::for_test`)
+    hand a generation-1 seat.
 - **A refusal the step can observe.** The runner may decline to start a job: the thread ceiling, a
   registry that moved on between the step and the launch (the client the job names is no longer the
   one the slot holds), or a `Held` runner whose client is gone. It then calls the port's `refused`,
