@@ -135,6 +135,46 @@ fn open(s: &mut CatalogStore, hex: [u8; 12]) {
     run_emitted(s);
 }
 
+fn auth_of(input: &crate::watchlist::WatchlistInput) -> WatchlistAuth {
+    input.auth().expect("a signed-in input").clone()
+}
+
+/// `open` handed the input the app read, the job it emitted run. (The base reads its scripted seam.)
+fn open_handed(s: &mut CatalogStore, hex: [u8; 12], input: &crate::watchlist::WatchlistInput) {
+    let _ = input;
+    s.open(hex);
+}
+
+/// One frame pass handed the profile the app read. (The base reads its scripted seam.)
+fn pump_handed(s: &mut CatalogStore, profile: &plx_plex::plex::session::CurrentProfile) -> bool {
+    let _ = profile;
+    s.pump()
+}
+
+/// The scripted seam captures generation 1; the input carries generation 7, and the read goes out as it.
+#[test]
+fn open_captures_the_handed_auth() {
+    let fake = Fake::new(Ok(item("Handed", None)));
+    let mut s = store(&fake);
+    open_handed(&mut s, hex(), &crate::watchlist::WatchlistInput::for_test(7));
+    let (job, _) = one(&mut s);
+    let handed = auth_of(&crate::watchlist::WatchlistInput::for_test(7));
+    assert_eq!(job.req, CatalogReq::for_test(handed, hex()), "the read goes out as the handed identity");
+}
+
+/// The scripted seam says the profile is current; the profile the app hands is another one, so a
+/// landing in hand is dropped and the pass reports a change, whatever the seam says.
+#[test]
+fn a_switch_noticed_from_the_handed_profile_drops_the_landing() {
+    let fake = Fake::new(Ok(item("Old profile", None)));
+    let mut s = store(&fake);
+    open_handed(&mut s, hex(), &crate::watchlist::WatchlistInput::for_test(1));
+    run_emitted(&mut s);
+    let switched = crate::watchlist::WatchlistInput::profile_for_test(2);
+    assert!(pump_handed(&mut s, &switched), "the pass that notices the switch reports a change");
+    assert!(!matches!(s.load, Load::Loaded(_)), "the old profile's answer is not shown");
+}
+
 #[test]
 fn a_found_title_loads_with_its_record() {
     let fake = Fake::new(Ok(item("Coming Film", Some("2027-03-12"))));

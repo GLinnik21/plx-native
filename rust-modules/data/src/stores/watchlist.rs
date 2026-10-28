@@ -1268,6 +1268,18 @@ pub(super) mod tests {
         WatchlistStore::with_io(mock.clone()).with_spawn_for_test(inline)
     }
 
+    /// `Open` handed the input the app read. (The base reads its scripted seam instead.)
+    fn open_handed(s: &mut WatchlistStore, input: &crate::watchlist::WatchlistInput) -> bool {
+        let _ = input;
+        s.run(WatchlistCmd::Open)
+    }
+
+    /// One frame pass handed the profile the app read. (The base reads its scripted seam instead.)
+    fn pump_handed(s: &mut WatchlistStore, profile: &plx_plex::plex::session::CurrentProfile) -> bool {
+        let _ = profile;
+        s.pump()
+    }
+
     /// Open, then pump until nothing is left to land.
     fn load(s: &mut WatchlistStore) {
         s.run(WatchlistCmd::Open);
@@ -1403,6 +1415,44 @@ pub(super) mod tests {
         assert_eq!(s.view().status(), Status::Idle);
         assert!(!s.state.ledger.busy(), "the old profile's queued write is never sent to the new one");
         assert!(mock.writes.lock().unwrap().is_empty());
+    }
+
+    // ---- the session input (docs/sans-io.md S5): the step is handed the seated profile ----------
+
+    /// The scripted seam says the profile is current and holds generation 1; the profile the app
+    /// hands is generation 2, so only a step that reads what it is handed notices the switch.
+    #[test]
+    fn a_profile_switch_is_noticed_from_the_handed_profile() {
+        let mock = three();
+        let mut s = store(&mock);
+        load(&mut s);
+        let epoch = s.state.epoch;
+        let switched = crate::watchlist::WatchlistInput::profile_for_test(2);
+        assert!(pump_handed(&mut s, &switched), "the pass that notices the switch reports a change");
+        assert_ne!(s.state.epoch, epoch, "a new epoch");
+        assert!(s.view().is_empty());
+        assert_eq!(s.view().status(), Status::Idle);
+    }
+
+    /// The scripted seam would capture generation 1; the input carries generation 7.
+    #[test]
+    fn open_captures_the_handed_auth() {
+        let mock = three();
+        let mut s = store(&mock);
+        open_handed(&mut s, &crate::watchlist::WatchlistInput::for_test(7));
+        assert_eq!(s.state.auth.as_ref().map(|a| a.generation), Some(7));
+    }
+
+    /// The scripted seam would capture an identity; the input carries none (signed out, or no
+    /// plex.tv credential): the page says so and reads nothing.
+    #[test]
+    fn an_input_with_no_auth_is_no_account() {
+        let mock = three();
+        let mut s = store(&mock);
+        open_handed(&mut s, &crate::watchlist::WatchlistInput::signed_out_for_test(1));
+        assert_eq!(s.view().status(), Status::NoAccount);
+        s.pump();
+        assert_eq!(mock.pages.load(Ordering::SeqCst), 0, "no identity, no read");
     }
 
     #[test]

@@ -17,10 +17,11 @@ pub mod order;
 use ledger::{Intent, PendingWrite, WriteOutcome};
 use model::{Asked, Kind, Reach, ServerMatch, WatchRow};
 use plx_plex::plex::account::AccountClient;
-use plx_plex::plex::session::UserRef;
+use plx_plex::plex::session::{CurrentProfile, UserRef};
 use plx_plex::plex::watchlist::{WatchItem, WatchKind, WatchPage, WatchlistError, MAX_PAGE};
 use plx_plex::plex::{GuidKind, GuidLookupError, GuidMatch, ServerId, GUIDS_PER_REQUEST};
 use std::collections::HashSet;
+use std::sync::Arc;
 
 /// Who a worker acts for, captured on the MAIN thread at spawn (`session::plex_tv_credential`) and
 /// owned by the worker: it never reads the session itself. `generation` is the profile generation
@@ -62,6 +63,59 @@ impl WatchlistAuth {
 
     fn client(&self) -> AccountClient {
         AccountClient::new(&self.client_id, Some(&self.credential))
+    }
+}
+
+/// **What the app reads from the session for the two plex.tv stores (docs/sans-io.md S5):** the
+/// seated profile and, when a capture can happen, the identity to act as. The Bridge reads the
+/// registry (`Bridge::watchlist_input`) and hands this to a step; nothing here reads it. Built per
+/// call, never kept: a capture reads the credential at the moment it is made.
+pub struct WatchlistInput {
+    profile: Arc<CurrentProfile>,
+    auth: Option<WatchlistAuth>,
+}
+
+impl WatchlistInput {
+    /// The input for `profile`, whose plex.tv `credential` and the install's `client_id` the caller
+    /// read. `auth` is `None` when there is no profile, no credential or no client id: the page then
+    /// has no list to read.
+    pub fn new(profile: Arc<CurrentProfile>, credential: Option<String>, client_id: &str) -> Self {
+        let auth = match (profile.user.clone(), credential) {
+            (Some(user), Some(credential)) if !client_id.is_empty() => Some(WatchlistAuth {
+                client_id: client_id.to_owned(),
+                credential,
+                user,
+                generation: profile.generation,
+            }),
+            _ => None,
+        };
+        Self { profile, auth }
+    }
+
+    pub fn profile(&self) -> &CurrentProfile {
+        &self.profile
+    }
+
+    pub fn auth(&self) -> Option<&WatchlistAuth> {
+        self.auth.as_ref()
+    }
+
+    /// A seated profile of `generation` with a credential: what a signed-in test hands a step.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn for_test(generation: u32) -> Self {
+        Self::new(Self::profile_for_test(generation), Some("test-credential".into()), "test-client")
+    }
+
+    /// The same seat with no plex.tv credential: the page has no account to read.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn signed_out_for_test(generation: u32) -> Self {
+        Self::new(Self::profile_for_test(generation), None, "test-client")
+    }
+
+    /// The profile a frame pass is handed: the default user seated at `generation`.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn profile_for_test(generation: u32) -> Arc<CurrentProfile> {
+        Arc::new(CurrentProfile { user: Some(UserRef::default()), generation, stamp: String::new() })
     }
 }
 
