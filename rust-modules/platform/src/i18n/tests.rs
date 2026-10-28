@@ -622,3 +622,61 @@ fn render_in_english_is_scoped_and_nests() {
     assert_eq!(inside, "3.5");
     assert_eq!(current().language(), Language::Be);
 }
+
+#[test]
+fn polish_month_day_captions_use_genitive_and_abbreviations() {
+    let cx = LocaleContext::resolve(Preference::System, Some("pl-PL"), None, None, None);
+    let expected = [
+        ("12 sty", "12 stycznia"), ("12 lut", "12 lutego"), ("12 mar", "12 marca"),
+        ("12 kwi", "12 kwietnia"), ("12 maj", "12 maja"), ("12 cze", "12 czerwca"),
+        ("12 lip", "12 lipca"), ("12 sie", "12 sierpnia"), ("12 wrz", "12 września"),
+        ("12 paź", "12 października"), ("12 lis", "12 listopada"), ("12 gru", "12 grudnia"),
+    ];
+    for (i, (medium, long)) in expected.iter().enumerate() {
+        let month = (i + 1) as u8;
+        assert_eq!(cx.month_day(month, 12, MonthWidth::Medium).as_deref(), Some(*medium));
+        assert_eq!(cx.month_day(month, 12, MonthWidth::Long).as_deref(), Some(*long));
+    }
+    assert_eq!(cx.month_day(2, 29, MonthWidth::Long).as_deref(), Some("29 lutego"));
+    assert!(cx.month_day(2, 30, MonthWidth::Long).is_none());
+}
+
+#[test]
+fn polish_catalog_counts_follow_polish_plurals_even_with_english_formatting() {
+    let pl = LocaleContext::resolve(Preference::Pl, None, Some("en-US"), None, None);
+    for (count, expected, category) in [
+        (0, "0 odcinków", PluralCategory::Many),
+        (1, "1 odcinek", PluralCategory::One),
+        (2, "2 odcinki", PluralCategory::Few),
+        (5, "5 odcinków", PluralCategory::Many),
+        (11, "11 odcinków", PluralCategory::Many),
+        (12, "12 odcinków", PluralCategory::Many),
+        (14, "14 odcinków", PluralCategory::Many),
+        (21, "21 odcinków", PluralCategory::Many),
+        (22, "22 odcinki", PluralCategory::Few),
+        (25, "25 odcinków", PluralCategory::Many),
+        (101, "101 odcinków", PluralCategory::Many),
+        (112, "112 odcinków", PluralCategory::Many),
+        (122, "122 odcinki", PluralCategory::Few),
+    ] {
+        assert_eq!(pl.plural(count), category);
+        assert_eq!(msg::browse_detail_episodes_in(&pl, count), expected);
+    }
+    let mut fraction = Decimal::from(15);
+    fraction.multiply_pow10(-1);
+    assert_eq!(pl.plural.category_for(&fraction), PluralCategory::Other);
+}
+
+#[test]
+fn polish_system_locale_resolves_with_regional_formatting_and_latin_script() {
+    for tag in ["pl", "pl-PL", "pl_PL.UTF-8"] {
+        let cx = LocaleContext::resolve(Preference::System, Some(tag), None, None, None);
+        assert_eq!(cx.language(), Language::Pl, "{tag}");
+        assert_eq!(cx.preference(), Preference::System);
+    }
+    let pl = LocaleContext::resolve(Preference::Pl, None, None, None, None);
+    assert_eq!(pl.format_locale(), "pl-PL");
+    assert_eq!(pl.decimal(45, 1), "4,5");
+    assert_eq!(pl.date(2026, 10, 25).as_deref(), Some("25.10.2026"));
+    assert_eq!(LocaleContext::resolve(Preference::System, Some("pl-Cyrl"), None, None, None).language(), Language::En);
+}

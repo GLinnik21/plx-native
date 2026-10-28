@@ -268,6 +268,20 @@ impl Engine {
     }
 }
 
+/// Test builds only: an Engine dropped while it still holds its demuxer's handle was never torn
+/// down, so that thread may still be writing into `aq_video`/`aq_audio`, which this drop frees.
+/// `teardown` always takes the handle and joins it first. The hostsim rigs used to drop a
+/// reloaded Engine straight out of their `PlayerAdapter`: the demuxer's `aq_set_eof` then landed
+/// in freed memory, a heap corruption that surfaced later as a crash in some unrelated free.
+#[cfg(test)]
+impl Drop for Engine {
+    fn drop(&mut self) {
+        if self.stream_th.is_some() && !std::thread::panicking() {
+            panic!("an Engine was dropped with its demuxer still owned: stop it with teardown first");
+        }
+    }
+}
+
 // The `ENGINE` slot is `App.adapters.player` since phase 9 — a field, reached as
 // `pa: &mut PlayerAdapter` from the loop. `player::adapter` carries the confinement argument the
 // four `static mut` accessors used to carry here, and says what the owned slot proves that the
