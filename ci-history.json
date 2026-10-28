@@ -1,4 +1,4 @@
-{"updated":"2026-10-28T00:11:03Z",
+{"updated":"2026-10-28T00:15:20Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -3819,7 +3819,8 @@
 {"id":40604371367,"at":"2026-10-27T23:46:13Z","sha":"a52f6ef4e","title":"Merge series/inapp-decode-mp3 into series/inapp-decode-truehd (main's PCM lead included)","pr":1079,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":274,"macOS simulator build + launch":352,"Linux simulator build + launch":286,"Windows launcher syntax":19}},
 {"id":40604471243,"at":"2026-10-27T23:47:08Z","sha":"e54dc1ec3","title":"pl: translate the keys main gained (instant D-pad seeking, recovered-refusal preview, webOS build placeholder)","pr":1039,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{}},
 {"id":40604687459,"at":"2026-10-27T23:49:41Z","sha":"c97d7f55d","title":"pl: shorten the instant D-pad seeking label to fit the Settings column","pr":1039,"event":"pull_request","conclusion":"success","attempt":2,"jobs":{"macOS simulator build + launch":213,"Windows launcher syntax":24,"macOS tests against bundled FFmpeg and ASS":161,"Linux simulator build + launch":278},"wall":319},
-{"id":40605429634,"at":"2026-10-27T23:55:48Z","sha":"e60b2a922","title":"Add Polish (pl) localization","pr":1039,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":16,"Linux simulator build + launch":272,"macOS tests against bundled FFmpeg and ASS":204,"macOS simulator build + launch":190}}
+{"id":40605429634,"at":"2026-10-27T23:55:48Z","sha":"e60b2a922","title":"Add Polish (pl) localization","pr":1039,"conclusion":"success","attempt":1,"jobs":{"Windows launcher syntax":16,"Linux simulator build + launch":272,"macOS tests against bundled FFmpeg and ASS":204,"macOS simulator build + launch":190}},
+{"id":40606962990,"at":"2026-10-28T00:09:43Z","sha":"c64de4bab","title":"Merge series/inapp-decode-truehd into series/inapp-decode-enable (main's PCM lead and #1077/#1080 included)","pr":1082,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":324,"Windows launcher syntax":19,"macOS tests against bundled FFmpeg and ASS":233,"Linux simulator build + launch":285}}
 ],
 "nightly":[
 {"id":35412511191,"at":"2026-09-19T01:23:39Z","sha":"6d0599e36","title":"ci: nightly runs as a dry run on the pull requests that change it","pr":140,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"plan today's nightly":10},"failed":["ARM build + gates / build + verify"]},
