@@ -476,8 +476,10 @@ plx_base::dynlib! {
     fn avcodec_receive_frame(ctx: *mut AVCodecContext, frame: *mut c_void) -> c_int;
     // A seek: drop what the decoder carries from before it. Public libavcodec API since the
     // 1.x series and in the bundled `libavcodec-plx` (the library `dynlib!` opens is OUR build,
-    // not the television's): an export of both the ARM and the host build, `ci/check-elf.sh` reads
-    // the dynamic table of the former.
+    // not the television's): an export of both the ARM and the host build, checked by hand with
+    // `readelf --dyn-syms`. No CI step compares a `dynlib!` table with the bundled library's
+    // exports (`ci/check-elf.sh` reads only the app binary): a name the build did not export would
+    // leave this whole table `Incomplete` at start-up and refuse playback on every firmware.
     fn avcodec_flush_buffers(ctx: *mut AVCodecContext);
     fn avcodec_find_decoder_by_name(name: *const c_char) -> *const AVCodec;
 }}

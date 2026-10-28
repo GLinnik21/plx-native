@@ -347,6 +347,13 @@ something.
   and a pipeline refusal of it reads out; a track of one or two channels is no downmix and keeps the app decode. Under
   Auto (D2) the surround downmix is only the very last rung of the ladder (below), after every server option was
   refused, and stays labelled; Auto's default for a 5.1 track the set cannot take is the server conversion that keeps its channels.
+  **One exception, inside a request:** once the app-decode rung has put a codec in force (`Caps::app_lossy_in_force`) for a track of at most two channels,
+  the in-force arm of `Caps::app_decodes_lossy_track` admits a track of ANY width, so a later pick of a surround track of that
+  codec (`commit_audio_route`, `audio_track_direct_plays`) is a native switch that is mixed down and labelled "played in stereo"
+  WITHOUT that track's own server conversion or manual encode asked first. Admitting the mix-down only for a rung entered
+  for a surround source would send that pick to the server, and a refused switch rebuild is a `ClaimTail::Rejected` ("current
+  stream retained", `pump::rejected_tail`), not a `LoadRefusal` the `OpenRecovery` machine steps, so it would not reach the
+  labelled stereo play the ladder gives an open. Not built; the next request starts from `start` again.
   The `appdecodelossy` debug trigger (`AppLossy::All`) is the one explicit override. Auto never decodes in
   the app on its own, and Force Direct Play's pick is three passes (`route/plan.rs`): (1) a native track that honours the intent
   (the selected track, or a same-language non-commentary sibling: `StandIn::SameKind`), (2) the app's decode of the
