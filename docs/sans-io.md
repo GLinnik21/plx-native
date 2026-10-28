@@ -573,7 +573,9 @@ worker start and the `client_for` read inside that worker are gone too. The hous
   registry: each is handed the `&Session` the app read. This is the second consumer of the pattern Search's
   household scope began (`Bridge::household_ids`, the Bridge reads, the store takes the value), and of the
   controlled run's `preferences`, which is the same value handed under the `""` key. No job kind and no
-  runner arm is added; every replay fixture is byte-identical.
+  runner arm is added; every replay fixture is byte-identical. One path is not yet handed: the roster
+  reconcile (`sync_roster_owned` -> `reconcile_pins_from` -> `pin_record_for`) is given
+  `sync_roster_owned`'s own in-machine `peek()`, which stays on the ledger until B-E.
   - **Observe, then read.** `Bridge::browse_session` is the one production reader: it calls
     `BrowseStore::observe_pin_write` FIRST, then `session::peek()`. The write's receipt is sent after the
     storage worker installed the written session, so a session read after seeing the receipt contains the

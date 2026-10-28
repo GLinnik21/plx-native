@@ -104,13 +104,13 @@ impl TestBrowse {
     }
 
     pub(super) fn pump(&mut self) -> crate::stores::StoreOutcome {
+        self.observe_pin_write();
+        let session = plx_plex::plex::session::peek();
         let roster = self.state.sync_roster_owned();
         if roster.retire_adapter {
             self.adapter = Arc::new(BrowseAdapter::default());
         }
         self.refill();
-        self.observe_pin_write();
-        let session = plx_plex::plex::session::peek();
         let mut outcome = self.state.pump_owned_with_gate(&self.adapter, plx_machine::landgate::fixture_gate(),
             &self.keys, &session, &mut self.jobs);
         outcome.changed |= roster.changed;

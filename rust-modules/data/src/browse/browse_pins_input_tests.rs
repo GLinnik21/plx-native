@@ -216,3 +216,26 @@ fn a_pin_command_sent_through_the_sessionless_entry_is_refused() {
     let mut store = crate::stores::browse::BrowseStore::default();
     store.run(crate::stores::browse::BrowseCmd::ApplyPins(vec![(0, true)]), &ClientKeys::default());
 }
+
+/// The harness pump observes the write BEFORE its roster sync, as `Bridge::browse_session` does
+/// before `BrowseStore::pump_with_gate`: the roster reconcile then sees a saved write as saved.
+#[test]
+fn the_harness_pump_observes_the_write_before_the_roster_sync() {
+    let _serial = plx_base::testlock::serial();
+    let t = TempPins::new("pins-input-pump-order");
+    t.watching("u-owner");
+    plx_plex::plex::reset_servers_for_test();
+    let _cleanup = RegisteredCleanup;
+    let sid = plx_plex::plex::register_for_test("pins-order", "127.0.0.1", 9, "tok", "cid");
+    assert!(plx_plex::plex::set_current(sid));
+    let mut source = a_source("mac-mini", "", true);
+    source.sid = sid;
+    let mut browse = TestBrowse::default();
+    browse.seed_sources(vec![source]);
+    browse.append_sections(0, vec![(1, "Movies".into(), SecKind::Movie), (2, "TV Shows".into(), SecKind::Show)]);
+    browse.state.apply_pins(&[(1, false)]);
+    plx_base::storage_worker::drain_for_test();
+    t.watching("u-owner");
+    let _ = browse.pump();
+    assert_eq!(pending_write_saved(&browse), None, "the roster sync consumed the saved write");
+}
