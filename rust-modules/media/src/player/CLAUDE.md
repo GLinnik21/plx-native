@@ -353,8 +353,8 @@ something.
   declares `PCM`, stereo 48 kHz S16: `route::stream_pcm`), is announced without a table row, the track menu says a surround one plays in
   stereo (`route::audio_decoded_in_app`), and
   `ff_pcm::PcmDecoder` decodes it (DTS: the core only, `core_only`), downmixes by the frame's channel layout and resamples it
-  (`Stereo48`). The resample is linear from a source below 48 kHz and a windowed-sinc low-pass decimator from one above it
-  (`speed_audio::Decimator`: 88.2, 96, 176.4, 192 kHz; flat to 20 kHz, the alias of a tone above 28 kHz about 100 dB down), the
+  (`ff_pcm::PcmConverter`, lossy shape). The resample is linear from a source below 48 kHz and a windowed-sinc low-pass decimator from one above it
+  (`speed_audio::Decimator`: 88.2, 96, 176.4, 192 kHz; flat within 0.01 dB to 90% of the output's Nyquist, everything that can fold into that band 120 dB down), the
   same `Resampler` the speed path uses. MP3 and Vorbis stay `audio_rate_bounded` (a 96 kHz Vorbis has not been through the TV), so
   a track above 48 kHz is the server's; DTS (a core is 48 kHz at most) and TrueHD (decimated by the app) are exempt. TrueHD is
   decoded as FFmpeg's `truehd` decodes it, up to the 7.1 bed; an Atmos object substream is not rendered. Its access units are

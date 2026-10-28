@@ -177,7 +177,7 @@ fn role_gain(bit: u32) -> [f32; 2] {
 
 /// **The one resampler: `from` Hz in, `to` Hz out, f64 frames, stateful across calls so chunk edges are
 /// seamless.** The speed path (`SpeedAudio`) and the lossy app-decoded path
-/// ([`Stereo48`](crate::ff_pcm::Stereo48)) run it to [`OUT_RATE`]; `to` is any rate the caller needs.
+/// ([`PcmConverter`](crate::ff_pcm::PcmConverter), lossy shape) run it to [`OUT_RATE`]; `to` is any rate the caller needs.
 ///
 /// * `from == to`: the frames are copied.
 /// * `from < to` (44.1, 32, 22.05 kHz to 48): linear interpolation. Nothing folds back when the rate is

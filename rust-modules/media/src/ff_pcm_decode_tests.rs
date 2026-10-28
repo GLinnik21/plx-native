@@ -152,8 +152,8 @@ unsafe fn decode_file_with(path: &Path, out: PcmOut, inspect: impl FnOnce(&PcmDe
         let mut failure = None;
         while av_read_frame(fmt, pkt) >= 0 {
             if (*pkt).stream_index as usize == ai {
-                match dec.decode(pkt) {
-                    Ok(pcm) => all.extend_from_slice(pcm),
+                match dec.decode(pkt, pts_ns(pkt, *streams.add(ai))) {
+                    Ok((_, pcm)) => all.extend_from_slice(pcm),
                     Err(why) => failure = Some(why),
                 }
             }
@@ -218,7 +218,7 @@ fn every_lossless_codec_decodes_bit_exact_through_the_bundled_ffmpeg() {
     for c in CASES {
         let samples = signal(c.raw, c.channels, 9_000);
         let file = encode(&scratch.0, c.file, c.raw, c.rate, c.channels, &samples, c.codec, c.extra);
-        let out = PcmOut { rate: c.rate, bits: c.out_bits, channels: c.channels as u32 };
+        let out = PcmOut::exact(c.rate, c.out_bits, c.channels as u32);
         let got = unsafe { decode_file(&file, out) }.unwrap_or_else(|why| panic!("{}: {why}", c.name));
         let want = expected(c.raw, c.out_bits as usize, &samples);
         assert_eq!(got.len(), want.len(), "{}: decoded length", c.name);
@@ -240,18 +240,18 @@ fn a_file_that_contradicts_the_declared_load_is_refused_not_played_wrong() {
     let wide = encode(&scratch.0, "w.m4a", S24, 48_000, 2, &s24, "alac", &[]);
     // rate and channels are checked at the open
     for out in [
-        PcmOut { rate: 44_100, bits: 32, channels: 2 },
-        PcmOut { rate: 48_000, bits: 32, channels: 1 },
+        PcmOut::exact(44_100, 32, 2),
+        PcmOut::exact(48_000, 32, 1),
     ] {
         let why = unsafe { decode_file(&wide, out) }.expect_err("a mismatched shape");
         assert!(why.contains("Load declared"), "{why}");
     }
     // 24-bit audio declared as 16 would be truncated: refused at the first frame
-    let why = unsafe { decode_file(&wide, PcmOut { rate: 48_000, bits: 16, channels: 2 }) }.expect_err("truncation");
+    let why = unsafe { decode_file(&wide, PcmOut::exact(48_000, 16, 2)) }.expect_err("truncation");
     assert!(why.contains("24") || why.contains("32-bit"), "{why}");
     // a codec outside the app-decoded set never opens a PcmDecoder
     let ac3 = encode(&scratch.0, "x.mkv", S16, 48_000, 2, &signal(S16, 2, 9_000), "ac3", &[]);
-    let why = unsafe { decode_file(&ac3, PcmOut { rate: 48_000, bits: 16, channels: 2 }) }.expect_err("ac3");
+    let why = unsafe { decode_file(&ac3, PcmOut::exact(48_000, 16, 2)) }.expect_err("ac3");
     assert!(why.contains("not an app-decoded codec"), "{why}");
 }
 
@@ -269,7 +269,7 @@ fn dts_decodes_to_stereo_48k_through_the_bundled_ffmpeg() {
     }
     let _ffmpeg = bind_host_ffmpeg();
     let scratch = Scratch::new("dts");
-    let stereo = PcmOut { rate: 48_000, bits: 16, channels: 2 };
+    let stereo = PcmOut::exact(48_000, 16, 2);
     for (file, rate) in [("a.mkv", 48_000u32), ("b.mkv", 44_100)] {
         let frames = rate as usize * 2;
         let mut samples = Vec::with_capacity(frames * 6);
@@ -287,7 +287,7 @@ fn dts_decodes_to_stereo_48k_through_the_bundled_ffmpeg() {
         assert!(energy(0) > 100.0 * energy(1).max(1.0), "{rate} Hz: the front-left sine must stay on the left");
     }
     let src = scratch.0.join("a.mkv");
-    for wrong in [PcmOut { rate: 44_100, bits: 16, channels: 2 }, PcmOut { rate: 48_000, bits: 32, channels: 2 }, PcmOut { rate: 48_000, bits: 16, channels: 6 }] {
+    for wrong in [PcmOut::exact(44_100, 16, 2), PcmOut::exact(48_000, 32, 2), PcmOut::exact(48_000, 16, 6)] {
         let why = unsafe { decode_file(&src, wrong) }.expect_err("DTS is only converted to stereo 48 kHz S16");
         assert!(why.contains("stereo 48 kHz"), "{why}");
     }
@@ -310,7 +310,7 @@ fn float_and_8_bit_lpcm_are_not_app_decodable() {
     for (file, codec) in [("f32.mkv", "pcm_f32le"), ("f32.mov", "pcm_f32le"), ("s8.mov", "pcm_s8"), ("u8.mov", "pcm_u8"), ("u8.mkv", "pcm_u8")] {
         let src = encode(&scratch.0, file, S16, 48_000, 2, &samples, codec, &[]);
         for bits in [16, 32] {
-            let why = unsafe { decode_file(&src, PcmOut { rate: 48_000, bits, channels: 2 }) }
+            let why = unsafe { decode_file(&src, PcmOut::exact(48_000, bits, 2)) }
                 .expect_err(&format!("{file}: must not decode"));
             assert!(why.contains("not an app-decoded codec"), "{file}: {why}");
         }
@@ -341,9 +341,9 @@ unsafe fn packet_output(path: &Path, out: PcmOut, k: usize, span: usize, history
                 dec.reset_stream();
             }
             if n >= k {
-                result.extend_from_slice(dec.decode(pkt).expect("decode"));
+                result.extend_from_slice(dec.decode(pkt, pts_ns(pkt, *streams.add(ai))).expect("decode").1);
             } else if n + history >= k {
-                dec.decode(pkt).expect("decode");
+                dec.decode(pkt, pts_ns(pkt, *streams.add(ai))).expect("decode");
             }
             n += 1;
             if n >= k + span {
@@ -373,7 +373,7 @@ fn a_reset_leaves_no_history_of_the_stream_before_it() {
     }
     let _ffmpeg = bind_host_ffmpeg();
     let scratch = Scratch::new("dts-reset");
-    let stereo = PcmOut { rate: 48_000, bits: 16, channels: 2 };
+    let stereo = PcmOut::exact(48_000, 16, 2);
     for (file, rate) in [("a.mkv", 48_000u32), ("b.mkv", 44_100)] {
         let frames = rate as usize * 2;
         let mut samples = Vec::with_capacity(frames * 6);
@@ -441,7 +441,7 @@ fn mp3_and_vorbis_decode_to_stereo_48k_through_the_bundled_ffmpeg() {
     }
     let _ffmpeg = bind_host_ffmpeg();
     let scratch = Scratch::new("lossy-mp3-vorbis");
-    let stereo = PcmOut { rate: 48_000, bits: 16, channels: 2 };
+    let stereo = PcmOut::exact(48_000, 16, 2);
     for c in LOSSY_CASES {
         let src = lossy_source(&scratch.0, c);
         let got = unsafe { decode_file_with(&src, stereo, |d| assert!(!d.core_only(), "{}: core_only is a DTS option", c.file)) }
@@ -462,7 +462,7 @@ fn mp3_and_vorbis_decode_to_stereo_48k_through_the_bundled_ffmpeg() {
     }
     for c in [&LOSSY_CASES[0], &LOSSY_CASES[4]] {
         let src = scratch.0.join(c.file);
-        for wrong in [PcmOut { rate: 44_100, bits: 16, channels: 2 }, PcmOut { rate: 48_000, bits: 32, channels: 2 }, PcmOut { rate: 48_000, bits: 16, channels: 1 }] {
+        for wrong in [PcmOut::exact(44_100, 16, 2), PcmOut::exact(48_000, 32, 2), PcmOut::exact(48_000, 16, 1)] {
             let why = unsafe { decode_file(&src, wrong) }.expect_err("converted to stereo 48 kHz S16 only");
             assert!(why.contains("stereo 48 kHz"), "{}: {why}", c.file);
         }
@@ -481,7 +481,7 @@ fn a_reset_leaves_no_history_in_mp3_and_vorbis() {
     }
     let _ffmpeg = bind_host_ffmpeg();
     let scratch = Scratch::new("lossy-mp3-vorbis-reset");
-    let stereo = PcmOut { rate: 48_000, bits: 16, channels: 2 };
+    let stereo = PcmOut::exact(48_000, 16, 2);
     for c in [&LOSSY_CASES[1], &LOSSY_CASES[5]] {
         let src = lossy_source(&scratch.0, c);
         let short = unsafe { packet_output(&src, stereo, 20, 8, 7) };
@@ -527,7 +527,7 @@ fn truehd_decodes_to_stereo_48k_mixed_by_its_layout_through_the_bundled_ffmpeg()
     }
     let _ffmpeg = bind_host_ffmpeg();
     let scratch = Scratch::new("truehd");
-    let stereo = PcmOut { rate: 48_000, bits: 16, channels: 2 };
+    let stereo = PcmOut::exact(48_000, 16, 2);
     for rate in [48_000u32, 96_000, 192_000] {
         for layout in TRUEHD_LAYOUTS {
             for &(hot, want_left, want_right) in layout.hot {
@@ -576,7 +576,7 @@ fn high_rate_truehd_does_not_alias_ultrasound_into_the_band() {
     }
     let _ffmpeg = bind_host_ffmpeg();
     let scratch = Scratch::new("truehd-alias");
-    let stereo = PcmOut { rate: 48_000, bits: 16, channels: 2 };
+    let stereo = PcmOut::exact(48_000, 16, 2);
     let amplitude = |left: &[f64], hz: f64| {
         let (from, to) = (2_000, left.len() - 2_000);
         let (mut re, mut im) = (0.0, 0.0);

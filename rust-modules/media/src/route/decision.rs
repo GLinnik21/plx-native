@@ -5722,17 +5722,26 @@ pub fn stream_immersive(ps: &PlaybackSession) -> bool {
 /// [`Caps::app_decodes_lossy_track`](plx_platform::devcaps::Caps::app_decodes_lossy_track)).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct PcmFormat {
+    /// What the Load declares: always a rate of `devcaps::PCM_SAMPLE_RATES` (the input's table).
     pub sample_rate: u32,
-    /// 16 or 32: a source of up to 16 bits is fed as S16LE, anything deeper (or unstated) as
-    /// S32LE — both bit-exact, since the decoder left-justifies 24-bit samples in 32.
+    /// 16 or 32: a source of up to 16 bits at a table rate is fed as S16LE, anything deeper (or
+    /// unstated) as S32LE, both bit-exact (the decoder left-justifies 24-bit samples in 32). A stream
+    /// the app resamples (`source_rate != sample_rate`) is always 32: the resampled value is not on
+    /// the 16-bit grid, whatever the source's depth.
     pub bits: u32,
     pub channels: u32,
+    /// The track's own rate. Equal to `sample_rate` at a table rate (the bit-exact path); above the
+    /// table's top it is what the app resamples FROM (`devcaps::pcm_load_rate` names the rate it
+    /// resamples TO). `ff_pcm::PcmDecoder::open` refuses a file whose rate is not this one.
+    pub source_rate: u32,
 }
 
 impl PcmFormat {
     /// What the lossy decode outputs (`ff_pcm::PcmDecoder`): the source downmixed to stereo and
-    /// resampled to 48 kHz, as 16-bit samples — the same shape the speed decoder feeds.
-    pub const STEREO_48K: PcmFormat = PcmFormat { sample_rate: 48_000, bits: 16, channels: 2 };
+    /// resampled to 48 kHz, as 16-bit samples — the same shape the speed decoder feeds. Its
+    /// `source_rate` is 48 kHz by convention: the lossy decode accepts any source rate (it is the
+    /// lossless declaration that `source_rate` is checked against).
+    pub const STEREO_48K: PcmFormat = PcmFormat { sample_rate: 48_000, bits: 16, channels: 2, source_rate: 48_000 };
 }
 
 /// [`PcmFormat`] for the stream now being fed, `None` when it is not app-decoded audio.
@@ -5760,7 +5769,11 @@ pub fn stream_pcm_is_lossy(ps: &PlaybackSession) -> bool {
 }
 
 /// PURE half of [`stream_pcm`]: the carried track must be the same codec, with a stated rate and
-/// one or two channels.
+/// one or two channels. The rate is declared as `devcaps::pcm_load_rate` names it: a table rate is
+/// itself (bit-exact, `bits` 16 iff PMS says `bitDepth` is 1..=16, else 32), and every rate above the
+/// table's top is the rate the app RESAMPLES it to, with `source_rate` the track's own and `bits` 32
+/// (the resampled value is not on the 16-bit grid, a 16-bit source included). Only a rate that is not
+/// positive, or below the top and not in the table, is refused.
 pub(crate) fn pcm_format_of(audio: Option<&CarriedAudio>, codec: &str) -> Result<PcmFormat, String> {
     let Some(a) = audio else {
         return Err(format!("{codec}: the playing track's facts are unknown"));
@@ -5772,16 +5785,13 @@ pub(crate) fn pcm_format_of(audio: Option<&CarriedAudio>, codec: &str) -> Result
     if !(1..=max).contains(&a.channels) {
         return Err(format!("{codec}: {} channels (the PCM path carries 1..={max})", a.channels));
     }
-    let rates = &plx_platform::devcaps::PCM_SAMPLE_RATES;
-    let sample_rate = u32::try_from(a.sample_rate).ok().filter(|r| rates.contains(r));
-    let Some(sample_rate) = sample_rate else {
-        return Err(format!(
-            "{codec}: sampling rate {} is not one the PCM input's table names",
-            a.sample_rate
-        ));
+    let Some(sample_rate) = plx_platform::devcaps::pcm_load_rate(a.sample_rate) else {
+        return Err(format!("{codec}: sampling rate {} cannot be made one the PCM input names", a.sample_rate));
     };
-    let bits = if (1..=16).contains(&a.bit_depth) { 16 } else { 32 };
-    Ok(PcmFormat { sample_rate, bits, channels: a.channels as u32 })
+    // `pcm_load_rate` accepted it, so the rate is in 1..=i32::MAX
+    let source_rate = a.sample_rate as u32;
+    let bits = if source_rate != sample_rate || !(1..=16).contains(&a.bit_depth) { 32 } else { 16 };
+    Ok(PcmFormat { sample_rate, bits, channels: a.channels as u32, source_rate })
 }
 
 #[cfg(test)]
@@ -5798,9 +5808,9 @@ mod pcm_format_tests {
     #[test]
     fn a_stereo_flac_declares_its_own_rate_and_a_bit_exact_width() {
         assert_eq!(pcm_format_of(Some(&flac(2, 48_000, 16)), "flac"),
-            Ok(PcmFormat { sample_rate: 48_000, bits: 16, channels: 2 }));
+            Ok(PcmFormat { sample_rate: 48_000, bits: 16, channels: 2, source_rate: 48_000 }));
         assert_eq!(pcm_format_of(Some(&flac(1, 44_100, 24)), "flac"),
-            Ok(PcmFormat { sample_rate: 44_100, bits: 32, channels: 1 }));
+            Ok(PcmFormat { sample_rate: 44_100, bits: 32, channels: 1, source_rate: 44_100 }));
         // an unstated depth is fed wide: never truncate a sample nobody measured
         assert_eq!(pcm_format_of(Some(&flac(2, 48_000, 0)), "flac").unwrap().bits, 32);
     }
@@ -5811,16 +5821,50 @@ mod pcm_format_tests {
     fn alac_and_lpcm_declare_the_same_shape_as_flac() {
         let track = |codec: &str, channels, rate, bits| CarriedAudio { codec: codec.into(), ..flac(channels, rate, bits) };
         assert_eq!(pcm_format_of(Some(&track("alac", 2, 44_100, 16)), "alac"),
-            Ok(PcmFormat { sample_rate: 44_100, bits: 16, channels: 2 }));
+            Ok(PcmFormat { sample_rate: 44_100, bits: 16, channels: 2, source_rate: 44_100 }));
         assert_eq!(pcm_format_of(Some(&track("alac", 2, 48_000, 24)), "alac"),
-            Ok(PcmFormat { sample_rate: 48_000, bits: 32, channels: 2 }));
+            Ok(PcmFormat { sample_rate: 48_000, bits: 32, channels: 2, source_rate: 48_000 }));
         assert_eq!(pcm_format_of(Some(&track("pcm_s24le", 2, 48_000, 24)), "pcm"),
-            Ok(PcmFormat { sample_rate: 48_000, bits: 32, channels: 2 }));
+            Ok(PcmFormat { sample_rate: 48_000, bits: 32, channels: 2, source_rate: 48_000 }));
         assert_eq!(pcm_format_of(Some(&track("pcm_s16be", 2, 44_100, 16)), "pcm"),
-            Ok(PcmFormat { sample_rate: 44_100, bits: 16, channels: 2 }));
+            Ok(PcmFormat { sample_rate: 44_100, bits: 16, channels: 2, source_rate: 44_100 }));
         assert!(pcm_format_of(Some(&track("alac", 6, 48_000, 16)), "alac").is_err());
-        assert!(pcm_format_of(Some(&track("pcm_s24le", 2, 96_000, 24)), "pcm").is_err());
+        // above the table: resampled by the app, declared at the table's rate as S32
+        assert_eq!(pcm_format_of(Some(&track("pcm_s24le", 2, 96_000, 24)), "pcm"),
+            Ok(PcmFormat { sample_rate: 48_000, bits: 32, channels: 2, source_rate: 96_000 }));
+        assert_eq!(pcm_format_of(Some(&track("alac", 2, 96_000, 24)), "alac"),
+            Ok(PcmFormat { sample_rate: 48_000, bits: 32, channels: 2, source_rate: 96_000 }));
         assert!(pcm_format_of(Some(&track("flac", 2, 48_000, 16)), "pcm").is_err(), "a track of another codec");
+    }
+
+    /// **A hi-res lossless stereo track is declared as the PCM input's own top rate, in a 32-bit sample**: the app
+    /// resamples it (`ff_pcm`), so the Load names the rate the decoder emits (`sample_rate`) and the
+    /// track keeps its own (`source_rate`, what the decoder checks the file against). The width is 32 whenever the
+    /// rate differs, from a 16-bit source too: the resampled value is not on the 16-bit grid. A table rate is unchanged.
+    #[test]
+    fn a_hi_res_stereo_track_is_declared_at_the_tables_top_rate_in_32_bits() {
+        let shape = |channels, rate, bits| pcm_format_of(Some(&flac(channels, rate, bits)), "flac");
+        let fmt = |sample_rate, bits, channels, source_rate| Ok(PcmFormat { sample_rate, bits, channels, source_rate });
+        assert_eq!(shape(2, 96_000, 24), fmt(48_000, 32, 2, 96_000));
+        assert_eq!(shape(2, 192_000, 24), fmt(48_000, 32, 2, 192_000));
+        assert_eq!(shape(2, 88_200, 16), fmt(44_100, 32, 2, 88_200), "a 16-bit source resampled is still S32");
+        assert_eq!(shape(2, 176_400, 24), fmt(44_100, 32, 2, 176_400));
+        assert_eq!(shape(2, 96_000, 0), fmt(48_000, 32, 2, 96_000), "an unstated depth");
+        assert_eq!(shape(1, 96_000, 24), fmt(48_000, 32, 1, 96_000), "mono is kept mono");
+        assert_eq!(shape(2, 705_600, 24), fmt(44_100, 32, 2, 705_600), "there is no rate ceiling");
+        assert_eq!(shape(2, i64::from(i32::MAX), 24), fmt(48_000, 32, 2, i32::MAX as u32));
+        // a table rate is itself, bit-exact, and its own source
+        assert_eq!(shape(2, 48_000, 16), fmt(48_000, 16, 2, 48_000));
+        assert_eq!(shape(1, 44_100, 24), fmt(44_100, 32, 1, 44_100));
+        // not made into a table rate: surround (the server converts it), no rate, a rate below the top that the table lacks
+        assert!(shape(6, 96_000, 24).is_err());
+        assert!(shape(2, 0, 24).is_err());
+        assert!(shape(2, 11_025, 16).is_err());
+        // ALAC and LPCM, whatever the spelling of the codec
+        let track = |codec: &str, rate| CarriedAudio { codec: codec.into(), ..flac(2, rate, 24) };
+        for (spelling, id) in [("alac", "alac"), ("pcm_s24le", "pcm"), ("pcm_s32be", "pcm"), ("pcm_s16le", "pcm")] {
+            assert_eq!(pcm_format_of(Some(&track(spelling, 96_000)), id), fmt(48_000, 32, 2, 96_000), "{spelling}");
+        }
     }
 
     /// **DTS in force** (S4 PR 2): the Load declares the SHAPE THE DECODER OUTPUTS, stereo
@@ -5844,7 +5888,7 @@ mod pcm_format_tests {
         }
         set_stream_codecs(&mut ps, "h264", "flac");
         assert!(!stream_pcm_is_lossy(&ps), "a lossless PCM Load is never the lossy one");
-        assert_eq!(PcmFormat::STEREO_48K, PcmFormat { sample_rate: 48_000, bits: 16, channels: 2 });
+        assert_eq!(PcmFormat::STEREO_48K, PcmFormat { sample_rate: 48_000, bits: 16, channels: 2, source_rate: 48_000 });
         let out = crate::ff_pcm::STEREO_48K;
         assert_eq!(
             (PcmFormat::STEREO_48K.sample_rate, PcmFormat::STEREO_48K.bits, PcmFormat::STEREO_48K.channels),
@@ -5983,9 +6027,12 @@ mod pcm_format_tests {
         assert!(pcm_format_of(Some(&flac(6, 48_000, 16)), "flac").is_err());
         assert!(pcm_format_of(Some(&flac(0, 48_000, 16)), "flac").is_err());
         assert!(pcm_format_of(Some(&flac(2, 0, 16)), "flac").is_err());
-        // libpf plays these slow, with no error: refused, never declared
-        assert!(pcm_format_of(Some(&flac(2, 96_000, 24)), "flac").is_err());
-        assert!(pcm_format_of(Some(&flac(2, 192_000, 24)), "flac").is_err());
+        // a rate the table does not name and the app cannot make one (libpf plays an undeclared one slow, with no error)
+        assert!(pcm_format_of(Some(&flac(2, 11_025, 16)), "flac").is_err());
+        assert!(pcm_format_of(Some(&flac(2, 37_800, 16)), "flac").is_err());
+        assert!(pcm_format_of(Some(&flac(2, -48_000, 16)), "flac").is_err());
+        assert!(pcm_format_of(Some(&flac(2, i64::from(u32::MAX) + 1, 24)), "flac").is_err(), "past what FFmpeg can state");
+        assert!(pcm_format_of(Some(&flac(6, 96_000, 24)), "flac").is_err(), "5.1 at 96 kHz still converts on the server");
         let mut other = flac(2, 48_000, 16);
         other.codec = "ac3".into();
         assert!(pcm_format_of(Some(&other), "flac").is_err());

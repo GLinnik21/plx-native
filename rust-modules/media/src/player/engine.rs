@@ -1125,6 +1125,14 @@ fn with_pcm_info(p: &str, audio: &str, pcm: Option<crate::route::PcmFormat>) -> 
     )
 }
 
+/// The diagnostics line for an app-decoded PCM Load: the declared shape, and where the app resamples it
+/// the track's own rate (` (resampled from 96000Hz)`; nothing when the two are the same).
+/// PURE.
+fn pcm_decode_line(codec: &str, f: &crate::route::PcmFormat) -> String {
+    let resampled = if f.source_rate != f.sample_rate { format!(" (resampled from {}Hz)", f.source_rate) } else { String::new() };
+    format!("pcm: {codec} decoded in-app -> {}Hz {}-bit {}ch{resampled}", f.sample_rate, f.bits, f.channels)
+}
+
 /// The pipeline reads the true dimensions from the SPS (Phase 0 HEVC probe), so mw/mh are only
 /// the sink envelope.
 fn build_av_payload(ps: &crate::route::PlaybackSession, video: &str, audio: &str, env: SinkEnvelope) -> String {
@@ -1762,14 +1770,13 @@ fn start_bufferfeed_inner(
                 return Err(crate::route::RouteStartResult::StartFailed);
             };
             crate::ff::set_pcm_out(
-                pcm.map(|f| (f.sample_rate, f.bits, f.channels)),
+                pcm.map(|f| crate::ff_pcm::PcmOut {
+                    rate: f.sample_rate, bits: f.bits, channels: f.channels, source_rate: f.source_rate,
+                }),
                 pcm.is_some() && crate::route::stream_pcm_is_lossy(ps),
             );
             if let Some(f) = pcm {
-                log(&format!(
-                    "pcm: {codec} decoded in-app -> {}Hz {}-bit {}ch",
-                    f.sample_rate, f.bits, f.channels
-                ));
+                log(&pcm_decode_line(&codec, &f));
             }
             SHARED.dg_load_a.store(audio.diagnostic, Ordering::Relaxed);
             // App-decoded audio (`pcm`) and a speed session (`ff::SpeedDecoder`) both declare PCM;
@@ -6973,13 +6980,46 @@ mod pcm_info_tests {
 
     #[test]
     fn a_pcm_load_states_the_shape_the_decoder_produces() {
-        let f = PcmFormat { sample_rate: 48_000, bits: 16, channels: 2 };
+        let f = PcmFormat { sample_rate: 48_000, bits: 16, channels: 2, source_rate: 48_000 };
         let p = with_pcm_info(BASE, "PCM", Some(f));
         assert!(p.contains(r#""pcmInfo":{"format":"S16LE","channelMode":"stereo","layout":"interleaved","sampleRate":48,"bitsPerSample":16}"#), "{p}");
-        let wide = with_pcm_info(BASE, "PCM", Some(PcmFormat { sample_rate: 96_000, bits: 32, channels: 1 }));
+        let wide = with_pcm_info(BASE, "PCM", Some(PcmFormat { sample_rate: 48_000, bits: 32, channels: 1, source_rate: 96_000 }));
         assert!(wide.contains(r#""format":"S32LE","channelMode":"mono""#) && wide.contains(r#""bitsPerSample":32"#), "{wide}");
         // the payload stays parseable JSON
         serde_json::from_str::<serde_json::Value>(&p).unwrap();
+    }
+
+    /// **A hi-res track the app resamples is declared as what the decoder emits**, never as the file's own rate:
+    /// the Load is built from the format `route::pcm_format_of` returns, which names the PCM input's table
+    /// rate in S32 (a 16-bit source included), so the payload carries 48 or 44.1 kHz and 32 bits and none of 96, 192 or 88.2.
+    #[test]
+    fn a_resampled_hi_res_track_declares_the_tables_rate_and_a_32_bit_sample() {
+        let track = |rate: i64, bits: i64| crate::route::CarriedAudio {
+            sid: 7, ordinal: 4, codec: "flac".into(), channels: 2,
+            can_normalize_loudness: false, immersive: false, sample_rate: rate, bit_depth: bits,
+        };
+        for (rate, bits, khz, never) in [(96_000, 24, "48", ["96", "192", "88.2"]), (192_000, 24, "48", ["96", "192", "88.2"]), (88_200, 16, "44.1", ["96", "192", "88.2"])] {
+            let f = crate::route::pcm_format_of(Some(&track(rate, bits)), "flac").unwrap();
+            let p = with_pcm_info(BASE, "PCM", Some(f));
+            let v: serde_json::Value = serde_json::from_str(&p).unwrap();
+            let info = &v["contents"]["pcmInfo"];
+            assert_eq!(info["format"], "S32LE", "{rate}/{bits}: {p}");
+            assert_eq!(info["bitsPerSample"], 32, "{rate}/{bits}: {p}");
+            assert_eq!(info["sampleRate"].as_f64(), khz.parse::<f64>().ok(), "{rate}/{bits}: {p}");
+            for n in never {
+                assert!(!p.contains(&format!(r#""sampleRate":{n}"#)), "{rate}/{bits}: the file's own rate {n} must not be declared: {p}");
+            }
+        }
+    }
+
+    /// The diagnostics line names the track's own rate only where the app resamples it.
+    #[test]
+    fn the_decode_log_line_names_the_source_rate_only_when_it_is_resampled() {
+        let exact = PcmFormat { sample_rate: 48_000, bits: 16, channels: 2, source_rate: 48_000 };
+        assert_eq!(pcm_decode_line("flac", &exact), "pcm: flac decoded in-app -> 48000Hz 16-bit 2ch");
+        let hires = PcmFormat { sample_rate: 48_000, bits: 32, channels: 2, source_rate: 96_000 };
+        assert_eq!(pcm_decode_line("flac", &hires), "pcm: flac decoded in-app -> 48000Hz 32-bit 2ch (resampled from 96000Hz)");
+        assert_eq!(pcm_decode_line("dca", &PcmFormat::STEREO_48K), "pcm: dca decoded in-app -> 48000Hz 16-bit 2ch");
     }
 
     /// Every rate the PCM path admits is declared in kilohertz, the unit libpf's table is in. In
@@ -6989,7 +7029,7 @@ mod pcm_info_tests {
         let want = ["8", "12", "16", "22.05", "24", "32", "44.1", "48"];
         for (hz, khz) in plx_platform::devcaps::PCM_SAMPLE_RATES.into_iter().zip(want) {
             assert_eq!(pcm_rate_khz(hz), khz);
-            let p = with_pcm_info(BASE, "PCM", Some(PcmFormat { sample_rate: hz, bits: 16, channels: 2 }));
+            let p = with_pcm_info(BASE, "PCM", Some(PcmFormat { sample_rate: hz, bits: 16, channels: 2, source_rate: hz }));
             let v: serde_json::Value = serde_json::from_str(&p).unwrap();
             let declared = v["contents"]["pcmInfo"]["sampleRate"].as_f64().unwrap();
             assert!((declared * 1000.0 - f64::from(hz)).abs() < 1e-6, "{hz}: {p}");
@@ -6999,7 +7039,7 @@ mod pcm_info_tests {
 
     #[test]
     fn a_speed_session_leaves_the_pcm_to_the_speed_decoder() {
-        let f = || Some(Ok(PcmFormat { sample_rate: 44_100, bits: 16, channels: 2 }));
+        let f = || Some(Ok(PcmFormat { sample_rate: 44_100, bits: 16, channels: 2, source_rate: 44_100 }));
         assert_eq!(app_pcm_for_rate(crate::player::RATE_NORMAL, f()), f(), "1x: the FLAC decoder's shape");
         assert!(app_pcm_for_rate(1500, f()).is_none(), "1.5x: the speed decoder declares its own");
         // a FLAC track whose facts are missing only fails at 1x, where the FLAC decoder needs them
@@ -7116,7 +7156,7 @@ mod pcm_info_tests {
 
     #[test]
     fn only_a_pcm_load_carries_pcm_info() {
-        let f = PcmFormat { sample_rate: 48_000, bits: 16, channels: 2 };
+        let f = PcmFormat { sample_rate: 48_000, bits: 16, channels: 2, source_rate: 48_000 };
         assert_eq!(with_pcm_info(BASE, "AC3", Some(f)), BASE);
         assert_eq!(with_pcm_info(BASE, "PCM", None), BASE);
     }

@@ -43,27 +43,38 @@ pub fn set_feed_audio(on: bool) {
     FEED_AUDIO.store(on, Ordering::Relaxed);
 }
 
-/// The PCM the current Load declared for app-decoded audio (`route::stream_pcm`), packed
-/// `rate << 16 | bits << 8 | channels`; 0 = this Load declares no PCM.
+/// The PCM the current Load declared for app-decoded audio (`route::stream_pcm`), packed into one word:
+/// channels in bits 0-7, sample bits in 8-15, the declared rate in 16-31, [`PCM_LOSSY_BIT`] at 32 and the
+/// track's own rate ([`ff_pcm::PcmOut::source_rate`](crate::ff_pcm::PcmOut), at most `i32::MAX`: 31 bits) in
+/// 33-63; 0 = this Load declares no PCM.
 static PCM_OUT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Bit set in [`PCM_OUT`] when the Load's PCM is the LOSSY app decode's (a lossy codec the attempt decodes in the app).
-const PCM_LOSSY_BIT: u64 = 1 << 40;
+const PCM_LOSSY_BIT: u64 = 1 << 32;
+/// Where [`PCM_OUT`] keeps the track's own rate.
+const PCM_SOURCE_SHIFT: u32 = 33;
 /// Set by `start_bufferfeed` beside the Load, before the demuxer is spawned. `lossy`: the Load
 /// declared the lossy decode's shape (`route::stream_pcm_is_lossy`), so a lossy stream is the app's
 /// to decode only then, never because some lossless PCM Load happens to be 48 kHz stereo.
-pub fn set_pcm_out(f: Option<(u32, u32, u32)>, lossy: bool) {
-    let v = f.map_or(0, |(rate, bits, ch)| u64::from(rate) << 16 | u64::from(bits) << 8 | u64::from(ch));
-    PCM_OUT.store(if v != 0 && lossy { v | PCM_LOSSY_BIT } else { v }, Ordering::Relaxed);
+pub fn set_pcm_out(f: Option<crate::ff_pcm::PcmOut>, lossy: bool) {
+    let v = f.map_or(0, |o| {
+        u64::from(o.channels & 0xff)
+            | u64::from(o.bits & 0xff) << 8
+            | u64::from(o.rate & 0xffff) << 16
+            | u64::from(o.source_rate & 0x7fff_ffff) << PCM_SOURCE_SHIFT
+            | if lossy { PCM_LOSSY_BIT } else { 0 }
+    });
+    PCM_OUT.store(v, Ordering::Relaxed);
 }
 fn pcm_lossy() -> bool {
     PCM_OUT.load(Ordering::Relaxed) & PCM_LOSSY_BIT != 0
 }
 fn pcm_out() -> Option<crate::ff_pcm::PcmOut> {
-    let v = PCM_OUT.load(Ordering::Relaxed) & !PCM_LOSSY_BIT;
+    let v = PCM_OUT.load(Ordering::Relaxed);
     (v != 0).then(|| crate::ff_pcm::PcmOut {
-        rate: (v >> 16) as u32,
-        bits: ((v >> 8) & 0xff) as u32,
         channels: (v & 0xff) as u32,
+        bits: ((v >> 8) & 0xff) as u32,
+        rate: ((v >> 16) & 0xffff) as u32,
+        source_rate: (v >> PCM_SOURCE_SHIFT) as u32,
     })
 }
 
@@ -3858,8 +3869,9 @@ mod dts_core_tests {
     /// Load of the same 48 kHz stereo S16 does not make a DTS stream the app's.
     #[test]
     fn the_lossy_bit_is_the_loads_own_and_does_not_change_the_shape() {
+        use crate::ff_pcm::PcmOut;
         let _g = plx_base::testlock::serial();
-        let shape = Some((48_000, 16, 2));
+        let shape = Some(PcmOut::exact(48_000, 16, 2));
         super::set_pcm_out(shape, true);
         assert!(super::pcm_lossy());
         let lossy = super::pcm_out().unwrap();
@@ -3868,6 +3880,29 @@ mod dts_core_tests {
         assert_eq!(super::pcm_out().unwrap(), lossy);
         super::set_pcm_out(None, true);
         assert!(!super::pcm_lossy() && super::pcm_out().is_none(), "no PCM declared, nothing lossy");
+    }
+
+    /// The declared PCM roundtrips through its one word, with the track's own rate in its 31 high bits: the
+    /// largest rate FFmpeg can state (`i32::MAX`) comes back whole, and the lossy flag, which sits just below it,
+    /// neither clobbers it nor is clobbered by it.
+    #[test]
+    fn the_declared_pcm_roundtrips_with_the_source_rate_and_the_lossy_flag_beside_it() {
+        use crate::ff_pcm::PcmOut;
+        let _g = plx_base::testlock::serial();
+        for out in [
+            PcmOut::exact(48_000, 16, 2),
+            PcmOut { rate: 48_000, bits: 32, channels: 2, source_rate: 96_000 },
+            PcmOut { rate: 44_100, bits: 32, channels: 1, source_rate: i32::MAX as u32 },
+            PcmOut { rate: 48_000, bits: 32, channels: 2, source_rate: 1 << 30 },
+        ] {
+            for lossy in [false, true] {
+                super::set_pcm_out(Some(out), lossy);
+                assert_eq!(super::pcm_out(), Some(out), "{out:?} lossy={lossy}");
+                assert_eq!(super::pcm_lossy(), lossy, "{out:?}");
+            }
+        }
+        super::set_pcm_out(None, false);
+        assert!(super::pcm_out().is_none());
     }
 
     #[test]
@@ -9821,8 +9856,8 @@ pub fn demux(
                                 || state.drain_wire(),
                             )
                         } else if let Some(dec) = pcm_dec.as_mut() {
-                            let pcm = match dec.decode(pkt) {
-                                Ok(pcm) => pcm,
+                            let (pcm_pts, pcm) = match dec.decode(pkt, pts) {
+                                Ok(decoded) => decoded,
                                 Err(why) => {
                                     crate::player::log(&format!(
                                         "ff: {} decode failed — {why}; refusing audio feed",
@@ -9834,7 +9869,7 @@ pub fn demux(
                                     break;
                                 }
                             };
-                            match pcm_batch.as_mut().and_then(|b| b.push(pts, pcm)) {
+                            match pcm_batch.as_mut().and_then(|b| b.push(pcm_pts, pcm)) {
                                 None => 0,
                                 Some((au_pts, au)) => crate::aq::aq_push_gated(
                                     aqa_p, au.as_ptr(), au.len() as c_int, au_pts, 1, 2, gate,
