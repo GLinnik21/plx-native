@@ -135,6 +135,19 @@ unsafe fn decode_file(path: &Path, out: PcmOut) -> Result<Vec<u8>, String> {
 
 /// [`decode_file`], showing `inspect` the opened decoder first.
 unsafe fn decode_file_with(path: &Path, out: PcmOut, inspect: impl FnOnce(&PcmDecoder)) -> Result<Vec<u8>, String> {
+    decode_blocks_with(path, out, inspect).map(|blocks| blocks.into_iter().flat_map(|b| b.pcm).collect())
+}
+
+/// One packet's worth of what a [`PcmDecoder`] returned: the PCM, the content time (ns) it was stamped with, and the
+/// pts (ns) of the packet it came from.
+struct Block {
+    packet_pts: i64,
+    stamp: i64,
+    pcm: Vec<u8>,
+}
+
+/// [`decode_file_with`], keeping each packet's block and stamp apart.
+unsafe fn decode_blocks_with(path: &Path, out: PcmOut, inspect: impl FnOnce(&PcmDecoder)) -> Result<Vec<Block>, String> {
     let c_path = CString::new(path.to_str().unwrap()).unwrap();
     let mut fmt = avformat_alloc_context();
     let r = avformat_open_input(&mut fmt, c_path.as_ptr(), std::ptr::null_mut(), std::ptr::null_mut());
@@ -152,8 +165,9 @@ unsafe fn decode_file_with(path: &Path, out: PcmOut, inspect: impl FnOnce(&PcmDe
         let mut failure = None;
         while av_read_frame(fmt, pkt) >= 0 {
             if (*pkt).stream_index as usize == ai {
-                match dec.decode(pkt, pts_ns(pkt, *streams.add(ai))) {
-                    Ok((_, pcm)) => all.extend_from_slice(pcm),
+                let packet_pts = pts_ns(pkt, *streams.add(ai));
+                match dec.decode(pkt, packet_pts) {
+                    Ok((stamp, pcm)) => all.push(Block { packet_pts, stamp, pcm: pcm.to_vec() }),
                     Err(why) => failure = Some(why),
                 }
             }
@@ -323,6 +337,11 @@ fn float_and_8_bit_lpcm_are_not_app_decodable() {
 /// whatever the history was. (Not compared with a decoder that never played: FFmpeg applies a
 /// stream's start padding only at the start, so an MP3 decoder's first frame legitimately differs.)
 unsafe fn packet_output(path: &Path, out: PcmOut, k: usize, span: usize, history: usize) -> Vec<u8> {
+    packet_blocks(path, out, k, span, history).into_iter().flat_map(|b| b.pcm).collect()
+}
+
+/// [`packet_output`], keeping each packet's block, its stamp and its pts apart.
+unsafe fn packet_blocks(path: &Path, out: PcmOut, k: usize, span: usize, history: usize) -> Vec<Block> {
     let c_path = CString::new(path.to_str().unwrap()).unwrap();
     let mut fmt = avformat_alloc_context();
     assert!(avformat_open_input(&mut fmt, c_path.as_ptr(), std::ptr::null_mut(), std::ptr::null_mut()) >= 0);
@@ -341,7 +360,9 @@ unsafe fn packet_output(path: &Path, out: PcmOut, k: usize, span: usize, history
                 dec.reset_stream();
             }
             if n >= k {
-                result.extend_from_slice(dec.decode(pkt, pts_ns(pkt, *streams.add(ai))).expect("decode").1);
+                let packet_pts = pts_ns(pkt, *streams.add(ai));
+                let (stamp, pcm) = dec.decode(pkt, packet_pts).expect("decode");
+                result.push(Block { packet_pts, stamp, pcm: pcm.to_vec() });
             } else if n + history >= k {
                 dec.decode(pkt, pts_ns(pkt, *streams.add(ai))).expect("decode");
             }
@@ -650,5 +671,228 @@ fn the_speed_decoder_drops_the_lfe_of_a_layout_the_count_cannot_name() {
         avformat_close_input(&mut fmt);
         assert!(total > 10_000, "the stream decoded ({total} samples)");
         assert!(loud == 0, "the LFE must not reach either side ({loud} of {total} samples are audible)");
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Hi-res lossless: a stereo FLAC above the PCM input's table is resampled by the app (`PcmOut::source_rate`).
+// The signal is not the LCG of the bit-exact cases (noise says nothing about a filter): it is sines with f64
+// phases, and the analysis is correlation in f64 over whole periods, so a level or a line 110 dB down can be read.
+// ---------------------------------------------------------------------------------------------
+
+fn gcd(a: u32, b: u32) -> u32 {
+    if b == 0 { a } else { gcd(b, a % b) }
+}
+
+/// Interleaved stereo `bits`-bit samples of the sum of `tones` (frequency Hz, amplitude as a fraction of full
+/// scale), the right channel at half the left's amplitude so a crossed or swapped channel shows. The amplitudes
+/// are whole numbers of LSBs (`0.5` and `0.25` of a power of two), so a tone's level is known exactly.
+fn tone_signal(bits: usize, rate: u32, frames: usize, tones: &[(u32, f64)]) -> Vec<i32> {
+    let full = (1i64 << (bits - 1)) as f64;
+    let mut out = Vec::with_capacity(frames * 2);
+    for i in 0..frames {
+        let mut sum = 0.0;
+        for &(hz, amp) in tones {
+            // the phase reduced exactly (integer modulo), so a long file does not drift
+            let cycle = (i as u64 * u64::from(hz) % u64::from(rate)) as f64 / f64::from(rate);
+            sum += amp * (cycle * std::f64::consts::TAU).sin();
+        }
+        let left = (sum * full).round() as i32;
+        let right = (sum * full * 0.5).round() as i32;
+        out.extend_from_slice(&[left, right]);
+    }
+    out
+}
+
+/// A stretch of `x[margin..len - margin]` that holds a whole number of periods of every tone in `hzs` (sampled at
+/// `rate`): `(start, length)`. The correlation below then sees no leakage of one of them into another, which a
+/// partial period of a tone 100 dB above the one being read would put at -90 dB.
+fn whole_periods(len: usize, margin: usize, rate: u32, hzs: &[u32]) -> (usize, usize) {
+    let common = hzs.iter().fold(1usize, |l, &hz| {
+        let period = (rate / gcd(rate, hz)) as usize;
+        l / gcd(l as u32, period as u32) as usize * period
+    });
+    let n = (len - 2 * margin) / common * common;
+    assert!(n >= 4 * common, "{len} samples hold fewer than 4 common periods of {hzs:?} Hz at {rate} Hz");
+    (margin, n)
+}
+
+/// The amplitude of the `hz` component of `x[start..start + n]` (sampled at `rate`) by correlation with a sine and a
+/// cosine in f64. `(start, n)` is [`whole_periods`].
+fn tone_amplitude(x: &[f64], hz: u32, rate: u32, (start, n): (usize, usize)) -> f64 {
+    let (mut re, mut im) = (0.0, 0.0);
+    for (i, v) in x[start..start + n].iter().enumerate() {
+        let cycle = (i as u64 * u64::from(hz) % u64::from(rate)) as f64 / f64::from(rate);
+        let phase = cycle * std::f64::consts::TAU;
+        re += v * phase.cos();
+        im += v * phase.sin();
+    }
+    2.0 * re.hypot(im) / n as f64
+}
+
+fn db(ratio: f64) -> f64 {
+    20.0 * ratio.log10()
+}
+
+/// The two channels of interleaved little-endian S32 stereo as f64.
+fn s32_stereo(pcm: &[u8]) -> [Vec<f64>; 2] {
+    let side = |ch: usize| {
+        pcm.chunks_exact(8).map(|f| i32::from_le_bytes([f[4 * ch], f[4 * ch + 1], f[4 * ch + 2], f[4 * ch + 3]]) as f64).collect()
+    };
+    [side(0), side(1)]
+}
+
+/// Stamps of the non-empty blocks advance by exactly the frames before them at `rate`, from the first packet's pts.
+fn assert_stamps_follow_the_frames(blocks: &[Block], rate: u32, what: &str) {
+    let first = blocks.iter().find(|b| !b.pcm.is_empty()).expect("some block has sound");
+    assert_eq!(first.stamp, first.packet_pts, "{what}: the first block is stamped with its packet's pts");
+    let mut frames_before = 0i128;
+    for b in blocks.iter().filter(|b| !b.pcm.is_empty()) {
+        let due = first.stamp + (frames_before * 1_000_000_000 / i128::from(rate)) as i64;
+        assert_eq!(b.stamp, due, "{what}: a block after {frames_before} frames is stamped by the frames, not the packet");
+        frames_before += (b.pcm.len() / 8) as i128;
+    }
+}
+
+const HIRES_TONES: &[(u32, f64)] = &[(1_000, 0.5), (30_000, 0.25)];
+
+/// **96 kHz / 24-bit FLAC through the Load's resampled shape {48 kHz, S32, stereo, source 96 kHz}.** The output is
+/// half as long (less the filter's lookahead), the 1 kHz tone is at unity (0.01 dB) on both channels (a crossed
+/// channel would show: the right is half the left), and the 30 kHz tone, which folds to 18 kHz at 48 kHz, is
+/// at least 110 dB below it (the filter is meant for 124). The stamps follow the output frames, not the packets'
+/// millisecond-rounded pts, and dropping the decoder (which logs the stream's clipping report) does not panic.
+#[test]
+#[ignore = "requires the bundled host FFmpeg and the ffmpeg tool; run make check-ffmpeg"]
+fn a_96k_24_bit_flac_is_resampled_to_48k_s32_at_unity_with_the_ultrasound_rejected() {
+    let _g = plx_base::testlock::serial();
+    if skip() {
+        return;
+    }
+    let _ffmpeg = bind_host_ffmpeg();
+    let scratch = Scratch::new("hires-96k");
+    let frames = 96_000;
+    let samples = tone_signal(24, 96_000, frames, HIRES_TONES);
+    let file = encode(&scratch.0, "hires.mkv", S24, 96_000, 2, &samples, "flac", &[]);
+    let out = PcmOut { rate: 48_000, bits: 32, channels: 2, source_rate: 96_000 };
+
+    let blocks = unsafe { decode_blocks_with(&file, out, |_| {}) }.expect("a 96 kHz FLAC decodes as the resampled shape");
+    let pcm: Vec<u8> = blocks.iter().flat_map(|b| b.pcm.iter().copied()).collect();
+    assert_eq!(pcm.len() % 8, 0, "whole S32 stereo frames");
+    let frames_out = pcm.len() / 8;
+    assert!(
+        frames_out.abs_diff(frames / 2) <= 300,
+        "half of {frames} frames less the lookahead (41 output frames), got {frames_out}"
+    );
+    assert_stamps_follow_the_frames(&blocks, 48_000, "96 kHz");
+
+    // the 30 kHz tone is in the source, at -6 dB of the 1 kHz one: the rejection below is not a missing tone
+    let source: Vec<f64> = samples.iter().step_by(2).map(|&v| f64::from(v)).collect();
+    let window = whole_periods(source.len(), 2_000, 96_000, &[1_000, 30_000]);
+    let in_1k = tone_amplitude(&source, 1_000, 96_000, window);
+    let in_30k = tone_amplitude(&source, 30_000, 96_000, window);
+    assert!((db(in_30k / in_1k) + 6.02).abs() < 0.01, "the source holds the 30 kHz tone at half the 1 kHz one: {in_1k} {in_30k}");
+
+    let channels = s32_stereo(&pcm);
+    let window = whole_periods(channels[0].len(), 1_000, 48_000, &[1_000, 18_000]);
+    for (ch, (side, gain)) in channels.iter().zip([1.0, 0.5]).enumerate() {
+        let want = 0.5 * gain * 2_147_483_648.0;
+        let tone = tone_amplitude(side, 1_000, 48_000, window);
+        let level = db(tone / want);
+        assert!(level.abs() <= 0.01, "channel {ch}: the 1 kHz tone is {level:+.4} dB from unity (amplitude {tone}, wanted {want})");
+        let alias = db(tone_amplitude(side, 18_000, 48_000, window) / tone);
+        eprintln!("96 kHz -> 48 kHz channel {ch}: 1 kHz {level:+.6} dB from unity, the 30 kHz tone at {alias:.1} dB of it ({frames_out} frames)");
+        assert!(alias <= -110.0, "channel {ch}: the 30 kHz tone folds to 18 kHz at {alias:.1} dB of the 1 kHz tone");
+    }
+}
+
+/// **A seek (`reset_stream`) leaves no history in the resampled decode.** The blocks after a reset equal those of a
+/// decoder that decoded nothing before it, whatever the history was, and the first one is stamped with its packet's
+/// pts again (the clock re-anchors), the next by the frames written.
+#[test]
+#[ignore = "requires the bundled host FFmpeg and the ffmpeg tool; run make check-ffmpeg"]
+fn a_reset_leaves_no_history_in_the_resampled_decode() {
+    let _g = plx_base::testlock::serial();
+    if skip() {
+        return;
+    }
+    let _ffmpeg = bind_host_ffmpeg();
+    let scratch = Scratch::new("hires-reset");
+    let samples = tone_signal(24, 96_000, 96_000, HIRES_TONES);
+    let file = encode(&scratch.0, "hires.mkv", S24, 96_000, 2, &samples, "flac", &[]);
+    let out = PcmOut { rate: 48_000, bits: 32, channels: 2, source_rate: 96_000 };
+    let (k, span) = (4, 3);
+    let fresh = unsafe { packet_blocks(&file, out, k, span, 0) };
+    let after_seek = unsafe { packet_blocks(&file, out, k, span, k) };
+    assert_eq!(fresh.len(), span);
+    assert!(fresh.iter().all(|b| b.pcm.iter().any(|&v| v != 0)), "each packet decodes to sound");
+    assert!(fresh[0].packet_pts > 0, "the packet is not the first of the stream, so the anchor is a real restart");
+    assert!(
+        fresh.iter().zip(&after_seek).all(|(a, b)| a.pcm == b.pcm),
+        "the first blocks after a reset must not depend on what was decoded before it"
+    );
+    assert_stamps_follow_the_frames(&fresh, 48_000, "fresh");
+    assert_stamps_follow_the_frames(&after_seek, 48_000, "after a reset");
+    assert_eq!(
+        after_seek.iter().map(|b| b.stamp).collect::<Vec<_>>(),
+        fresh.iter().map(|b| b.stamp).collect::<Vec<_>>(),
+        "the stamps restart from the packet after the seek"
+    );
+}
+
+/// **The open refuses a file whose rate is not the Load's `source_rate`.** A wrong rate is wrong pitch (or a
+/// filter built for another ratio), not something anyone would see as an error.
+#[test]
+#[ignore = "requires the bundled host FFmpeg and the ffmpeg tool; run make check-ffmpeg"]
+fn a_file_that_is_not_at_the_loads_source_rate_is_refused() {
+    let _g = plx_base::testlock::serial();
+    if skip() {
+        return;
+    }
+    let _ffmpeg = bind_host_ffmpeg();
+    let scratch = Scratch::new("hires-refuse");
+    let hi = encode(&scratch.0, "hi.mkv", S24, 96_000, 2, &signal(S24, 2, 4_000), "flac", &[]);
+    let lo = encode(&scratch.0, "lo.mkv", S24, 48_000, 2, &signal(S24, 2, 4_000), "flac", &[]);
+    // the 96 kHz file declared as a 48 kHz one, which is what the Load said before the app resampled
+    let why = unsafe { decode_file(&hi, PcmOut::exact(48_000, 32, 2)) }.expect_err("96 kHz declared as 48 kHz");
+    assert!(why.contains("Load declared"), "{why}");
+    // a 48 kHz file declared as a 96 kHz source
+    let why = unsafe { decode_file(&lo, PcmOut { rate: 48_000, bits: 32, channels: 2, source_rate: 96_000 }) }
+        .expect_err("48 kHz declared as 96 kHz");
+    assert!(why.contains("Load declared"), "{why}");
+    // a resampled Load is S32 and mono or stereo: 16 bits would need dither, which this path does not do
+    let why = unsafe { decode_file(&hi, PcmOut { rate: 48_000, bits: 16, channels: 2, source_rate: 96_000 }) }
+        .expect_err("a resampled S16 Load");
+    assert!(why.contains("S32"), "{why}");
+}
+
+/// **88.2 kHz / 16-bit FLAC to {44.1 kHz, S32, stereo, source 88.2 kHz}**: a multiple of 44.1 kHz stays in the
+/// 44.1 kHz family, a 16-bit source is carried as S32 (the resampled value is not on its grid), and the 1 kHz tone
+/// is at unity on both channels.
+#[test]
+#[ignore = "requires the bundled host FFmpeg and the ffmpeg tool; run make check-ffmpeg"]
+fn an_88k_16_bit_flac_is_resampled_to_44k_s32_at_unity() {
+    let _g = plx_base::testlock::serial();
+    if skip() {
+        return;
+    }
+    let _ffmpeg = bind_host_ffmpeg();
+    let scratch = Scratch::new("hires-88k");
+    let frames = 88_200;
+    let samples = tone_signal(16, 88_200, frames, &[(1_000, 0.5)]);
+    let file = encode(&scratch.0, "hires.mkv", S16, 88_200, 2, &samples, "flac", &[]);
+    let out = PcmOut { rate: 44_100, bits: 32, channels: 2, source_rate: 88_200 };
+
+    let blocks = unsafe { decode_blocks_with(&file, out, |_| {}) }.expect("an 88.2 kHz FLAC decodes as the resampled shape");
+    let pcm: Vec<u8> = blocks.iter().flat_map(|b| b.pcm.iter().copied()).collect();
+    assert_eq!(pcm.len() % 8, 0, "whole S32 stereo frames");
+    assert!((pcm.len() / 8).abs_diff(frames / 2) <= 300, "half of {frames} frames less the lookahead, got {}", pcm.len() / 8);
+    assert_stamps_follow_the_frames(&blocks, 44_100, "88.2 kHz");
+    let channels = s32_stereo(&pcm);
+    let window = whole_periods(channels[0].len(), 1_000, 44_100, &[1_000]);
+    for (ch, (side, gain)) in channels.iter().zip([1.0, 0.5]).enumerate() {
+        let want = 0.5 * gain * 2_147_483_648.0;
+        let level = db(tone_amplitude(side, 1_000, 44_100, window) / want);
+        eprintln!("88.2 kHz -> 44.1 kHz channel {ch}: 1 kHz {level:+.6} dB from unity");
+        assert!(level.abs() <= 0.01, "channel {ch}: the 1 kHz tone is {level:+.4} dB from unity");
     }
 }

@@ -78,7 +78,8 @@ const OPUS_AUTO_MAX_CHANNELS: u32 = 2;
 /// Audio the app DECODES ITSELF and feeds as PCM, so no row of the device table is needed: the
 /// pipeline's PCM input (`libpf`'s `audio/x-raw` caps and the `contents.pcmInfo` node) is what
 /// carries it. FLAC is the case, and ALAC and LPCM ride the same path ([`APP_DECODED`]) — libpf has no FLAC input of its own (its Load vocabulary is
-/// AAC/AC3/AC3 PLUS/DTS/MP3/MPEG/OPUS/VORBIS/WMA/PCM), but PCM decoded from it is bit-exact. Both
+/// AAC/AC3/AC3 PLUS/DTS/MP3/MPEG/OPUS/VORBIS/WMA/PCM), but PCM decoded from it is bit-exact at a rate of [`PCM_SAMPLE_RATES`]
+/// (above them the app resamples, [`pcm_load_rate`]). Both
 /// the vocabulary and the PCM input were verified on webOS 4.4.3 (libpf-1.0 on an OLED55B8); other
 /// webOS versions are unconfirmed. Joins [`Caps::audio`] only on a table that was READ: the assumed
 /// fallback stays byte-for-byte what it was.
@@ -137,7 +138,7 @@ pub const APP_DECODED: &[AppDecoded] = &[
     AppDecoded { id: "vorbis", codecs: &["vorbis"], decoders: &["vorbis"], lossy: true, measured: None },
     // TrueHD (S4-5): up to eight channels (FFmpeg's `truehd` decodes the 7.1 bed; an Atmos object
     // substream is not rendered), mixed by layout to stereo 48 kHz. The only lossy entry without a rate
-    // bound beside DTS, because the app's resampler low-passes high rates ([`audio_rate_bounded`]).
+    // bound beside DTS, because the app's resampler (`speed_audio::Resampler`) low-passes high rates ([`audio_rate_bounded`]).
     // Unmeasured, like MP3 and Vorbis.
     AppDecoded { id: "truehd", codecs: &["truehd"], decoders: &["truehd"], lossy: true, measured: None },
 ];
@@ -231,10 +232,10 @@ pub const AUDIO_RATE_CEILING: u32 = 48_000;
 /// ([`PCM_AUDIO_CODECS`]: FLAC, ALAC, LPCM). The app feeds only the DTS core
 /// (`ff.rs::dts_core_packet`), 48 kHz at most by format, so a DTS-HD 96/24 source plays today and
 /// bounding it would push that source into a lossy AC-3 conversion. TrueHD and the lossless PCM codecs,
-/// when the app decodes them, are resampled to 48 or 44.1 kHz by the app itself (`speed_audio::Decimator`
+/// when the app decodes them, are resampled to 48 or 44.1 kHz by the app itself (`speed_audio::Resampler`
 /// low-passes before it decimates from 88.2 kHz and up), so their Load never carries the source rate;
 /// bounding them would send every high-resolution track to a lossy server conversion for nothing
-/// ([`pcm_load_rate`] is the rule for the PCM codecs). MP3 and Vorbis stay bound: the decimator exists,
+/// ([`pcm_load_rate`] is the rule for the PCM codecs). MP3 and Vorbis stay bound: the resampler exists,
 /// but a 96 kHz Vorbis has not been through the TV. Opus, AC-3 and E-AC-3 are
 /// 48 kHz at most by format, so their bound never fires; they stay in the set so that "every other
 /// codec" is the one rule, with no per-codec list to keep in step.

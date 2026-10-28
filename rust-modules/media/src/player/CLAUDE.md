@@ -324,7 +324,9 @@ something.
   aac/ac3/eac3, so a PCM Load refused before its first picture can take the facet rung (the server converts
   the track), and a proven conversion is stored by codec like any audio facet (`NativeAudioRefusal::of_facet`).
   After two such plays an ALAC or LPCM row can remove that codec from the set's value, as FLAC's already can.
-  That is existing behaviour, left as it is. A stream the Load declared PCM for but the app has no decoder for
+  That is existing behaviour, left as it is. A hi-res track (96 kHz FLAC, resampled by the app to 48 kHz S32) is declared
+  in the same shape as a 24-bit 48 kHz FLAC, and the facet is keyed by codec alone: two refused hi-res plays can remove
+  `flac` from the set's value and with it the bit-exact 44.1 and 48 kHz FLAC. Accepted knowingly, not keyed by (codec, resampled). A stream the Load declared PCM for but the app has no decoder for
   (float or 8-bit LPCM under PMS's `pcm`) is refused in the demuxer (`ff::pcm_load_feeds_raw`) and ends as
   `demux_failed` -> `LoadRefusal::SourceFailed`, which names no facet, so the audio-only conversion rung is not
   reached: Auto Original falls to its HLS contingency, Force Direct Play shows the error.
@@ -350,13 +352,20 @@ something.
   (the selected track, or a same-language non-commentary sibling: `StandIn::SameKind`), (2) the app's decode of the
   intended track (at most two channels), (3) only then the native stand-in of any track. A native sibling wins over the app decode, and a
   native commentary or dub never does. An app-decoded track is never the set's own decoder's (the Load
-  declares `PCM`, stereo 48 kHz S16: `route::stream_pcm`), is announced without a table row, the track menu says a surround one plays in
+  declares `PCM`: stereo 48 kHz S16 for a lossy codec; the track's own table rate and width for FLAC, ALAC and LPCM, or the rate
+  they are resampled to as S32 below: `route::stream_pcm`), is announced without a table row, the track menu says a surround one plays in
   stereo (`route::audio_decoded_in_app`), and
   `ff_pcm::PcmDecoder` decodes it (DTS: the core only, `core_only`), downmixes by the frame's channel layout and resamples it
   (`ff_pcm::PcmConverter`, lossy shape). The resample is linear from a source below 48 kHz and a windowed-sinc low-pass decimator from one above it
-  (`speed_audio::Decimator`: 88.2, 96, 176.4, 192 kHz; flat within 0.01 dB to 90% of the output's Nyquist, everything that can fold into that band 120 dB down), the
-  same `Resampler` the speed path uses. MP3 and Vorbis stay `audio_rate_bounded` (a 96 kHz Vorbis has not been through the TV), so
-  a track above 48 kHz is the server's; DTS (a core is 48 kHz at most) and TrueHD (decimated by the app) are exempt. TrueHD is
+  (`speed_audio::Resampler`, the one the speed path uses: a Kaiser-windowed sinc, `ZEROS 41, CUTOFF 1.0, BETA 12.8`, f64; flat within 0.01 dB to
+  90% of the output's Nyquist and at least 120 dB down from `fout - 0.9 * Nyquist` up, measured: pass band within 5e-6 dB, worst alias -124.3 dB at 176.4 kHz and
+  -126.7 dB at 96 kHz; a source more than 8 times the output is first halved by exact 2:1 stages, so the tables stay under 6.7 MB for any rate). MP3 and Vorbis stay
+  `audio_rate_bounded` (a 96 kHz Vorbis has not been through the TV), so a track above 48 kHz is the server's; DTS (a core is 48 kHz at most), TrueHD
+  (decimated by the app) and FLAC, ALAC and LPCM (below) are exempt. **Lossless hi-res**: a mono or stereo FLAC, ALAC or LPCM track above 48 kHz is
+  resampled by the app (`ff_pcm::PcmConverter`, lossless shape) to 48 kHz, or to 44.1 kHz for a multiple of 44.1 kHz (`devcaps::pcm_load_rate`, the one rule
+  for the planner, Forced, the track menu and the profile), and declared S32 whatever its own depth, at unity gain, saturating at the i32 range,
+  without dither or limiter; one log line per stream counts the clipped samples and the peak. A 5.1 hi-res track still converts on the server
+  (the profile keeps `audio.channels <= 2` for these codecs). A table rate (8 to 48 kHz) builds no converter and stays bit-exact. TrueHD is
   decoded as FFmpeg's `truehd` decodes it, up to the 7.1 bed; an Atmos object substream is not rendered. Its access units are
   1/1200 s, so the demuxer gathers decoded blocks shorter than 10 ms into AUs of about that length (`ff_pcm::AuBatcher`; a DTS,
   MP3 or lossless block is longer and, while the stream is contiguous, passes whole; a gap in the content time ends the AU). The speed decoder (`SpeedDecoder`) mixes by the same layout mask
@@ -590,8 +599,8 @@ something.
   included: `engine::load_audio` plans the lead from the name the Load declares, which is PCM for it), and a speed
   session at any speed other than 1x; a compressed Load, DTS the set decodes itself included, gets none).
   App-decoded DTS, TrueHD, MP3 and Vorbis get the lead of the set's stack exactly as FLAC does, but none of them
-  was FILMED (the measurements below are FLAC on `liblxa`); Vorbis' half-block pts offset (`ff_pcm.rs`) is not
-  corrected and its effect on sync is not determined.
+  was FILMED (the measurements below are FLAC on `liblxa`); the converter's own clock corrects the filter's lookahead
+  (about a millisecond) in the stamps, but Vorbis' decoder delay (a half-block pts offset, `ff_pcm.rs`) is not corrected and its effect on sync is not determined.
   *Which stack:* `devcaps::audio_stack()` fingerprints it at boot (`devcaps::probe`, the `devcaps:` line's
   `audio stack=`) by the GStreamer sink PLUGIN, because each LG generation has its own sink plugin family in `/usr/lib/gstreamer-1.0/`
   (a 2018 image also ships the 2016/2017 one, so the probe order decides), no Realtek or MStar image has
