@@ -581,7 +581,7 @@ fn run_release_tail(mt: &MainThread, p: PendingRelease) {
     // `p._engine` drops here, after the object it belonged to is gone.
 }
 
-/// Block (bounded by [`super::release::RELEASE_DEADLINE`]) until the previous object is released
+/// Block (bounded by [`crate::player::release::RELEASE_DEADLINE`]) until the previous object is released
 /// or overdue. **Only a caller that cannot be deferred uses this** — the foreground restore, which
 /// has no way to follow a start that has not happened yet. A play lands as `Deferred`.
 pub fn wait_for_release(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
@@ -6359,6 +6359,7 @@ mod off_frame_release_tests {
         let _release = ReleaseUnloadOnDrop;
         playing_engine(&mut pa);
         crate::player::ffi_host::hold_unload_for_test();
+        let t_stop = std::time::Instant::now();
         stop_bufferfeed(&mut ps, &mut pa);
         assert!(pa.has_pending_release());
         // A helper lets the hold go after 3 s, so the unfixed code ends instead of hanging.
@@ -6368,15 +6369,101 @@ mod off_frame_release_tests {
         });
 
         let started = std::time::Instant::now();
-        let _outcome = start_bufferfeed_tracked(&mut ps, &mut pa);
+        let outcome = start_bufferfeed_tracked(&mut ps, &mut pa);
         let took = started.elapsed();
         assert!(
             took < std::time::Duration::from_millis(50),
             "the start blocked the UI thread for {took:?} over an Unload that had not returned"
         );
+        assert_eq!(outcome, BufferfeedStartOutcome::Deferred);
         assert!(!pa.is_live());
         assert!(SHARED.begin_native_session().is_none());
-        helper.join().unwrap();
+        assert!(pa.has_pending_release());
+
+        // The deadline, on the machine's injected clock: the queued start fails typed.
+        let t0 = t_stop;
+        assert!(!poll_release(&mut ps, &mut pa, t0 + crate::player::release::RELEASE_DEADLINE - std::time::Duration::from_millis(1)));
+        assert_ne!(
+            crate::player::error_now(&ps).kind,
+            crate::player::FailureKind::ReleaseTimeout,
+            "the read-out appeared before the deadline"
+        );
+        assert!(!poll_release(&mut ps, &mut pa, t0 + crate::player::release::RELEASE_DEADLINE + std::time::Duration::from_secs(5)));
+        assert_eq!(crate::player::state(&ps), crate::player::PlaybackState::Error);
+        let shape = crate::player::error_now(&ps);
+        assert_eq!(shape.kind, crate::player::FailureKind::ReleaseTimeout);
+        assert_eq!(shape.kind.code(), "release_timeout");
+        let actions = crate::player::failure_actions(
+            shape.kind,
+            crate::player::FailureContext { forced: false, can_retry: true, repair_idle: true },
+        );
+        assert!(actions.contains(&crate::player::FailureAction::TryAgain), "{actions:?}");
+
+        // A second start is refused with no new object; the leaked object was not D1'd.
+        assert_eq!(start_bufferfeed_tracked(&mut ps, &mut pa), BufferfeedStartOutcome::Failed);
+        assert!(!pa.is_live());
+        assert_eq!(crate::player::error_now(&ps).kind, crate::player::FailureKind::ReleaseTimeout);
+        assert_ne!(
+            unsafe { crate::player::raw_sink().ready(&MainThread::assume()) },
+            0,
+            "the overdue object was destroyed under a worker that may still be inside it"
+        );
+        assert!(pa.has_pending_release(), "the overdue release must stay parked");
+        assert!(pa.release_overdue());
+
+        // The Unload finally returns: the tail runs, nothing quarantines, the next start goes.
+        helper.join().unwrap(); // released by the helper after 3 s
+        let give_up = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !poll_release(&mut ps, &mut pa, std::time::Instant::now()) {
+            assert!(std::time::Instant::now() < give_up, "the late Unload was never finished");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!pa.has_pending_release());
+        assert_eq!(ready_now(), 0);
+        assert!(!crate::player::ffi_host::lifecycle_blocked_for_test(), "the late tail must D1");
+        assert_ne!(
+            start_bufferfeed_tracked(&mut ps, &mut pa),
+            BufferfeedStartOutcome::Deferred,
+            "the slot must be free again"
+        );
+        assert_ne!(crate::player::error_now(&ps).kind, crate::player::FailureKind::ReleaseTimeout);
+    }
+
+    /// The exit with an `Unload` that never returns is bounded by the deadline and says a worker
+    /// is still in firmware, so the display is not torn down under it.
+    #[test]
+    fn exit_with_an_unload_that_never_returns_is_bounded_and_reports_a_worker_in_firmware() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        let mut pa = arm(&ps);
+        let _cleanup = Cleanup;
+        let _release = ReleaseUnloadOnDrop;
+        playing_engine(&mut pa);
+        crate::player::ffi_host::hold_unload_for_test();
+        stop_bufferfeed(&mut ps, &mut pa);
+        assert!(pa.has_pending_release());
+        // An injected clock that jumps a second per look: no real sleep, the deadline in ~11 reads.
+        let t0 = std::time::Instant::now();
+        let mut ticks = 0u64;
+        let exit = exit_native_with(
+            &mut pa,
+            || {
+                ticks += 1;
+                t0 + std::time::Duration::from_secs(ticks)
+            },
+            || {},
+        );
+        assert_eq!(exit, NativeExit::WorkerInFirmware);
+        assert!(ticks >= 10, "the exit gave up before the deadline ({ticks} looks)");
+        assert!(pa.has_pending_release(), "the overdue object must stay parked, not destroyed");
+        crate::player::ffi_host::release_unload_for_test();
+        // Once the Unload returns, the exit is clean.
+        let give_up = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while exit_native(&mut pa) != NativeExit::Clean {
+            assert!(std::time::Instant::now() < give_up, "the returned Unload never made the exit clean");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(!pa.has_pending_release());
     }
 
     #[test]
@@ -7108,11 +7195,19 @@ mod load_in_flight_tests {
         });
         install_engine_with_timed_out_load(&mut ps, &mut pa);
         stop_bufferfeed(&mut ps, &mut pa);
-        finish_release_for_test(&mut pa);
+        let exit = exit_native(&mut pa);
         assert!(
-            !crate::player::ffi_host::load_in_flight_for_test(),
+            exit == NativeExit::WorkerInFirmware || !crate::player::ffi_host::load_in_flight_for_test(),
             "the exit's native half returned with a Load still inside firmware: SDL_Quit would run under it"
         );
+        assert_eq!(exit, NativeExit::WorkerInFirmware);
+        // The Load returns and is reaped: the exit is clean.
+        crate::player::ffi_host::release_load_for_test();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while exit_native(&mut pa) != NativeExit::Clean {
+            assert!(std::time::Instant::now() < deadline, "the returned Load never made the exit clean");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     /// PLX-NATIVE-15: the Auto Original's Load passes its budget, the HLS recovery reloads while
