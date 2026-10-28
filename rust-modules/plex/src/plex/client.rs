@@ -844,6 +844,13 @@ impl Client {
             .map(|e| e.media_container)
     }
 
+    /// POST → the JSON body as a tree, for a write whose answer has no flat container shape — the
+    /// Live TV tune, whose session sits several levels down (`livetv::session_of`).
+    pub(super) fn post_value(&self, path_no_token: &str) -> Option<serde_json::Value> {
+        let body = self.body_2xx(path_no_token, Method::Post, &[ACCEPT_JSON])?;
+        serde_json::from_slice(&body).ok()
+    }
+
     /// THE token choke point. Appends `X-Plex-Token=…` with the right separator.
     pub(super) fn with_token(&self, path: &str) -> String {
         let sep = if path.contains('?') { '&' } else { '?' };
