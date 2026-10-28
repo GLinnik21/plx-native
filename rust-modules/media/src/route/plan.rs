@@ -163,8 +163,9 @@ pub struct CarriedAudio {
     pub can_normalize_loudness: bool,
     /// Dolby Atmos (`metadata::Stream::has_atmos`) — the Load payload's `contents.immersive`.
     pub immersive: bool,
-    /// PMS `samplingRate` (Hz) and `bitDepth` — what a PCM Load declares for a track the app
-    /// decodes itself (FLAC, ALAC, LPCM: `devcaps::PCM_AUDIO_CODECS`). 0 = not said, and the Load refuses.
+    /// PMS `samplingRate` (Hz) and `bitDepth` of a track the app decodes itself (FLAC, ALAC, LPCM:
+    /// `devcaps::PCM_AUDIO_CODECS`); the PCM Load declares `devcaps::pcm_load_rate(sample_rate)` (a rate
+    /// above the table is resampled to 48 or 44.1 kHz, S32; `route::pcm_format_of`). 0 = not said, and the Load refuses.
     pub sample_rate: i64,
     pub bit_depth: i64,
 }
