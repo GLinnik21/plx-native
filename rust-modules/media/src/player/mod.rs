@@ -781,8 +781,8 @@ pub fn state(ps: &crate::route::PlaybackSession) -> shared::PlaybackState {
     // that owns `pb_state` never runs. Deriving it in the one reader keeps a single writer — the
     // alternative is poking `Error` into the player's state from the frame loop. It sits BELOW the
     // resolve check because a fresh resolve is the thing that retires the last verdict.
-    // A start refused because a timed-out Load is still parked (`ps.native_start_refused`) is the
-    // same kind of fact: no Engine was built, so the pump that owns `pb_state` never runs and
+    // A start refused because a timed-out Load is still parked, or because the previous object's
+    // off-frame Unload outlived `RELEASE_DEADLINE` (`ps.native_start_refused`) is the same kind of fact: no Engine was built, so the pump that owns `pb_state` never runs and
     // nothing else could say why the player is empty.
     if ps.jail_load_blocked
         || ps.native_start_refused.is_some()

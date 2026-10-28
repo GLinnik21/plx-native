@@ -17,7 +17,7 @@
 //! the result back as one event, and executes the effects. `Instant`s arrive on events; the
 //! machine only compares them. **`Overdue` never destroys the object**: the worker may still be
 //! inside firmware, so the object, its payload and the Engine it belonged to are leaked until the
-//! `Unload` returns (or for the life of the process), exactly as an `AbandonedLoad` is.
+//! `Unload` returns (or until the process ends by `_exit` on a firmware exit), exactly as an `AbandonedLoad` is.
 
 use std::time::{Duration, Instant};
 

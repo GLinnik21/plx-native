@@ -648,12 +648,13 @@ fn exit_native_with(
     }
 }
 
-/// **A worker still in firmware reads memory its owner is about to drop.** The caller returns
-/// without `SDL_Quit` and `run_application` then drops the `App`, so the parked
+/// **A worker still in firmware reads memory its owner is about to drop.** The caller skips
+/// `SDL_Quit` and `app::run_and_shutdown` ends the process with `_exit` (no `App` drop, no libc
+/// finalizers), but the stack above it may still unwind, so the parked
 /// [`PendingRelease`] (its Engine: the Load payload Starfish holds a raw pointer into, the
 /// handle set, the AU queues) and the parked [`AbandonedLoad`] (the payload its `media` thread
 /// reads) would be freed under the live call. They are leaked instead, for the life of the process
-/// (`release.rs`: the OS reclaims it). Only `exit_native` calls this, and only on that outcome.
+/// (`release.rs`: the `_exit` that follows skips their destructors). Only `exit_native` calls this, and only on that outcome.
 fn leak_parked_for_exit(pa: &mut super::adapter::PlayerAdapter) {
     if let Some(p) = pa.take_pending_release_any() {
         std::mem::forget(p);
