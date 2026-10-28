@@ -4144,6 +4144,10 @@ mod fetch_state_tests;
 mod home_and_tabs_tests;
 
 #[cfg(test)]
+#[path = "browse_pins_input_tests.rs"]
+mod pins_input_tests;
+
+#[cfg(test)]
 #[path = "browse_eviction_tests.rs"]
 mod eviction_tests;
 

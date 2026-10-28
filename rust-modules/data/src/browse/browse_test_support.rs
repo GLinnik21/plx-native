@@ -235,6 +235,33 @@ impl TestBrowse {
         self.state.cur_state().map_or(SecFetch::Loading, |state| state.fetch)
     }
 
+    /// Poll the pending pin write's receipt once, as the Bridge does before it reads the session.
+    pub(super) fn observe_pin_write(&self) {
+        if let Some((_, write)) = &self.state.pending_pins {
+            let _ = write.lock().unwrap_or_else(|e| e.into_inner()).saved();
+        }
+    }
+
+    /// The first-run gate on `session`.
+    pub(super) fn first_run_asks_with(&self, _session: &plx_plex::plex::session::Session) -> bool {
+        crate::stores::browse::onboard::asks_for_sources(self.state.sources.len())
+    }
+
+    /// The editor's commit, stepped with `session`.
+    pub(super) fn apply_pins_with(&mut self, answers: &[(usize, bool)], _session: &plx_plex::plex::session::Session) {
+        self.state.apply_pins(answers);
+    }
+
+    /// A live discovery landing's section append, stepped with `session`.
+    pub(super) fn append_sections_live_with(
+        &mut self,
+        source: usize,
+        sections: Vec<(i64, String, SecKind)>,
+        _session: &plx_plex::plex::session::Session,
+    ) {
+        self.state.append_sections_with(source, sections, None);
+    }
+
     pub(super) fn first_run_asks(&self) -> bool {
         crate::stores::browse::onboard::asks_for_sources(self.state.sources.len())
     }
