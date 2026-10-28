@@ -50,10 +50,10 @@
 //! answers 401 to the other's token. So the table is a flat `Vec<BrowseSection>` whose every entry
 //! names its [`BrowseSource`], and every fetch is issued through `client_for(source.sid)` captured
 //! BEFORE the worker starts — never `client()` read inside a worker, which would dial whichever
-//! server happened to be current when the thread got scheduled. Source discovery and the pins
-//! capture it at their spawn site; the page and directory reads capture the section's `ClientKey`
-//! at the step (from the `ClientKeys` the caller filled) and the runner resolves it to the client
-//! at the launch, refusing a job whose client has moved on.
+//! server happened to be current when the thread got scheduled. The pins capture it at their spawn
+//! site; the source discovery and the page and directory reads capture the `ClientKey` of the
+//! source or section at the step (from the `ClientKeys` the caller filled) and the runner resolves
+//! it to the client at the launch, refusing a job whose client has moved on.
 //!
 //! **It grows by APPEND and never by rebuild**, which is what keeps the page mailbox sound. A page
 //! landing is blamed on a section INDEX (`PageResult.sec`), so an index that moved under an
@@ -2719,7 +2719,7 @@ impl BrowseState {
         adapter: &Arc<BrowseAdapter>,
         gate: &plx_machine::landgate::Gate,
     ) -> crate::stores::StoreOutcome {
-        // DUMP MODE: owed while the discovery claim (`src_fetching`, set at the spawn and cleared
+        // DUMP MODE: owed while the discovery claim (`src_fetching`, raised by the step that emits the job and cleared
         // in `apply_discovery`, after its epoch check) is held. Per MAILBOX: the claim of the one mailbox taken here.
         let taken = crate::stores::take_landing_owed(gate, crate::stores::StoreId::Browse,
             || adapter.src_fetching.busy(), || {
@@ -3242,7 +3242,7 @@ enum SrcWhat {
 }
 
 /// Legacy synchronous harness retained only for lifecycle regression fixtures. Production section
-/// discovery is uniformly `kick → worker → mailbox → commit` via [`discover_pump`].
+/// discovery is uniformly `step → job → worker → mailbox → commit` via [`discover_pump`].
 #[cfg(test)]
 fn ensure_sections_with(
     state: &mut BrowseState,

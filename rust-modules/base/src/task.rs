@@ -203,7 +203,7 @@ struct SmallWorker(Option<u64>);
 #[cfg(any(test, feature = "test-support"))]
 impl SmallWorker {
     fn enter(counted: bool, what: &str) -> Self {
-        // Not counted: the library-discovery worker (`browse::spawn_discovery`) dials whatever
+        // Not counted: the library-discovery worker (the runner's `launch_browse_discovery`) dials whatever
         // server the test registered, which may be an address that answers only by its connect
         // timeout, and it posts into the per-owner adapter the test owns and drops with itself —
         // no process global — so waiting for it would charge every such test seconds for nothing.

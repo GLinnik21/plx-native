@@ -1254,7 +1254,7 @@ ledger_candidates() {
 # `storage_worker::submit(`, `submit_retained(` (base/src/storage_worker.rs) and the typed command
 # worker's `.submit_ticket(`, keyed `<path>::<enclosing fn>::<spelling>`. A BARE `spawn(` / `submit(` is a
 # site only in a file that imports it from `task` / `storage_worker` (no other `spawn(` is a worker start:
-# `Builder::spawn`, a local fn). A local wrapper (`spawn_discovery`) is not itself a site —
+# `Builder::spawn`, a local fn). A local launcher (`launch_browse_discovery`) is not itself a site —
 # the real call inside it is. The command worker's `.submit(` is not covered: it is `cfg(any(test,
 # feature = "test-support"))` in base, so no production line can call it; `.submit_ticket(` is covered
 # although no machine calls it today, because a machine that did would be starting a worker. A worker

@@ -4,7 +4,8 @@
 //! no clock. The `Bridge` takes the jobs right after the step that emitted them
 //! (`Bridge::metadata_run`, `Bridge::person_pump`, `Bridge::collection_pump`,
 //! `Bridge::catalog_open`, `Bridge::catalog_pump`, `Bridge::subsearch_pump`, `Bridge::search_pump`,
-//! `Bridge::reconcile_pump`, `Bridge::viewstate_run`, `Bridge::viewstate_pump`, or
+//! `Bridge::reconcile_pump`, `Bridge::viewstate_run`, `Bridge::viewstate_pump`,
+//! `Bridge::browse_discover_pump`, or
 //! `Bridge::start_store_jobs` after a command run on the bare store)
 //! and hands each to [`StoreRunner::start`], which owns everything the data layer must not: the
 //! tape's admission record, the worker thread and the process-global client the request reads. A
@@ -16,8 +17,8 @@
 //!
 //! **Three admission families** (`plx_data::stores::Admission`, stated by the job kind and matched
 //! exhaustively): `Tape` kinds record their launch on the tape; `Direct` kinds are started with no
-//! record; a `Home` kind (the Hubs read) records its launch in a controlled Home run's own
-//! ordered ledger (`HomeIo::admit`). A controlled arm starts its Home jobs with
+//! record; a `Home` kind (the Hubs read and the Library's source discovery) records its launch in a
+//! controlled Home run's own ordered ledger (`HomeIo::admit`). A controlled arm starts its Home jobs with
 //! [`StoreRunner::start_admitted`], handing over the run's `HomeIo`; every other sender, the live
 //! arms and the landing and fan-out drains included, starts them with [`StoreRunner::start`], which
 //! launches a Home kind as a direct one. A Home job that reaches `start` from a controlled arm has
@@ -30,10 +31,11 @@
 //! made both depend on the scheduler: a fetch for an unknown server returns in microseconds, so a
 //! fast run settled a request before an "in flight" assertion while a loaded CI runner had not
 //! settled it after a hundred `yield_now`s. `Held` parks per kind (`LiveKind`): [`StoreRunner::held`]
-//! leaves the Home Hubs read, the Metadata season switch and the Library listing's page read live
-//! (the rigs that poll for a landing, the dump and return-hold tests, `menu_play_season_tests` and the
-//! library route rigs that wait for a grid to settle, need a real answer on a worker),
-//! [`StoreRunner::park_page_reads`] parks the page read as well, and [`StoreRunner::held_all`] parks
+//! leaves the Home Hubs read, the Metadata season switch, the Library listing's page read and the
+//! Library's source discovery live (the rigs that poll for a landing, the dump and return-hold
+//! tests, `menu_play_season_tests` and the library route rigs that wait for a grid to settle, need a
+//! real answer on a worker; discovery is live so the rigs that run every parked job on the test thread
+//! (the hostsim helpers of `app/run.rs`) never run its blocking reads there), [`StoreRunner::park_page_reads`] parks the page read as well, and [`StoreRunner::held_all`] parks
 //! every kind. Every held runner parks episode-page jobs.
 //!
 //! **The registry is read here, not in a step.** A step that decides from "which client does this
@@ -180,7 +182,7 @@ pub(crate) enum StoreRunner {
 
 /// TEST ONLY: a kind of job a [`StoreRunner::Held`] starts on a worker instead of parking. It names
 /// a kind and not a store: Browse emits several kinds (`BrowseHubs`, `BrowseDirectory`,
-/// `BrowsePage`), and a rig that waits for the Library grid's page landing must not also get the
+/// `BrowsePage`, `BrowseDiscovery`), and a rig that waits for the Library grid's page landing must not also get the
 /// section hubs' read live; Metadata's season switch runs live while
 /// its detail fetch stays parked.
 #[cfg(test)]
@@ -207,7 +209,8 @@ impl StoreRunner {
     }
 
     /// TEST ONLY: [`StoreRunner::Held`] for every kind but the Home Hubs read, the Metadata season
-    /// switch and the Library listing's page read, which start on a worker as they do in production:
+    /// switch, the Library listing's page read and the Library's source discovery, which start on a
+    /// worker as they do in production:
     /// a rig that waits for a Home or a grid landing, and the menu-play season wait
     /// (`menu_play_season_tests`, which polls `metadata_pump_season` for a landing and never runs held
     /// jobs), need a real one. No rig waits for an episode-page landing, so those are parked.
