@@ -17,7 +17,7 @@ All paths in this table are relative to `rust-modules/src/`. `small` means `spaw
 | Source location(s) | Calls / labels | Shape and disposition |
 |---|---|---|
 | `app/adapters/poster.rs:992` | normal `poster`, called twice | Two interchangeable long-lived workers competing for images. **This proposal's scheduling domain.** |
-| `browse/mod.rs:3644` | small `sources` | One-shot source discovery, adapter mailboxes and caller-owned epochs/latches. Leave alone. |
+| `app/adapters/stores.rs` (`launch_browse_discovery`) | small `sources` | One-shot source discovery, started by the app's runner for `StoreJob::BrowseDiscovery` (no longer in `browse/mod.rs`). Adapter mailbox behind a `Fetch` claim, caller-owned epochs. Leave alone. |
 | `app/adapters/stores.rs` (`launch_browse_directory`, `launch_browse_page`) | small `directory`, `page` | The Library's value-list and listing-page reads, started by the app's runner for `StoreJob::BrowseDirectory` / `BrowsePage` (no longer in `browse/mod.rs`). One-shot results behind each read's own claim and mailbox. Leave alone. `directory` serves genres and letters. |
 | `app/adapters/stores.rs` (`launch_browse_hubs`) | small `libhubs` | The section hubs' list/row read, started by the app's runner for `StoreJob::BrowseHubs` (no longer in `browse/section_hubs.rs`). One-shot result with section/table/client validity checks. Leave alone. |
 | `metadata.rs:2753,3188,3582` | small `detail`, `altsrc`, `season` | Distinct request/landing protocols; season failure is separate from an empty answer. Leave alone. |
