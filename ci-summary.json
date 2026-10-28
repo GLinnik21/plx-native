@@ -57,22 +57,22 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-28T13:34:53Z",
+ "generated": "2026-10-28T14:21:46Z",
  "metrics": [
   {
    "change30_pct": null,
-   "change7_pct": 41.2,
+   "change7_pct": 40.4,
    "d30": null,
    "delta30": null,
-   "delta7": 68.0,
+   "delta7": 67.0,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
    "n_now": 86,
-   "n_prev": 109,
+   "n_prev": 107,
    "now": 233.0,
-   "prev7": 165,
+   "prev7": 166,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -159,18 +159,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 28.3,
+   "change7_pct": 26.8,
    "d30": null,
    "delta30": null,
-   "delta7": 47.5,
+   "delta7": 45.5,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
    "n_now": 86,
-   "n_prev": 109,
+   "n_prev": 107,
    "now": 215.5,
-   "prev7": 168,
+   "prev7": 170,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -179,19 +179,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -58.5,
-   "change7_pct": -22.7,
+   "change30_pct": -58.4,
+   "change7_pct": -22.2,
    "d30": 887.0,
-   "delta30": -518.5,
-   "delta7": -108.5,
+   "delta30": -518.0,
+   "delta7": -105.5,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 226,
-   "n_prev": 267,
-   "now": 368.5,
-   "prev7": 477,
+   "n_now": 225,
+   "n_prev": 266,
+   "now": 369,
+   "prev7": 474.5,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -200,19 +200,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -60.6,
-   "change7_pct": -1.8,
-   "d30": 891.5,
-   "delta30": -540.0,
-   "delta7": -6.5,
+   "change30_pct": -60.7,
+   "change7_pct": -1.7,
+   "d30": 892,
+   "delta30": -541,
+   "delta7": -6.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 88,
-   "n_prev": 124,
-   "now": 351.5,
-   "prev7": 358.0,
+   "n_now": 89,
+   "n_prev": 122,
+   "now": 351,
+   "prev7": 357.0,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -326,19 +326,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 33.2,
-   "change7_pct": 5.8,
-   "d30": 1685,
-   "delta30": 559.5,
-   "delta7": 123.5,
+   "change30_pct": 31.3,
+   "change7_pct": 6.2,
+   "d30": 1710.0,
+   "delta30": 534.5,
+   "delta7": 131.5,
    "group": "ci",
    "id": "minutes",
    "kind": "cost",
    "label": "Runner time per push",
    "n_now": 70,
-   "n_prev": 97,
+   "n_prev": 95,
    "now": 2244.5,
-   "prev7": 2121,
+   "prev7": 2113,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -369,18 +369,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -1.5,
+   "change7_pct": 1.0,
    "d30": null,
    "delta30": null,
-   "delta7": -5.5,
+   "delta7": 3.5,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
    "n_now": 86,
-   "n_prev": 109,
+   "n_prev": 107,
    "now": 349.5,
-   "prev7": 355,
+   "prev7": 346,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -411,18 +411,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 5.9,
+   "change7_pct": 7.0,
    "d30": null,
    "delta30": null,
-   "delta7": 17,
+   "delta7": 20,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
    "n_now": 85,
-   "n_prev": 109,
+   "n_prev": 107,
    "now": 306,
-   "prev7": 289,
+   "prev7": 286,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -431,19 +431,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 84.0,
-   "change7_pct": 9.3,
-   "d30": 144.0,
-   "delta30": 121.0,
-   "delta7": 22.5,
+   "change30_pct": 83.1,
+   "change7_pct": 9.0,
+   "d30": 145,
+   "delta30": 120.5,
+   "delta7": 22.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 77,
-   "n_prev": 118,
-   "now": 265,
-   "prev7": 242.5,
+   "n_now": 78,
+   "n_prev": 116,
+   "now": 265.5,
+   "prev7": 243.5,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -452,18 +452,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -46.0,
-   "change7_pct": 4.9,
-   "d30": 375.0,
-   "delta30": -172.5,
-   "delta7": 9.5,
+   "change30_pct": -46.7,
+   "change7_pct": 5.2,
+   "d30": 381,
+   "delta30": -178,
+   "delta7": 10.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 76,
-   "n_prev": 118,
-   "now": 202.5,
+   "n_now": 77,
+   "n_prev": 116,
+   "now": 203,
    "prev7": 193.0,
    "shown": true,
    "state": "flat",
@@ -474,17 +474,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 14.8,
+   "change7_pct": 15.1,
    "d30": null,
    "delta30": null,
-   "delta7": 22.0,
+   "delta7": 22.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 77,
-   "n_prev": 118,
-   "now": 171,
+   "n_now": 78,
+   "n_prev": 116,
+   "now": 171.5,
    "prev7": 149.0,
    "shown": true,
    "state": "flat",
@@ -495,18 +495,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -3.5,
+   "change7_pct": -2.9,
    "d30": null,
    "delta30": null,
-   "delta7": -6.0,
+   "delta7": -5.0,
    "group": "ci",
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
    "n_now": 86,
-   "n_prev": 109,
+   "n_prev": 107,
    "now": 165.0,
-   "prev7": 171,
+   "prev7": 170,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -538,16 +538,16 @@
   {
    "change30_pct": 12.5,
    "change7_pct": 0.0,
-   "d30": 16.0,
+   "d30": 16,
    "delta30": 2.0,
    "delta7": 0.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 77,
-   "n_prev": 118,
-   "now": 18,
+   "n_now": 78,
+   "n_prev": 116,
+   "now": 18.0,
    "prev7": 18.0,
    "shown": false,
    "state": "flat",
@@ -601,15 +601,15 @@
   {
    "change30_pct": -98.8,
    "change7_pct": -25.0,
-   "d30": 258.5,
-   "delta30": -255.5,
+   "d30": 259,
+   "delta30": -256,
    "delta7": -1,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
    "n_now": 85,
-   "n_prev": 109,
+   "n_prev": 107,
    "now": 3,
    "prev7": 4,
    "shown": false,
@@ -622,15 +622,15 @@
   {
    "change30_pct": -99.7,
    "change7_pct": 0.0,
-   "d30": 884.0,
-   "delta30": -881.0,
+   "d30": 891,
+   "delta30": -888,
    "delta7": 0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
    "n_now": 85,
-   "n_prev": 109,
+   "n_prev": 107,
    "now": 3,
    "prev7": 3,
    "shown": false,
@@ -664,13 +664,8 @@
  ],
  "regressions": [
   {
-   "change_pct": 41.2,
+   "change_pct": 40.4,
    "commits": [
-    {
-     "pr": 1068,
-     "sha": "598ece791",
-     "title": "Playback: the app decodes a DTS core to stereo PCM, behind a debug gate"
-    },
     {
      "pr": 1078,
      "sha": "9b7d1da28",
@@ -715,9 +710,14 @@
      "pr": 1108,
      "sha": "5c76ae0b2",
      "title": "Watchlist W-1: the stores take the seated profile and its identity from the Bridge"
+    },
+    {
+     "pr": 1110,
+     "sha": "132853d36",
+     "title": "Playback: a refused hero preview reports preview_not_direct, not unspecified"
     }
    ],
-   "from": 165,
+   "from": 166,
    "id": "ci|host harness tests",
    "label": "CI: host harness tests",
    "since": "2026-10-28",
@@ -728,11 +728,6 @@
    "change_pct": 37.9,
    "commits": [
     {
-     "pr": 1068,
-     "sha": "598ece791",
-     "title": "Playback: the app decodes a DTS core to stereo PCM, behind a debug gate"
-    },
-    {
      "pr": 1078,
      "sha": "9b7d1da28",
      "title": "Playback: MP3 and Vorbis are decoded in the app behind the debug gate"
@@ -776,6 +771,11 @@
      "pr": 1108,
      "sha": "5c76ae0b2",
      "title": "Watchlist W-1: the stores take the seated profile and its identity from the Bridge"
+    },
+    {
+     "pr": 1110,
+     "sha": "132853d36",
+     "title": "Playback: a refused hero preview reports preview_not_direct, not unspecified"
     }
    ],
    "from": 1116.6,
@@ -789,11 +789,6 @@
    "change_pct": 37.9,
    "commits": [
     {
-     "pr": 1068,
-     "sha": "598ece791",
-     "title": "Playback: the app decodes a DTS core to stereo PCM, behind a debug gate"
-    },
-    {
      "pr": 1078,
      "sha": "9b7d1da28",
      "title": "Playback: MP3 and Vorbis are decoded in the app behind the debug gate"
@@ -837,6 +832,11 @@
      "pr": 1108,
      "sha": "5c76ae0b2",
      "title": "Watchlist W-1: the stores take the seated profile and its identity from the Bridge"
+    },
+    {
+     "pr": 1110,
+     "sha": "132853d36",
+     "title": "Playback: a refused hero preview reports preview_not_direct, not unspecified"
     }
    ],
    "from": 1116.0,
@@ -850,11 +850,6 @@
    "change_pct": 30.9,
    "commits": [
     {
-     "pr": 1068,
-     "sha": "598ece791",
-     "title": "Playback: the app decodes a DTS core to stereo PCM, behind a debug gate"
-    },
-    {
      "pr": 1078,
      "sha": "9b7d1da28",
      "title": "Playback: MP3 and Vorbis are decoded in the app behind the debug gate"
@@ -898,6 +893,11 @@
      "pr": 1108,
      "sha": "5c76ae0b2",
      "title": "Watchlist W-1: the stores take the seated profile and its identity from the Bridge"
+    },
+    {
+     "pr": 1110,
+     "sha": "132853d36",
+     "title": "Playback: a refused hero preview reports preview_not_direct, not unspecified"
     }
    ],
    "from": 973.0,
@@ -908,13 +908,8 @@
    "to": 1274.0
   },
   {
-   "change_pct": 28.3,
+   "change_pct": 26.8,
    "commits": [
-    {
-     "pr": 1068,
-     "sha": "598ece791",
-     "title": "Playback: the app decodes a DTS core to stereo PCM, behind a debug gate"
-    },
     {
      "pr": 1078,
      "sha": "9b7d1da28",
@@ -959,9 +954,14 @@
      "pr": 1108,
      "sha": "5c76ae0b2",
      "title": "Watchlist W-1: the stores take the seated profile and its identity from the Bridge"
+    },
+    {
+     "pr": 1110,
+     "sha": "132853d36",
+     "title": "Playback: a refused hero preview reports preview_not_direct, not unspecified"
     }
    ],
-   "from": 168,
+   "from": 170,
    "id": "ci|host python/shell/C gates",
    "label": "CI: host python/shell/C gates",
    "since": "2026-10-28",
@@ -999,7 +999,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 265
+   "now": 265.5
   }
  ],
  "slowest_local": [
