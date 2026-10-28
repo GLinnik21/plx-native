@@ -55,6 +55,8 @@ pub enum ReleaseEvent {
     Tick { now: Instant },
     /// The process is ending.
     Exit { now: Instant },
+    /// A stop or suspend found a start queued behind the release: it must not run afterwards.
+    CancelQueued,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,6 +145,11 @@ impl NativeRelease {
                 }
             }
             (_, V::Tick { .. }) => {}
+            (S::Releasing { epoch, since, queued: Some(q) }, V::CancelQueued) => {
+                self.state = S::Releasing { epoch, since, queued: None };
+                fx.push(E::AbortSuperseded(q));
+            }
+            (_, V::CancelQueued) => {}
             (S::Idle, V::Exit { .. }) => fx.push(E::ExitClean),
             (S::Releasing { epoch, since, queued }, V::Exit { now }) => {
                 if now.saturating_duration_since(since) >= RELEASE_DEADLINE {
@@ -211,6 +218,19 @@ mod tests {
         assert_eq!(
             run(&mut m, ReleaseEvent::UnloadReturned { epoch: 7 }),
             vec![ReleaseEffect::RunTail { epoch: 7 }, ReleaseEffect::Start(q(2))]
+        );
+    }
+
+    #[test]
+    fn a_stop_cancels_the_queued_start_so_it_never_runs_after_the_tail() {
+        let mut m = releasing(Instant::now());
+        let _ = run(&mut m, ReleaseEvent::StartRequested(q(1)));
+        assert_eq!(run(&mut m, ReleaseEvent::CancelQueued), vec![ReleaseEffect::AbortSuperseded(q(1))]);
+        assert!(run(&mut m, ReleaseEvent::CancelQueued).is_empty());
+        assert_eq!(
+            run(&mut m, ReleaseEvent::UnloadReturned { epoch: 7 }),
+            vec![ReleaseEffect::RunTail { epoch: 7 }],
+            "a cancelled start must not follow the tail"
         );
     }
 

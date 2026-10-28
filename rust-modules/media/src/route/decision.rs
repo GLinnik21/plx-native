@@ -128,6 +128,10 @@ pub struct PlaybackSession {
     /// overdue (`player::release`). Same shape as `native_start_refused`; its cause is
     /// `release_timeout`.
     pub native_release_refused: bool,
+    /// A fresh native start is queued behind the previous object's still-running `Unload`
+    /// (`player::release`): no Engine exists yet, and `player::state` derives `Resolving` from this
+    /// so the player route shows Connecting rather than an empty screen for the ~150 ms.
+    pub native_start_deferred: bool,
     /// The cause an Engine ended with when it failed for good and was released while the
     /// read-out stands (`player::release_failed_engine`). The Engine, its pipeline and the video
     /// plane are gone, so the worker signals the read-out used to be derived from are gone with
@@ -535,6 +539,7 @@ impl PlaybackSession {
         jail_load_blocked: false,
         native_start_refused: false,
         native_release_refused: false,
+        native_start_deferred: false,
         engine_failure: None,
         repair_status: plx_platform::tv::sandbox::State::Idle,
         request: None,
@@ -624,6 +629,7 @@ impl PlaybackSession {
             jail_load_blocked,
             native_start_refused,
             native_release_refused,
+            native_start_deferred,
             engine_failure,
             repair_status,
             request,
@@ -695,6 +701,7 @@ impl PlaybackSession {
             jail_load_blocked: *jail_load_blocked,
             native_start_refused: *native_start_refused,
             native_release_refused: *native_release_refused,
+            native_start_deferred: *native_start_deferred,
             engine_failure: *engine_failure,
             repair_status: *repair_status,
             request: request.clone(),
@@ -9118,6 +9125,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             jail_load_blocked: false,
             native_start_refused: false,
             native_release_refused: false,
+            native_start_deferred: false,
             engine_failure: None,
             repair_status: plx_platform::tv::sandbox::State::Idle,
             request,

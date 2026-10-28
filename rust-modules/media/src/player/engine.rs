@@ -564,6 +564,7 @@ fn refuse_start_for_release(ps: &mut crate::route::PlaybackSession, q: super::re
     log("native lifecycle: the previous Unload is overdue (refusing native start)");
     let _ = crate::route::abort_route_start(q.route_start, crate::route::RouteStartResult::StartFailed);
     ps.native_release_refused = true;
+    ps.native_start_deferred = false;
 }
 
 /// The main-thread tail of a finished off-frame release: gate, epoch, ACB, D1, window.
@@ -1633,6 +1634,7 @@ pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
     ps.jail_load_blocked = false;
     ps.native_start_refused = false;
     ps.native_release_refused = false;
+    ps.native_start_deferred = false;
     // A fresh play (not a `reload_at`, which reaches `start_bufferfeed_for` directly) is a new
     // playback: it gets to try the native Seek again.
     if pa.engine().is_none() {
@@ -1722,12 +1724,15 @@ fn start_bufferfeed_for(
         }
     }
     if refused {
+        ps.native_start_deferred = false;
         return BufferfeedStartOutcome::Failed;
     }
     if !go {
         log("start_bufferfeed: the previous Unload is still running; start deferred");
+        ps.native_start_deferred = true;
         return BufferfeedStartOutcome::Deferred;
     }
+    ps.native_start_deferred = false;
     match start_bufferfeed_inner(ps, pa, route_start) {
         Ok(attempt) => {
             // Every start funnels through here (fresh, reload and the rollback's reload alike), so
@@ -2683,6 +2688,13 @@ pub fn foreground_follows_load(pa: &mut super::adapter::PlayerAdapter, attempt: 
 /// the "stopped" timeline scrobble, the server transcode stop, and the URL clear.
 fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, for_reload: bool) {
     FAILED_ENGINE_RELEASE_ARMED.store(false, Ordering::Release);
+    // A start still queued behind the previous object's `Unload` is the playback this stop ends.
+    if ps.native_start_deferred {
+        let mut fx = Vec::new();
+        pa.release_step(&super::release::ReleaseEvent::CancelQueued, &mut fx);
+        let _ = run_release_effects(ps, pa, fx, None, false);
+        ps.native_start_deferred = false;
+    }
     // A prepared route whose native start failed has no Engine but still owns its exact PMS
     // resource and Session projection. A real stop must retire that ownership exactly once;
     // returning here used to leak the candidate forever while the reducer remained Failed.
@@ -6379,6 +6391,11 @@ mod off_frame_release_tests {
         assert!(!pa.is_live());
         assert!(SHARED.begin_native_session().is_none());
         assert!(pa.has_pending_release());
+        assert_eq!(
+            crate::player::state(&ps),
+            crate::player::PlaybackState::Resolving,
+            "a deferred start must read as Connecting, not as an empty player"
+        );
 
         // The deadline, on the machine's injected clock: the queued start fails typed.
         let t0 = t_stop;
@@ -6427,6 +6444,25 @@ mod off_frame_release_tests {
             "the slot must be free again"
         );
         assert_ne!(crate::player::error_now(&ps).kind, crate::player::FailureKind::ReleaseTimeout);
+    }
+
+    /// A stop over a deferred start ends that playback: the queued start must not run after the tail.
+    #[test]
+    fn a_stop_over_a_deferred_start_cancels_it() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        let mut pa = arm(&ps);
+        let _cleanup = Cleanup;
+        playing_engine(&mut pa);
+        crate::player::ffi_host::delay_unload_for_test(50);
+        stop_bufferfeed(&mut ps, &mut pa);
+        assert_eq!(start_bufferfeed_tracked(&mut ps, &mut pa), BufferfeedStartOutcome::Deferred);
+        stop_bufferfeed(&mut ps, &mut pa);
+        assert!(!ps.native_start_deferred);
+        assert_ne!(crate::player::state(&ps), crate::player::PlaybackState::Resolving);
+        finish_release_for_test(&mut pa);
+        assert!(!pa.is_live(), "the cancelled start ran after the tail");
+        assert_eq!(ready_now(), 0);
     }
 
     /// The exit with an `Unload` that never returns is bounded by the deadline and says a worker
