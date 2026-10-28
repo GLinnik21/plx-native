@@ -2,6 +2,20 @@
  "flaky": [
   {
    "count": 1,
+   "first_seen": "2026-10-28T03:55:40Z",
+   "job": "host unit tests (hostsim)",
+   "last": {
+    "pr": 1079,
+    "run": 40626199797,
+    "sha": "61f5788ea"
+   },
+   "last_seen": "2026-10-28T03:55:40Z",
+   "new": true,
+   "status": "Active",
+   "test": "plxnative_modules::app::run::lifecycle_regression_tests::issue_680_an_episode_played_to_its_end_is_watched_on_the_detail_page_it_returns_to"
+  },
+  {
+   "count": 1,
    "first_seen": "2026-10-24T12:52:27Z",
    "job": "host unit tests (hostsim)",
    "last": {
@@ -29,7 +43,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-28T04:00:59Z",
+ "generated": "2026-10-28T04:02:08Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -100,14 +114,14 @@
    "change7_pct": -24.5,
    "d30": 879.0,
    "delta30": -513.0,
-   "delta7": -119,
+   "delta7": -119.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
-   "n_now": 219,
+   "n_now": 220,
    "n_prev": 275,
-   "now": 366,
+   "now": 366.0,
    "prev7": 485,
    "shown": true,
    "state": "flat",
