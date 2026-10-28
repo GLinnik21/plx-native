@@ -125,8 +125,9 @@ pub(super) struct GridPart {
     /// and when the first awake tick finds a focus no event announced since the last dormant tick;
     /// a restore or reconcile announced after that is adopted at full scale (`ui::cards`, the pop
     /// rule). A page ENTERED under a route dip's held image is dormant, so its focused poster grows
-    /// from rest when the image is let go; a page rebuilt from its memory on BACK is not
-    /// (`LibraryScreen::restored`), so its poster comes back lifted, as it was left.
+    /// from rest when the image is let go; a page that RETURNS (`Enter(Restored)`, fed to the grid
+    /// by `LibraryScreen`) is not put to sleep, so its poster comes back lifted, as it was left
+    /// (`Grid::dormant`).
     grid: Grid,
     snapshot: Option<plx_data::stores::browse::ListingSnapshot>,
     indexes: GridIndexes,

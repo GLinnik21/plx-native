@@ -10,7 +10,7 @@ use crate::screen::{At, By, Dir, DrawFrame, Placed, ScreenEvent, Step};
 use crate::widgets::Art;
 use crate::{Painter, Rect, Spring};
 use plx_machine::machine::{
-    Canon, Cx, Effects, EntryId, FocusKey, FocusRead, InputOwner, InstanceId, MachineId, PressId, PressRead, Tick,
+    Canon, Cx, Effects, Enter, EntryId, FocusKey, FocusRead, InputOwner, InstanceId, MachineId, PressId, PressRead, Tick,
 };
 use plx_machine::present::Present;
 
@@ -1738,6 +1738,123 @@ fn a_grid_restore_after_dormant_ticks_arrives_popped_and_a_deliberate_move_still
     dived.run(1);
     let first = dived.scale(102).unwrap();
     assert!(first > 1.0 && first < full - 0.02, "a deliberate arrival grows from rest: {first}");
+}
+
+/// A captioned grid of four rows, card 100 (the first) focused and settled lifted, the way a page
+/// is left when a Detail is opened from it.
+fn left_lifted() -> Rig<Grid> {
+    let mut r = Rig::<Grid>::new(4 * poster_grid::COLS);
+    r.src.captioned = true;
+    r.sect.set_caption_policy(Some(crate::caption_policy::CaptionPolicy {
+        title: true,
+        details: crate::caption_policy::DetailsKind::YearLength,
+    }));
+    r.run(2);
+    r.land_focus(100, By::Dir);
+    r.run(200);
+    assert!(r.scale(100).unwrap() > 1.05, "premise: the card is left lifted");
+    r
+}
+
+/// The caption alpha of card 100 on the frame the grid last drew.
+fn caption_of_100(r: &Rig<Grid>) -> f32 {
+    let cx = r.cx();
+    let f = DrawFrame::new(&cx, Painter::root());
+    r.sect.caption_probe(&f, f.painter, &r.src).iter().filter(|(i, _)| *i == 0).map(|(_, a)| *a).sum()
+}
+
+/// **A page that returns is not put to sleep.** BACK from a Detail runs under the dip's image, which
+/// the owner reports as dormant; a seat put at rest there and grown again moves the row under its
+/// caption band by the band's height and back. A grid fed `Enter(Restored)` draws the seat the
+/// engine restored lifted with its caption open from the first frame, through every dormant tick,
+/// and keeps it when the owner wakes it. Both a grid that slept while covered and a fresh one (the
+/// stack let the page go and rebuilt it) come back that way.
+#[test]
+fn a_grid_that_returns_under_a_held_image_keeps_its_seat_lifted_and_its_caption_open() {
+    let full = RowStyle::HOME.focus_scale;
+    for covered in [true, false] {
+        let mut r = if covered {
+            // the page slept under the image of the push that covered it, then went unticked
+            let mut r = left_lifted();
+            r.sect.dormant(true);
+            r.run(3);
+            assert_eq!(r.scale(100), Some(1.0), "premise: it slept");
+            r.focus = None;
+            r
+        } else {
+            Rig::<Grid>::new(4 * poster_grid::COLS)
+        };
+        if !covered {
+            r.src.captioned = true;
+            r.sect.set_caption_policy(Some(crate::caption_policy::CaptionPolicy {
+                title: true,
+                details: crate::caption_policy::DetailsKind::YearLength,
+            }));
+        }
+        r.sect.dormant(true);
+        r.feed(ScreenEvent::Enter(Enter::Restored));
+        r.land_focus(100, By::Restore);
+        assert_eq!(r.scale(100), Some(full), "covered={covered}: whole on the first frame, before any tick");
+        for frame in 0..30 {
+            r.run(1);
+            assert_eq!(r.scale(100), Some(full), "covered={covered}: lifted under the image, frame {frame}");
+        }
+        assert!((caption_of_100(&r) - 1.0).abs() < 0.01, "covered={covered}: its caption is open under the image: {}", caption_of_100(&r));
+        r.sect.dormant(false);
+        for frame in 0..30 {
+            r.run(1);
+            assert_eq!(r.scale(100), Some(full), "covered={covered}: still lifted once awake, frame {frame}");
+            assert!((caption_of_100(&r) - 1.0).abs() < 0.01, "covered={covered}: caption kept once awake, frame {frame}");
+        }
+    }
+}
+
+/// **A return leaves no mark.** `Enter(Restored)` reaches a live page too (a modal's dismissal), with
+/// no image after it: the first tick that reports awake ends the return, so a later dissolve puts
+/// the seat to rest and the lift grows on the awake tick, as on a page that never returned.
+#[test]
+fn a_grid_that_returned_with_no_image_sleeps_through_the_next_dissolve() {
+    let full = RowStyle::HOME.focus_scale;
+    let mut r = left_lifted();
+    r.focus = None;
+    r.feed(ScreenEvent::Enter(Enter::Restored));
+    r.land_focus(100, By::Restore);
+    r.run(2);
+    assert!((r.scale(100).unwrap() - full).abs() < 1e-4, "premise: it came back lifted");
+    r.sect.dormant(true);
+    r.run(3);
+    assert_eq!(r.scale(100), Some(1.0), "a later dissolve puts the seat to rest");
+    assert_eq!(lifted(&r), 0);
+    r.sect.dormant(false);
+    r.run(1);
+    let first = r.scale(100).unwrap();
+    assert!(first > 1.0 && first < full - 0.02, "and the lift grows from rest once the page is in: {first}");
+}
+
+/// **The reader moving ends the return.** A key pressed while the image of the way back is still up
+/// is slept through like an entry's: nothing is lifted or opened under the image (the move would
+/// hold it), and the new seat grows from rest once the owner wakes the grid.
+#[test]
+fn a_deliberate_move_ends_a_grids_return_and_is_slept_through() {
+    let full = RowStyle::HOME.focus_scale;
+    let mut r = left_lifted();
+    r.focus = None;
+    r.sect.dormant(true);
+    r.feed(ScreenEvent::Enter(Enter::Restored));
+    r.land_focus(100, By::Restore);
+    r.run(3);
+    assert!((r.scale(100).unwrap() - full).abs() < 1e-4, "premise: it came back lifted");
+    r.land_focus(101, By::Dir);
+    for frame in 0..10 {
+        r.run(1);
+        assert_eq!(r.scale(100), Some(1.0), "the seat it left is at rest, frame {frame}");
+        assert_eq!(r.scale(101), Some(1.0), "the seat it moved to is at rest, frame {frame}");
+    }
+    assert!(!r.run(1), "nothing moves under the image");
+    r.sect.dormant(false);
+    r.run(1);
+    let first = r.scale(101).unwrap();
+    assert!(first > 1.0 && first < full - 0.02, "the new seat grows from rest once the page is in: {first}");
 }
 
 /// A lifted grid card that goes dormant lets go and the grid keeps no lift while it sleeps.

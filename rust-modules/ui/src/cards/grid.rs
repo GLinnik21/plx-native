@@ -7,7 +7,7 @@
 //! the same arithmetic for draw, stops, `Focusable` placement and paging, so the rect a card is
 //! drawn at, the stop it registers and the rect `place` answers are one value.
 
-use plx_machine::machine::{Canon, Cx, Effects, EntryId, FocusKey, GroupId, Host, ScreenEvent};
+use plx_machine::machine::{Canon, Cx, Effects, Enter, EntryId, FocusKey, GroupId, Host, ScreenEvent};
 use plx_machine::present::{PresentEvent, Provenance};
 
 use super::landing::{Landing, Occupancy, Scene};
@@ -183,6 +183,12 @@ pub struct Grid {
     dormant: bool,
     /// The last tick ran dormant, so the next awake one starts the focused card's pop from rest.
     slept: bool,
+    /// The page is RETURNING: it was restored (`Enter(Restored)`: BACK onto it, a modal's dismissal,
+    /// its own pill pressed again), so its seat comes back as it was left and is never put to sleep
+    /// ([`dormant`](Grid::dormant)). It ends on the first tick the owner reports awake, or at the
+    /// first deliberate move: the reader has moved on, and the move is slept through like an
+    /// entry's.
+    returning: bool,
     /// The owner announced that the focus it just seated is an arrival ([`arrive`](Grid::arrive)),
     /// not a restore: the next `FocusMoved` onto this grid grows from rest. Cleared by the tick.
     arriving: bool,
@@ -218,6 +224,7 @@ impl Grid {
             caption_policy: None,
             dormant: false,
             slept: false,
+            returning: false,
             arriving: false,
         }
     }
@@ -237,8 +244,21 @@ impl Grid {
     /// focused card's pop from rest, as a deliberate move does (a restore or reconcile announced
     /// since the last dormant tick is still adopted whole). Landings are adopted whole while
     /// dormant. Set it before each [`on`](Self::on).
+    ///
+    /// **A page that returns is not put to sleep.** A grid fed `Enter(Restored)` keeps its seat
+    /// lifted and its caption band open, as it was left, under the very fade or held image the
+    /// owner reports (BACK from a Detail runs under its dip's image): a card put at rest and grown
+    /// again there moves the row below it by the band's height, which reads as a bounce. The return
+    /// is the grid's own state, so the owner says nothing more than this flag: it ends on the first
+    /// tick that reports awake, or at the first deliberate move (that move is slept through).
     pub fn dormant(&mut self, held: bool) {
         self.dormant = held;
+    }
+
+    /// Whether the grid keeps no lift now: the owner says the page is unseen and the page is not
+    /// returning.
+    fn asleep(&self) -> bool {
+        self.dormant && !self.returning
     }
 
     /// Size and caption the focused band by `policy` (the Library's Under posters setting), or with
@@ -281,6 +301,10 @@ impl Grid {
                 // or a reconcile is adopted whole by the next tick.
                 let arrival = arrived.is_some() && std::mem::take(&mut self.arriving);
                 let deliberate = arrival || matches!(by, By::Dir | By::Pointer);
+                // the reader has moved on from what the page returned with
+                if deliberate {
+                    self.returning = false;
+                }
                 if let Some(a) = arrived {
                     self.seen = if arrival { Seen::Deliberate(a) } else { Seen::of(by, a) };
                 }
@@ -295,6 +319,12 @@ impl Grid {
                 if arrived.is_some() || left.is_some() {
                     fx.invalidate(Provenance::Input);
                 }
+                None
+            }
+            ScreenEvent::Enter(Enter::Restored) => {
+                // what the covered page slept through is stale: its seat comes back as it was left
+                self.returning = true;
+                self.slept = false;
                 None
             }
             ScreenEvent::PressCommit(_) => self.focused_elem(cx, src).map(|(_, e)| CardEvent::Activate(e)),
@@ -319,9 +349,12 @@ impl Grid {
         self.landed = None;
         self.shift = 0.0;
         let sy0 = self.scroll.pos;
-        let awake = !self.dormant;
+        if !self.dormant {
+            self.returning = false;
+        }
+        let awake = !self.asleep();
         self.arriving = false;
-        if self.dormant {
+        if self.asleep() {
             // nothing is lifted under the fade, and whatever was lets go like an unfocused grid's
             self.slept = true;
             self.seen = Seen::Nothing;
@@ -640,7 +673,7 @@ impl Grid {
     /// animating, and while the grid is [`dormant`](Self::dormant): a seat nobody has lifted has no
     /// band open under it, and its caption with it.
     pub fn settle_band(&mut self, row: Option<usize>) {
-        if !self.dormant {
+        if !self.asleep() {
             self.bands.focus(row, false);
         }
     }
@@ -712,7 +745,7 @@ impl Grid {
     /// [`pop`](Self::pop) with the way this frame finds the let-gos' cards already decided.
     fn pop_in<H: Host, S: CardSource<H>>(&self, cards: LetGoCards, src: &S, i: usize, focus: Option<usize>) -> f32 {
         // a page still dissolving in lifts nothing
-        let focus = focus.filter(|_| !self.dormant);
+        let focus = focus.filter(|_| !self.asleep());
         // the element-aware pool: a source change no tick has seen yet is resolved by element
         if cards == LetGoCards::ByElement {
             match pool::let_go_drawn(&self.pop, src, i, focus == Some(i)) {
@@ -1140,7 +1173,7 @@ impl Grid {
     /// of the lift, with the let-gos of the cards focus left out.
     #[cfg(any(test, feature = "test-support"))]
     pub fn pop_probe(&self, focus: Option<usize>) -> f32 {
-        focus.filter(|_| !self.dormant).map_or(1.0, |i| self.pop.pop_scale(i, &self.spec.style))
+        focus.filter(|_| !self.asleep()).map_or(1.0, |i| self.pop.pop_scale(i, &self.spec.style))
     }
 
     /// Card `i`'s settled (unpopped) cell as the grid stands now, the caption bands folded in: where
