@@ -180,29 +180,67 @@ pub const PCM_MAX_CHANNELS: u32 = 2;
 /// becomes 44.1 kHz and plays at the wrong speed with no error (a 96 kHz FLAC audibly slow on an
 /// OLED55B8, webOS 4.4.3; a 48 kHz one 9% slow, a 32 kHz one fast and stuttering on a C1, webOS
 /// 6.5.3, when the rate was declared in hertz). The table was read from libpf-1.0 on the B8. It
-/// bounds the PCM input only; every other codec's Load carries no rate ([`AUDIO_RATE_CEILING`]).
+/// bounds what the PCM input is DECLARED at, not what a source may be: a faster FLAC, ALAC or LPCM is
+/// resampled to its top ([`pcm_load_rate`]). Every other codec's Load carries no rate
+/// ([`AUDIO_RATE_CEILING`]).
 pub const PCM_SAMPLE_RATES: [u32; 8] = [8_000, 12_000, 16_000, 22_050, 24_000, 32_000, 44_100, 48_000];
+
+/// **The rate the PCM Load declares for a source sampled at `source` Hz**, or `None` when the app cannot
+/// make the source into one: the single rule for the PCM path's rate.
+///
+/// * a rate in [`PCM_SAMPLE_RATES`] is itself: the bit-exact path, no resampler built;
+/// * every rate above 48 kHz is resampled by the app (`speed_audio::Resampler`, a linear-phase low-pass
+///   decimator) to the top of the table that keeps its family: 44.1 kHz for a multiple of 44.1 kHz
+///   (88.2, 176.4, 352.8, 705.6 kHz: an integer ratio), 48 kHz for any other (96, 192, 384, 64, 50 kHz...);
+/// * `<= 0` (unstated) and a rate below 48 kHz outside the table (11.025, 37.8 kHz) are `None`: upsampling
+///   was not asked for, so those tracks stay with the server.
+///
+/// **There is no ceiling on the rate.** What is bounded is the converter, not the content that reaches it
+/// (`speed_audio::Resampler`: the memory of its filter tables is a constant of the filter, whatever
+/// the rate, and its per-input-frame work is constant). The one limit is `i32::MAX`, which is not a cap
+/// on a file: FFmpeg states a stream's rate in a C int (`AVCodecParameters::sample_rate`), so a rate past
+/// it cannot be one.
+///
+/// Every `Some(r)` is in [`PCM_SAMPLE_RATES`], so the Load's kilohertz declaration (`player::engine`)
+/// needs no new rate. The declared Load is then the shape a 24-bit 48 or 44.1 kHz FLAC already has.
+pub fn pcm_load_rate(source: i64) -> Option<u32> {
+    let top = PCM_SAMPLE_RATES[PCM_SAMPLE_RATES.len() - 1];
+    if !(1..=i64::from(i32::MAX)).contains(&source) {
+        return None;
+    }
+    if let Some(r) = PCM_SAMPLE_RATES.iter().copied().find(|&r| i64::from(r) == source) {
+        return Some(r);
+    }
+    if source < i64::from(top) {
+        return None;
+    }
+    let family = PCM_SAMPLE_RATES[PCM_SAMPLE_RATES.len() - 2];
+    Some(if source % i64::from(family) == 0 { family } else { top })
+}
 
 /// The highest sample rate, in hertz, any audio Load path here is known to accept: the
 /// `audio.samplingRate` upper bound the transcode profile asks PMS for and the one
-/// [`audio_track_fits`] holds a track to. An LG B8 (webOS 4.4.3) refused the Load of a 96 kHz AAC
-/// that PMS had made from a 96 kHz FLAC (#951, `smp_cb type=18 num=100`). WHERE that limit lives
-/// (the Load payload, libpf, the decoder) is not determined; 48 kHz is used because nothing above
-/// it is known to load (it is the top of [`PCM_SAMPLE_RATES`] too).
+/// [`audio_track_fits`] holds a codec that [`audio_rate_bounded`] names to. An LG B8 (webOS 4.4.3)
+/// refused the Load of a 96 kHz AAC that PMS had made from a 96 kHz FLAC (#951, `smp_cb type=18
+/// num=100`). WHERE that limit lives (the Load payload, libpf, the decoder) is not determined; 48 kHz
+/// is used because nothing above it is known to load (it is the top of [`PCM_SAMPLE_RATES`] too).
 pub const AUDIO_RATE_CEILING: u32 = 48_000;
 
 /// Whether `codec` is held to [`AUDIO_RATE_CEILING`], by [`audio_track_fits`] and by the profile's
-/// `audio.samplingRate` limitation alike: every codec but DTS and TrueHD. The app feeds only the DTS core
+/// `audio.samplingRate` limitation alike: every codec but DTS, TrueHD and the lossless PCM codecs
+/// ([`PCM_AUDIO_CODECS`]: FLAC, ALAC, LPCM). The app feeds only the DTS core
 /// (`ff.rs::dts_core_packet`), 48 kHz at most by format, so a DTS-HD 96/24 source plays today and
-/// bounding it would push that source into a lossy AC-3 conversion. TrueHD, when the app decodes it,
-/// is resampled to 48 kHz by the app itself (`speed_audio::Decimator` low-passes before it decimates
-/// from 88.2, 96, 176.4 and 192 kHz), so its Load never carries the source rate; bounding it would send
-/// every high-resolution TrueHD track to a server conversion for nothing. MP3 and Vorbis stay bound:
-/// the decimator exists, but a 96 kHz Vorbis has not been through the TV. Opus, AC-3 and E-AC-3 are
+/// bounding it would push that source into a lossy AC-3 conversion. TrueHD and the lossless PCM codecs,
+/// when the app decodes them, are resampled to 48 or 44.1 kHz by the app itself (`speed_audio::Decimator`
+/// low-passes before it decimates from 88.2 kHz and up), so their Load never carries the source rate;
+/// bounding them would send every high-resolution track to a lossy server conversion for nothing
+/// ([`pcm_load_rate`] is the rule for the PCM codecs). MP3 and Vorbis stay bound: the decimator exists,
+/// but a 96 kHz Vorbis has not been through the TV. Opus, AC-3 and E-AC-3 are
 /// 48 kHz at most by format, so their bound never fires; they stay in the set so that "every other
 /// codec" is the one rule, with no per-codec list to keep in step.
 pub fn audio_rate_bounded(codec: &str) -> bool {
-    !matches!(audio_codec_id(codec).as_ref(), "dts" | "truehd")
+    let id = audio_codec_id(codec);
+    !matches!(id.as_ref(), "dts" | "truehd") && !PCM_AUDIO_CODECS.split(',').any(|c| c == id)
 }
 
 /// Whether `codec` is one the app decodes itself and feeds as PCM ([`PCM_AUDIO_CODECS`]).
@@ -215,14 +253,14 @@ pub fn is_pcm_codec(codec: &str) -> bool {
 /// [`Caps::audio_supports`] / [`Caps::forced_feeds_audio`]: the ONE rate-fit predicate for every
 /// route that decides without PMS's `/decision`, mirrored by the transcode profile's
 /// `audio.samplingRate` limitation. A PCM codec ([`PCM_AUDIO_CODECS`]) needs one or two channels at
-/// a rate `pcmInfo` can name ([`PCM_SAMPLE_RATES`]); an unstated count or rate does not pass. Any
+/// a rate the app can make a `pcmInfo` rate of ([`pcm_load_rate`]: a table rate, or any faster one,
+/// resampled); an unstated count or rate does not pass. Any
 /// other codec passes at an unstated rate (`<= 0`, the planner's `0`) or at most
-/// [`AUDIO_RATE_CEILING`], DTS excepted ([`audio_rate_bounded`]). These are limits of the Load,
+/// [`AUDIO_RATE_CEILING`], DTS and TrueHD excepted ([`audio_rate_bounded`]). These are limits of the Load,
 /// not of a hardware decoder, so Force Direct Play applies them as well.
 pub fn audio_track_fits(codec: &str, channels: i64, sample_rate: i64) -> bool {
     if is_pcm_codec(codec) {
-        (1..=i64::from(PCM_MAX_CHANNELS)).contains(&channels)
-            && PCM_SAMPLE_RATES.iter().any(|&r| i64::from(r) == sample_rate)
+        (1..=i64::from(PCM_MAX_CHANNELS)).contains(&channels) && pcm_load_rate(sample_rate).is_some()
     } else {
         sample_rate <= i64::from(AUDIO_RATE_CEILING) || !audio_rate_bounded(codec)
     }
@@ -2003,22 +2041,56 @@ mod tests {
         assert!(!Caps::assumed().forced_feeds_audio("truehd"));
     }
 
-    /// `pcmInfo` can name only the rates in libpf's table (plus 44.1 kHz): a 96 kHz or 192 kHz FLAC
-    /// played audibly slow on the B8, with no error anywhere. The track gate refuses those, and an
-    /// unstated rate or channel count, for app-decoded codecs only.
+    /// `pcmInfo` can name only the rates in libpf's table (plus 44.1 kHz), so the app resamples a faster
+    /// FLAC to the top of it ([`pcm_load_rate`]) and the Load never carries the source rate. A rate the
+    /// resampler cannot make a table rate of (below 48 kHz and outside the table, unstated) and a
+    /// channel count past two still go to the server.
     #[test]
-    fn the_pcm_path_admits_only_the_rates_and_channels_it_plays_correctly() {
+    fn the_pcm_path_admits_the_table_rates_and_resamples_the_faster_ones() {
         for rate in [8_000, 22_050, 44_100, 48_000] {
             assert!(audio_track_fits("flac", 2, rate), "{rate}");
         }
         assert!(audio_track_fits("FLAC", 1, 48_000));
-        for rate in [0, 11_025, 88_200, 96_000, 176_400, 192_000] {
-            assert!(!audio_track_fits("flac", 2, rate), "{rate} plays at the wrong speed or is unknown");
+        for rate in [64_000, 88_200, 96_000, 176_400, 192_000, 352_800, 384_000] {
+            assert!(audio_track_fits("flac", 2, rate), "{rate}: resampled to the table's top");
+            assert!(audio_track_fits("flac", 1, rate), "{rate}: mono");
+        }
+        for rate in [0, -1, 11_025, 37_800] {
+            assert!(!audio_track_fits("flac", 2, rate), "{rate} is unstated or not a table rate");
         }
         assert!(!audio_track_fits("flac", 6, 48_000));
+        assert!(!audio_track_fits("flac", 6, 96_000), "a 5.1 hi-res FLAC still converts on the server");
         assert!(!audio_track_fits("flac", 0, 48_000));
         // not app-decoded: the hardware decoder's own channel rules apply, not these
         assert!(audio_track_fits("ac3", 6, 0));
+    }
+
+    /// **The rate the Load declares for a source rate** ([`pcm_load_rate`]): a table rate is itself (the
+    /// bit-exact path), every rate above 48 kHz goes to the top of the table that keeps its family
+    /// (a multiple of 44.1 kHz to 44.1 kHz, any other to 48 kHz), and a rate below 48 kHz that is not in
+    /// the table, or none, is `None`. There is no ceiling: the only limit is the type FFmpeg states a
+    /// rate in (a C int). Whatever it returns is in [`PCM_SAMPLE_RATES`], which is why the Load's
+    /// kilohertz declaration needs no change.
+    #[test]
+    fn pcm_load_rate_resamples_every_rate_above_the_table_to_its_top() {
+        for r in PCM_SAMPLE_RATES {
+            assert_eq!(pcm_load_rate(i64::from(r)), Some(r), "{r}: a table rate is itself");
+        }
+        for (src, want) in [
+            (88_200, 44_100), (176_400, 44_100), (352_800, 44_100), (705_600, 44_100), (2_822_400, 44_100),
+            (96_000, 48_000), (192_000, 48_000), (384_000, 48_000), (768_000, 48_000),
+            (64_000, 48_000), (128_000, 48_000), (50_000, 48_000), (48_001, 48_000), (1_000_003, 48_000),
+            (5_644_800, 44_100), (i64::from(i32::MAX), 48_000),
+        ] {
+            assert_eq!(pcm_load_rate(src), Some(want), "{src}");
+        }
+        for src in [i64::MIN, -48_000, -1, 0, 1, 7_999, 11_025, 37_800, 47_999] {
+            assert_eq!(pcm_load_rate(src), None, "{src}: unstated, or below the table's top and not in it");
+        }
+        assert_eq!(pcm_load_rate(i64::from(i32::MAX) + 1), None, "FFmpeg states a rate in a C int: no file has this");
+        for src in (0..400).map(|k| 1_000 * k + 7).chain([48_000 * 3, 44_100 * 3]) {
+            assert!(pcm_load_rate(src).is_none_or(|r| PCM_SAMPLE_RATES.contains(&r)), "{src}: the Load can name it");
+        }
     }
 
     /// Issue #951: an LG B8 refused a 96 kHz AAC Load, so a codec the hardware decodes is admitted
@@ -2175,6 +2247,13 @@ mod tests {
             assert!(on.app_decodes_lossy_track(codec, 8, 96_000, true), "{codec}");
         }
         assert!(!audio_rate_bounded("truehd") && audio_rate_bounded("vorbis") && audio_rate_bounded("mp3"));
+        // the lossless app decode resamples too, so the profile asks PMS for no rate bound on it either
+        for codec in ["flac", "FLAC", "alac", "pcm", "pcm_s24le", "dts", "dca"] {
+            assert!(!audio_rate_bounded(codec), "{codec}");
+        }
+        for codec in ["aac", "ac3", "eac3", "opus", "mp3", "vorbis"] {
+            assert!(audio_rate_bounded(codec), "{codec}");
+        }
         for rate in [0, 44_100, 48_000, 88_200, 96_000, 176_400, 192_000] {
             assert!(audio_track_fits("truehd", 8, rate), "{rate}");
         }
@@ -2347,7 +2426,8 @@ mod tests {
             assert!(caps.forced_feeds_audio(codec), "{codec}");
             assert!(!Caps::assumed().forced_feeds_audio(codec), "{codec}: the assumed fallback stays what shipped");
             assert!(audio_track_fits(codec, 2, 44_100), "{codec}");
-            assert!(!audio_track_fits(codec, 2, 96_000), "{codec}: 96 kHz plays slow in libpf");
+            assert!(audio_track_fits(codec, 2, 96_000), "{codec}: 96 kHz is resampled to 48 kHz");
+            assert!(!audio_track_fits(codec, 6, 96_000), "{codec}: wider than stereo is the server's at any rate");
             assert!(!audio_track_fits(codec, 6, 48_000), "{codec}");
         }
         assert_eq!(Caps::assumed().audio, "aac,ac3,eac3");
