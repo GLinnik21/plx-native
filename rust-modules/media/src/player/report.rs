@@ -1022,6 +1022,13 @@ fn tick_with(ps: &crate::route::PlaybackSession, report_preview_failures: bool) 
                 playback_id: ATTEMPT.load(Relaxed),
                 mode: mode(ps),
                 kind: shape.kind.code(),
+                video: video_codec_class(&crate::route::stream_vcodec(ps)),
+                audio: audio_codec_class(&crate::route::stream_acodec(ps)),
+                pipeline_error: plx_telemetry::telemetry::classes::PipelineErrorClass::from_number(
+                    context.pipeline_error,
+                )
+                .code(),
+                refusal: super::SHARED.refusal_path().code(),
             });
         }
         None => {}
@@ -1938,6 +1945,78 @@ mod tests {
             let (_, events) = plx_telemetry::diag::test_events::capture(|| observe(&film, S::Error));
             assert!(matches!(events.as_slice(), [DiagEvent::PlaybackFailed { playback_id, .. }] if *playback_id == attempt));
             assert!(SAW_FAIL.load(Relaxed));
+        });
+    }
+
+    /// **`playback.failed` names the codecs and the pipeline's account of the refusal**, so a
+    /// failed DTS play is visible as one (0.9.0's `tv_pipeline` rise was tied to DTS direct play
+    /// by inference only). An asynchronous `type=18 num=601` before any picture is `async`.
+    #[test]
+    fn a_failed_play_reports_codecs_the_pipeline_error_class_and_an_async_refusal() {
+        let _g = plx_base::testlock::serial();
+        consented(|| {
+            let mut ps = crate::route::PlaybackSession::default();
+            assert!(crate::route::set_stream_declaration_for_test(
+                &mut ps,
+                "h264",
+                "dca",
+                24.0,
+                Default::default(),
+                false,
+                plx_platform::devcaps::dv::DvCapability::Supported,
+            ));
+            requested(&ps, plx_plex::plex::ServerId::UNSET, AttemptOrigin::Fresh);
+            super::super::SHARED.reset_session();
+            let epoch = super::super::SHARED.begin_native_session().expect("session");
+            super::super::sf_on_event(epoch, 18, 601, c"Resource Allocation Error".as_ptr());
+            observe(&ps, S::Resolving);
+            let (_, events) = plx_telemetry::diag::test_events::capture(|| observe(&ps, S::Error));
+            super::super::SHARED.retire_native_session(epoch);
+            super::super::SHARED.reset_session();
+            match events.as_slice() {
+                [DiagEvent::PlaybackFailed { video, audio, pipeline_error, refusal, .. }] => {
+                    assert_eq!(*video, "h264");
+                    assert_eq!(*audio, "dts");
+                    assert_eq!(*pipeline_error, "601");
+                    assert_eq!(*refusal, "async");
+                }
+                other => panic!("one playback.failed expected: {other:?}"),
+            }
+        });
+    }
+
+    /// A Load call that itself returned 0 is `sync` and records no pipeline number.
+    #[test]
+    fn a_synchronous_load_refusal_reports_refusal_sync_and_no_pipeline_error() {
+        let _g = plx_base::testlock::serial();
+        consented(|| {
+            let mut ps = crate::route::PlaybackSession::default();
+            assert!(crate::route::set_stream_declaration_for_test(
+                &mut ps,
+                "hevc",
+                "ac3",
+                24.0,
+                Default::default(),
+                false,
+                plx_platform::devcaps::dv::DvCapability::Supported,
+            ));
+            requested(&ps, plx_plex::plex::ServerId::UNSET, AttemptOrigin::Fresh);
+            super::super::SHARED.reset_session();
+            let epoch = super::super::SHARED.begin_native_session().expect("session");
+            assert!(super::super::SHARED.publish_native_load_failure(epoch));
+            observe(&ps, S::Resolving);
+            let (_, events) = plx_telemetry::diag::test_events::capture(|| observe(&ps, S::Error));
+            super::super::SHARED.retire_native_session(epoch);
+            super::super::SHARED.reset_session();
+            assert_eq!(super::super::SHARED.refusal_path(), super::super::shared::RefusalPath::None, "reset_session clears it");
+            match events.as_slice() {
+                [DiagEvent::PlaybackFailed { video, audio, pipeline_error, refusal, .. }] => {
+                    assert_eq!((*video, *audio), ("hevc", "ac3"));
+                    assert_eq!(*pipeline_error, "0");
+                    assert_eq!(*refusal, "sync");
+                }
+                other => panic!("one playback.failed expected: {other:?}"),
+            }
         });
     }
 

@@ -1252,6 +1252,42 @@ impl ChannelBucket {
     }
 }
 
+/// The firmware's `type=18` error number as a closed class for the usage event: the numbers this
+/// project has measured (`100`, `200` Audio Codec Not Supported, `601` Resource Allocation Error),
+/// `0` for none recorded, and `other` for any number it has not. Sentry keeps the exact integer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PipelineErrorClass {
+    None,
+    E100,
+    E200,
+    E601,
+    Other,
+}
+
+impl PipelineErrorClass {
+    pub const ALL: [Self; 5] = [Self::None, Self::E100, Self::E200, Self::E601, Self::Other];
+
+    pub const fn from_number(n: i32) -> Self {
+        match n {
+            0 => Self::None,
+            100 => Self::E100,
+            200 => Self::E200,
+            601 => Self::E601,
+            _ => Self::Other,
+        }
+    }
+
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::None => "0",
+            Self::E100 => "100",
+            Self::E200 => "200",
+            Self::E601 => "601",
+            Self::Other => "other",
+        }
+    }
+}
+
 /// What the pipeline said: the firmware's own `type=18` number, a Load budget that ran out in
 /// silence, or the surround native-audio stall (the pipeline took the Load and swallowed the feed).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

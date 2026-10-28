@@ -2531,6 +2531,7 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char, scope: shared::Event
             log(&format!(
                 "smp: Load refused by the pipeline before any picture (type=18 num={num}) — failing the source"
             ));
+            SHARED.note_refusal_path(shared::RefusalPath::Async);
             SHARED.load_failed.store(true, std::sync::atomic::Ordering::Release);
             if num == AUDIO_CODEC_NOT_SUPPORTED && crate::ff::native_audio::fed().is_some() {
                 SHARED.native_audio_refused.store(true, std::sync::atomic::Ordering::Release);

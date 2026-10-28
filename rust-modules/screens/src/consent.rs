@@ -1266,6 +1266,10 @@ pub fn preview_usage() -> String {
             playback_id: 4815162342,
             mode: "transcode",
             kind: "no_video_transcode_target",
+            video: "h264",
+            audio: "dts",
+            pipeline_error: "601",
+            refusal: "async",
         },
         DiagEvent::PlaybackCancelled {
             playback_id: 4815162342,
