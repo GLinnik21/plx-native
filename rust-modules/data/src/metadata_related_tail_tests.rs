@@ -146,6 +146,7 @@ fn slide(before: bool) {
     let was = state();
     let seen = (detail().related_tail.offset, detail().related_tail.end);
     assert!(want_related(test_state(), test_adapter(), before, seen), "a request starts");
+    start_related_jobs();
     let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while state() == was && std::time::Instant::now() < until {
         pump_related_pages(test_state(), test_adapter());
@@ -413,6 +414,7 @@ fn a_withdrawn_read_never_installs_its_window() {
     // left to loopback speed the worker could land (and clear the latch) before `cancel_related`.
     server.hold();
     assert!(want_related(test_state(), test_adapter(), false, was), "a request starts");
+    start_related_jobs();
     cancel_related(test_adapter());
     assert!(test_adapter().rel_pages.lock().unwrap().inflight, "the worker is still reading, so the latch is held");
     assert!(!want_related(test_state(), test_adapter(), true, was) || at() == was, "an ask for another direction starts nothing beside it");
@@ -436,6 +438,7 @@ fn an_ask_for_the_window_a_withdrawn_read_is_reading_adopts_that_read() {
     let was = at();
     server.hold();
     assert!(want_related(test_state(), test_adapter(), false, was), "a request starts");
+    start_related_jobs();
     cancel_related(test_adapter());
     assert!(!want_related(test_state(), test_adapter(), false, was), "no second read starts");
     server.release();
@@ -456,6 +459,7 @@ fn an_edge_asked_while_a_landing_waits_to_install_reads_nothing_twice() {
     let at = || (detail().related_tail.offset, detail().related_tail.end);
     let was = at();
     assert!(want_related(test_state(), test_adapter(), false, was), "a request starts");
+    start_related_jobs();
     let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while test_adapter().rel_pages.lock().unwrap().landed.is_empty() && std::time::Instant::now() < until {
         std::thread::sleep(std::time::Duration::from_millis(1));
@@ -534,6 +538,7 @@ fn a_repeated_related_ask_starts_one_read_and_one_refused_during_a_withdrawn_rea
     let was = at();
     server.hold();
     assert!(want_related(test_state(), test_adapter(), false, was), "the first ask starts the read");
+    start_related_jobs();
     for _ in 0..5 {
         assert!(!want_related(test_state(), test_adapter(), false, was), "a repeat while it is out starts nothing");
         assert!(!ask_related(test_state(), test_adapter(), RelatedAsk::Seek(150), was), "nor does a seek beside it");
@@ -547,6 +552,7 @@ fn a_repeated_related_ask_starts_one_read_and_one_refused_during_a_withdrawn_rea
     // the reader walked away from this read; a seek meanwhile is refused, and taken once it is over
     server.hold();
     assert!(want_related(test_state(), test_adapter(), false, next));
+    start_related_jobs();
     cancel_related(test_adapter());
     assert!(!ask_related(test_state(), test_adapter(), RelatedAsk::Seek(150), next), "refused beside the withdrawn read");
     server.release();
@@ -554,6 +560,7 @@ fn a_repeated_related_ask_starts_one_read_and_one_refused_during_a_withdrawn_rea
     assert!(!pump_related_pages(test_state(), test_adapter()), "the withdrawn read installs nothing");
     assert_eq!(at(), next);
     assert!(ask_related(test_state(), test_adapter(), RelatedAsk::Seek(150), next), "sent again, the seek is taken");
+    start_related_jobs();
     wait_for_related_read();
     assert!(pump_related_pages(test_state(), test_adapter()));
     assert_eq!(at(), (138, 162), "and its window opens where it was asked");
@@ -592,6 +599,7 @@ fn a_seek_opens_the_window_at_a_tail_position_and_the_row_slides_on_from_it() {
     // an ask from a window the store has replaced is refused, as an edge's is
     assert!(!seek(150, (seen.0 + 1, seen.1)));
     assert!(seek(150, seen), "a seek starts");
+    start_related_jobs();
     assert!(!seek(150, seen), "and only one read is out");
     let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while detail().related_tail.offset == 0 && std::time::Instant::now() < until {
@@ -659,6 +667,7 @@ fn a_related_window_replays_only_the_edits_published_after_its_own_request() {
 
     ledger.record(&ViewAt::leaf(sid, &plain(1, 12)), ViewEdit::Watched(true)); // before the request
     assert!(want_related(test_state(), test_adapter(), false, seen), "a request starts");
+    start_related_jobs();
     ledger.record(&ViewAt::leaf(sid, &plain(1, 13)), ViewEdit::Watched(true)); // while it is out
     let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while (detail().related_tail.offset, detail().related_tail.end) == seen && std::time::Instant::now() < until {

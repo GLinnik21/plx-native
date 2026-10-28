@@ -756,6 +756,11 @@ pub enum StoreJob {
     /// `EP_JOB_PAGES` pages, read in order and posted to the port page by page as they are read.
     /// Not on the tape.
     MetaEpisodes(plx_machine::job::Job<crate::metadata::MetaEpisodesReq>, crate::metadata::MetaEpisodesPort),
+    /// One window of the Related row's tail (`MetadataCmd::WantRelated` or `SeekRelated`), addressed
+    /// by a sequence of its own. One is out at a time (the single-flight claim in `rel_pages`). The
+    /// runner resolves the loaded item's server to its client at the launch; a server with none
+    /// answers the failure without a GET. Not on the tape.
+    MetaRelated(plx_machine::job::Job<crate::metadata::MetaRelatedReq>, crate::metadata::MetaRelatedPort),
 }
 
 /// How the runner admits a job before it starts it: the policy a job kind belongs to, stated on
@@ -800,12 +805,17 @@ impl StoreJob {
             | Self::ViewWrite(..)
             | Self::MetaSeason(..)
             | Self::MetaEpisodes(..) => Admission::Direct,
+            // A Related window is asked for by `MetadataCmd::WantRelated` / `SeekRelated`, which
+            // `bootstrap/effects.rs` has no arm for (it rejects them as "unsupported controlled
+            // metadata command"), so no controlled run or replay emits one and the launch is the
+            // whole decision (as for the season switch and the episode pages beside it).
+            Self::MetaRelated(..) => Admission::Direct,
         }
     }
 
     pub fn store(&self) -> StoreId {
         match self {
-            Self::Detail(..) | Self::MetaSeason(..) | Self::MetaEpisodes(..) => StoreId::Metadata,
+            Self::Detail(..) | Self::MetaSeason(..) | Self::MetaEpisodes(..) | Self::MetaRelated(..) => StoreId::Metadata,
             Self::Collection(..) => StoreId::Collection,
             Self::Person(..) => StoreId::Person,
             Self::Catalog(..) => StoreId::Catalog,

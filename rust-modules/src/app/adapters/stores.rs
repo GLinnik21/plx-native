@@ -56,8 +56,8 @@ use plx_data::browse::listing_jobs::{
 use plx_data::browse::section_hubs::{finish_browse_hubs_job, BrowseHubsPort, BrowseHubsReq};
 use plx_data::collection::{finish_collection_job, CollectionPort, CollectionReq};
 use plx_data::metadata::{
-    fetch_full, finish_detail_fetch, finish_episodes_job, finish_season_job, DetailPort, DetailReq, MetaEpisodesPort,
-    MetaEpisodesReq, MetaSeasonPort, MetaSeasonReq,
+    fetch_full, finish_detail_fetch, finish_episodes_job, finish_related_job, finish_season_job, DetailPort,
+    DetailReq, MetaEpisodesPort, MetaEpisodesReq, MetaRelatedPort, MetaRelatedReq, MetaSeasonPort, MetaSeasonReq,
 };
 use plx_data::person::{finish_person_job, PersonPort, PersonReq};
 use plx_data::stores::catalog::{finish_catalog_job, CatalogPort, CatalogReq};
@@ -244,6 +244,7 @@ impl StoreRunner {
             StoreJob::ViewWrite(job, port) => self.start_view_write(job, port),
             StoreJob::MetaSeason(job, port) => self.start_meta_season(job, port),
             StoreJob::MetaEpisodes(job, port) => self.start_meta_episodes(job, port),
+            StoreJob::MetaRelated(job, port) => self.start_meta_related(job, port),
         }
     }
 
@@ -286,7 +287,8 @@ impl StoreRunner {
                 | StoreJob::SaveRecents(..)
                 | StoreJob::ViewWrite(..)
                 | StoreJob::MetaSeason(..)
-                | StoreJob::MetaEpisodes(..)) => self.start(other),
+                | StoreJob::MetaEpisodes(..)
+                | StoreJob::MetaRelated(..)) => self.start(other),
         }
     }
 
@@ -380,6 +382,7 @@ impl StoreRunner {
                     | StoreJob::ViewWrite(..)
                     | StoreJob::MetaSeason(..)
                     | StoreJob::MetaEpisodes(..)
+                    | StoreJob::MetaRelated(..)
                 ) => held.push(kept),
             }
         }
@@ -648,6 +651,35 @@ impl StoreRunner {
             #[cfg(test)]
             Self::Held { parked, .. } => {
                 parked.push(StoreJob::MetaEpisodes(job, port));
+                true
+            }
+        }
+    }
+
+    /// A Related window read is not on the tape either. A launch that did not happen is refused,
+    /// which gives the single-flight claim back in the same call, so the next edge asks again.
+    fn start_meta_related(&mut self, job: Job<MetaRelatedReq>, port: MetaRelatedPort) {
+        let addr = job.addr;
+        let refusal = port.clone();
+        if !self.launch_meta_related(job, port) {
+            refusal.refused(addr);
+        }
+    }
+
+    /// Start the read on a worker through the client resolved here, once, for the loaded item's
+    /// server. A server the registry holds none for still launches, and its worker answers the
+    /// failure without a GET, as the inline worker did when its read found no client. A parked job
+    /// (`Held`) holds the claim from the park, as a worker that has not answered does.
+    fn launch_meta_related(&mut self, job: Job<MetaRelatedReq>, port: MetaRelatedPort) -> bool {
+        match self {
+            Self::Live => {
+                let client = plx_plex::plex::client_for(job.req.sid);
+                let Job { addr, req } = job;
+                plx_base::task::spawn_small("related-tail", move || finish_related_job(&port, addr, client, req))
+            }
+            #[cfg(test)]
+            Self::Held { parked, .. } => {
+                parked.push(StoreJob::MetaRelated(job, port));
                 true
             }
         }
@@ -977,6 +1009,9 @@ impl StoreRunner {
                 }
                 StoreJob::MetaEpisodes(job, port) => {
                     finish_episodes_job(&port, job.addr, plx_plex::plex::client_for(job.req.sid), job.req);
+                }
+                StoreJob::MetaRelated(job, port) => {
+                    finish_related_job(&port, job.addr, plx_plex::plex::client_for(job.req.sid), job.req);
                 }
             }
         }
@@ -3555,5 +3590,61 @@ mod tests {
         assert_eq!(bridge.run_held_store_jobs_for_test(), 1, "the held runner parked the page window");
         assert!(bridge.metadata_run(MetadataCmd::LoadSeason(1)));
         bridge.assert_no_store_jobs_left_for_test();
+    }
+
+    // ---- a Related window read -----------------------------------------------------------------
+
+    /// Cards before the tail in the loopback's `/similar` listing (the preview the page holds) and
+    /// the tail behind them.
+    const RELATED_PREVIEW: usize = 3;
+    const RELATED_TAIL: usize = 100;
+
+    /// A movie page whose Related row is a 3-card head and the tail window `0..24` of the hub behind
+    /// it, on a server registered at `port`.
+    fn related_store_at(port: i32) -> (ServerId, MetadataStore) {
+        assert!(plx_net::net::global_init() && plx_net::net::available() && plx_net::net::threaded_tls_ready());
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test("runner", "127.0.0.1", port, "t", "cid");
+        plx_plex::plex::client_for(sid).unwrap().set_link(plx_plex::plex::probe::Location::Local);
+        let mut store = MetadataStore::default();
+        related_on(&mut store, sid);
+        (sid, store)
+    }
+
+    fn related_on(store: &mut MetadataStore, sid: ServerId) {
+        use plx_data::metadata::{Detail, RelatedTail, TailHub};
+        let card = |rk: String| plx_data::pms::PmsMovie { sid, rk, sec: 1, ..Default::default() };
+        let mut related: Vec<_> = (0..RELATED_PREVIEW).map(|i| card(format!("h{i}"))).collect();
+        related.extend((0..24).map(|n| card(format!("t{n}"))));
+        plx_data::metadata::set_current_for_test(store.state_mut(), Some(Detail {
+            sid, rk: "movie".into(), kind: "movie".into(), related,
+            related_tail: RelatedTail {
+                hubs: vec![TailHub {
+                    key: "/library/metadata/1/similar".into(), preview: RELATED_PREVIEW, len: Some(RELATED_TAIL),
+                }],
+                head: RELATED_PREVIEW, positions: (0..24).collect(), offset: 0, end: 24, total: RELATED_TAIL,
+                more: true, ..Default::default()
+            },
+            ..Default::default()
+        }));
+    }
+
+    /// The dispatcher's entry: `metadata_run` starts the job its command emitted in that call, for an
+    /// edge ask and for a seek alike. The held runner parks it.
+    #[test]
+    fn the_bridge_metadata_run_starts_the_related_window_it_emitted() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let (sid, _) = related_store_at(9);
+        let mut bridge = Bridge::for_test(|| 0);
+        related_on(bridge.metadata_mut(), sid);
+
+        assert!(bridge.metadata_run(MetadataCmd::WantRelated { before: false, seen: (0, 24) }));
+        bridge.assert_no_store_jobs_left_for_test();
+        assert_eq!(bridge.run_held_store_jobs_for_test(), 1, "the held runner parked the edge's window");
+
+        assert!(bridge.metadata_run(MetadataCmd::SeekRelated { at: 60, seen: (0, 24) }));
+        bridge.assert_no_store_jobs_left_for_test();
+        assert_eq!(bridge.run_held_store_jobs_for_test(), 1, "and the seek's");
     }
 }

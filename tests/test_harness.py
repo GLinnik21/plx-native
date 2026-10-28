@@ -7461,7 +7461,9 @@ impl PersonOwnerGateFixture {
         # Metadata M2 (the season switch and the episode-page window leave as `StoreJob::MetaSeason` /
         # `StoreJob::MetaEpisodes`): -2 here (`load_season`, `want_episodes` `spawn_small`), -2 on globals
         # (`fetch_episodes`, `fetch_episode_page` `client_for`).
-        "workers": 9,  # production worker starts inside machines (`ci/allow/workers/`)
+        # Metadata M3 (the Related tail window read leaves as `StoreJob::MetaRelated`): -1 here (`ask_related`'s
+        # `spawn_small`), -1 on globals (its `client_for`).
+        "workers": 8,  # production worker starts inside machines (`ci/allow/workers/`)
         # Sans-IO lifecycle PR B moved the pin by nothing: -3 (the three `lifecycle.rs` `player::TX` lines left with the
         # transport contract, `player/transport.rs`, the IO layer) and +3 (a relocation lowers no pin by itself, so the same
         # diff widened the spellings to the transport readers `transport::paused`, `transport::viewer_paused` and
@@ -7471,7 +7473,7 @@ impl PersonOwnerGateFixture {
         # fan-out's `fan_out` and `ask_sources`, which now reach the other servers through the key-checked `KeyedClients`.
         # Attempt-caps (#1044) moved the pin by nothing: the spellings widened to `devcaps::caps` and the zero-argument
         # `is_dp_audio` / `is_dp_audio_track` (a coverage expansion, not a shrink), and the planner reads none of them.
-        "globals": 66,  # production process-global reads inside machines (`ci/allow/globals/`)
+        "globals": 65,  # production process-global reads inside machines (`ci/allow/globals/`)
         "forks": 58,  # production test/production forks in data/, plex/, media/, session/ (`ci/allow/forks/`)
         "fxlanes": 11,  # Bridge::app_effect arms that do not push Fx::Deliver (`ci/allow/fxlanes/`)
     }
