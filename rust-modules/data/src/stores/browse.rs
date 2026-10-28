@@ -574,6 +574,12 @@ impl BrowseStore {
         self.state.discovery_policy_for_test(&self.adapter)
     }
 
+    /// TEST ONLY: how many sections the table holds, the discovery's landed sections among them.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn section_count_for_test(&self) -> usize {
+        self.state.section_count_for_test()
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn queue_discovery_for_test(
         &mut self,

@@ -1915,6 +1915,10 @@ impl BrowseState {
             source.sections_done,
         )
     }
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn section_count_for_test(&self) -> usize {
+        self.sections.len()
+    }
     fn library_pins(&self) -> Vec<(usize, i64, bool)> {
         let mut out: Vec<(usize, i64, bool)> = self.sections
             .iter()

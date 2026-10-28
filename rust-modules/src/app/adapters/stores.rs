@@ -3147,6 +3147,251 @@ mod tests {
         }
     }
 
+    /// A loopback PMS that ANSWERS the three reads a source's discovery makes: the section list (one
+    /// Movies library), the server's own name, and the item count of a section. A worker handed the
+    /// client the runner resolved lands a section; one handed none (or a dead port) lands a failure,
+    /// so only the landing tells the two apart.
+    fn discovery_server() -> Pms {
+        Pms::serve(|path| match path {
+            "/library/sections" => ("200 OK",
+                r#"{"MediaContainer":{"size":1,"Directory":[{"key":"1","type":"movie","title":"Movies"}]}}"#.into()),
+            "/" => ("200 OK", r#"{"MediaContainer":{"friendlyName":"Loopback PMS"}}"#.into()),
+            _ => ("200 OK", r#"{"MediaContainer":{"size":0,"totalSize":3}}"#.into()),
+        })
+    }
+
+    fn is_discovery(job: &StoreJob) -> bool { matches!(job, StoreJob::BrowseDiscovery(..)) }
+
+    /// A server registered at `port` and a Browse store whose first discovery pass has asked for its
+    /// section list: the job the step left, keyed to the client the registry held when it did, with
+    /// the discovery claim up from that step.
+    fn discovery_request_at(port: i32) -> (ServerId, BrowseStore, StoreJob) {
+        assert!(plx_net::net::global_init() && plx_net::net::available() && plx_net::net::threaded_tls_ready());
+        plx_plex::plex::reset_servers_for_test();
+        let sid = plx_plex::plex::register_for_test("runner", "127.0.0.1", port, "t", "cid");
+        assert!(plx_plex::plex::set_current(sid));
+        plx_plex::plex::client_for(sid).unwrap().set_link(plx_plex::plex::probe::Location::Local);
+        let mut browse = BrowseStore::default();
+        discovery_step(&mut browse);
+        let job = the_one_job(&mut browse, is_discovery, "discovery");
+        assert!(browse.discovery_owed(), "the step raised the discovery claim");
+        (sid, browse, job)
+    }
+
+    /// The store's discovery pass, with the registry's keys as of now.
+    fn discovery_step(browse: &mut BrowseStore) {
+        let _ = browse.discover_pump_with_gate(plx_machine::landgate::fixture_gate(), &registry_keys());
+    }
+
+    /// The `"sources"` worker is not counted by `drain_workers_for_test` (it dials whatever a roster
+    /// names), so a test waits for its answer by polling the mailbox, a bounded count of passes.
+    #[track_caller]
+    fn wait_for_the_discovery_answer(browse: &BrowseStore) {
+        for _ in 0..5000 {
+            if browse.discovery_answer_waiting_for_test() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        panic!("the discovery worker never answered");
+    }
+
+    /// The pass after an answer: the landing is applied (the section is in the table, the claim
+    /// came down in `apply_discovery`) and, the same step, the source's next question (the item
+    /// counts of what landed) is asked: ONE new discovery job, with the claim up for it.
+    /// (`sections_done` is the first source's flag, from `discovery_policy_for_test`.)
+    #[track_caller]
+    fn assert_the_section_landed(browse: &mut BrowseStore) {
+        discovery_step(browse);
+        assert_eq!(browse.section_count_for_test(), 1, "the loopback's one library landed");
+        let (_claimed, _retry, sections_done) = browse.discovery_policy_for_test();
+        assert!(sections_done, "the source's section list is done");
+        let next = browse.take_jobs();
+        assert_eq!(next.iter().filter(|job| is_discovery(job)).count(), 1,
+            "the landing was applied (it lowered the claim) and the counts are the next ask");
+        assert!(browse.discovery_owed(), "the claim now belongs to the counts read");
+    }
+
+    /// The pass after a refusal: nothing is asked for yet (the source backs off), and the claim is
+    /// down. `retry_cd` is one short of the full 600-step backoff: the refusal is settled first, then
+    /// the countdown runs.
+    #[track_caller]
+    fn assert_settled_into_the_backoff(browse: &mut BrowseStore) {
+        assert!(!browse.discovery_owed(), "the refusal gave the claim back in the call that refused");
+        discovery_step(browse);
+        assert!(browse.take_jobs().is_empty(), "the refused source is in its backoff: nothing is asked");
+        let (claimed, retry, sections_done) = browse.discovery_policy_for_test();
+        assert!(!claimed);
+        assert_eq!(retry, 599, "settled to the full backoff, then one step of the countdown");
+        assert!(!sections_done, "nothing was learned of the server");
+    }
+
+    /// The registry still holds the client the step decided on: the worker reads from the server
+    /// through it and posts its ONE answer, and the pump that applies it lands the section and lowers
+    /// the claim. The step raised the claim; the launch raises nothing.
+    #[test]
+    fn a_browse_discovery_job_whose_client_is_held_runs_on_a_worker_and_answers_once() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let pms = discovery_server();
+        let (_sid, mut browse, job) = discovery_request_at(pms.port);
+        assert_eq!(job.admission(), Admission::Home);
+        assert!(!browse.discovery_answer_waiting_for_test(), "nothing has answered before the launch");
+
+        StoreRunner::live().start(job);
+        wait_for_the_discovery_answer(&browse);
+
+        assert!(browse.discovery_owed(), "the claim holds until the answer is applied");
+        assert_the_section_landed(&mut browse);
+    }
+
+    /// The registry moved on between the step and the launch: nothing starts, the one answer is the
+    /// refusal (the claim is down in that call), and the next step settles it into the backoff.
+    #[test]
+    fn a_browse_discovery_job_whose_client_is_gone_is_refused_once_and_backs_off_before_it_asks_again() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let pms = discovery_server();
+        let (sid, mut browse, job) = discovery_request_at(pms.port);
+        move_the_key(sid);
+
+        StoreRunner::live().start(job);
+        plx_base::task::drain_workers_for_test();
+
+        assert!(!browse.discovery_answer_waiting_for_test(), "no worker started, so no landing");
+        assert_settled_into_the_backoff(&mut browse);
+    }
+
+    /// The system refuses the thread: the same single refusal, the same settle.
+    #[test]
+    fn a_browse_discovery_job_the_system_refuses_to_start_is_refused_once_and_backs_off_before_it_asks_again() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let pms = discovery_server();
+        let (_sid, mut browse, job) = discovery_request_at(pms.port);
+
+        with_refused_hubs_launches_for_test(|| StoreRunner::live().start(job));
+        plx_base::task::drain_workers_for_test();
+
+        assert!(!browse.discovery_answer_waiting_for_test());
+        assert_settled_into_the_backoff(&mut browse);
+    }
+
+    /// `held_all` parks the job with the claim the step raised still up, and `run_held` runs it on
+    /// the test thread through the client it resolves then: one answer, nothing left parked, and the
+    /// section lands.
+    #[test]
+    fn a_held_browse_discovery_job_holds_its_claim_and_runs_once_when_the_test_runs_it() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let pms = discovery_server();
+        let (_sid, mut browse, job) = discovery_request_at(pms.port);
+        let mut runner = StoreRunner::held_all();
+
+        runner.start(job);
+        assert!(browse.discovery_owed(), "a parked job is a read that has not answered");
+        assert!(!browse.discovery_answer_waiting_for_test());
+
+        assert_eq!(runner.run_held_of(plx_data::stores::StoreId::Browse), 1);
+        assert!(browse.discovery_answer_waiting_for_test());
+        assert_the_section_landed(&mut browse);
+        assert_eq!(runner.run_held(), 0, "nothing left parked");
+    }
+
+    /// A parked job whose client is gone by the time the test runs it is refused, as the launch would
+    /// have refused it; the next step settles it into the backoff.
+    #[test]
+    fn a_held_browse_discovery_job_whose_client_is_gone_by_then_is_refused_and_backs_off() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let pms = discovery_server();
+        let (sid, mut browse, job) = discovery_request_at(pms.port);
+        let mut runner = StoreRunner::held_all();
+
+        runner.start(job);
+        assert!(browse.discovery_owed());
+        move_the_key(sid);
+        assert_eq!(runner.run_held(), 1);
+
+        assert!(!browse.discovery_answer_waiting_for_test());
+        assert_settled_into_the_backoff(&mut browse);
+    }
+
+    /// `held` starts a source discovery on a worker, as production does (nothing is parked: no rig
+    /// of the suite waits for a landing from it, and a parked one would run its blocking reads on
+    /// the test thread wherever a rig runs every parked job); `held_all` parks it.
+    #[test]
+    fn the_held_runner_starts_a_browse_discovery_job_on_a_worker_and_held_all_parks_it() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let pms = discovery_server();
+        let (_sid, browse, job) = discovery_request_at(pms.port);
+        let mut runner = StoreRunner::held();
+
+        runner.start(job);
+        wait_for_the_discovery_answer(&browse);
+        assert_eq!(runner.run_held(), 0, "a worker answered: nothing is parked");
+
+        let (_sid, browse, job) = discovery_request_at(pms.port);
+        let mut runner = StoreRunner::held_all();
+        runner.start(job);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert!(!browse.discovery_answer_waiting_for_test(), "no worker answered: the job is parked");
+        assert_eq!(runner.run_held_of(plx_data::stores::StoreId::Browse), 1);
+        assert!(browse.discovery_answer_waiting_for_test());
+    }
+
+    /// A controlled run recording: the ledger holds exactly the job's own descriptor with `admitted`
+    /// added, and a worker answers.
+    #[test]
+    fn a_browse_discovery_job_is_recorded_with_its_own_descriptor_and_started() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let pms = discovery_server();
+        let (_sid, mut browse, job) = discovery_request_at(pms.port);
+        let StoreJob::BrowseDiscovery(inner, _) = &job else { unreachable!() };
+        let mut record = inner.req.admission();
+        record["admitted"] = serde_json::json!(true);
+        let mut io = home_io(false, Vec::new());
+
+        StoreRunner::live().start_admitted(job, Some(&mut io));
+        wait_for_the_discovery_answer(&browse);
+
+        assert_eq!(io.requests, [record], "the descriptor and `admitted`, and nothing else");
+        assert!(io.failure.is_none());
+        assert_the_section_landed(&mut browse);
+    }
+
+    /// A controlled run replaying: a recorded launch (`admitted: true`) starts nothing and answers
+    /// nothing (the recorded result answers it, and the claim stays up until it is applied); a
+    /// recorded refusal is answered here, once, and the next step settles it.
+    #[test]
+    fn a_replayed_browse_discovery_job_launches_nothing_and_a_recorded_refusal_is_answered_once() {
+        let _serial = plx_base::testlock::serial();
+        let _rig = CollectionRig;
+        let pms = discovery_server();
+        for admitted in [true, false] {
+            let (_sid, mut browse, job) = discovery_request_at(pms.port);
+            let StoreJob::BrowseDiscovery(inner, _) = &job else { unreachable!() };
+            let mut record = inner.req.admission();
+            record["admitted"] = serde_json::json!(admitted);
+            let mut io = home_io(true, vec![record.clone()]);
+            let mut runner = StoreRunner::live();
+
+            runner.start_admitted(job, Some(&mut io));
+            std::thread::sleep(std::time::Duration::from_millis(20));
+
+            assert_eq!(io.requests, [record], "the replay records what it was told");
+            assert!(io.admissions.is_empty() && io.failure.is_none());
+            assert!(!browse.discovery_answer_waiting_for_test(), "a replay starts no worker (admitted: {admitted})");
+            if admitted {
+                assert!(browse.discovery_owed(), "the recorded launch's claim stays up until its result applies");
+            } else {
+                assert_settled_into_the_backoff(&mut browse);
+            }
+        }
+    }
+
     /// A controlled run recording: the launch is the recorded boolean. The ledger holds the job's
     /// own descriptor, and a worker answers.
     #[test]
