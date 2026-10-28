@@ -659,7 +659,7 @@ if [ -n "$(grep_code '\bEffect::' "$SRC" "$SRC_BASE" "$SRC_MACHINE" "$SRC_PLATFO
 # outright — and added every real mutator the census found missing entirely: `alt_install`,
 # `alt_restamp_owners`, `alt_prune_inactive`, `alt_stand_in`, `record_pins`, `retry_source`,
 # `apply_landing`, `take_landed_views`/`take_landed`.
-MUTATORS='\b(browse|pms|metadata|search|person|viewstate)::(set_cur|note_library_choice|kick_letters|kick_genres|want|save_cursor|set_sort_by_key|set_sort|set_unwatched|set_genre_by_id|set_genre|retry_cur_source|retry_source|recheck_shares|apply_pins|toggle_pin|record_pins|retry_discovery|reset|discover_pump|pump|pump_detail|pump_season|pump_alt_sources|request|open|close|set_query|request_detail|clear|load_season|set_now_playing|set_watched_local|install_playing|mark_skipped|retire_playing|retire_playing_item|alt_install|alt_restamp_owners|alt_prune_inactive|alt_stand_in|request_refetch_hubs|request_retry|edit_item|apply_landing|take_landed_views|take_landed)\(|\bsection_hubs::(kick|commit_staged|invalidate_all|invalidate|set_watched_local|left_the_deck)\('
+MUTATORS='\b(browse|pms|metadata|search|person|viewstate)::(set_cur|note_library_choice|kick_letters|kick_genres|want|save_cursor|set_sort_by_key|set_sort|set_unwatched|set_genre_by_id|set_genre|retry_cur_source|retry_source|recheck_shares|apply_pins|apply_pins_from|toggle_pin|record_pins|record_pins_from|retry_discovery|reset|discover_pump|pump|pump_detail|pump_season|pump_alt_sources|request|open|close|set_query|request_detail|clear|load_season|set_now_playing|set_watched_local|install_playing|mark_skipped|retire_playing|retire_playing_item|alt_install|alt_restamp_owners|alt_prune_inactive|alt_stand_in|request_refetch_hubs|request_retry|edit_item|apply_landing|take_landed_views|take_landed)\(|\bsection_hubs::(kick|commit_staged|invalidate_all|invalidate|set_watched_local|left_the_deck)\('
 # The spelling is matched WITHOUT a `crate::` prefix (a `use crate::metadata;` makes it
 # `metadata::load_season(`), and every `#[cfg(test)] mod … { … }` block is skipped by brace depth
 # wherever it sits in the file — the first version cut at the FIRST such block and let ~700
@@ -706,7 +706,7 @@ if [ "$mut_bad" -eq 0 ]; then ok "mutators"; else fail "mutators: $mut_bad line(
 # script's own shebang is `env bash` and the dev Mac's `/bin/bash` is 3.2 (Apple ships nothing
 # newer over the GPLv3 boundary), which has no associative arrays at all.
 MUT_FNS_TABLE=(
-  "browse/mod.rs|set_cur note_library_choice kick_letters kick_genres want save_cursor set_sort_by_key set_sort set_unwatched set_genre_by_id set_genre retry_cur_source retry_source recheck_shares apply_pins toggle_pin record_pins retry_discovery reset set_watched_local"
+  "browse/mod.rs|set_cur note_library_choice kick_letters kick_genres want save_cursor set_sort_by_key set_sort set_unwatched set_genre_by_id set_genre retry_cur_source retry_source recheck_shares apply_pins apply_pins_from toggle_pin record_pins record_pins_from retry_discovery reset set_watched_local"
   "browse/section_hubs.rs|kick commit_staged invalidate_all invalidate set_watched_local left_the_deck"
   "metadata.rs|request_detail clear load_season set_now_playing set_watched_local install_playing mark_skipped retire_playing retire_playing_item alt_install alt_restamp_owners alt_prune_inactive"
   "pms.rs|request_refetch_hubs request_retry edit_item apply_landing reset"

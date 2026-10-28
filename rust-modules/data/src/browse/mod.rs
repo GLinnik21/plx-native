@@ -923,12 +923,18 @@ pub struct BrowseState {
 
 /// Shared by a cloned Browse snapshot, so consuming a receipt never makes another clone
 /// mistake a successful write for a disconnected worker. Failed writes keep the local choice.
+///
+/// The poll and its use are split. [`observe`](Self::observe) polls the receipt once and latches
+/// it; `Bridge::browse_session` is the only production caller, and it calls it BEFORE it reads the
+/// session it hands the step. [`saved`](Self::saved) only reads the latch, so a step never pairs a
+/// receipt it polled itself with a session read before it (the receipt is sent after the worker
+/// installed the written session, so a read taken after seeing it contains the write).
 struct PinWrite {
     ticket: plx_base::storage_worker::TypedTicket<bool>,
     saved: Option<bool>,
 }
 impl PinWrite {
-    fn saved(&mut self) -> bool {
+    fn observe(&mut self) {
         if self.saved.is_none() {
             self.saved = match self.ticket.try_recv() {
                 Ok(saved) => Some(saved),
@@ -936,6 +942,8 @@ impl PinWrite {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(false),
             };
         }
+    }
+    fn saved(&self) -> bool {
         self.saved == Some(true)
     }
 }
@@ -2106,8 +2114,18 @@ impl BrowseState {
             self.set_cur(index);
         }
     }
+    /// Poll the pending pin write's receipt, once (`PinWrite::observe`). The Bridge calls this
+    /// before it reads the session it hands the step (`Bridge::browse_session`), so a write seen as
+    /// saved is never paired with a session read from before it.
+    pub fn observe_pin_write(&self) {
+        if let Some((_, write)) = &self.pending_pins {
+            write.lock().unwrap_or_else(|e| e.into_inner()).observe();
+        }
+    }
     /// A directory refresh must not replace the pending (or failed) local choice with the
-    /// older persisted snapshot. Successful receipts recapture the cache after the worker fill.
+    /// older persisted snapshot. A receipt observed before the caller read `session` takes the
+    /// record from `session`, which contains the write; a receipt not yet observed answers with the
+    /// local record, never with a snapshot older than the write.
     fn pin_record_for(&mut self, session: &plx_plex::plex::session::Session, user: &str)
         -> Option<plx_plex::plex::session::HomePins> {
         if let Some((pending_user, write)) = &self.pending_pins {
@@ -2115,7 +2133,6 @@ impl BrowseState {
                 return self.recorded.clone();
             }
             self.pending_pins = None;
-            return plx_plex::plex::session::peek().pins_for(user).cloned();
         }
         session.pins_for(user).cloned()
     }
@@ -2174,13 +2191,22 @@ impl BrowseState {
         let record = self.pin_record_for(session, user);
         self.reconcile_pins(record)
     }
+    /// The registry as of now, after the pin write was observed: what the Bridge hands a step.
+    #[cfg(test)]
     fn resolve_pins(&mut self) {
+        self.observe_pin_write();
         let session = plx_plex::plex::session::peek();
         let user = plx_plex::plex::session::current_profile_key();
         self.resolve_pins_from(&session, &user);
     }
+    #[cfg(any(test, feature = "test-support"))]
+    fn append_sections_for_test(&mut self, source: usize, list: Vec<(i64, String, SecKind)>) {
+        self.observe_pin_write();
+        let session = plx_plex::plex::session::peek();
+        self.append_sections_with(source, list, &session, &plx_plex::plex::session::current_profile_key());
+    }
     fn append_sections_with(&mut self, source: usize, list: Vec<(i64, String, SecKind)>,
-        preferences: Option<&plx_plex::plex::session::Session>) {
+        session: &plx_plex::plex::session::Session, user: &str) {
         let fresh: Vec<_> = list.into_iter().filter(|(key, _, _)| {
             !self.sections.iter().any(|section| section.src == source && section.key == *key)
         }).collect();
@@ -2194,11 +2220,7 @@ impl BrowseState {
             });
             self.states.push(SecState::default());
         }
-        if let Some(session) = preferences {
-            self.resolve_pins_from(session, "");
-        } else {
-            self.resolve_pins();
-        }
+        self.resolve_pins_from(session, user);
         // After the resolve above, which is what (re)loads the profile's saved views.
         for index in first_fresh..self.sections.len() {
             self.seed_saved_view(index);
@@ -2215,12 +2237,18 @@ impl BrowseState {
     /// against the current authority under IO, so unrelated edits made while it was queued
     /// survive. A missing session or a refused queue returns `None`; the visible selection
     /// still stands for this run, without claiming it was saved.
+    #[cfg(test)]
     fn record_pins(&mut self, asked: bool, touched: &[bool])
+        -> Option<plx_plex::plex::session::HomePins> {
+        self.observe_pin_write();
+        let snapshot = plx_plex::plex::session::peek();
+        self.record_pins_from(asked, touched, &snapshot)
+    }
+    fn record_pins_from(&mut self, asked: bool, touched: &[bool], snapshot: &plx_plex::plex::session::Session)
         -> Option<plx_plex::plex::session::HomePins> {
         let libraries = self.lib_refs();
         let on: Vec<bool> = self.sections.iter().map(|section| section.pinned).collect();
         let user = plx_plex::plex::session::current_profile_key();
-        let snapshot = plx_plex::plex::session::peek();
         if snapshot.client_id.is_empty() { return None; }
         let previous = self.recorded.as_ref().or_else(|| snapshot.pins_for(&user));
         let answers = plx_plex::plex::pins::answers(&libraries, &on, touched, previous);
@@ -2272,7 +2300,13 @@ impl BrowseState {
     /// **A commit that produced no record is not reconciled**, and the difference is the whole of
     /// it: [`record_pins`](Self::record_pins) answers `None` when `session::update` refused the
     /// cycle, and the record still standing then is the one this commit meant to replace.
+    #[cfg(test)]
     fn apply_pins(&mut self, answers: &[(usize, bool)]) {
+        self.observe_pin_write();
+        let session = plx_plex::plex::session::peek();
+        self.apply_pins_from(answers, &session);
+    }
+    fn apply_pins_from(&mut self, answers: &[(usize, bool)], session: &plx_plex::plex::session::Session) {
         let mut touched = vec![false; self.sections.len()];
         let mut changed = false;
         for &(index, on) in answers {
@@ -2287,7 +2321,7 @@ impl BrowseState {
                 *slot = true;
             }
         }
-        let produced = self.record_pins(true, &touched);
+        let produced = self.record_pins_from(true, &touched, session);
         if changed {
             self.repoint_cur();
             self.bump_sections_gen();
@@ -2319,7 +2353,8 @@ impl BrowseState {
         epoch: u32,
         source_index: usize,
         landing: SrcLanding,
-        preferences: Option<&plx_plex::plex::session::Session>,
+        session: &plx_plex::plex::session::Session,
+        user: &str,
         adapter: &BrowseAdapter,
     ) -> crate::stores::StoreOutcome {
         plx_machine::idle::invalidate();
@@ -2348,7 +2383,7 @@ impl BrowseState {
                     SrcWhat::Sections(list) => {
                         let answered = list.is_some();
                         self.append_sections_with(
-                            source_index, list.unwrap_or_default(), preferences);
+                            source_index, list.unwrap_or_default(), session, user);
                         if let Some(source) = self.source_mut(source_index) {
                             source.sections_done = answered;
                             source.retry_cd = if answered { 0 } else { SRC_RETRY_CD };
@@ -2582,12 +2617,14 @@ impl BrowseState {
         adapter: &Arc<BrowseAdapter>,
         cmd: crate::stores::browse::BrowseCmd,
         keys: &ClientKeys,
+        session: &plx_plex::plex::session::Session,
         jobs: &mut Vec<crate::stores::StoreJob>,
     ) -> bool {
         use crate::stores::browse::BrowseCmd;
         match cmd {
             BrowseCmd::Discovery(result) => {
-                record::apply_to(self, adapter, &result, None).changed
+                record::apply_to(self, adapter, &result, session,
+                    &plx_plex::plex::session::current_profile_key()).changed
             }
             BrowseCmd::Addressed { target, work } => {
                 self.addressed_with_adapter(adapter, target, work, keys, jobs)
@@ -2603,7 +2640,7 @@ impl BrowseState {
                 true
             }
             BrowseCmd::ApplyPins(edits) => {
-                self.apply_pins(&edits);
+                self.apply_pins_from(&edits, session);
                 true
             }
             BrowseCmd::RetryDiscovery => {
@@ -2720,6 +2757,7 @@ impl BrowseState {
         &mut self,
         adapter: &Arc<BrowseAdapter>,
         gate: &plx_machine::landgate::Gate,
+        session: &plx_plex::plex::session::Session,
     ) -> crate::stores::StoreOutcome {
         // DUMP MODE: owed while the discovery claim (`src_fetching`, raised by the step that emits the job and cleared
         // in `apply_discovery`, after its epoch check) is held. Per MAILBOX: the claim of the one mailbox taken here.
@@ -2728,7 +2766,8 @@ impl BrowseState {
             adapter.src_result.lock().unwrap_or_else(|e| e.into_inner()).take()
         });
         let Some((epoch, source, landing)) = taken else { return Default::default() };
-        self.apply_discovery(epoch, source, landing, None, adapter)
+        self.apply_discovery(epoch, source, landing, session,
+            &plx_plex::plex::session::current_profile_key(), adapter)
     }
     /// `#[track_caller]`: the paced dump keys a landing's claim by CALL SITE, and the genre and
     /// letters mailboxes both come through here, so the wrapper must hand its caller's site on
@@ -2766,7 +2805,9 @@ impl BrowseState {
     #[cfg(test)]
     fn land_discovery_owned(&mut self, adapter: &Arc<BrowseAdapter>)
         -> crate::stores::StoreOutcome {
-        self.land_discovery_owned_with_gate(adapter, plx_machine::landgate::fixture_gate())
+        self.observe_pin_write();
+        let session = plx_plex::plex::session::peek();
+        self.land_discovery_owned_with_gate(adapter, plx_machine::landgate::fixture_gate(), &session)
     }
     #[cfg(test)]
     #[track_caller]
@@ -2844,27 +2885,31 @@ impl BrowseState {
         adapter: &Arc<BrowseAdapter>,
         gate: &plx_machine::landgate::Gate,
         keys: &ClientKeys,
+        session: &plx_plex::plex::session::Session,
         jobs: &mut Vec<crate::stores::StoreJob>,
     ) -> crate::stores::StoreOutcome {
-        let outcome = self.land_discovery_owned_with_gate(adapter, gate);
+        let outcome = self.land_discovery_owned_with_gate(adapter, gate, session);
         self.maybe_discover_owned(adapter, keys, jobs);
         outcome
     }
     #[cfg(any(test, feature = "test-support"))]
     pub fn discover_pump_owned(&mut self, adapter: &Arc<BrowseAdapter>, keys: &ClientKeys,
         jobs: &mut Vec<crate::stores::StoreJob>) -> crate::stores::StoreOutcome {
-        self.discover_pump_owned_with_gate(adapter, plx_machine::landgate::fixture_gate(), keys, jobs)
+        self.observe_pin_write();
+        let session = plx_plex::plex::session::peek();
+        self.discover_pump_owned_with_gate(adapter, plx_machine::landgate::fixture_gate(), keys, &session, jobs)
     }
     pub fn pump_owned_with_gate(
         &mut self,
         adapter: &Arc<BrowseAdapter>,
         gate: &plx_machine::landgate::Gate,
         keys: &ClientKeys,
+        session: &plx_plex::plex::session::Session,
         jobs: &mut Vec<crate::stores::StoreJob>,
     ) -> crate::stores::StoreOutcome {
         let mut changed = false;
         self.retry_cd = self.retry_cd.saturating_sub(1);
-        let discovery = self.land_discovery_owned_with_gate(adapter, gate);
+        let discovery = self.land_discovery_owned_with_gate(adapter, gate, session);
         changed |= discovery.changed;
         let endpoints = discovery.endpoints;
         self.maybe_discover_owned(adapter, keys, jobs);
@@ -2985,8 +3030,10 @@ impl BrowseState {
     #[cfg(any(test, feature = "test-support"))]
     pub fn pump_owned(&mut self, adapter: &Arc<BrowseAdapter>)
         -> crate::stores::StoreOutcome {
+        self.observe_pin_write();
+        let session = plx_plex::plex::session::peek();
         self.pump_owned_with_gate(adapter, plx_machine::landgate::fixture_gate(), &ClientKeys::default(),
-            &mut Vec::new())
+            &session, &mut Vec::new())
     }
 }
 
@@ -3274,7 +3321,7 @@ fn ensure_sections_with(
             if state.sources().get(si).map(|s| s.sid) != Some(client.id()) {
                 return false;
             }
-            state.append_sections_with(si, found.unwrap_or_default(), None);
+            state.append_sections_for_test(si, found.unwrap_or_default());
             if let Some(s) = state.source_mut(si) {
                 s.sections_done = ok;
                 s.set_probe_outcome(outcome);
@@ -3865,21 +3912,19 @@ pub fn seed_two_source_table_for_owner_test(state: &mut BrowseState) {
         a_source("mac-mini", "", true),
         a_source("nas-home", "friend", true),
     ];
-    state.append_sections_with(
+    state.append_sections_for_test(
         0,
         vec![
             (1, "Movies".into(), SecKind::Movie),
             (2, "TV Shows".into(), SecKind::Show),
         ],
-        None,
     );
-    state.append_sections_with(
+    state.append_sections_for_test(
         1,
         vec![
             (1, "Film Club".into(), SecKind::Movie),
             (2, "Film Club".into(), SecKind::Show),
         ],
-        None,
     );
 }
 
@@ -3916,7 +3961,7 @@ pub fn append_section_for_owner_test(
     kind: SecKind,
 ) {
     plx_base::testlock::assert_held("an owned browse section table (append_section_for_test)");
-    state.append_sections_with(source, vec![(key, title.into(), kind)], None);
+    state.append_sections_for_test(source, vec![(key, title.into(), kind)]);
 }
 
 #[cfg(any(test, feature = "test-support"))]

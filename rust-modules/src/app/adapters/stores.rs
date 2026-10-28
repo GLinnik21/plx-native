@@ -2727,7 +2727,7 @@ mod tests {
 
         assert!(browse.hubs_answer_waiting_for_test(), "the worker answered");
         assert!(browse.hubs_read_out_for_test(), "the claim holds until the pump takes the answer");
-        let _outcome = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &registry_keys());
+        let _outcome = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &registry_keys(), &plx_plex::plex::session::peek());
         assert!(!browse.hubs_answer_waiting_for_test(), "the pump took the one answer");
         assert!(!browse.hubs_read_out_for_test(), "…which lowered the claim");
         // The same pump asks for the grid's first page (the Library section it landed shelves for),
@@ -2786,7 +2786,7 @@ mod tests {
 
         assert_eq!(runner.run_held_of(plx_data::stores::StoreId::Browse), 1);
         assert!(browse.hubs_answer_waiting_for_test());
-        let _outcome = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &registry_keys());
+        let _outcome = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &registry_keys(), &plx_plex::plex::session::peek());
         assert!(!browse.hubs_read_out_for_test());
         assert_eq!(runner.run_held(), 0, "nothing left parked");
     }
@@ -2885,7 +2885,7 @@ mod tests {
 
     /// The store's step that asks for the grid's page (the pump).
     fn page_step(browse: &mut BrowseStore) {
-        let _ = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &registry_keys());
+        let _ = browse.pump_with_gate(plx_machine::landgate::fixture_gate(), &registry_keys(), &plx_plex::plex::session::peek());
     }
 
     /// The command that asks the current section for its genre list.
@@ -3224,7 +3224,7 @@ mod tests {
 
     /// The store's discovery pass, with the registry's keys as of now.
     fn discovery_step(browse: &mut BrowseStore) {
-        let _ = browse.discover_pump_with_gate(plx_machine::landgate::fixture_gate(), &registry_keys());
+        let _ = browse.discover_pump_with_gate(plx_machine::landgate::fixture_gate(), &registry_keys(), &plx_plex::plex::session::peek());
     }
 
     /// The `"sources"` worker is not counted by `drain_workers_for_test` (it dials whatever a roster

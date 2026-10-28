@@ -1238,7 +1238,8 @@ impl Bridge {
     /// step that left its job on the outbox would read as a read in flight with nothing running.
     pub(crate) fn browse_run(&mut self, cmd: plx_data::stores::browse::BrowseCmd) -> bool {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
-        let changed = self.stores.browse_run(cmd, &self.client_keys);
+        let session = self.browse_session();
+        let changed = self.stores.browse_run(cmd, &self.client_keys, &session);
         self.start_store_jobs_of(StoreId::Browse);
         changed
     }
@@ -1258,7 +1259,8 @@ impl Bridge {
     /// ([`Bridge::admit_home_jobs`]).
     pub(crate) fn browse_discover_pump(&mut self) -> plx_data::stores::StoreOutcome {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
-        let outcome = self.stores.browse_discover_pump(&self.client_keys);
+        let session = self.browse_session();
+        let outcome = self.stores.browse_discover_pump(&self.client_keys, &session);
         self.start_store_jobs_of(StoreId::Browse);
         outcome
     }
@@ -1554,10 +1556,11 @@ impl Bridge {
         if self.stores.network_held() {
             return outcome.endpoints; // a membership re-query is a network read
         }
-        let requeried = {
-            let mut browse = self.stores.browse.borrow_mut();
-            browse.requery_owed().then(|| browse.pump_with_gate(&self.stores.landgate, &self.client_keys).endpoints)
-        };
+        let owed = self.stores.browse.borrow().requery_owed();
+        let requeried = owed.then(|| {
+            let session = self.browse_session();
+            self.stores.browse.borrow_mut().pump_with_gate(&self.stores.landgate, &self.client_keys, &session).endpoints
+        });
         if let Some(endpoints) = requeried {
             outcome.endpoints.merge(endpoints);
             self.start_store_jobs_of(StoreId::Browse);
@@ -1657,6 +1660,14 @@ impl Bridge {
     /// the store; the data layer reads no session global for it.
     fn household_ids() -> Vec<i64> {
         plx_plex::plex::session::peek().household_ids()
+    }
+
+    /// The session Browse's step is handed. The store observes its pending pin write's receipt FIRST
+    /// and the registry is read AFTER, so a saved write is never paired with a session from before it.
+    /// The two lines must not swap, and the `Arc` is never kept across Bridge calls.
+    fn browse_session(&self) -> std::sync::Arc<plx_plex::plex::session::Session> {
+        self.stores.browse.borrow().observe_pin_write();
+        plx_plex::plex::session::peek()
     }
 
     /// The profile the Session owner has seated, as the scope counter it allocated and published
@@ -2123,7 +2134,8 @@ impl Bridge {
             }
             AppMsg::StoreWork(plx_data::stores::StoreWork::Browse) => {
                 super::adapters::stores::refill_client_keys(&mut self.client_keys);
-                let due = self.stores.browse.borrow_mut().pump_with_gate(&self.stores.landgate, &self.client_keys).endpoints;
+                let session = self.browse_session();
+                let due = self.stores.browse.borrow_mut().pump_with_gate(&self.stores.landgate, &self.client_keys, &session).endpoints;
                 self.start_store_jobs_of(StoreId::Browse);
                 Self::carry(&mut self.endpoint_carry, due)
             }
@@ -3410,7 +3422,7 @@ pub(crate) fn follow_auth_landing(pages: &mut Dispatcher<AppHost>, bridge: &mut 
         // single-user account this is the earliest authorized moment there is.
         super::input::maybe_ask_consent(pages);
         bridge.refresh_browse_directory();
-        if plx_data::stores::browse::onboard::asks(bridge.browse_directory()) {
+        if plx_data::stores::browse::onboard::asks(bridge.browse_directory(), &plx_plex::plex::session::peek()) {
             plx_base::eventlog::log("login: server installed — asking which sources feed Home");
             // no `enter()`: rooting the stack at the page is what mounts the owned screen
             // (`boot.rs`), and a ROOT is right because the sweep above has just emptied the tree.

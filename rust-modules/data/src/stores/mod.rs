@@ -163,16 +163,25 @@ impl Stores {
     /// `keys` is the registry's answer as of this call. A command may leave a
     /// [`StoreJob::BrowseHubs`] or a [`StoreJob::BrowseDirectory`] on Browse's outbox: the caller that
     /// returns without [`Stores::take_jobs_of`] and handing it to a runner has stranded the read. The one
-    /// production caller is `Bridge::browse_run`, which drains in the same call.
-    pub fn browse_run(&self, cmd: browse::BrowseCmd, keys: &plx_plex::plex::ClientKeys) -> bool {
-        self.browse.borrow_mut().run(cmd, keys)
+    /// production caller is `Bridge::browse_run`, which drains in the same call. `session` is the
+    /// one it read after Browse observed its pin write (`Bridge::browse_session`).
+    pub fn browse_run(
+        &self,
+        cmd: browse::BrowseCmd,
+        keys: &plx_plex::plex::ClientKeys,
+        session: &plx_plex::plex::session::Session,
+    ) -> bool {
+        self.browse.borrow_mut().run_with_session(cmd, keys, session)
     }
 
     /// [`Stores::browse_run`] on a registry that holds no client (no section-hubs or directory read leaves): the
-    /// command of a test about something else.
+    /// command of a test about something else. The session is the registry's as of now, read after
+    /// the pin write was observed.
     #[cfg(any(test, feature = "test-support"))]
     pub fn browse_run_for_test(&self, cmd: browse::BrowseCmd) -> bool {
-        self.browse_run(cmd, &plx_plex::plex::ClientKeys::default())
+        self.browse.borrow().observe_pin_write();
+        let session = plx_plex::plex::session::peek();
+        self.browse_run(cmd, &plx_plex::plex::ClientKeys::default(), &session)
     }
 
     /// Is any shelf of the addressed section committed? (The Library pages' publication gate asks.)
@@ -182,15 +191,21 @@ impl Stores {
 
     /// The Library's discovery pass: land the answer waiting and step the discovery. A read the
     /// step asks for is left on Browse's outbox for the caller to start (`Bridge::browse_discover_pump`).
-    pub fn browse_discover_pump(&self, keys: &plx_plex::plex::ClientKeys) -> StoreOutcome {
-        self.browse.borrow_mut().discover_pump_with_gate(&self.landgate, keys)
+    pub fn browse_discover_pump(
+        &self,
+        keys: &plx_plex::plex::ClientKeys,
+        session: &plx_plex::plex::session::Session,
+    ) -> StoreOutcome {
+        self.browse.borrow_mut().discover_pump_with_gate(&self.landgate, keys, session)
     }
 
     /// [`Stores::browse_discover_pump`] on a registry that holds no client (no discovery read
     /// leaves): the pass of a test about something else.
     #[cfg(any(test, feature = "test-support"))]
     pub fn browse_discover_pump_for_test(&self) -> StoreOutcome {
-        self.browse_discover_pump(&plx_plex::plex::ClientKeys::default())
+        self.browse.borrow().observe_pin_write();
+        let session = plx_plex::plex::session::peek();
+        self.browse_discover_pump(&plx_plex::plex::ClientKeys::default(), &session)
     }
 
     pub fn person_run(&mut self, cmd: person::PersonCmd) -> bool {

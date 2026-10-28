@@ -24,17 +24,18 @@ pub use crate::browse::view::{
 };
 
 /// Owner-aware first-run gate shared by boot and login. The retained directory is the granted
-/// Browse publication for this Bridge.
+/// Browse publication for this Bridge. The session is handed by the caller (boot and login each
+/// read it where they ask), never read here.
 pub mod onboard {
-    pub fn asks(directory: super::DirectoryView<'_>) -> bool {
-        asks_for_sources(directory.sources().len())
+    pub fn asks(directory: super::DirectoryView<'_>, session: &plx_plex::plex::session::Session) -> bool {
+        asks_for_sources(directory.sources().len(), session)
     }
 
-    /// The gate for a roster of `sources`, judged for the profile that is watching NOW
+    /// The gate for a roster of `sources`, judged on `session` for the profile that is watching NOW
     /// (`plex::pins::asks`): everyone is asked once, so the profile matters only for its recorded
-    /// answer. Read off the same published profile key the record is filed under.
-    pub fn asks_for_sources(sources: usize) -> bool {
-        let session = plx_plex::plex::session::peek();
+    /// answer. The profile is the published profile key the record is filed under
+    /// (`current_profile_key`), which is not a session read.
+    pub fn asks_for_sources(sources: usize, session: &plx_plex::plex::session::Session) -> bool {
         let profile = plx_plex::plex::session::current_profile_key();
         plx_plex::plex::pins::asks(sources, session.pins_for(&profile))
     }
@@ -160,10 +161,30 @@ impl BrowseStore {
         !self.jobs.is_empty()
     }
 
+    /// Run one command for a caller that holds no session: the Stores fan-outs, which send only
+    /// `ApplyView`, `HubsInvalidateAll`, `HubsInvalidateServer` and `ListingsChanged`. A pin or
+    /// discovery command is refused here, because the session it must read was never handed:
+    /// those reach [`BrowseStore::run_with_session`].
+    pub fn run(&mut self, cmd: BrowseCmd, keys: &ClientKeys) -> bool {
+        if matches!(cmd, BrowseCmd::ApplyPins(_) | BrowseCmd::Discovery(_)) {
+            debug_assert!(false, "a pin or discovery command reached a step handed no session");
+            plx_base::eventlog::log(
+                "browse: a pin or discovery command reached a step handed no session — dropped");
+            return false;
+        }
+        self.run_with_session(cmd, keys, &plx_plex::plex::session::Session::default())
+    }
+
     /// Run one command; `keys` is the registry's answer as of this call (the Bridge fills it
     /// immediately before, `refill_client_keys`), which the section-hubs or directory reads it may emit
-    /// are decided from.
-    pub fn run(&mut self, cmd: BrowseCmd, keys: &ClientKeys) -> bool {
+    /// are decided from. `session` is the one the Bridge read after observing the pin write
+    /// (`Bridge::browse_session`), which the pin commands and a landing discovery read.
+    pub fn run_with_session(
+        &mut self,
+        cmd: BrowseCmd,
+        keys: &ClientKeys,
+        session: &plx_plex::plex::session::Session,
+    ) -> bool {
         use crate::viewstate::ViewEdit;
         let change_sensitive = matches!(&cmd, BrowseCmd::Discovery(_) | BrowseCmd::Addressed {
             work: LibraryWork::SaveCursor { .. } | LibraryWork::Hubs { .. } | LibraryWork::HubHold { .. }
@@ -180,7 +201,7 @@ impl BrowseStore {
         if matches!(&cmd, BrowseCmd::Reset) {
             self.adapter = Arc::new(Default::default());
         }
-        let changed = self.state.run_owned(&self.adapter, cmd, keys, &mut self.jobs) || roster_changed;
+        let changed = self.state.run_owned(&self.adapter, cmd, keys, session, &mut self.jobs) || roster_changed;
         if !quiet && (!change_sensitive || changed) {
             self.bump();
         }
@@ -188,19 +209,33 @@ impl BrowseStore {
     }
 
     /// Run one command on a registry that holds no client (no section-hubs or directory read leaves): the
-    /// command of a test about something else.
+    /// command of a test about something else. It reads the session as of now, after observing its
+    /// pin write, as the Bridge does.
     #[cfg(any(test, feature = "test-support"))]
     pub fn run_for_test(&mut self, cmd: BrowseCmd) -> bool {
-        self.run(cmd, &ClientKeys::default())
+        self.observe_pin_write();
+        let session = plx_plex::plex::session::peek();
+        self.run_with_session(cmd, &ClientKeys::default(), &session)
     }
 
-    pub fn pump_with_gate(&mut self, gate: &plx_machine::landgate::Gate, keys: &ClientKeys) -> super::StoreOutcome {
+    /// Poll the pending pin write's receipt (`BrowseState::observe_pin_write`). The Bridge calls it
+    /// before it reads the session it hands a step.
+    pub fn observe_pin_write(&self) {
+        self.state.observe_pin_write();
+    }
+
+    pub fn pump_with_gate(
+        &mut self,
+        gate: &plx_machine::landgate::Gate,
+        keys: &ClientKeys,
+        session: &plx_plex::plex::session::Session,
+    ) -> super::StoreOutcome {
         if !self.state.pump_needs_work(&self.adapter) {
             return Default::default();
         }
         let roster_changed = self.sync_roster();
         let source_gen = self.state.source_list_gen();
-        let mut outcome = self.state.pump_owned_with_gate(&self.adapter, gate, keys, &mut self.jobs);
+        let mut outcome = self.state.pump_owned_with_gate(&self.adapter, gate, keys, session, &mut self.jobs);
         outcome.changed |= roster_changed || source_gen != self.state.source_list_gen();
         if outcome.changed {
             self.bump();
@@ -211,28 +246,36 @@ impl BrowseStore {
     /// section-hubs or page read leaves): the pump of a test about something else.
     #[cfg(any(test, feature = "test-support"))]
     pub fn pump(&mut self) -> super::StoreOutcome {
-        self.pump_with_gate(plx_machine::landgate::fixture_gate(), &ClientKeys::default())
+        self.observe_pin_write();
+        let session = plx_plex::plex::session::peek();
+        self.pump_with_gate(plx_machine::landgate::fixture_gate(), &ClientKeys::default(), &session)
     }
 
     /// One discovery pass: land the answer waiting, and ask for the next source's discovery if none
     /// is out. The read leaves as a [`super::StoreJob::BrowseDiscovery`] on the outbox
     /// ([`BrowseStore::take_jobs`]), decided from `keys`; the caller starts it in the same call
     /// (`Bridge::browse_discover_pump`).
-    pub fn discover_pump_with_gate(&mut self, gate: &plx_machine::landgate::Gate, keys: &ClientKeys)
-        -> super::StoreOutcome {
+    pub fn discover_pump_with_gate(
+        &mut self,
+        gate: &plx_machine::landgate::Gate,
+        keys: &ClientKeys,
+        session: &plx_plex::plex::session::Session,
+    ) -> super::StoreOutcome {
         if !self.state.discovery_needs_pump(&self.adapter) {
             return Default::default();
         }
         let roster_changed = self.sync_roster();
         let source_gen = self.state.source_list_gen();
-        let mut outcome = self.state.discover_pump_owned_with_gate(&self.adapter, gate, keys, &mut self.jobs);
+        let mut outcome = self.state.discover_pump_owned_with_gate(&self.adapter, gate, keys, session, &mut self.jobs);
         outcome.changed |= roster_changed || source_gen != self.state.source_list_gen();
         if outcome.changed { self.bump(); }
         outcome
     }
     #[cfg(any(test, feature = "test-support"))]
     pub fn discover_pump(&mut self) -> super::StoreOutcome {
-        self.discover_pump_with_gate(plx_machine::landgate::fixture_gate(), &ClientKeys::default())
+        self.observe_pin_write();
+        let session = plx_plex::plex::session::peek();
+        self.discover_pump_with_gate(plx_machine::landgate::fixture_gate(), &ClientKeys::default(), &session)
     }
 
     /// The items the addressed Library page holds (see [`BrowseState::held_keys`]).
@@ -346,7 +389,7 @@ impl BrowseStore {
         preferences: &plx_plex::plex::session::Session,
     ) -> super::StoreOutcome {
         let outcome = crate::browse::record::apply_to(
-            &mut self.state, &self.adapter, result, Some(preferences));
+            &mut self.state, &self.adapter, result, preferences, "");
         if outcome.changed {
             self.bump();
         }
@@ -701,20 +744,22 @@ impl<H: super::StoreEffectHost> Machine<H> for BrowseStore {
     type Ev = StoreEv<BrowseCmd>;
     fn step(&mut self, ev: &Self::Ev, _cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         match ev {
-            // The registry is read by the host, never in a step (`plx_plex::plex::ClientKeys`), and
-            // a machine step is handed no keys: this arm cannot decide a section-hubs or directory read. It is
+            // The registry is read by the host, never in a step (`plx_plex::plex::ClientKeys`, and
+            // the session `Bridge::browse_session` reads), and a machine step is handed no keys and
+            // no session: this arm cannot decide a section-hubs or directory read, and `run` refuses
+            // a pin or discovery command it would have to read the session for. It is
             // not how the application drives Browse, which calls `Stores::browse_run` and
             // `BrowseStore::pump_with_gate` and `discover_pump_with_gate` with the keys it filled
             // and starts the jobs they leave (`Bridge::browse_run`, `Bridge::browse_discover_pump`);
-            // no sender of `StoreEv::Pump` exists either, and its pump hands the step no keys, so it
-            // emits no discovery job.
+            // no sender of `StoreEv::Pump` exists either, and its pump hands the step no keys and no
+            // session, so it emits no discovery job.
             StoreEv::Cmd(c) => {
                 self.run(c.clone(), &ClientKeys::default());
             }
             StoreEv::Pump { .. } => {
                 let mut due = std::mem::take(&mut self.endpoint_carry);
-                due.merge(self.pump_with_gate(&plx_machine::landgate::Gate::default(), &ClientKeys::default())
-                    .endpoints);
+                due.merge(self.pump_with_gate(&plx_machine::landgate::Gate::default(), &ClientKeys::default(),
+                    &plx_plex::plex::session::Session::default()).endpoints);
                 self.endpoint_carry = due.emit(fx);
             }
         }
