@@ -179,9 +179,12 @@ pub struct Grid {
     /// What the focused caption band shows (the Library's Under posters setting); `None` keeps the
     /// legacy 114 px band every grid without the setting opens to.
     caption_policy: Option<crate::caption_policy::CaptionPolicy>,
-    /// The page is still dissolving in ([`dormant`](Grid::dormant)): no card is lifted yet.
+    /// The owner reports the page unseen, dissolving in or shown as a held image
+    /// ([`dormant`](Grid::dormant)). The grid is then asleep (no card is lifted yet) unless the
+    /// page is `returning` ([`asleep`](Grid::asleep)).
     dormant: bool,
-    /// The last tick ran dormant, so the next awake one starts the focused card's pop from rest.
+    /// The last tick ran asleep (a returning grid ticks dormant and sleeps through none), so the
+    /// next awake one starts the focused card's pop from rest.
     slept: bool,
     /// The page is RETURNING: it was restored (`Enter(Restored)`: BACK onto it, a modal's dismissal,
     /// its own pill pressed again), so its seat comes back as it was left and is never put to sleep
@@ -750,7 +753,8 @@ impl Grid {
 
     /// [`pop`](Self::pop) with the way this frame finds the let-gos' cards already decided.
     fn pop_in<H: Host, S: CardSource<H>>(&self, cards: LetGoCards, src: &S, i: usize, focus: Option<usize>) -> f32 {
-        // a page still dissolving in lifts nothing
+        // a page asleep (unseen, and not returning) lifts nothing; a returning one keeps its seat
+        // lifted through the fade or the image
         let focus = focus.filter(|_| !self.asleep());
         // the element-aware pool: a source change no tick has seen yet is resolved by element
         if cards == LetGoCards::ByElement {

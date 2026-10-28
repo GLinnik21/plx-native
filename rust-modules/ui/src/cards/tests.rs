@@ -1916,6 +1916,30 @@ fn a_grid_that_returned_adopts_a_landing_whole_under_the_image() {
     assert!(r.sect.ghost_probe().0.is_empty());
 }
 
+/// **A layout built before the first tick sizes the document from the returning seat's band.**
+/// `settle_band` is the owner's way to adopt a restored focus row's caption band at once (the
+/// Library's `relayout`, which runs on `Enter(Restored)` while the grid still reads the dormant
+/// flag of the dip that covered the page): a returning grid takes it, a sleeping one does not.
+#[test]
+fn settle_band_opens_a_returning_grids_band_but_not_a_sleeping_ones() {
+    let open = |r: &Rig<Grid>| r.sect.band_geometry().iter().any(|band| band.expansion > 0.99);
+    let mut sleeping = left_lifted();
+    sleeping.focus = None;
+    sleeping.sect.dormant(true);
+    sleeping.run(3);
+    sleeping.sect.settle_band(Some(0));
+    assert!(!open(&sleeping), "a sleeping grid's band stays shut");
+
+    let mut returning = left_lifted();
+    returning.focus = None;
+    returning.sect.dormant(true);
+    returning.run(3);
+    assert!(!open(&returning), "premise: the covered grid's band is shut");
+    returning.feed(ScreenEvent::Enter(Enter::Restored));
+    returning.sect.settle_band(Some(0));
+    assert!(open(&returning), "a returning grid's band opens before any tick");
+}
+
 /// A lifted grid card that goes dormant lets go and the grid keeps no lift while it sleeps.
 #[test]
 fn a_grid_that_goes_dormant_lets_its_lifted_card_go() {
@@ -2040,8 +2064,9 @@ impl Drop for ImageHeld {
 
 /// **Nothing steps under an image that hides it.** A shelf that is dormant while the page is a held
 /// image (a route dip's Out and In halves, the hold after it) parks at exact rest on its FIRST
-/// tick, as a grid does: the card that was lifted, the caption band and the heading's lift are all
-/// closed at once, with no spring left moving to hold the image past the dissolve.
+/// tick, as a grid put to sleep does (a grid that RETURNS is not put to sleep): the card that was
+/// lifted, the caption band and the heading's lift are all closed at once, with no spring left
+/// moving to hold the image past the dissolve.
 #[test]
 fn a_dormant_shelf_under_a_held_page_image_parks_on_its_first_tick() {
     let mut r = settled::<Shelf>(8);
