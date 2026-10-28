@@ -638,3 +638,35 @@ fn the_source_table_tells_a_household_server_from_a_share_though_both_read_unown
         "plex.tv owns neither; only one of them is this house's",
     );
 }
+/// A refused discovery leaves its claim down, and the source it was for is asked again on the
+/// SRC_RETRY_CD-th step after the refusing one, not before: the step after the refusal finds the
+/// countdown one short of the full backoff, every later step one shorter again, and the other
+/// source is never touched. The pin that has to hold on both sides of the move of the refusal
+/// from the step's own launcher to the store's settle of the runner's refusal.
+#[test]
+fn a_refused_discovery_backs_off_for_the_full_countdown_and_the_source_is_asked_again() {
+    let _g = plx_base::testlock::serial();
+    let (_cleanup, mut browse, _sid, _client) = registered_source();
+    let mut other = a_source("nas-home", "friend", true);
+    other.sections_done = true;
+    other.counts_done = true;
+    browse.state.sources.push(other);
+    browse.state.source_mut(0).unwrap().counts_done = true;
+    with_refused_discovery_for_test(|| {
+        browse.state.maybe_discover_owned(&browse.adapter, &mut execute_discovery);
+        assert!(!discovery_owed(&browse.adapter), "the refused launch gave the claim back");
+        assert_eq!(browse.state.sources()[0].retry_cd, SRC_RETRY_CD, "the refusing step arms the backoff");
+        for step in 1..SRC_RETRY_CD {
+            browse.state.maybe_discover_owned(&browse.adapter, &mut execute_discovery);
+            assert!(!discovery_owed(&browse.adapter), "step {step}: nothing was asked");
+            assert_eq!(browse.state.sources()[0].retry_cd, SRC_RETRY_CD - step,
+                "step {step}: the countdown runs one per step");
+        }
+        // the SRC_RETRY_CD-th step after the refusal finds the source ready and asks again; the
+        // seam refuses that launch too, so the backoff is armed afresh
+        browse.state.maybe_discover_owned(&browse.adapter, &mut execute_discovery);
+        assert!(!discovery_owed(&browse.adapter));
+        assert_eq!(browse.state.sources()[0].retry_cd, SRC_RETRY_CD, "asked again, and refused again");
+    });
+    assert_eq!(browse.state.sources()[1].retry_cd, 0, "the other source is untouched");
+}

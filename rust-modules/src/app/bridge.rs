@@ -4363,6 +4363,9 @@ mod viewstate_controlled_tests;
 #[path = "browse_hubs_drain_tests.rs"]
 mod browse_hubs_drain_tests;
 #[cfg(test)]
+#[path = "browse_discovery_drain_tests.rs"]
+mod browse_discovery_drain_tests;
+#[cfg(test)]
 #[path = "browse_listing_admission_tests.rs"]
 mod browse_listing_admission_tests;
 #[cfg(test)]
