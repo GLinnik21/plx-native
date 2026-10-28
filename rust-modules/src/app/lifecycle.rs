@@ -82,6 +82,20 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
     }
 
     fn land_recovery(&mut self, ps: &mut plx_media::route::PlaybackSession) -> FlightLanding<ForegroundLoadStart<Self::Attempt>> {
+        // A start deferred behind the previous object's `Unload` lands the way a rollback does:
+        // polled once a frame, started the frame the tail has run, failed typed at the deadline.
+        if self.pa.watching_queued_start() {
+            use plx_media::player::adapter::QueuedLanding;
+            plx_media::player::engine::poll_release_frame(ps, self.pa);
+            return match self.pa.take_queued_landing() {
+                QueuedLanding::Waiting => FlightLanding::Waiting,
+                QueuedLanding::Stale => FlightLanding::Stale,
+                QueuedLanding::Launched(attempt) => {
+                    FlightLanding::Landed(self.following(ForegroundLoadStart::Launched(attempt)))
+                }
+                QueuedLanding::Failed => FlightLanding::Landed(ForegroundLoadStart::Failed),
+            };
+        }
         use plx_media::player::RollbackLanding;
         match plx_media::player::land_engineless_rollback(ps, self.pa) {
             RollbackLanding::Waiting => FlightLanding::Waiting,
@@ -111,9 +125,6 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
     }
 
     fn start_load(&mut self, ps: &mut plx_media::route::PlaybackSession) -> ForegroundLoadStart<Self::Attempt> {
-        // The foreground restore can follow only a Load that exists, not a start that has not run, so
-        // it waits (bounded by the release deadline) for a previous `Unload` instead of deferring.
-        plx_media::player::engine::wait_for_release(ps, self.pa);
         let first = plx_media::player::start_bufferfeed_tracked(ps, self.pa);
         if matches!(first, plx_media::player::BufferfeedStartOutcome::Failed) {
             // A synchronous failure inside an Original trial has no Engine for player::pump to
@@ -128,8 +139,12 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
                 self.following(ForegroundLoadStart::Launched(attempt))
             }
             plx_media::player::BufferfeedStartOutcome::Failed => unreachable!("handled above"),
-            // `wait_for_release` above leaves nothing to defer behind.
-            plx_media::player::BufferfeedStartOutcome::Deferred => ForegroundLoadStart::Failed,
+            // The previous object is still inside its `Unload`: the start is queued in the release
+            // machine and the lifecycle polls it (`land_recovery`) instead of blocking the frame.
+            plx_media::player::BufferfeedStartOutcome::Deferred => {
+                self.pa.watch_queued_start();
+                ForegroundLoadStart::Deferred
+            }
         }
     }
 

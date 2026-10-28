@@ -2691,10 +2691,13 @@ fn finish_landed_play(app: &mut App, resume_prepared: bool) {
     // A preview is the exception: the detail page stays mounted, and an off-route
     // engine is the feature, not a violation.
     if resume_prepared {
-        let started = plx_media::player::start_bufferfeed(
+        let outcome = plx_media::player::start_bufferfeed_tracked(
             &mut app.player.session,
             &mut app.adapters.player,
         );
+        let started = app.player.session.jail_load_blocked || outcome.accepted();
+        // Queued behind the previous object's `Unload`: not started yet, so not admitted yet.
+        let deferred = outcome == plx_media::player::BufferfeedStartOutcome::Deferred;
         let preview = plx_media::route::is_preview(&app.player.session);
         if started && !matches!(app.route(), AppArg::Player) && !preview {
             log("pump_play: engine started off-route → restoring AppArg::Player");
@@ -2711,7 +2714,11 @@ fn finish_landed_play(app: &mut App, resume_prepared: bool) {
             // admitted slot. Counting it spends the cycle and the later failure
             // opens the breaker, so every later title is skipped.
             let seam_absent = cfg!(feature = "hostsim") && !plx_base::devtrig::flag("clocksink");
-            if started && !seam_absent {
+            if deferred {
+                // Admission is taken when the queued start launches (or refused if the deadline
+                // refuses it), by the runner that starts it.
+                app.adapters.player.admit_preview_at_launch(!seam_absent);
+            } else if started && !seam_absent {
                 plx_media::player::preview::note_admitted();
             } else if plx_media::route::url(&app.player.session).is_empty() {
                 plx_media::player::preview::note_refused_direct(

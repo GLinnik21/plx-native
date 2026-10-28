@@ -97,6 +97,11 @@ impl NativeRelease {
         !matches!(self.state, ReleaseState::Idle)
     }
 
+    /// A start is queued behind the running `Unload`.
+    pub fn has_queued(&self) -> bool {
+        matches!(self.state, ReleaseState::Releasing { queued: Some(_), .. })
+    }
+
     /// The deadline passed and the worker has not returned.
     pub fn is_overdue(&self) -> bool {
         matches!(self.state, ReleaseState::Overdue { .. })

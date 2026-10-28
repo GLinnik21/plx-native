@@ -268,6 +268,10 @@ impl Engine {
     }
 }
 
+/// Test builds only: how many Engines have dropped (the exit's leak is observed by it staying put).
+#[cfg(test)]
+static ENGINES_DROPPED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// Test builds only: an Engine dropped while it still holds its demuxer's handle was never torn
 /// down, so that thread may still be writing into `aq_video`/`aq_audio`, which this drop frees.
 /// `teardown` always takes the handle and joins it first. The hostsim rigs used to drop a
@@ -276,6 +280,7 @@ impl Engine {
 #[cfg(test)]
 impl Drop for Engine {
     fn drop(&mut self) {
+        ENGINES_DROPPED.fetch_add(1, Ordering::SeqCst);
         if self.stream_th.is_some() && !std::thread::panicking() {
             panic!("an Engine was dropped with its demuxer still owned: stop it with teardown first");
         }
@@ -418,8 +423,8 @@ pub fn reap_abandoned_load(pa: &mut super::adapter::PlayerAdapter) -> bool {
 /// returns. So a real stop issues it on a worker and keeps everything else where it was: the
 /// callback gate, the epoch retirement, the ACB `setState(UNLOADED)`, D1 and the exported window
 /// still run on the main thread, in the same order, once `Unload` has returned
-/// ([`settle_release`], polled once a frame by `app::run` and forced by the adapter before anyone
-/// takes the token again). A reload, an app-switch suspend and the decoder-revoked park keep the
+/// ([`poll_release`], polled once a frame by `app::run`; the adapter hands out the token at once and
+/// `player::sink()` fences the object meanwhile). A reload, an app-switch suspend and the decoder-revoked park keep the
 /// synchronous release: each starts the next Load at once, so there is no frame to save.
 ///
 /// While the worker owns the object its epoch is [`Shared::begin_native_release`]'s `Releasing`
@@ -550,13 +555,28 @@ fn run_release_effects(
                 }
             }
             E::Start(q) if may_start => {
-                let _ = start_bufferfeed_for(ps, pa, q.route_start);
+                let launched = match start_bufferfeed_for(ps, pa, q.route_start) {
+                    BufferfeedStartOutcome::Launched(attempt) => Some(attempt),
+                    _ => None,
+                };
+                pa.settle_preview_admission(launched.is_some(), true);
+                pa.queued_start_ran(launched);
             }
             // The exit does not start playback; the transaction is settled instead.
-            E::Start(q) | E::AbortSuperseded(q) => {
+            E::Start(q) => {
+                pa.settle_preview_admission(false, false);
                 let _ = crate::route::abort_route_start(q.route_start, crate::route::RouteStartResult::StartFailed);
             }
-            E::RefuseStart(q) => refuse_start_for_release(ps, q),
+            E::AbortSuperseded(q) => {
+                pa.settle_preview_admission(false, false);
+                pa.queued_start_dropped();
+                let _ = crate::route::abort_route_start(q.route_start, crate::route::RouteStartResult::StartFailed);
+            }
+            E::RefuseStart(q) => {
+                refuse_start_for_release(ps, q);
+                pa.settle_preview_admission(false, true);
+                pa.queued_start_ran(None);
+            }
             exit @ (E::ExitClean | E::ExitWaiting | E::ExitWorkerInFirmware) => pass.exit = Some(exit),
         }
     }
@@ -568,8 +588,7 @@ fn run_release_effects(
 fn refuse_start_for_release(ps: &mut crate::route::PlaybackSession, q: super::release::QueuedStart) {
     log("native lifecycle: the previous Unload is overdue (refusing native start)");
     let _ = crate::route::abort_route_start(q.route_start, crate::route::RouteStartResult::StartFailed);
-    ps.native_release_refused = true;
-    ps.native_start_deferred = false;
+    ps.native_start_refused = Some(crate::route::StartRefusal::ReleaseTimeout);
 }
 
 /// The main-thread tail of a finished off-frame release: gate, epoch, ACB, D1, window.
@@ -585,18 +604,6 @@ fn run_release_tail(mt: &MainThread, p: PendingRelease) {
         p.handed_off_at.elapsed().as_millis(),
     ));
     // `p._engine` drops here, after the object it belonged to is gone.
-}
-
-/// Block (bounded by [`crate::player::release::RELEASE_DEADLINE`]) until the previous object is released
-/// or overdue. **Only a caller that cannot be deferred uses this** — the foreground restore, which
-/// has no way to follow a start that has not happened yet. A play lands as `Deferred`.
-pub fn wait_for_release(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
-    while pa.release_busy() && !pa.release_overdue() {
-        poll_release(ps, pa, std::time::Instant::now());
-        if pa.release_busy() && !pa.release_overdue() {
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-    }
 }
 
 /// Whether the process may tear the display down.
@@ -622,6 +629,7 @@ fn exit_native_with(
     reap_abandoned_load(pa);
     if pa.has_abandoned_load() {
         log("exit: a timed-out Load is still inside firmware; the display is left to the OS");
+        leak_parked_for_exit(pa);
         return NativeExit::WorkerInFirmware;
     }
     let mut ps = crate::route::PlaybackSession::IDLE;
@@ -632,10 +640,26 @@ fn exit_native_with(
             Some(super::release::ReleaseEffect::ExitClean) => return NativeExit::Clean,
             Some(super::release::ReleaseEffect::ExitWorkerInFirmware) => {
                 log("exit: the native Unload is overdue; the display is left to the OS");
+                leak_parked_for_exit(pa);
                 return NativeExit::WorkerInFirmware;
             }
             _ => idle(),
         }
+    }
+}
+
+/// **A worker still in firmware reads memory its owner is about to drop.** The caller returns
+/// without `SDL_Quit` and `run_application` then drops the `App`, so the parked
+/// [`PendingRelease`] (its Engine: the Load payload Starfish holds a raw pointer into, the
+/// handle set, the AU queues) and the parked [`AbandonedLoad`] (the payload its `media` thread
+/// reads) would be freed under the live call. They are leaked instead, for the life of the process
+/// (`release.rs`: the OS reclaims it). Only `exit_native` calls this, and only on that outcome.
+fn leak_parked_for_exit(pa: &mut super::adapter::PlayerAdapter) {
+    if let Some(p) = pa.take_pending_release_any() {
+        std::mem::forget(p);
+    }
+    if let Some(l) = pa.take_abandoned_load() {
+        std::mem::forget(l);
     }
 }
 
@@ -721,7 +745,7 @@ fn release_native_object_timed(mt: &MainThread, epoch: u32, sp: &mut TeardownSpa
 
 /// Everything after `Unload` returns, in the audited order: close and drain the C callback gate,
 /// retire the Rust epoch, unload the ACB plane, then D1 with complete evidence or quarantine. The
-/// synchronous release and the off-frame release's main-thread tail ([`settle_release`]) share
+/// synchronous release and the off-frame release's main-thread tail ([`run_release_tail`]) share
 /// it, so the order is one definition.
 fn finish_unloaded_object(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans) {
     {
@@ -1614,7 +1638,7 @@ pub enum BufferfeedStartOutcome {
 }
 
 impl BufferfeedStartOutcome {
-    fn accepted(self) -> bool {
+    pub fn accepted(self) -> bool {
         !matches!(self, Self::Failed)
     }
 }
@@ -1637,9 +1661,7 @@ pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
         return BufferfeedStartOutcome::Failed;
     }
     ps.jail_load_blocked = false;
-    ps.native_start_refused = false;
-    ps.native_release_refused = false;
-    ps.native_start_deferred = false;
+    ps.native_start_refused = None;
     // A fresh play (not a `reload_at`, which reaches `start_bufferfeed_for` directly) is a new
     // playback: it gets to try the native Seek again.
     if pa.engine().is_none() {
@@ -1680,7 +1702,7 @@ pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
     // why the player is empty. Record it where `player::state` derives the read-out from; the start
     // itself stays refused.
     if outcome == BufferfeedStartOutcome::Failed && pa.has_abandoned_load() {
-        ps.native_start_refused = true;
+        ps.native_start_refused = Some(crate::route::StartRefusal::LoadTimeout);
     }
     outcome
 }
@@ -1723,29 +1745,27 @@ fn start_bufferfeed_for(
                 refused = true;
             }
             super::release::ReleaseEffect::AbortSuperseded(q) => {
+                pa.settle_preview_admission(false, false);
+                pa.queued_start_dropped();
                 let _ = crate::route::abort_route_start(q.route_start, crate::route::RouteStartResult::StartFailed);
             }
             _ => {}
         }
     }
     if refused {
-        ps.native_start_deferred = false;
         return BufferfeedStartOutcome::Failed;
     }
     if !go {
         log("start_bufferfeed: the previous Unload is still running; start deferred");
-        ps.native_start_deferred = true;
         return BufferfeedStartOutcome::Deferred;
     }
-    ps.native_start_deferred = false;
     match start_bufferfeed_inner(ps, pa, route_start) {
         Ok(attempt) => {
             // Every start funnels through here (fresh, reload and the rollback's reload alike), so
             // the refusal's read-out ends at the first start that is NOT refused. Clearing it only
             // in `start_bufferfeed_tracked` left a reload landing after a refused fresh start
             // (the foreground restore's rollback) with an Error over the video it began.
-            ps.native_start_refused = false;
-            ps.native_release_refused = false;
+            ps.native_start_refused = None;
             // The request's failed-open ladder rules on this Engine's open too: a Load it did not
             // ask for (the foreground restore after a Home during a recovery flight or over the
             // read-out) takes it out of `Flight` or `Failed`. The recovery landing's own reload has
@@ -2592,8 +2612,8 @@ pub fn reload_transcode_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
 /// Stop playback: unblock+join threads, reset all state so a fresh start_bufferfeed() can
 /// restart, and release the pipeline and the video plane. With a ready object the native Unload is
 /// handed to the `sf-unload` worker and the destroy / plane release finish later in
-/// `settle_release` (`PendingRelease`), so the object may still exist when this returns; anything
-/// that needs it gone goes through the adapter, which waits for it.
+/// [`poll_release`] (`PendingRelease`), so the object may still exist when this returns; anything
+/// that needs it gone is queued behind it in the release machine (`Deferred`), never waited for.
 pub fn stop_bufferfeed(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
     teardown(ps, pa, false);
 }
@@ -2694,11 +2714,12 @@ pub fn foreground_follows_load(pa: &mut super::adapter::PlayerAdapter, attempt: 
 fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, for_reload: bool) {
     FAILED_ENGINE_RELEASE_ARMED.store(false, Ordering::Release);
     // A start still queued behind the previous object's `Unload` is the playback this stop ends.
-    if ps.native_start_deferred {
+    // Always sent: the machine owns whether anything is queued (a no-op otherwise), and no copy of
+    // that fact in the session can go stale across a landing that replaced the session.
+    {
         let mut fx = Vec::new();
         pa.release_step(&super::release::ReleaseEvent::CancelQueued, &mut fx);
         let _ = run_release_effects(ps, pa, fx, None, false);
-        ps.native_start_deferred = false;
     }
     // A prepared route whose native start failed has no Engine but still owns its exact PMS
     // resource and Session projection. A real stop must retire that ownership exactly once;
@@ -6122,7 +6143,7 @@ pub(super) fn streaming_engine_for_test(native_epoch: u32) -> Engine {
 /// (`delay_unload_for_test`) and the contract is graded where the device's cannot be: the stop
 /// returns long before the Unload does, nothing the stopped object says reaches the state the next
 /// session owns, no native session can begin while the object is still being released, and a start
-/// issued meanwhile waits for the release instead of racing it — and the release still ends in a
+/// issued meanwhile is queued behind the release instead of racing it — and the release still ends in a
 /// D1 with complete evidence, not a quarantine.
 #[cfg(all(test, feature = "hostsim"))]
 mod off_frame_release_tests {
@@ -6466,11 +6487,139 @@ mod off_frame_release_tests {
         stop_bufferfeed(&mut ps, &mut pa);
         assert_eq!(start_bufferfeed_tracked(&mut ps, &mut pa), BufferfeedStartOutcome::Deferred);
         stop_bufferfeed(&mut ps, &mut pa);
-        assert!(!ps.native_start_deferred);
+        assert!(!pa.release_has_queued_start());
         assert_ne!(crate::player::state(&ps), crate::player::PlaybackState::Resolving);
-        finish_release_for_test(&mut pa);
+        // The frame poll (may_start = true) is what would launch a surviving queued start.
+        let give_up = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while pa.release_busy() {
+            assert!(std::time::Instant::now() < give_up, "the Unload never returned");
+            poll_release(&mut ps, &mut pa, std::time::Instant::now());
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
         assert!(!pa.is_live(), "the cancelled start ran after the tail");
         assert_eq!(ready_now(), 0);
+    }
+
+    /// A landing replaces the whole session (`apply_plan` rebuilds it). The queued start lives in the
+    /// release machine, not in the session, so a stop after that landing still cancels it.
+    #[test]
+    fn a_stop_after_a_landing_replaced_the_session_still_cancels_the_queued_start() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        let mut pa = arm(&ps);
+        let _cleanup = Cleanup;
+        playing_engine(&mut pa);
+        crate::player::ffi_host::delay_unload_for_test(50);
+        stop_bufferfeed(&mut ps, &mut pa);
+        assert_eq!(start_bufferfeed_tracked(&mut ps, &mut pa), BufferfeedStartOutcome::Deferred);
+        assert_eq!(crate::player::state(&ps), crate::player::PlaybackState::Resolving, "derived from the machine");
+        ps = crate::route::PlaybackSession::IDLE; // the landing's rebuilt session
+        assert_eq!(crate::player::state(&ps), crate::player::PlaybackState::Resolving, "the session carries nothing");
+        stop_bufferfeed(&mut ps, &mut pa);
+        assert!(!pa.release_has_queued_start());
+        let give_up = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while pa.release_busy() {
+            assert!(std::time::Instant::now() < give_up, "the Unload never returned");
+            poll_release(&mut ps, &mut pa, std::time::Instant::now());
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(!pa.is_live(), "the queued start survived a stop and ran after the tail");
+    }
+
+    /// The foreground restore over a held `Unload` neither blocks nor loses the start: it parks, and
+    /// lands once the release goes Idle, or fails typed at the deadline.
+    #[test]
+    fn a_foreground_start_over_a_held_unload_parks_without_blocking_then_lands() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        let mut pa = arm(&ps);
+        let _cleanup = Cleanup;
+        let _release = ReleaseUnloadOnDrop;
+        playing_engine(&mut pa);
+        crate::player::ffi_host::hold_unload_for_test();
+        stop_bufferfeed(&mut ps, &mut pa);
+        let t = std::time::Instant::now();
+        assert_eq!(start_bufferfeed_tracked(&mut ps, &mut pa), BufferfeedStartOutcome::Deferred);
+        pa.watch_queued_start();
+        assert_eq!(pa.take_queued_landing(), crate::player::adapter::QueuedLanding::Waiting);
+        poll_release(&mut ps, &mut pa, std::time::Instant::now());
+        assert!(t.elapsed() < std::time::Duration::from_millis(50), "the restore blocked the frame");
+        assert_eq!(pa.take_queued_landing(), crate::player::adapter::QueuedLanding::Waiting);
+        crate::player::ffi_host::release_unload_for_test();
+        let give_up = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let landing = loop {
+            poll_release(&mut ps, &mut pa, std::time::Instant::now());
+            match pa.take_queued_landing() {
+                crate::player::adapter::QueuedLanding::Waiting => {
+                    assert!(std::time::Instant::now() < give_up, "the deferred start never ran");
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                other => break other,
+            }
+        };
+        assert!(
+            !matches!(landing, crate::player::adapter::QueuedLanding::Waiting | crate::player::adapter::QueuedLanding::Stale),
+            "{landing:?}"
+        );
+    }
+
+    /// A preview whose start is queued behind the release is not admitted while queued, and a
+    /// deadline that refuses it (or a run that fails) settles the admission instead of leaving it counted.
+    /// (Admission on a SUCCESSFUL launch needs a route fixture the rig does not have.)
+    #[test]
+    fn a_deferred_preview_start_is_settled_when_it_runs_not_when_queued() {
+        use crate::player::preview::{phase_for_test, set_phase_for_test, reset_for_test, Phase};
+        for refuse in [false, true] {
+            let mut ps = crate::route::PlaybackSession::IDLE;
+            let _serial = plx_base::testlock::serial();
+            let mut pa = arm(&ps);
+            let _cleanup = Cleanup;
+            let _release = ReleaseUnloadOnDrop;
+            reset_for_test();
+            playing_engine(&mut pa);
+            crate::player::ffi_host::hold_unload_for_test();
+            stop_bufferfeed(&mut ps, &mut pa);
+            set_phase_for_test(Phase::Fetching);
+            assert_eq!(start_bufferfeed_tracked(&mut ps, &mut pa), BufferfeedStartOutcome::Deferred);
+            pa.admit_preview_at_launch(true);
+            assert_eq!(phase_for_test(), Phase::Fetching, "queued is not admitted");
+            if refuse {
+                let later = std::time::Instant::now() + crate::player::release::RELEASE_DEADLINE + std::time::Duration::from_secs(1);
+                poll_release(&mut ps, &mut pa, later);
+                assert_eq!(phase_for_test(), Phase::Idle, "a refused start gives the slot back");
+            } else {
+                crate::player::ffi_host::release_unload_for_test();
+                let give_up = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while phase_for_test() == Phase::Fetching {
+                    assert!(std::time::Instant::now() < give_up, "the queued start never launched");
+                    poll_release(&mut ps, &mut pa, std::time::Instant::now());
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                // The fixture session has no URL, so the start runs and ends NoRoute: the admission is
+                // settled when the start RUNS (here refused, the slot given back), not when queued.
+                assert_eq!(phase_for_test(), Phase::Idle, "settled at the run, not before");
+            }
+            reset_for_test();
+        }
+    }
+
+    /// …and past the deadline the parked restore fails typed (`release_timeout`), still without blocking.
+    #[test]
+    fn a_foreground_start_over_an_overdue_unload_fails_typed() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        let mut pa = arm(&ps);
+        let _cleanup = Cleanup;
+        let _release = ReleaseUnloadOnDrop;
+        playing_engine(&mut pa);
+        crate::player::ffi_host::hold_unload_for_test();
+        stop_bufferfeed(&mut ps, &mut pa);
+        assert_eq!(start_bufferfeed_tracked(&mut ps, &mut pa), BufferfeedStartOutcome::Deferred);
+        pa.watch_queued_start();
+        let later = std::time::Instant::now() + crate::player::release::RELEASE_DEADLINE + std::time::Duration::from_secs(1);
+        poll_release(&mut ps, &mut pa, later);
+        assert_eq!(pa.take_queued_landing(), crate::player::adapter::QueuedLanding::Failed);
+        assert_eq!(crate::player::error_now(&ps).kind, crate::player::FailureKind::ReleaseTimeout);
     }
 
     /// The exit with an `Unload` that never returns is bounded by the deadline and says a worker
@@ -6499,15 +6648,13 @@ mod off_frame_release_tests {
         );
         assert_eq!(exit, NativeExit::WorkerInFirmware);
         assert!(ticks >= 10, "the exit gave up before the deadline ({ticks} looks)");
-        assert!(pa.has_pending_release(), "the overdue object must stay parked, not destroyed");
+        // The object is still in firmware: the adapter must not own it (dropping the adapter would
+        // free the Engine under the live Unload), and its drop must never run.
+        assert!(!pa.has_pending_release(), "the overdue object must leave the adapter, leaked");
+        let dropped = ENGINES_DROPPED.load(Ordering::SeqCst);
+        drop(pa);
+        assert_eq!(ENGINES_DROPPED.load(Ordering::SeqCst), dropped, "dropping the adapter freed the Engine");
         crate::player::ffi_host::release_unload_for_test();
-        // Once the Unload returns, the exit is clean.
-        let give_up = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while exit_native(&mut pa) != NativeExit::Clean {
-            assert!(std::time::Instant::now() < give_up, "the returned Unload never made the exit clean");
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-        assert!(!pa.has_pending_release());
     }
 
     #[test]
@@ -7245,13 +7392,9 @@ mod load_in_flight_tests {
             "the exit's native half returned with a Load still inside firmware: SDL_Quit would run under it"
         );
         assert_eq!(exit, NativeExit::WorkerInFirmware);
-        // The Load returns and is reaped: the exit is clean.
+        // The payload the `media` thread reads is leaked, not owned by the adapter that is dropped next.
+        assert!(!pa.has_abandoned_load(), "the parked Load must leave the adapter, leaked");
         crate::player::ffi_host::release_load_for_test();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while exit_native(&mut pa) != NativeExit::Clean {
-            assert!(std::time::Instant::now() < deadline, "the returned Load never made the exit clean");
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
     }
 
     /// PLX-NATIVE-15: the Auto Original's Load passes its budget, the HLS recovery reloads while
@@ -7379,7 +7522,7 @@ mod load_in_flight_tests {
             BufferfeedStartOutcome::Failed,
             "PRECONDITION FAILED: the fresh start must be refused for the parked Load"
         );
-        assert!(ps.native_start_refused, "PRECONDITION FAILED: the refusal must be recorded");
+        assert!(ps.native_start_refused.is_some(), "PRECONDITION FAILED: the refusal must be recorded");
 
         // The parked Load returns and is reaped; the rollback's reload then starts.
         crate::player::ffi_host::release_load_for_test();

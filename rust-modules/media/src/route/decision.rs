@@ -112,6 +112,15 @@ struct RetryContext {
 /// asserted: a frame's draw cannot hold one across [`apply_plan`] or [`request_play`], because
 /// those take `&mut`.
 
+/// Why the last native start was refused with no Engine built ([`PlaybackSession::native_start_refused`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StartRefusal {
+    /// A timed-out Load is still inside `sf_load` (an `AbandonedLoad` owns the one native object).
+    LoadTimeout,
+    /// The previous object's off-frame `Unload` outlived `player::release::RELEASE_DEADLINE`.
+    ReleaseTimeout,
+}
+
 pub struct PlaybackSession {
     /// Frozen for one logical playback, including its retries and track changes.
     direct_play_mode: DirectPlayMode,
@@ -123,15 +132,12 @@ pub struct PlaybackSession {
     /// else would publish the failure and the player sat Idle with no read-out. `player::state`
     /// derives `Error` (cause `load_timeout`) from it. Cleared by the next start attempt and,
     /// like [`jail_load_blocked`](Self::jail_load_blocked), with the playback verdict.
-    pub native_start_refused: bool,
-    /// The last native start was refused because the previous object's off-frame `Unload` is
-    /// overdue (`player::release`). Same shape as `native_start_refused`; its cause is
-    /// `release_timeout`.
-    pub native_release_refused: bool,
-    /// A fresh native start is queued behind the previous object's still-running `Unload`
-    /// (`player::release`): no Engine exists yet, and `player::state` derives `Resolving` from this
-    /// so the player route shows Connecting rather than an empty screen for the ~150 ms.
-    pub native_start_deferred: bool,
+    ///
+    /// The cause rides with the refusal ([`StartRefusal`]): the previous object's off-frame `Unload`
+    /// being overdue (`player::release`) is a refusal like the parked Load, with its own cause
+    /// (`release_timeout`). A start QUEUED behind a still-running `Unload` is not stored here: the
+    /// release machine owns that fact and `player::state` reads what the adapter publishes of it.
+    pub native_start_refused: Option<StartRefusal>,
     /// The cause an Engine ended with when it failed for good and was released while the
     /// read-out stands (`player::release_failed_engine`). The Engine, its pipeline and the video
     /// plane are gone, so the worker signals the read-out used to be derived from are gone with
@@ -537,9 +543,7 @@ impl PlaybackSession {
     pub const IDLE: PlaybackSession = PlaybackSession {
         direct_play_mode: DirectPlayMode::Auto,
         jail_load_blocked: false,
-        native_start_refused: false,
-        native_release_refused: false,
-        native_start_deferred: false,
+        native_start_refused: None,
         engine_failure: None,
         repair_status: plx_platform::tv::sandbox::State::Idle,
         request: None,
@@ -628,8 +632,6 @@ impl PlaybackSession {
             direct_play_mode,
             jail_load_blocked,
             native_start_refused,
-            native_release_refused,
-            native_start_deferred,
             engine_failure,
             repair_status,
             request,
@@ -700,8 +702,6 @@ impl PlaybackSession {
             direct_play_mode: *direct_play_mode,
             jail_load_blocked: *jail_load_blocked,
             native_start_refused: *native_start_refused,
-            native_release_refused: *native_release_refused,
-            native_start_deferred: *native_start_deferred,
             engine_failure: *engine_failure,
             repair_status: *repair_status,
             request: request.clone(),
@@ -5482,7 +5482,7 @@ fn clear_play_verdict(ps: &mut PlaybackSession) {
     { let s = &mut *ps; {
         s.play_verdict = None;
         s.jail_load_blocked = false;
-        s.native_start_refused = false;
+        s.native_start_refused = None;
         s.engine_failure = None;
         s.resolve_failed = false;
         s.requested_resume_ns = 0;
@@ -8609,7 +8609,7 @@ fn request_play_with_queue(
         // a resolve that never lands (a refused spawn) would leave nothing else to clear it.
         s.play_verdict = None;
         s.jail_load_blocked = false;
-        s.native_start_refused = false;
+        s.native_start_refused = None;
         s.engine_failure = None;
         s.resolve_failed = false;
         // A film request retires the previous trailer's mark: `resolved_as_preview` is otherwise
@@ -9123,9 +9123,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
         *s = PlaybackSession {
             direct_play_mode: plan.direct_play_mode,
             jail_load_blocked: false,
-            native_start_refused: false,
-            native_release_refused: false,
-            native_start_deferred: false,
+            native_start_refused: None,
             engine_failure: None,
             repair_status: plx_platform::tv::sandbox::State::Idle,
             request,

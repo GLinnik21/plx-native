@@ -45,11 +45,14 @@ and seeks by time via `av_seek_frame` (libavformat's own Cues index).
   returns (`run.rs` → `poll_release_frame`). Nothing blocks on the worker: a start over a running
   Unload returns `BufferfeedStartOutcome::Deferred` (the player reads Connecting) and runs the frame
   the tail has run; `pa.mt()`/`pa.split()` hand out the token at once while `player::sink()` answers
-  `ReleasingSink` (every control verb a no-op) for the `Releasing` phase; `shutdown` waits via
+  `RefusingSink` (`player::FENCE`: every verb refused, the memoized queries real) for the `Releasing` phase; `shutdown` waits via
   `exit_native`, bounded by `RELEASE_DEADLINE` (10 s), and skips `SDL_Quit` when a worker is still in
   firmware. Past the deadline a start is refused with `FailureKind::ReleaseTimeout` (Try Again), and the
   object is leaked, never destroyed under the worker, until the Unload returns. The foreground restore
-  cannot follow a deferred start, so it waits (bounded) via `engine::wait_for_release`. While
+  follows a deferred start too (`ForegroundLoadStart::Deferred`: parked like a rollback flight, started the
+  frame the tail has run via `poll_release`, failed typed at the deadline); nothing on the UI thread waits.
+  When the exit finds a worker in firmware, `exit_native` leaks the parked release and any abandoned Load
+  (`mem::forget`), so dropping the `App` cannot free memory the worker still reads. While
   `Releasing`, only that epoch's `UnloadCompleted` callback is admitted (it is D1's evidence) and no
   native session can begin. Reloads, suspend and the decoder-release park (`for_reload == true`)
   keep the synchronous release. The log reads `native lifecycle: off-frame Unload epoch=N released

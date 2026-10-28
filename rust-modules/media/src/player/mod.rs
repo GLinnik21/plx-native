@@ -82,17 +82,22 @@ use shared::{
 /// hostsim test binary reads the host sink directly, so it needs no port. Everything in `player/`
 /// reaches the seam as `sink().<verb>(mt, ..)`, and nothing branches on which platform it is.
 ///
-/// **While an off-frame `Unload` owns the native object this answers [`ReleasingSink`]**, so the
+/// **While an off-frame `Unload` owns the native object this answers [`FENCE`]**, so the
 /// main thread cannot reach the object the worker is inside (the fence `PlayerAdapter::mt` used to
 /// provide by joining the worker, without a bound: PLX-NATIVE-1Q). The release itself, which has
 /// to reach the real seam, uses [`raw_sink`].
 fn sink() -> &'static dyn plx_platform::tv::sink::VideoSink {
     if SHARED.native_releasing() {
-        &ReleasingSink
+        &FENCE
     } else {
         raw_sink()
     }
 }
+
+/// What a main-thread verb gets while the object is inside its off-frame `Unload`: nothing happens
+/// (every verb refused, `NoSink`'s answers), except the memoized queries that say nothing about the
+/// object, which keep the real answer.
+static FENCE: plx_platform::tv::sink::RefusingSink = plx_platform::tv::sink::RefusingSink(raw_sink);
 
 /// The seam itself, unfenced: only the native release (the `Unload` worker and its main-thread
 /// tail) may use it while the object is `Releasing`.
@@ -104,51 +109,6 @@ fn raw_sink() -> &'static dyn plx_platform::tv::sink::VideoSink {
 fn raw_sink() -> &'static dyn plx_platform::tv::sink::VideoSink {
     &ffi_host::HostSink
 }
-
-/// What a main-thread verb gets while the object is inside its off-frame `Unload`: nothing happens
-/// (the answers of [`NoSink`](plx_platform::tv::sink::NoSink), whose every verb is a refusal),
-/// except the three memoized queries that say nothing about the object and keep the real answer.
-struct ReleasingSink;
-
-impl plx_platform::tv::sink::VideoSink for ReleasingSink {
-    fn window_mode(&self) -> std::os::raw::c_int { raw_sink().window_mode() }
-    fn window_id(&self) -> &'static std::ffi::CStr { raw_sink().window_id() }
-    fn feed_abi_is_cow(&self) -> bool { raw_sink().feed_abi_is_cow() }
-    unsafe fn load(&self, p: *const std::os::raw::c_char, e: u32) -> std::os::raw::c_int { NO.load(p, e) }
-    unsafe fn ready(&self, mt: &MainThread) -> std::os::raw::c_int { NO.ready(mt) }
-    unsafe fn is_load_completed(&self, mt: &MainThread) -> std::os::raw::c_int { NO.is_load_completed(mt) }
-    unsafe fn play(&self, mt: &MainThread) -> std::os::raw::c_int { NO.play(mt) }
-    unsafe fn pause(&self, mt: &MainThread) -> std::os::raw::c_int { NO.pause(mt) }
-    unsafe fn set_volume(&self, mt: &MainThread, v: std::os::raw::c_int) -> std::os::raw::c_int { NO.set_volume(mt, v) }
-    unsafe fn flush(&self, mt: &MainThread) -> std::os::raw::c_int { NO.flush(mt) }
-    unsafe fn push_eos(&self, mt: &MainThread) -> std::os::raw::c_int { NO.push_eos(mt) }
-    unsafe fn set_time_to_decode(&self, mt: &MainThread, ns: i64) -> std::os::raw::c_int { NO.set_time_to_decode(mt, ns) }
-    unsafe fn set_content_info(&self, mt: &MainThread, ns: i64) -> std::os::raw::c_int { NO.set_content_info(mt, ns) }
-    unsafe fn send_segment(&self, mt: &MainThread) -> std::os::raw::c_int { NO.send_segment(mt) }
-    unsafe fn seek(&self, mt: &MainThread, ms: i64) -> std::os::raw::c_int { NO.seek(mt, ms) }
-    unsafe fn feed(&self, mt: &MainThread, p: *const u8, size: std::os::raw::c_uint, pts: i64, es: std::os::raw::c_int) -> std::os::raw::c_char {
-        NO.feed(mt, p, size, pts, es)
-    }
-    unsafe fn unload(&self, owner: &plx_platform::tv::sink::UnloadTicket) { NO.unload(owner) }
-    unsafe fn callback_gate_retire(&self, mt: &MainThread) -> std::os::raw::c_int { NO.callback_gate_retire(mt) }
-    unsafe fn callback_intercepts(&self, mt: &MainThread) -> u32 { NO.callback_intercepts(mt) }
-    unsafe fn destroy(&self, mt: &MainThread) -> std::os::raw::c_int { NO.destroy(mt) }
-    unsafe fn quarantine(&self, mt: &MainThread) { NO.quarantine(mt) }
-    unsafe fn create_window(&self, mt: &MainThread) -> *const std::os::raw::c_char { NO.create_window(mt) }
-    unsafe fn place_window(&self, mt: &MainThread, a: std::os::raw::c_int, b: std::os::raw::c_int, c: std::os::raw::c_int,
-        d: std::os::raw::c_int, e: std::os::raw::c_int, f: std::os::raw::c_int) -> std::os::raw::c_int { NO.place_window(mt, a, b, c, d, e, f) }
-    unsafe fn destroy_window(&self, mt: &MainThread) { NO.destroy_window(mt) }
-    unsafe fn plane_create(&self, mt: &MainThread, id: *const std::os::raw::c_char, t: std::os::raw::c_int) -> std::os::raw::c_long { NO.plane_create(mt, id, t) }
-    unsafe fn plane_bind(&self, mt: &MainThread, id: *const std::os::raw::c_char) { NO.plane_bind(mt, id) }
-    unsafe fn plane_send_video_data(&self, mt: &MainThread, s: *const std::os::raw::c_char) -> std::os::raw::c_int { NO.plane_send_video_data(mt, s) }
-    unsafe fn plane_send_atmos(&self, mt: &MainThread, id: *const std::os::raw::c_char) -> std::os::raw::c_int { NO.plane_send_atmos(mt, id) }
-    unsafe fn plane_start(&self, mt: &MainThread, x: std::os::raw::c_long, y: std::os::raw::c_long, w: std::os::raw::c_long, h: std::os::raw::c_long) { NO.plane_start(mt, x, y, w, h) }
-    unsafe fn plane_unload(&self, mt: &MainThread) { NO.plane_unload(mt) }
-    unsafe fn plane_pause(&self, mt: &MainThread) { NO.plane_pause(mt) }
-    unsafe fn plane_resume(&self, mt: &MainThread) { NO.plane_resume(mt) }
-}
-
-const NO: plx_platform::tv::sink::NoSink = plx_platform::tv::sink::NoSink;
 
 /// `/tmp/plxnative-tracknames[=<audio>;<subs>]` — **stand in for the container's own track names**,
 /// which nothing off-device can read.
@@ -813,7 +773,7 @@ pub fn state(ps: &crate::route::PlaybackSession) -> shared::PlaybackState {
     // the Resolving spinner until it lands. So does every recovery no Engine waits on (the
     // foreground restore's resume, a rollback after a Load that failed before its Engine
     // existed): `route::engineless_flight_outstanding`.
-    if crate::route::play_pending() || crate::route::engineless_flight_outstanding() || ps.native_start_deferred {
+    if crate::route::play_pending() || crate::route::engineless_flight_outstanding() || SHARED.start_queued.load(Relaxed) {
         return shared::PlaybackState::Resolving;
     }
     // …and so is the PRE-FLIGHT refusal, for exactly the same reason: `/decision` answers before a
@@ -825,8 +785,7 @@ pub fn state(ps: &crate::route::PlaybackSession) -> shared::PlaybackState {
     // same kind of fact: no Engine was built, so the pump that owns `pb_state` never runs and
     // nothing else could say why the player is empty.
     if ps.jail_load_blocked
-        || ps.native_start_refused
-        || ps.native_release_refused
+        || ps.native_start_refused.is_some()
         || crate::route::play_refused(ps)
         || crate::route::play_resolution_failed(ps)
         || crate::route::engine_failure(ps).is_some()
@@ -1167,7 +1126,7 @@ fn runtime_failure(
 /// The cause the worker signals publish right now: what [`error_now`] reads while an Engine is up,
 /// and what a failed Engine freezes into the session as it is released.
 fn live_runtime_failure(ps: &crate::route::PlaybackSession) -> RuntimeFailure {
-    if ps.native_release_refused {
+    if ps.native_start_refused == Some(crate::route::StartRefusal::ReleaseTimeout) {
         return RuntimeFailure::ReleaseTimeout;
     }
     runtime_failure(
@@ -1175,7 +1134,7 @@ fn live_runtime_failure(ps: &crate::route::PlaybackSession) -> RuntimeFailure {
         SHARED.demux_io_failed.load(std::sync::atomic::Ordering::Acquire),
         SHARED.load_failed.load(Relaxed),
         // The refused start's cause: an abandoned Load exists only after the budget fired.
-        SHARED.load_timed_out.load(Relaxed) || ps.native_start_refused,
+        SHARED.load_timed_out.load(Relaxed) || ps.native_start_refused == Some(crate::route::StartRefusal::LoadTimeout),
     )
 }
 
