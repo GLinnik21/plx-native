@@ -43,22 +43,22 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-28T11:53:53Z",
+ "generated": "2026-10-28T12:02:58Z",
  "metrics": [
   {
    "change30_pct": null,
-   "change7_pct": 39.6,
+   "change7_pct": 40.2,
    "d30": null,
    "delta30": null,
-   "delta7": 65.0,
+   "delta7": 66.0,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 87,
-   "n_prev": 108,
-   "now": 229,
-   "prev7": 164.0,
+   "n_now": 86,
+   "n_prev": 109,
+   "now": 230.0,
+   "prev7": 164,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -145,18 +145,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 29.7,
+   "change7_pct": 29.0,
    "d30": null,
    "delta30": null,
-   "delta7": 49.5,
+   "delta7": 48.5,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 87,
-   "n_prev": 108,
-   "now": 216,
-   "prev7": 166.5,
+   "n_now": 86,
+   "n_prev": 109,
+   "now": 215.5,
+   "prev7": 167,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -186,19 +186,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": -60.0,
-   "change7_pct": -2.9,
-   "d30": 876.0,
-   "delta30": -526.0,
-   "delta7": -10.5,
+   "change30_pct": -60.1,
+   "change7_pct": -2.8,
+   "d30": 877,
+   "delta30": -527,
+   "delta7": -10,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
    "n_now": 89,
-   "n_prev": 124,
+   "n_prev": 125,
    "now": 350,
-   "prev7": 360.5,
+   "prev7": 360,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -312,19 +312,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 44.6,
-   "change7_pct": 5.6,
+   "change30_pct": 44.7,
+   "change7_pct": 5.5,
    "d30": 1546.0,
-   "delta30": 689.0,
-   "delta7": 118.0,
+   "delta30": 691.5,
+   "delta7": 116.5,
    "group": "ci",
    "id": "minutes",
    "kind": "cost",
    "label": "Runner time per push",
-   "n_now": 71,
-   "n_prev": 96,
-   "now": 2235,
-   "prev7": 2117.0,
+   "n_now": 70,
+   "n_prev": 97,
+   "now": 2237.5,
+   "prev7": 2121,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -355,18 +355,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -3.0,
+   "change7_pct": -2.7,
    "d30": null,
    "delta30": null,
-   "delta7": -10.5,
+   "delta7": -9.5,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 87,
-   "n_prev": 108,
-   "now": 345,
-   "prev7": 355.5,
+   "n_now": 86,
+   "n_prev": 109,
+   "now": 345.5,
+   "prev7": 355,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -376,39 +376,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 3.5,
-   "d30": null,
-   "delta30": null,
-   "delta7": 11,
-   "group": "ci",
-   "id": "ci|armv7 cross-build and artifact assertions",
-   "kind": "job",
-   "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 87,
-   "n_prev": 53,
-   "now": 323,
-   "prev7": 312,
-   "shown": true,
-   "state": "flat",
-   "state30": "new",
-   "threshold_abs": 20.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
-   "change7_pct": 3.6,
+   "change7_pct": 3.4,
    "d30": null,
    "delta30": null,
    "delta7": 10.5,
    "group": "ci",
-   "id": "ci|host unit tests (hostsim)",
+   "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
-   "label": "CI: host unit tests (hostsim)",
+   "label": "CI: armv7 cross-build and artifact assertions",
    "n_now": 86,
-   "n_prev": 108,
-   "now": 300.5,
-   "prev7": 290.0,
+   "n_prev": 54,
+   "now": 323.0,
+   "prev7": 312.5,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -417,19 +396,40 @@
    "unit": "s"
   },
   {
-   "change30_pct": 85.0,
-   "change7_pct": 8.2,
+   "change30_pct": null,
+   "change7_pct": 4.8,
+   "d30": null,
+   "delta30": null,
+   "delta7": 14,
+   "group": "ci",
+   "id": "ci|host unit tests (hostsim)",
+   "kind": "job",
+   "label": "CI: host unit tests (hostsim)",
+   "n_now": 85,
+   "n_prev": 109,
+   "now": 303,
+   "prev7": 289,
+   "shown": true,
+   "state": "flat",
+   "state30": "new",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": 85.3,
+   "change7_pct": 8.6,
    "d30": 143,
-   "delta30": 121.5,
-   "delta7": 20.0,
+   "delta30": 122.0,
+   "delta7": 21.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
    "n_now": 78,
-   "n_prev": 118,
-   "now": 264.5,
-   "prev7": 244.5,
+   "n_prev": 119,
+   "now": 265.0,
+   "prev7": 244,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -442,15 +442,15 @@
    "change7_pct": 6.3,
    "d30": 337,
    "delta30": -134,
-   "delta7": 12.0,
+   "delta7": 12,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
    "n_now": 77,
-   "n_prev": 118,
+   "n_prev": 119,
    "now": 203,
-   "prev7": 191.0,
+   "prev7": 191,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -460,18 +460,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 14.4,
+   "change7_pct": 14.0,
    "d30": null,
    "delta30": null,
-   "delta7": 21.5,
+   "delta7": 21.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
    "n_now": 78,
-   "n_prev": 118,
+   "n_prev": 119,
    "now": 171.0,
-   "prev7": 149.5,
+   "prev7": 150,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -489,10 +489,10 @@
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 87,
-   "n_prev": 108,
-   "now": 165,
-   "prev7": 172.0,
+   "n_now": 86,
+   "n_prev": 109,
+   "now": 165.0,
+   "prev7": 172,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -532,9 +532,9 @@
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
    "n_now": 78,
-   "n_prev": 118,
+   "n_prev": 119,
    "now": 18.0,
-   "prev7": 18.0,
+   "prev7": 18,
    "shown": false,
    "state": "flat",
    "state30": "flat",
@@ -565,18 +565,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 0.0,
+   "change7_pct": -10.0,
    "d30": null,
    "delta30": null,
-   "delta7": 0,
+   "delta7": -0.5,
    "group": "ci",
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 87,
-   "n_prev": 53,
-   "now": 5,
-   "prev7": 5,
+   "n_now": 86,
+   "n_prev": 54,
+   "now": 4.5,
+   "prev7": 5.0,
    "shown": false,
    "state": "flat",
    "state30": "new",
@@ -586,18 +586,18 @@
   },
   {
    "change30_pct": -98.8,
-   "change7_pct": -98.9,
-   "d30": 257.5,
-   "delta30": -254.5,
-   "delta7": -262.5,
+   "change7_pct": -98.7,
+   "d30": 258,
+   "delta30": -255,
+   "delta7": -224,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 86,
-   "n_prev": 108,
-   "now": 3.0,
-   "prev7": 265.5,
+   "n_now": 85,
+   "n_prev": 109,
+   "now": 3,
+   "prev7": 227,
    "shown": false,
    "state": "better",
    "state30": "better",
@@ -608,17 +608,17 @@
   {
    "change30_pct": -99.7,
    "change7_pct": 0.0,
-   "d30": 874.0,
-   "delta30": -871.0,
-   "delta7": 0.0,
+   "d30": 875,
+   "delta30": -872,
+   "delta7": 0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 86,
-   "n_prev": 108,
-   "now": 3.0,
-   "prev7": 3.0,
+   "n_now": 85,
+   "n_prev": 109,
+   "now": 3,
+   "prev7": 3,
    "shown": false,
    "state": "flat",
    "state30": "better",
@@ -650,13 +650,8 @@
  ],
  "regressions": [
   {
-   "change_pct": 39.6,
+   "change_pct": 40.2,
    "commits": [
-    {
-     "pr": 1039,
-     "sha": "e60b2a922",
-     "title": "Add Polish (pl) localization"
-    },
     {
      "pr": 1083,
      "sha": "4edffa24e",
@@ -701,24 +696,24 @@
      "pr": 1103,
      "sha": "a2aa85d4f",
      "title": "Browse: the Library's source discovery leaves as a typed store job"
+    },
+    {
+     "pr": 1106,
+     "sha": "eb60dc7bb",
+     "title": "Browse pins: the pin logic takes the session the app reads, not the registry"
     }
    ],
-   "from": 164.0,
+   "from": 164,
    "id": "ci|host harness tests",
    "label": "CI: host harness tests",
    "since": "2026-10-28",
    "threshold_pct": 20.0,
-   "to": 229
+   "to": 230.0
   },
   {
    "change_pct": 37.9,
    "commits": [
     {
-     "pr": 1039,
-     "sha": "e60b2a922",
-     "title": "Add Polish (pl) localization"
-    },
-    {
      "pr": 1083,
      "sha": "4edffa24e",
      "title": "Library: a page mounted over a listing the server changed meanwhile lists it again"
@@ -762,6 +757,11 @@
      "pr": 1103,
      "sha": "a2aa85d4f",
      "title": "Browse: the Library's source discovery leaves as a typed store job"
+    },
+    {
+     "pr": 1106,
+     "sha": "eb60dc7bb",
+     "title": "Browse pins: the pin logic takes the session the app reads, not the registry"
     }
    ],
    "from": 1116.6,
@@ -775,11 +775,6 @@
    "change_pct": 37.9,
    "commits": [
     {
-     "pr": 1039,
-     "sha": "e60b2a922",
-     "title": "Add Polish (pl) localization"
-    },
-    {
      "pr": 1083,
      "sha": "4edffa24e",
      "title": "Library: a page mounted over a listing the server changed meanwhile lists it again"
@@ -823,6 +818,11 @@
      "pr": 1103,
      "sha": "a2aa85d4f",
      "title": "Browse: the Library's source discovery leaves as a typed store job"
+    },
+    {
+     "pr": 1106,
+     "sha": "eb60dc7bb",
+     "title": "Browse pins: the pin logic takes the session the app reads, not the registry"
     }
    ],
    "from": 1116.0,
@@ -836,11 +836,6 @@
    "change_pct": 30.9,
    "commits": [
     {
-     "pr": 1039,
-     "sha": "e60b2a922",
-     "title": "Add Polish (pl) localization"
-    },
-    {
      "pr": 1083,
      "sha": "4edffa24e",
      "title": "Library: a page mounted over a listing the server changed meanwhile lists it again"
@@ -884,6 +879,11 @@
      "pr": 1103,
      "sha": "a2aa85d4f",
      "title": "Browse: the Library's source discovery leaves as a typed store job"
+    },
+    {
+     "pr": 1106,
+     "sha": "eb60dc7bb",
+     "title": "Browse pins: the pin logic takes the session the app reads, not the registry"
     }
    ],
    "from": 973.0,
@@ -894,13 +894,8 @@
    "to": 1274.0
   },
   {
-   "change_pct": 29.7,
+   "change_pct": 29.0,
    "commits": [
-    {
-     "pr": 1039,
-     "sha": "e60b2a922",
-     "title": "Add Polish (pl) localization"
-    },
     {
      "pr": 1083,
      "sha": "4edffa24e",
@@ -945,14 +940,19 @@
      "pr": 1103,
      "sha": "a2aa85d4f",
      "title": "Browse: the Library's source discovery leaves as a typed store job"
+    },
+    {
+     "pr": 1106,
+     "sha": "eb60dc7bb",
+     "title": "Browse pins: the pin logic takes the session the app reads, not the registry"
     }
    ],
-   "from": 166.5,
+   "from": 167,
    "id": "ci|host python/shell/C gates",
    "label": "CI: host python/shell/C gates",
    "since": "2026-10-28",
    "threshold_pct": 20.0,
-   "to": 216
+   "to": 215.5
   }
  ],
  "schema": 2,
@@ -967,25 +967,25 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 345
+   "now": 345.5
   },
   {
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 323
+   "now": 323.0
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 300.5
+   "now": 303
   },
   {
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 264.5
+   "now": 265.0
   }
  ],
  "slowest_local": [
