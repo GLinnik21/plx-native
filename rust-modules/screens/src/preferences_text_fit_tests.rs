@@ -201,6 +201,7 @@ fn the_subtitle_mode_readouts_are_pinned_in_every_language() {
         ("it", "Se audio e sottotitoli hanno lingue diverse"),
         ("pt", "Áudio fora do idioma das legendas"),
         ("de", "Ton nicht in Untertitelsprache"),
+        ("pl", "Gdy język dźwięku jest inny"),
         ("hu", "Ha a hang nem a felirat nyelvén szól"),
         ("be", "Калі гук не на мове субцітраў"),
         ("ru", "Если аудио не на языке субтитров"),
