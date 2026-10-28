@@ -5633,14 +5633,19 @@ pub fn stream_vcodec(ps: &PlaybackSession) -> String {
 pub fn stream_acodec(ps: &PlaybackSession) -> String {
     ps.stream_acodec.clone()
 }
+/// The carried audio track when it is the codec the stream declares, in any spelling of it
+/// (`devcaps::audio_codec_id`: PMS's `dca` is the pipeline's `dts`), else `None`. A native track
+/// switch moves only `stream_acodec`, so a switch between two tracks of one codec and different widths
+/// still reads the first one's facts.
+fn carried_audio_of_stream(ps: &PlaybackSession) -> Option<&CarriedAudio> {
+    let declared = plx_platform::devcaps::audio_codec_id(&ps.stream_acodec);
+    ps.cur_audio.as_ref().filter(|a| plx_platform::devcaps::audio_codec_id(&a.codec) == declared)
+}
 /// The carried audio track's channel count when it is the codec the stream declares, else 0.
-/// An Opus Load needs it (`opusInfo`); a native track switch moves only `stream_acodec`, so a
-/// switch between two Opus tracks of different widths still reads the first one's count.
+/// An Opus Load needs it (`opusInfo`), and the no-downmix rule reads it
+/// ([`plx_platform::devcaps::app_decode_mixes_down`]: 0 is unknown, which counts as a downmix).
 pub fn stream_achannels(ps: &PlaybackSession) -> i64 {
-    ps.cur_audio
-        .as_ref()
-        .filter(|a| a.codec.eq_ignore_ascii_case(&ps.stream_acodec))
-        .map_or(0, |a| a.channels)
+    carried_audio_of_stream(ps).map_or(0, |a| a.channels)
 }
 /// What the pipeline was fed, for the failed-open ladder ([`crate::player::recovery::OpenFacts`]):
 /// the stream's audio codec and the carried track's channel count ([`stream_achannels`]: 0 when
@@ -5750,11 +5755,7 @@ pub fn stream_pcm(ps: &PlaybackSession) -> Option<Result<PcmFormat, String>> {
 /// stereo only: a surround track, and one whose width is unknown, is not mixed down
 /// (`Caps::app_may_mix_down`), so this reads false there and the Load stays native.
 pub fn stream_pcm_is_lossy(ps: &PlaybackSession) -> bool {
-    let (channels, rate) = ps
-        .cur_audio
-        .as_ref()
-        .filter(|a| a.codec.eq_ignore_ascii_case(&ps.stream_acodec))
-        .map_or((0, 0), |a| (a.channels, a.sample_rate));
+    let (channels, rate) = carried_audio_of_stream(ps).map_or((0, 0), |a| (a.channels, a.sample_rate));
     ps.attempt_caps().app_decodes_lossy_track(&ps.stream_acodec, channels, rate, forced_direct_play(ps))
 }
 
@@ -5910,6 +5911,29 @@ mod pcm_format_tests {
         assert!(stream_pcm_is_lossy(&ps));
         set_carried_audio_for_test(&mut ps, vorbis(96_000));
         assert!(!stream_pcm_is_lossy(&ps), "above the rate bound the server converts it");
+    }
+
+    /// **The no-downmix rule reads the carried track's width whichever spelling names the codec**: the
+    /// stream declares `dts` while PMS (and so the carried track) says `dca`, and the same track is one
+    /// codec (`devcaps::audio_codec_id`). A width lost to a spelling would read as "unknown", which Force
+    /// Direct Play refuses as a possible downmix, and a stereo DTS would lose its app decode for nothing.
+    #[test]
+    fn the_downmix_rule_reads_the_carried_width_in_either_spelling_of_the_codec() {
+        use plx_platform::devcaps::{AppLossy, Caps};
+        let measured = std::sync::Arc::new(Caps { app_lossy: AppLossy::Measured, ..Caps::assumed() });
+        for (declared, carried) in [("dts", "dca"), ("dca", "dts"), ("DTS", "dca"), ("dca", "dca")] {
+            for (channels, decoded) in [(2, true), (1, true), (6, false)] {
+                let mut ps = PlaybackSession::IDLE;
+                ps.direct_play_mode = DirectPlayMode::Forced;
+                ps.begin_attempt(measured.clone());
+                set_stream_codecs(&mut ps, "h264", declared);
+                set_carried_audio_for_test(&mut ps, CarriedAudio { codec: carried.into(), ..flac(channels, 48_000, 0) });
+                let what = format!("{declared}/{carried} {channels}ch");
+                assert_eq!(stream_achannels(&ps), channels, "{what}");
+                assert_eq!(stream_pcm_is_lossy(&ps), decoded, "{what}");
+                assert_eq!(stream_audio(&ps).unwrap().channels, channels as u32, "{what}: the ladder's fact");
+            }
+        }
     }
 
     /// **MP3 and Vorbis in force** (S4-4) declare the same one shape as DTS, only on an attempt
