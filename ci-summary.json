@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-28T15:16:05Z",
+ "generated": "2026-10-28T15:19:53Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -209,9 +209,9 @@
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 89,
+   "n_now": 90,
    "n_prev": 122,
-   "now": 351,
+   "now": 351.0,
    "prev7": 357.0,
    "shown": true,
    "state": "flat",
@@ -431,18 +431,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 81.2,
-   "change7_pct": 9.0,
+   "change30_pct": 80.9,
+   "change7_pct": 8.8,
    "d30": 146.5,
-   "delta30": 119.0,
-   "delta7": 22.0,
+   "delta30": 118.5,
+   "delta7": 21.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 78,
+   "n_now": 79,
    "n_prev": 116,
-   "now": 265.5,
+   "now": 265,
    "prev7": 243.5,
    "shown": true,
    "state": "flat",
@@ -452,18 +452,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -48.0,
-   "change7_pct": 5.2,
+   "change30_pct": -47.9,
+   "change7_pct": 5.4,
    "d30": 390.5,
-   "delta30": -187.5,
-   "delta7": 10.0,
+   "delta30": -187.0,
+   "delta7": 10.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 77,
+   "n_now": 78,
    "n_prev": 116,
-   "now": 203,
+   "now": 203.5,
    "prev7": 193.0,
    "shown": true,
    "state": "flat",
@@ -474,17 +474,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 15.1,
+   "change7_pct": 14.8,
    "d30": null,
    "delta30": null,
-   "delta7": 22.5,
+   "delta7": 22.0,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 78,
+   "n_now": 79,
    "n_prev": 116,
-   "now": 171.5,
+   "now": 171,
    "prev7": 149.0,
    "shown": true,
    "state": "flat",
@@ -545,9 +545,9 @@
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 78,
+   "n_now": 79,
    "n_prev": 116,
-   "now": 18.0,
+   "now": 18,
    "prev7": 18.0,
    "shown": false,
    "state": "flat",
@@ -667,11 +667,6 @@
    "change_pct": 42.5,
    "commits": [
     {
-     "pr": 1079,
-     "sha": "44d4eda8d",
-     "title": "Playback: TrueHD is decoded in the app behind the debug gate; high rates are low-passed before decimation"
-    },
-    {
      "pr": 1082,
      "sha": "a66624719",
      "title": "Playback: Force Direct Play and a refused open decode lossy audio in the app, DTS enabled; surround is never mixed down "
@@ -715,6 +710,11 @@
      "pr": 1113,
      "sha": "eb6dadd55",
      "title": "Telemetry: playback.failed carries the codec classes, the pipeline error class and the refusal path"
+    },
+    {
+     "pr": 956,
+     "sha": "a329aadd3",
+     "title": "Ask for independent requests together: detail page, playback start, Home"
     }
    ],
    "from": 166,
@@ -728,11 +728,6 @@
    "change_pct": 37.9,
    "commits": [
     {
-     "pr": 1079,
-     "sha": "44d4eda8d",
-     "title": "Playback: TrueHD is decoded in the app behind the debug gate; high rates are low-passed before decimation"
-    },
-    {
      "pr": 1082,
      "sha": "a66624719",
      "title": "Playback: Force Direct Play and a refused open decode lossy audio in the app, DTS enabled; surround is never mixed down "
@@ -776,6 +771,11 @@
      "pr": 1113,
      "sha": "eb6dadd55",
      "title": "Telemetry: playback.failed carries the codec classes, the pipeline error class and the refusal path"
+    },
+    {
+     "pr": 956,
+     "sha": "a329aadd3",
+     "title": "Ask for independent requests together: detail page, playback start, Home"
     }
    ],
    "from": 1116.6,
@@ -789,11 +789,6 @@
    "change_pct": 37.9,
    "commits": [
     {
-     "pr": 1079,
-     "sha": "44d4eda8d",
-     "title": "Playback: TrueHD is decoded in the app behind the debug gate; high rates are low-passed before decimation"
-    },
-    {
      "pr": 1082,
      "sha": "a66624719",
      "title": "Playback: Force Direct Play and a refused open decode lossy audio in the app, DTS enabled; surround is never mixed down "
@@ -837,6 +832,11 @@
      "pr": 1113,
      "sha": "eb6dadd55",
      "title": "Telemetry: playback.failed carries the codec classes, the pipeline error class and the refusal path"
+    },
+    {
+     "pr": 956,
+     "sha": "a329aadd3",
+     "title": "Ask for independent requests together: detail page, playback start, Home"
     }
    ],
    "from": 1116.0,
@@ -850,11 +850,6 @@
    "change_pct": 30.9,
    "commits": [
     {
-     "pr": 1079,
-     "sha": "44d4eda8d",
-     "title": "Playback: TrueHD is decoded in the app behind the debug gate; high rates are low-passed before decimation"
-    },
-    {
      "pr": 1082,
      "sha": "a66624719",
      "title": "Playback: Force Direct Play and a refused open decode lossy audio in the app, DTS enabled; surround is never mixed down "
@@ -898,6 +893,11 @@
      "pr": 1113,
      "sha": "eb6dadd55",
      "title": "Telemetry: playback.failed carries the codec classes, the pipeline error class and the refusal path"
+    },
+    {
+     "pr": 956,
+     "sha": "a329aadd3",
+     "title": "Ask for independent requests together: detail page, playback start, Home"
     }
    ],
    "from": 973.0,
@@ -911,11 +911,6 @@
    "change_pct": 27.9,
    "commits": [
     {
-     "pr": 1079,
-     "sha": "44d4eda8d",
-     "title": "Playback: TrueHD is decoded in the app behind the debug gate; high rates are low-passed before decimation"
-    },
-    {
      "pr": 1082,
      "sha": "a66624719",
      "title": "Playback: Force Direct Play and a refused open decode lossy audio in the app, DTS enabled; surround is never mixed down "
@@ -959,6 +954,11 @@
      "pr": 1113,
      "sha": "eb6dadd55",
      "title": "Telemetry: playback.failed carries the codec classes, the pipeline error class and the refusal path"
+    },
+    {
+     "pr": 956,
+     "sha": "a329aadd3",
+     "title": "Ask for independent requests together: detail page, playback start, Home"
     }
    ],
    "from": 170,
@@ -999,7 +999,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 265.5
+   "now": 265
   }
  ],
  "slowest_local": [
