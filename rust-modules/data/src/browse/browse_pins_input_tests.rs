@@ -109,3 +109,110 @@ fn a_receipt_landing_after_the_snapshot_is_never_paired_with_it() {
     browse.state.resolve_pins_from(&stale, "u-owner");
     assert!(browse.pinned(2), "the older snapshot must not undo the viewer's saved choice");
 }
+
+fn pending_write_saved(browse: &TestBrowse) -> Option<bool> {
+    browse.state.pending_pins.as_ref()
+        .map(|(_, write)| write.lock().unwrap_or_else(|e| e.into_inner()).saved())
+}
+
+/// Park the storage worker until the returned sender fires, so a write queued meanwhile is
+/// unsaved and its receipt cannot land.
+fn parked_worker() -> (std::sync::mpsc::Sender<()>, plx_base::storage_worker::TypedTicket<()>) {
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let blocker = plx_base::storage_worker::submit(move || {
+        entered_tx.send(()).unwrap();
+        let _ = release_rx.recv();
+    }).unwrap();
+    entered_rx.recv().unwrap();
+    (release_tx, blocker)
+}
+
+/// **F2.** A latch belongs to the write that set it: observing write A says nothing about write B.
+#[test]
+fn a_latch_belongs_to_its_own_write() {
+    let _serial = plx_base::testlock::serial();
+    let t = TempPins::new("pins-input-latch");
+    t.watching("u-owner");
+    let mut browse = TestBrowse::default();
+    seed_two_servers(&mut browse);
+    browse.state.apply_pins(&[(2, true)]);
+    plx_base::storage_worker::drain_for_test();
+    browse.observe_pin_write();
+    assert_eq!(pending_write_saved(&browse), Some(true), "A is saved and latched");
+
+    let (release, _blocker) = parked_worker();
+    {
+        let _frame = plx_base::task::FrameScope::enter();
+        browse.state.apply_pins(&[(0, false)]);
+    }
+    assert_eq!(pending_write_saved(&browse), Some(false), "B is a new write, and unsaved");
+    browse.state.resolve_pins_from(&peek(), "u-owner");
+    assert!(!browse.pinned(0) && browse.pinned(2), "B's local record stands while its receipt is out");
+    assert_eq!(pending_write_saved(&browse), Some(false), "B is still the pending write");
+
+    release.send(()).unwrap();
+    plx_base::storage_worker::drain_for_test();
+    browse.observe_pin_write();
+    browse.state.resolve_pins_from(&peek(), "u-owner");
+    assert!(!browse.pinned(0) && browse.pinned(2), "B's saved record, read from the registry");
+    assert_eq!(pending_write_saved(&browse), None, "nothing pending once B was seen saved");
+}
+
+/// **F3.** A receipt is consumed only once it was observed: a resolve on a session read before
+/// the observation leaves the write pending.
+#[test]
+fn a_receipt_is_consumed_only_once_observed() {
+    let _serial = plx_base::testlock::serial();
+    let t = TempPins::new("pins-input-consume");
+    t.watching("u-owner");
+    let (release, _blocker) = parked_worker();
+    let mut browse = TestBrowse::default();
+    seed_two_servers(&mut browse);
+    let stale;
+    {
+        let _frame = plx_base::task::FrameScope::enter();
+        browse.state.apply_pins(&[(2, true)]);
+        stale = peek();
+    }
+    release.send(()).unwrap();
+    plx_base::storage_worker::drain_for_test();
+    browse.state.resolve_pins_from(&stale, "u-owner");
+    assert!(pending_write_saved(&browse).is_some(), "the receipt was not observed, so the write is still pending");
+
+    browse.observe_pin_write();
+    let fresh = peek();
+    browse.state.resolve_pins_from(&fresh, "u-owner");
+    assert_eq!(pending_write_saved(&browse), None, "observed, then consumed");
+    assert_eq!(browse.state.recorded, fresh.pins_for("u-owner").cloned(), "the record now comes from the registry");
+}
+
+/// **G1.** The gate asks for the profile that is watching, on the record the handed session holds
+/// for that profile and no other.
+#[test]
+fn the_gate_judges_the_published_profile() {
+    let _serial = plx_base::testlock::serial();
+    let t = TempPins::new("pins-input-profile");
+    t.watching("u-owner");
+    let mut browse = TestBrowse::default();
+    seed_two_servers(&mut browse);
+    let asked = |user: &str| plx_plex::plex::session::HomePins {
+        user: user.into(), asked: true, ..Default::default()
+    };
+    let mut other = Session::default();
+    other.set_pins_for("u-other", asked("u-other"));
+    assert!(browse.first_run_asks_with(&other), "a record for another profile does not answer for this one");
+    let mut owner = Session::default();
+    owner.set_pins_for("u-owner", asked("u-owner"));
+    assert!(!browse.first_run_asks_with(&owner), "this profile's own record answers it");
+}
+
+/// `BrowseStore::run` is the fan-outs' entry and holds no session: a pin commit sent through it
+/// is refused loudly (a release build drops it with a log line) instead of reading the registry.
+#[test]
+#[should_panic(expected = "handed no session")]
+fn a_pin_command_sent_through_the_sessionless_entry_is_refused() {
+    let _serial = plx_base::testlock::serial();
+    let mut store = crate::stores::browse::BrowseStore::default();
+    store.run(crate::stores::browse::BrowseCmd::ApplyPins(vec![(0, true)]), &ClientKeys::default());
+}
