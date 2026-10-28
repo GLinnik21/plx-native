@@ -887,6 +887,10 @@ pub enum FailureKind {
     /// reported: this is a HANG, and conflating the two made a k5lp-style stall indistinguishable
     /// from an ordinary rejection on the wire.
     LoadTimeout,
+    /// The resolve produced no playable plan and no verdict: no URL, no refusal, so no Engine
+    /// ever ran. A hero preview refused for not being a direct play ends here (Sentry
+    /// PLX-NATIVE-1G), as does a resolve with no client or whose worker never spawned.
+    ResolveFailed,
     /// Everything else. Honest rather than tidy — see the type's doc.
     Unspecified,
 }
@@ -907,6 +911,7 @@ impl FailureKind {
             FailureKind::TvPipeline => C::TvPipeline,
             FailureKind::JailMissingRtkmem => C::JailMissingRtkmem,
             FailureKind::LoadTimeout => C::LoadTimeout,
+            FailureKind::ResolveFailed => C::ResolveFailed,
             FailureKind::Unspecified => C::Unspecified,
         }
     }
@@ -972,7 +977,7 @@ pub fn failure_actions(kind: FailureKind, cx: FailureContext) -> Vec<FailureActi
     use FailureAction as A;
     use FailureKind as K;
     let transient = matches!(kind, K::MediaSource | K::PlaybackInterrupted | K::LoadTimeout
-        | K::Unspecified);
+        | K::ResolveFailed | K::Unspecified);
     let mut v = Vec::with_capacity(4);
     match kind {
         // A device finding: nothing about the request changes it; only the repair can.
@@ -1068,6 +1073,8 @@ pub(crate) enum RuntimeFailure {
     /// Issue #74 D.1.4's `NATIVE_LOAD_BUDGET` fired — a hang, not a firmware refusal. See
     /// [`FailureKind::LoadTimeout`].
     LoadTimeout,
+    /// The resolve landed no plan and no verdict ([`FailureKind::ResolveFailed`]).
+    ResolveFailed,
 }
 
 /// PURE: turn the four terminal worker signals into one cause. More specific downstream evidence
@@ -1098,6 +1105,11 @@ fn runtime_failure(
 /// The cause the worker signals publish right now: what [`error_now`] reads while an Engine is up,
 /// and what a failed Engine freezes into the session as it is released.
 fn live_runtime_failure(ps: &crate::route::PlaybackSession) -> RuntimeFailure {
+    // FIRST: a resolve that landed no plan built no Engine, so any worker signal still set is a
+    // previous playback's, not this one's.
+    if crate::route::play_resolution_failed(ps) {
+        return RuntimeFailure::ResolveFailed;
+    }
     runtime_failure(
         SHARED.demux_failed.load(std::sync::atomic::Ordering::Acquire),
         SHARED.demux_io_failed.load(std::sync::atomic::Ordering::Acquire),
@@ -1221,6 +1233,16 @@ fn error_shape(
             caption: plx_platform::i18n::msg::widgets_failure_load_timeout_c(),
             panel: plx_platform::i18n::msg::widgets_panel_load_timeout(),
             readout: plx_platform::i18n::msg::widgets_reason_load_timeout(),
+            detail: std::borrow::Cow::Borrowed(""),
+            no_pass: false,
+        },
+        // The wording is the open failure's: the app never got as far as a stream to open, and the
+        // reader's remedy (try again) is the same.
+        RuntimeFailure::ResolveFailed => ErrorShape {
+            kind: FailureKind::ResolveFailed,
+            caption: plx_platform::i18n::msg::widgets_failure_open_c(),
+            panel: plx_platform::i18n::msg::widgets_panel_open(),
+            readout: plx_platform::i18n::msg::widgets_reason_open(),
             detail: std::borrow::Cow::Borrowed(""),
             no_pass: false,
         },
@@ -2680,7 +2702,7 @@ pub fn every_failure_row() -> Vec<(FailureKind, FailureContext, Vec<FailureActio
     use FailureKind as K;
     let kinds = [K::DecisionRefused, K::PlaybackPolicy, K::NoVideoTranscodeTarget, K::NoVideoTrack,
         K::MediaSource, K::PlaybackInterrupted, K::TvPipeline, K::LoadTimeout,
-        K::JailMissingRtkmem, K::Unspecified];
+        K::JailMissingRtkmem, K::ResolveFailed, K::Unspecified];
     let mut out = Vec::new();
     for kind in kinds {
         for forced in [false, true] {
@@ -2886,6 +2908,7 @@ mod tests {
             (K::TvPipeline, "tv_pipeline"),
             (K::JailMissingRtkmem, "jail_missing_rtkmem"),
             (K::LoadTimeout, "load_timeout"),
+            (K::ResolveFailed, "resolve_failed"),
             (K::Unspecified, "unspecified"),
         ];
         for (kind, code) in table {
@@ -3646,6 +3669,21 @@ mod tests {
                 assert!(!e.no_pass);
             }
         }
+    }
+
+    /// **Sentry PLX-NATIVE-1G.** A hero preview whose resolve is refused for not being a direct
+    /// play (`plan.rs`: "preview: refused - not a direct play") installs a plan with no URL and
+    /// no verdict, so only `resolve_failed` is set. No Engine ever ran, so no worker signal
+    /// exists, and the failure used to read `unspecified`. It is a resolve failure, and says so.
+    #[test]
+    fn a_preview_whose_resolve_produced_no_plan_reports_resolve_failed_not_unspecified() {
+        let _g = plx_base::testlock::serial();
+        let mut ps = crate::route::PlaybackSession::default();
+        crate::route::resolve_as_preview_for_test(&mut ps);
+        crate::route::resolve_failed_for_test(&mut ps);
+        let e = error_now(&ps);
+        assert_eq!(e.kind.code(), "resolve_failed", "{:?}", e.kind);
+        assert_ne!(e.kind, FailureKind::Unspecified);
     }
 
     /// A terminal runtime failure already knows which subsystem stopped: the media source,

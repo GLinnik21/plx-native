@@ -5482,6 +5482,13 @@ pub fn clear_play_verdict_for_test(ps: &mut PlaybackSession) {
 pub fn refuse_for_test(ps: &mut PlaybackSession, verdict: PlayVerdict) {
     ps.play_verdict = Some(verdict);
 }
+/// Test-only: leave `ps` as [`apply_plan`] leaves it for a plan with no URL and no verdict (a
+/// preview refused for not being a direct play, a resolve that found no client): no route, no
+/// refusal, `resolve_failed` set.
+#[cfg(any(test, feature = "test-support"))]
+pub fn resolve_failed_for_test(ps: &mut PlaybackSession) {
+    ps.resolve_failed = true;
+}
 /// Test-only: leave `ps` as a refusing [`apply_plan`] does after the SERVER refused a transcode —
 /// the verdict and its codes installed, the attempted route's contract and the source file's
 /// codecs recorded, and still no URL and no encoder session.
