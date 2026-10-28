@@ -123,7 +123,10 @@ of more than two channels down to stereo by default (owner decision, 2026-10-28)
 cannot decode, with the same read-out as any unplayable track, instead of playing it in stereo. Auto never decodes
 in the app on its own except as the very last rung, after the server refused to convert a direct play's audio and,
 for a track of more than two channels, after the manual encode was refused too (`open recovery: decoding dts in
-the app`); a surround track played that way is marked "played in stereo" in the audio menu.
+the app`); a surround track played that way is marked "played in stereo" in the audio menu. One exception, inside
+a single request: once that rung has put DTS in force for a track of one or two channels, DTS stays decoded in the
+app for the rest of that request, so a later pick in the audio menu of a surround DTS track switches without asking
+the server first and plays as stereo, labelled the same way. The next request starts from the set's own decoder again.
 
 ### Implementation verification — 2026-09-27
 
