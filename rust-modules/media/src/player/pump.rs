@@ -582,8 +582,9 @@ enum OpenRecoveryRun {
     /// A flight owns the replacement route; [`land_recovery_flight`] reloads onto it, or fails the
     /// Engine, when it lands. The frames in between wait ([`recovery_flight_outstanding`]).
     Flying,
-    /// The ladder's last rung: the same direct play, reloaded at `offset_ns` with the app decoding
-    /// its audio ([`decode_in_app`]). No flight: the caller reloads.
+    /// The ladder's app-decode rung (the very last one for a surround source): the same direct play,
+    /// reloaded at `offset_ns` with the app decoding its audio ([`decode_in_app`]). No flight: the
+    /// caller reloads.
     DecodeInApp { offset_ns: i64 },
     /// Nothing to recover with: the Engine failed for good and the viewer has the read-out.
     Failed,
@@ -796,7 +797,8 @@ fn recover_failed_open(
     run
 }
 
-/// The ladder's last rung ([`super::recovery::RecoveryEffect::DecodeInApp`]): reload the SAME direct
+/// The ladder's app-decode rung ([`super::recovery::RecoveryEffect::DecodeInApp`]; the very last rung
+/// for a source of more than two channels, which this mixes down): reload the SAME direct
 /// play at `offset_ns`. The machine has already put the refused codec in force in the attempt, so the
 /// fresh Load declares stereo 48 kHz PCM and the demuxer decodes the audio itself; no server is asked.
 /// A route that is a server session (the machine only picks a direct play) fails the Engine instead.
@@ -4959,10 +4961,27 @@ mod flight_tests {
 
     /// `rig` plays a DTS 5.1 track natively, on a start value the lossy policy admits DTS on.
     fn measured_dts_rig(rig: Rig) -> Rig {
+        measured_dts_rig_of(rig, 6)
+    }
+
+    /// [`measured_dts_rig`] for a DTS track of `channels` channels: the width decides whether the app's
+    /// stereo decode is a downmix, and so where the rung sits in the ladder (and whether Force has it).
+    fn measured_dts_rig_of(rig: Rig, channels: i64) -> Rig {
         let mut rig = rig;
         rig.flight.begin_attempt(&rig.ps);
         FlightRig::plan_on(&mut rig.ps, measured_dts_start());
-        FlightRig::declare_audio(&mut rig.ps, "dca", 6);
+        FlightRig::declare_audio(&mut rig.ps, "dca", channels);
+        rig
+    }
+
+    /// A Force Direct Play rig playing a native DTS track of `channels` channels, on a start value the
+    /// lossy policy admits DTS on.
+    fn forced_dts_rig(channels: i64) -> Rig {
+        let mut rig = Rig::direct(40);
+        rig.flight.begin_attempt(&rig.ps);
+        crate::route::set_direct_play_mode_for_test(&mut rig.ps, crate::route::DirectPlayMode::Forced);
+        FlightRig::plan_on(&mut rig.ps, measured_dts_start());
+        FlightRig::declare_audio(&mut rig.ps, "dca", channels);
         rig
     }
 
@@ -4998,7 +5017,9 @@ mod flight_tests {
     /// **P1. A DTS direct play whose conversion the server refuses is decoded in the app.** The pipeline
     /// refuses the native DTS (`601`), the facet rung asks the server to convert it, the server
     /// declines, and the last rung reloads the SAME direct play with the app decoding the audio, once,
-    /// with no second conversion request. Before the rung existed the viewer got the read-out here.
+    /// with no second conversion request (the source's video is not fed at a known raster here, so the
+    /// manual encode is not earned: `a_refused_surround_dts_takes_the_manual_encode_before_the_app_decode`
+    /// has the video). Before the rung existed the viewer got the read-out here.
     #[test]
     fn a_refused_dts_conversion_on_a_direct_play_decodes_in_the_app() {
         let mut rig = measured_dts_rig(Rig::direct(40));
@@ -5017,7 +5038,8 @@ mod flight_tests {
     }
 
     /// **P2. A cold Auto Original that is a direct play reaches the app only after the HLS contingency
-    /// is refused too**: two refused conversions (the facet rung's, then the HLS rung's), then the app.
+    /// is refused too**: two refused conversions (the facet rung's, then the HLS rung's), then the app,
+    /// which plays the 5.1 track as stereo and is labelled so (the owner's last-rung downmix).
     #[test]
     fn a_cold_auto_original_decodes_in_the_app_only_after_hls_is_refused_too() {
         let mut rig = measured_dts_rig(Rig::direct_auto_original(40));
@@ -5030,17 +5052,16 @@ mod flight_tests {
         assert_decoding_in_the_app(&mut rig, epoch, &log);
         assert!(!crate::route::is_segmented_hls(&rig.ps), "the route is still the direct play");
         assert!(!crate::route::is_transcoding(&rig.ps));
+        // The last rung of Auto plays the 5.1 track as stereo, and the track menu says so.
+        assert!(crate::route::audio_decoded_in_app(&rig.ps, "dca", 6, 0), "the track menu marks it played in stereo");
     }
 
-    /// **P3. Force Direct Play decodes a refused native DTS in the app and asks the server NOTHING**: no
-    /// `/decision` of any kind (not the conversion, not the probe), the same reload as above.
+    /// **P3. Force Direct Play decodes a refused native STEREO DTS in the app and asks the server NOTHING**:
+    /// no `/decision` of any kind (not the conversion, not the probe), the same reload as above. (A
+    /// surround track is not mixed down under Force: `a_forced_refusal_of_native_surround_dts_reads_out`.)
     #[test]
     fn a_forced_refusal_of_native_dts_decodes_in_the_app_with_no_server() {
-        let mut rig = Rig::direct(40);
-        rig.flight.begin_attempt(&rig.ps);
-        crate::route::set_direct_play_mode_for_test(&mut rig.ps, crate::route::DirectPlayMode::Forced);
-        FlightRig::plan_on(&mut rig.ps, measured_dts_start());
-        FlightRig::declare_audio(&mut rig.ps, "dca", 6);
+        let mut rig = forced_dts_rig(2);
         assert_eq!(crate::route::stream_pcm(&rig.ps).and_then(Result::ok), None, "native until the pipeline refuses it");
         rig.frame();
         let epoch = engine_epoch(&mut rig);
@@ -5066,11 +5087,7 @@ mod flight_tests {
             [(AudioStack::Liblxa, true, 400_000_000), (AudioStack::Other, false, 0)]
         {
             let _stack = audio_stack_on_this_thread_for_test(stack);
-            let mut rig = Rig::direct(40);
-            rig.flight.begin_attempt(&rig.ps);
-            crate::route::set_direct_play_mode_for_test(&mut rig.ps, crate::route::DirectPlayMode::Forced);
-            FlightRig::plan_on(&mut rig.ps, measured_dts_start());
-            FlightRig::declare_audio(&mut rig.ps, "dca", 6);
+            let mut rig = forced_dts_rig(2);
             rig.frame();
             let epoch = engine_epoch(&mut rig);
             let log = refused_601_until_settled(&mut rig);
@@ -5091,15 +5108,75 @@ mod flight_tests {
         }
     }
 
+    /// **P3c. Force Direct Play does NOT mix a surround track down** (owner decision 2026-10-28). The
+    /// pipeline refuses the native DTS 5.1 (`601`) on a set whose policy admits DTS in the app, and the
+    /// viewer gets the read-out: no app decode, no reload, no `/decision` of any kind. The 2.0 twin is
+    /// `a_forced_refusal_of_native_dts_decodes_in_the_app_with_no_server`.
+    #[test]
+    fn a_forced_refusal_of_native_surround_dts_reads_out() {
+        let mut rig = forced_dts_rig(6);
+        rig.frame();
+        let epoch = engine_epoch(&mut rig);
+        let log = refused_601_until_settled(&mut rig);
+        assert!(!log.contains("decoding dts in the app"), "{log}");
+        assert!(log.contains("open recovery: no rung left"), "{log}");
+        assert_eq!(crate::player::state(&rig.ps), crate::player::PlaybackState::Error, "{log}");
+        assert_eq!(engine_epoch(&mut rig), epoch, "a refusal reloads nothing");
+        assert!(!rig.ps.open_recovery().attempt().app_lossy_in_force.contains("dts"), "nothing decodes in the app");
+        assert_eq!(crate::route::stream_pcm(&rig.ps).and_then(Result::ok), None, "the track stays native: no stereo PCM was declared");
+        assert!(!crate::route::audio_decoded_in_app(&rig.ps, "dca", 6, 0), "and the track menu does not say it plays in stereo");
+        assert!(
+            !rig.flight.requests().iter().any(|r| r.contains("/decision")),
+            "Force Direct Play converts nothing and asks nothing: {:?}",
+            rig.flight.requests()
+        );
+    }
+
+    /// **P3d. A surround track the server cannot convert takes the manual ENCODE before the app decode**
+    /// (owner decision 2026-10-28: the app mixes a surround source down only as the very last rung). A
+    /// DTS 5.1 direct play of a 1080p H.264: the `601` asks the server to convert the audio (declined),
+    /// then to encode the video with the audio converted (declined), and only then does the app decode the
+    /// audio, as stereo, labelled so in the track menu. Two `/decision`s, in that order.
+    #[test]
+    fn a_refused_surround_dts_takes_the_manual_encode_before_the_app_decode() {
+        let mut rig = measured_dts_rig(Rig::direct(40));
+        FlightRig::declare_video(&mut rig.ps, "h264", 1920, 1080);
+        rig.flight.refuse_decisions(2);
+        rig.frame();
+        let epoch = engine_epoch(&mut rig);
+        let log = refused_601_until_settled(&mut rig);
+        assert_eq!(rig.flight.decisions(), 2, "the audio conversion and the encode, both declined: {:?}", rig.flight.requests());
+        let facet = log.find("open recovery: converting Audio").unwrap_or_else(|| panic!("the facet rung flew first: {log}"));
+        let both = log.find("open recovery: converting both facets").unwrap_or_else(|| panic!("the encode flew second: {log}"));
+        let decode = log.find(DECODING).unwrap_or_else(|| panic!("the app decoded last: {log}"));
+        assert!(facet < both && both < decode, "facet, then encode, then the app: {log}");
+        assert_decoding_in_the_app(&mut rig, epoch, &log);
+        assert_eq!(log.matches(DECODING).count(), 1, "{log}");
+        assert!(crate::route::audio_decoded_in_app(&rig.ps, "dca", 6, 0), "labelled as played in stereo");
+    }
+
+    /// **P3e. A stereo track keeps the app decode BEFORE the manual encode** (today's order): the same
+    /// rig as above with a 2.0 DTS track. The refused audio conversion is followed at once by the app
+    /// decode (it keeps the direct play and loses no channel); the encode is not asked.
+    #[test]
+    fn a_refused_stereo_dts_is_decoded_in_the_app_before_the_manual_encode() {
+        let mut rig = measured_dts_rig_of(Rig::direct(40), 2);
+        FlightRig::declare_video(&mut rig.ps, "h264", 1920, 1080);
+        rig.flight.refuse_decisions(2);
+        rig.frame();
+        let epoch = engine_epoch(&mut rig);
+        let log = refused_601_until_settled(&mut rig);
+        assert_eq!(rig.flight.decisions(), 1, "the audio conversion only; the encode waits behind the app: {:?}", rig.flight.requests());
+        assert!(!log.contains("converting both facets"), "{log}");
+        assert_decoding_in_the_app(&mut rig, epoch, &log);
+        assert_eq!(log.matches(DECODING).count(), 1, "{log}");
+    }
+
     /// **P4. A refused app decode ends on the read-out, once.** The reload's Load is refused too: the rung
     /// is spent and no facet is left, so the Engine fails, the read-out shows, and nothing reloads again.
     #[test]
     fn a_refused_app_decode_ends_on_the_read_out_once() {
-        let mut rig = Rig::direct(40);
-        rig.flight.begin_attempt(&rig.ps);
-        crate::route::set_direct_play_mode_for_test(&mut rig.ps, crate::route::DirectPlayMode::Forced);
-        FlightRig::plan_on(&mut rig.ps, measured_dts_start());
-        FlightRig::declare_audio(&mut rig.ps, "dca", 6);
+        let mut rig = forced_dts_rig(2);
         rig.frame();
         let epoch = engine_epoch(&mut rig);
         let first = refused_601_until_settled(&mut rig);

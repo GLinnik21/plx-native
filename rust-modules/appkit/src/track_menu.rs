@@ -2378,13 +2378,15 @@ use plx_data::metadata::track_label::Kind;
 /// and the menu names that on the track it concerns rather than leaving the viewer to learn it
 /// from a log. Whether a track is converted is the planner's capability answer for THIS playback's
 /// attempt (`route::audio_converted_by_server`, which reads `ps`). A surround track the APP decodes
-/// (`route::audio_decoded_in_app`: Force Direct Play on a set with no decoder for it, or a codec the
-/// recovery put in force) says it plays in stereo, since the descriptor ("DTS 5.1") would otherwise
-/// promise a layout the downmix does not keep; the server mark outranks it. Always ONE line: the
+/// (`route::audio_decoded_in_app`: a codec the recovery put in force as its very last rung, or the
+/// `appdecodelossy` debug trigger; never Force Direct Play, which refuses a surround track the set
+/// cannot decode instead of mixing it down) says it plays in stereo, since the descriptor ("DTS 5.1")
+/// would otherwise promise a layout the downmix does not keep; the server mark outranks it. Always ONE line: the
 /// longest label is graded against the panel by `converted_audio_sub_lines_fit_the_panel_in_every_language`.
 fn audio_sub_line(ps: &plx_media::route::PlaybackSession, sub: String, s: &metadata::Stream) -> String {
     let converted = plx_media::route::audio_converted_by_server(ps, &s.codec, s.channels, s.sampling_rate);
-    let in_app = s.channels > 2 && plx_media::route::audio_decoded_in_app(ps, &s.codec, s.channels, s.sampling_rate);
+    let in_app = plx_platform::devcaps::app_decode_mixes_down(s.channels)
+        && plx_media::route::audio_decoded_in_app(ps, &s.codec, s.channels, s.sampling_rate);
     audio_sub_line_for(sub, converted, in_app)
 }
 
@@ -4360,10 +4362,11 @@ mod enhancement_menu_tests {
         assert!(!plx_media::route::audio_converted_by_server(&ps, &ac3.codec, ac3.channels, ac3.sampling_rate));
     }
 
-    /// **A surround track the app decodes says it plays in stereo** (Force Direct Play on a set whose
-    /// table has no DTS row, with the lossy policy admitting DTS): the descriptor alone ("DTS 5.1")
-    /// would promise a layout the downmix does not keep. A stereo track, a track the set decodes itself
-    /// and a codec nothing enabled say nothing extra, and the server mark outranks it.
+    /// **A surround track the app decodes says it plays in stereo** (Auto's very last rung, which put DTS
+    /// in force on a set whose pipeline refused it): the descriptor alone ("DTS 5.1") would promise a
+    /// layout the downmix does not keep. Force Direct Play never takes a surround track down, so it says
+    /// nothing of the kind there. A stereo track, a track the set decodes itself and a codec nothing
+    /// enabled say nothing extra, and the server mark outranks it.
     #[test]
     fn an_app_decoded_surround_track_says_it_plays_in_stereo() {
         let _g = plx_base::testlock::serial();
@@ -4377,9 +4380,17 @@ mod enhancement_menu_tests {
         let mut ps = plx_media::route::PlaybackSession::IDLE;
         plx_media::route::begin_attempt_for_test(&mut ps, measured.clone());
         assert_eq!(audio_sub_line(&ps, "DTS 5.1".into(), &dts(6)), "DTS 5.1 \u{b7} converted by your server", "Auto: the server converts it");
-        plx_media::route::set_direct_play_mode_for_test(&mut ps, plx_media::route::DirectPlayMode::Forced);
+        // The recovery's last rung put DTS in force: the attempt now plays the 5.1 track as stereo.
+        let rung = std::sync::Arc::new((*measured).clone().with_app_lossy_for("dts"));
+        plx_media::route::begin_attempt_for_test(&mut ps, rung.clone());
         assert_eq!(audio_sub_line(&ps, "DTS 5.1".into(), &dts(6)), "DTS 5.1 \u{b7} played in stereo");
         assert_eq!(audio_sub_line(&ps, "DTS 2.0".into(), &dts(2)), "DTS 2.0", "a stereo track is not a downmix");
+        // Force Direct Play refuses a surround track the set cannot decode instead of mixing it down, even
+        // with the codec in force: no mark, because nothing plays it.
+        plx_media::route::set_direct_play_mode_for_test(&mut ps, plx_media::route::DirectPlayMode::Forced);
+        assert_eq!(audio_sub_line(&ps, "DTS 5.1".into(), &dts(6)), "DTS 5.1", "Forced: no downmix, so no mark");
+        plx_media::route::begin_attempt_for_test(&mut ps, measured.clone());
+        assert_eq!(audio_sub_line(&ps, "DTS 5.1".into(), &dts(6)), "DTS 5.1", "Forced on a measured set: the refusal, no mark");
         let truehd = metadata::Stream { codec: "truehd".into(), channels: 8, sampling_rate: 48_000, ..Default::default() };
         assert_eq!(audio_sub_line(&ps, "Dolby TrueHD 7.1".into(), &truehd), "Dolby TrueHD 7.1", "unmeasured: not decoded here");
         let native = std::sync::Arc::new(plx_platform::devcaps::Caps {
@@ -4409,13 +4420,15 @@ mod enhancement_menu_tests {
             let store = super::tests::store_with_audio(vec![mk(1, "truehd"), mk(2, "eac3"), mk(3, "dts")]);
             let menu = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
             out.extend(menu.form.table.app_fit_failures(plx_ui::table::MENU_MAX_W, language.tag()));
-            // The same track menu under Force Direct Play on a measured set with no DTS row: the DTS 7.1
-            // track is decoded in the app, and its "played in stereo" line is graded the same way.
-            plx_media::route::begin_attempt_for_test(&mut ps, std::sync::Arc::new(plx_platform::devcaps::Caps {
-                app_lossy: plx_platform::devcaps::AppLossy::Measured,
-                ..plx_platform::devcaps::Caps::assumed()
-            }));
-            plx_media::route::set_direct_play_mode_for_test(&mut ps, plx_media::route::DirectPlayMode::Forced);
+            // The same track menu once the recovery's last rung put DTS in force on a measured set: the DTS
+            // 7.1 track is decoded in the app, and its "played in stereo" line is graded the same way.
+            plx_media::route::begin_attempt_for_test(&mut ps, std::sync::Arc::new(
+                plx_platform::devcaps::Caps {
+                    app_lossy: plx_platform::devcaps::AppLossy::Measured,
+                    ..plx_platform::devcaps::Caps::assumed()
+                }
+                .with_app_lossy_for("dts"),
+            ));
             let menu = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
             let line = audio_sub_line(&ps, "DTS 7.1".into(), &mk(3, "dts"));
             assert_ne!(line, "DTS 7.1", "{}: the app-decoded track says so", language.tag());

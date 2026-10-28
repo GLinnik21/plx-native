@@ -1865,8 +1865,11 @@ pub(super) fn build_stream(off: &plx_base::task::OffFrame, rk: &str, part: &str,
     //   Under Force Direct Play the pick is three passes, each `StandIn::SameKind` until the last: (1) a
     //   native track that honours the intent (the selected track, or a same-language non-commentary
     //   sibling of it), (2) the app's lossy decode of the intended track
-    //   (`devcaps::Caps::app_decodes_lossy_track`), (3) only then today's native stand-in, any track at
-    //   all. A native sibling therefore wins over the app decode, and a commentary or a dub never does.
+    //   (`devcaps::Caps::app_decodes_lossy_track`; to stereo, so under Force only a track of at most two
+    //   channels: the app never mixes a surround source down by default, and a surround track the set
+    //   cannot decode falls through to pass 3 or to the refusal), (3) only then today's native stand-in,
+    //   any track at all. A native sibling therefore wins over the app decode, and a commentary or a dub
+    //   never does.
     let natively = |codec: &str, channels: i64, rate: i64| {
         audio_natively_plays_with(&env.caps, env.direct_play_mode, codec, channels, rate)
     };
@@ -3074,7 +3077,8 @@ pub(super) fn pick_dp_audio_pref(
 /// Can the TV take this audio track straight from the file, under `mode`, on the attempt's
 /// capability value `caps`: with its own decoder ([`audio_natively_plays_with`]) or with the app's
 /// lossy decode to stereo ([`plx_platform::devcaps::Caps::app_decodes_lossy_track`]: a codec in force,
-/// or, under Forced, one the set has no native path for and the policy admits)? Auto and Forced both go
+/// or, under Forced, one the set has no native path for and the policy admits, and then only for a
+/// track of at most two channels, because the app never mixes a surround source down under Force)? Auto and Forced both go
 /// through `devcaps`' canonicaliser (PMS's `dca` is the pipeline's `dts`), so they cannot drift apart.
 /// Both also apply the Load's own limits ([`plx_platform::devcaps::audio_track_fits`]): the PCM
 /// path's channel count and rate table, and the sample-rate ceiling every other codec shares

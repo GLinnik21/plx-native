@@ -7035,10 +7035,12 @@ mod pcm_info_tests {
         serde_json::from_str::<serde_json::Value>(&on).unwrap();
     }
 
-    /// **Force Direct Play on a set with no DTS row declares DTS as stereo 48 kHz PCM**: the app decodes
-    /// it (the table's lossy policy admits DTS, and the set has no native path), so the Load carries one
-    /// `pcmInfo` and `PCM` instead of a `DTS` the pipeline would hang on. Under Auto the same value
-    /// still declares `DTS`.
+    /// **Force Direct Play on a set with no DTS row declares a STEREO DTS track as stereo 48 kHz PCM**: the
+    /// app decodes it (the table's lossy policy admits DTS, the set has no native path, and a 2.0 source
+    /// is no downmix, `Caps::app_may_mix_down`), so the Load carries one `pcmInfo` and `PCM` instead of a
+    /// `DTS` the pipeline would hang on. Under Auto the same value still declares `DTS`. The carried track
+    /// supplies the channel count the rule reads; a 5.1 one is refused before any Load
+    /// (`forced_resolve_refuses_a_surround_dts_track_instead_of_mixing_it_down`).
     #[test]
     fn a_forced_dts_with_no_row_is_declared_as_stereo_48k_pcm() {
         let caps = std::sync::Arc::new(plx_platform::devcaps::Caps {
@@ -7048,6 +7050,13 @@ mod pcm_info_tests {
         let mut ps = crate::route::PlaybackSession::IDLE;
         crate::route::begin_attempt_for_test(&mut ps, caps);
         crate::route::set_stream_codecs(&mut ps, "h264", "dts");
+        crate::route::set_carried_audio_for_test(
+            &mut ps,
+            crate::route::CarriedAudio {
+                sid: 7, ordinal: 1, codec: "dts".into(), channels: 2,
+                can_normalize_loudness: false, immersive: false, sample_rate: 48_000, bit_depth: 0,
+            },
+        );
         assert_eq!(crate::route::stream_pcm(&ps).and_then(Result::ok), None, "Auto: the native decoder's");
         crate::route::set_direct_play_mode_for_test(&mut ps, crate::route::DirectPlayMode::Forced);
         let shape = crate::route::stream_pcm(&ps).and_then(Result::ok);

@@ -1005,8 +1005,12 @@ fn the_lossy_gate_lets_the_app_direct_play_dts_in_both_modes_and_off_changes_not
     // in the app on its own, Force Direct Play does only where the set has no native path.
     let admitted = plx_platform::devcaps::Caps { app_lossy: plx_platform::devcaps::AppLossy::Measured, ..off.clone() };
     assert!(!audio_direct_plays_with(&admitted, DirectPlayMode::Auto, "dca", 6, 0), "Auto: the server converts it");
-    assert!(audio_direct_plays_with(&admitted, DirectPlayMode::Forced, "dca", 6, 0), "Forced: no native path");
-    assert!(!audio_natively_plays_with(&admitted, DirectPlayMode::Forced, "dca", 6, 0));
+    assert!(audio_direct_plays_with(&admitted, DirectPlayMode::Forced, "dca", 2, 0), "Forced: no native path, nothing to mix down");
+    assert!(
+        !audio_direct_plays_with(&admitted, DirectPlayMode::Forced, "dca", 6, 0),
+        "Forced: no native path and the app will not mix a surround source down (owner, 2026-10-28)"
+    );
+    assert!(!audio_natively_plays_with(&admitted, DirectPlayMode::Forced, "dca", 2, 0));
     let measured = plx_platform::devcaps::Caps { native_ceiling: [("dts".into(), 2)].into(), ..dts_row_caps() };
     assert!(!audio_direct_plays_with(&measured, DirectPlayMode::Forced, "dca", 6, 0), "native ceiling applies natively");
     assert!(audio_direct_plays_with(&measured.with_app_lossy(), DirectPlayMode::Forced, "dca", 6, 0));

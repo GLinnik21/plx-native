@@ -254,9 +254,12 @@ something.
     `pump::land_recovery_flight`), because the branches' failure flags stay up for the whole flight
     and `fail_current_engine` would end it. `land_recovery_flight` fails nothing itself: it reloads
     onto the route, or hands `FlightRefused` to the machine. A refused facet conversion goes to the
-    HLS rung for a cold Auto Original and otherwise to the app-decode rung (below), else, for a manual pick, to
-    the both-facets encode when it is earned, else to the read-out; a refused both-facets flight goes to the
-    app-decode rung or the read-out, a refused rollback is always the read-out.
+    HLS rung for a cold Auto Original and otherwise, for a manual pick, to the both-facets encode when it is
+    earned and to the app-decode rung (below) when it is not, the two in the order the source's width sets (a
+    source of at most two channels takes the app decode first; a surround source never does, the app being its
+    last rung), else to the read-out; a refused both-facets flight (the HLS contingency or the manual
+    encode) goes to the app-decode rung, which a surround source's ladder has kept for last, or the read-out,
+    a refused rollback is always the read-out.
     `route::recovery_flight_outstanding` is how the pump waits.
   - **Two rollbacks have no Engine for a pump to drive** (`route::dispatch_engineless_rollback_rebase`,
     marked `flight_engineless` beside the recovery marker): the foreground restore's
@@ -332,12 +335,22 @@ something.
   unmeasured row is measured. A row is DECODED IN THE APP only where it is in force
   (`Caps::app_decodes_lossy_track`, the one answer): the trigger puts every lossy row in force (even where the set has the
   decoder); otherwise Force Direct Play has no native path for the track on a set without a DTS row (webOS 10+, or a refusal
-  the install learned), or the recovery rung below put the codec in force (`Caps::with_app_lossy_for`). Auto never decodes in
+  the install learned) AND the track has at most two channels, or the recovery rung below put the codec in force (`Caps::with_app_lossy_for`).
+  **The app never mixes a source of more than two channels down to stereo by default** (owner decision 2026-10-28;
+  D1(b) and D2 as amended). `devcaps::app_decode_mixes_down(channels)` (channels outside 1..=2, so an unknown
+  width counts too) is the ONE predicate, `Caps::app_may_mix_down` its gate, and both the planner and the recovery
+  ladder read it: under Force Direct Play (D1(b)) a surround track the set has no native path for is NOT decoded
+  in the app (`app_decodes_lossy_track` is false for it, in either arm, the codec being in force or not), so the
+  Forced pick refuses it like any unplayable track (`ForcedFailure::Audio`, naming the codec; before S4 the same)
+  and a pipeline refusal of it reads out; a track of one or two channels is no downmix and keeps the app decode. Under
+  Auto (D2) the surround downmix is only the very last rung of the ladder (below), after every server option was
+  refused, and stays labelled; Auto's default for a 5.1 track the set cannot take is the server conversion that keeps its channels.
+  The `appdecodelossy` debug trigger (`AppLossy::All`) is the one explicit override. Auto never decodes in
   the app on its own, and Force Direct Play's pick is three passes (`route/plan.rs`): (1) a native track that honours the intent
   (the selected track, or a same-language non-commentary sibling: `StandIn::SameKind`), (2) the app's decode of the
-  intended track, (3) only then the native stand-in of any track. A native sibling wins over the app decode, and a
+  intended track (at most two channels), (3) only then the native stand-in of any track. A native sibling wins over the app decode, and a
   native commentary or dub never does. An app-decoded track is never the set's own decoder's (the Load
-  declares `PCM`, stereo 48 kHz S16: `route::stream_pcm`), is announced without a table row, the track menu says it plays in
+  declares `PCM`, stereo 48 kHz S16: `route::stream_pcm`), is announced without a table row, the track menu says a surround one plays in
   stereo (`route::audio_decoded_in_app`), and
   `ff_pcm::PcmDecoder` decodes it (DTS: the core only, `core_only`), downmixes by the frame's channel layout and resamples it
   (`Stereo48`). The resample is linear from a source below 48 kHz and a windowed-sinc low-pass decimator from one above it
@@ -393,7 +406,8 @@ something.
   **The ladder** (the order of `OpenRecovery::decide`): (1) a pending Original trial's
   rollback, which narrows the attempt first by the facet the refusal named, because its rebase, the next
   retry and a quality change must plan from the narrowed value; (2) under Forced Direct Play, the
-  app-decode rung (5) or the read-out (a forced play is never converted); (3) the **facet rung**, for a refusal that names the
+  app-decode rung (6) for a track of at most two channels, else the read-out (a forced play is never converted, and the app never
+  mixes a surround source down for it); (3) the **facet rung**, for a refusal that names the
   pipeline (`type=18` of ANY number, or the stall; not a Load timeout or a source failure) of an
   Engine that has shown no picture (`OpenFacts::no_frames`: the machine lives per request but a
   picture is per Engine, so a reload after the request's first picture, a track pick, owes its own
@@ -417,19 +431,7 @@ something.
   plays leaves dropped). No track pick runs in S1a: the replacement converts the track the viewer was on, and the
   AC3 sibling is only chosen once a learned row is in `start` (S2); (4) the **HLS both-facets rung**, a cold
   Auto Original's HLS contingency (`StartAutoHls`), whose attempt lacks every facet the request took
-  out and every stream this refusal named (the refused video raster, the suspect audio); (5) the **app-decode
-  rung** (`RecoveryEffect::DecodeInApp`), before the manual encode because it keeps the direct play and asks no
-  server: a pipeline refusal of a direct play (`OpenFacts::direct`: no server session) that has shown no picture, whose audio
-  the pipeline itself decoded (`StreamAudio::app_decoded_lossy` is false), of a lossy codec the START value's policy admits
-  (`Caps::app_may_decode_lossy`), once per request (`in_app`), after a refused HLS contingency or a refused facet flight, or at
-  once under Forced. It flies nothing and asks no server: the attempt gets that codec in force (`Caps::with_app_lossy_for`,
-  applied after the facets, with the refused video raster given back since the reload feeds the same source video), and
-  `pump::decode_in_app` reloads the same direct play (`reload_at`, logged `open recovery: decoding dts in the app (stereo)
-  after type=18 num=601`), whose Load declares the PCM and so is planned the audio stack's PCM lead like any other PCM Load
-  (`engine::load_audio`). It never proves a facet, and a flight after an app-decoded refusal
-  never does either (`unprovable`); it flies no flight and so has no rescue to report (`ReportRecovered` names a flight's
-  rung). A remux or transcode route and a refused app decode go on to (6) or the read-out. A rebuild rung for a refused remux or
-  transcode, and a resolve-time `PlayVerdict::Server` refusal, are not covered. (6) The **manual both-facets rung**
+  out and every stream this refusal named (the refused video raster, the suspect audio); (5) the **manual both-facets rung**
   (`RecoveryEffect::ConvertBoth`, `VideoLane::Both`) is one ENCODE with no video copy
   (`directStream=0&directStreamAudio=1`) of today's route, from an attempt that lacks the audio suspect and
   the refused raster of a numbered refusal. A pipeline refusal (`Refused` or `Stalled`; not a timeout or a
@@ -437,15 +439,33 @@ something.
   source's video is still fed and not yet excluded, or an audio suspect still narrows the attempt. A
   refusal with nothing to lower (a 1080p frame-rate refusal) still earns the one encode, which keeps the
   route's own ceiling; a lowered video raster clamps it to the 1080p rung's. The encode's own refusal
-  reads out (it feeds an encoded video, `OpenFacts::video == None`, and no audio suspect), and so does a
-  refused HLS rescue. The converted route's video counts as fed whole only for an Original remux, so a
+  reads out (it feeds an encoded video, `OpenFacts::video == None`, and no audio suspect) unless the app decode
+  (6) is still open for it, and a refused HLS rescue ends the same way. The converted route's video counts as fed whole only for an Original remux, so a
   manual re-encode flavour with no stored Original candidate gets no both-facets rung (conservative);
+  (6) the **app-decode rung** (`RecoveryEffect::DecodeInApp`): a pipeline refusal of a direct play
+  (`OpenFacts::direct`: no server session) that has shown no picture, whose audio
+  the pipeline itself decoded (`StreamAudio::app_decoded_lossy` is false), of a lossy codec the START value's policy admits
+  (`Caps::app_may_decode_lossy`), once per request (`in_app`), after a refused HLS contingency or a refused facet flight, or at
+  once under Forced (a track of at most two channels only, `Caps::app_may_mix_down`). **The source's width sets where it
+  sits (owner decision 2026-10-28):** for a source of at most two channels the app decode is no downmix, keeps the direct play
+  and asks no server, so it runs BEFORE (5); for a surround source (more than two channels, or an unknown
+  width: `devcaps::app_decode_mixes_down`, the planner's predicate) (5), which keeps the channels, runs first when it is earned
+  and the app decode is the very last rung, after the encode was refused too (a refused encode flight is
+  `app_decode_or_error`'s). The channel count is the SOURCE track's (`StreamAudio::channels`). It flies nothing and asks no
+  server: the attempt gets that codec in force (`Caps::with_app_lossy_for`,
+  applied after the facets, with the refused video raster given back since the reload feeds the same source video), and
+  `pump::decode_in_app` reloads the same direct play (`reload_at`, logged `open recovery: decoding dts in the app (stereo)
+  after type=18 num=601`), whose Load declares the PCM and so is planned the audio stack's PCM lead like any other PCM Load
+  (`engine::load_audio`); a surround track it takes is labelled "played in stereo" in the track menu. It never proves a facet, and a flight after an app-decoded refusal
+  never does either (`unprovable`); it flies no flight and so has no rescue to report (`ReportRecovered` names a flight's
+  rung). A remux or transcode route and a refused app decode go on to (5) or the read-out. A rebuild rung for a refused remux or
+  transcode, and a resolve-time `PlayVerdict::Server` refusal, are not covered;
   (7) the read-out.
   The facet and both-facets rungs together are bounded by `MAX_RECOVERY_FLIGHTS` (2) per request, the facet rung runs once, and the
   rollback is not counted. A facet `start` already lacks (`start.without(facet) == start`: a stored
   refusal that `devcaps::start_caps` took out of `start`) narrows nothing and gets no flight, so a
   conversion that is still refused cannot loop; a refused conversion dispatch goes on to the next rung
-  too (HLS for a cold Auto Original, else the app decode, else the manual encode when earned, else the read-out), and a refused rollback is terminal. The viewer
+  too (HLS for a cold Auto Original, else for a source of at most two channels the app decode and then the manual encode when earned, for a surround source the manual encode when earned and then the app decode, else the read-out), and a refused rollback is terminal. The viewer
   keeps the connecting spinner: no read-out, no second play request. **The project hears about a
   rescue** (issue #1075): the machine keeps the request's first refusal that `LoadRefusal::reports`
   (a pipeline number, the stall or a Load timeout, never a source failure) with the stream it named,

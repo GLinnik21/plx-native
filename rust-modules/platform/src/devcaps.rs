@@ -228,6 +228,17 @@ pub fn audio_track_fits(codec: &str, channels: i64, sample_rate: i64) -> bool {
     }
 }
 
+/// Whether the app's lossy decode of a source with `channels` channels MIXES IT DOWN: the decode's one
+/// output is stereo ([`PCM_MAX_CHANNELS`] channels), so a source with more than two channels loses its
+/// layout, and one with an unstated count (`<= 0`) is not known to keep it. **The ONE predicate of the
+/// owner's rule (2026-10-28, #1082): the app never mixes a surround source down by default.** The
+/// planner ([`Caps::app_decodes_lossy_track`]), the failed-open ladder (`player::recovery`'s order of
+/// the app decode and the manual encode, and Force Direct Play's rung) and the track menu's "played in
+/// stereo" mark all ask this, so none of them can disagree about which tracks are mixed.
+pub fn app_decode_mixes_down(channels: i64) -> bool {
+    !(1..=i64::from(PCM_MAX_CHANNELS)).contains(&channels)
+}
+
 const CAPS_TABLE: &str = "/etc/umediaserver/device_codec_capability_config.json";
 
 /// One native-audio combination that is **measured broken** on a firmware family, and so is not
@@ -553,6 +564,16 @@ impl Caps {
         self
     }
 
+    /// Whether this value lets the app decode a source with `channels` channels, in the mode `forced`
+    /// says (Force Direct Play), WITHOUT mixing it down against the viewer's choice: false only for a
+    /// Force Direct Play of a source [`app_decode_mixes_down`] says is mixed down. Force Direct Play
+    /// never mixes a surround source down (owner, 2026-10-28, #1082): it plays what the set decodes or
+    /// shows the refusal. Auto's last rung may, and so may the explicit `appdecodelossy` debug trigger
+    /// ([`AppLossy::All`]), which exists to measure a decode on any file.
+    pub fn app_may_mix_down(&self, channels: i64, forced: bool) -> bool {
+        !(forced && app_decode_mixes_down(channels)) || self.app_lossy == AppLossy::All
+    }
+
     /// The debug form ([`AppLossy::All`], every lossy row in force): even a codec the set decodes
     /// natively goes through the app, so each row's cost can be measured on a set that has its decoder.
     pub fn with_app_lossy(mut self) -> Caps {
@@ -590,11 +611,15 @@ impl Caps {
     /// row, and the codec is either in force or Force Direct Play has no native path for the track (so
     /// the app replaces what would be a refusal; a set that plays it natively keeps doing so). The
     /// track's own limit is the rate bound of a rate-bound row ([`audio_track_fits`]); the channel
-    /// count is not one, since the mix is by layout down to two.
+    /// count is no limit of the DECODER (it mixes by layout down to two), but **Force Direct Play
+    /// never mixes a surround source down** ([`Caps::app_may_mix_down`], owner 2026-10-28, #1082): there
+    /// the app decodes a stereo or mono track only, and a surround one keeps its refusal. Auto's value
+    /// with the codec in force (the recovery ladder's last rung) decodes any width.
     pub fn app_decodes_lossy_track(&self, codec: &str, channels: i64, sample_rate: i64, forced: bool) -> bool {
         let id = audio_codec_id(codec);
         self.app_may_decode_lossy(&id)
             && audio_track_fits(&id, channels, sample_rate)
+            && self.app_may_mix_down(channels, forced)
             && (self.app_lossy_in_force.contains(id.as_ref())
                 || (forced && !self.native_audio_track(&id, channels, sample_rate, true)))
     }
@@ -2219,19 +2244,65 @@ mod tests {
         let rowless = parse(&REAL.replace("DTS", "WMA")).unwrap();
         assert!(!rowless.audio_has("dts"));
         for spelling in ["dts", "dca", "DTS"] {
-            assert!(rowless.app_decodes_lossy_track(spelling, 8, 96_000, true), "{spelling}");
+            // a stereo core at any rate: nothing to mix down (a surround one is `forced_app_decode_never_mixes_a_surround_source_down`)
+            assert!(rowless.app_decodes_lossy_track(spelling, 2, 96_000, true), "{spelling}");
         }
         assert!(!rowless.native_audio_track("dts", 8, 0, true));
         assert!(!rowless.app_decodes_lossy_track("dts", 6, 0, false), "Auto converts on the server instead");
-        assert!(!Caps::assumed().app_decodes_lossy_track("dts", 6, 0, true), "off is off");
+        assert!(!Caps::assumed().app_decodes_lossy_track("dts", 2, 0, true), "off is off");
         let learned = native.minus(&[refusal("dts", 6)], "");
-        assert!(learned.app_decodes_lossy_track("dts", 6, 0, true), "a surround refusal leaves stereo only");
+        assert!(
+            !learned.app_decodes_lossy_track("dts", 6, 0, true),
+            "a learned surround refusal is still a surround track: Force Direct Play shows the refusal, it does not mix down"
+        );
         assert!(!learned.app_decodes_lossy_track("dts", 2, 0, true));
         let unmeasured = rowless.clone();
         for codec in ["truehd", "mp3", "vorbis"] {
             assert!(!unmeasured.app_decodes_lossy_track(codec, 2, 44_100, true), "{codec}: no evidence, no decode");
         }
         assert!(!rowless.app_decodes_lossy_track("ac3", 6, 0, true), "only the lossy rows");
+    }
+
+    /// **The app never mixes a surround source down by default** (owner, 2026-10-28, #1082). Force Direct
+    /// Play, on a set with no path of its own for the track, decodes in the app only a source that is
+    /// already stereo or mono; a surround one (or one whose count is not stated) is refused, whatever
+    /// codec and rate. The rule holds for a codec the recovery rung put in force too (the rung is
+    /// reached by a stereo track only under Forced), but not for Auto's last rung, which is exactly
+    /// where the downmix is allowed, nor under the `appdecodelossy` trigger, an explicit override.
+    #[test]
+    fn forced_app_decode_never_mixes_a_surround_source_down() {
+        for (channels, mixes) in [(-1, true), (0, true), (1, false), (2, false), (3, true), (6, true), (8, true)] {
+            assert_eq!(app_decode_mixes_down(channels), mixes, "{channels} channels");
+        }
+        let rowless = parse(&REAL.replace("DTS", "WMA")).unwrap();
+        assert!(rowless.app_lossy == AppLossy::Measured && !rowless.audio_has("dts"));
+        for spelling in ["dts", "dca", "DTS"] {
+            for channels in [0, 3, 6, 8] {
+                assert!(!rowless.app_decodes_lossy_track(spelling, channels, 48_000, true), "{spelling} {channels}ch");
+            }
+            for channels in [1, 2] {
+                assert!(rowless.app_decodes_lossy_track(spelling, channels, 48_000, true), "{spelling} {channels}ch");
+            }
+        }
+        assert!(!rowless.app_may_mix_down(6, true) && rowless.app_may_mix_down(2, true));
+        assert!(rowless.app_may_mix_down(6, false), "Auto asks the ladder's order, not this gate");
+        // A set that has the decoder and a refusal the install learned: a learned surround refusal leaves
+        // stereo to the set's own decoder, and the surround track stays refused under Force.
+        let learned = parse(REAL).unwrap().minus(&[refusal("dts", 6)], "");
+        assert!(!learned.app_decodes_lossy_track("dts", 6, 0, true));
+        // The recovery rung's value: Auto may use it for any width (the last rung), Force only for stereo.
+        let rescue = rowless.clone().with_app_lossy_for("dts");
+        assert!(rescue.app_decodes_lossy_track("dts", 6, 0, false), "Auto's last rung decodes a surround track");
+        assert!(rescue.app_decodes_lossy_track("dts", 2, 0, true));
+        assert!(
+            !rescue.app_decodes_lossy_track("dts", 6, 0, true),
+            "a codec in force by the rung still does not mix a surround pick down under Force"
+        );
+        // The debug trigger is the explicit override (it measures a decode on any file), in both modes.
+        let all = Caps::assumed().with_app_lossy();
+        for forced in [false, true] {
+            assert!(all.app_decodes_lossy_track("dts", 8, 96_000, forced) && all.app_may_mix_down(8, forced));
+        }
     }
 
     /// The recovery rung's value puts ONE codec in force: the others, and the policy, stay as they were.
