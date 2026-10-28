@@ -9,6 +9,10 @@ use std::sync::OnceLock;
 pub struct Info {
     /// e.g. "4.10.2" — empty when unknown
     pub release: String,
+    /// The exact firmware build, e.g. "6.5.3-47" (nyx's `core_os_release`: the release and the
+    /// build id); falls back to `release` when the file has no such key, empty when unknown. A
+    /// patch within one release changes this and not `release`.
+    pub build: String,
     /// e.g. "goldilocks2-grampians" — webosbrew buckets firmware by this
     pub codename: String,
     /// e.g. "4.1.0"
@@ -22,6 +26,7 @@ pub struct Info {
 static INFO: OnceLock<Info> = OnceLock::new();
 static NO_INFO: Info = Info {
     release: String::new(),
+    build: String::new(),
     codename: String::new(),
     api: String::new(),
     name: String::new(),

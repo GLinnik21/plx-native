@@ -2610,7 +2610,10 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // (tag 13, with its `media:u64` id); `ARG_SHAPE` gains `VersionsPanel{host,sid,rk,anchor}` and
 // `screens::versions_panel::SHAPE` is appended. One bump; the three replay fixtures were
 // re-recorded against it; the previous pin was 0x209b_8063_1907_d7c8.
-const SCREEN_SHAPES_PIN: u64 = 0x3cf2_5b06_5ed9_8faa;
+// Immediate jump state adds SeekBurst target/time and the pending FF/REW tap flag.
+// The independent settings also update the Preferences and Picker state versions.
+// Previous pin: 0x3cf2_5b06_5ed9_8faa. Re-record the incompatible anchors through plxnative-rec.
+const SCREEN_SHAPES_PIN: u64 = 0x9425f33f3f536aa5;
 
 #[cfg(test)]
 mod arg_tests {

@@ -120,44 +120,65 @@ pub trait VideoSink: Sync {
 #[cfg_attr(all(any(test, feature = "test-support"), feature = "hostsim"), allow(dead_code))] // player::sink() answers HostSink there
 pub fn installed() -> &'static dyn VideoSink { super::port().sink }
 
+/// Every verb of [`VideoSink`], refused: the answers of "no sink". Written once, for the sinks
+/// that refuse (`NoSink`, `RefusingSink`); the three memoized queries are each sink's own.
+macro_rules! refuse_every_verb {
+    () => {
+        unsafe fn load(&self, _payload: *const c_char, _epoch: u32) -> c_int { 0 }
+        unsafe fn ready(&self, _mt: &MainThread) -> c_int { 0 }
+        unsafe fn is_load_completed(&self, _mt: &MainThread) -> c_int { 0 }
+        unsafe fn play(&self, _mt: &MainThread) -> c_int { 0 }
+        unsafe fn pause(&self, _mt: &MainThread) -> c_int { 0 }
+        unsafe fn set_volume(&self, _mt: &MainThread, _volume: c_int) -> c_int { 0 }
+        unsafe fn flush(&self, _mt: &MainThread) -> c_int { 0 }
+        unsafe fn push_eos(&self, _mt: &MainThread) -> c_int { 0 }
+        unsafe fn set_time_to_decode(&self, _mt: &MainThread, _position_ns: i64) -> c_int { 0 }
+        unsafe fn set_content_info(&self, _mt: &MainThread, _position_ns: i64) -> c_int { 0 }
+        unsafe fn send_segment(&self, _mt: &MainThread) -> c_int { 0 }
+        unsafe fn seek(&self, _mt: &MainThread, _ms: i64) -> c_int { 0 }
+        unsafe fn feed(&self, _mt: &MainThread, _p: *const u8, _size: c_uint, _pts: i64, _es_data: c_int) -> c_char {
+            b'e' as c_char
+        }
+        unsafe fn unload(&self, _owner: &UnloadTicket) {}
+        unsafe fn callback_gate_retire(&self, _mt: &MainThread) -> c_int { 0 }
+        unsafe fn callback_intercepts(&self, _mt: &MainThread) -> u32 { 0 }
+        unsafe fn destroy(&self, _mt: &MainThread) -> c_int { 0 }
+        unsafe fn quarantine(&self, _mt: &MainThread) {}
+        unsafe fn create_window(&self, _mt: &MainThread) -> *const c_char { std::ptr::null() }
+        #[allow(clippy::too_many_arguments)]
+        unsafe fn place_window(&self, _mt: &MainThread, _src_w: c_int, _src_h: c_int, _dst_x: c_int,
+            _dst_y: c_int, _dst_w: c_int, _dst_h: c_int) -> c_int { 0 }
+        unsafe fn destroy_window(&self, _mt: &MainThread) {}
+        unsafe fn plane_create(&self, _mt: &MainThread, _app_id: *const c_char, _player_type: c_int) -> c_long { 0 }
+        unsafe fn plane_bind(&self, _mt: &MainThread, _media_id: *const c_char) {}
+        unsafe fn plane_send_video_data(&self, _mt: &MainThread, _source_info: *const c_char) -> c_int { -1 }
+        unsafe fn plane_send_atmos(&self, _mt: &MainThread, _media_id: *const c_char) -> c_int { 0 }
+        unsafe fn plane_start(&self, _mt: &MainThread, _x: c_long, _y: c_long, _w: c_long, _h: c_long) {}
+        unsafe fn plane_unload(&self, _mt: &MainThread) {}
+        unsafe fn plane_pause(&self, _mt: &MainThread) {}
+        unsafe fn plane_resume(&self, _mt: &MainThread) {}
+    };
+}
+
 /// No sink: exactly `ffi_host.rs`'s disabled answers.
 pub struct NoSink;
 
 impl VideoSink for NoSink {
-    unsafe fn load(&self, _payload: *const c_char, _epoch: u32) -> c_int { 0 }
-    unsafe fn ready(&self, _mt: &MainThread) -> c_int { 0 }
-    unsafe fn is_load_completed(&self, _mt: &MainThread) -> c_int { 0 }
-    unsafe fn play(&self, _mt: &MainThread) -> c_int { 0 }
-    unsafe fn pause(&self, _mt: &MainThread) -> c_int { 0 }
-    unsafe fn set_volume(&self, _mt: &MainThread, _volume: c_int) -> c_int { 0 }
-    unsafe fn flush(&self, _mt: &MainThread) -> c_int { 0 }
-    unsafe fn push_eos(&self, _mt: &MainThread) -> c_int { 0 }
-    unsafe fn set_time_to_decode(&self, _mt: &MainThread, _position_ns: i64) -> c_int { 0 }
-    unsafe fn set_content_info(&self, _mt: &MainThread, _position_ns: i64) -> c_int { 0 }
-    unsafe fn send_segment(&self, _mt: &MainThread) -> c_int { 0 }
-    unsafe fn seek(&self, _mt: &MainThread, _ms: i64) -> c_int { 0 }
+    refuse_every_verb!();
     fn feed_abi_is_cow(&self) -> bool { false }
-    unsafe fn feed(&self, _mt: &MainThread, _p: *const u8, _size: c_uint, _pts: i64, _es_data: c_int) -> c_char {
-        b'e' as c_char
-    }
-    unsafe fn unload(&self, _owner: &UnloadTicket) {}
-    unsafe fn callback_gate_retire(&self, _mt: &MainThread) -> c_int { 0 }
-    unsafe fn callback_intercepts(&self, _mt: &MainThread) -> u32 { 0 }
-    unsafe fn destroy(&self, _mt: &MainThread) -> c_int { 0 }
-    unsafe fn quarantine(&self, _mt: &MainThread) {}
     fn window_mode(&self) -> c_int { VP_NONE }
     fn window_id(&self) -> &'static CStr { c"" }
-    unsafe fn create_window(&self, _mt: &MainThread) -> *const c_char { std::ptr::null() }
-    #[allow(clippy::too_many_arguments)]
-    unsafe fn place_window(&self, _mt: &MainThread, _src_w: c_int, _src_h: c_int, _dst_x: c_int,
-        _dst_y: c_int, _dst_w: c_int, _dst_h: c_int) -> c_int { 0 }
-    unsafe fn destroy_window(&self, _mt: &MainThread) {}
-    unsafe fn plane_create(&self, _mt: &MainThread, _app_id: *const c_char, _player_type: c_int) -> c_long { 0 }
-    unsafe fn plane_bind(&self, _mt: &MainThread, _media_id: *const c_char) {}
-    unsafe fn plane_send_video_data(&self, _mt: &MainThread, _source_info: *const c_char) -> c_int { -1 }
-    unsafe fn plane_send_atmos(&self, _mt: &MainThread, _media_id: *const c_char) -> c_int { 0 }
-    unsafe fn plane_start(&self, _mt: &MainThread, _x: c_long, _y: c_long, _w: c_long, _h: c_long) {}
-    unsafe fn plane_unload(&self, _mt: &MainThread) {}
-    unsafe fn plane_pause(&self, _mt: &MainThread) {}
-    unsafe fn plane_resume(&self, _mt: &MainThread) {}
+}
+
+/// A fence in front of a real sink (read through the getter it holds, so a static can name it): every verb is refused (NoSink's answers, nothing reaches the
+/// wrapped sink) while the three memoized queries, which say nothing about the native object,
+/// keep the wrapped sink's real answer. `player::sink()` hands this out while an off-frame
+/// `Unload` owns the object, so the main thread cannot reach what the worker is inside.
+pub struct RefusingSink(pub fn() -> &'static dyn VideoSink);
+
+impl VideoSink for RefusingSink {
+    refuse_every_verb!();
+    fn feed_abi_is_cow(&self) -> bool { (self.0)().feed_abi_is_cow() }
+    fn window_mode(&self) -> c_int { (self.0)().window_mode() }
+    fn window_id(&self) -> &'static CStr { (self.0)().window_id() }
 }

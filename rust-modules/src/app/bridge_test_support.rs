@@ -464,7 +464,7 @@ impl World {
         if held { super::watchlist_press_tests::hold_reads(&mut bridge); }
         let mut w = World { d, bridge, frame: 1, pump: Pump::new(), performed: Vec::new(), own: plx_plex::plex::ServerId::UNSET,
             script: Some(script), _session: session, _serial: serial, feed: Some(|d, bridge| {
-                bridge.watchlist_for_test().pump();
+                bridge.watchlist_pump();
                 bridge.watchlist_feed(d);
             }) };
         super::nav_tab(&mut w.d, &mut w.bridge, HomeTab::Watchlist, None, None);
@@ -557,7 +557,7 @@ impl World {
         let (d, bridge) = super::watchlist_press_tests::rig_over(&script);
         World { d, bridge, frame: 1, pump: Pump::new(), performed: Vec::new(), own: plx_plex::plex::ServerId::UNSET,
             script: Some(script), _session: session, _serial: serial, feed: Some(|d, bridge| {
-                bridge.watchlist_for_test().pump();
+                bridge.watchlist_pump();
                 bridge.watchlist_feed(d);
                 super::watchlist_press_tests::feed_catalog(bridge, d);
             }) }
@@ -876,6 +876,16 @@ pub(crate) struct Pms {
 
 impl Pms {
     pub(crate) fn serve(respond: fn(&str) -> (&'static str, String)) -> Pms {
+        Self::spawn(move |path, _| respond(path))
+    }
+
+    /// [`Pms::serve`] for a read that pages: `respond` is also handed the request's query string
+    /// (`X-Plex-Container-Start=..&X-Plex-Container-Size=..`), empty when there is none.
+    pub(crate) fn serve_query(respond: fn(&str, &str) -> (&'static str, String)) -> Pms {
+        Self::spawn(respond)
+    }
+
+    fn spawn(respond: impl Fn(&str, &str) -> (&'static str, String) + Send + 'static) -> Pms {
         use std::io::{Read, Write};
         use std::sync::atomic::Ordering;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -892,8 +902,9 @@ impl Pms {
                 let mut buf = [0u8; 4096];
                 let n = conn.read(&mut buf).unwrap_or(0);
                 let head = String::from_utf8_lossy(&buf[..n]);
-                let path = head.split_whitespace().nth(1).unwrap_or("");
-                let (status, body) = respond(path.split('?').next().unwrap_or(""));
+                let target = head.split_whitespace().nth(1).unwrap_or("");
+                let (path, query) = target.split_once('?').unwrap_or((target, ""));
+                let (status, body) = respond(path, query);
                 let _ = write!(
                     conn,
                     "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -911,5 +922,23 @@ impl Drop for Pms {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
+    }
+}
+
+impl Bridge {
+    /// Seat the plex.tv account a Watchlist rig scripts: the Bridge reads the registry for the identity
+    /// it hands the stores (`Bridge::watchlist_input`), so the rig publishes a profile (with the
+    /// plex.tv credential when `credential`) and, where the test holds no scratch session of its own,
+    /// seats one for the client id. The session lives as long as the rig. The caller holds the test lock.
+    pub(crate) fn seat_watchlist_account_for_test(&mut self, credential: bool) {
+        use plx_plex::plex::session;
+        if session::peek().client_id.is_empty() {
+            self.watchlist_session = Some(session::TempSession::new("watchlist-account"));
+        }
+        let user = session::UserRef {
+            plex_tv_token: credential.then(|| "synthetic-credential".to_owned()),
+            ..Default::default()
+        };
+        session::publish_profile_for_test(Some(user), session::current_gen().wrapping_add(1));
     }
 }

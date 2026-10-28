@@ -45,7 +45,7 @@ fn a_served_page_leaves_the_section_ready() {
 fn a_seeded_listing_is_not_overwritten_by_the_request_that_was_out_when_it_was_seeded() {
     let _g = plx_base::testlock::serial();
     let (_cleanup, mut browse, _, client) = registered_page_source();
-    *browse.adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(PageResult {
+    browse.adapter.page.post(PageResult {
         client,
         token_gen: client.token_gen(),
         gen: browse.state.query_gen(),
@@ -55,7 +55,7 @@ fn a_seeded_listing_is_not_overwritten_by_the_request_that_was_out_when_it_was_s
         total: -1,
         sorts: None, restored: None, genres: None, genre: None,
         resolved: Default::default(),
-    });
+    }, |_| true);
     seed_items_for_owner_test(&mut browse.state, 37);
     let _outcome = browse.pump();
     assert_eq!(browse.fetch_state(), SecFetch::Ready, "the late failure is for a query that has been answered");

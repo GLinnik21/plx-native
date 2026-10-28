@@ -868,6 +868,25 @@ class Enhancement266(unittest.TestCase):
         ig_audio = next(s for s in ig_part["Stream"] if s["streamType"] == 2)
         self.assertEqual(ig_audio["decision"], "copy")
 
+    def test_refuse_conversions_declines_only_what_asks_the_server_to_convert(self):
+        rk = ENHANCEMENT_AC3_2CH_RK
+        base = f"/video/:/transcode/universal/decision?path=%2Flibrary%2Fmetadata%2F{rk}"
+        direct = base + "&hasMDE=1&directPlay=1&directStreamAudio=0"
+        remux = base + "&directPlay=0&directStream=1"
+        pms = MockPms(Library())
+        self.assertIs(pms.refuse_conversions, False)
+        self.assertEqual(get(pms, remux)["generalDecisionCode"], 1000, "off: as ever")
+        pms.refuse_conversions = True
+        self.assertEqual(get(pms, direct)["generalDecisionCode"], 1000, "the direct-play probe is unaffected")
+        refused = get(pms, remux)
+        self.assertEqual(refused["generalDecisionCode"], 2000)
+        self.assertEqual(refused["Metadata"], [])
+        self.assertTrue(refused["transcodeDecisionText"])
+        status, _, body = pms.handle("POST", "/_mock/config", json.dumps({"refuse_conversions": False}).encode())
+        self.assertEqual(status, 200)
+        self.assertIs(json.loads(body)["refuse_conversions"], False)
+        self.assertEqual(get(pms, remux)["generalDecisionCode"], 1000)
+
     @staticmethod
     def _requests(pms):
         status, ctype, body = pms.handle("GET", "/_mock/requests")
@@ -880,7 +899,8 @@ class Enhancement266(unittest.TestCase):
             "POST", "/_mock/config", json.dumps({"refuse_enhancements": True}).encode())
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body), {
-            "refuse_enhancements": True, "ignore_enhancements": False, "plex_pass": True})
+            "refuse_enhancements": True, "ignore_enhancements": False, "refuse_conversions": False,
+            "plex_pass": True})
         self.assertIs(pms.refuse_enhancements, True)
         self.assertIs(pms.ignore_enhancements, False)
 

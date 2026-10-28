@@ -79,7 +79,7 @@ impl Harness {
                 let stores = plx_data::stores::Stores::default();
                 stores.browse.borrow_mut().seed_two_source_table_for_test();
                 stores.capture_browse(&mut directory);
-                stores.browse_run(BrowseCmd::SetCur(0));
+                stores.browse_run_for_test(BrowseCmd::SetCur(0));
                 {
                     let mut browse = stores.browse.borrow_mut();
                     browse.seed_items_for_test(120);

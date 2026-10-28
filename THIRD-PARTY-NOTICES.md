@@ -53,10 +53,13 @@ has always done).
 
 **Configuration.** Built with `--disable-everything` plus an explicit component list, **without**
 `--enable-gpl`, `--enable-version3` or `--enable-nonfree`, so no GPL-licensed or non-free FFmpeg
-component is present. Only demuxers, parsers, bitstream filters and *subtitle* decoders are
-enabled — video and audio are decoded by the television's hardware, not by FFmpeg. The one
-external library enabled is **zlib**, the television's own `libz.so.1` (not redistributed — see
-section 3), which the Matroska demuxer needs to inflate compressed subtitle tracks.
+component is present. Only demuxers, parsers, bitstream filters, *subtitle* decoders and the
+LGPL audio decoders the app runs itself are enabled — video and, in the ordinary case, audio are
+decoded by the television's hardware, not by FFmpeg. FLAC, ALAC and LPCM are decoded by the app
+because the television's player has no input for them; the result is fed to it as PCM. The DTS core is decoded
+by the app (`dca`) where Force Direct Play has no native path for it or a refused open falls back to it. The one external library enabled is **zlib**,
+the television's own `libz.so.1` (not redistributed — see section 3), which the Matroska demuxer
+needs to inflate compressed subtitle tracks.
 
 **You may modify and replace them.** They are ordinary shared libraries, loaded at run time by
 `dlopen` from the application's own directory; no FFmpeg code is linked into the `plxnative`
@@ -81,7 +84,7 @@ uses `libass-plx-host.so.0`.
 | libass | 0.17.5 | ISC (`licenses/libass-ISC.txt`) |
 | FreeType | 2.15.0 | Elected FreeType License; contributed MIT and Zlib code (`licenses/FreeType.txt`, `licenses/Zlib.txt`) |
 | FriBidi | 1.0.17 | LGPL-2.1-or-later (`licenses/LGPL-2.1.txt`) |
-| HarfBuzz | 14.6.0 | Old MIT (`licenses/HarfBuzz-Old-MIT.txt`) |
+| HarfBuzz | 15.0.0 | Old MIT (`licenses/HarfBuzz-Old-MIT.txt`) |
 | libunibreak | 8.0 | zlib (`licenses/libunibreak-Zlib.txt`) |
 
 Portions of this software are copyright © 2026 The FreeType Project

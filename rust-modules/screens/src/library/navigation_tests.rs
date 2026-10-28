@@ -67,7 +67,7 @@ impl Fixture {
     fn new(libraries: usize, items: usize, shelves: usize) -> Self {
         let stores = plx_data::stores::Stores::default();
         stores.browse.borrow_mut().seed_two_source_table_for_test();
-        stores.browse_run(BrowseCmd::SetCur(0));
+        stores.browse_run_for_test(BrowseCmd::SetCur(0));
         let titles: Vec<_> = (0..shelves)
             .map(|i| format!("Synthetic shelf {i}"))
             .collect();

@@ -73,13 +73,16 @@
 //!   another page: a Closing surface carried into covered modals is re-entered by the container and
 //!   asks for its own item too, and nested presented copies (a copy presented from inside another
 //!   copy) are not covered.
-//! - `LoadSeason(usize)` → `metadata::load_season` — flip the season strip optimistically, fetch
-//!   the episodes off-thread (debounced landing through `pump_season`).
-//! - `WantEpisodes{lo, hi, focus, restore}` → `metadata::want_episodes` — fetch the pages of a long
-//!   season the screen needs and evict the ones it does not (`pump_episode_pages` installs them).
-//! - `WantRelated{before, seen}` → `metadata::want_related` — slide the Related row's tail window
-//!   (`pump_related`, at the start of the frame, installs it).
-//! - `SeekRelated{at, seen}` → `metadata::ask_related` with `RelatedAsk::Seek` — the same read, opened at a tail position.
+//! - `LoadSeason(usize)` → `metadata::load_season` — flip the season strip optimistically and emit
+//!   the episodes' fetch as a `StoreJob::MetaSeason` the owner starts (debounced landing through
+//!   `pump_season`).
+//! - `WantEpisodes{lo, hi, focus, restore}` → `metadata::want_episodes` — emit the fetch of the pages
+//!   of a long season the screen needs as a `StoreJob::MetaEpisodes` and evict the ones it does
+//!   not (`pump_episode_pages` installs them).
+//! - `WantRelated{before, seen}` → `metadata::want_related` — slide the Related row's tail window:
+//!   take the single-flight claim and emit the read as a `StoreJob::MetaRelated` the owner starts
+//!   (`pump_related`, at the start of the frame, installs the window it lands).
+//! - `SeekRelated{at, seen}` → `metadata::ask_related` with `RelatedAsk::Seek` — the same job, opened at a tail position.
 //! - `SetNowPlaying(Option<NowPlaying>)` → `metadata::set_now_playing`.
 //! - `ApplyView{at, edit}` → `metadata::set_watched_local` — the optimistic half of a view-state
 //!   change, answers whether it actually changed anything.
@@ -190,7 +193,7 @@ pub enum MetadataCmd {
     /// Unlike `Clear`, this one must not leave a previous profile's playback descriptor or track
     /// store reachable from the next profile's Bridge.
     Reset,
-    /// The season strip: flip optimistically, fetch the episodes off-thread.
+    /// The season strip: flip optimistically, emit the episodes' fetch as a job the owner starts.
     LoadSeason(usize),
     /// The selected season's episodes the screen needs, as indices `lo..hi` (what is on screen plus
     /// a lead in the direction of travel), with the focused index and the target of a pending

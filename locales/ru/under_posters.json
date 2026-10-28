@@ -1,0 +1,19 @@
+{
+  "under_posters.title": "Под постерами",
+  "under_posters.detail": "Подписи под постером.",
+  "under_posters.copy": "На большинстве постеров уже есть название. Выберите, что показывать под выбранным постером.",
+  "under_posters.title_row": "Название",
+  "under_posters.title_detail": "Название жирным шрифтом.",
+  "under_posters.details_row": "Сведения",
+  "under_posters.details_detail": "Одна строка информации.",
+  "under_posters.details_copy": "Для начатых и ещё не вышедших фильмов и сериалов, а также коллекций вместо этого отображаются оставшееся время, дата выхода или число фильмов.",
+  "under_posters.year_length": "Год · Длительность",
+  "under_posters.genre": "Жанр",
+  "under_posters.video": "Видео",
+  "under_posters.age_rating_score": "Возрастной рейтинг · Оценка",
+  "under_posters.none": "Ничего",
+  "under_posters.reset": "Сбросить настройки",
+  "under_posters.reset_detail": "Год и длительность, без названия.",
+  "under_posters.sample_title": "Фильм",
+  "under_posters.sample_genre": "Драма"
+}

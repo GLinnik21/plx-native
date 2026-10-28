@@ -814,6 +814,9 @@ pub struct Stream {
     pub chroma_subsampling: String,
     #[serde(default, deserialize_with = "de_i64")]
     pub channels: i64,
+    /// Audio track only: Hz, e.g. 48000; 0 = not said. The PCM Load declares it (FLAC).
+    #[serde(rename = "samplingRate", default, deserialize_with = "de_i64")]
+    pub sampling_rate: i64,
     #[serde(rename = "audioChannelLayout", default)]
     pub audio_channel_layout: String,
     #[serde(rename = "displayTitle", default)]

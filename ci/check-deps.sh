@@ -56,7 +56,8 @@
 # one file per area under ci/allow/<rule>/ (exact multisets that only shrink: a new site, a stale
 # line, a wrong `# count:`, or a line filed in the wrong area fails; a migration lands by deleting
 # lines). A MACHINE is the scope of the first two: rust-modules/data, session, screens, ui, appkit
-# and machine, plex's session.rs, and the player's lifecycle.rs and route planners.
+# and machine, plex's session.rs, and the player's lifecycle.rs, recovery.rs (the failed-open ladder
+# machine) and route planners.
 #   workers  — a production worker start in a machine: `task::spawn`, `spawn_small*`,
 #              `spawn_off_frame*`, `storage_worker::submit`, `submit_retained`, the command worker's
 #              `.submit_ticket`. A machine's work leaves as a typed effect the app runs.
@@ -619,8 +620,11 @@ gate ticks 'SDL_GetTicks\(' "$SRC" "$SRC_BASE" "$SRC_PLATFORM" "$SRC_GFX" "$SRC_
 #   wall (widened Sans-IO store lane, Collection, 2026-10-24): also data/src/collection.rs, whose step emits its request as a store job and starts nothing, so a clock read there is an instrument or a defect (no hit when it joined).
 #   wall (widened Sans-IO lifecycle PR B, 2026-10-24): also media/src/player/lifecycle.rs, the foreground machine, once its drivers (which carry `CycleScope::enter`) became player/foreground.rs. `step` is a function of (state, event) and the pause it parks with arrives on the event, so a clock read there is an instrument or a defect (no hit when it joined).
 #   wall (widened Sans-IO store lane, subtitle search, 2026-10-24): also data/src/subsearch.rs, whose step emits its request as a store job and starts nothing, so a clock read there is an instrument or a defect (no hit when it joined; stores/viewreconcile.rs is already inside data/src/stores).
+#   wall (widened Sans-IO store lane, Browse section hubs, 2026-10-24): also data/src/browse/section_hubs.rs, whose steps emit their reads as store jobs and start nothing, so a clock read there is an instrument or a defect (no hit when it joined; the rest of browse/ is not in scope yet, its directory and page reads still start their own workers).
 #   wall (widened Sans-IO store lane, Search, 2026-10-24): also data/src/search.rs and data/src/search/, whose step emits its fetches as store jobs and starts nothing (its debounce and backoff count the `dt` the pump is handed), so a clock read there is an instrument or a defect (no hit when they joined).
-gate wall '(Instant::now|SystemTime::now|\.elapsed\(\))' "$SRC_UI" "$SRC_MACHINE" "$SRC_APPKIT" "$SRC/app" "$SRC_MEDIA/route/plan.rs" "$SRC_MEDIA/route/plan_memory.rs" "$SRC_SCREENS" "$SRC_DATA/stores" "$SRC_PLEX/plex/session.rs" "$SRC_SESSION"/auth/owner*.rs "$SRC_DATA/collection.rs" "$SRC_DATA/subsearch.rs" "$SRC_DATA/search.rs" "$SRC_DATA/search" "$SRC_MEDIA/player/lifecycle.rs"
+#   wall (widened Sans-IO store lane, Browse directory and page reads, 2026-10-25): also data/src/browse/listing_jobs.rs, the requests, ports and completion paths of the directory and listing-page reads whose steps now emit them as store jobs, so a clock read there is an instrument or a defect (no hit when it joined; the rest of browse/ is not in scope yet, its source reads and pins still read the registry and the roster).
+#   wall (widened Sans-IO store lane, Browse source discovery, 2026-10-28): also data/src/browse/discovery_job.rs, the request, port and completion path of the source discovery whose step now emits it as a store job, so a clock read there is an instrument or a defect (no hit when it joined; the rest of browse/ is not in scope yet).
+gate wall '(Instant::now|SystemTime::now|\.elapsed\(\))' "$SRC_UI" "$SRC_MACHINE" "$SRC_APPKIT" "$SRC/app" "$SRC_MEDIA/route/plan.rs" "$SRC_MEDIA/route/plan_memory.rs" "$SRC_SCREENS" "$SRC_DATA/stores" "$SRC_PLEX/plex/session.rs" "$SRC_SESSION"/auth/owner*.rs "$SRC_DATA/collection.rs" "$SRC_DATA/subsearch.rs" "$SRC_DATA/search.rs" "$SRC_DATA/search" "$SRC_DATA/browse/section_hubs.rs" "$SRC_DATA/browse/listing_jobs.rs" "$SRC_DATA/browse/discovery_job.rs" "$SRC_MEDIA/player/lifecycle.rs"
 
 if grep -rnE 'fp-contract|fast-math|\+fma' rust-modules/Cargo.toml rust-modules/build.rs rust-modules/net/Cargo.toml rust-modules/plex/Cargo.toml rust-modules/telemetry/Cargo.toml rust-modules/data/Cargo.toml rust-modules/session/Cargo.toml rust-modules/media/Cargo.toml rust-modules/appkit/Cargo.toml rust-modules/screens/Cargo.toml rust-modules/platform/Cargo.toml rust-modules/platform/build.rs rust-modules/gfx/Cargo.toml rust-modules/gfx/build.rs rust-modules/ui/Cargo.toml rust-modules/ui/build.rs rust-modules/appkit/build.rs rust-modules/screens/build.rs rust-modules/storage/Cargo.toml rust-modules/storage/build.rs rust-modules/.cargo Makefile 2>/dev/null | grep -v '^[[:space:]]*#'; then
   fail "fpflags: a floating-point contraction flag is set (spec §4.2 assumes none)"
@@ -655,7 +659,7 @@ if [ -n "$(grep_code '\bEffect::' "$SRC" "$SRC_BASE" "$SRC_MACHINE" "$SRC_PLATFO
 # outright — and added every real mutator the census found missing entirely: `alt_install`,
 # `alt_restamp_owners`, `alt_prune_inactive`, `alt_stand_in`, `record_pins`, `retry_source`,
 # `apply_landing`, `take_landed_views`/`take_landed`.
-MUTATORS='\b(browse|pms|metadata|search|person|viewstate)::(set_cur|note_library_choice|kick_letters|kick_genres|want|save_cursor|set_sort_by_key|set_sort|set_unwatched|set_genre_by_id|set_genre|retry_cur_source|retry_source|recheck_shares|apply_pins|toggle_pin|record_pins|retry_discovery|reset|discover_pump|pump|pump_detail|pump_season|pump_alt_sources|request|open|close|set_query|request_detail|clear|load_season|set_now_playing|set_watched_local|install_playing|mark_skipped|retire_playing|retire_playing_item|alt_install|alt_restamp_owners|alt_prune_inactive|alt_stand_in|request_refetch_hubs|request_retry|edit_item|apply_landing|take_landed_views|take_landed)\(|\bsection_hubs::(kick|commit_staged|invalidate_all|invalidate|set_watched_local|left_the_deck)\('
+MUTATORS='\b(browse|pms|metadata|search|person|viewstate)::(set_cur|note_library_choice|kick_letters|kick_genres|want|save_cursor|set_sort_by_key|set_sort|set_unwatched|set_genre_by_id|set_genre|retry_cur_source|retry_source|recheck_shares|apply_pins|apply_pins_from|toggle_pin|record_pins|record_pins_from|retry_discovery|reset|discover_pump|pump|pump_detail|pump_season|pump_alt_sources|request|open|close|set_query|request_detail|clear|load_season|set_now_playing|set_watched_local|install_playing|mark_skipped|retire_playing|retire_playing_item|alt_install|alt_restamp_owners|alt_prune_inactive|alt_stand_in|request_refetch_hubs|request_retry|edit_item|apply_landing|take_landed_views|take_landed)\(|\bsection_hubs::(kick|commit_staged|invalidate_all|invalidate|set_watched_local|left_the_deck)\('
 # The spelling is matched WITHOUT a `crate::` prefix (a `use crate::metadata;` makes it
 # `metadata::load_season(`), and every `#[cfg(test)] mod … { … }` block is skipped by brace depth
 # wherever it sits in the file — the first version cut at the FIRST such block and let ~700
@@ -702,7 +706,7 @@ if [ "$mut_bad" -eq 0 ]; then ok "mutators"; else fail "mutators: $mut_bad line(
 # script's own shebang is `env bash` and the dev Mac's `/bin/bash` is 3.2 (Apple ships nothing
 # newer over the GPLv3 boundary), which has no associative arrays at all.
 MUT_FNS_TABLE=(
-  "browse/mod.rs|set_cur note_library_choice kick_letters kick_genres want save_cursor set_sort_by_key set_sort set_unwatched set_genre_by_id set_genre retry_cur_source retry_source recheck_shares apply_pins toggle_pin record_pins retry_discovery reset set_watched_local"
+  "browse/mod.rs|set_cur note_library_choice kick_letters kick_genres want save_cursor set_sort_by_key set_sort set_unwatched set_genre_by_id set_genre retry_cur_source retry_source recheck_shares apply_pins apply_pins_from toggle_pin record_pins record_pins_from retry_discovery reset set_watched_local"
   "browse/section_hubs.rs|kick commit_staged invalidate_all invalidate set_watched_local left_the_deck"
   "metadata.rs|request_detail clear load_season set_now_playing set_watched_local install_playing mark_skipped retire_playing retire_playing_item alt_install alt_restamp_owners alt_prune_inactive"
   "pms.rs|request_refetch_hubs request_retry edit_item apply_landing reset"
@@ -1196,7 +1200,7 @@ LG_LEDGERS=ci/allow/blocking.txt LG_COUNT_FILE=ci/allow/blocking.txt \
 # lines of the machine it made pure. MACHINES is the scope of workers and globals; forks reads the
 # whole of the four crates that own the data, the Plex client, the player and the session:
 MACHINES=("$SRC_DATA" "$SRC_SESSION" rust-modules/plex/src/plex/session.rs "$SRC_MEDIA/player/lifecycle.rs"
-  "$SRC_MEDIA/route/plan.rs" "$SRC_MEDIA/route/plan_memory.rs" "$SRC_SCREENS" "$SRC_UI" "$SRC_APPKIT" "$SRC_MACHINE")
+  "$SRC_MEDIA/player/recovery.rs" "$SRC_MEDIA/player/release.rs" "$SRC_MEDIA/route/plan.rs" "$SRC_MEDIA/route/plan_memory.rs" "$SRC_SCREENS" "$SRC_UI" "$SRC_APPKIT" "$SRC_MACHINE")
 FORK_SCOPE=("$SRC_DATA" "$SRC_PLEX" "$SRC_MEDIA" "$SRC_SESSION")
 
 # scope_re <path>...: an ERE over repo-relative file paths that matches those paths (a `.rs` file
@@ -1218,7 +1222,7 @@ fork_scope_re=$(scope_re "${FORK_SCOPE[@]}")
 # has a line that could hold a site of that rule, and ci/ledger.awk then decides what is really one; a
 # file the pattern misses cannot hold one. W and G read the machines, F the four fork crates.
 workers_pat='spawn_small|spawn_off_frame|submit_retained|submit_ticket|task::(spawn|\{|\*)|storage_worker::(submit|\{|\*)|(task|storage_worker)[[:space:]]+as[[:space:]]'
-globals_pat='client_for|current_server|current_snapshot|keypin::(revision|blocked_for|\{|\*)|session::(peek|\{|\*)|grant::(offers|\{|\*)|(^|[^A-Za-z0-9_])transport::(paused|viewer_paused|\{|\*)|(^|[^A-Za-z0-9_])preview::(paused|\{|\*)|player::TX|(session|keypin|grant|player|transport|preview|peek|revision|blocked_for|offers|paused|viewer_paused|TX)[[:space:]]+as[[:space:]]'
+globals_pat='client_for|current_server|current_snapshot|keypin::(revision|blocked_for|\{|\*)|session::(peek|\{|\*)|grant::(offers|\{|\*)|(^|[^A-Za-z0-9_])transport::(paused|viewer_paused|\{|\*)|(^|[^A-Za-z0-9_])preview::(paused|\{|\*)|player::TX|devcaps::(caps|\{|\*)|is_dp_audio|(session|keypin|grant|player|transport|preview|devcaps|caps|is_dp_audio|is_dp_audio_track|peek|revision|blocked_for|offers|paused|viewer_paused|TX)[[:space:]]+as[[:space:]]'
 # a cfg line: one with `test` on it, or an attribute / `cfg!` that opens on one line and closes on a later
 # one, where `test` may sit on the second. A line that is a test-only attribute outright — `#[cfg(test)]`,
 # `#[cfg(any(test, feature = "test-support"))]`, or an `all(<either>, <flat atoms>)` of them — is no
@@ -1250,7 +1254,7 @@ ledger_candidates() {
 # `storage_worker::submit(`, `submit_retained(` (base/src/storage_worker.rs) and the typed command
 # worker's `.submit_ticket(`, keyed `<path>::<enclosing fn>::<spelling>`. A BARE `spawn(` / `submit(` is a
 # site only in a file that imports it from `task` / `storage_worker` (no other `spawn(` is a worker start:
-# `Builder::spawn`, a local fn). A local wrapper (`spawn_discovery`) is not itself a site —
+# `Builder::spawn`, a local fn). A local launcher (`launch_browse_discovery`) is not itself a site —
 # the real call inside it is. The command worker's `.submit(` is not covered: it is `cfg(any(test,
 # feature = "test-support"))` in base, so no production line can call it; `.submit_ticket(` is covered
 # although no machine calls it today, because a machine that did would be starting a worker. A worker
@@ -1279,10 +1283,16 @@ LG_LEDGERS="$(echo ci/allow/workers/*.txt)" LG_AREA_CHECK=1 \
 # (each is `TX.paused` read behind a function; the lifecycle PR B move put them in player/transport.rs and
 # widened this rule to them, seeding the machines' existing reads as a coverage expansion), and `player::TX`
 # in the player's lifecycle (the machine, at zero: it takes the pause as a value on its event, and the
-# spelling stays pinned there as a guard; the HUD's direct reads are not machines). A bare
-# `peek(` / `revision(` / `blocked_for(` / `offers(` / `paused(` / `viewer_paused(` is a site in a file that
-# imports it from `session` / `keypin` / `grant` / `transport` / `preview` (alone, last in a braced group, or
-# by glob; `transport` and `preview` count only as a whole path segment, because `scrub_preview::*` and
+# spelling stays pinned there as a guard; the HUD's direct reads are not machines). The device's
+# capability answer is read behind a function too: `devcaps::caps(`, and the zero-argument audio gates
+# `is_dp_audio(` / `is_dp_audio_track(` that used to read it (the `_with` forms take the value and do not
+# match). The attempt-caps PR widened the rule to them as a coverage expansion, not a shrink: the route's
+# planner took its `&Caps` as an argument and reads none, so they seeded no line. A bare
+# `peek(` / `revision(` / `blocked_for(` / `offers(` / `paused(` / `viewer_paused(` / `caps(` /
+# `is_dp_audio(` / `is_dp_audio_track(` is a site in a file that
+# imports it from `session` / `keypin` / `grant` / `transport` / `preview` / `devcaps` /
+# `plex` / `transcoder` (alone, last in a braced group, or
+# by glob; `transport`, `preview` and `devcaps` count only as a whole path segment, because `scrub_preview::*` and
 # `hud_transport::*` are common module names that import neither) and, for `peek`, in
 # plex/src/plex/session.rs, the module that defines it. A getter named without
 # a call (`.and_then(client_for)`) reads the registry as surely as a call does, so it is a site too; only a
@@ -1292,10 +1302,10 @@ globals_sites=$(
   { ledger_candidates G
     printf '%s\n' rust-modules/plex/src/plex/session.rs "$SRC_MEDIA/player/lifecycle.rs"; } \
     | LG_MODE=call LG_KEYSPELL=1 LG_USE_OK=1 LG_REF_USE_ONLY=1 \
-      LG_SITE='(^|[^A-Za-z0-9_.])(client_for|current_server|current_snapshot|keypin::revision|keypin::blocked_for|session::peek|grant::offers|transport::paused|transport::viewer_paused|preview::paused)([^A-Za-z0-9_]|$)' \
-      LG_DEF='fn[[:space:]]+(client_for|current_server|current_snapshot|peek|revision|blocked_for|offers|paused|viewer_paused)[[:space:]]*[(<]' \
-      LG_REF='(^|[^A-Za-z0-9_])(client_for|current_server|current_snapshot|peek|revision|blocked_for|offers|paused|viewer_paused|TX|session|keypin|grant|player|transport|preview)[[:space:]]+as[[:space:]]' \
-      LG_BARE='session::(peek([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?peek([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])peek([^A-Za-z0-9_]|$);;keypin::(revision([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?revision([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])revision([^A-Za-z0-9_]|$);;keypin::(blocked_for([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?blocked_for([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])blocked_for([^A-Za-z0-9_]|$);;grant::(offers([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?offers([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])offers([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])transport::(paused([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?paused([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])paused([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])transport::(viewer_paused([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?viewer_paused([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])viewer_paused([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])preview::(paused([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?paused([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])paused([^A-Za-z0-9_]|$)' \
+      LG_SITE='(^|[^A-Za-z0-9_.])(client_for|current_server|current_snapshot|keypin::revision|keypin::blocked_for|session::peek|grant::offers|transport::paused|transport::viewer_paused|preview::paused|devcaps::caps|is_dp_audio_track|is_dp_audio)([^A-Za-z0-9_]|$)' \
+      LG_DEF='fn[[:space:]]+(client_for|current_server|current_snapshot|peek|revision|blocked_for|offers|paused|viewer_paused|caps|is_dp_audio|is_dp_audio_track)[[:space:]]*[(<]' \
+      LG_REF='(^|[^A-Za-z0-9_])(client_for|current_server|current_snapshot|peek|revision|blocked_for|offers|paused|viewer_paused|caps|is_dp_audio|is_dp_audio_track|TX|session|keypin|grant|player|transport|preview|devcaps)[[:space:]]+as[[:space:]]' \
+      LG_BARE='session::(peek([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?peek([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])peek([^A-Za-z0-9_]|$);;keypin::(revision([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?revision([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])revision([^A-Za-z0-9_]|$);;keypin::(blocked_for([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?blocked_for([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])blocked_for([^A-Za-z0-9_]|$);;grant::(offers([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?offers([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])offers([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])transport::(paused([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?paused([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])paused([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])transport::(viewer_paused([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?viewer_paused([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])viewer_paused([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])preview::(paused([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?paused([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])paused([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])devcaps::(caps([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?caps([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])caps[[:space:]]*\(;;(^|[^A-Za-z0-9_])(plex|transcoder)::(is_dp_audio([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?is_dp_audio([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])is_dp_audio([^A-Za-z0-9_]|$);;(^|[^A-Za-z0-9_])(plex|transcoder)::(is_dp_audio_track([^A-Za-z0-9_]|$)|\*|\{([^}]*[^A-Za-z0-9_])?is_dp_audio_track([^A-Za-z0-9_}][^}]*)?\})@@(^|[^A-Za-z0-9_.:])is_dp_audio_track([^A-Za-z0-9_]|$)' \
       LG_FILE_SITE='rust-modules/plex/src/plex/session.rs@@(^|[^A-Za-z0-9_.:])peek([^A-Za-z0-9_]|$);;rust-modules/media/src/player/lifecycle.rs@@(^|[^A-Za-z0-9_.])(player::TX|super::TX)([^A-Za-z0-9_]|$)|(^|[^A-Za-z0-9_.:])TX([^A-Za-z0-9_]|$)' \
       ledger_scan | sort
 )

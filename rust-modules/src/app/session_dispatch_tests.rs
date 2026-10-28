@@ -25,7 +25,7 @@ fn browse_tab_generation_is_owned_and_chrome_never_replays_a_stale_shape() {
     assert!(before.faces.iter().any(|face| matches!(face, plx_ui::widgets::TabFace::Label(l) if l == "TV Shows")));
     let before_gen = before.generation;
 
-    rig.stores.browse.borrow_mut().run(
+    rig.stores.browse.borrow_mut().run_for_test(
         plx_data::stores::browse::BrowseCmd::ApplyPins(vec![(1, false)]));
     rig.capture_views(&mut pages);
     rig.capture_chrome(&mut pages);
@@ -91,7 +91,11 @@ fn production_bridges_do_not_share_browse_state_or_landings() {
     first.stores.browse.borrow_mut().prepare_page_for_test(shared);
     let mut pages = Dispatcher::<AppHost>::new();
     frame(&mut pages, &mut first, AppArg::Library, tick(0), vec![]);
-    let _ = first.stores.browse.borrow_mut().pump();
+    // The pump the frame's `StoreWork::Browse` runs: the keys the step decides from, the step, and
+    // the page read it left, started by the runner (which resolves the key and starts the worker).
+    crate::app::adapters::stores::refill_client_keys(&mut first.client_keys);
+    let _ = first.stores.browse.borrow_mut().pump_with_gate(&first.stores.landgate, &first.client_keys, &plx_plex::plex::session::peek());
+    first.start_store_jobs_of(StoreId::Browse);
     accepted_rx.recv_timeout(std::time::Duration::from_secs(2))
         .expect("production page request reached loopback");
     let _ = first.stores.take_notices();
@@ -599,7 +603,7 @@ fn endpoint_outcomes_cross_central_dispatch_machine_bridge_and_boot() {
         assert_eq!(out.len(), 1);
         assert!(matches!(out[0].fx, Fx::App(AppFx::Session(
             plx_session::auth::SessionCmd::RequestEndpoint { sid })) if sid == b));
-        plx_data::browse::with_refused_discovery_for_test(|| {
+        {
             let client = plx_plex::plex::client_for(a).unwrap();
             rig.stores.browse.borrow_mut().queue_discovery_for_test(
                 client, client.token_gen(), false);
@@ -634,7 +638,7 @@ fn endpoint_outcomes_cross_central_dispatch_machine_bridge_and_boot() {
                 Fx::App(AppFx::Session(plx_session::auth::SessionCmd::RequestEndpoint { sid })) => *sid,
                 _ => panic!("the settled refusals were not translated into Session commands"),
             }).collect::<Vec<_>>(), expected);
-        });
+        }
     });
     plx_plex::plex::reset_servers_for_test();
 }

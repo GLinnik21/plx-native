@@ -8,10 +8,15 @@
 //! `["playback-error", kind]`, except for origin `preview` (a failed detail-page trailer), which
 //! groups apart as `["playback-error", "preview", kind]`. There is no
 //! title, URL, rating key, playhead, duration, measured bitrate or free-text error slot. Sparse transitions are retained in memory only while error reporting is
-//! enabled, and nothing is queued unless the viewer actually reaches `PlaybackState::Error`.
+//! enabled, and no error event is queued unless the viewer actually reaches `PlaybackState::Error`.
+//!
+//! The one other handled event, and the one that is NOT a failure, is `refusal_recovered`
+//! ([`refusal_recovered_body`]): a play the television refused and the app then recovered, with four
+//! closed fields and no trace, under the same consent.
 
 use super::classes::{
-    AttemptOrigin, FailureClass, PlaybackErrorContext, TraceEvent, TraceOutcome, TraceStep,
+    AttemptOrigin, FailureClass, PlaybackErrorContext, RefusalRecoveredContext, TraceEvent,
+    TraceOutcome, TraceStep,
 };
 use serde_json::{Map, Value};
 
@@ -260,6 +265,122 @@ pub fn report_error(kind: FailureClass, context: PlaybackErrorContext, trace: &[
         context,
         trace,
     );
+    queue_handled(event_id, body, "playback error");
+}
+
+/// The `refusal_recovered` class code: the wire value of the event's `playback.class` tag, its
+/// exception value and its fingerprint's first segment.
+pub const REFUSAL_RECOVERED: &str = "refusal_recovered";
+
+/// **Pure body builder of the `refusal_recovered` event**: a refusal the television gave a Load
+/// before its first picture and the open-recovery ladder then recovered from. Everything it
+/// carries is a field of [`RefusalRecoveredContext`] (the refused stream's codec class, a channel
+/// bucket, the pipeline's error number or `timeout`/`stall`, the rung that played) plus what every
+/// Sentry-bound report carries (release, environment, the crash-report id as `user.id`, the
+/// webOS/hardware contexts with the firmware build). No trace and no breadcrumb: the ladder's own
+/// log lines stay on the television, so there is no raster, delivery, timing or anything else of
+/// the playback here. It groups by rung and codec class (`["refusal_recovered", rung, codec]`);
+/// the error number and channel bucket are tags, so one refused codec is one issue however many
+/// firmware numbers it arrives with. Level `info`: a recovered play is not an error.
+pub fn refusal_recovered_body(
+    event_id: &str,
+    dist: &str,
+    errors_id: Option<&str>,
+    context: RefusalRecoveredContext,
+) -> Vec<u8> {
+    let codec = context.stream.codec();
+    let error = context.error.code();
+    let mut body = serde_json::json!({
+        "event_id": event_id,
+        "platform": "native",
+        "level": "info",
+        "release": super::release(),
+        "environment": super::sender::ENVIRONMENT,
+        "sdk": {"name": "plxnative-handled", "version": super::app_version()},
+        "logger": "playback",
+        "transaction": "playback",
+        "culprit": format!("playback::{REFUSAL_RECOVERED}"),
+        "fingerprint": [REFUSAL_RECOVERED, context.rung.code(), codec],
+        "exception": {"values": [{
+            "type": "RefusalRecovered",
+            "value": REFUSAL_RECOVERED,
+            "mechanism": {"type": "playback", "handled": true},
+        }]},
+        "tags": {
+            "playback.class": REFUSAL_RECOVERED,
+            "playback.refused_stream": context.stream.kind(),
+            "playback.refused_codec": codec,
+            "playback.refused_channels": context.channels.code(),
+            "playback.pipeline_error": error,
+            "playback.recovery_rung": context.rung.code(),
+        },
+        "contexts": {"refusal_recovered": {
+            "type": "refusal_recovered",
+            "refused_stream": context.stream.kind(),
+            "refused_codec": codec,
+            "refused_channels": context.channels.code(),
+            "pipeline_error": error,
+            "recovery_rung": context.rung.code(),
+        }},
+    });
+    if !dist.is_empty() {
+        body["dist"] = Value::String(dist.to_string());
+    }
+    super::sentry::attach_user(&mut body, errors_id);
+    super::sentry::attach_hardware_context(&mut body);
+    serde_json::to_vec(&body).unwrap_or_default()
+}
+
+/// The `refusal_recovered` bodies [`report_refusal_recovered`] accepted past the consent gate, in
+/// order. Test seam: "one event per rescued play, none without consent" is a count of these (a test
+/// build has no Sentry destination, so nothing reaches the spool).
+#[cfg(any(test, feature = "test-support"))]
+static RECOVERED_FOR_TEST: std::sync::Mutex<Vec<Vec<u8>>> = std::sync::Mutex::new(Vec::new());
+
+/// See [`RECOVERED_FOR_TEST`]: take (and forget) the bodies accepted so far.
+#[cfg(any(test, feature = "test-support"))]
+pub fn take_recovered_for_test() -> Vec<serde_json::Value> {
+    std::mem::take(&mut *RECOVERED_FOR_TEST.lock().unwrap_or_else(|e| e.into_inner()))
+        .iter()
+        .map(|body| serde_json::from_slice(body).expect("refusal_recovered JSON"))
+        .collect()
+}
+
+/// Queue one `refusal_recovered` handled event through the same spool and sender as
+/// [`report_error`], under the same error-report consent and nothing else: no consent, no event,
+/// and no new channel or question for the viewer. No network work is performed on the render thread.
+pub fn report_refusal_recovered(context: RefusalRecoveredContext) {
+    if !super::consent::allows_errors() {
+        return;
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    RECOVERED_FOR_TEST
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(refusal_recovered_body(
+            &"0".repeat(32),
+            "",
+            super::consent::errors_id().as_deref(),
+            context,
+        ));
+    if !super::sender::has_sentry() {
+        return;
+    }
+    let Some(event_id) = crate::diag::random_hex_id() else {
+        plx_base::eventlog::log("telemetry: no /dev/urandom — recovered refusal was not queued");
+        return;
+    };
+    let body = refusal_recovered_body(
+        &event_id,
+        super::sentry::build_id(),
+        super::consent::errors_id().as_deref(),
+        context,
+    );
+    queue_handled(event_id, body, "recovered refusal");
+}
+
+/// Spool one handled Sentry event and ask the sender to flush it; the one tail of both reports.
+fn queue_handled(event_id: String, body: Vec<u8>, what: &str) {
     let record = super::queue::Record {
         category: super::queue::Category::Errors,
         dest: super::queue::Dest::Sentry,
@@ -271,10 +392,10 @@ pub fn report_error(kind: FailureClass, context: PlaybackErrorContext, trace: &[
         // `Some(false)` is a failed write, not a size verdict: no spool path is writable (the app
         // directory is read-only on that install), or the write itself failed. An oversized
         // record logs its own cap line, so this wording must not claim "did not fit".
-        Some(false) => plx_base::eventlog::log(
-            "telemetry: handled playback error was not written to the durable spool \
-             (no writable spool path, or the write failed)",
-        ),
+        Some(false) => plx_base::eventlog::log(&format!(
+            "telemetry: handled {what} was not written to the durable spool \
+             (no writable spool path, or the write failed)"
+        )),
         None => {} // consent changed while the event was being shaped
     }
 }
@@ -382,6 +503,57 @@ pub fn preview_event() -> Vec<u8> {
         },
         &trace,
     )
+}
+
+/// Representative `refusal_recovered` payload through the real serializer, for the consent screen
+/// beside [`preview_event`]: the same visible placeholders for the per-report values.
+pub fn preview_refusal_recovered() -> Vec<u8> {
+    use crate::telemetry::classes::{
+        AudioCodecClass, ChannelBucket, RecoveryRung, RefusalError, RefusedStream,
+    };
+    refusal_recovered_body(
+        "<random per-error event id>",
+        "<running ELF build id>",
+        Some(super::native::PREVIEW_USER_ID),
+        RefusalRecoveredContext {
+            stream: RefusedStream::Audio(AudioCodecClass::Dts),
+            channels: ChannelBucket::Surround,
+            error: RefusalError::Number(601),
+            rung: RecoveryRung::Facet,
+        },
+    )
+}
+
+/// The closed domain of each `refusal_recovered` field, from the same enums as the serializer, as
+/// [`preview_domains`] does for the playback error.
+pub fn preview_recovered_domains() -> String {
+    use crate::telemetry::classes::{
+        AudioCodecClass as A, ChannelBucket as C, RecoveryRung as R, VideoCodecClass as V,
+    };
+    use plx_platform::i18n::msg;
+    let domains: [(&str, String); 5] = [
+        (msg::core_preview_domain_recovered_rung(), codes(&R::ALL, R::code)),
+        (msg::core_preview_domain_recovered_stream(), "none / video / audio".to_owned()),
+        (
+            msg::core_preview_domain_recovered_codec(),
+            format!("{} / {}", codes(&V::ALL, V::code), codes(&A::ALL, A::code)),
+        ),
+        (msg::core_preview_domain_recovered_channels(), codes(&C::ALL, C::code)),
+        // The one NUMERIC field, so its domain is its range, then the two words that stand for no
+        // number: the firmware's own error number, a Load budget that ran out, the audio stall.
+        (
+            msg::core_preview_domain_recovered_error(),
+            format!("{} to {} / timeout / stall", i32::MIN, i32::MAX),
+        ),
+    ];
+    let mut out = String::new();
+    for (label, values) in domains {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&msg::core_preview_domain_line(label, &values));
+    }
+    out
 }
 
 fn codes<T: Copy>(values: &[T], code: fn(T) -> &'static str) -> String {
@@ -808,7 +980,7 @@ mod tests {
         assert_eq!(keys(&v["contexts"]), ["hardware", "playback", "webos"]);
         assert_eq!(
             keys(&v["contexts"]["webos"]),
-            ["api", "codename", "name", "release", "type"]
+            ["api", "build", "codename", "name", "release", "type"]
         );
         assert_eq!(
             keys(&v["contexts"]["hardware"]),
@@ -1004,6 +1176,19 @@ mod tests {
         // not list would be a payload the person was never shown.
         assert!(preview_domains()
             .contains("unknown / original_direct / original_remux / hls / progressive_transcode"));
+    }
+
+    #[test]
+    fn delivery_reason_codes_are_closed_and_listed() {
+        use crate::telemetry::classes::DeliveryReason;
+        let legend = preview_domains();
+        let privacy = include_str!("../../../../PRIVACY.md");
+        assert_eq!(DeliveryReason::ALL.len(), 5);
+        assert_eq!(DeliveryReason::RefusalRecovery.code(), "refusal_recovery");
+        for reason in DeliveryReason::ALL {
+            assert!(legend.contains(reason.code()), "the legend omitted {}", reason.code());
+        }
+        assert!(privacy.contains("`refusal_recovery`"), "PRIVACY.md omitted the facet rung's reason");
     }
 
     #[test]
@@ -1361,6 +1546,7 @@ mod tests {
         );
         assert!(legend.contains("1 / 2 / 3 / 4 / 5 / 6 / 7 / 8 / 9 / 9+"), "the attempt_ordinal domain");
         assert!(legend.contains("quality_pick"), "the delivery reason the fixed-rung pick notes");
+        assert!(legend.contains("refusal_recovery"), "the delivery reason the facet rung's conversion notes");
         // The attempted route rides EVERY report now, so its row lists the whole delivery domain
         // (including `unknown`), not only the three a refusal can name.
         let all = "unknown / original_direct / original_remux / hls / progressive_transcode";
@@ -1382,6 +1568,7 @@ mod tests {
             assert!(privacy.contains(&quoted), "PRIVACY.md omitted the origin {}", origin.code());
         }
         assert!(privacy.contains("9+") && privacy.contains("quality_pick"));
+        assert!(privacy.contains("refusal_recovery"));
     }
 
     /// **The firmware's error number.** A `tv_pipeline` report used to say only that the pipeline
@@ -1445,5 +1632,169 @@ mod tests {
         assert!(v["tags"]["playback.transfer_age"].is_string());
         assert!(v["contexts"]["playback"]["demux_exit"].is_string());
         assert!(v["tags"]["playback.demux_exit"].is_string());
+    }
+
+    // ---- the `refusal_recovered` event (S6, #1075) ------------------------------------------
+
+    fn recovered_context() -> RefusalRecoveredContext {
+        use crate::telemetry::classes::{ChannelBucket, RecoveryRung, RefusalError, RefusedStream};
+        RefusalRecoveredContext {
+            stream: RefusedStream::Audio(AudioCodecClass::Dts),
+            channels: ChannelBucket::Surround,
+            error: RefusalError::Number(601),
+            rung: RecoveryRung::Facet,
+        }
+    }
+
+    fn sorted_keys(v: &Value) -> Vec<&str> {
+        let mut out: Vec<_> = v.as_object().expect("object").keys().map(String::as_str).collect();
+        out.sort_unstable();
+        out
+    }
+
+    /// **The event's whole content, key by key.** A key that is not in this list is a field nobody
+    /// agreed to send: no breadcrumbs, no playback context (no raster, delivery or timing), no
+    /// refusal block (no source codecs beyond the one refused stream), only `user.id` of the user.
+    #[test]
+    fn refusal_recovered_carries_exactly_its_closed_fields() {
+        let v: Value = serde_json::from_slice(&refusal_recovered_body(
+            &"a".repeat(32),
+            "0123456789abcdef",
+            Some(&"e".repeat(32)),
+            recovered_context(),
+        ))
+        .expect("event JSON");
+        assert_eq!(v["level"], "info", "a recovered play is not an error");
+        assert_eq!(v["fingerprint"], serde_json::json!(["refusal_recovered", "facet", "dts"]));
+        assert_eq!(v["exception"]["values"][0]["mechanism"]["handled"], true);
+        assert_eq!(
+            sorted_keys(&v["tags"]),
+            [
+                "playback.class",
+                "playback.pipeline_error",
+                "playback.recovery_rung",
+                "playback.refused_channels",
+                "playback.refused_codec",
+                "playback.refused_stream",
+            ]
+        );
+        assert_eq!(v["tags"]["playback.class"], "refusal_recovered");
+        assert_eq!(v["tags"]["playback.refused_stream"], "audio");
+        assert_eq!(v["tags"]["playback.refused_codec"], "dts");
+        assert_eq!(v["tags"]["playback.refused_channels"], "3-6");
+        assert_eq!(v["tags"]["playback.pipeline_error"], "601");
+        assert_eq!(v["tags"]["playback.recovery_rung"], "facet");
+        assert_eq!(
+            sorted_keys(&v["contexts"]),
+            ["hardware", "refusal_recovered", "webos"],
+            "no playback context rides this event"
+        );
+        assert_eq!(
+            sorted_keys(&v["contexts"]["refusal_recovered"]),
+            ["pipeline_error", "recovery_rung", "refused_channels", "refused_codec", "refused_stream", "type"]
+        );
+        assert!(v.get("breadcrumbs").is_none(), "no trace of the playback is sent");
+        assert_eq!(sorted_keys(&v["user"]), ["id"]);
+        assert!(v["contexts"]["webos"]["build"].is_string(), "the firmware build rides every report");
+    }
+
+    /// The pipeline's answer is a number, `timeout` or `stall`; a video stream and an unnamed one
+    /// carry no channel count, and the grouping never includes the firmware's number.
+    #[test]
+    fn refusal_recovered_spells_every_closed_value_and_groups_without_the_number() {
+        use crate::telemetry::classes::{ChannelBucket, RecoveryRung, RefusalError, RefusedStream};
+        let body = |stream, channels, error, rung| -> Value {
+            serde_json::from_slice(&refusal_recovered_body(
+                &"a".repeat(32),
+                "",
+                None,
+                RefusalRecoveredContext { stream, channels, error, rung },
+            ))
+            .expect("event JSON")
+        };
+        let v = body(
+            RefusedStream::Video(VideoCodecClass::Hevc),
+            ChannelBucket::Unknown,
+            RefusalError::Timeout,
+            RecoveryRung::Hls,
+        );
+        assert_eq!(v["tags"]["playback.pipeline_error"], "timeout");
+        assert_eq!(v["tags"]["playback.refused_stream"], "video");
+        assert_eq!(v["fingerprint"], serde_json::json!(["refusal_recovered", "hls", "hevc"]));
+        assert!(v.get("user").is_none(), "no id, no user key at all");
+        assert!(v.get("dist").is_none());
+        let v = body(RefusedStream::Video(VideoCodecClass::H264), ChannelBucket::Unknown, RefusalError::Number(100), RecoveryRung::Encode);
+        assert_eq!(v["fingerprint"], serde_json::json!(["refusal_recovered", "encode", "h264"]));
+        let v = body(RefusedStream::None, ChannelBucket::Unknown, RefusalError::Stall, RecoveryRung::Rollback);
+        assert_eq!(v["tags"]["playback.pipeline_error"], "stall");
+        assert_eq!(v["tags"]["playback.refused_stream"], "none");
+        assert_eq!(v["tags"]["playback.refused_codec"], "unknown");
+        let a = body(RefusedStream::Audio(AudioCodecClass::Opus), ChannelBucket::Surround, RefusalError::Number(200), RecoveryRung::Facet);
+        let b = body(RefusedStream::Audio(AudioCodecClass::Opus), ChannelBucket::UpToStereo, RefusalError::Number(601), RecoveryRung::Facet);
+        assert_eq!(a["fingerprint"], b["fingerprint"], "one refused codec, one issue");
+    }
+
+    /// The channel buckets, at their edges.
+    #[test]
+    fn channel_buckets_have_their_edges_where_the_layouts_are() {
+        use crate::telemetry::classes::ChannelBucket as B;
+        assert_eq!(
+            [0, 1, 2, 3, 6, 7, 8, 32].map(|n| B::from_channels(n).code()),
+            ["unknown", "1-2", "1-2", "3-6", "3-6", "7+", "7+", "7+"]
+        );
+    }
+
+    /// **Consent is the existing error-report switch and nothing else.** On: exactly one event per
+    /// report call. Off (never asked, or declined): nothing is accepted, and a withdrawal stops
+    /// it at once.
+    #[test]
+    fn refusal_recovered_is_sent_only_under_the_error_report_consent() {
+        use crate::telemetry::consent::{self, Consent};
+        let _g = plx_base::testlock::serial();
+        let previous = consent::current();
+        let _ = take_recovered_for_test();
+
+        consent::install(Consent::default());
+        report_refusal_recovered(recovered_context());
+        assert!(take_recovered_for_test().is_empty(), "never asked: nothing");
+
+        let mut usage_only = Consent::default();
+        usage_only.usage = true;
+        usage_only.asked_version = consent::POLICY_VERSION;
+        consent::install(usage_only);
+        report_refusal_recovered(recovered_context());
+        assert!(take_recovered_for_test().is_empty(), "analytics consent is not error-report consent");
+
+        let mut enabled = Consent::default();
+        enabled.errors = true;
+        enabled.asked_version = consent::POLICY_VERSION;
+        consent::install(enabled);
+        report_refusal_recovered(recovered_context());
+        let sent = take_recovered_for_test();
+        assert_eq!(sent.len(), 1, "one call, one event");
+        assert_eq!(sent[0]["tags"]["playback.class"], "refusal_recovered");
+
+        let mut declined = Consent::default();
+        declined.asked_version = consent::POLICY_VERSION;
+        consent::install(declined);
+        report_refusal_recovered(recovered_context());
+        assert!(take_recovered_for_test().is_empty(), "declined: nothing");
+
+        consent::install(previous.unwrap_or_default());
+    }
+
+    /// The consent screen shows a sample of the event and the domain of each of its fields, and
+    /// `PRIVACY.md` names the class: an event neither mentions is an event nobody was shown.
+    #[test]
+    fn consent_preview_and_privacy_name_the_recovered_refusal() {
+        let sample: Value = serde_json::from_slice(&preview_refusal_recovered()).expect("preview JSON");
+        assert_eq!(sample["tags"]["playback.class"], "refusal_recovered");
+        let legend = preview_recovered_domains();
+        for code in ["facet", "hls", "rollback", "encode", "timeout", "stall", "1-2", "3-6", "7+", "dts", "h264", "video", "audio", "none"] {
+            assert!(legend.contains(code), "the legend omits {code}: {legend}");
+        }
+        assert!(legend.contains(&format!("{} to {}", i32::MIN, i32::MAX)), "{legend}");
+        let privacy = include_str!("../../../../PRIVACY.md");
+        assert!(privacy.contains("refusal_recovered"), "PRIVACY.md omitted refusal_recovered");
     }
 }

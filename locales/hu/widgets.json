@@ -19,6 +19,7 @@
   "widgets.tracks.stereo": "Sztereó",
   "widgets.tracks.original": "Eredeti: {language}",
   "widgets.tracks.converted_by_server": "{track} · a szerver konvertálja",
+  "widgets.tracks.decoded_in_app_stereo": "{track} · sztereóban lejátszva",
   "widgets.action.mark_watched": "Megjelölés megnézettként",
   "widgets.action.mark_unwatched": "Megjelölés nem látottként",
   "widgets.action.play_start": "Lejátszás az elejéről",

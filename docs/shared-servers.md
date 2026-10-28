@@ -741,7 +741,7 @@ writes for retry when the worker queue cannot admit them. `browse.rs` is the plu
 around them, and a selection PERSISTS: every flip was in-memory before 2026-08-21, so a selection
 made in the Sources panel was gone by the next boot and the default came back, which reads as the
 switch not working. Since 2026-09-04 the write
-is `browse::apply_pins`, once, when the Home editor's `Done`/`Start watching` commits its draft — a
+is `browse::apply_pins_from`, once, when the Home editor's `Done`/`Start watching` commits its draft — a
 flip edits the in-memory draft and nothing is written until then (`toggle_pin`, the old per-press
 write, is a test-only fixture now).
 
@@ -809,7 +809,7 @@ Two halves close it, both in `browse.rs`, and both keyed on the machine id becau
 name a record has:
 
 - **`RECORDED`** — the current profile's persisted answer, kept in memory from the read
-  `resolve_pins` already makes, and joined into `library_pins()` for every roster source the section
+  `resolve_pins_from` already makes, and joined into `library_pins()` for every roster source the section
   table does NOT hold. The record is on disk keyed by machine; that is exactly the join that was
   missing. It is a snapshot rather than a per-call read because `library_pins` is reached from
   Home's own pump, and `session.rs` forbids a per-frame file read.

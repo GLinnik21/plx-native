@@ -1204,7 +1204,11 @@ impl LibraryScreen {
                 self.sync(cx);
                 self.follow_listing_type(cx, fx);
                 // A read-back that lands while a page is pushed over this one is acted on at once.
-                if self.buried { self.requery_stale(cx, fx); }
+                // A page being mounted finds a listing the server changed while no Library page
+                // was there to act on it (the notice came while the section was on screen, and the
+                // reader then left by a tab, which buries nothing): nobody is looking at its
+                // cached rows yet, so it is listed again now.
+                if self.buried || matches!(ev, ScreenEvent::Mount) { self.requery_stale(cx, fx); }
             }
             ScreenEvent::RestoreMemory(PageMemory::Library(memory)) => { self.restore(memory); self.restored = true; self.restored_held = false;
                 // The grid still sleeps from the dip that held the image over the Detail: wake it now,
