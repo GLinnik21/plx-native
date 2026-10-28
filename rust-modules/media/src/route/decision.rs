@@ -124,6 +124,10 @@ pub struct PlaybackSession {
     /// derives `Error` (cause `load_timeout`) from it. Cleared by the next start attempt and,
     /// like [`jail_load_blocked`](Self::jail_load_blocked), with the playback verdict.
     pub native_start_refused: bool,
+    /// The last native start was refused because the previous object's off-frame `Unload` is
+    /// overdue (`player::release`). Same shape as `native_start_refused`; its cause is
+    /// `release_timeout`.
+    pub native_release_refused: bool,
     /// The cause an Engine ended with when it failed for good and was released while the
     /// read-out stands (`player::release_failed_engine`). The Engine, its pipeline and the video
     /// plane are gone, so the worker signals the read-out used to be derived from are gone with
@@ -530,6 +534,7 @@ impl PlaybackSession {
         direct_play_mode: DirectPlayMode::Auto,
         jail_load_blocked: false,
         native_start_refused: false,
+        native_release_refused: false,
         engine_failure: None,
         repair_status: plx_platform::tv::sandbox::State::Idle,
         request: None,
@@ -618,6 +623,7 @@ impl PlaybackSession {
             direct_play_mode,
             jail_load_blocked,
             native_start_refused,
+            native_release_refused,
             engine_failure,
             repair_status,
             request,
@@ -688,6 +694,7 @@ impl PlaybackSession {
             direct_play_mode: *direct_play_mode,
             jail_load_blocked: *jail_load_blocked,
             native_start_refused: *native_start_refused,
+            native_release_refused: *native_release_refused,
             engine_failure: *engine_failure,
             repair_status: *repair_status,
             request: request.clone(),
@@ -1013,6 +1020,14 @@ impl std::fmt::Debug for ClaimSnapshot {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RouteStartTransaction {
     pub(super) serial: u64,
+}
+
+impl RouteStartTransaction {
+    /// A transaction identity for a pure machine's unit tests.
+    #[cfg(any(test, feature = "test-support"))]
+    pub const fn fixture(serial: u64) -> Self {
+        Self { serial }
+    }
 }
 
 /// Synchronous result of the native half of a prepared route transition.
@@ -9102,6 +9117,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut plx_data::stores::metadata::M
             direct_play_mode: plan.direct_play_mode,
             jail_load_blocked: false,
             native_start_refused: false,
+            native_release_refused: false,
             engine_failure: None,
             repair_status: plx_platform::tv::sandbox::State::Idle,
             request,

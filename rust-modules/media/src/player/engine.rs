@@ -427,11 +427,27 @@ pub fn reap_abandoned_load(pa: &mut super::adapter::PlayerAdapter) -> bool {
 /// callback would write into), and no new native session may begin.
 pub struct PendingRelease {
     epoch: u32,
-    unload_th: std::thread::JoinHandle<()>,
+    /// Taken by the join ([`join_finished_release`]); `None` afterwards.
+    unload_th: Option<std::thread::JoinHandle<()>>,
     handed_off_at: std::time::Instant,
     /// The Engine the object belonged to. It used to drop at the end of `teardown`, after the
     /// release; it still drops after it (the Load payload in particular outlives the Unload).
     _engine: Engine,
+}
+
+impl PendingRelease {
+    pub(crate) fn epoch(&self) -> u32 {
+        self.epoch
+    }
+
+    pub(crate) fn handed_off_at(&self) -> std::time::Instant {
+        self.handed_off_at
+    }
+
+    /// The `Unload` has returned, so joining its worker cannot block.
+    pub(crate) fn is_finished(&self) -> bool {
+        self.unload_th.as_ref().is_none_or(|t| t.is_finished())
+    }
 }
 
 /// Test seam: make [`release_off_frame`] see the OS refuse the `sf-unload` thread.
@@ -442,7 +458,7 @@ static FAIL_UNLOAD_SPAWN_FOR_TEST: std::sync::atomic::AtomicBool = std::sync::at
 /// off (no dispatchable object, an epoch that no longer owns `Active`, or the OS refusing the
 /// thread). `Some` = the worker is running and the caller must park it with the Engine.
 fn release_off_frame(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans) -> Option<std::thread::JoinHandle<()>> {
-    if unsafe { sink().ready(mt) } == 0 || !SHARED.begin_native_release(epoch) {
+    if unsafe { super::raw_sink().ready(mt) } == 0 || !SHARED.begin_native_release(epoch) {
         release_native_object_timed(mt, epoch, sp);
         return None;
     }
@@ -454,12 +470,12 @@ fn release_off_frame(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans) -> Opt
     let th = if refused {
         None
     } else {
-        plx_base::task::spawn("sf-unload", move || unsafe { sink().unload(&ticket) })
+        plx_base::task::spawn("sf-unload", move || unsafe { super::raw_sink().unload(&ticket) })
     };
     sp.mark("unload_handoff");
     if th.is_none() {
         log("native lifecycle: no thread for the off-frame Unload; unloading on the main thread");
-        unsafe { sink().unload(&UnloadTicket::issue(mt)) };
+        unsafe { super::raw_sink().unload(&UnloadTicket::issue(mt)) };
         sp.mark("sf_unload");
         finish_unloaded_object(mt, epoch, sp);
         destroy_native_window(mt, sp);
@@ -467,34 +483,165 @@ fn release_off_frame(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans) -> Opt
     th
 }
 
-/// Finish a parked [`PendingRelease`]: join its `Unload` (only once it has returned, unless
-/// `wait`) and run the main-thread tail. `true` when this call finished it. Reached through
-/// `PlayerAdapter::{poll_release, finish_release}`.
-pub(crate) fn settle_release(slot: &mut Option<PendingRelease>, mt: &MainThread, wait: bool) -> bool {
-    let finished = match slot.as_ref() {
-        Some(p) => p.unload_th.is_finished(),
-        None => return false,
-    };
-    if !finished && !wait {
-        return false;
+/// **The runner of [`super::release::NativeRelease`].** Once a frame (and at the head of a start):
+/// join the `Unload` worker only if it has returned (so the join cannot block), feed that and the
+/// clock to the machine, and execute what it asks: the main-thread tail, the start that was queued
+/// behind the release, or the typed refusal once the release is overdue. `true` when a tail ran.
+pub fn poll_release(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+    now: std::time::Instant,
+) -> bool {
+    let (fx, joined) = drive_release(pa, now, None);
+    run_release_effects(ps, pa, fx, joined, true).tail_ran
+}
+
+/// What one pass of the effects did.
+#[derive(Default)]
+struct ReleasePass {
+    tail_ran: bool,
+    exit: Option<super::release::ReleaseEffect>,
+}
+
+/// Join a returned worker, then step the machine with its return, the clock and (at the exit) the
+/// exit request. Returns the effects and the joined release, whose tail the effects may run.
+fn drive_release(
+    pa: &mut super::adapter::PlayerAdapter,
+    now: std::time::Instant,
+    exit: Option<std::time::Instant>,
+) -> (Vec<super::release::ReleaseEffect>, Option<PendingRelease>) {
+    use super::release::ReleaseEvent as V;
+    let mut fx = Vec::new();
+    let joined = pa.take_finished_release().map(|mut p| {
+        if let Some(th) = p.unload_th.take() {
+            plx_base::task::join("sf-unload", th);
+        }
+        pa.release_step(&V::UnloadReturned { epoch: p.epoch }, &mut fx);
+        p
+    });
+    pa.release_step(&V::Tick { now }, &mut fx);
+    if let Some(at) = exit {
+        pa.release_step(&V::Exit { now: at }, &mut fx);
     }
-    let p = slot.take().expect("checked above");
+    (fx, joined)
+}
+
+fn run_release_effects(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+    fx: Vec<super::release::ReleaseEffect>,
+    mut joined: Option<PendingRelease>,
+    may_start: bool,
+) -> ReleasePass {
+    use super::release::ReleaseEffect as E;
+    let mut pass = ReleasePass::default();
+    for effect in fx {
+        match effect {
+            E::RunTail { epoch } => {
+                if let Some(p) = joined.take() {
+                    debug_assert_eq!(p.epoch, epoch);
+                    run_release_tail(pa.mt(), p);
+                    pass.tail_ran = true;
+                }
+            }
+            E::Start(q) if may_start => {
+                let _ = start_bufferfeed_for(ps, pa, q.route_start);
+            }
+            // The exit does not start playback; the transaction is settled instead.
+            E::Start(q) | E::AbortSuperseded(q) => {
+                let _ = crate::route::abort_route_start(q.route_start, crate::route::RouteStartResult::StartFailed);
+            }
+            E::RefuseStart(q) => refuse_start_for_release(ps, q),
+            exit @ (E::ExitClean | E::ExitWaiting | E::ExitWorkerInFirmware) => pass.exit = Some(exit),
+        }
+    }
+    pass
+}
+
+/// The deadline passed over a start: settle its transaction as failed and record where
+/// `player::state` derives the `release_timeout` read-out from. No Engine, no second object.
+fn refuse_start_for_release(ps: &mut crate::route::PlaybackSession, q: super::release::QueuedStart) {
+    log("native lifecycle: the previous Unload is overdue (refusing native start)");
+    let _ = crate::route::abort_route_start(q.route_start, crate::route::RouteStartResult::StartFailed);
+    ps.native_release_refused = true;
+}
+
+/// The main-thread tail of a finished off-frame release: gate, epoch, ACB, D1, window.
+fn run_release_tail(mt: &MainThread, p: PendingRelease) {
     let mut sp = TeardownSpans::new();
-    // A thread that has finished joins at once; one that has not is a caller about to use the seam
-    // within ~150 ms of the stop, and `task::join` names the wait if it stalls.
-    plx_base::task::join("sf-unload", p.unload_th);
-    sp.mark(if finished { "join" } else { "wait_unload" });
+    sp.mark("join");
     finish_unloaded_object(mt, p.epoch, &mut sp);
     destroy_native_window(mt, &mut sp);
     sp.emit("release");
     log(&format!(
-        "native lifecycle: off-frame Unload epoch={} released {} ms after the stop{}",
+        "native lifecycle: off-frame Unload epoch={} released {} ms after the stop",
         p.epoch,
         p.handed_off_at.elapsed().as_millis(),
-        if finished { "" } else { " (a caller waited for it)" },
     ));
     // `p._engine` drops here, after the object it belonged to is gone.
-    true
+}
+
+/// Block (bounded by [`super::release::RELEASE_DEADLINE`]) until the previous object is released
+/// or overdue. **Only a caller that cannot be deferred uses this** — the foreground restore, which
+/// has no way to follow a start that has not happened yet. A play lands as `Deferred`.
+pub fn wait_for_release(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
+    while pa.release_busy() && !pa.release_overdue() {
+        poll_release(ps, pa, std::time::Instant::now());
+        if pa.release_busy() && !pa.release_overdue() {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+}
+
+/// Whether the process may tear the display down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeExit {
+    Clean,
+    /// A native worker (the `sf-unload` worker, or a timed-out Load's media thread) is still
+    /// inside firmware: `SDL_Quit` / the Wayland window destroy must not run under it.
+    WorkerInFirmware,
+}
+
+/// The native half of `app::run::shutdown`, after the final stop. Waits for the `Unload` up to
+/// the release deadline (the process is ending anyway; the old wait was unbounded).
+pub fn exit_native(pa: &mut super::adapter::PlayerAdapter) -> NativeExit {
+    exit_native_with(pa, std::time::Instant::now, || std::thread::sleep(std::time::Duration::from_millis(2)))
+}
+
+fn exit_native_with(
+    pa: &mut super::adapter::PlayerAdapter,
+    mut clock: impl FnMut() -> std::time::Instant,
+    mut idle: impl FnMut(),
+) -> NativeExit {
+    reap_abandoned_load(pa);
+    if pa.has_abandoned_load() {
+        log("exit: a timed-out Load is still inside firmware; the display is left to the OS");
+        return NativeExit::WorkerInFirmware;
+    }
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    loop {
+        let now = clock();
+        let (fx, joined) = drive_release(pa, now, Some(now));
+        match run_release_effects(&mut ps, pa, fx, joined, false).exit {
+            Some(super::release::ReleaseEffect::ExitClean) => return NativeExit::Clean,
+            Some(super::release::ReleaseEffect::ExitWorkerInFirmware) => {
+                log("exit: the native Unload is overdue; the display is left to the OS");
+                return NativeExit::WorkerInFirmware;
+            }
+            _ => idle(),
+        }
+    }
+}
+
+/// Test helper: finish the pending release the way the exit does, with no deadline concerns.
+#[cfg(test)]
+pub(crate) fn finish_release_for_test(pa: &mut super::adapter::PlayerAdapter) {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    while pa.release_busy() {
+        let (fx, joined) = drive_release(pa, std::time::Instant::now(), None);
+        let _ = run_release_effects(&mut ps, pa, fx, joined, false);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
 }
 
 /// Unload and retire the native object of `epoch`, then destroy it only with complete evidence.
@@ -553,9 +700,9 @@ fn release_native_object_timed(mt: &MainThread, epoch: u32, sp: &mut TeardownSpa
     // runtime evidence that this firmware followed the audited path. If any proof is missing, C
     // retains the constructed object forever and permanently refuses another Load. Leaking one
     // object is preferable to letting D1 turn a late producer callback into a use-after-free.
-    if unsafe { sink().ready(mt) } != 0 {
+    if unsafe { super::raw_sink().ready(mt) } != 0 {
         sp.mark("pre_unload");
-        unsafe { sink().unload(&UnloadTicket::issue(mt)) };
+        unsafe { super::raw_sink().unload(&UnloadTicket::issue(mt)) };
         sp.mark("sf_unload");
         finish_unloaded_object(mt, epoch, sp);
     } else if !SHARED.retire_native_session(epoch) {
@@ -573,9 +720,9 @@ fn release_native_object_timed(mt: &MainThread, epoch: u32, sp: &mut TeardownSpa
 fn finish_unloaded_object(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans) {
     {
         window_step(WindowStage::NativeUnload);
-        let callback_gate_proven = unsafe { sink().callback_gate_retire(mt) } != 0;
+        let callback_gate_proven = unsafe { super::raw_sink().callback_gate_retire(mt) } != 0;
         sp.mark("gate_retire");
-        let callback_intercepts = unsafe { sink().callback_intercepts(mt) };
+        let callback_intercepts = unsafe { super::raw_sink().callback_intercepts(mt) };
         let unload_completed = SHARED.native_unload_completed(epoch);
         let rust_epoch_retired = SHARED.retire_native_session(epoch);
         if !unload_completed {
@@ -595,14 +742,14 @@ fn finish_unloaded_object(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans) {
         }
         sp.mark("retire");
         if ACB_OK.load(Ordering::Relaxed) {
-            unsafe { sink().plane_unload(mt) };
+            unsafe { super::raw_sink().plane_unload(mt) };
             sp.mark("acb_unload");
             window_step(WindowStage::AcbPlaneUnload);
         }
         match native_object_disposition(unload_completed, callback_gate_proven, rust_epoch_retired)
         {
             NativeObjectDisposition::Destroy => {
-                let destroyed = unsafe { sink().destroy(mt) } != 0;
+                let destroyed = unsafe { super::raw_sink().destroy(mt) } != 0;
                 sp.mark("sf_destroy");
                 if !destroyed {
                     log("native lifecycle: C seam rejected D1 and quarantined the object");
@@ -612,7 +759,7 @@ fn finish_unloaded_object(mt: &MainThread, epoch: u32, sp: &mut TeardownSpans) {
                 }
             }
             NativeObjectDisposition::Quarantine => {
-                unsafe { sink().quarantine(mt) };
+                unsafe { super::raw_sink().quarantine(mt) };
                 sp.mark("quarantine");
                 window_step(WindowStage::NativeQuarantined);
             }
@@ -626,9 +773,9 @@ fn destroy_native_window(mt: &MainThread, sp: &mut TeardownSpans) {
     // because the window is created BEFORE Load — a session that failed between the two would
     // otherwise leak it, and the next Load would ask for another. Unguarded because the seam
     // already no-ops in the other modes (see starfish.h).
-    unsafe { sink().destroy_window(mt) };
+    unsafe { super::raw_sink().destroy_window(mt) };
     sp.mark("destroy_window");
-    if sink().window_mode() == super::VP_EXPORTED {
+    if super::raw_sink().window_mode() == super::VP_EXPORTED {
         window_step(WindowStage::ExportedWindowDestroy);
     }
 }
@@ -1453,6 +1600,10 @@ fn fps_rational(fps: f64) -> Option<(i64, i64)> {
 pub enum BufferfeedStartOutcome {
     AlreadyRunning,
     Launched(crate::route::RouteStartAttempt),
+    /// The previous object's `Unload` is still running: the start is queued in the release
+    /// machine and runs the frame its tail has run (or fails typed at the deadline). Accepted:
+    /// the route stays on the Player and the HUD shows Connecting.
+    Deferred,
     Failed,
 }
 
@@ -1481,6 +1632,7 @@ pub fn start_bufferfeed_tracked(ps: &mut crate::route::PlaybackSession, pa: &mut
     }
     ps.jail_load_blocked = false;
     ps.native_start_refused = false;
+    ps.native_release_refused = false;
     // A fresh play (not a `reload_at`, which reaches `start_bufferfeed_for` directly) is a new
     // playback: it gets to try the native Seek again.
     if pa.engine().is_none() {
@@ -1543,6 +1695,39 @@ fn start_bufferfeed_for(
     pa: &mut super::adapter::PlayerAdapter,
     route_start: crate::route::RouteStartTransaction,
 ) -> BufferfeedStartOutcome {
+    // The last real stop's object may still be inside its off-frame `Unload`. A tail that is ready
+    // runs now; one that is not defers this start into the release machine (never a blocking join:
+    // PLX-NATIVE-1Q), which starts it the frame the tail has run or refuses it at the deadline.
+    if pa.release_busy() {
+        poll_release(ps, pa, std::time::Instant::now());
+    }
+    let mut fx = Vec::new();
+    pa.release_step(
+        &super::release::ReleaseEvent::StartRequested(super::release::QueuedStart { route_start }),
+        &mut fx,
+    );
+    let mut go = false;
+    let mut refused = false;
+    for effect in fx {
+        match effect {
+            super::release::ReleaseEffect::Start(_) => go = true,
+            super::release::ReleaseEffect::RefuseStart(q) => {
+                refuse_start_for_release(ps, q);
+                refused = true;
+            }
+            super::release::ReleaseEffect::AbortSuperseded(q) => {
+                let _ = crate::route::abort_route_start(q.route_start, crate::route::RouteStartResult::StartFailed);
+            }
+            _ => {}
+        }
+    }
+    if refused {
+        return BufferfeedStartOutcome::Failed;
+    }
+    if !go {
+        log("start_bufferfeed: the previous Unload is still running; start deferred");
+        return BufferfeedStartOutcome::Deferred;
+    }
     match start_bufferfeed_inner(ps, pa, route_start) {
         Ok(attempt) => {
             // Every start funnels through here (fresh, reload and the rollback's reload alike), so
@@ -1550,6 +1735,7 @@ fn start_bufferfeed_for(
             // in `start_bufferfeed_tracked` left a reload landing after a refused fresh start
             // (the foreground restore's rollback) with an Error over the video it began.
             ps.native_start_refused = false;
+            ps.native_release_refused = false;
             // The request's failed-open ladder rules on this Engine's open too: a Load it did not
             // ask for (the foreground restore after a Home during a recovery flight or over the
             // read-out) takes it out of `Flight` or `Failed`. The recovery landing's own reload has
@@ -1569,10 +1755,8 @@ fn start_bufferfeed_inner(
     pa: &mut super::adapter::PlayerAdapter,
     route_start: crate::route::RouteStartTransaction,
 ) -> Result<crate::route::RouteStartAttempt, crate::route::RouteStartResult> {
-    // The last real stop's object may still be inside its off-frame `Unload`: finish that release
-    // first (waiting for it if it has not returned — only a start within ~150 ms of a stop does),
-    // so the epoch is retired and the object destroyed before this start constructs the next one.
-    pa.finish_release();
+    // The previous object's release is finished or the start was deferred before this point
+    // (`start_bufferfeed_for`), so the epoch is retired and the object destroyed already.
     // A timed-out Load from an earlier Engine may still own the one native object the C seam
     // holds. Release it now if it has returned; otherwise refuse before anything below (the
     // exported window in particular) can touch state that object is still using.
@@ -2376,7 +2560,9 @@ pub fn reload_transcode(ps: &mut crate::route::PlaybackSession, pa: &mut super::
         // `start_bufferfeed_for` always creates a fresh attempt, but keep the conversion total if
         // that implementation changes.
         Some(BufferfeedStartOutcome::AlreadyRunning) => ReloadOutcome::Started,
-        Some(BufferfeedStartOutcome::Launched(_)) => unreachable!("accepted handled above"),
+        Some(BufferfeedStartOutcome::Launched(_) | BufferfeedStartOutcome::Deferred) => {
+            unreachable!("accepted handled above")
+        }
     }
 }
 
@@ -2763,7 +2949,7 @@ fn teardown(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::Pla
             ));
             pa.park_release(PendingRelease {
                 epoch: eng.native_epoch,
-                unload_th,
+                unload_th: Some(unload_th),
                 handed_off_at: std::time::Instant::now(),
                 _engine: eng,
             });
@@ -5967,7 +6153,7 @@ mod off_frame_release_tests {
     }
 
     #[test]
-    fn a_stop_returns_before_the_unload_and_the_next_start_waits_for_it() {
+    fn a_stop_returns_before_the_unload_and_the_next_start_is_deferred_until_its_tail_ran() {
         let mut ps = crate::route::PlaybackSession::IDLE;
         let _serial = plx_base::testlock::serial();
         let mut pa = arm(&ps);
@@ -5998,17 +6184,31 @@ mod off_frame_release_tests {
             SHARED.begin_native_session().is_none(),
             "a native session began while the previous object was still inside Unload"
         );
-        assert!(!pa.poll_release(), "the per-frame poll must not wait for a running Unload");
+        assert!(
+            !poll_release(&mut ps, &mut pa, std::time::Instant::now()),
+            "the per-frame poll must not wait for a running Unload"
+        );
 
-        // A start now (no URL, so it ends NoRoute) finishes the release before anything else.
-        let start = crate::route::begin_route_start().expect("a completed stop grants a start owner");
-        let _ = start_bufferfeed_inner(&mut ps, &mut pa, start);
-        let _ = crate::route::abort_route_start(start, crate::route::RouteStartResult::StartFailed);
+        // A start now (no URL, so it would end NoRoute) is deferred: it neither waits for the
+        // Unload nor runs over the object, and the frame poll starts it once the tail has run.
+        let before_start = std::time::Instant::now();
+        let outcome = start_bufferfeed_tracked(&mut ps, &mut pa);
+        assert_eq!(outcome, BufferfeedStartOutcome::Deferred);
+        assert!(
+            before_start.elapsed() < std::time::Duration::from_millis(UNLOAD_MS / 4),
+            "the start waited for the Unload"
+        );
+        assert!(pa.has_pending_release(), "the Unload is still running");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !poll_release(&mut ps, &mut pa, std::time::Instant::now()) {
+            assert!(std::time::Instant::now() < deadline, "the returned Unload was never finished");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         assert!(
             started.elapsed() >= std::time::Duration::from_millis(UNLOAD_MS),
-            "the start went ahead while the Unload was still running"
+            "the tail ran before the Unload returned"
         );
-        assert!(!pa.has_pending_release(), "the start must leave no release pending");
+        assert!(!pa.has_pending_release(), "the tail must leave no release pending");
         assert_eq!(ready_now(), 0, "the released object must be destroyed before a new one may load");
         assert!(
             !crate::player::ffi_host::lifecycle_blocked_for_test(),
@@ -6032,7 +6232,7 @@ mod off_frame_release_tests {
         stop_bufferfeed(&mut ps, &mut pa);
         assert!(pa.has_pending_release());
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !pa.poll_release() {
+        while !poll_release(&mut ps, &mut pa, std::time::Instant::now()) {
             assert!(std::time::Instant::now() < deadline, "the returned Unload was never finished");
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
@@ -6046,7 +6246,7 @@ mod off_frame_release_tests {
         crate::player::ffi_host::delay_unload_for_test(UNLOAD_MS);
         stop_bufferfeed(&mut ps, &mut pa);
         assert!(pa.has_pending_release());
-        pa.finish_release();
+        finish_release_for_test(&mut pa);
         assert!(!pa.has_pending_release(), "finish_release must not return with the Unload running");
         assert_eq!(ready_now(), 0);
         assert!(!crate::player::ffi_host::lifecycle_blocked_for_test());
@@ -6062,7 +6262,7 @@ mod off_frame_release_tests {
         crate::player::ffi_host::delay_unload_for_test(50);
         stop_bufferfeed(&mut ps, &mut pa);
         assert!(pa.has_pending_release());
-        pa.finish_release();
+        finish_release_for_test(&mut pa);
         assert!(!crate::player::ffi_host::lifecycle_blocked_for_test(), "the release must still D1");
         assert_eq!(
             SHARED.dg_cb_count.load(Ordering::Relaxed),
@@ -6073,7 +6273,7 @@ mod off_frame_release_tests {
     }
 
     #[test]
-    fn taking_the_token_or_splitting_waits_for_a_running_unload() {
+    fn taking_the_token_or_splitting_never_waits_for_a_running_unload() {
         for use_split in [false, true] {
             let mut ps = crate::route::PlaybackSession::IDLE;
             let _serial = plx_base::testlock::serial();
@@ -6084,17 +6284,29 @@ mod off_frame_release_tests {
             let started = std::time::Instant::now();
             stop_bufferfeed(&mut ps, &mut pa);
             assert!(pa.has_pending_release());
+            let before = std::time::Instant::now();
             if use_split {
                 let _ = pa.split();
             } else {
                 let _ = pa.mt();
             }
             assert!(
-                started.elapsed() >= std::time::Duration::from_millis(UNLOAD_MS),
-                "{} returned while the Unload was still running",
+                before.elapsed() < std::time::Duration::from_millis(UNLOAD_MS / 4),
+                "{} waited for the running Unload (PLX-NATIVE-1Q)",
                 if use_split { "split()" } else { "mt()" }
             );
-            assert!(!pa.has_pending_release(), "nothing may be pending once the token is handed out");
+            // …and a verb through the fenced sink does not reach the object the worker is inside.
+            assert_eq!(
+                unsafe { crate::player::sink().pause(pa.mt()) },
+                0,
+                "a main-thread verb reached the object while it was Releasing"
+            );
+            assert!(pa.has_pending_release(), "nothing may finish the release but its own poll");
+            finish_release_for_test(&mut pa);
+            assert!(
+                started.elapsed() >= std::time::Duration::from_millis(UNLOAD_MS),
+                "the release finished before the Unload returned"
+            );
             assert_eq!(ready_now(), 0);
             assert!(!crate::player::ffi_host::lifecycle_blocked_for_test());
         }
@@ -6127,6 +6339,46 @@ mod off_frame_release_tests {
         assert!(!crate::player::ffi_host::lifecycle_blocked_for_test(), "the fallback must end in a D1");
     }
 
+    /// Lets the held host `Unload` go when a test unwinds, so a failed assertion cannot leave
+    /// the next test's release hanging.
+    struct ReleaseUnloadOnDrop;
+    impl Drop for ReleaseUnloadOnDrop {
+        fn drop(&mut self) {
+            crate::player::ffi_host::release_unload_for_test();
+        }
+    }
+
+    /// PLX-NATIVE-1Q: a start over an `Unload` that never returns froze the UI thread in the
+    /// join. It must come back at once, deferred, and fail typed at the deadline.
+    #[test]
+    fn a_start_over_an_unload_that_never_returns_does_not_block_and_fails_typed_at_the_deadline() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        let mut pa = arm(&ps);
+        let _cleanup = Cleanup;
+        let _release = ReleaseUnloadOnDrop;
+        playing_engine(&mut pa);
+        crate::player::ffi_host::hold_unload_for_test();
+        stop_bufferfeed(&mut ps, &mut pa);
+        assert!(pa.has_pending_release());
+        // A helper lets the hold go after 3 s, so the unfixed code ends instead of hanging.
+        let helper = std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            crate::player::ffi_host::release_unload_for_test();
+        });
+
+        let started = std::time::Instant::now();
+        let _outcome = start_bufferfeed_tracked(&mut ps, &mut pa);
+        let took = started.elapsed();
+        assert!(
+            took < std::time::Duration::from_millis(50),
+            "the start blocked the UI thread for {took:?} over an Unload that had not returned"
+        );
+        assert!(!pa.is_live());
+        assert!(SHARED.begin_native_session().is_none());
+        helper.join().unwrap();
+    }
+
     #[test]
     fn an_unloadcompleted_from_the_wrong_epoch_during_the_release_is_not_evidence() {
         let mut ps = crate::route::PlaybackSession::IDLE;
@@ -6145,7 +6397,7 @@ mod off_frame_release_tests {
             !SHARED.native_unload_completed(epoch),
             "a wrong-epoch UNLOADCOMPLETED counted as the release's D1 evidence"
         );
-        pa.finish_release();
+        finish_release_for_test(&mut pa);
         assert!(!crate::player::ffi_host::lifecycle_blocked_for_test());
     }
 }
@@ -6835,6 +7087,31 @@ mod load_in_flight_tests {
         assert!(
             SHARED.load_timed_out.load(Ordering::Acquire),
             "PRECONDITION FAILED: the budget must have fired, or this test is not about a timed-out Load"
+        );
+    }
+
+    /// The exit after a playback error (`load_timeout`): `app::run::shutdown` then quits SDL and
+    /// destroys the Wayland display. A Load still inside firmware on the `media` thread must make
+    /// the exit say so, so the display is left to the OS rather than torn down under it.
+    #[test]
+    fn exit_after_a_load_timeout_never_quits_the_display_under_a_hung_load() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _serial = plx_base::testlock::serial();
+        SHARED.reset_session();
+        crate::route::reset_player_control_for_test(&ps);
+        crate::player::ffi_host::reset_native_lifecycle_for_test();
+        crate::player::ffi_host::force_clocksink_for_test(true);
+        let _cleanup = Cleanup;
+        let _release = ReleaseLoadOnDrop;
+        let mut pa = crate::player::adapter::PlayerAdapter::new(unsafe {
+            plx_base::task::MainThread::assume()
+        });
+        install_engine_with_timed_out_load(&mut ps, &mut pa);
+        stop_bufferfeed(&mut ps, &mut pa);
+        finish_release_for_test(&mut pa);
+        assert!(
+            !crate::player::ffi_host::load_in_flight_for_test(),
+            "the exit's native half returned with a Load still inside firmware: SDL_Quit would run under it"
         );
     }
 
@@ -8442,7 +8719,7 @@ mod pcm_stack_wiring_tests {
         );
         crate::player::ffi_host::delay_unload_for_test(unload_ms);
         stop_bufferfeed(&mut ps, &mut pa);
-        pa.finish_release();
+        finish_release_for_test(&mut pa);
         (pending, lead)
     }
 

@@ -111,6 +111,9 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
     }
 
     fn start_load(&mut self, ps: &mut plx_media::route::PlaybackSession) -> ForegroundLoadStart<Self::Attempt> {
+        // The foreground restore can follow only a Load that exists, not a start that has not run, so
+        // it waits (bounded by the release deadline) for a previous `Unload` instead of deferring.
+        plx_media::player::engine::wait_for_release(ps, self.pa);
         let first = plx_media::player::start_bufferfeed_tracked(ps, self.pa);
         if matches!(first, plx_media::player::BufferfeedStartOutcome::Failed) {
             // A synchronous failure inside an Original trial has no Engine for player::pump to
@@ -125,6 +128,8 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
                 self.following(ForegroundLoadStart::Launched(attempt))
             }
             plx_media::player::BufferfeedStartOutcome::Failed => unreachable!("handled above"),
+            // `wait_for_release` above leaves nothing to defer behind.
+            plx_media::player::BufferfeedStartOutcome::Deferred => ForegroundLoadStart::Failed,
         }
     }
 

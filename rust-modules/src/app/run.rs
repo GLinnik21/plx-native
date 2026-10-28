@@ -214,7 +214,11 @@ pub(crate) unsafe fn run(app: &mut App) {
         plx_media::player::engine::reap_abandoned_load(&mut app.adapters.player);
         // …and a real stop's off-frame `Unload` gets its main-thread tail (gate, epoch, ACB,
         // D1) the first frame after it returns (`player::engine::PendingRelease`).
-        app.adapters.player.poll_release();
+        plx_media::player::engine::poll_release(
+            &mut app.player.session,
+            &mut app.adapters.player,
+            std::time::Instant::now(),
+        );
         app.player.session.repair_status = app.player.repair.state();
         app.bridge.publish_playback(&app.player.session, was_player);
         // The container runs its frame: the pending navigation's commit (at `PageDip`'s floor),
@@ -3357,8 +3361,10 @@ pub(crate) unsafe fn shutdown(
         plx_media::player::stop_bufferfeed(ps, pa);
     }
     // The stop's `Unload` runs off-frame; the process must not exit inside it, nor with the
-    // object it is releasing left undestroyed.
-    pa.finish_release();
+    // object it is releasing left undestroyed. The wait is bounded, and a worker still inside
+    // firmware (an overdue `Unload`, or a timed-out Load's media thread) means the display must not
+    // be torn down under it: the OS reclaims the process.
+    let native_exit = plx_media::player::engine::exit_native(pa);
     // The stop scrobble is posted off-thread now, and this process is about to die with any
     // worker still running — so THIS is the one place its result has to be waited for, or the
     // resume point the user just earned is silently dropped. Same cost the old inline call
@@ -3369,7 +3375,11 @@ pub(crate) unsafe fn shutdown(
     // A clean exit ends the release-health session as `exited`, after the native teardown: a death
     // anywhere above leaves its state for the next boot to classify as crashed or abnormal.
     plx_telemetry::telemetry::session::shutdown();
-    SDL_Quit();
+    if native_exit == plx_media::player::engine::NativeExit::Clean {
+        SDL_Quit();
+    } else {
+        log("shutdown: a native worker is still inside firmware; SDL_Quit skipped");
+    }
 }
 
 /// Re-inject one recorded input (`app::recorder`'s encodings) for the frame being replayed: SDL

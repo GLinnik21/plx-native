@@ -229,6 +229,19 @@ pub(super) fn release_load_for_test() {
     *held = false;
     HOLD_LOAD.1.notify_all();
 }
+/// Makes the host `sf_unload` block until [`release_unload_for_test`]: an `Unload` that does not
+/// return (the 1Q freeze), where [`delay_unload_for_test`] is a fixed sleep the caller waits out.
+#[cfg(test)]
+static HOLD_UNLOAD: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+#[cfg(test)]
+pub(super) fn hold_unload_for_test() {
+    *HOLD_UNLOAD.0.lock().unwrap_or_else(|e| e.into_inner()) = true;
+}
+#[cfg(test)]
+pub(super) fn release_unload_for_test() {
+    *HOLD_UNLOAD.0.lock().unwrap_or_else(|e| e.into_inner()) = false;
+    HOLD_UNLOAD.1.notify_all();
+}
 /// How long the host `sf_unload` takes, in ms — the device's `StarfishMediaAPIs::Unload` blocks
 /// for 110-150 ms (`engine::PendingRelease`), and a test of the frame that pays for it needs a
 /// sink that takes measurable time too. 0 (the default) is the unmodified, instant Unload.
@@ -539,6 +552,7 @@ pub(super) fn reset_native_lifecycle_for_test() {
     *HOLD_LOAD.0.lock().unwrap_or_else(|e| e.into_inner()) = false;
     HOLD_LOAD.1.notify_all();
     UNLOAD_DELAY_MS.store(0, Relaxed);
+    release_unload_for_test();
     Clock::rewind();
 }
 
@@ -951,6 +965,10 @@ unsafe fn sf_unload() {
         let ms = UNLOAD_DELAY_MS.load(Relaxed);
         if ms > 0 {
             std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
+        let mut held = HOLD_UNLOAD.0.lock().unwrap_or_else(|e| e.into_inner());
+        while *held {
+            held = HOLD_UNLOAD.1.wait(held).unwrap_or_else(|e| e.into_inner());
         }
     }
     let epoch = ACTIVE_EPOCH.load(Relaxed);

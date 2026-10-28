@@ -1375,6 +1375,18 @@ impl Shared {
         true
     }
 
+    /// Whether an off-frame `Unload` owns the native object ([`NativeSessionPhase::Releasing`]):
+    /// `player::sink()` answers the fenced sink for the main thread while this holds.
+    pub fn native_releasing(&self) -> bool {
+        matches!(
+            self.native_session
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .phase,
+            NativeSessionPhase::Releasing { .. }
+        )
+    }
+
     /// Whether a timed-out Load is parked ([`NativeSessionPhase::Abandoned`]): the native object
     /// is still owned by a `Load` that has not returned, so every native start is refused.
     pub fn native_load_abandoned(&self) -> bool {

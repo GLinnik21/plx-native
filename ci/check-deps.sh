@@ -1200,7 +1200,7 @@ LG_LEDGERS=ci/allow/blocking.txt LG_COUNT_FILE=ci/allow/blocking.txt \
 # lines of the machine it made pure. MACHINES is the scope of workers and globals; forks reads the
 # whole of the four crates that own the data, the Plex client, the player and the session:
 MACHINES=("$SRC_DATA" "$SRC_SESSION" rust-modules/plex/src/plex/session.rs "$SRC_MEDIA/player/lifecycle.rs"
-  "$SRC_MEDIA/player/recovery.rs" "$SRC_MEDIA/route/plan.rs" "$SRC_MEDIA/route/plan_memory.rs" "$SRC_SCREENS" "$SRC_UI" "$SRC_APPKIT" "$SRC_MACHINE")
+  "$SRC_MEDIA/player/recovery.rs" "$SRC_MEDIA/player/release.rs" "$SRC_MEDIA/route/plan.rs" "$SRC_MEDIA/route/plan_memory.rs" "$SRC_SCREENS" "$SRC_UI" "$SRC_APPKIT" "$SRC_MACHINE")
 FORK_SCOPE=("$SRC_DATA" "$SRC_PLEX" "$SRC_MEDIA" "$SRC_SESSION")
 
 # scope_re <path>...: an ERE over repo-relative file paths that matches those paths (a `.rs` file

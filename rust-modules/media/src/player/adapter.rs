@@ -40,12 +40,15 @@ pub struct PlayerAdapter {
     /// the Starfish seam, which only the main thread may do. See `engine::AbandonedLoad`.
     abandoned_load: Option<super::engine::AbandonedLoad>,
     /// A real stop's native object whose `Unload` is still running on its worker
-    /// (`engine::PendingRelease`). **The adapter is the fence the off-frame release relies on:**
-    /// [`mt`](Self::mt) and [`split`](Self::split) finish it (waiting if they must) before they
-    /// hand out the token, so nothing reaches the seam while the worker owns the object. A
-    /// `RefCell` because `mt` takes `&self`; the adapter is `!Send` (it holds the token), so the
-    /// cell never crosses a thread.
+    /// (`engine::PendingRelease`): the worker's handle and the Engine it keeps alive. What may
+    /// happen to it is decided by [`release`](Self::release), the pure machine this holds beside it.
+    /// **The fence the off-frame release relies on is `player::sink()`:** while the object is
+    /// `Releasing` the main thread's verbs reach `ReleasingSink`, so [`mt`](Self::mt) and
+    /// [`split`](Self::split) hand out the token without waiting for the worker (PLX-NATIVE-1Q: that
+    /// wait had no bound). A `RefCell` because `take_finished_release` takes `&self`; the adapter is
+    /// `!Send` (it holds the token), so the cell never crosses a thread.
     pending_release: std::cell::RefCell<Option<super::engine::PendingRelease>>,
+    release: super::release::NativeRelease,
 }
 
 impl PlayerAdapter {
@@ -57,15 +60,19 @@ impl PlayerAdapter {
             repair: None,
             abandoned_load: None,
             pending_release: std::cell::RefCell::new(None),
+            release: super::release::NativeRelease::new(),
         }
     }
 
-    /// Park a real stop's off-frame release. At most one exists: the next start finishes it
-    /// before it can construct another object.
-    pub fn park_release(&self, release: super::engine::PendingRelease) {
-        let mut slot = self.pending_release.borrow_mut();
-        debug_assert!(slot.is_none(), "a second off-frame release cannot exist");
-        *slot = Some(release);
+    /// Park a real stop's off-frame release. At most one exists: a start over it is deferred.
+    pub fn park_release(&mut self, release: super::engine::PendingRelease) {
+        let (epoch, at) = (release.epoch(), release.handed_off_at());
+        {
+            let mut slot = self.pending_release.borrow_mut();
+            debug_assert!(slot.is_none(), "a second off-frame release cannot exist");
+            *slot = Some(release);
+        }
+        self.release_step(&super::release::ReleaseEvent::UnloadHandedOff { epoch, at }, &mut Vec::new());
     }
 
     /// Is a stopped native object's `Unload` still owed its main-thread tail?
@@ -73,16 +80,29 @@ impl PlayerAdapter {
         self.pending_release.borrow().is_some()
     }
 
-    /// Once a frame: finish the off-frame release if its `Unload` has returned. Never blocks.
-    /// `true` when this call finished it.
-    pub fn poll_release(&self) -> bool {
-        super::engine::settle_release(&mut self.pending_release.borrow_mut(), &self.mt, false)
+    /// The release machine's verdict on one event; the effects are the caller's to run.
+    pub(super) fn release_step(&mut self, event: &super::release::ReleaseEvent, fx: &mut Vec<super::release::ReleaseEffect>) {
+        self.release.step(event, fx);
     }
 
-    /// Finish the off-frame release now, waiting for its `Unload` if it is still running — what a
-    /// caller that is about to use the seam (a start, the exit) must do first.
-    pub fn finish_release(&self) {
-        super::engine::settle_release(&mut self.pending_release.borrow_mut(), &self.mt, true);
+    /// An `Unload` is running or overdue: the object slot is not free.
+    pub fn release_busy(&self) -> bool {
+        self.release.is_busy()
+    }
+
+    /// The `Unload` outlived its deadline: it stays parked and every start is refused.
+    pub fn release_overdue(&self) -> bool {
+        self.release.is_overdue()
+    }
+
+    /// The parked release, taken only once its worker has returned (so joining it cannot block).
+    pub(super) fn take_finished_release(&self) -> Option<super::engine::PendingRelease> {
+        let mut slot = self.pending_release.borrow_mut();
+        if slot.as_ref().is_some_and(|p| p.is_finished()) {
+            slot.take()
+        } else {
+            None
+        }
     }
 
     /// UI-thread resource effect. The owner spends the attempt before the worker can run.
@@ -162,12 +182,11 @@ impl PlayerAdapter {
     /// The token, for the ACB/Starfish seam. `tv::sink::VideoSink`'s methods still take one — see the
     /// module doc for why that surface keeps its own argument.
     ///
-    /// Finishes a pending off-frame release first ([`finish_release`](Self::finish_release)): a
-    /// caller holding the token may call any verb, and the object the release still owns must
-    /// not be one of the things it can reach. Free when nothing is pending.
+    /// Does not wait for a pending off-frame release: a caller holding the token may call any verb,
+    /// and while the object is `Releasing` `player::sink()` answers a sink on which every verb is
+    /// a no-op, so none of them reaches the object the worker is inside.
     #[inline]
     pub fn mt(&self) -> &MainThread {
-        self.finish_release();
         &self.mt
     }
 
@@ -181,7 +200,6 @@ impl PlayerAdapter {
     /// which was a COMMENT for as long as the slot handed out `&'static mut`.
     #[inline]
     pub fn split(&mut self) -> (Option<&mut Engine>, &MainThread) {
-        self.finish_release();
         (self.engine.as_mut(), &self.mt)
     }
 }

@@ -1254,7 +1254,7 @@ fn failure_glyph(kind: plx_media::player::FailureKind) -> plx_ui::icons::Icon {
     match kind {
         K::DecisionRefused | K::NoVideoTranscodeTarget => Icon::ServerBadgeXmark,
         K::JailMissingRtkmem => Icon::LockBadgeAlert,
-        K::LoadTimeout => Icon::ClockBadgeAlert,
+        K::LoadTimeout | K::ReleaseTimeout => Icon::ClockBadgeAlert,
         _ => Icon::Alert,
     }
 }
