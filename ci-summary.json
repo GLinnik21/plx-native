@@ -57,7 +57,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-28T14:27:24Z",
+ "generated": "2026-10-28T14:32:55Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -667,11 +667,6 @@
    "change_pct": 41.0,
    "commits": [
     {
-     "pr": 1078,
-     "sha": "9b7d1da28",
-     "title": "Playback: MP3 and Vorbis are decoded in the app behind the debug gate"
-    },
-    {
      "pr": 1079,
      "sha": "44d4eda8d",
      "title": "Playback: TrueHD is decoded in the app behind the debug gate; high rates are low-passed before decimation"
@@ -715,6 +710,11 @@
      "pr": 1110,
      "sha": "132853d36",
      "title": "Playback: a refused hero preview reports preview_not_direct, not unspecified"
+    },
+    {
+     "pr": 1113,
+     "sha": "eb6dadd55",
+     "title": "Telemetry: playback.failed carries the codec classes, the pipeline error class and the refusal path"
     }
    ],
    "from": 166,
@@ -728,11 +728,6 @@
    "change_pct": 37.9,
    "commits": [
     {
-     "pr": 1078,
-     "sha": "9b7d1da28",
-     "title": "Playback: MP3 and Vorbis are decoded in the app behind the debug gate"
-    },
-    {
      "pr": 1079,
      "sha": "44d4eda8d",
      "title": "Playback: TrueHD is decoded in the app behind the debug gate; high rates are low-passed before decimation"
@@ -776,6 +771,11 @@
      "pr": 1110,
      "sha": "132853d36",
      "title": "Playback: a refused hero preview reports preview_not_direct, not unspecified"
+    },
+    {
+     "pr": 1113,
+     "sha": "eb6dadd55",
+     "title": "Telemetry: playback.failed carries the codec classes, the pipeline error class and the refusal path"
     }
    ],
    "from": 1116.6,
@@ -789,11 +789,6 @@
    "change_pct": 37.9,
    "commits": [
     {
-     "pr": 1078,
-     "sha": "9b7d1da28",
-     "title": "Playback: MP3 and Vorbis are decoded in the app behind the debug gate"
-    },
-    {
      "pr": 1079,
      "sha": "44d4eda8d",
      "title": "Playback: TrueHD is decoded in the app behind the debug gate; high rates are low-passed before decimation"
@@ -837,6 +832,11 @@
      "pr": 1110,
      "sha": "132853d36",
      "title": "Playback: a refused hero preview reports preview_not_direct, not unspecified"
+    },
+    {
+     "pr": 1113,
+     "sha": "eb6dadd55",
+     "title": "Telemetry: playback.failed carries the codec classes, the pipeline error class and the refusal path"
     }
    ],
    "from": 1116.0,
@@ -850,11 +850,6 @@
    "change_pct": 30.9,
    "commits": [
     {
-     "pr": 1078,
-     "sha": "9b7d1da28",
-     "title": "Playback: MP3 and Vorbis are decoded in the app behind the debug gate"
-    },
-    {
      "pr": 1079,
      "sha": "44d4eda8d",
      "title": "Playback: TrueHD is decoded in the app behind the debug gate; high rates are low-passed before decimation"
@@ -898,6 +893,11 @@
      "pr": 1110,
      "sha": "132853d36",
      "title": "Playback: a refused hero preview reports preview_not_direct, not unspecified"
+    },
+    {
+     "pr": 1113,
+     "sha": "eb6dadd55",
+     "title": "Telemetry: playback.failed carries the codec classes, the pipeline error class and the refusal path"
     }
    ],
    "from": 973.0,
@@ -911,11 +911,6 @@
    "change_pct": 27.1,
    "commits": [
     {
-     "pr": 1078,
-     "sha": "9b7d1da28",
-     "title": "Playback: MP3 and Vorbis are decoded in the app behind the debug gate"
-    },
-    {
      "pr": 1079,
      "sha": "44d4eda8d",
      "title": "Playback: TrueHD is decoded in the app behind the debug gate; high rates are low-passed before decimation"
@@ -959,6 +954,11 @@
      "pr": 1110,
      "sha": "132853d36",
      "title": "Playback: a refused hero preview reports preview_not_direct, not unspecified"
+    },
+    {
+     "pr": 1113,
+     "sha": "eb6dadd55",
+     "title": "Telemetry: playback.failed carries the codec classes, the pipeline error class and the refusal path"
     }
    ],
    "from": 170,
