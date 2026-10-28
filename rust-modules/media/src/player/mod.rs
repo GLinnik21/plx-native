@@ -888,9 +888,13 @@ pub enum FailureKind {
     /// from an ordinary rejection on the wire.
     LoadTimeout,
     /// The resolve produced no playable plan and no verdict: no URL, no refusal, so no Engine
-    /// ever ran. A hero preview refused for not being a direct play ends here (Sentry
-    /// PLX-NATIVE-1G), as does a resolve with no client or whose worker never spawned.
+    /// ever ran. A resolve with no client or whose worker never spawned ends here.
     ResolveFailed,
+    /// A hero/trailer preview whose route was not a direct play, which a muted preview never
+    /// takes (Sentry PLX-NATIVE-1G): the plan carried [`PlayVerdict::PreviewNeedsDirectPlay`]. The
+    /// same item resolves the same way again, so unlike [`ResolveFailed`](Self::ResolveFailed) it
+    /// is not transient.
+    PreviewNotDirect,
     /// Everything else. Honest rather than tidy — see the type's doc.
     Unspecified,
 }
@@ -912,6 +916,7 @@ impl FailureKind {
             FailureKind::JailMissingRtkmem => C::JailMissingRtkmem,
             FailureKind::LoadTimeout => C::LoadTimeout,
             FailureKind::ResolveFailed => C::ResolveFailed,
+            FailureKind::PreviewNotDirect => C::PreviewNotDirect,
             FailureKind::Unspecified => C::Unspecified,
         }
     }
@@ -980,6 +985,9 @@ pub fn failure_actions(kind: FailureKind, cx: FailureContext) -> Vec<FailureActi
         | K::ResolveFailed | K::Unspecified);
     let mut v = Vec::with_capacity(4);
     match kind {
+        // A preview refused for not being a direct play: the same item resolves the same way, and
+        // a preview has no rung to pick.
+        K::PreviewNotDirect => {}
         // A device finding: nothing about the request changes it; only the repair can.
         K::JailMissingRtkmem => {
             if cx.repair_idle {
@@ -1296,6 +1304,20 @@ fn with_forced_playback_context(mut shape: ErrorShape, forced: bool) -> ErrorSha
     shape
 }
 
+/// The read-out for [`FailureKind::PreviewNotDirect`]. A preview shows no read-out of its own, so
+/// the wording is the open failure's (the catalog has no narrower "could not prepare playback"
+/// string, and a new one would need every language).
+fn preview_not_direct_shape() -> ErrorShape {
+    ErrorShape {
+        kind: FailureKind::PreviewNotDirect,
+        caption: plx_platform::i18n::msg::widgets_failure_open_c(),
+        panel: plx_platform::i18n::msg::widgets_panel_open(),
+        readout: plx_platform::i18n::msg::widgets_reason_open(),
+        detail: std::borrow::Cow::Borrowed(""),
+        no_pass: false,
+    }
+}
+
 /// The live [`ErrorShape`] for `PlaybackState::Error` (main thread — `route::is_transcoding` and
 /// `route::play_verdict` read main-thread state).
 pub fn error_now(ps: &crate::route::PlaybackSession) -> ErrorShape {
@@ -1307,6 +1329,11 @@ pub fn error_now(ps: &crate::route::PlaybackSession) -> ErrorShape {
     // signal below can be the real explanation for a playback failure.
     if ps.jail_load_blocked {
         return jail_error_shape();
+    }
+    // The typed verdict, not the sentence: a refused preview is ours, not the server's, and must
+    // not read as `DecisionRefused`.
+    if crate::route::play_refused_as_preview(ps) {
+        return preview_not_direct_shape();
     }
     with_forced_playback_context(error_shape(
         SHARED.demux_no_video.load(Relaxed),
@@ -2702,7 +2729,7 @@ pub fn every_failure_row() -> Vec<(FailureKind, FailureContext, Vec<FailureActio
     use FailureKind as K;
     let kinds = [K::DecisionRefused, K::PlaybackPolicy, K::NoVideoTranscodeTarget, K::NoVideoTrack,
         K::MediaSource, K::PlaybackInterrupted, K::TvPipeline, K::LoadTimeout,
-        K::JailMissingRtkmem, K::ResolveFailed, K::Unspecified];
+        K::JailMissingRtkmem, K::ResolveFailed, K::PreviewNotDirect, K::Unspecified];
     let mut out = Vec::new();
     for kind in kinds {
         for forced in [false, true] {
@@ -2909,6 +2936,7 @@ mod tests {
             (K::JailMissingRtkmem, "jail_missing_rtkmem"),
             (K::LoadTimeout, "load_timeout"),
             (K::ResolveFailed, "resolve_failed"),
+            (K::PreviewNotDirect, "preview_not_direct"),
             (K::Unspecified, "unspecified"),
         ];
         for (kind, code) in table {
@@ -3673,17 +3701,19 @@ mod tests {
 
     /// **Sentry PLX-NATIVE-1G.** A hero preview whose resolve is refused for not being a direct
     /// play (`plan.rs`: "preview: refused - not a direct play") installs a plan with no URL and
-    /// no verdict, so only `resolve_failed` is set. No Engine ever ran, so no worker signal
-    /// exists, and the failure used to read `unspecified`. It is a resolve failure, and says so.
+    /// `PlayVerdict::PreviewNeedsDirectPlay`. It used to carry no verdict and read `unspecified`;
+    /// the read-out now takes its kind from the typed verdict, not from "no plan".
     #[test]
-    fn a_preview_whose_resolve_produced_no_plan_reports_resolve_failed_not_unspecified() {
+    fn a_preview_refused_for_not_being_a_direct_play_reports_preview_not_direct() {
         let _g = plx_base::testlock::serial();
         let mut ps = crate::route::PlaybackSession::default();
-        crate::route::resolve_as_preview_for_test(&mut ps);
-        crate::route::resolve_failed_for_test(&mut ps);
+        crate::route::resolve_refused_preview_for_test(&mut ps);
         let e = error_now(&ps);
-        assert_eq!(e.kind.code(), "resolve_failed", "{:?}", e.kind);
+        assert_eq!(e.kind.code(), "preview_not_direct", "{:?}", e.kind);
         assert_ne!(e.kind, FailureKind::Unspecified);
+        assert!(e.detail.is_empty(), "no server sentence rides a refusal that is ours");
+        let cx = FailureContext { forced: false, can_retry: true, repair_idle: false };
+        assert_eq!(failure_actions(e.kind, cx), vec![FailureAction::Back], "same item, same refusal: no Try Again");
     }
 
     /// A terminal runtime failure already knows which subsystem stopped: the media source,

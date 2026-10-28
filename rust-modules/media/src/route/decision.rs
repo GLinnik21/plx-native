@@ -5408,6 +5408,11 @@ pub fn is_transcoding(ps: &PlaybackSession) -> bool {
 pub fn play_refused(ps: &PlaybackSession) -> bool {
     ps.play_verdict.is_some()
 }
+/// Did the resolve refuse this as a PREVIEW that was not a direct play
+/// ([`PlayVerdict::PreviewNeedsDirectPlay`])? Our own refusal, not the server's.
+pub(crate) fn play_refused_as_preview(ps: &PlaybackSession) -> bool {
+    matches!(ps.play_verdict, Some(PlayVerdict::PreviewNeedsDirectPlay))
+}
 /// The app/worker failed to produce a playable plan, as distinct from a PMS `/decision` refusal.
 /// There is no Engine whose pump could publish Error, so `player::state()` derives it beside the
 /// refusal case.
@@ -5481,13 +5486,6 @@ pub fn clear_play_verdict_for_test(ps: &mut PlaybackSession) {
 #[cfg(any(test, feature = "test-support"))]
 pub fn refuse_for_test(ps: &mut PlaybackSession, verdict: PlayVerdict) {
     ps.play_verdict = Some(verdict);
-}
-/// Test-only: leave `ps` as [`apply_plan`] leaves it for a plan with no URL and no verdict (a
-/// preview refused for not being a direct play, a resolve that found no client): no route, no
-/// refusal, `resolve_failed` set.
-#[cfg(any(test, feature = "test-support"))]
-pub fn resolve_failed_for_test(ps: &mut PlaybackSession) {
-    ps.resolve_failed = true;
 }
 /// Test-only: leave `ps` as a refusing [`apply_plan`] does after the SERVER refused a transcode —
 /// the verdict and its codes installed, the attempted route's contract and the source file's
@@ -11576,6 +11574,41 @@ pub fn report_timeline(
 #[cfg(test)]
 #[path = "decision_test_support.rs"]
 mod test_support;
+
+/// Test-only: leave `ps` as a REAL hero-preview resolve leaves it when the route is not a direct
+/// play. The resolve runs against a loopback PMS through `build_stream` with the preview env and
+/// an item with no Part, which `preview::accepts_direct_play` rejects, and the plan it returns is
+/// installed by `apply_plan`. Nothing here sets a flag the production path would not. The caller
+/// holds `plx_base::testlock::serial()`.
+#[cfg(test)]
+pub(crate) fn resolve_refused_preview_for_test(ps: &mut PlaybackSession) {
+    assert!(plx_net::net::global_init() && crate::curlio::available());
+    let (port, done, server) = test_support::enhancement_pms(
+        test_support::MDE_DIRECTPLAY, test_support::EnhMode::Honor("ac3"), 0);
+    let sid = plx_plex::plex::register_for_test("preview-pms", "127.0.0.1", port, "token", "preview-client");
+    plx_plex::plex::client_for(sid).unwrap().set_link(plx_plex::plex::probe::Location::Local);
+    let mut env = ResolveEnv::snapshot(ps, plx_data::stores::metadata::MetadataStore::default().view(), sid, "trailer");
+    env.quality = Quality::Original;
+    env.set_preview(true);
+    env.cached_item = Some(test_support::fourk_item(sid, vec![plx_data::metadata::Stream::default()]));
+    let plan = build_stream(&plx_base::task::OffFrame::for_test(), "trailer", "", "h264", "aac", &env);
+    done.send(()).unwrap();
+    let _ = server.join().unwrap();
+    ps.request = Some(PlaybackRequest {
+        sid,
+        rk: "trailer".into(),
+        part: String::new(),
+        vcodec: "h264".into(),
+        acodec: "aac".into(),
+        title: "Trailer".into(),
+        ctx: plx_data::metadata::TRAILER_CONTEXT.into(),
+        preview: true,
+        version: None,
+    });
+    test_support::apply_plan(ps, plan, "trailer");
+    crate::route::resolve_as_preview_for_test(ps);
+    plx_plex::plex::reset_servers_for_test();
+}
 
 #[cfg(all(test, feature = "hostsim"))]
 #[path = "decision_flight_rig.rs"]

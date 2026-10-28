@@ -1112,9 +1112,11 @@ pub enum FailureClass {
     JailMissingRtkmem,
     /// The native `Load` budget fired: the call never returned, or `loadCompleted` never arrived.
     LoadTimeout,
-    /// The resolve produced no playable plan and no verdict: no Engine ever ran (a hero preview
-    /// refused for not being a direct play, a resolve with no client).
+    /// The resolve produced no playable plan and no verdict: no Engine ever ran (a resolve with no
+    /// client, or whose worker never spawned).
     ResolveFailed,
+    /// A hero/trailer preview refused because its route was not a direct play.
+    PreviewNotDirect,
     /// Everything else. Honest rather than tidy.
     Unspecified,
 }
@@ -1123,7 +1125,7 @@ impl FailureClass {
     /// Every class, so a test can hold the declared `playback.failed` domain to the enum it is
     /// built from.
     #[cfg(any(test, feature = "test-support"))]
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::DecisionRefused,
         Self::PlaybackPolicy,
         Self::NoVideoTranscodeTarget,
@@ -1135,6 +1137,7 @@ impl FailureClass {
         Self::JailMissingRtkmem,
         Self::LoadTimeout,
         Self::ResolveFailed,
+        Self::PreviewNotDirect,
         Self::Unspecified,
     ];
 
@@ -1153,6 +1156,7 @@ impl FailureClass {
             Self::JailMissingRtkmem => "jail_missing_rtkmem",
             Self::LoadTimeout => "load_timeout",
             Self::ResolveFailed => "resolve_failed",
+            Self::PreviewNotDirect => "preview_not_direct",
             Self::Unspecified => "unspecified",
         }
     }

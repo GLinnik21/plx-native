@@ -1448,6 +1448,7 @@ mod tests {
             crate::route::PlayVerdict::Server(String::new(), Default::default()),
             crate::route::PlayVerdict::DirectPlayDisabled,
             crate::route::PlayVerdict::Forced(crate::route::ForcedFailure::Video),
+            crate::route::PlayVerdict::PreviewNeedsDirectPlay,
         ] {
             let mut ps = crate::route::PlaybackSession::default();
             crate::route::refuse_for_test(&mut ps, verdict.clone());
@@ -1560,6 +1561,7 @@ mod tests {
         for verdict in [
             crate::route::PlayVerdict::DirectPlayDisabled,
             crate::route::PlayVerdict::Forced(crate::route::ForcedFailure::Video),
+            crate::route::PlayVerdict::PreviewNeedsDirectPlay,
         ] {
             let mut ps = crate::route::PlaybackSession::default();
             crate::route::refuse_for_test(&mut ps, verdict.clone());
@@ -1760,13 +1762,32 @@ mod tests {
         .expect("handled event JSON")
     }
 
-    /// A session as a hero preview leaves it when its landing is refused: resolved for a preview,
-    /// retired by the machine, no route installed.
+    /// A session as a hero preview leaves it when its landing is refused: a REAL preview resolve
+    /// (the route rig runs `build_stream` with the preview env on an item `accepts_direct_play`
+    /// rejects), so it carries exactly what `plan.rs` installs - `PreviewNeedsDirectPlay`, no
+    /// route - and not a state the production path never produces.
     fn refused_preview() -> crate::route::PlaybackSession {
         let mut ps = crate::route::PlaybackSession::default();
-        crate::route::resolve_as_preview_for_test(&mut ps);
-        crate::route::refuse_for_test(&mut ps, crate::route::PlayVerdict::DirectPlayDisabled);
+        crate::route::resolve_refused_preview_for_test(&mut ps);
         ps
+    }
+
+    /// **Sentry PLX-NATIVE-1G.** The same refusal, through the report path end to end: the event's
+    /// `playback.kind` tag is the typed verdict's `preview_not_direct`, not `unspecified`.
+    #[test]
+    fn a_preview_refused_for_not_being_a_direct_play_reports_kind_preview_not_direct() {
+        let _g = plx_base::testlock::serial();
+        consented(|| {
+            crate::player::preview::reset_for_test();
+            clear_error_trace();
+            let ps = refused_preview();
+            preview_requested();
+            observe(&ps, S::Error);
+            let v = event_for(&ps);
+            assert_eq!(v["tags"]["playback.kind"], "preview_not_direct");
+            assert_eq!(v["tags"]["playback.attempt_origin"], "preview");
+            assert_eq!(v["fingerprint"], serde_json::json!(["playback-error", "preview", "preview_not_direct"]));
+        });
     }
 
     /// **Sentry PLX-NATIVE-15.** A detail-page preview never passes [`requested`], so its failure
