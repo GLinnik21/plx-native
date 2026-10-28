@@ -5479,8 +5479,8 @@ fn want_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdap
 /// The step takes the single-flight claim in `rel_pages` and leaves the read on the outbox as a
 /// [`MetaRelatedReq`] job; it starts no thread and reads no registry. True means the job was
 /// emitted: the claim is up until the job's port gives it back, by its answer or by a refusal
-/// ([`MetaRelatedPort`]), so a true for a read the OS then refuses is followed by a false claim and
-/// the next edge asking again, exactly as a spawn that failed left it.
+/// ([`MetaRelatedPort`]), so a true for a read the OS then refuses is followed by the claim lowered
+/// and the next edge asking again, exactly as a spawn that failed left it.
 fn ask_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>, ask: RelatedAsk,
     seen: (usize, usize)) -> bool {
     use crate::stores::paging::{PageInfo, Row};
