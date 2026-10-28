@@ -29,7 +29,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-28T00:15:39Z",
+ "generated": "2026-10-28T00:16:48Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -97,17 +97,17 @@
   },
   {
    "change30_pct": -57.9,
-   "change7_pct": -24.6,
+   "change7_pct": -24.5,
    "d30": 869.0,
-   "delta30": -503.5,
-   "delta7": -119.5,
+   "delta30": -503.0,
+   "delta7": -119.0,
    "group": "ci",
    "id": "pr_wait",
    "kind": "wait",
    "label": "PR CI wait",
    "n_now": 214,
    "n_prev": 275,
-   "now": 365.5,
+   "now": 366.0,
    "prev7": 485,
    "shown": true,
    "state": "flat",
@@ -117,18 +117,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -58.9,
-   "change7_pct": -14.7,
+   "change30_pct": -59.1,
+   "change7_pct": -15.0,
    "d30": 833,
-   "delta30": -491,
-   "delta7": -59,
+   "delta30": -492.0,
+   "delta7": -60.0,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 87,
+   "n_now": 88,
    "n_prev": 125,
-   "now": 342,
+   "now": 341.0,
    "prev7": 401,
    "shown": true,
    "state": "flat",
@@ -385,14 +385,14 @@
    "change7_pct": 9.5,
    "d30": 136.0,
    "delta30": 129.0,
-   "delta7": 23.0,
+   "delta7": 23,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 76,
+   "n_now": 77,
    "n_prev": 119,
-   "now": 265.0,
+   "now": 265,
    "prev7": 242,
    "shown": true,
    "state": "flat",
@@ -402,18 +402,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 100.0,
-   "change7_pct": 4.7,
+   "change30_pct": 98.5,
+   "change7_pct": 3.9,
    "d30": 100.0,
-   "delta30": 100.0,
-   "delta7": 9,
+   "delta30": 98.5,
+   "delta7": 7.5,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 75,
+   "n_now": 76,
    "n_prev": 119,
-   "now": 200,
+   "now": 198.5,
    "prev7": 191,
    "shown": true,
    "state": "flat",
@@ -445,17 +445,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 9.3,
+   "change7_pct": 10.0,
    "d30": null,
    "delta30": null,
-   "delta7": 14.0,
+   "delta7": 15,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 76,
+   "n_now": 77,
    "n_prev": 119,
-   "now": 164.0,
+   "now": 165,
    "prev7": 150,
    "shown": true,
    "state": "flat",
@@ -533,14 +533,14 @@
    "change7_pct": 0.0,
    "d30": 16.0,
    "delta30": 2.0,
-   "delta7": 0.0,
+   "delta7": 0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 76,
+   "n_now": 77,
    "n_prev": 119,
-   "now": 18.0,
+   "now": 18,
    "prev7": 18,
    "shown": false,
    "state": "flat",
@@ -639,11 +639,6 @@
    "change_pct": 31.1,
    "commits": [
     {
-     "pr": 1067,
-     "sha": "efbe044fa",
-     "title": "Playback: ALAC and integer LPCM are decoded in the app like FLAC"
-    },
-    {
      "pr": 1066,
      "sha": "c82be20f8",
      "title": "Dependencies: harfbuzz -> 15.0.0"
@@ -687,6 +682,11 @@
      "pr": 1039,
      "sha": "e60b2a922",
      "title": "Add Polish (pl) localization"
+    },
+    {
+     "pr": 1083,
+     "sha": "4edffa24e",
+     "title": "Library: a page mounted over a listing the server changed meanwhile lists it again"
     }
    ],
    "from": 164,
@@ -700,11 +700,6 @@
    "change_pct": 29.1,
    "commits": [
     {
-     "pr": 1067,
-     "sha": "efbe044fa",
-     "title": "Playback: ALAC and integer LPCM are decoded in the app like FLAC"
-    },
-    {
      "pr": 1066,
      "sha": "c82be20f8",
      "title": "Dependencies: harfbuzz -> 15.0.0"
@@ -748,6 +743,11 @@
      "pr": 1039,
      "sha": "e60b2a922",
      "title": "Add Polish (pl) localization"
+    },
+    {
+     "pr": 1083,
+     "sha": "4edffa24e",
+     "title": "Library: a page mounted over a listing the server changed meanwhile lists it again"
     }
    ],
    "from": 987.0,
@@ -761,11 +761,6 @@
    "change_pct": 20.2,
    "commits": [
     {
-     "pr": 1067,
-     "sha": "efbe044fa",
-     "title": "Playback: ALAC and integer LPCM are decoded in the app like FLAC"
-    },
-    {
      "pr": 1066,
      "sha": "c82be20f8",
      "title": "Dependencies: harfbuzz -> 15.0.0"
@@ -809,6 +804,11 @@
      "pr": 1039,
      "sha": "e60b2a922",
      "title": "Add Polish (pl) localization"
+    },
+    {
+     "pr": 1083,
+     "sha": "4edffa24e",
+     "title": "Library: a page mounted over a listing the server changed meanwhile lists it again"
     }
    ],
    "from": 163,
@@ -849,7 +849,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 265.0
+   "now": 265
   }
  ],
  "slowest_local": [
