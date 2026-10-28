@@ -23,9 +23,11 @@ use crate::watchlist::ledger::{Intent, IntentLedger, PendingWrite, WriteOutcome}
 use crate::watchlist::model::{tile_state, Asked, Kind, MatchTable, ServerMatch, TileState, WatchRow};
 use crate::watchlist::order::{sorted_filtered, FilterSpec, SortSpec};
 use crate::watchlist::{
-    run_delta, run_list, run_rematch, run_write, Failure, Landed, LiveIo, Tag, What, WatchlistAuth, WatchlistIo,
+    run_delta, run_list, run_rematch, run_write, Failure, Landed, LiveIo, Tag, What, WatchlistAuth, WatchlistInput,
+    WatchlistIo,
 };
 use plx_machine::machine::{Cx, Effects, Handled, Host, Machine};
+use plx_plex::plex::session::CurrentProfile;
 use plx_plex::plex::{ListingFacts, ServerId};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::Range;
@@ -40,8 +42,8 @@ const RETRY_FRAMES: u32 = 120;
 /// Every mutation of the watchlist store.
 #[derive(Clone, Debug)]
 pub enum WatchlistCmd {
-    /// The page mounted (or the tab was entered): capture the identity if the epoch has none and
-    /// read the list. A populated list is never blanked by it.
+    /// The page mounted (or the tab was entered): take the identity from the input if the epoch has none
+    /// and read the list. It is stepped through [`WatchlistStore::run_with_input`]. A populated list is never blanked by it.
     Open,
     /// Read the list again behind the rows now held (resume, a write burst, a watched mark).
     Reread,
@@ -358,9 +360,28 @@ impl WatchlistStore {
         changed
     }
 
+    /// Run one command for a caller that holds no [`WatchlistInput`]: every command but `Open`,
+    /// which is the one that captures an identity or checks the seated profile. An `Open` is
+    /// refused here, because the input it must read was never handed: it reaches
+    /// [`WatchlistStore::run_with_input`].
     pub fn run(&mut self, cmd: WatchlistCmd) -> bool {
+        if matches!(cmd, WatchlistCmd::Open) {
+            debug_assert!(false, "an Open reached a step handed no input");
+            plx_base::eventlog::log("watchlist: an Open reached a step handed no input - dropped");
+            return false;
+        }
+        self.run_step(cmd, None)
+    }
+
+    /// Run one command; `input` is what the Bridge read for this call (`Bridge::watchlist_input`),
+    /// which an `Open` captures from and checks the held identity against.
+    pub fn run_with_input(&mut self, cmd: WatchlistCmd, input: &WatchlistInput) -> bool {
+        self.run_step(cmd, Some(input))
+    }
+
+    fn run_step(&mut self, cmd: WatchlistCmd, input: Option<&WatchlistInput>) -> bool {
         let changed = match cmd {
-            WatchlistCmd::Open => self.open(),
+            WatchlistCmd::Open => input.is_some_and(|input| self.open(input)),
             WatchlistCmd::Reread => {
                 if self.state.auth.is_some() {
                     self.state.list_wanted = true;
@@ -399,13 +420,13 @@ impl WatchlistStore {
         changed
     }
 
-    fn open(&mut self) -> bool {
-        let stale = self.state.auth.as_ref().is_none_or(|a| !self.io.is_current(a));
+    fn open(&mut self, input: &WatchlistInput) -> bool {
+        let stale = self.state.auth.as_ref().is_none_or(|a| !a.is_current(input.profile()));
         if stale {
             if self.state.auth.is_some() {
                 self.reset();
             }
-            self.state.auth = self.io.capture_auth();
+            self.state.auth = input.auth().cloned();
         }
         let Some(auth) = &self.state.auth else {
             let was = self.state.status;
@@ -622,9 +643,11 @@ impl WatchlistStore {
 
     /// Route-unconditional landing pass: land what arrived, notice a profile switch, follow
     /// `facts_gen`, then start whatever work is owed. MAIN THREAD, once a frame.
-    pub fn pump_with_gate(&mut self, gate: &plx_machine::landgate::Gate) -> bool {
+    /// `profile` is the one the Bridge read for this frame (`Bridge::seated_profile`): a pass never
+    /// captures an identity (a reset leaves none, and the next `Open` captures), so it needs no more.
+    pub fn pump_with_gate(&mut self, gate: &plx_machine::landgate::Gate, profile: &CurrentProfile) -> bool {
         let mut changed = false;
-        if self.state.auth.as_ref().is_some_and(|a| !self.io.is_current(a)) {
+        if self.state.auth.as_ref().is_some_and(|a| !a.is_current(profile)) {
             self.reset();
             changed = true;
         }
@@ -904,9 +927,17 @@ impl WatchlistStore {
         changed
     }
 
+    /// [`Self::pump_with_gate`] for a test about something else: the fixture gate, and the seat
+    /// [`WatchlistInput::for_test`] hands out at generation 1 (the one a store's tests open under).
     #[cfg(any(test, feature = "test-support"))]
     pub fn pump(&mut self) -> bool {
-        self.pump_with_gate(plx_machine::landgate::fixture_gate())
+        self.pump_with_gate(plx_machine::landgate::fixture_gate(), &WatchlistInput::profile_for_test(1))
+    }
+
+    /// [`Self::run_with_input`] for a test about something else: the same generation-1 seat.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn run_for_test(&mut self, cmd: WatchlistCmd) -> bool {
+        self.run_with_input(cmd, &WatchlistInput::for_test(1))
     }
 
     /// Run the workers through `spawn` (an inline runner makes a landing deterministic).
@@ -1051,7 +1082,11 @@ impl<H: Host> Machine<H> for WatchlistStore {
                 self.run(cmd.clone());
             }
             StoreEv::Pump { .. } => {
-                self.pump_with_gate(&plx_machine::landgate::Gate::default());
+                // Unreached: nothing sends `StoreEv::Pump`. A step reads no registry, and a pass needs
+                // the seated profile (`Bridge::watchlist_pump` reads it and calls `pump_with_gate`):
+                // a pump with none handed would read as a sign-out. A sender must pass the host's profile.
+                debug_assert!(false, "a pump reached a step handed no profile");
+                plx_base::eventlog::log("watchlist: a pump reached a step handed no profile - dropped");
             }
         }
         Handled::Yes
@@ -1101,8 +1136,6 @@ pub(super) mod tests {
         held: Mutex<HashMap<(ServerId, String), String>>,
         writes: Mutex<Vec<(String, Intent)>>,
         fail_writes: AtomicBool,
-        current: AtomicBool,
-        generation: AtomicU32,
         roster_gen: AtomicU32,
         facts_gen: AtomicU32,
         finds: AtomicUsize,
@@ -1151,8 +1184,6 @@ pub(super) mod tests {
                 held: Mutex::new(HashMap::new()),
                 writes: Mutex::new(Vec::new()),
                 fail_writes: AtomicBool::new(false),
-                current: AtomicBool::new(true),
-                generation: AtomicU32::new(1),
                 roster_gen: AtomicU32::new(1),
                 facts_gen: AtomicU32::new(1),
                 finds: AtomicUsize::new(0),
@@ -1184,17 +1215,6 @@ pub(super) mod tests {
     }
 
     impl WatchlistIo for Mock {
-        fn capture_auth(&self) -> Option<WatchlistAuth> {
-            Some(WatchlistAuth {
-                client_id: "test-client".into(),
-                credential: "test-credential".into(),
-                user: Default::default(),
-                generation: self.generation.load(Ordering::SeqCst),
-            })
-        }
-        fn is_current(&self, a: &WatchlistAuth) -> bool {
-            self.current.load(Ordering::SeqCst) && a.generation == self.generation.load(Ordering::SeqCst)
-        }
         fn page(&self, _: &WatchlistAuth, start: u32, size: u32, if_none_match: Option<&str>)
             -> Result<WatchPage, WatchlistError>
         {
@@ -1268,11 +1288,27 @@ pub(super) mod tests {
         WatchlistStore::with_io(mock.clone()).with_spawn_for_test(inline)
     }
 
+    /// `Open` handed the input the app read.
+    fn open_handed(s: &mut WatchlistStore, input: &crate::watchlist::WatchlistInput) -> bool {
+        s.run_with_input(WatchlistCmd::Open, input)
+    }
+
+    /// One frame pass handed the profile the app read.
+    fn pump_handed(s: &mut WatchlistStore, profile: &plx_plex::plex::session::CurrentProfile) -> bool {
+        s.pump_with_gate(plx_machine::landgate::fixture_gate(), profile)
+    }
+
     /// Open, then pump until nothing is left to land.
     fn load(s: &mut WatchlistStore) {
-        s.run(WatchlistCmd::Open);
+        load_as(s, 1);
+    }
+
+    /// [`load`] with the seat at `generation`: the input it opens under and the profile it pumps with.
+    fn load_as(s: &mut WatchlistStore, generation: u32) {
+        open_handed(s, &crate::watchlist::WatchlistInput::for_test(generation));
+        let profile = crate::watchlist::WatchlistInput::profile_for_test(generation);
         for _ in 0..4 {
-            s.pump();
+            pump_handed(s, &profile);
         }
     }
 
@@ -1396,13 +1432,115 @@ pub(super) mod tests {
         load(&mut s);
         let epoch = s.state.epoch;
         s.run(WatchlistCmd::Press { hex: hex_of(1), intent: Intent::Remove });
-        mock.current.store(false, Ordering::SeqCst);
-        s.pump();
+        pump_handed(&mut s, &crate::watchlist::WatchlistInput::profile_for_test(2));
         assert_ne!(s.state.epoch, epoch);
         assert!(s.view().is_empty());
         assert_eq!(s.view().status(), Status::Idle);
         assert!(!s.state.ledger.busy(), "the old profile's queued write is never sent to the new one");
         assert!(mock.writes.lock().unwrap().is_empty());
+    }
+
+    // ---- the session input (docs/sans-io.md S5): the step is handed the seated profile ----------
+
+    /// The scripted seam says the profile is current and holds generation 1; the profile the app
+    /// hands is generation 2, so only a step that reads what it is handed notices the switch.
+    #[test]
+    fn a_profile_switch_is_noticed_from_the_handed_profile() {
+        let mock = three();
+        let mut s = store(&mock);
+        load(&mut s);
+        let epoch = s.state.epoch;
+        let switched = crate::watchlist::WatchlistInput::profile_for_test(2);
+        assert!(pump_handed(&mut s, &switched), "the pass that notices the switch reports a change");
+        assert_ne!(s.state.epoch, epoch, "a new epoch");
+        assert!(s.view().is_empty());
+        assert_eq!(s.view().status(), Status::Idle);
+    }
+
+    /// The scripted seam would capture generation 1; the input carries generation 7.
+    #[test]
+    fn open_captures_the_handed_auth() {
+        let mock = three();
+        let mut s = store(&mock);
+        open_handed(&mut s, &crate::watchlist::WatchlistInput::for_test(7));
+        assert_eq!(s.state.auth.as_ref().map(|a| a.generation), Some(7));
+    }
+
+    /// The scripted seam would capture an identity; the input carries none (signed out, or no
+    /// plex.tv credential): the page says so and reads nothing.
+    #[test]
+    fn an_input_with_no_auth_is_no_account() {
+        let mock = three();
+        let mut s = store(&mock);
+        open_handed(&mut s, &crate::watchlist::WatchlistInput::signed_out_for_test(1));
+        assert_eq!(s.view().status(), Status::NoAccount);
+        s.pump();
+        assert_eq!(mock.pages.load(Ordering::SeqCst), 0, "no identity, no read");
+    }
+
+    /// A sign-out is a pass handed a profile with nobody seated: the store resets in that pass, and the
+    /// next `Open` (handed no credential) says there is no account.
+    #[test]
+    fn a_sign_out_resets_the_pass_and_the_next_open_is_no_account() {
+        let mock = three();
+        let mut s = store(&mock);
+        load(&mut s);
+        assert_eq!(s.view().status(), Status::Ready);
+        let epoch = s.state.epoch;
+        let signed_out = plx_plex::plex::session::CurrentProfile { user: None, generation: 2, stamp: String::new() };
+        assert!(pump_handed(&mut s, &signed_out), "the pass that notices the sign-out reports a change");
+        assert_ne!(s.state.epoch, epoch);
+        assert!(s.view().is_empty());
+        assert_eq!(s.view().status(), Status::Idle);
+        let pages = mock.pages.load(Ordering::SeqCst);
+        open_handed(&mut s, &crate::watchlist::WatchlistInput::new(Arc::new(signed_out), None, "test-client"));
+        assert_eq!(s.view().status(), Status::NoAccount);
+        s.pump();
+        assert_eq!(mock.pages.load(Ordering::SeqCst), pages, "no account, no read");
+    }
+
+    /// A landing tagged with the generation a switch left behind never reaches the new epoch, whichever
+    /// mailbox it arrives in; one tagged with the new generation does.
+    #[test]
+    fn a_landing_tagged_with_the_old_generation_is_dropped_after_a_switch() {
+        let mock = three();
+        let mut s = store(&mock);
+        load(&mut s);
+        pump_handed(&mut s, &crate::watchlist::WatchlistInput::profile_for_test(2));
+        load_as(&mut s, 2);
+        assert_eq!(titles(&s), ["Alpha", "Bravo", "Charlie"]);
+        let epoch = s.state.epoch;
+        let old = Tag { profile_gen: 1, epoch, req: 99 };
+        s.adapter_for_test().post_for_test(Landed { tag: old, what: ghost_page() });
+        pump_handed(&mut s, &crate::watchlist::WatchlistInput::profile_for_test(2));
+        assert_eq!(titles(&s), ["Alpha", "Bravo", "Charlie"], "the old generation never lands");
+        let live = Tag { profile_gen: 2, epoch, req: 99 };
+        s.adapter_for_test().post_for_test(Landed { tag: live, what: ghost_page() });
+        pump_handed(&mut s, &crate::watchlist::WatchlistInput::profile_for_test(2));
+        assert!(titles(&s).contains(&"Ghost".to_string()), "the new generation's does");
+    }
+
+    /// The same seat is not a switch: a pass handed the profile the store opened under changes nothing,
+    /// and an `Open` under it keeps the identity (and the rows) it holds.
+    #[test]
+    fn the_same_profile_is_not_a_switch() {
+        let mock = three();
+        let mut s = store(&mock);
+        load(&mut s);
+        let epoch = s.state.epoch;
+        pump_handed(&mut s, &crate::watchlist::WatchlistInput::profile_for_test(1));
+        open_handed(&mut s, &crate::watchlist::WatchlistInput::for_test(1));
+        assert_eq!(s.state.epoch, epoch);
+        assert_eq!(titles(&s), ["Alpha", "Bravo", "Charlie"]);
+    }
+
+    /// `run` is the entry of a caller that holds no input, so an `Open` has no input to capture from.
+    #[test]
+    #[should_panic(expected = "an Open reached a step handed no input")]
+    fn an_open_sent_through_the_inputless_entry_is_refused() {
+        let mock = three();
+        let mut s = store(&mock);
+        s.run(WatchlistCmd::Open);
     }
 
     #[test]
@@ -1427,7 +1565,7 @@ pub(super) mod tests {
     fn a_press_during_a_read_survives_it() {
         let mock = three();
         let mut s = store(&mock);
-        s.run(WatchlistCmd::Open);
+        s.run_for_test(WatchlistCmd::Open);
         // The first pump issues the read (stamped now); the press follows before it is landed.
         s.state.list_wanted = true;
         s.maybe_spawn();
@@ -1435,7 +1573,7 @@ pub(super) mod tests {
         s.run(WatchlistCmd::Press { hex: hex_of(7), intent: Intent::Add });
         let gate = plx_machine::landgate::fixture_gate();
         for _ in 0..3 {
-            s.pump_with_gate(gate);
+            s.pump_with_gate(gate, &crate::watchlist::WatchlistInput::profile_for_test(1));
         }
         assert_eq!(titles(&s), ["Alpha", "Charlie"], "the read, issued before the press, does not bring Bravo back");
         assert!(s.view().is_member(&hex_of(7)), "nor does it forget an add the list has not heard of");
@@ -1527,7 +1665,7 @@ pub(super) mod tests {
     fn a_refused_spawn_retries_after_n_frames_and_never_blocks() {
         let mock = three();
         let mut s = store(&mock).with_spawn_for_test(refuse);
-        s.run(WatchlistCmd::Open);
+        s.run_for_test(WatchlistCmd::Open);
         s.pump();
         assert_eq!(mock.pages.load(Ordering::SeqCst), 0);
         assert!(!s.adapter.list_busy.load(Ordering::SeqCst), "the claim is released");
@@ -1784,7 +1922,7 @@ pub(super) mod tests {
         let items: Vec<WatchItem> = (0..2100u32).map(|i| item((i % 250) as u8 + 1, "T")).collect();
         let mock = Mock::new(items);
         let mut s = store(&mock);
-        s.run(WatchlistCmd::Open);
+        s.run_for_test(WatchlistCmd::Open);
         for _ in 0..40 {
             s.pump();
         }
@@ -1815,31 +1953,6 @@ pub(super) mod tests {
         s.pump();
         assert_eq!(s.view().status(), Status::Ready);
         assert_eq!(s.view().len(), 3);
-    }
-
-    #[test]
-    fn no_credential_means_no_list() {
-        struct NoAuth(Arc<Mock>);
-        impl Reach for NoAuth {
-            fn reachable(&self, s: ServerId) -> bool { self.0.reachable(s) }
-            fn roster(&self) -> Vec<ServerId> { self.0.roster() }
-        }
-        impl WatchlistIo for NoAuth {
-            fn capture_auth(&self) -> Option<WatchlistAuth> { None }
-            fn is_current(&self, a: &WatchlistAuth) -> bool { self.0.is_current(a) }
-            fn page(&self, a: &WatchlistAuth, s: u32, n: u32, t: Option<&str>) -> Result<WatchPage, WatchlistError> { self.0.page(a, s, n, t) }
-            fn released(&self, a: &WatchlistAuth) -> Result<Vec<WatchItem>, WatchlistError> { self.0.released(a) }
-            fn write(&self, a: &WatchlistAuth, h: &str, i: Intent) -> Result<(), WatchlistError> { self.0.write(a, h, i) }
-            fn find(&self, s: ServerId, k: GuidKind, g: &[String]) -> Result<Vec<GuidMatch>, GuidLookupError> { self.0.find(s, k, g) }
-            fn roster_gen(&self) -> u32 { 0 }
-            fn facts_gen(&self) -> u32 { 0 }
-            fn today(&self) -> Option<String> { None }
-        }
-        let mock = three();
-        let mut s = WatchlistStore::with_io(Arc::new(NoAuth(mock.clone()))).with_spawn_for_test(inline);
-        load(&mut s);
-        assert_eq!(s.view().status(), Status::NoAccount);
-        assert_eq!(mock.pages.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -2106,12 +2219,9 @@ pub(super) mod tests {
         let mut s = store(&mock);
         load(&mut s);
         assert!(s.state.list_etag.is_some());
-        mock.current.store(false, Ordering::SeqCst);
-        s.pump();
+        pump_handed(&mut s, &crate::watchlist::WatchlistInput::profile_for_test(2));
         assert_eq!(s.state.list_etag, None);
-        mock.current.store(true, Ordering::SeqCst);
-        mock.generation.fetch_add(1, Ordering::SeqCst);
-        load(&mut s);
+        load_as(&mut s, 2);
         assert_eq!(asked(&mock).last(), Some(&(0, None)), "the new profile's first read is whole");
         s.run(WatchlistCmd::Reset);
         assert_eq!(s.state.list_etag, None);

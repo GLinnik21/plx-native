@@ -310,6 +310,10 @@ mod tests {
                 playback_id: 7,
                 mode: "direct",
                 kind: "network",
+                video: "h264",
+                audio: "ac3",
+                pipeline_error: "0",
+                refusal: "none",
             },
             DiagEvent::PlaybackCancelled {
                 playback_id: 7,
@@ -542,6 +546,10 @@ mod tests {
                 playback_id: 7,
                 mode: "direct",
                 kind: kind.code(),
+                video: "h264",
+                audio: "dts",
+                pipeline_error: "601",
+                refusal: "async",
             };
             let envelope = crate::diag::schema::UsageEnvelope::capture(event, 0, "session");
             let body = parse(&captured("phc_k", "id1", &envelope, "test"));
