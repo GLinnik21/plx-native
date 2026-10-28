@@ -43,8 +43,29 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-28T11:13:51Z",
+ "generated": "2026-10-28T11:23:27Z",
  "metrics": [
+  {
+   "change30_pct": null,
+   "change7_pct": 38.7,
+   "d30": null,
+   "delta30": null,
+   "delta7": 63.5,
+   "group": "ci",
+   "id": "ci|host harness tests",
+   "kind": "job",
+   "label": "CI: host harness tests",
+   "n_now": 86,
+   "n_prev": 108,
+   "now": 227.5,
+   "prev7": 164.0,
+   "shown": true,
+   "state": "worse",
+   "state30": "new",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
   {
    "change30_pct": null,
    "change7_pct": 37.9,
@@ -102,27 +123,6 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 37.8,
-   "d30": null,
-   "delta30": null,
-   "delta7": 62,
-   "group": "ci",
-   "id": "ci|host harness tests",
-   "kind": "job",
-   "label": "CI: host harness tests",
-   "n_now": 87,
-   "n_prev": 107,
-   "now": 226,
-   "prev7": 164,
-   "shown": true,
-   "state": "worse",
-   "state30": "new",
-   "threshold_abs": 20.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
    "change7_pct": 30.9,
    "d30": null,
    "delta30": null,
@@ -145,18 +145,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 30.1,
+   "change7_pct": 29.4,
    "d30": null,
    "delta30": null,
-   "delta7": 50,
+   "delta7": 49.0,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 87,
-   "n_prev": 107,
-   "now": 216,
-   "prev7": 166,
+   "n_now": 86,
+   "n_prev": 108,
+   "now": 215.5,
+   "prev7": 166.5,
    "shown": true,
    "state": "worse",
    "state30": "new",
@@ -165,10 +165,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": -58.4,
+   "change30_pct": -58.5,
    "change7_pct": -23.1,
-   "d30": 884,
-   "delta30": -516.5,
+   "d30": 884.5,
+   "delta30": -517.0,
    "delta7": -110.5,
    "group": "ci",
    "id": "pr_wait",
@@ -187,18 +187,18 @@
   },
   {
    "change30_pct": -60.0,
-   "change7_pct": -3.0,
+   "change7_pct": -2.9,
    "d30": 875,
    "delta30": -525,
-   "delta7": -11,
+   "delta7": -10.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
    "n_now": 89,
-   "n_prev": 123,
+   "n_prev": 124,
    "now": 350,
-   "prev7": 361,
+   "prev7": 360.5,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -312,19 +312,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 52.4,
-   "change7_pct": 5.1,
+   "change30_pct": 52.9,
+   "change7_pct": 5.2,
    "d30": 1457,
-   "delta30": 764,
-   "delta7": 108,
+   "delta30": 771.0,
+   "delta7": 111.0,
    "group": "ci",
    "id": "minutes",
    "kind": "cost",
    "label": "Runner time per push",
-   "n_now": 71,
-   "n_prev": 95,
-   "now": 2221,
-   "prev7": 2113,
+   "n_now": 70,
+   "n_prev": 96,
+   "now": 2228.0,
+   "prev7": 2117.0,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -333,10 +333,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 37.0,
+   "change30_pct": 29.2,
    "change7_pct": 3.4,
-   "d30": 723.5,
-   "delta30": 267.5,
+   "d30": 767,
+   "delta30": 224,
    "delta7": 32.5,
    "group": "ci",
    "id": "nightly|ARM build + gates / build + verify",
@@ -355,18 +355,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -3.1,
+   "change7_pct": -2.8,
    "d30": null,
    "delta30": null,
-   "delta7": -11,
+   "delta7": -10.0,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 87,
-   "n_prev": 107,
-   "now": 345,
-   "prev7": 356,
+   "n_now": 86,
+   "n_prev": 108,
+   "now": 345.5,
+   "prev7": 355.5,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -384,10 +384,10 @@
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 87,
-   "n_prev": 52,
-   "now": 323,
-   "prev7": 312.0,
+   "n_now": 86,
+   "n_prev": 53,
+   "now": 323.0,
+   "prev7": 312,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -397,18 +397,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 3.3,
+   "change7_pct": 4.5,
    "d30": null,
    "delta30": null,
-   "delta7": 9.5,
+   "delta7": 13.0,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 86,
-   "n_prev": 107,
-   "now": 300.5,
-   "prev7": 291,
+   "n_now": 85,
+   "n_prev": 108,
+   "now": 303,
+   "prev7": 290.0,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -417,19 +417,19 @@
    "unit": "s"
   },
   {
-   "change30_pct": 85.3,
-   "change7_pct": 7.8,
+   "change30_pct": 85.6,
+   "change7_pct": 8.2,
    "d30": 142.5,
-   "delta30": 121.5,
-   "delta7": 19.0,
+   "delta30": 122.0,
+   "delta7": 20.0,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
    "n_now": 78,
-   "n_prev": 117,
-   "now": 264.0,
-   "prev7": 245,
+   "n_prev": 118,
+   "now": 264.5,
+   "prev7": 244.5,
    "shown": true,
    "state": "flat",
    "state30": "worse",
@@ -442,15 +442,15 @@
    "change7_pct": 6.3,
    "d30": 336.5,
    "delta30": -133.5,
-   "delta7": 12,
+   "delta7": 12.0,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
    "n_now": 77,
-   "n_prev": 117,
+   "n_prev": 118,
    "now": 203,
-   "prev7": 191,
+   "prev7": 191.0,
    "shown": true,
    "state": "flat",
    "state30": "better",
@@ -460,18 +460,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 14.8,
+   "change7_pct": 14.4,
    "d30": null,
    "delta30": null,
-   "delta7": 22.0,
+   "delta7": 21.5,
    "group": "ci",
    "id": "sim|macOS tests against bundled FFmpeg and ASS",
    "kind": "job",
    "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
    "n_now": 78,
-   "n_prev": 117,
+   "n_prev": 118,
    "now": 171.0,
-   "prev7": 149,
+   "prev7": 149.5,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -484,15 +484,15 @@
    "change7_pct": -4.1,
    "d30": null,
    "delta30": null,
-   "delta7": -7,
+   "delta7": -7.0,
    "group": "ci",
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 87,
-   "n_prev": 107,
-   "now": 165,
-   "prev7": 172,
+   "n_now": 86,
+   "n_prev": 108,
+   "now": 165.0,
+   "prev7": 172.0,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -501,10 +501,10 @@
    "unit": "s"
   },
   {
-   "change30_pct": 51.7,
+   "change30_pct": 46.7,
    "change7_pct": 15.8,
-   "d30": 14.5,
-   "delta30": 7.5,
+   "d30": 15,
+   "delta30": 7,
    "delta7": 3.0,
    "group": "ci",
    "id": "nightly|publish nightly prerelease",
@@ -532,9 +532,9 @@
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
    "n_now": 78,
-   "n_prev": 117,
+   "n_prev": 118,
    "now": 18.0,
-   "prev7": 18,
+   "prev7": 18.0,
    "shown": false,
    "state": "flat",
    "state30": "flat",
@@ -545,8 +545,8 @@
   {
    "change30_pct": 41.7,
    "change7_pct": 6.2,
-   "d30": 12.0,
-   "delta30": 5.0,
+   "d30": 12,
+   "delta30": 5,
    "delta7": 1.0,
    "group": "ci",
    "id": "nightly|plan today's nightly",
@@ -565,18 +565,18 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": -20.0,
+   "change7_pct": -10.0,
    "d30": null,
    "delta30": null,
-   "delta7": -1.0,
+   "delta7": -0.5,
    "group": "ci",
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 87,
-   "n_prev": 52,
-   "now": 4,
-   "prev7": 5.0,
+   "n_now": 86,
+   "n_prev": 53,
+   "now": 4.5,
+   "prev7": 5,
    "shown": false,
    "state": "flat",
    "state30": "new",
@@ -586,18 +586,18 @@
   },
   {
    "change30_pct": -98.8,
-   "change7_pct": -99.0,
+   "change7_pct": -98.9,
    "d30": 257,
-   "delta30": -254.0,
-   "delta7": -301.0,
+   "delta30": -254,
+   "delta7": -262.5,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 86,
-   "n_prev": 107,
-   "now": 3.0,
-   "prev7": 304,
+   "n_now": 85,
+   "n_prev": 108,
+   "now": 3,
+   "prev7": 265.5,
    "shown": false,
    "state": "better",
    "state30": "better",
@@ -609,16 +609,16 @@
    "change30_pct": -99.7,
    "change7_pct": 0.0,
    "d30": 873,
-   "delta30": -870.0,
+   "delta30": -870,
    "delta7": 0.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 86,
-   "n_prev": 107,
-   "now": 3.0,
-   "prev7": 3,
+   "n_now": 85,
+   "n_prev": 108,
+   "now": 3,
+   "prev7": 3.0,
    "shown": false,
    "state": "flat",
    "state30": "better",
@@ -650,13 +650,8 @@
  ],
  "regressions": [
   {
-   "change_pct": 37.9,
+   "change_pct": 38.7,
    "commits": [
-    {
-     "pr": 1043,
-     "sha": "6289733a7",
-     "title": "media: the pump flight rig stops its Engine before dropping it"
-    },
     {
      "pr": 1039,
      "sha": "e60b2a922",
@@ -701,6 +696,72 @@
      "pr": 1102,
      "sha": "9cab21e8c",
      "title": "Metadata Related tail windows emit a store job; the runner resolves the client"
+    },
+    {
+     "pr": 1103,
+     "sha": "a2aa85d4f",
+     "title": "Browse: the Library's source discovery leaves as a typed store job"
+    }
+   ],
+   "from": 164.0,
+   "id": "ci|host harness tests",
+   "label": "CI: host harness tests",
+   "since": "2026-10-28",
+   "threshold_pct": 20.0,
+   "to": 227.5
+  },
+  {
+   "change_pct": 37.9,
+   "commits": [
+    {
+     "pr": 1039,
+     "sha": "e60b2a922",
+     "title": "Add Polish (pl) localization"
+    },
+    {
+     "pr": 1083,
+     "sha": "4edffa24e",
+     "title": "Library: a page mounted over a listing the server changed meanwhile lists it again"
+    },
+    {
+     "pr": 1068,
+     "sha": "598ece791",
+     "title": "Playback: the app decodes a DTS core to stereo PCM, behind a debug gate"
+    },
+    {
+     "pr": 1078,
+     "sha": "9b7d1da28",
+     "title": "Playback: MP3 and Vorbis are decoded in the app behind the debug gate"
+    },
+    {
+     "pr": 1079,
+     "sha": "44d4eda8d",
+     "title": "Playback: TrueHD is decoded in the app behind the debug gate; high rates are low-passed before decimation"
+    },
+    {
+     "pr": 1082,
+     "sha": "a66624719",
+     "title": "Playback: Force Direct Play and a refused open decode lossy audio in the app, DTS enabled; surround is never mixed down "
+    },
+    {
+     "pr": 1095,
+     "sha": "ee737edf8",
+     "title": "Playback: hi-res stereo FLAC, ALAC and LPCM are resampled by the app to 48 or 44.1 kHz, 32-bit, instead of a lossy serve"
+    },
+    {
+     "pr": 1097,
+     "sha": "944d9c290",
+     "title": "Playback: 192 kHz and other 4x-or-more sources are resampled through a cheap half-band first stage, about half the multi"
+    },
+    {
+     "pr": 1102,
+     "sha": "9cab21e8c",
+     "title": "Metadata Related tail windows emit a store job; the runner resolves the client"
+    },
+    {
+     "pr": 1103,
+     "sha": "a2aa85d4f",
+     "title": "Browse: the Library's source discovery leaves as a typed store job"
     }
    ],
    "from": 1116.6,
@@ -714,11 +775,6 @@
    "change_pct": 37.9,
    "commits": [
     {
-     "pr": 1043,
-     "sha": "6289733a7",
-     "title": "media: the pump flight rig stops its Engine before dropping it"
-    },
-    {
      "pr": 1039,
      "sha": "e60b2a922",
      "title": "Add Polish (pl) localization"
@@ -762,6 +818,11 @@
      "pr": 1102,
      "sha": "9cab21e8c",
      "title": "Metadata Related tail windows emit a store job; the runner resolves the client"
+    },
+    {
+     "pr": 1103,
+     "sha": "a2aa85d4f",
+     "title": "Browse: the Library's source discovery leaves as a typed store job"
     }
    ],
    "from": 1116.0,
@@ -772,75 +833,9 @@
    "to": 1539.0
   },
   {
-   "change_pct": 37.8,
-   "commits": [
-    {
-     "pr": 1043,
-     "sha": "6289733a7",
-     "title": "media: the pump flight rig stops its Engine before dropping it"
-    },
-    {
-     "pr": 1039,
-     "sha": "e60b2a922",
-     "title": "Add Polish (pl) localization"
-    },
-    {
-     "pr": 1083,
-     "sha": "4edffa24e",
-     "title": "Library: a page mounted over a listing the server changed meanwhile lists it again"
-    },
-    {
-     "pr": 1068,
-     "sha": "598ece791",
-     "title": "Playback: the app decodes a DTS core to stereo PCM, behind a debug gate"
-    },
-    {
-     "pr": 1078,
-     "sha": "9b7d1da28",
-     "title": "Playback: MP3 and Vorbis are decoded in the app behind the debug gate"
-    },
-    {
-     "pr": 1079,
-     "sha": "44d4eda8d",
-     "title": "Playback: TrueHD is decoded in the app behind the debug gate; high rates are low-passed before decimation"
-    },
-    {
-     "pr": 1082,
-     "sha": "a66624719",
-     "title": "Playback: Force Direct Play and a refused open decode lossy audio in the app, DTS enabled; surround is never mixed down "
-    },
-    {
-     "pr": 1095,
-     "sha": "ee737edf8",
-     "title": "Playback: hi-res stereo FLAC, ALAC and LPCM are resampled by the app to 48 or 44.1 kHz, 32-bit, instead of a lossy serve"
-    },
-    {
-     "pr": 1097,
-     "sha": "944d9c290",
-     "title": "Playback: 192 kHz and other 4x-or-more sources are resampled through a cheap half-band first stage, about half the multi"
-    },
-    {
-     "pr": 1102,
-     "sha": "9cab21e8c",
-     "title": "Metadata Related tail windows emit a store job; the runner resolves the client"
-    }
-   ],
-   "from": 164,
-   "id": "ci|host harness tests",
-   "label": "CI: host harness tests",
-   "since": "2026-10-28",
-   "threshold_pct": 20.0,
-   "to": 226
-  },
-  {
    "change_pct": 30.9,
    "commits": [
     {
-     "pr": 1043,
-     "sha": "6289733a7",
-     "title": "media: the pump flight rig stops its Engine before dropping it"
-    },
-    {
      "pr": 1039,
      "sha": "e60b2a922",
      "title": "Add Polish (pl) localization"
@@ -884,6 +879,11 @@
      "pr": 1102,
      "sha": "9cab21e8c",
      "title": "Metadata Related tail windows emit a store job; the runner resolves the client"
+    },
+    {
+     "pr": 1103,
+     "sha": "a2aa85d4f",
+     "title": "Browse: the Library's source discovery leaves as a typed store job"
     }
    ],
    "from": 973.0,
@@ -894,13 +894,8 @@
    "to": 1274.0
   },
   {
-   "change_pct": 30.1,
+   "change_pct": 29.4,
    "commits": [
-    {
-     "pr": 1043,
-     "sha": "6289733a7",
-     "title": "media: the pump flight rig stops its Engine before dropping it"
-    },
     {
      "pr": 1039,
      "sha": "e60b2a922",
@@ -945,14 +940,19 @@
      "pr": 1102,
      "sha": "9cab21e8c",
      "title": "Metadata Related tail windows emit a store job; the runner resolves the client"
+    },
+    {
+     "pr": 1103,
+     "sha": "a2aa85d4f",
+     "title": "Browse: the Library's source discovery leaves as a typed store job"
     }
    ],
-   "from": 166,
+   "from": 166.5,
    "id": "ci|host python/shell/C gates",
    "label": "CI: host python/shell/C gates",
    "since": "2026-10-28",
    "threshold_pct": 20.0,
-   "to": 216
+   "to": 215.5
   }
  ],
  "schema": 2,
@@ -967,25 +967,25 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 345
+   "now": 345.5
   },
   {
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 323
+   "now": 323.0
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 300.5
+   "now": 303
   },
   {
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 264.0
+   "now": 264.5
   }
  ],
  "slowest_local": [
