@@ -16,7 +16,7 @@
 //! `threads::load_thread` calls `sf_load` off-main by design (see `ffi`), and a real stop's
 //! `sf_unload` runs on the `sf-unload` worker on an `UnloadTicket` (`engine::PendingRelease`): the
 //! rest of that release (gate, retire, ACB UNLOADED, D1, `destroy_window`) stays on the main thread,
-//! and the adapter keeps every other seam call waiting until it is done.
+//! and `sink()` answers a no-op sink to every other main-thread verb until it is done.
 #![allow(non_upper_case_globals)]
 pub mod adapter;
 pub mod claim_hold;

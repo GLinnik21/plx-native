@@ -214,11 +214,7 @@ pub(crate) unsafe fn run(app: &mut App) {
         plx_media::player::engine::reap_abandoned_load(&mut app.adapters.player);
         // …and a real stop's off-frame `Unload` gets its main-thread tail (gate, epoch, ACB,
         // D1) the first frame after it returns (`player::engine::PendingRelease`).
-        plx_media::player::engine::poll_release(
-            &mut app.player.session,
-            &mut app.adapters.player,
-            std::time::Instant::now(),
-        );
+        plx_media::player::engine::poll_release_frame(&mut app.player.session, &mut app.adapters.player);
         app.player.session.repair_status = app.player.repair.state();
         app.bridge.publish_playback(&app.player.session, was_player);
         // The container runs its frame: the pending navigation's commit (at `PageDip`'s floor),

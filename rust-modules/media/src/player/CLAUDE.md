@@ -41,13 +41,19 @@ and seeks by time via `av_seek_frame` (libavformat's own Cues index).
   `Releasing`, hands the Unload to an `sf-unload` worker with an `UnloadTicket`, and parks the
   worker on the adapter. The rest of the release — callback gate, epoch retire, ACB
   `setState(UNLOADED)`, D1 or quarantine, `destroy_window` — stays on the main thread and runs in
-  `settle_release`: on the first frame after the Unload returns (`run.rs` → `poll_release`), or
-  at once, blocking, from `start_bufferfeed_inner`, `pa.mt()`, `pa.split()` and `shutdown`, so
-  nothing reaches the seam or builds a new object while the old one is still inside Unload. While
+  `engine::poll_release` (a pure machine, `release.rs`, decides): on the first frame after the Unload
+  returns (`run.rs` → `poll_release_frame`). Nothing blocks on the worker: a start over a running
+  Unload returns `BufferfeedStartOutcome::Deferred` (the player reads Connecting) and runs the frame
+  the tail has run; `pa.mt()`/`pa.split()` hand out the token at once while `player::sink()` answers
+  `ReleasingSink` (every control verb a no-op) for the `Releasing` phase; `shutdown` waits via
+  `exit_native`, bounded by `RELEASE_DEADLINE` (10 s), and skips `SDL_Quit` when a worker is still in
+  firmware. Past the deadline a start is refused with `FailureKind::ReleaseTimeout` (Try Again), and the
+  object is leaked, never destroyed under the worker, until the Unload returns. The foreground restore
+  cannot follow a deferred start, so it waits (bounded) via `engine::wait_for_release`. While
   `Releasing`, only that epoch's `UnloadCompleted` callback is admitted (it is D1's evidence) and no
   native session can begin. Reloads, suspend and the decoder-release park (`for_reload == true`)
   keep the synchronous release. The log reads `native lifecycle: off-frame Unload epoch=N released
-  X ms after the stop`, with `(a caller waited for it)` when a blocking caller had to wait.
+  X ms after the stop`.
 - `pump.rs` — the **main-thread pump** (was `bufferfeed_pump`): each frame it drives bind → Play →
   feed and services seeks.
 - `threads.rs` — the workers beside the demuxer: **`load_thread`** (construct Starfish + `Load()`,

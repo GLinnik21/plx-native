@@ -496,6 +496,11 @@ pub fn poll_release(
     run_release_effects(ps, pa, fx, joined, true).tail_ran
 }
 
+/// [`poll_release`] at the wall clock: the per-frame entry `app::run` calls.
+pub fn poll_release_frame(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) -> bool {
+    poll_release(ps, pa, std::time::Instant::now())
+}
+
 /// What one pass of the effects did.
 #[derive(Default)]
 struct ReleasePass {
@@ -635,7 +640,7 @@ fn exit_native_with(
 }
 
 /// Test helper: finish the pending release the way the exit does, with no deadline concerns.
-#[cfg(test)]
+#[cfg(all(test, feature = "hostsim"))]
 pub(crate) fn finish_release_for_test(pa: &mut super::adapter::PlayerAdapter) {
     let mut ps = crate::route::PlaybackSession::IDLE;
     while pa.release_busy() {
@@ -6375,10 +6380,13 @@ mod off_frame_release_tests {
         stop_bufferfeed(&mut ps, &mut pa);
         assert!(pa.has_pending_release());
         // A helper lets the hold go after 3 s, so the unfixed code ends instead of hanging.
-        let helper = std::thread::spawn(|| {
-            std::thread::sleep(std::time::Duration::from_secs(3));
-            crate::player::ffi_host::release_unload_for_test();
-        });
+        let helper = std::thread::Builder::new()
+            .name("test-unload-release".into())
+            .spawn(|| {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                crate::player::ffi_host::release_unload_for_test();
+            })
+            .expect("spawn helper");
 
         let started = std::time::Instant::now();
         let outcome = start_bufferfeed_tracked(&mut ps, &mut pa);
