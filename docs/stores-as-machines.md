@@ -132,7 +132,7 @@ the "legacy callers' combined pass" it was the last caller of — is deleted wit
 `stores::hubs::pump`. HubsStore forwards commands through `run_with_directory`/`tick_with_directory`. Every step
 captures its immutable `HubRequest` and emits it as a `StoreJob::Hubs`, which the app's runner
 launches or refuses; a controlled Home arm steps through the same calls and differs only in
-admission (`admit_hubs_jobs`). `pms::controlled_work` is a data-layer test driver, not a capture path. The owned Home emits `StoreCmd::Hubs(..)` and never calls a catalog
+admission (`admit_home_jobs`). `pms::controlled_work` is a data-layer test driver, not a capture path. The owned Home emits `StoreCmd::Hubs(..)` and never calls a catalog
 mutator. The store owns the work and result handling. Person, Filmography and
 PersonBio read only the owner-borrowed
 `PersonView`; Filmography reacts to Person notices but does not mutate the store.

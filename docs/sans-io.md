@@ -221,10 +221,10 @@ worker start and the `client_for` read inside that worker are gone too. The hous
   retires only the parked Detail jobs, never another store's. `Held` parks per kind
   (`LiveKind`, test only; a kind and not a store, because Browse emits several kinds: `BrowseHubs`,
   `BrowseDirectory`, `BrowsePage`, `BrowseDiscovery`): `StoreRunner::held()`
-  leaves the Hubs read, the Metadata season switch, the Library grid's page read and the Library's
-  source discovery live, as production runs them (a rig that waits for a Home, a season, a grid or a
-  section-list landing needs a real worker; `menu_play_season_tests` polls for the season landing and
-  never runs held jobs), and
+  leaves the Hubs read, the Metadata season switch and the Library grid's page read live, as
+  production runs them (a rig that waits for a Home, a season or a grid landing needs a real worker;
+  `menu_play_season_tests` polls for the season landing and never runs held jobs), leaves the
+  Library's source discovery live for the reason given below, and
   `StoreRunner::held_all()` parks them too, for a test that chooses when the read settles
   (`Bridge::run_held_store_jobs_of_for_test`).
   `StoreRunner::park_page_reads` (`Bridge::park_page_reads_for_test`) parks only the page read of
@@ -303,7 +303,7 @@ worker start and the `client_for` read inside that worker are gone too. The hous
   `HubsStore::run_with_directory`, `land_with_directory` and `tick_with_directory`: the
   Bridge's `Store(Hubs(..))`, `HubsResult` and `StoreWork::Hubs` arms and `Bridge::hubs_run` drain
   with `start_store_jobs_of(StoreId::Hubs)` in the same call, and a controlled Home arm admits the
-  jobs (`Bridge::admit_hubs_jobs`, the bullet headed "The Hubs lane"). And for the public
+  jobs (`Bridge::admit_home_jobs`, the bullet headed "The Hubs lane"). And for the public
   `SearchStore::run_with_directory` and `pump_with_directory_and_gate`: the Bridge's
   `Store(Search(..))` and `StoreWork::Search` arms, `boot.rs`'s reset and `dev/scenarios.rs`'s query
   all reach them through `Bridge::search_run` and `Bridge::search_pump`, which drain in the same call.
@@ -560,7 +560,9 @@ worker start and the `client_for` read inside that worker are gone too. The hous
     flight's, the source's `retry_cd` is set to the full `SRC_RETRY_CD`, as a refused launch
     always did, so a source is not asked again at 60 Hz. Nothing is invalidated and nothing is
     recorded. The refusal settles one step later than the old launcher's (which set the countdown
-    in the launching call); no replay fixture holds a refused discovery.
+    in the launching call); no replay fixture holds a refused discovery. `BrowseStore::sync_roster`
+    settles before it syncs the roster, so a source the sync re-arms in the same step (a
+    re-pointed or retokened client, `retry_cd = 0`) is asked again at once, as it always was.
   - **Every entry drains it.** `Bridge::browse_discover_pump` refills the keys, steps, and starts
     the jobs of Browse; `frame_ingest` and the live `StoreWork::BrowseDiscovery` arm go through it,
     and the controlled arm drains inside the arm to admit. `app/browse_discovery_drain_tests.rs`

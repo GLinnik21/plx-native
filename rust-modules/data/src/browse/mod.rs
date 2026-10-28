@@ -2702,8 +2702,10 @@ impl BrowseState {
     /// countdown's decrement, so the step after a refusal finds the countdown one short of the full
     /// backoff, as the step after a refusing launcher always did. A flight with neither a claim nor
     /// a refusal landed (or belonged to an adapter that has since been cleared) and is dropped.
+    /// `BrowseStore::sync_roster` settles BEFORE it syncs the roster, so a source the sync re-arms
+    /// in the same step (a re-pointed or retokened client) is asked again at once, as it was.
     /// Never recorded anywhere.
-    fn discovery_settle(&mut self, adapter: &BrowseAdapter) {
+    pub fn discovery_settle(&mut self, adapter: &BrowseAdapter) {
         if adapter.src_fetching.busy() {
             return;
         }

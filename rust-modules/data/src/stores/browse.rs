@@ -317,7 +317,11 @@ impl BrowseStore {
         crate::browse::discovery_owed(&self.adapter)
     }
 
+    /// Settles a refused discovery BEFORE the roster sync, so a source the sync re-arms in the same
+    /// step (a re-pointed or retokened client: `retry_cd = 0`) is asked again at once, as it was
+    /// when the launcher set the backoff in the launching call.
     fn sync_roster(&mut self) -> bool {
+        self.state.discovery_settle(&self.adapter);
         let sync = self.state.sync_roster_owned();
         if sync.retire_adapter {
             self.adapter = Arc::new(Default::default());
@@ -1068,6 +1072,40 @@ mod contract_tests {
         assert_eq!(plx_machine::idle::take_local_damage(), 0,
             "an empty-to-empty machine identity must not invalidate the settled frame");
 
+        plx_plex::plex::reset_servers_for_test();
+    }
+
+    /// A source whose first discovery was refused AND whose client is retokened before the next
+    /// step is asked again at once: the step's roster sync re-arms a re-pointed source
+    /// (`retry_cd = 0`) after the refusal has set the backoff, as it did when the launcher set the
+    /// backoff in the launching call. A refusal settled AFTER the sync would leave the source
+    /// waiting out the full countdown.
+    #[test]
+    fn a_refused_discovery_is_asked_again_at_once_when_the_client_is_repointed() {
+        let _guard = plx_base::testlock::serial();
+        let _session = plx_plex::plex::session::TempSession::new("refused-then-repointed");
+        plx_plex::plex::reset_servers_for_test();
+        let stores = crate::stores::Stores::default();
+        let sid = plx_plex::plex::register_for_test("", "127.0.0.1", 9, "synthetic", "fixture");
+        assert_eq!(refused_discovery_step(&stores), 1, "the first step asks and is refused");
+
+        plx_plex::plex::client_for(sid).expect("registered").set_token("retokened");
+
+        assert_eq!(refused_discovery_step(&stores), 1,
+            "the retoken re-armed the source: it is asked again in the next step, not after the backoff");
+        plx_plex::plex::reset_servers_for_test();
+    }
+
+    /// The control: with the client unchanged, the refusal's backoff holds.
+    #[test]
+    fn a_refused_discovery_backs_off_when_the_client_is_unchanged() {
+        let _guard = plx_base::testlock::serial();
+        let _session = plx_plex::plex::session::TempSession::new("refused-unchanged");
+        plx_plex::plex::reset_servers_for_test();
+        let stores = crate::stores::Stores::default();
+        plx_plex::plex::register_for_test("", "127.0.0.1", 9, "synthetic", "fixture");
+        assert_eq!(refused_discovery_step(&stores), 1);
+        assert_eq!(refused_discovery_step(&stores), 0, "no change to the client: the source backs off");
         plx_plex::plex::reset_servers_for_test();
     }
 

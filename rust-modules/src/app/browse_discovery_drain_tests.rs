@@ -79,7 +79,30 @@ fn the_live_discovery_arm_starts_the_read_its_step_emitted_in_the_same_call() {
     assert_refused_in_the_same_call(&bridge, "the live discovery arm");
 }
 
-/// The frame's pre-capture owner pump (`frame_ingest`) on the Onboard screen.
+/// The frame's pre-capture owner pump (`frame_ingest`), on a screen whose Tick sends no
+/// `StoreWork::BrowseDiscovery` (Login: Home, Search and Onboard all send one, whose live arm
+/// would start the job and hide a `frame_ingest` that did not).
+#[test]
+fn a_frame_on_a_screen_that_asks_for_no_discovery_starts_the_read_its_ingest_emitted() {
+    let _serial = plx_base::testlock::serial();
+    let _reset = Reset;
+    one_server();
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut bridge = Bridge::for_test(|| 0);
+    crate::app::adapters::stores::with_refused_hubs_launches_for_test(|| {
+        frame(&mut d, &mut bridge, AppArg::Login, tick(0), vec![]);
+    });
+    assert_refused_in_the_same_call(&bridge, "a Login frame");
+    // A claim that is down proves nothing if no read was ever asked: the next frame settles the
+    // refusal into the source's backoff, which only a read that was emitted and refused can leave.
+    crate::app::adapters::stores::with_refused_hubs_launches_for_test(|| {
+        frame(&mut d, &mut bridge, AppArg::Login, tick(1), vec![]);
+    });
+    let (claimed, retry, _) = bridge.stores.browse.borrow().discovery_policy_for_test();
+    assert!(!claimed && retry > 0, "the Login frame asked for the discovery and it was refused (retry_cd {retry})");
+}
+
+/// The same frame on Onboard, whose Tick also asks for the discovery pass through the live arm.
 #[test]
 fn an_onboard_frame_starts_the_read_its_step_emitted_in_the_same_call() {
     let _serial = plx_base::testlock::serial();
