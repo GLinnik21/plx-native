@@ -64,7 +64,7 @@ pub struct OnboardScreen {
     /// [`toggle_row`](Self::toggle_row) rather than derived from any comparison.
     ///
     /// It was `draft != entry_pins` until 2026-09-20, which is the same inference the store
-    /// removed from `browse::apply_pins` and it survived here. The comparison needs a baseline
+    /// removed from `browse::apply_pins_from` and it survived here. The comparison needs a baseline
     /// that stays true, and [`draft_rows`](Self::draft_rows) can only keep one for a row NOBODY
     /// has touched — so once a row was edited its baseline froze, and a Plex Home roster landing
     /// while the editor was open left it stale: toggle a row Off, let the live default drift Off

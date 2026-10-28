@@ -1236,6 +1236,7 @@ impl Bridge {
     /// hubs' or directory reads the step sent (`StoreJob::BrowseHubs`, `StoreJob::BrowseDirectory`) are
     /// started before this returns, in the same call: the store's read claims gate its pumps, and a
     /// step that left its job on the outbox would read as a read in flight with nothing running.
+    /// The step is handed `browse_session()`, read after the store observed its pin write.
     pub(crate) fn browse_run(&mut self, cmd: plx_data::stores::browse::BrowseCmd) -> bool {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
         let session = self.browse_session();
@@ -1256,7 +1257,8 @@ impl Bridge {
     /// in flight with nothing running. Every sender outside the controlled Home arm comes through
     /// here (`frame_ingest`, `activate_server_owned`, the live `StoreWork::BrowseDiscovery` arm), and
     /// the job is started as a direct one: only the controlled arm records it
-    /// ([`Bridge::admit_home_jobs`]).
+    /// ([`Bridge::admit_home_jobs`]). The step is handed `browse_session()`, which a landing's pins
+    /// resolve from.
     pub(crate) fn browse_discover_pump(&mut self) -> plx_data::stores::StoreOutcome {
         super::adapters::stores::refill_client_keys(&mut self.client_keys);
         let session = self.browse_session();

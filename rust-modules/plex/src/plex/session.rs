@@ -299,7 +299,7 @@ static TEST_FILE: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
 /// surviving every run. Three consequences — the first MEASURED, the second and third read off
 /// the code that produced it:
 ///
-/// * **A test's answer was decided by that file.** `browse::append_sections` calls `resolve_pins`,
+/// * **A test's answer was decided by that file.** `browse::append_sections` calls `resolve_pins_from`,
 ///   which reads this module for the current profile's `home_pins` — so EVERY use of
 ///   `browse::seed_two_source_table_for_test` resolved its favourite libraries against whatever
 ///   record happened to be on that developer's disk. A record for the empty profile key naming

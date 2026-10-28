@@ -190,7 +190,7 @@ headed "The listing lanes"): their two worker starts and two registry reads are 
 `data/src/browse/mod.rs`. The Library's source discovery (the section list, the server's name and the
 item counts) is the twelfth (the bullet headed "The discovery lane"): its worker start and its one
 registry read are gone from `data/src/browse/mod.rs`, and its `data-browse` workers ledger file is
-deleted. The rest of `browse/` (the roster and the gate reads, the pins) is still on its ledger. The Metadata store's
+deleted. The Home pins take the session from the Bridge (the bullet headed "The pins' session input"); the rest of `browse/` (the roster and the gate reads) is still on its ledger. The Metadata store's
 season switch and episode-page window are the tenth (the bullet headed "The Metadata reads"): their
 two worker starts and the `client_for` reads of `fetch_episodes` and `fetch_episode_page` are gone
 from `data/src/metadata.rs`; the Related row's tail window read joins them in the same bullet, and its
@@ -568,6 +568,32 @@ worker start and the `client_for` read inside that worker are gone too. The hous
     and the controlled arm drains inside the arm to admit. `app/browse_discovery_drain_tests.rs`
     fails when an entry's drain is removed, and `app/adapters/stores.rs` has a test for each branch
     of the runner's start.
+- **The pins' session input.** `resolve_pins_from` (through `append_sections_with` and `record::apply_to`),
+  `pin_record_for`, `record_pins_from` (through `apply_pins_from`) and `onboard::asks_for_sources` read no
+  registry: each is handed the `&Session` the app read. This is the second consumer of the pattern Search's
+  household scope began (`Bridge::household_ids`, the Bridge reads, the store takes the value), and of the
+  controlled run's `preferences`, which is the same value handed under the `""` key. No job kind and no
+  runner arm is added; every replay fixture is byte-identical.
+  - **Observe, then read.** `Bridge::browse_session` is the one production reader: it calls
+    `BrowseStore::observe_pin_write` FIRST, then `session::peek()`. The write's receipt is sent after the
+    storage worker installed the written session, so a session read after seeing the receipt contains the
+    write. `PinWrite::observe` polls and latches; `PinWrite::saved` only reads the latch and never polls, so
+    a step can never pair a receipt it saw with a session read before it. A write not yet observed answers
+    with the local pending record. Each write has its own latch (`record_pins_from` replaces
+    `pending_pins`). The two lines of `browse_session` must not swap, and its `Arc` is not kept across
+    Bridge calls. Its callers are `browse_run`, `browse_discover_pump`, the `StoreWork::Browse` arm and
+    `reconcile_pump`'s requery.
+  - **`run(cmd, keys)` holds no session.** It is the Stores fan-outs' entry (`ApplyView`,
+    `HubsInvalidateAll`, `HubsInvalidateServer`, `ListingsChanged`), and it refuses `ApplyPins` and
+    `Discovery` (a `debug_assert`, and a dropped command with a log line in a release build) rather than
+    read the registry; both reach `run_with_session`. The `Machine` arms hand the step no keys and no
+    session.
+  - **What stays.** `current_profile_key` (the profile is a published key, not a session read), the
+    `queue_update` / `queue_update_ticket` merge under IO, `peek_settled`, and B-E's reads
+    (`discovery_needs_pump`, `sync_roster_owned`). The first-run gate's session is read by its two
+    callers, boot and `follow_auth_landing`, where each asks. The test entry points (`*_for_test`, the
+    `#[cfg(test)]` `resolve_pins` / `apply_pins` / `record_pins` shims) read the registry as of now, after
+    observing the pin write, as the Bridge does.
 - **The Metadata reads.** The season tabs, the long-season page window and the Related row's tail
   window (`data/src/metadata.rs`) are the tenth store reads on the lane. `load_season` flips the tab and emits
   `StoreJob::MetaSeason(Job<MetaSeasonReq>, MetaSeasonPort)`, addressed by the season generation it

@@ -2168,7 +2168,7 @@ impl BrowseState {
     ///
     /// Two callers reach it, and they are the two ways that can happen: a Plex Home roster landing
     /// or session-cache recovery refreshes a SOURCE/record (`sync_roster_owned`), and the Home editor's commit replaces this
-    /// profile's RECORD (`apply_pins`). Both end in the same question — what does
+    /// profile's RECORD (`apply_pins_from`). Both end in the same question — what does
     /// `pins::resolve` say about every row now — so they ask it the same way rather than each
     /// keeping a version of the answer. A row that moves without `bump_sections_gen` +
     /// `plx_machine::idle::invalidate` is a table nothing republishes, which is a pill strip and a set of
@@ -2205,6 +2205,9 @@ impl BrowseState {
         let session = plx_plex::plex::session::peek();
         self.append_sections_with(source, list, &session, &plx_plex::plex::session::current_profile_key());
     }
+    /// Append the sections a discovery found, then re-resolve the pins from `session` for `user`: the
+    /// live landing hands the profile key and the session the Bridge read, the controlled one hands its
+    /// `preferences` under the `""` key.
     fn append_sections_with(&mut self, source: usize, list: Vec<(i64, String, SecKind)>,
         session: &plx_plex::plex::session::Session, user: &str) {
         let fresh: Vec<_> = list.into_iter().filter(|(key, _, _)| {
@@ -2228,6 +2231,13 @@ impl BrowseState {
         self.bump_sections_gen();
         plx_machine::idle::invalidate();
     }
+    #[cfg(test)]
+    fn record_pins(&mut self, asked: bool, touched: &[bool])
+        -> Option<plx_plex::plex::session::HomePins> {
+        self.observe_pin_write();
+        let snapshot = plx_plex::plex::session::peek();
+        self.record_pins_from(asked, touched, &snapshot)
+    }
     /// Write this profile's answer down. `touched` is indexed like the section table and marks
     /// the rows the VIEWER answered — as the editor reported them, never as a comparison against
     /// the live pins; everything else keeps whatever it had already answered and is otherwise
@@ -2237,13 +2247,10 @@ impl BrowseState {
     /// against the current authority under IO, so unrelated edits made while it was queued
     /// survive. A missing session or a refused queue returns `None`; the visible selection
     /// still stands for this run, without claiming it was saved.
-    #[cfg(test)]
-    fn record_pins(&mut self, asked: bool, touched: &[bool])
-        -> Option<plx_plex::plex::session::HomePins> {
-        self.observe_pin_write();
-        let snapshot = plx_plex::plex::session::peek();
-        self.record_pins_from(asked, touched, &snapshot)
-    }
+    ///
+    /// `snapshot` is the session the Bridge read (`Bridge::browse_session`): its `client_id` gates the
+    /// write and its record is the fallback for the previous answer. The test shim `record_pins` hands
+    /// the registry as of now.
     fn record_pins_from(&mut self, asked: bool, touched: &[bool], snapshot: &plx_plex::plex::session::Session)
         -> Option<plx_plex::plex::session::HomePins> {
         let libraries = self.lib_refs();
@@ -2273,6 +2280,12 @@ impl BrowseState {
         self.recorded = Some(record.clone());
         Some(record)
     }
+    #[cfg(test)]
+    fn apply_pins(&mut self, answers: &[(usize, bool)]) {
+        self.observe_pin_write();
+        let session = plx_plex::plex::session::peek();
+        self.apply_pins_from(answers, &session);
+    }
     /// The editor's one commit: apply the rows it ANSWERED, and record exactly those.
     ///
     /// Recording the rest would freeze defaults nobody chose; `plex::pins::answers` has the
@@ -2298,14 +2311,9 @@ impl BrowseState {
     /// says otherwise, and go back down at the next resolve with no user action behind it.
     ///
     /// **A commit that produced no record is not reconciled**, and the difference is the whole of
-    /// it: [`record_pins`](Self::record_pins) answers `None` when `session::update` refused the
-    /// cycle, and the record still standing then is the one this commit meant to replace.
-    #[cfg(test)]
-    fn apply_pins(&mut self, answers: &[(usize, bool)]) {
-        self.observe_pin_write();
-        let session = plx_plex::plex::session::peek();
-        self.apply_pins_from(answers, &session);
-    }
+    /// it: [`record_pins_from`](Self::record_pins_from) answers `None` when the session it was handed
+    /// has no `client_id` (or the queue refused the cycle), and the record still standing then is the
+    /// one this commit meant to replace.
     fn apply_pins_from(&mut self, answers: &[(usize, bool)], session: &plx_plex::plex::session::Session) {
         let mut touched = vec![false; self.sections.len()];
         let mut changed = false;
@@ -3532,7 +3540,7 @@ pub const TAB_KINDS: [SecKind; 2] = [SecKind::Movie, SecKind::Show];
 // **Per profile is the whole shape.** The persisted selection used to hang off the `Session`,
 // which is one per INSTALL, so a household could hold exactly one opinion about a friend's films.
 // Owner's ruling, 2026-08-21: "it is separate for each profile." A switch needs no code of its own
-// to honour it — `install_pms` calls [`reset`], discovery re-runs, and [`resolve_pins`] reads the
+// to honour it — `install_pms` calls [`reset`], discovery re-runs, and [`resolve_pins_from`] reads the
 // NEW profile's record — which is exactly why the resolve is a whole-table function rather than a
 // per-row default applied once at append.
 
@@ -3545,8 +3553,8 @@ pub const TAB_KINDS: [SecKind; 2] = [SecKind::Movie, SecKind::Show];
 /// Their answer is on disk keyed by machine, which is exactly the join that settles it.
 ///
 /// `None` means "nothing has been read yet", never "nothing was recorded" — the same distinction
-/// [`library_pins`] and `Session::home_pins` both turn on. Written by [`resolve_pins`] and
-/// [`record_pins`], cleared by [`reset`]; never read from the file per frame.
+/// [`library_pins`] and `Session::home_pins` both turn on. Written by [`resolve_pins_from`] and
+/// [`record_pins_from`], cleared by [`reset`]; never read from the file per frame.
 
 /// One source's `machineIdentifier` as the registry knows it, `""` while nobody has learned it.
 fn machine_of(sid: ServerId) -> String {
