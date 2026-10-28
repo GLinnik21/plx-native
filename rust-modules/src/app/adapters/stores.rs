@@ -10,8 +10,8 @@
 //! tape's admission record, the worker thread and the process-global client the request reads. A
 //! kind that is not on the tape (the catalog read, a plex.tv call that names no client; subtitle
 //! search; the Search screen's fetches and its recents writes; view reconcile; the Library's
-//! section-hubs, directory and page reads; the view-state writes; the Metadata season switch and
-//! episode-page window) is started with no admission record, as its inline spawn was. The detail pump keeps a counted
+//! section-hubs, directory and page reads; the view-state writes; the Metadata season switch,
+//! episode-page window and Related window) is started with no admission record, as its inline spawn was. The detail pump keeps a counted
 //! backstop for a sender that did neither (`Bridge::start_late_store_jobs`).
 //!
 //! **Three admission families** (`plx_data::stores::Admission`, stated by the job kind and matched
@@ -34,7 +34,7 @@
 //! (the rigs that poll for a landing, the dump and return-hold tests, `menu_play_season_tests` and the
 //! library route rigs that wait for a grid to settle, need a real answer on a worker),
 //! [`StoreRunner::park_page_reads`] parks the page read as well, and [`StoreRunner::held_all`] parks
-//! every kind. Every held runner parks episode-page jobs.
+//! every kind. Every held runner parks episode-page and Related window jobs.
 //!
 //! **The registry is read here, not in a step.** A step that decides from "which client does this
 //! server slot hold" is handed the answer as an input (`plx_plex::plex::ClientKeys`), which the
@@ -44,9 +44,9 @@
 //! step decided under: its worker reaches the title's OTHER copies only through
 //! `plx_plex::plex::KeyedClients` built from it, with the registry read passed in from here. The
 //! Detail job carries no key: `start_detail` resolves its server once, at the admission, and the
-//! whole chain runs through that client. The season and episode-page jobs carry none either:
-//! `start_meta_season` and `start_meta_episodes` resolve the server's client once, at the launch,
-//! and hand it to the worker body; a server with none answers the failure without a GET;
+//! whole chain runs through that client. The season, episode-page and Related window jobs carry
+//! none either: `start_meta_season`, `start_meta_episodes` and `start_meta_related` resolve the
+//! server's client once, at the launch, and hand it to the worker body; a server with none answers the failure without a GET;
 //! `docs/sans-io.md`, "The store job lane".)
 
 use plx_data::browse::listing_jobs::{
@@ -169,8 +169,8 @@ pub(crate) enum StoreRunner {
     /// TEST ONLY: park the jobs of every kind not in `live` until [`StoreRunner::run_held`]: after
     /// its tape admission for a kind that is on the tape, after the registry's key check for one
     /// that is not but reads a server, and with neither for a Catalog job (a plex.tv read that
-    /// names no client) or a season or episode-page job, which carries no key (`run_held` resolves
-    /// its client when it runs the job). A kind in `live` starts as `Live` starts it.
+    /// names no client) or a season, episode-page or Related window job, which carries no key
+    /// (`run_held` resolves its client when it runs the job). A kind in `live` starts as `Live` starts it.
     #[cfg(test)]
     Held { parked: Vec<StoreJob>, live: &'static [LiveKind] },
 }
@@ -200,7 +200,8 @@ impl StoreRunner {
     /// switch and the Library listing's page read, which start on a worker as they do in production:
     /// a rig that waits for a Home or a grid landing, and the menu-play season wait
     /// (`menu_play_season_tests`, which polls `metadata_pump_season` for a landing and never runs held
-    /// jobs), need a real one. No rig waits for an episode-page landing, so those are parked.
+    /// jobs), need a real one. No rig waits for an episode-page or a Related window landing through a
+    /// worker (the Related rigs land the window with `land_related_for_test`), so those are parked.
     #[cfg(test)]
     pub(crate) fn held() -> Self {
         Self::Held { parked: Vec::new(), live: &[LiveKind::Hubs, LiveKind::MetaSeason, LiveKind::BrowsePage] }

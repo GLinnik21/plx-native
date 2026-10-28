@@ -191,7 +191,8 @@ headed "The listing lanes"): their two worker starts and two registry reads are 
 on its ledger. The Metadata store's
 season switch and episode-page window are the tenth (the bullet headed "The Metadata reads"): their
 two worker starts and the `client_for` reads of `fetch_episodes` and `fetch_episode_page` are gone
-from `data/src/metadata.rs`. The household's watch-state writes are the eleventh (the bullet headed
+from `data/src/metadata.rs`; the Related row's tail window read joins them in the same bullet, and its
+worker start and the `client_for` read inside that worker are gone too. The household's watch-state writes are the eleventh (the bullet headed
 "The view-state write lane"): the worker start and all five `client_for` reads are gone from
 `data/src/viewstate.rs`, and its two `data-viewstate` ledger files are deleted.
 
@@ -209,7 +210,8 @@ from `data/src/metadata.rs`. The household's watch-state writes are the eleventh
   `plx_data::browse::section_hubs::{BrowseHubsReq, BrowseHubsPort}`,
   `plx_data::browse::listing_jobs::{BrowseDirectoryReq, BrowseDirectoryPort}`,
   `plx_data::browse::listing_jobs::{BrowsePageReq, BrowsePagePort}` (`BrowseStore::take_jobs`) and
-  `plx_data::metadata::{MetaSeasonReq, MetaSeasonPort, MetaEpisodesReq, MetaEpisodesPort}`. The app's `StoreRunner`
+  `plx_data::metadata::{MetaSeasonReq, MetaSeasonPort, MetaEpisodesReq, MetaEpisodesPort}` and
+  `plx_data::metadata::{MetaRelatedReq, MetaRelatedPort}`. The app's `StoreRunner`
   (`app/adapters/stores.rs`) executes a job and owns what `data/` must not: the tape's admission
   record, the thread and the `client_for` read. It is `Live` or `Held` (a test parks the job and
   runs it on the test thread), chosen when the `Bridge` is constructed; a newer Detail request
@@ -223,8 +225,8 @@ from `data/src/metadata.rs`. The household's watch-state writes are the eleventh
   (`Bridge::run_held_store_jobs_of_for_test`).
   `StoreRunner::park_page_reads` (`Bridge::park_page_reads_for_test`) parks only the page read of
   a held runner, for a rig that grades which reads an entry started. Every other kind parks under
-  all three, the section hubs' read, the filter menus' directory read and the episode-page jobs
-  included: no rig of the suite waits for any of those landings from a real worker, and a parked
+  all three, the section hubs' read, the filter menus' directory read, the episode-page jobs and
+  the Related window job included: no rig of the suite waits for any of those landings from a real worker, and a parked
   read is one the test starts when it chooses (the one `hostsim` rig that needs the section hubs'
   read to reach the server, `the_recommended_page_fetches_the_sections_hubs`, runs it from the
   parked set with `Bridge::run_held_store_jobs_of_for_test(StoreId::Browse)`). The page read is live
@@ -390,8 +392,8 @@ from `data/src/metadata.rs`. The household's watch-state writes are the eleventh
   for. The Hubs read differs from the six before it in four ways.
   - **A third admission family.** `StoreJob::admission()` names `Tape` (Detail, Collection, Person),
     `Direct` (Catalog, subtitle search, view reconcile, Search's fetches and recents writes, the section
-    hubs' read, the Library's directory and page reads, the view-state writes, the Metadata season switch
-    and episode-page window) or `Home`,
+    hubs' read, the Library's directory and page reads, the view-state writes, the Metadata season switch,
+    episode-page window and Related window) or `Home`,
     as one exhaustive match. A `Home`
     job is recorded in a controlled Home run's own ordered ledger (`HomeIo::admit`), not on the tape,
     with the bytes `HubRequest::admission` returns (the bytes `hubs_descriptor` returned before it,
@@ -523,8 +525,8 @@ from `data/src/metadata.rs`. The household's watch-state writes are the eleventh
     page (`total < 0`: the listing keeps what it had and `retry_cd` backs the pump off), a directory
     read that panics lands as an empty list. The seams `finish_page_with` and
     `finish_directory_with` take the read as a closure so a test can swap in one that panics.
-- **The Metadata reads.** The season tabs and the long-season page window (`data/src/metadata.rs`)
-  are the tenth store reads on the lane. `load_season` flips the tab and emits
+- **The Metadata reads.** The season tabs, the long-season page window and the Related row's tail
+  window (`data/src/metadata.rs`) are the tenth store reads on the lane. `load_season` flips the tab and emits
   `StoreJob::MetaSeason(Job<MetaSeasonReq>, MetaSeasonPort)`, addressed by the season generation it
   minted; `want_episodes` emits `StoreJob::MetaEpisodes(Job<MetaEpisodesReq>, MetaEpisodesPort)` for
   at most `EP_JOB_PAGES` pages, addressed by a sequence of its own (pages are keyed by
@@ -557,6 +559,40 @@ from `data/src/metadata.rs`. The household's watch-state writes are the eleventh
     refusing the thread cannot be forced on a host, so the refused branches are pinned at the port
     (`a_refused_season_job_ends_season_loading_and_leaves_the_tab_and_the_list`,
     `a_refused_page_job_releases_its_inflight_keys_and_the_next_want_asks_again`).
+  - **The Related window.** `ask_related` (an edge ask, `WantRelated`, or a seek, `SeekRelated`)
+    takes the single-flight claim in the adapter's `rel_pages` exactly as before (the adopt path
+    that un-withdraws a read asked for again, and the `served` check that skips an edge that already
+    landed, are unchanged) and then emits `StoreJob::MetaRelated(Job<MetaRelatedReq>,
+    MetaRelatedPort)`, `Direct`, addressed by a sequence of its own (`RelPages.sent`; it shares
+    `season_addr`'s id space, and nothing routes by an `Addr` alone). The request carries what the
+    worker closure captured: the item, the ask, the window it starts from with its cards, the keys
+    the tail must not show, the hubs with the lengths learned so far, the ledger the window carries
+    and the view-state stamp. A controlled run never emits it (`bootstrap/effects.rs` has no related
+    arm), so no replay fixture moved. The runner resolves `client_for(sid)` once, at the launch,
+    which moves the resolve that used to run inside the worker onto the main thread: a read keeps
+    its client for its few serial GETs, and a server the registry holds none for still launches and
+    its body answers the failure (`window: None`) without a GET. The body is the old worker's:
+    `read_row` over `tail_page`, behind `catch_unwind`, the answer posted outside the guard.
+    - **The claim is the port's to give back.** `done` lowers `inflight` and `out`, drops the
+      answer when the reader withdrew the read while it was out (taking the flag), and otherwise
+      lands the window for `pump_related_pages`, which is unchanged and ungated. `refused` lowers
+      the claim and clears `withdrawn` in the call that refuses, which is what the inline
+      `!spawned` arm left, so the next edge asks again and no later read is discarded on a stale
+      flag. A job the held runner parks keeps the claim up, as a worker that has not answered does;
+      a cancel meanwhile leaves the answer to be discarded when the parked job runs.
+    - **The return value.** `ask_related` returned `spawned`; it returns true when the job was
+      emitted. Its readers are `MetadataStore::run`'s `changed` (the notice is bumped for every
+      command but `ApplyView`, so a true never changes whether it rises) and the tests; the one
+      production sender, `deliver_inner`, ignores it. A true for a job later refused changes no
+      screen state beyond what a spawned read's true did.
+    - **Drains.** The Detail screen's effects reach `ask_related` through `Bridge::metadata_run`,
+      which drains Metadata after its step; that is the only production path. No bare-store sender
+      and no fan-out sends `WantRelated` or `SeekRelated` (the view-state closures send `ApplyView`
+      only), so no drain was added; `the_bridge_metadata_run_starts_the_related_window_it_emitted`
+      pins the dispatcher path. The held runner parks the kind under `held()` and `held_all()`: no
+      rig in the app, screens or hostsim suites waits on a Related landing through a real worker
+      (`detail_related_landing_tests` lands the window with `land_related_for_test`), so there is
+      no `LiveKind` for it.
 - **The view-state write lane.** The household's watch-state writes (`data/src/viewstate.rs`: mark
   watched, mark unwatched, remove from Continue Watching, and the fan-out of a watched write, or of
   an end of stream, to the title's other copies) are the eleventh store on the lane. `kick` starts no

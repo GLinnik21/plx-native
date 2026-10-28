@@ -158,8 +158,9 @@ pub struct MetadataState {
     alt: AltStore,
     /// The IO this owner has asked the application to start and the application has not yet taken
     /// (`MetadataStore::take_jobs`): one [`crate::stores::StoreJob::Detail`] per accepted detail
-    /// request, one [`crate::stores::StoreJob::MetaSeason`] per season switch and one
-    /// [`crate::stores::StoreJob::MetaEpisodes`] per episode-page window. The owner never starts
+    /// request, one [`crate::stores::StoreJob::MetaSeason`] per season switch, one
+    /// [`crate::stores::StoreJob::MetaEpisodes`] per episode-page window and one
+    /// [`crate::stores::StoreJob::MetaRelated`] per Related tail window. The owner never starts
     /// the work itself, so no thread, clock or network read happens in the step that asks. A job
     /// taken is a job owed to its runner: the application's `Bridge` starts each one in the same
     /// call that stepped the store (`app::adapters::stores`).
@@ -4019,9 +4020,9 @@ fn request_detail_with_spawn(adapter: &MetadataAdapter, sid: plx_plex::plex::Ser
 /// re-resolved its client before each sub-fetch, so after a sign-out its later GETs found no
 /// client (`None`) and after a re-point they went to the slot's new client. This one keeps the
 /// client it was handed (the registry leaks its clients, so the reference stays valid), which is
-/// `pms::kick_with`'s capture-at-the-step rule. (`ask_related` also keeps one client for its whole
-/// window, but it resolves that client inside its worker, which is why it is still on the globals
-/// ledger.) The registry blanks that client's token on both events (`revoke_all`, and the
+/// `pms::kick_with`'s capture-at-the-step rule. (The Related window job keeps one client for its
+/// whole window the same way: the runner resolves it at the launch and hands it to
+/// [`finish_related_job`].) The registry blanks that client's token on both events (`revoke_all`, and the
 /// re-point arm of `register_lazy`), so the rest of the chain asks tokenless and lands `None`. For
 /// a sign-out that is the old outcome, with the requests now sent and refused where they used to
 /// be skipped. For a re-point it is a page with its hero but empty seasons, streams, extras,
@@ -5173,7 +5174,8 @@ fn season_addr(gen: u32) -> plx_machine::machine::Addr {
 
 /// A page job's address: the sequence of its own (`EpPages.sent`). It shares the id space of
 /// [`season_addr`] and of the Detail job's address (`Addr { to: Store(Metadata), req }`), so a page
-/// job, a season job and a detail job can carry an identical `Addr`. Nothing routes by `Addr`
+/// job, a season job, a Related window job ([`related_addr`]) and a detail job can carry an
+/// identical `Addr`. Nothing routes by `Addr`
 /// alone (each typed port keeps its answers apart); anything that later keys by it has to add the
 /// kind, or give the kinds disjoint ranges.
 fn pages_addr(seq: u32) -> plx_machine::machine::Addr {
@@ -5247,8 +5249,8 @@ impl plx_machine::job::Port<SeasonAnswer> for MetaSeasonPort {
     }
 }
 
-/// One read of a season or page job through the client the runner resolved: `None` when it held none for the
-/// server (no GET is made), and `None` when the read failed or panicked. The panic is caught HERE,
+/// One read of a season, page or Related window job through the client the runner resolved: `None`
+/// when it held none for the server (no GET is made), and `None` when the read failed or panicked. The panic is caught HERE,
 /// so a caller posts its answer outside the guard and a panicking read still lands, as a failure.
 fn read_through<T>(
     client: Option<&'static plx_plex::plex::Client>,
@@ -5465,13 +5467,20 @@ pub enum RelatedAsk {
 }
 
 /// Ask for the previous or next window of the Related tail. False when there is nothing to ask:
-/// no tail, no more in that direction, or a read already out. Main thread only.
+/// no tail, no more in that direction, or a read already out. True when the read's job was left on
+/// the outbox ([`ask_related`]). Main thread only.
 fn want_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>, before: bool,
     seen: (usize, usize)) -> bool {
     ask_related(state, adapter, RelatedAsk::Edge { before }, seen)
 }
 
 /// [`want_related`], or a window opened at a tail position ([`MetadataCmd::SeekRelated`]).
+///
+/// The step takes the single-flight claim in `rel_pages` and leaves the read on the outbox as a
+/// [`MetaRelatedReq`] job; it starts no thread and reads no registry. True means the job was
+/// emitted: the claim is up until the job's port gives it back, by its answer or by a refusal
+/// ([`MetaRelatedPort`]), so a true for a read the OS then refuses is followed by a false claim and
+/// the next edge asking again, exactly as a spawn that failed left it.
 fn ask_related(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>, ask: RelatedAsk,
     seen: (usize, usize)) -> bool {
     use crate::stores::paging::{PageInfo, Row};
@@ -5545,8 +5554,9 @@ fn related_seek_start(at: usize) -> usize {
 }
 
 /// Withdraws the Related read: one out is discarded when it lands, one landed and not yet installed
-/// is dropped. The read out keeps its single-flight latch until it has finished, so the next edge
-/// asks again only after it (or adopts it, for the same window). Main thread only.
+/// is dropped. The read out keeps its single-flight latch until its job has answered or been
+/// refused (a job the runner has parked holds it too), so the next edge asks again only after it
+/// (or adopts it, for the same window). Main thread only.
 fn cancel_related(adapter: &MetadataAdapter) -> bool {
     let mut rel = adapter.rel_pages.lock().unwrap_or_else(|e| e.into_inner());
     if rel.inflight { rel.withdrawn = true; }
@@ -5555,7 +5565,7 @@ fn cancel_related(adapter: &MetadataAdapter) -> bool {
 }
 
 /// Test seam: a tail read that started from window `from` of `next`'s item has answered with
-/// `next`'s tail window, and waits for [`pump_related_pages`] exactly as a worker's answer does.
+/// `next`'s tail window, and waits for [`pump_related_pages`] exactly as the job port's answer does.
 #[cfg(any(test, feature = "test-support"))]
 pub fn land_related_for_test(adapter: &MetadataAdapter, from: (usize, usize), next: &Detail) {
     plx_base::testlock::assert_held("the detail store (land_related_for_test)");
