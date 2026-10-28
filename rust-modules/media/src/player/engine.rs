@@ -268,6 +268,20 @@ impl Engine {
     }
 }
 
+/// Test builds only: an Engine dropped while it still holds its demuxer's handle was never torn
+/// down, so that thread may still be writing into `aq_video`/`aq_audio`, which this drop frees.
+/// `teardown` always takes the handle and joins it first. The hostsim rigs used to drop a
+/// reloaded Engine straight out of their `PlayerAdapter`: the demuxer's `aq_set_eof` then landed
+/// in freed memory, a heap corruption that surfaced later as a crash in some unrelated free.
+#[cfg(test)]
+impl Drop for Engine {
+    fn drop(&mut self) {
+        if self.stream_th.is_some() && !std::thread::panicking() {
+            panic!("an Engine was dropped with its demuxer still owned: stop it with teardown first");
+        }
+    }
+}
+
 // The `ENGINE` slot is `App.adapters.player` since phase 9 — a field, reached as
 // `pa: &mut PlayerAdapter` from the loop. `player::adapter` carries the confinement argument the
 // four `static mut` accessors used to carry here, and says what the owned slot proves that the
@@ -3341,8 +3355,8 @@ struct LoadAudio {
     lead: PcmLead,
 }
 
-/// [`LoadAudio`] for a track of `codec` at `session_rate` (permille); `None` when the pipeline has no
-/// name for the codec. A speed session decodes and stretches the sound in the app
+/// [`LoadAudio`] for a track of `codec` at `session_rate` (permille); `None` only at 1x, when the pipeline has
+/// no name for the codec and the app does not decode it. A speed session decodes and stretches the sound in the app
 /// (`ff::SpeedDecoder`), so at any speed but 1x every codec declares `"PCM"`; so does a track the app
 /// decodes itself at 1x (`app_pcm`, the shape [`crate::route::stream_pcm`] declared: DTS under the
 /// lossy gate, FLAC and the like), whatever its codec, and that name is what the lead plan is made
@@ -3352,8 +3366,14 @@ fn load_audio(
     codec: &str, session_rate: i32, app_pcm: Option<&crate::route::PcmFormat>, lead_override_ms: Option<&str>,
     stack: AudioStack,
 ) -> Option<LoadAudio> {
-    let (name, diagnostic) = audio_declaration(codec, app_pcm)?;
-    let name = if session_rate != super::RATE_NORMAL { "PCM" } else { name };
+    let declared = audio_declaration(codec, app_pcm);
+    // A speed session declares PCM whatever the codec is called, so it needs no payload name for it
+    // (`mp3`, `vorbis` and `truehd` have none): its diagnostic code stays the codec's when it has one.
+    let (name, diagnostic) = if session_rate != super::RATE_NORMAL {
+        ("PCM", declared.map_or(5, |(_, code)| code))
+    } else {
+        declared?
+    };
     Some(LoadAudio { name, diagnostic, lead: pcm_lead_plan(name, lead_override_ms, stack) })
 }
 
@@ -7079,6 +7099,36 @@ mod pcm_info_tests {
         assert_eq!(on.matches("pcmInfo").count(), 1, "{on}");
         let planned = load_audio("truehd", crate::player::RATE_NORMAL, shape.as_ref(), None, AudioStack::Liblxa).unwrap();
         assert_eq!((planned.name, planned.lead), ("PCM", PcmLead::FromOutput(AudioStack::Liblxa)), "planned the stack's lead");
+    }
+
+    /// **An app-decoded lossy track at a playback speed still loads.** At a speed the speed decoder
+    /// declares PCM itself and the app-decoded shape is dropped ([`app_pcm_for_rate`]), so `load_audio`
+    /// is asked for a codec the pipeline has no payload name for (`mp3`, `vorbis`, `truehd`): the Load must still
+    /// declare PCM and take the stack's lead, as a speed session on any other codec does, not be
+    /// refused as an "unsupported audio codec". The `pcm` argument is derived exactly as
+    /// `start_bufferfeed_inner` derives it, so this goes through the Load's own path (the speed
+    /// assertion of `app_decoded_dts_is_declared_as_pcm_and_native_dts_as_dts` hands `"PCM"` straight
+    /// to the payload builder and cannot see this).
+    #[test]
+    fn an_app_decoded_lossy_track_loads_as_pcm_at_a_speed() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        crate::route::begin_attempt_for_test(
+            &mut ps, std::sync::Arc::new(plx_platform::devcaps::Caps::assumed().with_app_lossy()),
+        );
+        for codec in ["mp3", "vorbis", "truehd"] {
+            crate::route::set_stream_codecs(&mut ps, "h264", codec);
+            for rate in [500, 1500, 2000] {
+                let pcm = app_pcm_for_rate(rate, crate::route::stream_pcm(&ps)).and_then(Result::ok);
+                assert_eq!(pcm, None, "{codec} at {rate}: the speed decoder declares the shape");
+                let planned = load_audio(codec, rate, pcm.as_ref(), None, AudioStack::Liblxa)
+                    .map(|a| (a.name, a.diagnostic, a.lead));
+                assert_eq!(
+                    planned,
+                    Some(("PCM", 5, PcmLead::FromOutput(AudioStack::Liblxa))),
+                    "{codec} at {rate}: a speed session declares PCM whatever the codec is called"
+                );
+            }
+        }
     }
 
     #[test]
