@@ -1346,11 +1346,11 @@ impl Bridge {
     /// `StoreCmd::Metadata` arm included: the jobs the step emitted (a `RequestDetail`'s fetch, a
     /// season switch, an episode-page window, a Related tail window) are started before this
     /// returns, in the same call, so the tape's admission record follows the cancellation record
-    /// the same step wrote with nothing between them. A caller that steps the bare store, whether it holds only the store
-    /// (`playback::describe_movie`, which gets a `&mut MetadataStore`) or holds the Bridge
-    /// (`input::menu_play_tick`'s season press), leaves its job on the outbox and drains it itself
-    /// the moment the call returns ([`Bridge::start_store_jobs`]). A sender that does neither is
-    /// not lost: the next pump's backstop starts the job a frame late, counts it in
+    /// the same step wrote with nothing between them. A caller that steps the bare store, whether it
+    /// holds only the store (`playback::describe_movie`, which gets a `&mut MetadataStore`) or holds
+    /// the Bridge (`input::menu_play_tick`'s season press), leaves its job on the outbox and drains
+    /// it itself the moment the call returns ([`Bridge::start_store_jobs`]). A sender that does
+    /// neither is not lost: the next pump's backstop starts the job a frame late, counts it in
     /// `late_store_jobs` and logs it, and the test rigs fail on that count.
     pub(crate) fn metadata_run(&mut self, cmd: plx_data::stores::metadata::MetadataCmd) -> bool {
         let changed = self.stores.metadata_run(cmd);

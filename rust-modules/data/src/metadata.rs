@@ -4022,11 +4022,11 @@ fn request_detail_with_spawn(adapter: &MetadataAdapter, sid: plx_plex::plex::Ser
 /// client it was handed (the registry leaks its clients, so the reference stays valid), which is
 /// `pms::kick_with`'s capture-at-the-step rule. (The Related window job keeps one client for its
 /// whole window the same way: the runner resolves it at the launch and hands it to
-/// [`finish_related_job`].) The registry blanks that client's token on both events (`revoke_all`, and the
-/// re-point arm of `register_lazy`), so the rest of the chain asks tokenless and lands `None`. For
-/// a sign-out that is the old outcome, with the requests now sent and refused where they used to
-/// be skipped. For a re-point it is a page with its hero but empty seasons, streams, extras,
-/// trailer and related, where the old chain went on to the slot's new client and finished.
+/// [`finish_related_job`].) The registry blanks that client's token on both events (`revoke_all`,
+/// and the re-point arm of `register_lazy`), so the rest of the chain asks tokenless and lands
+/// `None`. For a sign-out that is the old outcome, with the requests now sent and refused where
+/// they used to be skipped. For a re-point it is a page with its hero but empty seasons, streams,
+/// extras, trailer and related, where the old chain went on to the slot's new client and finished.
 ///
 /// `None` is a server the registry held no client for when the job was admitted: there is nothing
 /// to ask, so `fetch` is not called and the answer is the failure, as it was when the first
@@ -5175,9 +5175,8 @@ fn season_addr(gen: u32) -> plx_machine::machine::Addr {
 /// A page job's address: the sequence of its own (`EpPages.sent`). It shares the id space of
 /// [`season_addr`] and of the Detail job's address (`Addr { to: Store(Metadata), req }`), so a page
 /// job, a season job, a Related window job ([`related_addr`]) and a detail job can carry an
-/// identical `Addr`. Nothing routes by `Addr`
-/// alone (each typed port keeps its answers apart); anything that later keys by it has to add the
-/// kind, or give the kinds disjoint ranges.
+/// identical `Addr`. Nothing routes by `Addr` alone (each typed port keeps its answers apart);
+/// anything that later keys by it has to add the kind, or give the kinds disjoint ranges.
 fn pages_addr(seq: u32) -> plx_machine::machine::Addr {
     season_addr(seq)
 }
@@ -5250,8 +5249,9 @@ impl plx_machine::job::Port<SeasonAnswer> for MetaSeasonPort {
 }
 
 /// One read of a season, page or Related window job through the client the runner resolved: `None`
-/// when it held none for the server (no GET is made), and `None` when the read failed or panicked. The panic is caught HERE,
-/// so a caller posts its answer outside the guard and a panicking read still lands, as a failure.
+/// when it held none for the server (no GET is made), and `None` when the read failed or panicked.
+/// The panic is caught HERE, so a caller posts its answer outside the guard and a panicking read
+/// still lands, as a failure.
 fn read_through<T>(
     client: Option<&'static plx_plex::plex::Client>,
     read: impl FnOnce(&'static plx_plex::plex::Client) -> Option<T>,
@@ -5757,11 +5757,9 @@ fn finish_related_with(
 /// shared row reader.
 fn read_related_window(client: &'static plx_plex::plex::Client, req: MetaRelatedReq) -> Option<RelatedWindow> {
     let MetaRelatedReq { sid, ask, info, rows, skip, mut hubs, row, .. } = req;
-    let before = matches!(ask, RelatedAsk::Edge { before: true });
-    let start = match ask {
-        RelatedAsk::Seek(at) => related_seek_start(at),
-        RelatedAsk::Edge { before: true } => info.offset,
-        RelatedAsk::Edge { before: false } => info.end,
+    let (start, before) = match ask {
+        RelatedAsk::Seek(at) => (related_seek_start(at), false),
+        RelatedAsk::Edge { before } => (if before { info.offset } else { info.end }, before),
     };
     let ask = crate::stores::paging::Ask { start, before, hidden: &[] };
     let current = (!rows.is_empty()).then_some((rows, info));

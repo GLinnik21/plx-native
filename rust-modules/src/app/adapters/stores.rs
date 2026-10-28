@@ -11,8 +11,9 @@
 //! kind that is not on the tape (the catalog read, a plex.tv call that names no client; subtitle
 //! search; the Search screen's fetches and its recents writes; view reconcile; the Library's
 //! section-hubs, directory and page reads; the view-state writes; the Metadata season switch,
-//! episode-page window and Related window) is started with no admission record, as its inline spawn was. The detail pump keeps a counted
-//! backstop for a sender that did neither (`Bridge::start_late_store_jobs`).
+//! episode-page window and Related window) is started with no admission record, as its inline
+//! spawn was. The detail pump keeps a counted backstop for a sender that did neither
+//! (`Bridge::start_late_store_jobs`).
 //!
 //! **Three admission families** (`plx_data::stores::Admission`, stated by the job kind and matched
 //! exhaustively): `Tape` kinds record their launch on the tape; `Direct` kinds are started with no
@@ -46,8 +47,8 @@
 //! Detail job carries no key: `start_detail` resolves its server once, at the admission, and the
 //! whole chain runs through that client. The season, episode-page and Related window jobs carry
 //! none either: `start_meta_season`, `start_meta_episodes` and `start_meta_related` resolve the
-//! server's client once, at the launch, and hand it to the worker body; a server with none answers the failure without a GET;
-//! `docs/sans-io.md`, "The store job lane".)
+//! server's client once, at the launch, and hand it to the worker body; a server with none answers
+//! the failure without a GET; `docs/sans-io.md`, "The store job lane".)
 
 use plx_data::browse::listing_jobs::{
     finish_browse_directory_job, finish_browse_page_job, BrowseDirectoryPort, BrowseDirectoryReq,
@@ -170,7 +171,8 @@ pub(crate) enum StoreRunner {
     /// its tape admission for a kind that is on the tape, after the registry's key check for one
     /// that is not but reads a server, and with neither for a Catalog job (a plex.tv read that
     /// names no client) or a season, episode-page or Related window job, which carries no key
-    /// (`run_held` resolves its client when it runs the job). A kind in `live` starts as `Live` starts it.
+    /// (`run_held` resolves its client when it runs the job). A kind in `live` starts as `Live`
+    /// starts it.
     #[cfg(test)]
     Held { parked: Vec<StoreJob>, live: &'static [LiveKind] },
 }
