@@ -43,7 +43,7 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-28T04:15:20Z",
+ "generated": "2026-10-28T04:23:36Z",
  "metrics": [
   {
    "change30_pct": null,
@@ -132,17 +132,17 @@
   },
   {
    "change30_pct": -60.3,
-   "change7_pct": -14.1,
+   "change7_pct": -14.2,
    "d30": 867.5,
-   "delta30": -523.0,
-   "delta7": -56.5,
+   "delta30": -523.5,
+   "delta7": -57,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 90,
+   "n_now": 91,
    "n_prev": 125,
-   "now": 344.5,
+   "now": 344,
    "prev7": 401,
    "shown": true,
    "state": "flat",
@@ -395,18 +395,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 90.6,
-   "change7_pct": 9.5,
+   "change30_pct": 90.3,
+   "change7_pct": 9.3,
    "d30": 139,
-   "delta30": 126,
-   "delta7": 23,
+   "delta30": 125.5,
+   "delta7": 22.5,
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: Linux simulator build + launch",
-   "n_now": 79,
+   "n_now": 80,
    "n_prev": 119,
-   "now": 265,
+   "now": 264.5,
    "prev7": 242,
    "shown": true,
    "state": "flat",
@@ -416,22 +416,43 @@
    "unit": "s"
   },
   {
-   "change30_pct": -10.1,
-   "change7_pct": 5.0,
+   "change30_pct": -9.9,
+   "change7_pct": 5.2,
    "d30": 223,
-   "delta30": -22.5,
-   "delta7": 9.5,
+   "delta30": -22,
+   "delta7": 10,
    "group": "ci",
    "id": "sim|macOS simulator build + launch",
    "kind": "job",
    "label": "Simulator CI: macOS simulator build + launch",
-   "n_now": 78,
+   "n_now": 79,
    "n_prev": 119,
-   "now": 200.5,
+   "now": 201,
    "prev7": 191,
    "shown": true,
    "state": "flat",
    "state30": "flat",
+   "threshold_abs": 30.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": 10.3,
+   "d30": null,
+   "delta30": null,
+   "delta7": 15.5,
+   "group": "ci",
+   "id": "sim|macOS tests against bundled FFmpeg and ASS",
+   "kind": "job",
+   "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
+   "n_now": 80,
+   "n_prev": 119,
+   "now": 165.5,
+   "prev7": 150,
+   "shown": true,
+   "state": "flat",
+   "state30": "new",
    "threshold_abs": 30.0,
    "threshold_pct": 20.0,
    "unit": "s"
@@ -454,27 +475,6 @@
    "state": "flat",
    "state30": "new",
    "threshold_abs": 20.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
-   "change30_pct": null,
-   "change7_pct": 10.0,
-   "d30": null,
-   "delta30": null,
-   "delta7": 15,
-   "group": "ci",
-   "id": "sim|macOS tests against bundled FFmpeg and ASS",
-   "kind": "job",
-   "label": "Simulator CI: macOS tests against bundled FFmpeg and ASS",
-   "n_now": 79,
-   "n_prev": 119,
-   "now": 165,
-   "prev7": 150,
-   "shown": true,
-   "state": "flat",
-   "state30": "new",
-   "threshold_abs": 30.0,
    "threshold_pct": 20.0,
    "unit": "s"
   },
@@ -546,15 +546,15 @@
    "change30_pct": 12.5,
    "change7_pct": 0.0,
    "d30": 16,
-   "delta30": 2,
-   "delta7": 0,
+   "delta30": 2.0,
+   "delta7": 0.0,
    "group": "ci",
    "id": "sim|Windows launcher syntax",
    "kind": "job",
    "label": "Simulator CI: Windows launcher syntax",
-   "n_now": 79,
+   "n_now": 80,
    "n_prev": 119,
-   "now": 18,
+   "now": 18.0,
    "prev7": 18,
    "shown": false,
    "state": "flat",
@@ -691,6 +691,11 @@
      "pr": 1078,
      "sha": "9b7d1da28",
      "title": "Playback: MP3 and Vorbis are decoded in the app behind the debug gate"
+    },
+    {
+     "pr": 1079,
+     "sha": "44d4eda8d",
+     "title": "Playback: TrueHD is decoded in the app behind the debug gate; high rates are low-passed before decimation"
     }
    ],
    "from": 164,
@@ -703,11 +708,6 @@
   {
    "change_pct": 29.1,
    "commits": [
-    {
-     "pr": 1080,
-     "sha": "89c020dbf",
-     "title": "Playback: a refusal the app recovered from is reported once under the error-report consent, with the firmware build"
-    },
     {
      "pr": 1077,
      "sha": "4b30a63b7",
@@ -752,6 +752,11 @@
      "pr": 1078,
      "sha": "9b7d1da28",
      "title": "Playback: MP3 and Vorbis are decoded in the app behind the debug gate"
+    },
+    {
+     "pr": 1079,
+     "sha": "44d4eda8d",
+     "title": "Playback: TrueHD is decoded in the app behind the debug gate; high rates are low-passed before decimation"
     }
    ],
    "from": 987.0,
@@ -803,6 +808,11 @@
      "pr": 1078,
      "sha": "9b7d1da28",
      "title": "Playback: MP3 and Vorbis are decoded in the app behind the debug gate"
+    },
+    {
+     "pr": 1079,
+     "sha": "44d4eda8d",
+     "title": "Playback: TrueHD is decoded in the app behind the debug gate; high rates are low-passed before decimation"
     }
    ],
    "from": 163,
@@ -843,7 +853,7 @@
    "group": "ci",
    "id": "sim|Linux simulator build + launch",
    "label": "Simulator CI: Linux simulator build + launch",
-   "now": 265
+   "now": 264.5
   }
  ],
  "slowest_local": [
