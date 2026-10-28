@@ -57,21 +57,21 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-28T17:01:10Z",
+ "generated": "2026-10-28T17:08:37Z",
  "metrics": [
   {
    "change30_pct": null,
-   "change7_pct": 46.1,
+   "change7_pct": 48.2,
    "d30": null,
    "delta30": null,
-   "delta7": 76.5,
+   "delta7": 80,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 88,
+   "n_now": 89,
    "n_prev": 105,
-   "now": 242.5,
+   "now": 246,
    "prev7": 166,
    "shown": true,
    "state": "worse",
@@ -159,17 +159,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 27.2,
+   "change7_pct": 28.1,
    "d30": null,
    "delta30": null,
-   "delta7": 46.5,
+   "delta7": 48,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 88,
+   "n_now": 89,
    "n_prev": 105,
-   "now": 217.5,
+   "now": 219,
    "prev7": 171,
    "shown": true,
    "state": "worse",
@@ -201,17 +201,17 @@
   },
   {
    "change30_pct": -60.8,
-   "change7_pct": -1.1,
+   "change7_pct": -1.0,
    "d30": 899,
-   "delta30": -547,
-   "delta7": -4,
+   "delta30": -546.5,
+   "delta7": -3.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
-   "n_now": 89,
+   "n_now": 90,
    "n_prev": 119,
-   "now": 352,
+   "now": 352.5,
    "prev7": 356,
    "shown": true,
    "state": "flat",
@@ -369,17 +369,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 3.1,
+   "change7_pct": 3.5,
    "d30": null,
    "delta30": null,
-   "delta7": 10.5,
+   "delta7": 12,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 88,
+   "n_now": 89,
    "n_prev": 105,
-   "now": 349.5,
+   "now": 351,
    "prev7": 339,
    "shown": true,
    "state": "flat",
@@ -390,17 +390,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 3.4,
+   "change7_pct": 3.5,
    "d30": null,
    "delta30": null,
-   "delta7": 10.5,
+   "delta7": 11,
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 88,
+   "n_now": 89,
    "n_prev": 57,
-   "now": 323.5,
+   "now": 324,
    "prev7": 313,
    "shown": true,
    "state": "flat",
@@ -411,17 +411,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 9.1,
+   "change7_pct": 9.3,
    "d30": null,
    "delta30": null,
-   "delta7": 26,
+   "delta7": 26.5,
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "kind": "job",
    "label": "CI: host unit tests (hostsim)",
-   "n_now": 87,
+   "n_now": 88,
    "n_prev": 105,
-   "now": 311,
+   "now": 311.5,
    "prev7": 285,
    "shown": true,
    "state": "flat",
@@ -498,14 +498,14 @@
    "change7_pct": -2.9,
    "d30": null,
    "delta30": null,
-   "delta7": -5.0,
+   "delta7": -5,
    "group": "ci",
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 88,
+   "n_now": 89,
    "n_prev": 105,
-   "now": 165.0,
+   "now": 165,
    "prev7": 170,
    "shown": true,
    "state": "flat",
@@ -582,14 +582,14 @@
    "change7_pct": -20.0,
    "d30": null,
    "delta30": null,
-   "delta7": -1.0,
+   "delta7": -1,
    "group": "ci",
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 88,
+   "n_now": 89,
    "n_prev": 57,
-   "now": 4.0,
+   "now": 4,
    "prev7": 5,
    "shown": false,
    "state": "flat",
@@ -602,15 +602,15 @@
    "change30_pct": -98.9,
    "change7_pct": -25.0,
    "d30": 261,
-   "delta30": -258,
-   "delta7": -1,
+   "delta30": -258.0,
+   "delta7": -1.0,
    "group": "ci",
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 87,
+   "n_now": 88,
    "n_prev": 105,
-   "now": 3,
+   "now": 3.0,
    "prev7": 4,
    "shown": false,
    "state": "flat",
@@ -623,15 +623,15 @@
    "change30_pct": -99.7,
    "change7_pct": 0.0,
    "d30": 892,
-   "delta30": -889,
-   "delta7": 0,
+   "delta30": -889.0,
+   "delta7": 0.0,
    "group": "ci",
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 87,
+   "n_now": 88,
    "n_prev": 105,
-   "now": 3,
+   "now": 3.0,
    "prev7": 3,
    "shown": false,
    "state": "flat",
@@ -664,13 +664,8 @@
  ],
  "regressions": [
   {
-   "change_pct": 46.1,
+   "change_pct": 48.2,
    "commits": [
-    {
-     "pr": 1082,
-     "sha": "a66624719",
-     "title": "Playback: Force Direct Play and a refused open decode lossy audio in the app, DTS enabled; surround is never mixed down "
-    },
     {
      "pr": 1095,
      "sha": "ee737edf8",
@@ -715,6 +710,11 @@
      "pr": 956,
      "sha": "a329aadd3",
      "title": "Ask for independent requests together: detail page, playback start, Home"
+    },
+    {
+     "pr": 1116,
+     "sha": "1d603b179",
+     "title": "Playback: a new play never blocks the UI on the previous player's Unload; a hung Unload fails typed after 10 s"
     }
    ],
    "from": 166,
@@ -722,16 +722,11 @@
    "label": "CI: host harness tests",
    "since": "2026-10-28",
    "threshold_pct": 20.0,
-   "to": 242.5
+   "to": 246
   },
   {
    "change_pct": 37.9,
    "commits": [
-    {
-     "pr": 1082,
-     "sha": "a66624719",
-     "title": "Playback: Force Direct Play and a refused open decode lossy audio in the app, DTS enabled; surround is never mixed down "
-    },
     {
      "pr": 1095,
      "sha": "ee737edf8",
@@ -776,6 +771,11 @@
      "pr": 956,
      "sha": "a329aadd3",
      "title": "Ask for independent requests together: detail page, playback start, Home"
+    },
+    {
+     "pr": 1116,
+     "sha": "1d603b179",
+     "title": "Playback: a new play never blocks the UI on the previous player's Unload; a hung Unload fails typed after 10 s"
     }
    ],
    "from": 1116.6,
@@ -789,11 +789,6 @@
    "change_pct": 37.9,
    "commits": [
     {
-     "pr": 1082,
-     "sha": "a66624719",
-     "title": "Playback: Force Direct Play and a refused open decode lossy audio in the app, DTS enabled; surround is never mixed down "
-    },
-    {
      "pr": 1095,
      "sha": "ee737edf8",
      "title": "Playback: hi-res stereo FLAC, ALAC and LPCM are resampled by the app to 48 or 44.1 kHz, 32-bit, instead of a lossy serve"
@@ -837,6 +832,11 @@
      "pr": 956,
      "sha": "a329aadd3",
      "title": "Ask for independent requests together: detail page, playback start, Home"
+    },
+    {
+     "pr": 1116,
+     "sha": "1d603b179",
+     "title": "Playback: a new play never blocks the UI on the previous player's Unload; a hung Unload fails typed after 10 s"
     }
    ],
    "from": 1116.0,
@@ -850,11 +850,6 @@
    "change_pct": 30.9,
    "commits": [
     {
-     "pr": 1082,
-     "sha": "a66624719",
-     "title": "Playback: Force Direct Play and a refused open decode lossy audio in the app, DTS enabled; surround is never mixed down "
-    },
-    {
      "pr": 1095,
      "sha": "ee737edf8",
      "title": "Playback: hi-res stereo FLAC, ALAC and LPCM are resampled by the app to 48 or 44.1 kHz, 32-bit, instead of a lossy serve"
@@ -898,6 +893,11 @@
      "pr": 956,
      "sha": "a329aadd3",
      "title": "Ask for independent requests together: detail page, playback start, Home"
+    },
+    {
+     "pr": 1116,
+     "sha": "1d603b179",
+     "title": "Playback: a new play never blocks the UI on the previous player's Unload; a hung Unload fails typed after 10 s"
     }
    ],
    "from": 973.0,
@@ -908,13 +908,8 @@
    "to": 1274.0
   },
   {
-   "change_pct": 27.2,
+   "change_pct": 28.1,
    "commits": [
-    {
-     "pr": 1082,
-     "sha": "a66624719",
-     "title": "Playback: Force Direct Play and a refused open decode lossy audio in the app, DTS enabled; surround is never mixed down "
-    },
     {
      "pr": 1095,
      "sha": "ee737edf8",
@@ -959,6 +954,11 @@
      "pr": 956,
      "sha": "a329aadd3",
      "title": "Ask for independent requests together: detail page, playback start, Home"
+    },
+    {
+     "pr": 1116,
+     "sha": "1d603b179",
+     "title": "Playback: a new play never blocks the UI on the previous player's Unload; a hung Unload fails typed after 10 s"
     }
    ],
    "from": 171,
@@ -966,7 +966,7 @@
    "label": "CI: host python/shell/C gates",
    "since": "2026-10-28",
    "threshold_pct": 20.0,
-   "to": 217.5
+   "to": 219
   }
  ],
  "schema": 2,
@@ -981,19 +981,19 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 349.5
+   "now": 351
   },
   {
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 323.5
+   "now": 324
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 311
+   "now": 311.5
   },
   {
    "group": "ci",
