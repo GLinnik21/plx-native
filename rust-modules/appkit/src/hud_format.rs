@@ -31,6 +31,9 @@ pub mod parse;
 pub mod schema;
 pub mod svg_subset;
 
+#[cfg(test)]
+mod tests; // the corpus of valid and invalid packages, the seeded mutation tests and the table-vs-parser drift test
+
 /// How loudly a finding speaks. A package parses (`Parsed::package` is `Some`) only if it has no `Error`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Severity {
