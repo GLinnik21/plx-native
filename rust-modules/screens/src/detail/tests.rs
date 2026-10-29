@@ -1031,6 +1031,42 @@ fn a_restore_memory_keeps_the_scroll_of_a_live_body_while_the_re_read_is_owed() 
     clear();
 }
 
+/// The same return, but the store holds one detail at a time and closing a film opened from the
+/// cast member's list emptied it: the body comes back with no detail, keeps its scroll while the
+/// re-read is owed, and the re-read then FAILS. Nothing moves the scroll after that (`reveal_focus`
+/// returns early without a detail) and the hero, the only thing drawn without one, is faded out past
+/// `HERO_FADE`, so the page must go back to the top where the hero is.
+#[test]
+fn a_return_whose_re_read_fails_puts_the_page_back_at_the_top() {
+    let guard = plx_base::testlock::serial();
+    let sid = ServerId::UNSET;
+    test_store().run(MetadataCmd::Clear);
+    plx_data::metadata::set_current_for_test(test_store().state_mut(), None);
+    let mut screen = bare(&guard, sid, "show");
+    screen.sync_keys(test_store().view());
+    screen.scroll_target = 839.0;
+    screen.scroll.pos = 839.0;
+    screen.refresh = DetailRefreshPhase::Requested;
+    let memory = crate::registry::DetailMemory {
+        spot: plx_data::metadata::Spot { section: 4, col: 0, ..Default::default() },
+        keys: screen.keys.clone(),
+        next_elem: screen.next_elem,
+    };
+    screen.restore_memory(&memory, test_store().view());
+    assert_eq!(screen.scroll_target, 839.0, "the return waits for its re-read where the body was left");
+    let generation = plx_data::metadata::begin_detail_for_test(test_store().adapter_ref(), sid, "show");
+    {
+        let (state, adapter) = test_store().split_for_test();
+        assert!(!plx_data::metadata::land_detail_for_test(state, adapter, sid, "show", generation, None));
+    }
+    assert!(screen.detail(test_store().view()).is_none());
+    pump_restore(&mut screen);
+    assert!(screen.restore_intent.is_none() && !screen.return_pending, "the return gave up");
+    assert_eq!(screen.scroll_target, 0.0, "a page with no detail shows only the hero, so it goes back to it");
+    test_store().run(MetadataCmd::Clear);
+    clear();
+}
+
 /// Every section's element block is its own, wide, and below the engine keys: no two overlap, and
 /// no section's list can run into its neighbour's ids. A block is 2^24 ids; episodes take two ids
 /// each out of their 2^30 block.
