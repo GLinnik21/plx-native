@@ -2629,8 +2629,9 @@ impl Shared {
 const PREROLL_VOLUME_NONE: i32 = i32::MIN;
 
 /// UI-facing transport state. Main-thread-only in practice (plex_run + pump +
-/// player_hud all run on M), but exposed as atomics so app.rs / player_hud/ read
-/// it with plain .load()/.store(). Replaces the #[no_mangle] transport globals.
+/// player_hud all run on M), but exposed as atomics so the app's per-frame loop reads it
+/// with plain .load()/.store(); the HUD's draw path sees it only through the `HudModel` that
+/// loop fills. Replaces the #[no_mangle] transport globals.
 pub struct Transport {
     pub started: AtomicBool, // bf_started
     pub paused: AtomicBool,  // pl_paused

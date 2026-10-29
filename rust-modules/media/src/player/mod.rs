@@ -660,7 +660,7 @@ pub fn observe_video_plane(
     pl.set_video_plane_bound(bound)
 }
 
-// ---- transport accessors app.rs / player_hud/ call ----
+// ---- transport accessors the app's per-frame loop and `HudMotion`'s tick call ----
 pub fn is_started() -> bool {
     TX.started.load(Relaxed)
 }

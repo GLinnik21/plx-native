@@ -852,7 +852,7 @@ Its docstring states what it cannot see.
   the cascade `p.alpha()`, which would fade the art and the wash as one object. The cascade still
   reaches the whole `Backdrop` from above, which is how `nav`'s page dip covers it),
   `appkit::player_hud`'s `SCR_H`-offset geometry
-  (shared with `app.rs` pointer hit-tests), and the subtitle renderer. Leave them; wrapping them in a
+  (reported as `HudGeometry`, which the player screen's pointer hit-tests read), and the subtitle renderer. Leave them; wrapping them in a
   `View` breaks a load-bearing contract.
 - **Clipping: prefer culling; use a scissor clip only for a hard-bounded panel.** Two spellings
   today. The legacy one is `Painter::clip(rect)` / `clip_clear()` (backed by `gfx::clip_set`/

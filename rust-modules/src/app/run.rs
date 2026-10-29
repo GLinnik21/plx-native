@@ -2050,6 +2050,9 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
                 // the tile behind a transport nobody drew. `HudState::raise_for_offer` is where
                 // that rule, its resting-position clause and the bug are written down.
                 player.raise_for_offer(fr.now, fr.ctrl.primary_btn());
+                // It moved the ring (when it was on the scrubber) with no effect to say so: the engine
+                // has to follow, or OK on the offered pill would toggle play/pause.
+                reseat = true;
             } else if plx_appkit::player_hud::standin_left_the_ring(
                 player.hud.was_standin,
                 fr.ctrl,

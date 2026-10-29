@@ -1970,6 +1970,17 @@ mod travel_rig {
             InputOwner::Entry(self.entry)
         }
 
+        /// What the app does after it writes `hud.nav.focus` itself: hand the engine a fresh seat on
+        /// that group and tell the page where the engine went.
+        pub(super) fn reseat(&mut self, page: &mut PlayerScreen, group: GroupId) {
+            let cx = self.cx();
+            if let Outcome::Moved { from, to, by } =
+                self.engine.enter(self.owner(), &*page, FocusTarget::ContainerGroup(group), None, &cx)
+            {
+                self.deliver(page, ScreenEvent::FocusMoved { from, to, by });
+            }
+        }
+
         /// The element the engine holds focus on.
         pub(super) fn current(&self) -> Option<u32> {
             self.engine.current(self.owner()).map(|k| k.elem)
@@ -2728,6 +2739,29 @@ mod step_ladder_tests {
         let mut rig = Rig::on(&page, ENTRY);
         let (handled, reqs) = rig.key(&mut page, SDLK_RETURN, 0, Edge::Down, 1_000);
         assert_eq!(handled, Handled::Yes);
+        assert_eq!(reqs, vec![PlayerReq::ArmControlRow]);
+    }
+
+    /// A segment offer moves the ring (`PlayerScreen::raise_for_offer` writes `nav`, with no effect to
+    /// carry), so the app that calls it re-seats the engine afterwards. Until it does the engine is
+    /// still on the scrubber, and OK there toggles play/pause instead of arming the offered pill.
+    #[test]
+    fn a_segment_offer_arms_the_row_only_once_the_engine_is_re_seated() {
+        let _g = plx_base::testlock::serial();
+        let mut page = PlayerScreen::new(ENTRY);
+        fresh(&mut page);
+        let mut rig = Rig::on(&page, ENTRY);
+        page.raise_for_offer(1_100, 0);
+        assert_eq!(page.hud.nav.focus, GROUP_ROW, "the offer raised the ring onto the row");
+        assert_eq!(rig.current(), Some(player_hud::ELEM_SCRUB), "the engine has not followed by itself");
+        let group = page.hud.nav.focus;
+        rig.reseat(&mut page, group);
+        assert_eq!(
+            rig.current(),
+            Some(player_hud::ELEM_ROW_BASE + page.slot.primary_btn() as u32),
+            "the app's re-seat lands it on the row's primary button"
+        );
+        let (_, reqs) = rig.key(&mut page, SDLK_RETURN, 0, Edge::Down, 1_200);
         assert_eq!(reqs, vec![PlayerReq::ArmControlRow]);
     }
 
