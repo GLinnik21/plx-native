@@ -1,4 +1,4 @@
-{"updated":"2026-10-29T15:29:21Z",
+{"updated":"2026-10-29T15:31:28Z",
 "ci":[
 {"id":30761547985,"at":"2026-08-02T18:37:46Z","sha":"9bdedc3a4","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":119},"failed":["cross-build (armv7) + artifact assertions"]},
 {"id":30783429566,"at":"2026-08-03T04:05:12Z","sha":"62b61e4ef","title":"plex: one device identity per install, not one per binary","pr":null,"conclusion":"failure","attempt":1,"jobs":{"host checks (NOT a device gate)":118},"failed":["cross-build (armv7) + artifact assertions"]},
@@ -3957,6 +3957,7 @@
 {"id":40890264342,"at":"2026-10-29T14:19:08Z","sha":"b5d17d88b","title":"Add optional sort information below movie library posters","pr":1129,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":262,"macOS tests against bundled FFmpeg and ASS":182,"Windows launcher syntax":19,"Linux simulator build + launch":298}},
 {"id":40892752461,"at":"2026-10-29T14:34:01Z","sha":"2fca28f23","title":"Library: BACK from a Detail brings the focused card back lifted, so the row below stays put","pr":958,"conclusion":"success","attempt":1,"jobs":{"macOS tests against bundled FFmpeg and ASS":139,"Windows launcher syntax":19,"macOS simulator build + launch":200,"Linux simulator build + launch":212}},
 {"id":40899589608,"at":"2026-10-29T15:14:48Z","sha":"c96280ef7","title":"Detail: a return whose re-read fails puts the page back at the top","pr":1099,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"Linux simulator build + launch":312,"Windows launcher syntax":19,"macOS simulator build + launch":242,"macOS tests against bundled FFmpeg and ASS":210}},
+{"id":40899755494,"at":"2026-10-29T15:15:45Z","sha":"7d20ba78d","title":"Playback: tests for the finished-item scrobble and the stale-flag reset","pr":969,"event":"pull_request","conclusion":"failure","attempt":1,"jobs":{"Windows launcher syntax":25,"Linux simulator build + launch":285,"macOS tests against bundled FFmpeg and ASS":301}},
 {"id":40900061853,"at":"2026-10-29T15:17:33Z","sha":"88ebd9220","title":"Docs: an H.264 keyframe is an IDR or a flagged I-slice at a random access point","pr":1085,"event":"pull_request","conclusion":"success","attempt":1,"jobs":{"macOS simulator build + launch":239,"Linux simulator build + launch":274,"macOS tests against bundled FFmpeg and ASS":214,"Windows launcher syntax":18}}
 ],
 "nightly":[
