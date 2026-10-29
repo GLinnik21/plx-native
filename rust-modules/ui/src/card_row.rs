@@ -1899,7 +1899,7 @@ fn draw_label_block(
                 draw_play_mark(p, at.x, y, csz, 0);
             }
             let x0 = at.x + caption_lead;
-            let caption_rtl = plx_gfx::text::is_rtl_paragraph(s);
+            let caption_rtl = plx_gfx::text::is_rtl_paragraph(&tc.to_string_lossy());
             TITLE_CLOCK.with(|clock| {
                 MARQUEE.glide_in(
                     clock,
