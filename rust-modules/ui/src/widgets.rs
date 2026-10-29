@@ -8967,7 +8967,7 @@ pub fn badge(
 // behind that provider's own brand mark — Rotten Tomatoes' fruit and popcorn tub as tinted
 // silhouettes, IMDb and TMDB as logotype chips in their brand colours. All of that is gone:
 //
-//   * the RT marks had no licensing route (see `ui/icons.rs`), and
+//   * the RT marks had no public licence and we held no permission (see `ui/icons.rs`), and
 //   * the chips were reproducing two more brands' logotypes to solve a problem — "whose score is
 //     this?" — that a WORD solves for free, and that naming the provider solves *lawfully*, since
 //     referential use needs no licence where a mark does.

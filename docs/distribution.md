@@ -1735,18 +1735,21 @@ a percentage in a movie app still gestures at Rotten Tomatoes. That is the owner
 the facts on the table, and the two shapes a rights holder would actually write about — the seal and
 the popcorn pair — are the ones that are gone.
 
-**Re-checked 2026-10-29, when #1129 redrew the splat and the popcorn tubs.** Other clients that
-show the marks are not precedent. Plezy ships copies of RT's marks (Wikimedia/Inkscape traces in
-RT's exact colours), which RT's published terms do not allow. Infuse 8.5.7 (2026-10-13) shows RT's
-own artwork after Firecore said in 2024 that *"the Rotten Tomatoes service presents a number of
-challenges"* and that it had *"recently gained official access to Metacritic ratings"*
+**Re-checked 2026-10-29, when a revision of #1129 proposed redrawn splat and popcorn marks
+(withdrawn in review).** Other clients that show the marks are not precedent. Plezy ships copies
+of RT's marks (Wikimedia/Inkscape traces in RT's exact colours,
+`github.com/edde746/plezy/tree/1dd75b3e5e95913cdaa5b8c22911490e72dfb7c5/assets/rating_icons`),
+which RT's published terms do not allow. Infuse 8.5.7 (2026-10-13) shows RT's own artwork after
+Firecore said in 2024 that *"the Rotten Tomatoes service presents a number of challenges"* and that
+it had *"recently gained official access to Metacritic ratings"*
 (`community.firecore.com/t/imdb-rotten-tomato-ratings/14551?page=8`), so it is most likely a
 licensee. Neither helps us. Fandango grants its marks in writing, revocably, without sublicensing
-and per developer, so another app's licence never reaches this one. A use nobody has challenged
-is not a permitted one either: under *Toyota v. Tabari*, 610 F.3d 1171 (9th Cir. 2010), a court
-can order a use changed whenever the owner acts, and a copied logo is more of the mark than words
-need. The one enforcement action found is Fandango's 2017 legal request that made OMDb stop
-serving RT data (`github.com/omdbapi/OMDb-API/issues/5`).
+and per developer, so another app's licence never reaches this one. A use nobody has challenged is
+not a permitted one either; it only means the owner has not acted yet. And a logo is the weakest
+form of reference: *Toyota v. Tabari*, 610 F.3d 1171 (9th Cir. 2010), treated a stylized mark and
+logo as more of the mark than nominative use needs where words would do. The one enforcement action
+found is Fandango's 2017 legal request that made OMDb stop serving RT data
+(`github.com/omdbapi/OMDb-API/issues/5`).
 
 ---
 
