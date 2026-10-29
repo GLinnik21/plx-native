@@ -66,6 +66,11 @@ impl ClientKeys {
     pub fn key(&self, sid: ServerId) -> Option<ClientKey> {
         self.0.iter().find(|(slot, _)| *slot == sid).map(|&(_, key)| key)
     }
+
+    /// Every slot that held a client, with its key, in fill order.
+    pub fn iter(&self) -> impl Iterator<Item = (ServerId, ClientKey)> + '_ {
+        self.0.iter().copied()
+    }
 }
 
 /// A key-checked way to a server's client, for a WORKER that holds the snapshot its step decided

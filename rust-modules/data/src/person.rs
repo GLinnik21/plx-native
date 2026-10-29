@@ -1386,9 +1386,7 @@ fn seed_dev_credits(state: &mut PersonState) -> bool {
 /// The servers the roster offers and the client object each answers with (a re-point makes a new
 /// one; a token rotation keeps it): what a page's sources depend on.
 fn roster_sig(keys: &ClientKeys) -> Vec<(ServerId, u32)> {
-    plx_plex::plex::server_ids()
-        .map(|sid| (sid, keys.key(sid).map_or(0, |key| key.instance)))
-        .collect()
+    keys.iter().map(|(sid, key)| (sid, key.instance)).collect()
 }
 
 /// Rebuild an open page's per-source projection at an exact registry identity boundary. Header
