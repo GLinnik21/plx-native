@@ -14,6 +14,7 @@
 
 use super::state::BTN_N;
 use plx_machine::machine::GroupId;
+use plx_media::player::text_style::HudBand;
 use plx_ui::Rect;
 
 /// The scrubber's group: a free-form region, extent [`HudGeometry::grab`].
@@ -68,6 +69,14 @@ pub struct HudGeometry {
 }
 
 impl HudGeometry {
+    /// **The caption band this layout occupies** (`docs/hud-plugins.md`, "Captions: the band a HUD
+    /// occupies"): the compact row's top, the highest interactive extent, whichever slot occupies
+    /// the row, because the Skip and Up Next stand-ins land on `row_anchor` exactly. A value from
+    /// the layout, so the caption draws and the libass lift take it rather than a constant.
+    pub fn band(&self) -> HudBand {
+        HudBand::from_controls_top(self.row_anchor.top)
+    }
+
     /// **Where along the bar a pointer at `x` is pointing**, `0..1`. X only, on purpose: an engaged
     /// drag tracks the pointer even when it wanders off the band vertically, which is why
     /// `PlayerScreen::handle_drag` never re-tests the hit once a click has seated the gesture.

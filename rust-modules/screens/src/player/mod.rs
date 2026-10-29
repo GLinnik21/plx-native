@@ -249,8 +249,8 @@ impl PlayerScreen {
     }
 
     /// Draw the image-subtitle display set — the render half this screen owns.
-    pub fn draw_subtitle_bitmap(&mut self, hud_up: bool) {
-        plx_appkit::player_hud::draw_subtitle_bitmap(&mut self.render.subs, hud_up, &self.model);
+    pub fn draw_subtitle_bitmap(&mut self, hud_up: bool, band: plx_appkit::player_hud::HudBand) {
+        plx_appkit::player_hud::draw_subtitle_bitmap(&mut self.render.subs, hud_up, band, &self.model);
     }
 
     /// The transport, with this instance's own springs, memo and countdown. Paint only: what a
@@ -1672,18 +1672,20 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Screen<H> for PlayerScreen {
         // capsule is the exception: it HIDES the transport rather than sharing its read time, so
         // captions stay at their normal `SUB_BASE_Y` even while it is up (`Self::subs_lift`).
         let subs_lift = self.subs_lift(ps, now);
-        self.render.ass.draw(subs_lift, &self.model);
+        // The band the layout occupies, a value from its geometry this frame, not a constant.
+        let band = player_hud::classic::frame_geometry().band();
+        self.render.ass.draw(subs_lift, band, &self.model);
         if let Some(message) = self.render.ass.error() {
-            plx_appkit::player_hud::draw_subtitle_message(message, subs_lift, &self.model, f.cx.measure);
+            plx_appkit::player_hud::draw_subtitle_message(message, subs_lift, band, &self.model, f.cx.measure);
         }
         // a sidecar that produced nothing says so for a few seconds; the server burning the
         // selection draws it already, so no second notice then
         if let Some(message) = plx_media::player::sidecar::notice()
             .filter(|_| !plx_media::route::subtitles_burned(ps))
         {
-            plx_appkit::player_hud::draw_subtitle_message(message, subs_lift, &self.model, f.cx.measure);
+            plx_appkit::player_hud::draw_subtitle_message(message, subs_lift, band, &self.model, f.cx.measure);
         }
-        self.draw_subtitle_bitmap(subs_lift); // PGS/VobSub image subs
+        self.draw_subtitle_bitmap(subs_lift, band); // PGS/VobSub image subs
         // What a pointer can hit is registered AFTER the paint, by `record_stops`, from this
         // screen's own `Focusable` — the rects D-pad focus uses, in the z-order `groups` states.
         // `Hover::Ignore` on the transport's stops: the old pointer path never followed the mouse

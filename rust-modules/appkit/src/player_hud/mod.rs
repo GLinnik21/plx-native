@@ -28,14 +28,14 @@ use plx_gfx::gfx::{delete_tex, upload_rgba};
 use plx_machine::machine::Measure;
 // The caption's look (face, pitch, wrap, lift, anchors) is one definition, media's `text_style`,
 // shared with the synthesized ASS header (plan `libass-text-subs` §2.5, PR 5a).
-pub use plx_media::player::text_style::CAPSULE_BOTTOM_Y;
+pub use plx_media::player::text_style::{HudBand, CAPSULE_BOTTOM_Y};
 use plx_media::player::text_style::{
     position_lift, size_scale, wrap_width, CAPTION_ANCHOR_LINES, CAPTION_FACE, CAPTION_FLOOR_Y,
-    CAPTION_LINE_PITCH, CAPTION_TEXT_INSET, HUD_CONTROLS_TOP_Y, SUB_BASE_Y, SUB_CEIL_Y,
+    CAPTION_INK_CLEARANCE, CAPTION_LINE_PITCH, CAPTION_TEXT_INSET, SUB_BASE_Y,
 };
 pub use state::*;
 use model::HudModel;
-use plx_ui::consts::{SCR_H, SCR_W};
+use plx_ui::consts::{SAFE, SCR_H, SCR_W};
 use plx_ui::theme;
 use plx_ui::{Painter, Rect};
 use std::ffi::CString;
@@ -45,9 +45,10 @@ use std::os::raw::{c_int, c_uint};
 /// vertical placement follow the viewer's Settings > Playback picks (`route::subtitle_size`,
 /// `route::subtitle_position`) — native ASS/SSA keeps its authored style instead
 /// (`docs/ass-subtitles.md`). The message is a short fixed string, so it is never paged: a block
-/// taller than the area is drawn whole at the smallest step.
-pub fn draw_subtitle_message(text: &str, hud_up: bool, model: &HudModel, measure: &dyn Measure) {
-    let (scale, baseline, floor) = caption_geometry(model, hud_up);
+/// taller than the area is drawn whole at the smallest step. `band` is the HUD's, as its layout
+/// reports it ([`geometry::HudGeometry::band`]): the ceiling the block lifts to while `hud_up`.
+pub fn draw_subtitle_message(text: &str, hud_up: bool, band: HudBand, model: &HudModel, measure: &dyn Measure) {
+    let (scale, baseline, floor) = caption_geometry(model, hud_up, band);
     let lines = caption_wrap(text, scale, measure);
     if lines.is_empty() {
         return;
@@ -59,9 +60,9 @@ pub fn draw_subtitle_message(text: &str, hud_up: bool, model: &HudModel, measure
 /// The viewer's size and the y a caption block is placed from: sit near the bottom normally; lift
 /// above the scrubber/tabs while the HUD is up; the viewer's Position pick lifts it further still,
 /// same direction, on top of that. The third value is the lowest y the block may reach — with the
-/// HUD up that is the transport's ceiling, so a block that grows down cannot run into the scrubber.
-fn caption_geometry(model: &HudModel, hud_up: bool) -> (f32, f32, f32) {
-    caption_geometry_for(model.sub_size, model.sub_position, hud_up)
+/// HUD up that is the band's ceiling, so a block that grows down cannot run into the scrubber.
+fn caption_geometry(model: &HudModel, hud_up: bool, band: HudBand) -> (f32, f32, f32) {
+    caption_geometry_for(model.sub_size, model.sub_position, hud_up, band)
 }
 
 /// [`caption_geometry`] for explicit picks (the tie test pins it against `text_style::today_baseline`).
@@ -69,10 +70,11 @@ fn caption_geometry_for(
     size: plx_plex::plex::session::SubtitleSize,
     position: plx_plex::plex::session::SubtitlePosition,
     hud_up: bool,
+    band: HudBand,
 ) -> (f32, f32, f32) {
     let scale = size_scale(size);
-    let baseline = (if hud_up { SUB_CEIL_Y } else { SUB_BASE_Y }) - position_lift(position);
-    let floor = if hud_up { SUB_CEIL_Y } else { CAPTION_FLOOR_Y };
+    let baseline = (if hud_up { band.ceil_y } else { SUB_BASE_Y }) - position_lift(position);
+    let floor = if hud_up { band.ceil_y } else { CAPTION_FLOOR_Y };
     (scale, baseline, floor)
 }
 
@@ -170,6 +172,22 @@ fn caption_layout(lines: usize, scale: f32, baseline: f32, floor: f32) -> Captio
     lay
 }
 
+/// **The highest `controls_top_y` a HUD may report**: the top at which a caption block of
+/// [`CAPTION_ANCHOR_LINES`] lines at the largest `SubtitleSize` and the highest `SubtitlePosition`
+/// still fits between [`SAFE`]'s top and the baseline [`caption_geometry_for`] lifts it to. A band
+/// whose row top is above it would push that block off the safe area. Computed from the shared
+/// `size_scale`, `position_lift` and `caption_layout`, so it follows them, and rounded UP to a whole
+/// pixel so the bound is never optimistic. A plain fn on purpose: a lazy static would be a new
+/// global. Not a `MAX_*` constant, so `ci/list-caps.ini` has nothing to classify.
+pub fn min_controls_top_y() -> f32 {
+    use plx_plex::plex::session::{SubtitlePosition, SubtitleSize};
+    let scale = SubtitleSize::LADDER.iter().map(|&s| size_scale(s)).fold(0.0, f32::max);
+    let raise = SubtitlePosition::LADDER.iter().map(|&p| position_lift(p)).fold(0.0, f32::max);
+    // A block whose bottom is on y = 0 has its top at minus its height.
+    let height = -caption_layout(CAPTION_ANCHOR_LINES, scale, 0.0, f32::MAX).top;
+    (SAFE.y + height + raise + CAPTION_INK_CLEARANCE).ceil()
+}
+
 /// The ink both subtitle draws use this frame: the viewer's tone ([`HudModel::sub_tone`])
 /// resolved on [`theme::SUBTITLE_INKS`]. A rung the table does not have is white, never a
 /// neighbour.
@@ -214,36 +232,36 @@ fn sub_screen_rect(r: (i32, i32, i32, i32), cw: i32, ch: i32) -> Rect {
 /// while leaving the dialogue still behind the scrim. Measuring the group and moving it as ONE
 /// unit is also why this is not a per-rect lift: two-line dialogue is two rects with different
 /// overhangs, and lifting each by its own would collapse them onto each other.
-fn hud_lift<I: Iterator<Item = Rect>>(rects: I, hud_up: bool) -> f32 {
+fn hud_lift<I: Iterator<Item = Rect>>(rects: I, hud_up: bool, band: HudBand) -> f32 {
     if !hud_up {
         return 0.0;
     }
     let (mut top, mut bottom) = (f32::MAX, f32::MIN);
-    for r in rects.filter(|r| overhangs(*r)) {
+    for r in rects.filter(|r| overhangs(*r, band)) {
         top = top.min(r.y);
         bottom = bottom.max(r.y + r.h);
     }
     if top > bottom {
         return 0.0; // nothing overhangs
     }
-    (bottom - SUB_CEIL_Y).max(0.0).min(top.max(0.0))
+    (bottom - band.ceil_y).max(0.0).min(top.max(0.0))
 }
 
-/// Does this rect reach below the transport ceiling? Only such rects take the lift.
-fn overhangs(r: Rect) -> bool {
-    r.y + r.h > SUB_CEIL_Y
+/// Does this rect reach below the band's ceiling? Only such rects take the lift.
+fn overhangs(r: Rect, band: HudBand) -> bool {
+    r.y + r.h > band.ceil_y
 }
 
 /// Client-rendered IMAGE subtitles (PGS/VobSub): composite the active decoded display set over
 /// the video, scaled from the subtitle stream's own authoring canvas into the video rect
-/// (`sub_screen_rect`) and lifted clear of the transport when `hud_up` (`hud_lift`). EVERY rect
+/// (`sub_screen_rect`) and lifted clear of the HUD's `band` when `hud_up` (`hud_lift`). EVERY rect
 /// of the set is drawn — two-line dialogue and sign-plus-dialogue are authored as separate rects.
 /// Caches one GL texture per rect and re-uploads only when the active cue changes (every few
 /// seconds); the cached rects are the unlifted screen rects, so the lift can follow the HUD
 /// frame by frame without re-uploading. Main-thread only (GL). This is the image counterpart to
 /// the text path (libass) — a selected track is either text or image, so at most one of the two draws a
 /// cue at a time.
-pub fn draw_subtitle_bitmap(cache: &mut SubtitleBitmaps, hud_up: bool, model: &HudModel) {
+pub fn draw_subtitle_bitmap(cache: &mut SubtitleBitmaps, hud_up: bool, band: HudBand, model: &HudModel) {
     let set = &mut cache.set;
     let sel = model.sub_sel;
     if sel < 0 {
@@ -289,13 +307,13 @@ pub fn draw_subtitle_bitmap(cache: &mut SubtitleBitmaps, hud_up: bool, model: &H
                 cache.key = k;
                 cache.sel = sel;
             }
-            let lift = hud_lift(set.iter().map(|(_, r)| *r), hud_up);
+            let lift = hud_lift(set.iter().map(|(_, r)| *r), hud_up, band);
             // the tone TINTS a bitmap: the image shader multiplies by it, so a PGS cue keeps its
             // authored colours and outline and only gives up light (white is the identity)
             let tint = subtitle_ink(model);
             let p = Painter::root();
             for (tex, r) in set.iter() {
-                let dy = if overhangs(*r) { lift } else { 0.0 };
+                let dy = if overhangs(*r, band) { lift } else { 0.0 };
                 p.tex(*tex, Rect::new(r.x, r.y - dy, r.w, r.h), 0.0, tint);
             }
         }
