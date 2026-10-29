@@ -2398,7 +2398,7 @@ mod tests {
         let _g = plx_base::testlock::serial();
         let clock = plx_ui::marquee::Clock::new();
         let long = c"فيلم طويل جدا يجب أن يكشف كلماته الأخيرة ببطء بعد الإيقاف المؤقت للتشغيل";
-        let right = title_right(ControlSlot::Discs, &TransportRow::new(), &FM);
+        let right = title_right(ControlSlot::Discs(Controls::NONE), &TransportRow::new(), &FM);
         let (full, window) = (FM.width(long, HUD_TITLE_SZ, true), right - SB_X);
         assert!(full > window, "the fixture title overflows");
         let paint = |paused| plx_ui::draw_census::capture_runs(|| {
