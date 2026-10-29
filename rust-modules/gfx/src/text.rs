@@ -1880,7 +1880,10 @@ unsafe fn cache_store(
     (tex, sw, sh, ink_t, ink_b, rise)
 }
 
-/// Pixel width of `s` at `sz`/`bold` **without rasterizing anything** — pure font metrics.
+/// Pixel width of `s` at `sz`/`bold`: **pure font metrics, with no glyph rasterized and no texture
+/// built**, for every run an SDL_ttf face draws. A run in a script the native shaper owns (Arabic,
+/// Hebrew) is the exception: its width comes from `Face::measure`, which runs the same layout pass
+/// as the draw and so rasterizes each of its glyphs (it only skips the coverage buffer).
 ///
 /// This used to go through `text_tex`, i.e. it ran `TTF_RenderUTF8_Blended` (a full glyph-run
 /// rasterization), scanned the resulting surface for its ink rows, uploaded a GL texture and then
