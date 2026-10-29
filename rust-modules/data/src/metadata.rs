@@ -1585,6 +1585,14 @@ pub struct Detail {
     /// under a Russian title. Empty when the server sent none, which simply means no cross-source
     /// lookup is possible for this item.
     pub guid: String,
+    /// The item's TMDB id (`tmdb://` in its `Guid[]`, `Metadata::tmdb_id`), the id the household's
+    /// Seerr server knows the title by: a show's Detail page asks Seerr which of its seasons are
+    /// missing with it (docs/seerr.md). `None` when the server sent none.
+    ///
+    /// Not serialized while `None`, so the committed replay recordings, which predate it, still
+    /// round-trip canonically (`record::validate`), as [`Detail::parent_rk`] does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tmdb: Option<i64>,
     pub is_show: bool,
     pub kind: String, // this item's own type: movie | episode | show | season
     pub show_title: String, // grandparentTitle — the show name, when this item is an episode
@@ -2260,6 +2268,7 @@ fn fetch_detail(client: &'static plx_plex::plex::Client, sid: plx_plex::plex::Se
         rk: rk.to_string(),
         // the portable identity — what "Also available" resolves across the other sources
         guid: it.guid.clone(),
+        tmdb: it.tmdb_id(),
         is_show: it.kind == "show",
         kind: it.kind.clone(),
         show_title: it.grandparent_title.clone(),

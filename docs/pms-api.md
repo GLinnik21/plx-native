@@ -624,7 +624,9 @@ GET /library/metadata/1?X-Plex-Token=...
 
 Returns one `Metadata[0]` with everything from §2 **plus** `tagline`, `studio`,
 `originallyAvailableAt`, `Genre[]/Director[]/Writer[]/Role[]` (`{"tag":"..."}`),
-`Rating[]`, `Guid[]`, `chapterSource`, and `Media[].Part[].Stream[]`
+`Rating[]`, `Guid[]` (the outside ids: `imdb://…`, `tmdb://…`, `tvdb://…`; the app's request
+names `includeGuids=1` explicitly, which a listing needs for them, and reads the TMDB one for
+Seerr, docs/seerr.md), `chapterSource`, and `Media[].Part[].Stream[]`
 (streamType 1=video, 2=audio, 3=subtitle; `codec`, `language`, `languageCode`,
 `channels`, `displayTitle`).
 

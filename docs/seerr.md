@@ -20,6 +20,11 @@ it is reached at exactly that address.
 | app | `Bridge::seerr_pump` (once a frame), `Bridge::seerr_connect`, the runner's `seerr-call` | hands the store the stored address, signs a seated profile in once |
 | Settings | `screens/src/settings_seerr.rs` (Services > Seerr) | address field (`plx_ui::text_field`), Connect with the live connection line, Remove |
 | Requests tab | `screens/src/requests.rs` (`AppArg::Requests`, `TAB_KEY_REQUESTS`) | on the strip between the Watchlist mark and Search while an address is set (`chrome::StripSource::requests`); rows My requests (the first `MINE_SHOWN`, each title read by its own `Detail`), Trending, Popular movies and shows, Upcoming movies and shows; a card opens the Seerr title page |
+| Detail page | `screens/src/detail` (`HeroCtl::Request`, `RequestFace`, `request_face`) | a show's missing seasons: the last disc of the hero row (see below) |
+
+What a title page's pill and a show's request disc offer is ONE decision, the store's
+`stores::seerr::offer` (a movie nobody asked for, or a show's seasons the server neither holds nor
+was asked for; nothing while a request is in flight or after one went through).
 
 Layers: the client is `plex`, the store `data` (no worker: its jobs are started by the app's
 runner, docs/sans-io.md), the page `screens`, which reads the store through `InnerViews::seerr`.
@@ -32,6 +37,18 @@ call. The session is never stored: it lives in the store, goes with the profile 
 for, and is signed in again after a 401 (a server restart forgets sessions). A 403 at sign-in is a
 Plex account the server does not let in (not imported, or Seerr's "new Plex sign-in" off); Settings
 says so. Redirects are never followed: a cookie must not reach another host.
+
+## A show's missing seasons (the Detail page)
+
+A show's page asks Seerr about the show once per page (`Slot::Detail(Tv, tmdb)`), when its server
+sent a TMDB id (`tmdb://` in the item's `Guid[]`, `Metadata::tmdb_id`, read with `includeGuids=1`)
+and an address is set. When seasons are missing the hero row ends with a request disc
+(`HeroCtl::Request`): a plus that unfurls to "Request missing seasons", and a press asks for every
+one of them in one request. Its face then says what became of it, through its mark and verb: Requesting…,
+Requested (a check), Already requested (a check, a 409), or why it failed (a 403 or no answer),
+when a press tries again. A show with nothing missing, a show without a TMDB id, a movie, a season
+and an episode have no disc. The page asks again whenever it is opened again; while that answer is
+on its way the disc is absent.
 
 ## Wire facts (Overseerr's `overseerr-api.yml`; not yet checked against a live server)
 
@@ -69,4 +86,7 @@ query, a title, the token or the cookie.
 - "My requests" shows the first page of the list, newest first, and only its first `MINE_SHOWN`
   titles: Seerr's request list carries no title, so each card costs one more call. It is read
   again whenever the tab is uncovered.
-- A show's missing seasons on its Detail page are not built yet.
+- A show's request asks for every missing season at once: there is no season picker, on the Detail
+  page or the title page.
+- A show's TMDB id comes from its PMS record. A show matched by an agent that records none (the
+  legacy TheTVDB agent, or a show matched by nothing) has no request disc.

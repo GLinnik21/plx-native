@@ -16,8 +16,8 @@
 //! ([`SessionChange`]). It is never persisted, and it goes with the profile it was signed in for.
 
 use super::{StoreId, StoreJob};
-use crate::seerr::{run_op, DiscoverRow, LiveSeerrIo, MediaKind, SeerrData, SeerrError, SeerrIo, SeerrOp, SeerrOutcome,
-    SeerrSession, SeerrUser, SessionChange};
+use crate::seerr::{run_op, Availability, DiscoverRow, LiveSeerrIo, MediaKind, SeerrData, SeerrError, SeerrIo, SeerrOp,
+    SeerrOutcome, SeerrSession, SeerrUser, SessionChange, TitleDetail};
 use crate::watchlist::{WatchlistAuth, WatchlistInput};
 use plx_machine::job::{Job, Port};
 use plx_machine::machine::{Addr, MachineId, RequestId};
@@ -91,6 +91,37 @@ pub enum Answer {
     Loading,
     Ready(SeerrData),
     Failed(SeerrError),
+}
+
+/// What a request surface offers for one title: the Seerr title page's pill and the Detail page's
+/// request disc read this one decision, from the title's detail and its request slot's answer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Offer {
+    /// Ask for it: a movie (no seasons) or these seasons of a show.
+    Request(Vec<i32>),
+    /// A request is on its way to the server.
+    Sending,
+    /// Nothing to ask for: the server holds or was asked for all of it, its owner blocked it, or
+    /// this title's request went through.
+    Nothing,
+}
+
+/// What can be asked of `detail` now, given its request slot's answer. A request that failed
+/// offers itself again; one that went through offers nothing more.
+pub fn offer(detail: &TitleDetail, request: Option<&Answer>) -> Offer {
+    match request {
+        Some(Answer::Loading) => return Offer::Sending,
+        Some(Answer::Ready(SeerrData::Requested)) => return Offer::Nothing,
+        _ => {}
+    }
+    match detail.title.kind {
+        Some(MediaKind::Movie) if detail.title.status == Availability::Unknown => Offer::Request(Vec::new()),
+        Some(MediaKind::Tv) => {
+            let seasons = detail.requestable_seasons();
+            if seasons.is_empty() { Offer::Nothing } else { Offer::Request(seasons) }
+        }
+        _ => Offer::Nothing,
+    }
 }
 
 enum Outcome {
@@ -281,6 +312,14 @@ impl SeerrStore {
 
     pub fn answer(&self, slot: &Slot) -> Option<&Answer> {
         self.answers.get(slot)
+    }
+
+    /// The detail of one title, once its [`Slot::Detail`] ask has landed.
+    pub fn title_detail(&self, kind: MediaKind, tmdb: i64) -> Option<&TitleDetail> {
+        match self.answer(&Slot::Detail(kind, tmdb))? {
+            Answer::Ready(SeerrData::Detail(detail)) => Some(detail),
+            _ => None,
+        }
     }
 
     /// What `slot` was last asked: a surface reads [`Self::answer`] only when this is its question.

@@ -266,6 +266,7 @@ impl plx_screens::registry::MetadataLike for AppHost {
     fn subtitle_search<'a>(cx: &Cx<'a, Self>) -> Option<plx_data::subsearch::SubSearchView<'a>> {
         Some(cx.views.subtitle_search)
     }
+    fn seerr<'a>(cx: &Cx<'a, Self>) -> Option<&'a plx_data::stores::seerr::SeerrStore> { Some(cx.views.seerr) }
 }
 
 // ---------------------------------------------------------------------------------------------

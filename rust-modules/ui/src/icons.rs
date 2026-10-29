@@ -68,6 +68,11 @@ pub enum Icon {
     /// be two circles saying one thing. Its user is the detail hero's *mark unwatched* disc, beside
     /// a `Check` on the same ground: the pair `detail::hero_ctls` draws for a part-watched item.
     Minus,
+    /// [`Icon::Minus`] with its upright: "ask for more of this". Worn by the detail hero's Seerr
+    /// request disc (`detail::hero`'s `HeroCtl::Request`, docs/seerr.md) while a request can be
+    /// made. Minus's stroke and caps, the two strokes subpaths of ONE path so the cross carries
+    /// no seam (rule 1 above).
+    Plus,
     /// The player row's Previous/Next episode discs.
     Previous,
     Next,
@@ -307,6 +312,7 @@ fn src(id: Icon) -> &'static str {
         Icon::CheckCircleFill => include_str!("../../../assets/icons/check-circle-fill.svg"),
         Icon::MinusCircleFill => include_str!("../../../assets/icons/minus-circle-fill.svg"),
         Icon::Minus => include_str!("../../../assets/icons/minus.svg"),
+        Icon::Plus => include_str!("../../../assets/icons/plus.svg"),
         Icon::Play => include_str!("../../../assets/icons/play.svg"),
         Icon::Pause => include_str!("../../../assets/icons/pause.svg"),
         Icon::Rewind => include_str!("../../../assets/icons/rewind.svg"),
@@ -672,6 +678,30 @@ mod ink_tests {
             let alpha = |x: i32, y: i32| rgba[((y * size + x) * 4 + 3) as usize];
             let max_alpha = (0..size).flat_map(|y| (0..size).map(move |x| alpha(x, y))).max().unwrap();
             assert_eq!(max_alpha, 255, "WifiSlash never reaches full opacity at {size}px");
+        }
+    }
+
+    /// The plus at the hero disc's control-size mark (28px) and at 4×: full opacity, no ink on the
+    /// border, and the crossing itself solid, which is what rule 1 (one path, two subpaths) buys:
+    /// two separate elements would composite to ~0.75 alpha along the joins.
+    #[test]
+    fn the_plus_rasterizes_clean_with_a_seamless_crossing() {
+        for px in [28, 112] {
+            let px = icon_raster_px(px);
+            let rgba = plx_gfx::svg::rasterize(src(Icon::Plus), px, px)
+                .unwrap_or_else(|| panic!("Plus failed to rasterize at {px}px"));
+            let alpha = |x: i32, y: i32| rgba[((y * px + x) * 4 + 3) as usize];
+            let max_alpha = (0..px).flat_map(|y| (0..px).map(move |x| alpha(x, y))).max().unwrap();
+            assert_eq!(max_alpha, 255, "Plus never reaches full opacity at {px}px");
+            for i in 0..px {
+                for (x, y) in [(i, 0), (i, px - 1), (0, i), (px - 1, i)] {
+                    assert_eq!(alpha(x, y), 0, "Plus has ink on the border at {px}px ({x},{y})");
+                }
+            }
+            let c = px / 2;
+            for (x, y) in [(c, c), (c - 1, c - 1), (c - 1, c), (c, c - 1)] {
+                assert_eq!(alpha(x, y), 255, "the crossing is not solid at {px}px ({x},{y})");
+            }
         }
     }
 

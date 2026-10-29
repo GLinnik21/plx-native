@@ -1294,6 +1294,12 @@ pub trait MetadataLike: AppLike + Sized {
     fn subtitle_search<'a>(_cx: &Cx<'a, Self>) -> Option<plx_data::subsearch::SubSearchView<'a>> {
         None
     }
+    /// The household's Seerr store (docs/seerr.md): a show's Detail page reads which of its seasons
+    /// can be requested. PROVIDED, `None` for a host that publishes none (the test hosts); the
+    /// production host publishes it.
+    fn seerr<'a>(_cx: &Cx<'a, Self>) -> Option<&'a plx_data::stores::seerr::SeerrStore> {
+        None
+    }
 }
 
 /// A host that publishes Home's retained catalog view. The view is borrowed from the rig-owned
@@ -2672,7 +2678,9 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // the previous pin was 0x9425_f33f_3f53_6aa5. Replay fixtures need `tools/plxnative-rec rerecord`.
 // The Requests tab (docs/seerr.md): `ARG_SHAPE` gains `Requests` and `SCREEN_SHAPES` gains
 // `RequestsScreen::SHAPE`; the previous pin was 0x8023_3869_e2e9_13dd.
-const SCREEN_SHAPES_PIN: u64 = 0x996c_f958_8b43_8bcb;
+// A show's missing seasons (docs/seerr.md): the Detail page's shape gains `seerr_asked:opt<u64>`
+// (the show it asked Seerr about); the previous pin was 0x996c_f958_8b43_8bcb.
+const SCREEN_SHAPES_PIN: u64 = 0xc7ee_9398_b737_249e;
 
 #[cfg(test)]
 mod arg_tests {

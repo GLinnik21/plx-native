@@ -1,7 +1,7 @@
 //! The Seerr store over a scripted seam, its jobs run inline: what a slot reads before and after
 //! its answer, the connection line, a superseded ask, a refused job, a new address and a new profile.
 use super::*;
-use crate::seerr::{Page, Title};
+use crate::seerr::{Page, Season, Title};
 use std::sync::Mutex;
 
 /// Signs in with `sign_in` every time and answers `run` with the next reply.
@@ -298,4 +298,39 @@ fn unwanting_a_slot_forgets_its_wait_its_ask_and_its_answer() {
     for _ in 0..SETTLE_FRAMES * 2 {
         assert!(store.take_due().is_none());
     }
+}
+
+fn movie(status: Availability) -> TitleDetail {
+    TitleDetail { title: Title { kind: Some(MediaKind::Movie), tmdb: 1, status, ..Default::default() }, seasons: vec![] }
+}
+
+fn show(statuses: &[Availability]) -> TitleDetail {
+    TitleDetail {
+        title: Title { kind: Some(MediaKind::Tv), tmdb: 2, status: Availability::PartlyAvailable, ..Default::default() },
+        seasons: statuses.iter().enumerate()
+            .map(|(i, &status)| Season { number: i as i32 + 1, episodes: Some(8), status }).collect(),
+    }
+}
+
+#[test]
+fn a_movie_nobody_asked_for_can_be_requested_and_nothing_else_can() {
+    assert_eq!(offer(&movie(Availability::Unknown), None), Offer::Request(vec![]));
+    for status in [Availability::Pending, Availability::Processing, Availability::Available, Availability::Blocked] {
+        assert_eq!(offer(&movie(status), None), Offer::Nothing, "{status:?}");
+    }
+}
+
+#[test]
+fn a_show_offers_only_the_seasons_nobody_holds_or_asked_for() {
+    let detail = show(&[Availability::Available, Availability::Unknown, Availability::Pending, Availability::Unknown]);
+    assert_eq!(offer(&detail, None), Offer::Request(vec![2, 4]));
+    assert_eq!(offer(&show(&[Availability::Available, Availability::Processing]), None), Offer::Nothing);
+}
+
+#[test]
+fn a_request_in_flight_or_done_takes_the_offer_and_a_failed_one_offers_it_again() {
+    let detail = movie(Availability::Unknown);
+    assert_eq!(offer(&detail, Some(&Answer::Loading)), Offer::Sending);
+    assert_eq!(offer(&detail, Some(&Answer::Ready(SeerrData::Requested))), Offer::Nothing);
+    assert_eq!(offer(&detail, Some(&Answer::Failed(SeerrError::Transport))), Offer::Request(vec![]));
 }

@@ -62,6 +62,16 @@ pub(super) fn test_store() -> &'static mut plx_data::stores::metadata::MetadataS
     TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
 }
 
+thread_local! {
+    static TEST_SEERR: std::cell::UnsafeCell<Option<SeerrStore>> = const { std::cell::UnsafeCell::new(None) };
+}
+
+/// The Seerr store the test host publishes (`MetadataLike::seerr`): none unless a test sets one
+/// (`seerr_tests`), which leaves it `None` again when it ends.
+pub(super) fn test_seerr() -> &'static mut Option<SeerrStore> {
+    TEST_SEERR.with(|cell| unsafe { &mut *cell.get() })
+}
+
 impl crate::registry::CollectionLike for TestHost {
     fn collection<'a>(_cx: &Cx<'a, Self>) -> plx_data::collection::CollectionView<'a> {
         plx_data::collection::CollectionView::default()
@@ -72,7 +82,13 @@ impl crate::registry::MetadataLike for TestHost {
     fn metadata<'a>(_cx: &Cx<'a, Self>) -> plx_data::metadata::MetadataView<'a> {
         test_store().view()
     }
+    fn seerr<'a>(_cx: &Cx<'a, Self>) -> Option<&'a SeerrStore> {
+        test_seerr().as_ref()
+    }
 }
+
+#[path = "seerr_tests.rs"]
+mod seerr_tests;
 
 fn cx<'a>(measure: &'a dyn plx_machine::machine::Measure, elem: Option<u32>) -> Cx<'a, TestHost> {
     Cx {
@@ -153,7 +169,7 @@ pub(super) fn bare_held(sid: ServerId, rk: &str) -> DetailScreen {
         season_pop: CtlPop::new(),
         ctl_pop: CtlPop::new(),
         disc_unfurl: [Spring::at(0.0); hero::DISCS],
-        watchlist: plx_appkit::watchlist_disc::Disc::new(plx_data::catalog::Membership::Unknown), watchlist_hex: None,
+        watchlist: plx_appkit::watchlist_disc::Disc::new(plx_data::catalog::Membership::Unknown), watchlist_hex: None, seerr_asked: None, request_face: None,
         season_metrics: season::Metrics::new(),
         about_rows: about::Rows::new(),
         ground: AmbientWash::flat(theme::SURFACE_APP),
@@ -1240,6 +1256,7 @@ fn hero_focus_survives_a_control_appearing_in_the_middle_of_the_row() {
         trailer: false,
         alt: false,
         mark: PosterMark::None,
+        request: None,
     };
     let after = hero::HeroSet {
         watchlist: true,
@@ -1407,11 +1424,12 @@ fn a_pointer_lands_on_the_capsule_the_unfurl_drew() {
         trailer: false,
         alt: false,
         mark: PosterMark::InProgress,
+        request: None,
     };
     let index = hero::watch_index(set).unwrap();
     assert_eq!(hero::ctl_at(set, index - 1), Some(hero::HeroCtl::Restart));
     for unfurl in [0.2, 0.6, 1.0] {
-        let disc = hero::disc_caps_at(set, 230.0, 0.0, [0.0, 0.0, unfurl, 0.0], [201.0, 0.0, 267.0, 0.0]);
+        let disc = hero::disc_caps_at(set, 230.0, 0.0, [0.0, 0.0, unfurl, 0.0, 0.0], [201.0, 0.0, 267.0, 0.0, 0.0]);
         let widths = hero::HeroWidths {
             pill: 230.0,
             alt: 0.0,
@@ -1483,12 +1501,12 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
                     assert_eq!(n, 3 + usize::from(restart) + usize::from(alt));
                     sizes.insert(n);
                     for unfurl in [
-                        [0.0, 0.0, 0.0, 0.0],
-                        [0.0, 0.0, 1.0, 0.0],
-                        [0.0, 1.0, 0.0, 0.0],
-                        [0.3, 0.0, 0.7, 0.0],
-                        [1.0, 0.0, 0.0, 0.0],
-                        [0.0, 1.0, 1.0, 0.0],
+                        [0.0, 0.0, 0.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0, 0.0, 0.0],
+                        [0.0, 1.0, 0.0, 0.0, 0.0],
+                        [0.3, 0.0, 0.7, 0.0, 0.0],
+                        [1.0, 0.0, 0.0, 0.0, 0.0],
+                        [0.0, 1.0, 1.0, 0.0, 0.0],
                     ] {
                         screen.disc_unfurl = unfurl.map(Spring::at);
                         for scroll in [0.0, 48.0] {

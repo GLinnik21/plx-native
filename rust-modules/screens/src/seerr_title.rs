@@ -13,7 +13,7 @@ use std::ffi::CString;
 
 use plx_appkit::hero_layout;
 use plx_data::seerr::{Availability, MediaKind, SeerrData, SeerrError, SeerrOp, TitleDetail};
-use plx_data::stores::seerr::{Answer, SeerrCmd, SeerrStore, Slot};
+use plx_data::stores::seerr::{offer, Answer, Offer, SeerrCmd, SeerrStore, Slot};
 use plx_data::stores::{StoreCmd, StoreId};
 use plx_machine::machine::{
     Canon, Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind, Key, LogicalState, Machine, Measure,
@@ -37,34 +37,6 @@ use crate::registry::{AppFx, ContentReq, SearchLike};
 pub const PILL_ELEM: u32 = 0;
 const GROUP: GroupId = GroupId(0);
 
-/// What the pill does, from the title's detail and the request's own answer.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PillState {
-    /// Request it: a movie (no seasons) or these seasons of a show.
-    Request(Vec<i32>),
-    /// A request is on its way to the server.
-    Sending,
-    /// Nothing left to ask for: no pill.
-    None,
-}
-
-/// The pill for `detail`, given the request slot's answer.
-pub fn pill_state(detail: &TitleDetail, request: Option<&Answer>) -> PillState {
-    match request {
-        Some(Answer::Loading) => return PillState::Sending,
-        Some(Answer::Ready(SeerrData::Requested)) => return PillState::None,
-        _ => {}
-    }
-    match detail.title.kind {
-        Some(MediaKind::Movie) if detail.title.status == Availability::Unknown => PillState::Request(Vec::new()),
-        Some(MediaKind::Tv) => {
-            let seasons = detail.requestable_seasons();
-            if seasons.is_empty() { PillState::None } else { PillState::Request(seasons) }
-        }
-        _ => PillState::None,
-    }
-}
-
 /// The status line: what the last request said, else what the server says of the title.
 pub fn status_line(detail: &TitleDetail, request: Option<&Answer>) -> Option<&'static str> {
     match request {
@@ -84,9 +56,9 @@ pub fn status_line(detail: &TitleDetail, request: Option<&Answer>) -> Option<&'s
     }
 }
 
-fn pill_label(kind: Option<MediaKind>, state: &PillState) -> &'static std::ffi::CStr {
+fn pill_label(kind: Option<MediaKind>, state: &Offer) -> &'static std::ffi::CStr {
     match (state, kind) {
-        (PillState::Sending, _) => msg::seerr_title_requesting_c(),
+        (Offer::Sending, _) => msg::seerr_title_requesting_c(),
         (_, Some(MediaKind::Tv)) => msg::seerr_title_request_seasons_c(),
         _ => msg::seerr_title_request_c(),
     }
@@ -155,18 +127,15 @@ impl SeerrTitleScreen {
 
     /// The detail this page asked for, once it has landed.
     fn detail<'a>(&self, seerr: Option<&'a SeerrStore>) -> Option<&'a TitleDetail> {
-        match seerr?.answer(&self.detail_slot())? {
-            Answer::Ready(SeerrData::Detail(detail)) => Some(detail),
-            _ => None,
-        }
+        seerr?.title_detail(self.kind, self.tmdb)
     }
 
     fn request<'a>(&self, seerr: Option<&'a SeerrStore>) -> Option<&'a Answer> {
         seerr?.answer(&self.request_slot())
     }
 
-    fn pill(&self, seerr: Option<&SeerrStore>) -> PillState {
-        self.detail(seerr).map_or(PillState::None, |detail| pill_state(detail, self.request(seerr)))
+    fn pill(&self, seerr: Option<&SeerrStore>) -> Offer {
+        self.detail(seerr).map_or(Offer::Nothing, |detail| offer(detail, self.request(seerr)))
     }
 
     fn rows(&self, seerr: Option<&SeerrStore>, measure: &dyn Measure) -> Option<Rows> {
@@ -177,7 +146,7 @@ impl SeerrTitleScreen {
 
     fn pill_rect(&self, seerr: Option<&SeerrStore>, measure: &dyn Measure) -> Option<Rect> {
         let state = self.pill(seerr);
-        if state == PillState::None {
+        if state == Offer::Nothing {
             return None;
         }
         let rows = self.rows(seerr, measure)?;
@@ -190,7 +159,7 @@ impl SeerrTitleScreen {
         if elem != PILL_ELEM {
             return Handled::No;
         }
-        if let PillState::Request(seasons) = self.pill(H::seerr(cx)) {
+        if let Offer::Request(seasons) = self.pill(H::seerr(cx)) {
             self.refreshed = false;
             self.ask(self.request_slot(), SeerrOp::Request { kind: self.kind, tmdb: self.tmdb, seasons }, fx);
             fx.invalidate(Provenance::Input);
@@ -304,7 +273,7 @@ impl<H: SearchLike> Machine<H> for SeerrTitleScreen {
             }
             ScreenEvent::Tick(t) => {
                 let focused = cx.focus.current.is_some_and(|k| k.entry == self.entry && k.elem == PILL_ELEM);
-                self.tick(*t, focused && self.pill(H::seerr(cx)) != PillState::None);
+                self.tick(*t, focused && self.pill(H::seerr(cx)) != Offer::Nothing);
                 self.follow_request(cx, fx);
                 Handled::Yes
             }
@@ -335,14 +304,14 @@ impl<H: SearchLike> Machine<H> for SeerrTitleScreen {
 
 impl<H: SearchLike> Focusable<H> for SeerrTitleScreen {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
-        if self.pill(H::seerr(cx)) == PillState::None {
+        if self.pill(H::seerr(cx)) == Offer::Nothing {
             return;
         }
         out.push(GroupSpec { id: GROUP, kind: GroupKind::Row { wrap: false }, seat: Seat::First, reachable: AxisMask::BOTH,
             edge: [EdgeRule::Stop; 4], extent: Rect::FULL, len: 1, elem: ElemKind::Control });
     }
     fn group_of(&self, elem: &u32, cx: &Cx<'_, H>) -> Option<GroupId> {
-        (*elem == PILL_ELEM && self.pill(H::seerr(cx)) != PillState::None).then_some(GROUP)
+        (*elem == PILL_ELEM && self.pill(H::seerr(cx)) != Offer::Nothing).then_some(GROUP)
     }
     fn neighbour(&self, _: FocusKey<u32>, _: Dir, _: &Cx<'_, H>) -> Step<u32> {
         Step::Edge
@@ -355,7 +324,7 @@ impl<H: SearchLike> Focusable<H> for SeerrTitleScreen {
         Some(Placed { rect, rest_rect: rect, clip: Rect::FULL, index: Some(0) })
     }
     fn reconcile(&self, want: FocusKey<u32>, cx: &Cx<'_, H>) -> FocusKey<u32> {
-        if self.pill(H::seerr(cx)) != PillState::None { self.key() } else { want }
+        if self.pill(H::seerr(cx)) != Offer::Nothing { self.key() } else { want }
     }
     fn seat(&self, _: GroupId, _: Placed, _: &Cx<'_, H>) -> FocusKey<u32> {
         self.key()

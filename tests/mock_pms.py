@@ -1066,6 +1066,10 @@ class Library:
             "viewedLeafCount": 0,
             "Genre": self._tags(rng, self.genres, 2),
             "Role": self._tags(rng, self.people, 6, role=True),
+            # The outside ids a PMS item carries (docs/pms-api.md section 4). The TMDB one is a show
+            # the Seerr stand-in holds, so a show's Detail page can ask it for its missing seasons.
+            # No draw from `rng`: every other value this library generates stays where it was.
+            "Guid": [{"id": f"tmdb://{SEERR_TV_IDS[rk % len(SEERR_TV_IDS)]}"}, {"id": f"tvdb://{700000 + rk}"}],
         })
         return it
 
@@ -2368,6 +2372,12 @@ def seerr_stand_in_problem(log_text):
         return (f"Seerr is not the mock's stand-in (`{real[0]}`): arm plxnative-seerr at the mock "
                 f"before booting, or the boot calls the configured server")
     return None
+
+
+# The TMDB ids of the stand-in's shows (`SeerrFixture`: titles 9100001.., movies and shows
+# alternating). The PMS library's shows carry them in `Guid[]`, which is how a show on the mock PMS
+# is the same title as one on the mock Seerr.
+SEERR_TV_IDS = tuple(9100001 + i for i in range(1, 12, 2))
 
 
 class SeerrFixture:
@@ -4234,6 +4244,11 @@ def _selftest_seerr():
         assert any(h["id"] == show["id"] for h in hits)
         detail = call(f"/api/v1/tv/{show['id']}", cookie=cookie)[1]
         assert [s["seasonNumber"] for s in detail["seasons"]] == [1, 2, 3]
+        # Every PMS show names a stand-in show by its TMDB id (`Guid[]`), so its Detail page can
+        # ask Seerr for its missing seasons.
+        tmdb_of = lambda it: next(int(g["id"][7:]) for g in it["Guid"] if g["id"].startswith("tmdb://"))
+        shows = [it for it in pms.lib.items.values() if it.get("type") == "show"]
+        assert shows and all(pms.seerr.by_id("tv", tmdb_of(it)) for it in shows)
         before = len(pms.writes)
         status, _, _ = call("/api/v1/request", {"mediaType": "tv", "mediaId": show["id"], "seasons": [2]}, cookie)
         assert status == 201 and len(pms.writes) == before + 1

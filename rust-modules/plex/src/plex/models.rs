@@ -326,6 +326,13 @@ pub struct Metadata {
     /// Plex's own client matches these two, which is the behaviour "Also available" reproduces.
     #[serde(default, deserialize_with = "de_str")]
     pub guid: String,
+    /// The item's ids in the outside catalogues (`imdb://tt0944947`, `tmdb://1399`,
+    /// `tvdb://121361`), sent on a single item (`/library/metadata/{rk}`, docs/pms-api.md §4); a
+    /// listing sends them only with `includeGuids=1`. None of them matches a `/library/all?guid=`
+    /// lookup (only the primary `plex://` guid does); [`Metadata::tmdb_id`] reads the TMDB one, the
+    /// id a household's Seerr server knows a title by (docs/seerr.md).
+    #[serde(rename = "Guid", default, deserialize_with = "de_vec")]
+    pub guids: Vec<ExternalGuid>,
     #[serde(default)]
     pub title: String,
     /// The LIBRARY this row lives in, on the server that answered ("Movies", "Film Club"). Sent on
@@ -554,6 +561,13 @@ impl Metadata {
     pub fn show_guid_hex(&self) -> Option<[u8; 12]> {
         let guid = if self.kind == "season" { &self.parent_guid } else { &self.grandparent_guid };
         catalog_hex_of_guid(guid)
+    }
+
+    /// The item's TMDB id, from its `tmdb://<n>` entry of [`Self::guids`]. `None` when the item
+    /// carries none (an item matched by an older agent, or a listing row read without
+    /// `includeGuids=1`) or one that is not a positive number.
+    pub fn tmdb_id(&self) -> Option<i64> {
+        self.guids.iter().find_map(|g| g.id.strip_prefix("tmdb://")?.parse::<i64>().ok().filter(|&n| n > 0))
     }
 
     /// **The version a play takes, and its position in `Media[]`**: the one accessor every reader
@@ -874,6 +888,13 @@ pub struct Stream {
     /// because the search answers it; no client path acts on it yet.
     #[serde(rename = "canAutoSync", default, deserialize_with = "de_bool")]
     pub can_auto_sync: bool,
+}
+
+/// One entry of an item's `Guid[]`: `{"id": "tmdb://1399"}` (see [`Metadata::guids`]).
+#[derive(Deserialize, Default)]
+pub struct ExternalGuid {
+    #[serde(default, deserialize_with = "de_str")]
+    pub id: String,
 }
 
 /// A tag row — `Genre[]`, `Country[]`, `Role[]`, `Director[]`, `Writer[]`. The three PEOPLE
@@ -1258,6 +1279,21 @@ mod tests {
         assert_eq!(mc.metadata[0].show_guid_hex(), Some(BYTES));
         assert_eq!(mc.metadata[1].guid_hex(), Some(BYTES));
         assert_eq!(mc.metadata[1].show_guid_hex(), None, "a movie has no show");
+    }
+
+    /// **The TMDB id is read from `Guid[]`**, the array a single item carries beside its primary
+    /// `plex://` guid; an item without one, a null array, a null id and a malformed number all
+    /// read as none, and none of them fails the item's parse.
+    #[test]
+    fn the_tmdb_id_is_read_from_the_guid_array_and_absent_otherwise() {
+        let json = r#"{"MediaContainer":{"Metadata":[
+            {"ratingKey":"1","type":"show","guid":"plex://show/5d9c08804eefaa001f5df5fc",
+             "Guid":[{"id":"imdb://tt0944947"},{"id":"tmdb://1399"},{"id":"tvdb://121361"}]},
+            {"ratingKey":"2","type":"show"},
+            {"ratingKey":"3","type":"show","Guid":null},
+            {"ratingKey":"4","type":"show","Guid":[{"id":null},{"id":"tmdb://"},{"id":"tmdb://x9"},{"id":"tmdb://-4"}]}]}}"#;
+        let mc = serde_json::from_slice::<Envelope>(json.as_bytes()).expect("parse").media_container;
+        assert_eq!(mc.metadata.iter().map(|m| m.tmdb_id()).collect::<Vec<_>>(), [Some(1399), None, None, None]);
     }
 
     fn listing(json: &str) -> super::ListingFacts {

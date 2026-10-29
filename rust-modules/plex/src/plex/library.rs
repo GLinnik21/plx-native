@@ -213,11 +213,17 @@ impl Client {
     /// only show-level answer to "what's next": the client otherwise holds ONE season's episodes at a
     /// time, so anything it computed itself would change with the selected season tab. Verified live
     /// 2026-07-30 on rk 437 → S2E2 at 635510/3130720 while season 1 was the loaded tab.
+    ///
+    /// `includeGuids=1` asks for the item's `Guid[]` (its TMDB, TVDB and IMDb ids) by name: a
+    /// single item was measured to carry it unasked (docs/pms-api.md §4, a movie), and the flag is
+    /// what a listing needs for it, so a show's TMDB id (the Detail page's Seerr request,
+    /// docs/seerr.md) does not rest on the default.
     pub fn metadata(&self, rating_key: &str) -> Option<Metadata> {
         let path = QueryBuilder::new(format!("/library/metadata/{rating_key}"))
             .int("includeChapters", 1)
             .int("includeMarkers", 1)
             .int("includeOnDeck", 1)
+            .int("includeGuids", 1)
             .build();
         self.get_json(&path)?.metadata.into_iter().next()
     }
