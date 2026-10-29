@@ -4050,6 +4050,15 @@ pub(crate) fn search_owns_input(d: &Dispatcher<AppHost>) -> bool {
             .is_some_and(|screen| screen.is::<plx_screens::search::SearchScreen>())
 }
 
+/// Does typed text have a recipient? The Search page (its field takes text with or without the
+/// panel, a desktop keyboard included), or whichever screen raised the television's keyboard — a
+/// Settings page's field included (Services > Seerr's address), which the dispatcher records as
+/// `input.keyboard`. The loop turns SDL text into input only while this holds; otherwise it is
+/// queued for nobody (`textinput::on_event`).
+pub(crate) fn keyboard_takes_text(d: &Dispatcher<AppHost>) -> bool {
+    search_owns_input(d) || d.input.keyboard
+}
+
 pub(crate) fn owns_input(d: &Dispatcher<AppHost>) -> bool {
     d.surface_up() || d.owns_input()
 }
@@ -4455,6 +4464,9 @@ mod detail_panel_tests;
 #[path = "detail_related_landing_tests.rs"]
 mod detail_related_landing_tests;
 
+#[cfg(test)]
+#[path = "seerr_settings_tests.rs"]
+mod seerr_settings_tests;
 #[cfg(test)]
 #[path = "surface_navigation_tests.rs"]
 mod surface_navigation_tests;
