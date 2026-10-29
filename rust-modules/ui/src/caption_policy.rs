@@ -19,7 +19,8 @@
 //! and a name its face cuts ([`CaptionFacts::name_cut`]) is told on the details line when the title
 //! line is off, since the face is the only other place it is told.
 //!
-//! **Every POSTER tile reads this one setting**: the Library grid, the Collections page, the
+//! **Poster tiles follow this policy except movie grids with Show sort information enabled**
+//! (those use persistent title/year/sort captions): the Library grid, the Collections page, the
 //! Watchlist, Home's shelves, the Library's Recommended shelves, Search's poster rows, the person
 //! page's filmography, Detail's Related and collection shelves and the Collection screen's members
 //! (the screens build the focused block through `registry::captions`, and hand a

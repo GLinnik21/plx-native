@@ -9069,6 +9069,24 @@ pub fn rating_group_w(
     rating_walk(0.0, caption, cells, measure, |_, _| {})
 }
 
+/// A single caption score centred with its mark. The native Measure retains both the fitted
+/// drawable and its width; drawing a warm cell does no CString construction or measurement.
+pub(crate) fn rating_cell_fitted(
+    p: Painter, cx: f32, cy: f32, budget: f32, cell: &RatingCell,
+    measure: &dyn plx_machine::machine::Measure,
+) {
+    debug_assert!(cell.suffix.is_empty(), "caption scores carry their unit in the value");
+    let lead = if cell.mark.is_empty() { 0.0 } else { RATING_MARK_D + RATING_GAP };
+    let (run, width) = measure.fit_line_measured(cell.value, (budget - lead).max(0.0), theme::size::LABEL, true);
+    let x = cx - (lead + width).min(budget) * 0.5;
+    if !cell.mark.is_empty() {
+        let rect = Rect::new(x, cy - RATING_MARK_D * 0.5, RATING_MARK_D, RATING_MARK_D);
+        for (mask, tint) in cell.mark { crate::icons::draw(p, *mask, rect, *tint); }
+    }
+    let y = plx_gfx::text::text_vcenter_y(theme::size::LABEL, 1, cy);
+    p.text(run.as_ptr(), x + lead, y, theme::size::LABEL, theme::TEXT_PRIMARY, 0, 1);
+}
+
 /// Draw one provider's group with its LEFT edge at `x`, centred on `cy`; returns its width.
 pub fn rating_group(
     p: Painter,

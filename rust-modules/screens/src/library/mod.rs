@@ -614,7 +614,7 @@ impl LibraryScreen {
         } else { rows };
         let episodes = self.layout.is_episodes();
         let persistent = self.kind == SecKind::Movie && self.listed == plx_data::browse::LibraryType::Primary
-            && parts::sort_information_enabled();
+            && crate::registry::captions::show_sort_info();
         let band_h = self.grid_policy().as_ref().map_or(plx_ui::cards::LEGACY_BAND_H, plx_ui::caption_policy::band_h);
         self.layout = if self.readout == Readout::Failed {
             Layout::failed(true)

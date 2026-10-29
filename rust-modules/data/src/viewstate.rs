@@ -199,11 +199,10 @@ pub struct StopRecord {
 pub struct WatchSortFacts {
     pub count: Option<i64>,
     pub viewed_at: Option<i64>,
-    pub viewed_date: Option<[i32; 3]>,
 }
 impl WatchSortFacts {
     pub fn of(m: &crate::pms::PmsMovie) -> Option<Self> {
-        m.sort_info.as_ref().map(|f| Self { count: f.view_count, viewed_at: f.last_viewed_at, viewed_date: f.last_viewed_date })
+        m.sort_info.as_ref().map(|f| Self { count: f.view_count, viewed_at: f.last_viewed_at })
     }
 }
 
@@ -344,7 +343,7 @@ impl ViewEdit {
             ViewEdit::Watched(on) => {
                 crate::pms::set_watched(m, on);
                 if let Some(facts) = &mut m.sort_info {
-                    facts.view_count = None; facts.last_viewed_at = None; facts.last_viewed_date = None;
+                    facts.view_count = None; facts.last_viewed_at = None;
                 }
             },
             ViewEdit::Facts { watched, unwatched, resume_ms, sort } => {
@@ -355,7 +354,6 @@ impl ViewEdit {
                     let facts = m.sort_info.get_or_insert_with(Default::default);
                     facts.view_count = sort.count;
                     facts.last_viewed_at = sort.viewed_at;
-                    facts.last_viewed_date = sort.viewed_date;
                 }
             }
             ViewEdit::Offset { ms } => m.resume_ms = ms,
@@ -2560,12 +2558,12 @@ mod sort_caption_reconcile_tests {
     #[test]
     fn optimistic_watch_changes_hide_unknown_counts_until_authoritative_readback() {
         let mut row = crate::pms::PmsMovie { sort_info: Some(crate::pms::SortInfo {
-            view_count: Some(3), last_viewed_at: Some(1700000000), last_viewed_date: Some([2023,11,14]),
+            view_count: Some(3), last_viewed_at: Some(1700000000),
             ..Default::default() }), ..Default::default() };
         ViewEdit::Watched(true).apply(&mut row);
         assert!(row.sort_info.as_ref().unwrap().view_count.is_none());
-        assert!(row.sort_info.as_ref().unwrap().last_viewed_date.is_none());
-        let sort = WatchSortFacts { count: Some(4), viewed_at: Some(1700000100), viewed_date: Some([2023,11,14]) };
+        assert!(row.sort_info.as_ref().unwrap().last_viewed_at.is_none());
+        let sort = WatchSortFacts { count: Some(4), viewed_at: Some(1700000100) };
         let facts = ViewEdit::Facts { watched: true, unwatched: false, resume_ms: 0, sort: Some(sort) };
         assert!(facts.changes(&row), "equal watch flags must not hide a changed play count");
         facts.apply(&mut row);

@@ -1245,12 +1245,6 @@ pub const RATING_LEAF: [f32; 4] = GREEN_500;
 /// caption now". Its own role ON that stop rather than an alias OF the text token: a verdict mark
 /// and a runtime label are two jobs, and retuning one must not restyle the other.
 pub const RATING_MUTED: [f32; 4] = COOL_400;
-/// Low critic verdict and tipped audience tub, visibly distinct from a fresh red mark.
-pub const RATING_ROTTEN: [f32; 4] = GREEN_400;
-/// The audience tub's paper and contrasting stripes, independent of text ink.
-pub const RATING_PAPER: [f32; 4] = WHITE;
-/// Popcorn kernels, sharing the palette's warm gold stop.
-pub const RATING_KERNEL: [f32; 4] = AMBER_300;
 
 // ── Card-glow geometry (the glow *color* is shader-baked in gfx.rs's FS_SRC/FS_IMG; only geometry
 // is tunable). The hero-grid card's wide glow pad is `consts::GLOW_PAD` (shared with off-screen

@@ -1,7 +1,7 @@
 //! **Settings > Libraries > Under posters**: what the focused poster shows beneath it.
 //!
 //! One global setting, saved per profile (`plx_plex::plex::session::UnderPosters`). The page holds
-//! three rows: a Title switch, a Details row that opens [`DetailsPage`] (its pushed picker, one
+//! four rows: a Title switch, a Show sort information switch, a Details row that opens [`DetailsPage`] (its pushed picker, one
 //! checked choice per details line, each with a sample of what it shows) and Reset. Both pages carry
 //! a framed preview: a still row of three posters from the library the Library last showed, drawn by
 //! the shelves' own tile painters ([`plx_ui::cards::SampleRow`]), the middle one lifted and captioned
@@ -11,7 +11,8 @@
 //! never drawn empty, for any kind of tile: a details kind a tile has no facts for (a season has no
 //! length, often no genre) says the tile's identity instead ("Season 6", "S1 · E8", its year, and
 //! for a film, show or collection with not even that, what it is: "Movie", "Show", "Collection").
-//! The setting is the same under every POSTER in the app (Search results, a person's filmography,
+//! Except movie grids with Show sort information on (persistent title/year/sort captions),
+//! the policy is the same under every POSTER in the app (Search results, a person's filmography,
 //! Detail's Related and collection shelves and a collection's members included); a landscape still
 //! or a headshot is not a poster and wears none of it. The preview is built from the value
 //! the rows show, so a change moves it in the frame the row changes; the picker's preview follows

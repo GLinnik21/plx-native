@@ -641,8 +641,8 @@ mod catalog_tests;
 #[cfg(test)]
 mod tests;
 
-/// A Unix timestamp as a calendar date in the operating system's timezone. Called by page-read
-/// adapters while projecting metadata, never once per card per frame. Checked time_t conversion
+/// A Unix timestamp as a calendar date in the operating system's timezone. Called while building
+/// cached presentation labels, never by data parsers or once per card per frame. Checked time_t conversion
 /// matters on the 32-bit television: an unrepresentable date remains unknown.
 pub fn local_calendar_date(seconds: i64) -> Option<[i32; 3]> {
     if seconds <= 0 { return None; }

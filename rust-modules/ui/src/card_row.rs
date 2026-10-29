@@ -1162,6 +1162,22 @@ pub fn draw_label(
     label: &TileLabel,
     measure: &dyn plx_machine::machine::Measure,
 ) {
+    draw_label_mode(p, rect, s, sty, label, measure, label.static_text, label.within_tile);
+}
+
+/// Persistent grid presentation borrows the cached words; focus changes only their presentation.
+pub(crate) fn draw_persistent_label(
+    p: Painter, rect: Rect, s: f32, sty: &RowStyle, label: &TileLabel,
+    measure: &dyn plx_machine::machine::Measure, focused: bool,
+) {
+    draw_label_mode(p, rect, s, sty, label, measure, !focused, true);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_label_mode(
+    p: Painter, rect: Rect, s: f32, sty: &RowStyle, label: &TileLabel,
+    measure: &dyn plx_machine::machine::Measure, static_text: bool, within_tile: bool,
+) {
     // The label block anchors to the UNSCALED card bottom (rect is scaled about its center, so
     // base bottom = cy + (h/s)/2). In the mock the label is normal-flow BELOW the transformed
     // poster — a pop/press never moves it; the pop eats the poster→label gap instead of shoving
@@ -1174,25 +1190,18 @@ pub fn draw_label(
     if label.all_lines().iter().flatten().all(|l| l.alpha <= 0.0) {
         return;
     }
-    draw_label_block(p, rect, sty, label, lines, bottom, measure);
+    draw_label_block(p, rect, sty, label, lines, bottom, measure, static_text, within_tile);
     if let (Some(text), Some(line)) = (&label.sort_info, label.all_lines()[2].filter(|l| l.alpha > 0.0)) {
         let raw = text.to_string_lossy();
         if !label.sort_bold && label.sort_mark.is_empty() {
-            let value = plx_gfx::text::elide_by(&raw, sty.w, false,
-                |s| measure.width_str(s, theme::size::CAPTION, false));
-            if let Ok(value) = std::ffi::CString::new(value) {
-                p.alpha(line.alpha).text(value.as_ptr(), rect.cx(), bottom + line.top,
-                    theme::size::CAPTION, theme::CAPTION_DETAIL_INK, 1, 0);
-            }
+            let run = measure.fit_line(&raw, sty.w, theme::size::CAPTION, false);
+            p.alpha(line.alpha).text(run.as_ptr(), rect.cx(), bottom + line.top,
+                theme::size::CAPTION, theme::CAPTION_DETAIL_INK, 1, 0);
             return;
         }
-        let lead = if label.sort_mark.is_empty() { 0.0 } else { crate::widgets::RATING_MARK_D + crate::theme::space::SM };
-        let value = plx_gfx::text::elide_by(&raw, (sty.w - lead).max(0.0), false,
-            |s| measure.width_str(s, theme::size::LABEL, true));
-        let cell = crate::widgets::RatingCell { mark: label.sort_mark, value: &value, suffix: "" };
-        let width = crate::widgets::rating_group_w("", std::slice::from_ref(&cell), measure);
-        crate::widgets::rating_group(p.alpha(line.alpha), rect.cx() - width.min(sty.w) * 0.5,
-            bottom + line.top + UNDER_CAPTION_H * 0.5, "", &[cell], measure);
+        crate::widgets::rating_cell_fitted(p.alpha(line.alpha), rect.cx(),
+            bottom + line.top + UNDER_CAPTION_H * 0.5, sty.w,
+            &crate::widgets::RatingCell { mark: label.sort_mark, value: &raw, suffix: "" }, measure);
     }
 }
 /// **The state line under a focused Continue Watching tile** (`registry::captions::shelf_label`: the
@@ -1773,6 +1782,7 @@ pub fn label_band(p: Painter, rect: Rect, sty: &RowStyle) -> (f32, f32) {
 /// caption — placed ONCE by [`place_label_wide`] from the wider of its two runs (plus the uncapped
 /// `want`), so both lines share one alignment: centred together, starting together at the card's
 /// leading edge, or ending together at its trailing edge when the room to the right is too small.
+#[allow(clippy::too_many_arguments)]
 fn draw_label_block(
     p: Painter,
     rect: Rect,
@@ -1781,29 +1791,26 @@ fn draw_label_block(
     lines: [Option<LineBox>; 2],
     bottom: f32,
     measure: &dyn plx_machine::machine::Measure,
+    static_text: bool,
+    within_tile: bool,
 ) {
     // Every run of the block is a label block's to a recording census, whatever its ink.
     #[cfg(any(test, feature = "test-support"))]
     let _label_scope = crate::draw_census::label_scope();
-    if label.static_text {
+    if static_text {
         for (text, line, size, bold, ink) in [
             (label.title.as_ref(), lines[0], theme::size::LABEL, true, theme::TEXT_PRIMARY),
             (label.caption.as_ref(), lines[1], theme::size::CAPTION, false, theme::CAPTION_DETAIL_INK),
         ] {
             if let (Some(text), Some(line)) = (text, line.filter(|l| l.alpha > 0.0)) {
-                let text = plx_gfx::text::elide_by(&text.to_string_lossy(), sty.w, false,
-                    |s| measure.width_str(s, size, bold));
-                if let Ok(text) = std::ffi::CString::new(text) {
-                    let p = p.alpha(line.alpha);
-                    let width = measure.width(&text, size, bold);
-                    let x = rect.cx() - width * 0.5;
-                    let y = bottom + line.top;
-                    if label.shadowed {
-                        p.text(text.as_ptr(), x, y + crate::caption_policy::CAPTION_SHADOW_DY, size,
-                            crate::caption_policy::CAPTION_SHADOW, 0, i32::from(bold));
-                    }
-                    p.text(text.as_ptr(), x, y, size, ink, 0, i32::from(bold));
+                let run = measure.fit_line(&text.to_string_lossy(), sty.w, size, bold);
+                let p = p.alpha(line.alpha);
+                let y = bottom + line.top;
+                if label.shadowed {
+                    p.text(run.as_ptr(), rect.cx(), y + crate::caption_policy::CAPTION_SHADOW_DY, size,
+                        crate::caption_policy::CAPTION_SHADOW, 1, i32::from(bold));
                 }
+                p.text(run.as_ptr(), rect.cx(), y, size, ink, 1, i32::from(bold));
             }
         }
         return;
@@ -1812,7 +1819,8 @@ fn draw_label_block(
     let csz = theme::size::CAPTION;
     // Measured once and threaded through: the title's drawn width feeds both how wide the block
     // is asked to be and (unchanged) how title_marquee decides plain vs. looping.
-    let title_w_val = label.title.as_ref().map(|t| title_w(t.as_ptr(), measure));
+    let title_w_val = label.title.as_ref().map(|t| measure.fit_line_measured(
+        &t.to_string_lossy(), f32::INFINITY, theme::size::LABEL, true).1);
     // The play mark leads the FIRST line drawn: the title, or the details line of a block with none.
     let title_mark = label.glyph && label.title.is_some();
     let caption_mark = label.glyph && label.title.is_none() && label.caption.is_some();
@@ -1822,12 +1830,12 @@ fn draw_label_block(
     // room on both sides of the text (`2 * lead`): the line stays on the block's centre.
     let title_run = title_w_val.map_or(0.0, |w| (w + 2.0 * lead).min(full));
     let caption_str = label.caption.as_ref().map(|c| c.to_string_lossy());
-    let caption_w = caption_str.as_ref().map_or(0.0, |s| measure.width_str(s, csz, false));
+    let caption_w = caption_str.as_ref().map_or(0.0, |s| measure.fit_line_measured(s, f32::INFINITY, csz, false).1);
     let caption_run = caption_w + 2.0 * caption_lead;
     // …and the UNCAPPED widest run, which only a block that reaches left of its card may use
     // ([`anchor_label`]).
     let want = title_w_val.map_or(0.0, |w| w + 2.0 * lead).max(caption_run);
-    let at = if label.within_tile {
+    let at = if within_tile {
         tile_window(rect.cx() - sty.w * 0.5, sty.w, want)
     } else {
         place_label_wide(p, rect, sty, title_run.max(caption_run.min(full)), want, label.settle_lag)
@@ -1857,11 +1865,10 @@ fn draw_label_block(
     let [title_line, caption_line] = lines.map(|line| line.filter(|l| l.alpha > 0.0));
     if let (Some(t), Some(line)) = (&label.title, title_line) {
         title_marquee(p.alpha(line.alpha), at, t.as_ptr(), bottom + line.top, title_mark, title_w_val.unwrap_or(0.0),
-            block.as_ref(), label.shadowed, label.within_tile);
+            block.as_ref(), label.shadowed, within_tile);
     }
-    if let (Some(s), Some(line)) = (&caption_str, caption_line) {
+    if let (Some(tc), Some(line)) = (&label.caption, caption_line) {
         let (p, y) = (p.alpha(line.alpha), bottom + line.top);
-        let Ok(tc) = std::ffi::CString::new(s.as_ref()) else { return };
         // The mark hangs left of the text; a gliding line keeps it fixed at the window's left edge
         // and glides inside the window after it (the title's rule, `title_marquee`).
         if let Some(block) = block.as_ref().filter(|_| caption_over) {
@@ -1878,7 +1885,7 @@ fn draw_label_block(
                     block.cycle_w,
                     Rect::new(x0, y - MARQUEE_AIR, (at.w - caption_lead).max(0.0), UNDER_CAPTION_H + 2.0 * MARQUEE_AIR),
                     |dx| {
-                        let window = label.within_tile.then_some((x0, at.x + at.w));
+                        let window = within_tile.then_some((x0, at.x + at.w));
                         if label.shadowed {
                             block_text(p, tc.as_ptr(), x0 + dx, y + crate::caption_policy::CAPTION_SHADOW_DY, csz,
                                 crate::caption_policy::CAPTION_SHADOW, 0, caption_w, window);
@@ -3425,5 +3432,64 @@ mod tests {
         let _ = plx_machine::idle::take_local_damage();
         assert_eq!(credit_runs("Ana", "Director", true).len(), 2);
         assert_eq!(plx_machine::idle::take_local_damage(), 0, "a fitting label never reports");
+    }
+}
+
+#[cfg(test)]
+mod sort_caption_review_tests {
+    use super::*;
+    use plx_machine::machine::Measure;
+    use std::{cell::{Cell, RefCell}, ffi::CStr, rc::Rc};
+
+    #[derive(Default)]
+    struct CachedMeasure {
+        fits: RefCell<plx_gfx::text::FittedLines>,
+        widths: Cell<usize>,
+    }
+    impl Measure for CachedMeasure {
+        fn fit_line(&self, s: &str, budget: f32, size: i32, bold: bool) -> Rc<CStr> {
+            self.fits.borrow_mut().fit(self, s, budget, size, bold)
+        }
+        fn fit_line_measured(&self, s: &str, budget: f32, size: i32, bold: bool) -> (Rc<CStr>, f32) {
+            self.fits.borrow_mut().fit_measured(self, s, budget, size, bold)
+        }
+        fn width(&self, s: &CStr, size: i32, _: bool) -> f32 {
+            self.widths.set(self.widths.get() + 1);
+            s.to_bytes().len() as f32 * size as f32 * 0.5
+        }
+        fn cap_h(&self, size: i32) -> f32 { size as f32 }
+        fn line_h(&self, size: i32) -> f32 { size as f32 }
+    }
+
+    #[test]
+    fn review_persistent_captions_reuse_fitted_text_and_rating_widths() {
+        let _guard = plx_base::testlock::serial();
+        let measure = CachedMeasure::default();
+        let mut label = TileLabel::titled("A very long movie title repeated across frames", "1997");
+        label.static_text = true;
+        label.sort_info = std::ffi::CString::new("100%").ok();
+        label.sort_bold = true;
+        label.sort_mark = &[(crate::icons::Icon::Crowd, theme::RATING_AUDIENCE)];
+        let rect = Rect::new(100.0, 100.0, 200.0, 300.0);
+        let style = RowStyle { w: 200.0, ..crate::poster_grid::STYLE };
+        let draw = || draw_label(Painter::recording(), rect, 1.0, &style, &label, &measure);
+        draw();
+        let cold = measure.widths.get();
+        assert!(cold > 0);
+        draw();
+        assert_eq!(measure.widths.get(), cold, "a warm persistent caption must not measure again");
+        // Focused identity lines keep the existing shared marquee, but reuse full-run metrics.
+        let mut focused = label.clone();
+        focused.static_text = false;
+        draw_label(Painter::recording(), rect, 1.0, &style, &focused, &measure);
+        let focused_cold = measure.widths.get();
+        draw_label(Painter::recording(), rect, 1.0, &style, &focused, &measure);
+        assert_eq!(measure.widths.get(), focused_cold);
+        // The ordinary metadata face takes the same fitted path, with no rating group.
+        let plain = TileLabel { sort_bold: false, sort_mark: &[], ..label };
+        draw_label(Painter::recording(), rect, 1.0, &style, &plain, &measure);
+        let plain_cold = measure.widths.get();
+        draw_label(Painter::recording(), rect, 1.0, &style, &plain, &measure);
+        assert_eq!(measure.widths.get(), plain_cold);
     }
 }

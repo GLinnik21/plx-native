@@ -1708,6 +1708,14 @@ pub fn take_measure_fault() -> bool {
 pub struct TtfMeasure;
 
 impl plx_machine::machine::Measure for TtfMeasure {
+    fn fit_line_measured(&self, s: &str, budget: f32, sz: i32, bold: bool) -> (Rc<CStr>, f32) {
+        if unsafe { addr_of!(TEXT_OK).read() } == 0 {
+            let run = fit_line_by(self, s, budget, sz, bold);
+            let width = self.width(&run, sz, bold);
+            return (run, width);
+        }
+        FITTED_LINES.with(|cache| cache.borrow_mut().fit_measured(self, s, budget, sz, bold))
+    }
     fn fit_line(&self, s: &str, budget: f32, sz: i32, bold: bool) -> Rc<CStr> {
         if unsafe { addr_of!(TEXT_OK).read() } == 0 {
             return fit_line_by(self, s, budget, sz, bold);
@@ -1863,6 +1871,7 @@ struct FittedLine {
     text: Box<str>,
     spec: (u32, i32, bool),
     run: Rc<CStr>,
+    width: Option<f32>,
 }
 
 // Only the native capability owns this memo. A recording/replay capability must issue its own
@@ -1888,8 +1897,23 @@ impl FittedLines {
         // Cache hits return above, so a successful hot run pays no generation checks.
         if NATIVE_WIDTH_FAILURES.with(std::cell::Cell::get) != before { return run; }
         if self.entries.len() >= 512 { self.entries.clear(); }
-        self.entries.insert(key, FittedLine { text: s.into(), spec, run: Rc::clone(&run) });
+        self.entries.insert(key, FittedLine { text: s.into(), spec, run: Rc::clone(&run), width: None });
         run
+    }
+
+    pub fn fit_measured(&mut self, measure: &impl plx_machine::machine::Measure, s: &str,
+        budget: f32, sz: i32, bold: bool) -> (Rc<CStr>, f32) {
+        let run = self.fit(measure, s, budget, sz, bold);
+        let mut hash = DefaultHasher::new();
+        (s, (budget.to_bits(), sz, bold)).hash(&mut hash);
+        let entry = self.entries.get_mut(&hash.finish()).filter(|e| Rc::ptr_eq(&e.run, &run));
+        if let Some(width) = entry.as_ref().and_then(|e| e.width) { return (run, width); }
+        let before = NATIVE_WIDTH_FAILURES.with(std::cell::Cell::get);
+        let width = measure.width(&run, sz, bold);
+        if NATIVE_WIDTH_FAILURES.with(std::cell::Cell::get) == before {
+            if let Some(entry) = entry { entry.width = Some(width); }
+        }
+        (run, width)
     }
 }
 
@@ -1925,6 +1949,28 @@ mod fitted_line_tests {
             assert!(Rc::ptr_eq(&show, &next_show));
             assert!(Rc::ptr_eq(&address, &next_address));
         }
+    }
+
+    #[test]
+    fn measured_fitted_lines_cache_advance_and_invalidate_with_the_font_spec() {
+        let measure = CountMeasure::default();
+        let mut cache = FittedLines::default();
+        for (text, budget, sz, bold) in [("100%", 100.0, 1, true), ("100%", 3.0, 1, true),
+            ("100%", 100.0, 2, true), ("100%", 100.0, 2, false), ("85%", 100.0, 2, false)] {
+            let before = measure.0.get();
+            let (run, width) = cache.fit_measured(&measure, text, budget, sz, bold);
+            let cold = measure.0.get();
+            assert!(cold > before);
+            let (again, again_width) = cache.fit_measured(&measure, text, budget, sz, bold);
+            assert!(Rc::ptr_eq(&run, &again));
+            assert_eq!(width, again_width);
+            assert_eq!(measure.0.get(), cold);
+        }
+        // The default capability must still consult each replay's metrics, never native state.
+        let before = measure.0.get();
+        measure.fit_line_measured("85%", 100.0, 2, false);
+        measure.fit_line_measured("85%", 100.0, 2, false);
+        assert!(measure.0.get() >= before + 4);
     }
 
     #[test]
