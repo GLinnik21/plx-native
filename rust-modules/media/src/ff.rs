@@ -3656,8 +3656,9 @@ fn h264_slice_is_intra(nal: &[u8]) -> bool {
 }
 
 /// Convert one length-prefixed video packet to Annex-B (4-byte start codes) into `out`,
-/// prepending `param` (VPS/SPS/PPS) when the AU is a keyframe (H264 IDR type 5 / HEVC IRAP
-/// types 16-23). Returns true if it is a keyframe. Mirrors mkv_handle_block.
+/// prepending `param` (VPS/SPS/PPS) when the AU is a keyframe (H264 IDR type 5, or a non-IDR
+/// I-slice at a random access point, see `container_key`; HEVC IRAP types 16-23). Returns true if
+/// it is a keyframe. Mirrors mkv_handle_block.
 ///
 /// `container_key`: the demuxer flagged the packet a keyframe (`AV_PKT_FLAG_KEY`). For H.264 that,
 /// or an SPS ahead of the slice in the same AU, also makes a non-IDR I-slice one: a Blu-ray remux's
