@@ -2625,9 +2625,8 @@ pub const SCREEN_SHAPES: &[&str] = &[
 // Previous pin: 0x3cf2_5b06_5ed9_8faa. Re-record the incompatible anchors through plxnative-rec.
 // HUD commands (PR3): `PlayerOverlay::More` names the page it opens on, `More(page:u8)` (0 the
 // root, 1 Quality, 2 Speed) where it carried `More(quality:bool)`, so the Speed page can be
-// addressed. One bump; the three replay fixtures are NOT re-recorded by this change (the lane may
-// not touch `tests/fixtures/replay/`), so `make check-replay` fails until the owner runs
-// `tools/plxnative-rec rerecord`. Previous pin: 0x9425_f33f_3f53_6aa5.
+// addressed. One bump; the three replay fixtures were re-recorded against it; the previous pin was
+// 0x9425_f33f_3f53_6aa5.
 const SCREEN_SHAPES_PIN: u64 = 0xb633_b65b_ed93_ca93;
 
 #[cfg(test)]
