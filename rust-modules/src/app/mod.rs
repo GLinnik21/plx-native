@@ -530,30 +530,7 @@ unsafe fn run_and_shutdown(app: &mut App) -> ! {
     // The crash-channel guard is the one `Drop` that persists something (it closes the capture
     // backend and removes its database), so it runs here explicitly: nothing drops the `App`.
     drop(app.telemetry_guard.take());
-    end_process(code)
-}
-
-/// The one way the app process ends: `_exit`, never a return into libc's `exit` (#1115).
-///
-/// `exit` runs `atexit` handlers, among them OpenSSL's `OPENSSL_cleanup`, which frees and NULLs
-/// libcrypto's global locks while the detached curl workers (notification feed, metadata, watchlist,
-/// auth probes) are still running; their next `CRYPTO_THREAD_*_lock` is `pthread_rwlock_*lock(NULL)`,
-/// a SIGSEGV at 0x1c on a clean exit. It would also run the firmware libraries' C++ finalizers
-/// (libStarfishMediaAPIs, libpf, libAcbAPI) under a worker still inside them. Returning is not an
-/// option either: the `App` would drop and the process would reach `exit` anyway.
-///
-/// What `exit` would have flushed is flushed by hand first: C stdio, and Rust's stdout/stderr (the
-/// event log is appended unbuffered per line, and every persistent store has saved by now).
-fn end_process(code: c_int) -> ! {
-    use std::io::Write;
-    let _ = std::io::stdout().flush();
-    let _ = std::io::stderr().flush();
-    // SAFETY: `fflush(NULL)` flushes every open C output stream; `_exit` is async-signal-safe and
-    // touches no Rust or C++ state, so no destructor or `atexit` handler runs under a live worker.
-    unsafe {
-        libc::fflush(std::ptr::null_mut());
-        libc::_exit(code)
-    }
+    plx_base::process::exit_now(code)
 }
 
 fn finish_recording(rec: &mut recorder::Recplay, gate: &plx_machine::landgate::Gate) -> bool {
@@ -622,7 +599,7 @@ fn enter_application(pms_host: *const c_char, pms_port: c_int) -> Result<App,c_i
 pub(crate) fn run_application(pms_host: *const c_char, pms_port: c_int) -> ! {
     // An early-boot refusal ends the same way: the workers it has already started (diagnostics,
     // capability probe, telemetry) are as live as after a played session.
-    let mut app = match enter_application(pms_host,pms_port) { Ok(app) => app, Err(code) => end_process(code) };
+    let mut app = match enter_application(pms_host,pms_port) { Ok(app) => app, Err(code) => plx_base::process::exit_now(code) };
     unsafe { run_and_shutdown(&mut app) }
 }
 

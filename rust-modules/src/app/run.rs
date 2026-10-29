@@ -3354,7 +3354,7 @@ pub(crate) unsafe fn heartbeat(app: &mut App, fr: &mut Frame) {
 }
 
 /// Whether [`shutdown`] quits SDL before the process ends. EVERY exit ends the process with `_exit`
-/// (`app::end_process`), never by returning into libc's `exit` (#1115); this is the one decision
+/// (`plx_base::process::exit_now`), never by returning into libc's `exit` (#1115); this is the one decision
 /// left in the teardown.
 pub(crate) fn quits_sdl(native_exit: plx_media::player::engine::NativeExit) -> bool {
     match native_exit {
@@ -3512,7 +3512,7 @@ mod lifecycle_regression_tests {
     use super::*;
 
     #[test]
-    fn a_worker_still_in_firmware_ends_the_process_without_unwinding() {
+    fn shutdown_quits_sdl_only_when_no_worker_is_in_firmware() {
         use plx_media::player::engine::NativeExit;
         assert!(!quits_sdl(NativeExit::WorkerInFirmware));
         assert!(quits_sdl(NativeExit::Clean));
