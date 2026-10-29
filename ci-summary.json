@@ -57,21 +57,21 @@
    "test": "plxnative_modules::app::bridge::home_retention_tests::home_worker_results_cross_the_addressed_dispatcher_ingest_once"
   }
  ],
- "generated": "2026-10-29T20:57:53Z",
+ "generated": "2026-10-29T20:59:16Z",
  "metrics": [
   {
    "change30_pct": null,
-   "change7_pct": 68.8,
+   "change7_pct": 69.3,
    "d30": null,
    "delta30": null,
-   "delta7": 121.0,
+   "delta7": 122,
    "group": "ci",
    "id": "ci|host harness tests",
    "kind": "job",
    "label": "CI: host harness tests",
-   "n_now": 88,
+   "n_now": 89,
    "n_prev": 77,
-   "now": 297.0,
+   "now": 298,
    "prev7": 176,
    "shown": true,
    "state": "worse",
@@ -102,27 +102,6 @@
    "unit": "s"
   },
   {
-   "change30_pct": null,
-   "change7_pct": 20.7,
-   "d30": null,
-   "delta30": null,
-   "delta7": 54.0,
-   "group": "ci",
-   "id": "ci|host unit tests (hostsim)",
-   "kind": "job",
-   "label": "CI: host unit tests (hostsim)",
-   "n_now": 88,
-   "n_prev": 76,
-   "now": 315.0,
-   "prev7": 261.0,
-   "shown": true,
-   "state": "worse",
-   "state30": "new",
-   "threshold_abs": 20.0,
-   "threshold_pct": 20.0,
-   "unit": "s"
-  },
-  {
    "change30_pct": -58.8,
    "change7_pct": 7.6,
    "d30": 905,
@@ -144,18 +123,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": -60.1,
-   "change7_pct": 10.2,
+   "change30_pct": -59.9,
+   "change7_pct": 10.8,
    "d30": 912,
-   "delta30": -548.5,
-   "delta7": 33.5,
+   "delta30": -546.5,
+   "delta7": 35.5,
    "group": "ci",
    "id": "push_wait",
    "kind": "wait",
    "label": "Wait after merge",
    "n_now": 88,
    "n_prev": 83,
-   "now": 363.5,
+   "now": 365.5,
    "prev7": 330,
    "shown": true,
    "state": "flat",
@@ -282,18 +261,18 @@
    "unit": "s"
   },
   {
-   "change30_pct": 4.3,
-   "change7_pct": 12.5,
+   "change30_pct": 4.7,
+   "change7_pct": 13.0,
    "d30": 2237,
-   "delta30": 97.0,
-   "delta7": 260.0,
+   "delta30": 106,
+   "delta7": 269.0,
    "group": "ci",
    "id": "minutes",
    "kind": "cost",
    "label": "Runner time per push",
-   "n_now": 66,
+   "n_now": 67,
    "n_prev": 66,
-   "now": 2334.0,
+   "now": 2343,
    "prev7": 2074.0,
    "shown": true,
    "state": "flat",
@@ -325,17 +304,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 11.5,
+   "change7_pct": 11.1,
    "d30": null,
    "delta30": null,
-   "delta7": 37.0,
+   "delta7": 36,
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "kind": "job",
    "label": "CI: host unit tests (default features)",
-   "n_now": 88,
+   "n_now": 89,
    "n_prev": 77,
-   "now": 360.0,
+   "now": 359,
    "prev7": 323,
    "shown": true,
    "state": "flat",
@@ -346,18 +325,39 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 3.0,
+   "change7_pct": 3.3,
    "d30": null,
    "delta30": null,
-   "delta7": 9.5,
+   "delta7": 10.5,
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "kind": "job",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "n_now": 88,
+   "n_now": 89,
    "n_prev": 74,
-   "now": 325.0,
+   "now": 326,
    "prev7": 315.5,
+   "shown": true,
+   "state": "flat",
+   "state30": "new",
+   "threshold_abs": 20.0,
+   "threshold_pct": 20.0,
+   "unit": "s"
+  },
+  {
+   "change30_pct": null,
+   "change7_pct": 19.9,
+   "d30": null,
+   "delta30": null,
+   "delta7": 52.0,
+   "group": "ci",
+   "id": "ci|host unit tests (hostsim)",
+   "kind": "job",
+   "label": "CI: host unit tests (hostsim)",
+   "n_now": 89,
+   "n_prev": 76,
+   "now": 313,
+   "prev7": 261.0,
    "shown": true,
    "state": "flat",
    "state30": "new",
@@ -388,17 +388,17 @@
   },
   {
    "change30_pct": null,
-   "change7_pct": 12.8,
+   "change7_pct": 13.1,
    "d30": null,
    "delta30": null,
-   "delta7": 25.5,
+   "delta7": 26,
    "group": "ci",
    "id": "ci|host python/shell/C gates",
    "kind": "job",
    "label": "CI: host python/shell/C gates",
-   "n_now": 88,
+   "n_now": 89,
    "n_prev": 77,
-   "now": 224.5,
+   "now": 225,
    "prev7": 199,
    "shown": true,
    "state": "flat",
@@ -454,14 +454,14 @@
    "change7_pct": 3.1,
    "d30": null,
    "delta30": null,
-   "delta7": 5.0,
+   "delta7": 5,
    "group": "ci",
    "id": "ci|host lint + type-checks",
    "kind": "job",
    "label": "CI: host lint + type-checks",
-   "n_now": 88,
+   "n_now": 89,
    "n_prev": 77,
-   "now": 166.0,
+   "now": 166,
    "prev7": 161,
    "shown": true,
    "state": "flat",
@@ -587,9 +587,9 @@
    "id": "ci|which gates apply",
    "kind": "job",
    "label": "CI: which gates apply",
-   "n_now": 88,
+   "n_now": 89,
    "n_prev": 74,
-   "now": 5.0,
+   "now": 5,
    "prev7": 5.0,
    "shown": false,
    "state": "flat",
@@ -608,9 +608,9 @@
    "id": "ci|cross-build (armv7) + artifact assertions",
    "kind": "job",
    "label": "CI: cross-build (armv7) + artifact assertions",
-   "n_now": 88,
+   "n_now": 89,
    "n_prev": 76,
-   "now": 3.0,
+   "now": 3,
    "prev7": 3.0,
    "shown": false,
    "state": "flat",
@@ -629,9 +629,9 @@
    "id": "ci|host checks (NOT a device gate)",
    "kind": "job",
    "label": "CI: host checks (NOT a device gate)",
-   "n_now": 88,
+   "n_now": 89,
    "n_prev": 76,
-   "now": 3.0,
+   "now": 3,
    "prev7": 3.0,
    "shown": false,
    "state": "flat",
@@ -664,7 +664,7 @@
  ],
  "regressions": [
   {
-   "change_pct": 68.8,
+   "change_pct": 69.3,
    "commits": [
     {
      "pr": 1105,
@@ -722,7 +722,7 @@
    "label": "CI: host harness tests",
    "since": "2026-10-29",
    "threshold_pct": 20.0,
-   "to": 297.0
+   "to": 298
   },
   {
    "change_pct": 28.6,
@@ -784,67 +784,6 @@
    "since": "2026-10-25",
    "threshold_pct": 25.0,
    "to": 154.8
-  },
-  {
-   "change_pct": 20.7,
-   "commits": [
-    {
-     "pr": 1105,
-     "sha": "0e1949c7b",
-     "title": "Posters: a backdrop left behind by a page is evicted before the posters, so tiles stop blinking"
-    },
-    {
-     "pr": 1085,
-     "sha": "da8424b7e",
-     "title": "Player: an H.264 non-IDR I-slice at a random access point is a keyframe (seeks in Blu-ray remuxes stuck on Buffering)"
-    },
-    {
-     "pr": 1100,
-     "sha": "5486598a9",
-     "title": "Detail: a focused episode that left the landed list re-seats on its neighbour"
-    },
-    {
-     "pr": 1030,
-     "sha": "19eaaca6f",
-     "title": "Library: keep the A-Z rail under Unwatched and genre filters"
-    },
-    {
-     "pr": 1007,
-     "sha": "411f6d33c",
-     "title": "UI text: Arabic and Hebrew with RTL paragraphs"
-    },
-    {
-     "pr": 1134,
-     "sha": "decb0aafa",
-     "title": "CI: the globals rule names the registry readers it missed, and the forks rule reads every machine crate"
-    },
-    {
-     "pr": 1135,
-     "sha": "b763b41db",
-     "title": "CI: a ledger or allowlist count that rises above the base branch's fails the PR"
-    },
-    {
-     "pr": 1129,
-     "sha": "64e7bf443",
-     "title": "Library: optional sort information below movie library posters"
-    },
-    {
-     "pr": 1136,
-     "sha": "656ed590e",
-     "title": "Docs: Rotten Tomatoes reviews each request case by case, and other clients' logos are not precedent"
-    },
-    {
-     "pr": 1139,
-     "sha": "2623e4560",
-     "title": "HUD plugins: the package format's descriptor table, strict parser and SVG mask checker"
-    }
-   ],
-   "from": 261.0,
-   "id": "ci|host unit tests (hostsim)",
-   "label": "CI: host unit tests (hostsim)",
-   "since": "2026-10-29",
-   "threshold_pct": 20.0,
-   "to": 315.0
   }
  ],
  "schema": 2,
@@ -859,25 +798,25 @@
    "group": "ci",
    "id": "ci|host unit tests (default features)",
    "label": "CI: host unit tests (default features)",
-   "now": 360.0
+   "now": 359
   },
   {
    "group": "ci",
    "id": "ci|armv7 cross-build and artifact assertions",
    "label": "CI: armv7 cross-build and artifact assertions",
-   "now": 325.0
+   "now": 326
   },
   {
    "group": "ci",
    "id": "ci|host unit tests (hostsim)",
    "label": "CI: host unit tests (hostsim)",
-   "now": 315.0
+   "now": 313
   },
   {
    "group": "ci",
    "id": "ci|host harness tests",
    "label": "CI: host harness tests",
-   "now": 297.0
+   "now": 298
   }
  ],
  "slowest_local": [
