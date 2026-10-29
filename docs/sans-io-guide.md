@@ -9,7 +9,7 @@ step then has no seam to fake: a test and a replay feed it the events the produc
 
 ## Which code is a machine
 
-`ci/check-deps.sh` (`MACHINES`, about line 1202) scans these for `workers` and `globals`:
+`ci/check-deps.sh` (the `MACHINES` array) scans these for `workers` and `globals`:
 
 - `rust-modules/data/src`, `session/src`, `screens/src`, `ui/src`, `appkit/src`, `machine/src`;
 - `rust-modules/plex/src/plex/session.rs` (the session owner's state);
@@ -19,13 +19,19 @@ step then has no seam to fake: a test and a replay feed it the events the produc
 `forks` reads wider: all of `data/`, `plex/`, `media/` and `session/`.
 
 The scan is by file; the rule is about what a `run`, `pump`, `tick` or `step` body does. These are
-NOT steps, and are where IO belongs: a job's body (`finish_collection_job`, `data/src/collection.rs:596`,
+NOT steps, and are where IO belongs: a job's body (`finish_collection_job` in `data/src/collection.rs`,
 which lives in `data/` and runs on the worker the runner started), a function that takes `&OffFrame`
-(`media/src/route/plan.rs:1587`), the runner (`StoreRunner`, `rust-modules/src/app/adapters/stores.rs`),
-the `Bridge` (`rust-modules/src/app/bridge.rs`), an actuator (`ForegroundActuator`,
-`media/src/player/foreground.rs:27`) and a seam implementation (`LiveCatalogIo`, `data/src/catalog.rs:96`;
-`LiveIo`, `data/src/watchlist.rs:138`). CI still reads a body that sits in a scanned file, so give it what
-it needs as arguments too.
+(`build_stream` in `media/src/route/plan.rs`), the runner (`StoreRunner`,
+`rust-modules/src/app/adapters/stores.rs`), the `Bridge` (`rust-modules/src/app/bridge.rs`), an
+actuator (`ForegroundActuator` in `media/src/player/foreground.rs`) and a seam the job body calls
+(`LiveCatalogIo`, called inside `finish_catalog_job`'s `catch_unwind` in `data/src/stores/catalog.rs`).
+CI still reads a body that sits in a scanned file, so give it what it needs as arguments too.
+
+Two leftovers look like that list and are not models. `LiveIo` (`data/src/watchlist.rs`) is a seam the
+Watchlist STEP calls (`reachable`, `roster`, `copy_rank`, `today`, `facts_gen`, `roster_gen`), and its
+methods hold the three `ci/allow/globals/data-watchlist.txt` lines and the remaining reads
+`docs/sans-io.md` lists (W-2). `build_stream`'s registry reads and its fork are ledger lines too
+(`ci/allow/globals/media.txt`, `ci/allow/forks/media.txt`). Do not copy either.
 
 ## What counts as IO in a step
 
@@ -42,15 +48,16 @@ it. The ledgers freeze the sites that were found; they are not the definition.
   `transport::paused`, `devcaps::caps`.
 - Reads one it does NOT match, and which `docs/sans-io.md` lists as remaining: `plex::server_ids()`,
   `server_roster_gen()`, `server_facts_gen()`, `server_probe_result()` (re-exports in
-  `plex/src/plex/mod.rs:128-131`), `session::peek_settled()` (`plex/src/plex/session.rs:3341`),
-  `session::current_gen()` (`session.rs:239`) and `tape::active()` (`data/src/stores/tape.rs:34`).
+  `plex/src/plex/mod.rs`), `session::peek_settled()` and `session::current_gen()` (both in
+  `plex/src/plex/session.rs`) and `tape::active()` (`data/src/stores/tape.rs`).
   A new use of any of these is as wrong as a new `client_for`.
 
 ## The moves
 
 **(a) The step needs to fetch: emit a job.** The step claims the request and pushes a `Job`
 (`machine/src/job.rs`: an `Addr` and a request that captured everything) with its `Port`. The
-runner starts it; the answer returns through the port. Collection (#987), `collection.rs:405-411`:
+runner starts it; the answer returns through the port. Collection (#987), `maybe_spawn` in
+`data/src/collection.rs`:
 
 ```rust
 let generation = self.generation;
@@ -62,18 +69,20 @@ self.jobs.push(crate::stores::StoreJob::Collection(
 ));
 ```
 
-The Bridge refills the keys, steps and drains in one call (`collection_pump`, `bridge.rs:1302-1307`):
+The Bridge refills the keys, steps and drains in one call (`Bridge::collection_pump`):
 `refill_client_keys`, then `stores.collection_pump(&self.client_keys)`, then
 `start_store_jobs_of(StoreId::Collection)`. The runner's `launch_collection`
-(`rust-modules/src/app/adapters/stores.rs:455`) is where the thread starts.
+(`rust-modules/src/app/adapters/stores.rs`) is where the thread starts.
 
-Hubs (#1011) is the same shape for several sources at once. A new store also joins
-`Stores::take_jobs_of`, `has_jobs_of` and every `*_FILLS` list (`rust-modules/data/src/AGENTS.md`).
+Hubs (#1011) is the same shape for several sources at once, except that it raises its claim at the
+launch and not in the step (`docs/sans-io.md`, "The Hubs lane"). A new store also joins
+`Stores::take_jobs_of`, `has_jobs_of` and the `*_FILLS` list of each fanning call that reaches it
+(`rust-modules/data/src/AGENTS.md`).
 
 **(b) The step needs the session, the profile or a client: the Bridge reads, the step takes the
 value.** #1108 removed the session reads from the Watchlist and catalog stores (the `client_for` and
 roster reads that remain are listed in `docs/sans-io.md`). The Bridge builds the input
-(`bridge.rs:1690-1695`) and the step receives it:
+(`Bridge::watchlist_input`) and the step receives it:
 
 ```rust
 pub(crate) fn watchlist_input() -> plx_data::watchlist::WatchlistInput {
@@ -84,17 +93,22 @@ pub(crate) fn watchlist_input() -> plx_data::watchlist::WatchlistInput {
 }
 ```
 
-The store calls `run_with_input(cmd, &WatchlistInput)` (`stores/watchlist.rs:378`) and compares
-with `WatchlistAuth::is_current(&CurrentProfile)` (`data/src/watchlist.rs:46`), a pure function.
-The Browse pins did the same (#1106: `Bridge::browse_session`, `bridge.rs:1700`, then
-`BrowseStore::run_with_session`). Which client a server holds is an input too: the Collection step
-asks `keys.key(sid)` of the `ClientKeys` it is handed (`collection.rs:397`), never `client_for`.
+The Bridge calls the store's `run_with_input(cmd, &WatchlistInput)` (`WatchlistStore` in
+`data/src/stores/watchlist.rs`), and the step compares with `WatchlistAuth::is_current(&CurrentProfile)`
+(`data/src/watchlist.rs`), a pure function. The Browse pins did the same (#1106:
+`Bridge::browse_session`, then `BrowseStore::run_with_session`). Which client a server holds is an
+input too: the Collection step asks `keys.key(sid)` of the `ClientKeys` it is handed (`maybe_spawn`
+in `data/src/collection.rs`), never `client_for`.
+
+A screen gets a session read the same way: the Bridge reads it and folds it into what a store
+publishes (`Bridge::household_ids` into `Stores::search_snapshot`). The screens' own `peek` and
+`client_for` reads are ledger lines (`ci/allow/globals/screens.txt`), not a pattern.
 
 **(c) A stepped machine: `step` returns effects, a runner executes them.** The player lifecycle
-(#1003) is `step(&mut self, ev, fx: &mut Vec<ForegroundEffect>) -> Handled` (`lifecycle.rs:273`).
+(#1003) is `step(&mut self, ev, fx: &mut Vec<ForegroundEffect>) -> Handled` (`lifecycle.rs`).
 It reads no global; the pause arrives on the event (`Park { viewer_paused, .. }`). The driver runs
 each effect through an actuator and feeds the answer back as the next event
-(`media/src/player/foreground.rs:109-110, 121-130`):
+(`run_foreground` in `media/src/player/foreground.rs`):
 
 ```rust
 while let Some(ev) = next.take() {
@@ -109,12 +123,12 @@ while let Some(ev) = next.take() {
             }
 ```
 
-A screen is the same kind of machine: it pushes an `AppFx` (`screens/src/registry.rs:48`) and the
+A screen is the same kind of machine: it pushes an `AppFx` (`screens/src/registry.rs`) and the
 Bridge's `app_effect` runs it; an arm that does IO without pushing `Fx::Deliver(` is a new `fxlanes` site.
 
 **(d) The step needs time: count the `dt` it is handed.** `Tick` is "the ONLY clock a machine sees"
-(`machine/src/machine.rs:139`). Search's debounce accumulates whole microseconds, an exact integer
-compare (`search.rs:1285-1287`):
+(`machine/src/machine.rs`). Search's debounce accumulates whole microseconds, an exact integer
+compare (`data/src/search.rs`):
 
 ```rust
 let dt_us = (dt * 1_000_000.0).round() as u32;
@@ -122,13 +136,16 @@ state.settle_us = state.settle_us.saturating_add(dt_us);
 if state.settle_us >= SETTLE_US_TARGET {
 ```
 
-Never `Instant::now` or `SystemTime::now` in a step. CI does not count the ones that remain (a
-diagnostic timer in `pms.rs:3745`, one in the fetch body `metadata.rs:3685`) and `WatchlistIo::today`
-is a documented remaining read; do not add to them.
+Never `Instant::now` or `SystemTime::now` in a step. The `wall` rule (`ci/check-deps.sh`; its
+instruments are listed in `ci/allow/wall.txt`) fails a clock read in most machine scope: `ui/`,
+`screens/`, `data/src/stores/`, the session owner and the migrated store files. Outside it, CI does
+not count the ones that remain (a diagnostic timer in `step_landings_with_scope` in `data/src/pms.rs`,
+one in the fetch body `fetch_full` in `data/src/metadata.rs`), and `WatchlistIo::today` is a
+documented remaining read; do not add to them.
 
 **(e) A test needs different behaviour: a seam or an argument, never a `cfg` branch.** A body takes
 the one call that reaches the world as a parameter. `finish_browse_page_job` passes the real read
-and a test passes one that panics (#1028, `browse/listing_jobs.rs:303-310`):
+and a test passes one that panics (#1028, `data/src/browse/listing_jobs.rs`):
 
 ```rust
 pub fn finish_browse_page_job(port: &BrowsePagePort, addr: Addr, client: &'static Client, req: BrowsePageReq) {
@@ -138,14 +155,16 @@ fn finish_page_with(port: &BrowsePagePort, addr: Addr, client: &'static Client, 
     read: impl FnOnce(&Client, ServerId, &SectionQuery<'_>, bool, Option<&Restore>) -> ListingPage) {
 ```
 
-An IO trait works the same way (`CatalogIo`, `data/src/catalog.rs:88`). The shape to avoid is
+An IO trait works the same way when only the job body calls it (`CatalogIo`, `data/src/catalog.rs`);
+a trait the step calls (`WatchlistIo`) is a registry read with one more hop. The shape to avoid is
 `#[cfg(not(test))]` or `if cfg!(test) { fake } else { real }` in production code:
-`ci/allow/forks/data-person.txt` lists the ones that remain, to be deleted, not copied. An item only
+`ci/allow/forks/*.txt` list the ones that remain, to be deleted, not copied. An item only
 a test can see (`#[cfg(test)] fn`) is no fork.
 
 **(f) A command arrives without its input: refuse it loudly.** A `run` that holds no input refuses
 the commands that need one, with a debug assertion and a log line, and returns without acting.
-`data/src/stores/browse.rs:168-174` (the watchlist's twin is `stores/watchlist.rs:367-373`):
+`BrowseStore::run` in `data/src/stores/browse.rs` (the watchlist's twin is `WatchlistStore::run` in
+`data/src/stores/watchlist.rs`):
 
 ```rust
 if matches!(cmd, BrowseCmd::ApplyPins(_) | BrowseCmd::Discovery(_)) {
@@ -158,7 +177,7 @@ if matches!(cmd, BrowseCmd::ApplyPins(_) | BrowseCmd::Discovery(_)) {
 
 ## `task::beside` and blocking calls
 
-`task::beside` (`base/src/task.rs:378`) asks for a request on a scoped sibling thread and joins it
+`task::beside` (`base/src/task.rs`) asks for a request on a scoped sibling thread and joins it
 before the scope returns. The `workers` gate does not count it, which is not permission to use it
 in a step: it exists for a worker-side body that has several independent requests (`build_stream`
 in `route/plan.rs`, which takes `&OffFrame`, and the detail chain in `metadata.rs`). Anything that
@@ -169,8 +188,9 @@ blocks belongs in such a body, or in the runner. A step never calls it, and neve
 `ci/allow/{workers,globals,forks,fxlanes}/` only shrink. A new line there, a raised `# count:`
 header or a raised `PINNED_LEDGER_TOTALS` entry (`tests/test_harness.py`) is never the fix. If a
 step truly seems to need IO, stop and say why in the PR or the handoff; do not add the exception.
-A rename that keeps the count, like #1116's `mod.rs::sink` to `mod.rs::raw_sink` in
-`ci/allow/forks/media.txt`, is fine. A migration deletes lines (`docs/sans-io.md`, "How a migration
+A one-for-one rename of the fn that already holds a site, the site itself unchanged (#1116 renamed
+`mod.rs::sink` to `mod.rs::raw_sink` in `ci/allow/forks/media.txt`), changes only its key; say so in
+the PR. It never covers a new call. A migration deletes lines (`docs/sans-io.md`, "How a migration
 shrinks a ledger"). The ledgers hold today's numbers; read the files, do not copy totals into prose.
 
 ## Before you commit machine code
@@ -183,4 +203,5 @@ shrinks a ledger"). The ledgers hold today's numbers; read the files, do not cop
 5. Whoever steps a store drains it in the same call (`start_store_jobs_of`).
 6. No `cfg(test)` or `cfg!(test)` in production code; the test uses a seam or an argument.
 7. A command that needs an input and lacks it is refused (assert plus log), not defaulted.
-8. `git diff ci/allow tests/test_harness.py` shows only deleted lines and lowered counts.
+8. `git diff ci/allow tests/test_harness.py` shows only deleted lines, lowered counts, or such a
+   one-for-one rename.
