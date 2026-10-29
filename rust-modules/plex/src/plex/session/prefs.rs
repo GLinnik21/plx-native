@@ -357,6 +357,15 @@ pub struct Preferences {
     /// (`storage::state::ACCOUNT_BOUND_PREFERENCES`). Written only through [`persist_profile_pref`].
     #[serde(default, deserialize_with = "super::de_soft_vec", skip_serializing_if = "Vec::is_empty")]
     pub profile_prefs: Vec<ProfilePrefsRecord>,
+    // ---- the household's request service ----
+    /// **The address of the household's Seerr server** (Overseerr / Jellyseerr, docs/seerr.md), as
+    /// the owner typed it in Settings > Requests; `plex::seerr::normalize_address` reads it. Empty
+    /// means no Seerr: every request surface stays hidden. Install-wide and kept across sign-out:
+    /// it names the household's server, it is no credential (the Seerr session is never stored, it
+    /// is signed in again for whoever is seated). Skipped while empty so a session that never set it
+    /// serializes exactly as before; soft-parsed, so anything but a string reads as unset.
+    #[serde(default, deserialize_with = "de_soft_string", skip_serializing_if = "String::is_empty")]
+    pub seerr_address: String,
 }
 
 /// How long a setting's value lives, and who owns the write. `auto_sign_in`, `ui_resolution`,
@@ -586,6 +595,18 @@ list_row!(NativeAudioRefusedRow: NativeAudioRefusal = native_audio_refused, "nat
 list_row!(LastLibraryRow: LastLibrary = last_library, "last_library", Profile, account true);
 list_row!(LibraryViewsRow: LibraryViews = library_views, "library_sorts", Profile, account true);
 
+/// The `seerr_address` row: one string, so neither a [`Setting`] (`Copy`) nor a [`ListRow`]. An
+/// install fact kept across sign-out; written through `session::set_seerr_address` only.
+pub struct SeerrAddressPref;
+impl Row for SeerrAddressPref {
+    const KEY: &'static str = "seerr_address";
+    const SCOPE: Scope = Scope::Install;
+    const ACCOUNT_BOUND: bool = false;
+    const LIVE: bool = false;
+    const SETTINGS: Option<SettingsWrite> = None;
+    const PARSE: Parse = Parse::Soft;
+}
+
 /// A setting as data, so a test (and a later generic restore) can walk them all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Descriptor {
@@ -643,6 +664,8 @@ pub const DESCRIPTORS: &[Descriptor] = &[
     // The memory-door tenants (lists with no value API).
     Descriptor::of::<TrackMemoryPref>(),
     Descriptor::of::<SubtitleOffsetsPref>(),
+    // The household's request service.
+    Descriptor::of::<SeerrAddressPref>(),
 ];
 
 impl Session {

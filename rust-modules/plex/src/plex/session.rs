@@ -3154,6 +3154,17 @@ pub fn queue_update_ticket(edit: impl FnOnce(&Session) -> Option<Session> + Send
     }))
 }
 
+/// Settings > Requests: keep the household's Seerr address (`""` forgets it). Nothing is written
+/// when the stored address already is that one. The receipt is [`queue_update_ticket`]'s.
+pub fn set_seerr_address(address: String)
+    -> Result<plx_base::storage_worker::TypedTicket<bool>, plx_base::storage_worker::SubmitError> {
+    queue_update_ticket(move |current| (current.prefs.seerr_address != address).then(|| {
+        let mut next = current.clone();
+        next.prefs.seerr_address = address;
+        next
+    }))
+}
+
 /// [`queue_update_ticket`] for an edit whose LANDING matters — a consent refusal
 /// (`plex::grant::record`), which must not be lost to a failed write. `settled` runs on the
 /// storage worker once the attempt is over: `true` when the file holds the edit afterwards (it

@@ -21,6 +21,7 @@ pub mod pms; // the Home catalog: hubs merged across every source
 pub mod sortfacts; // one name and one direction wording per sort fact, for the Library's and the Watchlist's Sort & Filter panels
 pub mod subsearch; // the player's subtitle search & download: agent search, install, install poll
 pub mod search; // Search data layer: /hubs/search fanned out across every source, merged into typed shelves
+pub mod seerr; // the household's Seerr server: what a job asks, what it brings back, the job body (docs/seerr.md)
 pub mod stores; // stores as machines (restructure phase 4): one command vocabulary + one step per data store
 pub mod viewstate; // watched / unwatched / remove-from-deck: the PMS view-state WRITES, off the SDL thread
 pub mod watchlist; // plex.tv Watchlist: rows, match table, tile states, intent ledger, sort/filter

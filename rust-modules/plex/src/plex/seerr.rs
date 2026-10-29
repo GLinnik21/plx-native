@@ -345,18 +345,11 @@ fn resolve_base(trigger: Option<&str>, configured: &str) -> Option<String> {
     }
 }
 
-/// Is the loopback stand-in armed? Read once per process outside tests (a trigger is a boot
-/// decision, as the Discover stand-in's is).
+/// Is the loopback stand-in armed? Read where it is asked — on a worker, once per call, the same
+/// read [`base_for`] makes — so the answer and the base a call is built on cannot disagree. A
+/// release build has no triggers (`devtrig::read` is `None` there) and reads nothing.
 pub fn stand_in_armed() -> bool {
-    #[cfg(not(any(test, feature = "test-support")))]
-    {
-        static ARMED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *ARMED.get_or_init(|| plx_base::devtrig::read("seerr").is_some_and(|v| loopback_http(&v)))
-    }
-    #[cfg(any(test, feature = "test-support"))]
-    {
-        plx_base::devtrig::read("seerr").is_some_and(|v| loopback_http(&v))
-    }
+    plx_base::devtrig::read("seerr").is_some_and(|v| loopback_http(&v))
 }
 
 #[cfg(feature = "devtriggers")]

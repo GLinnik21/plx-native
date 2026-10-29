@@ -8,7 +8,7 @@
 //!
 //! T-live and T-settings sit in media (`route/prefs_tests.rs`), where the lists they hold to these
 //! descriptors are declared.
-use super::prefs::{Descriptor, Fallback, ListRow, Parse, ProfileMemory, Row, Scope, Setting, SettingsWrite, DESCRIPTORS};
+use super::prefs::{Descriptor, Fallback, ListRow, Parse, ProfileMemory, Row, Scope, SeerrAddressPref, Setting, SettingsWrite, DESCRIPTORS};
 use super::prefs::{InstantDpadSeekingPref, AudioEnhancementsPref, AutoSignInPref, DeckPressPref, UnderPostersPref, DirectPlayModePref, LastHeroBlurPref,
     LastLibraryRow, LibraryViewsRow, NextEpisodeModePref, PlaintextConsentRow, QualityPref, ServerKeyPinsRow,
     HdrOverlayBrightnessPref, SkipIntervalPref, SubtitleOffsetsPref, SubtitlePositionPref, SubtitleSizePref, SubtitleTonePref,
@@ -124,9 +124,28 @@ fn every_marker_names_its_own_field() {
     // memory-door rows (`TrackMemoryPref`, whose field check is
     // `track_memory_tests::the_list_row_names_its_own_field`, and `SubtitleOffsetsPref`, checked by
     // `the_subtitle_offsets_row_names_its_own_field`) and the per-profile record list
-    // (`ProfilePrefsPref`, `profile_prefs_tests::nothing_picked_serializes_to_no_key`): a row needs
-    // its line in one of the four places.
-    assert_eq!(DESCRIPTORS.len(), 17 + 5 + 2 + 1);
+    // (`ProfilePrefsPref`, `profile_prefs_tests::nothing_picked_serializes_to_no_key`) and the one
+    // string row (`SeerrAddressPref`, `the_seerr_address_row_names_its_own_field`): a row needs its
+    // line in one of the five places.
+    assert_eq!(DESCRIPTORS.len(), 17 + 5 + 2 + 1 + 1);
+}
+
+/// The one string row: unset writes no key, a value writes its own key and no other, reads back,
+/// and is no account-bound key (an address outlives a sign-out).
+#[test]
+fn the_seerr_address_row_names_its_own_field() {
+    let default_json = serde_json::to_value(Preferences::default()).unwrap();
+    assert!(default_json.get(SeerrAddressPref::KEY).is_none(), "unset is not written");
+    let p = Preferences { seerr_address: "http://192.0.2.10:5055".into(), ..Default::default() };
+    let json = serde_json::to_value(&p).unwrap();
+    for (key, value) in json.as_object().unwrap() {
+        if key != SeerrAddressPref::KEY {
+            assert_eq!(default_json.get(key), Some(value), "moved the unrelated key {key}");
+        }
+    }
+    let back: Preferences = serde_json::from_value(json).unwrap();
+    assert_eq!(back.seerr_address, "http://192.0.2.10:5055");
+    assert!(!plx_platform::storage::state::ACCOUNT_BOUND_PREFERENCES.contains(&SeerrAddressPref::KEY));
 }
 
 /// The list rows do what `check_row` proves for the `Copy` ones: the marker names its own field
@@ -351,6 +370,7 @@ fn garbage_fixtures() -> Vec<(&'static str, Vec<Value>)> {
         ("track_memory", not_a_list()),
         ("subtitle_offsets", not_a_list()),
         ("profile_prefs", not_a_list()),
+        ("seerr_address", vec![Value::Null, json!(17), json!(true), json!(["http://h"]), json!({"unexpected": 1})]),
     ]
 }
 

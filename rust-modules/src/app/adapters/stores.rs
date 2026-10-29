@@ -68,6 +68,7 @@ use plx_data::metadata::{
 };
 use plx_data::person::{finish_person_job, PersonPort, PersonReq};
 use plx_data::stores::catalog::{finish_catalog_job, CatalogPort, CatalogReq};
+use plx_data::stores::seerr::{finish_seerr_job, SeerrPort, SeerrReq};
 use plx_data::stores::viewreconcile::{finish_reconcile_job, ReconcilePort, ReconcileReq};
 use plx_data::pms::{launch_hubs_job, HubRequest, HubsPort};
 use plx_data::stores::{Admission, StoreJob};
@@ -251,6 +252,7 @@ impl StoreRunner {
             StoreJob::Person(job, port) => self.start_person(job, port),
             StoreJob::Hubs(job, port) => self.start_hubs(job, port),
             StoreJob::Catalog(job, port) => self.start_catalog(job, port),
+            StoreJob::Seerr(job, port) => self.start_seerr(job, port),
             StoreJob::SubtitleSearch(job, port) => self.start_subsearch(job, port),
             StoreJob::ViewReconcile(job, port) => self.start_reconcile(job, port),
             StoreJob::BrowseHubs(job, port) => self.start_browse_hubs(job, port),
@@ -304,6 +306,7 @@ impl StoreRunner {
                 | StoreJob::Collection(..)
                 | StoreJob::Person(..)
                 | StoreJob::Catalog(..)
+                | StoreJob::Seerr(..)
                 | StoreJob::SubtitleSearch(..)
                 | StoreJob::ViewReconcile(..)
                 | StoreJob::BrowseHubs(..)
@@ -400,6 +403,7 @@ impl StoreRunner {
                     | StoreJob::Person(..)
                     | StoreJob::Hubs(..)
                     | StoreJob::Catalog(..)
+                    | StoreJob::Seerr(..)
                     | StoreJob::SubtitleSearch(..)
                     | StoreJob::ViewReconcile(..)
                     | StoreJob::BrowseHubs(..)
@@ -525,6 +529,33 @@ impl StoreRunner {
             #[cfg(test)]
             Self::Held { parked: held, .. } => {
                 held.push(StoreJob::Catalog(job, port));
+                true
+            }
+        }
+    }
+
+    /// A Seerr call is not on the tape and names no client: the launch is the whole decision, as
+    /// for the catalog read. A launch that did not happen is refused; the store's pump owes the ask
+    /// and makes it again after its wait.
+    fn start_seerr(&mut self, job: Job<SeerrReq>, port: SeerrPort) {
+        let addr = job.addr;
+        let refusal = port.clone();
+        if !self.launch_seerr(job, port) {
+            refusal.refused(addr);
+        }
+    }
+
+    fn launch_seerr(&mut self, job: Job<SeerrReq>, port: SeerrPort) -> bool {
+        match self {
+            Self::Live => {
+                let Job { addr, req } = job;
+                plx_base::task::spawn_small("seerr-call", move || {
+                    finish_seerr_job(&port, addr, req);
+                })
+            }
+            #[cfg(test)]
+            Self::Held { parked: held, .. } => {
+                held.push(StoreJob::Seerr(job, port));
                 true
             }
         }
@@ -1009,6 +1040,7 @@ impl StoreRunner {
                     }
                 }
                 StoreJob::Catalog(job, port) => finish_catalog_job(&port, job.addr, job.req),
+                StoreJob::Seerr(job, port) => finish_seerr_job(&port, job.addr, job.req),
                 StoreJob::SubtitleSearch(job, port) => {
                     // The registry may have moved on since the job was parked: a request whose
                     // client is gone is refused, as the launch would have refused it.
