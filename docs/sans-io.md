@@ -57,6 +57,10 @@ run the product's code. `fxlanes` reads the one fn, `Bridge::app_effect` in `rus
   `it.peek()` are not workers or registry reads); `peek` is also a site in
   `plex/src/plex/session.rs`, the module that defines it. A local launcher (`launch_browse_discovery`) is no
   site of its own: the real call inside it is.
+- `task::beside` is not a `workers` site: its scoped sibling is joined before the IO body that asked for
+  it returns, so no worker outlives the call and there is no ledger line to shrink; scoped concurrency
+  inside an IO body a runner already runs off the frame is allowed, a machine step never calls it (it
+  would block the frame on the network, and `beside` asserts it is not on the frame thread).
 - A getter named without a call (`.and_then(client_for)`) reads the registry as surely as a call
   does, so it is a site. Only a rename (`use ...::client_for as x`) fails outright, because the
   calls through `x` are invisible to the scan.
