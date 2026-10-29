@@ -30,8 +30,8 @@ and the lines are compared to the tree as an exact multiset.
 | Rule | A site is | Key |
 |---|---|---|
 | `workers` | a production call that starts a worker in a machine: `task::spawn(`, `spawn_small(`, `spawn_small_keeping(`, `spawn_small_or_inline(`, `spawn_off_frame(`, `spawn_off_frame_keeping(`, `storage_worker::submit(`, `submit_retained(`, the command worker's `.submit_ticket(` | `<path>::<enclosing fn>::<spelling>` |
-| `globals` | a production read of a process-global registry in a machine: `client_for`, `current_server`, `current_snapshot`, `keypin::revision`, `keypin::blocked_for`, `session::peek`, `grant::offers`, the player's transport-pause readers (`transport::paused`, `transport::viewer_paused`, `preview::paused`), the device's capability answer (`devcaps::caps`, and the zero-argument `is_dp_audio` / `is_dp_audio_track` that used to read it), and `player::TX` in the player's lifecycle (at zero) | `<path>::<enclosing fn>::<spelling>` |
-| `forks` | a production test/production fork whose predicate reads `test` or `feature = "test-support"`: a `#[cfg(..)]` attribute that a production build can satisfy (`not(test)`, `not(any(test, feature = "test-support"))`, `all(target_os = .., not(test))`, ...), or an inline `cfg!(..)` of any value | `<path>::<item name>`, or `<path>::<enclosing fn>` for a statement, a field or an inline `cfg!` |
+| `globals` | a production read of a process-global registry in a machine: `client_for`, `current_server`, `current_snapshot`, `keypin::revision`, `keypin::blocked_for`, `session::peek`, `grant::offers`, the session cache's `session::peek_settled` and `session::current_gen`, the server registry's roster readers (`server_ids`, `server_roster_gen`, `server_facts_gen`, `server_probe_result`), the controlled-run switch `tape::active`, the player's transport-pause readers (`transport::paused`, `transport::viewer_paused`, `preview::paused`), the device's capability answer (`devcaps::caps`, and the zero-argument `is_dp_audio` / `is_dp_audio_track` that used to read it), and `player::TX` in the player's lifecycle (at zero) | `<path>::<enclosing fn>::<spelling>` |
+| `forks` | a production test/production fork whose predicate reads `test` or `feature = "test-support"`: a `#[cfg(..)]` attribute that a production build can satisfy (`not(test)`, `not(any(test, feature = "test-support"))`, `all(target_os = .., not(test))`, ...), or an inline `cfg!(..)` of any value | `<path>::<item name>`, or `<path>::<enclosing fn>` for a statement or an inline `cfg!`, or `<path>::<struct>` for a field |
 | `fxlanes` | an `AppFx::<Variant>` arm of `Bridge::app_effect` that does not push `Fx::Deliver(`: one site for each variant on its head, and one for an arm that names no variant (`other => ..`, `_ => ..`) | `<path>::AppFx::<Variant>`, or `<path>::AppFx::_` |
 
 `blocking` (the frame thread's `allow_blocking(` exceptions) is the older ledger these follow. It now
@@ -46,17 +46,39 @@ dropped.
 `plex/src/plex/session.rs` (the session owner's state), the player's `lifecycle.rs`, `recovery.rs`
 (the failed-open ladder machine) and `release.rs` (the native object's release machine) and the route planners `route/plan.rs` and `route/plan_memory.rs`. The IO layers (the rest of `plex/`, `media/`,
 `net/`, `platform/`) are where those calls belong, so they are not scanned. `forks` reads the whole
-of `data/`, `plex/`, `media/` and `session/`, because a fork anywhere in them is a test that does not
-run the product's code. `fxlanes` reads the one fn, `Bridge::app_effect` in `rust-modules/src/app/bridge.rs`.
+of every crate that holds a machine (`FORK_SCOPE`): `data/`, `plex/`, `media/`, `session/`, `screens/`,
+`ui/`, `appkit/` and `machine/`, because a fork anywhere in them is a test that does not run the
+product's code. It read only the first four until the scope was widened to the rest; the
+widening recorded the 17 forks that were already there (three in `screens/`: `legal.rs`
+`build_sha`, `library/lookahead.rs` `rows` and `login.rs` `harness_driven`; thirteen in `ui/`; one in
+`machine/`) as a coverage expansion, not new code. `fxlanes` reads the one fn, `Bridge::app_effect` in `rust-modules/src/app/bridge.rs`.
 
 **Decisions the table hides.**
 
-- A bare `spawn(` / `submit(` / `peek(` / `revision(` / `blocked_for(` / `offers(` is a site only in a
-  file that imports it from `task`, `storage_worker`, `session`, `keypin` or `grant` (singly, as the
-  last or any other item of a braced group, or through a glob; `Builder::spawn`, a local fn and
-  `it.peek()` are not workers or registry reads); `peek` is also a site in
-  `plex/src/plex/session.rs`, the module that defines it. A local launcher (`launch_browse_discovery`) is no
-  site of its own: the real call inside it is.
+- A bare `spawn(` / `submit(` / `peek(` / `revision(` / `blocked_for(` / `offers(` / `current_gen(` /
+  `active(` is a site only in a file that imports it from `task`, `storage_worker`, `session`, `keypin`,
+  `grant` or `tape` (singly, as the last or any other item of a braced group, or through a glob;
+  `Builder::spawn`, a local fn, `it.peek()` and another module's `active()` are not workers or registry
+  reads); `peek`, `current_gen(` and `active(` are also sites in `plex/src/plex/session.rs` and
+  `data/src/stores/tape.rs`, the modules that define them (`stores/tape.rs` calls its own `active()`
+  six times). `current_gen` and `active` are generic names, so their bare form counts only as a call; a
+  `use ... as` rename of `tape`, `tape::active` or any of the new names fails outright. A local launcher
+  (`launch_browse_discovery`) is no site of its own: the real call inside it is.
+- The roster, session-cache and tape readers (`server_ids`, `server_roster_gen`, `server_facts_gen`,
+  `server_probe_result`, `session::peek_settled`, `session::current_gen`, `tape::active`) read process-wide
+  state behind a free function, as `client_for` does: the first four are the `plex/src/plex/mod.rs`
+  re-exports of `servers::ids`, `roster_gen`, `facts_gen` and `probe_result` over atomics and the slot
+  table, `peek_settled` locks the session cache, and `current_gen` is `current_snapshot().generation`.
+  `tape::active` is the one that is thread-local rather than process-wide (the tape the controlled
+  bootstrap arms), and it is a site because it is ambient state a step reads instead of being handed, the
+  same hazard as a fork. The four `server_*` names and `peek_settled` are as distinctive as `client_for`
+  and are sites bare anywhere (`x.server_ids()` is not); the spelling the rule keys is the one the call
+  uses (`session::peek_settled` when qualified, `peek_settled` when bare). Widening the rule to them
+  was a coverage expansion: it recorded 63 reads that were already there (`globals` 57 to 120) and
+  deleted none. Not in the list on purpose: `i18n::current` (a display read) and the
+  `plx_media::route::*()` settings getters, which the architecture board kept out of this gate; and the
+  other registry accessors (`server_facts`, `server_count`, `describe_server`, ...), which the rule does
+  not name yet.
 - `task::beside` is not a `workers` site: its scoped sibling is joined before the IO body that asked for
   it returns, so no worker outlives the call and there is no ledger line to shrink; scoped concurrency
   inside an IO body a runner already runs off the frame is allowed, a machine step never calls it (it
@@ -343,7 +365,7 @@ worker start and the `client_for` read inside that worker are gone too. The hous
 - **What the Person step still reads.** Person starts no worker and reads no `client_for`, but its
   step is NOT pure. It still reads `tape::active()` (which decides whether a job exists and carries
   the controlled identity), `session::peek_settled()` (the settled plex.tv account the two global
-  reads are made as; the gate's `session::peek(` spelling does not match it), the session watch, the
+  reads are made as; a `globals` site of its own, in `ci/allow/globals/data-person.txt`), the session watch, the
   refused-discover check (`discover::person_profile_refused` / `person_credits_refused`, which
   lands the refusal in the step with no job, because routing it through the runner would release
   and respawn it every ~2 s), `plx_base::devtrig::read("personcredits")` (dev-trigger builds only:

@@ -16,7 +16,8 @@ step then has no seam to fake: a test and a replay feed it the events the produc
 - `rust-modules/media/src/player/{lifecycle,recovery,release}.rs` and
   `media/src/route/{plan,plan_memory}.rs`.
 
-`forks` reads wider: all of `data/`, `plex/`, `media/` and `session/`.
+`forks` reads every machine crate whole (`FORK_SCOPE`): all of `data/`, `plex/`, `media/`,
+`session/`, `screens/`, `ui/`, `appkit/` and `machine/`.
 
 The scan is by file; the rule is about what a `run`, `pump`, `tick` or `step` body does. These are
 NOT steps, and are where IO belongs: a job's body (`finish_collection_job` in `data/src/collection.rs`,
@@ -29,8 +30,9 @@ CI still reads a body that sits in a scanned file, so give it what it needs as a
 
 Two leftovers look like that list and are not models. `LiveIo` (`data/src/watchlist.rs`) is a seam the
 Watchlist STEP calls (`reachable`, `roster`, `copy_rank`, `today`, `facts_gen`, `roster_gen`), and its
-methods hold the three `ci/allow/globals/data-watchlist.txt` lines and the remaining reads
-`docs/sans-io.md` lists (W-2). `build_stream`'s registry reads and its fork are ledger lines too
+methods hold the `ci/allow/globals/data-watchlist.txt` lines (its `client_for` and `current_server`
+reads, and the roster readers `server_ids`, `server_probe_result`, `server_roster_gen` and
+`server_facts_gen`) and the `today()` clock read `docs/sans-io.md` lists (W-2). `build_stream`'s registry reads and its fork are ledger lines too
 (`ci/allow/globals/media.txt`, `ci/allow/forks/media.txt`). Do not copy either.
 
 ## What counts as IO in a step
@@ -45,12 +47,16 @@ it. The ledgers freeze the sites that were found; they are not the definition.
 - Reads the clock: `Instant::now`, `SystemTime::now`, a `today()`.
 - Reads a registry the globals rule matches: `client_for`, `current_server`, `current_snapshot`,
   `session::peek`, `keypin::revision`, `keypin::blocked_for`, `grant::offers`,
-  `transport::paused`, `devcaps::caps`.
-- Reads one it does NOT match, and which `docs/sans-io.md` lists as remaining: `plex::server_ids()`,
-  `server_roster_gen()`, `server_facts_gen()`, `server_probe_result()` (re-exports in
-  `plex/src/plex/mod.rs`), `session::peek_settled()` and `session::current_gen()` (both in
-  `plex/src/plex/session.rs`) and `tape::active()` (`data/src/stores/tape.rs`).
-  A new use of any of these is as wrong as a new `client_for`.
+  `transport::paused`, `devcaps::caps`, and the ones `docs/sans-io.md` lists as remaining:
+  `plex::server_ids()`, `server_roster_gen()`, `server_facts_gen()`, `server_probe_result()`
+  (re-exports in `plex/src/plex/mod.rs`), `session::peek_settled()` and `session::current_gen()`
+  (both in `plex/src/plex/session.rs`) and `tape::active()` (`data/src/stores/tape.rs`). A new use of
+  any of these fails `make check` unless a ledger line names it, and is as wrong as a new `client_for`.
+- Reads one the rule does not name. The rule matches a closed list of names, so a registry read it
+  does not spell passes CI with no ledger line and is IO all the same. Two are left out on purpose,
+  and the principle above still covers them: `i18n::current` (a display read) and the
+  `plx_media::route::*()` settings getters (the architecture board kept settings getters out of
+  this gate). When you add a registry reader, add its name to the rule in the same change.
 
 ## The moves
 

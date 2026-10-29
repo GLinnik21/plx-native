@@ -17,7 +17,7 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
 
 ## Sans-IO
 
-`ui/` is machine code (its `workers` and `globals` are scanned): nothing here starts a worker or
+`ui/` is machine code (its `workers`, `globals` and `forks` are scanned): nothing here starts a worker or
 reads a process-global registry, and nothing forks on `cfg(test)`. A component takes values as
 arguments, and its time is the `dt` it is handed.
 

@@ -6551,7 +6551,8 @@ impl PersonOwnerGateFixture {
 
     def test_forks_ledger_catches_a_new_production_test_fork(self):
         """RED: a `#[cfg(not(test))]` / `cfg!(not(test))` / `not(feature = \"test-support\")` fork in
-        data/, plex/, media/ or session/ that no ci/allow/forks/<area>.txt names fails `forks`, keyed by
+        any machine crate (data/, plex/, media/, session/, screens/, ui/, appkit/, machine/) that no
+        ci/allow/forks/<area>.txt names fails `forks`, keyed by
         the item it sits on, or the fn around a statement or an inline `cfg!`."""
         name = "_check_deps_selftest_forks.rs"
         body = ("#[cfg(not(test))]\npub fn real_only() {}\n\n"
@@ -6570,6 +6571,35 @@ impl PersonOwnerGateFixture {
             with self.subTest(item=item):
                 self.assertIn(f"{key}::{item}  (ledger: ", out)
         self.assertIn("ci/allow/forks/session.txt", out)
+
+    def test_forks_ledger_reads_every_machine_crate_not_only_the_four_that_own_the_data(self):
+        """RED: a machine in screens/, ui/, appkit/ or machine/ forks on `cfg(test)` as surely as one in data/ does
+        (`screens/src/legal.rs` `build_sha`, `screens/src/login.rs` `harness_driven` were the live cases), so the
+        `forks` scope is every machine crate. A production fork planted in each -- an attribute production can
+        satisfy and an inline `cfg!(test)` -- is a new site naming the area file its crate owns, and an item only
+        a test can see (`#[cfg(test)]`, `any(test, feature = \"test-support\")`) is still no fork there. A field under
+        a cfg has no fn around it, so it is keyed by its struct (`Holder`), never the unnamed `?`."""
+        body = ("#[cfg(not(any(test, feature = \"test-support\")))]\nfn production_only() {}\n\n"
+                "pub fn inline_test() -> bool {\n    if cfg!(test) { true } else { false }\n}\n\n"
+                "pub struct Holder {\n    kept: u8,\n    #[cfg(not(test))]\n    live: u8,\n}\n\n"
+                "#[cfg(test)]\nfn test_only() {}\n\n"
+                "#[cfg(any(test, feature = \"test-support\"))]\nfn support_only() {}\n")
+        name = "_check_deps_selftest_machine_forks.rs"
+        for crate in ("screens", "ui", "appkit", "machine"):
+            with open(os.path.join(self.tree, "rust-modules", crate, "src", name), "w", encoding="utf-8") as f:
+                f.write(body)
+        r = self._deps()
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("forks:", out)
+        for crate in ("screens", "ui", "appkit", "machine"):
+            key = f"rust-modules/{crate}/src/{name}"
+            for item in ("production_only", "inline_test", "Holder"):
+                with self.subTest(crate=crate, item=item):
+                    self.assertIn(f"{key}::{item}  (ledger: ci/allow/forks/{crate}.txt)", out)
+            for item in ("test_only", "support_only"):
+                with self.subTest(crate=crate, test_item=item):
+                    self.assertNotIn(f"{key}::{item}", out, "an item only a test can see is no fork\n" + out)
 
     def test_fxlanes_ledger_fails_a_new_appfx_side_queue_but_not_a_deliver_arm(self):
         """RED: in `Bridge::app_effect` an `AppFx` arm that pushes `Fx::Deliver(` rides the ordered
@@ -6786,6 +6816,98 @@ impl PersonOwnerGateFixture {
             with self.subTest(not_a_read=stem):
                 self.assertNotIn(f"{base}{stem}.rs", out,
                                  "a `caps` parameter or an unimported `caps(` is not the capability answer\n" + out)
+
+    def test_globals_ledger_sees_the_registry_readers_the_old_closed_list_missed(self):
+        """RED: the server registry's roster readers (`server_ids`, `server_roster_gen`, `server_facts_gen`,
+        `server_probe_result`), the session cache's two readers (`session::peek_settled`, `session::current_gen`)
+        and the controlled-run switch `tape::active` read process-wide state behind a free function, as
+        surely as `client_for` does, and docs/sans-io.md listed them as the reads the rule did not see.
+        Planted in a store file (data/src/stores/) they are sites: qualified, bare after an import (singly, in a
+        group, through a glob), and the rename that would hide the calls fails outright. A method or a local of
+        the same name (`it.active()`, `it.server_ids()`, a struct field `active`, a local `fn active()`) is no
+        read; `active` and `current_gen` count only where the file imports them from `tape` / `session`."""
+        crate = "data"
+        r = self._plant_many({
+            "stores/_check_deps_selftest_qualified.rs": (
+                "pub fn qualified() {\n"
+                "    let _ = plx_plex::plex::server_ids();\n"
+                "    let _ = plx_plex::plex::server_roster_gen();\n"
+                "    let _ = plx_plex::plex::server_facts_gen();\n"
+                "    let _ = plx_plex::plex::server_probe_result(1);\n"
+                "    let _ = plx_plex::plex::session::peek_settled();\n"
+                "    let _ = plx_plex::plex::session::current_gen();\n"
+                "    let _ = crate::stores::tape::active();\n}\n"),
+            "stores/_check_deps_selftest_renamed.rs": (
+                "use plx_plex::plex::server_ids as ids;\n"
+                "use plx_plex::plex::session::peek_settled as settled;\n"
+                "use plx_plex::plex::session::current_gen as generation;\n"
+                "use crate::stores::tape::active as armed;\n"
+                "use crate::stores::tape as controlled;\n\n"
+                "pub fn renamed() {\n    let _ = (ids(), settled(), generation(), armed());\n}\n"),
+            "stores/_check_deps_selftest_bare.rs": (
+                "use plx_plex::plex::{server_ids, server_probe_result};\n"
+                "use plx_plex::plex::session::{self, current_gen, peek_settled};\n"
+                "use crate::stores::tape::{self, active};\n\n"
+                "pub fn bare() {\n    let _ = (server_ids(), server_probe_result(1), current_gen(), peek_settled());\n"
+                "    let _ = active();\n    let _ = it.active();\n    let _ = it.server_ids();\n}\n"),
+            "stores/_check_deps_selftest_globbed.rs": (
+                "use crate::stores::tape::*;\nuse plx_plex::plex::session::*;\n\n"
+                "pub fn globbed() {\n    let _ = (active(), current_gen());\n}\n"),
+            "stores/_check_deps_selftest_no_import.rs": (
+                "use plx_media::player::claim_hold::active as _unused;\n"
+                "use plx_media::player::subside::{self, active};\n\n"
+                "pub struct Pane {\n    active: bool,\n}\nimpl Pane {\n"
+                "    pub fn active(&self) -> bool {\n        self.active\n    }\n}\n"
+                "fn local() -> bool {\n    true\n}\n"
+                "pub fn no_import(p: &Pane, current_gen: u32) -> bool {\n"
+                "    let _ = (p.active(), current_gen, helper::active(), local());\n    active()\n}\n"),
+            "stores/_check_deps_selftest_defines.rs": (
+                "fn active() -> bool {\n    true\n}\n\n"
+                "pub fn defines() -> bool {\n    active()\n}\n"),
+        }, crate)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("globals:", out)
+        base = f"rust-modules/{crate}/src/stores/_check_deps_selftest_"
+        for spelling in ("server_ids", "server_roster_gen", "server_facts_gen", "server_probe_result",
+                         "session::peek_settled", "session::current_gen", "tape::active"):
+            with self.subTest(qualified=spelling):
+                self.assertIn(f"{base}qualified.rs::qualified::{spelling}  (ledger: ", out)
+        for line in (1, 2, 3, 4, 5):
+            with self.subTest(rename_line=line):
+                self.assertIn(f"{base}renamed.rs:{line}\n", out + "\n")
+        for fn, spelling in (("bare", "server_ids"), ("bare", "server_probe_result"), ("bare", "current_gen"),
+                             ("bare", "peek_settled"), ("bare", "active"),
+                             ("globbed", "active"), ("globbed", "current_gen")):
+            with self.subTest(fn=fn, spelling=spelling):
+                self.assertIn(f"{base}{fn}.rs::{fn}::{spelling}  (ledger: ", out)
+        self.assertEqual(out.count(f"{base}bare.rs::bare::active  (ledger: "), 1,
+                         "`it.active()` is not a registry read\n" + out)
+        self.assertEqual(out.count(f"{base}bare.rs::bare::server_ids  (ledger: "), 1,
+                         "`it.server_ids()` is not a registry read\n" + out)
+        for stem in ("no_import", "defines"):
+            with self.subTest(not_a_read=stem):
+                self.assertNotIn(f"{base}{stem}.rs", out,
+                                 "a method, a field, a local or another module's `active` is no registry read\n" + out)
+
+    def test_globals_ledger_sees_bare_calls_inside_the_defining_modules(self):
+        """RED: `session.rs` calls its own `peek_settled()` / `current_gen()` and `stores/tape.rs` its own
+        `active()` with no `use` to say so, as `session.rs` always did for `peek`; a bare call planted in
+        either file is a site. The file's other `active` (the `Tape` field, the `fn active` header) and
+        `it.active()` are not."""
+        session = "rust-modules/plex/src/plex/session.rs"
+        tape = "rust-modules/data/src/stores/tape.rs"
+        with open(os.path.join(self.tree, session), "a", encoding="utf-8") as f:
+            f.write("\nfn planted_settled() -> bool {\n    peek_settled().is_some() && current_gen() > 0\n}\n")
+        with open(os.path.join(self.tree, tape), "a", encoding="utf-8") as f:
+            f.write("\nfn planted_active() -> bool {\n    let _ = it.active();\n    active()\n}\n")
+        r = self._deps()
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("globals:", out)
+        self.assertIn(f"{session}::planted_settled::peek_settled  (ledger: ci/allow/globals/plex.txt)", out)
+        self.assertIn(f"{session}::planted_settled::current_gen  (ledger: ci/allow/globals/plex.txt)", out)
+        self.assertEqual(out.count(f"{tape}::planted_active::active  (ledger: "), 1, out)
 
     def test_a_bare_name_that_ends_a_braced_import_is_still_imported(self):
         """RED: `use plx_base::task::{self, spawn};` imports `spawn` as surely as `{spawn, self}` does, and
@@ -7479,8 +7601,13 @@ impl PersonOwnerGateFixture {
         # fan-out's `fan_out` and `ask_sources`, which now reach the other servers through the key-checked `KeyedClients`.
         # Attempt-caps (#1044) moved the pin by nothing: the spellings widened to `devcaps::caps` and the zero-argument
         # `is_dp_audio` / `is_dp_audio_track` (a coverage expansion, not a shrink), and the planner reads none of them.
-        "globals": 57,  # production process-global reads inside machines (`ci/allow/globals/`)
-        "forks": 58,  # production test/production forks in data/, plex/, media/, session/ (`ci/allow/forks/`)
+        # Ledger widening (a one-time re-baseline that RECORDS sites that already existed; no new code and no
+        # new read): the globals rule gained the registry readers its closed list had missed (`server_ids`,
+        # `server_roster_gen`, `server_facts_gen`, `server_probe_result`, `session::peek_settled`,
+        # `session::current_gen`, `tape::active`), +63 (57 -> 120); the forks rule gained the machine crates
+        # screens/, ui/, appkit/ and machine/ (it read only data/, plex/, media/, session/), +17 (58 -> 75).
+        "globals": 120,  # production process-global reads inside machines (`ci/allow/globals/`)
+        "forks": 75,  # production test/production forks in every machine crate: data/, plex/, media/, session/, screens/, ui/, appkit/, machine/ (`ci/allow/forks/`)
         "fxlanes": 11,  # Bridge::app_effect arms that do not push Fx::Deliver (`ci/allow/fxlanes/`)
     }
 
