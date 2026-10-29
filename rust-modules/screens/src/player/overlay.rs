@@ -276,6 +276,15 @@ fn search_default_lang(ps: &plx_media::route::PlaybackSession, meta: plx_data::m
     plx_data::subsearch::default_language(plx_media::route::cur_sub_pref_lang(ps), subtitle_yours_langs(ps, meta))
 }
 
+/// **The rect a menu opens beside**, handed to it once when it is mounted: the opener's rest rect,
+/// widened across to the end of its segment, so the openers of one segment share the panel's edge.
+/// Classic has one segment, the control row, end-aligned at `CTRL_RIGHT`, and every opener (the
+/// Subtitles, Audio and `…` discs, and the failure read-out's quality entry that has no disc at
+/// all) gets that row's rect: the panels settle where the fixed constants put them.
+fn menu_anchor() -> Rect {
+    plx_appkit::player_hud::ctrl_row_hit_rect()
+}
+
 impl PlayerOverlayScreen {
     /// Every panel here answers on exactly one focus group — see each `*Part`'s own `groups()`
     /// (restructure phase 12); this screen never holds more than one panel at a time, so there is
@@ -295,21 +304,22 @@ impl PlayerOverlayScreen {
         let panel = match kind {
             OverlayKind::Tracks { tab } => Panel::Tracks(plx_base::diag::spans::span("tmnew", || {
                 plx_appkit::track_menu::TrackMenuState::new_with(ps, meta, tab, subtitle_yours_langs(ps, meta), offer_search)
+                    .with_anchor(menu_anchor())
             })),
             OverlayKind::Info => Panel::Info(plx_appkit::info_panel::InfoPanelState::new()),
             OverlayKind::Chapters => {
                 Panel::Chapters(plx_appkit::chapters_panel::ChaptersState::new(meta))
             }
             OverlayKind::More { quality: false } => {
-                Panel::More(plx_appkit::more_menu::MoreMenuState::new(ps))
+                Panel::More(plx_appkit::more_menu::MoreMenuState::new(ps).with_anchor(menu_anchor()))
             }
             // Force Direct Play offers no Quality section, so there is no rung to land on: a
             // quality entry is the ordinary menu then (`more_menu::rows_for`).
             OverlayKind::More { quality: true } if plx_media::route::forced_direct_play(ps) => {
-                Panel::More(plx_appkit::more_menu::MoreMenuState::new(ps))
+                Panel::More(plx_appkit::more_menu::MoreMenuState::new(ps).with_anchor(menu_anchor()))
             }
             OverlayKind::More { quality: true } => {
-                Panel::More(plx_appkit::more_menu::MoreMenuState::new_quality(ps))
+                Panel::More(plx_appkit::more_menu::MoreMenuState::new_quality(ps).with_anchor(menu_anchor()))
             }
             OverlayKind::Timing => {
                 let (lo, hi) = plx_media::player::subtitle_offset_range_ms();

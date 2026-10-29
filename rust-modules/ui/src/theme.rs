@@ -194,8 +194,9 @@ pub mod layout {
     /// its note into a column too narrow to read; this floor keeps it a panel. A FLOOR only: wider
     /// content still grows the panel up to `ui::table::MENU_MAX_W`.
     pub const PLAYER_MENU_MIN_W: f32 = 440.0;
-    /// Bottom edge of an in-player popover: ~28px above the transport buttons, at 1080p.
-    pub const PLAYER_MENU_BOTTOM: f32 = crate::consts::SCR_H - 316.0;
+    /// Air between the control that opened an in-player popover (Tracks, More) and the panel, at
+    /// 1080p. Classic's opener row stands at y 792, so this puts the panel's bottom edge at 764.
+    pub const PLAYER_MENU_GAP: f32 = 28.0;
 }
 
 /// The **logo presence ladder** — how big a clearLogo is DRAWN. The third size axis of the design

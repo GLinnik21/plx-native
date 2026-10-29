@@ -1158,3 +1158,30 @@ fn every_kind_is_listed_once() {
     assert_eq!(slots, (0..OverlayKind::ALL.len() as u8).collect::<Vec<_>>());
     assert!(OverlayKind::ALL.into_iter().all(listed));
 }
+
+/// **The player screen hands the menu its anchor when it mounts it.** Whichever opener asked (the
+/// Subtitles or Audio disc, the `…` disc, or the failure read-out's quality entry, which has no
+/// disc), classic's anchor is the control row ending at the segment edge `CTRL_RIGHT`, so every
+/// panel settles at `CTRL_RIGHT - pw`, bottom 764, as the constants placed it.
+#[test]
+fn every_classic_opener_hands_its_menu_the_control_rows_anchor() {
+    let _g = plx_base::testlock::serial();
+    let ps = plx_media::route::PlaybackSession::IDLE;
+    let meta = plx_data::stores::metadata::MetadataStore::default();
+    let row = plx_appkit::player_hud::ctrl_row_hit_rect();
+    assert_eq!(row.x + row.w, plx_appkit::player_hud::CTRL_RIGHT);
+    for (kind, name) in [
+        (OverlayKind::Tracks { tab: 0 }, "Audio disc"),
+        (OverlayKind::Tracks { tab: 1 }, "Subtitles disc"),
+        (OverlayKind::More { quality: false }, "More disc"),
+        (OverlayKind::More { quality: true }, "failure read-out"),
+    ] {
+        let page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, kind);
+        let got = match page.panel() {
+            Panel::Tracks(p) => p.anchor(),
+            Panel::More(p) => p.anchor(),
+            _ => panic!("{name}: a menu"),
+        };
+        assert_eq!(got, row, "{name}");
+    }
+}

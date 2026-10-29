@@ -86,7 +86,10 @@ arguments, and its time is the `dt` it is handed.
      regions.
    - **A row of pills** (selection and focus capsules that travel): `widgets::TabStrip` and
      `SelMark` (`widgets.rs`), the nav bar's own motion.
-   - **Menus**: `Popover` (`popover.rs`) around a `TableView` (`table.rs`). **Strips and grids of
+   - **Menus**: `Popover` (`popover.rs`) around a `TableView` (`table.rs`). A menu placed beside the
+     control that opened it takes its rect from `popover::anchor_panel` with a `Placement`
+     (`under_or_above` and the player menus are calls of it; a header menu's cross axis is `hang_x`),
+     never from a screen's own arithmetic. **Strips and grids of
      tiles**: `cards::Shelf` / `cards::Grid` (`cards/`, next section).
    - **A row of items an equal gap apart** (a header row, a crumb, a name packer): `hstack::HStack`
      (`hstack.rs`), UIStackView's spacing for widths the caller already measured. It places, sums
