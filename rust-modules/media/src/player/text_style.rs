@@ -50,8 +50,8 @@ pub const INK_TRIM: f32 = 3.0;
 /// draws at `line_top + 4`).
 pub const CAPTION_TEXT_INSET: f32 = 4.0;
 
-/// The top of the transport HUD's control row (`player_hud::BTN_Y`, which is this constant). A
-/// text caption lifted with the HUD up must end above it, deep marks included (plan §2.4, as
+/// The top of the transport HUD's control row (`player_hud::classic::BTN_Y`, which is this
+/// constant). A text caption lifted with the HUD up must end above it, deep marks included (plan §2.4, as
 /// amended: the golden's criterion is this row, not `SUB_CEIL_Y`).
 pub const HUD_CONTROLS_TOP_Y: f32 = SCR_H - 288.0;
 

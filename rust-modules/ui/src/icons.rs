@@ -74,8 +74,9 @@ pub enum Icon {
     Play,
     Pause,
     /// The transport pair — two filled triangles, pointing back and forward. Worn by ONE surface:
-    /// the player HUD's transport state read-out beside the elapsed clock (`player_hud::draw_hud`,
-    /// via `plx_appkit::player_hud::transport_mark`), where `Rewind` marks the playhead travelling
+    /// the player HUD's transport state read-out beside the elapsed clock
+    /// (`player_hud::classic::draw_hud`, via `plx_appkit::player_hud::transport_mark`), where
+    /// `Rewind` marks the playhead travelling
     /// BACKWARDS and `FastForward` marks it travelling forwards — a scrub, a chapter/marker hop and
     /// a rapid-seek burst alike. They are a read-out, never a control: there is no rewind BUTTON in
     /// this app and the design system forbids adding one.
