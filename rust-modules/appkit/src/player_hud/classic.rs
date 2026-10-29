@@ -11,7 +11,7 @@ use super::geometry::{HudGeometry, RowAnchor, GROUP_ROW, GROUP_SCRUB, GROUP_TABS
 use super::model::HudModel;
 use super::motion::*;
 use super::state::*;
-use super::HUD_CONTROLS_TOP_Y;
+use super::HudBand;
 use plx_machine::machine::{GroupId, Measure};
 use plx_ui::consts::{SCR_H, SCR_W};
 use plx_ui::hstack::{Align, HStack, Item};
@@ -54,7 +54,7 @@ pub const fn sb_w() -> f32 {
 pub(super) const SB_Y: f32 = SCR_H - 198.0;
 pub(super) const SB_H: f32 = 8.0;
 pub(super) const BTN_S: f32 = 64.0; // right-side control button size (mockup ≈ 68)
-pub(super) const BTN_Y: f32 = HUD_CONTROLS_TOP_Y;
+pub(super) const BTN_Y: f32 = HudBand::CLASSIC.controls_top_y;
 
 // The control row, exported for `skip_pill` — while a marker is under the playhead the Skip button
 // STANDS IN for the two discs, and it has to land on exactly their row and right edge or the

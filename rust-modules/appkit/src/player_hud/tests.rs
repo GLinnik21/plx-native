@@ -704,26 +704,27 @@ fn image_sub_unknown_canvas_stays_1to1() {
 fn image_sub_lifts_only_over_the_transport() {
     let dialogue = Rect::new(300.0, 900.0, 1320.0, 135.0); // bottom 1035, overhangs
                                                            // transport down: nothing moves, ever
-    assert_eq!(hud_lift([dialogue].into_iter(), false), 0.0);
+    assert_eq!(hud_lift([dialogue].into_iter(), false, HudBand::CLASSIC), 0.0);
     // transport up: a bottom-anchored cue rises exactly its overhang, landing ON the ceiling
-    let lift = hud_lift([dialogue].into_iter(), true);
+    let lift = hud_lift([dialogue].into_iter(), true, HudBand::CLASSIC);
     assert!(
-        close(1035.0 - lift, SUB_CEIL_Y),
+        close(1035.0 - lift, HudBand::CLASSIC.ceil_y),
         "lifted bottom should sit at the ceiling"
     );
     // a sign at the top of frame already clears it and must stay put
     let sign = Rect::new(100.0, 100.0, 200.0, 100.0);
-    assert_eq!(hud_lift([sign].into_iter(), true), 0.0);
-    assert!(!overhangs(sign) && overhangs(dialogue));
+    assert_eq!(hud_lift([sign].into_iter(), true, HudBand::CLASSIC), 0.0);
+    assert!(!overhangs(sign, HudBand::CLASSIC) && overhangs(dialogue, HudBand::CLASSIC));
     // a set too tall to lift is clamped instead of being pushed off the top of the screen
     assert_eq!(
-        hud_lift([Rect::new(0.0, 0.0, 1920.0, SCR_H)].into_iter(), true),
+        hud_lift([Rect::new(0.0, 0.0, 1920.0, SCR_H)].into_iter(), true, HudBand::CLASSIC),
         0.0
     );
     assert_eq!(
         hud_lift(
             [Rect::new(0.0, 50.0, 1920.0, SCR_H - 50.0)].into_iter(),
-            true
+            true,
+            HudBand::CLASSIC
         ),
         50.0
     );
@@ -737,26 +738,26 @@ fn image_sub_lifts_only_over_the_transport() {
 fn image_sub_lift_spans_only_the_rects_that_overhang() {
     let sign = Rect::new(100.0, 100.0, 200.0, 100.0);
     let dialogue = Rect::new(300.0, 900.0, 1320.0, 135.0);
-    let lift = hud_lift([sign, dialogue].into_iter(), true);
+    let lift = hud_lift([sign, dialogue].into_iter(), true, HudBand::CLASSIC);
     assert!(
-        close(lift, 1035.0 - SUB_CEIL_Y),
+        close(lift, 1035.0 - HudBand::CLASSIC.ceil_y),
         "the sign's top must not clamp the lift"
     );
     assert!(
-        close(dialogue.y + dialogue.h - lift, SUB_CEIL_Y),
+        close(dialogue.y + dialogue.h - lift, HudBand::CLASSIC.ceil_y),
         "dialogue clears the transport"
     );
-    assert!(!overhangs(sign), "and the sign is not shifted at all");
+    assert!(!overhangs(sign, HudBand::CLASSIC), "and the sign is not shifted at all");
 
     // two-line dialogue: different overhangs, ONE shift, so the gap between them survives
     let l1 = Rect::new(300.0, 900.0, 1320.0, 50.0); // bottom 950
     let l2 = Rect::new(300.0, 960.0, 1320.0, 50.0); // bottom 1010
-    let two = hud_lift([l1, l2].into_iter(), true);
+    let two = hud_lift([l1, l2].into_iter(), true, HudBand::CLASSIC);
     assert!(
-        close(two, 1010.0 - SUB_CEIL_Y),
+        close(two, 1010.0 - HudBand::CLASSIC.ceil_y),
         "measured over the group, not per rect"
     );
-    assert!(overhangs(l1) && overhangs(l2), "both take the same shift");
+    assert!(overhangs(l1, HudBand::CLASSIC) && overhangs(l2, HudBand::CLASSIC), "both take the same shift");
     assert!(
         close((l2.y - two) - (l1.y + l1.h - two), 10.0),
         "their 10px gap is preserved"
@@ -1299,23 +1300,130 @@ fn text_style_baseline_ties_to_caption_geometry_and_layout() {
     use plx_plex::plex::session::{SubtitlePosition, SubtitleSize};
     assert_eq!(CAPTION_FLOOR_Y, SCR_H - plx_ui::consts::MARGIN_Y, "media hard-codes the screen margin");
     assert_eq!((plx_media::player::text_style::SCR_W, plx_media::player::text_style::SCR_H), (SCR_W, SCR_H));
-    let mut n = 0;
-    for position in SubtitlePosition::LADDER {
-        for size in SubtitleSize::LADDER {
-            for hud_up in [false, true] {
-                let (scale, baseline, floor) = caption_geometry_for(size, position, hud_up);
-                let t = today_baseline(position, size_scale(size), hud_up);
-                assert_eq!((t.scale, t.baseline, t.floor), (scale, baseline, floor), "{position:?} {size:?} up={hud_up}");
-                for lines in 1..=CAPTION_ANCHOR_LINES {
-                    let lay = caption_layout(lines, scale, baseline, floor);
-                    let tl = today_layout(lines, scale, baseline);
-                    assert_eq!((tl.face, tl.pitch, tl.top), (lay.face, lay.pitch, lay.top), "{lines} lines");
+    for band in [HudBand::CLASSIC, HudBand::from_controls_top(700.0)] {
+        let mut n = 0;
+        for position in SubtitlePosition::LADDER {
+            for size in SubtitleSize::LADDER {
+                for hud_up in [false, true] {
+                    let (scale, baseline, floor) = caption_geometry_for(size, position, hud_up, band);
+                    let t = today_baseline(position, size_scale(size), hud_up, band);
+                    assert_eq!((t.scale, t.baseline, t.floor), (scale, baseline, floor), "{position:?} {size:?} up={hud_up}");
+                    for lines in 1..=CAPTION_ANCHOR_LINES {
+                        let lay = caption_layout(lines, scale, baseline, floor);
+                        let tl = today_layout(lines, scale, baseline);
+                        assert_eq!((tl.face, tl.pitch, tl.top), (lay.face, lay.pitch, lay.top), "{lines} lines");
+                    }
+                    n += 1;
                 }
-                n += 1;
             }
         }
+        assert_eq!(n, 30);
     }
-    assert_eq!(n, 30);
+}
+
+/// **The caption draw and the band's difference**: a band that is not classic's moves the lifted
+/// baseline and floor by exactly the difference of the two bands, and the HUD-down placement not at
+/// all.
+#[test]
+fn a_non_classic_band_moves_the_lifted_caption_by_its_difference() {
+    use plx_plex::plex::session::{SubtitlePosition, SubtitleSize};
+    let band = HudBand::from_controls_top(700.0);
+    let shift = HudBand::CLASSIC.controls_top_y - band.controls_top_y;
+    assert_eq!(shift, 92.0);
+    for position in SubtitlePosition::LADDER {
+        for size in SubtitleSize::LADDER {
+            let (_, cb, cf) = caption_geometry_for(size, position, true, HudBand::CLASSIC);
+            let (_, nb, nf) = caption_geometry_for(size, position, true, band);
+            assert_eq!((cb - nb, cf - nf), (shift, shift), "{position:?} {size:?}");
+            assert_eq!(
+                caption_geometry_for(size, position, false, band),
+                caption_geometry_for(size, position, false, HudBand::CLASSIC),
+                "the HUD down ignores the band"
+            );
+        }
+    }
+}
+
+/// The image-subtitle lift lands the overhanging group on the band's ceiling, so a higher band
+/// lifts the same cue by exactly the difference.
+#[test]
+fn image_sub_lift_follows_the_band() {
+    let band = HudBand::from_controls_top(700.0);
+    let dialogue = Rect::new(300.0, 900.0, 1320.0, 135.0);
+    let classic = hud_lift([dialogue].into_iter(), true, HudBand::CLASSIC);
+    let lift = hud_lift([dialogue].into_iter(), true, band);
+    assert!(close(lift - classic, 92.0), "{lift} vs {classic}");
+    assert!(close(1035.0 - lift, band.ceil_y), "the lifted bottom sits on the band's ceiling");
+    // A cue that clears classic's ceiling but not the higher band's is lifted only by the latter.
+    let above = Rect::new(300.0, 650.0, 1320.0, 120.0); // bottom 770
+    assert!(!overhangs(above, HudBand::CLASSIC) && overhangs(above, band));
+    assert_eq!(hud_lift([above].into_iter(), true, HudBand::CLASSIC), 0.0);
+    assert!(close(hud_lift([above].into_iter(), true, band), 770.0 - band.ceil_y));
+}
+
+/// **`min_controls_top_y`**: the highest row top for which the largest block (three lines at the
+/// largest size, the highest position) is still inside `SAFE`. The number is computed, not
+/// estimated: 54 (SAFE top) + 3 x 48 x 1.8 (block) + 320 (position) + 12 (clearance) = 645.2, up
+/// to the whole pixel 646. A band exactly there keeps the block on screen through
+/// `caption_geometry_for` and `hud_lift`; one px higher does not.
+#[test]
+fn min_controls_top_y_is_where_the_largest_block_just_fits() {
+    use plx_plex::plex::session::{SubtitlePosition, SubtitleSize};
+    let bound = min_controls_top_y();
+    assert_eq!(bound, 646.0);
+    assert!(bound <= HudBand::CLASSIC.controls_top_y, "classic's own row passes");
+    let (size, position) = (SubtitleSize::Huge, SubtitlePosition::High);
+    let top_of_block = |band: HudBand| {
+        let (scale, baseline, floor) = caption_geometry_for(size, position, true, band);
+        caption_layout(CAPTION_ANCHOR_LINES, scale, baseline, floor).top
+    };
+    assert!(top_of_block(HudBand::from_controls_top(bound)) >= SAFE.y);
+    assert!(top_of_block(HudBand::from_controls_top(bound - 1.0)) < SAFE.y, "one px higher does not");
+    // Every other pick of size and position fits at the bound too: it is the binding one.
+    for p in SubtitlePosition::LADDER {
+        for z in SubtitleSize::LADDER {
+            let (scale, baseline, floor) = caption_geometry_for(z, p, true, HudBand::from_controls_top(bound));
+            assert!(caption_layout(CAPTION_ANCHOR_LINES, scale, baseline, floor).top >= SAFE.y, "{p:?} {z:?}");
+        }
+    }
+    // The image path: the same block authored on the highest position's baseline. `hud_lift` lands
+    // its bottom on the BAND's ceiling (classic's 780 would not move it at all, so this is what
+    // ties the reader to the band) and, being a lift, leaves the top inside `SAFE`.
+    let height = CAPTION_ANCHOR_LINES as f32 * CAPTION_LINE_PITCH * size_scale(size);
+    let bottom = SUB_BASE_Y - position_lift(position);
+    let block = Rect::new(300.0, bottom - height, 1320.0, height);
+    for band in [HudBand::from_controls_top(bound), HudBand::from_controls_top(bound - 1.0)] {
+        let lift = hud_lift([block].into_iter(), true, band);
+        assert!(close(block.y + block.h - lift, band.ceil_y), "{band:?}: bottom on the ceiling");
+        assert!(block.y - lift >= SAFE.y, "{band:?}: lifted top {}", block.y - lift);
+    }
+    // The clamp, not the bound: a band far past it cannot push the block off the screen.
+    let far = HudBand::from_controls_top(200.0);
+    let lift = hud_lift([block].into_iter(), true, far);
+    assert!(block.y - lift >= 0.0, "a band far past the bound clamps on screen");
+    assert!(block.y + block.h - lift > far.ceil_y, "…which is the clamp, short of the ceiling");
+}
+
+/// **`HudGeometry::band` is the compact row's top**, in every slot: classic's layout reports
+/// `HudBand::CLASSIC`, from the slot-independent half and from the whole geometry alike.
+#[test]
+fn the_layouts_band_is_classics_in_every_slot() {
+    assert_eq!(classic::frame_geometry().band(), HudBand::CLASSIC);
+    let row = HudMotion::new();
+    let slots = [
+        ControlSlot::Discs(Controls::NONE),
+        ControlSlot::Discs(Controls { previous: true, next: true, restart: true }),
+        slot_for(Some(marker(MarkerKind::Intro, false)), false, NextEpisodeMode::Countdown),
+        slot_for(Some(marker(MarkerKind::Credits, true)), true, NextEpisodeMode::Countdown),
+    ];
+    for slot in slots {
+        assert_eq!(classic::geometry(slot, &row, 2, &FM).band(), HudBand::CLASSIC);
+    }
+    assert_eq!(
+        HudBand::CLASSIC,
+        HudBand::from_controls_top(CTRL_Y),
+        "the band is the row's own top: the one number classic draws its row at"
+    );
 }
 
 /// **A 1-3 line caption lays out exactly as it did before the fit rule**: 36 px at the
