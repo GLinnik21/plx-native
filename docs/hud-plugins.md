@@ -1013,8 +1013,9 @@ binds `builtin:classic`, which keeps it; a package's transport row is the owner'
 a package is never the default.
 
 Classic's compact state, tabs, scrim and Up Next, as the `layout` of `classic.plxhud.json` (every number is a constant
-cited in the table below; faces are omitted, so each control draws its command's classic glyph; PR8 adds the two section
-bands of the table and keys the tabs band's `gap_before` on them, and PR6's `--hud-export builtin:classic` prints the
+cited in the table below; faces are omitted, so each control draws its command's classic glyph; the file in the repo
+(`appkit/src/hud_format/fixtures/classic.plxhud.json`) already has the two section bands of the table and the tabs
+band's keyed `gap_before` (its chapters value is a placeholder, below), and PR6's `--hud-export builtin:classic` prints the
 whole file):
 
 ```json
@@ -1039,7 +1040,7 @@ whole file):
       ] } }
     ] },
     { "id": "bar", "when": "!sections", "chrome": "steady", "gap_before": 26, "cells": [
-      { "align": "start", "playbar": { "w": "fill" } }
+      { "align": "start", "playbar": { "w": "fill", "fill": "TEXT_PRIMARY", "track": "RAIL_TRACK", "thickness": 8, "clock_size": "CAPTION" } }
     ] },
     { "id": "tabs", "gap_before": 59, "cells": [
       { "align": "start", "segment": { "id": "tabs", "gap": "SM", "items": [
@@ -1070,13 +1071,13 @@ at 768 and the title at 802.
 | Row | five 64 discs at `CTRL_Y` 792, ending at `CTRL_RIGHT` = `SAFE`'s right (`:476-491`) | end-aligned segment, `x_inset: 0` |
 | Scrim | fixed `SCRIM_H` 470 in every state, before `if transport` (`:941`, `:1678-1686`, `:2074`) | `scrim {cover: fixed, height: 470}` |
 | Chrome fade | title, row and tabs on `pc = p.alpha(chrome_a)`; bar, clocks and preview on `p` (`:2075-2081`, `:2146-2160`) | bands `top` and `tabs` default `fades`; `bar` `steady` |
-| Playbar | `SB_Y` 882, 8 tall (`:474-475`); primary fill, tick knob, clocks follow the head, state glyph (F37) | `playbar` at its defaults, which are classic's |
+| Playbar | `SB_Y` 882, 8 tall (`:474-475`); primary fill, tick knob, clocks follow the head, state glyph (F37) | `playbar` with the four keys the table requires (`fill` `TEXT_PRIMARY`, `track` `RAIL_TRACK`, `thickness` 8, `clock_size` `CAPTION`, `draw_playbar`) and the rest at its defaults, which are classic's |
 | Grab band | `scrub_hit_rect` = `(SB_X, SCR_H - 270, sb_w, 160)` (`:1405-1407`) | `playbar.grab` defaults 72 / 80 |
 | Tabs | Info, then Chapters only with chapters (`tab_labels`, `:1430-1435`); `SM` apart from `SB_X` (`:1457-1459`); selected while open (`hud_tab_state`, `:1587-1590`); drawn in every state, outside `if transport` (`:2160`); `BTN_S` tall at `tab_y()` 949 (`:1440-1442`, `:2174-2176`) | band `tabs` with no `when`, `gap_before: 59`; `toggle_section` pills of `size: 64`, Chapters `when: chapters.present`; the selected-face rule |
 | Up Next | the app-drawn column (`up_next.rs:194-200`, `:226-266`, `:290-330`), the primary floored at `ctrl_row_w` (`player_hud.rs:717-719`) | `up_next {replaces: [row], band: top, align: end, still, caption, countdown: fill_sweep}`; inside app-owned |
 | Skip | `ctrl_slot` of its own label (`skip_pill.rs:75-77`) | the Skip rule (Package format) |
 | Sections | modal; title, bar and row hidden while open (F2) | `sections: modal`; `when: "!sections"` on `top` and `bar` |
-| Chapters strip | 288 x 162 at `CH_TOP` 684, gap 24, radius 10, ring 2.5; name 26 below the card, time 34 below the name, both at the card's left (`chapters_panel.rs:27-40`); cards past `SAFE` culled at the screen edge (`:140-147`); an empty name draws "Chapter N" (`:176-179`) | band `chapters`, `when: panel.chapters`: `strip {card_w: 288, card_h: 162, gap: 24, radius: 10, focus: ring, label_align: leading, below_gap: 26, below: [item.title LABEL bold leading 34, item.start CAPTION]}`; the tabs band's `gap_before` keyed on `panel.chapters` so the card top stays 684 (PR8 computes it from the strip's box); scroll and marquee per D11 |
+| Chapters strip | 288 x 162 at `CH_TOP` 684, gap 24, radius 10, ring 2.5; name 26 below the card, time 34 below the name, both at the card's left (`chapters_panel.rs:27-40`); cards past `SAFE` culled at the screen edge (`:140-147`); an empty name draws "Chapter N" (`:176-179`) | band `chapters`, `when: panel.chapters`: `strip {card_w: 288, card_h: 162, gap: 24, radius: 10, focus: ring, label_align: leading, below_gap: 26, below: [item.title LABEL bold leading 34, item.start CAPTION]}`; the tabs band's `gap_before` keyed on `panel.chapters` so the card top stays 684 (the fixture's value, 43 = 949 - 684 - (162 + 26 + 34), takes the `item.start` line as zero-height as `chapters_panel::label_ys` does; a one-line text's box is its rung's line height, so PR8 recomputes it from the compiled strip box and the fixture's number is a placeholder until then); scroll and marquee per D11 |
 | Info card | ground x 80, w 1760, h 236, top `SCR_H - 176 - 236` = 668, pad 28 (`info_panel.rs:581-588`); still radius 16 (`:216`); text 34 from the still and from the buttons (`:252-255`); title to synopsis 6, tags `before(12)` (`:436-446`); synopsis `leading(29)` (`:386-389`); buttons a column 70 tall, 16 apart, centred, width max(352, widest of all three labels) (`:594-608`), right edge 1812 inside `SAFE`'s 1824 | band `info`, `when: panel.info`: `rect {bleed: 16, pad: 28, h: 236, gap: 34, ink: PANEL_TOP, radius: 28}` holding `image info.still` 320 x 180 radius 16; a `vstack {gap: 6, w: fill, valign: center}` of the title (`max_lines: 1`), the synopsis (`leading: 29`, `max_lines: 2`) and `facts` with `gap_before: 12` (`order: [genres, year, duration]`, `genres_max: 2`, `bold: true`, `ink: TEXT_PRIMARY`, `playback_fact: true`, `badges: [content_rating, audio_format, cc, sdh, ad]`); `actions {axis: column, gap: 16, item_h: 70, min_w: 352, items: [from_beginning, go_to_detail]}`, `align: end`, `valign: center`; the tabs band's `gap_before` 45 under `panel.info` (949 - 904) |
 | Captions | ceiling 780 whenever the HUD is up (F28) | `band: "controls"`, interactive rects only: 792 - 12 in every slot |
 
@@ -1090,7 +1091,8 @@ recompiles on a change; registry CI lints all ten):
   still, the Tracks, More and Timing overlays. `readout_owns_frame` keeps deciding whether the HUD draws.
 - I2. Reachability R1-R4 under every valuation of the content conditions (`open_more` in the root; folds computed;
   openers imply sections; Up Next whole).
-- I3. Identity: every `id` unique; an unknown command, parameter, binding or condition is an error; order
+- I3. Identity: every `id` unique among the bands, among the segments and among the controls (three namespaces, because
+  `up_next.band` and `up_next.replaces` name different kinds and classic's own `tabs` is both a band and a segment); an unknown command, parameter, binding or condition is an error; order
   is free.
 - I4. z-order census: same-z interactive rects never overlap; every item hit-tests back to itself (the
   census `every_disc_hit_tests_back_to_itself`, `player_hud.rs:2500`, generalised); a lower-z group (the
@@ -1434,7 +1436,9 @@ PR9. The More fold.
   root unchanged, pixel-identical); `fit_report` clean in every shipped language.
 
 PR10. Store, local install, selection, drop folder.
-- Goal: `data::hudpacks::HudStore` (pure; events `Scanned`, `Validated`, `Selected`, `Removed`; effects `ScanDir`,
+- Goal: refuse the id `builtin:classic` from every source that is not compiled in (the format accepts that one
+  literal so the built-in's own file parses; a sideloaded or registry file claiming it must never collide with the
+  built-in's Settings entry or the fallback target). `data::hudpacks::HudStore` (pure; events `Scanned`, `Validated`, `Selected`, `Removed`; effects `ScanDir`,
   `ReadFile`, `WriteFile`, `Delete`), runners in `app/adapters/huds.rs` on the storage worker, `paths::hud_candidates()`,
   a `Profile` `setting!` with the install fallback, and `SettingsPage::PlayerHud`, a FormTable keyed by package id
   (not a `PickerKind`, a static vocabulary, F32) with a `fit_report`; a compile failure in the current language falls
@@ -1442,7 +1446,8 @@ PR10. Store, local install, selection, drop folder.
   `fit_report`), Text fit.
 - Files: `data/src/hudpacks.rs`, `ci/module-layers.ini`, `docs/module-layers.md`, `ci/machines.ini`, `base/src/paths.rs`,
   `plex/src/plex/session/prefs.rs`, `screens/src/family.rs`, `screens/src/preferences*`, `src/app/adapters/`.
-- Verify: machine tests (event in, effect out), `ci/check-machine-shape.py`, ledgers not grown, the sim with a fixture
+- Verify: a dropped or fetched file with id `builtin:classic` is refused and the built-in stays selectable; machine
+  tests (event in, effect out), `ci/check-machine-shape.py`, ledgers not grown, the sim with a fixture
   pack in the drop folder, the TV under the Dev Mode install.
 
 PR11. Install from address: the bounded fetch in `net/src/net.rs` (`fw-compat-reviewer`), the Fetch effect, the

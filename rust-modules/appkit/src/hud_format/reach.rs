@@ -19,9 +19,10 @@
 //! cell's, the cells of a `vstack` or `rect` around it, its own), and, unless the slot is Discs, its
 //! segment is not one of `up_next.replaces`. A strip card's cells are not focus stops and are not walked.
 //!
-//! **R2 folds** are computed from the packages' own controls only: a folded More row is not an edge of
+//! **R2 folds** are computed from the package's own controls only: a folded More row is not an edge of
 //! this graph, so a section's content can fold (`from_beginning` in an Info band whose opener is missing)
-//! although a folded Info row would reach it. The row is then redundant, never missing.
+//! although a folded Info row would reach it. The row is then redundant, never missing. A section the package
+//! does not lay out never folds: its More row would enter a state where nothing is drawn.
 //!
 //! **R1 checks presence only.** The size floor `MIN_CONTROL_SIZE` is a geometric bound and belongs to the
 //! compiler, which has the rects; no value is invented here.
@@ -327,12 +328,14 @@ impl<'a> Layout<'a> {
                 .any(|paused| self.blocker(control, state, v, paused).is_none())
     }
 
-    /// Whether the app lets the command act under `v`: Previous and Next need an episode, the chapters
-    /// section needs chapters, the rest always.
+    /// Whether a folded row for the command would do something under `v`: Previous and Next need an
+    /// episode, the chapters section needs chapters, and a section row needs a section the package lays
+    /// out (a row that enters a section with no band would open nothing); the rest always.
     fn enabled(&self, fold: &Fold, v: Valuation) -> bool {
+        let laid = |name| SECTIONS.iter().any(|&(bit, n)| n == name && self.laid & bit != 0);
         match (fold.command, fold.section) {
             ("previous" | "next", _) => v.episode,
-            ("toggle_section", Some("chapters")) => v.chapters,
+            ("toggle_section", Some(name)) => laid(name) && (name != "chapters" || v.chapters),
             _ => true,
         }
     }

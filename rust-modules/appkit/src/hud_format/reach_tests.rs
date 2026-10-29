@@ -91,7 +91,7 @@ fn the_reference_passes_and_folds_only_the_info_actions() {
 }
 
 #[test]
-fn the_minimal_package_passes_with_more_placed_and_folds_everything_else() {
+fn the_minimal_package_passes_with_more_placed_and_folds_what_it_could_open() {
     let checked = check(&package(MINIMAL));
     assert!(checked.findings.is_empty(), "{}", dump(&checked.findings));
     assert_eq!(
@@ -100,12 +100,27 @@ fn the_minimal_package_passes_with_more_placed_and_folds_everything_else() {
             fold("previous", None),
             fold("next", None),
             fold("open_tracks", None),
-            fold("toggle_section", Some("chapters")),
-            fold("toggle_section", Some("info")),
             fold("from_beginning", None),
             fold("go_to_detail", None),
-        ]
+        ],
+        "it lays out no section, so a More row for Chapters or Info would open nothing and is not folded"
     );
+}
+
+#[test]
+fn a_section_row_folds_only_for_a_section_the_package_lays_out() {
+    // Chapters is laid out (a band shown `when: panel.chapters`), Info is not: only Chapters can fold.
+    let text = edit(
+        MINIMAL,
+        r#"{ "id": "row", "gap_before": "SM","#,
+        r#"{ "id": "chapters", "when": "panel.chapters", "cells": [
+        { "align": "start", "text": { "bind": "label.chapters", "size": "LABEL", "ink": "TEXT_PRIMARY" } }
+      ] },
+      { "id": "row", "gap_before": "SM","#,
+    );
+    let folds = check(&package(&text)).folds;
+    assert!(folds.contains(&fold("toggle_section", Some("chapters"))), "{folds:?}");
+    assert!(!folds.contains(&fold("toggle_section", Some("info"))), "{folds:?}");
 }
 
 #[test]
