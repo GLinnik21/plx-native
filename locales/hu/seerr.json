@@ -6,7 +6,7 @@
   "settings.seerr.value_on": "Be",
   "settings.seerr.copy": "Csatlakoztasd a Seerr, Overseerr vagy Jellyseerr szerveredet, hogy erről a tévéről kérhess filmeket és sorozatokat. A bejelentkezés a nézést végző Plex-profillal történik.",
   "settings.seerr.address.title": "Szervercím",
-  "settings.seerr.address.detail": "Például 192.168.1.10:5055",
+  "settings.seerr.address.detail": "Például 192.0.2.10:5055",
   "settings.seerr.address.unset": "Nincs megadva",
   "settings.seerr.connect.title": "Csatlakozás",
   "settings.seerr.status.off": "Előbb add meg a szerver címét.",

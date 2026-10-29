@@ -6,7 +6,7 @@
   "settings.seerr.value_on": "Activado",
   "settings.seerr.copy": "Conecta tu servidor Seerr, Overseerr o Jellyseerr para solicitar películas y series desde este televisor. Inicia sesión con el perfil de Plex que está viendo.",
   "settings.seerr.address.title": "Dirección del servidor",
-  "settings.seerr.address.detail": "Por ejemplo 192.168.1.10:5055",
+  "settings.seerr.address.detail": "Por ejemplo 192.0.2.10:5055",
   "settings.seerr.address.unset": "Sin configurar",
   "settings.seerr.connect.title": "Conectar",
   "settings.seerr.status.off": "Primero escribe la dirección del servidor.",
