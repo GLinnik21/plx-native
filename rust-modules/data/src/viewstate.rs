@@ -225,6 +225,13 @@ pub struct ViewChange {
 /// client stops OFFERING a resume.
 const WATCHED_PERCENT: i64 = 90;
 
+/// Is a position `ms` into an item `dur_ms` long past [`WATCHED_PERCENT`], so that the server marks
+/// the item watched from a `playing`/`stopped` report there? False for an unknown duration. Integer
+/// math with saturating products: no overflow whatever the server reported.
+pub fn past_watched_threshold(ms: i64, dur_ms: i64) -> bool {
+    dur_ms > 0 && ms.saturating_mul(100) >= dur_ms.saturating_mul(WATCHED_PERCENT)
+}
+
 /// The edit a store applies to the rows a [`ViewAt`] names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewEdit {
@@ -265,11 +272,7 @@ impl ViewChange {
             // never past the end of what was playing; at the watched threshold PMS clears
             // `viewOffset` (docs/pms-api.md, "Client behavior expected by PMS"), so there is no point
             ViewFact::Offset { ms, dur_ms } => ViewEdit::Offset {
-                ms: if dur_ms > 0 && ms.saturating_mul(100) >= dur_ms.saturating_mul(WATCHED_PERCENT) {
-                    0
-                } else {
-                    ms.max(0)
-                },
+                ms: if past_watched_threshold(ms, dur_ms) { 0 } else { ms.max(0) },
             },
         }
     }

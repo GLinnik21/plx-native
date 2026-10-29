@@ -535,19 +535,70 @@ fn a_stop_leaves_a_record_with_the_queue_rows_parentage_and_prior_watched_state(
     reset_player_control_for_test(&ps);
 }
 
+/// A loopback PMS that answers every request with an empty 200 and keeps each request line, in the
+/// order they arrived: what a stop's worker sent, as the server saw it.
+struct RecordingServer {
+    port: i32,
+    seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+impl RecordingServer {
+    fn start() -> Self {
+        use std::io::{BufRead, BufReader, Write};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Mutex};
+        use std::time::Duration;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let port = listener.local_addr().unwrap().port() as i32;
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let done = Arc::new(AtomicBool::new(false));
+        let thread = {
+            let (seen, done) = (seen.clone(), done.clone());
+            std::thread::spawn(move || {
+                while !done.load(Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok((mut socket, _)) => {
+                            let _ = socket.set_nonblocking(false);
+                            let _ = socket.set_read_timeout(Some(Duration::from_secs(5)));
+                            let mut line = String::new();
+                            let _ = BufReader::new(&socket).read_line(&mut line);
+                            seen.lock().unwrap().push(line);
+                            let _ = socket.write_all(
+                                b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                            );
+                        }
+                        Err(_) => std::thread::sleep(Duration::from_millis(2)),
+                    }
+                }
+            })
+        };
+        Self { port, seen, done, thread }
+    }
+
+    /// Every request line so far.
+    fn lines(&self) -> Vec<String> {
+        self.seen.lock().unwrap().clone()
+    }
+
+    fn stop(self) {
+        self.done.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.thread.join().unwrap();
+    }
+}
+
 /// **A stop that finished the item marks it watched, after its `stopped` report.** A server only
 /// marks an item played itself when the stop lands past its own threshold (PMS's is about 90 %),
-/// and long credits start before that, so Up Next and Skip on a `final` credits marker set [`PlaybackSession::finished`] and the stop worker scrobbles the item
-/// once the `stopped` POST is in. The record the app learns the stop from then reads as the end of
-/// the item, before its read-back says the server's. The flag is taken by the stop that reads it:
-/// the next stop, which the viewer did not finish, posts `stopped` alone.
+/// and long credits start before that, so Up Next and Skip on a `final` credits marker set
+/// [`PlaybackSession::finished`] and a stop BELOW the threshold scrobbles the item once the
+/// `stopped` POST is in. The record the app learns the stop from then reads as the end of the
+/// item, before its read-back says the server's. The flag is taken by the stop that reads it: the
+/// next stop, which the viewer did not finish, posts `stopped` alone.
 #[test]
 fn a_stop_that_finished_the_item_scrobbles_it_after_the_stopped_report() {
-    use std::io::{BufRead, BufReader, Write};
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
-    use std::time::Duration;
-
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     drain_scrobble();
@@ -555,33 +606,9 @@ fn a_stop_that_finished_the_item_scrobbles_it_after_the_stopped_report() {
     reset_player_control_for_test(&ps);
     let _ = take_landed_stops();
 
-    // Every request line a stop's worker sends, in order. The loop answers each with an empty 200.
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-    listener.set_nonblocking(true).expect("nonblocking");
-    let port = listener.local_addr().unwrap().port() as i32;
-    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
-    let done = Arc::new(AtomicBool::new(false));
-    let server = {
-        let (seen, done) = (seen.clone(), done.clone());
-        std::thread::spawn(move || {
-            while !done.load(Ordering::SeqCst) {
-                match listener.accept() {
-                    Ok((mut socket, _)) => {
-                        let _ = socket.set_nonblocking(false);
-                        let _ = socket.set_read_timeout(Some(Duration::from_secs(5)));
-                        let mut line = String::new();
-                        let _ = BufReader::new(&socket).read_line(&mut line);
-                        seen.lock().unwrap().push(line);
-                        let _ = socket.write_all(
-                            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                        );
-                    }
-                    Err(_) => std::thread::sleep(Duration::from_millis(2)),
-                }
-            }
-        })
-    };
-    let sid = plx_plex::plex::register_for_test("finished-stop", "127.0.0.1", port, "tok", "finished-client");
+    // Every request line a stop's worker sends, in order. The server answers each with an empty 200.
+    let server = RecordingServer::start();
+    let sid = plx_plex::plex::register_for_test("finished-stop", "127.0.0.1", server.port, "tok", "finished-client");
     apply_plan(
         &mut ps,
         Plan {
@@ -598,7 +625,7 @@ fn a_stop_that_finished_the_item_scrobbles_it_after_the_stopped_report() {
     drain_scrobble();
     assert!(!ps.finished, "the stop took the flag, so it cannot mark the next item");
     {
-        let lines = seen.lock().unwrap();
+        let lines = server.lines();
         assert_eq!(lines.len(), 2, "the stopped report and the scrobble, nothing else: {lines:?}");
         assert!(lines[0].contains("state=stopped"), "`stopped` goes first: {}", lines[0]);
         assert!(lines[1].contains("/:/scrobble?key=7"), "then the scrobble: {}", lines[1]);
@@ -615,15 +642,65 @@ fn a_stop_that_finished_the_item_scrobbles_it_after_the_stopped_report() {
     scrobble_stop(&mut ps, Some(("8".into(), 30_000, 60_000)), None);
     drain_scrobble();
     {
-        let lines = seen.lock().unwrap();
+        let lines = server.lines();
         assert_eq!(lines.len(), 3, "only the `stopped` report: {lines:?}");
         assert!(lines[2].contains("state=stopped"), "{}", lines[2]);
     }
     let stops = take_landed_stops();
     assert_eq!((stops[0].pos_ms, stops[0].dur_ms), (30_000, 60_000));
 
-    done.store(true, Ordering::SeqCst);
-    server.join().unwrap();
+    server.stop();
+    plx_plex::plex::reset_servers_for_test();
+    reset_session(&mut ps);
+    reset_player_control_for_test(&ps);
+}
+
+/// **A stop past the server's own threshold is not scrobbled a second time.** Up Next only appears
+/// at the final credits marker, and the end of the stream and the countdown's expiry reach it too,
+/// so a stop with `finished` set often lands past ~90 %: the server has already counted the view
+/// from that report, and `/:/scrobble` would add one more (`docs/pms-api.md` §6, "Measured live
+/// 2026-10-10"). Such a stop posts `stopped` alone, tells the app where the viewer stopped, and
+/// still takes the flag.
+#[test]
+fn a_finishing_stop_past_the_servers_threshold_posts_stopped_alone() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    drain_scrobble();
+    reset_session(&mut ps);
+    reset_player_control_for_test(&ps);
+    let _ = take_landed_stops();
+
+    let server = RecordingServer::start();
+    let sid = plx_plex::plex::register_for_test("finished-late", "127.0.0.1", server.port, "tok", "finished-late-client");
+    apply_plan(
+        &mut ps,
+        Plan {
+            sid,
+            sess: "logical-finished-late".into(),
+            ..Default::default()
+        },
+        "7",
+    );
+
+    // 59 s of 60 s is past 90 %: the server marks item 7 played from this stop itself.
+    ps.finished = true;
+    scrobble_stop(&mut ps, Some(("7".into(), 59_000, 60_000)), None);
+    drain_scrobble();
+    assert!(!ps.finished, "the stop took the flag even though it did not scrobble");
+    {
+        let lines = server.lines();
+        assert_eq!(lines.len(), 1, "only the `stopped` report, no second view: {lines:?}");
+        assert!(lines[0].contains("state=stopped"), "{}", lines[0]);
+    }
+    let stops = take_landed_stops();
+    assert_eq!(stops.len(), 1);
+    assert_eq!(
+        (stops[0].pos_ms, stops[0].dur_ms, stops[0].ok),
+        (59_000, 60_000, true),
+        "the record keeps the viewer's position; the server's own threshold made it watched"
+    );
+
+    server.stop();
     plx_plex::plex::reset_servers_for_test();
     reset_session(&mut ps);
     reset_player_control_for_test(&ps);

@@ -145,9 +145,10 @@ pub struct PlaybackSession {
     /// above. Cleared with them, and by the next playback request.
     engine_failure: Option<crate::player::RuntimeFailure>,
     /// The viewer left this item for the next one from its credits (Up Next, or Skip on a `final`
-    /// credits marker). The stop that follows marks it watched explicitly: a server only does that
-    /// itself when the stop lands past its own threshold (PMS's is about 90 %, `docs/pms-api.md`
-    /// §6), and long credits start before that. Read and cleared by [`scrobble_stop`].
+    /// credits marker). A stop BELOW the server's own watched threshold (PMS's is about 90 %,
+    /// `docs/pms-api.md` §6; [`plx_data::viewstate::past_watched_threshold`]) then marks it watched
+    /// explicitly, since long credits start before that; a stop past it is the server's to count,
+    /// and a scrobble on top would be a second view. Read and cleared by [`scrobble_stop`].
     pub finished: bool,
     /// Read-only publication of Player.repair for the HUD. Never authorizes a resource effect.
     pub repair_status: plx_platform::tv::sandbox::State,
@@ -6362,7 +6363,8 @@ struct ScrobbleWork {
     subtitle_stream_id: i64,
     transcode_session: String,
     timeline_stop: Option<TimelineStopCompletion>,
-    /// Mark the item watched once the `stopped` report is in (`PlaybackSession::finished`).
+    /// Mark the item watched once the `stopped` report is in, if it landed below the server's own
+    /// watched threshold (`PlaybackSession::finished`).
     mark_watched: bool,
     /// The record the app learns this stop from; posted just before `timeline_stop` completes.
     stop_mail: Option<PendingStop>,
@@ -6481,7 +6483,9 @@ impl ScrobbleWork {
                 ok as i32,
             ));
             posted = ok;
-            if self.mark_watched {
+            // Only a stop BELOW the server's own threshold needs the scrobble: past it the report
+            // just posted already counted the view, and `/:/scrobble` would count a second one.
+            if self.mark_watched && d_ms > 0 && !plx_data::viewstate::past_watched_threshold(t_ms, d_ms) {
                 let marked = self.client.is_some_and(|c| c.scrobble(&rk));
                 plx_base::eventlog::log(&format!("marked watched at the credits ok={}", marked as i32));
                 if marked {
