@@ -32,7 +32,8 @@
 # do it to the one static free each other's data; `cargo test` runs tests on parallel threads, so
 # the bug is a random crash in a stranger's run (`plx_ui`'s TAB_CACHE, 2026-10-20). A frame-loop
 # cache is a `thread_local!`; a heap static that is genuinely process-wide earns a named entry
-# that says which single thread owns it or what serialises it. Plain Copy statics (GL object
+# that says which single thread owns it or what serialises it (`ci/check-ledger-ratchet.py` fails a
+# PR that grows ci/allow/statics.txt, so a new entry is the owner's call). Plain Copy statics (GL object
 # names and uniform locations, function pointers, raw FFI handles, flags, counters, times, NonZero*,
 # atomics and Cell-family wrappers of plain data) stay outside the rule: they free nothing when
 # written. A static a `macro_rules!` declares is listed under the macro's name and `!` (`cache!`).
@@ -103,7 +104,7 @@ while IFS=$'\t' read -r path name why; do
   else echo "    $path: static mut $name — $why"; bad=$((bad+1)); fi
 done <<<"$heap"
 if [ "$bad" -eq 0 ]; then ok "heap-owning static mut outside the gated directories: $n_heap named in ci/allow/statics.txt, none unlisted"
-else fail "statics: $bad heap-owning static mut(s) not in ci/allow/statics.txt — make it a thread_local! (a frame-loop cache) or name it there with the thread that owns it; if the type is plain data the detector misread, fix the detector (ci/check-statics-heap.py), do not allowlist it"; fi
+else fail "statics: $bad heap-owning static mut(s) not in ci/allow/statics.txt — make it a thread_local! (a frame-loop cache) or name it there with the thread that owns it (ci/check-ledger-ratchet.py fails a PR that grows the list, so a new entry is the owner's call); if the type is plain data the detector misread, fix the detector (ci/check-statics-heap.py), do not allowlist it"; fi
 
 # stale entries: an allowlisted static or file that no longer exists must leave the list.
 known=$(printf '%s\n%s\n' "$all" "$heap_keys")

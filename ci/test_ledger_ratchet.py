@@ -4,9 +4,11 @@ commit and a head commit), run end to end as the gate is: exit status and the te
 
 What it pins: a family's entry count that rises fails and is named as `name: base -> head`; one that falls,
 a same-count rename, an entry that moves between two files of one family, and a `# count:` header bumped
-over unchanged entries all pass; a new top-level file with entries fails (a new file counts up from 0); a
-raised pin in `tests/test_harness.py` fails and a lowered one passes; a new pin key counts from 0; with no
-base the check skips and says so. Also the base resolution (the override, `GITHUB_BASE_REF`, `origin/main`,
+over unchanged entries all pass; a new area file that raises an existing family's total fails, and so does
+an entry added to a file that was empty; a counter the base does not have (a new top-level file, a new
+family directory, a new pin key) is a new gate's own list: it passes and the ok line names it as not
+compared; a raised pin in `tests/test_harness.py` fails and a lowered one passes; with no base the check
+skips and says so. Also the base resolution (the override, `GITHUB_BASE_REF`, `origin/main`,
 the MERGE-BASE rather than the tip of main), the exit-2 cases that must never read as a skip, and the real
 tree: the pin tables of `tests/test_harness.py` still parse and the CI job that runs the gate fetches the
 full history it needs. Nothing here reads the real repository's history or writes outside a temp dir."""
@@ -116,20 +118,24 @@ class Ratchet(unittest.TestCase):
 
     # -- the ledger counts -----------------------------------------------------------------------
 
-    def test_an_unchanged_tree_passes(self):
+    def test_an_unchanged_tree_passes_and_names_nothing_as_new(self):
         code, out = self.head({})
         self.assertEqual(code, 0, out)
         self.assertIn("ledger-ratchet: ok", out)
+        self.assertNotIn("not compared", out)
 
     def test_a_family_whose_entry_count_rises_fails_and_is_named(self):
         code, out = self.head({"ci/allow/forks/plex.txt": ledger("p.rs::a", "p.rs::b")})
         self.assertEqual(code, 1, out)
         self.assertIn("ci/allow/forks/: 3 \u2192 4", out)
         self.assertNotIn("ci/allow/workers/", out)
-        self.assertIn("only shrink", out)
-        self.assertIn('docs/sans-io-guide.md, "The ledgers"', out)
-        self.assertIn("owner's call", out)
-        self.assertIn("merging past this check", out)
+        words = " ".join(out.split())  # the message wraps; the sentences are what is pinned
+        self.assertIn("only shrink", words)
+        self.assertIn("remove the entry by fixing the site so the rule passes", words)
+        self.assertIn('(for a Sans-IO ledger, move the work behind an effect, docs/sans-io-guide.md, "The ledgers")', words)
+        self.assertNotIn("instead of listing the site", words)
+        self.assertIn("owner's call", words)
+        self.assertIn("merging past this check", words)
 
     def test_every_raised_count_is_named(self):
         code, out = self.head({"ci/allow/workers/plex.txt": ledger("w.rs::a::spawn", "w.rs::b::spawn"),
@@ -157,18 +163,45 @@ class Ratchet(unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertIn("ci/allow/workers/: 1 \u2192 2", out)
 
-    def test_a_new_top_level_file_with_entries_fails(self):
+    def test_a_new_top_level_file_with_entries_is_a_new_gates_list_and_passes_named(self):
+        """No existing gate reads a file name that did not exist, so the list cannot excuse an old rule's site."""
         code, out = self.head({"ci/allow/newrule.txt": ledger("a.rs", "b.rs")})
-        self.assertEqual(code, 1, out)
-        self.assertIn("ci/allow/newrule.txt: 0 \u2192 2", out)
+        self.assertEqual(code, 0, out)
+        self.assertIn("ledger-ratchet: ok", out)
+        self.assertIn("; new, not compared: ci/allow/newrule.txt (2)", out)
 
-    def test_a_new_family_with_entries_fails_and_an_empty_new_file_passes(self):
+    def test_a_new_family_directory_passes_named_and_an_empty_new_file_too(self):
         code, out = self.head({"ci/allow/newfam/x.txt": ledger("a.rs")})
-        self.assertEqual(code, 1, out)
-        self.assertIn("ci/allow/newfam/: 0 \u2192 1", out)
+        self.assertEqual(code, 0, out)
+        self.assertIn("new, not compared: ci/allow/newfam/ (1)", out)
         self.repo.commit({"ci/allow/newfam/x.txt": None, "ci/allow/empty.txt": ledger()}, "empty")
         code, out = self.repo.run(PLX_LEDGER_BASE=self.base)
         self.assertEqual(code, 0, out)
+
+    def test_every_new_counter_is_named_and_the_ones_the_base_has_are_not(self):
+        code, out = self.head({"ci/allow/newrule.txt": ledger("a.rs"), "ci/allow/newfam/x.txt": ledger("a.rs", "b.rs")})
+        self.assertEqual(code, 0, out)
+        self.assertIn("new, not compared: ci/allow/newfam/ (2), ci/allow/newrule.txt (1)", out)
+        self.assertNotIn("wall.txt (", out)
+
+    def test_a_new_area_file_in_an_existing_family_still_counts_toward_the_family(self):
+        """The engine globs the family, so this IS a new site of an old rule: the family total is what rose."""
+        code, out = self.head({"ci/allow/forks/newarea.txt": ledger("n.rs::a")})
+        self.assertEqual(code, 1, out)
+        self.assertIn("ci/allow/forks/: 3 \u2192 4", out)
+        self.assertNotIn("new, not compared", out)
+
+    def test_an_entry_added_to_a_list_that_was_empty_fails(self):
+        """`threads.txt` is `# count: 0` at the base: it exists there, so 0 -> 1 is growth, not a new list."""
+        code, out = self.head({"ci/allow/threads.txt": ledger("t.rs")})
+        self.assertEqual(code, 1, out)
+        self.assertIn("ci/allow/threads.txt: 0 \u2192 1", out)
+
+    def test_a_raised_count_fails_even_when_a_new_list_comes_with_it(self):
+        code, out = self.head({"ci/allow/wall.txt": ledger("w.rs", "x.rs", "y.rs"), "ci/allow/newrule.txt": ledger("a.rs")})
+        self.assertEqual(code, 1, out)
+        self.assertIn("ci/allow/wall.txt: 2 \u2192 3", out)
+        self.assertNotIn("newrule", out)
 
     def test_a_deleted_file_is_zero_and_a_header_bump_over_unchanged_entries_passes(self):
         code, out = self.head({"ci/allow/forks/plex.txt": None,
@@ -203,15 +236,23 @@ class Ratchet(unittest.TestCase):
         code, out = self.head({HARNESS: harness({"workers": 1, "forks": 3}, {"wall.txt": 0, "threads.txt": 0})})
         self.assertEqual(code, 0, out)
 
-    def test_a_new_pin_key_counts_from_zero(self):
+    def test_a_new_pin_key_is_a_new_gates_pin_and_passes_named(self):
         code, out = self.head({HARNESS: harness({"workers": 3, "forks": 3, "extra": 1},
                                                 {"wall.txt": 2, "threads.txt": 0})})
-        self.assertEqual(code, 1, out)
-        self.assertIn('PINNED_LEDGER_TOTALS["extra"]: 0 \u2192 1', out)
+        self.assertEqual(code, 0, out)
+        self.assertIn('new, not compared: PINNED_LEDGER_TOTALS["extra"] (1)', out)
         self.repo.git("reset", "-q", "--hard", self.base)
         code, out = self.head({HARNESS: harness({"workers": 3, "forks": 3, "extra": 0},
-                                                {"wall.txt": 2, "threads.txt": 0})})
+                                                {"wall.txt": 2, "threads.txt": 0, "newrule.txt": 0})})
         self.assertEqual(code, 0, out)
+        self.assertIn('PINNED_ALLOWLIST_COUNTS["newrule.txt"] (0)', out)
+
+    def test_a_pin_the_base_has_is_compared_whatever_new_keys_come_with_it(self):
+        code, out = self.head({HARNESS: harness({"workers": 3, "forks": 3, "extra": 1},
+                                                {"wall.txt": 3, "threads.txt": 0})})
+        self.assertEqual(code, 1, out)
+        self.assertIn('PINNED_ALLOWLIST_COUNTS["wall.txt"]: 2 \u2192 3', out)
+        self.assertNotIn("extra", out)
 
     def test_a_pin_table_that_disappears_cannot_be_compared(self):
         code, out = self.head({HARNESS: "import unittest\n"})
@@ -233,13 +274,16 @@ class Ratchet(unittest.TestCase):
         self.assertEqual(tables, {"PINNED_LEDGER_TOTALS": {"a": 1}, "PINNED_ALLOWLIST_COUNTS": {"b.txt": 2}})
 
     def test_a_base_without_the_harness_has_no_pins_to_compare(self):
+        """Every pin key is new then, so none is compared; the ledger counts still are."""
         repo = Repo()
         self.addCleanup(repo.cleanup)
         base = repo.commit({"ci/allow/wall.txt": ledger("a")}, "base")
         repo.commit({HARNESS: harness({"workers": 1}, {})}, "head")
         code, out = repo.run(PLX_LEDGER_BASE=base)
-        self.assertEqual(code, 1, out)
-        self.assertIn('PINNED_LEDGER_TOTALS["workers"]: 0 \u2192 1', out)
+        self.assertEqual(code, 0, out)
+        self.assertIn('new, not compared: PINNED_LEDGER_TOTALS["workers"] (1)', out)
+        repo.commit({"ci/allow/wall.txt": ledger("a", "b")}, "raise")
+        self.assertEqual(repo.run(PLX_LEDGER_BASE=base)[0], 1)
 
 
 class Base(unittest.TestCase):

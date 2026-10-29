@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The ledger ratchet: no allowlist, ledger or pin may count MORE entries than the base branch has.
+"""The ledger ratchet: no allowlist, ledger or pin the base branch has may count MORE entries than it did there.
 
 The files under `ci/allow/` (the Sans-IO ledgers `workers/`, `globals/`, `forks/`, `fxlanes/`, and the
 flat lists `blocking.txt`, `wall.txt`, `layers.txt`, `threads.txt`, `statics.txt`, ...) are meant to
@@ -19,10 +19,18 @@ list that is empty), so that rule is the whole format.
 
   * a directory under `ci/allow/` is a FAMILY (`workers/`, `globals/`, `forks/`, `fxlanes/`) and is ONE
     total, so an entry may move between the area files of a family (a re-filed line is not growth);
-  * every top-level `ci/allow/*.txt` counts on its own;
-  * a file or family that is new in the working tree counts up from 0, and one that is gone is 0;
+  * each top-level `ci/allow/*.txt` is its own counter;
+  * a counter the BASE does not have (a top-level file, a family directory, a pin key) is a NEW gate's
+    own list, not an exception added to an existing rule, so it is NOT compared: it is named in the ok
+    line (`; new, not compared: ci/allow/foo.txt (3)`) and nothing else. That is safe because no
+    existing gate reads a file name that did not exist: `ci/check-deps.sh`'s `allowed()` keys by file
+    name, its ledger engine globs the four families by name, and the Python gates read fixed paths, so a
+    new list cannot excuse a site of an existing rule. A new AREA file inside a family the base has is
+    NOT new: the engine globs the family, so its entries count toward the family's total as before.
+    A counter that is gone from the head is 0;
   * the two pin tables in `tests/test_harness.py` (`PINNED_LEDGER_TOTALS`, `PINNED_ALLOWLIST_COUNTS`)
-    are read with `ast`, and each KEY is compared; a key that is new counts from 0.
+    are read with `ast`, and each KEY the base has is compared; a table the base has and the head has
+    lost is exit 2, never a pass.
 
 THE BASE. `PLX_LEDGER_BASE=<rev>` if set (the tests' override); else, when `GITHUB_BASE_REF` is set
 (Actions sets it on `pull_request`), the merge-base of HEAD and `origin/$GITHUB_BASE_REF`, which must
@@ -134,9 +142,14 @@ def flat(tables: dict[str, dict[str, int]]) -> dict[str, int]:
     return {f'{table}["{key}"]': value for table, rows in tables.items() for key, value in rows.items()}
 
 
-def raised(base: dict[str, int], head: dict[str, int]) -> list[tuple[str, int, int]]:
-    """Every name whose head count is above its base count (a name missing from the base is 0)."""
-    return [(name, base.get(name, 0), value) for name, value in sorted(head.items()) if value > base.get(name, 0)]
+def compare(base: dict[str, int], head: dict[str, int]) -> tuple[list[tuple[str, int, int]], list[tuple[str, int]]]:
+    """(the names the base has whose head count is above theirs, the head's names the base lacks).
+
+    A name the base lacks is a new gate's own list (the module doc says why that is safe), so it is
+    reported and never compared: counting it up from 0 would fail every PR that adds a gate."""
+    rows = [(name, base[name], value) for name, value in sorted(head.items()) if name in base and value > base[name]]
+    new = [(name, value) for name, value in sorted(head.items()) if name not in base]
+    return rows, new
 
 
 def resolve_base(repo: Path, env) -> tuple[str | None, str]:
@@ -169,9 +182,10 @@ def message(rows: list[tuple[str, int, int]], base: str, how: str) -> str:
     lines += [f"  {name}: {was} → {now}" for name, was, now in rows]
     lines += [
         "",
-        f"The ledgers and allowlists under {ALLOW}/ only shrink ({GUIDE}). This compares with the base",
-        "branch, not with this tree, so a raised `# count:` header or a raised pin in tests/test_harness.py",
-        "does not make a new line acceptable: move the work behind an effect instead of listing the site.",
+        f"The ledgers and allowlists under {ALLOW}/ only shrink. This compares with the base branch, not",
+        "with this tree, so a raised `# count:` header or a raised pin in tests/test_harness.py does not make",
+        "a new line acceptable: remove the entry by fixing the site so the rule passes (for a Sans-IO",
+        f"ledger, move the work behind an effect, {GUIDE}).",
         "An exception is the owner's call, made by merging past this check. An agent does not raise a",
         "count: it stops and explains in the PR why the site seems to need an entry.",
     ]
@@ -194,11 +208,12 @@ def check(repo: Path, env=None) -> tuple[int, str]:
     if lost:
         raise Unavailable(f"{HARNESS} no longer defines {', '.join(lost)}: the ratchet reads those pin tables")
     head_counts = {**counts(head_files), **flat(head_tables)}
-    rows = raised({**counts(base_files), **flat(base_tables)}, head_counts)
+    rows, new = compare({**counts(base_files), **flat(base_tables)}, head_counts)
     if rows:
         return 1, message(rows, base, how)
+    skipped = "; new, not compared: " + ", ".join(f"{name} ({value})" for name, value in new) if new else ""
     return 0, (f"ledger-ratchet: ok: no count above {base[:9]} ({how}); {len(head_files)} ledger files, "
-               f"{sum(counts(head_files).values())} entries, {len(flat(head_tables))} pins")
+               f"{sum(counts(head_files).values())} entries, {len(flat(head_tables))} pins{skipped}")
 
 
 def main(argv=None) -> int:
