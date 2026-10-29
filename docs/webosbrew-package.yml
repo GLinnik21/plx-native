@@ -112,7 +112,8 @@ description: |
     bit depth, so 10-bit is still claimed without asking.
 
   The app talks to the Plex Media Servers your account can reach, to plex.tv to sign in, and to
-  discover.provider.plex.tv for cast biographies. Error reports and usage are two separate
+  discover.provider.plex.tv for cast biographies; if you enter one, it also talks to your own Seerr
+  server to request titles. Error reports and usage are two separate
   switches. The first question presents both selected, but that is only an inert draft: nothing is
   collected or sent until you explicitly save reporting settings, BACK cancels, and Continue
   without reporting records both as off. The choices remain reversible under Account → Reporting
