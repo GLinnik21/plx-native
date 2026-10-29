@@ -1333,6 +1333,7 @@ fn hero_focus_follows_its_control_when_the_set_grows_under_it() {
 fn hero_focus_survives_a_control_appearing_in_the_middle_of_the_row() {
     let before = hero::HeroSet {
         watchlist: true,
+        go_show: false,
         version: false,
         restart: true,
         trailer: false,
@@ -1341,6 +1342,7 @@ fn hero_focus_survives_a_control_appearing_in_the_middle_of_the_row() {
     };
     let after = hero::HeroSet {
         watchlist: true,
+        go_show: false,
         version: false,
         alt: true,
         ..before
@@ -1500,6 +1502,7 @@ fn a_pointer_lands_on_the_capsule_the_unfurl_drew() {
     let y = 812.0;
     let set = hero::HeroSet {
         watchlist: true,
+        go_show: false,
         version: false,
         restart: true,
         trailer: false,
@@ -1509,7 +1512,7 @@ fn a_pointer_lands_on_the_capsule_the_unfurl_drew() {
     let index = hero::watch_index(set).unwrap();
     assert_eq!(hero::ctl_at(set, index - 1), Some(hero::HeroCtl::Restart));
     for unfurl in [0.2, 0.6, 1.0] {
-        let disc = hero::disc_caps_at(set, 230.0, 0.0, [0.0, 0.0, unfurl, 0.0], [201.0, 0.0, 267.0, 0.0]);
+        let disc = hero::disc_caps_at(set, 230.0, 0.0, [0.0, 0.0, unfurl, 0.0, 0.0], [201.0, 0.0, 267.0, 0.0, 0.0]);
         let widths = hero::HeroWidths {
             pill: 230.0,
             alt: 0.0,
@@ -1581,12 +1584,12 @@ fn hero_action_row_hit_matches_the_drawn_controls_at_every_set_size() {
                     assert_eq!(n, 3 + usize::from(restart) + usize::from(alt));
                     sizes.insert(n);
                     for unfurl in [
-                        [0.0, 0.0, 0.0, 0.0],
-                        [0.0, 0.0, 1.0, 0.0],
-                        [0.0, 1.0, 0.0, 0.0],
-                        [0.3, 0.0, 0.7, 0.0],
-                        [1.0, 0.0, 0.0, 0.0],
-                        [0.0, 1.0, 1.0, 0.0],
+                        [0.0, 0.0, 0.0, 0.0, 0.0],
+                        [0.0, 0.0, 1.0, 0.0, 0.0],
+                        [0.0, 1.0, 0.0, 0.0, 0.0],
+                        [0.3, 0.0, 0.7, 0.0, 0.0],
+                        [1.0, 0.0, 0.0, 0.0, 0.0],
+                        [0.0, 1.0, 1.0, 0.0, 0.0],
                     ] {
                         screen.disc_unfurl = unfurl.map(Spring::at);
                         for scroll in [0.0, 48.0] {
@@ -5464,4 +5467,61 @@ fn a_show_page_offers_and_plays_its_hero_episodes_versions() {
     let screen = bare(&_guard, ServerId::UNSET, "show");
     assert!(!screen.hero_set(test_store().view()).version);
     clear();
+}
+
+// ---- the Go to Show disc on an episode's page ------------------------------------------------
+
+fn episode_naming_its_show() -> Detail {
+    Detail {
+        sid: ServerId::UNSET,
+        rk: "ep".into(),
+        kind: "episode".into(),
+        title: "The Episode".into(),
+        show_rk: "show".into(),
+        show_title: "The Show".into(),
+        season: 2,
+        index: 3,
+        ..Default::default()
+    }
+}
+
+/// An episode's hero offers the way back up to its show, second in the row (the bookmark is
+/// absent here), and OK asks the item menu's own navigation — the one route that carries the
+/// season, so the show page opens on the season this episode belongs to.
+#[test]
+fn an_episode_gets_a_go_to_show_disc_that_presses_the_item_menus_navigation() {
+    let _guard = install(episode_naming_its_show());
+    let mut screen = bare(&_guard, ServerId::UNSET, "ep");
+    let set = screen.hero_set(test_store().view());
+    assert!(set.go_show);
+    assert!(!set.watchlist, "no plex guid: the bookmark disc is not in this row");
+    assert_eq!(hero::index_of(set, hero::HeroCtl::GoToShow), Some(1));
+    let (_, fx) = step(
+        &mut screen,
+        &ScreenEvent::Activate(hero::ELEM_GO_TO_SHOW),
+        Some(hero::ELEM_GO_TO_SHOW),
+    );
+    assert_eq!(
+        item_menu_acts(&fx),
+        vec![crate::registry::ItemMenuAction::GoToShow("show".into(), 2)]
+    );
+    clear();
+}
+
+/// The disc is for an EPISODE's own page only: a movie has no show, and a show's page IS that
+/// page, so neither draws it.
+#[test]
+fn only_an_episode_page_gets_a_go_to_show_disc() {
+    for d in [
+        Detail { sid: ServerId::UNSET, rk: "movie".into(), kind: "movie".into(), ..Default::default() },
+        Detail { sid: ServerId::UNSET, rk: "show".into(), kind: "show".into(), show_rk: "show".into(), ..Default::default() },
+        Detail { sid: ServerId::UNSET, rk: "ep".into(), kind: "episode".into(), ..Default::default() },
+    ] {
+        let want = d.kind == "episode" && !d.show_rk.is_empty();
+        assert_eq!(hero::go_to_show_target(&d).is_some(), want, "{:?}", d.kind);
+        let _guard = install(d);
+        let screen = bare(&_guard, ServerId::UNSET, "x");
+        assert_eq!(screen.hero_set(test_store().view()).go_show, want);
+        clear();
+    }
 }
