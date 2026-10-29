@@ -128,10 +128,17 @@ pub const SUPPORTED: &[(u8, u8)] = &[(1, 0)];
 /// The version every 1.0 entry arrived in.
 pub const V1_0: Since = (1, 0);
 
+/// The one `id` that is not reverse-DNS: the built-in HUD (D2). [`Pattern::ReverseDns`] accepts exactly this
+/// string besides reverse-DNS names, so the built-in's own file parses like any package. That the id parses
+/// does not make a file the built-in: whether a package IS the built-in comes from where it was loaded
+/// from (compiled in), never from this string, and a store that takes files from outside refuses it.
+pub const BUILTIN_CLASSIC_ID: &str = "builtin:classic";
+
 /// A string shape a [`Ty::Pattern`] checks. Each is a closed grammar, never a regular expression.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pattern {
     /// `[a-z0-9.-]`, at least two dot-separated labels, each starting with a letter: `com.plxnative.x`.
+    /// The one other string it accepts is [`BUILTIN_CLASSIC_ID`].
     ReverseDns,
     /// `MAJOR.MINOR.PATCH` numeric semver (no pre-release, no build metadata).
     Semver,
@@ -820,7 +827,7 @@ pub static ROOT: Node = Node {
             "The schema URL, for editors: accepted and ignored by the app; lint checks its major.minor equals `format`.",
         ),
         Field::req("format", Ty::Pattern(Pattern::FormatVersion), "MAJOR.MINOR of the schema, bindings and command vocabulary."),
-        Field::req("id", Ty::Pattern(Pattern::ReverseDns), "The package's reverse-DNS identity."),
+        Field::req("id", Ty::Pattern(Pattern::ReverseDns), "The package's reverse-DNS identity (the built-in HUD's reserved `builtin:classic` is the one other id that parses)."),
         Field::req("version", Ty::Pattern(Pattern::Semver), "The package's own semver; it only orders updates of one id."),
         Field::req("name", Ty::Text { max_len: 64 }, "The display name."),
         Field::req("author", Ty::Text { max_len: 64 }, "The author."),

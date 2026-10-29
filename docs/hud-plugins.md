@@ -405,7 +405,7 @@ input). Parsed strictly: unknown keys and duplicate keys are errors, through the
 reader of F41, made a shared `pub` module of `plx_ui`. Coordinates are on the logical 1920x1080 canvas
 (`base/src/surface.rs:47-48`); the existing scaling to the drawable size applies unchanged.
 
-Top level: `format`, `id` (reverse-DNS, `[a-z0-9.-]`), `version` (semver), `name`, `author`, `license`,
+Top level: `format`, `id` (reverse-DNS, `[a-z0-9.-]`; the built-in's own file is the one other id that parses, `builtin:classic`, which proves nothing about where a file came from: a store that takes files from outside refuses it), `version` (semver), `name`, `author`, `license`,
 optional `app` (`min`/`max`), optional `$schema` (the schema URL, for editors; accepted, its value ignored), optional
 `palette`, `assets`, `layout`.
 

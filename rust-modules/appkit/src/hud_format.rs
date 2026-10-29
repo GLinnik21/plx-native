@@ -1,10 +1,11 @@
 //! **The HUD package format, 1.0** (`docs/hud-plugins.md`): the descriptor table ([`schema`]), the strict
-//! parser ([`parse`]), the SVG subset checker ([`svg_subset`]), and the finding every one of them reports.
+//! parser ([`parse`]), the SVG subset checker ([`svg_subset`]), the reachability check and the package-level
+//! invariants ([`reach`], [`validate`], entered through [`check`]), and the finding every one of them reports.
 //!
 //! A HUD package is declarative DATA, never code (D1): one UTF-8 JSON file, assets inline. This module is
 //! PURE: no IO, no globals, no clock, no `cfg(test)` fork. Bytes go in; a typed [`parse::Package`] and a
-//! list of [`Finding`]s come out. Wave B builds the draw-list compiler, the reachability check and `lint`
-//! on top of these types and reuses [`Finding`] as it is.
+//! list of [`Finding`]s come out. Wave B builds the draw-list compiler and `lint` on top of these types and
+//! reuses [`Finding`] as it is.
 //!
 //! ## The finding
 //!
@@ -23,11 +24,17 @@
 //! * an SVG asset: the asset string's pointer, `/assets/<id>`.
 
 pub mod parse;
+pub mod reach; // `check`: reachability R1-R4 and the folds over the HUD's state graph, then `validate`'s invariants
 pub mod schema;
 pub mod svg_subset;
+pub mod validate; // the package-level invariants no geometry is needed for (I3, I9, I11)
+
+pub use reach::{check, Checked, Fold};
 
 #[cfg(test)]
 mod tests; // the corpus of valid and invalid packages, the seeded mutation tests and the table-vs-parser drift test
+#[cfg(test)]
+mod reach_tests; // `check`: one invalid package per rule, the folds of classic and the reference, the state counts
 
 /// How loudly a finding speaks. A package parses (`Parsed::package` is `Some`) only if it has no `Error`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -290,6 +297,28 @@ pub mod codes {
         E0705 = (Error, "HUD-E0705", "svg-size");
         /// An SVG with more `<path>` than `svg_subset::MAX_PATHS_PER_ASSET`. Pointer: `/assets/<id>`.
         E0706 = (Error, "HUD-E0706", "svg-paths");
+        /// R1: no `open_more` that opens More's root is placed in the root state (compact, Discs) under
+        /// every valuation of the content conditions the package names. Pointer: the `when` that removes
+        /// the control under some valuation (a control's, its cell's or its band's), else the control
+        /// itself when it is gated by something else, else `/layout/block` when the package has none.
+        E0801 = (Error, "HUD-E0801", "more-in-root");
+        /// R3: a `toggle_section {section: s}` control and no band whose `when` holds `panel.s`: an opener
+        /// with nothing to open. Pointer: the control's `section` value.
+        E0802 = (Error, "HUD-E0802", "opener-has-section");
+        /// R4: Up Next is not whole: `up_next.replaces` is empty or names no segment of the package, or
+        /// `up_next.band` names no band. (Both buttons and the countdown are required keys of
+        /// `layout.up_next`, so the parser reports them missing as `E0103`.) Pointer: the offending value.
+        E0803 = (Error, "HUD-E0803", "up-next-whole");
+        /// I3: an `id` used by two bands, two segments or two controls (the three kinds are three
+        /// namespaces). Pointer: the later `id` value.
+        E0901 = (Error, "HUD-E0901", "identity-unique");
+        /// I9: a palette in the package whose id is `builtin:classic`, which declares none. Pointer
+        /// `/palette`.
+        E0902 = (Error, "HUD-E0902", "builtin-no-palette");
+        /// I11: a `seek {by: "setting"}` face map whose `by_interval` lacks a rung of the viewer's Skip
+        /// ladder; that rung draws `default`. A warning: a new rung can never break a published package.
+        /// Pointer: the `by_interval` object.
+        W0903 = (Warning, "HUD-W0903", "face-ladder-complete");
     }
 }
 
@@ -344,7 +373,7 @@ mod freeze_tests {
 
     #[test]
     fn the_code_table_is_unique_and_well_formed() {
-        assert_eq!(codes::ALL.len(), 32);
+        assert_eq!(codes::ALL.len(), 38);
         let ids: HashSet<_> = codes::ALL.iter().map(|c| c.id).collect();
         let rules: HashSet<_> = codes::ALL.iter().map(|c| c.rule).collect();
         assert_eq!(ids.len(), codes::ALL.len(), "a code id is never reused");

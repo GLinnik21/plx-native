@@ -2082,6 +2082,9 @@ fn is_semver(text: &str) -> bool {
 }
 
 fn is_reverse_dns(text: &str) -> bool {
+    if text == schema::BUILTIN_CLASSIC_ID {
+        return true;
+    }
     let alphabet = text
         .bytes()
         .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'-');

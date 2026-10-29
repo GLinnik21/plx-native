@@ -1652,7 +1652,9 @@ mod coverage {
         for code in codes::ALL {
             // E0107 (a key newer than the declared format) cannot be written in a package that parses:
             // 1.0 is the first minor. `parse::tests` reaches it with a hand-built node.
-            if code.id == "HUD-E0107" || command_codes.contains(&code.id) {
+            // The E08xx/E09xx/W09xx codes are `check`'s, not the parser's: `reach_tests` has their rows.
+            let check_code = ["HUD-E08", "HUD-E09", "HUD-W09"].iter().any(|p| code.id.starts_with(p));
+            if code.id == "HUD-E0107" || check_code || command_codes.contains(&code.id) {
                 continue;
             }
             assert!(covered.contains(code.id), "{} has no corpus row", code.id);
@@ -2273,7 +2275,7 @@ mod drift {
     /// Strings of a pattern, valid and (for the refusals) not.
     fn pattern_valid(pattern: Pattern) -> Vec<String> {
         match pattern {
-            Pattern::ReverseDns => vec!["com.example.hud".into(), "a.b".into()],
+            Pattern::ReverseDns => vec!["com.example.hud".into(), "a.b".into(), schema::BUILTIN_CLASSIC_ID.into()],
             Pattern::Semver => vec!["1.2.3".into(), "0.0.0".into()],
             Pattern::FormatVersion => vec!["1.0".into(), "12.34".into()],
             Pattern::SchemaUrl => vec!["https://plxnative.com/hud/schema/1.0.json".into()],
@@ -2284,7 +2286,17 @@ mod drift {
     fn pattern_invalid(pattern: Pattern) -> Vec<String> {
         let common = String::new();
         match pattern {
-            Pattern::ReverseDns => vec![common, "nodots".into(), "Com.Bad".into(), "a.1b".into()],
+            Pattern::ReverseDns => vec![
+                common,
+                "nodots".into(),
+                "Com.Bad".into(),
+                "a.1b".into(),
+                "builtin:Classic".into(),
+                "builtin:other".into(),
+                "builtin:".into(),
+                "xbuiltin:classic".into(),
+                "builtin:classic ".into(),
+            ],
             Pattern::Semver => vec![common, "1.0".into(), "1.0.0-beta".into(), "01.0.0".into()],
             Pattern::FormatVersion => vec![common, "1".into(), "v1.0".into(), "1.0.0".into()],
             Pattern::SchemaUrl => vec![common, "http://plxnative.com/x".into(), "plxnative.com".into()],
