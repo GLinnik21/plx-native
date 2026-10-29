@@ -1934,7 +1934,16 @@ fn start_bufferfeed_inner(
     if stream && !crate::route::is_preview(ps) {
         if let Some(text) = plx_base::devtrig::read("uriprobe") {
             match super::uriprobe::Variant::from_trigger(&text) {
-                Some(variant) => return super::uriprobe_drive::start(ps, pa, route_start, &url, variant),
+                Some(variant) => {
+                    // The probe takes no native session of its own, but its window verbs reach the
+                    // same seam, so it refuses like an Engine does while an earlier session still
+                    // owns the object (a parked timed-out Load): the tester plays again.
+                    if NativeSessionStartGuard::arm().is_none() {
+                        log("uriprobe: the native object is still owned by an earlier session: probe NOT started");
+                        return Err(crate::route::RouteStartResult::StartFailed);
+                    }
+                    return super::uriprobe_drive::start(ps, pa, route_start, &url, variant);
+                }
                 None => log("uriprobe: the trigger file names no variant (empty, load, late or none): NOT armed, playing normally"),
             }
         }
