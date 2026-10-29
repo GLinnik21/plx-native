@@ -337,7 +337,7 @@ type EnhState = (
 fn table_natural(table: &TableView, measure: &dyn plx_machine::machine::Measure) -> Rect {
     let pw = table.menu_panel_width(measure);
     // the transport control row's own right edge — one number for the discs and both panels
-    let px = crate::player_hud::CTRL_RIGHT - pw;
+    let px = crate::player_hud::classic::CTRL_RIGHT - pw;
     // Bottom-anchored just above the control-button row (buttons top at SCR_H-288) with a clear gap.
     // The panel grows UPWARD from this fixed bottom edge, and its height is capped so the top never
     // crosses `top_min` — so a long list (an item with many audio dubs) SCROLLS inside the panel
@@ -2627,7 +2627,7 @@ pub fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
     let pw = plx_ui::table::MENU_MAX_W;
     out.push((
         "track menu panel (widest)",
-        Rect::new(crate::player_hud::CTRL_RIGHT - pw, top_min, pw, bottom - top_min),
+        Rect::new(crate::player_hud::classic::CTRL_RIGHT - pw, top_min, pw, bottom - top_min),
     ));
 }
 

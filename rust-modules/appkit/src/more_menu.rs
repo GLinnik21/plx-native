@@ -574,13 +574,13 @@ impl MoreMenuState {
 
     /// Bottom-right, above the control row — anchored to the `…` disc that opened it, the way the
     /// track menu is anchored to the pair beside it. Shares the track menu's right margin
-    /// (`player_hud::CTRL_RIGHT`, the discs' own edge) and its bottom edge, so opening one after the
+    /// (`player_hud::classic::CTRL_RIGHT`, the discs' own edge) and its bottom edge, so opening one after the
     /// other does not make the panel hop. This is the NATURAL (layout) rect, cached against the
     /// table's `layout_rev`; [`Self::shown_rect`] is what is on screen while the card resizes.
     fn panel_rect(&self, measure: &dyn plx_machine::machine::Measure) -> Rect {
         self.motion.natural(self.form.table.layout_rev(), || {
             let pw = self.form.table.menu_panel_width(measure);
-            let px = crate::player_hud::CTRL_RIGHT - pw;
+            let px = crate::player_hud::classic::CTRL_RIGHT - pw;
             let bottom = theme::layout::PLAYER_MENU_BOTTOM; // ~28px above the discs, as track_menu
             let ph = self.panel_h();
             Rect::new(px, bottom - ph, pw, ph)
@@ -852,7 +852,7 @@ pub fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
     let bottom = theme::layout::PLAYER_MENU_BOTTOM;
     out.push((
         "… overflow menu panel",
-        Rect::new(crate::player_hud::CTRL_RIGHT - pw, bottom - ph, pw, ph),
+        Rect::new(crate::player_hud::classic::CTRL_RIGHT - pw, bottom - ph, pw, ph),
     ));
 }
 
