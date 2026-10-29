@@ -35,13 +35,15 @@ use crate::registry::{AppFx, AppLike, PlayerLike, PlayerReq};
 use plx_ui::consts;
 use plx_ui::frame::Budget;
 use plx_machine::machine::{
-    Canon, Cx, Edge, Effects, EntryId, Fx, FocusKey, GroupId, Handled, InputKind, InstanceId,
+    By, Canon, Cx, Edge, Effects, EntryId, Fx, FocusKey, GroupId, Handled, InputKind, InstanceId,
     LogicalState, Machine,
 };
+use plx_appkit::player_hud::geometry::{HudGeometry, GROUP_FAILURE, GROUP_ROW, GROUP_SCRUB, GROUP_TABS};
+use plx_appkit::player_hud::model::HudModel;
 use plx_appkit::player_hud::{self, ControlSlot, SubtitleBitmaps, motion::HudMotion};
 use plx_ui::screen::{
     Activate, At, AxisMask, Dir, DrawFrame, EdgeRule, FocusSource, Focusable, GroupKind, GroupSpec,
-    HitSource, Hover, Placed, RenderStrategy, Screen, ScreenEvent, Seat, Step, Stop,
+    HitSource, Hover, Link, Placed, RenderStrategy, Screen, ScreenEvent, Seat, Step, Stop,
 };
 use plx_appkit::up_next::Countdown;
 use plx_ui::Rect;
@@ -159,6 +161,11 @@ pub struct PlayerScreen {
     failure_up: bool,
     /// The transport clocks' prewarm memo — a render resource, not logical state (`prepare`).
     clock_warm: plx_appkit::player_hud::motion::ClockWarm,
+    /// **This frame's snapshot of everything the HUD's presentation reads from the player's
+    /// globals** (`TX.paused`, the scrub target, the playhead, the duration, the subtitle picks).
+    /// The app assigns it ONCE a frame, before `prepare` and `draw`; only those two read it.
+    /// Key handling, the scrub arithmetic and the Tick keep sampling what they always did.
+    pub model: HudModel,
 }
 
 impl PlayerScreen {
@@ -186,6 +193,7 @@ impl PlayerScreen {
             failure_sel: 0,
             failure_up: false,
             clock_warm: Default::default(),
+            model: HudModel::default(),
         }
     }
 
@@ -237,7 +245,7 @@ impl PlayerScreen {
 
     /// Draw the image-subtitle display set — the render half this screen owns.
     pub fn draw_subtitle_bitmap(&mut self, hud_up: bool) {
-        plx_appkit::player_hud::draw_subtitle_bitmap(&mut self.render.subs, hud_up);
+        plx_appkit::player_hud::draw_subtitle_bitmap(&mut self.render.subs, hud_up, &self.model);
     }
 
     /// The transport, with this instance's own springs, memo and countdown. Paint only: what a
@@ -251,6 +259,7 @@ impl PlayerScreen {
     ) {
         plx_appkit::player_hud::classic::draw_hud(
             ps,
+            &self.model,
             &mut self.row,
             &self.up_next,
             self.slot,
@@ -287,8 +296,11 @@ impl PlayerScreen {
         hud_drawn: bool,
     ) {
         if !f.records_stops() { return; }
+        // ONE report of where the layout put everything this frame (it measures the row's stand-ins
+        // and the tab pills), shared by the group list and every stop placed from it.
+        let geo = self.hud_geometry(f.cx);
         let mut groups = Vec::new();
-        Focusable::<H>::groups(self, f.cx, &mut groups);
+        self.groups_in(&geo, f.cx, &mut groups);
         for g in groups.iter().filter(|g| self.group_drawn(g.id, hud_drawn)) {
             // The repair alert's buttons are ordinary pressable controls (hover parks focus, the
             // press dips and commits on release); the transport's are `Direct` — see `draw`.
@@ -299,7 +311,7 @@ impl PlayerScreen {
             };
             for i in 0..g.len as u32 {
                 let elem = Self::elem_of(g.id, i);
-                let Some(p) = Focusable::<H>::place(self, &elem, f.cx, At::Drawn) else { continue };
+                let Some(p) = self.place_in(&geo, &elem, f.cx) else { continue };
                 f.stop(
                     plx_ui::Painter::root(),
                     Stop {
@@ -483,15 +495,14 @@ impl PlayerScreen {
     }
 }
 
-/// The four focus groups [`PlayerScreen`] registers (restructure phase 12, D2): the scrubber, the
+/// The focus groups [`PlayerScreen`] registers (restructure phase 12, D2): the scrubber, the
 /// control row (discs, or the one region a Skip/Up Next stand-in occupies), the bottom tabs, and —
-/// only while a failure owns the frame — the read-out's row of actions. Element addresses
-/// within each are [`player_hud::ELEM_SCRUB`]/[`player_hud::ELEM_ROW_BASE`]/
-/// [`player_hud::ELEM_TAB_BASE`]/[`player_hud::ELEM_FAILURE_BASE`].
-const GROUP_SCRUB: GroupId = GroupId(0);
-const GROUP_ROW: GroupId = GroupId(1);
-const GROUP_TABS: GroupId = GroupId(2);
-const GROUP_FAILURE: GroupId = GroupId(3);
+/// only while a failure owns the frame — the read-out's row of actions. The first four are the
+/// HUD's own and live in `appkit::player_hud::geometry` ([`GROUP_SCRUB`], [`GROUP_ROW`],
+/// [`GROUP_TABS`], [`GROUP_FAILURE`]), because the HUD's motion and drawing compare a focus against
+/// the same numbers; element addresses within each are [`player_hud::ELEM_SCRUB`]/
+/// [`player_hud::ELEM_ROW_BASE`]/[`player_hud::ELEM_TAB_BASE`]/[`player_hud::ELEM_FAILURE_BASE`].
+/// The sandbox-repair confirmation's group is this page's alone.
 const GROUP_REPAIR: GroupId = GroupId(4);
 const REPAIR_CANCEL: u32 = 40_000;
 const REPAIR_CONFIRM: u32 = REPAIR_CANCEL + 1;
@@ -587,16 +598,37 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
             }
         }
         match ev {
-            ScreenEvent::FocusMoved { to, .. } if let Some(btn) = player_hud::row_index(to.elem) => {
-                if self.slot.enabled(btn) {
-                    self.hud.nav.focus = 1;
-                    self.hud.nav.btn = btn;
-                    self.scrub.cancel();
+            // **The engine moved focus: `hud.nav` follows.** The engine is the authority on where
+            // focus is; `nav` is the mirror the HUD's motion, drawing and published state read. A
+            // re-seat (`By::Restore`, `By::Reconcile`: the app's and this screen's own writes to
+            // `nav`, each paired with one) only mirrors. A DIRECTIONAL move that changes group is
+            // the user travelling, and carries its side effects: leaving the scrubber drops the
+            // scrub target, and any travel is a fresh interaction that re-arms the linger.
+            // A move inside a group (the row's Left/Right) keeps its own key handling's extend.
+            ScreenEvent::FocusMoved { from, to, by } if let Some(group) = Self::hud_group_of(to.elem) => {
+                if let Some(btn) = player_hud::row_index(to.elem) {
+                    if self.slot.enabled(btn) {
+                        self.hud.nav.focus = GROUP_ROW;
+                        self.hud.nav.btn = btn;
+                        self.scrub.cancel();
+                    }
+                } else {
+                    self.hud.nav.focus = group;
+                    if group == GROUP_TABS {
+                        self.hud.nav.tab = (to.elem - player_hud::ELEM_TAB_BASE) as i32;
+                    }
+                }
+                if *by == By::Dir && from.and_then(|f| Self::hud_group_of(f.elem)) != Some(group) {
+                    if group != GROUP_SCRUB {
+                        self.scrub.ns = -1;
+                        self.scrub.disengage();
+                    }
+                    self.hud.extend(cx.tick.ms, input::HUD_LINGER_MS);
                 }
                 Handled::Yes
             }
             ScreenEvent::Tick(tick) => {
-                if self.hud.nav.focus == 1 && !self.slot.enabled(self.hud.nav.btn) {
+                if self.hud.nav.focus == GROUP_ROW && !self.slot.enabled(self.hud.nav.btn) {
                     self.hud.nav.btn = self.slot.primary_btn();
                     Self::repair_focus(fx, GROUP_ROW);
                 }
@@ -639,8 +671,14 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Machine<H> for PlayerScreen 
             ScreenEvent::Input(input) => {
                 let ps = H::session(cx);
                 match &input.kind {
-                    InputKind::Key { key, sym, wcode, edge, .. } => {
-                        self.handle_key(ps, consts::classify_input(*key, *sym, *wcode), *edge, input.at.ms, fx, H::metadata(cx))
+                    InputKind::Key { key, sym, wcode, edge, at_edge } => {
+                        // The ENGINE's focus decides what OK means and which group a re-delivered
+                        // edge belongs to; `hud.nav` only mirrors it.
+                        let focused = cx.focus.current.map(|k| k.elem);
+                        self.handle_key(
+                            ps, consts::classify_input(*key, *sym, *wcode), *edge, *at_edge, input.at.ms,
+                            focused, fx, H::metadata(cx),
+                        )
                     }
                     InputKind::Click { hit, x, .. } => {
                         self.end_jump_gesture();
@@ -677,11 +715,25 @@ impl PlayerScreen {
         fx.push(Fx::App(AppFx::Player(req)));
     }
 
+    /// Re-seat the engine on `group` by that group's own seat policy: the pairing of every write
+    /// this screen makes to `hud.nav`, so the engine (which decides what OK means) and the mirror
+    /// never disagree. The arrival is a `By::Restore`, which `step` only mirrors.
     fn repair_focus<H: AppLike>(fx: &mut Effects<'_, H>, group: GroupId) {
         fx.push(Fx::Deliver(
             fx.from(),
             plx_machine::machine::Delivery::Screen(ScreenEvent::Enter(plx_ui::screen::Enter::Fresh {
                 focus: plx_ui::screen::FocusTarget::ContainerGroup(group),
+            })),
+        ));
+    }
+
+    /// Re-seat the engine on one element: a pointer click on a control, which `Activate::Direct`
+    /// stops never move focus to themselves.
+    fn seat_elem<H: AppLike>(&self, fx: &mut Effects<'_, H>, elem: u32) {
+        fx.push(Fx::Deliver(
+            fx.from(),
+            plx_machine::machine::Delivery::Screen(ScreenEvent::Enter(plx_ui::screen::Enter::Fresh {
+                focus: plx_ui::screen::FocusTarget::Elem(FocusKey { entry: self.entry, elem }),
             })),
         ));
     }
@@ -775,7 +827,8 @@ impl PlayerScreen {
             e if e == ELEM_SCRUB => {
                 let dur = plx_media::player::duration_ns();
                 if dur > 0 {
-                    self.hud.nav.focus = 0;
+                    self.hud.nav.focus = GROUP_SCRUB;
+                    self.seat_elem(fx, ELEM_SCRUB);
                     self.scrub.ns = self.pointed_ns(x, dur);
                     self.scrub.drag = true; // the release commits; nothing else does
                     self.hud.extend(now, input::HUD_LINGER_MS);
@@ -784,16 +837,21 @@ impl PlayerScreen {
                 Handled::Yes
             }
             e if let Some(btn) = player_hud::row_index(e) => {
-                self.hud.nav.focus = 1;
-                if !self.slot.enabled(btn) { return Handled::Yes; }
+                self.hud.nav.focus = GROUP_ROW;
+                if !self.slot.enabled(btn) {
+                    Self::repair_focus(fx, GROUP_ROW);
+                    return Handled::Yes;
+                }
                 self.hud.nav.btn = btn;
+                self.seat_elem(fx, e);
                 self.arm_control_row(fx);
                 Handled::Yes
             }
             e if (ELEM_TAB_BASE..ELEM_FAILURE_BASE).contains(&e) => {
                 let tab = e - ELEM_TAB_BASE;
-                self.hud.nav.focus = 2;
+                self.hud.nav.focus = GROUP_TABS;
                 self.hud.nav.tab = tab as i32;
+                self.seat_elem(fx, e);
                 let kind = if tab == 0 {
                     overlay::OverlayKind::Info
                 } else {
@@ -807,10 +865,10 @@ impl PlayerScreen {
     }
 
     /// Where on the timeline a pointer at `x` is pointing, bounded by [`Scrub::clamp_target`].
-    /// `scrub_frac_x` is x-only on purpose: an engaged drag tracks the pointer even when it
+    /// `HudGeometry::scrub_frac` is x-only on purpose: an engaged drag tracks the pointer even when it
     /// wanders off the band vertically, which is why the drag arm below never re-tests the hit.
     fn pointed_ns(&self, x: f32, duration_ns: i64) -> i64 {
-        let frac = player_hud::classic::scrub_frac_x(x) as f64;
+        let frac = player_hud::classic::frame_geometry().scrub_frac(x) as f64;
         Scrub::clamp_target((frac * duration_ns as f64) as i64, duration_ns)
     }
 
@@ -853,12 +911,19 @@ impl PlayerScreen {
     }
 
     /// Classify → dispatch, the one entry every `Input(Key)` event goes through.
+    ///
+    /// `at_edge` marks the dispatcher's RE-DELIVERY of a direction the engine could not move (an
+    /// `EdgeRule::Screen` edge, §7.3 step 4): the screen's answer is [`Self::answer_edge`], and an
+    /// edge is never asked twice. `focused` is the element the ENGINE holds focus on, which is what
+    /// decides OK ([`Self::key_ok`]) and which group an edge belongs to.
     fn handle_key<H: AppLike>(
         &mut self,
         ps: &plx_media::route::PlaybackSession,
         key: consts::Key,
         edge: Edge,
+        at_edge: bool,
         now: u32,
+        focused: Option<u32>,
         fx: &mut Effects<'_, H>,
         meta: plx_data::metadata::MetadataView<'_>,
     ) -> Handled {
@@ -904,7 +969,7 @@ impl PlayerScreen {
         if self.jump_key(ps, key, edge, now, fx) {
             return Handled::Yes;
         }
-        if self.hud.visible_at_press && self.hud.nav.focus == 1
+        if self.hud.visible_at_press && self.hud.nav.focus == GROUP_ROW
             && matches!(key, Key::Left { alt: false } | Key::Right { alt: false }) {
             self.hud.extend(now, input::HUD_LINGER_MS);
             return if edge == Edge::Up { Handled::Yes } else { Handled::No };
@@ -954,7 +1019,8 @@ impl PlayerScreen {
                 Handled::Yes
             }
             Key::Back if edge == Edge::Down && self.hud.visible_at_press => {
-                self.hud.nav.focus = 0;
+                self.hud.nav.focus = GROUP_SCRUB;
+                Self::repair_focus(fx, GROUP_SCRUB);
                 self.scrub.ns = -1;
                 self.scrub.disengage();
                 self.hud.hide(plx_media::player::loading(ps));
@@ -967,12 +1033,25 @@ impl PlayerScreen {
                 }
                 Handled::Yes
             }
+            // **UP and DOWN travel through the FocusEngine** (`Screen::links`, the groups' edge
+            // rules). A fresh press on a transport that is on screen is left unhandled for it: the
+            // landing arrives as `FocusMoved` and `step` carries the travel's side effects. A
+            // repeat or release is swallowed, as a held UP never walked the ring. A transport
+            // that is hidden spends the press on being raised, and moves nothing.
             Key::Up | Key::Down => {
-                if edge == Edge::Down {
-                    self.key_updown(key, now);
-                    if self.hud.nav.focus == 1 { Self::repair_focus(fx, GROUP_ROW); }
+                if at_edge {
+                    return self.answer_edge(key, focused, now, fx);
                 }
-                Handled::Yes
+                if edge != Edge::Down {
+                    return Handled::Yes;
+                }
+                if !self.hud.visible_at_press {
+                    self.hud.nav.focus = GROUP_SCRUB;
+                    Self::repair_focus(fx, GROUP_SCRUB);
+                    self.hud.extend(now, input::HUD_LINGER_MS);
+                    return Handled::Yes;
+                }
+                Handled::No
             }
             Key::Left { .. } | Key::Right { .. } => {
                 match edge {
@@ -983,7 +1062,7 @@ impl PlayerScreen {
                         if self.scrub.key.release_pending() && !self.scrub.key.continues(fwd, now) {
                             self.end_hold("a different press settled the release");
                         }
-                        self.key_scrub_fresh(ps, key, now, meta)
+                        self.key_scrub_fresh(ps, key, now, fx, meta)
                     }
                     Edge::Repeat => self.key_scrub_repeat(now),
                     Edge::Up => self.key_scrub_release(now),
@@ -992,7 +1071,7 @@ impl PlayerScreen {
             }
             Key::Ok => {
                 match edge {
-                    Edge::Down => self.key_ok(now, fx),
+                    Edge::Down => self.key_ok(now, focused, fx),
                     // …and the pointer button's own release, which the loop spells as this edge.
                     Edge::Up => self.handle_release(now, fx),
                     Edge::Repeat => {}
@@ -1003,23 +1082,28 @@ impl PlayerScreen {
         }
     }
 
-    /// **OK, off a panel** — the deferred press for the control row (`PlayerReq::ArmControlRow`,
-    /// which the loop's existing commit-frame dispatch resolves through `activate_player_row`), the
-    /// immediate tabs-row overlay open, or — everywhere else, exactly as the old ladder's `else`
-    /// arm — a plain play/pause toggle. Port of `key_ok`'s `Route::Player` arm.
-    fn key_ok<H: AppLike>(&mut self, now: u32, fx: &mut Effects<'_, H>) {
+    /// **OK, off a panel** — a pending target is taken first; a hidden transport asks for the
+    /// plain play/pause toggle. Otherwise the ENGINE's focus decides what was pressed: a control
+    /// row element is the deferred press (`PlayerReq::ArmControlRow`, which the loop's existing
+    /// commit-frame dispatch resolves through `activate_player_row`), a tab opens its panel
+    /// (Info for the first, Chapters for the second), and everything else, the scrubber included,
+    /// is the toggle — exactly as the old ladder's `else` arm. Port of `key_ok`'s `Route::Player`
+    /// arm.
+    fn key_ok<H: AppLike>(&mut self, now: u32, focused: Option<u32>, fx: &mut Effects<'_, H>) {
         let vis = self.hud.visible_at_press;
+        let focused = focused.filter(|_| vis);
         if self.take_target(now, fx) {
             // OK confirmed the target and the film plays on from it; that is all this press means
-        } else if vis && self.hud.nav.focus == 1 {
+        } else if focused.and_then(player_hud::row_index).is_some() {
             self.arm_control_row(fx);
-        } else if vis && self.hud.nav.focus == 2 {
-            let kind = if self.hud.nav.tab == 0 {
-                Some(overlay::OverlayKind::Info)
-            } else if self.hud.nav.tab == 1 {
-                Some(overlay::OverlayKind::Chapters)
-            } else {
-                None
+        } else if let Some(tab) = focused
+            .filter(|e| Self::hud_group_of(*e) == Some(GROUP_TABS))
+            .map(|e| e - player_hud::ELEM_TAB_BASE)
+        {
+            let kind = match tab {
+                0 => Some(overlay::OverlayKind::Info),
+                1 => Some(overlay::OverlayKind::Chapters),
+                _ => None,
             };
             if let Some(kind) = kind {
                 Self::ask(fx, PlayerReq::OpenOverlay(kind));
@@ -1038,38 +1122,40 @@ impl PlayerScreen {
         Self::ask(fx, PlayerReq::ArmControlRow);
     }
 
-    /// Port of `key_player_updown`: walk the HUD's ring (scrubber ↔ control row ↔ tabs), or reveal
-    /// a hidden transport and move nothing.
-    fn key_updown(&mut self, key: consts::Key, now: u32) {
-        let vis = self.hud.visible_at_press;
-        let mut hide = false;
-        if !vis {
-            self.hud.nav.focus = 0;
-        } else if matches!(key, consts::Key::Up) {
-            match self.hud.nav.focus {
-                0 => { self.hud.nav.focus = 1; self.hud.nav.btn = self.slot.primary_btn(); },
-                2 => self.hud.nav.focus = 0,
-                _ => {
-                    hide = true;
-                    self.hud.nav.focus = 0;
-                }
+    /// **The screen's answer to `Step::Edge`**: the dispatcher re-delivers a direction the engine
+    /// could not move, from a group whose edge rule is `EdgeRule::Screen`, as the same key with
+    /// `at_edge` set. `focused` names the group it left.
+    ///
+    /// * UP off the top of the control row HIDES the transport (and the film plays on): the
+    ///   scrubber is parked for the next reveal, the pending target dropped, and NOT re-armed — a
+    ///   hide that extended its own linger would not hide.
+    /// * DOWN off the bottom of the tabs has nowhere to go and stays: the target is dropped and the
+    ///   press re-arms the linger like any other.
+    ///
+    /// Anything else swallows the press; an edge nobody answers would be dropped as a dead key.
+    fn answer_edge<H: AppLike>(
+        &mut self,
+        key: consts::Key,
+        focused: Option<u32>,
+        now: u32,
+        fx: &mut Effects<'_, H>,
+    ) -> Handled {
+        match (focused.and_then(Self::hud_group_of), key) {
+            (Some(GROUP_ROW), consts::Key::Up) => {
+                self.hud.nav.focus = GROUP_SCRUB;
+                self.scrub.ns = -1;
+                self.scrub.disengage();
+                self.hud.hide(false);
+                Self::repair_focus(fx, GROUP_SCRUB);
             }
-        } else {
-            match self.hud.nav.focus {
-                0 => self.hud.nav.focus = 2,
-                1 => self.hud.nav.focus = 0,
-                _ => {}
+            (Some(GROUP_TABS), consts::Key::Down) => {
+                self.scrub.ns = -1;
+                self.scrub.disengage();
+                self.hud.extend(now, input::HUD_LINGER_MS);
             }
+            _ => {}
         }
-        if self.hud.nav.focus != 0 || hide {
-            self.scrub.ns = -1;
-            self.scrub.disengage();
-        }
-        if hide {
-            self.hud.hide(false);
-        } else {
-            self.hud.extend(now, input::HUD_LINGER_MS);
-        }
+        Handled::Yes
     }
 
     /// A key hold is over — its release survived the bounce window, or a press that is not the
@@ -1130,11 +1216,12 @@ impl PlayerScreen {
 
     /// A FRESH LEFT/RIGHT press: port of `key_scrub`'s `ScrubPress` dispatch. It commits NOTHING,
     /// and neither does its release (`key_scrub_release`): the press moves the target, OK takes it.
-    fn key_scrub_fresh(
+    fn key_scrub_fresh<H: AppLike>(
         &mut self,
         ps: &plx_media::route::PlaybackSession,
         key: consts::Key,
         now: u32,
+        fx: &mut Effects<'_, H>,
         meta: plx_data::metadata::MetadataView<'_>,
     ) {
         let fwd = matches!(key, consts::Key::Right { .. });
@@ -1161,7 +1248,8 @@ impl PlayerScreen {
         self.hud.extend(now, input::HUD_LINGER_MS);
         match act {
             input::ScrubPress::Reveal => {
-                self.hud.nav.focus = 0;
+                self.hud.nav.focus = GROUP_SCRUB;
+                Self::repair_focus(fx, GROUP_SCRUB);
                 if dur > 0 {
                     self.scrub.begin(now, fwd);
                     self.scrub.reveal = true;
@@ -1174,6 +1262,8 @@ impl PlayerScreen {
                 let max_tab = if plx_appkit::chapters_panel::has_chapters(meta) { 1 } else { 0 };
                 self.hud.nav.tab =
                     (self.hud.nav.tab + if fwd { 1 } else { -1 }).clamp(0, max_tab);
+                // the tab pill the engine holds follows, or OK would open the one just left
+                Self::repair_focus(fx, GROUP_TABS);
             }
             input::ScrubPress::Jump => {
                 // scrubber focus, FRESH press: the Skip interval hop of the TARGET, and NOTHING
@@ -1200,7 +1290,7 @@ impl PlayerScreen {
     /// `Tick` rather than by the repeat event itself (a held key's repeats and the frame rate are
     /// two different clocks).
     fn key_scrub_repeat(&mut self, now: u32) {
-        if self.hud.nav.focus == 0 && self.scrub.key.dir != 0 {
+        if self.hud.nav.focus == GROUP_SCRUB && self.scrub.key.dir != 0 {
             if self.scrub.key.repeat(now) {
                 // `reveal` is deliberately NOT cleared here. Engaging the hold is not the same
                 // event as the preview MOVING: `t` is stamped now, so the advance's first pass
@@ -1305,16 +1395,35 @@ impl PlayerScreen {
     }
 }
 
-/// **The four registered regions**: scrubber, control row, bottom tabs and failure actions.
-/// The established player key policy chooses vertical HUD transitions and dismissal. Horizontal
-/// control-row travel belongs to FocusEngine: neighbour uses the shared enabled-index helper,
-/// absent/disabled discs have no placement, and seat chooses the row's enabled primary.
-///
-/// **The order `groups` pushes in is the pointer's z-order**, lowest first: `record_stops`
-/// registers in it, and the hit map resolves the last stop under the pointer. The scrubber's tall
-/// grab band therefore comes FIRST, under the control row and tabs it overlaps (issue #162).
-impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScreen {
-    fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+impl PlayerScreen {
+    /// **Where the layout puts the HUD this frame**, as the `HudGeometry` the classic layout
+    /// reports for the row's occupant and the tab count (Info alone, or Info and Chapters). It
+    /// measures, like the draw it describes, so the callers that need several facts of one frame
+    /// ([`Self::record_stops`]) ask once and read it through [`Self::groups_in`] and
+    /// [`Self::place_in`]; the `Focusable` methods ask for their own.
+    fn hud_geometry<H: PlayerLike + crate::registry::MetadataLike>(&self, cx: &Cx<'_, H>) -> HudGeometry {
+        let tabs = if plx_appkit::chapters_panel::has_chapters(H::metadata(cx)) { 2 } else { 1 };
+        player_hud::classic::geometry(self.slot, &self.row, tabs, cx.measure)
+    }
+
+    /// Which of the HUD's three transport groups holds `elem` — the failure row and the repair
+    /// card are not the transport's, and answer `None`.
+    fn hud_group_of(elem: u32) -> Option<GroupId> {
+        use player_hud::{ELEM_FAILURE_BASE, ELEM_ROW_BASE, ELEM_SCRUB, ELEM_TAB_BASE};
+        match elem {
+            e if e == ELEM_SCRUB => Some(GROUP_SCRUB),
+            e if (ELEM_ROW_BASE..ELEM_TAB_BASE).contains(&e) => Some(GROUP_ROW),
+            e if (ELEM_TAB_BASE..ELEM_FAILURE_BASE).contains(&e) => Some(GROUP_TABS),
+            _ => None,
+        }
+    }
+
+    fn groups_in<H: PlayerLike + crate::registry::MetadataLike>(
+        &self,
+        geo: &HudGeometry,
+        cx: &Cx<'_, H>,
+        out: &mut Vec<GroupSpec>,
+    ) {
         if self.repair_alert.visible() {
             let len = match self.repair_alert.answers() { plx_ui::decision_alert::Answers::One => 1, _ => 2 };
             out.push(GroupSpec { id: GROUP_REPAIR, kind: GroupKind::Row { wrap: false }, seat: Seat::First,
@@ -1327,7 +1436,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
             seat: Seat::First,
             reachable: AxisMask::BOTH,
             edge: [EdgeRule::Screen; 4],
-            extent: player_hud::classic::scrub_hit_rect(),
+            extent: geo.grab,
             len: 1,
             elem: plx_ui::screen::ElemKind::Control,
         });
@@ -1339,8 +1448,10 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
             kind: GroupKind::Row { wrap: false },
             seat: Seat::First,
             reachable: AxisMask::BOTH,
-            edge: [EdgeRule::Stop; 4],
-            extent: player_hud::classic::ctrl_row_hit_rect(),
+            // Up off the row's top is the screen's to answer (`answer_edge`: it hides the HUD);
+            // Down is a declared link back to the scrubber (`links`), and the row's ends stay put.
+            edge: [EdgeRule::Screen, EdgeRule::Stop, EdgeRule::Stop, EdgeRule::Stop],
+            extent: geo.row,
             len: row_len,
             elem: plx_ui::screen::ElemKind::Control,
         });
@@ -1351,7 +1462,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
             seat: Seat::First,
             reachable: AxisMask::BOTH,
             edge: [EdgeRule::Screen; 4],
-            extent: player_hud::classic::tab_hit_rect(0, has_ch, cx.measure).unwrap_or(Rect::FULL),
+            extent: geo.tabs[0].unwrap_or(Rect::FULL),
             len: if has_ch { 2 } else { 1 },
             elem: plx_ui::screen::ElemKind::Control,
         });
@@ -1373,18 +1484,61 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
             });
         }
     }
+
+    /// Where `key` sits, read off the frame's [`HudGeometry`] and so measuring nothing itself: the
+    /// scrubber's grab band, the row's item `i` at the rect it is DRAWN at (a disabled or absent
+    /// disc has none), a tab's pill, or the failure read-out's control.
+    fn place_in<H: PlayerLike + crate::registry::MetadataLike>(
+        &self,
+        geo: &HudGeometry,
+        key: &u32,
+        cx: &Cx<'_, H>,
+    ) -> Option<Placed> {
+        use player_hud::{ELEM_FAILURE_BASE, ELEM_FAILURE_END, ELEM_SCRUB, ELEM_TAB_BASE};
+        if self.repair_alert.visible() {
+            if !matches!(*key, REPAIR_CANCEL | REPAIR_CONFIRM) { return None; }
+            let rect = self.repair_rect(*key == REPAIR_CONFIRM, cx.measure);
+            return Some(Placed { rect, rest_rect: rect, clip: Rect::FULL, index: None });
+        }
+        let rect = match *key {
+            e if e == ELEM_SCRUB => geo.grab,
+            e if let Some(index) = player_hud::row_index(e) => {
+                if !self.slot.enabled(index) { return None; }
+                geo.items.get(index as usize).copied().flatten()?
+            }
+            e if (ELEM_TAB_BASE..ELEM_FAILURE_BASE).contains(&e) => {
+                geo.tabs.get((e - ELEM_TAB_BASE) as usize).copied().flatten()?
+            }
+            e if (ELEM_FAILURE_BASE..ELEM_FAILURE_END).contains(&e) => {
+                player_hud::FailureReadout::now(H::session(cx)).frames(cx.measure)[(e - ELEM_FAILURE_BASE) as usize]?
+            }
+            _ => return None,
+        };
+        Some(Placed { rect, rest_rect: rect, clip: Rect::FULL, index: None })
+    }
+}
+
+/// **The four registered regions**: scrubber, control row, bottom tabs and failure actions.
+/// The established player key policy chooses vertical HUD transitions and dismissal. Horizontal
+/// control-row travel belongs to FocusEngine: neighbour uses the shared enabled-index helper,
+/// absent/disabled discs have no placement, and seat chooses the row's enabled primary.
+///
+/// **The order `groups` pushes in is the pointer's z-order**, lowest first: `record_stops`
+/// registers in it, and the hit map resolves the last stop under the pointer. The scrubber's tall
+/// grab band therefore comes FIRST, under the control row and tabs it overlaps (issue #162).
+impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScreen {
+    fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+        let geo = self.hud_geometry(cx);
+        self.groups_in(&geo, cx, out);
+    }
     fn group_of(&self, key: &u32, _cx: &Cx<'_, H>) -> Option<GroupId> {
-        use player_hud::{ELEM_FAILURE_BASE, ELEM_FAILURE_END, ELEM_ROW_BASE, ELEM_SCRUB, ELEM_TAB_BASE};
+        use player_hud::{ELEM_FAILURE_BASE, ELEM_FAILURE_END};
         if self.repair_alert.visible() {
             return matches!(*key, REPAIR_CANCEL | REPAIR_CONFIRM).then_some(GROUP_REPAIR);
         }
-        match *key {
-            e if e == ELEM_SCRUB => Some(GROUP_SCRUB),
-            e if (ELEM_ROW_BASE..ELEM_TAB_BASE).contains(&e) => Some(GROUP_ROW),
-            e if (ELEM_TAB_BASE..ELEM_FAILURE_BASE).contains(&e) => Some(GROUP_TABS),
-            e if (ELEM_FAILURE_BASE..ELEM_FAILURE_END).contains(&e) => Some(GROUP_FAILURE),
-            _ => None,
-        }
+        Self::hud_group_of(*key).or_else(|| {
+            (ELEM_FAILURE_BASE..ELEM_FAILURE_END).contains(key).then_some(GROUP_FAILURE)
+        })
     }
     fn neighbour(&self, key: FocusKey<u32>, dir: Dir, _cx: &Cx<'_, H>) -> Step<u32> {
         if self.repair_alert.is_open() {
@@ -1406,40 +1560,24 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
         Step::Edge
     }
     fn place(&self, key: &u32, cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
-        use player_hud::{ELEM_FAILURE_BASE, ELEM_FAILURE_END, ELEM_SCRUB, ELEM_TAB_BASE};
-        if self.repair_alert.visible() {
-            if !matches!(*key, REPAIR_CANCEL | REPAIR_CONFIRM) { return None; }
-            let rect = self.repair_rect(*key == REPAIR_CONFIRM, cx.measure);
-            return Some(Placed { rect, rest_rect: rect, clip: Rect::FULL, index: None });
-        }
-        let rect = match *key {
-            e if e == ELEM_SCRUB => player_hud::classic::scrub_hit_rect(),
-            e if let Some(index) = player_hud::row_index(e) => {
-                if !self.slot.enabled(index) { return None; }
-                self.slot.item_rect(&self.row, index, cx.measure)?
-            }
-            e if (ELEM_TAB_BASE..ELEM_FAILURE_BASE).contains(&e) => player_hud::classic::tab_hit_rect(
-                (e - ELEM_TAB_BASE) as i32,
-                plx_appkit::chapters_panel::has_chapters(H::metadata(cx)),
-                cx.measure,
-            )?,
-            e if (ELEM_FAILURE_BASE..ELEM_FAILURE_END).contains(&e) => {
-                player_hud::FailureReadout::now(H::session(cx)).frames(cx.measure)[(e - ELEM_FAILURE_BASE) as usize]?
-            }
-            _ => return None,
-        };
-        Some(Placed { rect, rest_rect: rect, clip: Rect::FULL, index: None })
+        let geo = self.hud_geometry(cx);
+        self.place_in(&geo, key, cx)
     }
     fn reconcile(&self, want: FocusKey<u32>, _cx: &Cx<'_, H>) -> FocusKey<u32> {
         if player_hud::row_index(want.elem).is_some_and(|i| !self.slot.enabled(i)) {
             FocusKey { entry: self.entry, elem: player_hud::ELEM_ROW_BASE + self.slot.primary_btn() as u32 }
         } else { want }
     }
-    fn seat(&self, g: GroupId, _from: Placed, _cx: &Cx<'_, H>) -> FocusKey<u32> {
+    fn seat(&self, g: GroupId, _from: Placed, cx: &Cx<'_, H>) -> FocusKey<u32> {
         let elem = match g {
             GROUP_SCRUB => player_hud::ELEM_SCRUB,
             GROUP_ROW => player_hud::ELEM_ROW_BASE + self.slot.primary_btn() as u32,
-            GROUP_TABS => player_hud::ELEM_TAB_BASE,
+            // the tab the user last stood on (Down from the scrubber returns to it), held to the
+            // tabs this item has
+            GROUP_TABS => {
+                let last = if plx_appkit::chapters_panel::has_chapters(H::metadata(cx)) { 1 } else { 0 };
+                player_hud::ELEM_TAB_BASE + self.hud.nav.tab.clamp(0, last) as u32
+            }
             GROUP_FAILURE => player_hud::ELEM_FAILURE_BASE,
             GROUP_REPAIR => REPAIR_CANCEL,
             _ => player_hud::ELEM_SCRUB,
@@ -1450,7 +1588,7 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Focusable<H> for PlayerScree
 
 impl LogicalState for PlayerScreen {
     fn write(&self, c: &mut Canon) {
-        c.u32(self.hud.nav.focus as u32)
+        c.u32(self.hud.nav.focus.0 as u32)
             .u32(self.hud.nav.btn as u32)
             .u32(self.hud.nav.tab as u32)
             .u32(self.hud.until)
@@ -1491,13 +1629,27 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Screen<H> for PlayerScreen {
     fn crumb(&self, _cx: &Cx<'_, H>) -> Option<Cow<'_, str>> {
         None
     }
+    /// **The HUD's travel between its three regions**, as declared links (§7.3 step 3): the
+    /// scrubber's Up is the control row and its Down the tabs; Down from the row and Up from the
+    /// tabs come back to the scrubber. Where a link lands is the destination group's `seat`. What
+    /// no link covers is the group's edge rule: Up off the row and Down off the tabs are
+    /// `EdgeRule::Screen`, which the dispatcher re-delivers to [`PlayerScreen::step`] as the key
+    /// with `at_edge` set — [`PlayerScreen::answer_edge`] is the screen's answer.
+    fn links(&self, out: &mut Vec<Link>) {
+        out.extend([
+            Link { from: GROUP_SCRUB, dir: Dir::Up, to: GROUP_ROW },
+            Link { from: GROUP_SCRUB, dir: Dir::Down, to: GROUP_TABS },
+            Link { from: GROUP_ROW, dir: Dir::Down, to: GROUP_SCRUB },
+            Link { from: GROUP_TABS, dir: Dir::Up, to: GROUP_SCRUB },
+        ]);
+    }
     /// The transport's clocks, queued for the presenting side to rasterise before the draw's
     /// back-buffer wait (`player_hud::motion::ClockWarm`). Only while the playbar is drawn: the gate is
     /// `draw`'s own (`hud_drawn` and the transport's middle).
     fn prepare(&mut self, _b: &mut Budget, cx: &Cx<'_, H>) {
         let ps = H::session(cx);
         if self.transport && self.hud_drawn(ps, cx.tick.ms) {
-            self.clock_warm.queue_live(ps);
+            self.clock_warm.queue(&self.model);
         }
     }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
@@ -1511,16 +1663,16 @@ impl<H: PlayerLike + crate::registry::MetadataLike> Screen<H> for PlayerScreen {
         // capsule is the exception: it HIDES the transport rather than sharing its read time, so
         // captions stay at their normal `SUB_BASE_Y` even while it is up (`Self::subs_lift`).
         let subs_lift = self.subs_lift(ps, now);
-        self.render.ass.draw(subs_lift);
+        self.render.ass.draw(subs_lift, &self.model);
         if let Some(message) = self.render.ass.error() {
-            plx_appkit::player_hud::draw_subtitle_message(message, subs_lift, f.cx.measure);
+            plx_appkit::player_hud::draw_subtitle_message(message, subs_lift, &self.model, f.cx.measure);
         }
         // a sidecar that produced nothing says so for a few seconds; the server burning the
         // selection draws it already, so no second notice then
         if let Some(message) = plx_media::player::sidecar::notice()
             .filter(|_| !plx_media::route::subtitles_burned(ps))
         {
-            plx_appkit::player_hud::draw_subtitle_message(message, subs_lift, f.cx.measure);
+            plx_appkit::player_hud::draw_subtitle_message(message, subs_lift, &self.model, f.cx.measure);
         }
         self.draw_subtitle_bitmap(subs_lift); // PGS/VobSub image subs
         // What a pointer can hit is registered AFTER the paint, by `record_stops`, from this
@@ -1773,6 +1925,156 @@ mod render_residency_tests {
     }
 }
 
+/// **The part of the dispatcher a direct `PlayerScreen::step` test needs** (§7.3): a real
+/// `FocusEngine`, the screen's own `links()`, `Focusable` and edge rules, and the same order the
+/// dispatcher keeps. A direction the page leaves unhandled is the engine's; a move arrives as
+/// `FocusMoved` before anything else; a `Screen` edge comes back as the key with `at_edge` set,
+/// behind the rest of the queue; an `Enter::Fresh` the page pushes (its re-seats) is entered and
+/// reports its own `FocusMoved`. Nothing here decides travel for the page, so a test through it
+/// grades the tables the page declares, not a copy of them.
+#[cfg(test)]
+mod travel_rig {
+    use super::*;
+    use crate::player::overlay_tests::TestHost;
+    use crate::registry::AppFx;
+    use plx_machine::machine::{Delivery, InputEvent, InputOwner, MachineId, Source, Tick};
+    use plx_ui::fixture::FixtureMeasure;
+    use plx_ui::focus::{FocusEngine, Outcome};
+    use plx_ui::screen::{Enter, FocusTarget};
+    use std::collections::VecDeque;
+
+    const INST: InstanceId = InstanceId(3);
+
+    pub(super) struct Rig {
+        entry: EntryId,
+        engine: FocusEngine<u32>,
+        now: u32,
+    }
+
+    impl Rig {
+        /// An engine holding focus where `page.hud.nav` says it is, by that group's own seat.
+        pub(super) fn on(page: &PlayerScreen, entry: EntryId) -> Self {
+            let mut rig = Self { entry, engine: FocusEngine::new(), now: 1_000 };
+            let cx = rig.cx();
+            rig.engine.enter(
+                rig.owner(),
+                page,
+                FocusTarget::ContainerGroup(page.hud.nav.focus),
+                None,
+                &cx,
+            );
+            rig
+        }
+
+        fn owner(&self) -> InputOwner {
+            InputOwner::Entry(self.entry)
+        }
+
+        /// The element the engine holds focus on.
+        pub(super) fn current(&self) -> Option<u32> {
+            self.engine.current(self.owner()).map(|k| k.elem)
+        }
+
+        pub(super) fn cx(&self) -> Cx<'static, TestHost> {
+            Cx {
+                views: (),
+                tick: Tick { ms: self.now, dt_us: 0 },
+                measure: &FixtureMeasure,
+                focus: self.engine.read(self.owner()),
+                press: Default::default(),
+                owner: self.owner(),
+            }
+        }
+
+        /// One key through the page and everything the dispatcher would do after it. Returns the
+        /// KEY's own answer and every `PlayerReq` the whole exchange asked for.
+        pub(super) fn key(
+            &mut self,
+            page: &mut PlayerScreen,
+            sym: u32,
+            wcode: u32,
+            edge: Edge,
+            ms: u32,
+        ) -> (Handled, Vec<PlayerReq>) {
+            self.now = ms;
+            self.deliver(
+                page,
+                ScreenEvent::Input(InputEvent {
+                    at: Tick { ms, dt_us: 0 },
+                    source: Source::Sdl,
+                    kind: InputKind::Key {
+                        key: plx_machine::machine::Key::Other,
+                        sym,
+                        wcode,
+                        edge,
+                        at_edge: false,
+                    },
+                }),
+            )
+        }
+
+        pub(super) fn deliver(
+            &mut self,
+            page: &mut PlayerScreen,
+            ev: ScreenEvent<TestHost>,
+        ) -> (Handled, Vec<PlayerReq>) {
+            let mut reqs = Vec::new();
+            let mut first = None;
+            let mut queue = VecDeque::from([ev]);
+            while let Some(ev) = queue.pop_front() {
+                let cx = self.cx();
+                let mut out = Vec::new();
+                let mut present = plx_machine::present::Present::new();
+                let handled = page.step(
+                    &ev,
+                    &cx,
+                    &mut Effects::new(&mut out, MachineId::Instance(INST), &mut present),
+                );
+                first.get_or_insert(handled);
+                for e in out {
+                    match e.fx {
+                        Fx::App(AppFx::Player(req)) => reqs.push(req),
+                        Fx::Deliver(_, Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus }))) => {
+                            let cx = self.cx();
+                            if let Outcome::Moved { from, to, by } =
+                                self.engine.enter(self.owner(), &*page, focus, None, &cx)
+                            {
+                                queue.push_front(ScreenEvent::FocusMoved { from, to, by });
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let ScreenEvent::Input(InputEvent { at, source, kind: InputKind::Key { key, sym, wcode, edge, at_edge } }) = &ev
+                else { continue };
+                let dir = match consts::classify_input(*key, *sym, *wcode) {
+                    consts::Key::Up => Dir::Up,
+                    consts::Key::Down => Dir::Down,
+                    _ => continue,
+                };
+                if handled != Handled::No || *edge == Edge::Up {
+                    continue;
+                }
+                let mut links = Vec::new();
+                Screen::<TestHost>::links(&*page, &mut links);
+                let cx = self.cx();
+                match self.engine.move_dir(self.owner(), &*page, &links, dir, &cx) {
+                    Outcome::Moved { from, to, by } => queue.push_front(ScreenEvent::FocusMoved { from, to, by }),
+                    Outcome::Edge(EdgeRule::Screen) if !*at_edge => {
+                        queue.push_back(ScreenEvent::Input(InputEvent {
+                            at: *at,
+                            source: *source,
+                            kind: InputKind::Key { key: *key, sym: *sym, wcode: *wcode, edge: *edge, at_edge: true },
+                        }));
+                    }
+                    _ => {}
+                }
+            }
+            (first.expect("one event went in"), reqs)
+        }
+    }
+}
+
 /// **The transport ladder, ported onto `PlayerScreen::step`** (restructure phase 12, D2 Part C).
 ///
 /// Each case here was watched RED first against `88841d3e` (the contract-freeze commit, whose
@@ -1800,6 +2102,7 @@ mod step_ladder_tests {
         WCODE_STOP,
     };
     use plx_ui::fixture::FixtureMeasure;
+    use super::travel_rig::Rig;
     use plx_machine::machine::{
         Cx, Edge, Effects, EntryId, Fx, Handled, InputEvent, InputKind, InputOwner, MachineId,
         Source, Tick,
@@ -1896,6 +2199,14 @@ mod step_ladder_tests {
     fn bound_press(page: &mut PlayerScreen, sym: u32, wcode: u32) -> (Handled, Vec<PlayerReq>) {
         page.hud.note_fresh_press(TestHost::session(&cx()), 1_000, false);
         press(page, sym, wcode, Edge::Down)
+    }
+
+    /// [`bound_press`] for UP and DOWN, which the page leaves to the focus engine: the press goes
+    /// through the dispatcher's own order ([`travel_rig`]), so the travel under test is the page's
+    /// declared links and edge rules and nothing a test wrote.
+    fn bound_travel(rig: &mut Rig, page: &mut PlayerScreen, sym: u32) -> (Handled, Vec<PlayerReq>) {
+        page.hud.note_fresh_press(TestHost::session(&cx()), 1_000, false);
+        rig.key(page, sym, 0, Edge::Down, 1_000)
     }
 
     /// The census's other half: a control the frame does NOT draw registers no stop, so a click
@@ -2111,7 +2422,7 @@ mod step_ladder_tests {
             let gaps = pointer_gaps(&mut map, ENTRY, &placed);
             assert!(gaps.is_empty(), "{name}: controls the pointer cannot click:\n{}", gaps.join("\n"));
             if !player_hud::failure_row_drawn(busy) {
-                let band = player_hud::classic::scrub_hit_rect();
+                let band = player_hud::classic::frame_geometry().grab;
                 let hit = map.resolve(Some(ENTRY), PointerKind::Click, band.cx(), band.cy(), None);
                 assert_eq!(hit.activate.map(|(k, _)| k.elem), Some(ELEM_SCRUB), "{name}: the scrubber");
             }
@@ -2179,12 +2490,12 @@ mod step_ladder_tests {
         let _g = plx_base::testlock::serial();
         let mut page = PlayerScreen::new(ENTRY);
         fresh(&mut page);
-        page.hud.nav.focus = 2; // parked on the tabs row, to see the ring come home
+        page.hud.nav.focus = GROUP_TABS; // parked on the tabs row, to see the ring come home
         let (handled, reqs) = press(&mut page, 0, WCODE_BACK, Edge::Down);
         assert_eq!(handled, Handled::Yes);
         assert!(reqs.is_empty(), "the first BACK only hides the transport: {reqs:?}");
         assert!(page.hud.dismissed, "the transport is dismissed");
-        assert_eq!(page.hud.nav.focus, 0, "ring parked on the scrubber");
+        assert_eq!(page.hud.nav.focus, GROUP_SCRUB, "ring parked on the scrubber");
         assert_eq!(page.scrub.ns, -1, "no scrub target left behind");
         // A bound key un-dismisses; BACK itself is bound, so the second press must sample the
         // dismissed state BEFORE that, which is what `visible_at_press` is for.
@@ -2303,8 +2614,9 @@ mod step_ladder_tests {
         let was = plx_media::player::swap_state_for_test(Playing);
         let mut page = PlayerScreen::new(ENTRY);
         page.hud.until = 5_000;
-        page.hud.nav.focus = 1; // on the control row, where UP hides
-        bound_press(&mut page, SDLK_UP, 0);
+        page.hud.nav.focus = GROUP_ROW; // on the control row, where UP hides
+        let mut rig = Rig::on(&page, ENTRY);
+        bound_travel(&mut rig, &mut page, SDLK_UP);
         let hidden = (page.hud.dismissed, page.hud.exit_armed);
         plx_media::player::swap_state_for_test(Buffering);
         let (_, one) = bound_press(&mut page, 0, WCODE_BACK);
@@ -2314,16 +2626,18 @@ mod step_ladder_tests {
     }
 
     /// …and an UP-hide done WHILE the pipeline is busy arms nothing either: only a BACK-hide is the
-    /// viewer asking to leave. The test above hides in `Playing`, so it could not tell `key_updown`
-    /// passing `false` to `HudState::hide` from passing the live `loading()`; this one can.
+    /// viewer asking to leave. The test above hides in `Playing`, so it could not tell the UP-hide
+    /// (`answer_edge`) passing `false` to `HudState::hide` from passing the live `loading()`; this
+    /// one can.
     #[test]
     fn an_up_hide_while_busy_does_not_arm_the_exit() {
         use plx_media::player::PlaybackState::Buffering;
         let _g = plx_base::testlock::serial();
         let was = plx_media::player::swap_state_for_test(Buffering);
         let mut page = PlayerScreen::new(ENTRY);
-        page.hud.nav.focus = 1; // on the control row, where UP hides
-        bound_press(&mut page, SDLK_UP, 0);
+        page.hud.nav.focus = GROUP_ROW; // on the control row, where UP hides
+        let mut rig = Rig::on(&page, ENTRY);
+        bound_travel(&mut rig, &mut page, SDLK_UP);
         let hidden = (page.hud.dismissed, page.hud.exit_armed);
         let (_, one) = bound_press(&mut page, 0, WCODE_BACK);
         plx_media::player::restore_state_for_test(was);
@@ -2388,41 +2702,46 @@ mod step_ladder_tests {
         let _g = plx_base::testlock::serial();
         let mut page = PlayerScreen::new(ENTRY);
         fresh(&mut page);
-        assert_eq!(page.hud.nav.focus, 0);
-        press(&mut page, SDLK_UP, 0, Edge::Down);
-        assert_eq!(page.hud.nav.focus, 1, "scrubber -> control row");
-        press(&mut page, SDLK_UP, 0, Edge::Down);
-        assert_eq!(page.hud.nav.focus, 0, "control row has nothing above: hides+reparks");
-        press(&mut page, SDLK_DOWN, 0, Edge::Down);
-        assert_eq!(page.hud.nav.focus, 2, "scrubber -> tabs");
-        press(&mut page, SDLK_DOWN, 0, Edge::Down);
-        assert_eq!(page.hud.nav.focus, 2, "tabs has nothing below: stays");
-        press(&mut page, SDLK_UP, 0, Edge::Down);
-        assert_eq!(page.hud.nav.focus, 0, "tabs -> scrubber");
+        let mut rig = Rig::on(&page, ENTRY);
+        assert_eq!(page.hud.nav.focus, GROUP_SCRUB);
+        rig.key(&mut page, SDLK_UP, 0, Edge::Down, 1_000);
+        assert_eq!(page.hud.nav.focus, GROUP_ROW, "scrubber -> control row");
+        rig.key(&mut page, SDLK_UP, 0, Edge::Down, 1_000);
+        assert_eq!(page.hud.nav.focus, GROUP_SCRUB, "control row has nothing above: hides+reparks");
+        assert_eq!(rig.current(), Some(player_hud::ELEM_SCRUB), "…and the engine is home too");
+        rig.key(&mut page, SDLK_DOWN, 0, Edge::Down, 1_000);
+        assert_eq!(page.hud.nav.focus, GROUP_TABS, "scrubber -> tabs");
+        rig.key(&mut page, SDLK_DOWN, 0, Edge::Down, 1_000);
+        assert_eq!(page.hud.nav.focus, GROUP_TABS, "tabs has nothing below: stays");
+        rig.key(&mut page, SDLK_UP, 0, Edge::Down, 1_000);
+        assert_eq!(page.hud.nav.focus, GROUP_SCRUB, "tabs -> scrubber");
     }
 
     /// OK on the control row is the DEFERRED press (`ArmControlRow`), not an immediate action —
-    /// port of `key_ok`'s `focus == 1` arm.
+    /// port of `key_ok`'s `focus == 1` arm — now read off the element the engine holds.
     #[test]
     fn ok_on_the_control_row_arms_the_deferred_press() {
         let _g = plx_base::testlock::serial();
         let mut page = PlayerScreen::new(ENTRY);
         fresh(&mut page);
-        page.hud.nav.focus = 1;
-        let (handled, reqs) = press(&mut page, SDLK_RETURN, 0, Edge::Down);
+        page.hud.nav.focus = GROUP_ROW;
+        let mut rig = Rig::on(&page, ENTRY);
+        let (handled, reqs) = rig.key(&mut page, SDLK_RETURN, 0, Edge::Down, 1_000);
         assert_eq!(handled, Handled::Yes);
         assert_eq!(reqs, vec![PlayerReq::ArmControlRow]);
     }
 
-    /// OK on the tabs row opens the named overlay AT ONCE — port of `key_ok`'s `focus == 2` arm.
+    /// OK on the tabs row opens the named overlay AT ONCE — port of `key_ok`'s `focus == 2` arm,
+    /// now read off the element the engine holds.
     #[test]
     fn ok_on_the_tabs_row_opens_the_named_overlay() {
         let _g = plx_base::testlock::serial();
         let mut page = PlayerScreen::new(ENTRY);
         fresh(&mut page);
-        page.hud.nav.focus = 2;
+        page.hud.nav.focus = GROUP_TABS;
         page.hud.nav.tab = 0;
-        let (_, reqs) = press(&mut page, SDLK_RETURN, 0, Edge::Down);
+        let mut rig = Rig::on(&page, ENTRY);
+        let (_, reqs) = rig.key(&mut page, SDLK_RETURN, 0, Edge::Down, 1_000);
         assert_eq!(
             reqs,
             vec![PlayerReq::OpenOverlay(overlay::OverlayKind::Info)]
@@ -2436,8 +2755,9 @@ mod step_ladder_tests {
         let _g = plx_base::testlock::serial();
         let mut page = PlayerScreen::new(ENTRY);
         fresh(&mut page);
-        page.hud.nav.focus = 0;
-        let (_, reqs) = press(&mut page, SDLK_RETURN, 0, Edge::Down);
+        page.hud.nav.focus = GROUP_SCRUB;
+        let mut rig = Rig::on(&page, ENTRY);
+        let (_, reqs) = rig.key(&mut page, SDLK_RETURN, 0, Edge::Down, 1_000);
         assert_eq!(reqs, vec![PlayerReq::Transport(None)]);
     }
 
@@ -2449,7 +2769,7 @@ mod step_ladder_tests {
         let mut page = PlayerScreen::new(ENTRY);
         let (handled, reqs) = click(&mut page, player_hud::ELEM_ROW_BASE + player_hud::BTN_AUDIO as u32);
         assert_eq!(handled, Handled::Yes);
-        assert_eq!(page.hud.nav.focus, 1);
+        assert_eq!(page.hud.nav.focus, GROUP_ROW);
         assert_eq!(page.hud.nav.btn, player_hud::BTN_AUDIO);
         assert_eq!(reqs, vec![PlayerReq::ArmControlRow]);
     }
@@ -2467,7 +2787,7 @@ mod step_ladder_tests {
             At::Drawn,
         )
         .expect("the scrubber always places");
-        let want = player_hud::classic::scrub_hit_rect();
+        let want = player_hud::classic::frame_geometry().grab;
         assert_eq!((placed.rect.x, placed.rect.y, placed.rect.w, placed.rect.h), (want.x, want.y, want.w, want.h));
     }
 
@@ -2521,6 +2841,7 @@ mod step_ladder_tests {
 /// committer on that field can then only be a second seek, which is the symptom.
 #[cfg(test)]
 mod scrub_ownership_tests {
+    use super::travel_rig::Rig;
     use super::*;
     use crate::player::overlay_tests::TestHost;
     use crate::registry::AppFx;
@@ -2581,7 +2902,7 @@ mod scrub_ownership_tests {
     fn page_on_the_bar() -> PlayerScreen {
         let mut page = PlayerScreen::new(ENTRY);
         page.hud.visible_at_press = true;
-        page.hud.nav.focus = 0;
+        page.hud.nav.focus = GROUP_SCRUB;
         page
     }
 
@@ -2656,7 +2977,7 @@ mod scrub_ownership_tests {
 
     /// A point on the scrubber's registered band, `frac` of the way along it.
     fn on_the_bar(frac: f32) -> (f32, f32) {
-        let r = player_hud::classic::scrub_hit_rect();
+        let r = player_hud::classic::frame_geometry().grab;
         (r.x + r.w * frac, r.y + r.h * 0.5)
     }
 
@@ -3036,7 +3357,7 @@ mod scrub_ownership_tests {
             v.sort_unstable();
             v
         };
-        let step = |page: &mut PlayerScreen, now: u32| page.row.step(ControlSlot::Discs(player_hud::Controls::NONE), 0, 0, 0.016, now);
+        let step = |page: &mut PlayerScreen, now: u32| page.row.step(ControlSlot::Discs(player_hud::Controls::NONE), GROUP_SCRUB, 0, 0.016, now);
         let mut page = page_on_the_bar();
         page.transport = true;
         step(&mut page, 1_000);
@@ -3072,7 +3393,7 @@ mod scrub_ownership_tests {
         let mut page = PlayerScreen::new(ENTRY);
         page.transport = true;
         assert!(!page.hud.visible_at_press, "the fixture: the transport is hidden");
-        let step = |page: &mut PlayerScreen, now: u32| page.row.step(ControlSlot::Discs(player_hud::Controls::NONE), 0, 0, 0.016, now);
+        let step = |page: &mut PlayerScreen, now: u32| page.row.step(ControlSlot::Discs(player_hud::Controls::NONE), GROUP_SCRUB, 0, 0.016, now);
 
         key(&mut page, SDLK_RIGHT, Edge::Down, 1_000);
         page.publish();
@@ -3548,8 +3869,10 @@ mod scrub_ownership_tests {
         }
         for sym in [SDLK_UP, SDLK_DOWN] {
             let mut page = pending();
-            let (_, reqs) = key(&mut page, sym, Edge::Down, 1_100);
+            let mut rig = Rig::on(&page, ENTRY);
+            let (_, reqs) = rig.key(&mut page, sym, 0, Edge::Down, 1_100);
             assert!(seeks(reqs).is_empty());
+            assert_ne!(page.hud.nav.focus, GROUP_SCRUB, "the fixture: the key left the scrubber");
             settled(&mut page, "leaving the scrubber");
         }
         let mut page = pending();
